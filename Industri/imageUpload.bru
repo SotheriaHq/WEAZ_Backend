@@ -1,0 +1,19 @@
+meta {
+  name: imageUpload
+  type: http
+  seq: 5
+}
+
+post {
+  url: http://localhost:3040/auth/upload
+  body: multipartForm
+  auth: bearer
+}
+
+auth:bearer {
+  token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI1NzA0MmRhMS05NTZlLTRiODEtYTg1YS05OGI3OTllOTUxYTEiLCJmaXJzdE5hbWUiOiJ0ZXN0IiwibGFzdE5hbWUiOiJBY2NvdW50IiwiZW1haWwiOiJ0ZXN0QHRlc3QuY29tIiwicm9sZSI6IlVzZXIiLCJ1c2VybmFtZSI6InRlc3QuQWNjb3VudCIsImlhdCI6MTc1MjU4MjM4MywiZXhwIjoxNzUyNTgzMjgzfQ.C119qLEBS9HKV3p1okRpAkhWowtnfZtzoc6YgzakhgA
+}
+
+body:multipart-form {
+  file: @file(C:\Users\shawn\Pictures\Screenshots\343.png)
+}

@@ -1,0 +1,19 @@
+{
+  "type": "endpoint",
+  "name": "Sign Up",
+  "method": "POST",
+  "url": "{{baseUrl}}/auth/signup",
+  "request": {
+    "body": {
+      "type": "json",
+      "content": {
+        "email": "test@example.com",
+        "password": "password123",
+        "username": "testuser",
+        "firstName": "Test",
+        "lastName": "User",
+        "type": "REGULAR"
+      }
+    }
+  }
+}

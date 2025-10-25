@@ -1,0 +1,101 @@
+{
+  "info": {
+    "_postman_id": "voguely-api-collection",
+    "name": "voguely API Collection",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Signup (REGULAR)",
+      "request": {
+        "method": "POST",
+        "header": [{"key": "Content-Type", "value": "application/json"}],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"username\": \"john_doe\",\n  \"firstName\": \"John\",\n  \"lastName\": \"Doe\",\n  \"email\": \"john@example.com\",\n  \"password\": \"Password123!\",\n  \"phoneNumber\": \"1234567890\",\n  \"type\": \"REGULAR\"\n}"
+        },
+        "url": {"raw": "http://localhost:3000/auth/signup", "protocol": "http", "host": ["localhost"], "port": "3000", "path": ["auth", "signup"]}
+      }
+    },
+    {
+      "name": "Signup (BRAND)",
+      "request": {
+        "method": "POST",
+        "header": [{"key": "Content-Type", "value": "application/json"}],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"username\": \"brand_user\",\n  \"firstName\": \"Jane\",\n  \"lastName\": \"Smith\",\n  \"email\": \"jane@brand.com\",\n  \"password\": \"BrandPass456!\",\n  \"phoneNumber\": \"0987654321\",\n  \"type\": \"BRAND\",\n  \"brandFullName\": \"BrandName Inc.\",\n  \"cacNumber\": \"CAC123456\",\n  \"tin\": \"TIN987654\",\n  \"ceoNin\": \"NIN123456\",\n  \"ceoFirstName\": \"Jane\",\n  \"ceoLastName\": \"Smith\",\n  \"companyLocation\": \"Lagos\"\n}"
+        },
+        "url": {"raw": "http://localhost:3000/auth/signup", "protocol": "http", "host": ["localhost"], "port": "3000", "path": ["auth", "signup"]}
+      }
+    },
+    {
+      "name": "Login",
+      "request": {
+        "method": "POST",
+        "header": [{"key": "Content-Type", "value": "application/json"}],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"email\": \"john@example.com\",\n  \"password\": \"Password123!\"\n}"
+        },
+        "url": {"raw": "http://localhost:3000/auth/login", "protocol": "http", "host": ["localhost"], "port": "3000", "path": ["auth", "login"]}
+      }
+    },
+    {
+      "name": "Verify Email by Code",
+      "request": {
+        "method": "POST",
+        "header": [{"key": "Content-Type", "value": "application/json"}],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"email\": \"john@example.com\",\n  \"code\": \"ABC123\"\n}"
+        },
+        "url": {"raw": "http://localhost:3000/auth/verify-email-code", "protocol": "http", "host": ["localhost"], "port": "3000", "path": ["auth", "verify-email-code"]}
+      }
+    },
+    {
+      "name": "Verify Email by Link",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {"raw": "http://localhost:3000/auth/verify-email?userId=<USER_ID>&code=<CODE>", "protocol": "http", "host": ["localhost"], "port": "3000", "path": ["auth", "verify-email"], "query": [{"key": "userId", "value": "<USER_ID>"}, {"key": "code", "value": "<CODE>"}]}
+      }
+    },
+    {
+      "name": "Get All Users",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {"raw": "http://localhost:3000/auth/users", "protocol": "http", "host": ["localhost"], "port": "3000", "path": ["auth", "users"]}
+      }
+    },
+    {
+      "name": "Get Single User",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {"raw": "http://localhost:3000/auth/user/<USER_ID>", "protocol": "http", "host": ["localhost"], "port": "3000", "path": ["auth", "user", "<USER_ID>"]}
+      }
+    },
+    {
+      "name": "Update User",
+      "request": {
+        "method": "PATCH",
+        "header": [{"key": "Content-Type", "value": "application/json"}],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"firstName\": \"UpdatedName\",\n  \"lastName\": \"UpdatedLast\"\n}"
+        },
+        "url": {"raw": "http://localhost:3000/auth/user/<USER_ID>", "protocol": "http", "host": ["localhost"], "port": "3000", "path": ["auth", "user", "<USER_ID>"]}
+      }
+    },
+    {
+      "name": "Soft Delete User",
+      "request": {
+        "method": "DELETE",
+        "header": [],
+        "url": {"raw": "http://localhost:3000/auth/user/<USER_ID>", "protocol": "http", "host": ["localhost"], "port": "3000", "path": ["auth", "user", "<USER_ID>"]}
+      }
+    }
+  ]
+}

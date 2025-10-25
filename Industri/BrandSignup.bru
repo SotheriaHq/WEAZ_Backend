@@ -1,0 +1,30 @@
+meta {
+  name: BrandSignup
+  type: http
+  seq: 3
+}
+
+post {
+  url: http://localhost:3040/auth/signup
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "firstName": "test",
+    "lastName": "Account",
+    "email": "test@test.com",
+    "password": "Password@1",
+    "phoneNumber": "09099900099",
+    "address": "Ajah, ajah",
+    "brandFullName": "testBrand",
+    "cacNumber": "090887778878",
+    "tin": "0909099998",
+    "ceoNin": "ytyhhethsh",
+    "ceoFirstName": "CEO Name",
+    "ceoLastName": "CEO LAST",
+    "companyLocation": "AJAH",
+    "type": "BRAND"
+  }
+}

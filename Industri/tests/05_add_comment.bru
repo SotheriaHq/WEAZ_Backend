@@ -1,0 +1,17 @@
+{
+  "type": "endpoint",
+  "name": "Add Comment",
+  "method": "POST",
+  "url": "{{baseUrl}}/posts/{{postId}}/comments",
+  "request": {
+    "body": {
+      "type": "json",
+      "content": {
+        "content": "Test comment content"
+      }
+    },
+    "headers": {
+      "Authorization": "Bearer {{accessToken}}"
+    }
+  }
+}

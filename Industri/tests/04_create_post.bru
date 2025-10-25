@@ -1,0 +1,18 @@
+{
+  "type": "endpoint",
+  "name": "Create Post",
+  "method": "POST",
+  "url": "{{baseUrl}}/posts",
+  "request": {
+    "body": {
+      "type": "json",
+      "content": {
+        "content": "Test post content",
+        "imageIds": ["{{uploadedImageId}}"]
+      }
+    },
+    "headers": {
+      "Authorization": "Bearer {{accessToken}}"
+    }
+  }
+}

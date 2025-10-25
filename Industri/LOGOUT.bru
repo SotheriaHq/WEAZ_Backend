@@ -1,0 +1,23 @@
+meta {
+  name: LOGOUT
+  type: http
+  seq: 6
+}
+
+post {
+  url: http://localhost:3040/auth/logout
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI1NzA0MmRhMS05NTZlLTRiODEtYTg1YS05OGI3OTllOTUxYTEiLCJmaXJzdE5hbWUiOiJ0ZXN0IiwibGFzdE5hbWUiOiJBY2NvdW50IiwiZW1haWwiOiJ0ZXN0QHRlc3QuY29tIiwicm9sZSI6IlVzZXIiLCJ1c2VybmFtZSI6InRlc3QuQWNjb3VudCIsImlhdCI6MTc1MjU4MjM4MywiZXhwIjoxNzUyNTgzMjgzfQ.C119qLEBS9HKV3p1okRpAkhWowtnfZtzoc6YgzakhgA
+}
+
+body:json {
+  {
+    "email": "test@test.com",
+    "password": "Password@1"
+  
+  }
+}

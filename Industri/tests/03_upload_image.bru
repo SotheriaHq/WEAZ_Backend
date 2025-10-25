@@ -1,0 +1,25 @@
+{
+  "type": "endpoint",
+  "name": "Upload Image",
+  "method": "POST",
+  "url": "{{baseUrl}}/upload/file",
+  "request": {
+    "body": {
+      "type": "multipart/form-data",
+      "content": [
+        {
+          "key": "file",
+          "type": "file",
+          "value": "./test-image.jpg"
+        },
+        {
+          "key": "type",
+          "value": "POST_IMAGE"
+        }
+      ]
+    },
+    "headers": {
+      "Authorization": "Bearer {{accessToken}}"
+    }
+  }
+}

@@ -1,0 +1,21 @@
+meta {
+  name: regularSignup
+  type: http
+  seq: 2
+}
+
+post {
+  url: http://localhost:3040/auth/signup
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "firstName": "test",
+    "lastName": "Account",
+    "email": "test@test.com",
+    "password": "Password@1"
+  
+  }
+}
