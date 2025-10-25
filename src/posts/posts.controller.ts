@@ -14,13 +14,16 @@ import { PostsService } from './posts.service';
 import { JwtAuthGuard } from '../auth/guard/jwt-auth.guard';
 import { CreatePostDto, UpdatePostDto, GetPostsDto } from './dto/post.dto';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
+import { ThrottlerGuard, Throttle } from '@nestjs/throttler';
+import { UseGuards as UseGuardsDeco } from '@nestjs/common';
+import { EventsGateway } from '../realtime/events.gateway';
 
 @ApiTags('posts')
 @ApiBearerAuth()
 @Controller('posts')
 @UseGuards(JwtAuthGuard)
 export class PostsController {
-  constructor(private readonly postsService: PostsService) {}
+  constructor(private readonly postsService: PostsService, private readonly events: EventsGateway) {}
 
   @Post()
   create(@Body() createPostDto: CreatePostDto, @Req() req: any) {
@@ -51,9 +54,18 @@ export class PostsController {
     return this.postsService.delete(id, req.user.id);
   }
 
+  @UseGuardsDeco(ThrottlerGuard)
+  @Throttle({ default: { limit: 60, ttl: 60000 } })
   @Post(':id/likes')
-  toggleLike(@Param('id') id: string, @Req() req: any) {
-    return this.postsService.toggleLike(id, req.user.id);
+  async toggleLike(@Param('id') id: string, @Req() req: any) {
+    const res = await this.postsService.toggleLike(id, req.user.id);
+    this.events.emitLike(res.liked ? 'like.created' : 'like.removed', {
+      contentType: 'POST',
+      contentId: id,
+      userId: req.user.id,
+      likeCount: res.likesCount,
+    });
+    return res;
   }
 
   @Get(':id/likes')

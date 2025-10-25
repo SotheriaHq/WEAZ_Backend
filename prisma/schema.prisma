@@ -56,22 +56,25 @@ model User {
   posts                 Post[]
   comments              Comment[]
   likes                 Like[]
+  commentsV2            CommentV2[]
+  commentV2Likes        CommentV2Like[]
   isEmailVerified       Boolean        @default(false)
   emailVerificationCode String?        @unique
   isActive              String         @default("Active")
 
   // Relations for new social models
-  followerFollows       Follow[]             @relation("followerFollows")
-  followingFollows      Follow[]             @relation("followingFollows")
-  collections           Collection[]
-  collectionReactions   CollectionReaction[]
-  collectionComments    CollectionComment[]
-  commentReactions      CommentReaction[]
-  patchesMade           Patch[]              @relation("UserPatches")
-  views                 View[]
-  notificationsReceived Notification[]       @relation("UserNotificationsReceived")
-  notificationsActed    Notification[]       @relation("UserNotificationsActed")
-  presignedUploads      PresignedUpload[]
+  followerFollows         Follow[]                  @relation("followerFollows")
+  followingFollows        Follow[]                  @relation("followingFollows")
+  collections             Collection[]
+  collectionReactions     CollectionReaction[]
+  collectionComments      CollectionComment[]
+  commentReactions        CommentReaction[]
+  patchesMade             Patch[]                   @relation("UserPatches")
+  views                   View[]
+  notificationsReceived   Notification[]            @relation("UserNotificationsReceived")
+  notificationsActed      Notification[]            @relation("UserNotificationsActed")
+  presignedUploads        PresignedUpload[]
+  CollectionMediaReaction CollectionMediaReaction[]
 }
 
 model FileUpload {
@@ -114,6 +117,7 @@ model Post {
   comments   Comment[]
   likes      Like[]
   likesCount Int          @default(0)
+  commentsCount Int       @default(0)
 }
 
 model Comment {
@@ -169,12 +173,13 @@ enum PresignStatus {
 }
 
 model Like {
-  id        String   @id @map("_id") @db.Uuid
-  postId    String   @db.Uuid
-  userId    String   @db.Uuid
-  post      Post     @relation(fields: [postId], references: [id], onDelete: Cascade)
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  createdAt DateTime @default(now())
+  id            String   @id @map("_id") @db.Uuid
+  postId        String   @db.Uuid
+  userId        String   @db.Uuid
+  post          Post     @relation(fields: [postId], references: [id], onDelete: Cascade)
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  clientEventId String?  @unique
+  createdAt     DateTime @default(now())
 
   @@unique([postId, userId]) // Prevent duplicate likes
 }
@@ -192,6 +197,51 @@ enum NotificationType {
   COMMENT
   PATCH
   FOLLOW
+}
+
+// ====== Comment V2 (unified for posts, collections, and collection media) ======
+
+enum CommentTarget {
+  POST
+  COLLECTION
+  COLLECTION_MEDIA
+}
+
+model CommentV2 {
+  id               String         @id @map("_id") @db.Uuid
+  targetType       CommentTarget
+  targetId         String         @db.Uuid
+  userId           String         @db.Uuid
+  user             User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  parentId         String?        @db.Uuid
+  parent           CommentV2?     @relation("CommentV2Children", fields: [parentId], references: [id])
+  children         CommentV2[]    @relation("CommentV2Children")
+  depth            Int            @default(0)
+  contentRaw       String
+  contentSanitized String
+  likeCount        Int            @default(0)
+  replyCount       Int            @default(0)
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+  editedAt         DateTime?
+  deletedAt        DateTime?
+  version          Int            @default(1)
+  likes            CommentV2Like[]
+
+  @@index([targetType, targetId, createdAt])
+  @@index([parentId, createdAt])
+}
+
+model CommentV2Like {
+  id        String    @id @map("_id") @db.Uuid
+  commentId String    @db.Uuid
+  userId    String    @db.Uuid
+  createdAt DateTime  @default(now())
+  comment   CommentV2 @relation(fields: [commentId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([commentId, userId])
+  @@index([userId, createdAt])
 }
 
 model Follow {
@@ -242,23 +292,27 @@ enum CollectionStatus {
 }
 
 model CollectionMedia {
-  id           String     @id @map("_id") @db.Uuid
-  collectionId String     @db.Uuid
-  collection   Collection @relation("Collection_to_Media", fields: [collectionId], references: [id], onDelete: Cascade)
-  fileUploadId String     @db.Uuid
-  file         FileUpload @relation("FileUpload_to_CollectionMedia", fields: [fileUploadId], references: [id])
-  orderIndex   Int        @default(0)
-  mediaType    FileType
+  id                      String                    @id @map("_id") @db.Uuid
+  collectionId            String                    @db.Uuid
+  collection              Collection                @relation("Collection_to_Media", fields: [collectionId], references: [id], onDelete: Cascade)
+  fileUploadId            String                    @db.Uuid
+  file                    FileUpload                @relation("FileUpload_to_CollectionMedia", fields: [fileUploadId], references: [id])
+  orderIndex              Int                       @default(0)
+  mediaType               FileType
+  likesCount              Int                       @default(0)
+  CollectionMediaReaction CollectionMediaReaction[]
+  commentsCount           Int                       @default(0)
 }
 
 model CollectionReaction {
-  id           String       @id @map("_id") @db.Uuid
-  collectionId String       @db.Uuid
-  userId       String       @db.Uuid
-  type         ReactionType
-  collection   Collection   @relation(fields: [collectionId], references: [id], onDelete: Cascade)
-  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
-  createdAt    DateTime     @default(now())
+  id            String       @id @map("_id") @db.Uuid
+  collectionId  String       @db.Uuid
+  userId        String       @db.Uuid
+  type          ReactionType
+  collection    Collection   @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+  user          User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  clientEventId String?
+  createdAt     DateTime     @default(now())
 
   @@unique([collectionId, userId])
   @@index([collectionId])
@@ -338,4 +392,47 @@ model PresignedUpload {
   expiresAt    DateTime
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt
+}
+
+// ===== Likes Analytics & Moderation =====
+
+enum ContentTarget {
+  POST
+  COLLECTION
+}
+
+model DailyLikeAggregate {
+  id          String        @id @default(uuid())
+  contentId   String
+  contentType ContentTarget
+  date        DateTime
+  count       Int           @default(0)
+
+  @@unique([contentType, contentId, date])
+  @@index([contentType, contentId])
+}
+
+model QuarantinedLike {
+  id          String        @id @default(uuid())
+  userId      String
+  contentId   String
+  contentType ContentTarget
+  reason      String?
+  createdAt   DateTime      @default(now())
+
+  @@index([userId, contentType, contentId])
+}
+
+model CollectionMediaReaction {
+  id                String          @id @map("_id") @db.Uuid
+  collectionMediaId String          @db.Uuid
+  userId            String          @db.Uuid
+  type              ReactionType
+  media             CollectionMedia @relation(fields: [collectionMediaId], references: [id], onDelete: Cascade)
+  user              User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  clientEventId     String?
+  createdAt         DateTime        @default(now())
+
+  @@unique([collectionMediaId, userId])
+  @@index([collectionMediaId])
 }

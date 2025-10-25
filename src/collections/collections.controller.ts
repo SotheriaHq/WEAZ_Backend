@@ -25,6 +25,8 @@ import {
 import { JwtAuthGuard } from 'src/auth/guard/jwt-auth.guard';
 import { UserTypeGuard } from 'src/auth/guard/user-type.guard';
 import { UserType, ReactionType } from '@prisma/client';
+import { ThrottlerGuard, Throttle } from '@nestjs/throttler';
+import { EventsGateway } from 'src/realtime/events.gateway';
 
 @ApiTags('collections')
 @ApiBearerAuth()
@@ -32,7 +34,10 @@ import { UserType, ReactionType } from '@prisma/client';
 // @UseGuards(UserTypeGuard)
 @Controller('collections')
 export class CollectionsController {
-  constructor(private readonly collectionsService: CollectionsService) {}
+  constructor(
+    private readonly collectionsService: CollectionsService,
+    private readonly events: EventsGateway,
+  ) {}
 
   // ============================================
   // STEP 1: Initialize Collection (Get Presigned URLs)
@@ -285,6 +290,8 @@ export class CollectionsController {
       },
     },
   })
+  @UseGuards(JwtAuthGuard, ThrottlerGuard)
+  @Throttle({ default: { limit: 60, ttl: 60000 } })
   async toggleReaction(
     @Param('id') collectionId: string,
     @Param('type') type: string,
@@ -298,11 +305,21 @@ export class CollectionsController {
       );
     }
 
-    return this.collectionsService.toggleReaction(
+    const result = await this.collectionsService.toggleReaction(
       collectionId,
       req.user.id,
       reactionType,
     );
+    // Emit realtime only for LIKE (dislikes optional)
+    if (reactionType === 'LIKE') {
+      this.events.emitLike(result.liked ? 'like.created' : 'like.removed', {
+        contentType: 'COLLECTION',
+        contentId: collectionId,
+        userId: req.user.id,
+        likeCount: result.likes,
+      });
+    }
+    return result;
   }
 
   @Get(':id/reactions')
@@ -451,4 +468,44 @@ export class CollectionsController {
       req.user.id,
     );
   }
+  @UseGuards(JwtAuthGuard, ThrottlerGuard)
+  @Throttle({ default: { limit: 60, ttl: 60000 } })
+  @Post('media/:mediaId/reaction/like')
+  async toggleMediaLike(@Param('mediaId') mediaId: string, @Req() req: any) {
+    const res = await this.collectionsService.toggleMediaLike(mediaId, req.user.id);
+    this.events.emitLike(res.liked ? 'like.created' : 'like.removed', {
+      contentType: 'COLLECTION_MEDIA',
+      contentId: mediaId,
+      userId: req.user.id,
+      likeCount: res.likes,
+    });
+    return res;
+  }
+
+  @Get('media/:mediaId/reactions')
+  async getMediaReactions(@Param('mediaId') mediaId: string, @Query('limit') limit?: string) {
+    return this.collectionsService.getMediaReactions(mediaId, limit ? parseInt(limit, 10) : 20);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Get('media/:mediaId/is-liked')
+  async isMediaLiked(@Param('mediaId') mediaId: string, @Req() req: any) {
+    return this.collectionsService.isMediaLikedByUser(mediaId, req.user.id);
+  }
+
+  // Is-liked for a collection
+  @UseGuards(JwtAuthGuard)
+  @Get(':id/is-liked')
+  async isCollectionLiked(@Param('id') collectionId: string, @Req() req: any) {
+    return this.collectionsService.isCollectionLikedByUser(collectionId, req.user.id);
+  }
+
+  // Likes summary for a collection (collection likes + media likes)
+  @Get(':id/likes/summary')
+  @ApiOperation({ summary: 'Get likes summary for a collection' })
+  async getLikesSummary(@Param('id') collectionId: string) {
+    return this.collectionsService.getLikesSummary(collectionId);
+  }
+
 }
+

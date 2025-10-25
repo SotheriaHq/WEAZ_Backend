@@ -111,6 +111,22 @@ async function bootstrap() {
       .get<string>('CORS_EXPOSED_HEADERS', '')
       .trim();
 
+    const envAllowedHeaders = configService.get<string>(
+      'CORS_ALLOWED_HEADERS',
+      'Content-Type, Accept, Authorization',
+    );
+    const allowedHeadersSet = new Set(
+      envAllowedHeaders
+        .split(',')
+        .map((h) => h.trim())
+        .filter((h) => h.length > 0),
+    );
+    // Always allow idempotency/client event headers used by the frontend
+    ['x-client-event-id', 'x-request-id'].forEach((h) =>
+      allowedHeadersSet.add(h),
+    );
+    const allowedHeaders = Array.from(allowedHeadersSet).join(', ');
+
     app.enableCors({
       origin: allowedOrigins.length > 0 ? allowedOrigins : true,
       methods: configService.get<string>(
@@ -121,10 +137,7 @@ async function bootstrap() {
         configService.get<string>('CORS_ALLOW_CREDENTIALS'),
         true,
       ),
-      allowedHeaders: configService.get<string>(
-        'CORS_ALLOWED_HEADERS',
-        'Content-Type, Accept, Authorization',
-      ),
+      allowedHeaders,
       exposedHeaders: exposedHeaders.length > 0 ? exposedHeaders : undefined,
     });
 

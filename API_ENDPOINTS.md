@@ -105,6 +105,74 @@
   - Query Params: `cursor?: string, limit?: number`
   - Response: `{ items: Like[], hasNextPage: boolean, endCursor: string }`
 
+### Collections – Likes & Reactions
+
+- **POST /collections/:id/reactions/:type**
+  - Description: Toggle a reaction on a collection. `:type` is `LIKE` or `DISLIKE`. Calling with the same type twice removes it.
+  - Auth: JWT, throttled
+  - Response: `{ likes: number, dislikes: number }`
+
+- **GET /collections/:id/reactions**
+  - Description: List users who reacted (LIKE/DISLIKE) to a collection
+  - Auth: JWT
+  - Query Params: `limit?: number`
+  - Response: `{ users: Array<UserSummary>, totalLikes: number, totalDislikes: number }`
+
+- **GET /collections/:id/likes/summary**
+  - Description: Aggregated likes for a collection, combining collection-level and media-level likes
+  - Auth: Public
+  - Response: `{ collectionLikes: number, mediaLikes: number, totalLikes: number }`
+
+### Collection Media – Likes
+
+- **POST /collections/media/:mediaId/reaction/like**
+  - Description: Toggle like on a specific media item in a collection
+  - Auth: JWT, throttled
+  - Response: `{ likes: number }`
+
+- **GET /collections/media/:mediaId/is-liked**
+  - Description: Check if the current user liked the media item
+  - Auth: JWT
+  - Response: `{ liked: boolean }`
+
+- **GET /collections/media/:mediaId/reactions**
+  - Description: List users who liked a specific media item
+  - Auth: JWT
+  - Query Params: `limit?: number`
+  - Response: `{ users: Array<UserSummary>, totalLikes: number }`
+
+### Comments v2 (Unified)
+
+- Create comment (depth <= 2)
+  - POST `/api/v1/posts/:postId/comments`
+  - POST `/api/v1/collections/:collectionId/comments`
+  - POST `/api/v1/collections/media/:mediaId/comments`
+  - Body: `{ content: string (1-500), parentId?: uuid }`
+
+- List top-level comments for target (preloads latest 2 replies)
+  - GET `/api/v1/posts/:postId/comments?cursor=&limit=`
+  - GET `/api/v1/collections/:collectionId/comments?cursor=&limit=`
+  - GET `/api/v1/collections/media/:mediaId/comments?cursor=&limit=`
+  - Returns `{ items, hasNextPage, endCursor }`
+
+- Get replies
+  - GET `/api/v1/comments/:id/replies?cursor=&limit=`
+
+- Like / Unlike comment (toggle)
+  - POST `/api/v1/comments/:id/like` (header `x-client-event-id` optional)
+  - Returns `{ liked: boolean, likeCount: number }`
+
+- Check is-liked
+  - GET `/api/v1/comments/:id/is-liked`
+  - Returns `{ liked: boolean }`
+
+- Delete comment (soft)
+  - DELETE `/api/v1/comments/:id`
+  - Author or target owner only; replaces content with `[deleted]`.
+
+- Comment stats
+  - GET `/api/v1/comments/:id/stats` → `{ likeCount, replyCount }`
+
 ### Profile
 
 - **POST /auth/upload**

@@ -5,13 +5,14 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreatePostDto, UpdatePostDto, GetPostsDto } from './dto/post.dto';
-import { Post } from '@prisma/client';
+import { Post, ContentTarget } from '@prisma/client';
+import { AnalyticsService } from 'src/analytics/analytics.service';
 import { PaginatedResult } from '../upload/dto/pagination.dto';
 import { v4 as uuidv4 } from 'uuid';
 
 @Injectable()
 export class PostsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(private prisma: PrismaService, private readonly analytics?: AnalyticsService) {}
 
   async create(userId: string, dto: CreatePostDto): Promise<Post> {
     // Verify that all referenced files exist and belong to the user
@@ -262,6 +263,10 @@ export class PostsService {
         },
       });
 
+      if (this.analytics) {
+        await this.analytics.updateDailyLike(ContentTarget.POST, postId, -1);
+      }
+
       return {
         liked: false,
         likesCount: updatedPost.likesCount,
@@ -288,6 +293,10 @@ export class PostsService {
           },
         },
       });
+
+      if (this.analytics) {
+        await this.analytics.updateDailyLike(ContentTarget.POST, postId, +1);
+      }
 
       return {
         liked: true,

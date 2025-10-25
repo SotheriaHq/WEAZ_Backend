@@ -289,6 +289,9 @@ export class UploadService {
    * Batch generate signed URLs for multiple files (optimized for feeds)
    */
   async getBatchPublicSignedUrls(fileIds: string[]): Promise<Map<string, string>> {
+    if (!fileIds || fileIds.length === 0) {
+      return new Map<string, string>();
+    }
     const files = await this.prisma.fileUpload.findMany({
       where: { id: { in: fileIds } },
       select: { id: true, s3Key: true },

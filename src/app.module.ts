@@ -9,6 +9,12 @@ import { DevToolsModule } from './dev-tools/dev-tools.module';
 import { BrandsModule } from './brands/brands.module';
 import { FollowsModule } from './follows/follows.module';
 import { CollectionsModule } from './collections/collections.module';
+import { ThrottlerModule } from '@nestjs/throttler';
+import { EventsGateway } from './realtime/events.gateway';
+import { AnalyticsModule } from './analytics/analytics.module';
+import { ModerationModule } from './moderation/moderation.module';
+import { PostsModule } from './posts/posts.module';
+import { CommentsV2Module } from './commentsv2/commentsv2.module';
 
 @Module({
   imports: [
@@ -17,15 +23,20 @@ import { CollectionsModule } from './collections/collections.module';
       envFilePath: '.env',
     }),
     AuthModule,
+    ThrottlerModule.forRoot([{ ttl: 60, limit: 120 }]),
     UploadModule,
     BrandsModule,
     // Social follows (sews)
     FollowsModule,
     // Collections for brands
     CollectionsModule,
+    PostsModule,
+    CommentsV2Module,
+    AnalyticsModule,
+    ModerationModule,
     DevToolsModule,
   ],
   controllers: [AppController],
-  providers: [AppService, PrismaService],
+  providers: [AppService, PrismaService, EventsGateway],
 })
 export class AppModule {}
