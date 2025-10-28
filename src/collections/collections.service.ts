@@ -6,7 +6,14 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { v4 as uuidv4 } from 'uuid';
-import { ReactionType, UserType, Prisma, ContentTarget } from '@prisma/client';
+import {
+  ReactionType,
+  UserType,
+  Prisma,
+  ContentTarget,
+  NotificationType,
+} from '@prisma/client';
+import { NotificationsService } from 'src/notifications/notifications.service';
 import { AnalyticsService } from 'src/analytics/analytics.service';
 import {
   CreateCollectionDto,
@@ -22,6 +29,7 @@ export class CollectionsService {
     private readonly helperservice: HelperService,
     private readonly uploadService: UploadService,
     private readonly analytics?: AnalyticsService,
+    private readonly notifications?: NotificationsService,
   ) {}
 
   /**
@@ -109,7 +117,11 @@ export class CollectionsService {
     };
   }
 
-  async getMarketFeed(options?: { cursor?: string; limit?: number; tag?: string }) {
+  async getMarketFeed(options?: {
+    cursor?: string;
+    limit?: number;
+    tag?: string;
+  }) {
     const { cursor, limit = 20, tag } = options ?? {};
     const take = Math.min(Math.max(limit, 1), 40);
 
@@ -205,16 +217,16 @@ export class CollectionsService {
         const { collection } = media;
         const owner = collection.owner;
         const file = media.file;
-        
+
         // Get signed URL for media file
-        const mediaSignedUrl = media.fileUploadId 
-          ? signedUrlMap.get(media.fileUploadId) ?? null
+        const mediaSignedUrl = media.fileUploadId
+          ? (signedUrlMap.get(media.fileUploadId) ?? null)
           : null;
-        
+
         // Get signed URL for brand logo
         const logoFileId = owner.profileImageId ?? owner.profileImageFile?.id;
-        const logoSignedUrl = logoFileId 
-          ? signedUrlMap.get(logoFileId) ?? null
+        const logoSignedUrl = logoFileId
+          ? (signedUrlMap.get(logoFileId) ?? null)
           : null;
 
         return {
@@ -240,7 +252,7 @@ export class CollectionsService {
         };
       }),
       hasNextPage,
-      nextCursor: hasNextPage ? data[data.length - 1]?.id ?? null : null,
+      nextCursor: hasNextPage ? (data[data.length - 1]?.id ?? null) : null,
     };
   }
 
@@ -387,7 +399,10 @@ export class CollectionsService {
       throw new NotFoundException('Collection not found');
     }
 
-    const mediaAgg = await this.prisma.collectionMedia.aggregate({ where: { collectionId: id }, _sum: { likesCount: true } });
+    const mediaAgg = await this.prisma.collectionMedia.aggregate({
+      where: { collectionId: id },
+      _sum: { likesCount: true },
+    });
     const totalLikes = collection.likesCount + (mediaAgg._sum.likesCount ?? 0);
     return { ...collection, totalLikes };
   }
@@ -683,10 +698,16 @@ export class CollectionsService {
           where: { id: existing.id },
           data: { type },
         });
-        if (existing.type === ReactionType.DISLIKE && type === ReactionType.LIKE) {
+        if (
+          existing.type === ReactionType.DISLIKE &&
+          type === ReactionType.LIKE
+        ) {
           delta = +1;
         }
-        if (existing.type === ReactionType.LIKE && type === ReactionType.DISLIKE) {
+        if (
+          existing.type === ReactionType.LIKE &&
+          type === ReactionType.DISLIKE
+        ) {
           // Moving from LIKE to DISLIKE decrements likes for analytics
           delta = -1;
         }
@@ -725,10 +746,33 @@ export class CollectionsService {
 
     // Update analytics daily likes if changed
     if (this.analytics && delta !== 0) {
-      await this.analytics.updateDailyLike(ContentTarget.COLLECTION, collectionId, delta);
+      await this.analytics.updateDailyLike(
+        ContentTarget.COLLECTION,
+        collectionId,
+        delta,
+      );
     }
 
-    return { likes: updated.likesCount, dislikes: updated.dislikesCount, liked: nowLiked };
+    // Notify owner when a new LIKE is added
+    if (nowLiked && userId !== collection.ownerId && this.notifications) {
+      try {
+        await this.notifications.create(
+          collection.ownerId,
+          NotificationType.LIKE,
+          {
+            actorId: userId,
+            payload: { collectionId },
+            dedupeMs: 5 * 60 * 1000,
+          },
+        );
+      } catch {}
+    }
+
+    return {
+      likes: updated.likesCount,
+      dislikes: updated.dislikesCount,
+      liked: nowLiked,
+    };
   }
 
   /**
@@ -861,17 +905,21 @@ export class CollectionsService {
     });
 
     // Optional: Create notification for collection owner
-    if (collection.ownerId !== patchingBrandId) {
-      await this.createNotification({
-        recipientId: collection.ownerId,
-        actorId: patchingBrandId,
-        type: 'PATCH',
-        payload: {
-          collectionId,
-          collectionTitle: collection.title,
-          patchWeight: weight,
-        },
-      });
+    if (collection.ownerId !== patchingBrandId && this.notifications) {
+      try {
+        await this.notifications.create(
+          collection.ownerId,
+          NotificationType.PATCH,
+          {
+            actorId: patchingBrandId,
+            payload: {
+              collectionId,
+              collectionTitle: collection.title,
+              patchWeight: weight,
+            },
+          },
+        );
+      } catch {}
     }
 
     return patch;
@@ -1064,24 +1112,35 @@ export class CollectionsService {
   // Media-level likes (per upload)
   // =============================
   async toggleMediaLike(mediaId: string, userId: string) {
-    const media = await this.prisma.collectionMedia.findUnique({ where: { id: mediaId } });
+    const media = await this.prisma.collectionMedia.findUnique({
+      where: { id: mediaId },
+    });
     if (!media) {
       throw new NotFoundException('Media not found');
     }
 
     const existing = await this.prisma.collectionMediaReaction.findUnique({
-      where: { collectionMediaId_userId: { collectionMediaId: mediaId, userId } },
+      where: {
+        collectionMediaId_userId: { collectionMediaId: mediaId, userId },
+      },
     });
 
     let delta = 0;
     let nowLiked = false;
     if (existing) {
-      await this.prisma.collectionMediaReaction.delete({ where: { id: existing.id } });
+      await this.prisma.collectionMediaReaction.delete({
+        where: { id: existing.id },
+      });
       delta = -1;
       nowLiked = false;
     } else {
       await this.prisma.collectionMediaReaction.create({
-        data: { id: uuidv4(), collectionMediaId: mediaId, userId, type: ReactionType.LIKE },
+        data: {
+          id: uuidv4(),
+          collectionMediaId: mediaId,
+          userId,
+          type: ReactionType.LIKE,
+        },
       });
       delta = +1;
       nowLiked = true;
@@ -1097,28 +1156,53 @@ export class CollectionsService {
   async getMediaReactions(mediaId: string, limit = 20) {
     const rows = await this.prisma.collectionMediaReaction.findMany({
       where: { collectionMediaId: mediaId, type: ReactionType.LIKE },
-      include: { user: { select: { id: true, username: true, firstName: true, lastName: true, profileImage: true } } },
+      include: {
+        user: {
+          select: {
+            id: true,
+            username: true,
+            firstName: true,
+            lastName: true,
+            profileImage: true,
+          },
+        },
+      },
       orderBy: { createdAt: 'desc' },
       take: limit,
     });
-    const total = await this.prisma.collectionMediaReaction.count({ where: { collectionMediaId: mediaId, type: ReactionType.LIKE } });
-    return { users: rows.map(r => r.user), totalLikes: total };
+    const total = await this.prisma.collectionMediaReaction.count({
+      where: { collectionMediaId: mediaId, type: ReactionType.LIKE },
+    });
+    return { users: rows.map((r) => r.user), totalLikes: total };
   }
 
   async isMediaLikedByUser(mediaId: string, userId: string) {
-    const r = await this.prisma.collectionMediaReaction.findUnique({ where: { collectionMediaId_userId: { collectionMediaId: mediaId, userId } } });
+    const r = await this.prisma.collectionMediaReaction.findUnique({
+      where: {
+        collectionMediaId_userId: { collectionMediaId: mediaId, userId },
+      },
+    });
     return { liked: !!r };
   }
 
   async isCollectionLikedByUser(collectionId: string, userId: string) {
-    const r = await this.prisma.collectionReaction.findUnique({ where: { collectionId_userId: { collectionId, userId } } });
+    const r = await this.prisma.collectionReaction.findUnique({
+      where: { collectionId_userId: { collectionId, userId } },
+    });
     return { liked: !!r };
   }
 
   async getLikesSummary(collectionId: string) {
-    const collection = await this.prisma.collection.findUnique({ where: { id: collectionId } });
-    if (!collection) { throw new NotFoundException('Collection not found'); }
-    const mediaAgg = await this.prisma.collectionMedia.aggregate({ where: { collectionId }, _sum: { likesCount: true } });
+    const collection = await this.prisma.collection.findUnique({
+      where: { id: collectionId },
+    });
+    if (!collection) {
+      throw new NotFoundException('Collection not found');
+    }
+    const mediaAgg = await this.prisma.collectionMedia.aggregate({
+      where: { collectionId },
+      _sum: { likesCount: true },
+    });
     const collectionLikes = collection.likesCount;
     const mediaLikes = mediaAgg._sum.likesCount ?? 0;
     const totalLikes = collectionLikes + mediaLikes;

@@ -15,6 +15,7 @@ import { AnalyticsModule } from './analytics/analytics.module';
 import { ModerationModule } from './moderation/moderation.module';
 import { PostsModule } from './posts/posts.module';
 import { CommentsV2Module } from './commentsv2/commentsv2.module';
+import { NotificationsModule } from './notifications/notifications.module';
 
 @Module({
   imports: [
@@ -35,6 +36,7 @@ import { CommentsV2Module } from './commentsv2/commentsv2.module';
     AnalyticsModule,
     ModerationModule,
     DevToolsModule,
+    NotificationsModule,
   ],
   controllers: [AppController],
   providers: [AppService, PrismaService, EventsGateway],

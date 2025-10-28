@@ -31,9 +31,10 @@ export class UploadController {
 
   @Get('public-url/:fileId')
   @SkipThrottle()
-  @ApiOperation({ 
+  @ApiOperation({
     summary: 'Get public signed URL for file access (no auth required)',
-    description: 'Returns signed URL for publicly accessible files like published collection media'
+    description:
+      'Returns signed URL for publicly accessible files like published collection media',
   })
   async getPublicSignedUrl(@Param('fileId') fileId: string) {
     const url = await this.uploadService.getPublicSignedUrl(fileId);

@@ -23,7 +23,10 @@ import { EventsGateway } from '../realtime/events.gateway';
 @Controller('posts')
 @UseGuards(JwtAuthGuard)
 export class PostsController {
-  constructor(private readonly postsService: PostsService, private readonly events: EventsGateway) {}
+  constructor(
+    private readonly postsService: PostsService,
+    private readonly events: EventsGateway,
+  ) {}
 
   @Post()
   create(@Body() createPostDto: CreatePostDto, @Req() req: any) {

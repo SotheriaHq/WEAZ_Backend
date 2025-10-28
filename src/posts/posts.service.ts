@@ -5,14 +5,19 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreatePostDto, UpdatePostDto, GetPostsDto } from './dto/post.dto';
-import { Post, ContentTarget } from '@prisma/client';
+import { Post, ContentTarget, NotificationType } from '@prisma/client';
+import { NotificationsService } from 'src/notifications/notifications.service';
 import { AnalyticsService } from 'src/analytics/analytics.service';
 import { PaginatedResult } from '../upload/dto/pagination.dto';
 import { v4 as uuidv4 } from 'uuid';
 
 @Injectable()
 export class PostsService {
-  constructor(private prisma: PrismaService, private readonly analytics?: AnalyticsService) {}
+  constructor(
+    private prisma: PrismaService,
+    private readonly analytics?: AnalyticsService,
+    private readonly notifications?: NotificationsService,
+  ) {}
 
   async create(userId: string, dto: CreatePostDto): Promise<Post> {
     // Verify that all referenced files exist and belong to the user
@@ -297,6 +302,25 @@ export class PostsService {
       if (this.analytics) {
         await this.analytics.updateDailyLike(ContentTarget.POST, postId, +1);
       }
+
+      // Notify post owner
+      try {
+        if (
+          updatedPost.userId &&
+          updatedPost.userId !== userId &&
+          this.notifications
+        ) {
+          await this.notifications.create(
+            updatedPost.userId,
+            NotificationType.LIKE,
+            {
+              actorId: userId,
+              payload: { postId },
+              dedupeMs: 5 * 60 * 1000,
+            },
+          );
+        }
+      } catch {}
 
       return {
         liked: true,

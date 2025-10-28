@@ -7,4 +7,3 @@ import { PrismaService } from 'src/prisma/prisma.service';
   providers: [PrismaService],
 })
 export class ModerationModule {}
-

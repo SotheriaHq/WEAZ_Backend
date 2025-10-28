@@ -15,9 +15,15 @@ export class AnalyticsController {
     @Query('from') from: string,
     @Query('to') to: string,
   ) {
-    const fromDate = from ? new Date(from) : new Date(Date.now() - 7 * 86400000);
+    const fromDate = from
+      ? new Date(from)
+      : new Date(Date.now() - 7 * 86400000);
     const toDate = to ? new Date(to) : new Date();
-    return this.analytics.getDailyLikes(contentType, contentId, fromDate, toDate);
+    return this.analytics.getDailyLikes(
+      contentType,
+      contentId,
+      fromDate,
+      toDate,
+    );
   }
 }
-

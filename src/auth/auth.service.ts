@@ -10,7 +10,7 @@ import { PrismaService } from 'src/prisma/prisma.service';
 import { PasswordService } from 'src/auth/helper/password.service';
 import { LoginDto } from './dto/login-auth.dto';
 import { v4 as uuidv4 } from 'uuid';
-import { UserType, Role } from '@prisma/client';
+import { UserType, Role, NotificationType } from '@prisma/client';
 import {
   authUserSelect,
   profileUserSelect,
@@ -22,6 +22,7 @@ import { TokenService } from './helper/general.helper';
 import { Request, Response } from 'express';
 import { UserHelperService } from './helper/user-helper.service';
 import { UpdateProfileDto } from './dto/update-profile.dto';
+import { NotificationsService } from 'src/notifications/notifications.service';
 import { EmailVerificationHelperService } from './helper/email-verification-helper.service';
 
 @Injectable()
@@ -34,6 +35,7 @@ export class AuthService {
     private readonly tokenService: TokenService,
     private readonly userHelperService: UserHelperService,
     private readonly emailVerificationHelper: EmailVerificationHelperService,
+    private readonly notifications: NotificationsService,
   ) {}
 
   private validateBrandRequirements(signupDto: CreateUserDto): void {
@@ -181,13 +183,26 @@ export class AuthService {
         this.logger.error('Token generation failed:', tokenError);
         // User was created but token failed - still return success
         // The user can login later
+        // Notify SIGNUP event
+        try {
+          await this.notifications.create(user.id, NotificationType.SIGNUP, {
+            payload: { action: 'SIGNUP', email: user.email },
+          });
+        } catch {}
         return {
           user: toAuthUserResponse(user),
           accessToken: null,
           message:
-            'Account created successfully, please login to get access token',
+            'Account created successfully!!!!, please login to get access token',
         };
       }
+
+      // Notify SIGNUP event (account created)
+      try {
+        await this.notifications.create(user.id, NotificationType.SIGNUP, {
+          payload: { action: 'SIGNUP', email: user.email },
+        });
+      } catch {}
 
       return {
         user: toAuthUserResponse(user),
@@ -228,6 +243,23 @@ export class AuthService {
           'Login failed - token generation error',
         );
       }
+
+      // Notify LOGIN event (login activity)
+      try {
+        const forwarded = req.headers['x-forwarded-for'];
+        const ip = Array.isArray(forwarded)
+          ? (forwarded[0] ?? null)
+          : typeof forwarded === 'string' && forwarded.length
+            ? forwarded.split(',')[0].trim()
+            : null;
+        const ipAddress = ip || req.ip || null;
+        await this.notifications.create(user.id, NotificationType.LOGIN, {
+          payload: {
+            ip: ipAddress,
+            userAgent: req.headers['user-agent'] ?? null,
+          },
+        });
+      } catch {}
 
       return {
         user: toAuthUserResponse(user),
@@ -360,6 +392,11 @@ export class AuthService {
       where: { id: userId },
       data: { isEmailVerified: true, emailVerificationCode: null },
     });
+    try {
+      await this.notifications.create(userId, NotificationType.SIGNUP, {
+        payload: { action: 'EMAIL_VERIFIED' },
+      });
+    } catch {}
     return { message: 'Email verified successfully' };
   }
 
@@ -374,6 +411,11 @@ export class AuthService {
       where: { email },
       data: { isEmailVerified: true, emailVerificationCode: null },
     });
+    try {
+      await this.notifications.create(user.id, NotificationType.SIGNUP, {
+        payload: { action: 'EMAIL_VERIFIED' },
+      });
+    } catch {}
     return { message: 'Email verified successfully' };
   }
 

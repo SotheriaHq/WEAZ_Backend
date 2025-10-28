@@ -37,6 +37,7 @@ import {
   ApiParam,
 } from '@nestjs/swagger';
 import { ConfigService } from '@nestjs/config';
+import { NotificationsService } from 'src/notifications/notifications.service';
 
 @ApiTags('auth')
 @ApiBearerAuth()
@@ -47,6 +48,7 @@ export class AuthController {
     private readonly authService: AuthService,
     private readonly tokenService: TokenService,
     private readonly configService: ConfigService,
+    private readonly notifications: NotificationsService,
   ) {}
 
   private get accessTokenCookieName(): string {
@@ -143,6 +145,23 @@ export class AuthController {
 
     await this.tokenService.revokeRefreshToken(refreshToken);
 
+    // Create logout notification (requires enum migration). Use string to avoid type friction.
+    try {
+      const forwarded = req.headers['x-forwarded-for'];
+      const ip = Array.isArray(forwarded)
+        ? (forwarded[0] ?? null)
+        : typeof forwarded === 'string' && forwarded.length
+          ? forwarded.split(',')[0].trim()
+          : null;
+      const ipAddress = ip || req.ip || null;
+      await this.notifications.create(req.user.id, 'LOGOUT' as any, {
+        payload: {
+          ip: ipAddress,
+          userAgent: req.headers['user-agent'] ?? null,
+        },
+      });
+    } catch {}
+
     return { message: 'Logged out successfully' };
   }
 
@@ -161,6 +180,22 @@ export class AuthController {
     res.clearCookie(this.accessTokenCookieName, cookieOptions);
 
     await this.tokenService.revokeAllRefreshTokens(req.user.id);
+
+    try {
+      const forwarded = req.headers['x-forwarded-for'];
+      const ip = Array.isArray(forwarded)
+        ? (forwarded[0] ?? null)
+        : typeof forwarded === 'string' && forwarded.length
+          ? forwarded.split(',')[0].trim()
+          : null;
+      const ipAddress = ip || req.ip || null;
+      await this.notifications.create(req.user.id, 'LOGOUT_ALL' as any, {
+        payload: {
+          ip: ipAddress,
+          userAgent: req.headers['user-agent'] ?? null,
+        },
+      });
+    } catch {}
 
     return { message: 'Logged out from all devices' };
   }

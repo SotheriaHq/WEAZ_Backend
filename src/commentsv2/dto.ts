@@ -1,4 +1,12 @@
-import { IsOptional, IsString, IsUUID, MaxLength, MinLength, IsInt } from 'class-validator';
+import {
+  IsOptional,
+  IsString,
+  IsUUID,
+  MaxLength,
+  MinLength,
+  IsInt,
+} from 'class-validator';
+import { Type } from 'class-transformer';
 
 export class CreateCommentV2Dto {
   @IsString()
@@ -18,6 +26,6 @@ export class ListQueryDto {
 
   @IsOptional()
   @IsInt()
+  @Type(() => Number)
   limit?: number;
 }
-

@@ -472,7 +472,10 @@ export class CollectionsController {
   @Throttle({ default: { limit: 60, ttl: 60000 } })
   @Post('media/:mediaId/reaction/like')
   async toggleMediaLike(@Param('mediaId') mediaId: string, @Req() req: any) {
-    const res = await this.collectionsService.toggleMediaLike(mediaId, req.user.id);
+    const res = await this.collectionsService.toggleMediaLike(
+      mediaId,
+      req.user.id,
+    );
     this.events.emitLike(res.liked ? 'like.created' : 'like.removed', {
       contentType: 'COLLECTION_MEDIA',
       contentId: mediaId,
@@ -483,8 +486,14 @@ export class CollectionsController {
   }
 
   @Get('media/:mediaId/reactions')
-  async getMediaReactions(@Param('mediaId') mediaId: string, @Query('limit') limit?: string) {
-    return this.collectionsService.getMediaReactions(mediaId, limit ? parseInt(limit, 10) : 20);
+  async getMediaReactions(
+    @Param('mediaId') mediaId: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.collectionsService.getMediaReactions(
+      mediaId,
+      limit ? parseInt(limit, 10) : 20,
+    );
   }
 
   @UseGuards(JwtAuthGuard)
@@ -497,7 +506,10 @@ export class CollectionsController {
   @UseGuards(JwtAuthGuard)
   @Get(':id/is-liked')
   async isCollectionLiked(@Param('id') collectionId: string, @Req() req: any) {
-    return this.collectionsService.isCollectionLikedByUser(collectionId, req.user.id);
+    return this.collectionsService.isCollectionLikedByUser(
+      collectionId,
+      req.user.id,
+    );
   }
 
   // Likes summary for a collection (collection likes + media likes)
@@ -506,6 +518,4 @@ export class CollectionsController {
   async getLikesSummary(@Param('id') collectionId: string) {
     return this.collectionsService.getLikesSummary(collectionId);
   }
-
 }
-

@@ -1,11 +1,16 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
+import { NotificationType } from '@prisma/client';
+import { NotificationsService } from 'src/notifications/notifications.service';
 import { CreateFollowDto } from './dto/create-follow.dto';
 import { v4 as uuidv4 } from 'uuid';
 
 @Injectable()
 export class FollowsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly notifications: NotificationsService,
+  ) {}
 
   async follow(userId: string, dto: CreateFollowDto) {
     const target = await this.prisma.user.findUnique({
@@ -23,6 +28,19 @@ export class FollowsService {
           followingId: dto.targetId,
         },
       });
+      // Notify the target user
+      if (dto.targetId !== userId) {
+        try {
+          await this.notifications.create(
+            dto.targetId,
+            NotificationType.FOLLOW,
+            {
+              actorId: userId,
+              payload: {},
+            },
+          );
+        } catch {}
+      }
 
       return follow;
     } catch (error) {

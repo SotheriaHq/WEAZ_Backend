@@ -116,9 +116,9 @@ export class UploadService {
       return {
         id: uploadRecord.id,
         url: uploadRecord.s3Url,
-      key: uploadRecord.s3Key,
-      fileName: uploadRecord.fileName,
-      originalName: uploadRecord.originalName,
+        key: uploadRecord.s3Key,
+        fileName: uploadRecord.fileName,
+        originalName: uploadRecord.originalName,
         size: uploadRecord.size,
         mimeType: uploadRecord.mimeType,
         fileType: uploadRecord.fileType as FileType,
@@ -288,7 +288,9 @@ export class UploadService {
   /**
    * Batch generate signed URLs for multiple files (optimized for feeds)
    */
-  async getBatchPublicSignedUrls(fileIds: string[]): Promise<Map<string, string>> {
+  async getBatchPublicSignedUrls(
+    fileIds: string[],
+  ): Promise<Map<string, string>> {
     if (!fileIds || fileIds.length === 0) {
       return new Map<string, string>();
     }
@@ -298,7 +300,7 @@ export class UploadService {
     });
 
     const urlMap = new Map<string, string>();
-    
+
     for (const file of files) {
       const signedUrl = this.s3.getSignedUrl('getObject', {
         Bucket: this.bucketName,
