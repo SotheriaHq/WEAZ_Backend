@@ -15,11 +15,11 @@ import { CreateCommentV2Dto, ListQueryDto } from './dto';
 
 // Versioned routes under /api/v1
 @Controller('api/v1')
-@UseGuards(JwtAuthGuard)
 export class CommentsV2Controller {
   constructor(private readonly service: CommentsV2Service) {}
 
   // Create comment for POST
+  @UseGuards(JwtAuthGuard)
   @Post('posts/:postId/comments')
   createForPost(
     @Param('postId') postId: string,
@@ -30,6 +30,7 @@ export class CommentsV2Controller {
   }
 
   // Create comment for COLLECTION
+  @UseGuards(JwtAuthGuard)
   @Post('collections/:collectionId/comments')
   createForCollection(
     @Param('collectionId') collectionId: string,
@@ -45,6 +46,7 @@ export class CommentsV2Controller {
   }
 
   // Create comment for COLLECTION_MEDIA
+  @UseGuards(JwtAuthGuard)
   @Post('collections/media/:mediaId/comments')
   createForMedia(
     @Param('mediaId') mediaId: string,
@@ -98,6 +100,7 @@ export class CommentsV2Controller {
   }
 
   // Like toggle
+  @UseGuards(JwtAuthGuard)
   @Post('comments/:id/like')
   toggleLike(@Param('id') id: string, @Req() req: any) {
     const clientEventId =
@@ -107,12 +110,14 @@ export class CommentsV2Controller {
     return this.service.toggleLike(id, req.user.id, clientEventId);
   }
 
+  @UseGuards(JwtAuthGuard)
   @Get('comments/:id/is-liked')
   isLiked(@Param('id') id: string, @Req() req: any) {
     return this.service.isLiked(id, req.user.id);
   }
 
   // Delete (soft)
+  @UseGuards(JwtAuthGuard)
   @Delete('comments/:id')
   remove(@Param('id') id: string, @Req() req: any) {
     return this.service.softDelete(id, req.user.id);
