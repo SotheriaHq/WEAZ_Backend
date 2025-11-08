@@ -11,7 +11,7 @@ import type { CommentV2 as PrismaCommentV2 } from '@prisma/client';
 import { EventsGateway } from 'src/realtime/events.gateway';
 import { NotificationsService } from 'src/notifications/notifications.service';
 import { CreateCommentV2Dto, ListQueryDto } from './dto';
-import { NotificationType } from '@prisma/client';
+import { NotificationType, CollectionVisibility, AccessState } from '@prisma/client';
 
 function escapeHtml(input: string): string {
   return input
@@ -29,6 +29,33 @@ export class CommentsV2Service {
     private readonly events: EventsGateway,
     private readonly notifications: NotificationsService,
   ) {}
+
+  private async canViewCollection(collectionId: string, requesterId?: string) {
+    const c = await this.prisma.collection.findUnique({
+      where: { id: collectionId },
+      select: { ownerId: true, status: true, visibility: true },
+    });
+    if (!c || c.status !== 'PUBLISHED') return false;
+    if (c.visibility === CollectionVisibility.PUBLIC) return true;
+    if (requesterId && requesterId === c.ownerId) return true;
+    if (requesterId) {
+      const access = await this.prisma.collectionAccess.findUnique({
+        where: { collectionId_viewerId: { collectionId, viewerId: requesterId } },
+        select: { state: true },
+      });
+      return access?.state === AccessState.APPROVED;
+    }
+    return false;
+  }
+
+  private async canViewMedia(mediaId: string, requesterId?: string) {
+    const m = await this.prisma.collectionMedia.findUnique({
+      where: { id: mediaId },
+      select: { collectionId: true },
+    });
+    if (!m) return false;
+    return this.canViewCollection(m.collectionId, requesterId);
+  }
 
   private async assertTargetExists(
     targetType: CommentTarget,
@@ -66,6 +93,14 @@ export class CommentsV2Service {
     dto: CreateCommentV2Dto,
   ) {
     const { ownerId } = await this.assertTargetExists(targetType, targetId);
+    if (targetType === 'COLLECTION') {
+      const ok = await this.canViewCollection(targetId, userId);
+      if (!ok) throw new NotFoundException('Collection not found');
+    }
+    if (targetType === 'COLLECTION_MEDIA') {
+      const ok = await this.canViewMedia(targetId, userId);
+      if (!ok) throw new NotFoundException('Media not found');
+    }
 
     let parent: PrismaCommentV2 | null = null;
     if (dto.parentId) {
@@ -210,6 +245,14 @@ export class CommentsV2Service {
     q: ListQueryDto,
   ) {
     await this.assertTargetExists(targetType, targetId);
+    if (targetType === 'COLLECTION') {
+      const ok = await this.canViewCollection(targetId, requesterId);
+      if (!ok) throw new NotFoundException('Collection not found');
+    }
+    if (targetType === 'COLLECTION_MEDIA') {
+      const ok = await this.canViewMedia(targetId, requesterId);
+      if (!ok) throw new NotFoundException('Media not found');
+    }
     const limit = Math.min(Math.max(q.limit ?? 20, 1), 40);
     const cursorDate = q.cursor ? new Date(q.cursor) : undefined;
 
@@ -286,8 +329,17 @@ export class CommentsV2Service {
   ) {
     const parent = await this.prisma.commentV2.findUnique({
       where: { id: commentId },
+      select: { id: true, targetType: true, targetId: true },
     });
     if (!parent) throw new NotFoundException('Comment not found');
+    if (parent.targetType === 'COLLECTION') {
+      const ok = await this.canViewCollection(parent.targetId, requesterId);
+      if (!ok) throw new NotFoundException('Collection not found');
+    }
+    if (parent.targetType === 'COLLECTION_MEDIA') {
+      const ok = await this.canViewMedia(parent.targetId, requesterId);
+      if (!ok) throw new NotFoundException('Media not found');
+    }
     const limit = Math.min(Math.max(q.limit ?? 20, 1), 50);
     const cursorDate = q.cursor ? new Date(q.cursor) : undefined;
     const items = await this.prisma.commentV2.findMany({
@@ -444,3 +496,5 @@ export class CommentsV2Service {
     return { likeCount: c.likeCount, replyCount: c.replyCount };
   }
 }
+
+

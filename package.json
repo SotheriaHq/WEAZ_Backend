@@ -11,13 +11,19 @@
     "start": "nest start",
     "dev": "nest start --watch",
     "start:debug": "nest start --debug --watch",
-    "start:prod": "node dist/main",
+    "start:prod": "node -r module-alias/register dist/src/main.js",
     "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix",
     "test": "jest",
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
-    "test:e2e": "jest --config ./test/jest-e2e.json"
+    "test:e2e": "jest --config ./test/jest-e2e.json",
+    "prisma:migrate": "prisma migrate dev",
+    "prisma:generate": "prisma generate",
+    "prisma:seed": "prisma db seed"
+  },
+  "_moduleAliases": {
+    "src": "dist/src"
   },
   "dependencies": {
     "@nestjs/cache-manager": "^3.0.1",
@@ -32,7 +38,7 @@
     "@nestjs/swagger": "^11.2.0",
     "@nestjs/throttler": "^6.4.0",
     "@nestjs/websockets": "^11.0.0",
-    "@prisma/client": "^6.8.2",
+  "@prisma/client": "6.19.0",
     "@types/cache-manager-redis-store": "^2.0.4",
     "argon2": "^0.43.0",
     "aws-sdk": "^2.1692.0",
@@ -45,6 +51,7 @@
     "csurf": "^1.11.0",
     "joi": "^18.0.1",
     "mime-types": "^3.0.1",
+    "module-alias": "^2.2.3",
     "passport-jwt": "^4.0.1",
     "reflect-metadata": "^0.2.0",
     "rxjs": "^7.8.1",
@@ -70,7 +77,7 @@
     "eslint-plugin-prettier": "^5.0.0",
     "jest": "^29.5.0",
     "prettier": "^3.0.0",
-    "prisma": "^6.8.2",
+  "prisma": "6.19.0",
     "source-map-support": "^0.5.21",
     "supertest": "^6.3.3",
     "ts-jest": "^29.1.0",
@@ -98,5 +105,8 @@
     "moduleNameMapper": {
       "^src/(.*)$": "<rootDir>/$1"
     }
+  },
+  "prisma": {
+    "seed": "ts-node prisma/seed.ts"
   }
 }

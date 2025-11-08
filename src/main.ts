@@ -1,3 +1,16 @@
+// Register runtime module aliases only in production (compiled JS)
+// to support absolute imports like 'src/...'
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+declare const __non_webpack_require__: any;
+try {
+  // Detect if running compiled JS (no ts-node) and dynamically register aliases
+  const isTsNode = !!(process as any).env.TS_NODE;
+  if (!isTsNode) {
+    // Use non-webpack require if available, fallback to require
+    const req = typeof __non_webpack_require__ === 'function' ? __non_webpack_require__ : require;
+    req('module-alias/register');
+  }
+} catch {}
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { TransformInterceptor } from './transform/transform.interceptor';

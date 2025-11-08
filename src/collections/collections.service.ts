@@ -12,6 +12,8 @@ import {
   Prisma,
   ContentTarget,
   NotificationType,
+  CollectionVisibility,
+  CollectionType,
 } from '@prisma/client';
 import { NotificationsService } from 'src/notifications/notifications.service';
 import { AnalyticsService } from 'src/analytics/analytics.service';
@@ -21,6 +23,7 @@ import {
 } from './dto/create-collection.dto';
 import { HelperService } from './helper/Helper.service';
 import { UploadService } from 'src/upload/upload.service';
+import * as crypto from 'crypto';
 
 @Injectable()
 export class CollectionsService {
@@ -31,6 +34,143 @@ export class CollectionsService {
     private readonly analytics?: AnalyticsService,
     private readonly notifications?: NotificationsService,
   ) {}
+
+  private async canViewCollection(
+    collectionId: string,
+    requesterId?: string,
+  ): Promise<boolean> {
+    const c = await this.prisma.collection.findUnique({
+      where: { id: collectionId },
+      select: { ownerId: true, status: true, visibility: true },
+    });
+    if (!c || c.status !== 'PUBLISHED') return false;
+    if (c.visibility === CollectionVisibility.PUBLIC) return true;
+    if (requesterId && requesterId === c.ownerId) return true;
+    if (requesterId) {
+      const access = await this.prisma.collectionAccess.findUnique({
+        where: { collectionId_viewerId: { collectionId, viewerId: requesterId } },
+        select: { state: true },
+      });
+      return access?.state === 'APPROVED';
+    }
+    return false;
+  }
+
+  
+
+  private async canViewMedia(mediaId: string, requesterId?: string) {
+    const m = await this.prisma.collectionMedia.findUnique({
+      where: { id: mediaId },
+      select: { collectionId: true },
+    });
+    if (!m) return false;
+    return this.canViewCollection(m.collectionId, requesterId);
+  }
+
+  // ===================== Access Management =====================
+  async requestAccess(collectionId: string, requesterId: string) {
+    const c = await this.prisma.collection.findUnique({
+      where: { id: collectionId },
+      select: { id: true, ownerId: true, status: true, visibility: true },
+    });
+    if (!c || c.status !== 'PUBLISHED') throw new NotFoundException('Collection not found');
+    if (c.visibility === CollectionVisibility.PUBLIC) return { state: 'APPROVED' };
+    if (c.ownerId === requesterId) return { state: 'APPROVED' };
+    const now = new Date();
+    const existing = await this.prisma.collectionAccess.findUnique({
+      where: { collectionId_viewerId: { collectionId, viewerId: requesterId } },
+    });
+    if (!existing) {
+      await this.prisma.collectionAccess.create({
+        data: {
+          id: uuidv4(),
+          collectionId,
+          viewerId: requesterId,
+          state: 'PENDING',
+          createdAt: now,
+        },
+      } as any);
+      console.log('metrics.access_request', { collectionId, requesterId });
+      return { state: 'PENDING' };
+    }
+    if (existing.state === 'APPROVED') {
+      return { state: 'APPROVED' };
+    }
+    if (existing.state === 'PENDING') {
+      console.log('metrics.access_request', { collectionId, requesterId });
+      return { state: 'PENDING' };
+    }
+    await this.prisma.collectionAccess.update({
+      where: { collectionId_viewerId: { collectionId, viewerId: requesterId } },
+      data: { state: 'PENDING', updatedAt: now },
+    } as any);
+    console.log('metrics.access_request', { collectionId, requesterId });
+    return { state: 'PENDING' };
+  }
+
+  private async assertOwner(collectionId: string, ownerId: string) {
+    const c = await this.prisma.collection.findUnique({ where: { id: collectionId }, select: { ownerId: true } });
+    if (!c) throw new NotFoundException('Collection not found');
+    if (c.ownerId !== ownerId) throw new ForbiddenException('Not owner');
+  }
+
+  async listAccessRequests(collectionId: string, ownerId: string, limit = 20, cursor?: string) {
+    await this.assertOwner(collectionId, ownerId);
+    const rows = await this.prisma.collectionAccess.findMany({
+      where: { collectionId, state: 'PENDING' },
+      include: { viewer: { select: { id: true, username: true, profileImage: true } } },
+      orderBy: { createdAt: 'desc' },
+      take: limit + 1,
+      ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
+    } as any);
+    const hasNext = rows.length > limit;
+    const data = hasNext ? rows.slice(0, -1) : rows;
+    return { items: data, hasNextPage: hasNext, endCursor: data.length ? data[data.length - 1].id : null };
+  }
+
+  async listApprovedViewers(collectionId: string, ownerId: string, limit = 20, cursor?: string) {
+    await this.assertOwner(collectionId, ownerId);
+    const rows = await this.prisma.collectionAccess.findMany({
+      where: { collectionId, state: 'APPROVED' },
+      include: { viewer: { select: { id: true, username: true, profileImage: true } } },
+      orderBy: { createdAt: 'desc' },
+      take: limit + 1,
+      ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
+    } as any);
+    const hasNext = rows.length > limit;
+    const data = hasNext ? rows.slice(0, -1) : rows;
+    return { items: data, hasNextPage: hasNext, endCursor: data.length ? data[data.length - 1].id : null };
+  }
+
+  async approveAccessBulk(collectionId: string, ownerId: string, userIds: string[]) {
+    await this.assertOwner(collectionId, ownerId);
+    const now = new Date();
+    await this.prisma.$transaction(
+      userIds.map((uid) =>
+        this.prisma.collectionAccess.upsert({
+          where: { collectionId_viewerId: { collectionId, viewerId: uid } },
+          update: { state: 'APPROVED', grantedBy: ownerId, updatedAt: now },
+          create: { id: uuidv4(), collectionId, viewerId: uid, state: 'APPROVED', grantedBy: ownerId, createdAt: now },
+        } as any),
+      ),
+    );
+    console.log('metrics.access_approve_bulk', {
+      collectionId,
+      count: userIds.length,
+    });
+    return { success: true };
+  }
+
+  async updateAccessState(collectionId: string, ownerId: string, userId: string, state: 'APPROVED' | 'REVOKED') {
+    await this.assertOwner(collectionId, ownerId);
+    await this.prisma.collectionAccess.upsert({
+      where: { collectionId_viewerId: { collectionId, viewerId: userId } },
+      update: { state, grantedBy: ownerId, updatedAt: new Date() },
+      create: { id: uuidv4(), collectionId, viewerId: userId, state, grantedBy: ownerId },
+    } as any);
+    console.log('metrics.access_update_state', { collectionId, userId, state });
+    return { success: true };
+  }
 
   /**
    * STEP 1: Create collection draft and return presigned URLs
@@ -52,11 +192,12 @@ export class CollectionsService {
       throw new BadRequestException('Maximum 10 files per collection');
     }
 
+    const tagRe = /^[a-z0-9._-]{1,24}$/;
     const sanitizedTags = Array.from(
       new Set(
         (dto.tags ?? [])
-          .map((tag) => (typeof tag === 'string' ? tag.trim() : ''))
-          .filter((tag) => tag.length > 0),
+          .map((tag) => (typeof tag === 'string' ? tag.trim().toLowerCase() : ''))
+          .filter((tag) => tag.length > 0 && tagRe.test(tag)),
       ),
     ).slice(0, 10);
 
@@ -77,6 +218,11 @@ export class CollectionsService {
         isAvailableInStore: dto.isAvailableInStore ?? false,
         tags: sanitizedTags,
         status: 'DRAFT',
+        visibility: (dto as any).visibility ?? CollectionVisibility.PUBLIC,
+        type: (dto as any).type ?? CollectionType.EVERYBODY,
+        ...((dto as any).categoryId
+          ? { category: { connect: { id: (dto as any).categoryId } } }
+          : {}),
       },
     });
 
@@ -128,6 +274,7 @@ export class CollectionsService {
     const where: Prisma.CollectionMediaWhereInput = {
       collection: {
         status: 'PUBLISHED',
+        visibility: CollectionVisibility.PUBLIC,
         ...(tag
           ? {
               tags: {
@@ -342,9 +489,11 @@ export class CollectionsService {
   /**
    * Enhanced get method with proper includes
    */
-  async getCollection(id: string) {
+  async getCollection(id: string, requesterId?: string) {
+    const ok = await this.canViewCollection(id, requesterId);
+    if (!ok) throw new NotFoundException('Collection not found');
     const collection = await this.prisma.collection.findUnique({
-      where: { id, status: 'PUBLISHED' }, // Only show published collections
+      where: { id },
       include: {
         owner: {
           select: {
@@ -418,9 +567,10 @@ export class CollectionsService {
     const { cursor, limit = 20 } = options || {};
     const where: any = { ownerId: userId };
 
-    // If requester is not the owner, only show published collections
+    // If requester is not the owner, only show published public collections
     if (requesterId !== userId) {
       where.status = 'PUBLISHED';
+      (where as any).visibility = CollectionVisibility.PUBLIC;
     }
 
     const items = await this.prisma.collection.findMany({
@@ -468,8 +618,25 @@ export class CollectionsService {
     const hasNext = items.length > limit;
     const data = hasNext ? items.slice(0, -1) : items;
 
+    // Hydrate isLiked for requester when available
+    let isLikedMap: Record<string, boolean> = {};
+    if (requesterId) {
+      const ids = data.map((c) => c.id);
+      if (ids.length) {
+        const liked = await this.prisma.collectionReaction.findMany({
+          where: { userId: requesterId, type: 'LIKE', collectionId: { in: ids } },
+          select: { collectionId: true },
+        });
+        const set = new Set(liked.map((r) => r.collectionId));
+        isLikedMap = ids.reduce((acc, id) => {
+          acc[id] = set.has(id);
+          return acc;
+        }, {} as Record<string, boolean>);
+      }
+    }
+
     return {
-      items: data,
+      items: data.map((c) => ({ ...c, isLiked: requesterId ? !!isLikedMap[c.id] : false })),
       hasNextPage: hasNext,
       endCursor: data.length ? data[data.length - 1].id : null,
     };
@@ -599,12 +766,14 @@ export class CollectionsService {
   async listCollections({
     cursor,
     limit = 20,
+    requesterId,
   }: {
     cursor?: string;
     limit?: number;
+    requesterId?: string;
   }) {
     const items = await this.prisma.collection.findMany({
-      where: { status: 'PUBLISHED' },
+      where: { status: 'PUBLISHED', visibility: CollectionVisibility.PUBLIC } as any,
       orderBy: [
         { patchesCount: 'desc' }, // Show most patched first
         { createdAt: 'desc' },
@@ -653,8 +822,25 @@ export class CollectionsService {
     const hasNext = items.length > limit;
     const data = hasNext ? items.slice(0, -1) : items;
 
+    // Hydrate isLiked for requester when available
+    let isLikedMap: Record<string, boolean> = {};
+    if (requesterId) {
+      const ids = data.map((c) => c.id);
+      if (ids.length) {
+        const liked = await this.prisma.collectionReaction.findMany({
+          where: { userId: requesterId, type: 'LIKE', collectionId: { in: ids } },
+          select: { collectionId: true },
+        });
+        const set = new Set(liked.map((r) => r.collectionId));
+        isLikedMap = ids.reduce((acc, id) => {
+          acc[id] = set.has(id);
+          return acc;
+        }, {} as Record<string, boolean>);
+      }
+    }
+
     return {
-      items: data,
+      items: data.map((c) => ({ ...c, isLiked: requesterId ? !!isLikedMap[c.id] : false })),
       hasNextPage: hasNext,
       endCursor: data.length ? data[data.length - 1].id : null,
     };
@@ -668,12 +854,14 @@ export class CollectionsService {
     userId: string,
     type: ReactionType,
   ) {
+    const ok = await this.canViewCollection(collectionId, userId);
+    if (!ok) throw new NotFoundException('Collection not found');
     const collection = await this.prisma.collection.findUnique({
-      where: { id: collectionId, status: 'PUBLISHED' },
+      where: { id: collectionId },
+      select: { visibility: true, ownerId: true },
     });
-
-    if (!collection) {
-      throw new NotFoundException('Collection not found');
+    if (collection && collection.visibility !== CollectionVisibility.PUBLIC) {
+      throw new ForbiddenException('Cannot interact with private collection');
     }
 
     const existing = await this.prisma.collectionReaction.findUnique({
@@ -783,13 +971,8 @@ export class CollectionsService {
     viewerId?: string,
     ipAddress?: string,
   ) {
-    const collection = await this.prisma.collection.findUnique({
-      where: { id: collectionId, status: 'PUBLISHED' },
-    });
-
-    if (!collection) {
-      throw new NotFoundException('Collection not found');
-    }
+    const ok = await this.canViewCollection(collectionId, viewerId);
+    if (!ok) throw new NotFoundException('Collection not found');
 
     // Create IP hash for privacy
     const ipHash = ipAddress ? this.helperservice.hashIP(ipAddress) : null;
@@ -1044,13 +1227,8 @@ export class CollectionsService {
    * Get reactions for a collection
    */
   async getReactions(collectionId: string, limit = 20) {
-    const collection = await this.prisma.collection.findUnique({
-      where: { id: collectionId, status: 'PUBLISHED' },
-    });
-
-    if (!collection) {
-      throw new NotFoundException('Collection not found');
-    }
+    const ok = await this.canViewCollection(collectionId);
+    if (!ok) throw new NotFoundException('Collection not found');
 
     const [reactions, totalLikes, totalDislikes] = await Promise.all([
       this.prisma.collectionReaction.findMany({
@@ -1112,12 +1290,8 @@ export class CollectionsService {
   // Media-level likes (per upload)
   // =============================
   async toggleMediaLike(mediaId: string, userId: string) {
-    const media = await this.prisma.collectionMedia.findUnique({
-      where: { id: mediaId },
-    });
-    if (!media) {
-      throw new NotFoundException('Media not found');
-    }
+    const can = await this.canViewMedia(mediaId, userId);
+    if (!can) throw new NotFoundException('Media not found');
 
     const existing = await this.prisma.collectionMediaReaction.findUnique({
       where: {
@@ -1154,6 +1328,8 @@ export class CollectionsService {
   }
 
   async getMediaReactions(mediaId: string, limit = 20) {
+    const can = await this.canViewMedia(mediaId);
+    if (!can) throw new NotFoundException('Media not found');
     const rows = await this.prisma.collectionMediaReaction.findMany({
       where: { collectionMediaId: mediaId, type: ReactionType.LIKE },
       include: {
@@ -1177,6 +1353,8 @@ export class CollectionsService {
   }
 
   async isMediaLikedByUser(mediaId: string, userId: string) {
+    const can = await this.canViewMedia(mediaId, userId);
+    if (!can) throw new NotFoundException('Media not found');
     const r = await this.prisma.collectionMediaReaction.findUnique({
       where: {
         collectionMediaId_userId: { collectionMediaId: mediaId, userId },
@@ -1208,6 +1386,101 @@ export class CollectionsService {
     const totalLikes = collectionLikes + mediaLikes;
     return { collectionLikes, mediaLikes, totalLikes };
   }
+
+  // ===================== Invite Links (Feature-flagged) =====================
+  private getInviteSecret() {
+    const key = process.env.INVITE_TOKEN_SIGNING_KEY;
+    if (!key) throw new Error('Missing INVITE_TOKEN_SIGNING_KEY');
+    return key;
+  }
+
+  async createInviteLink(collectionId: string, ownerId: string, ttlSeconds = 86400) {
+    await this.assertOwner(collectionId, ownerId);
+    const payload = {
+      cid: collectionId,
+      iat: Math.floor(Date.now() / 1000),
+      exp: Math.floor(Date.now() / 1000) + Math.max(60, ttlSeconds),
+    } as any;
+    const secret = this.getInviteSecret();
+    const body = Buffer.from(JSON.stringify(payload)).toString('base64url');
+    const sig = (require('crypto') as typeof import('crypto'))
+      .createHmac('sha256', secret)
+      .update(body)
+      .digest('base64url');
+    const token = `${body}.${sig}`;
+    return { token };
+  }
+
+  async acceptInvite(token: string, userId: string) {
+    const secret = this.getInviteSecret();
+    const parts = token.split('.');
+    if (parts.length !== 2) throw new BadRequestException('Invalid token');
+    const [body, sig] = parts;
+    const expected = (require('crypto') as typeof import('crypto'))
+      .createHmac('sha256', secret)
+      .update(body)
+      .digest('base64url');
+    if (sig !== expected) throw new BadRequestException('Invalid signature');
+    let payload: any;
+    try {
+      payload = JSON.parse(Buffer.from(body, 'base64url').toString('utf8'));
+    } catch {
+      throw new BadRequestException('Invalid token');
+    }
+    if (!payload?.cid || !payload?.exp) throw new BadRequestException('Invalid token');
+    if (Date.now() / 1000 > payload.exp) throw new BadRequestException('Token expired');
+    const collectionId = String(payload.cid);
+    await this.prisma.collectionAccess.upsert({
+      where: { collectionId_viewerId: { collectionId, viewerId: userId } },
+      update: { state: 'APPROVED', grantedBy: null, updatedAt: new Date() },
+      create: { id: uuidv4(), collectionId, viewerId: userId, state: 'APPROVED', grantedBy: null },
+    } as any);
+    return { success: true };
+  }
+
+  // ===================== Metrics =====================
+  async getAccessMetrics(collectionId: string, from?: string, to?: string) {
+    const fromDate = from ? new Date(from) : new Date(Date.now() - 30 * 86400000);
+    const toDate = to ? new Date(to) : new Date();
+    const [pending, approved, revoked] = await Promise.all([
+      this.prisma.collectionAccess.count({ where: { collectionId, state: 'PENDING', createdAt: { gte: fromDate, lte: toDate } } as any }),
+      this.prisma.collectionAccess.count({ where: { collectionId, state: 'APPROVED', updatedAt: { gte: fromDate, lte: toDate } } as any }),
+      this.prisma.collectionAccess.count({ where: { collectionId, state: 'REVOKED', updatedAt: { gte: fromDate, lte: toDate } } as any }),
+    ]);
+    return { pending, approved, revoked, from: fromDate.toISOString(), to: toDate.toISOString() };
+  }
+
+  async getPrivateViewsMetrics(collectionId: string, from?: string, to?: string) {
+    const c = await this.prisma.collection.findUnique({ where: { id: collectionId }, select: { visibility: true } });
+    if (!c) throw new NotFoundException('Collection not found');
+    const fromDate = from ? new Date(from) : new Date(Date.now() - 30 * 86400000);
+    const toDate = to ? new Date(to) : new Date();
+    const views = await this.prisma.view.count({ where: { collectionId, createdAt: { gte: fromDate, lte: toDate } } });
+    return { visibility: c.visibility, views, from: fromDate.toISOString(), to: toDate.toISOString() };
+  }
+
+  // ===================== Categories =====================
+  async listCategories() {
+    const rows = await this.prisma.collectionCategory.findMany({
+      where: { isActive: true },
+      orderBy: [{ order: 'asc' }, { createdAt: 'asc' }],
+      select: { id: true, slug: true, name: true, description: true, order: true },
+    });
+    return rows.map((r) => ({
+      id: r.id,
+      slug: r.slug,
+      name: r.name,
+      description: r.description,
+      order: r.order,
+    }));
+  }
 }
 
 export { CreateCollectionDto, FinalizeCollectionDto };
+
+
+
+
+
+
+

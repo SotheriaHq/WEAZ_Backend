@@ -1,4 +1,4 @@
-import { FileType } from '@prisma/client';
+import { FileType, CollectionVisibility, CollectionType } from '@prisma/client';
 import { Type } from 'class-transformer';
 import {
   IsString,
@@ -53,6 +53,20 @@ export class CreateCollectionDto {
   @IsOptional()
   @IsBoolean()
   isAvailableInStore?: boolean;
+
+  // Visibility: PUBLIC or PRIVATE (default PUBLIC)
+  @IsOptional()
+  @IsEnum(CollectionVisibility)
+  visibility?: CollectionVisibility;
+
+  // Category (required)
+  @IsString()
+  @IsNotEmpty()
+  categoryId: string;
+
+  // Type: MALE, FEMALE, EVERYBODY
+  @IsEnum(CollectionType)
+  type: CollectionType;
 
   @IsArray()
   @ArrayMinSize(1)

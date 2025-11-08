@@ -16,6 +16,8 @@ import { ModerationModule } from './moderation/moderation.module';
 import { PostsModule } from './posts/posts.module';
 import { CommentsV2Module } from './commentsv2/commentsv2.module';
 import { NotificationsModule } from './notifications/notifications.module';
+import { TagsModule } from './tags/tags.module';
+import { CategoriesModule } from './categories/categories.module';
 
 @Module({
   imports: [
@@ -37,6 +39,8 @@ import { NotificationsModule } from './notifications/notifications.module';
     ModerationModule,
     DevToolsModule,
     NotificationsModule,
+    TagsModule,
+    CategoriesModule,
   ],
   controllers: [AppController],
   providers: [AppService, PrismaService, EventsGateway],

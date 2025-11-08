@@ -9,6 +9,7 @@ import {
   UseGuards,
   BadRequestException,
   Delete,
+  Patch,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -193,11 +194,20 @@ export class CollectionsController {
   async listCollections(
     @Query('cursor') cursor?: string,
     @Query('limit') limit?: string,
+    @Req() req?: any,
   ) {
     return this.collectionsService.listCollections({
       cursor,
       limit: limit ? parseInt(limit, 10) : 20,
+      requesterId: req?.user?.id,
     });
+  }
+
+  @Get('categories')
+  @ApiOperation({ summary: 'Get active collection categories' })
+  @ApiResponse({ status: 200, description: 'List of active categories' })
+  async getCategories() {
+    return this.collectionsService.listCategories();
   }
 
   @Get('market')
@@ -266,7 +276,7 @@ export class CollectionsController {
       console.warn('Failed to record view:', err);
     });
 
-    return this.collectionsService.getCollection(id);
+    return this.collectionsService.getCollection(id, req.user?.id);
   }
 
   // ============================================
@@ -418,9 +428,11 @@ export class CollectionsController {
       },
     },
   })
-  async getCollectionStats(@Param('id') collectionId: string) {
-    const collection =
-      await this.collectionsService.getCollection(collectionId);
+  async getCollectionStats(@Param('id') collectionId: string, @Req() req: any) {
+    const collection = await this.collectionsService.getCollection(
+      collectionId,
+      req.user?.id,
+    );
 
     const totalInteractions =
       collection._count.reactions +
@@ -515,7 +527,155 @@ export class CollectionsController {
   // Likes summary for a collection (collection likes + media likes)
   @Get(':id/likes/summary')
   @ApiOperation({ summary: 'Get likes summary for a collection' })
-  async getLikesSummary(@Param('id') collectionId: string) {
+  async getLikesSummary(@Param('id') collectionId: string, @Req() req?: any) {
     return this.collectionsService.getLikesSummary(collectionId);
   }
+
+  // Categories
+  @Get('categories')
+  @ApiOperation({ summary: 'List active collection categories' })
+  async listCategories() {
+    return this.collectionsService.listCategories();
+  }
+
+  // ===================== Access Management =====================
+  @UseGuards(JwtAuthGuard)
+  @Post(':id/access-requests')
+  @ApiOperation({ summary: 'Request access to a private collection' })
+  async requestAccess(@Param('id') collectionId: string, @Req() req: any) {
+    return this.collectionsService.requestAccess(collectionId, req.user.id);
+  }
+
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Get(':id/access-requests')
+  @ApiOperation({ summary: 'List pending access requests (owner only)' })
+  async listAccessRequests(
+    @Param('id') collectionId: string,
+    @Query('limit') limit?: string,
+    @Query('cursor') cursor?: string,
+    @Req() req?: any,
+  ) {
+    return this.collectionsService.listAccessRequests(
+      collectionId,
+      req.user.id,
+      limit ? parseInt(limit, 10) : 20,
+      cursor,
+    );
+  }
+
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Get(':id/access')
+  @ApiOperation({ summary: 'List approved viewers (owner only)' })
+  async listApproved(
+    @Param('id') collectionId: string,
+    @Query('limit') limit?: string,
+    @Query('cursor') cursor?: string,
+    @Req() req?: any,
+  ) {
+    return this.collectionsService.listApprovedViewers(
+      collectionId,
+      req.user.id,
+      limit ? parseInt(limit, 10) : 20,
+      cursor,
+    );
+  }
+
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Post(':id/access/grant')
+  @ApiOperation({ summary: 'Approve access for multiple users (owner only)' })
+  async approveBulk(
+    @Param('id') collectionId: string,
+    @Body() body: { userIds: string[] },
+    @Req() req: any,
+  ) {
+    return this.collectionsService.approveAccessBulk(
+      collectionId,
+      req.user.id,
+      Array.isArray(body?.userIds) ? body.userIds : [],
+    );
+  }
+
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Patch(':id/access/:userId')
+  @ApiOperation({ summary: 'Update access state (APPROVED/REVOKED)' })
+  async updateAccess(
+    @Param('id') collectionId: string,
+    @Param('userId') userId: string,
+    @Body() body: { state: 'APPROVED' | 'REVOKED' },
+    @Req() req: any,
+  ) {
+    const state = body?.state === 'APPROVED' ? 'APPROVED' : 'REVOKED';
+    return this.collectionsService.updateAccessState(
+      collectionId,
+      req.user.id,
+      userId,
+      state,
+    );
+  }
+
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Delete(':id/access/:userId')
+  @ApiOperation({ summary: 'Revoke access (owner only)' })
+  async revokeAccess(
+    @Param('id') collectionId: string,
+    @Param('userId') userId: string,
+    @Req() req: any,
+  ) {
+    return this.collectionsService.updateAccessState(
+      collectionId,
+      req.user.id,
+      userId,
+      'REVOKED',
+    );
+  }
+
+  // Invite links (feature-flagged)
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Post(':id/access/invite-link')
+  @ApiOperation({ summary: 'Create invite link token (owner only)' })
+  async createInvite(
+    @Param('id') collectionId: string,
+    @Body() body: { ttlSeconds?: number },
+    @Req() req: any,
+  ) {
+    return this.collectionsService.createInviteLink(
+      collectionId,
+      req.user.id,
+      body?.ttlSeconds ?? 86400,
+    );
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Post('access/invite/accept')
+  @ApiOperation({ summary: 'Accept invite to a collection' })
+  async acceptInvite(@Body() body: { token: string }, @Req() req: any) {
+    return this.collectionsService.acceptInvite(body?.token, req.user.id);
+  }
+
+  // Metrics
+  @Get(':id/metrics/access')
+  @ApiOperation({ summary: 'Access request metrics for a collection' })
+  async getAccessMetrics(
+    @Param('id') collectionId: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    return this.collectionsService.getAccessMetrics(collectionId, from, to);
+  }
+
+  @Get(':id/metrics/views')
+  @ApiOperation({ summary: 'Private views metrics for a collection' })
+  async getViewsMetrics(
+    @Param('id') collectionId: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    return this.collectionsService.getPrivateViewsMetrics(collectionId, from, to);
+  }
 }
+
+
+
+
+
+

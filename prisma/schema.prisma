@@ -15,20 +15,20 @@ datasource db {
 }
 
 model User {
-  id                    String         @id @map("_id") @db.Uuid
-  username              String         @unique
-  role                  Role           @default(User)
-  type                  UserType       @default(REGULAR)
+  id                    String          @id @map("_id") @db.Uuid
+  username              String          @unique
+  role                  Role            @default(User)
+  type                  UserType        @default(REGULAR)
   firstName             String
   lastName              String
-  email                 String         @unique
+  email                 String          @unique
   password              String
   phoneNumber           String?
   address               String?
   brandFullName         String?
-  cacNumber             String?        @unique
-  tin                   String?        @unique
-  ceoNin                String?        @unique
+  cacNumber             String?         @unique
+  tin                   String?         @unique
+  ceoNin                String?         @unique
   ceoFirstName          String?
   ceoLastName           String?
   companyLocation       String?
@@ -36,31 +36,31 @@ model User {
   brandCountry          String?
   brandState            String?
   brandCity             String?
-  brandTags             String[]       @default([])
+  brandTags             String[]        @default([])
   brandBusinessType     String?
   socialInstagram       String?
   socialFacebook        String?
   socialTwitter         String?
   socialWebsite         String?
   profileImage          String?
-  profileImageId        String?        @db.Uuid
-  profileImageFile      FileUpload?    @relation("UserProfileImage", fields: [profileImageId], references: [id])
+  profileImageId        String?         @db.Uuid
+  profileImageFile      FileUpload?     @relation("UserProfileImage", fields: [profileImageId], references: [id])
   bannerImage           String?
-  bannerImageId         String?        @db.Uuid
-  bannerImageFile       FileUpload?    @relation("UserBannerImage", fields: [bannerImageId], references: [id])
-  industriNumber        String?        @unique
-  createdAt             DateTime       @default(now())
-  updatedAt             DateTime       @updatedAt
+  bannerImageId         String?         @db.Uuid
+  bannerImageFile       FileUpload?     @relation("UserBannerImage", fields: [bannerImageId], references: [id])
+  industriNumber        String?         @unique
+  createdAt             DateTime        @default(now())
+  updatedAt             DateTime        @updatedAt
   refreshTokens         RefreshToken[]
-  fileUploads           FileUpload[]   @relation("UserFiles")
+  fileUploads           FileUpload[]    @relation("UserFiles")
   posts                 Post[]
   comments              Comment[]
   likes                 Like[]
   commentsV2            CommentV2[]
   commentV2Likes        CommentV2Like[]
-  isEmailVerified       Boolean        @default(false)
-  emailVerificationCode String?        @unique
-  isActive              String         @default("Active")
+  isEmailVerified       Boolean         @default(false)
+  emailVerificationCode String?         @unique
+  isActive              String          @default("Active")
 
   // Relations for new social models
   followerFollows         Follow[]                  @relation("followerFollows")
@@ -75,6 +75,8 @@ model User {
   notificationsActed      Notification[]            @relation("UserNotificationsActed")
   presignedUploads        PresignedUpload[]
   CollectionMediaReaction CollectionMediaReaction[]
+  // Access to private collections (viewer side)
+  collectionAccesses      CollectionAccess[]
 }
 
 model FileUpload {
@@ -104,20 +106,20 @@ model FileUpload {
 }
 
 model Post {
-  id         String       @id @map("_id") @db.Uuid
-  userId     String       @db.Uuid
-  user       User         @relation(fields: [userId], references: [id], onDelete: Cascade)
-  content    String?
-  imageIds   String[]     @db.Uuid
-  images     FileUpload[] @relation("PostImages")
-  videoId    String?      @db.Uuid
-  video      FileUpload?  @relation("PostVideos", fields: [videoId], references: [id])
-  createdAt  DateTime     @default(now())
-  updatedAt  DateTime     @updatedAt
-  comments   Comment[]
-  likes      Like[]
-  likesCount Int          @default(0)
-  commentsCount Int       @default(0)
+  id            String       @id @map("_id") @db.Uuid
+  userId        String       @db.Uuid
+  user          User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  content       String?
+  imageIds      String[]     @db.Uuid
+  images        FileUpload[] @relation("PostImages")
+  videoId       String?      @db.Uuid
+  video         FileUpload?  @relation("PostVideos", fields: [videoId], references: [id])
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+  comments      Comment[]
+  likes         Like[]
+  likesCount    Int          @default(0)
+  commentsCount Int          @default(0)
 }
 
 model Comment {
@@ -210,24 +212,24 @@ enum CommentTarget {
 }
 
 model CommentV2 {
-  id               String         @id @map("_id") @db.Uuid
+  id               String          @id @map("_id") @db.Uuid
   targetType       CommentTarget
-  targetId         String         @db.Uuid
-  userId           String         @db.Uuid
-  user             User           @relation(fields: [userId], references: [id], onDelete: Cascade)
-  parentId         String?        @db.Uuid
-  parent           CommentV2?     @relation("CommentV2Children", fields: [parentId], references: [id])
-  children         CommentV2[]    @relation("CommentV2Children")
-  depth            Int            @default(0)
+  targetId         String          @db.Uuid
+  userId           String          @db.Uuid
+  user             User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  parentId         String?         @db.Uuid
+  parent           CommentV2?      @relation("CommentV2Children", fields: [parentId], references: [id])
+  children         CommentV2[]     @relation("CommentV2Children")
+  depth            Int             @default(0)
   contentRaw       String
   contentSanitized String
-  likeCount        Int            @default(0)
-  replyCount       Int            @default(0)
-  createdAt        DateTime       @default(now())
-  updatedAt        DateTime       @updatedAt
+  likeCount        Int             @default(0)
+  replyCount       Int             @default(0)
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
   editedAt         DateTime?
   deletedAt        DateTime?
-  version          Int            @default(1)
+  version          Int             @default(1)
   likes            CommentV2Like[]
 
   @@index([targetType, targetId, createdAt])
@@ -266,6 +268,10 @@ model Collection {
   title              String?
   description        String?
   status             CollectionStatus     @default(DRAFT)
+  visibility         CollectionVisibility @default(PUBLIC)
+  type               CollectionType       @default(EVERYBODY)
+  categoryId         String?              @db.Uuid
+  category           CollectionCategory?  @relation(fields: [categoryId], references: [id])
   minPrice           Float?
   maxPrice           Float?
   isAvailableInStore Boolean              @default(false)
@@ -282,15 +288,95 @@ model Collection {
   comments           CollectionComment[]
   patches            Patch[]              @relation("Collection_to_Patch")
   views              View[]               @relation("Collection_to_View")
+  // Access approvals for private collections
+  accesses           CollectionAccess[]
 
   @@index([status, createdAt])
   @@index([status, patchesCount])
+  @@index([status, visibility, createdAt])
 }
 
 enum CollectionStatus {
   DRAFT // Created but files not uploaded
   PUBLISHED // Fully published and visible
   ARCHIVED // Hidden from public view
+}
+
+enum CollectionVisibility {
+  PUBLIC
+  PRIVATE
+}
+
+enum CollectionType {
+  MALE
+  FEMALE
+  EVERYBODY
+}
+
+model CollectionCategory {
+  id          String       @id @map("_id") @db.Uuid
+  slug        String       @unique
+  name        String
+  description String?
+  isActive    Boolean      @default(true)
+  order       Int          @default(0)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  collections Collection[]
+
+  @@index([isActive, order])
+}
+
+// ===== Category Suggestions (Phase 6) =====
+
+enum CategorySuggestionStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+model CollectionCategorySuggestion {
+  id                String                  @id @map("_id") @db.Uuid
+  name              String
+  slug              String                  @unique
+  description       String?
+  status            CategorySuggestionStatus @default(PENDING)
+  proposedByUserId  String                  @db.Uuid
+  proposedByUser    User                    @relation(fields: [proposedByUserId], references: [id], onDelete: Cascade)
+  decisionByUserId  String?                 @db.Uuid
+  decisionByUser    User?                   @relation(fields: [decisionByUserId], references: [id])
+  rejectionReason   String?
+  approvedCategoryId String?                @db.Uuid
+  approvedCategory  CollectionCategory?     @relation(fields: [approvedCategoryId], references: [id])
+  decidedAt         DateTime?
+  createdAt         DateTime                @default(now())
+  updatedAt         DateTime                @updatedAt
+
+  @@index([status, createdAt])
+  @@index([proposedByUserId, createdAt])
+}
+
+model CollectionAccess {
+  id           String      @id @map("_id") @db.Uuid
+  collectionId String      @db.Uuid
+  viewerId     String      @db.Uuid
+  state        AccessState @default(PENDING)
+  grantedBy    String?     @db.Uuid
+  notes        String?
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+  collection   Collection  @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+  viewer       User        @relation(fields: [viewerId], references: [id], onDelete: Cascade)
+
+  @@unique([collectionId, viewerId])
+  @@index([collectionId, state])
+  @@index([viewerId, state])
+}
+
+enum AccessState {
+  PENDING
+  APPROVED
+  REVOKED
 }
 
 model CollectionMedia {
