@@ -1,8 +1,9 @@
-import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
+import { Injectable, BadRequestException, NotFoundException, Inject, forwardRef } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SubmitCategorySuggestionDto } from './dto/submit-category-suggestion.dto';
 import { ModerateCategorySuggestionDto, ModerationDecision } from './dto/moderate-category-suggestion.dto';
 import { v4 as uuidv4 } from 'uuid';
+import { CollectionsService } from '../../collections/collections.service';
 // Use local types to avoid build-time coupling to generated Prisma enums
 export type CategorySuggestionStatus = 'PENDING' | 'APPROVED' | 'REJECTED';
 
@@ -23,7 +24,11 @@ interface SuggestionResponse {
 
 @Injectable()
 export class CategorySuggestionsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    @Inject(forwardRef(() => CollectionsService))
+    private readonly collectionsService: CollectionsService,
+  ) {}
 
   private normalizeSlug(base: string): string {
     return base
@@ -125,6 +130,19 @@ export class CategorySuggestionsService {
           decidedAt: new Date(),
         },
       });
+      
+      // PHASE 2: Handle rejection - update linked collections
+      try {
+        const rejectionResult = await this.collectionsService.handleRejectedCategory(
+          id,
+          dto.rejectionReason?.trim() || 'Your category suggestion was not approved.',
+        );
+        console.log(`Rejection handled: ${rejectionResult.updated} collections updated, ${rejectionResult.notified} users notified`);
+      } catch (error) {
+        console.error('Error handling rejected category:', error);
+        // Don't fail the rejection if notification fails
+      }
+      
       return this.toResponse(updated);
     }
 
@@ -154,6 +172,24 @@ export class CategorySuggestionsService {
         decidedAt: new Date(),
       },
     });
+    
+    // PHASE 2: Auto-publish collections waiting for this category
+    try {
+      const publishResult = await this.collectionsService.autoPublishPendingCollections(
+        id,
+        category.id,
+      );
+      console.log(
+        `Auto-publish result: ${publishResult.published} published, ${publishResult.skipped} skipped, ${publishResult.failed} failed`,
+      );
+      if (publishResult.errors.length > 0) {
+        console.error('Auto-publish errors:', publishResult.errors);
+      }
+    } catch (error) {
+      console.error('Error auto-publishing collections:', error);
+      // Don't fail the approval if auto-publish fails
+    }
+    
     return this.toResponse(updated);
   }
 }

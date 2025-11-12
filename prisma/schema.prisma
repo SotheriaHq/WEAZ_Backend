@@ -63,20 +63,23 @@ model User {
   isActive              String          @default("Active")
 
   // Relations for new social models
-  followerFollows         Follow[]                  @relation("followerFollows")
-  followingFollows        Follow[]                  @relation("followingFollows")
+  followerFollows         Follow[]                        @relation("followerFollows")
+  followingFollows        Follow[]                        @relation("followingFollows")
   collections             Collection[]
   collectionReactions     CollectionReaction[]
   collectionComments      CollectionComment[]
   commentReactions        CommentReaction[]
-  patchesMade             Patch[]                   @relation("UserPatches")
+  patchesMade             Patch[]                         @relation("UserPatches")
   views                   View[]
-  notificationsReceived   Notification[]            @relation("UserNotificationsReceived")
-  notificationsActed      Notification[]            @relation("UserNotificationsActed")
+  notificationsReceived   Notification[]                  @relation("UserNotificationsReceived")
+  notificationsActed      Notification[]                  @relation("UserNotificationsActed")
   presignedUploads        PresignedUpload[]
   CollectionMediaReaction CollectionMediaReaction[]
   // Access to private collections (viewer side)
   collectionAccesses      CollectionAccess[]
+  // PHASE 1: Category suggestions
+  proposedSuggestions     CollectionCategorySuggestion[]  @relation("ProposedCategorySuggestions")
+  decidedSuggestions      CollectionCategorySuggestion[]  @relation("DecidedCategorySuggestions")
 }
 
 model FileUpload {
@@ -262,38 +265,46 @@ model Follow {
 }
 
 model Collection {
-  id                 String               @id @map("_id") @db.Uuid
-  ownerId            String               @db.Uuid
-  owner              User                 @relation(fields: [ownerId], references: [id], onDelete: Cascade)
-  title              String?
-  description        String?
-  status             CollectionStatus     @default(DRAFT)
-  visibility         CollectionVisibility @default(PUBLIC)
-  type               CollectionType       @default(EVERYBODY)
-  categoryId         String?              @db.Uuid
-  category           CollectionCategory?  @relation(fields: [categoryId], references: [id])
-  minPrice           Float?
-  maxPrice           Float?
-  isAvailableInStore Boolean              @default(false)
-  tags               String[]             @default([])
-  createdAt          DateTime             @default(now())
-  updatedAt          DateTime             @updatedAt
-  likesCount         Int                  @default(0)
-  dislikesCount      Int                  @default(0)
-  commentsCount      Int                  @default(0)
-  patchesCount       Int                  @default(0)
-  viewsCount         Int                  @default(0)
-  medias             CollectionMedia[]    @relation("Collection_to_Media")
-  reactions          CollectionReaction[]
-  comments           CollectionComment[]
-  patches            Patch[]              @relation("Collection_to_Patch")
-  views              View[]               @relation("Collection_to_View")
+  id                           String                          @id @map("_id") @db.Uuid
+  ownerId                      String                          @db.Uuid
+  owner                        User                            @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  title                        String?
+  description                  String?
+  status                       CollectionStatus                @default(DRAFT)
+  visibility                   CollectionVisibility            @default(PUBLIC)
+  type                         CollectionType                  @default(EVERYBODY)
+  categoryId                   String?                         @db.Uuid
+  category                     CollectionCategory?             @relation(fields: [categoryId], references: [id])
+  // PHASE 1: Pending category support for draft collections
+  pendingCategorySuggestionId  String?                         @db.Uuid
+  pendingCategorySuggestion    CollectionCategorySuggestion?   @relation(fields: [pendingCategorySuggestionId], references: [id], onDelete: SetNull)
+  draftReason                  String?                         // Enum-like: "AWAITING_CATEGORY_APPROVAL", "USER_SAVED", "CATEGORY_REJECTED", "UPLOAD_INCOMPLETE"
+  pendingCategoryName          String?                         // Human-readable name for UI display
+  originalSuggestionId         String?                         @db.Uuid // Audit trail - maintains reference even after approval/rejection
+  minPrice                     Float?
+  maxPrice                     Float?
+  isAvailableInStore           Boolean                         @default(false)
+  tags                         String[]                        @default([])
+  createdAt                    DateTime                        @default(now())
+  updatedAt                    DateTime                        @updatedAt
+  likesCount                   Int                             @default(0)
+  dislikesCount                Int                             @default(0)
+  commentsCount                Int                             @default(0)
+  patchesCount                 Int                             @default(0)
+  viewsCount                   Int                             @default(0)
+  medias                       CollectionMedia[]               @relation("Collection_to_Media")
+  reactions                    CollectionReaction[]
+  comments                     CollectionComment[]
+  patches                      Patch[]                         @relation("Collection_to_Patch")
+  views                        View[]                          @relation("Collection_to_View")
   // Access approvals for private collections
-  accesses           CollectionAccess[]
+  accesses                     CollectionAccess[]
 
   @@index([status, createdAt])
   @@index([status, patchesCount])
   @@index([status, visibility, createdAt])
+  @@index([status, pendingCategorySuggestionId]) // PHASE 1: Fast lookup of drafts waiting for category approval
+  @@index([ownerId, status, createdAt]) // PHASE 1: User's draft management
 }
 
 enum CollectionStatus {
@@ -314,15 +325,17 @@ enum CollectionType {
 }
 
 model CollectionCategory {
-  id          String       @id @map("_id") @db.Uuid
-  slug        String       @unique
-  name        String
-  description String?
-  isActive    Boolean      @default(true)
-  order       Int          @default(0)
-  createdAt   DateTime     @default(now())
-  updatedAt   DateTime     @updatedAt
-  collections Collection[]
+  id                      String                          @id @map("_id") @db.Uuid
+  slug                    String                          @unique
+  name                    String
+  description             String?
+  isActive                Boolean                         @default(true)
+  order                   Int                             @default(0)
+  createdAt               DateTime                        @default(now())
+  updatedAt               DateTime                        @updatedAt
+  collections             Collection[]
+  // PHASE 1: Approved suggestions that created this category
+  approvedSuggestions     CollectionCategorySuggestion[]
 
   @@index([isActive, order])
 }
@@ -336,24 +349,27 @@ enum CategorySuggestionStatus {
 }
 
 model CollectionCategorySuggestion {
-  id                String                  @id @map("_id") @db.Uuid
-  name              String
-  slug              String                  @unique
-  description       String?
-  status            CategorySuggestionStatus @default(PENDING)
-  proposedByUserId  String                  @db.Uuid
-  proposedByUser    User                    @relation(fields: [proposedByUserId], references: [id], onDelete: Cascade)
-  decisionByUserId  String?                 @db.Uuid
-  decisionByUser    User?                   @relation(fields: [decisionByUserId], references: [id])
-  rejectionReason   String?
-  approvedCategoryId String?                @db.Uuid
-  approvedCategory  CollectionCategory?     @relation(fields: [approvedCategoryId], references: [id])
-  decidedAt         DateTime?
-  createdAt         DateTime                @default(now())
-  updatedAt         DateTime                @updatedAt
+  id                     String                    @id @map("_id") @db.Uuid
+  name                   String
+  slug                   String                    @unique
+  description            String?
+  status                 CategorySuggestionStatus  @default(PENDING)
+  proposedByUserId       String                    @db.Uuid
+  proposedByUser         User                      @relation("ProposedCategorySuggestions", fields: [proposedByUserId], references: [id], onDelete: Cascade)
+  decisionByUserId       String?                   @db.Uuid
+  decisionByUser         User?                     @relation("DecidedCategorySuggestions", fields: [decisionByUserId], references: [id])
+  rejectionReason        String?
+  approvedCategoryId     String?                   @db.Uuid
+  approvedCategory       CollectionCategory?       @relation(fields: [approvedCategoryId], references: [id])
+  decidedAt              DateTime?
+  createdAt              DateTime                  @default(now())
+  updatedAt              DateTime                  @updatedAt
+  // PHASE 1: Relation to draft collections waiting for this suggestion
+  pendingCollections     Collection[]
 
   @@index([status, createdAt])
   @@index([proposedByUserId, createdAt])
+  @@index([slug, status]) // PHASE 1: Duplicate detection and fast lookup
 }
 
 model CollectionAccess {

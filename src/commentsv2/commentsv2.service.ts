@@ -3,6 +3,7 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
+  Logger,
 } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { v4 as uuidv4 } from 'uuid';
@@ -174,15 +175,36 @@ export class CommentsV2Service {
       return createdComment;
     });
 
-    // Emit realtime
+    // Emit realtime with enriched payload so clients can patch incrementally without refetch
     const room = `${targetType}:${targetId}`;
-    this.events.server?.to(room).emit('comment.created', {
+    try {
+      this.events.server?.to(room).emit('comment.created', {
       targetType,
       targetId,
       commentId: created.id,
       userId,
       at: Date.now(),
-    });
+      comment: {
+        id: created.id,
+        targetType,
+        targetId,
+        user: created.user,
+        userId: created.userId,
+        parentId: created.parentId,
+        depth: created.depth,
+        contentSanitized: created.contentSanitized,
+        likeCount: 0,
+        replyCount: 0,
+        createdAt: created.createdAt,
+        deletedAt: null,
+        isLikedByMe: false,
+        children: [],
+      },
+      });
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.warn('Failed to emit comment.created', e);
+    }
 
     // Notify target owner
     try {
@@ -261,6 +283,7 @@ export class CommentsV2Service {
         targetType,
         targetId,
         depth: 0,
+        deletedAt: null,
         ...(cursorDate ? { createdAt: { lt: cursorDate } } : {}),
       },
       orderBy: { createdAt: 'desc' },
@@ -276,6 +299,7 @@ export class CommentsV2Service {
           },
         },
         children: {
+          where: { deletedAt: null },
           orderBy: { createdAt: 'desc' },
           take: 2,
           include: {
@@ -345,6 +369,7 @@ export class CommentsV2Service {
     const items = await this.prisma.commentV2.findMany({
       where: {
         parentId: commentId,
+        deletedAt: null,
         ...(cursorDate ? { createdAt: { lt: cursorDate } } : {}),
       },
       orderBy: { createdAt: 'desc' },
@@ -482,9 +507,14 @@ export class CommentsV2Service {
     });
 
     const room = `${c.targetType}:${c.targetId}`;
-    this.events.server
-      ?.to(room)
-      .emit('comment.deleted', { commentId, at: Date.now() });
+    try {
+      this.events.server
+        ?.to(room)
+        .emit('comment.deleted', { commentId, at: Date.now(), targetType: c.targetType, targetId: c.targetId, deleted: true });
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.warn('Failed to emit comment.deleted', e);
+    }
     return { success: true };
   }
 

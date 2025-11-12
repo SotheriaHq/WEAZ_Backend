@@ -24,6 +24,7 @@ import {
 import { HelperService } from './helper/Helper.service';
 import { UploadService } from 'src/upload/upload.service';
 import * as crypto from 'crypto';
+import { sanitizeTags } from 'src/common/utils/tag-validator';
 
 @Injectable()
 export class CollectionsService {
@@ -174,7 +175,7 @@ export class CollectionsService {
 
   /**
    * STEP 1: Create collection draft and return presigned URLs
-
+   * PHASE 2: Enhanced to handle pending category suggestions
    */
   async initializeCollection(userId: string, dto: CreateCollectionDto) {
     // Validate user is brand
@@ -192,17 +193,69 @@ export class CollectionsService {
       throw new BadRequestException('Maximum 10 files per collection');
     }
 
-    const tagRe = /^[a-z0-9._-]{1,24}$/;
-    const sanitizedTags = Array.from(
-      new Set(
-        (dto.tags ?? [])
-          .map((tag) => (typeof tag === 'string' ? tag.trim().toLowerCase() : ''))
-          .filter((tag) => tag.length > 0 && tagRe.test(tag)),
-      ),
-    ).slice(0, 10);
+    // PHASE 2: Use shared tag normalization utility
+    const sanitizedTags = sanitizeTags(dto.tags ?? []);
 
     if (sanitizedTags.length === 0) {
       throw new BadRequestException('At least one descriptive tag is required');
+    }
+
+    // PHASE 2: Handle category logic - can be existing category, pending suggestion, or neither
+    let finalCategoryId: string | undefined;
+    let pendingCategorySuggestionId: string | undefined;
+    let draftReason: string | undefined;
+    let pendingCategoryName: string | undefined;
+    let originalSuggestionId: string | undefined;
+    let collectionStatus: 'DRAFT' | 'PUBLISHED' = 'DRAFT';
+
+    if (dto.categorySuggestionId) {
+      // User selected a category suggestion
+      const suggestion = await (this.prisma as any).collectionCategorySuggestion.findUnique({
+        where: { id: dto.categorySuggestionId },
+      });
+
+      if (!suggestion) {
+        throw new NotFoundException('Category suggestion not found');
+      }
+
+      if (suggestion.status === 'REJECTED') {
+        throw new BadRequestException(
+          `This category suggestion was rejected${suggestion.rejectionReason ? ': ' + suggestion.rejectionReason : ''}`,
+        );
+      }
+
+      if (suggestion.status === 'APPROVED') {
+        // Suggestion already approved - use the approved category
+        finalCategoryId = suggestion.approvedCategoryId;
+        collectionStatus = 'DRAFT'; // Still draft until files uploaded
+      } else {
+        // Suggestion is PENDING - save as draft waiting for approval
+        pendingCategorySuggestionId = dto.categorySuggestionId;
+        originalSuggestionId = dto.categorySuggestionId;
+        pendingCategoryName = suggestion.name;
+        draftReason = 'AWAITING_CATEGORY_APPROVAL';
+        collectionStatus = 'DRAFT';
+      }
+    } else if (dto.categoryId) {
+      // User selected an existing approved category
+      const category = await this.prisma.collectionCategory.findUnique({
+        where: { id: dto.categoryId },
+      });
+
+      if (!category) {
+        throw new NotFoundException('Category not found');
+      }
+
+      if (!category.isActive) {
+        throw new BadRequestException('This category is not active');
+      }
+
+      finalCategoryId = dto.categoryId;
+      collectionStatus = 'DRAFT'; // Still draft until files uploaded
+    } else {
+      // No category selected - save as draft
+      draftReason = 'USER_SAVED';
+      collectionStatus = 'DRAFT';
     }
 
     // Create collection in DRAFT status
@@ -217,12 +270,17 @@ export class CollectionsService {
         maxPrice: dto.maxPrice,
         isAvailableInStore: dto.isAvailableInStore ?? false,
         tags: sanitizedTags,
-        status: 'DRAFT',
-        visibility: (dto as any).visibility ?? CollectionVisibility.PUBLIC,
-        type: (dto as any).type ?? CollectionType.EVERYBODY,
-        ...((dto as any).categoryId
-          ? { category: { connect: { id: (dto as any).categoryId } } }
+        status: collectionStatus,
+        visibility: dto.visibility ?? CollectionVisibility.PUBLIC,
+        type: dto.type ?? CollectionType.EVERYBODY,
+        // PHASE 2: Set category fields based on selection
+        ...(finalCategoryId ? { category: { connect: { id: finalCategoryId } } } : {}),
+        ...(pendingCategorySuggestionId
+          ? { pendingCategorySuggestion: { connect: { id: pendingCategorySuggestionId } } }
           : {}),
+        draftReason,
+        pendingCategoryName,
+        originalSuggestionId,
       },
     });
 
@@ -260,6 +318,17 @@ export class CollectionsService {
       uploads: uploadData,
       expiresIn: 600,
       tags: sanitizedTags,
+      // PHASE 2: Return draft status info for frontend
+      draftStatus: {
+        isDraft: collectionStatus === 'DRAFT',
+        reason: draftReason,
+        pendingCategoryName,
+        message: draftReason === 'AWAITING_CATEGORY_APPROVAL'
+          ? `Your collection will be published automatically when the "${pendingCategoryName}" category is approved by an admin.`
+          : draftReason === 'USER_SAVED'
+          ? 'Your collection is saved as a draft. You can publish it later by selecting a category.'
+          : undefined,
+      },
     };
   }
 
@@ -267,8 +336,10 @@ export class CollectionsService {
     cursor?: string;
     limit?: number;
     tag?: string;
+    countsPolicy?: 'combined';
+    requesterId?: string; // Add requesterId to check like status
   }) {
-    const { cursor, limit = 20, tag } = options ?? {};
+    const { cursor, limit = 20, tag, requesterId } = options ?? {};
     const take = Math.min(Math.max(limit, 1), 40);
 
     const where: Prisma.CollectionMediaWhereInput = {
@@ -340,6 +411,23 @@ export class CollectionsService {
     const hasNextPage = medias.length > take;
     const data = hasNextPage ? medias.slice(0, -1) : medias;
 
+    // Hydrate isLiked for requester when available
+    let isLikedMap: Record<string, boolean> = {};
+    if (requesterId) {
+      const mediaIds = data.map((m) => m.id);
+      if (mediaIds.length) {
+        const liked = await this.prisma.collectionMediaReaction.findMany({
+          where: { userId: requesterId, type: 'LIKE', collectionMediaId: { in: mediaIds } },
+          select: { collectionMediaId: true },
+        });
+        const set = new Set(liked.map((r) => r.collectionMediaId));
+        isLikedMap = mediaIds.reduce((acc, id) => {
+          acc[id] = set.has(id);
+          return acc;
+        }, {} as Record<string, boolean>);
+      }
+    }
+
     // Collect all file IDs that need signed URLs
     const fileIds = new Set<string>();
     data.forEach((media) => {
@@ -359,8 +447,7 @@ export class CollectionsService {
       Array.from(fileIds),
     );
 
-    return {
-      items: data.map((media) => {
+    const items = data.map((media) => {
         const { collection } = media;
         const owner = collection.owner;
         const file = media.file;
@@ -376,7 +463,7 @@ export class CollectionsService {
           ? (signedUrlMap.get(logoFileId) ?? null)
           : null;
 
-        return {
+        const base = {
           id: media.id,
           collectionId: media.collectionId,
           mediaType: media.mediaType,
@@ -396,8 +483,16 @@ export class CollectionsService {
           username: owner.username ?? '',
           brandLogo: logoSignedUrl ?? owner.profileImage ?? null, // Signed URL or fallback
           brandLogoFileId: logoFileId ?? null,
+          isLiked: requesterId ? !!isLikedMap[media.id] : false, // Add like status for requester
         };
-      }),
+        // Optionally include combinedCommentsCount for frontend normalization
+        if (options?.countsPolicy === 'combined') {
+          (base as any).combinedCommentsCount = (collection.commentsCount ?? 0) + (media.commentsCount ?? 0);
+        }
+        return base;
+      })
+    return {
+      items,
       hasNextPage,
       nextCursor: hasNextPage ? (data[data.length - 1]?.id ?? null) : null,
     };
@@ -554,6 +649,56 @@ export class CollectionsService {
     });
     const totalLikes = collection.likesCount + (mediaAgg._sum.likesCount ?? 0);
     return { ...collection, totalLikes };
+  }
+
+  /**
+   * PHASE 6: Get draft collections for current user
+   */
+  async getMyDraftCollections(userId: string) {
+    const items = await this.prisma.collection.findMany({
+      where: {
+        ownerId: userId,
+        status: 'DRAFT',
+      },
+      orderBy: { createdAt: 'desc' },
+      include: {
+        medias: {
+          include: { file: true },
+          orderBy: { orderIndex: 'asc' },
+          take: 1,
+        },
+        _count: {
+          select: { medias: true },
+        },
+      },
+    });
+
+    // Generate signed URLs for cover images
+    const fileIds = items
+      .map((c) => c.medias[0]?.fileUploadId)
+      .filter((id): id is string => !!id);
+
+    const signedUrlMap = await this.uploadService.getBatchPublicSignedUrls(fileIds);
+
+    return {
+      items: items.map((c) => {
+        const firstMedia = c.medias[0];
+        const coverImage = firstMedia?.fileUploadId
+          ? signedUrlMap.get(firstMedia.fileUploadId) ?? null
+          : null;
+
+        return {
+          id: c.id,
+          title: c.title,
+          description: c.description,
+          pendingCategoryName: c.pendingCategoryName,
+          draftReason: c.draftReason,
+          createdAt: c.createdAt,
+          itemCount: c._count.medias,
+          coverImage,
+        };
+      }),
+    };
   }
 
   /**
@@ -1385,6 +1530,179 @@ export class CollectionsService {
     const mediaLikes = mediaAgg._sum.likesCount ?? 0;
     const totalLikes = collectionLikes + mediaLikes;
     return { collectionLikes, mediaLikes, totalLikes };
+  }
+
+  // ===================== PHASE 2: Auto-Publishing for Approved Categories =====================
+  
+  /**
+   * Automatically publish all draft collections waiting for a specific category suggestion
+   * Called when admin approves a category suggestion
+   */
+  async autoPublishPendingCollections(
+    suggestionId: string,
+    approvedCategoryId: string,
+  ): Promise<{ published: number; skipped: number; failed: number; errors: string[] }> {
+    const results = {
+      published: 0,
+      skipped: 0,
+      failed: 0,
+      errors: [] as string[],
+    };
+
+    // Find all draft collections waiting for this suggestion
+    const pendingCollections = await this.prisma.collection.findMany({
+      where: {
+        pendingCategorySuggestionId: suggestionId,
+        status: 'DRAFT',
+      },
+      include: {
+        owner: { select: { id: true, username: true, email: true } },
+        medias: { include: { file: true } },
+      },
+    });
+
+    console.log(`Found ${pendingCollections.length} collections waiting for suggestion ${suggestionId}`);
+
+    // Process each collection independently
+    for (const collection of pendingCollections) {
+      try {
+        // Verify collection has uploaded media files
+        if (!collection.medias || collection.medias.length === 0) {
+          console.log(`Skipping collection ${collection.id} - no media uploaded`);
+          results.skipped++;
+          
+          // Notify user that upload is incomplete
+          if (this.notifications) {
+            await this.notifications.create(
+              collection.ownerId,
+              NotificationType.COLLECTION_UPLOAD,
+              {
+                payload: {
+                  collectionId: collection.id,
+                  message: 'Your category was approved, but your collection upload is incomplete. Please complete the upload to publish.',
+                },
+              },
+            );
+          }
+          continue;
+        }
+
+        // Update collection in a transaction
+        await this.prisma.$transaction(async (tx) => {
+          await tx.collection.update({
+            where: { id: collection.id },
+            data: {
+              categoryId: approvedCategoryId,
+              pendingCategorySuggestionId: null,
+              draftReason: null,
+              status: 'PUBLISHED',
+              updatedAt: new Date(),
+            },
+          });
+        });
+
+        results.published++;
+        console.log(`Published collection ${collection.id} for user ${collection.owner.username}`);
+
+        // Send success notification
+        if (this.notifications) {
+          await this.notifications.create(
+            collection.ownerId,
+            NotificationType.COLLECTION_UPLOAD,
+            {
+              payload: {
+                collectionId: collection.id,
+                title: collection.title,
+                message: `Great news! Your collection "${collection.title}" has been published automatically because the category you requested was approved.`,
+              },
+            },
+          );
+        }
+      } catch (error) {
+        results.failed++;
+        const errorMsg = `Failed to publish collection ${collection.id}: ${error.message}`;
+        results.errors.push(errorMsg);
+        console.error(errorMsg, error);
+
+        // Notify user of failure
+        if (this.notifications) {
+          await this.notifications.create(
+            collection.ownerId,
+            NotificationType.COLLECTION_UPLOAD,
+            {
+              payload: {
+                collectionId: collection.id,
+                message: 'There was an issue publishing your collection automatically. Please try publishing manually.',
+              },
+            },
+          );
+        }
+      }
+    }
+
+    return results;
+  }
+
+  /**
+   * Handle rejected category suggestions - update linked draft collections
+   * Called when admin rejects a category suggestion
+   */
+  async handleRejectedCategory(
+    suggestionId: string,
+    rejectionReason: string,
+  ): Promise<{ updated: number; notified: number }> {
+    const results = { updated: 0, notified: 0 };
+
+    // Find all collections waiting for this suggestion
+    const affectedCollections = await this.prisma.collection.findMany({
+      where: {
+        pendingCategorySuggestionId: suggestionId,
+        status: 'DRAFT',
+      },
+      include: {
+        owner: { select: { id: true, username: true, email: true } },
+      },
+    });
+
+    console.log(`Found ${affectedCollections.length} collections affected by rejected suggestion ${suggestionId}`);
+
+    for (const collection of affectedCollections) {
+      try {
+        // Update collection to reflect rejection
+        await this.prisma.collection.update({
+          where: { id: collection.id },
+          data: {
+            draftReason: 'CATEGORY_REJECTED',
+            // Keep pendingCategorySuggestionId for reference
+            updatedAt: new Date(),
+          },
+        });
+
+        results.updated++;
+
+        // Notify user
+        if (this.notifications) {
+          await this.notifications.create(
+            collection.ownerId,
+            NotificationType.COLLECTION_UPLOAD,
+            {
+              payload: {
+                collectionId: collection.id,
+                title: collection.title,
+                pendingCategoryName: collection.pendingCategoryName,
+                rejectionReason,
+                message: `Your category suggestion "${collection.pendingCategoryName}" was not approved. Your collection "${collection.title}" is saved as a draft. You can select a different category to publish it.`,
+              },
+            },
+          );
+          results.notified++;
+        }
+      } catch (error) {
+        console.error(`Failed to update collection ${collection.id}:`, error);
+      }
+    }
+
+    return results;
   }
 
   // ===================== Invite Links (Feature-flagged) =====================

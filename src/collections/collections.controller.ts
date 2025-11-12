@@ -220,12 +220,24 @@ export class CollectionsController {
     @Query('cursor') cursor?: string,
     @Query('limit') limit?: string,
     @Query('tag') tag?: string,
+    @Query('counts') countsPolicy?: string,
+    @Req() req?: any,
   ) {
     return this.collectionsService.getMarketFeed({
       cursor,
       limit: limit ? parseInt(limit, 10) : undefined,
       tag,
+      countsPolicy: countsPolicy === 'combined' ? 'combined' : undefined,
+      requesterId: req?.user?.id, // Pass userId if authenticated
     });
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Get('my/drafts')
+  @ApiOperation({ summary: 'Get my draft collections (PHASE 6)' })
+  @ApiResponse({ status: 200, description: 'List of draft collections for current user' })
+  async getMyDrafts(@Req() req: any) {
+    return this.collectionsService.getMyDraftCollections(req.user.id);
   }
 
   @UseGuards(JwtAuthGuard)

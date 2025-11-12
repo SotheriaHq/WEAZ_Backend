@@ -59,10 +59,15 @@ export class CreateCollectionDto {
   @IsEnum(CollectionVisibility)
   visibility?: CollectionVisibility;
 
-  // Category (required)
+  // Category (optional - can be existing category OR pending suggestion)
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
-  categoryId: string;
+  categoryId?: string;
+
+  // PHASE 2: Category suggestion (if user selected pending suggestion instead of approved category)
+  @IsOptional()
+  @IsString()
+  categorySuggestionId?: string;
 
   // Type: MALE, FEMALE, EVERYBODY
   @IsEnum(CollectionType)
