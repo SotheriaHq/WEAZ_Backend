@@ -16,7 +16,7 @@ export const TAG_CONFIG = {
  */
 export function normalizeTag(input: string): string {
   if (typeof input !== 'string') return '';
-  
+
   return input
     .trim()
     .toLowerCase()
@@ -37,23 +37,24 @@ export function validateTag(input: string): { valid: boolean; error?: string } {
   const normalized = normalizeTag(input);
 
   if (normalized.length < TAG_CONFIG.MIN_LENGTH) {
-    return { 
-      valid: false, 
-      error: `Tag must be at least ${TAG_CONFIG.MIN_LENGTH} characters` 
+    return {
+      valid: false,
+      error: `Tag must be at least ${TAG_CONFIG.MIN_LENGTH} characters`,
     };
   }
 
   if (normalized.length > TAG_CONFIG.MAX_LENGTH) {
-    return { 
-      valid: false, 
-      error: `Tag must be at most ${TAG_CONFIG.MAX_LENGTH} characters` 
+    return {
+      valid: false,
+      error: `Tag must be at most ${TAG_CONFIG.MAX_LENGTH} characters`,
     };
   }
 
   if (!TAG_CONFIG.REGEX.test(normalized)) {
-    return { 
-      valid: false, 
-      error: 'Tag can only contain lowercase letters, numbers, dashes, underscores, and dots' 
+    return {
+      valid: false,
+      error:
+        'Tag can only contain lowercase letters, numbers, dashes, underscores, and dots',
     };
   }
 
@@ -67,12 +68,15 @@ export function validateTag(input: string): { valid: boolean; error?: string } {
  * - Remove duplicates (case-insensitive)
  * - Limit to max count
  */
-export function sanitizeTags(tags: string[], maxCount = TAG_CONFIG.MAX_TAGS_PER_COLLECTION): string[] {
+export function sanitizeTags(
+  tags: string[],
+  maxCount = TAG_CONFIG.MAX_TAGS_PER_COLLECTION,
+): string[] {
   if (!Array.isArray(tags)) return [];
 
   const normalized = tags
-    .map(tag => normalizeTag(tag))
-    .filter(tag => {
+    .map((tag) => normalizeTag(tag))
+    .filter((tag) => {
       if (!tag) return false;
       const validation = validateTag(tag);
       return validation.valid;
@@ -89,6 +93,6 @@ export function sanitizeTags(tags: string[], maxCount = TAG_CONFIG.MAX_TAGS_PER_
  */
 export function tagExists(tag: string, existingTags: string[]): boolean {
   const normalized = normalizeTag(tag);
-  const normalizedExisting = existingTags.map(t => normalizeTag(t));
+  const normalizedExisting = existingTags.map((t) => normalizeTag(t));
   return normalizedExisting.includes(normalized);
 }

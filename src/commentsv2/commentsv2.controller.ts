@@ -99,6 +99,16 @@ export class CommentsV2Controller {
     return this.service.getReplies(id, req.user?.id, q);
   }
 
+  // Unified comments for a collection: includes COLLECTION and all COLLECTION_MEDIA under it
+  @Get('collections/:collectionId/comments-unified')
+  listUnifiedForCollection(
+    @Param('collectionId') collectionId: string,
+    @Query() q: ListQueryDto,
+    @Req() req: any,
+  ) {
+    return this.service.listUnifiedForCollection(collectionId, req.user?.id, q);
+  }
+
   // Like toggle
   @UseGuards(JwtAuthGuard)
   @Post('comments/:id/like')

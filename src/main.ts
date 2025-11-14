@@ -7,7 +7,10 @@ try {
   const isTsNode = !!(process as any).env.TS_NODE;
   if (!isTsNode) {
     // Use non-webpack require if available, fallback to require
-    const req = typeof __non_webpack_require__ === 'function' ? __non_webpack_require__ : require;
+    const req =
+      typeof __non_webpack_require__ === 'function'
+        ? __non_webpack_require__
+        : require;
     req('module-alias/register');
   }
 } catch {}

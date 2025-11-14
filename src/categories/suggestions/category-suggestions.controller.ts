@@ -13,7 +13,10 @@ export class CategorySuggestionsController {
 
   @Post()
   @ApiOperation({ summary: 'Submit a new category suggestion' })
-  async submit(@Req() req: any, @Body() dto: SubmitCategorySuggestionDto): Promise<any> {
+  async submit(
+    @Req() req: any,
+    @Body() dto: SubmitCategorySuggestionDto,
+  ): Promise<any> {
     return this.suggestions.submit(req.user.id, dto);
   }
 

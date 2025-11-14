@@ -1,4 +1,8 @@
-import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
+import {
+  Injectable,
+  BadRequestException,
+  NotFoundException,
+} from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { UpsertCategoryDto } from './dto/upsert-category.dto';
 import { v4 as uuidv4 } from 'uuid';
@@ -25,14 +29,22 @@ export class CategoriesService {
   }
 
   private async generateUniqueSlug(base: string): Promise<string> {
-    const normalize = (s: string) => s.toLowerCase().trim().replace(/[^a-z0-9 ]+/g, '').replace(/\s+/g, '-');
+    const normalize = (s: string) =>
+      s
+        .toLowerCase()
+        .trim()
+        .replace(/[^a-z0-9 ]+/g, '')
+        .replace(/\s+/g, '-');
     let slug = normalize(base).slice(0, 60) || 'category';
     let attempt = 1;
     while (true) {
-      const exists = await this.prisma.collectionCategory.findUnique({ where: { slug } });
+      const exists = await this.prisma.collectionCategory.findUnique({
+        where: { slug },
+      });
       if (!exists) return slug;
       slug = `${slug}-${attempt++}`;
-      if (attempt > 50) throw new BadRequestException('Unable to generate unique slug');
+      if (attempt > 50)
+        throw new BadRequestException('Unable to generate unique slug');
     }
   }
 
@@ -49,11 +61,20 @@ export class CategoriesService {
         isActive: true,
       },
     });
-    return { id: row.id, slug: row.slug, name: row.name, description: row.description, isActive: row.isActive, order: row.order };
+    return {
+      id: row.id,
+      slug: row.slug,
+      name: row.name,
+      description: row.description,
+      isActive: row.isActive,
+      order: row.order,
+    };
   }
 
   async update(id: string, dto: UpsertCategoryDto) {
-    const existing = await this.prisma.collectionCategory.findUnique({ where: { id } });
+    const existing = await this.prisma.collectionCategory.findUnique({
+      where: { id },
+    });
     if (!existing) throw new NotFoundException('Category not found');
     const data: any = {};
     if (dto.name && dto.name.trim() !== existing.name) {
@@ -68,32 +89,57 @@ export class CategoriesService {
     if (Object.keys(data).length === 0) {
       return existing;
     }
-    const updated = await this.prisma.collectionCategory.update({ where: { id }, data });
-    return { id: updated.id, slug: updated.slug, name: updated.name, description: updated.description, isActive: updated.isActive, order: updated.order };
+    const updated = await this.prisma.collectionCategory.update({
+      where: { id },
+      data,
+    });
+    return {
+      id: updated.id,
+      slug: updated.slug,
+      name: updated.name,
+      description: updated.description,
+      isActive: updated.isActive,
+      order: updated.order,
+    };
   }
 
   async activate(id: string) {
-    const existing = await this.prisma.collectionCategory.findUnique({ where: { id } });
+    const existing = await this.prisma.collectionCategory.findUnique({
+      where: { id },
+    });
     if (!existing) throw new NotFoundException('Category not found');
     if (existing.isActive) return existing;
-    const updated = await this.prisma.collectionCategory.update({ where: { id }, data: { isActive: true } });
+    const updated = await this.prisma.collectionCategory.update({
+      where: { id },
+      data: { isActive: true },
+    });
     return updated;
   }
 
   async deactivate(id: string) {
-    const existing = await this.prisma.collectionCategory.findUnique({ where: { id } });
+    const existing = await this.prisma.collectionCategory.findUnique({
+      where: { id },
+    });
     if (!existing) throw new NotFoundException('Category not found');
     if (!existing.isActive) return existing;
-    const updated = await this.prisma.collectionCategory.update({ where: { id }, data: { isActive: false } });
+    const updated = await this.prisma.collectionCategory.update({
+      where: { id },
+      data: { isActive: false },
+    });
     return updated;
   }
 
   async remove(id: string) {
-    const existing = await this.prisma.collectionCategory.findUnique({ where: { id } });
+    const existing = await this.prisma.collectionCategory.findUnique({
+      where: { id },
+    });
     if (!existing) throw new NotFoundException('Category not found');
     // Optionally: check if referenced by collections
-    const referencing = await this.prisma.collection.count({ where: { categoryId: id } });
-    if (referencing > 0) throw new BadRequestException('Cannot delete category in use');
+    const referencing = await this.prisma.collection.count({
+      where: { categoryId: id },
+    });
+    if (referencing > 0)
+      throw new BadRequestException('Cannot delete category in use');
     await this.prisma.collectionCategory.delete({ where: { id } });
     return { success: true };
   }

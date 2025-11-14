@@ -21,7 +21,9 @@ export class CommentsService {
     userId: string,
     dto: CreateCommentDto,
   ): Promise<Comment> {
-    this.logger.warn('Deprecated CommentsService.create called; prefer CommentsV2Service for POST target');
+    this.logger.warn(
+      'Deprecated CommentsService.create called; prefer CommentsV2Service for POST target',
+    );
     // Check if post exists
     const post = await this.prisma.post.findUnique({
       where: { id: postId },
@@ -60,7 +62,9 @@ export class CommentsService {
     postId: string,
     { cursor, limit = 20 }: GetCommentsDto,
   ): Promise<PaginatedResult<Comment>> {
-    this.logger.warn('Deprecated CommentsService.getComments called; prefer CommentsV2Service for POST target');
+    this.logger.warn(
+      'Deprecated CommentsService.getComments called; prefer CommentsV2Service for POST target',
+    );
     const items = await this.prisma.comment.findMany({
       where: {
         postId,
@@ -104,7 +108,9 @@ export class CommentsService {
     userId: string,
     dto: UpdateCommentDto,
   ): Promise<Comment> {
-    this.logger.warn('Deprecated CommentsService.update called; prefer CommentsV2Service for POST target');
+    this.logger.warn(
+      'Deprecated CommentsService.update called; prefer CommentsV2Service for POST target',
+    );
     const comment = await this.prisma.comment.findFirst({
       where: {
         id: commentId,
@@ -136,7 +142,9 @@ export class CommentsService {
   }
 
   async delete(commentId: string, userId: string): Promise<void> {
-    this.logger.warn('Deprecated CommentsService.delete called; prefer CommentsV2Service for POST target');
+    this.logger.warn(
+      'Deprecated CommentsService.delete called; prefer CommentsV2Service for POST target',
+    );
     const comment = await this.prisma.comment.findFirst({
       where: {
         id: commentId,
@@ -164,7 +172,9 @@ export class CommentsService {
     likes: number;
     dislikes: number;
   }> {
-    this.logger.warn('Deprecated CommentsService.toggleReaction called; prefer CommentsV2Service for POST target');
+    this.logger.warn(
+      'Deprecated CommentsService.toggleReaction called; prefer CommentsV2Service for POST target',
+    );
     const comment = await this.prisma.comment.findUnique({
       where: { id: commentId },
     });
@@ -211,7 +221,9 @@ export class CommentsService {
 
   // Get users who reacted to a comment (latest N)
   async getReactions(commentId: string, limit = 20) {
-    this.logger.warn('Deprecated CommentsService.getReactions called; prefer CommentsV2Service for POST target');
+    this.logger.warn(
+      'Deprecated CommentsService.getReactions called; prefer CommentsV2Service for POST target',
+    );
     const [reactions, totalLikes, totalDislikes] = await Promise.all([
       this.prisma.commentReaction.findMany({
         where: { commentId, type: ReactionType.LIKE },

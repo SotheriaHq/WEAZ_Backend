@@ -28,6 +28,7 @@ import { UserTypeGuard } from 'src/auth/guard/user-type.guard';
 import { UserType, ReactionType } from '@prisma/client';
 import { ThrottlerGuard, Throttle } from '@nestjs/throttler';
 import { EventsGateway } from 'src/realtime/events.gateway';
+import { UpdateCollectionDto } from './dto/update-collection.dto';
 
 @ApiTags('collections')
 @ApiBearerAuth()
@@ -235,7 +236,10 @@ export class CollectionsController {
   @UseGuards(JwtAuthGuard)
   @Get('my/drafts')
   @ApiOperation({ summary: 'Get my draft collections (PHASE 6)' })
-  @ApiResponse({ status: 200, description: 'List of draft collections for current user' })
+  @ApiResponse({
+    status: 200,
+    description: 'List of draft collections for current user',
+  })
   async getMyDrafts(@Req() req: any) {
     return this.collectionsService.getMyDraftCollections(req.user.id);
   }
@@ -539,7 +543,7 @@ export class CollectionsController {
   // Likes summary for a collection (collection likes + media likes)
   @Get(':id/likes/summary')
   @ApiOperation({ summary: 'Get likes summary for a collection' })
-  async getLikesSummary(@Param('id') collectionId: string, @Req() req?: any) {
+  async getLikesSummary(@Param('id') collectionId: string) {
     return this.collectionsService.getLikesSummary(collectionId);
   }
 
@@ -682,12 +686,26 @@ export class CollectionsController {
     @Query('from') from?: string,
     @Query('to') to?: string,
   ) {
-    return this.collectionsService.getPrivateViewsMetrics(collectionId, from, to);
+    return this.collectionsService.getPrivateViewsMetrics(
+      collectionId,
+      from,
+      to,
+    );
+  }
+
+  // ===================== Update collection meta (price/tags/discount) =====================
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Patch(':id')
+  @ApiOperation({ summary: 'Update collection fields (owner only)' })
+  async updateCollection(
+    @Param('id') collectionId: string,
+    @Req() req: any,
+    @Body() body: UpdateCollectionDto,
+  ) {
+    return this.collectionsService.updateCollection(
+      collectionId,
+      req.user.id,
+      body,
+    );
   }
 }
-
-
-
-
-
-

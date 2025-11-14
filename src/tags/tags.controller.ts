@@ -8,7 +8,9 @@ export class TagsController {
   constructor(private readonly tags: TagsService) {}
 
   @Get()
-  @ApiOperation({ summary: 'List popular tags aggregated from collections and brands' })
+  @ApiOperation({
+    summary: 'List popular tags aggregated from collections and brands',
+  })
   async list(@Query('limit') limit?: string) {
     const lim = limit ? parseInt(limit, 10) : 50;
     const popular = await this.tags.getPopularTags(lim);

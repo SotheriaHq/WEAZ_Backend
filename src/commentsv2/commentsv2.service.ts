@@ -3,7 +3,6 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
-  Logger,
 } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { v4 as uuidv4 } from 'uuid';
@@ -12,7 +11,11 @@ import type { CommentV2 as PrismaCommentV2 } from '@prisma/client';
 import { EventsGateway } from 'src/realtime/events.gateway';
 import { NotificationsService } from 'src/notifications/notifications.service';
 import { CreateCommentV2Dto, ListQueryDto } from './dto';
-import { NotificationType, CollectionVisibility, AccessState } from '@prisma/client';
+import {
+  NotificationType,
+  CollectionVisibility,
+  AccessState,
+} from '@prisma/client';
 
 function escapeHtml(input: string): string {
   return input
@@ -41,7 +44,9 @@ export class CommentsV2Service {
     if (requesterId && requesterId === c.ownerId) return true;
     if (requesterId) {
       const access = await this.prisma.collectionAccess.findUnique({
-        where: { collectionId_viewerId: { collectionId, viewerId: requesterId } },
+        where: {
+          collectionId_viewerId: { collectionId, viewerId: requesterId },
+        },
         select: { state: true },
       });
       return access?.state === AccessState.APPROVED;
@@ -93,7 +98,7 @@ export class CommentsV2Service {
     userId: string,
     dto: CreateCommentV2Dto,
   ) {
-    const { ownerId } = await this.assertTargetExists(targetType, targetId);
+    await this.assertTargetExists(targetType, targetId);
     if (targetType === 'COLLECTION') {
       const ok = await this.canViewCollection(targetId, userId);
       if (!ok) throw new NotFoundException('Collection not found');
@@ -179,27 +184,27 @@ export class CommentsV2Service {
     const room = `${targetType}:${targetId}`;
     try {
       this.events.server?.to(room).emit('comment.created', {
-      targetType,
-      targetId,
-      commentId: created.id,
-      userId,
-      at: Date.now(),
-      comment: {
-        id: created.id,
         targetType,
         targetId,
-        user: created.user,
-        userId: created.userId,
-        parentId: created.parentId,
-        depth: created.depth,
-        contentSanitized: created.contentSanitized,
-        likeCount: 0,
-        replyCount: 0,
-        createdAt: created.createdAt,
-        deletedAt: null,
-        isLikedByMe: false,
-        children: [],
-      },
+        commentId: created.id,
+        userId,
+        at: Date.now(),
+        comment: {
+          id: created.id,
+          targetType,
+          targetId,
+          user: created.user,
+          userId: created.userId,
+          parentId: created.parentId,
+          depth: created.depth,
+          contentSanitized: created.contentSanitized,
+          likeCount: 0,
+          replyCount: 0,
+          createdAt: created.createdAt,
+          deletedAt: null,
+          isLikedByMe: false,
+          children: [],
+        },
       });
     } catch (e) {
       // eslint-disable-next-line no-console
@@ -508,9 +513,13 @@ export class CommentsV2Service {
 
     const room = `${c.targetType}:${c.targetId}`;
     try {
-      this.events.server
-        ?.to(room)
-        .emit('comment.deleted', { commentId, at: Date.now(), targetType: c.targetType, targetId: c.targetId, deleted: true });
+      this.events.server?.to(room).emit('comment.deleted', {
+        commentId,
+        at: Date.now(),
+        targetType: c.targetType,
+        targetId: c.targetId,
+        deleted: true,
+      });
     } catch (e) {
       // eslint-disable-next-line no-console
       console.warn('Failed to emit comment.deleted', e);
@@ -525,6 +534,99 @@ export class CommentsV2Service {
     if (!c) throw new NotFoundException('Comment not found');
     return { likeCount: c.likeCount, replyCount: c.replyCount };
   }
+
+  // Unified comment list for a collection: includes comments made on the collection
+  // and comments made on any media belonging to that collection. Top-level only with last 2 replies.
+  async listUnifiedForCollection(
+    collectionId: string,
+    requesterId: string | undefined,
+    q: ListQueryDto,
+  ) {
+    const ok = await this.canViewCollection(collectionId, requesterId);
+    if (!ok) throw new NotFoundException('Collection not found');
+
+    // Gather media ids once
+    const medias = await this.prisma.collectionMedia.findMany({
+      where: { collectionId },
+      select: { id: true },
+    });
+    const mediaIds = medias.map((m) => m.id);
+
+    const limit = Math.min(Math.max(q.limit ?? 20, 1), 40);
+    const cursorDate = q.cursor ? new Date(q.cursor) : undefined;
+
+    const where: any = {
+      OR: [
+        { targetType: 'COLLECTION', targetId: collectionId },
+        mediaIds.length
+          ? { targetType: 'COLLECTION_MEDIA', targetId: { in: mediaIds } }
+          : undefined,
+      ].filter(Boolean),
+      depth: 0,
+      deletedAt: null,
+      ...(cursorDate ? { createdAt: { lt: cursorDate } } : {}),
+    };
+
+    const rows = await this.prisma.commentV2.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+      take: limit + 1,
+      include: {
+        user: {
+          select: {
+            id: true,
+            username: true,
+            firstName: true,
+            lastName: true,
+            profileImage: true,
+          },
+        },
+        children: {
+          where: { deletedAt: null },
+          orderBy: { createdAt: 'desc' },
+          take: 2,
+          include: {
+            user: {
+              select: {
+                id: true,
+                username: true,
+                firstName: true,
+                lastName: true,
+                profileImage: true,
+              },
+            },
+          },
+        },
+      },
+    });
+
+    const hasNextPage = rows.length > limit;
+    const data = hasNextPage ? rows.slice(0, -1) : rows;
+
+    // Like state for visible comments
+    const ids = data.flatMap((c) => [c.id, ...c.children.map((r) => r.id)]);
+    let likedSet = new Set<string>();
+    if (requesterId && ids.length) {
+      const liked = await this.prisma.commentV2Like.findMany({
+        where: { userId: requesterId, commentId: { in: ids } },
+        select: { commentId: true },
+      });
+      likedSet = new Set(liked.map((l) => l.commentId));
+    }
+
+    return {
+      items: data.map((c) => ({
+        ...c,
+        isLikedByMe: requesterId ? likedSet.has(c.id) : false,
+        children: c.children.map((r) => ({
+          ...r,
+          isLikedByMe: requesterId ? likedSet.has(r.id) : false,
+        })),
+      })),
+      hasNextPage,
+      endCursor: data.length
+        ? data[data.length - 1].createdAt.toISOString()
+        : null,
+    };
+  }
 }
-
-

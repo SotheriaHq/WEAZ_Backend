@@ -9,7 +9,11 @@ import { CollectionsModule } from '../collections/collections.module';
 
 @Module({
   imports: [forwardRef(() => CollectionsModule)],
-  controllers: [CategoriesAdminController, CategorySuggestionsController, CategorySuggestionsAdminController],
+  controllers: [
+    CategoriesAdminController,
+    CategorySuggestionsController,
+    CategorySuggestionsAdminController,
+  ],
   providers: [CategoriesService, PrismaService, CategorySuggestionsService],
   exports: [CategoriesService, CategorySuggestionsService],
 })

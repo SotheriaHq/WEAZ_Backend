@@ -22,7 +22,9 @@ export class EventsGateway {
    */
   private isValidUuid(id?: string): boolean {
     if (!id) return false;
-    return /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(id);
+    return /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(
+      id,
+    );
   }
 
   private async canViewCollection(collectionId: string, userId?: string) {
@@ -46,7 +48,9 @@ export class EventsGateway {
       return false;
     } catch (err: any) {
       // Suppress noisy P2023 errors; treat as not viewable.
-      this.logger.debug(`canViewCollection failed for id='${collectionId}': ${err?.code ?? err}`);
+      this.logger.debug(
+        `canViewCollection failed for id='${collectionId}': ${err?.code ?? err}`,
+      );
       return false;
     }
   }
@@ -79,7 +83,8 @@ export class EventsGateway {
         }
         const ok = await this.canViewCollection(id, userId);
         if (!ok) return client.emit('join.denied', { room });
-        client.join(room); client.emit('joined', { room });
+        client.join(room);
+        client.emit('joined', { room });
         return;
       }
       if (type === 'COLLECTION_MEDIA') {
@@ -87,14 +92,19 @@ export class EventsGateway {
           client.emit('join.denied', { room });
           return;
         }
-        const media = await this.prisma.collectionMedia.findUnique({ where: { id }, select: { collectionId: true } }).catch((e) => {
-          this.logger.debug(`Lookup media failed id='${id}': ${e?.code ?? e}`);
-          return null;
-        });
+        const media = await this.prisma.collectionMedia
+          .findUnique({ where: { id }, select: { collectionId: true } })
+          .catch((e) => {
+            this.logger.debug(
+              `Lookup media failed id='${id}': ${e?.code ?? e}`,
+            );
+            return null;
+          });
         if (!media) return client.emit('join.denied', { room });
         const ok = await this.canViewCollection(media.collectionId, userId);
         if (!ok) return client.emit('join.denied', { room });
-        client.join(room); client.emit('joined', { room });
+        client.join(room);
+        client.emit('joined', { room });
         return;
       }
       // Default: join (no validation needed)

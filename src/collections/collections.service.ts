@@ -25,6 +25,7 @@ import { HelperService } from './helper/Helper.service';
 import { UploadService } from 'src/upload/upload.service';
 import * as crypto from 'crypto';
 import { sanitizeTags } from 'src/common/utils/tag-validator';
+import { UpdateCollectionDto } from './dto/update-collection.dto';
 
 @Injectable()
 export class CollectionsService {
@@ -49,15 +50,15 @@ export class CollectionsService {
     if (requesterId && requesterId === c.ownerId) return true;
     if (requesterId) {
       const access = await this.prisma.collectionAccess.findUnique({
-        where: { collectionId_viewerId: { collectionId, viewerId: requesterId } },
+        where: {
+          collectionId_viewerId: { collectionId, viewerId: requesterId },
+        },
         select: { state: true },
       });
       return access?.state === 'APPROVED';
     }
     return false;
   }
-
-  
 
   private async canViewMedia(mediaId: string, requesterId?: string) {
     const m = await this.prisma.collectionMedia.findUnique({
@@ -74,8 +75,10 @@ export class CollectionsService {
       where: { id: collectionId },
       select: { id: true, ownerId: true, status: true, visibility: true },
     });
-    if (!c || c.status !== 'PUBLISHED') throw new NotFoundException('Collection not found');
-    if (c.visibility === CollectionVisibility.PUBLIC) return { state: 'APPROVED' };
+    if (!c || c.status !== 'PUBLISHED')
+      throw new NotFoundException('Collection not found');
+    if (c.visibility === CollectionVisibility.PUBLIC)
+      return { state: 'APPROVED' };
     if (c.ownerId === requesterId) return { state: 'APPROVED' };
     const now = new Date();
     const existing = await this.prisma.collectionAccess.findUnique({
@@ -110,40 +113,69 @@ export class CollectionsService {
   }
 
   private async assertOwner(collectionId: string, ownerId: string) {
-    const c = await this.prisma.collection.findUnique({ where: { id: collectionId }, select: { ownerId: true } });
+    const c = await this.prisma.collection.findUnique({
+      where: { id: collectionId },
+      select: { ownerId: true },
+    });
     if (!c) throw new NotFoundException('Collection not found');
     if (c.ownerId !== ownerId) throw new ForbiddenException('Not owner');
   }
 
-  async listAccessRequests(collectionId: string, ownerId: string, limit = 20, cursor?: string) {
+  async listAccessRequests(
+    collectionId: string,
+    ownerId: string,
+    limit = 20,
+    cursor?: string,
+  ) {
     await this.assertOwner(collectionId, ownerId);
     const rows = await this.prisma.collectionAccess.findMany({
       where: { collectionId, state: 'PENDING' },
-      include: { viewer: { select: { id: true, username: true, profileImage: true } } },
+      include: {
+        viewer: { select: { id: true, username: true, profileImage: true } },
+      },
       orderBy: { createdAt: 'desc' },
       take: limit + 1,
       ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
     } as any);
     const hasNext = rows.length > limit;
     const data = hasNext ? rows.slice(0, -1) : rows;
-    return { items: data, hasNextPage: hasNext, endCursor: data.length ? data[data.length - 1].id : null };
+    return {
+      items: data,
+      hasNextPage: hasNext,
+      endCursor: data.length ? data[data.length - 1].id : null,
+    };
   }
 
-  async listApprovedViewers(collectionId: string, ownerId: string, limit = 20, cursor?: string) {
+  async listApprovedViewers(
+    collectionId: string,
+    ownerId: string,
+    limit = 20,
+    cursor?: string,
+  ) {
     await this.assertOwner(collectionId, ownerId);
     const rows = await this.prisma.collectionAccess.findMany({
       where: { collectionId, state: 'APPROVED' },
-      include: { viewer: { select: { id: true, username: true, profileImage: true } } },
+      include: {
+        viewer: { select: { id: true, username: true, profileImage: true } },
+      },
       orderBy: { createdAt: 'desc' },
       take: limit + 1,
       ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
     } as any);
     const hasNext = rows.length > limit;
     const data = hasNext ? rows.slice(0, -1) : rows;
-    return { items: data, hasNextPage: hasNext, endCursor: data.length ? data[data.length - 1].id : null };
+    return {
+      items: data,
+      hasNextPage: hasNext,
+      endCursor: data.length ? data[data.length - 1].id : null,
+    };
   }
 
-  async approveAccessBulk(collectionId: string, ownerId: string, userIds: string[]) {
+  async approveAccessBulk(
+    collectionId: string,
+    ownerId: string,
+    userIds: string[],
+  ) {
     await this.assertOwner(collectionId, ownerId);
     const now = new Date();
     await this.prisma.$transaction(
@@ -151,7 +183,14 @@ export class CollectionsService {
         this.prisma.collectionAccess.upsert({
           where: { collectionId_viewerId: { collectionId, viewerId: uid } },
           update: { state: 'APPROVED', grantedBy: ownerId, updatedAt: now },
-          create: { id: uuidv4(), collectionId, viewerId: uid, state: 'APPROVED', grantedBy: ownerId, createdAt: now },
+          create: {
+            id: uuidv4(),
+            collectionId,
+            viewerId: uid,
+            state: 'APPROVED',
+            grantedBy: ownerId,
+            createdAt: now,
+          },
         } as any),
       ),
     );
@@ -162,12 +201,23 @@ export class CollectionsService {
     return { success: true };
   }
 
-  async updateAccessState(collectionId: string, ownerId: string, userId: string, state: 'APPROVED' | 'REVOKED') {
+  async updateAccessState(
+    collectionId: string,
+    ownerId: string,
+    userId: string,
+    state: 'APPROVED' | 'REVOKED',
+  ) {
     await this.assertOwner(collectionId, ownerId);
     await this.prisma.collectionAccess.upsert({
       where: { collectionId_viewerId: { collectionId, viewerId: userId } },
       update: { state, grantedBy: ownerId, updatedAt: new Date() },
-      create: { id: uuidv4(), collectionId, viewerId: userId, state, grantedBy: ownerId },
+      create: {
+        id: uuidv4(),
+        collectionId,
+        viewerId: userId,
+        state,
+        grantedBy: ownerId,
+      },
     } as any);
     console.log('metrics.access_update_state', { collectionId, userId, state });
     return { success: true };
@@ -210,7 +260,9 @@ export class CollectionsService {
 
     if (dto.categorySuggestionId) {
       // User selected a category suggestion
-      const suggestion = await (this.prisma as any).collectionCategorySuggestion.findUnique({
+      const suggestion = await (
+        this.prisma as any
+      ).collectionCategorySuggestion.findUnique({
         where: { id: dto.categorySuggestionId },
       });
 
@@ -274,9 +326,15 @@ export class CollectionsService {
         visibility: dto.visibility ?? CollectionVisibility.PUBLIC,
         type: dto.type ?? CollectionType.EVERYBODY,
         // PHASE 2: Set category fields based on selection
-        ...(finalCategoryId ? { category: { connect: { id: finalCategoryId } } } : {}),
+        ...(finalCategoryId
+          ? { category: { connect: { id: finalCategoryId } } }
+          : {}),
         ...(pendingCategorySuggestionId
-          ? { pendingCategorySuggestion: { connect: { id: pendingCategorySuggestionId } } }
+          ? {
+              pendingCategorySuggestion: {
+                connect: { id: pendingCategorySuggestionId },
+              },
+            }
           : {}),
         draftReason,
         pendingCategoryName,
@@ -323,11 +381,12 @@ export class CollectionsService {
         isDraft: collectionStatus === 'DRAFT',
         reason: draftReason,
         pendingCategoryName,
-        message: draftReason === 'AWAITING_CATEGORY_APPROVAL'
-          ? `Your collection will be published automatically when the "${pendingCategoryName}" category is approved by an admin.`
-          : draftReason === 'USER_SAVED'
-          ? 'Your collection is saved as a draft. You can publish it later by selecting a category.'
-          : undefined,
+        message:
+          draftReason === 'AWAITING_CATEGORY_APPROVAL'
+            ? `Your collection will be published automatically when the "${pendingCategoryName}" category is approved by an admin.`
+            : draftReason === 'USER_SAVED'
+              ? 'Your collection is saved as a draft. You can publish it later by selecting a category.'
+              : undefined,
       },
     };
   }
@@ -417,14 +476,21 @@ export class CollectionsService {
       const mediaIds = data.map((m) => m.id);
       if (mediaIds.length) {
         const liked = await this.prisma.collectionMediaReaction.findMany({
-          where: { userId: requesterId, type: 'LIKE', collectionMediaId: { in: mediaIds } },
+          where: {
+            userId: requesterId,
+            type: 'LIKE',
+            collectionMediaId: { in: mediaIds },
+          },
           select: { collectionMediaId: true },
         });
         const set = new Set(liked.map((r) => r.collectionMediaId));
-        isLikedMap = mediaIds.reduce((acc, id) => {
-          acc[id] = set.has(id);
-          return acc;
-        }, {} as Record<string, boolean>);
+        isLikedMap = mediaIds.reduce(
+          (acc, id) => {
+            acc[id] = set.has(id);
+            return acc;
+          },
+          {} as Record<string, boolean>,
+        );
       }
     }
 
@@ -448,49 +514,50 @@ export class CollectionsService {
     );
 
     const items = data.map((media) => {
-        const { collection } = media;
-        const owner = collection.owner;
-        const file = media.file;
+      const { collection } = media;
+      const owner = collection.owner;
+      const file = media.file;
 
-        // Get signed URL for media file
-        const mediaSignedUrl = media.fileUploadId
-          ? (signedUrlMap.get(media.fileUploadId) ?? null)
-          : null;
+      // Get signed URL for media file
+      const mediaSignedUrl = media.fileUploadId
+        ? (signedUrlMap.get(media.fileUploadId) ?? null)
+        : null;
 
-        // Get signed URL for brand logo
-        const logoFileId = owner.profileImageId ?? owner.profileImageFile?.id;
-        const logoSignedUrl = logoFileId
-          ? (signedUrlMap.get(logoFileId) ?? null)
-          : null;
+      // Get signed URL for brand logo
+      const logoFileId = owner.profileImageId ?? owner.profileImageFile?.id;
+      const logoSignedUrl = logoFileId
+        ? (signedUrlMap.get(logoFileId) ?? null)
+        : null;
 
-        const base = {
-          id: media.id,
-          collectionId: media.collectionId,
-          mediaType: media.mediaType,
-          mediaFileId: media.fileUploadId,
-          mediaUrl: mediaSignedUrl, // Now contains actual signed URL
-          createdAt: file?.createdAt ?? collection.createdAt,
-          collectionTitle: collection.title ?? '',
-          collectionDescription: collection.description ?? '',
-          minPrice: collection.minPrice,
-          maxPrice: collection.maxPrice,
-          likesCount: media.likesCount,
-          commentsCount: media.commentsCount,
-          patchesCount: collection.patchesCount,
-          tags: collection.tags ?? [],
-          brandId: owner.id,
-          brandName: owner.brandFullName ?? owner.username ?? '',
-          username: owner.username ?? '',
-          brandLogo: logoSignedUrl ?? owner.profileImage ?? null, // Signed URL or fallback
-          brandLogoFileId: logoFileId ?? null,
-          isLiked: requesterId ? !!isLikedMap[media.id] : false, // Add like status for requester
-        };
-        // Optionally include combinedCommentsCount for frontend normalization
-        if (options?.countsPolicy === 'combined') {
-          (base as any).combinedCommentsCount = (collection.commentsCount ?? 0) + (media.commentsCount ?? 0);
-        }
-        return base;
-      })
+      const base = {
+        id: media.id,
+        collectionId: media.collectionId,
+        mediaType: media.mediaType,
+        mediaFileId: media.fileUploadId,
+        mediaUrl: mediaSignedUrl, // Now contains actual signed URL
+        createdAt: file?.createdAt ?? collection.createdAt,
+        collectionTitle: collection.title ?? '',
+        collectionDescription: collection.description ?? '',
+        minPrice: collection.minPrice,
+        maxPrice: collection.maxPrice,
+        likesCount: media.likesCount,
+        commentsCount: media.commentsCount,
+        patchesCount: collection.patchesCount,
+        tags: collection.tags ?? [],
+        brandId: owner.id,
+        brandName: owner.brandFullName ?? owner.username ?? '',
+        username: owner.username ?? '',
+        brandLogo: logoSignedUrl ?? owner.profileImage ?? null, // Signed URL or fallback
+        brandLogoFileId: logoFileId ?? null,
+        isLiked: requesterId ? !!isLikedMap[media.id] : false, // Add like status for requester
+      };
+      // Optionally include combinedCommentsCount for frontend normalization
+      if (options?.countsPolicy === 'combined') {
+        (base as any).combinedCommentsCount =
+          (collection.commentsCount ?? 0) + (media.commentsCount ?? 0);
+      }
+      return base;
+    });
     return {
       items,
       hasNextPage,
@@ -678,13 +745,14 @@ export class CollectionsService {
       .map((c) => c.medias[0]?.fileUploadId)
       .filter((id): id is string => !!id);
 
-    const signedUrlMap = await this.uploadService.getBatchPublicSignedUrls(fileIds);
+    const signedUrlMap =
+      await this.uploadService.getBatchPublicSignedUrls(fileIds);
 
     return {
       items: items.map((c) => {
         const firstMedia = c.medias[0];
         const coverImage = firstMedia?.fileUploadId
-          ? signedUrlMap.get(firstMedia.fileUploadId) ?? null
+          ? (signedUrlMap.get(firstMedia.fileUploadId) ?? null)
           : null;
 
         return {
@@ -769,19 +837,29 @@ export class CollectionsService {
       const ids = data.map((c) => c.id);
       if (ids.length) {
         const liked = await this.prisma.collectionReaction.findMany({
-          where: { userId: requesterId, type: 'LIKE', collectionId: { in: ids } },
+          where: {
+            userId: requesterId,
+            type: 'LIKE',
+            collectionId: { in: ids },
+          },
           select: { collectionId: true },
         });
         const set = new Set(liked.map((r) => r.collectionId));
-        isLikedMap = ids.reduce((acc, id) => {
-          acc[id] = set.has(id);
-          return acc;
-        }, {} as Record<string, boolean>);
+        isLikedMap = ids.reduce(
+          (acc, id) => {
+            acc[id] = set.has(id);
+            return acc;
+          },
+          {} as Record<string, boolean>,
+        );
       }
     }
 
     return {
-      items: data.map((c) => ({ ...c, isLiked: requesterId ? !!isLikedMap[c.id] : false })),
+      items: data.map((c) => ({
+        ...c,
+        isLiked: requesterId ? !!isLikedMap[c.id] : false,
+      })),
       hasNextPage: hasNext,
       endCursor: data.length ? data[data.length - 1].id : null,
     };
@@ -918,7 +996,10 @@ export class CollectionsService {
     requesterId?: string;
   }) {
     const items = await this.prisma.collection.findMany({
-      where: { status: 'PUBLISHED', visibility: CollectionVisibility.PUBLIC } as any,
+      where: {
+        status: 'PUBLISHED',
+        visibility: CollectionVisibility.PUBLIC,
+      } as any,
       orderBy: [
         { patchesCount: 'desc' }, // Show most patched first
         { createdAt: 'desc' },
@@ -973,19 +1054,29 @@ export class CollectionsService {
       const ids = data.map((c) => c.id);
       if (ids.length) {
         const liked = await this.prisma.collectionReaction.findMany({
-          where: { userId: requesterId, type: 'LIKE', collectionId: { in: ids } },
+          where: {
+            userId: requesterId,
+            type: 'LIKE',
+            collectionId: { in: ids },
+          },
           select: { collectionId: true },
         });
         const set = new Set(liked.map((r) => r.collectionId));
-        isLikedMap = ids.reduce((acc, id) => {
-          acc[id] = set.has(id);
-          return acc;
-        }, {} as Record<string, boolean>);
+        isLikedMap = ids.reduce(
+          (acc, id) => {
+            acc[id] = set.has(id);
+            return acc;
+          },
+          {} as Record<string, boolean>,
+        );
       }
     }
 
     return {
-      items: data.map((c) => ({ ...c, isLiked: requesterId ? !!isLikedMap[c.id] : false })),
+      items: data.map((c) => ({
+        ...c,
+        isLiked: requesterId ? !!isLikedMap[c.id] : false,
+      })),
       hasNextPage: hasNext,
       endCursor: data.length ? data[data.length - 1].id : null,
     };
@@ -1533,7 +1624,7 @@ export class CollectionsService {
   }
 
   // ===================== PHASE 2: Auto-Publishing for Approved Categories =====================
-  
+
   /**
    * Automatically publish all draft collections waiting for a specific category suggestion
    * Called when admin approves a category suggestion
@@ -1541,7 +1632,12 @@ export class CollectionsService {
   async autoPublishPendingCollections(
     suggestionId: string,
     approvedCategoryId: string,
-  ): Promise<{ published: number; skipped: number; failed: number; errors: string[] }> {
+  ): Promise<{
+    published: number;
+    skipped: number;
+    failed: number;
+    errors: string[];
+  }> {
     const results = {
       published: 0,
       skipped: 0,
@@ -1561,16 +1657,20 @@ export class CollectionsService {
       },
     });
 
-    console.log(`Found ${pendingCollections.length} collections waiting for suggestion ${suggestionId}`);
+    console.log(
+      `Found ${pendingCollections.length} collections waiting for suggestion ${suggestionId}`,
+    );
 
     // Process each collection independently
     for (const collection of pendingCollections) {
       try {
         // Verify collection has uploaded media files
         if (!collection.medias || collection.medias.length === 0) {
-          console.log(`Skipping collection ${collection.id} - no media uploaded`);
+          console.log(
+            `Skipping collection ${collection.id} - no media uploaded`,
+          );
           results.skipped++;
-          
+
           // Notify user that upload is incomplete
           if (this.notifications) {
             await this.notifications.create(
@@ -1579,7 +1679,8 @@ export class CollectionsService {
               {
                 payload: {
                   collectionId: collection.id,
-                  message: 'Your category was approved, but your collection upload is incomplete. Please complete the upload to publish.',
+                  message:
+                    'Your category was approved, but your collection upload is incomplete. Please complete the upload to publish.',
                 },
               },
             );
@@ -1602,7 +1703,9 @@ export class CollectionsService {
         });
 
         results.published++;
-        console.log(`Published collection ${collection.id} for user ${collection.owner.username}`);
+        console.log(
+          `Published collection ${collection.id} for user ${collection.owner.username}`,
+        );
 
         // Send success notification
         if (this.notifications) {
@@ -1632,7 +1735,8 @@ export class CollectionsService {
             {
               payload: {
                 collectionId: collection.id,
-                message: 'There was an issue publishing your collection automatically. Please try publishing manually.',
+                message:
+                  'There was an issue publishing your collection automatically. Please try publishing manually.',
               },
             },
           );
@@ -1664,7 +1768,9 @@ export class CollectionsService {
       },
     });
 
-    console.log(`Found ${affectedCollections.length} collections affected by rejected suggestion ${suggestionId}`);
+    console.log(
+      `Found ${affectedCollections.length} collections affected by rejected suggestion ${suggestionId}`,
+    );
 
     for (const collection of affectedCollections) {
       try {
@@ -1712,7 +1818,11 @@ export class CollectionsService {
     return key;
   }
 
-  async createInviteLink(collectionId: string, ownerId: string, ttlSeconds = 86400) {
+  async createInviteLink(
+    collectionId: string,
+    ownerId: string,
+    ttlSeconds = 86400,
+  ) {
     await this.assertOwner(collectionId, ownerId);
     const payload = {
       cid: collectionId,
@@ -1721,7 +1831,7 @@ export class CollectionsService {
     } as any;
     const secret = this.getInviteSecret();
     const body = Buffer.from(JSON.stringify(payload)).toString('base64url');
-    const sig = (require('crypto') as typeof import('crypto'))
+    const sig = crypto
       .createHmac('sha256', secret)
       .update(body)
       .digest('base64url');
@@ -1734,7 +1844,7 @@ export class CollectionsService {
     const parts = token.split('.');
     if (parts.length !== 2) throw new BadRequestException('Invalid token');
     const [body, sig] = parts;
-    const expected = (require('crypto') as typeof import('crypto'))
+    const expected = crypto
       .createHmac('sha256', secret)
       .update(body)
       .digest('base64url');
@@ -1745,36 +1855,86 @@ export class CollectionsService {
     } catch {
       throw new BadRequestException('Invalid token');
     }
-    if (!payload?.cid || !payload?.exp) throw new BadRequestException('Invalid token');
-    if (Date.now() / 1000 > payload.exp) throw new BadRequestException('Token expired');
+    if (!payload?.cid || !payload?.exp)
+      throw new BadRequestException('Invalid token');
+    if (Date.now() / 1000 > payload.exp)
+      throw new BadRequestException('Token expired');
     const collectionId = String(payload.cid);
     await this.prisma.collectionAccess.upsert({
       where: { collectionId_viewerId: { collectionId, viewerId: userId } },
       update: { state: 'APPROVED', grantedBy: null, updatedAt: new Date() },
-      create: { id: uuidv4(), collectionId, viewerId: userId, state: 'APPROVED', grantedBy: null },
+      create: {
+        id: uuidv4(),
+        collectionId,
+        viewerId: userId,
+        state: 'APPROVED',
+        grantedBy: null,
+      },
     } as any);
     return { success: true };
   }
 
   // ===================== Metrics =====================
   async getAccessMetrics(collectionId: string, from?: string, to?: string) {
-    const fromDate = from ? new Date(from) : new Date(Date.now() - 30 * 86400000);
+    const fromDate = from
+      ? new Date(from)
+      : new Date(Date.now() - 30 * 86400000);
     const toDate = to ? new Date(to) : new Date();
     const [pending, approved, revoked] = await Promise.all([
-      this.prisma.collectionAccess.count({ where: { collectionId, state: 'PENDING', createdAt: { gte: fromDate, lte: toDate } } as any }),
-      this.prisma.collectionAccess.count({ where: { collectionId, state: 'APPROVED', updatedAt: { gte: fromDate, lte: toDate } } as any }),
-      this.prisma.collectionAccess.count({ where: { collectionId, state: 'REVOKED', updatedAt: { gte: fromDate, lte: toDate } } as any }),
+      this.prisma.collectionAccess.count({
+        where: {
+          collectionId,
+          state: 'PENDING',
+          createdAt: { gte: fromDate, lte: toDate },
+        } as any,
+      }),
+      this.prisma.collectionAccess.count({
+        where: {
+          collectionId,
+          state: 'APPROVED',
+          updatedAt: { gte: fromDate, lte: toDate },
+        } as any,
+      }),
+      this.prisma.collectionAccess.count({
+        where: {
+          collectionId,
+          state: 'REVOKED',
+          updatedAt: { gte: fromDate, lte: toDate },
+        } as any,
+      }),
     ]);
-    return { pending, approved, revoked, from: fromDate.toISOString(), to: toDate.toISOString() };
+    return {
+      pending,
+      approved,
+      revoked,
+      from: fromDate.toISOString(),
+      to: toDate.toISOString(),
+    };
   }
 
-  async getPrivateViewsMetrics(collectionId: string, from?: string, to?: string) {
-    const c = await this.prisma.collection.findUnique({ where: { id: collectionId }, select: { visibility: true } });
+  async getPrivateViewsMetrics(
+    collectionId: string,
+    from?: string,
+    to?: string,
+  ) {
+    const c = await this.prisma.collection.findUnique({
+      where: { id: collectionId },
+      select: { visibility: true },
+    });
     if (!c) throw new NotFoundException('Collection not found');
-    const fromDate = from ? new Date(from) : new Date(Date.now() - 30 * 86400000);
+    const fromDate = from
+      ? new Date(from)
+      : new Date(Date.now() - 30 * 86400000);
     const toDate = to ? new Date(to) : new Date();
-    const views = await this.prisma.view.count({ where: { collectionId, createdAt: { gte: fromDate, lte: toDate } } });
-    return { visibility: c.visibility, views, from: fromDate.toISOString(), to: toDate.toISOString() };
+    const views = await this.prisma.view.count({
+      where: { collectionId, createdAt: { gte: fromDate, lte: toDate } },
+    });
+    return {
+      visibility: c.visibility,
+      views,
+      from: fromDate.toISOString(),
+      to: toDate.toISOString(),
+    };
   }
 
   // ===================== Categories =====================
@@ -1782,7 +1942,13 @@ export class CollectionsService {
     const rows = await this.prisma.collectionCategory.findMany({
       where: { isActive: true },
       orderBy: [{ order: 'asc' }, { createdAt: 'asc' }],
-      select: { id: true, slug: true, name: true, description: true, order: true },
+      select: {
+        id: true,
+        slug: true,
+        name: true,
+        description: true,
+        order: true,
+      },
     });
     return rows.map((r) => ({
       id: r.id,
@@ -1792,13 +1958,50 @@ export class CollectionsService {
       order: r.order,
     }));
   }
+
+  // ===================== Update collection (owner only) =====================
+  async updateCollection(
+    collectionId: string,
+    ownerId: string,
+    body: UpdateCollectionDto,
+  ) {
+    await this.assertOwner(collectionId, ownerId);
+    const data: any = {};
+    if (typeof body.minPrice === 'number' || body.minPrice === null)
+      data.minPrice = body.minPrice as any;
+    if (typeof body.maxPrice === 'number' || body.maxPrice === null)
+      data.maxPrice = body.maxPrice as any;
+    if (typeof body.saleMinPrice === 'number' || body.saleMinPrice === null)
+      data.saleMinPrice = body.saleMinPrice as any;
+    if (typeof body.saleMaxPrice === 'number' || body.saleMaxPrice === null)
+      data.saleMaxPrice = body.saleMaxPrice as any;
+    if (typeof body.saleStartAt === 'string' || body.saleStartAt === null)
+      data.saleStartAt = body.saleStartAt ? new Date(body.saleStartAt) : null;
+    if (typeof body.saleEndAt === 'string' || body.saleEndAt === null)
+      data.saleEndAt = body.saleEndAt ? new Date(body.saleEndAt) : null;
+    if (Array.isArray(body.tags)) data.tags = sanitizeTags(body.tags);
+    if (typeof body.coverMediaId === 'string' || body.coverMediaId === null)
+      data.coverMediaId = body.coverMediaId || null;
+
+    const updated = await this.prisma.collection.update({
+      where: { id: collectionId },
+      data,
+      include: {
+        owner: {
+          select: {
+            id: true,
+            username: true,
+            brandFullName: true,
+            profileImage: true,
+          },
+        },
+        // coverMedia relation may not be generated yet until migration applied; comment out include safely
+        // coverMedia: { include: { file: true } },
+        _count: { select: { medias: true, views: true, comments: true } },
+      },
+    });
+    return updated;
+  }
 }
 
 export { CreateCollectionDto, FinalizeCollectionDto };
-
-
-
-
-
-
-

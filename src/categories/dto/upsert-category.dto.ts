@@ -1,4 +1,11 @@
-import { IsString, IsOptional, IsInt, Min, Max, Matches } from 'class-validator';
+import {
+  IsString,
+  IsOptional,
+  IsInt,
+  Min,
+  Max,
+  Matches,
+} from 'class-validator';
 
 export class UpsertCategoryDto {
   @IsString()

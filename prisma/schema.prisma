@@ -275,6 +275,8 @@ model Collection {
   type                         CollectionType                  @default(EVERYBODY)
   categoryId                   String?                         @db.Uuid
   category                     CollectionCategory?             @relation(fields: [categoryId], references: [id])
+  coverMediaId                 String?                         @db.Uuid
+  coverMedia                   CollectionMedia?                @relation("CollectionCoverMedia", fields: [coverMediaId], references: [id])
   // PHASE 1: Pending category support for draft collections
   pendingCategorySuggestionId  String?                         @db.Uuid
   pendingCategorySuggestion    CollectionCategorySuggestion?   @relation(fields: [pendingCategorySuggestionId], references: [id], onDelete: SetNull)
@@ -285,6 +287,11 @@ model Collection {
   maxPrice                     Float?
   isAvailableInStore           Boolean                         @default(false)
   tags                         String[]                        @default([])
+  // Optional sale/discount fields
+  saleMinPrice                 Float?
+  saleMaxPrice                 Float?
+  saleStartAt                  DateTime?
+  saleEndAt                    DateTime?
   createdAt                    DateTime                        @default(now())
   updatedAt                    DateTime                        @updatedAt
   likesCount                   Int                             @default(0)
@@ -406,6 +413,8 @@ model CollectionMedia {
   likesCount              Int                       @default(0)
   CollectionMediaReaction CollectionMediaReaction[]
   commentsCount           Int                       @default(0)
+  // inverse relation for cover usage
+  coverOf                Collection[]              @relation("CollectionCoverMedia")
 }
 
 model CollectionReaction {
