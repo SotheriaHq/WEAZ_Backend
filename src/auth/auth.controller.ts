@@ -100,7 +100,7 @@ export class AuthController {
     @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
   ) {
-    // console.log('try', res);
+ 
 
     return this.authService.CreateUser(dto, req, res);
   }
