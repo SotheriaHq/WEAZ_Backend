@@ -225,7 +225,7 @@ export class CollectionsService {
 
   /**
    * STEP 1: Create collection draft and return presigned URLs
-   * PHASE 2: Enhanced to handle pending category suggestions
+   * Simplified: category suggestions removed; categoryId is required and must be active.
    */
   async initializeCollection(userId: string, dto: CreateCollectionDto) {
     // Validate user is brand
@@ -250,65 +250,18 @@ export class CollectionsService {
       throw new BadRequestException('At least one descriptive tag is required');
     }
 
-    // PHASE 2: Handle category logic - can be existing category, pending suggestion, or neither
-    let finalCategoryId: string | undefined;
-    let pendingCategorySuggestionId: string | undefined;
-    let draftReason: string | undefined;
-    let pendingCategoryName: string | undefined;
-    let originalSuggestionId: string | undefined;
-    let collectionStatus: 'DRAFT' | 'PUBLISHED' = 'DRAFT';
-
-    if (dto.categorySuggestionId) {
-      // User selected a category suggestion
-      const suggestion = await (
-        this.prisma as any
-      ).collectionCategorySuggestion.findUnique({
-        where: { id: dto.categorySuggestionId },
-      });
-
-      if (!suggestion) {
-        throw new NotFoundException('Category suggestion not found');
-      }
-
-      if (suggestion.status === 'REJECTED') {
-        throw new BadRequestException(
-          `This category suggestion was rejected${suggestion.rejectionReason ? ': ' + suggestion.rejectionReason : ''}`,
-        );
-      }
-
-      if (suggestion.status === 'APPROVED') {
-        // Suggestion already approved - use the approved category
-        finalCategoryId = suggestion.approvedCategoryId;
-        collectionStatus = 'DRAFT'; // Still draft until files uploaded
-      } else {
-        // Suggestion is PENDING - save as draft waiting for approval
-        pendingCategorySuggestionId = dto.categorySuggestionId;
-        originalSuggestionId = dto.categorySuggestionId;
-        pendingCategoryName = suggestion.name;
-        draftReason = 'AWAITING_CATEGORY_APPROVAL';
-        collectionStatus = 'DRAFT';
-      }
-    } else if (dto.categoryId) {
-      // User selected an existing approved category
-      const category = await this.prisma.collectionCategory.findUnique({
-        where: { id: dto.categoryId },
-      });
-
-      if (!category) {
-        throw new NotFoundException('Category not found');
-      }
-
-      if (!category.isActive) {
-        throw new BadRequestException('This category is not active');
-      }
-
-      finalCategoryId = dto.categoryId;
-      collectionStatus = 'DRAFT'; // Still draft until files uploaded
-    } else {
-      // No category selected - save as draft
-      draftReason = 'USER_SAVED';
-      collectionStatus = 'DRAFT';
+    // Require a valid, active category
+    const category = await this.prisma.collectionCategory.findUnique({
+      where: { id: dto.categoryId },
+    });
+    if (!category) {
+      throw new NotFoundException('Category not found');
     }
+    if (!category.isActive) {
+      throw new BadRequestException('This category is not active');
+    }
+    const finalCategoryId = dto.categoryId;
+    const collectionStatus: 'DRAFT' | 'PUBLISHED' = 'DRAFT';
 
     // Create collection in DRAFT status
     const collectionId = uuidv4();
@@ -325,20 +278,8 @@ export class CollectionsService {
         status: collectionStatus,
         visibility: dto.visibility ?? CollectionVisibility.PUBLIC,
         type: dto.type ?? CollectionType.EVERYBODY,
-        // PHASE 2: Set category fields based on selection
-        ...(finalCategoryId
-          ? { category: { connect: { id: finalCategoryId } } }
-          : {}),
-        ...(pendingCategorySuggestionId
-          ? {
-              pendingCategorySuggestion: {
-                connect: { id: pendingCategorySuggestionId },
-              },
-            }
-          : {}),
-        draftReason,
-        pendingCategoryName,
-        originalSuggestionId,
+        // Set required category
+        category: { connect: { id: finalCategoryId } },
       },
     });
 
@@ -376,17 +317,9 @@ export class CollectionsService {
       uploads: uploadData,
       expiresIn: 600,
       tags: sanitizedTags,
-      // PHASE 2: Return draft status info for frontend
+      // Draft status (simplified)
       draftStatus: {
         isDraft: collectionStatus === 'DRAFT',
-        reason: draftReason,
-        pendingCategoryName,
-        message:
-          draftReason === 'AWAITING_CATEGORY_APPROVAL'
-            ? `Your collection will be published automatically when the "${pendingCategoryName}" category is approved by an admin.`
-            : draftReason === 'USER_SAVED'
-              ? 'Your collection is saved as a draft. You can publish it later by selecting a category.'
-              : undefined,
       },
     };
   }
