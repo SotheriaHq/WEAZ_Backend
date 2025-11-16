@@ -170,4 +170,62 @@ export class BrandsController {
       Array.isArray(body?.userIds) ? body.userIds : [],
     );
   }
+
+  // ===================== Private Access (User-scoped) =====================
+  
+  @UseGuards(JwtAuthGuard)
+  @Get('users/me/private-access/requests')
+  async listMyAccessRequests(
+    @Req() req: any,
+    @Query('status') status?: 'pending' | 'approved' | 'rejected',
+    @Query('page') page?: string,
+    @Query('pageSize') pageSize?: string,
+  ) {
+    const userId = req.user?.id;
+    const take = pageSize ? parseInt(pageSize, 10) : 20;
+    const pageNum = page ? parseInt(page, 10) : 1;
+    return this.collectionsService.listUserAccessRequests(
+      userId,
+      status,
+      take,
+      pageNum,
+    );
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Get('users/me/private-access/granted')
+  async listMyGrantedAccesses(
+    @Req() req: any,
+    @Query('page') page?: string,
+    @Query('pageSize') pageSize?: string,
+  ) {
+    const userId = req.user?.id;
+    const take = pageSize ? parseInt(pageSize, 10) : 20;
+    const pageNum = page ? parseInt(page, 10) : 1;
+    return this.collectionsService.listUserGrantedAccesses(
+      userId,
+      take,
+      pageNum,
+    );
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Patch('users/me/private-access/requests/:requestId/cancel')
+  async cancelMyAccessRequest(
+    @Param('requestId') requestId: string,
+    @Req() req: any,
+  ) {
+    const userId = req.user?.id;
+    return this.collectionsService.cancelAccessRequest(requestId, userId);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Patch('users/me/private-access/granted/:accessId/revoke')
+  async revokeMyAccess(
+    @Param('accessId') accessId: string,
+    @Req() req: any,
+  ) {
+    const userId = req.user?.id;
+    return this.collectionsService.userRevokeOwnAccess(accessId, userId);
+  }
 }

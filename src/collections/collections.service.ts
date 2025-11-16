@@ -43,7 +43,14 @@ export class CollectionsService {
   ): Promise<boolean> {
     const c = await this.prisma.collection.findUnique({
       where: { id: collectionId },
-      select: { ownerId: true, status: true, visibility: true },
+      select: { 
+        ownerId: true, 
+        status: true, 
+        visibility: true,
+        isAvailableInStore: true,
+        saleMinPrice: true,
+        saleMaxPrice: true,
+      },
     });
     // Not found
     if (!c) return false;
@@ -57,6 +64,12 @@ export class CollectionsService {
     // Public collections are always viewable
     if (c.visibility === CollectionVisibility.PUBLIC) return true;
 
+    // Private collections that are available in store (market) are viewable by everyone
+    if (c.visibility === CollectionVisibility.PRIVATE && c.isAvailableInStore) {
+      return true;
+    }
+
+    // For other private collections, check access approval
     if (requesterId) {
       const access = await this.prisma.collectionAccess.findUnique({
         where: {
@@ -254,7 +267,20 @@ export class CollectionsService {
       where,
       include: {
         viewer: { select: { id: true, username: true, profileImage: true } },
-        collection: { select: { id: true, title: true } },
+        collection: { 
+          select: { 
+            id: true, 
+            title: true,
+            medias: {
+              select: {
+                file: { select: { s3Url: true } },
+              },
+              take: 1,
+              orderBy: { orderIndex: 'asc' },
+            },
+            _count: { select: { medias: true } },
+          } 
+        },
       },
       take: pageNum ? take : take + 1,
       ...(pageNum ? { skip: (pageNum - 1) * take } : {}),
@@ -453,6 +479,231 @@ export class CollectionsService {
     } catch {}
     console.log('metrics.access_reject', { collectionId, userId });
     return { success: true };
+  }
+
+  // ===================== User-scoped Private Access Management =====================
+
+  /**
+   * List all access requests sent by the user
+   */
+  async listUserAccessRequests(
+    userId: string,
+    status?: 'pending' | 'approved' | 'rejected',
+    take = 20,
+    page = 1,
+  ) {
+    const stateMap: Record<string, any> = {
+      pending: 'PENDING',
+      approved: 'APPROVED',
+      rejected: 'REVOKED',
+    };
+    
+    const where: Prisma.CollectionAccessWhereInput = {
+      viewerId: userId,
+      ...(status ? { state: stateMap[status] } : {}),
+    };
+
+    const totalCount = await this.prisma.collectionAccess.count({ where });
+    const skip = (page - 1) * take;
+
+    const rows = await this.prisma.collectionAccess.findMany({
+      where,
+      include: {
+        collection: {
+          select: {
+            id: true,
+            title: true,
+            ownerId: true,
+            owner: {
+              select: {
+                id: true,
+                username: true,
+                brandFullName: true,
+                profileImage: true,
+              },
+            },
+            medias: {
+              select: {
+                file: { select: { s3Url: true } },
+              },
+              take: 1,
+              orderBy: { orderIndex: 'asc' },
+            },
+            _count: { select: { medias: true } },
+          },
+        },
+      },
+      skip,
+      take,
+      orderBy: { createdAt: 'desc' },
+    });
+
+    const totalPages = Math.ceil(totalCount / take);
+
+    return {
+      items: rows.map(r => ({
+        id: r.id,
+        collectionId: r.collectionId,
+        title: r.collection?.title || 'Untitled',
+        brand: {
+          id: r.collection?.owner?.id,
+          name: r.collection?.owner?.brandFullName || r.collection?.owner?.username,
+          profileImage: r.collection?.owner?.profileImage,
+        },
+        coverUrl: r.collection?.medias[0]?.file?.s3Url || null,
+        itemCount: r.collection?._count?.medias || 0,
+        state: r.state,
+        requestedAt: r.createdAt,
+        updatedAt: r.updatedAt,
+      })),
+      totalCount,
+      page,
+      pageSize: take,
+      totalPages,
+      hasNextPage: page < totalPages,
+    };
+  }
+
+  /**
+   * List all granted accesses for the user (approved collections they can view)
+   */
+  async listUserGrantedAccesses(
+    userId: string,
+    take = 20,
+    page = 1,
+  ) {
+    const where: Prisma.CollectionAccessWhereInput = {
+      viewerId: userId,
+      state: 'APPROVED',
+    };
+
+    const totalCount = await this.prisma.collectionAccess.count({ where });
+    const skip = (page - 1) * take;
+
+    const rows = await this.prisma.collectionAccess.findMany({
+      where,
+      include: {
+        collection: {
+          select: {
+            id: true,
+            title: true,
+            ownerId: true,
+            owner: {
+              select: {
+                id: true,
+                username: true,
+                brandFullName: true,
+                profileImage: true,
+              },
+            },
+            medias: {
+              select: {
+                file: { select: { s3Url: true } },
+              },
+              take: 1,
+              orderBy: { orderIndex: 'asc' },
+            },
+            _count: { select: { medias: true } },
+          },
+        },
+      },
+      skip,
+      take,
+      orderBy: { updatedAt: 'desc' },
+    });
+
+    const totalPages = Math.ceil(totalCount / take);
+
+    return {
+      items: rows.map(r => ({
+        id: r.id,
+        collectionId: r.collectionId,
+        title: r.collection?.title || 'Untitled',
+        brand: {
+          id: r.collection?.owner?.id,
+          name: r.collection?.owner?.brandFullName || r.collection?.owner?.username,
+          profileImage: r.collection?.owner?.profileImage,
+        },
+        coverUrl: r.collection?.medias[0]?.file?.s3Url || null,
+        itemCount: r.collection?._count?.medias || 0,
+        grantedAt: r.updatedAt,
+      })),
+      totalCount,
+      page,
+      pageSize: take,
+      totalPages,
+      hasNextPage: page < totalPages,
+    };
+  }
+
+  /**
+   * Cancel a pending access request
+   */
+  async cancelAccessRequest(requestId: string, userId: string) {
+    const access = await this.prisma.collectionAccess.findUnique({
+      where: { id: requestId },
+      include: { collection: { select: { ownerId: true } } },
+    });
+
+    if (!access) {
+      throw new NotFoundException('Access request not found');
+    }
+
+    if (access.viewerId !== userId) {
+      throw new ForbiddenException('Not authorized to cancel this request');
+    }
+
+    // Only allow canceling pending requests
+    if (access.state !== 'PENDING') {
+      throw new BadRequestException('Can only cancel pending requests');
+    }
+
+    await this.prisma.collectionAccess.delete({
+      where: { id: requestId },
+    });
+
+    console.log('metrics.access_request_cancelled', {
+      requestId,
+      userId,
+      collectionId: access.collectionId,
+    });
+
+    return { success: true, message: 'Request cancelled successfully' };
+  }
+
+  /**
+   * User revokes their own access to a private collection
+   */
+  async userRevokeOwnAccess(accessId: string, userId: string) {
+    const access = await this.prisma.collectionAccess.findUnique({
+      where: { id: accessId },
+      include: { collection: { select: { ownerId: true } } },
+    });
+
+    if (!access) {
+      throw new NotFoundException('Access not found');
+    }
+
+    if (access.viewerId !== userId) {
+      throw new ForbiddenException('Not authorized to revoke this access');
+    }
+
+    // Only allow revoking approved access
+    if (access.state !== 'APPROVED') {
+      throw new BadRequestException('Can only revoke approved access');
+    }
+
+    await this.prisma.collectionAccess.delete({
+      where: { id: accessId },
+    });
+
+    console.log('metrics.access_user_revoked', {
+      accessId,
+      userId,
+      collectionId: access.collectionId,
+    });
+
+    return { success: true, message: 'Access revoked successfully' };
   }
 
   /**
