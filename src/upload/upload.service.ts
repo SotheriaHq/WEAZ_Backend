@@ -1,7 +1,8 @@
 import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { FileUpload } from '@prisma/client';
-import * as AWS from 'aws-sdk';
+import { S3Client, PutObjectCommand, DeleteObjectCommand, DeleteObjectsCommand, HeadObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { v4 as uuidv4 } from 'uuid';
 import { GetFilesDto } from './dto/get-files.dto';
 import { PaginatedResult } from './dto/pagination.dto';
@@ -31,7 +32,7 @@ export interface FileUploadResult {
 @Injectable()
 export class UploadService {
   private readonly logger = new Logger(UploadService.name);
-  private readonly s3: AWS.S3;
+  private readonly s3: S3Client;
   private readonly bucketName: string;
   private readonly region: string;
 
@@ -60,7 +61,7 @@ export class UploadService {
       this.configService.get<string>('AWS_SECRET_ACCESS_KEY') ??
       this.configService.get<string>('SECRET_ACCESS_KEY');
 
-    const s3Config: AWS.S3.ClientConfiguration = {
+    const s3Config: any = {
       region: this.region,
     };
 
@@ -71,7 +72,7 @@ export class UploadService {
       };
     }
 
-    this.s3 = new AWS.S3(s3Config);
+    this.s3 = new S3Client(s3Config);
   }
 
   async uploadFile(
@@ -88,15 +89,18 @@ export class UploadService {
       this.logger.debug(
         `Uploading file to S3 bucket ${this.bucketName} with key ${key}`,
       );
-      const s3Result = await this.s3
-        .upload({
-          Bucket: this.bucketName,
-          Key: key,
-          Body: file.buffer,
-          ContentType: file.mimetype,
-          ContentDisposition: 'inline',
-        })
-        .promise();
+      const command = new PutObjectCommand({
+        Bucket: this.bucketName,
+        Key: key,
+        Body: file.buffer,
+        ContentType: file.mimetype,
+        ContentDisposition: 'inline',
+      });
+      
+      await this.s3.send(command);
+      
+      // Construct S3 URL
+      const s3Url = `https://${this.bucketName}.s3.${this.region}.amazonaws.com/${key}`;
 
       // Save to database
       const uploadRecord = await this.prisma.fileUpload.create({
@@ -106,7 +110,7 @@ export class UploadService {
           originalName: file.originalname,
           fileName: key.split('/').pop()!,
           s3Key: key,
-          s3Url: s3Result.Location,
+          s3Url: s3Url,
           fileType: fileType,
           mimeType: file.mimetype,
           size: file.size,
@@ -258,11 +262,12 @@ export class UploadService {
       throw new BadRequestException('File not found');
     }
 
-    return this.s3.getSignedUrl('getObject', {
+    const command = new GetObjectCommand({
       Bucket: this.bucketName,
       Key: file.s3Key,
-      Expires: 3600, // 1 hour
     });
+    
+    return await getSignedUrl(this.s3, command, { expiresIn: 3600 }); // 1 hour
   }
 
   /**
@@ -278,11 +283,12 @@ export class UploadService {
       return null;
     }
 
-    return this.s3.getSignedUrl('getObject', {
+    const command = new GetObjectCommand({
       Bucket: this.bucketName,
       Key: file.s3Key,
-      Expires: 3600, // 1 hour
     });
+    
+    return await getSignedUrl(this.s3, command, { expiresIn: 3600 }); // 1 hour
   }
 
   /**
@@ -302,11 +308,11 @@ export class UploadService {
     const urlMap = new Map<string, string>();
 
     for (const file of files) {
-      const signedUrl = this.s3.getSignedUrl('getObject', {
+      const command = new GetObjectCommand({
         Bucket: this.bucketName,
         Key: file.s3Key,
-        Expires: 3600, // 1 hour
       });
+      const signedUrl = await getSignedUrl(this.s3, command, { expiresIn: 3600 }); // 1 hour
       urlMap.set(file.id, signedUrl);
     }
 
@@ -324,12 +330,11 @@ export class UploadService {
 
     try {
       // Delete from S3
-      await this.s3
-        .deleteObject({
-          Bucket: this.bucketName,
-          Key: file.s3Key,
-        })
-        .promise();
+      const command = new DeleteObjectCommand({
+        Bucket: this.bucketName,
+        Key: file.s3Key,
+      });
+      await this.s3.send(command);
 
       // Delete from database
       await this.prisma.fileUpload.delete({
@@ -346,9 +351,11 @@ export class UploadService {
    */
   async deleteS3ObjectByKey(key: string): Promise<void> {
     try {
-      await this.s3
-        .deleteObject({ Bucket: this.bucketName, Key: key })
-        .promise();
+      const command = new DeleteObjectCommand({ 
+        Bucket: this.bucketName, 
+        Key: key 
+      });
+      await this.s3.send(command);
     } catch (err) {
       this.logger.error('S3 deleteObject failed for key:', key, err);
       throw err;
@@ -363,12 +370,13 @@ export class UploadService {
     const objects = keys.map((k) => ({ Key: k }));
     try {
       // AWS SDK deleteObjects returns details about deleted vs errors
-      const res = await this.s3
-        .deleteObjects({
-          Bucket: this.bucketName,
-          Delete: { Objects: objects },
-        })
-        .promise();
+      const command = new DeleteObjectsCommand({
+        Bucket: this.bucketName,
+        Delete: { Objects: objects },
+      });
+      
+      const res = await this.s3.send(command);
+      
       if (res.Errors && res.Errors.length) {
         this.logger.error('S3 deleteObjects reported errors', res.Errors);
         throw new Error('One or more S3 deletions failed');
@@ -382,7 +390,11 @@ export class UploadService {
   // Verify S3 object exists by key
   async verifyObjectExists(key: string): Promise<boolean> {
     try {
-      await this.s3.headObject({ Bucket: this.bucketName, Key: key }).promise();
+      const command = new HeadObjectCommand({ 
+        Bucket: this.bucketName, 
+        Key: key 
+      });
+      await this.s3.send(command);
       return true;
     } catch (err) {
       this.logger.warn('S3 headObject failed for key:', key, err);
@@ -446,14 +458,17 @@ export class UploadService {
     const fileId = uuidv4();
     const key = this.generateS3Key(fileType, userId, fileId, originalName);
 
-    const s3Result = await this.s3
-      .upload({
-        Bucket: this.bucketName,
-        Key: key,
-        Body: buffer,
-        ContentType: mimeType,
-      })
-      .promise();
+    const command = new PutObjectCommand({
+      Bucket: this.bucketName,
+      Key: key,
+      Body: buffer,
+      ContentType: mimeType,
+    });
+    
+    await this.s3.send(command);
+    
+    // Construct S3 URL
+    const s3Url = `https://${this.bucketName}.s3.${this.region}.amazonaws.com/${key}`;
 
     const record = await this.prisma.fileUpload.create({
       data: {
@@ -462,7 +477,7 @@ export class UploadService {
         originalName,
         fileName: key.split('/').pop()!,
         s3Key: key,
-        s3Url: s3Result.Location,
+        s3Url: s3Url,
         fileType,
         mimeType,
         size: buffer.length,

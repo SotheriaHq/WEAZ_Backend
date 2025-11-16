@@ -42,6 +42,29 @@ export class NotificationsService {
     return value;
   }
 
+  private sanitizeTargetUrl(url: unknown): string | undefined {
+    if (!url || typeof url !== 'string') return undefined;
+    // Disallow protocols and hosts
+    try {
+      const hasScheme = /^(https?:)?\/\//i.test(url);
+      if (hasScheme) return undefined;
+    } catch {}
+    // Normalize to ensure leading slash
+    const cleaned = url.startsWith('/') ? url : `/${url}`;
+    // Allow only known internal prefixes
+    const allowed = [
+      '/',
+      '/collections/',
+      '/brands/',
+      '/settings',
+      '/settings/collections',
+    ];
+    if (allowed.some((p) => cleaned === p || cleaned.startsWith(p))) {
+      return cleaned;
+    }
+    return undefined;
+  }
+
   private formatMessage(n: any) {
     try {
       const config = this.registry.getConfig(n.type);
@@ -157,11 +180,17 @@ export class NotificationsService {
     }
 
     try {
-      // Validate and sanitize payload
+      // Validate payload by type
       const sanitizedPayload = this.validateAndSanitizePayload(
         type,
         opts?.payload ?? {},
       );
+      // Enforce internal-only targetUrl if present
+      if (sanitizedPayload && typeof sanitizedPayload === 'object') {
+        const tu = this.sanitizeTargetUrl((sanitizedPayload as any).targetUrl);
+        if (tu) (sanitizedPayload as any).targetUrl = tu;
+        else delete (sanitizedPayload as any).targetUrl;
+      }
       console.log('Payload validated and sanitized');
 
       // Optional dedupe within window based on same recipient/type/actor and target id in payload

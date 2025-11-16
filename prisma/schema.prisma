@@ -198,12 +198,18 @@ enum NotificationType {
   SIGNUP
   LOGIN
   COLLECTION_UPLOAD
+  COLLECTION_DELETED
   LIKE
   COMMENT
   PATCH
   FOLLOW
   LOGOUT
   LOGOUT_ALL
+  // Private collection access workflow
+  PRIVATE_ACCESS_REQUESTED
+  PRIVATE_ACCESS_APPROVED
+  PRIVATE_ACCESS_REJECTED
+  PRIVATE_ACCESS_REVOKED
 }
 
 // ====== Comment V2 (unified for posts, collections, and collection media) ======

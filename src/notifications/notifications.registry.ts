@@ -169,6 +169,83 @@ export class NotificationRegistry {
       },
     });
 
+    // PRIVATE ACCESS REQUESTED
+    registry.register({
+      type: NotificationType.PRIVATE_ACCESS_REQUESTED,
+      schema: Joi.object({
+        collectionId: Joi.string().required(),
+        requesterId: Joi.string().required(),
+        targetUrl: Joi.string().optional(),
+      }),
+      formatter: (n: any) => {
+        const actorName = n.actor
+          ? n.actor.username ||
+            `${n.actor.firstName ?? ''} ${n.actor.lastName ?? ''}`.trim()
+          : 'Someone';
+        return `${actorName} requested access to a private collection`;
+      },
+    });
+
+    // PRIVATE ACCESS APPROVED
+    registry.register({
+      type: NotificationType.PRIVATE_ACCESS_APPROVED,
+      schema: Joi.object({
+        collectionId: Joi.string().required(),
+        targetUrl: Joi.string().optional(),
+      }),
+      formatter: () => 'Your request to view a private collection was approved',
+    });
+
+    // PRIVATE ACCESS REJECTED
+    registry.register({
+      type: NotificationType.PRIVATE_ACCESS_REJECTED,
+      schema: Joi.object({
+        collectionId: Joi.string().required(),
+        note: Joi.string().optional(),
+        targetUrl: Joi.string().optional(),
+      }),
+      formatter: () => 'Your request to view a private collection was rejected',
+    });
+
+    // PRIVATE ACCESS REVOKED
+    registry.register({
+      type: NotificationType.PRIVATE_ACCESS_REVOKED,
+      schema: Joi.object({
+        collectionId: Joi.string().required(),
+        targetUrl: Joi.string().optional(),
+      }),
+      formatter: () => 'Your access to a private collection was revoked',
+    });
+
+    // COLLECTION_UPLOAD
+    registry.register({
+      type: NotificationType.COLLECTION_UPLOAD,
+      schema: Joi.object({
+        collectionId: Joi.string().optional(),
+        collectionName: Joi.string().optional(),
+        targetUrl: Joi.string().optional(),
+      }),
+      formatter: (n: any) => {
+        const name = n.payload?.collectionName || 'Your collection';
+        return `${name} was successfully uploaded`;
+      },
+    });
+
+    // COLLECTION_DELETED (informational, no action link)
+    registry.register({
+      type: NotificationType.COLLECTION_DELETED,
+      schema: Joi.object({
+        collectionName: Joi.string().optional(),
+        message: Joi.string().optional(),
+      }),
+      formatter: (n: any) => {
+        // Use custom message if provided, otherwise default
+        if (n.payload?.message) return n.payload.message;
+        const name = n.payload?.collectionName || 'Collection';
+        return `${name} has been successfully deleted`;
+      },
+    });
+
     return registry;
   }
 }

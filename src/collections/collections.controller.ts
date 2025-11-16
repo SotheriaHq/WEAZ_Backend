@@ -24,6 +24,7 @@ import {
   FinalizeCollectionDto,
 } from './collections.service';
 import { JwtAuthGuard } from 'src/auth/guard/jwt-auth.guard';
+import { OptionalJwtAuthGuard } from 'src/auth/guard/optional-jwt-auth.guard';
 import { UserTypeGuard } from 'src/auth/guard/user-type.guard';
 import { UserType, ReactionType } from '@prisma/client';
 import { ThrottlerGuard, Throttle } from '@nestjs/throttler';
@@ -261,17 +262,23 @@ export class CollectionsController {
 
   @Get('user/:userId')
   @ApiOperation({ summary: 'Get collections for a specific user (brand)' })
+  @UseGuards(JwtAuthGuard)
   async getUserCollections(
     @Param('userId') userId: string,
     @Query('cursor') cursor?: string,
     @Query('limit') limit?: string,
+    @Query('visibility') visibility?: 'public' | 'private' | 'all',
     @Req() req?: any,
   ) {
     // If the requester is the same as the userId, include drafts; otherwise only published
     const requesterId = req?.user?.id;
+    try {
+      console.log('[collections:getUserCollections] userId=%s requesterId=%s visibility=%s cursor=%s limit=%s', userId, requesterId ?? 'anon', visibility ?? 'public', cursor ?? '-', limit ?? '-');
+    } catch {}
     return this.collectionsService.getUserCollections(userId, requesterId, {
       cursor,
       limit: limit ? parseInt(limit, 10) : 20,
+      visibility,
     });
   }
 
@@ -279,6 +286,7 @@ export class CollectionsController {
   // DYNAMIC ROUTE (must come after static routes)
   // ============================================
 
+  @UseGuards(OptionalJwtAuthGuard)
   @Get(':id')
   @ApiOperation({ summary: 'Get collection by ID' })
   @ApiResponse({ status: 200, description: 'Collection details' })
@@ -286,6 +294,9 @@ export class CollectionsController {
     // Record view if accessing collection
     const userId = req.user?.id;
     const ipAddress = req.ip || req.connection.remoteAddress;
+    try {
+      console.log('[collections:getCollection] id=%s requesterId=%s', id, userId ?? 'anon');
+    } catch {}
 
     // Record view asynchronously (don't wait)
     this.collectionsService.recordView(id, userId, ipAddress).catch((err) => {
@@ -524,19 +535,19 @@ export class CollectionsController {
     );
   }
 
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(OptionalJwtAuthGuard)
   @Get('media/:mediaId/is-liked')
   async isMediaLiked(@Param('mediaId') mediaId: string, @Req() req: any) {
-    return this.collectionsService.isMediaLikedByUser(mediaId, req.user.id);
+    return this.collectionsService.isMediaLikedByUser(mediaId, req.user?.id);
   }
 
   // Is-liked for a collection
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(OptionalJwtAuthGuard)
   @Get(':id/is-liked')
   async isCollectionLiked(@Param('id') collectionId: string, @Req() req: any) {
     return this.collectionsService.isCollectionLikedByUser(
       collectionId,
-      req.user.id,
+      req.user?.id,
     );
   }
 
@@ -555,7 +566,8 @@ export class CollectionsController {
   }
 
   // ===================== Access Management =====================
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, ThrottlerGuard)
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
   @Post(':id/access-requests')
   @ApiOperation({ summary: 'Request access to a private collection' })
   async requestAccess(@Param('id') collectionId: string, @Req() req: any) {
@@ -626,6 +638,21 @@ export class CollectionsController {
       req.user.id,
       userId,
       state,
+    );
+  }
+
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Patch(':id/access/:userId/reject')
+  @ApiOperation({ summary: 'Reject a pending access request (owner only)' })
+  async rejectAccess(
+    @Param('id') collectionId: string,
+    @Param('userId') userId: string,
+    @Req() req: any,
+  ) {
+    return this.collectionsService.rejectAccess(
+      collectionId,
+      req.user.id,
+      userId,
     );
   }
 

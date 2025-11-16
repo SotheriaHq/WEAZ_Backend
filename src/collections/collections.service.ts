@@ -45,9 +45,18 @@ export class CollectionsService {
       where: { id: collectionId },
       select: { ownerId: true, status: true, visibility: true },
     });
-    if (!c || c.status !== 'PUBLISHED') return false;
-    if (c.visibility === CollectionVisibility.PUBLIC) return true;
+    // Not found
+    if (!c) return false;
+
+    // Owner can always view their own collection (draft or published)
     if (requesterId && requesterId === c.ownerId) return true;
+
+    // For non-owners, only published collections are viewable
+    if (c.status !== 'PUBLISHED') return false;
+
+    // Public collections are always viewable
+    if (c.visibility === CollectionVisibility.PUBLIC) return true;
+
     if (requesterId) {
       const access = await this.prisma.collectionAccess.findUnique({
         where: {
@@ -84,6 +93,26 @@ export class CollectionsService {
     const existing = await this.prisma.collectionAccess.findUnique({
       where: { collectionId_viewerId: { collectionId, viewerId: requesterId } },
     });
+    // Cooldown after rejection
+    // Default cooldown: 72h (configurable via env PRIVATE_ACCESS_COOLDOWN_MS)
+    const cooldownMs = Math.max(
+      0,
+      parseInt(process.env.PRIVATE_ACCESS_COOLDOWN_MS || '') ||
+        72 * 60 * 60 * 1000,
+    );
+    if (
+      existing &&
+      existing.state === 'REVOKED' &&
+      existing.notes === 'REJECTED'
+    ) {
+      const elapsed = now.getTime() - new Date(existing.updatedAt).getTime();
+      if (elapsed < cooldownMs) {
+        const nextAllowedAt = new Date(
+          existing.updatedAt.getTime() + cooldownMs,
+        ).toISOString();
+        return { state: 'PENDING', cooldownActive: true, nextAllowedAt } as any;
+      }
+    }
     if (!existing) {
       await this.prisma.collectionAccess.create({
         data: {
@@ -94,6 +123,23 @@ export class CollectionsService {
           createdAt: now,
         },
       } as any);
+      // Notify owner about new request
+      try {
+        await this.notifications?.create(
+          c.ownerId,
+          NotificationType.PRIVATE_ACCESS_REQUESTED,
+          {
+            actorId: requesterId,
+            payload: {
+              collectionId,
+              requesterId,
+              targetUrl: `/settings/collections?collectionId=${collectionId}&tab=requests`,
+            },
+          },
+        );
+      } catch (e) {
+        // non-blocking
+      }
       console.log('metrics.access_request', { collectionId, requesterId });
       return { state: 'PENDING' };
     }
@@ -171,6 +217,122 @@ export class CollectionsService {
     };
   }
 
+  // Brand-scoped: list access requests across all private collections of the brand
+  async listBrandAccessRequests(
+    brandId: string,
+    ownerId: string,
+    state: 'PENDING' | 'APPROVED' = 'PENDING',
+    limit = 20,
+    cursor?: string,
+    q?: string,
+    page?: number,
+  ) {
+    if (brandId !== ownerId) throw new ForbiddenException('Not owner');
+    const where: Prisma.CollectionAccessWhereInput = {
+      state,
+      collection: { ownerId: brandId },
+      ...(q
+        ? {
+            OR: [
+              {
+                viewer: { username: { contains: q, mode: 'insensitive' } },
+              } as any,
+              {
+                collection: { title: { contains: q, mode: 'insensitive' } },
+              } as any,
+            ],
+          }
+        : {}),
+    } as any;
+
+    const take = Math.min(Math.max(limit, 1), 100);
+    const pageNum = page && page > 0 ? page : undefined;
+
+    const totalCount = await this.prisma.collectionAccess.count({ where });
+
+    const rows = await this.prisma.collectionAccess.findMany({
+      where,
+      include: {
+        viewer: { select: { id: true, username: true, profileImage: true } },
+        collection: { select: { id: true, title: true } },
+      },
+      take: pageNum ? take : take + 1,
+      ...(pageNum ? { skip: (pageNum - 1) * take } : {}),
+      orderBy: { createdAt: 'desc' },
+      ...(cursor && !pageNum ? { skip: 1, cursor: { id: cursor } } : {}),
+    } as any);
+    const hasNextPage = pageNum
+      ? pageNum * take < totalCount
+      : rows.length > take;
+    const data = pageNum ? rows : hasNextPage ? rows.slice(0, -1) : rows;
+    const totalPages = Math.max(1, Math.ceil(totalCount / take));
+    return {
+      items: data,
+      hasNextPage,
+      endCursor: pageNum
+        ? null
+        : data.length
+          ? (data[data.length - 1] as any).id
+          : null,
+      totalCount,
+      page: pageNum ?? undefined,
+      pageSize: take,
+      totalPages,
+    } as any;
+  }
+
+  // Brand-scoped: list viewer states for all private collections of a brand
+  async listViewerAccessStatesForBrand(brandId: string, viewerId?: string) {
+    // Use select to avoid relying on columns that may not exist yet (e.g., coverMediaId) when DB schema is out-of-sync.
+    const collections = await this.prisma.collection.findMany({
+      where: {
+        ownerId: brandId,
+        status: 'PUBLISHED',
+        visibility: CollectionVisibility.PRIVATE,
+      },
+      select: {
+        id: true,
+        title: true,
+        medias: {
+          select: {
+            id: true,
+            orderIndex: true,
+            file: { select: { id: true, s3Url: true } },
+          },
+          take: 1,
+          orderBy: [{ orderIndex: 'asc' }],
+        },
+        _count: { select: { medias: true } },
+      },
+    });
+
+    const states: Record<string, 'APPROVED' | 'PENDING' | 'REVOKED'> = {};
+    if (viewerId) {
+      const acc = await this.prisma.collectionAccess.findMany({
+        where: { viewerId, collectionId: { in: collections.map((c) => c.id) } },
+      });
+      for (const a of acc) {
+        states[a.collectionId] = a.state as any;
+      }
+    }
+
+    return {
+      items: collections.map((c) => ({
+        collectionId: c.id,
+        title: c.title,
+        coverMediaId: c.medias[0]?.id ?? null,
+        coverFileId: c.medias[0]?.file?.id ?? null,
+        coverUrl: c.medias[0]?.file?.s3Url ?? null,
+        itemCount: c._count.medias,
+        state: (states[c.id] ?? 'NONE') as
+          | 'APPROVED'
+          | 'PENDING'
+          | 'REVOKED'
+          | 'NONE',
+      })),
+    };
+  }
+
   async approveAccessBulk(
     collectionId: string,
     ownerId: string,
@@ -194,6 +356,22 @@ export class CollectionsService {
         } as any),
       ),
     );
+    // Notify users approved
+    for (const uid of userIds) {
+      try {
+        await this.notifications?.create(
+          uid,
+          NotificationType.PRIVATE_ACCESS_APPROVED,
+          {
+            actorId: ownerId,
+            payload: {
+              collectionId,
+              targetUrl: `/collections/${collectionId}`,
+            },
+          },
+        );
+      } catch {}
+    }
     console.log('metrics.access_approve_bulk', {
       collectionId,
       count: userIds.length,
@@ -219,7 +397,61 @@ export class CollectionsService {
         grantedBy: ownerId,
       },
     } as any);
+    // Notify viewer on decision
+    try {
+      await this.notifications?.create(
+        userId,
+        state === 'APPROVED'
+          ? NotificationType.PRIVATE_ACCESS_APPROVED
+          : NotificationType.PRIVATE_ACCESS_REVOKED,
+        {
+          actorId: ownerId,
+          payload: {
+            collectionId,
+            targetUrl:
+              state === 'APPROVED'
+                ? `/collections/${collectionId}`
+                : `/brands/${ownerId}?tab=private`,
+          },
+        },
+      );
+    } catch {}
     console.log('metrics.access_update_state', { collectionId, userId, state });
+    return { success: true };
+  }
+
+  async rejectAccess(collectionId: string, ownerId: string, userId: string) {
+    await this.assertOwner(collectionId, ownerId);
+    const existing = await this.prisma.collectionAccess.findUnique({
+      where: { collectionId_viewerId: { collectionId, viewerId: userId } },
+    });
+    if (!existing || existing.state !== 'PENDING') {
+      // Idempotent: no-op if already decided
+      return { success: true };
+    }
+    await this.prisma.collectionAccess.update({
+      where: { collectionId_viewerId: { collectionId, viewerId: userId } },
+      data: {
+        state: 'REVOKED' as any,
+        notes: 'REJECTED',
+        updatedAt: new Date(),
+        grantedBy: ownerId,
+      },
+    } as any);
+    try {
+      await this.notifications?.create(
+        userId,
+        NotificationType.PRIVATE_ACCESS_REJECTED,
+        {
+          actorId: ownerId,
+          payload: {
+            collectionId,
+            targetUrl: `/brands/${ownerId}?tab=private`,
+          },
+        },
+      );
+    } catch {}
+    console.log('metrics.access_reject', { collectionId, userId });
     return { success: true };
   }
 
@@ -473,7 +705,7 @@ export class CollectionsService {
         collectionDescription: collection.description ?? '',
         minPrice: collection.minPrice,
         maxPrice: collection.maxPrice,
-        // Sale price fields for frontend display 
+        // Sale price fields for frontend display
         saleMinPrice: collection.saleMinPrice,
         saleMaxPrice: collection.saleMaxPrice,
         saleStartAt: collection.saleStartAt,
@@ -713,15 +945,63 @@ export class CollectionsService {
   async getUserCollections(
     userId: string,
     requesterId?: string,
-    options?: { cursor?: string; limit?: number },
+    options?: {
+      cursor?: string;
+      limit?: number;
+      visibility?: 'public' | 'private' | 'all';
+    },
   ) {
-    const { cursor, limit = 20 } = options || {};
+    const { cursor, limit = 20, visibility } = options || {};
+    const privateFeature =
+      (process.env.FEATURE_PRIVATE_COLLECTIONS ?? 'true') !== 'false';
     const where: any = { ownerId: userId };
+    try {
+      console.log('[collections.service.getUserCollections] userId=%s requesterId=%s visibility=%s featurePrivate=%s', userId, requesterId ?? 'anon', visibility ?? 'public', privateFeature);
+    } catch {}
 
-    // If requester is not the owner, only show published public collections
+    // Default: published only for non-owner
     if (requesterId !== userId) {
       where.status = 'PUBLISHED';
-      (where as any).visibility = CollectionVisibility.PUBLIC;
+
+      if (!visibility || visibility === 'public') {
+        (where as any).visibility = CollectionVisibility.PUBLIC;
+      } else if (visibility === 'private') {
+        if (!privateFeature) {
+          (where as any).visibility = CollectionVisibility.PUBLIC; // feature disabled, fallback to public only
+        } else {
+          (where as any).visibility = CollectionVisibility.PRIVATE;
+          // Only those private collections the requester is approved to view
+          (where as any).accesses = {
+            some: { viewerId: requesterId, state: 'APPROVED' },
+          };
+        }
+      } else if (visibility === 'all') {
+        if (!privateFeature) {
+          (where as any).visibility = CollectionVisibility.PUBLIC;
+        } else {
+          // public OR approved private
+          (where as any).OR = [
+            { visibility: CollectionVisibility.PUBLIC },
+            {
+              visibility: CollectionVisibility.PRIVATE,
+              accesses: { some: { viewerId: requesterId, state: 'APPROVED' } },
+            },
+          ];
+          delete (where as any).visibility;
+        }
+      }
+    } else {
+      // Owner view: show by requested visibility or all (published + drafts per current business rules)
+      if (visibility === 'public') {
+        (where as any).visibility = CollectionVisibility.PUBLIC;
+      } else if (visibility === 'private') {
+        if (privateFeature) {
+          (where as any).visibility = CollectionVisibility.PRIVATE;
+        } else {
+          (where as any).visibility = CollectionVisibility.PUBLIC;
+        }
+      }
+      // status filter for owner remains default (no restriction) to allow managing drafts separately on dedicated endpoints
     }
 
     const items = await this.prisma.collection.findMany({
@@ -729,7 +1009,34 @@ export class CollectionsService {
       orderBy: { createdAt: 'desc' },
       take: limit + 1,
       ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
-      include: {
+      select: {
+        id: true,
+        ownerId: true,
+        title: true,
+        description: true,
+        status: true,
+        visibility: true,
+        type: true,
+        categoryId: true,
+        pendingCategorySuggestionId: true,
+        draftReason: true,
+        pendingCategoryName: true,
+        originalSuggestionId: true,
+        minPrice: true,
+        maxPrice: true,
+        isAvailableInStore: true,
+        tags: true,
+        saleMinPrice: true,
+        saleMaxPrice: true,
+        saleStartAt: true,
+        saleEndAt: true,
+        createdAt: true,
+        updatedAt: true,
+        likesCount: true,
+        dislikesCount: true,
+        commentsCount: true,
+        patchesCount: true,
+        viewsCount: true,
         medias: {
           include: { file: true },
           orderBy: { orderIndex: 'asc' },
@@ -765,6 +1072,7 @@ export class CollectionsService {
         },
       },
     });
+    try { console.log('[collections.service.getUserCollections] rows=%d where=%j', items.length, where); } catch {}
 
     const hasNext = items.length > limit;
     const data = hasNext ? items.slice(0, -1) : items;
@@ -821,14 +1129,14 @@ export class CollectionsService {
       .map((m) => m.file?.s3Key)
       .filter((k): k is string => !!k);
 
-    // First delete from S3. Abort if any S3 deletion fails.
-    try {
-      await this.uploadService.deleteS3ObjectsByKeys(keys);
-    } catch (err) {
-      console.warn('Aborting collection deletion due to S3 delete failure');
-      throw new BadRequestException(
-        'Failed to delete files from storage; aborting',
-      );
+    // Delete from S3 if there are files. Log but don't fail if S3 deletion has issues.
+    if (keys.length > 0) {
+      try {
+        await this.uploadService.deleteS3ObjectsByKeys(keys);
+      } catch (err) {
+        console.warn('S3 deletion failed, but continuing with DB cleanup:', err);
+        // Don't throw - allow DB cleanup to proceed even if S3 fails
+      }
     }
 
     // Then delete DB records in a transaction: fileUpload, collectionMedia, collection
@@ -852,6 +1160,25 @@ export class CollectionsService {
     } catch (err) {
       console.warn('DB transaction failed after S3 deletion:', err);
       throw new BadRequestException('Failed to delete collection records');
+    }
+
+    // Create notification for successful deletion (informational, no action link)
+    if (this.notifications) {
+      try {
+        await this.notifications.create(
+          requesterId,
+          'COLLECTION_DELETED' as any,
+          {
+            payload: {
+              collectionName: collection.title || 'Collection',
+              message: `Your collection "${collection.title || 'Untitled'}" has been successfully deleted.`,
+            },
+          },
+        );
+      } catch (err) {
+        console.warn('Failed to create deletion notification:', err);
+        // Don't fail the operation if notification fails
+      }
     }
 
     return { success: true };
@@ -1526,7 +1853,10 @@ export class CollectionsService {
     return { users: rows.map((r) => r.user), totalLikes: total };
   }
 
-  async isMediaLikedByUser(mediaId: string, userId: string) {
+  async isMediaLikedByUser(mediaId: string, userId: string | undefined) {
+    if (!userId) {
+      return { liked: false };
+    }
     const can = await this.canViewMedia(mediaId, userId);
     if (!can) throw new NotFoundException('Media not found');
     const r = await this.prisma.collectionMediaReaction.findUnique({
@@ -1537,7 +1867,10 @@ export class CollectionsService {
     return { liked: !!r };
   }
 
-  async isCollectionLikedByUser(collectionId: string, userId: string) {
+  async isCollectionLikedByUser(collectionId: string, userId: string | undefined) {
+    if (!userId) {
+      return { liked: false };
+    }
     const r = await this.prisma.collectionReaction.findUnique({
       where: { collectionId_userId: { collectionId, userId } },
     });
