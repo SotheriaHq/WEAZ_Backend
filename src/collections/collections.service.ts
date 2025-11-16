@@ -473,6 +473,11 @@ export class CollectionsService {
         collectionDescription: collection.description ?? '',
         minPrice: collection.minPrice,
         maxPrice: collection.maxPrice,
+        // Sale price fields for frontend display 
+        saleMinPrice: collection.saleMinPrice,
+        saleMaxPrice: collection.saleMaxPrice,
+        saleStartAt: collection.saleStartAt,
+        saleEndAt: collection.saleEndAt,
         likesCount: media.likesCount,
         commentsCount: media.commentsCount,
         patchesCount: collection.patchesCount,
