@@ -266,7 +266,22 @@ export class CollectionsService {
     const rows = await this.prisma.collectionAccess.findMany({
       where,
       include: {
-        viewer: { select: { id: true, username: true, profileImage: true } },
+        viewer: { 
+          select: { 
+            id: true, 
+            username: true, 
+            firstName: true,
+            lastName: true,
+            profileImage: true,
+            profileImageId: true,
+            profileImageFile: {
+              select: {
+                id: true,
+                s3Url: true,
+              },
+            },
+          } 
+        },
         collection: { 
           select: { 
             id: true, 
@@ -520,6 +535,13 @@ export class CollectionsService {
                 username: true,
                 brandFullName: true,
                 profileImage: true,
+                profileImageId: true,
+                profileImageFile: {
+                  select: {
+                    id: true,
+                    s3Url: true,
+                  },
+                },
               },
             },
             medias: {
@@ -549,6 +571,8 @@ export class CollectionsService {
           id: r.collection?.owner?.id,
           name: r.collection?.owner?.brandFullName || r.collection?.owner?.username,
           profileImage: r.collection?.owner?.profileImage,
+          profileImageId: r.collection?.owner?.profileImageId,
+          profileImageFile: r.collection?.owner?.profileImageFile,
         },
         coverUrl: r.collection?.medias[0]?.file?.s3Url || null,
         itemCount: r.collection?._count?.medias || 0,
@@ -594,6 +618,13 @@ export class CollectionsService {
                 username: true,
                 brandFullName: true,
                 profileImage: true,
+                profileImageId: true,
+                profileImageFile: {
+                  select: {
+                    id: true,
+                    s3Url: true,
+                  },
+                },
               },
             },
             medias: {
@@ -623,6 +654,8 @@ export class CollectionsService {
           id: r.collection?.owner?.id,
           name: r.collection?.owner?.brandFullName || r.collection?.owner?.username,
           profileImage: r.collection?.owner?.profileImage,
+          profileImageId: r.collection?.owner?.profileImageId,
+          profileImageFile: r.collection?.owner?.profileImageFile,
         },
         coverUrl: r.collection?.medias[0]?.file?.s3Url || null,
         itemCount: r.collection?._count?.medias || 0,
