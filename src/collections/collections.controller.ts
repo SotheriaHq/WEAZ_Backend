@@ -212,6 +212,7 @@ export class CollectionsController {
     return this.collectionsService.listCategories();
   }
 
+  @UseGuards(OptionalJwtAuthGuard)
   @Get('market')
   @ApiOperation({
     summary: 'Get market feed of individual collection uploads',
