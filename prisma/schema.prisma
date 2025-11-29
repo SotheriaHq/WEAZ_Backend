@@ -65,6 +65,14 @@ model User {
   // Relations for new social models
   followerFollows         Follow[]                        @relation("followerFollows")
   followingFollows        Follow[]                        @relation("followingFollows")
+  
+  // Brand Patching (Mutual)
+  sentPatchRequests       BrandPatch[]                    @relation("SentPatchRequests")
+  receivedPatchRequests   BrandPatch[]                    @relation("ReceivedPatchRequests")
+
+  // Contributions
+  contributionRequests    ContributionRequest[]           @relation("UserContributionRequests")
+
   collections             Collection[]
   collectionReactions     CollectionReaction[]
   collectionComments      CollectionComment[]
@@ -210,6 +218,16 @@ enum NotificationType {
   PRIVATE_ACCESS_APPROVED
   PRIVATE_ACCESS_REJECTED
   PRIVATE_ACCESS_REVOKED
+  
+  // Brand Patching
+  BRAND_PATCH_REQUEST
+  BRAND_PATCH_ACCEPTED
+  BRAND_PATCH_REJECTED
+
+  // Contributions
+  CONTRIBUTION_REQUEST
+  CONTRIBUTION_ACCEPTED
+  CONTRIBUTION_REJECTED
 }
 
 // ====== Comment V2 (unified for posts, collections, and collection media) ======
@@ -312,6 +330,9 @@ model Collection {
   views                        View[]                          @relation("Collection_to_View")
   // Access approvals for private collections
   accesses                     CollectionAccess[]
+  
+  // Contributions
+  contributionRequests         ContributionRequest[]           @relation("CollectionContributionRequests")
 
   @@index([status, createdAt])
   @@index([status, patchesCount])
@@ -556,4 +577,44 @@ model CollectionMediaReaction {
 
   @@unique([collectionMediaId, userId])
   @@index([collectionMediaId])
+}
+
+// ===== New Social Models =====
+
+enum PatchStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+}
+
+model BrandPatch {
+  id          String      @id @map("_id") @db.Uuid
+  requesterId String      @db.Uuid
+  receiverId  String      @db.Uuid
+  status      PatchStatus @default(PENDING)
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  requester   User        @relation("SentPatchRequests", fields: [requesterId], references: [id], onDelete: Cascade)
+  receiver    User        @relation("ReceivedPatchRequests", fields: [receiverId], references: [id], onDelete: Cascade)
+
+  @@unique([requesterId, receiverId])
+  @@index([requesterId, status])
+  @@index([receiverId, status])
+}
+
+model ContributionRequest {
+  id           String      @id @map("_id") @db.Uuid
+  requesterId  String      @db.Uuid
+  collectionId String      @db.Uuid
+  status       PatchStatus @default(PENDING) // Reuse PatchStatus (PENDING, ACCEPTED, REJECTED)
+  message      String?
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  requester    User        @relation("UserContributionRequests", fields: [requesterId], references: [id], onDelete: Cascade)
+  collection   Collection  @relation("CollectionContributionRequests", fields: [collectionId], references: [id], onDelete: Cascade)
+
+  @@unique([requesterId, collectionId]) // One request per user per collection
+  @@index([collectionId, status])
 }

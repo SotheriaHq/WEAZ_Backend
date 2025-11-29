@@ -5,6 +5,8 @@ import {
   Get,
   Param,
   Patch,
+  Post,
+  Delete,
   Query,
   Req,
   UseGuards,
@@ -23,7 +25,7 @@ import { TransformInterceptor } from '../transform/transform.interceptor';
 import { Request } from 'express';
 import { CollectionsService } from '../collections/collections.service';
 import { UserTypeGuard } from '../auth/guard/user-type.guard';
-import { UserType } from '@prisma/client';
+import { UserType, PatchStatus } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/guard/jwt-auth.guard';
 
 @Controller()
@@ -32,6 +34,80 @@ export class BrandsController {
     private readonly brandsService: BrandsService,
     private readonly collectionsService: CollectionsService,
   ) {}
+
+  // ... existing methods ...
+
+  // ===================== Brand Patching =====================
+
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Post('brands/:id/patches/request')
+  async requestBrandPatch(
+    @Param('id') brandId: string, // Target brand ID
+    @Req() req: any,
+  ) {
+    // req.user.id is the requester
+    return this.brandsService.requestBrandPatch(req.user.id, brandId);
+  }
+
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Patch('brands/patches/:patchId/respond')
+  async respondToBrandPatch(
+    @Param('patchId') patchId: string,
+    @Body() body: { status: 'ACCEPTED' | 'REJECTED' },
+    @Req() req: any,
+  ) {
+    const status = body.status === 'ACCEPTED' ? PatchStatus.ACCEPTED : PatchStatus.REJECTED;
+    return this.brandsService.respondToBrandPatch(req.user.id, patchId, status);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Get('brands/:id/patches')
+  async getBrandPatches(
+    @Param('id') brandId: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.brandsService.getBrandPatches(
+      brandId,
+      PatchStatus.ACCEPTED,
+      page ? parseInt(page, 10) : 1,
+      limit ? parseInt(limit, 10) : 20,
+    );
+  }
+
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Get('brands/me/patches/requests')
+  async getMyPatchRequests(@Req() req: any) {
+    return this.brandsService.getPendingPatchRequests(req.user.id);
+  }
+
+  // ===================== Subscriptions =====================
+
+  @UseGuards(JwtAuthGuard)
+  @Post('brands/:id/subscribe')
+  async subscribe(@Param('id') brandId: string, @Req() req: any) {
+    return this.brandsService.subscribeToBrand(req.user.id, brandId);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Delete('brands/:id/subscribe')
+  async unsubscribe(@Param('id') brandId: string, @Req() req: any) {
+    return this.brandsService.unsubscribeFromBrand(req.user.id, brandId);
+  }
+
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Get('brands/me/subscribers')
+  async getMySubscribers(
+    @Req() req: any,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.brandsService.getSubscribers(
+      req.user.id,
+      page ? parseInt(page, 10) : 1,
+      limit ? parseInt(limit, 10) : 20,
+    );
+  }
 
   @Get('brands/:id')
   @SkipThrottle()

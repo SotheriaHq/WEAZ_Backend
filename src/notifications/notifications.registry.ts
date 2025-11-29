@@ -246,6 +246,93 @@ export class NotificationRegistry {
       },
     });
 
+    // BRAND_PATCH_REQUEST
+    registry.register({
+      type: NotificationType.BRAND_PATCH_REQUEST,
+      schema: Joi.object({
+        targetUrl: Joi.string().optional(),
+      }),
+      formatter: (n: any) => {
+        const actorName = n.actor
+          ? n.actor.username || n.actor.brandFullName || 'A brand'
+          : 'A brand';
+        return `${actorName} sent you a patch request`;
+      },
+    });
+
+    // BRAND_PATCH_ACCEPTED
+    registry.register({
+      type: NotificationType.BRAND_PATCH_ACCEPTED,
+      schema: Joi.object({
+        targetUrl: Joi.string().optional(),
+      }),
+      formatter: (n: any) => {
+        const actorName = n.actor
+          ? n.actor.username || n.actor.brandFullName || 'A brand'
+          : 'A brand';
+        return `${actorName} accepted your patch request`;
+      },
+    });
+
+    // BRAND_PATCH_REJECTED
+    registry.register({
+      type: NotificationType.BRAND_PATCH_REJECTED,
+      schema: Joi.object({
+        targetUrl: Joi.string().optional(),
+      }),
+      formatter: (n: any) => {
+        const actorName = n.actor
+          ? n.actor.username || n.actor.brandFullName || 'A brand'
+          : 'A brand';
+        return `${actorName} rejected your patch request`;
+      },
+    });
+
+    // CONTRIBUTION_REQUEST
+    registry.register({
+      type: NotificationType.CONTRIBUTION_REQUEST,
+      schema: Joi.object({
+        collectionId: Joi.string().required(),
+        targetUrl: Joi.string().optional(),
+      }),
+      formatter: (n: any) => {
+        const actorName = n.actor
+          ? n.actor.username || n.actor.brandFullName || 'A brand'
+          : 'A brand';
+        return `${actorName} requested to contribute to your collection`;
+      },
+    });
+
+    // CONTRIBUTION_ACCEPTED
+    registry.register({
+      type: NotificationType.CONTRIBUTION_ACCEPTED,
+      schema: Joi.object({
+        collectionId: Joi.string().required(),
+        targetUrl: Joi.string().optional(),
+      }),
+      formatter: (n: any) => {
+        const actorName = n.actor
+          ? n.actor.username || n.actor.brandFullName || 'A brand'
+          : 'A brand';
+        return `${actorName} accepted your contribution request`;
+      },
+    });
+
+    // CONTRIBUTION_REJECTED
+    registry.register({
+      type: NotificationType.CONTRIBUTION_REJECTED,
+      schema: Joi.object({
+        collectionId: Joi.string().required(),
+        targetUrl: Joi.string().optional(),
+      }),
+      formatter: (n: any) => {
+        const actorName = n.actor
+          ? n.actor.username || n.actor.brandFullName || 'A brand'
+          : 'A brand';
+        return `${actorName} rejected your contribution request`;
+      },
+    });
+
     return registry;
   }
 }

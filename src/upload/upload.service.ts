@@ -3,6 +3,7 @@ import { PrismaService } from 'src/prisma/prisma.service';
 import { FileUpload } from '@prisma/client';
 import { S3Client, PutObjectCommand, DeleteObjectCommand, DeleteObjectsCommand, HeadObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import { createPresignedPost } from '@aws-sdk/s3-presigned-post';
 import { v4 as uuidv4 } from 'uuid';
 import { GetFilesDto } from './dto/get-files.dto';
 import { PaginatedResult } from './dto/pagination.dto';
@@ -147,24 +148,18 @@ export class UploadService {
     const fileId = uuidv4();
     const key = this.generateS3Key(fileType, userId, fileId, originalName);
 
-    const params: any = {
-      Bucket: this.bucketName,
-      Fields: {
-        key,
-      },
-      Conditions: [['starts-with', '$Content-Type', '']],
-      Expires: 600, // 10 minutes
-    };
+    // Build fields and conditions for AWS v3 createPresignedPost
+    const baseConditions: any[] = [];
+    let fields: Record<string, string> = { key };
 
-    // If the caller provided a specific contentType, include it in the form fields and tighten policy
     if (contentType) {
-      params.Fields['Content-Type'] = contentType;
-      // Replace the starts-with condition with exact match for the content type
-      params.Conditions = params.Conditions.map((c: any) =>
-        Array.isArray(c) && c[0] === 'starts-with' && c[1] === '$Content-Type'
-          ? ['eq', '$Content-Type', contentType]
-          : c,
-      );
+      fields = {
+        ...fields,
+        'Content-Type': contentType,
+      };
+      baseConditions.push(['eq', '$Content-Type', contentType]);
+    } else {
+      baseConditions.push(['starts-with', '$Content-Type', '']);
     }
 
     // create DB presign record
@@ -181,11 +176,12 @@ export class UploadService {
       },
     } as any);
 
-    const presigned = await new Promise((resolve, reject) => {
-      (this.s3 as any).createPresignedPost(params, (err, data) => {
-        if (err) return reject(err);
-        resolve({ ...data, key, fileId, expiresIn: 600 });
-      });
+    const presigned = await createPresignedPost(this.s3, {
+      Bucket: this.bucketName,
+      Key: key,
+      Fields: fields,
+      Conditions: baseConditions,
+      Expires: 600, // seconds
     });
 
     // Build a region-specific upload URL to avoid region-signature mismatches
@@ -194,7 +190,7 @@ export class UploadService {
     const uploadUrl = `https://${this.bucketName}.s3.${region}.amazonaws.com`;
 
     return {
-      ...(presigned as any),
+      ...presigned,
       url: uploadUrl,
       key,
       fileId,

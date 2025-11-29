@@ -26,7 +26,7 @@ import {
 import { JwtAuthGuard } from 'src/auth/guard/jwt-auth.guard';
 import { OptionalJwtAuthGuard } from 'src/auth/guard/optional-jwt-auth.guard';
 import { UserTypeGuard } from 'src/auth/guard/user-type.guard';
-import { UserType, ReactionType } from '@prisma/client';
+import { UserType, ReactionType, PatchStatus } from '@prisma/client';
 import { ThrottlerGuard, Throttle } from '@nestjs/throttler';
 import { EventsGateway } from 'src/realtime/events.gateway';
 import { UpdateCollectionDto } from './dto/update-collection.dto';
@@ -734,6 +734,52 @@ export class CollectionsController {
       collectionId,
       req.user.id,
       body,
+    );
+  }
+
+  // ===================== Contributions =====================
+
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Post(':id/contribute')
+  @ApiOperation({ summary: 'Request to contribute to a collection' })
+  async requestContribution(
+    @Param('id') collectionId: string,
+    @Body() body: { message?: string },
+    @Req() req: any,
+  ) {
+    return this.collectionsService.requestContribution(
+      req.user.id,
+      collectionId,
+      body?.message,
+    );
+  }
+
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Get(':id/contributions')
+  @ApiOperation({ summary: 'List contribution requests (owner only)' })
+  async listContributionRequests(
+    @Param('id') collectionId: string,
+    @Req() req: any,
+  ) {
+    return this.collectionsService.getContributionRequests(
+      collectionId,
+      req.user.id,
+    );
+  }
+
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Patch('contributions/:requestId/respond')
+  @ApiOperation({ summary: 'Respond to contribution request' })
+  async respondToContribution(
+    @Param('requestId') requestId: string,
+    @Body() body: { status: 'ACCEPTED' | 'REJECTED' },
+    @Req() req: any,
+  ) {
+    const status = body.status === 'ACCEPTED' ? PatchStatus.ACCEPTED : PatchStatus.REJECTED;
+    return this.collectionsService.respondToContribution(
+      req.user.id,
+      requestId,
+      status,
     );
   }
 }

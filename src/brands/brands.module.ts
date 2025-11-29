@@ -3,9 +3,11 @@ import { BrandsService } from './brands.service';
 import { BrandsController } from './brands.controller';
 import { PrismaService } from '../prisma/prisma.service';
 import { CollectionsModule } from '../collections/collections.module';
+import { UploadModule } from '../upload/upload.module';
+import { NotificationsModule } from '../notifications/notifications.module';
 
 @Module({
-  imports: [CollectionsModule],
+  imports: [CollectionsModule, UploadModule, NotificationsModule],
   providers: [BrandsService, PrismaService],
   controllers: [BrandsController],
   exports: [BrandsService],

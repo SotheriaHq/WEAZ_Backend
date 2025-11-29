@@ -14,6 +14,7 @@ import {
   NotificationType,
   CollectionVisibility,
   CollectionType,
+  PatchStatus,
 } from '@prisma/client';
 import { NotificationsService } from 'src/notifications/notifications.service';
 import { AnalyticsService } from 'src/analytics/analytics.service';
@@ -1081,10 +1082,11 @@ export class CollectionsService {
       ),
     );
 
-    // Mark collection as published
+    // Mark collection as published (or keep as DRAFT if requested)
+    const newStatus = dto.shouldPublish === false ? 'DRAFT' : 'PUBLISHED';
     const publishedCollection = await this.prisma.collection.update({
       where: { id: collectionId },
-      data: { status: 'PUBLISHED' },
+      data: { status: newStatus },
       include: {
         owner: true,
         medias: { include: { file: true }, orderBy: { orderIndex: 'asc' } },
@@ -1275,7 +1277,10 @@ export class CollectionsService {
         }
       }
     } else {
-      // Owner view: show by requested visibility or all (published + drafts per current business rules)
+      // Owner view: show by requested visibility or all
+      // Filter out DRAFT collections from the main list to avoid showing failed/incomplete collections.
+      where.status = 'PUBLISHED';
+
       if (visibility === 'public') {
         (where as any).visibility = CollectionVisibility.PUBLIC;
       } else if (visibility === 'private') {
@@ -1285,7 +1290,6 @@ export class CollectionsService {
           (where as any).visibility = CollectionVisibility.PUBLIC;
         }
       }
-      // status filter for owner remains default (no restriction) to allow managing drafts separately on dedicated endpoints
     }
 
     const items = await this.prisma.collection.findMany({
@@ -1324,7 +1328,7 @@ export class CollectionsService {
         medias: {
           include: { file: true },
           orderBy: { orderIndex: 'asc' },
-          take: 1,
+          // Removed take: 1 to get all medias for correct counts
         },
         _count: {
           select: {
@@ -1385,11 +1389,56 @@ export class CollectionsService {
       }
     }
 
+    // Collect file IDs for batch signing
+    const fileIds = new Set<string>();
+    data.forEach((c) => {
+      // Cover image (first media)
+      if (c.medias?.[0]?.file?.id) {
+        fileIds.add(c.medias[0].file.id);
+      }
+      // Brand logo
+      if (c.owner?.profileImageFile?.id) {
+        fileIds.add(c.owner.profileImageFile.id);
+      } else if (c.owner?.profileImageId) {
+        fileIds.add(c.owner.profileImageId);
+      }
+    });
+
+    const signedUrlMap = await this.uploadService.getBatchPublicSignedUrls(
+      Array.from(fileIds),
+    );
+
     return {
-      items: data.map((c) => ({
-        ...c,
-        isLiked: requesterId ? !!isLikedMap[c.id] : false,
-      })),
+      items: data.map((c) => {
+        // Inject signed URLs
+        const mappedMedias = c.medias.map(m => {
+            if (m.file && signedUrlMap.has(m.file.id)) {
+                return { ...m, file: { ...m.file, s3Url: signedUrlMap.get(m.file.id)! } };
+            }
+            return m;
+        });
+        
+        const owner = c.owner;
+        let ownerWithSignedUrl = owner;
+        const logoId = owner?.profileImageFile?.id || owner?.profileImageId;
+        if (logoId && signedUrlMap.has(logoId)) {
+             ownerWithSignedUrl = {
+                 ...owner,
+                 profileImage: signedUrlMap.get(logoId)!, // Update profileImage string too
+                 profileImageFile: owner.profileImageFile ? {
+                     ...owner.profileImageFile,
+                     s3Url: signedUrlMap.get(logoId)!
+                 } : null
+             };
+        }
+
+        return {
+            ...c,
+            medias: mappedMedias,
+            owner: ownerWithSignedUrl,
+            isLiked: requesterId ? !!isLikedMap[c.id] : false,
+        };
+      }),
       hasNextPage: hasNext,
       endCursor: data.length ? data[data.length - 1].id : null,
     };
@@ -1797,6 +1846,144 @@ export class CollectionsService {
     }
 
     return { viewed: !existingView };
+  }
+
+  // ============================================
+  // CONTRIBUTIONS
+  // ============================================
+
+  async requestContribution(requesterId: string, collectionId: string, message?: string) {
+    const collection = await this.prisma.collection.findUnique({
+      where: { id: collectionId },
+      include: { owner: true },
+    });
+
+    if (!collection) {
+      throw new NotFoundException('Collection not found');
+    }
+
+    if (collection.ownerId === requesterId) {
+      throw new BadRequestException('Cannot contribute to your own collection');
+    }
+
+    // Check if requester is a brand (optional, but likely desired)
+    const requester = await this.prisma.user.findUnique({ where: { id: requesterId } });
+    if (!requester || requester.type !== UserType.BRAND) {
+      throw new ForbiddenException('Only brands can request to contribute');
+    }
+
+    const existing = await this.prisma.contributionRequest.findUnique({
+      where: { requesterId_collectionId: { requesterId, collectionId } },
+    });
+
+    if (existing) {
+      if (existing.status === PatchStatus.PENDING) {
+        throw new BadRequestException('Contribution request already pending');
+      }
+      // Allow re-request if rejected?
+      await this.prisma.contributionRequest.update({
+        where: { id: existing.id },
+        data: { status: PatchStatus.PENDING, message, updatedAt: new Date() },
+      });
+      return { status: 'PENDING', message: 'Contribution request resent' };
+    }
+
+    await this.prisma.contributionRequest.create({
+      data: {
+        id: uuidv4(),
+        requesterId,
+        collectionId,
+        message,
+        status: PatchStatus.PENDING,
+      },
+    });
+
+    // Notify owner
+    if (this.notifications) {
+      try {
+        await this.notifications.create(
+          collection.ownerId,
+          NotificationType.CONTRIBUTION_REQUEST,
+          {
+            actorId: requesterId,
+            payload: {
+              collectionId,
+              collectionTitle: collection.title,
+              message,
+              targetUrl: `/collections/${collectionId}`,
+            },
+          },
+        );
+      } catch {}
+    }
+
+    return { status: 'PENDING', message: 'Contribution request sent' };
+  }
+
+  async respondToContribution(
+    ownerId: string,
+    requestId: string,
+    status: 'ACCEPTED' | 'REJECTED',
+  ) {
+    const request = await this.prisma.contributionRequest.findUnique({
+      where: { id: requestId },
+      include: { collection: true },
+    });
+
+    if (!request) {
+      throw new NotFoundException('Request not found');
+    }
+
+    if (request.collection.ownerId !== ownerId) {
+      throw new ForbiddenException('Not authorized');
+    }
+
+    if (request.status !== PatchStatus.PENDING) {
+      throw new BadRequestException('Request already processed');
+    }
+
+    await this.prisma.contributionRequest.update({
+      where: { id: requestId },
+      data: { status, updatedAt: new Date() },
+    });
+
+    // Notify requester
+    if (this.notifications) {
+      try {
+        const type =
+          status === PatchStatus.ACCEPTED
+            ? NotificationType.CONTRIBUTION_ACCEPTED
+            : NotificationType.CONTRIBUTION_REJECTED;
+        await this.notifications.create(request.requesterId, type, {
+          actorId: ownerId,
+          payload: {
+            collectionId: request.collectionId,
+            collectionTitle: request.collection.title,
+            targetUrl: `/collections/${request.collectionId}`,
+          },
+        });
+      } catch {}
+    }
+
+    return { status, message: `Contribution request ${status.toLowerCase()}` };
+  }
+
+  async getContributionRequests(collectionId: string, ownerId: string) {
+    await this.assertOwner(collectionId, ownerId);
+    return this.prisma.contributionRequest.findMany({
+      where: { collectionId, status: PatchStatus.PENDING },
+      include: {
+        requester: {
+          select: {
+            id: true,
+            username: true,
+            brandFullName: true,
+            profileImage: true,
+          },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
   }
 
   // ============================================

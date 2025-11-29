@@ -105,4 +105,8 @@ export class FinalizeCollectionDto {
   @ArrayMinSize(1)
   @Type(() => CompleteUploadDto)
   completions: CompleteUploadDto[];
+
+  @IsOptional()
+  @IsBoolean()
+  shouldPublish?: boolean;
 }
