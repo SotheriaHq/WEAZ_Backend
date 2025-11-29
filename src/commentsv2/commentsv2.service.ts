@@ -233,9 +233,28 @@ export class CommentsV2Service {
       }
 
       if (ownerId && ownerId !== userId) {
+        let targetUrl = '';
+        if (targetType === 'COLLECTION') {
+          targetUrl = `/collections/${targetId}?commentId=${created.id}`;
+        } else if (targetType === 'COLLECTION_MEDIA') {
+          // We fetched media earlier to check permissions, but let's ensure we have collectionId
+          // If we didn't fetch it in assertTargetExists (we did), we might need to fetch again or pass it down.
+          // assertTargetExists returns { ownerId } but not collectionId.
+          // Let's fetch it quickly or optimize.
+          const media = await this.prisma.collectionMedia.findUnique({
+            where: { id: targetId },
+            select: { collectionId: true },
+          });
+          if (media) {
+            targetUrl = `/collections/${media.collectionId}?commentId=${created.id}`;
+          }
+        } else if (targetType === 'POST') {
+           targetUrl = `/posts/${targetId}?commentId=${created.id}`;
+        }
+
         await this.notifications.create(ownerId, NotificationType.COMMENT, {
           actorId: userId,
-          payload: { targetType, targetId },
+          payload: { targetType, targetId, targetUrl },
         });
       }
 

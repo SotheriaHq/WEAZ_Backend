@@ -185,8 +185,7 @@ export class UploadService {
     });
 
     // Build a region-specific upload URL to avoid region-signature mismatches
-    const region =
-      (this.s3.config && (this.s3.config as any).region) || this.region;
+    const region = this.region;
     const uploadUrl = `https://${this.bucketName}.s3.${region}.amazonaws.com`;
 
     return {

@@ -85,7 +85,9 @@ export class NotificationRegistry {
     // FOLLOW
     registry.register({
       type: NotificationType.FOLLOW,
-      schema: Joi.object({}),
+      schema: Joi.object({
+        targetUrl: Joi.string().optional(),
+      }),
       formatter: (n: any) => {
         const actorName = n.actor
           ? n.actor.username ||
@@ -106,6 +108,7 @@ export class NotificationRegistry {
           id: Joi.string().optional(),
         }).optional(),
         targetType: Joi.string().optional(),
+        targetUrl: Joi.string().optional(),
       }),
       formatter: (n: any) => {
         const actorName = n.actor
@@ -130,6 +133,7 @@ export class NotificationRegistry {
         }).optional(),
         postId: Joi.string().optional(),
         collectionId: Joi.string().optional(),
+        targetUrl: Joi.string().optional(),
       }),
       formatter: (n: any) => {
         const actorName = n.actor
@@ -157,6 +161,7 @@ export class NotificationRegistry {
           type: Joi.string().optional(),
           id: Joi.string().optional(),
         }).optional(),
+        targetUrl: Joi.string().optional(),
       }),
       formatter: (n: any) => {
         const actorName = n.actor

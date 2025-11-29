@@ -381,6 +381,21 @@ export class BrandsService {
       throw new BadRequestException('You need at least 3 published collections to request a patch');
     }
 
+    // Rule: Rate Limiting (Max 3 requests per 30 days)
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+    const recentRequestsCount = await this.prisma.brandPatch.count({
+      where: {
+        requesterId,
+        createdAt: { gte: thirtyDaysAgo },
+      },
+    });
+
+    if (recentRequestsCount >= 3) {
+      throw new BadRequestException('You have reached your limit of 3 patch requests per 30 days');
+    }
+
     // Check existing request
     const existing = await this.prisma.brandPatch.findUnique({
       where: { requesterId_receiverId: { requesterId, receiverId } },
@@ -393,7 +408,21 @@ export class BrandsService {
       if (existing.status === PatchStatus.ACCEPTED) {
         throw new BadRequestException('You are already patched with this brand');
       }
-      // If REJECTED, allow re-request after cooldown? For now, just update to PENDING
+      
+      // Rule: Cooldown for REJECTED requests (72 hours)
+      if (existing.status === PatchStatus.REJECTED) {
+        const cooldownHours = 72;
+        const now = new Date();
+        const diffInMs = now.getTime() - existing.updatedAt.getTime();
+        const diffInHours = diffInMs / (1000 * 60 * 60);
+
+        if (diffInHours < cooldownHours) {
+          const remainingHours = Math.ceil(cooldownHours - diffInHours);
+          throw new BadRequestException(`Patch request rejected recently. Please wait ${remainingHours} hours before retrying.`);
+        }
+      }
+
+      // If REJECTED and cooldown passed, update to PENDING
       await this.prisma.brandPatch.update({
         where: { id: existing.id },
         data: { status: PatchStatus.PENDING, updatedAt: new Date() },

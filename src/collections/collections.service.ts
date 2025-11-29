@@ -845,10 +845,11 @@ export class CollectionsService {
     cursor?: string;
     limit?: number;
     tag?: string;
+    category?: string;
     countsPolicy?: 'combined';
     requesterId?: string; // Add requesterId to check like status
   }) {
-    const { cursor, limit = 20, tag, requesterId } = options ?? {};
+    const { cursor, limit = 20, tag, category, requesterId } = options ?? {};
     const take = Math.min(Math.max(limit, 1), 40);
 
     const where: Prisma.CollectionMediaWhereInput = {
@@ -859,6 +860,13 @@ export class CollectionsService {
           ? {
               tags: {
                 has: tag,
+              },
+            }
+          : {}),
+        ...(category && category !== 'ALL'
+          ? {
+              category: {
+                slug: category,
               },
             }
           : {}),
@@ -1100,6 +1108,36 @@ export class CollectionsService {
         },
       },
     });
+
+    // Notify followers if published
+    if (newStatus === 'PUBLISHED' && this.notifications) {
+      // Fetch followers
+      const followers = await this.prisma.follow.findMany({
+        where: { followingId: userId },
+        select: { followerId: true },
+      });
+
+      // Fan-out notifications
+      for (const f of followers) {
+        try {
+          await this.notifications.create(
+            f.followerId,
+            NotificationType.COLLECTION_UPLOAD,
+            {
+              actorId: userId,
+              payload: {
+                collectionId: publishedCollection.id,
+                collectionTitle: publishedCollection.title,
+                targetUrl: `/collections/${publishedCollection.id}`,
+                message: `${publishedCollection.owner.brandFullName || publishedCollection.owner.username} created a new collection: ${publishedCollection.title}`,
+              },
+            },
+          );
+        } catch (e) {
+          console.warn(`Failed to notify follower ${f.followerId}`, e);
+        }
+      }
+    }
 
     return publishedCollection;
   }
