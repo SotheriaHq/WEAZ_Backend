@@ -2,7 +2,7 @@ import { Module } from '@nestjs/common';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { AuthModule } from './auth/auth.module';
-import { PrismaService } from './prisma/prisma.service';
+import { PrismaModule } from './prisma/prisma.module';
 import { ConfigModule } from '@nestjs/config';
 import { UploadModule } from './upload/upload.module';
 import { DevToolsModule } from './dev-tools/dev-tools.module';
@@ -27,6 +27,7 @@ import { PayoutModule } from './payout/payout.module';
       isGlobal: true,
       envFilePath: '.env',
     }),
+    PrismaModule,
     AuthModule,
     ThrottlerModule.forRoot([{ ttl: 60, limit: 120 }]),
     UploadModule,
@@ -47,6 +48,6 @@ import { PayoutModule } from './payout/payout.module';
     PayoutModule,
   ],
   controllers: [AppController],
-  providers: [AppService, PrismaService, EventsGateway],
+  providers: [AppService, EventsGateway],
 })
-export class AppModule {}
+export class AppModule { }
