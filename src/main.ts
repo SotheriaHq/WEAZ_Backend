@@ -13,7 +13,7 @@ try {
         : require;
     req('module-alias/register');
   }
-} catch {}
+} catch { }
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { TransformInterceptor } from './transform/transform.interceptor';
@@ -123,6 +123,14 @@ async function bootstrap() {
       .split(',')
       .map((origin) => origin.trim())
       .filter((origin) => origin.length > 0);
+
+    // Always allow localhost development origins
+    if (!allowedOrigins.includes('http://localhost:3000')) {
+      allowedOrigins.push('http://localhost:3000');
+    }
+    if (!allowedOrigins.includes('http://localhost:5173')) {
+      allowedOrigins.push('http://localhost:5173');
+    }
 
     const exposedHeaders = configService
       .get<string>('CORS_EXPOSED_HEADERS', '')
