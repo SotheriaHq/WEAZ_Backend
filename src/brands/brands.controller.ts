@@ -33,7 +33,7 @@ export class BrandsController {
   constructor(
     private readonly brandsService: BrandsService,
     private readonly collectionsService: CollectionsService,
-  ) {}
+  ) { }
 
   // ... existing methods ...
 
@@ -248,7 +248,7 @@ export class BrandsController {
   }
 
   // ===================== Private Access (User-scoped) =====================
-  
+
   @UseGuards(JwtAuthGuard)
   @Get('users/me/private-access/requests')
   async listMyAccessRequests(
@@ -303,5 +303,29 @@ export class BrandsController {
   ) {
     const userId = req.user?.id;
     return this.collectionsService.userRevokeOwnAccess(accessId, userId);
+  }
+
+  // ===================== Dashboard Endpoints =====================
+
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Get('brands/:id/dashboard/overview')
+  async getDashboardOverview(@Param('id') brandId: string, @Req() req: any) {
+    if (req.user.id !== brandId) {
+      throw new BadRequestException('Not authorized for this brand');
+    }
+    return this.brandsService.getDashboardOverview(brandId);
+  }
+
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Get('brands/:id/dashboard/analytics')
+  async getDashboardAnalytics(
+    @Param('id') brandId: string,
+    @Req() req: any,
+    @Query('range') range: '7d' | '30d' | 'ytd' = '30d',
+  ) {
+    if (req.user.id !== brandId) {
+      throw new BadRequestException('Not authorized for this brand');
+    }
+    return this.brandsService.getDashboardAnalytics(brandId, range);
   }
 }

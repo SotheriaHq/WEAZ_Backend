@@ -85,7 +85,7 @@ export class BrandsService {
     private readonly prisma: PrismaService,
     private readonly uploadService: UploadService,
     private readonly notifications?: NotificationsService,
-  ) {}
+  ) { }
 
   private async getBrandOrThrow(brandId: string) {
     const brand = await this.prisma.user.findUnique({
@@ -177,23 +177,23 @@ export class BrandsService {
 
     const logoAsset = brand.profileImageFile
       ? {
-          fileId: brand.profileImageFile.id,
-          url: brand.profileImageFile.s3Url,
-          originalName: brand.profileImageFile.originalName ?? null,
-          fileName: brand.profileImageFile.fileName ?? null,
-          createdAt: brand.profileImageFile.createdAt.toISOString(),
-          updatedAt: brand.profileImageFile.updatedAt.toISOString(),
-        }
+        fileId: brand.profileImageFile.id,
+        url: brand.profileImageFile.s3Url,
+        originalName: brand.profileImageFile.originalName ?? null,
+        fileName: brand.profileImageFile.fileName ?? null,
+        createdAt: brand.profileImageFile.createdAt.toISOString(),
+        updatedAt: brand.profileImageFile.updatedAt.toISOString(),
+      }
       : null;
     const bannerAsset = brand.bannerImageFile
       ? {
-          fileId: brand.bannerImageFile.id,
-          url: brand.bannerImageFile.s3Url,
-          originalName: brand.bannerImageFile.originalName ?? null,
-          fileName: brand.bannerImageFile.fileName ?? null,
-          createdAt: brand.bannerImageFile.createdAt.toISOString(),
-          updatedAt: brand.bannerImageFile.updatedAt.toISOString(),
-        }
+        fileId: brand.bannerImageFile.id,
+        url: brand.bannerImageFile.s3Url,
+        originalName: brand.bannerImageFile.originalName ?? null,
+        fileName: brand.bannerImageFile.fileName ?? null,
+        createdAt: brand.bannerImageFile.createdAt.toISOString(),
+        updatedAt: brand.bannerImageFile.updatedAt.toISOString(),
+      }
       : null;
 
     // Generate signed URLs
@@ -283,12 +283,12 @@ export class BrandsService {
 
     const sanitizedTags = Array.isArray(dto.brandTags)
       ? Array.from(
-          new Set(
-            dto.brandTags
-              .map((tag) => (typeof tag === 'string' ? tag.trim() : ''))
-              .filter((tag) => tag.length > 0),
-          ),
-        ).slice(0, 6)
+        new Set(
+          dto.brandTags
+            .map((tag) => (typeof tag === 'string' ? tag.trim() : ''))
+            .filter((tag) => tag.length > 0),
+        ),
+      ).slice(0, 6)
       : undefined;
 
     const brandCountry = trimOrNull(dto.brandCountry);
@@ -335,9 +335,9 @@ export class BrandsService {
       }),
       ...(locationWasProvided
         ? {
-            companyLocation:
-              companyLocation.length > 0 ? companyLocation : null,
-          }
+          companyLocation:
+            companyLocation.length > 0 ? companyLocation : null,
+        }
         : {}),
     };
 
@@ -408,7 +408,7 @@ export class BrandsService {
       if (existing.status === PatchStatus.ACCEPTED) {
         throw new BadRequestException('You are already patched with this brand');
       }
-      
+
       // Rule: Cooldown for REJECTED requests (72 hours)
       if (existing.status === PatchStatus.REJECTED) {
         const cooldownHours = 72;
@@ -454,7 +454,7 @@ export class BrandsService {
             },
           },
         );
-      } catch {}
+      } catch { }
     }
 
     return { status: 'PENDING', message: 'Patch request sent' };
@@ -500,7 +500,7 @@ export class BrandsService {
             targetUrl: '/settings?tab=patches&filter=active',
           },
         });
-      } catch {}
+      } catch { }
     }
 
     return { status, message: `Patch request ${status.toLowerCase()}` };
@@ -576,9 +576,9 @@ export class BrandsService {
             brandFullName: true,
             profileImage: true,
             collections: {
-                where: { status: 'PUBLISHED' },
-                take: 3,
-                select: { id: true, title: true, medias: { take: 1, select: { file: { select: { s3Url: true } } } } }
+              where: { status: 'PUBLISHED' },
+              take: 3,
+              select: { id: true, title: true, medias: { take: 1, select: { file: { select: { s3Url: true } } } } }
             }
           },
         },
@@ -626,7 +626,7 @@ export class BrandsService {
           actorId: followerId,
           payload: { message: 'New subscriber' },
         });
-      } catch {}
+      } catch { }
     }
 
     return { subscribed: true };
@@ -674,6 +674,121 @@ export class BrandsService {
       total,
       page,
       totalPages: Math.ceil(total / limit),
+    };
+  }
+  // ============================================
+  // DASHBOARD & ANALYTICS
+  // ============================================
+
+  async getDashboardOverview(brandId: string) {
+    const brand = await this.prisma.brand.findUnique({
+      where: { ownerId: brandId },
+    });
+
+    if (!brand) {
+      throw new NotFoundException('Brand profile not found');
+    }
+
+    // KPIs
+    const [totalOrders, totalSalesResult, pendingOrders] = await Promise.all([
+      this.prisma.order.count({ where: { brandId: brand.id } }),
+      this.prisma.order.aggregate({
+        where: { brandId: brand.id, paymentStatus: 'PAID' },
+        _sum: { totalAmount: true },
+      }),
+      this.prisma.order.count({
+        where: { brandId: brand.id, status: 'PENDING' },
+      }),
+    ]);
+
+    const totalSales = totalSalesResult._sum.totalAmount || 0;
+    const avgOrderValue = totalOrders > 0 ? Number(totalSales) / totalOrders : 0;
+
+    // Recent Orders
+    const recentOrders = await this.prisma.order.findMany({
+      where: { brandId: brand.id },
+      orderBy: { createdAt: 'desc' },
+      take: 5,
+    });
+
+    // Low Stock (Mocked for now as Product inventory isn't fully defined in schema yet)
+    const lowStockAlerts = [];
+
+    // Action Required
+    const actionRequired = [];
+    if (pendingOrders > 0) {
+      actionRequired.push({
+        type: 'ORDER_SHIPMENT',
+        message: `${pendingOrders} orders need shipment`,
+        count: pendingOrders,
+        link: '/orders?status=PENDING',
+      });
+    }
+
+    return {
+      kpis: {
+        totalSales: Number(totalSales),
+        totalOrders,
+        avgOrderValue,
+        pendingOrders,
+      },
+      recentOrders,
+      actionRequired,
+      currency: brand.currency,
+    };
+  }
+
+  async getDashboardAnalytics(brandId: string, range: '7d' | '30d' | 'ytd' = '30d') {
+    const brand = await this.prisma.brand.findUnique({
+      where: { ownerId: brandId },
+    });
+
+    if (!brand) {
+      throw new NotFoundException('Brand profile not found');
+    }
+
+    const now = new Date();
+    let startDate = new Date();
+
+    if (range === '7d') startDate.setDate(now.getDate() - 7);
+    else if (range === '30d') startDate.setDate(now.getDate() - 30);
+    else if (range === 'ytd') startDate = new Date(now.getFullYear(), 0, 1);
+
+    // Group orders by date
+    const orders = await this.prisma.order.findMany({
+      where: {
+        brandId: brand.id,
+        createdAt: { gte: startDate },
+        paymentStatus: 'PAID',
+      },
+      select: {
+        createdAt: true,
+        totalAmount: true,
+      },
+    });
+
+    // Aggregate by day
+    const dailySales = new Map<string, number>();
+    orders.forEach(order => {
+      const date = order.createdAt.toISOString().split('T')[0];
+      const amount = Number(order.totalAmount);
+      dailySales.set(date, (dailySales.get(date) || 0) + amount);
+    });
+
+    // Fill missing days
+    const chartData = [];
+    for (let d = new Date(startDate); d <= now; d.setDate(d.getDate() + 1)) {
+      const dateStr = d.toISOString().split('T')[0];
+      chartData.push({
+        date: dateStr,
+        amount: dailySales.get(dateStr) || 0,
+      });
+    }
+
+    return {
+      salesChart: chartData,
+      range,
+      currency: brand.currency,
     };
   }
 }

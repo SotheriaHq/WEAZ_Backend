@@ -14,7 +14,8 @@ import {
 import { FileInterceptor } from '@nestjs/platform-express';
 import { memoryStorage } from 'multer';
 import { JwtAuthGuard } from 'src/auth/guard/jwt-auth.guard';
-import { UploadService, FileType } from './upload.service';
+import { UploadService } from './upload.service';
+import { FileType } from './upload.enums';
 import { GetFilesDto } from './dto/get-files.dto';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { SkipThrottle } from '@nestjs/throttler';
@@ -23,7 +24,7 @@ import { SkipThrottle } from '@nestjs/throttler';
 @ApiBearerAuth()
 @Controller('uploads')
 export class UploadController {
-  constructor(private uploadService: UploadService) {}
+  constructor(private uploadService: UploadService) { }
 
   // ============================================
   // PUBLIC ENDPOINTS (No Auth Required)

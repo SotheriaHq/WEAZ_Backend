@@ -8,14 +8,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { GetFilesDto } from './dto/get-files.dto';
 import { PaginatedResult } from './dto/pagination.dto';
 import { ConfigService } from '@nestjs/config';
-
-export enum FileType {
-  PROFILE_IMAGE = 'PROFILE_IMAGE',
-  BANNER_IMAGE = 'BANNER_IMAGE',
-  POST_IMAGE = 'POST_IMAGE',
-  POST_VIDEO = 'POST_VIDEO',
-  DOCUMENT = 'DOCUMENT',
-}
+import { FileType } from './upload.enums';
 
 export interface FileUploadResult {
   id: string;
@@ -97,9 +90,9 @@ export class UploadService {
         ContentType: file.mimetype,
         ContentDisposition: 'inline',
       });
-      
+
       await this.s3.send(command);
-      
+
       // Construct S3 URL
       const s3Url = `https://${this.bucketName}.s3.${this.region}.amazonaws.com/${key}`;
 
@@ -261,7 +254,7 @@ export class UploadService {
       Bucket: this.bucketName,
       Key: file.s3Key,
     });
-    
+
     return await getSignedUrl(this.s3, command, { expiresIn: 3600 }); // 1 hour
   }
 
@@ -282,7 +275,7 @@ export class UploadService {
       Bucket: this.bucketName,
       Key: file.s3Key,
     });
-    
+
     return await getSignedUrl(this.s3, command, { expiresIn: 3600 }); // 1 hour
   }
 
@@ -346,9 +339,9 @@ export class UploadService {
    */
   async deleteS3ObjectByKey(key: string): Promise<void> {
     try {
-      const command = new DeleteObjectCommand({ 
-        Bucket: this.bucketName, 
-        Key: key 
+      const command = new DeleteObjectCommand({
+        Bucket: this.bucketName,
+        Key: key
       });
       await this.s3.send(command);
     } catch (err) {
@@ -369,9 +362,9 @@ export class UploadService {
         Bucket: this.bucketName,
         Delete: { Objects: objects },
       });
-      
+
       const res = await this.s3.send(command);
-      
+
       if (res.Errors && res.Errors.length) {
         this.logger.error('S3 deleteObjects reported errors', res.Errors);
         throw new Error('One or more S3 deletions failed');
@@ -385,9 +378,9 @@ export class UploadService {
   // Verify S3 object exists by key
   async verifyObjectExists(key: string): Promise<boolean> {
     try {
-      const command = new HeadObjectCommand({ 
-        Bucket: this.bucketName, 
-        Key: key 
+      const command = new HeadObjectCommand({
+        Bucket: this.bucketName,
+        Key: key
       });
       await this.s3.send(command);
       return true;
@@ -459,9 +452,9 @@ export class UploadService {
       Body: buffer,
       ContentType: mimeType,
     });
-    
+
     await this.s3.send(command);
-    
+
     // Construct S3 URL
     const s3Url = `https://${this.bucketName}.s3.${this.region}.amazonaws.com/${key}`;
 

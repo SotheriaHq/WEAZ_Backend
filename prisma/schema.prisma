@@ -88,6 +88,8 @@ model User {
   // PHASE 1: Category suggestions
   proposedSuggestions     CollectionCategorySuggestion[]  @relation("ProposedCategorySuggestions")
   decidedSuggestions      CollectionCategorySuggestion[]  @relation("DecidedCategorySuggestions")
+  // Brand Relation
+  brand                   Brand?                          @relation("BrandOwner")
 }
 
 model FileUpload {
@@ -615,6 +617,87 @@ model ContributionRequest {
   requester    User        @relation("UserContributionRequests", fields: [requesterId], references: [id], onDelete: Cascade)
   collection   Collection  @relation("CollectionContributionRequests", fields: [collectionId], references: [id], onDelete: Cascade)
 
-  @@unique([requesterId, collectionId]) // One request per user per collection
-  @@index([collectionId, status])
+  @@unique([requesterId, collectionId])
+}
+
+// ... existing models ...
+
+// ===== Brand Dashboard Models =====
+
+model Brand {
+  id          String    @id @map("_id") @db.Uuid
+  name        String
+  ownerId     String    @unique @db.Uuid
+  owner       User      @relation("BrandOwner", fields: [ownerId], references: [id])
+  
+  description String?
+  logo        String?
+  banner      String?
+  
+  currency    String    @default("NGN")
+  
+  orders      Order[]
+  payouts     Payout[]
+  
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+}
+
+model Order {
+  id             String        @id @map("_id") @db.Uuid
+  brandId        String        @db.Uuid
+  brand          Brand         @relation(fields: [brandId], references: [id])
+  
+  customerName   String
+  items          Json          // [{productId, qty, price, thumbnail, name}]
+  totalAmount    Decimal       @db.Decimal(10, 2)
+  currency       String        @default("NGN")
+  
+  status         OrderStatus   @default(PENDING)
+  paymentStatus  PaymentStatus @default(PENDING)
+  
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  
+  @@index([brandId])
+  @@index([brandId, status])
+}
+
+model Payout {
+  id          String       @id @map("_id") @db.Uuid
+  brandId     String       @db.Uuid
+  brand       Brand        @relation(fields: [brandId], references: [id])
+  
+  amount      Decimal      @db.Decimal(10, 2)
+  currency    String       @default("NGN")
+  status      PayoutStatus @default(PENDING)
+  reference   String?
+  
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  
+  @@index([brandId])
+}
+
+enum OrderStatus {
+  PENDING
+  PROCESSING
+  SHIPPED
+  DELIVERED
+  CANCELLED
+  RETURNED
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  FAILED
+  REFUNDED
+}
+
+enum PayoutStatus {
+  PENDING
+  PROCESSING
+  PAID
+  FAILED
 }

@@ -18,6 +18,8 @@ import { CommentsV2Module } from './commentsv2/commentsv2.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { TagsModule } from './tags/tags.module';
 import { CategoriesModule } from './categories/categories.module';
+import { OrderModule } from './order/order.module';
+import { PayoutModule } from './payout/payout.module';
 
 @Module({
   imports: [
@@ -41,6 +43,8 @@ import { CategoriesModule } from './categories/categories.module';
     NotificationsModule,
     TagsModule,
     CategoriesModule,
+    OrderModule,
+    PayoutModule,
   ],
   controllers: [AppController],
   providers: [AppService, PrismaService, EventsGateway],
