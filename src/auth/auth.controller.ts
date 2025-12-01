@@ -25,7 +25,7 @@ import { LoginDto } from './dto/login-auth.dto';
 import { JwtAuthGuard } from './guard/jwt-auth.guard';
 import { RolesGuard } from './guard/role.guard';
 import { Roles } from './decorator/roles.decorator';
-import { Role } from '@prisma/client';
+import { Role, NotificationType } from '@prisma/client';
 import { Throttle, ThrottlerGuard, SkipThrottle } from '@nestjs/throttler';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import {
@@ -49,7 +49,7 @@ export class AuthController {
     private readonly tokenService: TokenService,
     private readonly configService: ConfigService,
     private readonly notifications: NotificationsService,
-  ) {}
+  ) { }
 
   private get accessTokenCookieName(): string {
     return this.configService.get<string>('ACCESS_TOKEN_COOKIE', 'accessToken');
@@ -152,13 +152,13 @@ export class AuthController {
           ? forwarded.split(',')[0].trim()
           : null;
       const ipAddress = ip || req.ip || null;
-      await this.notifications.create(req.user.id, 'LOGOUT' as any, {
+      await this.notifications.create(req.user.id, NotificationType.LOGOUT, {
         payload: {
           ip: ipAddress,
           userAgent: req.headers['user-agent'] ?? null,
         },
       });
-    } catch {}
+    } catch { }
 
     return { message: 'Logged out successfully' };
   }
@@ -187,13 +187,13 @@ export class AuthController {
           ? forwarded.split(',')[0].trim()
           : null;
       const ipAddress = ip || req.ip || null;
-      await this.notifications.create(req.user.id, 'LOGOUT_ALL' as any, {
+      await this.notifications.create(req.user.id, NotificationType.LOGOUT_ALL, {
         payload: {
           ip: ipAddress,
           userAgent: req.headers['user-agent'] ?? null,
         },
       });
-    } catch {}
+    } catch { }
 
     return { message: 'Logged out from all devices' };
   }

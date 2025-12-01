@@ -7,7 +7,7 @@ import {
 import { PrismaService } from 'src/prisma/prisma.service';
 import { EventsGateway } from 'src/realtime/events.gateway';
 import { NotificationType } from '@prisma/client';
-import { CreateNotificationOptions } from './notifications.types';
+import { CreateNotificationOptions, NotificationSettings, DEFAULT_NOTIFICATION_SETTINGS } from './notifications.types';
 import { v4 as uuidv4 } from 'uuid';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import { Cache } from 'cache-manager';
@@ -20,7 +20,7 @@ export class NotificationsService {
     private readonly events: EventsGateway,
     @Inject(CACHE_MANAGER) private cacheManager: Cache,
     private readonly registry: NotificationRegistry,
-  ) {}
+  ) { }
 
   private validateAndSanitizePayload(
     type: NotificationType,
@@ -48,7 +48,7 @@ export class NotificationsService {
     try {
       const hasScheme = /^(https?:)?\/\//i.test(url);
       if (hasScheme) return undefined;
-    } catch {}
+    } catch { }
     // Normalize to ensure leading slash
     const cleaned = url.startsWith('/') ? url : `/${url}`;
     // Allow only known internal prefixes
@@ -164,6 +164,65 @@ export class NotificationsService {
     return { success: true, count: res.count };
   }
 
+  async getSettings(userId: string): Promise<NotificationSettings> {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { notificationSettings: true },
+    });
+
+    if (!user?.notificationSettings) {
+      return DEFAULT_NOTIFICATION_SETTINGS;
+    }
+
+    // Merge with defaults to ensure all keys exist
+    return {
+      ...DEFAULT_NOTIFICATION_SETTINGS,
+      ...(user.notificationSettings as any),
+      security: { ...DEFAULT_NOTIFICATION_SETTINGS.security, ...(user.notificationSettings as any).security },
+      engagement: { ...DEFAULT_NOTIFICATION_SETTINGS.engagement, ...(user.notificationSettings as any).engagement },
+      brand: { ...DEFAULT_NOTIFICATION_SETTINGS.brand, ...(user.notificationSettings as any).brand },
+    };
+  }
+
+  async updateSettings(userId: string, settings: Partial<NotificationSettings>) {
+    const current = await this.getSettings(userId);
+    const updated = {
+      ...current,
+      ...settings,
+      security: { ...current.security, ...settings.security },
+      engagement: { ...current.engagement, ...settings.engagement },
+      brand: { ...current.brand, ...settings.brand },
+    };
+
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { notificationSettings: updated as any },
+    });
+
+    return updated;
+  }
+
+  private isNotificationEnabled(type: NotificationType, settings: NotificationSettings): boolean {
+    switch (type) {
+      case NotificationType.LOGIN:
+      case NotificationType.LOGOUT:
+      case NotificationType.LOGOUT_ALL:
+        return settings.security.login;
+      case NotificationType.LIKE:
+        return settings.engagement.likes;
+      case NotificationType.COMMENT:
+        return settings.engagement.comments;
+      case NotificationType.FOLLOW:
+        return settings.engagement.follows;
+      case NotificationType.BRAND_PATCH_REQUEST:
+        return settings.brand.patchRequests;
+      case NotificationType.CONTRIBUTION_REQUEST:
+        return settings.brand.contributions;
+      default:
+        return true; // Default to true for critical/other types
+    }
+  }
+
   async create(
     recipientId: string,
     type: NotificationType,
@@ -176,6 +235,13 @@ export class NotificationsService {
     const actorId = opts?.actorId ?? null;
     if (actorId && actorId === recipientId) {
       console.log('Skipping self-notification');
+      return null;
+    }
+
+    // Check user settings
+    const settings = await this.getSettings(recipientId);
+    if (!this.isNotificationEnabled(type, settings)) {
+      console.log(`Notification type ${type} disabled by user settings. Skipping.`);
       return null;
     }
 
@@ -251,8 +317,8 @@ export class NotificationsService {
         // Sanitize payload for emission: remove sensitive fields
         const sanitizedPayload =
           created.payload &&
-          typeof created.payload === 'object' &&
-          !Array.isArray(created.payload)
+            typeof created.payload === 'object' &&
+            !Array.isArray(created.payload)
             ? { ...created.payload }
             : {};
         if ((sanitizedPayload as any).ip) delete (sanitizedPayload as any).ip; // Remove IP addresses

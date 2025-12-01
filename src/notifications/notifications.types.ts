@@ -14,3 +14,33 @@ export interface CreateNotificationOptions {
   // exists within the given timeframe.
   dedupeMs?: number;
 }
+
+export interface NotificationSettings {
+  security: {
+    login: boolean;
+  };
+  engagement: {
+    likes: boolean;
+    comments: boolean;
+    follows: boolean;
+  };
+  brand: {
+    patchRequests: boolean;
+    contributions: boolean;
+  };
+}
+
+export const DEFAULT_NOTIFICATION_SETTINGS: NotificationSettings = {
+  security: {
+    login: true,
+  },
+  engagement: {
+    likes: true,
+    comments: true,
+    follows: true,
+  },
+  brand: {
+    patchRequests: true,
+    contributions: true,
+  },
+};

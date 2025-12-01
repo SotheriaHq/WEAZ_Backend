@@ -61,6 +61,7 @@ model User {
   isEmailVerified       Boolean         @default(false)
   emailVerificationCode String?         @unique
   isActive              String          @default("Active")
+  notificationSettings  Json?           // Stores user preferences { security: { login: true }, engagement: { likes: true } }
 
   // Relations for new social models
   followerFollows         Follow[]                        @relation("followerFollows")

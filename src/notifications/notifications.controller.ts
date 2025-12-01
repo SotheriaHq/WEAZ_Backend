@@ -7,6 +7,7 @@ import {
   Param,
   Req,
   UseGuards,
+  Body,
 } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import { NotificationsService } from './notifications.service';
@@ -16,7 +17,7 @@ import { ListNotificationsQueryDto } from './dto';
 @UseGuards(JwtAuthGuard)
 @Controller('notifications')
 export class NotificationsController {
-  constructor(private readonly service: NotificationsService) {}
+  constructor(private readonly service: NotificationsService) { }
 
   @Get()
   async list(@Req() req: any, @Query() q: ListNotificationsQueryDto) {
@@ -37,5 +38,15 @@ export class NotificationsController {
   @Post('mark-all-read')
   async markAll(@Req() req: any) {
     return this.service.markAllRead(req.user.id);
+  }
+
+  @Get('settings')
+  async getSettings(@Req() req: any) {
+    return this.service.getSettings(req.user.id);
+  }
+
+  @Patch('settings')
+  async updateSettings(@Req() req: any, @Body() body: any) {
+    return this.service.updateSettings(req.user.id, body);
   }
 }
