@@ -20,6 +20,7 @@ import { TagsModule } from './tags/tags.module';
 import { CategoriesModule } from './categories/categories.module';
 import { OrderModule } from './order/order.module';
 import { PayoutModule } from './payout/payout.module';
+import { StoreModule } from './store/store.module';
 
 @Module({
   imports: [
@@ -46,6 +47,7 @@ import { PayoutModule } from './payout/payout.module';
     CategoriesModule,
     OrderModule,
     PayoutModule,
+    StoreModule,
   ],
   controllers: [AppController],
   providers: [AppService, EventsGateway],

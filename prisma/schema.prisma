@@ -336,6 +336,9 @@ model Collection {
   
   // Contributions
   contributionRequests         ContributionRequest[]           @relation("CollectionContributionRequests")
+  
+  // E-commerce products
+  products                     Product[]                       @relation("Collection_to_Products")
 
   @@index([status, createdAt])
   @@index([status, patchesCount])
@@ -639,6 +642,7 @@ model Brand {
   
   orders      Order[]
   payouts     Payout[]
+  products    Product[] @relation("Brand_to_Products")
   
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
@@ -702,3 +706,87 @@ enum PayoutStatus {
   PAID
   FAILED
 }
+
+// ===== E-Commerce Store Models =====
+
+model Product {
+  id              String        @id @map("_id") @db.Uuid
+  collectionId    String        @db.Uuid
+  collection      Collection    @relation("Collection_to_Products", fields: [collectionId], references: [id], onDelete: Cascade)
+  brandId         String        @db.Uuid
+  brand           Brand         @relation("Brand_to_Products", fields: [brandId], references: [id], onDelete: Cascade)
+  
+  name            String
+  description     String?
+  price           Decimal       @db.Decimal(10, 2)
+  salePrice       Decimal?      @db.Decimal(10, 2)
+  saleStartAt     DateTime?
+  saleEndAt       DateTime?
+  
+  // Variants
+  sizes           String[]      @default([])     // ["XS", "S", "M", "L", "XL", "XXL"]
+  sizeStock       Json?                          // {"XS": 5, "S": 10, "M": 0, "L": 8}
+  colors          String[]      @default([])     // ["Navy", "Indigo", "Burgundy"]
+  colorImages     Json?                          // {"Navy": "url1", "Indigo": "url2"}
+  
+  // Media
+  images          String[]      @default([])     // Array of image URLs
+  thumbnail       String?
+  
+  // Inventory
+  totalStock      Int           @default(0)
+  lowStockThreshold Int         @default(5)
+  
+  // Metadata
+  tags            String[]      @default([])
+  gender          CollectionType @default(EVERYBODY)
+  isActive        Boolean       @default(true)
+  isFeatured      Boolean       @default(false)
+  
+  // Engagement
+  viewsCount      Int           @default(0)
+  likesCount      Int           @default(0)
+  
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  
+  // Relations
+  cartItems       CartItem[]
+  wishlistItems   WishlistItem[]
+  
+  @@index([brandId])
+  @@index([collectionId])
+  @@index([brandId, isActive])
+  @@index([brandId, isFeatured])
+  @@index([createdAt])
+}
+
+model CartItem {
+  id              String        @id @map("_id") @db.Uuid
+  userId          String        @db.Uuid
+  productId       String        @db.Uuid
+  product         Product       @relation(fields: [productId], references: [id], onDelete: Cascade)
+  
+  quantity        Int           @default(1)
+  selectedSize    String?
+  selectedColor   String?
+  
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  
+  @@unique([userId, productId, selectedSize, selectedColor])
+  @@index([userId])
+}
+
+model WishlistItem {
+  id              String        @id @map("_id") @db.Uuid
+  userId          String        @db.Uuid
+  productId       String        @db.Uuid
+  product         Product       @relation(fields: [productId], references: [id], onDelete: Cascade)
+  
+  createdAt       DateTime      @default(now())
+  
+  @@unique([userId, productId])
+  @@index([userId])
+}
+
