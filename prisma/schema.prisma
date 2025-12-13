@@ -91,6 +91,9 @@ model User {
   decidedSuggestions      CollectionCategorySuggestion[]  @relation("DecidedCategorySuggestions")
   // Brand Relation
   brand                   Brand?                          @relation("BrandOwner")
+
+  // Orders as buyer
+  ordersAsBuyer           Order[]                         @relation("OrderBuyer")
 }
 
 model FileUpload {
@@ -226,6 +229,10 @@ enum NotificationType {
   BRAND_PATCH_REQUEST
   BRAND_PATCH_ACCEPTED
   BRAND_PATCH_REJECTED
+
+  // Orders
+  ORDER_PLACED
+  ORDER_STATUS_UPDATED
 
   // Contributions
   CONTRIBUTION_REQUEST
@@ -637,6 +644,7 @@ model Brand {
   description String?
   logo        String?
   banner      String?
+  isStoreOpen Boolean   @default(false)
   
   currency    String    @default("NGN")
   
@@ -652,8 +660,12 @@ model Order {
   id             String        @id @map("_id") @db.Uuid
   brandId        String        @db.Uuid
   brand          Brand         @relation(fields: [brandId], references: [id])
+  buyerId        String?       @db.Uuid
+  buyer          User?         @relation("OrderBuyer", fields: [buyerId], references: [id])
   
   customerName   String
+  shippingAddress Json?
+  contactInfo     Json?
   items          Json          // [{productId, qty, price, thumbnail, name}]
   totalAmount    Decimal       @db.Decimal(10, 2)
   currency       String        @default("NGN")
@@ -666,6 +678,7 @@ model Order {
   
   @@index([brandId])
   @@index([brandId, status])
+  @@index([buyerId])
 }
 
 model Payout {

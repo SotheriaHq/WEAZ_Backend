@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { OrderStatus, Prisma } from '@prisma/client';
+import { OrderStatus, Prisma, NotificationType } from '@prisma/client';
+import { v4 as uuidv4 } from 'uuid';
 
 @Injectable()
 export class OrderService {
@@ -68,10 +69,25 @@ export class OrderService {
             throw new NotFoundException('Order not found');
         }
 
-        return this.prisma.order.update({
+        const updated = await this.prisma.order.update({
             where: { id: orderId },
             data: { status },
         });
+
+        // Notify buyer about status change
+        if (order.buyerId) {
+            await this.prisma.notification.create({
+                data: {
+                    id: uuidv4(),
+                    recipientId: order.buyerId,
+                    actorId: brandId,
+                    type: NotificationType.ORDER_STATUS_UPDATED,
+                    payload: { orderId: order.id, status },
+                },
+            });
+        }
+
+        return updated;
     }
 
     private async getBrandId(ownerId: string): Promise<string> {

@@ -4,11 +4,13 @@ import { PrismaService } from 'src/prisma/prisma.service';
 import { EventsGateway } from 'src/realtime/events.gateway';
 import { NotificationType } from '@prisma/client';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
+import { NotificationRegistry } from './notifications.registry';
 
 describe('NotificationsService', () => {
   let service: NotificationsService;
   let mockPrisma: any;
   let cacheManager: any;
+  let registry: NotificationRegistry;
 
   beforeEach(async () => {
     mockPrisma = {
@@ -20,6 +22,9 @@ describe('NotificationsService', () => {
         create: jest.fn(),
         findFirst: jest.fn(),
       },
+      user: {
+        findUnique: jest.fn().mockResolvedValue({ notificationSettings: null }),
+      },
     };
 
     const mockEvents = {
@@ -27,6 +32,20 @@ describe('NotificationsService', () => {
         to: jest.fn().mockReturnThis(),
         emit: jest.fn(),
       },
+    };
+
+    const mockRegistry: Partial<NotificationRegistry> = {
+      getConfig: jest.fn((type: NotificationType) => {
+        if (type === NotificationType.LOGIN) {
+          return {
+            schema: {
+              validate: () => ({ error: new Error('invalid'), value: {} }),
+            } as any,
+            formatter: () => 'fmt',
+          } as any;
+        }
+        return undefined;
+      }),
     };
 
     const mockCacheManager = {
@@ -41,11 +60,13 @@ describe('NotificationsService', () => {
         { provide: PrismaService, useValue: mockPrisma },
         { provide: EventsGateway, useValue: mockEvents },
         { provide: CACHE_MANAGER, useValue: mockCacheManager },
+        { provide: NotificationRegistry, useValue: mockRegistry },
       ],
     }).compile();
 
     service = module.get<NotificationsService>(NotificationsService);
     cacheManager = module.get(CACHE_MANAGER);
+    registry = module.get(NotificationRegistry);
   });
 
   it('should be defined', () => {

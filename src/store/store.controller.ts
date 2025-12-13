@@ -15,6 +15,7 @@ import { StoreService } from './store.service';
 import { CreateProductDto, UpdateProductDto } from './dto/create-product.dto';
 import { AddToCartDto, UpdateCartItemDto } from './dto/cart.dto';
 import { AddToWishlistDto } from './dto/wishlist.dto';
+import { CheckoutDto } from './dto/checkout.dto';
 import { JwtAuthGuard } from '../auth/guard/jwt-auth.guard';
 import { UserTypeGuard } from '../auth/guard/user-type.guard';
 import { OptionalJwtAuthGuard } from '../auth/guard/optional-jwt-auth.guard';
@@ -91,18 +92,21 @@ export class StoreController {
 
   @UseGuards(JwtAuthGuard)
   @Post('cart')
+  @Post('store/cart')
   async addToCart(@Body(ValidationPipe) dto: AddToCartDto, @Req() req: any) {
     return this.storeService.addToCart(req.user.id, dto);
   }
 
   @UseGuards(JwtAuthGuard)
   @Get('cart')
+  @Get('store/cart')
   async getCart(@Req() req: any) {
     return this.storeService.getCart(req.user.id);
   }
 
   @UseGuards(JwtAuthGuard)
   @Patch('cart/:itemId')
+  @Patch('store/cart/:itemId')
   async updateCartItem(
     @Param('itemId') itemId: string,
     @Body(ValidationPipe) dto: UpdateCartItemDto,
@@ -113,12 +117,14 @@ export class StoreController {
 
   @UseGuards(JwtAuthGuard)
   @Delete('cart/:itemId')
+  @Delete('store/cart/:itemId')
   async removeFromCart(@Param('itemId') itemId: string, @Req() req: any) {
     return this.storeService.removeFromCart(req.user.id, itemId);
   }
 
   @UseGuards(JwtAuthGuard)
   @Delete('cart')
+  @Delete('store/cart')
   async clearCart(@Req() req: any) {
     return this.storeService.clearCart(req.user.id);
   }
@@ -127,6 +133,7 @@ export class StoreController {
 
   @UseGuards(JwtAuthGuard)
   @Post('wishlist')
+  @Post('store/wishlist')
   async addToWishlist(
     @Body(ValidationPipe) dto: AddToWishlistDto,
     @Req() req: any,
@@ -136,6 +143,7 @@ export class StoreController {
 
   @UseGuards(JwtAuthGuard)
   @Delete('wishlist/:productId')
+  @Delete('store/wishlist/:productId')
   async removeFromWishlist(
     @Param('productId') productId: string,
     @Req() req: any,
@@ -145,6 +153,7 @@ export class StoreController {
 
   @UseGuards(JwtAuthGuard)
   @Get('wishlist')
+  @Get('store/wishlist')
   async getWishlist(
     @Req() req: any,
     @Query('page') page?: string,
@@ -159,7 +168,41 @@ export class StoreController {
 
   @UseGuards(JwtAuthGuard)
   @Get('wishlist/check/:productId')
+  @Get('store/wishlist/check/:productId')
   async isInWishlist(@Param('productId') productId: string, @Req() req: any) {
     return this.storeService.isInWishlist(req.user.id, productId);
+  }
+
+  // ==================== CHECKOUT ====================
+
+  @UseGuards(JwtAuthGuard)
+  @Post('checkout')
+  @Post('store/checkout')
+  async checkout(@Body(ValidationPipe) dto: CheckoutDto, @Req() req: any) {
+    return this.storeService.checkout(req.user.id, dto);
+  }
+
+  // ==================== BUYER ORDERS ====================
+
+  @UseGuards(JwtAuthGuard)
+  @Get('orders')
+  @Get('store/orders')
+  async getMyOrders(
+    @Req() req: any,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.storeService.getMyOrders(
+      req.user.id,
+      page ? parseInt(page, 10) : 1,
+      limit ? parseInt(limit, 10) : 20,
+    );
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Get('orders/:orderId')
+  @Get('store/orders/:orderId')
+  async getMyOrder(@Param('orderId') orderId: string, @Req() req: any) {
+    return this.storeService.getMyOrder(req.user.id, orderId);
   }
 }

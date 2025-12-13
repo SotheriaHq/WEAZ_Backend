@@ -8,8 +8,9 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CreateProductDto, UpdateProductDto } from './dto/create-product.dto';
 import { AddToCartDto, UpdateCartItemDto } from './dto/cart.dto';
 import { AddToWishlistDto } from './dto/wishlist.dto';
+import { CheckoutDto } from './dto/checkout.dto';
 import { v4 as uuidv4 } from 'uuid';
-import { Prisma } from '@prisma/client';
+import { Prisma, NotificationType } from '@prisma/client';
 
 @Injectable()
 export class StoreService {
@@ -138,13 +139,42 @@ export class StoreService {
     const product = await this.prisma.product.findUnique({
       where: { id: productId },
       include: {
-        collection: { select: { id: true, title: true, description: true } },
-        brand: { select: { id: true, name: true, logo: true, currency: true } },
+        collection: {
+          select: {
+            id: true,
+            title: true,
+            description: true,
+            status: true,
+            isAvailableInStore: true,
+          },
+        },
+        brand: {
+          select: {
+            id: true,
+            name: true,
+            logo: true,
+            currency: true,
+            ownerId: true,
+            isStoreOpen: true,
+          },
+        },
       },
     });
 
     if (!product) {
       throw new NotFoundException('Product not found');
+    }
+
+    const isOwner = userId && product.brand.ownerId === userId;
+
+    // Store gating: brand must be open, collection must be store-enabled and published for non-owners
+    if (!isOwner) {
+      if (!product.brand.isStoreOpen) {
+        throw new NotFoundException('Store is closed');
+      }
+      if (!product.collection.isAvailableInStore || product.collection.status !== 'PUBLISHED') {
+        throw new NotFoundException('Product not available');
+      }
     }
 
     // Check if user has wishlisted
@@ -198,6 +228,10 @@ export class StoreService {
     const where: any = {
       brandId,
       isActive: true,
+      collection: {
+        status: 'PUBLISHED',
+        isAvailableInStore: true,
+      },
     };
 
     // Gender filter
@@ -246,6 +280,7 @@ export class StoreService {
     // Category filter via collection
     if (category) {
       where.collection = {
+        ...(where.collection || {}),
         category: { slug: category },
       };
     }
@@ -266,6 +301,15 @@ export class StoreService {
         orderBy = { createdAt: 'desc' };
     }
 
+    // Gate by brand store state
+    const brand = await this.prisma.brand.findUnique({
+      where: { id: brandId },
+      select: { id: true, isStoreOpen: true },
+    });
+    if (!brand || !brand.isStoreOpen) {
+      throw new NotFoundException('Store is closed');
+    }
+
     const [products, total] = await Promise.all([
       this.prisma.product.findMany({
         where,
@@ -273,7 +317,14 @@ export class StoreService {
         skip: (page - 1) * limit,
         take: limit,
         include: {
-          collection: { select: { id: true, title: true } },
+          collection: {
+            select: {
+              id: true,
+              title: true,
+              status: true,
+              isAvailableInStore: true,
+            },
+          },
           brand: { select: { id: true, name: true, logo: true, currency: true } },
         },
       }),
@@ -614,5 +665,186 @@ export class StoreService {
       collection: product.collection,
       brand: product.brand,
     };
+  }
+
+  // ==================== CHECKOUT ====================
+
+  async checkout(userId: string, dto: CheckoutDto) {
+    const cartItems = await this.prisma.cartItem.findMany({
+      where: { userId },
+      include: {
+        product: {
+          include: {
+            brand: true,
+            collection: true,
+          },
+        },
+      },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    if (cartItems.length === 0) {
+      throw new BadRequestException('Cart is empty');
+    }
+
+    // Map items by brand to produce brand-scoped orders
+    const itemsByBrand = cartItems.reduce<Record<string, typeof cartItems>>((acc, item) => {
+      const brandId = item.product.brandId;
+      if (!acc[brandId]) acc[brandId] = [];
+      acc[brandId].push(item);
+      return acc;
+    }, {});
+
+    const orders = await this.prisma.$transaction(async (tx) => {
+      const createdOrders = [] as any[];
+
+      for (const [brandId, items] of Object.entries(itemsByBrand)) {
+        const brand = await tx.brand.findUnique({
+          where: { id: brandId },
+          select: { id: true, name: true, currency: true, isStoreOpen: true, ownerId: true },
+        });
+
+        if (!brand || !brand.isStoreOpen) {
+          throw new BadRequestException('Store is closed');
+        }
+
+        const orderItems: any[] = [];
+        let totalAmount = 0;
+
+        for (const item of items) {
+          const product = await tx.product.findUnique({
+            where: { id: item.productId },
+            include: { collection: true },
+          });
+
+          if (!product || !product.isActive) {
+            throw new BadRequestException('Product not available');
+          }
+
+          if (!product.collection || !product.collection.isAvailableInStore || product.collection.status !== 'PUBLISHED') {
+            throw new BadRequestException(`Product not available in store: ${product.name}`);
+          }
+
+          if (item.selectedSize && product.sizes.length > 0 && !product.sizes.includes(item.selectedSize)) {
+            throw new BadRequestException(`Invalid size for ${product.name}`);
+          }
+          if (item.selectedColor && product.colors.length > 0 && !product.colors.includes(item.selectedColor)) {
+            throw new BadRequestException(`Invalid color for ${product.name}`);
+          }
+
+          const sizeStock = (product.sizeStock as Record<string, number> | null) || null;
+          const quantity = item.quantity;
+
+          if (item.selectedSize && sizeStock) {
+            const available = sizeStock[item.selectedSize] || 0;
+            if (available < quantity) {
+              throw new BadRequestException(`Only ${available} left for ${product.name} (${item.selectedSize})`);
+            }
+            sizeStock[item.selectedSize] = available - quantity;
+          } else if (product.totalStock < quantity) {
+            throw new BadRequestException(`Only ${product.totalStock} left for ${product.name}`);
+          }
+
+          const isOnSale = this.isProductOnSale(product);
+          const unitPrice = isOnSale && product.salePrice ? Number(product.salePrice) : Number(product.price);
+          totalAmount += unitPrice * quantity;
+
+          await tx.product.update({
+            where: { id: product.id },
+            data: {
+              totalStock: { decrement: quantity },
+              ...(sizeStock ? { sizeStock } : {}),
+            },
+          });
+
+          orderItems.push({
+            productId: product.id,
+            name: product.name,
+            thumbnail: product.thumbnail,
+            price: unitPrice,
+            quantity,
+            selectedSize: item.selectedSize,
+            selectedColor: item.selectedColor,
+          });
+        }
+
+        const order = await tx.order.create({
+          data: {
+            id: uuidv4(),
+            brandId,
+            buyerId: userId,
+            customerName: dto.customerName || 'Customer',
+            shippingAddress: dto.shippingAddress || null,
+            contactInfo: dto.contactInfo || null,
+            items: orderItems,
+            totalAmount: new Prisma.Decimal(totalAmount.toFixed(2)),
+            currency: brand.currency || 'NGN',
+            status: 'PENDING',
+            paymentStatus: 'PENDING',
+          },
+        });
+
+        // Notify brand owner a new order has arrived
+        if (brand.ownerId) {
+          await tx.notification.create({
+            data: {
+              id: uuidv4(),
+              recipientId: brand.ownerId,
+              actorId: userId,
+              type: NotificationType.ORDER_PLACED,
+              payload: { orderId: order.id, totalAmount: totalAmount, brandId },
+            },
+          });
+        }
+
+        createdOrders.push(order);
+      }
+
+      await tx.cartItem.deleteMany({ where: { userId } });
+      return createdOrders;
+    });
+
+    return { orders };
+  }
+
+  // ==================== BUYER ORDERS ====================
+
+  async getMyOrders(userId: string, page = 1, limit = 20) {
+    const [orders, total] = await Promise.all([
+      this.prisma.order.findMany({
+        where: { buyerId: userId },
+        include: {
+          brand: { select: { id: true, name: true, logo: true, currency: true } },
+        },
+        orderBy: { createdAt: 'desc' },
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      this.prisma.order.count({ where: { buyerId: userId } }),
+    ]);
+
+    return {
+      items: orders,
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit),
+      hasNextPage: page * limit < total,
+    };
+  }
+
+  async getMyOrder(userId: string, orderId: string) {
+    const order = await this.prisma.order.findFirst({
+      where: { id: orderId, buyerId: userId },
+      include: {
+        brand: { select: { id: true, name: true, logo: true, currency: true } },
+      },
+    });
+
+    if (!order) {
+      throw new NotFoundException('Order not found');
+    }
+
+    return order;
   }
 }
