@@ -109,10 +109,31 @@ export class NotificationsService {
     });
     const hasNextPage = items.length > take;
     const sliced = hasNextPage ? items.slice(0, -1) : items;
-    const data = sliced.map((n) => ({
-      ...n,
-      message: this.formatMessage(n),
-    }));
+
+    // Transform to include structured target data for Multi-Target Pattern
+    const data = sliced.map((n) => {
+      const payload = n.payload as Record<string, any> | null;
+
+      // Extract structured target from payload
+      const target = this.extractTarget(n.type, payload);
+      const subTargetId = payload?.subTargetId || payload?.commentId || null;
+      const targetUrl = this.sanitizeTargetUrl(payload?.targetUrl);
+
+      return {
+        id: n.id,
+        type: n.type,
+        version: 2 as const, // All responses now use v2 structured format
+        createdAt: n.createdAt,
+        isRead: n.isRead,
+        actor: n.actor,
+        message: this.formatMessage(n),
+        target,
+        subTargetId,
+        targetUrl,
+        payload, // Include raw payload for backward compatibility
+      };
+    });
+
     return {
       items: data,
       hasNextPage,
@@ -120,6 +141,53 @@ export class NotificationsService {
         ? data[data.length - 1].createdAt.toISOString()
         : null,
     };
+  }
+
+  /**
+   * Extract structured target from notification payload
+   */
+  private extractTarget(
+    type: NotificationType,
+    payload: Record<string, any> | null,
+  ): { type: string; id: string; preview?: string } | null {
+    if (!payload) return null;
+
+    // Direct target object
+    if (payload.target?.type && payload.target?.id) {
+      return {
+        type: payload.target.type,
+        id: payload.target.id,
+        preview: payload.target.preview,
+      };
+    }
+
+    // Infer from payload fields
+    if (payload.collectionId) {
+      return {
+        type: 'COLLECTION',
+        id: payload.collectionId,
+        preview: payload.collectionName || payload.collectionTitle,
+      };
+    }
+
+    if (payload.postId) {
+      return { type: 'POST', id: payload.postId };
+    }
+
+    // Infer from targetUrl
+    const url = payload.targetUrl as string | undefined;
+    if (url) {
+      const collectionMatch = url.match(/\/collections\/([a-f0-9-]+)/);
+      if (collectionMatch) {
+        return { type: 'COLLECTION', id: collectionMatch[1] };
+      }
+      const brandsMatch = url.match(/\/brands\/([a-f0-9-]+)/);
+      if (brandsMatch) {
+        return { type: 'USER', id: brandsMatch[1] };
+      }
+    }
+
+    return null;
   }
 
   async unreadCount(recipientId: string) {
@@ -137,21 +205,36 @@ export class NotificationsService {
   }
 
   async markRead(recipientId: string, id: string) {
-    const res = await this.prisma.notification.updateMany({
+    // Check if notification exists and current read state (idempotency)
+    const notification = await this.prisma.notification.findFirst({
       where: { id, recipientId },
-      data: { isRead: true },
+      select: { id: true, isRead: true },
     });
-    if (res.count === 0) {
-      // Either not found or not owned by user
+
+    if (!notification) {
+      // Check if it exists at all but belongs to someone else
       const exists = await this.prisma.notification.findUnique({
         where: { id },
+        select: { id: true },
       });
       if (!exists) throw new NotFoundException('Notification not found');
       throw new ForbiddenException('Cannot modify this notification');
     }
+
+    // Idempotent: if already read, return success without updating
+    if (notification.isRead) {
+      return { success: true, alreadyRead: true };
+    }
+
+    // Mark as read
+    await this.prisma.notification.update({
+      where: { id },
+      data: { isRead: true },
+    });
+
     // Invalidate cache
     await this.cacheManager.del(`unread_count:${recipientId}`);
-    return { success: true };
+    return { success: true, alreadyRead: false };
   }
 
   async markAllRead(recipientId: string) {

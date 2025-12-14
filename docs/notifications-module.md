@@ -4,6 +4,16 @@
 
 The Notifications Module is a core component of the Threadly backend application responsible for managing user notifications. It handles creation, storage, retrieval, real-time broadcasting, and user interactions with notifications. The module supports various notification types (e.g., login, signup, likes, comments) and ensures secure, performant, and scalable notification delivery.
 
+> [!IMPORTANT]
+> **Multi-Target Notification Pattern RFC**: For the comprehensive architectural design of the notification system including multi-target click zones, deep-link resolution, accessibility, and frontend component architecture, see the implementation plan maintained by the frontend team.
+>
+> Frontend Files:
+> - `fthreadly/src/types/notificationTypes.ts` - Type registry (single source of truth)
+> - `fthreadly/src/utils/notificationAdapter.ts` - Backward compatibility layer
+> - `fthreadly/src/utils/notificationRouting.ts` - Centralized routing
+> - `fthreadly/src/utils/notificationTelemetry.ts` - Analytics hooks
+> - `fthreadly/src/components/notifications/` - UI components
+
 ## Architecture
 
 The module follows a clean architecture pattern with separation of concerns:
