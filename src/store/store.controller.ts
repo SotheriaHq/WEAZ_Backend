@@ -16,6 +16,7 @@ import { CreateProductDto, UpdateProductDto } from './dto/create-product.dto';
 import { AddToCartDto, UpdateCartItemDto } from './dto/cart.dto';
 import { AddToWishlistDto } from './dto/wishlist.dto';
 import { CheckoutDto } from './dto/checkout.dto';
+import { SaveStoreDraftDto } from './dto/save-store-draft.dto';
 import { JwtAuthGuard } from '../auth/guard/jwt-auth.guard';
 import { UserTypeGuard } from '../auth/guard/user-type.guard';
 import { OptionalJwtAuthGuard } from '../auth/guard/optional-jwt-auth.guard';
@@ -204,5 +205,34 @@ export class StoreController {
   @Get('store/orders/:orderId')
   async getMyOrder(@Param('orderId') orderId: string, @Req() req: any) {
     return this.storeService.getMyOrder(req.user.id, orderId);
+  }
+
+  // ==================== STORE CREATION DRAFT ====================
+
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Post('store/draft')
+  async saveStoreDraft(
+    @Body(ValidationPipe) dto: SaveStoreDraftDto,
+    @Req() req: any,
+  ) {
+    return this.storeService.saveStoreDraft(req.user.id, dto);
+  }
+
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Get('store/draft')
+  async getStoreDraft(@Req() req: any) {
+    return this.storeService.getStoreDraft(req.user.id);
+  }
+
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Get('store/draft/status')
+  async getStoreDraftStatus(@Req() req: any) {
+    return this.storeService.getStoreDraftStatus(req.user.id);
+  }
+
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Delete('store/draft')
+  async clearStoreDraft(@Req() req: any) {
+    return this.storeService.clearStoreDraft(req.user.id);
   }
 }

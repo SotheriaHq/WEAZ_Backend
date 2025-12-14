@@ -11,7 +11,6 @@ generator client {
 
 datasource db {
   provider = "postgresql"
-  url      = env("DATABASE_URL")
 }
 
 model User {
@@ -94,6 +93,9 @@ model User {
 
   // Orders as buyer
   ordersAsBuyer           Order[]                         @relation("OrderBuyer")
+
+  // Store draft (one per brand user)
+  storeDraft              StoreDraft?
 }
 
 model FileUpload {
@@ -718,6 +720,27 @@ enum PayoutStatus {
   PROCESSING
   PAID
   FAILED
+}
+
+// ===== Store Drafts =====
+
+enum StoreDraftStatus {
+  DRAFT
+  SUBMITTED
+  COMPLETED
+}
+
+model StoreDraft {
+  id        String           @id @map("_id") @db.Uuid
+  ownerId   String           @db.Uuid
+  owner     User             @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  data      Json
+  lastStep  Int              @default(1)
+  status    StoreDraftStatus @default(DRAFT)
+  createdAt DateTime         @default(now())
+  updatedAt DateTime         @updatedAt
+
+  @@unique([ownerId])
 }
 
 // ===== E-Commerce Store Models =====

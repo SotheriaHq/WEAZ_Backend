@@ -11,6 +11,7 @@ import { AddToWishlistDto } from './dto/wishlist.dto';
 import { CheckoutDto } from './dto/checkout.dto';
 import { v4 as uuidv4 } from 'uuid';
 import { Prisma, NotificationType } from '@prisma/client';
+import { SaveStoreDraftDto } from './dto/save-store-draft.dto';
 
 @Injectable()
 export class StoreService {
@@ -846,5 +847,98 @@ export class StoreService {
     }
 
     return order;
+  }
+
+  // ==================== STORE CREATION DRAFT ====================
+
+  async saveStoreDraft(ownerId: string, dto: SaveStoreDraftDto) {
+    const brand = await this.prisma.brand.findUnique({
+      where: { ownerId },
+      select: { id: true, isStoreOpen: true },
+    });
+
+    if (brand?.isStoreOpen) {
+      throw new BadRequestException('Store already exists. You cannot start a new store creation flow.');
+    }
+
+    const payload: Prisma.JsonObject = {
+      name: dto.name ?? null,
+      slug: dto.slug ?? null,
+      categories: dto.categories ?? [],
+      tagline: dto.tagline ?? null,
+      description: dto.description ?? null,
+      logoUrl: dto.logoUrl ?? null,
+      logoFileId: dto.logoFileId ?? null,
+      bannerUrl: dto.bannerUrl ?? null,
+      bannerFileId: dto.bannerFileId ?? null,
+    } as Prisma.JsonObject;
+
+    const draft = await this.prisma.storeDraft.upsert({
+      where: { ownerId },
+      update: {
+        data: payload,
+        lastStep: dto.step ?? 1,
+        status: 'DRAFT',
+      },
+      create: {
+        id: uuidv4(),
+        ownerId,
+        data: payload,
+        lastStep: dto.step ?? 1,
+        status: 'DRAFT',
+      },
+    });
+
+    return this.transformStoreDraft(draft, brand);
+  }
+
+  async getStoreDraft(ownerId: string) {
+    return this.getStoreDraftStatus(ownerId);
+  }
+
+  async clearStoreDraft(ownerId: string) {
+    try {
+      await this.prisma.storeDraft.delete({ where: { ownerId } });
+    } catch (error: any) {
+      // Ignore if not found
+      if (error?.code !== 'P2025') {
+        throw error;
+      }
+    }
+    return { success: true };
+  }
+
+  async getStoreDraftStatus(ownerId: string) {
+    const [draft, brand] = await Promise.all([
+      this.prisma.storeDraft.findUnique({ where: { ownerId } }),
+      this.prisma.brand.findUnique({ where: { ownerId }, select: { id: true, isStoreOpen: true, name: true } }),
+    ]);
+
+    if (!draft) {
+      return {
+        hasDraft: false,
+        hasBrand: !!brand,
+        hasLiveStore: !!brand && brand.isStoreOpen,
+      };
+    }
+
+    return this.transformStoreDraft(draft, brand);
+  }
+
+  private transformStoreDraft(draft: any, brand?: { id: string; isStoreOpen: boolean } | null) {
+    const data = (draft?.data && typeof draft.data === 'object') ? draft.data : {};
+    return {
+      hasDraft: true,
+      hasBrand: !!brand,
+      hasLiveStore: !!brand && brand.isStoreOpen,
+      draft: {
+        id: draft.id,
+        data,
+        step: draft.lastStep,
+        status: draft.status,
+        createdAt: draft.createdAt,
+        updatedAt: draft.updatedAt,
+      },
+    };
   }
 }
