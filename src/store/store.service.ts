@@ -12,10 +12,67 @@ import { CheckoutDto } from './dto/checkout.dto';
 import { v4 as uuidv4 } from 'uuid';
 import { Prisma, NotificationType } from '@prisma/client';
 import { SaveStoreDraftDto } from './dto/save-store-draft.dto';
+import { UpdateStoreNameDto } from './dto/update-store-name.dto';
+import { PasswordService } from 'src/auth/helper/password.service';
 
 @Injectable()
 export class StoreService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly passwordService: PasswordService,
+  ) {}
+
+  private normalizeTag(tag: string): string {
+    return (tag || '')
+      .trim()
+      .replace(/\s+/g, ' ')
+      .slice(0, 40);
+  }
+
+  private buildTagSet(tags: Array<string | null | undefined>): string[] {
+    const set = new Set<string>();
+    for (const tag of tags) {
+      const normalized = this.normalizeTag(String(tag ?? '')).toLowerCase();
+      if (!normalized) continue;
+      set.add(normalized);
+    }
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }
+
+  private async getSystemTags(): Promise<string[]> {
+    const [brandUsers, products] = await Promise.all([
+      this.prisma.user.findMany({
+        where: { type: 'BRAND' },
+        select: { brandTags: true },
+      }),
+      this.prisma.product.findMany({
+        select: { tags: true },
+        take: 2000,
+        orderBy: { updatedAt: 'desc' },
+      }),
+    ]);
+
+    const tags: string[] = [];
+    for (const u of brandUsers) tags.push(...(u.brandTags || []));
+    for (const p of products) tags.push(...(p.tags || []));
+    return this.buildTagSet(tags);
+  }
+
+  private async getActiveCategories() {
+    return this.prisma.collectionCategory.findMany({
+      where: { isActive: true },
+      orderBy: [{ order: 'asc' }, { createdAt: 'asc' }],
+      select: { id: true, slug: true, name: true },
+    });
+  }
+
+  private canonicalStoreName(user: { brandFullName: string | null }, brand?: { name: string } | null) {
+    return (user.brandFullName || brand?.name || '').trim();
+  }
+
+  private canonicalStoreSlug(user: { username: string }) {
+    return (user.username || '').trim();
+  }
 
   // ==================== PRODUCTS ====================
 
@@ -849,42 +906,252 @@ export class StoreService {
     return order;
   }
 
+  // ==================== STORE WIZARD PREFILL & SETTINGS ====================
+
+  async getStoreWizardPrefill(ownerId: string) {
+    const [user, brand, categories, tags] = await Promise.all([
+      this.prisma.user.findUnique({
+        where: { id: ownerId },
+        select: {
+          id: true,
+          username: true,
+          email: true,
+          isEmailVerified: true,
+          brandFullName: true,
+          brandDescription: true,
+          brandTags: true,
+          socialInstagram: true,
+          socialTwitter: true,
+          socialWebsite: true,
+        },
+      }),
+      this.prisma.brand.findUnique({
+        where: { ownerId },
+        select: { id: true, name: true, isStoreOpen: true },
+      }),
+      this.getActiveCategories(),
+      this.getSystemTags(),
+    ]);
+
+    if (!user) throw new NotFoundException('User not found');
+
+    const storeName = this.canonicalStoreName(user, brand);
+    const slug = this.canonicalStoreSlug(user);
+
+    const userTags = (user.brandTags || [])
+      .map((t) => this.normalizeTag(t))
+      .filter(Boolean);
+
+    const taglineFromDescription = (user.brandDescription || '')
+      .split(/(?<=[.!?])\s+/)[0]
+      ?.trim() || '';
+    const suggestedTagline = (taglineFromDescription || userTags.slice(0, 3).join(' • ')).slice(0, 60);
+
+    return {
+      brand: {
+        storeName,
+        slug,
+        contactEmail: user.email,
+        description: user.brandDescription || '',
+        instagram: user.socialInstagram || '',
+        twitter: user.socialTwitter || '',
+        website: user.socialWebsite || '',
+        tags: userTags,
+        tagline: suggestedTagline,
+      },
+      system: {
+        categories,
+        tags,
+      },
+      flags: {
+        isEmailVerified: user.isEmailVerified,
+        hasLiveStore: Boolean(brand?.isStoreOpen),
+      },
+    };
+  }
+
+  async getStoreGeneralSettings(ownerId: string) {
+    const [user, brand] = await Promise.all([
+      this.prisma.user.findUnique({
+        where: { id: ownerId },
+        select: {
+          id: true,
+          username: true,
+          email: true,
+          isEmailVerified: true,
+          brandFullName: true,
+          brandDescription: true,
+        },
+      }),
+      this.prisma.brand.findUnique({
+        where: { ownerId },
+        select: { id: true, name: true, storeNameLastChangedAt: true, isStoreOpen: true },
+      }),
+    ]);
+
+    if (!user) throw new NotFoundException('User not found');
+
+    const storeName = this.canonicalStoreName(user, brand);
+    const slug = this.canonicalStoreSlug(user);
+
+    const lastChangedAt = brand?.storeNameLastChangedAt ?? null;
+    const nextAllowedAt = lastChangedAt
+      ? new Date(lastChangedAt.getTime() + 90 * 24 * 60 * 60 * 1000)
+      : null;
+
+    return {
+      storeName,
+      slug,
+      description: user.brandDescription || '',
+      contactEmail: user.email,
+      isEmailVerified: user.isEmailVerified,
+      hasLiveStore: Boolean(brand?.isStoreOpen),
+      storeNameLastChangedAt: lastChangedAt,
+      storeNameNextAllowedAt: nextAllowedAt,
+    };
+  }
+
+  async updateStoreName(ownerId: string, dto: UpdateStoreNameDto) {
+    const [user, brand] = await Promise.all([
+      this.prisma.user.findUnique({
+        where: { id: ownerId },
+        select: {
+          id: true,
+          password: true,
+          isEmailVerified: true,
+        },
+      }),
+      this.prisma.brand.findUnique({
+        where: { ownerId },
+        select: { id: true, storeNameLastChangedAt: true },
+      }),
+    ]);
+
+    if (!user) throw new NotFoundException('User not found');
+    if (!brand) throw new NotFoundException('Brand not found');
+
+    if (!user.isEmailVerified) {
+      throw new ForbiddenException('Verify your email before changing your store name.');
+    }
+
+    const ok = await this.passwordService.verifyPassword(user.password, dto.currentPassword);
+    if (!ok) {
+      throw new ForbiddenException('Password verification failed.');
+    }
+
+    const now = new Date();
+    const last = brand.storeNameLastChangedAt;
+    if (last) {
+      const nextAllowedAt = new Date(last.getTime() + 90 * 24 * 60 * 60 * 1000);
+      if (now < nextAllowedAt) {
+        const daysRemaining = Math.ceil((nextAllowedAt.getTime() - now.getTime()) / (24 * 60 * 60 * 1000));
+        throw new BadRequestException(`Store name can only be changed once every 3 months. Try again in ~${daysRemaining} day(s).`);
+      }
+    }
+
+    const newName = dto.newName.trim();
+    if (!newName) throw new BadRequestException('Store name cannot be empty');
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.brand.update({
+        where: { id: brand.id },
+        data: {
+          name: newName,
+          storeNameLastChangedAt: now,
+        },
+      });
+
+      await tx.user.update({
+        where: { id: ownerId },
+        data: { brandFullName: newName },
+      });
+
+      const draft = await tx.storeDraft.findUnique({ where: { ownerId } });
+      if (draft && draft.data && typeof draft.data === 'object') {
+        const data = (draft.data as any) || {};
+        await tx.storeDraft.update({
+          where: { ownerId },
+          data: { data: { ...data, name: newName } },
+        });
+      }
+    });
+
+    return this.getStoreGeneralSettings(ownerId);
+  }
+
   // ==================== STORE CREATION DRAFT ====================
 
   async saveStoreDraft(ownerId: string, dto: SaveStoreDraftDto) {
-    const brand = await this.prisma.brand.findUnique({
-      where: { ownerId },
-      select: { id: true, isStoreOpen: true },
-    });
+    const [brand, user, existingDraft] = await Promise.all([
+      this.prisma.brand.findUnique({
+        where: { ownerId },
+        select: { id: true, isStoreOpen: true, name: true },
+      }),
+      this.prisma.user.findUnique({
+        where: { id: ownerId },
+        select: { id: true, username: true, email: true, brandFullName: true },
+      }),
+      this.prisma.storeDraft.findUnique({ where: { ownerId } }),
+    ]);
+
+    const systemTags = dto.tags !== undefined ? await this.getSystemTags() : [];
+
+    if (!user) throw new NotFoundException('User not found');
 
     if (brand?.isStoreOpen) {
       throw new BadRequestException('Store already exists. You cannot start a new store creation flow.');
     }
 
-    const payload: Prisma.JsonObject = {
-      name: dto.name ?? null,
-      slug: dto.slug ?? null,
-      categories: dto.categories ?? [],
-      tagline: dto.tagline ?? null,
-      description: dto.description ?? null,
-      logoUrl: dto.logoUrl ?? null,
-      logoFileId: dto.logoFileId ?? null,
-      bannerUrl: dto.bannerUrl ?? null,
-      bannerFileId: dto.bannerFileId ?? null,
-    } as Prisma.JsonObject;
+    const baseData: any =
+      existingDraft?.data && typeof existingDraft.data === 'object'
+        ? (existingDraft.data as any)
+        : {};
+
+    const payload: any = { ...baseData };
+
+    // Canonical identity: always enforced server-side
+    payload.name = this.canonicalStoreName(user, brand) || null;
+    payload.slug = this.canonicalStoreSlug(user) || null;
+
+    if (dto.categories !== undefined) payload.categories = dto.categories;
+    if (dto.tagline !== undefined) payload.tagline = dto.tagline;
+    if (dto.description !== undefined) payload.description = dto.description;
+    if (dto.logoUrl !== undefined) payload.logoUrl = dto.logoUrl;
+    if (dto.logoFileId !== undefined) payload.logoFileId = dto.logoFileId;
+    if (dto.bannerUrl !== undefined) payload.bannerUrl = dto.bannerUrl;
+    if (dto.bannerFileId !== undefined) payload.bannerFileId = dto.bannerFileId;
+
+    // Step 2: socials/contact
+    if (dto.instagram !== undefined) payload.instagram = dto.instagram;
+    if (dto.tiktok !== undefined) payload.tiktok = dto.tiktok;
+    if (dto.twitter !== undefined) payload.twitter = dto.twitter;
+    if (dto.website !== undefined) payload.website = dto.website;
+    if (dto.contactEmail !== undefined) payload.contactEmail = dto.contactEmail;
+    if (payload.contactEmail === undefined || payload.contactEmail === null || payload.contactEmail === '') {
+      payload.contactEmail = user.email || null;
+    }
+
+    // Unified tags: only allow known system tags
+    if (dto.tags !== undefined) {
+      const allow = new Set(systemTags);
+      const normalized = (dto.tags || [])
+        .map((t) => this.normalizeTag(t).toLowerCase())
+        .filter(Boolean);
+      payload.tags = normalized.filter((t) => allow.has(t));
+    }
 
     const draft = await this.prisma.storeDraft.upsert({
       where: { ownerId },
       update: {
-        data: payload,
-        lastStep: dto.step ?? 1,
+        data: payload as Prisma.JsonObject,
+        lastStep: dto.step ?? existingDraft?.lastStep ?? 1,
         status: 'DRAFT',
       },
       create: {
         id: uuidv4(),
         ownerId,
-        data: payload,
-        lastStep: dto.step ?? 1,
+        data: payload as Prisma.JsonObject,
+        lastStep: dto.step ?? existingDraft?.lastStep ?? 1,
         status: 'DRAFT',
       },
     });

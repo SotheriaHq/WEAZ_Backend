@@ -43,6 +43,38 @@ export class SaveStoreDraftDto {
   @IsString()
   bannerFileId?: string;
 
+  // Step 2: Socials
+  @IsOptional()
+  @IsString()
+  @MaxLength(60)
+  instagram?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(60)
+  tiktok?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(60)
+  twitter?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  website?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(254)
+  contactEmail?: string;
+
+  // Unified tags (store-level)
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  tags?: string[];
+
   @IsOptional()
   @Type(() => Number)
   @IsInt()

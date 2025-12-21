@@ -640,6 +640,7 @@ model ContributionRequest {
 model Brand {
   id          String    @id @map("_id") @db.Uuid
   name        String
+  storeNameLastChangedAt DateTime?
   ownerId     String    @unique @db.Uuid
   owner       User      @relation("BrandOwner", fields: [ownerId], references: [id])
   

@@ -1513,18 +1513,21 @@ export class CollectionsService {
     // Then delete DB records in a transaction: fileUpload, collectionMedia, collection
     try {
       await this.prisma.$transaction(async (tx) => {
-        // Delete collection medias (and dependent file uploads)
+        // Delete dependent records in FK-safe order:
+        // 1) collectionMedia rows referencing file uploads
+        // 2) the fileUpload rows themselves
+        // 3) the collection record
         const fileIds = collection.medias
           .map((m) => m.file?.id)
           .filter((id): id is string => !!id);
+
+        await tx.collectionMedia.deleteMany({ where: { collectionId } as any });
 
         if (fileIds.length) {
           await tx.fileUpload.deleteMany({
             where: { id: { in: fileIds } } as any,
           });
         }
-
-        await tx.collectionMedia.deleteMany({ where: { collectionId } as any });
 
         await tx.collection.delete({ where: { id: collectionId } });
       });

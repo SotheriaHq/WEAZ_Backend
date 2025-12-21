@@ -17,6 +17,7 @@ import { AddToCartDto, UpdateCartItemDto } from './dto/cart.dto';
 import { AddToWishlistDto } from './dto/wishlist.dto';
 import { CheckoutDto } from './dto/checkout.dto';
 import { SaveStoreDraftDto } from './dto/save-store-draft.dto';
+import { UpdateStoreNameDto } from './dto/update-store-name.dto';
 import { JwtAuthGuard } from '../auth/guard/jwt-auth.guard';
 import { UserTypeGuard } from '../auth/guard/user-type.guard';
 import { OptionalJwtAuthGuard } from '../auth/guard/optional-jwt-auth.guard';
@@ -55,11 +56,13 @@ export class StoreController {
 
   @UseGuards(OptionalJwtAuthGuard)
   @Get('products/:id')
+  @Get('store/products/:id')
   async getProduct(@Param('id') productId: string, @Req() req: any) {
     return this.storeService.getProduct(productId, req.user?.id);
   }
 
   @Get('brands/:brandId/products')
+  @Get('store/brands/:brandId/products')
   async getBrandProducts(
     @Param('brandId') brandId: string,
     @Query('page') page?: string,
@@ -208,6 +211,27 @@ export class StoreController {
   }
 
   // ==================== STORE CREATION DRAFT ====================
+
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Get('store/wizard/prefill')
+  async getStoreWizardPrefill(@Req() req: any) {
+    return this.storeService.getStoreWizardPrefill(req.user.id);
+  }
+
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Get('store/settings/general')
+  async getStoreGeneralSettings(@Req() req: any) {
+    return this.storeService.getStoreGeneralSettings(req.user.id);
+  }
+
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Patch('store/settings/name')
+  async updateStoreName(
+    @Body(ValidationPipe) dto: UpdateStoreNameDto,
+    @Req() req: any,
+  ) {
+    return this.storeService.updateStoreName(req.user.id, dto);
+  }
 
   @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
   @Post('store/draft')

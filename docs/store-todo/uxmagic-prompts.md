@@ -551,6 +551,55 @@ FOOTER:
 
 ---
 
+### Component: Image Crop & Edit Modal
+```
+Design a premium, mesmerizing dark-mode image cropping experience for Threadly.
+
+CONTEXT:
+- Modal used when uploading Profile Pictures, Banners, and Product Images
+- Needs to feel professional yet accessible, like a high-end photo editing tool
+- Dark aesthetic with glassmorphism
+- Focus on "Social, Attractive, Fashion" feel
+
+LAYOUT:
+- Full-screen dimmed backdrop (black/85 with heavy blur)
+- Centered Modal Card (Glassmorphic, rounded-3xl, max-width 700px, border-white/10)
+- Seamless transition on open
+
+HEADER:
+- Minimalist header floating within the glass container
+- Contextual Title (e.g., "Adjust Banner") in Playfair Display
+- Subtle "Close" icon (X)
+
+IMAGE AREA (The Stage):
+- Large, central cropping canvas (min 400px height)
+- Dark checkerboard pattern behind translucent areas
+- Crop Grid: Thin, elegant white lines (Rule of Thirds)
+- "Focus" effect: Area outside crop is dimmed more heavily (opacity 0.7) to highlight composition
+- Smooth gesture support (pinch to zoom, two-finger pan)
+
+CONTROLS BAR (Floating/Glass):
+- Positioned below the image area, styled as a floating control deck
+- Glassmorphic pill shape (bg-white/5 backdrop-blur-md)
+- Sliders & Tools:
+  - ZOOM: Premium slider with haptic-visual feedback (ticks), "100%" to "400%" labels. Thumb should be purple.
+  - ROTATE: Quick-action buttons (↺ 90°, ↻ 90°) with smooth icon animations
+  - RESET: "Use Original" text link/button (if allowed)
+
+FOOTER ACTIONS:
+- "Cancel" frosted ghost button (left)
+- "Apply Crop" primary CTA (right) - Vibrant Purple Gradient (#9333EA) with glow
+- Loading state: Button turns into a mesmerizing spinner or progress ring
+
+VISUAL DETAILS:
+- Interactive elements (sliders) should glow on hover/active
+- Smooth transitions for zoom/pan operations
+- Tooltips for "Scroll to Zoom" hint
+- Use of negative space to ensure the image is the hero
+```
+
+---
+
 ## PART 2: STORE MANAGEMENT SCREENS
 
 ### Screen 2.1: Store Dashboard - Main Overview
@@ -804,6 +853,36 @@ FOOTER:
 - "Discard Changes" link
 - "Save Changes" primary CTA
 - Auto-save indicator
+```
+
+---
+
+### Screen 2.4.1: Product Variants Configuration Modal
+```
+Design a sleek, high-efficiency variant management interface for the Product Studio.
+
+CONTEXT:
+- Used when a brand is defining options for a product (Size, Color, Material, Style)
+- Needs to handle complex permutations without looking overwhelming
+- Focus on "Attractive, Impressive" UI that feels like a powerful pro tool
+- Dark aesthetic with glassmorphism
+
+LAYOUT:
+- Modal or Slide-over panel
+- Glassmorphic card container with "Option Sets" visualization
+- "Add Option" floating action button (FAB) or prominent gradient button
+
+VISUALS:
+- **Variant matrix**: Instead of a boring table, use a card-based or "pill-based" layout for generated combinations
+- **Color Swatches**: If "Color" is selected, auto-show circular color pickers with hex codes
+- **Stock & Price Overrides**: Inline editable fields that glow on focus
+- **Impressive Interaction**: When a new option is added (e.g., "Size"), the matrix should animate/expand with a satisfying layout shift
+
+STYLE:
+- Dark mode optimized (#0f0f0f background)
+- Deep purple/indigo accents for "active" states
+- Subtle glass borders (white/10)
+- Typography: Inter or similar crisp sans-serif, with tabular nums for prices/stock
 ```
 
 ---
