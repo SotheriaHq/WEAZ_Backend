@@ -1,7 +1,18 @@
+import 'dotenv/config';
 import { PrismaClient } from '@prisma/client';
+import { PrismaPg } from '@prisma/adapter-pg';
+import { Pool } from 'pg';
 import { randomUUID } from 'crypto';
 
-const prisma = new PrismaClient();
+const datasourceUrl = process.env.DATABASE_URL;
+
+if (!datasourceUrl) {
+  throw new Error('DATABASE_URL must be set to seed the database.');
+}
+
+const pool = new Pool({ connectionString: datasourceUrl });
+const adapter = new PrismaPg(pool);
+const prisma = new PrismaClient({ adapter });
 
 async function upsertCategory(slug: string, name: string, description?: string | null, order = 0) {
   const existing = await prisma.collectionCategory.findUnique({ where: { slug } });
@@ -39,10 +50,12 @@ async function main() {
 main()
   .then(async () => {
     await prisma.$disconnect();
+    await pool.end();
   })
   .catch(async (e) => {
     console.error(e);
     await prisma.$disconnect();
+    await pool.end();
     process.exit(1);
   });
 

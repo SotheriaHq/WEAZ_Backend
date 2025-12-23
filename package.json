@@ -21,7 +21,7 @@
     "test:e2e": "jest --config ./test/jest-e2e.json",
     "prisma:migrate": "prisma migrate dev",
     "prisma:generate": "prisma generate",
-    "prisma:seed": "prisma db seed"
+    "prisma:seed": "ts-node prisma/seed.ts"
   },
   "_moduleAliases": {
     "src": "dist/src"
@@ -111,7 +111,5 @@
       "^src/(.*)$": "<rootDir>/$1"
     }
   },
-  "prisma": {
-    "seed": "ts-node prisma/seed.ts"
-  }
+  "prisma": {}
 }
