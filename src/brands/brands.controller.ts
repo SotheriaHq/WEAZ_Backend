@@ -33,7 +33,7 @@ export class BrandsController {
   constructor(
     private readonly brandsService: BrandsService,
     private readonly collectionsService: CollectionsService,
-  ) { }
+  ) {}
 
   // ... existing methods ...
 
@@ -56,7 +56,8 @@ export class BrandsController {
     @Body() body: { status: 'ACCEPTED' | 'REJECTED' },
     @Req() req: any,
   ) {
-    const status = body.status === 'ACCEPTED' ? PatchStatus.ACCEPTED : PatchStatus.REJECTED;
+    const status =
+      body.status === 'ACCEPTED' ? PatchStatus.ACCEPTED : PatchStatus.REJECTED;
     return this.brandsService.respondToBrandPatch(req.user.id, patchId, status);
   }
 
@@ -297,10 +298,7 @@ export class BrandsController {
 
   @UseGuards(JwtAuthGuard)
   @Patch('users/me/private-access/granted/:accessId/revoke')
-  async revokeMyAccess(
-    @Param('accessId') accessId: string,
-    @Req() req: any,
-  ) {
+  async revokeMyAccess(@Param('accessId') accessId: string, @Req() req: any) {
     const userId = req.user?.id;
     return this.collectionsService.userRevokeOwnAccess(accessId, userId);
   }

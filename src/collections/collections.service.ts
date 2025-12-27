@@ -44,9 +44,9 @@ export class CollectionsService {
   ): Promise<boolean> {
     const c = await this.prisma.collection.findUnique({
       where: { id: collectionId },
-      select: { 
-        ownerId: true, 
-        status: true, 
+      select: {
+        ownerId: true,
+        status: true,
         visibility: true,
         isAvailableInStore: true,
         saleMinPrice: true,
@@ -267,10 +267,10 @@ export class CollectionsService {
     const rows = await this.prisma.collectionAccess.findMany({
       where,
       include: {
-        viewer: { 
-          select: { 
-            id: true, 
-            username: true, 
+        viewer: {
+          select: {
+            id: true,
+            username: true,
             firstName: true,
             lastName: true,
             profileImage: true,
@@ -281,11 +281,11 @@ export class CollectionsService {
                 s3Url: true,
               },
             },
-          } 
+          },
         },
-        collection: { 
-          select: { 
-            id: true, 
+        collection: {
+          select: {
+            id: true,
             title: true,
             medias: {
               select: {
@@ -295,7 +295,7 @@ export class CollectionsService {
               orderBy: { orderIndex: 'asc' },
             },
             _count: { select: { medias: true } },
-          } 
+          },
         },
       },
       take: pageNum ? take : take + 1,
@@ -513,7 +513,7 @@ export class CollectionsService {
       approved: 'APPROVED',
       rejected: 'REVOKED',
     };
-    
+
     const where: Prisma.CollectionAccessWhereInput = {
       viewerId: userId,
       ...(status ? { state: stateMap[status] } : {}),
@@ -564,13 +564,14 @@ export class CollectionsService {
     const totalPages = Math.ceil(totalCount / take);
 
     return {
-      items: rows.map(r => ({
+      items: rows.map((r) => ({
         id: r.id,
         collectionId: r.collectionId,
         title: r.collection?.title || 'Untitled',
         brand: {
           id: r.collection?.owner?.id,
-          name: r.collection?.owner?.brandFullName || r.collection?.owner?.username,
+          name:
+            r.collection?.owner?.brandFullName || r.collection?.owner?.username,
           profileImage: r.collection?.owner?.profileImage,
           profileImageId: r.collection?.owner?.profileImageId,
           profileImageFile: r.collection?.owner?.profileImageFile,
@@ -592,11 +593,7 @@ export class CollectionsService {
   /**
    * List all granted accesses for the user (approved collections they can view)
    */
-  async listUserGrantedAccesses(
-    userId: string,
-    take = 20,
-    page = 1,
-  ) {
+  async listUserGrantedAccesses(userId: string, take = 20, page = 1) {
     const where: Prisma.CollectionAccessWhereInput = {
       viewerId: userId,
       state: 'APPROVED',
@@ -647,13 +644,14 @@ export class CollectionsService {
     const totalPages = Math.ceil(totalCount / take);
 
     return {
-      items: rows.map(r => ({
+      items: rows.map((r) => ({
         id: r.id,
         collectionId: r.collectionId,
         title: r.collection?.title || 'Untitled',
         brand: {
           id: r.collection?.owner?.id,
-          name: r.collection?.owner?.brandFullName || r.collection?.owner?.username,
+          name:
+            r.collection?.owner?.brandFullName || r.collection?.owner?.username,
           profileImage: r.collection?.owner?.profileImage,
           profileImageId: r.collection?.owner?.profileImageId,
           profileImageFile: r.collection?.owner?.profileImageFile,
@@ -1280,7 +1278,13 @@ export class CollectionsService {
       (process.env.FEATURE_PRIVATE_COLLECTIONS ?? 'true') !== 'false';
     const where: any = { ownerId: userId };
     try {
-      console.log('[collections.service.getUserCollections] userId=%s requesterId=%s visibility=%s featurePrivate=%s', userId, requesterId ?? 'anon', visibility ?? 'public', privateFeature);
+      console.log(
+        '[collections.service.getUserCollections] userId=%s requesterId=%s visibility=%s featurePrivate=%s',
+        userId,
+        requesterId ?? 'anon',
+        visibility ?? 'public',
+        privateFeature,
+      );
     } catch {}
 
     // Default: published only for non-owner
@@ -1398,7 +1402,13 @@ export class CollectionsService {
         },
       },
     });
-    try { console.log('[collections.service.getUserCollections] rows=%d where=%j', items.length, where); } catch {}
+    try {
+      console.log(
+        '[collections.service.getUserCollections] rows=%d where=%j',
+        items.length,
+        where,
+      );
+    } catch {}
 
     const hasNext = items.length > limit;
     const data = hasNext ? items.slice(0, -1) : items;
@@ -1449,32 +1459,37 @@ export class CollectionsService {
     return {
       items: data.map((c) => {
         // Inject signed URLs
-        const mappedMedias = c.medias.map(m => {
-            if (m.file && signedUrlMap.has(m.file.id)) {
-                return { ...m, file: { ...m.file, s3Url: signedUrlMap.get(m.file.id)! } };
-            }
-            return m;
+        const mappedMedias = c.medias.map((m) => {
+          if (m.file && signedUrlMap.has(m.file.id)) {
+            return {
+              ...m,
+              file: { ...m.file, s3Url: signedUrlMap.get(m.file.id)! },
+            };
+          }
+          return m;
         });
-        
+
         const owner = c.owner;
         let ownerWithSignedUrl = owner;
         const logoId = owner?.profileImageFile?.id || owner?.profileImageId;
         if (logoId && signedUrlMap.has(logoId)) {
-             ownerWithSignedUrl = {
-                 ...owner,
-                 profileImage: signedUrlMap.get(logoId)!, // Update profileImage string too
-                 profileImageFile: owner.profileImageFile ? {
-                     ...owner.profileImageFile,
-                     s3Url: signedUrlMap.get(logoId)!
-                 } : null
-             };
+          ownerWithSignedUrl = {
+            ...owner,
+            profileImage: signedUrlMap.get(logoId)!, // Update profileImage string too
+            profileImageFile: owner.profileImageFile
+              ? {
+                  ...owner.profileImageFile,
+                  s3Url: signedUrlMap.get(logoId)!,
+                }
+              : null,
+          };
         }
 
         return {
-            ...c,
-            medias: mappedMedias,
-            owner: ownerWithSignedUrl,
-            isLiked: requesterId ? !!isLikedMap[c.id] : false,
+          ...c,
+          medias: mappedMedias,
+          owner: ownerWithSignedUrl,
+          isLiked: requesterId ? !!isLikedMap[c.id] : false,
         };
       }),
       hasNextPage: hasNext,
@@ -1505,7 +1520,10 @@ export class CollectionsService {
       try {
         await this.uploadService.deleteS3ObjectsByKeys(keys);
       } catch (err) {
-        console.warn('S3 deletion failed, but continuing with DB cleanup:', err);
+        console.warn(
+          'S3 deletion failed, but continuing with DB cleanup:',
+          err,
+        );
         // Don't throw - allow DB cleanup to proceed even if S3 fails
       }
     }
@@ -1893,7 +1911,11 @@ export class CollectionsService {
   // CONTRIBUTIONS
   // ============================================
 
-  async requestContribution(requesterId: string, collectionId: string, message?: string) {
+  async requestContribution(
+    requesterId: string,
+    collectionId: string,
+    message?: string,
+  ) {
     const collection = await this.prisma.collection.findUnique({
       where: { id: collectionId },
       include: { owner: true },
@@ -1908,7 +1930,9 @@ export class CollectionsService {
     }
 
     // Check if requester is a brand (optional, but likely desired)
-    const requester = await this.prisma.user.findUnique({ where: { id: requesterId } });
+    const requester = await this.prisma.user.findUnique({
+      where: { id: requesterId },
+    });
     if (!requester || requester.type !== UserType.BRAND) {
       throw new ForbiddenException('Only brands can request to contribute');
     }
@@ -2379,7 +2403,10 @@ export class CollectionsService {
     return { liked: !!r };
   }
 
-  async isCollectionLikedByUser(collectionId: string, userId: string | undefined) {
+  async isCollectionLikedByUser(
+    collectionId: string,
+    userId: string | undefined,
+  ) {
     if (!userId) {
       return { liked: false };
     }

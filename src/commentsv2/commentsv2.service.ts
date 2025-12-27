@@ -249,7 +249,7 @@ export class CommentsV2Service {
             targetUrl = `/collections/${media.collectionId}?commentId=${created.id}`;
           }
         } else if (targetType === 'POST') {
-           targetUrl = `/posts/${targetId}?commentId=${created.id}`;
+          targetUrl = `/posts/${targetId}?commentId=${created.id}`;
         }
 
         await this.notifications.create(ownerId, NotificationType.COMMENT, {

@@ -49,7 +49,7 @@ export class AuthController {
     private readonly tokenService: TokenService,
     private readonly configService: ConfigService,
     private readonly notifications: NotificationsService,
-  ) { }
+  ) {}
 
   private get accessTokenCookieName(): string {
     return this.configService.get<string>('ACCESS_TOKEN_COOKIE', 'accessToken');
@@ -119,10 +119,20 @@ export class AuthController {
   ) {
     const refreshToken = req.cookies[this.refreshTokenCookieName];
     if (!refreshToken) {
+      const cookieOptions = this.cookieBaseOptions;
+      res.clearCookie(this.refreshTokenCookieName, cookieOptions);
+      res.clearCookie(this.accessTokenCookieName, cookieOptions);
       throw new UnauthorizedException('Refresh token not found');
     }
 
-    return this.tokenService.refreshToken(refreshToken, req, res);
+    try {
+      return await this.tokenService.refreshToken(refreshToken, req, res);
+    } catch (error) {
+      const cookieOptions = this.cookieBaseOptions;
+      res.clearCookie(this.refreshTokenCookieName, cookieOptions);
+      res.clearCookie(this.accessTokenCookieName, cookieOptions);
+      throw error;
+    }
   }
 
   @Post('logout')
@@ -158,7 +168,7 @@ export class AuthController {
           userAgent: req.headers['user-agent'] ?? null,
         },
       });
-    } catch { }
+    } catch {}
 
     return { message: 'Logged out successfully' };
   }
@@ -187,13 +197,17 @@ export class AuthController {
           ? forwarded.split(',')[0].trim()
           : null;
       const ipAddress = ip || req.ip || null;
-      await this.notifications.create(req.user.id, NotificationType.LOGOUT_ALL, {
-        payload: {
-          ip: ipAddress,
-          userAgent: req.headers['user-agent'] ?? null,
+      await this.notifications.create(
+        req.user.id,
+        NotificationType.LOGOUT_ALL,
+        {
+          payload: {
+            ip: ipAddress,
+            userAgent: req.headers['user-agent'] ?? null,
+          },
         },
-      });
-    } catch { }
+      );
+    } catch {}
 
     return { message: 'Logged out from all devices' };
   }

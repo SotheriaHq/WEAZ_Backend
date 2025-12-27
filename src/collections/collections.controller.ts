@@ -274,7 +274,14 @@ export class CollectionsController {
     // If the requester is the same as the userId, include drafts; otherwise only published
     const requesterId = req?.user?.id;
     try {
-      console.log('[collections:getUserCollections] userId=%s requesterId=%s visibility=%s cursor=%s limit=%s', userId, requesterId ?? 'anon', visibility ?? 'public', cursor ?? '-', limit ?? '-');
+      console.log(
+        '[collections:getUserCollections] userId=%s requesterId=%s visibility=%s cursor=%s limit=%s',
+        userId,
+        requesterId ?? 'anon',
+        visibility ?? 'public',
+        cursor ?? '-',
+        limit ?? '-',
+      );
     } catch {}
     return this.collectionsService.getUserCollections(userId, requesterId, {
       cursor,
@@ -296,7 +303,11 @@ export class CollectionsController {
     const userId = req.user?.id;
     const ipAddress = req.ip || req.connection.remoteAddress;
     try {
-      console.log('[collections:getCollection] id=%s requesterId=%s', id, userId ?? 'anon');
+      console.log(
+        '[collections:getCollection] id=%s requesterId=%s',
+        id,
+        userId ?? 'anon',
+      );
     } catch {}
 
     // Record view asynchronously (don't wait)
@@ -775,7 +786,8 @@ export class CollectionsController {
     @Body() body: { status: 'ACCEPTED' | 'REJECTED' },
     @Req() req: any,
   ) {
-    const status = body.status === 'ACCEPTED' ? PatchStatus.ACCEPTED : PatchStatus.REJECTED;
+    const status =
+      body.status === 'ACCEPTED' ? PatchStatus.ACCEPTED : PatchStatus.REJECTED;
     return this.collectionsService.respondToContribution(
       req.user.id,
       requestId,

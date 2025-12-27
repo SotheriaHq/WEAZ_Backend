@@ -22,6 +22,13 @@ export const authUserSelect = Prisma.validator<Prisma.UserSelect>()({
   firstName: true,
   lastName: true,
   email: true,
+  brand: {
+    select: {
+      id: true,
+      name: true,
+      isStoreOpen: true,
+    },
+  },
   phoneNumber: true,
   address: true,
   brandFullName: true,
@@ -135,6 +142,7 @@ export const toAuthUserResponse = (
       ? mapFileUploadToDto((user as ProfileUser).bannerImageFile ?? null)
       : null,
   isEmailVerified: user.isEmailVerified,
+  storeId: user.brand?.id ?? null,
   isActive: user.isActive,
   createdAt: user.createdAt.toISOString(),
   updatedAt: user.updatedAt.toISOString(),

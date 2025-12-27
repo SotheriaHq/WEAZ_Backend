@@ -52,4 +52,4 @@ import { StoreModule } from './store/store.module';
   controllers: [AppController],
   providers: [AppService, EventsGateway],
 })
-export class AppModule { }
+export class AppModule {}

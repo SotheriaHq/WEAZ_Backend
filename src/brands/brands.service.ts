@@ -1,7 +1,18 @@
-import { Injectable, NotFoundException, BadRequestException, ForbiddenException } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  BadRequestException,
+  ForbiddenException,
+} from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { UploadService } from '../upload/upload.service';
-import { CollectionStatus, Prisma, UserType, PatchStatus, NotificationType } from '@prisma/client';
+import {
+  CollectionStatus,
+  Prisma,
+  UserType,
+  PatchStatus,
+  NotificationType,
+} from '@prisma/client';
 import { NotificationsService } from '../notifications/notifications.service';
 import { UpdateBrandProfileDto } from './dto/update-brand-profile.dto';
 import { v4 as uuidv4 } from 'uuid';
@@ -85,7 +96,7 @@ export class BrandsService {
     private readonly prisma: PrismaService,
     private readonly uploadService: UploadService,
     private readonly notifications?: NotificationsService,
-  ) { }
+  ) {}
 
   private async getBrandOrThrow(brandId: string) {
     const brand = await this.prisma.user.findUnique({
@@ -177,23 +188,23 @@ export class BrandsService {
 
     const logoAsset = brand.profileImageFile
       ? {
-        fileId: brand.profileImageFile.id,
-        url: brand.profileImageFile.s3Url,
-        originalName: brand.profileImageFile.originalName ?? null,
-        fileName: brand.profileImageFile.fileName ?? null,
-        createdAt: brand.profileImageFile.createdAt.toISOString(),
-        updatedAt: brand.profileImageFile.updatedAt.toISOString(),
-      }
+          fileId: brand.profileImageFile.id,
+          url: brand.profileImageFile.s3Url,
+          originalName: brand.profileImageFile.originalName ?? null,
+          fileName: brand.profileImageFile.fileName ?? null,
+          createdAt: brand.profileImageFile.createdAt.toISOString(),
+          updatedAt: brand.profileImageFile.updatedAt.toISOString(),
+        }
       : null;
     const bannerAsset = brand.bannerImageFile
       ? {
-        fileId: brand.bannerImageFile.id,
-        url: brand.bannerImageFile.s3Url,
-        originalName: brand.bannerImageFile.originalName ?? null,
-        fileName: brand.bannerImageFile.fileName ?? null,
-        createdAt: brand.bannerImageFile.createdAt.toISOString(),
-        updatedAt: brand.bannerImageFile.updatedAt.toISOString(),
-      }
+          fileId: brand.bannerImageFile.id,
+          url: brand.bannerImageFile.s3Url,
+          originalName: brand.bannerImageFile.originalName ?? null,
+          fileName: brand.bannerImageFile.fileName ?? null,
+          createdAt: brand.bannerImageFile.createdAt.toISOString(),
+          updatedAt: brand.bannerImageFile.updatedAt.toISOString(),
+        }
       : null;
 
     // Generate signed URLs
@@ -202,7 +213,8 @@ export class BrandsService {
     if (bannerAsset) fileIds.push(bannerAsset.fileId);
 
     if (fileIds.length > 0) {
-      const signedUrlMap = await this.uploadService.getBatchPublicSignedUrls(fileIds);
+      const signedUrlMap =
+        await this.uploadService.getBatchPublicSignedUrls(fileIds);
       if (logoAsset && signedUrlMap.has(logoAsset.fileId)) {
         logoAsset.url = signedUrlMap.get(logoAsset.fileId)!;
       }
@@ -283,12 +295,12 @@ export class BrandsService {
 
     const sanitizedTags = Array.isArray(dto.brandTags)
       ? Array.from(
-        new Set(
-          dto.brandTags
-            .map((tag) => (typeof tag === 'string' ? tag.trim() : ''))
-            .filter((tag) => tag.length > 0),
-        ),
-      ).slice(0, 6)
+          new Set(
+            dto.brandTags
+              .map((tag) => (typeof tag === 'string' ? tag.trim() : ''))
+              .filter((tag) => tag.length > 0),
+          ),
+        ).slice(0, 6)
       : undefined;
 
     const brandCountry = trimOrNull(dto.brandCountry);
@@ -335,9 +347,9 @@ export class BrandsService {
       }),
       ...(locationWasProvided
         ? {
-          companyLocation:
-            companyLocation.length > 0 ? companyLocation : null,
-        }
+            companyLocation:
+              companyLocation.length > 0 ? companyLocation : null,
+          }
         : {}),
     };
 
@@ -378,7 +390,9 @@ export class BrandsService {
     });
 
     if (collectionCount < 3) {
-      throw new BadRequestException('You need at least 3 published collections to request a patch');
+      throw new BadRequestException(
+        'You need at least 3 published collections to request a patch',
+      );
     }
 
     // Rule: Rate Limiting (Max 3 requests per 30 days)
@@ -393,7 +407,9 @@ export class BrandsService {
     });
 
     if (recentRequestsCount >= 3) {
-      throw new BadRequestException('You have reached your limit of 3 patch requests per 30 days');
+      throw new BadRequestException(
+        'You have reached your limit of 3 patch requests per 30 days',
+      );
     }
 
     // Check existing request
@@ -406,7 +422,9 @@ export class BrandsService {
         throw new BadRequestException('Patch request already pending');
       }
       if (existing.status === PatchStatus.ACCEPTED) {
-        throw new BadRequestException('You are already patched with this brand');
+        throw new BadRequestException(
+          'You are already patched with this brand',
+        );
       }
 
       // Rule: Cooldown for REJECTED requests (72 hours)
@@ -418,7 +436,9 @@ export class BrandsService {
 
         if (diffInHours < cooldownHours) {
           const remainingHours = Math.ceil(cooldownHours - diffInHours);
-          throw new BadRequestException(`Patch request rejected recently. Please wait ${remainingHours} hours before retrying.`);
+          throw new BadRequestException(
+            `Patch request rejected recently. Please wait ${remainingHours} hours before retrying.`,
+          );
         }
       }
 
@@ -454,7 +474,7 @@ export class BrandsService {
             },
           },
         );
-      } catch { }
+      } catch {}
     }
 
     return { status: 'PENDING', message: 'Patch request sent' };
@@ -500,13 +520,18 @@ export class BrandsService {
             targetUrl: '/settings?tab=patches&filter=active',
           },
         });
-      } catch { }
+      } catch {}
     }
 
     return { status, message: `Patch request ${status.toLowerCase()}` };
   }
 
-  async getBrandPatches(brandId: string, status: PatchStatus = PatchStatus.ACCEPTED, page = 1, limit = 20) {
+  async getBrandPatches(
+    brandId: string,
+    status: PatchStatus = PatchStatus.ACCEPTED,
+    page = 1,
+    limit = 20,
+  ) {
     const skip = (page - 1) * limit;
     const [total, patches] = await Promise.all([
       this.prisma.brandPatch.count({
@@ -578,8 +603,15 @@ export class BrandsService {
             collections: {
               where: { status: 'PUBLISHED' },
               take: 3,
-              select: { id: true, title: true, medias: { take: 1, select: { file: { select: { s3Url: true } } } } }
-            }
+              select: {
+                id: true,
+                title: true,
+                medias: {
+                  take: 1,
+                  select: { file: { select: { s3Url: true } } },
+                },
+              },
+            },
           },
         },
       },
@@ -626,7 +658,7 @@ export class BrandsService {
           actorId: followerId,
           payload: { message: 'New subscriber' },
         });
-      } catch { }
+      } catch {}
     }
 
     return { subscribed: true };
@@ -702,7 +734,8 @@ export class BrandsService {
     ]);
 
     const totalSales = totalSalesResult._sum.totalAmount || 0;
-    const avgOrderValue = totalOrders > 0 ? Number(totalSales) / totalOrders : 0;
+    const avgOrderValue =
+      totalOrders > 0 ? Number(totalSales) / totalOrders : 0;
 
     // Recent Orders
     const recentOrders = await this.prisma.order.findMany({
@@ -710,9 +743,6 @@ export class BrandsService {
       orderBy: { createdAt: 'desc' },
       take: 5,
     });
-
-    // Low Stock (Mocked for now as Product inventory isn't fully defined in schema yet)
-    const lowStockAlerts = [];
 
     // Action Required
     const actionRequired = [];
@@ -738,7 +768,10 @@ export class BrandsService {
     };
   }
 
-  async getDashboardAnalytics(brandId: string, range: '7d' | '30d' | 'ytd' = '30d') {
+  async getDashboardAnalytics(
+    brandId: string,
+    range: '7d' | '30d' | 'ytd' = '30d',
+  ) {
     const brand = await this.prisma.brand.findUnique({
       where: { ownerId: brandId },
     });
@@ -769,7 +802,7 @@ export class BrandsService {
 
     // Aggregate by day
     const dailySales = new Map<string, number>();
-    orders.forEach(order => {
+    orders.forEach((order) => {
       const date = order.createdAt.toISOString().split('T')[0];
       const amount = Number(order.totalAmount);
       dailySales.set(date, (dailySales.get(date) || 0) + amount);

@@ -124,6 +124,14 @@ export class AuthUserResponseDto {
   @ApiProperty()
   isEmailVerified: boolean;
 
+  @ApiProperty({
+    required: false,
+    nullable: true,
+    description:
+      'Brand store id (Brand.id) for BRAND users; null for regular users',
+  })
+  storeId: string | null;
+
   @ApiProperty()
   isActive: string;
 

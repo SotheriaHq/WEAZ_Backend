@@ -17,11 +17,15 @@ describe('ImageController', () => {
           provide: ConfigService,
           useValue: {
             get: jest.fn((key: string) => {
-              if (key === 'AWS_S3_BUCKET' || key === 'S3_BUCKET') return 'test-bucket';
+              if (key === 'AWS_S3_BUCKET' || key === 'S3_BUCKET')
+                return 'test-bucket';
               if (key === 'AWS_REGION' || key === 'REGION') return 'us-east-1';
               if (key === 'AWS_ACCESS_KEY_ID' || key === 'ACCESS_KEY_ID')
                 return 'dummy';
-              if (key === 'AWS_SECRET_ACCESS_KEY' || key === 'SECRET_ACCESS_KEY')
+              if (
+                key === 'AWS_SECRET_ACCESS_KEY' ||
+                key === 'SECRET_ACCESS_KEY'
+              )
                 return 'dummy';
               return undefined;
             }),

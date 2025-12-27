@@ -17,7 +17,7 @@ import { ListNotificationsQueryDto } from './dto';
 @UseGuards(JwtAuthGuard)
 @Controller('notifications')
 export class NotificationsController {
-  constructor(private readonly service: NotificationsService) { }
+  constructor(private readonly service: NotificationsService) {}
 
   @Get()
   async list(@Req() req: any, @Query() q: ListNotificationsQueryDto) {

@@ -1,4 +1,11 @@
-import { IsArray, IsOptional, IsString, ValidateNested, IsNumber, Min } from 'class-validator';
+import {
+  IsArray,
+  IsOptional,
+  IsString,
+  ValidateNested,
+  IsNumber,
+  Min,
+} from 'class-validator';
 import { Type } from 'class-transformer';
 
 export class CheckoutItemDto {

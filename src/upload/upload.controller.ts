@@ -24,7 +24,7 @@ import { SkipThrottle } from '@nestjs/throttler';
 @ApiBearerAuth()
 @Controller('uploads')
 export class UploadController {
-  constructor(private uploadService: UploadService) { }
+  constructor(private uploadService: UploadService) {}
 
   // ============================================
   // PUBLIC ENDPOINTS (No Auth Required)

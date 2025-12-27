@@ -1,4 +1,13 @@
-import { IsString, IsOptional, IsNumber, IsArray, IsBoolean, IsDateString, Min, IsEnum } from 'class-validator';
+import {
+  IsString,
+  IsOptional,
+  IsNumber,
+  IsArray,
+  IsBoolean,
+  IsDateString,
+  Min,
+  IsEnum,
+} from 'class-validator';
 import { Type } from 'class-transformer';
 
 export enum ProductGender {

@@ -9,10 +9,7 @@ describe('OrderController', () => {
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
       controllers: [OrderController],
-      providers: [
-        OrderService,
-        { provide: PrismaService, useValue: {} },
-      ],
+      providers: [OrderService, { provide: PrismaService, useValue: {} }],
     }).compile();
 
     controller = module.get<OrderController>(OrderController);

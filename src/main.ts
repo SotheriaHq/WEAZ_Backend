@@ -13,7 +13,7 @@ try {
         : require;
     req('module-alias/register');
   }
-} catch { }
+} catch {}
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { TransformInterceptor } from './transform/transform.interceptor';

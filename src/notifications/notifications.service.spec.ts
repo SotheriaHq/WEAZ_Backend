@@ -10,7 +10,6 @@ describe('NotificationsService', () => {
   let service: NotificationsService;
   let mockPrisma: any;
   let cacheManager: any;
-  let registry: NotificationRegistry;
 
   beforeEach(async () => {
     mockPrisma = {
@@ -66,7 +65,6 @@ describe('NotificationsService', () => {
 
     service = module.get<NotificationsService>(NotificationsService);
     cacheManager = module.get(CACHE_MANAGER);
-    registry = module.get(NotificationRegistry);
   });
 
   it('should be defined', () => {

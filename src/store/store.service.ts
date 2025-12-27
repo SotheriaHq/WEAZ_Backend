@@ -23,10 +23,7 @@ export class StoreService {
   ) {}
 
   private normalizeTag(tag: string): string {
-    return (tag || '')
-      .trim()
-      .replace(/\s+/g, ' ')
-      .slice(0, 40);
+    return (tag || '').trim().replace(/\s+/g, ' ').slice(0, 40);
   }
 
   private buildTagSet(tags: Array<string | null | undefined>): string[] {
@@ -66,7 +63,10 @@ export class StoreService {
     });
   }
 
-  private canonicalStoreName(user: { brandFullName: string | null }, brand?: { name: string } | null) {
+  private canonicalStoreName(
+    user: { brandFullName: string | null },
+    brand?: { name: string } | null,
+  ) {
     return (user.brandFullName || brand?.name || '').trim();
   }
 
@@ -83,7 +83,9 @@ export class StoreService {
     });
 
     if (!brand) {
-      throw new ForbiddenException('You must be a brand owner to create products');
+      throw new ForbiddenException(
+        'You must be a brand owner to create products',
+      );
     }
 
     // Verify collection belongs to this brand
@@ -92,7 +94,9 @@ export class StoreService {
     });
 
     if (!collection) {
-      throw new NotFoundException('Collection not found or does not belong to you');
+      throw new NotFoundException(
+        'Collection not found or does not belong to you',
+      );
     }
 
     const product = await this.prisma.product.create({
@@ -128,7 +132,11 @@ export class StoreService {
     return this.transformProduct(product);
   }
 
-  async updateProduct(brandOwnerId: string, productId: string, dto: UpdateProductDto) {
+  async updateProduct(
+    brandOwnerId: string,
+    productId: string,
+    dto: UpdateProductDto,
+  ) {
     const product = await this.prisma.product.findFirst({
       where: { id: productId },
       include: { brand: true },
@@ -143,13 +151,21 @@ export class StoreService {
     }
 
     const updateData: any = {};
-    
+
     if (dto.name !== undefined) updateData.name = dto.name;
     if (dto.description !== undefined) updateData.description = dto.description;
-    if (dto.price !== undefined) updateData.price = new Prisma.Decimal(dto.price);
-    if (dto.salePrice !== undefined) updateData.salePrice = dto.salePrice ? new Prisma.Decimal(dto.salePrice) : null;
-    if (dto.saleStartAt !== undefined) updateData.saleStartAt = dto.saleStartAt ? new Date(dto.saleStartAt) : null;
-    if (dto.saleEndAt !== undefined) updateData.saleEndAt = dto.saleEndAt ? new Date(dto.saleEndAt) : null;
+    if (dto.price !== undefined)
+      updateData.price = new Prisma.Decimal(dto.price);
+    if (dto.salePrice !== undefined)
+      updateData.salePrice = dto.salePrice
+        ? new Prisma.Decimal(dto.salePrice)
+        : null;
+    if (dto.saleStartAt !== undefined)
+      updateData.saleStartAt = dto.saleStartAt
+        ? new Date(dto.saleStartAt)
+        : null;
+    if (dto.saleEndAt !== undefined)
+      updateData.saleEndAt = dto.saleEndAt ? new Date(dto.saleEndAt) : null;
     if (dto.sizes !== undefined) updateData.sizes = dto.sizes;
     if (dto.sizeStock !== undefined) updateData.sizeStock = dto.sizeStock;
     if (dto.colors !== undefined) updateData.colors = dto.colors;
@@ -157,7 +173,8 @@ export class StoreService {
     if (dto.images !== undefined) updateData.images = dto.images;
     if (dto.thumbnail !== undefined) updateData.thumbnail = dto.thumbnail;
     if (dto.totalStock !== undefined) updateData.totalStock = dto.totalStock;
-    if (dto.lowStockThreshold !== undefined) updateData.lowStockThreshold = dto.lowStockThreshold;
+    if (dto.lowStockThreshold !== undefined)
+      updateData.lowStockThreshold = dto.lowStockThreshold;
     if (dto.tags !== undefined) updateData.tags = dto.tags;
     if (dto.gender !== undefined) updateData.gender = dto.gender;
     if (dto.isActive !== undefined) updateData.isActive = dto.isActive;
@@ -230,7 +247,10 @@ export class StoreService {
       if (!product.brand.isStoreOpen) {
         throw new NotFoundException('Store is closed');
       }
-      if (!product.collection.isAvailableInStore || product.collection.status !== 'PUBLISHED') {
+      if (
+        !product.collection.isAvailableInStore ||
+        product.collection.status !== 'PUBLISHED'
+      ) {
         throw new NotFoundException('Product not available');
       }
     }
@@ -293,7 +313,10 @@ export class StoreService {
     };
 
     // Gender filter
-    if (gender && ['MALE', 'FEMALE', 'EVERYBODY'].includes(gender.toUpperCase())) {
+    if (
+      gender &&
+      ['MALE', 'FEMALE', 'EVERYBODY'].includes(gender.toUpperCase())
+    ) {
       where.gender = gender.toUpperCase();
     }
 
@@ -383,7 +406,9 @@ export class StoreService {
               isAvailableInStore: true,
             },
           },
-          brand: { select: { id: true, name: true, logo: true, currency: true } },
+          brand: {
+            select: { id: true, name: true, logo: true, currency: true },
+          },
         },
       }),
       this.prisma.product.count({ where }),
@@ -431,10 +456,14 @@ export class StoreService {
       const sizeStock = product.sizeStock as Record<string, number>;
       const available = sizeStock[dto.selectedSize] || 0;
       if (available < (dto.quantity || 1)) {
-        throw new BadRequestException(`Only ${available} items available in size ${dto.selectedSize}`);
+        throw new BadRequestException(
+          `Only ${available} items available in size ${dto.selectedSize}`,
+        );
       }
     } else if (product.totalStock < (dto.quantity || 1)) {
-      throw new BadRequestException(`Only ${product.totalStock} items available`);
+      throw new BadRequestException(
+        `Only ${product.totalStock} items available`,
+      );
     }
 
     // Upsert cart item
@@ -485,10 +514,11 @@ export class StoreService {
     const cartItems = items.map((item) => {
       const product = item.product;
       const isOnSale = this.isProductOnSale(product);
-      const effectivePrice = isOnSale && product.salePrice 
-        ? Number(product.salePrice) 
-        : Number(product.price);
-      
+      const effectivePrice =
+        isOnSale && product.salePrice
+          ? Number(product.salePrice)
+          : Number(product.price);
+
       return {
         id: item.id,
         productId: item.productId,
@@ -524,7 +554,11 @@ export class StoreService {
     };
   }
 
-  async updateCartItem(userId: string, cartItemId: string, dto: UpdateCartItemDto) {
+  async updateCartItem(
+    userId: string,
+    cartItemId: string,
+    dto: UpdateCartItemDto,
+  ) {
     const item = await this.prisma.cartItem.findFirst({
       where: { id: cartItemId, userId },
       include: { product: true },
@@ -542,7 +576,9 @@ export class StoreService {
         throw new BadRequestException(`Only ${available} items available`);
       }
     } else if (item.product.totalStock < dto.quantity) {
-      throw new BadRequestException(`Only ${item.product.totalStock} items available`);
+      throw new BadRequestException(
+        `Only ${item.product.totalStock} items available`,
+      );
     }
 
     await this.prisma.cartItem.update({
@@ -588,7 +624,11 @@ export class StoreService {
     });
 
     if (existing) {
-      return { success: true, message: 'Already in wishlist', isWishlisted: true };
+      return {
+        success: true,
+        message: 'Already in wishlist',
+        isWishlisted: true,
+      };
     }
 
     await this.prisma.wishlistItem.create({
@@ -615,7 +655,11 @@ export class StoreService {
       where: { userId_productId: { userId, productId } },
     });
 
-    return { success: true, message: 'Removed from wishlist', isWishlisted: false };
+    return {
+      success: true,
+      message: 'Removed from wishlist',
+      isWishlisted: false,
+    };
   }
 
   async getWishlist(userId: string, page = 1, limit = 20) {
@@ -625,7 +669,9 @@ export class StoreService {
         include: {
           product: {
             include: {
-              brand: { select: { id: true, name: true, logo: true, currency: true } },
+              brand: {
+                select: { id: true, name: true, logo: true, currency: true },
+              },
             },
           },
         },
@@ -670,15 +716,18 @@ export class StoreService {
 
   private transformProduct(product: any) {
     const isOnSale = this.isProductOnSale(product);
-    const effectivePrice = isOnSale && product.salePrice 
-      ? Number(product.salePrice) 
-      : Number(product.price);
-    
+    const effectivePrice =
+      isOnSale && product.salePrice
+        ? Number(product.salePrice)
+        : Number(product.price);
+
     // Calculate discount percentage
     let discountPercent: number | null = null;
     if (isOnSale && product.salePrice) {
       discountPercent = Math.round(
-        ((Number(product.price) - Number(product.salePrice)) / Number(product.price)) * 100
+        ((Number(product.price) - Number(product.salePrice)) /
+          Number(product.price)) *
+          100,
       );
     }
 
@@ -710,7 +759,9 @@ export class StoreService {
       thumbnail: product.thumbnail,
       totalStock: product.totalStock,
       lowStockThreshold: product.lowStockThreshold,
-      isLowStock: product.totalStock > 0 && product.totalStock <= product.lowStockThreshold,
+      isLowStock:
+        product.totalStock > 0 &&
+        product.totalStock <= product.lowStockThreshold,
       isOutOfStock: product.totalStock === 0,
       tags: product.tags,
       gender: product.gender,
@@ -746,12 +797,15 @@ export class StoreService {
     }
 
     // Map items by brand to produce brand-scoped orders
-    const itemsByBrand = cartItems.reduce<Record<string, typeof cartItems>>((acc, item) => {
-      const brandId = item.product.brandId;
-      if (!acc[brandId]) acc[brandId] = [];
-      acc[brandId].push(item);
-      return acc;
-    }, {});
+    const itemsByBrand = cartItems.reduce<Record<string, typeof cartItems>>(
+      (acc, item) => {
+        const brandId = item.product.brandId;
+        if (!acc[brandId]) acc[brandId] = [];
+        acc[brandId].push(item);
+        return acc;
+      },
+      {},
+    );
 
     const orders = await this.prisma.$transaction(async (tx) => {
       const createdOrders = [] as any[];
@@ -759,7 +813,13 @@ export class StoreService {
       for (const [brandId, items] of Object.entries(itemsByBrand)) {
         const brand = await tx.brand.findUnique({
           where: { id: brandId },
-          select: { id: true, name: true, currency: true, isStoreOpen: true, ownerId: true },
+          select: {
+            id: true,
+            name: true,
+            currency: true,
+            isStoreOpen: true,
+            ownerId: true,
+          },
         });
 
         if (!brand || !brand.isStoreOpen) {
@@ -779,32 +839,54 @@ export class StoreService {
             throw new BadRequestException('Product not available');
           }
 
-          if (!product.collection || !product.collection.isAvailableInStore || product.collection.status !== 'PUBLISHED') {
-            throw new BadRequestException(`Product not available in store: ${product.name}`);
+          if (
+            !product.collection ||
+            !product.collection.isAvailableInStore ||
+            product.collection.status !== 'PUBLISHED'
+          ) {
+            throw new BadRequestException(
+              `Product not available in store: ${product.name}`,
+            );
           }
 
-          if (item.selectedSize && product.sizes.length > 0 && !product.sizes.includes(item.selectedSize)) {
+          if (
+            item.selectedSize &&
+            product.sizes.length > 0 &&
+            !product.sizes.includes(item.selectedSize)
+          ) {
             throw new BadRequestException(`Invalid size for ${product.name}`);
           }
-          if (item.selectedColor && product.colors.length > 0 && !product.colors.includes(item.selectedColor)) {
+          if (
+            item.selectedColor &&
+            product.colors.length > 0 &&
+            !product.colors.includes(item.selectedColor)
+          ) {
             throw new BadRequestException(`Invalid color for ${product.name}`);
           }
 
-          const sizeStock = (product.sizeStock as Record<string, number> | null) || null;
+          const sizeStock =
+            (product.sizeStock as Record<string, number> | null) || null;
           const quantity = item.quantity;
 
           if (item.selectedSize && sizeStock) {
             const available = sizeStock[item.selectedSize] || 0;
             if (available < quantity) {
-              throw new BadRequestException(`Only ${available} left for ${product.name} (${item.selectedSize})`);
+              throw new BadRequestException(
+                `Only ${available} left for ${product.name} (${item.selectedSize})`,
+              );
             }
             sizeStock[item.selectedSize] = available - quantity;
           } else if (product.totalStock < quantity) {
-            throw new BadRequestException(`Only ${product.totalStock} left for ${product.name}`);
+            throw new BadRequestException(
+              `Only ${product.totalStock} left for ${product.name}`,
+            );
           }
 
           const isOnSale = this.isProductOnSale(product);
-          const unitPrice = isOnSale && product.salePrice ? Number(product.salePrice) : Number(product.price);
+          const unitPrice =
+            isOnSale && product.salePrice
+              ? Number(product.salePrice)
+              : Number(product.price);
           totalAmount += unitPrice * quantity;
 
           await tx.product.update({
@@ -872,7 +954,9 @@ export class StoreService {
       this.prisma.order.findMany({
         where: { buyerId: userId },
         include: {
-          brand: { select: { id: true, name: true, logo: true, currency: true } },
+          brand: {
+            select: { id: true, name: true, logo: true, currency: true },
+          },
         },
         orderBy: { createdAt: 'desc' },
         skip: (page - 1) * limit,
@@ -942,10 +1026,11 @@ export class StoreService {
       .map((t) => this.normalizeTag(t))
       .filter(Boolean);
 
-    const taglineFromDescription = (user.brandDescription || '')
-      .split(/(?<=[.!?])\s+/)[0]
-      ?.trim() || '';
-    const suggestedTagline = (taglineFromDescription || userTags.slice(0, 3).join(' • ')).slice(0, 60);
+    const taglineFromDescription =
+      (user.brandDescription || '').split(/(?<=[.!?])\s+/)[0]?.trim() || '';
+    const suggestedTagline = (
+      taglineFromDescription || userTags.slice(0, 3).join(' • ')
+    ).slice(0, 60);
 
     return {
       brand: {
@@ -985,7 +1070,12 @@ export class StoreService {
       }),
       this.prisma.brand.findUnique({
         where: { ownerId },
-        select: { id: true, name: true, storeNameLastChangedAt: true, isStoreOpen: true },
+        select: {
+          id: true,
+          name: true,
+          storeNameLastChangedAt: true,
+          isStoreOpen: true,
+        },
       }),
     ]);
 
@@ -1031,10 +1121,15 @@ export class StoreService {
     if (!brand) throw new NotFoundException('Brand not found');
 
     if (!user.isEmailVerified) {
-      throw new ForbiddenException('Verify your email before changing your store name.');
+      throw new ForbiddenException(
+        'Verify your email before changing your store name.',
+      );
     }
 
-    const ok = await this.passwordService.verifyPassword(user.password, dto.currentPassword);
+    const ok = await this.passwordService.verifyPassword(
+      user.password,
+      dto.currentPassword,
+    );
     if (!ok) {
       throw new ForbiddenException('Password verification failed.');
     }
@@ -1044,8 +1139,12 @@ export class StoreService {
     if (last) {
       const nextAllowedAt = new Date(last.getTime() + 90 * 24 * 60 * 60 * 1000);
       if (now < nextAllowedAt) {
-        const daysRemaining = Math.ceil((nextAllowedAt.getTime() - now.getTime()) / (24 * 60 * 60 * 1000));
-        throw new BadRequestException(`Store name can only be changed once every 3 months. Try again in ~${daysRemaining} day(s).`);
+        const daysRemaining = Math.ceil(
+          (nextAllowedAt.getTime() - now.getTime()) / (24 * 60 * 60 * 1000),
+        );
+        throw new BadRequestException(
+          `Store name can only be changed once every 3 months. Try again in ~${daysRemaining} day(s).`,
+        );
       }
     }
 
@@ -1099,7 +1198,9 @@ export class StoreService {
     if (!user) throw new NotFoundException('User not found');
 
     if (brand?.isStoreOpen) {
-      throw new BadRequestException('Store already exists. You cannot start a new store creation flow.');
+      throw new BadRequestException(
+        'Store already exists. You cannot start a new store creation flow.',
+      );
     }
 
     const baseData: any =
@@ -1127,7 +1228,11 @@ export class StoreService {
     if (dto.twitter !== undefined) payload.twitter = dto.twitter;
     if (dto.website !== undefined) payload.website = dto.website;
     if (dto.contactEmail !== undefined) payload.contactEmail = dto.contactEmail;
-    if (payload.contactEmail === undefined || payload.contactEmail === null || payload.contactEmail === '') {
+    if (
+      payload.contactEmail === undefined ||
+      payload.contactEmail === null ||
+      payload.contactEmail === ''
+    ) {
       payload.contactEmail = user.email || null;
     }
 
@@ -1178,7 +1283,10 @@ export class StoreService {
   async getStoreDraftStatus(ownerId: string) {
     const [draft, brand] = await Promise.all([
       this.prisma.storeDraft.findUnique({ where: { ownerId } }),
-      this.prisma.brand.findUnique({ where: { ownerId }, select: { id: true, isStoreOpen: true, name: true } }),
+      this.prisma.brand.findUnique({
+        where: { ownerId },
+        select: { id: true, isStoreOpen: true, name: true },
+      }),
     ]);
 
     if (!draft) {
@@ -1192,8 +1300,12 @@ export class StoreService {
     return this.transformStoreDraft(draft, brand);
   }
 
-  private transformStoreDraft(draft: any, brand?: { id: string; isStoreOpen: boolean } | null) {
-    const data = (draft?.data && typeof draft.data === 'object') ? draft.data : {};
+  private transformStoreDraft(
+    draft: any,
+    brand?: { id: string; isStoreOpen: boolean } | null,
+  ) {
+    const data =
+      draft?.data && typeof draft.data === 'object' ? draft.data : {};
     return {
       hasDraft: true,
       hasBrand: !!brand,

@@ -36,7 +36,7 @@ export class AuthService {
     private readonly userHelperService: UserHelperService,
     private readonly emailVerificationHelper: EmailVerificationHelperService,
     private readonly notifications: NotificationsService,
-  ) { }
+  ) {}
 
   private validateBrandRequirements(signupDto: CreateUserDto): void {
     const missingFields: string[] = [];
@@ -152,6 +152,18 @@ export class AuthService {
             industriNumber,
             emailVerificationCode: verificationCode,
             isEmailVerified: false,
+            ...(signupDto.type === UserType.BRAND
+              ? {
+                  brand: {
+                    create: {
+                      id: uuidv4(),
+                      name: signupDto.brandFullName!,
+                      storeNameLastChangedAt: new Date(),
+                      currency: 'NGN',
+                    },
+                  },
+                }
+              : {}),
           },
           select: authUserSelect,
         })
@@ -183,7 +195,9 @@ export class AuthService {
         this.logger.error('Token generation failed:', tokenError);
         // If token generation fails, we should probably inform the user or fail the request
         // returning success with null token is confusing.
-        throw new BadRequestException('Account created but failed to generate login session. Please log in manually.');
+        throw new BadRequestException(
+          'Account created but failed to generate login session. Please log in manually.',
+        );
       }
 
       // Notify SIGNUP event (account created)
@@ -191,7 +205,7 @@ export class AuthService {
         await this.notifications.create(user.id, NotificationType.SIGNUP, {
           payload: { action: 'SIGNUP', email: user.email },
         });
-      } catch { }
+      } catch {}
 
       return {
         user: toAuthUserResponse(user),
@@ -248,7 +262,7 @@ export class AuthService {
             userAgent: req.headers['user-agent'] ?? null,
           },
         });
-      } catch { }
+      } catch {}
 
       return {
         user: toAuthUserResponse(user),
@@ -385,7 +399,7 @@ export class AuthService {
       await this.notifications.create(userId, NotificationType.SIGNUP, {
         payload: { action: 'EMAIL_VERIFIED' },
       });
-    } catch { }
+    } catch {}
     return { message: 'Email verified successfully' };
   }
 
@@ -404,7 +418,7 @@ export class AuthService {
       await this.notifications.create(user.id, NotificationType.SIGNUP, {
         payload: { action: 'EMAIL_VERIFIED' },
       });
-    } catch { }
+    } catch {}
     return { message: 'Email verified successfully' };
   }
 

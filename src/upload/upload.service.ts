@@ -1,7 +1,14 @@
 import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { FileUpload } from '@prisma/client';
-import { S3Client, PutObjectCommand, DeleteObjectCommand, DeleteObjectsCommand, HeadObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
+import {
+  S3Client,
+  PutObjectCommand,
+  DeleteObjectCommand,
+  DeleteObjectsCommand,
+  HeadObjectCommand,
+  GetObjectCommand,
+} from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { createPresignedPost } from '@aws-sdk/s3-presigned-post';
 import { v4 as uuidv4 } from 'uuid';
@@ -300,7 +307,9 @@ export class UploadService {
         Bucket: this.bucketName,
         Key: file.s3Key,
       });
-      const signedUrl = await getSignedUrl(this.s3, command, { expiresIn: 3600 }); // 1 hour
+      const signedUrl = await getSignedUrl(this.s3, command, {
+        expiresIn: 3600,
+      }); // 1 hour
       urlMap.set(file.id, signedUrl);
     }
 
@@ -341,7 +350,7 @@ export class UploadService {
     try {
       const command = new DeleteObjectCommand({
         Bucket: this.bucketName,
-        Key: key
+        Key: key,
       });
       await this.s3.send(command);
     } catch (err) {
@@ -380,7 +389,7 @@ export class UploadService {
     try {
       const command = new HeadObjectCommand({
         Bucket: this.bucketName,
-        Key: key
+        Key: key,
       });
       await this.s3.send(command);
       return true;

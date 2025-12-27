@@ -15,10 +15,26 @@ describe('AuthService', () => {
       providers: [
         AuthService,
         { provide: PrismaService, useValue: {} },
-        { provide: PasswordService, useValue: { hashPassword: jest.fn(), verifyPassword: jest.fn() } },
+        {
+          provide: PasswordService,
+          useValue: { hashPassword: jest.fn(), verifyPassword: jest.fn() },
+        },
         { provide: TokenService, useValue: { generateTokens: jest.fn() } },
-        { provide: UserHelperService, useValue: { generateUniqueUsername: jest.fn(), generateUsernameFromBrand: jest.fn(), generateIndustriNumber: jest.fn() } },
-        { provide: EmailVerificationHelperService, useValue: { generateVerificationCode: jest.fn(), generateVerificationLink: jest.fn() } },
+        {
+          provide: UserHelperService,
+          useValue: {
+            generateUniqueUsername: jest.fn(),
+            generateUsernameFromBrand: jest.fn(),
+            generateIndustriNumber: jest.fn(),
+          },
+        },
+        {
+          provide: EmailVerificationHelperService,
+          useValue: {
+            generateVerificationCode: jest.fn(),
+            generateVerificationLink: jest.fn(),
+          },
+        },
         { provide: NotificationsService, useValue: { create: jest.fn() } },
       ],
     }).compile();
