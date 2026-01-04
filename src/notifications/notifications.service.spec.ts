@@ -18,6 +18,7 @@ describe('NotificationsService', () => {
         count: jest.fn(),
         updateMany: jest.fn(),
         findUnique: jest.fn(),
+        update: jest.fn(),
         create: jest.fn(),
         findFirst: jest.fn(),
       },
@@ -118,16 +119,28 @@ describe('NotificationsService', () => {
 
   describe('markRead', () => {
     it('should mark notification as read and invalidate cache', async () => {
-      mockPrisma.notification.updateMany.mockResolvedValue({ count: 1 });
+      mockPrisma.notification.findFirst.mockResolvedValue({
+        id: 'notif-id',
+        isRead: false,
+      });
+      mockPrisma.notification.update.mockResolvedValue({
+        id: 'notif-id',
+        isRead: true,
+      });
 
       const result = await service.markRead('user-id', 'notif-id');
 
       expect(result.success).toBe(true);
+      expect(result.alreadyRead).toBe(false);
+      expect(mockPrisma.notification.update).toHaveBeenCalledWith({
+        where: { id: 'notif-id' },
+        data: { isRead: true },
+      });
       expect(cacheManager.del).toHaveBeenCalledWith('unread_count:user-id');
     });
 
     it('should throw NotFoundException if notification not found', async () => {
-      mockPrisma.notification.updateMany.mockResolvedValue({ count: 0 });
+      mockPrisma.notification.findFirst.mockResolvedValue(null);
       mockPrisma.notification.findUnique.mockResolvedValue(null);
 
       await expect(service.markRead('user-id', 'notif-id')).rejects.toThrow(

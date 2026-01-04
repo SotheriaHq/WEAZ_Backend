@@ -26,6 +26,16 @@ export class FollowsController {
 
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
+  @Get('check/:targetId')
+  @ApiOperation({ summary: 'Check if current user follows target' })
+  @ApiResponse({ status: 200, description: 'Follow status' })
+  async check(@Req() req: any, @Param('targetId') targetId: string) {
+    const isFollowing = await this.followsService.isFollowing(req.user.id, targetId);
+    return { isFollowing };
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
   @Post()
   @ApiOperation({ summary: 'Follow a user/brand' })
   @ApiResponse({ status: 201, description: 'Follow created' })

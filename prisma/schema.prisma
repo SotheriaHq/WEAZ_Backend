@@ -93,9 +93,6 @@ model User {
 
   // Orders as buyer
   ordersAsBuyer           Order[]                         @relation("OrderBuyer")
-
-  // Store draft (one per brand user)
-  storeDraft              StoreDraft?
 }
 
 model FileUpload {
@@ -644,9 +641,21 @@ model Brand {
   ownerId     String    @unique @db.Uuid
   owner       User      @relation("BrandOwner", fields: [ownerId], references: [id])
   
+  // Store profile fields (store-centric)
   description String?
+  tagline     String?
   logo        String?
   banner      String?
+  tags        String[]  @default([])
+  contactEmail String?
+  
+  // Social links
+  socialInstagram String?
+  socialTwitter   String?
+  socialTiktok    String?
+  socialWebsite   String?
+  
+  // Store state
   isStoreOpen Boolean   @default(false)
   
   currency    String    @default("NGN")
@@ -723,26 +732,7 @@ enum PayoutStatus {
   FAILED
 }
 
-// ===== Store Drafts =====
-
-enum StoreDraftStatus {
-  DRAFT
-  SUBMITTED
-  COMPLETED
-}
-
-model StoreDraft {
-  id        String           @id @map("_id") @db.Uuid
-  ownerId   String           @db.Uuid
-  owner     User             @relation(fields: [ownerId], references: [id], onDelete: Cascade)
-  data      Json
-  lastStep  Int              @default(1)
-  status    StoreDraftStatus @default(DRAFT)
-  createdAt DateTime         @default(now())
-  updatedAt DateTime         @updatedAt
-
-  @@unique([ownerId])
-}
+// ===== Store Drafts ===== (REMOVED - store setup uses Brand fields directly)
 
 // ===== E-Commerce Store Models =====
 

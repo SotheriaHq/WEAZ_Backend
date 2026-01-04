@@ -1370,6 +1370,112 @@ FOOTER:
 
 ## PART 4: CUSTOMER-FACING STORE SCREENS (Reference Designs)
 
+### Screen 4.0: Brand Store Page - Full Page (Header + Tabs + Sections)
+```
+Design a premium dark-mode Brand Store Page for Threadly (a fashion social-commerce platform).
+
+CONTEXT:
+- This is the main store screen for a single brand.
+- Users can browse products, view collections, learn about the brand, follow, and add items to cart.
+- Must feel luxury + modern: dark-mode-first with glassmorphism.
+- IMPORTANT VIEW STATES:
+  1) Public visitor viewing an OPEN store
+  2) Public visitor viewing a CLOSED store (store not open)
+  3) Brand owner previewing their store (owner can always preview)
+
+PAGE LAYOUT (DESKTOP):
+- Full-bleed hero banner at the top (brand banner image) with a subtle dark gradient overlay.
+- A floating glassmorphic Brand Card anchored at the banner bottom edge.
+- Sticky secondary navigation bar below the hero section.
+- Main content area switches based on active tab.
+- A subtle cart shortcut (glass pill icon + count) in the top-right of the sticky header.
+
+PAGE LAYOUT (MOBILE):
+- Banner collapses to a shorter hero.
+- Brand Card becomes stacked and full-width.
+- Sticky tabs become horizontally scrollable.
+- Filters open as a bottom sheet.
+
+HERO + BRAND CARD (GLASS):
+- Brand logo (circular) overlaps the top edge of the card.
+- Brand name (Playfair Display, bold), tagline underneath.
+- Location + category chips (colored tag chips per system).
+- Stats row: followers, rating, product count.
+- Social icons row (Instagram/TikTok/X/Website) as subtle glass icon buttons.
+- Primary actions:
+  - Follow (primary purple). Toggled state becomes "Following" (outlined purple).
+  - Message Brand (secondary glass).
+  - Share (icon button).
+
+STICKY STORE NAV (BELOW HERO):
+- Tabs: Products | Collections | About | Reviews
+- Right side controls (on Products tab): Search input + Sort dropdown + Grid/List toggle.
+
+TAB: PRODUCTS (DEFAULT):
+- Two-column layout:
+  - Left filters panel (glass card)
+  - Right product grid
+
+FILTERS PANEL:
+- Category chips
+- Price range slider (currency in NGN)
+- Size chips (multi-select)
+- Color swatches
+- On Sale toggle
+- In Stock toggle
+- Footer buttons: Clear | Apply (primary purple)
+
+PRODUCT GRID:
+- Premium product cards (glass-backed) showing:
+  - Image (hover swap to second image)
+  - Badges: SALE / NEW / LIMITED
+  - Product name
+  - Price in NGN (sale styling when needed)
+  - Quick actions on hover: Add to Cart (purple), Wishlist (heart)
+- Loading: skeleton cards with the same shape.
+- Empty state: "No products match your filters" with a Clear Filters action.
+
+TAB: COLLECTIONS:
+- Grid of collection cards:
+  - Cover image, name, item count
+  - View Collection CTA
+
+TAB: ABOUT:
+- Glass sections for:
+  - Brand story/description
+  - Shipping coverage badges
+  - Contact card (email/website)
+  - Trust badges earned
+
+TAB: REVIEWS:
+- Rating summary at top (large rating + distribution bars).
+- Review list rows in glass.
+
+STATE 1 (PUBLIC, STORE OPEN):
+- All tabs function normally.
+- Add-to-cart enabled.
+
+STATE 2 (PUBLIC, STORE CLOSED):
+- Show a premium "Store Not Open Yet" gate section instead of the product grid:
+  - Centered glass panel with brand identity
+  - Copy: "This store isn't open to the public yet."
+  - Primary CTA: Follow to get notified when it opens
+  - Secondary link: Browse Market
+
+STATE 3 (OWNER PREVIEW):
+- Show a top ribbon (glass with purple accent): "Preview Mode - only you can see this right now."
+- If setup is incomplete, show a clear setup callout card:
+  - Checklist of missing essentials: Name, Description, Tags, Logo, Banner
+  - CTA: Complete Setup (purple)
+- Products show owner-only status pills: ACTIVE / INACTIVE / DRAFT.
+
+VISUAL STYLE:
+- Dark background with subtle gradients.
+- Glass panels with thin borders, backdrop blur.
+- Purple accent for CTAs and active states.
+- Playfair headers, Inter/system body.
+```
+
 ### Screen 4.1: Public Store Page - Header
 ```
 Design a premium dark-mode public store header section for Threadly.
@@ -1688,6 +1794,74 @@ FOOTER:
 - "Back to Shipping" link
 - "Place Order ₦78,125" primary CTA
 - Security badges: Encrypted, Secure payment
+```
+
+---
+
+### Screen 4.7: Market Page - All Store Items (Cross-Brand Marketplace)
+```
+Design a premium dark-mode Market page for Threadly - a unified marketplace listing items from all brand stores.
+
+CONTEXT:
+- This page aggregates products across multiple brands.
+- Users can discover items, filter, and add to cart directly from Market.
+- Each product card must clearly show the brand identity (logo + name).
+
+LAYOUT (DESKTOP):
+- Sticky top bar:
+  - Title: "Market" (Playfair Display)
+  - Search input (glass)
+  - Filter button (icon)
+  - Cart icon with count badge
+- Below: horizontal chips rail for Categories + Trending Tags.
+- Main body: left filters panel + right product grid.
+
+LAYOUT (MOBILE):
+- Sticky top bar with search + cart.
+- Category chips horizontal scroll.
+- Filters open as bottom sheet.
+
+FILTERS PANEL:
+- Category chips
+- Brand filter:
+  - Search brand
+  - Brand rows (logo + name) with multi-select
+- Price range slider (NGN)
+- Size chips
+- Color swatches
+- Condition chips (if used): New / Preloved
+- On Sale toggle
+- In Stock toggle
+- Footer: Clear | Apply (purple)
+
+SORT + VIEW:
+- Sort dropdown: Recommended, Newest, Best Sellers, Price up, Price down
+- Grid/List toggle
+- Results count label in muted text
+
+PRODUCT CARDS (CROSS-BRAND):
+- Product image with hover swap
+- Brand strip (top or bottom of image): brand logo + brand name + "View store" link
+- Product name + price (sale styling when needed)
+- Quick actions: Add to Cart (primary purple), Wishlist (heart)
+- Optional micro social proof: likes or "Trending" badge
+
+INTERACTIONS:
+- Hover state: subtle border glow (no heavy shadows).
+- Add-to-cart triggers a soft confirmation toast or mini cart pulse.
+- Clicking opens Product Detail modal/drawer.
+
+EMPTY + LOADING:
+- Skeleton loading grid.
+- Empty state: "No items found" with suggestion chips and clear filters action.
+
+CART NOTE (VISUAL ONLY):
+- If cart includes multiple brands, show a subtle info line: "Items may ship separately."
+
+VISUAL STYLE:
+- Dark-mode glassmorphism.
+- Purple used for CTAs/active states.
+- Spacious, premium fashion vibe.
 ```
 
 ---

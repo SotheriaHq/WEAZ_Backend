@@ -12,6 +12,22 @@ export class FollowsService {
     private readonly notifications: NotificationsService,
   ) {}
 
+  async isFollowing(userId: string, targetId: string): Promise<boolean> {
+    if (!userId || !targetId) return false;
+    if (userId === targetId) return false;
+
+    const existing = await this.prisma.follow
+      .findUnique({
+        where: {
+          followerId_followingId: { followerId: userId, followingId: targetId },
+        },
+        select: { id: true },
+      })
+      .catch(() => null);
+
+    return Boolean(existing);
+  }
+
   async follow(userId: string, dto: CreateFollowDto) {
     const target = await this.prisma.user.findUnique({
       where: { id: dto.targetId },

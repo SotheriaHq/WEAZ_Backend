@@ -11,8 +11,8 @@ import { AddToWishlistDto } from './dto/wishlist.dto';
 import { CheckoutDto } from './dto/checkout.dto';
 import { v4 as uuidv4 } from 'uuid';
 import { Prisma, NotificationType } from '@prisma/client';
-import { SaveStoreDraftDto } from './dto/save-store-draft.dto';
 import { UpdateStoreNameDto } from './dto/update-store-name.dto';
+import { UpdateStoreProfileDto } from './dto/update-store-profile.dto';
 import { PasswordService } from 'src/auth/helper/password.service';
 
 @Injectable()
@@ -287,6 +287,7 @@ export class StoreService {
       onSale?: boolean;
       sortBy?: 'newest' | 'price_asc' | 'price_desc' | 'popular';
       search?: string;
+      requesterId?: string;
     } = {},
   ) {
     const {
@@ -301,16 +302,49 @@ export class StoreService {
       onSale,
       sortBy = 'newest',
       search,
+      requesterId,
     } = options;
 
+    // Try to find brand by id first, then by ownerId (for ID compatibility)
+    let brand = await this.prisma.brand.findUnique({
+      where: { id: brandId },
+      select: { id: true, isStoreOpen: true, ownerId: true },
+    });
+    
+    if (!brand) {
+      brand = await this.prisma.brand.findUnique({
+        where: { ownerId: brandId },
+        select: { id: true, isStoreOpen: true, ownerId: true },
+      });
+    }
+
+    if (!brand) {
+      throw new NotFoundException('Store not found');
+    }
+
+    const isOwner = requesterId && brand.ownerId === requesterId;
+
+    // Gate by brand store state for non-owners
+    if (!isOwner && !brand.isStoreOpen) {
+      throw new NotFoundException('Store is closed');
+    }
+
+    // Build where clause - owners see all products, public sees only active/published
     const where: any = {
-      brandId,
-      isActive: true,
-      collection: {
+      brandId: brand.id,
+    };
+
+    if (isOwner) {
+      // Owner preview: show all products including inactive
+      // Optionally filter by collection status if needed
+    } else {
+      // Public: only active products in published, store-enabled collections
+      where.isActive = true;
+      where.collection = {
         status: 'PUBLISHED',
         isAvailableInStore: true,
-      },
-    };
+      };
+    }
 
     // Gender filter
     if (
@@ -380,15 +414,6 @@ export class StoreService {
         break;
       default:
         orderBy = { createdAt: 'desc' };
-    }
-
-    // Gate by brand store state
-    const brand = await this.prisma.brand.findUnique({
-      where: { id: brandId },
-      select: { id: true, isStoreOpen: true },
-    });
-    if (!brand || !brand.isStoreOpen) {
-      throw new NotFoundException('Store is closed');
     }
 
     const [products, total] = await Promise.all([
@@ -1073,6 +1098,11 @@ export class StoreService {
         select: {
           id: true,
           name: true,
+          description: true,
+          tagline: true,
+          logo: true,
+          banner: true,
+          tags: true,
           storeNameLastChangedAt: true,
           isStoreOpen: true,
         },
@@ -1089,13 +1119,25 @@ export class StoreService {
       ? new Date(lastChangedAt.getTime() + 90 * 24 * 60 * 60 * 1000)
       : null;
 
+    // Compute setup completeness
+    const completeness = brand
+      ? this.computeStoreCompleteness(brand)
+      : { isComplete: false, missingFields: ['name', 'description', 'tags', 'logo', 'banner'] };
+
     return {
+      brandId: brand?.id,
       storeName,
       slug,
-      description: user.brandDescription || '',
+      description: brand?.description || user.brandDescription || '',
+      tagline: brand?.tagline || '',
+      logo: brand?.logo || '',
+      banner: brand?.banner || '',
+      tags: brand?.tags || [],
       contactEmail: user.email,
       isEmailVerified: user.isEmailVerified,
-      hasLiveStore: Boolean(brand?.isStoreOpen),
+      isStoreOpen: Boolean(brand?.isStoreOpen),
+      isSetupComplete: completeness.isComplete,
+      missingFields: completeness.missingFields,
       storeNameLastChangedAt: lastChangedAt,
       storeNameNextAllowedAt: nextAllowedAt,
     };
@@ -1164,160 +1206,169 @@ export class StoreService {
         where: { id: ownerId },
         data: { brandFullName: newName },
       });
-
-      const draft = await tx.storeDraft.findUnique({ where: { ownerId } });
-      if (draft && draft.data && typeof draft.data === 'object') {
-        const data = (draft.data as any) || {};
-        await tx.storeDraft.update({
-          where: { ownerId },
-          data: { data: { ...data, name: newName } },
-        });
-      }
     });
 
     return this.getStoreGeneralSettings(ownerId);
   }
 
-  // ==================== STORE CREATION DRAFT ====================
+  // ==================== STORE STATUS & COMPLETENESS ====================
 
-  async saveStoreDraft(ownerId: string, dto: SaveStoreDraftDto) {
-    const [brand, user, existingDraft] = await Promise.all([
-      this.prisma.brand.findUnique({
-        where: { ownerId },
-        select: { id: true, isStoreOpen: true, name: true },
-      }),
-      this.prisma.user.findUnique({
-        where: { id: ownerId },
-        select: { id: true, username: true, email: true, brandFullName: true },
-      }),
-      this.prisma.storeDraft.findUnique({ where: { ownerId } }),
-    ]);
+  /**
+   * Compute store setup completeness based on Tier 1 requirements:
+   * - name (required)
+   * - description (required)
+   * - tags (required, at least 1)
+   * - logo (required)
+   * - banner (required)
+   */
+  private computeStoreCompleteness(brand: {
+    name: string;
+    description?: string | null;
+    tags?: string[];
+    logo?: string | null;
+    banner?: string | null;
+  }): { isComplete: boolean; missingFields: string[] } {
+    const missingFields: string[] = [];
 
-    const systemTags = dto.tags !== undefined ? await this.getSystemTags() : [];
+    if (!brand.name?.trim()) missingFields.push('name');
+    if (!brand.description?.trim()) missingFields.push('description');
+    if (!brand.tags || brand.tags.length === 0) missingFields.push('tags');
+    if (!brand.logo?.trim()) missingFields.push('logo');
+    if (!brand.banner?.trim()) missingFields.push('banner');
 
-    if (!user) throw new NotFoundException('User not found');
+    return {
+      isComplete: missingFields.length === 0,
+      missingFields,
+    };
+  }
 
-    if (brand?.isStoreOpen) {
-      throw new BadRequestException(
-        'Store already exists. You cannot start a new store creation flow.',
-      );
+  async getStoreStatus(ownerId: string) {
+    const brand = await this.prisma.brand.findUnique({
+      where: { ownerId },
+      select: {
+        id: true,
+        name: true,
+        description: true,
+        tagline: true,
+        logo: true,
+        banner: true,
+        tags: true,
+        contactEmail: true,
+        socialInstagram: true,
+        socialTwitter: true,
+        socialTiktok: true,
+        socialWebsite: true,
+        isStoreOpen: true,
+      },
+    });
+
+    if (!brand) {
+      throw new NotFoundException('Brand not found');
     }
 
-    const baseData: any =
-      existingDraft?.data && typeof existingDraft.data === 'object'
-        ? (existingDraft.data as any)
-        : {};
+    const { isComplete, missingFields } = this.computeStoreCompleteness(brand);
 
-    const payload: any = { ...baseData };
+    return {
+      brandId: brand.id,
+      isStoreOpen: brand.isStoreOpen,
+      isSetupComplete: isComplete,
+      missingFields,
+      profile: {
+        name: brand.name,
+        description: brand.description,
+        tagline: brand.tagline,
+        logo: brand.logo,
+        banner: brand.banner,
+        tags: brand.tags,
+        contactEmail: brand.contactEmail,
+        socialInstagram: brand.socialInstagram,
+        socialTwitter: brand.socialTwitter,
+        socialTiktok: brand.socialTiktok,
+        socialWebsite: brand.socialWebsite,
+      },
+    };
+  }
 
-    // Canonical identity: always enforced server-side
-    payload.name = this.canonicalStoreName(user, brand) || null;
-    payload.slug = this.canonicalStoreSlug(user) || null;
+  async openStore(ownerId: string) {
+    const brand = await this.prisma.brand.findUnique({
+      where: { ownerId },
+      select: {
+        id: true,
+        name: true,
+        description: true,
+        tags: true,
+        logo: true,
+        banner: true,
+        isStoreOpen: true,
+      },
+    });
 
-    if (dto.categories !== undefined) payload.categories = dto.categories;
-    if (dto.tagline !== undefined) payload.tagline = dto.tagline;
-    if (dto.description !== undefined) payload.description = dto.description;
-    if (dto.logoUrl !== undefined) payload.logoUrl = dto.logoUrl;
-    if (dto.logoFileId !== undefined) payload.logoFileId = dto.logoFileId;
-    if (dto.bannerUrl !== undefined) payload.bannerUrl = dto.bannerUrl;
-    if (dto.bannerFileId !== undefined) payload.bannerFileId = dto.bannerFileId;
-
-    // Step 2: socials/contact
-    if (dto.instagram !== undefined) payload.instagram = dto.instagram;
-    if (dto.tiktok !== undefined) payload.tiktok = dto.tiktok;
-    if (dto.twitter !== undefined) payload.twitter = dto.twitter;
-    if (dto.website !== undefined) payload.website = dto.website;
-    if (dto.contactEmail !== undefined) payload.contactEmail = dto.contactEmail;
-    if (
-      payload.contactEmail === undefined ||
-      payload.contactEmail === null ||
-      payload.contactEmail === ''
-    ) {
-      payload.contactEmail = user.email || null;
+    if (!brand) {
+      throw new NotFoundException('Brand not found');
     }
 
-    // Unified tags: only allow known system tags
+    if (brand.isStoreOpen) {
+      return { success: true, message: 'Store is already open', brandId: brand.id };
+    }
+
+    const { isComplete, missingFields } = this.computeStoreCompleteness(brand);
+
+    if (!isComplete) {
+      throw new BadRequestException({
+        message: 'Store setup is incomplete. Please complete all required fields before opening.',
+        missingFields,
+      });
+    }
+
+    await this.prisma.brand.update({
+      where: { id: brand.id },
+      data: { isStoreOpen: true },
+    });
+
+    return { success: true, message: 'Store is now open!', brandId: brand.id };
+  }
+
+  async updateStoreProfile(ownerId: string, dto: UpdateStoreProfileDto) {
+    const brand = await this.prisma.brand.findUnique({
+      where: { ownerId },
+      select: { id: true },
+    });
+
+    if (!brand) {
+      throw new NotFoundException('Brand not found');
+    }
+
+    const updateData: any = {};
+
+    if (dto.description !== undefined) updateData.description = dto.description;
+    if (dto.tagline !== undefined) updateData.tagline = dto.tagline;
+    if (dto.logo !== undefined) updateData.logo = dto.logo;
+    if (dto.banner !== undefined) updateData.banner = dto.banner;
     if (dto.tags !== undefined) {
+      // Normalize and filter tags
+      const systemTags = await this.getSystemTags();
       const allow = new Set(systemTags);
       const normalized = (dto.tags || [])
         .map((t) => this.normalizeTag(t).toLowerCase())
         .filter(Boolean);
-      payload.tags = normalized.filter((t) => allow.has(t));
+      updateData.tags = normalized.filter((t) => allow.has(t));
+    }
+    if (dto.contactEmail !== undefined) updateData.contactEmail = dto.contactEmail;
+    if (dto.socialInstagram !== undefined) updateData.socialInstagram = dto.socialInstagram;
+    if (dto.socialTwitter !== undefined) updateData.socialTwitter = dto.socialTwitter;
+    if (dto.socialTiktok !== undefined) updateData.socialTiktok = dto.socialTiktok;
+    if (dto.socialWebsite !== undefined) updateData.socialWebsite = dto.socialWebsite;
+
+    if (Object.keys(updateData).length === 0) {
+      return this.getStoreStatus(ownerId);
     }
 
-    const draft = await this.prisma.storeDraft.upsert({
-      where: { ownerId },
-      update: {
-        data: payload as Prisma.JsonObject,
-        lastStep: dto.step ?? existingDraft?.lastStep ?? 1,
-        status: 'DRAFT',
-      },
-      create: {
-        id: uuidv4(),
-        ownerId,
-        data: payload as Prisma.JsonObject,
-        lastStep: dto.step ?? existingDraft?.lastStep ?? 1,
-        status: 'DRAFT',
-      },
+    await this.prisma.brand.update({
+      where: { id: brand.id },
+      data: updateData,
     });
 
-    return this.transformStoreDraft(draft, brand);
-  }
-
-  async getStoreDraft(ownerId: string) {
-    return this.getStoreDraftStatus(ownerId);
-  }
-
-  async clearStoreDraft(ownerId: string) {
-    try {
-      await this.prisma.storeDraft.delete({ where: { ownerId } });
-    } catch (error: any) {
-      // Ignore if not found
-      if (error?.code !== 'P2025') {
-        throw error;
-      }
-    }
-    return { success: true };
-  }
-
-  async getStoreDraftStatus(ownerId: string) {
-    const [draft, brand] = await Promise.all([
-      this.prisma.storeDraft.findUnique({ where: { ownerId } }),
-      this.prisma.brand.findUnique({
-        where: { ownerId },
-        select: { id: true, isStoreOpen: true, name: true },
-      }),
-    ]);
-
-    if (!draft) {
-      return {
-        hasDraft: false,
-        hasBrand: !!brand,
-        hasLiveStore: !!brand && brand.isStoreOpen,
-      };
-    }
-
-    return this.transformStoreDraft(draft, brand);
-  }
-
-  private transformStoreDraft(
-    draft: any,
-    brand?: { id: string; isStoreOpen: boolean } | null,
-  ) {
-    const data =
-      draft?.data && typeof draft.data === 'object' ? draft.data : {};
-    return {
-      hasDraft: true,
-      hasBrand: !!brand,
-      hasLiveStore: !!brand && brand.isStoreOpen,
-      draft: {
-        id: draft.id,
-        data,
-        step: draft.lastStep,
-        status: draft.status,
-        createdAt: draft.createdAt,
-        updatedAt: draft.updatedAt,
-      },
-    };
+    return this.getStoreStatus(ownerId);
   }
 }
+

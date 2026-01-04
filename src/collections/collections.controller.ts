@@ -263,7 +263,7 @@ export class CollectionsController {
 
   @Get('user/:userId')
   @ApiOperation({ summary: 'Get collections for a specific user (brand)' })
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(OptionalJwtAuthGuard)
   async getUserCollections(
     @Param('userId') userId: string,
     @Query('cursor') cursor?: string,
