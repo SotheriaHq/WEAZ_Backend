@@ -1345,13 +1345,11 @@ export class StoreService {
     if (dto.logo !== undefined) updateData.logo = dto.logo;
     if (dto.banner !== undefined) updateData.banner = dto.banner;
     if (dto.tags !== undefined) {
-      // Normalize and filter tags
-      const systemTags = await this.getSystemTags();
-      const allow = new Set(systemTags);
-      const normalized = (dto.tags || [])
-        .map((t) => this.normalizeTag(t).toLowerCase())
-        .filter(Boolean);
-      updateData.tags = normalized.filter((t) => allow.has(t));
+      // Normalize and de-duplicate tags.
+      // NOTE: Do not hard-filter against "system tags" here.
+      // In a fresh environment (or early product lifecycle), system tags may be empty,
+      // which would make it impossible for any brand to ever complete store setup.
+      updateData.tags = this.buildTagSet(dto.tags || []);
     }
     if (dto.contactEmail !== undefined) updateData.contactEmail = dto.contactEmail;
     if (dto.socialInstagram !== undefined) updateData.socialInstagram = dto.socialInstagram;
