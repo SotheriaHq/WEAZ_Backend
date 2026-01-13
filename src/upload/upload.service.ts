@@ -201,20 +201,34 @@ export class UploadService {
     userId: string,
     file: Pick<FileUploadResult, 'id' | 'url'>,
   ): Promise<void> {
-    await this.prisma.user.update({
-      where: { id: userId },
-      data: { profileImageId: file.id, profileImage: file.url },
-    });
+    await this.prisma.$transaction([
+      this.prisma.user.update({
+        where: { id: userId },
+        data: { profileImageId: file.id, profileImage: file.url },
+      }),
+      // Strict sync: store logo mirrors brand profile image.
+      this.prisma.brand.updateMany({
+        where: { ownerId: userId },
+        data: { logo: file.url },
+      }),
+    ]);
   }
 
   async updateUserBannerImage(
     userId: string,
     file: Pick<FileUploadResult, 'id' | 'url'>,
   ): Promise<void> {
-    await this.prisma.user.update({
-      where: { id: userId },
-      data: { bannerImageId: file.id, bannerImage: file.url },
-    });
+    await this.prisma.$transaction([
+      this.prisma.user.update({
+        where: { id: userId },
+        data: { bannerImageId: file.id, bannerImage: file.url },
+      }),
+      // Strict sync: store banner mirrors brand banner image.
+      this.prisma.brand.updateMany({
+        where: { ownerId: userId },
+        data: { banner: file.url },
+      }),
+    ]);
   }
 
   async getUserFiles(

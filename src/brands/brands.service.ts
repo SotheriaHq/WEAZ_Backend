@@ -59,6 +59,7 @@ export interface BrandProfileResponse {
   cacNumber: string | null;
   tin: string | null;
   verified: boolean;
+  isStoreOpen: boolean;
   averageRating: number;
   totalReviews: number;
   collectionsCount: number;
@@ -150,6 +151,11 @@ export class BrandsService {
         createdAt: true,
         updatedAt: true,
         type: true,
+        brand: {
+          select: {
+            isStoreOpen: true,
+          },
+        },
       },
     });
 
@@ -254,6 +260,7 @@ export class BrandsService {
       cacNumber: brand.cacNumber ?? null,
       tin: brand.tin ?? null,
       verified: Boolean(brand.isEmailVerified),
+      isStoreOpen: Boolean(brand.brand?.isStoreOpen),
       averageRating: 0,
       totalReviews: 0,
       collectionsCount,

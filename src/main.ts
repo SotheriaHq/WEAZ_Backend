@@ -23,6 +23,7 @@ import * as cookieParser from 'cookie-parser';
 import * as bodyParser from 'body-parser';
 import { ConfigService } from '@nestjs/config';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
+import { requestLoggerMiddleware } from './common/middleware/request-logger.middleware';
 
 const DEFAULT_BODY_LIMIT = '10mb';
 const DEFAULT_PORT = 3040;
@@ -60,6 +61,8 @@ async function bootstrap() {
   try {
     const app = await NestFactory.create(AppModule);
     const configService = app.get(ConfigService);
+
+    app.use(requestLoggerMiddleware);
 
     app.useGlobalPipes(
       new ValidationPipe({
@@ -147,7 +150,7 @@ async function bootstrap() {
         .filter((h) => h.length > 0),
     );
     // Always allow idempotency/client event headers used by the frontend
-    ['x-client-event-id', 'x-request-id'].forEach((h) =>
+    ['x-client-event-id', 'x-request-id', 'idempotency-key', 'x-idempotency-key'].forEach((h) =>
       allowedHeadersSet.add(h),
     );
     const allowedHeaders = Array.from(allowedHeadersSet).join(', ');

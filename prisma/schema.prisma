@@ -93,6 +93,9 @@ model User {
 
   // Orders as buyer
   ordersAsBuyer           Order[]                         @relation("OrderBuyer")
+
+  // Idempotency keys (safe retries for POST requests)
+  idempotencyKeys         IdempotencyKey[]
 }
 
 model FileUpload {
@@ -744,17 +747,28 @@ model Product {
   brand           Brand         @relation("Brand_to_Products", fields: [brandId], references: [id], onDelete: Cascade)
   
   name            String
+  slug            String?       @unique
   description     String?
+  currency        String        @default("NGN")
   price           Decimal       @db.Decimal(10, 2)
   salePrice       Decimal?      @db.Decimal(10, 2)
   saleStartAt     DateTime?
   saleEndAt       DateTime?
+  
+  // Product details
+  sku             String?
+  weight          Decimal?      @db.Decimal(10, 3)
+  weightUnit      String?       @default("kg")
+  materials       String?
+  careInstructions String?
+  costPerItem     Decimal?      @db.Decimal(10, 2)
   
   // Variants
   sizes           String[]      @default([])     // ["XS", "S", "M", "L", "XL", "XXL"]
   sizeStock       Json?                          // {"XS": 5, "S": 10, "M": 0, "L": 8}
   colors          String[]      @default([])     // ["Navy", "Indigo", "Burgundy"]
   colorImages     Json?                          // {"Navy": "url1", "Indigo": "url2"}
+  colorHexCodes   Json?                          // {"Navy": "#1E3A5F", "Indigo": "#4F46E5"}
   
   // Media
   images          String[]      @default([])     // Array of image URLs
@@ -763,16 +777,33 @@ model Product {
   // Inventory
   totalStock      Int           @default(0)
   lowStockThreshold Int         @default(5)
+  trackInventory  Boolean       @default(true)
+  allowBackorders Boolean       @default(false)
   
   // Metadata
   tags            String[]      @default([])
   gender          CollectionType @default(EVERYBODY)
   isActive        Boolean       @default(true)
   isFeatured      Boolean       @default(false)
+  isPhysicalProduct Boolean     @default(true)
+  customsRegion   String?
+  
+  // Policies
+  returnsEligible Boolean       @default(true)
+  
+  // SEO
+  metaTitle       String?
+  metaDescription String?
+  
+  // Scheduling
+  publishAt       DateTime?
   
   // Engagement
   viewsCount      Int           @default(0)
   likesCount      Int           @default(0)
+  
+  // Soft delete
+  deletedAt       DateTime?
   
   createdAt       DateTime      @default(now())
   updatedAt       DateTime      @updatedAt
@@ -780,12 +811,63 @@ model Product {
   // Relations
   cartItems       CartItem[]
   wishlistItems   WishlistItem[]
+  variants        ProductVariant[]
   
+  // Performance indexes
   @@index([brandId])
   @@index([collectionId])
   @@index([brandId, isActive])
   @@index([brandId, isFeatured])
   @@index([createdAt])
+  @@index([slug])
+  @@index([brandId, createdAt])
+  @@index([brandId, price])
+  @@index([brandId, viewsCount])
+  @@index([isActive, brandId])
+  @@index([deletedAt])
+}
+
+model ProductVariant {
+  id          String   @id @map("_id") @db.Uuid
+  productId   String   @db.Uuid
+  product     Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  // Variant dimensions (nullable to support size-only, color-only, or full size+color)
+  size        String?
+  color       String?
+
+  // Variant-specific overrides
+  sku         String?
+  price       Decimal? @db.Decimal(10, 2)
+  stock       Int      @default(0)
+  colorHex    String?
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([productId, size, color])
+  @@index([productId])
+  @@index([productId, stock])
+}
+
+model IdempotencyKey {
+  id           String   @id @map("_id") @db.Uuid
+  userId       String   @db.Uuid
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  key          String
+  method       String
+  path         String
+  requestHash  String
+  responseBody Json?
+  statusCode   Int?
+
+  createdAt    DateTime @default(now())
+  expiresAt    DateTime
+
+  @@unique([userId, key, method, path])
+  @@index([expiresAt])
+  @@index([userId, createdAt])
 }
 
 model CartItem {

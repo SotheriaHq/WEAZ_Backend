@@ -17,14 +17,6 @@ export class UpdateStoreProfileDto {
   tagline?: string;
 
   @IsOptional()
-  @IsString()
-  logo?: string;
-
-  @IsOptional()
-  @IsString()
-  banner?: string;
-
-  @IsOptional()
   @IsArray()
   @IsString({ each: true })
   tags?: string[];
