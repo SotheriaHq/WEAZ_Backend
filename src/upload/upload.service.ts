@@ -16,6 +16,8 @@ import { GetFilesDto } from './dto/get-files.dto';
 import { PaginatedResult } from './dto/pagination.dto';
 import { ConfigService } from '@nestjs/config';
 import { FileType } from './upload.enums';
+import * as path from 'path';
+import { mkdir, writeFile } from 'fs/promises';
 
 export interface FileUploadResult {
   id: string;
@@ -36,6 +38,35 @@ export class UploadService {
   private readonly s3: S3Client;
   private readonly bucketName: string;
   private readonly region: string;
+
+  private summarizeAwsError(error: unknown): {
+    name?: string;
+    message?: string;
+    code?: string;
+    httpStatusCode?: number;
+    requestId?: string;
+  } {
+    const anyErr = error as any;
+    return {
+      name: typeof anyErr?.name === 'string' ? anyErr.name : undefined,
+      message:
+        typeof anyErr?.message === 'string' ? anyErr.message : undefined,
+      code:
+        typeof anyErr?.code === 'string'
+          ? anyErr.code
+          : typeof anyErr?.Code === 'string'
+            ? anyErr.Code
+            : undefined,
+      httpStatusCode:
+        typeof anyErr?.$metadata?.httpStatusCode === 'number'
+          ? anyErr.$metadata.httpStatusCode
+          : undefined,
+      requestId:
+        typeof anyErr?.$metadata?.requestId === 'string'
+          ? anyErr.$metadata.requestId
+          : undefined,
+    };
+  }
 
   constructor(
     private readonly prisma: PrismaService,
@@ -86,6 +117,9 @@ export class UploadService {
     const fileId = uuidv4();
     const key = this.generateS3Key(fileType, userId, fileId, file.originalname);
 
+    const nodeEnv = (this.configService.get<string>('NODE_ENV') ?? '').trim();
+    const isProduction = nodeEnv.toLowerCase() === 'production';
+
     try {
       this.logger.debug(
         `Uploading file to S3 bucket ${this.bucketName} with key ${key}`,
@@ -131,10 +165,82 @@ export class UploadService {
         updatedAt: uploadRecord.updatedAt.toISOString(),
       };
     } catch (error) {
-      this.logger.error('File upload failed:', error);
-      this.logger.error('File upload error details:', error);
+      const details = this.summarizeAwsError(error);
+      this.logger.error(
+        `S3 file upload failed (${details.name ?? 'UnknownError'}): ${details.message ?? ''}`,
+        details as any,
+      );
+
+      // Dev fallback: if S3 isn't configured/available locally, still allow uploads
+      // by writing to disk under the API's /uploads static route.
+      if (!isProduction) {
+        this.logger.warn(
+          'Falling back to local disk upload (non-production).',
+        );
+        return this.uploadFileToLocalDisk(file, userId, fileType, fileId, key);
+      }
+
       throw new BadRequestException('File upload failed');
     }
+  }
+
+  private getLocalPublicBaseUrl(): string {
+    const explicit =
+      this.configService.get<string>('APP_PUBLIC_URL') ??
+      this.configService.get<string>('PUBLIC_BASE_URL') ??
+      this.configService.get<string>('APP_URL');
+
+    if (explicit && explicit.trim().length > 0) {
+      return explicit.trim().replace(/\/+$/, '');
+    }
+
+    const port = this.configService.get<string>('APP_PORT') ?? '3040';
+    return `http://localhost:${port}`;
+  }
+
+  private async uploadFileToLocalDisk(
+    file: Express.Multer.File,
+    userId: string,
+    fileType: FileType,
+    fileId: string,
+    key: string,
+  ): Promise<FileUploadResult> {
+    const uploadsRoot = path.join(process.cwd(), 'uploads');
+    const diskPath = path.join(uploadsRoot, key);
+    const diskDir = path.dirname(diskPath);
+
+    await mkdir(diskDir, { recursive: true });
+    await writeFile(diskPath, file.buffer);
+
+    const baseUrl = this.getLocalPublicBaseUrl();
+    const publicUrl = `${baseUrl}/uploads/${key.split(path.sep).join('/')}`;
+
+    const uploadRecord = await this.prisma.fileUpload.create({
+      data: {
+        id: fileId,
+        userId,
+        originalName: file.originalname,
+        fileName: key.split('/').pop()!,
+        s3Key: key,
+        s3Url: publicUrl,
+        fileType: fileType,
+        mimeType: file.mimetype,
+        size: file.size,
+      },
+    });
+
+    return {
+      id: uploadRecord.id,
+      url: uploadRecord.s3Url,
+      key: uploadRecord.s3Key,
+      fileName: uploadRecord.fileName,
+      originalName: uploadRecord.originalName,
+      size: uploadRecord.size,
+      mimeType: uploadRecord.mimeType,
+      fileType: uploadRecord.fileType as FileType,
+      createdAt: uploadRecord.createdAt.toISOString(),
+      updatedAt: uploadRecord.updatedAt.toISOString(),
+    };
   }
 
   // Generate presigned POST data for client direct-to-S3 uploads

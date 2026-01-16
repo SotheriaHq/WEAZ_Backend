@@ -24,6 +24,8 @@ import * as bodyParser from 'body-parser';
 import { ConfigService } from '@nestjs/config';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { requestLoggerMiddleware } from './common/middleware/request-logger.middleware';
+import * as express from 'express';
+import { join } from 'path';
 
 const DEFAULT_BODY_LIMIT = '10mb';
 const DEFAULT_PORT = 3040;
@@ -181,6 +183,9 @@ async function bootstrap() {
         limit: configService.get<string>('BODY_LIMIT', DEFAULT_BODY_LIMIT),
       }),
     );
+
+    // Serve locally-stored uploads (used as a dev fallback when S3 isn't available).
+    app.use('/uploads', express.static(join(process.cwd(), 'uploads')));
 
     const port = parsePort(configService.get<string>('APP_PORT'));
     const host = configService.get<string>('APP_HOST', DEFAULT_HOST);

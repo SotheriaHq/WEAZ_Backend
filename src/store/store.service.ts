@@ -387,15 +387,19 @@ export class StoreService {
       );
     }
 
-    // Verify collection belongs to this brand
-    const collection = await this.prisma.collection.findFirst({
-      where: { id: dto.collectionId, ownerId: brandOwnerId },
-    });
+    const requestedCollectionId = (dto.collectionId || '').trim() || null;
 
-    if (!collection) {
-      throw new NotFoundException(
-        'Collection not found or does not belong to you',
-      );
+    // If a collectionId is provided, verify it belongs to this brand.
+    if (requestedCollectionId) {
+      const collection = await this.prisma.collection.findFirst({
+        where: { id: requestedCollectionId, ownerId: brandOwnerId },
+      });
+
+      if (!collection) {
+        throw new NotFoundException(
+          'Collection not found or does not belong to you',
+        );
+      }
     }
 
     // Generate slug if not provided
@@ -421,10 +425,42 @@ export class StoreService {
     const currency = (dto.currency || brand.currency || 'NGN').trim();
 
     const product = await this.prisma.$transaction(async (tx) => {
+      let collectionId = requestedCollectionId;
+
+      if (!collectionId) {
+        const existingDefault = await tx.collection.findFirst({
+          where: {
+            ownerId: brandOwnerId,
+            isAvailableInStore: true,
+            status: 'PUBLISHED',
+          },
+          orderBy: { updatedAt: 'desc' },
+          select: { id: true },
+        });
+
+        if (existingDefault?.id) {
+          collectionId = existingDefault.id;
+        } else {
+          const createdDefault = await tx.collection.create({
+            data: {
+              id: uuidv4(),
+              ownerId: brandOwnerId,
+              title: 'Store Products',
+              status: 'PUBLISHED',
+              visibility: 'PUBLIC',
+              type: 'EVERYBODY',
+              isAvailableInStore: true,
+            },
+            select: { id: true },
+          });
+          collectionId = createdDefault.id;
+        }
+      }
+
       const created = await tx.product.create({
         data: {
           id: uuidv4(),
-          collectionId: dto.collectionId,
+          collectionId: collectionId!,
           brandId: brand.id,
           name: dto.name,
           slug,

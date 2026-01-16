@@ -54,8 +54,9 @@ export class ProductVariantDto {
 }
 
 export class CreateProductDto {
+  @IsOptional()
   @IsString()
-  collectionId: string;
+  collectionId?: string;
 
   @IsString()
   @MaxLength(200)

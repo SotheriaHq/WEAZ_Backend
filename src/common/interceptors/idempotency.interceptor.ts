@@ -4,6 +4,7 @@ import {
   ConflictException,
   ExecutionContext,
   Injectable,
+  InternalServerErrorException,
   NestInterceptor,
 } from '@nestjs/common';
 import { Observable, from, of } from 'rxjs';
@@ -65,10 +66,17 @@ export class IdempotencyInterceptor implements NestInterceptor {
     const now = Date.now();
     const expiresAt = new Date(now + DEFAULT_TTL_MS);
 
+    const idempotencyKeyModel = (this.prisma as any)['idempotencyKey'];
+    if (!idempotencyKeyModel) {
+      throw new InternalServerErrorException(
+        'Prisma model delegate "idempotencyKey" is not available on PrismaService (ensure the Prisma schema includes it and run prisma generate).',
+      );
+    }
+
     return from(
-      this.prisma.idempotencyKey
+      idempotencyKeyModel
         .findUnique({ where: { userId_key_method_path: { userId, key, method, path } } })
-        .then(async (existing) => {
+        .then(async (existing: any) => {
           if (existing) {
             if (existing.requestHash !== requestHash) {
               throw new ConflictException(
@@ -89,7 +97,7 @@ export class IdempotencyInterceptor implements NestInterceptor {
           }
 
           try {
-            await this.prisma.idempotencyKey.create({
+            await idempotencyKeyModel.create({
               data: {
                 id: uuidv4(),
                 userId,
@@ -102,7 +110,7 @@ export class IdempotencyInterceptor implements NestInterceptor {
             });
           } catch {
             // Race: another request created it first.
-            const raced = await this.prisma.idempotencyKey.findUnique({
+            const raced = await idempotencyKeyModel.findUnique({
               where: { userId_key_method_path: { userId, key, method, path } },
             });
             if (raced?.responseBody) {
@@ -117,7 +125,7 @@ export class IdempotencyInterceptor implements NestInterceptor {
 
           // Opportunistic cleanup (1% of calls)
           if (Math.random() < 0.01) {
-            void this.prisma.idempotencyKey.deleteMany({ where: { expiresAt: { lt: new Date() } } });
+            void idempotencyKeyModel.deleteMany({ where: { expiresAt: { lt: new Date() } } });
           }
 
           return { replay: false };
@@ -131,7 +139,7 @@ export class IdempotencyInterceptor implements NestInterceptor {
         return next.handle().pipe(
           tap(async (body) => {
             const statusCode = res.statusCode;
-            await this.prisma.idempotencyKey.update({
+            await idempotencyKeyModel.update({
               where: { userId_key_method_path: { userId, key, method, path } },
               data: { responseBody: body, statusCode },
             });
