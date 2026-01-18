@@ -802,8 +802,11 @@ model Product {
   viewsCount      Int           @default(0)
   likesCount      Int           @default(0)
   
-  // Soft delete
+  // Soft delete & Archive
   deletedAt       DateTime?
+  archivedAt      DateTime?                     // When product was archived
+  archiveExpiresAt DateTime?                    // Auto-delete date (60 days from archive)
+  archiveLastReminder DateTime?                 // Last 7-day reminder sent
   
   createdAt       DateTime      @default(now())
   updatedAt       DateTime      @updatedAt

@@ -58,9 +58,10 @@ export class CreateProductDto {
   @IsString()
   collectionId?: string;
 
+  @IsOptional()
   @IsString()
   @MaxLength(200)
-  name: string;
+  name?: string;
 
   @IsOptional()
   @IsString()
@@ -77,10 +78,11 @@ export class CreateProductDto {
   @MaxLength(10)
   currency?: string;
 
+  @IsOptional()
   @IsNumber()
   @Min(0)
   @Type(() => Number)
-  price: number;
+  price?: number;
 
   @IsOptional()
   @IsNumber()

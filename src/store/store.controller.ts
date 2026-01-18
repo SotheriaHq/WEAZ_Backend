@@ -143,17 +143,62 @@ export class StoreController {
     return this.storeService.duplicateProduct(req.user.id, productId);
   }
 
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // ARCHIVE & DELETE ENDPOINTS
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Get('products/:id/delete-impact')
+  async getDeleteImpact(@Param('id') productId: string, @Req() req: any) {
+    return this.storeService.getDeleteImpact(req.user.id, productId);
+  }
+
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Post('products/:id/archive')
+  async archiveProduct(@Param('id') productId: string, @Req() req: any) {
+    return this.storeService.archiveProduct(req.user.id, productId);
+  }
+
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Post('products/:id/unarchive')
+  async unarchiveProduct(@Param('id') productId: string, @Req() req: any) {
+    return this.storeService.unarchiveProduct(req.user.id, productId);
+  }
+
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Post('products/:id/toggle-featured')
+  async toggleFeatured(@Param('id') productId: string, @Req() req: any) {
+    return this.storeService.toggleFeatured(req.user.id, productId);
+  }
+
   @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
   @Delete('products/:id')
   async deleteProduct(@Param('id') productId: string, @Req() req: any) {
     return this.storeService.deleteProduct(req.user.id, productId);
   }
 
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Delete('products/:id/permanent')
+  async permanentlyDeleteProduct(@Param('id') productId: string, @Req() req: any) {
+    return this.storeService.permanentlyDeleteProduct(req.user.id, productId);
+  }
+
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Post('products/:id/restore')
+  async restoreProduct(@Param('id') productId: string, @Req() req: any) {
+    return this.storeService.restoreProduct(req.user.id, productId);
+  }
+
   @UseGuards(OptionalJwtAuthGuard)
   @Get(['products/:id', 'store/products/:id'])
   @Throttle({ default: { limit: 120, ttl: 60000 } })
-  async getProduct(@Param('id') productId: string, @Req() req: any) {
-    return this.storeService.getProduct(productId, req.user?.id);
+  async getProduct(
+    @Param('id') productId: string,
+    @Req() req: any,
+    @Query('includeDeleted') includeDeleted?: string,
+  ) {
+    const includeDeletedFlag = this.parseBoolParam(includeDeleted) === true;
+    return this.storeService.getProduct(productId, req.user?.id, includeDeletedFlag);
   }
 
   @UseGuards(OptionalJwtAuthGuard)
@@ -180,9 +225,13 @@ export class StoreController {
     @Query('sortBy') sortBy?: 'newest' | 'price_asc' | 'price_desc' | 'popular',
     @Query('sort') sort?: 'newest' | 'price_asc' | 'price_desc' | 'popular',
     @Query('search') search?: string,
+    @Query('includeDeleted') includeDeleted?: string,
+    @Query('onlyDeleted') onlyDeleted?: string,
   ) {
     const resolvedSortBy = sortBy ?? sort;
     const resolvedOnSale = this.parseBoolParam(onSale) ?? this.parseBoolParam(isOnSale);
+    const resolvedIncludeDeleted = this.parseBoolParam(includeDeleted);
+    const resolvedOnlyDeleted = this.parseBoolParam(onlyDeleted);
 
     return this.storeService.getBrandProducts(brandId, {
       page: page ? parseInt(page, 10) : 1,
@@ -201,6 +250,8 @@ export class StoreController {
       isFeatured: this.parseBoolParam(isFeatured) === true,
       sortBy: resolvedSortBy,
       search,
+      includeDeleted: resolvedIncludeDeleted,
+      onlyDeleted: resolvedOnlyDeleted,
       requesterId: req.user?.id,
     });
   }

@@ -1,17 +1,17 @@
--- DropIndex
-DROP INDEX "Product_colors_gin_idx";
+-- DropIndex (only if exists)
+DROP INDEX IF EXISTS "Product_colors_gin_idx";
 
--- DropIndex
-DROP INDEX "Product_description_trgm_idx";
+-- DropIndex (only if exists)
+DROP INDEX IF EXISTS "Product_description_trgm_idx";
 
--- DropIndex
-DROP INDEX "Product_name_trgm_idx";
+-- DropIndex (only if exists)
+DROP INDEX IF EXISTS "Product_name_trgm_idx";
 
--- DropIndex
-DROP INDEX "Product_sizes_gin_idx";
+-- DropIndex (only if exists)
+DROP INDEX IF EXISTS "Product_sizes_gin_idx";
 
--- DropIndex
-DROP INDEX "Product_tags_gin_idx";
+-- DropIndex (only if exists)
+DROP INDEX IF EXISTS "Product_tags_gin_idx";
 
 -- AlterTable
 ALTER TABLE "Product" ADD COLUMN     "currency" TEXT NOT NULL DEFAULT 'NGN';

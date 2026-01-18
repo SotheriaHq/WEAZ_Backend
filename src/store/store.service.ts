@@ -69,7 +69,7 @@ export class StoreService {
 
   private async assertBrandOwnsProduct(brandOwnerId: string, productId: string) {
     const product = await this.prisma.product.findFirst({
-      where: { id: productId, deletedAt: null },
+      where: { id: productId },
       include: { brand: true },
     });
 
@@ -402,16 +402,28 @@ export class StoreService {
       }
     }
 
+    const isDraft = dto.isActive === false;
+    const resolvedName = (dto.name ?? '').trim() || (isDraft ? 'Untitled Draft' : '');
+    if (!resolvedName) {
+      throw new BadRequestException('Product name is required');
+    }
+
+    const resolvedPrice =
+      typeof dto.price === 'number' ? dto.price : isDraft ? 0 : undefined;
+    if (resolvedPrice === undefined) {
+      throw new BadRequestException('Product price is required');
+    }
+
     // Generate slug if not provided
-    const slug = dto.slug || this.generateSlug(dto.name);
+    const slug = dto.slug || this.generateSlug(resolvedName);
 
     if (dto.salePrice !== undefined && dto.salePrice !== null) {
-      if (dto.salePrice > dto.price) {
+      if (dto.salePrice > resolvedPrice) {
         throw new BadRequestException('salePrice cannot be greater than price');
       }
     }
     if (dto.costPerItem !== undefined && dto.costPerItem !== null) {
-      if (dto.costPerItem > dto.price) {
+      if (dto.costPerItem > resolvedPrice) {
         throw new BadRequestException(
           'costPerItem cannot be greater than price (negative margin)',
         );
@@ -462,11 +474,11 @@ export class StoreService {
           id: uuidv4(),
           collectionId: collectionId!,
           brandId: brand.id,
-          name: dto.name,
+          name: resolvedName,
           slug,
           description: dto.description,
           currency,
-          price: new Prisma.Decimal(dto.price),
+          price: new Prisma.Decimal(resolvedPrice),
           salePrice: dto.salePrice ? new Prisma.Decimal(dto.salePrice) : null,
           saleStartAt: dto.saleStartAt ? new Date(dto.saleStartAt) : null,
           saleEndAt: dto.saleEndAt ? new Date(dto.saleEndAt) : null,
@@ -562,6 +574,25 @@ export class StoreService {
       throw new ForbiddenException('You can only update your own products');
     }
 
+    let resolvedCollectionId: string | null | undefined = undefined;
+    if (dto.collectionId !== undefined) {
+      const requestedCollectionId = (dto.collectionId || '').trim();
+      if (requestedCollectionId) {
+        const collection = await this.prisma.collection.findFirst({
+          where: { id: requestedCollectionId, ownerId: brandOwnerId },
+          select: { id: true },
+        });
+
+        if (!collection) {
+          throw new NotFoundException('Collection not found or does not belong to you');
+        }
+
+        resolvedCollectionId = requestedCollectionId;
+      } else {
+        resolvedCollectionId = null;
+      }
+    }
+
     if (dto.salePrice !== undefined && dto.salePrice !== null && dto.price !== undefined) {
       if (dto.salePrice > dto.price) {
         throw new BadRequestException('salePrice cannot be greater than price');
@@ -653,6 +684,43 @@ export class StoreService {
     if (dto.publishAt !== undefined) updateData.publishAt = dto.publishAt ? new Date(dto.publishAt) : null;
 
     const updated = await this.prisma.$transaction(async (tx) => {
+      if (resolvedCollectionId !== undefined) {
+        let finalCollectionId = resolvedCollectionId;
+        if (finalCollectionId === null) {
+          const existingDefault = await tx.collection.findFirst({
+            where: {
+              ownerId: brandOwnerId,
+              isAvailableInStore: true,
+              status: 'PUBLISHED',
+            },
+            orderBy: { updatedAt: 'desc' },
+            select: { id: true },
+          });
+
+          if (existingDefault?.id) {
+            finalCollectionId = existingDefault.id;
+          } else {
+            const createdDefault = await tx.collection.create({
+              data: {
+                id: uuidv4(),
+                ownerId: brandOwnerId,
+                title: 'Store Products',
+                status: 'PUBLISHED',
+                visibility: 'PUBLIC',
+                type: 'EVERYBODY',
+                isAvailableInStore: true,
+              },
+              select: { id: true },
+            });
+            finalCollectionId = createdDefault.id;
+          }
+        }
+
+        if (finalCollectionId) {
+          updateData.collection = { connect: { id: finalCollectionId } };
+        }
+      }
+
       await tx.product.update({
         where: { id: productId },
         data: updateData,
@@ -795,6 +863,184 @@ export class StoreService {
     return this.attachProductMedia(duplicated);
   }
 
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // DELETE IMPACT CHECK
+  // Returns info about what will be affected if a product is deleted
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  async getDeleteImpact(brandOwnerId: string, productId: string) {
+    const product = await this.prisma.product.findFirst({
+      where: { id: productId },
+      include: { brand: true },
+    });
+
+    if (!product) {
+      throw new NotFoundException('Product not found');
+    }
+
+    if (product.brand.ownerId !== brandOwnerId) {
+      throw new ForbiddenException('You can only check your own products');
+    }
+
+    // Count active orders containing this product (items stored as JSON)
+    // We need to query orders and check the JSON items array
+    const activeOrders = await this.prisma.order.findMany({
+      where: {
+        brandId: product.brandId,
+        status: { in: ['PENDING', 'PROCESSING', 'SHIPPED'] },
+      },
+      select: { items: true },
+    });
+    
+    // Count orders that contain this product in their JSON items
+    let activeOrdersCount = 0;
+    for (const order of activeOrders) {
+      const items = order.items as { productId: string }[] | null;
+      if (Array.isArray(items) && items.some(item => item.productId === productId)) {
+        activeOrdersCount++;
+      }
+    }
+
+    // Count carts and wishlists
+    const [inCarts, inWishlists] = await Promise.all([
+      this.prisma.cartItem.count({ where: { productId } }),
+      this.prisma.wishlistItem.count({ where: { productId } }),
+    ]);
+
+    const hasActiveOrders = activeOrdersCount > 0;
+
+    return {
+      productName: product.name,
+      hasActiveOrders,
+      activeOrdersCount,
+      inCarts,
+      inWishlists,
+      totalViews: product.viewsCount ?? 0,
+      totalLikes: product.likesCount ?? 0,
+      canDelete: !hasActiveOrders,
+      mustArchiveReason: hasActiveOrders
+        ? 'This product has active orders and can only be archived.'
+        : undefined,
+    };
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // ARCHIVE PRODUCT
+  // Sets archivedAt with 60-day auto-delete schedule
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  async archiveProduct(brandOwnerId: string, productId: string) {
+    const product = await this.prisma.product.findFirst({
+      where: { id: productId, deletedAt: null },
+      include: { brand: true },
+    });
+
+    if (!product) {
+      throw new NotFoundException('Product not found');
+    }
+
+    if (product.brand.ownerId !== brandOwnerId) {
+      throw new ForbiddenException('You can only archive your own products');
+    }
+
+    if (product.archivedAt) {
+      throw new BadRequestException('Product is already archived');
+    }
+
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + 60 * 24 * 60 * 60 * 1000); // 60 days from now
+
+    const archived = await this.prisma.product.update({
+      where: { id: productId },
+      data: {
+        archivedAt: now,
+        archiveExpiresAt: expiresAt,
+        archiveLastReminder: null,
+        isActive: false,
+      },
+      include: {
+        collection: { select: { id: true, title: true } },
+        brand: { select: { id: true, name: true, logo: true, currency: true } },
+        variants: true,
+      },
+    });
+
+    return this.attachProductMedia(archived);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // UNARCHIVE PRODUCT
+  // Restores product and clears archive schedule
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  async unarchiveProduct(brandOwnerId: string, productId: string) {
+    const product = await this.prisma.product.findFirst({
+      where: { id: productId, deletedAt: null },
+      include: { brand: true },
+    });
+
+    if (!product) {
+      throw new NotFoundException('Product not found');
+    }
+
+    if (product.brand.ownerId !== brandOwnerId) {
+      throw new ForbiddenException('You can only unarchive your own products');
+    }
+
+    if (!product.archivedAt) {
+      throw new BadRequestException('Product is not archived');
+    }
+
+    const restored = await this.prisma.product.update({
+      where: { id: productId },
+      data: {
+        archivedAt: null,
+        archiveExpiresAt: null,
+        archiveLastReminder: null,
+        // Keep isActive as false - user should manually publish
+      },
+      include: {
+        collection: { select: { id: true, title: true } },
+        brand: { select: { id: true, name: true, logo: true, currency: true } },
+        variants: true,
+      },
+    });
+
+    return this.attachProductMedia(restored);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // TOGGLE FEATURED
+  // Toggles the isFeatured flag on a product
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  async toggleFeatured(brandOwnerId: string, productId: string) {
+    const product = await this.prisma.product.findFirst({
+      where: { id: productId, deletedAt: null },
+      include: { brand: true },
+    });
+
+    if (!product) {
+      throw new NotFoundException('Product not found');
+    }
+
+    if (product.brand.ownerId !== brandOwnerId) {
+      throw new ForbiddenException('You can only modify your own products');
+    }
+
+    const updated = await this.prisma.product.update({
+      where: { id: productId },
+      data: { isFeatured: !product.isFeatured },
+      include: {
+        collection: { select: { id: true, title: true } },
+        brand: { select: { id: true, name: true, logo: true, currency: true } },
+        variants: true,
+      },
+    });
+
+    return this.attachProductMedia(updated);
+  }
+
   async deleteProduct(brandOwnerId: string, productId: string) {
     const product = await this.prisma.product.findFirst({
       where: { id: productId },
@@ -809,6 +1055,29 @@ export class StoreService {
       throw new ForbiddenException('You can only delete your own products');
     }
 
+    // Check for active orders containing this product (items stored as JSON)
+    const activeOrders = await this.prisma.order.findMany({
+      where: {
+        brandId: product.brandId,
+        status: { in: ['PENDING', 'PROCESSING', 'SHIPPED'] },
+      },
+      select: { items: true },
+    });
+    
+    let activeOrdersCount = 0;
+    for (const order of activeOrders) {
+      const items = order.items as { productId: string }[] | null;
+      if (Array.isArray(items) && items.some(item => item.productId === productId)) {
+        activeOrdersCount++;
+      }
+    }
+
+    if (activeOrdersCount > 0) {
+      throw new BadRequestException(
+        'Cannot delete product with active orders. Please archive it instead.',
+      );
+    }
+
     await this.prisma.$transaction(async (tx) => {
       await tx.product.update({
         where: { id: productId },
@@ -821,10 +1090,38 @@ export class StoreService {
     return { success: true, message: 'Product deleted' };
   }
 
-  async getProduct(productId: string, userId?: string) {
+  async permanentlyDeleteProduct(brandOwnerId: string, productId: string) {
+    const product = await this.prisma.product.findFirst({
+      where: { id: productId },
+      include: { brand: true },
+    });
+
+    if (!product) {
+      throw new NotFoundException('Product not found');
+    }
+
+    if (product.brand.ownerId !== brandOwnerId) {
+      throw new ForbiddenException('You can only delete your own products');
+    }
+
+    if (!product.deletedAt) {
+      throw new BadRequestException('Product must be deleted before permanent removal');
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.cartItem.deleteMany({ where: { productId } });
+      await tx.wishlistItem.deleteMany({ where: { productId } });
+      await tx.productVariant.deleteMany({ where: { productId } });
+      await tx.product.delete({ where: { id: productId } });
+    });
+
+    return { success: true, message: 'Product permanently deleted' };
+  }
+
+  async getProduct(productId: string, userId?: string, includeDeleted = false) {
     // Optimized: Include wishlist check in same query when user is authenticated
     const product = await this.prisma.product.findFirst({
-      where: { id: productId, deletedAt: null },
+      where: includeDeleted ? { id: productId } : { id: productId, deletedAt: null },
       include: {
         collection: {
           select: {
@@ -858,6 +1155,10 @@ export class StoreService {
     }
 
     const isOwner = userId && product.brand.ownerId === userId;
+
+    if (product.deletedAt && includeDeleted && !isOwner) {
+      throw new ForbiddenException('You can only view your own deleted products');
+    }
 
     // Store gating: brand must be open, collection must be store-enabled and published for non-owners
     if (!isOwner) {
@@ -904,6 +1205,8 @@ export class StoreService {
       sortBy?: 'newest' | 'price_asc' | 'price_desc' | 'popular';
       search?: string;
       requesterId?: string;
+      includeDeleted?: boolean;
+      onlyDeleted?: boolean;
     } = {},
   ) {
     const {
@@ -924,6 +1227,8 @@ export class StoreService {
       sortBy = 'newest',
       search,
       requesterId,
+      includeDeleted,
+      onlyDeleted,
     } = options;
 
     const safePage = Math.max(1, Number(page) || 1);
@@ -953,10 +1258,22 @@ export class StoreService {
       throw new NotFoundException('Store is closed');
     }
 
+    if (isOwner) {
+      const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
+      await this.prisma.product.deleteMany({
+        where: {
+          brandId: brand.id,
+          isActive: false,
+          archivedAt: null,
+          deletedAt: null,
+          createdAt: { lt: ninetyDaysAgo },
+        },
+      });
+    }
+
     // Build where clause - owners see all products, public sees only active/published
     const where: Prisma.ProductWhereInput = {
       brandId: brand.id,
-      deletedAt: null, // Exclude soft-deleted products
     };
 
     const andFilters: Prisma.ProductWhereInput[] = [];
@@ -970,9 +1287,15 @@ export class StoreService {
       if (typeof isActive === 'boolean') {
         where.isActive = isActive;
       }
+      if (onlyDeleted) {
+        where.deletedAt = { not: null };
+      } else if (!includeDeleted) {
+        where.deletedAt = null;
+      }
     } else {
       // Public: only active products in published, store-enabled collections
       where.isActive = true;
+      where.deletedAt = null;
       where.collection = {
         is: {
           status: 'PUBLISHED',
@@ -1116,8 +1439,44 @@ export class StoreService {
 
     const nextCursor = products.length > 0 ? products[products.length - 1].id : null;
 
+    const baseItems = products.map((p) => this.transformProduct(p));
+    const urls = Array.from(
+      new Set(
+        baseItems
+          .flatMap((p) => (Array.isArray((p as any).images) ? (p as any).images : []))
+          .filter((u) => typeof u === 'string' && u.length > 0),
+      ),
+    );
+
+    let idByUrl = new Map<string, string>();
+    if (urls.length > 0) {
+      const uploads = await this.prisma.fileUpload.findMany({
+        where: { s3Url: { in: urls } },
+        select: { id: true, s3Url: true },
+      });
+      idByUrl = new Map(uploads.map((u) => [u.s3Url, u.id]));
+    }
+
+    const itemsWithMedia = baseItems.map((base: any) => {
+      const images: string[] = Array.isArray(base.images) ? base.images.filter(Boolean) : [];
+      if (images.length === 0) {
+        return { ...base, media: [], mediaIds: [] };
+      }
+      const media = images.map((url: string) => ({
+        id: idByUrl.get(url) ?? url,
+        url,
+        type: 'image',
+        isPrimary: !!base.thumbnail && url === base.thumbnail,
+      }));
+      return {
+        ...base,
+        media,
+        mediaIds: media.map((m) => m.id),
+      };
+    });
+
     return {
-      items: products.map((p) => this.transformProduct(p)),
+      items: itemsWithMedia,
       total,
       page: safePage,
       limit: safeLimit,
@@ -1125,6 +1484,37 @@ export class StoreService {
       hasNextPage: safePage * safeLimit < total,
       nextCursor,
     };
+  }
+
+  async restoreProduct(brandOwnerId: string, productId: string) {
+    const product = await this.prisma.product.findFirst({
+      where: { id: productId },
+      include: { brand: true },
+    });
+
+    if (!product) {
+      throw new NotFoundException('Product not found');
+    }
+
+    if (product.brand.ownerId !== brandOwnerId) {
+      throw new ForbiddenException('You can only restore your own products');
+    }
+
+    if (!product.deletedAt) {
+      throw new BadRequestException('Product is not deleted');
+    }
+
+    const restored = await this.prisma.product.update({
+      where: { id: productId },
+      data: { deletedAt: null, isActive: false },
+      include: {
+        collection: { select: { id: true, title: true } },
+        brand: { select: { id: true, name: true, logo: true, currency: true } },
+        variants: true,
+      },
+    });
+
+    return this.attachProductMedia(restored);
   }
 
   // ==================== CART ====================
@@ -1623,6 +2013,9 @@ export class StoreService {
       isFeatured: product.isFeatured,
       isPhysicalProduct: product.isPhysicalProduct,
       customsRegion: product.customsRegion,
+      archivedAt: product.archivedAt,
+      archiveExpiresAt: product.archiveExpiresAt,
+      deletedAt: product.deletedAt,
       // Policies
       returnsEligible: product.returnsEligible,
       // SEO
