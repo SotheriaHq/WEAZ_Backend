@@ -100,64 +100,81 @@ export class BrandsService {
   ) {}
 
   private async getBrandOrThrow(brandId: string) {
-    const brand = await this.prisma.user.findUnique({
-      where: { id: brandId },
-      select: {
-        id: true,
-        username: true,
-        firstName: true,
-        lastName: true,
-        email: true,
-        phoneNumber: true,
-        address: true,
-        brandFullName: true,
-        brandDescription: true,
-        brandCountry: true,
-        brandState: true,
-        brandCity: true,
-        brandTags: true,
-        brandBusinessType: true,
-        socialInstagram: true,
-        socialFacebook: true,
-        socialTwitter: true,
-        socialWebsite: true,
-        companyLocation: true,
-        profileImage: true,
-        profileImageFile: {
-          select: {
-            id: true,
-            s3Url: true,
-            fileName: true,
-            originalName: true,
-            createdAt: true,
-            updatedAt: true,
-          },
-        },
-        bannerImage: true,
-        bannerImageId: true,
-        bannerImageFile: {
-          select: {
-            id: true,
-            s3Url: true,
-            fileName: true,
-            originalName: true,
-            createdAt: true,
-            updatedAt: true,
-          },
-        },
-        cacNumber: true,
-        tin: true,
-        isEmailVerified: true,
-        createdAt: true,
-        updatedAt: true,
-        type: true,
-        brand: {
-          select: {
-            isStoreOpen: true,
-          },
+    const select = {
+      id: true,
+      username: true,
+      firstName: true,
+      lastName: true,
+      email: true,
+      phoneNumber: true,
+      address: true,
+      brandFullName: true,
+      brandDescription: true,
+      brandCountry: true,
+      brandState: true,
+      brandCity: true,
+      brandTags: true,
+      brandBusinessType: true,
+      socialInstagram: true,
+      socialFacebook: true,
+      socialTwitter: true,
+      socialWebsite: true,
+      companyLocation: true,
+      profileImage: true,
+      profileImageFile: {
+        select: {
+          id: true,
+          s3Url: true,
+          fileName: true,
+          originalName: true,
+          createdAt: true,
+          updatedAt: true,
         },
       },
+      bannerImage: true,
+      bannerImageId: true,
+      bannerImageFile: {
+        select: {
+          id: true,
+          s3Url: true,
+          fileName: true,
+          originalName: true,
+          createdAt: true,
+          updatedAt: true,
+        },
+      },
+      cacNumber: true,
+      tin: true,
+      isEmailVerified: true,
+      createdAt: true,
+      updatedAt: true,
+      type: true,
+      brand: {
+        select: {
+          id: true,
+          isStoreOpen: true,
+        },
+      },
+    } as const;
+
+    let brand = await this.prisma.user.findUnique({
+      where: { id: brandId },
+      select,
     });
+
+    if (!brand) {
+      const brandRecord = await this.prisma.brand.findUnique({
+        where: { id: brandId },
+        select: { ownerId: true },
+      });
+
+      if (brandRecord?.ownerId) {
+        brand = await this.prisma.user.findUnique({
+          where: { id: brandRecord.ownerId },
+          select,
+        });
+      }
+    }
 
     if (!brand || brand.type !== UserType.BRAND) {
       throw new NotFoundException('Brand not found');
@@ -169,9 +186,11 @@ export class BrandsService {
   async getBrandProfile(brandId: string): Promise<BrandProfileResponse> {
     const brand = await this.getBrandOrThrow(brandId);
 
+    const ownerId = brand.id;
+
     const collectionsCount = await this.prisma.collection.count({
       where: {
-        ownerId: brandId,
+        ownerId,
         status: CollectionStatus.PUBLISHED,
       },
     });

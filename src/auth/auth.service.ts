@@ -36,7 +36,7 @@ export class AuthService {
     private readonly userHelperService: UserHelperService,
     private readonly emailVerificationHelper: EmailVerificationHelperService,
     private readonly notifications: NotificationsService,
-  ) {}
+  ) { }
 
   private validateBrandRequirements(signupDto: CreateUserDto): void {
     const missingFields: string[] = [];
@@ -51,12 +51,14 @@ export class AuthService {
     }
   }
   async CreateUser(signupDto: CreateUserDto, req: Request, res: Response) {
-    const { email } = signupDto;
+    // Normalize email: trim whitespace and convert to lowercase for case-insensitive matching
+    const normalizedEmail = signupDto.email?.trim().toLowerCase();
+    signupDto.email = normalizedEmail;
 
     try {
       const existingUser = await this.prisma.user
         .findUnique({
-          where: { email },
+          where: { email: normalizedEmail },
         })
         .catch((dbError) => {
           this.logger.error('Database error checking existing user:', dbError);
@@ -154,15 +156,15 @@ export class AuthService {
             isEmailVerified: false,
             ...(signupDto.type === UserType.BRAND
               ? {
-                  brand: {
-                    create: {
-                      id: uuidv4(),
-                      name: signupDto.brandFullName!,
-                      storeNameLastChangedAt: new Date(),
-                      currency: 'NGN',
-                    },
+                brand: {
+                  create: {
+                    id: uuidv4(),
+                    name: signupDto.brandFullName!,
+                    storeNameLastChangedAt: new Date(),
+                    currency: 'NGN',
                   },
-                }
+                },
+              }
               : {}),
           },
           select: authUserSelect,
@@ -205,7 +207,7 @@ export class AuthService {
         await this.notifications.create(user.id, NotificationType.SIGNUP, {
           payload: { action: 'SIGNUP', email: user.email },
         });
-      } catch {}
+      } catch { }
 
       return {
         user: toAuthUserResponse(user),
@@ -262,7 +264,7 @@ export class AuthService {
             userAgent: req.headers['user-agent'] ?? null,
           },
         });
-      } catch {}
+      } catch { }
 
       return {
         user: toAuthUserResponse(user),
@@ -281,10 +283,13 @@ export class AuthService {
 
   // Validates user credentials for login
   async validateUser(email: string, password: string) {
+    // Normalize email: trim whitespace and convert to lowercase for case-insensitive matching
+    const normalizedEmail = email?.trim().toLowerCase();
+
     try {
       const user = await this.prisma.user
         .findFirst({
-          where: { email },
+          where: { email: normalizedEmail },
           select: {
             ...authUserSelect,
             password: true,
@@ -399,7 +404,7 @@ export class AuthService {
       await this.notifications.create(userId, NotificationType.SIGNUP, {
         payload: { action: 'EMAIL_VERIFIED' },
       });
-    } catch {}
+    } catch { }
     return { message: 'Email verified successfully' };
   }
 
@@ -418,7 +423,7 @@ export class AuthService {
       await this.notifications.create(user.id, NotificationType.SIGNUP, {
         payload: { action: 'EMAIL_VERIFIED' },
       });
-    } catch {}
+    } catch { }
     return { message: 'Email verified successfully' };
   }
 

@@ -10,7 +10,7 @@ import { AddToCartDto, UpdateCartItemDto } from './dto/cart.dto';
 import { AddToWishlistDto } from './dto/wishlist.dto';
 import { CheckoutDto } from './dto/checkout.dto';
 import { v4 as uuidv4 } from 'uuid';
-import { CollectionType, Prisma, NotificationType } from '@prisma/client';
+import { CollectionType, Prisma, NotificationType, UserType } from '@prisma/client';
 import { UpdateStoreNameDto } from './dto/update-store-name.dto';
 import { UpdateStoreProfileDto } from './dto/update-store-profile.dto';
 import { PasswordService } from 'src/auth/helper/password.service';
@@ -79,6 +79,63 @@ export class StoreService {
     }
 
     return product;
+  }
+
+  private async resolveBrandByIdOrOwner(brandIdOrOwnerId: string) {
+    let brand = await this.prisma.brand.findUnique({
+      where: { id: brandIdOrOwnerId },
+      select: { id: true, isStoreOpen: true, ownerId: true },
+    });
+
+    if (!brand) {
+      brand = await this.prisma.brand.findUnique({
+        where: { ownerId: brandIdOrOwnerId },
+        select: { id: true, isStoreOpen: true, ownerId: true },
+      });
+    }
+
+    if (!brand) {
+      const owner = await this.prisma.user.findUnique({
+        where: { id: brandIdOrOwnerId },
+        select: {
+          id: true,
+          type: true,
+          brandFullName: true,
+          firstName: true,
+          lastName: true,
+          username: true,
+        },
+      });
+
+      if (owner && owner.type === UserType.BRAND) {
+        const fullName = `${owner.firstName ?? ''} ${owner.lastName ?? ''}`.trim();
+        const name = (owner.brandFullName ?? '').trim() || fullName || owner.username || 'Brand';
+
+        try {
+          brand = await this.prisma.brand.create({
+            data: {
+              id: uuidv4(),
+              name,
+              storeNameLastChangedAt: new Date(),
+              currency: 'NGN',
+              ownerId: owner.id,
+            },
+            select: { id: true, isStoreOpen: true, ownerId: true },
+          });
+        } catch (dbError: any) {
+          if (dbError?.code === 'P2002') {
+            brand = await this.prisma.brand.findUnique({
+              where: { ownerId: owner.id },
+              select: { id: true, isStoreOpen: true, ownerId: true },
+            });
+          } else {
+            throw dbError;
+          }
+        }
+      }
+    }
+
+    return brand;
   }
 
   async uploadProductMedia(
@@ -1234,19 +1291,7 @@ export class StoreService {
     const safePage = Math.max(1, Number(page) || 1);
     const safeLimit = Math.min(100, Math.max(1, Number(limit) || 20));
 
-    // Try to find brand by id first, then by ownerId (for ID compatibility)
-    let brand = await this.prisma.brand.findUnique({
-      where: { id: brandId },
-      select: { id: true, isStoreOpen: true, ownerId: true },
-    });
-    
-    if (!brand) {
-      brand = await this.prisma.brand.findUnique({
-        where: { ownerId: brandId },
-        select: { id: true, isStoreOpen: true, ownerId: true },
-      });
-    }
-
+    const brand = await this.resolveBrandByIdOrOwner(brandId);
     if (!brand) {
       throw new NotFoundException('Store not found');
     }
@@ -2537,7 +2582,7 @@ export class StoreService {
   }
 
   async getStoreStatus(ownerId: string) {
-    const brand = await this.prisma.brand.findUnique({
+    let brand = await this.prisma.brand.findUnique({
       where: { ownerId },
       select: {
         id: true,
@@ -2555,6 +2600,30 @@ export class StoreService {
         isStoreOpen: true,
       },
     });
+
+    if (!brand) {
+      const resolved = await this.resolveBrandByIdOrOwner(ownerId);
+      if (resolved) {
+        brand = await this.prisma.brand.findUnique({
+          where: { id: resolved.id },
+          select: {
+            id: true,
+            name: true,
+            description: true,
+            tagline: true,
+            logo: true,
+            banner: true,
+            tags: true,
+            contactEmail: true,
+            socialInstagram: true,
+            socialTwitter: true,
+            socialTiktok: true,
+            socialWebsite: true,
+            isStoreOpen: true,
+          },
+        });
+      }
+    }
 
     if (!brand) {
       throw new NotFoundException('Brand not found');
