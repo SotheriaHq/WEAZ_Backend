@@ -1668,19 +1668,12 @@ export class StoreService {
 
   async getCart(userId: string) {
     const items = await this.prisma.cartItem.findMany({
-      where: {
-        userId,
-        product: {
-          deletedAt: null,
-          isActive: true,
-          brand: { isStoreOpen: true },
-          collection: { isAvailableInStore: true, status: 'PUBLISHED' },
-        },
-      },
+      where: { userId },
       include: {
         product: {
           include: {
-            brand: { select: { id: true, name: true, currency: true } },
+            brand: { select: { id: true, name: true, currency: true, isStoreOpen: true } },
+            collection: { select: { id: true, status: true, isAvailableInStore: true } },
             variants: true,
           },
         },
@@ -1688,7 +1681,62 @@ export class StoreService {
       orderBy: { createdAt: 'desc' },
     });
 
-    const cartItems = items.map((item) => {
+    const unavailableItemIds: string[] = [];
+    const availableItems = items.filter((item) => {
+      const product = item.product;
+      if (!product) {
+        unavailableItemIds.push(item.id);
+        return false;
+      }
+
+      const isProductAvailable =
+        !product.deletedAt &&
+        product.isActive &&
+        Boolean(product.brand?.isStoreOpen) &&
+        Boolean(product.collection?.isAvailableInStore) &&
+        product.collection?.status === 'PUBLISHED';
+
+      if (!isProductAvailable) {
+        unavailableItemIds.push(item.id);
+        return false;
+      }
+
+      if (product.trackInventory && !product.allowBackorders) {
+        const variants = Array.isArray((product as any).variants)
+          ? ((product as any).variants as any[])
+          : [];
+        if (variants.length > 0) {
+          const match = variants.find(
+            (v) =>
+              (v.size || null) === (item.selectedSize || null) &&
+              (v.color || null) === (item.selectedColor || null),
+          );
+          const available = Number(match?.stock || 0);
+          if (!match || available <= 0) {
+            unavailableItemIds.push(item.id);
+            return false;
+          }
+        } else if (item.selectedSize && product.sizeStock) {
+          const sizeStock = product.sizeStock as Record<string, number>;
+          const available = sizeStock[item.selectedSize] || 0;
+          if (available <= 0) {
+            unavailableItemIds.push(item.id);
+            return false;
+          }
+        } else if (product.totalStock <= 0) {
+          unavailableItemIds.push(item.id);
+          return false;
+        }
+      }
+
+      return true;
+    });
+
+    if (unavailableItemIds.length > 0) {
+      await this.prisma.cartItem.deleteMany({ where: { id: { in: unavailableItemIds } } });
+    }
+
+    const cartItems = availableItems.map((item) => {
       const product = item.product;
       const isOnSale = this.isProductOnSale(product);
 
@@ -1896,21 +1944,15 @@ export class StoreService {
   async getWishlist(userId: string, page = 1, limit = 20) {
     const [items, total] = await Promise.all([
       this.prisma.wishlistItem.findMany({
-        where: {
-          userId,
-          product: {
-            deletedAt: null,
-            isActive: true,
-            brand: { isStoreOpen: true },
-            collection: { isAvailableInStore: true, status: 'PUBLISHED' },
-          },
-        },
+        where: { userId },
         include: {
           product: {
             include: {
               brand: {
-                select: { id: true, name: true, logo: true, currency: true },
+                select: { id: true, name: true, logo: true, currency: true, isStoreOpen: true },
               },
+              collection: { select: { id: true, status: true, isAvailableInStore: true } },
+              variants: true,
             },
           },
         },
@@ -1921,18 +1963,52 @@ export class StoreService {
       this.prisma.wishlistItem.count({ where: { userId } }),
     ]);
 
-    const wishlistItems = items.map((item) => ({
+    const unavailableWishlistIds: string[] = [];
+    const availableWishlistItems = items.filter((item) => {
+      const product = item.product;
+      if (!product) {
+        unavailableWishlistIds.push(item.id);
+        return false;
+      }
+
+      const isProductAvailable =
+        !product.deletedAt &&
+        product.isActive &&
+        Boolean(product.brand?.isStoreOpen) &&
+        Boolean(product.collection?.isAvailableInStore) &&
+        product.collection?.status === 'PUBLISHED';
+
+      if (!isProductAvailable) {
+        unavailableWishlistIds.push(item.id);
+        return false;
+      }
+
+      if (product.trackInventory && !product.allowBackorders && product.totalStock <= 0) {
+        unavailableWishlistIds.push(item.id);
+        return false;
+      }
+
+      return true;
+    });
+
+    if (unavailableWishlistIds.length > 0) {
+      await this.prisma.wishlistItem.deleteMany({ where: { id: { in: unavailableWishlistIds } } });
+    }
+
+    const wishlistItems = availableWishlistItems.map((item) => ({
       id: item.id,
       addedAt: item.createdAt,
       product: this.transformProduct(item.product),
     }));
 
+    const totalAvailable = Math.max(0, total - unavailableWishlistIds.length);
+
     return {
       items: wishlistItems,
-      total,
+      total: totalAvailable,
       page,
       limit,
-      totalPages: Math.ceil(total / limit),
+      totalPages: Math.ceil(totalAvailable / limit),
     };
   }
 
