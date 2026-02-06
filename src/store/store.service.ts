@@ -156,6 +156,9 @@ export class StoreService {
     );
 
     const nextImages = Array.isArray(product.images) ? [...product.images] : [];
+    if (nextImages.length >= 4) {
+      throw new BadRequestException('You can upload up to 4 images');
+    }
     nextImages.push(uploaded.url);
 
     const nextThumbnail =
@@ -212,6 +215,9 @@ export class StoreService {
     const product = await this.assertBrandOwnsProduct(brandOwnerId, productId);
 
     const ids = Array.isArray(mediaIds) ? mediaIds.filter(Boolean) : [];
+    if (ids.length > 4) {
+      throw new BadRequestException('You can upload up to 4 images');
+    }
     if (ids.length === 0) {
       await this.prisma.product.update({
         where: { id: productId },
@@ -261,6 +267,9 @@ export class StoreService {
     if (!upload) throw new NotFoundException('Media not found');
 
     const existingImages = Array.isArray(product.images) ? product.images : [];
+    if (!existingImages.includes(upload.s3Url) && existingImages.length >= 4) {
+      throw new BadRequestException('You can upload up to 4 images');
+    }
     const nextImages = existingImages.includes(upload.s3Url)
       ? existingImages
       : [...existingImages, upload.s3Url];
@@ -493,6 +502,19 @@ export class StoreService {
 
     const currency = (dto.currency || brand.currency || 'NGN').trim();
 
+    const normalizedImages = Array.isArray(dto.images)
+      ? dto.images.filter(Boolean)
+      : [];
+    if (normalizedImages.length > 4) {
+      throw new BadRequestException('You can upload up to 4 images');
+    }
+    let resolvedThumbnail: string | null = dto.thumbnail ?? null;
+    if (normalizedImages.length > 0) {
+      resolvedThumbnail = resolvedThumbnail || normalizedImages[0];
+    } else {
+      resolvedThumbnail = null;
+    }
+
     const product = await this.prisma.$transaction(async (tx) => {
       let collectionId = requestedCollectionId;
 
@@ -556,8 +578,8 @@ export class StoreService {
           colorHexCodes:
             derivedFromVariants?.colorHexCodes ?? dto.colorHexCodes ?? null,
           // Media
-          images: dto.images || [],
-          thumbnail: dto.thumbnail,
+          images: normalizedImages,
+          thumbnail: resolvedThumbnail,
           // Inventory
           totalStock:
             derivedFromVariants?.totalStock ?? (dto.totalStock || 0),
@@ -713,8 +735,26 @@ export class StoreService {
     }
     
     // Media
-    if (dto.images !== undefined) updateData.images = dto.images;
-    if (dto.thumbnail !== undefined) updateData.thumbnail = dto.thumbnail;
+    if (dto.images !== undefined) {
+      const normalizedImages = Array.isArray(dto.images)
+        ? dto.images.filter(Boolean)
+        : [];
+      if (normalizedImages.length > 4) {
+        throw new BadRequestException('You can upload up to 4 images');
+      }
+
+      let resolvedThumbnail: string | null = dto.thumbnail ?? null;
+      if (normalizedImages.length === 0) {
+        resolvedThumbnail = null;
+      } else if (!resolvedThumbnail || !normalizedImages.includes(resolvedThumbnail)) {
+        resolvedThumbnail = normalizedImages[0];
+      }
+
+      updateData.images = normalizedImages;
+      updateData.thumbnail = resolvedThumbnail;
+    } else if (dto.thumbnail !== undefined) {
+      updateData.thumbnail = dto.thumbnail;
+    }
     
     // Inventory
     if (dto.totalStock !== undefined) updateData.totalStock = dto.totalStock;

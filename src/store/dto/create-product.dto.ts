@@ -3,6 +3,7 @@ import {
   IsOptional,
   IsNumber,
   IsArray,
+  ArrayMaxSize,
   IsBoolean,
   IsDateString,
   Min,
@@ -159,6 +160,7 @@ export class CreateProductDto {
   // Media
   @IsOptional()
   @IsArray()
+  @ArrayMaxSize(4)
   @IsString({ each: true })
   images?: string[];
 
