@@ -1,4 +1,4 @@
-import { Injectable, Logger, BadRequestException } from '@nestjs/common';
+import { Injectable, Logger, BadRequestException, ForbiddenException } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { FileUpload } from '@prisma/client';
 import {
@@ -249,6 +249,7 @@ export class UploadService {
     originalName: string,
     fileType: FileType,
     contentType?: string,
+    options?: { collectionId?: string; orderIndex?: number },
   ) {
     // create presigned post and persist a pending PresignedUpload record
     const fileId = uuidv4();
@@ -274,6 +275,8 @@ export class UploadService {
       data: {
         id: fileId,
         userId,
+        collectionId: options?.collectionId,
+        orderIndex: typeof options?.orderIndex === 'number' ? options.orderIndex : null,
         originalName,
         contentType: '',
         fileType,
@@ -534,6 +537,35 @@ export class UploadService {
     } as any);
     if (!presign) {
       throw new BadRequestException('Presign record not found');
+    }
+
+    if (presign.userId !== userId) {
+      throw new ForbiddenException('Presign record does not belong to user');
+    }
+
+    if (presign.s3Key !== key) {
+      throw new BadRequestException('S3 key mismatch for presign record');
+    }
+
+    const now = new Date();
+    if (presign.expiresAt && presign.expiresAt < now) {
+      await (this.prisma as any)['presignedUpload'].update({
+        where: { id },
+        data: { status: 'EXPIRED' },
+      } as any);
+      throw new BadRequestException('Presign has expired');
+    }
+
+    if (presign.status === 'USED') {
+      throw new BadRequestException('Presign already used');
+    }
+
+    if (presign.status === 'EXPIRED') {
+      throw new BadRequestException('Presign has expired');
+    }
+
+    if (presign.status !== 'PENDING' && presign.status !== 'READY') {
+      throw new BadRequestException('Presign is not ready for use');
     }
 
     // Mark presign as USED

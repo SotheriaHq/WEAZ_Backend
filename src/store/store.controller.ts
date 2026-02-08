@@ -189,6 +189,25 @@ export class StoreController {
     return this.storeService.restoreProduct(req.user.id, productId);
   }
 
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // PRICE CHANGE PREVIEW
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Post('products/:id/price-preview')
+  async getProductPriceChangePreview(
+    @Param('id') productId: string,
+    @Body() body: { newPrice: number; newSalePrice?: number },
+    @Req() req: any,
+  ) {
+    return this.storeService.getProductPriceChangePreview(
+      req.user.id,
+      productId,
+      body.newPrice,
+      body.newSalePrice,
+    );
+  }
+
   @UseGuards(OptionalJwtAuthGuard)
   @Get(['products/:id', 'store/products/:id'])
   @Throttle({ default: { limit: 120, ttl: 60000 } })

@@ -1,13 +1,40 @@
 import {
   IsArray,
   IsDateString,
+  IsEnum,
   IsNumber,
   IsOptional,
   IsString,
+  IsBoolean,
   Min,
 } from 'class-validator';
+import { CollectionType, CollectionVisibility } from '@prisma/client';
 
 export class UpdateCollectionDto {
+  @IsOptional()
+  @IsString()
+  title?: string | null;
+
+  @IsOptional()
+  @IsString()
+  description?: string | null;
+
+  @IsOptional()
+  @IsEnum(CollectionVisibility)
+  visibility?: CollectionVisibility;
+
+  @IsOptional()
+  @IsEnum(CollectionType)
+  type?: CollectionType;
+
+  @IsOptional()
+  @IsString()
+  categoryId?: string | null;
+
+  @IsOptional()
+  @IsBoolean()
+  isAvailableInStore?: boolean | null;
+
   @IsOptional()
   @IsNumber()
   @Min(0)

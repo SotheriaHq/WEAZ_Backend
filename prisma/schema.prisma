@@ -307,6 +307,7 @@ model Collection {
   title                        String?
   description                  String?
   status                       CollectionStatus                @default(DRAFT)
+  archivedFromStatus           CollectionStatus?
   visibility                   CollectionVisibility            @default(PUBLIC)
   type                         CollectionType                  @default(EVERYBODY)
   categoryId                   String?                         @db.Uuid
@@ -346,14 +347,32 @@ model Collection {
   // Contributions
   contributionRequests         ContributionRequest[]           @relation("CollectionContributionRequests")
   
-  // E-commerce products
-  products                     Product[]                       @relation("Collection_to_Products")
+  // E-commerce products (multi-collection membership)
+  products                     CollectionProduct[]
+  // Primary collection link (compatibility)
+  primaryProducts              Product[]                       @relation("PrimaryCollection")
 
   @@index([status, createdAt])
   @@index([status, patchesCount])
   @@index([status, visibility, createdAt])
   @@index([status, pendingCategorySuggestionId]) // PHASE 1: Fast lookup of drafts waiting for category approval
   @@index([ownerId, status, createdAt]) // PHASE 1: User's draft management
+}
+
+model CollectionProduct {
+  id           String   @id @map("_id") @db.Uuid
+  collectionId String   @db.Uuid
+  productId    String   @db.Uuid
+  orderIndex   Int      @default(0)
+  isPrimary    Boolean  @default(false)
+  createdAt    DateTime @default(now())
+
+  collection   Collection @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+  product      Product    @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([collectionId, productId])
+  @@index([productId])
+  @@index([collectionId, orderIndex])
 }
 
 enum CollectionStatus {
@@ -540,6 +559,8 @@ model PresignedUpload {
   id           String        @id @map("_id") @db.Uuid
   userId       String        @db.Uuid
   user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  collectionId String?       @db.Uuid
+  orderIndex   Int?
   originalName String
   contentType  String
   fileType     FileType
@@ -741,8 +762,8 @@ enum PayoutStatus {
 
 model Product {
   id              String        @id @map("_id") @db.Uuid
-  collectionId    String        @db.Uuid
-  collection      Collection    @relation("Collection_to_Products", fields: [collectionId], references: [id], onDelete: Cascade)
+  collectionId    String?       @db.Uuid
+  collection      Collection?   @relation("PrimaryCollection", fields: [collectionId], references: [id], onDelete: SetNull)
   brandId         String        @db.Uuid
   brand           Brand         @relation("Brand_to_Products", fields: [brandId], references: [id], onDelete: Cascade)
   
@@ -815,11 +836,12 @@ model Product {
   cartItems       CartItem[]
   wishlistItems   WishlistItem[]
   variants        ProductVariant[]
+  collections     CollectionProduct[]
   
   // Performance indexes
   @@index([brandId])
-  @@index([collectionId])
   @@index([brandId, isActive])
+  @@index([collectionId])
   @@index([brandId, isFeatured])
   @@index([createdAt])
   @@index([slug])

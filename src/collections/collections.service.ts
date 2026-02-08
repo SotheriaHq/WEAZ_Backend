@@ -3,6 +3,7 @@ import {
   BadRequestException,
   NotFoundException,
   ForbiddenException,
+  ConflictException,
 } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { v4 as uuidv4 } from 'uuid';
@@ -24,6 +25,8 @@ import {
 } from './dto/create-collection.dto';
 import { HelperService } from './helper/Helper.service';
 import { UploadService } from 'src/upload/upload.service';
+import { StoreService } from 'src/store/store.service';
+import { CreateProductDto } from 'src/store/dto/create-product.dto';
 import * as crypto from 'crypto';
 import { sanitizeTags } from 'src/common/utils/tag-validator';
 import { UpdateCollectionDto } from './dto/update-collection.dto';
@@ -34,6 +37,7 @@ export class CollectionsService {
     private readonly prisma: PrismaService,
     private readonly helperservice: HelperService,
     private readonly uploadService: UploadService,
+    private readonly storeService: StoreService,
     private readonly analytics?: AnalyticsService,
     private readonly notifications?: NotificationsService,
   ) {}
@@ -65,11 +69,6 @@ export class CollectionsService {
     // Public collections are always viewable
     if (c.visibility === CollectionVisibility.PUBLIC) return true;
 
-    // Private collections that are available in store (market) are viewable by everyone
-    if (c.visibility === CollectionVisibility.PRIVATE && c.isAvailableInStore) {
-      return true;
-    }
-
     // For other private collections, check access approval
     if (requesterId) {
       const access = await this.prisma.collectionAccess.findUnique({
@@ -90,6 +89,76 @@ export class CollectionsService {
     });
     if (!m) return false;
     return this.canViewCollection(m.collectionId, requesterId);
+  }
+
+  private async recalculateCollectionPriceRange(collectionId: string) {
+    const links = await this.prisma.collectionProduct.findMany({
+      where: { collectionId },
+      include: {
+        product: {
+          select: {
+            price: true,
+            salePrice: true,
+            saleStartAt: true,
+            saleEndAt: true,
+            deletedAt: true,
+            archivedAt: true,
+            isActive: true,
+            publishAt: true,
+            variants: { select: { price: true } },
+          },
+        },
+      },
+    });
+    const now = new Date();
+    const active = links.filter((l) => {
+      const p = l.product;
+      if (!p || p.deletedAt || p.archivedAt || !p.isActive) return false;
+      if (p.publishAt && p.publishAt > now) return false;
+      return true;
+    });
+
+    const prices = active
+      .map((l) => {
+        const p = l.product;
+        const variantPrices = Array.isArray(p.variants)
+          ? p.variants.map((v) => Number(v.price || 0)).filter((v) => v > 0)
+          : [];
+        if (variantPrices.length > 0) return Math.min(...variantPrices);
+        return Number(p.price || 0);
+      })
+      .filter((v) => v > 0);
+
+    const maxPrices = active
+      .map((l) => {
+        const p = l.product;
+        const variantPrices = Array.isArray(p.variants)
+          ? p.variants.map((v) => Number(v.price || 0)).filter((v) => v > 0)
+          : [];
+        if (variantPrices.length > 0) return Math.max(...variantPrices);
+        return Number(p.price || 0);
+      })
+      .filter((v) => v > 0);
+
+    const salePrices = active
+      .map((l) => {
+        const p = l.product;
+        if (!p.salePrice) return null;
+        if (p.saleStartAt && p.saleStartAt > now) return null;
+        if (p.saleEndAt && p.saleEndAt < now) return null;
+        return Number(p.salePrice);
+      })
+      .filter((v): v is number => typeof v === 'number' && v > 0);
+
+    await this.prisma.collection.update({
+      where: { id: collectionId },
+      data: {
+        minPrice: prices.length ? Math.min(...prices) : null,
+        maxPrice: maxPrices.length ? Math.max(...maxPrices) : null,
+        saleMinPrice: salePrices.length ? Math.min(...salePrices) : null,
+        saleMaxPrice: salePrices.length ? Math.max(...salePrices) : null,
+      },
+    });
   }
 
   // ===================== Access Management =====================
@@ -749,13 +818,56 @@ export class CollectionsService {
       throw new ForbiddenException('Only brands can create collections');
     }
 
+    const hasFiles = Array.isArray(dto.files) && dto.files.length > 0;
+
+    // Store-collection session initialization (no media required)
+    if (!hasFiles && dto.mode) {
+      const draftsCount = await this.prisma.collection.count({
+        where: { ownerId: userId, status: 'DRAFT' },
+      });
+      if (draftsCount >= 4) {
+        throw new BadRequestException(
+          'You can have maximum 4 draft collections. Please publish or delete an existing draft to continue.',
+        );
+      }
+
+      const collectionId = uuidv4();
+      const collection = await this.prisma.collection.create({
+        data: {
+          id: collectionId,
+          ownerId: userId,
+          title: dto.title?.trim() || null,
+          description: dto.description?.trim() || null,
+          status: 'DRAFT',
+          visibility: dto.visibility ?? CollectionVisibility.PUBLIC,
+          type: dto.type ?? CollectionType.EVERYBODY,
+          isAvailableInStore: dto.isAvailableInStore ?? false,
+          tags: Array.isArray(dto.tags) ? sanitizeTags(dto.tags) : [],
+          categoryId: dto.categoryId || null,
+        },
+      });
+
+      return {
+        sessionId: collection.id,
+        expiresAt: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
+      };
+    }
+
+    if (!dto.title || !dto.title.trim()) {
+      throw new BadRequestException('Title is required');
+    }
+
+    if (!dto.categoryId) {
+      throw new BadRequestException('Category is required');
+    }
+
     // Validate files array
     if (!dto.files || dto.files.length === 0) {
       throw new BadRequestException('At least one file is required');
     }
 
-    if (dto.files.length > 10) {
-      throw new BadRequestException('Maximum 10 files per collection');
+    if (dto.files.length > 20) {
+      throw new BadRequestException('Maximum 20 files per collection');
     }
 
     // PHASE 2: Use shared tag normalization utility
@@ -814,6 +926,7 @@ export class CollectionsService {
           fileSpec.name,
           fileType as any,
           fileSpec.type,
+          { collectionId, orderIndex: index },
         );
 
         return {
@@ -1047,10 +1160,184 @@ export class CollectionsService {
       throw new BadRequestException('Collection is not in draft status');
     }
 
+    const hasCompletions = Array.isArray(dto.completions) && dto.completions.length > 0;
+
+    if (!hasCompletions) {
+      if (!dto.collectionMetadata && !dto.action && dto.shouldPublish === undefined) {
+        throw new BadRequestException('Missing upload completions');
+      }
+      const metadata = dto.collectionMetadata ?? {};
+      const action = dto.action ?? (dto.shouldPublish === false ? 'draft' : 'publish');
+
+      if (action === 'publish') {
+        const nextTitle = metadata.title ?? collection.title;
+        if (!nextTitle || !nextTitle.trim()) {
+          throw new BadRequestException('Title is required to publish');
+        }
+        const nextTags = Array.isArray(metadata.tags) ? metadata.tags : collection.tags ?? [];
+        if (sanitizeTags(nextTags).length === 0) {
+          throw new BadRequestException('At least one descriptive tag is required');
+        }
+        const nextCategoryId = metadata.categoryId ?? collection.categoryId;
+        if (!nextCategoryId) {
+          throw new BadRequestException('Category is required to publish');
+        }
+        const category = await this.prisma.collectionCategory.findUnique({
+          where: { id: nextCategoryId },
+          select: { id: true, isActive: true },
+        });
+        if (!category) throw new NotFoundException('Category not found');
+        if (!category.isActive) throw new BadRequestException('This category is not active');
+      }
+
+      const updated = await this.prisma.$transaction(async (tx) => {
+        const links = await tx.collectionProduct.findMany({
+            where: { collectionId },
+            include: {
+              product: {
+                select: {
+                  price: true,
+                  salePrice: true,
+                  saleStartAt: true,
+                  saleEndAt: true,
+                  isActive: true,
+                  deletedAt: true,
+                  publishAt: true,
+                  archivedAt: true,
+                  images: true,
+                  thumbnail: true,
+                  variants: { select: { price: true } },
+                },
+              },
+            },
+          });
+
+        if (action === 'publish' && links.length === 0) {
+          throw new BadRequestException('Cannot publish without products');
+        }
+
+        const now = new Date();
+        const activeProducts = links.filter((l) => {
+          const p = l.product;
+          if (!p || p.deletedAt || p.archivedAt || !p.isActive) return false;
+          if (p.publishAt && p.publishAt > now) return false;
+          return true;
+        });
+
+        if (action === 'publish') {
+          const hasProductMedia = activeProducts.some((l) => {
+            const p = l.product;
+            const images = Array.isArray(p.images) ? p.images.filter(Boolean) : [];
+            return images.length > 0 || Boolean(p.thumbnail);
+          });
+          if (!hasProductMedia) {
+            throw new BadRequestException('At least one product image is required to publish');
+          }
+        }
+
+        const prices = activeProducts
+          .map((l) => {
+            const p = l.product;
+            const variantPrices = Array.isArray(p.variants)
+              ? p.variants.map((v) => Number(v.price || 0)).filter((v) => v > 0)
+              : [];
+            if (variantPrices.length > 0) return Math.min(...variantPrices);
+            return Number(p.price || 0);
+          })
+          .filter((v) => v > 0);
+
+        const maxPrices = activeProducts
+          .map((l) => {
+            const p = l.product;
+            const variantPrices = Array.isArray(p.variants)
+              ? p.variants.map((v) => Number(v.price || 0)).filter((v) => v > 0)
+              : [];
+            if (variantPrices.length > 0) return Math.max(...variantPrices);
+            return Number(p.price || 0);
+          })
+          .filter((v) => v > 0);
+
+        const salePrices = activeProducts
+          .map((l) => {
+            const p = l.product;
+            if (!p.salePrice) return null;
+            if (p.saleStartAt && p.saleStartAt > now) return null;
+            if (p.saleEndAt && p.saleEndAt < now) return null;
+            return Number(p.salePrice);
+          })
+          .filter((v): v is number => typeof v === 'number' && v > 0);
+
+        return tx.collection.update({
+          where: { id: collectionId },
+          data: {
+            title: metadata.title ?? collection.title,
+            description: metadata.description ?? collection.description,
+            visibility: metadata.visibility ?? collection.visibility,
+            type: metadata.type ?? collection.type,
+            categoryId: metadata.categoryId ?? collection.categoryId,
+            isAvailableInStore:
+              typeof metadata.isAvailableInStore === 'boolean'
+                ? metadata.isAvailableInStore
+                : collection.isAvailableInStore,
+            tags: Array.isArray(metadata.tags)
+              ? sanitizeTags(metadata.tags)
+              : collection.tags,
+            minPrice: prices.length ? Math.min(...prices) : null,
+            maxPrice: maxPrices.length ? Math.max(...maxPrices) : null,
+            saleMinPrice: salePrices.length ? Math.min(...salePrices) : null,
+            saleMaxPrice: salePrices.length ? Math.max(...salePrices) : null,
+            status: action === 'publish' ? 'PUBLISHED' : 'DRAFT',
+          },
+        });
+      });
+
+      return updated;
+    }
+
     // Verify all uploads completed successfully and create central FileUpload records via UploadService
+    const completionIds = new Set<string>();
+    for (const c of dto.completions ?? []) {
+      if (completionIds.has(c.fileId)) {
+        throw new BadRequestException('Duplicate completion fileId');
+      }
+      completionIds.add(c.fileId);
+    }
+
     const verifiedFiles = await Promise.all(
-      dto.completions.map(async (completion) => {
-        // Verify object exists in S3
+      (dto.completions ?? []).map(async (completion) => {
+        const presign = await this.prisma.presignedUpload.findUnique({
+          where: { id: completion.fileId },
+        });
+        if (!presign) {
+          throw new BadRequestException('Presign record not found');
+        }
+        if (presign.userId !== userId) {
+          throw new ForbiddenException('Presign record does not belong to user');
+        }
+        if (presign.collectionId && presign.collectionId !== collectionId) {
+          throw new BadRequestException('Presign record not linked to collection');
+        }
+        if (presign.s3Key !== completion.s3Key) {
+          throw new BadRequestException('S3 key mismatch for presign record');
+        }
+        const now = new Date();
+        if (presign.expiresAt && presign.expiresAt < now) {
+          await this.prisma.presignedUpload.update({
+            where: { id: completion.fileId },
+            data: { status: 'EXPIRED' },
+          });
+          throw new BadRequestException('Presign has expired');
+        }
+        if (presign.status === 'USED') {
+          throw new BadRequestException('Presign already used');
+        }
+        if (presign.status === 'EXPIRED') {
+          throw new BadRequestException('Presign has expired');
+        }
+        if (presign.status !== 'PENDING' && presign.status !== 'READY') {
+          throw new BadRequestException('Presign is not ready for use');
+        }
+
         const exists = await this.uploadService.verifyObjectExists(
           completion.s3Key,
         );
@@ -1060,7 +1347,13 @@ export class CollectionsService {
           );
         }
 
-        // Create FileUpload DB record using presign entry (marks presign as USED)
+        const existing = await this.prisma.fileUpload.findUnique({
+          where: { id: completion.fileId },
+        });
+        if (existing) {
+          return { file: existing, orderIndex: presign.orderIndex ?? null };
+        }
+
         const fileUpload = await this.uploadService.createFileRecordFromPresign(
           completion.fileId,
           userId,
@@ -1069,30 +1362,59 @@ export class CollectionsService {
           completion.actualSize,
         );
 
-        return fileUpload;
+        return { file: fileUpload, orderIndex: presign.orderIndex ?? null };
       }),
     );
 
-    // Create collection media records
-    await Promise.all(
-      verifiedFiles.map((file, index) =>
-        this.prisma.collectionMedia.create({
+    await this.prisma.$transaction(async (tx) => {
+      for (const [index, entry] of verifiedFiles.entries()) {
+        const file = entry.file;
+        const orderIndex = typeof entry.orderIndex === 'number' ? entry.orderIndex : index;
+        const existingMedia = await tx.collectionMedia.findFirst({
+          where: { collectionId: collection.id, fileUploadId: file.id },
+        });
+        if (existingMedia) continue;
+        await tx.collectionMedia.create({
           data: {
             id: uuidv4(),
             collectionId: collection.id,
             fileUploadId: file.id,
-            orderIndex: index,
+            orderIndex,
             mediaType: file.fileType,
           },
-        }),
-      ),
-    );
+        });
+      }
+    });
+
+    let coverMediaId: string | null = dto.coverMediaId ?? null;
+    if (coverMediaId) {
+      const belongs = await this.prisma.collectionMedia.findFirst({
+        where: { id: coverMediaId, collectionId },
+        select: { id: true },
+      });
+      if (!belongs) {
+        throw new BadRequestException('coverMediaId does not belong to collection');
+      }
+    } else if (typeof dto.coverIndex === 'number') {
+      const cover = await this.prisma.collectionMedia.findFirst({
+        where: { collectionId, orderIndex: dto.coverIndex },
+        select: { id: true },
+      });
+      coverMediaId = cover?.id ?? null;
+    } else {
+      const first = await this.prisma.collectionMedia.findFirst({
+        where: { collectionId },
+        orderBy: { orderIndex: 'asc' },
+        select: { id: true },
+      });
+      coverMediaId = first?.id ?? null;
+    }
 
     // Mark collection as published (or keep as DRAFT if requested)
     const newStatus = dto.shouldPublish === false ? 'DRAFT' : 'PUBLISHED';
     const publishedCollection = await this.prisma.collection.update({
       where: { id: collectionId },
-      data: { status: newStatus },
+      data: { status: newStatus, coverMediaId },
       include: {
         owner: true,
         medias: { include: { file: true }, orderBy: { orderIndex: 'asc' } },
@@ -1140,6 +1462,282 @@ export class CollectionsService {
     return publishedCollection;
   }
 
+  // ===================== Store Collection Membership =====================
+  async addProductsToCollection(
+    collectionId: string,
+    ownerId: string,
+    productIds: string[],
+  ) {
+    await this.assertOwner(collectionId, ownerId);
+    if (!Array.isArray(productIds) || productIds.length === 0) {
+      throw new BadRequestException('productIds is required');
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      const products = await tx.product.findMany({
+        where: { id: { in: productIds }, deletedAt: null },
+        include: { brand: true },
+      });
+
+      if (products.length !== productIds.length) {
+        throw new NotFoundException('One or more products not found');
+      }
+
+      for (const p of products) {
+        if (p.brand?.ownerId !== ownerId) {
+          throw new ForbiddenException('Not owner of one or more products');
+        }
+      }
+
+      const existingLinks = await tx.collectionProduct.findMany({
+        where: { collectionId, productId: { in: productIds } },
+        select: { productId: true },
+      });
+      const existingSet = new Set(existingLinks.map((l) => l.productId));
+
+      const existingCount = await tx.collectionProduct.count({
+        where: { collectionId },
+      });
+      const newIds = productIds.filter((id) => !existingSet.has(id));
+      if (existingCount + newIds.length > 5) {
+        throw new BadRequestException('Collections can contain maximum 5 products.');
+      }
+
+      for (const productId of productIds) {
+        if (existingSet.has(productId)) continue;
+
+        const memberships = await tx.collectionProduct.findMany({
+          where: { productId },
+          select: { collectionId: true },
+        });
+        const memberCollectionIds = memberships.map((m) => m.collectionId);
+        if (memberCollectionIds.length >= 3) {
+          throw new ConflictException({
+            code: 'COLLECTION_MAX_MEMBERSHIP',
+            message: 'Product already belongs to maximum 3 collections.',
+            conflictingCollectionIds: memberCollectionIds,
+          } as any);
+        }
+
+        const orderIndex = await tx.collectionProduct.count({
+          where: { collectionId },
+        });
+
+        const product = products.find((p) => p.id === productId);
+        const shouldBePrimary = product ? !product.collectionId : false;
+
+        await tx.collectionProduct.create({
+          data: {
+            id: uuidv4(),
+            collectionId,
+            productId,
+            orderIndex,
+            isPrimary: shouldBePrimary,
+          },
+        });
+
+        if (shouldBePrimary) {
+          await tx.product.update({
+            where: { id: productId },
+            data: { collectionId },
+          });
+        }
+      }
+
+      await this.recalculateCollectionPriceRange(collectionId);
+      return { success: true };
+    });
+  }
+
+  async removeProductsFromCollection(
+    collectionId: string,
+    ownerId: string,
+    productIds: string[],
+  ) {
+    await this.assertOwner(collectionId, ownerId);
+    if (!Array.isArray(productIds) || productIds.length === 0) {
+      throw new BadRequestException('productIds is required');
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      const existingLinks = await tx.collectionProduct.findMany({
+        where: { collectionId, productId: { in: productIds } },
+        select: { productId: true, isPrimary: true },
+      });
+
+      await tx.collectionProduct.deleteMany({
+        where: { collectionId, productId: { in: productIds } },
+      });
+
+      const remaining = await tx.collectionProduct.findMany({
+        where: { productId: { in: productIds } },
+        orderBy: { orderIndex: 'asc' },
+        select: { productId: true, collectionId: true },
+      });
+
+      for (const productId of productIds) {
+        const next = remaining.find((r) => r.productId === productId);
+        await tx.product.update({
+          where: { id: productId },
+          data: { collectionId: next?.collectionId ?? null },
+        });
+
+        const removedPrimary = existingLinks.find(
+          (l) => l.productId === productId && l.isPrimary,
+        );
+        if (removedPrimary) {
+          await tx.collectionProduct.updateMany({
+            where: { productId },
+            data: { isPrimary: false },
+          });
+          if (next?.collectionId) {
+            await tx.collectionProduct.updateMany({
+              where: { productId, collectionId: next.collectionId },
+              data: { isPrimary: true },
+            });
+          }
+        }
+      }
+
+      await this.recalculateCollectionPriceRange(collectionId);
+
+      return { success: true };
+    });
+  }
+
+  async reorderCollectionProducts(
+    collectionId: string,
+    ownerId: string,
+    items: Array<{ productId: string; orderIndex: number }>,
+  ) {
+    await this.assertOwner(collectionId, ownerId);
+    if (!Array.isArray(items) || items.length === 0) {
+      throw new BadRequestException('items is required');
+    }
+
+    const productIdSet = new Set(items.map((i) => i.productId));
+    if (productIdSet.size !== items.length) {
+      throw new BadRequestException('Duplicate productId in reorder request');
+    }
+    const orderIndexSet = new Set(items.map((i) => i.orderIndex));
+    if (orderIndexSet.size !== items.length) {
+      throw new BadRequestException('Duplicate orderIndex in reorder request');
+    }
+
+    const existing = await this.prisma.collectionProduct.findMany({
+      where: { collectionId },
+      select: { productId: true },
+    });
+    const existingIds = new Set(existing.map((e) => e.productId));
+    for (const item of items) {
+      if (!existingIds.has(item.productId)) {
+        throw new NotFoundException('Product not found in collection');
+      }
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      for (const item of items) {
+        await tx.collectionProduct.updateMany({
+          where: { collectionId, productId: item.productId },
+          data: { orderIndex: item.orderIndex },
+        });
+      }
+    });
+
+    return { success: true };
+  }
+
+  async archiveCollection(collectionId: string, ownerId: string) {
+    await this.assertOwner(collectionId, ownerId);
+    const collection = await this.prisma.collection.findUnique({
+      where: { id: collectionId },
+      select: { status: true },
+    });
+    if (!collection) throw new NotFoundException('Collection not found');
+    if (collection.status === 'ARCHIVED') {
+      return { success: true, status: 'ARCHIVED' };
+    }
+
+    await this.prisma.collection.update({
+      where: { id: collectionId },
+      data: { status: 'ARCHIVED', archivedFromStatus: collection.status },
+    });
+    return { success: true, status: 'ARCHIVED' };
+  }
+
+  async unarchiveCollection(collectionId: string, ownerId: string) {
+    await this.assertOwner(collectionId, ownerId);
+    const collection = await this.prisma.collection.findUnique({
+      where: { id: collectionId },
+      select: { status: true, archivedFromStatus: true },
+    });
+    if (!collection) throw new NotFoundException('Collection not found');
+    if (collection.status !== 'ARCHIVED') {
+      throw new BadRequestException('Collection is not archived');
+    }
+
+    const restoreStatus = collection.archivedFromStatus ?? 'DRAFT';
+    await this.prisma.collection.update({
+      where: { id: collectionId },
+      data: { status: restoreStatus, archivedFromStatus: null },
+    });
+    return { success: true, status: restoreStatus };
+  }
+
+  async applyTemplateToCollectionProducts(
+    collectionId: string,
+    ownerId: string,
+    template: {
+      description?: string;
+      tags?: string[];
+      basePrice?: number;
+      sizeOptions?: string[];
+    },
+  ) {
+    await this.assertOwner(collectionId, ownerId);
+    const links = await this.prisma.collectionProduct.findMany({
+      where: { collectionId },
+      select: { productId: true },
+    });
+    const productIds = links.map((l) => l.productId);
+    if (productIds.length === 0) return { success: true };
+
+    const data: Prisma.ProductUpdateInput = {};
+    if (typeof template.description === 'string') {
+      data.description = template.description;
+    }
+    if (Array.isArray(template.tags)) {
+      data.tags = sanitizeTags(template.tags);
+    }
+    if (typeof template.basePrice === 'number') {
+      data.price = new Prisma.Decimal(template.basePrice);
+    }
+    if (Array.isArray(template.sizeOptions)) {
+      data.sizes = template.sizeOptions;
+    }
+
+    await this.prisma.product.updateMany({
+      where: { id: { in: productIds } },
+      data,
+    });
+
+    await this.recalculateCollectionPriceRange(collectionId);
+
+    return { success: true };
+  }
+
+  async createProductInCollection(
+    collectionId: string,
+    ownerId: string,
+    dto: CreateProductDto,
+  ) {
+    await this.assertOwner(collectionId, ownerId);
+    return this.storeService.createProduct(ownerId, {
+      ...dto,
+      collectionId,
+    });
+  }
+
   /**
    * Enhanced get method with proper includes
    */
@@ -1174,6 +1772,14 @@ export class CollectionsService {
           include: { file: true },
           orderBy: { orderIndex: 'asc' },
         },
+        products: {
+          include: {
+            product: {
+              include: { variants: { select: { id: true } } },
+            },
+          },
+          orderBy: { orderIndex: 'asc' },
+        },
         reactions: {
           include: {
             user: {
@@ -1202,12 +1808,37 @@ export class CollectionsService {
       throw new NotFoundException('Collection not found');
     }
 
+    const isOwner = !!(requesterId && collection.ownerId === requesterId);
+    if (!isOwner && Array.isArray(collection.products)) {
+      const now = new Date();
+      collection.products = collection.products.filter((link: any) => {
+        const p = link?.product;
+        if (!p) return false;
+        if (p.deletedAt || p.archivedAt || !p.isActive) return false;
+        if (p.publishAt && new Date(p.publishAt).getTime() > now.getTime()) return false;
+        return true;
+      });
+    }
+
     const mediaAgg = await this.prisma.collectionMedia.aggregate({
       where: { collectionId: id },
       _sum: { likesCount: true },
     });
     const totalLikes = collection.likesCount + (mediaAgg._sum.likesCount ?? 0);
-    return { ...collection, totalLikes };
+
+    let products = collection.products;
+    if (!isOwner) {
+      const now = new Date();
+      products = (collection.products || []).filter((link) => {
+        const p = (link as any)?.product;
+        if (!p) return false;
+        if (p.deletedAt || p.archivedAt || !p.isActive) return false;
+        if (p.publishAt && p.publishAt > now) return false;
+        return true;
+      }) as any;
+    }
+
+    return { ...collection, products, totalLikes };
   }
 
   /**
@@ -1277,6 +1908,16 @@ export class CollectionsService {
     const privateFeature =
       (process.env.FEATURE_PRIVATE_COLLECTIONS ?? 'true') !== 'false';
     const where: any = { ownerId: userId };
+    const now = new Date();
+    const productVisibilityWhere =
+      requesterId === userId
+        ? undefined
+        : {
+            deletedAt: null,
+            archivedAt: null,
+            isActive: true,
+            OR: [{ publishAt: null }, { publishAt: { lte: now } }],
+          };
     try {
       console.log(
         '[collections.service.getUserCollections] userId=%s requesterId=%s visibility=%s featurePrivate=%s',
@@ -1352,6 +1993,7 @@ export class CollectionsService {
         draftReason: true,
         pendingCategoryName: true,
         originalSuggestionId: true,
+        coverMediaId: true,
         minPrice: true,
         maxPrice: true,
         isAvailableInStore: true,
@@ -1371,6 +2013,18 @@ export class CollectionsService {
           include: { file: true },
           orderBy: { orderIndex: 'asc' },
           // Removed take: 1 to get all medias for correct counts
+        },
+        products: {
+          ...(productVisibilityWhere
+            ? { where: { product: productVisibilityWhere } }
+            : {}),
+          include: {
+            product: {
+              select: { thumbnail: true, images: true },
+            },
+          },
+          orderBy: { orderIndex: 'asc' },
+          take: 1,
         },
         _count: {
           select: {
@@ -1440,9 +2094,12 @@ export class CollectionsService {
     // Collect file IDs for batch signing
     const fileIds = new Set<string>();
     data.forEach((c) => {
-      // Cover image (first media)
-      if (c.medias?.[0]?.file?.id) {
-        fileIds.add(c.medias[0].file.id);
+      // Cover image (prefer coverMediaId)
+      const preferredCover = c.coverMediaId
+        ? c.medias?.find((m: any) => m.id === c.coverMediaId)
+        : c.medias?.[0];
+      if (preferredCover?.file?.id) {
+        fileIds.add(preferredCover.file.id);
       }
       // Brand logo
       if (c.owner?.profileImageFile?.id) {
@@ -1624,7 +2281,23 @@ export class CollectionsService {
         const remaining = await tx.collectionMedia.count({
           where: { collectionId } as any,
         });
-        if (remaining === 0) {
+        const productCount = await tx.collectionProduct.count({
+          where: { collectionId } as any,
+        });
+
+        if (collection.coverMediaId === media.id) {
+          const nextCover = await tx.collectionMedia.findFirst({
+            where: { collectionId } as any,
+            orderBy: { orderIndex: 'asc' },
+            select: { id: true },
+          });
+          await tx.collection.update({
+            where: { id: collectionId },
+            data: { coverMediaId: nextCover?.id ?? null },
+          });
+        }
+
+        if (remaining === 0 && productCount === 0) {
           await tx.collection.delete({ where: { id: collectionId } });
         }
       });
@@ -2777,6 +3450,14 @@ export class CollectionsService {
   ) {
     await this.assertOwner(collectionId, ownerId);
     const data: any = {};
+    if (typeof body.title === 'string' || body.title === null)
+      data.title = body.title || null;
+    if (typeof body.description === 'string' || body.description === null)
+      data.description = body.description || null;
+    if (typeof body.visibility === 'string') data.visibility = body.visibility;
+    if (typeof body.type === 'string') data.type = body.type;
+    if (typeof body.isAvailableInStore === 'boolean')
+      data.isAvailableInStore = body.isAvailableInStore;
     if (typeof body.minPrice === 'number' || body.minPrice === null)
       data.minPrice = body.minPrice as any;
     if (typeof body.maxPrice === 'number' || body.maxPrice === null)
@@ -2790,8 +3471,31 @@ export class CollectionsService {
     if (typeof body.saleEndAt === 'string' || body.saleEndAt === null)
       data.saleEndAt = body.saleEndAt ? new Date(body.saleEndAt) : null;
     if (Array.isArray(body.tags)) data.tags = sanitizeTags(body.tags);
-    if (typeof body.coverMediaId === 'string' || body.coverMediaId === null)
+    if (typeof body.coverMediaId === 'string' || body.coverMediaId === null) {
+      if (body.coverMediaId) {
+        const belongs = await this.prisma.collectionMedia.findFirst({
+          where: { id: body.coverMediaId, collectionId },
+          select: { id: true },
+        });
+        if (!belongs) {
+          throw new BadRequestException('coverMediaId does not belong to collection');
+        }
+      }
       data.coverMediaId = body.coverMediaId || null;
+    }
+
+    if (typeof body.categoryId === 'string' || body.categoryId === null) {
+      if (body.categoryId) {
+        const category = await this.prisma.collectionCategory.findUnique({
+          where: { id: body.categoryId },
+          select: { id: true, isActive: true },
+        });
+        if (!category) throw new NotFoundException('Category not found');
+        if (!category.isActive)
+          throw new BadRequestException('This category is not active');
+      }
+      data.categoryId = body.categoryId || null;
+    }
 
     const updated = await this.prisma.collection.update({
       where: { id: collectionId },
@@ -2811,6 +3515,430 @@ export class CollectionsService {
       },
     });
     return updated;
+  }
+
+  // ===================== Cart Preview for Collections =====================
+  /**
+   * Get cart preview showing available and unavailable products in a collection
+   * Used before "Add Entire Collection to Cart"
+   */
+  async getCollectionCartPreview(collectionId: string, requesterId?: string) {
+    const canView = await this.canViewCollection(collectionId, requesterId);
+    if (!canView) throw new NotFoundException('Collection not found');
+
+    const collection = await this.prisma.collection.findUnique({
+      where: { id: collectionId },
+      select: { id: true, title: true },
+    });
+
+    const links = await this.prisma.collectionProduct.findMany({
+      where: { collectionId },
+      include: {
+        product: {
+          include: {
+            brand: { select: { currency: true } },
+            variants: {
+              select: { size: true, color: true, stock: true, price: true },
+            },
+          },
+        },
+      },
+      orderBy: { orderIndex: 'asc' },
+    });
+
+    const now = new Date();
+    const available: any[] = [];
+    const unavailable: any[] = [];
+
+    for (const link of links) {
+      const p = link.product;
+      if (!p) continue;
+
+      const effectivePrice = p.salePrice && 
+        (!p.saleStartAt || p.saleStartAt <= now) &&
+        (!p.saleEndAt || p.saleEndAt >= now)
+        ? Number(p.salePrice)
+        : Number(p.price);
+
+      const variants = (p.variants || []).map((v) => ({
+        size: v.size,
+        color: v.color,
+        stock: v.stock,
+        inStock: v.stock > 0,
+        price: v.price ? Number(v.price) : undefined,
+      }));
+
+      const hasAnyInStock = variants.length > 0 
+        ? variants.some(v => v.inStock)
+        : p.totalStock > 0;
+
+      const item = {
+        productId: p.id,
+        name: p.name,
+        thumbnail: p.thumbnail,
+        price: Number(p.price),
+        salePrice: p.salePrice ? Number(p.salePrice) : undefined,
+        effectivePrice,
+        currency: p.currency || p.brand?.currency || 'NGN',
+        variants,
+        defaultSize: p.sizes?.[0],
+        defaultColor: p.colors?.[0],
+      };
+
+      // Determine availability
+      if (p.deletedAt) {
+        unavailable.push({ ...item, reason: 'deleted' });
+      } else if (p.archivedAt) {
+        unavailable.push({ ...item, reason: 'archived' });
+      } else if (!p.isActive) {
+        unavailable.push({ ...item, reason: 'inactive' });
+      } else if (p.publishAt && p.publishAt > now) {
+        unavailable.push({ 
+          ...item, 
+          reason: 'scheduled', 
+          availableAt: p.publishAt.toISOString(),
+        });
+      } else if (!hasAnyInStock) {
+        unavailable.push({ ...item, reason: 'out_of_stock' });
+      } else {
+        available.push(item);
+      }
+    }
+
+    const availableSubtotal = available.reduce(
+      (sum, item) => sum + item.effectivePrice,
+      0,
+    );
+
+    return {
+      collectionId,
+      collectionTitle: collection?.title || 'Untitled',
+      available,
+      unavailable,
+      summary: {
+        availableCount: available.length,
+        unavailableCount: unavailable.length,
+        totalCount: links.length,
+        availableSubtotal,
+        currency: available[0]?.currency || 'NGN',
+      },
+    };
+  }
+
+  // ===================== Price Change Preview =====================
+  /**
+   * Preview how a product price change will affect collection price ranges
+   */
+  async getProductPriceChangePreview(
+    productId: string,
+    newPrice: number,
+    ownerId: string,
+  ) {
+    const product = await this.prisma.product.findFirst({
+      where: { id: productId },
+      include: { brand: true },
+    });
+
+    if (!product) throw new NotFoundException('Product not found');
+    if (product.brand.ownerId !== ownerId) {
+      throw new ForbiddenException('You can only preview your own products');
+    }
+
+    const memberships = await this.prisma.collectionProduct.findMany({
+      where: { productId },
+      include: {
+        collection: {
+          select: { id: true, title: true, minPrice: true, maxPrice: true },
+        },
+      },
+    });
+
+    const affectedCollections: any[] = [];
+
+    for (const m of memberships) {
+      const links = await this.prisma.collectionProduct.findMany({
+        where: { collectionId: m.collectionId },
+        include: { product: { select: { id: true, price: true } } },
+      });
+
+      const prices = links.map((l) =>
+        l.productId === productId ? newPrice : Number(l.product?.price || 0),
+      ).filter((p) => p > 0);
+
+      const newMinPrice = prices.length > 0 ? Math.min(...prices) : null;
+      const newMaxPrice = prices.length > 0 ? Math.max(...prices) : null;
+
+      affectedCollections.push({
+        collectionId: m.collection.id,
+        collectionTitle: m.collection.title || 'Untitled',
+        currentMinPrice: m.collection.minPrice,
+        currentMaxPrice: m.collection.maxPrice,
+        newMinPrice,
+        newMaxPrice,
+        rangeChanged:
+          m.collection.minPrice !== newMinPrice ||
+          m.collection.maxPrice !== newMaxPrice,
+      });
+    }
+
+    const currentPrice = Number(product.price);
+    const priceChange = newPrice - currentPrice;
+    const percentageChange = currentPrice > 0 
+      ? ((priceChange / currentPrice) * 100) 
+      : 0;
+
+    return {
+      productId,
+      productName: product.name,
+      currentPrice,
+      newPrice,
+      priceChange,
+      percentageChange: Math.round(percentageChange * 100) / 100,
+      affectedCollections,
+    };
+  }
+
+  // ===================== Bulk Upload (Scaffold) =====================
+  /**
+   * Initialize bulk upload job
+   * TODO: Implement with Bull/Redis queue for production
+   */
+  async initiateBulkUpload(
+    collectionId: string,
+    ownerId: string,
+    mode: 'csv' | 'images' | 'mixed' = 'csv',
+  ) {
+    await this.assertOwner(collectionId, ownerId);
+
+    const jobId = uuidv4();
+
+    // In production, this would create a job in a queue
+    // For now, return scaffold response
+    return {
+      jobId,
+      status: 'pending',
+      uploadUrl: `/api/collections/${collectionId}/bulk-upload/${jobId}/files`,
+      csvTemplateUrl: '/api/collections/bulk-upload/template.csv',
+      maxFileSize: 25 * 1024 * 1024, // 25MB
+      supportedFormats: {
+        csv: ['text/csv', 'application/vnd.ms-excel'],
+        images: ['image/jpeg', 'image/png', 'image/webp'],
+      },
+      expiresAt: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
+    };
+  }
+
+  /**
+   * Get bulk upload job status
+   */
+  async getBulkUploadStatus(jobId: string, ownerId: string) {
+    // In production, this would check the job queue
+    // For now, return scaffold response
+    return {
+      jobId,
+      status: 'pending' as const,
+      progress: 0,
+      totalRows: 0,
+      processedRows: 0,
+      successCount: 0,
+      failedCount: 0,
+      errors: [],
+      createdAt: new Date().toISOString(),
+    };
+  }
+
+  /**
+   * Retry failed bulk upload rows
+   */
+  async retryBulkUploadRows(
+    jobId: string,
+    ownerId: string,
+    rowIndices: number[],
+  ) {
+    // In production, this would re-queue specific rows
+    return {
+      jobId,
+      retryJobId: uuidv4(),
+      rowsQueued: rowIndices.length,
+      status: 'pending',
+    };
+  }
+
+  // ===================== Custom Fit Inquiry (Scaffold) =====================
+  /**
+   * Submit a custom fit inquiry for a collection/product
+   * TODO: Implement with messaging system
+   */
+  async submitCustomFitInquiry(
+    collectionId: string,
+    requesterId: string,
+    dto: {
+      productId?: string;
+      message: string;
+      measurements?: string;
+      preferredSize?: string;
+    },
+  ) {
+    const collection = await this.prisma.collection.findUnique({
+      where: { id: collectionId },
+      select: { ownerId: true, title: true },
+    });
+
+    if (!collection) throw new NotFoundException('Collection not found');
+
+    const inquiryId = uuidv4();
+
+    // In production, this would:
+    // 1. Create a message/inquiry record
+    // 2. Notify the brand owner
+    // 3. Track in analytics
+
+    return {
+      success: true,
+      inquiryId,
+      message: 'Your inquiry has been sent to the brand. They will respond soon.',
+      estimatedResponseTime: '24-48 hours',
+    };
+  }
+
+  // ===================== Draft Conflict Detection =====================
+  /**
+   * Check for draft editing conflicts (multi-device)
+   */
+  async checkDraftConflict(
+    draftId: string,
+    ownerId: string,
+    currentDeviceInfo: string,
+  ) {
+    await this.assertOwner(draftId, ownerId);
+
+    const draft = await this.prisma.collection.findUnique({
+      where: { id: draftId },
+      select: {
+        id: true,
+        status: true,
+        updatedAt: true,
+        // In a full implementation, we'd have lastEditDeviceInfo and lastEditSessionId fields
+      },
+    });
+
+    if (!draft) throw new NotFoundException('Draft not found');
+    if (draft.status !== 'DRAFT') {
+      throw new BadRequestException('Collection is not a draft');
+    }
+
+    // Check if edited within last 5 minutes
+    const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
+    const recentlyEdited = draft.updatedAt > fiveMinutesAgo;
+
+    // In production, compare device info from a session tracking table
+    // For now, always allow (no conflict detection storage yet)
+    return {
+      hasConflict: false,
+      currentSession: {
+        sessionId: uuidv4(),
+        draftId,
+        deviceInfo: currentDeviceInfo,
+        startedAt: new Date().toISOString(),
+        lastActiveAt: new Date().toISOString(),
+      },
+      conflictingSession: recentlyEdited ? {
+        sessionId: 'unknown',
+        draftId,
+        deviceInfo: 'Another device',
+        startedAt: draft.updatedAt.toISOString(),
+        lastActiveAt: draft.updatedAt.toISOString(),
+      } : undefined,
+      recommendedAction: recentlyEdited ? 'view_only' : 'continue',
+    };
+  }
+
+  // ===================== Cover Media Reassignment =====================
+  /**
+   * Delete collection media and reassign cover if needed
+   */
+  async deleteCollectionMedia(
+    collectionId: string,
+    mediaId: string,
+    ownerId: string,
+  ) {
+    await this.assertOwner(collectionId, ownerId);
+
+    const collection = await this.prisma.collection.findUnique({
+      where: { id: collectionId },
+      select: { coverMediaId: true },
+    });
+
+    const media = await this.prisma.collectionMedia.findFirst({
+      where: { id: mediaId, collectionId },
+    });
+
+    if (!media) throw new NotFoundException('Media not found in collection');
+
+    // Delete the media
+    await this.prisma.collectionMedia.delete({ where: { id: mediaId } });
+
+    // Reassign cover if this was the cover
+    if (collection?.coverMediaId === mediaId) {
+      const firstRemaining = await this.prisma.collectionMedia.findFirst({
+        where: { collectionId },
+        orderBy: { orderIndex: 'asc' },
+        select: { id: true },
+      });
+
+      await this.prisma.collection.update({
+        where: { id: collectionId },
+        data: { coverMediaId: firstRemaining?.id ?? null },
+      });
+    }
+
+    return { success: true, coverReassigned: collection?.coverMediaId === mediaId };
+  }
+
+  // ===================== Visibility Change Cart Cleanup =====================
+  /**
+   * When collection becomes private, clean up carts of non-approved users
+   */
+  async handleVisibilityChange(
+    collectionId: string,
+    newVisibility: 'PUBLIC' | 'PRIVATE',
+    ownerId: string,
+  ) {
+    if (newVisibility !== 'PRIVATE') return { cleaned: 0 };
+
+    // Get product IDs in this collection
+    const productLinks = await this.prisma.collectionProduct.findMany({
+      where: { collectionId },
+      select: { productId: true },
+    });
+    const productIds = productLinks.map((l) => l.productId);
+
+    if (productIds.length === 0) return { cleaned: 0 };
+
+    // Get approved viewer IDs
+    const approvedAccess = await this.prisma.collectionAccess.findMany({
+      where: { collectionId, state: 'APPROVED' },
+      select: { viewerId: true },
+    });
+    const approvedViewerIds = approvedAccess.map((a) => a.viewerId);
+
+    // Remove cart items from non-approved users
+    const deleted = await this.prisma.cartItem.deleteMany({
+      where: {
+        productId: { in: productIds },
+        userId: { notIn: [...approvedViewerIds, ownerId] },
+      },
+    });
+
+    // Also clean wishlists
+    await this.prisma.wishlistItem.deleteMany({
+      where: {
+        productId: { in: productIds },
+        userId: { notIn: [...approvedViewerIds, ownerId] },
+      },
+    });
+
+    return { cleaned: deleted.count };
   }
 }
 

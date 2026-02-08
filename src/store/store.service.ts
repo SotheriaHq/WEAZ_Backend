@@ -3,6 +3,7 @@ import {
   NotFoundException,
   BadRequestException,
   ForbiddenException,
+  ConflictException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateProductDto, UpdateProductDto } from './dto/create-product.dto';
@@ -57,6 +58,77 @@ export class StoreService {
       media,
       mediaIds: media.map((m) => m.id),
     };
+  }
+
+  private async recalculateCollectionPriceRange(collectionId: string) {
+    const links = await this.prisma.collectionProduct.findMany({
+      where: { collectionId },
+      include: {
+        product: {
+          select: {
+            price: true,
+            salePrice: true,
+            saleStartAt: true,
+            saleEndAt: true,
+            deletedAt: true,
+            archivedAt: true,
+            isActive: true,
+            publishAt: true,
+            variants: { select: { price: true } },
+          },
+        },
+      },
+    });
+
+    const now = new Date();
+    const active = links.filter((l) => {
+      const p = l.product;
+      if (!p || p.deletedAt || p.archivedAt || !p.isActive) return false;
+      if (p.publishAt && p.publishAt > now) return false;
+      return true;
+    });
+
+    const prices = active
+      .map((l) => {
+        const p = l.product;
+        const variantPrices = Array.isArray(p.variants)
+          ? p.variants.map((v) => Number(v.price || 0)).filter((v) => v > 0)
+          : [];
+        if (variantPrices.length > 0) return Math.min(...variantPrices);
+        return Number(p.price || 0);
+      })
+      .filter((v) => v > 0);
+
+    const maxPrices = active
+      .map((l) => {
+        const p = l.product;
+        const variantPrices = Array.isArray(p.variants)
+          ? p.variants.map((v) => Number(v.price || 0)).filter((v) => v > 0)
+          : [];
+        if (variantPrices.length > 0) return Math.max(...variantPrices);
+        return Number(p.price || 0);
+      })
+      .filter((v) => v > 0);
+
+    const salePrices = active
+      .map((l) => {
+        const p = l.product;
+        if (!p.salePrice) return null;
+        if (p.saleStartAt && p.saleStartAt > now) return null;
+        if (p.saleEndAt && p.saleEndAt < now) return null;
+        return Number(p.salePrice);
+      })
+      .filter((v): v is number => typeof v === 'number' && v > 0);
+
+    await this.prisma.collection.update({
+      where: { id: collectionId },
+      data: {
+        minPrice: prices.length ? Math.min(...prices) : null,
+        maxPrice: maxPrices.length ? Math.max(...maxPrices) : null,
+        saleMinPrice: salePrices.length ? Math.min(...salePrices) : null,
+        saleMaxPrice: salePrices.length ? Math.max(...salePrices) : null,
+      },
+    });
   }
 
   async getProductCategories() {
@@ -427,6 +499,53 @@ export class StoreService {
     });
   }
 
+  private async ensureDefaultStoreCollection(
+    tx: Prisma.TransactionClient,
+    ownerId: string,
+  ) {
+    const existingDefault = await tx.collection.findFirst({
+      where: {
+        ownerId,
+        isAvailableInStore: true,
+        status: 'PUBLISHED',
+      },
+      orderBy: { updatedAt: 'desc' },
+      select: { id: true },
+    });
+
+    if (existingDefault?.id) return existingDefault.id;
+
+    const createdDefault = await tx.collection.create({
+      data: {
+        id: uuidv4(),
+        ownerId,
+        title: 'Store Products',
+        status: 'PUBLISHED',
+        visibility: 'PUBLIC',
+        type: 'EVERYBODY',
+        isAvailableInStore: true,
+      },
+      select: { id: true },
+    });
+
+    return createdDefault.id;
+  }
+
+  private async assertCollectionCapacity(
+    tx: Prisma.TransactionClient,
+    collectionId: string,
+    maxProducts = 5,
+  ) {
+    const count = await tx.collectionProduct.count({
+      where: { collectionId },
+    });
+    if (count >= maxProducts) {
+      throw new BadRequestException(
+        `Collections can contain maximum ${maxProducts} products.`,
+      );
+    }
+  }
+
   private canonicalStoreName(
     user: { brandFullName: string | null },
     brand?: { name: string } | null,
@@ -468,21 +587,8 @@ export class StoreService {
       }
     }
 
-    const isDraft = dto.isActive === false;
-    const resolvedName = (dto.name ?? '').trim() || (isDraft ? 'Untitled Draft' : '');
-    if (!resolvedName) {
-      throw new BadRequestException('Product name is required');
-    }
-
-    const resolvedPrice =
-      typeof dto.price === 'number' ? dto.price : isDraft ? 0 : undefined;
-    if (resolvedPrice === undefined) {
-      throw new BadRequestException('Product price is required');
-    }
-
-    // Generate slug if not provided
-    const slug = dto.slug || this.generateSlug(resolvedName);
-
+    // Validate sale price
+    const resolvedPrice = dto.price ?? 0;
     if (dto.salePrice !== undefined && dto.salePrice !== null) {
       if (dto.salePrice > resolvedPrice) {
         throw new BadRequestException('salePrice cannot be greater than price');
@@ -515,43 +621,29 @@ export class StoreService {
       resolvedThumbnail = null;
     }
 
+    // Resolve product name and slug
+    const resolvedName = (dto.name || 'Untitled Product').trim();
+    const slug = resolvedName
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-|-$/g, '');
+
     const product = await this.prisma.$transaction(async (tx) => {
       let collectionId = requestedCollectionId;
 
       if (!collectionId) {
-        const existingDefault = await tx.collection.findFirst({
-          where: {
-            ownerId: brandOwnerId,
-            isAvailableInStore: true,
-            status: 'PUBLISHED',
-          },
-          orderBy: { updatedAt: 'desc' },
-          select: { id: true },
-        });
-
-        if (existingDefault?.id) {
-          collectionId = existingDefault.id;
-        } else {
-          const createdDefault = await tx.collection.create({
-            data: {
-              id: uuidv4(),
-              ownerId: brandOwnerId,
-              title: 'Store Products',
-              status: 'PUBLISHED',
-              visibility: 'PUBLIC',
-              type: 'EVERYBODY',
-              isAvailableInStore: true,
-            },
-            select: { id: true },
-          });
-          collectionId = createdDefault.id;
-        }
+        collectionId = await this.ensureDefaultStoreCollection(tx, brandOwnerId);
       }
+
+      await this.assertCollectionCapacity(tx, collectionId, 5);
+      const orderIndex = await tx.collectionProduct.count({
+        where: { collectionId },
+      });
 
       const created = await tx.product.create({
         data: {
           id: uuidv4(),
-          collectionId: collectionId!,
+          collectionId,
           brandId: brand.id,
           name: resolvedName,
           slug,
@@ -603,6 +695,15 @@ export class StoreService {
         },
       });
 
+      await tx.collectionProduct.create({
+        data: {
+          id: uuidv4(),
+          collectionId,
+          productId: created.id,
+          orderIndex,
+        },
+      });
+
       if (derivedFromVariants && derivedFromVariants.variants.length > 0) {
         await tx.productVariant.createMany({
           data: derivedFromVariants.variants.map((v) => ({
@@ -621,7 +722,7 @@ export class StoreService {
       return tx.product.findUnique({
         where: { id: created.id },
         include: {
-          collection: { select: { id: true, title: true } },
+          collections: { select: { collectionId: true, orderIndex: true } },
           brand: { select: { id: true, name: true, logo: true, currency: true } },
           variants: true,
         },
@@ -630,6 +731,13 @@ export class StoreService {
 
     if (!product) {
       throw new NotFoundException('Product not found');
+    }
+
+    const collectionIds = Array.isArray(product.collections)
+      ? product.collections.map((c: any) => c.collectionId)
+      : [];
+    for (const id of collectionIds) {
+      await this.recalculateCollectionPriceRange(id);
     }
 
     return this.attachProductMedia(product);
@@ -694,7 +802,23 @@ export class StoreService {
 
     // Basic info
     if (dto.name !== undefined) updateData.name = dto.name;
-    if (dto.slug !== undefined) updateData.slug = dto.slug;
+    
+    // ===================== Item #14: Slug Immutability After Publish =====================
+    // Once a product has been published (isActive=true and publishAt is in the past or null),
+    // the slug cannot be changed to maintain URL stability and SEO preservation.
+    if (dto.slug !== undefined) {
+      const now = new Date();
+      const isPublished = product.isActive && (!product.publishAt || product.publishAt <= now);
+      const hasExistingSlug = !!product.slug;
+      
+      if (isPublished && hasExistingSlug && dto.slug !== product.slug) {
+        throw new BadRequestException(
+          'Slug cannot be changed after product has been published. This ensures URL stability and SEO preservation.',
+        );
+      }
+      updateData.slug = dto.slug;
+    }
+    
     if (dto.description !== undefined) updateData.description = dto.description;
     if (dto.currency !== undefined) {
       updateData.currency = (dto.currency || product.currency || 'NGN').trim();
@@ -780,41 +904,65 @@ export class StoreService {
     // Scheduling
     if (dto.publishAt !== undefined) updateData.publishAt = dto.publishAt ? new Date(dto.publishAt) : null;
 
+    let membershipChanged = false;
     const updated = await this.prisma.$transaction(async (tx) => {
       if (resolvedCollectionId !== undefined) {
         let finalCollectionId = resolvedCollectionId;
         if (finalCollectionId === null) {
-          const existingDefault = await tx.collection.findFirst({
-            where: {
-              ownerId: brandOwnerId,
-              isAvailableInStore: true,
-              status: 'PUBLISHED',
-            },
-            orderBy: { updatedAt: 'desc' },
-            select: { id: true },
-          });
-
-          if (existingDefault?.id) {
-            finalCollectionId = existingDefault.id;
-          } else {
-            const createdDefault = await tx.collection.create({
-              data: {
-                id: uuidv4(),
-                ownerId: brandOwnerId,
-                title: 'Store Products',
-                status: 'PUBLISHED',
-                visibility: 'PUBLIC',
-                type: 'EVERYBODY',
-                isAvailableInStore: true,
-              },
-              select: { id: true },
-            });
-            finalCollectionId = createdDefault.id;
-          }
+          finalCollectionId = await this.ensureDefaultStoreCollection(
+            tx,
+            brandOwnerId,
+          );
         }
 
         if (finalCollectionId) {
+          const existingLinks = await tx.collectionProduct.findMany({
+            where: { productId },
+            select: { collectionId: true },
+          });
+          const hasLink = existingLinks.some(
+            (l) => l.collectionId === finalCollectionId,
+          );
+
+          if (!hasLink) {
+            if (existingLinks.length >= 3) {
+              throw new ConflictException({
+                code: 'COLLECTION_MAX_MEMBERSHIP',
+                message: 'Product already belongs to maximum 3 collections.',
+                conflictingCollectionIds: existingLinks.map(
+                  (l) => l.collectionId,
+                ),
+              } as any);
+            }
+
+            await this.assertCollectionCapacity(tx, finalCollectionId, 5);
+            const orderIndex = await tx.collectionProduct.count({
+              where: { collectionId: finalCollectionId },
+            });
+
+            await tx.collectionProduct.create({
+              data: {
+                id: uuidv4(),
+                collectionId: finalCollectionId,
+                productId,
+                orderIndex,
+              },
+            });
+            membershipChanged = true;
+          }
+
+          // Update the product's primary collection reference via relation
           updateData.collection = { connect: { id: finalCollectionId } };
+
+          // Keep primary membership aligned with the explicit collectionId selection.
+          await tx.collectionProduct.updateMany({
+            where: { productId },
+            data: { isPrimary: false },
+          });
+          await tx.collectionProduct.updateMany({
+            where: { productId, collectionId: finalCollectionId },
+            data: { isPrimary: true },
+          });
         }
       }
 
@@ -844,12 +992,32 @@ export class StoreService {
       return tx.product.findUnique({
         where: { id: productId },
         include: {
-          collection: { select: { id: true, title: true } },
+          collections: { select: { collectionId: true, orderIndex: true } },
           brand: { select: { id: true, name: true, logo: true } },
           variants: true,
         },
       });
     });
+
+    const shouldRecalc =
+      membershipChanged ||
+      dto.price !== undefined ||
+      dto.salePrice !== undefined ||
+      dto.saleStartAt !== undefined ||
+      dto.saleEndAt !== undefined ||
+      dto.isActive !== undefined ||
+      dto.publishAt !== undefined ||
+      (dto as any).variants !== undefined ||
+      derivedFromVariants !== null;
+
+    if (shouldRecalc) {
+      const ids = Array.isArray(updated?.collections)
+        ? updated.collections.map((c) => c.collectionId)
+        : [];
+      for (const id of ids) {
+        await this.recalculateCollectionPriceRange(id);
+      }
+    }
 
     return this.attachProductMedia(updated);
   }
@@ -857,7 +1025,11 @@ export class StoreService {
   async duplicateProduct(brandOwnerId: string, productId: string) {
     const product = await this.prisma.product.findFirst({
       where: { id: productId },
-      include: { brand: true, variants: true },
+      include: {
+        brand: true,
+        variants: true,
+        collections: { select: { collectionId: true, orderIndex: true } },
+      },
     });
 
     if (!product) throw new NotFoundException('Product not found');
@@ -880,10 +1052,15 @@ export class StoreService {
       : null;
 
     const duplicated = await this.prisma.$transaction(async (tx) => {
+      const sourceCollections = Array.isArray(product.collections)
+        ? product.collections
+        : [];
+      const primaryCollectionId = sourceCollections[0]?.collectionId ?? null;
+
       const created = await tx.product.create({
         data: {
           id: uuidv4(),
-          collectionId: product.collectionId,
+          collectionId: primaryCollectionId,
           brandId: product.brandId,
           name: copyName,
           slug: this.generateSlug(copyName),
@@ -932,6 +1109,45 @@ export class StoreService {
         },
       });
 
+      if (sourceCollections.length === 0) {
+        const fallbackCollectionId = await this.ensureDefaultStoreCollection(
+          tx,
+          brandOwnerId,
+        );
+        await this.assertCollectionCapacity(tx, fallbackCollectionId, 5);
+        const orderIndex = await tx.collectionProduct.count({
+          where: { collectionId: fallbackCollectionId },
+        });
+        await tx.collectionProduct.create({
+          data: {
+            id: uuidv4(),
+            collectionId: fallbackCollectionId,
+            productId: created.id,
+            orderIndex,
+          },
+        });
+
+        await tx.product.update({
+          where: { id: created.id },
+          data: { collectionId: fallbackCollectionId },
+        });
+      } else {
+        for (const link of sourceCollections) {
+          await this.assertCollectionCapacity(tx, link.collectionId, 5);
+          const orderIndex = await tx.collectionProduct.count({
+            where: { collectionId: link.collectionId },
+          });
+          await tx.collectionProduct.create({
+            data: {
+              id: uuidv4(),
+              collectionId: link.collectionId,
+              productId: created.id,
+              orderIndex,
+            },
+          });
+        }
+      }
+
       if (derivedFromVariants && derivedFromVariants.variants.length > 0) {
         await tx.productVariant.createMany({
           data: derivedFromVariants.variants.map((v) => ({
@@ -950,7 +1166,7 @@ export class StoreService {
       return tx.product.findUnique({
         where: { id: created.id },
         include: {
-          collection: { select: { id: true, title: true } },
+          collections: { select: { collectionId: true, orderIndex: true } },
           brand: { select: { id: true, name: true, logo: true, currency: true } },
           variants: true,
         },
@@ -1056,11 +1272,18 @@ export class StoreService {
         isActive: false,
       },
       include: {
-        collection: { select: { id: true, title: true } },
+        collections: { select: { collectionId: true, orderIndex: true } },
         brand: { select: { id: true, name: true, logo: true, currency: true } },
         variants: true,
       },
     });
+
+    const archivedCollectionIds = Array.isArray(archived.collections)
+      ? archived.collections.map((c) => c.collectionId)
+      : [];
+    for (const id of archivedCollectionIds) {
+      await this.recalculateCollectionPriceRange(id);
+    }
 
     return this.attachProductMedia(archived);
   }
@@ -1097,11 +1320,18 @@ export class StoreService {
         // Keep isActive as false - user should manually publish
       },
       include: {
-        collection: { select: { id: true, title: true } },
+        collections: { select: { collectionId: true, orderIndex: true } },
         brand: { select: { id: true, name: true, logo: true, currency: true } },
         variants: true,
       },
     });
+
+    const restoredCollectionIds = Array.isArray(restored.collections)
+      ? restored.collections.map((c) => c.collectionId)
+      : [];
+    for (const id of restoredCollectionIds) {
+      await this.recalculateCollectionPriceRange(id);
+    }
 
     return this.attachProductMedia(restored);
   }
@@ -1129,7 +1359,7 @@ export class StoreService {
       where: { id: productId },
       data: { isFeatured: !product.isFeatured },
       include: {
-        collection: { select: { id: true, title: true } },
+        collections: { select: { collectionId: true, orderIndex: true } },
         brand: { select: { id: true, name: true, logo: true, currency: true } },
         variants: true,
       },
@@ -1141,7 +1371,14 @@ export class StoreService {
   async deleteProduct(brandOwnerId: string, productId: string) {
     const product = await this.prisma.product.findFirst({
       where: { id: productId },
-      include: { brand: true },
+      include: { 
+        brand: true,
+        collections: {
+          include: {
+            collection: { select: { id: true, title: true } },
+          },
+        },
+      },
     });
 
     if (!product) {
@@ -1175,16 +1412,176 @@ export class StoreService {
       );
     }
 
+    const memberships = await this.prisma.collectionProduct.findMany({
+      where: { productId },
+      select: { collectionId: true },
+    });
+
+    // Get affected collection titles for notification
+    const affectedCollections = (product.collections || [])
+      .map((c) => c.collection?.title || 'Untitled')
+      .filter(Boolean);
+
     await this.prisma.$transaction(async (tx) => {
+      await tx.collectionProduct.deleteMany({ where: { productId } });
       await tx.product.update({
         where: { id: productId },
-        data: { deletedAt: new Date(), isActive: false },
+        data: { deletedAt: new Date(), isActive: false, collectionId: null },
       });
       await tx.cartItem.deleteMany({ where: { productId } });
       await tx.wishlistItem.deleteMany({ where: { productId } });
     });
 
-    return { success: true, message: 'Product deleted' };
+    for (const link of memberships) {
+      await this.recalculateCollectionPriceRange(link.collectionId);
+    }
+
+    // Send notification if product was in collections
+    if (affectedCollections.length > 0) {
+      try {
+        await this.prisma.$queryRaw`SELECT 1`; // Verify DB connection
+        // Note: Notification service would be injected in production
+        // For now, log the notification that should be sent
+        console.log('[ProductDeletion] Notification would be sent:', {
+          recipientId: brandOwnerId,
+          type: 'PRODUCT_DELETED_FROM_COLLECTION',
+          payload: {
+            productName: product.name,
+            affectedCollections,
+            targetUrl: '/studio/products?view=deleted',
+          },
+        });
+      } catch (e) {
+        // Non-blocking notification error
+        console.error('[ProductDeletion] Failed to send notification:', e);
+      }
+    }
+
+    return { 
+      success: true, 
+      message: 'Product deleted',
+      affectedCollections,
+    };
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // PRICE CHANGE PREVIEW
+  // Preview how a product price change will affect collection price ranges
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  async getProductPriceChangePreview(
+    brandOwnerId: string,
+    productId: string,
+    newPrice: number,
+    newSalePrice?: number,
+  ) {
+    const product = await this.prisma.product.findFirst({
+      where: { id: productId, deletedAt: null },
+      include: { brand: true },
+    });
+
+    if (!product) {
+      throw new NotFoundException('Product not found');
+    }
+
+    if (product.brand.ownerId !== brandOwnerId) {
+      throw new ForbiddenException('You can only preview your own products');
+    }
+
+    // Get all collections this product belongs to
+    const memberships = await this.prisma.collectionProduct.findMany({
+      where: { productId },
+      include: {
+        collection: {
+          select: { 
+            id: true, 
+            title: true, 
+            minPrice: true, 
+            maxPrice: true,
+            saleMinPrice: true,
+            saleMaxPrice: true,
+          },
+        },
+      },
+    });
+
+    const affectedCollections: any[] = [];
+
+    for (const m of memberships) {
+      // Get all products in this collection
+      const links = await this.prisma.collectionProduct.findMany({
+        where: { collectionId: m.collectionId },
+        include: { 
+          product: { 
+            select: { 
+              id: true, 
+              price: true, 
+              salePrice: true,
+              isActive: true,
+              deletedAt: true,
+              archivedAt: true,
+            } 
+          } 
+        },
+      });
+
+      // Calculate new price range
+      const activePrices = links
+        .filter(l => l.product && l.product.isActive && !l.product.deletedAt && !l.product.archivedAt)
+        .map((l) => l.productId === productId ? newPrice : Number(l.product?.price || 0))
+        .filter((p) => p > 0);
+
+      const activeSalePrices = links
+        .filter(l => l.product && l.product.isActive && !l.product.deletedAt && !l.product.archivedAt)
+        .map((l) => {
+          if (l.productId === productId) return newSalePrice || null;
+          return l.product?.salePrice ? Number(l.product.salePrice) : null;
+        })
+        .filter((p): p is number => p !== null && p > 0);
+
+      const newMinPrice = activePrices.length > 0 ? Math.min(...activePrices) : null;
+      const newMaxPrice = activePrices.length > 0 ? Math.max(...activePrices) : null;
+      const newSaleMinPrice = activeSalePrices.length > 0 ? Math.min(...activeSalePrices) : null;
+      const newSaleMaxPrice = activeSalePrices.length > 0 ? Math.max(...activeSalePrices) : null;
+
+      affectedCollections.push({
+        collectionId: m.collection.id,
+        collectionTitle: m.collection.title || 'Untitled',
+        currentMinPrice: m.collection.minPrice,
+        currentMaxPrice: m.collection.maxPrice,
+        currentSaleMinPrice: m.collection.saleMinPrice,
+        currentSaleMaxPrice: m.collection.saleMaxPrice,
+        newMinPrice,
+        newMaxPrice,
+        newSaleMinPrice,
+        newSaleMaxPrice,
+        priceRangeChanged:
+          m.collection.minPrice !== newMinPrice ||
+          m.collection.maxPrice !== newMaxPrice,
+        saleRangeChanged:
+          m.collection.saleMinPrice !== newSaleMinPrice ||
+          m.collection.saleMaxPrice !== newSaleMaxPrice,
+      });
+    }
+
+    const currentPrice = Number(product.price);
+    const priceChange = newPrice - currentPrice;
+    const percentageChange = currentPrice > 0 
+      ? ((priceChange / currentPrice) * 100) 
+      : 0;
+
+    return {
+      productId,
+      productName: product.name,
+      currentPrice,
+      newPrice,
+      priceChange,
+      percentageChange: Math.round(percentageChange * 100) / 100,
+      currentSalePrice: product.salePrice ? Number(product.salePrice) : null,
+      newSalePrice: newSalePrice || null,
+      affectedCollections,
+      collectionsAffectedCount: affectedCollections.filter(c => c.priceRangeChanged || c.saleRangeChanged).length,
+    };
   }
 
   async permanentlyDeleteProduct(brandOwnerId: string, productId: string) {
@@ -1229,6 +1626,21 @@ export class StoreService {
             isAvailableInStore: true,
           },
         },
+        collections: {
+          select: {
+            collectionId: true,
+            orderIndex: true,
+            collection: {
+              select: {
+                id: true,
+                title: true,
+                description: true,
+                status: true,
+                isAvailableInStore: true,
+              },
+            },
+          },
+        },
         brand: {
           select: {
             id: true,
@@ -1262,10 +1674,14 @@ export class StoreService {
       if (!product.brand.isStoreOpen) {
         throw new NotFoundException('Store is closed');
       }
-      if (
-        !product.collection.isAvailableInStore ||
-        product.collection.status !== 'PUBLISHED'
-      ) {
+      const hasStoreCollection = Array.isArray(product.collections)
+        ? product.collections.some(
+            (link: any) =>
+              link.collection?.isAvailableInStore &&
+              link.collection?.status === 'PUBLISHED',
+          )
+        : false;
+      if (!hasStoreCollection) {
         throw new NotFoundException('Product not available');
       }
     }
@@ -1367,7 +1783,9 @@ export class StoreService {
       // Owner preview: show all products including inactive
       // Optionally filter by collection status if needed
       if (collectionId) {
-        where.collectionId = collectionId;
+        andFilters.push({
+          collections: { some: { collectionId } },
+        });
       }
       if (typeof isActive === 'boolean') {
         where.isActive = isActive;
@@ -1381,12 +1799,16 @@ export class StoreService {
       // Public: only active products in published, store-enabled collections
       where.isActive = true;
       where.deletedAt = null;
-      where.collection = {
-        is: {
-          status: 'PUBLISHED',
-          isAvailableInStore: true,
+      andFilters.push({
+        collections: {
+          some: {
+            collection: {
+              status: 'PUBLISHED',
+              isAvailableInStore: true,
+            },
+          },
         },
-      };
+      });
     }
 
     // Gender filter
@@ -1464,19 +1886,15 @@ export class StoreService {
       where.AND = [...existingAnd, ...andFilters];
     }
 
-    // Category filter via collection
+    // Category filter via collection memberships
     if (category) {
-      const existingIs =
-        where.collection && typeof where.collection === 'object' && 'is' in where.collection
-          ? (where.collection as Prisma.CollectionScalarRelationFilter).is
-          : undefined;
-
-      where.collection = {
-        is: {
-          ...(existingIs && typeof existingIs === 'object' ? existingIs : {}),
-          category: { slug: category },
+      andFilters.push({
+        collections: {
+          some: {
+            collection: { category: { slug: category } },
+          },
         },
-      };
+      });
     }
 
     // Sorting (stable; include id tie-breaker for cursor pagination)
@@ -1514,6 +1932,7 @@ export class StoreService {
               isAvailableInStore: true,
             },
           },
+          collections: { select: { collectionId: true, orderIndex: true } },
           brand: {
             select: { id: true, name: true, logo: true, currency: true },
           },
@@ -1593,7 +2012,7 @@ export class StoreService {
       where: { id: productId },
       data: { deletedAt: null, isActive: false },
       include: {
-        collection: { select: { id: true, title: true } },
+        collections: { select: { collectionId: true, orderIndex: true } },
         brand: { select: { id: true, name: true, logo: true, currency: true } },
         variants: true,
       },
@@ -1611,7 +2030,11 @@ export class StoreService {
         deletedAt: null,
         isActive: true,
         brand: { isStoreOpen: true },
-        collection: { isAvailableInStore: true, status: 'PUBLISHED' },
+        collections: {
+          some: {
+            collection: { isAvailableInStore: true, status: 'PUBLISHED' },
+          },
+        },
       },
       include: { variants: true },
     });
@@ -1713,7 +2136,12 @@ export class StoreService {
         product: {
           include: {
             brand: { select: { id: true, name: true, currency: true, isStoreOpen: true } },
-            collection: { select: { id: true, status: true, isAvailableInStore: true } },
+            collections: {
+              select: {
+                collectionId: true,
+                collection: { select: { id: true, status: true, isAvailableInStore: true } },
+              },
+            },
             variants: true,
           },
         },
@@ -1729,12 +2157,19 @@ export class StoreService {
         return false;
       }
 
+      const hasStoreCollection = Array.isArray(product.collections)
+        ? product.collections.some(
+            (link: any) =>
+              link.collection?.isAvailableInStore &&
+              link.collection?.status === 'PUBLISHED',
+          )
+        : false;
+
       const isProductAvailable =
         !product.deletedAt &&
         product.isActive &&
         Boolean(product.brand?.isStoreOpen) &&
-        Boolean(product.collection?.isAvailableInStore) &&
-        product.collection?.status === 'PUBLISHED';
+        hasStoreCollection;
 
       if (!isProductAvailable) {
         unavailableItemIds.push(item.id);
@@ -1929,7 +2364,11 @@ export class StoreService {
         deletedAt: null,
         isActive: true,
         brand: { isStoreOpen: true },
-        collection: { isAvailableInStore: true, status: 'PUBLISHED' },
+        collections: {
+          some: {
+            collection: { isAvailableInStore: true, status: 'PUBLISHED' },
+          },
+        },
       },
     });
 
@@ -1991,7 +2430,12 @@ export class StoreService {
               brand: {
                 select: { id: true, name: true, logo: true, currency: true, isStoreOpen: true },
               },
-              collection: { select: { id: true, status: true, isAvailableInStore: true } },
+              collections: {
+                select: {
+                  collectionId: true,
+                  collection: { select: { id: true, status: true, isAvailableInStore: true } },
+                },
+              },
               variants: true,
             },
           },
@@ -2011,12 +2455,19 @@ export class StoreService {
         return false;
       }
 
+      const hasStoreCollection = Array.isArray(product.collections)
+        ? product.collections.some(
+            (link: any) =>
+              link.collection?.isAvailableInStore &&
+              link.collection?.status === 'PUBLISHED',
+          )
+        : false;
+
       const isProductAvailable =
         !product.deletedAt &&
         product.isActive &&
         Boolean(product.brand?.isStoreOpen) &&
-        Boolean(product.collection?.isAvailableInStore) &&
-        product.collection?.status === 'PUBLISHED';
+        hasStoreCollection;
 
       if (!isProductAvailable) {
         unavailableWishlistIds.push(item.id);
@@ -2075,6 +2526,14 @@ export class StoreService {
   }
 
   private transformProduct(product: any) {
+    const collectionLinks = Array.isArray(product?.collections)
+      ? product.collections
+      : [];
+    const sortedCollections = [...collectionLinks].sort(
+      (a, b) => (a.orderIndex ?? 0) - (b.orderIndex ?? 0),
+    );
+    const primaryCollectionId = sortedCollections[0]?.collectionId ?? null;
+    const collectionIds = sortedCollections.map((c) => c.collectionId);
     const isOnSale = this.isProductOnSale(product);
     const effectivePrice =
       isOnSale && product.salePrice
@@ -2116,7 +2575,8 @@ export class StoreService {
 
     return {
       id: product.id,
-      collectionId: product.collectionId,
+      collectionId: primaryCollectionId,
+      collectionIds,
       brandId: product.brandId,
       // Basic info
       name: product.name,
@@ -2206,6 +2666,7 @@ export class StoreService {
           include: {
             brand: true,
             collection: true,
+            collections: { include: { collection: true } },
             variants: true,
           },
         },
@@ -2253,18 +2714,22 @@ export class StoreService {
         for (const item of items) {
           const product = await tx.product.findFirst({
             where: { id: item.productId, deletedAt: null },
-            include: { collection: true, variants: true },
+            include: { collection: true, collections: { include: { collection: true } }, variants: true },
           });
 
           if (!product || !product.isActive) {
             throw new BadRequestException('Product not available');
           }
 
-          if (
-            !product.collection ||
-            !product.collection.isAvailableInStore ||
-            product.collection.status !== 'PUBLISHED'
-          ) {
+          const hasStoreCollection = Array.isArray(product.collections)
+            ? product.collections.some(
+                (link: any) =>
+                  link.collection?.isAvailableInStore &&
+                  link.collection?.status === 'PUBLISHED',
+              )
+            : false;
+
+          if (!hasStoreCollection) {
             throw new BadRequestException(
               `Product not available in store: ${product.name}`,
             );
@@ -2846,4 +3311,3 @@ export class StoreService {
     return this.getStoreStatus(ownerId);
   }
 }
-

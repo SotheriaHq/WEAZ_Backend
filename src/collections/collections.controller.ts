@@ -23,6 +23,7 @@ import {
   CreateCollectionDto,
   FinalizeCollectionDto,
 } from './collections.service';
+import { CollectionSchedulerService } from './collection-scheduler.service';
 import { JwtAuthGuard } from 'src/auth/guard/jwt-auth.guard';
 import { OptionalJwtAuthGuard } from 'src/auth/guard/optional-jwt-auth.guard';
 import { UserTypeGuard } from 'src/auth/guard/user-type.guard';
@@ -30,6 +31,12 @@ import { UserType, ReactionType, PatchStatus } from '@prisma/client';
 import { ThrottlerGuard, Throttle } from '@nestjs/throttler';
 import { EventsGateway } from 'src/realtime/events.gateway';
 import { UpdateCollectionDto } from './dto/update-collection.dto';
+import {
+  AddProductsDto,
+  ApplyTemplateDto,
+  ReorderCollectionProductsDto,
+} from './dto/collection-products.dto';
+import { CreateProductDto } from 'src/store/dto/create-product.dto';
 
 @ApiTags('collections')
 @ApiBearerAuth()
@@ -39,6 +46,7 @@ import { UpdateCollectionDto } from './dto/update-collection.dto';
 export class CollectionsController {
   constructor(
     private readonly collectionsService: CollectionsService,
+    private readonly schedulerService: CollectionSchedulerService,
     private readonly events: EventsGateway,
   ) {}
 
@@ -187,6 +195,102 @@ export class CollectionsController {
   }
 
   // ============================================
+  // Store Collection Product Membership
+  // ============================================
+
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Post(':collectionId/add-products')
+  async addProductsToCollection(
+    @Param('collectionId') collectionId: string,
+    @Req() req: any,
+    @Body() dto: AddProductsDto,
+  ) {
+    return this.collectionsService.addProductsToCollection(
+      collectionId,
+      req.user.id,
+      dto.productIds,
+    );
+  }
+
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Post(':collectionId/remove-products')
+  async removeProductsFromCollection(
+    @Param('collectionId') collectionId: string,
+    @Req() req: any,
+    @Body() dto: AddProductsDto,
+  ) {
+    return this.collectionsService.removeProductsFromCollection(
+      collectionId,
+      req.user.id,
+      dto.productIds,
+    );
+  }
+
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Patch(':collectionId/reorder-products')
+  async reorderCollectionProducts(
+    @Param('collectionId') collectionId: string,
+    @Req() req: any,
+    @Body() dto: ReorderCollectionProductsDto,
+  ) {
+    return this.collectionsService.reorderCollectionProducts(
+      collectionId,
+      req.user.id,
+      dto.items,
+    );
+  }
+
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Post(':collectionId/apply-template')
+  async applyTemplate(
+    @Param('collectionId') collectionId: string,
+    @Req() req: any,
+    @Body() dto: ApplyTemplateDto,
+  ) {
+    return this.collectionsService.applyTemplateToCollectionProducts(
+      collectionId,
+      req.user.id,
+      dto,
+    );
+  }
+
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Post(':collectionId/products')
+  async createProductInCollection(
+    @Param('collectionId') collectionId: string,
+    @Req() req: any,
+    @Body() dto: CreateProductDto,
+  ) {
+    return this.collectionsService.createProductInCollection(
+      collectionId,
+      req.user.id,
+      dto,
+    );
+  }
+
+  // ============================================
+  // Archive / Unarchive
+  // ============================================
+
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Patch(':collectionId/archive')
+  async archiveCollection(
+    @Param('collectionId') collectionId: string,
+    @Req() req: any,
+  ) {
+    return this.collectionsService.archiveCollection(collectionId, req.user.id);
+  }
+
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Patch(':collectionId/unarchive')
+  async unarchiveCollection(
+    @Param('collectionId') collectionId: string,
+    @Req() req: any,
+  ) {
+    return this.collectionsService.unarchiveCollection(collectionId, req.user.id);
+  }
+
+  // ============================================
   // STATIC ROUTES (must come before :id dynamic route)
   // ============================================
 
@@ -244,6 +348,29 @@ export class CollectionsController {
   })
   async getMyDrafts(@Req() req: any) {
     return this.collectionsService.getMyDraftCollections(req.user.id);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Get('my/draft-stats')
+  @ApiOperation({ summary: 'Get draft expiry statistics for dashboard' })
+  @ApiResponse({
+    status: 200,
+    description: 'Draft expiry statistics',
+    schema: {
+      type: 'object',
+      properties: {
+        totalDrafts: { type: 'number' },
+        expiringIn7Days: { type: 'number' },
+        expiringIn3Days: { type: 'number' },
+        expiringToday: { type: 'number' },
+        oldestDraftAge: { type: 'number' },
+        draftTtlDays: { type: 'number' },
+        warningThresholdDays: { type: 'number' },
+      },
+    },
+  })
+  async getMyDraftStats(@Req() req: any) {
+    return this.schedulerService.getDraftStats(req.user.id);
   }
 
   @UseGuards(JwtAuthGuard)
@@ -570,13 +697,6 @@ export class CollectionsController {
     return this.collectionsService.getLikesSummary(collectionId);
   }
 
-  // Categories
-  @Get('categories')
-  @ApiOperation({ summary: 'List active collection categories' })
-  async listCategories() {
-    return this.collectionsService.listCategories();
-  }
-
   // ===================== Access Management =====================
   @UseGuards(JwtAuthGuard, ThrottlerGuard)
   @Throttle({ default: { limit: 10, ttl: 60000 } })
@@ -745,6 +865,129 @@ export class CollectionsController {
       collectionId,
       req.user.id,
       body,
+    );
+  }
+
+  // ===================== Cart Preview =====================
+  @UseGuards(OptionalJwtAuthGuard)
+  @Get(':id/cart-preview')
+  @ApiOperation({
+    summary: 'Preview collection products for add-to-cart',
+    description: 'Returns available and unavailable products with variant-level stock info',
+  })
+  async getCollectionCartPreview(
+    @Param('id') collectionId: string,
+    @Req() req: any,
+  ) {
+    return this.collectionsService.getCollectionCartPreview(
+      collectionId,
+      req?.user?.id,
+    );
+  }
+
+  // ===================== Bulk Upload (Scaffold) =====================
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Post(':id/bulk-upload')
+  @ApiOperation({
+    summary: 'Initiate bulk product upload',
+    description: 'Creates a bulk upload job for CSV/images. Returns upload URL and job ID.',
+  })
+  async initiateBulkUpload(
+    @Param('id') collectionId: string,
+    @Body() body: { mode?: 'csv' | 'images' | 'mixed' },
+    @Req() req: any,
+  ) {
+    return this.collectionsService.initiateBulkUpload(
+      collectionId,
+      req.user.id,
+      body?.mode || 'csv',
+    );
+  }
+
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Get('bulk-upload/:jobId')
+  @ApiOperation({ summary: 'Get bulk upload job status' })
+  async getBulkUploadStatus(
+    @Param('jobId') jobId: string,
+    @Req() req: any,
+  ) {
+    return this.collectionsService.getBulkUploadStatus(jobId, req.user.id);
+  }
+
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Post('bulk-upload/:jobId/retry')
+  @ApiOperation({ summary: 'Retry failed bulk upload rows' })
+  async retryBulkUploadRows(
+    @Param('jobId') jobId: string,
+    @Body() body: { rowIndices: number[] },
+    @Req() req: any,
+  ) {
+    return this.collectionsService.retryBulkUploadRows(
+      jobId,
+      req.user.id,
+      body.rowIndices,
+    );
+  }
+
+  // ===================== Custom Fit Inquiry (Scaffold) =====================
+  @UseGuards(JwtAuthGuard)
+  @Post(':id/custom-fit-inquiry')
+  @ApiOperation({
+    summary: 'Submit custom fit inquiry for collection',
+    description: 'Sends inquiry to brand when all products are out of stock',
+  })
+  async submitCustomFitInquiry(
+    @Param('id') collectionId: string,
+    @Body() body: {
+      productId?: string;
+      message: string;
+      measurements?: string;
+      preferredSize?: string;
+    },
+    @Req() req: any,
+  ) {
+    return this.collectionsService.submitCustomFitInquiry(
+      collectionId,
+      req.user.id,
+      body,
+    );
+  }
+
+  // ===================== Draft Conflict Detection =====================
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Post(':id/draft-session')
+  @ApiOperation({
+    summary: 'Start draft editing session',
+    description: 'Checks for conflicts and returns session info',
+  })
+  async startDraftSession(
+    @Param('id') draftId: string,
+    @Body() body: { deviceInfo: string },
+    @Req() req: any,
+  ) {
+    return this.collectionsService.checkDraftConflict(
+      draftId,
+      req.user.id,
+      body.deviceInfo,
+    );
+  }
+
+  // ===================== Delete Collection Media =====================
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Delete(':id/media/:mediaId')
+  @ApiOperation({
+    summary: 'Delete collection media',
+    description: 'Deletes media and reassigns cover if needed',
+  })
+  async deleteCollectionMedia(
+    @Param('id') collectionId: string,
+    @Param('mediaId') mediaId: string,
+    @Req() req: any,
+  ) {
+    return this.collectionsService.deleteCollectionMedia(
+      collectionId,
+      mediaId,
+      req.user.id,
     );
   }
 

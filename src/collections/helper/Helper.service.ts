@@ -83,12 +83,15 @@ export class HelperService {
     userId: string,
     originalName: string,
     fileType: FileType,
+    options?: { collectionId?: string; orderIndex?: number },
   ) {
     // UploadService will create a presigned DB entry and return url/fields
     return this.uploadService.createPresignedPost(
       userId,
       originalName,
       fileType as any,
+      undefined,
+      options,
     );
   }
 
