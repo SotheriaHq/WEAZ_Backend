@@ -18,6 +18,7 @@ import { PasswordService } from 'src/auth/helper/password.service';
 import { UploadService } from 'src/upload/upload.service';
 import { FileType } from 'src/upload/upload.enums';
 import { ProductViewCounterService } from './product-view-counter.service';
+import { NotificationsService } from 'src/notifications/notifications.service';
 
 @Injectable()
 export class StoreService {
@@ -26,7 +27,19 @@ export class StoreService {
     private readonly passwordService: PasswordService,
     private readonly uploadService: UploadService,
     private readonly viewCounter: ProductViewCounterService,
+    private readonly notifications?: NotificationsService,
   ) {}
+
+  private readonly maxProductsPerCollection = 5;
+
+  private async lockCollectionForUpdate(
+    tx: Prisma.TransactionClient,
+    collectionId: string,
+  ) {
+    await tx.$executeRaw(
+      Prisma.sql`SELECT "_id" FROM "Collection" WHERE "_id" = ${collectionId} FOR UPDATE`,
+    );
+  }
 
   private async attachProductMedia(product: any) {
     const base = this.transformProduct(product);
@@ -534,14 +547,15 @@ export class StoreService {
   private async assertCollectionCapacity(
     tx: Prisma.TransactionClient,
     collectionId: string,
-    maxProducts = 5,
+    maxProducts?: number,
   ) {
+    const limit = typeof maxProducts === 'number' ? maxProducts : this.maxProductsPerCollection;
     const count = await tx.collectionProduct.count({
       where: { collectionId },
     });
-    if (count >= maxProducts) {
+    if (count >= limit) {
       throw new BadRequestException(
-        `Collections can contain maximum ${maxProducts} products.`,
+        `Collections can contain maximum ${limit} products.`,
       );
     }
   }
@@ -578,12 +592,16 @@ export class StoreService {
     if (requestedCollectionId) {
       const collection = await this.prisma.collection.findFirst({
         where: { id: requestedCollectionId, ownerId: brandOwnerId },
+        select: { id: true, deletedAt: true },
       });
 
       if (!collection) {
         throw new NotFoundException(
           'Collection not found or does not belong to you',
         );
+      }
+      if (collection.deletedAt) {
+        throw new BadRequestException('Collection has been deleted');
       }
     }
 
@@ -635,7 +653,8 @@ export class StoreService {
         collectionId = await this.ensureDefaultStoreCollection(tx, brandOwnerId);
       }
 
-      await this.assertCollectionCapacity(tx, collectionId, 5);
+      await this.lockCollectionForUpdate(tx, collectionId);
+      await this.assertCollectionCapacity(tx, collectionId);
       const orderIndex = await tx.collectionProduct.count({
         where: { collectionId },
       });
@@ -701,6 +720,7 @@ export class StoreService {
           collectionId,
           productId: created.id,
           orderIndex,
+          isPrimary: true,
         },
       });
 
@@ -935,7 +955,8 @@ export class StoreService {
               } as any);
             }
 
-            await this.assertCollectionCapacity(tx, finalCollectionId, 5);
+            await this.lockCollectionForUpdate(tx, finalCollectionId);
+            await this.assertCollectionCapacity(tx, finalCollectionId);
             const orderIndex = await tx.collectionProduct.count({
               where: { collectionId: finalCollectionId },
             });
@@ -1114,7 +1135,8 @@ export class StoreService {
           tx,
           brandOwnerId,
         );
-        await this.assertCollectionCapacity(tx, fallbackCollectionId, 5);
+        await this.lockCollectionForUpdate(tx, fallbackCollectionId);
+        await this.assertCollectionCapacity(tx, fallbackCollectionId);
         const orderIndex = await tx.collectionProduct.count({
           where: { collectionId: fallbackCollectionId },
         });
@@ -1124,6 +1146,7 @@ export class StoreService {
             collectionId: fallbackCollectionId,
             productId: created.id,
             orderIndex,
+            isPrimary: true,
           },
         });
 
@@ -1133,7 +1156,8 @@ export class StoreService {
         });
       } else {
         for (const link of sourceCollections) {
-          await this.assertCollectionCapacity(tx, link.collectionId, 5);
+          await this.lockCollectionForUpdate(tx, link.collectionId);
+          await this.assertCollectionCapacity(tx, link.collectionId);
           const orderIndex = await tx.collectionProduct.count({
             where: { collectionId: link.collectionId },
           });
@@ -1143,6 +1167,7 @@ export class StoreService {
               collectionId: link.collectionId,
               productId: created.id,
               orderIndex,
+              isPrimary: link.collectionId === primaryCollectionId,
             },
           });
         }
@@ -1368,7 +1393,11 @@ export class StoreService {
     return this.attachProductMedia(updated);
   }
 
-  async deleteProduct(brandOwnerId: string, productId: string) {
+  async deleteProduct(
+    brandOwnerId: string,
+    productId: string,
+    cancelPendingOrders = false,
+  ) {
     const product = await this.prisma.product.findFirst({
       where: { id: productId },
       include: { 
@@ -1406,9 +1435,9 @@ export class StoreService {
       }
     }
 
-    if (activeOrdersCount > 0) {
+    if (activeOrdersCount > 0 && !cancelPendingOrders) {
       throw new BadRequestException(
-        'Cannot delete product with active orders. Please archive it instead.',
+        'Cannot delete product with active orders. Pass cancelPendingOrders=true to cancel pending orders and refund.',
       );
     }
 
@@ -1422,7 +1451,31 @@ export class StoreService {
       .map((c) => c.collection?.title || 'Untitled')
       .filter(Boolean);
 
+    const cancelledOrders: { id: string; buyerId?: string | null }[] = [];
+
     await this.prisma.$transaction(async (tx) => {
+      if (activeOrdersCount > 0 && cancelPendingOrders) {
+        const orders = await tx.order.findMany({
+          where: {
+            brandId: product.brandId,
+            status: { in: ['PENDING', 'PROCESSING', 'SHIPPED'] as any },
+          },
+          select: { id: true, buyerId: true, items: true },
+        });
+
+        for (const order of orders) {
+          const items = order.items as { productId?: string }[] | null;
+          if (!Array.isArray(items)) continue;
+          if (items.some((item) => item.productId === productId)) {
+            await tx.order.update({
+              where: { id: order.id },
+              data: { status: 'CANCELLED', paymentStatus: 'REFUNDED' },
+            });
+            cancelledOrders.push({ id: order.id, buyerId: order.buyerId });
+          }
+        }
+      }
+
       await tx.collectionProduct.deleteMany({ where: { productId } });
       await tx.product.update({
         where: { id: productId },
@@ -1431,6 +1484,33 @@ export class StoreService {
       await tx.cartItem.deleteMany({ where: { productId } });
       await tx.wishlistItem.deleteMany({ where: { productId } });
     });
+
+    if (cancelledOrders.length > 0) {
+      for (const order of cancelledOrders) {
+        if (!order.buyerId) continue;
+        try {
+          await this.notifications?.create(
+            order.buyerId,
+            NotificationType.ORDER_STATUS_UPDATED,
+            {
+              payload: {
+                orderId: order.id,
+                status: 'CANCELLED',
+                reason: 'Product deleted by brand',
+                refundStatus: 'REFUNDED',
+              },
+            },
+          );
+        } catch (error) {
+          console.warn('Failed to notify buyer about cancellation', error);
+        }
+      }
+
+      console.warn('[AdminNotice] Cancelled orders due to product deletion', {
+        productId,
+        orderIds: cancelledOrders.map((o) => o.id),
+      });
+    }
 
     for (const link of memberships) {
       await this.recalculateCollectionPriceRange(link.collectionId);

@@ -557,6 +557,10 @@ export class UploadService {
     }
 
     if (presign.status === 'USED') {
+      const existing = await this.prisma.fileUpload.findUnique({
+        where: { id },
+      });
+      if (existing) return existing;
       throw new BadRequestException('Presign already used');
     }
 

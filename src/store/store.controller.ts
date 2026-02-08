@@ -173,8 +173,13 @@ export class StoreController {
 
   @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
   @Delete('products/:id')
-  async deleteProduct(@Param('id') productId: string, @Req() req: any) {
-    return this.storeService.deleteProduct(req.user.id, productId);
+  async deleteProduct(
+    @Param('id') productId: string,
+    @Req() req: any,
+    @Query('cancelPendingOrders') cancelPendingOrders?: string,
+  ) {
+    const cancelFlag = cancelPendingOrders === 'true';
+    return this.storeService.deleteProduct(req.user.id, productId, cancelFlag);
   }
 
   @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))

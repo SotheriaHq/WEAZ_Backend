@@ -96,6 +96,8 @@ model User {
 
   // Idempotency keys (safe retries for POST requests)
   idempotencyKeys         IdempotencyKey[]
+  collectionDraftSessions CollectionDraftSession[]
+  collectionBulkUploadJobs CollectionBulkUploadJob[]
 }
 
 model FileUpload {
@@ -314,6 +316,10 @@ model Collection {
   category                     CollectionCategory?             @relation(fields: [categoryId], references: [id])
   coverMediaId                 String?                         @db.Uuid
   coverMedia                   CollectionMedia?                @relation("CollectionCoverMedia", fields: [coverMediaId], references: [id])
+  deletedAt                    DateTime?
+  deleteExpiresAt              DateTime?
+  lastActivityAt               DateTime?
+  draftVersion                 Int                             @default(0)
   // PHASE 1: Pending category support for draft collections
   pendingCategorySuggestionId  String?                         @db.Uuid
   pendingCategorySuggestion    CollectionCategorySuggestion?   @relation(fields: [pendingCategorySuggestionId], references: [id], onDelete: SetNull)
@@ -351,12 +357,97 @@ model Collection {
   products                     CollectionProduct[]
   // Primary collection link (compatibility)
   primaryProducts              Product[]                       @relation("PrimaryCollection")
+  draftSessions                CollectionDraftSession[]
+  bulkUploadJobs               CollectionBulkUploadJob[]
 
   @@index([status, createdAt])
   @@index([status, patchesCount])
   @@index([status, visibility, createdAt])
   @@index([status, pendingCategorySuggestionId]) // PHASE 1: Fast lookup of drafts waiting for category approval
   @@index([ownerId, status, createdAt]) // PHASE 1: User's draft management
+  @@index([deletedAt])
+  @@index([deleteExpiresAt])
+  @@index([lastActivityAt])
+}
+
+enum BulkUploadStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+  PARTIAL
+}
+
+enum BulkUploadRowStatus {
+  PENDING
+  PROCESSING
+  SUCCESS
+  FAILED
+  SKIPPED
+}
+
+model CollectionDraftSession {
+  id              String     @id @map("_id") @db.Uuid
+  collectionId    String     @db.Uuid
+  ownerId         String     @db.Uuid
+  sessionToken    String     @unique
+  deviceName      String?
+  deviceType      String?
+  startedAt       DateTime   @default(now())
+  lastHeartbeatAt DateTime   @default(now())
+  expiresAt       DateTime
+  isActive        Boolean    @default(true)
+
+  collection      Collection @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+  owner           User       @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+
+  @@index([collectionId, isActive])
+  @@index([ownerId])
+  @@index([expiresAt])
+}
+
+model CollectionBulkUploadJob {
+  id            String           @id @map("_id") @db.Uuid
+  collectionId  String           @db.Uuid
+  ownerId       String           @db.Uuid
+  status        BulkUploadStatus @default(PENDING)
+  mode          String?
+  totalRows     Int              @default(0)
+  processedRows Int              @default(0)
+  successRows   Int              @default(0)
+  failedRows    Int              @default(0)
+  errorSummary  Json?
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+  completedAt   DateTime?
+
+  collection    Collection       @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+  owner         User             @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  rows          CollectionBulkUploadRow[]
+
+  @@index([collectionId, createdAt])
+  @@index([ownerId, createdAt])
+  @@index([status, createdAt])
+}
+
+model CollectionBulkUploadRow {
+  id              String              @id @map("_id") @db.Uuid
+  jobId           String              @db.Uuid
+  rowIndex        Int
+  rowId           String?
+  status          BulkUploadRowStatus @default(PENDING)
+  errorMessage    String?
+  payload         Json?
+  createdProductId String?
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  job             CollectionBulkUploadJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@unique([jobId, rowIndex])
+  @@unique([jobId, rowId])
+  @@index([jobId, status])
+  @@index([rowId])
 }
 
 model CollectionProduct {

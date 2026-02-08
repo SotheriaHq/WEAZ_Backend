@@ -10,6 +10,8 @@ import {
   BadRequestException,
   Delete,
   Patch,
+  UseInterceptors,
+  UploadedFile,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -37,6 +39,8 @@ import {
   ReorderCollectionProductsDto,
 } from './dto/collection-products.dto';
 import { CreateProductDto } from 'src/store/dto/create-product.dto';
+import { IdempotencyInterceptor } from 'src/common/interceptors/idempotency.interceptor';
+import { FileInterceptor } from '@nestjs/platform-express';
 
 @ApiTags('collections')
 @ApiBearerAuth()
@@ -143,6 +147,7 @@ export class CollectionsController {
   // STEP 2: Finalize Collection (Confirm Uploads)
   // ============================================
   @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseInterceptors(IdempotencyInterceptor)
   @Post(':collectionId/finalize')
   @ApiOperation({
     summary: 'Finalize collection after S3 uploads complete',
@@ -888,6 +893,7 @@ export class CollectionsController {
   // ===================== Bulk Upload (Scaffold) =====================
   @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
   @Post(':id/bulk-upload')
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 25 * 1024 * 1024 } }))
   @ApiOperation({
     summary: 'Initiate bulk product upload',
     description: 'Creates a bulk upload job for CSV/images. Returns upload URL and job ID.',
@@ -896,11 +902,13 @@ export class CollectionsController {
     @Param('id') collectionId: string,
     @Body() body: { mode?: 'csv' | 'images' | 'mixed' },
     @Req() req: any,
+    @UploadedFile() file?: Express.Multer.File,
   ) {
     return this.collectionsService.initiateBulkUpload(
       collectionId,
       req.user.id,
       body?.mode || 'csv',
+      file,
     );
   }
 
@@ -919,13 +927,18 @@ export class CollectionsController {
   @ApiOperation({ summary: 'Retry failed bulk upload rows' })
   async retryBulkUploadRows(
     @Param('jobId') jobId: string,
-    @Body() body: { rowIndices: number[] },
+    @Body() body: { rowIndices?: number[]; rows?: number[] },
     @Req() req: any,
   ) {
+    const rowIndices = Array.isArray(body?.rowIndices)
+      ? body.rowIndices
+      : Array.isArray(body?.rows)
+        ? body.rows
+        : [];
     return this.collectionsService.retryBulkUploadRows(
       jobId,
       req.user.id,
-      body.rowIndices,
+      rowIndices,
     );
   }
 
@@ -962,14 +975,28 @@ export class CollectionsController {
   })
   async startDraftSession(
     @Param('id') draftId: string,
-    @Body() body: { deviceInfo: string },
+    @Body()
+    body: { deviceName?: string; forceNew?: boolean; existingToken?: string },
     @Req() req: any,
   ) {
     return this.collectionsService.checkDraftConflict(
       draftId,
       req.user.id,
-      body.deviceInfo,
+      body?.deviceName,
+      body?.forceNew,
+      body?.existingToken,
     );
+  }
+
+  // ===================== Restore Deleted Collection =====================
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Post(':id/restore')
+  @ApiOperation({
+    summary: 'Restore a soft-deleted collection',
+    description: 'Restores a collection within the 30-day recovery window.',
+  })
+  async restoreCollection(@Param('id') collectionId: string, @Req() req: any) {
+    return this.collectionsService.restoreCollection(collectionId, req.user.id);
   }
 
   // ===================== Delete Collection Media =====================

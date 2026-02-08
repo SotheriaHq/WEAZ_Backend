@@ -6,9 +6,10 @@ import { AuthModule } from '../auth/auth.module';
 import { UploadModule } from '../upload/upload.module';
 import { ProductViewCounterService } from './product-view-counter.service';
 import { IdempotencyInterceptor } from '../common/interceptors/idempotency.interceptor';
+import { NotificationsModule } from 'src/notifications/notifications.module';
 
 @Module({
-  imports: [PrismaModule, AuthModule, UploadModule],
+  imports: [PrismaModule, AuthModule, UploadModule, NotificationsModule],
   controllers: [StoreController],
   providers: [StoreService, ProductViewCounterService, IdempotencyInterceptor],
   exports: [StoreService],

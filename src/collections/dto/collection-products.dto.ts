@@ -1,4 +1,4 @@
-import { IsArray, IsNumber, IsOptional, IsString, ValidateNested } from 'class-validator';
+import { IsArray, IsNumber, IsOptional, IsString, ValidateNested, Min } from 'class-validator';
 import { Type } from 'class-transformer';
 
 export class AddProductsDto {
@@ -19,6 +19,7 @@ export class ReorderItemDto {
   productId: string;
 
   @IsNumber()
+  @Min(0)
   orderIndex: number;
 }
 

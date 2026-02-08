@@ -10,6 +10,7 @@ import { AnalyticsModule } from 'src/analytics/analytics.module';
 import { NotificationsModule } from 'src/notifications/notifications.module';
 import { EventsGateway } from 'src/realtime/events.gateway';
 import { StoreModule } from 'src/store/store.module';
+import { IdempotencyInterceptor } from 'src/common/interceptors/idempotency.interceptor';
 
 @Module({
   imports: [
@@ -25,6 +26,7 @@ import { StoreModule } from 'src/store/store.module';
     PrismaService,
     HelperService,
     EventsGateway,
+    IdempotencyInterceptor,
   ],
   controllers: [CollectionsController],
   exports: [CollectionsService],

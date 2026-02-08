@@ -8,7 +8,7 @@
 // Time in days
 export const DRAFT_EXPIRY_CONFIG = {
   /**
-   * Days after creation before a draft is auto-deleted
+   * Days after last activity before a draft is auto-deleted
    * Default: 30 days
    * Override: DRAFT_TTL_DAYS env var
    */
@@ -67,38 +67,38 @@ export const DRAFT_EXPIRY_CONFIG = {
 };
 
 // Derived values (computed from config)
-export const getDraftExpiryDate = (createdAt: Date): Date => {
+export const getDraftExpiryDate = (lastActivityAt: Date): Date => {
   return new Date(
-    createdAt.getTime() + DRAFT_EXPIRY_CONFIG.DRAFT_TTL_DAYS * 24 * 60 * 60 * 1000,
+    lastActivityAt.getTime() + DRAFT_EXPIRY_CONFIG.DRAFT_TTL_DAYS * 24 * 60 * 60 * 1000,
   );
 };
 
-export const getFirstWarningDate = (createdAt: Date): Date => {
+export const getFirstWarningDate = (lastActivityAt: Date): Date => {
   const daysUntilFirstWarning =
     DRAFT_EXPIRY_CONFIG.DRAFT_TTL_DAYS -
     DRAFT_EXPIRY_CONFIG.FIRST_WARNING_DAYS_BEFORE_EXPIRY;
   return new Date(
-    createdAt.getTime() + daysUntilFirstWarning * 24 * 60 * 60 * 1000,
+    lastActivityAt.getTime() + daysUntilFirstWarning * 24 * 60 * 60 * 1000,
   );
 };
 
-export const getFinalWarningDate = (createdAt: Date): Date => {
+export const getFinalWarningDate = (lastActivityAt: Date): Date => {
   const daysUntilFinalWarning =
     DRAFT_EXPIRY_CONFIG.DRAFT_TTL_DAYS -
     DRAFT_EXPIRY_CONFIG.FINAL_WARNING_DAYS_BEFORE_EXPIRY;
   return new Date(
-    createdAt.getTime() + daysUntilFinalWarning * 24 * 60 * 60 * 1000,
+    lastActivityAt.getTime() + daysUntilFinalWarning * 24 * 60 * 60 * 1000,
   );
 };
 
-export const isExpired = (createdAt: Date): boolean => {
+export const isExpired = (lastActivityAt: Date): boolean => {
   const now = new Date();
-  return now >= getDraftExpiryDate(createdAt);
+  return now >= getDraftExpiryDate(lastActivityAt);
 };
 
-export const getDaysUntilExpiry = (createdAt: Date): number => {
+export const getDaysUntilExpiry = (lastActivityAt: Date): number => {
   const now = new Date();
-  const expiry = getDraftExpiryDate(createdAt);
+  const expiry = getDraftExpiryDate(lastActivityAt);
   const diffMs = expiry.getTime() - now.getTime();
   return Math.max(0, Math.ceil(diffMs / (24 * 60 * 60 * 1000)));
 };

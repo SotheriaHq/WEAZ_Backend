@@ -71,4 +71,13 @@ export class UpdateCollectionDto {
   @IsOptional()
   @IsString()
   coverMediaId?: string | null;
+
+  @IsOptional()
+  @IsString()
+  draftSessionToken?: string;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  draftVersion?: number;
 }

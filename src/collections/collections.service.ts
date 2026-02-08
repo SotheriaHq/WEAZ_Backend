@@ -4,6 +4,7 @@ import {
   NotFoundException,
   ForbiddenException,
   ConflictException,
+  GoneException,
 } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { v4 as uuidv4 } from 'uuid';
@@ -16,6 +17,7 @@ import {
   CollectionVisibility,
   CollectionType,
   PatchStatus,
+  OrderStatus,
 } from '@prisma/client';
 import { NotificationsService } from 'src/notifications/notifications.service';
 import { AnalyticsService } from 'src/analytics/analytics.service';
@@ -30,6 +32,7 @@ import { CreateProductDto } from 'src/store/dto/create-product.dto';
 import * as crypto from 'crypto';
 import { sanitizeTags } from 'src/common/utils/tag-validator';
 import { UpdateCollectionDto } from './dto/update-collection.dto';
+import { parse } from 'csv-parse/sync';
 
 @Injectable()
 export class CollectionsService {
@@ -42,11 +45,189 @@ export class CollectionsService {
     private readonly notifications?: NotificationsService,
   ) {}
 
+  private readonly maxProductsPerCollection = 5;
+  private readonly collectionDeleteWindowMs = 30 * 24 * 60 * 60 * 1000;
+
+  private async lockCollectionForUpdate(
+    tx: Prisma.TransactionClient,
+    collectionId: string,
+  ) {
+    await tx.$executeRaw(
+      Prisma.sql`SELECT id FROM "Collection" WHERE id = ${collectionId} FOR UPDATE`,
+    );
+  }
+
+  private async touchDraftActivity(
+    tx: Prisma.TransactionClient,
+    collectionId: string,
+  ) {
+    const now = new Date();
+    const ttlMinutes = Math.max(
+      5,
+      parseInt(process.env.DRAFT_SESSION_TTL_MINUTES || '30', 10),
+    );
+    const nextExpiresAt = new Date(now.getTime() + ttlMinutes * 60 * 1000);
+    await (tx as any).collection.updateMany({
+      where: { id: collectionId, status: 'DRAFT', deletedAt: null },
+      data: { lastActivityAt: now, draftVersion: { increment: 1 } },
+    });
+  }
+
+  private async enforcePrimaryMembership(
+    tx: Prisma.TransactionClient,
+    productId: string,
+  ) {
+    const links = await tx.collectionProduct.findMany({
+      where: { productId },
+      orderBy: [
+        { isPrimary: 'desc' },
+        { createdAt: 'asc' },
+        { orderIndex: 'asc' },
+        { collectionId: 'asc' },
+      ],
+      select: { collectionId: true, isPrimary: true },
+    });
+
+    if (links.length === 0) {
+      await tx.product.update({
+        where: { id: productId },
+        data: { collectionId: null },
+      });
+      return;
+    }
+
+    const primary = links.find((l) => l.isPrimary) ?? links[0];
+    await tx.collectionProduct.updateMany({
+      where: { productId },
+      data: { isPrimary: false },
+    });
+    await tx.collectionProduct.updateMany({
+      where: { productId, collectionId: primary.collectionId },
+      data: { isPrimary: true },
+    });
+    await tx.product.update({
+      where: { id: productId },
+      data: { collectionId: primary.collectionId },
+    });
+  }
+
+  private async countActiveOrdersForCollection(
+    collectionId: string,
+    ownerId: string,
+  ) {
+    const productLinks = await this.prisma.collectionProduct.findMany({
+      where: { collectionId },
+      select: { productId: true },
+    });
+    const productIds = productLinks.map((l) => l.productId);
+    if (productIds.length === 0) return 0;
+
+    const brand = await this.prisma.brand.findUnique({
+      where: { ownerId },
+      select: { id: true },
+    });
+    if (!brand) return 0;
+
+    const activeOrders = await this.prisma.order.findMany({
+      where: {
+        brandId: brand.id,
+        status: { in: [OrderStatus.PENDING, OrderStatus.PROCESSING, OrderStatus.SHIPPED] },
+      },
+      select: { items: true },
+    });
+
+    let activeCount = 0;
+    for (const order of activeOrders) {
+      const items = order.items as { productId?: string }[] | null;
+      if (!Array.isArray(items)) continue;
+      if (items.some((item) => item.productId && productIds.includes(item.productId))) {
+        activeCount += 1;
+      }
+    }
+    return activeCount;
+  }
+
+  private parseBulkCsv(file: Express.Multer.File) {
+    const csvText = file.buffer.toString('utf-8');
+    return parse(csvText, {
+      columns: true,
+      skip_empty_lines: true,
+      trim: true,
+    }) as Array<Record<string, string>>;
+  }
+
+  private normalizeCsvBool(value?: string) {
+    if (!value) return undefined;
+    const normalized = value.trim().toLowerCase();
+    if (['true', '1', 'yes', 'y'].includes(normalized)) return true;
+    if (['false', '0', 'no', 'n'].includes(normalized)) return false;
+    return undefined;
+  }
+
+  private normalizeCsvNumber(value?: string) {
+    if (!value) return undefined;
+    const num = Number(value);
+    return Number.isFinite(num) ? num : undefined;
+  }
+
+  private buildBulkProductDto(
+    row: Record<string, string>,
+    collectionId: string,
+  ): CreateProductDto {
+    const tags = (row.tags || '')
+      .split(',')
+      .map((tag) => tag.trim())
+      .filter(Boolean);
+
+    const sizes = (row.sizes || '')
+      .split(',')
+      .map((size) => size.trim())
+      .filter(Boolean);
+
+    const colors = (row.colors || '')
+      .split(',')
+      .map((color) => color.trim())
+      .filter(Boolean);
+
+    const images = (row.images || '')
+      .split(',')
+      .map((url) => url.trim())
+      .filter(Boolean);
+
+    return {
+      name:
+        row.product_name ||
+        row.name ||
+        row.productName ||
+        'Untitled Product',
+      description: row.description || row.product_description || undefined,
+      price:
+        this.normalizeCsvNumber(row.price || row.unit_price) ?? 0,
+      salePrice: this.normalizeCsvNumber(row.sale_price || row.salePrice),
+      sku: row.sku || row.product_sku || undefined,
+      tags,
+      sizes,
+      colors,
+      images,
+      thumbnail: row.thumbnail || images[0] || undefined,
+      totalStock:
+        this.normalizeCsvNumber(
+          row.stock || row.total_stock || row.totalStock,
+        ) ?? 0,
+      allowBackorders: this.normalizeCsvBool(
+        row.allow_backorders || row.allowBackorders,
+      ),
+      isActive: this.normalizeCsvBool(row.is_active || row.isActive),
+      gender: (row.gender as any) || undefined,
+      collectionId,
+    } as CreateProductDto;
+  }
+
   private async canViewCollection(
     collectionId: string,
     requesterId?: string,
   ): Promise<boolean> {
-    const c = await this.prisma.collection.findUnique({
+    const c = (await this.prisma.collection.findUnique({
       where: { id: collectionId },
       select: {
         ownerId: true,
@@ -55,10 +236,13 @@ export class CollectionsService {
         isAvailableInStore: true,
         saleMinPrice: true,
         saleMaxPrice: true,
-      },
-    });
+        deletedAt: true,
+      } as any,
+    } as any)) as any;
     // Not found
     if (!c) return false;
+
+    if (c.deletedAt) return false;
 
     // Owner can always view their own collection (draft or published)
     if (requesterId && requesterId === c.ownerId) return true;
@@ -163,11 +347,11 @@ export class CollectionsService {
 
   // ===================== Access Management =====================
   async requestAccess(collectionId: string, requesterId: string) {
-    const c = await this.prisma.collection.findUnique({
+    const c = (await this.prisma.collection.findUnique({
       where: { id: collectionId },
-      select: { id: true, ownerId: true, status: true, visibility: true },
-    });
-    if (!c || c.status !== 'PUBLISHED')
+      select: { id: true, ownerId: true, status: true, visibility: true, deletedAt: true } as any,
+    } as any)) as any;
+    if (!c || c.deletedAt || c.status !== 'PUBLISHED')
       throw new NotFoundException('Collection not found');
     if (c.visibility === CollectionVisibility.PUBLIC)
       return { state: 'APPROVED' };
@@ -242,11 +426,12 @@ export class CollectionsService {
   }
 
   private async assertOwner(collectionId: string, ownerId: string) {
-    const c = await this.prisma.collection.findUnique({
+    const c = (await this.prisma.collection.findUnique({
       where: { id: collectionId },
-      select: { ownerId: true },
-    });
+      select: { ownerId: true, deletedAt: true } as any,
+    } as any)) as any;
     if (!c) throw new NotFoundException('Collection not found');
+    if (c.deletedAt) throw new GoneException('Collection has been deleted');
     if (c.ownerId !== ownerId) throw new ForbiddenException('Not owner');
   }
 
@@ -257,6 +442,15 @@ export class CollectionsService {
     cursor?: string,
   ) {
     await this.assertOwner(collectionId, ownerId);
+
+    const existingCount = await this.prisma.collectionProduct.count({
+      where: { collectionId },
+    });
+    if (existingCount >= this.maxProductsPerCollection) {
+      throw new BadRequestException(
+        `Collections can contain maximum ${this.maxProductsPerCollection} products.`,
+      );
+    }
     const rows = await this.prisma.collectionAccess.findMany({
       where: { collectionId, state: 'PENDING' },
       include: {
@@ -822,8 +1016,8 @@ export class CollectionsService {
 
     // Store-collection session initialization (no media required)
     if (!hasFiles && dto.mode) {
-      const draftsCount = await this.prisma.collection.count({
-        where: { ownerId: userId, status: 'DRAFT' },
+      const draftsCount = await (this.prisma.collection as any).count({
+        where: { ownerId: userId, status: 'DRAFT', deletedAt: null },
       });
       if (draftsCount >= 4) {
         throw new BadRequestException(
@@ -832,7 +1026,8 @@ export class CollectionsService {
       }
 
       const collectionId = uuidv4();
-      const collection = await this.prisma.collection.create({
+      const now = new Date();
+      const collection = await (this.prisma.collection as any).create({
         data: {
           id: collectionId,
           ownerId: userId,
@@ -844,6 +1039,7 @@ export class CollectionsService {
           isAvailableInStore: dto.isAvailableInStore ?? false,
           tags: Array.isArray(dto.tags) ? sanitizeTags(dto.tags) : [],
           categoryId: dto.categoryId || null,
+          draftVersion: 0,
         },
       });
 
@@ -892,7 +1088,8 @@ export class CollectionsService {
 
     // Create collection in DRAFT status
     const collectionId = uuidv4();
-    const collection = await this.prisma.collection.create({
+    const now = new Date();
+    const collection = await (this.prisma.collection as any).create({
       data: {
         id: collectionId,
         owner: { connect: { id: userId } },
@@ -907,6 +1104,8 @@ export class CollectionsService {
         type: dto.type ?? CollectionType.EVERYBODY,
         // Set required category
         category: { connect: { id: finalCategoryId } },
+        lastActivityAt: now,
+        draftVersion: 0,
       },
     });
 
@@ -967,6 +1166,8 @@ export class CollectionsService {
       collection: {
         status: 'PUBLISHED',
         visibility: CollectionVisibility.PUBLIC,
+        deletedAt: null,
+        isAvailableInStore: false,
         ...(tag
           ? {
               tags: {
@@ -981,7 +1182,7 @@ export class CollectionsService {
               },
             }
           : {}),
-      },
+      } as any,
     };
 
     const medias = await this.prisma.collectionMedia.findMany({
@@ -1148,7 +1349,7 @@ export class CollectionsService {
     dto: FinalizeCollectionDto,
   ) {
     // Verify collection exists and belongs to user
-    const collection = await this.prisma.collection.findUnique({
+    const collection = await this.prisma.collection.findFirst({
       where: { id: collectionId, ownerId: userId },
     });
 
@@ -1157,12 +1358,31 @@ export class CollectionsService {
     }
 
     if (collection.status !== 'DRAFT') {
+      if (collection.status === 'PUBLISHED') {
+        const published = await this.prisma.collection.findUnique({
+          where: { id: collectionId },
+          include: {
+            owner: true,
+            medias: { include: { file: true }, orderBy: { orderIndex: 'asc' } },
+            _count: {
+              select: {
+                reactions: true,
+                comments: true,
+                patches: true,
+                views: true,
+              },
+            },
+          },
+        });
+        if (published) return published;
+      }
       throw new BadRequestException('Collection is not in draft status');
     }
 
     const hasCompletions = Array.isArray(dto.completions) && dto.completions.length > 0;
 
     if (!hasCompletions) {
+      const previousVisibility = collection.visibility;
       if (!dto.collectionMetadata && !dto.action && dto.shouldPublish === undefined) {
         throw new BadRequestException('Missing upload completions');
       }
@@ -1287,9 +1507,19 @@ export class CollectionsService {
             saleMinPrice: salePrices.length ? Math.min(...salePrices) : null,
             saleMaxPrice: salePrices.length ? Math.max(...salePrices) : null,
             status: action === 'publish' ? 'PUBLISHED' : 'DRAFT',
+            ...(action === 'draft'
+              ? { lastActivityAt: now, draftVersion: { increment: 1 } }
+              : {}),
           },
         });
       });
+
+      if (
+        (metadata.visibility ?? collection.visibility) !== previousVisibility &&
+        (metadata.visibility ?? collection.visibility) === CollectionVisibility.PRIVATE
+      ) {
+        await this.handleVisibilityChange(collectionId, 'PRIVATE', userId);
+      }
 
       return updated;
     }
@@ -1329,6 +1559,12 @@ export class CollectionsService {
           throw new BadRequestException('Presign has expired');
         }
         if (presign.status === 'USED') {
+          const existing = await this.prisma.fileUpload.findUnique({
+            where: { id: completion.fileId },
+          });
+          if (existing) {
+            return { file: existing, orderIndex: presign.orderIndex ?? null };
+          }
           throw new BadRequestException('Presign already used');
         }
         if (presign.status === 'EXPIRED') {
@@ -1412,9 +1648,16 @@ export class CollectionsService {
 
     // Mark collection as published (or keep as DRAFT if requested)
     const newStatus = dto.shouldPublish === false ? 'DRAFT' : 'PUBLISHED';
+    const finalizeAt = new Date();
     const publishedCollection = await this.prisma.collection.update({
       where: { id: collectionId },
-      data: { status: newStatus, coverMediaId },
+      data: {
+        status: newStatus,
+        coverMediaId,
+        ...(newStatus === 'DRAFT'
+          ? { lastActivityAt: finalizeAt, draftVersion: { increment: 1 } }
+          : {}),
+      },
       include: {
         owner: true,
         medias: { include: { file: true }, orderBy: { orderIndex: 'asc' } },
@@ -1474,6 +1717,7 @@ export class CollectionsService {
     }
 
     return this.prisma.$transaction(async (tx) => {
+      await this.lockCollectionForUpdate(tx, collectionId);
       const products = await tx.product.findMany({
         where: { id: { in: productIds }, deletedAt: null },
         include: { brand: true },
@@ -1499,9 +1743,13 @@ export class CollectionsService {
         where: { collectionId },
       });
       const newIds = productIds.filter((id) => !existingSet.has(id));
-      if (existingCount + newIds.length > 5) {
-        throw new BadRequestException('Collections can contain maximum 5 products.');
+      if (existingCount + newIds.length > this.maxProductsPerCollection) {
+        throw new BadRequestException(
+          `Collections can contain maximum ${this.maxProductsPerCollection} products.`,
+        );
       }
+
+      let nextOrderIndex = existingCount;
 
       for (const productId of productIds) {
         if (existingSet.has(productId)) continue;
@@ -1519,12 +1767,14 @@ export class CollectionsService {
           } as any);
         }
 
-        const orderIndex = await tx.collectionProduct.count({
-          where: { collectionId },
-        });
+        const orderIndex = nextOrderIndex;
+        nextOrderIndex += 1;
 
-        const product = products.find((p) => p.id === productId);
-        const shouldBePrimary = product ? !product.collectionId : false;
+        const existingPrimary = await tx.collectionProduct.findFirst({
+          where: { productId, isPrimary: true },
+          select: { collectionId: true },
+        });
+        const shouldBePrimary = !existingPrimary;
 
         await tx.collectionProduct.create({
           data: {
@@ -1537,13 +1787,11 @@ export class CollectionsService {
         });
 
         if (shouldBePrimary) {
-          await tx.product.update({
-            where: { id: productId },
-            data: { collectionId },
-          });
+          await this.enforcePrimaryMembership(tx, productId);
         }
       }
 
+      await this.touchDraftActivity(tx, collectionId);
       await this.recalculateCollectionPriceRange(collectionId);
       return { success: true };
     });
@@ -1560,6 +1808,7 @@ export class CollectionsService {
     }
 
     return this.prisma.$transaction(async (tx) => {
+      await this.lockCollectionForUpdate(tx, collectionId);
       const existingLinks = await tx.collectionProduct.findMany({
         where: { collectionId, productId: { in: productIds } },
         select: { productId: true, isPrimary: true },
@@ -1569,36 +1818,18 @@ export class CollectionsService {
         where: { collectionId, productId: { in: productIds } },
       });
 
-      const remaining = await tx.collectionProduct.findMany({
-        where: { productId: { in: productIds } },
-        orderBy: { orderIndex: 'asc' },
-        select: { productId: true, collectionId: true },
-      });
-
       for (const productId of productIds) {
-        const next = remaining.find((r) => r.productId === productId);
-        await tx.product.update({
-          where: { id: productId },
-          data: { collectionId: next?.collectionId ?? null },
-        });
-
         const removedPrimary = existingLinks.find(
           (l) => l.productId === productId && l.isPrimary,
         );
         if (removedPrimary) {
-          await tx.collectionProduct.updateMany({
-            where: { productId },
-            data: { isPrimary: false },
-          });
-          if (next?.collectionId) {
-            await tx.collectionProduct.updateMany({
-              where: { productId, collectionId: next.collectionId },
-              data: { isPrimary: true },
-            });
-          }
+          await this.enforcePrimaryMembership(tx, productId);
+        } else {
+          await this.enforcePrimaryMembership(tx, productId);
         }
       }
 
+      await this.touchDraftActivity(tx, collectionId);
       await this.recalculateCollectionPriceRange(collectionId);
 
       return { success: true };
@@ -1623,25 +1854,37 @@ export class CollectionsService {
     if (orderIndexSet.size !== items.length) {
       throw new BadRequestException('Duplicate orderIndex in reorder request');
     }
+    if (items.some((item) => item.orderIndex < 0)) {
+      throw new BadRequestException('orderIndex must be non-negative');
+    }
 
     const existing = await this.prisma.collectionProduct.findMany({
       where: { collectionId },
       select: { productId: true },
     });
     const existingIds = new Set(existing.map((e) => e.productId));
+    if (existingIds.size !== items.length) {
+      throw new BadRequestException('items must include all products in collection');
+    }
     for (const item of items) {
       if (!existingIds.has(item.productId)) {
         throw new NotFoundException('Product not found in collection');
       }
     }
 
+    const normalized = [...items]
+      .sort((a, b) => a.orderIndex - b.orderIndex)
+      .map((item, index) => ({ productId: item.productId, orderIndex: index }));
+
     await this.prisma.$transaction(async (tx) => {
-      for (const item of items) {
+      for (const item of normalized) {
         await tx.collectionProduct.updateMany({
           where: { collectionId, productId: item.productId },
           data: { orderIndex: item.orderIndex },
         });
       }
+
+      await this.touchDraftActivity(tx, collectionId);
     });
 
     return { success: true };
@@ -1656,6 +1899,18 @@ export class CollectionsService {
     if (!collection) throw new NotFoundException('Collection not found');
     if (collection.status === 'ARCHIVED') {
       return { success: true, status: 'ARCHIVED' };
+    }
+
+    const activeOrdersCount = await this.countActiveOrdersForCollection(
+      collectionId,
+      ownerId,
+    );
+    if (activeOrdersCount > 0) {
+      throw new ConflictException({
+        code: 'COLLECTION_ARCHIVE_BLOCKED',
+        message: `Cannot archive collection with ${activeOrdersCount} active orders.`,
+        activeOrdersCount,
+      } as any);
     }
 
     await this.prisma.collection.update({
@@ -1732,10 +1987,15 @@ export class CollectionsService {
     dto: CreateProductDto,
   ) {
     await this.assertOwner(collectionId, ownerId);
-    return this.storeService.createProduct(ownerId, {
+    const created = await this.storeService.createProduct(ownerId, {
       ...dto,
       collectionId,
     });
+    await (this.prisma.collection as any).updateMany({
+      where: { id: collectionId, status: 'DRAFT', deletedAt: null },
+      data: { lastActivityAt: new Date(), draftVersion: { increment: 1 } },
+    });
+    return created;
   }
 
   /**
@@ -1744,7 +2004,7 @@ export class CollectionsService {
   async getCollection(id: string, requesterId?: string) {
     const ok = await this.canViewCollection(id, requesterId);
     if (!ok) throw new NotFoundException('Collection not found');
-    const collection = await this.prisma.collection.findUnique({
+    const collection = (await this.prisma.collection.findUnique({
       where: { id },
       include: {
         owner: {
@@ -1802,10 +2062,14 @@ export class CollectionsService {
           },
         },
       },
-    });
+    } as any)) as any;
 
     if (!collection) {
       throw new NotFoundException('Collection not found');
+    }
+
+    if (collection.deletedAt) {
+      throw new GoneException('Collection has been deleted');
     }
 
     const isOwner = !!(requesterId && collection.ownerId === requesterId);
@@ -1838,7 +2102,21 @@ export class CollectionsService {
       }) as any;
     }
 
-    return { ...collection, products, totalLikes };
+    const preferredCover = collection.coverMediaId
+      ? collection.medias?.find((m: any) => m.id === collection.coverMediaId)
+      : collection.medias?.[0];
+    const coverFromMedia = preferredCover?.file?.s3Url ?? null;
+    const coverFromProduct = (products || []).find((link: any) => {
+      const p = link?.product;
+      const images = Array.isArray(p?.images) ? p.images : [];
+      return Boolean(p?.thumbnail) || images.length > 0;
+    });
+    const productCoverUrl = coverFromProduct?.product?.thumbnail
+      ?? (Array.isArray(coverFromProduct?.product?.images)
+        ? coverFromProduct.product.images[0]
+        : null);
+
+    return { ...collection, products, totalLikes, coverImageUrl: coverFromMedia || productCoverUrl };
   }
 
   /**
@@ -1849,6 +2127,7 @@ export class CollectionsService {
       where: {
         ownerId: userId,
         status: 'DRAFT',
+        deletedAt: null,
       },
       orderBy: { createdAt: 'desc' },
       include: {
@@ -1907,7 +2186,7 @@ export class CollectionsService {
     const { cursor, limit = 20, visibility } = options || {};
     const privateFeature =
       (process.env.FEATURE_PRIVATE_COLLECTIONS ?? 'true') !== 'false';
-    const where: any = { ownerId: userId };
+    const where: any = { ownerId: userId, deletedAt: null };
     const now = new Date();
     const productVisibilityWhere =
       requesterId === userId
@@ -2159,56 +2438,37 @@ export class CollectionsService {
    */
   async deleteCollection(collectionId: string, requesterId: string) {
     // Verify collection and ownership
-    const collection = await this.prisma.collection.findUnique({
+    const collection = (await this.prisma.collection.findUnique({
       where: { id: collectionId },
       include: { medias: { include: { file: true } } },
-    });
+    } as any)) as any;
     if (!collection) throw new NotFoundException('Collection not found');
     if (collection.ownerId !== requesterId)
       throw new ForbiddenException('Not owner of collection');
 
-    // Collect S3 keys to delete
-    const keys = collection.medias
-      .map((m) => m.file?.s3Key)
-      .filter((k): k is string => !!k);
-
-    // Delete from S3 if there are files. Log but don't fail if S3 deletion has issues.
-    if (keys.length > 0) {
-      try {
-        await this.uploadService.deleteS3ObjectsByKeys(keys);
-      } catch (err) {
-        console.warn(
-          'S3 deletion failed, but continuing with DB cleanup:',
-          err,
-        );
-        // Don't throw - allow DB cleanup to proceed even if S3 fails
-      }
+    if (collection.deletedAt) {
+      return { success: true, deletedAt: collection.deletedAt };
     }
 
-    // Then delete DB records in a transaction: fileUpload, collectionMedia, collection
-    try {
-      await this.prisma.$transaction(async (tx) => {
-        // Delete dependent records in FK-safe order:
-        // 1) collectionMedia rows referencing file uploads
-        // 2) the fileUpload rows themselves
-        // 3) the collection record
-        const fileIds = collection.medias
-          .map((m) => m.file?.id)
-          .filter((id): id is string => !!id);
+    const now = new Date();
+    const deleteExpiresAt = new Date(now.getTime() + this.collectionDeleteWindowMs);
 
-        await tx.collectionMedia.deleteMany({ where: { collectionId } as any });
+    await this.prisma.collection.update({
+      where: { id: collectionId },
+      data: {
+        deletedAt: now,
+        deleteExpiresAt,
+      },
+    });
 
-        if (fileIds.length) {
-          await tx.fileUpload.deleteMany({
-            where: { id: { in: fileIds } } as any,
-          });
-        }
-
-        await tx.collection.delete({ where: { id: collectionId } });
-      });
-    } catch (err) {
-      console.warn('DB transaction failed after S3 deletion:', err);
-      throw new BadRequestException('Failed to delete collection records');
+    const productLinks = await this.prisma.collectionProduct.findMany({
+      where: { collectionId },
+      select: { productId: true },
+    });
+    const productIds = productLinks.map((l) => l.productId);
+    if (productIds.length) {
+      await this.prisma.cartItem.deleteMany({ where: { productId: { in: productIds } } });
+      await this.prisma.wishlistItem.deleteMany({ where: { productId: { in: productIds } } });
     }
 
     // Create notification for successful deletion (informational, no action link)
@@ -2220,7 +2480,8 @@ export class CollectionsService {
           {
             payload: {
               collectionName: collection.title || 'Collection',
-              message: `Your collection "${collection.title || 'Untitled'}" has been successfully deleted.`,
+              message: `Your collection "${collection.title || 'Untitled'}" has been deleted. You can restore it until ${deleteExpiresAt.toISOString()}.`,
+              restoreBy: deleteExpiresAt.toISOString(),
             },
           },
         );
@@ -2229,6 +2490,32 @@ export class CollectionsService {
         // Don't fail the operation if notification fails
       }
     }
+
+    return { success: true, deletedAt: now.toISOString(), restoreBy: deleteExpiresAt.toISOString() };
+  }
+
+  async restoreCollection(collectionId: string, ownerId: string) {
+    const collection = (await this.prisma.collection.findUnique({
+      where: { id: collectionId },
+      select: { ownerId: true, deletedAt: true, deleteExpiresAt: true } as any,
+    } as any)) as any;
+    if (!collection) throw new NotFoundException('Collection not found');
+    if (collection.ownerId !== ownerId) {
+      throw new ForbiddenException('Not owner of collection');
+    }
+    if (!collection.deletedAt) {
+      throw new BadRequestException('Collection is not deleted');
+    }
+
+    const now = new Date();
+    if (collection.deleteExpiresAt && collection.deleteExpiresAt < now) {
+      throw new GoneException('Collection recovery window has expired');
+    }
+
+    await this.prisma.collection.update({
+      where: { id: collectionId },
+      data: { deletedAt: null, deleteExpiresAt: null },
+    });
 
     return { success: true };
   }
@@ -2298,7 +2585,14 @@ export class CollectionsService {
         }
 
         if (remaining === 0 && productCount === 0) {
-          await tx.collection.delete({ where: { id: collectionId } });
+          const now = new Date();
+          const deleteExpiresAt = new Date(
+            now.getTime() + this.collectionDeleteWindowMs,
+          );
+          await tx.collection.update({
+            where: { id: collectionId },
+            data: { deletedAt: now, deleteExpiresAt },
+          });
         }
       });
     } catch (err) {
@@ -2306,10 +2600,21 @@ export class CollectionsService {
       throw new BadRequestException('Failed to delete media records');
     }
 
-    const remainingAfter = await this.prisma.collectionMedia.count({
-      where: { collectionId },
+    const [remainingAfter, remainingProducts, deletedInfo] = await Promise.all([
+      this.prisma.collectionMedia.count({ where: { collectionId } }),
+      this.prisma.collectionProduct.count({ where: { collectionId } }),
+      this.prisma.collection.findUnique({
+        where: { id: collectionId },
+        select: { deletedAt: true } as any,
+      }),
+    ]);
+    const deletedCollection =
+      !!deletedInfo?.deletedAt ||
+      (remainingAfter === 0 && remainingProducts === 0);
+    await (this.prisma.collection as any).updateMany({
+      where: { id: collectionId, status: 'DRAFT', deletedAt: null },
+      data: { lastActivityAt: new Date(), draftVersion: { increment: 1 } },
     });
-    const deletedCollection = remainingAfter === 0;
     return { success: true, deletedCollection };
   }
 
@@ -2329,6 +2634,8 @@ export class CollectionsService {
       where: {
         status: 'PUBLISHED',
         visibility: CollectionVisibility.PUBLIC,
+        deletedAt: null,
+        isAvailableInStore: false,
       } as any,
       orderBy: [
         { patchesCount: 'desc' }, // Show most patched first
@@ -3449,6 +3756,51 @@ export class CollectionsService {
     body: UpdateCollectionDto,
   ) {
     await this.assertOwner(collectionId, ownerId);
+    const existing = (await this.prisma.collection.findUnique({
+      where: { id: collectionId },
+      select: { status: true, visibility: true, deletedAt: true, draftVersion: true } as any,
+    } as any)) as any;
+    if (!existing) throw new NotFoundException('Collection not found');
+    if (existing.deletedAt) throw new GoneException('Collection has been deleted');
+
+    const now = new Date();
+    if (existing.status === 'DRAFT') {
+      const ttlMinutes = Math.max(
+        5,
+        parseInt(process.env.DRAFT_SESSION_TTL_MINUTES || '30', 10),
+      );
+      const nextExpiresAt = new Date(now.getTime() + ttlMinutes * 60 * 1000);
+      if (typeof body.draftVersion === 'number' && body.draftVersion !== existing.draftVersion) {
+        throw new ConflictException({
+          code: 'DRAFT_VERSION_CONFLICT',
+          message: 'Draft was modified by another session.',
+          serverVersion: existing.draftVersion,
+        } as any);
+      }
+      if (body.draftSessionToken) {
+        const session = await this.prisma.collectionDraftSession.findFirst({
+          where: {
+            collectionId,
+            ownerId,
+            sessionToken: body.draftSessionToken,
+            isActive: true,
+            expiresAt: { gt: now },
+          },
+          select: { id: true },
+        });
+        if (!session) {
+          throw new ConflictException({
+            code: 'DRAFT_SESSION_CONFLICT',
+            message: 'Draft session has expired or is not active.',
+          } as any);
+        }
+        await this.prisma.collectionDraftSession.update({
+          where: { id: session.id },
+          data: { lastHeartbeatAt: now, expiresAt: nextExpiresAt },
+        });
+      }
+    }
+
     const data: any = {};
     if (typeof body.title === 'string' || body.title === null)
       data.title = body.title || null;
@@ -3497,6 +3849,11 @@ export class CollectionsService {
       data.categoryId = body.categoryId || null;
     }
 
+    if (existing.status === 'DRAFT') {
+      data.lastActivityAt = now;
+      data.draftVersion = { increment: 1 };
+    }
+
     const updated = await this.prisma.collection.update({
       where: { id: collectionId },
       data,
@@ -3514,6 +3871,14 @@ export class CollectionsService {
         _count: { select: { medias: true, views: true, comments: true } },
       },
     });
+    if (
+      typeof body.visibility === 'string' &&
+      body.visibility !== existing.visibility &&
+      body.visibility === CollectionVisibility.PRIVATE
+    ) {
+      await this.handleVisibilityChange(collectionId, 'PRIVATE', ownerId);
+    }
+
     return updated;
   }
 
@@ -3571,6 +3936,7 @@ export class CollectionsService {
       const hasAnyInStock = variants.length > 0 
         ? variants.some(v => v.inStock)
         : p.totalStock > 0;
+      const canBackorder = !!p.allowBackorders;
 
       const item = {
         productId: p.id,
@@ -3583,6 +3949,7 @@ export class CollectionsService {
         variants,
         defaultSize: p.sizes?.[0],
         defaultColor: p.colors?.[0],
+        allowBackorders: canBackorder,
       };
 
       // Determine availability
@@ -3598,10 +3965,13 @@ export class CollectionsService {
           reason: 'scheduled', 
           availableAt: p.publishAt.toISOString(),
         });
-      } else if (!hasAnyInStock) {
+      } else if (!hasAnyInStock && !canBackorder) {
         unavailable.push({ ...item, reason: 'out_of_stock' });
       } else {
-        available.push(item);
+        available.push({
+          ...item,
+          availabilityNote: !hasAnyInStock && canBackorder ? 'backorder' : undefined,
+        });
       }
     }
 
@@ -3707,24 +4077,110 @@ export class CollectionsService {
     collectionId: string,
     ownerId: string,
     mode: 'csv' | 'images' | 'mixed' = 'csv',
+    file?: Express.Multer.File,
   ) {
     await this.assertOwner(collectionId, ownerId);
 
-    const jobId = uuidv4();
+    if (!file || !file.buffer) {
+      throw new BadRequestException('CSV file is required for bulk upload');
+    }
+    const maxFileSize = 25 * 1024 * 1024;
+    if (file.size > maxFileSize) {
+      throw new BadRequestException('Bulk upload file exceeds 25MB limit');
+    }
 
-    // In production, this would create a job in a queue
-    // For now, return scaffold response
+    const jobId = uuidv4();
+    const rows = this.parseBulkCsv(file);
+    if (!rows.length) {
+      throw new BadRequestException('CSV file contains no rows');
+    }
+
+    await this.prisma.collectionBulkUploadJob.create({
+      data: {
+        id: jobId,
+        collectionId,
+        ownerId,
+        mode,
+        status: 'PROCESSING',
+        totalRows: rows.length,
+      },
+    });
+
+    const rowRecords = rows.map((row, index) => {
+      const rowId = row.rowId || row.id || `${jobId}:${index + 1}`;
+      return {
+        id: uuidv4(),
+        jobId,
+        rowIndex: index + 1,
+        rowId,
+        status: 'PENDING' as const,
+        payload: row as any,
+      };
+    });
+
+    await this.prisma.collectionBulkUploadRow.createMany({
+      data: rowRecords as any,
+    });
+
+    let processedRows = 0;
+    let successRows = 0;
+    let failedRows = 0;
+    const errors: Array<{ row: number; field: string; message: string }> = [];
+
+    for (const rowRecord of rowRecords) {
+      processedRows += 1;
+      try {
+        await this.prisma.collectionBulkUploadRow.update({
+          where: { id: rowRecord.id },
+          data: { status: 'PROCESSING' },
+        });
+
+        const payload = rowRecord.payload as Record<string, string>;
+        const dto = this.buildBulkProductDto(payload, collectionId);
+        const created = await this.storeService.createProduct(ownerId, dto);
+
+        await this.prisma.collectionBulkUploadRow.update({
+          where: { id: rowRecord.id },
+          data: { status: 'SUCCESS', createdProductId: created.id },
+        });
+        successRows += 1;
+      } catch (error: any) {
+        failedRows += 1;
+        const message = error?.response?.message || error?.message || 'Row failed';
+        errors.push({ row: rowRecord.rowIndex, field: 'row', message });
+        await this.prisma.collectionBulkUploadRow.update({
+          where: { id: rowRecord.id },
+          data: { status: 'FAILED', errorMessage: message },
+        });
+      }
+    }
+
+    const status = failedRows > 0 && successRows > 0
+      ? 'PARTIAL'
+      : failedRows > 0
+        ? 'FAILED'
+        : 'COMPLETED';
+
+    await this.prisma.collectionBulkUploadJob.update({
+      where: { id: jobId },
+      data: {
+        status,
+        processedRows,
+        successRows,
+        failedRows,
+        errorSummary: errors as any,
+        completedAt: new Date(),
+      },
+    });
+
     return {
       jobId,
-      status: 'pending',
-      uploadUrl: `/api/collections/${collectionId}/bulk-upload/${jobId}/files`,
-      csvTemplateUrl: '/api/collections/bulk-upload/template.csv',
-      maxFileSize: 25 * 1024 * 1024, // 25MB
-      supportedFormats: {
-        csv: ['text/csv', 'application/vnd.ms-excel'],
-        images: ['image/jpeg', 'image/png', 'image/webp'],
-      },
-      expiresAt: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
+      status: status.toLowerCase(),
+      totalRows: rows.length,
+      processedRows,
+      successRows,
+      failedRows,
+      errors,
     };
   }
 
@@ -3732,18 +4188,29 @@ export class CollectionsService {
    * Get bulk upload job status
    */
   async getBulkUploadStatus(jobId: string, ownerId: string) {
-    // In production, this would check the job queue
-    // For now, return scaffold response
+    const job = await this.prisma.collectionBulkUploadJob.findFirst({
+      where: { id: jobId, ownerId },
+      include: { rows: true },
+    });
+    if (!job) throw new NotFoundException('Bulk upload job not found');
+
+    const failedRows = job.rows.filter((row) => row.status === 'FAILED');
+    const errors = failedRows.map((row) => ({
+      row: row.rowIndex,
+      field: 'row',
+      message: row.errorMessage || 'Row failed',
+    }));
+
     return {
       jobId,
-      status: 'pending' as const,
-      progress: 0,
-      totalRows: 0,
-      processedRows: 0,
-      successCount: 0,
-      failedCount: 0,
-      errors: [],
-      createdAt: new Date().toISOString(),
+      status: job.status.toLowerCase(),
+      totalRows: job.totalRows,
+      processedRows: job.processedRows,
+      successRows: job.successRows,
+      failedRows: job.failedRows,
+      errors,
+      createdAt: job.createdAt.toISOString(),
+      completedAt: job.completedAt ? job.completedAt.toISOString() : undefined,
     };
   }
 
@@ -3755,12 +4222,78 @@ export class CollectionsService {
     ownerId: string,
     rowIndices: number[],
   ) {
-    // In production, this would re-queue specific rows
+    const job = await this.prisma.collectionBulkUploadJob.findFirst({
+      where: { id: jobId, ownerId },
+      include: { rows: true },
+    });
+    if (!job) throw new NotFoundException('Bulk upload job not found');
+
+    const targetRows = Array.isArray(rowIndices) && rowIndices.length > 0
+      ? job.rows.filter((row) => rowIndices.includes(row.rowIndex))
+      : job.rows.filter((row) => row.status === 'FAILED');
+
+    let retriedCount = 0;
+    let successRows = job.successRows;
+    let failedRows = job.failedRows;
+    const errors: Array<{ row: number; field: string; message: string }> = [];
+
+    for (const row of targetRows) {
+      if (row.status === 'SUCCESS') continue;
+      retriedCount += 1;
+      try {
+        await this.prisma.collectionBulkUploadRow.update({
+          where: { id: row.id },
+          data: { status: 'PROCESSING', errorMessage: null },
+        });
+
+        const payload = (row.payload || {}) as Record<string, string>;
+        const dto = this.buildBulkProductDto(payload, job.collectionId);
+        const created = await this.storeService.createProduct(ownerId, dto);
+
+        await this.prisma.collectionBulkUploadRow.update({
+          where: { id: row.id },
+          data: { status: 'SUCCESS', createdProductId: created.id },
+        });
+        successRows += 1;
+      } catch (error: any) {
+        const message = error?.response?.message || error?.message || 'Row failed';
+        errors.push({ row: row.rowIndex, field: 'row', message });
+        await this.prisma.collectionBulkUploadRow.update({
+          where: { id: row.id },
+          data: { status: 'FAILED', errorMessage: message },
+        });
+      }
+    }
+
+    const refreshedRows = await this.prisma.collectionBulkUploadRow.findMany({
+      where: { jobId },
+      select: { status: true },
+    });
+    successRows = refreshedRows.filter((row) => row.status === 'SUCCESS').length;
+    failedRows = refreshedRows.filter((row) => row.status === 'FAILED').length;
+    const processedRows = refreshedRows.length;
+    const status = failedRows > 0 && successRows > 0
+      ? 'PARTIAL'
+      : failedRows > 0
+        ? 'FAILED'
+        : 'COMPLETED';
+
+    await this.prisma.collectionBulkUploadJob.update({
+      where: { id: jobId },
+      data: {
+        status,
+        processedRows,
+        successRows,
+        failedRows,
+        errorSummary: errors as any,
+        completedAt: new Date(),
+      },
+    });
+
     return {
       jobId,
-      retryJobId: uuidv4(),
-      rowsQueued: rowIndices.length,
-      status: 'pending',
+      retriedCount,
+      status: status.toLowerCase(),
     };
   }
 
@@ -3808,48 +4341,115 @@ export class CollectionsService {
   async checkDraftConflict(
     draftId: string,
     ownerId: string,
-    currentDeviceInfo: string,
+    deviceName?: string,
+    forceNew?: boolean,
+    existingToken?: string,
   ) {
     await this.assertOwner(draftId, ownerId);
 
-    const draft = await this.prisma.collection.findUnique({
+    const draft = (await this.prisma.collection.findUnique({
       where: { id: draftId },
       select: {
         id: true,
         status: true,
+        deletedAt: true,
         updatedAt: true,
-        // In a full implementation, we'd have lastEditDeviceInfo and lastEditSessionId fields
-      },
-    });
+      } as any,
+    } as any)) as any;
 
     if (!draft) throw new NotFoundException('Draft not found');
+    if (draft.deletedAt) throw new GoneException('Collection has been deleted');
     if (draft.status !== 'DRAFT') {
       throw new BadRequestException('Collection is not a draft');
     }
 
-    // Check if edited within last 5 minutes
-    const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
-    const recentlyEdited = draft.updatedAt > fiveMinutesAgo;
+    const now = new Date();
+    const ttlMinutes = Math.max(
+      5,
+      parseInt(process.env.DRAFT_SESSION_TTL_MINUTES || '30', 10),
+    );
+    const expiresAt = new Date(now.getTime() + ttlMinutes * 60 * 1000);
 
-    // In production, compare device info from a session tracking table
-    // For now, always allow (no conflict detection storage yet)
-    return {
-      hasConflict: false,
-      currentSession: {
-        sessionId: uuidv4(),
-        draftId,
-        deviceInfo: currentDeviceInfo,
-        startedAt: new Date().toISOString(),
-        lastActiveAt: new Date().toISOString(),
+    const normalizeDeviceType = (name?: string) => {
+      const value = (name || '').toLowerCase();
+      if (value.includes('ipad') || value.includes('tablet')) return 'tablet';
+      if (value.includes('iphone') || value.includes('android') || value.includes('mobile')) return 'mobile';
+      return 'desktop';
+    };
+
+    if (existingToken) {
+      const existingSession = await this.prisma.collectionDraftSession.findFirst({
+        where: {
+          collectionId: draftId,
+          ownerId,
+          sessionToken: existingToken,
+          isActive: true,
+          expiresAt: { gt: now },
+        },
+      });
+      if (existingSession) {
+        await this.prisma.collectionDraftSession.update({
+          where: { id: existingSession.id },
+          data: { lastHeartbeatAt: now, expiresAt },
+        });
+        return {
+          collectionId: draftId,
+          sessionToken: existingToken,
+          hasConflict: false,
+        };
+      }
+    }
+
+    const activeSession = await this.prisma.collectionDraftSession.findFirst({
+      where: {
+        collectionId: draftId,
+        ownerId,
+        isActive: true,
+        expiresAt: { gt: now },
       },
-      conflictingSession: recentlyEdited ? {
-        sessionId: 'unknown',
-        draftId,
-        deviceInfo: 'Another device',
-        startedAt: draft.updatedAt.toISOString(),
-        lastActiveAt: draft.updatedAt.toISOString(),
-      } : undefined,
-      recommendedAction: recentlyEdited ? 'view_only' : 'continue',
+      orderBy: { lastHeartbeatAt: 'desc' },
+    });
+
+    if (activeSession && !forceNew) {
+      return {
+        collectionId: draftId,
+        sessionToken: activeSession.sessionToken,
+        hasConflict: true,
+        conflictDetails: {
+          existingSessionToken: activeSession.sessionToken,
+          deviceName: activeSession.deviceName ?? 'Unknown device',
+          deviceType: (activeSession.deviceType as any) ?? 'desktop',
+          startedAt: activeSession.startedAt.toISOString(),
+          userId: ownerId,
+        },
+      };
+    }
+
+    if (activeSession && forceNew) {
+      await this.prisma.collectionDraftSession.updateMany({
+        where: { collectionId: draftId, ownerId, isActive: true },
+        data: { isActive: false },
+      });
+    }
+
+    const sessionToken = uuidv4();
+    await this.prisma.collectionDraftSession.create({
+      data: {
+        id: uuidv4(),
+        collectionId: draftId,
+        ownerId,
+        sessionToken,
+        deviceName: deviceName ?? null,
+        deviceType: normalizeDeviceType(deviceName),
+        lastHeartbeatAt: now,
+        expiresAt,
+      },
+    });
+
+    return {
+      collectionId: draftId,
+      sessionToken,
+      hasConflict: false,
     };
   }
 
@@ -3871,26 +4471,58 @@ export class CollectionsService {
 
     const media = await this.prisma.collectionMedia.findFirst({
       where: { id: mediaId, collectionId },
+      include: { file: true },
     });
 
     if (!media) throw new NotFoundException('Media not found in collection');
 
-    // Delete the media
-    await this.prisma.collectionMedia.delete({ where: { id: mediaId } });
-
-    // Reassign cover if this was the cover
-    if (collection?.coverMediaId === mediaId) {
-      const firstRemaining = await this.prisma.collectionMedia.findFirst({
-        where: { collectionId },
-        orderBy: { orderIndex: 'asc' },
-        select: { id: true },
-      });
-
-      await this.prisma.collection.update({
-        where: { id: collectionId },
-        data: { coverMediaId: firstRemaining?.id ?? null },
-      });
+    const key = media.file?.s3Key;
+    if (key) {
+      await this.uploadService.deleteS3ObjectByKey(key);
     }
+
+    const now = new Date();
+    await this.prisma.$transaction(async (tx) => {
+      if (media.file?.id) {
+        await tx.fileUpload.delete({ where: { id: media.file.id } as any });
+      }
+
+      await tx.collectionMedia.delete({ where: { id: mediaId } as any });
+
+      if (collection?.coverMediaId === mediaId) {
+        const firstRemaining = await tx.collectionMedia.findFirst({
+          where: { collectionId },
+          orderBy: { orderIndex: 'asc' },
+          select: { id: true },
+        });
+
+        await tx.collection.update({
+          where: { id: collectionId },
+          data: { coverMediaId: firstRemaining?.id ?? null },
+        });
+      }
+
+      const remainingMedia = await tx.collectionMedia.count({
+        where: { collectionId },
+      });
+      const remainingProducts = await tx.collectionProduct.count({
+        where: { collectionId },
+      });
+      if (remainingMedia === 0 && remainingProducts === 0) {
+        const deleteExpiresAt = new Date(
+          now.getTime() + this.collectionDeleteWindowMs,
+        );
+        await tx.collection.update({
+          where: { id: collectionId },
+          data: { deletedAt: now, deleteExpiresAt },
+        });
+      }
+    });
+
+    await (this.prisma.collection as any).updateMany({
+      where: { id: collectionId, status: 'DRAFT', deletedAt: null },
+      data: { lastActivityAt: new Date(), draftVersion: { increment: 1 } },
+    });
 
     return { success: true, coverReassigned: collection?.coverMediaId === mediaId };
   }

@@ -3,6 +3,7 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { NotificationsService } from 'src/notifications/notifications.service';
 import { NotificationType } from '@prisma/client';
+import { UploadService } from 'src/upload/upload.service';
 import {
   DRAFT_EXPIRY_CONFIG,
   getDraftExpiryDate,
@@ -31,6 +32,7 @@ export class CollectionSchedulerService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly notifications: NotificationsService,
+    private readonly uploadService: UploadService,
   ) {}
 
   /**
@@ -73,6 +75,9 @@ export class CollectionSchedulerService {
       // 4. Clean up orphaned presigned uploads
       await this.cleanupOrphanedPresigns();
 
+      // 5. Permanently delete collections past soft-delete window
+      await this.deleteExpiredSoftDeletedCollections();
+
       this.logger.log('Draft cleanup job completed successfully');
     } catch (error) {
       this.logger.error('Draft cleanup job failed:', error);
@@ -82,29 +87,36 @@ export class CollectionSchedulerService {
   /**
    * Send expiry warning notifications for drafts approaching expiry
    */
-  private async sendExpiryWarnings(createdBefore: Date, daysRemaining: number) {
-    const createdAfter = new Date(createdBefore.getTime() - 24 * 60 * 60 * 1000);
+  private async sendExpiryWarnings(activityBefore: Date, daysRemaining: number) {
+    const activityAfter = new Date(activityBefore.getTime() - 24 * 60 * 60 * 1000);
 
-    const drafts = await this.prisma.collection.findMany({
+    const drafts = await (this.prisma as any).collection.findMany({
       where: {
         status: 'DRAFT',
-        createdAt: {
-          gte: createdAfter,
-          lte: createdBefore,
-        },
+        deletedAt: null,
+        OR: [
+          {
+            lastActivityAt: {
+              gte: activityAfter,
+              lte: activityBefore,
+            },
+          },
+          {
+            lastActivityAt: null,
+            createdAt: {
+              gte: activityAfter,
+              lte: activityBefore,
+            },
+          },
+        ],
       },
-      select: {
-        id: true,
-        title: true,
-        ownerId: true,
-        createdAt: true,
-        _count: { select: { medias: true, products: true } },
-      },
+      include: { _count: { select: { medias: true, products: true } } },
       take: this.config.CLEANUP_BATCH_SIZE,
     });
 
     for (const draft of drafts) {
-      const expiryDate = getDraftExpiryDate(draft.createdAt);
+      const anchor = draft.lastActivityAt ?? draft.createdAt;
+      const expiryDate = getDraftExpiryDate(anchor);
 
       try {
         await this.notifications.create(
@@ -138,18 +150,17 @@ export class CollectionSchedulerService {
   /**
    * Delete drafts older than TTL and notify owners
    */
-  private async deleteExpiredDrafts(createdBefore: Date) {
-    const expiredDrafts = await this.prisma.collection.findMany({
+  private async deleteExpiredDrafts(activityBefore: Date) {
+    const expiredDrafts = await (this.prisma as any).collection.findMany({
       where: {
         status: 'DRAFT',
-        createdAt: { lte: createdBefore },
+        deletedAt: null,
+        OR: [
+          { lastActivityAt: { lte: activityBefore } },
+          { lastActivityAt: null, createdAt: { lte: activityBefore } },
+        ],
       },
-      select: {
-        id: true,
-        title: true,
-        ownerId: true,
-        _count: { select: { medias: true, products: true } },
-      },
+      include: { _count: { select: { medias: true, products: true } } },
       take: this.config.CLEANUP_BATCH_SIZE,
     });
 
@@ -171,9 +182,32 @@ export class CollectionSchedulerService {
           },
         );
 
-        // Delete the draft (cascade deletes medias and product links)
-        await this.prisma.collection.delete({
-          where: { id: draft.id },
+        const medias = await this.prisma.collectionMedia.findMany({
+          where: { collectionId: draft.id },
+          include: { file: true },
+        });
+        const keys = medias
+          .map((m) => m.file?.s3Key)
+          .filter((k): k is string => !!k);
+
+        if (keys.length > 0) {
+          try {
+            await this.uploadService.deleteS3ObjectsByKeys(keys);
+          } catch (error) {
+            this.logger.error(`Failed to delete S3 objects for draft ${draft.id}:`, error);
+          }
+        }
+
+        const fileIds = medias
+          .map((m) => m.file?.id)
+          .filter((id): id is string => !!id);
+
+        await this.prisma.$transaction(async (tx) => {
+          await tx.collectionMedia.deleteMany({ where: { collectionId: draft.id } as any });
+          if (fileIds.length) {
+            await tx.fileUpload.deleteMany({ where: { id: { in: fileIds } } as any });
+          }
+          await tx.collection.delete({ where: { id: draft.id } });
         });
 
         this.logger.log(`Deleted expired draft ${draft.id}`);
@@ -203,20 +237,64 @@ export class CollectionSchedulerService {
   }
 
   /**
+   * Permanently delete collections past soft-delete recovery window
+   */
+  private async deleteExpiredSoftDeletedCollections() {
+    const now = new Date();
+    const candidates = await (this.prisma as any).collection.findMany({
+      where: {
+        deletedAt: { not: null },
+        deleteExpiresAt: { lte: now },
+      },
+      select: { id: true },
+      take: this.config.CLEANUP_BATCH_SIZE,
+    });
+
+    for (const entry of candidates) {
+      try {
+        const medias = await this.prisma.collectionMedia.findMany({
+          where: { collectionId: entry.id },
+          include: { file: true },
+        });
+        const keys = medias
+          .map((m) => m.file?.s3Key)
+          .filter((k): k is string => !!k);
+        if (keys.length) {
+          try {
+            await this.uploadService.deleteS3ObjectsByKeys(keys);
+          } catch (error) {
+            this.logger.error(`Failed to delete S3 objects for collection ${entry.id}:`, error);
+          }
+        }
+
+        const fileIds = medias
+          .map((m) => m.file?.id)
+          .filter((id): id is string => !!id);
+
+        await this.prisma.$transaction(async (tx) => {
+          await tx.collectionMedia.deleteMany({ where: { collectionId: entry.id } as any });
+          if (fileIds.length) {
+            await tx.fileUpload.deleteMany({ where: { id: { in: fileIds } } as any });
+          }
+          await tx.collection.delete({ where: { id: entry.id } });
+        });
+
+        this.logger.log(`Hard-deleted collection ${entry.id} after recovery window`);
+      } catch (error) {
+        this.logger.error(`Failed to hard-delete collection ${entry.id}:`, error);
+      }
+    }
+  }
+
+  /**
    * Get draft statistics for a user (used by frontend)
    */
   async getDraftStats(userId: string) {
     const now = new Date();
 
-    const drafts = await this.prisma.collection.findMany({
-      where: { ownerId: userId, status: 'DRAFT' },
-      select: {
-        id: true,
-        title: true,
-        createdAt: true,
-        updatedAt: true,
-        _count: { select: { medias: true, products: true } },
-      },
+    const drafts = await (this.prisma as any).collection.findMany({
+      where: { ownerId: userId, status: 'DRAFT', deletedAt: null },
+      include: { _count: { select: { medias: true, products: true } } },
       orderBy: { updatedAt: 'desc' },
     });
 
@@ -225,8 +303,9 @@ export class CollectionSchedulerService {
       maxDraftsAllowed: 4,
       draftTtlDays: this.config.DRAFT_TTL_DAYS,
       drafts: drafts.map((d) => {
-        const expiryDate = getDraftExpiryDate(d.createdAt);
-        const daysRemaining = getDaysUntilExpiry(d.createdAt);
+        const anchor = d.lastActivityAt ?? d.createdAt;
+        const expiryDate = getDraftExpiryDate(anchor);
+        const daysRemaining = getDaysUntilExpiry(anchor);
 
         return {
           id: d.id,
