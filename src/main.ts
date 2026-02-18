@@ -1,5 +1,5 @@
 // Register runtime module aliases only in production (compiled JS)
-// to support absolute imports like 'src/...'
+// to support absolute imports such as 'src/...'
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 declare const __non_webpack_require__: any;
 try {
@@ -18,6 +18,7 @@ import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { TransformInterceptor } from './transform/transform.interceptor';
 import { BadRequestException, Logger, ValidationPipe } from '@nestjs/common';
+import type { ValidationError } from 'class-validator';
 import { AllExceptionsFilter } from './filters/All-exception.filter';
 import * as cookieParser from 'cookie-parser';
 import * as bodyParser from 'body-parser';
@@ -74,17 +75,45 @@ async function bootstrap() {
         transformOptions: { enableImplicitConversion: true },
         disableErrorMessages: false,
         stopAtFirstError: false,
-        exceptionFactory: (errors) => {
+        exceptionFactory: (errors: ValidationError[]) => {
           try {
-            const formattedErrors = errors.map((error) => {
-              const constraints = error.constraints || {};
-              return {
-                property: error.property || 'unknown',
-                value: error.value,
-                constraints: Object.values(constraints),
-                messages: Object.values(constraints),
-              };
-            });
+            const flattenErrors = (
+              items: ValidationError[],
+              parentPath = '',
+            ) => {
+              const result: Array<{
+                property: string;
+                value: unknown;
+                constraints: string[];
+                messages: string[];
+              }> = [];
+
+              for (const error of items) {
+                const propertyPath = parentPath
+                  ? `${parentPath}.${error.property}`
+                  : error.property || 'unknown';
+                const constraints = error.constraints
+                  ? Object.values(error.constraints)
+                  : [];
+
+                if (constraints.length > 0) {
+                  result.push({
+                    property: propertyPath,
+                    value: error.value,
+                    constraints,
+                    messages: constraints,
+                  });
+                }
+
+                if (Array.isArray(error.children) && error.children.length > 0) {
+                  result.push(...flattenErrors(error.children, propertyPath));
+                }
+              }
+
+              return result;
+            };
+
+            const formattedErrors = flattenErrors(errors);
 
             try {
               logger.warn(

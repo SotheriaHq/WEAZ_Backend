@@ -8,8 +8,8 @@ import { ContentTarget } from '@prisma/client';
 export class ModerationController {
   constructor(private prisma: PrismaService) {}
 
-  @Post('likes/quarantine')
-  async quarantine(
+  @Post('threads/quarantine')
+  async quarantineThreads(
     @Body()
     body: {
       userId: string;
@@ -18,7 +18,7 @@ export class ModerationController {
       reason?: string;
     },
   ) {
-    await this.prisma.quarantinedLike.create({
+    await this.prisma.quarantinedThread.create({
       data: {
         userId: body.userId,
         contentId: body.contentId,
@@ -29,8 +29,8 @@ export class ModerationController {
     return { success: true };
   }
 
-  @Post('likes/bulk-remove')
-  async bulkRemove(
+  @Post('threads/bulk-remove')
+  async bulkRemoveThreads(
     @Body()
     body: {
       entries: Array<{
@@ -46,7 +46,7 @@ export class ModerationController {
           where: { userId: e.userId, collectionId: e.contentId },
         });
       } else if (e.contentType === 'POST') {
-        await this.prisma.like.deleteMany({
+        await this.prisma.thread.deleteMany({
           where: { userId: e.userId, postId: e.contentId },
         });
       }

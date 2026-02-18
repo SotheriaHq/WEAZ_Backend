@@ -4,9 +4,10 @@ import { CommentsV2Service } from './commentsv2.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { EventsGateway } from 'src/realtime/events.gateway';
 import { NotificationsModule } from 'src/notifications/notifications.module';
+import { QueueModule } from 'src/queue/queue.module';
 
 @Module({
-  imports: [NotificationsModule],
+  imports: [NotificationsModule, QueueModule],
   controllers: [CommentsV2Controller],
   providers: [CommentsV2Service, PrismaService, EventsGateway],
 })

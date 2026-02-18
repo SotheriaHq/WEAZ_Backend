@@ -46,11 +46,23 @@ export class ProductViewCounterService implements OnModuleInit, OnModuleDestroy 
     this.flushTimer = null;
     await this.flush();
 
-    if (this.redis) {
+    await this.closeRedisClient(this.redis);
+    this.redis = null;
+  }
+
+  private async closeRedisClient(client: RedisClientType | null) {
+    if (!client) return;
+    try {
+      client.removeAllListeners();
+      if (client.isOpen) {
+        await client.quit();
+      } else {
+        client.disconnect();
+      }
+    } catch {
       try {
-        await this.redis.quit();
+        client.disconnect();
       } catch {}
-      this.redis = null;
     }
   }
 
@@ -64,7 +76,9 @@ export class ProductViewCounterService implements OnModuleInit, OnModuleDestroy 
         .catch((err: any) => {
           // Best-effort: fall back to local buffer if Redis is unhealthy
           this.logger.warn(`Redis increment failed; buffering locally: ${err?.message || err}`);
+          const failedClient = this.redis;
           this.redis = null;
+          void this.closeRedisClient(failedClient);
           const current = this.buffer.get(productId) ?? 0;
           this.buffer.set(productId, current + 1);
         });
@@ -130,7 +144,9 @@ export class ProductViewCounterService implements OnModuleInit, OnModuleDestroy 
         return;
       } catch (err: any) {
         this.logger.warn(`Redis flush failed; falling back to local buffer: ${err?.message || err}`);
+        const failedClient = this.redis;
         this.redis = null;
+        await this.closeRedisClient(failedClient);
         // continue into local flush
       }
     }

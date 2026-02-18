@@ -10,11 +10,15 @@ type CommentTarget = 'POST' | 'COLLECTION' | 'COLLECTION_MEDIA';
 import type { CommentV2 as PrismaCommentV2 } from '@prisma/client';
 import { EventsGateway } from 'src/realtime/events.gateway';
 import { NotificationsService } from 'src/notifications/notifications.service';
+import { NotificationsQueueService } from 'src/queue/notifications.queue.service';
 import { CreateCommentV2Dto, ListQueryDto } from './dto';
 import {
   NotificationType,
   CollectionVisibility,
   AccessState,
+  UserType,
+  PatchStatus,
+  PatchMode,
 } from '@prisma/client';
 
 function escapeHtml(input: string): string {
@@ -32,6 +36,7 @@ export class CommentsV2Service {
     private readonly prisma: PrismaService,
     private readonly events: EventsGateway,
     private readonly notifications: NotificationsService,
+    private readonly notificationsQueue?: NotificationsQueueService,
   ) {}
 
   private async canViewCollection(collectionId: string, requesterId?: string) {
@@ -198,11 +203,11 @@ export class CommentsV2Service {
           parentId: created.parentId,
           depth: created.depth,
           contentSanitized: created.contentSanitized,
-          likeCount: 0,
+          threadCount: 0,
           replyCount: 0,
           createdAt: created.createdAt,
           deletedAt: null,
-          isLikedByMe: false,
+          isThreadedByMe: false,
           children: [],
         },
       });
@@ -212,8 +217,12 @@ export class CommentsV2Service {
     }
 
     // Notify target owner
+    let ownerId: string | null = null;
+    let targetUrl: string | null = null;
+    let ownerProfile:
+      | { id: string; type: UserType; brandFullName: string | null; username: string }
+      | null = null;
     try {
-      let ownerId: string | null = null;
       if (targetType === 'POST') {
         const post = await this.prisma.post.findUnique({
           where: { id: targetId },
@@ -232,8 +241,20 @@ export class CommentsV2Service {
         ownerId = media?.collection.ownerId ?? null;
       }
 
-      if (ownerId && ownerId !== userId) {
-        let targetUrl = '';
+      if (ownerId) {
+        ownerProfile = await this.prisma.user.findUnique({
+          where: { id: ownerId },
+          select: {
+            id: true,
+            type: true,
+            brandFullName: true,
+            username: true,
+          },
+        });
+      }
+
+      if (ownerId) {
+        targetUrl = '';
         if (targetType === 'COLLECTION') {
           targetUrl = `/collections/${targetId}?commentId=${created.id}`;
         } else if (targetType === 'COLLECTION_MEDIA') {
@@ -251,7 +272,9 @@ export class CommentsV2Service {
         } else if (targetType === 'POST') {
           targetUrl = `/posts/${targetId}?commentId=${created.id}`;
         }
+      }
 
+      if (ownerId && ownerId !== userId) {
         await this.notifications.create(ownerId, NotificationType.COMMENT, {
           actorId: userId,
           payload: { targetType, targetId, targetUrl },
@@ -281,7 +304,76 @@ export class CommentsV2Service {
       }
     } catch {}
 
-    return created;
+    // Notify patchers about engagement on brand content
+    if (
+      ownerProfile &&
+      ownerProfile.type === UserType.BRAND &&
+      this.notifications
+    ) {
+      const patchers = await this.prisma.patchConnection.findMany({
+        where: {
+          targetId: ownerProfile.id,
+          status: PatchStatus.ACCEPTED,
+          mode: PatchMode.USER_TO_BRAND,
+        },
+        select: { requesterId: true },
+      });
+      const brandName =
+        ownerProfile.brandFullName || ownerProfile.username || 'A brand';
+      const targetLabel =
+        targetType === 'COLLECTION_MEDIA'
+          ? 'a design'
+          : targetType === 'COLLECTION'
+            ? 'a collection'
+            : 'a post';
+      const message = `${brandName} received a new comment on ${targetLabel}.`;
+
+      const recipientIds = patchers
+        .map((p) => p.requesterId)
+        .filter((id) => id && id !== userId);
+
+      if (recipientIds.length > 0 && this.notificationsQueue) {
+        try {
+          await this.notificationsQueue.enqueueFanout({
+            recipientIds,
+            notificationType: NotificationType.COMMENT,
+            actorId: userId,
+            payload: {
+              targetType,
+              targetId,
+              targetUrl: targetUrl ?? undefined,
+              message,
+            },
+            dedupeMs: 2 * 60 * 1000,
+          });
+        } catch (e) {
+          console.warn('Failed to enqueue comment fanout', e);
+        }
+      } else if (recipientIds.length > 0) {
+        for (const recipientId of recipientIds) {
+          try {
+            await this.notifications.create(
+              recipientId,
+              NotificationType.COMMENT,
+              {
+                actorId: userId,
+                payload: {
+                  targetType,
+                  targetId,
+                  targetUrl: targetUrl ?? undefined,
+                  message,
+                },
+                dedupeMs: 2 * 60 * 1000,
+              },
+            );
+          } catch (e) {
+            console.warn('Failed to notify patcher of comment', e);
+          }
+        }
+      }
+    }
+
+    return { ...created, threadCount: created.threadsCount };
   }
 
   async listForTarget(
@@ -343,24 +435,26 @@ export class CommentsV2Service {
     const hasNextPage = items.length > limit;
     const data = hasNextPage ? items.slice(0, -1) : items;
 
-    // isLikedByMe for visible comments
+    // isThreadedByMe for visible comments
     const ids = data.flatMap((c) => [c.id, ...c.children.map((r) => r.id)]);
-    let likedSet = new Set<string>();
+    let threadedSet = new Set<string>();
     if (requesterId && ids.length) {
-      const liked = await this.prisma.commentV2Like.findMany({
+      const threaded = await this.prisma.commentV2Thread.findMany({
         where: { userId: requesterId, commentId: { in: ids } },
         select: { commentId: true },
       });
-      likedSet = new Set(liked.map((l) => l.commentId));
+      threadedSet = new Set(threaded.map((t) => t.commentId));
     }
 
     return {
       items: data.map((c) => ({
         ...c,
-        isLikedByMe: requesterId ? likedSet.has(c.id) : false,
+        threadCount: c.threadsCount,
+        isThreadedByMe: requesterId ? threadedSet.has(c.id) : false,
         children: c.children.map((r) => ({
           ...r,
-          isLikedByMe: requesterId ? likedSet.has(r.id) : false,
+          threadCount: r.threadsCount,
+          isThreadedByMe: requesterId ? threadedSet.has(r.id) : false,
         })),
       })),
       hasNextPage,
@@ -413,22 +507,23 @@ export class CommentsV2Service {
     const hasNextPage = items.length > limit;
     const data = hasNextPage ? items.slice(0, -1) : items;
 
-    let likedSet = new Set<string>();
+    let threadedSet = new Set<string>();
     if (requesterId && data.length) {
-      const liked = await this.prisma.commentV2Like.findMany({
+      const threaded = await this.prisma.commentV2Thread.findMany({
         where: {
           userId: requesterId,
           commentId: { in: data.map((d) => d.id) },
         },
         select: { commentId: true },
       });
-      likedSet = new Set(liked.map((l) => l.commentId));
+      threadedSet = new Set(threaded.map((t) => t.commentId));
     }
 
     return {
       items: data.map((r) => ({
         ...r,
-        isLikedByMe: requesterId ? likedSet.has(r.id) : false,
+        threadCount: r.threadsCount,
+        isThreadedByMe: requesterId ? threadedSet.has(r.id) : false,
       })),
       hasNextPage,
       endCursor: data.length
@@ -437,54 +532,54 @@ export class CommentsV2Service {
     };
   }
 
-  async toggleLike(commentId: string, userId: string, clientEventId?: string) {
+  async toggleThread(commentId: string, userId: string, clientEventId?: string) {
     const comment = await this.prisma.commentV2.findUnique({
       where: { id: commentId },
     });
     if (!comment) throw new NotFoundException('Comment not found');
 
-    const existing = await this.prisma.commentV2Like
+    const existing = await this.prisma.commentV2Thread
       .findUnique({ where: { commentId_userId: { commentId, userId } } })
       .catch(() => null);
 
-    const liked = await this.prisma.$transaction(async (tx) => {
+    const threaded = await this.prisma.$transaction(async (tx) => {
       if (existing) {
-        await tx.commentV2Like.delete({
+        await tx.commentV2Thread.delete({
           where: { commentId_userId: { commentId, userId } },
         });
         const updated = await tx.commentV2.update({
           where: { id: commentId },
-          data: { likeCount: { decrement: 1 } },
+          data: { threadsCount: { decrement: 1 } },
         });
-        return { liked: false, likeCount: updated.likeCount };
+        return { threaded: false, threadCount: updated.threadsCount };
       } else {
-        await tx.commentV2Like.create({
+        await tx.commentV2Thread.create({
           data: { id: uuidv4(), commentId, userId },
         });
         const updated = await tx.commentV2.update({
           where: { id: commentId },
-          data: { likeCount: { increment: 1 } },
+          data: { threadsCount: { increment: 1 } },
         });
-        return { liked: true, likeCount: updated.likeCount };
+        return { threaded: true, threadCount: updated.threadsCount };
       }
     });
 
     const room = `COMMENT:${commentId}`;
-    this.events.server?.to(room).emit('comment.liked', {
+    this.events.server?.to(room).emit('comment.threaded', {
       commentId,
       userId,
-      likeCount: liked.likeCount,
+      threadCount: threaded.threadCount,
       at: Date.now(),
       clientEventId,
     });
-    return liked;
+    return threaded;
   }
 
-  async isLiked(commentId: string, userId: string) {
-    const liked = await this.prisma.commentV2Like.findUnique({
+  async isThreaded(commentId: string, userId: string) {
+    const threaded = await this.prisma.commentV2Thread.findUnique({
       where: { commentId_userId: { commentId, userId } },
     });
-    return { liked: !!liked };
+    return { threaded: !!threaded };
   }
 
   async softDelete(commentId: string, requesterId: string) {
@@ -551,7 +646,7 @@ export class CommentsV2Service {
       where: { id: commentId },
     });
     if (!c) throw new NotFoundException('Comment not found');
-    return { likeCount: c.likeCount, replyCount: c.replyCount };
+    return { threadCount: c.threadsCount, replyCount: c.replyCount };
   }
 
   // Unified comment list for a collection: includes comments made on the collection
@@ -622,24 +717,26 @@ export class CommentsV2Service {
     const hasNextPage = rows.length > limit;
     const data = hasNextPage ? rows.slice(0, -1) : rows;
 
-    // Like state for visible comments
+    // Thread state for visible comments
     const ids = data.flatMap((c) => [c.id, ...c.children.map((r) => r.id)]);
-    let likedSet = new Set<string>();
+    let threadedSet = new Set<string>();
     if (requesterId && ids.length) {
-      const liked = await this.prisma.commentV2Like.findMany({
+      const threaded = await this.prisma.commentV2Thread.findMany({
         where: { userId: requesterId, commentId: { in: ids } },
         select: { commentId: true },
       });
-      likedSet = new Set(liked.map((l) => l.commentId));
+      threadedSet = new Set(threaded.map((t) => t.commentId));
     }
 
     return {
       items: data.map((c) => ({
         ...c,
-        isLikedByMe: requesterId ? likedSet.has(c.id) : false,
+        threadCount: c.threadsCount,
+        isThreadedByMe: requesterId ? threadedSet.has(c.id) : false,
         children: c.children.map((r) => ({
           ...r,
-          isLikedByMe: requesterId ? likedSet.has(r.id) : false,
+          threadCount: r.threadsCount,
+          isThreadedByMe: requesterId ? threadedSet.has(r.id) : false,
         })),
       })),
       hasNextPage,

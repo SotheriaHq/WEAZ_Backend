@@ -1,4 +1,4 @@
-import {
+﻿import {
   Injectable,
   BadRequestException,
   NotFoundException,
@@ -6,8 +6,10 @@ import {
   ConflictException,
   GoneException,
 } from '@nestjs/common';
+import { InjectQueue } from '@nestjs/bullmq';
+import type { Queue } from 'bullmq';
 import { PrismaService } from 'src/prisma/prisma.service';
-import { v4 as uuidv4 } from 'uuid';
+import { v4 as uuidv4, validate as isUuid } from 'uuid';
 import {
   ReactionType,
   UserType,
@@ -17,6 +19,7 @@ import {
   CollectionVisibility,
   CollectionType,
   PatchStatus,
+  PatchMode,
   OrderStatus,
 } from '@prisma/client';
 import { NotificationsService } from 'src/notifications/notifications.service';
@@ -33,6 +36,15 @@ import * as crypto from 'crypto';
 import { sanitizeTags } from 'src/common/utils/tag-validator';
 import { UpdateCollectionDto } from './dto/update-collection.dto';
 import { parse } from 'csv-parse/sync';
+import { SystemTagsService } from 'src/tags/system-tags.service';
+import { TagIndexService } from 'src/tags/tag-index.service';
+import { NotificationsQueueService } from 'src/queue/notifications.queue.service';
+import {
+  BULK_UPLOAD_QUEUE,
+  BULK_UPLOAD_PROCESS_JOB,
+  BULK_UPLOAD_RETRY_JOB,
+} from 'src/queue/queue.constants';
+import { TAG_ENTITY_TYPE } from 'src/tags/tag-entity-type';
 
 @Injectable()
 export class CollectionsService {
@@ -43,6 +55,10 @@ export class CollectionsService {
     private readonly storeService: StoreService,
     private readonly analytics?: AnalyticsService,
     private readonly notifications?: NotificationsService,
+    private readonly systemTags?: SystemTagsService,
+    private readonly tagIndex?: TagIndexService,
+    private readonly notificationsQueue?: NotificationsQueueService,
+    @InjectQueue(BULK_UPLOAD_QUEUE) private readonly bulkUploadQueue?: Queue,
   ) {}
 
   private readonly maxProductsPerCollection = 5;
@@ -53,7 +69,7 @@ export class CollectionsService {
     collectionId: string,
   ) {
     await tx.$executeRaw(
-      Prisma.sql`SELECT id FROM "Collection" WHERE id = ${collectionId} FOR UPDATE`,
+      Prisma.sql`SELECT "_id" FROM "Collection" WHERE "_id" = ${collectionId} FOR UPDATE`,
     );
   }
 
@@ -145,6 +161,66 @@ export class CollectionsService {
       }
     }
     return activeCount;
+  }
+
+  private isCollectionTagIndexed(collection: {
+    status?: string | null;
+    visibility?: CollectionVisibility | null;
+    deletedAt?: Date | null;
+  }): boolean {
+    if (collection.deletedAt) return false;
+    if (collection.status !== 'PUBLISHED') return false;
+    return (collection.visibility ?? CollectionVisibility.PUBLIC) === CollectionVisibility.PUBLIC;
+  }
+
+  private getIndexedCollectionTags(
+    collection: {
+      status?: string | null;
+      visibility?: CollectionVisibility | null;
+      deletedAt?: Date | null;
+      tags?: Array<string | null | undefined> | null;
+    },
+    fallbackTags?: Array<string | null | undefined>,
+  ): string[] {
+    if (!this.isCollectionTagIndexed(collection)) return [];
+    const source = fallbackTags ?? (Array.isArray(collection.tags) ? collection.tags : []);
+    return sanitizeTags(source.map((tag) => String(tag ?? '')), 30);
+  }
+
+  private areTagsEqual(a: string[], b: string[]): boolean {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i += 1) {
+      if (a[i] !== b[i]) return false;
+    }
+    return true;
+  }
+
+  private isProductTagIndexed(product: {
+    isActive?: boolean | null;
+    publishAt?: Date | null;
+    archivedAt?: Date | null;
+    deletedAt?: Date | null;
+  }): boolean {
+    if (!product.isActive) return false;
+    if (product.deletedAt || product.archivedAt) return false;
+    const now = new Date();
+    if (product.publishAt && product.publishAt > now) return false;
+    return true;
+  }
+
+  private getIndexedProductTags(
+    product: {
+      isActive?: boolean | null;
+      publishAt?: Date | null;
+      archivedAt?: Date | null;
+      deletedAt?: Date | null;
+      tags?: Array<string | null | undefined> | null;
+    },
+    fallbackTags?: Array<string | null | undefined>,
+  ): string[] {
+    if (!this.isProductTagIndexed(product)) return [];
+    const source = fallbackTags ?? (Array.isArray(product.tags) ? product.tags : []);
+    return sanitizeTags(source.map((tag) => String(tag ?? '')), 30);
   }
 
   private parseBulkCsv(file: Express.Multer.File) {
@@ -716,7 +792,7 @@ export class CollectionsService {
             targetUrl:
               state === 'APPROVED'
                 ? `/collections/${collectionId}`
-                : `/brands/${ownerId}?tab=private`,
+                : `/profile/${ownerId}?tab=private`,
           },
         },
       );
@@ -751,7 +827,7 @@ export class CollectionsService {
           actorId: ownerId,
           payload: {
             collectionId,
-            targetUrl: `/brands/${ownerId}?tab=private`,
+            targetUrl: `/profile/${ownerId}?tab=private`,
           },
         },
       );
@@ -1043,6 +1119,25 @@ export class CollectionsService {
         },
       });
 
+      const indexedCollectionTags = this.getIndexedCollectionTags(
+        {
+          status: collection.status,
+          visibility: collection.visibility as CollectionVisibility,
+          deletedAt: null,
+          tags: collection.tags ?? [],
+        },
+        collection.tags ?? [],
+      );
+      if (this.tagIndex && indexedCollectionTags.length > 0) {
+        await this.tagIndex.syncEntityTags(
+          TAG_ENTITY_TYPE.COLLECTION,
+          collection.id,
+          [],
+          indexedCollectionTags,
+          { maxCount: 30 },
+        );
+      }
+
       return {
         sessionId: collection.id,
         expiresAt: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
@@ -1055,6 +1150,10 @@ export class CollectionsService {
 
     if (!dto.categoryId) {
       throw new BadRequestException('Category is required');
+    }
+
+    if (!isUuid(dto.categoryId)) {
+      throw new BadRequestException('Category format is invalid');
     }
 
     // Validate files array
@@ -1109,6 +1208,25 @@ export class CollectionsService {
       },
     });
 
+    const indexedCollectionTags = this.getIndexedCollectionTags(
+      {
+        status: collection.status,
+        visibility: collection.visibility as CollectionVisibility,
+        deletedAt: null,
+        tags: sanitizedTags,
+      },
+      sanitizedTags,
+    );
+    if (this.tagIndex && indexedCollectionTags.length > 0) {
+      await this.tagIndex.syncEntityTags(
+        TAG_ENTITY_TYPE.COLLECTION,
+        collection.id,
+        [],
+        indexedCollectionTags,
+        { maxCount: 30 },
+      );
+    }
+
     // Generate presigned URLs for each file using UploadService (creates presign DB entries)
     const uploadData = await Promise.all(
       dto.files.map(async (fileSpec, index) => {
@@ -1157,7 +1275,7 @@ export class CollectionsService {
     tag?: string;
     category?: string;
     countsPolicy?: 'combined';
-    requesterId?: string; // Add requesterId to check like status
+    requesterId?: string; // Add requesterId to check thread status
   }) {
     const { cursor, limit = 20, tag, category, requesterId } = options ?? {};
     const take = Math.min(Math.max(limit, 1), 40);
@@ -1229,7 +1347,7 @@ export class CollectionsService {
               select: {
                 reactions: true,
                 comments: true,
-                patches: true,
+                collectionCollabs: true,
               },
             },
           },
@@ -1240,21 +1358,21 @@ export class CollectionsService {
     const hasNextPage = medias.length > take;
     const data = hasNextPage ? medias.slice(0, -1) : medias;
 
-    // Hydrate isLiked for requester when available
-    let isLikedMap: Record<string, boolean> = {};
+    // Hydrate isThreaded for requester when available
+    let isThreadedMap: Record<string, boolean> = {};
     if (requesterId) {
       const mediaIds = data.map((m) => m.id);
       if (mediaIds.length) {
-        const liked = await this.prisma.collectionMediaReaction.findMany({
+        const threaded = await this.prisma.collectionMediaReaction.findMany({
           where: {
             userId: requesterId,
-            type: 'LIKE',
+            type: ReactionType.THREAD,
             collectionMediaId: { in: mediaIds },
           },
           select: { collectionMediaId: true },
         });
-        const set = new Set(liked.map((r) => r.collectionMediaId));
-        isLikedMap = mediaIds.reduce(
+        const set = new Set(threaded.map((r) => r.collectionMediaId));
+        isThreadedMap = mediaIds.reduce(
           (acc, id) => {
             acc[id] = set.has(id);
             return acc;
@@ -1315,16 +1433,16 @@ export class CollectionsService {
         saleMaxPrice: collection.saleMaxPrice,
         saleStartAt: collection.saleStartAt,
         saleEndAt: collection.saleEndAt,
-        likesCount: media.likesCount,
+        threadsCount: media.threadsCount,
         commentsCount: media.commentsCount,
-        patchesCount: collection.patchesCount,
+        collectionCollabCount: collection.collectionCollabsCount,
         tags: collection.tags ?? [],
         brandId: owner.id,
         brandName: owner.brandFullName ?? owner.username ?? '',
         username: owner.username ?? '',
         brandLogo: logoSignedUrl ?? owner.profileImage ?? null, // Signed URL or fallback
         brandLogoFileId: logoFileId ?? null,
-        isLiked: requesterId ? !!isLikedMap[media.id] : false, // Add like status for requester
+        isThreaded: requesterId ? !!isThreadedMap[media.id] : false, // Add thread status for requester
       };
       // Optionally include combinedCommentsCount for frontend normalization
       if (options?.countsPolicy === 'combined') {
@@ -1368,7 +1486,7 @@ export class CollectionsService {
               select: {
                 reactions: true,
                 comments: true,
-                patches: true,
+                collectionCollabs: true,
                 views: true,
               },
             },
@@ -1388,14 +1506,16 @@ export class CollectionsService {
       }
       const metadata = dto.collectionMetadata ?? {};
       const action = dto.action ?? (dto.shouldPublish === false ? 'draft' : 'publish');
+      const resolvedNextTags = Array.isArray(metadata.tags)
+        ? sanitizeTags(metadata.tags, 30)
+        : collection.tags ?? [];
 
       if (action === 'publish') {
         const nextTitle = metadata.title ?? collection.title;
         if (!nextTitle || !nextTitle.trim()) {
           throw new BadRequestException('Title is required to publish');
         }
-        const nextTags = Array.isArray(metadata.tags) ? metadata.tags : collection.tags ?? [];
-        if (sanitizeTags(nextTags).length === 0) {
+        if (resolvedNextTags.length === 0) {
           throw new BadRequestException('At least one descriptive tag is required');
         }
         const nextCategoryId = metadata.categoryId ?? collection.categoryId;
@@ -1416,6 +1536,7 @@ export class CollectionsService {
             include: {
               product: {
                 select: {
+                  id: true,
                   price: true,
                   salePrice: true,
                   saleStartAt: true,
@@ -1437,6 +1558,29 @@ export class CollectionsService {
         }
 
         const now = new Date();
+        if (action === 'publish') {
+          const inactiveIds = links
+            .filter(
+              (l) =>
+                l.product &&
+                l.product.deletedAt == null &&
+                l.product.archivedAt == null &&
+                l.product.isActive === false,
+            )
+            .map((l) => l.product!.id);
+          if (inactiveIds.length > 0) {
+            await tx.product.updateMany({
+              where: { id: { in: inactiveIds } },
+              data: { isActive: true },
+            });
+            links.forEach((l) => {
+              if (l.product && inactiveIds.includes(l.product.id)) {
+                l.product.isActive = true;
+              }
+            });
+          }
+        }
+
         const activeProducts = links.filter((l) => {
           const p = l.product;
           if (!p || p.deletedAt || p.archivedAt || !p.isActive) return false;
@@ -1499,9 +1643,7 @@ export class CollectionsService {
               typeof metadata.isAvailableInStore === 'boolean'
                 ? metadata.isAvailableInStore
                 : collection.isAvailableInStore,
-            tags: Array.isArray(metadata.tags)
-              ? sanitizeTags(metadata.tags)
-              : collection.tags,
+            tags: resolvedNextTags,
             minPrice: prices.length ? Math.min(...prices) : null,
             maxPrice: maxPrices.length ? Math.max(...maxPrices) : null,
             saleMinPrice: salePrices.length ? Math.min(...salePrices) : null,
@@ -1519,6 +1661,41 @@ export class CollectionsService {
         (metadata.visibility ?? collection.visibility) === CollectionVisibility.PRIVATE
       ) {
         await this.handleVisibilityChange(collectionId, 'PRIVATE', userId);
+      }
+      const previousIndexedTags = this.getIndexedCollectionTags(
+        {
+          status: collection.status,
+          visibility: collection.visibility as CollectionVisibility,
+          deletedAt: collection.deletedAt,
+          tags: collection.tags ?? [],
+        },
+        collection.tags ?? [],
+      );
+      const nextIndexedTags = this.getIndexedCollectionTags(
+        {
+          status: action === 'publish' ? 'PUBLISHED' : 'DRAFT',
+          visibility:
+            (metadata.visibility ?? collection.visibility) as CollectionVisibility,
+          deletedAt: null,
+          tags: resolvedNextTags,
+        },
+        resolvedNextTags,
+      );
+      const shouldSyncCollectionTags =
+        Array.isArray(metadata.tags) ||
+        !this.areTagsEqual(previousIndexedTags, nextIndexedTags);
+
+      if (this.systemTags && shouldSyncCollectionTags) {
+        await this.systemTags.syncTags(previousIndexedTags, nextIndexedTags);
+      }
+      if (this.tagIndex && shouldSyncCollectionTags) {
+        await this.tagIndex.syncEntityTags(
+          TAG_ENTITY_TYPE.COLLECTION,
+          collectionId,
+          previousIndexedTags,
+          nextIndexedTags,
+          { maxCount: 30 },
+        );
       }
 
       return updated;
@@ -1665,39 +1842,64 @@ export class CollectionsService {
           select: {
             reactions: true,
             comments: true,
-            patches: true,
+            collectionCollabs: true,
             views: true,
           },
         },
       },
     });
 
-    // Notify followers if published
+    // Notify patchers if published
     if (newStatus === 'PUBLISHED' && this.notifications) {
-      // Fetch followers
-      const followers = await this.prisma.follow.findMany({
-        where: { followingId: userId },
-        select: { followerId: true },
+      // Fetch patchers (user-to-brand patches)
+      const patchers = await this.prisma.patchConnection.findMany({
+        where: {
+          targetId: userId,
+          status: PatchStatus.ACCEPTED,
+          mode: PatchMode.USER_TO_BRAND,
+        },
+        select: { requesterId: true },
       });
+      const recipientIds = patchers
+        .map((p) => p.requesterId)
+        .filter((id) => id && id !== userId);
 
-      // Fan-out notifications
-      for (const f of followers) {
+      if (recipientIds.length > 0 && this.notificationsQueue) {
         try {
-          await this.notifications.create(
-            f.followerId,
-            NotificationType.COLLECTION_UPLOAD,
-            {
-              actorId: userId,
-              payload: {
-                collectionId: publishedCollection.id,
-                collectionTitle: publishedCollection.title,
-                targetUrl: `/collections/${publishedCollection.id}`,
-                message: `${publishedCollection.owner.brandFullName || publishedCollection.owner.username} created a new collection: ${publishedCollection.title}`,
-              },
+          await this.notificationsQueue.enqueueFanout({
+            recipientIds,
+            notificationType: NotificationType.COLLECTION_UPLOAD,
+            actorId: userId,
+            payload: {
+              collectionId: publishedCollection.id,
+              collectionTitle: publishedCollection.title,
+              targetUrl: `/collections/${publishedCollection.id}`,
+              message: `${publishedCollection.owner.brandFullName || publishedCollection.owner.username} created a new collection: ${publishedCollection.title}`,
             },
-          );
+          });
         } catch (e) {
-          console.warn(`Failed to notify follower ${f.followerId}`, e);
+          console.warn('Failed to enqueue collection publish fanout', e);
+        }
+      } else if (recipientIds.length > 0) {
+        // Fan-out notifications (fallback)
+        for (const recipientId of recipientIds) {
+          try {
+            await this.notifications.create(
+              recipientId,
+              NotificationType.COLLECTION_UPLOAD,
+              {
+                actorId: userId,
+                payload: {
+                  collectionId: publishedCollection.id,
+                  collectionTitle: publishedCollection.title,
+                  targetUrl: `/collections/${publishedCollection.id}`,
+                  message: `${publishedCollection.owner.brandFullName || publishedCollection.owner.username} created a new collection: ${publishedCollection.title}`,
+                },
+              },
+            );
+          } catch (e) {
+            console.warn(`Failed to notify patcher ${recipientId}`, e);
+          }
         }
       }
     }
@@ -1894,7 +2096,7 @@ export class CollectionsService {
     await this.assertOwner(collectionId, ownerId);
     const collection = await this.prisma.collection.findUnique({
       where: { id: collectionId },
-      select: { status: true },
+      select: { status: true, visibility: true, deletedAt: true, tags: true },
     });
     if (!collection) throw new NotFoundException('Collection not found');
     if (collection.status === 'ARCHIVED') {
@@ -1917,6 +2119,29 @@ export class CollectionsService {
       where: { id: collectionId },
       data: { status: 'ARCHIVED', archivedFromStatus: collection.status },
     });
+
+    const previousIndexedTags = this.getIndexedCollectionTags(
+      {
+        status: collection.status,
+        visibility: collection.visibility,
+        deletedAt: collection.deletedAt,
+        tags: collection.tags ?? [],
+      },
+      collection.tags ?? [],
+    );
+    if (previousIndexedTags.length > 0 && this.systemTags) {
+      await this.systemTags.syncTags(previousIndexedTags, []);
+    }
+    if (previousIndexedTags.length > 0 && this.tagIndex) {
+      await this.tagIndex.syncEntityTags(
+        TAG_ENTITY_TYPE.COLLECTION,
+        collectionId,
+        previousIndexedTags,
+        [],
+        { maxCount: 30 },
+      );
+    }
+
     return { success: true, status: 'ARCHIVED' };
   }
 
@@ -1924,7 +2149,13 @@ export class CollectionsService {
     await this.assertOwner(collectionId, ownerId);
     const collection = await this.prisma.collection.findUnique({
       where: { id: collectionId },
-      select: { status: true, archivedFromStatus: true },
+      select: {
+        status: true,
+        archivedFromStatus: true,
+        visibility: true,
+        deletedAt: true,
+        tags: true,
+      },
     });
     if (!collection) throw new NotFoundException('Collection not found');
     if (collection.status !== 'ARCHIVED') {
@@ -1936,6 +2167,38 @@ export class CollectionsService {
       where: { id: collectionId },
       data: { status: restoreStatus, archivedFromStatus: null },
     });
+
+    const previousIndexedTags = this.getIndexedCollectionTags(
+      {
+        status: collection.status,
+        visibility: collection.visibility,
+        deletedAt: collection.deletedAt,
+        tags: collection.tags ?? [],
+      },
+      collection.tags ?? [],
+    );
+    const nextIndexedTags = this.getIndexedCollectionTags(
+      {
+        status: restoreStatus,
+        visibility: collection.visibility,
+        deletedAt: null,
+        tags: collection.tags ?? [],
+      },
+      collection.tags ?? [],
+    );
+    if (this.systemTags && !this.areTagsEqual(previousIndexedTags, nextIndexedTags)) {
+      await this.systemTags.syncTags(previousIndexedTags, nextIndexedTags);
+    }
+    if (this.tagIndex && !this.areTagsEqual(previousIndexedTags, nextIndexedTags)) {
+      await this.tagIndex.syncEntityTags(
+        TAG_ENTITY_TYPE.COLLECTION,
+        collectionId,
+        previousIndexedTags,
+        nextIndexedTags,
+        { maxCount: 30 },
+      );
+    }
+
     return { success: true, status: restoreStatus };
   }
 
@@ -1958,11 +2221,28 @@ export class CollectionsService {
     if (productIds.length === 0) return { success: true };
 
     const data: Prisma.ProductUpdateInput = {};
+    const nextTags = Array.isArray(template.tags)
+      ? sanitizeTags(template.tags)
+      : undefined;
+    const previousProducts =
+      nextTags && (this.systemTags || this.tagIndex)
+        ? await this.prisma.product.findMany({
+            where: { id: { in: productIds } },
+            select: {
+              id: true,
+              tags: true,
+              isActive: true,
+              publishAt: true,
+              deletedAt: true,
+              archivedAt: true,
+            },
+          })
+        : [];
     if (typeof template.description === 'string') {
       data.description = template.description;
     }
     if (Array.isArray(template.tags)) {
-      data.tags = sanitizeTags(template.tags);
+      data.tags = nextTags ?? [];
     }
     if (typeof template.basePrice === 'number') {
       data.price = new Prisma.Decimal(template.basePrice);
@@ -1975,6 +2255,31 @@ export class CollectionsService {
       where: { id: { in: productIds } },
       data,
     });
+
+    if (this.systemTags && nextTags !== undefined) {
+      for (const p of previousProducts) {
+        const previousIndexedTags = this.getIndexedProductTags(p, p.tags ?? []);
+        const nextIndexedTags = this.getIndexedProductTags(p, nextTags);
+        if (!this.areTagsEqual(previousIndexedTags, nextIndexedTags)) {
+          await this.systemTags.syncTags(previousIndexedTags, nextIndexedTags);
+        }
+      }
+    }
+    if (this.tagIndex && nextTags !== undefined) {
+      for (const p of previousProducts) {
+        const previousIndexedTags = this.getIndexedProductTags(p, p.tags ?? []);
+        const nextIndexedTags = this.getIndexedProductTags(p, nextTags);
+        if (!this.areTagsEqual(previousIndexedTags, nextIndexedTags)) {
+          await this.tagIndex.syncEntityTags(
+            TAG_ENTITY_TYPE.PRODUCT,
+            p.id,
+            previousIndexedTags,
+            nextIndexedTags,
+            { maxCount: 30 },
+          );
+        }
+      }
+    }
 
     await this.recalculateCollectionPriceRange(collectionId);
 
@@ -2056,7 +2361,7 @@ export class CollectionsService {
           select: {
             reactions: true,
             comments: true,
-            patches: true,
+            collectionCollabs: true,
             views: true,
             medias: true,
           },
@@ -2086,9 +2391,9 @@ export class CollectionsService {
 
     const mediaAgg = await this.prisma.collectionMedia.aggregate({
       where: { collectionId: id },
-      _sum: { likesCount: true },
+      _sum: { threadsCount: true },
     });
-    const totalLikes = collection.likesCount + (mediaAgg._sum.likesCount ?? 0);
+    const totalThreads = collection.threadsCount + (mediaAgg._sum.threadsCount ?? 0);
 
     let products = collection.products;
     if (!isOwner) {
@@ -2116,7 +2421,22 @@ export class CollectionsService {
         ? coverFromProduct.product.images[0]
         : null);
 
-    return { ...collection, products, totalLikes, coverImageUrl: coverFromMedia || productCoverUrl };
+    const { threadsCount, collectionCollabsCount, medias, ...rest } = collection as any;
+    const mappedMedias = Array.isArray(medias)
+      ? medias.map((m: any) => {
+          const { threadsCount: mediaThreadsCount, ...mediaRest } = m;
+          return { ...mediaRest, threadsCount: mediaThreadsCount };
+        })
+      : medias;
+    return {
+      ...rest,
+      medias: mappedMedias,
+      threadsCount: threadsCount,
+      collectionCollabCount: collectionCollabsCount,
+      products,
+      totalThreads,
+      coverImageUrl: coverFromMedia || productCoverUrl,
+    };
   }
 
   /**
@@ -2283,10 +2603,10 @@ export class CollectionsService {
         saleEndAt: true,
         createdAt: true,
         updatedAt: true,
-        likesCount: true,
+        threadsCount: true,
         dislikesCount: true,
         commentsCount: true,
-        patchesCount: true,
+        collectionCollabsCount: true,
         viewsCount: true,
         medias: {
           include: { file: true },
@@ -2309,7 +2629,7 @@ export class CollectionsService {
           select: {
             reactions: true,
             comments: true,
-            patches: true,
+            collectionCollabs: true,
             views: true,
             medias: true,
           },
@@ -2346,21 +2666,21 @@ export class CollectionsService {
     const hasNext = items.length > limit;
     const data = hasNext ? items.slice(0, -1) : items;
 
-    // Hydrate isLiked for requester when available
-    let isLikedMap: Record<string, boolean> = {};
+    // Hydrate isThreaded for requester when available
+    let isThreadedMap: Record<string, boolean> = {};
     if (requesterId) {
       const ids = data.map((c) => c.id);
       if (ids.length) {
-        const liked = await this.prisma.collectionReaction.findMany({
+        const threaded = await this.prisma.collectionReaction.findMany({
           where: {
             userId: requesterId,
-            type: 'LIKE',
+            type: ReactionType.THREAD,
             collectionId: { in: ids },
           },
           select: { collectionId: true },
         });
-        const set = new Set(liked.map((r) => r.collectionId));
-        isLikedMap = ids.reduce(
+        const set = new Set(threaded.map((r) => r.collectionId));
+        isThreadedMap = ids.reduce(
           (acc, id) => {
             acc[id] = set.has(id);
             return acc;
@@ -2394,6 +2714,7 @@ export class CollectionsService {
 
     return {
       items: data.map((c) => {
+        const { collectionCollabsCount, threadsCount, ...rest } = c as any;
         // Inject signed URLs
         const mappedMedias = c.medias.map((m) => {
           if (m.file && signedUrlMap.has(m.file.id)) {
@@ -2422,10 +2743,12 @@ export class CollectionsService {
         }
 
         return {
-          ...c,
+          ...rest,
+          collectionCollabCount: collectionCollabsCount,
+          threadsCount: threadsCount,
           medias: mappedMedias,
           owner: ownerWithSignedUrl,
-          isLiked: requesterId ? !!isLikedMap[c.id] : false,
+          isThreaded: requesterId ? !!isThreadedMap[c.id] : false,
         };
       }),
       hasNextPage: hasNext,
@@ -2449,6 +2772,16 @@ export class CollectionsService {
     if (collection.deletedAt) {
       return { success: true, deletedAt: collection.deletedAt };
     }
+
+    const previousIndexedTags = this.getIndexedCollectionTags(
+      {
+        status: collection.status,
+        visibility: collection.visibility,
+        deletedAt: collection.deletedAt,
+        tags: collection.tags ?? [],
+      },
+      collection.tags ?? [],
+    );
 
     const now = new Date();
     const deleteExpiresAt = new Date(now.getTime() + this.collectionDeleteWindowMs);
@@ -2491,13 +2824,33 @@ export class CollectionsService {
       }
     }
 
+    if (previousIndexedTags.length > 0 && this.systemTags) {
+      await this.systemTags.syncTags(previousIndexedTags, []);
+    }
+    if (previousIndexedTags.length > 0 && this.tagIndex) {
+      await this.tagIndex.syncEntityTags(
+        TAG_ENTITY_TYPE.COLLECTION,
+        collectionId,
+        previousIndexedTags,
+        [],
+        { maxCount: 30 },
+      );
+    }
+
     return { success: true, deletedAt: now.toISOString(), restoreBy: deleteExpiresAt.toISOString() };
   }
 
   async restoreCollection(collectionId: string, ownerId: string) {
     const collection = (await this.prisma.collection.findUnique({
       where: { id: collectionId },
-      select: { ownerId: true, deletedAt: true, deleteExpiresAt: true } as any,
+      select: {
+        ownerId: true,
+        deletedAt: true,
+        deleteExpiresAt: true,
+        status: true,
+        visibility: true,
+        tags: true,
+      } as any,
     } as any)) as any;
     if (!collection) throw new NotFoundException('Collection not found');
     if (collection.ownerId !== ownerId) {
@@ -2516,6 +2869,37 @@ export class CollectionsService {
       where: { id: collectionId },
       data: { deletedAt: null, deleteExpiresAt: null },
     });
+
+    const previousIndexedTags = this.getIndexedCollectionTags(
+      {
+        status: collection.status,
+        visibility: collection.visibility,
+        deletedAt: collection.deletedAt,
+        tags: collection.tags ?? [],
+      },
+      collection.tags ?? [],
+    );
+    const nextIndexedTags = this.getIndexedCollectionTags(
+      {
+        status: collection.status,
+        visibility: collection.visibility,
+        deletedAt: null,
+        tags: collection.tags ?? [],
+      },
+      collection.tags ?? [],
+    );
+    if (this.systemTags && !this.areTagsEqual(previousIndexedTags, nextIndexedTags)) {
+      await this.systemTags.syncTags(previousIndexedTags, nextIndexedTags);
+    }
+    if (this.tagIndex && !this.areTagsEqual(previousIndexedTags, nextIndexedTags)) {
+      await this.tagIndex.syncEntityTags(
+        TAG_ENTITY_TYPE.COLLECTION,
+        collectionId,
+        previousIndexedTags,
+        nextIndexedTags,
+        { maxCount: 30 },
+      );
+    }
 
     return { success: true };
   }
@@ -2555,6 +2939,16 @@ export class CollectionsService {
       console.warn('Failed to delete S3 object for media:', media.id, err);
       throw new BadRequestException('Failed to delete file from storage');
     }
+
+    const previousIndexedTags = this.getIndexedCollectionTags(
+      {
+        status: collection.status,
+        visibility: collection.visibility,
+        deletedAt: collection.deletedAt,
+        tags: collection.tags ?? [],
+      },
+      collection.tags ?? [],
+    );
 
     // Then run DB transaction to remove fileUpload, media row, and possibly collection
     try {
@@ -2611,6 +3005,20 @@ export class CollectionsService {
     const deletedCollection =
       !!deletedInfo?.deletedAt ||
       (remainingAfter === 0 && remainingProducts === 0);
+    if (deletedCollection) {
+      if (previousIndexedTags.length > 0 && this.systemTags) {
+        await this.systemTags.syncTags(previousIndexedTags, []);
+      }
+      if (previousIndexedTags.length > 0 && this.tagIndex) {
+        await this.tagIndex.syncEntityTags(
+          TAG_ENTITY_TYPE.COLLECTION,
+          collectionId,
+          previousIndexedTags,
+          [],
+          { maxCount: 30 },
+        );
+      }
+    }
     await (this.prisma.collection as any).updateMany({
       where: { id: collectionId, status: 'DRAFT', deletedAt: null },
       data: { lastActivityAt: new Date(), draftVersion: { increment: 1 } },
@@ -2638,7 +3046,7 @@ export class CollectionsService {
         isAvailableInStore: false,
       } as any,
       orderBy: [
-        { patchesCount: 'desc' }, // Show most patched first
+        { collectionCollabsCount: 'desc' }, // Show most collabed first
         { createdAt: 'desc' },
       ],
       take: limit + 1,
@@ -2674,7 +3082,7 @@ export class CollectionsService {
           select: {
             reactions: true,
             comments: true,
-            patches: true,
+            collectionCollabs: true,
             views: true,
             medias: true,
           },
@@ -2685,21 +3093,21 @@ export class CollectionsService {
     const hasNext = items.length > limit;
     const data = hasNext ? items.slice(0, -1) : items;
 
-    // Hydrate isLiked for requester when available
-    let isLikedMap: Record<string, boolean> = {};
+    // Hydrate isThreaded for requester when available
+    let isThreadedMap: Record<string, boolean> = {};
     if (requesterId) {
       const ids = data.map((c) => c.id);
       if (ids.length) {
-        const liked = await this.prisma.collectionReaction.findMany({
+        const threaded = await this.prisma.collectionReaction.findMany({
           where: {
             userId: requesterId,
-            type: 'LIKE',
+            type: ReactionType.THREAD,
             collectionId: { in: ids },
           },
           select: { collectionId: true },
         });
-        const set = new Set(liked.map((r) => r.collectionId));
-        isLikedMap = ids.reduce(
+        const set = new Set(threaded.map((r) => r.collectionId));
+        isThreadedMap = ids.reduce(
           (acc, id) => {
             acc[id] = set.has(id);
             return acc;
@@ -2710,10 +3118,15 @@ export class CollectionsService {
     }
 
     return {
-      items: data.map((c) => ({
-        ...c,
-        isLiked: requesterId ? !!isLikedMap[c.id] : false,
-      })),
+      items: data.map((c) => {
+        const { collectionCollabsCount, threadsCount, ...rest } = c as any;
+        return {
+          ...rest,
+          collectionCollabCount: collectionCollabsCount,
+          threadsCount: threadsCount,
+          isThreaded: requesterId ? !!isThreadedMap[c.id] : false,
+        };
+      }),
       hasNextPage: hasNext,
       endCursor: data.length ? data[data.length - 1].id : null,
     };
@@ -2731,7 +3144,18 @@ export class CollectionsService {
     if (!ok) throw new NotFoundException('Collection not found');
     const collection = await this.prisma.collection.findUnique({
       where: { id: collectionId },
-      select: { visibility: true, ownerId: true },
+      select: {
+        visibility: true,
+        ownerId: true,
+        title: true,
+        owner: {
+          select: {
+            type: true,
+            brandFullName: true,
+            username: true,
+          },
+        },
+      },
     });
     if (collection && collection.visibility !== CollectionVisibility.PUBLIC) {
       throw new ForbiddenException('Cannot interact with private collection');
@@ -2742,16 +3166,16 @@ export class CollectionsService {
     });
 
     let delta = 0;
-    let nowLiked = false;
+    let nowThreaded = false;
     if (existing) {
       if (existing.type === type) {
         // Remove reaction
         await this.prisma.collectionReaction.delete({
           where: { id: existing.id },
         });
-        if (type === ReactionType.LIKE) {
+        if (type === ReactionType.THREAD) {
           delta = -1;
-          nowLiked = false;
+          nowThreaded = false;
         }
       } else {
         // Change reaction type
@@ -2761,18 +3185,18 @@ export class CollectionsService {
         });
         if (
           existing.type === ReactionType.DISLIKE &&
-          type === ReactionType.LIKE
+          type === ReactionType.THREAD
         ) {
           delta = +1;
         }
         if (
-          existing.type === ReactionType.LIKE &&
+          existing.type === ReactionType.THREAD &&
           type === ReactionType.DISLIKE
         ) {
-          // Moving from LIKE to DISLIKE decrements likes for analytics
+          // Moving from THREAD to DISLIKE decrements threads for analytics
           delta = -1;
         }
-        nowLiked = type === ReactionType.LIKE;
+        nowThreaded = type === ReactionType.THREAD;
       }
     } else {
       // Create new reaction
@@ -2784,16 +3208,16 @@ export class CollectionsService {
           type,
         },
       });
-      if (type === ReactionType.LIKE) {
+      if (type === ReactionType.THREAD) {
         delta = +1;
-        nowLiked = true;
+        nowThreaded = true;
       }
     }
 
     // Update denormalized counts
-    const [likes, dislikes] = await Promise.all([
+    const [threads, dislikes] = await Promise.all([
       this.prisma.collectionReaction.count({
-        where: { collectionId, type: ReactionType.LIKE },
+        where: { collectionId, type: ReactionType.THREAD },
       }),
       this.prisma.collectionReaction.count({
         where: { collectionId, type: ReactionType.DISLIKE },
@@ -2802,24 +3226,24 @@ export class CollectionsService {
 
     const updated = await this.prisma.collection.update({
       where: { id: collectionId },
-      data: { likesCount: likes, dislikesCount: dislikes },
+      data: { threadsCount: threads, dislikesCount: dislikes },
     });
 
-    // Update analytics daily likes if changed
+    // Update analytics daily threads if changed
     if (this.analytics && delta !== 0) {
-      await this.analytics.updateDailyLike(
+      await this.analytics.updateDailyThread(
         ContentTarget.COLLECTION,
         collectionId,
         delta,
       );
     }
 
-    // Notify owner when a new LIKE is added
-    if (nowLiked && userId !== collection.ownerId && this.notifications) {
+    // Notify owner when a new THREAD is added
+    if (nowThreaded && userId !== collection.ownerId && this.notifications) {
       try {
         await this.notifications.create(
           collection.ownerId,
-          NotificationType.LIKE,
+          NotificationType.THREAD,
           {
             actorId: userId,
             payload: { collectionId },
@@ -2829,10 +3253,73 @@ export class CollectionsService {
       } catch {}
     }
 
+    // Notify patchers about engagement on brand content
+    if (
+      nowThreaded &&
+      this.notifications &&
+      collection.owner?.type === UserType.BRAND
+    ) {
+      const brandName =
+        collection.owner.brandFullName || collection.owner.username || 'A brand';
+      const collectionLabel = collection.title
+        ? `"${collection.title}"`
+        : 'a collection';
+      const patchers = await this.prisma.patchConnection.findMany({
+        where: {
+          targetId: collection.ownerId,
+          status: PatchStatus.ACCEPTED,
+          mode: PatchMode.USER_TO_BRAND,
+        },
+        select: { requesterId: true },
+      });
+
+      const recipientIds = patchers
+        .map((p) => p.requesterId)
+        .filter((id) => id && id !== userId);
+
+      if (recipientIds.length > 0 && this.notificationsQueue) {
+        try {
+          await this.notificationsQueue.enqueueFanout({
+            recipientIds,
+            notificationType: NotificationType.THREAD,
+            actorId: userId,
+            payload: {
+              collectionId,
+              targetUrl: `/collections/${collectionId}`,
+              message: `${brandName} received a new thread on ${collectionLabel}.`,
+            },
+            dedupeMs: 2 * 60 * 1000,
+          });
+        } catch (e) {
+          console.warn('Failed to enqueue thread fanout', e);
+        }
+      } else if (recipientIds.length > 0) {
+        for (const recipientId of recipientIds) {
+          try {
+            await this.notifications.create(
+              recipientId,
+              NotificationType.THREAD,
+              {
+                actorId: userId,
+                payload: {
+                  collectionId,
+                  targetUrl: `/collections/${collectionId}`,
+                  message: `${brandName} received a new thread on ${collectionLabel}.`,
+                },
+                dedupeMs: 2 * 60 * 1000,
+              },
+            );
+          } catch (e) {
+            console.warn('Failed to notify patcher of thread', e);
+          }
+        }
+      }
+    }
+
     return {
-      likes: updated.likesCount,
+      threads: updated.threadsCount,
       dislikes: updated.dislikesCount,
-      liked: nowLiked,
+      threaded: nowThreaded,
     };
   }
 
@@ -3036,12 +3523,12 @@ export class CollectionsService {
   // ============================================
 
   /**
-   * PATCHING SYSTEM - Scalable approach
-   * Patches are like "reposts" that boost visibility
+   * COLLECTION COLLABS - Scalable approach
+   * Collabs are similar to "reposts" that boost visibility
    */
-  async patchCollection(
+  async createCollectionCollab(
     collectionId: string,
-    patchingBrandId: string,
+    collabBrandId: string,
     weight = 1,
   ) {
     // Verify collection exists and is published
@@ -3055,31 +3542,31 @@ export class CollectionsService {
 
     // Verify patching user is a brand
     const brand = await this.prisma.user.findUnique({
-      where: { id: patchingBrandId },
+      where: { id: collabBrandId },
     });
 
     if (!brand || brand.type !== UserType.BRAND) {
-      throw new ForbiddenException('Only brands can patch collections');
+      throw new ForbiddenException('Only brands can collab collections');
     }
 
-    // Check if brand already patched this collection
-    const existingPatch = await this.prisma.patch.findFirst({
+    // Check if brand already collabed this collection
+    const existingCollab = await this.prisma.collectionCollab.findFirst({
       where: {
         collectionId,
-        patchingBrandId,
+        patchingBrandId: collabBrandId,
       },
     });
 
-    if (existingPatch) {
-      throw new BadRequestException('You have already patched this collection');
+    if (existingCollab) {
+      throw new BadRequestException('You have already collabed this collection');
     }
 
-    // Create patch record
-    const patch = await this.prisma.patch.create({
+    // Create collab record
+    const collab = await this.prisma.collectionCollab.create({
       data: {
         id: uuidv4(),
         collectionId,
-        patchingBrandId,
+        patchingBrandId: collabBrandId,
         weight,
       },
       include: {
@@ -3094,45 +3581,47 @@ export class CollectionsService {
       },
     });
 
-    // Update denormalized patches count
-    const totalPatches = await this.prisma.patch.count({
+    // Update denormalized collabs count
+    const totalCollabs = await this.prisma.collectionCollab.count({
       where: { collectionId },
     });
 
     await this.prisma.collection.update({
       where: { id: collectionId },
-      data: { patchesCount: totalPatches },
+      data: { collectionCollabsCount: totalCollabs },
     });
 
     // Optional: Create notification for collection owner
-    if (collection.ownerId !== patchingBrandId && this.notifications) {
+    if (collection.ownerId !== collabBrandId && this.notifications) {
       try {
         await this.notifications.create(
           collection.ownerId,
           NotificationType.PATCH,
           {
-            actorId: patchingBrandId,
+            actorId: collabBrandId,
             payload: {
+              action: 'COLLECTION_COLLAB',
+              target: { type: 'COLLECTION', id: collectionId },
               collectionId,
               collectionTitle: collection.title,
-              patchWeight: weight,
+              collabWeight: weight,
             },
           },
         );
       } catch {}
     }
 
-    return patch;
+    return collab;
   }
 
   /**
-   * Get patches for a collection (who patched it)
+   * Get collabs for a collection (who collabed)
    */
-  async getCollectionPatches(
+  async getCollectionCollabs(
     collectionId: string,
     { cursor, limit = 20 }: { cursor?: string; limit?: number },
   ) {
-    const patches = await this.prisma.patch.findMany({
+    const collabs = await this.prisma.collectionCollab.findMany({
       where: { collectionId },
       include: {
         patchingBrand: {
@@ -3149,24 +3638,24 @@ export class CollectionsService {
       ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
     });
 
-    const hasNext = patches.length > limit;
-    const data = hasNext ? patches.slice(0, -1) : patches;
+    const hasNext = collabs.length > limit;
+    const data = hasNext ? collabs.slice(0, -1) : collabs;
 
     return {
-      patches: data,
+      collabs: data,
       hasNextPage: hasNext,
       endCursor: data.length ? data[data.length - 1].id : null,
     };
   }
 
   /**
-   * Get collections patched by a specific brand
+   * Get collections collabed by a specific brand
    */
-  async getBrandPatches(
+  async getBrandCollectionCollabs(
     brandId: string,
     { cursor, limit = 20 }: { cursor?: string; limit?: number },
   ) {
-    const patches = await this.prisma.patch.findMany({
+    const collabs = await this.prisma.collectionCollab.findMany({
       where: { patchingBrandId: brandId },
       include: {
         collection: {
@@ -3188,7 +3677,7 @@ export class CollectionsService {
               select: {
                 reactions: true,
                 comments: true,
-                patches: true,
+                collectionCollabs: true,
                 views: true,
               },
             },
@@ -3200,41 +3689,41 @@ export class CollectionsService {
       ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
     });
 
-    const hasNext = patches.length > limit;
-    const data = hasNext ? patches.slice(0, -1) : patches;
+    const hasNext = collabs.length > limit;
+    const data = hasNext ? collabs.slice(0, -1) : collabs;
 
     return {
-      patches: data,
+      collabs: data,
       hasNextPage: hasNext,
       endCursor: data.length ? data[data.length - 1].id : null,
     };
   }
 
   /**
-   * Remove patch (unpatch)
+   * Remove collab
    */
-  async removePatch(collectionId: string, patchingBrandId: string) {
-    const patch = await this.prisma.patch.findFirst({
+  async removeCollectionCollab(collectionId: string, collabBrandId: string) {
+    const collab = await this.prisma.collectionCollab.findFirst({
       where: {
         collectionId,
-        patchingBrandId,
+        patchingBrandId: collabBrandId,
       },
     });
 
-    if (!patch) {
-      throw new NotFoundException('Patch not found');
+    if (!collab) {
+      throw new NotFoundException('Collab not found');
     }
 
-    await this.prisma.patch.delete({ where: { id: patch.id } });
+    await this.prisma.collectionCollab.delete({ where: { id: collab.id } });
 
     // Update denormalized count
-    const totalPatches = await this.prisma.patch.count({
+    const totalCollabs = await this.prisma.collectionCollab.count({
       where: { collectionId },
     });
 
     await this.prisma.collection.update({
       where: { id: collectionId },
-      data: { patchesCount: totalPatches },
+      data: { collectionCollabsCount: totalCollabs },
     });
 
     return { success: true };
@@ -3247,9 +3736,9 @@ export class CollectionsService {
     const ok = await this.canViewCollection(collectionId);
     if (!ok) throw new NotFoundException('Collection not found');
 
-    const [reactions, totalLikes, totalDislikes] = await Promise.all([
+    const [reactions, totalThreads, totalDislikes] = await Promise.all([
       this.prisma.collectionReaction.findMany({
-        where: { collectionId, type: ReactionType.LIKE },
+        where: { collectionId, type: ReactionType.THREAD },
         include: {
           user: {
             select: {
@@ -3265,7 +3754,7 @@ export class CollectionsService {
         take: limit,
       }),
       this.prisma.collectionReaction.count({
-        where: { collectionId, type: ReactionType.LIKE },
+        where: { collectionId, type: ReactionType.THREAD },
       }),
       this.prisma.collectionReaction.count({
         where: { collectionId, type: ReactionType.DISLIKE },
@@ -3274,7 +3763,7 @@ export class CollectionsService {
 
     return {
       users: reactions.map((r) => r.user),
-      totalLikes,
+      totalThreads,
       totalDislikes,
     };
   }
@@ -3304,9 +3793,9 @@ export class CollectionsService {
     }
   }
   // =============================
-  // Media-level likes (per upload)
+  // Media-level threads (per upload)
   // =============================
-  async toggleMediaLike(mediaId: string, userId: string) {
+  async toggleMediaThread(mediaId: string, userId: string) {
     const can = await this.canViewMedia(mediaId, userId);
     if (!can) throw new NotFoundException('Media not found');
 
@@ -3317,38 +3806,121 @@ export class CollectionsService {
     });
 
     let delta = 0;
-    let nowLiked = false;
+    let nowThreaded = false;
     if (existing) {
       await this.prisma.collectionMediaReaction.delete({
         where: { id: existing.id },
       });
       delta = -1;
-      nowLiked = false;
+      nowThreaded = false;
     } else {
       await this.prisma.collectionMediaReaction.create({
         data: {
           id: uuidv4(),
           collectionMediaId: mediaId,
           userId,
-          type: ReactionType.LIKE,
+          type: ReactionType.THREAD,
         },
       });
       delta = +1;
-      nowLiked = true;
+      nowThreaded = true;
     }
 
     const updated = await this.prisma.collectionMedia.update({
       where: { id: mediaId },
-      data: { likesCount: { increment: delta } },
+      data: { threadsCount: { increment: delta } },
     });
-    return { likes: updated.likesCount, liked: nowLiked };
+
+    if (nowThreaded && this.notifications) {
+      const media = await this.prisma.collectionMedia.findUnique({
+        where: { id: mediaId },
+        select: {
+          collectionId: true,
+          collection: {
+            select: {
+              ownerId: true,
+              title: true,
+              owner: {
+                select: {
+                  type: true,
+                  brandFullName: true,
+                  username: true,
+                },
+              },
+            },
+          },
+        },
+      });
+
+      if (media?.collection?.owner?.type === UserType.BRAND) {
+        const brandName =
+          media.collection.owner.brandFullName ||
+          media.collection.owner.username ||
+          'A brand';
+        const collectionLabel = media.collection.title
+          ? `"${media.collection.title}"`
+          : 'a collection';
+        const patchers = await this.prisma.patchConnection.findMany({
+          where: {
+            targetId: media.collection.ownerId,
+            status: PatchStatus.ACCEPTED,
+            mode: PatchMode.USER_TO_BRAND,
+          },
+          select: { requesterId: true },
+        });
+
+        const recipientIds = patchers
+          .map((p) => p.requesterId)
+          .filter((id) => id && id !== userId);
+
+        if (recipientIds.length > 0 && this.notificationsQueue) {
+          try {
+            await this.notificationsQueue.enqueueFanout({
+              recipientIds,
+              notificationType: NotificationType.THREAD,
+              actorId: userId,
+              payload: {
+                collectionId: media.collectionId,
+                targetUrl: `/collections/${media.collectionId}`,
+                message: `${brandName} received a new thread on ${collectionLabel}.`,
+              },
+              dedupeMs: 2 * 60 * 1000,
+            });
+          } catch (e) {
+            console.warn('Failed to enqueue media thread fanout', e);
+          }
+        } else if (recipientIds.length > 0) {
+          for (const recipientId of recipientIds) {
+            try {
+              await this.notifications.create(
+                recipientId,
+                NotificationType.THREAD,
+                {
+                  actorId: userId,
+                  payload: {
+                    collectionId: media.collectionId,
+                    targetUrl: `/collections/${media.collectionId}`,
+                    message: `${brandName} received a new thread on ${collectionLabel}.`,
+                  },
+                  dedupeMs: 2 * 60 * 1000,
+                },
+              );
+            } catch (e) {
+              console.warn('Failed to notify patcher of media thread', e);
+            }
+          }
+        }
+      }
+    }
+
+    return { threads: updated.threadsCount, threaded: nowThreaded };
   }
 
   async getMediaReactions(mediaId: string, limit = 20) {
     const can = await this.canViewMedia(mediaId);
     if (!can) throw new NotFoundException('Media not found');
     const rows = await this.prisma.collectionMediaReaction.findMany({
-      where: { collectionMediaId: mediaId, type: ReactionType.LIKE },
+      where: { collectionMediaId: mediaId, type: ReactionType.THREAD },
       include: {
         user: {
           select: {
@@ -3364,14 +3936,14 @@ export class CollectionsService {
       take: limit,
     });
     const total = await this.prisma.collectionMediaReaction.count({
-      where: { collectionMediaId: mediaId, type: ReactionType.LIKE },
+      where: { collectionMediaId: mediaId, type: ReactionType.THREAD },
     });
-    return { users: rows.map((r) => r.user), totalLikes: total };
+    return { users: rows.map((r) => r.user), totalThreads: total };
   }
 
-  async isMediaLikedByUser(mediaId: string, userId: string | undefined) {
+  async isMediaThreadedByUser(mediaId: string, userId: string | undefined) {
     if (!userId) {
-      return { liked: false };
+      return { threaded: false };
     }
     const can = await this.canViewMedia(mediaId, userId);
     if (!can) throw new NotFoundException('Media not found');
@@ -3380,23 +3952,23 @@ export class CollectionsService {
         collectionMediaId_userId: { collectionMediaId: mediaId, userId },
       },
     });
-    return { liked: !!r };
+    return { threaded: !!r };
   }
 
-  async isCollectionLikedByUser(
+  async isCollectionThreadedByUser(
     collectionId: string,
     userId: string | undefined,
   ) {
     if (!userId) {
-      return { liked: false };
+      return { threaded: false };
     }
     const r = await this.prisma.collectionReaction.findUnique({
       where: { collectionId_userId: { collectionId, userId } },
     });
-    return { liked: !!r };
+    return { threaded: !!r };
   }
 
-  async getLikesSummary(collectionId: string) {
+  async getThreadsSummary(collectionId: string) {
     const collection = await this.prisma.collection.findUnique({
       where: { id: collectionId },
     });
@@ -3405,12 +3977,12 @@ export class CollectionsService {
     }
     const mediaAgg = await this.prisma.collectionMedia.aggregate({
       where: { collectionId },
-      _sum: { likesCount: true },
+      _sum: { threadsCount: true },
     });
-    const collectionLikes = collection.likesCount;
-    const mediaLikes = mediaAgg._sum.likesCount ?? 0;
-    const totalLikes = collectionLikes + mediaLikes;
-    return { collectionLikes, mediaLikes, totalLikes };
+    const collectionThreads = collection.threadsCount;
+    const mediaThreads = mediaAgg._sum.threadsCount ?? 0;
+    const totalThreads = collectionThreads + mediaThreads;
+    return { collectionThreads, mediaThreads, totalThreads };
   }
 
   // ===================== PHASE 2: Auto-Publishing for Approved Categories =====================
@@ -3758,7 +4330,13 @@ export class CollectionsService {
     await this.assertOwner(collectionId, ownerId);
     const existing = (await this.prisma.collection.findUnique({
       where: { id: collectionId },
-      select: { status: true, visibility: true, deletedAt: true, draftVersion: true } as any,
+      select: {
+        status: true,
+        visibility: true,
+        deletedAt: true,
+        draftVersion: true,
+        tags: true,
+      } as any,
     } as any)) as any;
     if (!existing) throw new NotFoundException('Collection not found');
     if (existing.deletedAt) throw new GoneException('Collection has been deleted');
@@ -3802,6 +4380,8 @@ export class CollectionsService {
     }
 
     const data: any = {};
+    const previousTags = Array.isArray(existing.tags) ? existing.tags : [];
+    let nextTags: string[] | undefined;
     if (typeof body.title === 'string' || body.title === null)
       data.title = body.title || null;
     if (typeof body.description === 'string' || body.description === null)
@@ -3822,7 +4402,10 @@ export class CollectionsService {
       data.saleStartAt = body.saleStartAt ? new Date(body.saleStartAt) : null;
     if (typeof body.saleEndAt === 'string' || body.saleEndAt === null)
       data.saleEndAt = body.saleEndAt ? new Date(body.saleEndAt) : null;
-    if (Array.isArray(body.tags)) data.tags = sanitizeTags(body.tags);
+    if (Array.isArray(body.tags)) {
+      nextTags = sanitizeTags(body.tags, 30);
+      data.tags = nextTags;
+    }
     if (typeof body.coverMediaId === 'string' || body.coverMediaId === null) {
       if (body.coverMediaId) {
         const belongs = await this.prisma.collectionMedia.findFirst({
@@ -3877,6 +4460,43 @@ export class CollectionsService {
       body.visibility === CollectionVisibility.PRIVATE
     ) {
       await this.handleVisibilityChange(collectionId, 'PRIVATE', ownerId);
+    }
+    const previousIndexedTags = this.getIndexedCollectionTags(
+      {
+        status: existing.status,
+        visibility: existing.visibility,
+        deletedAt: existing.deletedAt,
+        tags: previousTags,
+      },
+      previousTags,
+    );
+    const resolvedNextTags = nextTags ?? (Array.isArray(updated.tags) ? updated.tags : previousTags);
+    const nextIndexedTags = this.getIndexedCollectionTags(
+      {
+        status: updated.status,
+        visibility: updated.visibility,
+        deletedAt: updated.deletedAt,
+        tags: resolvedNextTags,
+      },
+      resolvedNextTags,
+    );
+    const shouldSyncCollectionTags =
+      nextTags !== undefined ||
+      !this.areTagsEqual(previousIndexedTags, nextIndexedTags);
+
+    if (shouldSyncCollectionTags) {
+      if (this.systemTags) {
+        await this.systemTags.syncTags(previousIndexedTags, nextIndexedTags);
+      }
+      if (this.tagIndex) {
+        await this.tagIndex.syncEntityTags(
+          TAG_ENTITY_TYPE.COLLECTION,
+          collectionId,
+          previousIndexedTags,
+          nextIndexedTags,
+          { maxCount: 30 },
+        );
+      }
     }
 
     return updated;
@@ -4025,11 +4645,30 @@ export class CollectionsService {
 
     const affectedCollections: any[] = [];
 
-    for (const m of memberships) {
+    const collectionIds = memberships.map((m) => m.collectionId);
+    const linksByCollection = new Map<string, Array<{
+      productId: string;
+      product: { id: string; price: any } | null;
+    }>>();
+
+    if (collectionIds.length > 0) {
       const links = await this.prisma.collectionProduct.findMany({
-        where: { collectionId: m.collectionId },
+        where: { collectionId: { in: collectionIds } },
         include: { product: { select: { id: true, price: true } } },
       });
+
+      for (const link of links) {
+        const bucket = linksByCollection.get(link.collectionId);
+        if (bucket) {
+          bucket.push(link);
+        } else {
+          linksByCollection.set(link.collectionId, [link]);
+        }
+      }
+    }
+
+    for (const m of memberships) {
+      const links = linksByCollection.get(m.collectionId) ?? [];
 
       const prices = links.map((l) =>
         l.productId === productId ? newPrice : Number(l.product?.price || 0),
@@ -4071,7 +4710,7 @@ export class CollectionsService {
   // ===================== Bulk Upload (Scaffold) =====================
   /**
    * Initialize bulk upload job
-   * TODO: Implement with Bull/Redis queue for production
+   * Processed asynchronously via BullMQ worker
    */
   async initiateBulkUpload(
     collectionId: string,
@@ -4101,7 +4740,7 @@ export class CollectionsService {
         collectionId,
         ownerId,
         mode,
-        status: 'PROCESSING',
+        status: 'PENDING',
         totalRows: rows.length,
       },
     });
@@ -4122,12 +4761,58 @@ export class CollectionsService {
       data: rowRecords as any,
     });
 
+    if (this.bulkUploadQueue) {
+      try {
+        await this.bulkUploadQueue.add(
+          BULK_UPLOAD_PROCESS_JOB,
+          { jobId },
+          { jobId: `bulk-upload:${jobId}` },
+        );
+      } catch (error) {
+        console.warn('Failed to enqueue bulk upload job; running inline', error);
+        return this.processBulkUploadJob(jobId);
+      }
+    } else {
+      return this.processBulkUploadJob(jobId);
+    }
+
+    return {
+      jobId,
+      status: 'pending',
+      totalRows: rows.length,
+      processedRows: 0,
+      successRows: 0,
+      failedRows: 0,
+      errors: [],
+    };
+  }
+
+  async processBulkUploadJob(jobId: string) {
+    const job = await this.prisma.collectionBulkUploadJob.findFirst({
+      where: { id: jobId },
+      include: { rows: true },
+    });
+    if (!job) throw new NotFoundException('Bulk upload job not found');
+
+    await this.prisma.collectionBulkUploadJob.update({
+      where: { id: jobId },
+      data: {
+        status: 'PROCESSING',
+        processedRows: 0,
+        successRows: 0,
+        failedRows: 0,
+        errorSummary: null,
+        completedAt: null,
+      },
+    });
+
     let processedRows = 0;
     let successRows = 0;
     let failedRows = 0;
     const errors: Array<{ row: number; field: string; message: string }> = [];
 
-    for (const rowRecord of rowRecords) {
+    for (const rowRecord of job.rows) {
+      if (rowRecord.status === 'SUCCESS') continue;
       processedRows += 1;
       try {
         await this.prisma.collectionBulkUploadRow.update({
@@ -4136,8 +4821,8 @@ export class CollectionsService {
         });
 
         const payload = rowRecord.payload as Record<string, string>;
-        const dto = this.buildBulkProductDto(payload, collectionId);
-        const created = await this.storeService.createProduct(ownerId, dto);
+        const dto = this.buildBulkProductDto(payload, job.collectionId);
+        const created = await this.storeService.createProduct(job.ownerId, dto);
 
         await this.prisma.collectionBulkUploadRow.update({
           where: { id: rowRecord.id },
@@ -4155,6 +4840,13 @@ export class CollectionsService {
       }
     }
 
+    const refreshedRows = await this.prisma.collectionBulkUploadRow.findMany({
+      where: { jobId },
+      select: { status: true },
+    });
+    successRows = refreshedRows.filter((row) => row.status === 'SUCCESS').length;
+    failedRows = refreshedRows.filter((row) => row.status === 'FAILED').length;
+    processedRows = refreshedRows.length;
     const status = failedRows > 0 && successRows > 0
       ? 'PARTIAL'
       : failedRows > 0
@@ -4176,7 +4868,7 @@ export class CollectionsService {
     return {
       jobId,
       status: status.toLowerCase(),
-      totalRows: rows.length,
+      totalRows: job.totalRows,
       processedRows,
       successRows,
       failedRows,
@@ -4218,6 +4910,49 @@ export class CollectionsService {
    * Retry failed bulk upload rows
    */
   async retryBulkUploadRows(
+    jobId: string,
+    ownerId: string,
+    rowIndices: number[],
+  ) {
+    const job = await this.prisma.collectionBulkUploadJob.findFirst({
+      where: { id: jobId, ownerId },
+      include: { rows: true },
+    });
+    if (!job) throw new NotFoundException('Bulk upload job not found');
+
+    const targetRows = Array.isArray(rowIndices) && rowIndices.length > 0
+      ? job.rows.filter((row) => rowIndices.includes(row.rowIndex))
+      : job.rows.filter((row) => row.status === 'FAILED');
+    const retriedCount = targetRows.filter((row) => row.status !== 'SUCCESS').length;
+
+    await this.prisma.collectionBulkUploadJob.update({
+      where: { id: jobId },
+      data: { status: 'PROCESSING', completedAt: null },
+    });
+
+    if (this.bulkUploadQueue) {
+      try {
+        await this.bulkUploadQueue.add(
+          BULK_UPLOAD_RETRY_JOB,
+          { jobId, ownerId, rowIndices },
+          { jobId: `bulk-upload-retry:${jobId}:${Date.now()}` },
+        );
+      } catch (error) {
+        console.warn('Failed to enqueue bulk upload retry; running inline', error);
+        return this.processBulkUploadRetry(jobId, ownerId, rowIndices);
+      }
+    } else {
+      return this.processBulkUploadRetry(jobId, ownerId, rowIndices);
+    }
+
+    return {
+      jobId,
+      retriedCount,
+      status: 'queued',
+    };
+  }
+
+  async processBulkUploadRetry(
     jobId: string,
     ownerId: string,
     rowIndices: number[],
@@ -4466,7 +5201,13 @@ export class CollectionsService {
 
     const collection = await this.prisma.collection.findUnique({
       where: { id: collectionId },
-      select: { coverMediaId: true },
+      select: {
+        coverMediaId: true,
+        status: true,
+        visibility: true,
+        deletedAt: true,
+        tags: true,
+      },
     });
 
     const media = await this.prisma.collectionMedia.findFirst({
@@ -4482,6 +5223,15 @@ export class CollectionsService {
     }
 
     const now = new Date();
+    const previousIndexedTags = this.getIndexedCollectionTags(
+      {
+        status: collection?.status,
+        visibility: collection?.visibility as CollectionVisibility | undefined,
+        deletedAt: collection?.deletedAt,
+        tags: collection?.tags ?? [],
+      },
+      collection?.tags ?? [],
+    );
     await this.prisma.$transaction(async (tx) => {
       if (media.file?.id) {
         await tx.fileUpload.delete({ where: { id: media.file.id } as any });
@@ -4518,6 +5268,25 @@ export class CollectionsService {
         });
       }
     });
+
+    const deletedInfo = await this.prisma.collection.findUnique({
+      where: { id: collectionId },
+      select: { deletedAt: true },
+    });
+    if (deletedInfo?.deletedAt) {
+      if (previousIndexedTags.length > 0 && this.systemTags) {
+        await this.systemTags.syncTags(previousIndexedTags, []);
+      }
+      if (previousIndexedTags.length > 0 && this.tagIndex) {
+        await this.tagIndex.syncEntityTags(
+          TAG_ENTITY_TYPE.COLLECTION,
+          collectionId,
+          previousIndexedTags,
+          [],
+          { maxCount: 30 },
+        );
+      }
+    }
 
     await (this.prisma.collection as any).updateMany({
       where: { id: collectionId, status: 'DRAFT', deletedAt: null },

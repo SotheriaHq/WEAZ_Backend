@@ -1,4 +1,4 @@
-import {
+﻿import {
   Controller,
   Post,
   Get,
@@ -300,7 +300,7 @@ export class CollectionsController {
   // ============================================
 
   @Get()
-  @ApiOperation({ summary: 'List collections (paginated, sorted by patches)' })
+  @ApiOperation({ summary: 'List collections (paginated, sorted by collabs)' })
   @ApiResponse({ status: 200, description: 'Paginated collections list' })
   async listCollections(
     @Query('cursor') cursor?: string,
@@ -379,15 +379,15 @@ export class CollectionsController {
   }
 
   @UseGuards(JwtAuthGuard)
-  @Get('patches/my')
-  @ApiOperation({ summary: 'Get collections patched by current user' })
-  @ApiResponse({ status: 200, description: 'List of collections I patched' })
-  async getMyPatches(
+  @Get('collabs/my')
+  @ApiOperation({ summary: 'Get collections I collabed with' })
+  @ApiResponse({ status: 200, description: 'List of collections I collabed with' })
+  async getMyCollabs(
     @Req() req: any,
     @Query('cursor') cursor?: string,
     @Query('limit') limit?: string,
   ) {
-    return this.collectionsService.getBrandPatches(req.user.id, {
+    return this.collectionsService.getBrandCollectionCollabs(req.user.id, {
       cursor,
       limit: limit ? parseInt(limit, 10) : 20,
     });
@@ -458,7 +458,7 @@ export class CollectionsController {
   @ApiOperation({
     summary: 'Toggle reaction on collection',
     description:
-      'Like or dislike a collection. Calling same reaction twice removes it.',
+      'Thread or dislike a collection. Calling same reaction twice removes it.',
   })
   @ApiResponse({
     status: 200,
@@ -466,8 +466,9 @@ export class CollectionsController {
     schema: {
       type: 'object',
       properties: {
-        likes: { type: 'number' },
+        threads: { type: 'number' },
         dislikes: { type: 'number' },
+        threaded: { type: 'boolean' },
       },
     },
   })
@@ -478,11 +479,12 @@ export class CollectionsController {
     @Param('type') type: string,
     @Req() req: any,
   ) {
-    const reactionType = type.toUpperCase() as ReactionType;
+    const normalizedType = type.toUpperCase();
+    const reactionType = normalizedType as ReactionType;
 
     if (!Object.values(ReactionType).includes(reactionType)) {
       throw new BadRequestException(
-        'Invalid reaction type. Use LIKE or DISLIKE',
+        'Invalid reaction type. Use THREAD or DISLIKE',
       );
     }
 
@@ -491,13 +493,15 @@ export class CollectionsController {
       req.user.id,
       reactionType,
     );
-    // Emit realtime only for LIKE (dislikes optional)
-    if (reactionType === 'LIKE') {
-      this.events.emitLike(result.liked ? 'like.created' : 'like.removed', {
+    // Emit realtime only for THREAD (dislikes optional)
+    if (reactionType === ReactionType.THREAD) {
+      this.events.emitThread(
+        result.threaded ? 'thread.created' : 'thread.removed',
+        {
         contentType: 'COLLECTION',
         contentId: collectionId,
         userId: req.user.id,
-        likeCount: result.likes,
+        threadCount: result.threads,
       });
     }
     return result;
@@ -517,35 +521,35 @@ export class CollectionsController {
   }
 
   @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
-  @Post(':id/patch')
+  @Post(':id/collab')
   @ApiOperation({
-    summary: 'Patch collection (Brands only)',
+    summary: 'Create collection collab (Brands only)',
     description: `
-      Patching is like "reposting" or "amplifying" a collection.
-      Only brands can patch collections.
-      Higher patch count = higher visibility in feeds.
+      CollectionCollab is a brand amplification/collaboration on a collection.
+      Only brands can create collabs on collections.
+      Higher collab count = higher visibility in feeds.
     `,
   })
   @ApiResponse({
     status: 200,
-    description: 'Collection patched successfully',
+    description: 'Collection collab created successfully',
     schema: {
       type: 'object',
       properties: {
         id: { type: 'string' },
         collectionId: { type: 'string' },
-        patchingBrandId: { type: 'string' },
+        collabBrandId: { type: 'string' },
         weight: { type: 'number' },
         createdAt: { type: 'string', format: 'date-time' },
       },
     },
   })
-  async patchCollection(
+  async createCollectionCollab(
     @Param('id') collectionId: string,
     @Req() req: any,
     @Body() body: { weight?: number },
   ) {
-    return this.collectionsService.patchCollection(
+    return this.collectionsService.createCollectionCollab(
       collectionId,
       req.user.id,
       body?.weight || 1,
@@ -553,27 +557,27 @@ export class CollectionsController {
   }
 
   @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
-  @Delete(':id/patch')
+  @Delete(':id/collab')
   @ApiOperation({
-    summary: 'Remove patch (unpatch collection)',
-    description: 'Remove your patch from a collection',
+    summary: 'Remove collection collab',
+    description: 'Remove your collab from a collection',
   })
-  async removePatch(@Param('id') collectionId: string, @Req() req: any) {
-    return this.collectionsService.removePatch(collectionId, req.user.id);
+  async removeCollectionCollab(@Param('id') collectionId: string, @Req() req: any) {
+    return this.collectionsService.removeCollectionCollab(collectionId, req.user.id);
   }
 
-  @Get(':id/patches')
-  @ApiOperation({ summary: 'Get patches for a collection (who patched it)' })
+  @Get(':id/collabs')
+  @ApiOperation({ summary: 'Get collabs for a collection (who collabed)' })
   @ApiResponse({
     status: 200,
-    description: 'List of patches with brand details',
+    description: 'List of collabs with brand details',
   })
-  async getCollectionPatches(
+  async getCollectionCollabs(
     @Param('id') collectionId: string,
     @Query('cursor') cursor?: string,
     @Query('limit') limit?: string,
   ) {
-    return this.collectionsService.getCollectionPatches(collectionId, {
+    return this.collectionsService.getCollectionCollabs(collectionId, {
       cursor,
       limit: limit ? parseInt(limit, 10) : 20,
     });
@@ -591,10 +595,10 @@ export class CollectionsController {
       type: 'object',
       properties: {
         views: { type: 'number' },
-        likes: { type: 'number' },
+        threads: { type: 'number' },
         dislikes: { type: 'number' },
         comments: { type: 'number' },
-        patches: { type: 'number' },
+        collabs: { type: 'number' },
         engagement_rate: { type: 'number' },
       },
     },
@@ -605,22 +609,24 @@ export class CollectionsController {
       req.user?.id,
     );
 
-    const totalInteractions =
-      collection._count.reactions +
-      collection._count.comments +
-      collection._count.patches;
+    const reactionsCount = collection._count?.reactions ?? 0;
+    const commentsCount = collection._count?.comments ?? 0;
+    const collabsCount =
+      collection.collectionCollabCount ?? collection._count?.collectionCollabs ?? 0;
+    const viewsCount = collection._count?.views ?? 0;
+    const totalInteractions = reactionsCount + commentsCount + collabsCount;
 
     const engagementRate =
-      collection._count.views > 0
-        ? (totalInteractions / collection._count.views) * 100
+      viewsCount > 0
+        ? (totalInteractions / viewsCount) * 100
         : 0;
 
     return {
-      views: collection._count.views,
-      likes: collection.likesCount,
+      views: viewsCount,
+      threads: collection.threadsCount ?? 0,
       dislikes: collection.dislikesCount,
-      comments: collection._count.comments,
-      patches: collection._count.patches,
+      comments: commentsCount,
+      collabs: collabsCount,
       engagement_rate: Math.round(engagementRate * 100) / 100,
     };
   }
@@ -653,17 +659,17 @@ export class CollectionsController {
   }
   @UseGuards(JwtAuthGuard, ThrottlerGuard)
   @Throttle({ default: { limit: 60, ttl: 60000 } })
-  @Post('media/:mediaId/reaction/like')
-  async toggleMediaLike(@Param('mediaId') mediaId: string, @Req() req: any) {
-    const res = await this.collectionsService.toggleMediaLike(
+  @Post('media/:mediaId/reaction/thread')
+  async toggleMediaThread(@Param('mediaId') mediaId: string, @Req() req: any) {
+    const res = await this.collectionsService.toggleMediaThread(
       mediaId,
       req.user.id,
     );
-    this.events.emitLike(res.liked ? 'like.created' : 'like.removed', {
+    this.events.emitThread(res.threaded ? 'thread.created' : 'thread.removed', {
       contentType: 'COLLECTION_MEDIA',
       contentId: mediaId,
       userId: req.user.id,
-      likeCount: res.likes,
+      threadCount: res.threads,
     });
     return res;
   }
@@ -680,26 +686,25 @@ export class CollectionsController {
   }
 
   @UseGuards(OptionalJwtAuthGuard)
-  @Get('media/:mediaId/is-liked')
-  async isMediaLiked(@Param('mediaId') mediaId: string, @Req() req: any) {
-    return this.collectionsService.isMediaLikedByUser(mediaId, req.user?.id);
+  @Get('media/:mediaId/is-threaded')
+  async isMediaThreaded(@Param('mediaId') mediaId: string, @Req() req: any) {
+    return this.collectionsService.isMediaThreadedByUser(mediaId, req.user?.id);
   }
 
-  // Is-liked for a collection
   @UseGuards(OptionalJwtAuthGuard)
-  @Get(':id/is-liked')
-  async isCollectionLiked(@Param('id') collectionId: string, @Req() req: any) {
-    return this.collectionsService.isCollectionLikedByUser(
+  @Get(':id/is-threaded')
+  async isCollectionThreaded(@Param('id') collectionId: string, @Req() req: any) {
+    return this.collectionsService.isCollectionThreadedByUser(
       collectionId,
       req.user?.id,
     );
   }
 
-  // Likes summary for a collection (collection likes + media likes)
-  @Get(':id/likes/summary')
-  @ApiOperation({ summary: 'Get likes summary for a collection' })
-  async getLikesSummary(@Param('id') collectionId: string) {
-    return this.collectionsService.getLikesSummary(collectionId);
+  // Threads summary for a collection (collection threads + media threads)
+  @Get(':id/threads/summary')
+  @ApiOperation({ summary: 'Get threads summary for a collection' })
+  async getThreadsSummary(@Param('id') collectionId: string) {
+    return this.collectionsService.getThreadsSummary(collectionId);
   }
 
   // ===================== Access Management =====================
@@ -1065,3 +1070,4 @@ export class CollectionsController {
     );
   }
 }
+

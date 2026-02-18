@@ -1,5 +1,6 @@
 import {
   Controller,
+  Delete,
   Get,
   Patch,
   Post,
@@ -38,6 +39,11 @@ export class NotificationsController {
   @Post('mark-all-read')
   async markAll(@Req() req: any) {
     return this.service.markAllRead(req.user.id);
+  }
+
+  @Delete(':id')
+  async remove(@Req() req: any, @Param('id') id: string) {
+    return this.service.remove(req.user.id, id);
   }
 
   @Get('settings')

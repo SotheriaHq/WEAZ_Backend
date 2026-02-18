@@ -7,7 +7,6 @@ import { ConfigModule } from '@nestjs/config';
 import { UploadModule } from './upload/upload.module';
 import { DevToolsModule } from './dev-tools/dev-tools.module';
 import { BrandsModule } from './brands/brands.module';
-import { FollowsModule } from './follows/follows.module';
 import { CollectionsModule } from './collections/collections.module';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { EventsGateway } from './realtime/events.gateway';
@@ -21,6 +20,8 @@ import { CategoriesModule } from './categories/categories.module';
 import { OrderModule } from './order/order.module';
 import { PayoutModule } from './payout/payout.module';
 import { StoreModule } from './store/store.module';
+import { UsersModule } from './users/users.module';
+import { ScheduleModule } from '@nestjs/schedule';
 
 @Module({
   imports: [
@@ -28,13 +29,12 @@ import { StoreModule } from './store/store.module';
       isGlobal: true,
       envFilePath: '.env',
     }),
+    ScheduleModule.forRoot(),
     PrismaModule,
     AuthModule,
     ThrottlerModule.forRoot([{ ttl: 60, limit: 120 }]),
     UploadModule,
     BrandsModule,
-    // Social follows (sews)
-    FollowsModule,
     // Collections for brands
     CollectionsModule,
     PostsModule,
@@ -48,6 +48,7 @@ import { StoreModule } from './store/store.module';
     OrderModule,
     PayoutModule,
     StoreModule,
+    UsersModule,
   ],
   controllers: [AppController],
   providers: [AppService, EventsGateway],

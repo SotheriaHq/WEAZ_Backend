@@ -161,7 +161,7 @@ export class CommentsService {
     });
   }
 
-  // Toggle reaction (LIKE/DISLIKE) on a comment
+  // Toggle reaction (THREAD/DISLIKE) on a comment
   async toggleReaction(
     commentId: string,
     userId: string,
@@ -169,7 +169,7 @@ export class CommentsService {
   ): Promise<{
     reacted: boolean;
     type: ReactionType;
-    likes: number;
+    threads: number;
     dislikes: number;
   }> {
     this.logger.warn(
@@ -207,16 +207,16 @@ export class CommentsService {
     }
 
     // Return counts
-    const [likes, dislikes] = await Promise.all([
+    const [threads, dislikes] = await Promise.all([
       this.prisma.commentReaction.count({
-        where: { commentId, type: ReactionType.LIKE },
+        where: { commentId, type: ReactionType.THREAD },
       }),
       this.prisma.commentReaction.count({
         where: { commentId, type: ReactionType.DISLIKE },
       }),
     ]);
 
-    return { reacted: true, type, likes, dislikes };
+    return { reacted: true, type, threads, dislikes };
   }
 
   // Get users who reacted to a comment (latest N)
@@ -224,9 +224,9 @@ export class CommentsService {
     this.logger.warn(
       'Deprecated CommentsService.getReactions called; prefer CommentsV2Service for POST target',
     );
-    const [reactions, totalLikes, totalDislikes] = await Promise.all([
+    const [reactions, totalThreads, totalDislikes] = await Promise.all([
       this.prisma.commentReaction.findMany({
-        where: { commentId, type: ReactionType.LIKE },
+        where: { commentId, type: ReactionType.THREAD },
         include: {
           user: {
             select: {
@@ -242,13 +242,13 @@ export class CommentsService {
         take: limit,
       }),
       this.prisma.commentReaction.count({
-        where: { commentId, type: ReactionType.LIKE },
+        where: { commentId, type: ReactionType.THREAD },
       }),
       this.prisma.commentReaction.count({
         where: { commentId, type: ReactionType.DISLIKE },
       }),
     ]);
 
-    return { users: reactions.map((r) => r.user), totalLikes, totalDislikes };
+    return { users: reactions.map((r) => r.user), totalThreads, totalDislikes };
   }
 }

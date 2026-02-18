@@ -25,6 +25,9 @@ describe('NotificationsService', () => {
       user: {
         findUnique: jest.fn().mockResolvedValue({ notificationSettings: null }),
       },
+      patchConnection: {
+        findFirst: jest.fn(),
+      },
     };
 
     const mockEvents = {
@@ -77,7 +80,7 @@ describe('NotificationsService', () => {
       const mockNotifications = [
         {
           id: '1',
-          type: NotificationType.LIKE,
+          type: NotificationType.THREAD,
           payload: {},
           isRead: false,
           createdAt: new Date(),
@@ -151,7 +154,7 @@ describe('NotificationsService', () => {
 
   describe('create', () => {
     it('should skip self-notifications', async () => {
-      const result = await service.create('user-id', NotificationType.LIKE, {
+      const result = await service.create('user-id', NotificationType.THREAD, {
         actorId: 'user-id',
       });
 
@@ -161,7 +164,7 @@ describe('NotificationsService', () => {
     it('should validate and sanitize payload', async () => {
       const mockCreated = {
         id: '1',
-        type: NotificationType.LIKE,
+        type: NotificationType.THREAD,
         payload: { target: { id: 'target-id' } },
         isRead: false,
         createdAt: new Date(),
@@ -169,7 +172,7 @@ describe('NotificationsService', () => {
       };
       mockPrisma.notification.create.mockResolvedValue(mockCreated);
 
-      await service.create('recipient-id', NotificationType.LIKE, {
+      await service.create('recipient-id', NotificationType.THREAD, {
         payload: { target: { id: 'target-id' } },
       });
 
@@ -182,13 +185,13 @@ describe('NotificationsService', () => {
     it('should dedupe notifications within window', async () => {
       mockPrisma.notification.findFirst.mockResolvedValue({
         id: 'existing',
-        type: NotificationType.LIKE,
+        type: NotificationType.THREAD,
         payload: { target: { id: 'target-id' } },
       });
 
       const result = await service.create(
         'recipient-id',
-        NotificationType.LIKE,
+        NotificationType.THREAD,
         {
           dedupeMs: 60000,
           target: { type: 'POST' as any, id: 'target-id' },
@@ -206,6 +209,40 @@ describe('NotificationsService', () => {
           payload: { invalidField: 'value' },
         }),
       ).rejects.toThrow('Invalid payload for notification type LOGIN');
+    });
+
+    it('should skip TAG_MENTION from unpatched actor when disabled in settings', async () => {
+      mockPrisma.user.findUnique.mockResolvedValue({
+        notificationSettings: {
+          tags: { mentions: true, fromUnpatchedUsers: false },
+        },
+      });
+      mockPrisma.patchConnection.findFirst.mockResolvedValue(null);
+
+      const result = await service.create(
+        'recipient-id',
+        'TAG_MENTION' as NotificationType,
+        { actorId: 'actor-id', payload: { tag: 'fresh' } },
+      );
+
+      expect(result).toBeNull();
+      expect(mockPrisma.notification.create).not.toHaveBeenCalled();
+    });
+
+    it('should skip COMMENT reply notifications when replies toggle is off', async () => {
+      mockPrisma.user.findUnique.mockResolvedValue({
+        notificationSettings: {
+          comments: { enabled: true, replies: false, fromUnpatchedUsers: true },
+        },
+      });
+
+      const result = await service.create('recipient-id', NotificationType.COMMENT, {
+        actorId: 'actor-id',
+        payload: { parentId: 'parent-comment-id' },
+      });
+
+      expect(result).toBeNull();
+      expect(mockPrisma.notification.create).not.toHaveBeenCalled();
     });
   });
 });

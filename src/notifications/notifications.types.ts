@@ -2,12 +2,19 @@ export type TargetType =
   | 'POST'
   | 'COLLECTION'
   | 'COLLECTION_MEDIA'
+  | 'PRODUCT'
   | 'USER'
   | 'SYSTEM';
 
+export type NotificationTarget = {
+  type: TargetType;
+  id: string;
+  preview?: string;
+};
+
 export interface CreateNotificationOptions {
   actorId?: string | null;
-  target?: { type: TargetType; id: string } | null;
+  target?: NotificationTarget | null;
   payload?: Record<string, any> | null;
   // Optional dedupe window in ms. If provided, will skip creating a new
   // notification if one with the same (recipientId, type, actorId, target)
@@ -19,14 +26,35 @@ export interface NotificationSettings {
   security: {
     login: boolean;
   };
-  engagement: {
-    likes: boolean;
-    comments: boolean;
+  social: {
+    threads: boolean;
     follows: boolean;
+    patches: boolean;
+  };
+  comments: {
+    enabled: boolean;
+    replies: boolean;
+    fromUnpatchedUsers: boolean;
+  };
+  tags: {
+    mentions: boolean;
+    fromUnpatchedUsers: boolean;
+  };
+  collections: {
+    lifecycle: boolean;
+    access: boolean;
   };
   brand: {
     patchRequests: boolean;
     contributions: boolean;
+  };
+  orders: {
+    updates: boolean;
+  };
+  fit: {
+    reminders: boolean;
+    shares: boolean;
+    approvals: boolean;
   };
 }
 
@@ -34,13 +62,34 @@ export const DEFAULT_NOTIFICATION_SETTINGS: NotificationSettings = {
   security: {
     login: true,
   },
-  engagement: {
-    likes: true,
-    comments: true,
+  social: {
+    threads: true,
     follows: true,
+    patches: true,
+  },
+  comments: {
+    enabled: true,
+    replies: true,
+    fromUnpatchedUsers: true,
+  },
+  tags: {
+    mentions: true,
+    fromUnpatchedUsers: true,
+  },
+  collections: {
+    lifecycle: true,
+    access: true,
   },
   brand: {
     patchRequests: true,
     contributions: true,
+  },
+  orders: {
+    updates: true,
+  },
+  fit: {
+    reminders: true,
+    shares: true,
+    approvals: true,
   },
 };

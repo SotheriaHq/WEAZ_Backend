@@ -425,15 +425,24 @@ export class UploadService {
 
     const urlMap = new Map<string, string>();
 
-    for (const file of files) {
-      const command = new GetObjectCommand({
-        Bucket: this.bucketName,
-        Key: file.s3Key,
-      });
-      const signedUrl = await getSignedUrl(this.s3, command, {
-        expiresIn: 3600,
-      }); // 1 hour
-      urlMap.set(file.id, signedUrl);
+    const chunkSize = 25;
+    for (let i = 0; i < files.length; i += chunkSize) {
+      const chunk = files.slice(i, i + chunkSize);
+      const results = await Promise.all(
+        chunk.map(async (file) => {
+          const command = new GetObjectCommand({
+            Bucket: this.bucketName,
+            Key: file.s3Key,
+          });
+          const signedUrl = await getSignedUrl(this.s3, command, {
+            expiresIn: 3600,
+          }); // 1 hour
+          return [file.id, signedUrl] as const;
+        }),
+      );
+      for (const [id, url] of results) {
+        urlMap.set(id, url);
+      }
     }
 
     return urlMap;

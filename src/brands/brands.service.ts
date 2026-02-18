@@ -11,6 +11,7 @@ import {
   Prisma,
   UserType,
   PatchStatus,
+  PatchMode,
   NotificationType,
 } from '@prisma/client';
 import { NotificationsService } from '../notifications/notifications.service';
@@ -21,6 +22,10 @@ import {
   toAuthUserResponse,
 } from '../auth/helper/prisma-select.helper';
 import { AuthUserResponseDto } from '../auth/dto/auth-response.dto';
+import { SystemTagsService } from '../tags/system-tags.service';
+import { TagIndexService } from '../tags/tag-index.service';
+import { sanitizeTags } from 'src/common/utils/tag-validator';
+import { TAG_ENTITY_TYPE } from 'src/tags/tag-entity-type';
 
 export interface BrandMediaAsset {
   fileId: string;
@@ -63,6 +68,7 @@ export interface BrandProfileResponse {
   averageRating: number;
   totalReviews: number;
   collectionsCount: number;
+  patchesCount: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -97,6 +103,8 @@ export class BrandsService {
     private readonly prisma: PrismaService,
     private readonly uploadService: UploadService,
     private readonly notifications?: NotificationsService,
+    private readonly systemTags?: SystemTagsService,
+    private readonly tagIndex?: TagIndexService,
   ) {}
 
   private async getBrandOrThrow(brandId: string) {
@@ -194,6 +202,13 @@ export class BrandsService {
         status: CollectionStatus.PUBLISHED,
       },
     });
+    const patchesCount = await this.prisma.patchConnection.count({
+      where: {
+        targetId: ownerId,
+        status: PatchStatus.ACCEPTED,
+        mode: PatchMode.USER_TO_BRAND,
+      },
+    });
 
     const fullName =
       brand.brandFullName ||
@@ -283,6 +298,7 @@ export class BrandsService {
       averageRating: 0,
       totalReviews: 0,
       collectionsCount,
+      patchesCount,
       createdAt: brand.createdAt.toISOString(),
       updatedAt: brand.updatedAt.toISOString(),
     };
@@ -309,7 +325,7 @@ export class BrandsService {
     brandId: string,
     dto: UpdateBrandProfileDto,
   ): Promise<AuthUserResponseDto> {
-    await this.getBrandOrThrow(brandId);
+    const brand = await this.getBrandOrThrow(brandId);
 
     const trimOrNull = (value: string | undefined): string | null => {
       if (typeof value !== 'string') {
@@ -320,13 +336,7 @@ export class BrandsService {
     };
 
     const sanitizedTags = Array.isArray(dto.brandTags)
-      ? Array.from(
-          new Set(
-            dto.brandTags
-              .map((tag) => (typeof tag === 'string' ? tag.trim() : ''))
-              .filter((tag) => tag.length > 0),
-          ),
-        ).slice(0, 6)
+      ? sanitizeTags(dto.brandTags, 5)
       : undefined;
 
     const brandCountry = trimOrNull(dto.brandCountry);
@@ -384,6 +394,19 @@ export class BrandsService {
       data,
       select: profileUserSelect,
     });
+
+    if (this.systemTags && sanitizedTags !== undefined) {
+      await this.systemTags.syncTags(brand.brandTags ?? [], sanitizedTags);
+    }
+    if (this.tagIndex && sanitizedTags !== undefined) {
+      await this.tagIndex.syncEntityTags(
+        TAG_ENTITY_TYPE.USER_BRAND,
+        brandId,
+        brand.brandTags ?? [],
+        sanitizedTags,
+        { maxCount: 10 },
+      );
+    }
 
     return toAuthUserResponse(updatedUser);
   }
@@ -645,96 +668,6 @@ export class BrandsService {
   }
 
   // ============================================
-  // SUBSCRIPTIONS (Follows)
-  // ============================================
-
-  async subscribeToBrand(followerId: string, brandId: string) {
-    if (followerId === brandId) {
-      throw new BadRequestException('Cannot subscribe to yourself');
-    }
-
-    const brand = await this.prisma.user.findUnique({
-      where: { id: brandId },
-    });
-
-    if (!brand || brand.type !== UserType.BRAND) {
-      throw new NotFoundException('Brand not found');
-    }
-
-    const existing = await this.prisma.follow.findUnique({
-      where: { followerId_followingId: { followerId, followingId: brandId } },
-    });
-
-    if (existing) {
-      return { subscribed: true, message: 'Already subscribed' };
-    }
-
-    await this.prisma.follow.create({
-      data: {
-        id: uuidv4(),
-        followerId,
-        followingId: brandId,
-      },
-    });
-
-    // Notify brand
-    if (this.notifications) {
-      try {
-        await this.notifications.create(brandId, NotificationType.FOLLOW, {
-          actorId: followerId,
-          payload: { message: 'New subscriber' },
-        });
-      } catch {}
-    }
-
-    return { subscribed: true };
-  }
-
-  async unsubscribeFromBrand(followerId: string, brandId: string) {
-    const existing = await this.prisma.follow.findUnique({
-      where: { followerId_followingId: { followerId, followingId: brandId } },
-    });
-
-    if (existing) {
-      await this.prisma.follow.delete({
-        where: { id: existing.id },
-      });
-    }
-
-    return { subscribed: false };
-  }
-
-  async getSubscribers(brandId: string, page = 1, limit = 20) {
-    const skip = (page - 1) * limit;
-    const [total, items] = await Promise.all([
-      this.prisma.follow.count({ where: { followingId: brandId } }),
-      this.prisma.follow.findMany({
-        where: { followingId: brandId },
-        include: {
-          follower: {
-            select: {
-              id: true,
-              username: true,
-              firstName: true,
-              lastName: true,
-              profileImage: true,
-            },
-          },
-        },
-        skip,
-        take: limit,
-        orderBy: { createdAt: 'desc' },
-      }),
-    ]);
-
-    return {
-      items: items.map((f) => f.follower),
-      total,
-      page,
-      totalPages: Math.ceil(total / limit),
-    };
-  }
-  // ============================================
   // DASHBOARD & ANALYTICS
   // ============================================
 
@@ -748,7 +681,7 @@ export class BrandsService {
     }
 
     // KPIs
-    const [totalOrders, totalSalesResult, pendingOrders] = await Promise.all([
+    const [totalOrders, totalSalesResult, pendingOrders, patchesCount] = await Promise.all([
       this.prisma.order.count({ where: { brandId: brand.id } }),
       this.prisma.order.aggregate({
         where: { brandId: brand.id, paymentStatus: 'PAID' },
@@ -756,6 +689,13 @@ export class BrandsService {
       }),
       this.prisma.order.count({
         where: { brandId: brand.id, status: 'PENDING' },
+      }),
+      this.prisma.patchConnection.count({
+        where: {
+          targetId: brandId,
+          status: PatchStatus.ACCEPTED,
+          mode: PatchMode.USER_TO_BRAND,
+        },
       }),
     ]);
 
@@ -787,6 +727,7 @@ export class BrandsService {
         totalOrders,
         avgOrderValue,
         pendingOrders,
+        patches: patchesCount,
       },
       recentOrders,
       actionRequired,

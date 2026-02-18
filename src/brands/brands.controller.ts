@@ -82,34 +82,6 @@ export class BrandsController {
     return this.brandsService.getPendingPatchRequests(req.user.id);
   }
 
-  // ===================== Subscriptions =====================
-
-  @UseGuards(JwtAuthGuard)
-  @Post('brands/:id/subscribe')
-  async subscribe(@Param('id') brandId: string, @Req() req: any) {
-    return this.brandsService.subscribeToBrand(req.user.id, brandId);
-  }
-
-  @UseGuards(JwtAuthGuard)
-  @Delete('brands/:id/subscribe')
-  async unsubscribe(@Param('id') brandId: string, @Req() req: any) {
-    return this.brandsService.unsubscribeFromBrand(req.user.id, brandId);
-  }
-
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
-  @Get('brands/me/subscribers')
-  async getMySubscribers(
-    @Req() req: any,
-    @Query('page') page?: string,
-    @Query('limit') limit?: string,
-  ) {
-    return this.brandsService.getSubscribers(
-      req.user.id,
-      page ? parseInt(page, 10) : 1,
-      limit ? parseInt(limit, 10) : 20,
-    );
-  }
-
   @Get('brands/:id')
   @SkipThrottle()
   async getBrandProfile(

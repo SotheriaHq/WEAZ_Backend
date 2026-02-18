@@ -11,6 +11,8 @@ import { NotificationsModule } from 'src/notifications/notifications.module';
 import { EventsGateway } from 'src/realtime/events.gateway';
 import { StoreModule } from 'src/store/store.module';
 import { IdempotencyInterceptor } from 'src/common/interceptors/idempotency.interceptor';
+import { TagsModule } from 'src/tags/tags.module';
+import { QueueModule } from 'src/queue/queue.module';
 
 @Module({
   imports: [
@@ -19,6 +21,8 @@ import { IdempotencyInterceptor } from 'src/common/interceptors/idempotency.inte
     AnalyticsModule,
     NotificationsModule,
     StoreModule,
+    TagsModule,
+    QueueModule,
   ],
   providers: [
     CollectionsService,

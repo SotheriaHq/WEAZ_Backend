@@ -22,6 +22,7 @@ import { AddToWishlistDto } from './dto/wishlist.dto';
 import { CheckoutDto } from './dto/checkout.dto';
 import { UpdateStoreNameDto } from './dto/update-store-name.dto';
 import { UpdateStoreProfileDto } from './dto/update-store-profile.dto';
+import { UpdateStorePoliciesDto } from './dto/update-store-policies.dto';
 import { JwtAuthGuard } from '../auth/guard/jwt-auth.guard';
 import { UserTypeGuard } from '../auth/guard/user-type.guard';
 import { OptionalJwtAuthGuard } from '../auth/guard/optional-jwt-auth.guard';
@@ -428,6 +429,12 @@ export class StoreController {
   }
 
   @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Post('store/close')
+  async closeStore(@Req() req: any) {
+    return this.storeService.closeStore(req.user.id);
+  }
+
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
   @Patch('store/profile')
   async updateStoreProfile(
     @Body(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
@@ -435,5 +442,21 @@ export class StoreController {
     @Req() req: any,
   ) {
     return this.storeService.updateStoreProfile(req.user.id, dto);
+  }
+
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Get('store/policies')
+  async getStorePolicies(@Req() req: any) {
+    return this.storeService.getStorePolicies(req.user.id);
+  }
+
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Patch('store/policies')
+  async updateStorePolicies(
+    @Body(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
+    dto: UpdateStorePoliciesDto,
+    @Req() req: any,
+  ) {
+    return this.storeService.updateStorePolicies(req.user.id, dto);
   }
 }

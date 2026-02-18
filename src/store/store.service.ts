@@ -4,30 +4,56 @@ import {
   BadRequestException,
   ForbiddenException,
   ConflictException,
+  Logger,
 } from '@nestjs/common';
+import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateProductDto, UpdateProductDto } from './dto/create-product.dto';
 import { AddToCartDto, UpdateCartItemDto } from './dto/cart.dto';
 import { AddToWishlistDto } from './dto/wishlist.dto';
 import { CheckoutDto } from './dto/checkout.dto';
 import { v4 as uuidv4 } from 'uuid';
-import { CollectionType, Prisma, NotificationType, UserType } from '@prisma/client';
+import {
+  CollectionType,
+  Prisma,
+  NotificationType,
+  PatchMode,
+  PatchStatus,
+  UserType,
+} from '@prisma/client';
 import { UpdateStoreNameDto } from './dto/update-store-name.dto';
 import { UpdateStoreProfileDto } from './dto/update-store-profile.dto';
+import { UpdateStorePoliciesDto } from './dto/update-store-policies.dto';
 import { PasswordService } from 'src/auth/helper/password.service';
 import { UploadService } from 'src/upload/upload.service';
 import { FileType } from 'src/upload/upload.enums';
 import { ProductViewCounterService } from './product-view-counter.service';
 import { NotificationsService } from 'src/notifications/notifications.service';
+import { SystemTagsService } from 'src/tags/system-tags.service';
+import { TagIndexService } from 'src/tags/tag-index.service';
+import { NotificationsQueueService } from 'src/queue/notifications.queue.service';
+import {
+  normalizeTag as normalizeTagValue,
+  sanitizeTags,
+} from 'src/common/utils/tag-validator';
+import { TAG_ENTITY_TYPE } from 'src/tags/tag-entity-type';
 
 @Injectable()
 export class StoreService {
+  private readonly logger = new Logger(StoreService.name);
+  private readonly systemTagsTtlMs = 5 * 60 * 1000;
+  private systemTagsCache: { tags: string[]; expiresAt: number } | null = null;
+  private systemTagsRefresh: Promise<string[]> | null = null;
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly passwordService: PasswordService,
     private readonly uploadService: UploadService,
     private readonly viewCounter: ProductViewCounterService,
     private readonly notifications?: NotificationsService,
+    private readonly systemTags?: SystemTagsService,
+    private readonly tagIndex?: TagIndexService,
+    private readonly notificationsQueue?: NotificationsQueueService,
   ) {}
 
   private readonly maxProductsPerCollection = 5;
@@ -368,7 +394,7 @@ export class StoreService {
   }
 
   private normalizeTag(tag: string): string {
-    return (tag || '').trim().replace(/\s+/g, ' ').slice(0, 40);
+    return normalizeTagValue(tag);
   }
 
   private normalizeVariantDimension(value: string | null | undefined): string | null {
@@ -476,32 +502,44 @@ export class StoreService {
   }
 
   private buildTagSet(tags: Array<string | null | undefined>): string[] {
-    const set = new Set<string>();
-    for (const tag of tags) {
-      const normalized = this.normalizeTag(String(tag ?? '')).toLowerCase();
-      if (!normalized) continue;
-      set.add(normalized);
-    }
-    return Array.from(set).sort((a, b) => a.localeCompare(b));
+    return sanitizeTags(
+      tags.map((tag) => String(tag ?? '')),
+      30,
+    );
   }
 
   private async getSystemTags(): Promise<string[]> {
-    const [brandUsers, products] = await Promise.all([
-      this.prisma.user.findMany({
-        where: { type: 'BRAND' },
-        select: { brandTags: true },
-      }),
-      this.prisma.product.findMany({
-        select: { tags: true },
-        take: 2000,
-        orderBy: { updatedAt: 'desc' },
-      }),
-    ]);
+    const now = Date.now();
+    if (this.systemTagsCache && this.systemTagsCache.expiresAt > now) {
+      return this.systemTagsCache.tags;
+    }
 
-    const tags: string[] = [];
-    for (const u of brandUsers) tags.push(...(u.brandTags || []));
-    for (const p of products) tags.push(...(p.tags || []));
-    return this.buildTagSet(tags);
+    if (this.systemTagsCache && this.systemTagsCache.expiresAt <= now) {
+      // Serve stale tags while refreshing in the background.
+      void this.refreshSystemTags();
+      return this.systemTagsCache.tags;
+    }
+
+    return this.refreshSystemTags();
+  }
+
+  private async refreshSystemTags(): Promise<string[]> {
+    if (this.systemTagsRefresh) return this.systemTagsRefresh;
+    this.systemTagsRefresh = (async () => {
+      const rows = await this.prisma.systemTag.findMany({
+        select: { tag: true },
+        orderBy: { tag: 'asc' },
+      });
+      const normalized = rows.map((row) => row.tag);
+      this.systemTagsCache = {
+        tags: normalized,
+        expiresAt: Date.now() + this.systemTagsTtlMs,
+      };
+      return normalized;
+    })().finally(() => {
+      this.systemTagsRefresh = null;
+    });
+    return this.systemTagsRefresh;
   }
 
   private async getActiveCategories() {
@@ -571,7 +609,189 @@ export class StoreService {
     return (user.username || '').trim();
   }
 
+  private isProductPublished(product: {
+    isActive?: boolean | null;
+    publishAt?: Date | null;
+    archivedAt?: Date | null;
+    deletedAt?: Date | null;
+  }) {
+    if (!product?.isActive) return false;
+    if (product.deletedAt || product.archivedAt) return false;
+    const now = new Date();
+    if (product.publishAt && product.publishAt > now) return false;
+    return true;
+  }
+
+  private getIndexedProductTags(
+    product: {
+      isActive?: boolean | null;
+      publishAt?: Date | null;
+      archivedAt?: Date | null;
+      deletedAt?: Date | null;
+      tags?: Array<string | null | undefined> | null;
+    },
+    fallbackTags?: Array<string | null | undefined>,
+  ): string[] {
+    if (!this.isProductPublished(product)) return [];
+    const source = fallbackTags ?? (Array.isArray(product.tags) ? product.tags : []);
+    return this.buildTagSet(source);
+  }
+
+  private areTagsEqual(a: string[], b: string[]): boolean {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i += 1) {
+      if (a[i] !== b[i]) return false;
+    }
+    return true;
+  }
+
+  private getIndexedBrandTags(
+    brand: {
+      isStoreOpen?: boolean | null;
+      tags?: Array<string | null | undefined> | null;
+    },
+    fallbackTags?: Array<string | null | undefined>,
+  ): string[] {
+    if (!brand.isStoreOpen) return [];
+    const source = fallbackTags ?? (Array.isArray(brand.tags) ? brand.tags : []);
+    return this.buildTagSet(source);
+  }
+
+  private async notifyPatchersOfProduct(
+    brandOwnerId: string,
+    product: { id: string; name: string },
+  ) {
+    if (!this.notifications) return;
+
+    const [patchers, owner] = await Promise.all([
+      this.prisma.patchConnection.findMany({
+        where: {
+          targetId: brandOwnerId,
+          status: PatchStatus.ACCEPTED,
+          mode: PatchMode.USER_TO_BRAND,
+        },
+        select: { requesterId: true },
+      }),
+      this.prisma.user.findUnique({
+        where: { id: brandOwnerId },
+        select: { username: true, brandFullName: true },
+      }),
+    ]);
+
+    if (patchers.length === 0) return;
+
+    const brandName =
+      owner?.brandFullName || owner?.username || 'A brand';
+    const message = `${brandName} added a new product: ${product.name}`;
+
+    const recipientIds = patchers
+      .map((p) => p.requesterId)
+      .filter((id) => id && id !== brandOwnerId);
+
+    if (recipientIds.length === 0) return;
+
+    if (this.notificationsQueue) {
+      try {
+        await this.notificationsQueue.enqueueFanout({
+          recipientIds,
+          notificationType: NotificationType.PRODUCT_UPLOAD,
+          actorId: brandOwnerId,
+          payload: {
+            productId: product.id,
+            productName: product.name,
+            targetUrl: `/products/${product.id}`,
+            message,
+          },
+          target: { type: 'PRODUCT', id: product.id, preview: product.name },
+        });
+        return;
+      } catch (e) {
+        console.warn('Failed to enqueue product notification fanout', e);
+      }
+    }
+
+    if (!this.notifications) return;
+
+    const chunkSize = 25;
+    for (let i = 0; i < recipientIds.length; i += chunkSize) {
+      const chunk = recipientIds.slice(i, i + chunkSize);
+      await Promise.all(
+        chunk.map(async (recipientId) => {
+          try {
+            await this.notifications.create(
+              recipientId,
+              NotificationType.PRODUCT_UPLOAD,
+              {
+                actorId: brandOwnerId,
+                payload: {
+                  productId: product.id,
+                  productName: product.name,
+                  targetUrl: `/products/${product.id}`,
+                  message,
+                },
+                target: { type: 'PRODUCT', id: product.id, preview: product.name },
+              },
+            );
+          } catch (e) {
+            console.warn('Failed to notify patcher of product', e);
+          }
+        }),
+      );
+    }
+
+    try {
+      await this.prisma.product.update({
+        where: { id: product.id },
+        data: { publishNotifiedAt: new Date() },
+      });
+    } catch (e) {
+      console.warn('Failed to mark product publish notification', e);
+    }
+  }
+
   // ==================== PRODUCTS ====================
+
+  @Cron(CronExpression.EVERY_5_MINUTES)
+  async handleScheduledProductPublishNotifications() {
+    if (!this.notifications) return;
+
+    const now = new Date();
+    const candidates = await this.prisma.product.findMany({
+      where: {
+        isActive: true,
+        deletedAt: null,
+        archivedAt: null,
+        publishAt: { lte: now },
+        publishNotifiedAt: null,
+      },
+      select: {
+        id: true,
+        name: true,
+        brand: { select: { ownerId: true } },
+      },
+      orderBy: { publishAt: 'asc' },
+      take: 200,
+    });
+
+    if (candidates.length === 0) return;
+
+    this.logger.log(
+      `Notifying patchers of ${candidates.length} scheduled product publishes`,
+    );
+
+    for (const product of candidates) {
+      const ownerId = product.brand?.ownerId;
+      if (!ownerId) continue;
+      try {
+        await this.notifyPatchersOfProduct(ownerId, product);
+      } catch (e) {
+        this.logger.warn(
+          `Failed scheduled product notification for ${product.id}`,
+          e as any,
+        );
+      }
+    }
+  }
 
   async createProduct(brandOwnerId: string, dto: CreateProductDto) {
     // Verify brand ownership
@@ -645,6 +865,7 @@ export class StoreService {
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, '-')
       .replace(/^-|-$/g, '');
+    const resolvedTags = this.buildTagSet(dto.tags || []);
 
     const product = await this.prisma.$transaction(async (tx) => {
       let collectionId = requestedCollectionId;
@@ -698,7 +919,7 @@ export class StoreService {
           trackInventory: dto.trackInventory ?? true,
           allowBackorders: dto.allowBackorders ?? false,
           // Metadata
-          tags: this.buildTagSet(dto.tags || []),
+          tags: resolvedTags,
           gender: dto.gender || 'EVERYBODY',
           isActive: dto.isActive ?? true,
           isFeatured: dto.isFeatured ?? false,
@@ -753,11 +974,30 @@ export class StoreService {
       throw new NotFoundException('Product not found');
     }
 
+    const indexedTags = this.getIndexedProductTags(product, resolvedTags);
+    if (this.systemTags && indexedTags.length > 0) {
+      await this.systemTags.upsertTags(indexedTags);
+      this.systemTagsCache = null;
+    }
+    if (this.tagIndex && indexedTags.length > 0) {
+      await this.tagIndex.syncEntityTags(
+        TAG_ENTITY_TYPE.PRODUCT,
+        product.id,
+        [],
+        indexedTags,
+        { maxCount: 30 },
+      );
+    }
+
     const collectionIds = Array.isArray(product.collections)
       ? product.collections.map((c: any) => c.collectionId)
       : [];
     for (const id of collectionIds) {
       await this.recalculateCollectionPriceRange(id);
+    }
+
+    if (this.isProductPublished(product)) {
+      await this.notifyPatchersOfProduct(brandOwnerId, product);
     }
 
     return this.attachProductMedia(product);
@@ -780,6 +1020,9 @@ export class StoreService {
     if (product.brand.ownerId !== brandOwnerId) {
       throw new ForbiddenException('You can only update your own products');
     }
+
+    const wasPublished = this.isProductPublished(product);
+    const previousTags = Array.isArray(product.tags) ? product.tags : [];
 
     let resolvedCollectionId: string | null | undefined = undefined;
     if (dto.collectionId !== undefined) {
@@ -907,7 +1150,9 @@ export class StoreService {
     if (dto.allowBackorders !== undefined) updateData.allowBackorders = dto.allowBackorders;
     
     // Metadata
-    if (dto.tags !== undefined) updateData.tags = this.buildTagSet(dto.tags || []);
+    const nextTags =
+      dto.tags !== undefined ? this.buildTagSet(dto.tags || []) : undefined;
+    if (nextTags !== undefined) updateData.tags = nextTags;
     if (dto.gender !== undefined) updateData.gender = dto.gender;
     if (dto.isActive !== undefined) updateData.isActive = dto.isActive;
     if (dto.isFeatured !== undefined) updateData.isFeatured = dto.isFeatured;
@@ -1040,6 +1285,44 @@ export class StoreService {
       }
     }
 
+    if (updated && !wasPublished && this.isProductPublished(updated)) {
+      await this.notifyPatchersOfProduct(brandOwnerId, updated);
+    }
+
+    const resolvedUpdatedTags =
+      nextTags ??
+      this.buildTagSet(Array.isArray(updated?.tags) ? (updated?.tags as string[]) : previousTags);
+    const previousIndexedTags = this.getIndexedProductTags(product, previousTags);
+    const nextIndexedTags = updated
+      ? this.getIndexedProductTags(
+          {
+            isActive: updated.isActive,
+            publishAt: updated.publishAt,
+            archivedAt: updated.archivedAt,
+            deletedAt: updated.deletedAt,
+            tags: resolvedUpdatedTags,
+          },
+          resolvedUpdatedTags,
+        )
+      : [];
+    const shouldSyncIndex =
+      nextTags !== undefined ||
+      !this.areTagsEqual(previousIndexedTags, nextIndexedTags);
+
+    if (this.systemTags && shouldSyncIndex) {
+      await this.systemTags.syncTags(previousIndexedTags, nextIndexedTags);
+      this.systemTagsCache = null;
+    }
+    if (this.tagIndex && shouldSyncIndex) {
+      await this.tagIndex.syncEntityTags(
+        TAG_ENTITY_TYPE.PRODUCT,
+        productId,
+        previousIndexedTags,
+        nextIndexedTags,
+        { maxCount: 30 },
+      );
+    }
+
     return this.attachProductMedia(updated);
   }
 
@@ -1126,7 +1409,7 @@ export class StoreService {
           metaDescription: null,
           // Reset engagement
           viewsCount: 0,
-          likesCount: 0,
+          threadsCount: 0,
         },
       });
 
@@ -1198,13 +1481,42 @@ export class StoreService {
       });
     });
 
+    if (!duplicated) {
+      throw new NotFoundException('Failed to duplicate product');
+    }
+
+    const duplicatedTags = this.getIndexedProductTags(
+      {
+        isActive: duplicated?.isActive,
+        publishAt: duplicated?.publishAt,
+        archivedAt: duplicated?.archivedAt,
+        deletedAt: duplicated?.deletedAt,
+        tags: duplicated?.tags as string[] | undefined,
+      },
+      Array.isArray(duplicated?.tags) ? (duplicated.tags as string[]) : [],
+    );
+
+    if (duplicatedTags.length > 0 && this.systemTags) {
+      await this.systemTags.upsertTags(duplicatedTags);
+      this.systemTagsCache = null;
+    }
+    if (duplicatedTags.length > 0 && this.tagIndex) {
+      await this.tagIndex.syncEntityTags(
+        TAG_ENTITY_TYPE.PRODUCT,
+        duplicated.id,
+        [],
+        duplicatedTags,
+        { maxCount: 30 },
+      );
+    }
+
     return this.attachProductMedia(duplicated);
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════════
+  // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
   // DELETE IMPACT CHECK
   // Returns info about what will be affected if a product is deleted
-  // ═══════════════════════════════════════════════════════════════════════════════
+  // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
   async getDeleteImpact(brandOwnerId: string, productId: string) {
     const product = await this.prisma.product.findFirst({
@@ -1254,7 +1566,7 @@ export class StoreService {
       inCarts,
       inWishlists,
       totalViews: product.viewsCount ?? 0,
-      totalLikes: product.likesCount ?? 0,
+      totalThreads: product.threadsCount ?? 0,
       canDelete: !hasActiveOrders,
       mustArchiveReason: hasActiveOrders
         ? 'This product has active orders and can only be archived.'
@@ -1262,10 +1574,10 @@ export class StoreService {
     };
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════════
+  // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
   // ARCHIVE PRODUCT
   // Sets archivedAt with 60-day auto-delete schedule
-  // ═══════════════════════════════════════════════════════════════════════════════
+  // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
   async archiveProduct(brandOwnerId: string, productId: string) {
     const product = await this.prisma.product.findFirst({
@@ -1287,6 +1599,8 @@ export class StoreService {
 
     const now = new Date();
     const expiresAt = new Date(now.getTime() + 60 * 24 * 60 * 60 * 1000); // 60 days from now
+
+    const previousIndexedTags = this.getIndexedProductTags(product, product.tags ?? []);
 
     const archived = await this.prisma.product.update({
       where: { id: productId },
@@ -1310,13 +1624,27 @@ export class StoreService {
       await this.recalculateCollectionPriceRange(id);
     }
 
+    if (previousIndexedTags.length > 0 && this.systemTags) {
+      await this.systemTags.syncTags(previousIndexedTags, []);
+      this.systemTagsCache = null;
+    }
+    if (previousIndexedTags.length > 0 && this.tagIndex) {
+      await this.tagIndex.syncEntityTags(
+        TAG_ENTITY_TYPE.PRODUCT,
+        productId,
+        previousIndexedTags,
+        [],
+        { maxCount: 30 },
+      );
+    }
+
     return this.attachProductMedia(archived);
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════════
+  // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
   // UNARCHIVE PRODUCT
   // Restores product and clears archive schedule
-  // ═══════════════════════════════════════════════════════════════════════════════
+  // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
   async unarchiveProduct(brandOwnerId: string, productId: string) {
     const product = await this.prisma.product.findFirst({
@@ -1335,6 +1663,8 @@ export class StoreService {
     if (!product.archivedAt) {
       throw new BadRequestException('Product is not archived');
     }
+
+    const previousIndexedTags = this.getIndexedProductTags(product, product.tags ?? []);
 
     const restored = await this.prisma.product.update({
       where: { id: productId },
@@ -1358,13 +1688,28 @@ export class StoreService {
       await this.recalculateCollectionPriceRange(id);
     }
 
+    const nextIndexedTags = this.getIndexedProductTags(restored, restored.tags ?? []);
+    if (this.systemTags && !this.areTagsEqual(previousIndexedTags, nextIndexedTags)) {
+      await this.systemTags.syncTags(previousIndexedTags, nextIndexedTags);
+      this.systemTagsCache = null;
+    }
+    if (this.tagIndex && !this.areTagsEqual(previousIndexedTags, nextIndexedTags)) {
+      await this.tagIndex.syncEntityTags(
+        TAG_ENTITY_TYPE.PRODUCT,
+        productId,
+        previousIndexedTags,
+        nextIndexedTags,
+        { maxCount: 30 },
+      );
+    }
+
     return this.attachProductMedia(restored);
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════════
+  // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
   // TOGGLE FEATURED
   // Toggles the isFeatured flag on a product
-  // ═══════════════════════════════════════════════════════════════════════════════
+  // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
   async toggleFeatured(brandOwnerId: string, productId: string) {
     const product = await this.prisma.product.findFirst({
@@ -1417,6 +1762,8 @@ export class StoreService {
     if (product.brand.ownerId !== brandOwnerId) {
       throw new ForbiddenException('You can only delete your own products');
     }
+
+    const previousIndexedTags = this.getIndexedProductTags(product, product.tags ?? []);
 
     // Check for active orders containing this product (items stored as JSON)
     const activeOrders = await this.prisma.order.findMany({
@@ -1516,6 +1863,20 @@ export class StoreService {
       await this.recalculateCollectionPriceRange(link.collectionId);
     }
 
+    if (previousIndexedTags.length > 0 && this.systemTags) {
+      await this.systemTags.syncTags(previousIndexedTags, []);
+      this.systemTagsCache = null;
+    }
+    if (previousIndexedTags.length > 0 && this.tagIndex) {
+      await this.tagIndex.syncEntityTags(
+        TAG_ENTITY_TYPE.PRODUCT,
+        productId,
+        previousIndexedTags,
+        [],
+        { maxCount: 30 },
+      );
+    }
+
     // Send notification if product was in collections
     if (affectedCollections.length > 0) {
       try {
@@ -1544,10 +1905,10 @@ export class StoreService {
     };
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════════
+  // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
   // PRICE CHANGE PREVIEW
   // Preview how a product price change will affect collection price ranges
-  // ═══════════════════════════════════════════════════════════════════════════════
+  // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
   async getProductPriceChangePreview(
     brandOwnerId: string,
@@ -1587,23 +1948,49 @@ export class StoreService {
 
     const affectedCollections: any[] = [];
 
-    for (const m of memberships) {
-      // Get all products in this collection
+    const collectionIds = memberships.map((m) => m.collectionId);
+    const linksByCollection = new Map<string, Array<{
+      productId: string;
+      product: {
+        id: string;
+        price: any;
+        salePrice: any;
+        isActive: boolean;
+        deletedAt: Date | null;
+        archivedAt: Date | null;
+      } | null;
+    }>>();
+
+    if (collectionIds.length > 0) {
       const links = await this.prisma.collectionProduct.findMany({
-        where: { collectionId: m.collectionId },
-        include: { 
-          product: { 
-            select: { 
-              id: true, 
-              price: true, 
+        where: { collectionId: { in: collectionIds } },
+        include: {
+          product: {
+            select: {
+              id: true,
+              price: true,
               salePrice: true,
               isActive: true,
               deletedAt: true,
               archivedAt: true,
-            } 
-          } 
+            },
+          },
         },
       });
+
+      for (const link of links) {
+        const bucket = linksByCollection.get(link.collectionId);
+        if (bucket) {
+          bucket.push(link);
+        } else {
+          linksByCollection.set(link.collectionId, [link]);
+        }
+      }
+    }
+
+    for (const m of memberships) {
+      // Get all products in this collection
+      const links = linksByCollection.get(m.collectionId) ?? [];
 
       // Calculate new price range
       const activePrices = links
@@ -1682,12 +2069,28 @@ export class StoreService {
       throw new BadRequestException('Product must be deleted before permanent removal');
     }
 
+    const previousIndexedTags = this.getIndexedProductTags(product, product.tags ?? []);
+
     await this.prisma.$transaction(async (tx) => {
       await tx.cartItem.deleteMany({ where: { productId } });
       await tx.wishlistItem.deleteMany({ where: { productId } });
       await tx.productVariant.deleteMany({ where: { productId } });
       await tx.product.delete({ where: { id: productId } });
     });
+
+    if (previousIndexedTags.length > 0 && this.systemTags) {
+      await this.systemTags.syncTags(previousIndexedTags, []);
+      this.systemTagsCache = null;
+    }
+    if (previousIndexedTags.length > 0 && this.tagIndex) {
+      await this.tagIndex.syncEntityTags(
+        TAG_ENTITY_TYPE.PRODUCT,
+        productId,
+        previousIndexedTags,
+        [],
+        { maxCount: 30 },
+      );
+    }
 
     return { success: true, message: 'Product permanently deleted' };
   }
@@ -2088,6 +2491,8 @@ export class StoreService {
       throw new BadRequestException('Product is not deleted');
     }
 
+    const previousIndexedTags = this.getIndexedProductTags(product, product.tags ?? []);
+
     const restored = await this.prisma.product.update({
       where: { id: productId },
       data: { deletedAt: null, isActive: false },
@@ -2097,6 +2502,21 @@ export class StoreService {
         variants: true,
       },
     });
+
+    const nextIndexedTags = this.getIndexedProductTags(restored, restored.tags ?? []);
+    if (this.systemTags && !this.areTagsEqual(previousIndexedTags, nextIndexedTags)) {
+      await this.systemTags.syncTags(previousIndexedTags, nextIndexedTags);
+      this.systemTagsCache = null;
+    }
+    if (this.tagIndex && !this.areTagsEqual(previousIndexedTags, nextIndexedTags)) {
+      await this.tagIndex.syncEntityTags(
+        TAG_ENTITY_TYPE.PRODUCT,
+        productId,
+        previousIndexedTags,
+        nextIndexedTags,
+        { maxCount: 30 },
+      );
+    }
 
     return this.attachProductMedia(restored);
   }
@@ -2116,11 +2536,19 @@ export class StoreService {
           },
         },
       },
-      include: { variants: true },
+      include: {
+        variants: true,
+        brand: { select: { ownerId: true } },
+      },
     });
 
     if (!product) {
       throw new NotFoundException('Product not found or unavailable');
+    }
+    if (product.brand?.ownerId === userId) {
+      throw new ForbiddenException(
+        'You cannot add your own product to cart',
+      );
     }
 
     const variants = Array.isArray((product as any).variants)
@@ -2145,7 +2573,25 @@ export class StoreService {
       throw new BadRequestException('Invalid color selected');
     }
 
-    const quantity = dto.quantity || 1;
+    const existingItem = await this.prisma.cartItem.findFirst({
+      where: {
+        userId,
+        productId: dto.productId,
+        selectedSize: dto.selectedSize || null,
+        selectedColor: dto.selectedColor || null,
+      },
+    });
+
+    const quantityToAdd = dto.quantity || 1;
+    const resultingQuantity = existingItem
+      ? existingItem.quantity + quantityToAdd
+      : quantityToAdd;
+
+    if (resultingQuantity > 99) {
+      throw new BadRequestException(
+        'Cart quantity limit exceeded for this item (max 99)',
+      );
+    }
 
     // Check stock (variant-aware)
     if (product.trackInventory && !product.allowBackorders) {
@@ -2159,7 +2605,7 @@ export class StoreService {
           throw new BadRequestException('Selected variant is not available');
         }
         const available = Number(match.stock || 0);
-        if (available < quantity) {
+        if (available < resultingQuantity) {
           throw new BadRequestException(
             `Only ${available} items available for the selected variant`,
           );
@@ -2167,31 +2613,20 @@ export class StoreService {
       } else if (dto.selectedSize && product.sizeStock) {
         const sizeStock = product.sizeStock as Record<string, number>;
         const available = sizeStock[dto.selectedSize] || 0;
-        if (available < quantity) {
+        if (available < resultingQuantity) {
           throw new BadRequestException(
             `Only ${available} items available in size ${dto.selectedSize}`,
           );
         }
-      } else if (product.totalStock < quantity) {
+      } else if (product.totalStock < resultingQuantity) {
         throw new BadRequestException(`Only ${product.totalStock} items available`);
       }
     }
 
-    // Upsert cart item
-    const existingItem = await this.prisma.cartItem.findFirst({
-      where: {
-        userId,
-        productId: dto.productId,
-        selectedSize: dto.selectedSize || null,
-        selectedColor: dto.selectedColor || null,
-      },
-    });
-
     if (existingItem) {
-      const newQuantity = existingItem.quantity + (dto.quantity || 1);
       await this.prisma.cartItem.update({
         where: { id: existingItem.id },
-        data: { quantity: newQuantity },
+        data: { quantity: resultingQuantity },
       });
     } else {
       await this.prisma.cartItem.create({
@@ -2199,7 +2634,7 @@ export class StoreService {
           id: uuidv4(),
           userId,
           productId: dto.productId,
-          quantity: dto.quantity || 1,
+          quantity: quantityToAdd,
           selectedSize: dto.selectedSize || null,
           selectedColor: dto.selectedColor || null,
         },
@@ -2215,7 +2650,15 @@ export class StoreService {
       include: {
         product: {
           include: {
-            brand: { select: { id: true, name: true, currency: true, isStoreOpen: true } },
+            brand: {
+              select: {
+                id: true,
+                name: true,
+                currency: true,
+                isStoreOpen: true,
+                ownerId: true,
+              },
+            },
             collections: {
               select: {
                 collectionId: true,
@@ -2249,6 +2692,7 @@ export class StoreService {
         !product.deletedAt &&
         product.isActive &&
         Boolean(product.brand?.isStoreOpen) &&
+        product.brand?.ownerId !== userId &&
         hasStoreCollection;
 
       if (!isProductAvailable) {
@@ -2450,10 +2894,22 @@ export class StoreService {
           },
         },
       },
+      include: {
+        brand: {
+          select: {
+            ownerId: true,
+          },
+        },
+      },
     });
 
     if (!product) {
       throw new NotFoundException('Product not found');
+    }
+    if (product.brand?.ownerId === userId) {
+      throw new ForbiddenException(
+        'You cannot add your own product to wishlist',
+      );
     }
 
     // Check if already in wishlist
@@ -2508,7 +2964,14 @@ export class StoreService {
           product: {
             include: {
               brand: {
-                select: { id: true, name: true, logo: true, currency: true, isStoreOpen: true },
+                select: {
+                  id: true,
+                  name: true,
+                  logo: true,
+                  currency: true,
+                  isStoreOpen: true,
+                  ownerId: true,
+                },
               },
               collections: {
                 select: {
@@ -2547,6 +3010,7 @@ export class StoreService {
         !product.deletedAt &&
         product.isActive &&
         Boolean(product.brand?.isStoreOpen) &&
+        product.brand?.ownerId !== userId &&
         hasStoreCollection;
 
       if (!isProductAvailable) {
@@ -2588,7 +3052,11 @@ export class StoreService {
       where: {
         userId,
         productId,
-        product: { deletedAt: null, isActive: true },
+        product: {
+          deletedAt: null,
+          isActive: true,
+          brand: { ownerId: { not: userId } },
+        },
       },
       select: { id: true },
     });
@@ -2726,7 +3194,7 @@ export class StoreService {
       publishAt: product.publishAt,
       // Engagement
       viewsCount: product.viewsCount,
-      likesCount: product.likesCount,
+      threadsCount: product.threadsCount,
       // Timestamps
       createdAt: product.createdAt,
       updatedAt: product.updatedAt,
@@ -2758,6 +3226,39 @@ export class StoreService {
       throw new BadRequestException('Cart is empty');
     }
 
+    const selfOwnedItem = cartItems.find(
+      (item) => item.product?.brand?.ownerId === userId,
+    );
+    if (selfOwnedItem) {
+      throw new ForbiddenException(
+        'You cannot place orders on your own products',
+      );
+    }
+
+    const sizeFitProfile = await (this.prisma as any).userSizeFitProfile.findUnique({
+      where: { userId },
+      select: {
+        visibility: true,
+        sharePolicy: true,
+        measurements: true,
+        lastUpdatedAt: true,
+      },
+    });
+    const sizeFitSnapshot = sizeFitProfile
+      ? {
+          visibility: sizeFitProfile.visibility,
+          sharePolicy: sizeFitProfile.sharePolicy,
+          measurements:
+            sizeFitProfile.measurements &&
+            typeof sizeFitProfile.measurements === 'object' &&
+            !Array.isArray(sizeFitProfile.measurements)
+              ? sizeFitProfile.measurements
+              : {},
+          lastUpdatedAt: sizeFitProfile.lastUpdatedAt?.toISOString() ?? null,
+          attachedAt: new Date().toISOString(),
+        }
+      : null;
+
     // Map items by brand to produce brand-scoped orders
     const itemsByBrand = cartItems.reduce<Record<string, typeof cartItems>>(
       (acc, item) => {
@@ -2786,6 +3287,11 @@ export class StoreService {
 
         if (!brand || !brand.isStoreOpen) {
           throw new BadRequestException('Store is closed');
+        }
+        if (brand.ownerId === userId) {
+          throw new ForbiddenException(
+            'You cannot place orders on your own products',
+          );
         }
 
         const orderItems: any[] = [];
@@ -2942,7 +3448,10 @@ export class StoreService {
             buyerId: userId,
             customerName: dto.customerName || 'Customer',
             shippingAddress: dto.shippingAddress || null,
-            contactInfo: dto.contactInfo || null,
+            contactInfo: {
+              ...(dto.contactInfo || {}),
+              ...(sizeFitSnapshot ? { sizeFitSnapshot } : {}),
+            } as any,
             items: orderItems,
             totalAmount: new Prisma.Decimal(totalAmount.toFixed(2)),
             currency: brand.currency || 'NGN',
@@ -3020,7 +3529,7 @@ export class StoreService {
   // ==================== STORE WIZARD PREFILL & SETTINGS ====================
 
   async getStoreWizardPrefill(ownerId: string) {
-    const [user, brand, categories, tags] = await Promise.all([
+    const [user, brand, policy, categories, tags] = await Promise.all([
       this.prisma.user.findUnique({
         where: { id: ownerId },
         select: {
@@ -3038,7 +3547,24 @@ export class StoreService {
       }),
       this.prisma.brand.findUnique({
         where: { ownerId },
-        select: { id: true, name: true, isStoreOpen: true },
+        select: {
+          id: true,
+          name: true,
+          description: true,
+          tagline: true,
+          tags: true,
+          contactEmail: true,
+          socialInstagram: true,
+          socialTwitter: true,
+          socialTiktok: true,
+          socialWebsite: true,
+          responseTimeSla: true,
+          isStoreOpen: true,
+        },
+      }),
+      this.prisma.storePolicy.findFirst({
+        where: { brand: { ownerId } },
+        select: { responseTimeSla: true },
       }),
       this.getActiveCategories(),
       this.getSystemTags(),
@@ -3049,27 +3575,40 @@ export class StoreService {
     const storeName = this.canonicalStoreName(user, brand);
     const slug = this.canonicalStoreSlug(user);
 
-    const userTags = (user.brandTags || [])
+    const rawTags =
+      (brand?.tags && brand.tags.length > 0 ? brand.tags : user.brandTags) || [];
+    const normalizedTags = rawTags
       .map((t) => this.normalizeTag(t))
       .filter(Boolean);
 
+    const description = (brand?.description || user.brandDescription || '').trim();
+    const contactEmail = brand?.contactEmail || user.email || '';
+    const instagram = brand?.socialInstagram || user.socialInstagram || '';
+    const twitter = brand?.socialTwitter || user.socialTwitter || '';
+    const website = brand?.socialWebsite || user.socialWebsite || '';
+    const tiktok = brand?.socialTiktok || '';
+    const tagline = (brand?.tagline || '').trim();
+    const responseTimeSla = policy?.responseTimeSla || brand?.responseTimeSla || '24h';
+
     const taglineFromDescription =
-      (user.brandDescription || '').split(/(?<=[.!?])\s+/)[0]?.trim() || '';
+      description.split(/(?<=[.!?])\s+/)[0]?.trim() || '';
     const suggestedTagline = (
-      taglineFromDescription || userTags.slice(0, 3).join(' • ')
+      tagline || taglineFromDescription || normalizedTags.slice(0, 3).join(' â€¢ ')
     ).slice(0, 60);
 
     return {
       brand: {
         storeName,
         slug,
-        contactEmail: user.email,
-        description: user.brandDescription || '',
-        instagram: user.socialInstagram || '',
-        twitter: user.socialTwitter || '',
-        website: user.socialWebsite || '',
-        tags: userTags,
+        contactEmail,
+        description,
+        instagram,
+        twitter,
+        tiktok,
+        website,
+        tags: normalizedTags,
         tagline: suggestedTagline,
+        responseTimeSla,
       },
       system: {
         categories,
@@ -3083,7 +3622,7 @@ export class StoreService {
   }
 
   async getStoreGeneralSettings(ownerId: string) {
-    const [user, brand] = await Promise.all([
+    const [user, brand, policy] = await Promise.all([
       this.prisma.user.findUnique({
         where: { id: ownerId },
         select: {
@@ -3101,13 +3640,19 @@ export class StoreService {
           id: true,
           name: true,
           description: true,
+          contactEmail: true,
           tagline: true,
           logo: true,
           banner: true,
           tags: true,
           storeNameLastChangedAt: true,
           isStoreOpen: true,
+          responseTimeSla: true,
         },
+      }),
+      this.prisma.storePolicy.findFirst({
+        where: { brand: { ownerId } },
+        select: { responseTimeSla: true },
       }),
     ]);
 
@@ -3135,13 +3680,14 @@ export class StoreService {
       logo: brand?.logo || '',
       banner: brand?.banner || '',
       tags: brand?.tags || [],
-      contactEmail: user.email,
+      contactEmail: brand?.contactEmail || user.email,
       isEmailVerified: user.isEmailVerified,
       isStoreOpen: Boolean(brand?.isStoreOpen),
       isSetupComplete: completeness.isComplete,
       missingFields: completeness.missingFields,
       storeNameLastChangedAt: lastChangedAt,
       storeNameNextAllowedAt: nextAllowedAt,
+      responseTimeSla: policy?.responseTimeSla || brand?.responseTimeSla || '24h',
     };
   }
 
@@ -3252,15 +3798,16 @@ export class StoreService {
         tagline: true,
         logo: true,
         banner: true,
-        tags: true,
-        contactEmail: true,
-        socialInstagram: true,
-        socialTwitter: true,
-        socialTiktok: true,
-        socialWebsite: true,
-        isStoreOpen: true,
-      },
-    });
+          tags: true,
+          contactEmail: true,
+          socialInstagram: true,
+          socialTwitter: true,
+          socialTiktok: true,
+          socialWebsite: true,
+          responseTimeSla: true,
+          isStoreOpen: true,
+        },
+      });
 
     if (!brand) {
       const resolved = await this.resolveBrandByIdOrOwner(ownerId);
@@ -3280,6 +3827,7 @@ export class StoreService {
             socialTwitter: true,
             socialTiktok: true,
             socialWebsite: true,
+            responseTimeSla: true,
             isStoreOpen: true,
           },
         });
@@ -3291,6 +3839,10 @@ export class StoreService {
     }
 
     const { isComplete, missingFields } = this.computeStoreCompleteness(brand);
+    const policy = await this.prisma.storePolicy.findUnique({
+      where: { brandId: brand.id },
+      select: { responseTimeSla: true },
+    });
 
     return {
       brandId: brand.id,
@@ -3309,6 +3861,7 @@ export class StoreService {
         socialTwitter: brand.socialTwitter,
         socialTiktok: brand.socialTiktok,
         socialWebsite: brand.socialWebsite,
+        responseTimeSla: policy?.responseTimeSla || brand.responseTimeSla,
       },
     };
   }
@@ -3349,19 +3902,98 @@ export class StoreService {
       data: { isStoreOpen: true },
     });
 
+    const nextIndexedTags = this.getIndexedBrandTags(
+      { isStoreOpen: true, tags: brand.tags ?? [] },
+      brand.tags ?? [],
+    );
+    if (nextIndexedTags.length > 0 && this.systemTags) {
+      await this.systemTags.syncTags([], nextIndexedTags);
+      this.systemTagsCache = null;
+    }
+    if (nextIndexedTags.length > 0 && this.tagIndex) {
+      await this.tagIndex.syncEntityTags(
+        TAG_ENTITY_TYPE.BRAND,
+        brand.id,
+        [],
+        nextIndexedTags,
+        { maxCount: 30 },
+      );
+    }
+
     return { success: true, message: 'Store is now open!', brandId: brand.id };
   }
 
-  async updateStoreProfile(ownerId: string, dto: UpdateStoreProfileDto) {
+  async closeStore(ownerId: string) {
     const brand = await this.prisma.brand.findUnique({
       where: { ownerId },
-      select: { id: true },
+      select: {
+        id: true,
+        isStoreOpen: true,
+        tags: true,
+      },
     });
 
     if (!brand) {
       throw new NotFoundException('Brand not found');
     }
 
+    if (!brand.isStoreOpen) {
+      return { success: true, message: 'Store is already closed', brandId: brand.id };
+    }
+
+    const previousIndexedTags = this.getIndexedBrandTags(
+      { isStoreOpen: true, tags: brand.tags ?? [] },
+      brand.tags ?? [],
+    );
+
+    await this.prisma.brand.update({
+      where: { id: brand.id },
+      data: { isStoreOpen: false },
+    });
+
+    if (previousIndexedTags.length > 0 && this.systemTags) {
+      await this.systemTags.syncTags(previousIndexedTags, []);
+      this.systemTagsCache = null;
+    }
+    if (previousIndexedTags.length > 0 && this.tagIndex) {
+      await this.tagIndex.syncEntityTags(
+        TAG_ENTITY_TYPE.BRAND,
+        brand.id,
+        previousIndexedTags,
+        [],
+        { maxCount: 30 },
+      );
+    }
+
+    return { success: true, message: 'Store is now closed', brandId: brand.id };
+  }
+
+  async updateStoreProfile(ownerId: string, dto: UpdateStoreProfileDto) {
+    let brand = await this.prisma.brand.findUnique({
+      where: { ownerId },
+      select: { id: true, tags: true, isStoreOpen: true },
+    });
+
+    if (!brand) {
+      const resolved = await this.resolveBrandByIdOrOwner(ownerId);
+      if (resolved) {
+        brand = await this.prisma.brand.findUnique({
+          where: { id: resolved.id },
+          select: { id: true, tags: true, isStoreOpen: true },
+        });
+      }
+    }
+
+    if (!brand) {
+      throw new NotFoundException('Brand not found');
+    }
+
+    const previousStoreTags = Array.isArray(brand.tags) ? brand.tags : [];
+    const previousIndexedTags = this.getIndexedBrandTags(
+      { isStoreOpen: brand.isStoreOpen, tags: previousStoreTags },
+      previousStoreTags,
+    );
+    let nextStoreTags: string[] | undefined;
     const updateData: any = {};
 
     if (dto.description !== undefined) updateData.description = dto.description;
@@ -3371,7 +4003,8 @@ export class StoreService {
       // NOTE: Do not hard-filter against "system tags" here.
       // In a fresh environment (or early product lifecycle), system tags may be empty,
       // which would make it impossible for any brand to ever complete store setup.
-      updateData.tags = this.buildTagSet(dto.tags || []);
+      nextStoreTags = this.buildTagSet(dto.tags || []);
+      updateData.tags = nextStoreTags;
     }
     if (dto.contactEmail !== undefined) updateData.contactEmail = dto.contactEmail;
     if (dto.socialInstagram !== undefined) updateData.socialInstagram = dto.socialInstagram;
@@ -3387,7 +4020,154 @@ export class StoreService {
       where: { id: brand.id },
       data: updateData,
     });
+    if (nextStoreTags !== undefined) {
+      const nextIndexedTags = this.getIndexedBrandTags(
+        { isStoreOpen: brand.isStoreOpen, tags: nextStoreTags },
+        nextStoreTags,
+      );
+      if (this.systemTags) {
+        await this.systemTags.syncTags(previousIndexedTags, nextIndexedTags);
+        this.systemTagsCache = null;
+      }
+      if (this.tagIndex) {
+        await this.tagIndex.syncEntityTags(
+          TAG_ENTITY_TYPE.BRAND,
+          brand.id,
+          previousIndexedTags,
+          nextIndexedTags,
+          { maxCount: 30 },
+        );
+      }
+    }
 
     return this.getStoreStatus(ownerId);
   }
+
+  async getStorePolicies(ownerId: string) {
+    let brand = await this.prisma.brand.findUnique({
+      where: { ownerId },
+      select: { id: true, responseTimeSla: true },
+    });
+
+    if (!brand) {
+      const resolved = await this.resolveBrandByIdOrOwner(ownerId);
+      if (resolved) {
+        brand = await this.prisma.brand.findUnique({
+          where: { id: resolved.id },
+          select: { id: true, responseTimeSla: true },
+        });
+      }
+    }
+
+    if (!brand) {
+      throw new NotFoundException('Brand not found');
+    }
+
+    const policy = await this.prisma.storePolicy.findUnique({
+      where: { brandId: brand.id },
+    });
+
+    return {
+      brandId: brand.id,
+      shippingRegions: policy?.shippingRegions || [],
+      processingTime: policy?.processingTime || '',
+      shippingMethods: policy?.shippingMethods || [],
+      freeShippingThreshold:
+        policy?.freeShippingThreshold !== null && policy?.freeShippingThreshold !== undefined
+          ? Number(policy.freeShippingThreshold)
+          : null,
+      returnsAccepted: policy?.returnsAccepted ?? true,
+      returnWindow: policy?.returnWindow || '14',
+      returnConditions: policy?.returnConditions || [],
+      refundMethod: policy?.refundMethod || 'original',
+      responseTimeSla: policy?.responseTimeSla || brand.responseTimeSla || '24h',
+      sizeChart: policy?.sizeChart || null,
+      shippingRules: policy?.shippingRules || null,
+    };
+  }
+
+  async updateStorePolicies(ownerId: string, dto: UpdateStorePoliciesDto) {
+    let brand = await this.prisma.brand.findUnique({
+      where: { ownerId },
+      select: { id: true, responseTimeSla: true },
+    });
+
+    if (!brand) {
+      const resolved = await this.resolveBrandByIdOrOwner(ownerId);
+      if (resolved) {
+        brand = await this.prisma.brand.findUnique({
+          where: { id: resolved.id },
+          select: { id: true, responseTimeSla: true },
+        });
+      }
+    }
+
+    if (!brand) {
+      throw new NotFoundException('Brand not found');
+    }
+
+    const updateData: Prisma.StorePolicyUpdateInput = {};
+    const createData: Prisma.StorePolicyCreateInput = {
+      id: uuidv4(),
+      brand: { connect: { id: brand.id } },
+    };
+
+    if (dto.shippingRegions !== undefined) {
+      updateData.shippingRegions = { set: dto.shippingRegions };
+      createData.shippingRegions = dto.shippingRegions;
+    }
+    if (dto.processingTime !== undefined) {
+      updateData.processingTime = dto.processingTime;
+      createData.processingTime = dto.processingTime;
+    }
+    if (dto.shippingMethods !== undefined) {
+      updateData.shippingMethods = { set: dto.shippingMethods };
+      createData.shippingMethods = dto.shippingMethods;
+    }
+    if (dto.freeShippingThreshold !== undefined) {
+      updateData.freeShippingThreshold = dto.freeShippingThreshold;
+      createData.freeShippingThreshold = dto.freeShippingThreshold;
+    }
+    if (dto.returnsAccepted !== undefined) {
+      updateData.returnsAccepted = dto.returnsAccepted;
+      createData.returnsAccepted = dto.returnsAccepted;
+    }
+    if (dto.returnWindow !== undefined) {
+      updateData.returnWindow = dto.returnWindow;
+      createData.returnWindow = dto.returnWindow;
+    }
+    if (dto.returnConditions !== undefined) {
+      updateData.returnConditions = { set: dto.returnConditions };
+      createData.returnConditions = dto.returnConditions;
+    }
+    if (dto.refundMethod !== undefined) {
+      updateData.refundMethod = dto.refundMethod;
+      createData.refundMethod = dto.refundMethod;
+    }
+    if (dto.responseTimeSla !== undefined) {
+      updateData.responseTimeSla = dto.responseTimeSla;
+      createData.responseTimeSla = dto.responseTimeSla;
+    }
+    if (dto.sizeChart !== undefined) {
+      updateData.sizeChart = dto.sizeChart;
+      createData.sizeChart = dto.sizeChart;
+    }
+    if (dto.shippingRules !== undefined) {
+      updateData.shippingRules = dto.shippingRules;
+      createData.shippingRules = dto.shippingRules;
+    }
+
+    if (Object.keys(updateData).length === 0) {
+      return this.getStorePolicies(ownerId);
+    }
+
+    await this.prisma.storePolicy.upsert({
+      where: { brandId: brand.id },
+      create: createData,
+      update: updateData,
+    });
+
+    return this.getStorePolicies(ownerId);
+  }
 }
+

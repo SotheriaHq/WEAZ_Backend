@@ -1,11 +1,14 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { OrderStatus, Prisma, NotificationType } from '@prisma/client';
-import { v4 as uuidv4 } from 'uuid';
+import { NotificationsService } from 'src/notifications/notifications.service';
 
 @Injectable()
 export class OrderService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly notifications: NotificationsService,
+  ) {}
 
   async findAll(
     brandId: string,
@@ -82,15 +85,18 @@ export class OrderService {
 
     // Notify buyer about status change
     if (order.buyerId) {
-      await this.prisma.notification.create({
-        data: {
-          id: uuidv4(),
-          recipientId: order.buyerId,
+      await this.notifications.create(
+        order.buyerId,
+        NotificationType.ORDER_STATUS_UPDATED,
+        {
           actorId: brandId,
-          type: NotificationType.ORDER_STATUS_UPDATED,
-          payload: { orderId: order.id, status },
+          payload: {
+            orderId: order.id,
+            status,
+            targetUrl: `/orders/${order.id}`,
+          },
         },
-      });
+      );
     }
 
     return updated;

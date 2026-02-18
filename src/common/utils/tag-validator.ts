@@ -70,7 +70,7 @@ export function validateTag(input: string): { valid: boolean; error?: string } {
  */
 export function sanitizeTags(
   tags: string[],
-  maxCount = TAG_CONFIG.MAX_TAGS_PER_COLLECTION,
+  maxCount: number = TAG_CONFIG.MAX_TAGS_PER_COLLECTION,
 ): string[] {
   if (!Array.isArray(tags)) return [];
 

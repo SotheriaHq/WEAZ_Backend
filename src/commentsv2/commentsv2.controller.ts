@@ -109,21 +109,21 @@ export class CommentsV2Controller {
     return this.service.listUnifiedForCollection(collectionId, req.user?.id, q);
   }
 
-  // Like toggle
+  // Thread toggle
   @UseGuards(JwtAuthGuard)
-  @Post('comments/:id/like')
-  toggleLike(@Param('id') id: string, @Req() req: any) {
+  @Post('comments/:id/thread')
+  toggleThread(@Param('id') id: string, @Req() req: any) {
     const clientEventId =
       typeof req.headers['x-client-event-id'] === 'string'
         ? req.headers['x-client-event-id']
         : undefined;
-    return this.service.toggleLike(id, req.user.id, clientEventId);
+    return this.service.toggleThread(id, req.user.id, clientEventId);
   }
 
   @UseGuards(JwtAuthGuard)
-  @Get('comments/:id/is-liked')
-  isLiked(@Param('id') id: string, @Req() req: any) {
-    return this.service.isLiked(id, req.user.id);
+  @Get('comments/:id/is-threaded')
+  isThreaded(@Param('id') id: string, @Req() req: any) {
+    return this.service.isThreaded(id, req.user.id);
   }
 
   // Delete (soft)

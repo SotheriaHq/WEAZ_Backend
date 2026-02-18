@@ -12,6 +12,7 @@ import {
   ArrayMaxSize,
   IsBoolean,
   Min,
+  IsUUID,
 } from 'class-validator';
 
 export class FileSpecDto {
@@ -64,8 +65,8 @@ export class CreateCollectionDto {
   visibility?: CollectionVisibility;
 
   // Category (required; users must select from approved categories)
-  @IsString()
   @IsOptional()
+  @IsUUID('4')
   categoryId?: string;
 
   // Type: MALE, FEMALE, EVERYBODY
@@ -122,7 +123,7 @@ export class CollectionMetadataDto {
   type?: CollectionType;
 
   @IsOptional()
-  @IsString()
+  @IsUUID('4')
   categoryId?: string;
 
   @IsOptional()

@@ -59,25 +59,25 @@ export class PostsController {
 
   @UseGuardsDeco(ThrottlerGuard)
   @Throttle({ default: { limit: 60, ttl: 60000 } })
-  @Post(':id/likes')
-  async toggleLike(@Param('id') id: string, @Req() req: any) {
-    const res = await this.postsService.toggleLike(id, req.user.id);
-    this.events.emitLike(res.liked ? 'like.created' : 'like.removed', {
+  @Post(':id/threads')
+  async toggleThread(@Param('id') id: string, @Req() req: any) {
+    const res = await this.postsService.toggleThread(id, req.user.id);
+    this.events.emitThread(res.threaded ? 'thread.created' : 'thread.removed', {
       contentType: 'POST',
       contentId: id,
       userId: req.user.id,
-      likeCount: res.likesCount,
+      threadCount: res.threadsCount,
     });
     return res;
   }
 
-  @Get(':id/likes')
-  getLikes(@Param('id') id: string) {
-    return this.postsService.getLikes(id);
+  @Get(':id/threads')
+  getThreads(@Param('id') id: string) {
+    return this.postsService.getThreads(id);
   }
 
-  @Get(':id/is-liked')
-  isLiked(@Param('id') id: string, @Req() req: any) {
-    return this.postsService.isLiked(id, req.user.id);
+  @Get(':id/is-threaded')
+  isThreaded(@Param('id') id: string, @Req() req: any) {
+    return this.postsService.isThreaded(id, req.user.id);
   }
 }

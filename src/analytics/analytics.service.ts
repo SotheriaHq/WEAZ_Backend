@@ -12,13 +12,13 @@ function startOfUTCDay(d: Date): Date {
 export class AnalyticsService {
   constructor(private prisma: PrismaService) {}
 
-  async updateDailyLike(
+  async updateDailyThread(
     contentType: ContentTarget,
     contentId: string,
     delta: number,
   ) {
     const day = startOfUTCDay(new Date());
-    await this.prisma.dailyLikeAggregate.upsert({
+    await this.prisma.dailyThreadAggregate.upsert({
       where: {
         contentType_contentId_date: {
           contentType,
@@ -31,13 +31,13 @@ export class AnalyticsService {
     });
   }
 
-  async getDailyLikes(
+  async getDailyThreads(
     contentType: ContentTarget,
     contentId: string,
     from: Date,
     to: Date,
   ) {
-    const list = await this.prisma.dailyLikeAggregate.findMany({
+    const list = await this.prisma.dailyThreadAggregate.findMany({
       where: {
         contentType,
         contentId,

@@ -1,6 +1,14 @@
 import { NotificationType } from '@prisma/client';
 import * as Joi from 'joi';
 
+const NT_SIZE_FIT_UPDATE_REMINDER = 'SIZE_FIT_UPDATE_REMINDER' as NotificationType;
+const NT_SIZE_FIT_SHARED = 'SIZE_FIT_SHARED' as NotificationType;
+const NT_SIZE_FIT_SHARE_REQUEST = 'SIZE_FIT_SHARE_REQUEST' as NotificationType;
+const NT_SIZE_FIT_SHARE_APPROVED = 'SIZE_FIT_SHARE_APPROVED' as NotificationType;
+const NT_SIZE_FIT_SHARE_REJECTED = 'SIZE_FIT_SHARE_REJECTED' as NotificationType;
+const NT_SIZE_FIT_RESHARED = 'SIZE_FIT_RESHARED' as NotificationType;
+const NT_TAG_MENTION = 'TAG_MENTION' as NotificationType;
+
 export interface NotificationConfig {
   type: NotificationType;
   schema: Joi.ObjectSchema;
@@ -72,7 +80,8 @@ export class NotificationRegistry {
     registry.register({
       type: NotificationType.SIGNUP,
       schema: Joi.object({
-        action: Joi.string().valid('EMAIL_VERIFIED').optional(),
+        action: Joi.string().valid('SIGNUP', 'EMAIL_VERIFIED').optional(),
+        email: Joi.string().email().optional(),
       }),
       formatter: (n: any) => {
         if (n.payload?.action === 'EMAIL_VERIFIED') {
@@ -82,7 +91,7 @@ export class NotificationRegistry {
       },
     });
 
-    // FOLLOW
+    // FOLLOW (legacy -> Patch copy)
     registry.register({
       type: NotificationType.FOLLOW,
       schema: Joi.object({
@@ -94,8 +103,8 @@ export class NotificationRegistry {
             `${n.actor.firstName ?? ''} ${n.actor.lastName ?? ''}`.trim()
           : null;
         return actorName
-          ? `${actorName} started following you`
-          : 'You have a new follower';
+          ? `${actorName} patched your profile`
+          : 'You have a new patch';
       },
     });
 
@@ -109,8 +118,13 @@ export class NotificationRegistry {
         }).optional(),
         targetType: Joi.string().optional(),
         targetUrl: Joi.string().optional(),
+        message: Joi.string().optional(),
       }),
       formatter: (n: any) => {
+        const message = n.payload?.message;
+        if (typeof message === 'string' && message.trim().length > 0) {
+          return message;
+        }
         const actorName = n.actor
           ? n.actor.username ||
             `${n.actor.firstName ?? ''} ${n.actor.lastName ?? ''}`.trim()
@@ -123,9 +137,9 @@ export class NotificationRegistry {
       },
     });
 
-    // LIKE
+    // THREAD
     registry.register({
-      type: NotificationType.LIKE,
+      type: NotificationType.THREAD,
       schema: Joi.object({
         target: Joi.object({
           type: Joi.string().optional(),
@@ -134,8 +148,13 @@ export class NotificationRegistry {
         postId: Joi.string().optional(),
         collectionId: Joi.string().optional(),
         targetUrl: Joi.string().optional(),
+        message: Joi.string().optional(),
       }),
       formatter: (n: any) => {
+        const message = n.payload?.message;
+        if (typeof message === 'string' && message.trim().length > 0) {
+          return message;
+        }
         const actorName = n.actor
           ? n.actor.username ||
             `${n.actor.firstName ?? ''} ${n.actor.lastName ?? ''}`.trim()
@@ -148,8 +167,8 @@ export class NotificationRegistry {
               ? 'COLLECTION'
               : 'content';
         return actorName
-          ? `${actorName} liked your ${String(tt).toLowerCase()}`
-          : 'New like received';
+          ? `${actorName} threaded your ${String(tt).toLowerCase()}`
+          : 'New thread received';
       },
     });
 
@@ -161,6 +180,7 @@ export class NotificationRegistry {
           type: Joi.string().optional(),
           id: Joi.string().optional(),
         }).optional(),
+        action: Joi.string().optional(),
         targetUrl: Joi.string().optional(),
       }),
       formatter: (n: any) => {
@@ -168,9 +188,30 @@ export class NotificationRegistry {
           ? n.actor.username ||
             `${n.actor.firstName ?? ''} ${n.actor.lastName ?? ''}`.trim()
           : null;
+        const action = n.payload?.action;
+        // Profile patch (user-to-brand)
+        if (action === 'PROFILE_PATCHED') {
+          return actorName
+            ? `${actorName} patched your profile`
+            : 'Your profile received a patch';
+        }
+        if (action === 'PROFILE_UNPATCHED') {
+          return actorName
+            ? `${actorName} unpatched your profile`
+            : 'A user unpatched your profile';
+        }
+        // Collection collab (brand-to-collection)
+        if (action === 'COLLECTION_COLLAB') {
+          return actorName
+            ? `${actorName} collabed your collection`
+            : 'Your collection received a collab';
+        }
+        // Fallback for legacy payloads
+        const targetType = n.payload?.target?.type;
+        const patchLabel = targetType === 'USER' ? 'profile' : 'collection';
         return actorName
-          ? `${actorName} patched your collection`
-          : 'Your collection received a patch';
+          ? `${actorName} patched your ${patchLabel}`
+          : `Your ${patchLabel} received a patch`;
       },
     });
 
@@ -228,11 +269,39 @@ export class NotificationRegistry {
       schema: Joi.object({
         collectionId: Joi.string().optional(),
         collectionName: Joi.string().optional(),
+        collectionTitle: Joi.string().optional(),
         targetUrl: Joi.string().optional(),
+        message: Joi.string().optional(),
       }),
       formatter: (n: any) => {
-        const name = n.payload?.collectionName || 'Your collection';
+        const message = n.payload?.message;
+        if (typeof message === 'string' && message.trim().length > 0) {
+          return message;
+        }
+        const name =
+          n.payload?.collectionName ||
+          n.payload?.collectionTitle ||
+          'Your collection';
         return `${name} was successfully uploaded`;
+      },
+    });
+
+    // PRODUCT_UPLOAD
+    registry.register({
+      type: NotificationType.PRODUCT_UPLOAD,
+      schema: Joi.object({
+        productId: Joi.string().optional(),
+        productName: Joi.string().optional(),
+        targetUrl: Joi.string().optional(),
+        message: Joi.string().optional(),
+      }),
+      formatter: (n: any) => {
+        const message = n.payload?.message;
+        if (typeof message === 'string' && message.trim().length > 0) {
+          return message;
+        }
+        const name = n.payload?.productName || 'A new product';
+        return `${name} is now available`;
       },
     });
 
@@ -335,6 +404,104 @@ export class NotificationRegistry {
           ? n.actor.username || n.actor.brandFullName || 'A brand'
           : 'A brand';
         return `${actorName} rejected your contribution request`;
+      },
+    });
+
+    // SIZE_FIT_UPDATE_REMINDER
+    registry.register({
+      type: NT_SIZE_FIT_UPDATE_REMINDER,
+      schema: Joi.object({
+        message: Joi.string().optional(),
+        targetUrl: Joi.string().optional(),
+      }),
+      formatter: (n: any) =>
+        n.payload?.message ||
+        'Time to update your custom size/fits profile (recommended every 2 weeks)',
+    });
+
+    // SIZE_FIT_SHARED
+    registry.register({
+      type: NT_SIZE_FIT_SHARED,
+      schema: Joi.object({
+        ownerId: Joi.string().optional(),
+        message: Joi.string().optional(),
+        targetUrl: Joi.string().optional(),
+      }),
+      formatter: (n: any) =>
+        n.payload?.message || 'A size fitting profile was shared with you',
+    });
+
+    // SIZE_FIT_SHARE_REQUEST
+    registry.register({
+      type: NT_SIZE_FIT_SHARE_REQUEST,
+      schema: Joi.object({
+        requestedViewerId: Joi.string().optional(),
+        message: Joi.string().optional(),
+        targetUrl: Joi.string().optional(),
+      }),
+      formatter: (n: any) => {
+        if (n.payload?.message) return n.payload.message;
+        const actorName = n.actor
+          ? n.actor.username ||
+            `${n.actor.firstName ?? ''} ${n.actor.lastName ?? ''}`.trim()
+          : 'A user';
+        return `${actorName} requested permission to share your size fittings`;
+      },
+    });
+
+    // SIZE_FIT_SHARE_APPROVED
+    registry.register({
+      type: NT_SIZE_FIT_SHARE_APPROVED,
+      schema: Joi.object({
+        message: Joi.string().optional(),
+        targetUrl: Joi.string().optional(),
+      }),
+      formatter: (n: any) => n.payload?.message || 'Your size fit share request was approved',
+    });
+
+    // SIZE_FIT_SHARE_REJECTED
+    registry.register({
+      type: NT_SIZE_FIT_SHARE_REJECTED,
+      schema: Joi.object({
+        message: Joi.string().optional(),
+        targetUrl: Joi.string().optional(),
+      }),
+      formatter: (n: any) => n.payload?.message || 'Your size fit share request was rejected',
+    });
+
+    // SIZE_FIT_RESHARED
+    registry.register({
+      type: NT_SIZE_FIT_RESHARED,
+      schema: Joi.object({
+        targetUserId: Joi.string().optional(),
+        message: Joi.string().optional(),
+        targetUrl: Joi.string().optional(),
+      }),
+      formatter: (n: any) =>
+        n.payload?.message || 'Your size fitting profile was shared again',
+    });
+
+    // TAG_MENTION
+    registry.register({
+      type: NT_TAG_MENTION,
+      schema: Joi.object({
+        tag: Joi.string().optional(),
+        tags: Joi.array().items(Joi.string()).optional(),
+        entityType: Joi.string().optional(),
+        entityId: Joi.string().optional(),
+        entityTitle: Joi.string().optional(),
+        targetUrl: Joi.string().optional(),
+        message: Joi.string().optional(),
+      }),
+      formatter: (n: any) => {
+        if (n.payload?.message) return n.payload.message;
+        const tags = Array.isArray(n.payload?.tags)
+          ? n.payload.tags.filter(Boolean)
+          : [];
+        const primaryTag = typeof n.payload?.tag === 'string' ? n.payload.tag : tags[0];
+        const tagText = primaryTag ? `#${primaryTag}` : 'one of your tags';
+        const title = n.payload?.entityTitle || 'A post';
+        return `${title} matched ${tagText}`;
       },
     });
 

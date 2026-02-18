@@ -114,13 +114,13 @@ export class EventsGateway {
     void run();
   }
 
-  emitLike(
-    event: 'like.created' | 'like.removed',
+  emitThread(
+    event: 'thread.created' | 'thread.removed',
     payload: {
       contentType: string;
       contentId: string;
       userId: string;
-      likeCount: number;
+      threadCount: number;
     },
   ) {
     const room = `${payload.contentType}:${payload.contentId}`;
@@ -129,9 +129,9 @@ export class EventsGateway {
       .emit(event, { ...payload, version: 1, ts: Date.now() });
   }
 
-  // Comment events (rooms may be target rooms or COMMENT:{id} for likes on a comment)
+  // Comment events (rooms may be target rooms or COMMENT:{id} for threads on a comment)
   emitComment(
-    event: 'comment.created' | 'comment.deleted' | 'comment.liked',
+    event: 'comment.created' | 'comment.deleted' | 'comment.threaded',
     room: string,
     payload: any,
   ) {

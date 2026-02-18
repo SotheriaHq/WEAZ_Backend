@@ -8,8 +8,8 @@ import { ContentTarget } from '@prisma/client';
 export class AnalyticsController {
   constructor(private analytics: AnalyticsService) {}
 
-  @Get('likes')
-  async likes(
+  @Get('threads')
+  async threads(
     @Query('contentType') contentType: ContentTarget,
     @Query('contentId') contentId: string,
     @Query('from') from: string,
@@ -19,7 +19,7 @@ export class AnalyticsController {
       ? new Date(from)
       : new Date(Date.now() - 7 * 86400000);
     const toDate = to ? new Date(to) : new Date();
-    return this.analytics.getDailyLikes(
+    return this.analytics.getDailyThreads(
       contentType,
       contentId,
       fromDate,
