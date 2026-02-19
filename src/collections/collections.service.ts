@@ -1918,7 +1918,7 @@ export class CollectionsService {
       throw new BadRequestException('productIds is required');
     }
 
-    return this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
       await this.lockCollectionForUpdate(tx, collectionId);
       const products = await tx.product.findMany({
         where: { id: { in: productIds }, deletedAt: null },
@@ -1994,9 +1994,11 @@ export class CollectionsService {
       }
 
       await this.touchDraftActivity(tx, collectionId);
-      await this.recalculateCollectionPriceRange(collectionId);
       return { success: true };
-    });
+    }, { timeout: 15000 });
+
+    await this.recalculateCollectionPriceRange(collectionId);
+    return result;
   }
 
   async removeProductsFromCollection(
@@ -2009,7 +2011,7 @@ export class CollectionsService {
       throw new BadRequestException('productIds is required');
     }
 
-    return this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
       await this.lockCollectionForUpdate(tx, collectionId);
       const existingLinks = await tx.collectionProduct.findMany({
         where: { collectionId, productId: { in: productIds } },
@@ -2032,10 +2034,11 @@ export class CollectionsService {
       }
 
       await this.touchDraftActivity(tx, collectionId);
-      await this.recalculateCollectionPriceRange(collectionId);
-
       return { success: true };
-    });
+    }, { timeout: 15000 });
+
+    await this.recalculateCollectionPriceRange(collectionId);
+    return result;
   }
 
   async reorderCollectionProducts(
@@ -2617,13 +2620,24 @@ export class CollectionsService {
           ...(productVisibilityWhere
             ? { where: { product: productVisibilityWhere } }
             : {}),
+          orderBy: [
+            { isPrimary: 'desc' },
+            { orderIndex: 'asc' },
+          ],
           include: {
             product: {
-              select: { thumbnail: true, images: true },
+              select: {
+                id: true,
+                thumbnail: true,
+                images: true,
+                isActive: true,
+                archivedAt: true,
+                deletedAt: true,
+                publishAt: true,
+              },
             },
           },
-          orderBy: { orderIndex: 'asc' },
-          take: 1,
+          take: this.maxProductsPerCollection,
         },
         _count: {
           select: {
@@ -4336,10 +4350,36 @@ export class CollectionsService {
         deletedAt: true,
         draftVersion: true,
         tags: true,
+        title: true,
+        description: true,
+        createdAt: true,
       } as any,
     } as any)) as any;
     if (!existing) throw new NotFoundException('Collection not found');
     if (existing.deletedAt) throw new GoneException('Collection has been deleted');
+
+    const titleRequested = typeof body.title === 'string';
+    const descriptionRequested = typeof body.description === 'string';
+    if (titleRequested || descriptionRequested) {
+      const lockAfterMs = 30 * 24 * 60 * 60 * 1000;
+      const createdAtMs = new Date(existing.createdAt).getTime();
+      const isEditWindowLocked = Date.now() > createdAtMs + lockAfterMs;
+
+      if (isEditWindowLocked) {
+        const titleChanged =
+          titleRequested &&
+          body.title!.trim() !== String(existing.title ?? '').trim();
+        const descriptionChanged =
+          descriptionRequested &&
+          body.description!.trim() !== String(existing.description ?? '').trim();
+
+        if (titleChanged || descriptionChanged) {
+          throw new BadRequestException(
+            'Title and description can only be edited within 30 days of creation',
+          );
+        }
+      }
+    }
 
     const now = new Date();
     if (existing.status === 'DRAFT') {

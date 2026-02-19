@@ -122,6 +122,13 @@ export class UserProfileService {
             firstName: true,
             lastName: true,
             profileImage: true,
+            profileImageId: true,
+            profileImageFile: {
+              select: {
+                id: true,
+                s3Url: true,
+              },
+            },
             address: true,
             companyLocation: true,
             brandDescription: true,
@@ -150,6 +157,8 @@ export class UserProfileService {
       firstName: connection.target.firstName,
       lastName: connection.target.lastName,
       profileImage: connection.target.profileImage,
+      profileImageId: connection.target.profileImageId,
+      profileImageFile: connection.target.profileImageFile,
       brandName: connection.target.brand?.name || `${connection.target.firstName} ${connection.target.lastName}`,
       brandLogo: connection.target.brand?.logo,
       brandTitle:

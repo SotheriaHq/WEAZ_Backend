@@ -2545,7 +2545,16 @@ export class StoreService {
     if (!product) {
       throw new NotFoundException('Product not found or unavailable');
     }
-    if (product.brand?.ownerId === userId) {
+    const resolvedBrandOwnerId =
+      product.brand?.ownerId ??
+      (
+        await this.prisma.brand.findUnique({
+          where: { id: product.brandId },
+          select: { ownerId: true },
+        })
+      )?.ownerId;
+
+    if (resolvedBrandOwnerId === userId || product.brandId === userId) {
       throw new ForbiddenException(
         'You cannot add your own product to cart',
       );

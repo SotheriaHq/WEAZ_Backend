@@ -24,6 +24,7 @@ type SyncEntityTagsOptions = {
 @Injectable()
 export class TagIndexService {
   private readonly logger = new Logger(TagIndexService.name);
+  private warnedMissingTagDelegates = false;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -45,6 +46,17 @@ export class TagIndexService {
     return sanitizeTags(safe, maxCount);
   }
 
+  private ensureTagDelegatesAvailable(client: any, context: string): boolean {
+    if (client?.tag && client?.tagBinding) return true;
+    if (!this.warnedMissingTagDelegates) {
+      this.warnedMissingTagDelegates = true;
+      this.logger.warn(
+        `Skipping tag index ${context}: Prisma client is missing Tag/TagBinding delegates. Run "npm run prisma:generate".`,
+      );
+    }
+    return false;
+  }
+
   async syncEntityTags(
     entityType: TagEntityTypeValue,
     entityId: string,
@@ -52,6 +64,9 @@ export class TagIndexService {
     nextTags: Array<string | null | undefined>,
     options?: SyncEntityTagsOptions,
   ): Promise<void> {
+    const prismaClient = this.prisma as any;
+    if (!this.ensureTagDelegatesAvailable(prismaClient, 'sync')) return;
+
     const maxCount = options?.maxCount ?? 30;
     const prev = new Set(this.normalizeTagList(previousTags, maxCount));
     const next = new Set(this.normalizeTagList(nextTags, maxCount));
@@ -62,7 +77,7 @@ export class TagIndexService {
 
     if (affected.length === 0) return;
 
-    const banned = await (this.prisma as any).tag.findMany({
+    const banned = await prismaClient.tag.findMany({
       where: { normalizedName: { in: added }, isBanned: true },
       select: { normalizedName: true },
     });
@@ -439,6 +454,11 @@ export class TagIndexService {
     tagsIndexed: number;
     bindingsCreated: number;
   }> {
+    const prismaClient = this.prisma as any;
+    if (!this.ensureTagDelegatesAvailable(prismaClient, 'reindex')) {
+      return { tagsIndexed: 0, bindingsCreated: 0 };
+    }
+
     const now = new Date();
     const [collections, products, brands, users, bannedRows] = await Promise.all([
       this.prisma.collection.findMany({
@@ -466,7 +486,7 @@ export class TagIndexService {
         where: { type: 'BRAND' },
         select: { id: true, brandTags: true },
       }),
-      (this.prisma as any).tag.findMany({
+      prismaClient.tag.findMany({
         where: { isBanned: true },
         select: { normalizedName: true },
       }),
@@ -529,7 +549,7 @@ export class TagIndexService {
       });
     }
 
-    const tagsIndexed = await (this.prisma as any).tag.count();
+    const tagsIndexed = await prismaClient.tag.count();
     return { tagsIndexed, bindingsCreated };
   }
 
