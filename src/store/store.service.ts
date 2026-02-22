@@ -4,6 +4,7 @@ import {
   BadRequestException,
   ForbiddenException,
   ConflictException,
+  InternalServerErrorException,
   Logger,
 } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
@@ -63,8 +64,50 @@ export class StoreService {
     collectionId: string,
   ) {
     await tx.$executeRaw(
-      Prisma.sql`SELECT "_id" FROM "Collection" WHERE "_id" = ${collectionId} FOR UPDATE`,
+      Prisma.sql`SELECT "_id" FROM "StoreCollection" WHERE "_id" = ${collectionId} FOR UPDATE`,
     );
+  }
+
+  private async assertCategoryTypeForCollection(
+    tx: Prisma.TransactionClient,
+    collectionId: string | null | undefined,
+    categoryTypeId: string | null | undefined,
+  ) {
+    if (!categoryTypeId) return;
+
+    const categoryType = await tx.collectionCategoryType.findUnique({
+      where: { id: categoryTypeId },
+      select: { id: true, categoryId: true, isActive: true },
+    });
+    if (!categoryType) {
+      throw new NotFoundException('Category type not found');
+    }
+    if (!categoryType.isActive) {
+      throw new BadRequestException('Category type is not active');
+    }
+
+    if (!collectionId) {
+      return;
+    }
+
+    const collection = await tx.storeCollection.findUnique({
+      where: { id: collectionId },
+      select: { id: true, categoryId: true, deletedAt: true },
+    });
+    if (!collection || collection.deletedAt) {
+      throw new NotFoundException('Collection not found');
+    }
+    if (!collection.categoryId) {
+      throw new BadRequestException(
+        'Selected collection does not have a category for category type matching',
+      );
+    }
+
+    if (categoryType.categoryId !== collection.categoryId) {
+      throw new BadRequestException(
+        'Category type does not belong to the selected collection category',
+      );
+    }
   }
 
   private async attachProductMedia(product: any) {
@@ -100,7 +143,7 @@ export class StoreService {
   }
 
   private async recalculateCollectionPriceRange(collectionId: string) {
-    const links = await this.prisma.collectionProduct.findMany({
+    const links = await this.prisma.storeCollectionProduct.findMany({
       where: { collectionId },
       include: {
         product: {
@@ -159,7 +202,7 @@ export class StoreService {
       })
       .filter((v): v is number => typeof v === 'number' && v > 0);
 
-    await this.prisma.collection.update({
+    await this.prisma.storeCollection.update({
       where: { id: collectionId },
       data: {
         minPrice: prices.length ? Math.min(...prices) : null,
@@ -554,11 +597,11 @@ export class StoreService {
     tx: Prisma.TransactionClient,
     ownerId: string,
   ) {
-    const existingDefault = await tx.collection.findFirst({
+    const existingDefault = await tx.storeCollection.findFirst({
       where: {
         ownerId,
-        isAvailableInStore: true,
-        status: 'PUBLISHED',
+        isSystemGenerated: true,
+        deletedAt: null,
       },
       orderBy: { updatedAt: 'desc' },
       select: { id: true },
@@ -566,18 +609,36 @@ export class StoreService {
 
     if (existingDefault?.id) return existingDefault.id;
 
-    const createdDefault = await tx.collection.create({
-      data: {
-        id: uuidv4(),
-        ownerId,
-        title: 'Store Products',
-        status: 'PUBLISHED',
-        visibility: 'PUBLIC',
-        type: 'EVERYBODY',
-        isAvailableInStore: true,
-      },
-      select: { id: true },
-    });
+    let createdDefault: { id: string };
+    try {
+      createdDefault = await tx.storeCollection.create({
+        data: {
+          id: uuidv4(),
+          ownerId,
+          title: 'Store Products',
+          description: 'System bucket for standalone products.',
+          status: 'PUBLISHED',
+          visibility: 'PRIVATE',
+          type: 'EVERYBODY',
+          isAvailableInStore: true,
+          isSystemGenerated: true,
+        },
+        select: { id: true },
+      });
+    } catch {
+      // Handle concurrent create race by re-reading existing system bucket.
+      const retry = await tx.storeCollection.findFirst({
+        where: {
+          ownerId,
+          isSystemGenerated: true,
+          deletedAt: null,
+        },
+        orderBy: { updatedAt: 'desc' },
+        select: { id: true },
+      });
+      if (!retry?.id) throw new InternalServerErrorException('Failed to ensure default store collection');
+      return retry.id;
+    }
 
     return createdDefault.id;
   }
@@ -588,7 +649,7 @@ export class StoreService {
     maxProducts?: number,
   ) {
     const limit = typeof maxProducts === 'number' ? maxProducts : this.maxProductsPerCollection;
-    const count = await tx.collectionProduct.count({
+    const count = await tx.storeCollectionProduct.count({
       where: { collectionId },
     });
     if (count >= limit) {
@@ -810,7 +871,7 @@ export class StoreService {
 
     // If a collectionId is provided, verify it belongs to this brand.
     if (requestedCollectionId) {
-      const collection = await this.prisma.collection.findFirst({
+      const collection = await this.prisma.storeCollection.findFirst({
         where: { id: requestedCollectionId, ownerId: brandOwnerId },
         select: { id: true, deletedAt: true },
       });
@@ -874,9 +935,15 @@ export class StoreService {
         collectionId = await this.ensureDefaultStoreCollection(tx, brandOwnerId);
       }
 
+      await this.assertCategoryTypeForCollection(
+        tx,
+        collectionId,
+        dto.categoryTypeId,
+      );
+
       await this.lockCollectionForUpdate(tx, collectionId);
       await this.assertCollectionCapacity(tx, collectionId);
-      const orderIndex = await tx.collectionProduct.count({
+      const orderIndex = await tx.storeCollectionProduct.count({
         where: { collectionId },
       });
 
@@ -884,6 +951,7 @@ export class StoreService {
         data: {
           id: uuidv4(),
           collectionId,
+          categoryTypeId: dto.categoryTypeId || null,
           brandId: brand.id,
           name: resolvedName,
           slug,
@@ -935,7 +1003,7 @@ export class StoreService {
         },
       });
 
-      await tx.collectionProduct.create({
+      await tx.storeCollectionProduct.create({
         data: {
           id: uuidv4(),
           collectionId,
@@ -1028,7 +1096,7 @@ export class StoreService {
     if (dto.collectionId !== undefined) {
       const requestedCollectionId = (dto.collectionId || '').trim();
       if (requestedCollectionId) {
-        const collection = await this.prisma.collection.findFirst({
+        const collection = await this.prisma.storeCollection.findFirst({
           where: { id: requestedCollectionId, ownerId: brandOwnerId },
           select: { id: true },
         });
@@ -1041,6 +1109,12 @@ export class StoreService {
       } else {
         resolvedCollectionId = null;
       }
+    }
+
+    let resolvedCategoryTypeId: string | null | undefined = undefined;
+    if (dto.categoryTypeId !== undefined) {
+      const requestedCategoryTypeId = (dto.categoryTypeId || '').trim();
+      resolvedCategoryTypeId = requestedCategoryTypeId || null;
     }
 
     if (dto.salePrice !== undefined && dto.salePrice !== null && dto.price !== undefined) {
@@ -1154,6 +1228,11 @@ export class StoreService {
       dto.tags !== undefined ? this.buildTagSet(dto.tags || []) : undefined;
     if (nextTags !== undefined) updateData.tags = nextTags;
     if (dto.gender !== undefined) updateData.gender = dto.gender;
+    if (resolvedCategoryTypeId !== undefined) {
+      updateData.categoryType = resolvedCategoryTypeId
+        ? { connect: { id: resolvedCategoryTypeId } }
+        : { disconnect: true };
+    }
     if (dto.isActive !== undefined) updateData.isActive = dto.isActive;
     if (dto.isFeatured !== undefined) updateData.isFeatured = dto.isFeatured;
     if (dto.isPhysicalProduct !== undefined) updateData.isPhysicalProduct = dto.isPhysicalProduct;
@@ -1181,7 +1260,7 @@ export class StoreService {
         }
 
         if (finalCollectionId) {
-          const existingLinks = await tx.collectionProduct.findMany({
+          const existingLinks = await tx.storeCollectionProduct.findMany({
             where: { productId },
             select: { collectionId: true },
           });
@@ -1202,11 +1281,11 @@ export class StoreService {
 
             await this.lockCollectionForUpdate(tx, finalCollectionId);
             await this.assertCollectionCapacity(tx, finalCollectionId);
-            const orderIndex = await tx.collectionProduct.count({
+            const orderIndex = await tx.storeCollectionProduct.count({
               where: { collectionId: finalCollectionId },
             });
 
-            await tx.collectionProduct.create({
+            await tx.storeCollectionProduct.create({
               data: {
                 id: uuidv4(),
                 collectionId: finalCollectionId,
@@ -1221,15 +1300,35 @@ export class StoreService {
           updateData.collection = { connect: { id: finalCollectionId } };
 
           // Keep primary membership aligned with the explicit collectionId selection.
-          await tx.collectionProduct.updateMany({
+          await tx.storeCollectionProduct.updateMany({
             where: { productId },
             data: { isPrimary: false },
           });
-          await tx.collectionProduct.updateMany({
+          await tx.storeCollectionProduct.updateMany({
             where: { productId, collectionId: finalCollectionId },
             data: { isPrimary: true },
           });
+
+          if (resolvedCategoryTypeId !== undefined) {
+            await this.assertCategoryTypeForCollection(
+              tx,
+              finalCollectionId,
+              resolvedCategoryTypeId,
+            );
+          } else if (
+            dto.collectionId !== undefined &&
+            finalCollectionId !== product.collectionId
+          ) {
+            // Reset when switching collection to avoid stale mismatched category type.
+            updateData.categoryType = { disconnect: true };
+          }
         }
+      } else if (resolvedCategoryTypeId !== undefined) {
+        await this.assertCategoryTypeForCollection(
+          tx,
+          product.collectionId,
+          resolvedCategoryTypeId,
+        );
       }
 
       await tx.product.update({
@@ -1365,6 +1464,7 @@ export class StoreService {
         data: {
           id: uuidv4(),
           collectionId: primaryCollectionId,
+          categoryTypeId: product.categoryTypeId ?? null,
           brandId: product.brandId,
           name: copyName,
           slug: this.generateSlug(copyName),
@@ -1420,10 +1520,10 @@ export class StoreService {
         );
         await this.lockCollectionForUpdate(tx, fallbackCollectionId);
         await this.assertCollectionCapacity(tx, fallbackCollectionId);
-        const orderIndex = await tx.collectionProduct.count({
+        const orderIndex = await tx.storeCollectionProduct.count({
           where: { collectionId: fallbackCollectionId },
         });
-        await tx.collectionProduct.create({
+        await tx.storeCollectionProduct.create({
           data: {
             id: uuidv4(),
             collectionId: fallbackCollectionId,
@@ -1441,10 +1541,10 @@ export class StoreService {
         for (const link of sourceCollections) {
           await this.lockCollectionForUpdate(tx, link.collectionId);
           await this.assertCollectionCapacity(tx, link.collectionId);
-          const orderIndex = await tx.collectionProduct.count({
+          const orderIndex = await tx.storeCollectionProduct.count({
             where: { collectionId: link.collectionId },
           });
-          await tx.collectionProduct.create({
+          await tx.storeCollectionProduct.create({
             data: {
               id: uuidv4(),
               collectionId: link.collectionId,
@@ -1788,7 +1888,7 @@ export class StoreService {
       );
     }
 
-    const memberships = await this.prisma.collectionProduct.findMany({
+    const memberships = await this.prisma.storeCollectionProduct.findMany({
       where: { productId },
       select: { collectionId: true },
     });
@@ -1823,7 +1923,7 @@ export class StoreService {
         }
       }
 
-      await tx.collectionProduct.deleteMany({ where: { productId } });
+      await tx.storeCollectionProduct.deleteMany({ where: { productId } });
       await tx.product.update({
         where: { id: productId },
         data: { deletedAt: new Date(), isActive: false, collectionId: null },
@@ -1930,7 +2030,7 @@ export class StoreService {
     }
 
     // Get all collections this product belongs to
-    const memberships = await this.prisma.collectionProduct.findMany({
+    const memberships = await this.prisma.storeCollectionProduct.findMany({
       where: { productId },
       include: {
         collection: {
@@ -1962,7 +2062,7 @@ export class StoreService {
     }>>();
 
     if (collectionIds.length > 0) {
-      const links = await this.prisma.collectionProduct.findMany({
+      const links = await this.prisma.storeCollectionProduct.findMany({
         where: { collectionId: { in: collectionIds } },
         include: {
           product: {
@@ -3187,6 +3287,15 @@ export class StoreService {
       // Metadata
       tags: product.tags || [],
       gender: product.gender,
+      categoryTypeId: product.categoryTypeId ?? null,
+      categoryType: product.categoryType
+        ? {
+            id: product.categoryType.id,
+            categoryId: product.categoryType.categoryId,
+            slug: product.categoryType.slug,
+            name: product.categoryType.name,
+          }
+        : null,
       isActive: product.isActive,
       isFeatured: product.isFeatured,
       isPhysicalProduct: product.isPhysicalProduct,
@@ -4179,4 +4288,5 @@ export class StoreService {
     return this.getStorePolicies(ownerId);
   }
 }
+
 

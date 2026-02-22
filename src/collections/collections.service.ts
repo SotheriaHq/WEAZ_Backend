@@ -1,4 +1,4 @@
-﻿import {
+import {
   Injectable,
   BadRequestException,
   NotFoundException,
@@ -46,8 +46,13 @@ import {
 } from 'src/queue/queue.constants';
 import { TAG_ENTITY_TYPE } from 'src/tags/tag-entity-type';
 
+type CollectionScope = 'design' | 'store' | 'all';
+type CollectionDomainValue = 'DESIGN' | 'STORE';
+
 @Injectable()
 export class CollectionsService {
+  private readonly defaultCollectionScope: CollectionScope = 'design';
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly helperservice: HelperService,
@@ -59,23 +64,79 @@ export class CollectionsService {
     private readonly tagIndex?: TagIndexService,
     private readonly notificationsQueue?: NotificationsQueueService,
     @InjectQueue(BULK_UPLOAD_QUEUE) private readonly bulkUploadQueue?: Queue,
-  ) {}
+  ) { }
 
   private readonly maxProductsPerCollection = 5;
   private readonly collectionDeleteWindowMs = 30 * 24 * 60 * 60 * 1000;
 
+  private normalizeCollectionScope(scope?: string): CollectionScope {
+    if (scope === 'store') return 'store';
+    if (scope === 'all') return 'all';
+    return 'design';
+  }
+
+  private scopeToDomain(scope: CollectionScope): CollectionDomainValue | null {
+    if (scope === 'design') return 'DESIGN';
+    if (scope === 'store') return 'STORE';
+    return null;
+  }
+
+  private async assertActiveCategory(categoryId: string) {
+    const category = await this.prisma.collectionCategory.findUnique({
+      where: { id: categoryId },
+      select: { id: true, isActive: true },
+    });
+    if (!category) throw new NotFoundException('Category not found');
+    if (!category.isActive) {
+      throw new BadRequestException('This category is not active');
+    }
+    return category;
+  }
+
+  private async assertCategoryTypeMatchesCategory(
+    categoryId: string | null | undefined,
+    categoryTypeId: string | null | undefined,
+  ) {
+    if (!categoryTypeId) return null;
+    if (!isUuid(categoryTypeId)) {
+      throw new BadRequestException('Category type format is invalid');
+    }
+    if (!categoryId) {
+      throw new BadRequestException('Category type requires a selected category');
+    }
+
+    const categoryType = await this.prisma.collectionCategoryType.findUnique({
+      where: { id: categoryTypeId },
+      select: { id: true, categoryId: true, isActive: true },
+    });
+    if (!categoryType) throw new NotFoundException('Category type not found');
+    if (!categoryType.isActive) {
+      throw new BadRequestException('This category type is not active');
+    }
+    if (categoryType.categoryId !== categoryId) {
+      throw new BadRequestException(
+        'Category type does not belong to selected category',
+      );
+    }
+    return categoryType;
+  }
+
   private async lockCollectionForUpdate(
     tx: Prisma.TransactionClient,
     collectionId: string,
+    domain: CollectionDomainValue = 'DESIGN',
   ) {
     await tx.$executeRaw(
-      Prisma.sql`SELECT "_id" FROM "Collection" WHERE "_id" = ${collectionId} FOR UPDATE`,
+      domain === 'STORE'
+        ? Prisma.sql`SELECT "_id" FROM "StoreCollection" WHERE "_id" = ${collectionId} FOR UPDATE`
+        : Prisma.sql`SELECT "_id" FROM "Collection" WHERE "_id" = ${collectionId} FOR UPDATE`,
     );
   }
 
   private async touchDraftActivity(
     tx: Prisma.TransactionClient,
     collectionId: string,
+    domain: CollectionDomainValue = 'DESIGN',
   ) {
     const now = new Date();
     const ttlMinutes = Math.max(
@@ -83,6 +144,13 @@ export class CollectionsService {
       parseInt(process.env.DRAFT_SESSION_TTL_MINUTES || '30', 10),
     );
     const nextExpiresAt = new Date(now.getTime() + ttlMinutes * 60 * 1000);
+    if (domain === 'STORE') {
+      await (tx as any).storeCollection.updateMany({
+        where: { id: collectionId, status: 'DRAFT', deletedAt: null },
+        data: { lastActivityAt: now, draftVersion: { increment: 1 } },
+      });
+      return;
+    }
     await (tx as any).collection.updateMany({
       where: { id: collectionId, status: 'DRAFT', deletedAt: null },
       data: { lastActivityAt: now, draftVersion: { increment: 1 } },
@@ -93,7 +161,7 @@ export class CollectionsService {
     tx: Prisma.TransactionClient,
     productId: string,
   ) {
-    const links = await tx.collectionProduct.findMany({
+    const links = await tx.storeCollectionProduct.findMany({
       where: { productId },
       orderBy: [
         { isPrimary: 'desc' },
@@ -113,11 +181,11 @@ export class CollectionsService {
     }
 
     const primary = links.find((l) => l.isPrimary) ?? links[0];
-    await tx.collectionProduct.updateMany({
+    await tx.storeCollectionProduct.updateMany({
       where: { productId },
       data: { isPrimary: false },
     });
-    await tx.collectionProduct.updateMany({
+    await tx.storeCollectionProduct.updateMany({
       where: { productId, collectionId: primary.collectionId },
       data: { isPrimary: true },
     });
@@ -131,7 +199,7 @@ export class CollectionsService {
     collectionId: string,
     ownerId: string,
   ) {
-    const productLinks = await this.prisma.collectionProduct.findMany({
+    const productLinks = await this.prisma.storeCollectionProduct.findMany({
       where: { collectionId },
       select: { productId: true },
     });
@@ -352,7 +420,7 @@ export class CollectionsService {
   }
 
   private async recalculateCollectionPriceRange(collectionId: string) {
-    const links = await this.prisma.collectionProduct.findMany({
+    const links = await this.prisma.storeCollectionProduct.findMany({
       where: { collectionId },
       include: {
         product: {
@@ -410,7 +478,7 @@ export class CollectionsService {
       })
       .filter((v): v is number => typeof v === 'number' && v > 0);
 
-    await this.prisma.collection.update({
+    await this.prisma.storeCollection.update({
       where: { id: collectionId },
       data: {
         minPrice: prices.length ? Math.min(...prices) : null,
@@ -441,7 +509,7 @@ export class CollectionsService {
     const cooldownMs = Math.max(
       0,
       parseInt(process.env.PRIVATE_ACCESS_COOLDOWN_MS || '') ||
-        72 * 60 * 60 * 1000,
+      72 * 60 * 60 * 1000,
     );
     if (
       existing &&
@@ -501,14 +569,51 @@ export class CollectionsService {
     return { state: 'PENDING' };
   }
 
-  private async assertOwner(collectionId: string, ownerId: string) {
+  private async assertOwner(
+    collectionId: string,
+    ownerId: string,
+    expectedDomain?: CollectionDomainValue,
+  ) {
+    if (expectedDomain === 'STORE') {
+      const s = await this.prisma.storeCollection.findUnique({
+        where: { id: collectionId },
+        select: { ownerId: true, deletedAt: true },
+      });
+      if (!s) throw new NotFoundException('Collection not found');
+      if (s.deletedAt) throw new GoneException('Collection has been deleted');
+      if (s.ownerId !== ownerId) throw new ForbiddenException('Not owner');
+      return {
+        ownerId: s.ownerId,
+        deletedAt: s.deletedAt,
+        domain: 'STORE' as CollectionDomainValue,
+      };
+    }
+
     const c = (await this.prisma.collection.findUnique({
       where: { id: collectionId },
-      select: { ownerId: true, deletedAt: true } as any,
+      select: { ownerId: true, deletedAt: true, domain: true } as any,
     } as any)) as any;
+    if (!c && !expectedDomain) {
+      const s = await this.prisma.storeCollection.findUnique({
+        where: { id: collectionId },
+        select: { ownerId: true, deletedAt: true },
+      });
+      if (!s) throw new NotFoundException('Collection not found');
+      if (s.deletedAt) throw new GoneException('Collection has been deleted');
+      if (s.ownerId !== ownerId) throw new ForbiddenException('Not owner');
+      return {
+        ownerId: s.ownerId,
+        deletedAt: s.deletedAt,
+        domain: 'STORE' as CollectionDomainValue,
+      };
+    }
     if (!c) throw new NotFoundException('Collection not found');
     if (c.deletedAt) throw new GoneException('Collection has been deleted');
     if (c.ownerId !== ownerId) throw new ForbiddenException('Not owner');
+    if (expectedDomain && c.domain !== expectedDomain) {
+      throw new BadRequestException('Design action attempted on a store collection.');
+    }
+    return c as { ownerId: string; deletedAt: Date | null; domain?: CollectionDomainValue };
   }
 
   async listAccessRequests(
@@ -518,15 +623,6 @@ export class CollectionsService {
     cursor?: string,
   ) {
     await this.assertOwner(collectionId, ownerId);
-
-    const existingCount = await this.prisma.collectionProduct.count({
-      where: { collectionId },
-    });
-    if (existingCount >= this.maxProductsPerCollection) {
-      throw new BadRequestException(
-        `Collections can contain maximum ${this.maxProductsPerCollection} products.`,
-      );
-    }
     const rows = await this.prisma.collectionAccess.findMany({
       where: { collectionId, state: 'PENDING' },
       include: {
@@ -586,15 +682,15 @@ export class CollectionsService {
       collection: { ownerId: brandId },
       ...(q
         ? {
-            OR: [
-              {
-                viewer: { username: { contains: q, mode: 'insensitive' } },
-              } as any,
-              {
-                collection: { title: { contains: q, mode: 'insensitive' } },
-              } as any,
-            ],
-          }
+          OR: [
+            {
+              viewer: { username: { contains: q, mode: 'insensitive' } },
+            } as any,
+            {
+              collection: { title: { contains: q, mode: 'insensitive' } },
+            } as any,
+          ],
+        }
         : {}),
     } as any;
 
@@ -751,7 +847,7 @@ export class CollectionsService {
             },
           },
         );
-      } catch {}
+      } catch { }
     }
     console.log('metrics.access_approve_bulk', {
       collectionId,
@@ -796,7 +892,7 @@ export class CollectionsService {
           },
         },
       );
-    } catch {}
+    } catch { }
     console.log('metrics.access_update_state', { collectionId, userId, state });
     return { success: true };
   }
@@ -831,7 +927,7 @@ export class CollectionsService {
           },
         },
       );
-    } catch {}
+    } catch { }
     console.log('metrics.access_reject', { collectionId, userId });
     return { success: true };
   }
@@ -1092,7 +1188,17 @@ export class CollectionsService {
 
     // Store-collection session initialization (no media required)
     if (!hasFiles && dto.mode) {
-      const draftsCount = await (this.prisma.collection as any).count({
+      if (dto.categoryId) {
+        await this.assertActiveCategory(dto.categoryId);
+      }
+      if (dto.categoryTypeId) {
+        await this.assertCategoryTypeMatchesCategory(
+          dto.categoryId ?? null,
+          dto.categoryTypeId,
+        );
+      }
+
+      const draftsCount = await (this.prisma.storeCollection as any).count({
         where: { ownerId: userId, status: 'DRAFT', deletedAt: null },
       });
       if (draftsCount >= 4) {
@@ -1103,7 +1209,7 @@ export class CollectionsService {
 
       const collectionId = uuidv4();
       const now = new Date();
-      const collection = await (this.prisma.collection as any).create({
+      const collection = await (this.prisma.storeCollection as any).create({
         data: {
           id: collectionId,
           ownerId: userId,
@@ -1112,9 +1218,9 @@ export class CollectionsService {
           status: 'DRAFT',
           visibility: dto.visibility ?? CollectionVisibility.PUBLIC,
           type: dto.type ?? CollectionType.EVERYBODY,
-          isAvailableInStore: dto.isAvailableInStore ?? false,
           tags: Array.isArray(dto.tags) ? sanitizeTags(dto.tags) : [],
           categoryId: dto.categoryId || null,
+          categoryTypeId: dto.categoryTypeId || null,
           draftVersion: 0,
         },
       });
@@ -1173,14 +1279,12 @@ export class CollectionsService {
     }
 
     // Require a valid, active category
-    const category = await this.prisma.collectionCategory.findUnique({
-      where: { id: dto.categoryId },
-    });
-    if (!category) {
-      throw new NotFoundException('Category not found');
-    }
-    if (!category.isActive) {
-      throw new BadRequestException('This category is not active');
+    await this.assertActiveCategory(dto.categoryId);
+    if (dto.categoryTypeId) {
+      await this.assertCategoryTypeMatchesCategory(
+        dto.categoryId,
+        dto.categoryTypeId,
+      );
     }
     const finalCategoryId = dto.categoryId;
     const collectionStatus: 'DRAFT' | 'PUBLISHED' = 'DRAFT';
@@ -1192,17 +1296,19 @@ export class CollectionsService {
       data: {
         id: collectionId,
         owner: { connect: { id: userId } },
+        domain: 'DESIGN',
         title: dto.title,
         description: dto.description,
         minPrice: dto.minPrice,
         maxPrice: dto.maxPrice,
-        isAvailableInStore: dto.isAvailableInStore ?? false,
+        isAvailableInStore: false,
         tags: sanitizedTags,
         status: collectionStatus,
         visibility: dto.visibility ?? CollectionVisibility.PUBLIC,
         type: dto.type ?? CollectionType.EVERYBODY,
         // Set required category
         category: { connect: { id: finalCategoryId } },
+        categoryTypeId: dto.categoryTypeId || null,
         lastActivityAt: now,
         draftVersion: 0,
       },
@@ -1282,23 +1388,23 @@ export class CollectionsService {
 
     const where: Prisma.CollectionMediaWhereInput = {
       collection: {
+        domain: 'DESIGN',
         status: 'PUBLISHED',
         visibility: CollectionVisibility.PUBLIC,
         deletedAt: null,
-        isAvailableInStore: false,
         ...(tag
           ? {
-              tags: {
-                has: tag,
-              },
-            }
+            tags: {
+              has: tag,
+            },
+          }
           : {}),
         ...(category && category !== 'ALL'
           ? {
-              category: {
-                slug: category,
-              },
-            }
+            category: {
+              slug: category,
+            },
+          }
           : {}),
       } as any,
     };
@@ -1465,7 +1571,14 @@ export class CollectionsService {
     collectionId: string,
     userId: string,
     dto: FinalizeCollectionDto,
+    scope?: CollectionScope,
   ) {
+    const resolvedScope = this.normalizeCollectionScope(scope);
+    const expectedDomain = this.scopeToDomain(resolvedScope);
+    if (expectedDomain === 'STORE') {
+      return this.finalizeStoreCollection(collectionId, userId, dto);
+    }
+
     // Verify collection exists and belongs to user
     const collection = await this.prisma.collection.findFirst({
       where: { id: collectionId, ownerId: userId },
@@ -1473,6 +1586,12 @@ export class CollectionsService {
 
     if (!collection) {
       throw new NotFoundException('Collection not found or not owned by user');
+    }
+
+    if (expectedDomain && (collection as any).domain !== expectedDomain) {
+      throw new BadRequestException(
+        'Finalize requested with design scope for a store collection.',
+      );
     }
 
     if (collection.status !== 'DRAFT') {
@@ -1522,36 +1641,59 @@ export class CollectionsService {
         if (!nextCategoryId) {
           throw new BadRequestException('Category is required to publish');
         }
-        const category = await this.prisma.collectionCategory.findUnique({
-          where: { id: nextCategoryId },
-          select: { id: true, isActive: true },
-        });
-        if (!category) throw new NotFoundException('Category not found');
-        if (!category.isActive) throw new BadRequestException('This category is not active');
+        await this.assertActiveCategory(nextCategoryId);
+
+        const nextCategoryTypeId =
+          metadata.categoryTypeId ?? (collection as any).categoryTypeId;
+        if (!nextCategoryTypeId) {
+          throw new BadRequestException('Category type is required to publish');
+        }
+        await this.assertCategoryTypeMatchesCategory(
+          nextCategoryId,
+          nextCategoryTypeId,
+        );
+      }
+
+      if (
+        metadata.categoryId !== undefined ||
+        metadata.categoryTypeId !== undefined
+      ) {
+        const nextCategoryId = metadata.categoryId ?? collection.categoryId;
+        const nextCategoryTypeId =
+          metadata.categoryTypeId ?? (collection as any).categoryTypeId;
+        if (nextCategoryId) {
+          await this.assertActiveCategory(nextCategoryId);
+        }
+        if (nextCategoryTypeId) {
+          await this.assertCategoryTypeMatchesCategory(
+            nextCategoryId,
+            nextCategoryTypeId,
+          );
+        }
       }
 
       const updated = await this.prisma.$transaction(async (tx) => {
-        const links = await tx.collectionProduct.findMany({
-            where: { collectionId },
-            include: {
-              product: {
-                select: {
-                  id: true,
-                  price: true,
-                  salePrice: true,
-                  saleStartAt: true,
-                  saleEndAt: true,
-                  isActive: true,
-                  deletedAt: true,
-                  publishAt: true,
-                  archivedAt: true,
-                  images: true,
-                  thumbnail: true,
-                  variants: { select: { price: true } },
-                },
+        const links = await tx.storeCollectionProduct.findMany({
+          where: { collectionId },
+          include: {
+            product: {
+              select: {
+                id: true,
+                price: true,
+                salePrice: true,
+                saleStartAt: true,
+                saleEndAt: true,
+                isActive: true,
+                deletedAt: true,
+                publishAt: true,
+                archivedAt: true,
+                images: true,
+                thumbnail: true,
+                variants: { select: { price: true } },
               },
             },
-          });
+          },
+        });
 
         if (action === 'publish' && links.length === 0) {
           throw new BadRequestException('Cannot publish without products');
@@ -1639,10 +1781,11 @@ export class CollectionsService {
             visibility: metadata.visibility ?? collection.visibility,
             type: metadata.type ?? collection.type,
             categoryId: metadata.categoryId ?? collection.categoryId,
-            isAvailableInStore:
-              typeof metadata.isAvailableInStore === 'boolean'
-                ? metadata.isAvailableInStore
-                : collection.isAvailableInStore,
+            categoryTypeId:
+              metadata.categoryTypeId ?? (collection as any).categoryTypeId,
+            domain:
+              (collection as any).domain === 'STORE' ? 'STORE' : 'DESIGN',
+            isAvailableInStore: (collection as any).domain === 'STORE',
             tags: resolvedNextTags,
             minPrice: prices.length ? Math.min(...prices) : null,
             maxPrice: maxPrices.length ? Math.max(...maxPrices) : null,
@@ -1702,6 +1845,12 @@ export class CollectionsService {
     }
 
     // Verify all uploads completed successfully and create central FileUpload records via UploadService
+    if ((collection as any).domain === 'STORE') {
+      throw new BadRequestException(
+        'Store collections cannot be finalized with media uploads.',
+      );
+    }
+
     const completionIds = new Set<string>();
     for (const c of dto.completions ?? []) {
       if (completionIds.has(c.fileId)) {
@@ -1829,6 +1978,8 @@ export class CollectionsService {
     const publishedCollection = await this.prisma.collection.update({
       where: { id: collectionId },
       data: {
+        domain: 'DESIGN',
+        isAvailableInStore: false,
         status: newStatus,
         coverMediaId,
         ...(newStatus === 'DRAFT'
@@ -1907,19 +2058,268 @@ export class CollectionsService {
     return publishedCollection;
   }
 
+  private async finalizeStoreCollection(
+    collectionId: string,
+    userId: string,
+    dto: FinalizeCollectionDto,
+  ) {
+    const collection = await this.prisma.storeCollection.findFirst({
+      where: { id: collectionId, ownerId: userId },
+    });
+    if (!collection) {
+      throw new NotFoundException('Collection not found or not owned by user');
+    }
+    if (collection.status !== 'DRAFT') {
+      if (collection.status === 'PUBLISHED') {
+        const existing = await this.prisma.storeCollection.findUnique({
+          where: { id: collectionId },
+          include: {
+            owner: true,
+            products: {
+              include: {
+                product: {
+                  include: { variants: { select: { id: true } } },
+                },
+              },
+              orderBy: { orderIndex: 'asc' },
+            },
+          },
+        });
+        if (existing) return existing;
+      }
+      throw new BadRequestException('Collection is not in draft status');
+    }
+
+    if (Array.isArray(dto.completions) && dto.completions.length > 0) {
+      throw new BadRequestException(
+        'Store collections cannot be finalized with media uploads.',
+      );
+    }
+    if (!dto.collectionMetadata && !dto.action && dto.shouldPublish === undefined) {
+      throw new BadRequestException('Missing collection metadata');
+    }
+
+    const metadata = dto.collectionMetadata ?? {};
+    const action = dto.action ?? (dto.shouldPublish === false ? 'draft' : 'publish');
+    const resolvedNextTags = Array.isArray(metadata.tags)
+      ? sanitizeTags(metadata.tags, 30)
+      : collection.tags ?? [];
+
+    if (action === 'publish') {
+      const nextTitle = metadata.title ?? collection.title;
+      if (!nextTitle || !nextTitle.trim()) {
+        throw new BadRequestException('Title is required to publish');
+      }
+      if (resolvedNextTags.length === 0) {
+        throw new BadRequestException('At least one descriptive tag is required');
+      }
+      const nextCategoryId = metadata.categoryId ?? collection.categoryId;
+      if (!nextCategoryId) {
+        throw new BadRequestException('Category is required to publish');
+      }
+      await this.assertActiveCategory(nextCategoryId);
+      const nextCategoryTypeId =
+        metadata.categoryTypeId ?? (collection as any).categoryTypeId;
+      if (!nextCategoryTypeId) {
+        throw new BadRequestException('Category type is required to publish');
+      }
+      await this.assertCategoryTypeMatchesCategory(
+        nextCategoryId,
+        nextCategoryTypeId,
+      );
+    }
+
+    if (metadata.categoryId !== undefined || metadata.categoryTypeId !== undefined) {
+      const nextCategoryId = metadata.categoryId ?? collection.categoryId;
+      const nextCategoryTypeId =
+        metadata.categoryTypeId ?? (collection as any).categoryTypeId;
+      if (nextCategoryId) {
+        await this.assertActiveCategory(nextCategoryId);
+      }
+      if (nextCategoryTypeId) {
+        await this.assertCategoryTypeMatchesCategory(
+          nextCategoryId,
+          nextCategoryTypeId,
+        );
+      }
+    }
+
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const links = await tx.storeCollectionProduct.findMany({
+        where: { collectionId },
+        include: {
+          product: {
+            select: {
+              id: true,
+              price: true,
+              salePrice: true,
+              saleStartAt: true,
+              saleEndAt: true,
+              isActive: true,
+              deletedAt: true,
+              publishAt: true,
+              archivedAt: true,
+              images: true,
+              thumbnail: true,
+              variants: { select: { price: true } },
+            },
+          },
+        },
+      });
+
+      if (action === 'publish' && links.length === 0) {
+        throw new BadRequestException('Cannot publish without products');
+      }
+
+      const now = new Date();
+      if (action === 'publish') {
+        const inactiveIds = links
+          .filter(
+            (l) =>
+              l.product &&
+              l.product.deletedAt == null &&
+              l.product.archivedAt == null &&
+              l.product.isActive === false,
+          )
+          .map((l) => l.product!.id);
+        if (inactiveIds.length > 0) {
+          await tx.product.updateMany({
+            where: { id: { in: inactiveIds } },
+            data: { isActive: true },
+          });
+          links.forEach((l) => {
+            if (l.product && inactiveIds.includes(l.product.id)) {
+              l.product.isActive = true;
+            }
+          });
+        }
+      }
+
+      const activeProducts = links.filter((l) => {
+        const p = l.product;
+        if (!p || p.deletedAt || p.archivedAt || !p.isActive) return false;
+        if (p.publishAt && p.publishAt > now) return false;
+        return true;
+      });
+
+      if (action === 'publish') {
+        const hasProductMedia = activeProducts.some((l) => {
+          const p = l.product;
+          const images = Array.isArray(p.images) ? p.images.filter(Boolean) : [];
+          return images.length > 0 || Boolean(p.thumbnail);
+        });
+        if (!hasProductMedia) {
+          throw new BadRequestException('At least one product image is required to publish');
+        }
+      }
+
+      const prices = activeProducts
+        .map((l) => {
+          const p = l.product;
+          const variantPrices = Array.isArray(p.variants)
+            ? p.variants.map((v) => Number(v.price || 0)).filter((v) => v > 0)
+            : [];
+          if (variantPrices.length > 0) return Math.min(...variantPrices);
+          return Number(p.price || 0);
+        })
+        .filter((v) => v > 0);
+
+      const maxPrices = activeProducts
+        .map((l) => {
+          const p = l.product;
+          const variantPrices = Array.isArray(p.variants)
+            ? p.variants.map((v) => Number(v.price || 0)).filter((v) => v > 0)
+            : [];
+          if (variantPrices.length > 0) return Math.max(...variantPrices);
+          return Number(p.price || 0);
+        })
+        .filter((v) => v > 0);
+
+      const salePrices = activeProducts
+        .map((l) => {
+          const p = l.product;
+          if (!p.salePrice) return null;
+          if (p.saleStartAt && p.saleStartAt > now) return null;
+          if (p.saleEndAt && p.saleEndAt < now) return null;
+          return Number(p.salePrice);
+        })
+        .filter((v): v is number => typeof v === 'number' && v > 0);
+
+      return tx.storeCollection.update({
+        where: { id: collectionId },
+        data: {
+          title: metadata.title ?? collection.title,
+          description: metadata.description ?? collection.description,
+          visibility: metadata.visibility ?? collection.visibility,
+          type: metadata.type ?? collection.type,
+          categoryId: metadata.categoryId ?? collection.categoryId,
+          categoryTypeId:
+            metadata.categoryTypeId ?? (collection as any).categoryTypeId,
+          tags: resolvedNextTags,
+          minPrice: prices.length ? Math.min(...prices) : null,
+          maxPrice: maxPrices.length ? Math.max(...maxPrices) : null,
+          saleMinPrice: salePrices.length ? Math.min(...salePrices) : null,
+          saleMaxPrice: salePrices.length ? Math.max(...salePrices) : null,
+          status: action === 'publish' ? 'PUBLISHED' : 'DRAFT',
+          ...(action === 'draft'
+            ? { lastActivityAt: now, draftVersion: { increment: 1 } }
+            : {}),
+        },
+      });
+    });
+
+    const previousIndexedTags = this.getIndexedCollectionTags(
+      {
+        status: collection.status,
+        visibility: collection.visibility as CollectionVisibility,
+        deletedAt: collection.deletedAt,
+        tags: collection.tags ?? [],
+      },
+      collection.tags ?? [],
+    );
+    const nextIndexedTags = this.getIndexedCollectionTags(
+      {
+        status: action === 'publish' ? 'PUBLISHED' : 'DRAFT',
+        visibility:
+          (metadata.visibility ?? collection.visibility) as CollectionVisibility,
+        deletedAt: null,
+        tags: resolvedNextTags,
+      },
+      resolvedNextTags,
+    );
+    const shouldSyncCollectionTags =
+      Array.isArray(metadata.tags) ||
+      !this.areTagsEqual(previousIndexedTags, nextIndexedTags);
+
+    if (this.systemTags && shouldSyncCollectionTags) {
+      await this.systemTags.syncTags(previousIndexedTags, nextIndexedTags);
+    }
+    if (this.tagIndex && shouldSyncCollectionTags) {
+      await this.tagIndex.syncEntityTags(
+        TAG_ENTITY_TYPE.COLLECTION,
+        collectionId,
+        previousIndexedTags,
+        nextIndexedTags,
+        { maxCount: 30 },
+      );
+    }
+
+    return updated;
+  }
+
   // ===================== Store Collection Membership =====================
   async addProductsToCollection(
     collectionId: string,
     ownerId: string,
     productIds: string[],
   ) {
-    await this.assertOwner(collectionId, ownerId);
+    await this.assertOwner(collectionId, ownerId, 'STORE');
     if (!Array.isArray(productIds) || productIds.length === 0) {
       throw new BadRequestException('productIds is required');
     }
 
     const result = await this.prisma.$transaction(async (tx) => {
-      await this.lockCollectionForUpdate(tx, collectionId);
+      await this.lockCollectionForUpdate(tx, collectionId, 'STORE');
       const products = await tx.product.findMany({
         where: { id: { in: productIds }, deletedAt: null },
         include: { brand: true },
@@ -1935,13 +2335,13 @@ export class CollectionsService {
         }
       }
 
-      const existingLinks = await tx.collectionProduct.findMany({
+      const existingLinks = await tx.storeCollectionProduct.findMany({
         where: { collectionId, productId: { in: productIds } },
         select: { productId: true },
       });
       const existingSet = new Set(existingLinks.map((l) => l.productId));
 
-      const existingCount = await tx.collectionProduct.count({
+      const existingCount = await tx.storeCollectionProduct.count({
         where: { collectionId },
       });
       const newIds = productIds.filter((id) => !existingSet.has(id));
@@ -1956,7 +2356,7 @@ export class CollectionsService {
       for (const productId of productIds) {
         if (existingSet.has(productId)) continue;
 
-        const memberships = await tx.collectionProduct.findMany({
+        const memberships = await tx.storeCollectionProduct.findMany({
           where: { productId },
           select: { collectionId: true },
         });
@@ -1972,13 +2372,13 @@ export class CollectionsService {
         const orderIndex = nextOrderIndex;
         nextOrderIndex += 1;
 
-        const existingPrimary = await tx.collectionProduct.findFirst({
+        const existingPrimary = await tx.storeCollectionProduct.findFirst({
           where: { productId, isPrimary: true },
           select: { collectionId: true },
         });
         const shouldBePrimary = !existingPrimary;
 
-        await tx.collectionProduct.create({
+        await tx.storeCollectionProduct.create({
           data: {
             id: uuidv4(),
             collectionId,
@@ -1993,7 +2393,7 @@ export class CollectionsService {
         }
       }
 
-      await this.touchDraftActivity(tx, collectionId);
+      await this.touchDraftActivity(tx, collectionId, 'STORE');
       return { success: true };
     }, { timeout: 15000 });
 
@@ -2006,19 +2406,19 @@ export class CollectionsService {
     ownerId: string,
     productIds: string[],
   ) {
-    await this.assertOwner(collectionId, ownerId);
+    await this.assertOwner(collectionId, ownerId, 'STORE');
     if (!Array.isArray(productIds) || productIds.length === 0) {
       throw new BadRequestException('productIds is required');
     }
 
     const result = await this.prisma.$transaction(async (tx) => {
-      await this.lockCollectionForUpdate(tx, collectionId);
-      const existingLinks = await tx.collectionProduct.findMany({
+      await this.lockCollectionForUpdate(tx, collectionId, 'STORE');
+      const existingLinks = await tx.storeCollectionProduct.findMany({
         where: { collectionId, productId: { in: productIds } },
         select: { productId: true, isPrimary: true },
       });
 
-      await tx.collectionProduct.deleteMany({
+      await tx.storeCollectionProduct.deleteMany({
         where: { collectionId, productId: { in: productIds } },
       });
 
@@ -2033,7 +2433,7 @@ export class CollectionsService {
         }
       }
 
-      await this.touchDraftActivity(tx, collectionId);
+      await this.touchDraftActivity(tx, collectionId, 'STORE');
       return { success: true };
     }, { timeout: 15000 });
 
@@ -2046,7 +2446,7 @@ export class CollectionsService {
     ownerId: string,
     items: Array<{ productId: string; orderIndex: number }>,
   ) {
-    await this.assertOwner(collectionId, ownerId);
+    await this.assertOwner(collectionId, ownerId, 'STORE');
     if (!Array.isArray(items) || items.length === 0) {
       throw new BadRequestException('items is required');
     }
@@ -2063,7 +2463,7 @@ export class CollectionsService {
       throw new BadRequestException('orderIndex must be non-negative');
     }
 
-    const existing = await this.prisma.collectionProduct.findMany({
+    const existing = await this.prisma.storeCollectionProduct.findMany({
       where: { collectionId },
       select: { productId: true },
     });
@@ -2083,20 +2483,79 @@ export class CollectionsService {
 
     await this.prisma.$transaction(async (tx) => {
       for (const item of normalized) {
-        await tx.collectionProduct.updateMany({
+        await tx.storeCollectionProduct.updateMany({
           where: { collectionId, productId: item.productId },
           data: { orderIndex: item.orderIndex },
         });
       }
 
-      await this.touchDraftActivity(tx, collectionId);
+      await this.touchDraftActivity(tx, collectionId, 'STORE');
     });
 
     return { success: true };
   }
 
-  async archiveCollection(collectionId: string, ownerId: string) {
-    await this.assertOwner(collectionId, ownerId);
+  async archiveCollection(
+    collectionId: string,
+    ownerId: string,
+    scope?: CollectionScope,
+  ) {
+    const resolvedScope = this.normalizeCollectionScope(scope);
+    const expectedDomain = this.scopeToDomain(resolvedScope);
+    if (expectedDomain === 'STORE') {
+      await this.assertOwner(collectionId, ownerId, 'STORE');
+      const collection = await this.prisma.storeCollection.findUnique({
+        where: { id: collectionId },
+        select: { status: true, visibility: true, deletedAt: true, tags: true },
+      });
+      if (!collection) throw new NotFoundException('Collection not found');
+      if (collection.status === 'ARCHIVED') {
+        return { success: true, status: 'ARCHIVED' };
+      }
+
+      const activeOrdersCount = await this.countActiveOrdersForCollection(
+        collectionId,
+        ownerId,
+      );
+      if (activeOrdersCount > 0) {
+        throw new ConflictException({
+          code: 'COLLECTION_ARCHIVE_BLOCKED',
+          message: `Cannot archive collection with ${activeOrdersCount} active orders.`,
+          activeOrdersCount,
+        } as any);
+      }
+
+      await this.prisma.storeCollection.update({
+        where: { id: collectionId },
+        data: { status: 'ARCHIVED', archivedFromStatus: collection.status },
+      });
+
+      const previousIndexedTags = this.getIndexedCollectionTags(
+        {
+          status: collection.status,
+          visibility: collection.visibility,
+          deletedAt: collection.deletedAt,
+          tags: collection.tags ?? [],
+        },
+        collection.tags ?? [],
+      );
+      if (previousIndexedTags.length > 0 && this.systemTags) {
+        await this.systemTags.syncTags(previousIndexedTags, []);
+      }
+      if (previousIndexedTags.length > 0 && this.tagIndex) {
+        await this.tagIndex.syncEntityTags(
+          TAG_ENTITY_TYPE.COLLECTION,
+          collectionId,
+          previousIndexedTags,
+          [],
+          { maxCount: 30 },
+        );
+      }
+
+      return { success: true, status: 'ARCHIVED' };
+    }
+
+    await this.assertOwner(collectionId, ownerId, expectedDomain ?? undefined);
     const collection = await this.prisma.collection.findUnique({
       where: { id: collectionId },
       select: { status: true, visibility: true, deletedAt: true, tags: true },
@@ -2148,8 +2607,71 @@ export class CollectionsService {
     return { success: true, status: 'ARCHIVED' };
   }
 
-  async unarchiveCollection(collectionId: string, ownerId: string) {
-    await this.assertOwner(collectionId, ownerId);
+  async unarchiveCollection(
+    collectionId: string,
+    ownerId: string,
+    scope?: CollectionScope,
+  ) {
+    const resolvedScope = this.normalizeCollectionScope(scope);
+    const expectedDomain = this.scopeToDomain(resolvedScope);
+    if (expectedDomain === 'STORE') {
+      await this.assertOwner(collectionId, ownerId, 'STORE');
+      const collection = await this.prisma.storeCollection.findUnique({
+        where: { id: collectionId },
+        select: {
+          status: true,
+          archivedFromStatus: true,
+          visibility: true,
+          deletedAt: true,
+          tags: true,
+        },
+      });
+      if (!collection) throw new NotFoundException('Collection not found');
+      if (collection.status !== 'ARCHIVED') {
+        throw new BadRequestException('Collection is not archived');
+      }
+
+      const restoreStatus = collection.archivedFromStatus ?? 'DRAFT';
+      await this.prisma.storeCollection.update({
+        where: { id: collectionId },
+        data: { status: restoreStatus, archivedFromStatus: null },
+      });
+
+      const previousIndexedTags = this.getIndexedCollectionTags(
+        {
+          status: collection.status,
+          visibility: collection.visibility,
+          deletedAt: collection.deletedAt,
+          tags: collection.tags ?? [],
+        },
+        collection.tags ?? [],
+      );
+      const nextIndexedTags = this.getIndexedCollectionTags(
+        {
+          status: restoreStatus,
+          visibility: collection.visibility,
+          deletedAt: null,
+          tags: collection.tags ?? [],
+        },
+        collection.tags ?? [],
+      );
+      if (this.systemTags && !this.areTagsEqual(previousIndexedTags, nextIndexedTags)) {
+        await this.systemTags.syncTags(previousIndexedTags, nextIndexedTags);
+      }
+      if (this.tagIndex && !this.areTagsEqual(previousIndexedTags, nextIndexedTags)) {
+        await this.tagIndex.syncEntityTags(
+          TAG_ENTITY_TYPE.COLLECTION,
+          collectionId,
+          previousIndexedTags,
+          nextIndexedTags,
+          { maxCount: 30 },
+        );
+      }
+
+      return { success: true, status: restoreStatus };
+    }
+
+    await this.assertOwner(collectionId, ownerId, expectedDomain ?? undefined);
     const collection = await this.prisma.collection.findUnique({
       where: { id: collectionId },
       select: {
@@ -2215,8 +2737,8 @@ export class CollectionsService {
       sizeOptions?: string[];
     },
   ) {
-    await this.assertOwner(collectionId, ownerId);
-    const links = await this.prisma.collectionProduct.findMany({
+    await this.assertOwner(collectionId, ownerId, 'STORE');
+    const links = await this.prisma.storeCollectionProduct.findMany({
       where: { collectionId },
       select: { productId: true },
     });
@@ -2230,16 +2752,16 @@ export class CollectionsService {
     const previousProducts =
       nextTags && (this.systemTags || this.tagIndex)
         ? await this.prisma.product.findMany({
-            where: { id: { in: productIds } },
-            select: {
-              id: true,
-              tags: true,
-              isActive: true,
-              publishAt: true,
-              deletedAt: true,
-              archivedAt: true,
-            },
-          })
+          where: { id: { in: productIds } },
+          select: {
+            id: true,
+            tags: true,
+            isActive: true,
+            publishAt: true,
+            deletedAt: true,
+            archivedAt: true,
+          },
+        })
         : [];
     if (typeof template.description === 'string') {
       data.description = template.description;
@@ -2294,12 +2816,12 @@ export class CollectionsService {
     ownerId: string,
     dto: CreateProductDto,
   ) {
-    await this.assertOwner(collectionId, ownerId);
+    await this.assertOwner(collectionId, ownerId, 'STORE');
     const created = await this.storeService.createProduct(ownerId, {
       ...dto,
       collectionId,
     });
-    await (this.prisma.collection as any).updateMany({
+    await (this.prisma.storeCollection as any).updateMany({
       where: { id: collectionId, status: 'DRAFT', deletedAt: null },
       data: { lastActivityAt: new Date(), draftVersion: { increment: 1 } },
     });
@@ -2309,7 +2831,16 @@ export class CollectionsService {
   /**
    * Enhanced get method with proper includes
    */
-  async getCollection(id: string, requesterId?: string) {
+  async getCollection(
+    id: string,
+    requesterId?: string,
+    scope?: CollectionScope,
+  ) {
+    const resolvedScope = scope ? this.normalizeCollectionScope(scope) : 'all';
+    const expectedDomain = this.scopeToDomain(resolvedScope);
+    if (expectedDomain === 'STORE') {
+      return this.getStoreCollection(id, requesterId);
+    }
     const ok = await this.canViewCollection(id, requesterId);
     if (!ok) throw new NotFoundException('Collection not found');
     const collection = (await this.prisma.collection.findUnique({
@@ -2371,6 +2902,9 @@ export class CollectionsService {
         },
       },
     } as any)) as any;
+    if (expectedDomain && collection?.domain !== expectedDomain) {
+      throw new NotFoundException('Collection not found');
+    }
 
     if (!collection) {
       throw new NotFoundException('Collection not found');
@@ -2427,9 +2961,9 @@ export class CollectionsService {
     const { threadsCount, collectionCollabsCount, medias, ...rest } = collection as any;
     const mappedMedias = Array.isArray(medias)
       ? medias.map((m: any) => {
-          const { threadsCount: mediaThreadsCount, ...mediaRest } = m;
-          return { ...mediaRest, threadsCount: mediaThreadsCount };
-        })
+        const { threadsCount: mediaThreadsCount, ...mediaRest } = m;
+        return { ...mediaRest, threadsCount: mediaThreadsCount };
+      })
       : medias;
     return {
       ...rest,
@@ -2439,6 +2973,97 @@ export class CollectionsService {
       products,
       totalThreads,
       coverImageUrl: coverFromMedia || productCoverUrl,
+    };
+  }
+
+  private async canViewStoreCollection(
+    collectionId: string,
+    requesterId?: string,
+  ): Promise<boolean> {
+    const c = await this.prisma.storeCollection.findUnique({
+      where: { id: collectionId },
+      select: { ownerId: true, status: true, visibility: true, deletedAt: true },
+    });
+    if (!c) return false;
+    if (c.deletedAt) return false;
+    if (requesterId && requesterId === c.ownerId) return true;
+    if (c.status !== 'PUBLISHED') return false;
+    return c.visibility === CollectionVisibility.PUBLIC;
+  }
+
+  private async getStoreCollection(id: string, requesterId?: string) {
+    const ok = await this.canViewStoreCollection(id, requesterId);
+    if (!ok) throw new NotFoundException('Collection not found');
+
+    const collection = await this.prisma.storeCollection.findUnique({
+      where: { id },
+      include: {
+        owner: {
+          select: {
+            id: true,
+            username: true,
+            firstName: true,
+            lastName: true,
+            brandFullName: true,
+            profileImage: true,
+            profileImageId: true,
+            profileImageFile: {
+              select: {
+                id: true,
+                s3Url: true,
+                fileName: true,
+                originalName: true,
+                createdAt: true,
+                updatedAt: true,
+              },
+            },
+          },
+        },
+        products: {
+          include: {
+            product: {
+              include: { variants: { select: { id: true } } },
+            },
+          },
+          orderBy: { orderIndex: 'asc' },
+        },
+      },
+    });
+    if (!collection) throw new NotFoundException('Collection not found');
+
+    const isOwner = !!(requesterId && collection.ownerId === requesterId);
+    let products = collection.products as any[];
+    if (!isOwner) {
+      const now = new Date();
+      products = (collection.products || []).filter((link: any) => {
+        const p = link?.product;
+        if (!p) return false;
+        if (p.deletedAt || p.archivedAt || !p.isActive) return false;
+        if (p.publishAt && p.publishAt > now) return false;
+        return true;
+      }) as any[];
+    }
+
+    const coverFromProduct = (products || []).find((link: any) => {
+      const p = link?.product;
+      const images = Array.isArray(p?.images) ? p.images : [];
+      return Boolean(p?.thumbnail) || images.length > 0;
+    });
+    const productCoverUrl = coverFromProduct?.product?.thumbnail
+      ?? (Array.isArray(coverFromProduct?.product?.images)
+        ? coverFromProduct.product.images[0]
+        : null);
+
+    return {
+      ...collection,
+      domain: 'STORE' as const,
+      isAvailableInStore: true,
+      medias: [],
+      coverMediaId: null,
+      collectionCollabCount: collection.collectionCollabsCount,
+      totalThreads: collection.threadsCount,
+      products,
+      coverImageUrl: productCoverUrl,
     };
   }
 
@@ -2504,31 +3129,50 @@ export class CollectionsService {
       cursor?: string;
       limit?: number;
       visibility?: 'public' | 'private' | 'all';
+      scope?: CollectionScope;
     },
   ) {
-    const { cursor, limit = 20, visibility } = options || {};
+    const {
+      cursor,
+      limit = 20,
+      visibility,
+      scope = this.defaultCollectionScope,
+    } = options || {};
+    const resolvedScope = this.normalizeCollectionScope(scope);
+    if (resolvedScope === 'store') {
+      return this.getUserStoreCollections(userId, requesterId, {
+        cursor,
+        limit,
+        visibility,
+      });
+    }
+    const domainFilter = this.scopeToDomain(resolvedScope);
     const privateFeature =
       (process.env.FEATURE_PRIVATE_COLLECTIONS ?? 'true') !== 'false';
-    const where: any = { ownerId: userId, deletedAt: null };
+    const where: any = { ownerId: userId, deletedAt: null, isSystemGenerated: false };
+    if (domainFilter) {
+      where.domain = domainFilter;
+    }
     const now = new Date();
     const productVisibilityWhere =
       requesterId === userId
         ? undefined
         : {
-            deletedAt: null,
-            archivedAt: null,
-            isActive: true,
-            OR: [{ publishAt: null }, { publishAt: { lte: now } }],
-          };
+          deletedAt: null,
+          archivedAt: null,
+          isActive: true,
+          OR: [{ publishAt: null }, { publishAt: { lte: now } }],
+        };
     try {
       console.log(
-        '[collections.service.getUserCollections] userId=%s requesterId=%s visibility=%s featurePrivate=%s',
+        '[collections.service.getUserCollections] userId=%s requesterId=%s visibility=%s scope=%s featurePrivate=%s',
         userId,
         requesterId ?? 'anon',
         visibility ?? 'public',
+        resolvedScope,
         privateFeature,
       );
-    } catch {}
+    } catch { }
 
     // Default: published only for non-owner
     if (requesterId !== userId) {
@@ -2585,12 +3229,14 @@ export class CollectionsService {
       select: {
         id: true,
         ownerId: true,
+        domain: true,
         title: true,
         description: true,
         status: true,
         visibility: true,
         type: true,
         categoryId: true,
+        categoryTypeId: true,
         pendingCategorySuggestionId: true,
         draftReason: true,
         pendingCategoryName: true,
@@ -2675,7 +3321,7 @@ export class CollectionsService {
         items.length,
         where,
       );
-    } catch {}
+    } catch { }
 
     const hasNext = items.length > limit;
     const data = hasNext ? items.slice(0, -1) : items;
@@ -2749,9 +3395,9 @@ export class CollectionsService {
             profileImage: signedUrlMap.get(logoId)!, // Update profileImage string too
             profileImageFile: owner.profileImageFile
               ? {
-                  ...owner.profileImageFile,
-                  s3Url: signedUrlMap.get(logoId)!,
-                }
+                ...owner.profileImageFile,
+                s3Url: signedUrlMap.get(logoId)!,
+              }
               : null,
           };
         }
@@ -2770,10 +3416,216 @@ export class CollectionsService {
     };
   }
 
+  private async getUserStoreCollections(
+    userId: string,
+    requesterId?: string,
+    options?: {
+      cursor?: string;
+      limit?: number;
+      visibility?: 'public' | 'private' | 'all';
+    },
+  ) {
+    const { cursor, limit = 20, visibility } = options || {};
+    const where: any = {
+      ownerId: userId,
+      deletedAt: null,
+      isSystemGenerated: false,
+    };
+
+    if (requesterId !== userId) {
+      where.status = 'PUBLISHED';
+      if (!visibility || visibility === 'public') {
+        where.visibility = CollectionVisibility.PUBLIC;
+      } else if (visibility === 'private') {
+        where.visibility = CollectionVisibility.PRIVATE;
+      }
+    } else if (visibility === 'public') {
+      where.visibility = CollectionVisibility.PUBLIC;
+    } else if (visibility === 'private') {
+      where.visibility = CollectionVisibility.PRIVATE;
+    }
+
+    const items = await this.prisma.storeCollection.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+      take: limit + 1,
+      ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
+      select: {
+        id: true,
+        ownerId: true,
+        title: true,
+        description: true,
+        status: true,
+        visibility: true,
+        type: true,
+        categoryId: true,
+        categoryTypeId: true,
+        isSystemGenerated: true,
+        minPrice: true,
+        maxPrice: true,
+        tags: true,
+        saleMinPrice: true,
+        saleMaxPrice: true,
+        saleStartAt: true,
+        saleEndAt: true,
+        createdAt: true,
+        updatedAt: true,
+        threadsCount: true,
+        dislikesCount: true,
+        commentsCount: true,
+        collectionCollabsCount: true,
+        viewsCount: true,
+        products: {
+          orderBy: [{ isPrimary: 'desc' }, { orderIndex: 'asc' }],
+          include: {
+            product: {
+              select: {
+                id: true,
+                thumbnail: true,
+                images: true,
+                isActive: true,
+                archivedAt: true,
+                deletedAt: true,
+                publishAt: true,
+              },
+            },
+          },
+          take: this.maxProductsPerCollection,
+        },
+        owner: {
+          select: {
+            id: true,
+            username: true,
+            brandFullName: true,
+            profileImage: true,
+            profileImageId: true,
+            profileImageFile: {
+              select: {
+                id: true,
+                s3Url: true,
+                fileName: true,
+                originalName: true,
+                createdAt: true,
+                updatedAt: true,
+              },
+            },
+          },
+        },
+      },
+    });
+
+    const hasNext = items.length > limit;
+    const data = hasNext ? items.slice(0, -1) : items;
+
+    const fileIds = new Set<string>();
+    data.forEach((c) => {
+      if (c.owner?.profileImageFile?.id) {
+        fileIds.add(c.owner.profileImageFile.id);
+      } else if (c.owner?.profileImageId) {
+        fileIds.add(c.owner.profileImageId);
+      }
+    });
+    const signedUrlMap = await this.uploadService.getBatchPublicSignedUrls(
+      Array.from(fileIds),
+    );
+
+    return {
+      items: data.map((c: any) => {
+        const logoId = c.owner?.profileImageFile?.id || c.owner?.profileImageId;
+        let owner = c.owner;
+        if (logoId && signedUrlMap.has(logoId)) {
+          owner = {
+            ...owner,
+            profileImage: signedUrlMap.get(logoId)!,
+            profileImageFile: owner.profileImageFile
+              ? { ...owner.profileImageFile, s3Url: signedUrlMap.get(logoId)! }
+              : null,
+          };
+        }
+        return {
+          ...c,
+          domain: 'STORE',
+          isAvailableInStore: true,
+          medias: [],
+          coverMediaId: null,
+          collectionCollabCount: c.collectionCollabsCount,
+          owner,
+        };
+      }),
+      hasNextPage: hasNext,
+      endCursor: data.length ? data[data.length - 1].id : null,
+    };
+  }
+
   /**
    * Delete entire collection and all its media (S3 + DB)
    */
-  async deleteCollection(collectionId: string, requesterId: string) {
+  async deleteCollection(
+    collectionId: string,
+    requesterId: string,
+    scope?: CollectionScope,
+  ) {
+    const resolvedScope = this.normalizeCollectionScope(scope);
+    const expectedDomain = this.scopeToDomain(resolvedScope);
+    if (expectedDomain === 'STORE') {
+      await this.assertOwner(collectionId, requesterId, 'STORE');
+      const collection = await this.prisma.storeCollection.findUnique({
+        where: { id: collectionId },
+      });
+      if (!collection) throw new NotFoundException('Collection not found');
+      if (collection.deletedAt) {
+        return { success: true, deletedAt: collection.deletedAt };
+      }
+
+      const previousIndexedTags = this.getIndexedCollectionTags(
+        {
+          status: collection.status,
+          visibility: collection.visibility,
+          deletedAt: collection.deletedAt,
+          tags: collection.tags ?? [],
+        },
+        collection.tags ?? [],
+      );
+
+      const now = new Date();
+      const deleteExpiresAt = new Date(
+        now.getTime() + this.collectionDeleteWindowMs,
+      );
+      await this.prisma.storeCollection.update({
+        where: { id: collectionId },
+        data: { deletedAt: now, deleteExpiresAt },
+      });
+
+      const productLinks = await this.prisma.storeCollectionProduct.findMany({
+        where: { collectionId },
+        select: { productId: true },
+      });
+      const productIds = productLinks.map((l) => l.productId);
+      if (productIds.length) {
+        await this.prisma.cartItem.deleteMany({ where: { productId: { in: productIds } } });
+        await this.prisma.wishlistItem.deleteMany({ where: { productId: { in: productIds } } });
+      }
+
+      if (previousIndexedTags.length > 0 && this.systemTags) {
+        await this.systemTags.syncTags(previousIndexedTags, []);
+      }
+      if (previousIndexedTags.length > 0 && this.tagIndex) {
+        await this.tagIndex.syncEntityTags(
+          TAG_ENTITY_TYPE.COLLECTION,
+          collectionId,
+          previousIndexedTags,
+          [],
+          { maxCount: 30 },
+        );
+      }
+
+      return {
+        success: true,
+        deletedAt: now.toISOString(),
+        restoreBy: deleteExpiresAt.toISOString(),
+      };
+    }
+
     // Verify collection and ownership
     const collection = (await this.prisma.collection.findUnique({
       where: { id: collectionId },
@@ -2782,6 +3634,11 @@ export class CollectionsService {
     if (!collection) throw new NotFoundException('Collection not found');
     if (collection.ownerId !== requesterId)
       throw new ForbiddenException('Not owner of collection');
+    if (expectedDomain && collection.domain !== expectedDomain) {
+      throw new BadRequestException(
+        'Delete requested with design scope for a store collection.',
+      );
+    }
 
     if (collection.deletedAt) {
       return { success: true, deletedAt: collection.deletedAt };
@@ -2808,7 +3665,7 @@ export class CollectionsService {
       },
     });
 
-    const productLinks = await this.prisma.collectionProduct.findMany({
+    const productLinks = await this.prisma.storeCollectionProduct.findMany({
       where: { collectionId },
       select: { productId: true },
     });
@@ -2854,7 +3711,357 @@ export class CollectionsService {
     return { success: true, deletedAt: now.toISOString(), restoreBy: deleteExpiresAt.toISOString() };
   }
 
+  async duplicateCollection(
+    collectionId: string,
+    requesterId: string,
+    scope?: CollectionScope,
+  ) {
+    const resolvedScope = this.normalizeCollectionScope(scope);
+    const expectedDomain = this.scopeToDomain(resolvedScope);
+    if (expectedDomain === 'STORE') {
+      const source = await this.prisma.storeCollection.findUnique({
+        where: { id: collectionId },
+      });
+      if (!source) throw new NotFoundException('Collection not found');
+      if (source.ownerId !== requesterId) {
+        throw new ForbiddenException('Not owner of collection');
+      }
+      if (source.deletedAt) {
+        throw new GoneException('Collection has been deleted');
+      }
+
+      const sourceLinks = await this.prisma.storeCollectionProduct.findMany({
+        where: { collectionId },
+        orderBy: [{ orderIndex: 'asc' }, { createdAt: 'asc' }],
+        select: { productId: true, orderIndex: true },
+      });
+
+      const maxMembershipConflicts: string[] = [];
+      for (const link of sourceLinks) {
+        const membershipCount = await this.prisma.storeCollectionProduct.count({
+          where: { productId: link.productId },
+        });
+        if (membershipCount >= 3) {
+          maxMembershipConflicts.push(link.productId);
+        }
+      }
+      if (maxMembershipConflicts.length > 0) {
+        throw new ConflictException({
+          code: 'COLLECTION_MAX_MEMBERSHIP',
+          message: 'One or more products already belong to maximum 3 collections.',
+          productIds: maxMembershipConflicts,
+        } as any);
+      }
+
+      const baseTitle = String(source.title || 'Untitled collection').trim();
+      const copiedTags = Array.isArray(source.tags)
+        ? sanitizeTags(source.tags, 30)
+        : [];
+      const duplicateId = uuidv4();
+      const now = new Date();
+      const duplicateTitle = baseTitle
+        ? `Copy of ${baseTitle}`
+        : 'Copy of collection';
+
+      await this.prisma.$transaction(async (tx) => {
+        await tx.storeCollection.create({
+          data: {
+            id: duplicateId,
+            ownerId: requesterId,
+            title: duplicateTitle,
+            description: source.description ?? null,
+            status: 'DRAFT',
+            visibility: source.visibility,
+            type: source.type,
+            categoryId: source.categoryId ?? null,
+            categoryTypeId: source.categoryTypeId ?? null,
+            tags: copiedTags,
+            minPrice: source.minPrice ?? null,
+            maxPrice: source.maxPrice ?? null,
+            saleMinPrice: source.saleMinPrice ?? null,
+            saleMaxPrice: source.saleMaxPrice ?? null,
+            saleStartAt: source.saleStartAt ?? null,
+            saleEndAt: source.saleEndAt ?? null,
+            lastActivityAt: now,
+            draftVersion: 0,
+          },
+        });
+
+        if (sourceLinks.length > 0) {
+          await tx.storeCollectionProduct.createMany({
+            data: sourceLinks.map((link, index) => ({
+              id: uuidv4(),
+              collectionId: duplicateId,
+              productId: link.productId,
+              orderIndex:
+                typeof link.orderIndex === 'number' ? link.orderIndex : index,
+              isPrimary: false,
+            })),
+            skipDuplicates: true,
+          });
+        }
+      });
+
+      await this.recalculateCollectionPriceRange(duplicateId);
+
+      const indexedTags = this.getIndexedCollectionTags(
+        {
+          status: 'DRAFT',
+          visibility: source.visibility,
+          deletedAt: null,
+          tags: copiedTags,
+        },
+        copiedTags,
+      );
+      if (indexedTags.length > 0 && this.systemTags) {
+        await this.systemTags.syncTags([], indexedTags);
+      }
+      if (indexedTags.length > 0 && this.tagIndex) {
+        await this.tagIndex.syncEntityTags(
+          TAG_ENTITY_TYPE.COLLECTION,
+          duplicateId,
+          [],
+          indexedTags,
+          { maxCount: 30 },
+        );
+      }
+
+      const duplicated = await this.prisma.storeCollection.findUnique({
+        where: { id: duplicateId },
+        include: {
+          owner: {
+            select: {
+              id: true,
+              username: true,
+              brandFullName: true,
+              profileImage: true,
+            },
+          },
+          products: {
+            include: { product: true },
+            orderBy: { orderIndex: 'asc' },
+          },
+        },
+      });
+      if (!duplicated) throw new NotFoundException('Collection not found');
+      return duplicated;
+    }
+
+    const source = (await this.prisma.collection.findUnique({
+      where: { id: collectionId },
+      select: {
+        id: true,
+        ownerId: true,
+        domain: true,
+        title: true,
+        description: true,
+        status: true,
+        visibility: true,
+        type: true,
+        categoryId: true,
+        categoryTypeId: true,
+        isAvailableInStore: true,
+        tags: true,
+        minPrice: true,
+        maxPrice: true,
+        saleMinPrice: true,
+        saleMaxPrice: true,
+        saleStartAt: true,
+        saleEndAt: true,
+        deletedAt: true,
+      } as any,
+    } as any)) as any;
+
+    if (!source) throw new NotFoundException('Collection not found');
+    if (source.ownerId !== requesterId) {
+      throw new ForbiddenException('Not owner of collection');
+    }
+    if (expectedDomain && source.domain !== expectedDomain) {
+      throw new BadRequestException(
+        'Duplicate requested with design scope for a store collection.',
+      );
+    }
+    if (source.deletedAt) {
+      throw new GoneException('Collection has been deleted');
+    }
+
+    const sourceLinks = await this.prisma.storeCollectionProduct.findMany({
+      where: { collectionId },
+      orderBy: [{ orderIndex: 'asc' }, { createdAt: 'asc' }],
+      select: { productId: true, orderIndex: true },
+    });
+
+    const maxMembershipConflicts: string[] = [];
+    for (const link of sourceLinks) {
+      const membershipCount = await this.prisma.storeCollectionProduct.count({
+        where: { productId: link.productId },
+      });
+      if (membershipCount >= 3) {
+        maxMembershipConflicts.push(link.productId);
+      }
+    }
+    if (maxMembershipConflicts.length > 0) {
+      throw new ConflictException({
+        code: 'COLLECTION_MAX_MEMBERSHIP',
+        message: 'One or more products already belong to maximum 3 collections.',
+        productIds: maxMembershipConflicts,
+      } as any);
+    }
+
+    const baseTitle = String(source.title || 'Untitled collection').trim();
+    const copiedTags = Array.isArray(source.tags) ? sanitizeTags(source.tags, 30) : [];
+    const duplicateId = uuidv4();
+    const now = new Date();
+    const duplicateTitle = baseTitle ? `Copy of ${baseTitle}` : 'Copy of collection';
+    const duplicateDomain: CollectionDomainValue =
+      source.domain === 'STORE' || source.isAvailableInStore ? 'STORE' : 'DESIGN';
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.collection.create({
+        data: {
+          id: duplicateId,
+          ownerId: requesterId,
+          domain: duplicateDomain,
+          title: duplicateTitle,
+          description: source.description ?? null,
+          status: 'DRAFT',
+          visibility: source.visibility,
+          type: source.type,
+          categoryId: source.categoryId ?? null,
+          categoryTypeId: source.categoryTypeId ?? null,
+          isAvailableInStore: duplicateDomain === 'STORE',
+          tags: copiedTags,
+          minPrice: source.minPrice ?? null,
+          maxPrice: source.maxPrice ?? null,
+          saleMinPrice: source.saleMinPrice ?? null,
+          saleMaxPrice: source.saleMaxPrice ?? null,
+          saleStartAt: source.saleStartAt ?? null,
+          saleEndAt: source.saleEndAt ?? null,
+          lastActivityAt: now,
+          draftVersion: 0,
+        } as any,
+      });
+
+      if (sourceLinks.length > 0) {
+        await tx.storeCollectionProduct.createMany({
+          data: sourceLinks.map((link, index) => ({
+            id: uuidv4(),
+            collectionId: duplicateId,
+            productId: link.productId,
+            orderIndex: typeof link.orderIndex === 'number' ? link.orderIndex : index,
+            isPrimary: false,
+          })),
+          skipDuplicates: true,
+        });
+      }
+    });
+
+    await this.recalculateCollectionPriceRange(duplicateId);
+
+    const indexedTags = this.getIndexedCollectionTags(
+      {
+        status: 'DRAFT',
+        visibility: source.visibility,
+        deletedAt: null,
+        tags: copiedTags,
+      },
+      copiedTags,
+    );
+    if (indexedTags.length > 0 && this.systemTags) {
+      await this.systemTags.syncTags([], indexedTags);
+    }
+    if (indexedTags.length > 0 && this.tagIndex) {
+      await this.tagIndex.syncEntityTags(
+        TAG_ENTITY_TYPE.COLLECTION,
+        duplicateId,
+        [],
+        indexedTags,
+        { maxCount: 30 },
+      );
+    }
+
+    const duplicated = await this.prisma.collection.findUnique({
+      where: { id: duplicateId },
+      include: {
+        owner: {
+          select: {
+            id: true,
+            username: true,
+            brandFullName: true,
+            profileImage: true,
+          },
+        },
+        _count: { select: { medias: true, views: true, comments: true } },
+      },
+    });
+
+    if (!duplicated) throw new NotFoundException('Collection not found');
+    return duplicated;
+  }
+
   async restoreCollection(collectionId: string, ownerId: string) {
+    const storeCollection = await this.prisma.storeCollection.findUnique({
+      where: { id: collectionId },
+      select: {
+        ownerId: true,
+        deletedAt: true,
+        deleteExpiresAt: true,
+        status: true,
+        visibility: true,
+        tags: true,
+      },
+    });
+    if (storeCollection) {
+      if (storeCollection.ownerId !== ownerId) {
+        throw new ForbiddenException('Not owner of collection');
+      }
+      if (!storeCollection.deletedAt) {
+        throw new BadRequestException('Collection is not deleted');
+      }
+      const now = new Date();
+      if (storeCollection.deleteExpiresAt && storeCollection.deleteExpiresAt < now) {
+        throw new GoneException('Collection recovery window has expired');
+      }
+
+      await this.prisma.storeCollection.update({
+        where: { id: collectionId },
+        data: { deletedAt: null, deleteExpiresAt: null },
+      });
+
+      const previousIndexedTags = this.getIndexedCollectionTags(
+        {
+          status: storeCollection.status,
+          visibility: storeCollection.visibility,
+          deletedAt: storeCollection.deletedAt,
+          tags: storeCollection.tags ?? [],
+        },
+        storeCollection.tags ?? [],
+      );
+      const nextIndexedTags = this.getIndexedCollectionTags(
+        {
+          status: storeCollection.status,
+          visibility: storeCollection.visibility,
+          deletedAt: null,
+          tags: storeCollection.tags ?? [],
+        },
+        storeCollection.tags ?? [],
+      );
+      if (this.systemTags && !this.areTagsEqual(previousIndexedTags, nextIndexedTags)) {
+        await this.systemTags.syncTags(previousIndexedTags, nextIndexedTags);
+      }
+      if (this.tagIndex && !this.areTagsEqual(previousIndexedTags, nextIndexedTags)) {
+        await this.tagIndex.syncEntityTags(
+          TAG_ENTITY_TYPE.COLLECTION,
+          collectionId,
+          previousIndexedTags,
+          nextIndexedTags,
+          { maxCount: 30 },
+        );
+      }
+
+      return { success: true };
+    }
+
     const collection = (await this.prisma.collection.findUnique({
       where: { id: collectionId },
       select: {
@@ -2976,7 +4183,7 @@ export class CollectionsService {
         const remaining = await tx.collectionMedia.count({
           where: { collectionId } as any,
         });
-        const productCount = await tx.collectionProduct.count({
+        const productCount = await tx.storeCollectionProduct.count({
           where: { collectionId } as any,
         });
 
@@ -3010,7 +4217,7 @@ export class CollectionsService {
 
     const [remainingAfter, remainingProducts, deletedInfo] = await Promise.all([
       this.prisma.collectionMedia.count({ where: { collectionId } }),
-      this.prisma.collectionProduct.count({ where: { collectionId } }),
+      this.prisma.storeCollectionProduct.count({ where: { collectionId } }),
       this.prisma.collection.findUnique({
         where: { id: collectionId },
         select: { deletedAt: true } as any,
@@ -3054,10 +4261,10 @@ export class CollectionsService {
   }) {
     const items = await this.prisma.collection.findMany({
       where: {
+        domain: 'DESIGN',
         status: 'PUBLISHED',
         visibility: CollectionVisibility.PUBLIC,
         deletedAt: null,
-        isAvailableInStore: false,
       } as any,
       orderBy: [
         { collectionCollabsCount: 'desc' }, // Show most collabed first
@@ -3264,7 +4471,7 @@ export class CollectionsService {
             dedupeMs: 5 * 60 * 1000,
           },
         );
-      } catch {}
+      } catch { }
     }
 
     // Notify patchers about engagement on brand content
@@ -3460,7 +4667,7 @@ export class CollectionsService {
             },
           },
         );
-      } catch {}
+      } catch { }
     }
 
     return { status: 'PENDING', message: 'Contribution request sent' };
@@ -3508,7 +4715,7 @@ export class CollectionsService {
             targetUrl: `/collections/${request.collectionId}`,
           },
         });
-      } catch {}
+      } catch { }
     }
 
     return { status, message: `Contribution request ${status.toLowerCase()}` };
@@ -3622,7 +4829,7 @@ export class CollectionsService {
             },
           },
         );
-      } catch {}
+      } catch { }
     }
 
     return collab;
@@ -4070,6 +5277,7 @@ export class CollectionsService {
             where: { id: collection.id },
             data: {
               categoryId: approvedCategoryId,
+              categoryTypeId: null,
               pendingCategorySuggestionId: null,
               draftReason: null,
               status: 'PUBLISHED',
@@ -4324,6 +5532,17 @@ export class CollectionsService {
         name: true,
         description: true,
         order: true,
+        types: {
+          where: { isActive: true },
+          orderBy: [{ order: 'asc' }, { createdAt: 'asc' }],
+          select: {
+            id: true,
+            slug: true,
+            name: true,
+            description: true,
+            order: true,
+          },
+        },
       },
     });
     return rows.map((r) => ({
@@ -4332,6 +5551,40 @@ export class CollectionsService {
       name: r.name,
       description: r.description,
       order: r.order,
+      types: (r.types ?? []).map((t) => ({
+        id: t.id,
+        slug: t.slug,
+        name: t.name,
+        description: t.description,
+        order: t.order,
+      })),
+    }));
+  }
+
+  async listCategoryTypes(categoryId?: string) {
+    const rows = await this.prisma.collectionCategoryType.findMany({
+      where: {
+        isActive: true,
+        ...(categoryId ? { categoryId } : {}),
+      },
+      orderBy: [{ order: 'asc' }, { createdAt: 'asc' }],
+      select: {
+        id: true,
+        categoryId: true,
+        slug: true,
+        name: true,
+        description: true,
+        order: true,
+      },
+    });
+
+    return rows.map((row) => ({
+      id: row.id,
+      categoryId: row.categoryId,
+      slug: row.slug,
+      name: row.name,
+      description: row.description,
+      order: row.order,
     }));
   }
 
@@ -4340,11 +5593,174 @@ export class CollectionsService {
     collectionId: string,
     ownerId: string,
     body: UpdateCollectionDto,
+    scope?: CollectionScope,
   ) {
-    await this.assertOwner(collectionId, ownerId);
+    const resolvedScope = this.normalizeCollectionScope(scope);
+    const expectedDomain = this.scopeToDomain(resolvedScope);
+    if (expectedDomain === 'STORE') {
+      await this.assertOwner(collectionId, ownerId, 'STORE');
+      const existing = await this.prisma.storeCollection.findUnique({
+        where: { id: collectionId },
+        select: {
+          status: true,
+          visibility: true,
+          deletedAt: true,
+          draftVersion: true,
+          tags: true,
+          title: true,
+          description: true,
+          metadataEditedAt: true,
+          categoryId: true,
+          categoryTypeId: true,
+        },
+      });
+      if (!existing) throw new NotFoundException('Collection not found');
+      if (existing.deletedAt) throw new GoneException('Collection has been deleted');
+
+      const titleRequested = typeof body.title === 'string';
+      const descriptionRequested = typeof body.description === 'string';
+      const titleChanged =
+        titleRequested &&
+        body.title!.trim() !== String(existing.title ?? '').trim();
+      const descriptionChanged =
+        descriptionRequested &&
+        body.description!.trim() !== String(existing.description ?? '').trim();
+
+      if (titleChanged || descriptionChanged) {
+        const cooldownMs = 30 * 24 * 60 * 60 * 1000;
+        const lastEdit = existing.metadataEditedAt
+          ? new Date(existing.metadataEditedAt).getTime()
+          : null;
+        if (lastEdit && Date.now() < lastEdit + cooldownMs) {
+          const nextEditDate = new Date(lastEdit + cooldownMs);
+          throw new BadRequestException(
+            `Title and description can only be updated once every 30 days. Next edit available on ${nextEditDate.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}.`,
+          );
+        }
+      }
+
+      const now = new Date();
+      const data: any = {};
+      const previousTags = Array.isArray(existing.tags) ? existing.tags : [];
+      let nextTags: string[] | undefined;
+      const targetCategoryId =
+        body.categoryId !== undefined
+          ? body.categoryId || null
+          : (existing.categoryId ?? null);
+      const targetCategoryTypeId =
+        body.categoryTypeId !== undefined
+          ? body.categoryTypeId || null
+          : (existing.categoryTypeId ?? null);
+
+      if (typeof body.title === 'string' || body.title === null) data.title = body.title || null;
+      if (typeof body.description === 'string' || body.description === null) {
+        data.description = body.description || null;
+      }
+      if (titleChanged || descriptionChanged) {
+        data.metadataEditedAt = new Date();
+      }
+      if (typeof body.visibility === 'string') data.visibility = body.visibility;
+      if (typeof body.type === 'string') data.type = body.type;
+      if (typeof body.minPrice === 'number' || body.minPrice === null) data.minPrice = body.minPrice as any;
+      if (typeof body.maxPrice === 'number' || body.maxPrice === null) data.maxPrice = body.maxPrice as any;
+      if (typeof body.saleMinPrice === 'number' || body.saleMinPrice === null) data.saleMinPrice = body.saleMinPrice as any;
+      if (typeof body.saleMaxPrice === 'number' || body.saleMaxPrice === null) data.saleMaxPrice = body.saleMaxPrice as any;
+      if (typeof body.saleStartAt === 'string' || body.saleStartAt === null) {
+        data.saleStartAt = body.saleStartAt ? new Date(body.saleStartAt) : null;
+      }
+      if (typeof body.saleEndAt === 'string' || body.saleEndAt === null) {
+        data.saleEndAt = body.saleEndAt ? new Date(body.saleEndAt) : null;
+      }
+      if (Array.isArray(body.tags)) {
+        nextTags = sanitizeTags(body.tags, 30);
+        data.tags = nextTags;
+      }
+      if (targetCategoryId) {
+        await this.assertActiveCategory(targetCategoryId);
+      }
+      if (targetCategoryTypeId) {
+        await this.assertCategoryTypeMatchesCategory(
+          targetCategoryId,
+          targetCategoryTypeId,
+        );
+      }
+      if (typeof body.categoryId === 'string' || body.categoryId === null) {
+        data.categoryId = body.categoryId || null;
+      }
+      if (
+        typeof body.categoryTypeId === 'string' ||
+        body.categoryTypeId === null ||
+        (body.categoryId !== undefined && body.categoryTypeId === undefined)
+      ) {
+        data.categoryTypeId =
+          body.categoryTypeId !== undefined
+            ? body.categoryTypeId || null
+            : targetCategoryTypeId;
+      }
+      if (existing.status === 'DRAFT') {
+        data.lastActivityAt = now;
+        data.draftVersion = { increment: 1 };
+      }
+
+      const updated = await this.prisma.storeCollection.update({
+        where: { id: collectionId },
+        data,
+        include: {
+          owner: {
+            select: {
+              id: true,
+              username: true,
+              brandFullName: true,
+              profileImage: true,
+            },
+          },
+        },
+      });
+
+      const previousIndexedTags = this.getIndexedCollectionTags(
+        {
+          status: existing.status,
+          visibility: existing.visibility,
+          deletedAt: existing.deletedAt,
+          tags: previousTags,
+        },
+        previousTags,
+      );
+      const resolvedNextTags = nextTags ?? (Array.isArray(updated.tags) ? updated.tags : previousTags);
+      const nextIndexedTags = this.getIndexedCollectionTags(
+        {
+          status: updated.status,
+          visibility: updated.visibility,
+          deletedAt: updated.deletedAt,
+          tags: resolvedNextTags,
+        },
+        resolvedNextTags,
+      );
+      const shouldSyncCollectionTags =
+        nextTags !== undefined ||
+        !this.areTagsEqual(previousIndexedTags, nextIndexedTags);
+      if (shouldSyncCollectionTags) {
+        if (this.systemTags) {
+          await this.systemTags.syncTags(previousIndexedTags, nextIndexedTags);
+        }
+        if (this.tagIndex) {
+          await this.tagIndex.syncEntityTags(
+            TAG_ENTITY_TYPE.COLLECTION,
+            collectionId,
+            previousIndexedTags,
+            nextIndexedTags,
+            { maxCount: 30 },
+          );
+        }
+      }
+      return { ...updated, domain: 'STORE', isAvailableInStore: true };
+    }
+
+    await this.assertOwner(collectionId, ownerId, expectedDomain ?? undefined);
     const existing = (await this.prisma.collection.findUnique({
       where: { id: collectionId },
       select: {
+        domain: true,
         status: true,
         visibility: true,
         deletedAt: true,
@@ -4352,7 +5768,9 @@ export class CollectionsService {
         tags: true,
         title: true,
         description: true,
-        createdAt: true,
+        metadataEditedAt: true,
+        categoryId: true,
+        categoryTypeId: true,
       } as any,
     } as any)) as any;
     if (!existing) throw new NotFoundException('Collection not found');
@@ -4360,24 +5778,24 @@ export class CollectionsService {
 
     const titleRequested = typeof body.title === 'string';
     const descriptionRequested = typeof body.description === 'string';
-    if (titleRequested || descriptionRequested) {
-      const lockAfterMs = 30 * 24 * 60 * 60 * 1000;
-      const createdAtMs = new Date(existing.createdAt).getTime();
-      const isEditWindowLocked = Date.now() > createdAtMs + lockAfterMs;
+    const titleChanged =
+      titleRequested &&
+      body.title!.trim() !== String(existing.title ?? '').trim();
+    const descriptionChanged =
+      descriptionRequested &&
+      body.description!.trim() !== String(existing.description ?? '').trim();
 
-      if (isEditWindowLocked) {
-        const titleChanged =
-          titleRequested &&
-          body.title!.trim() !== String(existing.title ?? '').trim();
-        const descriptionChanged =
-          descriptionRequested &&
-          body.description!.trim() !== String(existing.description ?? '').trim();
+    if (titleChanged || descriptionChanged) {
+      const cooldownMs = 30 * 24 * 60 * 60 * 1000; // 30 days
+      const lastEdit = existing.metadataEditedAt
+        ? new Date(existing.metadataEditedAt).getTime()
+        : null;
 
-        if (titleChanged || descriptionChanged) {
-          throw new BadRequestException(
-            'Title and description can only be edited within 30 days of creation',
-          );
-        }
+      if (lastEdit && Date.now() < lastEdit + cooldownMs) {
+        const nextEditDate = new Date(lastEdit + cooldownMs);
+        throw new BadRequestException(
+          `Title and description can only be updated once every 30 days. Next edit available on ${nextEditDate.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}.`,
+        );
       }
     }
 
@@ -4422,14 +5840,28 @@ export class CollectionsService {
     const data: any = {};
     const previousTags = Array.isArray(existing.tags) ? existing.tags : [];
     let nextTags: string[] | undefined;
+    const targetCategoryId =
+      body.categoryId !== undefined
+        ? body.categoryId || null
+        : (existing.categoryId ?? null);
+    const targetCategoryTypeId =
+      body.categoryTypeId !== undefined
+        ? body.categoryTypeId || null
+        : (existing.categoryTypeId ?? null);
     if (typeof body.title === 'string' || body.title === null)
       data.title = body.title || null;
     if (typeof body.description === 'string' || body.description === null)
       data.description = body.description || null;
+    // Stamp metadataEditedAt when title or description actually changes
+    if (titleChanged || descriptionChanged) {
+      data.metadataEditedAt = new Date();
+    }
     if (typeof body.visibility === 'string') data.visibility = body.visibility;
     if (typeof body.type === 'string') data.type = body.type;
-    if (typeof body.isAvailableInStore === 'boolean')
-      data.isAvailableInStore = body.isAvailableInStore;
+    if (typeof body.isAvailableInStore === 'boolean') {
+      data.isAvailableInStore = existing.domain === 'STORE';
+    }
+    data.domain = existing.domain === 'STORE' ? 'STORE' : 'DESIGN';
     if (typeof body.minPrice === 'number' || body.minPrice === null)
       data.minPrice = body.minPrice as any;
     if (typeof body.maxPrice === 'number' || body.maxPrice === null)
@@ -4459,17 +5891,28 @@ export class CollectionsService {
       data.coverMediaId = body.coverMediaId || null;
     }
 
+    if (targetCategoryId) {
+      await this.assertActiveCategory(targetCategoryId);
+    }
+    if (targetCategoryTypeId) {
+      await this.assertCategoryTypeMatchesCategory(
+        targetCategoryId,
+        targetCategoryTypeId,
+      );
+    }
+
     if (typeof body.categoryId === 'string' || body.categoryId === null) {
-      if (body.categoryId) {
-        const category = await this.prisma.collectionCategory.findUnique({
-          where: { id: body.categoryId },
-          select: { id: true, isActive: true },
-        });
-        if (!category) throw new NotFoundException('Category not found');
-        if (!category.isActive)
-          throw new BadRequestException('This category is not active');
-      }
       data.categoryId = body.categoryId || null;
+    }
+    if (
+      typeof body.categoryTypeId === 'string' ||
+      body.categoryTypeId === null ||
+      (body.categoryId !== undefined && body.categoryTypeId === undefined)
+    ) {
+      data.categoryTypeId =
+        body.categoryTypeId !== undefined
+          ? body.categoryTypeId || null
+          : targetCategoryTypeId;
     }
 
     if (existing.status === 'DRAFT') {
@@ -4548,15 +5991,15 @@ export class CollectionsService {
    * Used before "Add Entire Collection to Cart"
    */
   async getCollectionCartPreview(collectionId: string, requesterId?: string) {
-    const canView = await this.canViewCollection(collectionId, requesterId);
+    const canView = await this.canViewStoreCollection(collectionId, requesterId);
     if (!canView) throw new NotFoundException('Collection not found');
 
-    const collection = await this.prisma.collection.findUnique({
+    const collection = await this.prisma.storeCollection.findUnique({
       where: { id: collectionId },
       select: { id: true, title: true },
     });
 
-    const links = await this.prisma.collectionProduct.findMany({
+    const links = await this.prisma.storeCollectionProduct.findMany({
       where: { collectionId },
       include: {
         product: {
@@ -4579,7 +6022,7 @@ export class CollectionsService {
       const p = link.product;
       if (!p) continue;
 
-      const effectivePrice = p.salePrice && 
+      const effectivePrice = p.salePrice &&
         (!p.saleStartAt || p.saleStartAt <= now) &&
         (!p.saleEndAt || p.saleEndAt >= now)
         ? Number(p.salePrice)
@@ -4593,7 +6036,7 @@ export class CollectionsService {
         price: v.price ? Number(v.price) : undefined,
       }));
 
-      const hasAnyInStock = variants.length > 0 
+      const hasAnyInStock = variants.length > 0
         ? variants.some(v => v.inStock)
         : p.totalStock > 0;
       const canBackorder = !!p.allowBackorders;
@@ -4620,9 +6063,9 @@ export class CollectionsService {
       } else if (!p.isActive) {
         unavailable.push({ ...item, reason: 'inactive' });
       } else if (p.publishAt && p.publishAt > now) {
-        unavailable.push({ 
-          ...item, 
-          reason: 'scheduled', 
+        unavailable.push({
+          ...item,
+          reason: 'scheduled',
           availableAt: p.publishAt.toISOString(),
         });
       } else if (!hasAnyInStock && !canBackorder) {
@@ -4674,7 +6117,7 @@ export class CollectionsService {
       throw new ForbiddenException('You can only preview your own products');
     }
 
-    const memberships = await this.prisma.collectionProduct.findMany({
+    const memberships = await this.prisma.storeCollectionProduct.findMany({
       where: { productId },
       include: {
         collection: {
@@ -4692,7 +6135,7 @@ export class CollectionsService {
     }>>();
 
     if (collectionIds.length > 0) {
-      const links = await this.prisma.collectionProduct.findMany({
+      const links = await this.prisma.storeCollectionProduct.findMany({
         where: { collectionId: { in: collectionIds } },
         include: { product: { select: { id: true, price: true } } },
       });
@@ -4732,8 +6175,8 @@ export class CollectionsService {
 
     const currentPrice = Number(product.price);
     const priceChange = newPrice - currentPrice;
-    const percentageChange = currentPrice > 0 
-      ? ((priceChange / currentPrice) * 100) 
+    const percentageChange = currentPrice > 0
+      ? ((priceChange / currentPrice) * 100)
       : 0;
 
     return {
@@ -5295,7 +6738,7 @@ export class CollectionsService {
       const remainingMedia = await tx.collectionMedia.count({
         where: { collectionId },
       });
-      const remainingProducts = await tx.collectionProduct.count({
+      const remainingProducts = await tx.storeCollectionProduct.count({
         where: { collectionId },
       });
       if (remainingMedia === 0 && remainingProducts === 0) {
@@ -5348,7 +6791,7 @@ export class CollectionsService {
     if (newVisibility !== 'PRIVATE') return { cleaned: 0 };
 
     // Get product IDs in this collection
-    const productLinks = await this.prisma.collectionProduct.findMany({
+    const productLinks = await this.prisma.storeCollectionProduct.findMany({
       where: { collectionId },
       select: { productId: true },
     });
@@ -5384,3 +6827,4 @@ export class CollectionsService {
 }
 
 export { CreateCollectionDto, FinalizeCollectionDto };
+

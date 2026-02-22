@@ -32,6 +32,10 @@ export class UpdateCollectionDto {
   categoryId?: string | null;
 
   @IsOptional()
+  @IsString()
+  categoryTypeId?: string | null;
+
+  @IsOptional()
   @IsBoolean()
   isAvailableInStore?: boolean | null;
 

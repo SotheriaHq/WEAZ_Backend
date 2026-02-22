@@ -11,6 +11,7 @@ import {
   MaxLength,
   ValidateNested,
   IsInt,
+  IsUUID,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 
@@ -58,6 +59,10 @@ export class CreateProductDto {
   @IsOptional()
   @IsString()
   collectionId?: string;
+
+  @IsOptional()
+  @IsUUID('4')
+  categoryTypeId?: string;
 
   @IsOptional()
   @IsString()

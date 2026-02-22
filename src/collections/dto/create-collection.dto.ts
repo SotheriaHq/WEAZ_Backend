@@ -69,6 +69,11 @@ export class CreateCollectionDto {
   @IsUUID('4')
   categoryId?: string;
 
+  // Category type (required for publish flows)
+  @IsOptional()
+  @IsUUID('4')
+  categoryTypeId?: string;
+
   // Type: MALE, FEMALE, EVERYBODY
   @IsOptional()
   @IsEnum(CollectionType)
@@ -125,6 +130,10 @@ export class CollectionMetadataDto {
   @IsOptional()
   @IsUUID('4')
   categoryId?: string;
+
+  @IsOptional()
+  @IsUUID('4')
+  categoryTypeId?: string;
 
   @IsOptional()
   @IsString()

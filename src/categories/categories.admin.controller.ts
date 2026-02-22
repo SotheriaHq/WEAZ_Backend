@@ -26,7 +26,7 @@ const Roles = (...roles: Role[]) => SetMetadata('roles', roles);
 @Roles(Role.SuperAdmin)
 @Controller('admin/categories')
 export class CategoriesAdminController {
-  constructor(private readonly categories: CategoriesService) {}
+  constructor(private readonly categories: CategoriesService) { }
 
   @Get()
   @ApiOperation({ summary: 'List categories (optionally include inactive)' })
@@ -62,5 +62,17 @@ export class CategoriesAdminController {
   @ApiOperation({ summary: 'Delete category (only if unused)' })
   async remove(@Param('id') id: string) {
     return this.categories.remove(id);
+  }
+
+  @Get(':id/sub-categories')
+  @ApiOperation({ summary: 'List sub-categories for a main category' })
+  async subCategories(@Param('id') id: string) {
+    return this.categories.getSubCategoriesByCategoryId(id);
+  }
+
+  @Get('filters/dimensions')
+  @ApiOperation({ summary: 'List all filter dimensions with values' })
+  async filterDimensions() {
+    return this.categories.getFilterDimensions();
   }
 }

@@ -75,6 +75,7 @@ model User {
   contributionRequests    ContributionRequest[]           @relation("UserContributionRequests")
 
   collections             Collection[]
+  storeCollections        StoreCollection[]
   collectionReactions     CollectionReaction[]
   collectionComments      CollectionComment[]
   commentReactions        CommentReaction[]
@@ -357,6 +358,7 @@ model Collection {
   id                           String                          @id @map("_id") @db.Uuid
   ownerId                      String                          @db.Uuid
   owner                        User                            @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  domain                       CollectionDomain                @default(DESIGN)
   title                        String?
   description                  String?
   status                       CollectionStatus                @default(DRAFT)
@@ -365,6 +367,8 @@ model Collection {
   type                         CollectionType                  @default(EVERYBODY)
   categoryId                   String?                         @db.Uuid
   category                     CollectionCategory?             @relation(fields: [categoryId], references: [id])
+  categoryTypeId               String?                         @db.Uuid
+  categoryType                 CollectionCategoryType?         @relation(fields: [categoryTypeId], references: [id], onDelete: SetNull)
   coverMediaId                 String?                         @db.Uuid
   coverMedia                   CollectionMedia?                @relation("CollectionCoverMedia", fields: [coverMediaId], references: [id])
   deletedAt                    DateTime?
@@ -388,6 +392,7 @@ model Collection {
   saleEndAt                    DateTime?
   createdAt                    DateTime                        @default(now())
   updatedAt                    DateTime                        @updatedAt
+  metadataEditedAt             DateTime?                       // Last title/description edit timestamp (30-day cooldown)
   threadsCount                 Int                             @default(0) @map("likesCount")
   dislikesCount                Int                             @default(0)
   commentsCount                Int                             @default(0)
@@ -406,8 +411,6 @@ model Collection {
   
   // E-commerce products (multi-collection membership)
   products                     CollectionProduct[]
-  // Primary collection link (compatibility)
-  primaryProducts              Product[]                       @relation("PrimaryCollection")
   draftSessions                CollectionDraftSession[]
   bulkUploadJobs               CollectionBulkUploadJob[]
 
@@ -416,9 +419,64 @@ model Collection {
   @@index([status, visibility, createdAt])
   @@index([status, pendingCategorySuggestionId]) // PHASE 1: Fast lookup of drafts waiting for category approval
   @@index([ownerId, status, createdAt]) // PHASE 1: User's draft management
+  @@index([ownerId, domain, status, createdAt])
+  @@index([categoryTypeId])
   @@index([deletedAt])
   @@index([deleteExpiresAt])
   @@index([lastActivityAt])
+}
+
+model StoreCollection {
+  id                 String                  @id @map("_id") @db.Uuid
+  ownerId            String                  @db.Uuid
+  owner              User                    @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  title              String?
+  description        String?
+  status             CollectionStatus        @default(DRAFT)
+  archivedFromStatus CollectionStatus?
+  visibility         CollectionVisibility    @default(PUBLIC)
+  type               CollectionType          @default(EVERYBODY)
+  categoryId         String?                 @db.Uuid
+  category           CollectionCategory?     @relation(fields: [categoryId], references: [id])
+  categoryTypeId     String?                 @db.Uuid
+  categoryType       CollectionCategoryType? @relation(fields: [categoryTypeId], references: [id], onDelete: SetNull)
+  deletedAt          DateTime?
+  deleteExpiresAt    DateTime?
+  lastActivityAt     DateTime?
+  draftVersion       Int                     @default(0)
+  minPrice           Float?
+  maxPrice           Float?
+  isAvailableInStore Boolean                 @default(true)
+  isSystemGenerated  Boolean                 @default(false)
+  tags               String[]                @default([])
+  saleMinPrice       Float?
+  saleMaxPrice       Float?
+  saleStartAt        DateTime?
+  saleEndAt          DateTime?
+  createdAt          DateTime                @default(now())
+  updatedAt          DateTime                @updatedAt
+  metadataEditedAt   DateTime?
+  threadsCount       Int                     @default(0) @map("likesCount")
+  dislikesCount      Int                     @default(0)
+  commentsCount      Int                     @default(0)
+  collectionCollabsCount Int                 @default(0) @map("patchesCount")
+  viewsCount         Int                     @default(0)
+  products           StoreCollectionProduct[]
+  primaryProducts    Product[]               @relation("PrimaryStoreCollection")
+
+  @@index([status, createdAt])
+  @@index([status, visibility, createdAt])
+  @@index([ownerId, status, createdAt])
+  @@index([ownerId, visibility, status, createdAt])
+  @@index([categoryTypeId])
+  @@index([deletedAt])
+  @@index([deleteExpiresAt])
+  @@index([lastActivityAt])
+}
+
+enum CollectionDomain {
+  DESIGN
+  STORE
 }
 
 enum BulkUploadStatus {
@@ -517,6 +575,22 @@ model CollectionProduct {
   @@index([collectionId, orderIndex])
 }
 
+model StoreCollectionProduct {
+  id           String   @id @map("_id") @db.Uuid
+  collectionId String   @db.Uuid
+  productId    String   @db.Uuid
+  orderIndex   Int      @default(0)
+  isPrimary    Boolean  @default(false)
+  createdAt    DateTime @default(now())
+
+  collection   StoreCollection @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+  product      Product         @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([collectionId, productId])
+  @@index([productId])
+  @@index([collectionId, orderIndex])
+}
+
 enum CollectionStatus {
   DRAFT // Created but files not uploaded
   PUBLISHED // Fully published and visible
@@ -544,10 +618,32 @@ model CollectionCategory {
   createdAt               DateTime                        @default(now())
   updatedAt               DateTime                        @updatedAt
   collections             Collection[]
+  storeCollections        StoreCollection[]
+  products                Product[]
+  types                   CollectionCategoryType[]
   // PHASE 1: Approved suggestions that created this category
   approvedSuggestions     CollectionCategorySuggestion[]
 
   @@index([isActive, order])
+}
+
+model CollectionCategoryType {
+  id          String               @id @map("_id") @db.Uuid
+  categoryId  String               @db.Uuid
+  category    CollectionCategory   @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  slug        String
+  name        String
+  description String?
+  isActive    Boolean              @default(true)
+  order       Int                  @default(0)
+  createdAt   DateTime             @default(now())
+  updatedAt   DateTime             @updatedAt
+  collections Collection[]
+  storeCollections StoreCollection[]
+  products    Product[]
+
+  @@unique([categoryId, slug])
+  @@index([categoryId, isActive, order])
 }
 
 // ===== Category Suggestions (Phase 6) =====
@@ -1060,7 +1156,11 @@ enum PayoutStatus {
 model Product {
   id              String        @id @map("_id") @db.Uuid
   collectionId    String?       @db.Uuid
-  collection      Collection?   @relation("PrimaryCollection", fields: [collectionId], references: [id], onDelete: SetNull)
+  collection      StoreCollection?   @relation("PrimaryStoreCollection", fields: [collectionId], references: [id], onDelete: SetNull)
+  categoryTypeId  String?       @db.Uuid
+  categoryType    CollectionCategoryType? @relation(fields: [categoryTypeId], references: [id], onDelete: SetNull)
+  categoryId      String?       @db.Uuid
+  category        CollectionCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
   brandId         String        @db.Uuid
   brand           Brand         @relation("Brand_to_Products", fields: [brandId], references: [id], onDelete: Cascade)
   
@@ -1134,7 +1234,9 @@ model Product {
   cartItems       CartItem[]
   wishlistItems   WishlistItem[]
   variants        ProductVariant[]
-  collections     CollectionProduct[]
+  designCollections CollectionProduct[]
+  collections     StoreCollectionProduct[]
+  entityFilters   EntityFilter[]  @relation("ProductEntityFilters")
   
   // Performance indexes
   @@index([brandId])
@@ -1148,6 +1250,8 @@ model Product {
   @@index([brandId, viewsCount])
   @@index([isActive, brandId])
   @@index([deletedAt])
+  @@index([categoryTypeId])
+  @@index([categoryId])
 }
 
 model ProductVariant {
@@ -1238,4 +1342,64 @@ model WishlistItem {
   
   @@unique([userId, productId])
   @@index([userId])
+}
+
+// ===== Structured Filter Dimensions =====
+
+enum FilterEntityType {
+  COLLECTION
+  STORE_COLLECTION
+  PRODUCT
+}
+
+model FilterDimension {
+  id          String         @id @map("_id") @db.Uuid
+  slug        String         @unique
+  name        String
+  description String?
+  order       Int            @default(0)
+  isActive    Boolean        @default(true)
+  isMulti     Boolean        @default(true)
+  appliesTo   String[]       @default(["COLLECTION", "PRODUCT"])
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+  values      FilterValue[]
+
+  @@index([isActive, order])
+}
+
+model FilterValue {
+  id            String          @id @map("_id") @db.Uuid
+  dimensionId   String          @db.Uuid
+  dimension     FilterDimension @relation(fields: [dimensionId], references: [id], onDelete: Cascade)
+  slug          String
+  name          String
+  description   String?
+  order         Int             @default(0)
+  isActive      Boolean         @default(true)
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+
+  entityFilters EntityFilter[]
+
+  @@unique([dimensionId, slug])
+  @@index([dimensionId, isActive, order])
+}
+
+model EntityFilter {
+  id            String           @id @map("_id") @db.Uuid
+  filterValueId String           @db.Uuid
+  filterValue   FilterValue      @relation(fields: [filterValueId], references: [id], onDelete: Cascade)
+  entityType    FilterEntityType
+  entityId      String           @db.Uuid
+  createdAt     DateTime         @default(now())
+
+  // Optional back-reference for Product direct relation queries
+  productId     String?          @db.Uuid
+  product       Product?         @relation("ProductEntityFilters", fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([filterValueId, entityType, entityId])
+  @@index([entityType, entityId])
+  @@index([filterValueId])
+  @@index([productId])
 }

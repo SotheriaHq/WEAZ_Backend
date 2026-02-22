@@ -191,11 +191,13 @@ export class CollectionsController {
     @Param('collectionId') collectionId: string,
     @Req() req: any,
     @Body() dto: FinalizeCollectionDto,
+    @Query('scope') scope?: 'design' | 'store' | 'all',
   ) {
     return this.collectionsService.finalizeCollection(
       collectionId,
       req.user.id,
       dto,
+      scope,
     );
   }
 
@@ -282,8 +284,9 @@ export class CollectionsController {
   async archiveCollection(
     @Param('collectionId') collectionId: string,
     @Req() req: any,
+    @Query('scope') scope?: 'design' | 'store' | 'all',
   ) {
-    return this.collectionsService.archiveCollection(collectionId, req.user.id);
+    return this.collectionsService.archiveCollection(collectionId, req.user.id, scope);
   }
 
   @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
@@ -291,8 +294,13 @@ export class CollectionsController {
   async unarchiveCollection(
     @Param('collectionId') collectionId: string,
     @Req() req: any,
+    @Query('scope') scope?: 'design' | 'store' | 'all',
   ) {
-    return this.collectionsService.unarchiveCollection(collectionId, req.user.id);
+    return this.collectionsService.unarchiveCollection(
+      collectionId,
+      req.user.id,
+      scope,
+    );
   }
 
   // ============================================
@@ -319,6 +327,13 @@ export class CollectionsController {
   @ApiResponse({ status: 200, description: 'List of active categories' })
   async getCategories() {
     return this.collectionsService.listCategories();
+  }
+
+  @Get('category-types')
+  @ApiOperation({ summary: 'Get active category types (optionally filtered by categoryId)' })
+  @ApiResponse({ status: 200, description: 'List of active category types' })
+  async getCategoryTypes(@Query('categoryId') categoryId?: string) {
+    return this.collectionsService.listCategoryTypes(categoryId);
   }
 
   @UseGuards(OptionalJwtAuthGuard)
@@ -401,6 +416,7 @@ export class CollectionsController {
     @Query('cursor') cursor?: string,
     @Query('limit') limit?: string,
     @Query('visibility') visibility?: 'public' | 'private' | 'all',
+    @Query('scope') scope?: 'design' | 'store' | 'all',
     @Req() req?: any,
   ) {
     // If the requester is the same as the userId, include drafts; otherwise only published
@@ -419,6 +435,7 @@ export class CollectionsController {
       cursor,
       limit: limit ? parseInt(limit, 10) : 20,
       visibility,
+      scope,
     });
   }
 
@@ -430,8 +447,11 @@ export class CollectionsController {
   @Get(':id')
   @ApiOperation({ summary: 'Get collection by ID' })
   @ApiResponse({ status: 200, description: 'Collection details' })
-  async getCollection(@Param('id') id: string, @Req() req: any) {
-    // Record view if accessing collection
+  async getCollection(
+    @Param('id') id: string,
+    @Query('scope') scope: 'design' | 'store' | 'all' = 'all',
+    @Req() req: any,
+  ) {
     const userId = req.user?.id;
     const ipAddress = req.ip || req.connection.remoteAddress;
     try {
@@ -442,12 +462,20 @@ export class CollectionsController {
       );
     } catch {}
 
-    // Record view asynchronously (don't wait)
-    this.collectionsService.recordView(id, userId, ipAddress).catch((err) => {
+    const collection = await this.collectionsService.getCollection(
+      id,
+      req.user?.id,
+      scope,
+    );
+
+    // Record view asynchronously only after collection is confirmed readable.
+    this.collectionsService.recordView(id, userId, ipAddress).catch((err: any) => {
+      const status = err?.status ?? err?.response?.statusCode;
+      if (status === 404 || status === 410) return;
       console.warn('Failed to record view:', err);
     });
 
-    return this.collectionsService.getCollection(id, req.user?.id);
+    return collection;
   }
 
   // ============================================
@@ -637,8 +665,27 @@ export class CollectionsController {
   @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
   @Delete(':id')
   @ApiOperation({ summary: 'Delete entire collection (owner only)' })
-  async deleteCollection(@Param('id') collectionId: string, @Req() req: any) {
-    return this.collectionsService.deleteCollection(collectionId, req.user.id);
+  async deleteCollection(
+    @Param('id') collectionId: string,
+    @Req() req: any,
+    @Query('scope') scope?: 'design' | 'store' | 'all',
+  ) {
+    return this.collectionsService.deleteCollection(collectionId, req.user.id, scope);
+  }
+
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Post(':id/duplicate')
+  @ApiOperation({ summary: 'Duplicate a collection (owner only)' })
+  async duplicateCollection(
+    @Param('id') collectionId: string,
+    @Req() req: any,
+    @Query('scope') scope?: 'design' | 'store' | 'all',
+  ) {
+    return this.collectionsService.duplicateCollection(
+      collectionId,
+      req.user.id,
+      scope,
+    );
   }
 
   @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
@@ -870,11 +917,13 @@ export class CollectionsController {
     @Param('id') collectionId: string,
     @Req() req: any,
     @Body() body: UpdateCollectionDto,
+    @Query('scope') scope?: 'design' | 'store' | 'all',
   ) {
     return this.collectionsService.updateCollection(
       collectionId,
       req.user.id,
       body,
+      scope,
     );
   }
 

@@ -25,6 +25,7 @@ type SyncEntityTagsOptions = {
 export class TagIndexService {
   private readonly logger = new Logger(TagIndexService.name);
   private warnedMissingTagDelegates = false;
+  private warnedMissingTagTables = false;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -57,6 +58,21 @@ export class TagIndexService {
     return false;
   }
 
+  private isMissingTagTableError(error: any): boolean {
+    if (!error || typeof error !== 'object') return false;
+    if (error.code !== 'P2021') return false;
+    const message = String(error.message ?? '');
+    return message.includes('public.Tag') || message.includes('public.TagBinding');
+  }
+
+  private warnMissingTagTables(context: string): void {
+    if (this.warnedMissingTagTables) return;
+    this.warnedMissingTagTables = true;
+    this.logger.warn(
+      `Skipping tag index ${context}: Tag/TagBinding tables are missing. Run pending Prisma migrations.`,
+    );
+  }
+
   async syncEntityTags(
     entityType: TagEntityTypeValue,
     entityId: string,
@@ -77,10 +93,19 @@ export class TagIndexService {
 
     if (affected.length === 0) return;
 
-    const banned = await prismaClient.tag.findMany({
-      where: { normalizedName: { in: added }, isBanned: true },
-      select: { normalizedName: true },
-    });
+    let banned: Array<{ normalizedName: string }> = [];
+    try {
+      banned = await prismaClient.tag.findMany({
+        where: { normalizedName: { in: added }, isBanned: true },
+        select: { normalizedName: true },
+      });
+    } catch (error: any) {
+      if (this.isMissingTagTableError(error)) {
+        this.warnMissingTagTables('sync');
+        return;
+      }
+      throw error;
+    }
 
     if (banned.length > 0) {
       throw new BadRequestException(
@@ -89,109 +114,117 @@ export class TagIndexService {
     }
 
     const now = new Date();
-    await this.prisma.$transaction(async (tx) => {
-      const tagIdByName = new Map<string, string>();
+    try {
+      await this.prisma.$transaction(async (tx) => {
+        const tagIdByName = new Map<string, string>();
 
-      if (affected.length > 0) {
-        const existing = await (tx as any).tag.findMany({
+        if (affected.length > 0) {
+          const existing = await (tx as any).tag.findMany({
+            where: { normalizedName: { in: affected } },
+            select: { id: true, normalizedName: true },
+          });
+          for (const row of existing) tagIdByName.set(row.normalizedName, row.id);
+        }
+
+        for (const name of added) {
+          if (tagIdByName.has(name)) continue;
+          const row = await (tx as any).tag.upsert({
+            where: { normalizedName: name },
+            create: {
+              id: uuidv4(),
+              normalizedName: name,
+              displayName: name,
+              usageCount: 0,
+              lastUsedAt: now,
+            },
+            update: { displayName: name },
+            select: { id: true, normalizedName: true },
+          });
+          tagIdByName.set(row.normalizedName, row.id);
+        }
+
+        const addedBindings = added
+          .map((name) => {
+            const tagId = tagIdByName.get(name);
+            if (!tagId) return null;
+            return {
+              id: uuidv4(),
+              tagId,
+              entityType,
+              entityId,
+            };
+          })
+          .filter(Boolean) as Array<{
+          id: string;
+          tagId: string;
+          entityType: TagEntityTypeValue;
+          entityId: string;
+        }>;
+
+        if (addedBindings.length > 0) {
+          await (tx as any).tagBinding.createMany({
+            data: addedBindings,
+            skipDuplicates: true,
+          });
+        }
+
+        const removedTagIds = removed
+          .map((name) => tagIdByName.get(name))
+          .filter(Boolean) as string[];
+
+        if (removedTagIds.length > 0) {
+          await (tx as any).tagBinding.deleteMany({
+            where: {
+              entityType,
+              entityId,
+              tagId: { in: removedTagIds },
+            },
+          });
+        }
+
+        const affectedRows = await (tx as any).tag.findMany({
           where: { normalizedName: { in: affected } },
           select: { id: true, normalizedName: true },
         });
-        for (const row of existing) tagIdByName.set(row.normalizedName, row.id);
-      }
 
-      for (const name of added) {
-        if (tagIdByName.has(name)) continue;
-        const row = await (tx as any).tag.upsert({
-          where: { normalizedName: name },
-          create: {
-            id: uuidv4(),
-            normalizedName: name,
-            displayName: name,
-            usageCount: 0,
-            lastUsedAt: now,
-          },
-          update: { displayName: name },
-          select: { id: true, normalizedName: true },
-        });
-        tagIdByName.set(row.normalizedName, row.id);
-      }
-
-      const addedBindings = added
-        .map((name) => {
-          const tagId = tagIdByName.get(name);
-          if (!tagId) return null;
-          return {
-            id: uuidv4(),
-            tagId,
-            entityType,
-            entityId,
-          };
-        })
-        .filter(Boolean) as Array<{
-        id: string;
-        tagId: string;
-        entityType: TagEntityTypeValue;
-        entityId: string;
-      }>;
-
-      if (addedBindings.length > 0) {
-        await (tx as any).tagBinding.createMany({
-          data: addedBindings,
-          skipDuplicates: true,
-        });
-      }
-
-      const removedTagIds = removed
-        .map((name) => tagIdByName.get(name))
-        .filter(Boolean) as string[];
-
-      if (removedTagIds.length > 0) {
-        await (tx as any).tagBinding.deleteMany({
-          where: {
-            entityType,
-            entityId,
-            tagId: { in: removedTagIds },
-          },
-        });
-      }
-
-      const affectedRows = await (tx as any).tag.findMany({
-        where: { normalizedName: { in: affected } },
-        select: { id: true, normalizedName: true },
-      });
-
-      const zeroUsageNames: string[] = [];
-      for (const row of affectedRows) {
-        const count = await (tx as any).tagBinding.count({
-          where: { tagId: row.id },
-        });
-        await (tx as any).tag.update({
-          where: { id: row.id },
-          data: {
-            usageCount: count,
-            lastUsedAt: count > 0 ? now : null,
-          },
-        });
-        if (count === 0) {
-          zeroUsageNames.push(row.normalizedName);
+        const zeroUsageNames: string[] = [];
+        for (const row of affectedRows) {
+          const count = await (tx as any).tagBinding.count({
+            where: { tagId: row.id },
+          });
+          await (tx as any).tag.update({
+            where: { id: row.id },
+            data: {
+              usageCount: count,
+              lastUsedAt: count > 0 ? now : null,
+            },
+          });
+          if (count === 0) {
+            zeroUsageNames.push(row.normalizedName);
+          }
         }
-      }
 
-      const allNext = Array.from(next);
-      if (allNext.length > 0) {
-        await tx.systemTag.createMany({
-          data: allNext.map((tag) => ({ id: uuidv4(), tag })),
-          skipDuplicates: true,
-        });
-      }
+        const allNext = Array.from(next);
+        if (allNext.length > 0) {
+          await tx.systemTag.createMany({
+            data: allNext.map((tag) => ({ id: uuidv4(), tag })),
+            skipDuplicates: true,
+          });
+        }
 
-      if (zeroUsageNames.length > 0) {
-        await tx.systemTag.deleteMany({
-          where: { tag: { in: zeroUsageNames } },
-        });
+        if (zeroUsageNames.length > 0) {
+          await tx.systemTag.deleteMany({
+            where: { tag: { in: zeroUsageNames } },
+          });
+        }
+      });
+    } catch (error: any) {
+      if (this.isMissingTagTableError(error)) {
+        this.warnMissingTagTables('sync');
+        return;
       }
-    });
+      throw error;
+    }
 
     if (added.length > 0 && options?.notifyMentions !== false) {
       try {
