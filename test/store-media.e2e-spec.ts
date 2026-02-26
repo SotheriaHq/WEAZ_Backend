@@ -100,7 +100,8 @@ describe('Store media rules (e2e)', () => {
       })
       .expect(201);
 
-    expect(response.body.data.thumbnail).toBe('https://example.com/a.jpg');
+    const payload = response.body?.data ?? response.body;
+    expect(payload.thumbnail).toBe('https://example.com/a.jpg');
   });
 
   it('setting primary updates thumbnail without reordering', async () => {
@@ -146,7 +147,8 @@ describe('Store media rules (e2e)', () => {
       })
       .expect(201);
 
-    const productId = createResponse.body.data.id;
+    const createPayload = createResponse.body?.data ?? createResponse.body;
+    const productId = createPayload.id;
 
     await request(app.getHttpServer())
       .patch(`/products/${productId}/media/${mediaBId}/primary`)
@@ -156,8 +158,9 @@ describe('Store media rules (e2e)', () => {
       .get(`/products/${productId}`)
       .expect(200);
 
-    expect(updated.body.data.thumbnail).toBe(urlB);
-    expect(updated.body.data.images).toEqual([urlA, urlB]);
+    const updatedPayload = updated.body?.data ?? updated.body;
+    expect(updatedPayload.thumbnail).toBe(urlB);
+    expect(updatedPayload.images).toEqual([urlA, urlB]);
   });
 
   it('deleting the cover selects the next image as cover', async () => {
@@ -203,7 +206,8 @@ describe('Store media rules (e2e)', () => {
       })
       .expect(201);
 
-    const productId = createResponse.body.data.id;
+    const createPayload = createResponse.body?.data ?? createResponse.body;
+    const productId = createPayload.id;
 
     await request(app.getHttpServer())
       .delete(`/products/${productId}/media/${mediaAId}`)
@@ -213,7 +217,8 @@ describe('Store media rules (e2e)', () => {
       .get(`/products/${productId}`)
       .expect(200);
 
-    expect(updated.body.data.thumbnail).toBe(urlB);
-    expect(updated.body.data.images).toEqual([urlB]);
+    const updatedPayload = updated.body?.data ?? updated.body;
+    expect(updatedPayload.thumbnail).toBe(urlB);
+    expect(updatedPayload.images).toEqual([urlB]);
   });
 });

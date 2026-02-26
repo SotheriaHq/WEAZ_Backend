@@ -2,6 +2,8 @@ import { Module } from '@nestjs/common';
 import { ScheduleModule } from '@nestjs/schedule';
 import { CollectionsService } from './collections.service';
 import { CollectionsController } from './collections.controller';
+import { DesignsController } from './designs.controller';
+import { StoreCollectionsController } from './store-collections.controller';
 import { CollectionSchedulerService } from './collection-scheduler.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { UploadModule } from 'src/upload/upload.module';
@@ -32,7 +34,7 @@ import { QueueModule } from 'src/queue/queue.module';
     EventsGateway,
     IdempotencyInterceptor,
   ],
-  controllers: [CollectionsController],
+  controllers: [CollectionsController, DesignsController, StoreCollectionsController],
   exports: [CollectionsService],
 })
 export class CollectionsModule {}

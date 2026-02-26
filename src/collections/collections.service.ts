@@ -3149,7 +3149,7 @@ export class CollectionsService {
     const domainFilter = this.scopeToDomain(resolvedScope);
     const privateFeature =
       (process.env.FEATURE_PRIVATE_COLLECTIONS ?? 'true') !== 'false';
-    const where: any = { ownerId: userId, deletedAt: null, isSystemGenerated: false };
+    const where: any = { ownerId: userId, deletedAt: null };
     if (domainFilter) {
       where.domain = domainFilter;
     }

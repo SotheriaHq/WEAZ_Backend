@@ -65,6 +65,10 @@ export class CreateProductDto {
   categoryTypeId?: string;
 
   @IsOptional()
+  @IsUUID('4')
+  categoryId?: string;
+
+  @IsOptional()
   @IsString()
   @MaxLength(200)
   name?: string;

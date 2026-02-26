@@ -80,10 +80,10 @@ export class StoreService {
       select: { id: true, categoryId: true, isActive: true },
     });
     if (!categoryType) {
-      throw new NotFoundException('Category type not found');
+      throw new NotFoundException('Sub-category not found');
     }
     if (!categoryType.isActive) {
-      throw new BadRequestException('Category type is not active');
+      throw new BadRequestException('Sub-category is not active');
     }
 
     if (!collectionId) {
@@ -98,14 +98,13 @@ export class StoreService {
       throw new NotFoundException('Collection not found');
     }
     if (!collection.categoryId) {
-      throw new BadRequestException(
-        'Selected collection does not have a category for category type matching',
-      );
+      // Collection taxonomy is optional; product taxonomy can still be set independently.
+      return;
     }
 
     if (categoryType.categoryId !== collection.categoryId) {
       throw new BadRequestException(
-        'Category type does not belong to the selected collection category',
+        'Selected sub-category does not belong to the selected collection category',
       );
     }
   }
