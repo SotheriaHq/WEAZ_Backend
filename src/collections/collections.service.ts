@@ -5,6 +5,7 @@ import {
   ForbiddenException,
   ConflictException,
   GoneException,
+  Optional,
 } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import type { Queue } from 'bullmq';
@@ -45,6 +46,7 @@ import {
   BULK_UPLOAD_RETRY_JOB,
 } from 'src/queue/queue.constants';
 import { TAG_ENTITY_TYPE } from 'src/tags/tag-entity-type';
+import { CategoriesService } from 'src/categories/categories.service';
 
 type CollectionScope = 'design' | 'store' | 'all';
 type CollectionDomainValue = 'DESIGN' | 'STORE';
@@ -62,12 +64,26 @@ export class CollectionsService {
     private readonly notifications?: NotificationsService,
     private readonly systemTags?: SystemTagsService,
     private readonly tagIndex?: TagIndexService,
+    @Optional()
+    private readonly categoriesService?: CategoriesService,
     private readonly notificationsQueue?: NotificationsQueueService,
     @InjectQueue(BULK_UPLOAD_QUEUE) private readonly bulkUploadQueue?: Queue,
   ) { }
 
   private readonly maxProductsPerCollection = 5;
   private readonly collectionDeleteWindowMs = 30 * 24 * 60 * 60 * 1000;
+
+  private normalizeFilterValueIds(raw?: string[] | null): string[] {
+    if (!Array.isArray(raw)) return [];
+    const unique = Array.from(
+      new Set(
+        raw
+          .map((value) => (typeof value === 'string' ? value.trim() : ''))
+          .filter((value) => value.length > 0 && isUuid(value)),
+      ),
+    );
+    return unique;
+  }
 
   private normalizeCollectionScope(scope?: string): CollectionScope {
     if (scope === 'store') return 'store';
@@ -79,6 +95,26 @@ export class CollectionsService {
     if (scope === 'design') return 'DESIGN';
     if (scope === 'store') return 'STORE';
     return null;
+  }
+
+  private resolveCoverMedia<T extends { id: string }>(
+    medias: T[] | null | undefined,
+    coverMediaId?: string | null,
+  ): T | null {
+    if (!Array.isArray(medias) || medias.length === 0) return null;
+    if (coverMediaId) {
+      const cover = medias.find((media) => media.id === coverMediaId);
+      if (cover) return cover;
+    }
+    return medias[0] ?? null;
+  }
+
+  private toCoverOnlyMediaList<T extends { id: string }>(
+    medias: T[] | null | undefined,
+    coverMediaId?: string | null,
+  ): T[] {
+    const cover = this.resolveCoverMedia(medias, coverMediaId);
+    return cover ? [cover] : [];
   }
 
   private async assertActiveCategory(categoryId: string) {
@@ -99,23 +135,23 @@ export class CollectionsService {
   ) {
     if (!categoryTypeId) return null;
     if (!isUuid(categoryTypeId)) {
-      throw new BadRequestException('Category type format is invalid');
+      throw new BadRequestException('Sub-category format is invalid');
     }
     if (!categoryId) {
-      throw new BadRequestException('Category type requires a selected category');
+      throw new BadRequestException('Sub-category requires a selected category');
     }
 
     const categoryType = await this.prisma.collectionCategoryType.findUnique({
       where: { id: categoryTypeId },
       select: { id: true, categoryId: true, isActive: true },
     });
-    if (!categoryType) throw new NotFoundException('Category type not found');
+    if (!categoryType) throw new NotFoundException('Sub-category not found');
     if (!categoryType.isActive) {
-      throw new BadRequestException('This category type is not active');
+      throw new BadRequestException('This sub-category is not active');
     }
     if (categoryType.categoryId !== categoryId) {
       throw new BadRequestException(
-        'Category type does not belong to selected category',
+        'Sub-category does not belong to selected category',
       );
     }
     return categoryType;
@@ -722,11 +758,13 @@ export class CollectionsService {
           select: {
             id: true,
             title: true,
+            coverMediaId: true,
             medias: {
               select: {
-                file: { select: { s3Url: true } },
+                id: true,
+                orderIndex: true,
+                file: { select: { id: true, s3Url: true } },
               },
-              take: 1,
               orderBy: { orderIndex: 'asc' },
             },
             _count: { select: { medias: true } },
@@ -742,14 +780,30 @@ export class CollectionsService {
       ? pageNum * take < totalCount
       : rows.length > take;
     const data = pageNum ? rows : hasNextPage ? rows.slice(0, -1) : rows;
+    const items = data.map((row: any) => {
+      const cover = this.resolveCoverMedia(
+        row?.collection?.medias,
+        row?.collection?.coverMediaId ?? null,
+      );
+      return {
+        ...row,
+        collection: row?.collection
+          ? {
+              ...row.collection,
+              coverMediaId: row.collection.coverMediaId ?? cover?.id ?? null,
+              medias: cover ? [cover] : [],
+            }
+          : row?.collection,
+      };
+    });
     const totalPages = Math.max(1, Math.ceil(totalCount / take));
     return {
-      items: data,
+      items,
       hasNextPage,
       endCursor: pageNum
         ? null
-        : data.length
-          ? (data[data.length - 1] as any).id
+        : items.length
+          ? (items[items.length - 1] as any).id
           : null,
       totalCount,
       page: pageNum ?? undefined,
@@ -770,13 +824,13 @@ export class CollectionsService {
       select: {
         id: true,
         title: true,
+        coverMediaId: true,
         medias: {
           select: {
             id: true,
             orderIndex: true,
             file: { select: { id: true, s3Url: true } },
           },
-          take: 1,
           orderBy: [{ orderIndex: 'asc' }],
         },
         _count: { select: { medias: true } },
@@ -794,19 +848,22 @@ export class CollectionsService {
     }
 
     return {
-      items: collections.map((c) => ({
-        collectionId: c.id,
-        title: c.title,
-        coverMediaId: c.medias[0]?.id ?? null,
-        coverFileId: c.medias[0]?.file?.id ?? null,
-        coverUrl: c.medias[0]?.file?.s3Url ?? null,
-        itemCount: c._count.medias,
-        state: (states[c.id] ?? 'NONE') as
-          | 'APPROVED'
-          | 'PENDING'
-          | 'REVOKED'
-          | 'NONE',
-      })),
+      items: collections.map((c) => {
+        const cover = this.resolveCoverMedia(c.medias, c.coverMediaId ?? null);
+        return {
+          collectionId: c.id,
+          title: c.title,
+          coverMediaId: c.coverMediaId ?? cover?.id ?? null,
+          coverFileId: cover?.file?.id ?? null,
+          coverUrl: cover?.file?.s3Url ?? null,
+          itemCount: c._count.medias,
+          state: (states[c.id] ?? 'NONE') as
+            | 'APPROVED'
+            | 'PENDING'
+            | 'REVOKED'
+            | 'NONE',
+        };
+      }),
     };
   }
 
@@ -964,6 +1021,7 @@ export class CollectionsService {
           select: {
             id: true,
             title: true,
+            coverMediaId: true,
             ownerId: true,
             owner: {
               select: {
@@ -982,9 +1040,10 @@ export class CollectionsService {
             },
             medias: {
               select: {
+                id: true,
+                orderIndex: true,
                 file: { select: { s3Url: true } },
               },
-              take: 1,
               orderBy: { orderIndex: 'asc' },
             },
             _count: { select: { medias: true } },
@@ -999,24 +1058,31 @@ export class CollectionsService {
     const totalPages = Math.ceil(totalCount / take);
 
     return {
-      items: rows.map((r) => ({
-        id: r.id,
-        collectionId: r.collectionId,
-        title: r.collection?.title || 'Untitled',
-        brand: {
-          id: r.collection?.owner?.id,
-          name:
-            r.collection?.owner?.brandFullName || r.collection?.owner?.username,
-          profileImage: r.collection?.owner?.profileImage,
-          profileImageId: r.collection?.owner?.profileImageId,
-          profileImageFile: r.collection?.owner?.profileImageFile,
-        },
-        coverUrl: r.collection?.medias[0]?.file?.s3Url || null,
-        itemCount: r.collection?._count?.medias || 0,
-        state: r.state,
-        requestedAt: r.createdAt,
-        updatedAt: r.updatedAt,
-      })),
+      items: rows.map((r) => {
+        const cover = this.resolveCoverMedia(
+          r.collection?.medias,
+          r.collection?.coverMediaId ?? null,
+        );
+        return {
+          id: r.id,
+          collectionId: r.collectionId,
+          title: r.collection?.title || 'Untitled',
+          brand: {
+            id: r.collection?.owner?.id,
+            name:
+              r.collection?.owner?.brandFullName ||
+              r.collection?.owner?.username,
+            profileImage: r.collection?.owner?.profileImage,
+            profileImageId: r.collection?.owner?.profileImageId,
+            profileImageFile: r.collection?.owner?.profileImageFile,
+          },
+          coverUrl: cover?.file?.s3Url || null,
+          itemCount: r.collection?._count?.medias || 0,
+          state: r.state,
+          requestedAt: r.createdAt,
+          updatedAt: r.updatedAt,
+        };
+      }),
       totalCount,
       page,
       pageSize: take,
@@ -1044,6 +1110,7 @@ export class CollectionsService {
           select: {
             id: true,
             title: true,
+            coverMediaId: true,
             ownerId: true,
             owner: {
               select: {
@@ -1062,9 +1129,10 @@ export class CollectionsService {
             },
             medias: {
               select: {
+                id: true,
+                orderIndex: true,
                 file: { select: { s3Url: true } },
               },
-              take: 1,
               orderBy: { orderIndex: 'asc' },
             },
             _count: { select: { medias: true } },
@@ -1079,22 +1147,29 @@ export class CollectionsService {
     const totalPages = Math.ceil(totalCount / take);
 
     return {
-      items: rows.map((r) => ({
-        id: r.id,
-        collectionId: r.collectionId,
-        title: r.collection?.title || 'Untitled',
-        brand: {
-          id: r.collection?.owner?.id,
-          name:
-            r.collection?.owner?.brandFullName || r.collection?.owner?.username,
-          profileImage: r.collection?.owner?.profileImage,
-          profileImageId: r.collection?.owner?.profileImageId,
-          profileImageFile: r.collection?.owner?.profileImageFile,
-        },
-        coverUrl: r.collection?.medias[0]?.file?.s3Url || null,
-        itemCount: r.collection?._count?.medias || 0,
-        grantedAt: r.updatedAt,
-      })),
+      items: rows.map((r) => {
+        const cover = this.resolveCoverMedia(
+          r.collection?.medias,
+          r.collection?.coverMediaId ?? null,
+        );
+        return {
+          id: r.id,
+          collectionId: r.collectionId,
+          title: r.collection?.title || 'Untitled',
+          brand: {
+            id: r.collection?.owner?.id,
+            name:
+              r.collection?.owner?.brandFullName ||
+              r.collection?.owner?.username,
+            profileImage: r.collection?.owner?.profileImage,
+            profileImageId: r.collection?.owner?.profileImageId,
+            profileImageFile: r.collection?.owner?.profileImageFile,
+          },
+          coverUrl: cover?.file?.s3Url || null,
+          itemCount: r.collection?._count?.medias || 0,
+          grantedAt: r.updatedAt,
+        };
+      }),
       totalCount,
       page,
       pageSize: take,
@@ -1224,7 +1299,6 @@ export class CollectionsService {
           draftVersion: 0,
         },
       });
-
       const indexedCollectionTags = this.getIndexedCollectionTags(
         {
           status: collection.status,
@@ -1308,11 +1382,24 @@ export class CollectionsService {
         type: dto.type ?? CollectionType.EVERYBODY,
         // Set required category
         category: { connect: { id: finalCategoryId } },
-        categoryTypeId: dto.categoryTypeId || null,
+        categoryType: dto.categoryTypeId
+          ? { connect: { id: dto.categoryTypeId } }
+          : undefined,
         lastActivityAt: now,
         draftVersion: 0,
       },
     });
+
+    const initialFilterValueIds = this.normalizeFilterValueIds(
+      dto.filterValueIds,
+    );
+    if (this.categoriesService) {
+      await this.categoriesService.setEntityFilters(
+        'COLLECTION',
+        collection.id,
+        initialFilterValueIds,
+      );
+    }
 
     const indexedCollectionTags = this.getIndexedCollectionTags(
       {
@@ -1386,88 +1473,96 @@ export class CollectionsService {
     const { cursor, limit = 20, tag, category, requesterId } = options ?? {};
     const take = Math.min(Math.max(limit, 1), 40);
 
-    const where: Prisma.CollectionMediaWhereInput = {
-      collection: {
-        domain: 'DESIGN',
-        status: 'PUBLISHED',
-        visibility: CollectionVisibility.PUBLIC,
-        deletedAt: null,
-        ...(tag
-          ? {
+    const where: Prisma.CollectionWhereInput = {
+      domain: 'DESIGN',
+      status: 'PUBLISHED',
+      visibility: CollectionVisibility.PUBLIC,
+      deletedAt: null,
+      ...(tag
+        ? {
             tags: {
               has: tag,
             },
           }
-          : {}),
-        ...(category && category !== 'ALL'
-          ? {
+        : {}),
+      ...(category && category !== 'ALL'
+        ? {
             category: {
               slug: category,
             },
           }
-          : {}),
-      } as any,
-    };
+        : {}),
+    } as Prisma.CollectionWhereInput;
 
-    const medias = await this.prisma.collectionMedia.findMany({
+    const collections = await this.prisma.collection.findMany({
       where,
       take: take + 1,
       ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
-      orderBy: [
-        {
-          file: {
-            createdAt: 'desc',
-          },
-        },
-        {
-          collection: {
-            createdAt: 'desc',
-          },
-        },
-        {
-          orderIndex: 'asc',
-        },
-      ],
+      orderBy: [{ updatedAt: 'desc' }, { createdAt: 'desc' }],
       include: {
-        file: true,
-        collection: {
-          include: {
-            owner: {
+        owner: {
+          select: {
+            id: true,
+            username: true,
+            brandFullName: true,
+            profileImage: true,
+            profileImageId: true,
+            profileImageFile: {
               select: {
                 id: true,
-                username: true,
-                brandFullName: true,
-                profileImage: true,
-                profileImageId: true,
-                profileImageFile: {
-                  select: {
-                    id: true,
-                    s3Url: true,
-                    fileName: true,
-                    originalName: true,
-                  },
-                },
+                s3Url: true,
+                fileName: true,
+                originalName: true,
               },
             },
-            _count: {
-              select: {
-                reactions: true,
-                comments: true,
-                collectionCollabs: true,
-              },
-            },
+          },
+        },
+        medias: {
+          include: {
+            file: true,
+          },
+          orderBy: [{ orderIndex: 'asc' }],
+        },
+        _count: {
+          select: {
+            reactions: true,
+            comments: true,
+            collectionCollabs: true,
           },
         },
       },
     });
 
-    const hasNextPage = medias.length > take;
-    const data = hasNextPage ? medias.slice(0, -1) : medias;
+    const hasNextPage = collections.length > take;
+    const data = hasNextPage ? collections.slice(0, -1) : collections;
+
+    const feedRows = data
+      .map((collection) => {
+        const coverMediaId = (collection as any).coverMediaId as string | null;
+        const coverMedia =
+          (coverMediaId
+            ? collection.medias.find((media) => media.id === coverMediaId)
+            : null) ?? collection.medias[0] ?? null;
+        if (!coverMedia) return null;
+
+        return {
+          collection,
+          media: coverMedia,
+        };
+      })
+      .filter(
+        (
+          row,
+        ): row is {
+          collection: (typeof data)[number];
+          media: (typeof data)[number]['medias'][number];
+        } => Boolean(row),
+      );
 
     // Hydrate isThreaded for requester when available
     let isThreadedMap: Record<string, boolean> = {};
     if (requesterId) {
-      const mediaIds = data.map((m) => m.id);
+      const mediaIds = feedRows.map((row) => row.media.id);
       if (mediaIds.length) {
         const threaded = await this.prisma.collectionMediaReaction.findMany({
           where: {
@@ -1478,23 +1573,20 @@ export class CollectionsService {
           select: { collectionMediaId: true },
         });
         const set = new Set(threaded.map((r) => r.collectionMediaId));
-        isThreadedMap = mediaIds.reduce(
-          (acc, id) => {
-            acc[id] = set.has(id);
-            return acc;
-          },
-          {} as Record<string, boolean>,
-        );
+        isThreadedMap = mediaIds.reduce((acc, id) => {
+          acc[id] = set.has(id);
+          return acc;
+        }, {} as Record<string, boolean>);
       }
     }
 
     // Collect all file IDs that need signed URLs
     const fileIds = new Set<string>();
-    data.forEach((media) => {
+    feedRows.forEach(({ collection, media }) => {
       if (media.fileUploadId) {
         fileIds.add(media.fileUploadId);
       }
-      const owner = media.collection.owner;
+      const owner = collection.owner;
       if (owner.profileImageId) {
         fileIds.add(owner.profileImageId);
       } else if (owner.profileImageFile?.id) {
@@ -1507,17 +1599,14 @@ export class CollectionsService {
       Array.from(fileIds),
     );
 
-    const items = data.map((media) => {
-      const { collection } = media;
+    const items = feedRows.map(({ collection, media }) => {
       const owner = collection.owner;
       const file = media.file;
 
-      // Get signed URL for media file
       const mediaSignedUrl = media.fileUploadId
         ? (signedUrlMap.get(media.fileUploadId) ?? null)
         : null;
 
-      // Get signed URL for brand logo
       const logoFileId = owner.profileImageId ?? owner.profileImageFile?.id;
       const logoSignedUrl = logoFileId
         ? (signedUrlMap.get(logoFileId) ?? null)
@@ -1525,16 +1614,16 @@ export class CollectionsService {
 
       const base = {
         id: media.id,
-        collectionId: media.collectionId,
+        collectionId: collection.id,
+        coverMediaId: (collection as any).coverMediaId ?? media.id,
         mediaType: media.mediaType,
         mediaFileId: media.fileUploadId,
-        mediaUrl: mediaSignedUrl, // Now contains actual signed URL
+        mediaUrl: mediaSignedUrl,
         createdAt: file?.createdAt ?? collection.createdAt,
         collectionTitle: collection.title ?? '',
         collectionDescription: collection.description ?? '',
         minPrice: collection.minPrice,
         maxPrice: collection.maxPrice,
-        // Sale price fields for frontend display
         saleMinPrice: collection.saleMinPrice,
         saleMaxPrice: collection.saleMaxPrice,
         saleStartAt: collection.saleStartAt,
@@ -1546,17 +1635,19 @@ export class CollectionsService {
         brandId: owner.id,
         brandName: owner.brandFullName ?? owner.username ?? '',
         username: owner.username ?? '',
-        brandLogo: logoSignedUrl ?? owner.profileImage ?? null, // Signed URL or fallback
+        brandLogo: logoSignedUrl ?? owner.profileImage ?? null,
         brandLogoFileId: logoFileId ?? null,
-        isThreaded: requesterId ? !!isThreadedMap[media.id] : false, // Add thread status for requester
+        isThreaded: requesterId ? !!isThreadedMap[media.id] : false,
       };
-      // Optionally include combinedCommentsCount for frontend normalization
+
       if (options?.countsPolicy === 'combined') {
         (base as any).combinedCommentsCount =
           (collection.commentsCount ?? 0) + (media.commentsCount ?? 0);
       }
+
       return base;
     });
+
     return {
       items,
       hasNextPage,
@@ -1625,6 +1716,10 @@ export class CollectionsService {
       }
       const metadata = dto.collectionMetadata ?? {};
       const action = dto.action ?? (dto.shouldPublish === false ? 'draft' : 'publish');
+      const normalizedFilterValueIds = this.normalizeFilterValueIds(
+        metadata.filterValueIds,
+      );
+      const shouldUpdateFilters = Array.isArray(metadata.filterValueIds);
       const resolvedNextTags = Array.isArray(metadata.tags)
         ? sanitizeTags(metadata.tags, 30)
         : collection.tags ?? [];
@@ -1646,7 +1741,7 @@ export class CollectionsService {
         const nextCategoryTypeId =
           metadata.categoryTypeId ?? (collection as any).categoryTypeId;
         if (!nextCategoryTypeId) {
-          throw new BadRequestException('Category type is required to publish');
+          throw new BadRequestException('Sub-category is required to publish');
         }
         await this.assertCategoryTypeMatchesCategory(
           nextCategoryId,
@@ -1673,6 +1768,46 @@ export class CollectionsService {
       }
 
       const updated = await this.prisma.$transaction(async (tx) => {
+        const isStoreDomain = (collection as any).domain === 'STORE';
+
+        if (!isStoreDomain) {
+          if (action === 'publish') {
+            const mediaCount = await tx.collectionMedia.count({
+              where: { collectionId },
+            });
+            if (mediaCount === 0) {
+              throw new BadRequestException(
+                'At least one design media is required to publish',
+              );
+            }
+          }
+
+          const now = new Date();
+          return tx.collection.update({
+            where: { id: collectionId },
+            data: {
+              title: metadata.title ?? collection.title,
+              description: metadata.description ?? collection.description,
+              visibility: metadata.visibility ?? collection.visibility,
+              type: metadata.type ?? collection.type,
+              categoryId: metadata.categoryId ?? collection.categoryId,
+              categoryTypeId:
+                metadata.categoryTypeId ?? (collection as any).categoryTypeId,
+              domain: 'DESIGN',
+              isAvailableInStore: false,
+              tags: resolvedNextTags,
+              minPrice: collection.minPrice,
+              maxPrice: collection.maxPrice,
+              saleMinPrice: collection.saleMinPrice,
+              saleMaxPrice: collection.saleMaxPrice,
+              status: action === 'publish' ? 'PUBLISHED' : 'DRAFT',
+              ...(action === 'draft'
+                ? { lastActivityAt: now, draftVersion: { increment: 1 } }
+                : {}),
+            },
+          });
+        }
+
         const links = await tx.storeCollectionProduct.findMany({
           where: { collectionId },
           include: {
@@ -1841,6 +1976,14 @@ export class CollectionsService {
         );
       }
 
+      if (shouldUpdateFilters && this.categoriesService) {
+        await this.categoriesService.setEntityFilters(
+          'COLLECTION',
+          collectionId,
+          normalizedFilterValueIds,
+        );
+      }
+
       return updated;
     }
 
@@ -2000,6 +2143,17 @@ export class CollectionsService {
       },
     });
 
+    const normalizedFinalizeFilterValueIds = this.normalizeFilterValueIds(
+      dto.collectionMetadata?.filterValueIds,
+    );
+    if (Array.isArray(dto.collectionMetadata?.filterValueIds) && this.categoriesService) {
+      await this.categoriesService.setEntityFilters(
+        'COLLECTION',
+        collectionId,
+        normalizedFinalizeFilterValueIds,
+      );
+    }
+
     // Notify patchers if published
     if (newStatus === 'PUBLISHED' && this.notifications) {
       // Fetch patchers (user-to-brand patches)
@@ -2121,7 +2275,7 @@ export class CollectionsService {
       const nextCategoryTypeId =
         metadata.categoryTypeId ?? (collection as any).categoryTypeId;
       if (!nextCategoryTypeId) {
-        throw new BadRequestException('Category type is required to publish');
+        throw new BadRequestException('Sub-category is required to publish');
       }
       await this.assertCategoryTypeMatchesCategory(
         nextCategoryId,
@@ -2930,6 +3084,13 @@ export class CollectionsService {
       where: { collectionId: id },
       _sum: { threadsCount: true },
     });
+
+    const appliedFilters = this.categoriesService
+      ? await this.categoriesService.getEntityFilters('COLLECTION', id)
+      : [];
+    const filterValueIds = Array.from(
+      new Set(appliedFilters.map((filter) => filter.valueId)),
+    );
     const totalThreads = collection.threadsCount + (mediaAgg._sum.threadsCount ?? 0);
 
     let products = collection.products;
@@ -2968,6 +3129,8 @@ export class CollectionsService {
     return {
       ...rest,
       medias: mappedMedias,
+      filters: appliedFilters,
+      filterValueIds,
       threadsCount: threadsCount,
       collectionCollabCount: collectionCollabsCount,
       products,
@@ -3078,11 +3241,17 @@ export class CollectionsService {
         deletedAt: null,
       },
       orderBy: { createdAt: 'desc' },
-      include: {
+      select: {
+        id: true,
+        title: true,
+        description: true,
+        pendingCategoryName: true,
+        draftReason: true,
+        createdAt: true,
+        coverMediaId: true,
         medias: {
           include: { file: true },
           orderBy: { orderIndex: 'asc' },
-          take: 1,
         },
         _count: {
           select: { medias: true },
@@ -3092,7 +3261,9 @@ export class CollectionsService {
 
     // Generate signed URLs for cover images
     const fileIds = items
-      .map((c) => c.medias[0]?.fileUploadId)
+      .map((c) =>
+        this.resolveCoverMedia(c.medias, c.coverMediaId ?? null)?.fileUploadId,
+      )
       .filter((id): id is string => !!id);
 
     const signedUrlMap =
@@ -3100,9 +3271,9 @@ export class CollectionsService {
 
     return {
       items: items.map((c) => {
-        const firstMedia = c.medias[0];
-        const coverImage = firstMedia?.fileUploadId
-          ? (signedUrlMap.get(firstMedia.fileUploadId) ?? null)
+        const cover = this.resolveCoverMedia(c.medias, c.coverMediaId ?? null);
+        const coverImage = cover?.fileUploadId
+          ? (signedUrlMap.get(cover.fileUploadId) ?? null)
           : null;
 
         return {
@@ -3130,6 +3301,8 @@ export class CollectionsService {
       limit?: number;
       visibility?: 'public' | 'private' | 'all';
       scope?: CollectionScope;
+      includeDeleted?: boolean;
+      onlyDeleted?: boolean;
     },
   ) {
     const {
@@ -3137,6 +3310,8 @@ export class CollectionsService {
       limit = 20,
       visibility,
       scope = this.defaultCollectionScope,
+      includeDeleted = false,
+      onlyDeleted = false,
     } = options || {};
     const resolvedScope = this.normalizeCollectionScope(scope);
     if (resolvedScope === 'store') {
@@ -3144,12 +3319,22 @@ export class CollectionsService {
         cursor,
         limit,
         visibility,
+        includeDeleted,
+        onlyDeleted,
       });
     }
     const domainFilter = this.scopeToDomain(resolvedScope);
     const privateFeature =
       (process.env.FEATURE_PRIVATE_COLLECTIONS ?? 'true') !== 'false';
-    const where: any = { ownerId: userId, deletedAt: null };
+    const canAccessDeleted = requesterId === userId;
+    const shouldIncludeDeleted = canAccessDeleted && includeDeleted;
+    const shouldOnlyDeleted = canAccessDeleted && onlyDeleted;
+    const where: any = { ownerId: userId };
+    if (shouldOnlyDeleted) {
+      where.deletedAt = { not: null };
+    } else if (!shouldIncludeDeleted) {
+      where.deletedAt = null;
+    }
     if (domainFilter) {
       where.domain = domainFilter;
     }
@@ -3176,6 +3361,7 @@ export class CollectionsService {
 
     // Default: published only for non-owner
     if (requesterId !== userId) {
+      where.deletedAt = null;
       where.status = 'PUBLISHED';
 
       if (!visibility || visibility === 'public') {
@@ -3208,7 +3394,9 @@ export class CollectionsService {
     } else {
       // Owner view: show by requested visibility or all
       // Filter out DRAFT collections from the main list to avoid showing failed/incomplete collections.
-      where.status = 'PUBLISHED';
+      if (!shouldOnlyDeleted) {
+        where.status = 'PUBLISHED';
+      }
 
       if (visibility === 'public') {
         (where as any).visibility = CollectionVisibility.PUBLIC;
@@ -3250,6 +3438,8 @@ export class CollectionsService {
         saleMaxPrice: true,
         saleStartAt: true,
         saleEndAt: true,
+        deletedAt: true,
+        deleteExpiresAt: true,
         createdAt: true,
         updatedAt: true,
         threadsCount: true,
@@ -3423,14 +3613,29 @@ export class CollectionsService {
       cursor?: string;
       limit?: number;
       visibility?: 'public' | 'private' | 'all';
+      includeDeleted?: boolean;
+      onlyDeleted?: boolean;
     },
   ) {
-    const { cursor, limit = 20, visibility } = options || {};
+    const {
+      cursor,
+      limit = 20,
+      visibility,
+      includeDeleted = false,
+      onlyDeleted = false,
+    } = options || {};
+    const canAccessDeleted = requesterId === userId;
+    const shouldIncludeDeleted = canAccessDeleted && includeDeleted;
+    const shouldOnlyDeleted = canAccessDeleted && onlyDeleted;
     const where: any = {
       ownerId: userId,
-      deletedAt: null,
       isSystemGenerated: false,
     };
+    if (shouldOnlyDeleted) {
+      where.deletedAt = { not: null };
+    } else if (!shouldIncludeDeleted) {
+      where.deletedAt = null;
+    }
 
     if (requesterId !== userId) {
       where.status = 'PUBLISHED';
@@ -3468,6 +3673,8 @@ export class CollectionsService {
         saleMaxPrice: true,
         saleStartAt: true,
         saleEndAt: true,
+        deletedAt: true,
+        deleteExpiresAt: true,
         createdAt: true,
         updatedAt: true,
         threadsCount: true,
@@ -3546,6 +3753,8 @@ export class CollectionsService {
           ...c,
           domain: 'STORE',
           isAvailableInStore: true,
+          deletedAt: c.deletedAt ?? null,
+          deleteExpiresAt: c.deleteExpiresAt ?? null,
           medias: [],
           coverMediaId: null,
           collectionCollabCount: c.collectionCollabsCount,
@@ -4125,6 +4334,80 @@ export class CollectionsService {
     return { success: true };
   }
 
+  async permanentlyDeleteCollection(
+    collectionId: string,
+    ownerId: string,
+    scope?: CollectionScope,
+  ) {
+    const resolvedScope = this.normalizeCollectionScope(scope);
+    const expectedDomain = this.scopeToDomain(resolvedScope);
+
+    if (expectedDomain === 'STORE') {
+      const storeCollection = await this.prisma.storeCollection.findUnique({
+        where: { id: collectionId },
+        select: { id: true, ownerId: true, deletedAt: true },
+      });
+      if (!storeCollection) throw new NotFoundException('Collection not found');
+      if (storeCollection.ownerId !== ownerId) {
+        throw new ForbiddenException('Not owner of collection');
+      }
+      if (!storeCollection.deletedAt) {
+        throw new BadRequestException(
+          'Collection must be deleted before permanent removal',
+        );
+      }
+
+      await this.prisma.storeCollection.delete({ where: { id: collectionId } });
+      return { success: true, permanentlyDeleted: true };
+    }
+
+    const collection = await this.prisma.collection.findUnique({
+      where: { id: collectionId },
+      include: { medias: { include: { file: true } } },
+    });
+    if (!collection) throw new NotFoundException('Collection not found');
+    if (collection.ownerId !== ownerId) {
+      throw new ForbiddenException('Not owner of collection');
+    }
+    if (expectedDomain && collection.domain !== expectedDomain) {
+      throw new BadRequestException(
+        'Permanent delete requested with design scope for a store collection.',
+      );
+    }
+    if (!collection.deletedAt) {
+      throw new BadRequestException(
+        'Collection must be deleted before permanent removal',
+      );
+    }
+
+    const fileIds = collection.medias
+      .map((media) => media.file?.id)
+      .filter((id): id is string => Boolean(id));
+    const s3Keys = collection.medias
+      .map((media) => media.file?.s3Key)
+      .filter((key): key is string => Boolean(key));
+
+    if (s3Keys.length > 0) {
+      try {
+        await this.uploadService.deleteS3ObjectsByKeys(s3Keys);
+      } catch (error) {
+        console.warn(
+          `Failed to delete S3 objects while permanently deleting collection ${collectionId}:`,
+          error,
+        );
+      }
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.collection.delete({ where: { id: collectionId } });
+      if (fileIds.length > 0) {
+        await tx.fileUpload.deleteMany({ where: { id: { in: fileIds } } });
+      }
+    });
+
+    return { success: true, permanentlyDeleted: true };
+  }
+
   /**
    * Delete a single collection item. If it was the only item, delete the collection as well.
    */
@@ -4295,9 +4578,21 @@ export class CollectionsService {
           },
         },
         medias: {
-          include: { file: true },
+          select: {
+            id: true,
+            orderIndex: true,
+            file: {
+              select: {
+                id: true,
+                s3Url: true,
+                fileName: true,
+                originalName: true,
+                createdAt: true,
+                updatedAt: true,
+              },
+            },
+          },
           orderBy: { orderIndex: 'asc' },
-          take: 1, // Only get first media for listing
         },
         _count: {
           select: {
@@ -4340,9 +4635,15 @@ export class CollectionsService {
 
     return {
       items: data.map((c) => {
+        const coverMedias = this.toCoverOnlyMediaList(
+          c.medias as any[],
+          c.coverMediaId ?? null,
+        );
         const { collectionCollabsCount, threadsCount, ...rest } = c as any;
         return {
           ...rest,
+          coverMediaId: c.coverMediaId ?? coverMedias[0]?.id ?? null,
+          medias: coverMedias,
           collectionCollabCount: collectionCollabsCount,
           threadsCount: threadsCount,
           isThreaded: requesterId ? !!isThreadedMap[c.id] : false,
@@ -4890,9 +5191,21 @@ export class CollectionsService {
               },
             },
             medias: {
-              include: { file: true },
+              select: {
+                id: true,
+                orderIndex: true,
+                file: {
+                  select: {
+                    id: true,
+                    s3Url: true,
+                    fileName: true,
+                    originalName: true,
+                    createdAt: true,
+                    updatedAt: true,
+                  },
+                },
+              },
               orderBy: { orderIndex: 'asc' },
-              take: 1,
             },
             _count: {
               select: {
@@ -4912,11 +5225,28 @@ export class CollectionsService {
 
     const hasNext = collabs.length > limit;
     const data = hasNext ? collabs.slice(0, -1) : collabs;
+    const mappedCollabs = data.map((row: any) => {
+      if (!row?.collection) return row;
+      const coverMedias = this.toCoverOnlyMediaList(
+        row.collection.medias,
+        row.collection.coverMediaId ?? null,
+      );
+      return {
+        ...row,
+        collection: {
+          ...row.collection,
+          coverMediaId: row.collection.coverMediaId ?? coverMedias[0]?.id ?? null,
+          medias: coverMedias,
+        },
+      };
+    });
 
     return {
-      collabs: data,
+      collabs: mappedCollabs,
       hasNextPage: hasNext,
-      endCursor: data.length ? data[data.length - 1].id : null,
+      endCursor: mappedCollabs.length
+        ? mappedCollabs[mappedCollabs.length - 1].id
+        : null,
     };
   }
 
@@ -5982,6 +6312,14 @@ export class CollectionsService {
       }
     }
 
+    if (Array.isArray(body.filterValueIds) && this.categoriesService) {
+      await this.categoriesService.setEntityFilters(
+        'COLLECTION',
+        collectionId,
+        this.normalizeFilterValueIds(body.filterValueIds),
+      );
+    }
+
     return updated;
   }
 
@@ -6827,4 +7165,3 @@ export class CollectionsService {
 }
 
 export { CreateCollectionDto, FinalizeCollectionDto };
-

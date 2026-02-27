@@ -70,6 +70,8 @@ export class StoreCollectionsController {
     @Query('cursor') cursor?: string,
     @Query('limit') limit?: string,
     @Query('visibility') visibility?: 'public' | 'private' | 'all',
+    @Query('includeDeleted') includeDeleted?: string,
+    @Query('onlyDeleted') onlyDeleted?: string,
     @Req() req?: any,
   ) {
     return this.collectionsService.getUserCollections(userId, req?.user?.id, {
@@ -77,6 +79,9 @@ export class StoreCollectionsController {
       limit: limit ? parseInt(limit, 10) : 20,
       visibility,
       scope: 'store',
+      includeDeleted:
+        includeDeleted === 'true' || includeDeleted === '1',
+      onlyDeleted: onlyDeleted === 'true' || onlyDeleted === '1',
     });
   }
 
@@ -117,6 +122,25 @@ export class StoreCollectionsController {
   @Delete(':id')
   async deleteStoreCollection(@Param('id') collectionId: string, @Req() req: any) {
     return this.collectionsService.deleteCollection(collectionId, req.user.id, 'store');
+  }
+
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Post(':id/restore')
+  async restoreStoreCollection(@Param('id') collectionId: string, @Req() req: any) {
+    return this.collectionsService.restoreCollection(collectionId, req.user.id);
+  }
+
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Delete(':id/permanent')
+  async permanentlyDeleteStoreCollection(
+    @Param('id') collectionId: string,
+    @Req() req: any,
+  ) {
+    return this.collectionsService.permanentlyDeleteCollection(
+      collectionId,
+      req.user.id,
+      'store',
+    );
   }
 
   @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))

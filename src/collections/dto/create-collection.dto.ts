@@ -1,5 +1,5 @@
 import { FileType, CollectionVisibility, CollectionType } from '@prisma/client';
-import { Type } from 'class-transformer';
+import { Type, Transform } from 'class-transformer';
 import {
   IsString,
   IsOptional,
@@ -69,10 +69,16 @@ export class CreateCollectionDto {
   @IsUUID('4')
   categoryId?: string;
 
-  // Category type (required for publish flows)
+  // Sub-category (required for publish flows)
   @IsOptional()
   @IsUUID('4')
+  @Transform(({ value, obj }) => value ?? obj?.subCategoryId)
   categoryTypeId?: string;
+
+  // Alias for categoryTypeId (accepted for backward/forward compatibility)
+  @IsOptional()
+  @IsUUID('4')
+  subCategoryId?: string;
 
   // Type: MALE, FEMALE, EVERYBODY
   @IsOptional()
@@ -91,6 +97,11 @@ export class CreateCollectionDto {
   @ValidateNested({ each: true })
   @Type(() => FileSpecDto)
   files?: FileSpecDto[];
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  filterValueIds?: string[];
 }
 
 export class CompleteUploadDto {
@@ -133,7 +144,13 @@ export class CollectionMetadataDto {
 
   @IsOptional()
   @IsUUID('4')
+  @Transform(({ value, obj }) => value ?? obj?.subCategoryId)
   categoryTypeId?: string;
+
+  // Alias for categoryTypeId (accepted for backward/forward compatibility)
+  @IsOptional()
+  @IsUUID('4')
+  subCategoryId?: string;
 
   @IsOptional()
   @IsString()
@@ -147,6 +164,11 @@ export class CollectionMetadataDto {
   @IsOptional()
   @IsBoolean()
   isAvailableInStore?: boolean;
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  filterValueIds?: string[];
 }
 
 export class FinalizeCollectionDto {

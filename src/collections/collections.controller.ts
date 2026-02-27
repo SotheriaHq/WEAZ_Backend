@@ -330,8 +330,8 @@ export class CollectionsController {
   }
 
   @Get('category-types')
-  @ApiOperation({ summary: 'Get active category types (optionally filtered by categoryId)' })
-  @ApiResponse({ status: 200, description: 'List of active category types' })
+  @ApiOperation({ summary: 'Get active sub-categories (optionally filtered by categoryId)' })
+  @ApiResponse({ status: 200, description: 'List of active sub-categories' })
   async getCategoryTypes(@Query('categoryId') categoryId?: string) {
     return this.collectionsService.listCategoryTypes(categoryId);
   }
@@ -417,6 +417,8 @@ export class CollectionsController {
     @Query('limit') limit?: string,
     @Query('visibility') visibility?: 'public' | 'private' | 'all',
     @Query('scope') scope?: 'design' | 'store' | 'all',
+    @Query('includeDeleted') includeDeleted?: string,
+    @Query('onlyDeleted') onlyDeleted?: string,
     @Req() req?: any,
   ) {
     // If the requester is the same as the userId, include drafts; otherwise only published
@@ -436,6 +438,9 @@ export class CollectionsController {
       limit: limit ? parseInt(limit, 10) : 20,
       visibility,
       scope,
+      includeDeleted:
+        includeDeleted === 'true' || includeDeleted === '1',
+      onlyDeleted: onlyDeleted === 'true' || onlyDeleted === '1',
     });
   }
 
@@ -1053,6 +1058,24 @@ export class CollectionsController {
     return this.collectionsService.restoreCollection(collectionId, req.user.id);
   }
 
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Delete(':id/permanent')
+  @ApiOperation({
+    summary: 'Permanently delete a soft-deleted collection',
+    description: 'Removes collection data and media immediately.',
+  })
+  async permanentlyDeleteCollection(
+    @Param('id') collectionId: string,
+    @Query('scope') scope?: 'design' | 'store' | 'all',
+    @Req() req?: any,
+  ) {
+    return this.collectionsService.permanentlyDeleteCollection(
+      collectionId,
+      req.user.id,
+      scope,
+    );
+  }
+
   // ===================== Delete Collection Media =====================
   @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
   @Delete(':id/media/:mediaId')
@@ -1119,4 +1142,3 @@ export class CollectionsController {
     );
   }
 }
-

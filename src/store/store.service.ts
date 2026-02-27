@@ -1318,7 +1318,7 @@ export class StoreService {
             dto.collectionId !== undefined &&
             finalCollectionId !== product.collectionId
           ) {
-            // Reset when switching collection to avoid stale mismatched category type.
+            // Reset when switching collection to avoid stale mismatched sub-category.
             updateData.categoryType = { disconnect: true };
           }
         }
@@ -2199,6 +2199,14 @@ export class StoreService {
     const product = await this.prisma.product.findFirst({
       where: includeDeleted ? { id: productId } : { id: productId, deletedAt: null },
       include: {
+        categoryType: {
+          select: {
+            id: true,
+            categoryId: true,
+            slug: true,
+            name: true,
+          },
+        },
         collection: {
           select: {
             id: true,
@@ -3286,6 +3294,7 @@ export class StoreService {
       // Metadata
       tags: product.tags || [],
       gender: product.gender,
+      subCategoryId: product.categoryTypeId ?? null,
       categoryTypeId: product.categoryTypeId ?? null,
       categoryType: product.categoryType
         ? {

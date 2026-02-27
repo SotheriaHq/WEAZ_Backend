@@ -11,6 +11,7 @@ import { CollectionsService } from 'src/collections/collections.service';
 import { HelperService } from 'src/collections/helper/Helper.service';
 import { NotificationsProcessor } from './notifications.processor';
 import { BulkUploadProcessor } from './bulk-upload.processor';
+import { CategoriesModule } from 'src/categories/categories.module';
 
 @Module({
   imports: [
@@ -25,6 +26,7 @@ import { BulkUploadProcessor } from './bulk-upload.processor';
     AnalyticsModule,
     QueueModule,
     TagsModule,
+    CategoriesModule,
   ],
   providers: [
     CollectionsService,

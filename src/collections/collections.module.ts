@@ -15,6 +15,7 @@ import { StoreModule } from 'src/store/store.module';
 import { IdempotencyInterceptor } from 'src/common/interceptors/idempotency.interceptor';
 import { TagsModule } from 'src/tags/tags.module';
 import { QueueModule } from 'src/queue/queue.module';
+import { CategoriesModule } from 'src/categories/categories.module';
 
 @Module({
   imports: [
@@ -25,6 +26,7 @@ import { QueueModule } from 'src/queue/queue.module';
     StoreModule,
     TagsModule,
     QueueModule,
+    CategoriesModule,
   ],
   providers: [
     CollectionsService,

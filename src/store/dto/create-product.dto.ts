@@ -13,7 +13,7 @@ import {
   IsInt,
   IsUUID,
 } from 'class-validator';
-import { Type } from 'class-transformer';
+import { Type, Transform } from 'class-transformer';
 
 export enum ProductGender {
   MALE = 'MALE',
@@ -62,7 +62,12 @@ export class CreateProductDto {
 
   @IsOptional()
   @IsUUID('4')
+  @Transform(({ value, obj }) => value ?? obj?.subCategoryId)
   categoryTypeId?: string;
+
+  @IsOptional()
+  @IsUUID('4')
+  subCategoryId?: string;
 
   @IsOptional()
   @IsUUID('4')

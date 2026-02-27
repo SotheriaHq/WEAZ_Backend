@@ -58,6 +58,66 @@ const parsePort = (value: string | undefined) => {
   return parsed;
 };
 
+const parseOrigin = (origin: string) => {
+  try {
+    return new URL(origin);
+  } catch {
+    return null;
+  }
+};
+
+const isLoopbackHostname = (hostname: string) => {
+  const normalized = hostname.trim().toLowerCase();
+  return (
+    normalized === 'localhost' ||
+    normalized === '127.0.0.1' ||
+    normalized === '::1' ||
+    normalized === '[::1]'
+  );
+};
+
+const isPrivateNetworkHostname = (hostname: string) => {
+  const normalized = hostname.trim().toLowerCase();
+  if (!normalized) return false;
+  if (isLoopbackHostname(normalized)) return true;
+  if (normalized === 'host.docker.internal') return true;
+
+  // Private IPv4 ranges:
+  // 10.0.0.0/8
+  // 172.16.0.0/12
+  // 192.168.0.0/16
+  // Link-local 169.254.0.0/16
+  if (/^10\./.test(normalized)) return true;
+  if (/^192\.168\./.test(normalized)) return true;
+  if (/^169\.254\./.test(normalized)) return true;
+
+  const octets = normalized.split('.');
+  if (octets.length === 4 && octets.every((part) => /^\d+$/.test(part))) {
+    const first = Number(octets[0]);
+    const second = Number(octets[1]);
+    if (first === 172 && second >= 16 && second <= 31) {
+      return true;
+    }
+  }
+
+  return false;
+};
+
+const isSameLoopbackOrigin = (incomingOrigin: string, allowedOrigin: string) => {
+  const incoming = parseOrigin(incomingOrigin);
+  const allowed = parseOrigin(allowedOrigin);
+  if (!incoming || !allowed) return false;
+
+  if (!isLoopbackHostname(incoming.hostname) || !isLoopbackHostname(allowed.hostname)) {
+    return false;
+  }
+
+  const incomingPort = incoming.port || (incoming.protocol === 'https:' ? '443' : '80');
+  const allowedPort = allowed.port || (allowed.protocol === 'https:' ? '443' : '80');
+
+  return incoming.protocol === allowed.protocol && incomingPort === allowedPort;
+};
+
 async function bootstrap() {
   const logger = new Logger('Bootstrap');
 
@@ -158,13 +218,18 @@ async function bootstrap() {
       .map((origin) => origin.trim())
       .filter((origin) => origin.length > 0);
 
-    // Always allow localhost development origins
-    if (!allowedOrigins.includes('http://localhost:3000')) {
-      allowedOrigins.push('http://localhost:3000');
-    }
-    if (!allowedOrigins.includes('http://localhost:5173')) {
-      allowedOrigins.push('http://localhost:5173');
-    }
+    const defaultDevOrigins = [
+      'http://localhost:3000',
+      'http://localhost:5173',
+      'http://localhost:4173', // Vite preview default
+      'http://localhost:4174', // Vite alt preview
+    ];
+
+    defaultDevOrigins.forEach((origin) => {
+      if (!allowedOrigins.includes(origin)) {
+        allowedOrigins.push(origin);
+      }
+    });
 
     const exposedHeaders = configService
       .get<string>('CORS_EXPOSED_HEADERS', '')
@@ -180,14 +245,55 @@ async function bootstrap() {
         .map((h) => h.trim())
         .filter((h) => h.length > 0),
     );
-    // Always allow idempotency/client event headers used by the frontend
-    ['x-client-event-id', 'x-request-id', 'idempotency-key', 'x-idempotency-key'].forEach((h) =>
-      allowedHeadersSet.add(h),
-    );
+    // Always allow headers used by the frontend in authenticated and cache-bypass requests.
+    [
+      'x-client-event-id',
+      'x-request-id',
+      'idempotency-key',
+      'x-idempotency-key',
+      'Cache-Control',
+      'Pragma',
+      'If-None-Match',
+      'If-Modified-Since',
+    ].forEach((h) => allowedHeadersSet.add(h));
     const allowedHeaders = Array.from(allowedHeadersSet).join(', ');
 
+    const allowPrivateNetworkCors = toBoolean(
+      configService.get<string>('CORS_ALLOW_PRIVATE_NETWORK'),
+      true,
+    );
+
     app.enableCors({
-      origin: allowedOrigins.length > 0 ? allowedOrigins : true,
+      origin: (origin, callback) => {
+        if (!origin) {
+          callback(null, true);
+          return;
+        }
+
+        const incoming = parseOrigin(origin);
+        const incomingHost = incoming?.hostname ?? '';
+        const isPrivateHost = incomingHost && isPrivateNetworkHostname(incomingHost);
+
+        // Allow private/loopback origins by default so local preview builds
+        // (which often set NODE_ENV=production) keep working.
+        if (allowPrivateNetworkCors && isPrivateHost) {
+          callback(null, true);
+          return;
+        }
+
+        const exactMatch = allowedOrigins.includes(origin);
+        const loopbackAliasMatch = allowedOrigins.some((allowedOrigin) =>
+          isSameLoopbackOrigin(origin, allowedOrigin),
+        );
+
+        if (exactMatch || loopbackAliasMatch) {
+          callback(null, true);
+          return;
+        }
+
+        logger.warn(`CORS blocked origin: ${origin}`);
+        callback(new Error(`Origin ${origin} is not allowed by CORS`), false);
+      },
       methods: configService.get<string>(
         'CORS_ALLOWED_METHODS',
         'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',

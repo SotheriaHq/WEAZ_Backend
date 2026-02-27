@@ -8,6 +8,7 @@ import {
   IsBoolean,
   Min,
 } from 'class-validator';
+import { Transform } from 'class-transformer';
 import { CollectionType, CollectionVisibility } from '@prisma/client';
 
 export class UpdateCollectionDto {
@@ -33,7 +34,12 @@ export class UpdateCollectionDto {
 
   @IsOptional()
   @IsString()
+  @Transform(({ value, obj }) => value ?? obj?.subCategoryId)
   categoryTypeId?: string | null;
+
+  @IsOptional()
+  @IsString()
+  subCategoryId?: string | null;
 
   @IsOptional()
   @IsBoolean()
@@ -71,6 +77,11 @@ export class UpdateCollectionDto {
   @IsArray()
   @IsString({ each: true })
   tags?: string[];
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  filterValueIds?: string[];
 
   @IsOptional()
   @IsString()
