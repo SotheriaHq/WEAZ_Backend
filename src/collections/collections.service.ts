@@ -3109,14 +3109,22 @@ export class CollectionsService {
       ? collection.medias?.find((m: any) => m.id === collection.coverMediaId)
       : collection.medias?.[0];
     const coverFromMedia = preferredCover?.file?.s3Url ?? null;
-    const coverFromProduct = (products || []).find((link: any) => {
+    const primaryProductLink = (products || [])[0] ?? null;
+    const primaryProduct = primaryProductLink?.product;
+    const primaryProductImages = Array.isArray(primaryProduct?.images)
+      ? primaryProduct.images
+      : [];
+    const firstProductWithCover = (products || []).find((link: any) => {
       const p = link?.product;
       const images = Array.isArray(p?.images) ? p.images : [];
       return Boolean(p?.thumbnail) || images.length > 0;
     });
-    const productCoverUrl = coverFromProduct?.product?.thumbnail
-      ?? (Array.isArray(coverFromProduct?.product?.images)
-        ? coverFromProduct.product.images[0]
+    const productCoverUrl =
+      primaryProduct?.thumbnail ??
+      (primaryProductImages.length > 0 ? primaryProductImages[0] : null) ??
+      firstProductWithCover?.product?.thumbnail ??
+      (Array.isArray(firstProductWithCover?.product?.images)
+        ? firstProductWithCover.product.images[0]
         : null);
 
     const { threadsCount, collectionCollabsCount, medias, ...rest } = collection as any;
@@ -3207,14 +3215,22 @@ export class CollectionsService {
       }) as any[];
     }
 
-    const coverFromProduct = (products || []).find((link: any) => {
+    const primaryProductLink = (products || [])[0] ?? null;
+    const primaryProduct = primaryProductLink?.product;
+    const primaryProductImages = Array.isArray(primaryProduct?.images)
+      ? primaryProduct.images
+      : [];
+    const firstProductWithCover = (products || []).find((link: any) => {
       const p = link?.product;
       const images = Array.isArray(p?.images) ? p.images : [];
       return Boolean(p?.thumbnail) || images.length > 0;
     });
-    const productCoverUrl = coverFromProduct?.product?.thumbnail
-      ?? (Array.isArray(coverFromProduct?.product?.images)
-        ? coverFromProduct.product.images[0]
+    const productCoverUrl =
+      primaryProduct?.thumbnail ??
+      (primaryProductImages.length > 0 ? primaryProductImages[0] : null) ??
+      firstProductWithCover?.product?.thumbnail ??
+      (Array.isArray(firstProductWithCover?.product?.images)
+        ? firstProductWithCover.product.images[0]
         : null);
 
     return {
@@ -3682,8 +3698,13 @@ export class CollectionsService {
         commentsCount: true,
         collectionCollabsCount: true,
         viewsCount: true,
+        _count: {
+          select: {
+            products: true,
+          },
+        },
         products: {
-          orderBy: [{ isPrimary: 'desc' }, { orderIndex: 'asc' }],
+          orderBy: [{ orderIndex: 'asc' }],
           include: {
             product: {
               select: {
@@ -3724,13 +3745,100 @@ export class CollectionsService {
     const hasNext = items.length > limit;
     const data = hasNext ? items.slice(0, -1) : items;
 
+    const isRemoteMediaValue = (value: unknown): value is string => {
+      if (typeof value !== 'string') return false;
+      const normalized = value.trim();
+      if (!normalized) return false;
+      return (
+        normalized.startsWith('http') ||
+        normalized.startsWith('/') ||
+        normalized.startsWith('data:') ||
+        normalized.includes('://') ||
+        normalized.includes('?')
+      );
+    };
+
+    const collectionPreviewById = new Map<
+      string,
+      {
+        coverUrl: string | null;
+        coverFileId: string | null;
+        preview: Array<{ url: string | null; fileId: string | null }>;
+      }
+    >();
+
     const fileIds = new Set<string>();
-    data.forEach((c) => {
+    data.forEach((c: any) => {
       if (c.owner?.profileImageFile?.id) {
         fileIds.add(c.owner.profileImageFile.id);
       } else if (c.owner?.profileImageId) {
         fileIds.add(c.owner.profileImageId);
       }
+
+      const links = Array.isArray(c.products) ? c.products : [];
+      const rawCandidates = Array.from(
+        new Set(
+          links
+            .flatMap((link: any) => {
+              const product = link?.product;
+              if (!product) return [];
+              const thumbnail =
+                typeof product.thumbnail === 'string'
+                  ? product.thumbnail.trim()
+                  : '';
+              const images = Array.isArray(product.images)
+                ? product.images
+                    .map((image: unknown) =>
+                      typeof image === 'string' ? image.trim() : '',
+                    )
+                    .filter(Boolean)
+                : [];
+              return thumbnail ? [thumbnail, ...images] : images;
+            })
+            .filter((value: string) => value.length > 0),
+        ),
+      ) as string[];
+
+      rawCandidates.forEach((candidate: string) => {
+        if (!isRemoteMediaValue(candidate) && isUuid(candidate)) {
+          fileIds.add(candidate);
+        }
+      });
+
+      const firstCandidate = (rawCandidates[0] as string | undefined) ?? null;
+      let coverUrl: string | null = null;
+      let coverFileId: string | null = null;
+      if (firstCandidate) {
+        if (isRemoteMediaValue(firstCandidate)) {
+          coverUrl = firstCandidate;
+        } else if (isUuid(firstCandidate)) {
+          coverFileId = firstCandidate;
+        }
+      }
+
+      const preview = rawCandidates
+        .slice(0, 8)
+        .map((candidate) => {
+          if (isRemoteMediaValue(candidate)) {
+            return { url: candidate, fileId: null };
+          }
+          if (isUuid(candidate)) {
+            return { url: null, fileId: candidate };
+          }
+          return null;
+        })
+        .filter(
+          (
+            item,
+          ): item is { url: string | null; fileId: string | null } =>
+            Boolean(item),
+        );
+
+      collectionPreviewById.set(c.id, {
+        coverUrl,
+        coverFileId,
+        preview,
+      });
     });
     const signedUrlMap = await this.uploadService.getBatchPublicSignedUrls(
       Array.from(fileIds),
@@ -3739,6 +3847,32 @@ export class CollectionsService {
     return {
       items: data.map((c: any) => {
         const logoId = c.owner?.profileImageFile?.id || c.owner?.profileImageId;
+        const previewMeta = collectionPreviewById.get(c.id);
+        const coverFromFileId =
+          previewMeta?.coverFileId && signedUrlMap.has(previewMeta.coverFileId)
+            ? signedUrlMap.get(previewMeta.coverFileId) ?? null
+            : null;
+        const coverImage = previewMeta?.coverUrl ?? coverFromFileId ?? null;
+        const previewImages = (previewMeta?.preview ?? [])
+          .map((item) => {
+            if (item.url) {
+              return { url: item.url, fileId: null };
+            }
+            if (item.fileId && signedUrlMap.has(item.fileId)) {
+              return {
+                url: signedUrlMap.get(item.fileId) ?? null,
+                fileId: item.fileId,
+              };
+            }
+            if (item.fileId) {
+              return { url: null, fileId: item.fileId };
+            }
+            return null;
+          })
+          .filter(
+            (item): item is { url: string | null; fileId: string | null } =>
+              Boolean(item && (item.url || item.fileId)),
+          );
         let owner = c.owner;
         if (logoId && signedUrlMap.has(logoId)) {
           owner = {
@@ -3757,6 +3891,15 @@ export class CollectionsService {
           deleteExpiresAt: c.deleteExpiresAt ?? null,
           medias: [],
           coverMediaId: null,
+          coverImage,
+          coverFileId: previewMeta?.coverFileId ?? null,
+          previewImages,
+          itemCount:
+            typeof c?._count?.products === 'number'
+              ? c._count.products
+              : Array.isArray(c.products)
+                ? c.products.length
+                : 0,
           collectionCollabCount: c.collectionCollabsCount,
           owner,
         };

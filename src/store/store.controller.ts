@@ -255,6 +255,7 @@ export class StoreController {
   ) {
     const resolvedSortBy = sortBy ?? sort;
     const resolvedOnSale = this.parseBoolParam(onSale) ?? this.parseBoolParam(isOnSale);
+    const resolvedIsFeatured = this.parseBoolParam(isFeatured);
     const resolvedIncludeDeleted = this.parseBoolParam(includeDeleted);
     const resolvedOnlyDeleted = this.parseBoolParam(onlyDeleted);
 
@@ -272,7 +273,7 @@ export class StoreController {
       colors: this.parseListParam(colors),
       tags: this.parseListParam(tags),
       onSale: resolvedOnSale === true,
-      isFeatured: this.parseBoolParam(isFeatured) === true,
+      isFeatured: resolvedIsFeatured,
       sortBy: resolvedSortBy,
       search,
       includeDeleted: resolvedIncludeDeleted,

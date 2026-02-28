@@ -410,6 +410,19 @@ export class UploadService {
   }
 
   /**
+   * Get signed URL by raw S3 key (no DB lookup required).
+   * Used when the frontend only has a raw S3 URL and needs a signed version.
+   */
+  async getPublicSignedUrlByKey(s3Key: string): Promise<string> {
+    const command = new GetObjectCommand({
+      Bucket: this.bucketName,
+      Key: s3Key,
+    });
+
+    return await getSignedUrl(this.s3, command, { expiresIn: 3600 }); // 1 hour
+  }
+
+  /**
    * Batch generate signed URLs for multiple files (optimized for feeds)
    */
   async getBatchPublicSignedUrls(

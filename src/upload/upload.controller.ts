@@ -24,7 +24,7 @@ import { SkipThrottle } from '@nestjs/throttler';
 @ApiBearerAuth()
 @Controller('uploads')
 export class UploadController {
-  constructor(private uploadService: UploadService) {}
+  constructor(private uploadService: UploadService) { }
 
   // ============================================
   // PUBLIC ENDPOINTS (No Auth Required)
@@ -42,6 +42,21 @@ export class UploadController {
     if (!url) {
       throw new BadRequestException('File not found');
     }
+    return { url };
+  }
+
+  @Get('public-url-by-key')
+  @SkipThrottle()
+  @ApiOperation({
+    summary: 'Get public signed URL by S3 key (no auth required)',
+    description:
+      'Returns signed URL for an S3 object by its key. Used for raw S3 URLs that lack a FileUpload record.',
+  })
+  async getPublicSignedUrlByKey(@Query('key') key: string) {
+    if (!key || typeof key !== 'string' || key.includes('..')) {
+      throw new BadRequestException('Invalid S3 key');
+    }
+    const url = await this.uploadService.getPublicSignedUrlByKey(key);
     return { url };
   }
 

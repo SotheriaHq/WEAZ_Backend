@@ -86,26 +86,14 @@ export class StoreService {
       throw new BadRequestException('Sub-category is not active');
     }
 
-    if (!collectionId) {
-      return;
-    }
+    if (!collectionId) return;
 
     const collection = await tx.storeCollection.findUnique({
       where: { id: collectionId },
-      select: { id: true, categoryId: true, deletedAt: true },
+      select: { id: true, deletedAt: true },
     });
     if (!collection || collection.deletedAt) {
       throw new NotFoundException('Collection not found');
-    }
-    if (!collection.categoryId) {
-      // Collection taxonomy is optional; product taxonomy can still be set independently.
-      return;
-    }
-
-    if (categoryType.categoryId !== collection.categoryId) {
-      throw new BadRequestException(
-        'Selected sub-category does not belong to the selected collection category',
-      );
     }
   }
 
