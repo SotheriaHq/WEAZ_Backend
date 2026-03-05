@@ -22,12 +22,16 @@ export const authUserSelect = Prisma.validator<Prisma.UserSelect>()({
   firstName: true,
   lastName: true,
   email: true,
+  status: true,
   brand: {
     select: {
       id: true,
       name: true,
       isStoreOpen: true,
     },
+  },
+  adminPermissionGrants: {
+    select: { permissionCode: true },
   },
   phoneNumber: true,
   address: true,
@@ -150,12 +154,23 @@ export const toAuthUserResponse = (
 export const toAuthUsersResponse = (
   users: Array<AuthUser | ProfileUser>,
 ): AuthUserResponseDto[] => users.map((user) => toAuthUserResponse(user));
-export const buildAuthTokenPayload = (user: AuthUser): AuthJwtClaims => ({
-  sub: user.id,
-  username: user.username,
-  role: user.role,
-  type: user.type,
-  email: user.email,
-  firstName: user.firstName,
-  lastName: user.lastName,
-});
+export const buildAuthTokenPayload = (user: AuthUser): AuthJwtClaims => {
+  const base: AuthJwtClaims = {
+    sub: user.id,
+    username: user.username,
+    role: user.role,
+    type: user.type,
+    email: user.email,
+    firstName: user.firstName,
+    lastName: user.lastName,
+  };
+
+  // Embed admin permissions in JWT for zero-DB-query guard checks
+  if (user.role === 'SuperAdmin' || user.role === 'Admin') {
+    base.permissions = (user as any).adminPermissionGrants?.map(
+      (g: { permissionCode: string }) => g.permissionCode,
+    ) ?? [];
+  }
+
+  return base;
+};

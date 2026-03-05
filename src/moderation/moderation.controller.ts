@@ -1,10 +1,16 @@
-import { Body, Controller, Post } from '@nestjs/common';
-import { ApiTags } from '@nestjs/swagger';
+import { Body, Controller, Post, UseGuards } from '@nestjs/common';
+import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { PrismaService } from 'src/prisma/prisma.service';
-import { ContentTarget } from '@prisma/client';
+import { ContentTarget, Role } from '@prisma/client';
+import { JwtAuthGuard } from 'src/auth/guard/jwt-auth.guard';
+import { RolesGuard } from 'src/auth/guard/role.guard';
+import { Roles } from 'src/auth/decorator/roles.decorator';
 
 @ApiTags('moderation')
+@ApiBearerAuth()
 @Controller('moderation')
+@UseGuards(JwtAuthGuard, RolesGuard)
+@Roles(Role.SuperAdmin, Role.Admin)
 export class ModerationController {
   constructor(private prisma: PrismaService) {}
 

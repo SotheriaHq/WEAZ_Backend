@@ -17,6 +17,7 @@ const DEFAULT_ACCESS_TOKEN_COOKIE = 'accessToken';
 const DEFAULT_REFRESH_TOKEN_COOKIE = 'refreshToken';
 const DEFAULT_ACCESS_TOKEN_TTL_SECONDS = 15 * 60; // 15 minutes
 const DEFAULT_REFRESH_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+const ADMIN_REFRESH_TOKEN_TTL_MS = 5 * 60 * 60 * 1000; // 5 hours for admin roles
 const DEFAULT_BCRYPT_ROUNDS = 10;
 
 @Injectable()
@@ -135,11 +136,18 @@ export class TokenService {
     });
   }
 
-  private async issueRefreshToken(userId: string, req: Request) {
+  private getRefreshTtlForUser(user: AuthUser): number {
+    if (user.role === 'SuperAdmin' || user.role === 'Admin') {
+      return ADMIN_REFRESH_TOKEN_TTL_MS;
+    }
+    return this.refreshTokenTtlMilliseconds;
+  }
+
+  private async issueRefreshToken(userId: string, req: Request, ttlMs?: number) {
     const sessionId = uuidv4();
     const secret = randomBytes(32).toString('hex');
     const tokenHash = await bcrypt.hash(secret, this.bcryptRounds);
-    const expiresAt = new Date(Date.now() + this.refreshTokenTtlMilliseconds);
+    const expiresAt = new Date(Date.now() + (ttlMs ?? this.refreshTokenTtlMilliseconds));
 
     await this.prisma.refreshToken.create({
       data: {
@@ -193,13 +201,14 @@ export class TokenService {
 
   async generateTokens(user: AuthUser, req: Request, res: Response) {
     const payload = buildAuthTokenPayload(user);
+    const refreshTtl = this.getRefreshTtlForUser(user);
     try {
       const accessToken = await this.jwtService.signAsync(payload, {
         secret: this.accessTokenSecret,
         expiresIn: this.accessTokenTtlSeconds,
       });
 
-      const refreshToken = await this.issueRefreshToken(user.id, req);
+      const refreshToken = await this.issueRefreshToken(user.id, req, refreshTtl);
 
       this.attachAuthCookies(res, accessToken, refreshToken);
 

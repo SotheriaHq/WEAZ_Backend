@@ -23,6 +23,7 @@ import { StoreModule } from './store/store.module';
 import { UsersModule } from './users/users.module';
 import { ScheduleModule } from '@nestjs/schedule';
 import { MeasurementPointsModule } from './measurement-points/measurement-points.module';
+import { AdminModule } from './admin/admin.module';
 
 @Module({
   imports: [
@@ -51,6 +52,7 @@ import { MeasurementPointsModule } from './measurement-points/measurement-points
     StoreModule,
     UsersModule,
     MeasurementPointsModule,
+    AdminModule,
   ],
   controllers: [AppController],
   providers: [AppService, EventsGateway],

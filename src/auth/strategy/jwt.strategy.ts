@@ -45,6 +45,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
         username: true,
         type: true,
         isActive: true,
+        status: true,
       },
     });
 
@@ -52,12 +53,20 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       throw new UnauthorizedException('User account is inactive or missing');
     }
 
+    // Admin-specific: reject suspended/deactivated users via new status field
+    if (user.status && user.status !== 'ACTIVE') {
+      throw new UnauthorizedException('User account is suspended or deactivated');
+    }
+
     // Return user data for req.user using fresh DB state.
+    // Permissions come from the JWT payload (embedded at token issuance time).
     return {
       id: user.id,
+      sub: payload.sub,
       role: user.role,
       username: user.username,
       type: user.type,
+      permissions: payload.permissions ?? [],
     };
   }
 }
