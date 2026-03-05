@@ -3,6 +3,7 @@ import {
   ForbiddenException,
   NotFoundException,
   Inject,
+  Logger,
 } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { EventsGateway } from 'src/realtime/events.gateway';
@@ -20,6 +21,8 @@ import { NotificationRegistry } from './notifications.registry';
 
 @Injectable()
 export class NotificationsService {
+  private readonly logger = new Logger(NotificationsService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly events: EventsGateway,
@@ -38,7 +41,7 @@ export class NotificationsService {
       stripUnknown: true,
     });
     if (error) {
-      console.warn(
+      this.logger.warn(
         `Invalid payload for notification type ${type}:`,
         error.details,
       );
@@ -84,7 +87,7 @@ export class NotificationsService {
       }
       return 'You have a new notification';
     } catch (error) {
-      console.error('Error formatting notification message:', error);
+      this.logger.warn(`Error formatting notification message: ${error}`);
       return 'You have a new notification';
     }
   }
@@ -502,13 +505,13 @@ export class NotificationsService {
     type: NotificationType,
     opts?: CreateNotificationOptions,
   ) {
-    console.log(
+    this.logger.debug(
       `Creating notification: type=${type}, recipient=${recipientId}, actor=${opts?.actorId}`,
     );
 
     const actorId = opts?.actorId ?? null;
     if (actorId && actorId === recipientId) {
-      console.log('Skipping self-notification');
+      this.logger.debug('Skipping self-notification');
       return null;
     }
 
@@ -521,7 +524,7 @@ export class NotificationsService {
         settings,
       );
       if (!canReceive) {
-        console.log(
+        this.logger.debug(
           `Tag mention blocked by settings. recipient=${recipientId}, actor=${actorId}`,
         );
         return null;
@@ -534,13 +537,13 @@ export class NotificationsService {
         settings,
       );
       if (!canReceive) {
-        console.log(
+        this.logger.debug(
           `Comment notification blocked by settings. recipient=${recipientId}, actor=${actorId}`,
         );
         return null;
       }
     } else if (!this.isNotificationEnabled(type, settings)) {
-      console.log(
+      this.logger.debug(
         `Notification type ${type} disabled by user settings. Skipping.`,
       );
       return null;
@@ -558,7 +561,7 @@ export class NotificationsService {
         if (tu) (sanitizedPayload as any).targetUrl = tu;
         else delete (sanitizedPayload as any).targetUrl;
       }
-      console.log('Payload validated and sanitized');
+      this.logger.debug('Payload validated and sanitized');
 
       // Optional dedupe within window based on same recipient/type/actor and target id in payload
       if (opts?.dedupeMs && opts.dedupeMs > 0) {
@@ -579,7 +582,7 @@ export class NotificationsService {
           where: whereClause,
         });
         if (existing) {
-          console.log('Duplicate notification found, skipping creation');
+          this.logger.debug('Duplicate notification found, skipping creation');
           return existing;
         }
       }
@@ -609,7 +612,7 @@ export class NotificationsService {
         },
       });
 
-      console.log(`Notification created successfully: id=${created.id}`);
+      this.logger.debug(`Notification created successfully: id=${created.id}`);
 
       // Invalidate cache for unread count
       await this.cacheManager.del(`unread_count:${recipientId}`);
@@ -644,15 +647,15 @@ export class NotificationsService {
             targetUrl,
             ts: Date.now(),
           });
-        console.log('Notification event emitted successfully');
+        this.logger.debug('Notification event emitted successfully');
       } catch (error) {
-        console.error('Failed to emit notification event:', error);
+        this.logger.warn(`Failed to emit notification event: ${error}`);
         // Log for monitoring, but don't fail the notification creation
       }
 
       return created;
     } catch (error) {
-      console.error('Failed to create notification:', error);
+      this.logger.error(`Failed to create notification: ${error}`);
       throw error; // Re-throw to let caller handle
     }
   }

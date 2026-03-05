@@ -5,7 +5,7 @@ import { UserProfileResponseDto } from './dto/user-profile.dto';
 
 @Injectable()
 export class UserProfileService {
-  constructor(private prisma: PrismaService) {}
+  constructor(private prisma: PrismaService) { }
 
   async getOwnProfile(userId: string): Promise<UserProfileResponseDto> {
     if (!userId) {
@@ -92,7 +92,7 @@ export class UserProfileService {
 
   async getPatchedBrands(userId: string, viewerId?: string): Promise<any[]> {
     const isOwner = viewerId === userId;
-    
+
     // Only return patched brands if the viewer is the owner or if the profile is unlocked
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
@@ -144,6 +144,13 @@ export class UserProfileService {
                 description: true,
                 tagline: true,
               }
+            },
+            _count: {
+              select: {
+                patchConnectionsReceived: {
+                  where: { status: 'ACCEPTED' }
+                }
+              }
             }
           }
         }
@@ -179,6 +186,7 @@ export class UserProfileService {
         null,
       bannerImage: connection.target.bannerImage,
       patchedAt: connection.createdAt,
+      patchCount: connection.target._count?.patchConnectionsReceived || 0,
     }));
   }
 }

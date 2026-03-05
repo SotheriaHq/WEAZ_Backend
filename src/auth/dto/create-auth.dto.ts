@@ -7,7 +7,7 @@ import {
   Matches,
   IsNotEmpty,
 } from 'class-validator';
-import { Role, UserType } from '@prisma/client';
+import { UserType } from '@prisma/client';
 
 export class CreateUserDto {
   // Owner names are required during signup for both regular and brand users.
@@ -39,10 +39,6 @@ export class CreateUserDto {
   password: string;
 
   // phoneNumber removed - not required
-
-  @IsOptional()
-  @IsEnum(Role, { message: 'Role must be one of: SuperAdmin, Admin, User' })
-  role?: Role;
 
   @IsOptional()
   @IsString({ message: 'Brand full name must be a string' })

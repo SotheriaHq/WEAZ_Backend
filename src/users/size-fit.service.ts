@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   Logger,
@@ -72,7 +73,7 @@ export class SizeFitService {
 
   private normalizeReminderDays(days?: number | null): number {
     if (!days || !Number.isFinite(days)) return 14;
-    return Math.max(7, Math.min(60, Math.round(days)));
+    return Math.max(14, Math.min(90, Math.round(days)));
   }
 
   private sanitizeMeasurements(raw: unknown): SafeMeasurements {
@@ -133,6 +134,11 @@ export class SizeFitService {
         sharePolicy: SIZE_FIT_SHARE_POLICY.REQUIRE_PERMISSION,
         notifyOnShare: true,
         requireUpdateEveryDays: 14,
+        version: 0,
+        preferredLengthUnit: 'CM',
+        preferredWeightUnit: 'KG',
+        fitPreference: 'REGULAR',
+        label: 'My Measurements',
         measurements: {},
         lastUpdatedAt: null,
         nextReminderAt: now,
@@ -195,6 +201,11 @@ export class SizeFitService {
       sharePolicy: profile.sharePolicy,
       notifyOnShare: profile.notifyOnShare,
       requireUpdateEveryDays: profile.requireUpdateEveryDays,
+      version: profile.version,
+      preferredLengthUnit: profile.preferredLengthUnit,
+      preferredWeightUnit: profile.preferredWeightUnit,
+      fitPreference: profile.fitPreference,
+      label: profile.label,
       measurements:
         profile.measurements &&
         typeof profile.measurements === 'object' &&
@@ -234,6 +245,11 @@ export class SizeFitService {
         sharePolicy: true,
         notifyOnShare: true,
         requireUpdateEveryDays: true,
+        version: true,
+        preferredLengthUnit: true,
+        preferredWeightUnit: true,
+        fitPreference: true,
+        label: true,
         measurements: true,
         notes: true,
         lastUpdatedAt: true,
@@ -259,6 +275,11 @@ export class SizeFitService {
       userId: profile.userId,
       visibility: profile.visibility,
       sharePolicy: profile.sharePolicy,
+      version: profile.version,
+      preferredLengthUnit: profile.preferredLengthUnit,
+      preferredWeightUnit: profile.preferredWeightUnit,
+      fitPreference: profile.fitPreference,
+      label: profile.label,
       measurements:
         profile.measurements &&
         typeof profile.measurements === 'object' &&
@@ -287,6 +308,9 @@ export class SizeFitService {
       const reminderDays = this.normalizeReminderDays(
         dto.requireUpdateEveryDays ?? profile.requireUpdateEveryDays,
       );
+      if (typeof dto.version === 'number' && dto.version !== profile.version) {
+        throw new ConflictException('Size fit profile has been updated. Refresh and retry.');
+      }
       const now = new Date();
       const nextReminderAt = new Date(now.getTime() + this.daysToMs(reminderDays));
 
@@ -296,6 +320,17 @@ export class SizeFitService {
           measurements: nextMeasurements as unknown as Prisma.InputJsonValue,
           notes: dto.notes ?? profile.notes,
           requireUpdateEveryDays: reminderDays,
+          label: dto.label ?? profile.label,
+          preferredLengthUnit:
+            (dto.preferredLengthUnit as unknown as string | undefined) ??
+            profile.preferredLengthUnit,
+          preferredWeightUnit:
+            (dto.preferredWeightUnit as unknown as string | undefined) ??
+            profile.preferredWeightUnit,
+          fitPreference:
+            (dto.fitPreference as unknown as string | undefined) ??
+            profile.fitPreference,
+          version: profile.version + 1,
           lastUpdatedAt: now,
           nextReminderAt,
         },
@@ -326,6 +361,11 @@ export class SizeFitService {
         sharePolicy: updated.sharePolicy,
         notifyOnShare: updated.notifyOnShare,
         requireUpdateEveryDays: updated.requireUpdateEveryDays,
+        version: updated.version,
+        preferredLengthUnit: updated.preferredLengthUnit,
+        preferredWeightUnit: updated.preferredWeightUnit,
+        fitPreference: updated.fitPreference,
+        label: updated.label,
         measurements: nextMeasurements,
         notes: updated.notes ?? '',
         lastUpdatedAt: this.toIso(updated.lastUpdatedAt),
@@ -362,6 +402,11 @@ export class SizeFitService {
       sharePolicy: updated.sharePolicy,
       notifyOnShare: updated.notifyOnShare,
       requireUpdateEveryDays: updated.requireUpdateEveryDays,
+      version: updated.version,
+      preferredLengthUnit: updated.preferredLengthUnit,
+      preferredWeightUnit: updated.preferredWeightUnit,
+      fitPreference: updated.fitPreference,
+      label: updated.label,
       lastUpdatedAt: this.toIso(updated.lastUpdatedAt),
       nextReminderAt: this.toIso(updated.nextReminderAt),
     };

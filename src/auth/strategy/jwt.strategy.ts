@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -37,12 +37,27 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
   }
 
   async validate(payload: AuthJwtClaims) {
-    // Return user data for req.user
+    const user = await this.prisma.user.findUnique({
+      where: { id: payload.sub },
+      select: {
+        id: true,
+        role: true,
+        username: true,
+        type: true,
+        isActive: true,
+      },
+    });
+
+    if (!user || user.isActive === 'Inactive') {
+      throw new UnauthorizedException('User account is inactive or missing');
+    }
+
+    // Return user data for req.user using fresh DB state.
     return {
-      id: payload.sub,
-      role: payload.role,
-      username: payload.username,
-      type: payload.type,
+      id: user.id,
+      role: user.role,
+      username: user.username,
+      type: user.type,
     };
   }
 }

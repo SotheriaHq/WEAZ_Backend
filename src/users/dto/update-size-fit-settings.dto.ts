@@ -26,7 +26,7 @@ export class UpdateSizeFitSettingsDto {
 
   @IsOptional()
   @IsInt()
-  @Min(7)
-  @Max(60)
+  @Min(14)
+  @Max(90)
   requireUpdateEveryDays?: number;
 }

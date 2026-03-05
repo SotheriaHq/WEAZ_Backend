@@ -1,4 +1,4 @@
-import {
+﻿import {
   Injectable,
   NotFoundException,
   BadRequestException,
@@ -6,6 +6,7 @@ import {
   ConflictException,
   InternalServerErrorException,
   Logger,
+  Optional,
 } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from '../prisma/prisma.service';
@@ -13,6 +14,11 @@ import { CreateProductDto, UpdateProductDto } from './dto/create-product.dto';
 import { AddToCartDto, UpdateCartItemDto } from './dto/cart.dto';
 import { AddToWishlistDto } from './dto/wishlist.dto';
 import { CheckoutDto } from './dto/checkout.dto';
+import {
+  BulkArchiveProductsDto,
+  BulkDeleteProductsDto,
+  BulkUnpublishProductsDto,
+} from './dto/bulk-product-actions.dto';
 import { v4 as uuidv4 } from 'uuid';
 import {
   CollectionType,
@@ -20,6 +26,7 @@ import {
   NotificationType,
   PatchMode,
   PatchStatus,
+  SizingMode,
   UserType,
 } from '@prisma/client';
 import { UpdateStoreNameDto } from './dto/update-store-name.dto';
@@ -38,6 +45,7 @@ import {
   sanitizeTags,
 } from 'src/common/utils/tag-validator';
 import { TAG_ENTITY_TYPE } from 'src/tags/tag-entity-type';
+import { CategoriesService } from 'src/categories/categories.service';
 
 @Injectable()
 export class StoreService {
@@ -54,10 +62,136 @@ export class StoreService {
     private readonly notifications?: NotificationsService,
     private readonly systemTags?: SystemTagsService,
     private readonly tagIndex?: TagIndexService,
+    @Optional()
+    private readonly categoriesService?: CategoriesService,
     private readonly notificationsQueue?: NotificationsQueueService,
   ) {}
 
   private readonly maxProductsPerCollection = 5;
+
+  private normalizeFilterValueIds(raw?: string[] | null): string[] {
+    if (!Array.isArray(raw)) return [];
+    return Array.from(
+      new Set(
+        raw
+          .map((value) => (typeof value === 'string' ? value.trim() : ''))
+          .filter((value) => value.length > 0),
+      ),
+    );
+  }
+
+  private async getProductFilterRows(productIds: string[]) {
+    if (!Array.isArray(productIds) || productIds.length === 0) {
+      return [] as Array<{
+        entityId: string;
+        filterValueId: string;
+        filterValue: {
+          id: string;
+          slug: string;
+          name: string;
+          dimension: { id: string; slug: string; name: string; isMulti: boolean };
+        };
+      }>;
+    }
+
+    return this.prisma.entityFilter.findMany({
+      where: {
+        entityType: 'PRODUCT',
+        entityId: { in: productIds },
+      },
+      include: {
+        filterValue: {
+          include: {
+            dimension: {
+              select: { id: true, slug: true, name: true, isMulti: true },
+            },
+          },
+        },
+      },
+    });
+  }
+
+  private buildProductFilterPayloadByProductId(
+    rows: Array<{
+      entityId: string;
+      filterValueId: string;
+      filterValue: {
+        id: string;
+        slug: string;
+        name: string;
+        dimension: { id: string; slug: string; name: string; isMulti: boolean };
+      };
+    }>,
+  ) {
+    const map = new Map<
+      string,
+      {
+        filters: Array<{
+          dimensionId: string;
+          dimensionSlug: string;
+          dimensionName: string;
+          valueId: string;
+          valueSlug: string;
+          valueName: string;
+        }>;
+        filterValueIds: string[];
+        filterSelection: Record<string, string[]>;
+      }
+    >();
+
+    for (const row of rows) {
+      const entityId = row.entityId;
+      const existing =
+        map.get(entityId) ??
+        {
+          filters: [],
+          filterValueIds: [],
+          filterSelection: {},
+        };
+
+      const filterItem = {
+        dimensionId: row.filterValue.dimension.id,
+        dimensionSlug: row.filterValue.dimension.slug,
+        dimensionName: row.filterValue.dimension.name,
+        valueId: row.filterValue.id,
+        valueSlug: row.filterValue.slug,
+        valueName: row.filterValue.name,
+      };
+
+      if (!existing.filterValueIds.includes(filterItem.valueId)) {
+        existing.filters.push(filterItem);
+        existing.filterValueIds.push(filterItem.valueId);
+      }
+
+      const currentSelection = existing.filterSelection[filterItem.dimensionId] ?? [];
+      if (!currentSelection.includes(filterItem.valueId)) {
+        existing.filterSelection[filterItem.dimensionId] = [
+          ...currentSelection,
+          filterItem.valueId,
+        ];
+      }
+
+      map.set(entityId, existing);
+    }
+
+    return map;
+  }
+
+  private async attachProductFiltersToView(productView: any, productId: string) {
+    const rows = await this.getProductFilterRows([productId]);
+    const filterMap = this.buildProductFilterPayloadByProductId(rows);
+    const payload = filterMap.get(productId) ?? {
+      filters: [],
+      filterValueIds: [],
+      filterSelection: {},
+    };
+    return {
+      ...productView,
+      filters: payload.filters,
+      filterValueIds: payload.filterValueIds,
+      filterSelection: payload.filterSelection,
+    };
+  }
 
   private async lockCollectionForUpdate(
     tx: Prisma.TransactionClient,
@@ -99,12 +233,13 @@ export class StoreService {
 
   private async attachProductMedia(product: any) {
     const base = this.transformProduct(product);
+    const baseWithFilters = await this.attachProductFiltersToView(base, product.id);
     const images: string[] = Array.isArray(product?.images)
       ? product.images.filter(Boolean)
       : [];
 
     if (images.length === 0) {
-      return { ...base, media: [], mediaIds: [] };
+      return { ...baseWithFilters, media: [], mediaIds: [] };
     }
 
     const uploads = await this.prisma.fileUpload.findMany({
@@ -123,7 +258,7 @@ export class StoreService {
     }));
 
     return {
-      ...base,
+      ...baseWithFilters,
       media,
       mediaIds: media.map((m) => m.id),
     };
@@ -960,6 +1095,17 @@ export class StoreService {
           // Variants (legacy + derived)
           sizes: derivedFromVariants?.sizes ?? dto.sizes ?? [],
           sizeStock: derivedFromVariants?.sizeStock ?? dto.sizeStock ?? null,
+          sizingMode: this.normalizeSizingMode(dto.sizingMode),
+          rtwSizeSystem: dto.rtwSizeSystem || null,
+          rtwSizeType: dto.rtwSizeType || null,
+          rtwLinkedToInventory: dto.rtwLinkedToInventory ?? false,
+          customGender: dto.customGender || null,
+          customMeasurementKeys:
+            this.normalizeRequiredMeasurementKeys(dto.customMeasurementKeys),
+          customFreeformPointIds:
+            this.normalizeRequiredMeasurementKeys(dto.customFreeformPointIds),
+          fitPreference: dto.fitPreference || null,
+          targetAgeGroup: dto.targetAgeGroup || 'ADULT',
           colors: derivedFromVariants?.colors ?? dto.colors ?? [],
           colorImages: dto.colorImages || null,
           colorHexCodes:
@@ -1027,6 +1173,14 @@ export class StoreService {
 
     if (!product) {
       throw new NotFoundException('Product not found');
+    }
+
+    if (this.categoriesService && Array.isArray(dto.filterValueIds)) {
+      await this.categoriesService.setEntityFilters(
+        'PRODUCT',
+        product.id,
+        this.normalizeFilterValueIds(dto.filterValueIds),
+      );
     }
 
     const indexedTags = this.getIndexedProductTags(product, resolvedTags);
@@ -1181,6 +1335,28 @@ export class StoreService {
       if (dto.colorImages !== undefined) updateData.colorImages = dto.colorImages;
       if (dto.colorHexCodes !== undefined) updateData.colorHexCodes = dto.colorHexCodes;
     }
+    if (dto.sizingMode !== undefined)
+      updateData.sizingMode = this.normalizeSizingMode(dto.sizingMode);
+    if (dto.rtwSizeSystem !== undefined)
+      updateData.rtwSizeSystem = dto.rtwSizeSystem || null;
+    if (dto.rtwSizeType !== undefined)
+      updateData.rtwSizeType = dto.rtwSizeType || null;
+    if (dto.rtwLinkedToInventory !== undefined)
+      updateData.rtwLinkedToInventory = dto.rtwLinkedToInventory;
+    if (dto.customGender !== undefined)
+      updateData.customGender = dto.customGender || null;
+    if (dto.customMeasurementKeys !== undefined)
+      updateData.customMeasurementKeys = this.normalizeRequiredMeasurementKeys(
+        dto.customMeasurementKeys,
+      );
+    if (dto.customFreeformPointIds !== undefined)
+      updateData.customFreeformPointIds = this.normalizeRequiredMeasurementKeys(
+        dto.customFreeformPointIds,
+      );
+    if (dto.fitPreference !== undefined)
+      updateData.fitPreference = dto.fitPreference || null;
+    if (dto.targetAgeGroup !== undefined)
+      updateData.targetAgeGroup = dto.targetAgeGroup;
     
     // Media
     if (dto.images !== undefined) {
@@ -1350,6 +1526,14 @@ export class StoreService {
         },
       });
     });
+
+    if (updated && this.categoriesService && Array.isArray(dto.filterValueIds)) {
+      await this.categoriesService.setEntityFilters(
+        'PRODUCT',
+        productId,
+        this.normalizeFilterValueIds(dto.filterValueIds),
+      );
+    }
 
     const shouldRecalc =
       membershipChanged ||
@@ -1619,21 +1803,22 @@ export class StoreService {
       throw new ForbiddenException('You can only check your own products');
     }
 
-    // Count active orders containing this product (items stored as JSON)
-    // We need to query orders and check the JSON items array
     const activeOrders = await this.prisma.order.findMany({
       where: {
         brandId: product.brandId,
         status: { in: ['PENDING', 'PROCESSING', 'SHIPPED'] },
       },
-      select: { items: true },
+      select: {
+        items: true,
+        orderItems: {
+          select: { productId: true },
+        },
+      },
     });
-    
-    // Count orders that contain this product in their JSON items
+
     let activeOrdersCount = 0;
     for (const order of activeOrders) {
-      const items = order.items as { productId: string }[] | null;
-      if (Array.isArray(items) && items.some(item => item.productId === productId)) {
+      if (this.orderContainsProduct(order, productId)) {
         activeOrdersCount++;
       }
     }
@@ -1725,6 +1910,29 @@ export class StoreService {
       );
     }
 
+    // Notify wishlisted users that the product is unavailable
+    if (this.notifications) {
+      try {
+        const wishlistItems = await this.prisma.wishlistItem.findMany({
+          where: { productId },
+          select: { userId: true },
+        });
+        for (const wi of wishlistItems) {
+          await this.notifications.create(wi.userId, 'WISHLIST_PRODUCT_UNAVAILABLE', {
+            actorId: brandOwnerId,
+            payload: {
+              productId,
+              productName: product.name,
+              brandName: product.brand.name,
+            },
+          });
+        }
+      } catch (err) {
+        // Non-critical — don't fail the archive operation
+        console.warn('Failed to send wishlist unavailable notifications:', err);
+      }
+    }
+
     return this.attachProductMedia(archived);
   }
 
@@ -1759,7 +1967,8 @@ export class StoreService {
         archivedAt: null,
         archiveExpiresAt: null,
         archiveLastReminder: null,
-        // Keep isActive as false - user should manually publish
+        // Restored archived products should come back as drafts.
+        isActive: false,
       },
       include: {
         collections: { select: { collectionId: true, orderIndex: true } },
@@ -1790,6 +1999,29 @@ export class StoreService {
       );
     }
 
+
+
+    // Only notify availability when the product is actually active/published.
+    if (this.notifications && restored.isActive) {
+      try {
+        const wishlistItems = await this.prisma.wishlistItem.findMany({
+          where: { productId },
+          select: { userId: true },
+        });
+        for (const wi of wishlistItems) {
+          await this.notifications.create(wi.userId, 'WISHLIST_PRODUCT_AVAILABLE', {
+            actorId: brandOwnerId,
+            payload: {
+              productId,
+              productName: product.name,
+              brandName: product.brand.name,
+            },
+          });
+        }
+      } catch (err) {
+        console.warn('Failed to send wishlist available notifications:', err);
+      }
+    }
     return this.attachProductMedia(restored);
   }
 
@@ -1852,19 +2084,22 @@ export class StoreService {
 
     const previousIndexedTags = this.getIndexedProductTags(product, product.tags ?? []);
 
-    // Check for active orders containing this product (items stored as JSON)
     const activeOrders = await this.prisma.order.findMany({
       where: {
         brandId: product.brandId,
         status: { in: ['PENDING', 'PROCESSING', 'SHIPPED'] },
       },
-      select: { items: true },
+      select: {
+        items: true,
+        orderItems: {
+          select: { productId: true },
+        },
+      },
     });
-    
+
     let activeOrdersCount = 0;
     for (const order of activeOrders) {
-      const items = order.items as { productId: string }[] | null;
-      if (Array.isArray(items) && items.some(item => item.productId === productId)) {
+      if (this.orderContainsProduct(order, productId)) {
         activeOrdersCount++;
       }
     }
@@ -1894,13 +2129,18 @@ export class StoreService {
             brandId: product.brandId,
             status: { in: ['PENDING', 'PROCESSING', 'SHIPPED'] as any },
           },
-          select: { id: true, buyerId: true, items: true },
+          select: {
+            id: true,
+            buyerId: true,
+            items: true,
+            orderItems: {
+              select: { productId: true },
+            },
+          },
         });
 
         for (const order of orders) {
-          const items = order.items as { productId?: string }[] | null;
-          if (!Array.isArray(items)) continue;
-          if (items.some((item) => item.productId === productId)) {
+          if (this.orderContainsProduct(order, productId)) {
             await tx.order.update({
               where: { id: order.id },
               data: { status: 'CANCELLED', paymentStatus: 'REFUNDED' },
@@ -1916,7 +2156,6 @@ export class StoreService {
         data: { deletedAt: new Date(), isActive: false, collectionId: null },
       });
       await tx.cartItem.deleteMany({ where: { productId } });
-      await tx.wishlistItem.deleteMany({ where: { productId } });
     });
 
     if (cancelledOrders.length > 0) {
@@ -1990,6 +2229,159 @@ export class StoreService {
       message: 'Product deleted',
       affectedCollections,
     };
+  }
+
+  async bulkDeleteProducts(
+    brandOwnerId: string,
+    dto: BulkDeleteProductsDto,
+  ) {
+    const productIds = this.normalizeBulkProductIds(dto.productIds);
+
+    if (productIds.length === 0) {
+      throw new BadRequestException('Select at least one product');
+    }
+
+    const cancelPendingOrders = dto.cancelPendingOrders === true;
+    const successIds: string[] = [];
+    const failures: Array<{ productId: string; message: string }> = [];
+
+    for (const productId of productIds) {
+      try {
+        await this.deleteProduct(brandOwnerId, productId, cancelPendingOrders);
+        successIds.push(productId);
+      } catch (error: any) {
+        const message =
+          typeof error?.message === 'string' && error.message.length > 0
+            ? error.message
+            : 'Failed to delete product';
+        failures.push({ productId, message });
+      }
+    }
+
+    return {
+      requestedCount: productIds.length,
+      deletedCount: successIds.length,
+      failedCount: failures.length,
+      successIds,
+      failures,
+      message:
+        failures.length === 0
+          ? 'Products deleted'
+          : 'Some products could not be deleted',
+    };
+  }
+
+  async bulkArchiveProducts(
+    brandOwnerId: string,
+    dto: BulkArchiveProductsDto,
+  ) {
+    const productIds = this.normalizeBulkProductIds(dto.productIds);
+
+    if (productIds.length === 0) {
+      throw new BadRequestException('Select at least one product');
+    }
+
+    const successIds: string[] = [];
+    const failures: Array<{ productId: string; message: string }> = [];
+
+    for (const productId of productIds) {
+      try {
+        await this.archiveProduct(brandOwnerId, productId);
+        successIds.push(productId);
+      } catch (error: any) {
+        const message =
+          typeof error?.message === 'string' && error.message.length > 0
+            ? error.message
+            : 'Failed to archive product';
+        failures.push({ productId, message });
+      }
+    }
+
+    return {
+      requestedCount: productIds.length,
+      archivedCount: successIds.length,
+      failedCount: failures.length,
+      successIds,
+      failures,
+      message:
+        failures.length === 0
+          ? 'Products archived'
+          : 'Some products could not be archived',
+    };
+  }
+
+  async bulkUnpublishProducts(
+    brandOwnerId: string,
+    dto: BulkUnpublishProductsDto,
+  ) {
+    const productIds = this.normalizeBulkProductIds(dto.productIds);
+
+    if (productIds.length === 0) {
+      throw new BadRequestException('Select at least one product');
+    }
+
+    const successIds: string[] = [];
+    const failures: Array<{ productId: string; message: string }> = [];
+
+    for (const productId of productIds) {
+      try {
+        const product = await this.prisma.product.findFirst({
+          where: { id: productId, deletedAt: null },
+          include: { brand: true },
+        });
+
+        if (!product) {
+          throw new NotFoundException('Product not found');
+        }
+        if (product.brand.ownerId !== brandOwnerId) {
+          throw new ForbiddenException(
+            'You can only unpublish your own products',
+          );
+        }
+        if (product.archivedAt) {
+          throw new BadRequestException(
+            'Product is archived. Unarchive it first before unpublishing.',
+          );
+        }
+
+        if (product.isActive) {
+          await this.updateProduct(brandOwnerId, productId, {
+            isActive: false,
+            publishAt: null,
+          });
+        }
+        successIds.push(productId);
+      } catch (error: any) {
+        const message =
+          typeof error?.message === 'string' && error.message.length > 0
+            ? error.message
+            : 'Failed to unpublish product';
+        failures.push({ productId, message });
+      }
+    }
+
+    return {
+      requestedCount: productIds.length,
+      unpublishedCount: successIds.length,
+      failedCount: failures.length,
+      successIds,
+      failures,
+      message:
+        failures.length === 0
+          ? 'Products unpublished'
+          : 'Some products could not be unpublished',
+    };
+  }
+
+  private normalizeBulkProductIds(rawIds?: string[] | null): string[] {
+    const source = Array.isArray(rawIds) ? rawIds : [];
+    return Array.from(
+      new Set(
+        source
+          .map((id) => String(id || '').trim())
+          .filter((id) => id.length > 0),
+      ),
+    );
   }
 
   // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -2514,6 +2906,9 @@ export class StoreService {
           brand: {
             select: { id: true, name: true, logo: true, currency: true },
           },
+          categoryType: {
+            select: { id: true, categoryId: true, slug: true, name: true },
+          },
         },
       }),
       this.prisma.product.count({ where }),
@@ -2522,6 +2917,12 @@ export class StoreService {
     const nextCursor = products.length > 0 ? products[products.length - 1].id : null;
 
     const baseItems = products.map((p) => this.transformProduct(p));
+    const productFilterRows = await this.getProductFilterRows(
+      baseItems.map((item: any) => item.id).filter(Boolean),
+    );
+    const productFilterMap = this.buildProductFilterPayloadByProductId(
+      productFilterRows,
+    );
     const urls = Array.from(
       new Set(
         baseItems
@@ -2541,8 +2942,18 @@ export class StoreService {
 
     const itemsWithMedia = baseItems.map((base: any) => {
       const images: string[] = Array.isArray(base.images) ? base.images.filter(Boolean) : [];
+      const filterPayload = productFilterMap.get(base.id) ?? {
+        filters: [],
+        filterValueIds: [],
+        filterSelection: {},
+      };
       if (images.length === 0) {
-        return { ...base, media: [], mediaIds: [] };
+        return {
+          ...base,
+          ...filterPayload,
+          media: [],
+          mediaIds: [],
+        };
       }
       const media = images.map((url: string) => ({
         id: idByUrl.get(url) ?? url,
@@ -2552,6 +2963,7 @@ export class StoreService {
       }));
       return {
         ...base,
+        ...filterPayload,
         media,
         mediaIds: media.map((m) => m.id),
       };
@@ -2677,6 +3089,16 @@ export class StoreService {
       throw new BadRequestException('Invalid color selected');
     }
 
+    const sizingPayload = this.resolveCartItemSizing(
+      product,
+      {
+        sizingMode: dto.sizingMode,
+        requiredMeasurementKeys: dto.requiredMeasurementKeys,
+        sizeFitData: dto.sizeFitData ?? null,
+      },
+      product.name,
+    );
+
     const existingItem = await this.prisma.cartItem.findFirst({
       where: {
         userId,
@@ -2730,7 +3152,12 @@ export class StoreService {
     if (existingItem) {
       await this.prisma.cartItem.update({
         where: { id: existingItem.id },
-        data: { quantity: resultingQuantity },
+        data: {
+          quantity: resultingQuantity,
+          sizingMode: sizingPayload.sizingMode,
+          requiredMeasurementKeys: sizingPayload.requiredMeasurementKeys,
+          sizeFitData: sizingPayload.sizeFitData,
+        },
       });
     } else {
       await this.prisma.cartItem.create({
@@ -2741,6 +3168,9 @@ export class StoreService {
           quantity: quantityToAdd,
           selectedSize: dto.selectedSize || null,
           selectedColor: dto.selectedColor || null,
+          sizingMode: sizingPayload.sizingMode,
+          requiredMeasurementKeys: sizingPayload.requiredMeasurementKeys,
+          sizeFitData: sizingPayload.sizeFitData,
         },
       });
     }
@@ -2872,6 +3302,12 @@ export class StoreService {
         quantity: item.quantity,
         selectedSize: item.selectedSize,
         selectedColor: item.selectedColor,
+        sizingMode: item.sizingMode,
+        requiredMeasurementKeys: item.requiredMeasurementKeys,
+        sizeFitData:
+          item.sizeFitData && typeof item.sizeFitData === 'object'
+            ? item.sizeFitData
+            : null,
         product: {
           id: product.id,
           name: product.name,
@@ -2985,6 +3421,101 @@ export class StoreService {
 
   // ==================== WISHLIST ====================
 
+  private resolveWishlistAvailability(product: any, userId: string): {
+    status:
+      | 'AVAILABLE'
+      | 'OUT_OF_STOCK'
+      | 'ARCHIVED'
+      | 'DELETED'
+      | 'UNPUBLISHED'
+      | 'STORE_CLOSED'
+      | 'OWN_PRODUCT';
+    reason:
+      | 'available'
+      | 'out_of_stock'
+      | 'archived'
+      | 'deleted'
+      | 'not_in_store'
+      | 'store_closed'
+      | 'own_product';
+    isAvailable: boolean;
+    canAddToCart: boolean;
+  } {
+    if (product.deletedAt) {
+      return {
+        status: 'DELETED',
+        reason: 'deleted',
+        isAvailable: false,
+        canAddToCart: false,
+      };
+    }
+
+    if (product.archivedAt || !product.isActive) {
+      return {
+        status: 'ARCHIVED',
+        reason: 'archived',
+        isAvailable: false,
+        canAddToCart: false,
+      };
+    }
+
+    if (!product.brand?.isStoreOpen) {
+      return {
+        status: 'STORE_CLOSED',
+        reason: 'store_closed',
+        isAvailable: false,
+        canAddToCart: false,
+      };
+    }
+
+    if (product.brand?.ownerId === userId) {
+      return {
+        status: 'OWN_PRODUCT',
+        reason: 'own_product',
+        isAvailable: false,
+        canAddToCart: false,
+      };
+    }
+
+    const hasStoreCollection = Array.isArray(product.collections)
+      ? product.collections.some(
+          (link: any) =>
+            link.collection?.isAvailableInStore &&
+            link.collection?.status === 'PUBLISHED',
+        )
+      : false;
+
+    if (!hasStoreCollection) {
+      return {
+        status: 'UNPUBLISHED',
+        reason: 'not_in_store',
+        isAvailable: false,
+        canAddToCart: false,
+      };
+    }
+
+    const isOutOfStock =
+      Boolean(product.trackInventory) &&
+      !product.allowBackorders &&
+      Number(product.totalStock ?? 0) <= 0;
+
+    if (isOutOfStock) {
+      return {
+        status: 'OUT_OF_STOCK',
+        reason: 'out_of_stock',
+        isAvailable: false,
+        canAddToCart: false,
+      };
+    }
+
+    return {
+      status: 'AVAILABLE',
+      reason: 'available',
+      isAvailable: true,
+      canAddToCart: true,
+    };
+  }
+
   async addToWishlist(userId: string, dto: AddToWishlistDto) {
     const product = await this.prisma.product.findFirst({
       where: {
@@ -3041,21 +3572,14 @@ export class StoreService {
   }
 
   async removeFromWishlist(userId: string, productId: string) {
-    const item = await this.prisma.wishlistItem.findUnique({
-      where: { userId_productId: { userId, productId } },
-    });
-
-    if (!item) {
-      throw new NotFoundException('Item not in wishlist');
-    }
-
-    await this.prisma.wishlistItem.delete({
-      where: { userId_productId: { userId, productId } },
+    const deleted = await this.prisma.wishlistItem.deleteMany({
+      where: { userId, productId },
     });
 
     return {
       success: true,
-      message: 'Removed from wishlist',
+      message:
+        deleted.count > 0 ? 'Removed from wishlist' : 'Item already removed',
       isWishlisted: false,
     };
   }
@@ -3094,73 +3618,34 @@ export class StoreService {
       this.prisma.wishlistItem.count({ where: { userId } }),
     ]);
 
-    const unavailableWishlistIds: string[] = [];
-    const availableWishlistItems = items.filter((item) => {
-      const product = item.product;
-      if (!product) {
-        unavailableWishlistIds.push(item.id);
-        return false;
-      }
-
-      const hasStoreCollection = Array.isArray(product.collections)
-        ? product.collections.some(
-            (link: any) =>
-              link.collection?.isAvailableInStore &&
-              link.collection?.status === 'PUBLISHED',
-          )
-        : false;
-
-      const isProductAvailable =
-        !product.deletedAt &&
-        product.isActive &&
-        Boolean(product.brand?.isStoreOpen) &&
-        product.brand?.ownerId !== userId &&
-        hasStoreCollection;
-
-      if (!isProductAvailable) {
-        unavailableWishlistIds.push(item.id);
-        return false;
-      }
-
-      if (product.trackInventory && !product.allowBackorders && product.totalStock <= 0) {
-        unavailableWishlistIds.push(item.id);
-        return false;
-      }
-
-      return true;
+    // Keep wishlist immutable on read: expose availability state instead of
+    // deleting items when products become unavailable.
+    const wishlistItems = items.map((item) => {
+      const availability = this.resolveWishlistAvailability(item.product, userId);
+      return {
+        id: item.id,
+        addedAt: item.createdAt,
+        product: this.transformProduct(item.product),
+        availabilityStatus: availability.status,
+        availabilityReason: availability.reason,
+        isAvailable: availability.isAvailable,
+        canAddToCart: availability.canAddToCart,
+      };
     });
-
-    if (unavailableWishlistIds.length > 0) {
-      await this.prisma.wishlistItem.deleteMany({ where: { id: { in: unavailableWishlistIds } } });
-    }
-
-    const wishlistItems = availableWishlistItems.map((item) => ({
-      id: item.id,
-      addedAt: item.createdAt,
-      product: this.transformProduct(item.product),
-    }));
-
-    const totalAvailable = Math.max(0, total - unavailableWishlistIds.length);
 
     return {
       items: wishlistItems,
-      total: totalAvailable,
+      total,
       page,
       limit,
-      totalPages: Math.ceil(totalAvailable / limit),
+      totalPages: Math.ceil(total / limit),
     };
   }
 
   async isInWishlist(userId: string, productId: string) {
-    const item = await this.prisma.wishlistItem.findFirst({
+    const item = await this.prisma.wishlistItem.findUnique({
       where: {
-        userId,
-        productId,
-        product: {
-          deletedAt: null,
-          isActive: true,
-          brand: { ownerId: { not: userId } },
-        },
+        userId_productId: { userId, productId },
       },
       select: { id: true },
     });
@@ -3230,6 +3715,7 @@ export class StoreService {
       collectionId: primaryCollectionId,
       collectionIds,
       brandId: product.brandId,
+      categoryId: product.categoryId ?? null,
       // Basic info
       name: product.name,
       slug: product.slug,
@@ -3255,6 +3741,14 @@ export class StoreService {
       sizes: product.sizes || [],
       sizeStock: product.sizeStock,
       sizeAvailability,
+      sizingMode: this.normalizeSizingMode(product.sizingMode),
+      customMeasurementKeys: this.normalizeRequiredMeasurementKeys(
+        product.customMeasurementKeys,
+      ),
+      customAvailable:
+        this.normalizeSizingMode(product.sizingMode) === SizingMode.CUSTOM ||
+        this.normalizeSizingMode(product.sizingMode) === SizingMode.RTW_PLUS_CUSTOM ||
+        this.normalizeRequiredMeasurementKeys(product.customMeasurementKeys).length > 0,
       colors: product.colors || [],
       colorImages: product.colorImages,
       colorHexCodes: product.colorHexCodes,
@@ -3316,6 +3810,171 @@ export class StoreService {
       collection: product.collection,
       brand: product.brand,
     };
+  }
+
+  private normalizeSizingMode(value?: string | null): SizingMode {
+    const normalized = String(value ?? '')
+      .trim()
+      .toUpperCase();
+    switch (normalized) {
+      case 'RTW':
+        return SizingMode.RTW;
+      case 'CUSTOM':
+        return SizingMode.CUSTOM;
+      case 'RTW_PLUS_CUSTOM':
+        return SizingMode.RTW_PLUS_CUSTOM;
+      default:
+        return SizingMode.NONE;
+    }
+  }
+
+  private normalizeRequiredMeasurementKeys(raw?: unknown): string[] {
+    if (!Array.isArray(raw)) return [];
+    return Array.from(
+      new Set(
+        raw
+          .map((entry) => (typeof entry === 'string' ? entry.trim() : ''))
+          .filter((entry) => entry.length > 0),
+      ),
+    );
+  }
+
+  private normalizeSizeFitData(raw?: unknown): Record<string, any> | null {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      return null;
+    }
+    return raw as Record<string, any>;
+  }
+
+  private extractProvidedMeasurementKeys(sizeFitData: Record<string, any> | null): string[] {
+    if (!sizeFitData) return [];
+
+    const measurements =
+      sizeFitData.measurements &&
+      typeof sizeFitData.measurements === 'object' &&
+      !Array.isArray(sizeFitData.measurements)
+        ? (sizeFitData.measurements as Record<string, any>)
+        : null;
+
+    if (measurements) {
+      return Object.keys(measurements).filter((key) => {
+        const value = measurements[key];
+        if (value == null) return false;
+        if (typeof value === 'number') return Number.isFinite(value);
+        if (typeof value === 'object' && value !== null) {
+          const numericValue = (value as any).value;
+          return typeof numericValue === 'number' && Number.isFinite(numericValue);
+        }
+        return false;
+      });
+    }
+
+    return Object.keys(sizeFitData).filter((key) => {
+      const value = sizeFitData[key];
+      return typeof value === 'number' && Number.isFinite(value);
+    });
+  }
+
+  private resolveCartItemSizing(
+    product: any,
+    payload: {
+      sizingMode?: string | null;
+      requiredMeasurementKeys?: string[] | null;
+      sizeFitData?: Record<string, any> | null;
+    },
+    productNameForError?: string,
+  ): {
+    sizingMode: SizingMode;
+    requiredMeasurementKeys: string[];
+    sizeFitData: Record<string, any> | null;
+  } {
+    const productName = productNameForError || product?.name || 'product';
+    const productSizingMode = this.normalizeSizingMode(product?.sizingMode);
+    const requestSizingMode = this.normalizeSizingMode(payload?.sizingMode);
+    const sizingMode =
+      requestSizingMode === SizingMode.NONE ? productSizingMode : requestSizingMode;
+
+    const productRequiredKeys = this.normalizeRequiredMeasurementKeys(
+      product?.customMeasurementKeys,
+    );
+    const requestedKeys = this.normalizeRequiredMeasurementKeys(
+      payload?.requiredMeasurementKeys,
+    );
+
+    const requiredMeasurementKeys =
+      requestedKeys.length > 0
+        ? requestedKeys.filter((key) => productRequiredKeys.includes(key))
+        : productRequiredKeys;
+
+    const sizeFitData = this.normalizeSizeFitData(payload?.sizeFitData);
+
+    if (
+      (sizingMode === SizingMode.CUSTOM ||
+        sizingMode === SizingMode.RTW_PLUS_CUSTOM) &&
+      requiredMeasurementKeys.length > 0
+    ) {
+      const providedKeys = this.extractProvidedMeasurementKeys(sizeFitData);
+      const missingKeys = requiredMeasurementKeys.filter(
+        (key) => !providedKeys.includes(key),
+      );
+      if (missingKeys.length > 0) {
+        throw new BadRequestException(
+          `Missing required measurements for ${productName}: ${missingKeys.join(', ')}`,
+        );
+      }
+    }
+
+    return {
+      sizingMode,
+      requiredMeasurementKeys,
+      sizeFitData,
+    };
+  }
+
+  private getOrderLineItems(order: any): Array<{
+    productId?: string;
+    name?: string;
+    thumbnail?: string | null;
+    price?: number;
+    quantity?: number;
+    selectedSize?: string | null;
+    selectedColor?: string | null;
+    sizingMode?: SizingMode | string;
+    requiredMeasurementKeys?: string[];
+    sizeFitSnapshot?: Record<string, any> | null;
+  }> {
+    const relationalItems = Array.isArray(order?.orderItems) ? order.orderItems : [];
+    if (relationalItems.length > 0) {
+      return relationalItems.map((item: any) => ({
+        productId: item.productId,
+        name: item.nameAtPurchase ?? undefined,
+        thumbnail: item.thumbnailAtPurchase ?? null,
+        price:
+          typeof item.unitPrice === 'number'
+            ? item.unitPrice
+            : Number(item.unitPrice ?? 0),
+        quantity: item.quantity,
+        selectedSize: item.selectedSize ?? null,
+        selectedColor: item.selectedColor ?? null,
+        sizingMode: item.sizingMode,
+        requiredMeasurementKeys: this.normalizeRequiredMeasurementKeys(
+          item.requiredMeasurementKeys,
+        ),
+        sizeFitSnapshot:
+          item.sizeFitSnapshot &&
+          typeof item.sizeFitSnapshot === 'object' &&
+          !Array.isArray(item.sizeFitSnapshot)
+            ? item.sizeFitSnapshot
+            : null,
+      }));
+    }
+
+    return Array.isArray(order?.items) ? (order.items as any[]) : [];
+  }
+
+  private orderContainsProduct(order: any, productId: string): boolean {
+    const items = this.getOrderLineItems(order);
+    return items.some((item) => item?.productId === productId);
   }
 
   // ==================== CHECKOUT ====================
@@ -3408,7 +4067,18 @@ export class StoreService {
           );
         }
 
-        const orderItems: any[] = [];
+        const orderItems: Array<{
+          productId: string;
+          name: string;
+          thumbnail: string | null;
+          price: number;
+          quantity: number;
+          selectedSize: string | null;
+          selectedColor: string | null;
+          sizingMode: SizingMode;
+          requiredMeasurementKeys: string[];
+          sizeFitSnapshot: Record<string, any> | null;
+        }> = [];
         let totalAmount = 0;
 
         for (const item of items) {
@@ -3454,6 +4124,19 @@ export class StoreService {
           if (item.selectedColor && product.colors.length > 0 && !product.colors.includes(item.selectedColor)) {
             throw new BadRequestException(`Invalid color for ${product.name}`);
           }
+
+          const sizingPayload = this.resolveCartItemSizing(
+            product,
+            {
+              sizingMode: item.sizingMode,
+              requiredMeasurementKeys: item.requiredMeasurementKeys,
+              sizeFitData:
+                item.sizeFitData && typeof item.sizeFitData === 'object'
+                  ? (item.sizeFitData as Record<string, any>)
+                  : null,
+            },
+            product.name,
+          );
 
           const quantity = item.quantity;
 
@@ -3547,11 +4230,14 @@ export class StoreService {
           orderItems.push({
             productId: product.id,
             name: product.name,
-            thumbnail: product.thumbnail,
+            thumbnail: product.thumbnail ?? null,
             price: unitPrice,
             quantity,
-            selectedSize: item.selectedSize,
-            selectedColor: item.selectedColor,
+            selectedSize: item.selectedSize || null,
+            selectedColor: item.selectedColor || null,
+            sizingMode: sizingPayload.sizingMode,
+            requiredMeasurementKeys: sizingPayload.requiredMeasurementKeys,
+            sizeFitSnapshot: sizingPayload.sizeFitData,
           });
         }
 
@@ -3573,6 +4259,29 @@ export class StoreService {
             paymentStatus: 'PENDING',
           },
         });
+
+        if (orderItems.length > 0) {
+          await tx.orderItem.createMany({
+            data: orderItems.map((item) => ({
+              id: uuidv4(),
+              orderId: order.id,
+              productId: item.productId,
+              brandId,
+              buyerId: userId,
+              quantity: item.quantity,
+              currency: brand.currency || 'NGN',
+              unitPrice: new Prisma.Decimal(item.price.toFixed(2)),
+              totalPrice: new Prisma.Decimal((item.price * item.quantity).toFixed(2)),
+              selectedSize: item.selectedSize,
+              selectedColor: item.selectedColor,
+              sizingMode: item.sizingMode,
+              requiredMeasurementKeys: item.requiredMeasurementKeys,
+              sizeFitSnapshot: item.sizeFitSnapshot,
+              thumbnailAtPurchase: item.thumbnail,
+              nameAtPurchase: item.name,
+            })),
+          });
+        }
 
         // Notify brand owner a new order has arrived
         if (brand.ownerId) {
@@ -3607,6 +4316,20 @@ export class StoreService {
           brand: {
             select: { id: true, name: true, logo: true, currency: true },
           },
+          orderItems: {
+            select: {
+              productId: true,
+              quantity: true,
+              unitPrice: true,
+              selectedSize: true,
+              selectedColor: true,
+              sizingMode: true,
+              requiredMeasurementKeys: true,
+              sizeFitSnapshot: true,
+              thumbnailAtPurchase: true,
+              nameAtPurchase: true,
+            },
+          },
         },
         orderBy: { createdAt: 'desc' },
         skip: (page - 1) * limit,
@@ -3615,8 +4338,13 @@ export class StoreService {
       this.prisma.order.count({ where: { buyerId: userId } }),
     ]);
 
+    const normalizedOrders = orders.map((order) => ({
+      ...order,
+      items: this.getOrderLineItems(order),
+    }));
+
     return {
-      items: orders,
+      items: normalizedOrders,
       total,
       page,
       limit,
@@ -3630,6 +4358,20 @@ export class StoreService {
       where: { id: orderId, buyerId: userId },
       include: {
         brand: { select: { id: true, name: true, logo: true, currency: true } },
+        orderItems: {
+          select: {
+            productId: true,
+            quantity: true,
+            unitPrice: true,
+            selectedSize: true,
+            selectedColor: true,
+            sizingMode: true,
+            requiredMeasurementKeys: true,
+            sizeFitSnapshot: true,
+            thumbnailAtPurchase: true,
+            nameAtPurchase: true,
+          },
+        },
       },
     });
 
@@ -3637,7 +4379,10 @@ export class StoreService {
       throw new NotFoundException('Order not found');
     }
 
-    return order;
+    return {
+      ...order,
+      items: this.getOrderLineItems(order),
+    };
   }
 
   // ==================== STORE WIZARD PREFILL & SETTINGS ====================

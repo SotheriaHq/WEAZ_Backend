@@ -1,4 +1,13 @@
-import { IsString, IsNumber, IsOptional, Min, Max } from 'class-validator';
+import {
+  IsString,
+  IsNumber,
+  IsOptional,
+  Min,
+  Max,
+  IsArray,
+  IsObject,
+  IsIn,
+} from 'class-validator';
 import { Type } from 'class-transformer';
 
 export class AddToCartDto {
@@ -19,6 +28,19 @@ export class AddToCartDto {
   @IsOptional()
   @IsString()
   selectedColor?: string;
+
+  @IsOptional()
+  @IsIn(['NONE', 'RTW', 'CUSTOM', 'RTW_PLUS_CUSTOM'])
+  sizingMode?: 'NONE' | 'RTW' | 'CUSTOM' | 'RTW_PLUS_CUSTOM';
+
+  @IsOptional()
+  @IsObject()
+  sizeFitData?: Record<string, any>;
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  requiredMeasurementKeys?: string[];
 }
 
 export class UpdateCartItemDto {

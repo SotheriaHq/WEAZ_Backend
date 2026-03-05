@@ -177,6 +177,7 @@ model RefreshToken {
   updatedAt  DateTime  @updatedAt
 
   @@index([userId, createdAt])
+  @@index([expiresAt])
 }
 
 enum Role {
@@ -211,6 +212,78 @@ enum SizeFitShareStatus {
   APPROVED
   REJECTED
   REVOKED
+}
+
+enum SizingMode {
+  NONE
+  RTW
+  CUSTOM
+  RTW_PLUS_CUSTOM
+}
+
+enum RtwSizeType {
+  PREDEFINED
+  FREEFORM
+  MIXED
+}
+
+enum FitPreference {
+  SLIM
+  REGULAR
+  LOOSE
+  OVERSIZED
+}
+
+enum AgeGroup {
+  ADULT
+  CHILD
+}
+
+enum Gender {
+  MEN
+  WOMEN
+  UNISEX
+}
+
+enum MeasurementPointCategory {
+  UPPER_BODY
+  ARMS
+  LOWER_BODY
+  LENGTH
+  GENERAL
+  ACCESSORIES
+}
+
+enum MeasurementPointSource {
+  SYSTEM
+  BRAND_FREEFORM
+}
+
+enum FreeformPointStatus {
+  BRAND_ONLY
+  APPROVED_GLOBAL
+  REJECTED
+}
+
+enum BrandSizeChartStatus {
+  DRAFT
+  PENDING
+  PUBLISHED
+  SENT_BACK
+}
+
+enum DisputeStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+  CLOSED
+}
+
+enum DisputeResolution {
+  ACCEPT_REFUND
+  PARTIAL_REFUND
+  REJECT_CLAIM
+  ESCALATED
 }
 
 enum FileType {
@@ -293,6 +366,10 @@ enum NotificationType {
   SIZE_FIT_SHARE_APPROVED
   SIZE_FIT_SHARE_REJECTED
   SIZE_FIT_RESHARED
+
+  // Wishlist availability
+  WISHLIST_PRODUCT_UNAVAILABLE
+  WISHLIST_PRODUCT_AVAILABLE
 }
 
 // ====== Comment V2 (unified for posts, collections, and collection media) ======
@@ -390,6 +467,15 @@ model Collection {
   saleMaxPrice                 Float?
   saleStartAt                  DateTime?
   saleEndAt                    DateTime?
+  sizingMode                   SizingMode                      @default(NONE)
+  rtwSizes                     String[]                        @default([])
+  rtwSizeSystem                String?
+  rtwSizeType                  RtwSizeType?
+  customGender                 Gender?
+  customMeasurementKeys        String[]                        @default([])
+  customFreeformPointIds       String[]                        @default([])
+  fitPreference                FitPreference?
+  targetAgeGroup               AgeGroup                        @default(ADULT)
   createdAt                    DateTime                        @default(now())
   updatedAt                    DateTime                        @updatedAt
   metadataEditedAt             DateTime?                       // Last title/description edit timestamp (30-day cooldown)
@@ -453,6 +539,7 @@ model StoreCollection {
   saleMaxPrice       Float?
   saleStartAt        DateTime?
   saleEndAt          DateTime?
+  derivedSizeRange   String?
   createdAt          DateTime                @default(now())
   updatedAt          DateTime                @updatedAt
   metadataEditedAt   DateTime?
@@ -827,6 +914,11 @@ model UserSizeFitProfile {
   sharePolicy           SizeFitSharePolicy  @default(REQUIRE_PERMISSION)
   notifyOnShare         Boolean             @default(true)
   requireUpdateEveryDays Int                @default(14)
+  version               Int                 @default(0)
+  preferredLengthUnit   String              @default("CM")
+  preferredWeightUnit   String              @default("KG")
+  fitPreference         FitPreference?      @default(REGULAR)
+  label                 String              @default("My Measurements")
   measurements          Json?
   notes                 String?
   lastUpdatedAt         DateTime?
@@ -876,6 +968,65 @@ model UserSizeFitShare {
   @@index([ownerId, status, createdAt])
   @@index([viewerId, status, createdAt])
   @@index([requestedById, status, createdAt])
+}
+
+model MeasurementPoint {
+  id              String                    @id @default(uuid()) @db.Uuid
+  key             String                    @unique
+  label           String
+  description     String?
+  category        MeasurementPointCategory
+  gender          Gender?
+  source          MeasurementPointSource    @default(SYSTEM)
+  status          FreeformPointStatus       @default(APPROVED_GLOBAL)
+  brandId         String?                   @db.Uuid
+  brand           Brand?                    @relation(fields: [brandId], references: [id], onDelete: SetNull)
+  minValueCm      Decimal?                  @db.Decimal(7, 2)
+  maxValueCm      Decimal?                  @db.Decimal(7, 2)
+  minValueChildCm Decimal?                  @db.Decimal(7, 2)
+  maxValueChildCm Decimal?                  @db.Decimal(7, 2)
+  sortOrder       Int                       @default(0)
+  isActive        Boolean                   @default(true)
+  submittedAt     DateTime?
+  reviewedAt      DateTime?
+  reviewedById    String?                   @db.Uuid
+  rejectionReason String?
+  createdAt       DateTime                  @default(now())
+  updatedAt       DateTime                  @updatedAt
+
+  @@index([category, gender, isActive])
+  @@index([source, brandId, status])
+  @@index([status])
+}
+
+model BrandSizeChart {
+  id          String                @id @default(uuid()) @db.Uuid
+  brandId     String                @db.Uuid
+  brand       Brand                 @relation(fields: [brandId], references: [id], onDelete: Cascade)
+  version     Int
+  status      BrandSizeChartStatus  @default(DRAFT)
+  data        Json
+  notes       String?
+  publishedAt DateTime?
+  createdAt   DateTime              @default(now())
+  updatedAt   DateTime              @updatedAt
+
+  @@unique([brandId, version])
+  @@index([brandId, createdAt])
+  @@index([status])
+}
+
+model SizingTemplate {
+  id          String    @id @default(uuid()) @db.Uuid
+  brandId     String    @db.Uuid
+  brand       Brand     @relation(fields: [brandId], references: [id], onDelete: Cascade)
+  name        String
+  description String?
+  config      Json
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([brandId])
 }
 
 model PresignedUpload {
@@ -1013,6 +1164,10 @@ model Brand {
   policy      StorePolicy?
 
   orders      Order[]
+  orderItems  OrderItem[]
+  measurementPoints MeasurementPoint[]
+  brandSizeCharts BrandSizeChart[]
+  sizingTemplates SizingTemplate[]
   payouts     Payout[]
   products    Product[] @relation("Brand_to_Products")
   
@@ -1096,6 +1251,7 @@ model Order {
   contactInfo     Json?
   sizeFitSnapshot Json?
   items          Json          // [{productId, qty, price, thumbnail, name}]
+  orderItems     OrderItem[]
   totalAmount    Decimal       @db.Decimal(10, 2)
   currency       String        @default("NGN")
   
@@ -1108,6 +1264,61 @@ model Order {
   @@index([brandId])
   @@index([brandId, status])
   @@index([buyerId])
+}
+
+model OrderItem {
+  id                      String          @id @default(uuid()) @db.Uuid
+  orderId                 String          @db.Uuid
+  order                   Order           @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId               String          @db.Uuid
+  product                 Product         @relation(fields: [productId], references: [id], onDelete: Restrict)
+  brandId                 String          @db.Uuid
+  brand                   Brand           @relation(fields: [brandId], references: [id], onDelete: Restrict)
+  buyerId                 String?         @db.Uuid
+  quantity                Int             @default(1)
+  currency                String          @default("NGN")
+  unitPrice               Decimal         @db.Decimal(10, 2)
+  totalPrice              Decimal         @db.Decimal(10, 2)
+  selectedSize            String?
+  selectedColor           String?
+  sizingMode              SizingMode      @default(NONE)
+  requiredMeasurementKeys String[]        @default([])
+  sizeFitSnapshot         Json?
+  correctionDeadline      DateTime?
+  thumbnailAtPurchase     String?
+  nameAtPurchase          String?
+  skuAtPurchase           String?
+  createdAt               DateTime        @default(now())
+  updatedAt               DateTime        @updatedAt
+  disputes                SizingDispute[]
+
+  @@index([orderId])
+  @@index([productId])
+  @@index([brandId])
+  @@index([buyerId])
+  @@index([createdAt])
+}
+
+model SizingDispute {
+  id            String             @id @default(uuid()) @db.Uuid
+  orderItemId   String             @db.Uuid
+  orderItem     OrderItem          @relation(fields: [orderItemId], references: [id], onDelete: Cascade)
+  buyerId       String             @db.Uuid
+  brandId       String             @db.Uuid
+  status        DisputeStatus      @default(OPEN)
+  resolution    DisputeResolution?
+  buyerReason   String?
+  brandResponse String?
+  adminNotes    String?
+  openedAt      DateTime           @default(now())
+  respondByAt   DateTime?
+  resolvedAt    DateTime?
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+
+  @@index([status])
+  @@index([buyerId, createdAt])
+  @@index([brandId, createdAt])
 }
 
 model Payout {
@@ -1184,6 +1395,15 @@ model Product {
   // Variants
   sizes           String[]      @default([])     // ["XS", "S", "M", "L", "XL", "XXL"]
   sizeStock       Json?                          // {"XS": 5, "S": 10, "M": 0, "L": 8}
+  sizingMode      SizingMode    @default(NONE)
+  rtwSizeSystem   String?
+  rtwSizeType     RtwSizeType?
+  rtwLinkedToInventory Boolean   @default(false)
+  customGender    Gender?
+  customMeasurementKeys String[] @default([])
+  customFreeformPointIds String[] @default([])
+  fitPreference   FitPreference?
+  targetAgeGroup  AgeGroup      @default(ADULT)
   colors          String[]      @default([])     // ["Navy", "Indigo", "Burgundy"]
   colorImages     Json?                          // {"Navy": "url1", "Indigo": "url2"}
   colorHexCodes   Json?                          // {"Navy": "#1E3A5F", "Indigo": "#4F46E5"}
@@ -1232,6 +1452,7 @@ model Product {
   
   // Relations
   cartItems       CartItem[]
+  orderItems      OrderItem[]
   wishlistItems   WishlistItem[]
   variants        ProductVariant[]
   designCollections CollectionProduct[]
@@ -1324,6 +1545,9 @@ model CartItem {
   quantity        Int           @default(1)
   selectedSize    String?
   selectedColor   String?
+  sizingMode      SizingMode    @default(NONE)
+  sizeFitData     Json?
+  requiredMeasurementKeys String[] @default([])
   
   createdAt       DateTime      @default(now())
   updatedAt       DateTime      @updatedAt

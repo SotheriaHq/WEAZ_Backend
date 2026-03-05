@@ -115,9 +115,11 @@ export class AuthController {
   @UseInterceptors(TransformInterceptor)
   async refresh(
     @Req() req: Request,
+    @Body('refreshToken') bodyRefreshToken: string | undefined,
     @Res({ passthrough: true }) res: Response,
   ) {
-    const refreshToken = req.cookies[this.refreshTokenCookieName];
+    const refreshToken =
+      req.cookies[this.refreshTokenCookieName] ?? bodyRefreshToken;
     if (!refreshToken) {
       const cookieOptions = this.cookieBaseOptions;
       res.clearCookie(this.refreshTokenCookieName, cookieOptions);
@@ -142,9 +144,11 @@ export class AuthController {
   @ApiResponse({ status: 200, description: 'Logout successful' })
   async logout(
     @Req() req: Request & { user: { id: string } },
+    @Body('refreshToken') bodyRefreshToken: string | undefined,
     @Res({ passthrough: true }) res: Response,
   ) {
-    const refreshToken = req.cookies[this.refreshTokenCookieName];
+    const refreshToken =
+      req.cookies[this.refreshTokenCookieName] ?? bodyRefreshToken;
 
     const cookieOptions = this.cookieBaseOptions;
 
@@ -153,22 +157,22 @@ export class AuthController {
 
     await this.tokenService.revokeRefreshToken(refreshToken);
 
-    // Create logout notification (requires enum migration). Use string to avoid type friction.
-    try {
-      const forwarded = req.headers['x-forwarded-for'];
-      const ip = Array.isArray(forwarded)
-        ? (forwarded[0] ?? null)
-        : typeof forwarded === 'string' && forwarded.length
-          ? forwarded.split(',')[0].trim()
-          : null;
-      const ipAddress = ip || req.ip || null;
-      await this.notifications.create(req.user.id, NotificationType.LOGOUT, {
+    // Emit logout activity without blocking API response.
+    const forwarded = req.headers['x-forwarded-for'];
+    const ip = Array.isArray(forwarded)
+      ? (forwarded[0] ?? null)
+      : typeof forwarded === 'string' && forwarded.length
+        ? forwarded.split(',')[0].trim()
+        : null;
+    const ipAddress = ip || req.ip || null;
+    void this.notifications
+      .create(req.user.id, NotificationType.LOGOUT, {
         payload: {
           ip: ipAddress,
           userAgent: req.headers['user-agent'] ?? null,
         },
-      });
-    } catch {}
+      })
+      .catch(() => undefined);
 
     return { message: 'Logged out successfully' };
   }
@@ -189,25 +193,21 @@ export class AuthController {
 
     await this.tokenService.revokeAllRefreshTokens(req.user.id);
 
-    try {
-      const forwarded = req.headers['x-forwarded-for'];
-      const ip = Array.isArray(forwarded)
-        ? (forwarded[0] ?? null)
-        : typeof forwarded === 'string' && forwarded.length
-          ? forwarded.split(',')[0].trim()
-          : null;
-      const ipAddress = ip || req.ip || null;
-      await this.notifications.create(
-        req.user.id,
-        NotificationType.LOGOUT_ALL,
-        {
-          payload: {
-            ip: ipAddress,
-            userAgent: req.headers['user-agent'] ?? null,
-          },
+    const forwarded = req.headers['x-forwarded-for'];
+    const ip = Array.isArray(forwarded)
+      ? (forwarded[0] ?? null)
+      : typeof forwarded === 'string' && forwarded.length
+        ? forwarded.split(',')[0].trim()
+        : null;
+    const ipAddress = ip || req.ip || null;
+    void this.notifications
+      .create(req.user.id, NotificationType.LOGOUT_ALL, {
+        payload: {
+          ip: ipAddress,
+          userAgent: req.headers['user-agent'] ?? null,
         },
-      );
-    } catch {}
+      })
+      .catch(() => undefined);
 
     return { message: 'Logged out from all devices' };
   }
@@ -288,12 +288,16 @@ export class AuthController {
   }
 
   @Get('users')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.SuperAdmin)
   @ApiOperation({ summary: 'Get all users' })
   async getAllUsers() {
     return this.authService.getAllUsers();
   }
 
   @Get('user/:id')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.SuperAdmin)
   @ApiOperation({ summary: 'Get single user' })
   @ApiParam({ name: 'id', required: true })
   async getUserById(@Param('id') id: string) {
@@ -301,6 +305,8 @@ export class AuthController {
   }
 
   @Patch('user/:id')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.SuperAdmin)
   @ApiOperation({ summary: 'Update user (not profile)' })
   @ApiParam({ name: 'id', required: true })
   @ApiBody({ type: UpdateAuthDto })
@@ -312,6 +318,8 @@ export class AuthController {
   }
 
   @Delete('user/:id')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.SuperAdmin)
   @ApiOperation({ summary: 'Soft delete user (set isActive to Inactive)' })
   @ApiParam({ name: 'id', required: true })
   async softDeleteUser(@Param('id') id: string) {

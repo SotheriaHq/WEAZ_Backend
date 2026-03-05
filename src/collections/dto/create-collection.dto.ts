@@ -13,6 +13,7 @@ import {
   IsBoolean,
   Min,
   IsUUID,
+  IsIn,
 } from 'class-validator';
 
 export class FileSpecDto {
@@ -102,6 +103,45 @@ export class CreateCollectionDto {
   @IsArray()
   @IsString({ each: true })
   filterValueIds?: string[];
+
+  @IsOptional()
+  @IsIn(['NONE', 'RTW', 'CUSTOM', 'RTW_PLUS_CUSTOM'])
+  sizingMode?: 'NONE' | 'RTW' | 'CUSTOM' | 'RTW_PLUS_CUSTOM';
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  rtwSizes?: string[];
+
+  @IsOptional()
+  @IsString()
+  rtwSizeSystem?: string;
+
+  @IsOptional()
+  @IsIn(['PREDEFINED', 'FREEFORM', 'MIXED'])
+  rtwSizeType?: 'PREDEFINED' | 'FREEFORM' | 'MIXED';
+
+  @IsOptional()
+  @IsIn(['MEN', 'WOMEN', 'UNISEX'])
+  customGender?: 'MEN' | 'WOMEN' | 'UNISEX';
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  customMeasurementKeys?: string[];
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  customFreeformPointIds?: string[];
+
+  @IsOptional()
+  @IsIn(['SLIM', 'REGULAR', 'LOOSE', 'OVERSIZED'])
+  fitPreference?: 'SLIM' | 'REGULAR' | 'LOOSE' | 'OVERSIZED';
+
+  @IsOptional()
+  @IsIn(['ADULT', 'CHILD'])
+  targetAgeGroup?: 'ADULT' | 'CHILD';
 }
 
 export class CompleteUploadDto {
@@ -169,6 +209,45 @@ export class CollectionMetadataDto {
   @IsArray()
   @IsString({ each: true })
   filterValueIds?: string[];
+
+  @IsOptional()
+  @IsIn(['NONE', 'RTW', 'CUSTOM', 'RTW_PLUS_CUSTOM'])
+  sizingMode?: 'NONE' | 'RTW' | 'CUSTOM' | 'RTW_PLUS_CUSTOM';
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  rtwSizes?: string[];
+
+  @IsOptional()
+  @IsString()
+  rtwSizeSystem?: string;
+
+  @IsOptional()
+  @IsIn(['PREDEFINED', 'FREEFORM', 'MIXED'])
+  rtwSizeType?: 'PREDEFINED' | 'FREEFORM' | 'MIXED';
+
+  @IsOptional()
+  @IsIn(['MEN', 'WOMEN', 'UNISEX'])
+  customGender?: 'MEN' | 'WOMEN' | 'UNISEX';
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  customMeasurementKeys?: string[];
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  customFreeformPointIds?: string[];
+
+  @IsOptional()
+  @IsIn(['SLIM', 'REGULAR', 'LOOSE', 'OVERSIZED'])
+  fitPreference?: 'SLIM' | 'REGULAR' | 'LOOSE' | 'OVERSIZED';
+
+  @IsOptional()
+  @IsIn(['ADULT', 'CHILD'])
+  targetAgeGroup?: 'ADULT' | 'CHILD';
 }
 
 export class FinalizeCollectionDto {

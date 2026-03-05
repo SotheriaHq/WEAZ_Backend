@@ -30,6 +30,8 @@ export class CartPreviewItem {
   effectivePrice: number;
   currency: string;
   variants: CartPreviewVariant[];
+  sizes?: string[];
+  colors?: string[];
   defaultSize?: string;
   defaultColor?: string;
 }

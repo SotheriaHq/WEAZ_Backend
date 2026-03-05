@@ -10,6 +10,7 @@ import {
   DEFAULT_FILTER_DIMENSIONS,
   LEGACY_CATEGORY_SLUGS,
 } from '../src/categories/default-taxonomy';
+import { seedMeasurementPoints } from './seed_measurement_points';
 
 const DEMO_BRAND_EMAIL = 'brand@example.com';
 const DEMO_BRAND_PASSWORD = 'password123';
@@ -310,6 +311,8 @@ async function ensureDemoBrand(categoryId: string) {
 }
 
 async function main() {
+  await seedMeasurementPoints(prisma);
+
   const idsBySlug = await ensureDefaultTaxonomy();
   // Use new category slug — Women's Wear is the first active category
   const demoCategoryId = idsBySlug.get('womens-wear');

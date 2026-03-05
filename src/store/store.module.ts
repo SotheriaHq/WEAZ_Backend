@@ -9,9 +9,10 @@ import { IdempotencyInterceptor } from '../common/interceptors/idempotency.inter
 import { NotificationsModule } from 'src/notifications/notifications.module';
 import { TagsModule } from 'src/tags/tags.module';
 import { QueueModule } from 'src/queue/queue.module';
+import { CategoriesModule } from 'src/categories/categories.module';
 
 @Module({
-  imports: [PrismaModule, AuthModule, UploadModule, NotificationsModule, TagsModule, QueueModule],
+  imports: [PrismaModule, AuthModule, UploadModule, NotificationsModule, TagsModule, QueueModule, CategoriesModule],
   controllers: [StoreController],
   providers: [StoreService, ProductViewCounterService, IdempotencyInterceptor],
   exports: [StoreService],

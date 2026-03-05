@@ -22,6 +22,7 @@ import { PayoutModule } from './payout/payout.module';
 import { StoreModule } from './store/store.module';
 import { UsersModule } from './users/users.module';
 import { ScheduleModule } from '@nestjs/schedule';
+import { MeasurementPointsModule } from './measurement-points/measurement-points.module';
 
 @Module({
   imports: [
@@ -32,7 +33,7 @@ import { ScheduleModule } from '@nestjs/schedule';
     ScheduleModule.forRoot(),
     PrismaModule,
     AuthModule,
-    ThrottlerModule.forRoot([{ ttl: 60, limit: 120 }]),
+    ThrottlerModule.forRoot([{ ttl: 60000, limit: 120 }]),
     UploadModule,
     BrandsModule,
     // Collections for brands
@@ -49,6 +50,7 @@ import { ScheduleModule } from '@nestjs/schedule';
     PayoutModule,
     StoreModule,
     UsersModule,
+    MeasurementPointsModule,
   ],
   controllers: [AppController],
   providers: [AppService, EventsGateway],

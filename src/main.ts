@@ -25,6 +25,7 @@ import * as bodyParser from 'body-parser';
 import { ConfigService } from '@nestjs/config';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { requestLoggerMiddleware } from './common/middleware/request-logger.middleware';
+import { InputSanitizationPipe } from './common/pipes/input-sanitization.pipe';
 import * as express from 'express';
 import { join } from 'path';
 
@@ -56,6 +57,33 @@ const parsePort = (value: string | undefined) => {
     throw new Error(`APP_PORT must be a positive number. Received "${value}".`);
   }
   return parsed;
+};
+
+const applyTrustProxy = (
+  app: Awaited<ReturnType<typeof NestFactory.create>>,
+  value: string | undefined,
+) => {
+  const expressApp = app.getHttpAdapter().getInstance();
+  const setTrustProxy = (trustValue: unknown) => {
+    if (expressApp && typeof expressApp.set === 'function') {
+      expressApp.set('trust proxy', trustValue as any);
+    }
+  };
+  const raw = (value ?? '').trim().toLowerCase();
+  if (!raw || raw === 'false' || raw === '0' || raw === 'no') {
+    setTrustProxy(false);
+    return;
+  }
+  if (raw === 'true' || raw === '1' || raw === 'yes') {
+    setTrustProxy(1);
+    return;
+  }
+  const numeric = Number(raw);
+  if (Number.isFinite(numeric) && numeric >= 0) {
+    setTrustProxy(numeric);
+    return;
+  }
+  setTrustProxy(value);
 };
 
 const parseOrigin = (origin: string) => {
@@ -124,10 +152,32 @@ async function bootstrap() {
   try {
     const app = await NestFactory.create(AppModule);
     const configService = app.get(ConfigService);
+    applyTrustProxy(app, configService.get<string>('TRUST_PROXY', '1'));
+
+    app.use((req, res, next) => {
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.setHeader('X-Frame-Options', 'DENY');
+      res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+      res.setHeader('X-Permitted-Cross-Domain-Policies', 'none');
+      res.setHeader(
+        'Permissions-Policy',
+        'camera=(), microphone=(), geolocation=()',
+      );
+      const isSecure =
+        req.secure || req.headers['x-forwarded-proto'] === 'https';
+      if (isSecure) {
+        res.setHeader(
+          'Strict-Transport-Security',
+          'max-age=31536000; includeSubDomains; preload',
+        );
+      }
+      next();
+    });
 
     app.use(requestLoggerMiddleware);
 
     app.useGlobalPipes(
+      new InputSanitizationPipe(),
       new ValidationPipe({
         whitelist: true,
         forbidNonWhitelisted: true,

@@ -85,6 +85,39 @@ export class CollectionsService {
     return unique;
   }
 
+  private async collectStoreCollectionFilterValueIds(collectionId: string): Promise<string[]> {
+    const links = await this.prisma.storeCollectionProduct.findMany({
+      where: { collectionId },
+      select: { productId: true },
+    });
+    const productIds = Array.from(
+      new Set(links.map((link) => link.productId).filter(Boolean)),
+    );
+    if (productIds.length === 0) return [];
+
+    const rows = await this.prisma.entityFilter.findMany({
+      where: {
+        entityType: 'PRODUCT',
+        entityId: { in: productIds },
+      },
+      select: { filterValueId: true },
+    });
+
+    return Array.from(new Set(rows.map((row) => row.filterValueId)));
+  }
+
+  private async syncStoreCollectionFiltersFromProducts(collectionId: string) {
+    if (!this.categoriesService) return;
+    const productFilterValueIds = await this.collectStoreCollectionFilterValueIds(
+      collectionId,
+    );
+    await this.categoriesService.setEntityFilters(
+      'STORE_COLLECTION',
+      collectionId,
+      this.normalizeFilterValueIds(productFilterValueIds),
+    );
+  }
+
   private normalizeCollectionScope(scope?: string): CollectionScope {
     if (scope === 'store') return 'store';
     if (scope === 'all') return 'all';
@@ -1376,6 +1409,19 @@ export class CollectionsService {
         minPrice: dto.minPrice,
         maxPrice: dto.maxPrice,
         isAvailableInStore: false,
+        sizingMode: dto.sizingMode ?? 'NONE',
+        rtwSizes: Array.isArray(dto.rtwSizes) ? dto.rtwSizes : [],
+        rtwSizeSystem: dto.rtwSizeSystem ?? null,
+        rtwSizeType: dto.rtwSizeType ?? null,
+        customGender: dto.customGender ?? null,
+        customMeasurementKeys: Array.isArray(dto.customMeasurementKeys)
+          ? dto.customMeasurementKeys
+          : [],
+        customFreeformPointIds: Array.isArray(dto.customFreeformPointIds)
+          ? dto.customFreeformPointIds
+          : [],
+        fitPreference: dto.fitPreference ?? null,
+        targetAgeGroup: dto.targetAgeGroup ?? 'ADULT',
         tags: sanitizedTags,
         status: collectionStatus,
         visibility: dto.visibility ?? CollectionVisibility.PUBLIC,
@@ -1628,6 +1674,13 @@ export class CollectionsService {
         saleMaxPrice: collection.saleMaxPrice,
         saleStartAt: collection.saleStartAt,
         saleEndAt: collection.saleEndAt,
+        sizingMode: collection.sizingMode,
+        customMeasurementKeys: collection.customMeasurementKeys ?? [],
+        customAvailable:
+          collection.sizingMode === 'CUSTOM' ||
+          collection.sizingMode === 'RTW_PLUS_CUSTOM' ||
+          (Array.isArray(collection.customMeasurementKeys) &&
+            collection.customMeasurementKeys.length > 0),
         threadsCount: media.threadsCount,
         commentsCount: media.commentsCount,
         collectionCollabCount: collection.collectionCollabsCount,
@@ -1800,6 +1853,27 @@ export class CollectionsService {
               maxPrice: collection.maxPrice,
               saleMinPrice: collection.saleMinPrice,
               saleMaxPrice: collection.saleMaxPrice,
+              sizingMode: metadata.sizingMode ?? (collection as any).sizingMode,
+              rtwSizes: Array.isArray(metadata.rtwSizes)
+                ? metadata.rtwSizes
+                : (collection as any).rtwSizes,
+              rtwSizeSystem:
+                metadata.rtwSizeSystem ?? (collection as any).rtwSizeSystem,
+              rtwSizeType: metadata.rtwSizeType ?? (collection as any).rtwSizeType,
+              customGender:
+                metadata.customGender ?? (collection as any).customGender,
+              customMeasurementKeys: Array.isArray(metadata.customMeasurementKeys)
+                ? metadata.customMeasurementKeys
+                : (collection as any).customMeasurementKeys,
+              customFreeformPointIds: Array.isArray(
+                metadata.customFreeformPointIds,
+              )
+                ? metadata.customFreeformPointIds
+                : (collection as any).customFreeformPointIds,
+              fitPreference:
+                metadata.fitPreference ?? (collection as any).fitPreference,
+              targetAgeGroup:
+                metadata.targetAgeGroup ?? (collection as any).targetAgeGroup,
               status: action === 'publish' ? 'PUBLISHED' : 'DRAFT',
               ...(action === 'draft'
                 ? { lastActivityAt: now, draftVersion: { increment: 1 } }
@@ -2258,6 +2332,12 @@ export class CollectionsService {
     const resolvedNextTags = Array.isArray(metadata.tags)
       ? sanitizeTags(metadata.tags, 30)
       : collection.tags ?? [];
+    const normalizedManualFilterValueIds = this.normalizeFilterValueIds(
+      metadata.filterValueIds,
+    );
+    const resolvedFilterValueIds = Array.isArray(metadata.filterValueIds)
+      ? normalizedManualFilterValueIds
+      : await this.collectStoreCollectionFilterValueIds(collectionId);
 
     if (action === 'publish') {
       const nextTitle = metadata.title ?? collection.title;
@@ -2458,6 +2538,14 @@ export class CollectionsService {
       );
     }
 
+    if (this.categoriesService) {
+      await this.categoriesService.setEntityFilters(
+        'STORE_COLLECTION',
+        collectionId,
+        this.normalizeFilterValueIds(resolvedFilterValueIds),
+      );
+    }
+
     return updated;
   }
 
@@ -2551,7 +2639,11 @@ export class CollectionsService {
       return { success: true };
     }, { timeout: 15000 });
 
-    await this.recalculateCollectionPriceRange(collectionId);
+    // Do non-critical recompute work asynchronously to keep add-to-collection fast.
+    void Promise.allSettled([
+      this.recalculateCollectionPriceRange(collectionId),
+      this.syncStoreCollectionFiltersFromProducts(collectionId),
+    ]).catch(() => undefined);
     return result;
   }
 
@@ -2591,7 +2683,11 @@ export class CollectionsService {
       return { success: true };
     }, { timeout: 15000 });
 
-    await this.recalculateCollectionPriceRange(collectionId);
+    // Do non-critical recompute work asynchronously to keep remove flow fast.
+    void Promise.allSettled([
+      this.recalculateCollectionPriceRange(collectionId),
+      this.syncStoreCollectionFiltersFromProducts(collectionId),
+    ]).catch(() => undefined);
     return result;
   }
 
@@ -2979,6 +3075,7 @@ export class CollectionsService {
       where: { id: collectionId, status: 'DRAFT', deletedAt: null },
       data: { lastActivityAt: new Date(), draftVersion: { increment: 1 } },
     });
+    await this.syncStoreCollectionFiltersFromProducts(collectionId);
     return created;
   }
 
@@ -2995,8 +3092,23 @@ export class CollectionsService {
     if (expectedDomain === 'STORE') {
       return this.getStoreCollection(id, requesterId);
     }
-    const ok = await this.canViewCollection(id, requesterId);
-    if (!ok) throw new NotFoundException('Collection not found');
+
+    // When scope='all', try design collection first; if not found, fall back to store collection
+    if (!expectedDomain) {
+      const designViewable = await this.canViewCollection(id, requesterId);
+      if (!designViewable) {
+        // Not found in designs table — try store collections
+        try {
+          return await this.getStoreCollection(id, requesterId);
+        } catch {
+          // Store collection also not found — throw the original design not-found
+          throw new NotFoundException('Collection not found');
+        }
+      }
+    } else {
+      const ok = await this.canViewCollection(id, requesterId);
+      if (!ok) throw new NotFoundException('Collection not found');
+    }
     const collection = (await this.prisma.collection.findUnique({
       where: { id },
       include: {
@@ -3203,17 +3315,16 @@ export class CollectionsService {
     if (!collection) throw new NotFoundException('Collection not found');
 
     const isOwner = !!(requesterId && collection.ownerId === requesterId);
-    let products = collection.products as any[];
-    if (!isOwner) {
-      const now = new Date();
-      products = (collection.products || []).filter((link: any) => {
-        const p = link?.product;
-        if (!p) return false;
-        if (p.deletedAt || p.archivedAt || !p.isActive) return false;
-        if (p.publishAt && p.publishAt > now) return false;
-        return true;
-      }) as any[];
-    }
+    const now = new Date();
+    const allowInactiveDraftProducts = isOwner && collection.status === 'DRAFT';
+    const products = (collection.products || []).filter((link: any) => {
+      const p = link?.product;
+      if (!p) return false;
+      if (p.deletedAt || p.archivedAt) return false;
+      if (!allowInactiveDraftProducts && !p.isActive) return false;
+      if (!isOwner && p.publishAt && p.publishAt > now) return false;
+      return true;
+    }) as any[];
 
     const primaryProductLink = (products || [])[0] ?? null;
     const primaryProduct = primaryProductLink?.product;
@@ -3233,6 +3344,20 @@ export class CollectionsService {
         ? firstProductWithCover.product.images[0]
         : null);
 
+    const appliedFilters = this.categoriesService
+      ? await this.categoriesService.getEntityFilters('STORE_COLLECTION', id)
+      : [];
+    const filterValueIds = Array.from(
+      new Set(appliedFilters.map((filter) => filter.valueId)),
+    );
+    const filterSelection = appliedFilters.reduce((acc, filter) => {
+      const current = acc[filter.dimensionId] ?? [];
+      if (!current.includes(filter.valueId)) {
+        acc[filter.dimensionId] = [...current, filter.valueId];
+      }
+      return acc;
+    }, {} as Record<string, string[]>);
+
     return {
       ...collection,
       domain: 'STORE' as const,
@@ -3241,6 +3366,9 @@ export class CollectionsService {
       coverMediaId: null,
       collectionCollabCount: collection.collectionCollabsCount,
       totalThreads: collection.threadsCount,
+      filters: appliedFilters,
+      filterValueIds,
+      filterSelection,
       products,
       coverImageUrl: productCoverUrl,
     };
@@ -3744,6 +3872,8 @@ export class CollectionsService {
 
     const hasNext = items.length > limit;
     const data = hasNext ? items.slice(0, -1) : items;
+    const now = new Date();
+    const isOwnerRequester = requesterId === userId;
 
     const isRemoteMediaValue = (value: unknown): value is string => {
       if (typeof value !== 'string') return false;
@@ -3764,6 +3894,8 @@ export class CollectionsService {
         coverUrl: string | null;
         coverFileId: string | null;
         preview: Array<{ url: string | null; fileId: string | null }>;
+        visibleCount: number;
+        visibleLinks: any[];
       }
     >();
 
@@ -3776,9 +3908,20 @@ export class CollectionsService {
       }
 
       const links = Array.isArray(c.products) ? c.products : [];
+      const visibleLinks = links.filter((link: any) => {
+        const product = link?.product;
+        if (!product) return false;
+        if (product.deletedAt || product.archivedAt || !product.isActive) {
+          return false;
+        }
+        if (!isOwnerRequester && product.publishAt && product.publishAt > now) {
+          return false;
+        }
+        return true;
+      });
       const rawCandidates = Array.from(
         new Set(
-          links
+          visibleLinks
             .flatMap((link: any) => {
               const product = link?.product;
               if (!product) return [];
@@ -3838,6 +3981,8 @@ export class CollectionsService {
         coverUrl,
         coverFileId,
         preview,
+        visibleCount: visibleLinks.length,
+        visibleLinks,
       });
     });
     const signedUrlMap = await this.uploadService.getBatchPublicSignedUrls(
@@ -3848,6 +3993,7 @@ export class CollectionsService {
       items: data.map((c: any) => {
         const logoId = c.owner?.profileImageFile?.id || c.owner?.profileImageId;
         const previewMeta = collectionPreviewById.get(c.id);
+        const visibleCount = previewMeta?.visibleCount ?? 0;
         const coverFromFileId =
           previewMeta?.coverFileId && signedUrlMap.has(previewMeta.coverFileId)
             ? signedUrlMap.get(previewMeta.coverFileId) ?? null
@@ -3894,12 +4040,8 @@ export class CollectionsService {
           coverImage,
           coverFileId: previewMeta?.coverFileId ?? null,
           previewImages,
-          itemCount:
-            typeof c?._count?.products === 'number'
-              ? c._count.products
-              : Array.isArray(c.products)
-                ? c.products.length
-                : 0,
+          products: previewMeta?.visibleLinks ?? [],
+          itemCount: visibleCount,
           collectionCollabCount: c.collectionCollabsCount,
           owner,
         };
@@ -3955,7 +4097,6 @@ export class CollectionsService {
       const productIds = productLinks.map((l) => l.productId);
       if (productIds.length) {
         await this.prisma.cartItem.deleteMany({ where: { productId: { in: productIds } } });
-        await this.prisma.wishlistItem.deleteMany({ where: { productId: { in: productIds } } });
       }
 
       if (previousIndexedTags.length > 0 && this.systemTags) {
@@ -4024,7 +4165,6 @@ export class CollectionsService {
     const productIds = productLinks.map((l) => l.productId);
     if (productIds.length) {
       await this.prisma.cartItem.deleteMany({ where: { productId: { in: productIds } } });
-      await this.prisma.wishlistItem.deleteMany({ where: { productId: { in: productIds } } });
     }
 
     // Create notification for successful deletion (informational, no action link)
@@ -6347,6 +6487,25 @@ export class CollectionsService {
       data.saleStartAt = body.saleStartAt ? new Date(body.saleStartAt) : null;
     if (typeof body.saleEndAt === 'string' || body.saleEndAt === null)
       data.saleEndAt = body.saleEndAt ? new Date(body.saleEndAt) : null;
+    if (typeof body.sizingMode === 'string') data.sizingMode = body.sizingMode;
+    if (Array.isArray(body.rtwSizes)) data.rtwSizes = body.rtwSizes;
+    if (typeof body.rtwSizeSystem === 'string' || body.rtwSizeSystem === null)
+      data.rtwSizeSystem = body.rtwSizeSystem;
+    if (typeof body.rtwSizeType === 'string' || body.rtwSizeType === null)
+      data.rtwSizeType = body.rtwSizeType;
+    if (typeof body.customGender === 'string' || body.customGender === null)
+      data.customGender = body.customGender;
+    if (Array.isArray(body.customMeasurementKeys))
+      data.customMeasurementKeys = body.customMeasurementKeys;
+    if (Array.isArray(body.customFreeformPointIds))
+      data.customFreeformPointIds = body.customFreeformPointIds;
+    if (typeof body.fitPreference === 'string' || body.fitPreference === null)
+      data.fitPreference = body.fitPreference;
+    if (typeof body.targetAgeGroup === 'string') {
+      data.targetAgeGroup = body.targetAgeGroup;
+    } else if (body.targetAgeGroup === null) {
+      data.targetAgeGroup = 'ADULT';
+    }
     if (Array.isArray(body.tags)) {
       nextTags = sanitizeTags(body.tags, 30);
       data.tags = nextTags;
@@ -6503,6 +6662,12 @@ export class CollectionsService {
       const p = link.product;
       if (!p) continue;
 
+      // Deleted/archived/inactive products should no longer participate in
+      // customer-facing collection cart previews.
+      if (p.deletedAt || p.archivedAt || !p.isActive) {
+        continue;
+      }
+
       const effectivePrice = p.salePrice &&
         (!p.saleStartAt || p.saleStartAt <= now) &&
         (!p.saleEndAt || p.saleEndAt >= now)
@@ -6531,19 +6696,15 @@ export class CollectionsService {
         effectivePrice,
         currency: p.currency || p.brand?.currency || 'NGN',
         variants,
+        sizes: Array.isArray(p.sizes) ? p.sizes : [],
+        colors: Array.isArray(p.colors) ? p.colors : [],
         defaultSize: p.sizes?.[0],
         defaultColor: p.colors?.[0],
         allowBackorders: canBackorder,
       };
 
       // Determine availability
-      if (p.deletedAt) {
-        unavailable.push({ ...item, reason: 'deleted' });
-      } else if (p.archivedAt) {
-        unavailable.push({ ...item, reason: 'archived' });
-      } else if (!p.isActive) {
-        unavailable.push({ ...item, reason: 'inactive' });
-      } else if (p.publishAt && p.publishAt > now) {
+      if (p.publishAt && p.publishAt > now) {
         unavailable.push({
           ...item,
           reason: 'scheduled',
@@ -6572,7 +6733,7 @@ export class CollectionsService {
       summary: {
         availableCount: available.length,
         unavailableCount: unavailable.length,
-        totalCount: links.length,
+        totalCount: available.length + unavailable.length,
         availableSubtotal,
         currency: available[0]?.currency || 'NGN',
       },
@@ -7289,14 +7450,6 @@ export class CollectionsService {
 
     // Remove cart items from non-approved users
     const deleted = await this.prisma.cartItem.deleteMany({
-      where: {
-        productId: { in: productIds },
-        userId: { notIn: [...approvedViewerIds, ownerId] },
-      },
-    });
-
-    // Also clean wishlists
-    await this.prisma.wishlistItem.deleteMany({
       where: {
         productId: { in: productIds },
         userId: { notIn: [...approvedViewerIds, ownerId] },

@@ -144,7 +144,8 @@ export class AuthService {
           data: {
             id: uuidv4(),
             username,
-            role: signupDto.role ?? Role.User,
+            // Never trust role from client-controlled signup payload.
+            role: Role.User,
             firstName: dbFirstName,
             lastName: dbLastName,
             email: signupDto.email,
@@ -186,6 +187,7 @@ export class AuthService {
       // TODO: Send email to user.email with verificationLink and verificationCode
 
       let accessToken: string;
+      let refreshToken: string | undefined;
       try {
         const tokenResult = await this.tokenService.generateTokens(
           user,
@@ -193,6 +195,7 @@ export class AuthService {
           res,
         );
         accessToken = tokenResult.accessToken;
+        refreshToken = tokenResult.refreshToken;
       } catch (tokenError) {
         this.logger.error('Token generation failed:', tokenError);
         // If token generation fails, we should probably inform the user or fail the request
@@ -202,16 +205,17 @@ export class AuthService {
         );
       }
 
-      // Notify SIGNUP event (account created)
-      try {
-        await this.notifications.create(user.id, NotificationType.SIGNUP, {
+      // Notify SIGNUP event (account created) without blocking signup latency.
+      void this.notifications
+        .create(user.id, NotificationType.SIGNUP, {
           payload: { action: 'SIGNUP', email: user.email },
-        });
-      } catch { }
+        })
+        .catch(() => undefined);
 
       return {
         user: toAuthUserResponse(user),
         accessToken,
+        ...(refreshToken ? { refreshToken } : {}),
         message: 'Welcome TO THE INDUSTRY!',
       };
     } catch (error) {
@@ -235,6 +239,7 @@ export class AuthService {
       }
 
       let accessToken: string;
+      let refreshToken: string | undefined;
       try {
         const tokenResult = await this.tokenService.generateTokens(
           user,
@@ -242,6 +247,7 @@ export class AuthService {
           res,
         );
         accessToken = tokenResult.accessToken;
+        refreshToken = tokenResult.refreshToken;
       } catch (tokenError) {
         this.logger.error('Token generation failed during login:', tokenError);
         throw new UnauthorizedException(
@@ -249,26 +255,27 @@ export class AuthService {
         );
       }
 
-      // Notify LOGIN event (login activity)
-      try {
-        const forwarded = req.headers['x-forwarded-for'];
-        const ip = Array.isArray(forwarded)
-          ? (forwarded[0] ?? null)
-          : typeof forwarded === 'string' && forwarded.length
-            ? forwarded.split(',')[0].trim()
-            : null;
-        const ipAddress = ip || req.ip || null;
-        await this.notifications.create(user.id, NotificationType.LOGIN, {
+      // Notify LOGIN event (login activity) without blocking login latency.
+      const forwarded = req.headers['x-forwarded-for'];
+      const ip = Array.isArray(forwarded)
+        ? (forwarded[0] ?? null)
+        : typeof forwarded === 'string' && forwarded.length
+          ? forwarded.split(',')[0].trim()
+          : null;
+      const ipAddress = ip || req.ip || null;
+      void this.notifications
+        .create(user.id, NotificationType.LOGIN, {
           payload: {
             ip: ipAddress,
             userAgent: req.headers['user-agent'] ?? null,
           },
-        });
-      } catch { }
+        })
+        .catch(() => undefined);
 
       return {
         user: toAuthUserResponse(user),
         accessToken,
+        ...(refreshToken ? { refreshToken } : {}),
         message: 'Welcome Back',
       };
     } catch (error) {
@@ -289,7 +296,10 @@ export class AuthService {
     try {
       const user = await this.prisma.user
         .findFirst({
-          where: { email: normalizedEmail },
+          where: {
+            email: normalizedEmail,
+            isActive: { not: 'Inactive' },
+          },
           select: {
             ...authUserSelect,
             password: true,
@@ -445,6 +455,11 @@ export class AuthService {
 
   // Update user (not profile)
   async updateUser(userId: string, dto: UpdateAuthDto) {
+    if ((dto as any).password !== undefined || (dto as any).role !== undefined) {
+      throw new BadRequestException(
+        'Password and role must be updated via dedicated endpoints',
+      );
+    }
     const updatedUser = await this.prisma.user.update({
       where: { id: userId },
       data: dto,

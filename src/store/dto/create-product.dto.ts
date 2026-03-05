@@ -12,6 +12,7 @@ import {
   ValidateNested,
   IsInt,
   IsUUID,
+  IsIn,
 } from 'class-validator';
 import { Type, Transform } from 'class-transformer';
 
@@ -166,6 +167,45 @@ export class CreateProductDto {
   colors?: string[];
 
   @IsOptional()
+  @IsIn(['NONE', 'RTW', 'CUSTOM', 'RTW_PLUS_CUSTOM'])
+  sizingMode?: 'NONE' | 'RTW' | 'CUSTOM' | 'RTW_PLUS_CUSTOM';
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  rtwSizeSystem?: string;
+
+  @IsOptional()
+  @IsIn(['PREDEFINED', 'FREEFORM', 'MIXED'])
+  rtwSizeType?: 'PREDEFINED' | 'FREEFORM' | 'MIXED';
+
+  @IsOptional()
+  @IsBoolean()
+  rtwLinkedToInventory?: boolean;
+
+  @IsOptional()
+  @IsIn(['MEN', 'WOMEN', 'UNISEX'])
+  customGender?: 'MEN' | 'WOMEN' | 'UNISEX';
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  customMeasurementKeys?: string[];
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  customFreeformPointIds?: string[];
+
+  @IsOptional()
+  @IsIn(['SLIM', 'REGULAR', 'LOOSE', 'OVERSIZED'])
+  fitPreference?: 'SLIM' | 'REGULAR' | 'LOOSE' | 'OVERSIZED';
+
+  @IsOptional()
+  @IsIn(['ADULT', 'CHILD'])
+  targetAgeGroup?: 'ADULT' | 'CHILD';
+
+  @IsOptional()
   colorImages?: Record<string, string>;
 
   @IsOptional()
@@ -208,6 +248,11 @@ export class CreateProductDto {
   @IsArray()
   @IsString({ each: true })
   tags?: string[];
+
+  @IsOptional()
+  @IsArray()
+  @IsUUID('4', { each: true })
+  filterValueIds?: string[];
 
   @IsOptional()
   @IsEnum(ProductGender)

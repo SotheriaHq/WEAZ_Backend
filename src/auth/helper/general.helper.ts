@@ -94,6 +94,14 @@ export class TokenService {
     );
   }
 
+  private isMobileClient(req: Request): boolean {
+    const platformHeader = req.headers['x-client-platform'];
+    const value = Array.isArray(platformHeader)
+      ? platformHeader[0]
+      : platformHeader;
+    return typeof value === 'string' && value.toLowerCase().includes('mobile');
+  }
+
   private extractClientIp(req: Request): string | null {
     const forwarded = req.headers['x-forwarded-for'];
     if (typeof forwarded === 'string' && forwarded.length > 0) {
@@ -195,7 +203,10 @@ export class TokenService {
 
       this.attachAuthCookies(res, accessToken, refreshToken);
 
-      return { accessToken };
+      return {
+        accessToken,
+        refreshToken: this.isMobileClient(req) ? refreshToken : undefined,
+      };
     } catch (error: any) {
       this.logger.error('Token generation failed:', error.message);
       throw new Error('Failed to generate tokens');
@@ -241,7 +252,10 @@ export class TokenService {
 
       this.attachAuthCookies(res, accessToken, rotatedRefreshToken);
 
-      return { accessToken };
+      return {
+        accessToken,
+        refreshToken: this.isMobileClient(req) ? rotatedRefreshToken : undefined,
+      };
     } catch (error: any) {
       this.logger.error('Refresh token error:', error.message, error.stack);
       throw new UnauthorizedException(`Refresh token failed: ${error.message}`);

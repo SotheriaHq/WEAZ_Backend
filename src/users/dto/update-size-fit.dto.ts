@@ -1,4 +1,21 @@
-import { IsInt, IsObject, IsOptional, IsString, Max, Min } from 'class-validator';
+import { IsEnum, IsInt, IsObject, IsOptional, IsString, Max, Min } from 'class-validator';
+
+export enum LengthUnitDto {
+  CM = 'CM',
+  IN = 'IN',
+}
+
+export enum WeightUnitDto {
+  KG = 'KG',
+  LBS = 'LBS',
+}
+
+export enum FitPreferenceDto {
+  SLIM = 'SLIM',
+  REGULAR = 'REGULAR',
+  LOOSE = 'LOOSE',
+  OVERSIZED = 'OVERSIZED',
+}
 
 export class UpdateSizeFitDto {
   @IsOptional()
@@ -11,8 +28,29 @@ export class UpdateSizeFitDto {
 
   @IsOptional()
   @IsInt()
-  @Min(7)
-  @Max(60)
+  @Min(14)
+  @Max(90)
   requireUpdateEveryDays?: number;
+
+  @IsOptional()
+  @IsString()
+  label?: string;
+
+  @IsOptional()
+  @IsEnum(LengthUnitDto)
+  preferredLengthUnit?: LengthUnitDto;
+
+  @IsOptional()
+  @IsEnum(WeightUnitDto)
+  preferredWeightUnit?: WeightUnitDto;
+
+  @IsOptional()
+  @IsEnum(FitPreferenceDto)
+  fitPreference?: FitPreferenceDto;
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  version?: number;
 }
 

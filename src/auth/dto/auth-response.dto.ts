@@ -148,6 +148,9 @@ export class AuthTokensResponseDto {
   @ApiProperty({ required: false, nullable: true })
   accessToken?: string | null;
 
+  @ApiProperty({ required: false, nullable: true })
+  refreshToken?: string | null;
+
   @ApiProperty({ required: false })
   message?: string;
 }

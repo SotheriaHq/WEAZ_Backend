@@ -20,6 +20,11 @@ import { CreateProductDto, UpdateProductDto } from './dto/create-product.dto';
 import { AddToCartDto, UpdateCartItemDto } from './dto/cart.dto';
 import { AddToWishlistDto } from './dto/wishlist.dto';
 import { CheckoutDto } from './dto/checkout.dto';
+import {
+  BulkArchiveProductsDto,
+  BulkDeleteProductsDto,
+  BulkUnpublishProductsDto,
+} from './dto/bulk-product-actions.dto';
 import { UpdateStoreNameDto } from './dto/update-store-name.dto';
 import { UpdateStoreProfileDto } from './dto/update-store-profile.dto';
 import { UpdateStorePoliciesDto } from './dto/update-store-policies.dto';
@@ -170,6 +175,36 @@ export class StoreController {
   @Post('products/:id/toggle-featured')
   async toggleFeatured(@Param('id') productId: string, @Req() req: any) {
     return this.storeService.toggleFeatured(req.user.id, productId);
+  }
+
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Post('products/bulk/delete')
+  @UseInterceptors(IdempotencyInterceptor)
+  async bulkDeleteProducts(
+    @Body(ValidationPipe) dto: BulkDeleteProductsDto,
+    @Req() req: any,
+  ) {
+    return this.storeService.bulkDeleteProducts(req.user.id, dto);
+  }
+
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Post('products/bulk/archive')
+  @UseInterceptors(IdempotencyInterceptor)
+  async bulkArchiveProducts(
+    @Body(ValidationPipe) dto: BulkArchiveProductsDto,
+    @Req() req: any,
+  ) {
+    return this.storeService.bulkArchiveProducts(req.user.id, dto);
+  }
+
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Post('products/bulk/unpublish')
+  @UseInterceptors(IdempotencyInterceptor)
+  async bulkUnpublishProducts(
+    @Body(ValidationPipe) dto: BulkUnpublishProductsDto,
+    @Req() req: any,
+  ) {
+    return this.storeService.bulkUnpublishProducts(req.user.id, dto);
   }
 
   @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
