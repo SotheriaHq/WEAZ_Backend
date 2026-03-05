@@ -24,6 +24,8 @@ import { UserHelperService } from './helper/user-helper.service';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { NotificationsService } from 'src/notifications/notifications.service';
 import { EmailVerificationHelperService } from './helper/email-verification-helper.service';
+import { createHash, randomBytes } from 'crypto';
+import { DEFAULT_ADMIN_PERMISSIONS } from 'src/admin/constants/permissions';
 
 @Injectable()
 export class AuthService {
@@ -387,11 +389,46 @@ export class AuthService {
 
   async updateUserRole(userId: string, role: Role) {
     try {
+      const target = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { id: true, role: true, status: true },
+      });
+      if (!target) {
+        throw new BadRequestException('User not found');
+      }
+
+      if (target.role === Role.SuperAdmin && role !== Role.SuperAdmin) {
+        const activeSuperAdmins = await this.prisma.user.count({
+          where: { role: Role.SuperAdmin, status: 'ACTIVE' },
+        });
+        if (activeSuperAdmins <= 1) {
+          throw new BadRequestException('Cannot demote the last active SuperAdmin');
+        }
+      }
+
       const updatedUser = await this.prisma.user.update({
         where: { id: userId },
         data: { role },
         select: authUserSelect,
       });
+
+      if (target.role !== Role.Admin && role === Role.Admin) {
+        await this.prisma.adminPermissionGrant.createMany({
+          data: DEFAULT_ADMIN_PERMISSIONS.map((permissionCode) => ({
+            id: uuidv4(),
+            userId,
+            permissionCode,
+            grantedById: userId,
+          })),
+          skipDuplicates: true,
+        });
+      }
+
+      if (target.role === Role.Admin && role !== Role.Admin) {
+        await this.prisma.adminPermissionGrant.deleteMany({ where: { userId } });
+      }
+
+      await this.tokenService.revokeAllRefreshTokens(userId);
       return toAuthUserResponse(updatedUser);
     } catch (error) {
       this.logger.error('Role update error:', error);
@@ -472,9 +509,15 @@ export class AuthService {
   async softDeleteUser(userId: string) {
     const user = await this.prisma.user.update({
       where: { id: userId },
-      data: { isActive: 'Inactive' },
+      data: {
+        isActive: 'Inactive',
+        status: 'DEACTIVATED',
+        deactivatedAt: new Date(),
+        deactivatedReason: 'Deactivated via deprecated /auth/user/:id endpoint',
+      },
       select: authUserSelect,
     });
+    await this.tokenService.revokeAllRefreshTokens(userId);
     return {
       message: 'User account deactivated',
       user: toAuthUserResponse(user),
@@ -509,5 +552,137 @@ export class AuthService {
         `Profile fetch failed: ${error.message || 'Unknown error'}`,
       );
     }
+  }
+
+  async requestAdminPasswordReset(email: string) {
+    const normalizedEmail = email?.trim().toLowerCase();
+    if (!normalizedEmail) {
+      throw new BadRequestException('Email is required');
+    }
+
+    const user = await this.prisma.user.findUnique({
+      where: { email: normalizedEmail },
+      select: { id: true, role: true },
+    });
+
+    if (!user || (user.role !== Role.Admin && user.role !== Role.SuperAdmin)) {
+      // Return generic success response to prevent account enumeration
+      return { message: 'If the account exists, a reset link has been generated.' };
+    }
+
+    const rawToken = randomBytes(32).toString('hex');
+    const tokenHash = createHash('sha256').update(rawToken).digest('hex');
+    const expiresAt = new Date(Date.now() + 60 * 60 * 1000);
+
+    await this.prisma.passwordResetToken.create({
+      data: {
+        id: uuidv4(),
+        userId: user.id,
+        tokenHash,
+        expiresAt,
+      },
+    });
+
+    // In production this should be emailed; for now return token for integration.
+    return {
+      message: 'Password reset token generated',
+      resetToken: rawToken,
+      expiresAt,
+    };
+  }
+
+  async resetAdminPassword(token: string, newPassword: string) {
+    if (!token || !newPassword) {
+      throw new BadRequestException('Token and new password are required');
+    }
+
+    const tokenHash = createHash('sha256').update(token).digest('hex');
+
+    const resetToken = await this.prisma.passwordResetToken.findFirst({
+      where: {
+        tokenHash,
+        usedAt: null,
+        expiresAt: { gt: new Date() },
+      },
+      include: {
+        user: {
+          select: {
+            id: true,
+            role: true,
+          },
+        },
+      },
+    });
+
+    if (
+      !resetToken ||
+      (resetToken.user.role !== Role.Admin &&
+        resetToken.user.role !== Role.SuperAdmin)
+    ) {
+      throw new UnauthorizedException('Invalid or expired reset token');
+    }
+
+    const password = await this.passwordService.hashPassword(newPassword);
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.user.update({
+        where: { id: resetToken.userId },
+        data: {
+          password,
+          mustResetPassword: false,
+        },
+      });
+
+      await tx.passwordResetToken.update({
+        where: { id: resetToken.id },
+        data: { usedAt: new Date() },
+      });
+    });
+
+    await this.tokenService.revokeAllRefreshTokens(resetToken.userId);
+
+    return { message: 'Password reset successful' };
+  }
+
+  async changePasswordForAuthenticatedUser(
+    userId: string,
+    currentPassword: string | undefined,
+    newPassword: string,
+  ) {
+    if (!newPassword) {
+      throw new BadRequestException('New password is required');
+    }
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, password: true, mustResetPassword: true },
+    });
+    if (!user) throw new UnauthorizedException('User not found');
+
+    // If not in forced-reset mode, verify current password.
+    if (!user.mustResetPassword) {
+      if (!currentPassword) {
+        throw new BadRequestException('Current password is required');
+      }
+
+      const valid = await this.passwordService.verifyPassword(
+        user.password,
+        currentPassword,
+      );
+      if (!valid) {
+        throw new UnauthorizedException('Current password is incorrect');
+      }
+    }
+
+    const password = await this.passwordService.hashPassword(newPassword);
+
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { password, mustResetPassword: false },
+    });
+
+    await this.tokenService.revokeAllRefreshTokens(userId);
+
+    return { message: 'Password updated successfully' };
   }
 }

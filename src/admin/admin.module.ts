@@ -13,6 +13,8 @@ import { FeatureFlagsService } from './feature-flags/feature-flags.service';
 import { AdminSlaService } from './sla/admin-sla.service';
 import { AdminPayoutsService } from './payouts/admin-payouts.service';
 import { AdminNotificationsService } from './notifications/admin-notifications.service';
+import { AdminProductsService } from './products/admin-products.service';
+import { AdminCollectionsService } from './collections/admin-collections.service';
 
 // Controllers
 import { AdminUsersController } from './users/admin-users.controller';
@@ -25,6 +27,8 @@ import { AdminSlaController } from './sla/admin-sla.controller';
 import { AdminPayoutsController } from './payouts/admin-payouts.controller';
 import { AdminNotificationsController } from './notifications/admin-notifications.controller';
 import { AdminAuditController } from './audit/admin-audit.controller';
+import { AdminProductsController } from './products/admin-products.controller';
+import { AdminCollectionsController } from './collections/admin-collections.controller';
 
 @Module({
   imports: [PrismaModule, AuthModule],
@@ -39,6 +43,8 @@ import { AdminAuditController } from './audit/admin-audit.controller';
     AdminPayoutsController,
     AdminNotificationsController,
     AdminAuditController,
+    AdminProductsController,
+    AdminCollectionsController,
   ],
   providers: [
     AdminAuditService,
@@ -51,6 +57,8 @@ import { AdminAuditController } from './audit/admin-audit.controller';
     AdminSlaService,
     AdminPayoutsService,
     AdminNotificationsService,
+    AdminProductsService,
+    AdminCollectionsService,
   ],
   exports: [FeatureFlagsService, AdminAuditService],
 })

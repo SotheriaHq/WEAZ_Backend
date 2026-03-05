@@ -58,6 +58,7 @@ export const authUserSelect = Prisma.validator<Prisma.UserSelect>()({
   bannerImageId: true,
   isEmailVerified: true,
   isActive: true,
+  mustResetPassword: true,
   createdAt: true,
   updatedAt: true,
 });
@@ -148,6 +149,8 @@ export const toAuthUserResponse = (
   isEmailVerified: user.isEmailVerified,
   storeId: user.brand?.id ?? null,
   isActive: user.isActive,
+  status: (user as any).status ?? null,
+  mustResetPassword: (user as any).mustResetPassword ?? false,
   createdAt: user.createdAt.toISOString(),
   updatedAt: user.updatedAt.toISOString(),
 });

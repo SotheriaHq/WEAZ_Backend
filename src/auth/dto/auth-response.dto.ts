@@ -135,6 +135,12 @@ export class AuthUserResponseDto {
   @ApiProperty()
   isActive: string;
 
+  @ApiProperty({ required: false, nullable: true })
+  status?: string | null;
+
+  @ApiProperty({ required: false })
+  mustResetPassword?: boolean;
+
   @ApiProperty()
   createdAt: string;
 

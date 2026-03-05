@@ -21,7 +21,10 @@ export class AdminAuditService {
   constructor(private readonly prisma: PrismaService) {}
 
   private toJson(value?: Record<string, unknown>) {
-    return (value ?? null) as Prisma.InputJsonValue | Prisma.JsonNull;
+    if (value === undefined) {
+      return Prisma.JsonNull;
+    }
+    return value as Prisma.InputJsonValue;
   }
 
   /**

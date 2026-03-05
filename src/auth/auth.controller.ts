@@ -103,6 +103,38 @@ export class AuthController {
     return this.authService.CreateUser(dto, req, res);
   }
 
+  @Post('admin/reset-password/request')
+  @ApiOperation({ summary: 'Request admin reset password token' })
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
+  async requestAdminResetPassword(@Body('email') email: string) {
+    return this.authService.requestAdminPasswordReset(email);
+  }
+
+  @Post('admin/reset-password/confirm')
+  @ApiOperation({ summary: 'Confirm admin reset password with token' })
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
+  async confirmAdminResetPassword(
+    @Body('token') token: string,
+    @Body('newPassword') newPassword: string,
+  ) {
+    return this.authService.resetAdminPassword(token, newPassword);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Post('admin/change-password')
+  @ApiOperation({ summary: 'Change password for authenticated admin/user' })
+  async changeAuthenticatedPassword(
+    @Req() req: Request & { user: { id: string } },
+    @Body('currentPassword') currentPassword: string,
+    @Body('newPassword') newPassword: string,
+  ) {
+    return this.authService.changePasswordForAuthenticatedUser(
+      req.user.id,
+      currentPassword,
+      newPassword,
+    );
+  }
+
   @Post('refresh')
   @ApiOperation({ summary: 'Refresh access token' })
   @ApiResponse({ status: 200, description: 'Token refreshed' })
@@ -257,7 +289,12 @@ export class AuthController {
   @ApiResponse({ status: 200, description: 'Role updated' })
   @ApiResponse({ status: 401, description: 'Unauthorized' })
   @UseInterceptors(TransformInterceptor)
-  async updateUserRole(@Param('id') id: string, @Body('role') role: Role) {
+  async updateUserRole(
+    @Param('id') id: string,
+    @Body('role') role: Role,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    res.setHeader('X-Deprecated', 'true');
     // Only SuperAdmin can access
     return this.authService.updateUserRole(id, role);
   }
@@ -291,7 +328,8 @@ export class AuthController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.SuperAdmin)
   @ApiOperation({ summary: 'Get all users' })
-  async getAllUsers() {
+  async getAllUsers(@Res({ passthrough: true }) res: Response) {
+    res.setHeader('X-Deprecated', 'true');
     return this.authService.getAllUsers();
   }
 
@@ -300,7 +338,11 @@ export class AuthController {
   @Roles(Role.SuperAdmin)
   @ApiOperation({ summary: 'Get single user' })
   @ApiParam({ name: 'id', required: true })
-  async getUserById(@Param('id') id: string) {
+  async getUserById(
+    @Param('id') id: string,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    res.setHeader('X-Deprecated', 'true');
     return this.authService.getUserById(id);
   }
 
@@ -313,7 +355,9 @@ export class AuthController {
   async updateUser(
     @Param('id') id: string,
     @Body(ValidationPipe) dto: UpdateAuthDto,
+    @Res({ passthrough: true }) res: Response,
   ) {
+    res.setHeader('X-Deprecated', 'true');
     return this.authService.updateUser(id, dto);
   }
 
@@ -322,7 +366,11 @@ export class AuthController {
   @Roles(Role.SuperAdmin)
   @ApiOperation({ summary: 'Soft delete user (set isActive to Inactive)' })
   @ApiParam({ name: 'id', required: true })
-  async softDeleteUser(@Param('id') id: string) {
+  async softDeleteUser(
+    @Param('id') id: string,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    res.setHeader('X-Deprecated', 'true');
     return this.authService.softDeleteUser(id);
   }
 }
