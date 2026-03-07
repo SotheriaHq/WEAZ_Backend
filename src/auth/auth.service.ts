@@ -5,17 +5,21 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { CreateUserDto } from './dto/create-auth.dto';
-import { UpdateAuthDto } from './dto/update-auth.dto';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { PasswordService } from 'src/auth/helper/password.service';
 import { LoginDto } from './dto/login-auth.dto';
 import { v4 as uuidv4 } from 'uuid';
-import { UserType, Role, NotificationType } from '@prisma/client';
+import {
+  UserType,
+  Role,
+  NotificationType,
+  UserStatus,
+  Prisma,
+} from '@prisma/client';
 import {
   authUserSelect,
   profileUserSelect,
   toAuthUserResponse,
-  toAuthUsersResponse,
   AuthUser,
 } from 'src/auth/helper/prisma-select.helper';
 import { TokenService } from './helper/general.helper';
@@ -24,8 +28,9 @@ import { UserHelperService } from './helper/user-helper.service';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { NotificationsService } from 'src/notifications/notifications.service';
 import { EmailVerificationHelperService } from './helper/email-verification-helper.service';
+import { EmailService } from 'src/email/email.service';
+import * as emailTemplates from 'src/email/email.templates';
 import { createHash, randomBytes } from 'crypto';
-import { DEFAULT_ADMIN_PERMISSIONS } from 'src/admin/constants/permissions';
 
 @Injectable()
 export class AuthService {
@@ -38,7 +43,12 @@ export class AuthService {
     private readonly userHelperService: UserHelperService,
     private readonly emailVerificationHelper: EmailVerificationHelperService,
     private readonly notifications: NotificationsService,
+    private readonly emailService: EmailService,
   ) { }
+
+  private extractClientIp(req: Request): string | null {
+    return req.ip || req.socket?.remoteAddress || null;
+  }
 
   private validateBrandRequirements(signupDto: CreateUserDto): void {
     const missingFields: string[] = [];
@@ -181,12 +191,19 @@ export class AuthService {
           throw new BadRequestException('Failed to create user account');
         });
 
-      // TODO: Prepare and send verification link to the user's email
-      // const verificationLink = this.emailVerificationHelper.generateVerificationLink(
-      //   user.id,
-      //   verificationCode,
-      // );
-      // TODO: Send email to user.email with verificationLink and verificationCode
+// Send verification email
+    const verificationLink = this.emailVerificationHelper.generateVerificationLink(
+      user.id,
+      verificationCode,
+    );
+    const verificationEmail = emailTemplates.emailVerificationEmail(
+      verificationCode,
+      verificationLink,
+      this.emailService.getAppName(),
+    );
+    void this.emailService
+      .send(user.email, verificationEmail.subject, verificationEmail.html, verificationEmail.text)
+      .catch(() => undefined);
 
       let accessToken: string;
       let refreshToken: string | undefined;
@@ -258,13 +275,7 @@ export class AuthService {
       }
 
       // Notify LOGIN event (login activity) without blocking login latency.
-      const forwarded = req.headers['x-forwarded-for'];
-      const ip = Array.isArray(forwarded)
-        ? (forwarded[0] ?? null)
-        : typeof forwarded === 'string' && forwarded.length
-          ? forwarded.split(',')[0].trim()
-          : null;
-      const ipAddress = ip || req.ip || null;
+      const ipAddress = this.extractClientIp(req);
       void this.notifications
         .create(user.id, NotificationType.LOGIN, {
           payload: {
@@ -300,7 +311,6 @@ export class AuthService {
         .findFirst({
           where: {
             email: normalizedEmail,
-            isActive: { not: 'Inactive' },
           },
           select: {
             ...authUserSelect,
@@ -329,8 +339,26 @@ export class AuthService {
         return null;
       }
 
+      if (user.status !== UserStatus.ACTIVE) {
+        throw new UnauthorizedException(
+          'User account is suspended or deactivated. Submit a reactivation request.',
+        );
+      }
+
+      if (
+        user.mustResetPassword &&
+        (user.role === Role.Admin || user.role === Role.SuperAdmin)
+      ) {
+        throw new UnauthorizedException(
+          'Password reset required for this admin account before login',
+        );
+      }
+
       return publicUser as AuthUser;
     } catch (error) {
+      if (error instanceof UnauthorizedException) {
+        throw error;
+      }
       this.logger.error('User validation error:', error);
       return null;
     }
@@ -387,55 +415,6 @@ export class AuthService {
     }
   }
 
-  async updateUserRole(userId: string, role: Role) {
-    try {
-      const target = await this.prisma.user.findUnique({
-        where: { id: userId },
-        select: { id: true, role: true, status: true },
-      });
-      if (!target) {
-        throw new BadRequestException('User not found');
-      }
-
-      if (target.role === Role.SuperAdmin && role !== Role.SuperAdmin) {
-        const activeSuperAdmins = await this.prisma.user.count({
-          where: { role: Role.SuperAdmin, status: 'ACTIVE' },
-        });
-        if (activeSuperAdmins <= 1) {
-          throw new BadRequestException('Cannot demote the last active SuperAdmin');
-        }
-      }
-
-      const updatedUser = await this.prisma.user.update({
-        where: { id: userId },
-        data: { role },
-        select: authUserSelect,
-      });
-
-      if (target.role !== Role.Admin && role === Role.Admin) {
-        await this.prisma.adminPermissionGrant.createMany({
-          data: DEFAULT_ADMIN_PERMISSIONS.map((permissionCode) => ({
-            id: uuidv4(),
-            userId,
-            permissionCode,
-            grantedById: userId,
-          })),
-          skipDuplicates: true,
-        });
-      }
-
-      if (target.role === Role.Admin && role !== Role.Admin) {
-        await this.prisma.adminPermissionGrant.deleteMany({ where: { userId } });
-      }
-
-      await this.tokenService.revokeAllRefreshTokens(userId);
-      return toAuthUserResponse(updatedUser);
-    } catch (error) {
-      this.logger.error('Role update error:', error);
-      throw new BadRequestException('Failed to update user role');
-    }
-  }
-
   // Verify email by link
   async verifyEmailByLink(userId: string, code: string) {
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
@@ -474,56 +453,6 @@ export class AuthService {
     return { message: 'Email verified successfully' };
   }
 
-  // Get all users
-  async getAllUsers() {
-    const users = await this.prisma.user.findMany({ select: authUserSelect });
-    return toAuthUsersResponse(users);
-  }
-
-  // Get single user
-  async getUserById(userId: string) {
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-      select: authUserSelect,
-    });
-    if (!user) throw new BadRequestException('User not found');
-    return toAuthUserResponse(user);
-  }
-
-  // Update user (not profile)
-  async updateUser(userId: string, dto: UpdateAuthDto) {
-    if ((dto as any).password !== undefined || (dto as any).role !== undefined) {
-      throw new BadRequestException(
-        'Password and role must be updated via dedicated endpoints',
-      );
-    }
-    const updatedUser = await this.prisma.user.update({
-      where: { id: userId },
-      data: dto,
-      select: authUserSelect,
-    });
-    return toAuthUserResponse(updatedUser);
-  }
-
-  // Soft delete user (set isActive to 'Inactive')
-  async softDeleteUser(userId: string) {
-    const user = await this.prisma.user.update({
-      where: { id: userId },
-      data: {
-        isActive: 'Inactive',
-        status: 'DEACTIVATED',
-        deactivatedAt: new Date(),
-        deactivatedReason: 'Deactivated via deprecated /auth/user/:id endpoint',
-      },
-      select: authUserSelect,
-    });
-    await this.tokenService.revokeAllRefreshTokens(userId);
-    return {
-      message: 'User account deactivated',
-      user: toAuthUserResponse(user),
-    };
-  }
-
   async getProfileWithImage(userId: string) {
     try {
       const user = await this.prisma.user
@@ -552,6 +481,86 @@ export class AuthService {
         `Profile fetch failed: ${error.message || 'Unknown error'}`,
       );
     }
+  }
+
+  async requestAccountReactivation(email: string, reason: string) {
+    const genericResponse = {
+      message:
+        'If this account is suspended or deactivated, your reactivation request has been submitted.',
+    };
+
+    const normalizedEmail = email?.trim().toLowerCase();
+    const normalizedReason = reason?.trim();
+    if (!normalizedEmail || !normalizedReason) {
+      throw new BadRequestException('Email and reason are required');
+    }
+    if (normalizedReason.length < 15) {
+      throw new BadRequestException(
+        'Reason must be at least 15 characters long',
+      );
+    }
+    if (normalizedReason.length > 1200) {
+      throw new BadRequestException(
+        'Reason must be at most 1200 characters long',
+      );
+    }
+
+    const user = await this.prisma.user.findUnique({
+      where: { email: normalizedEmail },
+      select: { id: true, status: true, email: true },
+    });
+
+    // Generic response to avoid account status/email enumeration
+    if (!user || user.status === UserStatus.ACTIVE) {
+      return genericResponse;
+    }
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        return await this.prisma.$transaction(
+          async (tx) => {
+            const existingPending =
+              await tx.accountReactivationRequest.findFirst({
+                where: { userId: user.id, status: 'PENDING' },
+                select: { id: true },
+              });
+
+            if (existingPending) {
+              return {
+                message:
+                  'A reactivation request is already pending review. We will contact you after review.',
+              };
+            }
+
+            await tx.accountReactivationRequest.create({
+              data: {
+                id: uuidv4(),
+                userId: user.id,
+                emailSnapshot: user.email,
+                reason: normalizedReason,
+              },
+            });
+
+            return {
+              message:
+                'Your reactivation request has been submitted. Admin review is pending.',
+            };
+          },
+          {
+            isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+          },
+        );
+      } catch (error: any) {
+        if (error?.code === 'P2034' && attempt < 2) {
+          continue;
+        }
+        throw error;
+      }
+    }
+
+    throw new BadRequestException(
+      'Could not submit reactivation request at this time. Please retry.',
+    );
   }
 
   async requestAdminPasswordReset(email: string) {
@@ -583,12 +592,18 @@ export class AuthService {
       },
     });
 
-    // In production this should be emailed; for now return token for integration.
-    return {
-      message: 'Password reset token generated',
-      resetToken: rawToken,
-      expiresAt,
-    };
+    // Send reset email
+    const baseUrl = (process.env.WEB_APP_URL || 'http://localhost:5173').replace(/\/$/, '');
+    const resetLink = `${baseUrl}/admin/reset-password?token=${rawToken}`;
+    const resetEmail = emailTemplates.passwordResetEmail(
+      resetLink,
+      this.emailService.getAppName(),
+    );
+    void this.emailService
+      .send(normalizedEmail, resetEmail.subject, resetEmail.html, resetEmail.text)
+      .catch(() => undefined);
+
+    return { message: 'If the account exists, a reset link has been generated.' };
   }
 
   async resetAdminPassword(token: string, newPassword: string) {
@@ -630,6 +645,7 @@ export class AuthService {
         data: {
           password,
           mustResetPassword: false,
+          authVersion: { increment: 1 },
         },
       });
 
@@ -678,7 +694,11 @@ export class AuthService {
 
     await this.prisma.user.update({
       where: { id: userId },
-      data: { password, mustResetPassword: false },
+      data: {
+        password,
+        mustResetPassword: false,
+        authVersion: { increment: 1 },
+      },
     });
 
     await this.tokenService.revokeAllRefreshTokens(userId);

@@ -172,5 +172,6 @@ export interface AuthJwtClaims {
   email: string;
   firstName: string;
   lastName: string;
+  authVersion: number;
   permissions?: string[];
 }

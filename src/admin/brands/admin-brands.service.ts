@@ -5,15 +5,20 @@ import {
   Logger,
 } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
-import { AdminAuditAction } from '@prisma/client';
+import { AdminAuditAction, BrandVerificationStatus } from '@prisma/client';
 import { v4 as uuidv4 } from 'uuid';
 import { Request } from 'express';
+import { EmailService } from 'src/email/email.service';
+import * as emailTemplates from 'src/email/email.templates';
 
 @Injectable()
 export class AdminBrandsService {
   private readonly logger = new Logger(AdminBrandsService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly emailService: EmailService,
+  ) {}
 
   async list(params: {
     cursor?: string;
@@ -39,6 +44,7 @@ export class AdminBrandsService {
         ownerId: true,
         isStoreOpen: true,
         description: true,
+        logo: true,
         createdAt: true,
         updatedAt: true,
         owner: {
@@ -48,6 +54,7 @@ export class AdminBrandsService {
             firstName: true,
             lastName: true,
             status: true,
+            profileImage: true,
           },
         },
       },
@@ -168,6 +175,160 @@ export class AdminBrandsService {
 
       return result;
     });
+
+    return updated;
+  }
+
+  async getVerificationQueue(params: { cursor?: string; limit?: number }) {
+    const take = Math.min(params.limit ?? 30, 100);
+
+    const items = await this.prisma.brand.findMany({
+      where: { verificationStatus: BrandVerificationStatus.PENDING },
+      select: {
+        id: true,
+        name: true,
+        verificationStatus: true,
+        verificationSubmittedAt: true,
+        verificationAddress: true,
+        verificationClientEstimate: true,
+        createdAt: true,
+        owner: {
+          select: {
+            id: true,
+            email: true,
+            firstName: true,
+            lastName: true,
+          },
+        },
+      },
+      orderBy: { verificationSubmittedAt: 'asc' },
+      take: take + 1,
+      ...(params.cursor ? { cursor: { id: params.cursor }, skip: 1 } : {}),
+    });
+
+    const hasMore = items.length > take;
+    const results = hasMore ? items.slice(0, take) : items;
+    const nextCursor = hasMore ? results[results.length - 1]?.id : undefined;
+
+    return { items: results, nextCursor };
+  }
+
+  async getVerificationDetails(brandId: string) {
+    const brand = await this.prisma.brand.findUnique({
+      where: { id: brandId },
+      select: {
+        id: true,
+        name: true,
+        verificationStatus: true,
+        verificationSubmittedAt: true,
+        verificationReviewedAt: true,
+        verificationReviewedById: true,
+        verificationRejectionReason: true,
+        verificationPhoto1Key: true,
+        verificationPhoto2Key: true,
+        verificationNinKey: true,
+        verificationCacKey: true,
+        verificationAddress: true,
+        verificationClientEstimate: true,
+        createdAt: true,
+        owner: {
+          select: {
+            id: true,
+            email: true,
+            firstName: true,
+            lastName: true,
+            status: true,
+          },
+        },
+      },
+    });
+    if (!brand) throw new NotFoundException('Brand not found');
+    return brand;
+  }
+
+  async reviewVerification(
+    brandId: string,
+    dto: { decision: 'APPROVED' | 'REJECTED'; rejectionReason?: string },
+    actorId: string,
+    req: Request,
+  ) {
+    const brand = await this.prisma.brand.findUnique({
+      where: { id: brandId },
+      select: {
+        id: true,
+        name: true,
+        verificationStatus: true,
+        ownerId: true,
+        owner: { select: { email: true, firstName: true } },
+      },
+    });
+
+    if (!brand) throw new NotFoundException('Brand not found');
+    if (brand.verificationStatus !== BrandVerificationStatus.PENDING) {
+      throw new BadRequestException('Brand is not pending verification');
+    }
+
+    if (dto.decision === 'REJECTED' && !dto.rejectionReason?.trim()) {
+      throw new BadRequestException('Rejection reason is required');
+    }
+
+    const newStatus =
+      dto.decision === 'APPROVED'
+        ? BrandVerificationStatus.APPROVED
+        : BrandVerificationStatus.REJECTED;
+
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const result = await tx.brand.update({
+        where: { id: brandId },
+        data: {
+          verificationStatus: newStatus,
+          verificationReviewedAt: new Date(),
+          verificationReviewedById: actorId,
+          verificationRejectionReason:
+            dto.decision === 'REJECTED' ? dto.rejectionReason!.trim() : null,
+        },
+        select: { id: true, name: true, verificationStatus: true },
+      });
+
+      await (tx as any).adminAuditLog.create({
+        data: {
+          id: uuidv4(),
+          actorUserId: actorId,
+          action: AdminAuditAction.ADMIN_BRAND_VERIFY,
+          targetType: 'Brand',
+          targetId: brandId,
+          previousState: { verificationStatus: brand.verificationStatus },
+          newState: {
+            verificationStatus: newStatus,
+            rejectionReason: dto.rejectionReason ?? null,
+          },
+          ipAddress: req.socket?.remoteAddress ?? null,
+          userAgent: req.headers['user-agent'] ?? null,
+        },
+      });
+
+      return result;
+    });
+
+    // Send email notification
+    const appName = this.emailService.getAppName();
+    if (brand.owner?.email) {
+      if (dto.decision === 'APPROVED') {
+        const mail = emailTemplates.brandVerificationApprovedEmail(brand.name, appName);
+        void this.emailService
+          .send(brand.owner.email, mail.subject, mail.html, mail.text)
+          .catch(() => undefined);
+      } else {
+        const mail = emailTemplates.brandVerificationRejectedEmail(
+          brand.name,
+          dto.rejectionReason!,
+          appName,
+        );
+        void this.emailService
+          .send(brand.owner.email, mail.subject, mail.html, mail.text)
+          .catch(() => undefined);
+      }
+    }
 
     return updated;
   }

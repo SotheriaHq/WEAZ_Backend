@@ -14,6 +14,8 @@ import { seedMeasurementPoints } from './seed_measurement_points';
 
 const DEMO_BRAND_EMAIL = 'brand@example.com';
 const DEMO_BRAND_PASSWORD = 'password123';
+const SYSTEM_ADMIN_EMAIL = 'adminoversee@test.com';
+const SYSTEM_ADMIN_PASSWORD = 'Password@123';
 
 const datasourceUrl = process.env.DATABASE_URL;
 
@@ -310,7 +312,41 @@ async function ensureDemoBrand(categoryId: string) {
   });
 }
 
+async function ensureSystemAdmin() {
+  const existing = await prisma.user.findUnique({
+    where: { email: SYSTEM_ADMIN_EMAIL },
+    select: { id: true },
+  });
+
+  if (existing) {
+    console.log(`System admin already exists: ${SYSTEM_ADMIN_EMAIL}`);
+    return;
+  }
+
+  const hashedPassword = await argon2.hash(SYSTEM_ADMIN_PASSWORD);
+
+  await prisma.user.create({
+    data: {
+      id: randomUUID(),
+      email: SYSTEM_ADMIN_EMAIL,
+      username: 'systemadmin',
+      firstName: 'System',
+      lastName: 'Admin',
+      password: hashedPassword,
+      role: 'SuperAdmin',
+      type: 'REGULAR',
+      status: 'ACTIVE',
+      isActive: 'Active',
+      isEmailVerified: true,
+      mustResetPassword: false,
+    },
+  });
+
+  console.log(`System SuperAdmin created: ${SYSTEM_ADMIN_EMAIL}`);
+}
+
 async function main() {
+  await ensureSystemAdmin();
   await seedMeasurementPoints(prisma);
 
   const idsBySlug = await ensureDefaultTaxonomy();

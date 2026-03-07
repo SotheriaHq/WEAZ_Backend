@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { PrismaModule } from 'src/prisma/prisma.module';
+import { EmailModule } from 'src/email/email.module';
 import { UploadModule } from 'src/upload/upload.module';
 import { StoreModule } from 'src/store/store.module';
 import { NotificationsModule } from 'src/notifications/notifications.module';
@@ -20,6 +21,7 @@ import { CategoriesModule } from 'src/categories/categories.module';
       envFilePath: '.env',
     }),
     PrismaModule,
+    EmailModule,
     UploadModule,
     StoreModule,
     NotificationsModule,

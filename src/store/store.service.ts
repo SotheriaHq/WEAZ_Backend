@@ -1,4 +1,4 @@
-﻿import {
+import {
   Injectable,
   NotFoundException,
   BadRequestException,
@@ -1123,7 +1123,6 @@ export class StoreService {
           tags: resolvedTags,
           gender: dto.gender || 'EVERYBODY',
           isActive: dto.isActive ?? true,
-          isFeatured: dto.isFeatured ?? false,
           isPhysicalProduct: dto.isPhysicalProduct ?? true,
           customsRegion: dto.customsRegion || null,
           // Policies
@@ -1397,7 +1396,6 @@ export class StoreService {
         : { disconnect: true };
     }
     if (dto.isActive !== undefined) updateData.isActive = dto.isActive;
-    if (dto.isFeatured !== undefined) updateData.isFeatured = dto.isFeatured;
     if (dto.isPhysicalProduct !== undefined) updateData.isPhysicalProduct = dto.isPhysicalProduct;
     if (dto.customsRegion !== undefined) updateData.customsRegion = dto.customsRegion || null;
     
@@ -2026,36 +2024,9 @@ export class StoreService {
   }
 
   // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-  // TOGGLE FEATURED
-  // Toggles the isFeatured flag on a product
-  // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
-  async toggleFeatured(brandOwnerId: string, productId: string) {
-    const product = await this.prisma.product.findFirst({
-      where: { id: productId, deletedAt: null },
-      include: { brand: true },
-    });
+  // toggleFeatured removed - featuring is now admin-only via AdminFeaturedService
 
-    if (!product) {
-      throw new NotFoundException('Product not found');
-    }
-
-    if (product.brand.ownerId !== brandOwnerId) {
-      throw new ForbiddenException('You can only modify your own products');
-    }
-
-    const updated = await this.prisma.product.update({
-      where: { id: productId },
-      data: { isFeatured: !product.isFeatured },
-      include: {
-        collections: { select: { collectionId: true, orderIndex: true } },
-        brand: { select: { id: true, name: true, logo: true, currency: true } },
-        variants: true,
-      },
-    });
-
-    return this.attachProductMedia(updated);
-  }
 
   async deleteProduct(
     brandOwnerId: string,
@@ -2594,6 +2565,7 @@ export class StoreService {
             description: true,
             status: true,
             isAvailableInStore: true,
+            deletedAt: true,
           },
         },
         collections: {
@@ -2607,6 +2579,7 @@ export class StoreService {
                 description: true,
                 status: true,
                 isAvailableInStore: true,
+                deletedAt: true,
               },
             },
           },
@@ -2639,19 +2612,12 @@ export class StoreService {
       throw new ForbiddenException('You can only view your own deleted products');
     }
 
-    // Store gating: brand must be open, collection must be store-enabled and published for non-owners
+    // Store gating: brand must be open and product must be publicly available for non-owners.
     if (!isOwner) {
       if (!product.brand.isStoreOpen) {
         throw new NotFoundException('Store is closed');
       }
-      const hasStoreCollection = Array.isArray(product.collections)
-        ? product.collections.some(
-            (link: any) =>
-              link.collection?.isAvailableInStore &&
-              link.collection?.status === 'PUBLISHED',
-          )
-        : false;
-      if (!hasStoreCollection) {
+      if (!this.hasPublicStoreAccess(product)) {
         throw new NotFoundException('Product not available');
       }
     }
@@ -2766,18 +2732,24 @@ export class StoreService {
         where.deletedAt = null;
       }
     } else {
-      // Public: only active products in published, store-enabled collections
+      // Public: only active products available in storefront.
       where.isActive = true;
       where.deletedAt = null;
       andFilters.push({
-        collections: {
-          some: {
-            collection: {
-              status: 'PUBLISHED',
-              isAvailableInStore: true,
+        OR: [
+          { collections: { none: {} } },
+          {
+            collections: {
+              some: {
+                collection: {
+                  status: 'PUBLISHED',
+                  isAvailableInStore: true,
+                  deletedAt: null,
+                },
+              },
             },
           },
-        },
+        ],
       });
     }
 
@@ -3037,11 +3009,20 @@ export class StoreService {
         deletedAt: null,
         isActive: true,
         brand: { isStoreOpen: true },
-        collections: {
-          some: {
-            collection: { isAvailableInStore: true, status: 'PUBLISHED' },
+        OR: [
+          { collections: { none: {} } },
+          {
+            collections: {
+              some: {
+                collection: {
+                  isAvailableInStore: true,
+                  status: 'PUBLISHED',
+                  deletedAt: null,
+                },
+              },
+            },
           },
-        },
+        ],
       },
       include: {
         variants: true,
@@ -3196,7 +3177,14 @@ export class StoreService {
             collections: {
               select: {
                 collectionId: true,
-                collection: { select: { id: true, status: true, isAvailableInStore: true } },
+                collection: {
+                  select: {
+                    id: true,
+                    status: true,
+                    isAvailableInStore: true,
+                    deletedAt: true,
+                  },
+                },
               },
             },
             variants: true,
@@ -3214,20 +3202,12 @@ export class StoreService {
         return false;
       }
 
-      const hasStoreCollection = Array.isArray(product.collections)
-        ? product.collections.some(
-            (link: any) =>
-              link.collection?.isAvailableInStore &&
-              link.collection?.status === 'PUBLISHED',
-          )
-        : false;
-
       const isProductAvailable =
         !product.deletedAt &&
         product.isActive &&
         Boolean(product.brand?.isStoreOpen) &&
         product.brand?.ownerId !== userId &&
-        hasStoreCollection;
+        this.hasPublicStoreAccess(product);
 
       if (!isProductAvailable) {
         unavailableItemIds.push(item.id);
@@ -3477,15 +3457,7 @@ export class StoreService {
       };
     }
 
-    const hasStoreCollection = Array.isArray(product.collections)
-      ? product.collections.some(
-          (link: any) =>
-            link.collection?.isAvailableInStore &&
-            link.collection?.status === 'PUBLISHED',
-        )
-      : false;
-
-    if (!hasStoreCollection) {
+    if (!this.hasPublicStoreAccess(product)) {
       return {
         status: 'UNPUBLISHED',
         reason: 'not_in_store',
@@ -3523,11 +3495,20 @@ export class StoreService {
         deletedAt: null,
         isActive: true,
         brand: { isStoreOpen: true },
-        collections: {
-          some: {
-            collection: { isAvailableInStore: true, status: 'PUBLISHED' },
+        OR: [
+          { collections: { none: {} } },
+          {
+            collections: {
+              some: {
+                collection: {
+                  isAvailableInStore: true,
+                  status: 'PUBLISHED',
+                  deletedAt: null,
+                },
+              },
+            },
           },
-        },
+        ],
       },
       include: {
         brand: {
@@ -3604,7 +3585,14 @@ export class StoreService {
               collections: {
                 select: {
                   collectionId: true,
-                  collection: { select: { id: true, status: true, isAvailableInStore: true } },
+                  collection: {
+                    select: {
+                      id: true,
+                      status: true,
+                      isAvailableInStore: true,
+                      deletedAt: true,
+                    },
+                  },
                 },
               },
               variants: true,
@@ -3660,6 +3648,18 @@ export class StoreService {
     if (product.saleStartAt && product.saleStartAt > now) return false;
     if (product.saleEndAt && product.saleEndAt < now) return false;
     return true;
+  }
+
+  private hasPublicStoreAccess(product: { collections?: Array<any> } | null | undefined): boolean {
+    const links = Array.isArray(product?.collections) ? product.collections : [];
+    if (links.length === 0) return true;
+
+    return links.some((link: any) => {
+      const collection = link?.collection;
+      if (!collection) return false;
+      if (collection.deletedAt) return false;
+      return collection.isAvailableInStore && collection.status === 'PUBLISHED';
+    });
   }
 
   private transformProduct(product: any) {
@@ -4091,15 +4091,7 @@ export class StoreService {
             throw new BadRequestException('Product not available');
           }
 
-          const hasStoreCollection = Array.isArray(product.collections)
-            ? product.collections.some(
-                (link: any) =>
-                  link.collection?.isAvailableInStore &&
-                  link.collection?.status === 'PUBLISHED',
-              )
-            : false;
-
-          if (!hasStoreCollection) {
+          if (!this.hasPublicStoreAccess(product)) {
             throw new BadRequestException(
               `Product not available in store: ${product.name}`,
             );

@@ -11,7 +11,6 @@ import { CollectionsModule } from './collections/collections.module';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { EventsGateway } from './realtime/events.gateway';
 import { AnalyticsModule } from './analytics/analytics.module';
-import { ModerationModule } from './moderation/moderation.module';
 import { PostsModule } from './posts/posts.module';
 import { CommentsV2Module } from './commentsv2/commentsv2.module';
 import { NotificationsModule } from './notifications/notifications.module';
@@ -24,6 +23,8 @@ import { UsersModule } from './users/users.module';
 import { ScheduleModule } from '@nestjs/schedule';
 import { MeasurementPointsModule } from './measurement-points/measurement-points.module';
 import { AdminModule } from './admin/admin.module';
+import { EmailModule } from './email/email.module';
+import { FeaturedModule } from './featured/featured.module';
 
 @Module({
   imports: [
@@ -32,6 +33,7 @@ import { AdminModule } from './admin/admin.module';
       envFilePath: '.env',
     }),
     ScheduleModule.forRoot(),
+    EmailModule,
     PrismaModule,
     AuthModule,
     ThrottlerModule.forRoot([{ ttl: 60000, limit: 120 }]),
@@ -42,7 +44,6 @@ import { AdminModule } from './admin/admin.module';
     PostsModule,
     CommentsV2Module,
     AnalyticsModule,
-    ModerationModule,
     DevToolsModule,
     NotificationsModule,
     TagsModule,
@@ -53,6 +54,7 @@ import { AdminModule } from './admin/admin.module';
     UsersModule,
     MeasurementPointsModule,
     AdminModule,
+    FeaturedModule,
   ],
   controllers: [AppController],
   providers: [AppService, EventsGateway],

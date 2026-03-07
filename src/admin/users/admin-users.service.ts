@@ -14,19 +14,28 @@ import {
   Role,
   UserType,
   UserStatus,
+  ReactivationRequestStatus,
   AdminAuditAction,
 } from '@prisma/client';
 import { v4 as uuidv4 } from 'uuid';
 import { randomBytes } from 'crypto';
 import {
+  ALL_PERMISSION_CODES,
   DEFAULT_ADMIN_PERMISSIONS,
   AdminPermissionCode,
+  SUPERADMIN_ONLY_PERMISSIONS,
 } from '../constants/permissions';
 import { Request } from 'express';
+import { EmailService } from 'src/email/email.service';
+import * as emailTemplates from 'src/email/email.templates';
 
 @Injectable()
 export class AdminUsersService {
   private readonly logger = new Logger(AdminUsersService.name);
+  private readonly defaultSeededDeletableEmails = new Set<string>([
+    'brand@example.com',
+    'adminoversee@test.com',
+  ]);
 
   constructor(
     private readonly prisma: PrismaService,
@@ -34,6 +43,7 @@ export class AdminUsersService {
     private readonly passwordService: PasswordService,
     private readonly tokenService: TokenService,
     private readonly userHelper: UserHelperService,
+    private readonly emailService: EmailService,
   ) {}
 
   /**
@@ -125,6 +135,18 @@ export class AdminUsersService {
       return created;
     });
 
+    // Send admin account creation email with temporary password
+    const loginUrl = (process.env.WEB_APP_URL || 'http://localhost:5173').replace(/\/$/, '') + '/admin/login';
+    const creationEmail = emailTemplates.adminAccountCreatedEmail(
+      dto.email,
+      tempPassword,
+      loginUrl,
+      this.emailService.getAppName(),
+    );
+    void this.emailService
+      .send(dto.email, creationEmail.subject, creationEmail.html, creationEmail.text)
+      .catch(() => undefined);
+
     return {
       user,
       temporaryPassword: tempPassword,
@@ -165,7 +187,10 @@ export class AdminUsersService {
     const updated = await this.prisma.$transaction(async (tx) => {
       const user = await tx.user.update({
         where: { id: targetUserId },
-        data: { role: newRole },
+        data: {
+          role: newRole,
+          authVersion: { increment: 1 },
+        },
         select: { id: true, role: true, email: true },
       });
 
@@ -220,7 +245,7 @@ export class AdminUsersService {
    */
   async updatePermissions(
     targetUserId: string,
-    permissions: AdminPermissionCode[],
+    permissions: string[],
     actorId: string,
     req: Request,
   ) {
@@ -232,6 +257,28 @@ export class AdminUsersService {
     if (target.role !== Role.Admin) {
       throw new BadRequestException(
         'Permissions can only be managed for Admin role users',
+      );
+    }
+
+    const normalizedPermissions = Array.from(
+      new Set((permissions ?? []).map((p) => String(p).trim()).filter(Boolean)),
+    );
+
+    const invalidPermissions = normalizedPermissions.filter(
+      (code) => !ALL_PERMISSION_CODES.includes(code as AdminPermissionCode),
+    );
+    if (invalidPermissions.length > 0) {
+      throw new BadRequestException(
+        `Unknown permission code(s): ${invalidPermissions.join(', ')}`,
+      );
+    }
+
+    const disallowedAdminPermissions = normalizedPermissions.filter((code) =>
+      SUPERADMIN_ONLY_PERMISSIONS.includes(code as AdminPermissionCode),
+    );
+    if (disallowedAdminPermissions.length > 0) {
+      throw new BadRequestException(
+        `Cannot assign SuperAdmin-only permissions to Admin users: ${disallowedAdminPermissions.join(', ')}`,
       );
     }
 
@@ -248,9 +295,9 @@ export class AdminUsersService {
       });
 
       // Insert new grants
-      if (permissions.length > 0) {
+      if (normalizedPermissions.length > 0) {
         await tx.adminPermissionGrant.createMany({
-          data: permissions.map((code) => ({
+          data: normalizedPermissions.map((code) => ({
             id: uuidv4(),
             userId: targetUserId,
             permissionCode: code,
@@ -258,6 +305,11 @@ export class AdminUsersService {
           })),
         });
       }
+
+      await tx.user.update({
+        where: { id: targetUserId },
+        data: { authVersion: { increment: 1 } },
+      });
 
       await (tx as any).adminAuditLog.create({
         data: {
@@ -267,7 +319,7 @@ export class AdminUsersService {
           targetType: 'User',
           targetId: targetUserId,
           previousState: { permissions: currentCodes },
-          newState: { permissions },
+          newState: { permissions: normalizedPermissions },
           ipAddress: req.socket?.remoteAddress ?? null,
           userAgent: req.headers['user-agent'] ?? null,
         },
@@ -277,7 +329,7 @@ export class AdminUsersService {
     // Revoke refresh tokens to force re-auth with new permissions
     await this.tokenService.revokeAllRefreshTokens(targetUserId);
 
-    return { message: 'Permissions updated', permissions };
+    return { message: 'Permissions updated', permissions: normalizedPermissions };
   }
 
   /**
@@ -338,12 +390,13 @@ export class AdminUsersService {
       updateData.deactivatedReason = null;
       updateData.isActive = 'Active';
     }
+    updateData.authVersion = { increment: 1 };
 
     const updated = await this.prisma.$transaction(async (tx) => {
       const user = await tx.user.update({
         where: { id: targetUserId },
         data: updateData,
-        select: { id: true, status: true, email: true, role: true },
+        select: { id: true, status: true, email: true, role: true, firstName: true },
       });
 
       await (tx as any).adminAuditLog.create({
@@ -368,6 +421,18 @@ export class AdminUsersService {
       await this.tokenService.revokeAllRefreshTokens(targetUserId);
     }
 
+    // Send status change email notification
+    if (updated.email) {
+      const appName = this.emailService.getAppName();
+      if (newStatus === UserStatus.SUSPENDED) {
+        const mail = emailTemplates.accountSuspendedEmail(updated.firstName || 'User', reason || '', appName);
+        void this.emailService.send(updated.email, mail.subject, mail.html, mail.text).catch(() => undefined);
+      } else if (newStatus === UserStatus.ACTIVE && previousStatus !== UserStatus.ACTIVE) {
+        const mail = emailTemplates.accountReactivatedEmail(updated.firstName || 'User', appName);
+        void this.emailService.send(updated.email, mail.subject, mail.html, mail.text).catch(() => undefined);
+      }
+    }
+
     return updated;
   }
 
@@ -388,7 +453,10 @@ export class AdminUsersService {
     await this.prisma.$transaction(async (tx) => {
       await tx.user.update({
         where: { id: targetUserId },
-        data: { mustResetPassword: true },
+        data: {
+          mustResetPassword: true,
+          authVersion: { increment: 1 },
+        },
       });
 
       await (tx as any).adminAuditLog.create({
@@ -445,10 +513,15 @@ export class AdminUsersService {
         type: true,
         status: true,
         isActive: true,
+        profileImage: true,
+        profileImageId: true,
+        profileImageFile: {
+          select: { id: true, s3Url: true },
+        },
         createdAt: true,
         updatedAt: true,
       },
-      orderBy: { createdAt: 'desc' },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       take: take + 1,
       ...(params.cursor
         ? { cursor: { id: params.cursor }, skip: 1 }
@@ -500,6 +573,216 @@ export class AdminUsersService {
     };
   }
 
+  async listReactivationRequests(params: {
+    cursor?: string;
+    limit?: number;
+    status?: 'PENDING' | 'APPROVED' | 'REJECTED';
+    email?: string;
+  }) {
+    const take = Math.min(params.limit ?? 50, 100);
+    const where: Record<string, unknown> = {};
+
+    if (params.status) {
+      where.status = params.status;
+    }
+    if (params.email) {
+      where.emailSnapshot = {
+        contains: params.email.trim(),
+        mode: 'insensitive',
+      };
+    }
+
+    const items = await this.prisma.accountReactivationRequest.findMany({
+      where,
+      take: take + 1,
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      ...(params.cursor ? { cursor: { id: params.cursor }, skip: 1 } : {}),
+      include: {
+        user: {
+          select: {
+            id: true,
+            email: true,
+            firstName: true,
+            lastName: true,
+            role: true,
+            status: true,
+          },
+        },
+        reviewedBy: {
+          select: {
+            id: true,
+            email: true,
+            firstName: true,
+            lastName: true,
+          },
+        },
+      },
+    });
+
+    const hasMore = items.length > take;
+    const results = hasMore ? items.slice(0, take) : items;
+    const nextCursor = hasMore ? results[results.length - 1]?.id : undefined;
+
+    return { items: results, nextCursor };
+  }
+
+  async reviewReactivationRequest(
+    requestId: string,
+    decision: { decision: 'APPROVE' | 'REJECT'; adminNote?: string },
+    actorId: string,
+    actorRole: Role,
+    req: Request,
+  ) {
+    const request = await this.prisma.accountReactivationRequest.findUnique({
+      where: { id: requestId },
+      include: {
+        user: {
+          select: {
+            id: true,
+            role: true,
+            status: true,
+            isActive: true,
+            email: true,
+            firstName: true,
+          },
+        },
+      },
+    });
+
+    if (!request) {
+      throw new NotFoundException('Reactivation request not found');
+    }
+
+    if (request.status !== ReactivationRequestStatus.PENDING) {
+      throw new BadRequestException('Reactivation request has already been reviewed');
+    }
+
+    const adminNote = decision.adminNote?.trim() || null;
+
+    if (decision.decision === 'REJECT') {
+      const rejected = await this.prisma.$transaction(async (tx) => {
+        const result = await tx.accountReactivationRequest.update({
+          where: { id: requestId },
+          data: {
+            status: ReactivationRequestStatus.REJECTED,
+            adminNote,
+            reviewedById: actorId,
+            reviewedAt: new Date(),
+          },
+        });
+
+        await (tx as any).adminAuditLog.create({
+          data: {
+            id: uuidv4(),
+            actorUserId: actorId,
+            action: AdminAuditAction.ADMIN_USER_STATUS_UPDATE,
+            targetType: 'AccountReactivationRequest',
+            targetId: requestId,
+            previousState: { status: request.status },
+            newState: {
+              status: ReactivationRequestStatus.REJECTED,
+              adminNote,
+            },
+            ipAddress: req.socket?.remoteAddress ?? null,
+            userAgent: req.headers['user-agent'] ?? null,
+          },
+        });
+
+        return result;
+      });
+
+      return {
+        message: 'Reactivation request rejected',
+        request: rejected,
+      };
+    }
+
+    // APPROVE path
+    if (
+      request.user.role !== Role.User &&
+      actorRole !== Role.SuperAdmin
+    ) {
+      throw new ForbiddenException(
+        'Only SuperAdmin can reactivate admin/superadmin accounts',
+      );
+    }
+
+    if (
+      request.user.status === UserStatus.DEACTIVATED &&
+      actorRole !== Role.SuperAdmin
+    ) {
+      throw new ForbiddenException(
+        'Only SuperAdmin can reactivate deactivated accounts',
+      );
+    }
+
+    const approved = await this.prisma.$transaction(async (tx) => {
+      const updatedUser = await tx.user.update({
+        where: { id: request.user.id },
+        data: {
+          status: UserStatus.ACTIVE,
+          isActive: 'Active',
+          adminSuspendedAt: null,
+          adminSuspendedReason: null,
+          deactivatedAt: null,
+          deactivatedReason: null,
+          authVersion: { increment: 1 },
+        },
+        select: { id: true, status: true, role: true },
+      });
+
+      const updatedRequest = await tx.accountReactivationRequest.update({
+        where: { id: requestId },
+        data: {
+          status: ReactivationRequestStatus.APPROVED,
+          adminNote,
+          reviewedById: actorId,
+          reviewedAt: new Date(),
+        },
+      });
+
+      await (tx as any).adminAuditLog.create({
+        data: {
+          id: uuidv4(),
+          actorUserId: actorId,
+          action: AdminAuditAction.ADMIN_USER_STATUS_UPDATE,
+          targetType: 'User',
+          targetId: request.user.id,
+          previousState: { status: request.user.status },
+          newState: {
+            status: UserStatus.ACTIVE,
+            source: 'reactivation_request',
+            requestId,
+            adminNote,
+          },
+          ipAddress: req.socket?.remoteAddress ?? null,
+          userAgent: req.headers['user-agent'] ?? null,
+        },
+      });
+
+      return { updatedRequest, updatedUser };
+    });
+
+    await this.tokenService.revokeAllRefreshTokens(request.user.id);
+
+    // Notify user their account has been reactivated
+    if (request.user.email) {
+      const mail = emailTemplates.accountReactivatedEmail(
+        request.user.firstName || 'User',
+        this.emailService.getAppName(),
+      );
+      void this.emailService
+        .send(request.user.email, mail.subject, mail.html, mail.text)
+        .catch(() => undefined);
+    }
+
+    return {
+      message: 'Reactivation request approved and account reactivated',
+      request: approved.updatedRequest,
+      user: approved.updatedUser,
+    };
+  }
+
   private validateStatusTransition(
     from: UserStatus,
     to: UserStatus,
@@ -528,4 +811,264 @@ export class AdminUsersService {
       }
     }
   }
+
+  // ── GDPR ── Data Export ──
+  private getSeededDeletableEmails(): Set<string> {
+    const configured = String(process.env.SEEDED_USER_EMAILS || '')
+      .split(',')
+      .map((email) => email.trim().toLowerCase())
+      .filter(Boolean);
+    return new Set([
+      ...Array.from(this.defaultSeededDeletableEmails),
+      ...configured,
+    ]);
+  }
+
+  private isSeededDeletableEmail(email: string): boolean {
+    return this.getSeededDeletableEmails().has(email.trim().toLowerCase());
+  }
+
+  async hardDeleteSeededUser(
+    targetUserId: string,
+    actorId: string,
+    req: Request,
+  ) {
+    if (targetUserId === actorId) {
+      throw new BadRequestException('You cannot hard-delete your own account');
+    }
+
+    const target = await this.prisma.user.findUnique({
+      where: { id: targetUserId },
+      select: {
+        id: true,
+        email: true,
+        firstName: true,
+        lastName: true,
+        role: true,
+        brand: {
+          select: { id: true },
+        },
+      },
+    });
+    if (!target) throw new NotFoundException('User not found');
+
+    if (!this.isSeededDeletableEmail(target.email)) {
+      throw new ForbiddenException(
+        'Hard delete is only allowed for seeded users',
+      );
+    }
+
+    const [
+      ordersAsBuyerCount,
+      disputesReportedCount,
+      disputesAssignedCount,
+      disputesResolvedCount,
+    ] = await Promise.all([
+      this.prisma.order.count({ where: { buyerId: targetUserId } }),
+      this.prisma.dispute.count({ where: { reporterId: targetUserId } }),
+      this.prisma.dispute.count({ where: { assignedToId: targetUserId } }),
+      this.prisma.dispute.count({ where: { resolvedById: targetUserId } }),
+    ]);
+
+    if (ordersAsBuyerCount > 0) {
+      throw new BadRequestException(
+        'Cannot hard-delete seeded user with existing orders',
+      );
+    }
+    if (
+      disputesReportedCount > 0 ||
+      disputesAssignedCount > 0 ||
+      disputesResolvedCount > 0
+    ) {
+      throw new BadRequestException(
+        'Cannot hard-delete seeded user with linked disputes',
+      );
+    }
+
+    if (target.brand?.id) {
+      const [brandOrdersCount, brandOrderItemsCount, brandPayoutCount] =
+        await Promise.all([
+          this.prisma.order.count({ where: { brandId: target.brand.id } }),
+          this.prisma.orderItem.count({ where: { brandId: target.brand.id } }),
+          this.prisma.payout.count({ where: { brandId: target.brand.id } }),
+        ]);
+
+      if (
+        brandOrdersCount > 0 ||
+        brandOrderItemsCount > 0 ||
+        brandPayoutCount > 0
+      ) {
+        throw new BadRequestException(
+          'Cannot hard-delete seeded brand user with order or payout history',
+        );
+      }
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.accountReactivationRequest.updateMany({
+        where: { reviewedById: targetUserId },
+        data: { reviewedById: null },
+      });
+
+      await tx.adminPermissionGrant.deleteMany({
+        where: { grantedById: targetUserId },
+      });
+
+      if (target.brand?.id) {
+        await tx.storePolicy.deleteMany({
+          where: { brandId: target.brand.id },
+        });
+        await tx.brand.delete({
+          where: { id: target.brand.id },
+        });
+      }
+
+      await tx.user.delete({
+        where: { id: targetUserId },
+      });
+
+      await (tx as any).adminAuditLog.create({
+        data: {
+          id: uuidv4(),
+          actorUserId: actorId,
+          action: AdminAuditAction.ADMIN_USER_DATA_WIPE,
+          targetType: 'User',
+          targetId: targetUserId,
+          previousState: {
+            email: target.email,
+            role: target.role,
+            mode: 'hard_delete_seeded',
+          },
+          newState: {
+            deletedAt: new Date().toISOString(),
+          },
+          ipAddress: req.socket?.remoteAddress ?? null,
+          userAgent: req.headers['user-agent'] ?? null,
+        },
+      });
+    });
+
+    await this.tokenService.revokeAllRefreshTokens(targetUserId);
+
+    return {
+      success: true,
+      message: 'Seeded user hard-deleted successfully',
+      user: {
+        id: target.id,
+        email: target.email,
+        name: `${target.firstName} ${target.lastName}`.trim(),
+      },
+    };
+  }
+
+  async dataExport(userId: string, actorId: string, req: Request) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      include: {
+        brand: true,
+        collections: { take: 100 },
+        ordersAsBuyer: { take: 100 },
+        notificationsReceived: { take: 50, orderBy: { createdAt: 'desc' } },
+        disputesReported: { take: 50 },
+      },
+    });
+
+    if (!user) throw new NotFoundException('User not found');
+
+    await (this.prisma as any).adminAuditLog.create({
+      data: {
+        id: uuidv4(),
+        actorUserId: actorId,
+        action: AdminAuditAction.ADMIN_USER_DATA_EXPORT,
+        targetType: 'User',
+        targetId: userId,
+        previousState: null,
+        newState: { exportedAt: new Date().toISOString() },
+        ipAddress: req.socket?.remoteAddress ?? null,
+        userAgent: req.headers['user-agent'] ?? null,
+      },
+    });
+
+    // Strip sensitive fields
+    const { password, refreshTokens, authVersion, ...safeUser } = user as any;
+
+    return {
+      exportedAt: new Date().toISOString(),
+      user: safeUser,
+    };
+  }
+
+  // ── GDPR ── Data Wipe ──
+  async dataWipe(userId: string, actorId: string, req: Request) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, email: true, status: true },
+    });
+
+    if (!user) throw new NotFoundException('User not found');
+
+    // Audit BEFORE deletion
+    await (this.prisma as any).adminAuditLog.create({
+      data: {
+        id: uuidv4(),
+        actorUserId: actorId,
+        action: AdminAuditAction.ADMIN_USER_DATA_WIPE,
+        targetType: 'User',
+        targetId: userId,
+        previousState: { email: user.email, status: user.status },
+        newState: { wipedAt: new Date().toISOString() },
+        ipAddress: req.socket?.remoteAddress ?? null,
+        userAgent: req.headers['user-agent'] ?? null,
+      },
+    });
+
+    const counts = { orders: 0, collections: 0, notifications: 0, disputes: 0 };
+
+    await this.prisma.$transaction(async (tx) => {
+      // Delete related entities
+      const orders = await tx.order.deleteMany({ where: { buyerId: userId } });
+      counts.orders = orders.count;
+
+      const collections = await tx.collection.deleteMany({ where: { ownerId: userId } });
+      counts.collections = collections.count;
+
+      const notifications = await tx.notification.deleteMany({ where: { recipientId: userId } });
+      counts.notifications = notifications.count;
+
+      const disputes = await tx.dispute.deleteMany({
+        where: { reporterId: userId },
+      });
+      counts.disputes = disputes.count;
+
+      // Anonymize user record
+      await tx.user.update({
+        where: { id: userId },
+        data: {
+          email: `deleted-${userId.slice(0, 8)}@erased.local`,
+          firstName: 'Deleted',
+          lastName: 'User',
+          username: `deleted-${userId.slice(0, 8)}`,
+          password: '',
+          phoneNumber: null,
+          profileImage: null,
+          bannerImage: null,
+          address: null,
+          brandFullName: null,
+          brandDescription: null,
+          companyLocation: null,
+          status: UserStatus.DEACTIVATED,
+          isActive: 'Inactive',
+          authVersion: { increment: 1 },
+        },
+      });
+    });
+
+    await this.tokenService.revokeAllRefreshTokens(userId);
+
+    return {
+      message: 'User data permanently erased',
+      erasedEntities: counts,
+    };
+  }
 }
+

@@ -70,6 +70,7 @@ model User {
   deactivatedAt         DateTime?
   deactivatedReason     String?
   mustResetPassword     Boolean         @default(false)
+  authVersion           Int             @default(0)
 
   // Relations for new social models
   followerFollows         Follow[]                        @relation("followerFollows")
@@ -120,12 +121,16 @@ model User {
   // Admin Console relations
   adminPermissionGrants     AdminPermissionGrant[]        @relation("AdminPermissionGrants")
   adminPermissionsGrantedBy AdminPermissionGrant[]        @relation("AdminPermissionGrantedBy")
+  featuredItemsCreated      FeaturedItem[]                @relation("FeaturedByAdmin")
+  featuredItemsRemoved      FeaturedItem[]                @relation("RemovedByAdmin")
   adminSlaConfigsCreated    AdminSlaConfig[]              @relation("AdminSlaConfigCreatedBy")
   adminNotificationsSent    AdminNotificationLog[]        @relation("AdminNotificationsSent")
   disputesReported          Dispute[]                     @relation("DisputeReporter")
   disputesAssigned          Dispute[]                     @relation("DisputeAssignedTo")
   disputesResolved          Dispute[]                     @relation("DisputeResolvedBy")
   passwordResetTokens       PasswordResetToken[]          @relation("PasswordResetTokens")
+  reactivationRequests      AccountReactivationRequest[]  @relation("UserReactivationRequests")
+  reviewedReactivationRequests AccountReactivationRequest[] @relation("AdminReviewedReactivationRequests")
 }
 
 model FileUpload {
@@ -310,6 +315,7 @@ enum FileType {
   POST_IMAGE
   POST_VIDEO
   DOCUMENT
+  BRAND_VERIFICATION
 }
 
 enum PresignStatus {
@@ -391,6 +397,10 @@ enum NotificationType {
 
   // Admin actions
   ADMIN_ACTION
+
+  // Featured system
+  ITEM_FEATURED
+  FEATURED_AUTO_REMOVED
 }
 
 // ====== Comment V2 (unified for posts, collections, and collection media) ======
@@ -517,6 +527,9 @@ model Collection {
   contributionRequests         ContributionRequest[]           @relation("CollectionContributionRequests")
   
   // E-commerce products (multi-collection membership)
+  // Featured system
+  isFeaturedBlocked            Boolean                         @default(false)
+
   products                     CollectionProduct[]
   draftSessions                CollectionDraftSession[]
   bulkUploadJobs               CollectionBulkUploadJob[]
@@ -1182,6 +1195,24 @@ model Brand {
 
   currency    String    @default("NGN")
 
+  // Verification (MVP — test phase)
+  verificationStatus         BrandVerificationStatus @default(NOT_SUBMITTED)
+  verificationSubmittedAt    DateTime?
+  verificationReviewedAt     DateTime?
+  verificationReviewedById   String?              @db.Uuid
+  verificationRejectionReason String?
+  verificationPhoto1Key      String?
+  verificationPhoto2Key      String?
+  verificationNinKey         String?
+  verificationCacKey         String?
+  verificationAddress        String?
+  verificationClientEstimate String?
+
+  // Featured system
+  isFeaturedBlocked     Boolean   @default(false)
+  featuredCount         Int       @default(0)
+  featuredPenaltyUntil  DateTime?
+
   policy      StorePolicy?
 
   orders      Order[]
@@ -1191,6 +1222,7 @@ model Brand {
   sizingTemplates SizingTemplate[]
   payouts     Payout[]
   products    Product[] @relation("Brand_to_Products")
+  featuredItems FeaturedItem[]
   
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
@@ -1443,7 +1475,8 @@ model Product {
   tags            String[]      @default([])
   gender          CollectionType @default(EVERYBODY)
   isActive        Boolean       @default(true)
-  isFeatured      Boolean       @default(false)
+  isFeatured      Boolean       @default(false)  // @deprecated — use FeaturedItem table
+  isFeaturedBlocked Boolean     @default(false)
   isPhysicalProduct Boolean     @default(true)
   customsRegion   String?
   
@@ -1649,12 +1682,60 @@ model EntityFilter {
   @@index([productId])
 }
 
+// ===== Featured System =====
+
+model FeaturedItem {
+  id              String    @id @map("_id") @db.Uuid
+  entityType      String    // "PRODUCT" | "DESIGN"
+  entityId        String    @db.Uuid
+  brandId         String    @db.Uuid
+  brand           Brand     @relation(fields: [brandId], references: [id], onDelete: Cascade)
+
+  // Time window
+  startsAt        DateTime
+  expiresAt       DateTime
+  isActive        Boolean   @default(true)
+
+  // Admin context
+  featuredById    String    @db.Uuid
+  featuredBy      User      @relation("FeaturedByAdmin", fields: [featuredById], references: [id])
+  removedById     String?   @db.Uuid
+  removedBy       User?     @relation("RemovedByAdmin", fields: [removedById], references: [id])
+  removedAt       DateTime?
+  removeReason    String?   // "MANUAL" | "ITEM_DEACTIVATED" | "ITEM_DELETED" | "BRAND_SUSPENDED" | "EXPIRED"
+
+  // Images — admin selects which images to show
+  displayImages   String[]  @default([])
+  useCoverOnly    Boolean   @default(true)
+
+  // Performance snapshot (populated on expiry/removal)
+  viewsDelta      Int?
+  threadsDelta    Int?
+  clicksDelta     Int?
+
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@unique([entityType, entityId, isActive])
+  @@index([isActive, expiresAt])
+  @@index([brandId, isActive])
+  @@index([entityType, isActive])
+  @@index([startsAt])
+}
+
 // ===== Admin Console Models =====
 
 enum UserStatus {
   ACTIVE
   SUSPENDED
   DEACTIVATED
+}
+
+enum BrandVerificationStatus {
+  NOT_SUBMITTED
+  PENDING
+  APPROVED
+  REJECTED
 }
 
 enum AdminAuditAction {
@@ -1687,6 +1768,11 @@ enum AdminAuditAction {
   ADMIN_SYSTEM_SETTINGS_UPDATE
   ADMIN_BREAK_GLASS_SUCCESS
   ADMIN_BREAK_GLASS_FAILURE
+  ADMIN_USER_DATA_EXPORT
+  ADMIN_USER_DATA_WIPE
+  ADMIN_FEATURED_CREATE
+  ADMIN_FEATURED_REMOVE
+  ADMIN_FEATURED_BLOCK_TOGGLE
 }
 
 enum DisputeType {
@@ -1703,6 +1789,12 @@ enum AdminDisputeStatus {
   RESOLVED
   CLOSED
   REOPENED
+}
+
+enum ReactivationRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
 }
 
 model AdminPermissionGrant {
@@ -1736,6 +1828,7 @@ model AdminAuditLog {
   @@index([targetType, targetId])
   @@index([createdAt])
   @@index([action, createdAt])
+  @@index([action, ipAddress, userAgent, createdAt])
 }
 
 model BreakGlassCode {
@@ -1748,6 +1841,19 @@ model BreakGlassCode {
   createdAt  DateTime  @default(now())
 
   @@index([validFrom, validUntil])
+}
+
+model BreakGlassRecoveryToken {
+  id            String   @id @map("_id") @db.Uuid
+  jtiHash       String   @unique
+  ipAddress     String?
+  userAgentHash String?
+  expiresAt     DateTime
+  usedAt        DateTime?
+  createdAt     DateTime @default(now())
+
+  @@index([expiresAt])
+  @@index([usedAt])
 }
 
 model AdminSlaConfig {
@@ -1828,4 +1934,24 @@ model PasswordResetToken {
 
   @@index([userId])
   @@index([expiresAt])
+  @@index([tokenHash])
+}
+
+model AccountReactivationRequest {
+  id           String                    @id @map("_id") @db.Uuid
+  userId       String                    @db.Uuid
+  user         User                      @relation("UserReactivationRequests", fields: [userId], references: [id], onDelete: Cascade)
+  emailSnapshot String
+  reason       String
+  status       ReactivationRequestStatus @default(PENDING)
+  adminNote    String?
+  reviewedById String?                   @db.Uuid
+  reviewedBy   User?                     @relation("AdminReviewedReactivationRequests", fields: [reviewedById], references: [id])
+  reviewedAt   DateTime?
+  createdAt    DateTime                  @default(now())
+  updatedAt    DateTime                  @updatedAt
+
+  @@index([status, createdAt])
+  @@index([userId, createdAt])
+  @@index([userId, status, createdAt])
 }

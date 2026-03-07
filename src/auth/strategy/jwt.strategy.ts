@@ -46,16 +46,26 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
         type: true,
         isActive: true,
         status: true,
+        mustResetPassword: true,
+        authVersion: true,
       },
     });
 
-    if (!user || user.isActive === 'Inactive') {
+    if (!user || user.status !== 'ACTIVE') {
       throw new UnauthorizedException('User account is inactive or missing');
     }
 
-    // Admin-specific: reject suspended/deactivated users via new status field
-    if (user.status && user.status !== 'ACTIVE') {
-      throw new UnauthorizedException('User account is suspended or deactivated');
+    if (
+      user.mustResetPassword &&
+      (user.role === 'Admin' || user.role === 'SuperAdmin')
+    ) {
+      throw new UnauthorizedException(
+        'Password reset required for this admin account',
+      );
+    }
+
+    if ((payload.authVersion ?? 0) !== user.authVersion) {
+      throw new UnauthorizedException('Session is no longer valid');
     }
 
     // Return user data for req.user using fresh DB state.
@@ -67,6 +77,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       username: user.username,
       type: user.type,
       permissions: payload.permissions ?? [],
+      mustResetPassword: user.mustResetPassword,
     };
   }
 }

@@ -1,0 +1,211 @@
+import { EmailContent } from './email.types';
+
+const BRAND_COLOR = '#1a1a2e';
+const ACCENT_COLOR = '#e94560';
+
+function wrap(title: string, body: string, appName: string): string {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f4f4f5">
+<table width="100%" cellpadding="0" cellspacing="0" style="max-width:600px;margin:0 auto;background:#fff;border-radius:8px;overflow:hidden">
+  <tr><td style="background:${BRAND_COLOR};padding:24px 32px"><h1 style="color:#fff;margin:0;font-size:20px">${appName}</h1></td></tr>
+  <tr><td style="padding:32px">
+    <h2 style="color:${BRAND_COLOR};margin:0 0 16px">${title}</h2>
+    ${body}
+  </td></tr>
+  <tr><td style="padding:16px 32px;background:#f9fafb;color:#6b7280;font-size:12px;text-align:center">
+    &copy; ${new Date().getFullYear()} ${appName}. All rights reserved.
+  </td></tr>
+</table>
+</body></html>`;
+}
+
+function btn(href: string, label: string): string {
+  return `<a href="${href}" style="display:inline-block;background:${ACCENT_COLOR};color:#fff;padding:12px 24px;border-radius:6px;text-decoration:none;font-weight:600;margin:16px 0">${label}</a>`;
+}
+
+export function passwordResetEmail(
+  resetLink: string,
+  appName: string,
+): EmailContent {
+  return {
+    subject: `Reset your ${appName} password`,
+    html: wrap(
+      'Password Reset',
+      `<p style="color:#374151;line-height:1.6">You requested a password reset. Click below to set a new password. This link expires in 1 hour.</p>
+      ${btn(resetLink, 'Reset Password')}
+      <p style="color:#9ca3af;font-size:13px">If you didn't request this, ignore this email.</p>`,
+      appName,
+    ),
+    text: `Password Reset\n\nVisit this link to reset your password: ${resetLink}\n\nThis link expires in 1 hour. If you didn't request this, ignore this email.`,
+  };
+}
+
+export function emailVerificationEmail(
+  code: string,
+  verifyLink: string,
+  appName: string,
+): EmailContent {
+  return {
+    subject: `Verify your ${appName} email`,
+    html: wrap(
+      'Email Verification',
+      `<p style="color:#374151;line-height:1.6">Welcome! Use the code below or click the button to verify your email.</p>
+      <div style="background:#f3f4f6;padding:16px;border-radius:8px;text-align:center;margin:16px 0">
+        <span style="font-size:28px;font-weight:700;letter-spacing:6px;color:${BRAND_COLOR}">${code}</span>
+      </div>
+      ${btn(verifyLink, 'Verify Email')}`,
+      appName,
+    ),
+    text: `Email Verification\n\nYour verification code: ${code}\n\nOr visit: ${verifyLink}`,
+  };
+}
+
+export function breakGlassCodeEmail(
+  code: string,
+  appName: string,
+): EmailContent {
+  return {
+    subject: `[URGENT] ${appName} Break-Glass Recovery Code`,
+    html: wrap(
+      '🔑 Break-Glass Recovery Code',
+      `<p style="color:#374151;line-height:1.6">A new daily break-glass code has been generated. Store this securely.</p>
+      <div style="background:#fef2f2;border:2px solid ${ACCENT_COLOR};padding:16px;border-radius:8px;text-align:center;margin:16px 0">
+        <span style="font-size:24px;font-weight:700;letter-spacing:4px;color:${ACCENT_COLOR}">${code}</span>
+      </div>
+      <p style="color:#9ca3af;font-size:13px">This code is valid for 24 hours. Do not share it.</p>`,
+      appName,
+    ),
+    text: `BREAK-GLASS RECOVERY CODE\n\nCode: ${code}\n\nValid for 24 hours. Store securely. Do not share.`,
+  };
+}
+
+export function adminAccountCreatedEmail(
+  email: string,
+  tempPassword: string,
+  loginUrl: string,
+  appName: string,
+): EmailContent {
+  return {
+    subject: `Your ${appName} admin account has been created`,
+    html: wrap(
+      'Admin Account Created',
+      `<p style="color:#374151;line-height:1.6">An administrator account has been created for you.</p>
+      <table style="width:100%;margin:16px 0;border-collapse:collapse">
+        <tr><td style="padding:8px;color:#6b7280;border-bottom:1px solid #e5e7eb">Email</td><td style="padding:8px;font-weight:600;border-bottom:1px solid #e5e7eb">${email}</td></tr>
+        <tr><td style="padding:8px;color:#6b7280;border-bottom:1px solid #e5e7eb">Temporary Password</td><td style="padding:8px;font-weight:600;font-family:monospace;border-bottom:1px solid #e5e7eb">${tempPassword}</td></tr>
+      </table>
+      <p style="color:#ef4444;font-weight:600">You must change your password on first login.</p>
+      ${btn(loginUrl, 'Log In Now')}`,
+      appName,
+    ),
+    text: `Admin Account Created\n\nEmail: ${email}\nTemporary Password: ${tempPassword}\n\nYou must change your password on first login.\n\nLogin: ${loginUrl}`,
+  };
+}
+
+export function brandVerificationApprovedEmail(
+  brandName: string,
+  appName: string,
+): EmailContent {
+  return {
+    subject: `Your brand "${brandName}" has been verified!`,
+    html: wrap(
+      '✅ Brand Verified',
+      `<p style="color:#374151;line-height:1.6">Congratulations! Your brand <strong>${brandName}</strong> has been verified. You can now open your store and start selling.</p>`,
+      appName,
+    ),
+    text: `Brand Verified\n\nYour brand "${brandName}" has been verified. You can now open your store and start selling.`,
+  };
+}
+
+export function brandVerificationRejectedEmail(
+  brandName: string,
+  reason: string,
+  appName: string,
+): EmailContent {
+  return {
+    subject: `Brand verification update for "${brandName}"`,
+    html: wrap(
+      'Brand Verification Update',
+      `<p style="color:#374151;line-height:1.6">We were unable to verify your brand <strong>${brandName}</strong> at this time.</p>
+      <div style="background:#fef2f2;padding:16px;border-radius:8px;margin:16px 0">
+        <p style="color:#991b1b;margin:0"><strong>Reason:</strong> ${reason}</p>
+      </div>
+      <p style="color:#374151">You can update your documents and resubmit for verification.</p>`,
+      appName,
+    ),
+    text: `Brand Verification Update\n\nWe were unable to verify "${brandName}".\n\nReason: ${reason}\n\nYou can update your documents and resubmit.`,
+  };
+}
+
+export function accountSuspendedEmail(
+  firstName: string,
+  reason: string,
+  appName: string,
+): EmailContent {
+  return {
+    subject: `Your ${appName} account has been suspended`,
+    html: wrap(
+      'Account Suspended',
+      `<p style="color:#374151;line-height:1.6">Hi ${firstName}, your account has been suspended.</p>
+      <div style="background:#fef2f2;padding:16px;border-radius:8px;margin:16px 0">
+        <p style="color:#991b1b;margin:0"><strong>Reason:</strong> ${reason || 'Policy violation'}</p>
+      </div>
+      <p style="color:#374151">If you believe this is an error, you can submit a reactivation request.</p>`,
+      appName,
+    ),
+    text: `Account Suspended\n\nHi ${firstName}, your account has been suspended.\nReason: ${reason || 'Policy violation'}\n\nYou can submit a reactivation request if you believe this is an error.`,
+  };
+}
+
+export function accountReactivatedEmail(
+  firstName: string,
+  appName: string,
+): EmailContent {
+  return {
+    subject: `Your ${appName} account has been reactivated`,
+    html: wrap(
+      'Account Reactivated',
+      `<p style="color:#374151;line-height:1.6">Hi ${firstName}, your account has been reactivated. You can now log in and use all features.</p>`,
+      appName,
+    ),
+    text: `Account Reactivated\n\nHi ${firstName}, your account has been reactivated. You can now log in.`,
+  };
+}
+
+export function disputeResolvedEmail(
+  disputeId: string,
+  resolution: string,
+  appName: string,
+): EmailContent {
+  return {
+    subject: `Dispute #${disputeId.slice(0, 8)} has been resolved`,
+    html: wrap(
+      'Dispute Resolved',
+      `<p style="color:#374151;line-height:1.6">A dispute you were involved in has been resolved.</p>
+      <div style="background:#f0fdf4;padding:16px;border-radius:8px;margin:16px 0">
+        <p style="color:#166534;margin:0"><strong>Resolution:</strong> ${resolution}</p>
+      </div>`,
+      appName,
+    ),
+    text: `Dispute Resolved\n\nDispute #${disputeId.slice(0, 8)} has been resolved.\nResolution: ${resolution}`,
+  };
+}
+
+export function payoutProcessedEmail(
+  amount: string,
+  currency: string,
+  status: string,
+  appName: string,
+): EmailContent {
+  return {
+    subject: `Payout ${status}: ${currency} ${amount}`,
+    html: wrap(
+      'Payout Update',
+      `<p style="color:#374151;line-height:1.6">Your payout of <strong>${currency} ${amount}</strong> has been <strong>${status.toLowerCase()}</strong>.</p>`,
+      appName,
+    ),
+    text: `Payout Update\n\nYour payout of ${currency} ${amount} has been ${status.toLowerCase()}.`,
+  };
+}

@@ -44,6 +44,8 @@ export class AdminProductsService {
         price: true,
         salePrice: true,
         currency: true,
+        thumbnail: true,
+        images: true,
         createdAt: true,
         updatedAt: true,
         brand: {
@@ -67,7 +69,7 @@ export class AdminProductsService {
 
   async moderate(
     productId: string,
-    dto: { isActive?: boolean; isFeatured?: boolean },
+    dto: { isActive?: boolean },
     actorId: string,
     req: Request,
   ) {
@@ -76,14 +78,12 @@ export class AdminProductsService {
       select: {
         id: true,
         isActive: true,
-        isFeatured: true,
       },
     });
     if (!existing) throw new NotFoundException('Product not found');
 
     const updateData: Record<string, unknown> = {};
     if (dto.isActive !== undefined) updateData.isActive = dto.isActive;
-    if (dto.isFeatured !== undefined) updateData.isFeatured = dto.isFeatured;
 
     const updated = await this.prisma.$transaction(async (tx) => {
       const product = await tx.product.update({
@@ -93,7 +93,6 @@ export class AdminProductsService {
           id: true,
           name: true,
           isActive: true,
-          isFeatured: true,
           updatedAt: true,
         },
       });
@@ -107,7 +106,6 @@ export class AdminProductsService {
           targetId: productId,
           previousState: {
             isActive: existing.isActive,
-            isFeatured: existing.isFeatured,
           },
           newState: updateData,
           ipAddress: req.socket?.remoteAddress ?? null,

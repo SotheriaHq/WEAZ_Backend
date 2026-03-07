@@ -5,7 +5,6 @@
   Body,
   Patch,
   Param,
-  Delete,
   UseInterceptors,
   ValidationPipe,
   Req,
@@ -18,7 +17,6 @@
 import { Request, Response } from 'express';
 import { AuthService } from './auth.service';
 import { CreateUserDto } from './dto/create-auth.dto';
-import { UpdateAuthDto } from './dto/update-auth.dto';
 import { TransformInterceptor } from 'src/transform/transform.interceptor';
 import { TokenService } from './helper/general.helper';
 import { LoginDto } from './dto/login-auth.dto';
@@ -38,6 +36,10 @@ import {
 } from '@nestjs/swagger';
 import { ConfigService } from '@nestjs/config';
 import { NotificationsService } from 'src/notifications/notifications.service';
+import { RequestAccountReactivationDto } from './dto/request-account-reactivation.dto';
+import { RequestAdminPasswordResetDto } from './dto/request-admin-password-reset.dto';
+import { ConfirmAdminPasswordResetDto } from './dto/confirm-admin-password-reset.dto';
+import { ChangeAuthenticatedPasswordDto } from './dto/change-authenticated-password.dto';
 
 @ApiTags('auth')
 @ApiBearerAuth()
@@ -73,6 +75,10 @@ export class AuthController {
     };
   }
 
+  private extractClientIp(req: Request): string | null {
+    return req.ip || req.socket?.remoteAddress || null;
+  }
+
   @Post('login')
   @ApiOperation({ summary: 'User login' })
   @ApiBody({ type: LoginDto })
@@ -103,21 +109,33 @@ export class AuthController {
     return this.authService.CreateUser(dto, req, res);
   }
 
+  @Post('account-reactivation/request')
+  @ApiOperation({
+    summary: 'Submit account reactivation/leniency request for suspended or deactivated users',
+  })
+  @Throttle({ default: { limit: 3, ttl: 300000 } })
+  async requestAccountReactivation(
+    @Body(ValidationPipe) body: RequestAccountReactivationDto,
+  ) {
+    return this.authService.requestAccountReactivation(body.email, body.reason);
+  }
+
   @Post('admin/reset-password/request')
   @ApiOperation({ summary: 'Request admin reset password token' })
-  @Throttle({ default: { limit: 5, ttl: 60000 } })
-  async requestAdminResetPassword(@Body('email') email: string) {
-    return this.authService.requestAdminPasswordReset(email);
+  @Throttle({ default: { limit: 3, ttl: 900000 } })
+  async requestAdminResetPassword(
+    @Body(ValidationPipe) body: RequestAdminPasswordResetDto,
+  ) {
+    return this.authService.requestAdminPasswordReset(body.email);
   }
 
   @Post('admin/reset-password/confirm')
   @ApiOperation({ summary: 'Confirm admin reset password with token' })
-  @Throttle({ default: { limit: 5, ttl: 60000 } })
+  @Throttle({ default: { limit: 5, ttl: 900000 } })
   async confirmAdminResetPassword(
-    @Body('token') token: string,
-    @Body('newPassword') newPassword: string,
+    @Body(ValidationPipe) body: ConfirmAdminPasswordResetDto,
   ) {
-    return this.authService.resetAdminPassword(token, newPassword);
+    return this.authService.resetAdminPassword(body.token, body.newPassword);
   }
 
   @UseGuards(JwtAuthGuard)
@@ -125,13 +143,12 @@ export class AuthController {
   @ApiOperation({ summary: 'Change password for authenticated admin/user' })
   async changeAuthenticatedPassword(
     @Req() req: Request & { user: { id: string } },
-    @Body('currentPassword') currentPassword: string,
-    @Body('newPassword') newPassword: string,
+    @Body(ValidationPipe) body: ChangeAuthenticatedPasswordDto,
   ) {
     return this.authService.changePasswordForAuthenticatedUser(
       req.user.id,
-      currentPassword,
-      newPassword,
+      body.currentPassword,
+      body.newPassword,
     );
   }
 
@@ -190,13 +207,7 @@ export class AuthController {
     await this.tokenService.revokeRefreshToken(refreshToken);
 
     // Emit logout activity without blocking API response.
-    const forwarded = req.headers['x-forwarded-for'];
-    const ip = Array.isArray(forwarded)
-      ? (forwarded[0] ?? null)
-      : typeof forwarded === 'string' && forwarded.length
-        ? forwarded.split(',')[0].trim()
-        : null;
-    const ipAddress = ip || req.ip || null;
+    const ipAddress = this.extractClientIp(req);
     void this.notifications
       .create(req.user.id, NotificationType.LOGOUT, {
         payload: {
@@ -225,13 +236,7 @@ export class AuthController {
 
     await this.tokenService.revokeAllRefreshTokens(req.user.id);
 
-    const forwarded = req.headers['x-forwarded-for'];
-    const ip = Array.isArray(forwarded)
-      ? (forwarded[0] ?? null)
-      : typeof forwarded === 'string' && forwarded.length
-        ? forwarded.split(',')[0].trim()
-        : null;
-    const ipAddress = ip || req.ip || null;
+    const ipAddress = this.extractClientIp(req);
     void this.notifications
       .create(req.user.id, NotificationType.LOGOUT_ALL, {
         payload: {
@@ -273,32 +278,6 @@ export class AuthController {
     return this.authService.updateProfile(id, dto);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.SuperAdmin)
-  @Patch('update-role/:id')
-  @ApiOperation({ summary: 'Update user role (SuperAdmin only)' })
-  @ApiParam({ name: 'id', required: true })
-  @ApiBody({
-    schema: {
-      type: 'object',
-      properties: {
-        role: { type: 'string', enum: ['SuperAdmin', 'Admin', 'User'] },
-      },
-    },
-  })
-  @ApiResponse({ status: 200, description: 'Role updated' })
-  @ApiResponse({ status: 401, description: 'Unauthorized' })
-  @UseInterceptors(TransformInterceptor)
-  async updateUserRole(
-    @Param('id') id: string,
-    @Body('role') role: Role,
-    @Res({ passthrough: true }) res: Response,
-  ) {
-    res.setHeader('X-Deprecated', 'true');
-    // Only SuperAdmin can access
-    return this.authService.updateUserRole(id, role);
-  }
-
   @Get('verify-email')
   @ApiOperation({ summary: 'Verify email by link' })
   @ApiParam({ name: 'userId', required: true })
@@ -324,53 +303,4 @@ export class AuthController {
     return this.authService.verifyEmailByCode(email, code);
   }
 
-  @Get('users')
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.SuperAdmin)
-  @ApiOperation({ summary: 'Get all users' })
-  async getAllUsers(@Res({ passthrough: true }) res: Response) {
-    res.setHeader('X-Deprecated', 'true');
-    return this.authService.getAllUsers();
-  }
-
-  @Get('user/:id')
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.SuperAdmin)
-  @ApiOperation({ summary: 'Get single user' })
-  @ApiParam({ name: 'id', required: true })
-  async getUserById(
-    @Param('id') id: string,
-    @Res({ passthrough: true }) res: Response,
-  ) {
-    res.setHeader('X-Deprecated', 'true');
-    return this.authService.getUserById(id);
-  }
-
-  @Patch('user/:id')
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.SuperAdmin)
-  @ApiOperation({ summary: 'Update user (not profile)' })
-  @ApiParam({ name: 'id', required: true })
-  @ApiBody({ type: UpdateAuthDto })
-  async updateUser(
-    @Param('id') id: string,
-    @Body(ValidationPipe) dto: UpdateAuthDto,
-    @Res({ passthrough: true }) res: Response,
-  ) {
-    res.setHeader('X-Deprecated', 'true');
-    return this.authService.updateUser(id, dto);
-  }
-
-  @Delete('user/:id')
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.SuperAdmin)
-  @ApiOperation({ summary: 'Soft delete user (set isActive to Inactive)' })
-  @ApiParam({ name: 'id', required: true })
-  async softDeleteUser(
-    @Param('id') id: string,
-    @Res({ passthrough: true }) res: Response,
-  ) {
-    res.setHeader('X-Deprecated', 'true');
-    return this.authService.softDeleteUser(id);
-  }
 }

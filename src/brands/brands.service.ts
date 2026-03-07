@@ -13,6 +13,7 @@ import {
   PatchStatus,
   PatchMode,
   NotificationType,
+  BrandVerificationStatus,
 } from '@prisma/client';
 import { NotificationsService } from '../notifications/notifications.service';
 import { UpdateBrandProfileDto } from './dto/update-brand-profile.dto';
@@ -790,5 +791,73 @@ export class BrandsService {
       range,
       currency: brand.currency,
     };
+  }
+
+  // ============================================
+  // BRAND VERIFICATION (Brand-side)
+  // ============================================
+
+  async submitVerification(
+    brandOwnerId: string,
+    dto: {
+      verificationPhoto1Key: string;
+      verificationPhoto2Key: string;
+      verificationNinKey: string;
+      verificationCacKey?: string;
+      verificationAddress: string;
+      verificationClientEstimate: string;
+    },
+  ) {
+    const brand = await this.prisma.brand.findUnique({
+      where: { ownerId: brandOwnerId },
+      select: { id: true, verificationStatus: true },
+    });
+    if (!brand) throw new NotFoundException('Brand not found');
+
+    if (brand.verificationStatus === BrandVerificationStatus.APPROVED) {
+      throw new BadRequestException('Brand is already verified');
+    }
+    if (brand.verificationStatus === BrandVerificationStatus.PENDING) {
+      throw new BadRequestException(
+        'Verification is already pending review',
+      );
+    }
+
+    return this.prisma.brand.update({
+      where: { id: brand.id },
+      data: {
+        verificationStatus: BrandVerificationStatus.PENDING,
+        verificationSubmittedAt: new Date(),
+        verificationReviewedAt: null,
+        verificationReviewedById: null,
+        verificationRejectionReason: null,
+        verificationPhoto1Key: dto.verificationPhoto1Key,
+        verificationPhoto2Key: dto.verificationPhoto2Key,
+        verificationNinKey: dto.verificationNinKey,
+        verificationCacKey: dto.verificationCacKey ?? null,
+        verificationAddress: dto.verificationAddress,
+        verificationClientEstimate: dto.verificationClientEstimate,
+      },
+      select: {
+        id: true,
+        verificationStatus: true,
+        verificationSubmittedAt: true,
+      },
+    });
+  }
+
+  async getVerificationStatus(brandOwnerId: string) {
+    const brand = await this.prisma.brand.findUnique({
+      where: { ownerId: brandOwnerId },
+      select: {
+        id: true,
+        verificationStatus: true,
+        verificationSubmittedAt: true,
+        verificationReviewedAt: true,
+        verificationRejectionReason: true,
+      },
+    });
+    if (!brand) throw new NotFoundException('Brand not found');
+    return brand;
   }
 }

@@ -7,6 +7,7 @@ import {
   Query,
   Req,
   UseGuards,
+  ValidationPipe,
 } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
 import { Role } from '@prisma/client';
@@ -17,6 +18,7 @@ import { AdminPermissionGuard } from '../guards/admin-permission.guard';
 import { RequirePermissions } from '../decorators/require-permissions.decorator';
 import { ADMIN_PERMISSIONS } from '../constants/permissions';
 import { AdminBrandsService } from './admin-brands.service';
+import { ReviewVerificationDto } from './dto/brand-verification.dto';
 import { Request } from 'express';
 
 @ApiTags('admin/brands')
@@ -42,6 +44,19 @@ export class AdminBrandsController {
       search,
       isStoreOpen:
         isStoreOpen !== undefined ? isStoreOpen === 'true' : undefined,
+    });
+  }
+
+  @Get('verification-queue')
+  @RequirePermissions(ADMIN_PERMISSIONS.BRANDS_VERIFY)
+  @ApiOperation({ summary: 'List brands pending verification' })
+  async getVerificationQueue(
+    @Query('cursor') cursor?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.adminBrandsService.getVerificationQueue({
+      cursor,
+      limit: limit ? parseInt(limit, 10) : undefined,
     });
   }
 
@@ -81,6 +96,29 @@ export class AdminBrandsController {
       reason,
       req!.user.id,
       req!,
+    );
+  }
+
+  @Get(':id/verification')
+  @RequirePermissions(ADMIN_PERMISSIONS.BRANDS_VERIFY)
+  @ApiOperation({ summary: 'Get brand verification details' })
+  async getVerificationDetails(@Param('id') id: string) {
+    return this.adminBrandsService.getVerificationDetails(id);
+  }
+
+  @Patch(':id/verification')
+  @RequirePermissions(ADMIN_PERMISSIONS.BRANDS_VERIFY)
+  @ApiOperation({ summary: 'Approve or reject brand verification' })
+  async reviewVerification(
+    @Param('id') id: string,
+    @Body(new ValidationPipe({ whitelist: true })) dto: ReviewVerificationDto,
+    @Req() req: Request & { user: { id: string } },
+  ) {
+    return this.adminBrandsService.reviewVerification(
+      id,
+      dto,
+      req.user.id,
+      req,
     );
   }
 }

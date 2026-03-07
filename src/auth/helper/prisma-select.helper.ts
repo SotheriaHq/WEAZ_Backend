@@ -59,6 +59,7 @@ export const authUserSelect = Prisma.validator<Prisma.UserSelect>()({
   isEmailVerified: true,
   isActive: true,
   mustResetPassword: true,
+  authVersion: true,
   createdAt: true,
   updatedAt: true,
 });
@@ -166,6 +167,7 @@ export const buildAuthTokenPayload = (user: AuthUser): AuthJwtClaims => {
     email: user.email,
     firstName: user.firstName,
     lastName: user.lastName,
+    authVersion: (user as any).authVersion ?? 0,
   };
 
   // Embed admin permissions in JWT for zero-DB-query guard checks

@@ -8,6 +8,8 @@ const NT_SIZE_FIT_SHARE_APPROVED = 'SIZE_FIT_SHARE_APPROVED' as NotificationType
 const NT_SIZE_FIT_SHARE_REJECTED = 'SIZE_FIT_SHARE_REJECTED' as NotificationType;
 const NT_SIZE_FIT_RESHARED = 'SIZE_FIT_RESHARED' as NotificationType;
 const NT_TAG_MENTION = 'TAG_MENTION' as NotificationType;
+const NT_ITEM_FEATURED = 'ITEM_FEATURED' as NotificationType;
+const NT_FEATURED_AUTO_REMOVED = 'FEATURED_AUTO_REMOVED' as NotificationType;
 
 export interface NotificationConfig {
   type: NotificationType;
@@ -502,6 +504,46 @@ export class NotificationRegistry {
         const tagText = primaryTag ? `#${primaryTag}` : 'one of your tags';
         const title = n.payload?.entityTitle || 'A post';
         return `${title} matched ${tagText}`;
+      },
+    });
+
+    // ITEM_FEATURED
+    registry.register({
+      type: NT_ITEM_FEATURED,
+      schema: Joi.object({
+        entityType: Joi.string().valid('PRODUCT', 'DESIGN').required(),
+        entityId: Joi.string().required(),
+        entityName: Joi.string().optional(),
+        expiresAt: Joi.string().optional(),
+        targetUrl: Joi.string().optional(),
+        message: Joi.string().optional(),
+      }),
+      formatter: (n: any) => {
+        if (n.payload?.message) return n.payload.message;
+        const name = n.payload?.entityName || 'Your item';
+        const type = n.payload?.entityType === 'DESIGN' ? 'design' : 'product';
+        return `${name} has been featured! Your ${type} will be showcased for 7 days.`;
+      },
+    });
+
+    // FEATURED_AUTO_REMOVED
+    registry.register({
+      type: NT_FEATURED_AUTO_REMOVED,
+      schema: Joi.object({
+        entityType: Joi.string().valid('PRODUCT', 'DESIGN').required(),
+        entityId: Joi.string().required(),
+        entityName: Joi.string().optional(),
+        reason: Joi.string().optional(),
+        targetUrl: Joi.string().optional(),
+        message: Joi.string().optional(),
+      }),
+      formatter: (n: any) => {
+        if (n.payload?.message) return n.payload.message;
+        const name = n.payload?.entityName || 'Your item';
+        const reason = n.payload?.reason;
+        if (reason === 'EXPIRED') return `${name} is no longer featured — the 7-day period has ended.`;
+        if (reason === 'BRAND_SUSPENDED') return `${name} was removed from featured due to account suspension.`;
+        return `${name} has been removed from featured.`;
       },
     });
 

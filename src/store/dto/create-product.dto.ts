@@ -262,9 +262,7 @@ export class CreateProductDto {
   @IsBoolean()
   isActive?: boolean;
 
-  @IsOptional()
-  @IsBoolean()
-  isFeatured?: boolean;
+  // isFeatured removed — featuring is now admin-only via FeaturedItem table
 
   @IsOptional()
   @IsBoolean()

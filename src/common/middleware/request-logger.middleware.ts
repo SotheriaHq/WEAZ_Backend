@@ -2,9 +2,9 @@ import { Logger } from '@nestjs/common';
 import { v4 as uuidv4 } from 'uuid';
 import type { NextFunction, Request, Response } from 'express';
 
-export function requestLoggerMiddleware(req: Request, res: Response, next: NextFunction) {
-  const logger = new Logger('HTTP');
+const httpLogger = new Logger('HTTP');
 
+export function requestLoggerMiddleware(req: Request, res: Response, next: NextFunction) {
   const existing = req.headers['x-request-id'];
   const requestId = (typeof existing === 'string' && existing.trim()) || uuidv4();
 
@@ -29,9 +29,9 @@ export function requestLoggerMiddleware(req: Request, res: Response, next: NextF
     });
 
     if (durationMs >= 2000) {
-      logger.warn(msg);
+      httpLogger.warn(msg);
     } else {
-      logger.log(msg);
+      httpLogger.log(msg);
     }
   });
 

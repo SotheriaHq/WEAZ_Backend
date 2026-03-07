@@ -66,8 +66,14 @@ export class CategoriesAdminController {
 
   @Get(':id/sub-categories')
   @ApiOperation({ summary: 'List sub-categories for a main category' })
-  async subCategories(@Param('id') id: string) {
-    return this.categories.getSubCategoriesByCategoryId(id);
+  async subCategories(
+    @Param('id') id: string,
+    @Query('includeInactive') includeInactive?: string,
+  ) {
+    return this.categories.getSubCategoriesByCategoryId(
+      id,
+      includeInactive === 'true',
+    );
   }
 
   @Get('filters/dimensions')

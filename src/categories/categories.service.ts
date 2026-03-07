@@ -190,9 +190,9 @@ export class CategoriesService {
   /**
    * Get sub-categories for a specific main category.
    */
-  async getSubCategoriesByCategoryId(categoryId: string) {
+  async getSubCategoriesByCategoryId(categoryId: string, includeInactive = false) {
     const types = await this.prisma.collectionCategoryType.findMany({
-      where: { categoryId, isActive: true },
+      where: includeInactive ? { categoryId } : { categoryId, isActive: true },
       orderBy: [{ order: 'asc' }],
       select: { id: true, slug: true, name: true, description: true, order: true },
     });

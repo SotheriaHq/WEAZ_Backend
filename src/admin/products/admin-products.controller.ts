@@ -47,7 +47,7 @@ export class AdminProductsController {
   @RequirePermissions(ADMIN_PERMISSIONS.PRODUCTS_MODERATE)
   moderate(
     @Param('id') id: string,
-    @Body() dto: { isActive?: boolean; isFeatured?: boolean },
+    @Body() dto: { isActive?: boolean },
     @Req() req: Request,
   ) {
     const actorId = (req as any).user.sub;

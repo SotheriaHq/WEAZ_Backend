@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { AdminAuditAction, Prisma } from '@prisma/client';
 import { v4 as uuidv4 } from 'uuid';
@@ -16,8 +16,6 @@ export interface AuditLogEntry {
 
 @Injectable()
 export class AdminAuditService {
-  private readonly logger = new Logger(AdminAuditService.name);
-
   constructor(private readonly prisma: PrismaService) {}
 
   private toJson(value?: Record<string, unknown>) {
@@ -32,24 +30,20 @@ export class AdminAuditService {
    * Designed to be called within a Prisma transaction or standalone.
    */
   async log(entry: AuditLogEntry, req?: Request) {
-    try {
-      await this.prisma.adminAuditLog.create({
-        data: {
-          id: uuidv4(),
-          actorUserId: entry.actorUserId,
-          action: entry.action,
-          targetType: entry.targetType ?? null,
-          targetId: entry.targetId ?? null,
-          metadata: this.toJson(entry.metadata),
-          previousState: this.toJson(entry.previousState),
-          newState: this.toJson(entry.newState),
-          ipAddress: req ? this.extractIp(req) : null,
-          userAgent: req?.headers['user-agent'] ?? null,
-        },
-      });
-    } catch (error: any) {
-      this.logger.error('Failed to write audit log:', error.message);
-    }
+    await this.prisma.adminAuditLog.create({
+      data: {
+        id: uuidv4(),
+        actorUserId: entry.actorUserId,
+        action: entry.action,
+        targetType: entry.targetType ?? null,
+        targetId: entry.targetId ?? null,
+        metadata: this.toJson(entry.metadata),
+        previousState: this.toJson(entry.previousState),
+        newState: this.toJson(entry.newState),
+        ipAddress: req ? this.extractIp(req) : null,
+        userAgent: req?.headers['user-agent'] ?? null,
+      },
+    });
   }
 
   /**

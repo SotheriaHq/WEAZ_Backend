@@ -27,6 +27,7 @@ import { CollectionsService } from '../collections/collections.service';
 import { UserTypeGuard } from '../auth/guard/user-type.guard';
 import { UserType, PatchStatus } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/guard/jwt-auth.guard';
+import { SubmitVerificationDto } from '../admin/brands/dto/brand-verification.dto';
 
 @Controller()
 export class BrandsController {
@@ -297,5 +298,32 @@ export class BrandsController {
       throw new BadRequestException('Not authorized for this brand');
     }
     return this.brandsService.getDashboardAnalytics(brandId, range);
+  }
+
+  // ===================== Brand Verification =====================
+
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Post('brands/:id/verification')
+  async submitVerification(
+    @Param('id') brandId: string,
+    @Body(ValidationPipe) dto: SubmitVerificationDto,
+    @Req() req: any,
+  ) {
+    if (req.user.id !== brandId) {
+      throw new BadRequestException('Not authorized for this brand');
+    }
+    return this.brandsService.submitVerification(brandId, dto);
+  }
+
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Get('brands/:id/verification')
+  async getVerificationStatus(
+    @Param('id') brandId: string,
+    @Req() req: any,
+  ) {
+    if (req.user.id !== brandId) {
+      throw new BadRequestException('Not authorized for this brand');
+    }
+    return this.brandsService.getVerificationStatus(brandId);
   }
 }

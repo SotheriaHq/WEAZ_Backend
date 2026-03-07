@@ -1,10 +1,11 @@
 import {
+  BadRequestException,
   Injectable,
   NotFoundException,
   Logger,
 } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
-import { AdminAuditAction } from '@prisma/client';
+import { AdminAuditAction, ContentTarget } from '@prisma/client';
 import { v4 as uuidv4 } from 'uuid';
 import { Request } from 'express';
 
@@ -13,6 +14,132 @@ export class AdminModerationService {
   private readonly logger = new Logger(AdminModerationService.name);
 
   constructor(private readonly prisma: PrismaService) {}
+
+  async quarantineThreads(
+    body: {
+      userId: string;
+      contentId: string;
+      contentType: ContentTarget;
+      reason?: string;
+    },
+    actorId: string,
+    req: Request,
+  ) {
+    await this.prisma.$transaction(async (tx) => {
+      await tx.quarantinedThread.create({
+        data: {
+          userId: body.userId,
+          contentId: body.contentId,
+          contentType: body.contentType,
+          reason: body.reason ?? null,
+        },
+      });
+
+      await (tx as any).adminAuditLog.create({
+        data: {
+          id: uuidv4(),
+          actorUserId: actorId,
+          action: AdminAuditAction.ADMIN_MODERATION_QUARANTINE,
+          targetType: body.contentType,
+          targetId: body.contentId,
+          metadata: {
+            userId: body.userId,
+            reason: body.reason ?? null,
+          },
+          ipAddress: req.socket?.remoteAddress ?? null,
+          userAgent: req.headers['user-agent'] ?? null,
+        },
+      });
+    });
+
+    return { success: true };
+  }
+
+  async bulkRemoveThreads(
+    entries: Array<{
+      userId: string;
+      contentId: string;
+      contentType: ContentTarget;
+    }>,
+    actorId: string,
+    req: Request,
+  ) {
+    if (!Array.isArray(entries) || entries.length === 0) {
+      return { success: true, removed: 0 };
+    }
+    if (entries.length > 1000) {
+      throw new BadRequestException('Bulk removal limit exceeded (max 1000 entries)');
+    }
+
+    const chunk = <T>(input: T[], size: number): T[][] => {
+      const result: T[][] = [];
+      for (let i = 0; i < input.length; i += size) {
+        result.push(input.slice(i, i + size));
+      }
+      return result;
+    };
+
+    const dedupeMap = new Map<string, { userId: string; contentId: string; contentType: ContentTarget }>();
+    for (const entry of entries) {
+      const key = `${entry.contentType}:${entry.userId}:${entry.contentId}`;
+      if (!dedupeMap.has(key)) {
+        dedupeMap.set(key, entry);
+      }
+    }
+    const dedupedEntries = Array.from(dedupeMap.values());
+    const collectionEntries = dedupedEntries.filter((e) => e.contentType === 'COLLECTION');
+    const postEntries = dedupedEntries.filter((e) => e.contentType === 'POST');
+
+    let removedCount = 0;
+    await this.prisma.$transaction(async (tx) => {
+      for (const batch of chunk(collectionEntries, 200)) {
+        const result = await tx.collectionReaction.deleteMany({
+          where: {
+            OR: batch.map((entry) => ({
+              userId: entry.userId,
+              collectionId: entry.contentId,
+            })),
+          },
+        });
+        removedCount += result.count;
+      }
+
+      for (const batch of chunk(postEntries, 200)) {
+        const result = await tx.thread.deleteMany({
+          where: {
+            OR: batch.map((entry) => ({
+              userId: entry.userId,
+              postId: entry.contentId,
+            })),
+          },
+        });
+        removedCount += result.count;
+      }
+
+      await (tx as any).adminAuditLog.create({
+        data: {
+          id: uuidv4(),
+          actorUserId: actorId,
+          action: AdminAuditAction.ADMIN_MODERATION_BULK_REMOVE,
+          targetType: 'BulkModeration',
+          metadata: {
+            requestedCount: entries.length,
+            dedupedCount: dedupedEntries.length,
+            removedCount,
+          },
+          ipAddress: req.socket?.remoteAddress ?? null,
+          userAgent: req.headers['user-agent'] ?? null,
+        },
+      });
+    });
+
+    return {
+      success: true,
+      removed: removedCount,
+      requested: entries.length,
+      deduped: dedupedEntries.length,
+    };
+  }
 
   /**
    * Get the moderation queue (pending items: freeform measurement points, size charts).

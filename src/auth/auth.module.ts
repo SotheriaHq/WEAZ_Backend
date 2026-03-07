@@ -28,10 +28,16 @@ import { RefreshTokenCleanupService } from './helper/refresh-token-cleanup.servi
         if (!secret) {
           throw new Error('JWT_ACCESS_SECRET must be configured');
         }
+        const accessTtlSeconds = Number(
+          config.get<string>('JWT_ACCESS_TTL_SECONDS', '900'),
+        );
         return {
           secret,
           signOptions: {
-            expiresIn: config.get<string>('JWT_ACCESS_EXPIRES_IN', '15m'),
+            expiresIn:
+              Number.isFinite(accessTtlSeconds) && accessTtlSeconds > 0
+                ? accessTtlSeconds
+                : 900,
           },
         };
       },
@@ -40,17 +46,17 @@ import { RefreshTokenCleanupService } from './helper/refresh-token-cleanup.servi
       {
         name: 'short',
         ttl: 1000,
-        limit: 100, // Increased for development
+        limit: 20,
       },
       {
         name: 'medium',
         ttl: 10000,
-        limit: 200, // Increased for development
+        limit: 60,
       },
       {
         name: 'long',
         ttl: 60000,
-        limit: 1000, // Increased for development
+        limit: 180,
       },
     ]),
   ],

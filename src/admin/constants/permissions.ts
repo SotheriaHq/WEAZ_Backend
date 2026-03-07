@@ -26,6 +26,9 @@ export const ADMIN_PERMISSIONS = {
   COLLECTIONS_READ: 'collections.read',
   COLLECTIONS_MODERATE: 'collections.moderate',
 
+  // Featured
+  FEATURED_MANAGE: 'featured.manage',
+
   // Taxonomy & Tags
   TAXONOMY_READ: 'taxonomy.read',
   TAXONOMY_WRITE: 'taxonomy.write',

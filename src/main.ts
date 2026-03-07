@@ -152,7 +152,7 @@ async function bootstrap() {
   try {
     const app = await NestFactory.create(AppModule);
     const configService = app.get(ConfigService);
-    applyTrustProxy(app, configService.get<string>('TRUST_PROXY', '1'));
+    applyTrustProxy(app, configService.get<string>('TRUST_PROXY', 'false'));
 
     app.use((req, res, next) => {
       res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -247,14 +247,20 @@ async function bootstrap() {
       }),
     );
 
-    const swaggerConfig = new DocumentBuilder()
-      .setTitle('voguely API')
-      .setDescription('API documentation for voguely')
-      .setVersion('1.0')
-      .addTag('voguely')
-      .build();
-    const document = SwaggerModule.createDocument(app, swaggerConfig);
-    SwaggerModule.setup('api', app, document);
+    const enableSwagger = toBoolean(
+      configService.get<string>('ENABLE_SWAGGER'),
+      false,
+    );
+    if (enableSwagger) {
+      const swaggerConfig = new DocumentBuilder()
+        .setTitle('voguely API')
+        .setDescription('API documentation for voguely')
+        .setVersion('1.0')
+        .addTag('voguely')
+        .build();
+      const document = SwaggerModule.createDocument(app, swaggerConfig);
+      SwaggerModule.setup('api', app, document);
+    }
 
     app.useGlobalFilters(new AllExceptionsFilter());
     app.useGlobalInterceptors(new TransformInterceptor());
@@ -310,7 +316,7 @@ async function bootstrap() {
 
     const allowPrivateNetworkCors = toBoolean(
       configService.get<string>('CORS_ALLOW_PRIVATE_NETWORK'),
-      true,
+      false,
     );
 
     app.enableCors({
@@ -369,8 +375,14 @@ async function bootstrap() {
       }),
     );
 
-    // Serve locally-stored uploads (used as a dev fallback when S3 isn't available).
-    app.use('/uploads', express.static(join(process.cwd(), 'uploads')));
+    const serveLocalUploads = toBoolean(
+      configService.get<string>('SERVE_LOCAL_UPLOADS'),
+      configService.get<string>('NODE_ENV', '').toLowerCase() !== 'production',
+    );
+    if (serveLocalUploads) {
+      // Serve locally-stored uploads (used as a dev fallback when S3 isn't available).
+      app.use('/uploads', express.static(join(process.cwd(), 'uploads')));
+    }
 
     const port = parsePort(configService.get<string>('APP_PORT'));
     const host = configService.get<string>('APP_HOST', DEFAULT_HOST);

@@ -171,11 +171,7 @@ export class StoreController {
     return this.storeService.unarchiveProduct(req.user.id, productId);
   }
 
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
-  @Post('products/:id/toggle-featured')
-  async toggleFeatured(@Param('id') productId: string, @Req() req: any) {
-    return this.storeService.toggleFeatured(req.user.id, productId);
-  }
+  // toggleFeatured removed — featuring is now admin-only via /admin/featured
 
   @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
   @Post('products/bulk/delete')

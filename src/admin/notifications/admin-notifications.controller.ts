@@ -23,7 +23,7 @@ export class AdminNotificationsController {
   constructor(private readonly notificationsService: AdminNotificationsService) {}
 
   @Get('templates')
-  @RequirePermissions(ADMIN_PERMISSIONS.USERS_READ)
+  @RequirePermissions(ADMIN_PERMISSIONS.NOTIFICATIONS_SEND)
   getTemplates() {
     return this.notificationsService.getTemplates();
   }

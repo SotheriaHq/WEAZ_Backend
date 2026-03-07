@@ -3,6 +3,7 @@ import { PrismaService } from 'src/prisma/prisma.service';
 import { AdminAuditAction } from '@prisma/client';
 import { v4 as uuidv4 } from 'uuid';
 import { Request } from 'express';
+import { EmailService } from 'src/email/email.service';
 
 const NOTIFICATION_TEMPLATES: Record<string, { subject: string; body: string }> = {
   'account.suspended': {
@@ -41,7 +42,10 @@ const NOTIFICATION_TEMPLATES: Record<string, { subject: string; body: string }> 
 
 @Injectable()
 export class AdminNotificationsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly emailService: EmailService,
+  ) {}
 
   getTemplates() {
     return Object.entries(NOTIFICATION_TEMPLATES).map(([id, template]) => ({
@@ -71,12 +75,12 @@ export class AdminNotificationsService {
       const notif = await (tx as any).adminNotificationLog.create({
         data: {
           id: uuidv4(),
-          sentById: actorId,
-          targetUserId: dto.targetUserId,
+          adminUserId: actorId,
+          targetType: 'User',
+          targetId: dto.targetUserId,
           channel: dto.channel,
           templateKey: dto.messageTemplate,
-          customMessage: dto.customMessage ?? null,
-          relatedAuditLogId: dto.relatedAuditLogId ?? null,
+          message: dto.customMessage ?? body ?? null,
         },
       });
 
@@ -112,6 +116,19 @@ export class AdminNotificationsService {
 
       return notif;
     });
+
+    // Send email if channel includes email
+    if (dto.channel === 'email' || dto.channel === 'both') {
+      const targetUser = await this.prisma.user.findUnique({
+        where: { id: dto.targetUserId },
+        select: { email: true },
+      });
+      if (targetUser?.email) {
+        void this.emailService
+          .send(targetUser.email, subject, `<p>${body}</p>`, body)
+          .catch(() => undefined);
+      }
+    }
 
     return notification;
   }
