@@ -5,8 +5,10 @@ import { buildRedisConnection } from './queue.config';
 import {
   NOTIFICATIONS_QUEUE,
   BULK_UPLOAD_QUEUE,
+  IMAGE_PROCESSING_QUEUE,
 } from './queue.constants';
 import { NotificationsQueueService } from './notifications.queue.service';
+import { ImageProcessingQueueService } from './image-processing.queue.service';
 
 @Module({
   imports: [
@@ -24,9 +26,10 @@ import { NotificationsQueueService } from './notifications.queue.service';
     BullModule.registerQueue(
       { name: NOTIFICATIONS_QUEUE },
       { name: BULK_UPLOAD_QUEUE },
+      { name: IMAGE_PROCESSING_QUEUE },
     ),
   ],
-  providers: [NotificationsQueueService],
-  exports: [BullModule, NotificationsQueueService],
+  providers: [NotificationsQueueService, ImageProcessingQueueService],
+  exports: [BullModule, NotificationsQueueService, ImageProcessingQueueService],
 })
 export class QueueModule {}

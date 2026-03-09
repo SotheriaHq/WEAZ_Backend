@@ -56,13 +56,37 @@ export class OrderService {
         id: orderId,
         brandId: realBrandId,
       },
+      include: {
+        orderItems: true,
+        brand: { select: { id: true, name: true, logo: true, currency: true } },
+      },
     });
 
     if (!order) {
       throw new NotFoundException('Order not found');
     }
 
-    return order;
+    // Normalize contact fields for frontend consumption
+    const contactInfo = (order.contactInfo as Record<string, any>) || {};
+    const shippingAddr = (order.shippingAddress as Record<string, any>) || null;
+
+    return {
+      ...order,
+      customerEmail: contactInfo.email || null,
+      customerPhone: contactInfo.phone || null,
+      formattedShippingAddress: shippingAddr
+        ? [
+            shippingAddr.street,
+            shippingAddr.apartment,
+            shippingAddr.city,
+            shippingAddr.state,
+            shippingAddr.postalCode,
+            shippingAddr.country,
+          ]
+            .filter(Boolean)
+            .join(', ')
+        : null,
+    };
   }
 
   async updateStatus(brandId: string, orderId: string, status: OrderStatus) {

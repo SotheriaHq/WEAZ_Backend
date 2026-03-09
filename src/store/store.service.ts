@@ -14,6 +14,7 @@ import { CreateProductDto, UpdateProductDto } from './dto/create-product.dto';
 import { AddToCartDto, UpdateCartItemDto } from './dto/cart.dto';
 import { AddToWishlistDto } from './dto/wishlist.dto';
 import { CheckoutDto } from './dto/checkout.dto';
+import { calculateShipping } from '../payment/payment.types';
 import {
   BulkArchiveProductsDto,
   BulkDeleteProductsDto,
@@ -2881,6 +2882,17 @@ export class StoreService {
           categoryType: {
             select: { id: true, categoryId: true, slug: true, name: true },
           },
+          variants: {
+            select: {
+              id: true,
+              size: true,
+              color: true,
+              stock: true,
+              price: true,
+              sku: true,
+              colorHex: true,
+            },
+          },
         },
       }),
       this.prisma.product.count({ where }),
@@ -4233,22 +4245,28 @@ export class StoreService {
           });
         }
 
+        const shippingState = (dto.shippingAddress as any)?.state ?? '';
+        const shippingCost = shippingState ? calculateShipping(shippingState) : 0;
+
         const order = await tx.order.create({
           data: {
             id: uuidv4(),
             brandId,
             buyerId: userId,
             customerName: dto.customerName || 'Customer',
-            shippingAddress: dto.shippingAddress || null,
+            shippingAddress: (dto.shippingAddress as Record<string, any>) || null,
             contactInfo: {
               ...(dto.contactInfo || {}),
               ...(sizeFitSnapshot ? { sizeFitSnapshot } : {}),
             } as any,
             items: orderItems,
-            totalAmount: new Prisma.Decimal(totalAmount.toFixed(2)),
+            totalAmount: new Prisma.Decimal((totalAmount + shippingCost).toFixed(2)),
+            shippingCost: new Prisma.Decimal(shippingCost.toFixed(2)),
             currency: brand.currency || 'NGN',
             status: 'PENDING',
             paymentStatus: 'PENDING',
+            paymentMethod: (dto as any).paymentMethod || 'PENDING_SELECTION',
+            promoCode: (dto as any).promoCode || null,
           },
         });
 
@@ -4287,6 +4305,23 @@ export class StoreService {
             },
           });
         }
+
+        // Notify buyer their order was placed
+        await tx.notification.create({
+          data: {
+            id: uuidv4(),
+            recipientId: userId,
+            actorId: userId,
+            type: NotificationType.ORDER_PLACED,
+            payload: {
+              orderId: order.id,
+              totalAmount: totalAmount + shippingCost,
+              brandId,
+              brandName: brand.name,
+              isBuyerCopy: true,
+            },
+          },
+        });
 
         createdOrders.push(order);
       }

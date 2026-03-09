@@ -144,6 +144,19 @@ model FileUpload {
   fileType     FileType
   mimeType     String
   size         Int
+  processingStatus ImageProcessingStatus @default(PENDING)
+  processingError  String?
+  width            Int?
+  height           Int?
+  hasAlpha         Boolean               @default(false)
+  isAnimated       Boolean               @default(false)
+  orientation      Int?
+  colorSpace       String?
+  sha256           String?
+  assetVersion     Int                   @default(1)
+  isPublic         Boolean               @default(false)
+  originalDeletedAt DateTime?
+  lastProcessedAt  DateTime?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
@@ -157,6 +170,29 @@ model FileUpload {
   // Relation to collection media
   collectionMedias CollectionMedia[] @relation("FileUpload_to_CollectionMedia")
   bannerUsers      User[]            @relation("UserBannerImage")
+  variants         FileVariant[]
+
+  @@index([processingStatus, updatedAt])
+}
+
+model FileVariant {
+  id           String        @id @map("_id") @db.Uuid
+  fileUploadId String        @db.Uuid
+  file         FileUpload    @relation(fields: [fileUploadId], references: [id], onDelete: Cascade)
+  variantKind  ImageVariantKind
+  format       ImageVariantFormat
+  width        Int
+  height       Int
+  sizeBytes    Int
+  quality      Int
+  s3Key        String
+  s3Url        String
+  assetVersion Int           @default(1)
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  @@index([fileUploadId, variantKind])
+  @@unique([fileUploadId, variantKind, format, assetVersion])
 }
 
 model Post {
@@ -316,6 +352,28 @@ enum FileType {
   POST_VIDEO
   DOCUMENT
   BRAND_VERIFICATION
+}
+
+enum ImageProcessingStatus {
+  PENDING
+  READY
+  FAILED
+}
+
+enum ImageVariantKind {
+  AVATAR
+  BANNER
+  THUMB
+  CARD
+  DETAIL
+  ZOOM
+}
+
+enum ImageVariantFormat {
+  AVIF
+  WEBP
+  JPEG
+  PNG
 }
 
 enum PresignStatus {
@@ -1075,6 +1133,8 @@ model PresignedUpload {
   s3Key        String        @unique
   size         Int?
   status       PresignStatus @default(PENDING)
+  finalizedAt  DateTime?
+  processingEnqueuedAt DateTime?
   expiresAt    DateTime
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt
@@ -1306,10 +1366,17 @@ model Order {
   items          Json          // [{productId, qty, price, thumbnail, name}]
   orderItems     OrderItem[]
   totalAmount    Decimal       @db.Decimal(10, 2)
+  shippingCost   Decimal       @db.Decimal(10, 2) @default(0)
+  discountAmount Decimal       @db.Decimal(10, 2) @default(0)
+  promoCode      String?
   currency       String        @default("NGN")
   
   status         OrderStatus   @default(PENDING)
   paymentStatus  PaymentStatus @default(PENDING)
+  paymentMethod  PaymentMethod @default(PENDING_SELECTION)
+  paymentReference String?
+  paymentGateway   String?
+  paidAt           DateTime?
   
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
@@ -1317,6 +1384,7 @@ model Order {
   @@index([brandId])
   @@index([brandId, status])
   @@index([buyerId])
+  @@index([paymentReference])
 }
 
 model OrderItem {
@@ -1404,6 +1472,14 @@ enum PaymentStatus {
   PAID
   FAILED
   REFUNDED
+}
+
+enum PaymentMethod {
+  PENDING_SELECTION
+  PAYSTACK
+  FLUTTERWAVE
+  BANK_TRANSFER
+  PAY_ON_DELIVERY
 }
 
 enum PayoutStatus {

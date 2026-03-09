@@ -168,6 +168,20 @@ export class UploadController {
   }
 
   @UseGuards(JwtAuthGuard)
+  @Get(':fileId/variants')
+  @ApiOperation({ summary: 'Get optimized image variants for a file' })
+  async getVariants(@Param('fileId') fileId: string, @Req() req: any) {
+    return this.uploadService.getFileVariants(fileId, req.user.id);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Post(':fileId/reprocess')
+  @ApiOperation({ summary: 'Enqueue image variant reprocessing for a file' })
+  async reprocess(@Param('fileId') fileId: string, @Req() req: any) {
+    return this.uploadService.reprocessFile(fileId, req.user.id);
+  }
+
+  @UseGuards(JwtAuthGuard)
   @Delete(':fileId')
   @ApiOperation({ summary: 'Delete file' })
   async deleteFile(@Param('fileId') fileId: string, @Req() req: any) {

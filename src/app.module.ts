@@ -25,6 +25,7 @@ import { MeasurementPointsModule } from './measurement-points/measurement-points
 import { AdminModule } from './admin/admin.module';
 import { EmailModule } from './email/email.module';
 import { FeaturedModule } from './featured/featured.module';
+import { PaymentModule } from './payment/payment.module';
 
 @Module({
   imports: [
@@ -55,6 +56,7 @@ import { FeaturedModule } from './featured/featured.module';
     MeasurementPointsModule,
     AdminModule,
     FeaturedModule,
+    PaymentModule,
   ],
   controllers: [AppController],
   providers: [AppService, EventsGateway],

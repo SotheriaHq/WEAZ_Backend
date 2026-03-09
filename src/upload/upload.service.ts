@@ -1,4 +1,10 @@
-import { Injectable, Logger, BadRequestException, ForbiddenException } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  BadRequestException,
+  ForbiddenException,
+  Optional,
+} from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { FileUpload } from '@prisma/client';
 import {
@@ -18,6 +24,23 @@ import { ConfigService } from '@nestjs/config';
 import { FileType } from './upload.enums';
 import * as path from 'path';
 import { mkdir, writeFile } from 'fs/promises';
+import { ImageProcessingQueueService } from 'src/queue/image-processing.queue.service';
+
+type VariantView = {
+  url: string;
+  width: number;
+  height: number;
+  format: string;
+};
+
+type VariantsMap = {
+  thumb?: VariantView;
+  card?: VariantView;
+  detail?: VariantView;
+  zoom?: VariantView;
+  avatar?: VariantView;
+  banner?: VariantView;
+};
 
 export interface FileUploadResult {
   id: string;
@@ -28,6 +51,7 @@ export interface FileUploadResult {
   size: number;
   mimeType: string;
   fileType: FileType;
+  processingStatus?: 'PENDING' | 'READY' | 'FAILED';
   createdAt: string;
   updatedAt: string;
 }
@@ -71,6 +95,8 @@ export class UploadService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly configService: ConfigService,
+    @Optional()
+    private readonly imageQueue?: ImageProcessingQueueService,
   ) {
     this.bucketName =
       this.configService.get<string>('AWS_S3_BUCKET') ??
@@ -149,8 +175,13 @@ export class UploadService {
           fileType: fileType,
           mimeType: file.mimetype,
           size: file.size,
-        },
+          processingStatus: this.shouldOptimizeFile(fileType, file.mimetype)
+            ? 'PENDING'
+            : 'READY',
+        } as any,
       });
+
+      await this.enqueueImageProcessing(uploadRecord.id);
 
       return {
         id: uploadRecord.id,
@@ -161,6 +192,7 @@ export class UploadService {
         size: uploadRecord.size,
         mimeType: uploadRecord.mimeType,
         fileType: uploadRecord.fileType as FileType,
+        processingStatus: (uploadRecord as any).processingStatus,
         createdAt: uploadRecord.createdAt.toISOString(),
         updatedAt: uploadRecord.updatedAt.toISOString(),
       };
@@ -226,8 +258,13 @@ export class UploadService {
         fileType: fileType,
         mimeType: file.mimetype,
         size: file.size,
-      },
+        processingStatus: this.shouldOptimizeFile(fileType, file.mimetype)
+          ? 'PENDING'
+          : 'READY',
+      } as any,
     });
+
+    await this.enqueueImageProcessing(uploadRecord.id);
 
     return {
       id: uploadRecord.id,
@@ -238,6 +275,7 @@ export class UploadService {
       size: uploadRecord.size,
       mimeType: uploadRecord.mimeType,
       fileType: uploadRecord.fileType as FileType,
+      processingStatus: (uploadRecord as any).processingStatus,
       createdAt: uploadRecord.createdAt.toISOString(),
       updatedAt: uploadRecord.updatedAt.toISOString(),
     };
@@ -597,7 +635,7 @@ export class UploadService {
     // Mark presign as USED
     await (this.prisma as any)['presignedUpload'].update({
       where: { id },
-      data: { status: 'USED' },
+      data: { status: 'USED', finalizedAt: new Date() },
     } as any);
 
     const fileName = key.split('/').pop() || key;
@@ -616,8 +654,13 @@ export class UploadService {
         fileType: presign.fileType as any,
         mimeType,
         size: size || 0,
-      },
+        processingStatus: this.shouldOptimizeFile(presign.fileType as FileType, mimeType)
+          ? 'PENDING'
+          : 'READY',
+      } as any,
     });
+
+    await this.enqueueImageProcessing(record.id);
 
     return record;
   }
@@ -656,9 +699,160 @@ export class UploadService {
         fileType,
         mimeType,
         size: buffer.length,
-      },
+        processingStatus: this.shouldOptimizeFile(fileType, mimeType)
+          ? 'PENDING'
+          : 'READY',
+      } as any,
     });
+    await this.enqueueImageProcessing(record.id);
     return record;
+  }
+
+  async getFileVariants(fileId: string, userId?: string) {
+    const file = await this.prisma.fileUpload.findFirst({
+      where: userId ? { id: fileId, userId } : { id: fileId },
+    });
+    if (!file) {
+      throw new BadRequestException('File not found');
+    }
+
+    const variantRows = await (this.prisma as any).fileVariant.findMany({
+      where: { fileUploadId: fileId, assetVersion: (file as any).assetVersion ?? 1 },
+      orderBy: [{ variantKind: 'asc' }, { format: 'asc' }],
+    });
+
+    const variants: VariantsMap = {};
+    for (const row of variantRows ?? []) {
+      const key = String((row.variantKind || '')).toLowerCase();
+      const mapped =
+        key === 'thumb' ||
+        key === 'card' ||
+        key === 'detail' ||
+        key === 'zoom' ||
+        key === 'avatar' ||
+        key === 'banner'
+          ? key
+          : null;
+      if (!mapped) continue;
+      if ((variants as any)[mapped]) continue;
+      (variants as any)[mapped] = {
+        url: row.s3Url,
+        width: row.width,
+        height: row.height,
+        format: row.format,
+      } as VariantView;
+    }
+
+    return {
+      fileId: file.id,
+      processingStatus: (file as any).processingStatus ?? 'READY',
+      version: (file as any).assetVersion ?? 1,
+      variants,
+      fallbackUrl: file.s3Url,
+      s3Url: file.s3Url,
+    };
+  }
+
+  async reprocessFile(fileId: string, userId: string) {
+    const file = await this.prisma.fileUpload.findFirst({
+      where: { id: fileId, userId },
+      select: { id: true },
+    });
+    if (!file) {
+      throw new BadRequestException('File not found');
+    }
+
+    await this.prisma.fileUpload.update({
+      where: { id: fileId },
+      data: {
+        processingStatus: 'PENDING',
+        processingError: null,
+      } as any,
+    } as any);
+
+    await this.enqueueImageProcessing(fileId, true);
+    return { fileId, processingStatus: 'PENDING' };
+  }
+
+  async enqueueImageProcessing(fileId: string, force = false): Promise<void> {
+    if (!fileId || !this.imageQueue || !this.isImageOptimizationEnabled()) {
+      return;
+    }
+    try {
+      await this.imageQueue.enqueueSingle(fileId, force);
+    } catch (error) {
+      this.logger.warn(`Failed to enqueue image processing for ${fileId}: ${String(error)}`);
+    }
+  }
+
+  buildVariantS3Key(params: {
+    variantKind: string;
+    fileId: string;
+    assetVersion: number;
+    ext: string;
+  }): string {
+    const suffix = params.ext.replace(/[^a-z0-9]/gi, '').toLowerCase() || 'bin';
+    return `variant/${String(params.variantKind).toUpperCase()}/${params.fileId}/v${params.assetVersion}.${suffix}`;
+  }
+
+  async putObjectBuffer(params: {
+    key: string;
+    body: Buffer;
+    contentType: string;
+    isPublic?: boolean;
+  }): Promise<{ key: string; url: string }> {
+    const command = new PutObjectCommand({
+      Bucket: this.bucketName,
+      Key: params.key,
+      Body: params.body,
+      ContentType: params.contentType,
+      CacheControl: 'public, max-age=31536000, immutable',
+      ACL: params.isPublic ? 'public-read' : undefined,
+    } as any);
+    await this.s3.send(command);
+    return {
+      key: params.key,
+      url: `https://${this.bucketName}.s3.${this.region}.amazonaws.com/${params.key}`,
+    };
+  }
+
+  async getObjectBufferByKey(key: string): Promise<Buffer> {
+    const result = await this.s3.send(
+      new GetObjectCommand({
+        Bucket: this.bucketName,
+        Key: key,
+      }),
+    );
+
+    const body = result.Body as any;
+    if (!body) {
+      throw new BadRequestException('File object body is empty');
+    }
+
+    if (typeof body.transformToByteArray === 'function') {
+      const bytes = await body.transformToByteArray();
+      return Buffer.from(bytes);
+    }
+
+    const chunks: Buffer[] = [];
+    for await (const chunk of body as AsyncIterable<Buffer | Uint8Array | string>) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    }
+    return Buffer.concat(chunks);
+  }
+
+  private shouldOptimizeFile(fileType: FileType, mimeType: string): boolean {
+    if (!this.isImageOptimizationEnabled()) return false;
+    if (fileType === FileType.POST_VIDEO || fileType === FileType.DOCUMENT) return false;
+    return String(mimeType || '').toLowerCase().startsWith('image/');
+  }
+
+  private isImageOptimizationEnabled(): boolean {
+    const raw =
+      this.configService.get<string>('IMAGE_OPTIMIZATION_ENABLED') ??
+      this.configService.get<string>('IMAGE_VARIANTS_ENABLED') ??
+      'false';
+    return ['1', 'true', 'yes', 'on'].includes(String(raw).toLowerCase());
   }
 
   private validateFile(file: Express.Multer.File, fileType: FileType): void {

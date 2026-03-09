@@ -2165,6 +2165,27 @@ export class CollectionsService {
       }
     });
 
+    const enqueueAt = new Date();
+    for (const entry of verifiedFiles) {
+      const file = entry.file;
+      if (String(file.mimeType || '').toLowerCase().startsWith('image/')) {
+        await this.prisma.fileUpload.update({
+          where: { id: file.id },
+          data: {
+            processingStatus: 'PENDING',
+            processingError: null,
+          } as any,
+        } as any);
+      }
+
+      await (this.prisma as any).presignedUpload.updateMany({
+        where: { id: file.id, status: 'USED' },
+        data: { processingEnqueuedAt: enqueueAt },
+      });
+
+      await this.uploadService.enqueueImageProcessing(file.id);
+    }
+
     let coverMediaId: string | null = dto.coverMediaId ?? null;
     if (coverMediaId) {
       const belongs = await this.prisma.collectionMedia.findFirst({

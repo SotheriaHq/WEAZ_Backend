@@ -682,7 +682,7 @@ export class BrandsService {
     }
 
     // KPIs
-    const [totalOrders, totalSalesResult, pendingOrders, patchesCount] = await Promise.all([
+    const [totalOrders, totalSalesResult, pendingOrders, patchesCount, activeProducts] = await Promise.all([
       this.prisma.order.count({ where: { brandId: brand.id } }),
       this.prisma.order.aggregate({
         where: { brandId: brand.id, paymentStatus: 'PAID' },
@@ -697,6 +697,9 @@ export class BrandsService {
           status: PatchStatus.ACCEPTED,
           mode: PatchMode.USER_TO_BRAND,
         },
+      }),
+      this.prisma.product.count({
+        where: { brandId: brand.id, isActive: true, deletedAt: null },
       }),
     ]);
 
@@ -725,10 +728,17 @@ export class BrandsService {
     return {
       kpis: {
         totalSales: Number(totalSales),
+        totalRevenue: Number(totalSales), // alias for frontend compatibility
         totalOrders,
         avgOrderValue,
         pendingOrders,
         patches: patchesCount,
+        activeProducts,
+      },
+      store: {
+        name: brand.name,
+        logoUrl: brand.logo,
+        isLive: brand.isStoreOpen ?? false,
       },
       recentOrders,
       actionRequired,

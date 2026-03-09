@@ -13,6 +13,8 @@ import { HelperService } from 'src/collections/helper/Helper.service';
 import { NotificationsProcessor } from './notifications.processor';
 import { BulkUploadProcessor } from './bulk-upload.processor';
 import { CategoriesModule } from 'src/categories/categories.module';
+import { ImageProcessingProcessor } from './image-processing.processor';
+import { MediaProcessingService } from 'src/media-processing/media-processing.service';
 
 @Module({
   imports: [
@@ -35,6 +37,8 @@ import { CategoriesModule } from 'src/categories/categories.module';
     HelperService,
     NotificationsProcessor,
     BulkUploadProcessor,
+    ImageProcessingProcessor,
+    MediaProcessingService,
   ],
 })
 export class QueueWorkerModule {}
