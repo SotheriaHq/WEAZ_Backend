@@ -78,30 +78,6 @@ export interface BrandProfileResponse {
   updatedAt: string;
 }
 
-export interface BrandReviewsResponse {
-  reviews: Array<{
-    id: string;
-    userId: string;
-    userName: string;
-    userImage: string | null;
-    brandId: string;
-    rating: number;
-    comment: string;
-    helpful: number;
-    images: string[];
-    verified: boolean;
-    createdAt: string;
-    updatedAt: string;
-  }>;
-  averageRating: number;
-  totalReviews: number;
-  ratingDistribution: Array<{
-    stars: number;
-    count: number;
-    percentage: number;
-  }>;
-}
-
 @Injectable()
 export class BrandsService {
   constructor(
@@ -320,84 +296,6 @@ export class BrandsService {
       patchesCount,
       createdAt: brand.createdAt.toISOString(),
       updatedAt: brand.updatedAt.toISOString(),
-    };
-  }
-
-  async getBrandReviews(brandId: string): Promise<BrandReviewsResponse> {
-    await this.getBrandOrThrow(brandId);
-
-    // Resolve brand entity from ownerId
-    const brand = await this.prisma.brand.findFirst({
-      where: { ownerId: brandId },
-      select: { id: true, avgRating: true, totalReviews: true },
-    });
-
-    if (!brand) {
-      const distribution = [5, 4, 3, 2, 1].map((stars) => ({
-        stars,
-        count: 0,
-        percentage: 0,
-      }));
-      return {
-        reviews: [],
-        averageRating: 0,
-        totalReviews: 0,
-        ratingDistribution: distribution,
-      };
-    }
-
-    const reviews = await this.prisma.productReview.findMany({
-      where: { brandId: brand.id, status: 'PUBLISHED' },
-      orderBy: { createdAt: 'desc' },
-      take: 20,
-      include: {
-        user: {
-          select: {
-            id: true,
-            username: true,
-            firstName: true,
-            lastName: true,
-            profileImage: true,
-          },
-        },
-      },
-    });
-
-    const breakdownRaw = await this.prisma.productReview.groupBy({
-      by: ['rating'],
-      where: { brandId: brand.id, status: 'PUBLISHED' },
-      _count: { rating: true },
-    });
-
-    const total = breakdownRaw.reduce((sum, r) => sum + r._count.rating, 0);
-    const distribution = [5, 4, 3, 2, 1].map((stars) => {
-      const row = breakdownRaw.find((r) => r.rating === stars);
-      const count = row?._count.rating ?? 0;
-      return {
-        stars,
-        count,
-        percentage: total > 0 ? Math.round((count / total) * 100) : 0,
-      };
-    });
-
-    return {
-      reviews: reviews.map((r) => ({
-        id: r.id,
-        userId: r.userId,
-        userName: r.user.username,
-        userImage: r.user.profileImage ?? null,
-        brandId: r.brandId,
-        rating: r.rating,
-        comment: r.content,
-        helpful: r.helpfulCount,
-        images: [],
-        verified: true,
-        createdAt: r.createdAt.toISOString(),
-        updatedAt: r.updatedAt.toISOString(),
-      })),
-      averageRating: brand.avgRating ?? 0,
-      totalReviews: brand.totalReviews ?? 0,
-      ratingDistribution: distribution,
     };
   }
 

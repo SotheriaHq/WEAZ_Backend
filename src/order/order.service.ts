@@ -104,7 +104,12 @@ export class OrderService {
 
     const updated = await this.prisma.order.update({
       where: { id: orderId },
-      data: { status },
+      data: {
+        status,
+        ...(status === OrderStatus.DELIVERED && !order.deliveredAt
+          ? { deliveredAt: new Date() }
+          : {}),
+      },
     });
 
     // Notify buyer about status change

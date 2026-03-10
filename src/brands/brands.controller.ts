@@ -17,7 +17,6 @@ import { SkipThrottle } from '@nestjs/throttler';
 import {
   BrandsService,
   BrandProfileResponse,
-  BrandReviewsResponse,
 } from './brands.service';
 import { UpdateBrandProfileDto } from './dto/update-brand-profile.dto';
 import { AuthUserResponseDto } from '../auth/dto/auth-response.dto';
@@ -103,17 +102,6 @@ export class BrandsController {
       throw new BadRequestException('Brand id is required');
     }
     return this.brandsService.getBrandProfile(id);
-  }
-
-  @Get('reviews')
-  @SkipThrottle()
-  async getBrandReviews(
-    @Query('brandId') brandId?: string,
-  ): Promise<BrandReviewsResponse> {
-    if (!brandId) {
-      throw new BadRequestException('brandId query parameter is required');
-    }
-    return this.brandsService.getBrandReviews(brandId);
   }
 
   @Patch('brands/:id')

@@ -97,4 +97,28 @@ export class FeatureFlagsService {
     });
     return flag?.isEnabled ?? false;
   }
+
+  async getStates(keys: string[]): Promise<Record<string, boolean>> {
+    const uniqueKeys = Array.from(new Set(keys.filter((key) => key.trim().length > 0)));
+    if (uniqueKeys.length === 0) {
+      return {};
+    }
+
+    const flags = await this.prisma.featureFlag.findMany({
+      where: {
+        key: {
+          in: uniqueKeys,
+        },
+      },
+      select: {
+        key: true,
+        isEnabled: true,
+      },
+    });
+
+    return uniqueKeys.reduce<Record<string, boolean>>((result, key) => {
+      result[key] = flags.find((flag) => flag.key === key)?.isEnabled ?? false;
+      return result;
+    }, {});
+  }
 }

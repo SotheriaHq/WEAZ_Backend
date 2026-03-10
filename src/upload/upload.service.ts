@@ -845,6 +845,7 @@ export class UploadService {
     if (!this.isImageOptimizationEnabled()) return false;
     if (
       fileType === FileType.POST_VIDEO ||
+      fileType === FileType.REVIEW_VIDEO ||
       fileType === FileType.DOCUMENT
     ) {
       return false;
@@ -866,6 +867,8 @@ export class UploadService {
       [FileType.BANNER_IMAGE]: 8 * 1024 * 1024, // 8MB
       [FileType.POST_IMAGE]: 10 * 1024 * 1024, // 10MB
       [FileType.POST_VIDEO]: 100 * 1024 * 1024, // 100MB
+      [FileType.REVIEW_IMAGE]: 10 * 1024 * 1024, // 10MB
+      [FileType.REVIEW_VIDEO]: 40 * 1024 * 1024, // 40MB
       [FileType.DOCUMENT]: 20 * 1024 * 1024, // 20MB
       [FileType.BRAND_VERIFICATION]: 20 * 1024 * 1024, // 20MB
     };
@@ -885,6 +888,13 @@ export class UploadService {
         'image/gif',
       ],
       [FileType.POST_VIDEO]: ['video/mp4', 'video/webm', 'video/quicktime'],
+      [FileType.REVIEW_IMAGE]: [
+        'image/jpeg',
+        'image/png',
+        'image/webp',
+        'image/gif',
+      ],
+      [FileType.REVIEW_VIDEO]: ['video/mp4', 'video/webm', 'video/quicktime'],
       [FileType.DOCUMENT]: [
         'application/pdf',
         'application/msword',

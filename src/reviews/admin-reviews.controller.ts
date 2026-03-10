@@ -74,6 +74,7 @@ export class AdminReviewsController {
             req.user.id,
             reviewId,
             dto,
+            req,
         );
     }
 }

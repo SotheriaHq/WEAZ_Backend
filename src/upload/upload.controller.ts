@@ -152,6 +152,44 @@ export class UploadController {
   }
 
   @UseGuards(JwtAuthGuard)
+  @Post('review-image')
+  @ApiOperation({ summary: 'Upload review image' })
+  @UseInterceptors(FileInterceptor('file', { storage: memoryStorage() }))
+  async uploadReviewImage(
+    @UploadedFile() file: Express.Multer.File,
+    @Req() req: any,
+  ) {
+    if (!file) {
+      throw new BadRequestException('No file uploaded');
+    }
+
+    return this.uploadService.uploadFile(
+      file,
+      req.user.id,
+      FileType.REVIEW_IMAGE,
+    );
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Post('review-video')
+  @ApiOperation({ summary: 'Upload review video' })
+  @UseInterceptors(FileInterceptor('file', { storage: memoryStorage() }))
+  async uploadReviewVideo(
+    @UploadedFile() file: Express.Multer.File,
+    @Req() req: any,
+  ) {
+    if (!file) {
+      throw new BadRequestException('No file uploaded');
+    }
+
+    return this.uploadService.uploadFile(
+      file,
+      req.user.id,
+      FileType.REVIEW_VIDEO,
+    );
+  }
+
+  @UseGuards(JwtAuthGuard)
   @Get('my-files')
   @ApiOperation({ summary: 'Get user files with pagination' })
   async getUserFiles(@Req() req: any, @Query() query: GetFilesDto) {

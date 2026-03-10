@@ -8,12 +8,15 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import {
+    AdminAuditAction,
+    NotificationType,
     OrderStatus,
     Prisma,
     ProductReviewStatus,
     DisputeStatus,
     FileType,
 } from '@prisma/client';
+import type { Request } from 'express';
 import {
     CreateProductReviewDto,
     UpdateProductReviewDto,
@@ -30,22 +33,20 @@ import {
     getReviewInclude,
     ProductReviewListResponse,
     ProductReviewResponse,
+    ReviewMediaLookupItem,
 } from './mappers/review.mapper';
 import { ReviewAggregateQueueService } from '../queue/review-aggregate.queue.service';
-
-// ──── Error Codes (BRD §18.1) ────
-export const REVIEW_ERRORS = {
-    NOT_ELIGIBLE: 'REVIEW_NOT_ELIGIBLE',
-    ALREADY_EXISTS: 'REVIEW_ALREADY_EXISTS',
-    BLOCKED_BY_DISPUTE: 'REVIEW_BLOCKED_BY_DISPUTE',
-    MEDIA_OWNERSHIP_INVALID: 'REVIEW_MEDIA_OWNERSHIP_INVALID',
-    MEDIA_TYPE_INVALID: 'REVIEW_MEDIA_TYPE_INVALID',
-    NOT_FOUND: 'REVIEW_NOT_FOUND',
-    FORBIDDEN: 'REVIEW_FORBIDDEN',
-    ALREADY_VOTED: 'REVIEW_ALREADY_VOTED_HELPFUL',
-    REPORT_EXISTS: 'REVIEW_REPORT_ALREADY_EXISTS',
-    FEATURE_DISABLED: 'REVIEW_FEATURE_DISABLED',
-} as const;
+import { FeatureFlagsService } from '../admin/feature-flags/feature-flags.service';
+import { NotificationsService } from '../notifications/notifications.service';
+import { AdminAuditService } from '../admin/services/admin-audit.service';
+import { REVIEW_ERRORS, REVIEW_FEATURE_FLAGS } from './review.constants';
+import { ReviewsObservabilityService } from './reviews-observability.service';
+import {
+    buildCreatedAtCursor,
+    buildCreatedAtCursorWhere,
+    buildReviewCursor,
+    buildReviewCursorWhere,
+} from './review-pagination.util';
 
 const REVIEW_MEDIA_FILE_TYPES: FileType[] = [
     FileType.REVIEW_IMAGE,
@@ -59,7 +60,25 @@ export class ReviewsService {
     constructor(
         private readonly prisma: PrismaService,
         private readonly aggregateQueue: ReviewAggregateQueueService,
+        private readonly featureFlags: FeatureFlagsService,
+        private readonly notifications: NotificationsService,
+        private readonly adminAudit: AdminAuditService,
+        private readonly observability: ReviewsObservabilityService,
     ) { }
+
+    async getRuntimeFlags() {
+        const states = await this.featureFlags.getStates([
+            REVIEW_FEATURE_FLAGS.READ,
+            REVIEW_FEATURE_FLAGS.WRITE,
+            REVIEW_FEATURE_FLAGS.BRAND_REPLIES,
+        ]);
+
+        return {
+            readEnabled: states[REVIEW_FEATURE_FLAGS.READ] ?? false,
+            writeEnabled: states[REVIEW_FEATURE_FLAGS.WRITE] ?? false,
+            brandRepliesEnabled: states[REVIEW_FEATURE_FLAGS.BRAND_REPLIES] ?? false,
+        };
+    }
 
     // ──────────────────────────────────────────────
     // CREATE REVIEW (BRD §10.1)
@@ -68,6 +87,8 @@ export class ReviewsService {
         userId: string,
         dto: CreateProductReviewDto,
     ): Promise<ProductReviewResponse> {
+        const startedAt = Date.now();
+        await this.assertFeatureEnabled(REVIEW_FEATURE_FLAGS.WRITE);
         const { productId, orderItemId, rating, title, content, mediaIds } = dto;
 
         // 1. Load order item + order in one query
@@ -114,23 +135,34 @@ export class ReviewsService {
         }
 
         // 6. Create the review with purchase snapshots
-        const review = await this.prisma.productReview.create({
-            data: {
-                userId,
-                productId,
-                brandId: orderItem.brandId,
-                orderItemId,
-                rating,
-                title: title?.trim() || null,
-                content: content.trim(),
-                mediaIds: mediaIds ?? [],
-                productNameSnapshot: orderItem.nameAtPurchase,
-                thumbnailSnapshot: orderItem.thumbnailAtPurchase,
-                selectedSizeSnapshot: orderItem.selectedSize,
-                selectedColorSnapshot: orderItem.selectedColor,
-            },
-            include: getReviewInclude(userId),
-        });
+        let review;
+        try {
+            review = await this.prisma.productReview.create({
+                data: {
+                    userId,
+                    productId,
+                    brandId: orderItem.brandId,
+                    orderItemId,
+                    rating,
+                    title: title?.trim() || null,
+                    content: content.trim(),
+                    mediaIds: mediaIds ?? [],
+                    productNameSnapshot: orderItem.nameAtPurchase,
+                    thumbnailSnapshot: orderItem.thumbnailAtPurchase,
+                    selectedSizeSnapshot: orderItem.selectedSize,
+                    selectedColorSnapshot: orderItem.selectedColor,
+                },
+                include: getReviewInclude(userId),
+            });
+        } catch (error) {
+            if (
+                error instanceof Prisma.PrismaClientKnownRequestError &&
+                error.code === 'P2002'
+            ) {
+                throw new ConflictException(REVIEW_ERRORS.ALREADY_EXISTS);
+            }
+            throw error;
+        }
 
         this.logger.log(
             `Review created: reviewId=${review.id} userId=${userId} productId=${productId}`,
@@ -139,7 +171,13 @@ export class ReviewsService {
         // 7. Enqueue aggregate recalculation (async, non-blocking)
         this.enqueueAggregateRecalc(productId, orderItem.brandId);
 
-        return mapReviewToResponse(review, userId);
+        this.observability.recordWrite({
+            action: 'create',
+            durationMs: Date.now() - startedAt,
+            outcome: 'success',
+        });
+
+        return this.mapReviewWithMedia(review, userId);
     }
 
     // ──────────────────────────────────────────────
@@ -150,6 +188,8 @@ export class ReviewsService {
         reviewId: string,
         dto: UpdateProductReviewDto,
     ): Promise<ProductReviewResponse> {
+        const startedAt = Date.now();
+        await this.assertFeatureEnabled(REVIEW_FEATURE_FLAGS.WRITE);
         const review = await this.prisma.productReview.findUnique({
             where: { id: reviewId },
         });
@@ -201,13 +241,44 @@ export class ReviewsService {
             this.enqueueAggregateRecalc(review.productId, review.brandId);
         }
 
-        return mapReviewToResponse(updated, userId);
+        this.observability.recordWrite({
+            action: 'update',
+            durationMs: Date.now() - startedAt,
+            outcome: 'success',
+            detail: ratingChanged ? 'rating-changed' : 'content-only',
+        });
+
+        return this.mapReviewWithMedia(updated, userId);
+    }
+
+    async getMyReview(
+        userId: string,
+        reviewId: string,
+    ): Promise<ProductReviewResponse> {
+        await this.assertFeatureEnabled(REVIEW_FEATURE_FLAGS.WRITE);
+
+        const review = await this.prisma.productReview.findUnique({
+            where: { id: reviewId },
+            include: getReviewInclude(userId),
+        });
+
+        if (!review || review.status === ProductReviewStatus.DELETED_BY_USER) {
+            throw new NotFoundException(REVIEW_ERRORS.NOT_FOUND);
+        }
+
+        if (review.userId !== userId) {
+            throw new ForbiddenException(REVIEW_ERRORS.FORBIDDEN);
+        }
+
+        return this.mapReviewWithMedia(review, userId);
     }
 
     // ──────────────────────────────────────────────
     // DELETE REVIEW (BRD §10.3)
     // ──────────────────────────────────────────────
     async deleteReview(userId: string, reviewId: string): Promise<void> {
+        const startedAt = Date.now();
+        await this.assertFeatureEnabled(REVIEW_FEATURE_FLAGS.WRITE);
         const review = await this.prisma.productReview.findUnique({
             where: { id: reviewId },
         });
@@ -223,6 +294,7 @@ export class ReviewsService {
             where: { id: reviewId },
             data: {
                 status: ProductReviewStatus.DELETED_BY_USER,
+                activeReviewKey: null,
                 deletedAt: new Date(),
             },
         });
@@ -230,6 +302,12 @@ export class ReviewsService {
         this.logger.log(`Review soft-deleted: reviewId=${reviewId} userId=${userId}`);
 
         this.enqueueAggregateRecalc(review.productId, review.brandId);
+
+        this.observability.recordWrite({
+            action: 'delete',
+            durationMs: Date.now() - startedAt,
+            outcome: 'success',
+        });
     }
 
     // ──────────────────────────────────────────────
@@ -240,17 +318,15 @@ export class ReviewsService {
         query: ReviewQueryDto,
         viewerId?: string,
     ): Promise<ProductReviewListResponse> {
+        const startedAt = Date.now();
+        await this.assertFeatureEnabled(REVIEW_FEATURE_FLAGS.READ);
         const limit = query.limit ?? 20;
         const where = this.buildReviewWhere(productId, 'product', query);
         const orderBy = this.buildOrderBy(query.sort);
-
-        // Cursor-based pagination
-        const cursorWhere = query.cursor
-            ? { id: { lt: query.cursor } as any }
-            : {};
+        const cursorWhere = buildReviewCursorWhere(query.sort, query.cursor);
 
         const reviews = await this.prisma.productReview.findMany({
-            where: { ...where, ...cursorWhere },
+            where: cursorWhere ? { AND: [where, cursorWhere as Prisma.ProductReviewWhereInput] } : where,
             orderBy,
             take: limit + 1, // fetch one extra to determine nextCursor
             include: getReviewInclude(viewerId),
@@ -258,7 +334,9 @@ export class ReviewsService {
 
         const hasMore = reviews.length > limit;
         const items = hasMore ? reviews.slice(0, limit) : reviews;
-        const nextCursor = hasMore ? items[items.length - 1].id : null;
+        const nextCursor = hasMore
+            ? buildReviewCursor(query.sort, items[items.length - 1])
+            : null;
 
         // Get cached aggregates from Product
         const product = await this.prisma.product.findUnique({
@@ -274,8 +352,8 @@ export class ReviewsService {
             5: 0,
         };
 
-        return {
-            items: items.map((r) => mapReviewToResponse(r, viewerId)),
+        const response = {
+            items: await this.mapReviewsWithMedia(items, viewerId),
             summary: {
                 averageRating: product?.avgRating ?? 0,
                 totalReviews: product?.totalReviews ?? 0,
@@ -289,6 +367,17 @@ export class ReviewsService {
             },
             nextCursor,
         };
+
+        this.observability.recordRead({
+            surface: 'product',
+            resultCount: response.items.length,
+            durationMs: Date.now() - startedAt,
+            hasNextPage: Boolean(response.nextCursor),
+            sort: query.sort,
+            filter: query.filter,
+        });
+
+        return response;
     }
 
     // ──────────────────────────────────────────────
@@ -299,16 +388,16 @@ export class ReviewsService {
         query: ReviewQueryDto,
         viewerId?: string,
     ): Promise<ProductReviewListResponse> {
+        const startedAt = Date.now();
+        await this.assertFeatureEnabled(REVIEW_FEATURE_FLAGS.READ);
+        const resolvedBrandId = await this.resolveBrandReviewTargetId(brandId);
         const limit = query.limit ?? 20;
-        const where = this.buildReviewWhere(brandId, 'brand', query);
+        const where = this.buildReviewWhere(resolvedBrandId, 'brand', query);
         const orderBy = this.buildOrderBy(query.sort);
-
-        const cursorWhere = query.cursor
-            ? { id: { lt: query.cursor } as any }
-            : {};
+        const cursorWhere = buildReviewCursorWhere(query.sort, query.cursor);
 
         const reviews = await this.prisma.productReview.findMany({
-            where: { ...where, ...cursorWhere },
+            where: cursorWhere ? { AND: [where, cursorWhere as Prisma.ProductReviewWhereInput] } : where,
             orderBy,
             take: limit + 1,
             include: getReviewInclude(viewerId),
@@ -316,40 +405,57 @@ export class ReviewsService {
 
         const hasMore = reviews.length > limit;
         const items = hasMore ? reviews.slice(0, limit) : reviews;
-        const nextCursor = hasMore ? items[items.length - 1].id : null;
+        const nextCursor = hasMore
+            ? buildReviewCursor(query.sort, items[items.length - 1])
+            : null;
 
         const brand = await this.prisma.brand.findUnique({
-            where: { id: brandId },
-            select: { avgRating: true, totalReviews: true },
+            where: { id: resolvedBrandId },
+            select: { avgRating: true, totalReviews: true, ratingBreakdown: true },
         });
 
-        // Compute breakdown from actual reviews for brand (not cached at brand level)
-        const breakdownRaw = await this.prisma.productReview.groupBy({
-            by: ['rating'],
-            where: { brandId, status: ProductReviewStatus.PUBLISHED },
-            _count: { rating: true },
-        });
+        const breakdown = (brand?.ratingBreakdown as any) ?? {
+            1: 0,
+            2: 0,
+            3: 0,
+            4: 0,
+            5: 0,
+        };
 
-        const breakdown = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
-        for (const row of breakdownRaw) {
-            breakdown[row.rating as keyof typeof breakdown] = row._count.rating;
-        }
-
-        return {
-            items: items.map((r) => mapReviewToResponse(r, viewerId)),
+        const response = {
+            items: await this.mapReviewsWithMedia(items, viewerId),
             summary: {
                 averageRating: brand?.avgRating ?? 0,
                 totalReviews: brand?.totalReviews ?? 0,
-                ratingBreakdown: breakdown,
+                ratingBreakdown: {
+                    1: breakdown['1'] ?? 0,
+                    2: breakdown['2'] ?? 0,
+                    3: breakdown['3'] ?? 0,
+                    4: breakdown['4'] ?? 0,
+                    5: breakdown['5'] ?? 0,
+                },
             },
             nextCursor,
         };
+
+        this.observability.recordRead({
+            surface: 'brand',
+            resultCount: response.items.length,
+            durationMs: Date.now() - startedAt,
+            hasNextPage: Boolean(response.nextCursor),
+            sort: query.sort,
+            filter: query.filter,
+        });
+
+        return response;
     }
 
     // ──────────────────────────────────────────────
     // HELPFUL VOTE (BRD §10.4)
     // ──────────────────────────────────────────────
     async addHelpfulVote(userId: string, reviewId: string): Promise<void> {
+        const startedAt = Date.now();
+        await this.assertFeatureEnabled(REVIEW_FEATURE_FLAGS.WRITE);
         const review = await this.findPublishedReview(reviewId);
 
         // Don't let user vote on own review
@@ -378,9 +484,16 @@ export class ReviewsService {
         }
 
         this.logger.log(`Helpful vote added: reviewId=${reviewId} userId=${userId}`);
+        this.observability.recordWrite({
+            action: 'helpful-add',
+            durationMs: Date.now() - startedAt,
+            outcome: 'success',
+        });
     }
 
     async removeHelpfulVote(userId: string, reviewId: string): Promise<void> {
+        const startedAt = Date.now();
+        await this.assertFeatureEnabled(REVIEW_FEATURE_FLAGS.WRITE);
         await this.findPublishedReview(reviewId);
 
         const vote = await this.prisma.productReviewHelpfulVote.findUnique({
@@ -404,6 +517,11 @@ export class ReviewsService {
         this.logger.log(
             `Helpful vote removed: reviewId=${reviewId} userId=${userId}`,
         );
+        this.observability.recordWrite({
+            action: 'helpful-remove',
+            durationMs: Date.now() - startedAt,
+            outcome: 'success',
+        });
     }
 
     // ──────────────────────────────────────────────
@@ -415,6 +533,8 @@ export class ReviewsService {
         dto: ReportReviewDto,
         brandId?: string,
     ): Promise<void> {
+        const startedAt = Date.now();
+        await this.assertFeatureEnabled(REVIEW_FEATURE_FLAGS.WRITE);
         await this.findPublishedReview(reviewId);
 
         try {
@@ -446,6 +566,12 @@ export class ReviewsService {
         this.logger.log(
             `Review reported: reviewId=${reviewId} reporterId=${userId} reason=${dto.reason}`,
         );
+        this.observability.recordWrite({
+            action: 'report',
+            durationMs: Date.now() - startedAt,
+            outcome: 'success',
+            detail: dto.reason,
+        });
     }
 
     // ──────────────────────────────────────────────
@@ -456,6 +582,8 @@ export class ReviewsService {
         reviewId: string,
         dto: ReplyToProductReviewDto,
     ): Promise<ProductReviewResponse> {
+        const startedAt = Date.now();
+        await this.assertFeatureEnabled(REVIEW_FEATURE_FLAGS.BRAND_REPLIES);
         const review = await this.findPublishedReview(reviewId);
 
         if (review.brandId !== brandId) {
@@ -480,7 +608,29 @@ export class ReviewsService {
             `Brand reply ${isUpdate ? 'updated' : 'created'}: reviewId=${reviewId} brandId=${brandId}`,
         );
 
-        return mapReviewToResponse(updated);
+        await this.notifications.create(review.userId, NotificationType.REVIEW_REPLY_RECEIVED, {
+            payload: {
+                reviewId,
+                productId: review.productId,
+                productName: review.productNameSnapshot,
+                brandName: updated.brand.name,
+                targetUrl: `/products/${review.productId}`,
+            },
+            target: {
+                type: 'PRODUCT',
+                id: review.productId,
+            },
+            dedupeMs: 60_000,
+        });
+
+        this.observability.recordWrite({
+            action: 'brand-reply',
+            durationMs: Date.now() - startedAt,
+            outcome: 'success',
+            detail: isUpdate ? 'update' : 'create',
+        });
+
+        return this.mapReviewWithMedia(updated);
     }
 
     // ──────────────────────────────────────────────
@@ -490,7 +640,10 @@ export class ReviewsService {
         adminId: string,
         reviewId: string,
         dto: AdminModerationDto,
+        req?: Request,
     ): Promise<{ status: string }> {
+        const startedAt = Date.now();
+        await this.assertFeatureEnabled(REVIEW_FEATURE_FLAGS.ADMIN_MODERATION);
         const review = await this.prisma.productReview.findUnique({
             where: { id: reviewId },
         });
@@ -516,6 +669,20 @@ export class ReviewsService {
                         hiddenAt: now,
                         hiddenByAdminId: adminId,
                     },
+                });
+                await this.notifications.create(review.userId, NotificationType.REVIEW_HIDDEN_BY_ADMIN, {
+                    payload: {
+                        reviewId,
+                        productId: review.productId,
+                        productName: review.productNameSnapshot,
+                        reason: dto.reason ?? null,
+                        targetUrl: `/products/${review.productId}`,
+                    },
+                    target: {
+                        type: 'PRODUCT',
+                        id: review.productId,
+                    },
+                    dedupeMs: 60_000,
                 });
                 this.enqueueAggregateRecalc(review.productId, review.brandId);
                 break;
@@ -548,6 +715,40 @@ export class ReviewsService {
             `Admin moderation: reviewId=${reviewId} adminId=${adminId} action=${dto.action} previousStatus=${previousStatus}`,
         );
 
+        await this.adminAudit.log(
+            {
+                actorUserId: adminId,
+                action: AdminAuditAction.ADMIN_MODERATION_ITEM_UPDATE,
+                targetType: 'ProductReview',
+                targetId: reviewId,
+                metadata: {
+                    reason: dto.reason ?? null,
+                    moderatorNote: dto.moderatorNote ?? null,
+                },
+                previousState: {
+                    status: previousStatus,
+                },
+                newState: {
+                    status:
+                        dto.action === ModerationAction.DELETE
+                            ? 'DELETED'
+                            : dto.action === ModerationAction.KEEP
+                              ? previousStatus
+                              : dto.action === ModerationAction.HIDE
+                                ? ProductReviewStatus.HIDDEN_BY_ADMIN
+                                : ProductReviewStatus.PUBLISHED,
+                },
+            },
+            req,
+        );
+
+        this.observability.recordWrite({
+            action: 'moderation',
+            durationMs: Date.now() - startedAt,
+            outcome: 'success',
+            detail: dto.action,
+        });
+
         return { status: dto.action === ModerationAction.DELETE ? 'DELETED' : 'OK' };
     }
 
@@ -555,6 +756,8 @@ export class ReviewsService {
     // ADMIN LIST REVIEWS
     // ──────────────────────────────────────────────
     async adminGetReviews(query: ReviewQueryDto & { status?: string }) {
+        const startedAt = Date.now();
+        await this.assertFeatureEnabled(REVIEW_FEATURE_FLAGS.ADMIN_MODERATION);
         const limit = query.limit ?? 20;
         const where: Prisma.ProductReviewWhereInput = {};
 
@@ -562,12 +765,10 @@ export class ReviewsService {
             where.status = query.status as ProductReviewStatus;
         }
 
-        const cursorWhere = query.cursor
-            ? { id: { lt: query.cursor } as any }
-            : {};
+        const cursorWhere = buildCreatedAtCursorWhere(query.cursor);
 
         const reviews = await this.prisma.productReview.findMany({
-            where: { ...where, ...cursorWhere },
+            where: cursorWhere ? { AND: [where, cursorWhere as Prisma.ProductReviewWhereInput] } : where,
             orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
             take: limit + 1,
             include: {
@@ -588,22 +789,32 @@ export class ReviewsService {
 
         const hasMore = reviews.length > limit;
         const items = hasMore ? reviews.slice(0, limit) : reviews;
-        const nextCursor = hasMore ? items[items.length - 1].id : null;
+        const nextCursor = hasMore
+            ? buildCreatedAtCursor(items[items.length - 1])
+            : null;
 
-        return { items, nextCursor };
+        const response = { items, nextCursor };
+        this.observability.recordRead({
+            surface: 'admin-reviews',
+            resultCount: items.length,
+            durationMs: Date.now() - startedAt,
+            hasNextPage: Boolean(nextCursor),
+        });
+
+        return response;
     }
 
     // ──────────────────────────────────────────────
     // ADMIN GET REPORTS
     // ──────────────────────────────────────────────
     async adminGetReports(query: { cursor?: string; limit?: number }) {
+        const startedAt = Date.now();
+        await this.assertFeatureEnabled(REVIEW_FEATURE_FLAGS.ADMIN_MODERATION);
         const limit = query.limit ?? 20;
-        const cursorWhere = query.cursor
-            ? { id: { lt: query.cursor } as any }
-            : {};
+        const cursorWhere = buildCreatedAtCursorWhere(query.cursor);
 
         const reports = await this.prisma.productReviewReport.findMany({
-            where: cursorWhere,
+            where: (cursorWhere as Prisma.ProductReviewReportWhereInput | null) ?? undefined,
             orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
             take: limit + 1,
             include: {
@@ -626,15 +837,26 @@ export class ReviewsService {
 
         const hasMore = reports.length > limit;
         const items = hasMore ? reports.slice(0, limit) : reports;
-        const nextCursor = hasMore ? items[items.length - 1].id : null;
+        const nextCursor = hasMore
+            ? buildCreatedAtCursor(items[items.length - 1])
+            : null;
 
-        return { items, nextCursor };
+        const response = { items, nextCursor };
+        this.observability.recordRead({
+            surface: 'admin-reports',
+            resultCount: items.length,
+            durationMs: Date.now() - startedAt,
+            hasNextPage: Boolean(nextCursor),
+        });
+
+        return response;
     }
 
     // ──────────────────────────────────────────────
     // AGGREGATE RECALCULATION (BRD §7)
     // ──────────────────────────────────────────────
     async recalculateProductAggregate(productId: string): Promise<void> {
+        const startedAt = Date.now();
         const stats = await this.prisma.productReview.aggregate({
             where: { productId, status: ProductReviewStatus.PUBLISHED },
             _avg: { rating: true },
@@ -664,26 +886,228 @@ export class ReviewsService {
         this.logger.log(
             `Product aggregate recalculated: productId=${productId} avg=${stats._avg.rating} total=${stats._count.rating}`,
         );
+        this.observability.recordAggregate({
+            target: 'product',
+            durationMs: Date.now() - startedAt,
+            reviewCount: stats._count.rating,
+        });
     }
 
     async recalculateBrandAggregate(brandId: string): Promise<void> {
+        const startedAt = Date.now();
         const stats = await this.prisma.productReview.aggregate({
             where: { brandId, status: ProductReviewStatus.PUBLISHED },
             _avg: { rating: true },
             _count: { rating: true },
         });
 
+        const breakdownRaw = await this.prisma.productReview.groupBy({
+            by: ['rating'],
+            where: { brandId, status: ProductReviewStatus.PUBLISHED },
+            _count: { rating: true },
+        });
+
+        const breakdown: Record<number, number> = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
+        for (const row of breakdownRaw) {
+            breakdown[row.rating] = row._count.rating;
+        }
+
         await this.prisma.brand.update({
             where: { id: brandId },
             data: {
                 avgRating: Math.round((stats._avg.rating ?? 0) * 100) / 100,
                 totalReviews: stats._count.rating,
+                ratingBreakdown: breakdown,
             },
         });
 
         this.logger.log(
             `Brand aggregate recalculated: brandId=${brandId} avg=${stats._avg.rating} total=${stats._count.rating}`,
         );
+        this.observability.recordAggregate({
+            target: 'brand',
+            durationMs: Date.now() - startedAt,
+            reviewCount: stats._count.rating,
+        });
+    }
+
+    async getBrandIdForOwner(ownerId: string): Promise<string> {
+        const brand = await this.prisma.brand.findUnique({
+            where: { ownerId },
+            select: { id: true },
+        });
+
+        if (!brand) {
+            throw new NotFoundException('Brand not found');
+        }
+
+        return brand.id;
+    }
+
+    private async resolveBrandReviewTargetId(targetId: string): Promise<string> {
+        const brandById = await this.prisma.brand.findUnique({
+            where: { id: targetId },
+            select: { id: true },
+        });
+
+        if (brandById) {
+            return brandById.id;
+        }
+
+        return this.getBrandIdForOwner(targetId);
+    }
+
+    async processDueReviewReminders(limit = 100): Promise<{
+        processed: number;
+        sent: number;
+        skipped: number;
+        failed: number;
+    }> {
+        const startedAt = Date.now();
+        await this.assertFeatureEnabled(REVIEW_FEATURE_FLAGS.REMINDERS);
+
+        const reminderDelayDays = this.getReminderDelayDays();
+        const threshold = new Date(Date.now() - reminderDelayDays * 24 * 60 * 60 * 1000);
+        const candidates = await this.prisma.orderItem.findMany({
+            where: {
+                buyerId: { not: null },
+                reviewReminderSentAt: null,
+                order: {
+                    status: OrderStatus.DELIVERED,
+                    deliveredAt: {
+                        not: null,
+                        lte: threshold,
+                    },
+                },
+            },
+            select: {
+                id: true,
+                productId: true,
+                buyerId: true,
+                nameAtPurchase: true,
+                orderId: true,
+            },
+            orderBy: { createdAt: 'asc' },
+            take: limit,
+        });
+
+        if (candidates.length === 0) {
+            return { processed: 0, sent: 0, skipped: 0, failed: 0 };
+        }
+
+        const activeReviews = await this.prisma.productReview.findMany({
+            where: {
+                userId: {
+                    in: candidates
+                        .map((candidate) => candidate.buyerId)
+                        .filter((buyerId): buyerId is string => Boolean(buyerId)),
+                },
+                productId: {
+                    in: candidates.map((candidate) => candidate.productId),
+                },
+                status: { not: ProductReviewStatus.DELETED_BY_USER },
+            },
+            select: {
+                userId: true,
+                productId: true,
+            },
+        });
+        const openDisputes = await this.prisma.sizingDispute.findMany({
+            where: {
+                orderItemId: { in: candidates.map((candidate) => candidate.id) },
+                status: { in: [DisputeStatus.OPEN, DisputeStatus.IN_PROGRESS] },
+            },
+            select: { orderItemId: true },
+        });
+
+        const reviewedPairs = new Set(
+            activeReviews.map((review) => `${review.userId}:${review.productId}`),
+        );
+        const disputedOrderItemIds = new Set(
+            openDisputes.map((dispute) => dispute.orderItemId),
+        );
+
+        let sent = 0;
+        let skipped = 0;
+        let failed = 0;
+
+        for (const candidate of candidates) {
+            if (!candidate.buyerId) {
+                skipped += 1;
+                continue;
+            }
+
+            if (reviewedPairs.has(`${candidate.buyerId}:${candidate.productId}`)) {
+                skipped += 1;
+                continue;
+            }
+
+            if (disputedOrderItemIds.has(candidate.id)) {
+                skipped += 1;
+                continue;
+            }
+
+            try {
+                const created = await this.notifications.create(
+                    candidate.buyerId,
+                    NotificationType.REVIEW_REMINDER,
+                    {
+                        payload: {
+                            orderId: candidate.orderId,
+                            orderItemId: candidate.id,
+                            productId: candidate.productId,
+                            productName: candidate.nameAtPurchase,
+                            targetUrl: `/orders/${candidate.orderId}`,
+                        },
+                        target: {
+                            type: 'PRODUCT',
+                            id: candidate.productId,
+                        },
+                        dedupeMs: 7 * 24 * 60 * 60 * 1000,
+                    },
+                );
+
+                if (created) {
+                    await this.prisma.orderItem.update({
+                        where: { id: candidate.id },
+                        data: {
+                            reviewReminderSentAt: new Date(),
+                            reviewReminderLastError: null,
+                        },
+                    });
+                    sent += 1;
+                } else {
+                    skipped += 1;
+                }
+            } catch (error) {
+                failed += 1;
+                await this.prisma.orderItem.update({
+                    where: { id: candidate.id },
+                    data: {
+                        reviewReminderLastError:
+                            error instanceof Error ? error.message.slice(0, 500) : 'unknown error',
+                    },
+                });
+            }
+        }
+
+        this.logger.log(
+            `Review reminder run summary: processed=${candidates.length} sent=${sent} skipped=${skipped} failed=${failed}`,
+        );
+
+        const summary = {
+            processed: candidates.length,
+            sent,
+            skipped,
+            failed,
+        };
+
+        this.observability.recordReminderRun({
+            durationMs: Date.now() - startedAt,
+            ...summary,
+        });
+
+        return summary;
     }
 
     // ──────────────────────────────────────────────
@@ -813,5 +1237,72 @@ export class ReviewsService {
                     err.stack,
                 ),
             );
+    }
+
+    private async assertFeatureEnabled(flagKey: string): Promise<void> {
+        const enabled = await this.featureFlags.isEnabled(flagKey);
+        if (!enabled) {
+            throw new ForbiddenException(REVIEW_ERRORS.FEATURE_DISABLED);
+        }
+    }
+
+    private async mapReviewsWithMedia(
+        reviews: Array<Prisma.ProductReviewGetPayload<{ include: ReturnType<typeof getReviewInclude> }>>,
+        viewerUserId?: string,
+    ) {
+        const mediaLookup = await this.buildReviewMediaLookup(reviews);
+        return reviews.map((review) => mapReviewToResponse(review as any, viewerUserId, mediaLookup));
+    }
+
+    private async mapReviewWithMedia(
+        review: Prisma.ProductReviewGetPayload<{ include: ReturnType<typeof getReviewInclude> }>,
+        viewerUserId?: string,
+    ) {
+        const mediaLookup = await this.buildReviewMediaLookup([review]);
+        return mapReviewToResponse(review as any, viewerUserId, mediaLookup);
+    }
+
+    private async buildReviewMediaLookup(
+        reviews: Array<{ mediaIds: string[] }>,
+    ): Promise<Map<string, ReviewMediaLookupItem>> {
+        const mediaIds = Array.from(
+            new Set(reviews.flatMap((review) => review.mediaIds ?? []).filter(Boolean)),
+        );
+
+        if (mediaIds.length === 0) {
+            return new Map();
+        }
+
+        const files = await this.prisma.fileUpload.findMany({
+            where: { id: { in: mediaIds } },
+            select: {
+                id: true,
+                s3Url: true,
+                mimeType: true,
+            },
+        });
+
+        return new Map(
+            files.map((file) => [
+                file.id,
+                {
+                    id: file.id,
+                    url: file.s3Url,
+                    type: String(file.mimeType ?? '').toLowerCase().startsWith('video/')
+                        ? 'video'
+                        : 'image',
+                },
+            ]),
+        );
+    }
+
+    private getReminderDelayDays(): number {
+        const rawValue = process.env.REVIEW_REMINDER_DELAY_DAYS;
+        const parsed = Number(rawValue ?? 7);
+        if (!Number.isFinite(parsed) || parsed <= 0) {
+            return 7;
+        }
+
+        return Math.floor(parsed);
     }
 }

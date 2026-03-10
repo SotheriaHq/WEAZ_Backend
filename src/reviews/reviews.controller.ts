@@ -9,11 +9,13 @@ import {
     Query,
     Req,
     UseGuards,
+    UseInterceptors,
     ValidationPipe,
     HttpCode,
     HttpStatus,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guard/jwt-auth.guard';
+import { IdempotencyInterceptor } from '../common/interceptors/idempotency.interceptor';
 import { ReviewsService } from './reviews.service';
 import {
     CreateProductReviewDto,
@@ -25,6 +27,11 @@ import {
 @Controller('store')
 export class ReviewsController {
     constructor(private readonly reviewsService: ReviewsService) { }
+
+    @Get('reviews/runtime-flags')
+    async getRuntimeFlags() {
+        return this.reviewsService.getRuntimeFlags();
+    }
 
     /**
      * GET /store/products/:productId/reviews
@@ -45,6 +52,7 @@ export class ReviewsController {
      * Create a product review (requires auth + verified buyer).
      */
     @UseGuards(JwtAuthGuard)
+    @UseInterceptors(IdempotencyInterceptor)
     @Post('reviews')
     async createReview(
         @Body(ValidationPipe) dto: CreateProductReviewDto,
@@ -53,11 +61,21 @@ export class ReviewsController {
         return this.reviewsService.createReview(req.user.id, dto);
     }
 
+    @UseGuards(JwtAuthGuard)
+    @Get('reviews/:reviewId')
+    async getMyReview(
+        @Param('reviewId') reviewId: string,
+        @Req() req: any,
+    ) {
+        return this.reviewsService.getMyReview(req.user.id, reviewId);
+    }
+
     /**
      * PATCH /store/reviews/:reviewId
      * Update own review.
      */
     @UseGuards(JwtAuthGuard)
+    @UseInterceptors(IdempotencyInterceptor)
     @Patch('reviews/:reviewId')
     async updateReview(
         @Param('reviewId') reviewId: string,
@@ -72,6 +90,7 @@ export class ReviewsController {
      * Soft-delete own review.
      */
     @UseGuards(JwtAuthGuard)
+    @UseInterceptors(IdempotencyInterceptor)
     @Delete('reviews/:reviewId')
     @HttpCode(HttpStatus.NO_CONTENT)
     async deleteReview(
@@ -86,6 +105,7 @@ export class ReviewsController {
      * Mark a review as helpful.
      */
     @UseGuards(JwtAuthGuard)
+    @UseInterceptors(IdempotencyInterceptor)
     @Post('reviews/:reviewId/helpful')
     @HttpCode(HttpStatus.NO_CONTENT)
     async addHelpfulVote(
@@ -100,6 +120,7 @@ export class ReviewsController {
      * Remove helpful vote.
      */
     @UseGuards(JwtAuthGuard)
+    @UseInterceptors(IdempotencyInterceptor)
     @Delete('reviews/:reviewId/helpful')
     @HttpCode(HttpStatus.NO_CONTENT)
     async removeHelpfulVote(
@@ -114,6 +135,7 @@ export class ReviewsController {
      * Report a review.
      */
     @UseGuards(JwtAuthGuard)
+    @UseInterceptors(IdempotencyInterceptor)
     @Post('reviews/:reviewId/report')
     @HttpCode(HttpStatus.NO_CONTENT)
     async reportReview(

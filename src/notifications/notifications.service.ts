@@ -370,6 +370,10 @@ export class NotificationsService {
         ...DEFAULT_NOTIFICATION_SETTINGS.orders,
         ...(raw.orders ?? {}),
       },
+      reviews: {
+        ...DEFAULT_NOTIFICATION_SETTINGS.reviews,
+        ...(raw.reviews ?? {}),
+      },
       fit: {
         ...DEFAULT_NOTIFICATION_SETTINGS.fit,
         ...(raw.fit ?? {}),
@@ -392,6 +396,7 @@ export class NotificationsService {
       collections: { ...current.collections, ...settings.collections },
       brand: { ...current.brand, ...settings.brand },
       orders: { ...current.orders, ...settings.orders },
+      reviews: { ...current.reviews, ...settings.reviews },
       fit: { ...current.fit, ...settings.fit },
     };
 
@@ -440,6 +445,12 @@ export class NotificationsService {
       case NotificationType.ORDER_PLACED:
       case NotificationType.ORDER_STATUS_UPDATED:
         return settings.orders.updates;
+      case NotificationType.REVIEW_REMINDER:
+        return settings.reviews.reminders;
+      case NotificationType.REVIEW_REPLY_RECEIVED:
+        return settings.reviews.replies;
+      case NotificationType.REVIEW_HIDDEN_BY_ADMIN:
+        return settings.reviews.moderation;
       case 'SIZE_FIT_UPDATE_REMINDER' as NotificationType:
         return settings.fit.reminders;
       case 'SIZE_FIT_SHARED' as NotificationType:

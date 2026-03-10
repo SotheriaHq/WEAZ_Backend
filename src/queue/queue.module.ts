@@ -14,6 +14,7 @@ import { NotificationsQueueService } from './notifications.queue.service';
 import { ImageProcessingQueueService } from './image-processing.queue.service';
 import { SearchQueueService } from './search.queue.service';
 import { ReviewAggregateQueueService } from './review-aggregate.queue.service';
+import { ReviewReminderQueueService } from './review-reminder.queue.service';
 
 @Module({
   imports: [
@@ -42,6 +43,7 @@ import { ReviewAggregateQueueService } from './review-aggregate.queue.service';
     ImageProcessingQueueService,
     SearchQueueService,
     ReviewAggregateQueueService,
+    ReviewReminderQueueService,
   ],
   exports: [
     BullModule,
@@ -49,6 +51,7 @@ import { ReviewAggregateQueueService } from './review-aggregate.queue.service';
     ImageProcessingQueueService,
     SearchQueueService,
     ReviewAggregateQueueService,
+    ReviewReminderQueueService,
   ],
 })
 export class QueueModule { }

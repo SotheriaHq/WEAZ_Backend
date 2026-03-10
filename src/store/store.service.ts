@@ -4455,6 +4455,7 @@ export class StoreService {
           },
           orderItems: {
             select: {
+              id: true,
               productId: true,
               quantity: true,
               unitPrice: true,
@@ -4475,9 +4476,24 @@ export class StoreService {
       this.prisma.order.count({ where: { buyerId: userId } }),
     ]);
 
+    const reviewStatesByOrderItemId = await this.getReviewStateByOrderItemId(
+      userId,
+      orders.flatMap((order) => order.orderItems),
+      orders,
+    );
+
     const normalizedOrders = orders.map((order) => ({
       ...order,
       items: this.getOrderLineItems(order),
+      orderItems: order.orderItems.map((item) => ({
+        ...item,
+        orderItemId: item.id,
+        productName: item.nameAtPurchase,
+        thumbnail: item.thumbnailAtPurchase,
+        reviewState: reviewStatesByOrderItemId.get(item.id)?.reviewState ?? 'NOT_DELIVERED',
+        existingReviewId:
+          reviewStatesByOrderItemId.get(item.id)?.existingReviewId ?? null,
+      })),
     }));
 
     return {
@@ -4497,6 +4513,7 @@ export class StoreService {
         brand: { select: { id: true, name: true, logo: true, currency: true } },
         orderItems: {
           select: {
+            id: true,
             productId: true,
             quantity: true,
             unitPrice: true,
@@ -4516,10 +4533,111 @@ export class StoreService {
       throw new NotFoundException('Order not found');
     }
 
+    const reviewStatesByOrderItemId = await this.getReviewStateByOrderItemId(
+      userId,
+      order.orderItems,
+      [order],
+    );
+
     return {
       ...order,
       items: this.getOrderLineItems(order),
+      orderItems: order.orderItems.map((item) => ({
+        ...item,
+        orderItemId: item.id,
+        productName: item.nameAtPurchase,
+        thumbnail: item.thumbnailAtPurchase,
+        reviewState: reviewStatesByOrderItemId.get(item.id)?.reviewState ?? 'NOT_DELIVERED',
+        existingReviewId:
+          reviewStatesByOrderItemId.get(item.id)?.existingReviewId ?? null,
+      })),
     };
+  }
+
+  private async getReviewStateByOrderItemId(
+    userId: string,
+    orderItems: Array<{ id: string; productId: string | null }>,
+    orders: Array<{ id: string; status: string; orderItems: Array<{ id: string }> }>,
+  ) {
+    if (orderItems.length === 0) {
+      return new Map<string, { reviewState: string; existingReviewId: string | null }>();
+    }
+
+    const productIds = Array.from(
+      new Set(
+        orderItems
+          .map((item) => item.productId)
+          .filter((productId): productId is string => Boolean(productId)),
+      ),
+    );
+    const orderItemIds = orderItems.map((item) => item.id);
+    const deliveredOrderIds = new Set(
+      orders.filter((order) => order.status === 'DELIVERED').map((order) => order.id),
+    );
+
+    const [existingReviews, openDisputes] = await Promise.all([
+      productIds.length > 0
+        ? this.prisma.productReview.findMany({
+            where: {
+              userId,
+              productId: { in: productIds },
+              status: { not: 'DELETED_BY_USER' as any },
+            },
+            select: {
+              id: true,
+              productId: true,
+            },
+            orderBy: { createdAt: 'desc' },
+          })
+        : Promise.resolve([]),
+      this.prisma.sizingDispute.findMany({
+        where: {
+          orderItemId: { in: orderItemIds },
+          status: { in: ['OPEN', 'IN_PROGRESS'] as any },
+        },
+        select: { orderItemId: true },
+      }),
+    ]);
+
+    const reviewByProductId = new Map<string, string>();
+    for (const review of existingReviews) {
+      if (!reviewByProductId.has(review.productId)) {
+        reviewByProductId.set(review.productId, review.id);
+      }
+    }
+
+    const disputeOrderItemIds = new Set(openDisputes.map((dispute) => dispute.orderItemId));
+    const orderIdByOrderItemId = new Map<string, string>();
+    for (const order of orders) {
+      for (const item of order.orderItems) {
+        orderIdByOrderItemId.set(item.id, order.id);
+      }
+    }
+
+    const states = new Map<string, { reviewState: string; existingReviewId: string | null }>();
+    for (const item of orderItems) {
+      const orderId = orderIdByOrderItemId.get(item.id);
+      const existingReviewId = item.productId ? reviewByProductId.get(item.productId) ?? null : null;
+
+      if (!orderId || !deliveredOrderIds.has(orderId)) {
+        states.set(item.id, { reviewState: 'NOT_DELIVERED', existingReviewId });
+        continue;
+      }
+
+      if (existingReviewId) {
+        states.set(item.id, { reviewState: 'ALREADY_REVIEWED', existingReviewId });
+        continue;
+      }
+
+      if (disputeOrderItemIds.has(item.id)) {
+        states.set(item.id, { reviewState: 'BLOCKED_BY_DISPUTE', existingReviewId: null });
+        continue;
+      }
+
+      states.set(item.id, { reviewState: 'CAN_CREATE', existingReviewId: null });
+    }
+
+    return states;
   }
 
   async resolveOrderAccess(

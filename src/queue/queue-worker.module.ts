@@ -19,6 +19,7 @@ import { SearchModule } from 'src/search/search.module';
 import { SearchProcessor } from './search.processor';
 import { ReviewsModule } from 'src/reviews/reviews.module';
 import { ReviewAggregateProcessor } from './review-aggregate.processor';
+import { ReviewReminderProcessor } from './review-reminder.processor';
 
 @Module({
   imports: [
@@ -47,6 +48,7 @@ import { ReviewAggregateProcessor } from './review-aggregate.processor';
     SearchProcessor,
     MediaProcessingService,
     ReviewAggregateProcessor,
+    ReviewReminderProcessor,
   ],
 })
 export class QueueWorkerModule { }

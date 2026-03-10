@@ -1327,6 +1327,7 @@ model Brand {
   // Review aggregates (cached, recomputed async)
   avgRating    Float     @default(0)
   totalReviews Int       @default(0)
+  ratingBreakdown Json?
 
   orders      Order[]
   orderItems  OrderItem[]
@@ -2274,6 +2275,7 @@ model ProductReview {
   brandReplyUpdatedAt   DateTime?
 
   status                ProductReviewStatus @default(PUBLISHED)
+  activeReviewKey       String?             @default("ACTIVE")
   hiddenReason          String?
   hiddenAt              DateTime?
   hiddenByAdminId       String?             @db.Uuid
@@ -2290,6 +2292,7 @@ model ProductReview {
   @@index([brandId, status, createdAt])
   @@index([orderItemId])
   @@index([userId, productId, status])
+  @@unique([userId, productId, activeReviewKey])
 }
 
 model ProductReviewHelpfulVote {

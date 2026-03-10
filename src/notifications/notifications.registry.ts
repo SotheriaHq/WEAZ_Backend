@@ -20,6 +20,9 @@ const NT_VERIFICATION_CANCELLED = 'VERIFICATION_CANCELLED' as NotificationType;
 const NT_VERIFICATION_CANCELLED_ADMIN = 'VERIFICATION_CANCELLED_ADMIN' as NotificationType;
 const NT_VERIFICATION_COOLDOWN_EXPIRED = 'VERIFICATION_COOLDOWN_EXPIRED' as NotificationType;
 const NT_VERIFICATION_NUDGE = 'VERIFICATION_NUDGE' as NotificationType;
+const NT_REVIEW_REMINDER = 'REVIEW_REMINDER' as NotificationType;
+const NT_REVIEW_REPLY_RECEIVED = 'REVIEW_REPLY_RECEIVED' as NotificationType;
+const NT_REVIEW_HIDDEN_BY_ADMIN = 'REVIEW_HIDDEN_BY_ADMIN' as NotificationType;
 
 export interface NotificationConfig {
   type: NotificationType;
@@ -672,6 +675,52 @@ export class NotificationRegistry {
         targetUrl: Joi.string().optional(),
       }),
       formatter: () => 'Complete verification to add a stronger trust signal to your store',
+    });
+
+    registry.register({
+      type: NT_REVIEW_REMINDER,
+      schema: Joi.object({
+        orderId: Joi.string().optional(),
+        orderItemId: Joi.string().optional(),
+        productId: Joi.string().optional(),
+        productName: Joi.string().optional(),
+        targetUrl: Joi.string().optional(),
+      }),
+      formatter: (n: any) => {
+        const productName = n.payload?.productName || 'your recent purchase';
+        return `Share a review for ${productName}`;
+      },
+    });
+
+    registry.register({
+      type: NT_REVIEW_REPLY_RECEIVED,
+      schema: Joi.object({
+        reviewId: Joi.string().optional(),
+        productId: Joi.string().optional(),
+        productName: Joi.string().optional(),
+        brandName: Joi.string().optional(),
+        targetUrl: Joi.string().optional(),
+      }),
+      formatter: (n: any) => {
+        const brandName = n.payload?.brandName || 'A brand';
+        const productName = n.payload?.productName || 'your review';
+        return `${brandName} replied to your review on ${productName}`;
+      },
+    });
+
+    registry.register({
+      type: NT_REVIEW_HIDDEN_BY_ADMIN,
+      schema: Joi.object({
+        reviewId: Joi.string().optional(),
+        productId: Joi.string().optional(),
+        productName: Joi.string().optional(),
+        reason: Joi.string().allow(null).optional(),
+        targetUrl: Joi.string().optional(),
+      }),
+      formatter: (n: any) => {
+        const productName = n.payload?.productName || 'a product';
+        return `Your review for ${productName} was hidden by an admin`;
+      },
     });
 
     return registry;

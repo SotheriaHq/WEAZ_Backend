@@ -20,6 +20,12 @@ export interface ReviewMediaItem {
     type: 'image' | 'video';
 }
 
+export interface ReviewMediaLookupItem {
+    id: string;
+    url: string;
+    type: 'image' | 'video';
+}
+
 export interface BrandReplyPayload {
     content: string;
     brandId: string;
@@ -92,10 +98,14 @@ function buildVariantSummary(
 export function mapReviewToResponse(
     review: ReviewWithIncludes,
     viewerUserId?: string,
+    mediaLookup?: Map<string, ReviewMediaLookupItem>,
 ): ProductReviewResponse {
     const viewerHasMarkedHelpful = viewerUserId
         ? (review.helpfulVotes ?? []).some((v) => v.userId === viewerUserId)
         : false;
+    const media = review.mediaIds
+        .map((mediaId) => mediaLookup?.get(mediaId))
+        .filter((item): item is ReviewMediaLookupItem => Boolean(item));
 
     return {
         id: review.id,
@@ -112,7 +122,7 @@ export function mapReviewToResponse(
             review.selectedSizeSnapshot,
             review.selectedColorSnapshot,
         ),
-        media: [], // Media resolution deferred until upload integration is wired
+        media,
         reviewer: {
             id: review.user.id,
             username: review.user.username,

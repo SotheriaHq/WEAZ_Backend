@@ -84,11 +84,9 @@ export class IdempotencyInterceptor implements NestInterceptor {
               );
             }
 
-            if (existing.responseBody) {
+            if (typeof existing.statusCode === 'number') {
               res.setHeader('x-idempotent-replay', 'true');
-              if (typeof existing.statusCode === 'number') {
-                res.status(existing.statusCode);
-              }
+              res.status(existing.statusCode);
               return { replay: true, body: existing.responseBody };
             }
 
@@ -113,11 +111,9 @@ export class IdempotencyInterceptor implements NestInterceptor {
             const raced = await idempotencyKeyModel.findUnique({
               where: { userId_key_method_path: { userId, key, method, path } },
             });
-            if (raced?.responseBody) {
+            if (typeof raced?.statusCode === 'number') {
               res.setHeader('x-idempotent-replay', 'true');
-              if (typeof raced.statusCode === 'number') {
-                res.status(raced.statusCode);
-              }
+              res.status(raced.statusCode);
               return { replay: true, body: raced.responseBody };
             }
             throw new ConflictException('Request with this Idempotency-Key is in progress');

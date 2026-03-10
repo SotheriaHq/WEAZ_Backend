@@ -51,6 +51,11 @@ export interface NotificationSettings {
   orders: {
     updates: boolean;
   };
+  reviews: {
+    reminders: boolean;
+    replies: boolean;
+    moderation: boolean;
+  };
   fit: {
     reminders: boolean;
     shares: boolean;
@@ -86,6 +91,11 @@ export const DEFAULT_NOTIFICATION_SETTINGS: NotificationSettings = {
   },
   orders: {
     updates: true,
+  },
+  reviews: {
+    reminders: true,
+    replies: true,
+    moderation: true,
   },
   fit: {
     reminders: true,
