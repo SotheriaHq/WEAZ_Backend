@@ -26,6 +26,7 @@ import { AdminModule } from './admin/admin.module';
 import { EmailModule } from './email/email.module';
 import { FeaturedModule } from './featured/featured.module';
 import { PaymentModule } from './payment/payment.module';
+import { SearchModule } from './search/search.module';
 
 @Module({
   imports: [
@@ -57,6 +58,7 @@ import { PaymentModule } from './payment/payment.module';
     AdminModule,
     FeaturedModule,
     PaymentModule,
+    SearchModule,
   ],
   controllers: [AppController],
   providers: [AppService, EventsGateway],

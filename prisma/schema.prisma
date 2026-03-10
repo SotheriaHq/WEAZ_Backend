@@ -459,6 +459,21 @@ enum NotificationType {
   // Featured system
   ITEM_FEATURED
   FEATURED_AUTO_REMOVED
+
+  // Brand verification
+  VERIFICATION_SUBMITTED
+  VERIFICATION_IN_REVIEW
+  VERIFICATION_INFO_REQUESTED
+  VERIFICATION_INFO_RESUBMITTED
+  VERIFICATION_APPROVED
+  VERIFICATION_REJECTED
+  VERIFICATION_CANCELLED
+  VERIFICATION_CANCELLED_ADMIN
+  VERIFICATION_COOLDOWN_EXPIRED
+  VERIFICATION_NUDGE
+  VERIFICATION_SLA_WARNING
+  VERIFICATION_SLA_BREACH
+  VERIFICATION_REVIEW_DELAYED
 }
 
 // ====== Comment V2 (unified for posts, collections, and collection media) ======
@@ -527,6 +542,7 @@ model Collection {
   domain                       CollectionDomain                @default(DESIGN)
   title                        String?
   description                  String?
+  searchVector                 Unsupported("tsvector")?       @map("search_vector")
   status                       CollectionStatus                @default(DRAFT)
   archivedFromStatus           CollectionStatus?
   visibility                   CollectionVisibility            @default(PUBLIC)
@@ -610,6 +626,7 @@ model StoreCollection {
   owner              User                    @relation(fields: [ownerId], references: [id], onDelete: Cascade)
   title              String?
   description        String?
+  searchVector       Unsupported("tsvector")? @map("search_vector")
   status             CollectionStatus        @default(DRAFT)
   archivedFromStatus CollectionStatus?
   visibility         CollectionVisibility    @default(PUBLIC)
@@ -1238,6 +1255,7 @@ model Brand {
   // Store profile fields (store-centric)
   description String?
   tagline     String?
+  searchVector Unsupported("tsvector")? @map("search_vector")
   logo        String?
   banner      String?
   tags        String[]  @default([])
@@ -1260,13 +1278,32 @@ model Brand {
   verificationSubmittedAt    DateTime?
   verificationReviewedAt     DateTime?
   verificationReviewedById   String?              @db.Uuid
+  verificationReviewStartedAt DateTime?
+  verificationCancelledAt     DateTime?
   verificationRejectionReason String?
+  verificationRejectionReasons Json?
   verificationPhoto1Key      String?
   verificationPhoto2Key      String?
   verificationNinKey         String?
   verificationCacKey         String?
   verificationAddress        String?
   verificationClientEstimate String?
+  verificationAttemptNumber  Int                  @default(0)
+  verificationRejectionCount Int                  @default(0)
+  verificationCancellationCount Int               @default(0)
+  verificationCooldownExpiresAt DateTime?
+  verificationInfoRequestedAt DateTime?
+  verificationInfoRequestedItems Json?
+  verificationInfoRequestMessage String?
+  verificationDraftData     String?
+  verificationDraftUpdatedAt DateTime?
+  verificationNudgeOptOut   Boolean              @default(false)
+  verificationLastNudgedAt  DateTime?
+  verificationNudgeCount    Int                  @default(0)
+  verificationBrandNameAtApproval String?
+  verificationLetterKey     String?
+  verificationLetterHash    String?
+  verificationLetterVersion Int?
 
   // Featured system
   isFeaturedBlocked     Boolean   @default(false)
@@ -1283,9 +1320,96 @@ model Brand {
   payouts     Payout[]
   products    Product[] @relation("Brand_to_Products")
   featuredItems FeaturedItem[]
+  verificationAttempts BrandVerificationAttempt[]
+  verificationNotes BrandVerificationNote[]
   
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
+}
+
+model BrandVerificationAttempt {
+  id                         String                     @id @map("_id") @db.Uuid
+  brandId                    String                     @db.Uuid
+  brand                      Brand                      @relation(fields: [brandId], references: [id], onDelete: Cascade)
+  attemptNumber              Int
+  status                     BrandVerificationStatus
+  submittedAt                DateTime?
+  reviewStartedAt            DateTime?
+  reviewedAt                 DateTime?
+  reviewedById               String?                    @db.Uuid
+  cancelledAt                DateTime?
+  ownerLegalFirstName        String?
+  ownerLegalLastName         String?
+  ownerDateOfBirth           DateTime?
+  ownerGender                VerificationOwnerGender?
+  ownerPhoneNumber           String?
+  ownerNin                   String?
+  cacNumber                  String?
+  businessAddress            Json?
+  idDocumentType             VerificationIdDocumentType?
+  idDocumentNumber           String?
+  idDocumentExpiryDate       DateTime?
+  legalEntityType            VerificationLegalEntityType?
+  authorityType              VerificationAuthorityType?
+  authorityProofKey          String?
+  authorityProofDescription  String?
+  ownerPhotoKey              String?
+  idDocumentFrontKey         String?
+  idDocumentBackKey          String?
+  cacCertificateKey          String?
+  letterOfConfirmationKey    String?
+  letterHash                 String?
+  letterVersion              Int?
+  letterSignedAt             DateTime?
+  signatureMethod            VerificationSignatureMethod?
+  rejectionReasons           Json?
+  infoRequestedItems         Json?
+  infoRequestMessage         String?
+  evidenceManifest           Json?
+  isLegacyMigrated           Boolean                    @default(false)
+  createdAt                  DateTime                   @default(now())
+  updatedAt                  DateTime                   @updatedAt
+
+  @@unique([brandId, attemptNumber])
+  @@index([brandId, submittedAt])
+  @@index([submittedAt])
+}
+
+model VerificationRejectionReason {
+  id          String   @id @map("_id") @db.Uuid
+  code        String   @unique
+  label       String
+  category    String
+  sortOrder   Int      @default(0)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([isActive, sortOrder])
+}
+
+model VerificationLetterTemplate {
+  id          String   @id @map("_id") @db.Uuid
+  version     Int      @unique
+  title       String
+  body        String
+  isActive    Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([isActive])
+}
+
+model BrandVerificationNote {
+  id          String   @id @map("_id") @db.Uuid
+  brandId      String   @db.Uuid
+  brand        Brand    @relation(fields: [brandId], references: [id], onDelete: Cascade)
+  adminId      String   @db.Uuid
+  text         String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([brandId, createdAt])
 }
 
 model StorePolicy {
@@ -1507,6 +1631,8 @@ model Product {
   name            String
   slug            String?       @unique
   description     String?
+  brandNameCache  String?
+  searchVector    Unsupported("tsvector")? @map("search_vector")
   currency        String        @default("NGN")
   price           Decimal       @db.Decimal(10, 2)
   salePrice       Decimal?      @db.Decimal(10, 2)
@@ -1810,8 +1936,45 @@ enum UserStatus {
 enum BrandVerificationStatus {
   NOT_SUBMITTED
   PENDING
+  IN_REVIEW
+  ADDITIONAL_INFO_REQUESTED
   APPROVED
   REJECTED
+  CANCELLED
+}
+
+enum VerificationIdDocumentType {
+  NIN_SLIP
+  VOTERS_CARD
+  INTERNATIONAL_PASSPORT
+  DRIVERS_LICENSE
+  NATIONAL_ID
+}
+
+enum VerificationOwnerGender {
+  MALE
+  FEMALE
+  NON_BINARY
+  PREFER_NOT_TO_SAY
+}
+
+enum VerificationLegalEntityType {
+  SOLE_PROPRIETORSHIP
+  BUSINESS_NAME
+  LIMITED_COMPANY
+  PARTNERSHIP
+  OTHER
+}
+
+enum VerificationAuthorityType {
+  LEGAL_OWNER
+  DIRECTOR
+  AUTHORIZED_REPRESENTATIVE
+}
+
+enum VerificationSignatureMethod {
+  DRAWN
+  TYPED
 }
 
 enum AdminAuditAction {
@@ -1849,6 +2012,11 @@ enum AdminAuditAction {
   ADMIN_FEATURED_CREATE
   ADMIN_FEATURED_REMOVE
   ADMIN_FEATURED_BLOCK_TOGGLE
+  ADMIN_VERIFICATION_CLAIM
+  ADMIN_VERIFICATION_RELEASE
+  ADMIN_VERIFICATION_REQUEST_INFO
+  ADMIN_VERIFICATION_REASSIGN
+  ADMIN_VERIFICATION_NOTE_CREATE
 }
 
 enum DisputeType {

@@ -843,7 +843,12 @@ export class UploadService {
 
   private shouldOptimizeFile(fileType: FileType, mimeType: string): boolean {
     if (!this.isImageOptimizationEnabled()) return false;
-    if (fileType === FileType.POST_VIDEO || fileType === FileType.DOCUMENT) return false;
+    if (
+      fileType === FileType.POST_VIDEO ||
+      fileType === FileType.DOCUMENT
+    ) {
+      return false;
+    }
     return String(mimeType || '').toLowerCase().startsWith('image/');
   }
 
@@ -862,6 +867,7 @@ export class UploadService {
       [FileType.POST_IMAGE]: 10 * 1024 * 1024, // 10MB
       [FileType.POST_VIDEO]: 100 * 1024 * 1024, // 100MB
       [FileType.DOCUMENT]: 20 * 1024 * 1024, // 20MB
+      [FileType.BRAND_VERIFICATION]: 20 * 1024 * 1024, // 20MB
     };
 
     const allowedMimeTypes = {
@@ -883,6 +889,12 @@ export class UploadService {
         'application/pdf',
         'application/msword',
         'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      ],
+      [FileType.BRAND_VERIFICATION]: [
+        'image/jpeg',
+        'image/png',
+        'image/webp',
+        'application/pdf',
       ],
     };
 

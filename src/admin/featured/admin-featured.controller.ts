@@ -21,6 +21,7 @@ import { RequirePermissions } from '../decorators/require-permissions.decorator'
 import { ADMIN_PERMISSIONS } from '../constants/permissions';
 import { AdminFeaturedService } from './admin-featured.service';
 import { CreateFeaturedDto } from './dto';
+import { resolveSearchQuery } from 'src/common/utils/search-query';
 
 @Controller('admin/featured')
 @UseGuards(JwtAuthGuard, RolesGuard, AdminPermissionGuard)
@@ -72,12 +73,13 @@ export class AdminFeaturedController {
   @RequirePermissions(ADMIN_PERMISSIONS.FEATURED_MANAGE)
   async searchEligible(
     @Query('entityType') entityType?: string,
+    @Query('q') q?: string,
     @Query('search') search?: string,
     @Query('limit') limit?: string,
   ) {
     return this.featuredService.searchEligible({
       entityType,
-      search,
+      search: resolveSearchQuery(q, search),
       limit: limit ? parseInt(limit, 10) : undefined,
     });
   }

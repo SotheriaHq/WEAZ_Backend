@@ -34,6 +34,7 @@ import { OptionalJwtAuthGuard } from '../auth/guard/optional-jwt-auth.guard';
 import { UserType } from '@prisma/client';
 import { Throttle } from '@nestjs/throttler';
 import { IdempotencyInterceptor } from '../common/interceptors/idempotency.interceptor';
+import { resolveSearchQuery } from '../common/utils/search-query';
 
 @Controller()
 export class StoreController {
@@ -246,6 +247,20 @@ export class StoreController {
   }
 
   @UseGuards(OptionalJwtAuthGuard)
+  @Get('public/storefronts/:slug')
+  @Throttle({ default: { limit: 120, ttl: 60000 } })
+  async resolveStorefrontBySlug(@Param('slug') slug: string) {
+    return this.storeService.resolvePublicStorefrontBySlug(slug);
+  }
+
+  @UseGuards(OptionalJwtAuthGuard)
+  @Get('public/products/slug/:slug')
+  @Throttle({ default: { limit: 120, ttl: 60000 } })
+  async resolveProductBySlug(@Param('slug') slug: string, @Req() req: any) {
+    return this.storeService.resolvePublicProductBySlug(slug, req.user?.id);
+  }
+
+  @UseGuards(OptionalJwtAuthGuard)
   @Get(['products/:id', 'store/products/:id'])
   @Throttle({ default: { limit: 120, ttl: 60000 } })
   async getProduct(
@@ -280,6 +295,7 @@ export class StoreController {
     @Query('isFeatured') isFeatured?: string,
     @Query('sortBy') sortBy?: 'newest' | 'price_asc' | 'price_desc' | 'popular',
     @Query('sort') sort?: 'newest' | 'price_asc' | 'price_desc' | 'popular',
+    @Query('q') q?: string,
     @Query('search') search?: string,
     @Query('includeDeleted') includeDeleted?: string,
     @Query('onlyDeleted') onlyDeleted?: string,
@@ -306,7 +322,7 @@ export class StoreController {
       onSale: resolvedOnSale === true,
       isFeatured: resolvedIsFeatured,
       sortBy: resolvedSortBy,
-      search,
+      search: resolveSearchQuery(q, search),
       includeDeleted: resolvedIncludeDeleted,
       onlyDeleted: resolvedOnlyDeleted,
       requesterId: req.user?.id,
@@ -417,6 +433,12 @@ export class StoreController {
       page ? parseInt(page, 10) : 1,
       limit ? parseInt(limit, 10) : 20,
     );
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Get(['orders/:orderId/resolve', 'store/orders/:orderId/resolve'])
+  async resolveOrderAccess(@Param('orderId') orderId: string, @Req() req: any) {
+    return this.storeService.resolveOrderAccess(req.user, orderId);
   }
 
   @UseGuards(JwtAuthGuard)

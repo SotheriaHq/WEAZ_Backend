@@ -46,6 +46,12 @@ export class UserProfileController {
     return this.userProfileService.getPublicProfile(userId, viewerId);
   }
 
+  @Get('lookup/username/:username/profile/public')
+  @UseGuards(OptionalJwtAuthGuard)
+  async getPublicProfileByUsername(@Param('username') username: string) {
+    return this.userProfileService.resolvePublicProfileByUsername(username);
+  }
+
   @Patch('me/profile-visibility')
   @UseGuards(AuthGuard('jwt'))
   async updateProfileVisibility(

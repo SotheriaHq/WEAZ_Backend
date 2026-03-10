@@ -27,13 +27,24 @@ import { CollectionsService } from '../collections/collections.service';
 import { UserTypeGuard } from '../auth/guard/user-type.guard';
 import { UserType, PatchStatus } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/guard/jwt-auth.guard';
-import { SubmitVerificationDto } from '../admin/brands/dto/brand-verification.dto';
+import { BrandVerificationService } from '../brand-verification/brand-verification.service';
+import {
+  FinalizeVerificationUploadDto,
+  PresignVerificationUploadDto,
+  ResubmitVerificationInfoDto,
+  SaveVerificationDraftDto,
+  SignVerificationLetterDto,
+  SubmitBrandVerificationDto,
+  VerificationNudgePreferenceDto,
+  VerificationVersionDto,
+} from '../brand-verification/dto/verification.dto';
 
 @Controller()
 export class BrandsController {
   constructor(
     private readonly brandsService: BrandsService,
     private readonly collectionsService: CollectionsService,
+    private readonly brandVerificationService: BrandVerificationService,
   ) {}
 
   // ... existing methods ...
@@ -303,16 +314,92 @@ export class BrandsController {
   // ===================== Brand Verification =====================
 
   @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
-  @Post('brands/:id/verification')
-  async submitVerification(
+  @Post('brands/:id/verification/uploads/presign')
+  async presignVerificationUpload(
     @Param('id') brandId: string,
-    @Body(ValidationPipe) dto: SubmitVerificationDto,
+    @Body(ValidationPipe) dto: PresignVerificationUploadDto,
     @Req() req: any,
   ) {
     if (req.user.id !== brandId) {
       throw new BadRequestException('Not authorized for this brand');
     }
-    return this.brandsService.submitVerification(brandId, dto);
+    return this.brandVerificationService.presignUpload(brandId, dto);
+  }
+
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Post('brands/:id/verification/uploads/finalize')
+  async finalizeVerificationUpload(
+    @Param('id') brandId: string,
+    @Body(ValidationPipe) dto: FinalizeVerificationUploadDto,
+    @Req() req: any,
+  ) {
+    if (req.user.id !== brandId) {
+      throw new BadRequestException('Not authorized for this brand');
+    }
+    return this.brandVerificationService.finalizeUpload(brandId, dto);
+  }
+
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Get('brands/:id/verification/draft')
+  async getVerificationDraft(
+    @Param('id') brandId: string,
+    @Req() req: any,
+  ) {
+    if (req.user.id !== brandId) {
+      throw new BadRequestException('Not authorized for this brand');
+    }
+    return this.brandVerificationService.getDraft(brandId);
+  }
+
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Patch('brands/:id/verification/draft')
+  async saveVerificationDraft(
+    @Param('id') brandId: string,
+    @Body(ValidationPipe) dto: SaveVerificationDraftDto,
+    @Req() req: any,
+  ) {
+    if (req.user.id !== brandId) {
+      throw new BadRequestException('Not authorized for this brand');
+    }
+    return this.brandVerificationService.saveDraft(brandId, dto);
+  }
+
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Get('brands/:id/verification/letter')
+  async getVerificationLetter(
+    @Param('id') brandId: string,
+    @Req() req: any,
+  ) {
+    if (req.user.id !== brandId) {
+      throw new BadRequestException('Not authorized for this brand');
+    }
+    return this.brandVerificationService.getLetter(brandId);
+  }
+
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Post('brands/:id/verification/letter/sign')
+  async signVerificationLetter(
+    @Param('id') brandId: string,
+    @Body(ValidationPipe) dto: SignVerificationLetterDto,
+    @Req() req: any,
+  ) {
+    if (req.user.id !== brandId) {
+      throw new BadRequestException('Not authorized for this brand');
+    }
+    return this.brandVerificationService.signLetter(brandId, dto, req);
+  }
+
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Post('brands/:id/verification')
+  async submitVerification(
+    @Param('id') brandId: string,
+    @Body(ValidationPipe) dto: SubmitBrandVerificationDto,
+    @Req() req: any,
+  ) {
+    if (req.user.id !== brandId) {
+      throw new BadRequestException('Not authorized for this brand');
+    }
+    return this.brandVerificationService.submit(brandId, dto);
   }
 
   @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
@@ -324,6 +411,60 @@ export class BrandsController {
     if (req.user.id !== brandId) {
       throw new BadRequestException('Not authorized for this brand');
     }
-    return this.brandsService.getVerificationStatus(brandId);
+    return this.brandVerificationService.getStatus(brandId);
+  }
+
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Post('brands/:id/verification/cancel')
+  async cancelVerification(
+    @Param('id') brandId: string,
+    @Body(ValidationPipe) dto: VerificationVersionDto,
+    @Req() req: any,
+  ) {
+    if (req.user.id !== brandId) {
+      throw new BadRequestException('Not authorized for this brand');
+    }
+    return this.brandVerificationService.cancel(brandId, dto.expectedUpdatedAt);
+  }
+
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Delete('brands/:id/verification')
+  async cancelVerificationLegacy(
+    @Param('id') brandId: string,
+    @Req() req: any,
+  ) {
+    if (req.user.id !== brandId) {
+      throw new BadRequestException('Not authorized for this brand');
+    }
+    return this.brandVerificationService.cancel(brandId);
+  }
+
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Post('brands/:id/verification/resubmit-info')
+  async resubmitVerificationInfo(
+    @Param('id') brandId: string,
+    @Body(ValidationPipe) dto: ResubmitVerificationInfoDto,
+    @Req() req: any,
+  ) {
+    if (req.user.id !== brandId) {
+      throw new BadRequestException('Not authorized for this brand');
+    }
+    return this.brandVerificationService.resubmitInfo(brandId, dto);
+  }
+
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Patch('brands/:id/verification/nudge-optout')
+  async updateVerificationNudgeOptOut(
+    @Param('id') brandId: string,
+    @Body(ValidationPipe) dto: VerificationNudgePreferenceDto,
+    @Req() req: any,
+  ) {
+    if (req.user.id !== brandId) {
+      throw new BadRequestException('Not authorized for this brand');
+    }
+    return this.brandVerificationService.setNudgeOptOut(
+      brandId,
+      dto.nudgeOptOut,
+    );
   }
 }

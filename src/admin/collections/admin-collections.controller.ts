@@ -17,6 +17,7 @@ import { AdminPermissionGuard } from '../guards/admin-permission.guard';
 import { RequirePermissions } from '../decorators/require-permissions.decorator';
 import { ADMIN_PERMISSIONS } from '../constants/permissions';
 import { AdminCollectionsService } from './admin-collections.service';
+import { resolveSearchQuery } from 'src/common/utils/search-query';
 
 @Controller('admin/collections')
 @UseGuards(JwtAuthGuard, RolesGuard, AdminPermissionGuard)
@@ -29,6 +30,7 @@ export class AdminCollectionsController {
   list(
     @Query('cursor') cursor?: string,
     @Query('limit') limit?: string,
+    @Query('q') q?: string,
     @Query('search') search?: string,
     @Query('ownerId') ownerId?: string,
     @Query('status') status?: CollectionStatus,
@@ -36,7 +38,7 @@ export class AdminCollectionsController {
     return this.collectionsService.list({
       cursor,
       limit: limit ? parseInt(limit, 10) : undefined,
-      search,
+      search: resolveSearchQuery(q, search),
       ownerId,
       status,
     });

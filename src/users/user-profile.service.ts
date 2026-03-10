@@ -81,6 +81,37 @@ export class UserProfileService {
     });
   }
 
+  async resolvePublicProfileByUsername(username: string): Promise<UserProfileResponseDto> {
+    const normalizedUsername = username.trim();
+    if (!normalizedUsername) {
+      throw new NotFoundException('User not found');
+    }
+
+    const user = await this.prisma.user.findUnique({
+      where: { username: normalizedUsername },
+      select: {
+        id: true,
+        username: true,
+        firstName: true,
+        lastName: true,
+        type: true,
+        profileImage: true,
+        bannerImage: true,
+        address: true,
+        profileVisibility: true,
+      },
+    });
+
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    return new UserProfileResponseDto({
+      ...user,
+      location: user.address ?? undefined,
+    });
+  }
+
   async updateProfileVisibility(userId: string, profileVisibility: ProfileVisibility): Promise<User> {
     const user = await this.prisma.user.update({
       where: { id: userId },

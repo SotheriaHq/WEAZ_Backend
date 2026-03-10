@@ -10,6 +10,16 @@ const NT_SIZE_FIT_RESHARED = 'SIZE_FIT_RESHARED' as NotificationType;
 const NT_TAG_MENTION = 'TAG_MENTION' as NotificationType;
 const NT_ITEM_FEATURED = 'ITEM_FEATURED' as NotificationType;
 const NT_FEATURED_AUTO_REMOVED = 'FEATURED_AUTO_REMOVED' as NotificationType;
+const NT_VERIFICATION_SUBMITTED = 'VERIFICATION_SUBMITTED' as NotificationType;
+const NT_VERIFICATION_IN_REVIEW = 'VERIFICATION_IN_REVIEW' as NotificationType;
+const NT_VERIFICATION_INFO_REQUESTED = 'VERIFICATION_INFO_REQUESTED' as NotificationType;
+const NT_VERIFICATION_INFO_RESUBMITTED = 'VERIFICATION_INFO_RESUBMITTED' as NotificationType;
+const NT_VERIFICATION_APPROVED = 'VERIFICATION_APPROVED' as NotificationType;
+const NT_VERIFICATION_REJECTED = 'VERIFICATION_REJECTED' as NotificationType;
+const NT_VERIFICATION_CANCELLED = 'VERIFICATION_CANCELLED' as NotificationType;
+const NT_VERIFICATION_CANCELLED_ADMIN = 'VERIFICATION_CANCELLED_ADMIN' as NotificationType;
+const NT_VERIFICATION_COOLDOWN_EXPIRED = 'VERIFICATION_COOLDOWN_EXPIRED' as NotificationType;
+const NT_VERIFICATION_NUDGE = 'VERIFICATION_NUDGE' as NotificationType;
 
 export interface NotificationConfig {
   type: NotificationType;
@@ -545,6 +555,123 @@ export class NotificationRegistry {
         if (reason === 'BRAND_SUSPENDED') return `${name} was removed from featured due to account suspension.`;
         return `${name} has been removed from featured.`;
       },
+    });
+
+    // VERIFICATION_SUBMITTED
+    registry.register({
+      type: NT_VERIFICATION_SUBMITTED,
+      schema: Joi.object({
+        brandId: Joi.string().required(),
+        attemptNumber: Joi.number().optional(),
+        submittedAt: Joi.string().optional(),
+        targetUrl: Joi.string().optional(),
+      }),
+      formatter: () => 'Your verification request was submitted',
+    });
+
+    // VERIFICATION_IN_REVIEW
+    registry.register({
+      type: NT_VERIFICATION_IN_REVIEW,
+      schema: Joi.object({
+        brandId: Joi.string().required(),
+        reviewStartedAt: Joi.string().optional(),
+        targetUrl: Joi.string().optional(),
+      }),
+      formatter: () => 'Your verification request is now under review',
+    });
+
+    // VERIFICATION_INFO_REQUESTED
+    registry.register({
+      type: NT_VERIFICATION_INFO_REQUESTED,
+      schema: Joi.object({
+        brandId: Joi.string().required(),
+        items: Joi.array().items(Joi.object()).optional(),
+        message: Joi.string().allow(null).optional(),
+        targetUrl: Joi.string().optional(),
+      }),
+      formatter: () => 'More information is needed to continue your verification review',
+    });
+
+    // VERIFICATION_INFO_RESUBMITTED
+    registry.register({
+      type: NT_VERIFICATION_INFO_RESUBMITTED,
+      schema: Joi.object({
+        brandId: Joi.string().required(),
+        brandName: Joi.string().optional(),
+        targetUrl: Joi.string().optional(),
+      }),
+      formatter: (n: any) =>
+        n.payload?.brandName
+          ? `${n.payload.brandName} submitted the requested verification updates`
+          : 'Requested verification updates were submitted',
+    });
+
+    // VERIFICATION_APPROVED
+    registry.register({
+      type: NT_VERIFICATION_APPROVED,
+      schema: Joi.object({
+        brandId: Joi.string().required(),
+        approvedAt: Joi.string().optional(),
+        targetUrl: Joi.string().optional(),
+      }),
+      formatter: () => 'Your brand verification was approved',
+    });
+
+    // VERIFICATION_REJECTED
+    registry.register({
+      type: NT_VERIFICATION_REJECTED,
+      schema: Joi.object({
+        brandId: Joi.string().required(),
+        rejectedAt: Joi.string().optional(),
+        reasons: Joi.array().items(Joi.object()).optional(),
+        cooldownExpiresAt: Joi.string().allow(null).optional(),
+        targetUrl: Joi.string().optional(),
+      }),
+      formatter: () => 'Your brand verification was rejected',
+    });
+
+    // VERIFICATION_CANCELLED
+    registry.register({
+      type: NT_VERIFICATION_CANCELLED,
+      schema: Joi.object({
+        brandId: Joi.string().required(),
+        cancelledAt: Joi.string().optional(),
+        targetUrl: Joi.string().optional(),
+      }),
+      formatter: () => 'Your verification request was cancelled',
+    });
+
+    // VERIFICATION_CANCELLED_ADMIN
+    registry.register({
+      type: NT_VERIFICATION_CANCELLED_ADMIN,
+      schema: Joi.object({
+        brandId: Joi.string().required(),
+        brandName: Joi.string().optional(),
+        cancelledAt: Joi.string().optional(),
+        targetUrl: Joi.string().optional(),
+      }),
+      formatter: (n: any) =>
+        n.payload?.brandName
+          ? `${n.payload.brandName} cancelled its verification request`
+          : 'A brand cancelled its verification request',
+    });
+
+    registry.register({
+      type: NT_VERIFICATION_COOLDOWN_EXPIRED,
+      schema: Joi.object({
+        brandId: Joi.string().required(),
+        targetUrl: Joi.string().optional(),
+      }),
+      formatter: () => 'You can submit verification again',
+    });
+
+    registry.register({
+      type: NT_VERIFICATION_NUDGE,
+      schema: Joi.object({
+        brandId: Joi.string().required(),
+        targetUrl: Joi.string().optional(),
+      }),
+      formatter: () => 'Complete verification to add a stronger trust signal to your store',
     });
 
     return registry;

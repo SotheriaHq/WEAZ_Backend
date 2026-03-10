@@ -1,4 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
+import { BrandVerificationStatus } from '@prisma/client';
 
 export class AuthProfileImageFileDto {
   @ApiProperty()
@@ -131,6 +132,18 @@ export class AuthUserResponseDto {
       'Brand store id (Brand.id) for BRAND users; null for regular users',
   })
   storeId: string | null;
+
+  @ApiProperty({ required: false, nullable: true, enum: BrandVerificationStatus })
+  verificationStatus?: BrandVerificationStatus | null;
+
+  @ApiProperty({ required: false })
+  isVerifiedBrand?: boolean;
+
+  @ApiProperty({ required: false })
+  verificationBadgeVisible?: boolean;
+
+  @ApiProperty({ required: false, nullable: true })
+  verifiedExplanationUrl?: string | null;
 
   @ApiProperty()
   isActive: string;

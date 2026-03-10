@@ -119,6 +119,62 @@ export function brandVerificationApprovedEmail(
   };
 }
 
+export function verificationSubmittedEmail(
+  brandName: string,
+  appName: string,
+): EmailContent {
+  return {
+    subject: `Verification submitted for "${brandName}"`,
+    html: wrap(
+      'Verification Submitted',
+      `<p style="color:#374151;line-height:1.6">We received your verification application for <strong>${brandName}</strong>.</p>
+      <p style="color:#374151;line-height:1.6">Our team will review it and notify you when the status changes.</p>`,
+      appName,
+    ),
+    text: `Verification Submitted\n\nWe received your verification application for "${brandName}". We will notify you when the status changes.`,
+  };
+}
+
+export function verificationInReviewEmail(
+  brandName: string,
+  appName: string,
+): EmailContent {
+  return {
+    subject: `Verification review started for "${brandName}"`,
+    html: wrap(
+      'Verification In Review',
+      `<p style="color:#374151;line-height:1.6">Your verification application for <strong>${brandName}</strong> is now being reviewed.</p>`,
+      appName,
+    ),
+    text: `Verification In Review\n\nYour verification application for "${brandName}" is now being reviewed.`,
+  };
+}
+
+export function verificationInfoRequestedEmail(
+  brandName: string,
+  requestedItems: string[],
+  appName: string,
+): EmailContent {
+  const itemsMarkup = requestedItems.length
+    ? `<ul style="color:#374151;line-height:1.6;padding-left:20px">${requestedItems
+        .map((item) => `<li>${item}</li>`)
+        .join('')}</ul>`
+    : '';
+  const itemsText = requestedItems.length
+    ? requestedItems.map((item) => `- ${item}`).join('\n')
+    : 'Please review your submitted verification details.';
+
+  return {
+    subject: `More verification information is needed for "${brandName}"`,
+    html: wrap(
+      'More Information Needed',
+      `<p style="color:#374151;line-height:1.6">We need additional information to continue reviewing <strong>${brandName}</strong>.</p>${itemsMarkup}`,
+      appName,
+    ),
+    text: `More Information Needed\n\nWe need additional information to continue reviewing "${brandName}".\n\n${itemsText}`,
+  };
+}
+
 export function brandVerificationRejectedEmail(
   brandName: string,
   reason: string,
@@ -136,6 +192,38 @@ export function brandVerificationRejectedEmail(
       appName,
     ),
     text: `Brand Verification Update\n\nWe were unable to verify "${brandName}".\n\nReason: ${reason}\n\nYou can update your documents and resubmit.`,
+  };
+}
+
+export function verificationCooldownExpiredEmail(
+  brandName: string,
+  appName: string,
+): EmailContent {
+  return {
+    subject: `Verification is available again for "${brandName}"`,
+    html: wrap(
+      'Verification Available Again',
+      `<p style="color:#374151;line-height:1.6">The verification cooldown for <strong>${brandName}</strong> has expired.</p>
+      <p style="color:#374151;line-height:1.6">You can review your details and submit a new verification request whenever you are ready.</p>`,
+      appName,
+    ),
+    text: `Verification Available Again\n\nThe verification cooldown for "${brandName}" has expired. You can submit a new verification request whenever you are ready.`,
+  };
+}
+
+export function verificationNudgeEmail(
+  brandName: string,
+  appName: string,
+): EmailContent {
+  return {
+    subject: `Complete verification for "${brandName}"`,
+    html: wrap(
+      'Build More Trust',
+      `<p style="color:#374151;line-height:1.6">Your store <strong>${brandName}</strong> is live. Completing verification adds a stronger trust signal for shoppers.</p>
+      <p style="color:#374151;line-height:1.6">You can start the verification flow from your studio whenever you are ready.</p>`,
+      appName,
+    ),
+    text: `Build More Trust\n\nYour store "${brandName}" is live. Completing verification adds a stronger trust signal for shoppers. You can start the verification flow from your studio whenever you are ready.`,
   };
 }
 

@@ -29,6 +29,7 @@ import { CreateAdminDto } from './dto/create-admin.dto';
 import { UpdateRoleDto } from './dto/update-role.dto';
 import { UpdateUserStatusDto } from './dto/update-user-status.dto';
 import { ReviewReactivationRequestDto } from './dto/review-reactivation-request.dto';
+import { resolveSearchQuery } from 'src/common/utils/search-query';
 
 const SKIP_ALL_THROTTLERS = {
   default: true,
@@ -63,6 +64,7 @@ export class AdminUsersController {
     @Query('limit') limit?: string,
     @Query('role') role?: Role,
     @Query('status') status?: UserStatus,
+    @Query('q') q?: string,
     @Query('search') search?: string,
   ) {
     return this.adminUsersService.list({
@@ -70,7 +72,7 @@ export class AdminUsersController {
       limit: limit ? parseInt(limit, 10) : undefined,
       role,
       status,
-      search,
+      search: resolveSearchQuery(q, search),
     });
   }
 

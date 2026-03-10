@@ -17,6 +17,7 @@ import { AdminPermissionGuard } from '../guards/admin-permission.guard';
 import { RequirePermissions } from '../decorators/require-permissions.decorator';
 import { ADMIN_PERMISSIONS } from '../constants/permissions';
 import { AdminProductsService } from './admin-products.service';
+import { resolveSearchQuery } from 'src/common/utils/search-query';
 
 @Controller('admin/products')
 @UseGuards(JwtAuthGuard, RolesGuard, AdminPermissionGuard)
@@ -29,6 +30,7 @@ export class AdminProductsController {
   list(
     @Query('cursor') cursor?: string,
     @Query('limit') limit?: string,
+    @Query('q') q?: string,
     @Query('search') search?: string,
     @Query('brandId') brandId?: string,
     @Query('isActive') isActive?: string,
@@ -36,7 +38,7 @@ export class AdminProductsController {
     return this.productsService.list({
       cursor,
       limit: limit ? parseInt(limit, 10) : undefined,
-      search,
+      search: resolveSearchQuery(q, search),
       brandId,
       isActive:
         isActive !== undefined ? isActive.toLowerCase() === 'true' : undefined,

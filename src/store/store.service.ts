@@ -2635,6 +2635,116 @@ export class StoreService {
     return { ...withMedia, isWishlisted };
   }
 
+  async resolvePublicProductBySlug(slug: string, userId?: string) {
+    const normalizedSlug = slug.trim();
+    if (!normalizedSlug) {
+      throw new NotFoundException('Product not found');
+    }
+
+    const product = await this.prisma.product.findFirst({
+      where: {
+        slug: normalizedSlug,
+        deletedAt: null,
+      },
+      select: {
+        id: true,
+        slug: true,
+        name: true,
+        isActive: true,
+        publishAt: true,
+        archivedAt: true,
+        deletedAt: true,
+        collectionId: true,
+        collection: {
+          select: {
+            id: true,
+            title: true,
+            description: true,
+            status: true,
+            isAvailableInStore: true,
+            deletedAt: true,
+          },
+        },
+        collections: {
+          select: {
+            collectionId: true,
+            orderIndex: true,
+            collection: {
+              select: {
+                id: true,
+                title: true,
+                description: true,
+                status: true,
+                isAvailableInStore: true,
+                deletedAt: true,
+              },
+            },
+          },
+        },
+        brand: {
+          select: {
+            ownerId: true,
+            isStoreOpen: true,
+          },
+        },
+      },
+    });
+
+    if (!product) {
+      throw new NotFoundException('Product not found');
+    }
+
+    const isOwner = Boolean(userId && product.brand.ownerId === userId);
+
+    if (!isOwner) {
+      if (!product.brand.isStoreOpen) {
+        throw new NotFoundException('Store is closed');
+      }
+      if (!this.hasPublicStoreAccess(product)) {
+        throw new NotFoundException('Product not available');
+      }
+    }
+
+    return {
+      id: product.id,
+      slug: product.slug,
+      name: product.name,
+    };
+  }
+
+  async resolvePublicStorefrontBySlug(slug: string) {
+    const normalizedSlug = slug.trim();
+    if (!normalizedSlug) {
+      throw new NotFoundException('Storefront not found');
+    }
+
+    const user = await this.prisma.user.findUnique({
+      where: { username: normalizedSlug },
+      select: {
+        id: true,
+        username: true,
+        type: true,
+        brandFullName: true,
+        brand: {
+          select: {
+            name: true,
+            isStoreOpen: true,
+          },
+        },
+      },
+    });
+
+    if (!user || user.type !== UserType.BRAND || !user.brand?.isStoreOpen) {
+      throw new NotFoundException('Storefront not found');
+    }
+
+    return {
+      ownerId: user.id,
+      slug: this.canonicalStoreSlug(user),
+      displayName: this.canonicalStoreName(user, user.brand),
+    };
+  }
+
   async getBrandProducts(
     brandId: string,
     options: {
@@ -4410,6 +4520,47 @@ export class StoreService {
       ...order,
       items: this.getOrderLineItems(order),
     };
+  }
+
+  async resolveOrderAccess(
+    user: { id: string; role?: string; type?: UserType },
+    orderId: string,
+  ) {
+    const order = await this.prisma.order.findUnique({
+      where: { id: orderId },
+      select: {
+        id: true,
+        buyerId: true,
+        brandId: true,
+        brand: {
+          select: {
+            ownerId: true,
+          },
+        },
+      },
+    });
+
+    if (!order) {
+      throw new NotFoundException('Order not found');
+    }
+
+    if (order.buyerId && order.buyerId === user.id) {
+      return {
+        orderId: order.id,
+        viewerRole: 'BUYER' as const,
+        destination: `/orders/${order.id}`,
+      };
+    }
+
+    if (order.brand?.ownerId === user.id) {
+      return {
+        orderId: order.id,
+        viewerRole: 'BRAND' as const,
+        destination: `/studio?tab=orders&orderId=${encodeURIComponent(order.id)}`,
+      };
+    }
+
+    throw new ForbiddenException('You do not have access to this order');
   }
 
   // ==================== STORE WIZARD PREFILL & SETTINGS ====================

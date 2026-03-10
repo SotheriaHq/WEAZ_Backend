@@ -27,6 +27,7 @@ import { SystemTagsService } from '../tags/system-tags.service';
 import { TagIndexService } from '../tags/tag-index.service';
 import { sanitizeTags } from 'src/common/utils/tag-validator';
 import { TAG_ENTITY_TYPE } from 'src/tags/tag-entity-type';
+import { getBrandVerificationTruth } from 'src/brand-verification/verification-truth.util';
 
 export interface BrandMediaAsset {
   fileId: string;
@@ -65,6 +66,9 @@ export interface BrandProfileResponse {
   cacNumber: string | null;
   tin: string | null;
   verified: boolean;
+  verificationStatus: BrandVerificationStatus;
+  verificationBadgeVisible: boolean;
+  verifiedExplanationUrl: string | null;
   isStoreOpen: boolean;
   averageRating: number;
   totalReviews: number;
@@ -155,6 +159,8 @@ export class BrandsService {
       cacNumber: true,
       tin: true,
       isEmailVerified: true,
+      status: true,
+      deactivatedAt: true,
       createdAt: true,
       updatedAt: true,
       type: true,
@@ -162,6 +168,7 @@ export class BrandsService {
         select: {
           id: true,
           isStoreOpen: true,
+          verificationStatus: true,
         },
       },
     } as const;
@@ -266,6 +273,12 @@ export class BrandsService {
 
     const logoImage = logoAsset?.url || brand.profileImage || null;
     const bannerImage = bannerAsset?.url || brand.bannerImage || null;
+    const verificationTruth = getBrandVerificationTruth({
+      verificationStatus: brand.brand?.verificationStatus,
+      isStoreOpen: brand.brand?.isStoreOpen,
+      ownerStatus: brand.status,
+      ownerDeactivatedAt: brand.deactivatedAt ?? null,
+    });
 
     return {
       id: brand.id,
@@ -294,7 +307,10 @@ export class BrandsService {
       hashtags: brand.brandTags ?? [],
       cacNumber: brand.cacNumber ?? null,
       tin: brand.tin ?? null,
-      verified: Boolean(brand.isEmailVerified),
+      verified: verificationTruth.isVerifiedBrand,
+      verificationStatus: verificationTruth.verificationStatus,
+      verificationBadgeVisible: verificationTruth.verificationBadgeVisible,
+      verifiedExplanationUrl: verificationTruth.verifiedExplanationUrl,
       isStoreOpen: Boolean(brand.brand?.isStoreOpen),
       averageRating: 0,
       totalReviews: 0,

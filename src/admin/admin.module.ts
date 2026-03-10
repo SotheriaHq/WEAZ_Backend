@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { AuthModule } from 'src/auth/auth.module';
 import { PrismaModule } from 'src/prisma/prisma.module';
 import { NotificationsModule } from 'src/notifications/notifications.module';
+import { BrandVerificationModule } from 'src/brand-verification/brand-verification.module';
 
 // Services
 import { AdminAuditService } from './services/admin-audit.service';
@@ -40,7 +41,12 @@ import { AdminDashboardService } from './dashboard/admin-dashboard.service';
 import { AdminFeaturedController } from './featured/admin-featured.controller';
 
 @Module({
-  imports: [PrismaModule, AuthModule, NotificationsModule],
+  imports: [
+    PrismaModule,
+    AuthModule,
+    NotificationsModule,
+    BrandVerificationModule,
+  ],
   controllers: [
     AdminUsersController,
     AdminBrandsController,
