@@ -1530,6 +1530,47 @@ model Order {
   @@index([paymentReference])
 }
 
+model PaymentAttempt {
+  id               String       @id @default(uuid()) @db.Uuid
+  buyerId          String?      @db.Uuid
+  provider         String
+  providerMode     String
+  paymentMethod    PaymentMethod
+  channel          String?
+  status           String
+  reference        String       @unique
+  callbackUrl      String?
+  authorizationUrl String?
+  amount           Decimal      @db.Decimal(10, 2)
+  currency         String       @default("NGN")
+  orderIds         String[]
+  requestSnapshot  Json?
+  responseSnapshot Json?
+  nextAction       Json?
+  bankAccount      Json?
+  failureCode      String?
+  failureMessage   String?
+  expiresAt        DateTime?
+  confirmedAt      DateTime?
+  lastVerifiedAt   DateTime?
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+
+  @@index([buyerId, createdAt])
+  @@index([status, createdAt])
+}
+
+model PaymentEvent {
+  id               String   @id @default(uuid()) @db.Uuid
+  paymentAttemptId String   @db.Uuid
+  type             String
+  source           String
+  payload          Json?
+  createdAt        DateTime @default(now())
+
+  @@index([paymentAttemptId, createdAt])
+}
+
 model OrderItem {
   id                      String          @id @default(uuid()) @db.Uuid
   orderId                 String          @db.Uuid
