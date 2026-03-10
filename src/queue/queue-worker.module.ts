@@ -15,6 +15,8 @@ import { BulkUploadProcessor } from './bulk-upload.processor';
 import { CategoriesModule } from 'src/categories/categories.module';
 import { ImageProcessingProcessor } from './image-processing.processor';
 import { MediaProcessingService } from 'src/media-processing/media-processing.service';
+import { SearchModule } from 'src/search/search.module';
+import { SearchProcessor } from './search.processor';
 
 @Module({
   imports: [
@@ -29,6 +31,7 @@ import { MediaProcessingService } from 'src/media-processing/media-processing.se
     NotificationsModule,
     AnalyticsModule,
     QueueModule,
+    SearchModule,
     TagsModule,
     CategoriesModule,
   ],
@@ -38,6 +41,7 @@ import { MediaProcessingService } from 'src/media-processing/media-processing.se
     NotificationsProcessor,
     BulkUploadProcessor,
     ImageProcessingProcessor,
+    SearchProcessor,
     MediaProcessingService,
   ],
 })

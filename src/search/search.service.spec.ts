@@ -78,4 +78,60 @@ describe('SearchService', () => {
     expect(response.meta.hasNextPage).toBe(true);
     expect(response.meta.paginationMode).toBe('single');
   });
+
+  it('treats @-prefixed searches as brand-only queries', async () => {
+    const { service } = createService();
+    const searchBrandsPage = jest
+      .spyOn(service as any, 'searchBrandsPage')
+      .mockResolvedValue({
+        items: [
+          {
+            id: 'brand-1',
+            type: 'brand',
+            title: 'Nike',
+            href: '/profile/brand-1',
+            score: 80,
+          },
+        ],
+        total: 1,
+      });
+    const searchProductsPage = jest.spyOn(service as any, 'searchProductsPage');
+    jest.spyOn(service as any, 'getSearchCacheVersionToken').mockResolvedValue('0.0');
+
+    const response = await service.search({ query: '@nike', page: 1, limit: 20 });
+
+    expect(searchBrandsPage).toHaveBeenCalledWith('nike', ['nike'], 20, 0);
+    expect(searchProductsPage).not.toHaveBeenCalled();
+    expect(response.types).toEqual(['brand']);
+    expect(response.counts.brand).toBe(1);
+  });
+
+  it('returns suggestions for one-character queries', async () => {
+    const { service } = createService();
+    const fetchSuggestionItems = jest
+      .spyOn(service as any, 'fetchSuggestionItems')
+      .mockResolvedValue([]);
+    jest.spyOn(service as any, 'resolveBrandOwnerId').mockResolvedValue(undefined);
+
+    await service.suggest('r');
+
+    expect(fetchSuggestionItems).toHaveBeenCalled();
+  });
+
+  it('treats /-prefixed suggestions as tag-only queries', async () => {
+    const { service } = createService();
+    const fetchSuggestionItems = jest
+      .spyOn(service as any, 'fetchSuggestionItems')
+      .mockResolvedValue([]);
+    jest.spyOn(service as any, 'resolveBrandOwnerId').mockResolvedValue(undefined);
+
+    await service.suggest('/summer');
+
+    expect(fetchSuggestionItems).toHaveBeenCalledTimes(1);
+    expect(fetchSuggestionItems).toHaveBeenCalledWith(
+      'search:suggest:index:tags',
+      'summer',
+      6,
+    );
+  });
 });

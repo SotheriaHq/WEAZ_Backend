@@ -4,6 +4,7 @@ import {
   Logger,
   OnModuleDestroy,
   OnModuleInit,
+  Optional,
 } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import {
@@ -15,6 +16,8 @@ import {
 import { PrismaService } from 'src/prisma/prisma.service';
 import { TagsService } from 'src/tags/tags.service';
 import { createClient, type RedisClientType } from 'redis';
+import type { SearchSyncJob } from 'src/queue/search.queue.service';
+import { SearchQueueService } from 'src/queue/search.queue.service';
 import {
   SEARCH_ENTITY_TYPES,
   type SearchEntityType,
@@ -31,6 +34,16 @@ interface SearchParams {
   limit?: number;
   brandId?: string;
   userId?: string;
+}
+
+type SearchQueryMode = 'default' | 'brand' | 'tag';
+
+interface ParsedSearchQuery {
+  rawQuery: string;
+  mode: SearchQueryMode;
+  normalizedQuery: string;
+  tokens: string[];
+  forcedTypes?: SearchEntityType[];
 }
 
 interface SuggestionPayload {
@@ -102,15 +115,25 @@ const SEARCH_REDIS_CIRCUIT_FAILURE_THRESHOLD = 5;
 const SEARCH_REDIS_CIRCUIT_OPEN_MS = 10000;
 const SEARCH_REBUILD_BATCH_SIZE = 250;
 const SEARCH_SUGGEST_SCAN_BATCH = 24;
-const SEARCH_SUGGEST_SCAN_CAP = 120;
+const SEARCH_SUGGEST_SCAN_CAP = 240;
 const SEARCH_SIMILARITY_THRESHOLD = 0.3;
+const SEARCH_MIXED_PREVIEW_LIMIT = 5;
+
+const SEARCH_RESULT_CACHE_ALL_VERSION_KEY = 'search:results:version:all';
+const SEARCH_RESULT_CACHE_VERSION_KEYS: Record<SearchEntityType, string> = {
+  product: 'search:results:version:product',
+  brand: 'search:results:version:brand',
+  design: 'search:results:version:design',
+  collection: 'search:results:version:collection',
+  tag: 'search:results:version:tag',
+};
 
 const SEARCH_SUGGEST_KEYS = {
-  products: 'search:suggest:products',
-  brands: 'search:suggest:brands',
-  designs: 'search:suggest:designs',
-  collections: 'search:suggest:store-collections',
-  tags: 'search:suggest:tags',
+  products: 'search:suggest:index:products',
+  brands: 'search:suggest:index:brands',
+  designs: 'search:suggest:index:designs',
+  collections: 'search:suggest:index:store-collections',
+  tags: 'search:suggest:index:tags',
 } as const;
 
 @Injectable()
@@ -120,10 +143,12 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
   private redisCircuitOpenUntil = 0;
   private redisFailureCount = 0;
   private isRebuildingSuggestions = false;
+  private prismaSearchHooksRegistered = false;
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly tagsService: TagsService,
+    @Optional() private readonly searchQueue?: SearchQueueService,
   ) {}
 
   async onModuleInit() {
@@ -143,6 +168,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
         this.logger.warn(`Search Redis error: ${error?.message || error}`);
       });
       await this.redis.connect();
+      this.registerPrismaSearchHooks();
       await this.ensureSuggestionIndexes();
     } catch (error: any) {
       this.logger.warn(
@@ -170,6 +196,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
       .normalize('NFKD')
       .replace(/[\u0300-\u036f]/g, '')
       .replace(/\u0000/g, '')
+      .replace(/[^\p{L}\p{N}\s]+/gu, ' ')
       .trim()
       .replace(/\s+/g, ' ')
       .toLowerCase();
@@ -177,9 +204,48 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
 
   private tokenize(query: string): string[] {
     return query
-      .split(/\s+/)
+      .split(/[^\p{L}\p{N}]+/u)
       .map((token) => token.trim())
       .filter(Boolean);
+  }
+
+  private parseSearchQuery(queryInput?: string | null): ParsedSearchQuery {
+    const rawQuery = String(queryInput || '').trim();
+    if (!rawQuery) {
+      return {
+        rawQuery,
+        mode: 'default',
+        normalizedQuery: '',
+        tokens: [],
+      };
+    }
+
+    let mode: SearchQueryMode = 'default';
+    let workingQuery = rawQuery;
+
+    if (workingQuery.startsWith('@')) {
+      mode = 'brand';
+      workingQuery = workingQuery.slice(1).trim();
+    } else if (workingQuery.startsWith('/') || workingQuery.startsWith('#')) {
+      mode = 'tag';
+      workingQuery = workingQuery.slice(1).trim();
+    }
+
+    const normalizedQuery = this.normalizeQuery(workingQuery);
+    const forcedTypes =
+      mode === 'brand'
+        ? (['brand'] as SearchEntityType[])
+        : mode === 'tag'
+          ? (['tag'] as SearchEntityType[])
+          : undefined;
+
+    return {
+      rawQuery,
+      mode,
+      normalizedQuery,
+      tokens: this.tokenize(normalizedQuery),
+      forcedTypes,
+    };
   }
 
   private clampLimit(input?: number, fallback = 20, max = 50): number {
@@ -287,33 +353,80 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     page: number;
     limit: number;
     brandId?: string;
+    versionToken: string;
   }) {
     return [
-      'search:results:v2',
+      'search:results:v3',
       params.query,
       params.types.join(','),
       params.page,
       params.limit,
       params.brandId || 'all',
+      params.versionToken,
     ].join(':');
   }
 
-  private suggestionWords(value: string) {
-    return Array.from(new Set(this.tokenize(this.normalizeQuery(value))));
+  private suggestionWords(...values: Array<string | string[] | null | undefined>) {
+    const tokens: string[] = [];
+
+    for (const value of values) {
+      if (Array.isArray(value)) {
+        tokens.push(...this.suggestionWords(...value));
+        continue;
+      }
+
+      const normalized = this.normalizeQuery(value);
+      if (!normalized) {
+        continue;
+      }
+
+      tokens.push(...this.tokenize(normalized));
+    }
+
+    return Array.from(new Set(tokens));
   }
 
-  private encodeSuggestionMember(word: string, payload: SuggestionPayload) {
-    return `${word}\u0000${JSON.stringify(payload)}`;
+  private buildDescriptionTerms(value: string | null | undefined) {
+    return this.tokenize(this.normalizeQuery(value))
+      .filter((token) => token.length > 2)
+      .slice(0, 12);
   }
 
-  private decodeSuggestionMember(member: string): SuggestionPayload | null {
+  private suggestionDocumentKey(type: SearchEntityType, id: string) {
+    return `search:suggest:doc:${type}:${id}`;
+  }
+
+  private suggestionReverseKey(type: SearchEntityType, id: string) {
+    return `search:suggest:entity:${type}:${id}`;
+  }
+
+  private suggestionRef(type: SearchEntityType, id: string) {
+    return `${type}:${id}`;
+  }
+
+  private encodeSuggestionMember(word: string, ref: string) {
+    return `${word}\u0000${ref}`;
+  }
+
+  private decodeSuggestionMember(member: string): { word: string; ref: string } | null {
     const separatorIndex = member.indexOf('\u0000');
     if (separatorIndex < 0) {
       return null;
     }
 
+    return {
+      word: member.slice(0, separatorIndex),
+      ref: member.slice(separatorIndex + 1),
+    };
+  }
+
+  private parseSuggestionDocument(document: string | null | undefined) {
+    if (!document) {
+      return null;
+    }
+
     try {
-      return JSON.parse(member.slice(separatorIndex + 1)) as SuggestionPayload;
+      return JSON.parse(document) as SuggestionPayload;
     } catch {
       return null;
     }
@@ -347,6 +460,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     id: string;
     name: string;
     description: string | null;
+    tags?: string[] | null;
     thumbnail: string | null;
     images: string[];
     price: Prisma.Decimal | number | string;
@@ -371,7 +485,9 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
         brandId: row.brandId,
         brandOwnerId: row.brand?.ownerId || null,
       },
-      matchText: this.normalizeQuery(`${row.name} ${row.brand?.name || ''} ${row.description || ''}`),
+      matchText: this.normalizeQuery(
+        `${row.name} ${row.brand?.name || ''} ${(row.tags || []).join(' ')} ${row.description || ''}`,
+      ),
     };
   }
 
@@ -381,6 +497,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     name: string;
     description: string | null;
     tagline: string | null;
+    tags?: string[] | null;
     logo: string | null;
     isStoreOpen: boolean;
   }): SuggestionPayload {
@@ -396,7 +513,9 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
         ownerId: row.ownerId,
         isStoreOpen: row.isStoreOpen,
       },
-      matchText: this.normalizeQuery(`${row.name} ${row.tagline || ''} ${row.description || ''}`),
+      matchText: this.normalizeQuery(
+        `${row.name} ${row.tagline || ''} ${(row.tags || []).join(' ')} ${row.description || ''}`,
+      ),
     };
   }
 
@@ -405,6 +524,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     ownerId: string;
     title: string | null;
     description: string | null;
+    tags?: string[] | null;
   }): SuggestionPayload {
     const title = row.title || 'Untitled design';
     return {
@@ -417,7 +537,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
       metadata: {
         ownerId: row.ownerId,
       },
-      matchText: this.normalizeQuery(`${title} ${row.description || ''}`),
+      matchText: this.normalizeQuery(`${title} ${(row.tags || []).join(' ')} ${row.description || ''}`),
     };
   }
 
@@ -426,6 +546,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     ownerId: string;
     title: string | null;
     description: string | null;
+    tags?: string[] | null;
   }): SuggestionPayload {
     const title = row.title || 'Untitled collection';
     return {
@@ -438,7 +559,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
       metadata: {
         ownerId: row.ownerId,
       },
-      matchText: this.normalizeQuery(`${title} ${row.description || ''}`),
+      matchText: this.normalizeQuery(`${title} ${(row.tags || []).join(' ')} ${row.description || ''}`),
     };
   }
 
@@ -868,6 +989,52 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     );
   }
 
+  private async getSearchCacheVersionToken(types: SearchEntityType[]) {
+    const versionKeys = [
+      SEARCH_RESULT_CACHE_ALL_VERSION_KEY,
+      ...Array.from(new Set(types)).map((type) => SEARCH_RESULT_CACHE_VERSION_KEYS[type]),
+    ];
+
+    const versions = await this.withRedisBudget(
+      'MGET search cache versions',
+      () => this.redis!.mGet(versionKeys),
+      versionKeys.map(() => null as string | null),
+    );
+
+    return versions
+      .map((value) => {
+        const parsed = Number(value || 0);
+        return Number.isFinite(parsed) ? parsed : 0;
+      })
+      .join('.');
+  }
+
+  private async invalidateSearchCaches(types: SearchEntityType[]) {
+    if (!this.redis) {
+      return;
+    }
+
+    const versionKeys = Array.from(
+      new Set([
+        SEARCH_RESULT_CACHE_ALL_VERSION_KEY,
+        ...types.map((type) => SEARCH_RESULT_CACHE_VERSION_KEYS[type]),
+      ]),
+    );
+
+    await this.withRedisBudget(
+      'INCR search cache versions',
+      async () => {
+        const pipeline = this.redis!.multi();
+        for (const key of versionKeys) {
+          pipeline.incr(key);
+        }
+        await pipeline.exec();
+        return true;
+      },
+      false,
+    );
+  }
+
   private async zRangeByPrefix(key: string, prefix: string, offset: number, count: number) {
     return this.withRedisBudget(
       `ZRANGEBYLEX ${key}`,
@@ -885,16 +1052,44 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     );
   }
 
+  private async getSuggestionDocuments(refs: string[]) {
+    if (refs.length === 0) {
+      return new Map<string, SuggestionPayload>();
+    }
+
+    const documentKeys = refs.map((ref) => {
+      const [type, ...idParts] = ref.split(':');
+      return this.suggestionDocumentKey(type as SearchEntityType, idParts.join(':'));
+    });
+
+    const documents = await this.withRedisBudget(
+      'MGET suggestion docs',
+      () => this.redis!.mGet(documentKeys),
+      refs.map(() => null as string | null),
+    );
+
+    const parsed = new Map<string, SuggestionPayload>();
+    refs.forEach((ref, index) => {
+      const payload = this.parseSuggestionDocument(documents[index]);
+      if (payload) {
+        parsed.set(ref, payload);
+      }
+    });
+
+    return parsed;
+  }
+
   private async fetchSuggestionItems(
     key: string,
     normalizedQuery: string,
     limit: number,
+    filter?: (payload: SuggestionPayload) => boolean,
   ) {
     const tokens = this.tokenize(normalizedQuery);
     const prefix = tokens[tokens.length - 1];
     const requiredTokens = tokens.slice(0, -1);
     const items: SearchItem[] = [];
-    const seen = new Set<string>();
+    const seenRefs = new Set<string>();
     let offset = 0;
 
     while (items.length < limit && offset < SEARCH_SUGGEST_SCAN_CAP) {
@@ -909,16 +1104,32 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
         break;
       }
 
-      for (const member of batch) {
-        const payload = this.decodeSuggestionMember(member);
-        if (!payload || seen.has(payload.id)) {
+      const refs = batch
+        .map((member) => this.decodeSuggestionMember(member))
+        .filter((entry): entry is { word: string; ref: string } => Boolean(entry))
+        .map((entry) => entry.ref)
+        .filter((ref) => {
+          if (seenRefs.has(ref)) {
+            return false;
+          }
+          seenRefs.add(ref);
+          return true;
+        });
+
+      const documents = await this.getSuggestionDocuments(refs);
+
+      for (const ref of refs) {
+        const payload = documents.get(ref);
+        if (!payload) {
           continue;
         }
         if (!requiredTokens.every((token) => payload.matchText.includes(token))) {
           continue;
         }
+        if (filter && !filter(payload)) {
+          continue;
+        }
 
-        seen.add(payload.id);
         items.push(this.itemFromSuggestionPayload(payload, normalizedQuery, tokens));
         if (items.length >= limit) {
           break;
@@ -1427,6 +1638,266 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
+  private scheduleSearchSync(task: () => Promise<void>) {
+    void task().catch((error: any) => {
+      this.logger.warn(`Search sync failed: ${error?.message || error}`);
+    });
+  }
+
+  private async dispatchSearchSyncJob(job: SearchSyncJob) {
+    if (this.searchQueue) {
+      await this.searchQueue.enqueueSync(job);
+      return;
+    }
+
+    this.scheduleSearchSync(() => this.processSearchSyncJob(job));
+  }
+
+  async processSearchSyncJob(job: SearchSyncJob) {
+    switch (job.target) {
+      case 'product':
+        await this.invalidateSearchCaches(['product']);
+        if (job.mode === 'entity' && job.id) {
+          await this.syncProductSuggestionById(job.id);
+        } else {
+          await this.rebuildProductSuggestions();
+        }
+        return;
+      case 'brand':
+        await this.invalidateSearchCaches(['brand', 'product']);
+        if (job.mode === 'entity' && job.id) {
+          await Promise.all([
+            this.syncBrandSuggestionById(job.id),
+            this.syncProductsForBrand(job.id),
+          ]);
+        } else {
+          await Promise.all([
+            this.rebuildBrandSuggestions(),
+            this.rebuildProductSuggestions(),
+          ]);
+        }
+        return;
+      case 'design':
+        await this.invalidateSearchCaches(['design']);
+        if (job.mode === 'entity' && job.id) {
+          await this.syncDesignSuggestionById(job.id);
+        } else {
+          await this.rebuildDesignSuggestions();
+        }
+        return;
+      case 'collection':
+        await this.invalidateSearchCaches(['collection']);
+        if (job.mode === 'entity' && job.id) {
+          await this.syncStoreCollectionSuggestionById(job.id);
+        } else {
+          await this.rebuildStoreCollectionSuggestions();
+        }
+        return;
+      case 'tag':
+        await this.invalidateSearchCaches(['tag']);
+        if (job.mode === 'entity' && job.id) {
+          await this.syncTagSuggestionById(job.id);
+        } else {
+          await this.rebuildTagSuggestions();
+        }
+        return;
+      default:
+        return;
+    }
+  }
+
+  private logSearchEvent(event: 'search' | 'suggest', payload: Record<string, unknown>) {
+    this.logger.log(
+      JSON.stringify({
+        event: `search.${event}`,
+        ...payload,
+      }),
+    );
+  }
+
+  private registerPrismaSearchHooks() {
+    if (this.prismaSearchHooksRegistered) {
+      return;
+    }
+
+    const prismaWithMiddleware = this.prisma as PrismaService & {
+      $use?: (middleware: (params: any, next: (params: any) => Promise<any>) => Promise<any>) => void;
+    };
+
+    if (typeof prismaWithMiddleware.$use !== 'function') {
+      this.logger.warn('Prisma middleware is unavailable; search cache invalidation falls back to recovery rebuilds.');
+      return;
+    }
+
+    prismaWithMiddleware.$use(async (params: any, next: (args: any) => Promise<any>) => {
+      const result = await next(params);
+      this.handlePrismaMutation(params, result);
+      return result;
+    });
+
+    this.prismaSearchHooksRegistered = true;
+  }
+
+  private extractMutationId(
+    params: any,
+    result: Record<string, unknown> | null | undefined,
+  ) {
+    const resultId = typeof result?.id === 'string' ? result.id : undefined;
+    if (resultId) {
+      return resultId;
+    }
+
+    const where = params.args?.where as { id?: string } | undefined;
+    return typeof where?.id === 'string' ? where.id : undefined;
+  }
+
+  private handlePrismaMutation(params: any, result: unknown) {
+    const action = params.action;
+    const isSingleMutation = ['create', 'update', 'upsert', 'delete'].includes(action);
+    const isBulkMutation = ['createMany', 'updateMany', 'deleteMany'].includes(action);
+    if (!isSingleMutation && !isBulkMutation) {
+      return;
+    }
+
+    const entity = result && typeof result === 'object' ? (result as Record<string, unknown>) : null;
+    const id = this.extractMutationId(params, entity);
+
+    switch (params.model) {
+      case 'Product':
+        void this.dispatchSearchSyncJob({
+          target: 'product',
+          mode: id ? 'entity' : 'rebuild',
+          id,
+          reason: `${params.model}.${action}`,
+        });
+        break;
+      case 'Brand':
+        void this.dispatchSearchSyncJob({
+          target: 'brand',
+          mode: id ? 'entity' : 'rebuild',
+          id,
+          reason: `${params.model}.${action}`,
+        });
+        break;
+      case 'Collection':
+        void this.dispatchSearchSyncJob({
+          target: 'design',
+          mode: id ? 'entity' : 'rebuild',
+          id,
+          reason: `${params.model}.${action}`,
+        });
+        break;
+      case 'StoreCollection':
+        void this.dispatchSearchSyncJob({
+          target: 'collection',
+          mode: id ? 'entity' : 'rebuild',
+          id,
+          reason: `${params.model}.${action}`,
+        });
+        break;
+      case 'Tag':
+        void this.dispatchSearchSyncJob({
+          target: 'tag',
+          mode: id ? 'entity' : 'rebuild',
+          id,
+          reason: `${params.model}.${action}`,
+        });
+        break;
+      default:
+        break;
+    }
+  }
+
+  private async clearSuggestionNamespace() {
+    if (!this.redis) {
+      return;
+    }
+
+    const keys: string[] = [];
+    for await (const key of this.redis.scanIterator({ MATCH: 'search:suggest:*', COUNT: 200 })) {
+      keys.push(String(key));
+    }
+
+    if (keys.length === 0) {
+      return;
+    }
+
+    await this.withRedisBudget('DEL suggestion namespace', () => this.redis!.del(keys), 0);
+  }
+
+  private async upsertSuggestion(
+    type: SearchEntityType,
+    indexKey: string,
+    payload: SuggestionPayload,
+    searchTerms: string[],
+  ) {
+    if (!this.redis) {
+      return;
+    }
+
+    const ref = this.suggestionRef(type, payload.id);
+    const reverseKey = this.suggestionReverseKey(type, payload.id);
+    const existingTokens = await this.withRedisBudget(
+      `SMEMBERS ${reverseKey}`,
+      () => this.redis!.sMembers(reverseKey),
+      [] as string[],
+    );
+
+    await this.withRedisBudget(
+      `MULTI upsert ${ref}`,
+      async () => {
+        const pipeline = this.redis!.multi();
+        if (existingTokens.length > 0) {
+          pipeline.zRem(indexKey, existingTokens.map((token) => this.encodeSuggestionMember(token, ref)));
+        }
+        pipeline.del(reverseKey);
+        pipeline.set(this.suggestionDocumentKey(type, payload.id), JSON.stringify(payload));
+        if (searchTerms.length > 0) {
+          pipeline.sAdd(reverseKey, searchTerms);
+          pipeline.zAdd(
+            indexKey,
+            searchTerms.map((token) => ({
+              score: 0,
+              value: this.encodeSuggestionMember(token, ref),
+            })),
+          );
+        }
+        await pipeline.exec();
+        return true;
+      },
+      false,
+    );
+  }
+
+  private async removeSuggestion(type: SearchEntityType, indexKey: string, id: string) {
+    if (!this.redis) {
+      return;
+    }
+
+    const ref = this.suggestionRef(type, id);
+    const reverseKey = this.suggestionReverseKey(type, id);
+    const existingTokens = await this.withRedisBudget(
+      `SMEMBERS ${reverseKey}`,
+      () => this.redis!.sMembers(reverseKey),
+      [] as string[],
+    );
+
+    await this.withRedisBudget(
+      `MULTI delete ${ref}`,
+      async () => {
+        const pipeline = this.redis!.multi();
+        if (existingTokens.length > 0) {
+          pipeline.zRem(indexKey, existingTokens.map((token) => this.encodeSuggestionMember(token, ref)));
+        }
+        pipeline.del(reverseKey);
+        pipeline.del(this.suggestionDocumentKey(type, id));
+        await pipeline.exec();
+        return true;
+      },
+      false,
+    );
+  }
+
   private async ensureSuggestionIndexes() {
     if (!this.redis) {
       return;
@@ -1442,9 +1913,9 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  @Cron(CronExpression.EVERY_10_MINUTES)
+  @Cron(CronExpression.EVERY_DAY_AT_4AM)
   async rebuildSuggestionIndexesCron() {
-    await this.rebuildSuggestionIndexes('scheduled');
+    await this.rebuildSuggestionIndexes('daily-recovery');
   }
 
   private async rebuildSuggestionIndexes(reason: string) {
@@ -1454,18 +1925,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
 
     this.isRebuildingSuggestions = true;
     try {
-      await this.withRedisBudget(
-        `DEL suggestion indexes (${reason})`,
-        () =>
-          this.redis!.del([
-            SEARCH_SUGGEST_KEYS.products,
-            SEARCH_SUGGEST_KEYS.brands,
-            SEARCH_SUGGEST_KEYS.designs,
-            SEARCH_SUGGEST_KEYS.collections,
-            SEARCH_SUGGEST_KEYS.tags,
-          ]),
-        0,
-      );
+      await this.clearSuggestionNamespace();
 
       await Promise.all([
         this.rebuildProductSuggestions(),
@@ -1496,6 +1956,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
           id: true,
           name: true,
           description: true,
+          tags: true,
           thumbnail: true,
           images: true,
           price: true,
@@ -1521,17 +1982,20 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
 
       const members = rows.flatMap((row) => {
         const payload = this.createProductSuggestionPayload(row);
-        return this.suggestionWords(payload.title).map((word) => ({
-          score: 0,
-          value: this.encodeSuggestionMember(word, payload),
-        }));
+        const searchTerms = this.suggestionWords(
+          payload.title,
+          payload.subtitle,
+          row.tags,
+          this.buildDescriptionTerms(row.description),
+        );
+        return [{ payload, searchTerms }];
       });
 
       if (members.length > 0) {
-        await this.withRedisBudget(
-          'ZADD product suggestions',
-          () => this.redis!.zAdd(SEARCH_SUGGEST_KEYS.products, members),
-          0,
+        await Promise.all(
+          members.map(({ payload, searchTerms }) =>
+            this.upsertSuggestion('product', SEARCH_SUGGEST_KEYS.products, payload, searchTerms),
+          ),
         );
       }
 
@@ -1551,6 +2015,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
           name: true,
           description: true,
           tagline: true,
+          tags: true,
           logo: true,
           isStoreOpen: true,
         },
@@ -1565,17 +2030,20 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
 
       const members = rows.flatMap((row) => {
         const payload = this.createBrandSuggestionPayload(row);
-        return this.suggestionWords(payload.title).map((word) => ({
-          score: 0,
-          value: this.encodeSuggestionMember(word, payload),
-        }));
+        const searchTerms = this.suggestionWords(
+          payload.title,
+          payload.subtitle,
+          row.tags,
+          this.buildDescriptionTerms(row.description),
+        );
+        return [{ payload, searchTerms }];
       });
 
       if (members.length > 0) {
-        await this.withRedisBudget(
-          'ZADD brand suggestions',
-          () => this.redis!.zAdd(SEARCH_SUGGEST_KEYS.brands, members),
-          0,
+        await Promise.all(
+          members.map(({ payload, searchTerms }) =>
+            this.upsertSuggestion('brand', SEARCH_SUGGEST_KEYS.brands, payload, searchTerms),
+          ),
         );
       }
 
@@ -1599,6 +2067,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
           ownerId: true,
           title: true,
           description: true,
+          tags: true,
         },
         take: SEARCH_REBUILD_BATCH_SIZE,
         orderBy: { id: 'asc' },
@@ -1611,17 +2080,19 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
 
       const members = rows.flatMap((row) => {
         const payload = this.createDesignSuggestionPayload(row);
-        return this.suggestionWords(payload.title).map((word) => ({
-          score: 0,
-          value: this.encodeSuggestionMember(word, payload),
-        }));
+        const searchTerms = this.suggestionWords(
+          payload.title,
+          row.tags,
+          this.buildDescriptionTerms(row.description),
+        );
+        return [{ payload, searchTerms }];
       });
 
       if (members.length > 0) {
-        await this.withRedisBudget(
-          'ZADD design suggestions',
-          () => this.redis!.zAdd(SEARCH_SUGGEST_KEYS.designs, members),
-          0,
+        await Promise.all(
+          members.map(({ payload, searchTerms }) =>
+            this.upsertSuggestion('design', SEARCH_SUGGEST_KEYS.designs, payload, searchTerms),
+          ),
         );
       }
 
@@ -1644,6 +2115,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
           ownerId: true,
           title: true,
           description: true,
+          tags: true,
         },
         take: SEARCH_REBUILD_BATCH_SIZE,
         orderBy: { id: 'asc' },
@@ -1656,17 +2128,19 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
 
       const members = rows.flatMap((row) => {
         const payload = this.createCollectionSuggestionPayload(row);
-        return this.suggestionWords(payload.title).map((word) => ({
-          score: 0,
-          value: this.encodeSuggestionMember(word, payload),
-        }));
+        const searchTerms = this.suggestionWords(
+          payload.title,
+          row.tags,
+          this.buildDescriptionTerms(row.description),
+        );
+        return [{ payload, searchTerms }];
       });
 
       if (members.length > 0) {
-        await this.withRedisBudget(
-          'ZADD store collection suggestions',
-          () => this.redis!.zAdd(SEARCH_SUGGEST_KEYS.collections, members),
-          0,
+        await Promise.all(
+          members.map(({ payload, searchTerms }) =>
+            this.upsertSuggestion('collection', SEARCH_SUGGEST_KEYS.collections, payload, searchTerms),
+          ),
         );
       }
 
@@ -1701,27 +2175,27 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
       const members = rows.flatMap((row) => {
         const normalized = this.normalizeQuery(row.normalizedName);
         if (!normalized) {
-          return [] as Array<{ score: number; value: string }>;
+          return [] as Array<{ payload: SuggestionPayload; searchTerms: string[] }>;
         }
         return [
           {
-            score: 0,
-            value: this.encodeSuggestionMember(normalized, {
+            payload: {
               id: row.id,
-              type: 'tag',
+              type: 'tag' as const,
               title: row.normalizedName,
               href: `/search?q=${encodeURIComponent(row.normalizedName)}&type=tag`,
               matchText: normalized,
-            }),
+            },
+            searchTerms: [normalized],
           },
         ];
       });
 
       if (members.length > 0) {
-        await this.withRedisBudget(
-          'ZADD tag suggestions',
-          () => this.redis!.zAdd(SEARCH_SUGGEST_KEYS.tags, members),
-          0,
+        await Promise.all(
+          members.map(({ payload, searchTerms }) =>
+            this.upsertSuggestion('tag', SEARCH_SUGGEST_KEYS.tags, payload, searchTerms),
+          ),
         );
       }
 
@@ -1729,14 +2203,200 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  private async syncProductSuggestionById(id: string) {
+    const row = await this.prisma.product.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        name: true,
+        description: true,
+        tags: true,
+        thumbnail: true,
+        images: true,
+        price: true,
+        salePrice: true,
+        currency: true,
+        slug: true,
+        brandId: true,
+        isActive: true,
+        deletedAt: true,
+        archivedAt: true,
+        brand: {
+          select: {
+            ownerId: true,
+            name: true,
+            isStoreOpen: true,
+          },
+        },
+      },
+    });
+
+    if (!row || !row.isActive || row.deletedAt || row.archivedAt || !row.brand?.isStoreOpen) {
+      await this.removeSuggestion('product', SEARCH_SUGGEST_KEYS.products, id);
+      return;
+    }
+
+    const payload = this.createProductSuggestionPayload(row);
+    const searchTerms = this.suggestionWords(
+      payload.title,
+      payload.subtitle,
+      row.tags,
+      this.buildDescriptionTerms(row.description),
+    );
+    await this.upsertSuggestion('product', SEARCH_SUGGEST_KEYS.products, payload, searchTerms);
+  }
+
+  private async syncProductsForBrand(brandId: string) {
+    const rows = await this.prisma.product.findMany({
+      where: { brandId },
+      select: { id: true },
+    });
+
+    await Promise.all(rows.map((row) => this.syncProductSuggestionById(row.id)));
+  }
+
+  private async syncBrandSuggestionById(id: string) {
+    const row = await this.prisma.brand.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        ownerId: true,
+        name: true,
+        description: true,
+        tagline: true,
+        tags: true,
+        logo: true,
+        isStoreOpen: true,
+      },
+    });
+
+    if (!row || !row.isStoreOpen) {
+      await this.removeSuggestion('brand', SEARCH_SUGGEST_KEYS.brands, id);
+      return;
+    }
+
+    const payload = this.createBrandSuggestionPayload(row);
+    const searchTerms = this.suggestionWords(
+      payload.title,
+      payload.subtitle,
+      row.tags,
+      this.buildDescriptionTerms(row.description),
+    );
+    await this.upsertSuggestion('brand', SEARCH_SUGGEST_KEYS.brands, payload, searchTerms);
+  }
+
+  private async syncDesignSuggestionById(id: string) {
+    const row = await this.prisma.collection.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        ownerId: true,
+        title: true,
+        description: true,
+        tags: true,
+        domain: true,
+        status: true,
+        visibility: true,
+        deletedAt: true,
+      },
+    });
+
+    if (
+      !row ||
+      row.domain !== CollectionDomain.DESIGN ||
+      row.status !== CollectionStatus.PUBLISHED ||
+      row.visibility !== CollectionVisibility.PUBLIC ||
+      row.deletedAt
+    ) {
+      await this.removeSuggestion('design', SEARCH_SUGGEST_KEYS.designs, id);
+      return;
+    }
+
+    const payload = this.createDesignSuggestionPayload(row);
+    const searchTerms = this.suggestionWords(
+      payload.title,
+      row.tags,
+      this.buildDescriptionTerms(row.description),
+    );
+    await this.upsertSuggestion('design', SEARCH_SUGGEST_KEYS.designs, payload, searchTerms);
+  }
+
+  private async syncStoreCollectionSuggestionById(id: string) {
+    const row = await this.prisma.storeCollection.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        ownerId: true,
+        title: true,
+        description: true,
+        tags: true,
+        status: true,
+        visibility: true,
+        deletedAt: true,
+      },
+    });
+
+    if (
+      !row ||
+      row.status !== CollectionStatus.PUBLISHED ||
+      row.visibility !== CollectionVisibility.PUBLIC ||
+      row.deletedAt
+    ) {
+      await this.removeSuggestion('collection', SEARCH_SUGGEST_KEYS.collections, id);
+      return;
+    }
+
+    const payload = this.createCollectionSuggestionPayload(row);
+    const searchTerms = this.suggestionWords(
+      payload.title,
+      row.tags,
+      this.buildDescriptionTerms(row.description),
+    );
+    await this.upsertSuggestion('collection', SEARCH_SUGGEST_KEYS.collections, payload, searchTerms);
+  }
+
+  private async syncTagSuggestionById(id: string) {
+    const row = await this.prisma.tag.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        normalizedName: true,
+        usageCount: true,
+        isBanned: true,
+        aliasOfTagId: true,
+      },
+    });
+
+    if (!row || row.isBanned || row.aliasOfTagId || row.usageCount <= 0) {
+      await this.removeSuggestion('tag', SEARCH_SUGGEST_KEYS.tags, id);
+      return;
+    }
+
+    const normalized = this.normalizeQuery(row.normalizedName);
+    await this.upsertSuggestion(
+      'tag',
+      SEARCH_SUGGEST_KEYS.tags,
+      {
+        id: row.id,
+        type: 'tag',
+        title: row.normalizedName,
+        href: `/search?q=${encodeURIComponent(row.normalizedName)}&type=tag`,
+        matchText: normalized,
+      },
+      [normalized],
+    );
+  }
+
   async suggest(queryInput?: string, userId?: string, brandId?: string): Promise<SearchSuggestionResponse> {
-    const normalizedQuery = this.normalizeQuery(queryInput);
+    const startedAt = Date.now();
+    const parsedQuery = this.parseSearchQuery(queryInput);
+    const normalizedQuery = parsedQuery.normalizedQuery;
     const recent = await this.getRecentSearches(userId, normalizedQuery || undefined);
     const trending = normalizedQuery ? [] : await this.getTrendingSearches();
     const brandOwnerId = await this.resolveBrandOwnerId(brandId);
 
     if (!normalizedQuery) {
-      return {
+      const response = {
         query: queryInput || '',
         normalizedQuery,
         recent,
@@ -1747,10 +2407,17 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
         storeCollections: { items: [], total: 0 },
         tags: [],
       };
+      this.logSearchEvent('suggest', {
+        mode: parsedQuery.mode,
+        normalizedQueryLength: normalizedQuery.length,
+        durationMs: Date.now() - startedAt,
+        resultCount: 0,
+      });
+      return response;
     }
 
-    if (normalizedQuery.length < 2) {
-      return {
+    if (normalizedQuery.length < 1) {
+      const response = {
         query: queryInput || '',
         normalizedQuery,
         recent,
@@ -1761,44 +2428,60 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
         storeCollections: { items: [], total: 0 },
         tags: [],
       };
+      this.logSearchEvent('suggest', {
+        mode: parsedQuery.mode,
+        normalizedQueryLength: normalizedQuery.length,
+        durationMs: Date.now() - startedAt,
+        resultCount: 0,
+      });
+      return response;
     }
 
+    const brandMode = parsedQuery.mode === 'brand';
+    const tagMode = parsedQuery.mode === 'tag';
+
     const [products, brands, designs, storeCollections, tagItems] = await Promise.all([
-      this.fetchSuggestionItems(
-        SEARCH_SUGGEST_KEYS.products,
-        normalizedQuery,
-        PRODUCT_SUGGEST_LIMIT,
-      ),
-      this.fetchSuggestionItems(
-        SEARCH_SUGGEST_KEYS.brands,
-        normalizedQuery,
-        BRAND_SUGGEST_LIMIT,
-      ),
-      this.fetchSuggestionItems(
-        SEARCH_SUGGEST_KEYS.designs,
-        normalizedQuery,
-        DESIGN_SUGGEST_LIMIT,
-      ),
-      this.fetchSuggestionItems(
-        SEARCH_SUGGEST_KEYS.collections,
-        brandOwnerId ? this.normalizeQuery(`${normalizedQuery}`) : normalizedQuery,
-        COLLECTION_SUGGEST_LIMIT,
-      ),
-      this.fetchSuggestionItems(
-        SEARCH_SUGGEST_KEYS.tags,
-        normalizedQuery,
-        TAG_SUGGEST_LIMIT,
-      ),
+      brandMode || tagMode
+        ? Promise.resolve([])
+        : this.fetchSuggestionItems(
+            SEARCH_SUGGEST_KEYS.products,
+            normalizedQuery,
+            PRODUCT_SUGGEST_LIMIT,
+          ),
+      tagMode
+        ? Promise.resolve([])
+        : this.fetchSuggestionItems(
+            SEARCH_SUGGEST_KEYS.brands,
+            normalizedQuery,
+            brandMode ? Math.max(BRAND_SUGGEST_LIMIT + 2, 4) : BRAND_SUGGEST_LIMIT,
+          ),
+      brandMode || tagMode
+        ? Promise.resolve([])
+        : this.fetchSuggestionItems(
+            SEARCH_SUGGEST_KEYS.designs,
+            normalizedQuery,
+            DESIGN_SUGGEST_LIMIT,
+          ),
+      brandMode || tagMode
+        ? Promise.resolve([])
+        : this.fetchSuggestionItems(
+            SEARCH_SUGGEST_KEYS.collections,
+            normalizedQuery,
+            COLLECTION_SUGGEST_LIMIT,
+            brandOwnerId
+              ? (payload) => payload.metadata?.ownerId === brandOwnerId
+              : undefined,
+          ),
+      brandMode
+        ? Promise.resolve([])
+        : this.fetchSuggestionItems(
+            SEARCH_SUGGEST_KEYS.tags,
+            normalizedQuery,
+            tagMode ? Math.max(TAG_SUGGEST_LIMIT + 3, 4) : TAG_SUGGEST_LIMIT,
+          ),
     ]);
 
-    const scopedCollections =
-      brandOwnerId == null
-        ? storeCollections
-        : storeCollections.filter(
-            (item) => item.metadata?.ownerId === brandOwnerId,
-          );
-
-    return {
+    const response = {
       query: queryInput || '',
       normalizedQuery,
       recent,
@@ -1806,32 +2489,48 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
       products: { items: products, total: products.length },
       brands: { items: brands, total: brands.length },
       designs: { items: designs, total: designs.length },
-      storeCollections: { items: scopedCollections, total: scopedCollections.length },
+      storeCollections: { items: storeCollections, total: storeCollections.length },
       tags: tagItems.map((item) => ({
         id: item.id,
-        type: 'tag',
+        type: 'tag' as const,
         title: item.title,
         href: item.href,
         score: item.score,
       })),
     };
+    this.logSearchEvent('suggest', {
+      mode: parsedQuery.mode,
+      normalizedQueryLength: normalizedQuery.length,
+      durationMs: Date.now() - startedAt,
+      resultCount:
+        response.products.total +
+        response.brands.total +
+        response.designs.total +
+        response.storeCollections.total +
+        response.tags.length,
+    });
+    return response;
   }
 
   async search(params: SearchParams): Promise<SearchResponse> {
-    const normalizedQuery = this.normalizeQuery(params.query);
+    const startedAt = Date.now();
+    const parsedQuery = this.parseSearchQuery(params.query);
+    const normalizedQuery = parsedQuery.normalizedQuery;
     if (!normalizedQuery) {
       throw new BadRequestException('Search query is required');
     }
 
     const page = this.clampPage(params.page);
     const limit = this.clampLimit(params.limit, 20, 50);
-    const tokens = this.tokenize(normalizedQuery);
-    const types = this.resolveTypes(params.types);
+    const tokens = parsedQuery.tokens;
+    const types = this.resolveTypes(parsedQuery.forcedTypes ?? params.types);
     if (types.length > 1 && page > 1) {
       throw new BadRequestException(
         'Mixed-result pagination is not supported beyond the first page',
       );
     }
+
+    const versionToken = await this.getSearchCacheVersionToken(types);
 
     const cacheKey = this.buildSearchCacheKey({
       query: normalizedQuery,
@@ -1839,11 +2538,22 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
       page,
       limit,
       brandId: params.brandId,
+      versionToken,
     });
 
     const cached = await this.getCachedSearchResult(cacheKey);
     if (cached) {
       await this.recordSearch(params.userId, normalizedQuery);
+      this.logSearchEvent('search', {
+        mode: parsedQuery.mode,
+        normalizedQueryLength: normalizedQuery.length,
+        types,
+        page,
+        limit,
+        cacheHit: true,
+        durationMs: Date.now() - startedAt,
+        resultCount: cached.items.length,
+      });
       return cached;
     }
 
@@ -1895,21 +2605,22 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
       items = result.items;
       hasNextPage = offset + result.items.length < result.total;
     } else {
+      const mixedLimit = Math.min(limit, SEARCH_MIXED_PREVIEW_LIMIT);
       const [products, brands, designs, collections, tags] = await Promise.all([
         types.includes('product')
-          ? this.searchProductsPage(normalizedQuery, tokens, limit, 0, params.brandId)
+          ? this.searchProductsPage(normalizedQuery, tokens, mixedLimit, 0, params.brandId)
           : Promise.resolve({ items: [], total: 0 }),
         types.includes('brand')
-          ? this.searchBrandsPage(normalizedQuery, tokens, limit, 0)
+          ? this.searchBrandsPage(normalizedQuery, tokens, mixedLimit, 0)
           : Promise.resolve({ items: [], total: 0 }),
         types.includes('design')
-          ? this.searchDesignsPage(normalizedQuery, tokens, limit, 0)
+          ? this.searchDesignsPage(normalizedQuery, tokens, mixedLimit, 0)
           : Promise.resolve({ items: [], total: 0 }),
         types.includes('collection')
-          ? this.searchCollectionsPage(normalizedQuery, tokens, limit, 0, brandOwnerId)
+          ? this.searchCollectionsPage(normalizedQuery, tokens, mixedLimit, 0, brandOwnerId)
           : Promise.resolve({ items: [], total: 0 }),
         types.includes('tag')
-          ? this.searchTagsPage(normalizedQuery, tokens, limit, 0)
+          ? this.searchTagsPage(normalizedQuery, tokens, mixedLimit, 0)
           : Promise.resolve({ items: [], total: 0 }),
       ]);
 
@@ -1947,6 +2658,18 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
 
     await this.setCachedSearchResult(cacheKey, response);
     await this.recordSearch(params.userId, normalizedQuery);
+    this.logSearchEvent('search', {
+      mode: parsedQuery.mode,
+      normalizedQueryLength: normalizedQuery.length,
+      types,
+      page,
+      limit,
+      cacheHit: false,
+      durationMs: Date.now() - startedAt,
+      resultCount: response.items.length,
+      hasNextPage: response.meta.hasNextPage,
+      paginationMode: response.meta.paginationMode,
+    });
 
     return response;
   }

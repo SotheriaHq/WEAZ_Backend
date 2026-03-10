@@ -9,3 +9,6 @@ export const IMAGE_PROCESSING_QUEUE = 'image-processing';
 export const IMAGE_PROCESS_SINGLE_JOB = 'image.process.single';
 export const IMAGE_PROCESS_BATCH_JOB = 'image.process.batch.backfill';
 export const IMAGE_REPROCESS_JOB = 'image.reprocess';
+
+export const SEARCH_QUEUE = 'search';
+export const SEARCH_SYNC_JOB = 'search.sync';
