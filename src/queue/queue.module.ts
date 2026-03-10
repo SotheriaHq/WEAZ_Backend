@@ -7,10 +7,13 @@ import {
   BULK_UPLOAD_QUEUE,
   IMAGE_PROCESSING_QUEUE,
   SEARCH_QUEUE,
+  REVIEW_AGGREGATE_QUEUE,
+  REVIEW_REMINDER_QUEUE,
 } from './queue.constants';
 import { NotificationsQueueService } from './notifications.queue.service';
 import { ImageProcessingQueueService } from './image-processing.queue.service';
 import { SearchQueueService } from './search.queue.service';
+import { ReviewAggregateQueueService } from './review-aggregate.queue.service';
 
 @Module({
   imports: [
@@ -30,9 +33,22 @@ import { SearchQueueService } from './search.queue.service';
       { name: BULK_UPLOAD_QUEUE },
       { name: IMAGE_PROCESSING_QUEUE },
       { name: SEARCH_QUEUE },
+      { name: REVIEW_AGGREGATE_QUEUE },
+      { name: REVIEW_REMINDER_QUEUE },
     ),
   ],
-  providers: [NotificationsQueueService, ImageProcessingQueueService, SearchQueueService],
-  exports: [BullModule, NotificationsQueueService, ImageProcessingQueueService, SearchQueueService],
+  providers: [
+    NotificationsQueueService,
+    ImageProcessingQueueService,
+    SearchQueueService,
+    ReviewAggregateQueueService,
+  ],
+  exports: [
+    BullModule,
+    NotificationsQueueService,
+    ImageProcessingQueueService,
+    SearchQueueService,
+    ReviewAggregateQueueService,
+  ],
 })
-export class QueueModule {}
+export class QueueModule { }

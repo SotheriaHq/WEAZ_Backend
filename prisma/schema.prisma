@@ -131,6 +131,11 @@ model User {
   passwordResetTokens       PasswordResetToken[]          @relation("PasswordResetTokens")
   reactivationRequests      AccountReactivationRequest[]  @relation("UserReactivationRequests")
   reviewedReactivationRequests AccountReactivationRequest[] @relation("AdminReviewedReactivationRequests")
+
+  // Product Reviews
+  productReviews            ProductReview[]                @relation("UserProductReviews")
+  reviewHelpfulVotes        ProductReviewHelpfulVote[]     @relation("UserReviewHelpfulVotes")
+  productReviewReports      ProductReviewReport[]          @relation("UserProductReviewReports")
 }
 
 model FileUpload {
@@ -352,6 +357,8 @@ enum FileType {
   POST_VIDEO
   DOCUMENT
   BRAND_VERIFICATION
+  REVIEW_IMAGE
+  REVIEW_VIDEO
 }
 
 enum ImageProcessingStatus {
@@ -474,6 +481,11 @@ enum NotificationType {
   VERIFICATION_SLA_WARNING
   VERIFICATION_SLA_BREACH
   VERIFICATION_REVIEW_DELAYED
+
+  // Product Reviews
+  REVIEW_REMINDER
+  REVIEW_REPLY_RECEIVED
+  REVIEW_HIDDEN_BY_ADMIN
 }
 
 // ====== Comment V2 (unified for posts, collections, and collection media) ======
@@ -1312,6 +1324,10 @@ model Brand {
 
   policy      StorePolicy?
 
+  // Review aggregates (cached, recomputed async)
+  avgRating    Float     @default(0)
+  totalReviews Int       @default(0)
+
   orders      Order[]
   orderItems  OrderItem[]
   measurementPoints MeasurementPoint[]
@@ -1322,6 +1338,7 @@ model Brand {
   featuredItems FeaturedItem[]
   verificationAttempts BrandVerificationAttempt[]
   verificationNotes BrandVerificationNote[]
+  reviews     ProductReview[] @relation("BrandProductReviews")
   
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
@@ -1501,6 +1518,7 @@ model Order {
   paymentReference String?
   paymentGateway   String?
   paidAt           DateTime?
+  deliveredAt      DateTime?
   
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
@@ -1533,9 +1551,12 @@ model OrderItem {
   thumbnailAtPurchase     String?
   nameAtPurchase          String?
   skuAtPurchase           String?
+  reviewReminderSentAt    DateTime?
+  reviewReminderLastError String?
   createdAt               DateTime        @default(now())
   updatedAt               DateTime        @updatedAt
   disputes                SizingDispute[]
+  reviews                 ProductReview[] @relation("OrderItemProductReviews")
 
   @@index([orderId])
   @@index([productId])
@@ -1696,6 +1717,11 @@ model Product {
   // Engagement
   viewsCount      Int           @default(0)
   threadsCount    Int           @default(0) @map("likesCount")
+
+  // Review aggregates (cached, recomputed async)
+  avgRating       Float         @default(0)
+  totalReviews    Int           @default(0)
+  ratingBreakdown Json?
   
   // Soft delete & Archive
   deletedAt       DateTime?
@@ -1714,6 +1740,7 @@ model Product {
   designCollections CollectionProduct[]
   collections     StoreCollectionProduct[]
   entityFilters   EntityFilter[]  @relation("ProductEntityFilters")
+  reviews         ProductReview[] @relation("ProductReviews")
   
   // Performance indexes
   @@index([brandId])
@@ -2198,4 +2225,96 @@ model AccountReactivationRequest {
   @@index([status, createdAt])
   @@index([userId, createdAt])
   @@index([userId, status, createdAt])
+}
+
+// ===== Product Reviews =====
+
+enum ProductReviewStatus {
+  PUBLISHED
+  HIDDEN_BY_ADMIN
+  DELETED_BY_USER
+}
+
+enum ProductReviewReportReason {
+  SPAM
+  HARASSMENT
+  HATE
+  OFF_TOPIC
+  COUNTERFEIT
+  MEDIA_POLICY
+  OTHER
+}
+
+model ProductReview {
+  id                    String              @id @default(uuid()) @db.Uuid
+  productId             String              @db.Uuid
+  product               Product             @relation("ProductReviews", fields: [productId], references: [id], onDelete: Cascade)
+  brandId               String              @db.Uuid
+  brand                 Brand               @relation("BrandProductReviews", fields: [brandId], references: [id], onDelete: Cascade)
+  userId                String              @db.Uuid
+  user                  User                @relation("UserProductReviews", fields: [userId], references: [id], onDelete: Restrict)
+  orderItemId           String              @db.Uuid
+  orderItem             OrderItem           @relation("OrderItemProductReviews", fields: [orderItemId], references: [id], onDelete: Restrict)
+
+  rating                Int
+  title                 String?
+  content               String
+  mediaIds              String[]            @default([])
+
+  productNameSnapshot   String?
+  thumbnailSnapshot     String?
+  selectedSizeSnapshot  String?
+  selectedColorSnapshot String?
+
+  helpfulCount          Int                 @default(0)
+  reportCount           Int                 @default(0)
+
+  brandReply            String?
+  brandReplyAt          DateTime?
+  brandReplyUpdatedAt   DateTime?
+
+  status                ProductReviewStatus @default(PUBLISHED)
+  hiddenReason          String?
+  hiddenAt              DateTime?
+  hiddenByAdminId       String?             @db.Uuid
+
+  createdAt             DateTime            @default(now())
+  updatedAt             DateTime            @updatedAt
+  editedAt              DateTime?
+  deletedAt             DateTime?
+
+  helpfulVotes          ProductReviewHelpfulVote[]
+  reports               ProductReviewReport[]
+
+  @@index([productId, status, createdAt])
+  @@index([brandId, status, createdAt])
+  @@index([orderItemId])
+  @@index([userId, productId, status])
+}
+
+model ProductReviewHelpfulVote {
+  id        String        @id @default(uuid()) @db.Uuid
+  reviewId  String        @db.Uuid
+  review    ProductReview @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+  userId    String        @db.Uuid
+  user      User          @relation("UserReviewHelpfulVotes", fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime      @default(now())
+
+  @@unique([reviewId, userId])
+  @@index([userId, createdAt])
+}
+
+model ProductReviewReport {
+  id          String                    @id @default(uuid()) @db.Uuid
+  reviewId    String                    @db.Uuid
+  review      ProductReview             @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+  reporterId  String                    @db.Uuid
+  reporter    User                      @relation("UserProductReviewReports", fields: [reporterId], references: [id], onDelete: Cascade)
+  brandId     String?                   @db.Uuid
+  reason      ProductReviewReportReason
+  details     String?
+  createdAt   DateTime                  @default(now())
+
+  @@unique([reviewId, reporterId])
+  @@index([reason, createdAt])
 }

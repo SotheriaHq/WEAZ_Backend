@@ -110,7 +110,7 @@ export class BrandsService {
     private readonly notifications?: NotificationsService,
     private readonly systemTags?: SystemTagsService,
     private readonly tagIndex?: TagIndexService,
-  ) {}
+  ) { }
 
   private async getBrandOrThrow(brandId: string) {
     const select = {
@@ -169,6 +169,8 @@ export class BrandsService {
           id: true,
           isStoreOpen: true,
           verificationStatus: true,
+          avgRating: true,
+          totalReviews: true,
         },
       },
     } as const;
@@ -236,23 +238,23 @@ export class BrandsService {
 
     const logoAsset = brand.profileImageFile
       ? {
-          fileId: brand.profileImageFile.id,
-          url: brand.profileImageFile.s3Url,
-          originalName: brand.profileImageFile.originalName ?? null,
-          fileName: brand.profileImageFile.fileName ?? null,
-          createdAt: brand.profileImageFile.createdAt.toISOString(),
-          updatedAt: brand.profileImageFile.updatedAt.toISOString(),
-        }
+        fileId: brand.profileImageFile.id,
+        url: brand.profileImageFile.s3Url,
+        originalName: brand.profileImageFile.originalName ?? null,
+        fileName: brand.profileImageFile.fileName ?? null,
+        createdAt: brand.profileImageFile.createdAt.toISOString(),
+        updatedAt: brand.profileImageFile.updatedAt.toISOString(),
+      }
       : null;
     const bannerAsset = brand.bannerImageFile
       ? {
-          fileId: brand.bannerImageFile.id,
-          url: brand.bannerImageFile.s3Url,
-          originalName: brand.bannerImageFile.originalName ?? null,
-          fileName: brand.bannerImageFile.fileName ?? null,
-          createdAt: brand.bannerImageFile.createdAt.toISOString(),
-          updatedAt: brand.bannerImageFile.updatedAt.toISOString(),
-        }
+        fileId: brand.bannerImageFile.id,
+        url: brand.bannerImageFile.s3Url,
+        originalName: brand.bannerImageFile.originalName ?? null,
+        fileName: brand.bannerImageFile.fileName ?? null,
+        createdAt: brand.bannerImageFile.createdAt.toISOString(),
+        updatedAt: brand.bannerImageFile.updatedAt.toISOString(),
+      }
       : null;
 
     // Generate signed URLs
@@ -312,8 +314,8 @@ export class BrandsService {
       verificationBadgeVisible: verificationTruth.verificationBadgeVisible,
       verifiedExplanationUrl: verificationTruth.verifiedExplanationUrl,
       isStoreOpen: Boolean(brand.brand?.isStoreOpen),
-      averageRating: 0,
-      totalReviews: 0,
+      averageRating: brand.brand?.avgRating ?? 0,
+      totalReviews: brand.brand?.totalReviews ?? 0,
       collectionsCount,
       patchesCount,
       createdAt: brand.createdAt.toISOString(),
@@ -324,16 +326,77 @@ export class BrandsService {
   async getBrandReviews(brandId: string): Promise<BrandReviewsResponse> {
     await this.getBrandOrThrow(brandId);
 
-    const distribution = [5, 4, 3, 2, 1].map((stars) => ({
-      stars,
-      count: 0,
-      percentage: 0,
-    }));
+    // Resolve brand entity from ownerId
+    const brand = await this.prisma.brand.findFirst({
+      where: { ownerId: brandId },
+      select: { id: true, avgRating: true, totalReviews: true },
+    });
+
+    if (!brand) {
+      const distribution = [5, 4, 3, 2, 1].map((stars) => ({
+        stars,
+        count: 0,
+        percentage: 0,
+      }));
+      return {
+        reviews: [],
+        averageRating: 0,
+        totalReviews: 0,
+        ratingDistribution: distribution,
+      };
+    }
+
+    const reviews = await this.prisma.productReview.findMany({
+      where: { brandId: brand.id, status: 'PUBLISHED' },
+      orderBy: { createdAt: 'desc' },
+      take: 20,
+      include: {
+        user: {
+          select: {
+            id: true,
+            username: true,
+            firstName: true,
+            lastName: true,
+            profileImage: true,
+          },
+        },
+      },
+    });
+
+    const breakdownRaw = await this.prisma.productReview.groupBy({
+      by: ['rating'],
+      where: { brandId: brand.id, status: 'PUBLISHED' },
+      _count: { rating: true },
+    });
+
+    const total = breakdownRaw.reduce((sum, r) => sum + r._count.rating, 0);
+    const distribution = [5, 4, 3, 2, 1].map((stars) => {
+      const row = breakdownRaw.find((r) => r.rating === stars);
+      const count = row?._count.rating ?? 0;
+      return {
+        stars,
+        count,
+        percentage: total > 0 ? Math.round((count / total) * 100) : 0,
+      };
+    });
 
     return {
-      reviews: [],
-      averageRating: 0,
-      totalReviews: 0,
+      reviews: reviews.map((r) => ({
+        id: r.id,
+        userId: r.userId,
+        userName: r.user.username,
+        userImage: r.user.profileImage ?? null,
+        brandId: r.brandId,
+        rating: r.rating,
+        comment: r.content,
+        helpful: r.helpfulCount,
+        images: [],
+        verified: true,
+        createdAt: r.createdAt.toISOString(),
+        updatedAt: r.updatedAt.toISOString(),
+      })),
+      averageRating: brand.avgRating ?? 0,
+      totalReviews: brand.totalReviews ?? 0,
       ratingDistribution: distribution,
     };
   }
@@ -400,9 +463,9 @@ export class BrandsService {
       }),
       ...(locationWasProvided
         ? {
-            companyLocation:
-              companyLocation.length > 0 ? companyLocation : null,
-          }
+          companyLocation:
+            companyLocation.length > 0 ? companyLocation : null,
+        }
         : {}),
     };
 
@@ -540,7 +603,7 @@ export class BrandsService {
             },
           },
         );
-      } catch {}
+      } catch { }
     }
 
     return { status: 'PENDING', message: 'Patch request sent' };
@@ -586,7 +649,7 @@ export class BrandsService {
             targetUrl: '/settings?tab=patches&filter=active',
           },
         });
-      } catch {}
+      } catch { }
     }
 
     return { status, message: `Patch request ${status.toLowerCase()}` };

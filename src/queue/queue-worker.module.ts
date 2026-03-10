@@ -17,6 +17,8 @@ import { ImageProcessingProcessor } from './image-processing.processor';
 import { MediaProcessingService } from 'src/media-processing/media-processing.service';
 import { SearchModule } from 'src/search/search.module';
 import { SearchProcessor } from './search.processor';
+import { ReviewsModule } from 'src/reviews/reviews.module';
+import { ReviewAggregateProcessor } from './review-aggregate.processor';
 
 @Module({
   imports: [
@@ -34,6 +36,7 @@ import { SearchProcessor } from './search.processor';
     SearchModule,
     TagsModule,
     CategoriesModule,
+    ReviewsModule,
   ],
   providers: [
     CollectionsService,
@@ -43,6 +46,7 @@ import { SearchProcessor } from './search.processor';
     ImageProcessingProcessor,
     SearchProcessor,
     MediaProcessingService,
+    ReviewAggregateProcessor,
   ],
 })
-export class QueueWorkerModule {}
+export class QueueWorkerModule { }

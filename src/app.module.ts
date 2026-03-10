@@ -27,6 +27,7 @@ import { EmailModule } from './email/email.module';
 import { FeaturedModule } from './featured/featured.module';
 import { PaymentModule } from './payment/payment.module';
 import { SearchModule } from './search/search.module';
+import { ReviewsModule } from './reviews/reviews.module';
 
 @Module({
   imports: [
@@ -59,8 +60,9 @@ import { SearchModule } from './search/search.module';
     FeaturedModule,
     PaymentModule,
     SearchModule,
+    ReviewsModule,
   ],
   controllers: [AppController],
   providers: [AppService, EventsGateway],
 })
-export class AppModule {}
+export class AppModule { }

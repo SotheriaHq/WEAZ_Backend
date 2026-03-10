@@ -12,3 +12,10 @@ export const IMAGE_REPROCESS_JOB = 'image.reprocess';
 
 export const SEARCH_QUEUE = 'search';
 export const SEARCH_SYNC_JOB = 'search.sync';
+
+export const REVIEW_AGGREGATE_QUEUE = 'review-aggregate';
+export const REVIEW_AGGREGATE_PRODUCT_JOB = 'review.aggregate.product';
+export const REVIEW_AGGREGATE_BRAND_JOB = 'review.aggregate.brand';
+
+export const REVIEW_REMINDER_QUEUE = 'review-reminder';
+export const REVIEW_REMINDER_JOB = 'review.reminder.process';
