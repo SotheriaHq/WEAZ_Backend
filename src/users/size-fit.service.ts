@@ -300,9 +300,13 @@ export class SizeFitService {
     return this.prisma.$transaction(async (tx) => {
       const profile = await this.ensureProfile(userId, tx);
 
+      const currentMeasurements = this.sanitizeMeasurements(profile.measurements);
       const nextMeasurements = dto.measurements
-        ? this.sanitizeMeasurements(dto.measurements)
-        : this.sanitizeMeasurements(profile.measurements);
+        ? {
+            ...currentMeasurements,
+            ...this.sanitizeMeasurements(dto.measurements),
+          }
+        : currentMeasurements;
       const changedKeys = this.computeChangedKeys(profile.measurements, nextMeasurements);
 
       const reminderDays = this.normalizeReminderDays(

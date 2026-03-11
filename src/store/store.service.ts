@@ -27,6 +27,7 @@ import {
   NotificationType,
   PatchMode,
   PatchStatus,
+  PaymentStatus,
   SizingMode,
   UserType,
 } from '@prisma/client';
@@ -69,6 +70,85 @@ export class StoreService {
   ) {}
 
   private readonly maxProductsPerCollection = 5;
+
+  private mapAttemptStatusToPaymentStatus(status: string | null | undefined): PaymentStatus {
+    switch ((status ?? '').toUpperCase()) {
+      case 'PAID':
+        return PaymentStatus.PAID;
+      case 'FAILED':
+      case 'CANCELLED':
+      case 'EXPIRED':
+        return PaymentStatus.FAILED;
+      default:
+        return PaymentStatus.PENDING;
+    }
+  }
+
+  private async reconcileOrderPaymentStatuses(
+    orders: Array<{
+      id: string;
+      paymentReference: string | null;
+      paymentStatus: PaymentStatus;
+      paidAt?: Date | null;
+    }>,
+  ): Promise<Map<string, PaymentStatus>> {
+    const references = Array.from(
+      new Set(
+        orders
+          .map((order) => order.paymentReference)
+          .filter((reference): reference is string => Boolean(reference)),
+      ),
+    );
+
+    const resolvedByOrderId = new Map<string, PaymentStatus>();
+    if (references.length === 0) {
+      return resolvedByOrderId;
+    }
+
+    const attempts = await this.prisma.paymentAttempt.findMany({
+      where: { reference: { in: references } },
+      select: { reference: true, status: true, confirmedAt: true },
+    });
+
+    const attemptByReference = new Map(
+      attempts.map((attempt) => [attempt.reference, attempt]),
+    );
+
+    const updates = orders
+      .map((order) => {
+        const reference = order.paymentReference;
+        if (!reference) return null;
+        const attempt = attemptByReference.get(reference);
+        if (!attempt) return null;
+
+        const resolvedStatus = this.mapAttemptStatusToPaymentStatus(
+          attempt.status,
+        );
+        resolvedByOrderId.set(order.id, resolvedStatus);
+
+        if (
+          order.paymentStatus === resolvedStatus &&
+          (resolvedStatus !== PaymentStatus.PAID || order.paidAt || !attempt.confirmedAt)
+        ) {
+          return null;
+        }
+
+        return this.prisma.order.update({
+          where: { id: order.id },
+          data: {
+            paymentStatus: resolvedStatus,
+            paidAt: resolvedStatus === PaymentStatus.PAID ? attempt.confirmedAt : null,
+          },
+        });
+      })
+      .filter(Boolean);
+
+    if (updates.length > 0) {
+      await this.prisma.$transaction(updates as Prisma.PrismaPromise<unknown>[]);
+    }
+
+    return resolvedByOrderId;
+  }
 
   private normalizeFilterValueIds(raw?: string[] | null): string[] {
     if (!Array.isArray(raw)) return [];
@@ -4481,9 +4561,12 @@ export class StoreService {
       orders.flatMap((order) => order.orderItems),
       orders,
     );
+    const paymentStatusByOrderId = await this.reconcileOrderPaymentStatuses(orders);
 
     const normalizedOrders = orders.map((order) => ({
       ...order,
+      paymentStatus:
+        paymentStatusByOrderId.get(order.id) ?? order.paymentStatus,
       items: this.getOrderLineItems(order),
       orderItems: order.orderItems.map((item) => ({
         ...item,
@@ -4538,9 +4621,12 @@ export class StoreService {
       order.orderItems,
       [order],
     );
+    const paymentStatusByOrderId = await this.reconcileOrderPaymentStatuses([order]);
 
     return {
       ...order,
+      paymentStatus:
+        paymentStatusByOrderId.get(order.id) ?? order.paymentStatus,
       items: this.getOrderLineItems(order),
       orderItems: order.orderItems.map((item) => ({
         ...item,
