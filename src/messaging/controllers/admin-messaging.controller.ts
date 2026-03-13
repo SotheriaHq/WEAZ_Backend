@@ -45,6 +45,24 @@ export class AdminMessagingController {
     return this.messaging.getAdminThreadMessages(req.user.id, threadId, query);
   }
 
+  @Get('custom-orders/:orderId/messages')
+  @RequirePermissions(ADMIN_PERMISSIONS.MESSAGING_READ)
+  async getCustomOrderMessages(
+    @Param('orderId') orderId: string,
+    @Query(new ValidationPipe({ transform: true, whitelist: true })) query: QueryMessagesDto,
+  ) {
+    return this.messaging.getAdminMessagesForContext('CUSTOM_ORDER', orderId, query);
+  }
+
+  @Get('orders/:orderId/messages')
+  @RequirePermissions(ADMIN_PERMISSIONS.MESSAGING_READ)
+  async getOrderMessages(
+    @Param('orderId') orderId: string,
+    @Query(new ValidationPipe({ transform: true, whitelist: true })) query: QueryMessagesDto,
+  ) {
+    return this.messaging.getAdminMessagesForContext('STANDARD_ORDER', orderId, query);
+  }
+
   @Post('messages/:messageId/hide')
   @RequirePermissions(ADMIN_PERMISSIONS.MESSAGING_MODERATE)
   async hideMessage(

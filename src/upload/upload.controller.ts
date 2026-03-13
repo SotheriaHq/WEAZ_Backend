@@ -190,6 +190,44 @@ export class UploadController {
   }
 
   @UseGuards(JwtAuthGuard)
+  @Post('message-image')
+  @ApiOperation({ summary: 'Upload message image attachment' })
+  @UseInterceptors(FileInterceptor('file', { storage: memoryStorage() }))
+  async uploadMessageImage(
+    @UploadedFile() file: Express.Multer.File,
+    @Req() req: any,
+  ) {
+    if (!file) {
+      throw new BadRequestException('No file uploaded');
+    }
+
+    return this.uploadService.uploadFile(
+      file,
+      req.user.id,
+      FileType.MESSAGE_IMAGE,
+    );
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Post('message-document')
+  @ApiOperation({ summary: 'Upload message document attachment' })
+  @UseInterceptors(FileInterceptor('file', { storage: memoryStorage() }))
+  async uploadMessageDocument(
+    @UploadedFile() file: Express.Multer.File,
+    @Req() req: any,
+  ) {
+    if (!file) {
+      throw new BadRequestException('No file uploaded');
+    }
+
+    return this.uploadService.uploadFile(
+      file,
+      req.user.id,
+      FileType.MESSAGE_DOCUMENT,
+    );
+  }
+
+  @UseGuards(JwtAuthGuard)
   @Get('my-files')
   @ApiOperation({ summary: 'Get user files with pagination' })
   async getUserFiles(@Req() req: any, @Query() query: GetFilesDto) {

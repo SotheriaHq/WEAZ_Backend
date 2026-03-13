@@ -88,11 +88,11 @@ export class MessagingService {
       actorId,
       actorRole: MessageParticipantRole.BUYER,
       threadStatus: this.policy.resolveThreadStatusForCustomOrder(resolved.status),
+      brandId: resolved.brandId,
       buyerId: resolved.buyerId,
       brandOwnerUserId: resolved.brandOwnerUserId,
       dto,
       idempotencyKey,
-      targetUrl: `/custom-orders/${customOrderId}#messages`,
     });
   }
 
@@ -104,11 +104,11 @@ export class MessagingService {
       actorId,
       actorRole: MessageParticipantRole.BRAND_OWNER,
       threadStatus: this.policy.resolveThreadStatusForCustomOrder(resolved.status),
+      brandId: resolved.brandId,
       buyerId: resolved.buyerId,
       brandOwnerUserId: resolved.brandOwnerUserId,
       dto,
       idempotencyKey,
-      targetUrl: `/studio/custom-orders/${customOrderId}#messages`,
     });
   }
 
@@ -120,11 +120,11 @@ export class MessagingService {
       actorId,
       actorRole: MessageParticipantRole.BUYER,
       threadStatus: this.policy.resolveThreadStatusForOrder(resolved.status),
+      brandId: resolved.brandId,
       buyerId: resolved.buyerId,
       brandOwnerUserId: resolved.brandOwnerUserId,
       dto,
       idempotencyKey,
-      targetUrl: `/orders/access/${orderId}#messages`,
     });
   }
 
@@ -136,11 +136,11 @@ export class MessagingService {
       actorId,
       actorRole: MessageParticipantRole.BRAND_OWNER,
       threadStatus: this.policy.resolveThreadStatusForOrder(resolved.status),
+      brandId: resolved.brandId,
       buyerId: resolved.buyerId,
       brandOwnerUserId: resolved.brandOwnerUserId,
       dto,
       idempotencyKey,
-      targetUrl: `/orders/access/${orderId}#messages`,
     });
   }
 
@@ -191,6 +191,7 @@ export class MessagingService {
     });
 
     this.sideEffects.emitThreadInvalidation(thread, [actorId]);
+    this.sideEffects.emitMessageRead(thread as any, actorId, upToMessage?.id ?? null);
     return { success: true, threadId: thread.id, lastReadMessageId: upToMessage?.id ?? null };
   }
 
@@ -225,6 +226,22 @@ export class MessagingService {
   async getAdminThreadMessages(actorId: string, threadId: string, queryDto: QueryMessagesDto) {
     await this.getThreadOrThrow(threadId);
     return this.query.getMessages(threadId, queryDto, { includeModerated: true });
+  }
+
+  async getAdminMessagesForContext(
+    contextType: MessageContextType,
+    contextId: string,
+    queryDto: QueryMessagesDto,
+  ) {
+    const thread = await this.getThreadByContext(contextType, contextId);
+    if (!thread) {
+      return { items: [], hasNextPage: false, endCursor: null, thread: null };
+    }
+
+    return {
+      ...(await this.query.getMessages(thread.id, queryDto, { includeModerated: true })),
+      thread,
+    };
   }
 
   async hideMessage(actorId: string, messageId: string, reason?: string, req?: Request) {
@@ -356,7 +373,7 @@ export class MessagingService {
       include: { participants: true },
     });
 
-    await this.prisma.message.create({
+    const reopenMessage = await this.prisma.message.create({
       data: {
         threadId: thread.id,
         senderUserId: null,
@@ -367,28 +384,43 @@ export class MessagingService {
       },
     });
 
-    const recipientIds = thread.participants.map((p) => p.userId);
-    for (const recipientId of recipientIds) {
+    await this.prisma.messageThread.update({
+      where: { id: thread.id },
+      data: {
+        lastMessageId: reopenMessage.id,
+        lastMessageAt: reopenMessage.createdAt,
+        lastVisibleMessageAt: reopenMessage.createdAt,
+        lastMessagePreview: reopenMessage.bodyText?.slice(0, 200) ?? null,
+        lastSenderUserId: null,
+      },
+    });
+
+    const recipients = thread.participants.map((p) => ({ userId: p.userId, role: p.role }));
+    for (const recipient of recipients) {
       await this.prisma.messageNotificationOutbox.create({
         data: {
           threadId: thread.id,
-          messageId: thread.lastMessageId ?? thread.id,
-          recipientId,
+          messageId: reopenMessage.id,
+          recipientId: recipient.userId,
           notificationType: NotificationType.MESSAGE_THREAD_REOPENED,
           payloadJson: {
             threadId: thread.id,
             contextType: thread.contextType,
             orderId: thread.orderId,
             customOrderId: thread.customOrderId,
-            targetUrl: thread.contextType === MessageContextType.CUSTOM_ORDER
-              ? `/admin/custom-orders/${thread.customOrderId}#messages`
-              : `/orders/access/${thread.orderId}#messages`,
+            targetUrl: this.resolveThreadTargetUrl(
+              thread.contextType,
+              thread.orderId,
+              thread.customOrderId,
+              thread.brandId,
+              recipient.role,
+            ),
           } as Prisma.InputJsonValue,
         },
       });
     }
 
-    this.sideEffects.emitThreadInvalidation(thread, recipientIds);
+    this.sideEffects.emitThreadInvalidation(thread, recipients.map((recipient) => recipient.userId));
 
     await this.adminAudit.log(
       {
@@ -478,11 +510,11 @@ export class MessagingService {
     actorId: string;
     actorRole: 'BUYER' | 'BRAND_OWNER';
     threadStatus: MessageThreadStatus;
+    brandId: string;
     buyerId: string | null;
     brandOwnerUserId: string;
     dto: SendMessageDto;
     idempotencyKey?: string;
-    targetUrl: string;
   }) {
     if (!params.idempotencyKey || !params.idempotencyKey.trim()) {
       throw new BadRequestException('Idempotency-Key header is required');
@@ -511,6 +543,7 @@ export class MessagingService {
         tx,
         params.contextType,
         params.contextId,
+        params.brandId,
         params.buyerId,
         params.brandOwnerUserId,
         effectiveStatus,
@@ -621,16 +654,27 @@ export class MessagingService {
         },
       });
 
-      const recipients = [params.buyerId, params.brandOwnerUserId]
-        .filter((id): id is string => Boolean(id))
-        .filter((id) => id !== params.actorId);
+      const recipients = [
+        params.buyerId
+          ? {
+              id: params.buyerId,
+              role: 'BUYER' as const,
+            }
+          : null,
+        {
+          id: params.brandOwnerUserId,
+          role: 'BRAND_OWNER' as const,
+        },
+      ]
+        .filter((entry): entry is { id: string; role: 'BUYER' | 'BRAND_OWNER' } => Boolean(entry))
+        .filter((entry) => entry.id !== params.actorId);
 
       if (recipients.length > 0) {
         await tx.messageNotificationOutbox.createMany({
-          data: recipients.map((recipientId) => ({
+          data: recipients.map((recipient) => ({
             threadId: thread.id,
             messageId: message.id,
-            recipientId,
+            recipientId: recipient.id,
             notificationType: NotificationType.MESSAGE_RECEIVED,
             payloadJson: {
               threadId: thread.id,
@@ -638,7 +682,13 @@ export class MessagingService {
               contextType: thread.contextType,
               orderId: thread.orderId,
               customOrderId: thread.customOrderId,
-              targetUrl: params.targetUrl,
+              targetUrl: this.resolveThreadTargetUrl(
+                thread.contextType,
+                thread.orderId,
+                thread.customOrderId,
+                thread.brandId,
+                recipient.role,
+              ),
             } as Prisma.InputJsonValue,
           })),
         });
@@ -728,6 +778,7 @@ export class MessagingService {
     tx: Prisma.TransactionClient,
     contextType: MessageContextType,
     contextId: string,
+    brandId: string,
     buyerId: string | null,
     brandOwnerUserId: string,
     status: MessageThreadStatus,
@@ -742,6 +793,7 @@ export class MessagingService {
       data: {
         contextType,
         ...(contextType === MessageContextType.CUSTOM_ORDER ? { customOrderId: contextId } : { orderId: contextId }),
+        brandId,
         buyerId,
         status,
         participants: {
@@ -879,10 +931,10 @@ export class MessagingService {
     return this.policy.resolveThreadStatusForOrder(order.status);
   }
 
-  private async notifyModeration(thread: { id: string; contextType: MessageContextType; orderId: string | null; customOrderId: string | null }, messageId: string, adminId: string, reason?: string) {
+  private async notifyModeration(thread: { id: string; contextType: MessageContextType; orderId: string | null; customOrderId: string | null; brandId: string | null }, messageId: string, adminId: string, reason?: string) {
     const participants = await this.prisma.messageThreadParticipant.findMany({
       where: { threadId: thread.id },
-      select: { userId: true },
+      select: { userId: true, role: true },
     });
 
     if (participants.length === 0) return;
@@ -901,15 +953,45 @@ export class MessagingService {
           orderId: thread.orderId,
           customOrderId: thread.customOrderId,
           moderatedBy: adminId,
-          targetUrl:
-            thread.contextType === MessageContextType.CUSTOM_ORDER
-              ? `/custom-orders/${thread.customOrderId}#messages`
-              : `/orders/access/${thread.orderId}#messages`,
+          targetUrl: this.resolveThreadTargetUrl(
+            thread.contextType,
+            thread.orderId,
+            thread.customOrderId,
+            thread.brandId,
+            p.role,
+          ),
         } as Prisma.InputJsonValue,
       })),
     });
 
     await this.sideEffects.dispatchMessageOutboxForMessage(messageId);
     this.sideEffects.emitThreadInvalidation(thread as any, participants.map((p) => p.userId));
+  }
+
+  private resolveThreadTargetUrl(
+    contextType: MessageContextType,
+    orderId: string | null,
+    customOrderId: string | null,
+    brandId: string | null,
+    recipientRole: MessageParticipantRole,
+  ): string {
+    if (contextType === MessageContextType.CUSTOM_ORDER && customOrderId) {
+      if (recipientRole === MessageParticipantRole.BRAND_OWNER) {
+        return `/studio/custom-orders/${customOrderId}#messages`;
+      }
+      if (recipientRole === MessageParticipantRole.ADMIN) {
+        return `/admin/custom-orders/${customOrderId}#messages`;
+      }
+      return `/custom-orders/${customOrderId}#messages`;
+    }
+
+    if (contextType === MessageContextType.STANDARD_ORDER && orderId) {
+      if (recipientRole === MessageParticipantRole.BRAND_OWNER && brandId) {
+        return `/brands/${brandId}/orders/${orderId}#messages`;
+      }
+      return `/orders/access/${orderId}#messages`;
+    }
+
+    return '/settings?tab=notifications';
   }
 }

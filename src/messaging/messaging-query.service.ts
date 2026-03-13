@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { MessageVisibilityState } from '@prisma/client';
+import { MessageKind, MessageParticipantRole, MessageVisibilityState } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 
 @Injectable()
@@ -28,7 +28,6 @@ export class MessagingQueryService {
     const messages = await this.prisma.message.findMany({
       where: {
         threadId,
-        ...(includeModerated ? {} : { visibilityState: MessageVisibilityState.VISIBLE }),
         ...(cursorCreatedAt && cursorId
           ? {
               OR: [
@@ -68,7 +67,27 @@ export class MessagingQueryService {
     });
 
     const hasNextPage = messages.length > take;
-    const items = hasNextPage ? messages.slice(0, -1) : messages;
+    const rawItems = hasNextPage ? messages.slice(0, -1) : messages;
+    const items = includeModerated
+      ? rawItems
+      : rawItems.map((message) => {
+          if (message.visibilityState === MessageVisibilityState.VISIBLE) {
+            return message;
+          }
+
+          return {
+            ...message,
+            senderUserId: null,
+            senderRole: MessageParticipantRole.SYSTEM,
+            kind: MessageKind.MODERATION_NOTICE,
+            bodyText:
+              message.visibilityState === MessageVisibilityState.REDACTED
+                ? 'This message was removed by moderation.'
+                : 'This message is hidden due to moderation policy.',
+            attachments: [],
+            sender: null,
+          };
+        });
     const endCursor = items.length
       ? {
           createdAt: items[items.length - 1].createdAt.toISOString(),

@@ -1026,6 +1026,42 @@ export class AdminUsersService {
       }),
     ]);
 
+    const sentMessageIds = sentMessages.map((message) => message.id);
+    const sentMessageAttachments = sentMessageIds.length
+      ? await this.prisma.messageAttachment.findMany({
+          where: { messageId: { in: sentMessageIds } },
+          select: {
+            id: true,
+            messageId: true,
+            kind: true,
+            createdAt: true,
+            file: {
+              select: {
+                id: true,
+                originalName: true,
+                fileType: true,
+                mimeType: true,
+                size: true,
+                createdAt: true,
+              },
+            },
+          },
+        })
+      : [];
+
+    const attachmentsByMessageId = sentMessageAttachments.reduce<Record<string, typeof sentMessageAttachments>>((acc, attachment) => {
+      if (!acc[attachment.messageId]) {
+        acc[attachment.messageId] = [];
+      }
+      acc[attachment.messageId].push(attachment);
+      return acc;
+    }, {});
+
+    const sentMessagesWithAttachments = sentMessages.map((message) => ({
+      ...message,
+      attachments: attachmentsByMessageId[message.id] ?? [],
+    }));
+
     await (this.prisma as any).adminAuditLog.create({
       data: {
         id: uuidv4(),
@@ -1048,7 +1084,7 @@ export class AdminUsersService {
       user: safeUser,
       messaging: {
         threadParticipants,
-        sentMessages,
+        sentMessages: sentMessagesWithAttachments,
         outboxEvents: threadOutbox,
       },
     };
@@ -1087,6 +1123,8 @@ export class AdminUsersService {
       messageOutboxEvents: 0,
       messagesRedacted: 0,
       threadBuyerSlotsCleared: 0,
+      messageAttachmentsDeleted: 0,
+      messageAttachmentFilesDeleted: 0,
     };
 
     await this.prisma.$transaction(async (tx) => {
@@ -1114,6 +1152,50 @@ export class AdminUsersService {
         where: { recipientId: userId },
       });
       counts.messageOutboxEvents = messageOutboxEvents.count;
+
+      const userMessages = await tx.message.findMany({
+        where: { senderUserId: userId },
+        select: { id: true },
+      });
+      const userMessageIds = userMessages.map((message) => message.id);
+
+      if (userMessageIds.length > 0) {
+        const attachments = await tx.messageAttachment.findMany({
+          where: { messageId: { in: userMessageIds } },
+          select: {
+            id: true,
+            fileUploadId: true,
+            file: {
+              select: {
+                userId: true,
+              },
+            },
+          },
+        });
+
+        const attachmentIds = attachments.map((attachment) => attachment.id);
+        const ownedAttachmentFileIds = Array.from(
+          new Set(
+            attachments
+              .filter((attachment) => attachment.file.userId === userId)
+              .map((attachment) => attachment.fileUploadId),
+          ),
+        );
+
+        if (attachmentIds.length > 0) {
+          const messageAttachmentsDeleted = await tx.messageAttachment.deleteMany({
+            where: { id: { in: attachmentIds } },
+          });
+          counts.messageAttachmentsDeleted = messageAttachmentsDeleted.count;
+        }
+
+        if (ownedAttachmentFileIds.length > 0) {
+          const messageAttachmentFilesDeleted = await tx.fileUpload.deleteMany({
+            where: { id: { in: ownedAttachmentFileIds }, userId },
+          });
+          counts.messageAttachmentFilesDeleted = messageAttachmentFilesDeleted.count;
+        }
+      }
 
       const messagesRedacted = await tx.message.updateMany({
         where: { senderUserId: userId },

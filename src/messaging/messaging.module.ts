@@ -12,9 +12,10 @@ import { MessagingPolicyService } from './messaging-policy.service';
 import { MessagingQueryService } from './messaging-query.service';
 import { MessagingService } from './messaging.service';
 import { MessagingSideEffectsService } from './messaging-side-effects.service';
+import { UploadModule } from 'src/upload/upload.module';
 
 @Module({
-  imports: [PrismaModule, QueueModule],
+  imports: [PrismaModule, QueueModule, UploadModule],
   controllers: [
     CustomOrderMessagingBuyerController,
     CustomOrderMessagingBrandController,
