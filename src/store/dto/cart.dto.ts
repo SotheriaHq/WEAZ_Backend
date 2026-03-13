@@ -8,7 +8,10 @@ import {
   IsObject,
   IsIn,
 } from 'class-validator';
-import { Type } from 'class-transformer';
+import { Type, Transform } from 'class-transformer';
+
+const normalizeSizingMode = ({ value }: { value: unknown }) =>
+  value === 'RTW_PLUS_CUSTOM' ? 'RTW_PLUS_FITTINGS' : value;
 
 export class AddToCartDto {
   @IsString()
@@ -30,8 +33,9 @@ export class AddToCartDto {
   selectedColor?: string;
 
   @IsOptional()
-  @IsIn(['NONE', 'RTW', 'CUSTOM', 'RTW_PLUS_CUSTOM'])
-  sizingMode?: 'NONE' | 'RTW' | 'CUSTOM' | 'RTW_PLUS_CUSTOM';
+  @Transform(normalizeSizingMode)
+  @IsIn(['NONE', 'RTW', 'CUSTOM', 'RTW_PLUS_FITTINGS'])
+  sizingMode?: 'NONE' | 'RTW' | 'CUSTOM' | 'RTW_PLUS_FITTINGS';
 
   @IsOptional()
   @IsObject()

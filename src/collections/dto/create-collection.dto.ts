@@ -16,6 +16,9 @@ import {
   IsIn,
 } from 'class-validator';
 
+const normalizeSizingMode = ({ value }: { value: unknown }) =>
+  value === 'RTW_PLUS_CUSTOM' ? 'RTW_PLUS_FITTINGS' : value;
+
 export class FileSpecDto {
   @IsString()
   @IsNotEmpty()
@@ -105,8 +108,9 @@ export class CreateCollectionDto {
   filterValueIds?: string[];
 
   @IsOptional()
-  @IsIn(['NONE', 'RTW', 'CUSTOM', 'RTW_PLUS_CUSTOM'])
-  sizingMode?: 'NONE' | 'RTW' | 'CUSTOM' | 'RTW_PLUS_CUSTOM';
+  @Transform(normalizeSizingMode)
+  @IsIn(['NONE', 'RTW', 'CUSTOM', 'RTW_PLUS_FITTINGS'])
+  sizingMode?: 'NONE' | 'RTW' | 'CUSTOM' | 'RTW_PLUS_FITTINGS';
 
   @IsOptional()
   @IsArray()
@@ -211,8 +215,9 @@ export class CollectionMetadataDto {
   filterValueIds?: string[];
 
   @IsOptional()
-  @IsIn(['NONE', 'RTW', 'CUSTOM', 'RTW_PLUS_CUSTOM'])
-  sizingMode?: 'NONE' | 'RTW' | 'CUSTOM' | 'RTW_PLUS_CUSTOM';
+  @Transform(normalizeSizingMode)
+  @IsIn(['NONE', 'RTW', 'CUSTOM', 'RTW_PLUS_FITTINGS'])
+  sizingMode?: 'NONE' | 'RTW' | 'CUSTOM' | 'RTW_PLUS_FITTINGS';
 
   @IsOptional()
   @IsArray()

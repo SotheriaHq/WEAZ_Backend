@@ -846,7 +846,8 @@ export class UploadService {
     if (
       fileType === FileType.POST_VIDEO ||
       fileType === FileType.REVIEW_VIDEO ||
-      fileType === FileType.DOCUMENT
+      fileType === FileType.DOCUMENT ||
+      fileType === FileType.MESSAGE_DOCUMENT
     ) {
       return false;
     }
@@ -871,6 +872,8 @@ export class UploadService {
       [FileType.REVIEW_VIDEO]: 40 * 1024 * 1024, // 40MB
       [FileType.DOCUMENT]: 20 * 1024 * 1024, // 20MB
       [FileType.BRAND_VERIFICATION]: 20 * 1024 * 1024, // 20MB
+      [FileType.MESSAGE_IMAGE]: 10 * 1024 * 1024, // 10MB
+      [FileType.MESSAGE_DOCUMENT]: 20 * 1024 * 1024, // 20MB
     };
 
     const allowedMimeTypes = {
@@ -906,6 +909,8 @@ export class UploadService {
         'image/webp',
         'application/pdf',
       ],
+      [FileType.MESSAGE_IMAGE]: ['image/jpeg', 'image/png', 'image/webp'],
+      [FileType.MESSAGE_DOCUMENT]: ['application/pdf'],
     };
 
     if (file.size > maxSizes[fileType]) {

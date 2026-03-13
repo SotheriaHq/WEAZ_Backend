@@ -107,6 +107,7 @@ model User {
 
   // Orders as buyer
   ordersAsBuyer           Order[]                         @relation("OrderBuyer")
+  customOrdersAsBuyer     CustomOrder[]                   @relation("CustomOrderBuyer")
   sizeFitProfile          UserSizeFitProfile?
   sizeFitSharesOwned      UserSizeFitShare[]             @relation("SizeFitOwnerShares")
   sizeFitSharesReceived   UserSizeFitShare[]             @relation("SizeFitViewerShares")
@@ -115,6 +116,8 @@ model User {
 
   // Idempotency keys (safe retries for POST requests)
   idempotencyKeys         IdempotencyKey[]
+  messageThreadParticipants MessageThreadParticipant[]
+  messagesAuthored        Message[]                @relation("MessageSender")
   collectionDraftSessions CollectionDraftSession[]
   collectionBulkUploadJobs CollectionBulkUploadJob[]
 
@@ -176,6 +179,7 @@ model FileUpload {
   collectionMedias CollectionMedia[] @relation("FileUpload_to_CollectionMedia")
   bannerUsers      User[]            @relation("UserBannerImage")
   variants         FileVariant[]
+  messageAttachments MessageAttachment[]
 
   @@index([processingStatus, updatedAt])
 }
@@ -283,6 +287,147 @@ enum SizingMode {
   RTW
   CUSTOM
   RTW_PLUS_CUSTOM
+  RTW_PLUS_FITTINGS
+}
+
+enum CustomOrderSourceType {
+  PRODUCT
+  DESIGN
+}
+
+enum CustomOrderStatus {
+  DRAFT
+  PENDING_PAYMENT
+  PENDING_BRAND_ACCEPTANCE
+  ACCEPTED
+  IN_PRODUCTION
+  READY_FOR_DISPATCH
+  IN_TRANSIT
+  DELIVERED_PENDING_BUYER_CONFIRMATION
+  COMPLETED
+  REJECTED_BY_BRAND
+  CANCELLED_BY_BUYER_PRE_ACCEPTANCE
+  DELIVERY_ISSUE_REPORTED
+  REFUND_IN_PROGRESS
+  DISPUTED
+  CLOSED
+}
+
+enum CustomOrderProgressStage {
+  ORDER_PLACED
+  ORDER_RECEIVED
+  FABRIC_AND_PIECE_PURCHASE_GATHERING
+  DESIGN_MODE
+  FINAL_TOUCHES_AND_PACKAGING
+  READY_FOR_DELIVERY
+}
+
+enum CustomFabricRuleBasisSource {
+  SYSTEM
+  BRAND_FREEFORM
+}
+
+enum CustomFabricRuleBasisStatus {
+  BRAND_ONLY
+  APPROVED_GLOBAL
+  REJECTED
+}
+
+enum FabricSourcingMode {
+  BRAND_SOURCED
+  BUYER_SUPPLIED
+  EITHER
+}
+
+enum CustomOrderExtensionTargetType {
+  PRODUCTION
+  DELIVERY
+  BOTH
+}
+
+enum CustomOrderExtensionResponseStatus {
+  OPEN
+  ACCEPTED
+  COUNTERED
+  REJECTED
+  EXPIRED
+}
+
+enum CustomOrderActorType {
+  BUYER
+  BRAND
+  ADMIN
+  SYSTEM
+}
+
+enum CustomOrderTimelineEventType {
+  OFFER_VERSION_LOCKED
+  PRICE_PREVIEW_CREATED
+  ORDER_CREATED
+  PAYMENT_INITIALIZED
+  PAYMENT_CONFIRMED
+  BRAND_ACCEPTED
+  BRAND_REJECTED
+  PROGRESS_STAGE_CHANGED
+  EXTENSION_REQUESTED
+  EXTENSION_RESOLVED
+  DELIVERED
+  BUYER_CONFIRMED_DELIVERY
+  DELIVERY_ISSUE_REPORTED
+  REFUND_INITIATED
+  DISPUTE_CREATED
+  ADMIN_ESCALATED
+}
+
+enum CustomOrderIssueType {
+  WRONG_ITEM
+  MATERIAL_DEFECT
+  MEASUREMENT_NON_COMPLIANCE
+  UNFINISHED_WORK
+  NON_DELIVERY
+  UNREASONABLE_DELAY
+  OTHER
+}
+
+enum CustomOrderDisputeStatus {
+  OPEN
+  BRAND_RESPONDED
+  ADMIN_REVIEW
+  RESOLVED
+  CLOSED
+}
+
+enum CustomOrderDisputeResolution {
+  FULL_REFUND
+  PARTIAL_REFUND
+  REMAKE
+  NO_ACTION
+  ESCALATED
+}
+
+enum CustomOrderLedgerAllocationType {
+  BRAND_ACCEPTANCE_PORTION
+  FINAL_COMPLETION_PORTION
+}
+
+enum CustomOrderLedgerAllocationStatus {
+  HELD
+  PAYOUT_ELIGIBLE
+  PAID_OUT
+  REVERSED
+  FORFEITED
+}
+
+enum CustomOrderRetentionHoldType {
+  LEGAL
+  SUPPORT
+}
+
+enum CustomOrderOutboxStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
 }
 
 enum RtwSizeType {
@@ -359,6 +504,8 @@ enum FileType {
   BRAND_VERIFICATION
   REVIEW_IMAGE
   REVIEW_VIDEO
+  MESSAGE_IMAGE
+  MESSAGE_DOCUMENT
 }
 
 enum ImageProcessingStatus {
@@ -486,6 +633,73 @@ enum NotificationType {
   REVIEW_REMINDER
   REVIEW_REPLY_RECEIVED
   REVIEW_HIDDEN_BY_ADMIN
+
+  // Custom orders
+  CUSTOM_ORDER_PAYMENT_RECEIVED
+  CUSTOM_ORDER_REVIEW_REQUIRED
+  CUSTOM_ORDER_BRAND_ACCEPTED
+  CUSTOM_ORDER_BRAND_REJECTED
+  CUSTOM_ORDER_PROGRESS_UPDATED
+  CUSTOM_ORDER_EXTENSION_REQUESTED
+  CUSTOM_ORDER_EXTENSION_RESOLVED
+  CUSTOM_ORDER_BUYER_COUNTERED
+  CUSTOM_ORDER_BUYER_REJECTED_EXTENSION
+  CUSTOM_ORDER_DELIVERED
+  CUSTOM_ORDER_ACCEPTANCE_WINDOW_REMINDER
+  CUSTOM_ORDER_ISSUE_REPORTED
+  CUSTOM_ORDER_DISPUTE_CREATED
+  CUSTOM_ORDER_STALE_STAGE_WARNING
+  CUSTOM_ORDER_ADMIN_REVIEW_TRIGGERED
+  CUSTOM_ORDER_ACCEPTANCE_SLA_RISK
+
+  // Messaging
+  MESSAGE_RECEIVED
+  MESSAGE_UNREAD_REMINDER
+  MESSAGE_THREAD_REOPENED
+  MESSAGE_MODERATED
+}
+
+enum MessageContextType {
+  CUSTOM_ORDER
+  STANDARD_ORDER
+}
+
+enum MessageThreadStatus {
+  OPEN
+  READ_ONLY
+  ARCHIVED
+  BLOCKED
+}
+
+enum MessageParticipantRole {
+  BUYER
+  BRAND_OWNER
+  ADMIN
+  SYSTEM
+}
+
+enum MessageKind {
+  USER
+  SYSTEM
+  MODERATION_NOTICE
+}
+
+enum MessageVisibilityState {
+  VISIBLE
+  HIDDEN
+  REDACTED
+}
+
+enum MessageAttachmentKind {
+  IMAGE
+  DOCUMENT
+}
+
+enum MessageOutboxStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
 }
 
 // ====== Comment V2 (unified for posts, collections, and collection media) ======
@@ -578,6 +792,7 @@ model Collection {
   minPrice                     Float?
   maxPrice                     Float?
   isAvailableInStore           Boolean                         @default(false)
+  customOrderEnabled           Boolean                         @default(false)
   tags                         String[]                        @default([])
   // Optional sale/discount fields
   saleMinPrice                 Float?
@@ -1330,6 +1545,9 @@ model Brand {
   ratingBreakdown Json?
 
   orders      Order[]
+  customOrderOffers CustomOrderOffer[]
+  customFabricRuleBases CustomFabricRuleBasis[]
+  customOrders CustomOrder[]
   orderItems  OrderItem[]
   measurementPoints MeasurementPoint[]
   brandSizeCharts BrandSizeChart[]
@@ -1520,6 +1738,7 @@ model Order {
   paymentGateway   String?
   paidAt           DateTime?
   deliveredAt      DateTime?
+  messageThread    MessageThread?
   
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
@@ -1530,15 +1749,459 @@ model Order {
   @@index([paymentReference])
 }
 
+model CustomOrderOffer {
+  id                       String                    @id @default(uuid()) @db.Uuid
+  brandId                  String                    @db.Uuid
+  brand                    Brand                     @relation(fields: [brandId], references: [id], onDelete: Cascade)
+  sourceType               CustomOrderSourceType
+  sourceId                 String                    @db.Uuid
+  isActive                 Boolean                   @default(true)
+  title                    String
+  buyerInstructionText     String?
+  requiredMeasurementKeys  String[]                  @default([])
+  requiredFreeformPointIds String[]                  @default([])
+  fabricRuleBasisId        String                    @db.Uuid
+  fabricRuleBasis          CustomFabricRuleBasis     @relation(fields: [fabricRuleBasisId], references: [id], onDelete: Restrict)
+  baseProductionCharge     Decimal                   @db.Decimal(10, 2)
+  fabricCostPerYard        Decimal                   @db.Decimal(10, 2)
+  rushEnabled              Boolean                   @default(false)
+  rushFee                  Decimal?                  @db.Decimal(10, 2)
+  rushProductionLeadDays   Int?
+  productionLeadDays       Int
+  deliveryMinDays          Int
+  deliveryMaxDays          Int
+  deliveryScope            String
+  revisionPolicy           String
+  returnPolicy             String
+  defectPolicy             String
+  fabricSourcingMode       FabricSourcingMode
+  notes                    String?
+  currentVersion           Int                       @default(1)
+  versions                 CustomOrderOfferVersion[]
+  rules                    CustomFabricRule[]
+  orders                   CustomOrder[]
+  createdAt                DateTime                  @default(now())
+  updatedAt                DateTime                  @updatedAt
+
+  @@index([brandId, isActive])
+  @@index([sourceType, sourceId])
+  @@unique([sourceType, sourceId])
+}
+
+model CustomOrderOfferVersion {
+  id           String           @id @default(uuid()) @db.Uuid
+  offerId      String           @db.Uuid
+  offer        CustomOrderOffer @relation(fields: [offerId], references: [id], onDelete: Cascade)
+  version      Int
+  snapshotJson Json
+  createdById  String           @db.Uuid
+  createdAt    DateTime         @default(now())
+  orders       CustomOrder[]
+
+  @@unique([offerId, version])
+  @@index([offerId, createdAt])
+}
+
+model CustomFabricRuleBasis {
+  id              String                      @id @default(uuid()) @db.Uuid
+  label           String
+  measurementKeys String[]                    @default([])
+  source          CustomFabricRuleBasisSource @default(BRAND_FREEFORM)
+  status          CustomFabricRuleBasisStatus @default(BRAND_ONLY)
+  brandId         String?                     @db.Uuid
+  brand           Brand?                      @relation(fields: [brandId], references: [id], onDelete: SetNull)
+  moderationNotes String?
+  reviewedById    String?                     @db.Uuid
+  reviewedAt      DateTime?
+  createdAt       DateTime                    @default(now())
+  updatedAt       DateTime                    @updatedAt
+  offers          CustomOrderOffer[]
+
+  @@index([status, createdAt])
+  @@index([brandId, status])
+}
+
+model CustomFabricRule {
+  id             String           @id @default(uuid()) @db.Uuid
+  offerId        String           @db.Uuid
+  offer          CustomOrderOffer @relation(fields: [offerId], references: [id], onDelete: Cascade)
+  priority       Int
+  conditionsJson Json
+  outputYards    Decimal          @db.Decimal(10, 2)
+  isFallback     Boolean          @default(false)
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  @@index([offerId, priority])
+}
+
+model CustomOrder {
+  id                            String                    @id @default(uuid()) @db.Uuid
+  brandId                       String                    @db.Uuid
+  brand                         Brand                     @relation(fields: [brandId], references: [id], onDelete: Restrict)
+  buyerId                       String                    @db.Uuid
+  buyer                         User                      @relation("CustomOrderBuyer", fields: [buyerId], references: [id], onDelete: Restrict)
+  sourceType                    CustomOrderSourceType
+  sourceId                      String                    @db.Uuid
+  sourceTitleSnapshot           String
+  sourceSlugSnapshot            String?
+  sourcePrimaryMediaUrlSnapshot String?
+  sourceBrandNameSnapshot       String?
+  offerId                       String                    @db.Uuid
+  offer                         CustomOrderOffer          @relation(fields: [offerId], references: [id], onDelete: Restrict)
+  offerVersionId                String                    @db.Uuid
+  offerVersion                  CustomOrderOfferVersion   @relation(fields: [offerVersionId], references: [id], onDelete: Restrict)
+  status                        CustomOrderStatus         @default(DRAFT)
+  paymentStatus                 PaymentStatus             @default(PENDING)
+  paymentMethod                 PaymentMethod             @default(PENDING_SELECTION)
+  paymentReference              String?
+  idempotencyKey                String?
+  currency                      String                    @default("NGN")
+  checkoutIntentId              String?                   @db.Uuid
+  checkoutIntent                CustomOrderCheckoutIntent? @relation(fields: [checkoutIntentId], references: [id], onDelete: SetNull)
+  baseProductionChargeSnapshot  Decimal                   @db.Decimal(10, 2)
+  fabricCostPerYardSnapshot     Decimal                   @db.Decimal(10, 2)
+  computedYards                 Decimal                   @db.Decimal(10, 2)
+  matchedFabricRuleId           String?                   @db.Uuid
+  internalPriceBreakdownJson    Json
+  buyerPriceSummaryJson         Json
+  measurementSnapshotJson       Json
+  measurementConfirmedAt        DateTime
+  rushSelected                  Boolean                   @default(false)
+  rushFeeSnapshot               Decimal?                  @db.Decimal(10, 2)
+  productionLeadDaysSnapshot    Int
+  deliveryMinDaysSnapshot       Int
+  deliveryMaxDaysSnapshot       Int
+  shippingAddressJson           Json?
+  contactInfoJson               Json?
+  promisedProductionAt          DateTime?
+  promisedDispatchAt            DateTime?
+  promisedDeliveryAt            DateTime?
+  currentProgressStage          CustomOrderProgressStage  @default(ORDER_PLACED)
+  currentProgressStageEnteredAt DateTime                  @default(now())
+  lastBrandProgressUpdateAt     DateTime?
+  buyerAcceptanceWindowEndsAt   DateTime?
+  acceptedAt                    DateTime?
+  rejectedAt                    DateTime?
+  deliveredAt                   DateTime?
+  buyerAcceptedAt               DateTime?
+  issueReportedAt               DateTime?
+  completedAt                   DateTime?
+  measurementRetentionUntil     DateTime?
+  anonymizedAt                  DateTime?
+  retentionHoldType             CustomOrderRetentionHoldType?
+  retentionHoldReason           String?
+  retentionHoldUntil            DateTime?
+  retentionHoldSetById          String?                   @db.Uuid
+  retentionHoldSetAt            DateTime?
+  createdAt                     DateTime                  @default(now())
+  updatedAt                     DateTime                  @updatedAt
+  progressEvents                CustomOrderProgressEvent[]
+  extensionRequests             CustomOrderExtensionRequest[]
+  timelineEvents                CustomOrderTimelineEvent[]
+  issues                        CustomOrderIssue[]
+  disputes                      CustomOrderDispute[]
+  ledgerAllocations             CustomOrderLedgerAllocation[]
+  notificationOutboxEvents      CustomOrderNotificationOutbox[]
+  analyticsEvents               CustomOrderAnalyticsEvent[]
+  messageThread                 MessageThread?
+
+  @@index([brandId, status, createdAt])
+  @@index([buyerId, status, createdAt])
+  @@index([paymentReference])
+  @@unique([checkoutIntentId])
+  @@index([sourceType, sourceId])
+  @@index([currentProgressStage, lastBrandProgressUpdateAt])
+  @@index([measurementRetentionUntil, retentionHoldUntil, anonymizedAt])
+  @@unique([buyerId, idempotencyKey])
+}
+
+model MessageThread {
+  id                   String                     @id @default(uuid()) @db.Uuid
+  contextType          MessageContextType
+  customOrderId        String?                    @unique @db.Uuid
+  customOrder          CustomOrder?               @relation(fields: [customOrderId], references: [id], onDelete: Cascade)
+  orderId              String?                    @unique @db.Uuid
+  order                Order?                     @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  brandId              String?                    @db.Uuid
+  buyerId              String?                    @db.Uuid
+  status               MessageThreadStatus        @default(OPEN)
+  subjectSnapshotJson  Json?
+  lastMessageId        String?                    @db.Uuid
+  lastMessageAt        DateTime?
+  lastVisibleMessageAt DateTime?
+  lastMessagePreview   String?
+  lastSenderUserId     String?                    @db.Uuid
+  readOnlyAt           DateTime?
+  archivedAt           DateTime?
+  createdAt            DateTime                   @default(now())
+  updatedAt            DateTime                   @updatedAt
+
+  messages             Message[]
+  participants         MessageThreadParticipant[]
+  outboxEvents         MessageNotificationOutbox[]
+
+  @@index([contextType, lastMessageAt])
+  @@index([brandId, lastMessageAt])
+  @@index([buyerId, lastMessageAt])
+}
+
+model MessageThreadParticipant {
+  id                String                 @id @default(uuid()) @db.Uuid
+  threadId          String                 @db.Uuid
+  userId            String                 @db.Uuid
+  role              MessageParticipantRole
+  joinedAt          DateTime               @default(now())
+  lastReadMessageId String?                @db.Uuid
+  lastReadAt        DateTime?
+  mutedUntil        DateTime?
+  archivedAt        DateTime?
+
+  thread            MessageThread          @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  user              User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([threadId, userId])
+  @@index([userId, lastReadAt])
+}
+
+model Message {
+  id                String                 @id @default(uuid()) @db.Uuid
+  threadId          String                 @db.Uuid
+  senderUserId      String?                @db.Uuid
+  senderRole        MessageParticipantRole
+  kind              MessageKind            @default(USER)
+  visibilityState   MessageVisibilityState @default(VISIBLE)
+  clientMessageId   String?
+  bodyText          String?                @db.Text
+  metadataJson      Json?
+  moderatedById     String?                @db.Uuid
+  moderatedAt       DateTime?
+  moderationReason  String?
+  createdAt         DateTime               @default(now())
+  editedAt          DateTime?
+
+  thread            MessageThread          @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  sender            User?                  @relation("MessageSender", fields: [senderUserId], references: [id], onDelete: SetNull)
+  attachments       MessageAttachment[]
+
+  @@index([threadId, createdAt, id])
+  @@index([threadId, visibilityState, createdAt])
+  @@unique([threadId, senderUserId, clientMessageId])
+}
+
+model MessageAttachment {
+  id                String                 @id @default(uuid()) @db.Uuid
+  messageId         String                 @db.Uuid
+  fileUploadId      String                 @db.Uuid
+  kind              MessageAttachmentKind
+  createdAt         DateTime               @default(now())
+
+  message           Message                @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  file              FileUpload             @relation(fields: [fileUploadId], references: [id], onDelete: Restrict)
+
+  @@index([messageId])
+  @@index([fileUploadId])
+}
+
+model MessageNotificationOutbox {
+  id                String                 @id @default(uuid()) @db.Uuid
+  threadId          String                 @db.Uuid
+  messageId         String                 @db.Uuid
+  recipientId       String                 @db.Uuid
+  notificationType  NotificationType
+  payloadJson       Json?
+  status            MessageOutboxStatus    @default(PENDING)
+  attempts          Int                    @default(0)
+  availableAt       DateTime               @default(now())
+  processedAt       DateTime?
+  lastError         String?
+  createdAt         DateTime               @default(now())
+  updatedAt         DateTime               @updatedAt
+
+  thread            MessageThread          @relation(fields: [threadId], references: [id], onDelete: Cascade)
+
+  @@index([status, availableAt, createdAt])
+  @@index([recipientId, createdAt])
+}
+
+model CustomOrderCheckoutIntent {
+  id                    String        @id @default(uuid()) @db.Uuid
+  buyerId               String        @db.Uuid
+  offerId               String        @db.Uuid
+  offerVersionId        String        @db.Uuid
+  currency              String        @default("NGN")
+  previewHash           String        @unique
+  requestSnapshotJson   Json
+  buyerPriceSummaryJson Json
+  expiresAt             DateTime
+  consumedAt            DateTime?
+  createdAt             DateTime      @default(now())
+  updatedAt             DateTime      @updatedAt
+  orders                CustomOrder[]
+
+  @@index([buyerId, expiresAt])
+  @@index([offerId, offerVersionId])
+}
+
+model CustomOrderProgressEvent {
+  id                 String                   @id @default(uuid()) @db.Uuid
+  customOrderId      String                   @db.Uuid
+  customOrder        CustomOrder              @relation(fields: [customOrderId], references: [id], onDelete: Cascade)
+  stage              CustomOrderProgressStage
+  note               String?
+  changedById        String                   @db.Uuid
+  changedAt          DateTime                 @default(now())
+  buyerNotifiedAt    DateTime?
+  staleThresholdAt   DateTime?
+  staleBuyerWarnedAt DateTime?
+  adminEscalatedAt   DateTime?
+
+  @@index([customOrderId, changedAt])
+  @@index([stage, staleThresholdAt])
+}
+
+model CustomOrderExtensionRequest {
+  id                  String                             @id @default(uuid()) @db.Uuid
+  customOrderId       String                             @db.Uuid
+  customOrder         CustomOrder                        @relation(fields: [customOrderId], references: [id], onDelete: Cascade)
+  requestedByBrandId  String                             @db.Uuid
+  targetType          CustomOrderExtensionTargetType
+  requestedExtraDays  Int
+  reason              String
+  buyerResponseStatus CustomOrderExtensionResponseStatus @default(OPEN)
+  buyerCounterDays    Int?
+  resolvedAt          DateTime?
+  createdAt           DateTime                           @default(now())
+  updatedAt           DateTime                           @updatedAt
+
+  @@index([customOrderId, buyerResponseStatus])
+}
+
+model CustomOrderTimelineEvent {
+  id            String                       @id @default(uuid()) @db.Uuid
+  customOrderId String                       @db.Uuid
+  customOrder   CustomOrder                  @relation(fields: [customOrderId], references: [id], onDelete: Cascade)
+  actorType     CustomOrderActorType
+  actorId       String?
+  eventType     CustomOrderTimelineEventType
+  payloadJson   Json?
+  createdAt     DateTime                     @default(now())
+  analyticsEvent CustomOrderAnalyticsEvent?
+
+  @@index([customOrderId, createdAt])
+  @@index([eventType, createdAt])
+}
+
+model CustomOrderNotificationOutbox {
+  id               String                  @id @default(uuid()) @db.Uuid
+  customOrderId    String                  @db.Uuid
+  customOrder      CustomOrder             @relation(fields: [customOrderId], references: [id], onDelete: Cascade)
+  recipientId      String                  @db.Uuid
+  actorId          String?                 @db.Uuid
+  notificationType NotificationType
+  payloadJson      Json?
+  targetJson       Json?
+  dedupeMs         Int?
+  status           CustomOrderOutboxStatus @default(PENDING)
+  attempts         Int                     @default(0)
+  availableAt      DateTime                @default(now())
+  processedAt      DateTime?
+  lastError        String?
+  createdAt        DateTime                @default(now())
+  updatedAt        DateTime                @updatedAt
+
+  @@index([status, availableAt, createdAt])
+  @@index([customOrderId, createdAt])
+  @@index([recipientId, createdAt])
+}
+
+model CustomOrderAnalyticsEvent {
+  id              String                    @id @default(uuid()) @db.Uuid
+  customOrderId   String                    @db.Uuid
+  customOrder     CustomOrder               @relation(fields: [customOrderId], references: [id], onDelete: Cascade)
+  timelineEventId String?                   @unique @db.Uuid
+  timelineEvent   CustomOrderTimelineEvent? @relation(fields: [timelineEventId], references: [id], onDelete: Cascade)
+  actorType       CustomOrderActorType?
+  actorId         String?                   @db.Uuid
+  eventType       String
+  payloadJson     Json?
+  occurredAt      DateTime
+  createdAt       DateTime                  @default(now())
+
+  @@index([customOrderId, occurredAt])
+  @@index([eventType, occurredAt])
+}
+
+model CustomOrderIssue {
+  id            String               @id @default(uuid()) @db.Uuid
+  customOrderId String               @db.Uuid
+  customOrder   CustomOrder          @relation(fields: [customOrderId], references: [id], onDelete: Cascade)
+  issueType     CustomOrderIssueType
+  description   String
+  evidenceJson  Json?
+  openedById    String               @db.Uuid
+  createdAt     DateTime             @default(now())
+  updatedAt     DateTime             @updatedAt
+
+  @@index([customOrderId, createdAt])
+}
+
+model CustomOrderDispute {
+  id               String                       @id @default(uuid()) @db.Uuid
+  customOrderId    String                       @db.Uuid
+  customOrder      CustomOrder                  @relation(fields: [customOrderId], references: [id], onDelete: Cascade)
+  openedById       String                       @db.Uuid
+  status           CustomOrderDisputeStatus     @default(OPEN)
+  reasonType       CustomOrderIssueType
+  buyerStatement   String?
+  brandResponse    String?
+  adminNotes       String?
+  resolution       CustomOrderDisputeResolution?
+  assignedAdminId  String?                      @db.Uuid
+  openedAt         DateTime                     @default(now())
+  brandRespondByAt DateTime?
+  resolvedAt       DateTime?
+  createdAt        DateTime                     @default(now())
+  updatedAt        DateTime                     @updatedAt
+
+  @@index([customOrderId, status])
+  @@index([status, openedAt])
+}
+
+model CustomOrderLedgerAllocation {
+  id             String                            @id @default(uuid()) @db.Uuid
+  customOrderId  String                            @db.Uuid
+  customOrder    CustomOrder                       @relation(fields: [customOrderId], references: [id], onDelete: Cascade)
+  payoutId       String?                           @db.Uuid
+  payout         Payout?                           @relation(fields: [payoutId], references: [id], onDelete: SetNull)
+  allocationType CustomOrderLedgerAllocationType
+  amount         Decimal                           @db.Decimal(10, 2)
+  currency       String                            @default("NGN")
+  status         CustomOrderLedgerAllocationStatus @default(HELD)
+  eligibleAt     DateTime?
+  paidOutAt      DateTime?
+  reversedAt     DateTime?
+  reversalReason String?
+  createdAt      DateTime                          @default(now())
+  updatedAt      DateTime                          @updatedAt
+
+  @@index([customOrderId, allocationType])
+  @@index([status, eligibleAt])
+  @@index([payoutId])
+}
+
 model PaymentAttempt {
   id               String       @id @default(uuid()) @db.Uuid
   buyerId          String?      @db.Uuid
+  subjectType      PaymentSubjectType @default(STANDARD_ORDER)
+  customOrderId    String?      @db.Uuid
   provider         String
   providerMode     String
   paymentMethod    PaymentMethod
   channel          String?
   status           String
   reference        String       @unique
+  idempotencyKey   String?
   callbackUrl      String?
   authorizationUrl String?
   amount           Decimal      @db.Decimal(10, 2)
@@ -1558,6 +2221,8 @@ model PaymentAttempt {
 
   @@index([buyerId, createdAt])
   @@index([status, createdAt])
+  @@index([subjectType, customOrderId])
+  @@index([buyerId, subjectType, customOrderId, idempotencyKey])
 }
 
 model PaymentEvent {
@@ -1633,6 +2298,7 @@ model Payout {
   id          String       @id @map("_id") @db.Uuid
   brandId     String       @db.Uuid
   brand       Brand        @relation(fields: [brandId], references: [id])
+  ledgerAllocations CustomOrderLedgerAllocation[]
   
   amount      Decimal      @db.Decimal(10, 2)
   currency    String       @default("NGN")
@@ -1669,6 +2335,11 @@ enum PaymentMethod {
   PAY_ON_DELIVERY
 }
 
+enum PaymentSubjectType {
+  STANDARD_ORDER
+  CUSTOM_ORDER
+}
+
 enum PayoutStatus {
   PENDING
   PROCESSING
@@ -1697,6 +2368,8 @@ model Product {
   brandNameCache  String?
   searchVector    Unsupported("tsvector")? @map("search_vector")
   currency        String        @default("NGN")
+  standardCheckoutEnabled Boolean @default(true)
+  customOrderEnabled Boolean    @default(false)
   price           Decimal       @db.Decimal(10, 2)
   salePrice       Decimal?      @db.Decimal(10, 2)
   saleStartAt     DateTime?
@@ -2086,6 +2759,10 @@ enum AdminAuditAction {
   ADMIN_VERIFICATION_REQUEST_INFO
   ADMIN_VERIFICATION_REASSIGN
   ADMIN_VERIFICATION_NOTE_CREATE
+  ADMIN_MESSAGING_MESSAGE_HIDE
+  ADMIN_MESSAGING_MESSAGE_REDACT
+  ADMIN_MESSAGING_THREAD_REOPEN
+  ADMIN_MESSAGING_SYSTEM_MESSAGE
 }
 
 enum DisputeType {

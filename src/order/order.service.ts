@@ -249,11 +249,24 @@ export class OrderService {
         id: orderId,
         brandId: realBrandId,
       },
+      include: {
+        brand: {
+          select: {
+            name: true,
+          },
+        },
+      },
     });
 
     if (!order) {
       throw new NotFoundException('Order not found');
     }
+
+    if (order.status === status) {
+      return order;
+    }
+
+    const previousStatus = order.status;
 
     const updated = await this.prisma.order.update({
       where: { id: orderId },
@@ -275,7 +288,9 @@ export class OrderService {
           payload: {
             orderId: order.id,
             status,
-            targetUrl: `/orders/${order.id}`,
+            previousStatus,
+            brandName: order.brand?.name ?? null,
+            targetUrl: `/orders/access/${order.id}`,
           },
         },
       );

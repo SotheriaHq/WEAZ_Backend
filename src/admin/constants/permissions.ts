@@ -51,6 +51,8 @@ export const ADMIN_PERMISSIONS = {
   // Moderation
   MODERATION_READ: 'moderation.read',
   MODERATION_WRITE: 'moderation.write',
+  MESSAGING_READ: 'messaging.read',
+  MESSAGING_MODERATE: 'messaging.moderate',
 
   // Audit & Notifications
   AUDIT_READ: 'audit.read',

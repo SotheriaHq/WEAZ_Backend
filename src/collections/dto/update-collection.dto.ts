@@ -12,6 +12,9 @@ import {
 import { Transform } from 'class-transformer';
 import { CollectionType, CollectionVisibility } from '@prisma/client';
 
+const normalizeSizingMode = ({ value }: { value: unknown }) =>
+  value === 'RTW_PLUS_CUSTOM' ? 'RTW_PLUS_FITTINGS' : value;
+
 export class UpdateCollectionDto {
   @IsOptional()
   @IsString()
@@ -85,8 +88,9 @@ export class UpdateCollectionDto {
   filterValueIds?: string[];
 
   @IsOptional()
-  @IsIn(['NONE', 'RTW', 'CUSTOM', 'RTW_PLUS_CUSTOM'])
-  sizingMode?: 'NONE' | 'RTW' | 'CUSTOM' | 'RTW_PLUS_CUSTOM';
+  @Transform(normalizeSizingMode)
+  @IsIn(['NONE', 'RTW', 'CUSTOM', 'RTW_PLUS_FITTINGS'])
+  sizingMode?: 'NONE' | 'RTW' | 'CUSTOM' | 'RTW_PLUS_FITTINGS';
 
   @IsOptional()
   @IsArray()

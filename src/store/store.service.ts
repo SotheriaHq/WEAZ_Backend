@@ -2223,6 +2223,7 @@ export class StoreService {
                 status: 'CANCELLED',
                 reason: 'Product deleted by brand',
                 refundStatus: 'REFUNDED',
+                targetUrl: `/orders/access/${order.id}`,
               },
             },
           );
@@ -3947,10 +3948,9 @@ export class StoreService {
       customMeasurementKeys: this.normalizeRequiredMeasurementKeys(
         product.customMeasurementKeys,
       ),
-      customAvailable:
-        this.normalizeSizingMode(product.sizingMode) === SizingMode.CUSTOM ||
-        this.normalizeSizingMode(product.sizingMode) === SizingMode.RTW_PLUS_CUSTOM ||
-        this.normalizeRequiredMeasurementKeys(product.customMeasurementKeys).length > 0,
+      standardCheckoutEnabled: product.standardCheckoutEnabled !== false,
+      customOrderEnabled: product.customOrderEnabled === true,
+      customAvailable: product.customOrderEnabled === true,
       colors: product.colors || [],
       colorImages: product.colorImages,
       colorHexCodes: product.colorHexCodes,
@@ -4022,9 +4022,9 @@ export class StoreService {
       case 'RTW':
         return SizingMode.RTW;
       case 'CUSTOM':
-        return SizingMode.CUSTOM;
+      case 'RTW_PLUS_FITTINGS':
       case 'RTW_PLUS_CUSTOM':
-        return SizingMode.RTW_PLUS_CUSTOM;
+        return SizingMode.RTW_PLUS_FITTINGS;
       default:
         return SizingMode.NONE;
     }
@@ -4111,8 +4111,7 @@ export class StoreService {
     const sizeFitData = this.normalizeSizeFitData(payload?.sizeFitData);
 
     if (
-      (sizingMode === SizingMode.CUSTOM ||
-        sizingMode === SizingMode.RTW_PLUS_CUSTOM) &&
+      sizingMode === SizingMode.RTW_PLUS_FITTINGS &&
       requiredMeasurementKeys.length > 0
     ) {
       const providedKeys = this.extractProvidedMeasurementKeys(sizeFitData);
@@ -4244,6 +4243,13 @@ export class StoreService {
       },
       {},
     );
+
+    const notificationJobs: Array<{
+      recipientId: string;
+      type: NotificationType;
+      actorId?: string | null;
+      payload: Record<string, any>;
+    }> = [];
 
     const orders = await this.prisma.$transaction(async (tx) => {
       const createdOrders = [] as any[];
@@ -4483,33 +4489,33 @@ export class StoreService {
           });
         }
 
-        // Notify brand owner a new order has arrived
         if (brand.ownerId) {
-          await tx.notification.create({
-            data: {
-              id: uuidv4(),
-              recipientId: brand.ownerId,
-              actorId: userId,
-              type: NotificationType.ORDER_PLACED,
-              payload: { orderId: order.id, totalAmount: totalAmount, brandId },
+          notificationJobs.push({
+            recipientId: brand.ownerId,
+            type: NotificationType.ORDER_PLACED,
+            actorId: userId,
+            payload: {
+              orderId: order.id,
+              totalAmount,
+              brandId,
+              brandName: brand.name,
+              customerName: dto.customerName || 'Customer',
+              targetUrl: `/studio?tab=orders&orderId=${order.id}`,
             },
           });
         }
 
-        // Notify buyer their order was placed
-        await tx.notification.create({
-          data: {
-            id: uuidv4(),
-            recipientId: userId,
-            actorId: userId,
-            type: NotificationType.ORDER_PLACED,
-            payload: {
-              orderId: order.id,
-              totalAmount: totalAmount + shippingCost,
-              brandId,
-              brandName: brand.name,
-              isBuyerCopy: true,
-            },
+        notificationJobs.push({
+          recipientId: userId,
+          type: NotificationType.ORDER_PLACED,
+          actorId: null,
+          payload: {
+            orderId: order.id,
+            totalAmount: totalAmount + shippingCost,
+            brandId,
+            brandName: brand.name,
+            isBuyerCopy: true,
+            targetUrl: `/orders/access/${order.id}`,
           },
         });
 
@@ -4519,6 +4525,25 @@ export class StoreService {
       await tx.cartItem.deleteMany({ where: { userId } });
       return createdOrders;
     });
+
+    if (this.notifications && notificationJobs.length > 0) {
+      const results = await Promise.allSettled(
+        notificationJobs.map((job) =>
+          this.notifications!.create(job.recipientId, job.type, {
+            actorId: job.actorId,
+            payload: job.payload,
+          }),
+        ),
+      );
+
+      results.forEach((result, index) => {
+        if (result.status === 'rejected') {
+          this.logger.warn(
+            `Failed to send order notification for ${notificationJobs[index].recipientId}: ${result.reason}`,
+          );
+        }
+      });
+    }
 
     return { orders };
   }

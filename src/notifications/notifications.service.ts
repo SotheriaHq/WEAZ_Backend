@@ -68,6 +68,9 @@ export class NotificationsService {
       '/posts/',
       '/products/',
       '/orders',
+      '/custom-orders',
+      '/admin/custom-orders',
+      '/admin/messaging',
       '/patches',
       '/settings',
       '/settings/collections',
@@ -369,6 +372,14 @@ export class NotificationsService {
       orders: {
         ...DEFAULT_NOTIFICATION_SETTINGS.orders,
         ...(raw.orders ?? {}),
+        placed:
+          raw.orders?.placed ??
+          raw.orders?.updates ??
+          DEFAULT_NOTIFICATION_SETTINGS.orders.placed,
+        statusChanges:
+          raw.orders?.statusChanges ??
+          raw.orders?.updates ??
+          DEFAULT_NOTIFICATION_SETTINGS.orders.statusChanges,
       },
       reviews: {
         ...DEFAULT_NOTIFICATION_SETTINGS.reviews,
@@ -378,6 +389,10 @@ export class NotificationsService {
         ...DEFAULT_NOTIFICATION_SETTINGS.fit,
         ...(raw.fit ?? {}),
       },
+      messaging: {
+        ...DEFAULT_NOTIFICATION_SETTINGS.messaging,
+        ...(raw.messaging ?? {}),
+      },
     };
   }
 
@@ -385,19 +400,26 @@ export class NotificationsService {
     userId: string,
     settings: Partial<NotificationSettings>,
   ) {
+    const sanitizedPatch = this.sanitizeSettingsPatch(settings);
     const current = await this.getSettings(userId);
+
+    if (Object.keys(sanitizedPatch).length === 0) {
+      return current;
+    }
+
     const updated = {
       ...current,
-      ...settings,
-      security: { ...current.security, ...settings.security },
-      social: { ...current.social, ...settings.social },
-      comments: { ...current.comments, ...settings.comments },
-      tags: { ...current.tags, ...settings.tags },
-      collections: { ...current.collections, ...settings.collections },
-      brand: { ...current.brand, ...settings.brand },
-      orders: { ...current.orders, ...settings.orders },
-      reviews: { ...current.reviews, ...settings.reviews },
-      fit: { ...current.fit, ...settings.fit },
+      ...sanitizedPatch,
+      security: { ...current.security, ...sanitizedPatch.security },
+      social: { ...current.social, ...sanitizedPatch.social },
+      comments: { ...current.comments, ...sanitizedPatch.comments },
+      tags: { ...current.tags, ...sanitizedPatch.tags },
+      collections: { ...current.collections, ...sanitizedPatch.collections },
+      brand: { ...current.brand, ...sanitizedPatch.brand },
+      orders: { ...current.orders, ...sanitizedPatch.orders },
+      reviews: { ...current.reviews, ...sanitizedPatch.reviews },
+      fit: { ...current.fit, ...sanitizedPatch.fit },
+      messaging: { ...current.messaging, ...sanitizedPatch.messaging },
     };
 
     await this.prisma.user.update({
@@ -406,6 +428,39 @@ export class NotificationsService {
     });
 
     return updated;
+  }
+
+  private sanitizeSettingsPatch(
+    settings: Partial<NotificationSettings>,
+  ): Partial<NotificationSettings> {
+    if (!settings || typeof settings !== 'object' || Array.isArray(settings)) {
+      return {};
+    }
+
+    const sanitized: Partial<NotificationSettings> = {};
+    const defaults = DEFAULT_NOTIFICATION_SETTINGS as unknown as Record<string, Record<string, boolean>>;
+    const incoming = settings as Record<string, unknown>;
+
+    for (const [sectionKey, sectionDefaults] of Object.entries(defaults)) {
+      const sectionPatch = incoming[sectionKey];
+      if (!sectionPatch || typeof sectionPatch !== 'object' || Array.isArray(sectionPatch)) {
+        continue;
+      }
+
+      const sanitizedSection: Record<string, boolean> = {};
+      for (const settingKey of Object.keys(sectionDefaults)) {
+        const nextValue = (sectionPatch as Record<string, unknown>)[settingKey];
+        if (typeof nextValue === 'boolean') {
+          sanitizedSection[settingKey] = nextValue;
+        }
+      }
+
+      if (Object.keys(sanitizedSection).length > 0) {
+        (sanitized as Record<string, unknown>)[sectionKey] = sanitizedSection;
+      }
+    }
+
+    return sanitized;
   }
 
   private isNotificationEnabled(
@@ -443,8 +498,9 @@ export class NotificationsService {
       case NotificationType.CONTRIBUTION_REJECTED:
         return settings.brand.contributions;
       case NotificationType.ORDER_PLACED:
+        return settings.orders.placed;
       case NotificationType.ORDER_STATUS_UPDATED:
-        return settings.orders.updates;
+        return settings.orders.statusChanges;
       case NotificationType.REVIEW_REMINDER:
         return settings.reviews.reminders;
       case NotificationType.REVIEW_REPLY_RECEIVED:
@@ -460,6 +516,13 @@ export class NotificationsService {
       case 'SIZE_FIT_SHARE_APPROVED' as NotificationType:
       case 'SIZE_FIT_SHARE_REJECTED' as NotificationType:
         return settings.fit.approvals;
+      case NotificationType.MESSAGE_RECEIVED:
+        return settings.messaging.newMessages;
+      case NotificationType.MESSAGE_UNREAD_REMINDER:
+        return settings.messaging.reminders;
+      case NotificationType.MESSAGE_MODERATED:
+      case NotificationType.MESSAGE_THREAD_REOPENED:
+        return true;
       default:
         return true; // Default to true for critical/other types
     }

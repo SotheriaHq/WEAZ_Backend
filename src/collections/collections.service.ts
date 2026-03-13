@@ -1676,11 +1676,7 @@ export class CollectionsService {
         saleEndAt: collection.saleEndAt,
         sizingMode: collection.sizingMode,
         customMeasurementKeys: collection.customMeasurementKeys ?? [],
-        customAvailable:
-          collection.sizingMode === 'CUSTOM' ||
-          collection.sizingMode === 'RTW_PLUS_CUSTOM' ||
-          (Array.isArray(collection.customMeasurementKeys) &&
-            collection.customMeasurementKeys.length > 0),
+        customAvailable: collection.customOrderEnabled === true,
         threadsCount: media.threadsCount,
         commentsCount: media.commentsCount,
         collectionCollabCount: collection.collectionCollabsCount,

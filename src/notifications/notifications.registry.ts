@@ -23,6 +23,62 @@ const NT_VERIFICATION_NUDGE = 'VERIFICATION_NUDGE' as NotificationType;
 const NT_REVIEW_REMINDER = 'REVIEW_REMINDER' as NotificationType;
 const NT_REVIEW_REPLY_RECEIVED = 'REVIEW_REPLY_RECEIVED' as NotificationType;
 const NT_REVIEW_HIDDEN_BY_ADMIN = 'REVIEW_HIDDEN_BY_ADMIN' as NotificationType;
+const NT_CUSTOM_ORDER_PAYMENT_RECEIVED = 'CUSTOM_ORDER_PAYMENT_RECEIVED' as NotificationType;
+const NT_CUSTOM_ORDER_REVIEW_REQUIRED = 'CUSTOM_ORDER_REVIEW_REQUIRED' as NotificationType;
+const NT_CUSTOM_ORDER_BRAND_ACCEPTED = 'CUSTOM_ORDER_BRAND_ACCEPTED' as NotificationType;
+const NT_CUSTOM_ORDER_BRAND_REJECTED = 'CUSTOM_ORDER_BRAND_REJECTED' as NotificationType;
+const NT_CUSTOM_ORDER_PROGRESS_UPDATED = 'CUSTOM_ORDER_PROGRESS_UPDATED' as NotificationType;
+const NT_CUSTOM_ORDER_EXTENSION_REQUESTED = 'CUSTOM_ORDER_EXTENSION_REQUESTED' as NotificationType;
+const NT_CUSTOM_ORDER_EXTENSION_RESOLVED = 'CUSTOM_ORDER_EXTENSION_RESOLVED' as NotificationType;
+const NT_CUSTOM_ORDER_BUYER_COUNTERED = 'CUSTOM_ORDER_BUYER_COUNTERED' as NotificationType;
+const NT_CUSTOM_ORDER_BUYER_REJECTED_EXTENSION = 'CUSTOM_ORDER_BUYER_REJECTED_EXTENSION' as NotificationType;
+const NT_CUSTOM_ORDER_DELIVERED = 'CUSTOM_ORDER_DELIVERED' as NotificationType;
+const NT_CUSTOM_ORDER_ACCEPTANCE_WINDOW_REMINDER = 'CUSTOM_ORDER_ACCEPTANCE_WINDOW_REMINDER' as NotificationType;
+const NT_CUSTOM_ORDER_ISSUE_REPORTED = 'CUSTOM_ORDER_ISSUE_REPORTED' as NotificationType;
+const NT_CUSTOM_ORDER_DISPUTE_CREATED = 'CUSTOM_ORDER_DISPUTE_CREATED' as NotificationType;
+const NT_CUSTOM_ORDER_STALE_STAGE_WARNING = 'CUSTOM_ORDER_STALE_STAGE_WARNING' as NotificationType;
+const NT_CUSTOM_ORDER_ADMIN_REVIEW_TRIGGERED = 'CUSTOM_ORDER_ADMIN_REVIEW_TRIGGERED' as NotificationType;
+const NT_CUSTOM_ORDER_ACCEPTANCE_SLA_RISK = 'CUSTOM_ORDER_ACCEPTANCE_SLA_RISK' as NotificationType;
+const NT_MESSAGE_RECEIVED = 'MESSAGE_RECEIVED' as NotificationType;
+const NT_MESSAGE_UNREAD_REMINDER = 'MESSAGE_UNREAD_REMINDER' as NotificationType;
+const NT_MESSAGE_THREAD_REOPENED = 'MESSAGE_THREAD_REOPENED' as NotificationType;
+const NT_MESSAGE_MODERATED = 'MESSAGE_MODERATED' as NotificationType;
+
+const formatOrderCode = (orderId: unknown) => {
+  if (typeof orderId !== 'string' || orderId.trim().length === 0) {
+    return 'order';
+  }
+
+  return `#${orderId.slice(0, 8).toUpperCase()}`;
+};
+
+const humanizeOrderStatus = (status: unknown) => {
+  const normalized = typeof status === 'string' ? status.trim().toUpperCase() : '';
+  switch (normalized) {
+    case 'PENDING':
+      return 'pending';
+    case 'PROCESSING':
+      return 'processing';
+    case 'SHIPPED':
+      return 'shipped';
+    case 'DELIVERED':
+      return 'delivered';
+    case 'CANCELLED':
+      return 'cancelled';
+    case 'RETURNED':
+      return 'returned';
+    default:
+      return normalized ? normalized.toLowerCase() : 'updated';
+  }
+};
+
+const formatCustomOrderCode = (customOrderId: unknown) => {
+  if (typeof customOrderId !== 'string' || customOrderId.trim().length === 0) {
+    return 'custom order';
+  }
+
+  return `#CO-${customOrderId.slice(0, 8).toUpperCase()}`;
+};
 
 export interface NotificationConfig {
   type: NotificationType;
@@ -103,6 +159,80 @@ export class NotificationRegistry {
           return 'Your email was verified successfully';
         }
         return 'Welcome! Your account was created';
+      },
+    });
+
+    // ORDER_PLACED
+    registry.register({
+      type: NotificationType.ORDER_PLACED,
+      schema: Joi.object({
+        orderId: Joi.string().required(),
+        brandId: Joi.string().optional(),
+        brandName: Joi.string().optional(),
+        customerName: Joi.string().optional(),
+        totalAmount: Joi.number().optional(),
+        isBuyerCopy: Joi.boolean().optional(),
+        targetUrl: Joi.string().optional(),
+        message: Joi.string().optional(),
+      }),
+      formatter: (n: any) => {
+        if (n.payload?.message) return n.payload.message;
+
+        const orderCode = formatOrderCode(n.payload?.orderId);
+        const brandName = n.payload?.brandName;
+        const actorName = n.actor
+          ? n.actor.username ||
+            `${n.actor.firstName ?? ''} ${n.actor.lastName ?? ''}`.trim()
+          : null;
+
+        if (n.payload?.isBuyerCopy) {
+          return brandName
+            ? `Your order ${orderCode} with ${brandName} was placed successfully`
+            : `Your order ${orderCode} was placed successfully`;
+        }
+
+        const customerName = actorName || n.payload?.customerName || 'A customer';
+        return `${customerName} placed ${orderCode}`;
+      },
+    });
+
+    // ORDER_STATUS_UPDATED
+    registry.register({
+      type: NotificationType.ORDER_STATUS_UPDATED,
+      schema: Joi.object({
+        orderId: Joi.string().required(),
+        status: Joi.string().required(),
+        previousStatus: Joi.string().optional(),
+        brandName: Joi.string().optional(),
+        reason: Joi.string().optional(),
+        refundStatus: Joi.string().optional(),
+        targetUrl: Joi.string().optional(),
+        message: Joi.string().optional(),
+      }),
+      formatter: (n: any) => {
+        if (n.payload?.message) return n.payload.message;
+
+        const orderCode = formatOrderCode(n.payload?.orderId);
+        const statusLabel = humanizeOrderStatus(n.payload?.status);
+        const brandName = n.payload?.brandName;
+        const reason = typeof n.payload?.reason === 'string' ? n.payload.reason.trim() : '';
+        const refundStatus = typeof n.payload?.refundStatus === 'string'
+          ? n.payload.refundStatus.trim().toLowerCase()
+          : '';
+
+        let message = brandName
+          ? `Your ${brandName} order ${orderCode} is now ${statusLabel}`
+          : `Your order ${orderCode} is now ${statusLabel}`;
+
+        if (reason) {
+          message += `. Reason: ${reason}`;
+        }
+
+        if (refundStatus) {
+          message += `. Refund status: ${refundStatus}`;
+        }
+
+        return message;
       },
     });
 
@@ -721,6 +851,245 @@ export class NotificationRegistry {
         const productName = n.payload?.productName || 'a product';
         return `Your review for ${productName} was hidden by an admin`;
       },
+    });
+
+    registry.register({
+      type: NT_CUSTOM_ORDER_PAYMENT_RECEIVED,
+      schema: Joi.object({
+        customOrderId: Joi.string().required(),
+        targetUrl: Joi.string().optional(),
+        message: Joi.string().optional(),
+      }),
+      formatter: (n: any) =>
+        n.payload?.message || `Payment received for ${formatCustomOrderCode(n.payload?.customOrderId)}`,
+    });
+
+    registry.register({
+      type: NT_CUSTOM_ORDER_REVIEW_REQUIRED,
+      schema: Joi.object({
+        customOrderId: Joi.string().required(),
+        buyerName: Joi.string().optional(),
+        sourceTitle: Joi.string().optional(),
+        targetUrl: Joi.string().optional(),
+        message: Joi.string().optional(),
+      }),
+      formatter: (n: any) =>
+        n.payload?.message ||
+        `${n.payload?.buyerName || 'A buyer'} paid for ${formatCustomOrderCode(n.payload?.customOrderId)} and it is awaiting your review`,
+    });
+
+    registry.register({
+      type: NT_CUSTOM_ORDER_BRAND_ACCEPTED,
+      schema: Joi.object({
+        customOrderId: Joi.string().required(),
+        brandName: Joi.string().optional(),
+        targetUrl: Joi.string().optional(),
+        message: Joi.string().optional(),
+      }),
+      formatter: (n: any) =>
+        n.payload?.message ||
+        `${n.payload?.brandName || 'The brand'} accepted ${formatCustomOrderCode(n.payload?.customOrderId)}`,
+    });
+
+    registry.register({
+      type: NT_CUSTOM_ORDER_BRAND_REJECTED,
+      schema: Joi.object({
+        customOrderId: Joi.string().required(),
+        reason: Joi.string().optional(),
+        targetUrl: Joi.string().optional(),
+        message: Joi.string().optional(),
+      }),
+      formatter: (n: any) =>
+        n.payload?.message ||
+        `${formatCustomOrderCode(n.payload?.customOrderId)} was rejected by the brand`,
+    });
+
+    registry.register({
+      type: NT_CUSTOM_ORDER_PROGRESS_UPDATED,
+      schema: Joi.object({
+        customOrderId: Joi.string().required(),
+        stage: Joi.string().optional(),
+        note: Joi.string().allow(null).optional(),
+        targetUrl: Joi.string().optional(),
+        message: Joi.string().optional(),
+      }),
+      formatter: (n: any) =>
+        n.payload?.message ||
+        `${formatCustomOrderCode(n.payload?.customOrderId)} moved to ${String(n.payload?.stage || 'a new stage').toLowerCase().replace(/_/g, ' ')}`,
+    });
+
+    registry.register({
+      type: NT_CUSTOM_ORDER_EXTENSION_REQUESTED,
+      schema: Joi.object({
+        customOrderId: Joi.string().required(),
+        requestedExtraDays: Joi.number().optional(),
+        targetUrl: Joi.string().optional(),
+        message: Joi.string().optional(),
+      }),
+      formatter: (n: any) =>
+        n.payload?.message ||
+        `An extension was requested for ${formatCustomOrderCode(n.payload?.customOrderId)}`,
+    });
+
+    registry.register({
+      type: NT_CUSTOM_ORDER_EXTENSION_RESOLVED,
+      schema: Joi.object({
+        customOrderId: Joi.string().required(),
+        response: Joi.string().optional(),
+        targetUrl: Joi.string().optional(),
+        message: Joi.string().optional(),
+      }),
+      formatter: (n: any) =>
+        n.payload?.message ||
+        `The extension request for ${formatCustomOrderCode(n.payload?.customOrderId)} was ${String(n.payload?.response || 'resolved').toLowerCase()}`,
+    });
+
+    registry.register({
+      type: NT_CUSTOM_ORDER_BUYER_COUNTERED,
+      schema: Joi.object({
+        customOrderId: Joi.string().required(),
+        counterDays: Joi.number().optional(),
+        targetUrl: Joi.string().optional(),
+        message: Joi.string().optional(),
+      }),
+      formatter: (n: any) =>
+        n.payload?.message ||
+        `The buyer countered the extension request for ${formatCustomOrderCode(n.payload?.customOrderId)}`,
+    });
+
+    registry.register({
+      type: NT_CUSTOM_ORDER_BUYER_REJECTED_EXTENSION,
+      schema: Joi.object({
+        customOrderId: Joi.string().required(),
+        targetUrl: Joi.string().optional(),
+        message: Joi.string().optional(),
+      }),
+      formatter: (n: any) =>
+        n.payload?.message ||
+        `The buyer rejected the extension request for ${formatCustomOrderCode(n.payload?.customOrderId)}`,
+    });
+
+    registry.register({
+      type: NT_CUSTOM_ORDER_DELIVERED,
+      schema: Joi.object({
+        customOrderId: Joi.string().required(),
+        targetUrl: Joi.string().optional(),
+        message: Joi.string().optional(),
+      }),
+      formatter: (n: any) =>
+        n.payload?.message || `${formatCustomOrderCode(n.payload?.customOrderId)} was marked as delivered`,
+    });
+
+    registry.register({
+      type: NT_CUSTOM_ORDER_ACCEPTANCE_WINDOW_REMINDER,
+      schema: Joi.object({
+        customOrderId: Joi.string().required(),
+        targetUrl: Joi.string().optional(),
+        message: Joi.string().optional(),
+      }),
+      formatter: (n: any) =>
+        n.payload?.message ||
+        `Please confirm delivery or report an issue for ${formatCustomOrderCode(n.payload?.customOrderId)}`,
+    });
+
+    registry.register({
+      type: NT_CUSTOM_ORDER_ISSUE_REPORTED,
+      schema: Joi.object({
+        customOrderId: Joi.string().required(),
+        issueType: Joi.string().optional(),
+        targetUrl: Joi.string().optional(),
+        message: Joi.string().optional(),
+      }),
+      formatter: (n: any) =>
+        n.payload?.message || `An issue was reported for ${formatCustomOrderCode(n.payload?.customOrderId)}`,
+    });
+
+    registry.register({
+      type: NT_CUSTOM_ORDER_DISPUTE_CREATED,
+      schema: Joi.object({
+        customOrderId: Joi.string().required(),
+        reasonType: Joi.string().optional(),
+        targetUrl: Joi.string().optional(),
+        message: Joi.string().optional(),
+      }),
+      formatter: (n: any) =>
+        n.payload?.message || `A dispute was opened for ${formatCustomOrderCode(n.payload?.customOrderId)}`,
+    });
+
+    registry.register({
+      type: NT_CUSTOM_ORDER_STALE_STAGE_WARNING,
+      schema: Joi.object({
+        customOrderId: Joi.string().required(),
+        stage: Joi.string().optional(),
+        targetUrl: Joi.string().optional(),
+        message: Joi.string().optional(),
+      }),
+      formatter: (n: any) =>
+        n.payload?.message || `${formatCustomOrderCode(n.payload?.customOrderId)} has not been updated on time`,
+    });
+
+    registry.register({
+      type: NT_CUSTOM_ORDER_ADMIN_REVIEW_TRIGGERED,
+      schema: Joi.object({
+        customOrderId: Joi.string().required(),
+        targetUrl: Joi.string().optional(),
+        message: Joi.string().optional(),
+      }),
+      formatter: (n: any) =>
+        n.payload?.message || `${formatCustomOrderCode(n.payload?.customOrderId)} requires admin review`,
+    });
+
+    registry.register({
+      type: NT_CUSTOM_ORDER_ACCEPTANCE_SLA_RISK,
+      schema: Joi.object({
+        customOrderId: Joi.string().required(),
+        targetUrl: Joi.string().optional(),
+        message: Joi.string().optional(),
+      }),
+      formatter: (n: any) =>
+        n.payload?.message || `${formatCustomOrderCode(n.payload?.customOrderId)} is approaching an acceptance SLA breach`,
+    });
+
+    registry.register({
+      type: NT_MESSAGE_RECEIVED,
+      schema: Joi.object({
+        threadId: Joi.string().required(),
+        messageId: Joi.string().required(),
+        targetUrl: Joi.string().optional(),
+        message: Joi.string().optional(),
+      }),
+      formatter: (n: any) => n.payload?.message || 'You received a new message on an order thread',
+    });
+
+    registry.register({
+      type: NT_MESSAGE_UNREAD_REMINDER,
+      schema: Joi.object({
+        threadId: Joi.string().required(),
+        targetUrl: Joi.string().optional(),
+        message: Joi.string().optional(),
+      }),
+      formatter: (n: any) => n.payload?.message || 'You have unread order messages waiting',
+    });
+
+    registry.register({
+      type: NT_MESSAGE_THREAD_REOPENED,
+      schema: Joi.object({
+        threadId: Joi.string().required(),
+        targetUrl: Joi.string().optional(),
+        message: Joi.string().optional(),
+      }),
+      formatter: (n: any) => n.payload?.message || 'A thread has been reopened by support',
+    });
+
+    registry.register({
+      type: NT_MESSAGE_MODERATED,
+      schema: Joi.object({
+        threadId: Joi.string().required(),
+        messageId: Joi.string().required(),
+        targetUrl: Joi.string().optional(),
+        message: Joi.string().optional(),
+      }),
+      formatter: (n: any) => n.payload?.message || 'A message in your order thread was moderated',
     });
 
     return registry;

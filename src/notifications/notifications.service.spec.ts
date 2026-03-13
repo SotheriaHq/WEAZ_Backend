@@ -24,6 +24,7 @@ describe('NotificationsService', () => {
       },
       user: {
         findUnique: jest.fn().mockResolvedValue({ notificationSettings: null }),
+        update: jest.fn(),
       },
       patchConnection: {
         findFirst: jest.fn(),
@@ -243,6 +244,84 @@ describe('NotificationsService', () => {
 
       expect(result).toBeNull();
       expect(mockPrisma.notification.create).not.toHaveBeenCalled();
+    });
+
+    it('should skip ORDER_STATUS_UPDATED notifications when order updates are disabled', async () => {
+      mockPrisma.user.findUnique.mockResolvedValue({
+        notificationSettings: {
+          orders: { statusChanges: false },
+        },
+      });
+
+      const result = await service.create(
+        'recipient-id',
+        NotificationType.ORDER_STATUS_UPDATED,
+        {
+          actorId: 'brand-owner-id',
+          payload: { orderId: 'order-123', status: 'PROCESSING' },
+        },
+      );
+
+      expect(result).toBeNull();
+      expect(mockPrisma.notification.create).not.toHaveBeenCalled();
+    });
+
+    it('should skip ORDER_PLACED notifications when order placement confirmations are disabled', async () => {
+      mockPrisma.user.findUnique.mockResolvedValue({
+        notificationSettings: {
+          orders: { placed: false },
+        },
+      });
+
+      const result = await service.create(
+        'recipient-id',
+        NotificationType.ORDER_PLACED,
+        {
+          payload: { orderId: 'order-123' },
+        },
+      );
+
+      expect(result).toBeNull();
+      expect(mockPrisma.notification.create).not.toHaveBeenCalled();
+    });
+
+    it('should migrate legacy orders.updates settings into the split order preferences', async () => {
+      mockPrisma.user.findUnique.mockResolvedValue({
+        notificationSettings: {
+          orders: { updates: false },
+        },
+      });
+
+      const result = await service.getSettings('user-id');
+
+      expect(result.orders.placed).toBe(false);
+      expect(result.orders.statusChanges).toBe(false);
+    });
+  });
+
+  describe('updateSettings', () => {
+    it('should ignore unknown settings keys and only persist allowed booleans', async () => {
+      mockPrisma.user.findUnique.mockResolvedValue({ notificationSettings: null });
+      mockPrisma.user.update.mockResolvedValue({ id: 'user-id' });
+
+      await service.updateSettings('user-id', {
+        orders: { placed: false },
+        social: { follows: false } as any,
+        bogus: { nope: true },
+      } as any);
+
+      expect(mockPrisma.user.update).toHaveBeenCalledWith({
+        where: { id: 'user-id' },
+        data: {
+          notificationSettings: expect.objectContaining({
+            orders: expect.objectContaining({ placed: false }),
+            social: expect.objectContaining({ follows: false }),
+          }),
+        },
+      });
+
+      const persisted = mockPrisma.user.update.mock.calls[0][0].data.notificationSettings;
+      expect(persisted.bogus).toBeUndefined();
     });
   });
 });

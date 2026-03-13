@@ -49,7 +49,8 @@ export interface NotificationSettings {
     contributions: boolean;
   };
   orders: {
-    updates: boolean;
+    placed: boolean;
+    statusChanges: boolean;
   };
   reviews: {
     reminders: boolean;
@@ -60,6 +61,11 @@ export interface NotificationSettings {
     reminders: boolean;
     shares: boolean;
     approvals: boolean;
+  };
+  messaging: {
+    newMessages: boolean;
+    reminders: boolean;
+    moderation: boolean;
   };
 }
 
@@ -90,7 +96,8 @@ export const DEFAULT_NOTIFICATION_SETTINGS: NotificationSettings = {
     contributions: true,
   },
   orders: {
-    updates: true,
+    placed: true,
+    statusChanges: true,
   },
   reviews: {
     reminders: true,
@@ -101,5 +108,10 @@ export const DEFAULT_NOTIFICATION_SETTINGS: NotificationSettings = {
     reminders: true,
     shares: true,
     approvals: true,
+  },
+  messaging: {
+    newMessages: true,
+    reminders: true,
+    moderation: true,
   },
 };
