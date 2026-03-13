@@ -47,7 +47,7 @@ export class MessagingService {
     const thread = await this.getOrCreateThreadForCustomOrder(resolved, false);
     if (!thread) return { items: [], hasNextPage: false, endCursor: null, thread: null };
     return {
-      ...(await this.query.getMessages(thread.id, queryDto)),
+      ...(await this.query.getMessages(thread.id, queryDto, { includeModerated: false })),
       thread,
     };
   }
@@ -57,7 +57,7 @@ export class MessagingService {
     const thread = await this.getOrCreateThreadForCustomOrder(resolved, false);
     if (!thread) return { items: [], hasNextPage: false, endCursor: null, thread: null };
     return {
-      ...(await this.query.getMessages(thread.id, queryDto)),
+      ...(await this.query.getMessages(thread.id, queryDto, { includeModerated: false })),
       thread,
     };
   }
@@ -66,7 +66,7 @@ export class MessagingService {
     const resolved = await this.resolveStandardOrderContext(orderId, actorId, 'BUYER');
     const thread = await this.getOrCreateThreadForOrder(resolved, true);
     return {
-      ...(await this.query.getMessages(thread.id, queryDto)),
+      ...(await this.query.getMessages(thread.id, queryDto, { includeModerated: false })),
       thread,
     };
   }
@@ -75,7 +75,7 @@ export class MessagingService {
     const resolved = await this.resolveStandardOrderContext(orderId, actorId, 'BRAND_OWNER', brandId);
     const thread = await this.getOrCreateThreadForOrder(resolved, true);
     return {
-      ...(await this.query.getMessages(thread.id, queryDto)),
+      ...(await this.query.getMessages(thread.id, queryDto, { includeModerated: false })),
       thread,
     };
   }
@@ -224,7 +224,7 @@ export class MessagingService {
 
   async getAdminThreadMessages(actorId: string, threadId: string, queryDto: QueryMessagesDto) {
     await this.getThreadOrThrow(threadId);
-    return this.query.getMessages(threadId, queryDto);
+    return this.query.getMessages(threadId, queryDto, { includeModerated: true });
   }
 
   async hideMessage(actorId: string, messageId: string, reason?: string, req?: Request) {
@@ -500,13 +500,20 @@ export class MessagingService {
     this.policy.assertCanSend(params.threadStatus);
 
     const result = await this.prisma.$transaction(async (tx) => {
+      const effectiveStatus = await this.resolveCurrentThreadStatusInTx(
+        tx,
+        params.contextType,
+        params.contextId,
+      );
+      this.policy.assertCanSend(effectiveStatus);
+
       const thread = await this.getOrCreateThreadInTx(
         tx,
         params.contextType,
         params.contextId,
         params.buyerId,
         params.brandOwnerUserId,
-        params.threadStatus,
+        effectiveStatus,
       );
 
       if (thread.status !== MessageThreadStatus.OPEN) {
@@ -589,7 +596,7 @@ export class MessagingService {
       await tx.messageThread.update({
         where: { id: thread.id },
         data: {
-          status: params.threadStatus,
+          status: effectiveStatus,
           lastMessageId: message.id,
           lastMessageAt: message.createdAt,
           lastVisibleMessageAt: message.createdAt,
@@ -842,6 +849,34 @@ export class MessagingService {
       buyerId: order.buyerId,
       brandOwnerUserId: order.brand.ownerId,
     };
+  }
+
+  private async resolveCurrentThreadStatusInTx(
+    tx: Prisma.TransactionClient,
+    contextType: MessageContextType,
+    contextId: string,
+  ) {
+    if (contextType === MessageContextType.CUSTOM_ORDER) {
+      const customOrder = await tx.customOrder.findUnique({
+        where: { id: contextId },
+        select: { status: true },
+      });
+      if (!customOrder) {
+        throw new NotFoundException('Custom order not found');
+      }
+
+      return this.policy.resolveThreadStatusForCustomOrder(customOrder.status);
+    }
+
+    const order = await tx.order.findUnique({
+      where: { id: contextId },
+      select: { status: true },
+    });
+    if (!order) {
+      throw new NotFoundException('Order not found');
+    }
+
+    return this.policy.resolveThreadStatusForOrder(order.status);
   }
 
   private async notifyModeration(thread: { id: string; contextType: MessageContextType; orderId: string | null; customOrderId: string | null }, messageId: string, adminId: string, reason?: string) {

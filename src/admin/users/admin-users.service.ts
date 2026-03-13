@@ -975,6 +975,57 @@ export class AdminUsersService {
 
     if (!user) throw new NotFoundException('User not found');
 
+    const [threadParticipants, sentMessages, threadOutbox] = await Promise.all([
+      this.prisma.messageThreadParticipant.findMany({
+        where: { userId },
+        include: {
+          thread: {
+            select: {
+              id: true,
+              contextType: true,
+              orderId: true,
+              customOrderId: true,
+              status: true,
+              lastMessageAt: true,
+            },
+          },
+        },
+        take: 200,
+        orderBy: { joinedAt: 'desc' },
+      }),
+      this.prisma.message.findMany({
+        where: { senderUserId: userId },
+        select: {
+          id: true,
+          threadId: true,
+          senderRole: true,
+          kind: true,
+          visibilityState: true,
+          bodyText: true,
+          createdAt: true,
+          moderatedAt: true,
+        },
+        take: 200,
+        orderBy: { createdAt: 'desc' },
+      }),
+      this.prisma.messageNotificationOutbox.findMany({
+        where: { recipientId: userId },
+        select: {
+          id: true,
+          threadId: true,
+          messageId: true,
+          notificationType: true,
+          status: true,
+          attempts: true,
+          availableAt: true,
+          processedAt: true,
+          createdAt: true,
+        },
+        take: 200,
+        orderBy: { createdAt: 'desc' },
+      }),
+    ]);
+
     await (this.prisma as any).adminAuditLog.create({
       data: {
         id: uuidv4(),
@@ -995,6 +1046,11 @@ export class AdminUsersService {
     return {
       exportedAt: new Date().toISOString(),
       user: safeUser,
+      messaging: {
+        threadParticipants,
+        sentMessages,
+        outboxEvents: threadOutbox,
+      },
     };
   }
 
@@ -1022,7 +1078,16 @@ export class AdminUsersService {
       },
     });
 
-    const counts = { orders: 0, collections: 0, notifications: 0, disputes: 0 };
+    const counts = {
+      orders: 0,
+      collections: 0,
+      notifications: 0,
+      disputes: 0,
+      messageThreadParticipants: 0,
+      messageOutboxEvents: 0,
+      messagesRedacted: 0,
+      threadBuyerSlotsCleared: 0,
+    };
 
     await this.prisma.$transaction(async (tx) => {
       // Delete related entities
@@ -1039,6 +1104,34 @@ export class AdminUsersService {
         where: { reporterId: userId },
       });
       counts.disputes = disputes.count;
+
+      const messageThreadParticipants = await tx.messageThreadParticipant.deleteMany({
+        where: { userId },
+      });
+      counts.messageThreadParticipants = messageThreadParticipants.count;
+
+      const messageOutboxEvents = await tx.messageNotificationOutbox.deleteMany({
+        where: { recipientId: userId },
+      });
+      counts.messageOutboxEvents = messageOutboxEvents.count;
+
+      const messagesRedacted = await tx.message.updateMany({
+        where: { senderUserId: userId },
+        data: {
+          senderUserId: null,
+          bodyText: null,
+          visibilityState: 'REDACTED',
+          moderatedAt: new Date(),
+          moderationReason: 'USER_DATA_WIPE',
+        },
+      });
+      counts.messagesRedacted = messagesRedacted.count;
+
+      const threadBuyerSlotsCleared = await tx.messageThread.updateMany({
+        where: { buyerId: userId },
+        data: { buyerId: null },
+      });
+      counts.threadBuyerSlotsCleared = threadBuyerSlotsCleared.count;
 
       // Anonymize user record
       await tx.user.update({

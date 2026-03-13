@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { MessageVisibilityState } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 
 @Injectable()
@@ -14,14 +15,20 @@ export class MessagingQueryService {
     });
   }
 
-  async getMessages(threadId: string, options?: { cursorCreatedAt?: string; cursorId?: string; limit?: number }) {
+  async getMessages(
+    threadId: string,
+    options?: { cursorCreatedAt?: string; cursorId?: string; limit?: number },
+    filters?: { includeModerated?: boolean },
+  ) {
     const take = Math.min(Math.max(options?.limit ?? 30, 1), 100);
     const cursorCreatedAt = options?.cursorCreatedAt ? new Date(options.cursorCreatedAt) : null;
     const cursorId = options?.cursorId;
+    const includeModerated = filters?.includeModerated === true;
 
     const messages = await this.prisma.message.findMany({
       where: {
         threadId,
+        ...(includeModerated ? {} : { visibilityState: MessageVisibilityState.VISIBLE }),
         ...(cursorCreatedAt && cursorId
           ? {
               OR: [

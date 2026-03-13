@@ -5,6 +5,8 @@ import { NotificationsQueueService } from 'src/queue/notifications.queue.service
 import { EventsGateway } from 'src/realtime/events.gateway';
 import { Cron, CronExpression } from '@nestjs/schedule';
 
+const MAX_MESSAGE_OUTBOX_ATTEMPTS = 8;
+
 @Injectable()
 export class MessagingSideEffectsService {
   private readonly logger = new Logger(MessagingSideEffectsService.name);
@@ -21,6 +23,7 @@ export class MessagingSideEffectsService {
         messageId,
         status: { in: [MessageOutboxStatus.PENDING, MessageOutboxStatus.FAILED] },
         availableAt: { lte: new Date() },
+        attempts: { lt: MAX_MESSAGE_OUTBOX_ATTEMPTS },
       },
     });
 
@@ -43,10 +46,27 @@ export class MessagingSideEffectsService {
           data: { status: MessageOutboxStatus.COMPLETED, processedAt: new Date(), lastError: null },
         });
       } catch (error) {
+        const current = await this.prisma.messageNotificationOutbox.findUnique({
+          where: { id: row.id },
+          select: { attempts: true, threadId: true },
+        });
+        const exhausted =
+          (current?.attempts ?? 0) >= MAX_MESSAGE_OUTBOX_ATTEMPTS;
+
         await this.prisma.messageNotificationOutbox.update({
           where: { id: row.id },
-          data: { status: MessageOutboxStatus.FAILED, lastError: this.formatError(error) },
+          data: {
+            status: MessageOutboxStatus.FAILED,
+            lastError: exhausted
+              ? `DLQ_EXHAUSTED:${this.formatError(error)}`
+              : this.formatError(error),
+          },
         });
+        if (exhausted) {
+          this.logger.error(
+            `Messaging outbox exhausted retries rowId=${row.id} threadId=${current?.threadId ?? 'unknown'}`,
+          );
+        }
       }
     }
   }
@@ -57,6 +77,7 @@ export class MessagingSideEffectsService {
       where: {
         status: { in: [MessageOutboxStatus.PENDING, MessageOutboxStatus.FAILED] },
         availableAt: { lte: new Date() },
+        attempts: { lt: MAX_MESSAGE_OUTBOX_ATTEMPTS },
       },
       orderBy: { createdAt: 'asc' },
       take: batchSize,

@@ -32,6 +32,7 @@ type RecordCustomOrderAnalyticsEventParams = {
 };
 
 const NOTIFICATION_DISPATCH_CONCURRENCY = 10;
+const MAX_NOTIFICATION_DISPATCH_ATTEMPTS = 8;
 
 @Injectable()
 export class CustomOrderSideEffectsService {
@@ -126,6 +127,7 @@ export class CustomOrderSideEffectsService {
           in: [CustomOrderOutboxStatus.PENDING, CustomOrderOutboxStatus.FAILED],
         },
         availableAt: { lte: new Date() },
+        attempts: { lt: MAX_NOTIFICATION_DISPATCH_ATTEMPTS },
       },
       orderBy: { createdAt: 'asc' },
       take: batchSize,
@@ -192,13 +194,27 @@ export class CustomOrderSideEffectsService {
       this.logger.warn(
         `Failed to dispatch custom-order notification ${event.id}: ${this.formatError(error)}`,
       );
+      const current = await this.prisma.customOrderNotificationOutbox.findUnique({
+        where: { id: event.id },
+        select: { attempts: true, customOrderId: true },
+      });
+      const exhausted =
+        (current?.attempts ?? 0) >= MAX_NOTIFICATION_DISPATCH_ATTEMPTS;
+
       await this.prisma.customOrderNotificationOutbox.update({
         where: { id: event.id },
         data: {
           status: CustomOrderOutboxStatus.FAILED,
-          lastError: this.formatError(error),
+          lastError: exhausted
+            ? `DLQ_EXHAUSTED:${this.formatError(error)}`
+            : this.formatError(error),
         },
       });
+      if (exhausted) {
+        this.logger.error(
+          `Custom-order notification outbox exhausted retries eventId=${event.id} customOrderId=${current?.customOrderId ?? 'unknown'}`,
+        );
+      }
       return false;
     }
   }
