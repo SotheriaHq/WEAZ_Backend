@@ -21,7 +21,6 @@ import { v4 as uuidv4 } from 'uuid';
 import { randomBytes } from 'crypto';
 import {
   ALL_PERMISSION_CODES,
-  DEFAULT_ADMIN_PERMISSIONS,
   AdminPermissionCode,
   SUPERADMIN_ONLY_PERMISSIONS,
 } from '../constants/permissions';
@@ -107,17 +106,7 @@ export class AdminUsersService {
         },
       });
 
-      // Grant default permissions for Admin role
-      if (targetRole === Role.Admin) {
-        await tx.adminPermissionGrant.createMany({
-          data: DEFAULT_ADMIN_PERMISSIONS.map((code) => ({
-            id: uuidv4(),
-            userId: created.id,
-            permissionCode: code,
-            grantedById: actorId,
-          })),
-        });
-      }
+      // New Admin users start with zero permissions; SuperAdmin grants explicitly.
 
       await (tx as any).adminAuditLog.create({
         data: {
@@ -194,18 +183,7 @@ export class AdminUsersService {
         select: { id: true, role: true, email: true },
       });
 
-      // If promoted to Admin, grant default permissions
-      if (newRole === Role.Admin && previousRole === Role.User) {
-        await tx.adminPermissionGrant.createMany({
-          data: DEFAULT_ADMIN_PERMISSIONS.map((code) => ({
-            id: uuidv4(),
-            userId: targetUserId,
-            permissionCode: code,
-            grantedById: actorId,
-          })),
-          skipDuplicates: true,
-        });
-      }
+      // If promoted to Admin, permissions remain explicit (no auto-grants).
 
       // If demoted from Admin, revoke all permissions
       if (
@@ -446,14 +424,21 @@ export class AdminUsersService {
   ) {
     const target = await this.prisma.user.findUnique({
       where: { id: targetUserId },
-      select: { id: true, role: true },
+      select: { id: true, role: true, email: true },
     });
     if (!target) throw new NotFoundException('User not found');
+    if (target.role !== Role.Admin) {
+      throw new BadRequestException('Force password reset with temporary password is limited to Admin users');
+    }
+
+    const tempPassword = randomBytes(16).toString('base64url');
+    const hashedPassword = await this.passwordService.hashPassword(tempPassword);
 
     await this.prisma.$transaction(async (tx) => {
       await tx.user.update({
         where: { id: targetUserId },
         data: {
+          password: hashedPassword,
           mustResetPassword: true,
           authVersion: { increment: 1 },
         },
@@ -474,7 +459,85 @@ export class AdminUsersService {
 
     await this.tokenService.revokeAllRefreshTokens(targetUserId);
 
-    return { message: 'User must reset password on next login' };
+    return {
+      email: target.email,
+      temporaryPassword: tempPassword,
+      message: 'Temporary password generated. User must reset password on next login.',
+    };
+  }
+
+  async reissueTempPasswordForAdmin(
+    targetUserId: string,
+    verification: {
+      actorEmail: string;
+      actorUserIdConfirm: string;
+      targetUserIdConfirm: string;
+    },
+    actorId: string,
+    actorEmailFromToken: string,
+    req: Request,
+  ) {
+    if (verification.actorUserIdConfirm !== actorId) {
+      throw new ForbiddenException('Actor ID confirmation mismatch');
+    }
+    if (verification.targetUserIdConfirm !== targetUserId) {
+      throw new ForbiddenException('Target user confirmation mismatch');
+    }
+    if (verification.actorEmail.trim().toLowerCase() !== actorEmailFromToken.trim().toLowerCase()) {
+      throw new ForbiddenException('Actor email verification failed');
+    }
+
+    const target = await this.prisma.user.findUnique({
+      where: { id: targetUserId },
+      select: { id: true, role: true, email: true },
+    });
+    if (!target) throw new NotFoundException('User not found');
+    if (target.role !== Role.Admin) {
+      throw new BadRequestException('Temporary password reissue is limited to Admin users');
+    }
+
+    const tempPassword = randomBytes(16).toString('base64url');
+    const hashedPassword = await this.passwordService.hashPassword(tempPassword);
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.user.update({
+        where: { id: targetUserId },
+        data: {
+          password: hashedPassword,
+          mustResetPassword: true,
+          authVersion: { increment: 1 },
+        },
+      });
+
+      await (tx as any).adminAuditLog.create({
+        data: {
+          id: uuidv4(),
+          actorUserId: actorId,
+          action: AdminAuditAction.ADMIN_USER_FORCE_PASSWORD_RESET,
+          targetType: 'User',
+          targetId: targetUserId,
+          previousState: null,
+          newState: {
+            reissuedTemporaryPassword: true,
+            securityVerification: {
+              actorEmailVerified: true,
+              actorUserIdConfirmed: true,
+              targetUserIdConfirmed: true,
+            },
+          },
+          ipAddress: req.socket?.remoteAddress ?? null,
+          userAgent: req.headers['user-agent'] ?? null,
+        },
+      });
+    });
+
+    await this.tokenService.revokeAllRefreshTokens(targetUserId);
+
+    return {
+      email: target.email,
+      temporaryPassword: tempPassword,
+      message: 'Temporary password reissued. Share securely and rotate after first login.',
+    };
   }
 
   /**
@@ -488,8 +551,13 @@ export class AdminUsersService {
     search?: string;
   }) {
     const take = Math.min(params.limit ?? 50, 100);
-    const where: Record<string, unknown> = {};
+    const where: Record<string, unknown> = {
+      role: { not: Role.SuperAdmin },
+    };
 
+    if (params.role === Role.SuperAdmin) {
+      return { items: [], nextCursor: undefined };
+    }
     if (params.role) where.role = params.role;
     if (params.status) where.status = params.status;
     if (params.search) {
@@ -564,7 +632,9 @@ export class AdminUsersService {
         },
       },
     });
-    if (!user) throw new NotFoundException('User not found');
+    if (!user || user.role === Role.SuperAdmin) {
+      throw new NotFoundException('User not found');
+    }
 
     return {
       ...user,
@@ -580,7 +650,13 @@ export class AdminUsersService {
     email?: string;
   }) {
     const take = Math.min(params.limit ?? 50, 100);
-    const where: Record<string, unknown> = {};
+    const where: Record<string, unknown> = {
+      user: {
+        role: {
+          not: Role.SuperAdmin,
+        },
+      },
+    };
 
     if (params.status) {
       where.status = params.status;
@@ -1244,6 +1320,90 @@ export class AdminUsersService {
       message: 'User data permanently erased',
       erasedEntities: counts,
     };
+  }
+
+  async permanentlyDeleteDeactivatedAdminUser(
+    targetUserId: string,
+    actorId: string,
+    req: Request,
+  ) {
+    if (targetUserId === actorId) {
+      throw new BadRequestException('You cannot permanently delete your own account');
+    }
+
+    const target = await this.prisma.user.findUnique({
+      where: { id: targetUserId },
+      select: {
+        id: true,
+        email: true,
+        role: true,
+        status: true,
+        brand: { select: { id: true } },
+      },
+    });
+
+    if (!target) throw new NotFoundException('User not found');
+    if (target.role !== Role.Admin) {
+      throw new BadRequestException('Permanent delete is limited to Admin users');
+    }
+    if (target.status !== UserStatus.DEACTIVATED) {
+      throw new BadRequestException('Admin must be deactivated before permanent delete');
+    }
+    if (target.brand?.id) {
+      throw new BadRequestException('Cannot permanently delete admin user linked to a brand');
+    }
+
+    const nowIso = new Date().toISOString();
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.adminPermissionGrant.deleteMany({ where: { userId: targetUserId } });
+      await tx.accountReactivationRequest.deleteMany({ where: { userId: targetUserId } });
+      await tx.refreshToken.deleteMany({ where: { userId: targetUserId } });
+      await tx.notification.deleteMany({ where: { recipientId: targetUserId } });
+      await tx.messageNotificationOutbox.deleteMany({ where: { recipientId: targetUserId } });
+      await tx.messageThreadParticipant.deleteMany({ where: { userId: targetUserId } });
+
+      await tx.message.updateMany({
+        where: { senderUserId: targetUserId },
+        data: {
+          senderUserId: null,
+          bodyText: null,
+          visibilityState: 'REDACTED',
+          moderatedAt: new Date(),
+          moderationReason: 'ADMIN_USER_PERMANENT_DELETE',
+        },
+      });
+
+      await tx.messageThread.updateMany({
+        where: { buyerId: targetUserId },
+        data: { buyerId: null },
+      });
+
+      await (tx as any).adminAuditLog.create({
+        data: {
+          id: uuidv4(),
+          actorUserId: actorId,
+          action: AdminAuditAction.ADMIN_USER_DATA_WIPE,
+          targetType: 'User',
+          targetId: targetUserId,
+          previousState: {
+            email: target.email,
+            role: target.role,
+            status: target.status,
+          },
+          newState: {
+            permanentlyDeleted: true,
+            deletedAt: nowIso,
+          },
+          ipAddress: req.socket?.remoteAddress ?? null,
+          userAgent: req.headers['user-agent'] ?? null,
+        },
+      });
+
+      await tx.user.delete({ where: { id: targetUserId } });
+    });
+
+    return { message: 'Admin user permanently deleted' };
   }
 }
 

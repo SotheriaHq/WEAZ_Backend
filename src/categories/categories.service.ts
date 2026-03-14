@@ -4,8 +4,11 @@ import {
   NotFoundException,
   Logger,
 } from '@nestjs/common';
+import { NotificationType, Role, UserStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { NotificationsService } from 'src/notifications/notifications.service';
 import { UpsertCategoryDto } from './dto/upsert-category.dto';
+import { UpsertSubCategoryDto } from './dto/upsert-sub-category.dto';
 import { v4 as uuidv4 } from 'uuid';
 import {
   DEFAULT_COLLECTION_CATEGORIES,
@@ -19,7 +22,54 @@ import {
 export class CategoriesService {
   private readonly logger = new Logger(CategoriesService.name);
 
-  constructor(private readonly prisma: PrismaService) { }
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly notifications: NotificationsService,
+  ) {}
+
+  private async notifyAdminsOfTaxonomyAction(params: {
+    action: string;
+    message: string;
+    actorUserId?: string;
+    categoryId?: string;
+    subCategoryId?: string;
+  }) {
+    const admins = await this.prisma.user.findMany({
+      where: {
+        role: { in: [Role.SuperAdmin, Role.Admin] },
+        status: UserStatus.ACTIVE,
+      },
+      select: { id: true },
+    });
+
+    if (admins.length === 0) {
+      return;
+    }
+
+    await Promise.all(
+      admins.map((admin) =>
+        this.notifications
+          .create(admin.id, NotificationType.ADMIN_ACTION, {
+            actorId: params.actorUserId,
+            payload: {
+              action: params.action,
+              message: params.message,
+              categoryId: params.categoryId,
+              subCategoryId: params.subCategoryId,
+              actorUserId: params.actorUserId,
+              targetUrl: '/admin/taxonomy',
+            },
+          })
+          .catch((error) => {
+            this.logger.warn(
+              `Failed to create taxonomy admin notification for ${admin.id}: ${
+                error instanceof Error ? error.message : 'unknown error'
+              }`,
+            );
+          }),
+      ),
+    );
+  }
 
   // =====================
   // Admin — Main Categories
@@ -62,7 +112,7 @@ export class CategoriesService {
     }
   }
 
-  async create(dto: UpsertCategoryDto) {
+  async create(dto: UpsertCategoryDto, actorUserId?: string) {
     const slug = await this.generateUniqueSlug(dto.name);
     const id = uuidv4();
     const row = await this.prisma.collectionCategory.create({
@@ -75,6 +125,14 @@ export class CategoriesService {
         isActive: true,
       },
     });
+
+    await this.notifyAdminsOfTaxonomyAction({
+      action: 'TAXONOMY_CATEGORY_CREATED',
+      message: `Category created: ${row.name}`,
+      actorUserId,
+      categoryId: row.id,
+    });
+
     return {
       id: row.id,
       slug: row.slug,
@@ -85,7 +143,7 @@ export class CategoriesService {
     };
   }
 
-  async update(id: string, dto: UpsertCategoryDto) {
+  async update(id: string, dto: UpsertCategoryDto, actorUserId?: string) {
     const existing = await this.prisma.collectionCategory.findUnique({
       where: { id },
     });
@@ -107,6 +165,14 @@ export class CategoriesService {
       where: { id },
       data,
     });
+
+    await this.notifyAdminsOfTaxonomyAction({
+      action: 'TAXONOMY_CATEGORY_UPDATED',
+      message: `Category updated: ${updated.name}`,
+      actorUserId,
+      categoryId: updated.id,
+    });
+
     return {
       id: updated.id,
       slug: updated.slug,
@@ -117,7 +183,7 @@ export class CategoriesService {
     };
   }
 
-  async activate(id: string) {
+  async activate(id: string, actorUserId?: string) {
     const existing = await this.prisma.collectionCategory.findUnique({
       where: { id },
     });
@@ -127,10 +193,18 @@ export class CategoriesService {
       where: { id },
       data: { isActive: true },
     });
+
+    await this.notifyAdminsOfTaxonomyAction({
+      action: 'TAXONOMY_CATEGORY_ACTIVATED',
+      message: `Category activated: ${updated.name}`,
+      actorUserId,
+      categoryId: updated.id,
+    });
+
     return updated;
   }
 
-  async deactivate(id: string) {
+  async deactivate(id: string, actorUserId?: string) {
     const existing = await this.prisma.collectionCategory.findUnique({
       where: { id },
     });
@@ -140,10 +214,18 @@ export class CategoriesService {
       where: { id },
       data: { isActive: false },
     });
+
+    await this.notifyAdminsOfTaxonomyAction({
+      action: 'TAXONOMY_CATEGORY_DEACTIVATED',
+      message: `Category deactivated: ${updated.name}`,
+      actorUserId,
+      categoryId: updated.id,
+    });
+
     return updated;
   }
 
-  async remove(id: string) {
+  async remove(id: string, actorUserId?: string) {
     const existing = await this.prisma.collectionCategory.findUnique({
       where: { id },
     });
@@ -155,7 +237,175 @@ export class CategoriesService {
     if (designReferencing > 0 || storeReferencing > 0)
       throw new BadRequestException('Cannot delete category in use');
     await this.prisma.collectionCategory.delete({ where: { id } });
+
+    await this.notifyAdminsOfTaxonomyAction({
+      action: 'TAXONOMY_CATEGORY_DELETED',
+      message: `Category deleted: ${existing.name}`,
+      actorUserId,
+      categoryId: existing.id,
+    });
+
     return { success: true };
+  }
+
+  private async generateUniqueSubCategorySlug(categoryId: string, base: string): Promise<string> {
+    const normalize = (s: string) =>
+      s
+        .toLowerCase()
+        .trim()
+        .replace(/[^a-z0-9 ]+/g, '')
+        .replace(/\s+/g, '-');
+    const baseSlug = normalize(base).slice(0, 60) || 'sub-category';
+    let slug = baseSlug;
+    let attempt = 1;
+
+    while (true) {
+      const exists = await this.prisma.collectionCategoryType.findFirst({
+        where: { categoryId, slug },
+        select: { id: true },
+      });
+      if (!exists) return slug;
+      slug = `${baseSlug}-${attempt++}`;
+      if (attempt > 50) {
+        throw new BadRequestException('Unable to generate unique sub-category slug');
+      }
+    }
+  }
+
+  async createSubCategory(categoryId: string, dto: UpsertSubCategoryDto, actorUserId?: string) {
+    const category = await this.prisma.collectionCategory.findUnique({ where: { id: categoryId } });
+    if (!category) {
+      throw new NotFoundException('Category not found');
+    }
+
+    const slug = await this.generateUniqueSubCategorySlug(categoryId, dto.name);
+
+    const row = await this.prisma.collectionCategoryType.create({
+      data: {
+        id: uuidv4(),
+        categoryId,
+        slug,
+        name: dto.name.trim(),
+        description: dto.description?.trim() || null,
+        order: dto.order ?? 0,
+        isActive: true,
+      },
+    });
+
+    await this.notifyAdminsOfTaxonomyAction({
+      action: 'TAXONOMY_SUBCATEGORY_CREATED',
+      message: `Sub-category created: ${row.name}`,
+      actorUserId,
+      categoryId: row.categoryId,
+      subCategoryId: row.id,
+    });
+
+    return {
+      id: row.id,
+      categoryId: row.categoryId,
+      slug: row.slug,
+      name: row.name,
+      description: row.description,
+      order: row.order,
+      isActive: row.isActive,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    };
+  }
+
+  async updateSubCategory(subCategoryId: string, dto: UpsertSubCategoryDto, actorUserId?: string) {
+    const existing = await this.prisma.collectionCategoryType.findUnique({ where: { id: subCategoryId } });
+    if (!existing) {
+      throw new NotFoundException('Sub-category not found');
+    }
+
+    const data: any = {};
+    if (dto.name && dto.name.trim() !== existing.name) {
+      data.name = dto.name.trim();
+    }
+    if (dto.description !== undefined) {
+      data.description = dto.description?.trim() || null;
+    }
+    if (dto.order !== undefined) {
+      data.order = dto.order;
+    }
+
+    if (Object.keys(data).length === 0) {
+      return existing;
+    }
+
+    const updated = await this.prisma.collectionCategoryType.update({
+      where: { id: subCategoryId },
+      data,
+    });
+
+    await this.notifyAdminsOfTaxonomyAction({
+      action: 'TAXONOMY_SUBCATEGORY_UPDATED',
+      message: `Sub-category updated: ${updated.name}`,
+      actorUserId,
+      categoryId: updated.categoryId,
+      subCategoryId: updated.id,
+    });
+
+    return {
+      id: updated.id,
+      categoryId: updated.categoryId,
+      slug: updated.slug,
+      name: updated.name,
+      description: updated.description,
+      order: updated.order,
+      isActive: updated.isActive,
+      createdAt: updated.createdAt,
+      updatedAt: updated.updatedAt,
+    };
+  }
+
+  async activateSubCategory(subCategoryId: string, actorUserId?: string) {
+    const existing = await this.prisma.collectionCategoryType.findUnique({ where: { id: subCategoryId } });
+    if (!existing) {
+      throw new NotFoundException('Sub-category not found');
+    }
+    if (existing.isActive) {
+      return existing;
+    }
+    const updated = await this.prisma.collectionCategoryType.update({
+      where: { id: subCategoryId },
+      data: { isActive: true },
+    });
+
+    await this.notifyAdminsOfTaxonomyAction({
+      action: 'TAXONOMY_SUBCATEGORY_ACTIVATED',
+      message: `Sub-category activated: ${updated.name}`,
+      actorUserId,
+      categoryId: updated.categoryId,
+      subCategoryId: updated.id,
+    });
+
+    return updated;
+  }
+
+  async deactivateSubCategory(subCategoryId: string, actorUserId?: string) {
+    const existing = await this.prisma.collectionCategoryType.findUnique({ where: { id: subCategoryId } });
+    if (!existing) {
+      throw new NotFoundException('Sub-category not found');
+    }
+    if (!existing.isActive) {
+      return existing;
+    }
+    const updated = await this.prisma.collectionCategoryType.update({
+      where: { id: subCategoryId },
+      data: { isActive: false },
+    });
+
+    await this.notifyAdminsOfTaxonomyAction({
+      action: 'TAXONOMY_SUBCATEGORY_DEACTIVATED',
+      message: `Sub-category deactivated: ${updated.name}`,
+      actorUserId,
+      categoryId: updated.categoryId,
+      subCategoryId: updated.id,
+    });
+
+    return updated;
   }
 
   // =====================

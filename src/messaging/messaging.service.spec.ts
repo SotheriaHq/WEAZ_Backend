@@ -31,6 +31,7 @@ describe('MessagingService', () => {
       overrides?.query ??
       ({
         getMessages: jest.fn(),
+        getSummariesForActor: jest.fn(),
       } as any);
 
     const attachments =
@@ -140,5 +141,39 @@ describe('MessagingService', () => {
         'idem-1',
       ),
     ).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it('returns bulk summaries keyed by requested context ids for buyer custom orders', async () => {
+    const { service, prisma, query } = buildService();
+
+    prisma.customOrder.findMany = jest.fn().mockResolvedValue([
+      { id: 'co_1' },
+      { id: 'co_2' },
+    ]);
+    prisma.messageThread.findMany = jest.fn().mockResolvedValue([
+      { id: 'thread_1', customOrderId: 'co_1', orderId: null },
+      { id: 'thread_2', customOrderId: 'co_2', orderId: null },
+    ]);
+
+    query.getSummariesForActor.mockResolvedValue({
+      thread_1: { id: 'thread_1', hasUnread: true, unreadCount: 3, responseRequired: true },
+      thread_2: { id: 'thread_2', hasUnread: false, unreadCount: 0, responseRequired: false },
+    });
+
+    const result = await service.getBulkSummariesForCustomOrdersBuyer('buyer_1', {
+      contextIds: ['co_1', 'co_2'],
+      includeUnreadCount: 'true',
+    });
+
+    expect(result.items).toEqual([
+      {
+        contextId: 'co_1',
+        summary: { id: 'thread_1', hasUnread: true, unreadCount: 3, responseRequired: true },
+      },
+      {
+        contextId: 'co_2',
+        summary: { id: 'thread_2', hasUnread: false, unreadCount: 0, responseRequired: false },
+      },
+    ]);
   });
 });

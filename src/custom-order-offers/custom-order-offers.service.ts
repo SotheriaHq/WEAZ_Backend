@@ -32,6 +32,7 @@ export class CustomOrderOffersService {
     await this.assertSourceOwnership(brand.id, ownerUserId, dto.sourceType, dto.sourceId);
     await this.assertBasisAccessible(brand.id, dto.fabricRuleBasisId);
     await this.assertFreeformPointsAccessible(brand.id, dto.requiredFreeformPointIds ?? []);
+    const resolvedTitle = this.resolveOfferTitle(dto.title);
 
     const normalizedRules = this.pricingService.validateOfferRules(dto.rules);
     this.validateOfferGuardrails(dto, dto.rules);
@@ -42,7 +43,7 @@ export class CustomOrderOffersService {
           brandId: brand.id,
           sourceType: dto.sourceType,
           sourceId: dto.sourceId,
-          title: dto.title.trim(),
+          title: resolvedTitle,
           buyerInstructionText: dto.buyerInstructionText?.trim() || null,
           requiredMeasurementKeys: dto.requiredMeasurementKeys,
           requiredFreeformPointIds: dto.requiredFreeformPointIds ?? [],
@@ -168,12 +169,13 @@ export class CustomOrderOffersService {
 
     const updated = await this.prisma.$transaction(async (tx) => {
       const nextVersion = existing.currentVersion + 1;
+      const resolvedTitle = this.resolveOfferTitle(mergedOffer.title, existing.title);
       const offer = await tx.customOrderOffer.update({
         where: { id: offerId },
         data: {
           sourceType: mergedOffer.sourceType,
           sourceId: mergedOffer.sourceId,
-          title: String(mergedOffer.title).trim(),
+          title: resolvedTitle,
           buyerInstructionText: mergedOffer.buyerInstructionText?.trim() || null,
           requiredMeasurementKeys: mergedOffer.requiredMeasurementKeys,
           requiredFreeformPointIds: mergedOffer.requiredFreeformPointIds,
@@ -549,6 +551,20 @@ export class CustomOrderOffersService {
     if (dto.rushProductionLeadDays >= dto.productionLeadDays) {
       throw new BadRequestException('Rush production lead time must be shorter than standard production lead time');
     }
+  }
+
+  private resolveOfferTitle(inputTitle?: string | null, fallbackTitle?: string | null): string {
+    const normalizedInput = typeof inputTitle === 'string' ? inputTitle.trim() : '';
+    if (normalizedInput.length > 0) {
+      return normalizedInput;
+    }
+
+    const normalizedFallback = typeof fallbackTitle === 'string' ? fallbackTitle.trim() : '';
+    if (normalizedFallback.length > 0) {
+      return normalizedFallback;
+    }
+
+    return 'Custom order offer';
   }
 
   private buildOfferSnapshot(

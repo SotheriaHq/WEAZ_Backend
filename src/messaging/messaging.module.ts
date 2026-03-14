@@ -7,6 +7,8 @@ import { CustomOrderMessagingBrandController } from './controllers/custom-order-
 import { OrderMessagingBuyerController } from './controllers/order-messaging-buyer.controller';
 import { OrderMessagingBrandController } from './controllers/order-messaging-brand.controller';
 import { AdminMessagingController } from './controllers/admin-messaging.controller';
+import { MessagingSummaryBuyerController } from './controllers/messaging-summary-buyer.controller';
+import { MessagingSummaryBrandController } from './controllers/messaging-summary-brand.controller';
 import { MessagingAttachmentService } from './messaging-attachment.service';
 import { MessagingPolicyService } from './messaging-policy.service';
 import { MessagingQueryService } from './messaging-query.service';
@@ -22,6 +24,8 @@ import { UploadModule } from 'src/upload/upload.module';
     OrderMessagingBuyerController,
     OrderMessagingBrandController,
     AdminMessagingController,
+    MessagingSummaryBuyerController,
+    MessagingSummaryBrandController,
   ],
   providers: [
     MessagingService,

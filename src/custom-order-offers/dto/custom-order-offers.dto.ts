@@ -45,9 +45,10 @@ export class CreateCustomOrderOfferDto {
   @IsUUID()
   sourceId: string;
 
+  @IsOptional()
   @IsString()
   @Length(3, 120)
-  title: string;
+  title?: string;
 
   @IsOptional()
   @IsString()

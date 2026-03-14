@@ -705,4 +705,60 @@ export class AuthService {
 
     return { message: 'Password updated successfully' };
   }
+
+  async completeAdminFirstLoginReset(
+    email: string,
+    currentPassword: string,
+    newPassword: string,
+  ) {
+    const normalizedEmail = email?.trim().toLowerCase();
+    if (!normalizedEmail || !currentPassword || !newPassword) {
+      throw new BadRequestException('Email, current password, and new password are required');
+    }
+    if (newPassword.length < 8) {
+      throw new BadRequestException('New password must be at least 8 characters');
+    }
+    if (currentPassword === newPassword) {
+      throw new BadRequestException('New password must be different from temporary password');
+    }
+
+    const user = await this.prisma.user.findUnique({
+      where: { email: normalizedEmail },
+      select: {
+        id: true,
+        role: true,
+        password: true,
+        mustResetPassword: true,
+      },
+    });
+
+    if (!user || (user.role !== Role.Admin && user.role !== Role.SuperAdmin)) {
+      throw new UnauthorizedException('Invalid account or credentials');
+    }
+    if (!user.mustResetPassword) {
+      throw new BadRequestException('This account does not require a password reset');
+    }
+
+    const valid = await this.passwordService.verifyPassword(
+      user.password,
+      currentPassword,
+    );
+    if (!valid) {
+      throw new UnauthorizedException('Temporary password is incorrect');
+    }
+
+    const password = await this.passwordService.hashPassword(newPassword);
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: {
+        password,
+        mustResetPassword: false,
+        authVersion: { increment: 1 },
+      },
+    });
+
+    await this.tokenService.revokeAllRefreshTokens(user.id);
+
+    return { message: 'Password reset complete. You can now sign in.' };
+  }
 }

@@ -29,6 +29,7 @@ import { CreateAdminDto } from './dto/create-admin.dto';
 import { UpdateRoleDto } from './dto/update-role.dto';
 import { UpdateUserStatusDto } from './dto/update-user-status.dto';
 import { ReviewReactivationRequestDto } from './dto/review-reactivation-request.dto';
+import { ReissueTempPasswordDto } from './dto/reissue-temp-password.dto';
 import { resolveSearchQuery } from 'src/common/utils/search-query';
 
 const SKIP_ALL_THROTTLERS = {
@@ -179,6 +180,23 @@ export class AdminUsersController {
     return this.adminUsersService.forcePasswordReset(id, req.user.id, req);
   }
 
+  @Post(':id/reissue-temp-password')
+  @Roles(Role.SuperAdmin)
+  @ApiOperation({ summary: 'Reissue temporary password for admin (SuperAdmin only)' })
+  async reissueTempPassword(
+    @Param('id') id: string,
+    @Body(ValidationPipe) body: ReissueTempPasswordDto,
+    @Req() req: Request & { user: { id: string; email: string } },
+  ) {
+    return this.adminUsersService.reissueTempPasswordForAdmin(
+      id,
+      body,
+      req.user.id,
+      req.user.email,
+      req,
+    );
+  }
+
   @Get(':id/data-export')
   @Roles(Role.SuperAdmin, Role.Admin)
   @RequirePermissions(ADMIN_PERMISSIONS.USERS_READ)
@@ -215,5 +233,16 @@ export class AdminUsersController {
     @Req() req: Request & { user: { id: string } },
   ) {
     return this.adminUsersService.hardDeleteSeededUser(id, req.user.id, req);
+  }
+
+  @Delete(':id/permanent-delete')
+  @Roles(Role.SuperAdmin)
+  @RequirePermissions(ADMIN_PERMISSIONS.USERS_DATA_WIPE)
+  @ApiOperation({ summary: 'Permanently delete a deactivated admin user (SuperAdmin only)' })
+  async permanentlyDeleteAdminUser(
+    @Param('id') id: string,
+    @Req() req: Request & { user: { id: string } },
+  ) {
+    return this.adminUsersService.permanentlyDeleteDeactivatedAdminUser(id, req.user.id, req);
   }
 }

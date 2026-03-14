@@ -12,6 +12,7 @@ import {
   Max,
   MaxLength,
   Min,
+  MinLength,
   ValidateIf,
 } from 'class-validator';
 
@@ -70,6 +71,19 @@ export class AdminSystemMessageDto {
 }
 
 export class QueryThreadSummaryDto {
+  @IsOptional()
+  @IsIn(['true', 'false'])
+  includeUnreadCount?: string;
+}
+
+export class BulkQueryThreadSummaryDto {
+  @IsArray()
+  @ArrayUnique()
+  @ArrayMaxSize(100)
+  @MinLength(1, { each: true })
+  @IsUUID('4', { each: true })
+  contextIds!: string[];
+
   @IsOptional()
   @IsIn(['true', 'false'])
   includeUnreadCount?: string;

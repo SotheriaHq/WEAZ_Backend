@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
-import { BrandVerificationStatus } from '@prisma/client';
+import { BrandVerificationStatus, Role } from '@prisma/client';
 
 @Injectable()
 export class AdminDashboardService {
@@ -19,8 +19,13 @@ export class AdminDashboardService {
       openDisputes,
       recentLogs,
     ] = await Promise.all([
-      this.prisma.user.count(),
-      this.prisma.user.count({ where: { updatedAt: { gte: thirtyDaysAgo } } }),
+      this.prisma.user.count({ where: { role: { not: Role.SuperAdmin } } }),
+      this.prisma.user.count({
+        where: {
+          role: { not: Role.SuperAdmin },
+          updatedAt: { gte: thirtyDaysAgo },
+        },
+      }),
       this.prisma.brand.count(),
       this.prisma.brand.count({
         where: { verificationStatus: BrandVerificationStatus.PENDING },

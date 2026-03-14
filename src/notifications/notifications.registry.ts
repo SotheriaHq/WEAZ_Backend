@@ -1092,6 +1092,37 @@ export class NotificationRegistry {
       formatter: (n: any) => n.payload?.message || 'A message in your order thread was moderated',
     });
 
+    registry.register({
+      type: NotificationType.ADMIN_ACTION,
+      schema: Joi.object({
+        action: Joi.string().optional(),
+        message: Joi.string().optional(),
+        targetUrl: Joi.string().optional(),
+        actorUserId: Joi.string().optional(),
+        brandId: Joi.string().optional(),
+        categoryId: Joi.string().optional(),
+        subCategoryId: Joi.string().optional(),
+        pointId: Joi.string().optional(),
+        submittedByUserId: Joi.string().optional(),
+      }),
+      formatter: (n: any) => {
+        const message = n.payload?.message;
+        if (typeof message === 'string' && message.trim().length > 0) {
+          return message;
+        }
+
+        const action =
+          typeof n.payload?.action === 'string'
+            ? n.payload.action.trim().toUpperCase()
+            : '';
+        if (!action) {
+          return 'Admin action recorded';
+        }
+
+        return `Admin action: ${action.replace(/_/g, ' ').toLowerCase()}`;
+      },
+    });
+
     return registry;
   }
 }

@@ -9,10 +9,11 @@ import {
   OnModuleInit,
   ForbiddenException,
 } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+import { NotificationType, Prisma, Role, UserStatus } from '@prisma/client';
 import { createClient, type RedisClientType } from 'redis';
 import { v4 as uuidv4 } from 'uuid';
 import { PrismaService } from 'src/prisma/prisma.service';
+import { NotificationsService } from 'src/notifications/notifications.service';
 import { CreateFreeformPointDto } from './dto/create-freeform-point.dto';
 import { QueryMeasurementPointsDto } from './dto/query-measurement-points.dto';
 
@@ -39,7 +40,52 @@ export class MeasurementPointsService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(MeasurementPointsService.name);
   private redis: RedisClientType | null = null;
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly notifications: NotificationsService,
+  ) {}
+
+  private async notifyAdminsOfFreeformSubmission(params: {
+    pointId: string;
+    label: string;
+    category: string;
+    brandId: string;
+    submittedByUserId: string;
+  }) {
+    const admins = await this.prisma.user.findMany({
+      where: {
+        role: { in: [Role.SuperAdmin, Role.Admin] },
+        status: UserStatus.ACTIVE,
+      },
+      select: { id: true },
+    });
+
+    if (admins.length === 0) return;
+
+    await Promise.all(
+      admins.map((admin) =>
+        this.notifications
+          .create(admin.id, NotificationType.ADMIN_ACTION, {
+            payload: {
+              action: 'MEASUREMENT_FREEFORM_SUBMITTED',
+              message: `New measurement submitted for moderation: ${params.label}`,
+              pointId: params.pointId,
+              category: params.category,
+              brandId: params.brandId,
+              submittedByUserId: params.submittedByUserId,
+              targetUrl: '/admin/taxonomy',
+            },
+          })
+          .catch((error) => {
+            this.logger.warn(
+              `Failed to create admin measurement notification for ${admin.id}: ${
+                error instanceof Error ? error.message : 'unknown error'
+              }`,
+            );
+          }),
+      ),
+    );
+  }
 
   async onModuleInit() {
     const redisUrl = String(process.env.REDIS_URL || '').trim();
@@ -300,6 +346,14 @@ export class MeasurementPointsService implements OnModuleInit, OnModuleDestroy {
         sortOrder: 999,
         isActive: true,
       },
+    });
+
+    await this.notifyAdminsOfFreeformSubmission({
+      pointId: created.id,
+      label: created.label,
+      category: created.category,
+      brandId,
+      submittedByUserId: authUserId,
     });
 
     await this.bustCache();

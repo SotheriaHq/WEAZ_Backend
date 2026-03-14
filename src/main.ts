@@ -307,6 +307,7 @@ async function bootstrap() {
       'x-request-id',
       'idempotency-key',
       'x-idempotency-key',
+      'x-confirm-wipe',
       'Cache-Control',
       'Pragma',
       'If-None-Match',

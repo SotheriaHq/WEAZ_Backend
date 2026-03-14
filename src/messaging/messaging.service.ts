@@ -1,6 +1,8 @@
 import {
   BadRequestException,
   ForbiddenException,
+  HttpException,
+  HttpStatus,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -25,6 +27,7 @@ import { MessagingQueryService } from './messaging-query.service';
 import { MessagingSideEffectsService } from './messaging-side-effects.service';
 import {
   AdminSystemMessageDto,
+  BulkQueryThreadSummaryDto,
   MarkThreadReadDto,
   QueryMessagesDto,
   QueryThreadSummaryDto,
@@ -215,6 +218,92 @@ export class MessagingService {
     return this.query.getSummaryForActor(
       thread.id,
       actorId,
+      queryDto.includeUnreadCount === 'true',
+    );
+  }
+
+  async getBulkSummariesForCustomOrdersBuyer(actorId: string, queryDto: BulkQueryThreadSummaryDto) {
+    const contextIds = this.normalizeContextIds(queryDto.contextIds);
+    const allowed = await this.prisma.customOrder.findMany({
+      where: {
+        id: { in: contextIds },
+        buyerId: actorId,
+      },
+      select: { id: true },
+    });
+
+    return this.getBulkSummariesForContext(
+      actorId,
+      MessageContextType.CUSTOM_ORDER,
+      contextIds,
+      allowed.map((entry) => entry.id),
+      queryDto.includeUnreadCount === 'true',
+    );
+  }
+
+  async getBulkSummariesForCustomOrdersBrand(
+    actorId: string,
+    brandId: string,
+    queryDto: BulkQueryThreadSummaryDto,
+  ) {
+    const contextIds = this.normalizeContextIds(queryDto.contextIds);
+    const allowed = await this.prisma.customOrder.findMany({
+      where: {
+        id: { in: contextIds },
+        brandId,
+        brand: { ownerId: actorId },
+      },
+      select: { id: true },
+    });
+
+    return this.getBulkSummariesForContext(
+      actorId,
+      MessageContextType.CUSTOM_ORDER,
+      contextIds,
+      allowed.map((entry) => entry.id),
+      queryDto.includeUnreadCount === 'true',
+    );
+  }
+
+  async getBulkSummariesForOrdersBuyer(actorId: string, queryDto: BulkQueryThreadSummaryDto) {
+    const contextIds = this.normalizeContextIds(queryDto.contextIds);
+    const allowed = await this.prisma.order.findMany({
+      where: {
+        id: { in: contextIds },
+        buyerId: actorId,
+      },
+      select: { id: true },
+    });
+
+    return this.getBulkSummariesForContext(
+      actorId,
+      MessageContextType.STANDARD_ORDER,
+      contextIds,
+      allowed.map((entry) => entry.id),
+      queryDto.includeUnreadCount === 'true',
+    );
+  }
+
+  async getBulkSummariesForOrdersBrand(
+    actorId: string,
+    brandId: string,
+    queryDto: BulkQueryThreadSummaryDto,
+  ) {
+    const contextIds = this.normalizeContextIds(queryDto.contextIds);
+    const allowed = await this.prisma.order.findMany({
+      where: {
+        id: { in: contextIds },
+        brandId,
+        brand: { ownerId: actorId },
+      },
+      select: { id: true },
+    });
+
+    return this.getBulkSummariesForContext(
+      actorId,
+      MessageContextType.STANDARD_ORDER,
+      contextIds,
+      allowed.map((entry) => entry.id),
       queryDto.includeUnreadCount === 'true',
     );
   }
@@ -588,6 +677,39 @@ export class MessagingService {
         return { thread, message: existing, replay: true };
       }
 
+      const now = Date.now();
+      const perUserWindowStart = new Date(now - 60 * 1000);
+      const perThreadWindowStart = new Date(now - 30 * 1000);
+
+      const [perUserBurstCount, perThreadBurstCount] = await Promise.all([
+        tx.message.count({
+          where: {
+            senderUserId: params.actorId,
+            createdAt: { gte: perUserWindowStart },
+          },
+        }),
+        tx.message.count({
+          where: {
+            threadId: thread.id,
+            senderUserId: params.actorId,
+            createdAt: { gte: perThreadWindowStart },
+          },
+        }),
+      ]);
+
+      if (perUserBurstCount >= 30) {
+        throw new HttpException(
+          'Too many messages sent in a short time window',
+          HttpStatus.TOO_MANY_REQUESTS,
+        );
+      }
+      if (perThreadBurstCount >= 12) {
+        throw new HttpException(
+          'Too many messages sent to this thread in a short time window',
+          HttpStatus.TOO_MANY_REQUESTS,
+        );
+      }
+
       const message = await tx.message.create({
         data: {
           threadId: thread.id,
@@ -812,6 +934,70 @@ export class MessagingService {
       where: this.policy.buildContextFilter(contextType, contextId),
       include: { participants: true },
     });
+  }
+
+  private normalizeContextIds(contextIds: string[]) {
+    const ids = Array.from(new Set((contextIds ?? []).filter(Boolean)));
+    if (ids.length === 0) {
+      throw new BadRequestException('contextIds must contain at least one id');
+    }
+    if (ids.length > 100) {
+      throw new BadRequestException('contextIds cannot exceed 100 ids');
+    }
+    return ids;
+  }
+
+  private async getBulkSummariesForContext(
+    actorId: string,
+    contextType: MessageContextType,
+    contextIds: string[],
+    allowedContextIds: string[],
+    includeUnreadCount: boolean,
+  ) {
+    const allowedSet = new Set(allowedContextIds);
+    const forbiddenIds = contextIds.filter((contextId) => !allowedSet.has(contextId));
+    if (forbiddenIds.length > 0) {
+      throw new ForbiddenException('Not allowed to access one or more requested threads');
+    }
+
+    const threads = await this.prisma.messageThread.findMany({
+      where:
+        contextType === MessageContextType.CUSTOM_ORDER
+          ? { contextType, customOrderId: { in: contextIds } }
+          : { contextType, orderId: { in: contextIds } },
+      select: {
+        id: true,
+        customOrderId: true,
+        orderId: true,
+      },
+    });
+
+    const summaryByThreadId = await this.query.getSummariesForActor(
+      threads.map((thread) => thread.id),
+      actorId,
+      includeUnreadCount,
+    );
+
+    const threadByContextId = new Map<string, { id: string; customOrderId: string | null; orderId: string | null }>();
+    for (const thread of threads) {
+      const contextId =
+        contextType === MessageContextType.CUSTOM_ORDER
+          ? thread.customOrderId
+          : thread.orderId;
+      if (contextId) {
+        threadByContextId.set(contextId, thread);
+      }
+    }
+
+    return {
+      items: contextIds.map((contextId) => {
+        const thread = threadByContextId.get(contextId);
+        return {
+          contextId,
+          summary: thread ? (summaryByThreadId[thread.id] ?? null) : null,
+        };
+      }),
+    };
   }
 
   private async getThreadOrThrow(threadId: string) {

@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { MessageKind, MessageParticipantRole, MessageVisibilityState } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 
@@ -141,5 +142,118 @@ export class MessagingQueryService {
       hasUnread,
       responseRequired: hasUnread,
     };
+  }
+
+  async getSummariesForActor(threadIds: string[], actorId: string, includeUnreadCount = false) {
+    const uniqueThreadIds = Array.from(new Set(threadIds.filter(Boolean)));
+    if (uniqueThreadIds.length === 0) {
+      return {} as Record<string, {
+        id: string;
+        status: string;
+        contextType: string;
+        orderId: string | null;
+        customOrderId: string | null;
+        lastMessageAt: Date | null;
+        lastMessagePreview: string | null;
+        lastSenderUserId: string | null;
+        updatedAt: Date;
+        unreadCount?: number;
+        hasUnread: boolean;
+        responseRequired: boolean;
+      }>;
+    }
+
+    const threads = await this.prisma.messageThread.findMany({
+      where: { id: { in: uniqueThreadIds } },
+      select: {
+        id: true,
+        status: true,
+        contextType: true,
+        orderId: true,
+        customOrderId: true,
+        lastMessageAt: true,
+        lastMessagePreview: true,
+        lastSenderUserId: true,
+        updatedAt: true,
+      },
+    });
+
+    if (threads.length === 0) {
+      return {} as Record<string, {
+        id: string;
+        status: string;
+        contextType: string;
+        orderId: string | null;
+        customOrderId: string | null;
+        lastMessageAt: Date | null;
+        lastMessagePreview: string | null;
+        lastSenderUserId: string | null;
+        updatedAt: Date;
+        unreadCount?: number;
+        hasUnread: boolean;
+        responseRequired: boolean;
+      }>;
+    }
+
+    const unreadRows = includeUnreadCount
+      ? await this.prisma.$queryRaw<Array<{ threadId: string; unreadCount: bigint | number }>>(Prisma.sql`
+          SELECT m."threadId" AS "threadId", COUNT(*)::bigint AS "unreadCount"
+          FROM "Message" m
+          LEFT JOIN "MessageThreadParticipant" p
+            ON p."threadId" = m."threadId" AND p."userId" = ${actorId}
+          WHERE m."threadId" IN (${Prisma.join(threads.map((thread) => thread.id))})
+            AND m."visibilityState" = 'VISIBLE'
+            AND m."senderUserId" IS DISTINCT FROM ${actorId}
+            AND (p."lastReadAt" IS NULL OR m."createdAt" > p."lastReadAt")
+          GROUP BY m."threadId"
+        `)
+      : await this.prisma.$queryRaw<Array<{ threadId: string }>>(Prisma.sql`
+          SELECT DISTINCT m."threadId" AS "threadId"
+          FROM "Message" m
+          LEFT JOIN "MessageThreadParticipant" p
+            ON p."threadId" = m."threadId" AND p."userId" = ${actorId}
+          WHERE m."threadId" IN (${Prisma.join(threads.map((thread) => thread.id))})
+            AND m."visibilityState" = 'VISIBLE'
+            AND m."senderUserId" IS DISTINCT FROM ${actorId}
+            AND (p."lastReadAt" IS NULL OR m."createdAt" > p."lastReadAt")
+        `);
+
+    const unreadCountByThreadId = new Map<string, number>();
+    if (includeUnreadCount) {
+      for (const row of unreadRows as Array<{ threadId: string; unreadCount: bigint | number }>) {
+        unreadCountByThreadId.set(row.threadId, Number(row.unreadCount));
+      }
+    } else {
+      for (const row of unreadRows as Array<{ threadId: string }>) {
+        unreadCountByThreadId.set(row.threadId, 1);
+      }
+    }
+
+    const summaries = threads.reduce((acc, thread) => {
+      const unreadCount = unreadCountByThreadId.get(thread.id) ?? 0;
+      const hasUnread = unreadCount > 0;
+      acc[thread.id] = {
+        ...thread,
+        ...(includeUnreadCount ? { unreadCount } : {}),
+        hasUnread,
+        responseRequired: hasUnread,
+      };
+      return acc;
+    }, {} as Record<string, {
+      id: string;
+      status: string;
+      contextType: string;
+      orderId: string | null;
+      customOrderId: string | null;
+      lastMessageAt: Date | null;
+      lastMessagePreview: string | null;
+      lastSenderUserId: string | null;
+      updatedAt: Date;
+      unreadCount?: number;
+      hasUnread: boolean;
+      responseRequired: boolean;
+    }>);
+
+    return summaries;
   }
 }

@@ -40,6 +40,7 @@ import { RequestAccountReactivationDto } from './dto/request-account-reactivatio
 import { RequestAdminPasswordResetDto } from './dto/request-admin-password-reset.dto';
 import { ConfirmAdminPasswordResetDto } from './dto/confirm-admin-password-reset.dto';
 import { ChangeAuthenticatedPasswordDto } from './dto/change-authenticated-password.dto';
+import { CompleteAdminFirstLoginResetDto } from './dto/complete-admin-first-login-reset.dto';
 
 @ApiTags('auth')
 @ApiBearerAuth()
@@ -136,6 +137,19 @@ export class AuthController {
     @Body(ValidationPipe) body: ConfirmAdminPasswordResetDto,
   ) {
     return this.authService.resetAdminPassword(body.token, body.newPassword);
+  }
+
+  @Post('admin/reset-password/first-login')
+  @ApiOperation({ summary: 'Complete first-login required admin password reset' })
+  @Throttle({ default: { limit: 6, ttl: 900000 } })
+  async completeAdminFirstLoginReset(
+    @Body(ValidationPipe) body: CompleteAdminFirstLoginResetDto,
+  ) {
+    return this.authService.completeAdminFirstLoginReset(
+      body.email,
+      body.currentPassword,
+      body.newPassword,
+    );
   }
 
   @UseGuards(JwtAuthGuard)
