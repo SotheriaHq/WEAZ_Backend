@@ -6,7 +6,10 @@ import {
   ConflictException,
   GoneException,
   Optional,
+  InternalServerErrorException,
+  Logger,
 } from '@nestjs/common';
+import { Cron, CronExpression } from '@nestjs/schedule';
 import { InjectQueue } from '@nestjs/bullmq';
 import type { Queue } from 'bullmq';
 import { PrismaService } from 'src/prisma/prisma.service';
@@ -56,6 +59,7 @@ type CollectionDomainValue = 'DESIGN' | 'STORE';
 
 @Injectable()
 export class CollectionsService {
+  private readonly logger = new Logger(CollectionsService.name);
   private readonly defaultCollectionScope: CollectionScope = 'all';
 
   constructor(
@@ -7178,17 +7182,38 @@ export class CollectionsService {
           { jobId: `bulk-upload:${jobId}` },
         );
       } catch (error) {
-        console.warn('Failed to enqueue bulk upload job; running inline', error);
+        if (process.env.NODE_ENV === 'production') {
+          await this.prisma.collectionBulkUploadJob.update({
+            where: { id: jobId },
+            data: { status: 'FAILED', errorSummary: [{ message: 'Queue unavailable in production' }] as any },
+          });
+          throw new InternalServerErrorException('Bulk upload queue is not configured');
+        }
+
+        this.logger.warn(
+          `Failed to enqueue bulk upload job ${jobId}; running dev inline fallback: ${String(error)}`,
+        );
         void setImmediate(() => {
           this.processBulkUploadJob(jobId).catch((err) =>
-            console.warn(`Inline bulk upload failed for ${jobId}: ${String(err)}`),
+            this.logger.error(`Inline bulk upload failed for ${jobId}: ${String(err)}`),
           );
         });
       }
     } else {
+      if (process.env.NODE_ENV === 'production') {
+        await this.prisma.collectionBulkUploadJob.update({
+          where: { id: jobId },
+          data: { status: 'FAILED', errorSummary: [{ message: 'Queue unavailable in production' }] as any },
+        });
+        throw new InternalServerErrorException('Bulk upload queue is not configured');
+      }
+
+      this.logger.warn(
+        `Bulk upload queue not configured; running dev inline fallback for job ${jobId}`,
+      );
       void setImmediate(() => {
         this.processBulkUploadJob(jobId).catch((err) =>
-          console.warn(`Inline bulk upload failed for ${jobId}: ${String(err)}`),
+          this.logger.error(`Inline bulk upload failed for ${jobId}: ${String(err)}`),
         );
       });
     }
@@ -7211,8 +7236,8 @@ export class CollectionsService {
     });
     if (!job) throw new NotFoundException('Bulk upload job not found');
 
-    await this.prisma.collectionBulkUploadJob.update({
-      where: { id: jobId },
+    const claim = await this.prisma.collectionBulkUploadJob.updateMany({
+      where: { id: jobId, status: { in: ['PENDING', 'FAILED', 'PARTIAL'] } },
       data: {
         status: 'PROCESSING',
         processedRows: 0,
@@ -7222,6 +7247,31 @@ export class CollectionsService {
         completedAt: null,
       },
     });
+
+    if (claim.count === 0) {
+      const existing = await this.prisma.collectionBulkUploadJob.findUnique({
+        where: { id: jobId },
+        select: {
+          status: true,
+          processedRows: true,
+          successRows: true,
+          failedRows: true,
+          errorSummary: true,
+        },
+      });
+      if (!existing) throw new NotFoundException('Bulk upload job not found');
+      this.logger.warn(
+        `Skipped bulk upload processing claim for ${jobId}; current status=${existing.status}`,
+      );
+      return {
+        jobId,
+        status: String(existing.status).toLowerCase(),
+        processedRows: existing.processedRows,
+        successRows: existing.successRows,
+        failedRows: existing.failedRows,
+        errors: Array.isArray(existing.errorSummary) ? existing.errorSummary : [],
+      };
+    }
 
     let processedRows = 0;
     let successRows = 0;
@@ -7507,7 +7557,7 @@ export class CollectionsService {
       const thread = await tx.messageThread.create({
         data: {
           id: threadId,
-          contextType: MessageContextType.STANDARD_ORDER,
+          contextType: MessageContextType.CUSTOM_ORDER,
           brandId: collection.owner?.brand?.id ?? null,
           buyerId: requesterId,
           subjectSnapshotJson: {
@@ -7587,6 +7637,25 @@ export class CollectionsService {
       message: 'Your inquiry has been sent to the brand. They will respond soon.',
       estimatedResponseTime: '24-48 hours',
     };
+  }
+
+  @Cron(CronExpression.EVERY_5_MINUTES)
+  async recoverStaleBulkUploadJobs() {
+    const staleThreshold = new Date(Date.now() - 15 * 60 * 1000);
+    const result = await this.prisma.collectionBulkUploadJob.updateMany({
+      where: {
+        status: 'PROCESSING',
+        updatedAt: { lt: staleThreshold },
+      },
+      data: {
+        status: 'FAILED',
+        errorSummary: [{ message: 'Job timed out' }] as any,
+      },
+    });
+
+    if (result.count > 0) {
+      this.logger.warn(`Recovered ${result.count} stale bulk upload job(s)`);
+    }
   }
 
   // ===================== Draft Conflict Detection =====================

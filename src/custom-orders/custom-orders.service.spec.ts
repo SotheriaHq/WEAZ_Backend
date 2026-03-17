@@ -58,6 +58,8 @@ describe('CustomOrdersService', () => {
   });
 
   beforeEach(async () => {
+    process.env.CUSTOM_ORDER_CANCEL_WINDOW_MS = String(60 * 60 * 1000);
+
     prisma = {
       user: {
         findUnique: jest.fn(),
@@ -120,6 +122,10 @@ describe('CustomOrdersService', () => {
     }).compile();
 
     service = module.get<CustomOrdersService>(CustomOrdersService);
+  });
+
+  afterEach(() => {
+    delete process.env.CUSTOM_ORDER_CANCEL_WINDOW_MS;
   });
 
   it('confirms delivery and releases the final completion payout allocation', async () => {
@@ -463,6 +469,7 @@ describe('CustomOrdersService', () => {
       buildOrder({
         status: CustomOrderStatus.PENDING_BRAND_ACCEPTANCE,
         paymentStatus: PaymentStatus.PAID,
+        createdAt: new Date(),
       }),
     );
     prisma.customOrderConfiguration.findUnique.mockResolvedValue({
@@ -524,6 +531,7 @@ describe('CustomOrdersService', () => {
       buildOrder({
         status: CustomOrderStatus.PENDING_BRAND_ACCEPTANCE,
         paymentStatus: PaymentStatus.PAID,
+        createdAt: new Date(),
       }),
     );
 

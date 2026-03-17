@@ -1014,6 +1014,12 @@ export class StoreService {
       );
     }
 
+    if ((dto as any).sizingModeDeprecatedAliasUsed) {
+      this.logger.warn(
+        `Deprecated sizingMode 'RTW_PLUS_CUSTOM' used by store owner ${brandOwnerId}; auto-mapped to RTW_PLUS_FITTINGS`,
+      );
+    }
+
     const requestedCollectionId = (dto.collectionId || '').trim() || null;
 
     // If a collectionId is provided, verify it belongs to this brand.
@@ -1252,6 +1258,12 @@ export class StoreService {
 
     if (product.brand.ownerId !== brandOwnerId) {
       throw new ForbiddenException('You can only update your own products');
+    }
+
+    if ((dto as any).sizingModeDeprecatedAliasUsed) {
+      this.logger.warn(
+        `Deprecated sizingMode 'RTW_PLUS_CUSTOM' used by store owner ${brandOwnerId}; auto-mapped to RTW_PLUS_FITTINGS`,
+      );
     }
 
     if (dto.isActive === true) {

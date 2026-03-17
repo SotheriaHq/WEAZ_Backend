@@ -29,6 +29,7 @@ import { CollectionSchedulerService } from './collection-scheduler.service';
 import { JwtAuthGuard } from 'src/auth/guard/jwt-auth.guard';
 import { OptionalJwtAuthGuard } from 'src/auth/guard/optional-jwt-auth.guard';
 import { UserTypeGuard } from 'src/auth/guard/user-type.guard';
+import { IsPublic } from 'src/auth/decorator/is-public.decorator';
 import { UserType, ReactionType, PatchStatus } from '@prisma/client';
 import { ThrottlerGuard, Throttle } from '@nestjs/throttler';
 import { EventsGateway } from 'src/realtime/events.gateway';
@@ -45,8 +46,7 @@ import { FileInterceptor } from '@nestjs/platform-express';
 
 @ApiTags('collections')
 @ApiBearerAuth()
-// @UseGuards(JwtAuthGuard)
-// @UseGuards(UserTypeGuard)
+@UseGuards(JwtAuthGuard)
 @Controller('collections')
 export class CollectionsController {
   constructor(
@@ -324,6 +324,7 @@ export class CollectionsController {
   // STATIC ROUTES (must come before :id dynamic route)
   // ============================================
 
+  @IsPublic()
   @Get()
   @ApiOperation({ summary: 'List collections (paginated, sorted by collabs)' })
   @ApiResponse({ status: 200, description: 'Paginated collections list' })
@@ -339,6 +340,7 @@ export class CollectionsController {
     });
   }
 
+  @IsPublic()
   @Get('categories')
   @ApiOperation({ summary: 'Get active collection categories' })
   @ApiResponse({ status: 200, description: 'List of active categories' })
@@ -346,6 +348,7 @@ export class CollectionsController {
     return this.collectionsService.listCategories();
   }
 
+  @IsPublic()
   @Get('category-types')
   @ApiOperation({ summary: 'Get active sub-categories (optionally filtered by categoryId)' })
   @ApiResponse({ status: 200, description: 'List of active sub-categories' })
@@ -353,6 +356,7 @@ export class CollectionsController {
     return this.collectionsService.listCategoryTypes(categoryId);
   }
 
+  @IsPublic()
   @UseGuards(OptionalJwtAuthGuard)
   @Get('market')
   @ApiOperation({
@@ -425,6 +429,7 @@ export class CollectionsController {
     });
   }
 
+  @IsPublic()
   @Get('user/:userId')
   @ApiOperation({ summary: 'Get collections for a specific user (brand)' })
   @UseGuards(OptionalJwtAuthGuard)
@@ -465,6 +470,7 @@ export class CollectionsController {
   // DYNAMIC ROUTE (must come after static routes)
   // ============================================
 
+  @IsPublic()
   @UseGuards(OptionalJwtAuthGuard)
   @Get(':id')
   @ApiOperation({ summary: 'Get collection by ID' })
@@ -557,6 +563,7 @@ export class CollectionsController {
     return result;
   }
 
+  @IsPublic()
   @Get(':id/reactions')
   @ApiOperation({ summary: 'Get collection reactions with user details' })
   @ApiResponse({ status: 200, description: 'Reactions list' })
@@ -616,6 +623,7 @@ export class CollectionsController {
     return this.collectionsService.removeCollectionCollab(collectionId, req.user.id);
   }
 
+  @IsPublic()
   @Get(':id/collabs')
   @ApiOperation({ summary: 'Get collabs for a collection (who collabed)' })
   @ApiResponse({
@@ -636,6 +644,7 @@ export class CollectionsController {
   // ============================================
   // ANALYTICS ENDPOINT
   // ============================================
+  @IsPublic()
   @Get(':id/stats')
   @ApiOperation({ summary: 'Get collection statistics' })
   @ApiResponse({
@@ -743,6 +752,7 @@ export class CollectionsController {
     return res;
   }
 
+  @IsPublic()
   @Get('media/:mediaId/reactions')
   async getMediaReactions(
     @Param('mediaId') mediaId: string,
@@ -754,12 +764,14 @@ export class CollectionsController {
     );
   }
 
+  @IsPublic()
   @UseGuards(OptionalJwtAuthGuard)
   @Get('media/:mediaId/is-threaded')
   async isMediaThreaded(@Param('mediaId') mediaId: string, @Req() req: any) {
     return this.collectionsService.isMediaThreadedByUser(mediaId, req.user?.id);
   }
 
+  @IsPublic()
   @UseGuards(OptionalJwtAuthGuard)
   @Get(':id/is-threaded')
   async isCollectionThreaded(@Param('id') collectionId: string, @Req() req: any) {
@@ -769,6 +781,7 @@ export class CollectionsController {
     );
   }
 
+  @IsPublic()
   // Threads summary for a collection (collection threads + media threads)
   @Get(':id/threads/summary')
   @ApiOperation({ summary: 'Get threads summary for a collection' })
@@ -959,6 +972,7 @@ export class CollectionsController {
     );
   }
 
+  @IsPublic()
   // ===================== Cart Preview =====================
   @UseGuards(OptionalJwtAuthGuard)
   @Get(':id/cart-preview')

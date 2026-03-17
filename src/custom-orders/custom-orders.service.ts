@@ -13,6 +13,7 @@ import {
   CustomOrderProgressStage,
   CustomOrderSourceType,
   CustomOrderStatus,
+  CustomOrderTimelineEventType,
   Gender,
   NotificationType,
   PaymentStatus,
@@ -572,6 +573,20 @@ export class CustomOrdersService {
       throw new BadRequestException('CUSTOM_ORDER_INVALID_STATE');
     }
 
+    const cancellationWindowMs = Math.max(
+      0,
+      parseInt(process.env.CUSTOM_ORDER_CANCEL_WINDOW_MS || '', 10) || 30 * 60 * 1000,
+    );
+    if (
+      order.status === CustomOrderStatus.PENDING_BRAND_ACCEPTANCE &&
+      order.createdAt &&
+      Date.now() - new Date(order.createdAt).getTime() > cancellationWindowMs
+    ) {
+      throw new BadRequestException(
+        'CUSTOM_ORDER_CANCELLATION_WINDOW_EXPIRED: You can only cancel within 30 minutes of placing the order',
+      );
+    }
+
     const updated = await this.prisma.$transaction(async (tx) => {
       const paidPreAcceptance = order.paymentStatus === PaymentStatus.PAID;
 
@@ -585,7 +600,7 @@ export class CustomOrdersService {
                   {
                     actorType: CustomOrderActorType.BUYER,
                     actorId: userId,
-                    eventType: 'ADMIN_ESCALATED',
+                    eventType: CustomOrderTimelineEventType.BUYER_CANCELLED,
                     payloadJson: { reason: dto.reason, cancellationType: 'BUYER_PRE_ACCEPTANCE' },
                   },
                   {
@@ -599,7 +614,7 @@ export class CustomOrdersService {
               : {
                   actorType: CustomOrderActorType.BUYER,
                   actorId: userId,
-                  eventType: 'ADMIN_ESCALATED',
+                  eventType: CustomOrderTimelineEventType.BUYER_CANCELLED,
                   payloadJson: { reason: dto.reason, cancellationType: 'BUYER_PRE_ACCEPTANCE' },
                 },
           },
