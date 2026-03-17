@@ -30,6 +30,7 @@ import {
   QueryCustomOrderDisputesDto,
   QueryCustomOrderExceptionReviewsDto,
   QueryCustomOrderLedgerAllocationsDto,
+  ReleaseCustomOrderLedgerAllocationsDto,
   QueryCustomOrderRefundReviewsDto,
   QueryCustomOrderRiskDashboardDto,
   QueryStaleCustomOrdersDto,
@@ -214,6 +215,16 @@ export class CustomOrderAdminController {
     @Query(new ValidationPipe({ transform: true, whitelist: true })) query: QueryCustomOrderLedgerAllocationsDto,
   ) {
     return this.service.listLedgerAllocations(query);
+  }
+
+  @Post('custom-order-ledger-allocations/release')
+  @RequirePermissions(ADMIN_PERMISSIONS.PAYOUTS_PROCESS)
+  async releaseLedgerAllocations(
+    @Req() req: Request & { user: { id: string } },
+    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true }))
+    dto: ReleaseCustomOrderLedgerAllocationsDto,
+  ) {
+    return this.service.releaseEligibleLedgerAllocations(dto, req.user.id);
   }
 
   @Patch('custom-order-disputes/:id')

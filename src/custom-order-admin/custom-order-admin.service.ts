@@ -3,10 +3,12 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { v4 as uuidv4 } from 'uuid';
 import { PrismaService } from 'src/prisma/prisma.service';
 import {
   CustomOrderActorType,
   CustomOrderDisputeStatus,
+  CustomOrderLedgerAllocationStatus,
   CustomFabricRuleBasisStatus,
   CustomOrderRetentionHoldType,
   CustomOrderStatus,
@@ -27,6 +29,7 @@ import {
   QueryCustomOrderLedgerAllocationsDto,
   QueryCustomOrderRefundReviewsDto,
   QueryCustomOrderRiskDashboardDto,
+  ReleaseCustomOrderLedgerAllocationsDto,
   QueryStaleCustomOrdersDto,
   ReviewCustomFabricRuleBasisDto,
   UpdateAdminCustomFabricRuleBasisDto,
@@ -1143,6 +1146,168 @@ export class CustomOrderAdminService {
         page,
         limit: take,
         total,
+      },
+    };
+  }
+
+  async releaseEligibleLedgerAllocations(
+    dto: ReleaseCustomOrderLedgerAllocationsDto,
+    adminUserId: string,
+  ) {
+    const now = new Date();
+    const allocationFilter = {
+      ...(dto.customOrderId ? { customOrderId: dto.customOrderId } : {}),
+      ...(dto.allocationIds?.length ? { id: { in: dto.allocationIds } } : {}),
+      ...(dto.brandId ? { customOrder: { brandId: dto.brandId } } : {}),
+      status: CustomOrderLedgerAllocationStatus.PAYOUT_ELIGIBLE,
+      paidOutAt: null,
+      payoutId: null,
+      customOrder: {
+        ...(dto.brandId ? { brandId: dto.brandId } : {}),
+        status: {
+          in: [CustomOrderStatus.ACCEPTED, CustomOrderStatus.COMPLETED, CustomOrderStatus.CLOSED],
+        },
+        disputes: {
+          none: {
+            status: {
+              in: ['OPEN', 'BRAND_RESPONDED', 'ADMIN_REVIEW'],
+            },
+          },
+        },
+      },
+    } as Prisma.CustomOrderLedgerAllocationWhereInput;
+
+    const allocations = await this.prisma.customOrderLedgerAllocation.findMany({
+      where: allocationFilter,
+      select: {
+        id: true,
+        amount: true,
+        currency: true,
+        customOrderId: true,
+        customOrder: {
+          select: {
+            brandId: true,
+          },
+        },
+      },
+      take: 1000,
+    });
+
+    if (allocations.length === 0) {
+      return {
+        statusCode: 200,
+        message: 'No payout-eligible custom-order allocations found for release',
+        data: {
+          dryRun: Boolean(dto.dryRun),
+          releasedBatches: 0,
+          releasedAllocations: 0,
+          releasedTotalAmount: 0,
+        },
+      };
+    }
+
+    const grouped = new Map<
+      string,
+      {
+        brandId: string;
+        currency: string;
+        totalAmount: number;
+        allocationIds: string[];
+        customOrderIds: string[];
+      }
+    >();
+
+    for (const allocation of allocations) {
+      const brandId = allocation.customOrder.brandId;
+      const key = `${brandId}:${allocation.currency}`;
+      const existing = grouped.get(key);
+      if (existing) {
+        existing.totalAmount += Number(allocation.amount);
+        existing.allocationIds.push(allocation.id);
+        existing.customOrderIds.push(allocation.customOrderId);
+      } else {
+        grouped.set(key, {
+          brandId,
+          currency: allocation.currency,
+          totalAmount: Number(allocation.amount),
+          allocationIds: [allocation.id],
+          customOrderIds: [allocation.customOrderId],
+        });
+      }
+    }
+
+    if (dto.dryRun) {
+      return {
+        statusCode: 200,
+        message: 'Dry-run release summary generated',
+        data: {
+          dryRun: true,
+          releasedBatches: grouped.size,
+          releasedAllocations: allocations.length,
+          releasedTotalAmount: allocations.reduce((sum, item) => sum + Number(item.amount), 0),
+        },
+      };
+    }
+
+    let releasedBatches = 0;
+    for (const group of grouped.values()) {
+      await this.prisma.$transaction(async (tx) => {
+        const payoutId = uuidv4();
+        await tx.payout.create({
+          data: {
+            id: payoutId,
+            brandId: group.brandId,
+            amount: new Prisma.Decimal(group.totalAmount.toFixed(2)),
+            currency: group.currency,
+            status: 'PENDING',
+            reference: `CO-${group.brandId.slice(0, 8)}-${now.getTime()}`,
+          },
+        });
+
+        const reserved = await tx.customOrderLedgerAllocation.updateMany({
+          where: {
+            id: { in: group.allocationIds },
+            status: CustomOrderLedgerAllocationStatus.PAYOUT_ELIGIBLE,
+            paidOutAt: null,
+            payoutId: null,
+          },
+          data: {
+            paidOutAt: now,
+            payoutId,
+          },
+        });
+
+        if (reserved.count !== group.allocationIds.length) {
+          throw new BadRequestException('CUSTOM_ORDER_PAYOUT_BATCH_RESERVATION_FAILED');
+        }
+
+        const uniqueOrderIds = Array.from(new Set(group.customOrderIds));
+        await tx.customOrderTimelineEvent.createMany({
+          data: uniqueOrderIds.map((customOrderId) => ({
+            customOrderId,
+            actorType: CustomOrderActorType.ADMIN,
+            actorId: adminUserId,
+            eventType: 'ADMIN_ESCALATED',
+            payloadJson: {
+              action: 'MANUAL_PAYOUT_RELEASE_QUEUED',
+              payoutId,
+              allocationCount: group.allocationIds.length,
+            } as Prisma.InputJsonValue,
+          })),
+        });
+      });
+
+      releasedBatches += 1;
+    }
+
+    return {
+      statusCode: 200,
+      message: 'Custom-order payout-eligible allocations released to payout queue',
+      data: {
+        dryRun: false,
+        releasedBatches,
+        releasedAllocations: allocations.length,
+        releasedTotalAmount: allocations.reduce((sum, item) => sum + Number(item.amount), 0),
       },
     };
   }

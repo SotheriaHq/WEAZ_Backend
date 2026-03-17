@@ -25,6 +25,7 @@ describe('CustomOrdersService', () => {
     id: 'co_1',
     buyerId: 'buyer_1',
     brandId: 'brand_1',
+    configurationId: 'configuration_1',
     status: CustomOrderStatus.DELIVERED_PENDING_BUYER_CONFIRMATION,
     paymentStatus: PaymentStatus.PAID,
     sourceType: 'PRODUCT',
@@ -34,6 +35,9 @@ describe('CustomOrdersService', () => {
     sourcePrimaryMediaUrlSnapshot: null,
     sourceBrandNameSnapshot: 'Threadly Atelier',
     configurationVersionId: 'configuration_version_1',
+    currency: 'NGN',
+    rushSelected: false,
+    shippingAddressJson: { city: 'Lagos' },
     buyerPriceSummaryJson: { grandTotal: 1500, currency: 'NGN' },
     internalPriceBreakdownJson: { subtotal: 1200 },
     measurementSnapshotJson: { chest: 102 },
@@ -74,6 +78,7 @@ describe('CustomOrdersService', () => {
       },
       customOrder: {
         findFirst: jest.fn(),
+        update: jest.fn(),
       },
       customOrderTimelineEvent: {
         count: jest.fn(),
@@ -360,6 +365,7 @@ describe('CustomOrdersService', () => {
     const result = await service.reportIssue('buyer_1', 'co_1', {
       issueType: CustomOrderIssueType.MEASUREMENT_NON_COMPLIANCE,
       description: 'The jacket sleeves are too short.',
+      evidenceJson: { photos: ['https://example.com/issue-1.jpg'] },
     });
 
     expect(tx.customOrderIssue.create).toHaveBeenCalledWith({
@@ -367,7 +373,10 @@ describe('CustomOrdersService', () => {
         customOrderId: 'co_1',
         issueType: CustomOrderIssueType.MEASUREMENT_NON_COMPLIANCE,
         description: 'The jacket sleeves are too short.',
-        evidenceJson: null,
+        evidenceJson: {
+          photos: ['https://example.com/issue-1.jpg'],
+          files: [],
+        },
         openedById: 'buyer_1',
       },
     });
@@ -397,8 +406,7 @@ describe('CustomOrdersService', () => {
   it('rejects issue reporting when the buyer acceptance window is not open', async () => {
     prisma.customOrder.findFirst.mockResolvedValue(
       buildOrder({
-        status: CustomOrderStatus.DELIVERED_PENDING_BUYER_CONFIRMATION,
-        buyerAcceptanceWindowEndsAt: null,
+        status: CustomOrderStatus.COMPLETED,
       }),
     );
 
@@ -406,8 +414,109 @@ describe('CustomOrdersService', () => {
       service.reportIssue('buyer_1', 'co_1', {
         issueType: CustomOrderIssueType.WRONG_ITEM,
         description: 'The delivered item is different from the approved order.',
+        evidenceJson: { photos: ['https://example.com/proof.jpg'] },
       }),
-    ).rejects.toThrow('CUSTOM_ORDER_ACCEPTANCE_WINDOW_CLOSED');
+    ).rejects.toThrow('CUSTOM_ORDER_DISPUTE_WINDOW_CLOSED');
+  });
+
+  it('enforces at least one photo in dispute evidence', async () => {
+    prisma.customOrder.findFirst.mockResolvedValue(
+      buildOrder({
+        status: CustomOrderStatus.IN_PRODUCTION,
+      }),
+    );
+
+    await expect(
+      service.reportIssue('buyer_1', 'co_1', {
+        issueType: CustomOrderIssueType.UNREASONABLE_DELAY,
+        description: 'Production timeline has exceeded agreed dates.',
+        evidenceJson: {},
+      }),
+    ).rejects.toThrow('Dispute evidence must include at least one photo');
+  });
+
+  it('allows only one extension request per order', async () => {
+    prisma.brand.findUnique.mockResolvedValue({ id: 'brand_1' });
+    prisma.customOrder.findFirst.mockResolvedValue(
+      buildOrder({
+        status: CustomOrderStatus.IN_PRODUCTION,
+        extensionRequests: [
+          {
+            id: 'ext_1',
+            buyerResponseStatus: CustomOrderExtensionResponseStatus.ACCEPTED,
+          },
+        ],
+      }),
+    );
+
+    await expect(
+      service.createExtensionRequest('owner_1', 'brand_1', 'co_1', {
+        targetType: 'DELIVERY' as any,
+        requestedExtraDays: 2,
+        reason: 'Unexpected tailoring complexity.',
+      }),
+    ).rejects.toThrow('Only one extension request is allowed per order');
+  });
+
+  it('updates buyer measurements before acceptance when revalidated total is unchanged', async () => {
+    prisma.customOrder.findFirst.mockResolvedValue(
+      buildOrder({
+        status: CustomOrderStatus.PENDING_BRAND_ACCEPTANCE,
+        paymentStatus: PaymentStatus.PAID,
+      }),
+    );
+    prisma.customOrderConfiguration.findUnique.mockResolvedValue({
+      id: 'configuration_1',
+      brandId: 'brand_1',
+      sourceType: 'PRODUCT',
+      sourceId: 'product_1',
+      notes: null,
+      brand: { currency: 'NGN' },
+      rules: [],
+      versions: [
+        {
+          id: 'configuration_version_1',
+          snapshotJson: {
+            baseProductionCharge: '1200',
+            fabricCostPerYard: '300',
+            rushEnabled: false,
+            rushFee: null,
+            requiredMeasurementKeys: ['WOMEN_WAIST'],
+            requiredFreeformPointIds: [],
+            rules: [],
+            notes: null,
+          },
+        },
+      ],
+    });
+    prisma.measurementPoint.findMany.mockResolvedValue([]);
+    pricingService.validateConfigurationRules.mockReturnValue([]);
+    pricingService.buildPricePreview.mockReturnValue({
+      computedYards: 2,
+      matchedRule: { priority: 1, isFallback: true },
+      buyerPriceSummary: { grandTotal: 1500, currency: 'NGN' },
+    });
+
+    const updatedOrder = buildOrder({
+      status: CustomOrderStatus.PENDING_BRAND_ACCEPTANCE,
+      measurementSnapshotJson: { WOMEN_WAIST: 75 },
+    });
+    prisma.customOrder.update.mockResolvedValue(updatedOrder);
+    prisma.brand.findUnique.mockResolvedValue({ ownerId: 'owner_1' });
+
+    const result = await service.updateBuyerMeasurementsBeforeAcceptance('buyer_1', 'co_1', {
+      measurementValues: { WOMEN_WAIST: 75 },
+      reason: 'Updated fit preference before acceptance.',
+    });
+
+    expect(prisma.customOrder.update).toHaveBeenCalled();
+    expect(result.statusCode).toBe(200);
+    expect(sideEffects.enqueueNotification).toHaveBeenCalledWith(
+      expect.objectContaining({
+        customOrderId: 'co_1',
+        recipientIds: ['owner_1'],
+      }),
+    );
   });
 
   it('cancels a paid pre-acceptance order and triggers refund handling', async () => {
@@ -659,8 +768,10 @@ describe('CustomOrdersService', () => {
         WOMEN_WEIGHT: 68,
         WOMEN_SHOULDER_WIDTH: 40,
         WOMEN_CHEST_FULL_BUST: 94,
+        WOMEN_BUST: 94,
         WOMEN_WAIST: 76,
         WOMEN_HIP: 102,
+        WOMEN_HIPS: 102,
         WOMEN_INSEAM: 78,
         WOMEN_SLEEVE_LENGTH_LONG: 61,
       },

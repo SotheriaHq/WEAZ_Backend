@@ -40,12 +40,17 @@ describe('CustomOrderAdminService', () => {
       customOrderLedgerAllocation: {
         findMany: jest.fn(),
         count: jest.fn(),
+        updateMany: jest.fn(),
       },
       customOrderProgressEvent: {
         findMany: jest.fn(),
         count: jest.fn(),
       },
       customOrderTimelineEvent: {
+        create: jest.fn(),
+        createMany: jest.fn(),
+      },
+      payout: {
         create: jest.fn(),
       },
       paymentAttempt: {
@@ -334,6 +339,54 @@ describe('CustomOrderAdminService', () => {
         payout: expect.objectContaining({ id: 'payout_1', status: 'PENDING' }),
       }),
     );
+  });
+
+  it('releases payout-eligible allocations into payout batches through admin action', async () => {
+    prisma.customOrderLedgerAllocation.findMany.mockResolvedValue([
+      {
+        id: 'alloc_1',
+        amount: 600,
+        currency: 'NGN',
+        customOrderId: 'co_1',
+        customOrder: { brandId: 'brand_1' },
+      },
+      {
+        id: 'alloc_2',
+        amount: 400,
+        currency: 'NGN',
+        customOrderId: 'co_1',
+        customOrder: { brandId: 'brand_1' },
+      },
+    ]);
+
+    const tx = {
+      payout: {
+        create: jest.fn().mockResolvedValue(undefined),
+      },
+      customOrderLedgerAllocation: {
+        updateMany: jest.fn().mockResolvedValue({ count: 2 }),
+      },
+      customOrderTimelineEvent: {
+        createMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+    };
+    prisma.$transaction.mockImplementation(async (callback: (innerTx: typeof tx) => Promise<unknown>) =>
+      callback(tx),
+    );
+
+    const result = await service.releaseEligibleLedgerAllocations({ customOrderId: 'co_1' }, 'admin_1');
+
+    expect(tx.payout.create).toHaveBeenCalledTimes(1);
+    expect(tx.customOrderLedgerAllocation.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          id: { in: ['alloc_1', 'alloc_2'] },
+        }),
+      }),
+    );
+    expect(result.statusCode).toBe(200);
+    expect(result.data.releasedBatches).toBe(1);
+    expect(result.data.releasedAllocations).toBe(2);
   });
 
   it('sets and clears retention holds for custom orders', async () => {

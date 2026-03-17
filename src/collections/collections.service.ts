@@ -19,6 +19,9 @@ import {
   NotificationType,
   CollectionVisibility,
   CollectionType,
+  MessageContextType,
+  MessageKind,
+  MessageParticipantRole,
   PatchStatus,
   PatchMode,
   OrderStatus,
@@ -53,7 +56,7 @@ type CollectionDomainValue = 'DESIGN' | 'STORE';
 
 @Injectable()
 export class CollectionsService {
-  private readonly defaultCollectionScope: CollectionScope = 'design';
+  private readonly defaultCollectionScope: CollectionScope = 'all';
 
   constructor(
     private readonly prisma: PrismaService,
@@ -70,8 +73,23 @@ export class CollectionsService {
     @InjectQueue(BULK_UPLOAD_QUEUE) private readonly bulkUploadQueue?: Queue,
   ) { }
 
-  private readonly maxProductsPerCollection = 5;
+  private readonly maxProductsPerCollection = Math.max(
+    1,
+    parseInt(process.env.MAX_PRODUCTS_PER_COLLECTION || '5', 10),
+  );
   private readonly collectionDeleteWindowMs = 30 * 24 * 60 * 60 * 1000;
+
+  private normalizeMeasurementKeys(raw?: string[] | null): string[] {
+    if (!Array.isArray(raw)) return [];
+    return Array.from(
+      new Set(
+        raw
+          .map((key) => (typeof key === 'string' ? key.trim() : ''))
+          .filter((key) => key.length > 0)
+          .map((key) => key.toUpperCase()),
+      ),
+    );
+  }
 
   private normalizeFilterValueIds(raw?: string[] | null): string[] {
     if (!Array.isArray(raw)) return [];
@@ -122,6 +140,68 @@ export class CollectionsService {
     if (scope === 'store') return 'store';
     if (scope === 'all') return 'all';
     return 'design';
+  }
+
+  private async enforceDraftSessionLock(
+    collectionId: string,
+    ownerId: string,
+    draftSessionToken?: string,
+  ) {
+    const now = new Date();
+    const activeSession = await this.prisma.collectionDraftSession.findFirst({
+      where: {
+        collectionId,
+        ownerId,
+        isActive: true,
+        expiresAt: { gt: now },
+      },
+      orderBy: { lastHeartbeatAt: 'desc' },
+      select: {
+        id: true,
+        sessionToken: true,
+        deviceName: true,
+        deviceType: true,
+        startedAt: true,
+      },
+    });
+
+    if (!activeSession) return;
+
+    if (!draftSessionToken) {
+      throw new ConflictException({
+        code: 'DRAFT_SESSION_REQUIRED',
+        message: 'An active draft editing session exists. Provide draftSessionToken to continue.',
+        conflictDetails: {
+          deviceName: activeSession.deviceName ?? 'Unknown device',
+          deviceType: (activeSession.deviceType as any) ?? 'desktop',
+          startedAt: activeSession.startedAt.toISOString(),
+          userId: ownerId,
+        },
+      } as any);
+    }
+
+    if (activeSession.sessionToken !== draftSessionToken) {
+      throw new ConflictException({
+        code: 'DRAFT_SESSION_CONFLICT',
+        message: 'Another active draft session currently holds the lock.',
+        conflictDetails: {
+          deviceName: activeSession.deviceName ?? 'Unknown device',
+          deviceType: (activeSession.deviceType as any) ?? 'desktop',
+          startedAt: activeSession.startedAt.toISOString(),
+          userId: ownerId,
+        },
+      } as any);
+    }
+
+    const ttlMinutes = Math.max(
+      5,
+      parseInt(process.env.DRAFT_SESSION_TTL_MINUTES || '30', 10),
+    );
+    const nextExpiresAt = new Date(now.getTime() + ttlMinutes * 60 * 1000);
+    await this.prisma.collectionDraftSession.update({
+      where: { id: activeSession.id },
+      data: { lastHeartbeatAt: now, expiresAt: nextExpiresAt },
+    });
   }
 
   private scopeToDomain(scope: CollectionScope): CollectionDomainValue | null {
@@ -1414,9 +1494,9 @@ export class CollectionsService {
         rtwSizeSystem: dto.rtwSizeSystem ?? null,
         rtwSizeType: dto.rtwSizeType ?? null,
         customGender: dto.customGender ?? null,
-        customMeasurementKeys: Array.isArray(dto.customMeasurementKeys)
-          ? dto.customMeasurementKeys
-          : [],
+        customMeasurementKeys: this.normalizeMeasurementKeys(
+          dto.customMeasurementKeys,
+        ),
         customFreeformPointIds: Array.isArray(dto.customFreeformPointIds)
           ? dto.customFreeformPointIds
           : [],
@@ -1715,6 +1795,7 @@ export class CollectionsService {
   ) {
     const resolvedScope = this.normalizeCollectionScope(scope);
     const expectedDomain = this.scopeToDomain(resolvedScope);
+    const hasCompletions = Array.isArray(dto.completions) && dto.completions.length > 0;
     if (expectedDomain === 'STORE') {
       return this.finalizeStoreCollection(collectionId, userId, dto);
     }
@@ -1735,7 +1816,7 @@ export class CollectionsService {
     }
 
     if (collection.status !== 'DRAFT') {
-      if (collection.status === 'PUBLISHED') {
+      if (collection.status === 'PUBLISHED' && !hasCompletions) {
         const published = await this.prisma.collection.findUnique({
           where: { id: collectionId },
           include: {
@@ -1753,10 +1834,22 @@ export class CollectionsService {
         });
         if (published) return published;
       }
-      throw new BadRequestException('Collection is not in draft status');
+      if (collection.status !== 'PUBLISHED' || !hasCompletions) {
+        throw new BadRequestException('Collection is not in draft status');
+      }
     }
 
-    const hasCompletions = Array.isArray(dto.completions) && dto.completions.length > 0;
+    if (
+      typeof dto.draftVersion === 'number' &&
+      dto.draftVersion !== (collection as any).draftVersion
+    ) {
+      throw new ConflictException({
+        code: 'DRAFT_VERSION_CONFLICT',
+        message: 'Draft was modified by another session.',
+        serverVersion: (collection as any).draftVersion,
+      } as any);
+    }
+    await this.enforceDraftSessionLock(collectionId, userId, dto.draftSessionToken);
 
     if (!hasCompletions) {
       const previousVisibility = collection.visibility;
@@ -1859,7 +1952,7 @@ export class CollectionsService {
               customGender:
                 metadata.customGender ?? (collection as any).customGender,
               customMeasurementKeys: Array.isArray(metadata.customMeasurementKeys)
-                ? metadata.customMeasurementKeys
+                ? this.normalizeMeasurementKeys(metadata.customMeasurementKeys)
                 : (collection as any).customMeasurementKeys,
               customFreeformPointIds: Array.isArray(
                 metadata.customFreeformPointIds,
@@ -6275,7 +6368,13 @@ export class CollectionsService {
   }
 
   // ===================== Metrics =====================
-  async getAccessMetrics(collectionId: string, from?: string, to?: string) {
+  async getAccessMetrics(
+    collectionId: string,
+    ownerId: string,
+    from?: string,
+    to?: string,
+  ) {
+    await this.assertOwner(collectionId, ownerId, 'DESIGN');
     const fromDate = from
       ? new Date(from)
       : new Date(Date.now() - 30 * 86400000);
@@ -6314,11 +6413,13 @@ export class CollectionsService {
 
   async getPrivateViewsMetrics(
     collectionId: string,
+    ownerId: string,
     from?: string,
     to?: string,
   ) {
+    await this.assertOwner(collectionId, ownerId, 'DESIGN');
     const c = await this.prisma.collection.findUnique({
-      where: { id: collectionId },
+        where: { id: collectionId, deletedAt: null },
       select: { visibility: true },
     });
     if (!c) throw new NotFoundException('Collection not found');
@@ -6617,11 +6718,6 @@ export class CollectionsService {
 
     const now = new Date();
     if (existing.status === 'DRAFT') {
-      const ttlMinutes = Math.max(
-        5,
-        parseInt(process.env.DRAFT_SESSION_TTL_MINUTES || '30', 10),
-      );
-      const nextExpiresAt = new Date(now.getTime() + ttlMinutes * 60 * 1000);
       if (typeof body.draftVersion === 'number' && body.draftVersion !== existing.draftVersion) {
         throw new ConflictException({
           code: 'DRAFT_VERSION_CONFLICT',
@@ -6629,28 +6725,11 @@ export class CollectionsService {
           serverVersion: existing.draftVersion,
         } as any);
       }
-      if (body.draftSessionToken) {
-        const session = await this.prisma.collectionDraftSession.findFirst({
-          where: {
-            collectionId,
-            ownerId,
-            sessionToken: body.draftSessionToken,
-            isActive: true,
-            expiresAt: { gt: now },
-          },
-          select: { id: true },
-        });
-        if (!session) {
-          throw new ConflictException({
-            code: 'DRAFT_SESSION_CONFLICT',
-            message: 'Draft session has expired or is not active.',
-          } as any);
-        }
-        await this.prisma.collectionDraftSession.update({
-          where: { id: session.id },
-          data: { lastHeartbeatAt: now, expiresAt: nextExpiresAt },
-        });
-      }
+      await this.enforceDraftSessionLock(
+        collectionId,
+        ownerId,
+        body.draftSessionToken,
+      );
     }
 
     const data: any = {};
@@ -6699,7 +6778,9 @@ export class CollectionsService {
     if (typeof body.customGender === 'string' || body.customGender === null)
       data.customGender = body.customGender;
     if (Array.isArray(body.customMeasurementKeys))
-      data.customMeasurementKeys = body.customMeasurementKeys;
+      data.customMeasurementKeys = this.normalizeMeasurementKeys(
+        body.customMeasurementKeys,
+      );
     if (Array.isArray(body.customFreeformPointIds))
       data.customFreeformPointIds = body.customFreeformPointIds;
     if (typeof body.fitPreference === 'string' || body.fitPreference === null)
@@ -7098,10 +7179,18 @@ export class CollectionsService {
         );
       } catch (error) {
         console.warn('Failed to enqueue bulk upload job; running inline', error);
-        return this.processBulkUploadJob(jobId);
+        void setImmediate(() => {
+          this.processBulkUploadJob(jobId).catch((err) =>
+            console.warn(`Inline bulk upload failed for ${jobId}: ${String(err)}`),
+          );
+        });
       }
     } else {
-      return this.processBulkUploadJob(jobId);
+      void setImmediate(() => {
+        this.processBulkUploadJob(jobId).catch((err) =>
+          console.warn(`Inline bulk upload failed for ${jobId}: ${String(err)}`),
+        );
+      });
     }
 
     return {
@@ -7267,10 +7356,18 @@ export class CollectionsService {
         );
       } catch (error) {
         console.warn('Failed to enqueue bulk upload retry; running inline', error);
-        return this.processBulkUploadRetry(jobId, ownerId, rowIndices);
+        void setImmediate(() => {
+          this.processBulkUploadRetry(jobId, ownerId, rowIndices).catch((err) =>
+            console.warn(`Inline bulk upload retry failed for ${jobId}: ${String(err)}`),
+          );
+        });
       }
     } else {
-      return this.processBulkUploadRetry(jobId, ownerId, rowIndices);
+      void setImmediate(() => {
+        this.processBulkUploadRetry(jobId, ownerId, rowIndices).catch((err) =>
+          console.warn(`Inline bulk upload retry failed for ${jobId}: ${String(err)}`),
+        );
+      });
     }
 
     return {
@@ -7377,21 +7474,116 @@ export class CollectionsService {
   ) {
     const collection = await this.prisma.collection.findUnique({
       where: { id: collectionId },
-      select: { ownerId: true, title: true },
+      select: {
+        ownerId: true,
+        title: true,
+        owner: {
+          select: {
+            brand: {
+              select: { id: true },
+            },
+          },
+        },
+      },
     });
 
     if (!collection) throw new NotFoundException('Collection not found');
 
     const inquiryId = uuidv4();
 
-    // In production, this would:
-    // 1. Create a message/inquiry record
-    // 2. Notify the brand owner
-    // 3. Track in analytics
+    const threadId = uuidv4();
+    const now = new Date();
+    const trimmedMessage = dto.message.trim();
+    const metadata: Record<string, unknown> = {
+      inquiryId,
+      collectionId,
+      productId: dto.productId ?? null,
+      preferredSize: dto.preferredSize ?? null,
+      measurements: dto.measurements ?? null,
+      source: 'CUSTOM_FIT_INQUIRY',
+    };
+
+    const createdThread = await this.prisma.$transaction(async (tx) => {
+      const thread = await tx.messageThread.create({
+        data: {
+          id: threadId,
+          contextType: MessageContextType.STANDARD_ORDER,
+          brandId: collection.owner?.brand?.id ?? null,
+          buyerId: requesterId,
+          subjectSnapshotJson: {
+            type: 'CUSTOM_FIT_INQUIRY',
+            collectionId,
+            collectionTitle: collection.title ?? null,
+            inquiryId,
+          } as Prisma.InputJsonValue,
+          status: 'OPEN',
+        },
+      });
+
+      await tx.messageThreadParticipant.createMany({
+        data: [
+          {
+            id: uuidv4(),
+            threadId,
+            userId: requesterId,
+            role: MessageParticipantRole.BUYER,
+          },
+          {
+            id: uuidv4(),
+            threadId,
+            userId: collection.ownerId,
+            role: MessageParticipantRole.BRAND_OWNER,
+          },
+        ],
+      });
+
+      const message = await tx.message.create({
+        data: {
+          id: uuidv4(),
+          threadId,
+          senderUserId: requesterId,
+          senderRole: MessageParticipantRole.BUYER,
+          kind: MessageKind.USER,
+          bodyText: trimmedMessage,
+          metadataJson: metadata as Prisma.InputJsonValue,
+        },
+      });
+
+      await tx.messageThread.update({
+        where: { id: threadId },
+        data: {
+          lastMessageId: message.id,
+          lastMessageAt: now,
+          lastVisibleMessageAt: now,
+          lastMessagePreview: trimmedMessage.slice(0, 240),
+          lastSenderUserId: requesterId,
+        },
+      });
+
+      return thread;
+    });
+
+    if (this.notifications) {
+      await this.notifications
+        .create(collection.ownerId, NotificationType.MESSAGE_RECEIVED, {
+          actorId: requesterId,
+          payload: {
+            threadId: createdThread.id,
+            inquiryId,
+            collectionId,
+            collectionTitle: collection.title ?? 'Design',
+            productId: dto.productId ?? null,
+            targetUrl: `/messages?threadId=${createdThread.id}`,
+            type: 'CUSTOM_FIT_INQUIRY',
+          },
+        })
+        .catch(() => undefined);
+    }
 
     return {
       success: true,
       inquiryId,
+      threadId,
       message: 'Your inquiry has been sent to the brand. They will respond soon.',
       estimatedResponseTime: '24-48 hours',
     };

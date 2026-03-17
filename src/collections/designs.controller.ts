@@ -137,4 +137,41 @@ export class DesignsController {
   async duplicateDesign(@Param('id') designId: string, @Req() req: any) {
     return this.collectionsService.duplicateCollection(designId, req.user.id, 'design');
   }
+
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Post(':id/draft-session')
+  async startDesignDraftSession(
+    @Param('id') designId: string,
+    @Body()
+    body: { deviceName?: string; forceNew?: boolean; existingToken?: string },
+    @Req() req: any,
+  ) {
+    return this.collectionsService.checkDraftConflict(
+      designId,
+      req.user.id,
+      body?.deviceName,
+      body?.forceNew,
+      body?.existingToken,
+    );
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Post(':id/custom-fit-inquiry')
+  async submitDesignCustomFitInquiry(
+    @Param('id') designId: string,
+    @Body()
+    body: {
+      productId?: string;
+      message: string;
+      measurements?: string;
+      preferredSize?: string;
+    },
+    @Req() req: any,
+  ) {
+    return this.collectionsService.submitCustomFitInquiry(
+      designId,
+      req.user.id,
+      body,
+    );
+  }
 }

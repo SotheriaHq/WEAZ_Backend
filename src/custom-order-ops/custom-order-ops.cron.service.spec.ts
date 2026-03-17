@@ -216,42 +216,21 @@ describe('CustomOrderOpsCronService', () => {
     });
   });
 
-  it('queues payout records for unreleased payout-eligible allocations grouped by brand and currency', async () => {
+  it('alerts admins for manual payout release when payout-eligible allocations exist', async () => {
     prisma.customOrderLedgerAllocation.findMany.mockResolvedValue([
       {
         id: 'alloc_1',
-        amount: 600,
-        currency: 'NGN',
-        customOrder: { brandId: 'brand_1' },
+        customOrderId: 'co_1',
+        customOrder: { brandId: 'brand_1', buyerId: 'buyer_1' },
       },
       {
         id: 'alloc_2',
-        amount: 400,
-        currency: 'NGN',
-        customOrder: { brandId: 'brand_1' },
-      },
-      {
-        id: 'alloc_3',
-        amount: 200,
-        currency: 'USD',
-        customOrder: { brandId: 'brand_2' },
+        customOrderId: 'co_2',
+        customOrder: { brandId: 'brand_1', buyerId: 'buyer_1' },
       },
     ]);
-
-    const tx = {
-      customOrderLedgerAllocation: {
-        updateMany: jest
-          .fn()
-          .mockResolvedValueOnce({ count: 2 })
-          .mockResolvedValueOnce({ count: 1 }),
-      },
-      payout: {
-        create: jest.fn().mockResolvedValue(undefined),
-      },
-    };
-    prisma.$transaction.mockImplementation(async (callback: (innerTx: typeof tx) => Promise<unknown>) =>
-      callback(tx),
-    );
+    prisma.user.findMany.mockResolvedValue([{ id: 'admin_1' }]);
+    prisma.customOrderTimelineEvent.create.mockResolvedValue(undefined);
 
     await service.queueEligibleCustomOrderPayouts();
 
@@ -274,67 +253,33 @@ describe('CustomOrderOpsCronService', () => {
       },
       select: {
         id: true,
-        amount: true,
-        currency: true,
+        customOrderId: true,
         customOrder: {
           select: {
             brandId: true,
+            buyerId: true,
           },
         },
       },
       take: 500,
     });
-    expect(tx.customOrderLedgerAllocation.updateMany).toHaveBeenNthCalledWith(
-      1,
-      {
-        where: {
-          id: { in: ['alloc_1', 'alloc_2'] },
-          status: CustomOrderLedgerAllocationStatus.PAYOUT_ELIGIBLE,
-          paidOutAt: null,
-          payoutId: null,
-        },
-        data: {
-          paidOutAt: fixedNow,
-          payoutId: expect.any(String),
-        },
-      },
-    );
-    expect(tx.payout.create).toHaveBeenNthCalledWith(
+    expect(sideEffects.enqueueNotification).toHaveBeenCalledTimes(2);
+    expect(sideEffects.enqueueNotification).toHaveBeenNthCalledWith(
       1,
       expect.objectContaining({
-        data: expect.objectContaining({
-          brandId: 'brand_1',
-          amount: expect.anything(),
-          currency: 'NGN',
-          status: 'PENDING',
-        }),
+        customOrderId: 'co_1',
+        recipientIds: ['admin_1'],
+        notificationType: NotificationType.CUSTOM_ORDER_ADMIN_REVIEW_TRIGGERED,
       }),
     );
-    expect(tx.customOrderLedgerAllocation.updateMany).toHaveBeenNthCalledWith(
-      2,
-      {
-        where: {
-          id: { in: ['alloc_3'] },
-          status: CustomOrderLedgerAllocationStatus.PAYOUT_ELIGIBLE,
-          paidOutAt: null,
-          payoutId: null,
-        },
-        data: {
-          paidOutAt: fixedNow,
-          payoutId: expect.any(String),
-        },
-      },
-    );
-    expect(tx.payout.create).toHaveBeenNthCalledWith(
+    expect(sideEffects.enqueueNotification).toHaveBeenNthCalledWith(
       2,
       expect.objectContaining({
-        data: expect.objectContaining({
-          brandId: 'brand_2',
-          amount: expect.anything(),
-          currency: 'USD',
-          status: 'PENDING',
-        }),
+        customOrderId: 'co_2',
+        recipientIds: ['admin_1'],
+        notificationType: NotificationType.CUSTOM_ORDER_ADMIN_REVIEW_TRIGGERED,
       }),
     );
+    expect(prisma.customOrderTimelineEvent.create).toHaveBeenCalledTimes(2);
   });
 });

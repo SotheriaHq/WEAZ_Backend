@@ -280,6 +280,15 @@ export class FinalizeCollectionDto {
   coverMediaId?: string;
 
   @IsOptional()
+  @IsString()
+  draftSessionToken?: string;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  draftVersion?: number;
+
+  @IsOptional()
   @IsNumber()
   coverIndex?: number;
 }

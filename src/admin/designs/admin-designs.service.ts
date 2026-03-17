@@ -28,7 +28,6 @@ export class AdminDesignsService {
     const where: Record<string, unknown> = {
       deletedAt: null,
       domain: CollectionDomain.DESIGN,
-      isAvailableInStore: false,
     };
 
     if (params.search) {
@@ -198,7 +197,7 @@ export class AdminDesignsService {
 
         return {
           ...deleted,
-          status: 'ARCHIVED',
+          deleted: true,
           updatedAt: new Date(),
         };
       }

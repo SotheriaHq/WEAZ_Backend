@@ -189,6 +189,16 @@ export class ReportCustomOrderIssueDto {
   evidenceJson?: Record<string, unknown>;
 }
 
+export class UpdateCustomOrderMeasurementsDto {
+  @IsObject()
+  measurementValues: Record<string, number>;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  reason?: string;
+}
+
 export class RespondToCustomOrderExtensionDto {
   @IsEnum(CustomOrderExtensionResponseStatus)
   response: CustomOrderExtensionResponseStatus;

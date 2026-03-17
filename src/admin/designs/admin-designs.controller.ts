@@ -56,7 +56,7 @@ export class AdminDesignsController {
     },
     @Req() req: Request,
   ) {
-    const actorId = (req as any).user.sub;
+    const actorId = (req as any).user.id ?? (req as any).user.sub;
     return this.designsService.moderate(id, dto, actorId, req);
   }
 }

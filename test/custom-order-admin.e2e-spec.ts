@@ -22,6 +22,7 @@ describe('Custom-order admin reconciliation routes (e2e)', () => {
   const customOrderId = uuidv4();
   const payoutId = uuidv4();
   const allocationId = uuidv4();
+  const releasableAllocationId = uuidv4();
 
   beforeAll(async () => {
     jest.spyOn(JwtAuthGuard.prototype, 'canActivate').mockImplementation((context: any) => {
@@ -205,11 +206,24 @@ describe('Custom-order admin reconciliation routes (e2e)', () => {
         paidOutAt: new Date('2026-03-12T12:00:00.000Z'),
       },
     });
+
+    await prisma.customOrderLedgerAllocation.create({
+      data: {
+        id: releasableAllocationId,
+        customOrderId,
+        allocationType: 'BRAND_ACCEPTANCE_PORTION',
+        amount: 300,
+        currency: 'NGN',
+        status: 'PAYOUT_ELIGIBLE',
+        eligibleAt: new Date('2026-03-12T10:00:00.000Z'),
+      },
+    });
   });
 
   afterAll(async () => {
+    await prisma.customOrderLedgerAllocation.deleteMany({ where: { id: releasableAllocationId } });
     await prisma.customOrderLedgerAllocation.deleteMany({ where: { id: allocationId } });
-    await prisma.payout.deleteMany({ where: { id: payoutId } });
+    await prisma.payout.deleteMany({ where: { brandId } });
     await prisma.customOrder.deleteMany({ where: { id: customOrderId } });
     await prisma.customOrderConfigurationVersion.deleteMany({ where: { id: configurationVersionId } });
     await prisma.customOrderConfiguration.deleteMany({ where: { id: configurationId } });
@@ -225,8 +239,9 @@ describe('Custom-order admin reconciliation routes (e2e)', () => {
       .expect(200);
 
     const payload = response.body?.data ?? response.body;
-    expect(payload.total).toBe(1);
-    expect(payload.items[0]).toEqual(
+    expect(payload.total).toBe(2);
+    const payoutLinked = payload.items.find((item: any) => item.id === allocationId);
+    expect(payoutLinked).toEqual(
       expect.objectContaining({
         id: allocationId,
         payoutId,
@@ -264,5 +279,42 @@ describe('Custom-order admin reconciliation routes (e2e)', () => {
     const storedAfterClear = await prisma.customOrder.findUnique({ where: { id: customOrderId } });
     expect(storedAfterClear?.retentionHoldType).toBeNull();
     expect(storedAfterClear?.retentionHoldReason).toBeNull();
+  });
+
+  it('releases payout-eligible allocations through admin manual trigger', async () => {
+    const dryRunResponse = await request(app.getHttpServer())
+      .post('/admin/custom-order-ledger-allocations/release')
+      .send({ customOrderId, dryRun: true })
+      .expect(201);
+
+    const dryRunPayload = dryRunResponse.body?.data ?? dryRunResponse.body;
+    expect(dryRunPayload.dryRun).toBe(true);
+    expect(dryRunPayload.releasedAllocations).toBe(1);
+
+    const releaseResponse = await request(app.getHttpServer())
+      .post('/admin/custom-order-ledger-allocations/release')
+      .send({ customOrderId })
+      .expect(201);
+
+    const releasePayload = releaseResponse.body?.data ?? releaseResponse.body;
+    expect(releasePayload.dryRun).toBe(false);
+    expect(releasePayload.releasedAllocations).toBe(1);
+    expect(releasePayload.releasedBatches).toBe(1);
+
+    const releasedAllocation = await prisma.customOrderLedgerAllocation.findUnique({
+      where: { id: releasableAllocationId },
+      select: { payoutId: true, paidOutAt: true },
+    });
+    expect(releasedAllocation?.payoutId).toBeTruthy();
+    expect(releasedAllocation?.paidOutAt).not.toBeNull();
+
+    const queuedPayout = await prisma.payout.findUnique({ where: { id: releasedAllocation?.payoutId ?? '' } });
+    expect(queuedPayout).toEqual(
+      expect.objectContaining({
+        brandId,
+        amount: expect.anything(),
+        status: 'PENDING',
+      }),
+    );
   });
 });

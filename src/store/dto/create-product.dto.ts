@@ -13,6 +13,7 @@ import {
   IsInt,
   IsUUID,
   IsIn,
+  IsNotEmpty,
 } from 'class-validator';
 import { Type, Transform } from 'class-transformer';
 
@@ -61,7 +62,7 @@ export class ProductVariantDto {
 
 export class CreateProductDto {
   @IsOptional()
-  @IsString()
+  @IsUUID('4')
   collectionId?: string;
 
   @IsOptional()
@@ -77,10 +78,10 @@ export class CreateProductDto {
   @IsUUID('4')
   categoryId?: string;
 
-  @IsOptional()
   @IsString()
+  @IsNotEmpty()
   @MaxLength(200)
-  name?: string;
+  name: string;
 
   @IsOptional()
   @IsString()

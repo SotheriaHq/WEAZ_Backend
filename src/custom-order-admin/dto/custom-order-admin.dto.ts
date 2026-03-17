@@ -171,6 +171,26 @@ export class QueryCustomOrderLedgerAllocationsDto {
   payoutId?: string;
 }
 
+export class ReleaseCustomOrderLedgerAllocationsDto {
+  @IsOptional()
+  @IsString()
+  customOrderId?: string;
+
+  @IsOptional()
+  @IsString()
+  brandId?: string;
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  allocationIds?: string[];
+
+  @IsOptional()
+  @Type(() => Boolean)
+  @IsBoolean()
+  dryRun?: boolean;
+}
+
 export class QueryCustomOrderRiskDashboardDto {
   @IsOptional()
   @Type(() => Number)

@@ -26,6 +26,7 @@ import {
   QueryCustomOrdersDto,
   ReportCustomOrderIssueDto,
   RespondToCustomOrderExtensionDto,
+  UpdateCustomOrderMeasurementsDto,
   UpdateDisplayChartPreferenceDto,
   VerifyCustomOrderPaymentDto,
 } from './dto/custom-orders.dto';
@@ -138,6 +139,16 @@ export class CustomOrdersBuyerController {
     dto: ReportCustomOrderIssueDto,
   ) {
     return this.ordersService.reportIssue(req.user.id, id, dto);
+  }
+
+  @Post(':id/update-measurements')
+  async updateMeasurements(
+    @Param('id') id: string,
+    @Req() req: Request & { user: { id: string } },
+    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true }))
+    dto: UpdateCustomOrderMeasurementsDto,
+  ) {
+    return this.ordersService.updateBuyerMeasurementsBeforeAcceptance(req.user.id, id, dto);
   }
 
   @Post(':id/extension-requests/:requestId/respond')

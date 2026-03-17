@@ -7,7 +7,7 @@ import {
   Req,
   UseGuards,
   Body,
-  BadRequestException,
+  ForbiddenException,
 } from '@nestjs/common';
 import { OrderService } from './order.service';
 import { JwtAuthGuard } from '../auth/guard/jwt-auth.guard';
@@ -29,7 +29,7 @@ export class OrderController {
     @Query('q') search?: string,
   ) {
     if (req.user.id !== brandId) {
-      throw new BadRequestException('Not authorized for this brand');
+      throw new ForbiddenException('Not authorized for this brand');
     }
     return this.orderService.findAll(
       brandId,
@@ -47,7 +47,7 @@ export class OrderController {
     @Req() req: any,
   ) {
     if (req.user.id !== brandId) {
-      throw new BadRequestException('Not authorized for this brand');
+      throw new ForbiddenException('Not authorized for this brand');
     }
     return this.orderService.findOne(brandId, orderId);
   }
@@ -60,7 +60,7 @@ export class OrderController {
     @Req() req: any,
   ) {
     if (req.user.id !== brandId) {
-      throw new BadRequestException('Not authorized for this brand');
+      throw new ForbiddenException('Not authorized for this brand');
     }
     return this.orderService.updateStatus(brandId, orderId, body.status);
   }

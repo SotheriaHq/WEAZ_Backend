@@ -36,6 +36,7 @@ import { UpdateCollectionDto } from './dto/update-collection.dto';
 import {
   AddProductsDto,
   ApplyTemplateDto,
+  RemoveProductsDto,
   ReorderCollectionProductsDto,
 } from './dto/collection-products.dto';
 import { CreateProductDto } from 'src/store/dto/create-product.dto';
@@ -224,7 +225,7 @@ export class CollectionsController {
   async removeProductsFromCollection(
     @Param('collectionId') collectionId: string,
     @Req() req: any,
-    @Body() dto: AddProductsDto,
+    @Body() dto: RemoveProductsDto,
   ) {
     return this.collectionsService.removeProductsFromCollection(
       collectionId,
@@ -906,25 +907,35 @@ export class CollectionsController {
   }
 
   // Metrics
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
   @Get(':id/metrics/access')
   @ApiOperation({ summary: 'Access request metrics for a collection' })
   async getAccessMetrics(
     @Param('id') collectionId: string,
+    @Req() req: any,
     @Query('from') from?: string,
     @Query('to') to?: string,
   ) {
-    return this.collectionsService.getAccessMetrics(collectionId, from, to);
+    return this.collectionsService.getAccessMetrics(
+      collectionId,
+      req.user.id,
+      from,
+      to,
+    );
   }
 
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
   @Get(':id/metrics/views')
   @ApiOperation({ summary: 'Private views metrics for a collection' })
   async getViewsMetrics(
     @Param('id') collectionId: string,
+    @Req() req: any,
     @Query('from') from?: string,
     @Query('to') to?: string,
   ) {
     return this.collectionsService.getPrivateViewsMetrics(
       collectionId,
+      req.user.id,
       from,
       to,
     );

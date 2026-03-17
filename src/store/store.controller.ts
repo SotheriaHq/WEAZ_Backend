@@ -461,6 +461,16 @@ export class StoreController {
     return this.storeService.getMyOrder(req.user.id, orderId);
   }
 
+  @UseGuards(JwtAuthGuard)
+  @Post(['orders/:orderId/cancel', 'store/orders/:orderId/cancel'])
+  async cancelMyOrder(
+    @Param('orderId') orderId: string,
+    @Body() body: { reason?: string },
+    @Req() req: any,
+  ) {
+    return this.storeService.cancelMyOrder(req.user.id, orderId, body?.reason);
+  }
+
   // ==================== STORE SETUP & STATUS ====================
 
   @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))

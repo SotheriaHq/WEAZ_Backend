@@ -7,6 +7,12 @@ export class AddProductsDto {
   productIds: string[];
 }
 
+export class RemoveProductsDto {
+  @IsArray()
+  @IsString({ each: true })
+  productIds: string[];
+}
+
 export class ReorderCollectionProductsDto {
   @IsArray()
   @ValidateNested({ each: true })

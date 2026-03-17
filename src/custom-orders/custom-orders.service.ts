@@ -39,6 +39,7 @@ import {
   ReportCustomOrderIssueDto,
   RespondToCustomOrderExtensionDto,
   UpdateDisplayChartPreferenceDto,
+  UpdateCustomOrderMeasurementsDto,
   UpdateCustomOrderLifecycleStatusDto,
   UpdateCustomOrderProgressStageDto,
 } from './dto/custom-orders.dto';
@@ -377,6 +378,16 @@ export class CustomOrdersService {
       shippingAddress: dto.shippingAddress,
       currency: configuration.configuration.brand.currency,
     });
+    const requiredMeasurementSnapshot = requiredMeasurementKeys.reduce<Record<string, number>>(
+      (accumulator, key) => {
+        const value = Number(dto.measurementValues[key]);
+        if (Number.isFinite(value)) {
+          accumulator[key] = value;
+        }
+        return accumulator;
+      },
+      {},
+    );
     const sourceSnapshot = await this.resolveSourceSnapshot(configuration.configuration.sourceType, configuration.configuration.sourceId);
     const retainedUntil = new Date(Date.now() + 180 * 24 * 60 * 60 * 1000);
 
@@ -424,6 +435,12 @@ export class CustomOrdersService {
             ...pricePreview.internalPriceBreakdown,
             chartLock: intentSnapshot.chartLock,
             noDirectMatchAcknowledged: Boolean(dto.noDirectMatchAcknowledged),
+            requiredMeasurementSnapshot,
+            measurementAttachmentMeta: {
+              attachedAt: new Date().toISOString(),
+              requiredMeasurementKeys,
+              requiredMeasurementCount: Object.keys(requiredMeasurementSnapshot).length,
+            },
           } as Prisma.InputJsonValue,
           buyerPriceSummaryJson: intent.buyerPriceSummaryJson,
           measurementSnapshotJson: dto.measurementValues as Prisma.InputJsonValue,
@@ -466,6 +483,8 @@ export class CustomOrdersService {
                 payloadJson: {
                   checkoutIntentId: intent.id,
                   customerName: dto.customerName,
+                  requiredMeasurementKeys,
+                  requiredMeasurementCount: Object.keys(requiredMeasurementSnapshot).length,
                 },
               },
             ],
@@ -670,15 +689,21 @@ export class CustomOrdersService {
   async reportIssue(userId: string, customOrderId: string, dto: ReportCustomOrderIssueDto) {
     const order = await this.requireBuyerOrder(userId, customOrderId);
     const now = new Date();
-    const withinAcceptanceWindow =
-      order.buyerAcceptanceWindowEndsAt != null && order.buyerAcceptanceWindowEndsAt >= now;
-    if (
-      (order.status !== CustomOrderStatus.DELIVERED_PENDING_BUYER_CONFIRMATION &&
-        order.status !== CustomOrderStatus.DELIVERY_ISSUE_REPORTED) ||
-      !withinAcceptanceWindow
-    ) {
-      throw new BadRequestException('CUSTOM_ORDER_ACCEPTANCE_WINDOW_CLOSED');
+    const disputeEligibleStates = new Set<CustomOrderStatus>([
+      CustomOrderStatus.PENDING_BRAND_ACCEPTANCE,
+      CustomOrderStatus.ACCEPTED,
+      CustomOrderStatus.IN_PRODUCTION,
+      CustomOrderStatus.READY_FOR_DISPATCH,
+      CustomOrderStatus.IN_TRANSIT,
+      CustomOrderStatus.DELIVERED_PENDING_BUYER_CONFIRMATION,
+      CustomOrderStatus.DELIVERY_ISSUE_REPORTED,
+    ]);
+    if (!disputeEligibleStates.has(order.status)) {
+      throw new BadRequestException('CUSTOM_ORDER_DISPUTE_WINDOW_CLOSED');
     }
+
+    const normalizedEvidence = this.validateAndNormalizeIssueEvidence(dto.evidenceJson);
+    const disputeIntakeQuestions = this.buildDisputeIntakeQuestions(dto.issueType);
 
     const updated = await this.prisma.$transaction(async (tx) => {
       await tx.customOrderIssue.create({
@@ -686,7 +711,7 @@ export class CustomOrdersService {
           customOrderId,
           issueType: dto.issueType,
           description: dto.description.trim(),
-          evidenceJson: (dto.evidenceJson ?? null) as Prisma.InputJsonValue,
+          evidenceJson: normalizedEvidence as Prisma.InputJsonValue,
           openedById: userId,
         },
       });
@@ -726,6 +751,15 @@ export class CustomOrdersService {
               {
                 actorType: CustomOrderActorType.SYSTEM,
                 eventType: 'DISPUTE_CREATED',
+                payloadJson: {
+                  issueType: dto.issueType,
+                  intakeQuestions: disputeIntakeQuestions,
+                  intakeEvidenceProvided: {
+                    hasText: true,
+                    photoCount: (normalizedEvidence.photos as unknown[]).length,
+                    optionalFileCount: ((normalizedEvidence.files as unknown[]) ?? []).length,
+                  },
+                },
               },
             ],
           },
@@ -786,6 +820,17 @@ export class CustomOrdersService {
     const counterDays = dto.counterDays;
     if (response === CustomOrderExtensionResponseStatus.COUNTERED && !counterDays) {
       throw new BadRequestException('Counter response requires a counter day value');
+    }
+    if (response === CustomOrderExtensionResponseStatus.COUNTERED) {
+      const existingCounter = order.extensionRequests.some(
+        (entry) =>
+          entry.id !== requestId &&
+          (entry.buyerCounterDays != null ||
+            entry.buyerResponseStatus === CustomOrderExtensionResponseStatus.COUNTERED),
+      );
+      if (existingCounter) {
+        throw new BadRequestException('Only one extension counter is allowed per order');
+      }
     }
 
     const updated = await this.prisma.$transaction(async (tx) => {
@@ -1336,13 +1381,8 @@ export class CustomOrdersService {
       throw new NotFoundException('Custom order not found');
     }
 
-    const openRequest = order.extensionRequests.find(
-      (request) =>
-        request.buyerResponseStatus === CustomOrderExtensionResponseStatus.OPEN ||
-        request.buyerResponseStatus === CustomOrderExtensionResponseStatus.COUNTERED,
-    );
-    if (openRequest) {
-      throw new BadRequestException('CUSTOM_ORDER_EXTENSION_ALREADY_OPEN');
+    if (order.extensionRequests.length > 0) {
+      throw new BadRequestException('Only one extension request is allowed per order');
     }
     if (!this.isExtensionRequestAllowed(order.status, dto.targetType)) {
       throw new BadRequestException('CUSTOM_ORDER_EXTENSION_NOT_ALLOWED_FOR_STATE');
@@ -1460,6 +1500,127 @@ export class CustomOrdersService {
     return {
       statusCode: 200,
       message: 'Custom order lifecycle status updated',
+      data: this.mapDetail(updated),
+    };
+  }
+
+  async updateBuyerMeasurementsBeforeAcceptance(
+    userId: string,
+    customOrderId: string,
+    dto: UpdateCustomOrderMeasurementsDto,
+  ) {
+    const order = await this.requireBuyerOrder(userId, customOrderId);
+    if (
+      order.status !== CustomOrderStatus.PENDING_BRAND_ACCEPTANCE ||
+      order.paymentStatus !== PaymentStatus.PAID ||
+      order.acceptedAt
+    ) {
+      throw new BadRequestException('CUSTOM_ORDER_MEASUREMENT_UPDATE_WINDOW_CLOSED');
+    }
+
+    const configuration = await this.getConfigurationVersion(order.configurationId, order.configurationVersionId);
+    const requiredMeasurementKeys = await this.resolveRequiredMeasurementKeys(
+      configuration.snapshot.requiredMeasurementKeys ?? [],
+      configuration.snapshot.requiredFreeformPointIds ?? [],
+      dto.measurementValues,
+    );
+    await this.validateMeasurementRanges(requiredMeasurementKeys, dto.measurementValues);
+
+    const yardProfile = this.parseConfigurationYardProfile(
+      typeof configuration.snapshot.notes === 'string' ? configuration.snapshot.notes : null,
+    );
+    const chartLock = this.normalizeChartLock(
+      (order.internalPriceBreakdownJson as Record<string, unknown>)?.chartLock,
+    );
+
+    const revalidatedPreview = this.pricingService.buildPricePreview({
+      baseProductionCharge: configuration.snapshot.baseProductionCharge,
+      fabricCostPerYard: configuration.snapshot.fabricCostPerYard,
+      rushEnabled: configuration.snapshot.rushEnabled,
+      rushFee: configuration.snapshot.rushFee,
+      baseYardsOverride: yardProfile?.averageBaseYards,
+      additionalYards: this.resolveAdditionalYardsFromProfile(yardProfile, chartLock.computedSize),
+      rules: this.pricingService.validateConfigurationRules(
+        (configuration.snapshot.rules ?? []).map((rule: Record<string, unknown>) => ({
+          priority: Number(rule.priority),
+          outputYards: String(rule.outputYards),
+          isFallback: Boolean(rule.isFallback),
+          conditionsJson: this.conditionsFromSnapshot(rule.conditions),
+        })),
+      ),
+      requiredMeasurementKeys,
+      measurementValues: dto.measurementValues,
+      rushSelected: order.rushSelected,
+      shippingAddress: (order.shippingAddressJson as Record<string, unknown> | null) ?? undefined,
+      currency: order.currency,
+    });
+
+    const existingGrandTotal = Number(
+      (order.buyerPriceSummaryJson as Record<string, unknown>)?.grandTotal ?? 0,
+    );
+    const revalidatedGrandTotal = Number(revalidatedPreview.buyerPriceSummary.grandTotal ?? 0);
+    if (existingGrandTotal !== revalidatedGrandTotal) {
+      throw new BadRequestException(
+        'Measurement update changes the locked payable total. Please create a new preview and contact support/admin for settlement revalidation.',
+      );
+    }
+
+    const requiredMeasurementSnapshot = requiredMeasurementKeys.reduce<Record<string, number>>(
+      (accumulator, key) => {
+        const value = Number(dto.measurementValues[key]);
+        if (Number.isFinite(value)) {
+          accumulator[key] = value;
+        }
+        return accumulator;
+      },
+      {},
+    );
+
+    const updated = await this.prisma.customOrder.update({
+      where: { id: customOrderId },
+      data: {
+        measurementSnapshotJson: dto.measurementValues as Prisma.InputJsonValue,
+        measurementConfirmedAt: new Date(),
+        internalPriceBreakdownJson: {
+          ...(order.internalPriceBreakdownJson as Record<string, unknown>),
+          requiredMeasurementSnapshot,
+          measurementAttachmentMeta: {
+            attachedAt: new Date().toISOString(),
+            requiredMeasurementKeys,
+            requiredMeasurementCount: Object.keys(requiredMeasurementSnapshot).length,
+            updatedBeforeAcceptance: true,
+            updateReason: dto.reason ?? null,
+          },
+        } as Prisma.InputJsonValue,
+        timelineEvents: {
+          create: {
+            actorType: CustomOrderActorType.BUYER,
+            actorId: userId,
+            eventType: 'PRICE_PREVIEW_CREATED',
+            payloadJson: {
+              action: 'MEASUREMENTS_UPDATED_PRE_ACCEPTANCE',
+              reason: dto.reason ?? null,
+              requiredMeasurementKeys,
+              requiredMeasurementCount: Object.keys(requiredMeasurementSnapshot).length,
+            },
+          },
+        },
+      },
+      include: this.detailIncludes,
+    });
+
+    await this.queueBrandNotification(
+      order.brandId,
+      'CUSTOM_ORDER_REVIEW_REQUIRED' as NotificationType,
+      customOrderId,
+      {
+        reason: 'MEASUREMENTS_UPDATED_PRE_ACCEPTANCE',
+      },
+    );
+
+    return {
+      statusCode: 200,
+      message: 'Custom order measurements updated and revalidated',
       data: this.mapDetail(updated),
     };
   }
@@ -1724,6 +1885,82 @@ export class CustomOrdersService {
     return `chart-pack-v1-${new Date().getUTCFullYear()}Q1`;
   }
 
+  private validateAndNormalizeIssueEvidence(
+    evidenceJson: Record<string, unknown> | undefined,
+  ): Record<string, unknown> {
+    const normalized =
+      evidenceJson && typeof evidenceJson === 'object' && !Array.isArray(evidenceJson)
+        ? { ...evidenceJson }
+        : {};
+
+    const photos = Array.isArray(normalized.photos)
+      ? normalized.photos.filter((entry) => typeof entry === 'string' && entry.trim().length > 0)
+      : [];
+    if (photos.length === 0) {
+      throw new BadRequestException('Dispute evidence must include at least one photo');
+    }
+
+    const files = Array.isArray(normalized.files)
+      ? normalized.files.filter((entry) => entry && typeof entry === 'object')
+      : [];
+
+    return {
+      ...normalized,
+      photos,
+      files,
+    };
+  }
+
+  private buildDisputeIntakeQuestions(issueType: CustomOrderIssueType): Array<{
+    key: string;
+    question: string;
+    required: boolean;
+  }> {
+    const base = [
+      {
+        key: 'summary',
+        question: 'Briefly describe what went wrong with this custom order.',
+        required: true,
+      },
+      {
+        key: 'impact',
+        question: 'How is this issue affecting delivery, fit, or usability?',
+        required: true,
+      },
+      {
+        key: 'preferred_resolution',
+        question: 'What outcome are you requesting (refund, remake, adjustment, or other)?',
+        required: true,
+      },
+    ];
+
+    const issueSpecific: Record<CustomOrderIssueType, Array<{ key: string; question: string; required: boolean }>> = {
+      WRONG_ITEM: [
+        { key: 'received_item_description', question: 'What item did you receive instead?', required: true },
+      ],
+      MATERIAL_DEFECT: [
+        { key: 'defect_location', question: 'Where is the material defect located?', required: true },
+      ],
+      MEASUREMENT_NON_COMPLIANCE: [
+        { key: 'fit_problem_area', question: 'Which fit areas are incorrect?', required: true },
+      ],
+      UNFINISHED_WORK: [
+        { key: 'unfinished_parts', question: 'Which parts of the outfit are unfinished?', required: true },
+      ],
+      NON_DELIVERY: [
+        { key: 'last_delivery_update', question: 'What was the last delivery update you received?', required: true },
+      ],
+      UNREASONABLE_DELAY: [
+        { key: 'delay_duration', question: 'How long has the delay lasted so far?', required: true },
+      ],
+      OTHER: [
+        { key: 'other_details', question: 'Provide details for this issue type.', required: true },
+      ],
+    };
+
+    return [...base, ...issueSpecific[issueType]];
+  }
+
   private resolveAdditionalYardsFromProfile(
     profile:
       | {
@@ -1807,7 +2044,12 @@ export class CustomOrdersService {
     for (const key of required) {
       const direct = indexed[key];
       const women = indexed[`WOMEN_${key}`];
-      const men = indexed[`MEN_${key}`];
+      const men =
+        key === 'BUST'
+          ? indexed.MEN_CHEST
+          : key === 'HIPS'
+            ? indexed.MEN_HIP
+            : indexed[`MEN_${key}`];
       const value = Number.isFinite(direct) ? direct : Number.isFinite(women) ? women : men;
       if (!Number.isFinite(value) || value <= 0) {
         return {
@@ -1831,7 +2073,7 @@ export class CustomOrdersService {
         const inBust = indexed.BUST >= band.bustMin && (idx === bands.length - 1 ? indexed.BUST <= band.bustMax : indexed.BUST < band.bustMax);
         const inWaist = indexed.WAIST >= band.waistMin && (idx === bands.length - 1 ? indexed.WAIST <= band.waistMax : indexed.WAIST < band.waistMax);
         const inHips = indexed.HIPS >= band.hipsMin && (idx === bands.length - 1 ? indexed.HIPS <= band.hipsMax : indexed.HIPS < band.hipsMax);
-        return inBust || inWaist || inHips;
+        return inBust && inWaist && inHips;
       });
 
       if (exact >= 0) {

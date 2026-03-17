@@ -48,6 +48,7 @@ import {
 } from 'src/common/utils/tag-validator';
 import { TAG_ENTITY_TYPE } from 'src/tags/tag-entity-type';
 import { CategoriesService } from 'src/categories/categories.service';
+import { reconcileStandardOrderPaymentStatuses } from 'src/common/payments/order-payment-reconciliation.util';
 
 @Injectable()
 export class StoreService {
@@ -69,86 +70,10 @@ export class StoreService {
     private readonly notificationsQueue?: NotificationsQueueService,
   ) {}
 
-  private readonly maxProductsPerCollection = 5;
-
-  private mapAttemptStatusToPaymentStatus(status: string | null | undefined): PaymentStatus {
-    switch ((status ?? '').toUpperCase()) {
-      case 'PAID':
-        return PaymentStatus.PAID;
-      case 'FAILED':
-      case 'CANCELLED':
-      case 'EXPIRED':
-        return PaymentStatus.FAILED;
-      default:
-        return PaymentStatus.PENDING;
-    }
-  }
-
-  private async reconcileOrderPaymentStatuses(
-    orders: Array<{
-      id: string;
-      paymentReference: string | null;
-      paymentStatus: PaymentStatus;
-      paidAt?: Date | null;
-    }>,
-  ): Promise<Map<string, PaymentStatus>> {
-    const references = Array.from(
-      new Set(
-        orders
-          .map((order) => order.paymentReference)
-          .filter((reference): reference is string => Boolean(reference)),
-      ),
-    );
-
-    const resolvedByOrderId = new Map<string, PaymentStatus>();
-    if (references.length === 0) {
-      return resolvedByOrderId;
-    }
-
-    const attempts = await this.prisma.paymentAttempt.findMany({
-      where: { reference: { in: references } },
-      select: { reference: true, status: true, confirmedAt: true },
-    });
-
-    const attemptByReference = new Map(
-      attempts.map((attempt) => [attempt.reference, attempt]),
-    );
-
-    const updates = orders
-      .map((order) => {
-        const reference = order.paymentReference;
-        if (!reference) return null;
-        const attempt = attemptByReference.get(reference);
-        if (!attempt) return null;
-
-        const resolvedStatus = this.mapAttemptStatusToPaymentStatus(
-          attempt.status,
-        );
-        resolvedByOrderId.set(order.id, resolvedStatus);
-
-        if (
-          order.paymentStatus === resolvedStatus &&
-          (resolvedStatus !== PaymentStatus.PAID || order.paidAt || !attempt.confirmedAt)
-        ) {
-          return null;
-        }
-
-        return this.prisma.order.update({
-          where: { id: order.id },
-          data: {
-            paymentStatus: resolvedStatus,
-            paidAt: resolvedStatus === PaymentStatus.PAID ? attempt.confirmedAt : null,
-          },
-        });
-      })
-      .filter(Boolean);
-
-    if (updates.length > 0) {
-      await this.prisma.$transaction(updates as Prisma.PrismaPromise<unknown>[]);
-    }
-
-    return resolvedByOrderId;
-  }
+  private readonly maxProductsPerCollection = Math.max(
+    1,
+    parseInt(process.env.MAX_PRODUCTS_PER_COLLECTION || '5', 10),
+  );
 
   private normalizeFilterValueIds(raw?: string[] | null): string[] {
     if (!Array.isArray(raw)) return [];
@@ -280,6 +205,15 @@ export class StoreService {
   ) {
     await tx.$executeRaw(
       Prisma.sql`SELECT "_id" FROM "StoreCollection" WHERE "_id" = ${collectionId} FOR UPDATE`,
+    );
+  }
+
+  private async lockProductForUpdate(
+    tx: Prisma.TransactionClient,
+    productId: string,
+  ) {
+    await tx.$executeRaw(
+      Prisma.sql`SELECT "_id" FROM "Product" WHERE "_id" = ${productId} FOR UPDATE`,
     );
   }
 
@@ -1017,9 +951,19 @@ export class StoreService {
 
   @Cron(CronExpression.EVERY_5_MINUTES)
   async handleScheduledProductPublishNotifications() {
+    const now = new Date();
+    await this.prisma.product.updateMany({
+      where: {
+        isActive: false,
+        deletedAt: null,
+        archivedAt: null,
+        publishAt: { lte: now },
+      },
+      data: { isActive: true },
+    });
+
     if (!this.notifications) return;
 
-    const now = new Date();
     const candidates = await this.prisma.product.findMany({
       where: {
         isActive: true,
@@ -4447,6 +4391,8 @@ export class StoreService {
 
           const quantity = item.quantity;
 
+          await this.lockProductForUpdate(tx, product.id);
+
           const selectedVariant =
             variants.length > 0
               ? variants.find(
@@ -4693,7 +4639,7 @@ export class StoreService {
       orders.flatMap((order) => order.orderItems),
       orders,
     );
-    const paymentStatusByOrderId = await this.reconcileOrderPaymentStatuses(orders);
+    const paymentStatusByOrderId = await reconcileStandardOrderPaymentStatuses(this.prisma, orders);
 
     const normalizedOrders = orders.map((order) => ({
       ...order,
@@ -4753,7 +4699,7 @@ export class StoreService {
       order.orderItems,
       [order],
     );
-    const paymentStatusByOrderId = await this.reconcileOrderPaymentStatuses([order]);
+    const paymentStatusByOrderId = await reconcileStandardOrderPaymentStatuses(this.prisma, [order]);
 
     return {
       ...order,
@@ -4770,6 +4716,49 @@ export class StoreService {
           reviewStatesByOrderItemId.get(item.id)?.existingReviewId ?? null,
       })),
     };
+  }
+
+  async cancelMyOrder(userId: string, orderId: string, reason?: string) {
+    const order = await this.prisma.order.findFirst({
+      where: { id: orderId, buyerId: userId },
+      select: {
+        id: true,
+        status: true,
+        paymentStatus: true,
+        brandId: true,
+      },
+    });
+
+    if (!order) {
+      throw new NotFoundException('Order not found');
+    }
+
+    if (order.status !== 'PENDING') {
+      throw new BadRequestException('Only pending orders can be cancelled by buyer');
+    }
+
+    const updated = await this.prisma.order.update({
+      where: { id: orderId },
+      data: { status: 'CANCELLED' },
+    });
+
+    if (this.notifications) {
+      await this.notifications
+        .create(order.brandId, NotificationType.ORDER_STATUS_UPDATED, {
+          actorId: userId,
+          payload: {
+            orderId,
+            status: 'CANCELLED',
+            previousStatus: 'PENDING',
+            reason: reason ?? null,
+            cancelledByBuyer: true,
+            targetUrl: `/studio?tab=orders&orderId=${orderId}`,
+          },
+        })
+        .catch(() => undefined);
+    }
+
+    return updated;
   }
 
   private async getReviewStateByOrderItemId(

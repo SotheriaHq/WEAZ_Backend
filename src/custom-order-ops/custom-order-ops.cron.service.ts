@@ -10,7 +10,6 @@ import {
   UserStatus,
 } from '@prisma/client';
 import { Cron, CronExpression } from '@nestjs/schedule';
-import { v4 as uuidv4 } from 'uuid';
 import { CustomOrderRefundService } from 'src/custom-orders/custom-order-refund.service';
 import { CustomOrderSideEffectsService } from 'src/custom-orders/custom-order-side-effects.service';
 import { PrismaService } from 'src/prisma/prisma.service';
@@ -569,9 +568,8 @@ export class CustomOrderOpsCronService {
 
   @Cron(CronExpression.EVERY_6_HOURS)
   async queueEligibleCustomOrderPayouts(): Promise<void> {
-    const now = new Date();
-
     try {
+      const now = new Date();
       const allocations = await this.prisma.customOrderLedgerAllocation.findMany({
         where: {
           status: CustomOrderLedgerAllocationStatus.PAYOUT_ELIGIBLE,
@@ -591,11 +589,11 @@ export class CustomOrderOpsCronService {
         },
         select: {
           id: true,
-          amount: true,
-          currency: true,
+          customOrderId: true,
           customOrder: {
             select: {
               brandId: true,
+              buyerId: true,
             },
           },
         },
@@ -606,80 +604,44 @@ export class CustomOrderOpsCronService {
         return;
       }
 
-      const groupedAllocations = new Map<
-        string,
-        {
-          brandId: string;
-          currency: string;
-          totalAmount: number;
-          allocationIds: string[];
-        }
-      >();
+      const admins = await this.getActiveAdminIds();
+      if (admins.length === 0) {
+        return;
+      }
 
-      for (const allocation of allocations) {
-        const brandId = allocation.customOrder.brandId;
-        const groupKey = `${brandId}:${allocation.currency}`;
-        const current = groupedAllocations.get(groupKey);
-        const nextAmount = Number(allocation.amount);
+      const orderIds = Array.from(new Set(allocations.map((allocation) => allocation.customOrderId)));
+      for (const customOrderId of orderIds) {
+        await this.sideEffects.enqueueNotification({
+          customOrderId,
+          recipientIds: admins,
+          notificationType: NotificationType.CUSTOM_ORDER_ADMIN_REVIEW_TRIGGERED,
+          target: this.adminCustomOrderTarget(customOrderId),
+          payload: {
+            customOrderId,
+            reason: 'PAYOUT_RELEASE_ELIGIBLE',
+            requiresManualRelease: true,
+            generatedAt: now.toISOString(),
+          },
+          dedupeMs: 4 * 60 * 60 * 1000,
+        });
 
-        if (current) {
-          current.totalAmount += nextAmount;
-          current.allocationIds.push(allocation.id);
-          continue;
-        }
-
-        groupedAllocations.set(groupKey, {
-          brandId,
-          currency: allocation.currency,
-          totalAmount: nextAmount,
-          allocationIds: [allocation.id],
+        await this.prisma.customOrderTimelineEvent.create({
+          data: {
+            customOrderId,
+            actorType: CustomOrderActorType.SYSTEM,
+            eventType: 'ADMIN_ESCALATED',
+            payloadJson: {
+              reason: 'PAYOUT_RELEASE_ELIGIBLE',
+              requiresManualRelease: true,
+            } as Prisma.InputJsonValue,
+          },
         });
       }
 
-      let queuedCount = 0;
-
-      for (const group of groupedAllocations.values()) {
-        const payoutQueued = await this.prisma.$transaction(async (tx) => {
-          const payoutId = uuidv4();
-
-          await tx.payout.create({
-            data: {
-              id: payoutId,
-              brandId: group.brandId,
-              amount: new Prisma.Decimal(group.totalAmount.toFixed(2)),
-              currency: group.currency,
-              status: 'PENDING',
-              reference: `CO-${group.brandId.slice(0, 8)}-${now.getTime()}`,
-            },
-          });
-
-          const reserved = await tx.customOrderLedgerAllocation.updateMany({
-            where: {
-              id: { in: group.allocationIds },
-              status: CustomOrderLedgerAllocationStatus.PAYOUT_ELIGIBLE,
-              paidOutAt: null,
-              payoutId: null,
-            },
-            data: {
-              paidOutAt: now,
-              payoutId,
-            },
-          });
-
-          if (reserved.count !== group.allocationIds.length) {
-            throw new Error('CUSTOM_ORDER_PAYOUT_BATCH_RESERVATION_FAILED');
-          }
-
-          return true;
-        });
-
-        if (payoutQueued) {
-          queuedCount += 1;
-        }
-      }
-
-      if (queuedCount > 0) {
-        this.logger.log(`Queued ${queuedCount} custom-order payout batch(es)`);
+      if (orderIds.length > 0) {
+        this.logger.log(
+          `Queued ${orderIds.length} custom-order manual payout release alert(s) for admin action`,
+        );
       }
     } catch (error) {
       this.logger.warn(`Custom-order payout queue cron failed: ${this.formatError(error)}`);
