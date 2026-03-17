@@ -14,31 +14,32 @@ import { PrismaService } from 'src/prisma/prisma.service';
 import { CustomOrderPricingService } from 'src/custom-order-pricing/custom-order-pricing.service';
 import {
   CreateCustomFabricRuleBasisDto,
-  CreateCustomOrderOfferDto,
+  CreateCustomOrderConfigurationDto,
+  CustomOrderConfigurationSizeExtraYardDto,
   QueryCustomFabricRuleBasesDto,
-  QueryCustomOrderOffersDto,
-  UpdateCustomOrderOfferDto,
-} from './dto/custom-order-offers.dto';
+  QueryVisibleCustomOrderConfigurationsDto,
+  UpdateCustomOrderConfigurationDto,
+} from './dto/custom-order-configurations.dto';
 
 @Injectable()
-export class CustomOrderOffersService {
+export class CustomOrderConfigurationsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly pricingService: CustomOrderPricingService,
   ) {}
 
-  async createOffer(ownerUserId: string, dto: CreateCustomOrderOfferDto) {
+  async createConfiguration(ownerUserId: string, dto: CreateCustomOrderConfigurationDto) {
     const brand = await this.resolveBrand(ownerUserId);
     await this.assertSourceOwnership(brand.id, ownerUserId, dto.sourceType, dto.sourceId);
     await this.assertBasisAccessible(brand.id, dto.fabricRuleBasisId);
     await this.assertFreeformPointsAccessible(brand.id, dto.requiredFreeformPointIds ?? []);
-    const resolvedTitle = this.resolveOfferTitle(dto.title);
+    const resolvedTitle = this.resolveConfigurationTitle(dto.title);
 
-    const normalizedRules = this.pricingService.validateOfferRules(dto.rules);
-    this.validateOfferGuardrails(dto, dto.rules);
+    const normalizedRules = this.pricingService.validateConfigurationRules(dto.rules);
+    this.validateConfigurationGuardrails(dto, dto.rules);
 
     const created = await this.prisma.$transaction(async (tx) => {
-      const offer = await tx.customOrderOffer.create({
+      const configuration = await tx.customOrderConfiguration.create({
         data: {
           brandId: brand.id,
           sourceType: dto.sourceType,
@@ -61,7 +62,11 @@ export class CustomOrderOffersService {
           returnPolicy: dto.returnPolicy.trim(),
           defectPolicy: dto.defectPolicy.trim(),
           fabricSourcingMode: dto.fabricSourcingMode,
-          notes: dto.notes?.trim() || null,
+          notes: this.composeConfigurationNotes(
+            dto.notes,
+            dto.averageBaseYards,
+            dto.sizeExtraYards,
+          ),
           rules: {
             create: dto.rules.map((rule) => ({
               priority: rule.priority,
@@ -76,10 +81,10 @@ export class CustomOrderOffersService {
         },
       });
 
-      const snapshotJson = this.buildOfferSnapshot(offer, normalizedRules);
-      await tx.customOrderOfferVersion.create({
+      const snapshotJson = this.buildConfigurationSnapshot(configuration, normalizedRules);
+      await tx.customOrderConfigurationVersion.create({
         data: {
-          offerId: offer.id,
+          configurationId: configuration.id,
           version: 1,
           snapshotJson,
           createdById: ownerUserId,
@@ -87,31 +92,41 @@ export class CustomOrderOffersService {
       });
 
       await this.enableSourceCustomOrdering(tx, dto.sourceType, dto.sourceId);
-      return offer;
+      return configuration;
     });
+
+    const hydrated = await this.prisma.customOrderConfiguration.findUnique({
+      where: { id: created.id },
+      include: {
+        brand: { select: { id: true, name: true, ownerId: true } },
+        fabricRuleBasis: true,
+        rules: { orderBy: { priority: 'asc' } },
+        versions: { orderBy: { version: 'desc' }, take: 1 },
+      },
+    });
+
+    if (!hydrated) {
+      throw new NotFoundException('Custom order configuration not found after creation');
+    }
 
     return {
       statusCode: 201,
-      message: 'Custom order offer created',
-      data: {
-        id: created.id,
-        currentVersion: created.currentVersion,
-        isActive: created.isActive,
-      },
+      message: 'Custom order configuration created',
+      data: hydrated,
     };
   }
 
-  async updateOffer(ownerUserId: string, offerId: string, dto: UpdateCustomOrderOfferDto) {
+  async updateConfiguration(ownerUserId: string, configurationId: string, dto: UpdateCustomOrderConfigurationDto) {
     const brand = await this.resolveBrand(ownerUserId);
-    const existing = await this.prisma.customOrderOffer.findFirst({
-      where: { id: offerId, brandId: brand.id },
+    const existing = await this.prisma.customOrderConfiguration.findFirst({
+      where: { id: configurationId, brandId: brand.id },
       include: {
         rules: { orderBy: { priority: 'asc' } },
       },
     });
 
     if (!existing) {
-      throw new NotFoundException('Custom order offer not found');
+      throw new NotFoundException('Custom order configuration not found');
     }
 
     if (dto.sourceType || dto.sourceId) {
@@ -136,8 +151,8 @@ export class CustomOrderOffersService {
       outputYards: String(rule.outputYards),
       isFallback: rule.isFallback,
     }));
-    const normalizedRules = this.pricingService.validateOfferRules(mergedRuleDtos);
-    const mergedOffer = {
+    const normalizedRules = this.pricingService.validateConfigurationRules(mergedRuleDtos);
+    const mergedConfiguration = {
       ...existing,
       ...dto,
       sourceType: dto.sourceType ?? existing.sourceType,
@@ -163,37 +178,43 @@ export class CustomOrderOffersService {
       defectPolicy: dto.defectPolicy ?? existing.defectPolicy,
       fabricSourcingMode: dto.fabricSourcingMode ?? existing.fabricSourcingMode,
       notes: dto.notes ?? existing.notes,
+      averageBaseYards: dto.averageBaseYards,
+      sizeExtraYards: dto.sizeExtraYards,
       rules: mergedRuleDtos,
     };
-    this.validateOfferGuardrails(mergedOffer, mergedRuleDtos);
+    this.validateConfigurationGuardrails(mergedConfiguration, mergedRuleDtos);
 
     const updated = await this.prisma.$transaction(async (tx) => {
       const nextVersion = existing.currentVersion + 1;
-      const resolvedTitle = this.resolveOfferTitle(mergedOffer.title, existing.title);
-      const offer = await tx.customOrderOffer.update({
-        where: { id: offerId },
+      const resolvedTitle = this.resolveConfigurationTitle(mergedConfiguration.title, existing.title);
+      const configuration = await tx.customOrderConfiguration.update({
+        where: { id: configurationId },
         data: {
-          sourceType: mergedOffer.sourceType,
-          sourceId: mergedOffer.sourceId,
+          sourceType: mergedConfiguration.sourceType,
+          sourceId: mergedConfiguration.sourceId,
           title: resolvedTitle,
-          buyerInstructionText: mergedOffer.buyerInstructionText?.trim() || null,
-          requiredMeasurementKeys: mergedOffer.requiredMeasurementKeys,
-          requiredFreeformPointIds: mergedOffer.requiredFreeformPointIds,
-          fabricRuleBasisId: mergedOffer.fabricRuleBasisId,
-          baseProductionCharge: new Prisma.Decimal(mergedOffer.baseProductionCharge),
-          fabricCostPerYard: new Prisma.Decimal(mergedOffer.fabricCostPerYard),
-          rushEnabled: Boolean(mergedOffer.rushEnabled),
-          rushFee: mergedOffer.rushFee ? new Prisma.Decimal(mergedOffer.rushFee) : null,
-          rushProductionLeadDays: mergedOffer.rushProductionLeadDays ?? null,
-          productionLeadDays: mergedOffer.productionLeadDays,
-          deliveryMinDays: mergedOffer.deliveryMinDays,
-          deliveryMaxDays: mergedOffer.deliveryMaxDays,
-          deliveryScope: String(mergedOffer.deliveryScope).trim(),
-          revisionPolicy: String(mergedOffer.revisionPolicy).trim(),
-          returnPolicy: String(mergedOffer.returnPolicy).trim(),
-          defectPolicy: String(mergedOffer.defectPolicy).trim(),
-          fabricSourcingMode: mergedOffer.fabricSourcingMode,
-          notes: mergedOffer.notes?.trim() || null,
+          buyerInstructionText: mergedConfiguration.buyerInstructionText?.trim() || null,
+          requiredMeasurementKeys: mergedConfiguration.requiredMeasurementKeys,
+          requiredFreeformPointIds: mergedConfiguration.requiredFreeformPointIds,
+          fabricRuleBasisId: mergedConfiguration.fabricRuleBasisId,
+          baseProductionCharge: new Prisma.Decimal(mergedConfiguration.baseProductionCharge),
+          fabricCostPerYard: new Prisma.Decimal(mergedConfiguration.fabricCostPerYard),
+          rushEnabled: Boolean(mergedConfiguration.rushEnabled),
+          rushFee: mergedConfiguration.rushFee ? new Prisma.Decimal(mergedConfiguration.rushFee) : null,
+          rushProductionLeadDays: mergedConfiguration.rushProductionLeadDays ?? null,
+          productionLeadDays: mergedConfiguration.productionLeadDays,
+          deliveryMinDays: mergedConfiguration.deliveryMinDays,
+          deliveryMaxDays: mergedConfiguration.deliveryMaxDays,
+          deliveryScope: String(mergedConfiguration.deliveryScope).trim(),
+          revisionPolicy: String(mergedConfiguration.revisionPolicy).trim(),
+          returnPolicy: String(mergedConfiguration.returnPolicy).trim(),
+          defectPolicy: String(mergedConfiguration.defectPolicy).trim(),
+          fabricSourcingMode: mergedConfiguration.fabricSourcingMode,
+          notes: this.composeConfigurationNotes(
+            mergedConfiguration.notes,
+            mergedConfiguration.averageBaseYards,
+            mergedConfiguration.sizeExtraYards,
+          ),
           currentVersion: nextVersion,
           rules: {
             deleteMany: {},
@@ -210,33 +231,47 @@ export class CustomOrderOffersService {
         },
       });
 
-      await tx.customOrderOfferVersion.create({
+      await tx.customOrderConfigurationVersion.create({
         data: {
-          offerId: offer.id,
+          configurationId: configuration.id,
           version: nextVersion,
-          snapshotJson: this.buildOfferSnapshot(offer, normalizedRules),
+          snapshotJson: this.buildConfigurationSnapshot(configuration, normalizedRules),
           createdById: ownerUserId,
         },
       });
 
-      await this.enableSourceCustomOrdering(tx, mergedOffer.sourceType, mergedOffer.sourceId);
-      return offer;
+      await this.enableSourceCustomOrdering(
+        tx,
+        mergedConfiguration.sourceType,
+        mergedConfiguration.sourceId,
+      );
+      return configuration;
     });
+
+    const hydrated = await this.prisma.customOrderConfiguration.findUnique({
+      where: { id: updated.id },
+      include: {
+        brand: { select: { id: true, name: true, ownerId: true } },
+        fabricRuleBasis: true,
+        rules: { orderBy: { priority: 'asc' } },
+        versions: { orderBy: { version: 'desc' }, take: 1 },
+      },
+    });
+
+    if (!hydrated) {
+      throw new NotFoundException('Custom order configuration not found after update');
+    }
 
     return {
       statusCode: 200,
-      message: 'Custom order offer updated',
-      data: {
-        id: updated.id,
-        currentVersion: updated.currentVersion,
-        isActive: updated.isActive,
-      },
+      message: 'Custom order configuration updated',
+      data: hydrated,
     };
   }
 
-  async getOffer(offerId: string, authUserId?: string) {
-    const offer = await this.prisma.customOrderOffer.findUnique({
-      where: { id: offerId },
+  async getConfiguration(configurationId: string, authUserId?: string) {
+    const configuration = await this.prisma.customOrderConfiguration.findUnique({
+      where: { id: configurationId },
       include: {
         brand: { select: { ownerId: true, name: true } },
         fabricRuleBasis: true,
@@ -245,23 +280,63 @@ export class CustomOrderOffersService {
       },
     });
 
-    if (!offer) {
-      throw new NotFoundException('Custom order offer not found');
+    if (!configuration) {
+      throw new NotFoundException('Custom order configuration not found');
     }
 
-    const isOwner = authUserId === offer.brand.ownerId;
-    if (!offer.isActive && !isOwner) {
-      throw new NotFoundException('Custom order offer not found');
+    const isOwner = authUserId === configuration.brand.ownerId;
+    if (!configuration.isActive && !isOwner) {
+      throw new NotFoundException('Custom order configuration not found');
     }
 
     return {
       statusCode: 200,
-      message: 'Custom order offer retrieved',
-      data: offer,
+      message: 'Custom order configuration retrieved',
+      data: configuration,
     };
   }
 
-  async listVisibleOffers(authUserId: string | undefined, query: QueryCustomOrderOffersDto) {
+  async getActiveConfigurationForSource(
+    sourceType: CustomOrderSourceType,
+    sourceId: string,
+    authUserId?: string,
+  ) {
+    const brand = authUserId
+      ? await this.prisma.brand.findUnique({
+          where: { ownerId: authUserId },
+          select: { id: true },
+        })
+      : null;
+
+    const configuration = await this.prisma.customOrderConfiguration.findFirst({
+      where: {
+        sourceType,
+        sourceId,
+        OR: brand?.id
+          ? [{ isActive: true }, { brandId: brand.id }]
+          : [{ isActive: true }],
+      },
+      include: {
+        brand: { select: { ownerId: true, name: true } },
+        fabricRuleBasis: true,
+        rules: { orderBy: { priority: 'asc' } },
+        versions: { orderBy: { version: 'desc' }, take: 1 },
+      },
+      orderBy: [{ isActive: 'desc' }, { updatedAt: 'desc' }],
+    });
+
+    if (!configuration) {
+      throw new NotFoundException('Custom order configuration not found');
+    }
+
+    return {
+      statusCode: 200,
+      message: 'Custom order configuration retrieved',
+      data: configuration,
+    };
+  }
+
+  async listVisibleConfigurations(authUserId: string | undefined, query: QueryVisibleCustomOrderConfigurationsDto) {
     const page = query.page ?? 1;
     const take = query.limit ?? 20;
     const brand = authUserId
@@ -271,9 +346,7 @@ export class CustomOrderOffersService {
         })
       : null;
 
-    const where: Prisma.CustomOrderOfferWhereInput = {
-      ...(query.sourceType ? { sourceType: query.sourceType } : {}),
-      ...(query.sourceId ? { sourceId: query.sourceId } : {}),
+    const where: Prisma.CustomOrderConfigurationWhereInput = {
       ...(query.isActive == null ? { isActive: true } : { isActive: query.isActive }),
       ...(brand?.id
         ? {
@@ -286,7 +359,7 @@ export class CustomOrderOffersService {
     };
 
     const [items, total] = await this.prisma.$transaction([
-      this.prisma.customOrderOffer.findMany({
+      this.prisma.customOrderConfiguration.findMany({
         where,
         include: {
           brand: { select: { id: true, name: true, ownerId: true } },
@@ -298,7 +371,7 @@ export class CustomOrderOffersService {
         skip: (page - 1) * take,
         take,
       }),
-      this.prisma.customOrderOffer.count({ where }),
+      this.prisma.customOrderConfiguration.count({ where }),
     ]);
 
     const visibleItems = brand?.id
@@ -307,49 +380,9 @@ export class CustomOrderOffersService {
 
     return {
       statusCode: 200,
-      message: 'Custom order offers retrieved',
+      message: 'Custom order configurations retrieved',
       data: {
         items: visibleItems,
-        page,
-        limit: take,
-        total,
-      },
-    };
-  }
-
-  async listBrandOffers(ownerUserId: string, brandId: string, query: QueryCustomOrderOffersDto) {
-    const brand = await this.resolveBrand(ownerUserId);
-    if (brand.id !== brandId) {
-      throw new ForbiddenException('Not authorized for this brand');
-    }
-
-    const page = query.page ?? 1;
-    const take = query.limit ?? 20;
-    const where: Prisma.CustomOrderOfferWhereInput = {
-      brandId,
-      ...(query.sourceType ? { sourceType: query.sourceType } : {}),
-      ...(query.sourceId ? { sourceId: query.sourceId } : {}),
-      ...(query.isActive == null ? {} : { isActive: query.isActive }),
-    };
-
-    const [items, total] = await this.prisma.$transaction([
-      this.prisma.customOrderOffer.findMany({
-        where,
-        include: {
-          rules: { orderBy: { priority: 'asc' } },
-        },
-        orderBy: { updatedAt: 'desc' },
-        skip: (page - 1) * take,
-        take,
-      }),
-      this.prisma.customOrderOffer.count({ where }),
-    ]);
-
-    return {
-      statusCode: 200,
-      message: 'Custom order offers retrieved',
-      data: {
-        items,
         page,
         limit: take,
         total,
@@ -497,9 +530,9 @@ export class CustomOrderOffersService {
     }
   }
 
-  private validateOfferGuardrails(
+  private validateConfigurationGuardrails(
     dto: Pick<
-      CreateCustomOrderOfferDto,
+      CreateCustomOrderConfigurationDto,
       | 'rushEnabled'
       | 'rushFee'
       | 'rushProductionLeadDays'
@@ -508,6 +541,8 @@ export class CustomOrderOffersService {
       | 'deliveryMaxDays'
       | 'baseProductionCharge'
       | 'fabricCostPerYard'
+      | 'averageBaseYards'
+      | 'sizeExtraYards'
     >,
     rules: Array<{ outputYards: string }> = [],
   ) {
@@ -522,12 +557,34 @@ export class CustomOrderOffersService {
       throw new BadRequestException('Fabric cost per yard cannot be negative');
     }
 
+    if (dto.averageBaseYards != null && Number(dto.averageBaseYards) <= 0) {
+      throw new BadRequestException('Average base yards must be greater than zero');
+    }
+
+    if (Array.isArray(dto.sizeExtraYards)) {
+      const seen = new Set<string>();
+      for (const row of dto.sizeExtraYards) {
+        const sizeLabel = String((row as any).sizeLabel ?? '').trim().toUpperCase();
+        const extraYards = Number((row as any).extraYards);
+        if (!sizeLabel) {
+          throw new BadRequestException('Each size extra-yard row requires a size label');
+        }
+        if (!Number.isFinite(extraYards) || extraYards < 0) {
+          throw new BadRequestException('Each size extra-yard value must be zero or greater');
+        }
+        if (seen.has(sizeLabel)) {
+          throw new BadRequestException(`Duplicate size extra-yard row for ${sizeLabel}`);
+        }
+        seen.add(sizeLabel);
+      }
+    }
+
     if (!dto.rushEnabled) {
       return;
     }
 
     if (!dto.rushFee || Number(dto.rushFee) <= 0) {
-      throw new BadRequestException('Rush-enabled offers must define a positive rush fee');
+      throw new BadRequestException('Rush-enabled configurations must define a positive rush fee');
     }
 
     const maxOutputYards = rules.reduce((currentMax, rule) => {
@@ -553,7 +610,7 @@ export class CustomOrderOffersService {
     }
   }
 
-  private resolveOfferTitle(inputTitle?: string | null, fallbackTitle?: string | null): string {
+  private resolveConfigurationTitle(inputTitle?: string | null, fallbackTitle?: string | null): string {
     const normalizedInput = typeof inputTitle === 'string' ? inputTitle.trim() : '';
     if (normalizedInput.length > 0) {
       return normalizedInput;
@@ -564,11 +621,11 @@ export class CustomOrderOffersService {
       return normalizedFallback;
     }
 
-    return 'Custom order offer';
+    return 'Custom order configuration';
   }
 
-  private buildOfferSnapshot(
-    offer: {
+  private buildConfigurationSnapshot(
+    configuration: {
       id: string;
       brandId: string;
       sourceType: CustomOrderSourceType;
@@ -593,32 +650,32 @@ export class CustomOrderOffersService {
       fabricSourcingMode: string;
       notes: string | null;
     },
-    normalizedRules: ReturnType<CustomOrderPricingService['validateOfferRules']>,
+    normalizedRules: ReturnType<CustomOrderPricingService['validateConfigurationRules']>,
   ): Prisma.InputJsonValue {
     return {
-      id: offer.id,
-      brandId: offer.brandId,
-      sourceType: offer.sourceType,
-      sourceId: offer.sourceId,
-      title: offer.title,
-      buyerInstructionText: offer.buyerInstructionText,
-      requiredMeasurementKeys: offer.requiredMeasurementKeys,
-      requiredFreeformPointIds: offer.requiredFreeformPointIds,
-      fabricRuleBasisId: offer.fabricRuleBasisId,
-      baseProductionCharge: String(offer.baseProductionCharge),
-      fabricCostPerYard: String(offer.fabricCostPerYard),
-      rushEnabled: offer.rushEnabled,
-      rushFee: offer.rushFee ? String(offer.rushFee) : null,
-      rushProductionLeadDays: offer.rushProductionLeadDays,
-      productionLeadDays: offer.productionLeadDays,
-      deliveryMinDays: offer.deliveryMinDays,
-      deliveryMaxDays: offer.deliveryMaxDays,
-      deliveryScope: offer.deliveryScope,
-      revisionPolicy: offer.revisionPolicy,
-      returnPolicy: offer.returnPolicy,
-      defectPolicy: offer.defectPolicy,
-      fabricSourcingMode: offer.fabricSourcingMode,
-      notes: offer.notes,
+      id: configuration.id,
+      brandId: configuration.brandId,
+      sourceType: configuration.sourceType,
+      sourceId: configuration.sourceId,
+      title: configuration.title,
+      buyerInstructionText: configuration.buyerInstructionText,
+      requiredMeasurementKeys: configuration.requiredMeasurementKeys,
+      requiredFreeformPointIds: configuration.requiredFreeformPointIds,
+      fabricRuleBasisId: configuration.fabricRuleBasisId,
+      baseProductionCharge: String(configuration.baseProductionCharge),
+      fabricCostPerYard: String(configuration.fabricCostPerYard),
+      rushEnabled: configuration.rushEnabled,
+      rushFee: configuration.rushFee ? String(configuration.rushFee) : null,
+      rushProductionLeadDays: configuration.rushProductionLeadDays,
+      productionLeadDays: configuration.productionLeadDays,
+      deliveryMinDays: configuration.deliveryMinDays,
+      deliveryMaxDays: configuration.deliveryMaxDays,
+      deliveryScope: configuration.deliveryScope,
+      revisionPolicy: configuration.revisionPolicy,
+      returnPolicy: configuration.returnPolicy,
+      defectPolicy: configuration.defectPolicy,
+      fabricSourcingMode: configuration.fabricSourcingMode,
+      notes: configuration.notes,
       rules: normalizedRules.map((rule) => ({
         priority: rule.priority,
         isFallback: rule.isFallback,
@@ -626,6 +683,33 @@ export class CustomOrderOffersService {
         conditions: rule.conditions,
       })),
     } as unknown as Prisma.InputJsonValue;
+  }
+
+  private composeConfigurationNotes(
+    notes: string | null | undefined,
+    averageBaseYards?: number,
+    sizeExtraYards?: CustomOrderConfigurationSizeExtraYardDto[] | Array<{ sizeLabel: string; extraYards: number }>,
+  ) {
+    const plainNotes = String(notes ?? '').replace(/^YARD_PROFILE:[^\n]*(\n\n)?/i, '').trim();
+    const normalizedExtraRows = Array.isArray(sizeExtraYards)
+      ? sizeExtraYards
+          .map((row) => ({
+            sizeLabel: String((row as any).sizeLabel ?? '').trim(),
+            extraYards: Number((row as any).extraYards),
+          }))
+          .filter((row) => row.sizeLabel.length > 0 && Number.isFinite(row.extraYards) && row.extraYards >= 0)
+      : [];
+
+    if (averageBaseYards == null && normalizedExtraRows.length === 0) {
+      return plainNotes || null;
+    }
+
+    const profileJson = JSON.stringify({
+      averageBaseYards: averageBaseYards == null ? null : Number(averageBaseYards),
+      sizeExtraYards: normalizedExtraRows,
+    });
+
+    return plainNotes ? `YARD_PROFILE:${profileJson}\n\n${plainNotes}` : `YARD_PROFILE:${profileJson}`;
   }
 
   private async enableSourceCustomOrdering(

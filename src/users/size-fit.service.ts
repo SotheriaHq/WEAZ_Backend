@@ -7,6 +7,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import {
+  Gender,
   NotificationType,
   Prisma,
 } from '@prisma/client';
@@ -42,6 +43,30 @@ const SIZE_FIT_SHARE_STATUS = {
 };
 
 type SafeMeasurements = Record<string, string | number | boolean | null>;
+type BaselineMeasurementGender = 'MEN' | 'WOMEN';
+
+const BASELINE_KEY_CANDIDATES: Record<BaselineMeasurementGender, string[]> = {
+  MEN: [
+    'MEN_HEIGHT',
+    'MEN_WEIGHT',
+    'MEN_SHOULDER',
+    'MEN_CHEST',
+    'MEN_WAIST',
+    'MEN_HIP',
+    'MEN_INSEAM',
+    'MEN_SLEEVE_LENGTH',
+  ],
+  WOMEN: [
+    'WOMEN_HEIGHT',
+    'WOMEN_WEIGHT',
+    'WOMEN_SHOULDER_WIDTH',
+    'WOMEN_CHEST_FULL_BUST',
+    'WOMEN_WAIST',
+    'WOMEN_HIP',
+    'WOMEN_INSEAM',
+    'WOMEN_SLEEVE_LENGTH_LONG',
+  ],
+};
 
 const REMINDER_TARGET = {
   type: 'USER',
@@ -119,6 +144,101 @@ export class SizeFitService {
     return changed;
   }
 
+  private inferMeasurementGender(
+    measurements: SafeMeasurements,
+    preferredKeys: string[] = [],
+  ): BaselineMeasurementGender | null {
+    const keys = [...preferredKeys, ...Object.keys(measurements)];
+    for (const key of keys) {
+      if (typeof key !== 'string') continue;
+      if (key.startsWith('MEN_')) return 'MEN';
+      if (key.startsWith('WOMEN_')) return 'WOMEN';
+    }
+    return null;
+  }
+
+  private hasUsableMeasurementValue(value: unknown): boolean {
+    if (typeof value === 'number') {
+      return Number.isFinite(value) && value > 0;
+    }
+    if (typeof value === 'string') {
+      const parsed = Number(value.trim());
+      return Number.isFinite(parsed) && parsed > 0;
+    }
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      const nested = (value as Record<string, unknown>).value;
+      if (typeof nested === 'number') {
+        return Number.isFinite(nested) && nested > 0;
+      }
+    }
+    return false;
+  }
+
+  private normalizeBaselineGender(gender: BaselineMeasurementGender | null): BaselineMeasurementGender {
+    return gender ?? 'WOMEN';
+  }
+
+  private formatMeasurementLabelFromKey(key: string): string {
+    return key
+      .replace(/^MEN_/, '')
+      .replace(/^WOMEN_/, '')
+      .replace(/_/g, ' ')
+      .toLowerCase()
+      .replace(/\b\w/g, (char) => char.toUpperCase());
+  }
+
+  private async resolveBaselineMeasurementPoints(gender: BaselineMeasurementGender | null) {
+    const effectiveGender = this.normalizeBaselineGender(gender);
+    const orderedKeys = BASELINE_KEY_CANDIDATES[effectiveGender];
+
+    const points = await (this.prisma as any).measurementPoint.findMany({
+      where: {
+        key: { in: orderedKeys },
+        source: 'SYSTEM',
+        status: 'APPROVED_GLOBAL',
+        isActive: true,
+        OR: [{ gender: effectiveGender as Gender }, { gender: 'UNISEX' }, { gender: null }],
+      },
+      select: {
+        key: true,
+        label: true,
+        description: true,
+        category: true,
+        minValueCm: true,
+        maxValueCm: true,
+      },
+    });
+
+    const byKey = new Map<string, any>(points.map((point: any) => [point.key, point]));
+
+    // Always return baseline slots so users can continue updating fittings incrementally,
+    // even if measurement-point rows are temporarily missing in a given environment.
+    return orderedKeys.map((key) => {
+      const point = byKey.get(key) as any | undefined;
+      if (!point) {
+        return {
+          key,
+          label: this.formatMeasurementLabelFromKey(key),
+          description: null,
+          category: 'GENERAL',
+          minValueCm: null,
+          maxValueCm: null,
+          required: true,
+        };
+      }
+
+      return {
+        key: point.key,
+        label: point.label,
+        description: point.description,
+        category: point.category,
+        minValueCm: point.minValueCm == null ? null : Number(point.minValueCm),
+        maxValueCm: point.maxValueCm == null ? null : Number(point.maxValueCm),
+        required: true,
+      };
+    });
+  }
+
   private async ensureProfile(userId: string, db: PrismaTx = this.prisma) {
     const existing = await (db as any).userSizeFitProfile.findUnique({
       where: { userId },
@@ -162,6 +282,20 @@ export class SizeFitService {
   async getMySizeFit(userId: string) {
     const profile = await this.ensureProfile(userId);
     const now = new Date();
+    const measurements =
+      profile.measurements &&
+      typeof profile.measurements === 'object' &&
+      !Array.isArray(profile.measurements)
+        ? (profile.measurements as Record<string, unknown>)
+        : {};
+    const inferredGender = this.inferMeasurementGender(
+      this.sanitizeMeasurements(profile.measurements),
+    );
+    const baselineMeasurementPoints = await this.resolveBaselineMeasurementPoints(inferredGender);
+    const baselineRequiredKeys = baselineMeasurementPoints.map((point: any) => point.key);
+    const missingBaselineKeys = baselineRequiredKeys.filter(
+      (key) => !this.hasUsableMeasurementValue(measurements[key]),
+    );
 
     const [latestRevision, incomingPending, outgoingPending, sharedWithMe] =
       await Promise.all([
@@ -206,12 +340,11 @@ export class SizeFitService {
       preferredWeightUnit: profile.preferredWeightUnit,
       fitPreference: profile.fitPreference,
       label: profile.label,
-      measurements:
-        profile.measurements &&
-        typeof profile.measurements === 'object' &&
-        !Array.isArray(profile.measurements)
-          ? profile.measurements
-          : {},
+      measurements,
+      measurementGender: this.normalizeBaselineGender(inferredGender),
+      baselineMeasurementPoints,
+      baselineRequiredKeys,
+      missingBaselineKeys,
       notes: profile.notes ?? '',
       lastUpdatedAt: this.toIso(profile.lastUpdatedAt),
       nextReminderAt: this.toIso(profile.nextReminderAt),
@@ -358,6 +491,13 @@ export class SizeFitService {
         },
       });
 
+      const inferredGender = this.inferMeasurementGender(nextMeasurements);
+      const baselineMeasurementPoints = await this.resolveBaselineMeasurementPoints(inferredGender);
+      const baselineRequiredKeys = baselineMeasurementPoints.map((point: any) => point.key);
+      const missingBaselineKeys = baselineRequiredKeys.filter(
+        (key) => !this.hasUsableMeasurementValue(nextMeasurements[key]),
+      );
+
       return {
         id: updated.id,
         userId: updated.userId,
@@ -371,6 +511,10 @@ export class SizeFitService {
         fitPreference: updated.fitPreference,
         label: updated.label,
         measurements: nextMeasurements,
+        measurementGender: this.normalizeBaselineGender(inferredGender),
+        baselineMeasurementPoints,
+        baselineRequiredKeys,
+        missingBaselineKeys,
         notes: updated.notes ?? '',
         lastUpdatedAt: this.toIso(updated.lastUpdatedAt),
         nextReminderAt: this.toIso(updated.nextReminderAt),

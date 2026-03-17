@@ -15,7 +15,7 @@ describe('CustomOrderPricingService', () => {
       fabricCostPerYard: '2000',
       rushEnabled: true,
       rushFee: '5000',
-      rules: service.validateOfferRules([
+      rules: service.validateConfigurationRules([
         {
           priority: 1,
           outputYards: '4.5',
@@ -60,7 +60,7 @@ describe('CustomOrderPricingService', () => {
       baseProductionCharge: '10000',
       fabricCostPerYard: '1500',
       rushEnabled: false,
-      rules: service.validateOfferRules([
+      rules: service.validateConfigurationRules([
         {
           priority: 1,
           outputYards: '5',
@@ -91,7 +91,7 @@ describe('CustomOrderPricingService', () => {
         baseProductionCharge: '10000',
         fabricCostPerYard: '1500',
         rushEnabled: false,
-        rules: service.validateOfferRules([
+        rules: service.validateConfigurationRules([
           {
             priority: 1,
             outputYards: '3',
@@ -113,7 +113,7 @@ describe('CustomOrderPricingService', () => {
         fabricCostPerYard: '1500',
         rushEnabled: false,
         rushFee: '2500',
-        rules: service.validateOfferRules([
+        rules: service.validateConfigurationRules([
           {
             priority: 1,
             outputYards: '3',
@@ -126,6 +126,6 @@ describe('CustomOrderPricingService', () => {
         rushSelected: true,
         currency: 'NGN',
       }),
-    ).toThrow(new BadRequestException('Rush ordering is not enabled for this custom offer'));
+    ).toThrow(new BadRequestException('Rush ordering is not enabled for this custom configuration'));
   });
 });

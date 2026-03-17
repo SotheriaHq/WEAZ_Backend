@@ -3,13 +3,17 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
-import { AdminAuditAction } from '@prisma/client';
+import { AdminAuditAction, NotificationType } from '@prisma/client';
 import { v4 as uuidv4 } from 'uuid';
 import { Request } from 'express';
+import { NotificationsService } from 'src/notifications/notifications.service';
 
 @Injectable()
 export class AdminProductsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly notifications?: NotificationsService,
+  ) {}
 
   async list(params: {
     cursor?: string;
@@ -46,6 +50,11 @@ export class AdminProductsService {
         currency: true,
         thumbnail: true,
         images: true,
+        _count: {
+          select: {
+            orderItems: true,
+          },
+        },
         createdAt: true,
         updatedAt: true,
         brand: {
@@ -64,12 +73,22 @@ export class AdminProductsService {
     const results = hasMore ? items.slice(0, take) : items;
     const nextCursor = hasMore ? results[results.length - 1]?.id : undefined;
 
-    return { items: results, nextCursor };
+    return {
+      items: results.map((item) => ({
+        ...item,
+        orderCount: item._count?.orderItems ?? 0,
+      })),
+      nextCursor,
+    };
   }
 
   async moderate(
     productId: string,
-    dto: { isActive?: boolean },
+    dto: {
+      isActive?: boolean;
+      action?: 'UNPUBLISH' | 'REPUBLISH' | 'HARD_DELETE';
+      reason?: string;
+    },
     actorId: string,
     req: Request,
   ) {
@@ -77,15 +96,62 @@ export class AdminProductsService {
       where: { id: productId },
       select: {
         id: true,
+        name: true,
         isActive: true,
+        brand: {
+          select: {
+            ownerId: true,
+          },
+        },
       },
     });
     if (!existing) throw new NotFoundException('Product not found');
 
+    const action = dto.action ?? (dto.isActive === false ? 'UNPUBLISH' : dto.isActive === true ? 'REPUBLISH' : undefined);
     const updateData: Record<string, unknown> = {};
-    if (dto.isActive !== undefined) updateData.isActive = dto.isActive;
+    if (action === 'UNPUBLISH') updateData.isActive = false;
+    if (action === 'REPUBLISH') updateData.isActive = true;
+    if (!action && dto.isActive !== undefined) updateData.isActive = dto.isActive;
 
     const updated = await this.prisma.$transaction(async (tx) => {
+      if (action === 'HARD_DELETE') {
+        const deleted = await tx.product.delete({
+          where: { id: productId },
+          select: {
+            id: true,
+            name: true,
+          },
+        });
+
+        await (tx as any).adminAuditLog.create({
+          data: {
+            id: uuidv4(),
+            actorUserId: actorId,
+            action: AdminAuditAction.ADMIN_PRODUCT_MODERATE,
+            targetType: 'Product',
+            targetId: productId,
+            previousState: {
+              isActive: existing.isActive,
+            },
+            newState: {
+              action: 'HARD_DELETE',
+              reason: dto.reason?.trim() || null,
+            },
+            metadata: {
+              reason: dto.reason?.trim() || null,
+            },
+            ipAddress: req.socket?.remoteAddress ?? null,
+            userAgent: req.headers['user-agent'] ?? null,
+          },
+        });
+
+        return {
+          ...deleted,
+          isActive: false,
+          updatedAt: new Date(),
+        };
+      }
+
       const product = await tx.product.update({
         where: { id: productId },
         data: updateData,
@@ -107,7 +173,14 @@ export class AdminProductsService {
           previousState: {
             isActive: existing.isActive,
           },
-          newState: updateData,
+          newState: {
+            ...updateData,
+            action: action ?? null,
+            reason: dto.reason?.trim() || null,
+          },
+          metadata: {
+            reason: dto.reason?.trim() || null,
+          },
           ipAddress: req.socket?.remoteAddress ?? null,
           userAgent: req.headers['user-agent'] ?? null,
         },
@@ -115,6 +188,32 @@ export class AdminProductsService {
 
       return product;
     });
+
+    if (
+      this.notifications &&
+      existing.brand?.ownerId &&
+      existing.brand.ownerId !== actorId &&
+      (action === 'UNPUBLISH' || action === 'HARD_DELETE')
+    ) {
+      try {
+        const reasonText = dto.reason?.trim();
+        const verb = action === 'HARD_DELETE' ? 'deleted' : 'unpublished';
+        const reasonSuffix = reasonText ? ` Reason: ${reasonText}` : '';
+        await this.notifications.create(
+          existing.brand.ownerId,
+          NotificationType.ADMIN_ACTION,
+          {
+            actorId,
+            payload: {
+              targetType: 'PRODUCT',
+              targetId: productId,
+              message: `Admin ${verb} your product "${existing.name}".${reasonSuffix}`,
+              reason: reasonText,
+            },
+          },
+        );
+      } catch {}
+    }
 
     return updated;
   }

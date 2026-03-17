@@ -19,6 +19,7 @@ import { AdminPayoutsService } from './payouts/admin-payouts.service';
 import { AdminNotificationsService } from './notifications/admin-notifications.service';
 import { AdminProductsService } from './products/admin-products.service';
 import { AdminCollectionsService } from './collections/admin-collections.service';
+import { AdminDesignsService } from './designs/admin-designs.service';
 import { AdminFeaturedService } from './featured/admin-featured.service';
 import { FeaturedExpiryCronService } from './featured/featured-expiry.cron.service';
 import { FeaturedAutoRemovalService } from './featured/featured-auto-removal.service';
@@ -36,6 +37,7 @@ import { AdminNotificationsController } from './notifications/admin-notification
 import { AdminAuditController } from './audit/admin-audit.controller';
 import { AdminProductsController } from './products/admin-products.controller';
 import { AdminCollectionsController } from './collections/admin-collections.controller';
+import { AdminDesignsController } from './designs/admin-designs.controller';
 import { AdminDashboardController } from './dashboard/admin-dashboard.controller';
 import { AdminDashboardService } from './dashboard/admin-dashboard.service';
 import { AdminFeaturedController } from './featured/admin-featured.controller';
@@ -60,6 +62,7 @@ import { AdminFeaturedController } from './featured/admin-featured.controller';
     AdminAuditController,
     AdminProductsController,
     AdminCollectionsController,
+    AdminDesignsController,
     AdminDashboardController,
     AdminFeaturedController,
   ],
@@ -78,6 +81,7 @@ import { AdminFeaturedController } from './featured/admin-featured.controller';
     AdminNotificationsService,
     AdminProductsService,
     AdminCollectionsService,
+    AdminDesignsService,
     AdminDashboardService,
     AdminFeaturedService,
     FeaturedExpiryCronService,

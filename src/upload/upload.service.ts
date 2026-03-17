@@ -361,6 +361,20 @@ export class UploadService {
     ]);
   }
 
+  async clearUserProfileImage(userId: string): Promise<void> {
+    await this.prisma.$transaction([
+      this.prisma.user.update({
+        where: { id: userId },
+        data: { profileImageId: null, profileImage: null },
+      }),
+      // Strict sync: store logo mirrors brand profile image.
+      this.prisma.brand.updateMany({
+        where: { ownerId: userId },
+        data: { logo: null },
+      }),
+    ]);
+  }
+
   async updateUserBannerImage(
     userId: string,
     file: Pick<FileUploadResult, 'id' | 'url'>,

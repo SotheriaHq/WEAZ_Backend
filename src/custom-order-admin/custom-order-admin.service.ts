@@ -7,6 +7,7 @@ import { PrismaService } from 'src/prisma/prisma.service';
 import {
   CustomOrderActorType,
   CustomOrderDisputeStatus,
+  CustomFabricRuleBasisStatus,
   CustomOrderRetentionHoldType,
   CustomOrderStatus,
   NotificationType,
@@ -15,15 +16,20 @@ import {
 import { CustomOrderSideEffectsService } from 'src/custom-orders/custom-order-side-effects.service';
 import {
   AdminCustomOrderReminderDto,
+  CreateAdminCustomFabricRuleBasisDto,
+  DecideCustomOrderExceptionReviewDto,
   EscalateCustomOrderRefundReviewDto,
   FlagCustomOrderRiskDto,
+  QueryAdminCustomFabricRuleBasesDto,
   QueryAdminCustomOrdersDto,
   QueryCustomOrderDisputesDto,
+  QueryCustomOrderExceptionReviewsDto,
   QueryCustomOrderLedgerAllocationsDto,
   QueryCustomOrderRefundReviewsDto,
   QueryCustomOrderRiskDashboardDto,
   QueryStaleCustomOrdersDto,
   ReviewCustomFabricRuleBasisDto,
+  UpdateAdminCustomFabricRuleBasisDto,
   UpdateCustomOrderRetentionHoldDto,
   UpdateCustomOrderDisputeDto,
 } from './dto/custom-order-admin.dto';
@@ -71,6 +77,102 @@ export class CustomOrderAdminService {
     };
   }
 
+  async listBases(query: QueryAdminCustomFabricRuleBasesDto) {
+    const where: Prisma.CustomFabricRuleBasisWhereInput = {
+      status: CustomFabricRuleBasisStatus.APPROVED_GLOBAL,
+    };
+
+    const items = await this.prisma.customFabricRuleBasis.findMany({
+      where,
+      orderBy: [{ status: 'asc' }, { updatedAt: 'desc' }],
+    });
+
+    return {
+      statusCode: 200,
+      message: 'Admin custom fabric rule bases retrieved',
+      data: items,
+    };
+  }
+
+  async createBasis(dto: CreateAdminCustomFabricRuleBasisDto, _adminUserId: string) {
+    const measurementKeys = Array.from(
+      new Set((dto.measurementKeys ?? []).map((key) => String(key).trim()).filter(Boolean)),
+    );
+    if (measurementKeys.length === 0) {
+      throw new BadRequestException('At least one measurement key is required for a fabric rule basis');
+    }
+
+    const created = await this.prisma.customFabricRuleBasis.create({
+      data: {
+        label: dto.label.trim(),
+        measurementKeys,
+        source: 'SYSTEM',
+        status: 'APPROVED_GLOBAL',
+      },
+    });
+
+    return {
+      statusCode: 201,
+      message: 'Global custom fabric rule basis created',
+      data: created,
+    };
+  }
+
+  async updateBasis(id: string, dto: UpdateAdminCustomFabricRuleBasisDto) {
+    const existing = await this.prisma.customFabricRuleBasis.findUnique({ where: { id } });
+    if (!existing || existing.status !== CustomFabricRuleBasisStatus.APPROVED_GLOBAL) {
+      throw new NotFoundException('Global custom fabric rule basis not found');
+    }
+
+    const measurementKeys = dto.measurementKeys
+      ? Array.from(new Set(dto.measurementKeys.map((key) => String(key).trim()).filter(Boolean)))
+      : undefined;
+    if (dto.measurementKeys && (!measurementKeys || measurementKeys.length === 0)) {
+      throw new BadRequestException('At least one measurement key is required for a fabric rule basis');
+    }
+
+    const updated = await this.prisma.customFabricRuleBasis.update({
+      where: { id },
+      data: {
+        ...(dto.label?.trim() ? { label: dto.label.trim() } : {}),
+        ...(measurementKeys ? { measurementKeys } : {}),
+      },
+    });
+
+    return {
+      statusCode: 200,
+      message: 'Global custom fabric rule basis updated',
+      data: updated,
+    };
+  }
+
+  async deleteBasis(id: string) {
+    const existing = await this.prisma.customFabricRuleBasis.findUnique({
+      where: { id },
+      include: {
+        configurations: {
+          select: { id: true },
+          take: 1,
+        },
+      },
+    });
+
+    if (!existing || existing.status !== CustomFabricRuleBasisStatus.APPROVED_GLOBAL) {
+      throw new NotFoundException('Global custom fabric rule basis not found');
+    }
+
+    if (existing.configurations.length > 0) {
+      throw new BadRequestException('Cannot delete this basis because it is already used by active configurations');
+    }
+
+    await this.prisma.customFabricRuleBasis.delete({ where: { id } });
+    return {
+      statusCode: 200,
+      message: 'Global custom fabric rule basis deleted',
+      data: { id },
+    };
+  }
+
   async listOrders(query: QueryAdminCustomOrdersDto) {
     const page = query.page ?? 1;
     const take = query.limit ?? 20;
@@ -110,6 +212,166 @@ export class CustomOrderAdminService {
         limit: take,
         total,
       },
+    };
+  }
+
+  async listExceptionReviews(query: QueryCustomOrderExceptionReviewsDto) {
+    const page = query.page ?? 1;
+    const take = query.limit ?? 20;
+
+    const where: Prisma.CustomOrderTimelineEventWhereInput = {
+      eventType: 'ADMIN_ESCALATED',
+      payloadJson: { path: ['kind'], equals: 'EXCEPTION_REVIEW_REQUEST' },
+      customOrder: query.brandId ? { brandId: query.brandId } : undefined,
+    };
+
+    const [items, total] = await this.prisma.$transaction([
+      this.prisma.customOrderTimelineEvent.findMany({
+        where,
+        include: {
+          customOrder: {
+            select: {
+              id: true,
+              brandId: true,
+              sourceTitleSnapshot: true,
+              sourceBrandNameSnapshot: true,
+              status: true,
+              createdAt: true,
+            },
+          },
+        },
+        orderBy: { createdAt: 'desc' },
+        skip: (page - 1) * take,
+        take,
+      }),
+      this.prisma.customOrderTimelineEvent.count({ where }),
+    ]);
+
+    const filtered = query.status
+      ? items.filter((item) => {
+          const payload = item.payloadJson as Record<string, unknown>;
+          return payload?.status === query.status;
+        })
+      : items;
+
+    return {
+      statusCode: 200,
+      message: 'Custom-order exception review queue retrieved',
+      data: {
+        items: filtered.map((item) => ({
+          id: item.id,
+          createdAt: item.createdAt,
+          payload: item.payloadJson,
+          customOrder: item.customOrder,
+        })),
+        page,
+        limit: take,
+        total,
+      },
+    };
+  }
+
+  async decideExceptionReview(
+    customOrderId: string,
+    eventId: string,
+    dto: DecideCustomOrderExceptionReviewDto,
+    adminUserId: string,
+  ) {
+    const event = await this.prisma.customOrderTimelineEvent.findFirst({
+      where: {
+        id: eventId,
+        customOrderId,
+        eventType: 'ADMIN_ESCALATED',
+      },
+    });
+    if (!event) {
+      throw new NotFoundException('Exception review request not found');
+    }
+
+    const payload = (event.payloadJson ?? {}) as Record<string, unknown>;
+    if (payload.kind !== 'EXCEPTION_REVIEW_REQUEST') {
+      throw new BadRequestException('Invalid exception review request payload');
+    }
+
+    const isRequestMoreInfo = dto.decision === 'REQUEST_MORE_INFO';
+    const nextStatus = isRequestMoreInfo
+      ? 'IN_REVIEW'
+      : dto.decision === 'APPROVED'
+        ? 'APPROVED'
+        : 'REJECTED';
+    const nowIso = new Date().toISOString();
+
+    const updatedOrder = await this.prisma.$transaction(async (tx) => {
+      await tx.customOrderTimelineEvent.update({
+        where: { id: eventId },
+        data: {
+          payloadJson: {
+            ...payload,
+            status: nextStatus,
+            decidedAt: nowIso,
+            decidedById: adminUserId,
+            rationale: dto.rationale.trim(),
+            approvedQuoteTotal: dto.approvedQuoteTotal ?? null,
+          } as Prisma.InputJsonValue,
+        },
+      });
+
+      const order = await tx.customOrder.findUnique({ where: { id: customOrderId } });
+      if (!order) {
+        throw new NotFoundException('Custom order not found');
+      }
+
+      const breakdown = (order.internalPriceBreakdownJson ?? {}) as Record<string, unknown>;
+      const nextBreakdown = isRequestMoreInfo
+        ? {
+            ...breakdown,
+            exceptionReview: {
+              status: nextStatus,
+              rationale: dto.rationale.trim(),
+              updatedAt: nowIso,
+              updatedById: adminUserId,
+            },
+          }
+        : {
+            ...breakdown,
+            exceptionDecision: {
+              decision: nextStatus,
+              rationale: dto.rationale.trim(),
+              approvedQuoteTotal: dto.approvedQuoteTotal ?? null,
+              decidedAt: nowIso,
+              decidedById: adminUserId,
+            },
+          };
+
+      return tx.customOrder.update({
+        where: { id: customOrderId },
+        data: {
+          internalPriceBreakdownJson: nextBreakdown as Prisma.InputJsonValue,
+          timelineEvents: {
+            create: {
+              actorType: CustomOrderActorType.ADMIN,
+              actorId: adminUserId,
+              eventType: 'ADMIN_ESCALATED',
+              payloadJson: {
+                kind: isRequestMoreInfo
+                  ? 'EXCEPTION_REVIEW_REQUEST_MORE_INFO'
+                  : 'EXCEPTION_REVIEW_DECISION',
+                requestEventId: eventId,
+                decision: nextStatus,
+                rationale: dto.rationale.trim(),
+                approvedQuoteTotal:
+                  nextStatus === 'APPROVED' ? dto.approvedQuoteTotal ?? null : null,
+              },
+            },
+          },
+        },
+      });
+    });
+
+    return {
+      statusCode: 200,
+      message: 'Exception review decision recorded',
+      data: updatedOrder,
     };
   }
 

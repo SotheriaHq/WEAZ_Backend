@@ -10,6 +10,8 @@ import {
   IsBoolean,
   IsEnum,
   IsInt,
+  IsNumber,
+  IsPositive,
   IsNumberString,
   IsObject,
   IsOptional,
@@ -38,7 +40,18 @@ export class CreateCustomFabricRuleDto {
   isFallback?: boolean;
 }
 
-export class CreateCustomOrderOfferDto {
+export class CustomOrderConfigurationSizeExtraYardDto {
+  @IsString()
+  @Length(1, 60)
+  sizeLabel: string;
+
+  @Type(() => Number)
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0)
+  extraYards: number;
+}
+
+export class CreateCustomOrderConfigurationDto {
   @IsEnum(CustomOrderSourceType)
   sourceType: CustomOrderSourceType;
 
@@ -125,14 +138,26 @@ export class CreateCustomOrderOfferDto {
   @MaxLength(2000)
   notes?: string;
 
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @IsPositive()
+  averageBaseYards?: number;
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => CustomOrderConfigurationSizeExtraYardDto)
+  sizeExtraYards?: CustomOrderConfigurationSizeExtraYardDto[];
+
   @ValidateNested({ each: true })
   @Type(() => CreateCustomFabricRuleDto)
   rules: CreateCustomFabricRuleDto[];
 }
 
-export class UpdateCustomOrderOfferDto extends PartialType(CreateCustomOrderOfferDto) {}
+export class UpdateCustomOrderConfigurationDto extends PartialType(CreateCustomOrderConfigurationDto) {}
 
-export class QueryCustomOrderOffersDto {
+export class QueryVisibleCustomOrderConfigurationsDto {
   @IsOptional()
   @Type(() => Number)
   @IsInt()
@@ -145,14 +170,6 @@ export class QueryCustomOrderOffersDto {
   @Min(1)
   @Max(100)
   limit?: number;
-
-  @IsOptional()
-  @IsEnum(CustomOrderSourceType)
-  sourceType?: CustomOrderSourceType;
-
-  @IsOptional()
-  @IsUUID()
-  sourceId?: string;
 
   @IsOptional()
   @Type(() => Boolean)

@@ -26,11 +26,13 @@ export interface CustomOrderInternalBreakdown {
   matchedRuleFallback: boolean;
 }
 
-export interface PriceOfferInput {
+export interface PriceConfigurationInput {
   baseProductionCharge: string | number;
   fabricCostPerYard: string | number;
   rushEnabled: boolean;
   rushFee?: string | number | null;
+  baseYardsOverride?: number;
+  additionalYards?: number;
   rules: NormalizedCustomFabricRule[];
   requiredMeasurementKeys: string[];
   measurementValues: Record<string, number>;
@@ -45,7 +47,7 @@ export class CustomOrderPricingService {
     private readonly ruleValidator: CustomOrderRuleValidatorService,
   ) {}
 
-  validateOfferRules(
+  validateConfigurationRules(
     rules: Array<{
       priority: number;
       outputYards: string | number;
@@ -56,7 +58,7 @@ export class CustomOrderPricingService {
     return this.ruleValidator.normalizeRules(rules);
   }
 
-  buildPricePreview(input: PriceOfferInput) {
+  buildPricePreview(input: PriceConfigurationInput) {
     const rules = [...input.rules].sort((left, right) => left.priority - right.priority);
     this.ensureRequiredMeasurements(input.requiredMeasurementKeys, input.measurementValues);
 
@@ -70,7 +72,17 @@ export class CustomOrderPricingService {
 
     const baseProductionCharge = this.toMoney(input.baseProductionCharge);
     const fabricCostPerYard = this.toMoney(input.fabricCostPerYard);
-    const computedYards = this.roundMoney(matchedRule.outputYards);
+    const additionalYards = this.roundMoney(Number(input.additionalYards ?? 0));
+    if (!Number.isFinite(additionalYards) || additionalYards < 0) {
+      throw new BadRequestException('Additional yards must be zero or greater');
+    }
+
+    const baseYardsOverride = Number(input.baseYardsOverride);
+    const baseYards = Number.isFinite(baseYardsOverride) && baseYardsOverride > 0
+      ? this.roundMoney(baseYardsOverride)
+      : this.roundMoney(matchedRule.outputYards);
+
+    const computedYards = this.roundMoney(baseYards + additionalYards);
     const fabricComponentTotal = this.roundMoney(computedYards * fabricCostPerYard);
     const rushFeeValue = input.rushSelected
       ? this.resolveRushFee(input.rushEnabled, input.rushFee)
@@ -148,7 +160,7 @@ export class CustomOrderPricingService {
 
   private resolveRushFee(rushEnabled: boolean, rushFee?: string | number | null) {
     if (!rushEnabled) {
-      throw new BadRequestException('Rush ordering is not enabled for this custom offer');
+      throw new BadRequestException('Rush ordering is not enabled for this custom configuration');
     }
 
     const numericRushFee = this.toMoney(rushFee ?? 0);

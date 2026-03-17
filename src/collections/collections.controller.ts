@@ -303,6 +303,22 @@ export class CollectionsController {
     );
   }
 
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Post(':collectionId/republish-request')
+  async requestCollectionRepublish(
+    @Param('collectionId') collectionId: string,
+    @Req() req: any,
+    @Body() body: { reason?: string },
+    @Query('scope') scope?: 'design' | 'store' | 'all',
+  ) {
+    return this.collectionsService.requestCollectionRepublishApproval(
+      collectionId,
+      req.user.id,
+      body?.reason,
+      scope,
+    );
+  }
+
   // ============================================
   // STATIC ROUTES (must come before :id dynamic route)
   // ============================================

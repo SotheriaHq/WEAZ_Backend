@@ -28,7 +28,7 @@ import { FeaturedModule } from './featured/featured.module';
 import { PaymentModule } from './payment/payment.module';
 import { SearchModule } from './search/search.module';
 import { ReviewsModule } from './reviews/reviews.module';
-import { CustomOrderOffersModule } from './custom-order-offers/custom-order-offers.module';
+import { CustomOrderConfigurationsModule } from './custom-order-configurations/custom-order-configurations.module';
 import { CustomOrdersModule } from './custom-orders/custom-orders.module';
 import { CustomOrderAdminModule } from './custom-order-admin/custom-order-admin.module';
 import { CustomOrderOpsModule } from './custom-order-ops/custom-order-ops.module';
@@ -66,7 +66,7 @@ import { MessagingModule } from './messaging/messaging.module';
     PaymentModule,
     SearchModule,
     ReviewsModule,
-    CustomOrderOffersModule,
+    CustomOrderConfigurationsModule,
     CustomOrdersModule,
     CustomOrderAdminModule,
     CustomOrderOpsModule,

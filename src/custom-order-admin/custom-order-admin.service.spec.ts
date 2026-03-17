@@ -16,6 +16,10 @@ describe('CustomOrderAdminService', () => {
 
   beforeEach(async () => {
     prisma = {
+      customFabricRuleBasis: {
+        findMany: jest.fn(),
+        create: jest.fn(),
+      },
       customOrder: {
         count: jest.fn(),
         groupBy: jest.fn(),
@@ -386,5 +390,61 @@ describe('CustomOrderAdminService', () => {
     expect(cleared.statusCode).toBe(200);
     expect(cleared.data.retentionHoldType).toBeNull();
     expect(prisma.customOrderTimelineEvent.create).toHaveBeenCalledTimes(2);
+  });
+
+  it('lists admin-visible global fabric rule bases', async () => {
+    prisma.customFabricRuleBasis.findMany.mockResolvedValue([
+      { id: 'basis_1', label: 'Women default', status: 'APPROVED_GLOBAL' },
+    ]);
+
+    const result = await service.listBases({});
+
+    expect(prisma.customFabricRuleBasis.findMany).toHaveBeenCalledWith({
+      where: { status: 'APPROVED_GLOBAL' },
+      orderBy: [{ status: 'asc' }, { updatedAt: 'desc' }],
+    });
+    expect(result.statusCode).toBe(200);
+    expect(result.data).toHaveLength(1);
+  });
+
+  it('creates a global admin fabric rule basis with trimmed unique keys', async () => {
+    prisma.customFabricRuleBasis.create.mockResolvedValue({
+      id: 'basis_2',
+      label: 'Global women basis',
+      measurementKeys: ['WOMEN_WAIST', 'WOMEN_HIP'],
+      source: 'SYSTEM',
+      status: 'APPROVED_GLOBAL',
+    });
+
+    const result = await service.createBasis(
+      {
+        label: '  Global women basis  ',
+        measurementKeys: ['WOMEN_WAIST', ' WOMEN_HIP ', 'WOMEN_WAIST', ''],
+      },
+      'admin_1',
+    );
+
+    expect(prisma.customFabricRuleBasis.create).toHaveBeenCalledWith({
+      data: {
+        label: 'Global women basis',
+        measurementKeys: ['WOMEN_WAIST', 'WOMEN_HIP'],
+        source: 'SYSTEM',
+        status: 'APPROVED_GLOBAL',
+      },
+    });
+    expect(result.statusCode).toBe(201);
+    expect(result.data.id).toBe('basis_2');
+  });
+
+  it('rejects admin basis creation when all measurement keys are empty', async () => {
+    await expect(
+      service.createBasis(
+        {
+          label: 'Invalid basis',
+          measurementKeys: [' ', ''],
+        },
+        'admin_1',
+      ),
+    ).rejects.toThrow(BadRequestException);
   });
 });

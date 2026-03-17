@@ -13,6 +13,7 @@ import {
   CustomOrderProgressStage,
   CustomOrderSourceType,
   CustomOrderStatus,
+  Gender,
   NotificationType,
   PaymentStatus,
   Prisma,
@@ -27,18 +28,102 @@ import {
   BrandRespondToCustomOrderExtensionCounterDto,
   CancelCustomOrderDto,
   ConfirmCustomOrderDeliveryDto,
+  CreateExceptionReviewRequestDto,
   CreateCustomOrderDto,
   CreateCustomOrderExtensionRequestDto,
+  CustomOrderChartFamily,
   CustomOrderPricePreviewDto,
+  CustomOrderResolverPolicy,
   QueryCustomOrdersDto,
   RejectCustomOrderDto,
   ReportCustomOrderIssueDto,
   RespondToCustomOrderExtensionDto,
+  UpdateDisplayChartPreferenceDto,
   UpdateCustomOrderLifecycleStatusDto,
   UpdateCustomOrderProgressStageDto,
 } from './dto/custom-orders.dto';
 
 const BUYER_ACCEPTANCE_WINDOW_HOURS = 72;
+const EXCEPTION_REVIEW_MONTHLY_QUOTA = 2;
+const EXCEPTION_REVIEW_SLA_HOURS = 24;
+const DEFAULT_PRICING_CHART_FAMILY: CustomOrderChartFamily = 'HYBRID_UK_NIGERIA';
+const DEFAULT_DISPLAY_CHART_FAMILY: CustomOrderChartFamily = 'UK';
+const DEFAULT_RESOLVER_POLICY: CustomOrderResolverPolicy = 'MAX_OF_BOTH';
+
+type ChartBand = {
+  label: string;
+  bustMin: number;
+  bustMax: number;
+  waistMin: number;
+  waistMax: number;
+  hipsMin: number;
+  hipsMax: number;
+};
+
+type ComputedChartCandidate = {
+  family: CustomOrderChartFamily;
+  label: string;
+  bandIndex: number;
+  noDirectMatch: boolean;
+  nearestLabel?: string;
+};
+
+const CHART_BANDS: Record<Exclude<CustomOrderChartFamily, 'HYBRID_UK_NIGERIA'>, ChartBand[]> = {
+  UK: [
+    { label: 'UK 8', bustMin: 80, bustMax: 84, waistMin: 62, waistMax: 66, hipsMin: 88, hipsMax: 92 },
+    { label: 'UK 10', bustMin: 84, bustMax: 88, waistMin: 66, waistMax: 70, hipsMin: 92, hipsMax: 96 },
+    { label: 'UK 12', bustMin: 88, bustMax: 92, waistMin: 70, waistMax: 74, hipsMin: 96, hipsMax: 100 },
+    { label: 'UK 14', bustMin: 92, bustMax: 98, waistMin: 74, waistMax: 80, hipsMin: 100, hipsMax: 106 },
+    { label: 'UK 16', bustMin: 98, bustMax: 104, waistMin: 80, waistMax: 86, hipsMin: 106, hipsMax: 112 },
+    { label: 'UK 18', bustMin: 104, bustMax: 112, waistMin: 86, waistMax: 94, hipsMin: 112, hipsMax: 120 },
+  ],
+  US: [
+    { label: 'US 4', bustMin: 80, bustMax: 84, waistMin: 62, waistMax: 66, hipsMin: 88, hipsMax: 92 },
+    { label: 'US 6', bustMin: 84, bustMax: 88, waistMin: 66, waistMax: 70, hipsMin: 92, hipsMax: 96 },
+    { label: 'US 8', bustMin: 88, bustMax: 92, waistMin: 70, waistMax: 74, hipsMin: 96, hipsMax: 100 },
+    { label: 'US 10', bustMin: 92, bustMax: 98, waistMin: 74, waistMax: 80, hipsMin: 100, hipsMax: 106 },
+    { label: 'US 12', bustMin: 98, bustMax: 104, waistMin: 80, waistMax: 86, hipsMin: 106, hipsMax: 112 },
+    { label: 'US 14', bustMin: 104, bustMax: 112, waistMin: 86, waistMax: 94, hipsMin: 112, hipsMax: 120 },
+  ],
+  NIGERIA: [
+    { label: 'NG 8', bustMin: 80, bustMax: 85, waistMin: 62, waistMax: 67, hipsMin: 88, hipsMax: 93 },
+    { label: 'NG 10', bustMin: 85, bustMax: 90, waistMin: 67, waistMax: 72, hipsMin: 93, hipsMax: 98 },
+    { label: 'NG 12', bustMin: 90, bustMax: 96, waistMin: 72, waistMax: 78, hipsMin: 98, hipsMax: 104 },
+    { label: 'NG 14', bustMin: 96, bustMax: 102, waistMin: 78, waistMax: 84, hipsMin: 104, hipsMax: 110 },
+    { label: 'NG 16', bustMin: 102, bustMax: 110, waistMin: 84, waistMax: 92, hipsMin: 110, hipsMax: 118 },
+    { label: 'NG 18', bustMin: 110, bustMax: 120, waistMin: 92, waistMax: 102, hipsMin: 118, hipsMax: 128 },
+  ],
+  ASIA: [
+    { label: 'ASIA M', bustMin: 78, bustMax: 84, waistMin: 60, waistMax: 66, hipsMin: 84, hipsMax: 92 },
+    { label: 'ASIA L', bustMin: 84, bustMax: 90, waistMin: 66, waistMax: 72, hipsMin: 92, hipsMax: 98 },
+    { label: 'ASIA XL', bustMin: 90, bustMax: 96, waistMin: 72, waistMax: 78, hipsMin: 98, hipsMax: 104 },
+    { label: 'ASIA XXL', bustMin: 96, bustMax: 102, waistMin: 78, waistMax: 84, hipsMin: 104, hipsMax: 110 },
+    { label: 'ASIA 3XL', bustMin: 102, bustMax: 110, waistMin: 84, waistMax: 92, hipsMin: 110, hipsMax: 118 },
+    { label: 'ASIA 4XL', bustMin: 110, bustMax: 120, waistMin: 92, waistMax: 102, hipsMin: 118, hipsMax: 128 },
+  ],
+};
+const BASELINE_KEY_CANDIDATES: Record<'MEN' | 'WOMEN', string[]> = {
+  MEN: [
+    'MEN_HEIGHT',
+    'MEN_WEIGHT',
+    'MEN_SHOULDER',
+    'MEN_CHEST',
+    'MEN_WAIST',
+    'MEN_HIP',
+    'MEN_INSEAM',
+    'MEN_SLEEVE_LENGTH',
+  ],
+  WOMEN: [
+    'WOMEN_HEIGHT',
+    'WOMEN_WEIGHT',
+    'WOMEN_SHOULDER_WIDTH',
+    'WOMEN_CHEST_FULL_BUST',
+    'WOMEN_WAIST',
+    'WOMEN_HIP',
+    'WOMEN_INSEAM',
+    'WOMEN_SLEEVE_LENGTH_LONG',
+  ],
+};
 
 function stableStringify(value: unknown): string {
   if (value === null || typeof value !== 'object') return JSON.stringify(value);
@@ -55,6 +140,16 @@ type CustomOrderRequestSnapshot = {
   rushSelected: boolean;
   shippingAddress: Record<string, unknown> | null;
   matchedFabricRuleId: string | null;
+  chartLock: {
+    pricingChartFamily: CustomOrderChartFamily;
+    displayChartFamily: CustomOrderChartFamily;
+    resolverPolicy: CustomOrderResolverPolicy;
+    chartVersionId: string;
+    computedSize: string | null;
+    noDirectMatch: boolean;
+    conversionGuidance: string | null;
+    quoteStatus: 'AUTO_PRICED' | 'MANUAL_QUOTE_REQUIRED';
+  };
 };
 
 @Injectable()
@@ -67,20 +162,54 @@ export class CustomOrdersService {
   ) {}
 
   async createPricePreview(userId: string, dto: CustomOrderPricePreviewDto) {
-    const offer = await this.getActiveOffer(dto.offerId, dto.offerVersionId);
+    const configuration = await this.getActiveConfiguration(dto.configurationId, dto.configurationVersionId);
     const requiredMeasurementKeys = await this.resolveRequiredMeasurementKeys(
-      offer.requiredMeasurementKeys,
-      offer.requiredFreeformPointIds,
+      configuration.requiredMeasurementKeys,
+      configuration.requiredFreeformPointIds,
+      dto.measurementValues,
     );
     await this.validateMeasurementRanges(requiredMeasurementKeys, dto.measurementValues);
 
+    const chartEvaluation = this.resolveChartEvaluation({
+      measurementValues: dto.measurementValues,
+      pricingChartFamily: dto.pricingChartFamily ?? DEFAULT_PRICING_CHART_FAMILY,
+      displayChartFamily: dto.displayChartFamily ?? DEFAULT_DISPLAY_CHART_FAMILY,
+      resolverPolicy: dto.resolverPolicy ?? DEFAULT_RESOLVER_POLICY,
+    });
+    const yardProfile = this.parseConfigurationYardProfile(configuration.notes);
+
+    if (chartEvaluation.manualQuoteRequired) {
+      return {
+        statusCode: 200,
+        message: 'Manual quote required for this measurement profile',
+        data: {
+          checkoutIntentId: null,
+          configurationId: configuration.id,
+          configurationVersionId: configuration.version.id,
+          currency: configuration.brand.currency,
+          buyerPriceSummary: null,
+          priceLockExpiresAt: null,
+            quoteStatus: 'MANUAL_QUOTE_REQUIRED' as const,
+          pricingChartFamily: chartEvaluation.pricingChartFamily,
+          displayChartFamily: chartEvaluation.displayChartFamily,
+          resolverPolicy: chartEvaluation.resolverPolicy,
+          computedSize: null,
+          chartVersionId: chartEvaluation.chartVersionId,
+          noDirectMatch: chartEvaluation.noDirectMatch,
+          conversionGuidance: chartEvaluation.conversionGuidance,
+        },
+      };
+    }
+
     const preview = this.pricingService.buildPricePreview({
-      baseProductionCharge: String(offer.baseProductionCharge),
-      fabricCostPerYard: String(offer.fabricCostPerYard),
-      rushEnabled: offer.rushEnabled,
-      rushFee: offer.rushFee ? String(offer.rushFee) : undefined,
-      rules: this.pricingService.validateOfferRules(
-        offer.rules.map((rule) => ({
+      baseProductionCharge: String(configuration.baseProductionCharge),
+      fabricCostPerYard: String(configuration.fabricCostPerYard),
+      rushEnabled: configuration.rushEnabled,
+      rushFee: configuration.rushFee ? String(configuration.rushFee) : undefined,
+      baseYardsOverride: yardProfile?.averageBaseYards,
+      additionalYards: this.resolveAdditionalYardsFromProfile(yardProfile, chartEvaluation.computedSize),
+      rules: this.pricingService.validateConfigurationRules(
+        configuration.rules.map((rule) => ({
           priority: rule.priority,
           outputYards: String(rule.outputYards),
           isFallback: rule.isFallback,
@@ -91,9 +220,9 @@ export class CustomOrdersService {
       measurementValues: dto.measurementValues,
       rushSelected: dto.rushSelected,
       shippingAddress: dto.shippingAddress,
-      currency: offer.brand.currency,
+      currency: configuration.brand.currency,
     });
-    const matchedRuleRecord = offer.rules.find(
+    const matchedRuleRecord = configuration.rules.find(
       (rule) =>
         rule.priority === preview.matchedRule.priority &&
         rule.isFallback === preview.matchedRule.isFallback,
@@ -104,9 +233,10 @@ export class CustomOrdersService {
       dto.rushSelected,
       dto.shippingAddress,
       matchedRuleRecord?.id ?? null,
+      chartEvaluation,
     );
     const previewHash = createHash('sha256')
-      .update(stableStringify({ userId, offerId: offer.id, offerVersionId: offer.version.id, requestSnapshot }))
+      .update(stableStringify({ userId, configurationId: configuration.id, configurationVersionId: configuration.version.id, requestSnapshot }))
       .digest('hex');
 
     const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
@@ -126,8 +256,8 @@ export class CustomOrdersService {
           },
           create: {
             buyerId: userId,
-            offerId: offer.id,
-            offerVersionId: offer.version.id,
+            configurationId: configuration.id,
+            configurationVersionId: configuration.version.id,
             previewHash,
             requestSnapshotJson: requestSnapshot as Prisma.InputJsonValue,
             buyerPriceSummaryJson: preview.buyerPriceSummary as unknown as Prisma.InputJsonValue,
@@ -140,11 +270,19 @@ export class CustomOrdersService {
       message: 'Custom order price preview created',
       data: {
         checkoutIntentId: checkoutIntent.id,
-        offerId: offer.id,
-        offerVersionId: offer.version.id,
-        currency: offer.brand.currency,
+        configurationId: configuration.id,
+        configurationVersionId: configuration.version.id,
+        currency: configuration.brand.currency,
         buyerPriceSummary: preview.buyerPriceSummary,
         priceLockExpiresAt: checkoutIntent.expiresAt.toISOString(),
+          quoteStatus: 'AUTO_PRICED' as const,
+        pricingChartFamily: chartEvaluation.pricingChartFamily,
+        displayChartFamily: chartEvaluation.displayChartFamily,
+        resolverPolicy: chartEvaluation.resolverPolicy,
+        computedSize: chartEvaluation.computedSize,
+        chartVersionId: chartEvaluation.chartVersionId,
+        noDirectMatch: chartEvaluation.noDirectMatch,
+        conversionGuidance: chartEvaluation.conversionGuidance,
       },
     };
   }
@@ -183,11 +321,11 @@ export class CustomOrdersService {
     if (intent.consumedAt) {
       throw new BadRequestException('Checkout intent has already been consumed');
     }
-    if (intent.offerId !== dto.offerId) {
-      throw new BadRequestException('CUSTOM_ORDER_OFFER_VERSION_MISMATCH');
+    if (intent.configurationId !== dto.configurationId) {
+      throw new BadRequestException('CUSTOM_ORDER_CONFIGURATION_VERSION_MISMATCH');
     }
-    if (dto.offerVersionId && intent.offerVersionId !== dto.offerVersionId) {
-      throw new BadRequestException('CUSTOM_ORDER_OFFER_VERSION_MISMATCH');
+    if (dto.configurationVersionId && intent.configurationVersionId !== dto.configurationVersionId) {
+      throw new BadRequestException('CUSTOM_ORDER_CONFIGURATION_VERSION_MISMATCH');
     }
 
     const intentSnapshot = this.normalizeCheckoutIntentRequestSnapshot(intent.requestSnapshotJson);
@@ -196,24 +334,37 @@ export class CustomOrdersService {
       dto.rushSelected,
       dto.shippingAddress,
       intentSnapshot.matchedFabricRuleId,
+      intentSnapshot.chartLock,
     );
     if (stableStringify(intentSnapshot) !== stableStringify(submittedSnapshot)) {
       throw new BadRequestException('Checkout intent payload does not match current order request');
     }
+    if (intentSnapshot.chartLock.quoteStatus === 'MANUAL_QUOTE_REQUIRED') {
+      throw new BadRequestException('MANUAL_QUOTE_REQUIRED');
+    }
+    if (intentSnapshot.chartLock.noDirectMatch && !dto.noDirectMatchAcknowledged) {
+      throw new BadRequestException('NO_DIRECT_MATCH_ACK_REQUIRED');
+    }
 
-    const offer = await this.getOfferVersion(intent.offerId, intent.offerVersionId);
+    const configuration = await this.getConfigurationVersion(intent.configurationId, intent.configurationVersionId);
     const requiredMeasurementKeys = await this.resolveRequiredMeasurementKeys(
-      offer.snapshot.requiredMeasurementKeys ?? [],
-      offer.snapshot.requiredFreeformPointIds ?? [],
+      configuration.snapshot.requiredMeasurementKeys ?? [],
+      configuration.snapshot.requiredFreeformPointIds ?? [],
+      dto.measurementValues,
     );
     await this.validateMeasurementRanges(requiredMeasurementKeys, dto.measurementValues);
+    const snapshotYardProfile = this.parseConfigurationYardProfile(
+      typeof configuration.snapshot.notes === 'string' ? configuration.snapshot.notes : null,
+    );
     const pricePreview = this.pricingService.buildPricePreview({
-      baseProductionCharge: offer.snapshot.baseProductionCharge,
-      fabricCostPerYard: offer.snapshot.fabricCostPerYard,
-      rushEnabled: offer.snapshot.rushEnabled,
-      rushFee: offer.snapshot.rushFee,
-      rules: this.pricingService.validateOfferRules(
-        (offer.snapshot.rules ?? []).map((rule: Record<string, unknown>) => ({
+      baseProductionCharge: configuration.snapshot.baseProductionCharge,
+      fabricCostPerYard: configuration.snapshot.fabricCostPerYard,
+      rushEnabled: configuration.snapshot.rushEnabled,
+      rushFee: configuration.snapshot.rushFee,
+      baseYardsOverride: snapshotYardProfile?.averageBaseYards,
+      additionalYards: this.resolveAdditionalYardsFromProfile(snapshotYardProfile, intentSnapshot.chartLock.computedSize),
+      rules: this.pricingService.validateConfigurationRules(
+        (configuration.snapshot.rules ?? []).map((rule: Record<string, unknown>) => ({
           priority: Number(rule.priority),
           outputYards: String(rule.outputYards),
           isFallback: Boolean(rule.isFallback),
@@ -224,9 +375,9 @@ export class CustomOrdersService {
       measurementValues: dto.measurementValues,
       rushSelected: dto.rushSelected,
       shippingAddress: dto.shippingAddress,
-      currency: offer.offer.brand.currency,
+      currency: configuration.configuration.brand.currency,
     });
-    const sourceSnapshot = await this.resolveSourceSnapshot(offer.offer.sourceType, offer.offer.sourceId);
+    const sourceSnapshot = await this.resolveSourceSnapshot(configuration.configuration.sourceType, configuration.configuration.sourceId);
     const retainedUntil = new Date(Date.now() + 180 * 24 * 60 * 60 * 1000);
 
     try {
@@ -248,38 +399,42 @@ export class CustomOrdersService {
 
         return tx.customOrder.create({
         data: {
-          brandId: offer.offer.brandId,
+          brandId: configuration.configuration.brandId,
           buyerId: userId,
-          sourceType: offer.offer.sourceType,
-          sourceId: offer.offer.sourceId,
+          sourceType: configuration.configuration.sourceType,
+          sourceId: configuration.configuration.sourceId,
           sourceTitleSnapshot: sourceSnapshot.title,
           sourceSlugSnapshot: sourceSnapshot.slug,
           sourcePrimaryMediaUrlSnapshot: sourceSnapshot.primaryMediaUrl,
           sourceBrandNameSnapshot: sourceSnapshot.brandName,
-          offerId: offer.offer.id,
-          offerVersionId: offer.version.id,
+          configurationId: configuration.configuration.id,
+          configurationVersionId: configuration.version.id,
           status: CustomOrderStatus.DRAFT,
           paymentStatus: 'PENDING',
-          currency: offer.offer.brand.currency,
+          currency: configuration.configuration.brand.currency,
           checkoutIntentId: intent.id,
-          baseProductionChargeSnapshot: new Prisma.Decimal(offer.snapshot.baseProductionCharge),
-          fabricCostPerYardSnapshot: new Prisma.Decimal(offer.snapshot.fabricCostPerYard),
+          baseProductionChargeSnapshot: new Prisma.Decimal(configuration.snapshot.baseProductionCharge),
+          fabricCostPerYardSnapshot: new Prisma.Decimal(configuration.snapshot.fabricCostPerYard),
           computedYards: new Prisma.Decimal(pricePreview.computedYards),
           matchedFabricRuleId:
             typeof intentSnapshot.matchedFabricRuleId === 'string'
               ? intentSnapshot.matchedFabricRuleId
               : null,
-          internalPriceBreakdownJson: pricePreview.internalPriceBreakdown as unknown as Prisma.InputJsonValue,
+          internalPriceBreakdownJson: {
+            ...pricePreview.internalPriceBreakdown,
+            chartLock: intentSnapshot.chartLock,
+            noDirectMatchAcknowledged: Boolean(dto.noDirectMatchAcknowledged),
+          } as Prisma.InputJsonValue,
           buyerPriceSummaryJson: intent.buyerPriceSummaryJson,
           measurementSnapshotJson: dto.measurementValues as Prisma.InputJsonValue,
           measurementConfirmedAt: new Date(),
           rushSelected: dto.rushSelected,
-          rushFeeSnapshot: offer.snapshot.rushFee
-            ? new Prisma.Decimal(offer.snapshot.rushFee)
+          rushFeeSnapshot: configuration.snapshot.rushFee
+            ? new Prisma.Decimal(configuration.snapshot.rushFee)
             : null,
-          productionLeadDaysSnapshot: offer.snapshot.productionLeadDays,
-          deliveryMinDaysSnapshot: offer.snapshot.deliveryMinDays,
-          deliveryMaxDaysSnapshot: offer.snapshot.deliveryMaxDays,
+          productionLeadDaysSnapshot: configuration.snapshot.productionLeadDays,
+          deliveryMinDaysSnapshot: configuration.snapshot.deliveryMinDays,
+          deliveryMaxDaysSnapshot: configuration.snapshot.deliveryMaxDays,
           shippingAddressJson: dto.shippingAddress as Prisma.InputJsonValue,
           contactInfoJson: {
             ...dto.contactInfo,
@@ -291,11 +446,17 @@ export class CustomOrdersService {
             create: [
               {
                 actorType: CustomOrderActorType.SYSTEM,
-                eventType: 'OFFER_VERSION_LOCKED',
+                eventType: 'CONFIGURATION_VERSION_LOCKED',
                 payloadJson: {
-                  offerId: offer.offer.id,
-                  offerVersionId: offer.version.id,
+                  configurationId: configuration.configuration.id,
+                  configurationVersionId: configuration.version.id,
                   checkoutIntentId: intent.id,
+                  chartVersionId: intentSnapshot.chartLock.chartVersionId,
+                  pricingChartFamily: intentSnapshot.chartLock.pricingChartFamily,
+                  displayChartFamily: intentSnapshot.chartLock.displayChartFamily,
+                  resolverPolicy: intentSnapshot.chartLock.resolverPolicy,
+                  computedSize: intentSnapshot.chartLock.computedSize,
+                  noDirectMatch: intentSnapshot.chartLock.noDirectMatch,
                 },
               },
               {
@@ -776,6 +937,122 @@ export class CustomOrdersService {
     return {
       statusCode: 200,
       message: 'Buyer counter response recorded',
+      data: this.mapDetail(updated),
+    };
+  }
+
+  async getDisplayChartPreference(userId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { notificationSettings: true },
+    });
+    const settings = user?.notificationSettings as Record<string, unknown> | null;
+    const customOrders = settings?.customOrders as Record<string, unknown> | undefined;
+    const displayChartFamily = this.normalizeChartFamily(customOrders?.displayChartFamily);
+    const updatedAtMs = Number(customOrders?.displayChartUpdatedAtMs ?? 0);
+
+    return {
+      statusCode: 200,
+      message: 'Display chart preference retrieved',
+      data: {
+        displayChartFamily,
+        updatedAtMs: Number.isFinite(updatedAtMs) ? updatedAtMs : 0,
+      },
+    };
+  }
+
+  async updateDisplayChartPreference(userId: string, dto: UpdateDisplayChartPreferenceDto) {
+    const displayChartFamily = this.normalizeChartFamily(dto.displayChartFamily);
+    const updatedAtMs = dto.updatedAtMs ?? Date.now();
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { notificationSettings: true },
+    });
+    const existing = (user?.notificationSettings as Record<string, unknown> | null) ?? {};
+    const next = {
+      ...existing,
+      customOrders: {
+        ...((existing.customOrders as Record<string, unknown>) ?? {}),
+        displayChartFamily,
+        displayChartUpdatedAtMs: updatedAtMs,
+      },
+    };
+
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { notificationSettings: next as Prisma.InputJsonValue },
+    });
+
+    return {
+      statusCode: 200,
+      message: 'Display chart preference updated',
+      data: { displayChartFamily, updatedAtMs },
+    };
+  }
+
+  async createExceptionReviewRequest(
+    ownerUserId: string,
+    brandId: string,
+    customOrderId: string,
+    dto: CreateExceptionReviewRequestDto,
+  ) {
+    await this.assertBrandOwnership(ownerUserId, brandId);
+    const order = await this.prisma.customOrder.findFirst({
+      where: { id: customOrderId, brandId },
+      include: this.detailIncludes,
+    });
+    if (!order) {
+      throw new NotFoundException('Custom order not found');
+    }
+    if (order.status !== CustomOrderStatus.PENDING_BRAND_ACCEPTANCE) {
+      throw new BadRequestException('EXCEPTION_REVIEW_NOT_ALLOWED_FOR_STATE');
+    }
+
+    const monthStart = new Date();
+    monthStart.setUTCDate(1);
+    monthStart.setUTCHours(0, 0, 0, 0);
+
+    const monthCount = await this.prisma.customOrderTimelineEvent.count({
+      where: {
+        eventType: 'ADMIN_ESCALATED',
+        actorType: CustomOrderActorType.BRAND,
+        actorId: ownerUserId,
+        createdAt: { gte: monthStart },
+      },
+    });
+    if (monthCount >= EXCEPTION_REVIEW_MONTHLY_QUOTA) {
+      throw new BadRequestException('EXCEPTION_REVIEW_MONTHLY_QUOTA_EXCEEDED');
+    }
+
+    const dueAt = new Date(Date.now() + EXCEPTION_REVIEW_SLA_HOURS * 60 * 60 * 1000);
+    const updated = await this.prisma.customOrder.update({
+      where: { id: customOrderId },
+      data: {
+        timelineEvents: {
+          create: {
+            actorType: CustomOrderActorType.BRAND,
+            actorId: ownerUserId,
+            eventType: 'ADMIN_ESCALATED',
+            payloadJson: {
+              kind: 'EXCEPTION_REVIEW_REQUEST',
+              status: 'NEW',
+              requestedQuoteTotal: dto.requestedQuoteTotal ?? null,
+              reason: dto.reason.trim(),
+              dueAt: dueAt.toISOString(),
+                chartLock: this.normalizeChartLock(
+                  (order.internalPriceBreakdownJson as Record<string, unknown>)?.chartLock,
+                ) as Prisma.InputJsonValue,
+            },
+          },
+        },
+      },
+      include: this.detailIncludes,
+    });
+
+    return {
+      statusCode: 201,
+      message: 'Exception review request submitted',
       data: this.mapDetail(updated),
     };
   }
@@ -1304,9 +1581,9 @@ export class CustomOrdersService {
     }
   }
 
-  private async getActiveOffer(offerId: string, requestedVersionId?: string) {
-    const offer = await this.prisma.customOrderOffer.findUnique({
-      where: { id: offerId },
+  private async getActiveConfiguration(configurationId: string, requestedVersionId?: string) {
+    const configuration = await this.prisma.customOrderConfiguration.findUnique({
+      where: { id: configurationId },
       include: {
         brand: { select: { currency: true } },
         rules: { orderBy: { priority: 'asc' } },
@@ -1318,34 +1595,34 @@ export class CustomOrdersService {
       },
     });
 
-    if (!offer || !offer.isActive) {
-      throw new NotFoundException('Custom order offer not found');
+    if (!configuration || !configuration.isActive) {
+      throw new NotFoundException('Custom order configuration not found');
     }
-    const version = offer.versions[0];
+    const version = configuration.versions[0];
     if (!version) {
-      throw new NotFoundException('Custom order offer version not found');
+      throw new NotFoundException('Custom order configuration version not found');
     }
 
-    return { ...offer, version };
+    return { ...configuration, version };
   }
 
-  private async getOfferVersion(offerId: string, versionId: string) {
-    const offer = await this.prisma.customOrderOffer.findUnique({
-      where: { id: offerId },
+  private async getConfigurationVersion(configurationId: string, versionId: string) {
+    const configuration = await this.prisma.customOrderConfiguration.findUnique({
+      where: { id: configurationId },
       include: {
         brand: { select: { currency: true } },
         rules: { orderBy: { priority: 'asc' } },
         versions: { where: { id: versionId }, take: 1 },
       },
     });
-    if (!offer || offer.versions.length === 0) {
-      throw new NotFoundException('Custom order offer version not found');
+    if (!configuration || configuration.versions.length === 0) {
+      throw new NotFoundException('Custom order configuration version not found');
     }
 
-    const version = offer.versions[0];
+    const version = configuration.versions[0];
     const snapshot = version.snapshotJson as Record<string, any>;
     return {
-      offer,
+      configuration,
       version,
       snapshot,
     };
@@ -1370,12 +1647,23 @@ export class CustomOrdersService {
     rushSelected: boolean | undefined,
     shippingAddress: Record<string, unknown> | null | undefined,
     matchedFabricRuleId: string | null,
+    chartLock?: CustomOrderRequestSnapshot['chartLock'],
   ): CustomOrderRequestSnapshot {
     return {
       measurementValues,
       rushSelected: Boolean(rushSelected),
       shippingAddress: shippingAddress ?? null,
       matchedFabricRuleId,
+      chartLock: chartLock ?? {
+        pricingChartFamily: DEFAULT_PRICING_CHART_FAMILY,
+        displayChartFamily: DEFAULT_DISPLAY_CHART_FAMILY,
+        resolverPolicy: DEFAULT_RESOLVER_POLICY,
+        chartVersionId: this.currentChartVersionId(),
+        computedSize: null,
+        noDirectMatch: false,
+        conversionGuidance: null,
+        quoteStatus: 'AUTO_PRICED',
+      },
     };
   }
 
@@ -1389,15 +1677,276 @@ export class CustomOrdersService {
       Boolean(value.rushSelected),
       (value.shippingAddress as Record<string, unknown> | null | undefined) ?? null,
       typeof value.matchedFabricRuleId === 'string' ? value.matchedFabricRuleId : null,
+      this.normalizeChartLock(value.chartLock),
     );
+  }
+
+  private normalizeChartLock(raw: unknown): CustomOrderRequestSnapshot['chartLock'] {
+    const lock = raw && typeof raw === 'object' && !Array.isArray(raw)
+      ? (raw as Record<string, unknown>)
+      : {};
+    const pricingChartFamily = this.normalizeChartFamily(lock.pricingChartFamily);
+    const displayChartFamily = this.normalizeChartFamily(lock.displayChartFamily);
+    const resolverPolicy = this.normalizeResolverPolicy(lock.resolverPolicy);
+
+    return {
+      pricingChartFamily,
+      displayChartFamily,
+      resolverPolicy,
+      chartVersionId:
+        typeof lock.chartVersionId === 'string' && lock.chartVersionId.trim().length > 0
+          ? lock.chartVersionId
+          : this.currentChartVersionId(),
+      computedSize: typeof lock.computedSize === 'string' ? lock.computedSize : null,
+      noDirectMatch: Boolean(lock.noDirectMatch),
+      conversionGuidance: typeof lock.conversionGuidance === 'string' ? lock.conversionGuidance : null,
+      quoteStatus: lock.quoteStatus === 'MANUAL_QUOTE_REQUIRED' ? 'MANUAL_QUOTE_REQUIRED' : 'AUTO_PRICED',
+    };
+  }
+
+  private normalizeChartFamily(value: unknown): CustomOrderChartFamily {
+    const v = typeof value === 'string' ? value.toUpperCase() : '';
+    if (v === 'UK' || v === 'US' || v === 'NIGERIA' || v === 'ASIA' || v === 'HYBRID_UK_NIGERIA') {
+      return v;
+    }
+    return DEFAULT_PRICING_CHART_FAMILY;
+  }
+
+  private normalizeResolverPolicy(value: unknown): CustomOrderResolverPolicy {
+    const v = typeof value === 'string' ? value.toUpperCase() : '';
+    if (v === 'PRIMARY_ONLY' || v === 'MAX_OF_BOTH' || v === 'WEIGHTED_AVERAGE_TO_NEAREST_BAND') {
+      return v;
+    }
+    return DEFAULT_RESOLVER_POLICY;
+  }
+
+  private currentChartVersionId() {
+    return `chart-pack-v1-${new Date().getUTCFullYear()}Q1`;
+  }
+
+  private resolveAdditionalYardsFromProfile(
+    profile:
+      | {
+          averageBaseYards?: number;
+          sizeExtraYards: Array<{ sizeLabel: string; extraYards: number }>;
+        }
+      | null,
+    computedSize?: string | null,
+  ) {
+    if (!computedSize) {
+      return 0;
+    }
+
+    if (!profile || !Array.isArray(profile.sizeExtraYards) || profile.sizeExtraYards.length === 0) {
+      return 0;
+    }
+
+    const normalize = (value: string) => value.toUpperCase().replace(/[^A-Z0-9]/g, '');
+    const target = normalize(computedSize);
+    const compactTarget = normalize(computedSize.replace(/^(UK|US|NG|NIGERIA|ASIA)\s*/i, ''));
+
+    const matched = profile.sizeExtraYards.find((row) => {
+      const normalizedLabel = normalize(String(row?.sizeLabel ?? ''));
+      return normalizedLabel === target || normalizedLabel === compactTarget;
+    });
+
+    return matched ? Number(matched.extraYards) || 0 : 0;
+  }
+
+  private parseConfigurationYardProfile(notes: string | null | undefined): {
+    averageBaseYards?: number;
+    sizeExtraYards: Array<{ sizeLabel: string; extraYards: number }>;
+  } | null {
+    const raw = String(notes ?? '');
+    const prefix = 'YARD_PROFILE:';
+    if (!raw.startsWith(prefix)) {
+      return null;
+    }
+
+    const jsonLine = raw.slice(prefix.length).split('\n')[0]?.trim();
+    if (!jsonLine) {
+      return null;
+    }
+
+    try {
+      const parsed = JSON.parse(jsonLine) as {
+        averageBaseYards?: unknown;
+        sizeExtraYards?: Array<{ sizeLabel?: unknown; extraYards?: unknown }>;
+      };
+      return {
+        averageBaseYards:
+          typeof parsed.averageBaseYards === 'number' && Number.isFinite(parsed.averageBaseYards)
+            ? parsed.averageBaseYards
+            : undefined,
+        sizeExtraYards: Array.isArray(parsed.sizeExtraYards)
+          ? parsed.sizeExtraYards
+              .map((row) => ({
+                sizeLabel: String(row?.sizeLabel ?? '').trim(),
+                extraYards: Number(row?.extraYards),
+              }))
+              .filter((row) => row.sizeLabel.length > 0 && Number.isFinite(row.extraYards) && row.extraYards >= 0)
+          : [],
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private resolveChartEvaluation(input: {
+    measurementValues: Record<string, number>;
+    pricingChartFamily: CustomOrderChartFamily;
+    displayChartFamily: CustomOrderChartFamily;
+    resolverPolicy: CustomOrderResolverPolicy;
+  }) {
+    const required = ['BUST', 'WAIST', 'HIPS'];
+    const indexed = Object.entries(input.measurementValues).reduce<Record<string, number>>((acc, [k, v]) => {
+      acc[k.toUpperCase()] = Number(v);
+      return acc;
+    }, {});
+
+    for (const key of required) {
+      const direct = indexed[key];
+      const women = indexed[`WOMEN_${key}`];
+      const men = indexed[`MEN_${key}`];
+      const value = Number.isFinite(direct) ? direct : Number.isFinite(women) ? women : men;
+      if (!Number.isFinite(value) || value <= 0) {
+        return {
+          manualQuoteRequired: true,
+          quoteStatus: 'MANUAL_QUOTE_REQUIRED' as const,
+          pricingChartFamily: input.pricingChartFamily,
+          displayChartFamily: input.displayChartFamily,
+          resolverPolicy: input.resolverPolicy,
+          chartVersionId: this.currentChartVersionId(),
+          computedSize: null,
+          noDirectMatch: false,
+          conversionGuidance: `Missing required measurement: ${key.toLowerCase()}`,
+        };
+      }
+      indexed[key] = value;
+    }
+
+    const computeFromFamily = (family: Exclude<CustomOrderChartFamily, 'HYBRID_UK_NIGERIA'>): ComputedChartCandidate => {
+      const bands = CHART_BANDS[family];
+      const exact = bands.findIndex((band, idx) => {
+        const inBust = indexed.BUST >= band.bustMin && (idx === bands.length - 1 ? indexed.BUST <= band.bustMax : indexed.BUST < band.bustMax);
+        const inWaist = indexed.WAIST >= band.waistMin && (idx === bands.length - 1 ? indexed.WAIST <= band.waistMax : indexed.WAIST < band.waistMax);
+        const inHips = indexed.HIPS >= band.hipsMin && (idx === bands.length - 1 ? indexed.HIPS <= band.hipsMax : indexed.HIPS < band.hipsMax);
+        return inBust || inWaist || inHips;
+      });
+
+      if (exact >= 0) {
+        return { family, label: bands[exact].label, bandIndex: exact, noDirectMatch: false };
+      }
+
+      const nearest = bands.reduce(
+        (best, band, idx) => {
+          const midpoint = (band.bustMin + band.bustMax + band.waistMin + band.waistMax + band.hipsMin + band.hipsMax) / 6;
+          const delta = Math.abs(midpoint - (indexed.BUST + indexed.WAIST + indexed.HIPS) / 3);
+          if (delta < best.delta) {
+            return { delta, idx, label: band.label };
+          }
+          return best;
+        },
+        { delta: Number.MAX_SAFE_INTEGER, idx: 0, label: bands[0].label },
+      );
+
+      return {
+        family,
+        label: nearest.label,
+        bandIndex: nearest.idx,
+        noDirectMatch: true,
+        nearestLabel: nearest.label,
+      };
+    };
+
+    const uk = computeFromFamily('UK');
+    const ng = computeFromFamily('NIGERIA');
+    const byFamily: Record<Exclude<CustomOrderChartFamily, 'HYBRID_UK_NIGERIA'>, ComputedChartCandidate> = {
+      UK: uk,
+      NIGERIA: ng,
+      US: computeFromFamily('US'),
+      ASIA: computeFromFamily('ASIA'),
+    };
+
+    let chosen: ComputedChartCandidate;
+    if (input.pricingChartFamily === 'HYBRID_UK_NIGERIA') {
+      if (input.resolverPolicy === 'PRIMARY_ONLY') {
+        chosen = uk;
+      } else if (input.resolverPolicy === 'WEIGHTED_AVERAGE_TO_NEAREST_BAND') {
+        const weighted = Math.round((uk.bandIndex * 0.6 + ng.bandIndex * 0.4));
+        chosen = uk.bandIndex >= ng.bandIndex
+          ? { ...uk, bandIndex: Math.max(weighted, uk.bandIndex) }
+          : { ...ng, bandIndex: Math.max(weighted, ng.bandIndex) };
+      } else {
+        chosen = uk.bandIndex >= ng.bandIndex ? uk : ng;
+      }
+    } else {
+      chosen = byFamily[input.pricingChartFamily as Exclude<CustomOrderChartFamily, 'HYBRID_UK_NIGERIA'>];
+    }
+
+    const displayCandidate =
+      input.displayChartFamily === 'HYBRID_UK_NIGERIA'
+        ? chosen
+        : byFamily[input.displayChartFamily as Exclude<CustomOrderChartFamily, 'HYBRID_UK_NIGERIA'>];
+
+    return {
+      manualQuoteRequired: false,
+      quoteStatus: 'AUTO_PRICED' as const,
+      pricingChartFamily: input.pricingChartFamily,
+      displayChartFamily: input.displayChartFamily,
+      resolverPolicy: input.resolverPolicy,
+      chartVersionId: this.currentChartVersionId(),
+      computedSize: chosen.label,
+      noDirectMatch: chosen.noDirectMatch || displayCandidate.noDirectMatch,
+      conversionGuidance:
+        chosen.noDirectMatch || displayCandidate.noDirectMatch
+          ? `Nearest mapped band: ${displayCandidate.nearestLabel ?? displayCandidate.label}`
+          : null,
+    };
+  }
+
+  private inferMeasurementGenderFromKeys(keys: string[]): 'MEN' | 'WOMEN' | null {
+    for (const key of keys) {
+      if (typeof key !== 'string') continue;
+      if (key.startsWith('MEN_')) return 'MEN';
+      if (key.startsWith('WOMEN_')) return 'WOMEN';
+    }
+    return null;
+  }
+
+  private async resolveBaselineMeasurementKeys(gender: 'MEN' | 'WOMEN' | null) {
+    const effectiveGender = gender ?? 'WOMEN';
+    const orderedKeys = BASELINE_KEY_CANDIDATES[effectiveGender];
+
+    const points = await this.prisma.measurementPoint.findMany({
+      where: {
+        key: { in: orderedKeys },
+        source: 'SYSTEM',
+        status: 'APPROVED_GLOBAL',
+        isActive: true,
+        OR: [{ gender: effectiveGender as Gender }, { gender: 'UNISEX' }, { gender: null }],
+      },
+      select: { key: true },
+    });
+
+    const byKey = new Set(points.map((point) => point.key));
+    // Enforce baseline requirements even if seeded registry rows are not present in an environment.
+    return orderedKeys.filter((key) => byKey.size === 0 || byKey.has(key));
   }
 
   private async resolveRequiredMeasurementKeys(
     requiredMeasurementKeys: string[],
     requiredFreeformPointIds: string[],
+    measurementValues: Record<string, number> = {},
   ) {
+    const inferredGender = this.inferMeasurementGenderFromKeys([
+      ...requiredMeasurementKeys,
+      ...Object.keys(measurementValues ?? {}),
+    ]);
+    const baselineKeys = await this.resolveBaselineMeasurementKeys(inferredGender);
+
     if (!requiredFreeformPointIds.length) {
-      return requiredMeasurementKeys;
+      return Array.from(new Set([...requiredMeasurementKeys, ...baselineKeys]));
     }
 
     const points = await this.prisma.measurementPoint.findMany({
@@ -1405,7 +1954,9 @@ export class CustomOrdersService {
       select: { key: true },
     });
 
-    return Array.from(new Set([...requiredMeasurementKeys, ...points.map((point) => point.key)]));
+    return Array.from(
+      new Set([...requiredMeasurementKeys, ...points.map((point) => point.key), ...baselineKeys]),
+    );
   }
 
   private async validateMeasurementRanges(
@@ -1576,6 +2127,8 @@ export class CustomOrdersService {
   }
 
   private mapDetail(order: any) {
+    const breakdown = (order.internalPriceBreakdownJson ?? {}) as Record<string, unknown>;
+    const chartLock = (breakdown.chartLock ?? null) as Record<string, unknown> | null;
     return {
       id: order.id,
       status: order.status,
@@ -1589,9 +2142,12 @@ export class CustomOrdersService {
         primaryMediaUrl: order.sourcePrimaryMediaUrlSnapshot,
         brandName: order.sourceBrandNameSnapshot,
       },
-      offerVersionId: order.offerVersionId,
+      configurationVersionId: order.configurationVersionId,
       buyerPriceSummary: order.buyerPriceSummaryJson,
       internalPriceBreakdown: order.internalPriceBreakdownJson,
+      quoteStatus: (chartLock?.quoteStatus as string | undefined) ?? 'AUTO_PRICED',
+      chartLock,
+      exceptionDecision: (breakdown.exceptionDecision ?? null) as Record<string, unknown> | null,
       measurementSnapshot: order.measurementSnapshotJson,
       measurementConfirmedAt: order.measurementConfirmedAt,
       currentProgressStage: order.currentProgressStage,

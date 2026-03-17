@@ -2883,6 +2883,7 @@ export class CollectionsService {
     const expectedDomain = this.scopeToDomain(resolvedScope);
     if (expectedDomain === 'STORE') {
       await this.assertOwner(collectionId, ownerId, 'STORE');
+      await this.ensureAdminRepublishUnlocked('StoreCollection', collectionId);
       const collection = await this.prisma.storeCollection.findUnique({
         where: { id: collectionId },
         select: {
@@ -2939,6 +2940,7 @@ export class CollectionsService {
     }
 
     await this.assertOwner(collectionId, ownerId, expectedDomain ?? undefined);
+    await this.ensureAdminRepublishUnlocked('Collection', collectionId);
     const collection = await this.prisma.collection.findUnique({
       where: { id: collectionId },
       select: {
@@ -2992,6 +2994,163 @@ export class CollectionsService {
     }
 
     return { success: true, status: restoreStatus };
+  }
+
+  async requestCollectionRepublishApproval(
+    collectionId: string,
+    ownerId: string,
+    reason?: string,
+    scope?: CollectionScope,
+  ) {
+    const resolvedScope = this.normalizeCollectionScope(scope);
+    const expectedDomain = this.scopeToDomain(resolvedScope);
+
+    if (expectedDomain === 'STORE') {
+      await this.assertOwner(collectionId, ownerId, 'STORE');
+      const collection = await this.prisma.storeCollection.findUnique({
+        where: { id: collectionId },
+        select: { id: true, title: true, status: true },
+      });
+      if (!collection) throw new NotFoundException('Collection not found');
+      if (collection.status !== 'ARCHIVED') {
+        throw new BadRequestException('Collection is not archived');
+      }
+
+      let isAdminLocked = false;
+      try {
+        await this.ensureAdminRepublishUnlocked('StoreCollection', collectionId);
+      } catch (error) {
+        if (error instanceof ForbiddenException) {
+          isAdminLocked = true;
+        } else {
+          throw error;
+        }
+      }
+      if (!isAdminLocked) {
+        throw new BadRequestException('This collection is not currently blocked by admin moderation');
+      }
+
+      await this.notifyAdminsForRepublishRequest(
+        ownerId,
+        'STORE_COLLECTION',
+        collectionId,
+        collection.title ?? 'Untitled',
+        reason,
+      );
+      return {
+        success: true,
+        message: 'Republish request sent to admin for review',
+      };
+    }
+
+    await this.assertOwner(collectionId, ownerId, expectedDomain ?? undefined);
+    const collection = await this.prisma.collection.findUnique({
+      where: { id: collectionId },
+      select: { id: true, title: true, status: true },
+    });
+    if (!collection) throw new NotFoundException('Collection not found');
+    if (collection.status !== 'ARCHIVED') {
+      throw new BadRequestException('Collection is not archived');
+    }
+
+    let isAdminLocked = false;
+    try {
+      await this.ensureAdminRepublishUnlocked('Collection', collectionId);
+    } catch (error) {
+      if (error instanceof ForbiddenException) {
+        isAdminLocked = true;
+      } else {
+        throw error;
+      }
+    }
+    if (!isAdminLocked) {
+      throw new BadRequestException('This collection is not currently blocked by admin moderation');
+    }
+
+    await this.notifyAdminsForRepublishRequest(
+      ownerId,
+      'COLLECTION',
+      collectionId,
+      collection.title ?? 'Untitled',
+      reason,
+    );
+    return {
+      success: true,
+      message: 'Republish request sent to admin for review',
+    };
+  }
+
+  private async ensureAdminRepublishUnlocked(
+    targetType: 'Collection' | 'StoreCollection',
+    targetId: string,
+  ) {
+    const logs = await (this.prisma as any).adminAuditLog.findMany({
+      where: {
+        action: 'ADMIN_COLLECTION_MODERATE',
+        targetType,
+        targetId,
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 20,
+      select: {
+        newState: true,
+      },
+    });
+
+    for (const log of logs) {
+      const state =
+        log?.newState && typeof log.newState === 'object' && !Array.isArray(log.newState)
+          ? (log.newState as Record<string, unknown>)
+          : {};
+      const action = String(state.action ?? '').toUpperCase();
+      const status = String(state.status ?? '').toUpperCase();
+
+      if (action === 'REPUBLISH' || status === 'PUBLISHED') {
+        return;
+      }
+
+      if (action === 'UNPUBLISH' || status === 'ARCHIVED') {
+        throw new ForbiddenException(
+          'This content was unpublished by admin and cannot be republished until admin approval.',
+        );
+      }
+    }
+  }
+
+  private async notifyAdminsForRepublishRequest(
+    actorId: string,
+    targetType: 'COLLECTION' | 'STORE_COLLECTION',
+    targetId: string,
+    title: string,
+    reason?: string,
+  ) {
+    if (!this.notifications) return;
+
+    const admins = await this.prisma.user.findMany({
+      where: {
+        role: { in: ['Admin', 'SuperAdmin'] as any },
+        status: 'ACTIVE',
+      },
+      select: { id: true },
+      take: 100,
+    });
+
+    await Promise.all(
+      admins
+        .filter((admin) => admin.id !== actorId)
+        .map((admin) =>
+          this.notifications!.create(admin.id, NotificationType.ADMIN_ACTION, {
+            actorId,
+            payload: {
+              targetType,
+              targetId,
+              action: 'REPUBLISH_REQUEST',
+              reason: reason?.trim() || null,
+              message: `A brand requested republish approval for "${title}".${reason?.trim() ? ` Reason: ${reason.trim()}` : ''}`,
+            },
+          }).catch(() => undefined),
+        ),
+    );
   }
 
   async applyTemplateToCollectionProducts(
@@ -5068,7 +5227,11 @@ export class CollectionsService {
           NotificationType.THREAD,
           {
             actorId: userId,
-            payload: { collectionId },
+            payload: {
+              collectionId,
+              targetType: 'COLLECTION',
+              contentTitle: collection.title ?? undefined,
+            },
             dedupeMs: 5 * 60 * 1000,
           },
         );
@@ -5081,8 +5244,6 @@ export class CollectionsService {
       this.notifications &&
       collection.owner?.type === UserType.BRAND
     ) {
-      const brandName =
-        collection.owner.brandFullName || collection.owner.username || 'A brand';
       const collectionLabel = collection.title
         ? `"${collection.title}"`
         : 'a collection';
@@ -5108,7 +5269,9 @@ export class CollectionsService {
             payload: {
               collectionId,
               targetUrl: `/collections/${collectionId}`,
-              message: `${brandName} received a new thread on ${collectionLabel}.`,
+              targetType: 'COLLECTION',
+              contentTitle: collection.title ?? undefined,
+              message: `threaded ${collectionLabel}`,
             },
             dedupeMs: 2 * 60 * 1000,
           });
@@ -5126,7 +5289,9 @@ export class CollectionsService {
                 payload: {
                   collectionId,
                   targetUrl: `/collections/${collectionId}`,
-                  message: `${brandName} received a new thread on ${collectionLabel}.`,
+                  targetType: 'COLLECTION',
+                  contentTitle: collection.title ?? undefined,
+                  message: `threaded ${collectionLabel}`,
                 },
                 dedupeMs: 2 * 60 * 1000,
               },
@@ -5703,11 +5868,28 @@ export class CollectionsService {
         },
       });
 
+      if (media?.collection?.ownerId && userId !== media.collection.ownerId) {
+        try {
+          await this.notifications.create(
+            media.collection.ownerId,
+            NotificationType.THREAD,
+            {
+              actorId: userId,
+              payload: {
+                collectionId: media.collectionId,
+                targetUrl: `/collections/${media.collectionId}`,
+                targetType: 'COLLECTION',
+                contentTitle: media.collection.title ?? undefined,
+              },
+              dedupeMs: 5 * 60 * 1000,
+            },
+          );
+        } catch (e) {
+          console.warn('Failed to notify owner of media thread', e);
+        }
+      }
+
       if (media?.collection?.owner?.type === UserType.BRAND) {
-        const brandName =
-          media.collection.owner.brandFullName ||
-          media.collection.owner.username ||
-          'A brand';
         const collectionLabel = media.collection.title
           ? `"${media.collection.title}"`
           : 'a collection';
@@ -5733,7 +5915,9 @@ export class CollectionsService {
               payload: {
                 collectionId: media.collectionId,
                 targetUrl: `/collections/${media.collectionId}`,
-                message: `${brandName} received a new thread on ${collectionLabel}.`,
+                targetType: 'COLLECTION',
+                contentTitle: media.collection.title ?? undefined,
+                message: `threaded ${collectionLabel}`,
               },
               dedupeMs: 2 * 60 * 1000,
             });
@@ -5751,7 +5935,9 @@ export class CollectionsService {
                   payload: {
                     collectionId: media.collectionId,
                     targetUrl: `/collections/${media.collectionId}`,
-                    message: `${brandName} received a new thread on ${collectionLabel}.`,
+                    targetType: 'COLLECTION',
+                    contentTitle: media.collection.title ?? undefined,
+                    message: `threaded ${collectionLabel}`,
                   },
                   dedupeMs: 2 * 60 * 1000,
                 },

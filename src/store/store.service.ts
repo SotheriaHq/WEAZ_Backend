@@ -1310,6 +1310,10 @@ export class StoreService {
       throw new ForbiddenException('You can only update your own products');
     }
 
+    if (dto.isActive === true) {
+      await this.assertProductRepublishUnlocked(productId);
+    }
+
     const wasPublished = this.isProductPublished(product);
     const previousTags = Array.isArray(product.tags) ? product.tags : [];
 
@@ -1673,6 +1677,109 @@ export class StoreService {
     }
 
     return this.attachProductMedia(updated);
+  }
+
+  private async assertProductRepublishUnlocked(productId: string) {
+    const logs = await (this.prisma as any).adminAuditLog.findMany({
+      where: {
+        action: 'ADMIN_PRODUCT_MODERATE',
+        targetType: 'Product',
+        targetId: productId,
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 20,
+      select: {
+        newState: true,
+      },
+    });
+
+    for (const log of logs) {
+      const state =
+        log?.newState && typeof log.newState === 'object' && !Array.isArray(log.newState)
+          ? (log.newState as Record<string, unknown>)
+          : {};
+      const action = String(state.action ?? '').toUpperCase();
+      const isActive = state.isActive;
+
+      if (action === 'REPUBLISH' || isActive === true) {
+        return;
+      }
+
+      if (action === 'UNPUBLISH' || isActive === false) {
+        throw new ForbiddenException(
+          'This product was unpublished by admin and can only be republished by admin.',
+        );
+      }
+    }
+  }
+
+  async requestProductRepublishApproval(
+    brandOwnerId: string,
+    productId: string,
+    reason?: string,
+  ) {
+    const product = await this.prisma.product.findFirst({
+      where: { id: productId, deletedAt: null },
+      include: { brand: true },
+    });
+
+    if (!product) {
+      throw new NotFoundException('Product not found');
+    }
+    if (product.brand.ownerId !== brandOwnerId) {
+      throw new ForbiddenException('You can only request republish for your own product');
+    }
+    if (product.isActive) {
+      throw new BadRequestException('Product is already published');
+    }
+
+    let isAdminLocked = false;
+    try {
+      await this.assertProductRepublishUnlocked(productId);
+    } catch (error) {
+      if (error instanceof ForbiddenException) {
+        isAdminLocked = true;
+      } else {
+        throw error;
+      }
+    }
+
+    if (!isAdminLocked) {
+      throw new BadRequestException('This product is not currently blocked by admin moderation');
+    }
+
+    const admins = await this.prisma.user.findMany({
+      where: {
+        role: { in: ['Admin', 'SuperAdmin'] as any },
+        status: 'ACTIVE',
+      },
+      select: { id: true },
+      take: 100,
+    });
+
+    if (this.notifications && admins.length > 0) {
+      await Promise.all(
+        admins
+          .filter((admin) => admin.id !== brandOwnerId)
+          .map((admin) =>
+            this.notifications!.create(admin.id, NotificationType.ADMIN_ACTION, {
+              actorId: brandOwnerId,
+              payload: {
+                targetType: 'PRODUCT',
+                targetId: productId,
+                action: 'REPUBLISH_REQUEST',
+                reason: reason?.trim() || null,
+                message: `A brand requested republish approval for product "${product.name}".${reason?.trim() ? ` Reason: ${reason.trim()}` : ''}`,
+              },
+            }).catch(() => undefined),
+          ),
+      );
+    }
+
+    return {
+      success: true,
+      message: 'Republish request sent to admin for review',
+    };
   }
 
   async duplicateProduct(brandOwnerId: string, productId: string) {

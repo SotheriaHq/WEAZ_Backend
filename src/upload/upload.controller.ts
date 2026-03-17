@@ -92,6 +92,14 @@ export class UploadController {
   }
 
   @UseGuards(JwtAuthGuard)
+  @Delete('profile-image')
+  @ApiOperation({ summary: 'Remove profile image' })
+  async removeProfileImage(@Req() req: any) {
+    await this.uploadService.clearUserProfileImage(req.user.id);
+    return { success: true };
+  }
+
+  @UseGuards(JwtAuthGuard)
   @Post('banner-image')
   @ApiOperation({ summary: 'Upload banner image' })
   @UseInterceptors(FileInterceptor('file', { storage: memoryStorage() }))

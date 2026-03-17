@@ -1,15 +1,17 @@
+import { Injectable, NotFoundException } from '@nestjs/common';
 import {
-  Injectable,
-  NotFoundException,
-} from '@nestjs/common';
-import { PrismaService } from 'src/prisma/prisma.service';
-import { AdminAuditAction, CollectionStatus, NotificationType } from '@prisma/client';
-import { v4 as uuidv4 } from 'uuid';
+  AdminAuditAction,
+  CollectionDomain,
+  CollectionStatus,
+  NotificationType,
+} from '@prisma/client';
 import { Request } from 'express';
+import { v4 as uuidv4 } from 'uuid';
+import { PrismaService } from 'src/prisma/prisma.service';
 import { NotificationsService } from 'src/notifications/notifications.service';
 
 @Injectable()
-export class AdminCollectionsService {
+export class AdminDesignsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly notifications?: NotificationsService,
@@ -25,6 +27,8 @@ export class AdminCollectionsService {
     const take = Math.min(params.limit ?? 50, 100);
     const where: Record<string, unknown> = {
       deletedAt: null,
+      domain: CollectionDomain.DESIGN,
+      isAvailableInStore: false,
     };
 
     if (params.search) {
@@ -36,7 +40,7 @@ export class AdminCollectionsService {
     if (params.ownerId) where.ownerId = params.ownerId;
     if (params.status) where.status = params.status;
 
-    const items = await this.prisma.storeCollection.findMany({
+    const items = await this.prisma.collection.findMany({
       where,
       select: {
         id: true,
@@ -47,24 +51,34 @@ export class AdminCollectionsService {
         ownerId: true,
         createdAt: true,
         updatedAt: true,
+        coverMedia: {
+          select: {
+            fileUploadId: true,
+            file: {
+              select: {
+                s3Url: true,
+              },
+            },
+          },
+        },
+        medias: {
+          orderBy: { orderIndex: 'asc' },
+          take: 1,
+          select: {
+            fileUploadId: true,
+            file: {
+              select: {
+                s3Url: true,
+              },
+            },
+          },
+        },
         owner: {
           select: {
             id: true,
             email: true,
             firstName: true,
             lastName: true,
-          },
-        },
-        products: {
-          orderBy: [{ isPrimary: 'desc' }, { orderIndex: 'asc' }],
-          take: 1,
-          select: {
-            product: {
-              select: {
-                thumbnail: true,
-                images: true,
-              },
-            },
           },
         },
       },
@@ -76,62 +90,39 @@ export class AdminCollectionsService {
     const hasMore = items.length > take;
     const results = hasMore ? items.slice(0, take) : items;
     const nextCursor = hasMore ? results[results.length - 1]?.id : undefined;
-    const collectionIds = results.map((item) => item.id);
-    const links =
-      collectionIds.length > 0
-        ? await this.prisma.storeCollectionProduct.findMany({
-            where: { collectionId: { in: collectionIds } },
-            select: {
-              collectionId: true,
-              productId: true,
-            },
-          })
-        : [];
-    const productIds = Array.from(new Set(links.map((link) => link.productId)));
-    const orderCountsByProductId =
-      productIds.length > 0
-        ? await this.prisma.orderItem.groupBy({
-            by: ['productId'],
+    const designIds = results.map((item) => item.id);
+    const groupedOrders =
+      designIds.length > 0
+        ? await this.prisma.customOrder.groupBy({
+            by: ['sourceId'],
             where: {
-              productId: { in: productIds },
+              sourceType: 'DESIGN',
+              sourceId: { in: designIds },
             },
             _count: {
               _all: true,
             },
           })
         : [];
-    const productOrderCountMap = new Map(
-      orderCountsByProductId.map((row) => [row.productId, row._count._all]),
+    const orderCountByDesignId = new Map(
+      groupedOrders.map((entry) => [entry.sourceId, entry._count._all]),
     );
-    const collectionOrderCountMap = new Map<string, number>();
-    for (const link of links) {
-      const previous = collectionOrderCountMap.get(link.collectionId) ?? 0;
-      const productCount = productOrderCountMap.get(link.productId) ?? 0;
-      collectionOrderCountMap.set(link.collectionId, previous + productCount);
-    }
 
     return {
-      items: results.map((item) => {
-        const firstProduct = item.products[0]?.product;
-        const coverImage =
-          firstProduct?.thumbnail ??
-          (Array.isArray(firstProduct?.images)
-            ? firstProduct.images.find(
-                (image) => typeof image === 'string' && image.trim().length > 0,
-              ) ?? null
-            : null);
-        return {
-          ...item,
-          coverImage,
-          orderCount: collectionOrderCountMap.get(item.id) ?? 0,
-        };
-      }),
+      items: results.map((item) => ({
+        ...item,
+        coverImage:
+          item.coverMedia?.file?.s3Url ?? item.medias[0]?.file?.s3Url ?? null,
+        coverImageFileId:
+          item.coverMedia?.fileUploadId ?? item.medias[0]?.fileUploadId ?? null,
+        orderCount: orderCountByDesignId.get(item.id) ?? 0,
+      })),
       nextCursor,
     };
   }
 
   async moderate(
-    collectionId: string,
+    designId: string,
     dto: {
       status?: CollectionStatus;
       action?: 'UNPUBLISH' | 'REPUBLISH' | 'HARD_DELETE';
@@ -140,16 +131,20 @@ export class AdminCollectionsService {
     actorId: string,
     req: Request,
   ) {
-    const existing = await this.prisma.storeCollection.findUnique({
-      where: { id: collectionId },
+    const existing = await this.prisma.collection.findUnique({
+      where: { id: designId },
       select: {
         id: true,
+        domain: true,
         title: true,
         ownerId: true,
         status: true,
       },
     });
-    if (!existing) throw new NotFoundException('Collection not found');
+
+    if (!existing || existing.domain !== CollectionDomain.DESIGN) {
+      throw new NotFoundException('Design not found');
+    }
 
     const action =
       dto.action ??
@@ -171,8 +166,8 @@ export class AdminCollectionsService {
 
     const updated = await this.prisma.$transaction(async (tx) => {
       if (action === 'HARD_DELETE') {
-        const deleted = await tx.storeCollection.delete({
-          where: { id: collectionId },
+        const deleted = await tx.collection.delete({
+          where: { id: designId },
           select: {
             id: true,
             title: true,
@@ -184,8 +179,8 @@ export class AdminCollectionsService {
             id: uuidv4(),
             actorUserId: actorId,
             action: AdminAuditAction.ADMIN_COLLECTION_MODERATE,
-            targetType: 'StoreCollection',
-            targetId: collectionId,
+            targetType: 'Collection',
+            targetId: designId,
             previousState: {
               status: existing.status,
             },
@@ -208,8 +203,8 @@ export class AdminCollectionsService {
         };
       }
 
-      const collection = await tx.storeCollection.update({
-        where: { id: collectionId },
+      const design = await tx.collection.update({
+        where: { id: designId },
         data: updateData,
         select: {
           id: true,
@@ -224,8 +219,8 @@ export class AdminCollectionsService {
           id: uuidv4(),
           actorUserId: actorId,
           action: AdminAuditAction.ADMIN_COLLECTION_MODERATE,
-          targetType: 'StoreCollection',
-          targetId: collectionId,
+          targetType: 'Collection',
+          targetId: designId,
           previousState: {
             status: existing.status,
           },
@@ -242,7 +237,7 @@ export class AdminCollectionsService {
         },
       });
 
-      return collection;
+      return design;
     });
 
     if (
@@ -258,9 +253,9 @@ export class AdminCollectionsService {
         await this.notifications.create(existing.ownerId, NotificationType.ADMIN_ACTION, {
           actorId,
           payload: {
-            targetType: 'STORE_COLLECTION',
-            targetId: collectionId,
-            message: `Admin ${verb} your collection "${existing.title ?? 'Untitled'}".${reasonSuffix}`,
+            targetType: 'COLLECTION',
+            targetId: designId,
+            message: `Admin ${verb} your design "${existing.title ?? 'Untitled'}".${reasonSuffix}`,
             reason: reasonText,
           },
         });

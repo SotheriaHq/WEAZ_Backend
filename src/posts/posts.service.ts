@@ -336,7 +336,7 @@ export class PostsService {
             NotificationType.THREAD,
             {
               actorId: userId,
-              payload: { postId },
+              payload: { postId, targetType: 'POST' },
               dedupeMs: 5 * 60 * 1000,
             },
           );
@@ -353,9 +353,7 @@ export class PostsService {
           },
           select: { requesterId: true },
         });
-        const brandName =
-          post.user.brandFullName || post.user.username || 'A brand';
-        const message = `${brandName} received a new thread on a post.`;
+        const message = 'threaded post';
 
         const recipientIds = patchers
           .map((p) => p.requesterId)
@@ -369,6 +367,7 @@ export class PostsService {
               actorId: userId,
               payload: {
                 postId,
+                targetType: 'POST',
                 targetUrl: `/posts/${postId}`,
                 message,
               },
@@ -387,6 +386,7 @@ export class PostsService {
                   actorId: userId,
                   payload: {
                     postId,
+                    targetType: 'POST',
                     targetUrl: `/posts/${postId}`,
                     message,
                   },

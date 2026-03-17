@@ -26,6 +26,7 @@ import {
   QueryCustomOrdersDto,
   ReportCustomOrderIssueDto,
   RespondToCustomOrderExtensionDto,
+  UpdateDisplayChartPreferenceDto,
   VerifyCustomOrderPaymentDto,
 } from './dto/custom-orders.dto';
 
@@ -83,6 +84,22 @@ export class CustomOrdersBuyerController {
     @Query(new ValidationPipe({ transform: true, whitelist: true })) query: QueryCustomOrdersDto,
   ) {
     return this.ordersService.listBuyerOrders(req.user.id, query);
+  }
+
+  @Get('preferences/display-chart')
+  async getDisplayChartPreference(
+    @Req() req: Request & { user: { id: string } },
+  ) {
+    return this.ordersService.getDisplayChartPreference(req.user.id);
+  }
+
+  @Post('preferences/display-chart')
+  async updateDisplayChartPreference(
+    @Req() req: Request & { user: { id: string } },
+    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true }))
+    dto: UpdateDisplayChartPreferenceDto,
+  ) {
+    return this.ordersService.updateDisplayChartPreference(req.user.id, dto);
   }
 
   @Get(':id')

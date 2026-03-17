@@ -18,6 +18,7 @@ import { CustomOrdersService } from './custom-orders.service';
 import {
   AcceptCustomOrderDto,
   BrandRespondToCustomOrderExtensionCounterDto,
+  CreateExceptionReviewRequestDto,
   CreateCustomOrderExtensionRequestDto,
   QueryCustomOrdersDto,
   RejectCustomOrderDto,
@@ -113,5 +114,16 @@ export class CustomOrdersBrandController {
     dto: UpdateCustomOrderLifecycleStatusDto,
   ) {
     return this.service.updateLifecycleStatus(req.user.id, brandId, id, dto);
+  }
+
+  @Post(':id/exception-review-requests')
+  async createExceptionReviewRequest(
+    @Param('brandId') brandId: string,
+    @Param('id') id: string,
+    @Req() req: Request & { user: { id: string } },
+    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true }))
+    dto: CreateExceptionReviewRequestDto,
+  ) {
+    return this.service.createExceptionReviewRequest(req.user.id, brandId, id, dto);
   }
 }

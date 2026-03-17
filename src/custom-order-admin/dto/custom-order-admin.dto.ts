@@ -6,8 +6,10 @@ import {
   CustomOrderDisputeStatus,
   CustomOrderProgressStage,
   CustomOrderStatus,
+  Gender,
 } from '@prisma/client';
 import {
+  IsArray,
   IsBoolean,
   IsEnum,
   IsInt,
@@ -27,6 +29,45 @@ export class ReviewCustomFabricRuleBasisDto {
   @IsString()
   @MaxLength(500)
   moderationNotes?: string;
+}
+
+export class QueryAdminCustomFabricRuleBasesDto {
+  @IsOptional()
+  @Type(() => Boolean)
+  @IsBoolean()
+  includeBrandOnly?: boolean;
+}
+
+export class CreateAdminCustomFabricRuleBasisDto {
+  @IsString()
+  @MinLength(3)
+  @MaxLength(120)
+  label: string;
+
+  @IsArray()
+  @IsString({ each: true })
+  measurementKeys: string[];
+
+  @IsOptional()
+  @IsEnum(Gender)
+  gender?: Gender;
+}
+
+export class UpdateAdminCustomFabricRuleBasisDto {
+  @IsOptional()
+  @IsString()
+  @MinLength(3)
+  @MaxLength(120)
+  label?: string;
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  measurementKeys?: string[];
+
+  @IsOptional()
+  @IsEnum(Gender)
+  gender?: Gender;
 }
 
 export class QueryAdminCustomOrdersDto {
@@ -244,4 +285,42 @@ export class UpdateCustomOrderRetentionHoldDto {
   @IsOptional()
   @Type(() => Date)
   holdUntil?: Date;
+}
+
+export class QueryCustomOrderExceptionReviewsDto {
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  page?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  limit?: number;
+
+  @IsOptional()
+  @IsString()
+  brandId?: string;
+
+  @IsOptional()
+  @IsString()
+  status?: 'NEW' | 'IN_REVIEW' | 'APPROVED' | 'REJECTED' | 'EXPIRED';
+}
+
+export class DecideCustomOrderExceptionReviewDto {
+  @IsString()
+  decision: 'APPROVED' | 'REJECTED' | 'REQUEST_MORE_INFO';
+
+  @IsString()
+  @MinLength(3)
+  @MaxLength(1000)
+  rationale: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(50)
+  approvedQuoteTotal?: string;
 }

@@ -80,6 +80,16 @@ const formatCustomOrderCode = (customOrderId: unknown) => {
   return `#CO-${customOrderId.slice(0, 8).toUpperCase()}`;
 };
 
+const toContentLabel = (targetType: unknown): string => {
+  const normalizedType = String(targetType ?? 'content').toUpperCase();
+  if (normalizedType === 'COLLECTION_MEDIA') return 'design';
+  if (normalizedType === 'COLLECTION') return 'design';
+  if (normalizedType === 'POST') return 'post';
+  if (normalizedType === 'PRODUCT') return 'product';
+  if (normalizedType === 'USER') return 'profile';
+  return String(targetType ?? 'content').toLowerCase();
+};
+
 export interface NotificationConfig {
   type: NotificationType;
   schema: Joi.ObjectSchema;
@@ -248,7 +258,7 @@ export class NotificationRegistry {
             `${n.actor.firstName ?? ''} ${n.actor.lastName ?? ''}`.trim()
           : null;
         return actorName
-          ? `${actorName} patched your profile`
+          ? `${actorName} patched on your profile`
           : 'You have a new patch';
       },
     });
@@ -262,6 +272,7 @@ export class NotificationRegistry {
           id: Joi.string().optional(),
         }).optional(),
         targetType: Joi.string().optional(),
+        contentTitle: Joi.string().optional(),
         targetUrl: Joi.string().optional(),
         message: Joi.string().optional(),
       }),
@@ -274,10 +285,18 @@ export class NotificationRegistry {
           ? n.actor.username ||
             `${n.actor.firstName ?? ''} ${n.actor.lastName ?? ''}`.trim()
           : null;
+        const contentTitle =
+          typeof n.payload?.contentTitle === 'string' &&
+          n.payload.contentTitle.trim().length > 0
+            ? n.payload.contentTitle.trim()
+            : null;
         const tt =
           n.payload?.target?.type || n.payload?.targetType || 'content';
+        const contentLabel = toContentLabel(tt);
         return actorName
-          ? `${actorName} commented on your ${String(tt).toLowerCase()}`
+          ? contentTitle
+            ? `${actorName} commented on ${contentLabel} "${contentTitle}"`
+            : `${actorName} commented on ${contentLabel}`
           : 'New comment received';
       },
     });
@@ -290,6 +309,7 @@ export class NotificationRegistry {
           type: Joi.string().optional(),
           id: Joi.string().optional(),
         }).optional(),
+        contentTitle: Joi.string().optional(),
         postId: Joi.string().optional(),
         collectionId: Joi.string().optional(),
         targetUrl: Joi.string().optional(),
@@ -304,6 +324,11 @@ export class NotificationRegistry {
           ? n.actor.username ||
             `${n.actor.firstName ?? ''} ${n.actor.lastName ?? ''}`.trim()
           : null;
+        const contentTitle =
+          typeof n.payload?.contentTitle === 'string' &&
+          n.payload.contentTitle.trim().length > 0
+            ? n.payload.contentTitle.trim()
+            : null;
         const tt = n.payload?.target?.type
           ? n.payload.target.type
           : n.payload?.postId
@@ -311,8 +336,12 @@ export class NotificationRegistry {
             : n.payload?.collectionId
               ? 'COLLECTION'
               : 'content';
+        const contentLabel = toContentLabel(tt);
+
         return actorName
-          ? `${actorName} threaded your ${String(tt).toLowerCase()}`
+          ? contentTitle
+            ? `${actorName} threaded ${contentLabel} "${contentTitle}"`
+            : `${actorName} threaded ${contentLabel}`
           : 'New thread received';
       },
     });
@@ -337,12 +366,12 @@ export class NotificationRegistry {
         // Profile patch (user-to-brand)
         if (action === 'PROFILE_PATCHED') {
           return actorName
-            ? `${actorName} patched your profile`
+            ? `${actorName} patched on your profile`
             : 'Your profile received a patch';
         }
         if (action === 'PROFILE_UNPATCHED') {
           return actorName
-            ? `${actorName} unpatched your profile`
+            ? `${actorName} unpatched from your profile`
             : 'A user unpatched your profile';
         }
         // Collection collab (brand-to-collection)
@@ -355,7 +384,7 @@ export class NotificationRegistry {
         const targetType = n.payload?.target?.type;
         const patchLabel = targetType === 'USER' ? 'profile' : 'collection';
         return actorName
-          ? `${actorName} patched your ${patchLabel}`
+          ? `${actorName} patched on your ${patchLabel}`
           : `Your ${patchLabel} received a patch`;
       },
     });

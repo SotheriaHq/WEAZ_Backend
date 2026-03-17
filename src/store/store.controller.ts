@@ -172,6 +172,20 @@ export class StoreController {
     return this.storeService.unarchiveProduct(req.user.id, productId);
   }
 
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Post('products/:id/republish-request')
+  async requestProductRepublish(
+    @Param('id') productId: string,
+    @Body() body: { reason?: string },
+    @Req() req: any,
+  ) {
+    return this.storeService.requestProductRepublishApproval(
+      req.user.id,
+      productId,
+      body?.reason,
+    );
+  }
+
   // toggleFeatured removed — featuring is now admin-only via /admin/featured
 
   @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))

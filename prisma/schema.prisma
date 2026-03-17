@@ -361,7 +361,7 @@ enum CustomOrderActorType {
 }
 
 enum CustomOrderTimelineEventType {
-  OFFER_VERSION_LOCKED
+  CONFIGURATION_VERSION_LOCKED
   PRICE_PREVIEW_CREATED
   ORDER_CREATED
   PAYMENT_INITIALIZED
@@ -1545,7 +1545,7 @@ model Brand {
   ratingBreakdown Json?
 
   orders      Order[]
-  customOrderOffers CustomOrderOffer[]
+  customOrderConfigurations CustomOrderConfiguration[]
   customFabricRuleBases CustomFabricRuleBasis[]
   customOrders CustomOrder[]
   orderItems  OrderItem[]
@@ -1749,7 +1749,7 @@ model Order {
   @@index([paymentReference])
 }
 
-model CustomOrderOffer {
+model CustomOrderConfiguration {
   id                       String                    @id @default(uuid()) @db.Uuid
   brandId                  String                    @db.Uuid
   brand                    Brand                     @relation(fields: [brandId], references: [id], onDelete: Cascade)
@@ -1777,7 +1777,7 @@ model CustomOrderOffer {
   fabricSourcingMode       FabricSourcingMode
   notes                    String?
   currentVersion           Int                       @default(1)
-  versions                 CustomOrderOfferVersion[]
+  versions                 CustomOrderConfigurationVersion[]
   rules                    CustomFabricRule[]
   orders                   CustomOrder[]
   createdAt                DateTime                  @default(now())
@@ -1788,18 +1788,18 @@ model CustomOrderOffer {
   @@unique([sourceType, sourceId])
 }
 
-model CustomOrderOfferVersion {
-  id           String           @id @default(uuid()) @db.Uuid
-  offerId      String           @db.Uuid
-  offer        CustomOrderOffer @relation(fields: [offerId], references: [id], onDelete: Cascade)
-  version      Int
-  snapshotJson Json
-  createdById  String           @db.Uuid
-  createdAt    DateTime         @default(now())
-  orders       CustomOrder[]
+model CustomOrderConfigurationVersion {
+  id              String                   @id @default(uuid()) @db.Uuid
+  configurationId String                   @db.Uuid
+  configuration   CustomOrderConfiguration @relation(fields: [configurationId], references: [id], onDelete: Cascade)
+  version         Int
+  snapshotJson    Json
+  createdById     String                   @db.Uuid
+  createdAt       DateTime                 @default(now())
+  orders          CustomOrder[]
 
-  @@unique([offerId, version])
-  @@index([offerId, createdAt])
+  @@unique([configurationId, version])
+  @@index([configurationId, createdAt])
 }
 
 model CustomFabricRuleBasis {
@@ -1815,24 +1815,24 @@ model CustomFabricRuleBasis {
   reviewedAt      DateTime?
   createdAt       DateTime                    @default(now())
   updatedAt       DateTime                    @updatedAt
-  offers          CustomOrderOffer[]
+  configurations  CustomOrderConfiguration[]
 
   @@index([status, createdAt])
   @@index([brandId, status])
 }
 
 model CustomFabricRule {
-  id             String           @id @default(uuid()) @db.Uuid
-  offerId        String           @db.Uuid
-  offer          CustomOrderOffer @relation(fields: [offerId], references: [id], onDelete: Cascade)
-  priority       Int
-  conditionsJson Json
-  outputYards    Decimal          @db.Decimal(10, 2)
-  isFallback     Boolean          @default(false)
-  createdAt      DateTime         @default(now())
-  updatedAt      DateTime         @updatedAt
+  id              String                   @id @default(uuid()) @db.Uuid
+  configurationId String                   @db.Uuid
+  configuration   CustomOrderConfiguration @relation(fields: [configurationId], references: [id], onDelete: Cascade)
+  priority        Int
+  conditionsJson  Json
+  outputYards     Decimal                  @db.Decimal(10, 2)
+  isFallback      Boolean                  @default(false)
+  createdAt       DateTime                 @default(now())
+  updatedAt       DateTime                 @updatedAt
 
-  @@index([offerId, priority])
+  @@index([configurationId, priority])
 }
 
 model CustomOrder {
@@ -1847,10 +1847,10 @@ model CustomOrder {
   sourceSlugSnapshot            String?
   sourcePrimaryMediaUrlSnapshot String?
   sourceBrandNameSnapshot       String?
-  offerId                       String                    @db.Uuid
-  offer                         CustomOrderOffer          @relation(fields: [offerId], references: [id], onDelete: Restrict)
-  offerVersionId                String                    @db.Uuid
-  offerVersion                  CustomOrderOfferVersion   @relation(fields: [offerVersionId], references: [id], onDelete: Restrict)
+  configurationId               String                    @db.Uuid
+  configuration                 CustomOrderConfiguration          @relation(fields: [configurationId], references: [id], onDelete: Restrict)
+  configurationVersionId        String                    @db.Uuid
+  configurationVersion          CustomOrderConfigurationVersion   @relation(fields: [configurationVersionId], references: [id], onDelete: Restrict)
   status                        CustomOrderStatus         @default(DRAFT)
   paymentStatus                 PaymentStatus             @default(PENDING)
   paymentMethod                 PaymentMethod             @default(PENDING_SELECTION)
@@ -2027,8 +2027,8 @@ model MessageNotificationOutbox {
 model CustomOrderCheckoutIntent {
   id                    String        @id @default(uuid()) @db.Uuid
   buyerId               String        @db.Uuid
-  offerId               String        @db.Uuid
-  offerVersionId        String        @db.Uuid
+  configurationId       String        @db.Uuid
+  configurationVersionId String       @db.Uuid
   currency              String        @default("NGN")
   previewHash           String        @unique
   requestSnapshotJson   Json
@@ -2040,7 +2040,7 @@ model CustomOrderCheckoutIntent {
   orders                CustomOrder[]
 
   @@index([buyerId, expiresAt])
-  @@index([offerId, offerVersionId])
+  @@index([configurationId, configurationVersionId])
 }
 
 model CustomOrderProgressEvent {

@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   Patch,
@@ -21,16 +22,21 @@ import { ADMIN_PERMISSIONS } from 'src/admin/constants/permissions';
 import { CustomOrderAdminService } from './custom-order-admin.service';
 import {
   AdminCustomOrderReminderDto,
+  CreateAdminCustomFabricRuleBasisDto,
   EscalateCustomOrderRefundReviewDto,
+  QueryAdminCustomFabricRuleBasesDto,
   FlagCustomOrderRiskDto,
   QueryAdminCustomOrdersDto,
   QueryCustomOrderDisputesDto,
+  QueryCustomOrderExceptionReviewsDto,
   QueryCustomOrderLedgerAllocationsDto,
   QueryCustomOrderRefundReviewsDto,
   QueryCustomOrderRiskDashboardDto,
   QueryStaleCustomOrdersDto,
   ReviewCustomFabricRuleBasisDto,
   UpdateCustomOrderRetentionHoldDto,
+  DecideCustomOrderExceptionReviewDto,
+  UpdateAdminCustomFabricRuleBasisDto,
   UpdateCustomOrderDisputeDto,
 } from './dto/custom-order-admin.dto';
 
@@ -55,6 +61,40 @@ export class CustomOrderAdminController {
     dto: ReviewCustomFabricRuleBasisDto,
   ) {
     return this.service.reviewBasis(id, dto, req.user.id);
+  }
+
+  @Get('custom-fabric-rule-bases')
+  @RequirePermissions(ADMIN_PERMISSIONS.TAXONOMY_READ)
+  async listBases(
+    @Query(new ValidationPipe({ transform: true, whitelist: true })) query: QueryAdminCustomFabricRuleBasesDto,
+  ) {
+    return this.service.listBases(query);
+  }
+
+  @Post('custom-fabric-rule-bases')
+  @RequirePermissions(ADMIN_PERMISSIONS.TAXONOMY_WRITE)
+  async createBasis(
+    @Req() req: Request & { user: { id: string } },
+    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true }))
+    dto: CreateAdminCustomFabricRuleBasisDto,
+  ) {
+    return this.service.createBasis(dto, req.user.id);
+  }
+
+  @Patch('custom-fabric-rule-bases/:id')
+  @RequirePermissions(ADMIN_PERMISSIONS.TAXONOMY_WRITE)
+  async updateBasis(
+    @Param('id') id: string,
+    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true }))
+    dto: UpdateAdminCustomFabricRuleBasisDto,
+  ) {
+    return this.service.updateBasis(id, dto);
+  }
+
+  @Delete('custom-fabric-rule-bases/:id')
+  @RequirePermissions(ADMIN_PERMISSIONS.TAXONOMY_WRITE)
+  async deleteBasis(@Param('id') id: string) {
+    return this.service.deleteBasis(id);
   }
 
   @Get('custom-orders/summary')
@@ -99,6 +139,26 @@ export class CustomOrderAdminController {
     @Query(new ValidationPipe({ transform: true, whitelist: true })) query: QueryAdminCustomOrdersDto,
   ) {
     return this.service.listOrders(query);
+  }
+
+  @Get('custom-orders/exception-reviews')
+  @RequirePermissions(ADMIN_PERMISSIONS.MODERATION_READ)
+  async listExceptionReviews(
+    @Query(new ValidationPipe({ transform: true, whitelist: true })) query: QueryCustomOrderExceptionReviewsDto,
+  ) {
+    return this.service.listExceptionReviews(query);
+  }
+
+  @Post('custom-orders/:id/exception-reviews/:eventId/decide')
+  @RequirePermissions(ADMIN_PERMISSIONS.MODERATION_WRITE)
+  async decideExceptionReview(
+    @Param('id') id: string,
+    @Param('eventId') eventId: string,
+    @Req() req: Request & { user: { id: string } },
+    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true }))
+    dto: DecideCustomOrderExceptionReviewDto,
+  ) {
+    return this.service.decideExceptionReview(id, eventId, dto, req.user.id);
   }
 
   @Get('custom-orders/:id')

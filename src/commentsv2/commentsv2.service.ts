@@ -30,6 +30,12 @@ function escapeHtml(input: string): string {
     .replace(/'/g, '&#39;');
 }
 
+function truncatePreview(input: string, max = 84): string {
+  const text = input.trim();
+  if (text.length <= max) return text;
+  return `${text.slice(0, max - 1).trimEnd()}...`;
+}
+
 @Injectable()
 export class CommentsV2Service {
   constructor(
@@ -219,6 +225,8 @@ export class CommentsV2Service {
     // Notify target owner
     let ownerId: string | null = null;
     let targetUrl: string | null = null;
+    let targetDescriptor: string = 'content';
+    let targetTitle: string | null = null;
     let ownerProfile:
       | { id: string; type: UserType; brandFullName: string | null; username: string }
       | null = null;
@@ -228,17 +236,22 @@ export class CommentsV2Service {
           where: { id: targetId },
         });
         ownerId = post?.userId ?? null;
+        targetDescriptor = 'post';
       } else if (targetType === 'COLLECTION') {
         const coll = await this.prisma.collection.findUnique({
           where: { id: targetId },
         });
         ownerId = coll?.ownerId ?? null;
+        targetDescriptor = 'collection';
+        targetTitle = coll?.title ?? null;
       } else if (targetType === 'COLLECTION_MEDIA') {
         const media = await this.prisma.collectionMedia.findUnique({
           where: { id: targetId },
           include: { collection: true },
         });
         ownerId = media?.collection.ownerId ?? null;
+        targetDescriptor = 'design';
+        targetTitle = media?.collection?.title ?? null;
       }
 
       if (ownerId) {
@@ -275,9 +288,22 @@ export class CommentsV2Service {
       }
 
       if (ownerId && ownerId !== userId) {
+        const actorLabel = created.user?.username || 'Someone';
+        const ownerContentLabel = targetTitle
+          ? `${targetDescriptor} "${targetTitle}"`
+          : targetDescriptor;
+        const commentPreview = truncatePreview(contentRaw);
+
         await this.notifications.create(ownerId, NotificationType.COMMENT, {
           actorId: userId,
-          payload: { targetType, targetId, targetUrl },
+          payload: {
+            targetType,
+            targetId,
+            targetUrl,
+            contentTitle: targetTitle ?? undefined,
+            commentPreview,
+            message: `${actorLabel} commented on your ${ownerContentLabel}: "${commentPreview}"`,
+          },
         });
       }
 
@@ -292,12 +318,31 @@ export class CommentsV2Service {
           parentAuthorId !== userId &&
           parentAuthorId !== (ownerId ?? '')
         ) {
+          const actorLabel = created.user?.username || 'Someone';
+          const replyContentLabel = targetTitle
+            ? `"${targetTitle}"`
+            : `this ${targetDescriptor}`;
+          const parentCommentPreview = truncatePreview(parent.contentRaw ?? '');
+          const replyPreview = truncatePreview(contentRaw);
+          const parentContext = parentCommentPreview
+            ? ` Your comment: "${parentCommentPreview}".`
+            : '';
+
           await this.notifications.create(
             parentAuthorId,
             NotificationType.COMMENT,
             {
               actorId: userId,
-              payload: { targetType, targetId, parentId: created.parentId },
+              payload: {
+                targetType,
+                targetId,
+                targetUrl,
+                parentId: created.parentId,
+                contentTitle: targetTitle ?? undefined,
+                parentCommentPreview: parentCommentPreview || undefined,
+                commentPreview: replyPreview,
+                message: `${actorLabel} responded to your comment on ${replyContentLabel}: "${replyPreview}".${parentContext}`,
+              },
             },
           );
         }
@@ -318,15 +363,15 @@ export class CommentsV2Service {
         },
         select: { requesterId: true },
       });
-      const brandName =
-        ownerProfile.brandFullName || ownerProfile.username || 'A brand';
-      const targetLabel =
-        targetType === 'COLLECTION_MEDIA'
+      const targetLabel = targetTitle
+        ? `"${targetTitle}"`
+        : targetType === 'COLLECTION_MEDIA'
           ? 'a design'
           : targetType === 'COLLECTION'
             ? 'a collection'
             : 'a post';
-      const message = `${brandName} received a new comment on ${targetLabel}.`;
+      const commentPreview = truncatePreview(contentRaw);
+      const message = `commented on ${targetLabel}: "${commentPreview}"`;
 
       const recipientIds = patchers
         .map((p) => p.requesterId)
@@ -342,6 +387,8 @@ export class CommentsV2Service {
               targetType,
               targetId,
               targetUrl: targetUrl ?? undefined,
+              contentTitle: targetTitle ?? undefined,
+              commentPreview,
               message,
             },
             dedupeMs: 2 * 60 * 1000,
@@ -361,6 +408,8 @@ export class CommentsV2Service {
                   targetType,
                   targetId,
                   targetUrl: targetUrl ?? undefined,
+                  contentTitle: targetTitle ?? undefined,
+                  commentPreview,
                   message,
                 },
                 dedupeMs: 2 * 60 * 1000,

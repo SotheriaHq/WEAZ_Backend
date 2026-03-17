@@ -127,6 +127,8 @@ describe('CustomOrdersPaymentsService', () => {
       buyerPriceSummaryJson: { grandTotal: 1500 },
       currency: 'NGN',
     });
+    const activeAttemptExpiry = new Date(Date.now() + 60 * 60 * 1000);
+
     prisma.paymentAttempt.findFirst
       .mockResolvedValueOnce(null)
       .mockResolvedValueOnce({
@@ -141,7 +143,7 @@ describe('CustomOrdersPaymentsService', () => {
         authorizationUrl: 'https://authorize.test',
         bankAccount: null,
         nextAction: { type: 'REDIRECT' },
-        expiresAt: new Date('2026-03-13T10:00:00.000Z'),
+        expiresAt: activeAttemptExpiry,
       });
 
     const result = await service.initializePayment('buyer_1', 'co_reuse', {

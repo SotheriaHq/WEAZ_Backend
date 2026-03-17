@@ -23,13 +23,19 @@ import {
   MinLength,
 } from 'class-validator';
 
+export type CustomOrderChartFamily = 'UK' | 'US' | 'NIGERIA' | 'ASIA' | 'HYBRID_UK_NIGERIA';
+export type CustomOrderResolverPolicy =
+  | 'PRIMARY_ONLY'
+  | 'MAX_OF_BOTH'
+  | 'WEIGHTED_AVERAGE_TO_NEAREST_BAND';
+
 export class CustomOrderPricePreviewDto {
   @IsUUID()
-  offerId: string;
+  configurationId: string;
 
   @IsOptional()
   @IsUUID()
-  offerVersionId?: string;
+  configurationVersionId?: string;
 
   @IsObject()
   measurementValues: Record<string, number>;
@@ -46,6 +52,18 @@ export class CustomOrderPricePreviewDto {
   @IsString()
   @MaxLength(120)
   idempotencyKey?: string;
+
+  @IsOptional()
+  @IsString()
+  pricingChartFamily?: CustomOrderChartFamily;
+
+  @IsOptional()
+  @IsString()
+  displayChartFamily?: CustomOrderChartFamily;
+
+  @IsOptional()
+  @IsString()
+  resolverPolicy?: CustomOrderResolverPolicy;
 }
 
 export class CreateCustomOrderDto {
@@ -53,11 +71,11 @@ export class CreateCustomOrderDto {
   checkoutIntentId: string;
 
   @IsUUID()
-  offerId: string;
+  configurationId: string;
 
   @IsOptional()
   @IsUUID()
-  offerVersionId?: string;
+  configurationVersionId?: string;
 
   @IsObject()
   measurementValues: Record<string, number>;
@@ -78,6 +96,33 @@ export class CreateCustomOrderDto {
   @IsString()
   @MaxLength(120)
   idempotencyKey: string;
+
+  @IsOptional()
+  @IsBoolean()
+  noDirectMatchAcknowledged?: boolean;
+}
+
+export class UpdateDisplayChartPreferenceDto {
+  @IsString()
+  displayChartFamily: CustomOrderChartFamily;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  updatedAtMs?: number;
+}
+
+export class CreateExceptionReviewRequestDto {
+  @IsString()
+  @MinLength(5)
+  @MaxLength(500)
+  reason: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(50)
+  requestedQuoteTotal?: string;
 }
 
 export class InitializeCustomOrderPaymentDto {

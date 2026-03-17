@@ -17,8 +17,8 @@ describe('Custom-order admin reconciliation routes (e2e)', () => {
   const buyerId = uuidv4();
   const brandId = uuidv4();
   const basisId = uuidv4();
-  const offerId = uuidv4();
-  const offerVersionId = uuidv4();
+  const configurationId = uuidv4();
+  const configurationVersionId = uuidv4();
   const customOrderId = uuidv4();
   const payoutId = uuidv4();
   const allocationId = uuidv4();
@@ -113,13 +113,13 @@ describe('Custom-order admin reconciliation routes (e2e)', () => {
       },
     });
 
-    await prisma.customOrderOffer.create({
+    await prisma.customOrderConfiguration.create({
       data: {
-        id: offerId,
+        id: configurationId,
         brandId,
         sourceType: 'PRODUCT',
         sourceId: uuidv4(),
-        title: 'Custom Jacket Offer',
+        title: 'Custom Jacket Configuration',
         requiredMeasurementKeys: ['chest', 'waist'],
         requiredFreeformPointIds: [],
         fabricRuleBasisId: basisId,
@@ -136,12 +136,12 @@ describe('Custom-order admin reconciliation routes (e2e)', () => {
       },
     });
 
-    await prisma.customOrderOfferVersion.create({
+    await prisma.customOrderConfigurationVersion.create({
       data: {
-        id: offerVersionId,
-        offerId,
+        id: configurationVersionId,
+        configurationId,
         version: 1,
-        snapshotJson: { title: 'Custom Jacket Offer' },
+        snapshotJson: { title: 'Custom Jacket Configuration' },
         createdById: ownerId,
       },
     });
@@ -156,8 +156,8 @@ describe('Custom-order admin reconciliation routes (e2e)', () => {
         sourceTitleSnapshot: 'Custom Jacket',
         sourceSlugSnapshot: 'custom-jacket',
         sourceBrandNameSnapshot: 'Custom Order Brand',
-        offerId,
-        offerVersionId,
+        configurationId,
+        configurationVersionId,
         status: 'COMPLETED',
         paymentStatus: 'PAID',
         paymentMethod: 'PAYSTACK',
@@ -211,8 +211,8 @@ describe('Custom-order admin reconciliation routes (e2e)', () => {
     await prisma.customOrderLedgerAllocation.deleteMany({ where: { id: allocationId } });
     await prisma.payout.deleteMany({ where: { id: payoutId } });
     await prisma.customOrder.deleteMany({ where: { id: customOrderId } });
-    await prisma.customOrderOfferVersion.deleteMany({ where: { id: offerVersionId } });
-    await prisma.customOrderOffer.deleteMany({ where: { id: offerId } });
+    await prisma.customOrderConfigurationVersion.deleteMany({ where: { id: configurationVersionId } });
+    await prisma.customOrderConfiguration.deleteMany({ where: { id: configurationId } });
     await prisma.customFabricRuleBasis.deleteMany({ where: { id: basisId } });
     await prisma.brand.deleteMany({ where: { id: brandId } });
     await prisma.user.deleteMany({ where: { id: { in: [adminId, ownerId, buyerId] } } });

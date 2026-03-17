@@ -19,6 +19,7 @@ describe('CustomOrdersService', () => {
   let prisma: any;
   let sideEffects: any;
   let refundService: any;
+  let pricingService: any;
 
   const buildOrder = (overrides: Record<string, unknown> = {}) => ({
     id: 'co_1',
@@ -32,7 +33,7 @@ describe('CustomOrdersService', () => {
     sourceSlugSnapshot: 'custom-jacket',
     sourcePrimaryMediaUrlSnapshot: null,
     sourceBrandNameSnapshot: 'Threadly Atelier',
-    offerVersionId: 'offer_version_1',
+    configurationVersionId: 'configuration_version_1',
     buyerPriceSummaryJson: { grandTotal: 1500, currency: 'NGN' },
     internalPriceBreakdownJson: { subtotal: 1200 },
     measurementSnapshotJson: { chest: 102 },
@@ -54,13 +55,35 @@ describe('CustomOrdersService', () => {
 
   beforeEach(async () => {
     prisma = {
+      user: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
       brand: {
         findUnique: jest.fn(),
+      },
+      customOrderConfiguration: {
+        findUnique: jest.fn(),
+      },
+      customOrderCheckoutIntent: {
+        findUnique: jest.fn(),
+        upsert: jest.fn(),
+      },
+      measurementPoint: {
+        findMany: jest.fn(),
       },
       customOrder: {
         findFirst: jest.fn(),
       },
+      customOrderTimelineEvent: {
+        count: jest.fn(),
+      },
       $transaction: jest.fn(),
+    };
+
+    pricingService = {
+      buildPricePreview: jest.fn(),
+      validateConfigurationRules: jest.fn(),
     };
 
     sideEffects = {
@@ -78,10 +101,7 @@ describe('CustomOrdersService', () => {
         { provide: PrismaService, useValue: prisma },
         {
           provide: CustomOrderPricingService,
-          useValue: {
-            buildPricePreview: jest.fn(),
-            validateOfferRules: jest.fn(),
-          },
+          useValue: pricingService,
         },
         {
           provide: CustomOrderSideEffectsService,
@@ -599,5 +619,126 @@ describe('CustomOrdersService', () => {
         status: CustomOrderStatus.CLOSED,
       }),
     ).rejects.toThrow('CUSTOM_ORDER_INVALID_STATE_TRANSITION');
+  });
+
+  it('adds baseline measurement keys to preview requirements when no baseline registry rows are returned', async () => {
+    prisma.customOrderConfiguration.findUnique.mockResolvedValue({
+      id: 'configuration_1',
+      isActive: true,
+      baseProductionCharge: 100000,
+      fabricCostPerYard: 6000,
+      rushEnabled: false,
+      rushFee: null,
+      requiredMeasurementKeys: ['WOMEN_WAIST'],
+      requiredFreeformPointIds: [],
+      rules: [],
+      brand: { currency: 'NGN' },
+      versions: [{ id: 'configuration_version_1' }],
+    });
+    prisma.measurementPoint.findMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+    prisma.customOrderCheckoutIntent.findUnique.mockResolvedValue(null);
+    prisma.customOrderCheckoutIntent.upsert.mockResolvedValue({
+      id: 'intent_1',
+      expiresAt: new Date('2026-03-16T12:00:00.000Z'),
+    });
+
+    pricingService.validateConfigurationRules.mockReturnValue([]);
+    pricingService.buildPricePreview.mockReturnValue({
+      computedYards: 3.5,
+      matchedRule: { priority: 1, isFallback: true },
+      buyerPriceSummary: { grandTotal: 121000, currency: 'NGN' },
+    });
+
+    await service.createPricePreview('buyer_1', {
+      configurationId: 'configuration_1',
+      configurationVersionId: 'configuration_version_1',
+      measurementValues: {
+        WOMEN_HEIGHT: 170,
+        WOMEN_WEIGHT: 68,
+        WOMEN_SHOULDER_WIDTH: 40,
+        WOMEN_CHEST_FULL_BUST: 94,
+        WOMEN_WAIST: 76,
+        WOMEN_HIP: 102,
+        WOMEN_INSEAM: 78,
+        WOMEN_SLEEVE_LENGTH_LONG: 61,
+      },
+      rushSelected: false,
+      shippingAddress: null,
+    } as any);
+
+    expect(pricingService.buildPricePreview).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requiredMeasurementKeys: expect.arrayContaining([
+          'WOMEN_HEIGHT',
+          'WOMEN_WEIGHT',
+          'WOMEN_SHOULDER_WIDTH',
+          'WOMEN_CHEST_FULL_BUST',
+          'WOMEN_WAIST',
+          'WOMEN_HIP',
+          'WOMEN_INSEAM',
+          'WOMEN_SLEEVE_LENGTH_LONG',
+        ]),
+      }),
+    );
+  });
+
+  it('returns MANUAL_QUOTE_REQUIRED when deterministic chart inputs are incomplete', async () => {
+    prisma.customOrderConfiguration.findUnique.mockResolvedValue({
+      id: 'configuration_1',
+      isActive: true,
+      baseProductionCharge: 100000,
+      fabricCostPerYard: 6000,
+      rushEnabled: false,
+      rushFee: null,
+      requiredMeasurementKeys: ['WOMEN_WAIST'],
+      requiredFreeformPointIds: [],
+      rules: [],
+      brand: { currency: 'NGN' },
+      versions: [{ id: 'configuration_version_1' }],
+    });
+    prisma.measurementPoint.findMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+
+    const result = await service.createPricePreview('buyer_1', {
+      configurationId: 'configuration_1',
+      configurationVersionId: 'configuration_version_1',
+      measurementValues: {
+        WOMEN_WAIST: 76,
+      },
+      rushSelected: false,
+      shippingAddress: null,
+    } as any);
+
+    expect(result.data.quoteStatus).toBe('MANUAL_QUOTE_REQUIRED');
+    expect(result.data.checkoutIntentId).toBeNull();
+    expect(prisma.customOrderCheckoutIntent.upsert).not.toHaveBeenCalled();
+    expect(pricingService.buildPricePreview).not.toHaveBeenCalled();
+  });
+
+  it('stores and returns display chart preference in user notification settings', async () => {
+    prisma.user.findUnique
+      .mockResolvedValueOnce({ notificationSettings: null })
+      .mockResolvedValueOnce({
+        notificationSettings: {
+          customOrders: {
+            displayChartFamily: 'NIGERIA',
+            displayChartUpdatedAtMs: 12345,
+          },
+        },
+      });
+    prisma.user.update.mockResolvedValue({ id: 'buyer_1' });
+
+    await service.updateDisplayChartPreference('buyer_1', {
+      displayChartFamily: 'NIGERIA',
+      updatedAtMs: 12345,
+    });
+
+    const result = await service.getDisplayChartPreference('buyer_1');
+    expect(prisma.user.update).toHaveBeenCalled();
+    expect(result.data.displayChartFamily).toBe('NIGERIA');
+    expect(result.data.updatedAtMs).toBe(12345);
   });
 });
