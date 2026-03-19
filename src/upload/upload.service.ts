@@ -4,6 +4,7 @@ import {
   BadRequestException,
   ForbiddenException,
   Optional,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { FileUpload } from '@prisma/client';
@@ -591,8 +592,30 @@ export class UploadService {
       await this.s3.send(command);
       return true;
     } catch (err) {
-      this.logger.warn('S3 headObject failed for key:', key, err);
-      return false;
+      const details = this.summarizeAwsError(err);
+      const errorCode = String(details.code ?? '').toUpperCase();
+      const errorName = String(details.name ?? '').toUpperCase();
+      const statusCode = details.httpStatusCode;
+      const message = String(details.message ?? '').toUpperCase();
+
+      const isNotFound =
+        statusCode === 404 ||
+        errorCode === 'NOTFOUND' ||
+        errorCode === 'NOSUCHKEY' ||
+        errorName === 'NOTFOUND' ||
+        errorName === 'NOSUCHKEY' ||
+        message.includes('NOT FOUND') ||
+        message.includes('NO SUCH KEY');
+
+      if (isNotFound) {
+        this.logger.warn('S3 object was not found for key:', key);
+        return false;
+      }
+
+      this.logger.error('S3 headObject failed for key:', key, details as any);
+      throw new ServiceUnavailableException(
+        'Storage is temporarily unavailable. Please retry in a moment.',
+      );
     }
   }
 
