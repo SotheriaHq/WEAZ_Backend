@@ -135,6 +135,10 @@ export class CreateCollectionDto {
   customMeasurementKeys?: string[];
 
   @IsOptional()
+  @IsBoolean()
+  customOrderEnabled?: boolean;
+
+  @IsOptional()
   @IsArray()
   @IsString({ each: true })
   customFreeformPointIds?: string[];
@@ -240,6 +244,10 @@ export class CollectionMetadataDto {
   @IsArray()
   @IsString({ each: true })
   customMeasurementKeys?: string[];
+
+  @IsOptional()
+  @IsBoolean()
+  customOrderEnabled?: boolean;
 
   @IsOptional()
   @IsArray()

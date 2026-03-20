@@ -16,7 +16,15 @@ import { Throttle } from '@nestjs/throttler';
 import { JwtAuthGuard } from 'src/auth/guard/jwt-auth.guard';
 import { UserTypeGuard } from 'src/auth/guard/user-type.guard';
 import { MessagingService } from '../messaging.service';
-import { MarkThreadReadDto, QueryMessagesDto, QueryThreadSummaryDto, SendMessageDto } from '../dto/messaging.dto';
+import {
+  MarkThreadReadDto,
+  OpenOrderDisputeDto,
+  QueryMessagesDto,
+  QueryThreadSummaryDto,
+  RespondOrderExtensionDto,
+  SendMessageDto,
+  UpdateThreadPreferencesDto,
+} from '../dto/messaging.dto';
 
 @Controller()
 @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.REGULAR))
@@ -64,6 +72,21 @@ export class OrderMessagingBuyerController {
     );
   }
 
+  @Post(['orders/:orderId/messages/preferences', 'store/orders/:orderId/messages/preferences'])
+  async updatePreferences(
+    @Req() req: Request & { user: { id: string } },
+    @Param('orderId') orderId: string,
+    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true })) dto: UpdateThreadPreferencesDto,
+  ) {
+    return this.messaging.updateThreadPreferencesForContext(
+      req.user.id,
+      'STANDARD_ORDER',
+      orderId,
+      'BUYER',
+      dto,
+    );
+  }
+
   @Get(['orders/:orderId/messages/summary', 'store/orders/:orderId/messages/summary'])
   async summary(
     @Req() req: Request & { user: { id: string } },
@@ -77,5 +100,24 @@ export class OrderMessagingBuyerController {
       'BUYER',
       query,
     );
+  }
+
+  @Post(['orders/:orderId/messages/extension-requests/:requestMessageId/respond', 'store/orders/:orderId/messages/extension-requests/:requestMessageId/respond'])
+  async respondToExtension(
+    @Req() req: Request & { user: { id: string } },
+    @Param('orderId') orderId: string,
+    @Param('requestMessageId') requestMessageId: string,
+    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true })) dto: RespondOrderExtensionDto,
+  ) {
+    return this.messaging.respondToOrderExtensionForBuyer(req.user.id, orderId, requestMessageId, dto);
+  }
+
+  @Post(['orders/:orderId/messages/disputes', 'store/orders/:orderId/messages/disputes'])
+  async openDispute(
+    @Req() req: Request & { user: { id: string } },
+    @Param('orderId') orderId: string,
+    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true })) dto: OpenOrderDisputeDto,
+  ) {
+    return this.messaging.openOrderDisputeForBuyer(req.user.id, orderId, dto);
   }
 }

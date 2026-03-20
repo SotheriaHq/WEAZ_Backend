@@ -115,6 +115,10 @@ export class UpdateCollectionDto {
   customMeasurementKeys?: string[];
 
   @IsOptional()
+  @IsBoolean()
+  customOrderEnabled?: boolean;
+
+  @IsOptional()
   @IsArray()
   @IsString({ each: true })
   customFreeformPointIds?: string[];

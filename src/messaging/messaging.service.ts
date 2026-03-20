@@ -4,11 +4,14 @@ import {
   HttpException,
   HttpStatus,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import {
+  AdminDisputeStatus,
   AdminAuditAction,
   CustomOrderStatus,
+  DisputeType,
   MessageContextType,
   MessageKind,
   MessageParticipantRole,
@@ -18,9 +21,16 @@ import {
   Prisma,
   Role,
 } from '@prisma/client';
+import { randomUUID } from 'crypto';
 import { Request } from 'express';
 import { AdminAuditService } from 'src/admin/services/admin-audit.service';
+import { CustomOrdersService } from 'src/custom-orders/custom-orders.service';
 import { PrismaService } from 'src/prisma/prisma.service';
+import {
+  CreateCustomOrderExtensionRequestDto,
+  ReportCustomOrderIssueDto,
+  RespondToCustomOrderExtensionDto,
+} from 'src/custom-orders/dto/custom-orders.dto';
 import { MessagingAttachmentService } from './messaging-attachment.service';
 import { MessagingPolicyService } from './messaging-policy.service';
 import { MessagingQueryService } from './messaging-query.service';
@@ -29,13 +39,23 @@ import {
   AdminSystemMessageDto,
   BulkQueryThreadSummaryDto,
   MarkThreadReadDto,
+  OpenCustomOrderDisputeDto,
+  OpenOrderDisputeDto,
+  QueryInboxDto,
   QueryMessagesDto,
   QueryThreadSummaryDto,
+  RequestCustomOrderExtensionDto,
+  RequestOrderExtensionDto,
+  RespondCustomOrderExtensionDto,
+  RespondOrderExtensionDto,
   SendMessageDto,
+  UpdateThreadPreferencesDto,
 } from './dto/messaging.dto';
 
 @Injectable()
 export class MessagingService {
+  private readonly logger = new Logger(MessagingService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly adminAudit: AdminAuditService,
@@ -43,6 +63,7 @@ export class MessagingService {
     private readonly policy: MessagingPolicyService,
     private readonly query: MessagingQueryService,
     private readonly sideEffects: MessagingSideEffectsService,
+    private readonly customOrdersService: CustomOrdersService,
   ) {}
 
   async listCustomOrderMessagesForBuyer(actorId: string, customOrderId: string, queryDto: QueryMessagesDto) {
@@ -77,6 +98,24 @@ export class MessagingService {
   async listOrderMessagesForBrand(actorId: string, brandId: string, orderId: string, queryDto: QueryMessagesDto) {
     const resolved = await this.resolveStandardOrderContext(orderId, actorId, 'BRAND_OWNER', brandId);
     const thread = await this.getOrCreateThreadForOrder(resolved, true);
+    return {
+      ...(await this.query.getMessages(thread.id, queryDto, { includeModerated: false })),
+      thread,
+    };
+  }
+
+  async listThreadMessagesForActor(actorId: string, threadId: string, queryDto: QueryMessagesDto) {
+    const thread = await this.prisma.messageThread.findFirst({
+      where: {
+        id: threadId,
+        participants: { some: { userId: actorId } },
+      },
+      include: { participants: true },
+    });
+    if (!thread) {
+      throw new ForbiddenException('Thread access denied');
+    }
+
     return {
       ...(await this.query.getMessages(thread.id, queryDto, { includeModerated: false })),
       thread,
@@ -147,6 +186,754 @@ export class MessagingService {
     });
   }
 
+  async sendMessageToThread(actorId: string, threadId: string, dto: SendMessageDto, idempotencyKey?: string) {
+    if (!idempotencyKey || !idempotencyKey.trim()) {
+      throw new BadRequestException('Idempotency-Key header is required');
+    }
+
+    const thread = await this.prisma.messageThread.findFirst({
+      where: {
+        id: threadId,
+        participants: { some: { userId: actorId } },
+      },
+      include: { participants: true },
+    });
+    if (!thread) {
+      throw new ForbiddenException('Thread access denied');
+    }
+
+    this.policy.assertCanSend(thread.status);
+    const actorParticipant = thread.participants.find((participant) => participant.userId === actorId);
+    if (!actorParticipant) {
+      throw new ForbiddenException('Thread access denied');
+    }
+
+    const bodyText = (dto.bodyText ?? '').trim();
+    const attachments = await this.attachments.resolveValidatedAttachments(
+      actorId,
+      dto.attachmentFileIds,
+    );
+    if (!bodyText && attachments.length === 0) {
+      throw new BadRequestException('bodyText is required when no attachments are provided');
+    }
+
+    const existing = await this.prisma.message.findFirst({
+      where: {
+        threadId: thread.id,
+        senderUserId: actorId,
+        clientMessageId: dto.clientMessageId,
+      },
+      include: {
+        attachments: {
+          include: {
+            file: {
+              select: {
+                id: true,
+                s3Url: true,
+                originalName: true,
+                mimeType: true,
+                size: true,
+              },
+            },
+          },
+        },
+        sender: {
+          select: {
+            id: true,
+            username: true,
+            firstName: true,
+            lastName: true,
+            profileImage: true,
+          },
+        },
+      },
+    });
+
+    if (existing) {
+      return {
+        statusCode: 200,
+        replay: true,
+        thread,
+        message: existing,
+      };
+    }
+
+    const message = await this.prisma.message.create({
+      data: {
+        threadId: thread.id,
+        senderUserId: actorId,
+        senderRole: actorParticipant.role,
+        kind: MessageKind.USER,
+        clientMessageId: dto.clientMessageId,
+        bodyText: bodyText || null,
+        attachments: {
+          create: attachments,
+        },
+      },
+      include: {
+        attachments: {
+          include: {
+            file: {
+              select: {
+                id: true,
+                s3Url: true,
+                originalName: true,
+                mimeType: true,
+                size: true,
+              },
+            },
+          },
+        },
+        sender: {
+          select: {
+            id: true,
+            username: true,
+            firstName: true,
+            lastName: true,
+            profileImage: true,
+          },
+        },
+      },
+    });
+
+    await this.prisma.messageThread.update({
+      where: { id: thread.id },
+      data: {
+        lastMessageId: message.id,
+        lastMessageAt: message.createdAt,
+        lastVisibleMessageAt: message.createdAt,
+        lastMessagePreview: bodyText ? bodyText.slice(0, 200) : '[Attachment]',
+        lastSenderUserId: actorId,
+      },
+    });
+
+    await this.prisma.messageThreadParticipant.upsert({
+      where: { threadId_userId: { threadId: thread.id, userId: actorId } },
+      update: {
+        role: actorParticipant.role,
+        lastReadMessageId: message.id,
+        lastReadAt: message.createdAt,
+      },
+      create: {
+        threadId: thread.id,
+        userId: actorId,
+        role: actorParticipant.role,
+        lastReadMessageId: message.id,
+        lastReadAt: message.createdAt,
+      },
+    });
+
+    const recipients = thread.participants
+      .filter((entry) => entry.userId !== actorId)
+      .map((entry) => ({ id: entry.userId, role: entry.role }));
+
+    if (recipients.length > 0) {
+      await this.prisma.messageNotificationOutbox.createMany({
+        data: recipients.map((recipient) => ({
+          threadId: thread.id,
+          messageId: message.id,
+          recipientId: recipient.id,
+          notificationType: NotificationType.MESSAGE_RECEIVED,
+          payloadJson: {
+            threadId: thread.id,
+            messageId: message.id,
+            contextType: thread.contextType,
+            orderId: thread.orderId,
+            customOrderId: thread.customOrderId,
+            targetUrl: this.resolveThreadTargetUrl(
+              thread.contextType,
+              thread.orderId,
+              thread.customOrderId,
+              thread.brandId,
+              recipient.role,
+              thread.id,
+              message.id,
+            ),
+          } as Prisma.InputJsonValue,
+        })),
+      });
+    }
+
+    const recipientIds = thread.participants.map((entry) => entry.userId);
+    await this.sideEffects.dispatchMessageOutboxForMessage(message.id);
+    this.sideEffects.emitMessageCreated(thread, recipientIds, {
+      id: message.id,
+      senderRole: message.senderRole,
+      createdAt: message.createdAt,
+    });
+    this.sideEffects.emitThreadInvalidation(thread, recipientIds);
+
+    return {
+      statusCode: 201,
+      replay: false,
+      thread,
+      message,
+    };
+  }
+
+  async requestOrderExtensionForBrand(actorId: string, brandId: string, orderId: string, dto: RequestOrderExtensionDto) {
+    const resolved = await this.resolveStandardOrderContext(orderId, actorId, 'BRAND_OWNER', brandId);
+    if (!resolved.buyerId) {
+      throw new BadRequestException('Order has no linked buyer account for message-based extension requests');
+    }
+
+    const existingThread = await this.getThreadByContext(MessageContextType.STANDARD_ORDER, orderId);
+    if (existingThread) {
+      const existingRequests = await this.prisma.message.findMany({
+        where: {
+          threadId: existingThread.id,
+          senderRole: MessageParticipantRole.SYSTEM,
+        },
+        select: { metadataJson: true },
+      });
+
+      const alreadyRequested = existingRequests.some((entry) => {
+        const metadata = (entry.metadataJson as Record<string, unknown> | null) ?? null;
+        return String(metadata?.eventType || '') === 'STANDARD_ORDER_EXTENSION_REQUESTED';
+      });
+      if (alreadyRequested) {
+        throw new BadRequestException('Brand can only request one extension per order');
+      }
+    }
+
+
+    const message = await this.createActionMessageForContext({
+      contextType: MessageContextType.STANDARD_ORDER,
+      contextId: orderId,
+      actorId,
+      actorRole: MessageParticipantRole.BRAND_OWNER,
+      threadStatus: this.policy.resolveThreadStatusForOrder(resolved.status),
+      brandId: resolved.brandId,
+      buyerId: resolved.buyerId,
+      brandOwnerUserId: resolved.brandOwnerUserId,
+      bodyText: `Brand requested an extension of ${dto.requestedExtraDays} day(s).`,
+      metadata: {
+        eventType: 'STANDARD_ORDER_EXTENSION_REQUESTED',
+        requestedExtraDays: dto.requestedExtraDays,
+        reason: dto.reason.trim(),
+      },
+      origin: 'BRAND',
+    });
+
+    return {
+      statusCode: 201,
+      message: 'Order extension request posted to thread',
+      requestMessageId: message.id,
+    };
+  }
+
+  async getInboxForActor(actorId: string, queryDto: QueryInboxDto) {
+    const limit = Math.min(Math.max(queryDto.limit ?? 20, 1), 100);
+    const filter = queryDto.filter ?? 'all';
+    const contextTypeFilter = queryDto.contextType ?? 'all';
+    const q = String(queryDto.q ?? '').trim();
+    const cursorDate = queryDto.cursorLastMessageAt ? new Date(queryDto.cursorLastMessageAt) : null;
+
+    const threadWhere: Prisma.MessageThreadWhereInput = {
+      participants: {
+        some: {
+          userId: actorId,
+          ...(filter === 'archived'
+            ? { archivedAt: { not: null } }
+            : { archivedAt: null }),
+        },
+      },
+      ...(contextTypeFilter !== 'all' ? { contextType: contextTypeFilter as MessageContextType } : {}),
+      ...(q
+        ? {
+            OR: [
+              { lastMessagePreview: { contains: q, mode: 'insensitive' } },
+              {
+                messages: {
+                  some: {
+                    bodyText: { contains: q, mode: 'insensitive' },
+                  },
+                },
+              },
+              {
+                participants: {
+                  some: {
+                    user: {
+                      OR: [
+                        { username: { contains: q, mode: 'insensitive' } },
+                        { firstName: { contains: q, mode: 'insensitive' } },
+                        { lastName: { contains: q, mode: 'insensitive' } },
+                      ],
+                    },
+                  },
+                },
+              },
+            ],
+          }
+        : {}),
+      ...(cursorDate
+        ? {
+            OR: [
+              { lastMessageAt: { lt: cursorDate } },
+              {
+                AND: [
+                  { lastMessageAt: cursorDate },
+                  { id: { lt: queryDto.cursorThreadId ?? '' } },
+                ],
+              },
+            ],
+          }
+        : {}),
+    };
+
+    const threads = await this.prisma.messageThread.findMany({
+      where: threadWhere,
+      orderBy: [{ lastMessageAt: 'desc' }, { id: 'desc' }],
+      take: limit + 1,
+      include: {
+        participants: {
+          select: {
+            userId: true,
+            role: true,
+            mutedUntil: true,
+            archivedAt: true,
+            user: {
+              select: {
+                id: true,
+                username: true,
+                firstName: true,
+                lastName: true,
+                profileImage: true,
+              },
+            },
+          },
+        },
+      },
+    });
+
+    const hasNextPage = threads.length > limit;
+    const sliced = hasNextPage ? threads.slice(0, -1) : threads;
+    const threadIds = sliced.map((thread) => thread.id);
+    const summaries = threadIds.length > 0
+      ? await this.query.getSummariesForActor(threadIds, actorId, true)
+      : {};
+
+    const meRole = await this.prisma.messageThreadParticipant.findMany({
+      where: { threadId: { in: threadIds }, userId: actorId },
+      select: { threadId: true, role: true },
+    });
+    const roleByThread = new Map(meRole.map((r) => [r.threadId, r.role]));
+
+    const items = sliced
+      .map((thread) => {
+        const summary = summaries[thread.id];
+        const counterpart = thread.participants.find((p) => p.userId !== actorId);
+        const actorRole = roleByThread.get(thread.id) ?? counterpart?.role ?? MessageParticipantRole.BUYER;
+
+        const isInquiry =
+          thread.contextType === MessageContextType.CUSTOM_ORDER &&
+          !thread.customOrderId &&
+          !thread.orderId &&
+          String((thread.subjectSnapshotJson as any)?.type || '').toUpperCase() === 'CUSTOM_FIT_INQUIRY';
+
+        const targetUrl = this.resolveThreadTargetUrl(
+          thread.contextType,
+          thread.orderId,
+          thread.customOrderId,
+          thread.brandId,
+          actorRole,
+          thread.id,
+          null,
+        );
+
+        return {
+          threadId: thread.id,
+          contextType: isInquiry ? 'INQUIRY' : thread.contextType,
+          orderId: thread.orderId,
+          customOrderId: thread.customOrderId,
+          inquiryId: isInquiry ? (thread.subjectSnapshotJson as any)?.inquiryId ?? null : null,
+          title:
+            isInquiry
+              ? `Inquiry #${String((thread.subjectSnapshotJson as any)?.inquiryId || thread.id).slice(0, 8).toUpperCase()}`
+              : thread.contextType === MessageContextType.STANDARD_ORDER
+                ? `Order #${String(thread.orderId || thread.id).slice(0, 8).toUpperCase()}`
+                : `Custom #${String(thread.customOrderId || thread.id).slice(0, 8).toUpperCase()}`,
+          subtitle: thread.lastMessagePreview || 'No messages yet',
+          participant: counterpart?.user
+            ? {
+                id: counterpart.user.id,
+                username: counterpart.user.username,
+                firstName: counterpart.user.firstName,
+                lastName: counterpart.user.lastName,
+                profileImage: counterpart.user.profileImage,
+              }
+            : null,
+          lastMessageAt: thread.lastMessageAt,
+          createdAt: thread.createdAt,
+          unreadCount: Number(summary?.unreadCount ?? 0),
+          hasUnread: Boolean(summary?.hasUnread),
+          mutedUntil: summary?.mutedUntil ?? null,
+          archivedAt: summary?.archivedAt ?? null,
+          targetUrl,
+        };
+      })
+      .filter((item) => (filter === 'unread' ? item.hasUnread || item.unreadCount > 0 : true));
+
+    const endCursor =
+      items.length > 0
+        ? {
+            cursorLastMessageAt: items[items.length - 1].lastMessageAt || items[items.length - 1].createdAt,
+            cursorThreadId: items[items.length - 1].threadId,
+          }
+        : null;
+
+    return {
+      items,
+      hasNextPage,
+      endCursor,
+    };
+  }
+
+  async resolveThreadForActor(actorId: string, threadId: string) {
+    const participant = await this.prisma.messageThreadParticipant.findUnique({
+      where: { threadId_userId: { threadId, userId: actorId } },
+      include: {
+        thread: {
+          select: {
+            id: true,
+            contextType: true,
+            orderId: true,
+            customOrderId: true,
+            brandId: true,
+            subjectSnapshotJson: true,
+          },
+        },
+      },
+    });
+
+    if (!participant) {
+      throw new ForbiddenException('Thread access denied');
+    }
+
+    const thread = participant.thread;
+    const targetUrl = this.resolveThreadTargetUrl(
+      thread.contextType,
+      thread.orderId,
+      thread.customOrderId,
+      thread.brandId,
+      participant.role,
+      thread.id,
+      null,
+    );
+
+    return {
+      threadId: thread.id,
+      contextType: thread.contextType,
+      orderId: thread.orderId,
+      customOrderId: thread.customOrderId,
+      inquiryType: String((thread.subjectSnapshotJson as any)?.type || ''),
+      targetUrl,
+    };
+  }
+
+  async markThreadReadById(actorId: string, threadId: string, dto: MarkThreadReadDto) {
+    const participant = await this.prisma.messageThreadParticipant.findUnique({
+      where: { threadId_userId: { threadId, userId: actorId } },
+      include: {
+        thread: {
+          include: { participants: true },
+        },
+      },
+    });
+
+    if (!participant) {
+      throw new ForbiddenException('Thread access denied');
+    }
+
+    const upToMessage = dto.upToMessageId
+      ? await this.prisma.message.findFirst({
+          where: { id: dto.upToMessageId, threadId },
+          select: { id: true, createdAt: true },
+        })
+      : await this.prisma.message.findFirst({
+          where: { threadId },
+          orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+          select: { id: true, createdAt: true },
+        });
+
+    await this.prisma.messageThreadParticipant.update({
+      where: { threadId_userId: { threadId, userId: actorId } },
+      data: {
+        lastReadMessageId: upToMessage?.id ?? null,
+        lastReadAt: upToMessage?.createdAt ?? new Date(),
+      },
+    });
+
+    this.sideEffects.emitThreadInvalidation(participant.thread, [actorId]);
+    this.sideEffects.emitMessageRead(participant.thread as any, actorId, upToMessage?.id ?? null);
+
+    return {
+      success: true,
+      threadId,
+      lastReadMessageId: upToMessage?.id ?? null,
+    };
+  }
+
+  async respondToOrderExtensionForBuyer(
+    actorId: string,
+    orderId: string,
+    requestMessageId: string,
+    dto: RespondOrderExtensionDto,
+  ) {
+    const resolved = await this.resolveStandardOrderContext(orderId, actorId, 'BUYER');
+    if (dto.response === 'COUNTERED' && !dto.counterDays) {
+      throw new BadRequestException('Counter response requires counterDays');
+    }
+
+    const thread = await this.getThreadByContext(MessageContextType.STANDARD_ORDER, orderId);
+    if (!thread) {
+      throw new NotFoundException('Message thread not found for this order');
+    }
+
+    const requestMessage = await this.prisma.message.findFirst({
+      where: {
+        id: requestMessageId,
+        threadId: thread.id,
+        kind: MessageKind.SYSTEM,
+      },
+      select: { id: true, metadataJson: true },
+    });
+    if (!requestMessage) {
+      throw new NotFoundException('Extension request reference was not found in this order thread');
+    }
+
+    const metadata = (requestMessage.metadataJson as Record<string, unknown> | null) ?? {};
+    if (String(metadata.eventType || '') !== 'STANDARD_ORDER_EXTENSION_REQUESTED') {
+      throw new BadRequestException('Referenced message is not an order extension request');
+    }
+
+    const responseLabel = dto.response === 'COUNTERED'
+      ? `countered with ${dto.counterDays} day(s)`
+      : dto.response.toLowerCase();
+
+    const message = await this.createActionMessageForContext({
+      contextType: MessageContextType.STANDARD_ORDER,
+      contextId: orderId,
+      actorId,
+      actorRole: MessageParticipantRole.BUYER,
+      threadStatus: this.policy.resolveThreadStatusForOrder(resolved.status),
+      brandId: resolved.brandId,
+      buyerId: resolved.buyerId,
+      brandOwnerUserId: resolved.brandOwnerUserId,
+      bodyText: `Buyer ${responseLabel} the extension request.`,
+      metadata: {
+        eventType: 'STANDARD_ORDER_EXTENSION_RESPONDED',
+        response: dto.response,
+        counterDays: dto.counterDays ?? null,
+        note: dto.note?.trim() || null,
+        requestMessageId,
+      },
+      origin: 'BUYER',
+    });
+
+    return {
+      statusCode: 200,
+      message: 'Order extension response posted to thread',
+      messageId: message.id,
+    };
+  }
+
+  async openOrderDisputeForBuyer(actorId: string, orderId: string, dto: OpenOrderDisputeDto) {
+    const resolved = await this.resolveStandardOrderContext(orderId, actorId, 'BUYER');
+    return this.openStandardOrderDispute(
+      actorId,
+      resolved,
+      dto.description,
+      MessageParticipantRole.BUYER,
+      'BUYER',
+    );
+  }
+
+  async openOrderDisputeForBrand(actorId: string, brandId: string, orderId: string, dto: OpenOrderDisputeDto) {
+    const resolved = await this.resolveStandardOrderContext(orderId, actorId, 'BRAND_OWNER', brandId);
+    return this.openStandardOrderDispute(
+      actorId,
+      resolved,
+      dto.description,
+      MessageParticipantRole.BRAND_OWNER,
+      'BRAND',
+    );
+  }
+
+  async requestCustomOrderExtensionForBrand(
+    actorId: string,
+    brandId: string,
+    customOrderId: string,
+    dto: RequestCustomOrderExtensionDto,
+  ) {
+    const resolved = await this.resolveCustomOrderContext(customOrderId, actorId, 'BRAND_OWNER', brandId);
+
+    const result = await this.customOrdersService.createExtensionRequest(
+      actorId,
+      brandId,
+      customOrderId,
+      dto as CreateCustomOrderExtensionRequestDto,
+    );
+
+    const requestId =
+      (result as any)?.data?.extensionRequests?.[0]?.id ||
+      (result as any)?.data?.extensionRequests
+        ?.slice()
+        ?.sort((a: any, b: any) => +new Date(b?.createdAt || 0) - +new Date(a?.createdAt || 0))?.[0]?.id ||
+      null;
+
+    const message = await this.createActionMessageForContext({
+      contextType: MessageContextType.CUSTOM_ORDER,
+      contextId: customOrderId,
+      actorId,
+      actorRole: MessageParticipantRole.BRAND_OWNER,
+      threadStatus: this.policy.resolveThreadStatusForCustomOrder(resolved.status),
+      brandId: resolved.brandId,
+      buyerId: resolved.buyerId,
+      brandOwnerUserId: resolved.brandOwnerUserId,
+      bodyText: `Brand requested ${dto.requestedExtraDays} extra day(s) for ${dto.targetType.toLowerCase()}.`,
+      metadata: {
+        eventType: 'CUSTOM_ORDER_EXTENSION_REQUESTED',
+        requestId,
+        targetType: dto.targetType,
+        requestedExtraDays: dto.requestedExtraDays,
+        reason: dto.reason.trim(),
+      },
+      origin: 'BRAND',
+    });
+
+    return {
+      ...result,
+      messageThreadEventId: message.id,
+      extensionRequestId: requestId,
+    };
+  }
+
+  async respondToCustomOrderExtensionForBuyer(
+    actorId: string,
+    customOrderId: string,
+    requestId: string,
+    dto: RespondCustomOrderExtensionDto,
+  ) {
+    const resolved = await this.resolveCustomOrderContext(customOrderId, actorId, 'BUYER');
+
+    const result = await this.customOrdersService.respondToExtension(
+      actorId,
+      customOrderId,
+      requestId,
+      dto as RespondToCustomOrderExtensionDto,
+    );
+
+    const responseLabel = dto.response === 'COUNTERED'
+      ? `countered with ${dto.counterDays} day(s)`
+      : dto.response.toLowerCase();
+
+    const message = await this.createActionMessageForContext({
+      contextType: MessageContextType.CUSTOM_ORDER,
+      contextId: customOrderId,
+      actorId,
+      actorRole: MessageParticipantRole.BUYER,
+      threadStatus: this.policy.resolveThreadStatusForCustomOrder(resolved.status),
+      brandId: resolved.brandId,
+      buyerId: resolved.buyerId,
+      brandOwnerUserId: resolved.brandOwnerUserId,
+      bodyText: `Buyer ${responseLabel} the extension request.`,
+      metadata: {
+        eventType: 'CUSTOM_ORDER_EXTENSION_RESPONDED',
+        requestId,
+        response: dto.response,
+        counterDays: dto.counterDays ?? null,
+      },
+      origin: 'BUYER',
+    });
+
+    return {
+      ...result,
+      messageThreadEventId: message.id,
+    };
+  }
+
+  async openCustomOrderDisputeForBuyer(actorId: string, customOrderId: string, dto: OpenCustomOrderDisputeDto) {
+    const resolved = await this.resolveCustomOrderContext(customOrderId, actorId, 'BUYER');
+
+    const result = await this.customOrdersService.reportIssue(
+      actorId,
+      customOrderId,
+      dto as ReportCustomOrderIssueDto,
+    );
+
+    const message = await this.createActionMessageForContext({
+      contextType: MessageContextType.CUSTOM_ORDER,
+      contextId: customOrderId,
+      actorId,
+      actorRole: MessageParticipantRole.BUYER,
+      threadStatus: this.policy.resolveThreadStatusForCustomOrder(resolved.status),
+      brandId: resolved.brandId,
+      buyerId: resolved.buyerId,
+      brandOwnerUserId: resolved.brandOwnerUserId,
+      bodyText: `Buyer opened a dispute (${dto.issueType.replaceAll('_', ' ').toLowerCase()}).`,
+      metadata: {
+        eventType: 'CUSTOM_ORDER_DISPUTE_OPENED',
+        issueType: dto.issueType,
+        description: dto.description.trim(),
+      },
+      origin: 'BUYER',
+    });
+
+    return {
+      ...result,
+      messageThreadEventId: message.id,
+    };
+  }
+
+  async openCustomOrderDisputeForBrand(
+    actorId: string,
+    brandId: string,
+    customOrderId: string,
+    dto: OpenCustomOrderDisputeDto,
+  ) {
+    const resolved = await this.resolveCustomOrderContext(customOrderId, actorId, 'BRAND_OWNER', brandId);
+
+    const dispute = await this.prisma.dispute.create({
+      data: {
+        id: randomUUID(),
+        type: DisputeType.ORDER,
+        reporter: { connect: { id: actorId } },
+        targetType: 'CUSTOM_ORDER',
+        targetId: customOrderId,
+        description: dto.description.trim(),
+        status: AdminDisputeStatus.OPEN,
+      },
+      select: { id: true },
+    });
+
+    const message = await this.createActionMessageForContext({
+      contextType: MessageContextType.CUSTOM_ORDER,
+      contextId: customOrderId,
+      actorId,
+      actorRole: MessageParticipantRole.BRAND_OWNER,
+      threadStatus: this.policy.resolveThreadStatusForCustomOrder(resolved.status),
+      brandId: resolved.brandId,
+      buyerId: resolved.buyerId,
+      brandOwnerUserId: resolved.brandOwnerUserId,
+      bodyText: `Brand opened a dispute (${dto.issueType.replaceAll('_', ' ').toLowerCase()}).`,
+      metadata: {
+        eventType: 'CUSTOM_ORDER_DISPUTE_OPENED',
+        disputeId: dispute.id,
+        issueType: dto.issueType,
+        description: dto.description.trim(),
+      },
+      origin: 'BRAND',
+    });
+
+    return {
+      statusCode: 201,
+      message: 'Custom order dispute opened and posted to thread',
+      disputeId: dispute.id,
+      messageId: message.id,
+    };
+  }
+
   async markThreadReadForContext(
     actorId: string,
     contextType: MessageContextType,
@@ -196,6 +983,83 @@ export class MessagingService {
     this.sideEffects.emitThreadInvalidation(thread, [actorId]);
     this.sideEffects.emitMessageRead(thread as any, actorId, upToMessage?.id ?? null);
     return { success: true, threadId: thread.id, lastReadMessageId: upToMessage?.id ?? null };
+  }
+
+  async updateThreadPreferencesForContext(
+    actorId: string,
+    contextType: MessageContextType,
+    contextId: string,
+    role: 'BUYER' | 'BRAND_OWNER',
+    dto: UpdateThreadPreferencesDto,
+    brandId?: string,
+  ) {
+    if (contextType === MessageContextType.CUSTOM_ORDER) {
+      await this.resolveCustomOrderContext(contextId, actorId, role, brandId);
+    } else {
+      await this.resolveStandardOrderContext(contextId, actorId, role, brandId);
+    }
+
+    const thread = await this.getThreadByContext(contextType, contextId);
+    if (!thread) {
+      return { success: true, threadId: null };
+    }
+
+    const nextMutedUntil = dto.unmute
+      ? null
+      : dto.muteForHours
+        ? new Date(Date.now() + dto.muteForHours * 60 * 60 * 1000)
+        : undefined;
+    const nextArchivedAt = dto.archived === undefined ? undefined : dto.archived ? new Date() : null;
+
+    const upToMessage = dto.markRead
+      ? await this.prisma.message.findFirst({
+          where: { threadId: thread.id },
+          orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+          select: { id: true, createdAt: true },
+        })
+      : null;
+
+    const participant = await this.prisma.messageThreadParticipant.upsert({
+      where: { threadId_userId: { threadId: thread.id, userId: actorId } },
+      update: {
+        role,
+        ...(nextMutedUntil !== undefined ? { mutedUntil: nextMutedUntil } : {}),
+        ...(nextArchivedAt !== undefined ? { archivedAt: nextArchivedAt } : {}),
+        ...(upToMessage
+          ? {
+              lastReadMessageId: upToMessage.id,
+              lastReadAt: upToMessage.createdAt,
+            }
+          : {}),
+      },
+      create: {
+        threadId: thread.id,
+        userId: actorId,
+        role,
+        mutedUntil: nextMutedUntil ?? null,
+        archivedAt: nextArchivedAt ?? null,
+        lastReadMessageId: upToMessage?.id ?? null,
+        lastReadAt: upToMessage?.createdAt ?? new Date(),
+      },
+      select: {
+        mutedUntil: true,
+        archivedAt: true,
+        lastReadMessageId: true,
+      },
+    });
+
+    this.sideEffects.emitThreadInvalidation(thread, [actorId]);
+    if (upToMessage) {
+      this.sideEffects.emitMessageRead(thread as any, actorId, upToMessage.id);
+    }
+
+    return {
+      success: true,
+      threadId: thread.id,
+      mutedUntil: participant.mutedUntil,
+      archivedAt: participant.archivedAt,
+      lastReadMessageId: participant.lastReadMessageId,
+    };
   }
 
   async getSummaryForContext(
@@ -503,6 +1367,8 @@ export class MessagingService {
               thread.customOrderId,
               thread.brandId,
               recipient.role,
+              thread.id,
+              reopenMessage.id,
             ),
           } as Prisma.InputJsonValue,
         },
@@ -810,6 +1676,8 @@ export class MessagingService {
                 thread.customOrderId,
                 thread.brandId,
                 recipient.role,
+                thread.id,
+                message.id,
               ),
             } as Prisma.InputJsonValue,
           })),
@@ -1029,13 +1897,22 @@ export class MessagingService {
 
     if (role === 'BUYER') {
       if (order.buyerId !== actorId) {
+        this.logger.warn(
+          `[THREAD_ACCESS_DENIED] type=CUSTOM_ORDER role=BUYER actorId=${actorId} customOrderId=${customOrderId} expectedBuyerId=${order.buyerId}`,
+        );
         throw new ForbiddenException('Not allowed to access this thread');
       }
     } else {
       if (brandId && order.brandId !== brandId) {
+        this.logger.warn(
+          `[THREAD_ACCESS_DENIED] type=CUSTOM_ORDER role=BRAND_OWNER actorId=${actorId} customOrderId=${customOrderId} providedBrandId=${brandId} expectedBrandId=${order.brandId}`,
+        );
         throw new ForbiddenException('Not allowed to access this thread');
       }
       if (order.brand.ownerId !== actorId) {
+        this.logger.warn(
+          `[THREAD_ACCESS_DENIED] type=CUSTOM_ORDER role=BRAND_OWNER actorId=${actorId} customOrderId=${customOrderId} expectedOwnerId=${order.brand.ownerId}`,
+        );
         throw new ForbiddenException('Not allowed to access this thread');
       }
     }
@@ -1069,13 +1946,22 @@ export class MessagingService {
 
     if (role === 'BUYER') {
       if (!order.buyerId || order.buyerId !== actorId) {
+        this.logger.warn(
+          `[THREAD_ACCESS_DENIED] type=STANDARD_ORDER role=BUYER actorId=${actorId} orderId=${orderId} expectedBuyerId=${order.buyerId ?? 'none'}`,
+        );
         throw new ForbiddenException('Not allowed to access this thread');
       }
     } else {
       if (brandId && order.brandId !== brandId) {
+        this.logger.warn(
+          `[THREAD_ACCESS_DENIED] type=STANDARD_ORDER role=BRAND_OWNER actorId=${actorId} orderId=${orderId} providedBrandId=${brandId} expectedBrandId=${order.brandId}`,
+        );
         throw new ForbiddenException('Not allowed to access this thread');
       }
       if (order.brand.ownerId !== actorId) {
+        this.logger.warn(
+          `[THREAD_ACCESS_DENIED] type=STANDARD_ORDER role=BRAND_OWNER actorId=${actorId} orderId=${orderId} expectedOwnerId=${order.brand.ownerId}`,
+        );
         throw new ForbiddenException('Not allowed to access this thread');
       }
     }
@@ -1145,6 +2031,8 @@ export class MessagingService {
             thread.customOrderId,
             thread.brandId,
             p.role,
+            thread.id,
+            messageId,
           ),
         } as Prisma.InputJsonValue,
       })),
@@ -1154,28 +2042,208 @@ export class MessagingService {
     this.sideEffects.emitThreadInvalidation(thread as any, participants.map((p) => p.userId));
   }
 
+  private async openStandardOrderDispute(
+    actorId: string,
+    context: {
+      orderId: string;
+      status: OrderStatus;
+      brandId: string;
+      buyerId: string | null;
+      brandOwnerUserId: string;
+    },
+    description: string,
+    actorRole: 'BUYER' | 'BRAND_OWNER',
+    origin: 'BUYER' | 'BRAND',
+  ) {
+    const existingOpen = await this.prisma.dispute.findFirst({
+      where: {
+        type: DisputeType.ORDER,
+        targetType: 'ORDER',
+        targetId: context.orderId,
+        status: {
+          in: [
+            AdminDisputeStatus.OPEN,
+            AdminDisputeStatus.ASSIGNED,
+            AdminDisputeStatus.IN_PROGRESS,
+            AdminDisputeStatus.REOPENED,
+          ],
+        },
+      },
+      select: { id: true },
+    });
+
+    if (existingOpen) {
+      throw new BadRequestException('An active dispute already exists for this order');
+    }
+
+    const dispute = await this.prisma.dispute.create({
+      data: {
+        id: randomUUID(),
+        type: DisputeType.ORDER,
+        reporter: { connect: { id: actorId } },
+        targetType: 'ORDER',
+        targetId: context.orderId,
+        description: description.trim(),
+        status: AdminDisputeStatus.OPEN,
+      },
+      select: { id: true },
+    });
+
+    const message = await this.createActionMessageForContext({
+      contextType: MessageContextType.STANDARD_ORDER,
+      contextId: context.orderId,
+      actorId,
+      actorRole,
+      threadStatus: this.policy.resolveThreadStatusForOrder(context.status),
+      brandId: context.brandId,
+      buyerId: context.buyerId,
+      brandOwnerUserId: context.brandOwnerUserId,
+      bodyText: `${origin === 'BUYER' ? 'Buyer' : 'Brand'} opened a dispute for this order.`,
+      metadata: {
+        eventType: 'STANDARD_ORDER_DISPUTE_OPENED',
+        disputeId: dispute.id,
+        description: description.trim(),
+      },
+      origin,
+    });
+
+    return {
+      statusCode: 201,
+      message: 'Order dispute opened and posted to thread',
+      disputeId: dispute.id,
+      messageId: message.id,
+    };
+  }
+
+  private async createActionMessageForContext(params: {
+    contextType: MessageContextType;
+    contextId: string;
+    actorId: string;
+    actorRole: 'BUYER' | 'BRAND_OWNER';
+    threadStatus: MessageThreadStatus;
+    brandId: string;
+    buyerId: string | null;
+    brandOwnerUserId: string;
+    bodyText: string;
+    metadata: Record<string, unknown>;
+    origin: 'BUYER' | 'BRAND';
+  }) {
+    const thread = await this.getOrCreateThreadInTx(
+      this.prisma,
+      params.contextType,
+      params.contextId,
+      params.brandId,
+      params.buyerId,
+      params.brandOwnerUserId,
+      params.threadStatus,
+    );
+
+    const actionMessage = await this.prisma.message.create({
+      data: {
+        threadId: thread.id,
+        senderUserId: null,
+        senderRole: MessageParticipantRole.SYSTEM,
+        kind: MessageKind.SYSTEM,
+        bodyText: params.bodyText,
+        metadataJson: {
+          ...params.metadata,
+          source: 'MESSAGING_ACTION',
+          origin: params.origin,
+          actorId: params.actorId,
+        } as Prisma.InputJsonValue,
+      },
+    });
+
+    await this.prisma.messageThread.update({
+      where: { id: thread.id },
+      data: {
+        lastMessageId: actionMessage.id,
+        lastMessageAt: actionMessage.createdAt,
+        lastVisibleMessageAt: actionMessage.createdAt,
+        lastMessagePreview: (params.bodyText || '').slice(0, 200),
+        lastSenderUserId: null,
+      },
+    });
+
+    const participants = await this.prisma.messageThreadParticipant.findMany({
+      where: { threadId: thread.id },
+      select: { userId: true, role: true },
+    });
+
+    const recipients = participants.filter((participant) => participant.userId !== params.actorId);
+    if (recipients.length > 0) {
+      await this.prisma.messageNotificationOutbox.createMany({
+        data: recipients.map((recipient) => ({
+          threadId: thread.id,
+          messageId: actionMessage.id,
+          recipientId: recipient.userId,
+          notificationType: NotificationType.MESSAGE_RECEIVED,
+          payloadJson: {
+            threadId: thread.id,
+            messageId: actionMessage.id,
+            contextType: thread.contextType,
+            orderId: thread.orderId,
+            customOrderId: thread.customOrderId,
+            actionType: params.metadata.eventType ?? null,
+            targetUrl: this.resolveThreadTargetUrl(
+              thread.contextType,
+              thread.orderId,
+              thread.customOrderId,
+              thread.brandId,
+              recipient.role,
+              thread.id,
+              actionMessage.id,
+            ),
+          } as Prisma.InputJsonValue,
+        })),
+      });
+    }
+
+    const recipientIds = participants.map((participant) => participant.userId);
+    await this.sideEffects.dispatchMessageOutboxForMessage(actionMessage.id);
+    this.sideEffects.emitMessageCreated(thread, recipientIds, {
+      id: actionMessage.id,
+      senderRole: actionMessage.senderRole,
+      createdAt: actionMessage.createdAt,
+    });
+    this.sideEffects.emitThreadInvalidation(thread, recipientIds);
+
+    return actionMessage;
+  }
+
   private resolveThreadTargetUrl(
     contextType: MessageContextType,
     orderId: string | null,
     customOrderId: string | null,
     brandId: string | null,
     recipientRole: MessageParticipantRole,
+    threadId?: string,
+    messageId?: string,
   ): string {
+    const qp = new URLSearchParams();
+    if (threadId) qp.set('thread', threadId);
+    if (messageId) qp.set('messageId', messageId);
+
     if (contextType === MessageContextType.CUSTOM_ORDER && customOrderId) {
       if (recipientRole === MessageParticipantRole.BRAND_OWNER) {
-        return `/studio/custom-orders/${customOrderId}#messages`;
+        qp.set('customOrderId', customOrderId);
+        return `/studio/messages?${qp.toString()}`;
       }
       if (recipientRole === MessageParticipantRole.ADMIN) {
         return `/admin/custom-orders/${customOrderId}#messages`;
       }
-      return `/custom-orders/${customOrderId}#messages`;
+      qp.set('customOrderId', customOrderId);
+      return `/messages?${qp.toString()}`;
     }
 
     if (contextType === MessageContextType.STANDARD_ORDER && orderId) {
       if (recipientRole === MessageParticipantRole.BRAND_OWNER && brandId) {
-        return `/brands/${brandId}/orders/${orderId}#messages`;
+        qp.set('orderId', orderId);
+        qp.set('openChat', '1');
+        return `/studio?tab=orders&${qp.toString()}`;
       }
-      return `/orders/access/${orderId}#messages`;
+      qp.set('orderId', orderId);
+      return `/messages?${qp.toString()}`;
     }
 
     return '/settings?tab=notifications';

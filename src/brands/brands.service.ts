@@ -177,6 +177,76 @@ export class BrandsService {
     return brand;
   }
 
+  private mapNotificationsToRecentActivity(
+    recentNotifications: Array<{
+      id: string;
+      type: string;
+      html: string | null;
+      createdAt: Date;
+      payload: Prisma.JsonValue | null;
+      actor: {
+        firstName: string | null;
+        username: string | null;
+      } | null;
+    }>,
+  ) {
+    return recentNotifications.map((notification) => {
+      const payload = (notification.payload ?? {}) as Record<string, any>;
+      const targetUrl = typeof payload.targetUrl === 'string' ? payload.targetUrl : null;
+      const notificationType = String(notification.type || '').toUpperCase();
+      const route = targetUrl || (
+        notificationType.includes('MESSAGE')
+          ? '/studio/messages'
+          : '/settings?tab=notifications'
+      );
+
+      return {
+        id: notification.id,
+        type: String(notification.type || 'SYSTEM').toLowerCase(),
+        title: notification.html || 'Recent update',
+        description: notification.actor
+          ? `From ${notification.actor.firstName || notification.actor.username || 'system'}`
+          : 'System update',
+        createdAt: notification.createdAt,
+        route,
+      };
+    });
+  }
+
+  async getDashboardActivityFeed(brandId: string, limit = 12) {
+    const brand = await this.prisma.brand.findUnique({
+      where: { ownerId: brandId },
+      select: { id: true },
+    });
+
+    if (!brand) {
+      throw new NotFoundException('Brand profile not found');
+    }
+
+    const take = Math.min(Math.max(limit, 1), 50);
+    const recentNotifications = await this.prisma.notification.findMany({
+      where: { recipientId: brandId },
+      orderBy: { createdAt: 'desc' },
+      take,
+      include: {
+        actor: {
+          select: {
+            id: true,
+            username: true,
+            firstName: true,
+            lastName: true,
+            profileImage: true,
+          },
+        },
+      },
+    });
+
+    return {
+      items: this.mapNotificationsToRecentActivity(recentNotifications as any),
+      total: recentNotifications.length,
+    };
+  }
+
   async getBrandProfile(brandId: string): Promise<BrandProfileResponse> {
     const brand = await this.getBrandOrThrow(brandId);
 
@@ -659,7 +729,7 @@ export class BrandsService {
     }
 
     // KPIs
-    const [totalOrders, totalSalesResult, pendingOrders, patchesCount, activeProducts] = await Promise.all([
+    const [totalOrders, totalSalesResult, pendingOrders, patchesCount, activeProducts, recentNotifications] = await Promise.all([
       this.prisma.order.count({ where: { brandId: brand.id } }),
       this.prisma.order.aggregate({
         where: { brandId: brand.id, paymentStatus: 'PAID' },
@@ -677,6 +747,22 @@ export class BrandsService {
       }),
       this.prisma.product.count({
         where: { brandId: brand.id, isActive: true, deletedAt: null },
+      }),
+      this.prisma.notification.findMany({
+        where: { recipientId: brandId },
+        orderBy: { createdAt: 'desc' },
+        take: 12,
+        include: {
+          actor: {
+            select: {
+              id: true,
+              username: true,
+              firstName: true,
+              lastName: true,
+              profileImage: true,
+            },
+          },
+        },
       }),
     ]);
 
@@ -702,6 +788,8 @@ export class BrandsService {
       });
     }
 
+    const recentActivity = this.mapNotificationsToRecentActivity(recentNotifications as any);
+
     return {
       kpis: {
         totalSales: Number(totalSales),
@@ -718,6 +806,7 @@ export class BrandsService {
         isLive: brand.isStoreOpen ?? false,
       },
       recentOrders,
+      recentActivity,
       actionRequired,
       currency: brand.currency,
     };

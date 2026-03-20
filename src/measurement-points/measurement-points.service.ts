@@ -40,6 +40,16 @@ export class MeasurementPointsService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(MeasurementPointsService.name);
   private redis: RedisClientType | null = null;
 
+  private normalizeDisplayLabel(rawLabel: string): string {
+    return String(rawLabel ?? '')
+      .trim()
+      .replace(/^BRAND[_\-\s]+[^_\-\s]+[_\-\s]+/i, '')
+      .replace(/^(MEN|WOMEN|WOMAN|UNISEX)[_\-\s]+/i, '')
+      .replace(/[_\-\s]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly notifications: NotificationsService,
@@ -143,7 +153,7 @@ export class MeasurementPointsService implements OnModuleInit, OnModuleDestroy {
     return {
       id: point.id,
       key: point.key,
-      label: point.label,
+      label: this.normalizeDisplayLabel(point.label),
       description: point.description,
       category: point.category,
       gender: point.gender,
@@ -360,7 +370,10 @@ export class MeasurementPointsService implements OnModuleInit, OnModuleDestroy {
 
     return {
       point: this.mapPoint(created as MeasurementPointRow),
-      fuzzyMatches,
+      fuzzyMatches: fuzzyMatches.map((match) => ({
+        ...match,
+        label: this.normalizeDisplayLabel(match.label),
+      })),
     };
   }
 

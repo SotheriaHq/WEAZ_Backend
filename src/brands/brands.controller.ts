@@ -299,6 +299,23 @@ export class BrandsController {
     return this.brandsService.getDashboardAnalytics(brandId, range);
   }
 
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Get('brands/:id/dashboard/activity-feed')
+  async getDashboardActivityFeed(
+    @Param('id') brandId: string,
+    @Req() req: any,
+    @Query('limit') limit?: string,
+  ) {
+    if (req.user.id !== brandId) {
+      throw new BadRequestException('Not authorized for this brand');
+    }
+
+    return this.brandsService.getDashboardActivityFeed(
+      brandId,
+      limit ? parseInt(limit, 10) : 12,
+    );
+  }
+
   // ===================== Brand Verification =====================
 
   @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))

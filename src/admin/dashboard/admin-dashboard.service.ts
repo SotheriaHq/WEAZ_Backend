@@ -55,6 +55,8 @@ export class AdminDashboardService {
       pendingVerifications,
       pendingPayouts,
       openDisputes,
+      // Backward-compatible key used by current frontend.
+      recentLogs,
       recentAuditLogs: recentLogs,
     };
   }

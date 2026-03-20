@@ -7,7 +7,6 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import {
-  Gender,
   NotificationType,
   Prisma,
 } from '@prisma/client';
@@ -44,28 +43,71 @@ const SIZE_FIT_SHARE_STATUS = {
 
 type SafeMeasurements = Record<string, string | number | boolean | null>;
 type BaselineMeasurementGender = 'MEN' | 'WOMEN';
+type BaselineMeasurementSlot =
+  | 'HEIGHT'
+  | 'WEIGHT'
+  | 'SHOULDER'
+  | 'CHEST'
+  | 'WAIST'
+  | 'HIP'
+  | 'INSEAM'
+  | 'SLEEVE_LENGTH';
 
-const BASELINE_KEY_CANDIDATES: Record<BaselineMeasurementGender, string[]> = {
-  MEN: [
-    'MEN_HEIGHT',
-    'MEN_WEIGHT',
-    'MEN_SHOULDER',
-    'MEN_CHEST',
-    'MEN_WAIST',
-    'MEN_HIP',
-    'MEN_INSEAM',
-    'MEN_SLEEVE_LENGTH',
-  ],
-  WOMEN: [
-    'WOMEN_HEIGHT',
-    'WOMEN_WEIGHT',
-    'WOMEN_SHOULDER_WIDTH',
-    'WOMEN_CHEST_FULL_BUST',
-    'WOMEN_WAIST',
-    'WOMEN_HIP',
-    'WOMEN_INSEAM',
-    'WOMEN_SLEEVE_LENGTH_LONG',
-  ],
+const BASELINE_MEASUREMENT_SLOTS: BaselineMeasurementSlot[] = [
+  'HEIGHT',
+  'WEIGHT',
+  'SHOULDER',
+  'CHEST',
+  'WAIST',
+  'HIP',
+  'INSEAM',
+  'SLEEVE_LENGTH',
+];
+
+const BASELINE_SLOT_KEY_CANDIDATES: Record<
+  BaselineMeasurementSlot,
+  { men: string[]; women: string[]; neutral: string[] }
+> = {
+  HEIGHT: {
+    men: ['MEN_HEIGHT'],
+    women: ['WOMEN_HEIGHT'],
+    neutral: ['UNISEX_HEIGHT', 'HEIGHT'],
+  },
+  WEIGHT: {
+    men: ['MEN_WEIGHT'],
+    women: ['WOMEN_WEIGHT'],
+    neutral: ['UNISEX_WEIGHT', 'WEIGHT'],
+  },
+  SHOULDER: {
+    men: ['MEN_SHOULDER'],
+    women: ['WOMEN_SHOULDER_WIDTH'],
+    neutral: ['UNISEX_SHOULDER', 'SHOULDER', 'SHOULDER_WIDTH'],
+  },
+  CHEST: {
+    men: ['MEN_CHEST'],
+    women: ['WOMEN_CHEST_FULL_BUST'],
+    neutral: ['UNISEX_CHEST', 'CHEST', 'CHEST_FULL_BUST'],
+  },
+  WAIST: {
+    men: ['MEN_WAIST'],
+    women: ['WOMEN_WAIST'],
+    neutral: ['UNISEX_WAIST', 'WAIST'],
+  },
+  HIP: {
+    men: ['MEN_HIP'],
+    women: ['WOMEN_HIP'],
+    neutral: ['UNISEX_HIP', 'HIP'],
+  },
+  INSEAM: {
+    men: ['MEN_INSEAM'],
+    women: ['WOMEN_INSEAM'],
+    neutral: ['UNISEX_INSEAM', 'INSEAM'],
+  },
+  SLEEVE_LENGTH: {
+    men: ['MEN_SLEEVE_LENGTH'],
+    women: ['WOMEN_SLEEVE_LENGTH_LONG'],
+    neutral: ['UNISEX_SLEEVE_LENGTH', 'SLEEVE_LENGTH', 'SLEEVE_LENGTH_LONG'],
+  },
 };
 
 const REMINDER_TARGET = {
@@ -82,6 +124,16 @@ const NT_SIZE_FIT_RESHARED = 'SIZE_FIT_RESHARED' as NotificationType;
 @Injectable()
 export class SizeFitService {
   private readonly logger = new Logger(SizeFitService.name);
+
+  private normalizeMeasurementDisplayLabel(rawLabel: string): string {
+    return String(rawLabel ?? '')
+      .trim()
+      .replace(/^BRAND[_\-\s]+[^_\-\s]+[_\-\s]+/i, '')
+      .replace(/^(MEN|WOMEN|WOMAN|UNISEX)[_\-\s]+/i, '')
+      .replace(/[_\-\s]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
 
   constructor(
     private readonly prisma: PrismaService,
@@ -178,18 +230,31 @@ export class SizeFitService {
     return gender ?? 'WOMEN';
   }
 
+  private buildBaselineSlotCandidates(gender: BaselineMeasurementGender | null) {
+    const preferredGender = this.normalizeBaselineGender(gender);
+
+    return BASELINE_MEASUREMENT_SLOTS.map((slot) => {
+      const config = BASELINE_SLOT_KEY_CANDIDATES[slot];
+      const preferred = preferredGender === 'MEN' ? config.men : config.women;
+      const fallback = preferredGender === 'MEN' ? config.women : config.men;
+      const orderedCandidates = [...preferred, ...config.neutral, ...fallback];
+
+      return {
+        slot,
+        orderedCandidates,
+      };
+    });
+  }
+
   private formatMeasurementLabelFromKey(key: string): string {
-    return key
-      .replace(/^MEN_/, '')
-      .replace(/^WOMEN_/, '')
-      .replace(/_/g, ' ')
+    return this.normalizeMeasurementDisplayLabel(key)
       .toLowerCase()
       .replace(/\b\w/g, (char) => char.toUpperCase());
   }
 
   private async resolveBaselineMeasurementPoints(gender: BaselineMeasurementGender | null) {
-    const effectiveGender = this.normalizeBaselineGender(gender);
-    const orderedKeys = BASELINE_KEY_CANDIDATES[effectiveGender];
+    const slots = this.buildBaselineSlotCandidates(gender);
+    const orderedKeys = Array.from(new Set(slots.flatMap((slot) => slot.orderedCandidates)));
 
     const points = await (this.prisma as any).measurementPoint.findMany({
       where: {
@@ -197,7 +262,6 @@ export class SizeFitService {
         source: 'SYSTEM',
         status: 'APPROVED_GLOBAL',
         isActive: true,
-        OR: [{ gender: effectiveGender as Gender }, { gender: 'UNISEX' }, { gender: null }],
       },
       select: {
         key: true,
@@ -213,12 +277,16 @@ export class SizeFitService {
 
     // Always return baseline slots so users can continue updating fittings incrementally,
     // even if measurement-point rows are temporarily missing in a given environment.
-    return orderedKeys.map((key) => {
-      const point = byKey.get(key) as any | undefined;
+    return slots.map(({ orderedCandidates }) => {
+      const point = orderedCandidates
+        .map((key) => byKey.get(key) as any | undefined)
+        .find((candidate) => Boolean(candidate));
+      const fallbackKey = orderedCandidates[0];
+
       if (!point) {
         return {
-          key,
-          label: this.formatMeasurementLabelFromKey(key),
+          key: fallbackKey,
+          label: this.formatMeasurementLabelFromKey(fallbackKey),
           description: null,
           category: 'GENERAL',
           minValueCm: null,
@@ -229,7 +297,7 @@ export class SizeFitService {
 
       return {
         key: point.key,
-        label: point.label,
+        label: this.normalizeMeasurementDisplayLabel(point.label),
         description: point.description,
         category: point.category,
         minValueCm: point.minValueCm == null ? null : Number(point.minValueCm),

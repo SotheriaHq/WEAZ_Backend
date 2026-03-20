@@ -1958,6 +1958,10 @@ export class CollectionsService {
               customMeasurementKeys: Array.isArray(metadata.customMeasurementKeys)
                 ? this.normalizeMeasurementKeys(metadata.customMeasurementKeys)
                 : (collection as any).customMeasurementKeys,
+              customOrderEnabled:
+                typeof (metadata as any).customOrderEnabled === 'boolean'
+                  ? Boolean((metadata as any).customOrderEnabled)
+                  : Boolean((collection as any).customOrderEnabled),
               customFreeformPointIds: Array.isArray(
                 metadata.customFreeformPointIds,
               )
@@ -6785,6 +6789,9 @@ export class CollectionsService {
       data.customMeasurementKeys = this.normalizeMeasurementKeys(
         body.customMeasurementKeys,
       );
+    if (typeof body.customOrderEnabled === 'boolean') {
+      data.customOrderEnabled = body.customOrderEnabled;
+    }
     if (Array.isArray(body.customFreeformPointIds))
       data.customFreeformPointIds = body.customFreeformPointIds;
     if (typeof body.fitPreference === 'string' || body.fitPreference === null)

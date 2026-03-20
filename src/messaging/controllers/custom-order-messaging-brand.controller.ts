@@ -16,7 +16,15 @@ import { Throttle } from '@nestjs/throttler';
 import { JwtAuthGuard } from 'src/auth/guard/jwt-auth.guard';
 import { UserTypeGuard } from 'src/auth/guard/user-type.guard';
 import { MessagingService } from '../messaging.service';
-import { MarkThreadReadDto, QueryMessagesDto, QueryThreadSummaryDto, SendMessageDto } from '../dto/messaging.dto';
+import {
+  MarkThreadReadDto,
+  OpenCustomOrderDisputeDto,
+  QueryMessagesDto,
+  QueryThreadSummaryDto,
+  RequestCustomOrderExtensionDto,
+  SendMessageDto,
+  UpdateThreadPreferencesDto,
+} from '../dto/messaging.dto';
 
 @Controller('brands/:brandId/custom-orders/:orderId/messages')
 @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
@@ -69,6 +77,23 @@ export class CustomOrderMessagingBrandController {
     );
   }
 
+  @Post('preferences')
+  async updatePreferences(
+    @Req() req: Request & { user: { id: string } },
+    @Param('brandId') brandId: string,
+    @Param('orderId') orderId: string,
+    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true })) dto: UpdateThreadPreferencesDto,
+  ) {
+    return this.messaging.updateThreadPreferencesForContext(
+      req.user.id,
+      'CUSTOM_ORDER',
+      orderId,
+      'BRAND_OWNER',
+      dto,
+      brandId,
+    );
+  }
+
   @Get('summary')
   async summary(
     @Req() req: Request & { user: { id: string } },
@@ -84,5 +109,25 @@ export class CustomOrderMessagingBrandController {
       query,
       brandId,
     );
+  }
+
+  @Post('extension-requests')
+  async requestExtension(
+    @Req() req: Request & { user: { id: string } },
+    @Param('brandId') brandId: string,
+    @Param('orderId') orderId: string,
+    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true })) dto: RequestCustomOrderExtensionDto,
+  ) {
+    return this.messaging.requestCustomOrderExtensionForBrand(req.user.id, brandId, orderId, dto);
+  }
+
+  @Post('disputes')
+  async openDispute(
+    @Req() req: Request & { user: { id: string } },
+    @Param('brandId') brandId: string,
+    @Param('orderId') orderId: string,
+    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true })) dto: OpenCustomOrderDisputeDto,
+  ) {
+    return this.messaging.openCustomOrderDisputeForBrand(req.user.id, brandId, orderId, dto);
   }
 }

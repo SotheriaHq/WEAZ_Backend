@@ -1133,7 +1133,7 @@ export class BrandVerificationService {
       { key: 'idDocumentBackKey', label: 'ID back', s3Key: attempt.idDocumentBackKey },
       { key: 'cacCertificateKey', label: 'CAC certificate', s3Key: attempt.cacCertificateKey },
       { key: 'authorityProofKey', label: 'Authority proof', s3Key: attempt.authorityProofKey },
-      { key: 'letterOfConfirmationKey', label: 'Signed letter', s3Key: attempt.letterOfConfirmationKey },
+      { key: 'letterOfConfirmationKey', label: 'Signed verification letter', s3Key: attempt.letterOfConfirmationKey },
     ].filter((item) => Boolean(item.s3Key));
 
     const files = await this.prisma.fileUpload.findMany({

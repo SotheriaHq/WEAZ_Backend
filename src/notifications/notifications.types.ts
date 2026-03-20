@@ -66,6 +66,8 @@ export interface NotificationSettings {
     newMessages: boolean;
     reminders: boolean;
     moderation: boolean;
+    desktop: boolean;
+    sound: boolean;
   };
 }
 
@@ -113,5 +115,7 @@ export const DEFAULT_NOTIFICATION_SETTINGS: NotificationSettings = {
     newMessages: true,
     reminders: true,
     moderation: true,
+    desktop: true,
+    sound: false,
   },
 };

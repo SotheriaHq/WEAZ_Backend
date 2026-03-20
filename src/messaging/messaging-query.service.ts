@@ -102,7 +102,7 @@ export class MessagingQueryService {
   async getSummaryForActor(threadId: string, actorId: string, includeUnreadCount = false) {
     const participant = await this.prisma.messageThreadParticipant.findUnique({
       where: { threadId_userId: { threadId, userId: actorId } },
-      select: { lastReadAt: true },
+      select: { lastReadAt: true, mutedUntil: true, archivedAt: true },
     });
 
     const thread = await this.prisma.messageThread.findUnique({
@@ -141,6 +141,10 @@ export class MessagingQueryService {
       unreadCount,
       hasUnread,
       responseRequired: hasUnread,
+      mutedUntil: participant?.mutedUntil ?? null,
+      archivedAt: participant?.archivedAt ?? null,
+      isMuted: Boolean(participant?.mutedUntil && participant.mutedUntil > new Date()),
+      isArchivedByActor: Boolean(participant?.archivedAt),
     };
   }
 
@@ -160,6 +164,10 @@ export class MessagingQueryService {
         unreadCount?: number;
         hasUnread: boolean;
         responseRequired: boolean;
+        mutedUntil?: Date | null;
+        archivedAt?: Date | null;
+        isMuted?: boolean;
+        isArchivedByActor?: boolean;
       }>;
     }
 
@@ -192,8 +200,27 @@ export class MessagingQueryService {
         unreadCount?: number;
         hasUnread: boolean;
         responseRequired: boolean;
+        mutedUntil?: Date | null;
+        archivedAt?: Date | null;
+        isMuted?: boolean;
+        isArchivedByActor?: boolean;
       }>;
     }
+
+    const participants = await this.prisma.messageThreadParticipant.findMany({
+      where: {
+        threadId: { in: threads.map((thread) => thread.id) },
+        userId: actorId,
+      },
+      select: {
+        threadId: true,
+        mutedUntil: true,
+        archivedAt: true,
+      },
+    });
+    const participantByThreadId = new Map(
+      participants.map((entry) => [entry.threadId, entry]),
+    );
 
     const unreadRows = includeUnreadCount
       ? await this.prisma.$queryRaw<Array<{ threadId: string; unreadCount: bigint | number }>>(Prisma.sql`
@@ -232,11 +259,16 @@ export class MessagingQueryService {
     const summaries = threads.reduce((acc, thread) => {
       const unreadCount = unreadCountByThreadId.get(thread.id) ?? 0;
       const hasUnread = unreadCount > 0;
+      const participant = participantByThreadId.get(thread.id);
       acc[thread.id] = {
         ...thread,
         ...(includeUnreadCount ? { unreadCount } : {}),
         hasUnread,
         responseRequired: hasUnread,
+        mutedUntil: participant?.mutedUntil ?? null,
+        archivedAt: participant?.archivedAt ?? null,
+        isMuted: Boolean(participant?.mutedUntil && participant.mutedUntil > new Date()),
+        isArchivedByActor: Boolean(participant?.archivedAt),
       };
       return acc;
     }, {} as Record<string, {
@@ -252,6 +284,10 @@ export class MessagingQueryService {
       unreadCount?: number;
       hasUnread: boolean;
       responseRequired: boolean;
+      mutedUntil?: Date | null;
+      archivedAt?: Date | null;
+      isMuted?: boolean;
+      isArchivedByActor?: boolean;
     }>);
 
     return summaries;

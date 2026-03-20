@@ -16,7 +16,15 @@ import { Throttle } from '@nestjs/throttler';
 import { JwtAuthGuard } from 'src/auth/guard/jwt-auth.guard';
 import { UserTypeGuard } from 'src/auth/guard/user-type.guard';
 import { MessagingService } from '../messaging.service';
-import { MarkThreadReadDto, QueryMessagesDto, QueryThreadSummaryDto, SendMessageDto } from '../dto/messaging.dto';
+import {
+  MarkThreadReadDto,
+  OpenOrderDisputeDto,
+  QueryMessagesDto,
+  QueryThreadSummaryDto,
+  RequestOrderExtensionDto,
+  SendMessageDto,
+  UpdateThreadPreferencesDto,
+} from '../dto/messaging.dto';
 
 @Controller('brands/:brandId/orders/:orderId/messages')
 @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
@@ -69,6 +77,23 @@ export class OrderMessagingBrandController {
     );
   }
 
+  @Post('preferences')
+  async updatePreferences(
+    @Req() req: Request & { user: { id: string } },
+    @Param('brandId') brandId: string,
+    @Param('orderId') orderId: string,
+    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true })) dto: UpdateThreadPreferencesDto,
+  ) {
+    return this.messaging.updateThreadPreferencesForContext(
+      req.user.id,
+      'STANDARD_ORDER',
+      orderId,
+      'BRAND_OWNER',
+      dto,
+      brandId,
+    );
+  }
+
   @Get('summary')
   async summary(
     @Req() req: Request & { user: { id: string } },
@@ -84,5 +109,25 @@ export class OrderMessagingBrandController {
       query,
       brandId,
     );
+  }
+
+  @Post('extension-requests')
+  async requestExtension(
+    @Req() req: Request & { user: { id: string } },
+    @Param('brandId') brandId: string,
+    @Param('orderId') orderId: string,
+    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true })) dto: RequestOrderExtensionDto,
+  ) {
+    return this.messaging.requestOrderExtensionForBrand(req.user.id, brandId, orderId, dto);
+  }
+
+  @Post('disputes')
+  async openDispute(
+    @Req() req: Request & { user: { id: string } },
+    @Param('brandId') brandId: string,
+    @Param('orderId') orderId: string,
+    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true })) dto: OpenOrderDisputeDto,
+  ) {
+    return this.messaging.openOrderDisputeForBrand(req.user.id, brandId, orderId, dto);
   }
 }

@@ -13,6 +13,26 @@ import { Request } from 'express';
 export class AdminModerationService {
   private readonly logger = new Logger(AdminModerationService.name);
 
+  private normalizeMeasurementDisplayLabel(rawLabel: string): string {
+    return String(rawLabel ?? '')
+      .trim()
+      .replace(/^BRAND[_\-\s]+[^_\-\s]+[_\-\s]+/i, '')
+      .replace(/^(MEN|WOMEN|WOMAN|UNISEX)[_\-\s]+/i, '')
+      .replace(/[_\-\s]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  private normalizeMeasurementPointRow<T extends { label?: string | null }>(point: T): T {
+    if (typeof point.label !== 'string') {
+      return point;
+    }
+    return {
+      ...point,
+      label: this.normalizeMeasurementDisplayLabel(point.label),
+    };
+  }
+
   constructor(private readonly prisma: PrismaService) {}
 
   async quarantineThreads(
@@ -186,7 +206,7 @@ export class AdminModerationService {
     });
 
     return {
-      freeformPoints: points,
+      freeformPoints: points.map((point) => this.normalizeMeasurementPointRow(point)),
       sizeCharts: charts,
     };
   }
@@ -257,7 +277,7 @@ export class AdminModerationService {
       return result;
     });
 
-    return updated;
+    return this.normalizeMeasurementPointRow(updated);
   }
 
   private async reviewSizeChart(
