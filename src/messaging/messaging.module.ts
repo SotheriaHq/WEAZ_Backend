@@ -17,9 +17,10 @@ import { MessagingService } from './messaging.service';
 import { MessagingSideEffectsService } from './messaging-side-effects.service';
 import { UploadModule } from 'src/upload/upload.module';
 import { CustomOrdersModule } from 'src/custom-orders/custom-orders.module';
+import { SystemConfigModule } from 'src/admin/system-config/system-config.module';
 
 @Module({
-  imports: [PrismaModule, QueueModule, UploadModule, CustomOrdersModule],
+  imports: [PrismaModule, QueueModule, UploadModule, CustomOrdersModule, SystemConfigModule],
   controllers: [
     CustomOrderMessagingBuyerController,
     CustomOrderMessagingBrandController,

@@ -41,6 +41,9 @@ import { AdminDesignsController } from './designs/admin-designs.controller';
 import { AdminDashboardController } from './dashboard/admin-dashboard.controller';
 import { AdminDashboardService } from './dashboard/admin-dashboard.service';
 import { AdminFeaturedController } from './featured/admin-featured.controller';
+import { SystemConfigModule } from './system-config/system-config.module';
+import { SystemConfigService } from './system-config/system-config.service';
+import { SystemConfigController } from './system-config/system-config.controller';
 
 @Module({
   imports: [
@@ -48,6 +51,7 @@ import { AdminFeaturedController } from './featured/admin-featured.controller';
     AuthModule,
     NotificationsModule,
     BrandVerificationModule,
+    SystemConfigModule,
   ],
   controllers: [
     AdminUsersController,
@@ -65,6 +69,7 @@ import { AdminFeaturedController } from './featured/admin-featured.controller';
     AdminDesignsController,
     AdminDashboardController,
     AdminFeaturedController,
+    SystemConfigController,
   ],
   providers: [
     AdminAuditService,
@@ -87,6 +92,6 @@ import { AdminFeaturedController } from './featured/admin-featured.controller';
     FeaturedExpiryCronService,
     FeaturedAutoRemovalService,
   ],
-  exports: [FeatureFlagsService, AdminAuditService, AdminFeaturedService, FeaturedAutoRemovalService],
+  exports: [FeatureFlagsService, AdminAuditService, AdminFeaturedService, FeaturedAutoRemovalService, SystemConfigModule],
 })
 export class AdminModule {}

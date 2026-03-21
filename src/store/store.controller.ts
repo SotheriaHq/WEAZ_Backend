@@ -84,7 +84,7 @@ export class StoreController {
   @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
   @Post('products/:id/media')
   @Throttle({ default: { limit: 20, ttl: 60000 } })
-  @UseInterceptors(FileInterceptor('file', { storage: memoryStorage() }))
+  @UseInterceptors(FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } })) // Hard cap; dynamic limit enforced in service
   async uploadProductMedia(
     @Param('id') productId: string,
     @UploadedFile() file: Express.Multer.File,

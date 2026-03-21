@@ -139,6 +139,7 @@ model User {
   productReviews            ProductReview[]                @relation("UserProductReviews")
   reviewHelpfulVotes        ProductReviewHelpfulVote[]     @relation("UserReviewHelpfulVotes")
   productReviewReports      ProductReviewReport[]          @relation("UserProductReviewReports")
+  systemConfigUpdates       SystemConfig[]                 @relation("SystemConfigUpdater")
 }
 
 model FileUpload {
@@ -3039,4 +3040,16 @@ model ProductReviewReport {
 
   @@unique([reviewId, reporterId])
   @@index([reason, createdAt])
+}
+
+// ─── System Configuration (key-value, admin-managed) ─────────────────────────
+model SystemConfig {
+  key         String   @id
+  value       String
+  description String?
+  updatedAt   DateTime @updatedAt
+  updatedById String?  @db.Uuid
+  updatedBy   User?    @relation("SystemConfigUpdater", fields: [updatedById], references: [id], onDelete: SetNull)
+
+  @@map("system_config")
 }

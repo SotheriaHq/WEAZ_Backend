@@ -13,6 +13,7 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import { InjectQueue } from '@nestjs/bullmq';
 import type { Queue } from 'bullmq';
 import { PrismaService } from 'src/prisma/prisma.service';
+import { SystemConfigService } from 'src/admin/system-config/system-config.service';
 import { v4 as uuidv4, validate as isUuid } from 'uuid';
 import {
   ReactionType,
@@ -75,6 +76,7 @@ export class CollectionsService {
     private readonly categoriesService?: CategoriesService,
     private readonly notificationsQueue?: NotificationsQueueService,
     @InjectQueue(BULK_UPLOAD_QUEUE) private readonly bulkUploadQueue?: Queue,
+    private readonly systemConfigService?: SystemConfigService,
   ) { }
 
   private readonly maxProductsPerCollection = Math.max(
@@ -1558,7 +1560,7 @@ export class CollectionsService {
           fileSpec.type,
           fileSpec.fileType,
         );
-        this.helperservice.validateFileSpec(fileSpec, fileType);
+        await this.helperservice.validateFileSpec(fileSpec, fileType);
 
         // Use UploadService to create presigned POST and presign DB record
         const presign = await this.uploadService.createPresignedPost(
@@ -7143,9 +7145,12 @@ export class CollectionsService {
     if (!file || !file.buffer) {
       throw new BadRequestException('CSV file is required for bulk upload');
     }
-    const maxFileSize = 25 * 1024 * 1024;
+    const maxFileSize = this.systemConfigService
+      ? await this.systemConfigService.getMaxFileSize('upload.maxSize.collectionBulk')
+      : 2 * 1024 * 1024;
     if (file.size > maxFileSize) {
-      throw new BadRequestException('Bulk upload file exceeds 25MB limit');
+      const limitMB = (maxFileSize / (1024 * 1024)).toFixed(1);
+      throw new BadRequestException(`Bulk upload file exceeds the ${limitMB}MB limit`);
     }
 
     const jobId = uuidv4();

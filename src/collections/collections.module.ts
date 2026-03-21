@@ -16,11 +16,13 @@ import { IdempotencyInterceptor } from 'src/common/interceptors/idempotency.inte
 import { TagsModule } from 'src/tags/tags.module';
 import { QueueModule } from 'src/queue/queue.module';
 import { CategoriesModule } from 'src/categories/categories.module';
+import { SystemConfigModule } from 'src/admin/system-config/system-config.module';
 
 @Module({
   imports: [
     ScheduleModule.forRoot(),
     UploadModule,
+    SystemConfigModule,
     AnalyticsModule,
     NotificationsModule,
     StoreModule,

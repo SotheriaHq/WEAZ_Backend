@@ -26,6 +26,7 @@ import { FileType } from './upload.enums';
 import * as path from 'path';
 import { mkdir, writeFile } from 'fs/promises';
 import { ImageProcessingQueueService } from 'src/queue/image-processing.queue.service';
+import { SystemConfigService } from 'src/admin/system-config/system-config.service';
 
 type VariantView = {
   url: string;
@@ -96,6 +97,7 @@ export class UploadService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly configService: ConfigService,
+    private readonly systemConfigService: SystemConfigService,
     @Optional()
     private readonly imageQueue?: ImageProcessingQueueService,
   ) {
@@ -139,7 +141,7 @@ export class UploadService {
     userId: string,
     fileType: FileType,
   ): Promise<FileUploadResult> {
-    this.validateFile(file, fileType);
+    await this.validateFile(file, fileType);
 
     const fileId = uuidv4();
     const key = this.generateS3Key(fileType, userId, fileId, file.originalname);
@@ -899,19 +901,25 @@ export class UploadService {
     return ['1', 'true', 'yes', 'on'].includes(String(raw).toLowerCase());
   }
 
-  private validateFile(file: Express.Multer.File, fileType: FileType): void {
-    const maxSizes = {
-      [FileType.PROFILE_IMAGE]: 5 * 1024 * 1024, // 5MB
-      [FileType.BANNER_IMAGE]: 8 * 1024 * 1024, // 8MB
-      [FileType.POST_IMAGE]: 10 * 1024 * 1024, // 10MB
-      [FileType.POST_VIDEO]: 100 * 1024 * 1024, // 100MB
-      [FileType.REVIEW_IMAGE]: 10 * 1024 * 1024, // 10MB
-      [FileType.REVIEW_VIDEO]: 40 * 1024 * 1024, // 40MB
-      [FileType.DOCUMENT]: 20 * 1024 * 1024, // 20MB
-      [FileType.BRAND_VERIFICATION]: 20 * 1024 * 1024, // 20MB
-      [FileType.MESSAGE_IMAGE]: 10 * 1024 * 1024, // 10MB
-      [FileType.MESSAGE_DOCUMENT]: 20 * 1024 * 1024, // 20MB
-    };
+  /** Map FileType enum → SystemConfig key */
+  private static readonly FILE_TYPE_CONFIG_KEYS: Record<string, string> = {
+    [FileType.PROFILE_IMAGE]: 'upload.maxSize.profileImage',
+    [FileType.BANNER_IMAGE]: 'upload.maxSize.bannerImage',
+    [FileType.POST_IMAGE]: 'upload.maxSize.postImage',
+    [FileType.POST_VIDEO]: 'upload.maxSize.postVideo',
+    [FileType.REVIEW_IMAGE]: 'upload.maxSize.reviewImage',
+    [FileType.REVIEW_VIDEO]: 'upload.maxSize.reviewVideo',
+    [FileType.DOCUMENT]: 'upload.maxSize.document',
+    [FileType.BRAND_VERIFICATION]: 'upload.maxSize.brandVerification',
+    [FileType.MESSAGE_IMAGE]: 'upload.maxSize.messageImage',
+    [FileType.MESSAGE_DOCUMENT]: 'upload.maxSize.messageDocument',
+  };
+
+  private async validateFile(file: Express.Multer.File, fileType: FileType): Promise<void> {
+    const configKey = UploadService.FILE_TYPE_CONFIG_KEYS[fileType];
+    const maxSize = configKey
+      ? await this.systemConfigService.getMaxFileSize(configKey)
+      : 2 * 1024 * 1024; // 2MB fallback
 
     const allowedMimeTypes = {
       [FileType.PROFILE_IMAGE]: ['image/jpeg', 'image/png', 'image/webp'],
@@ -950,8 +958,9 @@ export class UploadService {
       [FileType.MESSAGE_DOCUMENT]: ['application/pdf'],
     };
 
-    if (file.size > maxSizes[fileType]) {
-      throw new BadRequestException(`File size exceeds limit for ${fileType}`);
+    if (file.size > maxSize) {
+      const limitMB = (maxSize / (1024 * 1024)).toFixed(1);
+      throw new BadRequestException(`File size exceeds the ${limitMB}MB limit for ${fileType}`);
     }
 
     if (!allowedMimeTypes[fileType].includes(file.mimetype)) {

@@ -388,6 +388,15 @@ async function bootstrap() {
     const port = parsePort(configService.get<string>('APP_PORT'));
     const host = configService.get<string>('APP_HOST', DEFAULT_HOST);
 
+    // Seed system config defaults (idempotent)
+    try {
+      const { SystemConfigService } = await import('./admin/system-config/system-config.service');
+      const systemConfigService = app.get(SystemConfigService);
+      await systemConfigService.seedDefaults();
+    } catch (err) {
+      logger.warn('SystemConfig seed skipped (non-fatal):', err);
+    }
+
     await app.listen(port, host);
     logger.log(`Application is running on: http://${host}:${port}`);
 

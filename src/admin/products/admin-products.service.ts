@@ -77,6 +77,7 @@ export class AdminProductsService {
       items: results.map((item) => ({
         ...item,
         orderCount: item._count?.orderItems ?? 0,
+        primaryMediaUrl: item.thumbnail || (item.images?.length ? item.images[0] : null),
       })),
       nextCursor,
     };

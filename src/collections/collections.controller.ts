@@ -993,7 +993,7 @@ export class CollectionsController {
   // ===================== Bulk Upload (Scaffold) =====================
   @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
   @Post(':id/bulk-upload')
-  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 25 * 1024 * 1024 } }))
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 100 * 1024 * 1024 } })) // Hard cap; dynamic limit enforced in service
   @ApiOperation({
     summary: 'Initiate bulk product upload',
     description: 'Creates a bulk upload job for CSV/images. Returns upload URL and job ID.',
