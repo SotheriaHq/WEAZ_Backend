@@ -1172,6 +1172,121 @@ export class MessagingService {
     );
   }
 
+  async getAdminInbox(queryDto: QueryInboxDto) {
+    const limit = Math.min(Math.max(queryDto.limit ?? 20, 1), 100);
+    const filter = queryDto.filter ?? 'all';
+    const contextTypeFilter = queryDto.contextType ?? 'all';
+    const q = String(queryDto.q ?? '').trim();
+    const cursorDate = queryDto.cursorLastMessageAt ? new Date(queryDto.cursorLastMessageAt) : null;
+
+    const threadWhere: Prisma.MessageThreadWhereInput = {
+      ...(contextTypeFilter !== 'all' ? { contextType: contextTypeFilter as MessageContextType } : {}),
+      ...(filter === 'archived' ? { status: MessageThreadStatus.ARCHIVED } : {}),
+      ...(q
+        ? {
+            OR: [
+              { lastMessagePreview: { contains: q, mode: 'insensitive' as const } },
+              {
+                participants: {
+                  some: {
+                    user: {
+                      OR: [
+                        { username: { contains: q, mode: 'insensitive' as const } },
+                        { firstName: { contains: q, mode: 'insensitive' as const } },
+                        { lastName: { contains: q, mode: 'insensitive' as const } },
+                      ],
+                    },
+                  },
+                },
+              },
+            ],
+          }
+        : {}),
+      ...(cursorDate
+        ? {
+            OR: [
+              { lastMessageAt: { lt: cursorDate } },
+              {
+                AND: [
+                  { lastMessageAt: cursorDate },
+                  { id: { lt: queryDto.cursorThreadId ?? '' } },
+                ],
+              },
+            ],
+          }
+        : {}),
+    };
+
+    const threads = await this.prisma.messageThread.findMany({
+      where: threadWhere,
+      orderBy: [{ lastMessageAt: 'desc' }, { id: 'desc' }],
+      take: limit + 1,
+      include: {
+        participants: {
+          select: {
+            userId: true,
+            role: true,
+            user: {
+              select: {
+                id: true,
+                username: true,
+                firstName: true,
+                lastName: true,
+                profileImage: true,
+              },
+            },
+          },
+        },
+      },
+    });
+
+    const hasNextPage = threads.length > limit;
+    const sliced = hasNextPage ? threads.slice(0, -1) : threads;
+
+    const items = sliced.map((thread) => {
+      const isInquiry =
+        thread.contextType === MessageContextType.CUSTOM_ORDER &&
+        !thread.customOrderId &&
+        !thread.orderId &&
+        String((thread.subjectSnapshotJson as any)?.type || '').toUpperCase() === 'CUSTOM_FIT_INQUIRY';
+
+      return {
+        threadId: thread.id,
+        contextType: isInquiry ? 'INQUIRY' : thread.contextType,
+        orderId: thread.orderId,
+        customOrderId: thread.customOrderId,
+        status: thread.status,
+        title:
+          isInquiry
+            ? `Inquiry #${String((thread.subjectSnapshotJson as any)?.inquiryId || thread.id).slice(0, 8).toUpperCase()}`
+            : thread.contextType === MessageContextType.STANDARD_ORDER
+              ? `Order #${String(thread.orderId || thread.id).slice(0, 8).toUpperCase()}`
+              : `Custom #${String(thread.customOrderId || thread.id).slice(0, 8).toUpperCase()}`,
+        subtitle: thread.lastMessagePreview || 'No messages yet',
+        participants: thread.participants.map((p) => ({
+          id: p.user.id,
+          username: p.user.username,
+          firstName: p.user.firstName,
+          lastName: p.user.lastName,
+          profileImage: p.user.profileImage,
+          role: p.role,
+        })),
+        lastMessageAt: thread.lastMessageAt,
+        createdAt: thread.createdAt,
+      };
+    });
+
+    const endCursor =
+      items.length > 0
+        ? {
+            cursorLastMessageAt: items[items.length - 1].lastMessageAt || items[items.length - 1].createdAt,
+            cursorThreadId: items[items.length - 1].threadId,
+          }
+        : null;
+
+    return { items, hasNextPage, endCursor };
+  }
+
   async getAdminThread(actorId: string, threadId: string) {
     return this.getThreadOrThrow(threadId);
   }

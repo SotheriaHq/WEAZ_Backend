@@ -18,13 +18,21 @@ import { ADMIN_PERMISSIONS } from 'src/admin/constants/permissions';
 import { RequirePermissions } from 'src/admin/decorators/require-permissions.decorator';
 import { AdminPermissionGuard } from 'src/admin/guards/admin-permission.guard';
 import { MessagingService } from '../messaging.service';
-import { AdminSystemMessageDto, ModerateMessageDto, QueryMessagesDto } from '../dto/messaging.dto';
+import { AdminSystemMessageDto, ModerateMessageDto, QueryInboxDto, QueryMessagesDto } from '../dto/messaging.dto';
 
 @Controller('admin/messaging')
 @UseGuards(JwtAuthGuard, RolesGuard, AdminPermissionGuard)
 @Roles(Role.SuperAdmin, Role.Admin)
 export class AdminMessagingController {
   constructor(private readonly messaging: MessagingService) {}
+
+  @Get('inbox')
+  @RequirePermissions(ADMIN_PERMISSIONS.MESSAGING_READ)
+  async inbox(
+    @Query(new ValidationPipe({ transform: true, whitelist: true })) query: QueryInboxDto,
+  ) {
+    return this.messaging.getAdminInbox(query);
+  }
 
   @Get('threads/:threadId')
   @RequirePermissions(ADMIN_PERMISSIONS.MESSAGING_READ)
