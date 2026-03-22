@@ -20,6 +20,7 @@ import { SearchProcessor } from './search.processor';
 import { ReviewsModule } from 'src/reviews/reviews.module';
 import { ReviewAggregateProcessor } from './review-aggregate.processor';
 import { ReviewReminderProcessor } from './review-reminder.processor';
+import { SystemConfigModule } from 'src/admin/system-config/system-config.module';
 
 @Module({
   imports: [
@@ -38,6 +39,7 @@ import { ReviewReminderProcessor } from './review-reminder.processor';
     TagsModule,
     CategoriesModule,
     ReviewsModule,
+    SystemConfigModule,
   ],
   providers: [
     CollectionsService,

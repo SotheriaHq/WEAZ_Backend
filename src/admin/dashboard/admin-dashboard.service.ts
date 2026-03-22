@@ -1,14 +1,20 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { BrandVerificationStatus, Role } from '@prisma/client';
+import { SystemConfigService } from '../system-config/system-config.service';
 
 @Injectable()
 export class AdminDashboardService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly systemConfigService: SystemConfigService,
+  ) {}
 
   async getStats() {
     const thirtyDaysAgo = new Date();
     thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
 
     const [
       totalUsers,
@@ -17,7 +23,10 @@ export class AdminDashboardService {
       pendingVerifications,
       pendingPayouts,
       openDisputes,
-      recentLogs,
+      recentAuditLogs,
+      recentUsers,
+      dailySignupCount,
+      showDailySignupCount,
     ] = await Promise.all([
       this.prisma.user.count({ where: { role: { not: Role.SuperAdmin } } }),
       this.prisma.user.count({
@@ -38,14 +47,45 @@ export class AdminDashboardService {
         take: 10,
         orderBy: { createdAt: 'desc' },
       }),
+      this.prisma.user.findMany({
+        where: { role: { not: Role.SuperAdmin } },
+        take: 10,
+        orderBy: { createdAt: 'desc' },
+        select: {
+          id: true,
+          createdAt: true,
+        },
+      }),
+      this.prisma.user.count({
+        where: {
+          role: { not: Role.SuperAdmin },
+          createdAt: { gte: startOfToday },
+        },
+      }),
+      this.systemConfigService.getBoolean('admin.dashboard.showDailySignupCount'),
     ]);
 
-    // Enrich logs with actor + target entity data
+    const recentLogs = [
+      ...recentAuditLogs,
+      ...recentUsers.map((user) => ({
+        id: `signup-${user.id}`,
+        action: 'USER_SIGNUP',
+        targetType: 'USER',
+        targetId: user.id,
+        createdAt: user.createdAt,
+        actorUserId: user.id,
+      })),
+    ]
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+      .slice(0, 10);
+
     const enriched = await this.enrichRecentLogs(recentLogs);
 
     return {
       totalUsers,
       activeUsers30d,
+      dailySignupCount,
+      showDailySignupCount,
       totalBrands,
       pendingVerifications,
       pendingPayouts,
@@ -87,10 +127,11 @@ export class AdminDashboardService {
       actorIds.size > 0
         ? this.prisma.user.findMany({
             where: { id: { in: [...actorIds] } },
-            select: {
+          select: {
               id: true,
               firstName: true,
               lastName: true,
+              username: true,
               email: true,
               profileImageFile: { select: { s3Url: true } },
             },
@@ -154,7 +195,7 @@ export class AdminDashboardService {
     return logs.map((log) => {
       const actor = actorMap.get(log.actorUserId);
       const actorName = actor
-        ? `${actor.firstName} ${actor.lastName}`.trim()
+        ? `${actor.firstName} ${actor.lastName}`.trim() || actor.username || actor.email || 'User'
         : null;
       const actorImage = actor?.profileImageFile?.s3Url ?? null;
 
@@ -167,7 +208,7 @@ export class AdminDashboardService {
         const t = (log.targetType || '').toLowerCase();
         if (t === 'user') {
           const u = userMap.get(log.targetId);
-          targetName = u ? `${u.firstName} ${u.lastName}`.trim() : null;
+          targetName = u ? `${u.firstName} ${u.lastName}`.trim() || u.username || 'User' : null;
           targetImage = u?.profileImageFile?.s3Url ?? null;
           targetStatus = u?.status ?? null;
           targetRoute = `/admin/users`;

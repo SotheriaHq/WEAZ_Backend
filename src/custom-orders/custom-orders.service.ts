@@ -70,7 +70,10 @@ type ComputedChartCandidate = {
   nearestLabel?: string;
 };
 
-const CHART_BANDS: Record<Exclude<CustomOrderChartFamily, 'HYBRID_UK_NIGERIA'>, ChartBand[]> = {
+const CHART_BANDS: Record<
+  Exclude<CustomOrderChartFamily, 'HYBRID_UK_NIGERIA' | 'HYBRID_US_NIGERIA'>,
+  ChartBand[]
+> = {
   UK: [
     { label: 'UK 8', bustMin: 80, bustMax: 84, waistMin: 62, waistMax: 66, hipsMin: 88, hipsMax: 92 },
     { label: 'UK 10', bustMin: 84, bustMax: 88, waistMin: 66, waistMax: 70, hipsMin: 92, hipsMax: 96 },
@@ -1882,7 +1885,14 @@ export class CustomOrdersService {
 
   private normalizeChartFamily(value: unknown): CustomOrderChartFamily {
     const v = typeof value === 'string' ? value.toUpperCase() : '';
-    if (v === 'UK' || v === 'US' || v === 'NIGERIA' || v === 'ASIA' || v === 'HYBRID_UK_NIGERIA') {
+    if (
+      v === 'UK' ||
+      v === 'US' ||
+      v === 'NIGERIA' ||
+      v === 'ASIA' ||
+      v === 'HYBRID_UK_NIGERIA' ||
+      v === 'HYBRID_US_NIGERIA'
+    ) {
       return v;
     }
     return DEFAULT_PRICING_CHART_FAMILY;
@@ -1897,7 +1907,7 @@ export class CustomOrdersService {
   }
 
   private currentChartVersionId() {
-    return `chart-pack-v1-${new Date().getUTCFullYear()}Q1`;
+    return `chart-pack-v2-${new Date().getUTCFullYear()}Q1`;
   }
 
   private validateAndNormalizeIssueEvidence(
@@ -2082,7 +2092,9 @@ export class CustomOrdersService {
       indexed[key] = value;
     }
 
-    const computeFromFamily = (family: Exclude<CustomOrderChartFamily, 'HYBRID_UK_NIGERIA'>): ComputedChartCandidate => {
+    const computeFromFamily = (
+      family: Exclude<CustomOrderChartFamily, 'HYBRID_UK_NIGERIA' | 'HYBRID_US_NIGERIA'>,
+    ): ComputedChartCandidate => {
       const bands = CHART_BANDS[family];
       const exact = bands.findIndex((band, idx) => {
         const inBust = indexed.BUST >= band.bustMin && (idx === bands.length - 1 ? indexed.BUST <= band.bustMax : indexed.BUST < band.bustMax);
@@ -2118,7 +2130,10 @@ export class CustomOrdersService {
 
     const uk = computeFromFamily('UK');
     const ng = computeFromFamily('NIGERIA');
-    const byFamily: Record<Exclude<CustomOrderChartFamily, 'HYBRID_UK_NIGERIA'>, ComputedChartCandidate> = {
+    const byFamily: Record<
+      Exclude<CustomOrderChartFamily, 'HYBRID_UK_NIGERIA' | 'HYBRID_US_NIGERIA'>,
+      ComputedChartCandidate
+    > = {
       UK: uk,
       NIGERIA: ng,
       US: computeFromFamily('US'),
@@ -2137,14 +2152,37 @@ export class CustomOrdersService {
       } else {
         chosen = uk.bandIndex >= ng.bandIndex ? uk : ng;
       }
+    } else if (input.pricingChartFamily === 'HYBRID_US_NIGERIA') {
+      const us = byFamily.US;
+      if (input.resolverPolicy === 'PRIMARY_ONLY') {
+        chosen = us;
+      } else if (input.resolverPolicy === 'WEIGHTED_AVERAGE_TO_NEAREST_BAND') {
+        const weighted = Math.round((us.bandIndex * 0.6 + ng.bandIndex * 0.4));
+        chosen = us.bandIndex >= ng.bandIndex
+          ? { ...us, bandIndex: Math.max(weighted, us.bandIndex) }
+          : { ...ng, bandIndex: Math.max(weighted, ng.bandIndex) };
+      } else {
+        chosen = us.bandIndex >= ng.bandIndex ? us : ng;
+      }
     } else {
-      chosen = byFamily[input.pricingChartFamily as Exclude<CustomOrderChartFamily, 'HYBRID_UK_NIGERIA'>];
+      chosen = byFamily[
+        input.pricingChartFamily as Exclude<
+          CustomOrderChartFamily,
+          'HYBRID_UK_NIGERIA' | 'HYBRID_US_NIGERIA'
+        >
+      ];
     }
 
     const displayCandidate =
-      input.displayChartFamily === 'HYBRID_UK_NIGERIA'
+      input.displayChartFamily === 'HYBRID_UK_NIGERIA' ||
+      input.displayChartFamily === 'HYBRID_US_NIGERIA'
         ? chosen
-        : byFamily[input.displayChartFamily as Exclude<CustomOrderChartFamily, 'HYBRID_UK_NIGERIA'>];
+        : byFamily[
+            input.displayChartFamily as Exclude<
+              CustomOrderChartFamily,
+              'HYBRID_UK_NIGERIA' | 'HYBRID_US_NIGERIA'
+            >
+          ];
 
     return {
       manualQuoteRequired: false,

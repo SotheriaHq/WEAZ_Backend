@@ -20,6 +20,10 @@ export const DEFAULT_FILE_SIZE_LIMITS: Record<string, number> = {
   'upload.maxSize.collectionBulk': 2 * 1024 * 1024,   // 2 MB
 };
 
+export const DEFAULT_BOOLEAN_CONFIGS: Record<string, boolean> = {
+  'admin.dashboard.showDailySignupCount': true,
+};
+
 /** Descriptions for each config key */
 const KEY_DESCRIPTIONS: Record<string, string> = {
   'upload.maxSize.profileImage':     'Max file size for profile images (bytes)',
@@ -34,6 +38,7 @@ const KEY_DESCRIPTIONS: Record<string, string> = {
   'upload.maxSize.messageDocument':  'Max file size for message documents (bytes)',
   'upload.maxSize.productMedia':     'Max file size for product media uploads (bytes)',
   'upload.maxSize.collectionBulk':   'Max file size for collection bulk uploads (bytes)',
+  'admin.dashboard.showDailySignupCount': 'Controls whether the admin dashboard shows the daily signup count card',
 };
 
 @Injectable()
@@ -61,6 +66,17 @@ export class SystemConfigService {
           description: KEY_DESCRIPTIONS[key] ?? null,
         },
         update: {},   // don't overwrite admin customisations
+      });
+    }
+    for (const [key, value] of Object.entries(DEFAULT_BOOLEAN_CONFIGS)) {
+      await this.prisma.systemConfig.upsert({
+        where: { key },
+        create: {
+          key,
+          value: value ? 'true' : 'false',
+          description: KEY_DESCRIPTIONS[key] ?? null,
+        },
+        update: {},
       });
     }
     this.logger.log('SystemConfig defaults seeded');
@@ -101,6 +117,16 @@ export class SystemConfigService {
       if (Number.isFinite(n) && n > 0) return n;
     }
     return DEFAULT_FILE_SIZE_LIMITS[key] ?? 2 * 1024 * 1024;
+  }
+
+  async getBoolean(key: string): Promise<boolean> {
+    const raw = await this.getValue(key);
+    if (raw != null) {
+      const normalized = raw.trim().toLowerCase();
+      if (['true', '1', 'yes', 'on'].includes(normalized)) return true;
+      if (['false', '0', 'no', 'off'].includes(normalized)) return false;
+    }
+    return DEFAULT_BOOLEAN_CONFIGS[key] ?? false;
   }
 
   /** Get the max upload size (bytes) for a given FileType key. */

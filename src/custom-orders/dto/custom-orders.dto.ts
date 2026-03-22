@@ -23,7 +23,13 @@ import {
   MinLength,
 } from 'class-validator';
 
-export type CustomOrderChartFamily = 'UK' | 'US' | 'NIGERIA' | 'ASIA' | 'HYBRID_UK_NIGERIA';
+export type CustomOrderChartFamily =
+  | 'UK'
+  | 'US'
+  | 'NIGERIA'
+  | 'ASIA'
+  | 'HYBRID_UK_NIGERIA'
+  | 'HYBRID_US_NIGERIA';
 export type CustomOrderResolverPolicy =
   | 'PRIMARY_ONLY'
   | 'MAX_OF_BOTH'
