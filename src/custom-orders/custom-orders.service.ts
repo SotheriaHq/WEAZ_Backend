@@ -1249,6 +1249,11 @@ export class CustomOrdersService {
         data: this.mapDetail(order),
       };
     }
+    if (order.paymentStatus === PaymentStatus.PAID) {
+      throw new ForbiddenException(
+        'Paid custom orders are auto-accepted. Only a super admin can cancel the order and trigger a full refund.',
+      );
+    }
     if (order.status !== CustomOrderStatus.PENDING_BRAND_ACCEPTANCE) {
       throw new BadRequestException('CUSTOM_ORDER_INVALID_STATE');
     }

@@ -230,7 +230,7 @@ export class CreateProductDto {
   // Media
   @IsOptional()
   @IsArray()
-  @ArrayMaxSize(4)
+  @ArrayMaxSize(6)
   @IsString({ each: true })
   images?: string[];
 

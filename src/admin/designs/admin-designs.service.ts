@@ -23,6 +23,8 @@ export class AdminDesignsService {
     search?: string;
     ownerId?: string;
     status?: CollectionStatus;
+    visibility?: 'PUBLIC' | 'PRIVATE';
+    sortBy?: 'recent' | 'oldest' | 'views' | 'orders';
   }) {
     const take = Math.min(params.limit ?? 50, 100);
     const where: Record<string, unknown> = {
@@ -38,6 +40,11 @@ export class AdminDesignsService {
     }
     if (params.ownerId) where.ownerId = params.ownerId;
     if (params.status) where.status = params.status;
+    if (params.visibility) where.visibility = params.visibility;
+
+    let orderBy: Record<string, string> = { createdAt: 'desc' };
+    if (params.sortBy === 'oldest') orderBy = { createdAt: 'asc' };
+    else if (params.sortBy === 'views') orderBy = { viewsCount: 'desc' };
 
     const items = await this.prisma.collection.findMany({
       where,
@@ -47,6 +54,7 @@ export class AdminDesignsService {
         description: true,
         status: true,
         visibility: true,
+        viewsCount: true,
         ownerId: true,
         createdAt: true,
         updatedAt: true,
@@ -81,7 +89,7 @@ export class AdminDesignsService {
           },
         },
       },
-      orderBy: { createdAt: 'desc' },
+      orderBy,
       take: take + 1,
       ...(params.cursor ? { cursor: { id: params.cursor }, skip: 1 } : {}),
     });
@@ -107,14 +115,25 @@ export class AdminDesignsService {
       groupedOrders.map((entry) => [entry.sourceId, entry._count._all]),
     );
 
+    // If sorting by orders, re-sort in memory since it's a computed field
+    let sortedResults = results;
+    if (params.sortBy === 'orders') {
+      sortedResults = [...results].sort(
+        (a, b) =>
+          (orderCountByDesignId.get(b.id) ?? 0) -
+          (orderCountByDesignId.get(a.id) ?? 0),
+      );
+    }
+
     return {
-      items: results.map((item) => ({
+      items: sortedResults.map((item: any) => ({
         ...item,
         coverImage:
-          item.coverMedia?.file?.s3Url ?? item.medias[0]?.file?.s3Url ?? null,
+          item.coverMedia?.file?.s3Url ?? item.medias?.[0]?.file?.s3Url ?? null,
         coverImageFileId:
-          item.coverMedia?.fileUploadId ?? item.medias[0]?.fileUploadId ?? null,
+          item.coverMedia?.fileUploadId ?? item.medias?.[0]?.fileUploadId ?? null,
         orderCount: orderCountByDesignId.get(item.id) ?? 0,
+        viewCount: item.viewsCount ?? 0,
       })),
       nextCursor,
     };

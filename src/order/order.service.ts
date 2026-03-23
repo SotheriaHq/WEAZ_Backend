@@ -247,6 +247,16 @@ export class OrderService {
       throw new BadRequestException('ORDER_INVALID_STATUS_TRANSITION');
     }
 
+    // Brands cannot cancel an order once payment has been confirmed
+    if (
+      status === OrderStatus.CANCELLED &&
+      order.paymentStatus === PaymentStatus.PAID
+    ) {
+      throw new BadRequestException(
+        'ORDER_CANCEL_BLOCKED_PAYMENT_CONFIRMED',
+      );
+    }
+
     const previousStatus = order.status;
 
     const updated = await this.prisma.$transaction(async (tx) => {

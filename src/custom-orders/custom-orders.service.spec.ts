@@ -1,3 +1,4 @@
+import { ForbiddenException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import {
   CustomOrderActorType,
@@ -651,7 +652,7 @@ describe('CustomOrdersService', () => {
     expect(result.data.status).toBe(CustomOrderStatus.ACCEPTED);
   });
 
-  it('rejects a paid custom order, reverses allocations, and triggers refund handling', async () => {
+  it('blocks brand rejection once a custom order is fully paid', async () => {
     prisma.brand.findUnique.mockResolvedValue({ id: 'brand_1' });
     prisma.customOrder.findFirst.mockResolvedValue(
       buildOrder({
@@ -660,50 +661,11 @@ describe('CustomOrdersService', () => {
       }),
     );
 
-    const updatedOrder = buildOrder({
-      status: CustomOrderStatus.REJECTED_BY_BRAND,
-      rejectedAt: new Date('2026-03-12T10:30:00.000Z'),
-    });
-
-    const tx = {
-      customOrder: {
-        update: jest.fn().mockResolvedValue(updatedOrder),
-      },
-      customOrderLedgerAllocation: {
-        updateMany: jest.fn().mockResolvedValue({ count: 2 }),
-      },
-    };
-
-    prisma.$transaction.mockImplementation(async (callback: (innerTx: typeof tx) => Promise<unknown>) =>
-      callback(tx),
-    );
-
-    const result = await service.rejectBrandOrder('owner_1', 'brand_1', 'co_1', {
-      reason: 'The selected fabric is unavailable.',
-    });
-
-    expect(tx.customOrderLedgerAllocation.updateMany).toHaveBeenCalledWith({
-      where: { customOrderId: 'co_1' },
-      data: {
-        status: CustomOrderLedgerAllocationStatus.REVERSED,
-        reversedAt: expect.any(Date),
-        reversalReason: 'BRAND_REJECTED',
-      },
-    });
-    expect(refundService.initiateRefund).toHaveBeenCalledWith(tx, {
-      customOrderId: 'co_1',
-      reason: 'BRAND_REJECTED',
-      actorType: CustomOrderActorType.BRAND,
-      actorId: 'owner_1',
-    });
-    expect(sideEffects.enqueueNotification).toHaveBeenCalledWith(
-      expect.objectContaining({
-        customOrderId: 'co_1',
-        recipientIds: ['buyer_1'],
+    await expect(
+      service.rejectBrandOrder('owner_1', 'brand_1', 'co_1', {
+        reason: 'The selected fabric is unavailable.',
       }),
-    );
-    expect(result.statusCode).toBe(200);
-    expect(result.data.status).toBe(CustomOrderStatus.REJECTED_BY_BRAND);
+    ).rejects.toThrow(ForbiddenException);
   });
 
   it('blocks extension requests when the order state is no longer eligible', async () => {

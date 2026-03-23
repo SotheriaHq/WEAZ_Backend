@@ -4,7 +4,9 @@ import {
   CustomOrderActorType,
   CustomOrderStatus,
   NotificationType,
+  PaymentStatus,
 } from '@prisma/client';
+import { CustomOrderRefundService } from 'src/custom-orders/custom-order-refund.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { CustomOrderSideEffectsService } from 'src/custom-orders/custom-order-side-effects.service';
 import { CustomOrderAdminService } from './custom-order-admin.service';
@@ -13,6 +15,7 @@ describe('CustomOrderAdminService', () => {
   let service: CustomOrderAdminService;
   let prisma: any;
   let sideEffects: any;
+  let refundService: any;
 
   beforeEach(async () => {
     prisma = {
@@ -69,11 +72,16 @@ describe('CustomOrderAdminService', () => {
       enqueueNotification: jest.fn(),
     };
 
+    refundService = {
+      initiateRefund: jest.fn(),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         CustomOrderAdminService,
         { provide: PrismaService, useValue: prisma },
         { provide: CustomOrderSideEffectsService, useValue: sideEffects },
+        { provide: CustomOrderRefundService, useValue: refundService },
       ],
     }).compile();
 
@@ -290,6 +298,75 @@ describe('CustomOrderAdminService', () => {
     await expect(
       service.escalateRefundReview('co_1', { reason: 'Manual review' }, 'admin_1'),
     ).rejects.toThrow(BadRequestException);
+  });
+
+  it('cancels a paid custom order from super admin and starts a full refund', async () => {
+    prisma.customOrder.findUnique.mockResolvedValue({
+      id: 'co_1',
+      buyerId: 'buyer_1',
+      brandId: 'brand_1',
+      status: CustomOrderStatus.ACCEPTED,
+      paymentStatus: PaymentStatus.PAID,
+      sourceBrandNameSnapshot: 'Threadly Atelier',
+      brand: { ownerId: 'brand_owner_1' },
+    });
+
+    const tx = {
+      customOrder: {
+        update: jest.fn().mockResolvedValue({
+          id: 'co_1',
+          status: CustomOrderStatus.REFUND_IN_PROGRESS,
+          paymentStatus: PaymentStatus.PAID,
+        }),
+      },
+      customOrderLedgerAllocation: {
+        updateMany: jest.fn().mockResolvedValue({ count: 2 }),
+      },
+    };
+    prisma.$transaction.mockImplementation(async (callback: (innerTx: typeof tx) => Promise<unknown>) =>
+      callback(tx),
+    );
+
+    const result = await service.cancelPaidOrder(
+      'co_1',
+      { reason: 'Operational exception', note: 'Cancel and refund immediately.' },
+      'admin_1',
+    );
+
+    expect(tx.customOrder.update).toHaveBeenCalledWith({
+      where: { id: 'co_1' },
+      data: expect.objectContaining({
+        status: CustomOrderStatus.REFUND_IN_PROGRESS,
+      }),
+      select: expect.any(Object),
+    });
+    expect(tx.customOrderLedgerAllocation.updateMany).toHaveBeenCalledWith({
+      where: {
+        customOrderId: 'co_1',
+        status: {
+          in: ['HELD', 'PAYOUT_ELIGIBLE'],
+        },
+      },
+      data: {
+        status: 'REVERSED',
+        reversedAt: expect.any(Date),
+        reversalReason: 'SUPER_ADMIN_CANCELLED',
+      },
+    });
+    expect(refundService.initiateRefund).toHaveBeenCalledWith(tx, {
+      customOrderId: 'co_1',
+      reason: 'Operational exception',
+      actorType: CustomOrderActorType.ADMIN,
+      actorId: 'admin_1',
+    });
+    expect(sideEffects.enqueueNotification).toHaveBeenCalledWith(
+      expect.objectContaining({
+        customOrderId: 'co_1',
+        recipientIds: ['buyer_1', 'brand_owner_1'],
+      }),
+    );
+    expect(result.statusCode).toBe(200);
+    expect(result.data.status).toBe(CustomOrderStatus.REFUND_IN_PROGRESS);
   });
 
   it('throws when admin detail order does not exist', async () => {

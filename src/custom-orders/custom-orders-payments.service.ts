@@ -6,6 +6,7 @@ import {
 import {
   CustomOrderLedgerAllocationStatus,
   CustomOrderLedgerAllocationType,
+  CustomOrderProgressStage,
   CustomOrderStatus,
   NotificationType,
   PaymentMethod,
@@ -42,10 +43,14 @@ export class CustomOrdersPaymentsService {
       select: {
         id: true,
         buyerId: true,
+        brandId: true,
         status: true,
         paymentStatus: true,
         buyerPriceSummaryJson: true,
         currency: true,
+        sourceBrandNameSnapshot: true,
+        productionLeadDaysSnapshot: true,
+        deliveryMaxDaysSnapshot: true,
       },
     });
 
@@ -216,6 +221,8 @@ export class CustomOrdersPaymentsService {
         brandId: true,
         currency: true,
         sourceBrandNameSnapshot: true,
+        productionLeadDaysSnapshot: true,
+        deliveryMaxDaysSnapshot: true,
         buyerPriceSummaryJson: true,
       },
     });
@@ -271,7 +278,27 @@ export class CustomOrdersPaymentsService {
         : undefined,
     );
     const failureState = this.getFailureState(nextStatus);
+    const brand =
+      nextStatus === 'PAID'
+        ? await this.prisma.brand.findUnique({
+            where: { id: order.brandId },
+            select: { ownerId: true },
+          })
+        : null;
+
     const updatedAttempt = await this.prisma.$transaction(async (tx) => {
+      const promisedProductionAt =
+        nextStatus === 'PAID'
+          ? new Date(now.getTime() + order.productionLeadDaysSnapshot * 24 * 60 * 60 * 1000)
+          : null;
+      const promisedDispatchAt = promisedProductionAt;
+      const promisedDeliveryAt =
+        nextStatus === 'PAID' && promisedDispatchAt
+          ? new Date(
+              promisedDispatchAt.getTime() + order.deliveryMaxDaysSnapshot * 24 * 60 * 60 * 1000,
+            )
+          : null;
+
       const updated = await tx.paymentAttempt.update({
         where: { reference: dto.reference },
         data: {
@@ -290,8 +317,27 @@ export class CustomOrdersPaymentsService {
           paymentStatus: this.mapAttemptStatusToPaymentStatus(nextStatus),
           status:
             nextStatus === 'PAID'
-              ? CustomOrderStatus.PENDING_BRAND_ACCEPTANCE
+              ? CustomOrderStatus.ACCEPTED
               : CustomOrderStatus.PENDING_PAYMENT,
+          acceptedAt: nextStatus === 'PAID' ? now : undefined,
+          promisedProductionAt: nextStatus === 'PAID' ? promisedProductionAt : undefined,
+          promisedDispatchAt: nextStatus === 'PAID' ? promisedDispatchAt : undefined,
+          promisedDeliveryAt: nextStatus === 'PAID' ? promisedDeliveryAt : undefined,
+          currentProgressStage:
+            nextStatus === 'PAID' ? CustomOrderProgressStage.ORDER_RECEIVED : undefined,
+          currentProgressStageEnteredAt: nextStatus === 'PAID' ? now : undefined,
+          lastBrandProgressUpdateAt: nextStatus === 'PAID' ? now : undefined,
+          progressEvents:
+            nextStatus === 'PAID' && brand?.ownerId
+              ? {
+                  create: {
+                    stage: CustomOrderProgressStage.ORDER_RECEIVED,
+                    note: 'Order auto-accepted after payment confirmation.',
+                    changedById: brand.ownerId,
+                    staleThresholdAt: new Date(now.getTime() + 24 * 60 * 60 * 1000),
+                  },
+                }
+              : undefined,
         },
       });
 
@@ -322,6 +368,7 @@ export class CustomOrdersPaymentsService {
             reference: updated.reference,
             status: nextStatus,
             awaitingProviderConfirmation,
+            autoAccepted: nextStatus === 'PAID',
           },
         },
       });
@@ -353,17 +400,24 @@ export class CustomOrdersPaymentsService {
             ],
           });
         }
+
+        await tx.customOrderLedgerAllocation.updateMany({
+          where: {
+            customOrderId,
+            allocationType: CustomOrderLedgerAllocationType.BRAND_ACCEPTANCE_PORTION,
+            status: CustomOrderLedgerAllocationStatus.HELD,
+          },
+          data: {
+            status: CustomOrderLedgerAllocationStatus.PAYOUT_ELIGIBLE,
+            eligibleAt: now,
+          },
+        });
       }
 
       return updated;
     });
 
     if (nextStatus === 'PAID') {
-      const brand = await this.prisma.brand.findUnique({
-        where: { id: order.brandId },
-        select: { ownerId: true },
-      });
-
       await this.sideEffects.enqueueNotification({
         customOrderId,
         recipientIds: [order.buyerId],
@@ -371,6 +425,7 @@ export class CustomOrdersPaymentsService {
         payload: {
           customOrderId,
           targetUrl: `/custom-orders/${customOrderId}`,
+          message: `Payment received and ${order.sourceBrandNameSnapshot || 'the brand'} has been auto-confirmed for your custom order.`,
         },
         dedupeMs: 5 * 60 * 1000,
       });
@@ -384,6 +439,7 @@ export class CustomOrdersPaymentsService {
             customOrderId,
             brandName: order.sourceBrandNameSnapshot,
             targetUrl: `/studio/custom-orders/${customOrderId}`,
+            message: `Payment confirmed for ${customOrderId.slice(0, 8)}. The order was auto-accepted and is ready for production updates.`,
           },
           dedupeMs: 5 * 60 * 1000,
         });

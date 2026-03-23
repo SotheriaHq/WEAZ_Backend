@@ -388,17 +388,21 @@ async function bootstrap() {
     const port = parsePort(configService.get<string>('APP_PORT'));
     const host = configService.get<string>('APP_HOST', DEFAULT_HOST);
 
-    // Seed system config defaults (idempotent)
-    try {
-      const { SystemConfigService } = await import('./admin/system-config/system-config.service');
-      const systemConfigService = app.get(SystemConfigService);
-      await systemConfigService.seedDefaults();
-    } catch (err) {
-      logger.warn('SystemConfig seed skipped (non-fatal):', err);
-    }
-
     await app.listen(port, host);
     logger.log(`Application is running on: http://${host}:${port}`);
+
+    // Seed system config defaults (idempotent) without holding server startup.
+    void (async () => {
+      try {
+        const { SystemConfigService } = await import(
+          './admin/system-config/system-config.service'
+        );
+        const systemConfigService = app.get(SystemConfigService);
+        await systemConfigService.seedDefaults();
+      } catch (err) {
+        logger.warn('SystemConfig seed skipped (non-fatal):', err);
+      }
+    })();
 
     process.on('SIGTERM', async () => {
       logger.log('SIGTERM received, shutting down gracefully...');

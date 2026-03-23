@@ -13,11 +13,14 @@ import {
   CustomOrderRetentionHoldType,
   CustomOrderStatus,
   NotificationType,
+  PaymentStatus,
   Prisma,
 } from '@prisma/client';
+import { CustomOrderRefundService } from 'src/custom-orders/custom-order-refund.service';
 import { CustomOrderSideEffectsService } from 'src/custom-orders/custom-order-side-effects.service';
 import {
   AdminCustomOrderReminderDto,
+  CancelPaidCustomOrderDto,
   CreateAdminCustomFabricRuleBasisDto,
   DecideCustomOrderExceptionReviewDto,
   EscalateCustomOrderRefundReviewDto,
@@ -42,6 +45,7 @@ export class CustomOrderAdminService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly sideEffects: CustomOrderSideEffectsService,
+    private readonly refundService: CustomOrderRefundService,
   ) {}
 
   async getPendingBases() {
@@ -1569,6 +1573,133 @@ export class CustomOrderAdminService {
       data: {
         customOrderId: id,
         status: updated.status,
+      },
+    };
+  }
+
+  async cancelPaidOrder(
+    id: string,
+    dto: CancelPaidCustomOrderDto,
+    adminUserId: string,
+  ) {
+    const order = await this.prisma.customOrder.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        buyerId: true,
+        brandId: true,
+        status: true,
+        paymentStatus: true,
+        sourceBrandNameSnapshot: true,
+        brand: {
+          select: {
+            ownerId: true,
+          },
+        },
+      },
+    });
+    if (!order) {
+      throw new NotFoundException('Custom order not found');
+    }
+    if (order.paymentStatus !== PaymentStatus.PAID) {
+      throw new BadRequestException('Only fully paid custom orders can be cancelled from admin');
+    }
+
+    const cancellableStatuses = new Set<CustomOrderStatus>([
+      CustomOrderStatus.PENDING_BRAND_ACCEPTANCE,
+      CustomOrderStatus.ACCEPTED,
+      CustomOrderStatus.IN_PRODUCTION,
+      CustomOrderStatus.READY_FOR_DISPATCH,
+      CustomOrderStatus.IN_TRANSIT,
+      CustomOrderStatus.DELIVERED_PENDING_BUYER_CONFIRMATION,
+      CustomOrderStatus.DELIVERY_ISSUE_REPORTED,
+      CustomOrderStatus.DISPUTED,
+      CustomOrderStatus.COMPLETED,
+    ]);
+    if (!cancellableStatuses.has(order.status)) {
+      throw new BadRequestException('Custom order cannot be cancelled from its current state');
+    }
+
+    const normalizedReason = dto.reason.trim();
+    const normalizedNote = dto.note?.trim() || null;
+
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const next = await tx.customOrder.update({
+        where: { id },
+        data: {
+          status: CustomOrderStatus.REFUND_IN_PROGRESS,
+          timelineEvents: {
+            create: {
+              actorType: CustomOrderActorType.ADMIN,
+              actorId: adminUserId,
+              eventType: 'REFUND_INITIATED',
+              payloadJson: {
+                reason: normalizedReason,
+                note: normalizedNote,
+                action: 'SUPER_ADMIN_CANCEL_ORDER',
+              } as Prisma.InputJsonValue,
+            },
+          },
+        },
+        select: {
+          id: true,
+          status: true,
+          paymentStatus: true,
+        },
+      });
+
+      await tx.customOrderLedgerAllocation.updateMany({
+        where: {
+          customOrderId: id,
+          status: {
+            in: [
+              CustomOrderLedgerAllocationStatus.HELD,
+              CustomOrderLedgerAllocationStatus.PAYOUT_ELIGIBLE,
+            ],
+          },
+        },
+        data: {
+          status: CustomOrderLedgerAllocationStatus.REVERSED,
+          reversedAt: new Date(),
+          reversalReason: 'SUPER_ADMIN_CANCELLED',
+        },
+      });
+
+      await this.refundService.initiateRefund(tx, {
+        customOrderId: id,
+        reason: normalizedReason,
+        actorType: CustomOrderActorType.ADMIN,
+        actorId: adminUserId,
+      });
+
+      return next;
+    });
+
+    const recipientIds = [order.buyerId, order.brand?.ownerId].filter(
+      (recipientId): recipientId is string => Boolean(recipientId),
+    );
+    if (recipientIds.length > 0) {
+      await this.sideEffects.enqueueNotification({
+        customOrderId: id,
+        recipientIds,
+        notificationType: NotificationType.CUSTOM_ORDER_ADMIN_REVIEW_TRIGGERED,
+        target: this.buyerTarget(id),
+        payload: {
+          customOrderId: id,
+          reason: normalizedReason,
+          message: `A super admin cancelled ${id.slice(0, 8)} and initiated a full refund.`,
+        },
+        dedupeMs: 60 * 1000,
+      });
+    }
+
+    return {
+      statusCode: 200,
+      message: 'Custom order cancelled and refund initiated',
+      data: {
+        customOrderId: updated.id,
+        status: updated.status,
+        paymentStatus: updated.paymentStatus,
       },
     };
   }

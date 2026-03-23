@@ -18,6 +18,12 @@ export class CategoriesBootstrapService implements OnModuleInit {
       return;
     }
 
-    await this.categoriesService.ensureDefaultTaxonomy();
+    // Taxonomy seeding is idempotent, but it should not block the server from
+    // becoming reachable during local development or normal restarts.
+    void this.categoriesService.ensureDefaultTaxonomy().catch((error: any) => {
+      this.logger.warn(
+        `Default taxonomy seeding failed in background: ${error?.message || error}`,
+      );
+    });
   }
 }

@@ -33,6 +33,7 @@ describe('CustomOrdersPaymentsService', () => {
       customOrderLedgerAllocation: {
         count: jest.fn(),
         createMany: jest.fn(),
+        updateMany: jest.fn(),
       },
       $transaction: jest.fn(),
     };
@@ -194,6 +195,7 @@ describe('CustomOrdersPaymentsService', () => {
       customOrderLedgerAllocation: {
         count: jest.fn().mockResolvedValue(0),
         createMany: jest.fn().mockResolvedValue({ count: 2 }),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       },
     };
     prisma.$transaction.mockImplementation(async (callback: (innerTx: typeof tx) => Promise<unknown>) =>
@@ -205,6 +207,8 @@ describe('CustomOrdersPaymentsService', () => {
       brandId: 'brand_1',
       currency: 'NGN',
       sourceBrandNameSnapshot: 'Threadly Atelier',
+      productionLeadDaysSnapshot: 5,
+      deliveryMaxDaysSnapshot: 4,
       buyerPriceSummaryJson: { grandTotal: 1000 },
     });
     prisma.paymentAttempt.findUnique.mockResolvedValue({
@@ -233,12 +237,24 @@ describe('CustomOrdersPaymentsService', () => {
 
     expect(tx.customOrder.update).toHaveBeenCalledWith({
       where: { id: 'co_2' },
-      data: {
+      data: expect.objectContaining({
         paymentStatus: PaymentStatus.PAID,
-        status: 'PENDING_BRAND_ACCEPTANCE',
-      },
+        status: 'ACCEPTED',
+        currentProgressStage: 'ORDER_RECEIVED',
+      }),
     });
     expect(tx.customOrderLedgerAllocation.createMany).toHaveBeenCalledTimes(1);
+    expect(tx.customOrderLedgerAllocation.updateMany).toHaveBeenCalledWith({
+      where: {
+        customOrderId: 'co_2',
+        allocationType: 'BRAND_ACCEPTANCE_PORTION',
+        status: 'HELD',
+      },
+      data: {
+        status: 'PAYOUT_ELIGIBLE',
+        eligibleAt: expect.any(Date),
+      },
+    });
     const createManyArg = tx.customOrderLedgerAllocation.createMany.mock.calls[0][0];
     expect(createManyArg.data).toHaveLength(2);
     expect(createManyArg.data[0]).toMatchObject({
@@ -435,6 +451,8 @@ describe('CustomOrdersPaymentsService', () => {
       brandId: 'brand_2',
       currency: 'NGN',
       sourceBrandNameSnapshot: 'Threadly Atelier',
+      productionLeadDaysSnapshot: 5,
+      deliveryMaxDaysSnapshot: 4,
       buyerPriceSummaryJson: { grandTotal: 825 },
     });
     prisma.paymentAttempt.findUnique.mockResolvedValue({
@@ -523,6 +541,7 @@ describe('CustomOrdersPaymentsService', () => {
       customOrderLedgerAllocation: {
         count: jest.fn().mockResolvedValue(2),
         createMany: jest.fn().mockResolvedValue({ count: 0 }),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       },
     };
     prisma.$transaction.mockImplementation(async (callback: (innerTx: typeof tx) => Promise<unknown>) =>
@@ -534,6 +553,8 @@ describe('CustomOrdersPaymentsService', () => {
       brandId: 'brand_4',
       currency: 'NGN',
       sourceBrandNameSnapshot: 'Threadly Atelier',
+      productionLeadDaysSnapshot: 5,
+      deliveryMaxDaysSnapshot: 4,
       buyerPriceSummaryJson: { grandTotal: 2000 },
     });
     prisma.paymentAttempt.findUnique.mockResolvedValue({

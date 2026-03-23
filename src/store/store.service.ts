@@ -74,6 +74,8 @@ export class StoreService {
     1,
     parseInt(process.env.MAX_PRODUCTS_PER_COLLECTION || '5', 10),
   );
+  private readonly minPublishProductMediaCount = 4;
+  private readonly maxProductMediaCount = 6;
 
   private normalizeFilterValueIds(raw?: string[] | null): string[] {
     if (!Array.isArray(raw)) return [];
@@ -243,6 +245,170 @@ export class StoreService {
     });
     if (!collection || collection.deletedAt) {
       throw new NotFoundException('Collection not found');
+    }
+  }
+
+  private async assertActiveProductCategory(
+    tx: Prisma.TransactionClient,
+    categoryId: string | null | undefined,
+  ) {
+    if (!categoryId) {
+      return null;
+    }
+
+    const category = await tx.collectionCategory.findUnique({
+      where: { id: categoryId },
+      select: { id: true, isActive: true },
+    });
+
+    if (!category) {
+      throw new NotFoundException('Category not found');
+    }
+    if (!category.isActive) {
+      throw new BadRequestException('Category is not active');
+    }
+
+    return category;
+  }
+
+  private async assertProductTaxonomy(
+    tx: Prisma.TransactionClient,
+    categoryId: string | null | undefined,
+    categoryTypeId: string | null | undefined,
+  ) {
+    const normalizedCategoryId = (categoryId || '').trim() || null;
+    const normalizedCategoryTypeId = (categoryTypeId || '').trim() || null;
+
+    await this.assertActiveProductCategory(tx, normalizedCategoryId);
+
+    if (!normalizedCategoryTypeId) {
+      return;
+    }
+
+    const categoryType = await tx.collectionCategoryType.findUnique({
+      where: { id: normalizedCategoryTypeId },
+      select: { id: true, categoryId: true, isActive: true },
+    });
+
+    if (!categoryType) {
+      throw new NotFoundException('Sub-category not found');
+    }
+    if (!categoryType.isActive) {
+      throw new BadRequestException('Sub-category is not active');
+    }
+    if (
+      normalizedCategoryId &&
+      categoryType.categoryId !== normalizedCategoryId
+    ) {
+      throw new BadRequestException(
+        'Sub-category does not belong to the selected category',
+      );
+    }
+  }
+
+  private async assertProductPublishReady(
+    tx: Prisma.TransactionClient,
+    input: {
+      name?: string | null;
+      description?: string | null;
+      categoryId?: string | null;
+      categoryTypeId?: string | null;
+      tags?: string[] | null;
+      price?: number | Prisma.Decimal | null;
+      images?: string[] | null;
+      thumbnail?: string | null;
+      variants?: Array<
+        | null
+        | undefined
+        | {
+            size?: string | null;
+            color?: string | null;
+            sku?: string | null;
+            price?: number | Prisma.Decimal | null;
+            stock?: number | null;
+            colorHex?: string | null;
+          }
+      > | null;
+      totalStock?: number | null;
+      trackInventory?: boolean | null;
+    },
+  ) {
+    const name = String(input.name || '').trim();
+    if (!name) {
+      throw new BadRequestException('Product title is required to publish');
+    }
+
+    const description = String(input.description || '').trim();
+    if (!description) {
+      throw new BadRequestException(
+        'Product description is required to publish',
+      );
+    }
+
+    const categoryId = String(input.categoryId || '').trim();
+    if (!categoryId) {
+      throw new BadRequestException('Category is required to publish');
+    }
+
+    const categoryTypeId = String(input.categoryTypeId || '').trim();
+    if (!categoryTypeId) {
+      throw new BadRequestException('Sub-category is required to publish');
+    }
+
+    await this.assertProductTaxonomy(tx, categoryId, categoryTypeId);
+
+    const tags = this.buildTagSet(input.tags || []);
+    if (tags.length === 0) {
+      throw new BadRequestException(
+        'At least one tag is required to publish',
+      );
+    }
+
+    const price = Number(input.price ?? 0);
+    if (!Number.isFinite(price) || price <= 0) {
+      throw new BadRequestException('Price must be greater than 0 to publish');
+    }
+
+    const images = Array.isArray(input.images)
+      ? input.images.filter(Boolean)
+      : [];
+    if (images.length < this.minPublishProductMediaCount) {
+      throw new BadRequestException(
+        `Upload at least ${this.minPublishProductMediaCount} images to publish: front, left, right, and back`,
+      );
+    }
+    if (images.length > this.maxProductMediaCount) {
+      throw new BadRequestException(
+        `You can upload up to ${this.maxProductMediaCount} images`,
+      );
+    }
+
+    const thumbnail = String(input.thumbnail || '').trim();
+    if (!thumbnail) {
+      throw new BadRequestException('Cover image is required to publish');
+    }
+    if (!images.includes(thumbnail)) {
+      throw new BadRequestException(
+        'Cover image must be one of the uploaded product images',
+      );
+    }
+
+    const variants = Array.isArray(input.variants)
+      ? input.variants.filter(Boolean)
+      : [];
+    if (variants.length === 0) {
+      throw new BadRequestException(
+        'At least one variant is required to publish',
+      );
+    }
+
+    if (input.trackInventory !== false) {
+      const totalStock = Number(input.totalStock ?? 0);
+      if (!Number.isFinite(totalStock) || totalStock < 0) {
+        throw new BadRequestException(
+          'Inventory stock must be 0 or greater to publish',
+        );
+      }
     }
   }
 
@@ -447,8 +613,10 @@ export class StoreService {
     );
 
     const nextImages = Array.isArray(product.images) ? [...product.images] : [];
-    if (nextImages.length >= 4) {
-      throw new BadRequestException('You can upload up to 4 images');
+    if (nextImages.length >= this.maxProductMediaCount) {
+      throw new BadRequestException(
+        `You can upload up to ${this.maxProductMediaCount} images`,
+      );
     }
     nextImages.push(uploaded.url);
 
@@ -506,8 +674,10 @@ export class StoreService {
     const product = await this.assertBrandOwnsProduct(brandOwnerId, productId);
 
     const ids = Array.isArray(mediaIds) ? mediaIds.filter(Boolean) : [];
-    if (ids.length > 4) {
-      throw new BadRequestException('You can upload up to 4 images');
+    if (ids.length > this.maxProductMediaCount) {
+      throw new BadRequestException(
+        `You can upload up to ${this.maxProductMediaCount} images`,
+      );
     }
     if (ids.length === 0) {
       await this.prisma.product.update({
@@ -558,8 +728,13 @@ export class StoreService {
     if (!upload) throw new NotFoundException('Media not found');
 
     const existingImages = Array.isArray(product.images) ? product.images : [];
-    if (!existingImages.includes(upload.s3Url) && existingImages.length >= 4) {
-      throw new BadRequestException('You can upload up to 4 images');
+    if (
+      !existingImages.includes(upload.s3Url) &&
+      existingImages.length >= this.maxProductMediaCount
+    ) {
+      throw new BadRequestException(
+        `You can upload up to ${this.maxProductMediaCount} images`,
+      );
     }
     const nextImages = existingImages.includes(upload.s3Url)
       ? existingImages
@@ -1021,6 +1196,8 @@ export class StoreService {
     }
 
     const requestedCollectionId = (dto.collectionId || '').trim() || null;
+    const requestedCategoryId = (dto.categoryId || '').trim() || null;
+    const requestedCategoryTypeId = (dto.categoryTypeId || '').trim() || null;
 
     // If a collectionId is provided, verify it belongs to this brand.
     if (requestedCollectionId) {
@@ -1063,8 +1240,10 @@ export class StoreService {
     const normalizedImages = Array.isArray(dto.images)
       ? dto.images.filter(Boolean)
       : [];
-    if (normalizedImages.length > 4) {
-      throw new BadRequestException('You can upload up to 4 images');
+    if (normalizedImages.length > this.maxProductMediaCount) {
+      throw new BadRequestException(
+        `You can upload up to ${this.maxProductMediaCount} images`,
+      );
     }
     let resolvedThumbnail: string | null = dto.thumbnail ?? null;
     if (normalizedImages.length > 0) {
@@ -1080,6 +1259,7 @@ export class StoreService {
       .replace(/[^a-z0-9]+/g, '-')
       .replace(/^-|-$/g, '');
     const resolvedTags = this.buildTagSet(dto.tags || []);
+    const nextIsActive = dto.isActive ?? true;
 
     const product = await this.prisma.$transaction(async (tx) => {
       let collectionId = requestedCollectionId;
@@ -1091,8 +1271,29 @@ export class StoreService {
       await this.assertCategoryTypeForCollection(
         tx,
         collectionId,
-        dto.categoryTypeId,
+        requestedCategoryTypeId,
       );
+      await this.assertProductTaxonomy(
+        tx,
+        requestedCategoryId,
+        requestedCategoryTypeId,
+      );
+      if (nextIsActive) {
+        await this.assertProductPublishReady(tx, {
+          name: resolvedName,
+          description: dto.description,
+          categoryId: requestedCategoryId,
+          categoryTypeId: requestedCategoryTypeId,
+          tags: resolvedTags,
+          price: resolvedPrice,
+          images: normalizedImages,
+          thumbnail: resolvedThumbnail,
+          variants: derivedFromVariants?.variants ?? [],
+          totalStock:
+            derivedFromVariants?.totalStock ?? (dto.totalStock || 0),
+          trackInventory: dto.trackInventory ?? true,
+        });
+      }
 
       await this.lockCollectionForUpdate(tx, collectionId);
       await this.assertCollectionCapacity(tx, collectionId);
@@ -1104,7 +1305,8 @@ export class StoreService {
         data: {
           id: uuidv4(),
           collectionId,
-          categoryTypeId: dto.categoryTypeId || null,
+          categoryId: requestedCategoryId,
+          categoryTypeId: requestedCategoryTypeId,
           brandId: brand.id,
           name: resolvedName,
           slug,
@@ -1153,7 +1355,7 @@ export class StoreService {
           // Metadata
           tags: resolvedTags,
           gender: dto.gender || 'EVERYBODY',
-          isActive: dto.isActive ?? true,
+          isActive: nextIsActive,
           isPhysicalProduct: dto.isPhysicalProduct ?? true,
           customsRegion: dto.customsRegion || null,
           // Policies
@@ -1249,7 +1451,19 @@ export class StoreService {
   ) {
     const product = await this.prisma.product.findFirst({
       where: { id: productId, deletedAt: null },
-      include: { brand: true },
+      include: {
+        brand: true,
+        variants: {
+          select: {
+            size: true,
+            color: true,
+            sku: true,
+            price: true,
+            stock: true,
+            colorHex: true,
+          },
+        },
+      },
     });
 
     if (!product) {
@@ -1296,6 +1510,12 @@ export class StoreService {
     if (dto.categoryTypeId !== undefined) {
       const requestedCategoryTypeId = (dto.categoryTypeId || '').trim();
       resolvedCategoryTypeId = requestedCategoryTypeId || null;
+    }
+
+    let resolvedCategoryId: string | null | undefined = undefined;
+    if (dto.categoryId !== undefined) {
+      const requestedCategoryId = (dto.categoryId || '').trim();
+      resolvedCategoryId = requestedCategoryId || null;
     }
 
     if (dto.salePrice !== undefined && dto.salePrice !== null && dto.price !== undefined) {
@@ -1403,8 +1623,10 @@ export class StoreService {
       const normalizedImages = Array.isArray(dto.images)
         ? dto.images.filter(Boolean)
         : [];
-      if (normalizedImages.length > 4) {
-        throw new BadRequestException('You can upload up to 4 images');
+      if (normalizedImages.length > this.maxProductMediaCount) {
+        throw new BadRequestException(
+          `You can upload up to ${this.maxProductMediaCount} images`,
+        );
       }
 
       let resolvedThumbnail: string | null = dto.thumbnail ?? null;
@@ -1431,6 +1653,17 @@ export class StoreService {
       dto.tags !== undefined ? this.buildTagSet(dto.tags || []) : undefined;
     if (nextTags !== undefined) updateData.tags = nextTags;
     if (dto.gender !== undefined) updateData.gender = dto.gender;
+    if (resolvedCategoryId !== undefined) {
+      updateData.category = resolvedCategoryId
+        ? { connect: { id: resolvedCategoryId } }
+        : { disconnect: true };
+      if (
+        resolvedCategoryTypeId === undefined &&
+        resolvedCategoryId !== product.categoryId
+      ) {
+        updateData.categoryType = { disconnect: true };
+      }
+    }
     if (resolvedCategoryTypeId !== undefined) {
       updateData.categoryType = resolvedCategoryTypeId
         ? { connect: { id: resolvedCategoryTypeId } }
@@ -1531,6 +1764,64 @@ export class StoreService {
           product.collectionId,
           resolvedCategoryTypeId,
         );
+      }
+
+      const finalCategoryId =
+        resolvedCategoryId !== undefined
+          ? resolvedCategoryId
+          : (product.categoryId ?? null);
+      const finalCategoryTypeId =
+        updateData.categoryType && resolvedCategoryTypeId === undefined
+          ? null
+          : resolvedCategoryTypeId !== undefined
+            ? resolvedCategoryTypeId
+            : (product.categoryTypeId ?? null);
+      await this.assertProductTaxonomy(
+        tx,
+        finalCategoryId,
+        finalCategoryTypeId,
+      );
+
+      const finalIsActive =
+        dto.isActive !== undefined ? dto.isActive : product.isActive;
+      if (finalIsActive) {
+        const nextImages =
+          dto.images !== undefined
+            ? (Array.isArray(dto.images) ? dto.images.filter(Boolean) : [])
+            : (Array.isArray(product.images) ? product.images : []);
+        const nextThumbnail =
+          dto.images !== undefined
+            ? (updateData.thumbnail as string | null | undefined)
+            : dto.thumbnail !== undefined
+              ? (dto.thumbnail || null)
+              : (product.thumbnail ?? null);
+
+        await this.assertProductPublishReady(tx, {
+          name: dto.name !== undefined ? dto.name : product.name,
+          description:
+            dto.description !== undefined
+              ? dto.description
+              : product.description,
+          categoryId: finalCategoryId,
+          categoryTypeId: finalCategoryTypeId,
+          tags: nextTags ?? previousTags,
+          price:
+            dto.price !== undefined ? dto.price : Number(product.price || 0),
+          images: nextImages,
+          thumbnail: nextThumbnail,
+          variants:
+            derivedFromVariants?.variants ??
+            (Array.isArray(product.variants) ? product.variants : []),
+          totalStock:
+            derivedFromVariants?.totalStock ??
+            (dto.totalStock !== undefined
+              ? dto.totalStock
+              : product.totalStock),
+          trackInventory:
+            dto.trackInventory !== undefined
+              ? dto.trackInventory
+              : product.trackInventory,
+        });
       }
 
       await tx.product.update({

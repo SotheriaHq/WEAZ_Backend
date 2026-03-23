@@ -57,28 +57,32 @@ export class SystemConfigService {
   /* ------------------------------------------------------------------ */
 
   async seedDefaults(): Promise<void> {
-    for (const [key, value] of Object.entries(DEFAULT_FILE_SIZE_LIMITS)) {
-      await this.prisma.systemConfig.upsert({
-        where: { key },
-        create: {
-          key,
-          value: String(value),
-          description: KEY_DESCRIPTIONS[key] ?? null,
-        },
-        update: {},   // don't overwrite admin customisations
-      });
-    }
-    for (const [key, value] of Object.entries(DEFAULT_BOOLEAN_CONFIGS)) {
-      await this.prisma.systemConfig.upsert({
-        where: { key },
-        create: {
-          key,
-          value: value ? 'true' : 'false',
-          description: KEY_DESCRIPTIONS[key] ?? null,
-        },
-        update: {},
-      });
-    }
+    await Promise.all(
+      Object.entries(DEFAULT_FILE_SIZE_LIMITS).map(([key, value]) =>
+        this.prisma.systemConfig.upsert({
+          where: { key },
+          create: {
+            key,
+            value: String(value),
+            description: KEY_DESCRIPTIONS[key] ?? null,
+          },
+          update: {}, // don't overwrite admin customisations
+        }),
+      ),
+    );
+    await Promise.all(
+      Object.entries(DEFAULT_BOOLEAN_CONFIGS).map(([key, value]) =>
+        this.prisma.systemConfig.upsert({
+          where: { key },
+          create: {
+            key,
+            value: value ? 'true' : 'false',
+            description: KEY_DESCRIPTIONS[key] ?? null,
+          },
+          update: {},
+        }),
+      ),
+    );
     this.logger.log('SystemConfig defaults seeded');
     await this.refreshCache();
   }

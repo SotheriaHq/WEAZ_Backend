@@ -22,6 +22,7 @@ import { ADMIN_PERMISSIONS } from 'src/admin/constants/permissions';
 import { CustomOrderAdminService } from './custom-order-admin.service';
 import {
   AdminCustomOrderReminderDto,
+  CancelPaidCustomOrderDto,
   CreateAdminCustomFabricRuleBasisDto,
   EscalateCustomOrderRefundReviewDto,
   QueryAdminCustomFabricRuleBasesDto,
@@ -199,6 +200,18 @@ export class CustomOrderAdminController {
     dto: EscalateCustomOrderRefundReviewDto,
   ) {
     return this.service.escalateRefundReview(id, dto, req.user.id);
+  }
+
+  @Post('custom-orders/:id/cancel')
+  @Roles(Role.SuperAdmin)
+  @RequirePermissions(ADMIN_PERMISSIONS.DISPUTES_RESOLVE)
+  async cancelPaidOrder(
+    @Param('id') id: string,
+    @Req() req: Request & { user: { id: string } },
+    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true }))
+    dto: CancelPaidCustomOrderDto,
+  ) {
+    return this.service.cancelPaidOrder(id, dto, req.user.id);
   }
 
   @Get('custom-order-disputes')

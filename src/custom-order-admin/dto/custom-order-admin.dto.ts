@@ -289,6 +289,18 @@ export class EscalateCustomOrderRefundReviewDto {
   note?: string;
 }
 
+export class CancelPaidCustomOrderDto {
+  @IsString()
+  @MinLength(3)
+  @MaxLength(120)
+  reason: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000)
+  note?: string;
+}
+
 export class UpdateCustomOrderRetentionHoldDto {
   @IsBoolean()
   clear: boolean;

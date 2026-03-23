@@ -169,7 +169,11 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
       });
       await this.redis.connect();
       this.registerPrismaSearchHooks();
-      await this.ensureSuggestionIndexes();
+      void this.ensureSuggestionIndexes().catch((indexError: any) => {
+        this.logger.warn(
+          `Suggestion index bootstrap deferred failure: ${indexError?.message || indexError}`,
+        );
+      });
     } catch (error: any) {
       this.logger.warn(
         `Search Redis unavailable, continuing without recent/trending persistence: ${error?.message || error}`,
@@ -1160,6 +1164,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     const brandFilter = brandId
       ? Prisma.sql`AND p."brandId" = ${brandId}`
       : Prisma.empty;
+    const prodIlikePat = `%${query}%`;
 
     const rows = await this.prisma.$queryRaw<ProductSearchRow[]>(Prisma.sql`
       WITH search_params AS (
@@ -1227,12 +1232,45 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
             similarity(immutable_unaccent(COALESCE(p.name, '')), sp.normalized_query),
             similarity(immutable_unaccent(COALESCE(p."brandNameCache", '')), sp.normalized_query)
           ) >= ${SEARCH_SIMILARITY_THRESHOLD}
+      ),
+      ilike_fallback AS (
+        SELECT
+          p."_id" AS id,
+          p.name,
+          p.description,
+          p.thumbnail,
+          p.images,
+          p.price,
+          p."salePrice" AS "salePrice",
+          p.currency,
+          p.slug,
+          p."brandId" AS "brandId",
+          b.name AS "brandName",
+          b."ownerId" AS "brandOwnerId",
+          LEAST(10, LN(GREATEST(p."viewsCount", 0) + 1)) + 1 AS score,
+          2 AS source_rank
+        FROM "Product" p
+        INNER JOIN "Brand" b ON b."_id" = p."brandId"
+        WHERE p."isActive" = true
+          AND p."deletedAt" IS NULL
+          AND p."archivedAt" IS NULL
+          AND b."isStoreOpen" = true
+          ${brandFilter}
+          AND NOT EXISTS (SELECT 1 FROM fts WHERE fts.id = p."_id")
+          AND NOT EXISTS (SELECT 1 FROM trgm WHERE trgm.id = p."_id")
+          AND (
+            immutable_unaccent(COALESCE(p.name, '')) ILIKE immutable_unaccent(${prodIlikePat})
+            OR immutable_unaccent(COALESCE(p.description, '')) ILIKE immutable_unaccent(${prodIlikePat})
+            OR immutable_unaccent(COALESCE(p."brandNameCache", '')) ILIKE immutable_unaccent(${prodIlikePat})
+          )
       )
       SELECT id, name, description, thumbnail, images, price, "salePrice", currency, slug, "brandId", "brandName", "brandOwnerId", score
       FROM (
         SELECT * FROM fts
         UNION ALL
         SELECT * FROM trgm
+        UNION ALL
+        SELECT * FROM ilike_fallback
       ) ranked
       ORDER BY source_rank ASC, score DESC, id ASC
       LIMIT ${limit} OFFSET ${offset}
@@ -1271,12 +1309,31 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
             similarity(immutable_unaccent(COALESCE(p.name, '')), sp.normalized_query),
             similarity(immutable_unaccent(COALESCE(p."brandNameCache", '')), sp.normalized_query)
           ) >= ${SEARCH_SIMILARITY_THRESHOLD}
+      ),
+      ilike_fallback AS (
+        SELECT p."_id" AS id
+        FROM "Product" p
+        INNER JOIN "Brand" b ON b."_id" = p."brandId"
+        WHERE p."isActive" = true
+          AND p."deletedAt" IS NULL
+          AND p."archivedAt" IS NULL
+          AND b."isStoreOpen" = true
+          ${brandFilter}
+          AND NOT EXISTS (SELECT 1 FROM fts WHERE fts.id = p."_id")
+          AND NOT EXISTS (SELECT 1 FROM trgm WHERE trgm.id = p."_id")
+          AND (
+            immutable_unaccent(COALESCE(p.name, '')) ILIKE immutable_unaccent(${prodIlikePat})
+            OR immutable_unaccent(COALESCE(p.description, '')) ILIKE immutable_unaccent(${prodIlikePat})
+            OR immutable_unaccent(COALESCE(p."brandNameCache", '')) ILIKE immutable_unaccent(${prodIlikePat})
+          )
       )
       SELECT COUNT(*)::bigint AS total
       FROM (
         SELECT id FROM fts
         UNION ALL
         SELECT id FROM trgm
+        UNION ALL
+        SELECT id FROM ilike_fallback
       ) ranked
     `);
 
@@ -1395,6 +1452,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async searchDesignsPage(query: string, tokens: string[], limit: number, offset: number): Promise<SearchPageResult> {
+    const ilikePat = `%${query}%`;
     const rows = await this.prisma.$queryRaw<CollectionSearchRow[]>(Prisma.sql`
       WITH search_params AS (
         SELECT
@@ -1437,12 +1495,35 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
           AND c."deletedAt" IS NULL
           AND NOT EXISTS (SELECT 1 FROM fts WHERE fts.id = c."_id")
           AND similarity(immutable_unaccent(COALESCE(c.title, '')), sp.normalized_query) >= ${SEARCH_SIMILARITY_THRESHOLD}
+      ),
+      ilike_fallback AS (
+        SELECT
+          c."_id" AS id,
+          c."ownerId" AS "ownerId",
+          c.title,
+          c.description,
+          c."viewsCount" AS "viewsCount",
+          LEAST(8, LN(GREATEST(c."viewsCount", 0) + 1)) + 1 AS score,
+          2 AS source_rank
+        FROM "Collection" c
+        WHERE c.domain = ${CollectionDomain.DESIGN}
+          AND c.status = ${CollectionStatus.PUBLISHED}
+          AND c.visibility = ${CollectionVisibility.PUBLIC}
+          AND c."deletedAt" IS NULL
+          AND NOT EXISTS (SELECT 1 FROM fts WHERE fts.id = c."_id")
+          AND NOT EXISTS (SELECT 1 FROM trgm WHERE trgm.id = c."_id")
+          AND (
+            immutable_unaccent(COALESCE(c.title, '')) ILIKE immutable_unaccent(${ilikePat})
+            OR immutable_unaccent(COALESCE(c.description, '')) ILIKE immutable_unaccent(${ilikePat})
+          )
       )
       SELECT id, "ownerId", title, description, "viewsCount", score
       FROM (
         SELECT * FROM fts
         UNION ALL
         SELECT * FROM trgm
+        UNION ALL
+        SELECT * FROM ilike_fallback
       ) ranked
       ORDER BY source_rank ASC, score DESC, id ASC
       LIMIT ${limit} OFFSET ${offset}
@@ -1474,12 +1555,28 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
           AND c."deletedAt" IS NULL
           AND NOT EXISTS (SELECT 1 FROM fts WHERE fts.id = c."_id")
           AND similarity(immutable_unaccent(COALESCE(c.title, '')), sp.normalized_query) >= ${SEARCH_SIMILARITY_THRESHOLD}
+      ),
+      ilike_fallback AS (
+        SELECT c."_id" AS id
+        FROM "Collection" c
+        WHERE c.domain = ${CollectionDomain.DESIGN}
+          AND c.status = ${CollectionStatus.PUBLISHED}
+          AND c.visibility = ${CollectionVisibility.PUBLIC}
+          AND c."deletedAt" IS NULL
+          AND NOT EXISTS (SELECT 1 FROM fts WHERE fts.id = c."_id")
+          AND NOT EXISTS (SELECT 1 FROM trgm WHERE trgm.id = c."_id")
+          AND (
+            immutable_unaccent(COALESCE(c.title, '')) ILIKE immutable_unaccent(${ilikePat})
+            OR immutable_unaccent(COALESCE(c.description, '')) ILIKE immutable_unaccent(${ilikePat})
+          )
       )
       SELECT COUNT(*)::bigint AS total
       FROM (
         SELECT id FROM fts
         UNION ALL
         SELECT id FROM trgm
+        UNION ALL
+        SELECT id FROM ilike_fallback
       ) ranked
     `);
 

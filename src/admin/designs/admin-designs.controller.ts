@@ -34,6 +34,8 @@ export class AdminDesignsController {
     @Query('search') search?: string,
     @Query('ownerId') ownerId?: string,
     @Query('status') status?: CollectionStatus,
+    @Query('visibility') visibility?: string,
+    @Query('sortBy') sortBy?: string,
   ) {
     return this.designsService.list({
       cursor,
@@ -41,6 +43,8 @@ export class AdminDesignsController {
       search: resolveSearchQuery(q, search),
       ownerId,
       status,
+      visibility: visibility as any,
+      sortBy: sortBy as any,
     });
   }
 

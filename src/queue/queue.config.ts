@@ -1,9 +1,26 @@
 import { ConfigService } from '@nestjs/config';
-import type { ConnectionOptions } from 'bullmq';
+import type { ConnectionOptions, RedisOptions } from 'bullmq';
+
+const DEFAULT_REDIS_CONNECT_TIMEOUT_MS = 1000;
+
+const buildCommonRedisOptions = (
+  config: ConfigService,
+): Partial<RedisOptions> => ({
+  connectTimeout: Number(
+    config.get<string>(
+      'REDIS_CONNECT_TIMEOUT_MS',
+      String(DEFAULT_REDIS_CONNECT_TIMEOUT_MS),
+    ),
+  ),
+  enableReadyCheck: false,
+  lazyConnect: true,
+  maxRetriesPerRequest: 1,
+  retryStrategy: () => null,
+});
 
 export function buildRedisConnection(
   config: ConfigService,
-): ConnectionOptions {
+): RedisOptions {
   const redisUrl = config.get<string>('REDIS_URL');
   if (redisUrl) {
     const parsed = new URL(redisUrl);
@@ -17,6 +34,7 @@ export function buildRedisConnection(
       username: parsed.username || undefined,
       password: parsed.password || undefined,
       db: Number.isFinite(db) ? db : 0,
+      ...buildCommonRedisOptions(config),
       ...(parsed.protocol === 'rediss:' ? { tls: {} } : {}),
     };
   }
@@ -33,5 +51,6 @@ export function buildRedisConnection(
     username,
     password,
     db: Number.isFinite(db) ? db : 0,
+    ...buildCommonRedisOptions(config),
   };
 }
