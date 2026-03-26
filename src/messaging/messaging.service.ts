@@ -982,6 +982,12 @@ export class MessagingService {
       return { success: true, threadId: null };
     }
 
+    const participants = await this.prisma.messageThreadParticipant.findMany({
+      where: { threadId: thread.id },
+      select: { userId: true },
+    });
+    const participantIds = participants.map((entry) => entry.userId);
+
     const upToMessage = dto.upToMessageId
       ? await this.prisma.message.findFirst({
           where: { id: dto.upToMessageId, threadId: thread.id },
@@ -1009,8 +1015,12 @@ export class MessagingService {
       },
     });
 
-    this.sideEffects.emitThreadInvalidation(thread, [actorId]);
-    this.sideEffects.emitMessageRead(thread as any, actorId, upToMessage?.id ?? null);
+    if (upToMessage) {
+      await this.query.markMessagesRead(thread.id, actorId, upToMessage.id);
+    }
+
+    this.sideEffects.emitThreadInvalidation(thread, participantIds);
+    this.sideEffects.emitMessageRead(thread as any, actorId, upToMessage?.id ?? null, participantIds);
     return { success: true, threadId: thread.id, lastReadMessageId: upToMessage?.id ?? null };
   }
 
@@ -1032,6 +1042,12 @@ export class MessagingService {
     if (!thread) {
       return { success: true, threadId: null };
     }
+
+    const participants = await this.prisma.messageThreadParticipant.findMany({
+      where: { threadId: thread.id },
+      select: { userId: true },
+    });
+    const participantIds = participants.map((entry) => entry.userId);
 
     const nextMutedUntil = dto.unmute
       ? null
@@ -1077,9 +1093,10 @@ export class MessagingService {
       },
     });
 
-    this.sideEffects.emitThreadInvalidation(thread, [actorId]);
+    this.sideEffects.emitThreadInvalidation(thread, participantIds);
     if (upToMessage) {
-      this.sideEffects.emitMessageRead(thread as any, actorId, upToMessage.id);
+      await this.query.markMessagesRead(thread.id, actorId, upToMessage.id);
+      this.sideEffects.emitMessageRead(thread as any, actorId, upToMessage.id, participantIds);
     }
 
     return {

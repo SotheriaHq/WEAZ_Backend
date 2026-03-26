@@ -57,6 +57,7 @@ describe('MessagingService', () => {
       new MessagingPolicyService(),
       query,
       sideEffects,
+      {} as any,
     );
 
     return { service, prisma, query };
@@ -87,7 +88,7 @@ describe('MessagingService', () => {
 
     expect(query.getMessages).toHaveBeenCalledWith(
       'thread_1',
-      { limit: 20 },
+      { actorId: 'buyer_1', limit: 20 },
       { includeModerated: false },
     );
   });

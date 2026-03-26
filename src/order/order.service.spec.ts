@@ -66,28 +66,29 @@ describe('OrderService', () => {
     expect(prisma.order.update).not.toHaveBeenCalled();
   });
 
-  it('allows valid transitions and sets deliveredAt when delivered', async () => {
+  it('allows valid transitions from processing to shipped', async () => {
     prisma.brand.findUnique.mockResolvedValue({ id: 'brand_1' });
     prisma.order.findFirst.mockResolvedValue({
       id: 'order_1',
-      status: OrderStatus.SHIPPED,
+      status: OrderStatus.PROCESSING,
+      paymentStatus: 'PAID',
       brandId: 'brand_1',
       buyerId: 'buyer_1',
       brand: { name: 'Brand' },
       deliveredAt: null,
     });
-    prisma.order.update.mockResolvedValue({ id: 'order_1', status: OrderStatus.DELIVERED });
+    prisma.order.update.mockResolvedValue({ id: 'order_1', status: OrderStatus.SHIPPED });
 
-    const result = await service.updateStatus('owner_1', 'order_1', OrderStatus.DELIVERED);
+    const result = await service.updateStatus('owner_1', 'order_1', OrderStatus.SHIPPED);
 
     expect(prisma.order.update).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { id: 'order_1' },
-        data: expect.objectContaining({ status: OrderStatus.DELIVERED, deliveredAt: expect.any(Date) }),
+        data: expect.objectContaining({ status: OrderStatus.SHIPPED }),
       }),
     );
     expect(notifications.create).toHaveBeenCalled();
-    expect(result).toEqual({ id: 'order_1', status: OrderStatus.DELIVERED });
+    expect(result).toEqual({ id: 'order_1', status: OrderStatus.SHIPPED });
   });
 
   it('releases the first escrow tranche when the brand confirms shipment', async () => {
