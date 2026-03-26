@@ -5119,8 +5119,9 @@ export class StoreService {
       throw new NotFoundException('Order not found');
     }
 
-    if (order.status !== OrderStatus.DELIVERED) {
-      throw new BadRequestException('Only delivered orders can be confirmed');
+    // Buyer can confirm delivery when order is SHIPPED (new flow) or DELIVERED (legacy)
+    if (order.status !== OrderStatus.SHIPPED && order.status !== OrderStatus.DELIVERED) {
+      throw new BadRequestException('Only shipped or delivered orders can be confirmed');
     }
 
     if (order.paymentStatus !== PaymentStatus.PAID) {
@@ -5131,10 +5132,14 @@ export class StoreService {
       throw new ConflictException('Order delivery has already been confirmed');
     }
 
+    const previousStatus = order.status;
     await this.prisma.$transaction(async (tx) => {
       await tx.order.update({
         where: { id: orderId },
         data: {
+          // Move to DELIVERED + set buyer confirmation in one step
+          status: OrderStatus.DELIVERED,
+          deliveredAt: new Date(),
           buyerConfirmedDeliveryAt: new Date(),
         },
       });
@@ -5151,7 +5156,7 @@ export class StoreService {
           payload: {
             orderId,
             status: 'DELIVERED',
-            previousStatus: 'DELIVERED',
+            previousStatus,
             buyerConfirmedDelivery: true,
             note: note?.trim() || null,
             targetUrl: `/studio?tab=orders&orderId=${orderId}`,

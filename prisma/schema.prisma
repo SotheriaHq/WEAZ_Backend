@@ -118,6 +118,7 @@ model User {
   idempotencyKeys         IdempotencyKey[]
   messageThreadParticipants MessageThreadParticipant[]
   messagesAuthored        Message[]                @relation("MessageSender")
+  messageDeliveryReceipts MessageDeliveryReceipt[] @relation("MessageDeliveryReceipts")
   collectionDraftSessions CollectionDraftSession[]
   collectionBulkUploadJobs CollectionBulkUploadJob[]
 
@@ -2131,10 +2132,27 @@ model Message {
   thread            MessageThread          @relation(fields: [threadId], references: [id], onDelete: Cascade)
   sender            User?                  @relation("MessageSender", fields: [senderUserId], references: [id], onDelete: SetNull)
   attachments       MessageAttachment[]
+  deliveryReceipts  MessageDeliveryReceipt[]
 
   @@index([threadId, createdAt, id])
   @@index([threadId, visibilityState, createdAt])
   @@unique([threadId, senderUserId, clientMessageId])
+}
+
+model MessageDeliveryReceipt {
+  id          String    @id @default(uuid()) @db.Uuid
+  messageId   String    @db.Uuid
+  recipientId String    @db.Uuid
+  deliveredAt DateTime?
+  readAt      DateTime?
+  createdAt   DateTime  @default(now())
+
+  message     Message   @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  recipient   User      @relation("MessageDeliveryReceipts", fields: [recipientId], references: [id], onDelete: Cascade)
+
+  @@unique([messageId, recipientId])
+  @@index([recipientId, deliveredAt])
+  @@index([messageId, deliveredAt])
 }
 
 model MessageAttachment {

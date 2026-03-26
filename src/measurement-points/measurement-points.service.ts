@@ -115,7 +115,7 @@ export class MeasurementPointsService implements OnModuleInit, OnModuleDestroy {
     void client
       .connect()
       .then(() => {
-        this.redis = client;
+        this.redis = client as RedisClientType;
       })
       .catch((error) => {
         this.logger.warn(`Measurement points Redis error: ${error?.message || error}`);

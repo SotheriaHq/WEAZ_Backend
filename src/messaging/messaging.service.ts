@@ -70,38 +70,34 @@ export class MessagingService {
     const resolved = await this.resolveCustomOrderContext(customOrderId, actorId, 'BUYER');
     const thread = await this.getOrCreateThreadForCustomOrder(resolved, false);
     if (!thread) return { items: [], hasNextPage: false, endCursor: null, thread: null };
-    return {
-      ...(await this.query.getMessages(thread.id, queryDto, { includeModerated: false })),
-      thread,
-    };
+    const result = await this.query.getMessages(thread.id, { ...queryDto, actorId }, { includeModerated: false });
+    await this.acknowledgeDeliveryForActor(thread.id, actorId, result.items);
+    return { ...result, thread };
   }
 
   async listCustomOrderMessagesForBrand(actorId: string, brandId: string, customOrderId: string, queryDto: QueryMessagesDto) {
     const resolved = await this.resolveCustomOrderContext(customOrderId, actorId, 'BRAND_OWNER', brandId);
     const thread = await this.getOrCreateThreadForCustomOrder(resolved, false);
     if (!thread) return { items: [], hasNextPage: false, endCursor: null, thread: null };
-    return {
-      ...(await this.query.getMessages(thread.id, queryDto, { includeModerated: false })),
-      thread,
-    };
+    const result = await this.query.getMessages(thread.id, { ...queryDto, actorId }, { includeModerated: false });
+    await this.acknowledgeDeliveryForActor(thread.id, actorId, result.items);
+    return { ...result, thread };
   }
 
   async listOrderMessagesForBuyer(actorId: string, orderId: string, queryDto: QueryMessagesDto) {
     const resolved = await this.resolveStandardOrderContext(orderId, actorId, 'BUYER');
     const thread = await this.getOrCreateThreadForOrder(resolved, true);
-    return {
-      ...(await this.query.getMessages(thread.id, queryDto, { includeModerated: false })),
-      thread,
-    };
+    const result = await this.query.getMessages(thread.id, { ...queryDto, actorId }, { includeModerated: false });
+    await this.acknowledgeDeliveryForActor(thread.id, actorId, result.items);
+    return { ...result, thread };
   }
 
   async listOrderMessagesForBrand(actorId: string, brandId: string, orderId: string, queryDto: QueryMessagesDto) {
     const resolved = await this.resolveStandardOrderContext(orderId, actorId, 'BRAND_OWNER', brandId);
     const thread = await this.getOrCreateThreadForOrder(resolved, true);
-    return {
-      ...(await this.query.getMessages(thread.id, queryDto, { includeModerated: false })),
-      thread,
-    };
+    const result = await this.query.getMessages(thread.id, { ...queryDto, actorId }, { includeModerated: false });
+    await this.acknowledgeDeliveryForActor(thread.id, actorId, result.items);
+    return { ...result, thread };
   }
 
   async listThreadMessagesForActor(actorId: string, threadId: string, queryDto: QueryMessagesDto) {
@@ -116,10 +112,29 @@ export class MessagingService {
       throw new ForbiddenException('Thread access denied');
     }
 
-    return {
-      ...(await this.query.getMessages(thread.id, queryDto, { includeModerated: false })),
-      thread,
-    };
+    const result = await this.query.getMessages(thread.id, { ...queryDto, actorId }, { includeModerated: false });
+    await this.acknowledgeDeliveryForActor(thread.id, actorId, result.items);
+    return { ...result, thread };
+  }
+
+  /** When a user fetches messages, automatically acknowledge delivery for messages from others */
+  private async acknowledgeDeliveryForActor(
+    threadId: string,
+    actorId: string,
+    items: Array<{ id: string; senderUserId?: string | null }>,
+  ): Promise<void> {
+    const undeliveredFromOthers = items
+      .filter((m) => m.senderUserId && m.senderUserId !== actorId)
+      .map((m) => m.id);
+    if (undeliveredFromOthers.length > 0) {
+      await this.query.acknowledgeDelivery(threadId, actorId, undeliveredFromOthers).catch(() => {});
+      // Emit delivery event to all participants so senders update their ticks
+      const thread = await this.query.getThreadById(threadId);
+      if (thread) {
+        const allIds = thread.participants.map((p) => p.userId);
+        this.sideEffects.emitThreadInvalidation(thread, allIds);
+      }
+    }
   }
 
   async sendCustomOrderMessageForBuyer(actorId: string, customOrderId: string, dto: SendMessageDto, idempotencyKey?: string) {
@@ -671,8 +686,15 @@ export class MessagingService {
       },
     });
 
-    this.sideEffects.emitThreadInvalidation(participant.thread, [actorId]);
-    this.sideEffects.emitMessageRead(participant.thread as any, actorId, upToMessage?.id ?? null);
+    // Create read receipts for all messages up to this point
+    if (upToMessage) {
+      await this.query.markMessagesRead(threadId, actorId, upToMessage.id);
+    }
+
+    // Emit read event to ALL participants so senders can update their tick status
+    const allParticipantIds = participant.thread.participants.map((p) => p.userId);
+    this.sideEffects.emitThreadInvalidation(participant.thread, allParticipantIds);
+    this.sideEffects.emitMessageRead(participant.thread as any, actorId, upToMessage?.id ?? null, allParticipantIds);
 
     return {
       success: true,

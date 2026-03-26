@@ -30,7 +30,7 @@ export class ProductViewCounterService implements OnModuleInit, OnModuleDestroy 
       void client
         .connect()
         .then(() => {
-          this.redis = client;
+          this.redis = client as RedisClientType;
           this.logger.log('View counter using Redis buffering');
         })
         .catch((err: any) => {

@@ -18,13 +18,14 @@ export class MessagingQueryService {
 
   async getMessages(
     threadId: string,
-    options?: { cursorCreatedAt?: string; cursorId?: string; limit?: number },
+    options?: { cursorCreatedAt?: string; cursorId?: string; limit?: number; actorId?: string },
     filters?: { includeModerated?: boolean },
   ) {
     const take = Math.min(Math.max(options?.limit ?? 30, 1), 100);
     const cursorCreatedAt = options?.cursorCreatedAt ? new Date(options.cursorCreatedAt) : null;
     const cursorId = options?.cursorId;
     const includeModerated = filters?.includeModerated === true;
+    const actorId = options?.actorId;
 
     const messages = await this.prisma.message.findMany({
       where: {
@@ -64,31 +65,84 @@ export class MessagingQueryService {
             },
           },
         },
+        deliveryReceipts: {
+          select: {
+            recipientId: true,
+            deliveredAt: true,
+            readAt: true,
+          },
+        },
       },
     });
 
     const hasNextPage = messages.length > take;
     const rawItems = hasNextPage ? messages.slice(0, -1) : messages;
-    const items = includeModerated
-      ? rawItems
-      : rawItems.map((message) => {
-          if (message.visibilityState === MessageVisibilityState.VISIBLE) {
-            return message;
-          }
 
-          return {
-            ...message,
-            senderUserId: null,
-            senderRole: MessageParticipantRole.SYSTEM,
-            kind: MessageKind.MODERATION_NOTICE,
-            bodyText:
-              message.visibilityState === MessageVisibilityState.REDACTED
-                ? 'This message was removed by moderation.'
-                : 'This message is hidden due to moderation policy.',
-            attachments: [],
-            sender: null,
-          };
-        });
+    // Fetch messaging privacy settings for the actor and thread participants
+    const participantIds = await this.getThreadParticipantIds(threadId);
+    const privacyMap = actorId ? await this.getMessagingPrivacy(participantIds) : new Map<string, { readReceipts: boolean; deliveryReceipts: boolean }>();
+    const actorPrivacy = actorId ? (privacyMap.get(actorId) ?? { readReceipts: true, deliveryReceipts: true }) : { readReceipts: true, deliveryReceipts: true };
+
+    const items = rawItems.map((message) => {
+      if (!includeModerated && message.visibilityState !== MessageVisibilityState.VISIBLE) {
+        return {
+          ...message,
+          senderUserId: null,
+          senderRole: MessageParticipantRole.SYSTEM,
+          kind: MessageKind.MODERATION_NOTICE,
+          bodyText:
+            message.visibilityState === MessageVisibilityState.REDACTED
+              ? 'This message was removed by moderation.'
+              : 'This message is hidden due to moderation policy.',
+          attachments: [],
+          sender: null,
+          deliveryReceipts: [],
+          deliveryStatus: 'SENT' as const,
+        };
+      }
+
+      // Compute delivery status for own messages
+      let deliveryStatus: 'SENT' | 'DELIVERED' | 'READ' = 'SENT';
+      if (actorId && message.senderUserId === actorId) {
+        const otherParticipants = participantIds.filter((id) => id !== actorId);
+        if (otherParticipants.length > 0) {
+          const receipts = message.deliveryReceipts.filter((r) => otherParticipants.includes(r.recipientId));
+
+          // Check if any recipient has delivery receipts turned off
+          const allRecipientsAllowDelivery = otherParticipants.every((pid) => {
+            const pp = privacyMap.get(pid);
+            return pp ? pp.deliveryReceipts : true;
+          });
+
+          if (actorPrivacy.deliveryReceipts && allRecipientsAllowDelivery) {
+            const allDelivered = otherParticipants.every((pid) =>
+              receipts.some((r) => r.recipientId === pid && r.deliveredAt),
+            );
+            if (allDelivered) deliveryStatus = 'DELIVERED';
+
+            // Check read — both sender and recipients must allow read receipts
+            const allRecipientsAllowRead = otherParticipants.every((pid) => {
+              const pp = privacyMap.get(pid);
+              return pp ? pp.readReceipts : true;
+            });
+
+            if (allDelivered && actorPrivacy.readReceipts && allRecipientsAllowRead) {
+              const allRead = otherParticipants.every((pid) =>
+                receipts.some((r) => r.recipientId === pid && r.readAt),
+              );
+              if (allRead) deliveryStatus = 'READ';
+            }
+          }
+        }
+      }
+
+      return {
+        ...message,
+        deliveryReceipts: [],
+        deliveryStatus,
+      };
+    });
+
     const endCursor = items.length
       ? {
           createdAt: items[items.length - 1].createdAt.toISOString(),
@@ -97,6 +151,85 @@ export class MessagingQueryService {
       : null;
 
     return { items, hasNextPage, endCursor };
+  }
+
+  /** Acknowledge delivery of messages for a recipient */
+  async acknowledgeDelivery(threadId: string, recipientId: string, messageIds: string[]): Promise<void> {
+    if (messageIds.length === 0) return;
+
+    // Check recipient's privacy setting
+    const privacy = await this.getMessagingPrivacy([recipientId]);
+    const recipientPrivacy = privacy.get(recipientId) ?? { readReceipts: true, deliveryReceipts: true };
+    if (!recipientPrivacy.deliveryReceipts) return;
+
+    const now = new Date();
+    for (const messageId of messageIds) {
+      await this.prisma.messageDeliveryReceipt.upsert({
+        where: { messageId_recipientId: { messageId, recipientId } },
+        create: { messageId, recipientId, deliveredAt: now },
+        update: { deliveredAt: now },
+      }).catch(() => { /* ignore duplicates or missing messages */ });
+    }
+  }
+
+  /** Mark messages as read for a recipient (up to a given message) */
+  async markMessagesRead(threadId: string, recipientId: string, upToMessageId: string): Promise<void> {
+    const privacy = await this.getMessagingPrivacy([recipientId]);
+    const recipientPrivacy = privacy.get(recipientId) ?? { readReceipts: true, deliveryReceipts: true };
+    if (!recipientPrivacy.readReceipts) return;
+
+    const upToMessage = await this.prisma.message.findFirst({
+      where: { id: upToMessageId, threadId },
+      select: { createdAt: true },
+    });
+    if (!upToMessage) return;
+
+    // Find all messages in thread from other senders up to this point
+    const messages = await this.prisma.message.findMany({
+      where: {
+        threadId,
+        senderUserId: { not: recipientId },
+        createdAt: { lte: upToMessage.createdAt },
+        kind: 'USER',
+        visibilityState: 'VISIBLE',
+      },
+      select: { id: true },
+    });
+
+    const now = new Date();
+    for (const msg of messages) {
+      await this.prisma.messageDeliveryReceipt.upsert({
+        where: { messageId_recipientId: { messageId: msg.id, recipientId } },
+        create: { messageId: msg.id, recipientId, deliveredAt: now, readAt: now },
+        update: { readAt: now, ...(!recipientPrivacy.deliveryReceipts ? {} : { deliveredAt: now }) },
+      }).catch(() => { /* ignore */ });
+    }
+  }
+
+  private async getThreadParticipantIds(threadId: string): Promise<string[]> {
+    const participants = await this.prisma.messageThreadParticipant.findMany({
+      where: { threadId },
+      select: { userId: true },
+    });
+    return participants.map((p) => p.userId);
+  }
+
+  async getMessagingPrivacy(userIds: string[]): Promise<Map<string, { readReceipts: boolean; deliveryReceipts: boolean }>> {
+    if (userIds.length === 0) return new Map();
+    const users = await this.prisma.user.findMany({
+      where: { id: { in: userIds } },
+      select: { id: true, notificationSettings: true },
+    });
+    const map = new Map<string, { readReceipts: boolean; deliveryReceipts: boolean }>();
+    for (const user of users) {
+      const settings = user.notificationSettings as Record<string, any> | null;
+      const messaging = settings?.messaging ?? {};
+      map.set(user.id, {
+        readReceipts: messaging.readReceipts !== false,
+        deliveryReceipts: messaging.deliveryReceipts !== false,
+      });
+    }
+    return map;
   }
 
   async getSummaryForActor(threadId: string, actorId: string, includeUnreadCount = false) {

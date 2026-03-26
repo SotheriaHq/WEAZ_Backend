@@ -16,10 +16,11 @@ import { StandardOrderEscrowService } from 'src/finance/standard-order-escrow.se
 export class OrderService {
   private readonly logger = new Logger(OrderService.name);
 
+  /** Brand-side transitions: brands stop at SHIPPED. DELIVERED is buyer-initiated. */
   private readonly validTransitions: Record<OrderStatus, ReadonlyArray<OrderStatus>> = {
     [OrderStatus.PENDING]: [OrderStatus.PROCESSING, OrderStatus.CANCELLED],
     [OrderStatus.PROCESSING]: [OrderStatus.SHIPPED, OrderStatus.CANCELLED],
-    [OrderStatus.SHIPPED]: [OrderStatus.DELIVERED],
+    [OrderStatus.SHIPPED]: [],
     [OrderStatus.DELIVERED]: [OrderStatus.RETURNED],
     [OrderStatus.CANCELLED]: [],
     [OrderStatus.RETURNED]: [],

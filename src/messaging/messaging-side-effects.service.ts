@@ -350,15 +350,29 @@ export class MessagingSideEffectsService {
     thread: MessageThread,
     actorId: string,
     lastReadMessageId: string | null,
+    broadcastToParticipantIds?: string[],
   ) {
-    this.events?.server?.to(`USER:${actorId}`).emit('message.read', {
+    const payload = {
       threadId: thread.id,
       contextType: thread.contextType,
       orderId: thread.orderId,
       customOrderId: thread.customOrderId,
       lastReadMessageId,
+      readByUserId: actorId,
       ts: Date.now(),
-    });
+    };
+
+    // Emit to the reader themselves
+    this.events?.server?.to(`USER:${actorId}`).emit('message.read', payload);
+
+    // Also emit to all other participants so senders can update their tick status
+    if (broadcastToParticipantIds?.length) {
+      for (const pid of broadcastToParticipantIds) {
+        if (pid !== actorId) {
+          this.events?.server?.to(`USER:${pid}`).emit('message.read', payload);
+        }
+      }
+    }
   }
 
   private asRecord(value: unknown): Record<string, any> | undefined {

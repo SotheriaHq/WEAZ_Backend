@@ -123,18 +123,20 @@ export class PayoutService {
       }),
     ]);
 
-    const orderIds = Array.from(
+    const orderIds: string[] = Array.from(
       new Set(
         entries
           .filter((entry: any) => entry.transaction?.referenceType === 'Order' && entry.transaction?.referenceId)
-          .map((entry: any) => String(entry.transaction.referenceId)),
+          .map((entry: any) => String(entry.transaction.referenceId))
+          .filter((value: string) => value.length > 0),
       ),
     );
-    const customOrderIds = Array.from(
+    const customOrderIds: string[] = Array.from(
       new Set(
         entries
           .filter((entry: any) => entry.transaction?.referenceType === 'CustomOrder' && entry.transaction?.referenceId)
-          .map((entry: any) => String(entry.transaction.referenceId)),
+          .map((entry: any) => String(entry.transaction.referenceId))
+          .filter((value: string) => value.length > 0),
       ),
     );
 
@@ -172,7 +174,7 @@ export class PayoutService {
         : Promise.resolve([]),
     ]);
 
-    const orderById = new Map(
+    const orderById = new Map<string, { title: string; counterparty: string | null }>(
       orders.map((order) => {
         const firstItem = order.orderItems[0];
         return [
@@ -187,7 +189,7 @@ export class PayoutService {
       }),
     );
 
-    const customOrderById = new Map(
+    const customOrderById = new Map<string, { title: string; counterparty: string | null }>(
       customOrders.map((order: any) => {
         const buyerName = [order?.buyer?.firstName, order?.buyer?.lastName]
           .map((value) => String(value || '').trim())

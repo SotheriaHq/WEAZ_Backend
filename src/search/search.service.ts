@@ -171,7 +171,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     void client
       .connect()
       .then(() => {
-        this.redis = client;
+        this.redis = client as RedisClientType;
         this.registerPrismaSearchHooks();
         void this.ensureSuggestionIndexes().catch((indexError: any) => {
           this.logger.warn(

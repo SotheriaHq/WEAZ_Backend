@@ -68,6 +68,8 @@ export interface NotificationSettings {
     moderation: boolean;
     desktop: boolean;
     sound: boolean;
+    readReceipts: boolean;
+    deliveryReceipts: boolean;
   };
 }
 
@@ -117,5 +119,7 @@ export const DEFAULT_NOTIFICATION_SETTINGS: NotificationSettings = {
     moderation: true,
     desktop: true,
     sound: false,
+    readReceipts: true,
+    deliveryReceipts: true,
   },
 };
