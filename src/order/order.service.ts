@@ -10,6 +10,7 @@ import { OrderStatus, PaymentStatus, Prisma, NotificationType } from '@prisma/cl
 import { NotificationsService } from 'src/notifications/notifications.service';
 import { reconcileStandardOrderPaymentStatuses } from 'src/common/payments/order-payment-reconciliation.util';
 import { OrderRefundService } from './order-refund.service';
+import { StandardOrderEscrowService } from 'src/finance/standard-order-escrow.service';
 
 @Injectable()
 export class OrderService {
@@ -28,6 +29,7 @@ export class OrderService {
     private readonly prisma: PrismaService,
     private readonly notifications: NotificationsService,
     private readonly orderRefundService: OrderRefundService,
+    private readonly standardOrderEscrowService: StandardOrderEscrowService,
   ) {}
 
   @Cron(CronExpression.EVERY_5_MINUTES)
@@ -54,6 +56,18 @@ export class OrderService {
     } catch (error) {
       this.logger.error(
         `Background payment reconciliation failed: ${(error as Error).message}`,
+      );
+    }
+  }
+
+  @Cron('0 */15 * * * *')
+  async releaseStandardOrderEscrowBackground() {
+    try {
+      await this.standardOrderEscrowService.autoConfirmDeliveredOrders();
+      await this.standardOrderEscrowService.releaseEligibleFinalPortions();
+    } catch (error) {
+      this.logger.error(
+        `Standard-order escrow release failed: ${(error as Error).message}`,
       );
     }
   }
@@ -270,6 +284,10 @@ export class OrderService {
         },
       });
 
+      if (status === OrderStatus.SHIPPED) {
+        await this.standardOrderEscrowService.releaseShipmentPortion(tx, orderId);
+      }
+
       if (status === OrderStatus.RETURNED && order.paymentStatus === PaymentStatus.PAID) {
         await this.orderRefundService.initiateRefund(tx, {
           orderId,
@@ -283,6 +301,14 @@ export class OrderService {
 
     // Notify buyer about status change
     if (order.buyerId) {
+      const firstItem = Array.isArray(order.items)
+        ? order.items.find((item) => Boolean((item as Record<string, unknown>)?.name))
+        : null;
+      const orderTitle =
+        firstItem && typeof (firstItem as Record<string, unknown>).name === 'string'
+          ? ((firstItem as Record<string, unknown>).name as string).trim() || null
+          : null;
+
       await this.notifications.create(
         order.buyerId,
         NotificationType.ORDER_STATUS_UPDATED,
@@ -290,6 +316,7 @@ export class OrderService {
           actorId: brandId,
           payload: {
             orderId: order.id,
+            orderTitle,
             status,
             previousStatus,
             brandName: order.brand?.name ?? null,

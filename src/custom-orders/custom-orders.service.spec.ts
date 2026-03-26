@@ -9,6 +9,7 @@ import {
   CustomOrderStatus,
   PaymentStatus,
 } from '@prisma/client';
+import { LedgerService } from 'src/finance/ledger.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { CustomOrderPricingService } from 'src/custom-order-pricing/custom-order-pricing.service';
 import { CustomOrderRefundService } from './custom-order-refund.service';
@@ -21,6 +22,7 @@ describe('CustomOrdersService', () => {
   let sideEffects: any;
   let refundService: any;
   let pricingService: any;
+  let ledgerService: any;
 
   const buildOrder = (overrides: Record<string, unknown> = {}) => ({
     id: 'co_1',
@@ -103,6 +105,10 @@ describe('CustomOrdersService', () => {
       initiateRefund: jest.fn(),
     };
 
+    ledgerService = {
+      postCustomOrderFinalRelease: jest.fn().mockResolvedValue(undefined),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         CustomOrdersService,
@@ -118,6 +124,10 @@ describe('CustomOrdersService', () => {
         {
           provide: CustomOrderRefundService,
           useValue: refundService,
+        },
+        {
+          provide: LedgerService,
+          useValue: ledgerService,
         },
       ],
     }).compile();
@@ -152,6 +162,12 @@ describe('CustomOrdersService', () => {
       },
       customOrderLedgerAllocation: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        findFirst: jest.fn().mockResolvedValue({
+          amount: 600,
+          commissionAmount: 60,
+          netBrandAmount: 540,
+          currency: 'NGN',
+        }),
       },
     };
 
@@ -188,6 +204,26 @@ describe('CustomOrdersService', () => {
         status: CustomOrderLedgerAllocationStatus.PAYOUT_ELIGIBLE,
         eligibleAt: expect.any(Date),
       },
+    });
+    expect(tx.customOrderLedgerAllocation.findFirst).toHaveBeenCalledWith({
+      where: {
+        customOrderId: 'co_1',
+        allocationType: CustomOrderLedgerAllocationType.FINAL_COMPLETION_PORTION,
+      },
+      select: {
+        amount: true,
+        commissionAmount: true,
+        netBrandAmount: true,
+        currency: true,
+      },
+    });
+    expect(ledgerService.postCustomOrderFinalRelease).toHaveBeenCalledWith(tx, {
+      customOrderId: 'co_1',
+      brandId: 'brand_1',
+      currency: 'NGN',
+      amount: 600,
+      commissionAmount: 60,
+      netBrandAmount: 540,
     });
     expect(result.statusCode).toBe(200);
     expect(result.data.status).toBe(CustomOrderStatus.COMPLETED);

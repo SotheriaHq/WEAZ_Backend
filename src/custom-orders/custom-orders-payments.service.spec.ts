@@ -1,5 +1,8 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { PaymentMethod, PaymentStatus, PaymentSubjectType } from '@prisma/client';
+import { CommissionService } from 'src/finance/commission.service';
+import { FinancialDocumentsService } from 'src/finance/financial-documents.service';
+import { LedgerService } from 'src/finance/ledger.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { PaymentService } from 'src/payment/payment.service';
 import { CustomOrderSideEffectsService } from './custom-order-side-effects.service';
@@ -9,6 +12,9 @@ describe('CustomOrdersPaymentsService', () => {
   let service: CustomOrdersPaymentsService;
   let prisma: any;
   let paymentService: any;
+  let commissionService: any;
+  let ledgerService: any;
+  let financialDocumentsService: any;
 
   beforeEach(async () => {
     prisma = {
@@ -47,11 +53,27 @@ describe('CustomOrdersPaymentsService', () => {
       isTerminalStatus: jest.fn(),
     };
 
+    commissionService = {
+      resolveRule: jest.fn().mockResolvedValue({ ratePercent: 10 }),
+    };
+
+    ledgerService = {
+      postCustomOrderPaymentReceived: jest.fn().mockResolvedValue(undefined),
+      postCustomOrderImmediateRelease: jest.fn().mockResolvedValue(undefined),
+    };
+
+    financialDocumentsService = {
+      issueBuyerReceipt: jest.fn().mockResolvedValue(undefined),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         CustomOrdersPaymentsService,
         { provide: PrismaService, useValue: prisma },
         { provide: PaymentService, useValue: paymentService },
+        { provide: CommissionService, useValue: commissionService },
+        { provide: LedgerService, useValue: ledgerService },
+        { provide: FinancialDocumentsService, useValue: financialDocumentsService },
         {
           provide: CustomOrderSideEffectsService,
           useValue: {
@@ -270,7 +292,39 @@ describe('CustomOrdersPaymentsService', () => {
       status: 'HELD',
     });
     expect(String(createManyArg.data[0].amount)).toBe('600');
+    expect(String(createManyArg.data[0].commissionRate)).toBe('10');
+    expect(String(createManyArg.data[0].commissionAmount)).toBe('60');
+    expect(String(createManyArg.data[0].netBrandAmount)).toBe('540');
     expect(String(createManyArg.data[1].amount)).toBe('400');
+    expect(String(createManyArg.data[1].commissionRate)).toBe('10');
+    expect(String(createManyArg.data[1].commissionAmount)).toBe('40');
+    expect(String(createManyArg.data[1].netBrandAmount)).toBe('360');
+    expect(commissionService.resolveRule).toHaveBeenCalledWith(
+      { brandId: 'brand_1', currency: 'NGN' },
+      tx,
+    );
+    expect(ledgerService.postCustomOrderPaymentReceived).toHaveBeenCalledWith(tx, {
+      customOrderId: 'co_2',
+      totalAmount: 1000,
+      currency: 'NGN',
+    });
+    expect(ledgerService.postCustomOrderImmediateRelease).toHaveBeenCalledWith(tx, {
+      customOrderId: 'co_2',
+      brandId: 'brand_1',
+      currency: 'NGN',
+      amount: 600,
+      commissionAmount: 60,
+      netBrandAmount: 540,
+    });
+    expect(financialDocumentsService.issueBuyerReceipt).toHaveBeenCalledWith(
+      tx,
+      expect.objectContaining({
+        paymentAttemptId: 'attempt_2',
+        customOrderId: 'co_2',
+        currency: 'NGN',
+        grossAmount: 1000,
+      }),
+    );
     expect(result).toEqual({
       status: 'success',
       data: {
@@ -585,6 +639,28 @@ describe('CustomOrdersPaymentsService', () => {
       where: { customOrderId: 'co_4' },
     });
     expect(tx.customOrderLedgerAllocation.createMany).not.toHaveBeenCalled();
+    expect(ledgerService.postCustomOrderPaymentReceived).toHaveBeenCalledWith(tx, {
+      customOrderId: 'co_4',
+      totalAmount: 2000,
+      currency: 'NGN',
+    });
+    expect(ledgerService.postCustomOrderImmediateRelease).toHaveBeenCalledWith(tx, {
+      customOrderId: 'co_4',
+      brandId: 'brand_4',
+      currency: 'NGN',
+      amount: 1200,
+      commissionAmount: 120,
+      netBrandAmount: 1080,
+    });
+    expect(financialDocumentsService.issueBuyerReceipt).toHaveBeenCalledWith(
+      tx,
+      expect.objectContaining({
+        paymentAttemptId: 'attempt_4',
+        customOrderId: 'co_4',
+        currency: 'NGN',
+        grossAmount: 2000,
+      }),
+    );
     expect(result.data.success).toBe(true);
     expect(result.data.customOrderId).toBe('co_4');
   });

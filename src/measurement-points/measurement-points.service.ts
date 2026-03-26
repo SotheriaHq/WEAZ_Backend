@@ -101,20 +101,36 @@ export class MeasurementPointsService implements OnModuleInit, OnModuleDestroy {
     const redisUrl = String(process.env.REDIS_URL || '').trim();
     if (!redisUrl) return;
 
-    try {
-      this.redis = createClient({ url: redisUrl });
-      this.redis.on('error', (error) => {
+    const client = createClient({
+      url: redisUrl,
+      socket: {
+        connectTimeout: 100,
+      },
+    });
+
+    client.on('error', (error) => {
+      this.logger.warn(`Measurement points Redis error: ${error?.message || error}`);
+    });
+
+    void client
+      .connect()
+      .then(() => {
+        this.redis = client;
+      })
+      .catch((error) => {
         this.logger.warn(`Measurement points Redis error: ${error?.message || error}`);
+        this.logger.warn(
+          `Measurement points Redis unavailable, continuing without Redis cache: ${
+            error instanceof Error ? error.message : 'unknown error'
+          }`,
+        );
+        this.redis = null;
+        try {
+          client.disconnect();
+        } catch {
+          // Ignore best-effort cleanup failures.
+        }
       });
-      await this.redis.connect();
-    } catch (error) {
-      this.logger.warn(
-        `Measurement points Redis unavailable, continuing without Redis cache: ${
-          error instanceof Error ? error.message : 'unknown error'
-        }`,
-      );
-      this.redis = null;
-    }
   }
 
   async onModuleDestroy() {

@@ -44,6 +44,11 @@ import { AdminFeaturedController } from './featured/admin-featured.controller';
 import { SystemConfigModule } from './system-config/system-config.module';
 import { SystemConfigService } from './system-config/system-config.service';
 import { SystemConfigController } from './system-config/system-config.controller';
+import { FinanceModule } from 'src/finance/finance.module';
+import { AdminLedgerService } from './ledger/admin-ledger.service';
+import { AdminLedgerController } from './ledger/admin-ledger.controller';
+import { AdminFinanceService } from './finance/admin-finance.service';
+import { AdminFinanceController } from './finance/admin-finance.controller';
 
 @Module({
   imports: [
@@ -52,6 +57,7 @@ import { SystemConfigController } from './system-config/system-config.controller
     NotificationsModule,
     BrandVerificationModule,
     SystemConfigModule,
+    FinanceModule,
   ],
   controllers: [
     AdminUsersController,
@@ -69,6 +75,8 @@ import { SystemConfigController } from './system-config/system-config.controller
     AdminDesignsController,
     AdminDashboardController,
     AdminFeaturedController,
+    AdminLedgerController,
+    AdminFinanceController,
     SystemConfigController,
   ],
   providers: [
@@ -89,6 +97,8 @@ import { SystemConfigController } from './system-config/system-config.controller
     AdminDesignsService,
     AdminDashboardService,
     AdminFeaturedService,
+    AdminLedgerService,
+    AdminFinanceService,
     FeaturedExpiryCronService,
     FeaturedAutoRemovalService,
   ],

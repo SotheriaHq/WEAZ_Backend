@@ -18,17 +18,31 @@ export class ProductViewCounterService implements OnModuleInit, OnModuleDestroy 
     // If REDIS_URL is set, use Redis (multi-instance safe). Otherwise, fall back to process-local.
     const redisUrl = String(process.env.REDIS_URL || '').trim();
     if (redisUrl) {
-      try {
-        this.redis = createClient({ url: redisUrl });
-        this.redis.on('error', (err) => {
+      const client = createClient({
+        url: redisUrl,
+        socket: {
+          connectTimeout: 100,
+        },
+      });
+      client.on('error', (err) => {
+        this.logger.warn(`Redis error: ${err?.message || err}`);
+      });
+      void client
+        .connect()
+        .then(() => {
+          this.redis = client;
+          this.logger.log('View counter using Redis buffering');
+        })
+        .catch((err: any) => {
           this.logger.warn(`Redis error: ${err?.message || err}`);
+          this.logger.warn(`Failed to connect Redis; falling back to in-process buffering: ${err?.message || err}`);
+          this.redis = null;
+          try {
+            client.disconnect();
+          } catch {
+            // Ignore best-effort cleanup failures.
+          }
         });
-        await this.redis.connect();
-        this.logger.log('View counter using Redis buffering');
-      } catch (err: any) {
-        this.logger.warn(`Failed to connect Redis; falling back to in-process buffering: ${err?.message || err}`);
-        this.redis = null;
-      }
     }
 
     this.flushTimer = setInterval(() => {

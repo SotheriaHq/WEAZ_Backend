@@ -17,6 +17,9 @@ import {
 import { PrismaService } from 'src/prisma/prisma.service';
 import { PaymentService } from 'src/payment/payment.service';
 import { CustomOrderSideEffectsService } from './custom-order-side-effects.service';
+import { LedgerService } from 'src/finance/ledger.service';
+import { CommissionService } from 'src/finance/commission.service';
+import { FinancialDocumentsService } from 'src/finance/financial-documents.service';
 import {
   InitializeCustomOrderPaymentDto,
   VerifyCustomOrderPaymentDto,
@@ -30,6 +33,9 @@ export class CustomOrdersPaymentsService {
     private readonly prisma: PrismaService,
     private readonly paymentService: PaymentService,
     private readonly sideEffects: CustomOrderSideEffectsService,
+    private readonly ledgerService: LedgerService,
+    private readonly commissionService: CommissionService,
+    private readonly financialDocumentsService: FinancialDocumentsService,
   ) {}
 
   async initializePayment(
@@ -377,6 +383,24 @@ export class CustomOrdersPaymentsService {
         const grandTotal = lockedAmount;
         const acceptanceAmount = this.roundMoney(grandTotal * 0.6);
         const completionAmount = this.roundMoney(grandTotal - acceptanceAmount);
+        const commissionRule = await this.commissionService.resolveRule(
+          { brandId: order.brandId, currency: order.currency },
+          tx,
+        );
+        const commissionRate = commissionRule.ratePercent;
+        const totalCommissionAmount = this.roundMoney((grandTotal * commissionRate) / 100);
+        const acceptanceCommissionAmount = this.roundMoney(
+          (totalCommissionAmount * acceptanceAmount) / grandTotal,
+        );
+        const completionCommissionAmount = this.roundMoney(
+          totalCommissionAmount - acceptanceCommissionAmount,
+        );
+        const acceptanceNetAmount = this.roundMoney(
+          acceptanceAmount - acceptanceCommissionAmount,
+        );
+        const completionNetAmount = this.roundMoney(
+          completionAmount - completionCommissionAmount,
+        );
         const allocations = await tx.customOrderLedgerAllocation.count({
           where: { customOrderId },
         });
@@ -387,6 +411,9 @@ export class CustomOrdersPaymentsService {
                 customOrderId,
                 allocationType: CustomOrderLedgerAllocationType.BRAND_ACCEPTANCE_PORTION,
                 amount: new Prisma.Decimal(acceptanceAmount.toFixed(2)),
+                commissionRate: new Prisma.Decimal(commissionRate.toFixed(2)),
+                commissionAmount: new Prisma.Decimal(acceptanceCommissionAmount.toFixed(2)),
+                netBrandAmount: new Prisma.Decimal(acceptanceNetAmount.toFixed(2)),
                 currency: order.currency,
                 status: CustomOrderLedgerAllocationStatus.HELD,
               },
@@ -394,6 +421,9 @@ export class CustomOrdersPaymentsService {
                 customOrderId,
                 allocationType: CustomOrderLedgerAllocationType.FINAL_COMPLETION_PORTION,
                 amount: new Prisma.Decimal(completionAmount.toFixed(2)),
+                commissionRate: new Prisma.Decimal(commissionRate.toFixed(2)),
+                commissionAmount: new Prisma.Decimal(completionCommissionAmount.toFixed(2)),
+                netBrandAmount: new Prisma.Decimal(completionNetAmount.toFixed(2)),
                 currency: order.currency,
                 status: CustomOrderLedgerAllocationStatus.HELD,
               },
@@ -411,6 +441,34 @@ export class CustomOrdersPaymentsService {
             status: CustomOrderLedgerAllocationStatus.PAYOUT_ELIGIBLE,
             eligibleAt: now,
           },
+        });
+
+        await this.ledgerService.postCustomOrderPaymentReceived(tx, {
+          customOrderId,
+          totalAmount: grandTotal,
+          currency: order.currency,
+        });
+        await this.ledgerService.postCustomOrderImmediateRelease(tx, {
+          customOrderId,
+          brandId: order.brandId,
+          currency: order.currency,
+          amount: acceptanceAmount,
+          commissionAmount: acceptanceCommissionAmount,
+          netBrandAmount: acceptanceNetAmount,
+        });
+        await this.financialDocumentsService.issueBuyerReceipt(tx, {
+          paymentAttemptId: updated.id,
+          customOrderId,
+          currency: order.currency,
+          grossAmount: grandTotal,
+          settlementCurrency: attempt.settlementCurrency ?? order.currency,
+          settlementAmount: Number(attempt.settlementAmount ?? grandTotal),
+          lineItems: [
+            {
+              label: `Custom order ${customOrderId.slice(0, 8)}`,
+              amount: grandTotal,
+            },
+          ],
         });
       }
 

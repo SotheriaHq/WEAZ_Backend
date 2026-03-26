@@ -74,9 +74,30 @@ export class AdminDisputesController {
       adminNotes?: string;
       assignedToId?: string;
     },
-    @Req() req: Request & { user: { id: string } },
+    @Req() req: Request & { user: { id: string; role: Role } },
   ) {
-    return this.service.update(id, dto, req.user.id, req);
+    return this.service.update(id, dto, req.user.id, req.user.role as Role, req);
+  }
+
+  @Post(':id/claim')
+  @RequirePermissions(ADMIN_PERMISSIONS.DISPUTES_RESOLVE)
+  @ApiOperation({ summary: 'Claim a dispute for the current admin' })
+  async claim(
+    @Param('id') id: string,
+    @Req() req: Request & { user: { id: string; role: Role } },
+  ) {
+    return this.service.claim(id, req.user.id, req.user.role, req);
+  }
+
+  @Post(':id/release')
+  @RequirePermissions(ADMIN_PERMISSIONS.DISPUTES_RESOLVE)
+  @ApiOperation({ summary: 'Release a claimed dispute' })
+  async release(
+    @Param('id') id: string,
+    @Body('reason') reason: string,
+    @Req() req: Request & { user: { id: string; role: Role } },
+  ) {
+    return this.service.release(id, req.user.id, req.user.role, req, reason);
   }
 
   @Post(':id/reopen')
@@ -85,8 +106,8 @@ export class AdminDisputesController {
   async reopen(
     @Param('id') id: string,
     @Body('reason') reason: string,
-    @Req() req: Request & { user: { id: string } },
+    @Req() req: Request & { user: { id: string; role: Role } },
   ) {
-    return this.service.reopen(id, reason, req.user.id, req);
+    return this.service.reopen(id, reason, req.user.id, req.user.role, req);
   }
 }

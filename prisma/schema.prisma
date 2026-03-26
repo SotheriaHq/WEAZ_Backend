@@ -131,6 +131,11 @@ model User {
   disputesReported          Dispute[]                     @relation("DisputeReporter")
   disputesAssigned          Dispute[]                     @relation("DisputeAssignedTo")
   disputesResolved          Dispute[]                     @relation("DisputeResolvedBy")
+  payoutsApproved           Payout[]                      @relation("PayoutApprovedBy")
+  payoutsAssigned           Payout[]                      @relation("PayoutAssignedTo")
+  escrowHoldsAsBuyer        EscrowHold[]                  @relation("EscrowHoldBuyer")
+  escrowHoldsFrozen         EscrowHold[]                  @relation("EscrowHoldFrozenBy")
+  exchangeRateSnapshotsCreated ExchangeRateSnapshot[]     @relation("ExchangeRateSnapshotCreatedBy")
   passwordResetTokens       PasswordResetToken[]          @relation("PasswordResetTokens")
   reactivationRequests      AccountReactivationRequest[]  @relation("UserReactivationRequests")
   reviewedReactivationRequests AccountReactivationRequest[] @relation("AdminReviewedReactivationRequests")
@@ -140,6 +145,7 @@ model User {
   reviewHelpfulVotes        ProductReviewHelpfulVote[]     @relation("UserReviewHelpfulVotes")
   productReviewReports      ProductReviewReport[]          @relation("UserProductReviewReports")
   systemConfigUpdates       SystemConfig[]                 @relation("SystemConfigUpdater")
+  ledgerTransactionsCreated LedgerTransaction[]            @relation("LedgerTransactionCreatedBy")
 }
 
 model FileUpload {
@@ -418,6 +424,44 @@ enum CustomOrderLedgerAllocationStatus {
   PAID_OUT
   REVERSED
   FORFEITED
+}
+
+enum EscrowHoldStatus {
+  HELD
+  PARTIALLY_RELEASED
+  RELEASED
+  FROZEN
+  REFUNDED
+  FORFEITED
+}
+
+enum EscrowReleaseCondition {
+  SHIPMENT_CONFIRMED
+  BUYER_DELIVERY_CONFIRMED
+  BUYER_TIMEOUT
+  MANUAL_ADMIN
+  DISPUTE_RESOLVED
+  REFUND_COMPLETED
+}
+
+enum LedgerAccountType {
+  ASSET
+  LIABILITY
+  REVENUE
+  EXPENSE
+}
+
+enum LedgerEntryDirection {
+  DEBIT
+  CREDIT
+}
+
+enum LedgerTransactionType {
+  PAYMENT_RECEIVED
+  ESCROW_RELEASE
+  PAYOUT_DISBURSED
+  REFUND_ISSUED
+  REVERSAL
 }
 
 enum CustomOrderRetentionHoldType {
@@ -1547,6 +1591,7 @@ model Brand {
   ratingBreakdown Json?
 
   orders      Order[]
+  escrowHolds EscrowHold[]
   customOrderConfigurations CustomOrderConfiguration[]
   customFabricRuleBases CustomFabricRuleBasis[]
   customOrders CustomOrder[]
@@ -1740,6 +1785,8 @@ model Order {
   paymentGateway   String?
   paidAt           DateTime?
   deliveredAt      DateTime?
+  buyerConfirmedDeliveryAt DateTime?
+  escrowHold      EscrowHold?
   messageThread    MessageThread?
   
   createdAt      DateTime      @default(now())
@@ -1749,6 +1796,105 @@ model Order {
   @@index([brandId, status])
   @@index([buyerId])
   @@index([paymentReference])
+}
+
+model EscrowHold {
+  id                           String                 @id @default(uuid()) @db.Uuid
+  orderId                      String?                @unique @db.Uuid
+  order                        Order?                 @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  brandId                      String                 @db.Uuid
+  brand                        Brand                  @relation(fields: [brandId], references: [id], onDelete: Cascade)
+  buyerId                      String?                @db.Uuid
+  buyer                        User?                  @relation("EscrowHoldBuyer", fields: [buyerId], references: [id], onDelete: SetNull)
+  totalAmount                  Decimal                @db.Decimal(10, 2)
+  commissionRate               Decimal                @db.Decimal(5, 2)
+  commissionAmount             Decimal                @db.Decimal(10, 2)
+  netBrandAmount               Decimal                @db.Decimal(10, 2)
+  currency                     String                 @default("NGN")
+  status                       EscrowHoldStatus       @default(HELD)
+  firstReleaseAmount           Decimal                @db.Decimal(10, 2)
+  firstReleaseCommissionAmount Decimal                @db.Decimal(10, 2)
+  firstReleaseNetAmount        Decimal                @db.Decimal(10, 2)
+  secondReleaseAmount          Decimal                @db.Decimal(10, 2)
+  secondReleaseCommissionAmount Decimal               @db.Decimal(10, 2)
+  secondReleaseNetAmount       Decimal                @db.Decimal(10, 2)
+  firstReleasedAt              DateTime?
+  secondReleaseEligibleAt      DateTime?
+  secondReleaseCondition       EscrowReleaseCondition?
+  secondReleasedAt             DateTime?
+  frozenAt                     DateTime?
+  frozenReason                 String?
+  frozenById                   String?                @db.Uuid
+  frozenBy                     User?                  @relation("EscrowHoldFrozenBy", fields: [frozenById], references: [id], onDelete: SetNull)
+  refundedAt                   DateTime?
+  refundReason                 String?
+  createdAt                    DateTime               @default(now())
+  updatedAt                    DateTime               @updatedAt
+
+  @@index([brandId, status])
+  @@index([status, secondReleaseEligibleAt])
+  @@index([buyerId])
+}
+
+model LedgerAccount {
+  id              String            @id @default(uuid()) @db.Uuid
+  code            String            @unique
+  name            String
+  type            LedgerAccountType
+  subType         String
+  parentAccountId String?           @db.Uuid
+  parentAccount   LedgerAccount?    @relation("LedgerAccountParent", fields: [parentAccountId], references: [id], onDelete: SetNull)
+  childAccounts   LedgerAccount[]   @relation("LedgerAccountParent")
+  entityType      String?
+  entityId        String?           @db.Uuid
+  currency        String            @default("NGN")
+  currentBalance  Decimal           @default(0) @db.Decimal(18, 2)
+  isSystemAccount Boolean           @default(false)
+  isActive        Boolean           @default(true)
+  entries         LedgerEntry[]
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  @@index([entityType, entityId])
+  @@index([type, subType])
+}
+
+model LedgerTransaction {
+  id                 String                @id @default(uuid()) @db.Uuid
+  idempotencyKey     String                @unique
+  type               LedgerTransactionType
+  description        String
+  referenceType      String?
+  referenceId        String?               @db.Uuid
+  totalAmount        Decimal               @db.Decimal(18, 2)
+  currency           String
+  baseCurrency       String
+  baseCurrencyAmount Decimal               @db.Decimal(18, 2)
+  fxRateSnapshotId   String?               @db.Uuid
+  fxRateSnapshot     ExchangeRateSnapshot? @relation(fields: [fxRateSnapshotId], references: [id], onDelete: SetNull)
+  metadata           Json?
+  createdById        String?               @db.Uuid
+  createdBy          User?                 @relation("LedgerTransactionCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  entries            LedgerEntry[]
+  createdAt          DateTime              @default(now())
+
+  @@index([type, createdAt])
+  @@index([referenceType, referenceId])
+}
+
+model LedgerEntry {
+  id            String               @id @default(uuid()) @db.Uuid
+  transactionId String               @db.Uuid
+  transaction   LedgerTransaction    @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+  accountId     String               @db.Uuid
+  account       LedgerAccount        @relation(fields: [accountId], references: [id], onDelete: Restrict)
+  direction     LedgerEntryDirection
+  amount        Decimal              @db.Decimal(18, 2)
+  balanceAfter  Decimal              @db.Decimal(18, 2)
+  createdAt     DateTime             @default(now())
+
+  @@index([transactionId])
+  @@index([accountId, createdAt])
 }
 
 model CustomOrderConfiguration {
@@ -2178,6 +2324,9 @@ model CustomOrderLedgerAllocation {
   payout         Payout?                           @relation(fields: [payoutId], references: [id], onDelete: SetNull)
   allocationType CustomOrderLedgerAllocationType
   amount         Decimal                           @db.Decimal(10, 2)
+  commissionRate Decimal                           @db.Decimal(5, 2) @default(0)
+  commissionAmount Decimal                         @db.Decimal(10, 2) @default(0)
+  netBrandAmount Decimal                           @db.Decimal(10, 2) @default(0)
   currency       String                            @default("NGN")
   status         CustomOrderLedgerAllocationStatus @default(HELD)
   eligibleAt     DateTime?
@@ -2208,6 +2357,10 @@ model PaymentAttempt {
   authorizationUrl String?
   amount           Decimal      @db.Decimal(10, 2)
   currency         String       @default("NGN")
+  settlementCurrency String     @default("NGN")
+  settlementAmount Decimal?     @db.Decimal(10, 2)
+  exchangeRateSnapshotId String? @db.Uuid
+  exchangeRateSnapshot ExchangeRateSnapshot? @relation(fields: [exchangeRateSnapshotId], references: [id], onDelete: SetNull)
   orderIds         String[]
   requestSnapshot  Json?
   responseSnapshot Json?
@@ -2225,6 +2378,7 @@ model PaymentAttempt {
   @@index([status, createdAt])
   @@index([subjectType, customOrderId])
   @@index([buyerId, subjectType, customOrderId, idempotencyKey])
+  @@index([exchangeRateSnapshotId])
 }
 
 model PaymentEvent {
@@ -2301,16 +2455,31 @@ model Payout {
   brandId     String       @db.Uuid
   brand       Brand        @relation(fields: [brandId], references: [id])
   ledgerAllocations CustomOrderLedgerAllocation[]
-  
+
   amount      Decimal      @db.Decimal(10, 2)
   currency    String       @default("NGN")
-  status      PayoutStatus @default(PENDING)
+  status      PayoutStatus @default(PENDING_APPROVAL)
   reference   String?
-  
-  createdAt   DateTime     @default(now())
-  updatedAt   DateTime     @updatedAt
-  
+  gatewayReference String?
+  failureReason String?
+  statusReason String?
+  approvedById String?     @db.Uuid
+  approvedBy   User?       @relation("PayoutApprovedBy", fields: [approvedById], references: [id], onDelete: SetNull)
+  approvedAt   DateTime?
+  assignedAdminId String?  @db.Uuid
+  assignedAdmin User?      @relation("PayoutAssignedTo", fields: [assignedAdminId], references: [id], onDelete: SetNull)
+  assignedAt   DateTime?
+  claimedAt    DateTime?
+  releasedAt   DateTime?
+  processedAt  DateTime?
+  paidAt       DateTime?
+
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
   @@index([brandId])
+  @@index([status, createdAt])
+  @@index([assignedAdminId, status])
 }
 
 enum OrderStatus {
@@ -2343,10 +2512,172 @@ enum PaymentSubjectType {
 }
 
 enum PayoutStatus {
-  PENDING
+  PENDING_APPROVAL
+  APPROVED
   PROCESSING
   PAID
   FAILED
+  REJECTED
+  ON_HOLD
+  RECONCILIATION_REVIEW
+}
+
+model ExchangeRateSnapshot {
+  id            String          @id @default(uuid()) @db.Uuid
+  provider      String
+  baseCurrency  String
+  quoteCurrency String
+  rate          Decimal         @db.Decimal(18, 8)
+  capturedAt    DateTime
+  source        ExchangeRateSource
+  rawPayload    Json?
+  createdById   String?         @db.Uuid
+  createdBy     User?           @relation("ExchangeRateSnapshotCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  paymentAttempts PaymentAttempt[]
+  ledgerTransactions LedgerTransaction[]
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+
+  @@index([baseCurrency, quoteCurrency, capturedAt])
+  @@index([source, capturedAt])
+}
+
+enum ExchangeRateSource {
+  PARITY
+  FRANKFURTER
+  PAYSTACK
+  FLUTTERWAVE
+}
+
+enum CommissionRuleScope {
+  PLATFORM
+  BRAND
+}
+
+enum ReconciliationScope {
+  PAYMENTS
+  PAYOUTS
+  LEDGER_INTEGRITY
+}
+
+enum ReconciliationRunStatus {
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+enum ReconciliationItemStatus {
+  MATCHED
+  UNMATCHED_INTERNAL
+  DISCREPANCY
+  RESOLVED
+}
+
+enum FinancialDocumentType {
+  BUYER_RECEIPT
+  BRAND_SETTLEMENT_STATEMENT
+  PLATFORM_COMMISSION_INVOICE
+  CREDIT_NOTE
+}
+
+enum FinancialDocumentStatus {
+  GENERATED
+  VOIDED
+}
+
+model CommissionRule {
+  id          String              @id @default(uuid()) @db.Uuid
+  name        String
+  scope       CommissionRuleScope @default(PLATFORM)
+  brandId     String?             @db.Uuid
+  currency    String?
+  ratePercent Decimal             @db.Decimal(5, 2)
+  minFeeAmount Decimal?           @db.Decimal(10, 2)
+  maxFeeAmount Decimal?           @db.Decimal(10, 2)
+  isDefault   Boolean             @default(false)
+  isActive    Boolean             @default(true)
+  effectiveFrom DateTime          @default(now())
+  effectiveTo DateTime?
+  createdById String?             @db.Uuid
+  updatedById String?             @db.Uuid
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+
+  @@index([scope, brandId, isActive])
+  @@index([currency, effectiveFrom, effectiveTo])
+}
+
+model ReconciliationRun {
+  id           String                  @id @default(uuid()) @db.Uuid
+  scope        ReconciliationScope
+  status       ReconciliationRunStatus @default(RUNNING)
+  startedById  String?                 @db.Uuid
+  filtersJson  Json?
+  summaryJson  Json?
+  errorMessage String?
+  startedAt    DateTime                @default(now())
+  completedAt  DateTime?
+  failedAt     DateTime?
+  createdAt    DateTime                @default(now())
+  updatedAt    DateTime                @updatedAt
+  items        ReconciliationItem[]
+
+  @@index([scope, startedAt])
+  @@index([status, startedAt])
+}
+
+model ReconciliationItem {
+  id              String                   @id @default(uuid()) @db.Uuid
+  runId           String                   @db.Uuid
+  run             ReconciliationRun        @relation(fields: [runId], references: [id], onDelete: Cascade)
+  status          ReconciliationItemStatus
+  referenceType   String
+  referenceId     String?                  @db.Uuid
+  expectedAmount  Decimal?                 @db.Decimal(18, 2)
+  actualAmount    Decimal?                 @db.Decimal(18, 2)
+  currency        String?
+  summary         String
+  detailsJson     Json?
+  assignedAdminId String?                  @db.Uuid
+  assignedAt      DateTime?
+  releasedAt      DateTime?
+  resolvedById    String?                  @db.Uuid
+  resolvedAt      DateTime?
+  resolutionNote  String?
+  createdAt       DateTime                 @default(now())
+  updatedAt       DateTime                 @updatedAt
+
+  @@index([runId, status])
+  @@index([referenceType, referenceId])
+  @@index([assignedAdminId, status])
+}
+
+model FinancialDocument {
+  id               String                @id @default(uuid()) @db.Uuid
+  type             FinancialDocumentType
+  status           FinancialDocumentStatus @default(GENERATED)
+  documentNumber   String                @unique
+  paymentAttemptId String?               @db.Uuid
+  payoutId         String?               @db.Uuid
+  orderId          String?               @db.Uuid
+  customOrderId    String?               @db.Uuid
+  currency         String                @default("NGN")
+  grossAmount      Decimal               @db.Decimal(18, 2)
+  commissionAmount Decimal?              @db.Decimal(18, 2)
+  netAmount        Decimal?              @db.Decimal(18, 2)
+  metadataJson     Json?
+  contentHtml      String?               @db.Text
+  issuedAt         DateTime              @default(now())
+  voidedAt         DateTime?
+  emailSentAt      DateTime?
+  createdAt        DateTime              @default(now())
+  updatedAt        DateTime              @updatedAt
+
+  @@index([type, issuedAt])
+  @@index([paymentAttemptId])
+  @@index([payoutId])
+  @@index([orderId])
+  @@index([customOrderId])
 }
 
 // ===== Store Drafts ===== (REMOVED - store setup uses Brand fields directly)
@@ -2740,9 +3071,21 @@ enum AdminAuditAction {
   ADMIN_TAG_MODERATE
   ADMIN_MEASUREMENT_REVIEW
   ADMIN_PAYOUT_STATUS_UPDATE
+  ADMIN_PAYOUT_CLAIM
+  ADMIN_PAYOUT_RELEASE
+  ADMIN_PAYOUT_ASSIGN
   ADMIN_DISPUTE_RESOLVE
   ADMIN_DISPUTE_REOPEN
   ADMIN_DISPUTE_CREATE
+  ADMIN_DISPUTE_CLAIM
+  ADMIN_DISPUTE_RELEASE
+  ADMIN_DISPUTE_ASSIGN
+  ADMIN_FINANCE_COMMISSION_RULE_CREATE
+  ADMIN_FINANCE_COMMISSION_RULE_UPDATE
+  ADMIN_FINANCE_RECONCILIATION_RUN
+  ADMIN_FINANCE_RECONCILIATION_CLAIM
+  ADMIN_FINANCE_RECONCILIATION_RELEASE
+  ADMIN_FINANCE_RECONCILIATION_RESOLVE
   ADMIN_SLA_CREATE
   ADMIN_SLA_UPDATE
   ADMIN_SLA_DELETE
@@ -2901,6 +3244,7 @@ model Dispute {
   adminNotes    String?
   assignedToId  String?            @db.Uuid
   assignedTo    User?              @relation("DisputeAssignedTo", fields: [assignedToId], references: [id])
+  assignedAt    DateTime?
   resolvedById  String?            @db.Uuid
   resolvedBy    User?              @relation("DisputeResolvedBy", fields: [resolvedById], references: [id])
   resolvedAt    DateTime?

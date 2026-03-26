@@ -25,6 +25,7 @@ import {
   CollectionType,
   Prisma,
   NotificationType,
+  OrderStatus,
   PatchMode,
   PatchStatus,
   PaymentStatus,
@@ -49,6 +50,7 @@ import {
 import { TAG_ENTITY_TYPE } from 'src/tags/tag-entity-type';
 import { CategoriesService } from 'src/categories/categories.service';
 import { reconcileStandardOrderPaymentStatuses } from 'src/common/payments/order-payment-reconciliation.util';
+import { StandardOrderEscrowService } from 'src/finance/standard-order-escrow.service';
 
 @Injectable()
 export class StoreService {
@@ -68,6 +70,7 @@ export class StoreService {
     @Optional()
     private readonly categoriesService?: CategoriesService,
     private readonly notificationsQueue?: NotificationsQueueService,
+    private readonly standardOrderEscrowService?: StandardOrderEscrowService,
   ) {}
 
   private readonly maxProductsPerCollection = Math.max(
@@ -603,7 +606,7 @@ export class StoreService {
   ) {
     if (!file) throw new BadRequestException('No file uploaded');
 
-    const product = await this.assertBrandOwnsProduct(brandOwnerId, productId);
+    await this.assertBrandOwnsProduct(brandOwnerId, productId);
 
     // Re-use existing POST_IMAGE validation rules for product images.
     const uploaded = await this.uploadService.uploadFile(
@@ -612,23 +615,45 @@ export class StoreService {
       FileType.POST_IMAGE,
     );
 
-    const nextImages = Array.isArray(product.images) ? [...product.images] : [];
-    if (nextImages.length >= this.maxProductMediaCount) {
-      throw new BadRequestException(
-        `You can upload up to ${this.maxProductMediaCount} images`,
-      );
-    }
-    nextImages.push(uploaded.url);
+    await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`
+        SELECT 1
+        FROM "Product"
+        WHERE "_id" = ${productId}::uuid
+        FOR UPDATE
+      `;
 
-    const nextThumbnail =
-      isPrimary || !product.thumbnail ? uploaded.url : product.thumbnail;
+      const product = await tx.product.findUnique({
+        where: { id: productId },
+        select: {
+          id: true,
+          images: true,
+          thumbnail: true,
+        },
+      });
 
-    await this.prisma.product.update({
-      where: { id: productId },
-      data: {
-        images: nextImages,
-        thumbnail: nextThumbnail,
-      },
+      if (!product) {
+        throw new NotFoundException('Product not found');
+      }
+
+      const nextImages = Array.isArray(product.images) ? [...product.images] : [];
+      if (nextImages.length >= this.maxProductMediaCount) {
+        throw new BadRequestException(
+          `You can upload up to ${this.maxProductMediaCount} images`,
+        );
+      }
+
+      nextImages.push(uploaded.url);
+      const nextThumbnail =
+        isPrimary || !product.thumbnail ? uploaded.url : product.thumbnail;
+
+      await tx.product.update({
+        where: { id: productId },
+        data: {
+          images: nextImages,
+          thumbnail: nextThumbnail,
+        },
+      });
     });
 
     return { id: uploaded.id, url: uploaded.url };
@@ -844,16 +869,50 @@ export class StoreService {
   }
 
   private generateSlug(name: string): string {
-    const base = (name || '')
-      .toLowerCase()
-      .trim()
-      .replace(/[^\w\s-]/g, '') // Remove special chars
-      .replace(/\s+/g, '-') // Replace spaces with hyphens
-      .replace(/-+/g, '-') // Collapse multiple hyphens
-      .slice(0, 80);
+    const base = this.normalizeSlugBase(name);
     // Add random suffix for uniqueness
     const suffix = Math.random().toString(36).slice(2, 8);
     return `${base}-${suffix}`;
+  }
+
+  private normalizeSlugBase(name: string): string {
+    const base = (name || '')
+      .toLowerCase()
+      .trim()
+      .replace(/[^\w\s-]/g, '')
+      .replace(/\s+/g, '-')
+      .replace(/-+/g, '-')
+      .replace(/^-|-$/g, '')
+      .slice(0, 72);
+    return base.length > 0 ? base : 'untitled-product';
+  }
+
+  private async ensureUniqueProductSlug(
+    tx: Prisma.TransactionClient,
+    name: string,
+  ): Promise<string> {
+    const base = this.normalizeSlugBase(name);
+    const existing = await tx.product.findMany({
+      where: {
+        slug: {
+          startsWith: base,
+        },
+      },
+      select: { slug: true },
+    });
+
+    const existingSlugs = new Set(existing.map((entry) => entry.slug));
+    if (!existingSlugs.has(base)) {
+      return base;
+    }
+
+    let suffix = 2;
+    let candidate = `${base}-${suffix}`;
+    while (existingSlugs.has(candidate)) {
+      suffix += 1;
+      candidate = `${base}-${suffix}`;
+    }
+    return candidate;
   }
 
   private buildTagSet(tags: Array<string | null | undefined>): string[] {
@@ -1254,14 +1313,11 @@ export class StoreService {
 
     // Resolve product name and slug
     const resolvedName = (dto.name || 'Untitled Product').trim();
-    const slug = resolvedName
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-|-$/g, '');
     const resolvedTags = this.buildTagSet(dto.tags || []);
     const nextIsActive = dto.isActive ?? true;
 
     const product = await this.prisma.$transaction(async (tx) => {
+      let slug = await this.ensureUniqueProductSlug(tx, resolvedName);
       let collectionId = requestedCollectionId;
 
       if (!collectionId) {
@@ -1301,72 +1357,92 @@ export class StoreService {
         where: { collectionId },
       });
 
-      const created = await tx.product.create({
-        data: {
-          id: uuidv4(),
-          collectionId,
-          categoryId: requestedCategoryId,
-          categoryTypeId: requestedCategoryTypeId,
-          brandId: brand.id,
-          name: resolvedName,
-          slug,
-          description: dto.description,
-          currency,
-          price: new Prisma.Decimal(resolvedPrice),
-          salePrice: dto.salePrice ? new Prisma.Decimal(dto.salePrice) : null,
-          saleStartAt: dto.saleStartAt ? new Date(dto.saleStartAt) : null,
-          saleEndAt: dto.saleEndAt ? new Date(dto.saleEndAt) : null,
-          // Product details
-          sku: dto.sku || null,
-          weight: dto.weight ? new Prisma.Decimal(dto.weight) : null,
-          weightUnit: dto.weightUnit || 'kg',
-          materials: dto.materials || null,
-          careInstructions: dto.careInstructions || null,
-          costPerItem: dto.costPerItem
-            ? new Prisma.Decimal(dto.costPerItem)
-            : null,
-          // Variants (legacy + derived)
-          sizes: derivedFromVariants?.sizes ?? dto.sizes ?? [],
-          sizeStock: derivedFromVariants?.sizeStock ?? dto.sizeStock ?? null,
-          sizingMode: this.normalizeSizingMode(dto.sizingMode),
-          rtwSizeSystem: dto.rtwSizeSystem || null,
-          rtwSizeType: dto.rtwSizeType || null,
-          rtwLinkedToInventory: dto.rtwLinkedToInventory ?? false,
-          customGender: dto.customGender || null,
-          customMeasurementKeys:
-            this.normalizeRequiredMeasurementKeys(dto.customMeasurementKeys),
-          customFreeformPointIds:
-            this.normalizeRequiredMeasurementKeys(dto.customFreeformPointIds),
-          fitPreference: dto.fitPreference || null,
-          targetAgeGroup: dto.targetAgeGroup || 'ADULT',
-          colors: derivedFromVariants?.colors ?? dto.colors ?? [],
-          colorImages: dto.colorImages || null,
-          colorHexCodes:
-            derivedFromVariants?.colorHexCodes ?? dto.colorHexCodes ?? null,
-          // Media
-          images: normalizedImages,
-          thumbnail: resolvedThumbnail,
-          // Inventory
-          totalStock:
-            derivedFromVariants?.totalStock ?? (dto.totalStock || 0),
-          lowStockThreshold: dto.lowStockThreshold || 5,
-          trackInventory: dto.trackInventory ?? true,
-          allowBackorders: dto.allowBackorders ?? false,
-          // Metadata
-          tags: resolvedTags,
-          gender: dto.gender || 'EVERYBODY',
-          isActive: nextIsActive,
-          isPhysicalProduct: dto.isPhysicalProduct ?? true,
-          customsRegion: dto.customsRegion || null,
-          // Policies
-          returnsEligible: dto.returnsEligible ?? true,
-          // SEO
-          metaTitle: dto.metaTitle || null,
-          metaDescription: dto.metaDescription || null,
-          // Scheduling
-          publishAt: dto.publishAt ? new Date(dto.publishAt) : null,
-        },
-      });
+      let created = null as Awaited<ReturnType<typeof tx.product.create>> | null;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        try {
+          created = await tx.product.create({
+            data: {
+              id: uuidv4(),
+              collectionId,
+              categoryId: requestedCategoryId,
+              categoryTypeId: requestedCategoryTypeId,
+              brandId: brand.id,
+              name: resolvedName,
+              slug,
+              description: dto.description,
+              currency,
+              price: new Prisma.Decimal(resolvedPrice),
+              salePrice: dto.salePrice ? new Prisma.Decimal(dto.salePrice) : null,
+              saleStartAt: dto.saleStartAt ? new Date(dto.saleStartAt) : null,
+              saleEndAt: dto.saleEndAt ? new Date(dto.saleEndAt) : null,
+              // Product details
+              sku: dto.sku || null,
+              weight: dto.weight ? new Prisma.Decimal(dto.weight) : null,
+              weightUnit: dto.weightUnit || 'kg',
+              materials: dto.materials || null,
+              careInstructions: dto.careInstructions || null,
+              costPerItem: dto.costPerItem
+                ? new Prisma.Decimal(dto.costPerItem)
+                : null,
+              // Variants (legacy + derived)
+              sizes: derivedFromVariants?.sizes ?? dto.sizes ?? [],
+              sizeStock: derivedFromVariants?.sizeStock ?? dto.sizeStock ?? null,
+              sizingMode: this.normalizeSizingMode(dto.sizingMode),
+              rtwSizeSystem: dto.rtwSizeSystem || null,
+              rtwSizeType: dto.rtwSizeType || null,
+              rtwLinkedToInventory: dto.rtwLinkedToInventory ?? false,
+              customGender: dto.customGender || null,
+              customMeasurementKeys:
+                this.normalizeRequiredMeasurementKeys(dto.customMeasurementKeys),
+              customFreeformPointIds:
+                this.normalizeRequiredMeasurementKeys(dto.customFreeformPointIds),
+              fitPreference: dto.fitPreference || null,
+              targetAgeGroup: dto.targetAgeGroup || 'ADULT',
+              colors: derivedFromVariants?.colors ?? dto.colors ?? [],
+              colorImages: dto.colorImages || null,
+              colorHexCodes:
+                derivedFromVariants?.colorHexCodes ?? dto.colorHexCodes ?? null,
+              // Media
+              images: normalizedImages,
+              thumbnail: resolvedThumbnail,
+              // Inventory
+              totalStock:
+                derivedFromVariants?.totalStock ?? (dto.totalStock || 0),
+              lowStockThreshold: dto.lowStockThreshold || 5,
+              trackInventory: dto.trackInventory ?? true,
+              allowBackorders: dto.allowBackorders ?? false,
+              // Metadata
+              tags: resolvedTags,
+              gender: dto.gender || 'EVERYBODY',
+              isActive: nextIsActive,
+              isPhysicalProduct: dto.isPhysicalProduct ?? true,
+              customsRegion: dto.customsRegion || null,
+              // Policies
+              returnsEligible: dto.returnsEligible ?? true,
+              // SEO
+              metaTitle: dto.metaTitle || null,
+              metaDescription: dto.metaDescription || null,
+              // Scheduling
+              publishAt: dto.publishAt ? new Date(dto.publishAt) : null,
+            },
+          });
+          break;
+        } catch (error) {
+          if (
+            error instanceof Prisma.PrismaClientKnownRequestError &&
+            error.code === 'P2002' &&
+            attempt < 2
+          ) {
+            slug = this.generateSlug(resolvedName);
+            continue;
+          }
+          throw error;
+        }
+      }
+
+      if (!created) {
+        throw new InternalServerErrorException('Unable to create product');
+      }
 
       await tx.storeCollectionProduct.create({
         data: {
@@ -5019,6 +5095,72 @@ export class StoreService {
           reviewStatesByOrderItemId.get(item.id)?.existingReviewId ?? null,
       })),
     };
+  }
+
+  async confirmOrderDelivery(userId: string, orderId: string, note?: string) {
+    const order = await this.prisma.order.findFirst({
+      where: { id: orderId, buyerId: userId },
+      select: {
+        id: true,
+        status: true,
+        paymentStatus: true,
+        buyerConfirmedDeliveryAt: true,
+        brandId: true,
+        brand: {
+          select: {
+            ownerId: true,
+            name: true,
+          },
+        },
+      },
+    });
+
+    if (!order) {
+      throw new NotFoundException('Order not found');
+    }
+
+    if (order.status !== OrderStatus.DELIVERED) {
+      throw new BadRequestException('Only delivered orders can be confirmed');
+    }
+
+    if (order.paymentStatus !== PaymentStatus.PAID) {
+      throw new BadRequestException('Only paid orders can be confirmed');
+    }
+
+    if (order.buyerConfirmedDeliveryAt) {
+      throw new ConflictException('Order delivery has already been confirmed');
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.order.update({
+        where: { id: orderId },
+        data: {
+          buyerConfirmedDeliveryAt: new Date(),
+        },
+      });
+
+      if (this.standardOrderEscrowService) {
+        await this.standardOrderEscrowService.markBuyerDeliveryConfirmed(tx, orderId);
+      }
+    });
+
+    if (this.notifications && order.brand?.ownerId) {
+      await this.notifications
+        .create(order.brand.ownerId, NotificationType.ORDER_STATUS_UPDATED, {
+          actorId: userId,
+          payload: {
+            orderId,
+            status: 'DELIVERED',
+            previousStatus: 'DELIVERED',
+            buyerConfirmedDelivery: true,
+            note: note?.trim() || null,
+            targetUrl: `/studio?tab=orders&orderId=${orderId}`,
+          },
+        })
+        .catch(() => undefined);
+    }
+
+    return this.getMyOrder(userId, orderId);
   }
 
   async cancelMyOrder(userId: string, orderId: string, reason?: string) {

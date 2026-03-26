@@ -45,7 +45,6 @@ type SafeMeasurements = Record<string, string | number | boolean | null>;
 type BaselineMeasurementGender = 'MEN' | 'WOMEN';
 type BaselineMeasurementSlot =
   | 'HEIGHT'
-  | 'WEIGHT'
   | 'SHOULDER'
   | 'CHEST'
   | 'WAIST'
@@ -55,7 +54,6 @@ type BaselineMeasurementSlot =
 
 const BASELINE_MEASUREMENT_SLOTS: BaselineMeasurementSlot[] = [
   'HEIGHT',
-  'WEIGHT',
   'SHOULDER',
   'CHEST',
   'WAIST',
@@ -72,11 +70,6 @@ const BASELINE_SLOT_KEY_CANDIDATES: Record<
     men: ['MEN_HEIGHT'],
     women: ['WOMEN_HEIGHT'],
     neutral: ['UNISEX_HEIGHT', 'HEIGHT'],
-  },
-  WEIGHT: {
-    men: ['MEN_WEIGHT'],
-    women: ['WOMEN_WEIGHT'],
-    neutral: ['UNISEX_WEIGHT', 'WEIGHT'],
   },
   SHOULDER: {
     men: ['MEN_SHOULDER'],

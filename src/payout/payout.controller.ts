@@ -36,6 +36,34 @@ export class PayoutController {
     );
   }
 
+  @Get('overview')
+  async getOverview(
+    @Param('brandId') brandId: string,
+    @Req() req: any,
+  ) {
+    if (req.user.id !== brandId) {
+      throw new BadRequestException('Not authorized for this brand');
+    }
+    return this.payoutService.getOverview(brandId);
+  }
+
+  @Get('incoming')
+  async getIncomingTransactions(
+    @Param('brandId') brandId: string,
+    @Req() req: any,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    if (req.user.id !== brandId) {
+      throw new BadRequestException('Not authorized for this brand');
+    }
+    return this.payoutService.listIncomingTransactions(
+      brandId,
+      page ? parseInt(page, 10) : 1,
+      limit ? parseInt(limit, 10) : 20,
+    );
+  }
+
   @Post('request')
   async requestPayout(
     @Param('brandId') brandId: string,

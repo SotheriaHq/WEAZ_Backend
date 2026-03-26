@@ -1,0 +1,548 @@
+"use strict";
+var __decorate = (this && this.__decorate) || function (decorators, target, key, desc) {
+    var c = arguments.length, r = c < 3 ? target : desc === null ? desc = Object.getOwnPropertyDescriptor(target, key) : desc, d;
+    if (typeof Reflect === "object" && typeof Reflect.decorate === "function") r = Reflect.decorate(decorators, target, key, desc);
+    else for (var i = decorators.length - 1; i >= 0; i--) if (d = decorators[i]) r = (c < 3 ? d(r) : c > 3 ? d(target, key, r) : d(target, key)) || r;
+    return c > 3 && r && Object.defineProperty(target, key, r), r;
+};
+var __metadata = (this && this.__metadata) || function (k, v) {
+    if (typeof Reflect === "object" && typeof Reflect.metadata === "function") return Reflect.metadata(k, v);
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.CustomOrdersPaymentsService = void 0;
+const common_1 = require("@nestjs/common");
+const client_1 = require("@prisma/client");
+const prisma_service_1 = require("../prisma/prisma.service");
+const payment_service_1 = require("../payment/payment.service");
+const custom_order_side_effects_service_1 = require("./custom-order-side-effects.service");
+const system_config_service_1 = require("../admin/system-config/system-config.service");
+const ledger_service_1 = require("../finance/ledger.service");
+const ACTIVE_PAYMENT_ATTEMPT_STATUSES = new Set(['PENDING', 'REQUIRES_ACTION', 'PROCESSING']);
+let CustomOrdersPaymentsService = class CustomOrdersPaymentsService {
+    constructor(prisma, paymentService, sideEffects, systemConfigService, ledgerService) {
+        this.prisma = prisma;
+        this.paymentService = paymentService;
+        this.sideEffects = sideEffects;
+        this.systemConfigService = systemConfigService;
+        this.ledgerService = ledgerService;
+    }
+    async initializePayment(userId, customOrderId, dto) {
+        const now = new Date();
+        const order = await this.prisma.customOrder.findFirst({
+            where: { id: customOrderId, buyerId: userId },
+            select: {
+                id: true,
+                buyerId: true,
+                brandId: true,
+                status: true,
+                paymentStatus: true,
+                buyerPriceSummaryJson: true,
+                currency: true,
+                sourceBrandNameSnapshot: true,
+                productionLeadDaysSnapshot: true,
+                deliveryMaxDaysSnapshot: true,
+            },
+        });
+        if (!order) {
+            throw new common_1.NotFoundException('Custom order not found');
+        }
+        if (order.paymentStatus === client_1.PaymentStatus.PAID) {
+            throw new common_1.BadRequestException('Custom order has already been paid');
+        }
+        const existingAttempt = await this.prisma.paymentAttempt.findFirst({
+            where: {
+                buyerId: userId,
+                subjectType: client_1.PaymentSubjectType.CUSTOM_ORDER,
+                customOrderId,
+                idempotencyKey: dto.idempotencyKey,
+            },
+            orderBy: { createdAt: 'desc' },
+        });
+        if (existingAttempt) {
+            return {
+                status: 'success',
+                data: this.toInitResult(existingAttempt),
+            };
+        }
+        const latestActiveAttempt = await this.prisma.paymentAttempt.findFirst({
+            where: {
+                buyerId: userId,
+                subjectType: client_1.PaymentSubjectType.CUSTOM_ORDER,
+                customOrderId,
+                status: { in: [...ACTIVE_PAYMENT_ATTEMPT_STATUSES] },
+            },
+            orderBy: { createdAt: 'desc' },
+        });
+        if (latestActiveAttempt) {
+            if (latestActiveAttempt.expiresAt && latestActiveAttempt.expiresAt <= now) {
+                await this.prisma.paymentAttempt.update({
+                    where: { id: latestActiveAttempt.id },
+                    data: {
+                        status: 'EXPIRED',
+                        lastVerifiedAt: now,
+                        failureCode: 'ATTEMPT_EXPIRED',
+                        failureMessage: 'The previous payment attempt expired before completion.',
+                    },
+                });
+            }
+            else {
+                await this.prisma.customOrder.update({
+                    where: { id: customOrderId },
+                    data: {
+                        paymentMethod: latestActiveAttempt.paymentMethod,
+                        paymentReference: latestActiveAttempt.reference,
+                        paymentStatus: this.mapAttemptStatusToPaymentStatus(latestActiveAttempt.status),
+                        status: client_1.CustomOrderStatus.PENDING_PAYMENT,
+                    },
+                });
+                return {
+                    status: 'success',
+                    data: this.toInitResult(latestActiveAttempt),
+                };
+            }
+        }
+        const paymentApi = this.paymentService;
+        const paymentData = paymentApi.validatePaymentRequest(dto.paymentMethod, {
+            ...(dto.paymentData ?? {}),
+            email: dto.email,
+        });
+        const callbackUrl = paymentApi.resolveCallbackBaseUrl(dto.callbackUrl);
+        const amount = Number(order.buyerPriceSummaryJson?.grandTotal ?? 0);
+        const reference = `TH-CO-${Date.now()}-${customOrderId.slice(0, 8)}`;
+        const gatewayResult = await paymentApi.initializeGateway(dto.paymentMethod, reference, paymentData, amount, order.currency, callbackUrl);
+        const createdAttempt = await this.prisma.$transaction(async (tx) => {
+            const attempt = await tx.paymentAttempt.create({
+                data: {
+                    buyerId: userId,
+                    subjectType: client_1.PaymentSubjectType.CUSTOM_ORDER,
+                    customOrderId,
+                    provider: gatewayResult.gateway,
+                    providerMode: paymentApi.getProviderMode(),
+                    paymentMethod: dto.paymentMethod,
+                    channel: gatewayResult.channel,
+                    status: gatewayResult.status,
+                    reference,
+                    idempotencyKey: dto.idempotencyKey,
+                    callbackUrl: gatewayResult.callbackUrl ?? callbackUrl,
+                    authorizationUrl: gatewayResult.authorizationUrl,
+                    amount,
+                    currency: order.currency,
+                    orderIds: [],
+                    requestSnapshot: paymentData,
+                    responseSnapshot: (gatewayResult.responseSnapshot ?? null),
+                    nextAction: (gatewayResult.nextAction ?? null),
+                    bankAccount: (gatewayResult.bankAccount ?? null),
+                    expiresAt: gatewayResult.expiresAt ? new Date(gatewayResult.expiresAt) : null,
+                },
+            });
+            await tx.customOrder.update({
+                where: { id: customOrderId },
+                data: {
+                    paymentMethod: dto.paymentMethod,
+                    paymentReference: attempt.reference,
+                    paymentStatus: this.mapAttemptStatusToPaymentStatus(gatewayResult.status),
+                    status: client_1.CustomOrderStatus.PENDING_PAYMENT,
+                },
+            });
+            await tx.paymentEvent.create({
+                data: {
+                    paymentAttemptId: attempt.id,
+                    type: 'INITIALIZED',
+                    source: paymentApi.getProviderMode() === 'mock' ? 'mock-initialize' : 'initialize',
+                    payload: {
+                        paymentMethod: dto.paymentMethod,
+                        gateway: gatewayResult.gateway,
+                        status: gatewayResult.status,
+                        subjectType: client_1.PaymentSubjectType.CUSTOM_ORDER,
+                        customOrderId,
+                    },
+                },
+            });
+            await tx.customOrderTimelineEvent.create({
+                data: {
+                    customOrderId,
+                    actorType: 'BUYER',
+                    actorId: userId,
+                    eventType: 'PAYMENT_INITIALIZED',
+                    payloadJson: {
+                        reference: attempt.reference,
+                        gateway: gatewayResult.gateway,
+                        paymentMethod: dto.paymentMethod,
+                    },
+                },
+            });
+            return attempt;
+        });
+        return {
+            status: 'success',
+            data: this.toInitResult(createdAttempt),
+        };
+    }
+    async verifyPayment(userId, customOrderId, dto) {
+        const order = await this.prisma.customOrder.findFirst({
+            where: { id: customOrderId, buyerId: userId },
+            select: {
+                id: true,
+                buyerId: true,
+                brandId: true,
+                currency: true,
+                sourceBrandNameSnapshot: true,
+                productionLeadDaysSnapshot: true,
+                deliveryMaxDaysSnapshot: true,
+                buyerPriceSummaryJson: true,
+            },
+        });
+        if (!order) {
+            throw new common_1.NotFoundException('Custom order not found');
+        }
+        const attempt = await this.prisma.paymentAttempt.findUnique({
+            where: { reference: dto.reference },
+        });
+        if (!attempt || attempt.customOrderId !== customOrderId || attempt.buyerId !== userId) {
+            throw new common_1.BadRequestException('No custom-order payment attempt found for this reference');
+        }
+        if (dto.gateway.trim().toLowerCase() !== attempt.provider.trim().toLowerCase()) {
+            throw new common_1.BadRequestException('Payment verification gateway does not match the initialized payment attempt');
+        }
+        const lockedAmount = Number(order.buyerPriceSummaryJson?.grandTotal ?? 0);
+        if (Number(attempt.amount) !== lockedAmount || attempt.currency !== order.currency) {
+            throw new common_1.BadRequestException('Custom-order payment attempt no longer matches the locked order total');
+        }
+        if (attempt.status === 'PAID') {
+            return this.toVerifyResult(attempt, order);
+        }
+        const paymentApi = this.paymentService;
+        if (paymentApi.isTerminalStatus(attempt.status)) {
+            return this.toVerifyResult(attempt, order);
+        }
+        const nextStatus = this.resolveVerifiedAttemptStatus(attempt, dto);
+        const now = new Date();
+        const awaitingProviderConfirmation = String(attempt.providerMode).trim().toLowerCase() === 'live' &&
+            this.isPendingVerificationStatus(nextStatus);
+        const verificationSnapshot = this.buildVerificationSnapshot(attempt, dto, nextStatus, now, awaitingProviderConfirmation
+            ? {
+                awaitingProviderConfirmation: true,
+                recoveryAction: 'WAIT_FOR_PROVIDER_CONFIRMATION',
+                recoveryMessage: 'Payment is still awaiting provider callback or webhook confirmation. Recheck in a moment or after returning from the gateway.',
+            }
+            : undefined);
+        const failureState = this.getFailureState(nextStatus);
+        const brand = nextStatus === 'PAID'
+            ? await this.prisma.brand.findUnique({
+                where: { id: order.brandId },
+                select: { ownerId: true },
+            })
+            : null;
+        const updatedAttempt = await this.prisma.$transaction(async (tx) => {
+            const promisedProductionAt = nextStatus === 'PAID'
+                ? new Date(now.getTime() + order.productionLeadDaysSnapshot * 24 * 60 * 60 * 1000)
+                : null;
+            const promisedDispatchAt = promisedProductionAt;
+            const promisedDeliveryAt = nextStatus === 'PAID' && promisedDispatchAt
+                ? new Date(promisedDispatchAt.getTime() + order.deliveryMaxDaysSnapshot * 24 * 60 * 60 * 1000)
+                : null;
+            const updated = await tx.paymentAttempt.update({
+                where: { reference: dto.reference },
+                data: {
+                    status: nextStatus,
+                    confirmedAt: nextStatus === 'PAID' ? now : attempt.confirmedAt,
+                    lastVerifiedAt: now,
+                    responseSnapshot: verificationSnapshot,
+                    failureCode: failureState.failureCode,
+                    failureMessage: failureState.failureMessage,
+                },
+            });
+            await tx.customOrder.update({
+                where: { id: customOrderId },
+                data: {
+                    paymentStatus: this.mapAttemptStatusToPaymentStatus(nextStatus),
+                    status: nextStatus === 'PAID'
+                        ? client_1.CustomOrderStatus.ACCEPTED
+                        : client_1.CustomOrderStatus.PENDING_PAYMENT,
+                    acceptedAt: nextStatus === 'PAID' ? now : undefined,
+                    promisedProductionAt: nextStatus === 'PAID' ? promisedProductionAt : undefined,
+                    promisedDispatchAt: nextStatus === 'PAID' ? promisedDispatchAt : undefined,
+                    promisedDeliveryAt: nextStatus === 'PAID' ? promisedDeliveryAt : undefined,
+                    currentProgressStage: nextStatus === 'PAID' ? client_1.CustomOrderProgressStage.ORDER_RECEIVED : undefined,
+                    currentProgressStageEnteredAt: nextStatus === 'PAID' ? now : undefined,
+                    lastBrandProgressUpdateAt: nextStatus === 'PAID' ? now : undefined,
+                    progressEvents: nextStatus === 'PAID' && brand?.ownerId
+                        ? {
+                            create: {
+                                stage: client_1.CustomOrderProgressStage.ORDER_RECEIVED,
+                                note: 'Order auto-accepted after payment confirmation.',
+                                changedById: brand.ownerId,
+                                staleThresholdAt: new Date(now.getTime() + 24 * 60 * 60 * 1000),
+                            },
+                        }
+                        : undefined,
+                },
+            });
+            await tx.paymentEvent.create({
+                data: {
+                    paymentAttemptId: updated.id,
+                    type: awaitingProviderConfirmation
+                        ? 'VERIFICATION_PENDING_PROVIDER_CONFIRMATION'
+                        : `STATUS_${nextStatus}`,
+                    source: 'verify',
+                    payload: {
+                        gateway: dto.gateway,
+                        providerStatus: nextStatus,
+                        verifiedAt: now.toISOString(),
+                        subjectType: client_1.PaymentSubjectType.CUSTOM_ORDER,
+                        customOrderId,
+                        awaitingProviderConfirmation,
+                    },
+                },
+            });
+            await tx.customOrderTimelineEvent.create({
+                data: {
+                    customOrderId,
+                    actorType: 'SYSTEM',
+                    eventType: nextStatus === 'PAID' ? 'PAYMENT_CONFIRMED' : 'PAYMENT_INITIALIZED',
+                    payloadJson: {
+                        reference: updated.reference,
+                        status: nextStatus,
+                        awaitingProviderConfirmation,
+                        autoAccepted: nextStatus === 'PAID',
+                    },
+                },
+            });
+            if (nextStatus === 'PAID') {
+                const grandTotal = lockedAmount;
+                const acceptanceAmount = this.roundMoney(grandTotal * 0.6);
+                const completionAmount = this.roundMoney(grandTotal - acceptanceAmount);
+                const commissionRate = await this.systemConfigService.getNumber('finance.commission.defaultPercent');
+                const totalCommissionAmount = this.roundMoney((grandTotal * commissionRate) / 100);
+                const acceptanceCommissionAmount = this.roundMoney((totalCommissionAmount * acceptanceAmount) / grandTotal);
+                const completionCommissionAmount = this.roundMoney(totalCommissionAmount - acceptanceCommissionAmount);
+                const acceptanceNetAmount = this.roundMoney(acceptanceAmount - acceptanceCommissionAmount);
+                const completionNetAmount = this.roundMoney(completionAmount - completionCommissionAmount);
+                const allocations = await tx.customOrderLedgerAllocation.count({
+                    where: { customOrderId },
+                });
+                if (allocations === 0) {
+                    await tx.customOrderLedgerAllocation.createMany({
+                        data: [
+                            {
+                                customOrderId,
+                                allocationType: client_1.CustomOrderLedgerAllocationType.BRAND_ACCEPTANCE_PORTION,
+                                amount: new client_1.Prisma.Decimal(acceptanceAmount.toFixed(2)),
+                                commissionRate: new client_1.Prisma.Decimal(commissionRate.toFixed(2)),
+                                commissionAmount: new client_1.Prisma.Decimal(acceptanceCommissionAmount.toFixed(2)),
+                                netBrandAmount: new client_1.Prisma.Decimal(acceptanceNetAmount.toFixed(2)),
+                                currency: order.currency,
+                                status: client_1.CustomOrderLedgerAllocationStatus.HELD,
+                            },
+                            {
+                                customOrderId,
+                                allocationType: client_1.CustomOrderLedgerAllocationType.FINAL_COMPLETION_PORTION,
+                                amount: new client_1.Prisma.Decimal(completionAmount.toFixed(2)),
+                                commissionRate: new client_1.Prisma.Decimal(commissionRate.toFixed(2)),
+                                commissionAmount: new client_1.Prisma.Decimal(completionCommissionAmount.toFixed(2)),
+                                netBrandAmount: new client_1.Prisma.Decimal(completionNetAmount.toFixed(2)),
+                                currency: order.currency,
+                                status: client_1.CustomOrderLedgerAllocationStatus.HELD,
+                            },
+                        ],
+                    });
+                }
+                await tx.customOrderLedgerAllocation.updateMany({
+                    where: {
+                        customOrderId,
+                        allocationType: client_1.CustomOrderLedgerAllocationType.BRAND_ACCEPTANCE_PORTION,
+                        status: client_1.CustomOrderLedgerAllocationStatus.HELD,
+                    },
+                    data: {
+                        status: client_1.CustomOrderLedgerAllocationStatus.PAYOUT_ELIGIBLE,
+                        eligibleAt: now,
+                    },
+                });
+                await this.ledgerService.postCustomOrderPaymentReceived(tx, {
+                    customOrderId,
+                    totalAmount: grandTotal,
+                    currency: order.currency,
+                });
+                await this.ledgerService.postCustomOrderImmediateRelease(tx, {
+                    customOrderId,
+                    brandId: order.brandId,
+                    currency: order.currency,
+                    amount: acceptanceAmount,
+                    commissionAmount: acceptanceCommissionAmount,
+                    netBrandAmount: acceptanceNetAmount,
+                });
+            }
+            return updated;
+        });
+        if (nextStatus === 'PAID') {
+            await this.sideEffects.enqueueNotification({
+                customOrderId,
+                recipientIds: [order.buyerId],
+                notificationType: 'CUSTOM_ORDER_PAYMENT_RECEIVED',
+                payload: {
+                    customOrderId,
+                    targetUrl: `/custom-orders/${customOrderId}`,
+                    message: `Payment received and ${order.sourceBrandNameSnapshot || 'the brand'} has been auto-confirmed for your custom order.`,
+                },
+                dedupeMs: 5 * 60 * 1000,
+            });
+            if (brand?.ownerId) {
+                await this.sideEffects.enqueueNotification({
+                    customOrderId,
+                    recipientIds: [brand.ownerId],
+                    notificationType: 'CUSTOM_ORDER_REVIEW_REQUIRED',
+                    payload: {
+                        customOrderId,
+                        brandName: order.sourceBrandNameSnapshot,
+                        targetUrl: `/studio/custom-orders/${customOrderId}`,
+                        message: `Payment confirmed for ${customOrderId.slice(0, 8)}. The order was auto-accepted and is ready for production updates.`,
+                    },
+                    dedupeMs: 5 * 60 * 1000,
+                });
+            }
+        }
+        return this.toVerifyResult(updatedAttempt, order);
+    }
+    toInitResult(attempt) {
+        return {
+            paymentAttemptId: attempt.id,
+            reference: attempt.reference,
+            gateway: attempt.provider,
+            status: attempt.status,
+            channel: attempt.channel ?? undefined,
+            callbackUrl: attempt.callbackUrl ?? undefined,
+            authorizationUrl: attempt.authorizationUrl ?? undefined,
+            bankAccount: this.asObject(attempt.bankAccount),
+            nextAction: this.asObject(attempt.nextAction),
+        };
+    }
+    toVerifyResult(attempt, order) {
+        const responseSnapshot = this.asObject(attempt.responseSnapshot ?? null);
+        const awaitingProviderConfirmation = Boolean(responseSnapshot?.awaitingProviderConfirmation) && attempt.status !== 'PAID';
+        return {
+            status: 'success',
+            data: {
+                success: attempt.status === 'PAID',
+                status: attempt.status,
+                paymentAttemptId: attempt.id,
+                reference: attempt.reference,
+                amount: Number(order.buyerPriceSummaryJson?.grandTotal ?? 0),
+                currency: order.currency,
+                paidAt: attempt.confirmedAt?.toISOString(),
+                channel: attempt.channel ?? undefined,
+                failureMessage: attempt.failureMessage ?? undefined,
+                customOrderId: order.id,
+                ...(awaitingProviderConfirmation
+                    ? {
+                        awaitingProviderConfirmation: true,
+                        recoveryAction: responseSnapshot?.recoveryAction ?? undefined,
+                        recoveryMessage: responseSnapshot?.recoveryMessage ?? undefined,
+                    }
+                    : {}),
+            },
+        };
+    }
+    mapAttemptStatusToPaymentStatus(status) {
+        if (status === 'PAID') {
+            return client_1.PaymentStatus.PAID;
+        }
+        if (status === 'FAILED' || status === 'CANCELLED' || status === 'EXPIRED') {
+            return client_1.PaymentStatus.FAILED;
+        }
+        return client_1.PaymentStatus.PENDING;
+    }
+    roundMoney(value) {
+        return Math.round((value + Number.EPSILON) * 100) / 100;
+    }
+    resolveVerifiedAttemptStatus(attempt, dto) {
+        const snapshot = this.asObject(attempt.responseSnapshot) ?? {};
+        const authoritativeStatus = this.normalizeAttemptStatus(snapshot.providerVerificationStatus ?? snapshot.mockReturnStatus ?? snapshot.status);
+        const requestedStatus = this.normalizeAttemptStatus(dto.statusHint);
+        if (!authoritativeStatus) {
+            if (String(attempt.providerMode).trim().toLowerCase() === 'live') {
+                return this.isPendingVerificationStatus(attempt.status)
+                    ? attempt.status
+                    : 'PROCESSING';
+            }
+            return attempt.status;
+        }
+        if (requestedStatus && requestedStatus !== authoritativeStatus) {
+            throw new common_1.BadRequestException('Payment verification payload does not match the provider-confirmed attempt status');
+        }
+        return authoritativeStatus;
+    }
+    buildVerificationSnapshot(attempt, dto, resolvedStatus, verifiedAt, extra) {
+        return {
+            ...(this.asObject(attempt.responseSnapshot) ?? {}),
+            providerVerificationGateway: dto.gateway,
+            providerVerificationStatus: resolvedStatus,
+            providerVerificationReference: dto.reference,
+            providerVerificationAmount: Number(attempt.amount),
+            providerVerificationCurrency: attempt.currency,
+            verificationOtpProvided: Boolean(dto.otp),
+            verifiedAt: verifiedAt.toISOString(),
+            ...extra,
+        };
+    }
+    isPendingVerificationStatus(status) {
+        return ACTIVE_PAYMENT_ATTEMPT_STATUSES.has(String(status ?? '').trim().toUpperCase());
+    }
+    getFailureState(status) {
+        switch (status) {
+            case 'FAILED':
+                return {
+                    failureCode: 'MOCK_FAILURE',
+                    failureMessage: 'Mock payment marked as failed.',
+                };
+            case 'CANCELLED':
+                return {
+                    failureCode: 'CANCELLED',
+                    failureMessage: 'Mock payment was cancelled.',
+                };
+            case 'EXPIRED':
+                return {
+                    failureCode: 'EXPIRED',
+                    failureMessage: 'Mock payment expired before completion.',
+                };
+            default:
+                return {
+                    failureCode: null,
+                    failureMessage: null,
+                };
+        }
+    }
+    normalizeAttemptStatus(status) {
+        const normalized = String(status ?? '').trim().toUpperCase();
+        if (ACTIVE_PAYMENT_ATTEMPT_STATUSES.has(normalized) || normalized === 'PAID') {
+            return normalized;
+        }
+        if (normalized === 'FAIL' || normalized === 'FAILED') {
+            return 'FAILED';
+        }
+        if (normalized === 'CANCEL' || normalized === 'CANCELLED') {
+            return 'CANCELLED';
+        }
+        if (normalized === 'EXPIRE' || normalized === 'EXPIRED') {
+            return 'EXPIRED';
+        }
+        if (normalized === 'SUCCESS') {
+            return 'PAID';
+        }
+        return undefined;
+    }
+    asObject(value) {
+        return value && typeof value === 'object' && !Array.isArray(value)
+            ? value
+            : undefined;
+    }
+};
+exports.CustomOrdersPaymentsService = CustomOrdersPaymentsService;
+exports.CustomOrdersPaymentsService = CustomOrdersPaymentsService = __decorate([
+    (0, common_1.Injectable)(),
+    __metadata("design:paramtypes", [prisma_service_1.PrismaService,
+        payment_service_1.PaymentService,
+        custom_order_side_effects_service_1.CustomOrderSideEffectsService,
+        system_config_service_1.SystemConfigService,
+        ledger_service_1.LedgerService])
+], CustomOrdersPaymentsService);
+//# sourceMappingURL=custom-orders-payments.service.js.map

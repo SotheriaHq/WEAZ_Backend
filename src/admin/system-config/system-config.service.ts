@@ -20,6 +20,13 @@ export const DEFAULT_FILE_SIZE_LIMITS: Record<string, number> = {
   'upload.maxSize.collectionBulk': 2 * 1024 * 1024,   // 2 MB
 };
 
+export const DEFAULT_NUMBER_CONFIGS: Record<string, number> = {
+  'finance.commission.defaultPercent': 10,
+  'finance.standardEscrow.firstReleasePercent': 50,
+  'finance.standardEscrow.settlementHours': 48,
+  'finance.standardEscrow.autoReleaseDays': 7,
+};
+
 export const DEFAULT_BOOLEAN_CONFIGS: Record<string, boolean> = {
   'admin.dashboard.showDailySignupCount': true,
 };
@@ -38,6 +45,10 @@ const KEY_DESCRIPTIONS: Record<string, string> = {
   'upload.maxSize.messageDocument':  'Max file size for message documents (bytes)',
   'upload.maxSize.productMedia':     'Max file size for product media uploads (bytes)',
   'upload.maxSize.collectionBulk':   'Max file size for collection bulk uploads (bytes)',
+  'finance.commission.defaultPercent': 'Default platform commission percent for finance settlements',
+  'finance.standardEscrow.firstReleasePercent': 'Percent of a paid standard-order hold released when the brand confirms shipment',
+  'finance.standardEscrow.settlementHours': 'Hours to wait after buyer delivery confirmation before releasing the final standard-order tranche',
+  'finance.standardEscrow.autoReleaseDays': 'Days after a delivered standard order before the system auto-confirms delivery',
   'admin.dashboard.showDailySignupCount': 'Controls whether the admin dashboard shows the daily signup count card',
 };
 
@@ -83,6 +94,19 @@ export class SystemConfigService {
         }),
       ),
     );
+    await Promise.all(
+      Object.entries(DEFAULT_NUMBER_CONFIGS).map(([key, value]) =>
+        this.prisma.systemConfig.upsert({
+          where: { key },
+          create: {
+            key,
+            value: String(value),
+            description: KEY_DESCRIPTIONS[key] ?? null,
+          },
+          update: {},
+        }),
+      ),
+    );
     this.logger.log('SystemConfig defaults seeded');
     await this.refreshCache();
   }
@@ -119,6 +143,9 @@ export class SystemConfigService {
     if (raw !== null) {
       const n = Number(raw);
       if (Number.isFinite(n) && n > 0) return n;
+    }
+    if (key in DEFAULT_NUMBER_CONFIGS) {
+      return DEFAULT_NUMBER_CONFIGS[key];
     }
     return DEFAULT_FILE_SIZE_LIMITS[key] ?? 2 * 1024 * 1024;
   }

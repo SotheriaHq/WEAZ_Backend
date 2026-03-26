@@ -328,6 +328,11 @@ export class MessagingService {
       .map((entry) => ({ id: entry.userId, role: entry.role }));
 
     if (recipients.length > 0) {
+      const senderDisplayName =
+        message.sender?.firstName ||
+        message.sender?.username ||
+        (actorParticipant.role === 'BRAND_OWNER' ? 'Brand' : 'User');
+
       await this.prisma.messageNotificationOutbox.createMany({
         data: recipients.map((recipient) => ({
           threadId: thread.id,
@@ -340,6 +345,8 @@ export class MessagingService {
             contextType: thread.contextType,
             orderId: thread.orderId,
             customOrderId: thread.customOrderId,
+            actorUserId: actorId,
+            message: `${senderDisplayName} sent a new message`,
             targetUrl: this.resolveThreadTargetUrl(
               thread.contextType,
               thread.orderId,
@@ -1114,8 +1121,10 @@ export class MessagingService {
     const allowed = await this.prisma.customOrder.findMany({
       where: {
         id: { in: contextIds },
-        brandId,
-        brand: { ownerId: actorId },
+        brand: {
+          ownerId: actorId,
+          OR: [{ id: brandId }, { ownerId: brandId }],
+        },
       },
       select: { id: true },
     });
@@ -1157,8 +1166,10 @@ export class MessagingService {
     const allowed = await this.prisma.order.findMany({
       where: {
         id: { in: contextIds },
-        brandId,
-        brand: { ownerId: actorId },
+        brand: {
+          ownerId: actorId,
+          OR: [{ id: brandId }, { ownerId: brandId }],
+        },
       },
       select: { id: true },
     });
@@ -1773,6 +1784,11 @@ export class MessagingService {
         .filter((entry) => entry.id !== params.actorId);
 
       if (recipients.length > 0) {
+        const senderName =
+          message.sender?.firstName ||
+          message.sender?.username ||
+          (params.actorRole === 'BRAND_OWNER' ? 'Brand' : 'User');
+
         await tx.messageNotificationOutbox.createMany({
           data: recipients.map((recipient) => ({
             threadId: thread.id,
@@ -1785,6 +1801,8 @@ export class MessagingService {
               contextType: thread.contextType,
               orderId: thread.orderId,
               customOrderId: thread.customOrderId,
+              actorUserId: params.actorId,
+              message: `${senderName} sent a new message`,
               targetUrl: this.resolveThreadTargetUrl(
                 thread.contextType,
                 thread.orderId,
@@ -1930,6 +1948,17 @@ export class MessagingService {
     return ids;
   }
 
+  private matchesBrandScope(
+    providedBrandId: string,
+    actualBrandId: string,
+    ownerUserId?: string | null,
+  ) {
+    return (
+      providedBrandId === actualBrandId ||
+      (ownerUserId != null && providedBrandId === ownerUserId)
+    );
+  }
+
   private async getBulkSummariesForContext(
     actorId: string,
     contextType: MessageContextType,
@@ -2018,9 +2047,12 @@ export class MessagingService {
         throw new ForbiddenException('Not allowed to access this thread');
       }
     } else {
-      if (brandId && order.brandId !== brandId) {
+      if (
+        brandId &&
+        !this.matchesBrandScope(brandId, order.brandId, order.brand.ownerId)
+      ) {
         this.logger.warn(
-          `[THREAD_ACCESS_DENIED] type=CUSTOM_ORDER role=BRAND_OWNER actorId=${actorId} customOrderId=${customOrderId} providedBrandId=${brandId} expectedBrandId=${order.brandId}`,
+          `[THREAD_ACCESS_DENIED] type=CUSTOM_ORDER role=BRAND_OWNER actorId=${actorId} customOrderId=${customOrderId} providedBrandId=${brandId} expectedBrandId=${order.brandId} expectedOwnerId=${order.brand.ownerId}`,
         );
         throw new ForbiddenException('Not allowed to access this thread');
       }
@@ -2067,9 +2099,12 @@ export class MessagingService {
         throw new ForbiddenException('Not allowed to access this thread');
       }
     } else {
-      if (brandId && order.brandId !== brandId) {
+      if (
+        brandId &&
+        !this.matchesBrandScope(brandId, order.brandId, order.brand.ownerId)
+      ) {
         this.logger.warn(
-          `[THREAD_ACCESS_DENIED] type=STANDARD_ORDER role=BRAND_OWNER actorId=${actorId} orderId=${orderId} providedBrandId=${brandId} expectedBrandId=${order.brandId}`,
+          `[THREAD_ACCESS_DENIED] type=STANDARD_ORDER role=BRAND_OWNER actorId=${actorId} orderId=${orderId} providedBrandId=${brandId} expectedBrandId=${order.brandId} expectedOwnerId=${order.brand.ownerId}`,
         );
         throw new ForbiddenException('Not allowed to access this thread');
       }

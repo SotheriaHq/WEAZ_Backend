@@ -4,9 +4,10 @@ import { OrderService } from './order.service';
 import { OrderRefundService } from './order-refund.service';
 import { PrismaModule } from '../prisma/prisma.module';
 import { NotificationsModule } from 'src/notifications/notifications.module';
+import { FinanceModule } from 'src/finance/finance.module';
 
 @Module({
-  imports: [PrismaModule, NotificationsModule],
+  imports: [PrismaModule, NotificationsModule, FinanceModule],
   controllers: [OrderController],
   providers: [OrderService, OrderRefundService],
 })

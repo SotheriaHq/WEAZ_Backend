@@ -2,6 +2,7 @@ import {
   Controller,
   Get,
   Patch,
+  Post,
   Param,
   Body,
   Query,
@@ -44,10 +45,31 @@ export class AdminPayoutsController {
   @RequirePermissions(ADMIN_PERMISSIONS.PAYOUTS_PROCESS)
   updateStatus(
     @Param('id') id: string,
-    @Body() dto: { status: PayoutStatus },
+    @Body() dto: { status: PayoutStatus; reason?: string },
     @Req() req: Request,
   ) {
-    const actorId = (req as any).user.sub;
-    return this.payoutsService.updateStatus(id, dto.status, actorId, req);
+    const actorId = (req as any).user.id ?? (req as any).user.sub;
+    const actorRole = (req as any).user.role as Role;
+    return this.payoutsService.updateStatus(id, dto, actorId, actorRole, req);
+  }
+
+  @Post(':id/claim')
+  @RequirePermissions(ADMIN_PERMISSIONS.PAYOUTS_PROCESS)
+  claim(@Param('id') id: string, @Req() req: Request) {
+    const actorId = (req as any).user.id ?? (req as any).user.sub;
+    const actorRole = (req as any).user.role as Role;
+    return this.payoutsService.claim(id, actorId, actorRole, req);
+  }
+
+  @Post(':id/release')
+  @RequirePermissions(ADMIN_PERMISSIONS.PAYOUTS_PROCESS)
+  release(
+    @Param('id') id: string,
+    @Body() dto: { reason?: string },
+    @Req() req: Request,
+  ) {
+    const actorId = (req as any).user.id ?? (req as any).user.sub;
+    const actorRole = (req as any).user.role as Role;
+    return this.payoutsService.release(id, actorId, actorRole, req, dto?.reason);
   }
 }

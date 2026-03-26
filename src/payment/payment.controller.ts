@@ -4,12 +4,14 @@ import {
   Body,
   Get,
   Param,
+  Query,
   UseGuards,
   Req,
   HttpCode,
 } from '@nestjs/common';
 import { JwtAuthGuard } from 'src/auth/guard/jwt-auth.guard';
 import { PaymentService } from './payment.service';
+import { FxRateService } from './fx-rate.service';
 import {
   InitializePaymentDto,
   SimulatePaymentAttemptDto,
@@ -19,7 +21,24 @@ import { Request } from 'express';
 
 @Controller('payment')
 export class PaymentController {
-  constructor(private readonly paymentService: PaymentService) {}
+  constructor(
+    private readonly paymentService: PaymentService,
+    private readonly fxRateService: FxRateService,
+  ) {}
+
+  @Get('fx/quote')
+  async getFxQuote(
+    @Query('from') from: string,
+    @Query('to') to?: string,
+    @Query('amount') amount = '1',
+  ) {
+    const result = await this.fxRateService.getQuotePreview({
+      from,
+      to,
+      amount: Number(amount),
+    });
+    return { status: 'success', data: result };
+  }
 
   @Post('initialize')
   @UseGuards(JwtAuthGuard)

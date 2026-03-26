@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
-import { BrandVerificationStatus, Role } from '@prisma/client';
+import { BrandVerificationStatus, PayoutStatus, Role } from '@prisma/client';
 import { SystemConfigService } from '../system-config/system-config.service';
 
 @Injectable()
@@ -39,7 +39,9 @@ export class AdminDashboardService {
       this.prisma.brand.count({
         where: { verificationStatus: BrandVerificationStatus.PENDING },
       }),
-      this.prisma.payout.count({ where: { status: 'PENDING' } }),
+      this.prisma.payout.count({
+        where: { status: PayoutStatus.PENDING_APPROVAL },
+      }),
       this.prisma.dispute.count({
         where: { status: { in: ['OPEN', 'ASSIGNED', 'IN_PROGRESS'] } },
       }),

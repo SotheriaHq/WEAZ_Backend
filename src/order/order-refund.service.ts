@@ -10,6 +10,7 @@ import {
   Prisma,
 } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
+import { StandardOrderEscrowService } from 'src/finance/standard-order-escrow.service';
 
 interface InitiateOrderRefundParams {
   orderId: string;
@@ -31,7 +32,10 @@ type RefundAttemptSnapshot = {
 export class OrderRefundService {
   private readonly logger = new Logger(OrderRefundService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly standardOrderEscrowService: StandardOrderEscrowService,
+  ) {}
 
   private async executeGatewayRefundIfNeeded(attempt: RefundAttemptSnapshot) {
     if (String(attempt.providerMode || '').toLowerCase() !== 'live') {
@@ -261,6 +265,12 @@ export class OrderRefundService {
         paymentStatus: PaymentStatus.REFUNDED,
       },
     });
+
+    await this.standardOrderEscrowService.refundOrderHold(
+      tx,
+      params.orderId,
+      params.reason,
+    );
 
     return {
       orderId: order.id,

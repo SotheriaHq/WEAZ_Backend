@@ -22,6 +22,7 @@ import {
 import { createHash } from 'crypto';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { CustomOrderPricingService } from 'src/custom-order-pricing/custom-order-pricing.service';
+import { LedgerService } from 'src/finance/ledger.service';
 import { CustomOrderRefundService } from './custom-order-refund.service';
 import { CustomOrderSideEffectsService } from './custom-order-side-effects.service';
 import {
@@ -110,7 +111,6 @@ const CHART_BANDS: Record<
 const BASELINE_KEY_CANDIDATES: Record<'MEN' | 'WOMEN', string[]> = {
   MEN: [
     'MEN_HEIGHT',
-    'MEN_WEIGHT',
     'MEN_SHOULDER',
     'MEN_CHEST',
     'MEN_WAIST',
@@ -120,7 +120,6 @@ const BASELINE_KEY_CANDIDATES: Record<'MEN' | 'WOMEN', string[]> = {
   ],
   WOMEN: [
     'WOMEN_HEIGHT',
-    'WOMEN_WEIGHT',
     'WOMEN_SHOULDER_WIDTH',
     'WOMEN_CHEST_FULL_BUST',
     'WOMEN_WAIST',
@@ -164,6 +163,7 @@ export class CustomOrdersService {
     private readonly pricingService: CustomOrderPricingService,
     private readonly sideEffects: CustomOrderSideEffectsService,
     private readonly refundService: CustomOrderRefundService,
+    private readonly ledgerService: LedgerService,
   ) {}
 
   async createPricePreview(userId: string, dto: CustomOrderPricePreviewDto) {
@@ -664,12 +664,13 @@ export class CustomOrdersService {
     }
 
     const updated = await this.prisma.$transaction(async (tx) => {
+      const confirmedAt = new Date();
       const next = await tx.customOrder.update({
         where: { id: customOrderId },
         data: {
           status: CustomOrderStatus.COMPLETED,
-          buyerAcceptedAt: new Date(),
-          completedAt: new Date(),
+          buyerAcceptedAt: confirmedAt,
+          completedAt: confirmedAt,
           timelineEvents: {
             create: {
               actorType: CustomOrderActorType.BUYER,
@@ -690,9 +691,33 @@ export class CustomOrdersService {
         },
         data: {
           status: CustomOrderLedgerAllocationStatus.PAYOUT_ELIGIBLE,
-          eligibleAt: new Date(),
+          eligibleAt: confirmedAt,
         },
       });
+
+      const finalAllocation = await tx.customOrderLedgerAllocation.findFirst({
+        where: {
+          customOrderId,
+          allocationType: CustomOrderLedgerAllocationType.FINAL_COMPLETION_PORTION,
+        },
+        select: {
+          amount: true,
+          commissionAmount: true,
+          netBrandAmount: true,
+          currency: true,
+        },
+      });
+
+      if (finalAllocation) {
+        await this.ledgerService.postCustomOrderFinalRelease(tx, {
+          customOrderId,
+          brandId: order.brandId,
+          currency: finalAllocation.currency,
+          amount: Number(finalAllocation.amount),
+          commissionAmount: Number(finalAllocation.commissionAmount),
+          netBrandAmount: Number(finalAllocation.netBrandAmount),
+        });
+      }
 
       return next;
     });

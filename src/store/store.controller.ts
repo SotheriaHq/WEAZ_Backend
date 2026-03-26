@@ -462,6 +462,16 @@ export class StoreController {
   }
 
   @UseGuards(JwtAuthGuard)
+  @Post(['orders/:orderId/confirm-delivery', 'store/orders/:orderId/confirm-delivery'])
+  async confirmMyOrderDelivery(
+    @Param('orderId') orderId: string,
+    @Body() body: { note?: string },
+    @Req() req: any,
+  ) {
+    return this.storeService.confirmOrderDelivery(req.user.id, orderId, body?.note);
+  }
+
+  @UseGuards(JwtAuthGuard)
   @Post(['orders/:orderId/cancel', 'store/orders/:orderId/cancel'])
   async cancelMyOrder(
     @Param('orderId') orderId: string,

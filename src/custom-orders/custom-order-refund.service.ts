@@ -5,10 +5,12 @@ import {
 } from '@nestjs/common';
 import {
   CustomOrderActorType,
+  CustomOrderLedgerAllocationStatus,
   PaymentStatus,
   PaymentSubjectType,
   Prisma,
 } from '@prisma/client';
+import { LedgerService } from 'src/finance/ledger.service';
 
 interface InitiateCustomOrderRefundParams {
   customOrderId: string;
@@ -19,6 +21,8 @@ interface InitiateCustomOrderRefundParams {
 
 @Injectable()
 export class CustomOrderRefundService {
+  constructor(private readonly ledgerService: LedgerService) {}
+
   async initiateRefund(
     tx: Prisma.TransactionClient,
     params: InitiateCustomOrderRefundParams,
@@ -27,6 +31,8 @@ export class CustomOrderRefundService {
       where: { id: params.customOrderId },
       select: {
         id: true,
+        brandId: true,
+        currency: true,
         paymentReference: true,
         paymentStatus: true,
       },
@@ -60,6 +66,42 @@ export class CustomOrderRefundService {
     }
 
     const now = new Date();
+    const allocations = await tx.customOrderLedgerAllocation.findMany({
+      where: { customOrderId: params.customOrderId },
+      select: {
+        amount: true,
+        commissionAmount: true,
+        netBrandAmount: true,
+        status: true,
+        eligibleAt: true,
+        paidOutAt: true,
+      },
+    });
+
+    const releasedAllocations = allocations.filter(
+      (allocation) =>
+        allocation.status === CustomOrderLedgerAllocationStatus.PAYOUT_ELIGIBLE ||
+        allocation.status === CustomOrderLedgerAllocationStatus.PAID_OUT ||
+        allocation.eligibleAt !== null ||
+        allocation.paidOutAt !== null,
+    );
+    const releasedCommission = this.roundMoney(
+      releasedAllocations.reduce(
+        (sum, allocation) => sum + Number(allocation.commissionAmount),
+        0,
+      ),
+    );
+    const releasedNet = this.roundMoney(
+      releasedAllocations.reduce((sum, allocation) => sum + Number(allocation.netBrandAmount), 0),
+    );
+    const releasedGross = this.roundMoney(
+      releasedAllocations.reduce((sum, allocation) => sum + Number(allocation.amount), 0),
+    );
+    const totalAmount = this.roundMoney(Number(attempt.amount));
+    const unreleasedGross = this.roundMoney(
+      Math.max(allocations.length > 0 ? totalAmount - releasedGross : totalAmount, 0),
+    );
+
     await tx.paymentAttempt.update({
       where: { reference: attempt.reference },
       data: {
@@ -99,11 +141,25 @@ export class CustomOrderRefundService {
       });
     }
 
+    await this.ledgerService.postCustomOrderRefund(tx, {
+      customOrderId: params.customOrderId,
+      brandId: order.brandId,
+      currency: order.currency,
+      totalAmount,
+      releasedCommission,
+      releasedNet,
+      unreleasedGross,
+    });
+
     return {
       customOrderId: order.id,
       paymentAttemptId: attempt.id,
       reference: attempt.reference,
       alreadyRefunded: false,
     };
+  }
+
+  private roundMoney(value: number) {
+    return Math.round((value + Number.EPSILON) * 100) / 100;
   }
 }

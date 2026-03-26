@@ -53,10 +53,12 @@ export class MessagingSideEffectsService {
       if (claim.count === 0) continue;
 
       try {
+        const payload = this.asRecord(row.payloadJson);
         await this.notificationsQueue.enqueueFanout({
           recipientIds: [row.recipientId],
           notificationType: row.notificationType,
-          payload: this.asRecord(row.payloadJson),
+          actorId: typeof payload?.actorUserId === 'string' ? payload.actorUserId : undefined,
+          payload,
         });
 
         await this.prisma.messageNotificationOutbox.update({

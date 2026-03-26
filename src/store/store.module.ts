@@ -10,9 +10,10 @@ import { NotificationsModule } from 'src/notifications/notifications.module';
 import { TagsModule } from 'src/tags/tags.module';
 import { QueueModule } from 'src/queue/queue.module';
 import { CategoriesModule } from 'src/categories/categories.module';
+import { FinanceModule } from 'src/finance/finance.module';
 
 @Module({
-  imports: [PrismaModule, AuthModule, UploadModule, NotificationsModule, TagsModule, QueueModule, CategoriesModule],
+  imports: [PrismaModule, AuthModule, UploadModule, NotificationsModule, TagsModule, QueueModule, CategoriesModule, FinanceModule],
   controllers: [StoreController],
   providers: [StoreService, ProductViewCounterService, IdempotencyInterceptor],
   exports: [StoreService],

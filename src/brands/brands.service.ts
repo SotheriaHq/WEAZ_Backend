@@ -8,6 +8,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { UploadService } from '../upload/upload.service';
 import {
   CollectionStatus,
+  OrderStatus,
   Prisma,
   UserType,
   PatchStatus,
@@ -77,6 +78,14 @@ export interface BrandProfileResponse {
   createdAt: string;
   updatedAt: string;
 }
+
+type DashboardActionItem = {
+  type: string;
+  title: string;
+  description: string;
+  link: string;
+  count?: number;
+};
 
 @Injectable()
 export class BrandsService {
@@ -211,6 +220,242 @@ export class BrandsService {
         route,
       };
     });
+  }
+
+  private buildDashboardReturnQuery() {
+    const params = new URLSearchParams();
+    params.set('returnTo', '/studio?tab=dashboard');
+    params.set('returnLabel', 'Back to dashboard');
+    return params.toString();
+  }
+
+  private buildBrandOrderRoute(orderId: string, options?: { openChat?: boolean; messageId?: string | null }) {
+    const params = new URLSearchParams({
+      tab: 'orders',
+      orderId,
+    });
+
+    if (options?.openChat) {
+      params.set('openChat', '1');
+    }
+
+    if (options?.messageId) {
+      params.set('messageId', options.messageId);
+    }
+
+    return `/studio?${params.toString()}`;
+  }
+
+  private describeElapsedAge(date: Date, now = new Date()) {
+    const diffMs = Math.max(0, now.getTime() - date.getTime());
+    const diffHours = Math.max(1, Math.floor(diffMs / (1000 * 60 * 60)));
+
+    if (diffHours < 24) {
+      return `${diffHours} hour${diffHours === 1 ? '' : 's'}`;
+    }
+
+    const diffDays = Math.max(1, Math.floor(diffHours / 24));
+    return `${diffDays} day${diffDays === 1 ? '' : 's'}`;
+  }
+
+  private getOrderActionTitle(order: {
+    id: string;
+    orderItems?: Array<{ nameAtPurchase?: string | null }>;
+  }) {
+    const rawTitle = order.orderItems?.[0]?.nameAtPurchase;
+    if (typeof rawTitle === 'string' && rawTitle.trim().length > 0) {
+      return rawTitle.trim();
+    }
+
+    return `Order #${order.id.slice(0, 8).toUpperCase()}`;
+  }
+
+  private async buildDashboardActionRequired(brand: {
+    id: string;
+    ownerId: string;
+    verificationStatus?: BrandVerificationStatus | null;
+  }): Promise<DashboardActionItem[]> {
+    const now = new Date();
+    const actions: DashboardActionItem[] = [];
+
+    const [candidateOrders, lowStockProducts] = await Promise.all([
+      this.prisma.order.findMany({
+        where: {
+          brandId: brand.id,
+          OR: [
+            { status: { in: [OrderStatus.PENDING, OrderStatus.PROCESSING, OrderStatus.SHIPPED, OrderStatus.DELIVERED] } },
+            { messageThread: { isNot: null } },
+          ],
+        },
+        orderBy: { createdAt: 'asc' },
+        take: 40,
+        select: {
+          id: true,
+          customerName: true,
+          status: true,
+          createdAt: true,
+          updatedAt: true,
+          deliveredAt: true,
+          buyerConfirmedDeliveryAt: true,
+          orderItems: {
+            take: 1,
+            select: {
+              nameAtPurchase: true,
+            },
+          },
+          messageThread: {
+            select: {
+              id: true,
+              lastMessageAt: true,
+              updatedAt: true,
+            },
+          },
+        },
+      }),
+      this.prisma.product.findMany({
+        where: {
+          brandId: brand.id,
+          isActive: true,
+          deletedAt: null,
+          trackInventory: true,
+          totalStock: { gt: 0 },
+        },
+        orderBy: [{ totalStock: 'asc' }, { updatedAt: 'asc' }],
+        take: 12,
+        select: {
+          id: true,
+          name: true,
+          totalStock: true,
+          lowStockThreshold: true,
+        },
+      }),
+    ]);
+
+    const threadIds = candidateOrders
+      .map((order) => order.messageThread?.id ?? null)
+      .filter((threadId): threadId is string => Boolean(threadId));
+
+    const unreadRows = threadIds.length
+      ? await this.prisma.$queryRaw<Array<{ threadId: string; unreadCount: bigint | number }>>(Prisma.sql`
+          SELECT m."threadId" AS "threadId", COUNT(*)::bigint AS "unreadCount"
+          FROM "Message" m
+          LEFT JOIN "MessageThreadParticipant" p
+            ON p."threadId" = m."threadId" AND p."userId" = ${brand.ownerId}
+          WHERE m."threadId" IN (${Prisma.join(threadIds)})
+            AND m."visibilityState" = 'VISIBLE'
+            AND m."senderUserId" IS DISTINCT FROM ${brand.ownerId}
+            AND (p."lastReadAt" IS NULL OR m."createdAt" > p."lastReadAt")
+          GROUP BY m."threadId"
+        `)
+      : [];
+
+    const unreadCountByThreadId = new Map(
+      unreadRows.map((row) => [row.threadId, Number(row.unreadCount)] as const),
+    );
+
+    candidateOrders
+      .filter((order) => {
+        const threadId = order.messageThread?.id;
+        return Boolean(threadId && (unreadCountByThreadId.get(threadId) ?? 0) > 0);
+      })
+      .sort((left, right) => {
+        const leftTime = left.messageThread?.lastMessageAt?.getTime() ?? 0;
+        const rightTime = right.messageThread?.lastMessageAt?.getTime() ?? 0;
+        return rightTime - leftTime;
+      })
+      .slice(0, 3)
+      .forEach((order) => {
+        const lastMessageAt = order.messageThread?.lastMessageAt ?? order.messageThread?.updatedAt ?? order.updatedAt;
+        const unreadCount = unreadCountByThreadId.get(order.messageThread?.id ?? '') ?? 0;
+        actions.push({
+          type: 'MESSAGE_UNREAD',
+          title: `Unread buyer message on ${this.getOrderActionTitle(order)}`,
+          description: `${order.customerName} sent ${unreadCount} unread message${unreadCount === 1 ? '' : 's'} ${this.describeElapsedAge(lastMessageAt, now)} ago. Open the order chat and respond.`,
+          link: this.buildBrandOrderRoute(order.id, { openChat: true }),
+          count: unreadCount,
+        });
+      });
+
+    candidateOrders
+      .filter((order) => order.status === OrderStatus.PENDING)
+      .filter((order) => now.getTime() - order.createdAt.getTime() >= 24 * 60 * 60 * 1000)
+      .sort((left, right) => left.createdAt.getTime() - right.createdAt.getTime())
+      .slice(0, 2)
+      .forEach((order) => {
+        actions.push({
+          type: 'ORDER_PENDING',
+          title: `Pending order needs attention`,
+          description: `${this.getOrderActionTitle(order)} for ${order.customerName} has been pending for ${this.describeElapsedAge(order.createdAt, now)}. Review it and move it forward.`,
+          link: this.buildBrandOrderRoute(order.id),
+        });
+      });
+
+    candidateOrders
+      .filter((order) => order.status === OrderStatus.PROCESSING)
+      .filter((order) => now.getTime() - order.updatedAt.getTime() >= 72 * 60 * 60 * 1000)
+      .sort((left, right) => left.updatedAt.getTime() - right.updatedAt.getTime())
+      .slice(0, 2)
+      .forEach((order) => {
+        actions.push({
+          type: 'ORDER_TIMELINE',
+          title: `Production follow-up needed`,
+          description: `${this.getOrderActionTitle(order)} has stayed in processing for ${this.describeElapsedAge(order.updatedAt, now)} without shipment. Review the order and update the buyer.`,
+          link: this.buildBrandOrderRoute(order.id),
+        });
+      });
+
+    candidateOrders
+      .filter((order) => order.status === OrderStatus.SHIPPED)
+      .filter((order) => now.getTime() - order.updatedAt.getTime() >= 7 * 24 * 60 * 60 * 1000)
+      .sort((left, right) => left.updatedAt.getTime() - right.updatedAt.getTime())
+      .slice(0, 2)
+      .forEach((order) => {
+        actions.push({
+          type: 'DELIVERY_DELAY',
+          title: `Delivery follow-up needed`,
+          description: `${this.getOrderActionTitle(order)} was marked shipped ${this.describeElapsedAge(order.updatedAt, now)} ago and is still not delivered. Follow up on delivery progress.`,
+          link: this.buildBrandOrderRoute(order.id),
+        });
+      });
+
+    candidateOrders
+      .filter((order) => order.status === OrderStatus.DELIVERED)
+      .filter((order) => Boolean(order.deliveredAt) && !order.buyerConfirmedDeliveryAt)
+      .filter((order) => now.getTime() - (order.deliveredAt as Date).getTime() >= 3 * 24 * 60 * 60 * 1000)
+      .sort((left, right) => (left.deliveredAt as Date).getTime() - (right.deliveredAt as Date).getTime())
+      .slice(0, 1)
+      .forEach((order) => {
+        actions.push({
+          type: 'DELIVERY_CONFIRMATION',
+          title: `Delivered order awaiting confirmation`,
+          description: `${this.getOrderActionTitle(order)} was delivered ${this.describeElapsedAge(order.deliveredAt as Date, now)} ago. Check in with ${order.customerName} if confirmation is still pending.`,
+          link: this.buildBrandOrderRoute(order.id, { openChat: true }),
+        });
+      });
+
+    lowStockProducts
+      .filter((product) => product.totalStock <= Math.max(1, Number(product.lowStockThreshold ?? 5)))
+      .slice(0, 2)
+      .forEach((product) => {
+        actions.push({
+          type: 'LOW_STOCK',
+          title: `Low stock: ${product.name}`,
+          description: `${product.totalStock} unit${product.totalStock === 1 ? '' : 's'} left. Restock or update inventory before this product runs out.`,
+          link: `/studio/store/products/${product.id}/edit?${this.buildDashboardReturnQuery()}`,
+          count: product.totalStock,
+        });
+      });
+
+    if (brand.verificationStatus === BrandVerificationStatus.ADDITIONAL_INFO_REQUESTED) {
+      actions.push({
+        type: 'VERIFICATION_UPDATE',
+        title: 'Verification workspace needs updates',
+        description: 'Compliance requested more information for your store. Review the verification workspace and submit the missing details.',
+        link: '/studio/verification',
+      });
+    }
+
+    return actions.slice(0, 8);
   }
 
   async getDashboardActivityFeed(brandId: string, limit = 12) {
@@ -729,7 +974,7 @@ export class BrandsService {
     }
 
     // KPIs
-    const [totalOrders, totalSalesResult, pendingOrders, patchesCount, activeProducts, recentNotifications] = await Promise.all([
+    const [totalOrders, totalSalesResult, pendingOrders, patchesCount, activeProducts, recentNotifications, recentOrders, actionRequired] = await Promise.all([
       this.prisma.order.count({ where: { brandId: brand.id } }),
       this.prisma.order.aggregate({
         where: { brandId: brand.id, paymentStatus: 'PAID' },
@@ -764,29 +1009,21 @@ export class BrandsService {
           },
         },
       }),
+      this.prisma.order.findMany({
+        where: { brandId: brand.id },
+        orderBy: { createdAt: 'desc' },
+        take: 5,
+      }),
+      this.buildDashboardActionRequired({
+        id: brand.id,
+        ownerId: brand.ownerId,
+        verificationStatus: brand.verificationStatus,
+      }),
     ]);
 
     const totalSales = totalSalesResult._sum.totalAmount || 0;
     const avgOrderValue =
       totalOrders > 0 ? Number(totalSales) / totalOrders : 0;
-
-    // Recent Orders
-    const recentOrders = await this.prisma.order.findMany({
-      where: { brandId: brand.id },
-      orderBy: { createdAt: 'desc' },
-      take: 5,
-    });
-
-    // Action Required
-    const actionRequired = [];
-    if (pendingOrders > 0) {
-      actionRequired.push({
-        type: 'ORDER_SHIPMENT',
-        message: `${pendingOrders} orders need shipment`,
-        count: pendingOrders,
-        link: '/orders?status=PENDING',
-      });
-    }
 
     const recentActivity = this.mapNotificationsToRecentActivity(recentNotifications as any);
 

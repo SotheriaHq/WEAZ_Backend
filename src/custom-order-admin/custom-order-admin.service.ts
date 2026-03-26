@@ -1263,7 +1263,7 @@ export class CustomOrderAdminService {
             brandId: group.brandId,
             amount: new Prisma.Decimal(group.totalAmount.toFixed(2)),
             currency: group.currency,
-            status: 'PENDING',
+            status: 'PENDING_APPROVAL',
             reference: `CO-${group.brandId.slice(0, 8)}-${now.getTime()}`,
           },
         });

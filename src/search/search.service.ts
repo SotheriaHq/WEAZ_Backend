@@ -157,29 +157,39 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    try {
-      this.redis = createClient({
-        url: redisUrl,
-        socket: {
-          connectTimeout: SEARCH_REDIS_TIMEOUT_MS,
-        },
-      });
-      this.redis.on('error', (error) => {
-        this.logger.warn(`Search Redis error: ${error?.message || error}`);
-      });
-      await this.redis.connect();
-      this.registerPrismaSearchHooks();
-      void this.ensureSuggestionIndexes().catch((indexError: any) => {
+    const client = createClient({
+      url: redisUrl,
+      socket: {
+        connectTimeout: SEARCH_REDIS_TIMEOUT_MS,
+      },
+    });
+
+    client.on('error', (error) => {
+      this.logger.warn(`Search Redis error: ${error?.message || error}`);
+    });
+
+    void client
+      .connect()
+      .then(() => {
+        this.redis = client;
+        this.registerPrismaSearchHooks();
+        void this.ensureSuggestionIndexes().catch((indexError: any) => {
+          this.logger.warn(
+            `Suggestion index bootstrap deferred failure: ${indexError?.message || indexError}`,
+          );
+        });
+      })
+      .catch((error: any) => {
         this.logger.warn(
-          `Suggestion index bootstrap deferred failure: ${indexError?.message || indexError}`,
+          `Search Redis unavailable, continuing without recent/trending persistence: ${error?.message || error}`,
         );
+        this.redis = null;
+        try {
+          client.disconnect();
+        } catch {
+          // Ignore best-effort cleanup failures.
+        }
       });
-    } catch (error: any) {
-      this.logger.warn(
-        `Search Redis unavailable, continuing without recent/trending persistence: ${error?.message || error}`,
-      );
-      this.redis = null;
-    }
   }
 
   async onModuleDestroy() {

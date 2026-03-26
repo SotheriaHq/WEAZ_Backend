@@ -71,6 +71,10 @@ export interface PaymentInitResult {
   reference: string;
   gateway: string;
   status: PaymentAttemptStatus;
+  currency: string;
+  settlementCurrency: string;
+  settlementAmount: number;
+  exchangeRateSnapshotId?: string;
   channel?: PaymentChannel;
   /** URL to redirect user (for Paystack/Flutterwave) */
   authorizationUrl?: string;
@@ -112,6 +116,9 @@ export interface PaymentVerifyResult {
   reference: string;
   amount: number;
   currency: string;
+  settlementCurrency: string;
+  settlementAmount: number;
+  exchangeRateSnapshotId?: string;
   paidAt?: string;
   channel?: string;
   gatewayResponse?: string;
@@ -132,6 +139,10 @@ export interface PaymentAttemptSummary {
   providerMode: 'mock' | 'live';
   paymentMethod: PaymentMethod;
   status: PaymentAttemptStatus;
+  currency: string;
+  settlementCurrency: string;
+  settlementAmount: number;
+  exchangeRateSnapshotId?: string;
   channel?: PaymentChannel;
   authorizationUrl?: string;
   callbackUrl?: string;

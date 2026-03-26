@@ -7,6 +7,9 @@ import {
 import { PaymentMethod, PaymentStatus, Prisma } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { v4 as uuidv4 } from 'uuid';
+import { FxRateService } from './fx-rate.service';
+import { StandardOrderEscrowService } from 'src/finance/standard-order-escrow.service';
+import { FinancialDocumentsService } from 'src/finance/financial-documents.service';
 import {
   InitializePaymentDto,
   PaymentAttemptStatus,
@@ -44,7 +47,12 @@ const TERMINAL_ATTEMPT_STATUSES = new Set<PaymentAttemptStatus>([
 export class PaymentService {
   private readonly logger = new Logger(PaymentService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly fxRateService: FxRateService,
+    private readonly standardOrderEscrowService: StandardOrderEscrowService,
+    private readonly financialDocumentsService: FinancialDocumentsService,
+  ) {}
 
   async initializePayment(
     dto: InitializePaymentDto,
@@ -70,6 +78,8 @@ export class PaymentService {
       throw new BadRequestException('No eligible orders found');
     }
 
+    this.ensureSingleCurrency(orders.map((order) => order.currency));
+
     const paymentData = this.validatePaymentRequest(dto.paymentMethod, dto.paymentData);
     const amount = orders.reduce(
       (sum, order) =>
@@ -82,6 +92,11 @@ export class PaymentService {
     const currency = orders[0].currency;
     const callbackBaseUrl = this.resolveCallbackBaseUrl(dto.callbackUrl);
     const providerMode = this.getProviderMode();
+    const settlementQuote = await this.fxRateService.quoteAndPersist({
+      from: currency,
+      amount,
+      actorId: userId,
+    });
 
     const gatewayResult = await this.initializeGateway(
       dto.paymentMethod,
@@ -106,6 +121,9 @@ export class PaymentService {
           authorizationUrl: gatewayResult.authorizationUrl,
           amount,
           currency,
+          settlementCurrency: this.fxRateService.getBaseCurrency(),
+          settlementAmount: settlementQuote.convertedAmount,
+          exchangeRateSnapshotId: settlementQuote.snapshot.id,
           orderIds: orders.map((order) => order.id),
           requestSnapshot: paymentData as unknown as Prisma.InputJsonValue,
           responseSnapshot: (gatewayResult.responseSnapshot ?? null) as unknown as Prisma.InputJsonValue,
@@ -147,6 +165,10 @@ export class PaymentService {
       reference,
       gateway: gatewayResult.gateway,
       status: gatewayResult.status,
+      currency,
+      settlementCurrency: attempt.settlementCurrency,
+      settlementAmount: Number(attempt.settlementAmount ?? amount),
+      exchangeRateSnapshotId: attempt.exchangeRateSnapshotId ?? undefined,
       channel: gatewayResult.channel,
       callbackUrl: gatewayResult.callbackUrl ?? callbackBaseUrl,
       authorizationUrl: gatewayResult.authorizationUrl,
@@ -536,6 +558,12 @@ export class PaymentService {
       providerMode: attempt.providerMode === 'live' ? 'live' : 'mock',
       paymentMethod: attempt.paymentMethod,
       status: attempt.status as PaymentAttemptStatus,
+      currency: attempt.currency,
+      settlementCurrency: attempt.settlementCurrency,
+      settlementAmount: Number(
+        attempt.settlementAmount ?? attempt.amount ?? subtotal + shippingCost - discount,
+      ),
+      exchangeRateSnapshotId: attempt.exchangeRateSnapshotId ?? undefined,
       channel: (attempt.channel as PaymentChannel | null) ?? undefined,
       authorizationUrl: attempt.authorizationUrl ?? undefined,
       callbackUrl: attempt.callbackUrl ?? undefined,
@@ -582,6 +610,29 @@ export class PaymentService {
     }
 
     const now = new Date();
+    const settlement = await this.fxRateService.resolveSettlement({
+      attempt,
+      gateway: attempt.provider,
+      payload,
+    });
+    const linkedOrders =
+      nextStatus === 'PAID'
+        ? await this.prisma.order.findMany({
+            where: {
+              paymentReference: reference,
+              ...(attempt.buyerId ? { buyerId: attempt.buyerId } : {}),
+            },
+            select: {
+              id: true,
+              brandId: true,
+              buyerId: true,
+              totalAmount: true,
+              shippingCost: true,
+              discountAmount: true,
+            },
+            orderBy: { createdAt: 'asc' },
+          })
+        : [];
     const updatedAttempt = await this.prisma.$transaction(async (tx) => {
       const updated = await tx.paymentAttempt.update({
         where: { reference },
@@ -589,6 +640,9 @@ export class PaymentService {
           status: nextStatus,
           confirmedAt: nextStatus === 'PAID' ? now : attempt.confirmedAt,
           lastVerifiedAt: now,
+          settlementCurrency: settlement.settlementCurrency,
+          settlementAmount: settlement.settlementAmount,
+          exchangeRateSnapshotId: settlement.exchangeRateSnapshotId,
           failureCode: nextStatus === 'FAILED' ? 'MOCK_FAILURE' : nextStatus,
           failureMessage:
             nextStatus === 'FAILED'
@@ -608,6 +662,39 @@ export class PaymentService {
           paidAt: nextStatus === 'PAID' ? now : null,
         },
       });
+
+      if (nextStatus === 'PAID' && linkedOrders.length > 0) {
+        await this.standardOrderEscrowService.ensureHoldsForPaidOrders(
+          tx,
+          linkedOrders,
+          Number(settlement.settlementAmount ?? attempt.amount),
+          settlement.settlementCurrency ?? this.fxRateService.getBaseCurrency(),
+        );
+        await this.financialDocumentsService.issueBuyerReceipt(tx, {
+          paymentAttemptId: updated.id,
+          orderIds: linkedOrders.map((order) => order.id),
+          currency: attempt.currency,
+          grossAmount: linkedOrders.reduce(
+            (sum, order) =>
+              sum +
+              Number(order.totalAmount) +
+              Number(order.shippingCost ?? 0) -
+              Number(order.discountAmount ?? 0),
+            0,
+          ),
+          settlementCurrency: settlement.settlementCurrency,
+          settlementAmount: Number(
+            settlement.settlementAmount ?? attempt.amount ?? 0,
+          ),
+          lineItems: linkedOrders.map((order) => ({
+            label: `Order ${order.id.slice(0, 8)}`,
+            amount:
+              Number(order.totalAmount) +
+              Number(order.shippingCost ?? 0) -
+              Number(order.discountAmount ?? 0),
+          })),
+        });
+      }
 
       await tx.paymentEvent.create({
         data: {
@@ -646,6 +733,9 @@ export class PaymentService {
       reference: attempt.reference,
       amount,
       currency: orders[0]?.currency ?? attempt.currency,
+      settlementCurrency: attempt.settlementCurrency,
+      settlementAmount: Number(attempt.settlementAmount ?? amount),
+      exchangeRateSnapshotId: attempt.exchangeRateSnapshotId ?? undefined,
       paidAt: attempt.confirmedAt?.toISOString(),
       channel: attempt.channel ?? undefined,
       gatewayResponse: success
@@ -878,6 +968,18 @@ export class PaymentService {
 
   private isTerminalStatus(status: PaymentAttemptStatus): boolean {
     return TERMINAL_ATTEMPT_STATUSES.has(status);
+  }
+
+  private ensureSingleCurrency(currencies: string[]) {
+    const normalized = Array.from(
+      new Set(currencies.map((currency) => String(currency || '').trim().toUpperCase())),
+    );
+
+    if (normalized.length > 1) {
+      throw new BadRequestException(
+        'All orders in a single checkout must use the same currency',
+      );
+    }
   }
 
   private asObject(value: unknown): Record<string, any> {

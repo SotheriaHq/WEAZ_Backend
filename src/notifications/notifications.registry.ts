@@ -211,6 +211,7 @@ export class NotificationRegistry {
       type: NotificationType.ORDER_STATUS_UPDATED,
       schema: Joi.object({
         orderId: Joi.string().required(),
+        orderTitle: Joi.string().optional(),
         status: Joi.string().required(),
         previousStatus: Joi.string().optional(),
         brandName: Joi.string().optional(),
@@ -224,15 +225,31 @@ export class NotificationRegistry {
 
         const orderCode = formatOrderCode(n.payload?.orderId);
         const statusLabel = humanizeOrderStatus(n.payload?.status);
+        const orderTitle = typeof n.payload?.orderTitle === 'string'
+          ? n.payload.orderTitle.trim()
+          : '';
         const brandName = n.payload?.brandName;
         const reason = typeof n.payload?.reason === 'string' ? n.payload.reason.trim() : '';
         const refundStatus = typeof n.payload?.refundStatus === 'string'
           ? n.payload.refundStatus.trim().toLowerCase()
           : '';
 
-        let message = brandName
-          ? `Your ${brandName} order ${orderCode} is now ${statusLabel}`
-          : `Your order ${orderCode} is now ${statusLabel}`;
+        let message = '';
+        const orderReference = orderTitle || orderCode;
+
+        if (n.payload?.status === 'SHIPPED') {
+          message = brandName
+            ? `Your order ${orderReference} from ${brandName} has been shipped`
+            : `Your order ${orderReference} has been shipped`;
+        } else if (n.payload?.status === 'DELIVERED') {
+          message = brandName
+            ? `Your order ${orderReference} from ${brandName} has been delivered`
+            : `Your order ${orderReference} has been delivered`;
+        } else {
+          message = brandName
+            ? `Your order ${orderReference} from ${brandName} is now ${statusLabel}`
+            : `Your order ${orderReference} is now ${statusLabel}`;
+        }
 
         if (reason) {
           message += `. Reason: ${reason}`;
@@ -590,7 +607,7 @@ export class NotificationRegistry {
       }),
       formatter: (n: any) =>
         n.payload?.message ||
-        'Time to update your custom size/fits profile (recommended every 2 weeks)',
+        'Time to update your custom size/fits profile.(recommended every 2 weeks)',
     });
 
     // SIZE_FIT_SHARED
@@ -694,7 +711,7 @@ export class NotificationRegistry {
         if (n.payload?.message) return n.payload.message;
         const name = n.payload?.entityName || 'Your item';
         const type = n.payload?.entityType === 'DESIGN' ? 'design' : 'product';
-        return `${name} has been featured! Your ${type} will be showcased for 7 days.`;
+        return `${name} has been featured! Your ${type} will be featured for 7 days.`;
       },
     });
 
