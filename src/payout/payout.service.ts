@@ -1,18 +1,25 @@
 import {
+  BadRequestException,
   Injectable,
   NotFoundException,
-  BadRequestException,
 } from '@nestjs/common';
-import { PrismaService } from '../prisma/prisma.service';
-import { Prisma, PayoutStatus } from '@prisma/client';
+import {
+  CustomOrderLedgerAllocationStatus,
+  CustomOrderLedgerAllocationType,
+  PayoutStatus,
+  Prisma,
+} from '@prisma/client';
 import { v4 as uuidv4 } from 'uuid';
+import { CommissionService } from 'src/finance/commission.service';
 import { StandardOrderEscrowService } from 'src/finance/standard-order-escrow.service';
+import { PrismaService } from '../prisma/prisma.service';
 
 @Injectable()
 export class PayoutService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly standardOrderEscrowService: StandardOrderEscrowService,
+    private readonly commissionService: CommissionService,
   ) {}
 
   async findAll(brandId: string, page = 1, limit = 20) {
@@ -68,26 +75,31 @@ export class PayoutService {
     const { availableBalance, releasedBalance, reservedPayoutBalance, paidOutBalance } =
       await this.calculateBalanceSnapshot(realBrandId);
 
-    // Count of paid orders and total incoming credits for the brand
-    const [orderStats, incomingCreditsAgg] = await Promise.all([
-      this.prisma.order.aggregate({
-        where: { brandId: realBrandId, paymentStatus: 'PAID' },
-        _count: { id: true },
-        _sum: { totalAmount: true },
-      }),
-      (this.prisma as any).ledgerEntry.aggregate({
-        where: {
-          account: { entityType: 'BRAND', entityId: realBrandId },
-          direction: 'CREDIT',
-        },
-        _sum: { amount: true },
-        _count: { id: true },
-      }).catch(() => ({ _sum: { amount: null }, _count: { id: 0 } })),
-    ]);
-
-    const incomingCredits = Number(incomingCreditsAgg?._sum?.amount ?? 0) > 0
-      ? Number(Number(incomingCreditsAgg._sum.amount).toFixed(2))
-      : Number(Number(orderStats._sum?.totalAmount ?? 0).toFixed(2));
+    const [orderStats, customOrderStats, activeEscrowHolds, queuedCustomAllocations] =
+      await Promise.all([
+        this.prisma.order.aggregate({
+          where: { brandId: realBrandId, paymentStatus: 'PAID' },
+          _count: { id: true },
+        }),
+        (this.prisma as any).customOrder.aggregate({
+          where: { brandId: realBrandId, paymentStatus: 'PAID' },
+          _count: { id: true },
+        }),
+        this.prisma.escrowHold.count({
+          where: {
+            brandId: realBrandId,
+            status: { in: ['HELD', 'PARTIALLY_RELEASED', 'FROZEN'] as any },
+          },
+        }),
+        this.prisma.customOrderLedgerAllocation.count({
+          where: {
+            customOrder: { brandId: realBrandId },
+            status: CustomOrderLedgerAllocationStatus.PAYOUT_ELIGIBLE,
+            paidOutAt: null,
+            payoutId: null,
+          },
+        }),
+      ]);
 
     return {
       currency: 'NGN',
@@ -95,8 +107,10 @@ export class PayoutService {
       releasedBalance,
       reservedPayoutBalance,
       paidOutBalance,
-      incomingCredits,
-      totalOrders: orderStats._count?.id ?? 0,
+      incomingCredits: releasedBalance,
+      totalOrders: (orderStats._count?.id ?? 0) + (customOrderStats._count?.id ?? 0),
+      activeEscrowHolds,
+      queuedCustomAllocations,
       negativeBalance: availableBalance < 0,
     };
   }
@@ -107,20 +121,15 @@ export class PayoutService {
     const safeLimit = Math.min(100, Math.max(1, Number(limit) || 20));
     const skip = (safePage - 1) * safeLimit;
 
-    const where = {
-      account: {
-        entityType: 'BRAND',
-        entityId: realBrandId,
-      },
-      direction: 'CREDIT' as const,
-    };
-
-    const [total, entries] = await Promise.all([
-      (this.prisma as any).ledgerEntry.count({ where }),
+    const [entries, legacyOrders, fallbackCustomAllocations] = await Promise.all([
       (this.prisma as any).ledgerEntry.findMany({
-        where,
-        skip,
-        take: safeLimit,
+        where: {
+          account: {
+            entityType: 'BRAND',
+            entityId: realBrandId,
+          },
+          direction: 'CREDIT',
+        },
         orderBy: { createdAt: 'desc' },
         include: {
           account: {
@@ -156,22 +165,78 @@ export class PayoutService {
           },
         },
       }),
+      this.prisma.order.findMany({
+        where: {
+          brandId: realBrandId,
+          paymentStatus: 'PAID' as any,
+          escrowHold: { is: null },
+        },
+        orderBy: { createdAt: 'desc' },
+        select: {
+          id: true,
+          totalAmount: true,
+          currency: true,
+          customerName: true,
+          createdAt: true,
+          status: true,
+        },
+      }),
+      this.prisma.customOrderLedgerAllocation.findMany({
+        where: {
+          customOrder: { brandId: realBrandId },
+          status: {
+            in: [
+              CustomOrderLedgerAllocationStatus.PAYOUT_ELIGIBLE,
+              CustomOrderLedgerAllocationStatus.PAID_OUT,
+            ],
+          },
+        },
+        orderBy: [{ eligibleAt: 'desc' }, { createdAt: 'desc' }],
+        select: {
+          id: true,
+          allocationType: true,
+          amount: true,
+          commissionAmount: true,
+          netBrandAmount: true,
+          currency: true,
+          eligibleAt: true,
+          paidOutAt: true,
+          createdAt: true,
+          customOrderId: true,
+          customOrder: {
+            select: {
+              id: true,
+              title: true,
+              sourceTitleSnapshot: true,
+              buyer: {
+                select: {
+                  firstName: true,
+                  lastName: true,
+                  username: true,
+                },
+              },
+            },
+          },
+        },
+      }),
     ]);
 
-    const orderIds: string[] = Array.from(
+    const orderIds = Array.from(
       new Set(
         entries
           .filter((entry: any) => entry.transaction?.referenceType === 'Order' && entry.transaction?.referenceId)
-          .map((entry: any) => String(entry.transaction.referenceId))
-          .filter((value: string) => value.length > 0),
+          .map((entry: any) => String(entry.transaction.referenceId)),
       ),
     );
-    const customOrderIds: string[] = Array.from(
+    const customOrderIds = Array.from(
       new Set(
         entries
-          .filter((entry: any) => entry.transaction?.referenceType === 'CustomOrder' && entry.transaction?.referenceId)
-          .map((entry: any) => String(entry.transaction.referenceId))
-          .filter((value: string) => value.length > 0),
+          .filter(
+            (entry: any) =>
+              entry.transaction?.referenceType === 'CustomOrder' &&
+              entry.transaction?.referenceId,
+          )
+          .map((entry: any) => String(entry.transaction.referenceId)),
       ),
     );
 
@@ -243,7 +308,18 @@ export class PayoutService {
       }),
     );
 
-    const items = entries.map((entry: any) => {
+    const ledgerCustomReleaseKeys = new Set<string>();
+    for (const entry of entries) {
+      const transaction = entry.transaction;
+      if (String(transaction?.referenceType || '') !== 'CustomOrder' || !transaction?.referenceId) {
+        continue;
+      }
+
+      const stage = this.resolveReleaseStage(transaction?.description);
+      ledgerCustomReleaseKeys.add(`${String(transaction.referenceId)}:${stage}`);
+    }
+
+    const ledgerItems = entries.map((entry: any) => {
       const transaction = entry.transaction;
       const referenceType = String(transaction?.referenceType || '');
       const referenceId = String(transaction?.referenceId || '');
@@ -288,132 +364,186 @@ export class PayoutService {
       };
     });
 
-    // Fallback: if no ledger entries exist, show paid orders directly as income records
-    if (total === 0) {
-      return this.listLegacyOrderIncome(realBrandId, safePage, safeLimit);
-    }
+    const legacyItems = await this.buildLegacyStandardIncomeItems(realBrandId, legacyOrders);
+    const customFallbackItems = fallbackCustomAllocations
+      .filter((allocation) => {
+        const stage = this.mapCustomAllocationStage(allocation.allocationType);
+        return !ledgerCustomReleaseKeys.has(`${allocation.customOrderId}:${stage}`);
+      })
+      .map((allocation) => {
+        const buyerName = [
+          allocation.customOrder?.buyer?.firstName,
+          allocation.customOrder?.buyer?.lastName,
+        ]
+          .map((value) => String(value || '').trim())
+          .filter(Boolean)
+          .join(' ');
+
+        const stage = this.mapCustomAllocationStage(allocation.allocationType);
+        return {
+          id: allocation.id,
+          amount: this.roundMoney(Number(allocation.netBrandAmount ?? 0)),
+          grossAmount: this.roundMoney(Number(allocation.amount ?? 0)),
+          commissionAmount: this.roundMoney(Number(allocation.commissionAmount ?? 0)),
+          netAmount: this.roundMoney(Number(allocation.netBrandAmount ?? 0)),
+          balanceAfter: 0,
+          currency: allocation.currency || 'NGN',
+          createdAt: allocation.eligibleAt ?? allocation.paidOutAt ?? allocation.createdAt,
+          transactionId: null,
+          transactionType: 'ESCROW_RELEASE',
+          description:
+            stage === 'ACCEPTED_RELEASE'
+              ? `Immediate custom-order release for ${allocation.customOrderId.slice(0, 8).toUpperCase()}`
+              : `Final custom-order release for ${allocation.customOrderId.slice(0, 8).toUpperCase()}`,
+          referenceType: 'CustomOrder',
+          referenceId: allocation.customOrderId,
+          title:
+            allocation.customOrder?.title ||
+            allocation.customOrder?.sourceTitleSnapshot ||
+            `Custom Order #${allocation.customOrderId.slice(0, 8).toUpperCase()}`,
+          counterparty: buyerName || String(allocation.customOrder?.buyer?.username || 'Buyer'),
+          stage,
+          metadata: null,
+        };
+      });
+
+    const allItems = [...ledgerItems, ...legacyItems, ...customFallbackItems].sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+    );
 
     return {
-      items,
-      total,
+      items: allItems.slice(skip, skip + safeLimit),
+      total: allItems.length,
       page: safePage,
-      totalPages: Math.ceil(total / safeLimit),
+      totalPages: Math.ceil(allItems.length / safeLimit),
     };
   }
 
-  private async listLegacyOrderIncome(brandId: string, page: number, limit: number) {
-    const skip = (page - 1) * limit;
+  async listHeldFunds(brandId: string, page = 1, limit = 20) {
+    const realBrandId = await this.getBrandId(brandId);
+    const safePage = Math.max(1, Number(page) || 1);
+    const safeLimit = Math.min(100, Math.max(1, Number(limit) || 20));
+    const skip = (safePage - 1) * safeLimit;
 
-    const standardWhere: Prisma.OrderWhereInput = {
-      brandId,
-      paymentStatus: 'PAID' as any,
-    };
-
-    const [standardTotal, paidOrders, customOrderTotal, paidCustomOrders] = await Promise.all([
-      this.prisma.order.count({ where: standardWhere }),
-      this.prisma.order.findMany({
-        where: standardWhere,
+    const [standardHolds, customHeldAllocations] = await Promise.all([
+      this.prisma.escrowHold.findMany({
+        where: {
+          brandId: realBrandId,
+          status: { in: ['HELD', 'PARTIALLY_RELEASED', 'FROZEN'] as any },
+        },
         orderBy: { createdAt: 'desc' },
         select: {
           id: true,
+          orderId: true,
           totalAmount: true,
           currency: true,
-          customerName: true,
-          createdAt: true,
           status: true,
+          firstReleaseNetAmount: true,
+          secondReleaseNetAmount: true,
+          firstReleasedAt: true,
+          secondReleaseEligibleAt: true,
+          secondReleaseCondition: true,
+          frozenReason: true,
+          createdAt: true,
+          order: {
+            select: {
+              id: true,
+              customerName: true,
+            },
+          },
         },
       }),
-      (this.prisma as any).customOrder.count({
-        where: { brandId, paymentStatus: 'PAID' },
-      }),
-      (this.prisma as any).customOrder.findMany({
-        where: { brandId, paymentStatus: 'PAID' },
+      this.prisma.customOrderLedgerAllocation.findMany({
+        where: {
+          customOrder: { brandId: realBrandId },
+          allocationType: CustomOrderLedgerAllocationType.FINAL_COMPLETION_PORTION,
+          status: CustomOrderLedgerAllocationStatus.HELD,
+        },
         orderBy: { createdAt: 'desc' },
         select: {
           id: true,
-          sourceTitleSnapshot: true,
-          buyerPriceSummaryJson: true,
+          customOrderId: true,
+          amount: true,
+          netBrandAmount: true,
           currency: true,
-          status: true,
           createdAt: true,
-          buyer: {
-            select: { firstName: true, lastName: true, username: true },
+          customOrder: {
+            select: {
+              title: true,
+              sourceTitleSnapshot: true,
+              buyer: {
+                select: {
+                  firstName: true,
+                  lastName: true,
+                  username: true,
+                },
+              },
+            },
           },
         },
       }),
     ]);
 
-    const standardItems = paidOrders.map((order: any) => {
-      const netAmount = Number(order.totalAmount ?? 0);
-      return {
-        id: order.id,
-        amount: Number(netAmount.toFixed(2)),
-        grossAmount: Number(netAmount.toFixed(2)),
-        commissionAmount: 0,
-        netAmount: Number(netAmount.toFixed(2)),
-        balanceAfter: 0,
-        currency: order.currency || 'NGN',
-        createdAt: order.createdAt,
-        transactionId: null,
-        transactionType: 'PAYMENT_RECEIVED',
-        description: `Payment for order #${order.id.slice(0, 8).toUpperCase()}`,
-        referenceType: 'Order',
-        referenceId: order.id,
-        title: `Order #${order.id.slice(0, 8).toUpperCase()}`,
-        counterparty: order.customerName,
-        stage:
-          String(order.status) === 'DELIVERED'
-            ? 'DELIVERED_RELEASE'
-            : String(order.status) === 'SHIPPED'
-              ? 'SHIPPED_RELEASE'
-              : 'PAYMENT',
-        metadata: null,
-      };
-    });
+    const items = [
+      ...standardHolds.map((hold) => ({
+        id: hold.id,
+        holdType: 'STANDARD_ORDER',
+        referenceId: hold.orderId,
+        title: hold.order?.id
+          ? `Order #${hold.order.id.slice(0, 8).toUpperCase()}`
+          : 'Standard order hold',
+        counterparty: hold.order?.customerName ?? 'Buyer',
+        currency: hold.currency,
+        grossAmount: this.roundMoney(Number(hold.totalAmount ?? 0)),
+        releasedNetAmount: this.roundMoney(
+          hold.firstReleasedAt ? Number(hold.firstReleaseNetAmount ?? 0) : 0,
+        ),
+        heldNetAmount: this.roundMoney(Number(hold.secondReleaseNetAmount ?? 0)),
+        status: hold.status,
+        nextReleaseAt: hold.secondReleaseEligibleAt,
+        releaseCondition: hold.secondReleaseCondition,
+        frozenReason: hold.frozenReason ?? null,
+        canRequestManualRelease:
+          hold.status !== 'FROZEN' && hold.status !== 'RELEASED' && Boolean(hold.orderId),
+        createdAt: hold.createdAt,
+      })),
+      ...customHeldAllocations.map((allocation) => {
+        const buyerName = [
+          allocation.customOrder?.buyer?.firstName,
+          allocation.customOrder?.buyer?.lastName,
+        ]
+          .map((value) => String(value || '').trim())
+          .filter(Boolean)
+          .join(' ');
 
-    const customItems = paidCustomOrders.map((order: any) => {
-      const summary =
-        order.buyerPriceSummaryJson && typeof order.buyerPriceSummaryJson === 'object'
-          ? (order.buyerPriceSummaryJson as Record<string, unknown>)
-          : {};
-      const netAmount = Number((summary as any).grandTotal ?? 0);
-      const buyerName = [order.buyer?.firstName, order.buyer?.lastName]
-        .map((v: string) => String(v || '').trim())
-        .filter(Boolean)
-        .join(' ') || String(order.buyer?.username || 'Buyer');
-      return {
-        id: order.id,
-        amount: Number(netAmount.toFixed(2)),
-        grossAmount: Number(netAmount.toFixed(2)),
-        commissionAmount: 0,
-        netAmount: Number(netAmount.toFixed(2)),
-        balanceAfter: 0,
-        currency: (summary as any).currency || order.currency || 'NGN',
-        createdAt: order.createdAt,
-        transactionId: null,
-        transactionType: 'PAYMENT_RECEIVED',
-        description: `Custom order #${order.id.slice(0, 8).toUpperCase()}`,
-        referenceType: 'CustomOrder',
-        referenceId: order.id,
-        title: order.sourceTitleSnapshot || `Custom Order #${order.id.slice(0, 8).toUpperCase()}`,
-        counterparty: buyerName,
-        stage: String(order.status) === 'COMPLETED' ? 'DELIVERED_RELEASE' : 'PAYMENT',
-        metadata: null,
-      };
-    });
-
-    // Merge, sort by date, then paginate
-    const allItems = [...standardItems, ...customItems].sort(
-      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
-    );
-    const total = standardTotal + customOrderTotal;
-    const paginated = allItems.slice(skip, skip + limit);
+        return {
+          id: allocation.id,
+          holdType: 'CUSTOM_ORDER',
+          referenceId: allocation.customOrderId,
+          title:
+            allocation.customOrder?.title ||
+            allocation.customOrder?.sourceTitleSnapshot ||
+            `Custom Order #${allocation.customOrderId.slice(0, 8).toUpperCase()}`,
+          counterparty: buyerName || String(allocation.customOrder?.buyer?.username || 'Buyer'),
+          currency: allocation.currency || 'NGN',
+          grossAmount: this.roundMoney(Number(allocation.amount ?? 0)),
+          releasedNetAmount: 0,
+          heldNetAmount: this.roundMoney(Number(allocation.netBrandAmount ?? 0)),
+          status: 'HELD',
+          nextReleaseAt: null,
+          releaseCondition: 'BUYER_DELIVERY_CONFIRMED',
+          frozenReason: null,
+          canRequestManualRelease: false,
+          createdAt: allocation.createdAt,
+        };
+      }),
+    ].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
     return {
-      items: paginated,
-      total,
-      page,
-      totalPages: Math.ceil(total / limit),
+      items: items.slice(skip, skip + safeLimit),
+      total: items.length,
+      page: safePage,
+      totalPages: Math.ceil(items.length / safeLimit),
     };
   }
 
@@ -423,14 +553,17 @@ export class PayoutService {
   }
 
   private async calculateBalanceSnapshot(brandId: string) {
-    const releasedBalance = await this.standardOrderEscrowService.getReleasedBalance(brandId);
-    const legacyFallbackBalance = await this.getLegacyFallbackBalance(brandId);
-
-    const payoutTotals = await this.prisma.payout.groupBy({
-      by: ['status'],
-      where: { brandId },
-      _sum: { amount: true },
-    });
+    const [standardReleasedBalance, customReleasedBalance, legacyFallbackBalance, payoutTotals] =
+      await Promise.all([
+        this.standardOrderEscrowService.getReleasedBalance(brandId),
+        this.getCustomOrderReleasedBalance(brandId),
+        this.getLegacyFallbackBalance(brandId),
+        this.prisma.payout.groupBy({
+          by: ['status'],
+          where: { brandId },
+          _sum: { amount: true },
+        }),
+      ]);
 
     const reservedStatuses = new Set<PayoutStatus>([
       PayoutStatus.PENDING_APPROVAL,
@@ -454,16 +587,38 @@ export class PayoutService {
       return sum + Number(row._sum.amount ?? 0);
     }, 0);
 
-    const availableBalance = Number(
-      (releasedBalance + legacyFallbackBalance - reservedPayoutBalance - paidOutBalance).toFixed(2),
+    const releasedBalance = this.roundMoney(
+      standardReleasedBalance + customReleasedBalance + legacyFallbackBalance,
+    );
+    const availableBalance = this.roundMoney(
+      releasedBalance - reservedPayoutBalance - paidOutBalance,
     );
 
     return {
       availableBalance,
-      releasedBalance: Number((releasedBalance + legacyFallbackBalance).toFixed(2)),
-      reservedPayoutBalance: Number(reservedPayoutBalance.toFixed(2)),
-      paidOutBalance: Number(paidOutBalance.toFixed(2)),
+      releasedBalance,
+      reservedPayoutBalance: this.roundMoney(reservedPayoutBalance),
+      paidOutBalance: this.roundMoney(paidOutBalance),
     };
+  }
+
+  private async getCustomOrderReleasedBalance(brandId: string): Promise<number> {
+    const released = await this.prisma.customOrderLedgerAllocation.aggregate({
+      where: {
+        customOrder: { brandId },
+        status: {
+          in: [
+            CustomOrderLedgerAllocationStatus.PAYOUT_ELIGIBLE,
+            CustomOrderLedgerAllocationStatus.PAID_OUT,
+          ],
+        },
+      },
+      _sum: {
+        netBrandAmount: true,
+      },
+    });
+
+    return this.roundMoney(Number(released._sum.netBrandAmount ?? 0));
   }
 
   private async getLegacyFallbackBalance(brandId: string): Promise<number> {
@@ -475,15 +630,99 @@ export class PayoutService {
       },
       select: {
         totalAmount: true,
-        shippingCost: true,
-        discountAmount: true,
+        currency: true,
       },
     });
-    return paidOrders.reduce(
-      (sum, order) =>
-        sum + Number(order.totalAmount ?? 0),
-      0,
+
+    if (paidOrders.length === 0) {
+      return 0;
+    }
+
+    const rateMap = await this.getCommissionRateMap(
+      brandId,
+      paidOrders.map((order) => String(order.currency || 'NGN')),
     );
+
+    return this.roundMoney(
+      paidOrders.reduce((sum, order) => {
+        const grossAmount = Number(order.totalAmount ?? 0);
+        const commissionRate = rateMap.get(String(order.currency || 'NGN').toUpperCase()) ?? 0;
+        const commissionAmount = this.roundMoney((grossAmount * commissionRate) / 100);
+        return sum + this.roundMoney(grossAmount - commissionAmount);
+      }, 0),
+    );
+  }
+
+  private async buildLegacyStandardIncomeItems(
+    brandId: string,
+    orders: Array<{
+      id: string;
+      totalAmount: Prisma.Decimal;
+      currency: string;
+      customerName: string;
+      createdAt: Date;
+      status: string;
+    }>,
+  ) {
+    if (orders.length === 0) {
+      return [];
+    }
+
+    const rateMap = await this.getCommissionRateMap(
+      brandId,
+      orders.map((order) => String(order.currency || 'NGN')),
+    );
+
+    return orders.map((order) => {
+      const grossAmount = Number(order.totalAmount ?? 0);
+      const commissionRate = rateMap.get(String(order.currency || 'NGN').toUpperCase()) ?? 0;
+      const commissionAmount = this.roundMoney((grossAmount * commissionRate) / 100);
+      const netAmount = this.roundMoney(grossAmount - commissionAmount);
+
+      return {
+        id: order.id,
+        amount: netAmount,
+        grossAmount: this.roundMoney(grossAmount),
+        commissionAmount,
+        netAmount,
+        balanceAfter: 0,
+        currency: order.currency || 'NGN',
+        createdAt: order.createdAt,
+        transactionId: null,
+        transactionType: 'PAYMENT_RECEIVED',
+        description: `Payment for order #${order.id.slice(0, 8).toUpperCase()}`,
+        referenceType: 'Order',
+        referenceId: order.id,
+        title: `Order #${order.id.slice(0, 8).toUpperCase()}`,
+        counterparty: order.customerName,
+        stage:
+          String(order.status) === 'DELIVERED'
+            ? 'DELIVERED_RELEASE'
+            : String(order.status) === 'SHIPPED'
+              ? 'SHIPPED_RELEASE'
+              : 'PAYMENT',
+        metadata: null,
+      };
+    });
+  }
+
+  private async getCommissionRateMap(brandId: string, currencies: string[]) {
+    const uniqueCurrencies = Array.from(
+      new Set(
+        currencies
+          .map((currency) => String(currency || 'NGN').trim().toUpperCase())
+          .filter(Boolean),
+      ),
+    );
+
+    const resolvedRules = await Promise.all(
+      uniqueCurrencies.map(async (currency) => {
+        const resolved = await this.commissionService.resolveRule({ brandId, currency });
+        return [currency, resolved.ratePercent] as const;
+      }),
+    );
+
+    return new Map<string, number>(resolvedRules);
   }
 
   private async getBrandId(ownerId: string): Promise<string> {
@@ -501,6 +740,12 @@ export class PayoutService {
     if (haystack.includes('final')) return 'DELIVERED_RELEASE';
     if (haystack.includes('immediate')) return 'ACCEPTED_RELEASE';
     return 'RELEASE';
+  }
+
+  private mapCustomAllocationStage(type: CustomOrderLedgerAllocationType) {
+    return type === CustomOrderLedgerAllocationType.BRAND_ACCEPTANCE_PORTION
+      ? 'ACCEPTED_RELEASE'
+      : 'DELIVERED_RELEASE';
   }
 
   private roundMoney(value: number) {

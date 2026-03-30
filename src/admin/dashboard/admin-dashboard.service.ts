@@ -39,9 +39,9 @@ export class AdminDashboardService {
       this.prisma.brand.count({
         where: { verificationStatus: BrandVerificationStatus.PENDING },
       }),
-      this.prisma.payout.count({
-        where: { status: PayoutStatus.PENDING_APPROVAL },
-      }),
+      (this.prisma as any).payout
+        .count({ where: { status: { in: [PayoutStatus.PENDING_APPROVAL, 'PENDING' as any] } } })
+        .catch(() => 0) as Promise<number>,
       this.prisma.dispute.count({
         where: { status: { in: ['OPEN', 'ASSIGNED', 'IN_PROGRESS'] } },
       }),

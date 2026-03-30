@@ -1186,6 +1186,7 @@ export class CustomOrderAdminService {
       select: {
         id: true,
         amount: true,
+        netBrandAmount: true,
         currency: true,
         customOrderId: true,
         customOrder: {
@@ -1226,14 +1227,14 @@ export class CustomOrderAdminService {
       const key = `${brandId}:${allocation.currency}`;
       const existing = grouped.get(key);
       if (existing) {
-        existing.totalAmount += Number(allocation.amount);
+        existing.totalAmount += Number(allocation.netBrandAmount ?? 0);
         existing.allocationIds.push(allocation.id);
         existing.customOrderIds.push(allocation.customOrderId);
       } else {
         grouped.set(key, {
           brandId,
           currency: allocation.currency,
-          totalAmount: Number(allocation.amount),
+          totalAmount: Number(allocation.netBrandAmount ?? 0),
           allocationIds: [allocation.id],
           customOrderIds: [allocation.customOrderId],
         });
@@ -1248,7 +1249,10 @@ export class CustomOrderAdminService {
           dryRun: true,
           releasedBatches: grouped.size,
           releasedAllocations: allocations.length,
-          releasedTotalAmount: allocations.reduce((sum, item) => sum + Number(item.amount), 0),
+          releasedTotalAmount: allocations.reduce(
+            (sum, item) => sum + Number(item.netBrandAmount ?? 0),
+            0,
+          ),
         },
       };
     }
@@ -1276,7 +1280,6 @@ export class CustomOrderAdminService {
             payoutId: null,
           },
           data: {
-            paidOutAt: now,
             payoutId,
           },
         });
@@ -1296,6 +1299,7 @@ export class CustomOrderAdminService {
               action: 'MANUAL_PAYOUT_RELEASE_QUEUED',
               payoutId,
               allocationCount: group.allocationIds.length,
+              queuedNetAmount: Number(group.totalAmount.toFixed(2)),
             } as Prisma.InputJsonValue,
           })),
         });
@@ -1311,7 +1315,10 @@ export class CustomOrderAdminService {
         dryRun: false,
         releasedBatches,
         releasedAllocations: allocations.length,
-        releasedTotalAmount: allocations.reduce((sum, item) => sum + Number(item.amount), 0),
+        releasedTotalAmount: allocations.reduce(
+          (sum, item) => sum + Number(item.netBrandAmount ?? 0),
+          0,
+        ),
       },
     };
   }

@@ -33,6 +33,16 @@ const DEFAULT_BODY_LIMIT = '10mb';
 const DEFAULT_PORT = 3040;
 const DEFAULT_HOST = '0.0.0.0';
 
+const rawBodySaver = (
+  req: express.Request & { rawBody?: string },
+  _res: express.Response,
+  buf: Buffer,
+) => {
+  if (buf.length > 0) {
+    req.rawBody = buf.toString('utf8');
+  }
+};
+
 const toBoolean = (value: string | undefined, fallback = true) => {
   if (typeof value !== 'string') {
     return fallback;
@@ -367,12 +377,14 @@ async function bootstrap() {
     app.use(
       bodyParser.json({
         limit: configService.get<string>('BODY_LIMIT', DEFAULT_BODY_LIMIT),
+        verify: rawBodySaver,
       }),
     );
     app.use(
       bodyParser.urlencoded({
         extended: true,
         limit: configService.get<string>('BODY_LIMIT', DEFAULT_BODY_LIMIT),
+        verify: rawBodySaver,
       }),
     );
 

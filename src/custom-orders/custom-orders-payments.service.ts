@@ -13,7 +13,9 @@ import {
   PaymentStatus,
   PaymentSubjectType,
   Prisma,
+  Role,
 } from '@prisma/client';
+import { ADMIN_PERMISSIONS } from 'src/admin/constants/permissions';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { PaymentService } from 'src/payment/payment.service';
 import { CustomOrderSideEffectsService } from './custom-order-side-effects.service';
@@ -526,6 +528,15 @@ export class CustomOrdersPaymentsService {
           dedupeMs: 5 * 60 * 1000,
         });
       }
+
+      await this.notifyFinanceAdminsOfCustomOrderPayment({
+        customOrderId,
+        buyerId: order.buyerId,
+        reference: updatedAttempt.reference,
+        amount: lockedAmount,
+        currency: order.currency,
+        sourceTitle: order.sourceTitleSnapshot || 'Untitled custom order',
+      });
     }
 
     return this.toVerifyResult(updatedAttempt, order);
@@ -608,6 +619,54 @@ export class CustomOrdersPaymentsService {
       return PaymentStatus.FAILED;
     }
     return PaymentStatus.PENDING;
+  }
+
+  private async notifyFinanceAdminsOfCustomOrderPayment(params: {
+    customOrderId: string;
+    buyerId: string;
+    reference: string;
+    amount: number;
+    currency: string;
+    sourceTitle: string;
+  }) {
+    const recipients = await this.prisma.user.findMany({
+      where: {
+        role: { in: [Role.SuperAdmin, Role.Admin] },
+        OR: [
+          { role: Role.SuperAdmin },
+          {
+            adminPermissionGrants: {
+              some: { permissionCode: ADMIN_PERMISSIONS.PAYOUTS_READ },
+            },
+          },
+        ],
+      },
+      select: { id: true },
+    });
+
+    const recipientIds = Array.from(
+      new Set(recipients.map((recipient) => recipient.id).filter(Boolean)),
+    );
+    if (recipientIds.length === 0) {
+      return;
+    }
+
+    await this.sideEffects.enqueueNotification({
+      customOrderId: params.customOrderId,
+      recipientIds,
+      actorId: params.buyerId,
+      notificationType: NotificationType.ADMIN_ACTION,
+      dedupeMs: 5 * 60 * 1000,
+      payload: {
+        action: 'FINANCE_PAYMENT_RECEIVED',
+        reference: params.reference,
+        customOrderId: params.customOrderId,
+        amount: params.amount,
+        currency: params.currency,
+        message: `Payment received: ${params.reference} for custom order ${params.sourceTitle} worth ${params.currency} ${this.roundMoney(params.amount).toFixed(2)}.`,
+        targetUrl: '/admin/finance',
+      },
+    });
   }
 
   private roundMoney(value: number) {

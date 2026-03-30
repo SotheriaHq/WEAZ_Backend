@@ -5,7 +5,12 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
-import { AdminAuditAction, PayoutStatus, Role } from '@prisma/client';
+import {
+  AdminAuditAction,
+  CustomOrderLedgerAllocationStatus,
+  PayoutStatus,
+  Role,
+} from '@prisma/client';
 import { v4 as uuidv4 } from 'uuid';
 import { Request } from 'express';
 import { LedgerService } from 'src/finance/ledger.service';
@@ -62,7 +67,7 @@ export class AdminPayoutsService {
     if (params.status) where.status = params.status;
     if (params.brandId) where.brandId = params.brandId;
 
-    return this.prisma.payout.findMany({
+    const rows = await this.prisma.payout.findMany({
       where,
       take: take + 1,
       ...(params.cursor ? { cursor: { id: params.cursor }, skip: 1 } : {}),
@@ -77,6 +82,14 @@ export class AdminPayoutsService {
         },
       },
     });
+
+    const hasMore = rows.length > take;
+    const items = hasMore ? rows.slice(0, take) : rows;
+
+    return {
+      items,
+      nextCursor: hasMore ? items[items.length - 1]?.id : undefined,
+    };
   }
 
   async claim(
@@ -257,6 +270,39 @@ export class AdminPayoutsService {
       });
 
       if (params.status === PayoutStatus.PAID) {
+        const linkedAllocationSummary = await tx.customOrderLedgerAllocation.aggregate({
+          where: {
+            payoutId: result.id,
+            status: CustomOrderLedgerAllocationStatus.PAYOUT_ELIGIBLE,
+            paidOutAt: null,
+          },
+          _sum: { netBrandAmount: true },
+          _count: { id: true },
+        });
+
+        if ((linkedAllocationSummary._count?.id ?? 0) > 0) {
+          const expectedNetAmount = this.roundMoney(
+            Number(linkedAllocationSummary._sum.netBrandAmount ?? 0),
+          );
+          const payoutAmount = this.roundMoney(Number(result.amount ?? 0));
+          if (Math.abs(expectedNetAmount - payoutAmount) >= 0.01) {
+            throw new ConflictException(
+              'Payout amount no longer matches the linked custom-order allocations',
+            );
+          }
+        }
+
+        await tx.customOrderLedgerAllocation.updateMany({
+          where: {
+            payoutId: result.id,
+            status: CustomOrderLedgerAllocationStatus.PAYOUT_ELIGIBLE,
+            paidOutAt: null,
+          },
+          data: {
+            status: CustomOrderLedgerAllocationStatus.PAID_OUT,
+            paidOutAt: now,
+          },
+        });
         await this.ledgerService.postPayoutDisbursed(tx, result);
         await this.financialDocumentsService.issuePayoutSettlementStatement(tx, {
           payoutId: result.id,
@@ -298,6 +344,10 @@ export class AdminPayoutsService {
     });
 
     return updated;
+  }
+
+  private roundMoney(value: number) {
+    return Math.round((value + Number.EPSILON) * 100) / 100;
   }
 
   private assertOwnership(

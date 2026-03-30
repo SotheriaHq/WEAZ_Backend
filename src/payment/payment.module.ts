@@ -4,9 +4,10 @@ import { PaymentService } from './payment.service';
 import { PaymentController } from './payment.controller';
 import { FxRateService } from './fx-rate.service';
 import { FinanceModule } from 'src/finance/finance.module';
+import { NotificationsModule } from 'src/notifications/notifications.module';
 
 @Module({
-  imports: [PrismaModule, FinanceModule],
+  imports: [PrismaModule, FinanceModule, NotificationsModule],
   controllers: [PaymentController],
   providers: [PaymentService, FxRateService],
   exports: [PaymentService, FxRateService],

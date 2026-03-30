@@ -27,7 +27,7 @@ export class CustomOrderOpsCronService {
     private readonly prisma: PrismaService,
     private readonly sideEffects: CustomOrderSideEffectsService,
     private readonly refundService: CustomOrderRefundService,
-  ) {}
+  ) { }
 
   @Cron(CronExpression.EVERY_MINUTE)
   async processDurableCustomOrderSideEffects(): Promise<void> {
@@ -235,7 +235,7 @@ export class CustomOrderOpsCronService {
           1,
           Math.ceil(
             (order.buyerAcceptanceWindowEndsAt!.getTime() - now.getTime()) /
-              (60 * 60 * 1000),
+            (60 * 60 * 1000),
           ),
         );
 
@@ -336,15 +336,15 @@ export class CustomOrderOpsCronService {
         });
 
         await this.notifyBrandOwner(order.brandId, order.id, {
-            notificationType: NotificationType.CUSTOM_ORDER_PROGRESS_UPDATED,
-            target: this.adminCustomOrderTarget(order.id),
-            payload: {
-              customOrderId: order.id,
-              status: CustomOrderStatus.COMPLETED,
-              autoCompleted: true,
-            },
-            dedupeMs: 60 * 1000,
-          });
+          notificationType: NotificationType.CUSTOM_ORDER_PROGRESS_UPDATED,
+          target: this.adminCustomOrderTarget(order.id),
+          payload: {
+            customOrderId: order.id,
+            status: CustomOrderStatus.COMPLETED,
+            autoCompleted: true,
+          },
+          dedupeMs: 60 * 1000,
+        });
       }
 
       if (orders.length > 0) {
@@ -574,6 +574,7 @@ export class CustomOrderOpsCronService {
         where: {
           status: CustomOrderLedgerAllocationStatus.PAYOUT_ELIGIBLE,
           paidOutAt: null,
+          payoutId: null,
           customOrder: {
             status: {
               in: [CustomOrderStatus.ACCEPTED, CustomOrderStatus.COMPLETED, CustomOrderStatus.CLOSED],

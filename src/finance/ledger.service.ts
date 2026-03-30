@@ -120,8 +120,19 @@ export class LedgerService {
       }
 
       const account = await this.ensureAccount(tx, line);
+      const [lockedAccount] = await tx.$queryRaw<Array<{ currentBalance: Prisma.Decimal }>>`
+        SELECT "currentBalance"
+        FROM "LedgerAccount"
+        WHERE "id" = ${account.id}::uuid
+        FOR UPDATE
+      `;
+
+      if (!lockedAccount) {
+        throw new BadRequestException('LEDGER_ACCOUNT_LOCK_FAILED');
+      }
+
       const nextBalance = this.roundMoney(
-        Number(account.currentBalance) +
+        Number(lockedAccount.currentBalance) +
           this.getBalanceDelta(account.type, line.direction, amount),
       );
 

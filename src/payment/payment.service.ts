@@ -4,11 +4,14 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { PaymentMethod, PaymentStatus, Prisma } from '@prisma/client';
+import { createHmac, timingSafeEqual } from 'crypto';
+import { NotificationType, PaymentMethod, PaymentStatus, Prisma, Role } from '@prisma/client';
+import { ADMIN_PERMISSIONS } from 'src/admin/constants/permissions';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { v4 as uuidv4 } from 'uuid';
 import { FxRateService } from './fx-rate.service';
 import { StandardOrderFinanceSyncService } from 'src/finance/standard-order-finance-sync.service';
+import { NotificationsService } from 'src/notifications/notifications.service';
 import {
   InitializePaymentDto,
   PaymentAttemptStatus,
@@ -22,6 +25,16 @@ import {
 } from './payment.types';
 
 type PaymentAttemptRecord = Awaited<ReturnType<PrismaService['paymentAttempt']['findUnique']>>;
+
+type WebhookContext = {
+  headers: Record<string, string | string[] | undefined>;
+  rawBody?: string;
+};
+
+type AttemptStatusUpdatePayload = {
+  eventPayload?: Record<string, any>;
+  responseSnapshotPatch?: Record<string, any>;
+};
 
 interface GatewayInitializationResult {
   gateway: string;
@@ -50,6 +63,7 @@ export class PaymentService {
     private readonly prisma: PrismaService,
     private readonly fxRateService: FxRateService,
     private readonly standardOrderFinanceSyncService: StandardOrderFinanceSyncService,
+    private readonly notificationsService: NotificationsService,
   ) {}
 
   async initializePayment(
@@ -227,16 +241,23 @@ export class PaymentService {
       return this.buildVerifyResult(attempt, orders, false);
     }
 
-    const nextStatus = this.resolveVerificationStatus(attempt, dto.statusHint);
+    const nextStatus = this.resolveVerificationStatus(attempt, dto);
+    const now = new Date();
+    const awaitingProviderConfirmation =
+      this.getProviderModeForAttempt(attempt) === 'live' &&
+      this.isPendingVerificationStatus(nextStatus);
     const updatedAttempt = await this.applyAttemptStatus(
       attempt.reference,
       userId,
       nextStatus,
       'verify',
-      {
-        gateway: dto.gateway,
-        statusHint: dto.statusHint,
-      },
+      this.buildVerificationUpdatePayload(
+        attempt,
+        dto,
+        nextStatus,
+        now,
+        awaitingProviderConfirmation,
+      ),
     );
 
     const refreshedOrders = await this.getOwnedOrdersForAttempt(updatedAttempt, userId);
@@ -261,27 +282,50 @@ export class PaymentService {
       userId,
       dto.outcome,
       'simulation',
-      { outcome: dto.outcome },
+      {
+        eventPayload: { outcome: dto.outcome },
+        responseSnapshotPatch: {
+          simulatedOutcome: dto.outcome,
+          simulatedAt: new Date().toISOString(),
+        },
+      },
     );
 
     return this.buildAttemptSummary(updatedAttempt, userId);
   }
 
-  async handleWebhook(gateway: string, payload: Record<string, any>): Promise<void> {
-    const reference = payload?.data?.reference ?? payload?.txRef;
-    if (!reference) {
-      this.logger.warn(`Webhook from ${gateway}: missing reference`);
+  async handleWebhook(
+    gateway: string,
+    payload: Record<string, any>,
+    context: WebhookContext,
+  ): Promise<void> {
+    const normalizedGateway = String(gateway || '').trim().toUpperCase();
+    if (!this.verifyWebhookSignature(normalizedGateway, payload, context)) {
+      this.logger.warn(`Rejected ${normalizedGateway} webhook due to signature verification failure`);
       return;
     }
 
-    this.logger.log(`Webhook received from ${gateway}: ${reference}`);
+    const reference = this.extractWebhookReference(normalizedGateway, payload);
+    if (!reference) {
+      this.logger.warn(`Webhook from ${normalizedGateway}: missing reference`);
+      return;
+    }
+
+    this.logger.log(`Webhook received from ${normalizedGateway}: ${reference}`);
 
     const attempt = await this.prisma.paymentAttempt.findUnique({
       where: { reference },
     });
 
     if (!attempt) {
-      this.logger.warn(`Webhook from ${gateway}: unknown reference ${reference}`);
+      this.logger.warn(`Webhook from ${normalizedGateway}: unknown reference ${reference}`);
+      return;
+    }
+
+    if (String(attempt.provider || '').trim().toUpperCase() !== normalizedGateway) {
+      this.logger.warn(
+        `Webhook gateway mismatch for ${reference}: expected ${attempt.provider}, received ${normalizedGateway}`,
+      );
       return;
     }
 
@@ -289,7 +333,43 @@ export class PaymentService {
       return;
     }
 
-    await this.applyAttemptStatus(reference, attempt.buyerId ?? '', 'PAID', 'webhook', payload);
+    const nextStatus = this.resolveWebhookStatus(normalizedGateway, payload);
+    if (!nextStatus) {
+      this.logger.warn(`Webhook from ${normalizedGateway}: unsupported status payload for ${reference}`);
+      return;
+    }
+
+    const payloadAmount = this.extractWebhookAmount(normalizedGateway, payload);
+    const payloadCurrency = this.extractWebhookCurrency(payload);
+
+    if (
+      nextStatus === 'PAID' &&
+      !this.webhookAmountsMatch(
+        Number(attempt.amount ?? 0),
+        attempt.currency,
+        payloadAmount,
+        payloadCurrency,
+      )
+    ) {
+      this.logger.warn(
+        `Webhook from ${normalizedGateway}: amount or currency mismatch for ${reference}`,
+      );
+      return;
+    }
+
+    await this.applyAttemptStatus(reference, attempt.buyerId ?? '', nextStatus, 'webhook', {
+      eventPayload: payload,
+      responseSnapshotPatch: {
+        ...(this.asObject(attempt.responseSnapshot) ?? {}),
+        providerWebhookGateway: normalizedGateway,
+        providerWebhookStatus: nextStatus,
+        providerWebhookReceivedAt: new Date().toISOString(),
+        providerWebhookAmount: payloadAmount,
+        providerWebhookCurrency: payloadCurrency,
+        providerWebhookEvent: this.extractWebhookEvent(normalizedGateway, payload),
+        providerWebhookVerified: true,
+      },
+    });
   }
 
   private async initializeGateway(
@@ -594,7 +674,7 @@ export class PaymentService {
     userId: string,
     nextStatus: PaymentAttemptStatus,
     source: 'verify' | 'simulation' | 'webhook',
-    payload?: Record<string, any>,
+    payload?: AttemptStatusUpdatePayload,
   ) {
     const attempt = await this.prisma.paymentAttempt.findUnique({
       where: { reference },
@@ -609,10 +689,12 @@ export class PaymentService {
     }
 
     const now = new Date();
+    const eventPayload = payload?.eventPayload ?? null;
+    const responseSnapshotPatch = payload?.responseSnapshotPatch ?? null;
     const settlement = await this.fxRateService.resolveSettlement({
       attempt,
       gateway: attempt.provider,
-      payload,
+      payload: eventPayload ?? undefined,
     });
     const linkedOrders =
       nextStatus === 'PAID'
@@ -639,14 +721,36 @@ export class PaymentService {
           settlementCurrency: settlement.settlementCurrency,
           settlementAmount: settlement.settlementAmount,
           exchangeRateSnapshotId: settlement.exchangeRateSnapshotId,
-          failureCode: nextStatus === 'FAILED' ? 'MOCK_FAILURE' : nextStatus,
+          responseSnapshot:
+            responseSnapshotPatch && Object.keys(responseSnapshotPatch).length > 0
+              ? ({
+                  ...(this.asObject(attempt.responseSnapshot) ?? {}),
+                  ...responseSnapshotPatch,
+                } as Prisma.InputJsonValue)
+              : attempt.responseSnapshot,
+          failureCode:
+            nextStatus === 'FAILED'
+              ? source === 'simulation'
+                ? 'MOCK_FAILURE'
+                : 'PAYMENT_FAILED'
+              : nextStatus === 'CANCELLED'
+                ? 'PAYMENT_CANCELLED'
+                : nextStatus === 'EXPIRED'
+                  ? 'PAYMENT_EXPIRED'
+                  : null,
           failureMessage:
             nextStatus === 'FAILED'
-              ? 'Mock payment marked as failed.'
+              ? source === 'simulation'
+                ? 'Mock payment marked as failed.'
+                : 'Payment provider reported the payment as failed.'
               : nextStatus === 'CANCELLED'
-                ? 'Mock payment was cancelled.'
+                ? source === 'simulation'
+                  ? 'Mock payment was cancelled.'
+                  : 'Payment provider reported the payment as cancelled.'
                 : nextStatus === 'EXPIRED'
-                  ? 'Mock payment expired before completion.'
+                  ? source === 'simulation'
+                    ? 'Mock payment expired before completion.'
+                    : 'Payment provider reported that the payment expired before completion.'
                   : null,
         },
       });
@@ -664,7 +768,7 @@ export class PaymentService {
           paymentAttemptId: updated.id,
           type: `STATUS_${nextStatus}`,
           source,
-          payload,
+          payload: eventPayload,
         },
       });
 
@@ -673,6 +777,7 @@ export class PaymentService {
 
     if (nextStatus === 'PAID' && linkedOrders.length > 0) {
       await this.standardOrderFinanceSyncService.syncPaidOrdersByReferences([reference]);
+      await this.notifyFinanceAdminsOfStandardPayment(updatedAttempt, linkedOrders);
     }
 
     return updatedAttempt;
@@ -706,8 +811,12 @@ export class PaymentService {
       paidAt: attempt.confirmedAt?.toISOString(),
       channel: attempt.channel ?? undefined,
       gatewayResponse: success
-        ? 'Mock payment verified successfully'
-        : 'Mock payment remains unresolved or failed',
+        ? this.getProviderModeForAttempt(attempt) === 'mock'
+          ? 'Mock payment verified successfully'
+          : 'Payment verified successfully'
+        : this.getProviderModeForAttempt(attempt) === 'mock'
+          ? 'Mock payment remains unresolved or failed'
+          : 'Payment remains unresolved or failed',
       failureMessage: attempt.failureMessage ?? undefined,
       orderIds: orders.map((order) => order.id),
     };
@@ -734,6 +843,56 @@ export class PaymentService {
       },
       orderBy: { createdAt: 'asc' },
     });
+  }
+
+  private async notifyFinanceAdminsOfStandardPayment(
+    attempt: NonNullable<PaymentAttemptRecord>,
+    linkedOrders: Array<{ id: string; brandId: string; buyerId: string | null }>,
+  ) {
+    const recipients = await this.prisma.user.findMany({
+      where: {
+        role: { in: [Role.SuperAdmin, Role.Admin] },
+        OR: [
+          { role: Role.SuperAdmin },
+          {
+            adminPermissionGrants: {
+              some: { permissionCode: ADMIN_PERMISSIONS.PAYOUTS_READ },
+            },
+          },
+        ],
+      },
+      select: { id: true },
+    });
+
+    const recipientIds = Array.from(
+      new Set(recipients.map((recipient) => recipient.id).filter(Boolean)),
+    );
+    if (recipientIds.length === 0) {
+      return;
+    }
+
+    const amount = this.roundMoney(Number(attempt.amount ?? 0)).toFixed(2);
+    const orderCount = linkedOrders.length;
+    const subjectLabel = orderCount === 1 ? 'standard order' : 'standard orders';
+
+    await Promise.allSettled(
+      recipientIds.map((recipientId) =>
+        this.notificationsService.create(recipientId, NotificationType.ADMIN_ACTION, {
+          actorId: linkedOrders[0]?.buyerId ?? undefined,
+          dedupeMs: 5 * 60 * 1000,
+          payload: {
+            action: 'FINANCE_PAYMENT_RECEIVED',
+            paymentAttemptId: attempt.id,
+            reference: attempt.reference,
+            amount: Number(attempt.amount ?? 0),
+            currency: attempt.currency,
+            orderIds: linkedOrders.map((order) => order.id),
+            message: `Payment received: ${attempt.reference} for ${orderCount} ${subjectLabel} worth ${attempt.currency} ${amount}.`,
+            targetUrl: '/admin/finance',
+          },
+        }),
+      ),
+    );
   }
 
   private validatePaymentRequest(
@@ -829,26 +988,37 @@ export class PaymentService {
 
   private resolveVerificationStatus(
     attempt: NonNullable<PaymentAttemptRecord>,
-    statusHint?: string,
+    dto: VerifyPaymentDto,
   ): PaymentAttemptStatus {
-    const normalized = this.normalizeStatusHint(
-      statusHint ?? this.asObject(attempt.responseSnapshot)?.mockReturnStatus,
-    );
+    const authoritative = this.extractAttemptAuthoritativeStatus(attempt);
+    const requested = this.normalizeStatusHint(dto.statusHint);
 
-    switch (normalized) {
-      case 'PAID':
-        return 'PAID';
-      case 'FAILED':
-        return 'FAILED';
-      case 'CANCELLED':
-        return 'CANCELLED';
-      case 'EXPIRED':
-        return 'EXPIRED';
-      case 'PROCESSING':
-        return 'PROCESSING';
-      default:
-        return attempt.status as PaymentAttemptStatus;
+    if (this.getProviderModeForAttempt(attempt) === 'live') {
+      if (requested && authoritative && requested !== authoritative) {
+        throw new BadRequestException(
+          'Payment verification payload does not match the provider-confirmed attempt status',
+        );
+      }
+
+      if (authoritative) {
+        return authoritative;
+      }
+
+      return this.isPendingVerificationStatus(attempt.status)
+        ? (attempt.status as PaymentAttemptStatus)
+        : 'PROCESSING';
     }
+
+    const normalized =
+      requested ??
+      authoritative ??
+      this.normalizeStatusHint(this.asObject(attempt.responseSnapshot)?.mockReturnStatus);
+
+    if (!normalized) {
+      return attempt.status as PaymentAttemptStatus;
+    }
+
+    return normalized;
   }
 
   private mapAttemptStatusToOrderPaymentStatus(
@@ -910,7 +1080,7 @@ export class PaymentService {
     return 'success';
   }
 
-  private normalizeStatusHint(value: unknown): PaymentAttemptStatus {
+  private normalizeStatusHint(value: unknown): PaymentAttemptStatus | undefined {
     const normalized = String(value ?? '').trim().toLowerCase();
     switch (normalized) {
       case 'success':
@@ -929,12 +1099,212 @@ export class PaymentService {
       case 'pending':
         return 'PROCESSING';
       default:
-        return 'PROCESSING';
+        return undefined;
     }
   }
 
   private isTerminalStatus(status: PaymentAttemptStatus): boolean {
     return TERMINAL_ATTEMPT_STATUSES.has(status);
+  }
+
+  private isPendingVerificationStatus(status: string | null | undefined) {
+    return ['PENDING', 'REQUIRES_ACTION', 'PROCESSING'].includes(
+      String(status ?? '').trim().toUpperCase(),
+    );
+  }
+
+  private extractAttemptAuthoritativeStatus(
+    attempt: NonNullable<PaymentAttemptRecord>,
+  ): PaymentAttemptStatus | null {
+    const snapshot = this.asObject(attempt.responseSnapshot);
+    return (
+      this.normalizeStatusHint(
+        snapshot?.providerVerificationStatus ??
+          snapshot?.providerWebhookStatus ??
+          snapshot?.providerStatus ??
+          snapshot?.status,
+      ) ?? null
+    );
+  }
+
+  private getProviderModeForAttempt(attempt: NonNullable<PaymentAttemptRecord>) {
+    return String(attempt.providerMode || '').trim().toLowerCase() === 'live'
+      ? 'live'
+      : 'mock';
+  }
+
+  private buildVerificationUpdatePayload(
+    attempt: NonNullable<PaymentAttemptRecord>,
+    dto: VerifyPaymentDto,
+    nextStatus: PaymentAttemptStatus,
+    verifiedAt: Date,
+    awaitingProviderConfirmation: boolean,
+  ): AttemptStatusUpdatePayload {
+    const responseSnapshotPatch = {
+      providerVerificationGateway: dto.gateway,
+      providerVerificationStatus: nextStatus,
+      providerVerificationReference: dto.reference,
+      verificationOtpProvided: Boolean(dto.otp),
+      verifiedAt: verifiedAt.toISOString(),
+      ...(awaitingProviderConfirmation
+        ? {
+            awaitingProviderConfirmation: true,
+            recoveryAction: 'WAIT_FOR_PROVIDER_CONFIRMATION',
+            recoveryMessage:
+              'Payment is still awaiting provider callback or webhook confirmation. Recheck after returning from the gateway.',
+          }
+        : {
+            awaitingProviderConfirmation: false,
+            recoveryAction: null,
+            recoveryMessage: null,
+          }),
+    };
+
+    return {
+      eventPayload: {
+        gateway: dto.gateway,
+        statusHint: dto.statusHint,
+        awaitingProviderConfirmation,
+      },
+      responseSnapshotPatch: {
+        ...(this.asObject(attempt.responseSnapshot) ?? {}),
+        ...responseSnapshotPatch,
+      },
+    };
+  }
+
+  private verifyWebhookSignature(
+    gateway: string,
+    payload: Record<string, any>,
+    context: WebhookContext,
+  ) {
+    if (this.isMockMode()) {
+      return true;
+    }
+
+    if (gateway === 'PAYSTACK') {
+      const secret = String(process.env.PAYSTACK_SECRET_KEY ?? '').trim();
+      const signature = this.getHeader(context.headers, 'x-paystack-signature');
+      if (!secret || !signature || !context.rawBody) {
+        return false;
+      }
+
+      const expected = createHmac('sha512', secret)
+        .update(context.rawBody)
+        .digest('hex');
+
+      return this.safeCompare(signature, expected);
+    }
+
+    if (gateway === 'FLUTTERWAVE') {
+      const secret = String(
+        process.env.FLUTTERWAVE_WEBHOOK_SECRET_HASH ??
+          process.env.FLUTTERWAVE_SECRET_HASH ??
+          '',
+      ).trim();
+      const signature =
+        this.getHeader(context.headers, 'verif-hash') ??
+        this.getHeader(context.headers, 'x-flutterwave-signature');
+      if (!secret || !signature) {
+        return false;
+      }
+
+      return this.safeCompare(signature, secret);
+    }
+
+    this.logger.warn(`Webhook verification not configured for gateway ${gateway}`);
+    return false;
+  }
+
+  private extractWebhookReference(gateway: string, payload: Record<string, any>) {
+    if (gateway === 'PAYSTACK') {
+      return String(payload?.data?.reference ?? '').trim() || null;
+    }
+
+    if (gateway === 'FLUTTERWAVE') {
+      return (
+        String(
+          payload?.data?.tx_ref ?? payload?.data?.txRef ?? payload?.txRef ?? payload?.tx_ref ?? '',
+        ).trim() || null
+      );
+    }
+
+    return null;
+  }
+
+  private resolveWebhookStatus(
+    gateway: string,
+    payload: Record<string, any>,
+  ): PaymentAttemptStatus | null {
+    const rawStatus =
+      gateway === 'PAYSTACK'
+        ? payload?.data?.status ?? payload?.event
+        : payload?.data?.status ?? payload?.status ?? payload?.event;
+
+    return this.normalizeStatusHint(rawStatus) ?? null;
+  }
+
+  private extractWebhookAmount(gateway: string, payload: Record<string, any>) {
+    const rawAmount =
+      gateway === 'PAYSTACK'
+        ? Number(payload?.data?.amount ?? 0) / 100
+        : Number(payload?.data?.amount ?? payload?.amount ?? 0);
+
+    return Number.isFinite(rawAmount) && rawAmount > 0
+      ? this.roundMoney(rawAmount)
+      : null;
+  }
+
+  private extractWebhookCurrency(payload: Record<string, any>) {
+    const currency = String(payload?.data?.currency ?? payload?.currency ?? '')
+      .trim()
+      .toUpperCase();
+    return currency || null;
+  }
+
+  private extractWebhookEvent(gateway: string, payload: Record<string, any>) {
+    return String(
+      gateway === 'PAYSTACK'
+        ? payload?.event ?? payload?.data?.status ?? ''
+        : payload?.event ?? payload?.type ?? payload?.data?.status ?? '',
+    ).trim() || null;
+  }
+
+  private webhookAmountsMatch(
+    attemptAmount: number,
+    attemptCurrency: string,
+    payloadAmount: number | null,
+    payloadCurrency: string | null,
+  ) {
+    if (payloadCurrency && payloadCurrency !== String(attemptCurrency || '').trim().toUpperCase()) {
+      return false;
+    }
+
+    if (payloadAmount == null) {
+      return true;
+    }
+
+    return Math.abs(this.roundMoney(attemptAmount) - this.roundMoney(payloadAmount)) < 0.01;
+  }
+
+  private getHeader(
+    headers: Record<string, string | string[] | undefined>,
+    key: string,
+  ) {
+    const value = headers[key] ?? headers[key.toLowerCase()] ?? headers[key.toUpperCase()];
+    if (Array.isArray(value)) {
+      return value[0] ?? null;
+    }
+    return typeof value === 'string' ? value : null;
+  }
+
+  private safeCompare(left: string, right: string) {
+    const leftBuffer = Buffer.from(String(left).trim());
+    const rightBuffer = Buffer.from(String(right).trim());
+    if (leftBuffer.length !== rightBuffer.length) {
+      return false;
+    }
+    return timingSafeEqual(leftBuffer, rightBuffer);
   }
 
   private ensureSingleCurrency(currencies: string[]) {
@@ -947,6 +1317,10 @@ export class PaymentService {
         'All orders in a single checkout must use the same currency',
       );
     }
+  }
+
+  private roundMoney(value: number) {
+    return Math.round((value + Number.EPSILON) * 100) / 100;
   }
 
   private asObject(value: unknown): Record<string, any> {

@@ -210,6 +210,98 @@ export class StandardOrderEscrowService {
     return candidates.length;
   }
 
+  async releaseFinalPortionNow(
+    tx: Prisma.TransactionClient,
+    orderId: string,
+    condition: EscrowReleaseCondition = EscrowReleaseCondition.MANUAL_ADMIN,
+  ) {
+    const existing = await tx.escrowHold.findUnique({ where: { orderId } });
+    if (
+      !existing ||
+      existing.secondReleasedAt ||
+      existing.status === EscrowHoldStatus.REFUNDED ||
+      existing.status === EscrowHoldStatus.FROZEN
+    ) {
+      return existing;
+    }
+
+    if (!existing.firstReleasedAt) {
+      await this.releaseShipmentPortion(tx, orderId);
+    }
+
+    const hold = await tx.escrowHold.findUnique({ where: { orderId } });
+    if (
+      !hold ||
+      hold.secondReleasedAt ||
+      hold.status === EscrowHoldStatus.REFUNDED ||
+      hold.status === EscrowHoldStatus.FROZEN
+    ) {
+      return hold;
+    }
+
+    const updated = await tx.escrowHold.update({
+      where: { id: hold.id },
+      data: {
+        secondReleaseEligibleAt: new Date(),
+        secondReleaseCondition: condition,
+        secondReleasedAt: new Date(),
+        status: EscrowHoldStatus.RELEASED,
+      },
+    });
+
+    await this.ledgerService.postStandardOrderFinalRelease(tx, updated);
+    return updated;
+  }
+
+  async freezeHold(
+    tx: Prisma.TransactionClient,
+    orderId: string,
+    frozenById: string,
+    reason: string,
+  ) {
+    const hold = await tx.escrowHold.findUnique({ where: { orderId } });
+    if (
+      !hold ||
+      hold.status === EscrowHoldStatus.REFUNDED ||
+      hold.status === EscrowHoldStatus.RELEASED
+    ) {
+      return hold;
+    }
+
+    return tx.escrowHold.update({
+      where: { id: hold.id },
+      data: {
+        status: EscrowHoldStatus.FROZEN,
+        frozenAt: new Date(),
+        frozenById,
+        frozenReason: reason.trim().slice(0, 255),
+      },
+    });
+  }
+
+  async unfreezeHold(tx: Prisma.TransactionClient, orderId: string) {
+    const hold = await tx.escrowHold.findUnique({ where: { orderId } });
+    if (!hold || hold.status !== EscrowHoldStatus.FROZEN) {
+      return hold;
+    }
+
+    const nextStatus = hold.secondReleasedAt
+      ? EscrowHoldStatus.RELEASED
+      : hold.firstReleasedAt
+        ? EscrowHoldStatus.PARTIALLY_RELEASED
+        : EscrowHoldStatus.HELD;
+
+    return tx.escrowHold.update({
+      where: { id: hold.id },
+      data: {
+        status: nextStatus,
+        frozenAt: null,
+        frozenById: null,
+        frozenReason: null,
+      },
+    });
+  }
+
   async refundOrderHold(tx: Prisma.TransactionClient, orderId: string, reason: string) {
     const hold = await tx.escrowHold.findUnique({ where: { orderId } });
     if (!hold) {

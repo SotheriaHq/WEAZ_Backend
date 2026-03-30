@@ -95,15 +95,27 @@ export class PaymentController {
    */
   @Post('webhook/paystack')
   @HttpCode(200)
-  async paystackWebhook(@Body() payload: Record<string, any>) {
-    await this.paymentService.handleWebhook('PAYSTACK', payload);
+  async paystackWebhook(
+    @Body() payload: Record<string, any>,
+    @Req() req: Request & { rawBody?: string },
+  ) {
+    await this.paymentService.handleWebhook('PAYSTACK', payload, {
+      headers: req.headers,
+      rawBody: req.rawBody,
+    });
     return { status: 'ok' };
   }
 
   @Post('webhook/flutterwave')
   @HttpCode(200)
-  async flutterwaveWebhook(@Body() payload: Record<string, any>) {
-    await this.paymentService.handleWebhook('FLUTTERWAVE', payload);
+  async flutterwaveWebhook(
+    @Body() payload: Record<string, any>,
+    @Req() req: Request & { rawBody?: string },
+  ) {
+    await this.paymentService.handleWebhook('FLUTTERWAVE', payload, {
+      headers: req.headers,
+      rawBody: req.rawBody,
+    });
     return { status: 'ok' };
   }
 }

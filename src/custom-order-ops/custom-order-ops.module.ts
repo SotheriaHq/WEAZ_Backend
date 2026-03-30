@@ -7,4 +7,4 @@ import { CustomOrderOpsCronService } from './custom-order-ops.cron.service';
   imports: [PrismaModule, CustomOrdersModule],
   providers: [CustomOrderOpsCronService],
 })
-export class CustomOrderOpsModule {}
+export class CustomOrderOpsModule { }

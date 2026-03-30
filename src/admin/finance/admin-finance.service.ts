@@ -1,10 +1,25 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
-import { AdminAuditAction, Prisma, Role } from '@prisma/client';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
+import {
+  AdminAuditAction,
+  CustomOrderActorType,
+  CustomOrderLedgerAllocationStatus,
+  CustomOrderLedgerAllocationType,
+  EscrowReleaseCondition,
+  EscrowHoldStatus,
+  Prisma,
+  Role,
+} from '@prisma/client';
 import { Request } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { CommissionService } from 'src/finance/commission.service';
 import { FinancialDocumentsService } from 'src/finance/financial-documents.service';
+import { LedgerService } from 'src/finance/ledger.service';
 import { ReconciliationService } from 'src/finance/reconciliation.service';
+import { StandardOrderEscrowService } from 'src/finance/standard-order-escrow.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 
 const COMMISSION_RULE_SCOPE = {
@@ -60,6 +75,8 @@ export class AdminFinanceService {
     private readonly commissionService: CommissionService,
     private readonly reconciliationService: ReconciliationService,
     private readonly financialDocumentsService: FinancialDocumentsService,
+    private readonly standardOrderEscrowService: StandardOrderEscrowService,
+    private readonly ledgerService: LedgerService,
   ) {}
 
   async getOverview() {
@@ -72,6 +89,8 @@ export class AdminFinanceService {
       unresolvedItems,
       recentRuns,
       recentDocuments,
+      pendingPayouts,
+      activeEscrowHolds,
     ] = await Promise.all([
       this.prisma.paymentAttempt.aggregate({
         where: { status: 'PAID' },
@@ -104,6 +123,18 @@ export class AdminFinanceService {
       }),
       this.reconciliationService.listRuns({ take: 5 }),
       this.financialDocumentsService.listDocuments({ take: 6 }),
+      this.prisma.payout.count({
+        where: {
+          status: {
+            in: ['PENDING_APPROVAL', 'APPROVED', 'PROCESSING', 'ON_HOLD', 'RECONCILIATION_REVIEW'] as any,
+          },
+        },
+      }),
+      this.prisma.escrowHold.count({
+        where: {
+          status: { in: [EscrowHoldStatus.HELD, EscrowHoldStatus.PARTIALLY_RELEASED, EscrowHoldStatus.FROZEN] },
+        },
+      }),
     ]);
 
     const totalCommissions = this.roundMoney(
@@ -125,6 +156,8 @@ export class AdminFinanceService {
       totalRefunds: this.roundMoney(Number(refundTransactions._sum.totalAmount ?? 0)),
       activeCommissionRules: activeRules,
       unresolvedReconciliationItems: unresolvedItems,
+      pendingPayouts,
+      activeEscrowHolds,
       recentRuns,
       recentDocuments,
     };
@@ -349,6 +382,735 @@ export class AdminFinanceService {
       throw new NotFoundException('Financial document not found');
     }
     return document;
+  }
+
+  async listPaymentAttempts(params?: {
+    status?: string;
+    gateway?: string;
+    subjectType?: string;
+    q?: string;
+    brandId?: string;
+    take?: number;
+  }) {
+    const take = Math.min(params?.take ?? 50, 100);
+    const attempts = await this.prisma.paymentAttempt.findMany({
+      where: {
+        ...(params?.status ? { status: params.status } : {}),
+        ...(params?.gateway ? { provider: params.gateway } : {}),
+        ...(params?.subjectType ? { subjectType: params.subjectType as any } : {}),
+        ...(params?.q
+          ? {
+              OR: [
+                { reference: { contains: params.q, mode: 'insensitive' } },
+                { provider: { contains: params.q, mode: 'insensitive' } },
+              ],
+            }
+          : {}),
+      },
+      take,
+      orderBy: { createdAt: 'desc' },
+      select: {
+        id: true,
+        reference: true,
+        provider: true,
+        providerMode: true,
+        paymentMethod: true,
+        channel: true,
+        status: true,
+        amount: true,
+        currency: true,
+        settlementAmount: true,
+        settlementCurrency: true,
+        subjectType: true,
+        customOrderId: true,
+        orderIds: true,
+        confirmedAt: true,
+        lastVerifiedAt: true,
+        createdAt: true,
+        buyerId: true,
+        buyer: {
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            username: true,
+          },
+        },
+      },
+    });
+
+    const orderIds = Array.from(
+      new Set(attempts.flatMap((attempt) => attempt.orderIds ?? []).filter(Boolean)),
+    );
+    const customOrderIds = Array.from(
+      new Set(
+        attempts
+          .map((attempt) => attempt.customOrderId)
+          .filter((value): value is string => Boolean(value)),
+      ),
+    );
+
+    const [orders, customOrders] = await Promise.all([
+      orderIds.length > 0
+        ? this.prisma.order.findMany({
+            where: { id: { in: orderIds } },
+            select: {
+              id: true,
+              customerName: true,
+              brandId: true,
+              brand: { select: { id: true, name: true } },
+            },
+          })
+        : Promise.resolve([]),
+      customOrderIds.length > 0
+        ? (this.prisma as any).customOrder.findMany({
+            where: { id: { in: customOrderIds } },
+            select: {
+              id: true,
+              title: true,
+              sourceTitleSnapshot: true,
+              brandId: true,
+              brand: { select: { id: true, name: true } },
+              buyer: {
+                select: {
+                  id: true,
+                  firstName: true,
+                  lastName: true,
+                  username: true,
+                },
+              },
+            },
+          })
+        : Promise.resolve([]),
+    ]);
+
+    const ordersById = new Map(orders.map((order) => [order.id, order]));
+    const customOrdersById = new Map(customOrders.map((order: any) => [String(order.id), order]));
+
+    const items = attempts
+      .map((attempt) => {
+        const linkedOrders = (attempt.orderIds ?? [])
+          .map((orderId) => ordersById.get(orderId))
+          .filter((order): order is NonNullable<typeof order> => Boolean(order));
+        const linkedCustomOrder = attempt.customOrderId
+          ? customOrdersById.get(attempt.customOrderId)
+          : null;
+
+        const brands = linkedCustomOrder
+          ? [linkedCustomOrder.brand]
+          : Array.from(
+              new Map(
+                linkedOrders
+                  .filter((order) => order.brand?.id)
+                  .map((order) => [String(order.brand?.id), order.brand]),
+              ).values(),
+            );
+
+        const buyer = linkedCustomOrder?.buyer ?? attempt.buyer ?? null;
+        const buyerName = [buyer?.firstName, buyer?.lastName]
+          .map((value) => String(value || '').trim())
+          .filter(Boolean)
+          .join(' ');
+
+        return {
+          id: attempt.id,
+          reference: attempt.reference,
+          gateway: attempt.provider,
+          providerMode: attempt.providerMode,
+          paymentMethod: attempt.paymentMethod,
+          channel: attempt.channel,
+          status: attempt.status,
+          amount: Number(attempt.amount ?? 0),
+          currency: attempt.currency,
+          settlementAmount: Number(attempt.settlementAmount ?? attempt.amount ?? 0),
+          settlementCurrency: attempt.settlementCurrency,
+          subjectType: attempt.subjectType,
+          createdAt: attempt.createdAt,
+          confirmedAt: attempt.confirmedAt,
+          lastVerifiedAt: attempt.lastVerifiedAt,
+          buyer: buyer
+            ? {
+                id: buyer.id,
+                name: buyerName || String(buyer.username || 'Buyer'),
+                username: buyer.username,
+              }
+            : null,
+          brands: brands
+            .filter((brand): brand is { id: string; name: string | null } => Boolean(brand?.id))
+            .map((brand) => ({
+              id: brand.id,
+              name: brand.name,
+            })),
+          orderCount: linkedOrders.length + (linkedCustomOrder ? 1 : 0),
+          orders: linkedCustomOrder
+            ? [
+                {
+                  id: linkedCustomOrder.id,
+                  type: 'CUSTOM_ORDER',
+                  title:
+                    linkedCustomOrder.title ||
+                    linkedCustomOrder.sourceTitleSnapshot ||
+                    `Custom Order #${String(linkedCustomOrder.id).slice(0, 8).toUpperCase()}`,
+                },
+              ]
+            : linkedOrders.map((order) => ({
+                id: order.id,
+                type: 'ORDER',
+                title: `Order #${order.id.slice(0, 8).toUpperCase()}`,
+              })),
+        };
+      })
+      .filter((item) => {
+        if (!params?.brandId) {
+          return true;
+        }
+        return item.brands.some((brand) => brand.id === params.brandId);
+      });
+
+    return {
+      items,
+      total: items.length,
+    };
+  }
+
+  async getPaymentAttempt(reference: string) {
+    const attempt = await this.prisma.paymentAttempt.findUnique({
+      where: { reference },
+      include: {
+        buyer: {
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            username: true,
+          },
+        },
+      },
+    });
+
+    if (!attempt) {
+      throw new NotFoundException('Payment attempt not found');
+    }
+
+    const [orders, customOrder, events] = await Promise.all([
+      attempt.orderIds?.length
+        ? this.prisma.order.findMany({
+            where: { id: { in: attempt.orderIds } },
+            select: {
+              id: true,
+              customerName: true,
+              totalAmount: true,
+              currency: true,
+              brand: {
+                select: {
+                  id: true,
+                  name: true,
+                },
+              },
+            },
+          })
+        : Promise.resolve([]),
+      attempt.customOrderId
+        ? (this.prisma as any).customOrder.findUnique({
+            where: { id: attempt.customOrderId },
+            select: {
+              id: true,
+              title: true,
+              sourceTitleSnapshot: true,
+              brand: {
+                select: {
+                  id: true,
+                  name: true,
+                },
+              },
+              buyer: {
+                select: {
+                  id: true,
+                  firstName: true,
+                  lastName: true,
+                  username: true,
+                },
+              },
+            },
+          })
+        : Promise.resolve(null),
+      this.prisma.paymentEvent.findMany({
+        where: { paymentAttemptId: attempt.id },
+        orderBy: { createdAt: 'desc' },
+        take: 20,
+      }),
+    ]);
+
+    return {
+      id: attempt.id,
+      reference: attempt.reference,
+      gateway: attempt.provider,
+      providerMode: attempt.providerMode,
+      paymentMethod: attempt.paymentMethod,
+      channel: attempt.channel,
+      status: attempt.status,
+      amount: Number(attempt.amount ?? 0),
+      currency: attempt.currency,
+      settlementAmount: Number(attempt.settlementAmount ?? attempt.amount ?? 0),
+      settlementCurrency: attempt.settlementCurrency,
+      subjectType: attempt.subjectType,
+      createdAt: attempt.createdAt,
+      confirmedAt: attempt.confirmedAt,
+      lastVerifiedAt: attempt.lastVerifiedAt,
+      requestSnapshot: attempt.requestSnapshot,
+      responseSnapshot: attempt.responseSnapshot,
+      nextAction: attempt.nextAction,
+      bankAccount: attempt.bankAccount,
+      failureCode: attempt.failureCode,
+      failureMessage: attempt.failureMessage,
+      buyer: attempt.buyer,
+      orders,
+      customOrder,
+      events,
+    };
+  }
+
+  async listTransactionsDetailed(params?: {
+    type?: string;
+    referenceType?: string;
+    dateFrom?: string;
+    dateTo?: string;
+    take?: number;
+  }) {
+    const take = Math.min(params?.take ?? 50, 100);
+    const transactions = await this.prisma.ledgerTransaction.findMany({
+      where: {
+        ...(params?.type ? { type: params.type as any } : {}),
+        ...(params?.referenceType ? { referenceType: params.referenceType } : {}),
+        ...(params?.dateFrom || params?.dateTo
+          ? {
+              createdAt: {
+                ...(params?.dateFrom ? { gte: new Date(params.dateFrom) } : {}),
+                ...(params?.dateTo ? { lte: new Date(params.dateTo) } : {}),
+              },
+            }
+          : {}),
+      },
+      orderBy: { createdAt: 'desc' },
+      take,
+      include: {
+        entries: {
+          include: {
+            account: true,
+          },
+        },
+      },
+    });
+
+    const orderIds = Array.from(
+      new Set(
+        transactions
+          .filter((transaction) => transaction.referenceType === 'Order' && transaction.referenceId)
+          .map((transaction) => String(transaction.referenceId)),
+      ),
+    );
+    const customOrderIds = Array.from(
+      new Set(
+        transactions
+          .filter(
+            (transaction) =>
+              transaction.referenceType === 'CustomOrder' && transaction.referenceId,
+          )
+          .map((transaction) => String(transaction.referenceId)),
+      ),
+    );
+    const payoutIds = Array.from(
+      new Set(
+        transactions
+          .filter((transaction) => transaction.referenceType === 'Payout' && transaction.referenceId)
+          .map((transaction) => String(transaction.referenceId)),
+      ),
+    );
+
+    const [orders, customOrders, payouts] = await Promise.all([
+      orderIds.length > 0
+        ? this.prisma.order.findMany({
+            where: { id: { in: orderIds } },
+            select: {
+              id: true,
+              customerName: true,
+              brand: { select: { id: true, name: true } },
+            },
+          })
+        : Promise.resolve([]),
+      customOrderIds.length > 0
+        ? (this.prisma as any).customOrder.findMany({
+            where: { id: { in: customOrderIds } },
+            select: {
+              id: true,
+              title: true,
+              sourceTitleSnapshot: true,
+              brand: { select: { id: true, name: true } },
+              buyer: {
+                select: {
+                  firstName: true,
+                  lastName: true,
+                  username: true,
+                },
+              },
+            },
+          })
+        : Promise.resolve([]),
+      payoutIds.length > 0
+        ? this.prisma.payout.findMany({
+            where: { id: { in: payoutIds } },
+            select: {
+              id: true,
+              brand: { select: { id: true, name: true } },
+            },
+          })
+        : Promise.resolve([]),
+    ]);
+
+    const orderById = new Map(orders.map((order) => [order.id, order]));
+    const customOrderById = new Map(customOrders.map((order: any) => [String(order.id), order]));
+    const payoutById = new Map(payouts.map((payout) => [payout.id, payout]));
+
+    return {
+      items: transactions.map((transaction) => {
+        const customOrder =
+          transaction.referenceType === 'CustomOrder' && transaction.referenceId
+            ? customOrderById.get(String(transaction.referenceId))
+            : null;
+        const order =
+          transaction.referenceType === 'Order' && transaction.referenceId
+            ? orderById.get(String(transaction.referenceId))
+            : null;
+        const payout =
+          transaction.referenceType === 'Payout' && transaction.referenceId
+            ? payoutById.get(String(transaction.referenceId))
+            : null;
+
+        const buyerName = customOrder
+          ? [customOrder?.buyer?.firstName, customOrder?.buyer?.lastName]
+              .map((value) => String(value || '').trim())
+              .filter(Boolean)
+              .join(' ') || String(customOrder?.buyer?.username || 'Buyer')
+          : order?.customerName ?? null;
+
+        return {
+          ...transaction,
+          brand:
+            customOrder?.brand ??
+            order?.brand ??
+            payout?.brand ??
+            null,
+          buyerName,
+          referenceTitle:
+            customOrder?.title ||
+            customOrder?.sourceTitleSnapshot ||
+            (order ? `Order #${order.id.slice(0, 8).toUpperCase()}` : null),
+        };
+      }),
+      total: transactions.length,
+    };
+  }
+
+  async listEscrowHolds(params?: {
+    status?: string;
+    brandId?: string;
+    take?: number;
+  }) {
+    const take = Math.min(params?.take ?? 100, 200);
+    const [standardHolds, customHeldAllocations] = await Promise.all([
+      this.prisma.escrowHold.findMany({
+        where: {
+          ...(params?.brandId ? { brandId: params.brandId } : {}),
+          ...(params?.status ? { status: params.status as EscrowHoldStatus } : {}),
+          status: params?.status
+            ? (params.status as EscrowHoldStatus)
+            : { in: [EscrowHoldStatus.HELD, EscrowHoldStatus.PARTIALLY_RELEASED, EscrowHoldStatus.FROZEN] },
+        },
+        orderBy: { createdAt: 'desc' },
+        take,
+        select: {
+          id: true,
+          orderId: true,
+          brandId: true,
+          currency: true,
+          totalAmount: true,
+          firstReleaseNetAmount: true,
+          secondReleaseNetAmount: true,
+          firstReleasedAt: true,
+          secondReleaseEligibleAt: true,
+          secondReleaseCondition: true,
+          status: true,
+          frozenReason: true,
+          createdAt: true,
+          brand: { select: { id: true, name: true } },
+          order: { select: { id: true, customerName: true } },
+        },
+      }),
+      this.prisma.customOrderLedgerAllocation.findMany({
+        where: {
+          allocationType: CustomOrderLedgerAllocationType.FINAL_COMPLETION_PORTION,
+          status: CustomOrderLedgerAllocationStatus.HELD,
+          ...(params?.brandId ? { customOrder: { brandId: params.brandId } } : {}),
+        },
+        orderBy: { createdAt: 'desc' },
+        take,
+        select: {
+          id: true,
+          customOrderId: true,
+          amount: true,
+          commissionAmount: true,
+          netBrandAmount: true,
+          currency: true,
+          createdAt: true,
+          customOrder: {
+            select: {
+              id: true,
+              title: true,
+              sourceTitleSnapshot: true,
+              brand: { select: { id: true, name: true } },
+              buyer: {
+                select: {
+                  firstName: true,
+                  lastName: true,
+                  username: true,
+                },
+              },
+            },
+          },
+        },
+      }),
+    ]);
+
+    const items = [
+      ...standardHolds.map((hold) => ({
+        id: hold.id,
+        holdType: 'STANDARD_ORDER',
+        referenceId: hold.orderId,
+        title: hold.order?.id
+          ? `Order #${hold.order.id.slice(0, 8).toUpperCase()}`
+          : 'Standard order hold',
+        brand: hold.brand,
+        buyerName: hold.order?.customerName ?? 'Buyer',
+        currency: hold.currency,
+        grossAmount: Number(hold.totalAmount ?? 0),
+        releasedNetAmount: hold.firstReleasedAt ? Number(hold.firstReleaseNetAmount ?? 0) : 0,
+        heldNetAmount: Number(hold.secondReleaseNetAmount ?? 0),
+        status: hold.status,
+        nextReleaseAt: hold.secondReleaseEligibleAt,
+        releaseCondition: hold.secondReleaseCondition,
+        frozenReason: hold.frozenReason ?? null,
+        canManualRelease:
+          hold.status !== EscrowHoldStatus.RELEASED &&
+          hold.status !== EscrowHoldStatus.REFUNDED &&
+          Boolean(hold.orderId),
+        createdAt: hold.createdAt,
+      })),
+      ...customHeldAllocations.map((allocation) => {
+        const buyerName = [
+          allocation.customOrder?.buyer?.firstName,
+          allocation.customOrder?.buyer?.lastName,
+        ]
+          .map((value) => String(value || '').trim())
+          .filter(Boolean)
+          .join(' ');
+
+        return {
+          id: allocation.id,
+          holdType: 'CUSTOM_ORDER',
+          referenceId: allocation.customOrderId,
+          title:
+            allocation.customOrder?.title ||
+            allocation.customOrder?.sourceTitleSnapshot ||
+            `Custom Order #${allocation.customOrderId.slice(0, 8).toUpperCase()}`,
+          brand: allocation.customOrder?.brand ?? null,
+          buyerName: buyerName || String(allocation.customOrder?.buyer?.username || 'Buyer'),
+          currency: allocation.currency,
+          grossAmount: Number(allocation.amount ?? 0),
+          releasedNetAmount: 0,
+          heldNetAmount: Number(allocation.netBrandAmount ?? 0),
+          status: 'HELD',
+          nextReleaseAt: null,
+          releaseCondition: 'BUYER_DELIVERY_CONFIRMED',
+          frozenReason: null,
+          canManualRelease: true,
+          createdAt: allocation.createdAt,
+        };
+      }),
+    ].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+    return {
+      items,
+      total: items.length,
+    };
+  }
+
+  async releaseEscrowHold(
+    id: string,
+    actorId: string,
+    req: Request,
+    params: { holdType: 'STANDARD_ORDER' | 'CUSTOM_ORDER'; note?: string },
+  ) {
+    const now = new Date();
+
+    if (params.holdType === 'STANDARD_ORDER') {
+      const hold = await this.prisma.escrowHold.findUnique({
+        where: { id },
+        select: { id: true, orderId: true, status: true },
+      });
+      if (!hold?.orderId) {
+        throw new NotFoundException('Escrow hold not found');
+      }
+
+      const updated = await this.prisma.$transaction(async (tx) => {
+        const released = await this.standardOrderEscrowService.releaseFinalPortionNow(
+          tx,
+          hold.orderId!,
+          EscrowReleaseCondition.MANUAL_ADMIN,
+        );
+        if (!released) {
+          throw new BadRequestException('Escrow hold could not be released');
+        }
+        return released;
+      });
+
+      await this.recordAudit(req, actorId, AdminAuditAction.ADMIN_FINANCE_RECONCILIATION_RESOLVE, {
+        targetId: id,
+        newState: {
+          holdType: params.holdType,
+          releasedAt: now.toISOString(),
+          note: params.note ?? null,
+        },
+      });
+
+      return updated;
+    }
+
+    const allocation = await this.prisma.customOrderLedgerAllocation.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        customOrderId: true,
+        allocationType: true,
+        amount: true,
+        commissionAmount: true,
+        netBrandAmount: true,
+        currency: true,
+        status: true,
+        customOrder: {
+          select: {
+            brandId: true,
+          },
+        },
+      },
+    });
+
+    if (
+      !allocation ||
+      allocation.allocationType !== CustomOrderLedgerAllocationType.FINAL_COMPLETION_PORTION ||
+      allocation.status !== CustomOrderLedgerAllocationStatus.HELD
+    ) {
+      throw new NotFoundException('Custom-order held allocation not found');
+    }
+
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const released = await tx.customOrderLedgerAllocation.update({
+        where: { id },
+        data: {
+          status: CustomOrderLedgerAllocationStatus.PAYOUT_ELIGIBLE,
+          eligibleAt: now,
+        },
+      });
+
+      await this.ledgerService.postCustomOrderFinalRelease(tx, {
+        customOrderId: allocation.customOrderId,
+        brandId: allocation.customOrder.brandId,
+        currency: allocation.currency,
+        amount: Number(allocation.amount ?? 0),
+        commissionAmount: Number(allocation.commissionAmount ?? 0),
+        netBrandAmount: Number(allocation.netBrandAmount ?? 0),
+      });
+
+      await tx.customOrderTimelineEvent.create({
+        data: {
+          customOrderId: allocation.customOrderId,
+          actorType: CustomOrderActorType.ADMIN,
+          actorId,
+          eventType: 'ADMIN_ESCALATED',
+          payloadJson: {
+            action: 'MANUAL_FINAL_ESCROW_RELEASE',
+            note: params.note?.trim() || null,
+          } as Prisma.InputJsonValue,
+        },
+      });
+
+      return released;
+    });
+
+    await this.recordAudit(req, actorId, AdminAuditAction.ADMIN_FINANCE_RECONCILIATION_RESOLVE, {
+      targetId: id,
+      newState: {
+        holdType: params.holdType,
+        releasedAt: now.toISOString(),
+        note: params.note ?? null,
+      },
+    });
+
+    return updated;
+  }
+
+  async freezeEscrowHold(
+    id: string,
+    actorId: string,
+    req: Request,
+    reason: string,
+  ) {
+    const hold = await this.prisma.escrowHold.findUnique({
+      where: { id },
+      select: { id: true, orderId: true },
+    });
+    if (!hold?.orderId) {
+      throw new NotFoundException('Escrow hold not found');
+    }
+    if (!reason.trim()) {
+      throw new BadRequestException('Freeze reason is required');
+    }
+
+    const updated = await this.prisma.$transaction((tx) =>
+      this.standardOrderEscrowService.freezeHold(tx, hold.orderId!, actorId, reason),
+    );
+
+    await this.recordAudit(req, actorId, AdminAuditAction.ADMIN_FINANCE_RECONCILIATION_CLAIM, {
+      targetId: id,
+      newState: {
+        status: EscrowHoldStatus.FROZEN,
+        reason,
+      },
+    });
+
+    return updated;
+  }
+
+  async unfreezeEscrowHold(id: string, actorId: string, req: Request) {
+    const hold = await this.prisma.escrowHold.findUnique({
+      where: { id },
+      select: { id: true, orderId: true },
+    });
+    if (!hold?.orderId) {
+      throw new NotFoundException('Escrow hold not found');
+    }
+
+    const updated = await this.prisma.$transaction((tx) =>
+      this.standardOrderEscrowService.unfreezeHold(tx, hold.orderId!),
+    );
+
+    await this.recordAudit(req, actorId, AdminAuditAction.ADMIN_FINANCE_RECONCILIATION_RELEASE, {
+      targetId: id,
+      newState: {
+        status: updated?.status ?? null,
+      },
+    });
+
+    return updated;
   }
 
   private async recordAudit(

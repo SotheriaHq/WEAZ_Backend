@@ -77,6 +77,93 @@ export class AdminFinanceController {
     return this.financeService.getOverview();
   }
 
+  @Get('payments')
+  @RequirePermissions(ADMIN_PERMISSIONS.PAYOUTS_READ)
+  listPayments(
+    @Query('status') status?: string,
+    @Query('gateway') gateway?: string,
+    @Query('subjectType') subjectType?: string,
+    @Query('q') q?: string,
+    @Query('brandId') brandId?: string,
+    @Query('take') take?: string,
+  ) {
+    return this.financeService.listPaymentAttempts({
+      status,
+      gateway,
+      subjectType,
+      q,
+      brandId,
+      take: take ? parseInt(take, 10) : undefined,
+    });
+  }
+
+  @Get('payments/:reference')
+  @RequirePermissions(ADMIN_PERMISSIONS.PAYOUTS_READ)
+  getPayment(@Param('reference') reference: string) {
+    return this.financeService.getPaymentAttempt(reference);
+  }
+
+  @Get('transactions')
+  @RequirePermissions(ADMIN_PERMISSIONS.PAYOUTS_READ)
+  listTransactions(
+    @Query('type') type?: string,
+    @Query('referenceType') referenceType?: string,
+    @Query('dateFrom') dateFrom?: string,
+    @Query('dateTo') dateTo?: string,
+    @Query('take') take?: string,
+  ) {
+    return this.financeService.listTransactionsDetailed({
+      type,
+      referenceType,
+      dateFrom,
+      dateTo,
+      take: take ? parseInt(take, 10) : undefined,
+    });
+  }
+
+  @Get('escrow-holds')
+  @RequirePermissions(ADMIN_PERMISSIONS.PAYOUTS_READ)
+  listEscrowHolds(
+    @Query('status') status?: string,
+    @Query('brandId') brandId?: string,
+    @Query('take') take?: string,
+  ) {
+    return this.financeService.listEscrowHolds({
+      status,
+      brandId,
+      take: take ? parseInt(take, 10) : undefined,
+    });
+  }
+
+  @Post('escrow-holds/:id/release')
+  @RequirePermissions(ADMIN_PERMISSIONS.PAYOUTS_PROCESS)
+  releaseEscrowHold(
+    @Param('id') id: string,
+    @Body() dto: { holdType: 'STANDARD_ORDER' | 'CUSTOM_ORDER'; note?: string },
+    @Req() req: Request,
+  ) {
+    const actorId = (req as any).user.id ?? (req as any).user.sub;
+    return this.financeService.releaseEscrowHold(id, actorId, req, dto);
+  }
+
+  @Post('escrow-holds/:id/freeze')
+  @RequirePermissions(ADMIN_PERMISSIONS.PAYOUTS_PROCESS)
+  freezeEscrowHold(
+    @Param('id') id: string,
+    @Body() dto: { reason: string },
+    @Req() req: Request,
+  ) {
+    const actorId = (req as any).user.id ?? (req as any).user.sub;
+    return this.financeService.freezeEscrowHold(id, actorId, req, dto.reason);
+  }
+
+  @Post('escrow-holds/:id/unfreeze')
+  @RequirePermissions(ADMIN_PERMISSIONS.PAYOUTS_PROCESS)
+  unfreezeEscrowHold(@Param('id') id: string, @Req() req: Request) {
+    const actorId = (req as any).user.id ?? (req as any).user.sub;
+    return this.financeService.unfreezeEscrowHold(id, actorId, req);
+  }
+
   @Get('commission-rules')
   @RequirePermissions(ADMIN_PERMISSIONS.PAYOUTS_READ)
   listCommissionRules() {
