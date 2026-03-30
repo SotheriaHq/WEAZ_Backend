@@ -1447,11 +1447,6 @@ export class CustomOrdersService {
         'ORDER_PLACED and ORDER_RECEIVED are system-managed. Brand updates begin at fabric and piece gathering.',
       );
     }
-    if (order.paymentStatus !== 'PAID') {
-      throw new BadRequestException(
-        'Buyer payment must be confirmed before brand production updates begin.',
-      );
-    }
 
     const now = new Date();
     const nextStatus =
@@ -1962,7 +1957,11 @@ export class CustomOrdersService {
 
     return items.map((item) => {
       const needsFreshMedia = hasEphemeralMediaSignature(item.sourcePrimaryMediaUrlSnapshot);
-      if (!needsFreshMedia && item.sourceBrandNameSnapshot && item.sourceTitleSnapshot) {
+      const hasStableIdentitySnapshot =
+        Boolean(item.sourceBrandNameSnapshot) &&
+        Boolean(item.sourceTitleSnapshot) &&
+        Boolean(item.sourcePrimaryMediaUrlSnapshot);
+      if (!needsFreshMedia && hasStableIdentitySnapshot) {
         return item;
       }
 
@@ -1988,7 +1987,11 @@ export class CustomOrdersService {
     order: Prisma.CustomOrderGetPayload<{}>,
   ): Promise<Prisma.CustomOrderGetPayload<{}>> {
     const needsFreshMedia = hasEphemeralMediaSignature(order.sourcePrimaryMediaUrlSnapshot);
-    if (!needsFreshMedia && order.sourceBrandNameSnapshot && order.sourceTitleSnapshot) {
+    const hasStableIdentitySnapshot =
+      Boolean(order.sourceBrandNameSnapshot) &&
+      Boolean(order.sourceTitleSnapshot) &&
+      Boolean(order.sourcePrimaryMediaUrlSnapshot);
+    if (!needsFreshMedia && hasStableIdentitySnapshot) {
       return order;
     }
 

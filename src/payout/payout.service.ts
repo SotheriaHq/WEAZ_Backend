@@ -304,34 +304,47 @@ export class PayoutService {
   private async listLegacyOrderIncome(brandId: string, page: number, limit: number) {
     const skip = (page - 1) * limit;
 
-    const where: Prisma.OrderWhereInput = {
+    const standardWhere: Prisma.OrderWhereInput = {
       brandId,
       paymentStatus: 'PAID' as any,
     };
 
-    const [total, paidOrders] = await Promise.all([
-      this.prisma.order.count({ where }),
+    const [standardTotal, paidOrders, customOrderTotal, paidCustomOrders] = await Promise.all([
+      this.prisma.order.count({ where: standardWhere }),
       this.prisma.order.findMany({
-        where,
-        skip,
-        take: limit,
+        where: standardWhere,
         orderBy: { createdAt: 'desc' },
         select: {
           id: true,
           totalAmount: true,
-          shippingCost: true,
-          discountAmount: true,
           currency: true,
           customerName: true,
           createdAt: true,
           status: true,
         },
       }),
+      (this.prisma as any).customOrder.count({
+        where: { brandId, paymentStatus: 'PAID' },
+      }),
+      (this.prisma as any).customOrder.findMany({
+        where: { brandId, paymentStatus: 'PAID' },
+        orderBy: { createdAt: 'desc' },
+        select: {
+          id: true,
+          sourceTitleSnapshot: true,
+          buyerPriceSummaryJson: true,
+          currency: true,
+          status: true,
+          createdAt: true,
+          buyer: {
+            select: { firstName: true, lastName: true, username: true },
+          },
+        },
+      }),
     ]);
 
-    const items = paidOrders.map((order) => {
+    const standardItems = paidOrders.map((order: any) => {
       const netAmount = Number(order.totalAmount ?? 0);
-
       return {
         id: order.id,
         amount: Number(netAmount.toFixed(2)),
@@ -358,8 +371,46 @@ export class PayoutService {
       };
     });
 
+    const customItems = paidCustomOrders.map((order: any) => {
+      const summary =
+        order.buyerPriceSummaryJson && typeof order.buyerPriceSummaryJson === 'object'
+          ? (order.buyerPriceSummaryJson as Record<string, unknown>)
+          : {};
+      const netAmount = Number((summary as any).grandTotal ?? 0);
+      const buyerName = [order.buyer?.firstName, order.buyer?.lastName]
+        .map((v: string) => String(v || '').trim())
+        .filter(Boolean)
+        .join(' ') || String(order.buyer?.username || 'Buyer');
+      return {
+        id: order.id,
+        amount: Number(netAmount.toFixed(2)),
+        grossAmount: Number(netAmount.toFixed(2)),
+        commissionAmount: 0,
+        netAmount: Number(netAmount.toFixed(2)),
+        balanceAfter: 0,
+        currency: (summary as any).currency || order.currency || 'NGN',
+        createdAt: order.createdAt,
+        transactionId: null,
+        transactionType: 'PAYMENT_RECEIVED',
+        description: `Custom order #${order.id.slice(0, 8).toUpperCase()}`,
+        referenceType: 'CustomOrder',
+        referenceId: order.id,
+        title: order.sourceTitleSnapshot || `Custom Order #${order.id.slice(0, 8).toUpperCase()}`,
+        counterparty: buyerName,
+        stage: String(order.status) === 'COMPLETED' ? 'DELIVERED_RELEASE' : 'PAYMENT',
+        metadata: null,
+      };
+    });
+
+    // Merge, sort by date, then paginate
+    const allItems = [...standardItems, ...customItems].sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+    );
+    const total = standardTotal + customOrderTotal;
+    const paginated = allItems.slice(skip, skip + limit);
+
     return {
-      items,
+      items: paginated,
       total,
       page,
       totalPages: Math.ceil(total / limit),
