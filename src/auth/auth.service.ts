@@ -660,6 +660,111 @@ export class AuthService {
     return { message: 'Password reset successful' };
   }
 
+  async requestPasswordReset(email: string) {
+    const genericResponse = {
+      message: 'If an account with that email exists, a password reset link has been sent.',
+    };
+
+    const normalizedEmail = email?.trim().toLowerCase();
+    if (!normalizedEmail) {
+      throw new BadRequestException('Email is required');
+    }
+
+    const user = await this.prisma.user.findUnique({
+      where: { email: normalizedEmail },
+      select: { id: true, status: true },
+    });
+
+    // Always return generic response to prevent email enumeration
+    if (!user || user.status !== UserStatus.ACTIVE) {
+      this.logger.log(`Password reset requested for unknown or inactive email: ${normalizedEmail}`);
+      return genericResponse;
+    }
+
+    const rawToken = randomBytes(32).toString('hex');
+    const tokenHash = createHash('sha256').update(rawToken).digest('hex');
+    const expiresAt = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
+
+    await this.prisma.passwordResetToken.create({
+      data: {
+        id: uuidv4(),
+        userId: user.id,
+        tokenHash,
+        expiresAt,
+      },
+    });
+
+    // Send reset email
+    const baseUrl = (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
+    const resetLink = `${baseUrl}/reset-password?token=${rawToken}`;
+    const resetEmail = emailTemplates.passwordResetEmail(
+      resetLink,
+      this.emailService.getAppName(),
+    );
+    void this.emailService
+      .send(normalizedEmail, resetEmail.subject, resetEmail.html, resetEmail.text)
+      .catch(() => undefined);
+
+    this.logger.log(`Password reset requested for user ${user.id}`);
+
+    return genericResponse;
+  }
+
+  async confirmPasswordReset(token: string, newPassword: string) {
+    if (!token || !newPassword) {
+      throw new BadRequestException('Token and new password are required');
+    }
+
+    const tokenHash = createHash('sha256').update(token).digest('hex');
+
+    const resetToken = await this.prisma.passwordResetToken.findFirst({
+      where: {
+        tokenHash,
+        usedAt: null,
+        expiresAt: { gt: new Date() },
+      },
+      include: {
+        user: {
+          select: {
+            id: true,
+            status: true,
+          },
+        },
+      },
+    });
+
+    if (!resetToken) {
+      throw new UnauthorizedException('Invalid or expired reset token');
+    }
+
+    if (resetToken.user.status !== UserStatus.ACTIVE) {
+      throw new UnauthorizedException('This account is not active');
+    }
+
+    const password = await this.passwordService.hashPassword(newPassword);
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.user.update({
+        where: { id: resetToken.userId },
+        data: {
+          password,
+          authVersion: { increment: 1 },
+        },
+      });
+
+      await tx.passwordResetToken.update({
+        where: { id: resetToken.id },
+        data: { usedAt: new Date() },
+      });
+    });
+
+    await this.tokenService.revokeAllRefreshTokens(resetToken.userId);
+
+    this.logger.log(`Password reset confirmed for user ${resetToken.userId}`);
+
+    return { message: 'Password reset successful' };
+  }
+
   async changePasswordForAuthenticatedUser(
     userId: string,
     currentPassword: string | undefined,

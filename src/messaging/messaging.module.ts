@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { forwardRef, Module } from '@nestjs/common';
 import { AdminAuditService } from 'src/admin/services/admin-audit.service';
 import { QueueModule } from 'src/queue/queue.module';
 import { PrismaModule } from 'src/prisma/prisma.module';
@@ -11,6 +11,7 @@ import { MessagingSummaryBuyerController } from './controllers/messaging-summary
 import { MessagingSummaryBrandController } from './controllers/messaging-summary-brand.controller';
 import { MessagingInboxController } from './controllers/messaging-inbox.controller';
 import { MessagingAttachmentService } from './messaging-attachment.service';
+import { CustomOrderThreadBootstrapService } from './custom-order-thread-bootstrap.service';
 import { MessagingPolicyService } from './messaging-policy.service';
 import { MessagingQueryService } from './messaging-query.service';
 import { MessagingService } from './messaging.service';
@@ -20,7 +21,7 @@ import { CustomOrdersModule } from 'src/custom-orders/custom-orders.module';
 import { SystemConfigModule } from 'src/admin/system-config/system-config.module';
 
 @Module({
-  imports: [PrismaModule, QueueModule, UploadModule, CustomOrdersModule, SystemConfigModule],
+  imports: [PrismaModule, QueueModule, UploadModule, forwardRef(() => CustomOrdersModule), SystemConfigModule],
   controllers: [
     CustomOrderMessagingBuyerController,
     CustomOrderMessagingBrandController,
@@ -33,12 +34,13 @@ import { SystemConfigModule } from 'src/admin/system-config/system-config.module
   ],
   providers: [
     MessagingService,
+    CustomOrderThreadBootstrapService,
     MessagingQueryService,
     MessagingPolicyService,
     MessagingAttachmentService,
     MessagingSideEffectsService,
     AdminAuditService,
   ],
-  exports: [MessagingService],
+  exports: [MessagingService, CustomOrderThreadBootstrapService],
 })
 export class MessagingModule {}

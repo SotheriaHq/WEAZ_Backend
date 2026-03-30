@@ -14,6 +14,7 @@ import { AdminDisputesService } from './disputes/admin-disputes.service';
 import { BreakGlassService } from './break-glass/break-glass.service';
 import { BreakGlassCronService } from './break-glass/break-glass.cron.service';
 import { FeatureFlagsService } from './feature-flags/feature-flags.service';
+import { FeatureFlagsBootstrapService } from './feature-flags/feature-flags.bootstrap.service';
 import { AdminSlaService } from './sla/admin-sla.service';
 import { AdminPayoutsService } from './payouts/admin-payouts.service';
 import { AdminNotificationsService } from './notifications/admin-notifications.service';
@@ -89,6 +90,7 @@ import { AdminFinanceController } from './finance/admin-finance.controller';
     BreakGlassService,
     BreakGlassCronService,
     FeatureFlagsService,
+    FeatureFlagsBootstrapService,
     AdminSlaService,
     AdminPayoutsService,
     AdminNotificationsService,

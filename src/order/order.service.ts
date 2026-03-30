@@ -11,6 +11,7 @@ import { NotificationsService } from 'src/notifications/notifications.service';
 import { reconcileStandardOrderPaymentStatuses } from 'src/common/payments/order-payment-reconciliation.util';
 import { OrderRefundService } from './order-refund.service';
 import { StandardOrderEscrowService } from 'src/finance/standard-order-escrow.service';
+import { StandardOrderFinanceSyncService } from 'src/finance/standard-order-finance-sync.service';
 
 @Injectable()
 export class OrderService {
@@ -31,6 +32,7 @@ export class OrderService {
     private readonly notifications: NotificationsService,
     private readonly orderRefundService: OrderRefundService,
     private readonly standardOrderEscrowService: StandardOrderEscrowService,
+    private readonly standardOrderFinanceSyncService: StandardOrderFinanceSyncService,
   ) {}
 
   @Cron(CronExpression.EVERY_5_MINUTES)
@@ -53,7 +55,16 @@ export class OrderService {
     if (pendingOrders.length === 0) return;
 
     try {
-      await reconcileStandardOrderPaymentStatuses(this.prisma, pendingOrders);
+      const resolvedByOrderId = await reconcileStandardOrderPaymentStatuses(
+        this.prisma,
+        pendingOrders,
+      );
+      const paidOrderIds = pendingOrders
+        .filter((order) => resolvedByOrderId.get(order.id) === PaymentStatus.PAID)
+        .map((order) => order.id);
+      if (paidOrderIds.length > 0) {
+        await this.standardOrderFinanceSyncService.syncPaidOrdersByOrderIds(paidOrderIds);
+      }
     } catch (error) {
       this.logger.error(
         `Background payment reconciliation failed: ${(error as Error).message}`,
@@ -137,6 +148,12 @@ export class OrderService {
       }),
     ]);
     const paymentStatusByOrderId = await reconcileStandardOrderPaymentStatuses(this.prisma, orders);
+    const paidOrderIds = orders
+      .filter((order) => paymentStatusByOrderId.get(order.id) === PaymentStatus.PAID)
+      .map((order) => order.id);
+    if (paidOrderIds.length > 0) {
+      await this.standardOrderFinanceSyncService.syncPaidOrdersByOrderIds(paidOrderIds);
+    }
 
     const countsByStatus = statusBreakdown.reduce<Record<string, number>>((acc, entry) => {
       acc[entry.status] = entry._count._all;
@@ -199,7 +216,21 @@ export class OrderService {
       },
       include: {
         orderItems: true,
-        brand: { select: { id: true, name: true, logo: true, currency: true } },
+        brand: {
+          select: {
+            id: true,
+            name: true,
+            logo: true,
+            currency: true,
+            contactEmail: true,
+            owner: {
+              select: {
+                phoneNumber: true,
+                address: true,
+              },
+            },
+          },
+        },
       },
     });
 
@@ -207,6 +238,10 @@ export class OrderService {
       throw new NotFoundException('Order not found');
     }
     const paymentStatusByOrderId = await reconcileStandardOrderPaymentStatuses(this.prisma, [order]);
+    if (paymentStatusByOrderId.get(order.id) === PaymentStatus.PAID) {
+      await this.standardOrderFinanceSyncService.syncPaidOrdersByOrderIds([order.id]);
+    }
+    const financeSnapshot = await this.buildStandardOrderFinanceSnapshot(order);
 
     // Normalize contact fields for frontend consumption
     const contactInfo = (order.contactInfo as Record<string, any>) || {};
@@ -216,6 +251,8 @@ export class OrderService {
       ...order,
       paymentStatus:
         paymentStatusByOrderId.get(order.id) ?? order.paymentStatus,
+      financeBreakdown: financeSnapshot.breakdown,
+      buyerReceipt: financeSnapshot.receipt,
       customerEmail: contactInfo.email || null,
       customerPhone: contactInfo.phone || null,
       formattedShippingAddress: shippingAddr
@@ -343,5 +380,232 @@ export class OrderService {
     const regex =
       /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
     return regex.test(id);
+  }
+
+  private async buildStandardOrderFinanceSnapshot(order: {
+    id: string;
+    paymentReference?: string | null;
+    paymentStatus?: PaymentStatus | string | null;
+    totalAmount: Prisma.Decimal | number;
+    shippingCost?: Prisma.Decimal | number | null;
+    discountAmount?: Prisma.Decimal | number | null;
+    currency?: string | null;
+    paidAt?: Date | string | null;
+    createdAt?: Date | string | null;
+    orderItems?: Array<{
+      quantity?: number | null;
+      unitPrice?: Prisma.Decimal | number | null;
+      totalPrice?: Prisma.Decimal | number | null;
+      nameAtPurchase?: string | null;
+    }>;
+  }) {
+    const paymentAttempt = order.paymentReference
+      ? await this.prisma.paymentAttempt.findFirst({
+          where: { reference: order.paymentReference },
+          select: {
+            id: true,
+            reference: true,
+            amount: true,
+            currency: true,
+            settlementAmount: true,
+            settlementCurrency: true,
+            confirmedAt: true,
+          },
+        })
+      : null;
+
+    const [hold, receipt, ledgerTransactions] = await Promise.all([
+      this.prisma.escrowHold.findUnique({
+        where: { orderId: order.id },
+        select: {
+          totalAmount: true,
+          commissionRate: true,
+          commissionAmount: true,
+          netBrandAmount: true,
+          currency: true,
+          status: true,
+          firstReleaseAmount: true,
+          firstReleaseCommissionAmount: true,
+          firstReleaseNetAmount: true,
+          firstReleasedAt: true,
+          secondReleaseAmount: true,
+          secondReleaseCommissionAmount: true,
+          secondReleaseNetAmount: true,
+          secondReleaseEligibleAt: true,
+          secondReleaseCondition: true,
+          secondReleasedAt: true,
+          refundedAt: true,
+          refundReason: true,
+        },
+      }),
+      (this.prisma as any).financialDocument.findFirst({
+        where: {
+          type: 'BUYER_RECEIPT',
+          OR: [
+            ...(paymentAttempt?.id ? [{ paymentAttemptId: paymentAttempt.id }] : []),
+            { orderId: order.id },
+          ],
+        },
+        orderBy: { issuedAt: 'desc' },
+      }),
+      (this.prisma as any).ledgerTransaction.findMany({
+        where: {
+          referenceType: 'Order',
+          referenceId: order.id,
+        },
+        orderBy: { createdAt: 'asc' },
+        include: {
+          entries: {
+            include: {
+              account: {
+                select: {
+                  code: true,
+                  name: true,
+                  type: true,
+                  subType: true,
+                  entityType: true,
+                  entityId: true,
+                },
+              },
+            },
+          },
+        },
+      }),
+    ]);
+
+    const itemSubtotal = this.roundCurrency(
+      Array.isArray(order.orderItems)
+        ? order.orderItems.reduce((sum, item) => {
+            if (item.totalPrice != null) {
+              return sum + Number(item.totalPrice);
+            }
+            return sum + Number(item.unitPrice ?? 0) * Number(item.quantity ?? 0);
+          }, 0)
+        : 0,
+    );
+    const shippingAmount = this.roundCurrency(Number(order.shippingCost ?? 0));
+    const discountAmount = this.roundCurrency(Number(order.discountAmount ?? 0));
+    const grossAmount = this.roundCurrency(Number(order.totalAmount ?? 0));
+    const receiptMetadata = this.asJsonObject(receipt?.metadataJson);
+
+    return {
+      breakdown: {
+        currency: String(order.currency || paymentAttempt?.currency || hold?.currency || 'NGN'),
+        itemSubtotal,
+        shippingAmount,
+        discountAmount,
+        grossAmount,
+        paymentReference: order.paymentReference ?? paymentAttempt?.reference ?? null,
+        paymentStatus: order.paymentStatus ?? null,
+        paidAt: order.paidAt ?? paymentAttempt?.confirmedAt ?? null,
+        escrowStatus: hold?.status ?? null,
+        commissionRate: hold ? Number(hold.commissionRate ?? 0) : null,
+        commissionAmount: hold ? this.roundCurrency(Number(hold.commissionAmount ?? 0)) : null,
+        netBrandAmount: hold ? this.roundCurrency(Number(hold.netBrandAmount ?? 0)) : null,
+        releaseSchedule: hold
+          ? [
+              {
+                stage: 'SHIPPED_RELEASE',
+                grossAmount: this.roundCurrency(Number(hold.firstReleaseAmount ?? 0)),
+                commissionAmount: this.roundCurrency(
+                  Number(hold.firstReleaseCommissionAmount ?? 0),
+                ),
+                netAmount: this.roundCurrency(Number(hold.firstReleaseNetAmount ?? 0)),
+                releasedAt: hold.firstReleasedAt ?? null,
+              },
+              {
+                stage: 'DELIVERED_RELEASE',
+                grossAmount: this.roundCurrency(Number(hold.secondReleaseAmount ?? 0)),
+                commissionAmount: this.roundCurrency(
+                  Number(hold.secondReleaseCommissionAmount ?? 0),
+                ),
+                netAmount: this.roundCurrency(Number(hold.secondReleaseNetAmount ?? 0)),
+                eligibleAt: hold.secondReleaseEligibleAt ?? null,
+                condition: hold.secondReleaseCondition ?? null,
+                releasedAt: hold.secondReleasedAt ?? null,
+              },
+            ]
+          : [],
+        ledgerTransactions: Array.isArray(ledgerTransactions)
+          ? ledgerTransactions.map((transaction: any) => ({
+              id: transaction.id,
+              type: transaction.type,
+              description: transaction.description,
+              totalAmount: this.roundCurrency(Number(transaction.totalAmount ?? 0)),
+              currency: transaction.currency,
+              createdAt: transaction.createdAt,
+              entries: Array.isArray(transaction.entries)
+                ? transaction.entries.map((entry: any) => ({
+                    id: entry.id,
+                    direction: entry.direction,
+                    amount: this.roundCurrency(Number(entry.amount ?? 0)),
+                    accountCode: entry.account?.code ?? null,
+                    accountName: entry.account?.name ?? null,
+                    accountType: entry.account?.type ?? null,
+                    accountSubType: entry.account?.subType ?? null,
+                  }))
+                : [],
+            }))
+          : [],
+      },
+      receipt: receipt
+        ? {
+            id: receipt.id,
+            documentNumber: receipt.documentNumber,
+            type: receipt.type,
+            issuedAt: receipt.issuedAt,
+            currency: receipt.currency,
+            grossAmount: this.roundCurrency(Number(receipt.grossAmount ?? 0)),
+            commissionAmount:
+              receipt.commissionAmount != null
+                ? this.roundCurrency(Number(receipt.commissionAmount))
+                : null,
+            netAmount:
+              receipt.netAmount != null
+                ? this.roundCurrency(Number(receipt.netAmount))
+                : null,
+            paymentAttemptId: receipt.paymentAttemptId ?? paymentAttempt?.id ?? null,
+            paymentReference: paymentAttempt?.reference ?? order.paymentReference ?? null,
+            settlementCurrency:
+              typeof receiptMetadata?.settlementCurrency === 'string'
+                ? receiptMetadata.settlementCurrency
+                : paymentAttempt?.settlementCurrency ?? null,
+            settlementAmount:
+              receiptMetadata?.settlementAmount != null
+                ? this.roundCurrency(Number(receiptMetadata.settlementAmount))
+                : paymentAttempt?.settlementAmount != null
+                  ? this.roundCurrency(Number(paymentAttempt.settlementAmount))
+                  : null,
+            issuedToName:
+              typeof receiptMetadata?.issuedToName === 'string'
+                ? receiptMetadata.issuedToName
+                : null,
+            lineItems: Array.isArray(receiptMetadata?.lineItems)
+              ? receiptMetadata.lineItems
+                  .map((item) => {
+                    const raw = this.asJsonObject(item);
+                    return {
+                      label:
+                        typeof raw?.label === 'string'
+                          ? raw.label
+                          : `Order ${order.id.slice(0, 8)}`,
+                      amount: this.roundCurrency(Number(raw?.amount ?? 0)),
+                    };
+                  })
+                  .filter((item) => item.amount >= 0)
+              : [],
+          }
+        : null,
+    };
+  }
+
+  private asJsonObject(value: unknown): Record<string, any> | null {
+    return value && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Record<string, any>)
+      : null;
+  }
+
+  private roundCurrency(value: number) {
+    return Math.round((value + Number.EPSILON) * 100) / 100;
   }
 }

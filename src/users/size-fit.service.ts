@@ -44,7 +44,6 @@ const SIZE_FIT_SHARE_STATUS = {
 type SafeMeasurements = Record<string, string | number | boolean | null>;
 type BaselineMeasurementGender = 'MEN' | 'WOMEN';
 type BaselineMeasurementSlot =
-  | 'HEIGHT'
   | 'SHOULDER'
   | 'CHEST'
   | 'WAIST'
@@ -53,7 +52,6 @@ type BaselineMeasurementSlot =
   | 'SLEEVE_LENGTH';
 
 const BASELINE_MEASUREMENT_SLOTS: BaselineMeasurementSlot[] = [
-  'HEIGHT',
   'SHOULDER',
   'CHEST',
   'WAIST',
@@ -66,11 +64,6 @@ const BASELINE_SLOT_KEY_CANDIDATES: Record<
   BaselineMeasurementSlot,
   { men: string[]; women: string[]; neutral: string[] }
 > = {
-  HEIGHT: {
-    men: ['MEN_HEIGHT'],
-    women: ['WOMEN_HEIGHT'],
-    neutral: ['UNISEX_HEIGHT', 'HEIGHT'],
-  },
   SHOULDER: {
     men: ['MEN_SHOULDER'],
     women: ['WOMEN_SHOULDER_WIDTH'],

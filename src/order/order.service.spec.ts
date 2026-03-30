@@ -5,6 +5,7 @@ import { NotificationsService } from 'src/notifications/notifications.service';
 import { OrderStatus } from '@prisma/client';
 import { OrderRefundService } from './order-refund.service';
 import { StandardOrderEscrowService } from 'src/finance/standard-order-escrow.service';
+import { StandardOrderFinanceSyncService } from 'src/finance/standard-order-finance-sync.service';
 
 describe('OrderService', () => {
   let service: OrderService;
@@ -12,6 +13,7 @@ describe('OrderService', () => {
   let notifications: any;
   let refundService: any;
   let escrowService: any;
+  let financeSyncService: any;
 
   beforeEach(() => {
     prisma = {
@@ -39,6 +41,10 @@ describe('OrderService', () => {
       releaseEligibleFinalPortions: jest.fn(),
     };
 
+    financeSyncService = {
+      syncPaidOrdersByOrderIds: jest.fn(),
+    };
+
     prisma.$transaction.mockImplementation(async (cb: any) => cb(prisma));
 
     service = new OrderService(
@@ -46,6 +52,7 @@ describe('OrderService', () => {
       notifications as NotificationsService,
       refundService as OrderRefundService,
       escrowService as StandardOrderEscrowService,
+      financeSyncService as StandardOrderFinanceSyncService,
     );
   });
 

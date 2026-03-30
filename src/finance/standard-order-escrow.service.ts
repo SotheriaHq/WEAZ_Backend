@@ -261,11 +261,7 @@ export class StandardOrderEscrowService {
   }
 
   private getOrderGrossAmount(order: OrderSettlementInput) {
-    return this.roundMoney(
-      Number(order.totalAmount) +
-        Number(order.shippingCost ?? 0) -
-        Number(order.discountAmount ?? 0),
-    );
+    return this.roundMoney(Number(order.totalAmount ?? 0));
   }
 
   private buildTrancheAmounts(totalAmount: number, commissionRate: number, firstReleasePercent: number) {

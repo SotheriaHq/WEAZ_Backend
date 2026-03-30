@@ -15,7 +15,7 @@ export class AdminLedgerController {
   constructor(private readonly ledgerService: AdminLedgerService) {}
 
   @Get()
-  @RequirePermissions(ADMIN_PERMISSIONS.AUDIT_READ)
+  @RequirePermissions(ADMIN_PERMISSIONS.PAYOUTS_READ)
   list(
     @Query('type') type?: LedgerTransactionType,
     @Query('referenceType') referenceType?: string,

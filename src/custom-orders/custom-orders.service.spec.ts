@@ -81,6 +81,9 @@ describe('CustomOrdersService', () => {
       measurementPoint: {
         findMany: jest.fn(),
       },
+      userSizeFitProfile: {
+        findUnique: jest.fn(),
+      },
       customOrder: {
         findFirst: jest.fn(),
         update: jest.fn(),
@@ -736,7 +739,7 @@ describe('CustomOrdersService', () => {
     ).rejects.toThrow('CUSTOM_ORDER_INVALID_STATE_TRANSITION');
   });
 
-  it('adds baseline measurement keys to preview requirements when no baseline registry rows are returned', async () => {
+  it('only requires the brand-configured measurement keys for preview pricing', async () => {
     prisma.customOrderConfiguration.findUnique.mockResolvedValue({
       id: 'configuration_1',
       isActive: true,
@@ -750,9 +753,8 @@ describe('CustomOrdersService', () => {
       brand: { currency: 'NGN' },
       versions: [{ id: 'configuration_version_1' }],
     });
-    prisma.measurementPoint.findMany
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([]);
+    prisma.measurementPoint.findMany.mockResolvedValue([]);
+    prisma.userSizeFitProfile.findUnique.mockResolvedValue(null);
     prisma.customOrderCheckoutIntent.findUnique.mockResolvedValue(null);
     prisma.customOrderCheckoutIntent.upsert.mockResolvedValue({
       id: 'intent_1',
@@ -770,16 +772,7 @@ describe('CustomOrdersService', () => {
       configurationId: 'configuration_1',
       configurationVersionId: 'configuration_version_1',
       measurementValues: {
-        WOMEN_HEIGHT: 170,
-        WOMEN_WEIGHT: 68,
-        WOMEN_SHOULDER_WIDTH: 40,
-        WOMEN_CHEST_FULL_BUST: 94,
-        WOMEN_BUST: 94,
         WOMEN_WAIST: 76,
-        WOMEN_HIP: 102,
-        WOMEN_HIPS: 102,
-        WOMEN_INSEAM: 78,
-        WOMEN_SLEEVE_LENGTH_LONG: 61,
       },
       rushSelected: false,
       shippingAddress: null,
@@ -787,21 +780,12 @@ describe('CustomOrdersService', () => {
 
     expect(pricingService.buildPricePreview).toHaveBeenCalledWith(
       expect.objectContaining({
-        requiredMeasurementKeys: expect.arrayContaining([
-          'WOMEN_HEIGHT',
-          'WOMEN_WEIGHT',
-          'WOMEN_SHOULDER_WIDTH',
-          'WOMEN_CHEST_FULL_BUST',
-          'WOMEN_WAIST',
-          'WOMEN_HIP',
-          'WOMEN_INSEAM',
-          'WOMEN_SLEEVE_LENGTH_LONG',
-        ]),
+        requiredMeasurementKeys: ['WOMEN_WAIST'],
       }),
     );
   });
 
-  it('returns MANUAL_QUOTE_REQUIRED when deterministic chart inputs are incomplete', async () => {
+  it('keeps preview pricing available when chart-only measurements are missing', async () => {
     prisma.customOrderConfiguration.findUnique.mockResolvedValue({
       id: 'configuration_1',
       isActive: true,
@@ -815,9 +799,19 @@ describe('CustomOrdersService', () => {
       brand: { currency: 'NGN' },
       versions: [{ id: 'configuration_version_1' }],
     });
-    prisma.measurementPoint.findMany
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([]);
+    prisma.measurementPoint.findMany.mockResolvedValue([]);
+    prisma.userSizeFitProfile.findUnique.mockResolvedValue(null);
+    prisma.customOrderCheckoutIntent.findUnique.mockResolvedValue(null);
+    prisma.customOrderCheckoutIntent.upsert.mockResolvedValue({
+      id: 'intent_1',
+      expiresAt: new Date('2026-03-16T12:00:00.000Z'),
+    });
+    pricingService.validateConfigurationRules.mockReturnValue([]);
+    pricingService.buildPricePreview.mockReturnValue({
+      computedYards: 3.5,
+      matchedRule: { priority: 1, isFallback: true },
+      buyerPriceSummary: { grandTotal: 121000, currency: 'NGN' },
+    });
 
     const result = await service.createPricePreview('buyer_1', {
       configurationId: 'configuration_1',
@@ -829,10 +823,12 @@ describe('CustomOrdersService', () => {
       shippingAddress: null,
     } as any);
 
-    expect(result.data.quoteStatus).toBe('MANUAL_QUOTE_REQUIRED');
-    expect(result.data.checkoutIntentId).toBeNull();
-    expect(prisma.customOrderCheckoutIntent.upsert).not.toHaveBeenCalled();
-    expect(pricingService.buildPricePreview).not.toHaveBeenCalled();
+    expect(result.data.quoteStatus).toBe('AUTO_PRICED');
+    expect(result.data.checkoutIntentId).toBe('intent_1');
+    expect(result.data.computedSize).toBeNull();
+    expect(result.data.conversionGuidance).toContain('bust/chest');
+    expect(prisma.customOrderCheckoutIntent.upsert).toHaveBeenCalled();
+    expect(pricingService.buildPricePreview).toHaveBeenCalled();
   });
 
   it('stores and returns display chart preference in user notification settings', async () => {

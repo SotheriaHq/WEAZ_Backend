@@ -1,8 +1,10 @@
 import {
+  forwardRef,
   BadRequestException,
   ForbiddenException,
   HttpException,
   HttpStatus,
+  Inject,
   Injectable,
   Logger,
   NotFoundException,
@@ -63,6 +65,7 @@ export class MessagingService {
     private readonly policy: MessagingPolicyService,
     private readonly query: MessagingQueryService,
     private readonly sideEffects: MessagingSideEffectsService,
+    @Inject(forwardRef(() => CustomOrdersService))
     private readonly customOrdersService: CustomOrdersService,
   ) {}
 
@@ -101,7 +104,7 @@ export class MessagingService {
   }
 
   async listThreadMessagesForActor(actorId: string, threadId: string, queryDto: QueryMessagesDto) {
-    const thread = await this.prisma.messageThread.findFirst({
+    let thread = await this.prisma.messageThread.findFirst({
       where: {
         id: threadId,
         participants: { some: { userId: actorId } },
@@ -111,6 +114,8 @@ export class MessagingService {
     if (!thread) {
       throw new ForbiddenException('Thread access denied');
     }
+
+    thread = await this.syncThreadStatusIfNeeded(thread);
 
     const result = await this.query.getMessages(thread.id, { ...queryDto, actorId }, { includeModerated: false });
     await this.acknowledgeDeliveryForActor(thread.id, actorId, result.items);
@@ -206,7 +211,7 @@ export class MessagingService {
       throw new BadRequestException('Idempotency-Key header is required');
     }
 
-    const thread = await this.prisma.messageThread.findFirst({
+    let thread = await this.prisma.messageThread.findFirst({
       where: {
         id: threadId,
         participants: { some: { userId: actorId } },
@@ -217,6 +222,7 @@ export class MessagingService {
       throw new ForbiddenException('Thread access denied');
     }
 
+    thread = await this.syncThreadStatusIfNeeded(thread);
     this.policy.assertCanSend(thread.status);
     const actorParticipant = thread.participants.find((participant) => participant.userId === actorId);
     if (!actorParticipant) {
@@ -1624,6 +1630,52 @@ export class MessagingService {
     return { success: true, messageId: message.id };
   }
 
+  async publishCustomOrderProgressUpdateMessage(params: {
+    actorId: string;
+    brandId: string;
+    customOrderId: string;
+    stage: string;
+    note?: string | null;
+  }) {
+    const resolved = await this.resolveCustomOrderContext(
+      params.customOrderId,
+      params.actorId,
+      'BRAND_OWNER',
+      params.brandId,
+    );
+
+    const stageLabel = String(params.stage ?? '')
+      .trim()
+      .replace(/[_-]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .toLowerCase()
+      .replace(/\b\w/g, (character) => character.toUpperCase());
+    const trimmedNote = params.note?.trim() || '';
+    const bodyText = trimmedNote
+      ? `Production update: ${stageLabel}. ${trimmedNote}`
+      : `Production update: ${stageLabel}.`;
+
+    const message = await this.createActionMessageForContext({
+      contextType: MessageContextType.CUSTOM_ORDER,
+      contextId: params.customOrderId,
+      actorId: params.actorId,
+      actorRole: MessageParticipantRole.BRAND_OWNER,
+      threadStatus: this.policy.resolveThreadStatusForCustomOrder(resolved.status),
+      brandId: resolved.brandId,
+      buyerId: resolved.buyerId,
+      brandOwnerUserId: resolved.brandOwnerUserId,
+      bodyText,
+      metadata: {
+        eventType: 'CUSTOM_ORDER_PROGRESS_NOTE_PUBLISHED',
+        stage: params.stage,
+        note: trimmedNote || null,
+      },
+      origin: 'BRAND',
+    });
+
+    return { success: true, messageId: message.id };
+  }
+
   private async sendMessageInContext(params: {
     contextType: MessageContextType;
     contextId: string;
@@ -1948,7 +2000,18 @@ export class MessagingService {
     const where = this.policy.buildContextFilter(contextType, contextId);
     const existing = await tx.messageThread.findFirst({ where, include: { participants: true } });
     if (existing) {
-      return existing;
+      if (existing.status === status) {
+        return existing;
+      }
+
+      return tx.messageThread.update({
+        where: { id: existing.id },
+        data: {
+          status,
+          readOnlyAt: status === MessageThreadStatus.OPEN ? null : existing.readOnlyAt ?? new Date(),
+        },
+        include: { participants: true },
+      });
     }
 
     return tx.messageThread.create({
@@ -1970,10 +2033,15 @@ export class MessagingService {
   }
 
   private async getThreadByContext(contextType: MessageContextType, contextId: string) {
-    return this.prisma.messageThread.findFirst({
+    const thread = await this.prisma.messageThread.findFirst({
       where: this.policy.buildContextFilter(contextType, contextId),
       include: { participants: true },
     });
+    if (!thread) {
+      return null;
+    }
+
+    return this.syncThreadStatusIfNeeded(thread);
   }
 
   private normalizeContextIds(contextIds: string[]) {
@@ -2190,6 +2258,68 @@ export class MessagingService {
     }
 
     return this.policy.resolveThreadStatusForOrder(order.status);
+  }
+
+  private async resolveCurrentThreadStatus(
+    contextType: MessageContextType,
+    contextId: string,
+  ) {
+    if (contextType === MessageContextType.CUSTOM_ORDER) {
+      const customOrder = await this.prisma.customOrder.findUnique({
+        where: { id: contextId },
+        select: { status: true },
+      });
+      if (!customOrder) {
+        throw new NotFoundException('Custom order not found');
+      }
+
+      return this.policy.resolveThreadStatusForCustomOrder(customOrder.status);
+    }
+
+    const order = await this.prisma.order.findUnique({
+      where: { id: contextId },
+      select: { status: true },
+    });
+    if (!order) {
+      throw new NotFoundException('Order not found');
+    }
+
+    return this.policy.resolveThreadStatusForOrder(order.status);
+  }
+
+  private async syncThreadStatusIfNeeded<
+    T extends {
+      id: string;
+      contextType: MessageContextType;
+      orderId: string | null;
+      customOrderId: string | null;
+      status: MessageThreadStatus;
+      readOnlyAt?: Date | null;
+      participants: any[];
+    },
+  >(thread: T): Promise<T> {
+    const contextId =
+      thread.contextType === MessageContextType.CUSTOM_ORDER
+        ? thread.customOrderId
+        : thread.orderId;
+
+    if (!contextId) {
+      return thread;
+    }
+
+    const nextStatus = await this.resolveCurrentThreadStatus(thread.contextType, contextId);
+    if (nextStatus === thread.status) {
+      return thread;
+    }
+
+    return (await this.prisma.messageThread.update({
+      where: { id: thread.id },
+      data: {
+        status: nextStatus,
+        readOnlyAt: nextStatus === MessageThreadStatus.OPEN ? null : thread.readOnlyAt ?? new Date(),
+      },
+      include: { participants: true },
+    })) as unknown as T;
   }
 
   private async notifyModeration(thread: { id: string; contextType: MessageContextType; orderId: string | null; customOrderId: string | null; brandId: string | null }, messageId: string, adminId: string, reason?: string) {

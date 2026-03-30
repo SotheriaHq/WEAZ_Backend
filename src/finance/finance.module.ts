@@ -6,6 +6,7 @@ import { LedgerService } from './ledger.service';
 import { CommissionService } from './commission.service';
 import { ReconciliationService } from './reconciliation.service';
 import { FinancialDocumentsService } from './financial-documents.service';
+import { StandardOrderFinanceSyncService } from './standard-order-finance-sync.service';
 
 @Module({
   imports: [PrismaModule, SystemConfigModule],
@@ -15,6 +16,7 @@ import { FinancialDocumentsService } from './financial-documents.service';
     CommissionService,
     ReconciliationService,
     FinancialDocumentsService,
+    StandardOrderFinanceSyncService,
   ],
   exports: [
     StandardOrderEscrowService,
@@ -22,6 +24,7 @@ import { FinancialDocumentsService } from './financial-documents.service';
     CommissionService,
     ReconciliationService,
     FinancialDocumentsService,
+    StandardOrderFinanceSyncService,
   ],
 })
 export class FinanceModule {}

@@ -68,12 +68,35 @@ export class PayoutService {
     const { availableBalance, releasedBalance, reservedPayoutBalance, paidOutBalance } =
       await this.calculateBalanceSnapshot(realBrandId);
 
+    // Count of paid orders and total incoming credits for the brand
+    const [orderStats, incomingCreditsAgg] = await Promise.all([
+      this.prisma.order.aggregate({
+        where: { brandId: realBrandId, paymentStatus: 'PAID' },
+        _count: { id: true },
+        _sum: { totalAmount: true },
+      }),
+      (this.prisma as any).ledgerEntry.aggregate({
+        where: {
+          account: { entityType: 'BRAND', entityId: realBrandId },
+          direction: 'CREDIT',
+        },
+        _sum: { amount: true },
+        _count: { id: true },
+      }).catch(() => ({ _sum: { amount: null }, _count: { id: 0 } })),
+    ]);
+
+    const incomingCredits = Number(incomingCreditsAgg?._sum?.amount ?? 0) > 0
+      ? Number(Number(incomingCreditsAgg._sum.amount).toFixed(2))
+      : Number(Number(orderStats._sum?.totalAmount ?? 0).toFixed(2));
+
     return {
       currency: 'NGN',
       availableBalance,
       releasedBalance,
       reservedPayoutBalance,
       paidOutBalance,
+      incomingCredits,
+      totalOrders: orderStats._count?.id ?? 0,
       negativeBalance: availableBalance < 0,
     };
   }
@@ -117,6 +140,18 @@ export class PayoutService {
               currency: true,
               createdAt: true,
               metadata: true,
+              entries: {
+                select: {
+                  direction: true,
+                  amount: true,
+                  account: {
+                    select: {
+                      subType: true,
+                      entityId: true,
+                    },
+                  },
+                },
+              },
             },
           },
         },
@@ -222,6 +257,19 @@ export class PayoutService {
       return {
         id: entry.id,
         amount: Number(entry.amount ?? 0),
+        grossAmount: this.roundMoney(Number(transaction?.totalAmount ?? entry.amount ?? 0)),
+        commissionAmount: this.roundMoney(
+          Array.isArray(transaction?.entries)
+            ? transaction.entries
+                .filter(
+                  (line: any) =>
+                    line.direction === 'CREDIT' &&
+                    line.account?.subType === 'PLATFORM_COMMISSION',
+                )
+                .reduce((sum: number, line: any) => sum + Number(line.amount ?? 0), 0)
+            : 0,
+        ),
+        netAmount: this.roundMoney(Number(entry.amount ?? 0)),
         balanceAfter: Number(entry.balanceAfter ?? 0),
         currency: transaction?.currency ?? 'NGN',
         createdAt: entry.createdAt,
@@ -240,11 +288,81 @@ export class PayoutService {
       };
     });
 
+    // Fallback: if no ledger entries exist, show paid orders directly as income records
+    if (total === 0) {
+      return this.listLegacyOrderIncome(realBrandId, safePage, safeLimit);
+    }
+
     return {
       items,
       total,
       page: safePage,
       totalPages: Math.ceil(total / safeLimit),
+    };
+  }
+
+  private async listLegacyOrderIncome(brandId: string, page: number, limit: number) {
+    const skip = (page - 1) * limit;
+
+    const where: Prisma.OrderWhereInput = {
+      brandId,
+      paymentStatus: 'PAID' as any,
+    };
+
+    const [total, paidOrders] = await Promise.all([
+      this.prisma.order.count({ where }),
+      this.prisma.order.findMany({
+        where,
+        skip,
+        take: limit,
+        orderBy: { createdAt: 'desc' },
+        select: {
+          id: true,
+          totalAmount: true,
+          shippingCost: true,
+          discountAmount: true,
+          currency: true,
+          customerName: true,
+          createdAt: true,
+          status: true,
+        },
+      }),
+    ]);
+
+    const items = paidOrders.map((order) => {
+      const netAmount = Number(order.totalAmount ?? 0);
+
+      return {
+        id: order.id,
+        amount: Number(netAmount.toFixed(2)),
+        grossAmount: Number(netAmount.toFixed(2)),
+        commissionAmount: 0,
+        netAmount: Number(netAmount.toFixed(2)),
+        balanceAfter: 0,
+        currency: order.currency || 'NGN',
+        createdAt: order.createdAt,
+        transactionId: null,
+        transactionType: 'PAYMENT_RECEIVED',
+        description: `Payment for order #${order.id.slice(0, 8).toUpperCase()}`,
+        referenceType: 'Order',
+        referenceId: order.id,
+        title: `Order #${order.id.slice(0, 8).toUpperCase()}`,
+        counterparty: order.customerName,
+        stage:
+          String(order.status) === 'DELIVERED'
+            ? 'DELIVERED_RELEASE'
+            : String(order.status) === 'SHIPPED'
+              ? 'SHIPPED_RELEASE'
+              : 'PAYMENT',
+        metadata: null,
+      };
+    });
+
+    return {
+      items,
+      total,
+      page,
+      totalPages: Math.ceil(total / limit),
     };
   }
 
@@ -312,10 +430,7 @@ export class PayoutService {
     });
     return paidOrders.reduce(
       (sum, order) =>
-        sum +
-        Number(order.totalAmount) +
-        Number(order.shippingCost ?? 0) -
-        Number(order.discountAmount ?? 0),
+        sum + Number(order.totalAmount ?? 0),
       0,
     );
   }
@@ -335,5 +450,9 @@ export class PayoutService {
     if (haystack.includes('final')) return 'DELIVERED_RELEASE';
     if (haystack.includes('immediate')) return 'ACCEPTED_RELEASE';
     return 'RELEASE';
+  }
+
+  private roundMoney(value: number) {
+    return Math.round((value + Number.EPSILON) * 100) / 100;
   }
 }

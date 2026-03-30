@@ -20,6 +20,7 @@ import { CustomOrderSideEffectsService } from './custom-order-side-effects.servi
 import { LedgerService } from 'src/finance/ledger.service';
 import { CommissionService } from 'src/finance/commission.service';
 import { FinancialDocumentsService } from 'src/finance/financial-documents.service';
+import { CustomOrderThreadBootstrapService } from 'src/messaging/custom-order-thread-bootstrap.service';
 import {
   InitializeCustomOrderPaymentDto,
   VerifyCustomOrderPaymentDto,
@@ -36,6 +37,7 @@ export class CustomOrdersPaymentsService {
     private readonly ledgerService: LedgerService,
     private readonly commissionService: CommissionService,
     private readonly financialDocumentsService: FinancialDocumentsService,
+    private readonly customOrderThreadBootstrap: CustomOrderThreadBootstrapService,
   ) {}
 
   async initializePayment(
@@ -226,10 +228,18 @@ export class CustomOrdersPaymentsService {
         buyerId: true,
         brandId: true,
         currency: true,
+        sourceTitleSnapshot: true,
         sourceBrandNameSnapshot: true,
         productionLeadDaysSnapshot: true,
         deliveryMaxDaysSnapshot: true,
         buyerPriceSummaryJson: true,
+        buyer: {
+          select: {
+            firstName: true,
+            lastName: true,
+            username: true,
+          },
+        },
       },
     });
 
@@ -489,6 +499,20 @@ export class CustomOrdersPaymentsService {
       });
 
       if (brand?.ownerId) {
+        const buyerDisplayName = [order.buyer?.firstName, order.buyer?.lastName]
+          .map((value) => String(value ?? '').trim())
+          .filter(Boolean)
+          .join(' ');
+        await this.customOrderThreadBootstrap.ensureOrderPlacedThread({
+          customOrderId,
+          status: CustomOrderStatus.ACCEPTED,
+          brandId: order.brandId,
+          buyerId: order.buyerId,
+          brandOwnerUserId: brand.ownerId,
+          actorId: order.buyerId,
+          buyerDisplayName: buyerDisplayName || String(order.buyer?.username || 'Buyer'),
+          sourceTitle: order.sourceTitleSnapshot || 'Untitled custom order',
+        });
         await this.sideEffects.enqueueNotification({
           customOrderId,
           recipientIds: [brand.ownerId],

@@ -8,8 +8,7 @@ import { PaymentMethod, PaymentStatus, Prisma } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { v4 as uuidv4 } from 'uuid';
 import { FxRateService } from './fx-rate.service';
-import { StandardOrderEscrowService } from 'src/finance/standard-order-escrow.service';
-import { FinancialDocumentsService } from 'src/finance/financial-documents.service';
+import { StandardOrderFinanceSyncService } from 'src/finance/standard-order-finance-sync.service';
 import {
   InitializePaymentDto,
   PaymentAttemptStatus,
@@ -50,8 +49,7 @@ export class PaymentService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly fxRateService: FxRateService,
-    private readonly standardOrderEscrowService: StandardOrderEscrowService,
-    private readonly financialDocumentsService: FinancialDocumentsService,
+    private readonly standardOrderFinanceSyncService: StandardOrderFinanceSyncService,
   ) {}
 
   async initializePayment(
@@ -82,11 +80,7 @@ export class PaymentService {
 
     const paymentData = this.validatePaymentRequest(dto.paymentMethod, dto.paymentData);
     const amount = orders.reduce(
-      (sum, order) =>
-        sum +
-        Number(order.totalAmount) +
-        Number(order.shippingCost ?? 0) -
-        Number(order.discountAmount ?? 0),
+      (sum, order) => sum + Number(order.totalAmount ?? 0),
       0,
     );
     const currency = orders[0].currency;
@@ -547,9 +541,14 @@ export class PaymentService {
     const firstOrder = orders[0];
     const shippingAddress = this.asObject(firstOrder.shippingAddress);
     const items = orders.flatMap((order) => this.asOrderItems(order.items));
-    const subtotal = orders.reduce((sum, order) => sum + Number(order.totalAmount), 0);
+    const subtotal = items.reduce(
+      (sum, item) =>
+        sum + Number(item.price ?? item.unitPrice ?? 0) * Number(item.quantity ?? 1),
+      0,
+    );
     const shippingCost = orders.reduce((sum, order) => sum + Number(order.shippingCost ?? 0), 0);
     const discount = orders.reduce((sum, order) => sum + Number(order.discountAmount ?? 0), 0);
+    const grandTotal = orders.reduce((sum, order) => sum + Number(order.totalAmount ?? 0), 0);
 
     return {
       paymentAttemptId: attempt.id,
@@ -561,7 +560,7 @@ export class PaymentService {
       currency: attempt.currency,
       settlementCurrency: attempt.settlementCurrency,
       settlementAmount: Number(
-        attempt.settlementAmount ?? attempt.amount ?? subtotal + shippingCost - discount,
+        attempt.settlementAmount ?? attempt.amount ?? grandTotal,
       ),
       exchangeRateSnapshotId: attempt.exchangeRateSnapshotId ?? undefined,
       channel: (attempt.channel as PaymentChannel | null) ?? undefined,
@@ -582,7 +581,7 @@ export class PaymentService {
         subtotal,
         shippingCost,
         discount,
-        grandTotal: subtotal + shippingCost - discount,
+        grandTotal,
         shippingName: String(firstOrder.customerName ?? ''),
         shippingCity: String(shippingAddress.city ?? ''),
         shippingState: String(shippingAddress.state ?? ''),
@@ -626,9 +625,6 @@ export class PaymentService {
               id: true,
               brandId: true,
               buyerId: true,
-              totalAmount: true,
-              shippingCost: true,
-              discountAmount: true,
             },
             orderBy: { createdAt: 'asc' },
           })
@@ -663,39 +659,6 @@ export class PaymentService {
         },
       });
 
-      if (nextStatus === 'PAID' && linkedOrders.length > 0) {
-        await this.standardOrderEscrowService.ensureHoldsForPaidOrders(
-          tx,
-          linkedOrders,
-          Number(settlement.settlementAmount ?? attempt.amount),
-          settlement.settlementCurrency ?? this.fxRateService.getBaseCurrency(),
-        );
-        await this.financialDocumentsService.issueBuyerReceipt(tx, {
-          paymentAttemptId: updated.id,
-          orderIds: linkedOrders.map((order) => order.id),
-          currency: attempt.currency,
-          grossAmount: linkedOrders.reduce(
-            (sum, order) =>
-              sum +
-              Number(order.totalAmount) +
-              Number(order.shippingCost ?? 0) -
-              Number(order.discountAmount ?? 0),
-            0,
-          ),
-          settlementCurrency: settlement.settlementCurrency,
-          settlementAmount: Number(
-            settlement.settlementAmount ?? attempt.amount ?? 0,
-          ),
-          lineItems: linkedOrders.map((order) => ({
-            label: `Order ${order.id.slice(0, 8)}`,
-            amount:
-              Number(order.totalAmount) +
-              Number(order.shippingCost ?? 0) -
-              Number(order.discountAmount ?? 0),
-          })),
-        });
-      }
-
       await tx.paymentEvent.create({
         data: {
           paymentAttemptId: updated.id,
@@ -707,6 +670,10 @@ export class PaymentService {
 
       return updated;
     });
+
+    if (nextStatus === 'PAID' && linkedOrders.length > 0) {
+      await this.standardOrderFinanceSyncService.syncPaidOrdersByReferences([reference]);
+    }
 
     return updatedAttempt;
   }
@@ -722,7 +689,7 @@ export class PaymentService {
     success: boolean,
   ): PaymentVerifyResult {
     const amount = orders.reduce(
-      (sum, order) => sum + Number(order.totalAmount) + Number(order.shippingCost ?? 0),
+      (sum, order) => sum + Number(order.totalAmount ?? 0),
       0,
     );
 

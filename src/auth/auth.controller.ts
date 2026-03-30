@@ -41,6 +41,8 @@ import { RequestAdminPasswordResetDto } from './dto/request-admin-password-reset
 import { ConfirmAdminPasswordResetDto } from './dto/confirm-admin-password-reset.dto';
 import { ChangeAuthenticatedPasswordDto } from './dto/change-authenticated-password.dto';
 import { CompleteAdminFirstLoginResetDto } from './dto/complete-admin-first-login-reset.dto';
+import { RequestPasswordResetDto } from './dto/request-password-reset.dto';
+import { ConfirmPasswordResetDto } from './dto/confirm-password-reset.dto';
 
 @ApiTags('auth')
 @ApiBearerAuth()
@@ -150,6 +152,24 @@ export class AuthController {
       body.currentPassword,
       body.newPassword,
     );
+  }
+
+  @Post('password-reset/request')
+  @ApiOperation({ summary: 'Request password reset token for regular users' })
+  @Throttle({ default: { limit: 3, ttl: 900000 } })
+  async requestPasswordReset(
+    @Body(ValidationPipe) body: RequestPasswordResetDto,
+  ) {
+    return this.authService.requestPasswordReset(body.email);
+  }
+
+  @Post('password-reset/confirm')
+  @ApiOperation({ summary: 'Confirm password reset with token for regular users' })
+  @Throttle({ default: { limit: 5, ttl: 900000 } })
+  async confirmPasswordReset(
+    @Body(ValidationPipe) body: ConfirmPasswordResetDto,
+  ) {
+    return this.authService.confirmPasswordReset(body.token, body.newPassword);
   }
 
   @UseGuards(JwtAuthGuard)
