@@ -31,6 +31,7 @@ import { EmailVerificationHelperService } from './helper/email-verification-help
 import { EmailService } from 'src/email/email.service';
 import * as emailTemplates from 'src/email/email.templates';
 import { createHash, randomBytes } from 'crypto';
+import { TrustedDeviceService } from './helper/trusted-device.service';
 
 @Injectable()
 export class AuthService {
@@ -44,6 +45,7 @@ export class AuthService {
     private readonly emailVerificationHelper: EmailVerificationHelperService,
     private readonly notifications: NotificationsService,
     private readonly emailService: EmailService,
+    private readonly trustedDeviceService: TrustedDeviceService,
   ) { }
 
   private extractClientIp(req: Request): string | null {
@@ -276,11 +278,17 @@ export class AuthService {
 
       // Notify LOGIN event (login activity) without blocking login latency.
       const ipAddress = this.extractClientIp(req);
+      const deviceResult = await this.trustedDeviceService.recordLoginDevice(
+        user.id,
+        req,
+      );
+
       void this.notifications
         .create(user.id, NotificationType.LOGIN, {
           payload: {
             ip: ipAddress,
             userAgent: req.headers['user-agent'] ?? null,
+            newDevice: deviceResult.isNewDevice,
           },
         })
         .catch(() => undefined);
@@ -299,6 +307,14 @@ export class AuthService {
       }
       throw new UnauthorizedException(`Login failed: ${error.message}`);
     }
+  }
+
+  async getTrustedDevices(userId: string) {
+    return this.trustedDeviceService.listDevices(userId);
+  }
+
+  async revokeTrustedDevice(userId: string, deviceId: string) {
+    return this.trustedDeviceService.revokeDevice(userId, deviceId);
   }
 
   // Validates user credentials for login

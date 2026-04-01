@@ -62,6 +62,12 @@ model User {
   emailVerificationCode String?         @unique
   isActive              String          @default("Active")
   notificationSettings  Json?           // Stores user preferences { security: { login: true }, engagement: { threads: true } }
+  emailPreference       UserEmailPreference?
+  emailScenarioPreferences UserEmailScenarioPreference[]
+  trustedDevices        TrustedDevice[]
+  emailPreferenceAudits UserEmailPreferenceAudit[]      @relation("EmailPreferenceAuditSubject")
+  emailPreferenceChanges UserEmailPreferenceAudit[]     @relation("EmailPreferenceAuditActor")
+  emailOutboxEvents     EmailOutbox[]                  @relation("EmailOutboxRecipient")
 
   // Admin Console fields
   status                UserStatus      @default(ACTIVE)
@@ -445,6 +451,11 @@ enum EscrowReleaseCondition {
   REFUND_COMPLETED
 }
 
+enum StandardOrderReleaseStage {
+  SHIPMENT_PORTION
+  FINAL_PORTION
+}
+
 enum LedgerAccountType {
   ASSET
   LIABILITY
@@ -704,6 +715,27 @@ enum NotificationType {
   MESSAGE_UNREAD_REMINDER
   MESSAGE_THREAD_REOPENED
   MESSAGE_MODERATED
+}
+
+enum EmailOutboxStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+enum EmailPriority {
+  P0_SECURITY
+  P1_TRANSACTIONAL
+  P2_OPERATIONAL
+  P3_SOCIAL
+  P4_DIGEST
+}
+
+enum EmailSuppressionReason {
+  BOUNCE
+  COMPLAINT
+  MANUAL
 }
 
 enum MessageContextType {
@@ -1289,6 +1321,146 @@ model Notification {
   @@index([recipientId, createdAt])
 }
 
+model UserEmailPreference {
+  id                      String                        @id @default(uuid()) @db.Uuid
+  userId                  String                        @unique @db.Uuid
+  user                    User                          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  globalEnabled           Boolean                       @default(true)
+  securityCriticalEnabled Boolean                       @default(true)
+  digestMode              Boolean                       @default(false)
+  quietHoursJson          Json?
+  createdAt               DateTime                      @default(now())
+  updatedAt               DateTime                      @updatedAt
+
+  @@index([updatedAt])
+}
+
+model UserEmailScenarioPreference {
+  id          String              @id @default(uuid()) @db.Uuid
+  userId      String              @db.Uuid
+  user        User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  scenarioKey String
+  enabled     Boolean             @default(true)
+  frequency   String              @default("INSTANT")
+  updatedAt   DateTime            @updatedAt
+
+  @@unique([userId, scenarioKey])
+  @@index([scenarioKey])
+}
+
+model UserEmailPreferenceAudit {
+  id                     String    @id @default(uuid()) @db.Uuid
+  userId                 String    @db.Uuid
+  user                   User      @relation("EmailPreferenceAuditSubject", fields: [userId], references: [id], onDelete: Cascade)
+  changedById            String?   @db.Uuid
+  changedBy              User?     @relation("EmailPreferenceAuditActor", fields: [changedById], references: [id], onDelete: SetNull)
+  scenarioKey            String
+  previousValue          Boolean?
+  newValue               Boolean
+  complianceAcknowledged Boolean   @default(false)
+  stepUpMethod           String?
+  createdAt              DateTime  @default(now())
+
+  @@index([userId, createdAt])
+  @@index([scenarioKey, createdAt])
+}
+
+model TrustedDevice {
+  id              String    @id @default(uuid()) @db.Uuid
+  userId          String    @db.Uuid
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  fingerprintHash String
+  deviceLabel     String?
+  firstSeenAt     DateTime  @default(now())
+  lastSeenAt      DateTime  @default(now())
+  lastIpHash      String?
+  lastUserAgent   String?
+  isTrusted       Boolean   @default(false)
+  revokedAt       DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@unique([userId, fingerprintHash])
+  @@index([userId, revokedAt, lastSeenAt])
+}
+
+model EmailSuppression {
+  id                 String                 @id @default(uuid()) @db.Uuid
+  recipientEmailHash String                 @unique
+  reason             EmailSuppressionReason
+  source             String?
+  expiresAt          DateTime?
+  createdAt          DateTime               @default(now())
+  updatedAt          DateTime               @updatedAt
+
+  @@index([expiresAt])
+}
+
+model EmailOutbox {
+  id                     String             @id @default(uuid()) @db.Uuid
+  recipientUserId        String?            @db.Uuid
+  recipient              User?              @relation("EmailOutboxRecipient", fields: [recipientUserId], references: [id], onDelete: SetNull)
+  recipientEmailSnapshot String
+  scenarioKey            String
+  notificationType       NotificationType?
+  subject                String
+  html                   String
+  text                   String?
+  payloadJson            Json?
+  priority               EmailPriority      @default(P2_OPERATIONAL)
+  idempotencyKey         String?            @unique
+  status                 EmailOutboxStatus  @default(PENDING)
+  attempts               Int                @default(0)
+  availableAt            DateTime           @default(now())
+  lockedAt               DateTime?
+  lockOwner              String?
+  lockExpiresAt          DateTime?
+  lastError              String?
+  providerMessageId      String?
+  sentAt                 DateTime?
+  createdAt              DateTime           @default(now())
+  updatedAt              DateTime           @updatedAt
+
+  attemptsLog            EmailDeliveryAttempt[]
+
+  @@index([status, availableAt, createdAt])
+  @@index([priority, status, availableAt])
+  @@index([lockExpiresAt])
+  @@index([recipientUserId, createdAt])
+  @@index([scenarioKey, createdAt])
+}
+
+model EmailDeliveryAttempt {
+  id                   String    @id @default(uuid()) @db.Uuid
+  emailOutboxId        String    @db.Uuid
+  emailOutbox          EmailOutbox @relation(fields: [emailOutboxId], references: [id], onDelete: Cascade)
+  attemptNo            Int
+  provider             String?
+  smtpHost             String?
+  result               String
+  errorCode            String?
+  errorMessage         String?
+  providerResponseJson Json?
+  createdAt            DateTime  @default(now())
+
+  @@index([emailOutboxId, createdAt])
+}
+
+model EmailWebhookEvent {
+  id               String    @id @default(uuid()) @db.Uuid
+  provider         String
+  eventType        String
+  providerEventId  String
+  signatureValid   Boolean   @default(false)
+  receivedAt       DateTime  @default(now())
+  processedAt      DateTime?
+  payloadJson      Json?
+  errorMessage     String?
+
+  @@unique([provider, providerEventId])
+  @@index([processedAt, receivedAt])
+}
+
 model UserSizeFitProfile {
   id                    String              @id @map("_id") @db.Uuid
   userId                String              @unique @db.Uuid
@@ -1585,6 +1757,7 @@ model Brand {
   featuredPenaltyUntil  DateTime?
 
   policy      StorePolicy?
+  paymentAccount StorePaymentAccount?
 
   // Review aggregates (cached, recomputed async)
   avgRating    Float     @default(0)
@@ -1719,6 +1892,42 @@ model StorePolicy {
   @@index([brandId])
 }
 
+model StorePaymentAccount {
+  id                     String                  @id @default(uuid()) @map("_id") @db.Uuid
+  brandId                String                  @unique @db.Uuid
+  brand                  Brand                   @relation(fields: [brandId], references: [id], onDelete: Cascade)
+  status                 StorePaymentAccountStatus @default(PENDING_SETUP)
+  provider               String                  @default("PAYSTACK")
+  countryCode            String                  @default("NG")
+  currency               String                  @default("NGN")
+  businessName           String?
+  primaryContactName     String?
+  primaryContactEmail    String?
+  primaryContactPhone    String?
+  bankCode               String?
+  bankName               String?
+  accountName            String?
+  accountNumberEncrypted String?
+  accountNumberLast4     String?
+  isAccountResolved      Boolean                 @default(false)
+  accountResolvedAt      DateTime?
+  subaccountCode         String?                 @unique
+  subaccountId           String?
+  subaccountActive       Boolean                 @default(false)
+  subaccountVerified     Boolean                 @default(false)
+  subaccountLastSyncAt   DateTime?
+  transferRecipientCode  String?                 @unique
+  transferRecipientId    String?
+  transferRecipientActive Boolean                @default(false)
+  transferRecipientLastSyncAt DateTime?
+  lastSyncError          String?
+  metadata               Json?
+  createdAt              DateTime                @default(now())
+  updatedAt              DateTime                @updatedAt
+
+  @@index([status, updatedAt])
+}
+
 model SystemTag {
   id        String   @id @map("_id") @db.Uuid
   tag       String   @unique
@@ -1831,6 +2040,7 @@ model EscrowHold {
   refundReason                 String?
   createdAt                    DateTime               @default(now())
   updatedAt                    DateTime               @updatedAt
+  payoutSourceAllocations      PayoutLedgerSourceAllocation[]
 
   @@index([brandId, status])
   @@index([status, secondReleaseEligibleAt])
@@ -1893,6 +2103,7 @@ model LedgerEntry {
   amount        Decimal              @db.Decimal(18, 2)
   balanceAfter  Decimal              @db.Decimal(18, 2)
   createdAt     DateTime             @default(now())
+  payoutSourceAllocations PayoutLedgerSourceAllocation[]
 
   @@index([transactionId])
   @@index([accountId, createdAt])
@@ -2366,6 +2577,10 @@ model PaymentAttempt {
   customOrderId    String?      @db.Uuid
   provider         String
   providerMode     String
+  providerReference String?
+  providerTransactionId String?
+  providerAccessCode String?
+  providerChannel  String?
   paymentMethod    PaymentMethod
   channel          String?
   status           String
@@ -2388,6 +2603,7 @@ model PaymentAttempt {
   failureMessage   String?
   expiresAt        DateTime?
   confirmedAt      DateTime?
+  finalizedAt      DateTime?
   lastVerifiedAt   DateTime?
   createdAt        DateTime     @default(now())
   updatedAt        DateTime     @updatedAt
@@ -2404,10 +2620,15 @@ model PaymentEvent {
   paymentAttemptId String   @db.Uuid
   type             String
   source           String
+  providerEventKey String?  @unique
+  providerEventType String?
+  providerEventReceivedAt DateTime?
+  processedAt      DateTime?
   payload          Json?
   createdAt        DateTime @default(now())
 
   @@index([paymentAttemptId, createdAt])
+  @@index([providerEventType, createdAt])
 }
 
 model OrderItem {
@@ -2473,12 +2694,24 @@ model Payout {
   brandId     String       @db.Uuid
   brand       Brand        @relation(fields: [brandId], references: [id])
   ledgerAllocations CustomOrderLedgerAllocation[]
+  ledgerSourceAllocations PayoutLedgerSourceAllocation[]
+  events      PayoutEvent[]
 
   amount      Decimal      @db.Decimal(10, 2)
   currency    String       @default("NGN")
   status      PayoutStatus @default(PENDING_APPROVAL)
+  provider    String       @default("PAYSTACK")
   reference   String?
   gatewayReference String?
+  providerRecipientCode String?
+  providerRecipientId String?
+  providerTransferCode String? @unique
+  providerTransferId String?
+  providerTransferReference String? @unique
+  providerTransferStatus String?
+  providerTransferFailureCode String?
+  providerTransferFailureMessage String?
+  providerTransferPayload Json?
   failureReason String?
   statusReason String?
   approvedById String?     @db.Uuid
@@ -2491,6 +2724,9 @@ model Payout {
   releasedAt   DateTime?
   processedAt  DateTime?
   paidAt       DateTime?
+  providerTransferInitiatedAt DateTime?
+  providerTransferFinalizedAt DateTime?
+  providerTransferReversedAt DateTime?
 
   createdAt    DateTime    @default(now())
   updatedAt    DateTime    @updatedAt
@@ -2498,6 +2734,44 @@ model Payout {
   @@index([brandId])
   @@index([status, createdAt])
   @@index([assignedAdminId, status])
+  @@index([providerTransferStatus, createdAt])
+}
+
+model PayoutEvent {
+  id               String   @id @default(uuid()) @db.Uuid
+  payoutId         String   @db.Uuid
+  payout           Payout   @relation(fields: [payoutId], references: [id], onDelete: Cascade)
+  type             String
+  source           String
+  providerEventKey String?  @unique
+  providerEventType String?
+  providerEventReceivedAt DateTime?
+  processedAt      DateTime?
+  payload          Json?
+  createdAt        DateTime @default(now())
+
+  @@index([payoutId, createdAt])
+  @@index([providerEventType, createdAt])
+}
+
+model PayoutLedgerSourceAllocation {
+  id           String                    @id @default(uuid()) @db.Uuid
+  payoutId      String                   @db.Uuid
+  payout        Payout                   @relation(fields: [payoutId], references: [id], onDelete: Cascade)
+  ledgerEntryId  String                  @db.Uuid
+  ledgerEntry    LedgerEntry             @relation(fields: [ledgerEntryId], references: [id], onDelete: Cascade)
+  escrowHoldId   String?                 @db.Uuid
+  escrowHold     EscrowHold?             @relation(fields: [escrowHoldId], references: [id], onDelete: SetNull)
+  releaseStage   StandardOrderReleaseStage?
+  amount         Decimal                 @db.Decimal(10, 2)
+  currency       String                  @default("NGN")
+  createdAt      DateTime                @default(now())
+  updatedAt      DateTime                @updatedAt
+
+  @@unique([payoutId, ledgerEntryId])
+  @@index([payoutId])
+  @@index([ledgerEntryId])
+  @@index([escrowHoldId, releaseStage])
 }
 
 enum OrderStatus {
@@ -2522,6 +2796,13 @@ enum PaymentMethod {
   FLUTTERWAVE
   BANK_TRANSFER
   PAY_ON_DELIVERY
+}
+
+enum StorePaymentAccountStatus {
+  PENDING_SETUP
+  PENDING_SYNC
+  ACTIVE
+  SYNC_ERROR
 }
 
 enum PaymentSubjectType {

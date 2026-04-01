@@ -4,10 +4,11 @@ import {
   NotFoundException,
   Inject,
   Logger,
+  BadRequestException,
 } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { EventsGateway } from 'src/realtime/events.gateway';
-import { NotificationType, PatchStatus } from '@prisma/client';
+import { EmailSuppressionReason, NotificationType, PatchStatus, Prisma } from '@prisma/client';
 import {
   CreateNotificationOptions,
   NotificationSettings,
@@ -18,6 +19,32 @@ import { v4 as uuidv4 } from 'uuid';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import { Cache } from 'cache-manager';
 import { NotificationRegistry } from './notifications.registry';
+import { EmailService } from 'src/email/email.service';
+import {
+  getCriticalEmailScenarios,
+  getEmailPriorityForScenario,
+  getEmailScenarioKey,
+  isEmailScenarioCritical,
+  renderNotificationEmail,
+} from './email.policy';
+import * as argon2 from 'argon2';
+import { createHash } from 'crypto';
+import { ConfigService } from '@nestjs/config';
+
+type EmailSettingsResponse = {
+  globalEnabled: boolean;
+  securityCriticalEnabled: boolean;
+  scenarios: Record<string, boolean>;
+  securityCriticalScenarios: string[];
+};
+
+type UpdateEmailSettingsPayload = {
+  globalEnabled?: boolean;
+  securityCriticalEnabled?: boolean;
+  scenarios?: Record<string, boolean>;
+  stepUpPassword?: string;
+  complianceAcknowledged?: boolean;
+};
 
 @Injectable()
 export class NotificationsService {
@@ -28,6 +55,8 @@ export class NotificationsService {
     private readonly events: EventsGateway,
     @Inject(CACHE_MANAGER) private cacheManager: Cache,
     private readonly registry: NotificationRegistry,
+    private readonly emailService: EmailService,
+    private readonly config: ConfigService,
   ) {}
 
   private validateAndSanitizePayload(
@@ -464,6 +493,294 @@ export class NotificationsService {
     return sanitized;
   }
 
+  private getAllEmailScenarioKeys(): string[] {
+    const fromRegistry = this.registry
+      .getAllTypes()
+      .map((type) => getEmailScenarioKey(type, null));
+    return Array.from(new Set([...fromRegistry, ...getCriticalEmailScenarios()]));
+  }
+
+  private normalizeEmail(email: string): string {
+    return email.trim().toLowerCase();
+  }
+
+  private hashValue(value: string): string {
+    return createHash('sha256').update(value).digest('hex');
+  }
+
+  private toRecord(value: Prisma.JsonValue | null | undefined): Record<string, unknown> | null {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return null;
+    }
+    return value as Record<string, unknown>;
+  }
+
+  private async isEmailAllowedForScenario(
+    userId: string,
+    scenarioKey: string,
+  ): Promise<boolean> {
+    const [profile, override] = await Promise.all([
+      this.prisma.userEmailPreference.findUnique({
+        where: { userId },
+        select: { globalEnabled: true, securityCriticalEnabled: true },
+      }),
+      this.prisma.userEmailScenarioPreference.findUnique({
+        where: { userId_scenarioKey: { userId, scenarioKey } },
+        select: { enabled: true },
+      }),
+    ]);
+
+    const scenarioEnabled = override?.enabled ?? true;
+    if (!scenarioEnabled) {
+      return false;
+    }
+
+    if (isEmailScenarioCritical(scenarioKey)) {
+      return profile?.securityCriticalEnabled ?? true;
+    }
+
+    return profile?.globalEnabled ?? true;
+  }
+
+  async getEmailSettings(userId: string): Promise<EmailSettingsResponse> {
+    const [profile, overrides] = await Promise.all([
+      this.prisma.userEmailPreference.findUnique({
+        where: { userId },
+        select: {
+          globalEnabled: true,
+          securityCriticalEnabled: true,
+        },
+      }),
+      this.prisma.userEmailScenarioPreference.findMany({
+        where: { userId },
+        select: { scenarioKey: true, enabled: true },
+      }),
+    ]);
+
+    const scenarios: Record<string, boolean> = {};
+    for (const key of this.getAllEmailScenarioKeys()) {
+      scenarios[key] = true;
+    }
+    for (const override of overrides) {
+      scenarios[override.scenarioKey] = override.enabled;
+    }
+
+    return {
+      globalEnabled: profile?.globalEnabled ?? true,
+      securityCriticalEnabled: profile?.securityCriticalEnabled ?? true,
+      scenarios,
+      securityCriticalScenarios: getCriticalEmailScenarios(),
+    };
+  }
+
+  async resetEmailSettings(userId: string): Promise<EmailSettingsResponse> {
+    await this.prisma.$transaction([
+      this.prisma.userEmailScenarioPreference.deleteMany({ where: { userId } }),
+      this.prisma.userEmailPreference.deleteMany({ where: { userId } }),
+    ]);
+
+    return this.getEmailSettings(userId);
+  }
+
+  async updateEmailSettings(
+    userId: string,
+    payload: UpdateEmailSettingsPayload,
+  ): Promise<EmailSettingsResponse> {
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+      throw new BadRequestException('Invalid email settings payload');
+    }
+
+    const current = await this.getEmailSettings(userId);
+    const allowedScenarios = new Set(Object.keys(current.scenarios));
+
+    const nextGlobalEnabled =
+      typeof payload.globalEnabled === 'boolean'
+        ? payload.globalEnabled
+        : current.globalEnabled;
+    const nextSecurityCriticalEnabled =
+      typeof payload.securityCriticalEnabled === 'boolean'
+        ? payload.securityCriticalEnabled
+        : current.securityCriticalEnabled;
+
+    const scenarioPatch = payload.scenarios ?? {};
+    const unknownScenarioKeys = Object.keys(scenarioPatch).filter(
+      (key) => !allowedScenarios.has(key),
+    );
+    if (unknownScenarioKeys.length > 0) {
+      throw new BadRequestException(
+        `Unknown scenario keys: ${unknownScenarioKeys.join(', ')}`,
+      );
+    }
+
+    const criticalScenarios = new Set(getCriticalEmailScenarios());
+    const requiresStepUp =
+      (current.securityCriticalEnabled && !nextSecurityCriticalEnabled) ||
+      Object.entries(scenarioPatch).some(([key, value]) => {
+        if (typeof value !== 'boolean') {
+          throw new BadRequestException(`Invalid value for scenario ${key}`);
+        }
+
+        return criticalScenarios.has(key) && current.scenarios[key] && !value;
+      });
+
+    if (requiresStepUp) {
+      if (!payload.complianceAcknowledged) {
+        throw new ForbiddenException(
+          'Compliance acknowledgement is required for security-critical changes',
+        );
+      }
+
+      if (!payload.stepUpPassword || payload.stepUpPassword.length < 8) {
+        throw new ForbiddenException(
+          'Step-up password confirmation is required for security-critical changes',
+        );
+      }
+
+      const user = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { password: true },
+      });
+      if (!user) {
+        throw new NotFoundException('User not found');
+      }
+
+      const valid = await argon2.verify(user.password, payload.stepUpPassword);
+      if (!valid) {
+        throw new ForbiddenException('Step-up authentication failed');
+      }
+    }
+
+    const auditEntries: Prisma.UserEmailPreferenceAuditCreateManyInput[] = [];
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.userEmailPreference.upsert({
+        where: { userId },
+        create: {
+          userId,
+          globalEnabled: nextGlobalEnabled,
+          securityCriticalEnabled: nextSecurityCriticalEnabled,
+        },
+        update: {
+          globalEnabled: nextGlobalEnabled,
+          securityCriticalEnabled: nextSecurityCriticalEnabled,
+        },
+      });
+
+      for (const [scenarioKey, enabled] of Object.entries(scenarioPatch)) {
+        await tx.userEmailScenarioPreference.upsert({
+          where: { userId_scenarioKey: { userId, scenarioKey } },
+          create: { userId, scenarioKey, enabled },
+          update: { enabled },
+        });
+
+        if (current.scenarios[scenarioKey] !== enabled) {
+          auditEntries.push({
+            userId,
+            changedById: userId,
+            scenarioKey,
+            previousValue: current.scenarios[scenarioKey],
+            newValue: enabled,
+            complianceAcknowledged: !!payload.complianceAcknowledged,
+            stepUpMethod: requiresStepUp ? 'PASSWORD' : null,
+          });
+        }
+      }
+
+      if (auditEntries.length > 0) {
+        await tx.userEmailPreferenceAudit.createMany({ data: auditEntries });
+      }
+    });
+
+    return this.getEmailSettings(userId);
+  }
+
+  async handleEmailWebhook(
+    provider: string,
+    signature: string | undefined,
+    payload: Record<string, unknown> | null,
+  ): Promise<{ accepted: boolean; duplicate?: boolean }> {
+    const providerKey = provider.trim().toUpperCase().replace(/[^A-Z0-9]/g, '_');
+    const expectedSignature =
+      this.config.get<string>(`EMAIL_WEBHOOK_SECRET_${providerKey}`) ??
+      this.config.get<string>('EMAIL_WEBHOOK_SECRET');
+
+    const signatureValid = !!expectedSignature && signature === expectedSignature;
+    const eventType = String(payload?.eventType ?? payload?.event ?? 'unknown');
+    const providerEventIdRaw = String(
+      payload?.eventId ?? payload?.id ?? payload?.messageId ?? this.hashValue(JSON.stringify(payload ?? {})),
+    );
+
+    try {
+      await this.prisma.emailWebhookEvent.create({
+        data: {
+          provider,
+          eventType,
+          providerEventId: providerEventIdRaw,
+          signatureValid,
+          payloadJson: (payload ?? null) as Prisma.InputJsonValue,
+        },
+      });
+    } catch (error: any) {
+      if (error?.code === 'P2002') {
+        return { accepted: true, duplicate: true };
+      }
+      throw error;
+    }
+
+    if (!signatureValid) {
+      throw new ForbiddenException('Invalid email webhook signature');
+    }
+
+    const recipientEmail =
+      typeof payload?.recipientEmail === 'string'
+        ? payload.recipientEmail
+        : typeof payload?.recipient === 'string'
+          ? payload.recipient
+          : typeof payload?.email === 'string'
+            ? payload.email
+            : null;
+
+    const normalizedEventType = eventType.toLowerCase();
+    if (
+      recipientEmail &&
+      (normalizedEventType.includes('bounce') ||
+        normalizedEventType.includes('complaint') ||
+        normalizedEventType.includes('spam'))
+    ) {
+      const reason = normalizedEventType.includes('complaint') || normalizedEventType.includes('spam')
+        ? EmailSuppressionReason.COMPLAINT
+        : EmailSuppressionReason.BOUNCE;
+      const recipientEmailHash = this.hashValue(this.normalizeEmail(recipientEmail));
+
+      await this.prisma.emailSuppression.upsert({
+        where: { recipientEmailHash },
+        create: {
+          recipientEmailHash,
+          reason,
+          source: provider,
+        },
+        update: {
+          reason,
+          source: provider,
+        },
+      });
+    }
+
+    await this.prisma.emailWebhookEvent.update({
+      where: {
+        provider_providerEventId: {
+          provider,
+          providerEventId: providerEventIdRaw,
+        },
+      },
+      data: {
+        processedAt: new Date(),
+      },
+    });
+
+    return { accepted: true };
+  }
+
   private isNotificationEnabled(
     type: NotificationType,
     settings: NotificationSettings,
@@ -573,6 +890,66 @@ export class NotificationsService {
     }
 
     return true;
+  }
+
+  private async enqueueEmailForNotification(args: {
+    recipientId: string;
+    notificationId: string;
+    type: NotificationType;
+    message: string;
+    payload: Record<string, unknown> | null;
+    targetUrl?: string;
+  }): Promise<void> {
+    const scenarioKey = getEmailScenarioKey(args.type, args.payload);
+    const allowed = await this.isEmailAllowedForScenario(args.recipientId, scenarioKey);
+    if (!allowed) {
+      return;
+    }
+
+    const recipient = await this.prisma.user.findUnique({
+      where: { id: args.recipientId },
+      select: { email: true },
+    });
+    if (!recipient?.email) {
+      return;
+    }
+
+    const recipientEmail = this.normalizeEmail(recipient.email);
+    const recipientHash = this.hashValue(recipientEmail);
+
+    const suppression = await this.prisma.emailSuppression.findFirst({
+      where: {
+        recipientEmailHash: recipientHash,
+        OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+      },
+      select: { id: true },
+    });
+    if (suppression) {
+      return;
+    }
+
+    const heading = String(args.type).replace(/_/g, ' ').toLowerCase();
+    const rendered = renderNotificationEmail({
+      appName: this.emailService.getAppName(),
+      heading: heading.charAt(0).toUpperCase() + heading.slice(1),
+      message: args.message,
+      targetUrl: args.targetUrl,
+    });
+
+    await this.emailService.send(
+      recipientEmail,
+      rendered.subject,
+      rendered.html,
+      rendered.text,
+      {
+        recipientUserId: args.recipientId,
+        scenarioKey,
+        notificationType: args.type,
+        payloadJson: args.payload,
+        priority: getEmailPriorityForScenario(args.type, scenarioKey),
+        idempotencyKey: `notif:${args.notificationId}`,
+      },
+    );
   }
 
   async create(
@@ -727,6 +1104,23 @@ export class NotificationsService {
         this.logger.warn(`Failed to emit notification event: ${error}`);
         // Log for monitoring, but don't fail the notification creation
       }
+
+      const emailPayload = this.toRecord(created.payload as Prisma.JsonValue | null);
+      const targetUrl = this.sanitizeTargetUrl(emailPayload?.targetUrl);
+      const message = this.formatMessage(created);
+
+      void this.enqueueEmailForNotification({
+        recipientId,
+        notificationId: created.id,
+        type,
+        message,
+        payload: emailPayload,
+        targetUrl,
+      }).catch((error) => {
+        this.logger.warn(
+          `Failed to enqueue notification email for notification=${created.id}: ${String(error)}`,
+        );
+      });
 
       return created;
     } catch (error) {

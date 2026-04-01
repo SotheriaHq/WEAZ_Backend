@@ -34,6 +34,7 @@ import { BreakGlassController } from './break-glass/break-glass.controller';
 import { FeatureFlagsController } from './feature-flags/feature-flags.controller';
 import { AdminSlaController } from './sla/admin-sla.controller';
 import { AdminPayoutsController } from './payouts/admin-payouts.controller';
+import { AdminPayoutsWebhookController } from './payouts/admin-payouts-webhook.controller';
 import { AdminNotificationsController } from './notifications/admin-notifications.controller';
 import { AdminAuditController } from './audit/admin-audit.controller';
 import { AdminProductsController } from './products/admin-products.controller';
@@ -50,6 +51,7 @@ import { AdminLedgerService } from './ledger/admin-ledger.service';
 import { AdminLedgerController } from './ledger/admin-ledger.controller';
 import { AdminFinanceService } from './finance/admin-finance.service';
 import { AdminFinanceController } from './finance/admin-finance.controller';
+import { QueueModule } from 'src/queue/queue.module';
 
 @Module({
   imports: [
@@ -59,6 +61,7 @@ import { AdminFinanceController } from './finance/admin-finance.controller';
     BrandVerificationModule,
     SystemConfigModule,
     FinanceModule,
+    QueueModule,
   ],
   controllers: [
     AdminUsersController,
@@ -69,6 +72,7 @@ import { AdminFinanceController } from './finance/admin-finance.controller';
     FeatureFlagsController,
     AdminSlaController,
     AdminPayoutsController,
+    AdminPayoutsWebhookController,
     AdminNotificationsController,
     AdminAuditController,
     AdminProductsController,

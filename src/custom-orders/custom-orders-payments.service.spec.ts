@@ -7,6 +7,7 @@ import { PrismaService } from 'src/prisma/prisma.service';
 import { PaymentService } from 'src/payment/payment.service';
 import { CustomOrderSideEffectsService } from './custom-order-side-effects.service';
 import { CustomOrdersPaymentsService } from './custom-orders-payments.service';
+import { CustomOrderThreadBootstrapService } from 'src/messaging/custom-order-thread-bootstrap.service';
 
 describe('CustomOrdersPaymentsService', () => {
   let service: CustomOrdersPaymentsService;
@@ -20,6 +21,9 @@ describe('CustomOrdersPaymentsService', () => {
     prisma = {
       brand: {
         findUnique: jest.fn(),
+      },
+      user: {
+        findMany: jest.fn().mockResolvedValue([]),
       },
       customOrder: {
         findFirst: jest.fn(),
@@ -44,13 +48,76 @@ describe('CustomOrdersPaymentsService', () => {
       $transaction: jest.fn(),
     };
 
+    const preparePaymentRequest = jest.fn();
+    const resolvePaymentCallbackUrl = jest.fn();
+    const initializeGatewayForAttempt = jest.fn();
+    const getAttemptProviderMode = jest.fn();
+    const resolveAttemptVerification = jest.fn();
+    const isAttemptTerminalStatus = jest.fn();
+
+    preparePaymentRequest.mockImplementation((_paymentMethod: PaymentMethod, paymentData?: Record<string, unknown>) => paymentData ?? {});
+    resolvePaymentCallbackUrl.mockImplementation((callbackUrl?: string) => callbackUrl ?? 'https://callback.test');
+    initializeGatewayForAttempt.mockResolvedValue({
+      gateway: 'PAYSTACK',
+      status: 'REQUIRES_ACTION',
+      channel: 'CARD',
+      callbackUrl: 'https://callback.test',
+      authorizationUrl: 'https://authorize.test',
+      nextAction: { type: 'REDIRECT' },
+      bankAccount: null,
+      responseSnapshot: { mockReturnStatus: 'success' },
+    });
+    getAttemptProviderMode.mockReturnValue('mock');
+    resolveAttemptVerification.mockImplementation((attempt: any, dto: { statusHint?: string }) => {
+      const normalize = (value?: string | null) => {
+        const normalized = String(value ?? '').trim().toUpperCase();
+        if (!normalized) return undefined;
+        if (normalized === 'SUCCESS' || normalized === 'PAID') return 'PAID';
+        if (normalized === 'PENDING' || normalized === 'PROCESSING') return 'PENDING';
+        if (normalized === 'FAILED' || normalized === 'FAIL') return 'FAILED';
+        if (normalized === 'CANCELLED' || normalized === 'CANCEL') return 'CANCELLED';
+        if (normalized === 'EXPIRED' || normalized === 'EXPIRE') return 'EXPIRED';
+        return normalized;
+      };
+
+      const storedStatus = normalize(attempt?.responseSnapshot?.mockReturnStatus);
+      const hintedStatus = normalize(dto?.statusHint);
+      if (storedStatus && hintedStatus && storedStatus !== hintedStatus) {
+        throw new Error('Payment verification payload does not match the provider-confirmed attempt status');
+      }
+
+      const nextStatus = storedStatus ?? hintedStatus ?? normalize(attempt?.status) ?? 'PENDING';
+      const awaitingProviderConfirmation =
+        String(attempt?.providerMode || '').trim().toLowerCase() === 'live' &&
+        nextStatus === 'PENDING';
+
+      return {
+        nextStatus,
+        awaitingProviderConfirmation,
+        responseSnapshotPatch: awaitingProviderConfirmation
+          ? {
+              awaitingProviderConfirmation: true,
+              recoveryAction: 'WAIT_FOR_PROVIDER_CONFIRMATION',
+              recoveryMessage:
+                'Payment is still awaiting provider callback or webhook confirmation. Recheck in a moment or after returning from the gateway.',
+            }
+          : {},
+      };
+    });
+
     paymentService = {
       validatePaymentRequest: jest.fn(),
       resolveCallbackBaseUrl: jest.fn(),
       initializeGateway: jest.fn(),
       getProviderMode: jest.fn(),
       resolveVerificationStatus: jest.fn(),
-      isTerminalStatus: jest.fn(),
+      isTerminalStatus: isAttemptTerminalStatus,
+      preparePaymentRequest,
+      resolvePaymentCallbackUrl,
+      initializeGatewayForAttempt,
+      getAttemptProviderMode,
+      resolveAttemptVerification,
+      isAttemptTerminalStatus,
     };
 
     commissionService = {
@@ -79,6 +146,12 @@ describe('CustomOrdersPaymentsService', () => {
           useValue: {
             enqueueNotification: jest.fn(),
             recordAnalyticsEvent: jest.fn(),
+          },
+        },
+        {
+          provide: CustomOrderThreadBootstrapService,
+          useValue: {
+            ensureOrderPlacedThread: jest.fn(),
           },
         },
       ],

@@ -31,6 +31,10 @@ export class InitializePaymentDto {
   @IsOptional()
   @IsObject()
   paymentData?: Record<string, any>;
+
+  @IsOptional()
+  @IsString()
+  idempotencyKey?: string;
 }
 
 export type PaymentChannel =
@@ -135,6 +139,8 @@ export interface PaymentAttemptOrderSummaryItem {
 export interface PaymentAttemptSummary {
   paymentAttemptId: string;
   reference: string;
+  subjectType: 'STANDARD_ORDER' | 'CUSTOM_ORDER';
+  customOrderId?: string;
   gateway: string;
   providerMode: 'mock' | 'live';
   paymentMethod: PaymentMethod;

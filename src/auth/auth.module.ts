@@ -14,6 +14,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { EmailVerificationHelperService } from './helper/email-verification-helper.service';
 import { NotificationsModule } from 'src/notifications/notifications.module';
 import { RefreshTokenCleanupService } from './helper/refresh-token-cleanup.service';
+import { TrustedDeviceService } from './helper/trusted-device.service';
 
 @Module({
   imports: [
@@ -69,6 +70,7 @@ import { RefreshTokenCleanupService } from './helper/refresh-token-cleanup.servi
     UserHelperService,
     EmailVerificationHelperService,
     RefreshTokenCleanupService,
+    TrustedDeviceService,
     JwtStrategy,
     {
       provide: APP_GUARD,

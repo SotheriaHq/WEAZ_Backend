@@ -21,6 +21,9 @@ import { ReviewsModule } from 'src/reviews/reviews.module';
 import { ReviewAggregateProcessor } from './review-aggregate.processor';
 import { ReviewReminderProcessor } from './review-reminder.processor';
 import { SystemConfigModule } from 'src/admin/system-config/system-config.module';
+import { PaymentModule } from 'src/payment/payment.module';
+import { AdminModule } from 'src/admin/admin.module';
+import { WebhookEventsProcessor } from './webhook-events.processor';
 
 @Module({
   imports: [
@@ -40,6 +43,8 @@ import { SystemConfigModule } from 'src/admin/system-config/system-config.module
     CategoriesModule,
     ReviewsModule,
     SystemConfigModule,
+    PaymentModule,
+    AdminModule,
   ],
   providers: [
     CollectionsService,
@@ -48,6 +53,7 @@ import { SystemConfigModule } from 'src/admin/system-config/system-config.module
     BulkUploadProcessor,
     ImageProcessingProcessor,
     SearchProcessor,
+    WebhookEventsProcessor,
     MediaProcessingService,
     ReviewAggregateProcessor,
     ReviewReminderProcessor,

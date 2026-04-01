@@ -1,7 +1,9 @@
 import {
+  BadRequestException,
   ConflictException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
@@ -11,10 +13,27 @@ import {
   PayoutStatus,
   Role,
 } from '@prisma/client';
+import { createHmac, timingSafeEqual } from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
 import { Request } from 'express';
 import { LedgerService } from 'src/finance/ledger.service';
 import { FinancialDocumentsService } from 'src/finance/financial-documents.service';
+import {
+  WebhookEventsQueueService,
+  type PayoutWebhookProcessJob,
+} from 'src/queue/webhook-events.queue.service';
+
+type WebhookContext = {
+  headers: Record<string, any>;
+  rawBody?: string;
+  remoteAddress?: string | null;
+};
+
+const PAYSTACK_WEBHOOK_IPS = [
+  '52.31.139.75',
+  '52.49.173.169',
+  '52.214.14.220',
+] as const;
 
 const VALID_TRANSITIONS: Record<PayoutStatus, PayoutStatus[]> = {
   [PayoutStatus.PENDING_APPROVAL]: [
@@ -50,10 +69,13 @@ const VALID_TRANSITIONS: Record<PayoutStatus, PayoutStatus[]> = {
 
 @Injectable()
 export class AdminPayoutsService {
+  private readonly logger = new Logger(AdminPayoutsService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly ledgerService: LedgerService,
     private readonly financialDocumentsService: FinancialDocumentsService,
+    private readonly webhookEventsQueue: WebhookEventsQueueService,
   ) {}
 
   async list(params: {
@@ -72,15 +94,7 @@ export class AdminPayoutsService {
       take: take + 1,
       ...(params.cursor ? { cursor: { id: params.cursor }, skip: 1 } : {}),
       orderBy: { createdAt: 'desc' },
-      include: {
-        brand: { select: { id: true, name: true } },
-        assignedAdmin: {
-          select: { id: true, firstName: true, lastName: true, email: true },
-        },
-        approvedBy: {
-          select: { id: true, firstName: true, lastName: true, email: true },
-        },
-      },
+      include: this.payoutInclude(),
     });
 
     const hasMore = rows.length > take;
@@ -89,6 +103,32 @@ export class AdminPayoutsService {
     return {
       items,
       nextCursor: hasMore ? items[items.length - 1]?.id : undefined,
+    };
+  }
+
+  async getById(payoutId: string) {
+    const payout = await this.prisma.payout.findUnique({
+      where: { id: payoutId },
+      include: {
+        ...this.payoutInclude(),
+        events: {
+          orderBy: { createdAt: 'desc' },
+          take: 30,
+        },
+      },
+    });
+
+    if (!payout) {
+      throw new NotFoundException('Payout not found');
+    }
+
+    const paymentAccount = await (this.prisma as any).storePaymentAccount.findUnique({
+      where: { brandId: payout.brandId },
+    });
+
+    return {
+      ...payout,
+      payoutAccount: this.summarizeStorePaymentAccount(paymentAccount),
     };
   }
 
@@ -126,12 +166,7 @@ export class AdminPayoutsService {
           claimedAt: now,
           releasedAt: null,
         },
-        include: {
-          brand: { select: { id: true, name: true } },
-          assignedAdmin: {
-            select: { id: true, firstName: true, lastName: true, email: true },
-          },
-        },
+        include: this.payoutInclude(),
       });
 
       await (tx as any).adminAuditLog.create({
@@ -184,12 +219,7 @@ export class AdminPayoutsService {
           claimedAt: null,
           releasedAt: now,
         },
-        include: {
-          brand: { select: { id: true, name: true } },
-          assignedAdmin: {
-            select: { id: true, firstName: true, lastName: true, email: true },
-          },
-        },
+        include: this.payoutInclude(),
       });
 
       await (tx as any).adminAuditLog.create({
@@ -244,81 +274,54 @@ export class AdminPayoutsService {
       data.approvedAt = now;
     }
     if (params.status === PayoutStatus.PROCESSING) {
-      data.processedAt = now;
+      data.processedAt = payout.processedAt ?? now;
     }
     if (params.status === PayoutStatus.PAID) {
-      data.paidAt = now;
+      data.paidAt = payout.paidAt ?? now;
+      data.providerTransferFinalizedAt =
+        payout.providerTransferFinalizedAt ?? now;
+      data.failureReason = null;
+      data.statusReason = null;
     }
     if (params.status === PayoutStatus.FAILED) {
       data.failureReason =
         params.reason?.trim() || 'Payout processing failed';
+    }
+    if (params.status === PayoutStatus.RECONCILIATION_REVIEW) {
+      data.providerTransferReversedAt =
+        payout.providerTransferReversedAt ?? now;
+    }
+    if (params.status !== PayoutStatus.FAILED) {
+      data.failureReason = params.status === PayoutStatus.RECONCILIATION_REVIEW
+        ? payout.failureReason ?? null
+        : null;
     }
 
     const updated = await this.prisma.$transaction(async (tx) => {
       const result = await tx.payout.update({
         where: { id: payoutId },
         data,
-        include: {
-          brand: { select: { id: true, name: true } },
-          assignedAdmin: {
-            select: { id: true, firstName: true, lastName: true, email: true },
-          },
-          approvedBy: {
-            select: { id: true, firstName: true, lastName: true, email: true },
-          },
-        },
+        include: this.payoutInclude(),
       });
 
-      if (params.status === PayoutStatus.PAID) {
-        const linkedAllocationSummary = await tx.customOrderLedgerAllocation.aggregate({
-          where: {
-            payoutId: result.id,
-            status: CustomOrderLedgerAllocationStatus.PAYOUT_ELIGIBLE,
-            paidOutAt: null,
-          },
-          _sum: { netBrandAmount: true },
-          _count: { id: true },
-        });
+      await this.applyPayoutStatusSideEffects(
+        tx,
+        payout,
+        result,
+        now,
+        params.status,
+      );
 
-        if ((linkedAllocationSummary._count?.id ?? 0) > 0) {
-          const expectedNetAmount = this.roundMoney(
-            Number(linkedAllocationSummary._sum.netBrandAmount ?? 0),
-          );
-          const payoutAmount = this.roundMoney(Number(result.amount ?? 0));
-          if (Math.abs(expectedNetAmount - payoutAmount) >= 0.01) {
-            throw new ConflictException(
-              'Payout amount no longer matches the linked custom-order allocations',
-            );
-          }
-        }
-
-        await tx.customOrderLedgerAllocation.updateMany({
-          where: {
-            payoutId: result.id,
-            status: CustomOrderLedgerAllocationStatus.PAYOUT_ELIGIBLE,
-            paidOutAt: null,
-          },
-          data: {
-            status: CustomOrderLedgerAllocationStatus.PAID_OUT,
-            paidOutAt: now,
-          },
-        });
-        await this.ledgerService.postPayoutDisbursed(tx, result);
-        await this.financialDocumentsService.issuePayoutSettlementStatement(tx, {
-          payoutId: result.id,
-          brandId: result.brandId,
-          brandName: result.brand?.name ?? null,
-          currency: result.currency,
-          amount: Number(result.amount),
-        });
-        await this.financialDocumentsService.issueCommissionInvoice(tx, {
-          payoutId: result.id,
-          brandId: result.brandId,
-          brandName: result.brand?.name ?? null,
-          currency: result.currency,
-          amount: Number(result.amount),
-        });
-      }
+      await this.createPayoutEvent(tx, {
+        payoutId: result.id,
+        type: `STATUS_${params.status}`,
+        source: 'manual-admin',
+        processedAt: now,
+        payload: {
+          reason: params.reason?.trim() || null,
+          actorId,
+        },
+      });
 
       await (tx as any).adminAuditLog.create({
         data: {
@@ -344,6 +347,872 @@ export class AdminPayoutsService {
     });
 
     return updated;
+  }
+
+  async initiateTransfer(
+    payoutId: string,
+    actorId: string,
+    actorRole: Role,
+    req: Request,
+  ) {
+    const payout = await this.prisma.payout.findUnique({
+      where: { id: payoutId },
+      include: this.payoutInclude(),
+    });
+    if (!payout) throw new NotFoundException('Payout not found');
+
+    this.assertOwnership(payout.assignedAdminId, actorId, actorRole);
+
+    const transferableStatuses = new Set<PayoutStatus>([
+      PayoutStatus.APPROVED,
+      PayoutStatus.FAILED,
+      PayoutStatus.RECONCILIATION_REVIEW,
+    ]);
+
+    if (!transferableStatuses.has(payout.status)) {
+      throw new ConflictException(
+        `Cannot initiate a transfer while payout is ${payout.status}`,
+      );
+    }
+
+    if (String(payout.currency || '').trim().toUpperCase() !== 'NGN') {
+      throw new BadRequestException('Paystack payouts are only enabled for NGN in this phase');
+    }
+
+    const paymentAccount = await (this.prisma as any).storePaymentAccount.findUnique({
+      where: { brandId: payout.brandId },
+    });
+
+    if (!paymentAccount || paymentAccount.status !== 'ACTIVE') {
+      throw new BadRequestException(
+        'Brand payout account is not active. Sync the brand payment account before initiating payout.',
+      );
+    }
+
+    if (!paymentAccount.transferRecipientCode || !paymentAccount.transferRecipientActive) {
+      throw new BadRequestException(
+        'Brand payout account does not have an active transfer recipient.',
+      );
+    }
+
+    const providerPayload = await this.callPaystack('/transfer', {
+      method: 'POST',
+      bodyJson: {
+        source: 'balance',
+        amount: Math.round(this.roundMoney(Number(payout.amount ?? 0)) * 100),
+        recipient: paymentAccount.transferRecipientCode,
+        reference: this.buildTransferReference(payout.id),
+        reason: `Threadly payout ${payout.id.slice(0, 8).toUpperCase()}`,
+        currency: 'NGN',
+      },
+    });
+
+    return this.prisma.$transaction(async (tx) => {
+      const current = await tx.payout.findUnique({
+        where: { id: payoutId },
+        include: this.payoutInclude(),
+      });
+      if (!current) {
+        throw new NotFoundException('Payout not found');
+      }
+
+      const updated = await this.applyProviderTransferSync(
+        tx,
+        current,
+        providerPayload,
+        'provider-initiate',
+      );
+
+      await (tx as any).adminAuditLog.create({
+        data: {
+          id: uuidv4(),
+          actorUserId: actorId,
+          action: AdminAuditAction.ADMIN_PAYOUT_STATUS_UPDATE,
+          targetType: 'Payout',
+          targetId: payoutId,
+          previousState: {
+            status: payout.status,
+            providerTransferCode: payout.providerTransferCode ?? null,
+            providerTransferReference: payout.providerTransferReference ?? null,
+          },
+          newState: {
+            status: updated.status,
+            providerTransferCode: updated.providerTransferCode ?? null,
+            providerTransferReference: updated.providerTransferReference ?? null,
+            providerTransferStatus: updated.providerTransferStatus ?? null,
+          },
+          ipAddress: req.socket?.remoteAddress ?? null,
+          userAgent: req.headers['user-agent'] ?? null,
+        },
+      });
+
+      return updated;
+    });
+  }
+
+  async finalizeTransferOtp(
+    payoutId: string,
+    otp: string,
+    actorId: string,
+    actorRole: Role,
+    req: Request,
+  ) {
+    const payout = await this.prisma.payout.findUnique({
+      where: { id: payoutId },
+      include: this.payoutInclude(),
+    });
+    if (!payout) throw new NotFoundException('Payout not found');
+
+    this.assertOwnership(payout.assignedAdminId, actorId, actorRole);
+
+    if (!payout.providerTransferCode) {
+      throw new BadRequestException('This payout does not have a pending transfer to finalize');
+    }
+
+    const cleanOtp = String(otp || '').trim();
+    if (!cleanOtp) {
+      throw new BadRequestException('OTP is required to finalize this transfer');
+    }
+
+    const providerPayload = await this.callPaystack('/transfer/finalize_transfer', {
+      method: 'POST',
+      bodyJson: {
+        transfer_code: payout.providerTransferCode,
+        otp: cleanOtp,
+      },
+    });
+
+    return this.prisma.$transaction(async (tx) => {
+      const current = await tx.payout.findUnique({
+        where: { id: payoutId },
+        include: this.payoutInclude(),
+      });
+      if (!current) {
+        throw new NotFoundException('Payout not found');
+      }
+
+      const updated = await this.applyProviderTransferSync(
+        tx,
+        current,
+        providerPayload,
+        'provider-finalize',
+      );
+
+      await (tx as any).adminAuditLog.create({
+        data: {
+          id: uuidv4(),
+          actorUserId: actorId,
+          action: AdminAuditAction.ADMIN_PAYOUT_STATUS_UPDATE,
+          targetType: 'Payout',
+          targetId: payoutId,
+          previousState: {
+            status: payout.status,
+            providerTransferStatus: payout.providerTransferStatus ?? null,
+          },
+          newState: {
+            status: updated.status,
+            providerTransferStatus: updated.providerTransferStatus ?? null,
+            providerTransferCode: updated.providerTransferCode ?? null,
+          },
+          ipAddress: req.socket?.remoteAddress ?? null,
+          userAgent: req.headers['user-agent'] ?? null,
+        },
+      });
+
+      return updated;
+    });
+  }
+
+  async getProviderStatus(
+    payoutId: string,
+    actorId: string,
+    actorRole: Role,
+  ) {
+    const payout = await this.prisma.payout.findUnique({
+      where: { id: payoutId },
+      include: this.payoutInclude(),
+    });
+    if (!payout) throw new NotFoundException('Payout not found');
+
+    this.assertOwnership(payout.assignedAdminId, actorId, actorRole);
+
+    if (!payout.providerTransferCode) {
+      throw new BadRequestException('This payout does not have a Paystack transfer code yet');
+    }
+
+    const providerPayload = await this.callPaystack(
+      `/transfer/${encodeURIComponent(payout.providerTransferCode)}`,
+      { method: 'GET' },
+    );
+
+    return this.prisma.$transaction(async (tx) => {
+      const current = await tx.payout.findUnique({
+        where: { id: payoutId },
+        include: this.payoutInclude(),
+      });
+      if (!current) {
+        throw new NotFoundException('Payout not found');
+      }
+
+      return this.applyProviderTransferSync(
+        tx,
+        current,
+        providerPayload,
+        'provider-fetch',
+      );
+    });
+  }
+
+  async handlePaystackWebhook(
+    payload: Record<string, any>,
+    context: WebhookContext,
+  ): Promise<void> {
+    const receipt = await this.recordPaystackWebhookReceipt(payload, context);
+    if (!receipt || receipt.processedAt) {
+      return;
+    }
+
+    await this.processQueuedPaystackWebhook({
+      payload,
+      providerEventKey: receipt.providerEventKey,
+      payoutId: receipt.payoutId,
+      providerEventType: receipt.providerEventType,
+    });
+  }
+
+  async enqueuePaystackWebhook(
+    payload: Record<string, any>,
+    context: WebhookContext,
+  ): Promise<void> {
+    const receipt = await this.recordPaystackWebhookReceipt(payload, context);
+    if (!receipt || receipt.processedAt) {
+      return;
+    }
+
+    await this.webhookEventsQueue.enqueuePayoutWebhook({
+      payload,
+      providerEventKey: receipt.providerEventKey,
+      payoutId: receipt.payoutId,
+      providerEventType: receipt.providerEventType,
+    });
+  }
+
+  async processQueuedPaystackWebhook(
+    job: PayoutWebhookProcessJob,
+  ): Promise<void> {
+    const providerPayload = this.asObject(job.payload?.data) ?? job.payload;
+
+    await this.prisma.$transaction(async (tx) => {
+      const current = await tx.payout.findUnique({
+        where: { id: job.payoutId },
+        include: this.payoutInclude(),
+      });
+      if (!current) {
+        await (tx as any).payoutEvent.updateMany({
+          where: { providerEventKey: job.providerEventKey },
+          data: { processedAt: new Date() },
+        });
+        return;
+      }
+
+      await this.applyProviderTransferSync(
+        tx,
+        current,
+        providerPayload,
+        'provider-webhook',
+        job.providerEventType,
+      );
+
+      await (tx as any).payoutEvent.updateMany({
+        where: { providerEventKey: job.providerEventKey },
+        data: { processedAt: new Date() },
+      });
+    });
+  }
+
+  private async recordPaystackWebhookReceipt(
+    payload: Record<string, any>,
+    context: WebhookContext,
+  ) {
+    if (!this.verifyPaystackWebhookOrigin(context)) {
+      this.logger.warn('Rejected payout webhook due to origin verification failure');
+      return null;
+    }
+
+    const eventType = String(payload?.event || '').trim();
+    if (!eventType.startsWith('transfer.')) {
+      return null;
+    }
+
+    const providerPayload = this.asObject(payload?.data) ?? payload;
+    const transferCode = this.extractTransferCode(providerPayload);
+    const transferReference = this.extractTransferReference(providerPayload);
+
+    if (!transferCode && !transferReference) {
+      this.logger.warn(`Rejected payout webhook ${eventType}: missing transfer reference`);
+      return null;
+    }
+
+    const payout = await this.prisma.payout.findFirst({
+      where: {
+        OR: [
+          ...(transferCode ? [{ providerTransferCode: transferCode }] : []),
+          ...(transferReference ? [{ providerTransferReference: transferReference }] : []),
+          ...(transferReference ? [{ gatewayReference: transferReference }] : []),
+        ],
+      },
+      include: this.payoutInclude(),
+    });
+
+    if (!payout) {
+      this.logger.warn(
+        `Payout webhook ${eventType}: unknown transfer (${transferCode ?? transferReference})`,
+      );
+      return null;
+    }
+
+    const providerEventKey = this.computeProviderEventKey(
+      eventType,
+      providerPayload,
+      payout.id,
+    );
+
+    if (!providerEventKey) {
+      this.logger.warn(`Payout webhook ${eventType}: unable to compute event key`);
+      return null;
+    }
+
+    try {
+      await (this.prisma as any).payoutEvent.create({
+        data: {
+          id: uuidv4(),
+          payoutId: payout.id,
+          type: 'WEBHOOK_RECEIVED',
+          source: 'webhook-receipt',
+          providerEventKey,
+          providerEventType: eventType,
+          providerEventReceivedAt: new Date(),
+          payload,
+        },
+      });
+    } catch (error: any) {
+      const message = String(error?.message || '');
+      if (message.includes('providerEventKey') || message.includes('Unique constraint')) {
+        const existing = await (this.prisma as any).payoutEvent.findFirst({
+          where: { providerEventKey },
+          select: { processedAt: true },
+        });
+        return {
+          payoutId: payout.id,
+          providerEventKey,
+          providerEventType: eventType,
+          processedAt: existing?.processedAt ?? null,
+        };
+      }
+      throw error;
+    }
+
+    return {
+      payoutId: payout.id,
+      providerEventKey,
+      providerEventType: eventType,
+      processedAt: null,
+    };
+  }
+
+  private payoutInclude() {
+    return {
+      brand: { select: { id: true, name: true } },
+      assignedAdmin: {
+        select: { id: true, firstName: true, lastName: true, email: true },
+      },
+      approvedBy: {
+        select: { id: true, firstName: true, lastName: true, email: true },
+      },
+    };
+  }
+
+  private summarizeStorePaymentAccount(account: any) {
+    return {
+      id: account?.id ?? null,
+      status: account?.status ?? 'PENDING_SETUP',
+      provider: account?.provider ?? 'PAYSTACK',
+      bankName: account?.bankName ?? null,
+      accountName: account?.accountName ?? null,
+      maskedAccountNumber:
+        account?.accountNumberLast4 != null
+          ? `******${String(account.accountNumberLast4)}`
+          : null,
+      subaccountCode: account?.subaccountCode ?? null,
+      transferRecipientCode: account?.transferRecipientCode ?? null,
+      transferRecipientActive: Boolean(account?.transferRecipientActive),
+      lastSyncError: account?.lastSyncError ?? null,
+      subaccountLastSyncAt: account?.subaccountLastSyncAt ?? null,
+      transferRecipientLastSyncAt: account?.transferRecipientLastSyncAt ?? null,
+      updatedAt: account?.updatedAt ?? null,
+    };
+  }
+
+  private async applyProviderTransferSync(
+    tx: any,
+    payout: any,
+    providerPayload: Record<string, any>,
+    source:
+      | 'provider-initiate'
+      | 'provider-finalize'
+      | 'provider-fetch'
+      | 'provider-webhook',
+    providerEventType?: string,
+  ) {
+    const now = new Date();
+    const nextStatus = this.mapProviderTransferStatus(
+      providerEventType,
+      providerPayload?.status,
+    );
+    const failureMessage = this.extractTransferFailureMessage(providerPayload);
+    const nextData: Record<string, unknown> = {
+      provider: 'PAYSTACK',
+      providerRecipientCode:
+        this.extractRecipientCode(providerPayload) ?? payout.providerRecipientCode ?? null,
+      providerRecipientId:
+        this.extractRecipientId(providerPayload) ?? payout.providerRecipientId ?? null,
+      providerTransferCode:
+        this.extractTransferCode(providerPayload) ?? payout.providerTransferCode ?? null,
+      providerTransferId:
+        this.extractTransferId(providerPayload) ?? payout.providerTransferId ?? null,
+      providerTransferReference:
+        this.extractTransferReference(providerPayload) ??
+        payout.providerTransferReference ??
+        null,
+      providerTransferStatus:
+        this.normalizeProviderStatus(providerPayload?.status) ??
+        payout.providerTransferStatus ??
+        null,
+      providerTransferFailureCode:
+        this.extractTransferFailureCode(providerPayload) ??
+        payout.providerTransferFailureCode ??
+        null,
+      providerTransferFailureMessage: failureMessage ?? null,
+      providerTransferPayload: providerPayload,
+      gatewayReference:
+        this.extractTransferReference(providerPayload) ?? payout.gatewayReference ?? null,
+    };
+
+    if (!payout.providerTransferInitiatedAt) {
+      nextData.providerTransferInitiatedAt = now;
+    }
+
+    if (nextStatus === PayoutStatus.PROCESSING) {
+      nextData.status = PayoutStatus.PROCESSING;
+      nextData.processedAt = payout.processedAt ?? now;
+      nextData.statusReason = null;
+    }
+
+    if (nextStatus === PayoutStatus.PAID) {
+      nextData.status = PayoutStatus.PAID;
+      nextData.paidAt = payout.paidAt ?? now;
+      nextData.providerTransferFinalizedAt = now;
+      nextData.failureReason = null;
+      nextData.statusReason = null;
+    }
+
+    if (nextStatus === PayoutStatus.FAILED) {
+      nextData.status = PayoutStatus.FAILED;
+      nextData.failureReason = failureMessage || 'Paystack reported that the payout failed';
+      nextData.statusReason = nextData.failureReason;
+    }
+
+    if (nextStatus === PayoutStatus.RECONCILIATION_REVIEW) {
+      nextData.status = PayoutStatus.RECONCILIATION_REVIEW;
+      nextData.providerTransferReversedAt = now;
+      nextData.statusReason =
+        failureMessage || 'Paystack reported that the payout transfer was reversed';
+    }
+
+    const updated = await tx.payout.update({
+      where: { id: payout.id },
+      data: nextData,
+      include: this.payoutInclude(),
+    });
+
+    await this.applyPayoutStatusSideEffects(
+      tx,
+      payout,
+      updated,
+      now,
+      updated.status,
+    );
+
+    await this.createPayoutEvent(tx, {
+      payoutId: payout.id,
+      type: `STATUS_${updated.status}`,
+      source,
+      providerEventType:
+        providerEventType ?? this.normalizeProviderStatus(providerPayload?.status),
+      providerEventReceivedAt: source === 'provider-webhook' ? now : null,
+      processedAt: now,
+      payload: providerPayload,
+    });
+
+    return updated;
+  }
+
+  private async applyPayoutStatusSideEffects(
+    tx: any,
+    previous: any,
+    current: any,
+    now: Date,
+    nextStatus: PayoutStatus,
+  ) {
+    if (nextStatus === PayoutStatus.PAID && previous.status !== PayoutStatus.PAID) {
+      const [linkedAllocationSummary, linkedLedgerSourceSummary] = await Promise.all([
+        tx.customOrderLedgerAllocation.aggregate({
+          where: {
+            payoutId: current.id,
+            status: CustomOrderLedgerAllocationStatus.PAYOUT_ELIGIBLE,
+            paidOutAt: null,
+          },
+          _sum: { netBrandAmount: true },
+          _count: { id: true },
+        }),
+        (tx as any).payoutLedgerSourceAllocation.aggregate({
+          where: { payoutId: current.id },
+          _sum: { amount: true },
+          _count: { id: true },
+        }),
+      ]);
+
+      const expectedNetAmount = this.roundMoney(
+        Number(linkedAllocationSummary._sum.netBrandAmount ?? 0) +
+          Number(linkedLedgerSourceSummary._sum.amount ?? 0),
+      );
+      const payoutAmount = this.roundMoney(Number(current.amount ?? 0));
+
+      if (
+        ((linkedAllocationSummary._count?.id ?? 0) > 0 ||
+          (linkedLedgerSourceSummary._count?.id ?? 0) > 0) &&
+        Math.abs(expectedNetAmount - payoutAmount) >= 0.01
+      ) {
+        throw new ConflictException(
+          'Payout amount no longer matches the linked payout source reservations',
+        );
+      }
+
+      await tx.customOrderLedgerAllocation.updateMany({
+        where: {
+          payoutId: current.id,
+          status: CustomOrderLedgerAllocationStatus.PAYOUT_ELIGIBLE,
+          paidOutAt: null,
+        },
+        data: {
+          status: CustomOrderLedgerAllocationStatus.PAID_OUT,
+          paidOutAt: now,
+        },
+      });
+
+      await this.ledgerService.postPayoutDisbursed(tx, current);
+      await this.financialDocumentsService.issuePayoutSettlementStatement(tx, {
+        payoutId: current.id,
+        brandId: current.brandId,
+        brandName: current.brand?.name ?? null,
+        currency: current.currency,
+        amount: Number(current.amount),
+      });
+      await this.financialDocumentsService.issueCommissionInvoice(tx, {
+        payoutId: current.id,
+        brandId: current.brandId,
+        brandName: current.brand?.name ?? null,
+        currency: current.currency,
+        amount: Number(current.amount),
+      });
+    }
+
+    if (nextStatus === PayoutStatus.REJECTED && previous.status !== PayoutStatus.REJECTED) {
+      await tx.customOrderLedgerAllocation.updateMany({
+        where: {
+          payoutId: current.id,
+          status: CustomOrderLedgerAllocationStatus.PAYOUT_ELIGIBLE,
+          paidOutAt: null,
+        },
+        data: {
+          payoutId: null,
+        },
+      });
+    }
+  }
+
+  private async createPayoutEvent(
+    tx: any,
+    params: {
+      payoutId: string;
+      type: string;
+      source: string;
+      providerEventType?: string | null;
+      providerEventReceivedAt?: Date | null;
+      processedAt?: Date | null;
+      payload?: Record<string, any> | null;
+    },
+  ) {
+    await (tx as any).payoutEvent.create({
+      data: {
+        id: uuidv4(),
+        payoutId: params.payoutId,
+        type: params.type,
+        source: params.source,
+        providerEventType: params.providerEventType ?? null,
+        providerEventReceivedAt: params.providerEventReceivedAt ?? null,
+        processedAt: params.processedAt ?? null,
+        payload: params.payload ?? null,
+      },
+    });
+  }
+
+  private buildTransferReference(payoutId: string) {
+    return `threadly-payout-${payoutId.slice(0, 8)}-${Date.now()}`.toLowerCase();
+  }
+
+  private getRequiredPaystackSecret() {
+    const secret = String(process.env.PAYSTACK_SECRET_KEY ?? '').trim();
+    if (!secret) {
+      throw new BadRequestException('PAYSTACK_SECRET_KEY is required for payout execution');
+    }
+    return secret;
+  }
+
+  private async callPaystack(
+    path: string,
+    init?: RequestInit & { bodyJson?: Record<string, unknown> },
+  ) {
+    const secret = this.getRequiredPaystackSecret();
+    const { bodyJson, headers, ...rest } = init ?? {};
+    const requestHeaders: Record<string, string> = {
+      Authorization: `Bearer ${secret}`,
+      Accept: 'application/json',
+      ...(headers as Record<string, string> | undefined),
+    };
+    if (bodyJson) {
+      requestHeaders['Content-Type'] = 'application/json';
+    }
+
+    const response = await fetch(`https://api.paystack.co${path}`, {
+      ...rest,
+      headers: requestHeaders,
+      body: bodyJson ? JSON.stringify(bodyJson) : rest.body,
+    });
+
+    let payload: Record<string, any> | null = null;
+    try {
+      payload = (await response.json()) as Record<string, any>;
+    } catch {
+      payload = null;
+    }
+
+    if (!response.ok || payload?.status === false || !payload?.data) {
+      throw new BadRequestException(
+        String(payload?.message || 'Paystack payout request failed'),
+      );
+    }
+
+    return (payload.data ?? payload) as Record<string, any>;
+  }
+
+  private verifyPaystackWebhookOrigin(context: WebhookContext) {
+    if (!this.isAllowedPaystackWebhookIp(context)) {
+      return false;
+    }
+    return this.verifyPaystackWebhookSignature(context);
+  }
+
+  private verifyPaystackWebhookSignature(context: WebhookContext) {
+    const secret = this.getRequiredPaystackSecret();
+    const signature = this.getHeader(context.headers, 'x-paystack-signature');
+    if (!signature || !context.rawBody) {
+      return false;
+    }
+
+    const expected = createHmac('sha512', secret)
+      .update(context.rawBody)
+      .digest('hex');
+
+    return this.safeCompare(signature, expected);
+  }
+
+  private isAllowedPaystackWebhookIp(context: WebhookContext) {
+    const disabled = String(
+      process.env.PAYSTACK_WEBHOOK_IP_ALLOWLIST_DISABLED ?? '',
+    )
+      .trim()
+      .toLowerCase();
+    if (['1', 'true', 'yes'].includes(disabled)) {
+      return true;
+    }
+
+    const configuredIps = String(process.env.PAYSTACK_WEBHOOK_IP_ALLOWLIST ?? '')
+      .split(',')
+      .map((value) => this.normalizeIp(value))
+      .filter((value): value is string => Boolean(value));
+    const allowlist = new Set<string>(
+      configuredIps.length > 0 ? configuredIps : [...PAYSTACK_WEBHOOK_IPS],
+    );
+    const candidates = this.extractRequestIps(context);
+
+    return candidates.some((candidate) => allowlist.has(candidate));
+  }
+
+  private extractRequestIps(context: WebhookContext) {
+    const forwarded = this.getHeader(context.headers, 'x-forwarded-for');
+    const forwardedIps = String(forwarded ?? '')
+      .split(',')
+      .map((value) => this.normalizeIp(value))
+      .filter((value): value is string => Boolean(value));
+    const directIp = this.normalizeIp(context.remoteAddress);
+    return Array.from(new Set([...forwardedIps, ...(directIp ? [directIp] : [])]));
+  }
+
+  private normalizeIp(value: string | null | undefined) {
+    const normalized = String(value ?? '').trim();
+    if (!normalized) {
+      return null;
+    }
+    if (normalized.startsWith('::ffff:')) {
+      return normalized.slice(7);
+    }
+    return normalized;
+  }
+
+  private getHeader(headers: Record<string, any>, name: string) {
+    const target = name.toLowerCase();
+    for (const [headerName, value] of Object.entries(headers ?? {})) {
+      if (headerName.toLowerCase() === target) {
+        return Array.isArray(value) ? String(value[0] ?? '').trim() : String(value ?? '').trim();
+      }
+    }
+    return null;
+  }
+
+  private safeCompare(left: string, right: string) {
+    const leftBuffer = Buffer.from(String(left || '').trim());
+    const rightBuffer = Buffer.from(String(right || '').trim());
+    if (leftBuffer.length === 0 || rightBuffer.length === 0) {
+      return false;
+    }
+    if (leftBuffer.length !== rightBuffer.length) {
+      return false;
+    }
+    return timingSafeEqual(leftBuffer, rightBuffer);
+  }
+
+  private computeProviderEventKey(
+    providerEventType: string | null | undefined,
+    payload: Record<string, any>,
+    payoutId: string,
+  ) {
+    const parts = [
+      'PAYSTACK',
+      payoutId,
+      providerEventType,
+      this.extractTransferCode(payload),
+      this.extractTransferReference(payload),
+      this.normalizeProviderStatus(payload?.status),
+      payload?.updatedAt ?? payload?.createdAt ?? payload?.transferred_at ?? null,
+    ]
+      .map((value) => String(value ?? '').trim())
+      .filter(Boolean);
+
+    return parts.length > 0 ? parts.join(':') : null;
+  }
+
+  private mapProviderTransferStatus(
+    providerEventType: string | null | undefined,
+    rawStatus: string | null | undefined,
+  ): PayoutStatus {
+    const event = String(providerEventType || '').trim().toLowerCase();
+    if (event === 'transfer.success') {
+      return PayoutStatus.PAID;
+    }
+    if (event === 'transfer.failed') {
+      return PayoutStatus.FAILED;
+    }
+    if (event === 'transfer.reversed') {
+      return PayoutStatus.RECONCILIATION_REVIEW;
+    }
+
+    switch (String(rawStatus || '').trim().toLowerCase()) {
+      case 'success':
+        return PayoutStatus.PAID;
+      case 'failed':
+      case 'failure':
+      case 'error':
+        return PayoutStatus.FAILED;
+      case 'reversed':
+      case 'reversal':
+        return PayoutStatus.RECONCILIATION_REVIEW;
+      case 'otp':
+      case 'pending':
+      case 'processing':
+      default:
+        return PayoutStatus.PROCESSING;
+    }
+  }
+
+  private normalizeProviderStatus(value: unknown) {
+    const normalized = String(value ?? '').trim();
+    return normalized ? normalized.toUpperCase() : null;
+  }
+
+  private extractTransferCode(payload: Record<string, any>) {
+    const value = payload?.transfer_code;
+    return value != null ? String(value).trim() || null : null;
+  }
+
+  private extractTransferReference(payload: Record<string, any>) {
+    const value = payload?.reference;
+    return value != null ? String(value).trim() || null : null;
+  }
+
+  private extractTransferId(payload: Record<string, any>) {
+    const value = payload?.id ?? payload?.request;
+    return value != null ? String(value).trim() || null : null;
+  }
+
+  private extractRecipientCode(payload: Record<string, any>) {
+    const value =
+      payload?.recipient?.recipient_code ??
+      payload?.recipient_code ??
+      (typeof payload?.recipient === 'string' ? payload.recipient : null);
+    return value != null ? String(value).trim() || null : null;
+  }
+
+  private extractRecipientId(payload: Record<string, any>) {
+    const value = payload?.recipient?.id;
+    return value != null ? String(value).trim() || null : null;
+  }
+
+  private extractTransferFailureCode(payload: Record<string, any>) {
+    const value = payload?.failure_code ?? payload?.status ?? null;
+    return value != null ? String(value).trim() || null : null;
+  }
+
+  private extractTransferFailureMessage(payload: Record<string, any>) {
+    if (Array.isArray(payload?.failures) && payload.failures.length > 0) {
+      return payload.failures
+        .map((entry: any) => String(entry?.message ?? entry?.reason ?? entry ?? '').trim())
+        .filter(Boolean)
+        .join('; ');
+    }
+
+    const value =
+      payload?.failure_reason ??
+      payload?.message ??
+      payload?.recipient?.message ??
+      null;
+    return value != null ? String(value).trim() || null : null;
+  }
+
+  private asObject(value: unknown) {
+    return value && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Record<string, any>)
+      : null;
   }
 
   private roundMoney(value: number) {

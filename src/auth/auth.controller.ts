@@ -337,4 +337,21 @@ export class AuthController {
     return this.authService.verifyEmailByCode(email, code);
   }
 
+  @Get('security/devices')
+  @UseGuards(JwtAuthGuard)
+  @ApiOperation({ summary: 'List recognized and trusted devices for the authenticated user' })
+  async listSecurityDevices(@Req() req: Request & { user: { id: string } }) {
+    return this.authService.getTrustedDevices(req.user.id);
+  }
+
+  @Patch('security/devices/:id/revoke')
+  @UseGuards(JwtAuthGuard)
+  @ApiOperation({ summary: 'Revoke a recognized device for the authenticated user' })
+  async revokeSecurityDevice(
+    @Req() req: Request & { user: { id: string } },
+    @Param('id') id: string,
+  ) {
+    return this.authService.revokeTrustedDevice(req.user.id, id);
+  }
+
 }

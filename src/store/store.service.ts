@@ -22,6 +22,12 @@ import {
 } from './dto/bulk-product-actions.dto';
 import { v4 as uuidv4 } from 'uuid';
 import {
+  createCipheriv,
+  createDecipheriv,
+  createHash,
+  randomBytes,
+} from 'crypto';
+import {
   CollectionType,
   Prisma,
   NotificationType,
@@ -35,6 +41,7 @@ import {
 import { UpdateStoreNameDto } from './dto/update-store-name.dto';
 import { UpdateStoreProfileDto } from './dto/update-store-profile.dto';
 import { UpdateStorePoliciesDto } from './dto/update-store-policies.dto';
+import { UpdateStorePaymentAccountDto } from './dto/update-store-payment-account.dto';
 import { PasswordService } from 'src/auth/helper/password.service';
 import { UploadService } from 'src/upload/upload.service';
 import { FileType } from 'src/upload/upload.enums';
@@ -5733,9 +5740,15 @@ export class StoreService {
       : null;
 
     // Compute setup completeness
+    const paymentAccount =
+      brand?.id != null
+        ? await this.getStorePaymentAccountModel().findUnique({
+            where: { brandId: brand.id },
+          })
+        : null;
     const completeness = brand
-      ? this.computeStoreCompleteness(brand)
-      : { isComplete: false, missingFields: ['name', 'description', 'tags', 'logo', 'banner'] };
+      ? this.computeStoreCompleteness(brand, paymentAccount)
+      : { isComplete: false, missingFields: ['name', 'description', 'tags', 'paymentAccount'] };
 
     return {
       brandId: brand?.id,
@@ -5754,6 +5767,7 @@ export class StoreService {
       storeNameLastChangedAt: lastChangedAt,
       storeNameNextAllowedAt: nextAllowedAt,
       responseTimeSla: policy?.responseTimeSla || brand?.responseTimeSla || '24h',
+      paymentAccount: this.summarizePaymentAccount(paymentAccount),
     };
   }
 
@@ -5825,6 +5839,591 @@ export class StoreService {
     return this.getStoreGeneralSettings(ownerId);
   }
 
+  private getStorePaymentAccountModel() {
+    return (this.prisma as any).storePaymentAccount;
+  }
+
+  private getStorePaymentAccountKey() {
+    const secret =
+      String(process.env.STORE_PAYMENT_ACCOUNT_SECRET ?? '').trim() ||
+      String(process.env.VERIFICATION_DRAFT_SECRET ?? '').trim() ||
+      'threadly-store-payment-account-secret';
+    return createHash('sha256').update(secret).digest();
+  }
+
+  private encryptStorePaymentValue(value: string) {
+    const iv = randomBytes(12);
+    const cipher = createCipheriv('aes-256-gcm', this.getStorePaymentAccountKey(), iv);
+    const encrypted = Buffer.concat([cipher.update(value, 'utf8'), cipher.final()]);
+    const tag = cipher.getAuthTag();
+    return `${iv.toString('base64')}.${tag.toString('base64')}.${encrypted.toString('base64')}`;
+  }
+
+  private decryptStorePaymentValue(value?: string | null) {
+    if (!value) return null;
+    try {
+      const [ivText, tagText, encryptedText] = value.split('.');
+      if (!ivText || !tagText || !encryptedText) return null;
+      const decipher = createDecipheriv(
+        'aes-256-gcm',
+        this.getStorePaymentAccountKey(),
+        Buffer.from(ivText, 'base64'),
+      );
+      decipher.setAuthTag(Buffer.from(tagText, 'base64'));
+      return Buffer.concat([
+        decipher.update(Buffer.from(encryptedText, 'base64')),
+        decipher.final(),
+      ]).toString('utf8');
+    } catch {
+      return null;
+    }
+  }
+
+  private getRequiredPaystackSecret() {
+    const secret = String(process.env.PAYSTACK_SECRET_KEY ?? '').trim();
+    if (!secret) {
+      throw new BadRequestException(
+        'PAYSTACK_SECRET_KEY is required before brand payout accounts can be synced',
+      );
+    }
+    return secret;
+  }
+
+  private async callPaystack<T = any>(
+    path: string,
+    init?: RequestInit & { bodyJson?: Record<string, unknown> },
+  ): Promise<T> {
+    const secret = this.getRequiredPaystackSecret();
+    const { bodyJson, headers, ...rest } = init ?? {};
+    const requestHeaders: Record<string, string> = {
+      Authorization: `Bearer ${secret}`,
+      Accept: 'application/json',
+      ...(headers as Record<string, string> | undefined),
+    };
+    if (bodyJson) {
+      requestHeaders['Content-Type'] = 'application/json';
+    }
+
+    const response = await fetch(`https://api.paystack.co${path}`, {
+      ...rest,
+      headers: requestHeaders,
+      body: bodyJson ? JSON.stringify(bodyJson) : rest.body,
+    });
+
+    let payload: any = null;
+    try {
+      payload = await response.json();
+    } catch {
+      payload = null;
+    }
+
+    if (!response.ok || payload?.status === false) {
+      throw new BadRequestException(
+        String(payload?.message || 'Paystack request failed'),
+      );
+    }
+
+    return (payload?.data ?? payload) as T;
+  }
+
+  private maskAccountNumber(value: string | null | undefined) {
+    const digits = String(value ?? '').replace(/\D+/g, '');
+    if (!digits) {
+      return null;
+    }
+    if (digits.length <= 4) {
+      return digits;
+    }
+    return `${'*'.repeat(Math.max(0, digits.length - 4))}${digits.slice(-4)}`;
+  }
+
+  private sanitizePaystackSnapshot(value: unknown): Prisma.JsonValue | null {
+    if (Array.isArray(value)) {
+      return value.map((entry) => this.sanitizePaystackSnapshot(entry)) as Prisma.JsonValue;
+    }
+
+    if (value && typeof value === 'object') {
+      const output: Record<string, Prisma.JsonValue> = {};
+      for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+        if (key === 'account_number') {
+          output[key] = this.maskAccountNumber(String(entry ?? ''));
+          continue;
+        }
+        output[key] = this.sanitizePaystackSnapshot(entry);
+      }
+      return output as Prisma.JsonValue;
+    }
+
+    if (
+      value === null ||
+      typeof value === 'string' ||
+      typeof value === 'number' ||
+      typeof value === 'boolean'
+    ) {
+      return value as Prisma.JsonValue;
+    }
+
+    return null;
+  }
+
+  private buildStorePaymentMetadata(params: {
+    existingMetadata?: unknown;
+    resolvedAccountNumber?: string | null;
+    paystackBankId?: number | null;
+    subaccountPayload?: Record<string, any> | null;
+    transferRecipientPayload?: Record<string, any> | null;
+    lastProviderSyncAt?: Date | null;
+    lastSuccessfulSyncAt?: Date | null;
+    syncMode: 'INITIAL_SETUP' | 'RESYNC' | 'BANK_DETAILS_UPDATE';
+  }): Prisma.JsonObject {
+    const existing =
+      params.existingMetadata &&
+      typeof params.existingMetadata === 'object' &&
+      !Array.isArray(params.existingMetadata)
+        ? { ...(params.existingMetadata as Record<string, unknown>) }
+        : {};
+
+    return {
+      ...existing,
+      provider: 'PAYSTACK',
+      resolvedAccountNumber:
+        params.resolvedAccountNumber != null
+          ? this.maskAccountNumber(params.resolvedAccountNumber)
+          : existing['resolvedAccountNumber'] ?? null,
+      paystackBankId:
+        params.paystackBankId != null
+          ? params.paystackBankId
+          : (existing['paystackBankId'] as number | null | undefined) ?? null,
+      lastProviderSyncAt:
+        params.lastProviderSyncAt?.toISOString() ??
+        (existing['lastProviderSyncAt'] as string | null | undefined) ??
+        null,
+      lastSuccessfulSyncAt:
+        params.lastSuccessfulSyncAt?.toISOString() ??
+        (existing['lastSuccessfulSyncAt'] as string | null | undefined) ??
+        null,
+      syncMode: params.syncMode,
+      providerSyncVersion: 2,
+      subaccountResponseSnapshot:
+        params.subaccountPayload != null
+          ? this.sanitizePaystackSnapshot(params.subaccountPayload)
+          : (existing['subaccountResponseSnapshot'] as Prisma.JsonValue | undefined) ?? null,
+      transferRecipientResponseSnapshot:
+        params.transferRecipientPayload != null
+          ? this.sanitizePaystackSnapshot(params.transferRecipientPayload)
+          : (existing['transferRecipientResponseSnapshot'] as Prisma.JsonValue | undefined) ?? null,
+    };
+  }
+
+  private summarizePaymentAccount(account: any) {
+    const decryptedAccountNumber = this.decryptStorePaymentValue(
+      account?.accountNumberEncrypted,
+    );
+    const metadata =
+      account?.metadata && typeof account.metadata === 'object' && !Array.isArray(account.metadata)
+        ? (account.metadata as Record<string, any>)
+        : {};
+    return {
+      id: account?.id ?? null,
+      provider: account?.provider ?? 'PAYSTACK',
+      status: account?.status ?? 'PENDING_SETUP',
+      isReady: account?.status === 'ACTIVE',
+      businessName: account?.businessName ?? null,
+      primaryContactName: account?.primaryContactName ?? null,
+      primaryContactEmail: account?.primaryContactEmail ?? null,
+      primaryContactPhone: account?.primaryContactPhone ?? null,
+      bankCode: account?.bankCode ?? null,
+      bankName: account?.bankName ?? null,
+      accountName: account?.accountName ?? null,
+      maskedAccountNumber:
+        account?.accountNumberLast4 && typeof account.accountNumberLast4 === 'string'
+          ? `******${account.accountNumberLast4}`
+          : decryptedAccountNumber
+            ? `******${decryptedAccountNumber.slice(-4)}`
+            : null,
+      subaccountCode: account?.subaccountCode ?? null,
+      subaccountId: account?.subaccountId ?? null,
+      subaccountActive: Boolean(account?.subaccountActive),
+      subaccountVerified: Boolean(account?.subaccountVerified),
+      transferRecipientCode: account?.transferRecipientCode ?? null,
+      transferRecipientId: account?.transferRecipientId ?? null,
+      transferRecipientActive: Boolean(account?.transferRecipientActive),
+      lastSyncError: account?.lastSyncError ?? null,
+      accountResolvedAt: account?.accountResolvedAt ?? null,
+      subaccountLastSyncAt: account?.subaccountLastSyncAt ?? null,
+      transferRecipientLastSyncAt: account?.transferRecipientLastSyncAt ?? null,
+      lastProviderSyncAt:
+        typeof metadata.lastProviderSyncAt === 'string'
+          ? metadata.lastProviderSyncAt
+          : null,
+      lastSuccessfulSyncAt:
+        typeof metadata.lastSuccessfulSyncAt === 'string'
+          ? metadata.lastSuccessfulSyncAt
+          : null,
+      paystackBankId:
+        metadata.paystackBankId != null ? String(metadata.paystackBankId) : null,
+      updatedAt: account?.updatedAt ?? null,
+    };
+  }
+
+  async listSupportedPaymentBanks() {
+    const rows = await this.callPaystack<
+      Array<{
+        id: number;
+        name: string;
+        code: string;
+        active?: boolean;
+        currency?: string;
+        type?: string;
+      }>
+    >('/bank?country=nigeria&currency=NGN');
+
+    return rows
+      .filter((row) => row && row.active !== false && String(row.type || 'nuban') === 'nuban')
+      .map((row) => ({
+        id: row.id,
+        code: row.code,
+        name: row.name,
+        currency: row.currency || 'NGN',
+      }))
+      .sort((left, right) => left.name.localeCompare(right.name));
+  }
+
+  async getStorePaymentAccount(ownerId: string) {
+    const [resolvedBrand, owner] = await Promise.all([
+      this.resolveBrandByIdOrOwner(ownerId),
+      this.prisma.user.findUnique({
+        where: { id: ownerId },
+        select: {
+          id: true,
+          email: true,
+          firstName: true,
+          lastName: true,
+          phoneNumber: true,
+        },
+      }),
+    ]);
+
+    if (!resolvedBrand) {
+      throw new NotFoundException('Brand not found');
+    }
+
+    const brand = await this.prisma.brand.findUnique({
+      where: { id: resolvedBrand.id },
+      select: {
+        id: true,
+        name: true,
+      },
+    });
+
+    if (!brand) {
+      throw new NotFoundException('Brand not found');
+    }
+
+    const account = await this.getStorePaymentAccountModel().findUnique({
+      where: { brandId: brand.id },
+    });
+
+    const suggestedContactName =
+      `${owner?.firstName ?? ''} ${owner?.lastName ?? ''}`.trim() || brand.name;
+
+    return {
+      brandId: brand.id,
+      provider: 'PAYSTACK',
+      isRequiredForStoreOpen: true,
+      suggestedDefaults: {
+        businessName: brand.name,
+        primaryContactName: account?.primaryContactName ?? suggestedContactName,
+        primaryContactEmail:
+          account?.primaryContactEmail ?? owner?.email ?? null,
+        primaryContactPhone:
+          account?.primaryContactPhone ?? owner?.phoneNumber ?? null,
+      },
+      account: this.summarizePaymentAccount(account),
+    };
+  }
+
+  async updateStorePaymentAccount(
+    ownerId: string,
+    dto: UpdateStorePaymentAccountDto,
+  ) {
+    const [resolvedBrand, owner] = await Promise.all([
+      this.resolveBrandByIdOrOwner(ownerId),
+      this.prisma.user.findUnique({
+        where: { id: ownerId },
+        select: {
+          id: true,
+          email: true,
+          firstName: true,
+          lastName: true,
+          phoneNumber: true,
+        },
+      }),
+    ]);
+
+    if (!resolvedBrand) {
+      throw new NotFoundException('Brand not found');
+    }
+
+    const brand = await this.prisma.brand.findUnique({
+      where: { id: resolvedBrand.id },
+      select: {
+        id: true,
+        name: true,
+      },
+    });
+
+    if (!brand) {
+      throw new NotFoundException('Brand not found');
+    }
+
+    const existingAccount = await this.getStorePaymentAccountModel().findUnique({
+      where: { brandId: brand.id },
+    });
+
+    const providedBankCode = String(dto.bankCode || '').trim();
+    const providedAccountNumber = String(dto.accountNumber || '').trim();
+    const decryptedExistingAccountNumber = this.decryptStorePaymentValue(
+      existingAccount?.accountNumberEncrypted,
+    );
+    const bankCode =
+      providedBankCode || String(existingAccount?.bankCode || '').trim();
+    const accountNumber =
+      providedAccountNumber || String(decryptedExistingAccountNumber || '').trim();
+
+    if (!bankCode) {
+      throw new BadRequestException('Select the settlement bank first');
+    }
+    if (!/^\d{10}$/.test(accountNumber)) {
+      throw new BadRequestException('Account number must be a valid 10-digit NUBAN');
+    }
+
+    const bankDetailsChanged =
+      !existingAccount ||
+      bankCode !== String(existingAccount?.bankCode || '').trim() ||
+      (providedAccountNumber.length > 0 &&
+        accountNumber !== String(decryptedExistingAccountNumber || '').trim());
+    const syncMode: 'INITIAL_SETUP' | 'RESYNC' | 'BANK_DETAILS_UPDATE' = !existingAccount
+      ? 'INITIAL_SETUP'
+      : bankDetailsChanged
+        ? 'BANK_DETAILS_UPDATE'
+        : 'RESYNC';
+
+    const banks = await this.listSupportedPaymentBanks();
+    const selectedBank = banks.find((bank) => bank.code === bankCode);
+    if (!selectedBank) {
+      throw new BadRequestException('Selected bank is not supported by Paystack');
+    }
+
+    const resolved = await this.callPaystack<{
+      account_number: string;
+      account_name: string;
+      bank_id?: number;
+    }>(
+      `/bank/resolve?account_number=${encodeURIComponent(accountNumber)}&bank_code=${encodeURIComponent(bankCode)}`,
+      { method: 'GET' },
+    );
+
+    const primaryContactName =
+      String(dto.primaryContactName || '').trim() ||
+      existingAccount?.primaryContactName ||
+      `${owner?.firstName ?? ''} ${owner?.lastName ?? ''}`.trim() ||
+      brand.name;
+    const primaryContactEmail =
+      String(dto.primaryContactEmail || '').trim() ||
+      existingAccount?.primaryContactEmail ||
+      owner?.email ||
+      null;
+    const primaryContactPhone =
+      String(dto.primaryContactPhone || '').trim() ||
+      existingAccount?.primaryContactPhone ||
+      owner?.phoneNumber ||
+      null;
+
+    let subaccountPayload: any = null;
+    let transferRecipientPayload: any = null;
+    let syncError: string | null = null;
+    const syncTimestamp = new Date();
+
+    try {
+      const subaccountBody = {
+        business_name: brand.name,
+        bank_code: bankCode,
+        account_number: accountNumber,
+        percentage_charge: 0,
+        primary_contact_name: primaryContactName || undefined,
+        primary_contact_email: primaryContactEmail || undefined,
+        primary_contact_phone: primaryContactPhone || undefined,
+        settlement_schedule: 'manual',
+        description: `Threadly brand settlement account for ${brand.name}`,
+        metadata: {
+          threadlyBrandId: brand.id,
+          threadlyOwnerId: ownerId,
+        },
+      };
+
+      subaccountPayload = existingAccount?.subaccountCode
+        ? await this.callPaystack(
+            `/subaccount/${encodeURIComponent(existingAccount.subaccountCode)}`,
+            {
+              method: 'PUT',
+              bodyJson: subaccountBody,
+            },
+          )
+        : await this.callPaystack('/subaccount', {
+            method: 'POST',
+            bodyJson: subaccountBody,
+          });
+
+      const transferRecipientBody = {
+        type: 'nuban',
+        name: resolved.account_name,
+        account_number: accountNumber,
+        bank_code: bankCode,
+        currency: 'NGN',
+        active: true,
+        metadata: {
+          threadlyBrandId: brand.id,
+          threadlyOwnerId: ownerId,
+        },
+      };
+
+      transferRecipientPayload = existingAccount?.transferRecipientCode
+        ? await this.callPaystack(
+            `/transferrecipient/${encodeURIComponent(existingAccount.transferRecipientCode)}`,
+            {
+              method: 'PUT',
+              bodyJson: transferRecipientBody,
+            },
+          )
+        : await this.callPaystack('/transferrecipient', {
+            method: 'POST',
+            bodyJson: transferRecipientBody,
+          });
+    } catch (error: any) {
+      syncError =
+        error?.response?.data?.message ||
+        error?.message ||
+        'Unable to sync the Paystack payment account';
+    }
+
+    const nextStatus =
+      syncError == null &&
+      subaccountPayload?.subaccount_code &&
+      transferRecipientPayload?.recipient_code
+        ? 'ACTIVE'
+        : syncError
+          ? 'SYNC_ERROR'
+          : 'PENDING_SYNC';
+    const lastSuccessfulSyncAt = nextStatus === 'ACTIVE' ? syncTimestamp : null;
+    const metadata = this.buildStorePaymentMetadata({
+      existingMetadata: existingAccount?.metadata,
+      resolvedAccountNumber: resolved.account_number,
+      paystackBankId: resolved.bank_id ?? null,
+      subaccountPayload,
+      transferRecipientPayload,
+      lastProviderSyncAt: syncTimestamp,
+      lastSuccessfulSyncAt,
+      syncMode,
+    });
+
+    await this.getStorePaymentAccountModel().upsert({
+      where: { brandId: brand.id },
+      create: {
+        id: uuidv4(),
+        brandId: brand.id,
+        status: nextStatus,
+        provider: 'PAYSTACK',
+        countryCode: 'NG',
+        currency: 'NGN',
+        businessName: brand.name,
+        primaryContactName: primaryContactName || null,
+        primaryContactEmail: primaryContactEmail,
+        primaryContactPhone: primaryContactPhone,
+        bankCode,
+        bankName: selectedBank.name,
+        accountName: resolved.account_name,
+        accountNumberEncrypted: this.encryptStorePaymentValue(accountNumber),
+        accountNumberLast4: accountNumber.slice(-4),
+        isAccountResolved: true,
+        accountResolvedAt: new Date(),
+        subaccountCode: subaccountPayload?.subaccount_code ?? null,
+        subaccountId:
+          subaccountPayload?.id != null ? String(subaccountPayload.id) : null,
+        subaccountActive: Boolean(subaccountPayload?.active),
+        subaccountVerified: Boolean(subaccountPayload?.is_verified),
+        subaccountLastSyncAt: subaccountPayload ? syncTimestamp : null,
+        transferRecipientCode: transferRecipientPayload?.recipient_code ?? null,
+        transferRecipientId:
+          transferRecipientPayload?.id != null
+            ? String(transferRecipientPayload.id)
+            : null,
+        transferRecipientActive: Boolean(transferRecipientPayload?.active),
+        transferRecipientLastSyncAt: transferRecipientPayload ? syncTimestamp : null,
+        lastSyncError: syncError,
+        metadata,
+      },
+      update: {
+        status: nextStatus,
+        provider: 'PAYSTACK',
+        countryCode: 'NG',
+        currency: 'NGN',
+        businessName: brand.name,
+        primaryContactName: primaryContactName || null,
+        primaryContactEmail: primaryContactEmail,
+        primaryContactPhone: primaryContactPhone,
+        bankCode,
+        bankName: selectedBank.name,
+        accountName: resolved.account_name,
+        accountNumberEncrypted: this.encryptStorePaymentValue(accountNumber),
+        accountNumberLast4: accountNumber.slice(-4),
+        isAccountResolved: true,
+        accountResolvedAt: new Date(),
+        subaccountCode: subaccountPayload?.subaccount_code ?? existingAccount?.subaccountCode ?? null,
+        subaccountId:
+          subaccountPayload?.id != null
+            ? String(subaccountPayload.id)
+            : existingAccount?.subaccountId ?? null,
+        subaccountActive:
+          subaccountPayload != null
+            ? Boolean(subaccountPayload.active)
+            : Boolean(existingAccount?.subaccountActive),
+        subaccountVerified:
+          subaccountPayload != null
+            ? Boolean(subaccountPayload.is_verified)
+            : Boolean(existingAccount?.subaccountVerified),
+        subaccountLastSyncAt:
+          subaccountPayload != null
+            ? syncTimestamp
+            : existingAccount?.subaccountLastSyncAt ?? null,
+        transferRecipientCode:
+          transferRecipientPayload?.recipient_code ??
+          existingAccount?.transferRecipientCode ??
+          null,
+        transferRecipientId:
+          transferRecipientPayload?.id != null
+            ? String(transferRecipientPayload.id)
+            : existingAccount?.transferRecipientId ?? null,
+        transferRecipientActive:
+          transferRecipientPayload != null
+            ? Boolean(transferRecipientPayload.active)
+            : Boolean(existingAccount?.transferRecipientActive),
+        transferRecipientLastSyncAt:
+          transferRecipientPayload != null
+            ? syncTimestamp
+            : existingAccount?.transferRecipientLastSyncAt ?? null,
+        lastSyncError: syncError,
+        metadata,
+      },
+    });
+
+    if (syncError) {
+      throw new BadRequestException(syncError);
+    }
+
+    return this.getStorePaymentAccount(ownerId);
+  }
+
   // ==================== STORE STATUS & COMPLETENESS ====================
 
   /**
@@ -5841,12 +6440,15 @@ export class StoreService {
     tags?: string[];
     logo?: string | null;
     banner?: string | null;
-  }): { isComplete: boolean; missingFields: string[] } {
+  }, paymentAccount?: { status?: string | null } | null): { isComplete: boolean; missingFields: string[] } {
     const missingFields: string[] = [];
 
     if (!brand.name?.trim()) missingFields.push('name');
     if (!brand.description?.trim()) missingFields.push('description');
     if (!brand.tags || brand.tags.length === 0) missingFields.push('tags');
+    if (String(paymentAccount?.status || '').trim().toUpperCase() !== 'ACTIVE') {
+      missingFields.push('paymentAccount');
+    }
 
     return {
       isComplete: missingFields.length === 0,
@@ -5904,11 +6506,19 @@ export class StoreService {
       throw new NotFoundException('Brand not found');
     }
 
-    const { isComplete, missingFields } = this.computeStoreCompleteness(brand);
-    const policy = await this.prisma.storePolicy.findUnique({
-      where: { brandId: brand.id },
-      select: { responseTimeSla: true },
-    });
+    const [policy, paymentAccount] = await Promise.all([
+      this.prisma.storePolicy.findUnique({
+        where: { brandId: brand.id },
+        select: { responseTimeSla: true },
+      }),
+      this.getStorePaymentAccountModel().findUnique({
+        where: { brandId: brand.id },
+      }),
+    ]);
+    const { isComplete, missingFields } = this.computeStoreCompleteness(
+      brand,
+      paymentAccount,
+    );
 
     return {
       brandId: brand.id,
@@ -5929,6 +6539,7 @@ export class StoreService {
         socialWebsite: brand.socialWebsite,
         responseTimeSla: policy?.responseTimeSla || brand.responseTimeSla,
       },
+      paymentAccount: this.summarizePaymentAccount(paymentAccount),
     };
   }
 
@@ -5954,7 +6565,13 @@ export class StoreService {
       return { success: true, message: 'Store is already open', brandId: brand.id };
     }
 
-    const { isComplete, missingFields } = this.computeStoreCompleteness(brand);
+    const paymentAccount = await this.getStorePaymentAccountModel().findUnique({
+      where: { brandId: brand.id },
+    });
+    const { isComplete, missingFields } = this.computeStoreCompleteness(
+      brand,
+      paymentAccount,
+    );
 
     if (!isComplete) {
       throw new BadRequestException({

@@ -127,15 +127,14 @@ export class CustomOrdersPaymentsService {
       }
     }
 
-    const paymentApi = this.paymentService as any;
-    const paymentData = paymentApi.validatePaymentRequest(dto.paymentMethod, {
+    const paymentData = this.paymentService.preparePaymentRequest(dto.paymentMethod, {
       ...(dto.paymentData ?? {}),
       email: dto.email,
     });
-    const callbackUrl = paymentApi.resolveCallbackBaseUrl(dto.callbackUrl);
+    const callbackUrl = this.paymentService.resolvePaymentCallbackUrl(dto.callbackUrl);
     const amount = Number((order.buyerPriceSummaryJson as Record<string, unknown>)?.grandTotal ?? 0);
     const reference = `TH-CO-${Date.now()}-${customOrderId.slice(0, 8)}`;
-    const gatewayResult = await paymentApi.initializeGateway(
+    const gatewayResult = await this.paymentService.initializeGatewayForAttempt(
       dto.paymentMethod,
       reference,
       paymentData,
@@ -151,7 +150,11 @@ export class CustomOrdersPaymentsService {
           subjectType: PaymentSubjectType.CUSTOM_ORDER,
           customOrderId,
           provider: gatewayResult.gateway,
-          providerMode: paymentApi.getProviderMode(),
+          providerMode: this.paymentService.getAttemptProviderMode(),
+          providerReference: gatewayResult.providerReference,
+          providerTransactionId: gatewayResult.providerTransactionId,
+          providerAccessCode: gatewayResult.providerAccessCode,
+          providerChannel: gatewayResult.providerChannel ?? gatewayResult.channel,
           paymentMethod: dto.paymentMethod,
           channel: gatewayResult.channel,
           status: gatewayResult.status,
@@ -163,9 +166,10 @@ export class CustomOrdersPaymentsService {
           currency: order.currency,
           orderIds: [],
           requestSnapshot: paymentData as Prisma.InputJsonValue,
-          responseSnapshot: (gatewayResult.responseSnapshot ?? null) as Prisma.InputJsonValue,
-          nextAction: (gatewayResult.nextAction ?? null) as Prisma.InputJsonValue,
-          bankAccount: (gatewayResult.bankAccount ?? null) as Prisma.InputJsonValue,
+          responseSnapshot:
+            (gatewayResult.responseSnapshot ?? null) as unknown as Prisma.InputJsonValue,
+          nextAction: (gatewayResult.nextAction ?? null) as unknown as Prisma.InputJsonValue,
+          bankAccount: (gatewayResult.bankAccount ?? null) as unknown as Prisma.InputJsonValue,
           expiresAt: gatewayResult.expiresAt ? new Date(gatewayResult.expiresAt) : null,
         },
       });
@@ -184,7 +188,10 @@ export class CustomOrdersPaymentsService {
         data: {
           paymentAttemptId: attempt.id,
           type: 'INITIALIZED',
-          source: paymentApi.getProviderMode() === 'mock' ? 'mock-initialize' : 'initialize',
+          source:
+            this.paymentService.getAttemptProviderMode() === 'mock'
+              ? 'mock-initialize'
+              : 'initialize',
           payload: {
             paymentMethod: dto.paymentMethod,
             gateway: gatewayResult.gateway,
@@ -270,31 +277,13 @@ export class CustomOrdersPaymentsService {
       return this.toVerifyResult(attempt, order);
     }
 
-    const paymentApi = this.paymentService as any;
-    if (paymentApi.isTerminalStatus(attempt.status)) {
+    if (this.paymentService.isAttemptTerminalStatus(attempt.status as any)) {
       return this.toVerifyResult(attempt, order);
     }
 
-    const nextStatus = this.resolveVerifiedAttemptStatus(attempt, dto);
-
+    const resolvedVerification = await this.paymentService.resolveAttemptVerification(attempt as any, dto);
+    const nextStatus = resolvedVerification.nextStatus;
     const now = new Date();
-    const awaitingProviderConfirmation =
-      String(attempt.providerMode).trim().toLowerCase() === 'live' &&
-      this.isPendingVerificationStatus(nextStatus);
-    const verificationSnapshot = this.buildVerificationSnapshot(
-      attempt,
-      dto,
-      nextStatus,
-      now,
-      awaitingProviderConfirmation
-        ? {
-            awaitingProviderConfirmation: true,
-            recoveryAction: 'WAIT_FOR_PROVIDER_CONFIRMATION',
-            recoveryMessage:
-              'Payment is still awaiting provider callback or webhook confirmation. Recheck in a moment or after returning from the gateway.',
-          }
-        : undefined,
-    );
     const failureState = this.getFailureState(nextStatus);
     const brand =
       nextStatus === 'PAID'
@@ -322,8 +311,23 @@ export class CustomOrdersPaymentsService {
         data: {
           status: nextStatus,
           confirmedAt: nextStatus === 'PAID' ? now : attempt.confirmedAt,
+          finalizedAt:
+            ['PAID', 'FAILED', 'CANCELLED', 'EXPIRED'].includes(nextStatus)
+              ? now
+              : attempt.finalizedAt,
           lastVerifiedAt: now,
-          responseSnapshot: verificationSnapshot as Prisma.InputJsonValue,
+          providerReference: resolvedVerification.providerReference ?? attempt.providerReference,
+          providerTransactionId:
+            resolvedVerification.providerTransactionId ?? attempt.providerTransactionId,
+          providerAccessCode:
+            resolvedVerification.providerAccessCode ?? attempt.providerAccessCode,
+          providerChannel:
+            resolvedVerification.providerChannel ??
+            attempt.providerChannel ??
+            attempt.channel,
+          channel: resolvedVerification.providerChannel ?? attempt.channel,
+          responseSnapshot:
+            resolvedVerification.responseSnapshotPatch as Prisma.InputJsonValue,
           failureCode: failureState.failureCode,
           failureMessage: failureState.failureMessage,
         },
@@ -362,17 +366,18 @@ export class CustomOrdersPaymentsService {
       await tx.paymentEvent.create({
         data: {
           paymentAttemptId: updated.id,
-          type: awaitingProviderConfirmation
+          type: resolvedVerification.awaitingProviderConfirmation
             ? 'VERIFICATION_PENDING_PROVIDER_CONFIRMATION'
             : `STATUS_${nextStatus}`,
           source: 'verify',
           payload: {
+            ...(resolvedVerification.eventPayload ?? {}),
             gateway: dto.gateway,
             providerStatus: nextStatus,
             verifiedAt: now.toISOString(),
             subjectType: PaymentSubjectType.CUSTOM_ORDER,
             customOrderId,
-            awaitingProviderConfirmation,
+            awaitingProviderConfirmation: resolvedVerification.awaitingProviderConfirmation,
           },
         },
       });
@@ -385,7 +390,7 @@ export class CustomOrdersPaymentsService {
           payloadJson: {
             reference: updated.reference,
             status: nextStatus,
-            awaitingProviderConfirmation,
+            awaitingProviderConfirmation: resolvedVerification.awaitingProviderConfirmation,
             autoAccepted: nextStatus === 'PAID',
           },
         },
@@ -673,82 +678,22 @@ export class CustomOrdersPaymentsService {
     return Math.round((value + Number.EPSILON) * 100) / 100;
   }
 
-  private resolveVerifiedAttemptStatus(
-    attempt: {
-      status: string;
-      providerMode: string;
-      responseSnapshot: Prisma.JsonValue | null;
-    },
-    dto: VerifyCustomOrderPaymentDto,
-  ) {
-    const snapshot = this.asObject(attempt.responseSnapshot) ?? {};
-    const authoritativeStatus = this.normalizeAttemptStatus(
-      snapshot.providerVerificationStatus ?? snapshot.mockReturnStatus ?? snapshot.status,
-    );
-    const requestedStatus = this.normalizeAttemptStatus(dto.statusHint);
-
-    if (!authoritativeStatus) {
-      if (String(attempt.providerMode).trim().toLowerCase() === 'live') {
-        return this.isPendingVerificationStatus(attempt.status)
-          ? attempt.status
-          : 'PROCESSING';
-      }
-      return attempt.status;
-    }
-
-    if (requestedStatus && requestedStatus !== authoritativeStatus) {
-      throw new BadRequestException(
-        'Payment verification payload does not match the provider-confirmed attempt status',
-      );
-    }
-
-    return authoritativeStatus;
-  }
-
-  private buildVerificationSnapshot(
-    attempt: {
-      amount: Prisma.Decimal | number;
-      currency: string;
-      responseSnapshot: Prisma.JsonValue | null;
-    },
-    dto: VerifyCustomOrderPaymentDto,
-    resolvedStatus: string,
-    verifiedAt: Date,
-    extra?: Record<string, unknown>,
-  ) {
-    return {
-      ...(this.asObject(attempt.responseSnapshot) ?? {}),
-      providerVerificationGateway: dto.gateway,
-      providerVerificationStatus: resolvedStatus,
-      providerVerificationReference: dto.reference,
-      providerVerificationAmount: Number(attempt.amount),
-      providerVerificationCurrency: attempt.currency,
-      verificationOtpProvided: Boolean(dto.otp),
-      verifiedAt: verifiedAt.toISOString(),
-      ...extra,
-    };
-  }
-
-  private isPendingVerificationStatus(status: string) {
-    return ACTIVE_PAYMENT_ATTEMPT_STATUSES.has(String(status ?? '').trim().toUpperCase());
-  }
-
   private getFailureState(status: string) {
     switch (status) {
       case 'FAILED':
         return {
-          failureCode: 'MOCK_FAILURE',
-          failureMessage: 'Mock payment marked as failed.',
+          failureCode: 'PAYMENT_FAILED',
+          failureMessage: 'Payment provider reported the payment as failed.',
         };
       case 'CANCELLED':
         return {
           failureCode: 'CANCELLED',
-          failureMessage: 'Mock payment was cancelled.',
+          failureMessage: 'Payment provider reported the payment as cancelled.',
         };
       case 'EXPIRED':
         return {
           failureCode: 'EXPIRED',
-          failureMessage: 'Mock payment expired before completion.',
+          failureMessage: 'Payment provider reported that the payment expired before completion.',
         };
       default:
         return {
@@ -756,26 +701,6 @@ export class CustomOrdersPaymentsService {
           failureMessage: null,
         };
     }
-  }
-
-  private normalizeAttemptStatus(status: unknown) {
-    const normalized = String(status ?? '').trim().toUpperCase();
-    if (ACTIVE_PAYMENT_ATTEMPT_STATUSES.has(normalized) || normalized === 'PAID') {
-      return normalized;
-    }
-    if (normalized === 'FAIL' || normalized === 'FAILED') {
-      return 'FAILED';
-    }
-    if (normalized === 'CANCEL' || normalized === 'CANCELLED') {
-      return 'CANCELLED';
-    }
-    if (normalized === 'EXPIRE' || normalized === 'EXPIRED') {
-      return 'EXPIRED';
-    }
-    if (normalized === 'SUCCESS') {
-      return 'PAID';
-    }
-    return undefined;
   }
 
   private asObject(value: Prisma.JsonValue | null) {

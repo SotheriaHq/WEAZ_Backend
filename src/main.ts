@@ -38,7 +38,12 @@ const rawBodySaver = (
   _res: express.Response,
   buf: Buffer,
 ) => {
-  if (buf.length > 0) {
+  const path = String(req.originalUrl ?? req.url ?? '');
+  if (
+    buf.length > 0 &&
+    (path.includes('/payment/webhook/') ||
+      path.includes('/admin/payouts/webhook/'))
+  ) {
     req.rawBody = buf.toString('utf8');
   }
 };

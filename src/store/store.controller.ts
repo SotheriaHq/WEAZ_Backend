@@ -28,6 +28,7 @@ import {
 import { UpdateStoreNameDto } from './dto/update-store-name.dto';
 import { UpdateStoreProfileDto } from './dto/update-store-profile.dto';
 import { UpdateStorePoliciesDto } from './dto/update-store-policies.dto';
+import { UpdateStorePaymentAccountDto } from './dto/update-store-payment-account.dto';
 import { JwtAuthGuard } from '../auth/guard/jwt-auth.guard';
 import { UserTypeGuard } from '../auth/guard/user-type.guard';
 import { OptionalJwtAuthGuard } from '../auth/guard/optional-jwt-auth.guard';
@@ -546,5 +547,27 @@ export class StoreController {
     @Req() req: any,
   ) {
     return this.storeService.updateStorePolicies(req.user.id, dto);
+  }
+
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Get('store/payment-account')
+  async getStorePaymentAccount(@Req() req: any) {
+    return this.storeService.getStorePaymentAccount(req.user.id);
+  }
+
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Get('store/payment-account/banks')
+  async listStorePaymentAccountBanks() {
+    return this.storeService.listSupportedPaymentBanks();
+  }
+
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Patch('store/payment-account')
+  async updateStorePaymentAccount(
+    @Body(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
+    dto: UpdateStorePaymentAccountDto,
+    @Req() req: any,
+  ) {
+    return this.storeService.updateStorePaymentAccount(req.user.id, dto);
   }
 }

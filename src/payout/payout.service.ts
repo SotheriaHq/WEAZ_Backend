@@ -12,6 +12,7 @@ import {
 import { v4 as uuidv4 } from 'uuid';
 import { CommissionService } from 'src/finance/commission.service';
 import { StandardOrderEscrowService } from 'src/finance/standard-order-escrow.service';
+import { StandardOrderFinanceSyncService } from 'src/finance/standard-order-finance-sync.service';
 import { PrismaService } from '../prisma/prisma.service';
 
 @Injectable()
@@ -20,16 +21,16 @@ export class PayoutService {
     private readonly prisma: PrismaService,
     private readonly standardOrderEscrowService: StandardOrderEscrowService,
     private readonly commissionService: CommissionService,
+    private readonly standardOrderFinanceSyncService: StandardOrderFinanceSyncService,
   ) {}
 
   async findAll(brandId: string, page = 1, limit = 20) {
-    const realBrandId = await this.getBrandId(brandId);
     const skip = (page - 1) * limit;
 
     const [total, payouts] = await Promise.all([
-      this.prisma.payout.count({ where: { brandId: realBrandId } }),
+      this.prisma.payout.count({ where: { brandId } }),
       this.prisma.payout.findMany({
-        where: { brandId: realBrandId },
+        where: { brandId },
         skip,
         take: limit,
         orderBy: { createdAt: 'desc' },
@@ -45,13 +46,13 @@ export class PayoutService {
   }
 
   async requestPayout(brandId: string, amount: number) {
-    const realBrandId = await this.getBrandId(brandId);
-
     if (amount < 5000) {
       throw new BadRequestException('Minimum payout amount is 5000');
     }
 
-    const balance = await this.calculateAvailableBalance(realBrandId);
+    await this.assertBrandExists(brandId);
+    await this.syncLegacyStandardOrderSources(brandId);
+    const balance = await this.calculateAvailableBalance(brandId);
 
     if (amount > balance) {
       throw new BadRequestException(
@@ -59,41 +60,55 @@ export class PayoutService {
       );
     }
 
-    return this.prisma.payout.create({
-      data: {
-        id: uuidv4(),
-        brandId: realBrandId,
-        amount,
-        currency: 'NGN',
-        status: PayoutStatus.PENDING_APPROVAL,
-      },
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "id" FROM "Brand" WHERE "id" = ${brandId}::uuid FOR UPDATE`;
+      const refreshedBalance = await this.calculateAvailableBalance(brandId);
+      if (amount > refreshedBalance) {
+        throw new BadRequestException(
+          `Insufficient balance. Available: ${refreshedBalance}`,
+        );
+      }
+
+      const payoutId = uuidv4();
+      const payout = await tx.payout.create({
+        data: {
+          id: payoutId,
+          brandId,
+          amount,
+          currency: 'NGN',
+          status: PayoutStatus.PENDING_APPROVAL,
+        },
+      });
+
+      await this.reserveLedgerSources(tx, brandId, payoutId, amount, payout.currency);
+      return payout;
     });
   }
 
   async getOverview(brandId: string) {
-    const realBrandId = await this.getBrandId(brandId);
+    await this.assertBrandExists(brandId);
     const { availableBalance, releasedBalance, reservedPayoutBalance, paidOutBalance } =
-      await this.calculateBalanceSnapshot(realBrandId);
+      await this.calculateBalanceSnapshot(brandId);
 
     const [orderStats, customOrderStats, activeEscrowHolds, queuedCustomAllocations] =
       await Promise.all([
         this.prisma.order.aggregate({
-          where: { brandId: realBrandId, paymentStatus: 'PAID' },
+          where: { brandId, paymentStatus: 'PAID' },
           _count: { id: true },
         }),
         (this.prisma as any).customOrder.aggregate({
-          where: { brandId: realBrandId, paymentStatus: 'PAID' },
+          where: { brandId, paymentStatus: 'PAID' },
           _count: { id: true },
         }),
         this.prisma.escrowHold.count({
           where: {
-            brandId: realBrandId,
+            brandId,
             status: { in: ['HELD', 'PARTIALLY_RELEASED', 'FROZEN'] as any },
           },
         }),
         this.prisma.customOrderLedgerAllocation.count({
           where: {
-            customOrder: { brandId: realBrandId },
+            customOrder: { brandId },
             status: CustomOrderLedgerAllocationStatus.PAYOUT_ELIGIBLE,
             paidOutAt: null,
             payoutId: null,
@@ -116,7 +131,7 @@ export class PayoutService {
   }
 
   async listIncomingTransactions(brandId: string, page = 1, limit = 20) {
-    const realBrandId = await this.getBrandId(brandId);
+    await this.assertBrandExists(brandId);
     const safePage = Math.max(1, Number(page) || 1);
     const safeLimit = Math.min(100, Math.max(1, Number(limit) || 20));
     const skip = (safePage - 1) * safeLimit;
@@ -126,7 +141,7 @@ export class PayoutService {
         where: {
           account: {
             entityType: 'BRAND',
-            entityId: realBrandId,
+            entityId: brandId,
           },
           direction: 'CREDIT',
         },
@@ -167,7 +182,7 @@ export class PayoutService {
       }),
       this.prisma.order.findMany({
         where: {
-          brandId: realBrandId,
+          brandId,
           paymentStatus: 'PAID' as any,
           escrowHold: { is: null },
         },
@@ -183,7 +198,7 @@ export class PayoutService {
       }),
       this.prisma.customOrderLedgerAllocation.findMany({
         where: {
-          customOrder: { brandId: realBrandId },
+          customOrder: { brandId },
           status: {
             in: [
               CustomOrderLedgerAllocationStatus.PAYOUT_ELIGIBLE,
@@ -364,7 +379,7 @@ export class PayoutService {
       };
     });
 
-    const legacyItems = await this.buildLegacyStandardIncomeItems(realBrandId, legacyOrders);
+    const legacyItems = await this.buildLegacyStandardIncomeItems(brandId, legacyOrders);
     const customFallbackItems = fallbackCustomAllocations
       .filter((allocation) => {
         const stage = this.mapCustomAllocationStage(allocation.allocationType);
@@ -420,7 +435,7 @@ export class PayoutService {
   }
 
   async listHeldFunds(brandId: string, page = 1, limit = 20) {
-    const realBrandId = await this.getBrandId(brandId);
+    await this.assertBrandExists(brandId);
     const safePage = Math.max(1, Number(page) || 1);
     const safeLimit = Math.min(100, Math.max(1, Number(limit) || 20));
     const skip = (safePage - 1) * safeLimit;
@@ -428,7 +443,7 @@ export class PayoutService {
     const [standardHolds, customHeldAllocations] = await Promise.all([
       this.prisma.escrowHold.findMany({
         where: {
-          brandId: realBrandId,
+          brandId,
           status: { in: ['HELD', 'PARTIALLY_RELEASED', 'FROZEN'] as any },
         },
         orderBy: { createdAt: 'desc' },
@@ -455,7 +470,7 @@ export class PayoutService {
       }),
       this.prisma.customOrderLedgerAllocation.findMany({
         where: {
-          customOrder: { brandId: realBrandId },
+          customOrder: { brandId },
           allocationType: CustomOrderLedgerAllocationType.FINAL_COMPLETION_PORTION,
           status: CustomOrderLedgerAllocationStatus.HELD,
         },
@@ -565,13 +580,7 @@ export class PayoutService {
         }),
       ]);
 
-    const reservedStatuses = new Set<PayoutStatus>([
-      PayoutStatus.PENDING_APPROVAL,
-      PayoutStatus.APPROVED,
-      PayoutStatus.PROCESSING,
-      PayoutStatus.ON_HOLD,
-      PayoutStatus.RECONCILIATION_REVIEW,
-    ]);
+    const reservedStatuses = this.getReservedPayoutStatuses();
 
     const reservedPayoutBalance = payoutTotals.reduce((sum, row) => {
       if (!reservedStatuses.has(row.status)) {
@@ -725,13 +734,206 @@ export class PayoutService {
     return new Map<string, number>(resolvedRules);
   }
 
-  private async getBrandId(ownerId: string): Promise<string> {
+  private async syncLegacyStandardOrderSources(brandId: string) {
+    const legacyOrderIds = await this.prisma.order.findMany({
+      where: {
+        brandId,
+        paymentStatus: 'PAID',
+        paymentReference: { not: null },
+        escrowHold: { is: null },
+      },
+      select: { id: true },
+      take: 200,
+    });
+
+    if (legacyOrderIds.length === 0) {
+      return;
+    }
+
+    await this.standardOrderFinanceSyncService.syncPaidOrdersByOrderIds(
+      legacyOrderIds.map((order) => order.id),
+    );
+  }
+
+  private async reserveLedgerSources(
+    tx: Prisma.TransactionClient,
+    brandId: string,
+    payoutId: string,
+    requestedAmount: number,
+    currency: string,
+  ) {
+    const reservedStatuses = [...this.getReservedPayoutStatuses(), PayoutStatus.PAID];
+    const creditEntries = await (tx as any).ledgerEntry.findMany({
+      where: {
+        direction: 'CREDIT',
+        account: {
+          entityType: 'BRAND',
+          entityId: brandId,
+          subType: 'BRAND_AVAILABLE',
+        },
+        transaction: {
+          currency,
+        },
+      },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+      select: {
+        id: true,
+        amount: true,
+        createdAt: true,
+        transaction: {
+          select: {
+            id: true,
+            type: true,
+            referenceType: true,
+            referenceId: true,
+            description: true,
+          },
+        },
+        payoutSourceAllocations: {
+          where: {
+            payout: {
+              status: { in: reservedStatuses },
+            },
+          },
+          select: {
+            amount: true,
+          },
+        },
+      },
+    });
+
+    let remaining = this.roundMoney(requestedAmount);
+    const rows: Array<{
+      payoutId: string;
+      ledgerEntryId: string;
+      amount: Prisma.Decimal;
+      currency: string;
+      escrowHoldId?: string | null;
+      releaseStage?: 'SHIPMENT_PORTION' | 'FINAL_PORTION';
+    }> = [];
+
+    for (const entry of creditEntries) {
+      const alreadyReserved = this.roundMoney(
+        (entry.payoutSourceAllocations ?? []).reduce(
+          (sum: number, allocation: { amount: Prisma.Decimal }) =>
+            sum + Number(allocation.amount ?? 0),
+          0,
+        ),
+      );
+      const available = this.roundMoney(Number(entry.amount ?? 0) - alreadyReserved);
+      if (available <= 0) {
+        continue;
+      }
+
+      const toReserve = this.roundMoney(Math.min(available, remaining));
+      if (toReserve <= 0) {
+        continue;
+      }
+
+      const metadata = await this.resolveEscrowSourceForLedgerEntry(tx, {
+        referenceType: entry.transaction?.referenceType,
+        referenceId: entry.transaction?.referenceId,
+        description: entry.transaction?.description,
+      });
+      rows.push({
+        payoutId,
+        ledgerEntryId: entry.id,
+        amount: new Prisma.Decimal(toReserve.toFixed(2)),
+        currency,
+        escrowHoldId: metadata.escrowHoldId,
+        releaseStage: metadata.releaseStage,
+      });
+
+      remaining = this.roundMoney(remaining - toReserve);
+      if (remaining <= 0) {
+        break;
+      }
+    }
+
+    if (remaining > 0) {
+      throw new BadRequestException(
+        `Exact payout source reservation failed. Reservable balance is ${this.roundMoney(
+          requestedAmount - remaining,
+        )}.`,
+      );
+    }
+
+    if (rows.length === 0) {
+      throw new BadRequestException('No payout source allocations were available to reserve');
+    }
+
+    await (tx as any).payoutLedgerSourceAllocation.createMany({
+      data: rows.map((row) => ({
+        payoutId: row.payoutId,
+        ledgerEntryId: row.ledgerEntryId,
+        amount: row.amount,
+        currency: row.currency,
+        escrowHoldId: row.escrowHoldId ?? null,
+        releaseStage: row.releaseStage ?? null,
+      })),
+    });
+  }
+
+  private async resolveEscrowSourceForLedgerEntry(
+    tx: Prisma.TransactionClient,
+    params?: {
+      referenceType?: string | null;
+      referenceId?: string | null;
+      description?: string | null;
+    },
+  ): Promise<{
+    escrowHoldId: string | null;
+    releaseStage: 'SHIPMENT_PORTION' | 'FINAL_PORTION' | null;
+  }> {
+    if (String(params?.referenceType ?? '').trim().toUpperCase() !== 'ORDER') {
+      return { escrowHoldId: null, releaseStage: null };
+    }
+
+    const orderId = String(params?.referenceId ?? '').trim();
+    if (!orderId) {
+      return { escrowHoldId: null, releaseStage: null };
+    }
+
+    const hold = await tx.escrowHold.findUnique({
+      where: { orderId },
+      select: { id: true, firstReleasedAt: true, secondReleasedAt: true },
+    });
+
+    if (!hold) {
+      return { escrowHoldId: null, releaseStage: null };
+    }
+
+    const description = String(params?.description ?? '').toLowerCase();
+    if (description.includes('shipment')) {
+      return { escrowHoldId: hold.id, releaseStage: 'SHIPMENT_PORTION' };
+    }
+    if (description.includes('final')) {
+      return { escrowHoldId: hold.id, releaseStage: 'FINAL_PORTION' };
+    }
+    if (hold.firstReleasedAt) {
+      return { escrowHoldId: hold.id, releaseStage: 'SHIPMENT_PORTION' };
+    }
+
+    return { escrowHoldId: hold.id, releaseStage: null };
+  }
+
+  async assertBrandOwnership(brandId: string, ownerId: string): Promise<void> {
     const brand = await this.prisma.brand.findUnique({
-      where: { ownerId },
+      where: { id: brandId },
+      select: { ownerId: true },
+    });
+    if (!brand) throw new NotFoundException('Brand not found');
+    if (brand.ownerId !== ownerId) {
+      throw new BadRequestException('Not authorized for this brand');
+    }
+  }
+
+  private async assertBrandExists(brandId: string): Promise<void> {
+    const brand = await this.prisma.brand.findUnique({
+      where: { id: brandId },
       select: { id: true },
     });
     if (!brand) throw new NotFoundException('Brand not found');
-    return brand.id;
   }
 
   private resolveReleaseStage(description?: string | null) {
@@ -746,6 +948,17 @@ export class PayoutService {
     return type === CustomOrderLedgerAllocationType.BRAND_ACCEPTANCE_PORTION
       ? 'ACCEPTED_RELEASE'
       : 'DELIVERED_RELEASE';
+  }
+
+  private getReservedPayoutStatuses() {
+    return new Set<PayoutStatus>([
+      PayoutStatus.PENDING_APPROVAL,
+      PayoutStatus.APPROVED,
+      PayoutStatus.PROCESSING,
+      PayoutStatus.ON_HOLD,
+      PayoutStatus.RECONCILIATION_REVIEW,
+      PayoutStatus.FAILED,
+    ]);
   }
 
   private roundMoney(value: number) {

@@ -19,3 +19,7 @@ export const REVIEW_AGGREGATE_BRAND_JOB = 'review.aggregate.brand';
 
 export const REVIEW_REMINDER_QUEUE = 'review-reminder';
 export const REVIEW_REMINDER_JOB = 'review.reminder.process';
+
+export const WEBHOOK_EVENTS_QUEUE = 'webhook-events';
+export const WEBHOOK_PAYMENT_PROCESS_JOB = 'webhook.payment.process';
+export const WEBHOOK_PAYOUT_PROCESS_JOB = 'webhook.payout.process';

@@ -41,6 +41,12 @@ export class AdminPayoutsController {
     });
   }
 
+  @Get(':id')
+  @RequirePermissions(ADMIN_PERMISSIONS.PAYOUTS_READ)
+  getById(@Param('id') id: string) {
+    return this.payoutsService.getById(id);
+  }
+
   @Patch(':id/status')
   @RequirePermissions(ADMIN_PERMISSIONS.PAYOUTS_PROCESS)
   updateStatus(
@@ -71,5 +77,39 @@ export class AdminPayoutsController {
     const actorId = (req as any).user.id ?? (req as any).user.sub;
     const actorRole = (req as any).user.role as Role;
     return this.payoutsService.release(id, actorId, actorRole, req, dto?.reason);
+  }
+
+  @Post(':id/initiate-transfer')
+  @RequirePermissions(ADMIN_PERMISSIONS.PAYOUTS_PROCESS)
+  initiateTransfer(@Param('id') id: string, @Req() req: Request) {
+    const actorId = (req as any).user.id ?? (req as any).user.sub;
+    const actorRole = (req as any).user.role as Role;
+    return this.payoutsService.initiateTransfer(id, actorId, actorRole, req);
+  }
+
+  @Post(':id/finalize-transfer-otp')
+  @RequirePermissions(ADMIN_PERMISSIONS.PAYOUTS_PROCESS)
+  finalizeTransferOtp(
+    @Param('id') id: string,
+    @Body() dto: { otp: string },
+    @Req() req: Request,
+  ) {
+    const actorId = (req as any).user.id ?? (req as any).user.sub;
+    const actorRole = (req as any).user.role as Role;
+    return this.payoutsService.finalizeTransferOtp(
+      id,
+      dto?.otp,
+      actorId,
+      actorRole,
+      req,
+    );
+  }
+
+  @Get(':id/provider-status')
+  @RequirePermissions(ADMIN_PERMISSIONS.PAYOUTS_PROCESS)
+  getProviderStatus(@Param('id') id: string, @Req() req: Request) {
+    const actorId = (req as any).user.id ?? (req as any).user.sub;
+    const actorRole = (req as any).user.role as Role;
+    return this.payoutsService.getProviderStatus(id, actorId, actorRole);
   }
 }

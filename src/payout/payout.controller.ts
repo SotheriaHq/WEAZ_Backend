@@ -26,9 +26,7 @@ export class PayoutController {
     @Query('page') page?: string,
     @Query('limit') limit?: string,
   ) {
-    if (req.user.id !== brandId) {
-      throw new BadRequestException('Not authorized for this brand');
-    }
+    await this.payoutService.assertBrandOwnership(brandId, req.user.id);
     return this.payoutService.findAll(
       brandId,
       page ? parseInt(page, 10) : 1,
@@ -41,9 +39,7 @@ export class PayoutController {
     @Param('brandId') brandId: string,
     @Req() req: any,
   ) {
-    if (req.user.id !== brandId) {
-      throw new BadRequestException('Not authorized for this brand');
-    }
+    await this.payoutService.assertBrandOwnership(brandId, req.user.id);
     return this.payoutService.getOverview(brandId);
   }
 
@@ -54,9 +50,7 @@ export class PayoutController {
     @Query('page') page?: string,
     @Query('limit') limit?: string,
   ) {
-    if (req.user.id !== brandId) {
-      throw new BadRequestException('Not authorized for this brand');
-    }
+    await this.payoutService.assertBrandOwnership(brandId, req.user.id);
     return this.payoutService.listIncomingTransactions(
       brandId,
       page ? parseInt(page, 10) : 1,
@@ -71,9 +65,7 @@ export class PayoutController {
     @Query('page') page?: string,
     @Query('limit') limit?: string,
   ) {
-    if (req.user.id !== brandId) {
-      throw new BadRequestException('Not authorized for this brand');
-    }
+    await this.payoutService.assertBrandOwnership(brandId, req.user.id);
     return this.payoutService.listHeldFunds(
       brandId,
       page ? parseInt(page, 10) : 1,
@@ -87,9 +79,7 @@ export class PayoutController {
     @Body() body: { amount: number },
     @Req() req: any,
   ) {
-    if (req.user.id !== brandId) {
-      throw new BadRequestException('Not authorized for this brand');
-    }
+    await this.payoutService.assertBrandOwnership(brandId, req.user.id);
     if (!body.amount || body.amount <= 0) {
       throw new BadRequestException('Invalid amount');
     }

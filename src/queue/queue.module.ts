@@ -9,12 +9,14 @@ import {
   SEARCH_QUEUE,
   REVIEW_AGGREGATE_QUEUE,
   REVIEW_REMINDER_QUEUE,
+  WEBHOOK_EVENTS_QUEUE,
 } from './queue.constants';
 import { NotificationsQueueService } from './notifications.queue.service';
 import { ImageProcessingQueueService } from './image-processing.queue.service';
 import { SearchQueueService } from './search.queue.service';
 import { ReviewAggregateQueueService } from './review-aggregate.queue.service';
 import { ReviewReminderQueueService } from './review-reminder.queue.service';
+import { WebhookEventsQueueService } from './webhook-events.queue.service';
 
 @Module({
   imports: [
@@ -36,6 +38,7 @@ import { ReviewReminderQueueService } from './review-reminder.queue.service';
       { name: SEARCH_QUEUE },
       { name: REVIEW_AGGREGATE_QUEUE },
       { name: REVIEW_REMINDER_QUEUE },
+      { name: WEBHOOK_EVENTS_QUEUE },
     ),
   ],
   providers: [
@@ -44,6 +47,7 @@ import { ReviewReminderQueueService } from './review-reminder.queue.service';
     SearchQueueService,
     ReviewAggregateQueueService,
     ReviewReminderQueueService,
+    WebhookEventsQueueService,
   ],
   exports: [
     BullModule,
@@ -52,6 +56,7 @@ import { ReviewReminderQueueService } from './review-reminder.queue.service';
     SearchQueueService,
     ReviewAggregateQueueService,
     ReviewReminderQueueService,
+    WebhookEventsQueueService,
   ],
 })
 export class QueueModule { }

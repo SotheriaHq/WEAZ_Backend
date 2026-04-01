@@ -55,4 +55,19 @@ export class NotificationsController {
   async updateSettings(@Req() req: any, @Body() body: any) {
     return this.service.updateSettings(req.user.id, body);
   }
+
+  @Get('email-settings')
+  async getEmailSettings(@Req() req: any) {
+    return this.service.getEmailSettings(req.user.id);
+  }
+
+  @Patch('email-settings')
+  async updateEmailSettings(@Req() req: any, @Body() body: any) {
+    return this.service.updateEmailSettings(req.user.id, body);
+  }
+
+  @Post('email-settings/reset-defaults')
+  async resetEmailSettings(@Req() req: any) {
+    return this.service.resetEmailSettings(req.user.id);
+  }
 }
