@@ -33,6 +33,7 @@ import { CustomOrdersModule } from './custom-orders/custom-orders.module';
 import { CustomOrderAdminModule } from './custom-order-admin/custom-order-admin.module';
 import { CustomOrderOpsModule } from './custom-order-ops/custom-order-ops.module';
 import { MessagingModule } from './messaging/messaging.module';
+import { WebhooksModule } from './webhooks/webhooks.module';
 
 @Module({
   imports: [
@@ -71,6 +72,7 @@ import { MessagingModule } from './messaging/messaging.module';
     CustomOrderAdminModule,
     CustomOrderOpsModule,
     MessagingModule,
+    WebhooksModule,
   ],
   controllers: [AppController],
   providers: [AppService, EventsGateway],

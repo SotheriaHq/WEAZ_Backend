@@ -6275,7 +6275,7 @@ export class StoreService {
             bodyJson: subaccountBody,
           });
 
-      const transferRecipientBody = {
+      const transferRecipientCreateBody = {
         type: 'nuban',
         name: resolved.account_name,
         account_number: accountNumber,
@@ -6288,18 +6288,97 @@ export class StoreService {
         },
       };
 
-      transferRecipientPayload = existingAccount?.transferRecipientCode
-        ? await this.callPaystack(
-            `/transferrecipient/${encodeURIComponent(existingAccount.transferRecipientCode)}`,
+      const existingRecipientCode = String(
+        existingAccount?.transferRecipientCode ?? '',
+      ).trim() || null;
+
+      if (!existingRecipientCode) {
+        transferRecipientPayload = await this.callPaystack('/transferrecipient', {
+          method: 'POST',
+          bodyJson: transferRecipientCreateBody,
+        });
+      } else {
+        let existingRecipientPayload: any = null;
+        try {
+          existingRecipientPayload = await this.callPaystack(
+            `/transferrecipient/${encodeURIComponent(existingRecipientCode)}`,
+            { method: 'GET' },
+          );
+        } catch (error: any) {
+          this.logger.warn(
+            `Failed to fetch existing transfer recipient ${existingRecipientCode}: ${String(error?.message || error)}`,
+          );
+        }
+
+        const existingDetails =
+          existingRecipientPayload &&
+          typeof existingRecipientPayload.details === 'object' &&
+          !Array.isArray(existingRecipientPayload.details)
+            ? existingRecipientPayload.details
+            : null;
+        const existingBankCode = String(existingDetails?.bank_code ?? '').trim();
+        const existingAccountNumber = String(
+          existingDetails?.account_number ?? '',
+        )
+          .replace(/\D+/g, '')
+          .trim();
+
+        const canReuseRecipient =
+          Boolean(existingRecipientPayload) &&
+          existingBankCode === bankCode &&
+          existingAccountNumber === accountNumber;
+
+        if (canReuseRecipient) {
+          const updatedRecipient = await this.callPaystack(
+            `/transferrecipient/${encodeURIComponent(existingRecipientCode)}`,
             {
               method: 'PUT',
-              bodyJson: transferRecipientBody,
+              bodyJson: {
+                name: resolved.account_name,
+                email: primaryContactEmail || undefined,
+              },
             },
-          )
-        : await this.callPaystack('/transferrecipient', {
+          );
+
+          transferRecipientPayload = {
+            ...existingRecipientPayload,
+            ...updatedRecipient,
+            recipient_code:
+              updatedRecipient?.recipient_code ??
+              existingRecipientCode,
+            id:
+              updatedRecipient?.id ??
+              existingRecipientPayload?.id ??
+              existingAccount?.transferRecipientId ??
+              null,
+            active:
+              updatedRecipient?.active ??
+              existingRecipientPayload?.active ??
+              true,
+          };
+        } else {
+          transferRecipientPayload = await this.callPaystack('/transferrecipient', {
             method: 'POST',
-            bodyJson: transferRecipientBody,
+            bodyJson: transferRecipientCreateBody,
           });
+
+          const nextRecipientCode = String(
+            transferRecipientPayload?.recipient_code ?? '',
+          ).trim();
+          if (nextRecipientCode && nextRecipientCode !== existingRecipientCode) {
+            try {
+              await this.callPaystack(
+                `/transferrecipient/${encodeURIComponent(existingRecipientCode)}`,
+                { method: 'DELETE' },
+              );
+            } catch (error: any) {
+              this.logger.warn(
+                `Failed to deactivate old transfer recipient ${existingRecipientCode}: ${String(error?.message || error)}`,
+              );
+            }
+          }
+        }
+      }
     } catch (error: any) {
       syncError =
         error?.response?.data?.message ||
@@ -6422,6 +6501,333 @@ export class StoreService {
     }
 
     return this.getStorePaymentAccount(ownerId);
+  }
+
+  private toMoney(value: unknown) {
+    const numeric = Number(value ?? 0);
+    if (!Number.isFinite(numeric)) {
+      return 0;
+    }
+    return Math.round(numeric * 100) / 100;
+  }
+
+  private getEscrowRemainingAmount(hold: {
+    netBrandAmount: unknown;
+    firstReleaseNetAmount: unknown;
+    secondReleaseNetAmount: unknown;
+    firstReleasedAt?: Date | null;
+    secondReleasedAt?: Date | null;
+  }) {
+    let remaining = this.toMoney(hold.netBrandAmount);
+    if (hold.firstReleasedAt) {
+      remaining -= this.toMoney(hold.firstReleaseNetAmount);
+    }
+    if (hold.secondReleasedAt) {
+      remaining -= this.toMoney(hold.secondReleaseNetAmount);
+    }
+    return Math.max(0, this.toMoney(remaining));
+  }
+
+  async getStoreWallet(ownerId: string) {
+    const resolvedBrand = await this.resolveBrandByIdOrOwner(ownerId);
+    if (!resolvedBrand) {
+      throw new NotFoundException('Brand not found');
+    }
+
+    const brandId = resolvedBrand.id;
+    const pendingStatuses = [
+      'PENDING_APPROVAL',
+      'APPROVED',
+      'PROCESSING',
+      'ON_HOLD',
+      'RECONCILIATION_REVIEW',
+    ];
+
+    const [availableAccount, pendingPayouts, paidOut, heldHolds, recentPayouts] =
+      await Promise.all([
+        this.prisma.ledgerAccount.findFirst({
+          where: {
+            entityType: 'BRAND',
+            entityId: brandId,
+            subType: 'BRAND_AVAILABLE',
+            isActive: true,
+          },
+          select: { currentBalance: true },
+        }),
+        this.prisma.payout.aggregate({
+          where: {
+            brandId,
+            status: { in: pendingStatuses as any },
+          },
+          _sum: { amount: true },
+          _count: { id: true },
+        }),
+        this.prisma.payout.aggregate({
+          where: {
+            brandId,
+            status: 'PAID' as any,
+          },
+          _sum: { amount: true },
+          _count: { id: true },
+        }),
+        this.prisma.escrowHold.findMany({
+          where: {
+            brandId,
+            status: {
+              in: ['HELD', 'PARTIALLY_RELEASED', 'FROZEN'] as any,
+            },
+          },
+          select: {
+            netBrandAmount: true,
+            firstReleaseNetAmount: true,
+            secondReleaseNetAmount: true,
+            firstReleasedAt: true,
+            secondReleasedAt: true,
+          },
+        }),
+        this.prisma.payout.findMany({
+          where: { brandId },
+          orderBy: { createdAt: 'desc' },
+          take: 8,
+          select: {
+            id: true,
+            amount: true,
+            currency: true,
+            status: true,
+            providerTransferStatus: true,
+            createdAt: true,
+            processedAt: true,
+            paidAt: true,
+          },
+        }),
+      ]);
+
+    const payoutIds = recentPayouts.map((payout) => payout.id);
+    const statementRows =
+      payoutIds.length > 0
+        ? await (this.prisma as any).financialDocument.findMany({
+            where: {
+              payoutId: { in: payoutIds },
+              type: 'BRAND_SETTLEMENT_STATEMENT',
+              status: 'GENERATED',
+            },
+            select: {
+              id: true,
+              payoutId: true,
+              documentNumber: true,
+              issuedAt: true,
+            },
+          })
+        : [];
+
+    const statementByPayoutId = new Map<string, any>(
+      statementRows.map((row: any) => [String(row.payoutId), row]),
+    );
+
+    const availableForPayout = this.toMoney(availableAccount?.currentBalance ?? 0);
+    const pendingPayoutTotal = this.toMoney(pendingPayouts?._sum?.amount ?? 0);
+    const totalPaidOut = this.toMoney(paidOut?._sum?.amount ?? 0);
+    const heldInEscrow = this.toMoney(
+      heldHolds.reduce((sum, hold) => sum + this.getEscrowRemainingAmount(hold), 0),
+    );
+    const totalEarnings = this.toMoney(
+      availableForPayout + pendingPayoutTotal + totalPaidOut + heldInEscrow,
+    );
+
+    return {
+      brandId,
+      currency: 'NGN',
+      summary: {
+        availableForPayout,
+        heldInEscrow,
+        totalEarnings,
+        totalPaidOut,
+        pendingPayoutTotal,
+        pendingPayoutCount: Number(pendingPayouts?._count?.id ?? 0),
+      },
+      recentPayouts: recentPayouts.map((payout) => {
+        const statement = statementByPayoutId.get(String(payout.id));
+        return {
+          id: payout.id,
+          amount: this.toMoney(payout.amount),
+          currency: payout.currency,
+          status: payout.status,
+          providerTransferStatus: payout.providerTransferStatus ?? null,
+          createdAt: payout.createdAt,
+          processedAt: payout.processedAt,
+          paidAt: payout.paidAt,
+          statement:
+            statement != null
+              ? {
+                  id: String(statement.id),
+                  documentNumber: String(statement.documentNumber),
+                  issuedAt: statement.issuedAt,
+                  downloadPath: `/store/payouts/${payout.id}/statement`,
+                }
+              : null,
+        };
+      }),
+    };
+  }
+
+  async listStorePayouts(
+    ownerId: string,
+    params?: { page?: number; limit?: number; status?: string },
+  ) {
+    const resolvedBrand = await this.resolveBrandByIdOrOwner(ownerId);
+    if (!resolvedBrand) {
+      throw new NotFoundException('Brand not found');
+    }
+
+    const page = Math.max(1, Number(params?.page ?? 1));
+    const limit = Math.min(100, Math.max(1, Number(params?.limit ?? 20)));
+    const skip = (page - 1) * limit;
+    const normalizedStatus = String(params?.status ?? '').trim().toUpperCase();
+    const validStatuses = new Set([
+      'PENDING_APPROVAL',
+      'APPROVED',
+      'PROCESSING',
+      'PAID',
+      'FAILED',
+      'REJECTED',
+      'ON_HOLD',
+      'RECONCILIATION_REVIEW',
+    ]);
+    const statusFilter =
+      normalizedStatus && validStatuses.has(normalizedStatus)
+        ? normalizedStatus
+        : null;
+
+    const where = {
+      brandId: resolvedBrand.id,
+      ...(statusFilter ? { status: statusFilter as any } : {}),
+    };
+
+    const [total, payouts] = await Promise.all([
+      this.prisma.payout.count({ where }),
+      this.prisma.payout.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: limit,
+        select: {
+          id: true,
+          amount: true,
+          currency: true,
+          status: true,
+          providerTransferStatus: true,
+          providerTransferFailureMessage: true,
+          providerTransferReference: true,
+          createdAt: true,
+          processedAt: true,
+          paidAt: true,
+        },
+      }),
+    ]);
+
+    const payoutIds = payouts.map((payout) => payout.id);
+    const statementRows =
+      payoutIds.length > 0
+        ? await (this.prisma as any).financialDocument.findMany({
+            where: {
+              payoutId: { in: payoutIds },
+              type: 'BRAND_SETTLEMENT_STATEMENT',
+              status: 'GENERATED',
+            },
+            select: {
+              id: true,
+              payoutId: true,
+              documentNumber: true,
+              issuedAt: true,
+            },
+          })
+        : [];
+
+    const statementByPayoutId = new Map<string, any>(
+      statementRows.map((row: any) => [String(row.payoutId), row]),
+    );
+
+    return {
+      items: payouts.map((payout) => {
+        const statement = statementByPayoutId.get(String(payout.id));
+        return {
+          id: payout.id,
+          amount: this.toMoney(payout.amount),
+          currency: payout.currency,
+          status: payout.status,
+          providerTransferStatus: payout.providerTransferStatus ?? null,
+          providerTransferFailureMessage:
+            payout.providerTransferFailureMessage ?? null,
+          providerTransferReference: payout.providerTransferReference ?? null,
+          createdAt: payout.createdAt,
+          processedAt: payout.processedAt,
+          paidAt: payout.paidAt,
+          statement:
+            statement != null
+              ? {
+                  id: String(statement.id),
+                  documentNumber: String(statement.documentNumber),
+                  issuedAt: statement.issuedAt,
+                  downloadPath: `/store/payouts/${payout.id}/statement`,
+                }
+              : null,
+        };
+      }),
+      total,
+      page,
+      totalPages: Math.max(1, Math.ceil(total / limit)),
+      hasNextPage: skip + payouts.length < total,
+    };
+  }
+
+  async getStorePayoutStatement(ownerId: string, payoutId: string) {
+    const resolvedBrand = await this.resolveBrandByIdOrOwner(ownerId);
+    if (!resolvedBrand) {
+      throw new NotFoundException('Brand not found');
+    }
+
+    const payout = await this.prisma.payout.findFirst({
+      where: {
+        id: payoutId,
+        brandId: resolvedBrand.id,
+      },
+      select: { id: true },
+    });
+    if (!payout) {
+      throw new NotFoundException('Payout not found');
+    }
+
+    const document = await (this.prisma as any).financialDocument.findFirst({
+      where: {
+        payoutId,
+        type: 'BRAND_SETTLEMENT_STATEMENT',
+        status: 'GENERATED',
+      },
+      select: {
+        id: true,
+        documentNumber: true,
+        issuedAt: true,
+        currency: true,
+        grossAmount: true,
+        netAmount: true,
+        contentHtml: true,
+      },
+    });
+
+    if (!document) {
+      throw new NotFoundException('Settlement statement is not available yet');
+    }
+
+    return {
+      id: String(document.id),
+      payoutId,
+      documentNumber: String(document.documentNumber),
+      issuedAt: document.issuedAt,
+      currency: document.currency,
+      grossAmount: this.toMoney(document.grossAmount),
+      netAmount: this.toMoney(document.netAmount),
+      contentHtml: String(document.contentHtml || ''),
+    };
   }
 
   // ==================== STORE STATUS & COMPLETENESS ====================

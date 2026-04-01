@@ -355,6 +355,12 @@ export class AdminPayoutsService {
     actorRole: Role,
     req: Request,
   ) {
+    if (!this.isPayoutTransferExecutionEnabled()) {
+      throw new BadRequestException(
+        'Paystack payout transfer execution is currently disabled',
+      );
+    }
+
     const payout = await this.prisma.payout.findUnique({
       where: { id: payoutId },
       include: this.payoutInclude(),
@@ -395,6 +401,12 @@ export class AdminPayoutsService {
       );
     }
 
+    await this.assertPayoutSourceReservations(
+      this.prisma,
+      payout.id,
+      Number(payout.amount ?? 0),
+    );
+
     const providerPayload = await this.callPaystack('/transfer', {
       method: 'POST',
       bodyJson: {
@@ -416,12 +428,28 @@ export class AdminPayoutsService {
         throw new NotFoundException('Payout not found');
       }
 
+      await this.assertPayoutSourceReservations(
+        tx,
+        current.id,
+        Number(current.amount ?? 0),
+      );
+
       const updated = await this.applyProviderTransferSync(
         tx,
         current,
         providerPayload,
         'provider-initiate',
       );
+
+      const otpMode = this.getTransferOtpMode();
+      const providerStatus = this.normalizeProviderStatus(
+        providerPayload?.status,
+      );
+      if (otpMode === 'DISABLED' && providerStatus === 'OTP') {
+        this.logger.warn(
+          `Transfer ${updated.id} returned OTP while PAYSTACK_TRANSFER_OTP_MODE is DISABLED`,
+        );
+      }
 
       await (tx as any).adminAuditLog.create({
         data: {
@@ -467,6 +495,18 @@ export class AdminPayoutsService {
 
     if (!payout.providerTransferCode) {
       throw new BadRequestException('This payout does not have a pending transfer to finalize');
+    }
+
+    const providerTransferStatus = this.normalizeProviderStatus(
+      payout.providerTransferStatus,
+    );
+    if (
+      this.getTransferOtpMode() === 'DISABLED' &&
+      providerTransferStatus !== 'OTP'
+    ) {
+      throw new BadRequestException(
+        'Transfer OTP finalization is disabled for this environment',
+      );
     }
 
     const cleanOtp = String(otp || '').trim();
@@ -969,6 +1009,65 @@ export class AdminPayoutsService {
 
   private buildTransferReference(payoutId: string) {
     return `threadly-payout-${payoutId.slice(0, 8)}-${Date.now()}`.toLowerCase();
+  }
+
+  private isPayoutTransferExecutionEnabled() {
+    const value = String(
+      process.env.PAYSTACK_PAYOUT_TRANSFERS_ENABLED ?? 'true',
+    )
+      .trim()
+      .toLowerCase();
+    return !['0', 'false', 'no', 'off'].includes(value);
+  }
+
+  private getTransferOtpMode(): 'DISABLED' | 'REQUIRED' {
+    const value = String(process.env.PAYSTACK_TRANSFER_OTP_MODE ?? 'DISABLED')
+      .trim()
+      .toUpperCase();
+    return value === 'REQUIRED' ? 'REQUIRED' : 'DISABLED';
+  }
+
+  private async assertPayoutSourceReservations(
+    tx: any,
+    payoutId: string,
+    payoutAmount: number,
+  ) {
+    const [customOrderAllocations, standardOrderAllocations] = await Promise.all([
+      tx.customOrderLedgerAllocation.aggregate({
+        where: {
+          payoutId,
+          status: CustomOrderLedgerAllocationStatus.PAYOUT_ELIGIBLE,
+          paidOutAt: null,
+        },
+        _sum: { netBrandAmount: true },
+        _count: { id: true },
+      }),
+      (tx as any).payoutLedgerSourceAllocation.aggregate({
+        where: { payoutId },
+        _sum: { amount: true },
+        _count: { id: true },
+      }),
+    ]);
+
+    const linkedSourcesCount =
+      Number(customOrderAllocations?._count?.id ?? 0) +
+      Number(standardOrderAllocations?._count?.id ?? 0);
+    if (linkedSourcesCount === 0) {
+      throw new ConflictException(
+        'This payout no longer has active source reservations',
+      );
+    }
+
+    const linkedSourcesTotal = this.roundMoney(
+      Number(customOrderAllocations?._sum?.netBrandAmount ?? 0) +
+        Number(standardOrderAllocations?._sum?.amount ?? 0),
+    );
+    const expectedAmount = this.roundMoney(Number(payoutAmount ?? 0));
+    if (Math.abs(linkedSourcesTotal - expectedAmount) >= 0.01) {
+      throw new ConflictException(
+        'Payout amount no longer matches reserved payout source allocations',
+      );
+    }
   }
 
   private getRequiredPaystackSecret() {

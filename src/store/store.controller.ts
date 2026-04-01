@@ -570,4 +570,34 @@ export class StoreController {
   ) {
     return this.storeService.updateStorePaymentAccount(req.user.id, dto);
   }
+
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Get('store/wallet')
+  async getStoreWallet(@Req() req: any) {
+    return this.storeService.getStoreWallet(req.user.id);
+  }
+
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Get('store/payouts')
+  async listStorePayouts(
+    @Req() req: any,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('status') status?: string,
+  ) {
+    return this.storeService.listStorePayouts(req.user.id, {
+      page: page ? parseInt(page, 10) : 1,
+      limit: limit ? parseInt(limit, 10) : 20,
+      status,
+    });
+  }
+
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Get('store/payouts/:payoutId/statement')
+  async getStorePayoutStatement(
+    @Req() req: any,
+    @Param('payoutId') payoutId: string,
+  ) {
+    return this.storeService.getStorePayoutStatement(req.user.id, payoutId);
+  }
 }

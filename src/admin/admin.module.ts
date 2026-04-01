@@ -108,6 +108,13 @@ import { QueueModule } from 'src/queue/queue.module';
     FeaturedExpiryCronService,
     FeaturedAutoRemovalService,
   ],
-  exports: [FeatureFlagsService, AdminAuditService, AdminFeaturedService, FeaturedAutoRemovalService, SystemConfigModule],
+  exports: [
+    FeatureFlagsService,
+    AdminAuditService,
+    AdminFeaturedService,
+    FeaturedAutoRemovalService,
+    SystemConfigModule,
+    AdminPayoutsService,
+  ],
 })
 export class AdminModule {}
