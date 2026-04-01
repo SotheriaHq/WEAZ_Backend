@@ -593,6 +593,15 @@ export class StoreController {
   }
 
   @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Get('store/payouts/:payoutId')
+  async getStorePayoutDetail(
+    @Req() req: any,
+    @Param('payoutId') payoutId: string,
+  ) {
+    return this.storeService.getStorePayoutDetail(req.user.id, payoutId);
+  }
+
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
   @Get('store/payouts/:payoutId/statement')
   async getStorePayoutStatement(
     @Req() req: any,

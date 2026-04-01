@@ -237,37 +237,37 @@ export class OrderService {
     if (!order) {
       throw new NotFoundException('Order not found');
     }
-    const paymentStatusByOrderId = await reconcileStandardOrderPaymentStatuses(this.prisma, [order]);
-    if (paymentStatusByOrderId.get(order.id) === PaymentStatus.PAID) {
-      await this.standardOrderFinanceSyncService.syncPaidOrdersByOrderIds([order.id]);
+    return this.hydrateOrderDetail(order);
+  }
+
+  async findOneForAdmin(orderId: string) {
+    const order = await this.prisma.order.findUnique({
+      where: { id: orderId },
+      include: {
+        orderItems: true,
+        brand: {
+          select: {
+            id: true,
+            name: true,
+            logo: true,
+            currency: true,
+            contactEmail: true,
+            owner: {
+              select: {
+                phoneNumber: true,
+                address: true,
+              },
+            },
+          },
+        },
+      },
+    });
+
+    if (!order) {
+      throw new NotFoundException('Order not found');
     }
-    const financeSnapshot = await this.buildStandardOrderFinanceSnapshot(order);
 
-    // Normalize contact fields for frontend consumption
-    const contactInfo = (order.contactInfo as Record<string, any>) || {};
-    const shippingAddr = (order.shippingAddress as Record<string, any>) || null;
-
-    return {
-      ...order,
-      paymentStatus:
-        paymentStatusByOrderId.get(order.id) ?? order.paymentStatus,
-      financeBreakdown: financeSnapshot.breakdown,
-      buyerReceipt: financeSnapshot.receipt,
-      customerEmail: contactInfo.email || null,
-      customerPhone: contactInfo.phone || null,
-      formattedShippingAddress: shippingAddr
-        ? [
-            shippingAddr.street,
-            shippingAddr.apartment,
-            shippingAddr.city,
-            shippingAddr.state,
-            shippingAddr.postalCode,
-            shippingAddr.country,
-          ]
-            .filter(Boolean)
-            .join(', ')
-        : null,
-    };
+    return this.hydrateOrderDetail(order);
   }
 
   async updateStatus(brandId: string, orderId: string, status: OrderStatus) {
@@ -380,6 +380,44 @@ export class OrderService {
     const regex =
       /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
     return regex.test(id);
+  }
+
+  private async hydrateOrderDetail(order: any) {
+    const paymentStatusByOrderId = await reconcileStandardOrderPaymentStatuses(
+      this.prisma,
+      [order],
+    );
+    if (paymentStatusByOrderId.get(order.id) === PaymentStatus.PAID) {
+      await this.standardOrderFinanceSyncService.syncPaidOrdersByOrderIds([
+        order.id,
+      ]);
+    }
+    const financeSnapshot = await this.buildStandardOrderFinanceSnapshot(order);
+
+    // Normalize contact fields for frontend consumption.
+    const contactInfo = (order.contactInfo as Record<string, any>) || {};
+    const shippingAddr = (order.shippingAddress as Record<string, any>) || null;
+
+    return {
+      ...order,
+      paymentStatus: paymentStatusByOrderId.get(order.id) ?? order.paymentStatus,
+      financeBreakdown: financeSnapshot.breakdown,
+      buyerReceipt: financeSnapshot.receipt,
+      customerEmail: contactInfo.email || null,
+      customerPhone: contactInfo.phone || null,
+      formattedShippingAddress: shippingAddr
+        ? [
+            shippingAddr.street,
+            shippingAddr.apartment,
+            shippingAddr.city,
+            shippingAddr.state,
+            shippingAddr.postalCode,
+            shippingAddr.country,
+          ]
+            .filter(Boolean)
+            .join(', ')
+        : null,
+    };
   }
 
   private async buildStandardOrderFinanceSnapshot(order: {

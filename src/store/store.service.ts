@@ -59,6 +59,7 @@ import { CategoriesService } from 'src/categories/categories.service';
 import { reconcileStandardOrderPaymentStatuses } from 'src/common/payments/order-payment-reconciliation.util';
 import { StandardOrderEscrowService } from 'src/finance/standard-order-escrow.service';
 import { StandardOrderFinanceSyncService } from 'src/finance/standard-order-finance-sync.service';
+import { buildPayoutSourceBreakdown } from 'src/payout/payout-detail.presenter';
 
 @Injectable()
 export class StoreService {
@@ -6777,6 +6778,161 @@ export class StoreService {
       page,
       totalPages: Math.max(1, Math.ceil(total / limit)),
       hasNextPage: skip + payouts.length < total,
+    };
+  }
+
+  async getStorePayoutDetail(ownerId: string, payoutId: string) {
+    const resolvedBrand = await this.resolveBrandByIdOrOwner(ownerId);
+    if (!resolvedBrand) {
+      throw new NotFoundException('Brand not found');
+    }
+
+    const payout = await this.prisma.payout.findFirst({
+      where: {
+        id: payoutId,
+        brandId: resolvedBrand.id,
+      },
+      select: {
+        id: true,
+        brandId: true,
+        amount: true,
+        currency: true,
+        status: true,
+        provider: true,
+        reference: true,
+        providerTransferStatus: true,
+        providerTransferReference: true,
+        providerTransferFailureMessage: true,
+        providerTransferInitiatedAt: true,
+        providerTransferFinalizedAt: true,
+        providerTransferReversedAt: true,
+        failureReason: true,
+        statusReason: true,
+        createdAt: true,
+        processedAt: true,
+        paidAt: true,
+        ledgerSourceAllocations: {
+          orderBy: { createdAt: 'asc' },
+          select: {
+            id: true,
+            amount: true,
+            currency: true,
+            createdAt: true,
+            releaseStage: true,
+            ledgerEntry: {
+              select: {
+                id: true,
+                amount: true,
+                createdAt: true,
+                transaction: {
+                  select: {
+                    referenceId: true,
+                    referenceType: true,
+                    description: true,
+                    totalAmount: true,
+                    currency: true,
+                    createdAt: true,
+                  },
+                },
+              },
+            },
+            escrowHold: {
+              select: {
+                id: true,
+                order: {
+                  select: {
+                    id: true,
+                    customerName: true,
+                    orderItems: {
+                      take: 1,
+                      orderBy: { createdAt: 'asc' },
+                      select: {
+                        nameAtPurchase: true,
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+        ledgerAllocations: {
+          orderBy: { createdAt: 'asc' },
+          select: {
+            id: true,
+            allocationType: true,
+            amount: true,
+            commissionAmount: true,
+            netBrandAmount: true,
+            currency: true,
+            eligibleAt: true,
+            createdAt: true,
+            customOrderId: true,
+            customOrder: {
+              select: {
+                id: true,
+                sourceTitleSnapshot: true,
+                buyer: {
+                  select: {
+                    firstName: true,
+                    lastName: true,
+                    username: true,
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    });
+
+    if (!payout) {
+      throw new NotFoundException('Payout not found');
+    }
+
+    const statement = await (this.prisma as any).financialDocument.findFirst({
+      where: {
+        payoutId,
+        type: 'BRAND_SETTLEMENT_STATEMENT',
+        status: 'GENERATED',
+      },
+      select: {
+        id: true,
+        documentNumber: true,
+        issuedAt: true,
+      },
+    });
+
+    return {
+      id: payout.id,
+      brandId: payout.brandId,
+      amount: this.toMoney(payout.amount),
+      currency: payout.currency,
+      status: payout.status,
+      provider: payout.provider,
+      reference: payout.reference ?? null,
+      providerTransferStatus: payout.providerTransferStatus ?? null,
+      providerTransferReference: payout.providerTransferReference ?? null,
+      providerTransferFailureMessage:
+        payout.providerTransferFailureMessage ?? null,
+      providerTransferInitiatedAt: payout.providerTransferInitiatedAt,
+      providerTransferFinalizedAt: payout.providerTransferFinalizedAt,
+      providerTransferReversedAt: payout.providerTransferReversedAt,
+      failureReason: payout.failureReason ?? null,
+      statusReason: payout.statusReason ?? null,
+      createdAt: payout.createdAt,
+      processedAt: payout.processedAt,
+      paidAt: payout.paidAt,
+      statement:
+        statement != null
+          ? {
+              id: String(statement.id),
+              documentNumber: String(statement.documentNumber),
+              issuedAt: statement.issuedAt,
+              downloadPath: `/store/payouts/${payout.id}/statement`,
+            }
+          : null,
+      sourceBreakdown: buildPayoutSourceBreakdown(payout),
     };
   }
 

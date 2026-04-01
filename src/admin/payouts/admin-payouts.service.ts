@@ -22,6 +22,7 @@ import {
   WebhookEventsQueueService,
   type PayoutWebhookProcessJob,
 } from 'src/queue/webhook-events.queue.service';
+import { buildPayoutSourceBreakdown } from 'src/payout/payout-detail.presenter';
 
 type WebhookContext = {
   headers: Record<string, any>;
@@ -111,6 +112,78 @@ export class AdminPayoutsService {
       where: { id: payoutId },
       include: {
         ...this.payoutInclude(),
+        ledgerSourceAllocations: {
+          orderBy: { createdAt: 'asc' },
+          select: {
+            id: true,
+            amount: true,
+            currency: true,
+            createdAt: true,
+            releaseStage: true,
+            ledgerEntry: {
+              select: {
+                id: true,
+                amount: true,
+                createdAt: true,
+                transaction: {
+                  select: {
+                    referenceId: true,
+                    referenceType: true,
+                    description: true,
+                    totalAmount: true,
+                    currency: true,
+                    createdAt: true,
+                  },
+                },
+              },
+            },
+            escrowHold: {
+              select: {
+                id: true,
+                order: {
+                  select: {
+                    id: true,
+                    customerName: true,
+                    orderItems: {
+                      take: 1,
+                      orderBy: { createdAt: 'asc' },
+                      select: {
+                        nameAtPurchase: true,
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+        ledgerAllocations: {
+          orderBy: { createdAt: 'asc' },
+          select: {
+            id: true,
+            allocationType: true,
+            amount: true,
+            commissionAmount: true,
+            netBrandAmount: true,
+            currency: true,
+            eligibleAt: true,
+            createdAt: true,
+            customOrderId: true,
+            customOrder: {
+              select: {
+                id: true,
+                sourceTitleSnapshot: true,
+                buyer: {
+                  select: {
+                    firstName: true,
+                    lastName: true,
+                    username: true,
+                  },
+                },
+              },
+            },
+          },
+        },
         events: {
           orderBy: { createdAt: 'desc' },
           take: 30,
@@ -129,6 +202,7 @@ export class AdminPayoutsService {
     return {
       ...payout,
       payoutAccount: this.summarizeStorePaymentAccount(paymentAccount),
+      sourceBreakdown: buildPayoutSourceBreakdown(payout),
     };
   }
 
