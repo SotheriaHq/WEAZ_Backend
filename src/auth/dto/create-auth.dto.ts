@@ -8,6 +8,7 @@ import {
   IsNotEmpty,
 } from 'class-validator';
 import { UserType } from '@prisma/client';
+import { PASSWORD_POLICY_MIN_LENGTH } from '../helper/password-policy.helper';
 
 export class CreateUserDto {
   // Owner names are required during signup for both regular and brand users.
@@ -32,7 +33,9 @@ export class CreateUserDto {
 
   @IsNotEmpty({ message: 'Password is required' })
   @IsString({ message: 'Password must be a string' })
-  @MinLength(6, { message: 'Password must be at least 6 characters long' })
+  @MinLength(PASSWORD_POLICY_MIN_LENGTH, {
+    message: `Password must be at least ${PASSWORD_POLICY_MIN_LENGTH} characters long`,
+  })
   // Uncomment these for stronger password requirements
   // @Matches(/[A-Z]/, { message: 'Password must contain at least one uppercase letter' })
   // @Matches(/[!@#$%^&*(),.?":{}|<>]/, { message: 'Password must contain at least one special character' })

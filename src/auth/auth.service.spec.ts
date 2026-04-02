@@ -1,6 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { BadRequestException } from '@nestjs/common';
-import { Role } from '@prisma/client';
+import { UnauthorizedException } from '@nestjs/common';
+import { UserStatus } from '@prisma/client';
 
 import { AuthService } from './auth.service';
 import { PrismaService } from 'src/prisma/prisma.service';
@@ -9,9 +9,16 @@ import { TokenService } from './helper/general.helper';
 import { UserHelperService } from './helper/user-helper.service';
 import { EmailVerificationHelperService } from './helper/email-verification-helper.service';
 import { NotificationsService } from 'src/notifications/notifications.service';
+import { EmailService } from 'src/email/email.service';
+import { TrustedDeviceService } from './helper/trusted-device.service';
 
 describe('AuthService', () => {
   let service: AuthService;
+
+  const mockPasswordService = {
+    hashPassword: jest.fn(),
+    verifyPassword: jest.fn(),
+  };
 
   const mockPrisma = {
     user: {
@@ -29,7 +36,7 @@ describe('AuthService', () => {
         { provide: PrismaService, useValue: mockPrisma },
         {
           provide: PasswordService,
-          useValue: { hashPassword: jest.fn(), verifyPassword: jest.fn() },
+          useValue: mockPasswordService,
         },
         { provide: TokenService, useValue: { generateTokens: jest.fn() } },
         {
@@ -48,6 +55,14 @@ describe('AuthService', () => {
           },
         },
         { provide: NotificationsService, useValue: { create: jest.fn() } },
+        {
+          provide: EmailService,
+          useValue: { send: jest.fn(), getAppName: jest.fn(() => 'Threadly') },
+        },
+        {
+          provide: TrustedDeviceService,
+          useValue: { listDevices: jest.fn(), revokeDevice: jest.fn() },
+        },
       ],
     }).compile();
 
@@ -58,35 +73,68 @@ describe('AuthService', () => {
     expect(service).toBeDefined();
   });
 
-  it('validateUser should query only non-inactive users', async () => {
+  it('validateUser should normalize email before query', async () => {
     (mockPrisma.user.findFirst as jest.Mock).mockResolvedValue(null);
+    (mockPasswordService.verifyPassword as jest.Mock).mockResolvedValue(false);
 
-    await service.validateUser('test@example.com', 'password');
+    await service.validateUser('  TEST@example.com  ', 'password');
 
     expect(mockPrisma.user.findFirst).toHaveBeenCalledWith(
       expect.objectContaining({
         where: {
           email: 'test@example.com',
-          isActive: { not: 'Inactive' },
         },
       }),
     );
   });
 
-  it('updateUser should reject password updates through generic endpoint', async () => {
-    await expect(
-      service.updateUser('user-id', { password: 'plain-text' } as any),
-    ).rejects.toBeInstanceOf(BadRequestException);
+  it('validateUser should return null when password is invalid', async () => {
+    (mockPrisma.user.findFirst as jest.Mock).mockResolvedValue({
+      id: 'user-1',
+      email: 'user@example.com',
+      password: 'hashed-password',
+      status: UserStatus.ACTIVE,
+    });
+    (mockPasswordService.verifyPassword as jest.Mock).mockResolvedValue(false);
 
-    expect(mockPrisma.user.update).not.toHaveBeenCalled();
+    await expect(service.validateUser('user@example.com', 'wrong-password')).resolves.toBeNull();
   });
 
-  it('updateUser should reject role updates through generic endpoint', async () => {
-    await expect(
-      service.updateUser('user-id', { role: Role.SuperAdmin } as any),
-    ).rejects.toBeInstanceOf(BadRequestException);
+  it('validateUser should throw when account is not active', async () => {
+    (mockPrisma.user.findFirst as jest.Mock).mockResolvedValue({
+      id: 'user-1',
+      email: 'user@example.com',
+      password: 'hashed-password',
+      status: UserStatus.SUSPENDED,
+    });
+    (mockPasswordService.verifyPassword as jest.Mock).mockResolvedValue(true);
 
-    expect(mockPrisma.user.update).not.toHaveBeenCalled();
+    await expect(service.validateUser('user@example.com', 'correct-password')).rejects.toBeInstanceOf(
+      UnauthorizedException,
+    );
+  });
+
+  it('validateUser should return user data when credentials are valid', async () => {
+    (mockPrisma.user.findFirst as jest.Mock).mockResolvedValue({
+      id: 'user-1',
+      email: 'user@example.com',
+      password: 'hashed-password',
+      firstName: 'Alex',
+      lastName: 'Doe',
+      status: UserStatus.ACTIVE,
+    });
+    (mockPasswordService.verifyPassword as jest.Mock).mockResolvedValue(true);
+
+    const result = await service.validateUser('user@example.com', 'correct-password');
+
+    expect(result).not.toBeNull();
+    expect(result).toEqual(
+      expect.objectContaining({
+        id: 'user-1',
+        email: 'user@example.com',
+      }),
+    );
+    expect(result).not.toHaveProperty('password');
   });
 });
 

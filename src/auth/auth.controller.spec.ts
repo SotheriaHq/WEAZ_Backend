@@ -2,13 +2,10 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { ThrottlerGuard, ThrottlerStorage } from '@nestjs/throttler';
-import { PrismaService } from 'src/prisma/prisma.service';
-import { PasswordService } from './helper/password.service';
+import { Reflector } from '@nestjs/core';
 import { TokenService } from './helper/general.helper';
-import { UserHelperService } from './helper/user-helper.service';
-import { EmailVerificationHelperService } from './helper/email-verification-helper.service';
-import { NotificationsService } from 'src/notifications/notifications.service';
 import { ConfigService } from '@nestjs/config';
+import { NotificationsService } from 'src/notifications/notifications.service';
 
 describe('AuthController', () => {
   let controller: AuthController;
@@ -17,32 +14,23 @@ describe('AuthController', () => {
     const module: TestingModule = await Test.createTestingModule({
       controllers: [AuthController],
       providers: [
-        AuthService,
-        { provide: ThrottlerGuard, useValue: { canActivate: () => true } },
+        {
+          provide: ThrottlerGuard,
+          useValue: { canActivate: jest.fn().mockReturnValue(true) },
+        },
         { provide: 'THROTTLER:MODULE_OPTIONS', useValue: {} },
         { provide: ThrottlerStorage, useValue: {} },
-        { provide: PrismaService, useValue: {} },
-        { provide: ConfigService, useValue: {} },
+        { provide: Reflector, useValue: {} },
         {
-          provide: PasswordService,
-          useValue: { hashPassword: jest.fn(), verifyPassword: jest.fn() },
-        },
-        { provide: TokenService, useValue: { generateTokens: jest.fn() } },
-        {
-          provide: UserHelperService,
+          provide: AuthService,
           useValue: {
-            generateUniqueUsername: jest.fn(),
-            generateUsernameFromBrand: jest.fn(),
-            generateIndustriNumber: jest.fn(),
+            login: jest.fn(),
+            CreateUser: jest.fn(),
+            getProfile: jest.fn(),
           },
         },
-        {
-          provide: EmailVerificationHelperService,
-          useValue: {
-            generateVerificationCode: jest.fn(),
-            generateVerificationLink: jest.fn(),
-          },
-        },
+        { provide: TokenService, useValue: { rotateTokens: jest.fn() } },
+        { provide: ConfigService, useValue: { get: jest.fn() } },
         { provide: NotificationsService, useValue: { create: jest.fn() } },
       ],
     }).compile();

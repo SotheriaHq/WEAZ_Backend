@@ -434,66 +434,9 @@ export class AdminPayoutsService {
         'Paystack payout transfer execution is currently disabled',
       );
     }
-
-    const payout = await this.prisma.payout.findUnique({
-      where: { id: payoutId },
-      include: this.payoutInclude(),
-    });
-    if (!payout) throw new NotFoundException('Payout not found');
-
-    this.assertOwnership(payout.assignedAdminId, actorId, actorRole);
-
-    const transferableStatuses = new Set<PayoutStatus>([
-      PayoutStatus.APPROVED,
-      PayoutStatus.FAILED,
-      PayoutStatus.RECONCILIATION_REVIEW,
-    ]);
-
-    if (!transferableStatuses.has(payout.status)) {
-      throw new ConflictException(
-        `Cannot initiate a transfer while payout is ${payout.status}`,
-      );
-    }
-
-    if (String(payout.currency || '').trim().toUpperCase() !== 'NGN') {
-      throw new BadRequestException('Paystack payouts are only enabled for NGN in this phase');
-    }
-
-    const paymentAccount = await (this.prisma as any).storePaymentAccount.findUnique({
-      where: { brandId: payout.brandId },
-    });
-
-    if (!paymentAccount || paymentAccount.status !== 'ACTIVE') {
-      throw new BadRequestException(
-        'Brand payout account is not active. Sync the brand payment account before initiating payout.',
-      );
-    }
-
-    if (!paymentAccount.transferRecipientCode || !paymentAccount.transferRecipientActive) {
-      throw new BadRequestException(
-        'Brand payout account does not have an active transfer recipient.',
-      );
-    }
-
-    await this.assertPayoutSourceReservations(
-      this.prisma,
-      payout.id,
-      Number(payout.amount ?? 0),
-    );
-
-    const providerPayload = await this.callPaystack('/transfer', {
-      method: 'POST',
-      bodyJson: {
-        source: 'balance',
-        amount: Math.round(this.roundMoney(Number(payout.amount ?? 0)) * 100),
-        recipient: paymentAccount.transferRecipientCode,
-        reference: this.buildTransferReference(payout.id),
-        reason: `Threadly payout ${payout.id.slice(0, 8).toUpperCase()}`,
-        currency: 'NGN',
-      },
-    });
-
     return this.prisma.$transaction(async (tx) => {
+      await this.lockPayoutForUpdate(tx, payoutId);
+
       const current = await tx.payout.findUnique({
         where: { id: payoutId },
         include: this.payoutInclude(),
@@ -502,11 +445,64 @@ export class AdminPayoutsService {
         throw new NotFoundException('Payout not found');
       }
 
+      this.assertOwnership(current.assignedAdminId, actorId, actorRole);
+
+      const transferableStatuses = new Set<PayoutStatus>([
+        PayoutStatus.APPROVED,
+        PayoutStatus.FAILED,
+        PayoutStatus.RECONCILIATION_REVIEW,
+      ]);
+      if (!transferableStatuses.has(current.status)) {
+        throw new ConflictException(
+          `Cannot initiate a transfer while payout is ${current.status}`,
+        );
+      }
+
+      if (String(current.currency || '').trim().toUpperCase() !== 'NGN') {
+        throw new BadRequestException(
+          'Paystack payouts are only enabled for NGN in this phase',
+        );
+      }
+
+      const paymentAccount = await (tx as any).storePaymentAccount.findUnique({
+        where: { brandId: current.brandId },
+      });
+
+      if (!paymentAccount || paymentAccount.status !== 'ACTIVE') {
+        throw new BadRequestException(
+          'Brand payout account is not active. Sync the brand payment account before initiating payout.',
+        );
+      }
+
+      if (
+        !paymentAccount.transferRecipientCode ||
+        !paymentAccount.transferRecipientActive
+      ) {
+        throw new BadRequestException(
+          'Brand payout account does not have an active transfer recipient.',
+        );
+      }
+
       await this.assertPayoutSourceReservations(
         tx,
         current.id,
         Number(current.amount ?? 0),
       );
+
+      const transferReference =
+        current.providerTransferReference ?? this.buildTransferReference(current.id);
+
+      const providerPayload = await this.callPaystack('/transfer', {
+        method: 'POST',
+        bodyJson: {
+          source: 'balance',
+          amount: Math.round(this.roundMoney(Number(current.amount ?? 0)) * 100),
+          recipient: paymentAccount.transferRecipientCode,
+          reference: transferReference,
+          reason: `Threadly payout ${current.id.slice(0, 8).toUpperCase()}`,
+          currency: 'NGN',
+        },
+      });
 
       const updated = await this.applyProviderTransferSync(
         tx,
@@ -533,9 +529,10 @@ export class AdminPayoutsService {
           targetType: 'Payout',
           targetId: payoutId,
           previousState: {
-            status: payout.status,
-            providerTransferCode: payout.providerTransferCode ?? null,
-            providerTransferReference: payout.providerTransferReference ?? null,
+            status: current.status,
+            providerTransferCode: current.providerTransferCode ?? null,
+            providerTransferReference:
+              current.providerTransferReference ?? null,
           },
           newState: {
             status: updated.status,
@@ -559,44 +556,14 @@ export class AdminPayoutsService {
     actorRole: Role,
     req: Request,
   ) {
-    const payout = await this.prisma.payout.findUnique({
-      where: { id: payoutId },
-      include: this.payoutInclude(),
-    });
-    if (!payout) throw new NotFoundException('Payout not found');
-
-    this.assertOwnership(payout.assignedAdminId, actorId, actorRole);
-
-    if (!payout.providerTransferCode) {
-      throw new BadRequestException('This payout does not have a pending transfer to finalize');
-    }
-
-    const providerTransferStatus = this.normalizeProviderStatus(
-      payout.providerTransferStatus,
-    );
-    if (
-      this.getTransferOtpMode() === 'DISABLED' &&
-      providerTransferStatus !== 'OTP'
-    ) {
-      throw new BadRequestException(
-        'Transfer OTP finalization is disabled for this environment',
-      );
-    }
-
     const cleanOtp = String(otp || '').trim();
     if (!cleanOtp) {
       throw new BadRequestException('OTP is required to finalize this transfer');
     }
 
-    const providerPayload = await this.callPaystack('/transfer/finalize_transfer', {
-      method: 'POST',
-      bodyJson: {
-        transfer_code: payout.providerTransferCode,
-        otp: cleanOtp,
-      },
-    });
-
     return this.prisma.$transaction(async (tx) => {
+      await this.lockPayoutForUpdate(tx, payoutId);
+
       const current = await tx.payout.findUnique({
         where: { id: payoutId },
         include: this.payoutInclude(),
@@ -604,6 +571,34 @@ export class AdminPayoutsService {
       if (!current) {
         throw new NotFoundException('Payout not found');
       }
+
+      this.assertOwnership(current.assignedAdminId, actorId, actorRole);
+
+      if (!current.providerTransferCode) {
+        throw new BadRequestException(
+          'This payout does not have a pending transfer to finalize',
+        );
+      }
+
+      const providerTransferStatus = this.normalizeProviderStatus(
+        current.providerTransferStatus,
+      );
+      if (providerTransferStatus !== 'OTP') {
+        throw new BadRequestException(
+          'This payout is not awaiting Paystack OTP finalization',
+        );
+      }
+
+      const providerPayload = await this.callPaystack(
+        '/transfer/finalize_transfer',
+        {
+          method: 'POST',
+          bodyJson: {
+            transfer_code: current.providerTransferCode,
+            otp: cleanOtp,
+          },
+        },
+      );
 
       const updated = await this.applyProviderTransferSync(
         tx,
@@ -620,8 +615,8 @@ export class AdminPayoutsService {
           targetType: 'Payout',
           targetId: payoutId,
           previousState: {
-            status: payout.status,
-            providerTransferStatus: payout.providerTransferStatus ?? null,
+            status: current.status,
+            providerTransferStatus: current.providerTransferStatus ?? null,
           },
           newState: {
             status: updated.status,
@@ -1081,8 +1076,12 @@ export class AdminPayoutsService {
     });
   }
 
+  private async lockPayoutForUpdate(tx: any, payoutId: string) {
+    await tx.$queryRaw`SELECT "id" FROM "Payout" WHERE "id" = ${payoutId} FOR UPDATE`;
+  }
+
   private buildTransferReference(payoutId: string) {
-    return `threadly-payout-${payoutId.slice(0, 8)}-${Date.now()}`.toLowerCase();
+    return `threadly-payout-${payoutId}`.toLowerCase();
   }
 
   private isPayoutTransferExecutionEnabled() {

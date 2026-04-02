@@ -562,6 +562,7 @@ export class StoreController {
   }
 
   @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseInterceptors(IdempotencyInterceptor)
   @Patch('store/payment-account')
   async updateStorePaymentAccount(
     @Body(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))

@@ -336,6 +336,9 @@ export class PaymentService {
     }
 
     if (attempt.status === 'PAID') {
+      await this.standardOrderFinanceSyncService.syncPaidOrdersByReferences([
+        attempt.reference,
+      ]);
       return this.buildVerifyResult(attempt, orders, true);
     }
 
@@ -653,6 +656,11 @@ export class PaymentService {
     }
 
     if (this.isTerminalStatus(attempt.status as PaymentAttemptStatus)) {
+      if (String(attempt.status || '').trim().toUpperCase() === 'PAID') {
+        await this.standardOrderFinanceSyncService.syncPaidOrdersByReferences([
+          reference,
+        ]);
+      }
       await this.markProviderEventProcessed(providerEventKey);
       return;
     }

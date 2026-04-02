@@ -173,9 +173,25 @@ export class AuthController {
   }
 
   @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 6, ttl: 900000 } })
   @Post('admin/change-password')
   @ApiOperation({ summary: 'Change password for authenticated admin/user' })
   async changeAuthenticatedPassword(
+    @Req() req: Request & { user: { id: string } },
+    @Body(ValidationPipe) body: ChangeAuthenticatedPasswordDto,
+  ) {
+    return this.authService.changePasswordForAuthenticatedUser(
+      req.user.id,
+      body.currentPassword,
+      body.newPassword,
+    );
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 6, ttl: 900000 } })
+  @Post('change-password')
+  @ApiOperation({ summary: 'Change password for authenticated user' })
+  async changeAuthenticatedPasswordAlias(
     @Req() req: Request & { user: { id: string } },
     @Body(ValidationPipe) body: ChangeAuthenticatedPasswordDto,
   ) {

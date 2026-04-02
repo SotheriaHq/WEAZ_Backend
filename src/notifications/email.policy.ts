@@ -93,7 +93,7 @@ export function renderNotificationEmail(args: {
     </tr>
     <tr>
       <td style="background:#f3f4f6;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 12px 12px;padding:14px 24px;color:#6b7280;font-size:12px">
-        You are receiving this email because your Threadly account has email notifications enabled.
+        You are receiving this email because your ${args.appName} account has email notifications enabled.
       </td>
     </tr>
   </table>

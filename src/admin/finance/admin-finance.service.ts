@@ -68,6 +68,13 @@ const FINANCIAL_DOCUMENT_TYPE = {
 type FinancialDocumentType =
   (typeof FINANCIAL_DOCUMENT_TYPE)[keyof typeof FINANCIAL_DOCUMENT_TYPE];
 
+type FinanceBuyerSummary = {
+  id: string;
+  firstName: string;
+  lastName: string;
+  username: string;
+};
+
 @Injectable()
 export class AdminFinanceService {
   constructor(
@@ -428,14 +435,6 @@ export class AdminFinanceService {
         lastVerifiedAt: true,
         createdAt: true,
         buyerId: true,
-        buyer: {
-          select: {
-            id: true,
-            firstName: true,
-            lastName: true,
-            username: true,
-          },
-        },
       },
     });
 
@@ -446,6 +445,13 @@ export class AdminFinanceService {
       new Set(
         attempts
           .map((attempt) => attempt.customOrderId)
+          .filter((value): value is string => Boolean(value)),
+      ),
+    );
+    const attemptBuyerIds = Array.from(
+      new Set(
+        attempts
+          .map((attempt) => attempt.buyerId)
           .filter((value): value is string => Boolean(value)),
       ),
     );
@@ -463,29 +469,41 @@ export class AdminFinanceService {
           })
         : Promise.resolve([]),
       customOrderIds.length > 0
-        ? (this.prisma as any).customOrder.findMany({
+        ? this.prisma.customOrder.findMany({
             where: { id: { in: customOrderIds } },
             select: {
               id: true,
-              title: true,
               sourceTitleSnapshot: true,
               brandId: true,
+              buyerId: true,
               brand: { select: { id: true, name: true } },
-              buyer: {
-                select: {
-                  id: true,
-                  firstName: true,
-                  lastName: true,
-                  username: true,
-                },
-              },
             },
           })
         : Promise.resolve([]),
     ]);
+    const buyerIds = Array.from(
+      new Set([
+        ...attemptBuyerIds,
+        ...customOrders
+          .map((order) => order.buyerId)
+          .filter((value): value is string => Boolean(value)),
+      ]),
+    );
+    const buyers = buyerIds.length
+      ? await this.prisma.user.findMany({
+          where: { id: { in: buyerIds } },
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            username: true,
+          },
+        })
+      : [];
 
     const ordersById = new Map(orders.map((order) => [order.id, order]));
-    const customOrdersById = new Map(customOrders.map((order: any) => [String(order.id), order]));
+    const customOrdersById = new Map(customOrders.map((order) => [String(order.id), order]));
+    const buyersById = new Map(buyers.map((buyer) => [buyer.id, buyer]));
 
     const items = attempts
       .map((attempt) => {
@@ -506,11 +524,12 @@ export class AdminFinanceService {
               ).values(),
             );
 
-        const buyer = linkedCustomOrder?.buyer ?? attempt.buyer ?? null;
-        const buyerName = [buyer?.firstName, buyer?.lastName]
-          .map((value) => String(value || '').trim())
-          .filter(Boolean)
-          .join(' ');
+        const buyer =
+          (linkedCustomOrder?.buyerId
+            ? buyersById.get(linkedCustomOrder.buyerId)
+            : null) ??
+          (attempt.buyerId ? buyersById.get(attempt.buyerId) : null) ??
+          null;
 
         return {
           id: attempt.id,
@@ -528,13 +547,7 @@ export class AdminFinanceService {
           createdAt: attempt.createdAt,
           confirmedAt: attempt.confirmedAt,
           lastVerifiedAt: attempt.lastVerifiedAt,
-          buyer: buyer
-            ? {
-                id: buyer.id,
-                name: buyerName || String(buyer.username || 'Buyer'),
-                username: buyer.username,
-              }
-            : null,
+          buyer: this.toBuyerSummary(buyer),
           brands: brands
             .filter((brand): brand is { id: string; name: string | null } => Boolean(brand?.id))
             .map((brand) => ({
@@ -543,14 +556,11 @@ export class AdminFinanceService {
             })),
           orderCount: linkedOrders.length + (linkedCustomOrder ? 1 : 0),
           orders: linkedCustomOrder
-            ? [
+              ? [
                 {
                   id: linkedCustomOrder.id,
                   type: 'CUSTOM_ORDER',
-                  title:
-                    linkedCustomOrder.title ||
-                    linkedCustomOrder.sourceTitleSnapshot ||
-                    `Custom Order #${String(linkedCustomOrder.id).slice(0, 8).toUpperCase()}`,
+                  title: this.formatCustomOrderTitle(linkedCustomOrder),
                 },
               ]
             : linkedOrders.map((order) => ({
@@ -576,16 +586,6 @@ export class AdminFinanceService {
   async getPaymentAttempt(reference: string) {
     const attempt = await this.prisma.paymentAttempt.findUnique({
       where: { reference },
-      include: {
-        buyer: {
-          select: {
-            id: true,
-            firstName: true,
-            lastName: true,
-            username: true,
-          },
-        },
-      },
     });
 
     if (!attempt) {
@@ -611,24 +611,16 @@ export class AdminFinanceService {
           })
         : Promise.resolve([]),
       attempt.customOrderId
-        ? (this.prisma as any).customOrder.findUnique({
+        ? this.prisma.customOrder.findUnique({
             where: { id: attempt.customOrderId },
             select: {
               id: true,
-              title: true,
               sourceTitleSnapshot: true,
+              buyerId: true,
               brand: {
                 select: {
                   id: true,
                   name: true,
-                },
-              },
-              buyer: {
-                select: {
-                  id: true,
-                  firstName: true,
-                  lastName: true,
-                  username: true,
                 },
               },
             },
@@ -640,6 +632,25 @@ export class AdminFinanceService {
         take: 20,
       }),
     ]);
+    const buyerIds = Array.from(
+      new Set(
+        [attempt.buyerId, customOrder?.buyerId].filter(
+          (value): value is string => Boolean(value),
+        ),
+      ),
+    );
+    const buyers = buyerIds.length
+      ? await this.prisma.user.findMany({
+          where: { id: { in: buyerIds } },
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            username: true,
+          },
+        })
+      : [];
+    const buyersById = new Map(buyers.map((buyer) => [buyer.id, buyer]));
 
     return {
       id: attempt.id,
@@ -663,9 +674,14 @@ export class AdminFinanceService {
       bankAccount: attempt.bankAccount,
       failureCode: attempt.failureCode,
       failureMessage: attempt.failureMessage,
-      buyer: attempt.buyer,
+      buyer: attempt.buyerId ? buyersById.get(attempt.buyerId) ?? null : null,
       orders,
-      customOrder,
+      customOrder: customOrder
+        ? {
+            ...customOrder,
+            buyer: buyersById.get(customOrder.buyerId) ?? null,
+          }
+        : null,
       events,
     };
   }
@@ -739,20 +755,13 @@ export class AdminFinanceService {
           })
         : Promise.resolve([]),
       customOrderIds.length > 0
-        ? (this.prisma as any).customOrder.findMany({
+        ? this.prisma.customOrder.findMany({
             where: { id: { in: customOrderIds } },
             select: {
               id: true,
-              title: true,
               sourceTitleSnapshot: true,
+              buyerId: true,
               brand: { select: { id: true, name: true } },
-              buyer: {
-                select: {
-                  firstName: true,
-                  lastName: true,
-                  username: true,
-                },
-              },
             },
           })
         : Promise.resolve([]),
@@ -766,10 +775,29 @@ export class AdminFinanceService {
           })
         : Promise.resolve([]),
     ]);
+    const buyerIds = Array.from(
+      new Set(
+        customOrders
+          .map((order) => order.buyerId)
+          .filter((value): value is string => Boolean(value)),
+      ),
+    );
+    const buyers = buyerIds.length
+      ? await this.prisma.user.findMany({
+          where: { id: { in: buyerIds } },
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            username: true,
+          },
+        })
+      : [];
 
     const orderById = new Map(orders.map((order) => [order.id, order]));
-    const customOrderById = new Map(customOrders.map((order: any) => [String(order.id), order]));
+    const customOrderById = new Map(customOrders.map((order) => [String(order.id), order]));
     const payoutById = new Map(payouts.map((payout) => [payout.id, payout]));
+    const buyersById = new Map(buyers.map((buyer) => [buyer.id, buyer]));
 
     return {
       items: transactions.map((transaction) => {
@@ -785,12 +813,11 @@ export class AdminFinanceService {
           transaction.referenceType === 'Payout' && transaction.referenceId
             ? payoutById.get(String(transaction.referenceId))
             : null;
+        const buyer =
+          customOrder?.buyerId ? buyersById.get(customOrder.buyerId) ?? null : null;
 
         const buyerName = customOrder
-          ? [customOrder?.buyer?.firstName, customOrder?.buyer?.lastName]
-              .map((value) => String(value || '').trim())
-              .filter(Boolean)
-              .join(' ') || String(customOrder?.buyer?.username || 'Buyer')
+          ? this.formatBuyerName(buyer)
           : order?.customerName ?? null;
 
         return {
@@ -802,7 +829,6 @@ export class AdminFinanceService {
             null,
           buyerName,
           referenceTitle:
-            customOrder?.title ||
             customOrder?.sourceTitleSnapshot ||
             (order ? `Order #${order.id.slice(0, 8).toUpperCase()}` : null),
         };
@@ -865,21 +891,33 @@ export class AdminFinanceService {
           customOrder: {
             select: {
               id: true,
-              title: true,
               sourceTitleSnapshot: true,
+              buyerId: true,
               brand: { select: { id: true, name: true } },
-              buyer: {
-                select: {
-                  firstName: true,
-                  lastName: true,
-                  username: true,
-                },
-              },
             },
           },
         },
       }),
     ]);
+    const buyerIds = Array.from(
+      new Set(
+        customHeldAllocations
+          .map((allocation) => allocation.customOrder?.buyerId)
+          .filter((value): value is string => Boolean(value)),
+      ),
+    );
+    const buyers = buyerIds.length
+      ? await this.prisma.user.findMany({
+          where: { id: { in: buyerIds } },
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            username: true,
+          },
+        })
+      : [];
+    const buyersById = new Map(buyers.map((buyer) => [buyer.id, buyer]));
 
     const items = [
       ...standardHolds.map((hold) => ({
@@ -906,24 +944,28 @@ export class AdminFinanceService {
         createdAt: hold.createdAt,
       })),
       ...customHeldAllocations.map((allocation) => {
-        const buyerName = [
-          allocation.customOrder?.buyer?.firstName,
-          allocation.customOrder?.buyer?.lastName,
-        ]
-          .map((value) => String(value || '').trim())
-          .filter(Boolean)
-          .join(' ');
+        const buyer =
+          allocation.customOrder?.buyerId
+            ? buyersById.get(allocation.customOrder.buyerId) ?? null
+            : null;
 
         return {
           id: allocation.id,
           holdType: 'CUSTOM_ORDER',
           referenceId: allocation.customOrderId,
-          title:
-            allocation.customOrder?.title ||
-            allocation.customOrder?.sourceTitleSnapshot ||
-            `Custom Order #${allocation.customOrderId.slice(0, 8).toUpperCase()}`,
+          title: this.formatCustomOrderTitle(
+            allocation.customOrder
+              ? {
+                  id: allocation.customOrder.id,
+                  sourceTitleSnapshot: allocation.customOrder.sourceTitleSnapshot,
+                }
+              : {
+                  id: allocation.customOrderId,
+                  sourceTitleSnapshot: null,
+                },
+          ),
           brand: allocation.customOrder?.brand ?? null,
-          buyerName: buyerName || String(allocation.customOrder?.buyer?.username || 'Buyer'),
+          buyerName: this.formatBuyerName(buyer),
           currency: allocation.currency,
           grossAmount: Number(allocation.amount ?? 0),
           releasedNetAmount: 0,
@@ -1111,6 +1153,55 @@ export class AdminFinanceService {
     });
 
     return updated;
+  }
+
+  private toBuyerSummary(buyer: FinanceBuyerSummary | null | undefined) {
+    if (!buyer) {
+      return null;
+    }
+
+    return {
+      id: buyer.id,
+      name: this.formatBuyerName(buyer),
+      username: buyer.username,
+    };
+  }
+
+  private formatBuyerName(
+    buyer:
+      | Pick<FinanceBuyerSummary, 'firstName' | 'lastName' | 'username'>
+      | null
+      | undefined,
+  ) {
+    if (!buyer) {
+      return 'Buyer';
+    }
+
+    const fullName = [buyer.firstName, buyer.lastName]
+      .map((value) => String(value || '').trim())
+      .filter(Boolean)
+      .join(' ');
+
+    return fullName || String(buyer.username || 'Buyer');
+  }
+
+  private formatCustomOrderTitle(
+    customOrder:
+      | {
+          id: string;
+          sourceTitleSnapshot?: string | null;
+        }
+      | null
+      | undefined,
+  ) {
+    if (!customOrder) {
+      return 'Custom order';
+    }
+
+    return (
+      customOrder.sourceTitleSnapshot ||
+      `Custom Order #${String(customOrder.id).slice(0, 8).toUpperCase()}`
+    );
   }
 
   private async recordAudit(

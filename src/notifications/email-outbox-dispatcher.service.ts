@@ -2,7 +2,6 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { EmailOutboxStatus, Prisma } from '@prisma/client';
 import { createHash } from 'crypto';
-import { ConfigService } from '@nestjs/config';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { EmailService } from 'src/email/email.service';
 
@@ -10,6 +9,7 @@ const EMAIL_OUTBOX_MAX_ATTEMPTS = 8;
 const EMAIL_OUTBOX_CONCURRENCY = 10;
 const EMAIL_OUTBOX_COMPLETED_RETENTION_DAYS = 30;
 const EMAIL_OUTBOX_EXHAUSTED_RETENTION_DAYS = 90;
+const EMAIL_OUTBOX_DISPATCH_CRON = '*/10 * * * * *';
 
 @Injectable()
 export class EmailOutboxDispatcherService {
@@ -19,10 +19,9 @@ export class EmailOutboxDispatcherService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly emailService: EmailService,
-    private readonly config: ConfigService,
   ) {}
 
-  @Cron(CronExpression.EVERY_MINUTE)
+  @Cron(EMAIL_OUTBOX_DISPATCH_CRON)
   async dispatchPendingEmails(batchSize = 150): Promise<void> {
     const rows = await this.prisma.emailOutbox.findMany({
       where: {
@@ -34,10 +33,41 @@ export class EmailOutboxDispatcherService {
       take: batchSize,
     });
 
+    if (rows.length === 0) {
+      return;
+    }
+
+    this.logger.log(
+      `Email outbox sweep picked ${rows.length} row(s) for dispatch`,
+    );
+
+    let sent = 0;
+    let failed = 0;
+    let suppressed = 0;
+
     for (let i = 0; i < rows.length; i += EMAIL_OUTBOX_CONCURRENCY) {
       const chunk = rows.slice(i, i + EMAIL_OUTBOX_CONCURRENCY);
-      await Promise.all(chunk.map((row) => this.dispatchRow(row)));
+      const results = await Promise.all(chunk.map((row) => this.dispatchRow(row)));
+      results.forEach((result) => {
+        if (result === 'SENT') {
+          sent += 1;
+          return;
+        }
+
+        if (result === 'FAILED') {
+          failed += 1;
+          return;
+        }
+
+        if (result === 'SUPPRESSED') {
+          suppressed += 1;
+        }
+      });
     }
+
+    this.logger.log(
+      `Email outbox sweep completed sent=${sent} failed=${failed} suppressed=${suppressed} total=${rows.length}`,
+    );
   }
 
   private async dispatchRow(row: {
@@ -48,7 +78,7 @@ export class EmailOutboxDispatcherService {
     subject: string;
     html: string;
     text: string | null;
-  }): Promise<void> {
+  }): Promise<'SENT' | 'FAILED' | 'SUPPRESSED' | 'SKIPPED'> {
     const claim = await this.prisma.emailOutbox.updateMany({
       where: { id: row.id, status: row.status },
       data: {
@@ -61,7 +91,7 @@ export class EmailOutboxDispatcherService {
       },
     });
     if (claim.count === 0) {
-      return;
+      return 'SKIPPED';
     }
 
     const attemptNo = row.attempts + 1;
@@ -99,7 +129,10 @@ export class EmailOutboxDispatcherService {
             },
           }),
         ]);
-        return;
+        this.logger.warn(
+          `Outbox row suppressed outboxId=${row.id} reason=${suppression.reason}`,
+        );
+        return 'SUPPRESSED';
       }
 
       const providerResult = await this.emailService.sendNow(
@@ -114,8 +147,8 @@ export class EmailOutboxDispatcherService {
           data: {
             emailOutboxId: row.id,
             attemptNo,
-            provider: 'SMTP',
-            smtpHost: this.config.get<string>('SMTP_HOST') ?? null,
+            provider: this.emailService.getDeliveryAttemptProvider(),
+            smtpHost: this.emailService.getTransportHost(),
             result: 'SENT',
             providerResponseJson: {
               providerMessageId: providerResult.providerMessageId,
@@ -132,6 +165,8 @@ export class EmailOutboxDispatcherService {
           },
         }),
       ]);
+
+      return 'SENT';
     } catch (error) {
       const message = this.formatError(error);
       const exhausted = attemptNo >= EMAIL_OUTBOX_MAX_ATTEMPTS;
@@ -142,8 +177,8 @@ export class EmailOutboxDispatcherService {
           data: {
             emailOutboxId: row.id,
             attemptNo,
-            provider: 'SMTP',
-            smtpHost: this.config.get<string>('SMTP_HOST') ?? null,
+            provider: this.emailService.getDeliveryAttemptProvider(),
+            smtpHost: this.emailService.getTransportHost(),
             result: 'FAILED',
             errorMessage: message,
           },
@@ -163,7 +198,13 @@ export class EmailOutboxDispatcherService {
 
       if (exhausted) {
         this.logger.error(`Email outbox exhausted retries outboxId=${row.id}`);
+      } else {
+        this.logger.warn(
+          `Email outbox dispatch failed outboxId=${row.id} attempt=${attemptNo} error=${message}`,
+        );
       }
+
+      return 'FAILED';
     }
   }
 

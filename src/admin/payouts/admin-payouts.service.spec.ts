@@ -55,6 +55,7 @@ describe('AdminPayoutsService', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     process.env.PAYSTACK_SECRET_KEY = 'sk_test_123';
+    (global as any).fetch = jest.fn();
   });
 
   it('blocks non-superadmin claim when payout is owned by another admin', async () => {
@@ -145,20 +146,81 @@ describe('AdminPayoutsService', () => {
   });
 
   it('requires an active payment account before transfer initiation', async () => {
-    prisma.payout.findUnique.mockResolvedValue({
-      id: 'p_1',
-      brandId: 'brand_1',
-      amount: 2500,
-      currency: 'NGN',
-      status: PayoutStatus.APPROVED,
-      assignedAdminId: 'admin_1',
-      providerTransferCode: null,
-    });
-    prisma.storePaymentAccount.findUnique.mockResolvedValue(null);
+    prisma.$transaction.mockImplementation(async (callback: any) =>
+      callback({
+        $queryRaw: jest.fn().mockResolvedValue(undefined),
+        payout: {
+          findUnique: jest.fn().mockResolvedValue({
+            id: 'p_1',
+            brandId: 'brand_1',
+            amount: 2500,
+            currency: 'NGN',
+            status: PayoutStatus.APPROVED,
+            assignedAdminId: 'admin_1',
+            providerTransferCode: null,
+            providerTransferReference: null,
+          }),
+        },
+        storePaymentAccount: {
+          findUnique: jest.fn().mockResolvedValue(null),
+        },
+      }),
+    );
 
     await expect(
       service.initiateTransfer('p_1', 'admin_1', Role.Admin, req),
     ).rejects.toBeInstanceOf(BadRequestException);
+    expect((global as any).fetch).not.toHaveBeenCalled();
+  });
+
+  it('rejects transfer initiation after the locked payout has already moved to processing', async () => {
+    prisma.$transaction.mockImplementation(async (callback: any) =>
+      callback({
+        $queryRaw: jest.fn().mockResolvedValue(undefined),
+        payout: {
+          findUnique: jest.fn().mockResolvedValue({
+            id: 'p_1',
+            brandId: 'brand_1',
+            amount: 2500,
+            currency: 'NGN',
+            status: PayoutStatus.PROCESSING,
+            assignedAdminId: 'admin_1',
+            providerTransferCode: 'TRF_locked',
+            providerTransferReference: 'threadly-payout-locked',
+          }),
+        },
+      }),
+    );
+
+    await expect(
+      service.initiateTransfer('p_1', 'admin_1', Role.Admin, req),
+    ).rejects.toBeInstanceOf(ConflictException);
+    expect((global as any).fetch).not.toHaveBeenCalled();
+  });
+
+  it('requires a payout to remain in otp state before transfer finalization', async () => {
+    prisma.$transaction.mockImplementation(async (callback: any) =>
+      callback({
+        $queryRaw: jest.fn().mockResolvedValue(undefined),
+        payout: {
+          findUnique: jest.fn().mockResolvedValue({
+            id: 'p_1',
+            brandId: 'brand_1',
+            amount: 2500,
+            currency: 'NGN',
+            status: PayoutStatus.PROCESSING,
+            assignedAdminId: 'admin_1',
+            providerTransferCode: 'TRF_pending',
+            providerTransferStatus: 'PENDING',
+          }),
+        },
+      }),
+    );
+
+    await expect(
+      service.finalizeTransferOtp('p_1', '123456', 'admin_1', Role.Admin, req),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect((global as any).fetch).not.toHaveBeenCalled();
   });
 
   it('ignores duplicate payout webhook events after durable receipt is recorded', async () => {

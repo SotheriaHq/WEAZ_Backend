@@ -21,6 +21,10 @@ import { Cache } from 'cache-manager';
 import { NotificationRegistry } from './notifications.registry';
 import { EmailService } from 'src/email/email.service';
 import {
+  parseBasicAuthHeader,
+  resolveEmailWebhookAuth,
+} from 'src/email/email.config';
+import {
   getCriticalEmailScenarios,
   getEmailPriorityForScenario,
   getEmailScenarioKey,
@@ -508,6 +512,20 @@ export class NotificationsService {
     return createHash('sha256').update(value).digest('hex');
   }
 
+  private maskEmailForLogs(email: string): string {
+    const normalized = this.normalizeEmail(email);
+    const [localPart, domainPart] = normalized.split('@');
+    if (!domainPart) {
+      return normalized;
+    }
+
+    if (localPart.length <= 2) {
+      return `${localPart.slice(0, 1)}*@${domainPart}`;
+    }
+
+    return `${localPart.slice(0, 2)}***@${domainPart}`;
+  }
+
   private toRecord(value: Prisma.JsonValue | null | undefined): Record<string, unknown> | null {
     if (!value || typeof value !== 'object' || Array.isArray(value)) {
       return null;
@@ -698,16 +716,25 @@ export class NotificationsService {
     provider: string,
     signature: string | undefined,
     payload: Record<string, unknown> | null,
+    authorizationHeader?: string,
   ): Promise<{ accepted: boolean; duplicate?: boolean }> {
-    const providerKey = provider.trim().toUpperCase().replace(/[^A-Z0-9]/g, '_');
-    const expectedSignature =
-      this.config.get<string>(`EMAIL_WEBHOOK_SECRET_${providerKey}`) ??
-      this.config.get<string>('EMAIL_WEBHOOK_SECRET');
-
-    const signatureValid = !!expectedSignature && signature === expectedSignature;
+    const expectedAuth = resolveEmailWebhookAuth(this.config, provider);
+    const signatureValid =
+      !!expectedAuth.sharedSecret && signature === expectedAuth.sharedSecret;
+    const parsedBasicAuth = parseBasicAuthHeader(authorizationHeader);
+    const basicAuthValid =
+      !!expectedAuth.basicUser &&
+      !!expectedAuth.basicPass &&
+      parsedBasicAuth?.username === expectedAuth.basicUser &&
+      parsedBasicAuth?.password === expectedAuth.basicPass;
+    const authValid = signatureValid || basicAuthValid;
     const eventType = String(payload?.eventType ?? payload?.event ?? 'unknown');
     const providerEventIdRaw = String(
       payload?.eventId ?? payload?.id ?? payload?.messageId ?? this.hashValue(JSON.stringify(payload ?? {})),
+    );
+
+    this.logger.log(
+      `Email webhook received provider=${provider} event=${eventType} eventId=${providerEventIdRaw} signatureAuth=${signatureValid ? 'pass' : 'fail'} basicAuth=${basicAuthValid ? 'pass' : 'fail'}`,
     );
 
     try {
@@ -716,19 +743,25 @@ export class NotificationsService {
           provider,
           eventType,
           providerEventId: providerEventIdRaw,
-          signatureValid,
+          signatureValid: authValid,
           payloadJson: (payload ?? null) as Prisma.InputJsonValue,
         },
       });
     } catch (error: any) {
       if (error?.code === 'P2002') {
+        this.logger.debug(
+          `Duplicate email webhook ignored provider=${provider} eventId=${providerEventIdRaw}`,
+        );
         return { accepted: true, duplicate: true };
       }
       throw error;
     }
 
-    if (!signatureValid) {
-      throw new ForbiddenException('Invalid email webhook signature');
+    if (!authValid) {
+      this.logger.warn(
+        `Email webhook rejected due to invalid authentication provider=${provider} event=${eventType} eventId=${providerEventIdRaw}`,
+      );
+      throw new ForbiddenException('Invalid email webhook authentication');
     }
 
     const recipientEmail =
@@ -764,6 +797,10 @@ export class NotificationsService {
           source: provider,
         },
       });
+
+      this.logger.warn(
+        `Recipient suppressed from email delivery provider=${provider} event=${eventType} recipient=${this.maskEmailForLogs(recipientEmail)} reason=${reason}`,
+      );
     }
 
     await this.prisma.emailWebhookEvent.update({
@@ -777,6 +814,10 @@ export class NotificationsService {
         processedAt: new Date(),
       },
     });
+
+    this.logger.debug(
+      `Email webhook processed provider=${provider} event=${eventType} eventId=${providerEventIdRaw}`,
+    );
 
     return { accepted: true };
   }

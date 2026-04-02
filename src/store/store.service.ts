@@ -61,12 +61,23 @@ import { StandardOrderEscrowService } from 'src/finance/standard-order-escrow.se
 import { StandardOrderFinanceSyncService } from 'src/finance/standard-order-finance-sync.service';
 import { buildPayoutSourceBreakdown } from 'src/payout/payout-detail.presenter';
 
+type SupportedPaymentBank = {
+  id: number;
+  code: string;
+  name: string;
+  currency: string;
+};
+
 @Injectable()
 export class StoreService {
   private readonly logger = new Logger(StoreService.name);
   private readonly systemTagsTtlMs = 5 * 60 * 1000;
   private systemTagsCache: { tags: string[]; expiresAt: number } | null = null;
   private systemTagsRefresh: Promise<string[]> | null = null;
+  private readonly supportedPaymentBanksTtlMs = 60 * 60 * 1000;
+  private supportedPaymentBanksCache: { banks: SupportedPaymentBank[]; expiresAt: number } | null = null;
+  private supportedPaymentBanksRefresh: Promise<SupportedPaymentBank[]> | null = null;
+  private readonly storePaymentAccountSyncQueue = new Map<string, Promise<void>>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -5844,17 +5855,34 @@ export class StoreService {
     return (this.prisma as any).storePaymentAccount;
   }
 
-  private getStorePaymentAccountKey() {
-    const secret =
-      String(process.env.STORE_PAYMENT_ACCOUNT_SECRET ?? '').trim() ||
-      String(process.env.VERIFICATION_DRAFT_SECRET ?? '').trim() ||
-      'threadly-store-payment-account-secret';
-    return createHash('sha256').update(secret).digest();
+  private getStorePaymentAccountSecret() {
+    const secret = String(process.env.STORE_PAYMENT_ACCOUNT_SECRET ?? '').trim();
+    if (!secret) {
+      throw new BadRequestException(
+        'STORE_PAYMENT_ACCOUNT_SECRET is required before brand payout accounts can be encrypted',
+      );
+    }
+    return secret;
+  }
+
+  private getStorePaymentAccountEncryptionKey() {
+    return createHash('sha256').update(this.getStorePaymentAccountSecret()).digest();
+  }
+
+  private getStorePaymentAccountDecryptionKeys() {
+    const secrets = [
+      String(process.env.STORE_PAYMENT_ACCOUNT_SECRET ?? '').trim(),
+      String(process.env.VERIFICATION_DRAFT_SECRET ?? '').trim(),
+    ].filter((value): value is string => Boolean(value));
+
+    return Array.from(new Set(secrets)).map((secret) =>
+      createHash('sha256').update(secret).digest(),
+    );
   }
 
   private encryptStorePaymentValue(value: string) {
     const iv = randomBytes(12);
-    const cipher = createCipheriv('aes-256-gcm', this.getStorePaymentAccountKey(), iv);
+    const cipher = createCipheriv('aes-256-gcm', this.getStorePaymentAccountEncryptionKey(), iv);
     const encrypted = Buffer.concat([cipher.update(value, 'utf8'), cipher.final()]);
     const tag = cipher.getAuthTag();
     return `${iv.toString('base64')}.${tag.toString('base64')}.${encrypted.toString('base64')}`;
@@ -5865,16 +5893,23 @@ export class StoreService {
     try {
       const [ivText, tagText, encryptedText] = value.split('.');
       if (!ivText || !tagText || !encryptedText) return null;
-      const decipher = createDecipheriv(
-        'aes-256-gcm',
-        this.getStorePaymentAccountKey(),
-        Buffer.from(ivText, 'base64'),
-      );
-      decipher.setAuthTag(Buffer.from(tagText, 'base64'));
-      return Buffer.concat([
-        decipher.update(Buffer.from(encryptedText, 'base64')),
-        decipher.final(),
-      ]).toString('utf8');
+      for (const key of this.getStorePaymentAccountDecryptionKeys()) {
+        try {
+          const decipher = createDecipheriv(
+            'aes-256-gcm',
+            key,
+            Buffer.from(ivText, 'base64'),
+          );
+          decipher.setAuthTag(Buffer.from(tagText, 'base64'));
+          return Buffer.concat([
+            decipher.update(Buffer.from(encryptedText, 'base64')),
+            decipher.final(),
+          ]).toString('utf8');
+        } catch {
+          continue;
+        }
+      }
+      return null;
     } catch {
       return null;
     }
@@ -5990,7 +6025,7 @@ export class StoreService {
       resolvedAccountNumber:
         params.resolvedAccountNumber != null
           ? this.maskAccountNumber(params.resolvedAccountNumber)
-          : existing['resolvedAccountNumber'] ?? null,
+          : (existing['resolvedAccountNumber'] as Prisma.JsonValue | undefined) ?? null,
       paystackBankId:
         params.paystackBankId != null
           ? params.paystackBankId
@@ -6014,6 +6049,29 @@ export class StoreService {
           ? this.sanitizePaystackSnapshot(params.transferRecipientPayload)
           : (existing['transferRecipientResponseSnapshot'] as Prisma.JsonValue | undefined) ?? null,
     };
+  }
+
+  private async withStorePaymentAccountSyncLock<T>(
+    brandId: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const previous = this.storePaymentAccountSyncQueue.get(brandId) ?? Promise.resolve();
+    let releaseCurrent: () => void;
+    const current = new Promise<void>((resolve) => {
+      releaseCurrent = resolve;
+    });
+    const nextTail = previous.then(() => current);
+    this.storePaymentAccountSyncQueue.set(brandId, nextTail);
+
+    await previous.catch(() => undefined);
+    try {
+      return await operation();
+    } finally {
+      releaseCurrent!();
+      if (this.storePaymentAccountSyncQueue.get(brandId) === nextTail) {
+        this.storePaymentAccountSyncQueue.delete(brandId);
+      }
+    }
   }
 
   private summarizePaymentAccount(account: any) {
@@ -6068,6 +6126,34 @@ export class StoreService {
   }
 
   async listSupportedPaymentBanks() {
+    const now = Date.now();
+    if (
+      this.supportedPaymentBanksCache &&
+      this.supportedPaymentBanksCache.expiresAt > now
+    ) {
+      return this.supportedPaymentBanksCache.banks;
+    }
+
+    if (this.supportedPaymentBanksRefresh) {
+      return this.supportedPaymentBanksRefresh;
+    }
+
+    this.supportedPaymentBanksRefresh = this.fetchSupportedPaymentBanks()
+      .then((banks) => {
+        this.supportedPaymentBanksCache = {
+          banks,
+          expiresAt: Date.now() + this.supportedPaymentBanksTtlMs,
+        };
+        return banks;
+      })
+      .finally(() => {
+        this.supportedPaymentBanksRefresh = null;
+      });
+
+    return this.supportedPaymentBanksRefresh;
+  }
+
+  private async fetchSupportedPaymentBanks() {
     const rows = await this.callPaystack<
       Array<{
         id: number;
@@ -6178,330 +6264,318 @@ export class StoreService {
       throw new NotFoundException('Brand not found');
     }
 
-    const existingAccount = await this.getStorePaymentAccountModel().findUnique({
-      where: { brandId: brand.id },
-    });
+    return this.withStorePaymentAccountSyncLock(brand.id, async () => {
+      const existingAccount = await this.getStorePaymentAccountModel().findUnique({
+        where: { brandId: brand.id },
+      });
 
-    const providedBankCode = String(dto.bankCode || '').trim();
-    const providedAccountNumber = String(dto.accountNumber || '').trim();
-    const decryptedExistingAccountNumber = this.decryptStorePaymentValue(
-      existingAccount?.accountNumberEncrypted,
-    );
-    const bankCode =
-      providedBankCode || String(existingAccount?.bankCode || '').trim();
-    const accountNumber =
-      providedAccountNumber || String(decryptedExistingAccountNumber || '').trim();
+      const providedBankCode = String(dto.bankCode || '').trim();
+      const providedAccountNumber = String(dto.accountNumber || '').trim();
+      const decryptedExistingAccountNumber = this.decryptStorePaymentValue(
+        existingAccount?.accountNumberEncrypted,
+      );
+      const bankCode =
+        providedBankCode || String(existingAccount?.bankCode || '').trim();
+      const accountNumber =
+        providedAccountNumber || String(decryptedExistingAccountNumber || '').trim();
 
-    if (!bankCode) {
-      throw new BadRequestException('Select the settlement bank first');
-    }
-    if (!/^\d{10}$/.test(accountNumber)) {
-      throw new BadRequestException('Account number must be a valid 10-digit NUBAN');
-    }
+      if (!bankCode) {
+        throw new BadRequestException('Select the settlement bank first');
+      }
+      if (!/^\d{10}$/.test(accountNumber)) {
+        throw new BadRequestException('Account number must be a valid 10-digit NUBAN');
+      }
 
-    const bankDetailsChanged =
-      !existingAccount ||
-      bankCode !== String(existingAccount?.bankCode || '').trim() ||
-      (providedAccountNumber.length > 0 &&
-        accountNumber !== String(decryptedExistingAccountNumber || '').trim());
-    const syncMode: 'INITIAL_SETUP' | 'RESYNC' | 'BANK_DETAILS_UPDATE' = !existingAccount
-      ? 'INITIAL_SETUP'
-      : bankDetailsChanged
-        ? 'BANK_DETAILS_UPDATE'
-        : 'RESYNC';
+      const bankDetailsChanged =
+        !existingAccount ||
+        bankCode !== String(existingAccount?.bankCode || '').trim() ||
+        (providedAccountNumber.length > 0 &&
+          accountNumber !== String(decryptedExistingAccountNumber || '').trim());
+      const syncMode: 'INITIAL_SETUP' | 'RESYNC' | 'BANK_DETAILS_UPDATE' = !existingAccount
+        ? 'INITIAL_SETUP'
+        : bankDetailsChanged
+          ? 'BANK_DETAILS_UPDATE'
+          : 'RESYNC';
 
-    const banks = await this.listSupportedPaymentBanks();
-    const selectedBank = banks.find((bank) => bank.code === bankCode);
-    if (!selectedBank) {
-      throw new BadRequestException('Selected bank is not supported by Paystack');
-    }
+      const banks = await this.listSupportedPaymentBanks();
+      const selectedBank = banks.find((bank) => bank.code === bankCode);
+      if (!selectedBank) {
+        throw new BadRequestException('Selected bank is not supported by Paystack');
+      }
 
-    const resolved = await this.callPaystack<{
-      account_number: string;
-      account_name: string;
-      bank_id?: number;
-    }>(
-      `/bank/resolve?account_number=${encodeURIComponent(accountNumber)}&bank_code=${encodeURIComponent(bankCode)}`,
-      { method: 'GET' },
-    );
+      const resolved = await this.callPaystack<{
+        account_number: string;
+        account_name: string;
+        bank_id?: number;
+      }>(
+        `/bank/resolve?account_number=${encodeURIComponent(accountNumber)}&bank_code=${encodeURIComponent(bankCode)}`,
+        { method: 'GET' },
+      );
 
-    const primaryContactName =
-      String(dto.primaryContactName || '').trim() ||
-      existingAccount?.primaryContactName ||
-      `${owner?.firstName ?? ''} ${owner?.lastName ?? ''}`.trim() ||
-      brand.name;
-    const primaryContactEmail =
-      String(dto.primaryContactEmail || '').trim() ||
-      existingAccount?.primaryContactEmail ||
-      owner?.email ||
-      null;
-    const primaryContactPhone =
-      String(dto.primaryContactPhone || '').trim() ||
-      existingAccount?.primaryContactPhone ||
-      owner?.phoneNumber ||
-      null;
+      const primaryContactName =
+        String(dto.primaryContactName || '').trim() ||
+        existingAccount?.primaryContactName ||
+        `${owner?.firstName ?? ''} ${owner?.lastName ?? ''}`.trim() ||
+        brand.name;
+      const primaryContactEmail =
+        String(dto.primaryContactEmail || '').trim() ||
+        existingAccount?.primaryContactEmail ||
+        owner?.email ||
+        null;
+      const primaryContactPhone =
+        String(dto.primaryContactPhone || '').trim() ||
+        existingAccount?.primaryContactPhone ||
+        owner?.phoneNumber ||
+        null;
 
-    let subaccountPayload: any = null;
-    let transferRecipientPayload: any = null;
-    let syncError: string | null = null;
-    const syncTimestamp = new Date();
+      let subaccountPayload: any = null;
+      let transferRecipientPayload: any = null;
+      let syncError: string | null = null;
+      const syncTimestamp = new Date();
 
-    try {
-      const subaccountBody = {
-        business_name: brand.name,
-        bank_code: bankCode,
-        account_number: accountNumber,
-        percentage_charge: 0,
-        primary_contact_name: primaryContactName || undefined,
-        primary_contact_email: primaryContactEmail || undefined,
-        primary_contact_phone: primaryContactPhone || undefined,
-        settlement_schedule: 'manual',
-        description: `Threadly brand settlement account for ${brand.name}`,
-        metadata: {
-          threadlyBrandId: brand.id,
-          threadlyOwnerId: ownerId,
-        },
-      };
+      try {
+        const subaccountBody = {
+          business_name: brand.name,
+          bank_code: bankCode,
+          account_number: accountNumber,
+          percentage_charge: 0,
+          primary_contact_name: primaryContactName || undefined,
+          primary_contact_email: primaryContactEmail || undefined,
+          primary_contact_phone: primaryContactPhone || undefined,
+          settlement_schedule: 'manual',
+          description: `Threadly brand settlement account for ${brand.name}`,
+          metadata: {
+            threadlyBrandId: brand.id,
+            threadlyOwnerId: ownerId,
+          },
+        };
 
-      subaccountPayload = existingAccount?.subaccountCode
-        ? await this.callPaystack(
-            `/subaccount/${encodeURIComponent(existingAccount.subaccountCode)}`,
-            {
-              method: 'PUT',
-              bodyJson: subaccountBody,
-            },
-          )
-        : await this.callPaystack('/subaccount', {
-            method: 'POST',
-            bodyJson: subaccountBody,
-          });
-
-      const transferRecipientCreateBody = {
-        type: 'nuban',
-        name: resolved.account_name,
-        account_number: accountNumber,
-        bank_code: bankCode,
-        currency: 'NGN',
-        active: true,
-        metadata: {
-          threadlyBrandId: brand.id,
-          threadlyOwnerId: ownerId,
-        },
-      };
-
-      const existingRecipientCode = String(
-        existingAccount?.transferRecipientCode ?? '',
-      ).trim() || null;
-
-      if (!existingRecipientCode) {
-        transferRecipientPayload = await this.callPaystack('/transferrecipient', {
-          method: 'POST',
-          bodyJson: transferRecipientCreateBody,
-        });
-      } else {
-        let existingRecipientPayload: any = null;
-        try {
-          existingRecipientPayload = await this.callPaystack(
-            `/transferrecipient/${encodeURIComponent(existingRecipientCode)}`,
-            { method: 'GET' },
-          );
-        } catch (error: any) {
-          this.logger.warn(
-            `Failed to fetch existing transfer recipient ${existingRecipientCode}: ${String(error?.message || error)}`,
-          );
-        }
-
-        const existingDetails =
-          existingRecipientPayload &&
-          typeof existingRecipientPayload.details === 'object' &&
-          !Array.isArray(existingRecipientPayload.details)
-            ? existingRecipientPayload.details
-            : null;
-        const existingBankCode = String(existingDetails?.bank_code ?? '').trim();
-        const existingAccountNumber = String(
-          existingDetails?.account_number ?? '',
-        )
-          .replace(/\D+/g, '')
-          .trim();
-
-        const canReuseRecipient =
-          Boolean(existingRecipientPayload) &&
-          existingBankCode === bankCode &&
-          existingAccountNumber === accountNumber;
-
-        if (canReuseRecipient) {
-          const updatedRecipient = await this.callPaystack(
-            `/transferrecipient/${encodeURIComponent(existingRecipientCode)}`,
-            {
-              method: 'PUT',
-              bodyJson: {
-                name: resolved.account_name,
-                email: primaryContactEmail || undefined,
+        subaccountPayload = existingAccount?.subaccountCode
+          ? await this.callPaystack(
+              `/subaccount/${encodeURIComponent(existingAccount.subaccountCode)}`,
+              {
+                method: 'PUT',
+                bodyJson: subaccountBody,
               },
-            },
-          );
+            )
+          : await this.callPaystack('/subaccount', {
+              method: 'POST',
+              bodyJson: subaccountBody,
+            });
 
-          transferRecipientPayload = {
-            ...existingRecipientPayload,
-            ...updatedRecipient,
-            recipient_code:
-              updatedRecipient?.recipient_code ??
-              existingRecipientCode,
-            id:
-              updatedRecipient?.id ??
-              existingRecipientPayload?.id ??
-              existingAccount?.transferRecipientId ??
-              null,
-            active:
-              updatedRecipient?.active ??
-              existingRecipientPayload?.active ??
-              true,
-          };
-        } else {
+        const transferRecipientCreateBody = {
+          type: 'nuban',
+          name: resolved.account_name,
+          account_number: accountNumber,
+          bank_code: bankCode,
+          currency: 'NGN',
+          active: true,
+          metadata: {
+            threadlyBrandId: brand.id,
+            threadlyOwnerId: ownerId,
+          },
+        };
+
+        const existingRecipientCode = String(
+          existingAccount?.transferRecipientCode ?? '',
+        ).trim() || null;
+
+        if (!existingRecipientCode) {
           transferRecipientPayload = await this.callPaystack('/transferrecipient', {
             method: 'POST',
             bodyJson: transferRecipientCreateBody,
           });
+        } else {
+          let existingRecipientPayload: any = null;
+          try {
+            existingRecipientPayload = await this.callPaystack(
+              `/transferrecipient/${encodeURIComponent(existingRecipientCode)}`,
+              { method: 'GET' },
+            );
+          } catch (error: any) {
+            this.logger.warn(
+              `Failed to fetch existing transfer recipient ${existingRecipientCode}: ${String(error?.message || error)}`,
+            );
+          }
 
-          const nextRecipientCode = String(
-            transferRecipientPayload?.recipient_code ?? '',
-          ).trim();
-          if (nextRecipientCode && nextRecipientCode !== existingRecipientCode) {
-            try {
-              await this.callPaystack(
-                `/transferrecipient/${encodeURIComponent(existingRecipientCode)}`,
-                { method: 'DELETE' },
-              );
-            } catch (error: any) {
-              this.logger.warn(
-                `Failed to deactivate old transfer recipient ${existingRecipientCode}: ${String(error?.message || error)}`,
-              );
+          const existingDetails =
+            existingRecipientPayload &&
+            typeof existingRecipientPayload.details === 'object' &&
+            !Array.isArray(existingRecipientPayload.details)
+              ? existingRecipientPayload.details
+              : null;
+          const existingBankCode = String(existingDetails?.bank_code ?? '').trim();
+          const existingAccountNumber = String(
+            existingDetails?.account_number ?? '',
+          )
+            .replace(/\D+/g, '')
+            .trim();
+
+          const canReuseRecipient =
+            Boolean(existingRecipientPayload) &&
+            existingBankCode === bankCode &&
+            existingAccountNumber === accountNumber;
+
+          if (canReuseRecipient) {
+            const updatedRecipient = await this.callPaystack(
+              `/transferrecipient/${encodeURIComponent(existingRecipientCode)}`,
+              {
+                method: 'PUT',
+                bodyJson: {
+                  name: resolved.account_name,
+                  email: primaryContactEmail || undefined,
+                },
+              },
+            );
+
+            transferRecipientPayload = {
+              ...existingRecipientPayload,
+              ...updatedRecipient,
+              recipient_code:
+                updatedRecipient?.recipient_code ??
+                existingRecipientCode,
+              id:
+                updatedRecipient?.id ??
+                existingRecipientPayload?.id ??
+                existingAccount?.transferRecipientId ??
+                null,
+              active:
+                updatedRecipient?.active ??
+                existingRecipientPayload?.active ??
+                true,
+            };
+          } else {
+            transferRecipientPayload = await this.callPaystack('/transferrecipient', {
+              method: 'POST',
+              bodyJson: transferRecipientCreateBody,
+            });
+
+            const nextRecipientCode = String(
+              transferRecipientPayload?.recipient_code ?? '',
+            ).trim();
+            if (nextRecipientCode && nextRecipientCode !== existingRecipientCode) {
+              try {
+                await this.callPaystack(
+                  `/transferrecipient/${encodeURIComponent(existingRecipientCode)}`,
+                  { method: 'DELETE' },
+                );
+              } catch (error: any) {
+                this.logger.warn(
+                  `Failed to deactivate old transfer recipient ${existingRecipientCode}: ${String(error?.message || error)}`,
+                );
+              }
             }
           }
         }
+      } catch (error: any) {
+        syncError =
+          error?.response?.data?.message ||
+          error?.message ||
+          'Unable to sync the Paystack payment account';
       }
-    } catch (error: any) {
-      syncError =
-        error?.response?.data?.message ||
-        error?.message ||
-        'Unable to sync the Paystack payment account';
-    }
 
-    const nextStatus =
-      syncError == null &&
-      subaccountPayload?.subaccount_code &&
-      transferRecipientPayload?.recipient_code
+      const syncSucceeded =
+        syncError == null &&
+        Boolean(subaccountPayload?.subaccount_code) &&
+        Boolean(transferRecipientPayload?.recipient_code);
+      const nextStatus = syncSucceeded
         ? 'ACTIVE'
         : syncError
           ? 'SYNC_ERROR'
           : 'PENDING_SYNC';
-    const lastSuccessfulSyncAt = nextStatus === 'ACTIVE' ? syncTimestamp : null;
-    const metadata = this.buildStorePaymentMetadata({
-      existingMetadata: existingAccount?.metadata,
-      resolvedAccountNumber: resolved.account_number,
-      paystackBankId: resolved.bank_id ?? null,
-      subaccountPayload,
-      transferRecipientPayload,
-      lastProviderSyncAt: syncTimestamp,
-      lastSuccessfulSyncAt,
-      syncMode,
+      const lastSuccessfulSyncAt = syncSucceeded ? syncTimestamp : null;
+      const canonicalSyncState = syncSucceeded
+        ? {
+            subaccountCode: subaccountPayload?.subaccount_code ?? null,
+            subaccountId:
+              subaccountPayload?.id != null ? String(subaccountPayload.id) : null,
+            subaccountActive: Boolean(subaccountPayload?.active),
+            subaccountVerified: Boolean(subaccountPayload?.is_verified),
+            subaccountLastSyncAt: syncTimestamp,
+            transferRecipientCode: transferRecipientPayload?.recipient_code ?? null,
+            transferRecipientId:
+              transferRecipientPayload?.id != null
+                ? String(transferRecipientPayload.id)
+                : null,
+            transferRecipientActive: Boolean(transferRecipientPayload?.active),
+            transferRecipientLastSyncAt: syncTimestamp,
+          }
+        : {
+            subaccountCode: existingAccount?.subaccountCode ?? null,
+            subaccountId: existingAccount?.subaccountId ?? null,
+            subaccountActive: Boolean(existingAccount?.subaccountActive),
+            subaccountVerified: Boolean(existingAccount?.subaccountVerified),
+            subaccountLastSyncAt: existingAccount?.subaccountLastSyncAt ?? null,
+            transferRecipientCode:
+              existingAccount?.transferRecipientCode ?? null,
+            transferRecipientId: existingAccount?.transferRecipientId ?? null,
+            transferRecipientActive: Boolean(existingAccount?.transferRecipientActive),
+            transferRecipientLastSyncAt:
+              existingAccount?.transferRecipientLastSyncAt ?? null,
+          };
+      const metadata = this.buildStorePaymentMetadata({
+        existingMetadata: existingAccount?.metadata,
+        resolvedAccountNumber: resolved.account_number,
+        paystackBankId: resolved.bank_id ?? null,
+        subaccountPayload,
+        transferRecipientPayload,
+        lastProviderSyncAt: syncTimestamp,
+        lastSuccessfulSyncAt,
+        syncMode,
+      });
+
+      await this.getStorePaymentAccountModel().upsert({
+        where: { brandId: brand.id },
+        create: {
+          id: uuidv4(),
+          brandId: brand.id,
+          status: nextStatus,
+          provider: 'PAYSTACK',
+          countryCode: 'NG',
+          currency: 'NGN',
+          businessName: brand.name,
+          primaryContactName: primaryContactName || null,
+          primaryContactEmail: primaryContactEmail,
+          primaryContactPhone: primaryContactPhone,
+          bankCode,
+          bankName: selectedBank.name,
+          accountName: resolved.account_name,
+          accountNumberEncrypted: this.encryptStorePaymentValue(accountNumber),
+          accountNumberLast4: accountNumber.slice(-4),
+          isAccountResolved: true,
+          accountResolvedAt: syncTimestamp,
+          ...canonicalSyncState,
+          lastSyncError: syncError,
+          metadata,
+        },
+        update: {
+          status: nextStatus,
+          provider: 'PAYSTACK',
+          countryCode: 'NG',
+          currency: 'NGN',
+          businessName: brand.name,
+          primaryContactName: primaryContactName || null,
+          primaryContactEmail: primaryContactEmail,
+          primaryContactPhone: primaryContactPhone,
+          bankCode,
+          bankName: selectedBank.name,
+          accountName: resolved.account_name,
+          accountNumberEncrypted: this.encryptStorePaymentValue(accountNumber),
+          accountNumberLast4: accountNumber.slice(-4),
+          isAccountResolved: true,
+          accountResolvedAt: syncTimestamp,
+          ...canonicalSyncState,
+          lastSyncError: syncError,
+          metadata,
+        },
+      });
+
+      if (syncError) {
+        throw new BadRequestException(syncError);
+      }
+
+      return this.getStorePaymentAccount(ownerId);
     });
-
-    await this.getStorePaymentAccountModel().upsert({
-      where: { brandId: brand.id },
-      create: {
-        id: uuidv4(),
-        brandId: brand.id,
-        status: nextStatus,
-        provider: 'PAYSTACK',
-        countryCode: 'NG',
-        currency: 'NGN',
-        businessName: brand.name,
-        primaryContactName: primaryContactName || null,
-        primaryContactEmail: primaryContactEmail,
-        primaryContactPhone: primaryContactPhone,
-        bankCode,
-        bankName: selectedBank.name,
-        accountName: resolved.account_name,
-        accountNumberEncrypted: this.encryptStorePaymentValue(accountNumber),
-        accountNumberLast4: accountNumber.slice(-4),
-        isAccountResolved: true,
-        accountResolvedAt: new Date(),
-        subaccountCode: subaccountPayload?.subaccount_code ?? null,
-        subaccountId:
-          subaccountPayload?.id != null ? String(subaccountPayload.id) : null,
-        subaccountActive: Boolean(subaccountPayload?.active),
-        subaccountVerified: Boolean(subaccountPayload?.is_verified),
-        subaccountLastSyncAt: subaccountPayload ? syncTimestamp : null,
-        transferRecipientCode: transferRecipientPayload?.recipient_code ?? null,
-        transferRecipientId:
-          transferRecipientPayload?.id != null
-            ? String(transferRecipientPayload.id)
-            : null,
-        transferRecipientActive: Boolean(transferRecipientPayload?.active),
-        transferRecipientLastSyncAt: transferRecipientPayload ? syncTimestamp : null,
-        lastSyncError: syncError,
-        metadata,
-      },
-      update: {
-        status: nextStatus,
-        provider: 'PAYSTACK',
-        countryCode: 'NG',
-        currency: 'NGN',
-        businessName: brand.name,
-        primaryContactName: primaryContactName || null,
-        primaryContactEmail: primaryContactEmail,
-        primaryContactPhone: primaryContactPhone,
-        bankCode,
-        bankName: selectedBank.name,
-        accountName: resolved.account_name,
-        accountNumberEncrypted: this.encryptStorePaymentValue(accountNumber),
-        accountNumberLast4: accountNumber.slice(-4),
-        isAccountResolved: true,
-        accountResolvedAt: new Date(),
-        subaccountCode: subaccountPayload?.subaccount_code ?? existingAccount?.subaccountCode ?? null,
-        subaccountId:
-          subaccountPayload?.id != null
-            ? String(subaccountPayload.id)
-            : existingAccount?.subaccountId ?? null,
-        subaccountActive:
-          subaccountPayload != null
-            ? Boolean(subaccountPayload.active)
-            : Boolean(existingAccount?.subaccountActive),
-        subaccountVerified:
-          subaccountPayload != null
-            ? Boolean(subaccountPayload.is_verified)
-            : Boolean(existingAccount?.subaccountVerified),
-        subaccountLastSyncAt:
-          subaccountPayload != null
-            ? syncTimestamp
-            : existingAccount?.subaccountLastSyncAt ?? null,
-        transferRecipientCode:
-          transferRecipientPayload?.recipient_code ??
-          existingAccount?.transferRecipientCode ??
-          null,
-        transferRecipientId:
-          transferRecipientPayload?.id != null
-            ? String(transferRecipientPayload.id)
-            : existingAccount?.transferRecipientId ?? null,
-        transferRecipientActive:
-          transferRecipientPayload != null
-            ? Boolean(transferRecipientPayload.active)
-            : Boolean(existingAccount?.transferRecipientActive),
-        transferRecipientLastSyncAt:
-          transferRecipientPayload != null
-            ? syncTimestamp
-            : existingAccount?.transferRecipientLastSyncAt ?? null,
-        lastSyncError: syncError,
-        metadata,
-      },
-    });
-
-    if (syncError) {
-      throw new BadRequestException(syncError);
-    }
-
-    return this.getStorePaymentAccount(ownerId);
   }
 
   private toMoney(value: unknown) {

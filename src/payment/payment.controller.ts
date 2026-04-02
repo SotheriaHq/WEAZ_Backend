@@ -8,8 +8,11 @@ import {
   UseGuards,
   Req,
   HttpCode,
+  UseInterceptors,
+  Logger,
 } from '@nestjs/common';
 import { JwtAuthGuard } from 'src/auth/guard/jwt-auth.guard';
+import { IdempotencyInterceptor } from 'src/common/interceptors/idempotency.interceptor';
 import { PaymentService } from './payment.service';
 import { FxRateService } from './fx-rate.service';
 import {
@@ -21,6 +24,8 @@ import { Request } from 'express';
 
 @Controller('payment')
 export class PaymentController {
+  private readonly logger = new Logger(PaymentController.name);
+
   constructor(
     private readonly paymentService: PaymentService,
     private readonly fxRateService: FxRateService,
@@ -42,6 +47,7 @@ export class PaymentController {
 
   @Post('initialize')
   @UseGuards(JwtAuthGuard)
+  @UseInterceptors(IdempotencyInterceptor)
   async initialize(
     @Body() dto: InitializePaymentDto,
     @Req() req: Request,
@@ -99,6 +105,9 @@ export class PaymentController {
     @Body() payload: Record<string, any>,
     @Req() req: Request & { rawBody?: string },
   ) {
+    this.logger.warn(
+      'Received Paystack webhook on legacy /payment/webhook/paystack. Use /webhooks/paystack in the Paystack dashboard instead.',
+    );
     await this.paymentService.enqueueWebhook('PAYSTACK', payload, {
       headers: req.headers,
       rawBody: req.rawBody,

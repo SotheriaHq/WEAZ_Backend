@@ -15,6 +15,7 @@ import {
   NotificationType,
   UserStatus,
   Prisma,
+  EmailPriority,
 } from '@prisma/client';
 import {
   authUserSelect,
@@ -28,10 +29,17 @@ import { UserHelperService } from './helper/user-helper.service';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { NotificationsService } from 'src/notifications/notifications.service';
 import { EmailVerificationHelperService } from './helper/email-verification-helper.service';
-import { EmailService } from 'src/email/email.service';
+import { EmailService, type EnqueueEmailResult } from 'src/email/email.service';
 import * as emailTemplates from 'src/email/email.templates';
 import { createHash, randomBytes } from 'crypto';
 import { TrustedDeviceService } from './helper/trusted-device.service';
+import {
+  PasswordPolicyContext,
+  validatePasswordPolicy,
+} from './helper/password-policy.helper';
+
+const PASSWORD_RESET_TOKEN_TTL_MS = 60 * 60 * 1000;
+const RESET_REQUEST_SUPPRESSION_MS = 2 * 60 * 1000;
 
 @Injectable()
 export class AuthService {
@@ -47,6 +55,48 @@ export class AuthService {
     private readonly emailService: EmailService,
     private readonly trustedDeviceService: TrustedDeviceService,
   ) { }
+
+  private buildPasswordPolicyContext(
+    context: PasswordPolicyContext,
+  ): PasswordPolicyContext {
+    return {
+      email: context.email ?? null,
+      username: context.username ?? null,
+      brandFullName: context.brandFullName ?? null,
+      firstName: context.firstName ?? null,
+      lastName: context.lastName ?? null,
+    };
+  }
+
+  private logEmailDispatchOutcome(args: {
+    scenarioKey: string;
+    userId: string;
+    recipientEmail: string;
+    result: EnqueueEmailResult;
+  }): void {
+    const summary =
+      `scenario=${args.scenarioKey} userId=${args.userId} ` +
+      `recipient=${args.recipientEmail} outboxId=${args.result.outboxId ?? 'n/a'} ` +
+      `dispatchStatus=${args.result.dispatchStatus}`;
+
+    if (args.result.dispatchStatus === 'FAILED') {
+      this.logger.error(
+        `Auth email dispatch failed: ${summary} error=${args.result.errorMessage ?? 'unknown'}`,
+      );
+      return;
+    }
+
+    if (args.result.dispatchStatus === 'SUPPRESSED') {
+      this.logger.warn(
+        `Auth email dispatch suppressed: ${summary} reason=${args.result.errorMessage ?? 'n/a'}`,
+      );
+      return;
+    }
+
+    this.logger.log(
+      `Auth email dispatch outcome: ${summary} providerMessageId=${args.result.providerMessageId ?? 'n/a'}`,
+    );
+  }
 
   private extractClientIp(req: Request): string | null {
     return req.ip || req.socket?.remoteAddress || null;
@@ -121,6 +171,17 @@ export class AuthService {
         this.logger.error('Username generation failed:', usernameError);
         throw new BadRequestException('Failed to generate username');
       }
+
+      validatePasswordPolicy(
+        signupDto.password,
+        this.buildPasswordPolicyContext({
+          email: signupDto.email,
+          username,
+          brandFullName: signupDto.brandFullName,
+          firstName: signupDto.firstName,
+          lastName: signupDto.lastName,
+        }),
+      );
 
       let industriNumber: string | null = null;
       if (signupDto.type === UserType.BRAND) {
@@ -203,9 +264,25 @@ export class AuthService {
       verificationLink,
       this.emailService.getAppName(),
     );
-    void this.emailService
-      .send(user.email, verificationEmail.subject, verificationEmail.html, verificationEmail.text)
-      .catch(() => undefined);
+    const verificationDispatchResult = await this.emailService.send(
+      user.email,
+      verificationEmail.subject,
+      verificationEmail.html,
+      verificationEmail.text,
+      {
+        recipientUserId: user.id,
+        scenarioKey: 'auth.email_verification',
+        priority: EmailPriority.P1_TRANSACTIONAL,
+        idempotencyKey: `auth:email-verification:${user.id}:${verificationCode}`,
+        dispatchImmediately: true,
+      },
+    );
+    this.logEmailDispatchOutcome({
+      scenarioKey: 'auth.email_verification',
+      userId: user.id,
+      recipientEmail: user.email,
+      result: verificationDispatchResult,
+    });
 
       let accessToken: string;
       let refreshToken: string | undefined;
@@ -580,6 +657,10 @@ export class AuthService {
   }
 
   async requestAdminPasswordReset(email: string) {
+    const genericResponse = {
+      message: 'If the account exists, a reset link has been generated.',
+    };
+
     const normalizedEmail = email?.trim().toLowerCase();
     if (!normalizedEmail) {
       throw new BadRequestException('Email is required');
@@ -591,35 +672,117 @@ export class AuthService {
     });
 
     if (!user || (user.role !== Role.Admin && user.role !== Role.SuperAdmin)) {
-      // Return generic success response to prevent account enumeration
-      return { message: 'If the account exists, a reset link has been generated.' };
+      return genericResponse;
     }
 
-    const rawToken = randomBytes(32).toString('hex');
-    const tokenHash = createHash('sha256').update(rawToken).digest('hex');
-    const expiresAt = new Date(Date.now() + 60 * 60 * 1000);
+    let rawTokenToSend: string | null = null;
+    let tokenHashToSend: string | null = null;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const now = new Date();
+      const suppressionCutoff = new Date(
+        now.getTime() - RESET_REQUEST_SUPPRESSION_MS,
+      );
+      const candidateRawToken = randomBytes(32).toString('hex');
+      const candidateTokenHash = createHash('sha256')
+        .update(candidateRawToken)
+        .digest('hex');
+      const expiresAt = new Date(now.getTime() + PASSWORD_RESET_TOKEN_TTL_MS);
 
-    await this.prisma.passwordResetToken.create({
-      data: {
-        id: uuidv4(),
-        userId: user.id,
-        tokenHash,
-        expiresAt,
-      },
-    });
+      try {
+        const shouldCreateToken = await this.prisma.$transaction(
+          async (tx) => {
+            const latestActiveToken = await tx.passwordResetToken.findFirst({
+              where: {
+                userId: user.id,
+                usedAt: null,
+                expiresAt: { gt: now },
+              },
+              orderBy: { createdAt: 'desc' },
+              select: { createdAt: true },
+            });
+
+            if (
+              latestActiveToken &&
+              latestActiveToken.createdAt > suppressionCutoff
+            ) {
+              return false;
+            }
+
+            await tx.passwordResetToken.updateMany({
+              where: {
+                userId: user.id,
+                usedAt: null,
+                expiresAt: { gt: now },
+              },
+              data: { usedAt: now },
+            });
+
+            await tx.passwordResetToken.create({
+              data: {
+                id: uuidv4(),
+                userId: user.id,
+                tokenHash: candidateTokenHash,
+                expiresAt,
+              },
+            });
+
+            return true;
+          },
+          {
+            isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+          },
+        );
+
+        if (shouldCreateToken) {
+          rawTokenToSend = candidateRawToken;
+          tokenHashToSend = candidateTokenHash;
+        }
+        break;
+      } catch (error: any) {
+        if (error?.code === 'P2034' && attempt < 2) {
+          continue;
+        }
+        throw error;
+      }
+    }
+
+    if (!rawTokenToSend) {
+      this.logger.log(
+        `Admin password reset suppressed for user ${user.id} due to recent active token`,
+      );
+      return genericResponse;
+    }
 
     // Send reset email
     const baseUrl = (process.env.WEB_APP_URL || 'http://localhost:5173').replace(/\/$/, '');
-    const resetLink = `${baseUrl}/admin/reset-password?token=${rawToken}`;
+    const resetLink = `${baseUrl}/admin/reset-password?token=${rawTokenToSend}`;
     const resetEmail = emailTemplates.passwordResetEmail(
       resetLink,
       this.emailService.getAppName(),
     );
-    void this.emailService
-      .send(normalizedEmail, resetEmail.subject, resetEmail.html, resetEmail.text)
-      .catch(() => undefined);
+    const adminResetDispatchResult = await this.emailService.send(
+      normalizedEmail,
+      resetEmail.subject,
+      resetEmail.html,
+      resetEmail.text,
+      {
+        recipientUserId: user.id,
+        scenarioKey: 'auth.admin_password_reset',
+        priority: EmailPriority.P0_SECURITY,
+        idempotencyKey: tokenHashToSend
+          ? `auth:admin-password-reset:${user.id}:${tokenHashToSend}`
+          : undefined,
+        dispatchImmediately: true,
+      },
+    );
+    this.logEmailDispatchOutcome({
+      scenarioKey: 'auth.admin_password_reset',
+      userId: user.id,
+      recipientEmail: normalizedEmail,
+      result: adminResetDispatchResult,
+    });
 
-    return { message: 'If the account exists, a reset link has been generated.' };
+    return genericResponse;
   }
 
   async resetAdminPassword(token: string, newPassword: string) {
@@ -640,6 +803,13 @@ export class AuthService {
           select: {
             id: true,
             role: true,
+            status: true,
+            password: true,
+            email: true,
+            username: true,
+            brandFullName: true,
+            firstName: true,
+            lastName: true,
           },
         },
       },
@@ -653,32 +823,72 @@ export class AuthService {
       throw new UnauthorizedException('Invalid or expired reset token');
     }
 
+    if (resetToken.user.status !== UserStatus.ACTIVE) {
+      throw new UnauthorizedException('This account is not active');
+    }
+
+    validatePasswordPolicy(
+      newPassword,
+      this.buildPasswordPolicyContext({
+        email: resetToken.user.email,
+        username: resetToken.user.username,
+        brandFullName: resetToken.user.brandFullName,
+        firstName: resetToken.user.firstName,
+        lastName: resetToken.user.lastName,
+      }),
+    );
+
+    const isSamePassword = await this.passwordService.verifyPassword(
+      resetToken.user.password,
+      newPassword,
+    );
+    if (isSamePassword) {
+      throw new BadRequestException(
+        'New password must be different from your current password',
+      );
+    }
+
     const password = await this.passwordService.hashPassword(newPassword);
+    const now = new Date();
 
-    await this.prisma.$transaction(async (tx) => {
-      await tx.user.update({
-        where: { id: resetToken.userId },
-        data: {
-          password,
-          mustResetPassword: false,
-          authVersion: { increment: 1 },
-        },
-      });
+    await this.prisma.$transaction(
+      async (tx) => {
+        const claimedToken = await tx.passwordResetToken.updateMany({
+          where: {
+            id: resetToken.id,
+            usedAt: null,
+            expiresAt: { gt: now },
+          },
+          data: { usedAt: now },
+        });
 
-      await tx.passwordResetToken.update({
-        where: { id: resetToken.id },
-        data: { usedAt: new Date() },
-      });
-    });
+        if (claimedToken.count !== 1) {
+          throw new UnauthorizedException('Invalid or expired reset token');
+        }
 
-    await this.tokenService.revokeAllRefreshTokens(resetToken.userId);
+        await tx.refreshToken.deleteMany({ where: { userId: resetToken.userId } });
+
+        await tx.user.update({
+          where: { id: resetToken.userId },
+          data: {
+            password,
+            mustResetPassword: false,
+            authVersion: { increment: 1 },
+          },
+        });
+      },
+      {
+        isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+      },
+    );
 
     return { message: 'Password reset successful' };
   }
 
   async requestPasswordReset(email: string) {
     const genericResponse = {
-      message: 'If an account with that email exists, a password reset link has been sent.',
+      message:
+        'If an account with that email exists, a password reset link has been sent.',
     };
 
     const normalizedEmail = email?.trim().toLowerCase();
@@ -693,33 +903,118 @@ export class AuthService {
 
     // Always return generic response to prevent email enumeration
     if (!user || user.status !== UserStatus.ACTIVE) {
-      this.logger.log(`Password reset requested for unknown or inactive email: ${normalizedEmail}`);
+      this.logger.log(
+        `Password reset requested for unknown or inactive email: ${normalizedEmail}`,
+      );
       return genericResponse;
     }
 
-    const rawToken = randomBytes(32).toString('hex');
-    const tokenHash = createHash('sha256').update(rawToken).digest('hex');
-    const expiresAt = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
+    let rawTokenToSend: string | null = null;
+    let tokenHashToSend: string | null = null;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const now = new Date();
+      const suppressionCutoff = new Date(
+        now.getTime() - RESET_REQUEST_SUPPRESSION_MS,
+      );
+      const candidateRawToken = randomBytes(32).toString('hex');
+      const candidateTokenHash = createHash('sha256')
+        .update(candidateRawToken)
+        .digest('hex');
+      const expiresAt = new Date(now.getTime() + PASSWORD_RESET_TOKEN_TTL_MS);
 
-    await this.prisma.passwordResetToken.create({
-      data: {
-        id: uuidv4(),
-        userId: user.id,
-        tokenHash,
-        expiresAt,
-      },
-    });
+      try {
+        const shouldCreateToken = await this.prisma.$transaction(
+          async (tx) => {
+            const latestActiveToken = await tx.passwordResetToken.findFirst({
+              where: {
+                userId: user.id,
+                usedAt: null,
+                expiresAt: { gt: now },
+              },
+              orderBy: { createdAt: 'desc' },
+              select: { createdAt: true },
+            });
+
+            if (
+              latestActiveToken &&
+              latestActiveToken.createdAt > suppressionCutoff
+            ) {
+              return false;
+            }
+
+            await tx.passwordResetToken.updateMany({
+              where: {
+                userId: user.id,
+                usedAt: null,
+                expiresAt: { gt: now },
+              },
+              data: { usedAt: now },
+            });
+
+            await tx.passwordResetToken.create({
+              data: {
+                id: uuidv4(),
+                userId: user.id,
+                tokenHash: candidateTokenHash,
+                expiresAt,
+              },
+            });
+
+            return true;
+          },
+          {
+            isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+          },
+        );
+
+        if (shouldCreateToken) {
+          rawTokenToSend = candidateRawToken;
+          tokenHashToSend = candidateTokenHash;
+        }
+        break;
+      } catch (error: any) {
+        if (error?.code === 'P2034' && attempt < 2) {
+          continue;
+        }
+        throw error;
+      }
+    }
+
+    if (!rawTokenToSend) {
+      this.logger.log(
+        `Password reset suppressed for user ${user.id} due to recent active token`,
+      );
+      return genericResponse;
+    }
 
     // Send reset email
     const baseUrl = (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
-    const resetLink = `${baseUrl}/reset-password?token=${rawToken}`;
+    const resetLink = `${baseUrl}/reset-password?token=${rawTokenToSend}`;
     const resetEmail = emailTemplates.passwordResetEmail(
       resetLink,
       this.emailService.getAppName(),
     );
-    void this.emailService
-      .send(normalizedEmail, resetEmail.subject, resetEmail.html, resetEmail.text)
-      .catch(() => undefined);
+    const passwordResetDispatchResult = await this.emailService.send(
+      normalizedEmail,
+      resetEmail.subject,
+      resetEmail.html,
+      resetEmail.text,
+      {
+        recipientUserId: user.id,
+        scenarioKey: 'auth.password_reset',
+        priority: EmailPriority.P0_SECURITY,
+        idempotencyKey: tokenHashToSend
+          ? `auth:password-reset:${user.id}:${tokenHashToSend}`
+          : undefined,
+        dispatchImmediately: true,
+      },
+    );
+    this.logEmailDispatchOutcome({
+      scenarioKey: 'auth.password_reset',
+      userId: user.id,
+      recipientEmail: normalizedEmail,
+      result: passwordResetDispatchResult,
+    });
 
     this.logger.log(`Password reset requested for user ${user.id}`);
 
@@ -744,6 +1039,12 @@ export class AuthService {
           select: {
             id: true,
             status: true,
+            password: true,
+            email: true,
+            username: true,
+            brandFullName: true,
+            firstName: true,
+            lastName: true,
           },
         },
       },
@@ -757,24 +1058,59 @@ export class AuthService {
       throw new UnauthorizedException('This account is not active');
     }
 
+    validatePasswordPolicy(
+      newPassword,
+      this.buildPasswordPolicyContext({
+        email: resetToken.user.email,
+        username: resetToken.user.username,
+        brandFullName: resetToken.user.brandFullName,
+        firstName: resetToken.user.firstName,
+        lastName: resetToken.user.lastName,
+      }),
+    );
+
+    const isSamePassword = await this.passwordService.verifyPassword(
+      resetToken.user.password,
+      newPassword,
+    );
+    if (isSamePassword) {
+      throw new BadRequestException(
+        'New password must be different from your current password',
+      );
+    }
+
     const password = await this.passwordService.hashPassword(newPassword);
+    const now = new Date();
 
-    await this.prisma.$transaction(async (tx) => {
-      await tx.user.update({
-        where: { id: resetToken.userId },
-        data: {
-          password,
-          authVersion: { increment: 1 },
-        },
-      });
+    await this.prisma.$transaction(
+      async (tx) => {
+        const claimedToken = await tx.passwordResetToken.updateMany({
+          where: {
+            id: resetToken.id,
+            usedAt: null,
+            expiresAt: { gt: now },
+          },
+          data: { usedAt: now },
+        });
 
-      await tx.passwordResetToken.update({
-        where: { id: resetToken.id },
-        data: { usedAt: new Date() },
-      });
-    });
+        if (claimedToken.count !== 1) {
+          throw new UnauthorizedException('Invalid or expired reset token');
+        }
 
-    await this.tokenService.revokeAllRefreshTokens(resetToken.userId);
+        await tx.refreshToken.deleteMany({ where: { userId: resetToken.userId } });
+
+        await tx.user.update({
+          where: { id: resetToken.userId },
+          data: {
+            password,
+            authVersion: { increment: 1 },
+          },
+        });
+      },
+      {
+        isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+      },
+    );
 
     this.logger.log(`Password reset confirmed for user ${resetToken.userId}`);
 
@@ -792,7 +1128,16 @@ export class AuthService {
 
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
-      select: { id: true, password: true, mustResetPassword: true },
+      select: {
+        id: true,
+        email: true,
+        username: true,
+        brandFullName: true,
+        firstName: true,
+        lastName: true,
+        password: true,
+        mustResetPassword: true,
+      },
     });
     if (!user) throw new UnauthorizedException('User not found');
 
@@ -811,18 +1156,41 @@ export class AuthService {
       }
     }
 
+    validatePasswordPolicy(
+      newPassword,
+      this.buildPasswordPolicyContext({
+        email: user.email,
+        username: user.username,
+        brandFullName: user.brandFullName,
+        firstName: user.firstName,
+        lastName: user.lastName,
+      }),
+    );
+
+    const isSamePassword = await this.passwordService.verifyPassword(
+      user.password,
+      newPassword,
+    );
+    if (isSamePassword) {
+      throw new BadRequestException(
+        'New password must be different from your current password',
+      );
+    }
+
     const password = await this.passwordService.hashPassword(newPassword);
 
-    await this.prisma.user.update({
-      where: { id: userId },
-      data: {
-        password,
-        mustResetPassword: false,
-        authVersion: { increment: 1 },
-      },
-    });
+    await this.prisma.$transaction(async (tx) => {
+      await tx.refreshToken.deleteMany({ where: { userId } });
 
-    await this.tokenService.revokeAllRefreshTokens(userId);
+      await tx.user.update({
+        where: { id: userId },
+        data: {
+          password,
+          mustResetPassword: false,
+          authVersion: { increment: 1 },
+        },
+      });
+    });
 
     return { message: 'Password updated successfully' };
   }
@@ -836,9 +1204,6 @@ export class AuthService {
     if (!normalizedEmail || !currentPassword || !newPassword) {
       throw new BadRequestException('Email, current password, and new password are required');
     }
-    if (newPassword.length < 8) {
-      throw new BadRequestException('New password must be at least 8 characters');
-    }
     if (currentPassword === newPassword) {
       throw new BadRequestException('New password must be different from temporary password');
     }
@@ -850,6 +1215,11 @@ export class AuthService {
         role: true,
         password: true,
         mustResetPassword: true,
+        email: true,
+        username: true,
+        brandFullName: true,
+        firstName: true,
+        lastName: true,
       },
     });
 
@@ -868,17 +1238,39 @@ export class AuthService {
       throw new UnauthorizedException('Temporary password is incorrect');
     }
 
-    const password = await this.passwordService.hashPassword(newPassword);
-    await this.prisma.user.update({
-      where: { id: user.id },
-      data: {
-        password,
-        mustResetPassword: false,
-        authVersion: { increment: 1 },
-      },
-    });
+    validatePasswordPolicy(
+      newPassword,
+      this.buildPasswordPolicyContext({
+        email: user.email,
+        username: user.username,
+        brandFullName: user.brandFullName,
+        firstName: user.firstName,
+        lastName: user.lastName,
+      }),
+    );
 
-    await this.tokenService.revokeAllRefreshTokens(user.id);
+    const isSamePassword = await this.passwordService.verifyPassword(
+      user.password,
+      newPassword,
+    );
+    if (isSamePassword) {
+      throw new BadRequestException(
+        'New password must be different from temporary password',
+      );
+    }
+
+    const password = await this.passwordService.hashPassword(newPassword);
+    await this.prisma.$transaction(async (tx) => {
+      await tx.refreshToken.deleteMany({ where: { userId: user.id } });
+      await tx.user.update({
+        where: { id: user.id },
+        data: {
+          password,
+          mustResetPassword: false,
+          authVersion: { increment: 1 },
+        },
+      });
+    });
 
     return { message: 'Password reset complete. You can now sign in.' };
   }
