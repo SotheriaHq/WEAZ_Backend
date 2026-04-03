@@ -20,6 +20,7 @@ import {
   Prisma,
 } from '@prisma/client';
 import { createHash } from 'crypto';
+import { validate as isUuid } from 'uuid';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { CustomOrderPricingService } from 'src/custom-order-pricing/custom-order-pricing.service';
 import { LedgerService } from 'src/finance/ledger.service';
@@ -1837,16 +1838,17 @@ export class CustomOrdersService {
   ) {
     const page = query.page ?? 1;
     const take = query.limit ?? 20;
+    const searchQuery = query.q?.trim();
     const finalWhere: Prisma.CustomOrderWhereInput = {
       ...where,
       ...(query.status ? { status: query.status } : {}),
       ...(query.stage ? { currentProgressStage: query.stage } : {}),
-      ...(query.q
+      ...(searchQuery
         ? {
             OR: [
-              { id: { contains: query.q, mode: 'insensitive' } },
-              { sourceTitleSnapshot: { contains: query.q, mode: 'insensitive' } },
-              { sourceBrandNameSnapshot: { contains: query.q, mode: 'insensitive' } },
+              ...(isUuid(searchQuery) ? [{ id: { equals: searchQuery } }] : []),
+              { sourceTitleSnapshot: { contains: searchQuery, mode: 'insensitive' } },
+              { sourceBrandNameSnapshot: { contains: searchQuery, mode: 'insensitive' } },
             ],
           }
         : {}),

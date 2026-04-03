@@ -188,7 +188,7 @@ describe('Custom-order admin reconciliation routes (e2e)', () => {
         brandId,
         amount: 600,
         currency: 'NGN',
-        status: 'PENDING',
+        status: 'PENDING_APPROVAL',
         reference: 'CO-batch-test',
       },
     });

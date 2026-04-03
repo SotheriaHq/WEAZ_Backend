@@ -415,6 +415,14 @@ export class EmailService {
 
     await this.mailjetSenderValidationPromise;
 
+    if (this.mailjetSenderState === 'check_failed') {
+      this.logger.warn(
+        `Retrying Mailjet sender validation before send for ${this.fromAddress}`,
+      );
+      this.mailjetSenderValidationPromise = this.validateMailjetSenderStatus();
+      await this.mailjetSenderValidationPromise;
+    }
+
     if (this.mailjetSenderState === 'inactive') {
       const detail = this.mailjetSenderStateDetail ?? 'unknown sender status';
       const message = `Mailjet sender ${this.fromAddress} is not active (${detail})`;
@@ -428,6 +436,12 @@ export class EmailService {
 
       this.logger.warn(
         `Continuing email send because MAILJET_ENFORCE_ACTIVE_SENDER=false even though ${message}`,
+      );
+    }
+
+    if (this.mailjetSenderState === 'check_failed') {
+      this.logger.warn(
+        `Mailjet sender validation could not be confirmed for ${this.fromAddress}; continuing send to avoid hard outage. detail=${this.mailjetSenderStateDetail ?? 'n/a'}`,
       );
     }
   }
@@ -530,7 +544,7 @@ export class EmailService {
           headers: {
             Authorization: `Basic ${Buffer.from(`${apiKey}:${secretKey}`).toString('base64')}`,
           },
-          timeout: 7000,
+          timeout: 15000,
         },
         (response) => {
           let body = '';

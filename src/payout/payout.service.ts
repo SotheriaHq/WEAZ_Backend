@@ -221,7 +221,6 @@ export class PayoutService {
           customOrder: {
             select: {
               id: true,
-              title: true,
               sourceTitleSnapshot: true,
               buyer: {
                 select: {
@@ -236,15 +235,15 @@ export class PayoutService {
       }),
     ]);
 
-    const orderIds = Array.from(
-      new Set(
+    const orderIds: string[] = [
+      ...new Set<string>(
         entries
           .filter((entry: any) => entry.transaction?.referenceType === 'Order' && entry.transaction?.referenceId)
           .map((entry: any) => String(entry.transaction.referenceId)),
       ),
-    );
-    const customOrderIds = Array.from(
-      new Set(
+    ];
+    const customOrderIds: string[] = [
+      ...new Set<string>(
         entries
           .filter(
             (entry: any) =>
@@ -253,7 +252,7 @@ export class PayoutService {
           )
           .map((entry: any) => String(entry.transaction.referenceId)),
       ),
-    );
+    ];
 
     const [orders, customOrders] = await Promise.all([
       orderIds.length > 0
@@ -272,11 +271,11 @@ export class PayoutService {
           })
         : Promise.resolve([]),
       customOrderIds.length > 0
-        ? (this.prisma as any).customOrder.findMany({
+        ? this.prisma.customOrder.findMany({
             where: { id: { in: customOrderIds } },
             select: {
               id: true,
-              title: true,
+              sourceTitleSnapshot: true,
               buyer: {
                 select: {
                   firstName: true,
@@ -315,7 +314,8 @@ export class PayoutService {
           String(order.id),
           {
             title:
-              (typeof order?.title === 'string' && order.title.trim()) ||
+              (typeof order?.sourceTitleSnapshot === 'string' &&
+                order.sourceTitleSnapshot.trim()) ||
               `Custom Order #${String(order.id).slice(0, 8).toUpperCase()}`,
             counterparty: buyerName || String(order?.buyer?.username || 'Buyer'),
           },
@@ -413,7 +413,6 @@ export class PayoutService {
           referenceType: 'CustomOrder',
           referenceId: allocation.customOrderId,
           title:
-            allocation.customOrder?.title ||
             allocation.customOrder?.sourceTitleSnapshot ||
             `Custom Order #${allocation.customOrderId.slice(0, 8).toUpperCase()}`,
           counterparty: buyerName || String(allocation.customOrder?.buyer?.username || 'Buyer'),
@@ -484,7 +483,6 @@ export class PayoutService {
           createdAt: true,
           customOrder: {
             select: {
-              title: true,
               sourceTitleSnapshot: true,
               buyer: {
                 select: {
@@ -536,7 +534,6 @@ export class PayoutService {
           holdType: 'CUSTOM_ORDER',
           referenceId: allocation.customOrderId,
           title:
-            allocation.customOrder?.title ||
             allocation.customOrder?.sourceTitleSnapshot ||
             `Custom Order #${allocation.customOrderId.slice(0, 8).toUpperCase()}`,
           counterparty: buyerName || String(allocation.customOrder?.buyer?.username || 'Buyer'),
