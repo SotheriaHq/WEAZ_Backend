@@ -151,7 +151,7 @@ export const resolveEmailConfig = (
     smtpPass =
       cleanString(config.get<string>('MAILJET_SECRET_KEY')) ??
       cleanString(config.get<string>('SMTP_PASS'));
-    deliveryProviderName = 'MAILJET_SMTP';
+    deliveryProviderName = 'MAILJET_API';
     webhookSharedSecret =
       cleanString(config.get<string>('MAILJET_WEBHOOK_SECRET')) ??
       cleanString(config.get<string>('EMAIL_WEBHOOK_SECRET_MAILJET')) ??

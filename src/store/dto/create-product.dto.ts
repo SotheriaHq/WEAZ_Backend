@@ -259,6 +259,14 @@ export class CreateProductDto {
   @IsBoolean()
   allowBackorders?: boolean;
 
+  @IsOptional()
+  @IsBoolean()
+  standardCheckoutEnabled?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  customOrderEnabled?: boolean;
+
   // Metadata
   @IsOptional()
   @IsArray()

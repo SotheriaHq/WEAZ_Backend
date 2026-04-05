@@ -3040,6 +3040,9 @@ model Product {
   lowStockThreshold Int         @default(5)
   trackInventory  Boolean       @default(true)
   allowBackorders Boolean       @default(false)
+  customOrderOutOfStockTriggeredAt DateTime?
+  customOrderOutOfStockReminderSentAt DateTime?
+  customOrderOutOfStockDiscontinueAt DateTime?
   
   // Metadata
   tags            String[]      @default([])
@@ -3103,6 +3106,7 @@ model Product {
   @@index([deletedAt])
   @@index([categoryTypeId])
   @@index([categoryId])
+  @@index([customOrderOutOfStockDiscontinueAt])
 }
 
 model ProductVariant {

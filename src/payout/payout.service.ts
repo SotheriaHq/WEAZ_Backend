@@ -51,6 +51,7 @@ export class PayoutService {
     }
 
     await this.assertBrandExists(brandId);
+    await this.assertPayoutAccountReadyForRequest(brandId);
     await this.syncLegacyStandardOrderSources(brandId);
     const balance = await this.calculateAvailableBalance(brandId);
 
@@ -931,6 +932,29 @@ export class PayoutService {
       select: { id: true },
     });
     if (!brand) throw new NotFoundException('Brand not found');
+  }
+
+  private async assertPayoutAccountReadyForRequest(brandId: string): Promise<void> {
+    const paymentAccount = await (this.prisma as any).storePaymentAccount.findUnique({
+      where: { brandId },
+      select: {
+        status: true,
+        transferRecipientCode: true,
+        transferRecipientActive: true,
+      },
+    });
+
+    if (!paymentAccount || String(paymentAccount.status || '').toUpperCase() !== 'ACTIVE') {
+      throw new BadRequestException(
+        'Brand payout account is not active. Sync the brand payment account before requesting payout.',
+      );
+    }
+
+    if (!paymentAccount.transferRecipientCode || !paymentAccount.transferRecipientActive) {
+      throw new BadRequestException(
+        'Brand payout account does not have an active transfer recipient.',
+      );
+    }
   }
 
   private resolveReleaseStage(description?: string | null) {

@@ -34,6 +34,7 @@ import {
 import * as argon2 from 'argon2';
 import { createHash } from 'crypto';
 import { ConfigService } from '@nestjs/config';
+import { resolveWebAppBaseUrl as resolveConfiguredWebAppBaseUrl } from 'src/common/utils/web-app-url';
 
 type EmailSettingsResponse = {
   globalEnabled: boolean;
@@ -114,6 +115,15 @@ export class NotificationsService {
       return cleaned;
     }
     return undefined;
+  }
+
+  private resolveWebAppBaseUrl(): string {
+    return resolveConfiguredWebAppBaseUrl();
+  }
+
+  private toAbsoluteWebAppUrl(path?: string): string | undefined {
+    if (!path) return undefined;
+    return `${this.resolveWebAppBaseUrl()}${path}`;
   }
 
   private formatMessage(n: any) {
@@ -856,6 +866,8 @@ export class NotificationsService {
       case NotificationType.CONTRIBUTION_ACCEPTED:
       case NotificationType.CONTRIBUTION_REJECTED:
         return settings.brand.contributions;
+      case NotificationType.VERIFICATION_NUDGE:
+        return settings.brand.verificationPrompts;
       case NotificationType.ORDER_PLACED:
         return settings.orders.placed;
       case NotificationType.ORDER_STATUS_UPDATED:
@@ -970,11 +982,14 @@ export class NotificationsService {
     }
 
     const heading = String(args.type).replace(/_/g, ' ').toLowerCase();
+    const absoluteTargetUrl = this.toAbsoluteWebAppUrl(args.targetUrl);
     const rendered = renderNotificationEmail({
       appName: this.emailService.getAppName(),
       heading: heading.charAt(0).toUpperCase() + heading.slice(1),
       message: args.message,
-      targetUrl: args.targetUrl,
+      targetUrl: absoluteTargetUrl,
+      notificationType: args.type,
+      payload: args.payload,
     });
 
     await this.emailService.send(

@@ -163,10 +163,16 @@ export class NotificationRegistry {
       schema: Joi.object({
         action: Joi.string().valid('SIGNUP', 'EMAIL_VERIFIED').optional(),
         email: Joi.string().email().optional(),
+        displayName: Joi.string().optional(),
+        username: Joi.string().optional(),
+        createdAtIso: Joi.string().isoDate().optional(),
+        device: Joi.string().optional(),
+        location: Joi.string().optional(),
+        targetUrl: Joi.string().optional(),
       }),
       formatter: (n: any) => {
         if (n.payload?.action === 'EMAIL_VERIFIED') {
-          return 'Your email was verified successfully';
+          return 'Your email is verified. Your account is now secured and ready.';
         }
         return 'Welcome! Your account was created';
       },
@@ -848,9 +854,15 @@ export class NotificationRegistry {
       type: NT_VERIFICATION_NUDGE,
       schema: Joi.object({
         brandId: Joi.string().required(),
+        brandName: Joi.string().optional(),
+        message: Joi.string().optional(),
         targetUrl: Joi.string().optional(),
       }),
-      formatter: () => 'Complete verification to add a stronger trust signal to your store',
+      formatter: (n: any) => {
+        const message = typeof n.payload?.message === 'string' ? n.payload.message.trim() : '';
+        if (message) return message;
+        return 'Complete verification to add a stronger trust signal to your store';
+      },
     });
 
     registry.register({

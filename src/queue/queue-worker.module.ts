@@ -23,6 +23,7 @@ import { ReviewReminderProcessor } from './review-reminder.processor';
 import { SystemConfigModule } from 'src/admin/system-config/system-config.module';
 import { PaymentModule } from 'src/payment/payment.module';
 import { AdminModule } from 'src/admin/admin.module';
+import { CustomOrdersModule } from 'src/custom-orders/custom-orders.module';
 import { WebhookEventsProcessor } from './webhook-events.processor';
 
 @Module({
@@ -45,6 +46,7 @@ import { WebhookEventsProcessor } from './webhook-events.processor';
     SystemConfigModule,
     PaymentModule,
     AdminModule,
+    CustomOrdersModule,
   ],
   providers: [
     CollectionsService,

@@ -47,6 +47,7 @@ export interface NotificationSettings {
   brand: {
     patchRequests: boolean;
     contributions: boolean;
+    verificationPrompts: boolean;
   };
   orders: {
     placed: boolean;
@@ -98,6 +99,7 @@ export const DEFAULT_NOTIFICATION_SETTINGS: NotificationSettings = {
   brand: {
     patchRequests: true,
     contributions: true,
+    verificationPrompts: true,
   },
   orders: {
     placed: true,

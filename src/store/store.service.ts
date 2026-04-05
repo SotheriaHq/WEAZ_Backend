@@ -42,6 +42,7 @@ import { UpdateStoreNameDto } from './dto/update-store-name.dto';
 import { UpdateStoreProfileDto } from './dto/update-store-profile.dto';
 import { UpdateStorePoliciesDto } from './dto/update-store-policies.dto';
 import { UpdateStorePaymentAccountDto } from './dto/update-store-payment-account.dto';
+import { VerifyStorePaymentAccountDto } from './dto/verify-store-payment-account.dto';
 import { PasswordService } from 'src/auth/helper/password.service';
 import { UploadService } from 'src/upload/upload.service';
 import { FileType } from 'src/upload/upload.enums';
@@ -60,6 +61,10 @@ import { reconcileStandardOrderPaymentStatuses } from 'src/common/payments/order
 import { StandardOrderEscrowService } from 'src/finance/standard-order-escrow.service';
 import { StandardOrderFinanceSyncService } from 'src/finance/standard-order-finance-sync.service';
 import { buildPayoutSourceBreakdown } from 'src/payout/payout-detail.presenter';
+import {
+  describePaystackSecretEnvKeys,
+  resolvePaystackSecret,
+} from 'src/common/utils/paystack-secret';
 
 type SupportedPaymentBank = {
   id: number;
@@ -67,6 +72,34 @@ type SupportedPaymentBank = {
   name: string;
   currency: string;
 };
+
+const PAYSTACK_TEST_BANK_CODE = '001';
+const PAYSTACK_TEST_BANK_FALLBACK_UNTIL_ENV =
+  'PAYSTACK_TEST_BANK_001_UNTIL';
+const STORE_PAYMENT_TEST_ACCOUNT_DEV_BYPASS_ENV =
+  'STORE_PAYMENT_ALLOW_TEST_ACCOUNT_IN_DEV';
+const PRODUCT_VARIANT_SIZE_VALUES = [
+  'XXS',
+  'XS',
+  'S',
+  'M',
+  'L',
+  'XL',
+  'XXL',
+  'XXXL',
+  'XXXXL',
+] as const;
+const PRODUCT_VARIANT_SIZE_LABEL_SET = new Set<string>(PRODUCT_VARIANT_SIZE_VALUES);
+const PRODUCT_VARIANT_SIZE_ALIASES: Record<string, string> = {
+  XSM: 'XS',
+  '2XL': 'XXL',
+  '3XL': 'XXXL',
+  '4XL': 'XXXXL',
+};
+const CUSTOM_ORDER_OUT_OF_STOCK_GRACE_MS =
+  14 * 24 * 60 * 60 * 1000;
+const CUSTOM_ORDER_OUT_OF_STOCK_REMINDER_INTERVAL_MS =
+  24 * 60 * 60 * 1000;
 
 @Injectable()
 export class StoreService {
@@ -77,7 +110,6 @@ export class StoreService {
   private readonly supportedPaymentBanksTtlMs = 60 * 60 * 1000;
   private supportedPaymentBanksCache: { banks: SupportedPaymentBank[]; expiresAt: number } | null = null;
   private supportedPaymentBanksRefresh: Promise<SupportedPaymentBank[]> | null = null;
-  private readonly storePaymentAccountSyncQueue = new Map<string, Promise<void>>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -355,6 +387,7 @@ export class StoreService {
       > | null;
       totalStock?: number | null;
       trackInventory?: boolean | null;
+      customOrderEnabled?: boolean | null;
     },
   ) {
     const name = String(input.name || '').trim();
@@ -431,6 +464,11 @@ export class StoreService {
       if (!Number.isFinite(totalStock) || totalStock < 0) {
         throw new BadRequestException(
           'Inventory stock must be 0 or greater to publish',
+        );
+      }
+      if (totalStock <= 0 && input.customOrderEnabled !== true) {
+        throw new BadRequestException(
+          'Published products must have stock unless custom order is enabled.',
         );
       }
     }
@@ -803,6 +841,241 @@ export class StoreService {
     return normalized ? normalized.slice(0, 40) : null;
   }
 
+  private normalizeRequiredVariantSize(
+    value: string | null | undefined,
+  ): string | null {
+    const normalized = this.normalizeVariantDimension(value);
+    if (!normalized) {
+      return null;
+    }
+
+    const compact = normalized.toUpperCase().replace(/[\s-]+/g, '');
+    const aliased = PRODUCT_VARIANT_SIZE_ALIASES[compact] ?? compact;
+    return PRODUCT_VARIANT_SIZE_LABEL_SET.has(aliased) ? aliased : null;
+  }
+
+  private assertProductVariantRequirements(
+    variants: Array<{
+      size: string | null;
+      stock: number;
+    }>,
+    options: {
+      requireInStockVariant: boolean;
+      messagePrefix: string;
+    },
+  ): void {
+    if (variants.length === 0) {
+      throw new BadRequestException(
+        `${options.messagePrefix} must include at least one size variant.`,
+      );
+    }
+
+    const hasInStockVariant = variants.some((variant) => variant.stock > 0);
+    if (options.requireInStockVariant && !hasInStockVariant) {
+      throw new BadRequestException(
+        `${options.messagePrefix} must include at least one in-stock size variant.`,
+      );
+    }
+  }
+
+  private computeCustomOrderOutOfStockDiscontinueAt(triggeredAt: Date): Date {
+    return new Date(triggeredAt.getTime() + CUSTOM_ORDER_OUT_OF_STOCK_GRACE_MS);
+  }
+
+  private isStructuredMarketplaceProduct(product: {
+    variants?: Array<{ size?: string | null } | null> | null;
+  }): boolean {
+    const variants = Array.isArray(product?.variants)
+      ? product.variants.filter(Boolean)
+      : [];
+    if (variants.length === 0) {
+      return false;
+    }
+
+    return variants.every(
+      (variant) =>
+        this.normalizeRequiredVariantSize(variant?.size ?? null) !== null,
+    );
+  }
+
+  private canBagOutOfStockCustomOrderProduct(product: {
+    deletedAt?: Date | null;
+    archivedAt?: Date | null;
+    isActive?: boolean | null;
+    totalStock?: number | null;
+    customOrderEnabled?: boolean | null;
+    variants?: Array<{ size?: string | null } | null> | null;
+  }): boolean {
+    if (product.deletedAt || product.archivedAt || product.isActive === false) {
+      return false;
+    }
+
+    return (
+      this.isStructuredMarketplaceProduct(product) &&
+      Number(product.totalStock ?? 0) <= 0 &&
+      product.customOrderEnabled === true
+    );
+  }
+
+  private isProductPubliclyInventoryEligible(product: {
+    totalStock?: number | null;
+    customOrderEnabled?: boolean | null;
+    variants?: Array<{ size?: string | null } | null> | null;
+  }): boolean {
+    if (!this.isStructuredMarketplaceProduct(product)) {
+      return false;
+    }
+
+    if (Number(product.totalStock ?? 0) > 0) {
+      return true;
+    }
+
+    return product.customOrderEnabled === true;
+  }
+
+  private buildMarketplaceInventoryWhereFilter(): Prisma.ProductWhereInput {
+    const allowedSizes = [...PRODUCT_VARIANT_SIZE_VALUES];
+    return {
+      variants: {
+        some: {
+          size: { in: allowedSizes },
+        },
+        every: {
+          size: { in: allowedSizes },
+        },
+      },
+      OR: [{ totalStock: { gt: 0 } }, { customOrderEnabled: true }],
+    };
+  }
+
+  private buildCustomOrderStockLifecycleData(args: {
+    previousTotalStock: number;
+    nextTotalStock: number;
+    nextCustomOrderEnabled: boolean;
+    currentIsActive: boolean;
+    currentTriggeredAt?: Date | null;
+    currentDiscontinueAt?: Date | null;
+    explicitIsActive?: boolean;
+  }): Prisma.ProductUpdateInput {
+    const nextData: Prisma.ProductUpdateInput = {};
+    const nextHasStock = args.nextTotalStock > 0;
+    const wasAutoDiscontinued =
+      !args.currentIsActive &&
+      Boolean(args.currentDiscontinueAt) &&
+      args.previousTotalStock <= 0;
+
+    if (args.explicitIsActive === false || !args.nextCustomOrderEnabled) {
+      nextData.customOrderOutOfStockTriggeredAt = null;
+      nextData.customOrderOutOfStockReminderSentAt = null;
+      nextData.customOrderOutOfStockDiscontinueAt = null;
+      return nextData;
+    }
+
+    if (nextHasStock) {
+      nextData.customOrderOutOfStockTriggeredAt = null;
+      nextData.customOrderOutOfStockReminderSentAt = null;
+      nextData.customOrderOutOfStockDiscontinueAt = null;
+      if (wasAutoDiscontinued && args.explicitIsActive === undefined) {
+        nextData.isActive = true;
+      }
+      return nextData;
+    }
+
+    return nextData;
+  }
+
+  private buildOutOfStockCustomOrderReminderMessage(product: {
+    id: string;
+    name?: string | null;
+    customOrderOutOfStockDiscontinueAt?: Date | null;
+  }): string {
+    const name = String(product.name || 'Your product').trim() || 'Your product';
+    const deadline = product.customOrderOutOfStockDiscontinueAt;
+    if (!deadline) {
+      return `${name} is out of stock and shoppers are still bagging it as a custom-order item. Restock it to keep it strong in the market.`;
+    }
+
+    const msRemaining = deadline.getTime() - Date.now();
+    const daysRemaining = Math.max(
+      0,
+      Math.ceil(msRemaining / (24 * 60 * 60 * 1000)),
+    );
+
+    if (daysRemaining <= 1) {
+      return `${name} is still out of stock. Restock it within 24 hours or it will be discontinued from the market.`;
+    }
+
+    return `${name} is still out of stock. Restock it within ${daysRemaining} days or it will be discontinued from the market.`;
+  }
+
+  private async notifyBrandOfOutOfStockCustomOrder(
+    ownerId: string,
+    product: {
+      id: string;
+      name?: string | null;
+      customOrderOutOfStockDiscontinueAt?: Date | null;
+    },
+    message?: string,
+  ): Promise<void> {
+    if (!this.notifications) {
+      return;
+    }
+
+    const resolvedMessage =
+      typeof message === 'string' && message.trim().length > 0
+        ? message.trim()
+        : this.buildOutOfStockCustomOrderReminderMessage(product);
+
+    await this.notifications.create(ownerId, NotificationType.ADMIN_ACTION, {
+      payload: {
+        action: 'PRODUCT_OUT_OF_STOCK_CUSTOM_ORDER',
+        productId: product.id,
+        productName: product.name,
+        targetUrl: `/studio/products/${product.id}`,
+        message: resolvedMessage,
+      },
+      target: { type: 'PRODUCT', id: product.id, preview: product.name ?? undefined },
+      dedupeMs: 6 * 60 * 60 * 1000,
+    });
+  }
+
+  private async triggerOutOfStockCustomOrderLifecycle(args: {
+    tx: Prisma.TransactionClient;
+    productId: string;
+    ownerId: string;
+    productName: string;
+    currentTriggeredAt?: Date | null;
+    currentDiscontinueAt?: Date | null;
+  }): Promise<void> {
+    if (args.currentTriggeredAt && args.currentDiscontinueAt) {
+      return;
+    }
+
+    const triggeredAt = args.currentTriggeredAt ?? new Date();
+    const discontinueAt =
+      args.currentDiscontinueAt ??
+      this.computeCustomOrderOutOfStockDiscontinueAt(triggeredAt);
+
+    await args.tx.product.update({
+      where: { id: args.productId },
+      data: {
+        customOrderOutOfStockTriggeredAt: triggeredAt,
+        customOrderOutOfStockReminderSentAt: triggeredAt,
+        customOrderOutOfStockDiscontinueAt: discontinueAt,
+      },
+    });
+
+    await this.notifyBrandOfOutOfStockCustomOrder(
+      args.ownerId,
+      {
+        id: args.productId,
+        name: args.productName,
+        customOrderOutOfStockDiscontinueAt: discontinueAt,
+      },
+      `${args.productName} is out of stock, but a shopper just bagged it as a custom-order item. Restock it within 14 days or it will be discontinued from the market.`,
+    );
+  }
+
   private computeVariantDerived(
     variants: Array<
       | null
@@ -835,7 +1108,12 @@ export class StoreService {
 
     for (const v of variants) {
       if (!v) continue;
-      const size = this.normalizeVariantDimension(v.size);
+      const size = this.normalizeRequiredVariantSize(v.size);
+      if (!size) {
+        throw new BadRequestException(
+          `Each variant must include a supported size: ${PRODUCT_VARIANT_SIZE_VALUES.join(', ')}`,
+        );
+      }
       const color = this.normalizeVariantDimension(v.color);
       const key = `${size ?? ''}::${color ?? ''}`;
       if (seen.has(key)) {
@@ -1256,6 +1534,101 @@ export class StoreService {
     }
   }
 
+  @Cron(CronExpression.EVERY_6_HOURS)
+  async handleCustomOrderOutOfStockLifecycle() {
+    const now = new Date();
+    const reminderCutoff = new Date(
+      now.getTime() - CUSTOM_ORDER_OUT_OF_STOCK_REMINDER_INTERVAL_MS,
+    );
+
+    const productsToDiscontinue = await this.prisma.product.findMany({
+      where: {
+        deletedAt: null,
+        archivedAt: null,
+        isActive: true,
+        customOrderEnabled: true,
+        totalStock: { lte: 0 },
+        customOrderOutOfStockTriggeredAt: { not: null },
+        customOrderOutOfStockDiscontinueAt: { lte: now },
+      },
+      select: {
+        id: true,
+        name: true,
+        brand: { select: { ownerId: true } },
+      },
+      take: 200,
+      orderBy: { customOrderOutOfStockDiscontinueAt: 'asc' },
+    });
+
+    for (const product of productsToDiscontinue) {
+      const updated = await this.prisma.product.updateMany({
+        where: {
+          id: product.id,
+          deletedAt: null,
+          archivedAt: null,
+          isActive: true,
+          customOrderEnabled: true,
+          totalStock: { lte: 0 },
+          customOrderOutOfStockTriggeredAt: { not: null },
+          customOrderOutOfStockDiscontinueAt: { lte: now },
+        },
+        data: { isActive: false },
+      });
+
+      if (updated.count === 0 || !product.brand?.ownerId) {
+        continue;
+      }
+
+      await this.notifyBrandOfOutOfStockCustomOrder(
+        product.brand.ownerId,
+        { id: product.id, name: product.name },
+        `${product.name} stayed out of stock for 14 days after a customer bagged it as a custom-order item, so it has been discontinued from the market.`,
+      );
+    }
+
+    const productsNeedingReminder = await this.prisma.product.findMany({
+      where: {
+        deletedAt: null,
+        archivedAt: null,
+        isActive: true,
+        customOrderEnabled: true,
+        totalStock: { lte: 0 },
+        customOrderOutOfStockTriggeredAt: { not: null },
+        customOrderOutOfStockDiscontinueAt: { gt: now },
+        OR: [
+          { customOrderOutOfStockReminderSentAt: null },
+          { customOrderOutOfStockReminderSentAt: { lte: reminderCutoff } },
+        ],
+      },
+      select: {
+        id: true,
+        name: true,
+        customOrderOutOfStockDiscontinueAt: true,
+        brand: { select: { ownerId: true } },
+      },
+      take: 200,
+      orderBy: { customOrderOutOfStockReminderSentAt: 'asc' },
+    });
+
+    for (const product of productsNeedingReminder) {
+      if (!product.brand?.ownerId) {
+        continue;
+      }
+
+      await this.notifyBrandOfOutOfStockCustomOrder(product.brand.ownerId, {
+        id: product.id,
+        name: product.name,
+        customOrderOutOfStockDiscontinueAt:
+          product.customOrderOutOfStockDiscontinueAt,
+      });
+
+      await this.prisma.product.update({
+        where: { id: product.id },
+        data: { customOrderOutOfStockReminderSentAt: now },
+      });
+    }
+  }
+
   async createProduct(brandOwnerId: string, dto: CreateProductDto) {
     // Verify brand ownership
     const brand = await this.prisma.brand.findFirst({
@@ -1314,6 +1687,10 @@ export class StoreService {
     const derivedFromVariants = Array.isArray((dto as any).variants)
       ? this.computeVariantDerived((dto as any).variants)
       : null;
+    this.assertProductVariantRequirements(derivedFromVariants?.variants ?? [], {
+      requireInStockVariant: true,
+      messagePrefix: 'A product',
+    });
 
     const currency = (dto.currency || brand.currency || 'NGN').trim();
 
@@ -1336,6 +1713,7 @@ export class StoreService {
     const resolvedName = (dto.name || 'Untitled Product').trim();
     const resolvedTags = this.buildTagSet(dto.tags || []);
     const nextIsActive = dto.isActive ?? true;
+    const nextCustomOrderEnabled = dto.customOrderEnabled === true;
 
     const product = await this.prisma.$transaction(async (tx) => {
       let slug = await this.ensureUniqueProductSlug(tx, resolvedName);
@@ -1369,6 +1747,7 @@ export class StoreService {
           totalStock:
             derivedFromVariants?.totalStock ?? (dto.totalStock || 0),
           trackInventory: dto.trackInventory ?? true,
+          customOrderEnabled: nextCustomOrderEnabled,
         });
       }
 
@@ -1392,6 +1771,9 @@ export class StoreService {
               slug,
               description: dto.description,
               currency,
+              standardCheckoutEnabled:
+                dto.standardCheckoutEnabled !== false,
+              customOrderEnabled: nextCustomOrderEnabled,
               price: new Prisma.Decimal(resolvedPrice),
               salePrice: dto.salePrice ? new Prisma.Decimal(dto.salePrice) : null,
               saleStartAt: dto.saleStartAt ? new Date(dto.saleStartAt) : null,
@@ -1432,6 +1814,9 @@ export class StoreService {
               lowStockThreshold: dto.lowStockThreshold || 5,
               trackInventory: dto.trackInventory ?? true,
               allowBackorders: dto.allowBackorders ?? false,
+              customOrderOutOfStockTriggeredAt: null,
+              customOrderOutOfStockReminderSentAt: null,
+              customOrderOutOfStockDiscontinueAt: null,
               // Metadata
               tags: resolvedTags,
               gender: dto.gender || 'EVERYBODY',
@@ -1632,8 +2017,18 @@ export class StoreService {
     const derivedFromVariants = Array.isArray((dto as any).variants)
       ? this.computeVariantDerived((dto as any).variants)
       : null;
+    if ((dto as any).variants !== undefined) {
+      this.assertProductVariantRequirements(derivedFromVariants?.variants ?? [], {
+        requireInStockVariant: false,
+        messagePrefix: 'A product',
+      });
+    }
 
     const updateData: Prisma.ProductUpdateInput = {};
+    const nextCustomOrderEnabled =
+      dto.customOrderEnabled !== undefined
+        ? dto.customOrderEnabled === true
+        : product.customOrderEnabled === true;
 
     // Basic info
     if (dto.name !== undefined) updateData.name = dto.name;
@@ -1657,6 +2052,9 @@ export class StoreService {
     if (dto.description !== undefined) updateData.description = dto.description;
     if (dto.currency !== undefined) {
       updateData.currency = (dto.currency || product.currency || 'NGN').trim();
+    }
+    if (dto.standardCheckoutEnabled !== undefined) {
+      updateData.standardCheckoutEnabled = dto.standardCheckoutEnabled;
     }
     
     // Pricing
@@ -1744,6 +2142,9 @@ export class StoreService {
     if (dto.lowStockThreshold !== undefined) updateData.lowStockThreshold = dto.lowStockThreshold;
     if (dto.trackInventory !== undefined) updateData.trackInventory = dto.trackInventory;
     if (dto.allowBackorders !== undefined) updateData.allowBackorders = dto.allowBackorders;
+    if (dto.customOrderEnabled !== undefined) {
+      updateData.customOrderEnabled = dto.customOrderEnabled;
+    }
     
     // Metadata
     const nextTags =
@@ -1881,6 +2282,18 @@ export class StoreService {
 
       const finalIsActive =
         dto.isActive !== undefined ? dto.isActive : product.isActive;
+      const finalTotalStock =
+        derivedFromVariants?.totalStock ??
+        (dto.totalStock !== undefined ? dto.totalStock : product.totalStock);
+      const stockLifecyclePatch = this.buildCustomOrderStockLifecycleData({
+        previousTotalStock: product.totalStock,
+        nextTotalStock: finalTotalStock,
+        nextCustomOrderEnabled,
+        currentIsActive: product.isActive,
+        currentTriggeredAt: product.customOrderOutOfStockTriggeredAt,
+        currentDiscontinueAt: product.customOrderOutOfStockDiscontinueAt,
+        explicitIsActive: dto.isActive,
+      });
       if (finalIsActive) {
         const nextImages =
           dto.images !== undefined
@@ -1909,17 +2322,16 @@ export class StoreService {
           variants:
             derivedFromVariants?.variants ??
             (Array.isArray(product.variants) ? product.variants : []),
-          totalStock:
-            derivedFromVariants?.totalStock ??
-            (dto.totalStock !== undefined
-              ? dto.totalStock
-              : product.totalStock),
+          totalStock: finalTotalStock,
           trackInventory:
             dto.trackInventory !== undefined
               ? dto.trackInventory
               : product.trackInventory,
+          customOrderEnabled: nextCustomOrderEnabled,
         });
       }
+
+      Object.assign(updateData, stockLifecyclePatch);
 
       await tx.product.update({
         where: { id: productId },
@@ -2171,6 +2583,8 @@ export class StoreService {
           slug: this.generateSlug(copyName),
           description: product.description,
           currency: product.currency || product.brand.currency || 'NGN',
+          standardCheckoutEnabled: product.standardCheckoutEnabled !== false,
+          customOrderEnabled: product.customOrderEnabled === true,
           price: product.price,
           salePrice: product.salePrice,
           saleStartAt: product.saleStartAt,
@@ -2196,6 +2610,9 @@ export class StoreService {
           lowStockThreshold: product.lowStockThreshold,
           trackInventory: product.trackInventory,
           allowBackorders: product.allowBackorders,
+          customOrderOutOfStockTriggeredAt: null,
+          customOrderOutOfStockReminderSentAt: null,
+          customOrderOutOfStockDiscontinueAt: null,
           // Metadata
           tags: Array.isArray(product.tags) ? product.tags : [],
           gender: product.gender,
@@ -3150,7 +3567,7 @@ export class StoreService {
       if (!product.brand.isStoreOpen) {
         throw new NotFoundException('Store is closed');
       }
-      if (!this.hasPublicStoreAccess(product)) {
+      if (!this.isProductPubliclyAvailable(product)) {
         throw new NotFoundException('Product not available');
       }
     }
@@ -3186,6 +3603,8 @@ export class StoreService {
         publishAt: true,
         archivedAt: true,
         deletedAt: true,
+        totalStock: true,
+        customOrderEnabled: true,
         collectionId: true,
         collection: {
           select: {
@@ -3219,6 +3638,11 @@ export class StoreService {
             isStoreOpen: true,
           },
         },
+        variants: {
+          select: {
+            size: true,
+          },
+        },
       },
     });
 
@@ -3232,7 +3656,7 @@ export class StoreService {
       if (!product.brand.isStoreOpen) {
         throw new NotFoundException('Store is closed');
       }
-      if (!this.hasPublicStoreAccess(product)) {
+      if (!this.isProductPubliclyAvailable(product)) {
         throw new NotFoundException('Product not available');
       }
     }
@@ -3394,6 +3818,7 @@ export class StoreService {
           },
         ],
       });
+      andFilters.push(this.buildMarketplaceInventoryWhereFilter());
     }
 
     // Gender filter
@@ -3462,15 +3887,6 @@ export class StoreService {
       });
     }
 
-    if (andFilters.length > 0) {
-      const existingAnd = Array.isArray(where.AND)
-        ? where.AND
-        : where.AND
-          ? [where.AND]
-          : [];
-      where.AND = [...existingAnd, ...andFilters];
-    }
-
     // Category filter via collection memberships
     if (category) {
       andFilters.push({
@@ -3480,6 +3896,15 @@ export class StoreService {
           },
         },
       });
+    }
+
+    if (andFilters.length > 0) {
+      const existingAnd = Array.isArray(where.AND)
+        ? where.AND
+        : where.AND
+          ? [where.AND]
+          : [];
+      where.AND = [...existingAnd, ...andFilters];
     }
 
     // Sorting (stable; include id tie-breaker for cursor pagination)
@@ -3702,11 +4127,18 @@ export class StoreService {
       );
     }
 
+    if (!this.isStructuredMarketplaceProduct(product)) {
+      throw new BadRequestException(
+        'This product cannot be bagged until the brand adds size variants.',
+      );
+    }
+
     const variants = Array.isArray((product as any).variants)
       ? ((product as any).variants as any[])
       : [];
     const hasVariantSizes = variants.some((v) => v.size);
     const hasVariantColors = variants.some((v) => v.color);
+    const allowCustomOrderCarry = this.shouldAllowCustomOrderCarry(product);
 
     // Validate size
     if ((hasVariantSizes || product.sizes.length > 0) && !dto.selectedSize) {
@@ -3747,6 +4179,14 @@ export class StoreService {
     const resultingQuantity = existingItem
       ? existingItem.quantity + quantityToAdd
       : quantityToAdd;
+    const selectedVariant =
+      variants.length > 0
+        ? variants.find(
+            (v) =>
+              (v.size || null) === (dto.selectedSize || null) &&
+              (v.color || null) === (dto.selectedColor || null),
+          )
+        : null;
 
     if (resultingQuantity > 99) {
       throw new BadRequestException(
@@ -3754,18 +4194,14 @@ export class StoreService {
       );
     }
 
+    if (variants.length > 0 && !selectedVariant) {
+      throw new BadRequestException('Selected variant is not available');
+    }
+
     // Check stock (variant-aware)
-    if (product.trackInventory && !product.allowBackorders) {
-      if (variants.length > 0) {
-        const match = variants.find(
-          (v) =>
-            (v.size || null) === (dto.selectedSize || null) &&
-            (v.color || null) === (dto.selectedColor || null),
-        );
-        if (!match) {
-          throw new BadRequestException('Selected variant is not available');
-        }
-        const available = Number(match.stock || 0);
+    if (product.trackInventory && !product.allowBackorders && !allowCustomOrderCarry) {
+      if (selectedVariant) {
+        const available = Number(selectedVariant.stock || 0);
         if (available < resultingQuantity) {
           throw new BadRequestException(
             `Only ${available} items available for the selected variant`,
@@ -3784,31 +4220,44 @@ export class StoreService {
       }
     }
 
-    if (existingItem) {
-      await this.prisma.cartItem.update({
-        where: { id: existingItem.id },
-        data: {
-          quantity: resultingQuantity,
-          sizingMode: sizingPayload.sizingMode,
-          requiredMeasurementKeys: sizingPayload.requiredMeasurementKeys,
-          sizeFitData: sizingPayload.sizeFitData,
-        },
-      });
-    } else {
-      await this.prisma.cartItem.create({
-        data: {
-          id: uuidv4(),
-          userId,
-          productId: dto.productId,
-          quantity: quantityToAdd,
-          selectedSize: dto.selectedSize || null,
-          selectedColor: dto.selectedColor || null,
-          sizingMode: sizingPayload.sizingMode,
-          requiredMeasurementKeys: sizingPayload.requiredMeasurementKeys,
-          sizeFitData: sizingPayload.sizeFitData,
-        },
-      });
-    }
+    await this.prisma.$transaction(async (tx) => {
+      if (existingItem) {
+        await tx.cartItem.update({
+          where: { id: existingItem.id },
+          data: {
+            quantity: resultingQuantity,
+            sizingMode: sizingPayload.sizingMode,
+            requiredMeasurementKeys: sizingPayload.requiredMeasurementKeys,
+            sizeFitData: sizingPayload.sizeFitData,
+          },
+        });
+      } else {
+        await tx.cartItem.create({
+          data: {
+            id: uuidv4(),
+            userId,
+            productId: dto.productId,
+            quantity: quantityToAdd,
+            selectedSize: dto.selectedSize || null,
+            selectedColor: dto.selectedColor || null,
+            sizingMode: sizingPayload.sizingMode,
+            requiredMeasurementKeys: sizingPayload.requiredMeasurementKeys,
+            sizeFitData: sizingPayload.sizeFitData,
+          },
+        });
+      }
+
+      if (allowCustomOrderCarry && resolvedBrandOwnerId) {
+        await this.triggerOutOfStockCustomOrderLifecycle({
+          tx,
+          productId: product.id,
+          ownerId: resolvedBrandOwnerId,
+          productName: product.name,
+          currentTriggeredAt: product.customOrderOutOfStockTriggeredAt,
+          currentDiscontinueAt: product.customOrderOutOfStockDiscontinueAt,
+        });
+      }
+    });
 
     return this.getCart(userId);
   }
@@ -3861,12 +4310,15 @@ export class StoreService {
         product.isActive &&
         Boolean(product.brand?.isStoreOpen) &&
         product.brand?.ownerId !== userId &&
-        this.hasPublicStoreAccess(product);
+        this.hasPublicStoreAccess(product) &&
+        this.isProductPubliclyInventoryEligible(product);
 
       if (!isProductAvailable) {
         unavailableItemIds.push(item.id);
         return false;
       }
+
+      const allowCustomOrderCarry = this.shouldAllowCustomOrderCarry(product);
 
       if (product.trackInventory && !product.allowBackorders) {
         const variants = Array.isArray((product as any).variants)
@@ -3879,18 +4331,18 @@ export class StoreService {
               (v.color || null) === (item.selectedColor || null),
           );
           const available = Number(match?.stock || 0);
-          if (!match || available <= 0) {
+          if (!match || (!allowCustomOrderCarry && available <= 0)) {
             unavailableItemIds.push(item.id);
             return false;
           }
-        } else if (item.selectedSize && product.sizeStock) {
+        } else if (item.selectedSize && product.sizeStock && !allowCustomOrderCarry) {
           const sizeStock = product.sizeStock as Record<string, number>;
           const available = sizeStock[item.selectedSize] || 0;
           if (available <= 0) {
             unavailableItemIds.push(item.id);
             return false;
           }
-        } else if (product.totalStock <= 0) {
+        } else if (!allowCustomOrderCarry && product.totalStock <= 0) {
           unavailableItemIds.push(item.id);
           return false;
         }
@@ -3996,6 +4448,7 @@ export class StoreService {
     }
 
     // Check stock (variant-aware)
+    const allowCustomOrderCarry = this.shouldAllowCustomOrderCarry(item.product);
     if (item.product.trackInventory && !item.product.allowBackorders) {
       const variants = Array.isArray((item.product as any).variants)
         ? ((item.product as any).variants as any[])
@@ -4011,16 +4464,16 @@ export class StoreService {
           throw new BadRequestException('Selected variant is not available');
         }
         const available = Number(match.stock || 0);
-        if (available < dto.quantity) {
+        if (!allowCustomOrderCarry && available < dto.quantity) {
           throw new BadRequestException(`Only ${available} items available`);
         }
-      } else if (item.selectedSize && item.product.sizeStock) {
+      } else if (item.selectedSize && item.product.sizeStock && !allowCustomOrderCarry) {
         const sizeStock = item.product.sizeStock as Record<string, number>;
         const available = sizeStock[item.selectedSize] || 0;
         if (available < dto.quantity) {
           throw new BadRequestException(`Only ${available} items available`);
         }
-      } else if (item.product.totalStock < dto.quantity) {
+      } else if (!allowCustomOrderCarry && item.product.totalStock < dto.quantity) {
         throw new BadRequestException(
           `Only ${item.product.totalStock} items available`,
         );
@@ -4123,7 +4576,8 @@ export class StoreService {
     const isOutOfStock =
       Boolean(product.trackInventory) &&
       !product.allowBackorders &&
-      Number(product.totalStock ?? 0) <= 0;
+      Number(product.totalStock ?? 0) <= 0 &&
+      !this.shouldAllowCustomOrderCarry(product);
 
     if (isOutOfStock) {
       return {
@@ -4170,10 +4624,18 @@ export class StoreService {
             ownerId: true,
           },
         },
+        variants: {
+          select: {
+            size: true,
+          },
+        },
       },
     });
 
     if (!product) {
+      throw new NotFoundException('Product not found');
+    }
+    if (!this.isProductPubliclyInventoryEligible(product)) {
       throw new NotFoundException('Product not found');
     }
     if (product.brand?.ownerId === userId) {
@@ -4316,6 +4778,39 @@ export class StoreService {
     });
   }
 
+  private isProductPubliclyAvailable(product: {
+    deletedAt?: Date | null;
+    archivedAt?: Date | null;
+    isActive?: boolean | null;
+    brand?: { isStoreOpen?: boolean | null } | null;
+    collections?: Array<any> | null;
+    totalStock?: number | null;
+    customOrderEnabled?: boolean | null;
+    variants?: Array<{ size?: string | null } | null> | null;
+  }): boolean {
+    if (product.deletedAt || product.archivedAt || product.isActive === false) {
+      return false;
+    }
+
+    if (!product.brand?.isStoreOpen) {
+      return false;
+    }
+
+    if (!this.hasPublicStoreAccess(product)) {
+      return false;
+    }
+
+    return this.isProductPubliclyInventoryEligible(product);
+  }
+
+  private shouldAllowCustomOrderCarry(product: {
+    totalStock?: number | null;
+    customOrderEnabled?: boolean | null;
+    variants?: Array<{ size?: string | null } | null> | null;
+  }): boolean {
+    return this.canBagOutOfStockCustomOrderProduct(product);
+  }
+
   private transformProduct(product: any) {
     const collectionLinks = Array.isArray(product?.collections)
       ? product.collections
@@ -4402,6 +4897,14 @@ export class StoreService {
       standardCheckoutEnabled: product.standardCheckoutEnabled !== false,
       customOrderEnabled: product.customOrderEnabled === true,
       customAvailable: product.customOrderEnabled === true,
+      customOrderOutOfStockTriggeredAt:
+        product.customOrderOutOfStockTriggeredAt ?? null,
+      customOrderOutOfStockReminderSentAt:
+        product.customOrderOutOfStockReminderSentAt ?? null,
+      customOrderOutOfStockDiscontinueAt:
+        product.customOrderOutOfStockDiscontinueAt ?? null,
+      isCustomOrderOnly: this.shouldAllowCustomOrderCarry(product),
+      canBagWhenOutOfStock: this.shouldAllowCustomOrderCarry(product),
       colors: product.colors || [],
       colorImages: product.colorImages,
       colorHexCodes: product.colorHexCodes,
@@ -4743,14 +5246,19 @@ export class StoreService {
         for (const item of items) {
           const product = await tx.product.findFirst({
             where: { id: item.productId, deletedAt: null },
-            include: { collection: true, collections: { include: { collection: true } }, variants: true },
+            include: {
+              brand: { select: { ownerId: true, isStoreOpen: true } },
+              collection: true,
+              collections: { include: { collection: true } },
+              variants: true,
+            },
           });
 
           if (!product || !product.isActive) {
             throw new BadRequestException('Product not available');
           }
 
-          if (!this.hasPublicStoreAccess(product)) {
+          if (!this.isProductPubliclyAvailable(product)) {
             throw new BadRequestException(
               `Product not available in store: ${product.name}`,
             );
@@ -4819,8 +5327,9 @@ export class StoreService {
               : isOnSale && product.salePrice
                 ? Number(product.salePrice)
                 : baseUnitPrice;
+          const allowCustomOrderCarry = this.shouldAllowCustomOrderCarry(product);
 
-          if (product.trackInventory && !product.allowBackorders) {
+          if (product.trackInventory && !product.allowBackorders && !allowCustomOrderCarry) {
             if (selectedVariant) {
               const updated = await tx.productVariant.updateMany({
                 where: { id: selectedVariant.id, stock: { gte: quantity } },
@@ -4876,6 +5385,17 @@ export class StoreService {
                 },
               });
             }
+          }
+
+          if (allowCustomOrderCarry && product.brand?.ownerId) {
+            await this.triggerOutOfStockCustomOrderLifecycle({
+              tx,
+              productId: product.id,
+              ownerId: product.brand.ownerId,
+              productName: product.name,
+              currentTriggeredAt: product.customOrderOutOfStockTriggeredAt,
+              currentDiscontinueAt: product.customOrderOutOfStockDiscontinueAt,
+            });
           }
 
           totalAmount += unitPrice * quantity;
@@ -5916,13 +6436,36 @@ export class StoreService {
   }
 
   private getRequiredPaystackSecret() {
-    const secret = String(process.env.PAYSTACK_SECRET_KEY ?? '').trim();
+    const secret = resolvePaystackSecret();
     if (!secret) {
       throw new BadRequestException(
-        'PAYSTACK_SECRET_KEY is required before brand payout accounts can be synced',
+        `Paystack secret is missing. Configure one of: ${describePaystackSecretEnvKeys()}`,
       );
     }
     return secret;
+  }
+
+  private normalizeBrandShippingRules(
+    shippingRules: Record<string, any> | null | undefined,
+  ): Prisma.JsonObject | null {
+    if (!shippingRules || typeof shippingRules !== 'object' || Array.isArray(shippingRules)) {
+      return null;
+    }
+
+    const nextRules = { ...shippingRules } as Record<string, any>;
+    const nextOrderSettings =
+      nextRules.orderSettings &&
+      typeof nextRules.orderSettings === 'object' &&
+      !Array.isArray(nextRules.orderSettings)
+        ? { ...(nextRules.orderSettings as Record<string, unknown>) }
+        : {};
+
+    nextRules.orderSettings = {
+      ...nextOrderSettings,
+      orderProcessingMode: 'auto-confirm',
+    };
+
+    return nextRules as Prisma.JsonObject;
   }
 
   private async callPaystack<T = any>(
@@ -6055,23 +6598,33 @@ export class StoreService {
     brandId: string,
     operation: () => Promise<T>,
   ): Promise<T> {
-    const previous = this.storePaymentAccountSyncQueue.get(brandId) ?? Promise.resolve();
-    let releaseCurrent: () => void;
-    const current = new Promise<void>((resolve) => {
-      releaseCurrent = resolve;
-    });
-    const nextTail = previous.then(() => current);
-    this.storePaymentAccountSyncQueue.set(brandId, nextTail);
-
-    await previous.catch(() => undefined);
-    try {
-      return await operation();
-    } finally {
-      releaseCurrent!();
-      if (this.storePaymentAccountSyncQueue.get(brandId) === nextTail) {
-        this.storePaymentAccountSyncQueue.delete(brandId);
-      }
+    if (typeof (this.prisma as any)?.$transaction !== 'function') {
+      return operation();
     }
+
+    const lockKey = this.buildStorePaymentAccountLockKey(brandId);
+
+    return (this.prisma as any).$transaction(
+      async (tx: any) => {
+        // pg_advisory_xact_lock returns a Postgres void type; use executeRaw to
+        // avoid result deserialization errors in Prisma.
+        if (typeof tx?.$executeRaw === 'function') {
+          await tx.$executeRaw`SELECT pg_advisory_xact_lock(${lockKey})`;
+        }
+        return operation();
+      },
+      {
+        maxWait: 120000,
+        timeout: 180000,
+      },
+    );
+  }
+
+  private buildStorePaymentAccountLockKey(brandId: string): bigint {
+    const digest = createHash('sha256')
+      .update(`store-payment-account:${brandId}`)
+      .digest();
+    return digest.readBigInt64BE(0);
   }
 
   private summarizePaymentAccount(account: any) {
@@ -6125,13 +6678,108 @@ export class StoreService {
     };
   }
 
+  private getPaystackTestBankFallbackUntilMs(): number | null {
+    const raw = String(
+      process.env[PAYSTACK_TEST_BANK_FALLBACK_UNTIL_ENV] ?? '',
+    ).trim();
+    if (!raw) return null;
+
+    const parsed = Date.parse(raw);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  private isPaystackTestBankFallbackActive() {
+    const expiresAtMs = this.getPaystackTestBankFallbackUntilMs();
+    if (!expiresAtMs) return false;
+    return Date.now() < expiresAtMs;
+  }
+
+  private getPaystackTestBankOption(): SupportedPaymentBank {
+    return {
+      id: -1,
+      code: PAYSTACK_TEST_BANK_CODE,
+      name: 'Paystack Test Bank',
+      currency: 'NGN',
+    };
+  }
+
+  private withTemporaryPaystackTestBank(
+    banks: SupportedPaymentBank[],
+  ): SupportedPaymentBank[] {
+    if (!this.isPaystackTestBankFallbackActive()) {
+      return banks;
+    }
+
+    if (banks.some((bank) => bank.code === PAYSTACK_TEST_BANK_CODE)) {
+      return banks;
+    }
+
+    return [this.getPaystackTestBankOption(), ...banks];
+  }
+
+  private throwUnsupportedBankCode(bankCode: string): never {
+    if (bankCode === PAYSTACK_TEST_BANK_CODE) {
+      throw new BadRequestException(
+        `Bank code 001 (Paystack test bank) is not available right now. Set ${PAYSTACK_TEST_BANK_FALLBACK_UNTIL_ENV} to a future ISO timestamp to enable it temporarily.`,
+      );
+    }
+
+    throw new BadRequestException('Selected bank is not supported by Paystack');
+  }
+
+  private isLocalOrDevRuntime() {
+    const runtime = String(
+      process.env.APP_ENV ?? process.env.NODE_ENV ?? '',
+    )
+      .trim()
+      .toLowerCase();
+
+    return !['production', 'prod', 'staging', 'stage', 'qa', 'uat'].includes(runtime);
+  }
+
+  private isStorePaymentTestBypassEnabled() {
+    const raw = String(
+      process.env[STORE_PAYMENT_TEST_ACCOUNT_DEV_BYPASS_ENV] ?? '',
+    )
+      .trim()
+      .toLowerCase();
+
+    if (!raw) {
+      return this.isLocalOrDevRuntime();
+    }
+
+    return ['1', 'true', 'yes', 'on'].includes(raw);
+  }
+
+  private shouldAcceptTestAccountAsValidForSetup(params: {
+    bankCode: string;
+    syncError: string | null;
+  }) {
+    if (!params.syncError) return false;
+    if (params.bankCode !== PAYSTACK_TEST_BANK_CODE) return false;
+    if (!this.isLocalOrDevRuntime()) return false;
+    if (!this.isStorePaymentTestBypassEnabled()) return false;
+
+    return /account details are invalid/i.test(params.syncError);
+  }
+
+  private shouldBypassPaystackSyncForDevTestAccount(bankCode: string) {
+    return (
+      bankCode === PAYSTACK_TEST_BANK_CODE &&
+      this.isLocalOrDevRuntime() &&
+      this.isStorePaymentTestBypassEnabled()
+    );
+  }
+
   async listSupportedPaymentBanks() {
     const now = Date.now();
     if (
       this.supportedPaymentBanksCache &&
       this.supportedPaymentBanksCache.expiresAt > now
     ) {
-      return this.supportedPaymentBanksCache.banks;
+      return this.withTemporaryPaystackTestBank(
+        this.supportedPaymentBanksCache.banks,
+      );
     }
 
     if (this.supportedPaymentBanksRefresh) {
@@ -6144,7 +6792,7 @@ export class StoreService {
           banks,
           expiresAt: Date.now() + this.supportedPaymentBanksTtlMs,
         };
-        return banks;
+        return this.withTemporaryPaystackTestBank(banks);
       })
       .finally(() => {
         this.supportedPaymentBanksRefresh = null;
@@ -6230,10 +6878,97 @@ export class StoreService {
     };
   }
 
+  async verifyStorePaymentAccount(
+    ownerId: string,
+    dto: VerifyStorePaymentAccountDto,
+  ) {
+    await this.assertEmailVerifiedForStoreSetup(ownerId, 'continue');
+
+    const resolvedBrand = await this.resolveBrandByIdOrOwner(ownerId);
+    if (!resolvedBrand) {
+      throw new NotFoundException('Brand not found');
+    }
+
+    const bankCode = String(dto.bankCode ?? '').trim();
+    const accountNumber = String(dto.accountNumber ?? '')
+      .replace(/\D+/g, '')
+      .trim();
+
+    if (!bankCode) {
+      throw new BadRequestException('Select the settlement bank first');
+    }
+    if (!/^\d{10}$/.test(accountNumber)) {
+      throw new BadRequestException('Account number must be a valid 10-digit NUBAN');
+    }
+
+    const banks = await this.listSupportedPaymentBanks();
+    const selectedBank = banks.find((bank) => bank.code === bankCode);
+    if (!selectedBank) {
+      this.throwUnsupportedBankCode(bankCode);
+    }
+
+    const brand = await this.prisma.brand.findUnique({
+      where: { id: resolvedBrand.id },
+      select: {
+        id: true,
+        name: true,
+      },
+    });
+
+    if (!brand) {
+      throw new NotFoundException('Brand not found');
+    }
+
+    if (this.shouldBypassPaystackSyncForDevTestAccount(bankCode)) {
+      const verifiedAt = new Date().toISOString();
+      return {
+        bankCode: selectedBank.code,
+        bankName: selectedBank.name,
+        paystackBankId: null,
+        accountNumber,
+        maskedAccountNumber: this.maskAccountNumber(accountNumber),
+        accountName: brand.name,
+        message: 'Development test bank account verified successfully',
+        verifiedAt,
+      };
+    }
+
+    const resolved = await this.callPaystack<{
+      account_number: string;
+      account_name: string;
+      bank_id?: number;
+    }>(
+      `/bank/resolve?account_number=${encodeURIComponent(accountNumber)}&bank_code=${encodeURIComponent(bankCode)}`,
+      { method: 'GET' },
+    );
+
+    const resolvedAccountNumber = String(resolved.account_number ?? '').trim();
+    if (resolvedAccountNumber && resolvedAccountNumber !== accountNumber) {
+      throw new BadRequestException(
+        'Verified account number does not match the submitted value',
+      );
+    }
+
+    return {
+      bankCode: selectedBank.code,
+      bankName: selectedBank.name,
+      paystackBankId: resolved.bank_id ?? null,
+      accountNumber: resolvedAccountNumber || accountNumber,
+      maskedAccountNumber: this.maskAccountNumber(
+        resolvedAccountNumber || accountNumber,
+      ),
+      accountName: String(resolved.account_name ?? '').trim() || null,
+      message: 'Bank account verified successfully',
+      verifiedAt: new Date().toISOString(),
+    };
+  }
+
   async updateStorePaymentAccount(
     ownerId: string,
     dto: UpdateStorePaymentAccountDto,
   ) {
+    await this.assertEmailVerifiedForStoreSetup(ownerId, 'continue');
+
     const [resolvedBrand, owner] = await Promise.all([
       this.resolveBrandByIdOrOwner(ownerId),
       this.prisma.user.findUnique({
@@ -6300,7 +7035,111 @@ export class StoreService {
       const banks = await this.listSupportedPaymentBanks();
       const selectedBank = banks.find((bank) => bank.code === bankCode);
       if (!selectedBank) {
-        throw new BadRequestException('Selected bank is not supported by Paystack');
+        this.throwUnsupportedBankCode(bankCode);
+      }
+
+      if (this.shouldBypassPaystackSyncForDevTestAccount(bankCode)) {
+        const syncTimestamp = new Date();
+        const nextAccountName =
+          String(dto.primaryContactName || '').trim() ||
+          String(existingAccount?.accountName || '').trim() ||
+          brand.name;
+        const nextPrimaryContactName =
+          String(dto.primaryContactName || '').trim() ||
+          existingAccount?.primaryContactName ||
+          nextAccountName;
+        const nextPrimaryContactEmail =
+          String(dto.primaryContactEmail || '').trim() ||
+          existingAccount?.primaryContactEmail ||
+          owner?.email ||
+          null;
+        const nextPrimaryContactPhone =
+          String(dto.primaryContactPhone || '').trim() ||
+          existingAccount?.primaryContactPhone ||
+          owner?.phoneNumber ||
+          null;
+        const accountNumberEncrypted = this.encryptStorePaymentValue(accountNumber);
+        const lastSuccessfulSyncAt = syncTimestamp;
+        const metadata = this.buildStorePaymentMetadata({
+          existingMetadata: existingAccount?.metadata,
+          resolvedAccountNumber: accountNumber,
+          paystackBankId: null,
+          subaccountPayload: null,
+          transferRecipientPayload: null,
+          lastProviderSyncAt: syncTimestamp,
+          lastSuccessfulSyncAt,
+          syncMode: !existingAccount ? 'INITIAL_SETUP' : 'RESYNC',
+        });
+
+        await this.getStorePaymentAccountModel().upsert({
+          where: { brandId: brand.id },
+          create: {
+            id: uuidv4(),
+            brandId: brand.id,
+            status: 'ACTIVE',
+            provider: 'PAYSTACK',
+            countryCode: 'NG',
+            currency: 'NGN',
+            businessName: brand.name,
+            primaryContactName: nextPrimaryContactName,
+            primaryContactEmail: nextPrimaryContactEmail,
+            primaryContactPhone: nextPrimaryContactPhone,
+            bankCode,
+            bankName: selectedBank.name,
+            accountName: nextAccountName,
+            accountNumberEncrypted,
+            accountNumberLast4: accountNumber.slice(-4),
+            isAccountResolved: true,
+            accountResolvedAt: syncTimestamp,
+            subaccountCode: existingAccount?.subaccountCode ?? null,
+            subaccountId: existingAccount?.subaccountId ?? null,
+            subaccountActive: Boolean(existingAccount?.subaccountActive),
+            subaccountVerified: Boolean(existingAccount?.subaccountVerified),
+            subaccountLastSyncAt: existingAccount?.subaccountLastSyncAt ?? null,
+            transferRecipientCode: existingAccount?.transferRecipientCode ?? null,
+            transferRecipientId: existingAccount?.transferRecipientId ?? null,
+            transferRecipientActive: Boolean(existingAccount?.transferRecipientActive),
+            transferRecipientLastSyncAt:
+              existingAccount?.transferRecipientLastSyncAt ?? null,
+            lastSyncError: null,
+            metadata,
+          },
+          update: {
+            status: 'ACTIVE',
+            provider: 'PAYSTACK',
+            countryCode: 'NG',
+            currency: 'NGN',
+            businessName: brand.name,
+            primaryContactName: nextPrimaryContactName,
+            primaryContactEmail: nextPrimaryContactEmail,
+            primaryContactPhone: nextPrimaryContactPhone,
+            bankCode,
+            bankName: selectedBank.name,
+            accountName: nextAccountName,
+            accountNumberEncrypted,
+            accountNumberLast4: accountNumber.slice(-4),
+            isAccountResolved: true,
+            accountResolvedAt: syncTimestamp,
+            subaccountCode: existingAccount?.subaccountCode ?? null,
+            subaccountId: existingAccount?.subaccountId ?? null,
+            subaccountActive: Boolean(existingAccount?.subaccountActive),
+            subaccountVerified: Boolean(existingAccount?.subaccountVerified),
+            subaccountLastSyncAt: existingAccount?.subaccountLastSyncAt ?? null,
+            transferRecipientCode: existingAccount?.transferRecipientCode ?? null,
+            transferRecipientId: existingAccount?.transferRecipientId ?? null,
+            transferRecipientActive: Boolean(existingAccount?.transferRecipientActive),
+            transferRecipientLastSyncAt:
+              existingAccount?.transferRecipientLastSyncAt ?? null,
+            lastSyncError: null,
+            metadata,
+          },
+        });
+
+        this.logger.warn(
+          `Accepted dev test account setup for bank 001 without provider sync (${brand.id}).`,
+        );
+
+        return this.getStorePaymentAccount(ownerId);
       }
 
       const resolved = await this.callPaystack<{
@@ -6332,6 +7171,7 @@ export class StoreService {
       let transferRecipientPayload: any = null;
       let syncError: string | null = null;
       const syncTimestamp = new Date();
+      let rollbackTransferRecipientCode: string | null = null;
 
       try {
         const subaccountBody = {
@@ -6454,37 +7294,67 @@ export class StoreService {
               transferRecipientPayload?.recipient_code ?? '',
             ).trim();
             if (nextRecipientCode && nextRecipientCode !== existingRecipientCode) {
+              rollbackTransferRecipientCode = nextRecipientCode;
               try {
                 await this.callPaystack(
                   `/transferrecipient/${encodeURIComponent(existingRecipientCode)}`,
                   { method: 'DELETE' },
                 );
+                rollbackTransferRecipientCode = null;
               } catch (error: any) {
-                this.logger.warn(
-                  `Failed to deactivate old transfer recipient ${existingRecipientCode}: ${String(error?.message || error)}`,
+                throw new Error(
+                  `Failed to deactivate old transfer recipient ${existingRecipientCode}: ${String(
+                    error?.message || error,
+                  )}`,
                 );
               }
             }
           }
         }
       } catch (error: any) {
+        if (rollbackTransferRecipientCode) {
+          try {
+            await this.callPaystack(
+              `/transferrecipient/${encodeURIComponent(rollbackTransferRecipientCode)}`,
+              { method: 'DELETE' },
+            );
+          } catch (cleanupError: any) {
+            this.logger.error(
+              `Failed to rollback new transfer recipient ${rollbackTransferRecipientCode}: ${String(cleanupError?.message || cleanupError)}`,
+            );
+          }
+        }
+
         syncError =
           error?.response?.data?.message ||
           error?.message ||
           'Unable to sync the Paystack payment account';
       }
 
-      const syncSucceeded =
-        syncError == null &&
+      const providerSyncSucceeded =
         Boolean(subaccountPayload?.subaccount_code) &&
         Boolean(transferRecipientPayload?.recipient_code);
+      const devTestAccountAccepted =
+        this.shouldAcceptTestAccountAsValidForSetup({
+          bankCode,
+          syncError,
+        });
+      const effectiveSyncError = devTestAccountAccepted ? null : syncError;
+
+      if (devTestAccountAccepted) {
+        this.logger.warn(
+          `Accepted test-bank payout account setup in local/dev after provider validation failure (${bankCode}).`,
+        );
+      }
+
+      const syncSucceeded = providerSyncSucceeded || devTestAccountAccepted;
       const nextStatus = syncSucceeded
         ? 'ACTIVE'
-        : syncError
+        : effectiveSyncError
           ? 'SYNC_ERROR'
           : 'PENDING_SYNC';
       const lastSuccessfulSyncAt = syncSucceeded ? syncTimestamp : null;
-      const canonicalSyncState = syncSucceeded
+      const canonicalSyncState = providerSyncSucceeded
         ? {
             subaccountCode: subaccountPayload?.subaccount_code ?? null,
             subaccountId:
@@ -6545,7 +7415,7 @@ export class StoreService {
           isAccountResolved: true,
           accountResolvedAt: syncTimestamp,
           ...canonicalSyncState,
-          lastSyncError: syncError,
+          lastSyncError: effectiveSyncError,
           metadata,
         },
         update: {
@@ -6565,13 +7435,13 @@ export class StoreService {
           isAccountResolved: true,
           accountResolvedAt: syncTimestamp,
           ...canonicalSyncState,
-          lastSyncError: syncError,
+          lastSyncError: effectiveSyncError,
           metadata,
         },
       });
 
-      if (syncError) {
-        throw new BadRequestException(syncError);
+      if (effectiveSyncError) {
+        throw new BadRequestException(effectiveSyncError);
       }
 
       return this.getStorePaymentAccount(ownerId);
@@ -6618,8 +7488,11 @@ export class StoreService {
       'RECONCILIATION_REVIEW',
     ];
 
-    const [availableAccount, pendingPayouts, paidOut, heldHolds, recentPayouts] =
+    const [paymentAccount, availableAccount, pendingPayouts, paidOut, heldHolds, recentPayouts] =
       await Promise.all([
+        this.getStorePaymentAccountModel().findUnique({
+          where: { brandId },
+        }),
         this.prisma.ledgerAccount.findFirst({
           where: {
             entityType: 'BRAND',
@@ -6712,6 +7585,7 @@ export class StoreService {
     return {
       brandId,
       currency: 'NGN',
+      paymentAccount: this.summarizePaymentAccount(paymentAccount),
       summary: {
         availableForPayout,
         heldInEscrow,
@@ -7092,6 +7966,68 @@ export class StoreService {
     };
   }
 
+  /**
+   * Compute whether the brand profile has finished the onboarding fields
+   * required before store setup can be opened.
+   */
+  private computeBrandProfileCompleteness(brand: {
+    brandDescription?: string | null;
+    brandTags?: string[] | null;
+    brandCountry?: string | null;
+    brandState?: string | null;
+  }): { isComplete: boolean; missingFields: string[] } {
+    const missingFields: string[] = [];
+
+    if ((brand.brandDescription ?? '').trim().length < 20) {
+      missingFields.push('description');
+    }
+    if (!brand.brandTags || brand.brandTags.length === 0) {
+      missingFields.push('tags');
+    }
+    if (!String(brand.brandCountry ?? '').trim() && !String(brand.brandState ?? '').trim()) {
+      missingFields.push('location');
+    }
+
+    return {
+      isComplete: missingFields.length === 0,
+      missingFields,
+    };
+  }
+
+  private async assertEmailVerifiedForStoreSetup(
+    ownerId: string,
+    phase: 'start' | 'continue' | 'complete' = 'continue',
+  ) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: ownerId },
+      select: { id: true, isEmailVerified: true },
+    });
+
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    if (user.isEmailVerified) {
+      return;
+    }
+
+    if (phase === 'start') {
+      throw new ForbiddenException(
+        'Verify your email before starting store setup. Check your inbox and click the verification link.',
+      );
+    }
+
+    if (phase === 'complete') {
+      throw new ForbiddenException(
+        'Verify your email before completing store setup. Check your inbox and click the verification link.',
+      );
+    }
+
+    throw new ForbiddenException(
+      'Verify your email before continuing store setup. Check your inbox and click the verification link.',
+    );
+  }
+
   async getStoreStatus(ownerId: string) {
     let brand = await this.prisma.brand.findUnique({
       where: { ownerId },
@@ -7142,7 +8078,7 @@ export class StoreService {
       throw new NotFoundException('Brand not found');
     }
 
-    const [policy, paymentAccount] = await Promise.all([
+    const [policy, paymentAccount, owner] = await Promise.all([
       this.prisma.storePolicy.findUnique({
         where: { brandId: brand.id },
         select: { responseTimeSla: true },
@@ -7150,7 +8086,18 @@ export class StoreService {
       this.getStorePaymentAccountModel().findUnique({
         where: { brandId: brand.id },
       }),
+      this.prisma.user.findUnique({
+        where: { id: ownerId },
+        select: {
+          isEmailVerified: true,
+          brandDescription: true,
+          brandTags: true,
+          brandCountry: true,
+          brandState: true,
+        },
+      }),
     ]);
+    const profileCompleteness = this.computeBrandProfileCompleteness(owner ?? {});
     const { isComplete, missingFields } = this.computeStoreCompleteness(
       brand,
       paymentAccount,
@@ -7159,6 +8106,9 @@ export class StoreService {
     return {
       brandId: brand.id,
       isStoreOpen: brand.isStoreOpen,
+      isEmailVerified: owner?.isEmailVerified ?? true,
+      isProfileComplete: profileCompleteness.isComplete,
+      profileMissingFields: profileCompleteness.missingFields,
       isSetupComplete: isComplete,
       missingFields,
       profile: {
@@ -7180,6 +8130,8 @@ export class StoreService {
   }
 
   async openStore(ownerId: string) {
+    await this.assertEmailVerifiedForStoreSetup(ownerId, 'complete');
+
     const brand = await this.prisma.brand.findUnique({
       where: { ownerId },
       select: {
@@ -7239,6 +8191,23 @@ export class StoreService {
       );
     }
 
+    void this.notifications
+      ?.create(ownerId, NotificationType.VERIFICATION_NUDGE, {
+        payload: {
+          brandId: brand.id,
+          brandName: brand.name,
+          targetUrl: '/studio/verification',
+          message:
+            'Your store is live. Verify your brand to start making sales and build buyer trust.',
+        },
+        dedupeMs: 24 * 60 * 60 * 1000,
+      })
+      .catch((error) => {
+        this.logger.warn(
+          `Failed to send store-setup verification notification for brand=${brand.id}: ${String(error)}`,
+        );
+      });
+
     return { success: true, message: 'Store is now open!', brandId: brand.id };
   }
 
@@ -7288,6 +8257,8 @@ export class StoreService {
   }
 
   async updateStoreProfile(ownerId: string, dto: UpdateStoreProfileDto) {
+    await this.assertEmailVerifiedForStoreSetup(ownerId, 'continue');
+
     let brand = await this.prisma.brand.findUnique({
       where: { ownerId },
       select: { id: true, tags: true, isStoreOpen: true },
@@ -7386,6 +8357,14 @@ export class StoreService {
       where: { brandId: brand.id },
     });
 
+    const normalizedShippingRules = this.normalizeBrandShippingRules(
+      policy?.shippingRules &&
+        typeof policy.shippingRules === 'object' &&
+        !Array.isArray(policy.shippingRules)
+        ? (policy.shippingRules as Record<string, any>)
+        : null,
+    );
+
     return {
       brandId: brand.id,
       shippingRegions: policy?.shippingRegions || [],
@@ -7401,11 +8380,13 @@ export class StoreService {
       refundMethod: policy?.refundMethod || 'original',
       responseTimeSla: policy?.responseTimeSla || brand.responseTimeSla || '24h',
       sizeChart: policy?.sizeChart || null,
-      shippingRules: policy?.shippingRules || null,
+      shippingRules: normalizedShippingRules,
     };
   }
 
   async updateStorePolicies(ownerId: string, dto: UpdateStorePoliciesDto) {
+    await this.assertEmailVerifiedForStoreSetup(ownerId, 'continue');
+
     let brand = await this.prisma.brand.findUnique({
       where: { ownerId },
       select: { id: true, responseTimeSla: true },
@@ -7472,8 +8453,11 @@ export class StoreService {
       createData.sizeChart = dto.sizeChart;
     }
     if (dto.shippingRules !== undefined) {
-      updateData.shippingRules = dto.shippingRules;
-      createData.shippingRules = dto.shippingRules;
+      const normalizedShippingRules = this.normalizeBrandShippingRules(
+        dto.shippingRules as Record<string, any> | null,
+      );
+      updateData.shippingRules = normalizedShippingRules;
+      createData.shippingRules = normalizedShippingRules;
     }
 
     if (Object.keys(updateData).length === 0) {

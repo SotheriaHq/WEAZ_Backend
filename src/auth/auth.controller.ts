@@ -1,4 +1,5 @@
 ﻿import {
+  BadRequestException,
   Controller,
   Get,
   Post,
@@ -33,6 +34,7 @@ import {
   ApiBearerAuth,
   ApiBody,
   ApiParam,
+  ApiQuery,
 } from '@nestjs/swagger';
 import { ConfigService } from '@nestjs/config';
 import { NotificationsService } from 'src/notifications/notifications.service';
@@ -330,13 +332,25 @@ export class AuthController {
 
   @Get('verify-email')
   @ApiOperation({ summary: 'Verify email by link' })
-  @ApiParam({ name: 'userId', required: true })
-  @ApiParam({ name: 'code', required: true })
+  @ApiQuery({ name: 'token', required: false })
+  @ApiQuery({ name: 'userId', required: false })
+  @ApiQuery({ name: 'code', required: false })
   async verifyEmailByLink(
-    @Query('userId') userId: string,
-    @Query('code') code: string,
+    @Query('token') token?: string,
+    @Query('userId') userId?: string,
+    @Query('code') code?: string,
   ) {
-    return this.authService.verifyEmailByLink(userId, code);
+    if (token) {
+      return this.authService.verifyEmailByToken(token);
+    }
+
+    if (userId && code) {
+      return this.authService.verifyEmailByLink(userId, code);
+    }
+
+    throw new BadRequestException(
+      'Verification token is required. Use the verification link sent to your email.',
+    );
   }
 
   @Post('verify-email-code')
@@ -351,6 +365,16 @@ export class AuthController {
     @Body('code') code: string,
   ) {
     return this.authService.verifyEmailByCode(email, code);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 3, ttl: 300000 } })
+  @Post('verify-email/resend')
+  @ApiOperation({ summary: 'Resend email verification link for authenticated user' })
+  async resendEmailVerification(
+    @Req() req: Request & { user: { id: string } },
+  ) {
+    return this.authService.resendVerificationEmail(req.user.id);
   }
 
   @Get('security/devices')

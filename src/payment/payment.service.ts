@@ -34,6 +34,10 @@ import {
   SimulatePaymentAttemptDto,
   VerifyPaymentDto,
 } from './payment.types';
+import {
+  describePaystackSecretEnvKeys,
+  resolvePaystackSecret as resolvePaystackSecretFromEnv,
+} from 'src/common/utils/paystack-secret';
 
 type PaymentAttemptRecord = Awaited<ReturnType<PrismaService['paymentAttempt']['findUnique']>>;
 
@@ -161,17 +165,18 @@ export class PaymentService {
     const currency = orders[0].currency;
     const callbackBaseUrl = this.resolveCallbackBaseUrl(dto.callbackUrl);
     const providerMode = this.getProviderMode();
-    const existingAttempt =
-      (dto.idempotencyKey
-        ? await this.prisma.paymentAttempt.findFirst({
-            where: {
-              buyerId: userId,
-              subjectType: PaymentSubjectType.STANDARD_ORDER,
-              idempotencyKey: dto.idempotencyKey,
-            },
-            orderBy: { createdAt: 'desc' },
-          })
-        : null) ??
+    const idempotentAttempt = dto.idempotencyKey
+      ? await this.prisma.paymentAttempt.findFirst({
+          where: {
+            buyerId: userId,
+            subjectType: PaymentSubjectType.STANDARD_ORDER,
+            idempotencyKey: dto.idempotencyKey,
+          },
+          orderBy: { createdAt: 'desc' },
+        })
+      : null;
+    let existingAttempt =
+      idempotentAttempt ??
       (await this.prisma.paymentAttempt.findFirst({
         where: {
           buyerId: userId,
@@ -182,6 +187,14 @@ export class PaymentService {
         },
         orderBy: { createdAt: 'desc' },
       }));
+
+    if (
+      existingAttempt &&
+      !idempotentAttempt &&
+      !this.canReusePendingAttempt(existingAttempt.requestSnapshot, paymentData)
+    ) {
+      existingAttempt = null;
+    }
 
     if (existingAttempt) {
       if (existingAttempt.expiresAt && existingAttempt.expiresAt <= new Date()) {
@@ -330,15 +343,18 @@ export class PaymentService {
       throw new BadRequestException('No payment attempt found for this reference');
     }
 
+    if (attempt.subjectType === PaymentSubjectType.CUSTOM_ORDER) {
+      throw new BadRequestException(
+        'This payment reference belongs to a custom order. Verify it through /custom-orders/:id/payment/verify.',
+      );
+    }
+
     const orders = await this.getOwnedOrdersForAttempt(attempt, userId);
     if (!orders.length) {
       throw new BadRequestException('No orders found for this reference');
     }
 
     if (attempt.status === 'PAID') {
-      await this.standardOrderFinanceSyncService.syncPaidOrdersByReferences([
-        attempt.reference,
-      ]);
       return this.buildVerifyResult(attempt, orders, true);
     }
 
@@ -656,11 +672,6 @@ export class PaymentService {
     }
 
     if (this.isTerminalStatus(attempt.status as PaymentAttemptStatus)) {
-      if (String(attempt.status || '').trim().toUpperCase() === 'PAID') {
-        await this.standardOrderFinanceSyncService.syncPaidOrdersByReferences([
-          reference,
-        ]);
-      }
       await this.markProviderEventProcessed(providerEventKey);
       return;
     }
@@ -779,7 +790,7 @@ export class PaymentService {
       throw new BadRequestException('Paystack is only enabled for NGN payments in this phase');
     }
 
-    const secret = this.getRequiredEnv('PAYSTACK_SECRET_KEY');
+    const secret = this.getRequiredPaystackSecret('live payment processing');
     const response = await fetch('https://api.paystack.co/transaction/initialize', {
       method: 'POST',
       headers: {
@@ -1175,7 +1186,7 @@ export class PaymentService {
     const now = new Date();
     const eventPayload = payload?.eventPayload ?? null;
     const responseSnapshotPatch = payload?.responseSnapshotPatch ?? null;
-    const updatedAttempt = await this.prisma.$transaction(async (tx) => {
+    const transitionResult = await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT "reference" FROM "PaymentAttempt" WHERE "reference" = ${reference} FOR UPDATE`;
       const attempt = await tx.paymentAttempt.findUnique({
         where: { reference },
@@ -1186,7 +1197,10 @@ export class PaymentService {
       }
 
       if (this.isTerminalStatus(attempt.status as PaymentAttemptStatus)) {
-        return attempt;
+        return {
+          attempt,
+          transitionedToPaid: false,
+        };
       }
 
       const settlement = await this.fxRateService.resolveSettlement({
@@ -1269,11 +1283,16 @@ export class PaymentService {
         },
       });
 
-      return updated;
+      return {
+        attempt: updated,
+        transitionedToPaid: nextStatus === 'PAID',
+      };
     });
 
+    const updatedAttempt = transitionResult.attempt;
+
     const linkedOrders =
-      nextStatus === 'PAID'
+      transitionResult.transitionedToPaid
         ? await this.prisma.order.findMany({
             where: {
               paymentReference: reference,
@@ -1288,7 +1307,7 @@ export class PaymentService {
           })
         : [];
 
-    if (nextStatus === 'PAID' && linkedOrders.length > 0) {
+    if (transitionResult.transitionedToPaid && linkedOrders.length > 0) {
       await this.standardOrderFinanceSyncService.syncPaidOrdersByReferences([reference]);
       await this.notifyFinanceAdminsOfStandardPayment(updatedAttempt, linkedOrders);
     }
@@ -1580,13 +1599,15 @@ export class PaymentService {
     }
   }
 
-  private resolveCallbackBaseUrl(callbackUrl?: string): string {
-    const resolved =
-      callbackUrl?.trim() ||
+  private resolveCallbackBaseUrl(_callbackUrl?: string): string {
+    // SECURITY: The caller-supplied callbackUrl parameter is intentionally ignored.
+    // Accepting arbitrary redirect URLs from clients is an open-redirect vulnerability —
+    // an attacker could redirect buyers to a phishing page after Paystack checkout.
+    // The callback URL is always resolved from the server environment only.
+    return (
       process.env.FRONTEND_PUBLIC_CHECKOUT_CALLBACK_URL?.trim() ||
-      'http://localhost:5173/checkout/payment-return';
-
-    return resolved;
+      'http://localhost:5173/checkout/payment-return'
+    );
   }
 
   private buildMockReturnUrl(
@@ -1608,11 +1629,14 @@ export class PaymentService {
   }
 
   private isMockMode(): boolean {
-    return (process.env.PAYMENTS_MODE ?? 'mock').trim().toLowerCase() !== 'live';
+    // Default is 'live'. To use mock/test mode, explicitly set PAYMENTS_MODE=mock in your .env.
+    // We do NOT default to mock to prevent accidental mock-mode deploys in production.
+    return (process.env.PAYMENTS_MODE ?? 'live').trim().toLowerCase() !== 'live';
   }
 
   private allowPaymentSimulation(): boolean {
-    return (process.env.ALLOW_PAYMENT_SIMULATION ?? 'true').trim().toLowerCase() === 'true';
+    // Default is false. Simulation must be explicitly enabled for dev/staging only.
+    return (process.env.ALLOW_PAYMENT_SIMULATION ?? 'false').trim().toLowerCase() === 'true';
   }
 
   private resolveMockReturnStatus(paymentData: Record<string, any>): string {
@@ -1730,7 +1754,7 @@ export class PaymentService {
       if (!this.isAllowedPaystackWebhookIp(context)) {
         return false;
       }
-      const secret = String(process.env.PAYSTACK_SECRET_KEY ?? '').trim();
+      const secret = this.resolvePaystackSecret();
       const signature = this.getHeader(context.headers, 'x-paystack-signature');
       if (!secret || !signature || !context.rawBody) {
         return false;
@@ -1785,13 +1809,19 @@ export class PaymentService {
   }
 
   private extractRequestIps(context: WebhookContext) {
-    const forwarded = this.getHeader(context.headers, 'x-forwarded-for');
-    const forwardedIps = String(forwarded ?? '')
-      .split(',')
-      .map((value) => this.normalizeIp(value))
-      .filter((value): value is string => Boolean(value));
+    // SECURITY: Only use the resolved remoteAddress (req.ip from NestJS).
+    //
+    // We do NOT read X-Forwarded-For here. Any HTTP client can inject arbitrary
+    // IPs into that header, including real Paystack IPs, which would allow
+    // bypassing the allowlist entirely. Using candidates.some() against a combined
+    // list of all forwarded IPs is the vulnerability — one spoofed Paystack IP
+    // in the chain would pass the check regardless of where the request actually came from.
+    //
+    // When TRUST_PROXY is configured in main.ts, Express resolves req.ip to the
+    // actual client IP after the trusted proxy hop, so this is both safe and correct
+    // behind a load balancer.
     const directIp = this.normalizeIp(context.remoteAddress);
-    return Array.from(new Set([...forwardedIps, ...(directIp ? [directIp] : [])]));
+    return directIp ? [directIp] : [];
   }
 
   private normalizeIp(value: string | null | undefined) {
@@ -1959,6 +1989,20 @@ export class PaymentService {
     return value;
   }
 
+  private resolvePaystackSecret() {
+    return resolvePaystackSecretFromEnv();
+  }
+
+  private getRequiredPaystackSecret(contextLabel: string) {
+    const secret = this.resolvePaystackSecret();
+    if (!secret) {
+      throw new BadRequestException(
+        `Paystack secret is required for ${contextLabel}. Configure one of: ${describePaystackSecretEnvKeys()}`,
+      );
+    }
+    return secret;
+  }
+
   private async verifyPaystackAttempt(
     attempt: NonNullable<PaymentAttemptRecord>,
   ): Promise<{
@@ -1972,7 +2016,7 @@ export class PaymentService {
     paidAt: string | null;
     message: string | null;
   }> {
-    const secret = this.getRequiredEnv('PAYSTACK_SECRET_KEY');
+    const secret = this.getRequiredPaystackSecret('Paystack payment verification');
     const response = await fetch(
       `https://api.paystack.co/transaction/verify/${encodeURIComponent(attempt.reference)}`,
       {
@@ -1995,10 +2039,23 @@ export class PaymentService {
       throw new BadRequestException('Provider verification reference does not match the payment attempt');
     }
 
-    const amount = Number(payload.data.amount ?? 0) / 100;
+    const rawAmount = payload?.data?.amount;
+    if (rawAmount == null) {
+      throw new BadRequestException(
+        'Provider verification payload is missing the amount field',
+      );
+    }
+
+    const amountMinor = Number(rawAmount);
+    if (!Number.isFinite(amountMinor) || amountMinor <= 0) {
+      throw new BadRequestException(
+        'Provider verification payload returned an invalid amount',
+      );
+    }
+
+    const amount = amountMinor / 100;
     const currency = String(payload.data.currency || '').trim().toUpperCase() || null;
     if (
-      amount > 0 &&
       Math.abs(this.roundMoney(amount) - this.roundMoney(Number(attempt.amount ?? 0))) >= 0.01
     ) {
       throw new BadRequestException('Provider verification amount does not match the payment attempt');
@@ -2026,7 +2083,7 @@ export class PaymentService {
       reference: providerReference,
       transactionId:
         payload.data.id != null ? String(payload.data.id).trim() || null : null,
-      amount: amount > 0 ? this.roundMoney(amount) : null,
+      amount: this.roundMoney(amount),
       currency,
       channel:
         payload.data.channel != null
@@ -2054,6 +2111,54 @@ export class PaymentService {
 
   private roundMoney(value: number) {
     return Math.round((value + Number.EPSILON) * 100) / 100;
+  }
+
+  private canReusePendingAttempt(
+    existingSnapshot: unknown,
+    nextPaymentData: Record<string, any>,
+  ) {
+    return (
+      this.buildPaymentDataFingerprint(existingSnapshot) ===
+      this.buildPaymentDataFingerprint(nextPaymentData)
+    );
+  }
+
+  private buildPaymentDataFingerprint(value: unknown) {
+    return JSON.stringify(this.normalizePaymentDataForFingerprint(value));
+  }
+
+  private normalizePaymentDataForFingerprint(value: unknown): unknown {
+    if (Array.isArray(value)) {
+      return value.map((entry) => this.normalizePaymentDataForFingerprint(entry));
+    }
+
+    if (value && typeof value === 'object') {
+      const source = value as Record<string, unknown>;
+      const output: Record<string, unknown> = {};
+      const keys = Object.keys(source)
+        .filter((key) => !['consentAccepted', 'mockScenario'].includes(key))
+        .sort();
+
+      for (const key of keys) {
+        output[key] = this.normalizePaymentDataForFingerprint(source[key]);
+      }
+
+      return output;
+    }
+
+    if (typeof value === 'string') {
+      return value.trim();
+    }
+
+    if (
+      value === null ||
+      typeof value === 'number' ||
+      typeof value === 'boolean'
+    ) {
+      return value;
+    }
+
+    return null;
   }
 
   private asObject(value: unknown): Record<string, any> {

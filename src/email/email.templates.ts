@@ -1,64 +1,65 @@
 import { EmailContent } from './email.types';
+import {
+  EMAIL_COLORS,
+  normalizeCompanyName,
+  renderEmailButton,
+  renderEmailShell,
+} from './email.branding';
 
-const BRAND_COLOR = '#1a1a2e';
-const ACCENT_COLOR = '#e94560';
+const BRAND_PRIMARY = EMAIL_COLORS.brandPrimary;
+const BRAND_ACCENT = EMAIL_COLORS.brandAccent;
+const TEXT_SECONDARY = EMAIL_COLORS.textSecondary;
+const TEXT_MUTED = EMAIL_COLORS.textMuted;
 
 function wrap(title: string, body: string, appName: string): string {
-  return `<!DOCTYPE html>
-<html lang="en">
-<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
-<body style="margin:0;padding:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f4f4f5">
-<table width="100%" cellpadding="0" cellspacing="0" style="max-width:600px;margin:0 auto;background:#fff;border-radius:8px;overflow:hidden">
-  <tr><td style="background:${BRAND_COLOR};padding:24px 32px"><h1 style="color:#fff;margin:0;font-size:20px">${appName}</h1></td></tr>
-  <tr><td style="padding:32px">
-    <h2 style="color:${BRAND_COLOR};margin:0 0 16px">${title}</h2>
-    ${body}
-  </td></tr>
-  <tr><td style="padding:16px 32px;background:#f9fafb;color:#6b7280;font-size:12px;text-align:center">
-    &copy; ${new Date().getFullYear()} ${appName}. All rights reserved.
-  </td></tr>
-</table>
-</body></html>`;
+  return renderEmailShell({
+    appName: normalizeCompanyName(appName),
+    title,
+    bodyHtml: body,
+  });
 }
 
 function btn(href: string, label: string): string {
-  return `<a href="${href}" style="display:inline-block;background:${ACCENT_COLOR};color:#fff;padding:12px 24px;border-radius:6px;text-decoration:none;font-weight:600;margin:16px 0">${label}</a>`;
+  return renderEmailButton(href, label);
 }
 
 export function passwordResetEmail(
   resetLink: string,
   appName: string,
 ): EmailContent {
+  const companyName = normalizeCompanyName(appName);
+
   return {
-    subject: `Reset your ${appName} password`,
+    subject: `Reset your ${companyName} password`,
     html: wrap(
       'Password Reset',
-      `<p style="color:#374151;line-height:1.6">You requested a password reset. Click below to set a new password. This link expires in 1 hour.</p>
+      `<p style="color:${TEXT_SECONDARY};line-height:1.7;margin:0 0 12px">We received a request to reset your ${companyName} password.</p>
+      <p style="color:${TEXT_SECONDARY};line-height:1.7;margin:0 0 12px">Use the secure button below to choose a new password. For your protection, this link expires in 1 hour.</p>
       ${btn(resetLink, 'Reset Password')}
-      <p style="color:#9ca3af;font-size:13px">If you didn't request this, ignore this email.</p>`,
-      appName,
+      <p style="color:${TEXT_MUTED};font-size:13px;line-height:1.6;margin:6px 0 0">If you did not request this, you can safely ignore this message. Your current password remains unchanged.</p>`,
+      companyName,
     ),
     text: `Password Reset\n\nVisit this link to reset your password: ${resetLink}\n\nThis link expires in 1 hour. If you didn't request this, ignore this email.`,
   };
 }
 
 export function emailVerificationEmail(
-  code: string,
   verifyLink: string,
   appName: string,
 ): EmailContent {
+  const companyName = normalizeCompanyName(appName);
+
   return {
-    subject: `Verify your ${appName} email`,
+    subject: `Verify your ${companyName} email`,
     html: wrap(
-      'Email Verification',
-      `<p style="color:#374151;line-height:1.6">Welcome! Use the code below or click the button to verify your email.</p>
-      <div style="background:#f3f4f6;padding:16px;border-radius:8px;text-align:center;margin:16px 0">
-        <span style="font-size:28px;font-weight:700;letter-spacing:6px;color:${BRAND_COLOR}">${code}</span>
-      </div>
-      ${btn(verifyLink, 'Verify Email')}`,
-      appName,
+      'Confirm Your Email Address',
+      `<p style="color:${TEXT_SECONDARY};line-height:1.7;margin:0 0 12px">Welcome to ${companyName}. To activate your account fully, please verify your email address through the secure link below.</p>
+      <p style="color:${TEXT_SECONDARY};line-height:1.7;margin:0 0 12px">Once verified, you can complete your profile, connect with designers, and explore products from trusted brands across the ${companyName} community.</p>
+      ${btn(verifyLink, 'Verify Email')}
+      <p style="color:${TEXT_MUTED};font-size:13px;line-height:1.6;margin:6px 0 0">For your security, this verification link is single-use and will no longer work once your email is confirmed.</p>`,
+      companyName,
     ),
-    text: `Email Verification\n\nYour verification code: ${code}\n\nOr visit: ${verifyLink}`,
+    text: `Email Verification\n\nWelcome to ${companyName}. Verify your email address with this link: ${verifyLink}\n\nThis verification link is single-use and will no longer work after your email is confirmed.`,
   };
 }
 
@@ -66,16 +67,18 @@ export function breakGlassCodeEmail(
   code: string,
   appName: string,
 ): EmailContent {
+  const companyName = normalizeCompanyName(appName);
+
   return {
-    subject: `[URGENT] ${appName} Break-Glass Recovery Code`,
+    subject: `[URGENT] ${companyName} Break-Glass Recovery Code`,
     html: wrap(
       '🔑 Break-Glass Recovery Code',
       `<p style="color:#374151;line-height:1.6">A new daily break-glass code has been generated. Store this securely.</p>
-      <div style="background:#fef2f2;border:2px solid ${ACCENT_COLOR};padding:16px;border-radius:8px;text-align:center;margin:16px 0">
-        <span style="font-size:24px;font-weight:700;letter-spacing:4px;color:${ACCENT_COLOR}">${code}</span>
+      <div style="background:#fef2f2;border:2px solid ${BRAND_ACCENT};padding:16px;border-radius:8px;text-align:center;margin:16px 0">
+        <span style="font-size:24px;font-weight:700;letter-spacing:4px;color:${BRAND_PRIMARY}">${code}</span>
       </div>
       <p style="color:#9ca3af;font-size:13px">This code is valid for 24 hours. Do not share it.</p>`,
-      appName,
+      companyName,
     ),
     text: `BREAK-GLASS RECOVERY CODE\n\nCode: ${code}\n\nValid for 24 hours. Store securely. Do not share.`,
   };
@@ -87,8 +90,10 @@ export function adminAccountCreatedEmail(
   loginUrl: string,
   appName: string,
 ): EmailContent {
+  const companyName = normalizeCompanyName(appName);
+
   return {
-    subject: `Your ${appName} admin account has been created`,
+    subject: `Your ${companyName} admin account has been created`,
     html: wrap(
       'Admin Account Created',
       `<p style="color:#374151;line-height:1.6">An administrator account has been created for you.</p>
@@ -98,7 +103,7 @@ export function adminAccountCreatedEmail(
       </table>
       <p style="color:#ef4444;font-weight:600">You must change your password on first login.</p>
       ${btn(loginUrl, 'Log In Now')}`,
-      appName,
+      companyName,
     ),
     text: `Admin Account Created\n\nEmail: ${email}\nTemporary Password: ${tempPassword}\n\nYou must change your password on first login.\n\nLogin: ${loginUrl}`,
   };

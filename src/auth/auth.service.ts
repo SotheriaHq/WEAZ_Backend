@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Injectable,
   Logger,
+  ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
 import { CreateUserDto } from './dto/create-auth.dto';
@@ -37,6 +38,7 @@ import {
   PasswordPolicyContext,
   validatePasswordPolicy,
 } from './helper/password-policy.helper';
+import { resolveWebAppBaseUrl as resolveConfiguredWebAppBaseUrl } from 'src/common/utils/web-app-url';
 
 const PASSWORD_RESET_TOKEN_TTL_MS = 60 * 60 * 1000;
 const RESET_REQUEST_SUPPRESSION_MS = 2 * 60 * 1000;
@@ -100,6 +102,99 @@ export class AuthService {
 
   private extractClientIp(req: Request): string | null {
     return req.ip || req.socket?.remoteAddress || null;
+  }
+
+  private resolveWebAppBaseUrl(): string {
+    return resolveConfiguredWebAppBaseUrl();
+  }
+
+  private resolvePostVerificationNextPath(userType: UserType): string {
+    return userType === UserType.BRAND
+      ? '/profile?modal=brand-setup&modalOrigin=prompt'
+      : '/profile';
+  }
+
+  private readHeaderValue(req: Request, name: string): string {
+    const value = req.headers[name];
+    if (Array.isArray(value)) {
+      return String(value[0] ?? '').trim();
+    }
+    return typeof value === 'string' ? value.trim() : '';
+  }
+
+  private describeSignupDevice(req: Request): string {
+    const userAgent = this.readHeaderValue(req, 'user-agent').toLowerCase();
+
+    const browser =
+      userAgent.includes('edg/')
+        ? 'Edge'
+        : userAgent.includes('chrome/')
+          ? 'Chrome'
+          : userAgent.includes('safari/') && !userAgent.includes('chrome/')
+            ? 'Safari'
+            : userAgent.includes('firefox/')
+              ? 'Firefox'
+              : userAgent.includes('opr/')
+                ? 'Opera'
+                : 'Web browser';
+
+    const os =
+      userAgent.includes('windows')
+        ? 'Windows'
+        : userAgent.includes('mac os')
+          ? 'macOS'
+          : userAgent.includes('android')
+            ? 'Android'
+            : userAgent.includes('iphone') || userAgent.includes('ipad')
+              ? 'iOS'
+              : userAgent.includes('linux')
+                ? 'Linux'
+                : '';
+
+    const deviceType =
+      userAgent.includes('mobile') || userAgent.includes('android')
+        ? 'Mobile'
+        : 'Desktop';
+
+    const osSegment = os ? ` on ${os}` : '';
+    return `${browser}${osSegment} (${deviceType})`;
+  }
+
+  private describeSignupLocation(req: Request): string {
+    const city =
+      this.readHeaderValue(req, 'x-vercel-ip-city') ||
+      this.readHeaderValue(req, 'cf-ipcity') ||
+      this.readHeaderValue(req, 'x-appengine-city');
+    const region =
+      this.readHeaderValue(req, 'x-vercel-ip-country-region') ||
+      this.readHeaderValue(req, 'cf-region') ||
+      this.readHeaderValue(req, 'x-appengine-region');
+    const country =
+      this.readHeaderValue(req, 'x-vercel-ip-country') ||
+      this.readHeaderValue(req, 'cf-ipcountry') ||
+      this.readHeaderValue(req, 'x-appengine-country');
+
+    const locationParts = [city, region, country].filter(Boolean);
+    if (locationParts.length) {
+      return locationParts.join(', ');
+    }
+
+    const fallbackIp = this.extractClientIp(req);
+    return fallbackIp ? `IP ${fallbackIp}` : 'Unknown location';
+  }
+
+  private resolveSignupDisplayName(user: AuthUser): string {
+    const brandName = String(user.brandFullName ?? '').trim();
+    if (brandName) {
+      return brandName;
+    }
+
+    const fullName = `${user.firstName ?? ''} ${user.lastName ?? ''}`.trim();
+    if (fullName) {
+      return fullName;
+    }
+
+    return user.username;
   }
 
   private validateBrandRequirements(signupDto: CreateUserDto): void {
@@ -207,8 +302,8 @@ export class AuthService {
         throw new BadRequestException('Password processing failed');
       }
 
-      // Generate email verification code
-      const verificationCode =
+      // Generate single-use email verification token
+      const verificationToken =
         this.emailVerificationHelper.generateVerificationCode();
       // Ensure database-required name fields are present. Prisma User model requires firstName and lastName.
       const dbFirstName = signupDto.firstName ?? '';
@@ -228,7 +323,7 @@ export class AuthService {
             brandFullName: signupDto.brandFullName,
             type: signupDto.type ?? UserType.REGULAR,
             industriNumber,
-            emailVerificationCode: verificationCode,
+            emailVerificationCode: verificationToken,
             isEmailVerified: false,
             ...(signupDto.type === UserType.BRAND
               ? {
@@ -254,13 +349,16 @@ export class AuthService {
           throw new BadRequestException('Failed to create user account');
         });
 
-// Send verification email
+    const postVerificationNextPath = this.resolvePostVerificationNextPath(
+      user.type,
+    );
+
+    // Send verification email
     const verificationLink = this.emailVerificationHelper.generateVerificationLink(
-      user.id,
-      verificationCode,
+      verificationToken,
+      postVerificationNextPath,
     );
     const verificationEmail = emailTemplates.emailVerificationEmail(
-      verificationCode,
       verificationLink,
       this.emailService.getAppName(),
     );
@@ -273,8 +371,7 @@ export class AuthService {
         recipientUserId: user.id,
         scenarioKey: 'auth.email_verification',
         priority: EmailPriority.P1_TRANSACTIONAL,
-        idempotencyKey: `auth:email-verification:${user.id}:${verificationCode}`,
-        dispatchImmediately: true,
+        idempotencyKey: `auth:email-verification:${user.id}:${verificationToken}`,
       },
     );
     this.logEmailDispatchOutcome({
@@ -303,10 +400,24 @@ export class AuthService {
         );
       }
 
+      const signupRecordedAtIso = new Date().toISOString();
+      const signupDevice = this.describeSignupDevice(req);
+      const signupLocation = this.describeSignupLocation(req);
+      const signupDisplayName = this.resolveSignupDisplayName(user);
+
       // Notify SIGNUP event (account created) without blocking signup latency.
       void this.notifications
         .create(user.id, NotificationType.SIGNUP, {
-          payload: { action: 'SIGNUP', email: user.email },
+          payload: {
+            action: 'SIGNUP',
+            email: user.email,
+            displayName: signupDisplayName,
+            username: user.username,
+            createdAtIso: signupRecordedAtIso,
+            device: signupDevice,
+            location: signupLocation,
+            targetUrl: '/profile',
+          },
         })
         .catch(() => undefined);
 
@@ -508,6 +619,116 @@ export class AuthService {
     }
   }
 
+  async verifyEmailByToken(token: string) {
+    const verificationToken = token?.trim();
+    if (!verificationToken) {
+      throw new BadRequestException('Verification token is required');
+    }
+
+    const user = await this.prisma.user.findUnique({
+      where: { emailVerificationCode: verificationToken },
+    });
+    if (!user) {
+      throw new BadRequestException('Invalid or expired verification link');
+    }
+    if (user.isEmailVerified) {
+      return { message: 'Email already verified' };
+    }
+
+    await this.prisma.user.update({
+      where: { id: user.id },
+      // Keep token so repeated clicks remain idempotent and return
+      // "Email already verified" instead of confusing invalid-link errors.
+      data: { isEmailVerified: true },
+    });
+
+    try {
+      await this.notifications.create(user.id, NotificationType.SIGNUP, {
+        payload: { action: 'EMAIL_VERIFIED', targetUrl: '/' },
+      });
+    } catch {
+      // best-effort notification
+    }
+
+    return { message: 'Email verified successfully' };
+  }
+
+  async resendVerificationEmail(userId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        email: true,
+        type: true,
+        isEmailVerified: true,
+        emailVerificationCode: true,
+      },
+    });
+
+    if (!user) {
+      throw new UnauthorizedException('User not found');
+    }
+
+    if (user.isEmailVerified) {
+      return { message: 'Email already verified' };
+    }
+
+    const verificationToken =
+      String(user.emailVerificationCode ?? '').trim() ||
+      this.emailVerificationHelper.generateVerificationCode();
+
+    if (!user.emailVerificationCode) {
+      await this.prisma.user.update({
+        where: { id: user.id },
+        data: { emailVerificationCode: verificationToken },
+      });
+    }
+
+    const verificationLink = this.emailVerificationHelper.generateVerificationLink(
+      verificationToken,
+      this.resolvePostVerificationNextPath(user.type),
+    );
+    const verificationEmail = emailTemplates.emailVerificationEmail(
+      verificationLink,
+      this.emailService.getAppName(),
+    );
+
+    const dispatchResult = await this.emailService.send(
+      user.email,
+      verificationEmail.subject,
+      verificationEmail.html,
+      verificationEmail.text,
+      {
+        recipientUserId: user.id,
+        scenarioKey: 'auth.email_verification.resend',
+        priority: EmailPriority.P1_TRANSACTIONAL,
+      },
+    );
+
+    this.logEmailDispatchOutcome({
+      scenarioKey: 'auth.email_verification.resend',
+      userId: user.id,
+      recipientEmail: user.email,
+      result: dispatchResult,
+    });
+
+    if (dispatchResult.dispatchStatus === 'FAILED') {
+      throw new ServiceUnavailableException(
+        'Unable to send verification email right now. Please try again shortly.',
+      );
+    }
+
+    if (dispatchResult.dispatchStatus === 'SUPPRESSED') {
+      throw new BadRequestException(
+        'Verification email is temporarily suppressed for this address. Contact support if this persists.',
+      );
+    }
+
+    return {
+      message: 'Verification email sent. Please check your inbox and spam folder.',
+    };
+  }
+
   // Verify email by link
   async verifyEmailByLink(userId: string, code: string) {
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
@@ -521,7 +742,7 @@ export class AuthService {
     });
     try {
       await this.notifications.create(userId, NotificationType.SIGNUP, {
-        payload: { action: 'EMAIL_VERIFIED' },
+        payload: { action: 'EMAIL_VERIFIED', targetUrl: '/' },
       });
     } catch { }
     return { message: 'Email verified successfully' };
@@ -540,7 +761,7 @@ export class AuthService {
     });
     try {
       await this.notifications.create(user.id, NotificationType.SIGNUP, {
-        payload: { action: 'EMAIL_VERIFIED' },
+        payload: { action: 'EMAIL_VERIFIED', targetUrl: '/' },
       });
     } catch { }
     return { message: 'Email verified successfully' };
@@ -754,7 +975,7 @@ export class AuthService {
     }
 
     // Send reset email
-    const baseUrl = (process.env.WEB_APP_URL || 'http://localhost:5173').replace(/\/$/, '');
+    const baseUrl = this.resolveWebAppBaseUrl();
     const resetLink = `${baseUrl}/admin/reset-password?token=${rawTokenToSend}`;
     const resetEmail = emailTemplates.passwordResetEmail(
       resetLink,
@@ -772,7 +993,6 @@ export class AuthService {
         idempotencyKey: tokenHashToSend
           ? `auth:admin-password-reset:${user.id}:${tokenHashToSend}`
           : undefined,
-        dispatchImmediately: true,
       },
     );
     this.logEmailDispatchOutcome({
@@ -988,7 +1208,7 @@ export class AuthService {
     }
 
     // Send reset email
-    const baseUrl = (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
+    const baseUrl = this.resolveWebAppBaseUrl();
     const resetLink = `${baseUrl}/reset-password?token=${rawTokenToSend}`;
     const resetEmail = emailTemplates.passwordResetEmail(
       resetLink,
@@ -1006,7 +1226,6 @@ export class AuthService {
         idempotencyKey: tokenHashToSend
           ? `auth:password-reset:${user.id}:${tokenHashToSend}`
           : undefined,
-        dispatchImmediately: true,
       },
     );
     this.logEmailDispatchOutcome({

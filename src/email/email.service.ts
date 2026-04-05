@@ -13,6 +13,10 @@ import { createHash } from 'crypto';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { resolveEmailConfig, type ResolvedEmailConfig } from './email.config';
 
+const MAILJET_API_HOST = 'api.mailjet.com';
+const MAILJET_API_PORT = 443;
+const MAILJET_API_TIMEOUT_MS = 15_000;
+
 export type EnqueueEmailOptions = {
   recipientUserId?: string | null;
   scenarioKey?: string;
@@ -91,17 +95,26 @@ export class EmailService {
 
     this.emailConfig.warnings.forEach((warning) => this.logger.warn(warning));
 
-    if (
+    const hasMailjetCredentials =
+      this.emailConfig.provider === 'mailjet' &&
+      !!this.emailConfig.smtpUser &&
+      !!this.emailConfig.smtpPass;
+    const hasSmtpTransportConfig =
+      this.emailConfig.provider === 'smtp' &&
       this.emailConfig.transportEnabled &&
       this.emailConfig.smtpHost &&
       this.emailConfig.smtpPort &&
       this.emailConfig.smtpUser &&
-      this.emailConfig.smtpPass
-    ) {
+      this.emailConfig.smtpPass;
+
+    if (hasSmtpTransportConfig) {
       this.transporter = nodemailer.createTransport({
         host: this.emailConfig.smtpHost,
         port: this.emailConfig.smtpPort,
         secure: this.emailConfig.smtpPort === 465,
+        connectionTimeout: 15_000,
+        greetingTimeout: 15_000,
+        socketTimeout: 30_000,
         auth: {
           user: this.emailConfig.smtpUser,
           pass: this.emailConfig.smtpPass,
@@ -114,12 +127,19 @@ export class EmailService {
         this.emailConfig.smtpHost,
         this.emailConfig.smtpPort,
       );
+    } else if (this.emailConfig.provider === 'mailjet') {
+      if (hasMailjetCredentials) {
+        this.logger.log(
+          `Email transport configured: provider=${this.emailConfig.deliveryProviderName} endpoint=${MAILJET_API_HOST} from=${this.fromAddress}`,
+        );
 
-      if (
-        this.emailConfig.provider === 'mailjet' &&
-        this.mailjetSenderValidationEnabled
-      ) {
-        this.mailjetSenderValidationPromise = this.validateMailjetSenderStatus();
+        if (this.mailjetSenderValidationEnabled) {
+          this.mailjetSenderValidationPromise = this.validateMailjetSenderStatus();
+        }
+      } else {
+        this.logger.warn(
+          'Mailjet provider is configured without MAILJET_API_KEY and MAILJET_SECRET_KEY; email delivery will fail until both credentials are available',
+        );
       }
     } else {
       this.logger.warn(
@@ -199,6 +219,10 @@ export class EmailService {
   ): Promise<{ providerMessageId: string | null }> {
     await this.ensureMailjetSenderIsReady(to, subject);
 
+    if (this.emailConfig.provider === 'mailjet') {
+      return this.sendViaMailjetApi(to, subject, html, text);
+    }
+
     if (!this.transporter) {
       this.logger.log(`[EMAIL-DEV] To: ${to} | Subject: ${subject}`);
       this.logger.debug(`[EMAIL-DEV] Body:\n${text || '(html only)'}`);
@@ -231,10 +255,18 @@ export class EmailService {
   }
 
   getDeliveryAttemptProvider(): string {
+    if (this.emailConfig.provider === 'mailjet') {
+      return this.emailConfig.deliveryProviderName;
+    }
+
     return this.transporter ? this.emailConfig.deliveryProviderName : 'CONSOLE';
   }
 
   getTransportHost(): string | null {
+    if (this.emailConfig.provider === 'mailjet') {
+      return MAILJET_API_HOST;
+    }
+
     return this.transporter ? this.emailConfig.smtpHost : null;
   }
 
@@ -251,6 +283,179 @@ export class EmailService {
         `Email transport verification failed for ${host}:${port}: ${error.message}`,
       );
     }
+  }
+
+  private async sendViaMailjetApi(
+    to: string,
+    subject: string,
+    html: string,
+    text?: string,
+  ): Promise<{ providerMessageId: string | null }> {
+    const message: Record<string, unknown> = {
+      From: {
+        Email: this.fromAddress,
+        Name: this.fromName,
+      },
+      To: [{ Email: to }],
+      Subject: subject,
+      HTMLPart: html,
+    };
+
+    if (text) {
+      message.TextPart = text;
+    }
+
+    if (this.replyTo) {
+      message.ReplyTo = { Email: this.replyTo };
+    }
+
+    const response = await this.requestMailjet('POST', '/v3.1/send', {
+      Messages: [message],
+    });
+
+    let parsedBody: any;
+    try {
+      parsedBody = JSON.parse(response.body || '{}');
+    } catch {
+      throw new Error(
+        `Mailjet API send returned invalid JSON: ${response.body || 'empty body'}`,
+      );
+    }
+
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw new Error(
+        this.formatMailjetSendError(response.statusCode, parsedBody, response.body),
+      );
+    }
+
+    const firstMessage = Array.isArray(parsedBody?.Messages)
+      ? parsedBody.Messages[0]
+      : null;
+
+    if (!firstMessage) {
+      throw new Error('Mailjet API send returned no message entries');
+    }
+
+    if (String(firstMessage.Status ?? '').trim().toLowerCase() !== 'success') {
+      throw new Error(
+        this.formatMailjetSendError(response.statusCode, parsedBody, response.body),
+      );
+    }
+
+    const firstRecipient = Array.isArray(firstMessage.To)
+      ? firstMessage.To[0]
+      : null;
+    const providerMessageId = this.normalizeMailjetMessageId(
+      firstRecipient?.MessageID ??
+        firstRecipient?.MessageUUID ??
+        firstMessage.MessageID ??
+        firstMessage.MessageUUID,
+    );
+
+    this.logger.log(
+      `Email sent via Mailjet API to ${to}: "${subject}" providerMessageId=${providerMessageId ?? 'n/a'}`,
+    );
+
+    return { providerMessageId };
+  }
+
+  private async requestMailjet(
+    method: 'GET' | 'POST',
+    path: string,
+    body?: Record<string, unknown>,
+  ): Promise<{ statusCode: number; body: string }> {
+    const apiKey = this.emailConfig.smtpUser;
+    const secretKey = this.emailConfig.smtpPass;
+    if (!apiKey || !secretKey) {
+      throw new Error('Mailjet API request requires API key and secret');
+    }
+
+    const payload = body ? JSON.stringify(body) : null;
+    return new Promise((resolve, reject) => {
+      const request = https.request(
+        {
+          hostname: MAILJET_API_HOST,
+          port: MAILJET_API_PORT,
+          method,
+          path,
+          headers: {
+            Authorization: `Basic ${Buffer.from(`${apiKey}:${secretKey}`).toString('base64')}`,
+            ...(payload
+              ? {
+                  'Content-Type': 'application/json',
+                  'Content-Length': Buffer.byteLength(payload),
+                }
+              : {}),
+          },
+          timeout: MAILJET_API_TIMEOUT_MS,
+        },
+        (response) => {
+          let responseBody = '';
+          response.on('data', (chunk) => {
+            responseBody += chunk.toString();
+          });
+          response.on('end', () => {
+            resolve({
+              statusCode: response.statusCode ?? 0,
+              body: responseBody,
+            });
+          });
+        },
+      );
+
+      request.on('timeout', () => {
+        request.destroy(new Error('Mailjet API request timed out'));
+      });
+      request.on('error', reject);
+
+      if (payload) {
+        request.write(payload);
+      }
+
+      request.end();
+    });
+  }
+
+  private formatMailjetSendError(
+    statusCode: number,
+    parsedBody: any,
+    rawBody: string,
+  ): string {
+    const fallback = `Mailjet API send failed with HTTP ${statusCode}`;
+    const firstMessage = Array.isArray(parsedBody?.Messages)
+      ? parsedBody.Messages[0]
+      : null;
+    const firstError = Array.isArray(firstMessage?.Errors)
+      ? firstMessage.Errors[0]
+      : null;
+    const statusLabel = firstMessage?.Status
+      ? ` status=${String(firstMessage.Status)}`
+      : '';
+    const errorCode = firstError?.ErrorCode
+      ? String(firstError.ErrorCode)
+      : parsedBody?.ErrorCode
+        ? String(parsedBody.ErrorCode)
+        : null;
+    const errorMessage = firstError?.ErrorMessage
+      ? String(firstError.ErrorMessage)
+      : parsedBody?.ErrorMessage
+        ? String(parsedBody.ErrorMessage)
+        : rawBody.trim() || 'unknown error';
+
+    return `${fallback}${statusLabel}${errorCode ? ` (${errorCode})` : ''}: ${errorMessage}`;
+  }
+
+  private normalizeMailjetMessageId(messageId: unknown): string | null {
+    if (typeof messageId === 'number' && Number.isFinite(messageId)) {
+      return String(messageId);
+    }
+
+    if (typeof messageId === 'string') {
+      const trimmed = messageId.trim();
+      return trimmed.length > 0 ? trimmed : null;
+    }
+
+    return null;
   }
 
   private async dispatchOutboxRowNow(
@@ -528,43 +733,6 @@ export class EmailService {
   private async requestMailjetSender(
     emailAddress: string,
   ): Promise<{ statusCode: number; body: string }> {
-    const apiKey = this.emailConfig.smtpUser;
-    const secretKey = this.emailConfig.smtpPass;
-    if (!apiKey || !secretKey) {
-      throw new Error('Mailjet sender validation requires API key and secret');
-    }
-
-    return new Promise((resolve, reject) => {
-      const request = https.request(
-        {
-          hostname: 'api.mailjet.com',
-          port: 443,
-          method: 'GET',
-          path: `/v3/REST/sender?Email=${encodeURIComponent(emailAddress)}`,
-          headers: {
-            Authorization: `Basic ${Buffer.from(`${apiKey}:${secretKey}`).toString('base64')}`,
-          },
-          timeout: 15000,
-        },
-        (response) => {
-          let body = '';
-          response.on('data', (chunk) => {
-            body += chunk.toString();
-          });
-          response.on('end', () => {
-            resolve({
-              statusCode: response.statusCode ?? 0,
-              body,
-            });
-          });
-        },
-      );
-
-      request.on('timeout', () => {
-        request.destroy(new Error('Mailjet sender lookup timed out'));
-      });
-      request.on('error', reject);
-      request.end();
-    });
+    return this.requestMailjet('GET', `/v3/REST/sender?Email=${encodeURIComponent(emailAddress)}`);
   }
 }

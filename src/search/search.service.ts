@@ -116,6 +116,7 @@ const SEARCH_REDIS_CIRCUIT_OPEN_MS = 10000;
 const SEARCH_REBUILD_BATCH_SIZE = 250;
 const SEARCH_SUGGEST_SCAN_BATCH = 24;
 const SEARCH_SUGGEST_SCAN_CAP = 240;
+const SEARCH_SUGGEST_DB_FALLBACK_MIN_LENGTH = 2;
 const SEARCH_SIMILARITY_THRESHOLD = 0.3;
 const SEARCH_MIXED_PREVIEW_LIMIT = 5;
 
@@ -1157,6 +1158,38 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     }
 
     return items;
+  }
+
+  private async fetchSuggestionItemsWithFallback(
+    key: string,
+    normalizedQuery: string,
+    limit: number,
+    fallback: () => Promise<SearchPageResult>,
+    filter?: (payload: SuggestionPayload) => boolean,
+  ): Promise<SearchPageResult> {
+    const redisItems = await this.fetchSuggestionItems(key, normalizedQuery, limit, filter);
+    if (redisItems.length > 0 || normalizedQuery.length < SEARCH_SUGGEST_DB_FALLBACK_MIN_LENGTH) {
+      return {
+        items: redisItems,
+        total: redisItems.length,
+      };
+    }
+
+    try {
+      const dbResult = await fallback();
+      return {
+        items: dbResult.items.slice(0, limit),
+        total: dbResult.total,
+      };
+    } catch (error: any) {
+      this.logger.warn(
+        `Suggestion database fallback failed for ${key}: ${error?.message || error}`,
+      );
+      return {
+        items: redisItems,
+        total: redisItems.length,
+      };
+    }
   }
 
   private async getSearchResultCount(sql: Prisma.Sql) {
@@ -2498,6 +2531,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     const startedAt = Date.now();
     const parsedQuery = this.parseSearchQuery(queryInput);
     const normalizedQuery = parsedQuery.normalizedQuery;
+    const tokens = parsedQuery.tokens;
     const recent = await this.getRecentSearches(userId, normalizedQuery || undefined);
     const trending = normalizedQuery ? [] : await this.getTrendingSearches();
     const brandOwnerId = await this.resolveBrandOwnerId(brandId);
@@ -2549,42 +2583,66 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
 
     const [products, brands, designs, storeCollections, tagItems] = await Promise.all([
       brandMode || tagMode
-        ? Promise.resolve([])
-        : this.fetchSuggestionItems(
+        ? Promise.resolve({ items: [], total: 0 })
+        : this.fetchSuggestionItemsWithFallback(
             SEARCH_SUGGEST_KEYS.products,
             normalizedQuery,
             PRODUCT_SUGGEST_LIMIT,
+            () => this.searchProductsPage(normalizedQuery, tokens, PRODUCT_SUGGEST_LIMIT, 0, brandId),
           ),
       tagMode
-        ? Promise.resolve([])
-        : this.fetchSuggestionItems(
+        ? Promise.resolve({ items: [], total: 0 })
+        : this.fetchSuggestionItemsWithFallback(
             SEARCH_SUGGEST_KEYS.brands,
             normalizedQuery,
             brandMode ? Math.max(BRAND_SUGGEST_LIMIT + 2, 4) : BRAND_SUGGEST_LIMIT,
+            () =>
+              this.searchBrandsPage(
+                normalizedQuery,
+                tokens,
+                brandMode ? Math.max(BRAND_SUGGEST_LIMIT + 2, 4) : BRAND_SUGGEST_LIMIT,
+                0,
+              ),
           ),
       brandMode || tagMode
-        ? Promise.resolve([])
-        : this.fetchSuggestionItems(
+        ? Promise.resolve({ items: [], total: 0 })
+        : this.fetchSuggestionItemsWithFallback(
             SEARCH_SUGGEST_KEYS.designs,
             normalizedQuery,
             DESIGN_SUGGEST_LIMIT,
+            () => this.searchDesignsPage(normalizedQuery, tokens, DESIGN_SUGGEST_LIMIT, 0),
           ),
       brandMode || tagMode
-        ? Promise.resolve([])
-        : this.fetchSuggestionItems(
+        ? Promise.resolve({ items: [], total: 0 })
+        : this.fetchSuggestionItemsWithFallback(
             SEARCH_SUGGEST_KEYS.collections,
             normalizedQuery,
             COLLECTION_SUGGEST_LIMIT,
+            () =>
+              this.searchCollectionsPage(
+                normalizedQuery,
+                tokens,
+                COLLECTION_SUGGEST_LIMIT,
+                0,
+                brandOwnerId,
+              ),
             brandOwnerId
               ? (payload) => payload.metadata?.ownerId === brandOwnerId
               : undefined,
           ),
       brandMode
-        ? Promise.resolve([])
-        : this.fetchSuggestionItems(
+        ? Promise.resolve({ items: [], total: 0 })
+        : this.fetchSuggestionItemsWithFallback(
             SEARCH_SUGGEST_KEYS.tags,
             normalizedQuery,
             tagMode ? Math.max(TAG_SUGGEST_LIMIT + 3, 4) : TAG_SUGGEST_LIMIT,
+            () =>
+              this.searchTagsPage(
+                normalizedQuery,
+                tokens,
+                tagMode ? Math.max(TAG_SUGGEST_LIMIT + 3, 4) : TAG_SUGGEST_LIMIT,
+                0,
+              ),
           ),
     ]);
 
@@ -2593,11 +2651,11 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
       normalizedQuery,
       recent,
       trending: [],
-      products: { items: products, total: products.length },
-      brands: { items: brands, total: brands.length },
-      designs: { items: designs, total: designs.length },
-      storeCollections: { items: storeCollections, total: storeCollections.length },
-      tags: tagItems.map((item) => ({
+      products: { items: products.items, total: products.total },
+      brands: { items: brands.items, total: brands.total },
+      designs: { items: designs.items, total: designs.total },
+      storeCollections: { items: storeCollections.items, total: storeCollections.total },
+      tags: tagItems.items.map((item) => ({
         id: item.id,
         type: 'tag' as const,
         title: item.title,

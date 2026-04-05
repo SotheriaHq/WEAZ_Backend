@@ -29,6 +29,7 @@ import { UpdateStoreNameDto } from './dto/update-store-name.dto';
 import { UpdateStoreProfileDto } from './dto/update-store-profile.dto';
 import { UpdateStorePoliciesDto } from './dto/update-store-policies.dto';
 import { UpdateStorePaymentAccountDto } from './dto/update-store-payment-account.dto';
+import { VerifyStorePaymentAccountDto } from './dto/verify-store-payment-account.dto';
 import { JwtAuthGuard } from '../auth/guard/jwt-auth.guard';
 import { UserTypeGuard } from '../auth/guard/user-type.guard';
 import { OptionalJwtAuthGuard } from '../auth/guard/optional-jwt-auth.guard';
@@ -570,6 +571,16 @@ export class StoreController {
     @Req() req: any,
   ) {
     return this.storeService.updateStorePaymentAccount(req.user.id, dto);
+  }
+
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Post('store/payment-account/verify')
+  async verifyStorePaymentAccount(
+    @Body(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
+    dto: VerifyStorePaymentAccountDto,
+    @Req() req: any,
+  ) {
+    return this.storeService.verifyStorePaymentAccount(req.user.id, dto);
   }
 
   @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))

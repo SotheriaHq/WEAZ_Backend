@@ -261,6 +261,71 @@ describe('CustomOrdersPaymentsService', () => {
     expect(result.data.reference).toBe('TH-CO-active');
   });
 
+  it('refreshes the existing custom-order attempt instead of creating a second row', async () => {
+    prisma.customOrder.findFirst.mockResolvedValue({
+      id: 'co_refresh',
+      buyerId: 'buyer_1',
+      status: 'PENDING_PAYMENT',
+      paymentStatus: PaymentStatus.PENDING,
+      buyerPriceSummaryJson: { grandTotal: 1900 },
+      currency: 'NGN',
+    });
+
+    prisma.paymentAttempt.findFirst
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({
+        id: 'attempt_old',
+        reference: 'TH-CO-old',
+        status: 'FAILED',
+      });
+
+    const refreshedAttempt = {
+      id: 'attempt_old',
+      reference: 'TH-CO-refresh',
+      provider: 'PAYSTACK',
+      status: 'REQUIRES_ACTION',
+      channel: 'CARD',
+      callbackUrl: 'https://callback.test',
+      authorizationUrl: 'https://authorize.test',
+      bankAccount: null,
+      nextAction: { type: 'REDIRECT' },
+    };
+
+    const tx = {
+      paymentAttempt: {
+        update: jest.fn().mockResolvedValue(refreshedAttempt),
+        create: jest.fn(),
+      },
+      customOrder: {
+        update: jest.fn().mockResolvedValue(undefined),
+      },
+      paymentEvent: {
+        create: jest.fn().mockResolvedValue(undefined),
+      },
+      customOrderTimelineEvent: {
+        create: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+    prisma.$transaction.mockImplementation(async (callback: (innerTx: typeof tx) => Promise<unknown>) =>
+      callback(tx),
+    );
+
+    const result = await service.initializePayment('buyer_1', 'co_refresh', {
+      paymentMethod: PaymentMethod.PAYSTACK,
+      email: 'buyer@example.com',
+      idempotencyKey: 'idem-refresh',
+    });
+
+    expect(tx.paymentAttempt.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'attempt_old' },
+      }),
+    );
+    expect(tx.paymentAttempt.create).not.toHaveBeenCalled();
+    expect(result.data.reference).toBe('TH-CO-refresh');
+  });
+
   it('verifies a successful payment and creates ledger allocations once', async () => {
     const updatedAttempt = {
       id: 'attempt_2',

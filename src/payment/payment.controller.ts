@@ -12,6 +12,9 @@ import {
   Logger,
 } from '@nestjs/common';
 import { JwtAuthGuard } from 'src/auth/guard/jwt-auth.guard';
+import { RolesGuard } from 'src/auth/guard/role.guard';
+import { Roles } from 'src/auth/decorator/roles.decorator';
+import { Role } from '@prisma/client';
 import { IdempotencyInterceptor } from 'src/common/interceptors/idempotency.interceptor';
 import { PaymentService } from './payment.service';
 import { FxRateService } from './fx-rate.service';
@@ -82,7 +85,8 @@ export class PaymentController {
   }
 
   @Post('mock/:reference/simulate')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.SuperAdmin, Role.Admin)
   async simulate(
     @Param('reference') reference: string,
     @Body() dto: SimulatePaymentAttemptDto,

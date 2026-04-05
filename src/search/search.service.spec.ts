@@ -111,11 +111,32 @@ describe('SearchService', () => {
     const fetchSuggestionItems = jest
       .spyOn(service as any, 'fetchSuggestionItems')
       .mockResolvedValue([]);
+    const searchProductsPage = jest.spyOn(service as any, 'searchProductsPage');
     jest.spyOn(service as any, 'resolveBrandOwnerId').mockResolvedValue(undefined);
 
     await service.suggest('r');
 
     expect(fetchSuggestionItems).toHaveBeenCalled();
+    expect(searchProductsPage).not.toHaveBeenCalled();
+  });
+
+  it('falls back to database search when redis suggestions miss', async () => {
+    const { service } = createService();
+    jest.spyOn(service as any, 'fetchSuggestionItems').mockResolvedValue([]);
+    jest.spyOn(service as any, 'resolveBrandOwnerId').mockResolvedValue(undefined);
+    const searchProductsPage = jest
+      .spyOn(service as any, 'searchProductsPage')
+      .mockResolvedValue({ items: [buildItem()], total: 1 });
+    jest.spyOn(service as any, 'searchBrandsPage').mockResolvedValue({ items: [], total: 0 });
+    jest.spyOn(service as any, 'searchDesignsPage').mockResolvedValue({ items: [], total: 0 });
+    jest.spyOn(service as any, 'searchCollectionsPage').mockResolvedValue({ items: [], total: 0 });
+    jest.spyOn(service as any, 'searchTagsPage').mockResolvedValue({ items: [], total: 0 });
+
+    const response = await service.suggest('ada');
+
+    expect(searchProductsPage).toHaveBeenCalledWith('ada', ['ada'], 3, 0, undefined);
+    expect(response.products.items).toHaveLength(1);
+    expect(response.products.total).toBe(1);
   });
 
   it('treats /-prefixed suggestions as tag-only queries', async () => {
@@ -124,6 +145,9 @@ describe('SearchService', () => {
       .spyOn(service as any, 'fetchSuggestionItems')
       .mockResolvedValue([]);
     jest.spyOn(service as any, 'resolveBrandOwnerId').mockResolvedValue(undefined);
+    const searchTagsPage = jest
+      .spyOn(service as any, 'searchTagsPage')
+      .mockResolvedValue({ items: [], total: 0 });
 
     await service.suggest('/summer');
 
@@ -132,6 +156,8 @@ describe('SearchService', () => {
       'search:suggest:index:tags',
       'summer',
       6,
+      undefined,
     );
+    expect(searchTagsPage).toHaveBeenCalledWith('summer', ['summer'], 6, 0);
   });
 });

@@ -8,6 +8,7 @@ import {
   CustomOrderLedgerAllocationType,
   CustomOrderProgressStage,
   CustomOrderStatus,
+  CustomOrderTimelineEventType,
   NotificationType,
   PaymentMethod,
   PaymentStatus,
@@ -127,6 +128,14 @@ export class CustomOrdersPaymentsService {
       }
     }
 
+    const existingOrderAttempt = await this.prisma.paymentAttempt.findFirst({
+      where: {
+        subjectType: PaymentSubjectType.CUSTOM_ORDER,
+        customOrderId,
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
     const paymentData = this.paymentService.preparePaymentRequest(dto.paymentMethod, {
       ...(dto.paymentData ?? {}),
       email: dto.email,
@@ -144,35 +153,50 @@ export class CustomOrdersPaymentsService {
     );
 
     const createdAttempt = await this.prisma.$transaction(async (tx) => {
-      const attempt = await tx.paymentAttempt.create({
-        data: {
-          buyerId: userId,
-          subjectType: PaymentSubjectType.CUSTOM_ORDER,
-          customOrderId,
-          provider: gatewayResult.gateway,
-          providerMode: this.paymentService.getAttemptProviderMode(),
-          providerReference: gatewayResult.providerReference,
-          providerTransactionId: gatewayResult.providerTransactionId,
-          providerAccessCode: gatewayResult.providerAccessCode,
-          providerChannel: gatewayResult.providerChannel ?? gatewayResult.channel,
-          paymentMethod: dto.paymentMethod,
-          channel: gatewayResult.channel,
-          status: gatewayResult.status,
-          reference,
-          idempotencyKey: dto.idempotencyKey,
-          callbackUrl: gatewayResult.callbackUrl ?? callbackUrl,
-          authorizationUrl: gatewayResult.authorizationUrl,
-          amount,
-          currency: order.currency,
-          orderIds: [],
-          requestSnapshot: paymentData as Prisma.InputJsonValue,
-          responseSnapshot:
-            (gatewayResult.responseSnapshot ?? null) as unknown as Prisma.InputJsonValue,
-          nextAction: (gatewayResult.nextAction ?? null) as unknown as Prisma.InputJsonValue,
-          bankAccount: (gatewayResult.bankAccount ?? null) as unknown as Prisma.InputJsonValue,
-          expiresAt: gatewayResult.expiresAt ? new Date(gatewayResult.expiresAt) : null,
-        },
-      });
+      const attemptPayload = {
+        buyerId: userId,
+        subjectType: PaymentSubjectType.CUSTOM_ORDER,
+        customOrderId,
+        provider: gatewayResult.gateway,
+        providerMode: this.paymentService.getAttemptProviderMode(),
+        providerReference: gatewayResult.providerReference,
+        providerTransactionId: gatewayResult.providerTransactionId,
+        providerAccessCode: gatewayResult.providerAccessCode,
+        providerChannel: gatewayResult.providerChannel ?? gatewayResult.channel,
+        paymentMethod: dto.paymentMethod,
+        channel: gatewayResult.channel,
+        status: gatewayResult.status,
+        reference,
+        idempotencyKey: dto.idempotencyKey,
+        callbackUrl: gatewayResult.callbackUrl ?? callbackUrl,
+        authorizationUrl: gatewayResult.authorizationUrl,
+        amount,
+        currency: order.currency,
+        settlementCurrency: order.currency,
+        settlementAmount: null,
+        exchangeRateSnapshotId: null,
+        orderIds: [],
+        requestSnapshot: paymentData as Prisma.InputJsonValue,
+        responseSnapshot:
+          (gatewayResult.responseSnapshot ?? null) as unknown as Prisma.InputJsonValue,
+        nextAction: (gatewayResult.nextAction ?? null) as unknown as Prisma.InputJsonValue,
+        bankAccount: (gatewayResult.bankAccount ?? null) as unknown as Prisma.InputJsonValue,
+        expiresAt: gatewayResult.expiresAt ? new Date(gatewayResult.expiresAt) : null,
+        confirmedAt: null,
+        finalizedAt: null,
+        lastVerifiedAt: null,
+        failureCode: null,
+        failureMessage: null,
+      };
+
+      const attempt = existingOrderAttempt
+        ? await tx.paymentAttempt.update({
+            where: { id: existingOrderAttempt.id },
+            data: attemptPayload,
+          })
+        : await tx.paymentAttempt.create({
+            data: attemptPayload,
+          });
 
       await tx.customOrder.update({
         where: { id: customOrderId },
@@ -274,6 +298,7 @@ export class CustomOrdersPaymentsService {
     }
 
     if (attempt.status === 'PAID') {
+      await this.ensurePaidCustomOrderSettlement(attempt.reference, customOrderId);
       return this.toVerifyResult(attempt, order);
     }
 
@@ -545,6 +570,349 @@ export class CustomOrdersPaymentsService {
     }
 
     return this.toVerifyResult(updatedAttempt, order);
+  }
+
+  async reconcilePaidAttemptByReference(reference: string) {
+    const attempt = await this.prisma.paymentAttempt.findUnique({
+      where: { reference },
+      select: {
+        reference: true,
+        customOrderId: true,
+        subjectType: true,
+        status: true,
+      },
+    });
+
+    if (
+      !attempt ||
+      attempt.subjectType !== PaymentSubjectType.CUSTOM_ORDER ||
+      !attempt.customOrderId ||
+      attempt.status !== 'PAID'
+    ) {
+      return { reconciled: false };
+    }
+
+    await this.ensurePaidCustomOrderSettlement(attempt.reference, attempt.customOrderId);
+    return {
+      reconciled: true,
+      customOrderId: attempt.customOrderId,
+    };
+  }
+
+  private async ensurePaidCustomOrderSettlement(
+    reference: string,
+    customOrderId: string,
+  ) {
+    const reconciliation = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "id" FROM "CustomOrder" WHERE "id" = ${customOrderId}::uuid FOR UPDATE`;
+
+      const attempt = await tx.paymentAttempt.findUnique({
+        where: { reference },
+        select: {
+          id: true,
+          reference: true,
+          buyerId: true,
+          customOrderId: true,
+          status: true,
+          channel: true,
+          confirmedAt: true,
+          settlementCurrency: true,
+          settlementAmount: true,
+        },
+      });
+
+      if (!attempt || attempt.customOrderId !== customOrderId || attempt.status !== 'PAID') {
+        return null;
+      }
+
+      const order = await tx.customOrder.findUnique({
+        where: { id: customOrderId },
+        select: {
+          id: true,
+          buyerId: true,
+          brandId: true,
+          currency: true,
+          status: true,
+          sourceTitleSnapshot: true,
+          sourceBrandNameSnapshot: true,
+          productionLeadDaysSnapshot: true,
+          deliveryMaxDaysSnapshot: true,
+          buyerPriceSummaryJson: true,
+          acceptedAt: true,
+          promisedProductionAt: true,
+          promisedDispatchAt: true,
+          promisedDeliveryAt: true,
+          currentProgressStage: true,
+          currentProgressStageEnteredAt: true,
+          lastBrandProgressUpdateAt: true,
+          buyer: {
+            select: {
+              firstName: true,
+              lastName: true,
+              username: true,
+            },
+          },
+        },
+      });
+
+      if (!order) {
+        return null;
+      }
+
+      const now = new Date();
+      const acceptedAt = order.acceptedAt ?? attempt.confirmedAt ?? now;
+      const promisedProductionAt =
+        order.promisedProductionAt ??
+        new Date(
+          acceptedAt.getTime() + order.productionLeadDaysSnapshot * 24 * 60 * 60 * 1000,
+        );
+      const promisedDispatchAt = order.promisedDispatchAt ?? promisedProductionAt;
+      const promisedDeliveryAt =
+        order.promisedDeliveryAt ??
+        new Date(
+          promisedDispatchAt.getTime() + order.deliveryMaxDaysSnapshot * 24 * 60 * 60 * 1000,
+        );
+
+      const brand = await tx.brand.findUnique({
+        where: { id: order.brandId },
+        select: { ownerId: true },
+      });
+
+      const existingTimeline = await tx.customOrderTimelineEvent.findFirst({
+        where: {
+          customOrderId: order.id,
+          eventType: CustomOrderTimelineEventType.PAYMENT_CONFIRMED,
+        },
+        select: { id: true },
+      });
+
+      const existingOrderReceivedProgress = await tx.customOrderProgressEvent.findFirst({
+        where: {
+          customOrderId: order.id,
+          stage: CustomOrderProgressStage.ORDER_RECEIVED,
+        },
+        select: { id: true },
+      });
+
+      await tx.customOrder.update({
+        where: { id: order.id },
+        data: {
+          paymentStatus: PaymentStatus.PAID,
+          status:
+            order.status === CustomOrderStatus.PENDING_PAYMENT
+              ? CustomOrderStatus.ACCEPTED
+              : order.status,
+          acceptedAt,
+          promisedProductionAt,
+          promisedDispatchAt,
+          promisedDeliveryAt,
+          currentProgressStage:
+            order.currentProgressStage === CustomOrderProgressStage.ORDER_PLACED
+              ? CustomOrderProgressStage.ORDER_RECEIVED
+              : order.currentProgressStage,
+          currentProgressStageEnteredAt:
+            order.currentProgressStage === CustomOrderProgressStage.ORDER_PLACED
+              ? acceptedAt
+              : order.currentProgressStageEnteredAt ?? acceptedAt,
+          lastBrandProgressUpdateAt: order.lastBrandProgressUpdateAt ?? acceptedAt,
+        },
+      });
+
+      if (!existingOrderReceivedProgress && brand?.ownerId) {
+        await tx.customOrderProgressEvent.create({
+          data: {
+            customOrderId: order.id,
+            stage: CustomOrderProgressStage.ORDER_RECEIVED,
+            note: 'Order auto-accepted after payment confirmation.',
+            changedById: brand.ownerId,
+            staleThresholdAt: new Date(acceptedAt.getTime() + 24 * 60 * 60 * 1000),
+          },
+        });
+      }
+
+      if (!existingTimeline) {
+        await tx.customOrderTimelineEvent.create({
+          data: {
+            customOrderId: order.id,
+            actorType: 'SYSTEM',
+            eventType: CustomOrderTimelineEventType.PAYMENT_CONFIRMED,
+            payloadJson: {
+              reference: attempt.reference,
+              status: 'PAID',
+              awaitingProviderConfirmation: false,
+              autoAccepted: true,
+            },
+          },
+        });
+      }
+
+      const grandTotal = Number(
+        (order.buyerPriceSummaryJson as Record<string, unknown>)?.grandTotal ?? 0,
+      );
+      const acceptanceAmount = this.roundMoney(grandTotal * 0.6);
+      const completionAmount = this.roundMoney(grandTotal - acceptanceAmount);
+      const commissionRule = await this.commissionService.resolveRule(
+        { brandId: order.brandId, currency: order.currency },
+        tx,
+      );
+      const commissionRate = commissionRule.ratePercent;
+      const totalCommissionAmount = this.roundMoney((grandTotal * commissionRate) / 100);
+      const acceptanceCommissionAmount =
+        grandTotal > 0
+          ? this.roundMoney((totalCommissionAmount * acceptanceAmount) / grandTotal)
+          : 0;
+      const completionCommissionAmount = this.roundMoney(
+        totalCommissionAmount - acceptanceCommissionAmount,
+      );
+      const acceptanceNetAmount = this.roundMoney(
+        acceptanceAmount - acceptanceCommissionAmount,
+      );
+      const completionNetAmount = this.roundMoney(
+        completionAmount - completionCommissionAmount,
+      );
+
+      const allocations = await tx.customOrderLedgerAllocation.count({
+        where: { customOrderId: order.id },
+      });
+      if (allocations === 0) {
+        await tx.customOrderLedgerAllocation.createMany({
+          data: [
+            {
+              customOrderId: order.id,
+              allocationType: CustomOrderLedgerAllocationType.BRAND_ACCEPTANCE_PORTION,
+              amount: new Prisma.Decimal(acceptanceAmount.toFixed(2)),
+              commissionRate: new Prisma.Decimal(commissionRate.toFixed(2)),
+              commissionAmount: new Prisma.Decimal(acceptanceCommissionAmount.toFixed(2)),
+              netBrandAmount: new Prisma.Decimal(acceptanceNetAmount.toFixed(2)),
+              currency: order.currency,
+              status: CustomOrderLedgerAllocationStatus.HELD,
+            },
+            {
+              customOrderId: order.id,
+              allocationType: CustomOrderLedgerAllocationType.FINAL_COMPLETION_PORTION,
+              amount: new Prisma.Decimal(completionAmount.toFixed(2)),
+              commissionRate: new Prisma.Decimal(commissionRate.toFixed(2)),
+              commissionAmount: new Prisma.Decimal(completionCommissionAmount.toFixed(2)),
+              netBrandAmount: new Prisma.Decimal(completionNetAmount.toFixed(2)),
+              currency: order.currency,
+              status: CustomOrderLedgerAllocationStatus.HELD,
+            },
+          ],
+        });
+      }
+
+      await tx.customOrderLedgerAllocation.updateMany({
+        where: {
+          customOrderId: order.id,
+          allocationType: CustomOrderLedgerAllocationType.BRAND_ACCEPTANCE_PORTION,
+          status: CustomOrderLedgerAllocationStatus.HELD,
+        },
+        data: {
+          status: CustomOrderLedgerAllocationStatus.PAYOUT_ELIGIBLE,
+          eligibleAt: acceptedAt,
+        },
+      });
+
+      await this.ledgerService.postCustomOrderPaymentReceived(tx, {
+        customOrderId: order.id,
+        totalAmount: grandTotal,
+        currency: order.currency,
+      });
+      await this.ledgerService.postCustomOrderImmediateRelease(tx, {
+        customOrderId: order.id,
+        brandId: order.brandId,
+        currency: order.currency,
+        amount: acceptanceAmount,
+        commissionAmount: acceptanceCommissionAmount,
+        netBrandAmount: acceptanceNetAmount,
+      });
+      await this.financialDocumentsService.issueBuyerReceipt(tx, {
+        paymentAttemptId: attempt.id,
+        customOrderId: order.id,
+        currency: order.currency,
+        grossAmount: grandTotal,
+        settlementCurrency: attempt.settlementCurrency ?? order.currency,
+        settlementAmount: Number(attempt.settlementAmount ?? grandTotal),
+        lineItems: [
+          {
+            label: `Custom order ${order.id.slice(0, 8)}`,
+            amount: grandTotal,
+          },
+        ],
+      });
+
+      return {
+        customOrderId: order.id,
+        buyerId: order.buyerId,
+        brandId: order.brandId,
+        brandOwnerId: brand?.ownerId ?? null,
+        reference: attempt.reference,
+        currency: order.currency,
+        amount: grandTotal,
+        sourceTitle: order.sourceTitleSnapshot || 'Untitled custom order',
+        sourceBrandName: order.sourceBrandNameSnapshot || 'the brand',
+        buyer: order.buyer,
+        shouldNotify: !existingTimeline,
+      };
+    });
+
+    if (!reconciliation || !reconciliation.shouldNotify) {
+      return;
+    }
+
+    await this.sideEffects.enqueueNotification({
+      customOrderId: reconciliation.customOrderId,
+      recipientIds: [reconciliation.buyerId],
+      notificationType: 'CUSTOM_ORDER_PAYMENT_RECEIVED' as NotificationType,
+      payload: {
+        customOrderId: reconciliation.customOrderId,
+        targetUrl: `/custom-orders/${reconciliation.customOrderId}`,
+        message: `Payment received and ${reconciliation.sourceBrandName} has been auto-confirmed for your custom order.`,
+      },
+      dedupeMs: 5 * 60 * 1000,
+    });
+
+    if (reconciliation.brandOwnerId) {
+      const buyerDisplayName = [
+        reconciliation.buyer?.firstName,
+        reconciliation.buyer?.lastName,
+      ]
+        .map((value) => String(value ?? '').trim())
+        .filter(Boolean)
+        .join(' ');
+      await this.customOrderThreadBootstrap.ensureOrderPlacedThread({
+        customOrderId: reconciliation.customOrderId,
+        status: CustomOrderStatus.ACCEPTED,
+        brandId: reconciliation.brandId,
+        buyerId: reconciliation.buyerId,
+        brandOwnerUserId: reconciliation.brandOwnerId,
+        actorId: reconciliation.buyerId,
+        buyerDisplayName:
+          buyerDisplayName || String(reconciliation.buyer?.username || 'Buyer'),
+        sourceTitle: reconciliation.sourceTitle,
+      });
+      await this.sideEffects.enqueueNotification({
+        customOrderId: reconciliation.customOrderId,
+        recipientIds: [reconciliation.brandOwnerId],
+        notificationType: 'CUSTOM_ORDER_REVIEW_REQUIRED' as NotificationType,
+        payload: {
+          customOrderId: reconciliation.customOrderId,
+          brandName: reconciliation.sourceBrandName,
+          targetUrl: `/studio/custom-orders/${reconciliation.customOrderId}`,
+          message: `Payment confirmed for ${reconciliation.customOrderId.slice(0, 8)}. The order was auto-accepted and is ready for production updates.`,
+        },
+        dedupeMs: 5 * 60 * 1000,
+      });
+    }
+
+    await this.notifyFinanceAdminsOfCustomOrderPayment({
+      customOrderId: reconciliation.customOrderId,
+      buyerId: reconciliation.buyerId,
+      reference: reconciliation.reference,
+      amount: reconciliation.amount,
+      currency: reconciliation.currency,
+      sourceTitle: reconciliation.sourceTitle,
+    });
   }
 
   private toInitResult(attempt: {

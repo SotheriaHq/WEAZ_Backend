@@ -118,7 +118,7 @@ function runCommand(command, args, label) {
 }
 
 function resetDatabase() {
-  const args = ['prisma', 'migrate', 'reset', '--force', '--skip-seed'];
+  const args = ['prisma', 'migrate', 'reset', '--force'];
   runCommand('npx', args, 'Prisma reset');
 }
 

@@ -27,6 +27,7 @@ import {
 import { Request } from 'express';
 import { EmailService } from 'src/email/email.service';
 import * as emailTemplates from 'src/email/email.templates';
+import { resolveWebAppBaseUrl } from 'src/common/utils/web-app-url';
 
 @Injectable()
 export class AdminUsersService {
@@ -125,7 +126,7 @@ export class AdminUsersService {
     });
 
     // Send admin account creation email with temporary password
-    const loginUrl = (process.env.WEB_APP_URL || 'http://localhost:5173').replace(/\/$/, '') + '/admin/login';
+    const loginUrl = `${resolveWebAppBaseUrl()}/admin/login`;
     const creationEmail = emailTemplates.adminAccountCreatedEmail(
       dto.email,
       tempPassword,

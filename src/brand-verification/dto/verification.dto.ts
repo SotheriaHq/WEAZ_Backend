@@ -73,8 +73,9 @@ export class SubmitBrandVerificationDto {
   @IsEnum(VerificationOwnerGender)
   ownerGender: VerificationOwnerGender;
 
+  @IsOptional()
   @IsString()
-  ownerPhoneNumber: string;
+  ownerPhoneNumber?: string;
 
   @IsString()
   ownerNin: string;

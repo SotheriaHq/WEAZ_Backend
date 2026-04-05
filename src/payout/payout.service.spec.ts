@@ -2,6 +2,8 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { PayoutService } from './payout.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { StandardOrderEscrowService } from 'src/finance/standard-order-escrow.service';
+import { CommissionService } from 'src/finance/commission.service';
+import { StandardOrderFinanceSyncService } from 'src/finance/standard-order-finance-sync.service';
 
 describe('PayoutService', () => {
   let service: PayoutService;
@@ -12,6 +14,11 @@ describe('PayoutService', () => {
         PayoutService,
         { provide: PrismaService, useValue: {} },
         { provide: StandardOrderEscrowService, useValue: { getReleasedBalance: jest.fn() } },
+        { provide: CommissionService, useValue: { resolveRule: jest.fn() } },
+        {
+          provide: StandardOrderFinanceSyncService,
+          useValue: { syncPaidOrdersByOrderIds: jest.fn() },
+        },
       ],
     }).compile();
 

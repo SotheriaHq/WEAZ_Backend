@@ -3,6 +3,7 @@ import { Processor, WorkerHost } from '@nestjs/bullmq';
 import type { Job } from 'bullmq';
 import { PaymentService } from 'src/payment/payment.service';
 import { AdminPayoutsService } from 'src/admin/payouts/admin-payouts.service';
+import { CustomOrdersPaymentsService } from 'src/custom-orders/custom-orders-payments.service';
 import {
   WEBHOOK_EVENTS_QUEUE,
   WEBHOOK_PAYMENT_PROCESS_JOB,
@@ -20,6 +21,7 @@ export class WebhookEventsProcessor extends WorkerHost {
   constructor(
     private readonly paymentService: PaymentService,
     private readonly adminPayoutsService: AdminPayoutsService,
+    private readonly customOrdersPaymentsService: CustomOrdersPaymentsService,
   ) {
     super();
   }
@@ -28,8 +30,12 @@ export class WebhookEventsProcessor extends WorkerHost {
     job: Job<PaymentWebhookProcessJob | PayoutWebhookProcessJob>,
   ): Promise<void> {
     if (job.name === WEBHOOK_PAYMENT_PROCESS_JOB) {
+      const paymentJob = job.data as PaymentWebhookProcessJob;
       await this.paymentService.processQueuedWebhook(
-        job.data as PaymentWebhookProcessJob,
+        paymentJob,
+      );
+      await this.customOrdersPaymentsService.reconcilePaidAttemptByReference(
+        paymentJob.reference,
       );
       return;
     }

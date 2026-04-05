@@ -261,6 +261,13 @@ export class BrandVerificationService {
     this.assertCanSubmit(brand);
     await this.validateVerificationDocuments(ownerId, dto);
     await this.ensureNinNotApprovedElsewhere(dto.ownerNin, brand.id);
+    const resolvedOwnerPhoneNumber =
+      String(dto.ownerPhoneNumber ?? '').trim() ||
+      String(brand.owner.phoneNumber ?? '').trim();
+
+    if (!resolvedOwnerPhoneNumber) {
+      throw new BadRequestException('Owner phone number is required');
+    }
 
     const attemptNumber = (brand.verificationAttemptNumber ?? 0) + 1;
     const now = new Date();
@@ -286,7 +293,7 @@ export class BrandVerificationService {
           ownerLegalLastName: dto.ownerLegalLastName,
           ownerDateOfBirth: new Date(dto.ownerDateOfBirth),
           ownerGender: dto.ownerGender,
-          ownerPhoneNumber: dto.ownerPhoneNumber,
+          ownerPhoneNumber: resolvedOwnerPhoneNumber,
           ownerNin: dto.ownerNin,
           cacNumber: dto.cacNumber,
           businessAddress: dto.businessAddress as any,
@@ -1015,6 +1022,7 @@ export class BrandVerificationService {
             email: true,
             firstName: true,
             lastName: true,
+            phoneNumber: true,
             status: true,
             deactivatedAt: true,
           },

@@ -9,6 +9,7 @@ describe('StoreService', () => {
   const prisma = {
     brand: { findUnique: jest.fn() },
     user: { findUnique: jest.fn() },
+    storePolicy: { findUnique: jest.fn() },
     storePaymentAccount: {
       findUnique: jest.fn(),
       upsert: jest.fn(),
@@ -161,6 +162,7 @@ describe('StoreService', () => {
       firstName: 'Ada',
       lastName: 'Lovelace',
       phoneNumber: '08030000000',
+      isEmailVerified: true,
     });
     prisma.storePaymentAccount.findUnique.mockResolvedValue({
       brandId: 'brand_1',
@@ -209,5 +211,41 @@ describe('StoreService', () => {
     expect(upsertArgs.update.transferRecipientCode).toBe('TRF_OLD');
     expect(upsertArgs.create.lastSyncError).toBe('Transfer recipient update failed');
     expect(upsertArgs.update.lastSyncError).toBe('Transfer recipient update failed');
+  });
+
+  it('reports brand profile completeness separately from store setup completeness', async () => {
+    prisma.brand.findUnique.mockResolvedValue({
+      id: 'brand_1',
+      name: 'Brand One',
+      description: 'A valid store description for setup.',
+      tags: ['fashion'],
+      logo: null,
+      banner: null,
+      isStoreOpen: false,
+      tagline: null,
+      contactEmail: null,
+      socialInstagram: null,
+      socialTwitter: null,
+      socialTiktok: null,
+      socialWebsite: null,
+      responseTimeSla: null,
+    });
+    prisma.user.findUnique.mockResolvedValue({
+      id: 'owner_1',
+      isEmailVerified: true,
+      brandDescription: 'Short bio',
+      brandTags: [],
+      brandCountry: null,
+      brandState: null,
+    });
+    prisma.storePolicy.findUnique.mockResolvedValue({ responseTimeSla: '24h' });
+    prisma.storePaymentAccount.findUnique.mockResolvedValue(null);
+
+    const status = await service.getStoreStatus('owner_1');
+
+    expect(status.isEmailVerified).toBe(true);
+    expect(status.isProfileComplete).toBe(false);
+    expect(status.profileMissingFields).toEqual(['description', 'tags', 'location']);
+    expect(status.isSetupComplete).toBe(false);
   });
 });

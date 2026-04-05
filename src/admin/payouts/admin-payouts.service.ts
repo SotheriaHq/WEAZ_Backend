@@ -1,4 +1,5 @@
 import {
+  BadGatewayException,
   BadRequestException,
   ConflictException,
   ForbiddenException,
@@ -23,6 +24,10 @@ import {
   type PayoutWebhookProcessJob,
 } from 'src/queue/webhook-events.queue.service';
 import { buildPayoutSourceBreakdown } from 'src/payout/payout-detail.presenter';
+import {
+  describePaystackSecretEnvKeys,
+  resolvePaystackSecret,
+} from 'src/common/utils/paystack-secret';
 
 type WebhookContext = {
   headers: Record<string, any>;
@@ -60,8 +65,12 @@ const VALID_TRANSITIONS: Record<PayoutStatus, PayoutStatus[]> = {
   [PayoutStatus.REJECTED]: [],
   [PayoutStatus.ON_HOLD]: [PayoutStatus.APPROVED, PayoutStatus.REJECTED],
   [PayoutStatus.RECONCILIATION_REVIEW]: [
+    // PAID is intentionally excluded here.
+    // A payout can only reach PAID via a confirmed Paystack transfer (webhook or
+    // provider fetch). Manual status updates must never bypass that requirement.
+    // To close a reconciliation case: move back to APPROVED and re-initiate the
+    // transfer, or move to FAILED/REJECTED if the payout cannot proceed.
     PayoutStatus.APPROVED,
-    PayoutStatus.PAID,
     PayoutStatus.FAILED,
     PayoutStatus.ON_HOLD,
   ],
@@ -335,6 +344,10 @@ export class AdminPayoutsService {
       throw new ConflictException(
         `Cannot transition payout from ${payout.status} to ${params.status}`,
       );
+    }
+
+    if (params.status === PayoutStatus.PAID) {
+      this.assertManualPaidTransitionIsProviderConfirmed(payout);
     }
 
     const now = new Date();
@@ -1047,6 +1060,15 @@ export class AdminPayoutsService {
           payoutId: null,
         },
       });
+
+      await (tx as any).payoutLedgerSourceAllocation.updateMany({
+        where: {
+          payoutId: current.id,
+        },
+        data: {
+          payoutId: null,
+        },
+      });
     }
   }
 
@@ -1085,8 +1107,10 @@ export class AdminPayoutsService {
   }
 
   private isPayoutTransferExecutionEnabled() {
+    // Default is false (disabled). Must be explicitly set to 'true' only after
+    // test-mode UAT passes. Prevents accidental live payout execution.
     const value = String(
-      process.env.PAYSTACK_PAYOUT_TRANSFERS_ENABLED ?? 'true',
+      process.env.PAYSTACK_PAYOUT_TRANSFERS_ENABLED ?? 'false',
     )
       .trim()
       .toLowerCase();
@@ -1144,9 +1168,11 @@ export class AdminPayoutsService {
   }
 
   private getRequiredPaystackSecret() {
-    const secret = String(process.env.PAYSTACK_SECRET_KEY ?? '').trim();
+    const secret = resolvePaystackSecret();
     if (!secret) {
-      throw new BadRequestException('PAYSTACK_SECRET_KEY is required for payout execution');
+      throw new BadRequestException(
+        `Paystack secret is required for payout execution. Configure one of: ${describePaystackSecretEnvKeys()}`,
+      );
     }
     return secret;
   }
@@ -1180,7 +1206,7 @@ export class AdminPayoutsService {
     }
 
     if (!response.ok || payload?.status === false || !payload?.data) {
-      throw new BadRequestException(
+      throw new BadGatewayException(
         String(payload?.message || 'Paystack payout request failed'),
       );
     }
@@ -1232,13 +1258,11 @@ export class AdminPayoutsService {
   }
 
   private extractRequestIps(context: WebhookContext) {
-    const forwarded = this.getHeader(context.headers, 'x-forwarded-for');
-    const forwardedIps = String(forwarded ?? '')
-      .split(',')
-      .map((value) => this.normalizeIp(value))
-      .filter((value): value is string => Boolean(value));
+    // SECURITY: Only use the resolved remoteAddress (req.ip from NestJS).
+    // See the equivalent method in payment.service.ts for the full explanation.
+    // Summary: using X-Forwarded-For with candidates.some() is bypassable via header injection.
     const directIp = this.normalizeIp(context.remoteAddress);
-    return Array.from(new Set([...forwardedIps, ...(directIp ? [directIp] : [])]));
+    return directIp ? [directIp] : [];
   }
 
   private normalizeIp(value: string | null | undefined) {
@@ -1406,6 +1430,24 @@ export class AdminPayoutsService {
 
     if (assignedAdminId !== actorId) {
       throw new ForbiddenException('Payout is assigned to another admin');
+    }
+  }
+
+  private assertManualPaidTransitionIsProviderConfirmed(payout: any) {
+    const transferCode = String(payout?.providerTransferCode ?? '').trim();
+    if (!transferCode) {
+      throw new ConflictException(
+        'Cannot mark payout as PAID without an initiated provider transfer code',
+      );
+    }
+
+    const providerStatus = this.normalizeProviderStatus(
+      payout?.providerTransferStatus,
+    );
+    if (providerStatus !== 'SUCCESS') {
+      throw new ConflictException(
+        'Cannot mark payout as PAID until provider transfer status is SUCCESS. Refresh provider status or wait for webhook confirmation.',
+      );
     }
   }
 }

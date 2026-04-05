@@ -141,7 +141,24 @@ export class IdempotencyInterceptor implements NestInterceptor {
             });
           }),
           catchError((err) => {
-            // Do not persist failures as responses.
+            // On error: delete the idempotency key record so the caller can
+            // retry with the same key. We do NOT persist error responses because
+            // a transient failure (Paystack timeout, network blip, validation error)
+            // should be retryable with the same idempotency key — not permanently
+            // cached as a failure for 24 hours.
+            //
+            // If the delete itself fails, the key will expire naturally after TTL.
+            // We use void + .catch() to not block the error response.
+            void idempotencyKeyModel
+              .deleteMany({
+                where: { userId, key, method, path },
+              })
+              .catch((deleteErr: unknown) => {
+                console.error(
+                  '[IdempotencyInterceptor] Failed to clean up key after error:',
+                  deleteErr,
+                );
+              });
             return throwError(() => err);
           }),
         );
