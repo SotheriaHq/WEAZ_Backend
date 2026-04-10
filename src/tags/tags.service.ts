@@ -58,6 +58,55 @@ type TagFeedItem =
       };
     };
 
+type TagAdminRow = {
+  name: string;
+  displayName: string;
+  usageCount: number;
+  isBanned: boolean;
+  aliasOfTagName: string | null;
+  createdAt: string;
+  lastUsedAt: string | null;
+  lifecycleStage: 'LIVE' | 'REJECTED' | 'ALIAS' | 'DORMANT';
+};
+
+type TagLifecycleStage = 'all' | 'live' | 'rejected' | 'alias' | 'dormant';
+
+type TagAdminSortMode = 'recent' | 'popular' | 'last-used' | 'name-asc';
+
+type TagLifecycleEvent = {
+  id: string;
+  type:
+    | 'TAG_CREATED'
+    | 'FIRST_USAGE'
+    | 'LAST_USAGE'
+    | 'STATUS_REJECTED'
+    | 'STATUS_ALLOWED'
+    | 'ALIASED_TO'
+    | 'TAG_UPDATED';
+  at: string;
+  summary: string;
+};
+
+type TagLifecycleActor = {
+  userId: string;
+  username: string | null;
+  brandFullName: string | null;
+  profileImage: string | null;
+  usageCount: number;
+  latestTaggedAt: string | null;
+};
+
+type TagGroupedBindingRow = {
+  entityType: string;
+  entityId: string;
+  _count?: {
+    _all?: number | bigint | null;
+  } | null;
+  _max?: {
+    createdAt?: Date | null;
+  } | null;
+};
+
 @Injectable()
 export class TagsService {
   constructor(
@@ -74,6 +123,14 @@ export class TagsService {
     return this.tagIndex.normalizeTagName(input);
   }
 
+  private normalizeDisplayName(input: string): string {
+    return String(input ?? '')
+      .trim()
+      .replace(/^#+/, '')
+      .replace(/\s+/g, ' ')
+      .slice(0, 64);
+  }
+
   private parseTrendingWindow(window?: string): number {
     const normalized = (window || '24h').trim().toLowerCase();
     if (normalized === '1h') return 1 * 60 * 60 * 1000;
@@ -82,6 +139,185 @@ export class TagsService {
     throw new BadRequestException(
       'Invalid window. Supported values: 1h, 24h, 7d',
     );
+  }
+
+  private parseLifecycleStage(state?: string): TagLifecycleStage {
+    const normalized = String(state ?? 'all').trim().toLowerCase();
+    if (normalized === 'live') return 'live';
+    if (normalized === 'rejected') return 'rejected';
+    if (normalized === 'alias') return 'alias';
+    if (normalized === 'dormant') return 'dormant';
+    return 'all';
+  }
+
+  private parseAdminSort(sort?: string): TagAdminSortMode {
+    const normalized = String(sort ?? 'recent').trim().toLowerCase();
+    if (normalized === 'popular') return 'popular';
+    if (normalized === 'last-used') return 'last-used';
+    if (normalized === 'name-asc') return 'name-asc';
+    return 'recent';
+  }
+
+  private mapLifecycleStage(row: {
+    isBanned: boolean;
+    aliasOfTagId?: string | null;
+    usageCount: number;
+  }): TagAdminRow['lifecycleStage'] {
+    if (row.aliasOfTagId) return 'ALIAS';
+    if (row.isBanned) return 'REJECTED';
+    if ((row.usageCount ?? 0) <= 0) return 'DORMANT';
+    return 'LIVE';
+  }
+
+  private async queryAdminTagRows(params: {
+    query?: string;
+    cursor?: string;
+    limit?: number;
+    includeBanned?: boolean;
+    sort?: TagAdminSortMode;
+    state?: TagLifecycleStage;
+  }): Promise<{ items: TagAdminRow[]; nextCursor: string | null }> {
+    const take = this.clampLimit(params.limit, 1, 100);
+    const normalizedQuery = this.normalizeLookup(params.query ?? '');
+
+    const where: Record<string, unknown> = {};
+    if (!params.includeBanned) {
+      where.isBanned = false;
+    }
+    if (normalizedQuery) {
+      where.normalizedName = { startsWith: normalizedQuery };
+    }
+
+    const state = this.parseLifecycleStage(params.state);
+    if (state === 'live') {
+      where.isBanned = false;
+      where.aliasOfTagId = null;
+      where.usageCount = { gt: 0 };
+    } else if (state === 'rejected') {
+      where.isBanned = true;
+    } else if (state === 'alias') {
+      where.aliasOfTagId = { not: null };
+    } else if (state === 'dormant') {
+      where.usageCount = { lte: 0 };
+    }
+
+    const sort = this.parseAdminSort(params.sort);
+    const orderBy =
+      sort === 'popular'
+        ? [{ usageCount: 'desc' }, { lastUsedAt: 'desc' }, { normalizedName: 'asc' }]
+        : sort === 'last-used'
+          ? [{ lastUsedAt: 'desc' }, { usageCount: 'desc' }, { normalizedName: 'asc' }]
+          : sort === 'name-asc'
+            ? [{ normalizedName: 'asc' }]
+            : [{ createdAt: 'desc' }, { normalizedName: 'asc' }];
+
+    const rows = await (this.prisma as any).tag.findMany({
+      where,
+      orderBy,
+      ...(params.cursor ? { cursor: { id: params.cursor }, skip: 1 } : {}),
+      take: take + 1,
+      select: {
+        id: true,
+        normalizedName: true,
+        displayName: true,
+        usageCount: true,
+        isBanned: true,
+        aliasOfTagId: true,
+        aliasOfTag: {
+          select: {
+            normalizedName: true,
+          },
+        },
+        createdAt: true,
+        lastUsedAt: true,
+      },
+    });
+
+    const hasMore = rows.length > take;
+    const pageRows = hasMore ? rows.slice(0, take) : rows;
+
+    return {
+      items: pageRows.map((row: any) => ({
+        name: row.normalizedName,
+        displayName: row.displayName,
+        usageCount: row.usageCount,
+        isBanned: row.isBanned,
+        aliasOfTagName: row.aliasOfTag?.normalizedName ?? null,
+        createdAt: row.createdAt.toISOString(),
+        lastUsedAt: row.lastUsedAt ? row.lastUsedAt.toISOString() : null,
+        lifecycleStage: this.mapLifecycleStage(row),
+      })),
+      nextCursor: hasMore ? pageRows[pageRows.length - 1]?.id ?? null : null,
+    };
+  }
+
+  async getAdminTagQueue(params: {
+    cursor?: string;
+    limit?: number;
+    includeBanned?: boolean;
+    sort?: TagAdminSortMode;
+    state?: TagLifecycleStage;
+  }) {
+    return this.queryAdminTagRows({
+      cursor: params.cursor,
+      limit: params.limit,
+      includeBanned: params.includeBanned,
+      sort: params.sort ?? 'recent',
+      state: params.state,
+    });
+  }
+
+  async searchAdminTags(
+    query: string,
+    limit = 50,
+    includeBanned = false,
+    sort: TagAdminSortMode = 'popular',
+    state?: TagLifecycleStage,
+  ) {
+    const rows = await this.queryAdminTagRows({
+      query,
+      limit,
+      includeBanned,
+      sort,
+      state,
+    });
+
+    return rows.items;
+  }
+
+  async updateTagMetadata(inputName: string, payload: { displayName?: string }) {
+    const normalizedName = this.normalizeLookup(inputName);
+    if (!normalizedName) throw new BadRequestException('Invalid tag');
+
+    const nextDisplayName = payload.displayName
+      ? this.normalizeDisplayName(payload.displayName)
+      : '';
+    if (!nextDisplayName) {
+      throw new BadRequestException('Display name is required');
+    }
+
+    const updated = await (this.prisma as any).tag.upsert({
+      where: { normalizedName },
+      create: {
+        id: crypto.randomUUID(),
+        normalizedName,
+        displayName: nextDisplayName,
+      },
+      update: {
+        displayName: nextDisplayName,
+      },
+      select: {
+        normalizedName: true,
+        displayName: true,
+        updatedAt: true,
+      },
+    });
+
+    return {
+      name: updated.normalizedName,
+      displayName: updated.displayName,
+      updatedAt: updated.updatedAt.toISOString(),
+    };
   }
 
   /**
@@ -227,12 +463,25 @@ export class TagsService {
         displayName: true,
         usageCount: true,
         isBanned: true,
+        lastUsedAt: true,
         aliasOfTagId: true,
         aliasOfTag: {
           select: {
+            id: true,
             normalizedName: true,
             displayName: true,
           },
+        },
+        aliases: {
+          select: {
+            id: true,
+            normalizedName: true,
+            displayName: true,
+            createdAt: true,
+            updatedAt: true,
+          },
+          orderBy: [{ updatedAt: 'desc' }],
+          take: 25,
         },
         createdAt: true,
         updatedAt: true,
@@ -241,32 +490,323 @@ export class TagsService {
 
     if (!tag) throw new NotFoundException('Tag not found');
 
-    const countRows = await (this.prisma as any).tagBinding.groupBy({
-      by: ['entityType'],
-      where: { tagId: tag.id },
-      _count: { _all: true },
+    const resolvedTagId = tag.aliasOfTagId ?? tag.id;
+    const resolvedTag =
+      tag.aliasOfTagId && tag.aliasOfTag
+        ? tag.aliasOfTag
+        : {
+            id: tag.id,
+            normalizedName: tag.normalizedName,
+            displayName: tag.displayName,
+          };
+
+    const [bindingStats, groupedBindings] = await Promise.all([
+      (this.prisma as any).tagBinding.aggregate({
+        where: { tagId: resolvedTagId },
+        _count: { _all: true },
+        _min: { createdAt: true },
+        _max: { createdAt: true },
+      }),
+      (this.prisma as any).tagBinding.groupBy({
+        by: ['entityType', 'entityId'],
+        where: { tagId: resolvedTagId },
+        _count: { _all: true },
+        _max: { createdAt: true },
+      }),
+    ]);
+
+    const typedGroupedBindings = groupedBindings as TagGroupedBindingRow[];
+
+    const countRows = typedGroupedBindings.reduce((acc: Record<string, number>, row) => {
+      const key = row.entityType;
+      acc[key] = (acc[key] ?? 0) + Number(row._count?._all ?? 0);
+      return acc;
+    }, {});
+
+    const collectionIds = typedGroupedBindings
+      .filter((row) => row.entityType === TAG_ENTITY_TYPE.COLLECTION)
+      .map((row) => row.entityId);
+    const productIds = typedGroupedBindings
+      .filter((row) => row.entityType === TAG_ENTITY_TYPE.PRODUCT)
+      .map((row) => row.entityId);
+    const brandIds = typedGroupedBindings
+      .filter((row) => row.entityType === TAG_ENTITY_TYPE.BRAND)
+      .map((row) => row.entityId);
+    const userBrandIds = typedGroupedBindings
+      .filter((row) => row.entityType === TAG_ENTITY_TYPE.USER_BRAND)
+      .map((row) => row.entityId);
+
+    const [collections, products, brands, userBrands] = await Promise.all([
+      collectionIds.length
+        ? this.prisma.collection.findMany({
+            where: { id: { in: collectionIds } },
+            select: { id: true, title: true, ownerId: true },
+          })
+        : Promise.resolve([]),
+      productIds.length
+        ? this.prisma.product.findMany({
+            where: { id: { in: productIds } },
+            select: {
+              id: true,
+              name: true,
+              brand: {
+                select: {
+                  ownerId: true,
+                  name: true,
+                },
+              },
+            },
+          })
+        : Promise.resolve([]),
+      brandIds.length
+        ? this.prisma.brand.findMany({
+            where: { id: { in: brandIds } },
+            select: {
+              id: true,
+              name: true,
+              ownerId: true,
+            },
+          })
+        : Promise.resolve([]),
+      userBrandIds.length
+        ? this.prisma.user.findMany({
+            where: { id: { in: userBrandIds } },
+            select: {
+              id: true,
+              username: true,
+              brandFullName: true,
+            },
+          })
+        : Promise.resolve([]),
+    ]);
+
+    const ownerByEntity = new Map<string, string>();
+    const labelByEntity = new Map<string, string>();
+
+    collections.forEach((row) => {
+      ownerByEntity.set(`${TAG_ENTITY_TYPE.COLLECTION}:${row.id}`, row.ownerId);
+      labelByEntity.set(
+        `${TAG_ENTITY_TYPE.COLLECTION}:${row.id}`,
+        row.title?.trim() || 'Collection',
+      );
     });
 
-    const entityCounts = countRows.reduce(
-      (acc: Record<string, number>, row: any) => {
-        acc[row.entityType] = row._count?._all ?? 0;
-        return acc;
-      },
-      {},
+    products.forEach((row) => {
+      if (row.brand?.ownerId) {
+        ownerByEntity.set(`${TAG_ENTITY_TYPE.PRODUCT}:${row.id}`, row.brand.ownerId);
+      }
+      labelByEntity.set(
+        `${TAG_ENTITY_TYPE.PRODUCT}:${row.id}`,
+        row.name?.trim() || row.brand?.name || 'Product',
+      );
+    });
+
+    brands.forEach((row) => {
+      ownerByEntity.set(`${TAG_ENTITY_TYPE.BRAND}:${row.id}`, row.ownerId);
+      labelByEntity.set(`${TAG_ENTITY_TYPE.BRAND}:${row.id}`, row.name?.trim() || 'Brand');
+    });
+
+    userBrands.forEach((row) => {
+      ownerByEntity.set(`${TAG_ENTITY_TYPE.USER_BRAND}:${row.id}`, row.id);
+      labelByEntity.set(
+        `${TAG_ENTITY_TYPE.USER_BRAND}:${row.id}`,
+        row.brandFullName?.trim() || row.username?.trim() || 'Brand profile',
+      );
+    });
+
+    const usageByUser = new Map<
+      string,
+      {
+        usageCount: number;
+        latestTaggedAt: Date | null;
+      }
+    >();
+    for (const row of typedGroupedBindings) {
+      const entityKey = `${row.entityType}:${row.entityId}`;
+      const ownerId = ownerByEntity.get(entityKey);
+      if (!ownerId) continue;
+
+      const previous = usageByUser.get(ownerId) ?? {
+        usageCount: 0,
+        latestTaggedAt: null,
+      };
+      const rowCount = Number(row._count?._all ?? 0);
+      const rowLatest: Date | null = row._max?.createdAt ?? null;
+      const latestTaggedAt =
+        previous.latestTaggedAt && rowLatest
+          ? previous.latestTaggedAt > rowLatest
+            ? previous.latestTaggedAt
+            : rowLatest
+          : previous.latestTaggedAt ?? rowLatest;
+
+      usageByUser.set(ownerId, {
+        usageCount: previous.usageCount + rowCount,
+        latestTaggedAt,
+      });
+    }
+
+    const usageUserIds = Array.from(usageByUser.keys());
+    const usageUsers = usageUserIds.length
+      ? await this.prisma.user.findMany({
+          where: { id: { in: usageUserIds } },
+          select: {
+            id: true,
+            username: true,
+            brandFullName: true,
+            profileImage: true,
+          },
+        })
+      : [];
+    const usageUserMap = new Map(usageUsers.map((row) => [row.id, row]));
+
+    const usageByUsers: TagLifecycleActor[] = usageUserIds
+      .map((userId) => {
+        const stats = usageByUser.get(userId);
+        const user = usageUserMap.get(userId);
+        if (!stats || !user) return null;
+        return {
+          userId,
+          username: user.username,
+          brandFullName: user.brandFullName,
+          profileImage: user.profileImage,
+          usageCount: stats.usageCount,
+          latestTaggedAt: stats.latestTaggedAt
+            ? stats.latestTaggedAt.toISOString()
+            : null,
+        };
+      })
+      .filter((entry): entry is TagLifecycleActor => Boolean(entry))
+      .sort((a, b) => {
+        if (b.usageCount !== a.usageCount) return b.usageCount - a.usageCount;
+        const aDate = a.latestTaggedAt ? new Date(a.latestTaggedAt).getTime() : 0;
+        const bDate = b.latestTaggedAt ? new Date(b.latestTaggedAt).getTime() : 0;
+        return bDate - aDate;
+      })
+      .slice(0, 50);
+
+    const timeline: TagLifecycleEvent[] = [];
+    timeline.push({
+      id: `created:${tag.id}`,
+      type: 'TAG_CREATED',
+      at: tag.createdAt.toISOString(),
+      summary: `Tag #${tag.normalizedName} was created.`,
+    });
+
+    if (bindingStats?._min?.createdAt) {
+      timeline.push({
+        id: `first-usage:${tag.id}`,
+        type: 'FIRST_USAGE',
+        at: bindingStats._min.createdAt.toISOString(),
+        summary: 'First recorded usage in published content.',
+      });
+    }
+
+    if (bindingStats?._max?.createdAt) {
+      timeline.push({
+        id: `last-usage:${tag.id}`,
+        type: 'LAST_USAGE',
+        at: bindingStats._max.createdAt.toISOString(),
+        summary: 'Most recent recorded usage.',
+      });
+    }
+
+    if (tag.aliasOfTag) {
+      timeline.push({
+        id: `alias:${tag.id}`,
+        type: 'ALIASED_TO',
+        at: tag.updatedAt.toISOString(),
+        summary: `Merged under #${tag.aliasOfTag.normalizedName}.`,
+      });
+    }
+
+    if (tag.isBanned) {
+      timeline.push({
+        id: `rejected:${tag.id}`,
+        type: 'STATUS_REJECTED',
+        at: tag.updatedAt.toISOString(),
+        summary: 'Tag is currently rejected from global use.',
+      });
+    } else if (tag.updatedAt.getTime() > tag.createdAt.getTime()) {
+      timeline.push({
+        id: `allowed:${tag.id}`,
+        type: 'STATUS_ALLOWED',
+        at: tag.updatedAt.toISOString(),
+        summary: 'Tag is currently allowed for global use.',
+      });
+    }
+
+    timeline.push({
+      id: `updated:${tag.id}`,
+      type: 'TAG_UPDATED',
+      at: tag.updatedAt.toISOString(),
+      summary: 'Tag metadata was updated.',
+    });
+
+    timeline.sort(
+      (a, b) => new Date(b.at).getTime() - new Date(a.at).getTime(),
     );
+
+    const usageSamples = typedGroupedBindings
+      .map((row) => {
+        const entityKey = `${row.entityType}:${row.entityId}`;
+        const label = labelByEntity.get(entityKey) ?? row.entityId;
+        return {
+          entityType: row.entityType,
+          entityId: row.entityId,
+          usageCount: Number(row._count?._all ?? 0),
+          latestTaggedAt: row._max?.createdAt
+            ? row._max.createdAt.toISOString()
+            : null,
+          label,
+        };
+      })
+      .sort((a, b) => {
+        if (b.usageCount !== a.usageCount) return b.usageCount - a.usageCount;
+        const aDate = a.latestTaggedAt ? new Date(a.latestTaggedAt).getTime() : 0;
+        const bDate = b.latestTaggedAt ? new Date(b.latestTaggedAt).getTime() : 0;
+        return bDate - aDate;
+      })
+      .slice(0, 100);
+
+    const resolvedUsageCount = Number(bindingStats?._count?._all ?? tag.usageCount ?? 0);
+
+    const entityCounts = countRows;
 
     return {
       name: tag.normalizedName,
       displayName: tag.displayName,
-      usageCount: tag.usageCount,
+      usageCount: resolvedUsageCount,
       isBanned: tag.isBanned,
+      lifecycleStage: this.mapLifecycleStage({
+        isBanned: tag.isBanned,
+        aliasOfTagId: tag.aliasOfTagId,
+        usageCount: resolvedUsageCount,
+      }),
+      lastUsedAt: tag.lastUsedAt ? tag.lastUsedAt.toISOString() : null,
       aliasOf: tag.aliasOfTag
         ? {
             name: tag.aliasOfTag.normalizedName,
             displayName: tag.aliasOfTag.displayName,
           }
         : null,
+      aliases: (tag.aliases ?? []).map((alias: any) => ({
+        name: alias.normalizedName,
+        displayName: alias.displayName,
+        createdAt: alias.createdAt.toISOString(),
+        updatedAt: alias.updatedAt.toISOString(),
+      })),
+      resolvedTag: {
+        id: resolvedTag.id,
+        name: resolvedTag.normalizedName,
+        displayName: resolvedTag.displayName,
+      },
       entityCounts,
+      usage: {
+        distinctUsersCount: usageByUsers.length,
+        users: usageByUsers,
+        entities: usageSamples,
+      },
+      timeline,
       createdAt: tag.createdAt,
       updatedAt: tag.updatedAt,
     };

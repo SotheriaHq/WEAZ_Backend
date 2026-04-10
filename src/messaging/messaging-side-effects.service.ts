@@ -193,6 +193,8 @@ export class MessagingSideEffectsService {
               participant.thread.customOrderId,
               participant.thread.brandId,
               participant.role,
+              participant.thread.id,
+              participant.thread.lastMessageId,
             ),
           },
         },
@@ -393,22 +395,33 @@ export class MessagingSideEffectsService {
     customOrderId: string | null,
     brandId: string | null,
     recipientRole: MessageParticipantRole,
+    threadId?: string,
+    messageId?: string | null,
   ): string {
+    const qp = new URLSearchParams();
+    if (threadId) qp.set('thread', threadId);
+    if (messageId) qp.set('messageId', messageId);
+
     if (contextType === MessageContextType.CUSTOM_ORDER && customOrderId) {
       if (recipientRole === MessageParticipantRole.BRAND_OWNER) {
-        return `/studio/custom-orders/${customOrderId}#messages`;
+        qp.set('customOrderId', customOrderId);
+        return `/studio/messages?${qp.toString()}`;
       }
       if (recipientRole === MessageParticipantRole.ADMIN) {
         return `/admin/custom-orders/${customOrderId}#messages`;
       }
-      return `/custom-orders/${customOrderId}#messages`;
+      qp.set('customOrderId', customOrderId);
+      return `/messages?${qp.toString()}`;
     }
 
     if (contextType === MessageContextType.STANDARD_ORDER && orderId) {
-      if (recipientRole === MessageParticipantRole.BRAND_OWNER && brandId) {
-        return `/brands/${brandId}/orders/${orderId}#messages`;
+      if (recipientRole === MessageParticipantRole.BRAND_OWNER) {
+        qp.set('orderId', orderId);
+        qp.set('openChat', '1');
+        return `/studio?tab=orders&${qp.toString()}`;
       }
-      return `/orders/access/${orderId}#messages`;
+      qp.set('orderId', orderId);
+      return `/messages?${qp.toString()}`;
     }
 
     return '/settings?tab=notifications';

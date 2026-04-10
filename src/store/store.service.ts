@@ -29,6 +29,7 @@ import {
 } from 'crypto';
 import {
   CollectionType,
+  CustomOrderSourceType,
   Prisma,
   NotificationType,
   OrderStatus,
@@ -97,7 +98,7 @@ const PRODUCT_VARIANT_SIZE_ALIASES: Record<string, string> = {
   '4XL': 'XXXXL',
 };
 const CUSTOM_ORDER_OUT_OF_STOCK_GRACE_MS =
-  14 * 24 * 60 * 60 * 1000;
+  7 * 24 * 60 * 60 * 1000;
 const CUSTOM_ORDER_OUT_OF_STOCK_REMINDER_INTERVAL_MS =
   24 * 60 * 60 * 1000;
 
@@ -132,6 +133,7 @@ export class StoreService {
   );
   private readonly minPublishProductMediaCount = 4;
   private readonly maxProductMediaCount = 6;
+  private readonly minPublishVariantCount = 5;
 
   private normalizeFilterValueIds(raw?: string[] | null): string[] {
     if (!Array.isArray(raw)) return [];
@@ -453,9 +455,9 @@ export class StoreService {
     const variants = Array.isArray(input.variants)
       ? input.variants.filter(Boolean)
       : [];
-    if (variants.length === 0) {
+    if (variants.length < this.minPublishVariantCount) {
       throw new BadRequestException(
-        'At least one variant is required to publish',
+        `At least ${this.minPublishVariantCount} size variants are required to publish`,
       );
     }
 
@@ -882,22 +884,6 @@ export class StoreService {
     return new Date(triggeredAt.getTime() + CUSTOM_ORDER_OUT_OF_STOCK_GRACE_MS);
   }
 
-  private isStructuredMarketplaceProduct(product: {
-    variants?: Array<{ size?: string | null } | null> | null;
-  }): boolean {
-    const variants = Array.isArray(product?.variants)
-      ? product.variants.filter(Boolean)
-      : [];
-    if (variants.length === 0) {
-      return false;
-    }
-
-    return variants.every(
-      (variant) =>
-        this.normalizeRequiredVariantSize(variant?.size ?? null) !== null,
-    );
-  }
-
   private canBagOutOfStockCustomOrderProduct(product: {
     deletedAt?: Date | null;
     archivedAt?: Date | null;
@@ -911,7 +897,6 @@ export class StoreService {
     }
 
     return (
-      this.isStructuredMarketplaceProduct(product) &&
       Number(product.totalStock ?? 0) <= 0 &&
       product.customOrderEnabled === true
     );
@@ -922,10 +907,6 @@ export class StoreService {
     customOrderEnabled?: boolean | null;
     variants?: Array<{ size?: string | null } | null> | null;
   }): boolean {
-    if (!this.isStructuredMarketplaceProduct(product)) {
-      return false;
-    }
-
     if (Number(product.totalStock ?? 0) > 0) {
       return true;
     }
@@ -934,16 +915,7 @@ export class StoreService {
   }
 
   private buildMarketplaceInventoryWhereFilter(): Prisma.ProductWhereInput {
-    const allowedSizes = [...PRODUCT_VARIANT_SIZE_VALUES];
     return {
-      variants: {
-        some: {
-          size: { in: allowedSizes },
-        },
-        every: {
-          size: { in: allowedSizes },
-        },
-      },
       OR: [{ totalStock: { gt: 0 } }, { customOrderEnabled: true }],
     };
   }
@@ -979,6 +951,16 @@ export class StoreService {
         nextData.isActive = true;
       }
       return nextData;
+    }
+
+    const triggeredAt = args.currentTriggeredAt ?? new Date();
+    nextData.customOrderOutOfStockTriggeredAt = triggeredAt;
+    nextData.customOrderOutOfStockDiscontinueAt =
+      args.currentDiscontinueAt ??
+      this.computeCustomOrderOutOfStockDiscontinueAt(triggeredAt);
+
+    if (!args.currentTriggeredAt) {
+      nextData.customOrderOutOfStockReminderSentAt = null;
     }
 
     return nextData;
@@ -1072,7 +1054,7 @@ export class StoreService {
         name: args.productName,
         customOrderOutOfStockDiscontinueAt: discontinueAt,
       },
-      `${args.productName} is out of stock, but a shopper just bagged it as a custom-order item. Restock it within 14 days or it will be discontinued from the market.`,
+      `${args.productName} is out of stock, but shoppers can still bag it as a custom-order item. Restock it within 7 days or it will be discontinued from the market.`,
     );
   }
 
@@ -1582,7 +1564,7 @@ export class StoreService {
       await this.notifyBrandOfOutOfStockCustomOrder(
         product.brand.ownerId,
         { id: product.id, name: product.name },
-        `${product.name} stayed out of stock for 14 days after a customer bagged it as a custom-order item, so it has been discontinued from the market.`,
+        `${product.name} stayed out of stock for 7 days while custom orders were still allowed, so it has been discontinued from the market.`,
       );
     }
 
@@ -1714,6 +1696,17 @@ export class StoreService {
     const resolvedTags = this.buildTagSet(dto.tags || []);
     const nextIsActive = dto.isActive ?? true;
     const nextCustomOrderEnabled = dto.customOrderEnabled === true;
+    const initialTotalStock =
+      derivedFromVariants?.totalStock ?? (dto.totalStock || 0);
+    const initialOutOfStockTriggeredAt =
+      nextIsActive && nextCustomOrderEnabled && initialTotalStock <= 0
+        ? new Date()
+        : null;
+    const initialOutOfStockDiscontinueAt = initialOutOfStockTriggeredAt
+      ? this.computeCustomOrderOutOfStockDiscontinueAt(
+          initialOutOfStockTriggeredAt,
+        )
+      : null;
 
     const product = await this.prisma.$transaction(async (tx) => {
       let slug = await this.ensureUniqueProductSlug(tx, resolvedName);
@@ -1809,14 +1802,15 @@ export class StoreService {
               images: normalizedImages,
               thumbnail: resolvedThumbnail,
               // Inventory
-              totalStock:
-                derivedFromVariants?.totalStock ?? (dto.totalStock || 0),
+              totalStock: initialTotalStock,
               lowStockThreshold: dto.lowStockThreshold || 5,
               trackInventory: dto.trackInventory ?? true,
               allowBackorders: dto.allowBackorders ?? false,
-              customOrderOutOfStockTriggeredAt: null,
+              customOrderOutOfStockTriggeredAt:
+                initialOutOfStockTriggeredAt,
               customOrderOutOfStockReminderSentAt: null,
-              customOrderOutOfStockDiscontinueAt: null,
+              customOrderOutOfStockDiscontinueAt:
+                initialOutOfStockDiscontinueAt,
               // Metadata
               tags: resolvedTags,
               gender: dto.gender || 'EVERYBODY',
@@ -2337,6 +2331,17 @@ export class StoreService {
         where: { id: productId },
         data: updateData,
       });
+
+      if (dto.customOrderEnabled === false) {
+        await tx.customOrderConfiguration.updateMany({
+          where: {
+            sourceType: CustomOrderSourceType.PRODUCT,
+            sourceId: productId,
+            isActive: true,
+          },
+          data: { isActive: false },
+        });
+      }
 
       if (derivedFromVariants) {
         await tx.productVariant.deleteMany({ where: { productId } });
@@ -3091,7 +3096,7 @@ export class StoreService {
                 status: 'CANCELLED',
                 reason: 'Product deleted by brand',
                 refundStatus: 'REFUNDED',
-                targetUrl: `/orders/access/${order.id}`,
+                targetUrl: `/orders/${order.id}`,
               },
             },
           );
@@ -4031,6 +4036,278 @@ export class StoreService {
     };
   }
 
+  async getMarketplaceProducts(
+    options: {
+      page?: number;
+      limit?: number;
+      cursor?: string;
+      collectionId?: string;
+      category?: string;
+      gender?: string;
+      minPrice?: number;
+      maxPrice?: number;
+      sizes?: string[];
+      colors?: string[];
+      tags?: string[];
+      onSale?: boolean;
+      isFeatured?: boolean;
+      sortBy?: 'newest' | 'price_asc' | 'price_desc' | 'popular';
+      search?: string;
+    } = {},
+  ) {
+    const {
+      page = 1,
+      limit = 40,
+      cursor,
+      collectionId,
+      category,
+      gender,
+      minPrice,
+      maxPrice,
+      sizes,
+      colors,
+      tags,
+      onSale,
+      isFeatured,
+      sortBy = 'newest',
+      search,
+    } = options;
+
+    const safePage = Math.max(1, Number(page) || 1);
+    const safeLimit = Math.min(120, Math.max(1, Number(limit) || 40));
+
+    const where: Prisma.ProductWhereInput = {
+      isActive: true,
+      deletedAt: null,
+      brand: { isStoreOpen: true },
+    };
+
+    const andFilters: Prisma.ProductWhereInput[] = [
+      {
+        OR: [
+          { collections: { none: {} } },
+          {
+            collections: {
+              some: {
+                collection: {
+                  status: 'PUBLISHED',
+                  isAvailableInStore: true,
+                  deletedAt: null,
+                },
+              },
+            },
+          },
+        ],
+      },
+      this.buildMarketplaceInventoryWhereFilter(),
+    ];
+
+    if (
+      gender &&
+      ['MALE', 'FEMALE', 'EVERYBODY'].includes(gender.toUpperCase())
+    ) {
+      where.gender = gender.toUpperCase() as CollectionType;
+    }
+
+    if (minPrice !== undefined || maxPrice !== undefined) {
+      where.price = {};
+      if (minPrice !== undefined) where.price.gte = minPrice;
+      if (maxPrice !== undefined) where.price.lte = maxPrice;
+    }
+
+    if (sizes && sizes.length > 0) {
+      where.sizes = { hasSome: sizes };
+    }
+
+    if (colors && colors.length > 0) {
+      where.colors = { hasSome: colors };
+    }
+
+    if (tags && tags.length > 0) {
+      const normalized = this.buildTagSet(tags);
+      if (normalized.length > 0) {
+        where.tags = { hasSome: normalized };
+      }
+    }
+
+    if (typeof isFeatured === 'boolean') {
+      where.isFeatured = isFeatured;
+    }
+
+    if (onSale) {
+      const now = new Date();
+      andFilters.push({
+        salePrice: { not: null },
+        OR: [
+          { saleStartAt: null, saleEndAt: null },
+          { saleStartAt: { lte: now }, saleEndAt: { gte: now } },
+          { saleStartAt: { lte: now }, saleEndAt: null },
+          { saleStartAt: null, saleEndAt: { gte: now } },
+        ],
+      });
+    }
+
+    if (search) {
+      const normalizedSearch = this.normalizeTag(search).toLowerCase();
+      andFilters.push({
+        OR: [
+          { name: { contains: search, mode: 'insensitive' } },
+          { description: { contains: search, mode: 'insensitive' } },
+          ...(normalizedSearch
+            ? [{ tags: { hasSome: [normalizedSearch] } }]
+            : []),
+        ],
+      });
+    }
+
+    if (category) {
+      andFilters.push({
+        collections: {
+          some: {
+            collection: { category: { slug: category } },
+          },
+        },
+      });
+    }
+
+    if (collectionId) {
+      andFilters.push({
+        collections: { some: { collectionId } },
+      });
+    }
+
+    if (andFilters.length > 0) {
+      const existingAnd = Array.isArray(where.AND)
+        ? where.AND
+        : where.AND
+          ? [where.AND]
+          : [];
+      where.AND = [...existingAnd, ...andFilters];
+    }
+
+    let orderBy: any = [{ createdAt: 'desc' }, { id: 'desc' }];
+    switch (sortBy) {
+      case 'price_asc':
+        orderBy = [{ price: 'asc' }, { id: 'asc' }];
+        break;
+      case 'price_desc':
+        orderBy = [{ price: 'desc' }, { id: 'desc' }];
+        break;
+      case 'popular':
+        orderBy = [{ viewsCount: 'desc' }, { id: 'desc' }];
+        break;
+      default:
+        orderBy = [{ createdAt: 'desc' }, { id: 'desc' }];
+    }
+
+    const useCursor = typeof cursor === 'string' && cursor.trim().length > 0;
+    const skipValue = useCursor ? 1 : (safePage - 1) * safeLimit;
+
+    const [products, total] = await Promise.all([
+      this.prisma.product.findMany({
+        where,
+        orderBy,
+        ...(useCursor ? { cursor: { id: cursor.trim() } } : {}),
+        skip: skipValue,
+        take: safeLimit,
+        include: {
+          collection: {
+            select: {
+              id: true,
+              title: true,
+              status: true,
+              isAvailableInStore: true,
+            },
+          },
+          collections: { select: { collectionId: true, orderIndex: true } },
+          brand: {
+            select: { id: true, name: true, logo: true, currency: true },
+          },
+          categoryType: {
+            select: { id: true, categoryId: true, slug: true, name: true },
+          },
+          variants: {
+            select: {
+              id: true,
+              size: true,
+              color: true,
+              stock: true,
+              price: true,
+              sku: true,
+              colorHex: true,
+            },
+          },
+        },
+      }),
+      this.prisma.product.count({ where }),
+    ]);
+
+    const nextCursor = products.length > 0 ? products[products.length - 1].id : null;
+
+    const baseItems = products.map((p) => this.transformProduct(p));
+    const productFilterRows = await this.getProductFilterRows(
+      baseItems.map((item: any) => item.id).filter(Boolean),
+    );
+    const productFilterMap = this.buildProductFilterPayloadByProductId(
+      productFilterRows,
+    );
+    const urls = Array.from(
+      new Set(
+        baseItems
+          .flatMap((p) => (Array.isArray((p as any).images) ? (p as any).images : []))
+          .filter((u) => typeof u === 'string' && u.length > 0),
+      ),
+    );
+
+    let idByUrl = new Map<string, string>();
+    if (urls.length > 0) {
+      const uploads = await this.prisma.fileUpload.findMany({
+        where: { s3Url: { in: urls } },
+        select: { id: true, s3Url: true },
+      });
+      idByUrl = new Map(uploads.map((u) => [u.s3Url, u.id]));
+    }
+
+    const itemsWithMedia = baseItems.map((base: any) => {
+      const images: string[] = Array.isArray(base.images) ? base.images.filter(Boolean) : [];
+      const filterPayload = productFilterMap.get(base.id) ?? {
+        filters: [],
+        filterValueIds: [],
+        filterSelection: {},
+      };
+      if (images.length === 0) {
+        return {
+          ...base,
+          ...filterPayload,
+          media: [],
+          mediaIds: [],
+        };
+      }
+      const media = images.map((url: string) => ({
+        id: idByUrl.get(url) ?? url,
+        url,
+        type: 'image',
+        isPrimary: !!base.thumbnail && url === base.thumbnail,
+      }));
+      return {
+        ...base,
+        ...filterPayload,
+        media,
+        mediaIds: media.map((m) => m.id),
+      };
+    });
+
+    return {
+      items: itemsWithMedia,
+      total,
+      page: safePage,
+      limit: safeLimit,
+      totalPages: Math.ceil(total / safeLimit),
+      hasNextPage: safePage * safeLimit < total,
+      nextCursor,
+    };
+  }
+
   async restoreProduct(brandOwnerId: string, productId: string) {
     const product = await this.prisma.product.findFirst({
       where: { id: productId },
@@ -4127,21 +4404,16 @@ export class StoreService {
       );
     }
 
-    if (!this.isStructuredMarketplaceProduct(product)) {
-      throw new BadRequestException(
-        'This product cannot be bagged until the brand adds size variants.',
-      );
-    }
-
     const variants = Array.isArray((product as any).variants)
       ? ((product as any).variants as any[])
       : [];
     const hasVariantSizes = variants.some((v) => v.size);
     const hasVariantColors = variants.some((v) => v.color);
-    const allowCustomOrderCarry = this.shouldAllowCustomOrderCarry(product);
-
     // Validate size
-    if ((hasVariantSizes || product.sizes.length > 0) && !dto.selectedSize) {
+    if (
+      (hasVariantSizes || product.sizes.length > 0) &&
+      !dto.selectedSize
+    ) {
       throw new BadRequestException('Please select a size');
     }
     if (dto.selectedSize && !product.sizes.includes(dto.selectedSize)) {
@@ -4149,7 +4421,10 @@ export class StoreService {
     }
 
     // Validate color
-    if ((hasVariantColors || product.colors.length > 0) && !dto.selectedColor) {
+    if (
+      (hasVariantColors || product.colors.length > 0) &&
+      !dto.selectedColor
+    ) {
       throw new BadRequestException('Please select a color');
     }
     if (dto.selectedColor && !product.colors.includes(dto.selectedColor)) {
@@ -4199,7 +4474,10 @@ export class StoreService {
     }
 
     // Check stock (variant-aware)
-    if (product.trackInventory && !product.allowBackorders && !allowCustomOrderCarry) {
+    if (
+      product.trackInventory &&
+      !product.allowBackorders
+    ) {
       if (selectedVariant) {
         const available = Number(selectedVariant.stock || 0);
         if (available < resultingQuantity) {
@@ -4247,16 +4525,6 @@ export class StoreService {
         });
       }
 
-      if (allowCustomOrderCarry && resolvedBrandOwnerId) {
-        await this.triggerOutOfStockCustomOrderLifecycle({
-          tx,
-          productId: product.id,
-          ownerId: resolvedBrandOwnerId,
-          productName: product.name,
-          currentTriggeredAt: product.customOrderOutOfStockTriggeredAt,
-          currentDiscontinueAt: product.customOrderOutOfStockDiscontinueAt,
-        });
-      }
     });
 
     return this.getCart(userId);
@@ -4318,8 +4586,6 @@ export class StoreService {
         return false;
       }
 
-      const allowCustomOrderCarry = this.shouldAllowCustomOrderCarry(product);
-
       if (product.trackInventory && !product.allowBackorders) {
         const variants = Array.isArray((product as any).variants)
           ? ((product as any).variants as any[])
@@ -4331,18 +4597,21 @@ export class StoreService {
               (v.color || null) === (item.selectedColor || null),
           );
           const available = Number(match?.stock || 0);
-          if (!match || (!allowCustomOrderCarry && available <= 0)) {
+          if (
+            !match ||
+            available <= 0
+          ) {
             unavailableItemIds.push(item.id);
             return false;
           }
-        } else if (item.selectedSize && product.sizeStock && !allowCustomOrderCarry) {
+        } else if (item.selectedSize && product.sizeStock) {
           const sizeStock = product.sizeStock as Record<string, number>;
           const available = sizeStock[item.selectedSize] || 0;
           if (available <= 0) {
             unavailableItemIds.push(item.id);
             return false;
           }
-        } else if (!allowCustomOrderCarry && product.totalStock <= 0) {
+        } else if (product.totalStock <= 0) {
           unavailableItemIds.push(item.id);
           return false;
         }
@@ -4448,7 +4717,6 @@ export class StoreService {
     }
 
     // Check stock (variant-aware)
-    const allowCustomOrderCarry = this.shouldAllowCustomOrderCarry(item.product);
     if (item.product.trackInventory && !item.product.allowBackorders) {
       const variants = Array.isArray((item.product as any).variants)
         ? ((item.product as any).variants as any[])
@@ -4464,16 +4732,16 @@ export class StoreService {
           throw new BadRequestException('Selected variant is not available');
         }
         const available = Number(match.stock || 0);
-        if (!allowCustomOrderCarry && available < dto.quantity) {
+        if (available < dto.quantity) {
           throw new BadRequestException(`Only ${available} items available`);
         }
-      } else if (item.selectedSize && item.product.sizeStock && !allowCustomOrderCarry) {
+      } else if (item.selectedSize && item.product.sizeStock) {
         const sizeStock = item.product.sizeStock as Record<string, number>;
         const available = sizeStock[item.selectedSize] || 0;
         if (available < dto.quantity) {
           throw new BadRequestException(`Only ${available} items available`);
         }
-      } else if (!allowCustomOrderCarry && item.product.totalStock < dto.quantity) {
+      } else if (item.product.totalStock < dto.quantity) {
         throw new BadRequestException(
           `Only ${item.product.totalStock} items available`,
         );
@@ -5198,13 +5466,6 @@ export class StoreService {
       {},
     );
 
-    const notificationJobs: Array<{
-      recipientId: string;
-      type: NotificationType;
-      actorId?: string | null;
-      payload: Record<string, any>;
-    }> = [];
-
     const orders = await this.prisma.$transaction(async (tx) => {
       const createdOrders = [] as any[];
 
@@ -5269,15 +5530,20 @@ export class StoreService {
             : [];
           const hasVariantSizes = variants.some((v) => v.size);
           const hasVariantColors = variants.some((v) => v.color);
-
-          if ((hasVariantSizes || product.sizes.length > 0) && !item.selectedSize) {
+          if (
+            (hasVariantSizes || product.sizes.length > 0) &&
+            !item.selectedSize
+          ) {
             throw new BadRequestException(`Please select a size for ${product.name}`);
           }
           if (item.selectedSize && product.sizes.length > 0 && !product.sizes.includes(item.selectedSize)) {
             throw new BadRequestException(`Invalid size for ${product.name}`);
           }
 
-          if ((hasVariantColors || product.colors.length > 0) && !item.selectedColor) {
+          if (
+            (hasVariantColors || product.colors.length > 0) &&
+            !item.selectedColor
+          ) {
             throw new BadRequestException(`Please select a color for ${product.name}`);
           }
           if (item.selectedColor && product.colors.length > 0 && !product.colors.includes(item.selectedColor)) {
@@ -5327,9 +5593,10 @@ export class StoreService {
               : isOnSale && product.salePrice
                 ? Number(product.salePrice)
                 : baseUnitPrice;
-          const allowCustomOrderCarry = this.shouldAllowCustomOrderCarry(product);
-
-          if (product.trackInventory && !product.allowBackorders && !allowCustomOrderCarry) {
+          if (
+            product.trackInventory &&
+            !product.allowBackorders
+          ) {
             if (selectedVariant) {
               const updated = await tx.productVariant.updateMany({
                 where: { id: selectedVariant.id, stock: { gte: quantity } },
@@ -5385,17 +5652,6 @@ export class StoreService {
                 },
               });
             }
-          }
-
-          if (allowCustomOrderCarry && product.brand?.ownerId) {
-            await this.triggerOutOfStockCustomOrderLifecycle({
-              tx,
-              productId: product.id,
-              ownerId: product.brand.ownerId,
-              productName: product.name,
-              currentTriggeredAt: product.customOrderOutOfStockTriggeredAt,
-              currentDiscontinueAt: product.customOrderOutOfStockDiscontinueAt,
-            });
           }
 
           totalAmount += unitPrice * quantity;
@@ -5462,61 +5718,12 @@ export class StoreService {
           });
         }
 
-        if (brand.ownerId) {
-          notificationJobs.push({
-            recipientId: brand.ownerId,
-            type: NotificationType.ORDER_PLACED,
-            actorId: userId,
-            payload: {
-              orderId: order.id,
-              totalAmount,
-              brandId,
-              brandName: brand.name,
-              customerName: dto.customerName || 'Customer',
-              targetUrl: `/studio?tab=orders&orderId=${order.id}`,
-            },
-          });
-        }
-
-        notificationJobs.push({
-          recipientId: userId,
-          type: NotificationType.ORDER_PLACED,
-          actorId: null,
-          payload: {
-            orderId: order.id,
-            totalAmount: totalAmount + shippingCost,
-            brandId,
-            brandName: brand.name,
-            isBuyerCopy: true,
-            targetUrl: `/orders/access/${order.id}`,
-          },
-        });
-
         createdOrders.push(order);
       }
 
       await tx.cartItem.deleteMany({ where: { userId } });
       return createdOrders;
     });
-
-    if (this.notifications && notificationJobs.length > 0) {
-      const results = await Promise.allSettled(
-        notificationJobs.map((job) =>
-          this.notifications!.create(job.recipientId, job.type, {
-            actorId: job.actorId,
-            payload: job.payload,
-          }),
-        ),
-      );
-
-      results.forEach((result, index) => {
-        if (result.status === 'rejected') {
-          this.logger.warn(
-            `Failed to send order notification for ${notificationJobs[index].recipientId}: ${result.reason}`,
-          );
-        }
-      });
-    }
 
     return { orders };
   }

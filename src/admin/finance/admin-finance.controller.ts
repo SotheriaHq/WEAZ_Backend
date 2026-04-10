@@ -103,6 +103,12 @@ export class AdminFinanceController {
     return this.financeService.getPaymentAttempt(reference);
   }
 
+  @Get('payments/:reference/timeline')
+  @RequirePermissions(ADMIN_PERMISSIONS.PAYOUTS_READ)
+  getPaymentTimeline(@Param('reference') reference: string) {
+    return this.financeService.getPaymentAttemptTimeline(reference);
+  }
+
   @Get('transactions')
   @RequirePermissions(ADMIN_PERMISSIONS.PAYOUTS_READ)
   listTransactions(

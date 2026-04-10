@@ -146,6 +146,70 @@ describe('MessagingSideEffectsService', () => {
     );
   });
 
+  it('enqueueUnreadMessageReminders builds canonical standard-order deep links', async () => {
+    const { service, prisma } = buildService();
+
+    const now = new Date();
+    prisma.messageThreadParticipant.findMany.mockResolvedValue([
+      {
+        threadId: 'thread_brand',
+        userId: 'brand_owner_1',
+        role: MessageParticipantRole.BRAND_OWNER,
+        lastReadAt: null,
+        thread: {
+          id: 'thread_brand',
+          contextType: MessageContextType.STANDARD_ORDER,
+          customOrderId: null,
+          orderId: 'order_brand',
+          brandId: 'brand_1',
+          lastMessageAt: now,
+          lastMessageId: 'msg_brand',
+          lastSenderUserId: 'buyer_1',
+        },
+      },
+      {
+        threadId: 'thread_buyer',
+        userId: 'buyer_1',
+        role: MessageParticipantRole.BUYER,
+        lastReadAt: null,
+        thread: {
+          id: 'thread_buyer',
+          contextType: MessageContextType.STANDARD_ORDER,
+          customOrderId: null,
+          orderId: 'order_buyer',
+          brandId: 'brand_2',
+          lastMessageAt: now,
+          lastMessageId: 'msg_buyer',
+          lastSenderUserId: 'brand_owner_2',
+        },
+      },
+    ]);
+
+    prisma.messageNotificationOutbox.findMany.mockResolvedValue([]);
+    prisma.messageNotificationOutbox.create.mockResolvedValue({ id: 'new_row' });
+
+    await service.enqueueUnreadMessageReminders();
+
+    expect(prisma.messageNotificationOutbox.create).toHaveBeenCalledTimes(2);
+
+    const createdRows = prisma.messageNotificationOutbox.create.mock.calls.map(
+      (call: any[]) => call[0].data,
+    );
+    const brandRow = createdRows.find(
+      (row: any) => row.recipientId === 'brand_owner_1',
+    );
+    const buyerRow = createdRows.find(
+      (row: any) => row.recipientId === 'buyer_1',
+    );
+
+    expect((brandRow?.payloadJson as Record<string, any>)?.targetUrl).toBe(
+      '/studio?tab=orders&thread=thread_brand&messageId=msg_brand&orderId=order_brand&openChat=1',
+    );
+    expect((buyerRow?.payloadJson as Record<string, any>)?.targetUrl).toBe(
+      '/messages?thread=thread_buyer&messageId=msg_buyer&orderId=order_buyer',
+    );
+  });
+
   it('cleanupExpiredClosedThreads redacts user messages and archives eligible threads', async () => {
     const { service, prisma } = buildService();
 

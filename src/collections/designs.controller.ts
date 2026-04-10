@@ -31,6 +31,8 @@ export class DesignsController {
   @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
   @Post('initialize')
   async initializeDesign(@Req() req: any, @Body() dto: CreateCollectionDto) {
+    await this.collectionsService.assertDesignCreationAllowed(req.user.id);
+
     const payload: CreateCollectionDto = {
       ...dto,
       mode: undefined,

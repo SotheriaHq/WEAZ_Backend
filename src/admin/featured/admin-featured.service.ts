@@ -13,7 +13,7 @@ import { CreateFeaturedDto } from './dto';
 import { NotificationsService } from 'src/notifications/notifications.service';
 
 const FEATURED_DURATION_DAYS = 7;
-const MAX_GLOBAL_FEATURED = 7;
+const MAX_GLOBAL_FEATURED = 10;
 const MAX_PER_BRAND = 1;
 const PENALTY_MONTHS = 2;
 

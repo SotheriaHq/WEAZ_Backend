@@ -21,6 +21,7 @@ import { LedgerService } from 'src/finance/ledger.service';
 import { ReconciliationService } from 'src/finance/reconciliation.service';
 import { StandardOrderEscrowService } from 'src/finance/standard-order-escrow.service';
 import { PrismaService } from 'src/prisma/prisma.service';
+import { resolveWebAppBaseUrl } from 'src/common/utils/web-app-url';
 
 const COMMISSION_RULE_SCOPE = {
   PLATFORM: 'PLATFORM',
@@ -686,6 +687,108 @@ export class AdminFinanceService {
     };
   }
 
+  async getPaymentAttemptTimeline(reference: string) {
+    const attempt = await this.prisma.paymentAttempt.findUnique({
+      where: { reference },
+    });
+
+    if (!attempt) {
+      throw new NotFoundException('Payment attempt not found');
+    }
+
+    const [events, checkoutSession] = await Promise.all([
+      this.prisma.paymentEvent.findMany({
+        where: { paymentAttemptId: attempt.id },
+        orderBy: { createdAt: 'asc' },
+      }),
+      attempt.checkoutIntentId
+        ? this.prisma.customOrderCheckoutSession.findUnique({
+            where: { checkoutIntentId: attempt.checkoutIntentId },
+            select: {
+              id: true,
+              status: true,
+              checkoutIntentId: true,
+              customOrderId: true,
+              lastAttemptReference: true,
+              lastAttemptStatus: true,
+              attemptsCount: true,
+              resumeToken: true,
+              resumePath: true,
+              submittedAt: true,
+              paymentInitiatedAt: true,
+              paidConfirmedAt: true,
+              abandonedAt: true,
+            },
+          })
+        : Promise.resolve(null),
+    ]);
+
+    const timeline = [
+      {
+        type: 'ATTEMPT_CREATED',
+        source: 'system',
+        createdAt: attempt.createdAt,
+        status: attempt.status,
+      },
+      ...events.map((event) => ({
+        type: event.type,
+        source: event.source,
+        providerEventType: event.providerEventType,
+        providerEventReceivedAt: event.providerEventReceivedAt,
+        processedAt: event.processedAt,
+        createdAt: event.createdAt,
+        payload: event.payload,
+      })),
+    ];
+
+    if (attempt.finalizedAt) {
+      timeline.push({
+        type: 'ATTEMPT_FINALIZED',
+        source: 'system',
+        createdAt: attempt.finalizedAt,
+        status: attempt.status,
+      });
+    }
+
+    const responseSnapshot = this.asObject(attempt.responseSnapshot);
+    const webhookSummary = responseSnapshot?.providerWebhookVerified
+      ? {
+          gateway: responseSnapshot.providerWebhookGateway ?? attempt.provider,
+          status: responseSnapshot.providerWebhookStatus,
+          event: responseSnapshot.providerWebhookEvent,
+          receivedAt: responseSnapshot.providerWebhookReceivedAt,
+          amount: responseSnapshot.providerWebhookAmount,
+          currency: responseSnapshot.providerWebhookCurrency,
+        }
+      : null;
+
+    return {
+      reference: attempt.reference,
+      gateway: attempt.provider,
+      status: attempt.status,
+      amount: Number(attempt.amount ?? 0),
+      currency: attempt.currency,
+      subjectType: attempt.subjectType,
+      buyerId: attempt.buyerId ?? null,
+      checkoutIntentId: attempt.checkoutIntentId ?? null,
+      customOrderId: attempt.customOrderId ?? null,
+      createdAt: attempt.createdAt,
+      confirmedAt: attempt.confirmedAt,
+      finalizedAt: attempt.finalizedAt,
+      lastVerifiedAt: attempt.lastVerifiedAt,
+      failureCode: attempt.failureCode,
+      failureMessage: attempt.failureMessage,
+      timeline,
+      webhookSummary,
+      checkoutSession: checkoutSession
+        ? {
+            ...checkoutSession,
+            resumeUrl: this.buildCheckoutResumeUrl(checkoutSession.resumeToken),
+          }
+        : null,
+    };
+  }
+
   async listTransactionsDetailed(params?: {
     type?: string;
     referenceType?: string;
@@ -835,6 +938,17 @@ export class AdminFinanceService {
       }),
       total: transactions.length,
     };
+  }
+
+  private asObject(value: unknown) {
+    return value && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Record<string, any>)
+      : null;
+  }
+
+  private buildCheckoutResumeUrl(token: string) {
+    const baseUrl = resolveWebAppBaseUrl();
+    return `${baseUrl}/custom-orders/resume/${encodeURIComponent(token)}`;
   }
 
   async listEscrowHolds(params?: {

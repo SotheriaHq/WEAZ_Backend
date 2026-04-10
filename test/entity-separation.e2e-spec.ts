@@ -19,7 +19,7 @@ describe('Entity separation routes (e2e)', () => {
   beforeAll(async () => {
     jest
       .spyOn(JwtAuthGuard.prototype, 'canActivate')
-      .mockImplementation((context: any) => {
+      .mockImplementation(async (context: any) => {
         const req = context.switchToHttp().getRequest();
         req.user = { id: ownerId, type: 'BRAND' };
         return true;

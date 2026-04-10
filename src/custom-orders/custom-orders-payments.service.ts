@@ -4,6 +4,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import {
+  CustomOrderCheckoutStatus,
   CustomOrderLedgerAllocationStatus,
   CustomOrderLedgerAllocationType,
   CustomOrderProgressStage,
@@ -16,10 +17,12 @@ import {
   Prisma,
   Role,
 } from '@prisma/client';
+import { randomUUID } from 'crypto';
 import { ADMIN_PERMISSIONS } from 'src/admin/constants/permissions';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { PaymentService } from 'src/payment/payment.service';
 import { CustomOrderSideEffectsService } from './custom-order-side-effects.service';
+import { CustomOrdersService } from './custom-orders.service';
 import { LedgerService } from 'src/finance/ledger.service';
 import { CommissionService } from 'src/finance/commission.service';
 import { FinancialDocumentsService } from 'src/finance/financial-documents.service';
@@ -37,6 +40,7 @@ export class CustomOrdersPaymentsService {
     private readonly prisma: PrismaService,
     private readonly paymentService: PaymentService,
     private readonly sideEffects: CustomOrderSideEffectsService,
+    private readonly ordersService: CustomOrdersService,
     private readonly ledgerService: LedgerService,
     private readonly commissionService: CommissionService,
     private readonly financialDocumentsService: FinancialDocumentsService,
@@ -59,6 +63,7 @@ export class CustomOrdersPaymentsService {
         paymentStatus: true,
         buyerPriceSummaryJson: true,
         currency: true,
+        checkoutIntentId: true,
         sourceBrandNameSnapshot: true,
         productionLeadDaysSnapshot: true,
         deliveryMaxDaysSnapshot: true,
@@ -83,6 +88,15 @@ export class CustomOrdersPaymentsService {
     });
 
     if (existingAttempt) {
+      if (order.checkoutIntentId) {
+        await this.recordCheckoutSessionPaymentInitiated(
+          this.prisma as unknown as Prisma.TransactionClient,
+          order.checkoutIntentId,
+          existingAttempt,
+          existingAttempt.provider,
+          false,
+        );
+      }
       return {
         status: 'success',
         data: this.toInitResult(existingAttempt),
@@ -121,20 +135,22 @@ export class CustomOrdersPaymentsService {
           },
         });
 
+        if (order.checkoutIntentId) {
+          await this.recordCheckoutSessionPaymentInitiated(
+            this.prisma as unknown as Prisma.TransactionClient,
+            order.checkoutIntentId,
+            latestActiveAttempt,
+            latestActiveAttempt.provider,
+            false,
+          );
+        }
+
         return {
           status: 'success',
           data: this.toInitResult(latestActiveAttempt),
         };
       }
     }
-
-    const existingOrderAttempt = await this.prisma.paymentAttempt.findFirst({
-      where: {
-        subjectType: PaymentSubjectType.CUSTOM_ORDER,
-        customOrderId,
-      },
-      orderBy: { createdAt: 'desc' },
-    });
 
     const paymentData = this.paymentService.preparePaymentRequest(dto.paymentMethod, {
       ...(dto.paymentData ?? {}),
@@ -157,6 +173,7 @@ export class CustomOrdersPaymentsService {
         buyerId: userId,
         subjectType: PaymentSubjectType.CUSTOM_ORDER,
         customOrderId,
+        checkoutIntentId: order.checkoutIntentId ?? null,
         provider: gatewayResult.gateway,
         providerMode: this.paymentService.getAttemptProviderMode(),
         providerReference: gatewayResult.providerReference,
@@ -189,14 +206,9 @@ export class CustomOrdersPaymentsService {
         failureMessage: null,
       };
 
-      const attempt = existingOrderAttempt
-        ? await tx.paymentAttempt.update({
-            where: { id: existingOrderAttempt.id },
-            data: attemptPayload,
-          })
-        : await tx.paymentAttempt.create({
-            data: attemptPayload,
-          });
+      const attempt = await tx.paymentAttempt.create({
+        data: attemptPayload,
+      });
 
       await tx.customOrder.update({
         where: { id: customOrderId },
@@ -239,6 +251,222 @@ export class CustomOrdersPaymentsService {
           },
         },
       });
+
+      if (order.checkoutIntentId) {
+        await this.recordCheckoutSessionPaymentInitiated(
+          tx,
+          order.checkoutIntentId,
+          attempt,
+          gatewayResult.gateway,
+          true,
+        );
+      }
+
+      return attempt;
+    });
+
+    return {
+      status: 'success',
+      data: this.toInitResult(createdAttempt),
+    };
+  }
+
+  async initializePaymentForCheckoutIntent(
+    userId: string,
+    checkoutIntentId: string,
+    dto: InitializeCustomOrderPaymentDto,
+  ) {
+    const now = new Date();
+    const intent = await this.prisma.customOrderCheckoutIntent.findFirst({
+      where: { id: checkoutIntentId, buyerId: userId },
+      select: {
+        id: true,
+        buyerId: true,
+        buyerPriceSummaryJson: true,
+        currency: true,
+        requestSnapshotJson: true,
+        expiresAt: true,
+        consumedAt: true,
+      },
+    });
+
+    if (!intent) {
+      throw new NotFoundException('Custom order checkout intent not found');
+    }
+    if (intent.expiresAt <= now) {
+      throw new BadRequestException('CUSTOM_ORDER_CHECKOUT_INTENT_EXPIRED');
+    }
+    if (intent.consumedAt) {
+      throw new BadRequestException('Checkout intent has already been consumed');
+    }
+
+    const snapshot = this.asObject(intent.requestSnapshotJson);
+    const contactInfo =
+      snapshot.contactInfo && typeof snapshot.contactInfo === 'object' && !Array.isArray(snapshot.contactInfo)
+        ? snapshot.contactInfo
+        : null;
+    const customerName = typeof snapshot.customerName === 'string' ? snapshot.customerName : null;
+    const chartLock =
+      snapshot.chartLock && typeof snapshot.chartLock === 'object' && !Array.isArray(snapshot.chartLock)
+        ? (snapshot.chartLock as Record<string, unknown>)
+        : {};
+    const quoteStatus = typeof chartLock.quoteStatus === 'string' ? chartLock.quoteStatus : 'AUTO_PRICED';
+    const noDirectMatch = Boolean(chartLock.noDirectMatch);
+    const noDirectMatchAcknowledged = Boolean(snapshot.noDirectMatchAcknowledged);
+
+    if (quoteStatus === 'MANUAL_QUOTE_REQUIRED') {
+      throw new BadRequestException('MANUAL_QUOTE_REQUIRED');
+    }
+    if (noDirectMatch && !noDirectMatchAcknowledged) {
+      throw new BadRequestException('NO_DIRECT_MATCH_ACK_REQUIRED');
+    }
+    if (!contactInfo || !customerName) {
+      throw new BadRequestException('CUSTOM_ORDER_CHECKOUT_INCOMPLETE');
+    }
+
+    const existingAttempt = await this.prisma.paymentAttempt.findFirst({
+      where: {
+        buyerId: userId,
+        subjectType: PaymentSubjectType.CUSTOM_ORDER,
+        checkoutIntentId,
+        idempotencyKey: dto.idempotencyKey,
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    if (existingAttempt) {
+      await this.recordCheckoutSessionPaymentInitiated(
+        this.prisma as unknown as Prisma.TransactionClient,
+        checkoutIntentId,
+        existingAttempt,
+        existingAttempt.provider,
+        false,
+      );
+      return {
+        status: 'success',
+        data: this.toInitResult(existingAttempt),
+      };
+    }
+
+    const latestActiveAttempt = await this.prisma.paymentAttempt.findFirst({
+      where: {
+        buyerId: userId,
+        subjectType: PaymentSubjectType.CUSTOM_ORDER,
+        checkoutIntentId,
+        status: { in: [...ACTIVE_PAYMENT_ATTEMPT_STATUSES] },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    if (latestActiveAttempt) {
+      if (latestActiveAttempt.expiresAt && latestActiveAttempt.expiresAt <= now) {
+        await this.prisma.paymentAttempt.update({
+          where: { id: latestActiveAttempt.id },
+          data: {
+            status: 'EXPIRED',
+            lastVerifiedAt: now,
+            failureCode: 'ATTEMPT_EXPIRED',
+            failureMessage: 'The previous payment attempt expired before completion.',
+          },
+        });
+      } else {
+        await this.recordCheckoutSessionPaymentInitiated(
+          this.prisma as unknown as Prisma.TransactionClient,
+          checkoutIntentId,
+          latestActiveAttempt,
+          latestActiveAttempt.provider,
+          false,
+        );
+        return {
+          status: 'success',
+          data: this.toInitResult(latestActiveAttempt),
+        };
+      }
+    }
+
+    const paymentData = this.paymentService.preparePaymentRequest(dto.paymentMethod, {
+      ...(dto.paymentData ?? {}),
+      email: dto.email,
+    });
+    const callbackUrl = this.paymentService.resolvePaymentCallbackUrl(dto.callbackUrl);
+    const amount = Number((intent.buyerPriceSummaryJson as Record<string, unknown>)?.grandTotal ?? 0);
+    const reference = `TH-CO-${Date.now()}-${checkoutIntentId.slice(0, 8)}`;
+    const gatewayResult = await this.paymentService.initializeGatewayForAttempt(
+      dto.paymentMethod,
+      reference,
+      paymentData,
+      amount,
+      intent.currency,
+      callbackUrl,
+    );
+
+    const createdAttempt = await this.prisma.$transaction(async (tx) => {
+      const attemptPayload = {
+        buyerId: userId,
+        subjectType: PaymentSubjectType.CUSTOM_ORDER,
+        customOrderId: null,
+        checkoutIntentId,
+        provider: gatewayResult.gateway,
+        providerMode: this.paymentService.getAttemptProviderMode(),
+        providerReference: gatewayResult.providerReference,
+        providerTransactionId: gatewayResult.providerTransactionId,
+        providerAccessCode: gatewayResult.providerAccessCode,
+        providerChannel: gatewayResult.providerChannel ?? gatewayResult.channel,
+        paymentMethod: dto.paymentMethod,
+        channel: gatewayResult.channel,
+        status: gatewayResult.status,
+        reference,
+        idempotencyKey: dto.idempotencyKey,
+        callbackUrl: gatewayResult.callbackUrl ?? callbackUrl,
+        authorizationUrl: gatewayResult.authorizationUrl,
+        amount,
+        currency: intent.currency,
+        settlementCurrency: intent.currency,
+        settlementAmount: null,
+        exchangeRateSnapshotId: null,
+        orderIds: [],
+        requestSnapshot: paymentData as Prisma.InputJsonValue,
+        responseSnapshot:
+          (gatewayResult.responseSnapshot ?? null) as unknown as Prisma.InputJsonValue,
+        nextAction: (gatewayResult.nextAction ?? null) as unknown as Prisma.InputJsonValue,
+        bankAccount: (gatewayResult.bankAccount ?? null) as unknown as Prisma.InputJsonValue,
+        expiresAt: gatewayResult.expiresAt ? new Date(gatewayResult.expiresAt) : null,
+        confirmedAt: null,
+        finalizedAt: null,
+        lastVerifiedAt: null,
+        failureCode: null,
+        failureMessage: null,
+      };
+
+      const attempt = await tx.paymentAttempt.create({
+        data: attemptPayload,
+      });
+
+      await tx.paymentEvent.create({
+        data: {
+          paymentAttemptId: attempt.id,
+          type: 'INITIALIZED',
+          source:
+            this.paymentService.getAttemptProviderMode() === 'mock'
+              ? 'mock-initialize'
+              : 'initialize',
+          payload: {
+            paymentMethod: dto.paymentMethod,
+            gateway: gatewayResult.gateway,
+            status: gatewayResult.status,
+            subjectType: PaymentSubjectType.CUSTOM_ORDER,
+            checkoutIntentId,
+          },
+        },
+      });
+
+      await this.recordCheckoutSessionPaymentInitiated(
+        tx,
+        checkoutIntentId,
+        attempt,
+        gatewayResult.gateway,
+        true,
+      );
 
       return attempt;
     });
@@ -298,7 +526,7 @@ export class CustomOrdersPaymentsService {
     }
 
     if (attempt.status === 'PAID') {
-      await this.ensurePaidCustomOrderSettlement(attempt.reference, customOrderId);
+      await this.ensurePaidCustomOrderSettlement(attempt.reference);
       return this.toVerifyResult(attempt, order);
     }
 
@@ -309,7 +537,14 @@ export class CustomOrdersPaymentsService {
     const resolvedVerification = await this.paymentService.resolveAttemptVerification(attempt as any, dto);
     const nextStatus = resolvedVerification.nextStatus;
     const now = new Date();
-    const failureState = this.getFailureState(nextStatus);
+    const failureState = this.getFailureState(
+      nextStatus,
+      this.getProviderFailureMessage(
+        this.asObject(attempt.responseSnapshot),
+        resolvedVerification.responseSnapshotPatch,
+        resolvedVerification.eventPayload,
+      ),
+    );
     const brand =
       nextStatus === 'PAID'
         ? await this.prisma.brand.findUnique({
@@ -572,6 +807,176 @@ export class CustomOrdersPaymentsService {
     return this.toVerifyResult(updatedAttempt, order);
   }
 
+  async verifyPaymentByReference(
+    userId: string,
+    dto: VerifyCustomOrderPaymentDto,
+  ) {
+    const attempt = await this.prisma.paymentAttempt.findUnique({
+      where: { reference: dto.reference },
+    });
+
+    if (!attempt || attempt.subjectType !== PaymentSubjectType.CUSTOM_ORDER || attempt.buyerId !== userId) {
+      throw new BadRequestException('No custom-order payment attempt found for this reference');
+    }
+
+    if (attempt.customOrderId) {
+      return this.verifyPayment(userId, attempt.customOrderId, dto);
+    }
+
+    if (!attempt.checkoutIntentId) {
+      throw new BadRequestException('Custom-order payment attempt is missing its checkout intent reference');
+    }
+
+    if (dto.gateway.trim().toLowerCase() !== attempt.provider.trim().toLowerCase()) {
+      throw new BadRequestException('Payment verification gateway does not match the initialized payment attempt');
+    }
+
+    const intent = await this.prisma.customOrderCheckoutIntent.findFirst({
+      where: { id: attempt.checkoutIntentId, buyerId: userId },
+      select: {
+        id: true,
+        buyerPriceSummaryJson: true,
+        currency: true,
+      },
+    });
+
+    if (!intent) {
+      throw new NotFoundException('Custom order checkout intent not found');
+    }
+
+    const lockedAmount = Number((intent.buyerPriceSummaryJson as Record<string, unknown>)?.grandTotal ?? 0);
+    if (Number(attempt.amount) !== lockedAmount || attempt.currency !== intent.currency) {
+      throw new BadRequestException(
+        'Custom-order payment attempt no longer matches the locked order total',
+      );
+    }
+
+    if (attempt.status === 'PAID') {
+      await this.ensurePaidCustomOrderSettlement(attempt.reference);
+      const refreshedAttempt = await this.prisma.paymentAttempt.findUnique({
+        where: { reference: dto.reference },
+      });
+      const customOrderId = refreshedAttempt?.customOrderId ?? undefined;
+      if (customOrderId) {
+        const order = await this.prisma.customOrder.findUnique({
+          where: { id: customOrderId },
+          select: { id: true, currency: true, buyerPriceSummaryJson: true },
+        });
+        if (order) {
+          return this.toVerifyResult(refreshedAttempt ?? attempt, order);
+        }
+      }
+      return this.toVerifyResultWithSummary(refreshedAttempt ?? attempt, {
+        amount: lockedAmount,
+        currency: intent.currency,
+        customOrderId,
+      });
+    }
+
+    if (this.paymentService.isAttemptTerminalStatus(attempt.status as any)) {
+      await this.markCheckoutSessionAbandoned(attempt.checkoutIntentId, attempt);
+      return this.toVerifyResultWithSummary(attempt, {
+        amount: lockedAmount,
+        currency: intent.currency,
+        customOrderId: undefined,
+      });
+    }
+
+    const resolvedVerification = await this.paymentService.resolveAttemptVerification(attempt as any, dto);
+    const nextStatus = resolvedVerification.nextStatus;
+    const now = new Date();
+    const failureState = this.getFailureState(
+      nextStatus,
+      this.getProviderFailureMessage(
+        this.asObject(attempt.responseSnapshot),
+        resolvedVerification.responseSnapshotPatch,
+        resolvedVerification.eventPayload,
+      ),
+    );
+
+    const updatedAttempt = await this.prisma.$transaction(async (tx) => {
+      const updated = await tx.paymentAttempt.update({
+        where: { reference: dto.reference },
+        data: {
+          status: nextStatus,
+          confirmedAt: nextStatus === 'PAID' ? now : attempt.confirmedAt,
+          finalizedAt:
+            ['PAID', 'FAILED', 'CANCELLED', 'EXPIRED'].includes(nextStatus)
+              ? now
+              : attempt.finalizedAt,
+          lastVerifiedAt: now,
+          providerReference: resolvedVerification.providerReference ?? attempt.providerReference,
+          providerTransactionId:
+            resolvedVerification.providerTransactionId ?? attempt.providerTransactionId,
+          providerAccessCode:
+            resolvedVerification.providerAccessCode ?? attempt.providerAccessCode,
+          providerChannel:
+            resolvedVerification.providerChannel ??
+            attempt.providerChannel ??
+            attempt.channel,
+          channel: resolvedVerification.providerChannel ?? attempt.channel,
+          responseSnapshot:
+            resolvedVerification.responseSnapshotPatch as Prisma.InputJsonValue,
+          failureCode: failureState.failureCode,
+          failureMessage: failureState.failureMessage,
+        },
+      });
+
+      await tx.paymentEvent.create({
+        data: {
+          paymentAttemptId: updated.id,
+          type: resolvedVerification.awaitingProviderConfirmation
+            ? 'VERIFICATION_PENDING_PROVIDER_CONFIRMATION'
+            : `STATUS_${nextStatus}`,
+          source: 'verify',
+          payload: {
+            ...(resolvedVerification.eventPayload ?? {}),
+            gateway: dto.gateway,
+            providerStatus: nextStatus,
+            verifiedAt: now.toISOString(),
+            subjectType: PaymentSubjectType.CUSTOM_ORDER,
+            checkoutIntentId: attempt.checkoutIntentId,
+            awaitingProviderConfirmation: resolvedVerification.awaitingProviderConfirmation,
+          },
+        },
+      });
+
+      return updated;
+    });
+
+    if (nextStatus === 'PAID') {
+      await this.ensurePaidCustomOrderSettlement(updatedAttempt.reference);
+      const refreshedAttempt = await this.prisma.paymentAttempt.findUnique({
+        where: { reference: dto.reference },
+      });
+      const customOrderId = refreshedAttempt?.customOrderId ?? undefined;
+      if (customOrderId) {
+        const order = await this.prisma.customOrder.findUnique({
+          where: { id: customOrderId },
+          select: { id: true, currency: true, buyerPriceSummaryJson: true },
+        });
+        if (order) {
+          return this.toVerifyResult(refreshedAttempt ?? updatedAttempt, order);
+        }
+      }
+      return this.toVerifyResultWithSummary(refreshedAttempt ?? updatedAttempt, {
+        amount: lockedAmount,
+        currency: intent.currency,
+        customOrderId,
+      });
+    }
+
+    if (['FAILED', 'CANCELLED', 'EXPIRED'].includes(nextStatus)) {
+      await this.markCheckoutSessionAbandoned(attempt.checkoutIntentId, updatedAttempt);
+    }
+
+    return this.toVerifyResultWithSummary(updatedAttempt, {
+      amount: lockedAmount,
+      currency: intent.currency,
+      customOrderId: undefined,
+    });
+  }
+
   async reconcilePaidAttemptByReference(reference: string) {
     const attempt = await this.prisma.paymentAttempt.findUnique({
       where: { reference },
@@ -586,25 +991,21 @@ export class CustomOrdersPaymentsService {
     if (
       !attempt ||
       attempt.subjectType !== PaymentSubjectType.CUSTOM_ORDER ||
-      !attempt.customOrderId ||
       attempt.status !== 'PAID'
     ) {
       return { reconciled: false };
     }
 
-    await this.ensurePaidCustomOrderSettlement(attempt.reference, attempt.customOrderId);
+    const reconciliation = await this.ensurePaidCustomOrderSettlement(attempt.reference);
     return {
-      reconciled: true,
-      customOrderId: attempt.customOrderId,
+      reconciled: Boolean(reconciliation),
+      customOrderId: reconciliation?.customOrderId ?? attempt.customOrderId ?? null,
     };
   }
 
-  private async ensurePaidCustomOrderSettlement(
-    reference: string,
-    customOrderId: string,
-  ) {
+  private async ensurePaidCustomOrderSettlement(reference: string) {
     const reconciliation = await this.prisma.$transaction(async (tx) => {
-      await tx.$queryRaw`SELECT "id" FROM "CustomOrder" WHERE "id" = ${customOrderId}::uuid FOR UPDATE`;
+      await tx.$queryRaw`SELECT "reference" FROM "PaymentAttempt" WHERE "reference" = ${reference} FOR UPDATE`;
 
       const attempt = await tx.paymentAttempt.findUnique({
         where: { reference },
@@ -613,20 +1014,110 @@ export class CustomOrdersPaymentsService {
           reference: true,
           buyerId: true,
           customOrderId: true,
+          checkoutIntentId: true,
           status: true,
           channel: true,
+          paymentMethod: true,
           confirmedAt: true,
           settlementCurrency: true,
           settlementAmount: true,
         },
       });
 
-      if (!attempt || attempt.customOrderId !== customOrderId || attempt.status !== 'PAID') {
+      if (!attempt || attempt.status !== 'PAID') {
+        return null;
+      }
+      if (!attempt.buyerId) {
         return null;
       }
 
+      let resolvedCustomOrderId = attempt.customOrderId ?? null;
+
+      if (!resolvedCustomOrderId && attempt.checkoutIntentId) {
+        const existingByIntent = await tx.customOrder.findUnique({
+          where: { checkoutIntentId: attempt.checkoutIntentId },
+          select: { id: true },
+        });
+        if (existingByIntent) {
+          resolvedCustomOrderId = existingByIntent.id;
+        } else {
+          const intent = await tx.customOrderCheckoutIntent.findUnique({
+            where: { id: attempt.checkoutIntentId },
+          });
+
+          if (!intent) {
+            return null;
+          }
+
+          const consumedAt = new Date();
+          const intentClaim = await tx.customOrderCheckoutIntent.updateMany({
+            where: {
+              id: intent.id,
+              buyerId: attempt.buyerId,
+              consumedAt: null,
+            },
+            data: { consumedAt },
+          });
+
+          let shouldCreate = true;
+          if (intentClaim.count === 0) {
+            const existingAfterClaim = await tx.customOrder.findUnique({
+              where: { checkoutIntentId: intent.id },
+              select: { id: true },
+            });
+            if (existingAfterClaim) {
+              resolvedCustomOrderId = existingAfterClaim.id;
+              shouldCreate = false;
+            }
+          }
+
+          if (shouldCreate) {
+            const createInput = await this.ordersService.buildPaidOrderCreateInput({
+              intent,
+              buyerId: attempt.buyerId,
+              paymentReference: attempt.reference,
+              paymentMethod: attempt.paymentMethod,
+              confirmedAt: attempt.confirmedAt,
+            });
+            try {
+              const created = await tx.customOrder.create({
+                data: createInput,
+                select: { id: true },
+              });
+              resolvedCustomOrderId = created.id;
+            } catch (error) {
+              if (
+                error instanceof Prisma.PrismaClientKnownRequestError &&
+                error.code === 'P2002'
+              ) {
+                const existingDuplicate = await tx.customOrder.findUnique({
+                  where: { checkoutIntentId: intent.id },
+                  select: { id: true },
+                });
+                resolvedCustomOrderId = existingDuplicate?.id ?? null;
+              } else {
+                throw error;
+              }
+            }
+          }
+        }
+
+        if (resolvedCustomOrderId && resolvedCustomOrderId !== attempt.customOrderId) {
+          await tx.paymentAttempt.update({
+            where: { id: attempt.id },
+            data: { customOrderId: resolvedCustomOrderId },
+          });
+        }
+      }
+
+      if (!resolvedCustomOrderId) {
+        return null;
+      }
+
+      await tx.$queryRaw`SELECT "id" FROM "CustomOrder" WHERE "id" = ${resolvedCustomOrderId}::uuid FOR UPDATE`;
+
       const order = await tx.customOrder.findUnique({
-        where: { id: customOrderId },
+        where: { id: resolvedCustomOrderId },
         select: {
           id: true,
           buyerId: true,
@@ -717,6 +1208,22 @@ export class CustomOrdersPaymentsService {
           lastBrandProgressUpdateAt: order.lastBrandProgressUpdateAt ?? acceptedAt,
         },
       });
+
+      if (attempt.checkoutIntentId) {
+        await tx.customOrderCheckoutSession.updateMany({
+          where: { checkoutIntentId: attempt.checkoutIntentId },
+          data: {
+            status: CustomOrderCheckoutStatus.PAID_CONFIRMED,
+            paidConfirmedAt: acceptedAt,
+            customOrderId: order.id,
+            lastAttemptId: attempt.id,
+            lastAttemptReference: attempt.reference,
+            lastAttemptStatus: attempt.status,
+            resumePath: `/custom-orders/${order.id}`,
+            abandonedAt: null,
+          },
+        });
+      }
 
       if (!existingOrderReceivedProgress && brand?.ownerId) {
         await tx.customOrderProgressEvent.create({
@@ -856,8 +1363,11 @@ export class CustomOrdersPaymentsService {
       };
     });
 
-    if (!reconciliation || !reconciliation.shouldNotify) {
-      return;
+    if (!reconciliation) {
+      return null;
+    }
+    if (!reconciliation.shouldNotify) {
+      return reconciliation;
     }
 
     await this.sideEffects.enqueueNotification({
@@ -913,6 +1423,140 @@ export class CustomOrdersPaymentsService {
       currency: reconciliation.currency,
       sourceTitle: reconciliation.sourceTitle,
     });
+
+    return reconciliation;
+  }
+
+  async listBuyerPaymentAttempts(userId: string, customOrderId: string) {
+    const order = await this.prisma.customOrder.findFirst({
+      where: { id: customOrderId, buyerId: userId },
+      select: { id: true, checkoutIntentId: true },
+    });
+    if (!order) {
+      throw new NotFoundException('Custom order not found');
+    }
+
+    const attempts = await this.prisma.paymentAttempt.findMany({
+      where: {
+        buyerId: userId,
+        subjectType: PaymentSubjectType.CUSTOM_ORDER,
+        OR: [
+          { customOrderId: order.id },
+          ...(order.checkoutIntentId ? [{ checkoutIntentId: order.checkoutIntentId }] : []),
+        ],
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    return {
+      statusCode: 200,
+      message: 'Custom order payment attempts retrieved',
+      data: attempts.map((attempt) => ({
+        id: attempt.id,
+        reference: attempt.reference,
+        status: attempt.status,
+        provider: attempt.provider,
+        paymentMethod: attempt.paymentMethod,
+        channel: attempt.channel ?? attempt.providerChannel ?? null,
+        amount: Number(attempt.amount),
+        currency: attempt.currency,
+        failureCode: attempt.failureCode,
+        failureMessage: attempt.failureMessage,
+        createdAt: attempt.createdAt.toISOString(),
+        confirmedAt: attempt.confirmedAt?.toISOString() ?? null,
+        finalizedAt: attempt.finalizedAt?.toISOString() ?? null,
+        lastVerifiedAt: attempt.lastVerifiedAt?.toISOString() ?? null,
+      })),
+    };
+  }
+
+  private buildPaymentReturnPath(reference: string, gateway: string) {
+    const safeGateway = String(gateway || 'PAYSTACK').trim() || 'PAYSTACK';
+    return `/checkout/payment-return?reference=${encodeURIComponent(reference)}&gateway=${encodeURIComponent(safeGateway)}`;
+  }
+
+  private async recordCheckoutSessionPaymentInitiated(
+    prisma: Prisma.TransactionClient,
+    checkoutIntentId: string,
+    attempt: { id: string; reference: string; status: string; provider?: string | null },
+    gateway: string,
+    increment: boolean,
+  ) {
+    const now = new Date();
+    const updateData: Prisma.CustomOrderCheckoutSessionUpdateManyMutationInput = {
+      status: CustomOrderCheckoutStatus.PAYMENT_INITIATED,
+      paymentInitiatedAt: now,
+      lastAttemptId: attempt.id,
+      lastAttemptReference: attempt.reference,
+      lastAttemptStatus: attempt.status,
+      resumePath: this.buildPaymentReturnPath(attempt.reference, gateway),
+      abandonedAt: null,
+    };
+    if (increment) {
+      updateData.attemptsCount = { increment: 1 };
+    }
+
+    const updated = await prisma.customOrderCheckoutSession.updateMany({
+      where: { checkoutIntentId },
+      data: updateData,
+    });
+
+    if (updated.count > 0) {
+      return;
+    }
+
+    const intent = await prisma.customOrderCheckoutIntent.findUnique({
+      where: { id: checkoutIntentId },
+      select: { buyerId: true },
+    });
+    if (!intent) {
+      return;
+    }
+
+    await prisma.customOrderCheckoutSession.create({
+      data: {
+        buyerId: intent.buyerId,
+        checkoutIntentId,
+        status: CustomOrderCheckoutStatus.PAYMENT_INITIATED,
+        submittedAt: now,
+        paymentInitiatedAt: now,
+        lastAttemptId: attempt.id,
+        lastAttemptReference: attempt.reference,
+        lastAttemptStatus: attempt.status,
+        attemptsCount: 1,
+        resumeToken: randomUUID(),
+        resumePath: this.buildPaymentReturnPath(attempt.reference, gateway),
+      },
+    });
+  }
+
+  private async markCheckoutSessionAbandoned(
+    checkoutIntentId: string,
+    attempt: { id: string; reference: string; status: string; provider?: string | null },
+  ) {
+    const activeAttempt = await this.prisma.paymentAttempt.findFirst({
+      where: {
+        subjectType: PaymentSubjectType.CUSTOM_ORDER,
+        checkoutIntentId,
+        status: { in: [...ACTIVE_PAYMENT_ATTEMPT_STATUSES] },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (activeAttempt && activeAttempt.reference !== attempt.reference) {
+      return;
+    }
+
+    await this.prisma.customOrderCheckoutSession.updateMany({
+      where: { checkoutIntentId },
+      data: {
+        status: CustomOrderCheckoutStatus.ABANDONED,
+        abandonedAt: new Date(),
+        lastAttemptId: attempt.id,
+        lastAttemptReference: attempt.reference,
+        lastAttemptStatus: attempt.status,
+        resumePath: this.buildPaymentReturnPath(attempt.reference, attempt.provider ?? 'PAYSTACK'),
+      },
+    });
   }
 
   private toInitResult(attempt: {
@@ -921,6 +1565,7 @@ export class CustomOrdersPaymentsService {
     provider: string;
     status: string;
     channel: string | null;
+    providerAccessCode?: string | null;
     callbackUrl: string | null;
     authorizationUrl: string | null;
     bankAccount: Prisma.JsonValue | null;
@@ -932,6 +1577,7 @@ export class CustomOrdersPaymentsService {
       gateway: attempt.provider,
       status: attempt.status,
       channel: attempt.channel ?? undefined,
+      providerAccessCode: attempt.providerAccessCode ?? undefined,
       callbackUrl: attempt.callbackUrl ?? undefined,
       authorizationUrl: attempt.authorizationUrl ?? undefined,
       bankAccount: this.asObject(attempt.bankAccount),
@@ -973,6 +1619,51 @@ export class CustomOrdersPaymentsService {
         channel: attempt.channel ?? undefined,
         failureMessage: attempt.failureMessage ?? undefined,
         customOrderId: order.id,
+        ...(awaitingProviderConfirmation
+          ? {
+              awaitingProviderConfirmation: true,
+              recoveryAction: responseSnapshot?.recoveryAction ?? undefined,
+              recoveryMessage: responseSnapshot?.recoveryMessage ?? undefined,
+            }
+          : {}),
+      },
+    };
+  }
+
+  private toVerifyResultWithSummary(
+    attempt: {
+      id: string;
+      reference: string;
+      status: string;
+      confirmedAt: Date | null;
+      channel: string | null;
+      failureMessage: string | null;
+    },
+    summary: {
+      amount: number;
+      currency: string;
+      customOrderId?: string | null;
+    },
+  ) {
+    const responseSnapshot = this.asObject(
+      (attempt as { responseSnapshot?: Prisma.JsonValue | null }).responseSnapshot ?? null,
+    );
+    const awaitingProviderConfirmation =
+      Boolean(responseSnapshot?.awaitingProviderConfirmation) && attempt.status !== 'PAID';
+
+    return {
+      status: 'success',
+      data: {
+        success: attempt.status === 'PAID',
+        status: attempt.status,
+        paymentAttemptId: attempt.id,
+        reference: attempt.reference,
+        amount: summary.amount,
+        currency: summary.currency,
+        paidAt: attempt.confirmedAt?.toISOString(),
+        channel: attempt.channel ?? undefined,
+        failureMessage: attempt.failureMessage ?? undefined,
+        customOrderId: summary.customOrderId ?? undefined,
         ...(awaitingProviderConfirmation
           ? {
               awaitingProviderConfirmation: true,
@@ -1046,22 +1737,30 @@ export class CustomOrdersPaymentsService {
     return Math.round((value + Number.EPSILON) * 100) / 100;
   }
 
-  private getFailureState(status: string) {
+  private getFailureState(status: string, providerMessage?: string | null) {
+    const normalizedProviderMessage =
+      typeof providerMessage === 'string' && providerMessage.trim().length > 0
+        ? providerMessage.trim()
+        : null;
     switch (status) {
       case 'FAILED':
         return {
           failureCode: 'PAYMENT_FAILED',
-          failureMessage: 'Payment provider reported the payment as failed.',
+          failureMessage:
+            normalizedProviderMessage ?? 'Payment provider reported the payment as failed.',
         };
       case 'CANCELLED':
         return {
           failureCode: 'CANCELLED',
-          failureMessage: 'Payment provider reported the payment as cancelled.',
+          failureMessage:
+            normalizedProviderMessage ?? 'Payment provider reported the payment as cancelled.',
         };
       case 'EXPIRED':
         return {
           failureCode: 'EXPIRED',
-          failureMessage: 'Payment provider reported that the payment expired before completion.',
+          failureMessage:
+            normalizedProviderMessage ??
+            'Payment provider reported that the payment expired before completion.',
         };
       default:
         return {
@@ -1069,6 +1768,34 @@ export class CustomOrdersPaymentsService {
           failureMessage: null,
         };
     }
+  }
+
+  private getProviderFailureMessage(
+    ...snapshots: Array<Record<string, unknown> | null | undefined>
+  ) {
+    for (const snapshot of snapshots) {
+      if (!snapshot) {
+        continue;
+      }
+
+      const candidateKeys = [
+        'providerVerificationMessage',
+        'providerWebhookMessage',
+        'providerMessage',
+        'gatewayResponse',
+        'message',
+        'errorMessage',
+      ] as const;
+
+      for (const key of candidateKeys) {
+        const value = snapshot[key];
+        if (typeof value === 'string' && value.trim().length > 0) {
+          return value.trim();
+        }
+      }
+    }
+
+    return null;
   }
 
   private asObject(value: Prisma.JsonValue | null) {

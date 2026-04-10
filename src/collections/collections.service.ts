@@ -20,6 +20,7 @@ import {
   UserType,
   Prisma,
   ContentTarget,
+  CustomOrderSourceType,
   NotificationType,
   CollectionVisibility,
   CollectionType,
@@ -84,6 +85,27 @@ export class CollectionsService {
     parseInt(process.env.MAX_PRODUCTS_PER_COLLECTION || '5', 10),
   );
   private readonly collectionDeleteWindowMs = 30 * 24 * 60 * 60 * 1000;
+
+  async assertDesignCreationAllowed(userId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        type: true,
+        isEmailVerified: true,
+      },
+    });
+
+    if (!user || user.type !== UserType.BRAND) {
+      throw new ForbiddenException('Only brands can create designs');
+    }
+
+    if (!user.isEmailVerified) {
+      throw new ForbiddenException('Verify your email before creating designs.');
+    }
+
+    return user;
+  }
 
   private normalizeMeasurementKeys(raw?: string[] | null): string[] {
     if (!Array.isArray(raw)) return [];
@@ -2400,6 +2422,20 @@ export class CollectionsService {
             console.warn(`Failed to notify patcher ${recipientId}`, e);
           }
         }
+      }
+
+      try {
+        await this.notifications.create(userId, NotificationType.COLLECTION_UPLOAD, {
+          actorId: userId,
+          payload: {
+            collectionId: publishedCollection.id,
+            collectionTitle: publishedCollection.title,
+            targetUrl: `/collections/${publishedCollection.id}`,
+            message: `Your design "${publishedCollection.title}" is now live`,
+          },
+        });
+      } catch (e) {
+        console.warn('Failed to notify collection owner of publish', e);
       }
     }
 
@@ -6866,6 +6902,18 @@ export class CollectionsService {
         _count: { select: { medias: true, views: true, comments: true } },
       },
     });
+
+    if (body.customOrderEnabled === false) {
+      await this.prisma.customOrderConfiguration.updateMany({
+        where: {
+          sourceType: CustomOrderSourceType.DESIGN,
+          sourceId: collectionId,
+          isActive: true,
+        },
+        data: { isActive: false },
+      });
+    }
+
     if (
       typeof body.visibility === 'string' &&
       body.visibility !== existing.visibility &&

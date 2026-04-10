@@ -21,9 +21,24 @@ export class UserProfileService {
         lastName: true,
         type: true,
         profileImage: true,
+        profileImageId: true,
+        profileImageFile: {
+          select: {
+            id: true,
+            s3Url: true,
+          },
+        },
         bannerImage: true,
+        bannerImageId: true,
+        bannerImageFile: {
+          select: {
+            id: true,
+            s3Url: true,
+          },
+        },
         address: true,
         profileVisibility: true,
+        createdAt: true,
       },
     });
 
@@ -41,6 +56,7 @@ export class UserProfileService {
     return new UserProfileResponseDto({
       ...user,
       location,
+      createdAt: user.createdAt.toISOString(),
     });
   }
 
@@ -54,9 +70,24 @@ export class UserProfileService {
         lastName: true,
         type: true,
         profileImage: true,
+        profileImageId: true,
+        profileImageFile: {
+          select: {
+            id: true,
+            s3Url: true,
+          },
+        },
         bannerImage: true,
+        bannerImageId: true,
+        bannerImageFile: {
+          select: {
+            id: true,
+            s3Url: true,
+          },
+        },
         address: true,
         profileVisibility: true,
+        createdAt: true,
       },
     });
 
@@ -78,6 +109,7 @@ export class UserProfileService {
     return new UserProfileResponseDto({
       ...user,
       location,
+      createdAt: user.createdAt.toISOString(),
     });
   }
 
@@ -96,9 +128,24 @@ export class UserProfileService {
         lastName: true,
         type: true,
         profileImage: true,
+        profileImageId: true,
+        profileImageFile: {
+          select: {
+            id: true,
+            s3Url: true,
+          },
+        },
         bannerImage: true,
+        bannerImageId: true,
+        bannerImageFile: {
+          select: {
+            id: true,
+            s3Url: true,
+          },
+        },
         address: true,
         profileVisibility: true,
+        createdAt: true,
       },
     });
 
@@ -109,6 +156,7 @@ export class UserProfileService {
     return new UserProfileResponseDto({
       ...user,
       location: user.address ?? undefined,
+      createdAt: user.createdAt.toISOString(),
     });
   }
 

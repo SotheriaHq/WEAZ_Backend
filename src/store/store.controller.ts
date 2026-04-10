@@ -277,6 +277,52 @@ export class StoreController {
   }
 
   @UseGuards(OptionalJwtAuthGuard)
+  @Get(['products/market', 'store/products/market'])
+  @Throttle({ default: { limit: 120, ttl: 60000 } })
+  async getMarketplaceProducts(
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('cursor') cursor?: string,
+    @Query('collectionId') collectionId?: string,
+    @Query('category') category?: string,
+    @Query('gender') gender?: string,
+    @Query('minPrice') minPrice?: string,
+    @Query('maxPrice') maxPrice?: string,
+    @Query('sizes') sizes?: string | string[],
+    @Query('colors') colors?: string | string[],
+    @Query('tags') tags?: string | string[],
+    @Query('onSale') onSale?: string,
+    @Query('isOnSale') isOnSale?: string,
+    @Query('isFeatured') isFeatured?: string,
+    @Query('sortBy') sortBy?: 'newest' | 'price_asc' | 'price_desc' | 'popular',
+    @Query('sort') sort?: 'newest' | 'price_asc' | 'price_desc' | 'popular',
+    @Query('q') q?: string,
+    @Query('search') search?: string,
+  ) {
+    const resolvedSortBy = sortBy ?? sort;
+    const resolvedOnSale = this.parseBoolParam(onSale) ?? this.parseBoolParam(isOnSale);
+    const resolvedIsFeatured = this.parseBoolParam(isFeatured);
+
+    return this.storeService.getMarketplaceProducts({
+      page: page ? parseInt(page, 10) : 1,
+      limit: limit ? parseInt(limit, 10) : 40,
+      cursor,
+      collectionId,
+      category,
+      gender,
+      minPrice: minPrice ? parseFloat(minPrice) : undefined,
+      maxPrice: maxPrice ? parseFloat(maxPrice) : undefined,
+      sizes: this.parseListParam(sizes),
+      colors: this.parseListParam(colors),
+      tags: this.parseListParam(tags),
+      onSale: resolvedOnSale === true,
+      isFeatured: resolvedIsFeatured,
+      sortBy: resolvedSortBy,
+      search: resolveSearchQuery(q, search),
+    });
+  }
+
+  @UseGuards(OptionalJwtAuthGuard)
   @Get(['products/:id', 'store/products/:id'])
   @Throttle({ default: { limit: 120, ttl: 60000 } })
   async getProduct(

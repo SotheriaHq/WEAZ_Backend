@@ -345,7 +345,7 @@ export class PaymentService {
 
     if (attempt.subjectType === PaymentSubjectType.CUSTOM_ORDER) {
       throw new BadRequestException(
-        'This payment reference belongs to a custom order. Verify it through /custom-orders/:id/payment/verify.',
+        'This payment reference belongs to a custom order. Verify it through /custom-orders/payment/verify (or /custom-orders/:id/payment/verify if the order already exists).',
       );
     }
 
@@ -1044,50 +1044,125 @@ export class PaymentService {
     userId: string,
   ): Promise<PaymentAttemptSummary> {
     if (attempt.subjectType === PaymentSubjectType.CUSTOM_ORDER) {
-      if (!attempt.customOrderId) {
-        throw new NotFoundException('Custom-order payment attempt is missing its order reference');
+      if (attempt.customOrderId) {
+        const customOrder = await this.prisma.customOrder.findFirst({
+          where: {
+            id: attempt.customOrderId,
+            buyerId: userId,
+          },
+          select: {
+            id: true,
+            sourceTitleSnapshot: true,
+            sourceBrandNameSnapshot: true,
+            buyerPriceSummaryJson: true,
+            shippingAddressJson: true,
+            currency: true,
+            checkoutIntentId: true,
+          },
+        });
+
+        if (!customOrder) {
+          throw new NotFoundException('No custom order found for this payment attempt');
+        }
+
+        const priceSummary = this.asObject(customOrder.buyerPriceSummaryJson);
+        const shippingAddress = this.asObject(customOrder.shippingAddressJson);
+        const grandTotal = this.roundMoney(Number(priceSummary?.grandTotal ?? attempt.amount ?? 0));
+        const shippingCost = this.roundMoney(Number(priceSummary?.shippingFee ?? 0));
+        const discount = this.roundMoney(Number(priceSummary?.discount ?? 0));
+        const subtotal = this.roundMoney(
+          Number(priceSummary?.subtotal ?? grandTotal - shippingCost + discount),
+        );
+
+        return {
+          paymentAttemptId: attempt.id,
+          reference: attempt.reference,
+          subjectType: 'CUSTOM_ORDER',
+          customOrderId: customOrder.id,
+          checkoutIntentId: customOrder.checkoutIntentId ?? attempt.checkoutIntentId ?? undefined,
+          gateway: attempt.provider,
+          providerMode: attempt.providerMode === 'live' ? 'live' : 'mock',
+          paymentMethod: attempt.paymentMethod,
+          status: attempt.status as PaymentAttemptStatus,
+          currency: attempt.currency,
+          settlementCurrency: attempt.settlementCurrency,
+          settlementAmount: Number(attempt.settlementAmount ?? attempt.amount ?? grandTotal),
+          exchangeRateSnapshotId: attempt.exchangeRateSnapshotId ?? undefined,
+          channel: (attempt.channel as PaymentChannel | null) ?? undefined,
+          authorizationUrl: attempt.authorizationUrl ?? undefined,
+          callbackUrl: attempt.callbackUrl ?? undefined,
+          bankAccount: this.asObject(attempt.bankAccount) as PaymentInitResult['bankAccount'],
+          paymentData: this.asObject(attempt.requestSnapshot),
+          nextAction: this.asObject(attempt.nextAction) as PaymentNextAction | undefined,
+          canRetry: ['FAILED', 'CANCELLED', 'EXPIRED'].includes(attempt.status),
+          canSimulate: this.isMockMode() && this.allowPaymentSimulation() && attempt.status !== 'PAID',
+          orderIds: [],
+          summary: {
+            items: [
+              {
+                name:
+                  String(customOrder.sourceTitleSnapshot || '').trim() ||
+                  `Custom order ${customOrder.id.slice(0, 8).toUpperCase()}`,
+                quantity: 1,
+                price: subtotal,
+              },
+            ],
+            subtotal,
+            shippingCost,
+            discount,
+            grandTotal,
+            shippingName: String(customOrder.sourceBrandNameSnapshot ?? 'Custom order'),
+            shippingCity: String(shippingAddress.city ?? ''),
+            shippingState: String(shippingAddress.state ?? ''),
+          },
+        };
       }
 
-      const customOrder = await this.prisma.customOrder.findFirst({
-        where: {
-          id: attempt.customOrderId,
-          buyerId: userId,
-        },
+      if (!attempt.checkoutIntentId) {
+        throw new NotFoundException(
+          'Custom-order payment attempt is missing its checkout intent reference',
+        );
+      }
+
+      const checkoutIntent = await this.prisma.customOrderCheckoutIntent.findFirst({
+        where: { id: attempt.checkoutIntentId, buyerId: userId },
         select: {
           id: true,
-          sourceTitleSnapshot: true,
-          sourceBrandNameSnapshot: true,
           buyerPriceSummaryJson: true,
-          shippingAddressJson: true,
+          requestSnapshotJson: true,
           currency: true,
         },
       });
 
-      if (!customOrder) {
-        throw new NotFoundException('No custom order found for this payment attempt');
+      if (!checkoutIntent) {
+        throw new NotFoundException('Custom order checkout intent not found for this payment attempt');
       }
 
-      const priceSummary = this.asObject(customOrder.buyerPriceSummaryJson);
-      const shippingAddress = this.asObject(customOrder.shippingAddressJson);
+      const priceSummary = this.asObject(checkoutIntent.buyerPriceSummaryJson);
+      const requestSnapshot = this.asObject(checkoutIntent.requestSnapshotJson);
+      const shippingAddress = this.asObject(requestSnapshot?.shippingAddress);
+      const contactInfo = this.asObject(requestSnapshot?.contactInfo);
+      const shippingName = String(contactInfo?.customerName ?? requestSnapshot?.customerName ?? '');
       const grandTotal = this.roundMoney(Number(priceSummary?.grandTotal ?? attempt.amount ?? 0));
       const shippingCost = this.roundMoney(Number(priceSummary?.shippingFee ?? 0));
       const discount = this.roundMoney(Number(priceSummary?.discount ?? 0));
-      const subtotal = this.roundMoney(Number(priceSummary?.subtotal ?? grandTotal - shippingCost + discount));
+      const subtotal = this.roundMoney(
+        Number(priceSummary?.subtotal ?? grandTotal - shippingCost + discount),
+      );
 
       return {
         paymentAttemptId: attempt.id,
         reference: attempt.reference,
         subjectType: 'CUSTOM_ORDER',
-        customOrderId: customOrder.id,
+        customOrderId: undefined,
+        checkoutIntentId: checkoutIntent.id,
         gateway: attempt.provider,
         providerMode: attempt.providerMode === 'live' ? 'live' : 'mock',
         paymentMethod: attempt.paymentMethod,
         status: attempt.status as PaymentAttemptStatus,
-        currency: attempt.currency,
+        currency: checkoutIntent.currency,
         settlementCurrency: attempt.settlementCurrency,
-        settlementAmount: Number(
-          attempt.settlementAmount ?? attempt.amount ?? grandTotal,
-        ),
+        settlementAmount: Number(attempt.settlementAmount ?? attempt.amount ?? grandTotal),
         exchangeRateSnapshotId: attempt.exchangeRateSnapshotId ?? undefined,
         channel: (attempt.channel as PaymentChannel | null) ?? undefined,
         authorizationUrl: attempt.authorizationUrl ?? undefined,
@@ -1101,9 +1176,7 @@ export class PaymentService {
         summary: {
           items: [
             {
-              name:
-                String(customOrder.sourceTitleSnapshot || '').trim() ||
-                `Custom order ${customOrder.id.slice(0, 8).toUpperCase()}`,
+              name: 'Custom order checkout',
               quantity: 1,
               price: subtotal,
             },
@@ -1112,7 +1185,7 @@ export class PaymentService {
           shippingCost,
           discount,
           grandTotal,
-          shippingName: String(customOrder.sourceBrandNameSnapshot ?? 'Custom order'),
+          shippingName,
           shippingCity: String(shippingAddress.city ?? ''),
           shippingState: String(shippingAddress.state ?? ''),
         },
@@ -1302,6 +1375,14 @@ export class PaymentService {
               id: true,
               brandId: true,
               buyerId: true,
+              customerName: true,
+              totalAmount: true,
+              brand: {
+                select: {
+                  ownerId: true,
+                  name: true,
+                },
+              },
             },
             orderBy: { createdAt: 'asc' },
           })
@@ -1310,6 +1391,7 @@ export class PaymentService {
     if (transitionResult.transitionedToPaid && linkedOrders.length > 0) {
       await this.standardOrderFinanceSyncService.syncPaidOrdersByReferences([reference]);
       await this.notifyFinanceAdminsOfStandardPayment(updatedAttempt, linkedOrders);
+      await this.notifyOrderPlacementAfterPayment(linkedOrders);
     }
 
     return updatedAttempt;
@@ -1445,6 +1527,77 @@ export class PaymentService {
         }),
       ),
     );
+  }
+
+  private async notifyOrderPlacementAfterPayment(
+    linkedOrders: Array<{
+      id: string;
+      brandId: string;
+      buyerId: string | null;
+      customerName: string | null;
+      totalAmount: Prisma.Decimal;
+      brand: {
+        ownerId: string;
+        name: string;
+      } | null;
+    }>,
+  ) {
+    const jobs: Array<Promise<unknown>> = [];
+
+    for (const order of linkedOrders) {
+      const totalAmount = Number(order.totalAmount ?? 0);
+      const brandName = order.brand?.name ?? 'Brand';
+
+      if (order.brand?.ownerId) {
+        jobs.push(
+          this.notificationsService.create(
+            order.brand.ownerId,
+            NotificationType.ORDER_PLACED,
+            {
+              actorId: order.buyerId ?? undefined,
+              dedupeMs: 5 * 60 * 1000,
+              payload: {
+                orderId: order.id,
+                totalAmount,
+                brandId: order.brandId,
+                brandName,
+                customerName: order.customerName || 'Customer',
+                targetUrl: `/studio?tab=orders&orderId=${order.id}`,
+              },
+            },
+          ),
+        );
+      }
+
+      if (order.buyerId) {
+        jobs.push(
+          this.notificationsService.create(order.buyerId, NotificationType.ORDER_PLACED, {
+            actorId: null,
+            dedupeMs: 5 * 60 * 1000,
+            payload: {
+              orderId: order.id,
+              totalAmount,
+              brandId: order.brandId,
+              brandName,
+              isBuyerCopy: true,
+              targetUrl: `/orders/${order.id}`,
+            },
+          }),
+        );
+      }
+    }
+
+    if (jobs.length === 0) {
+      return;
+    }
+
+    const results = await Promise.allSettled(jobs);
+    const rejected = results.filter((result) => result.status === 'rejected');
+    if (rejected.length > 0) {
+      this.logger.warn(
+        `Failed to send ${rejected.length} order placement notification(s) after payment confirmation`,
+      );
+    }
   }
 
   private validatePaymentRequest(
@@ -2093,7 +2246,14 @@ export class PaymentService {
         payload.data.paid_at != null
           ? String(payload.data.paid_at).trim() || null
           : null,
-      message: payload?.message != null ? String(payload.message) : null,
+      message:
+        payload?.data?.gateway_response != null
+          ? String(payload.data.gateway_response)
+          : payload?.data?.message != null
+            ? String(payload.data.message)
+            : payload?.message != null
+              ? String(payload.message)
+              : null,
     };
   }
 

@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import {
   CustomOrderActorType,
+  CustomOrderCheckoutStatus,
   CustomOrderLedgerAllocationStatus,
   CustomOrderLedgerAllocationType,
   CustomOrderStatus,
@@ -18,6 +19,7 @@ const ACCEPTANCE_SLA_WARNING_HOURS = 24;
 const ACCEPTANCE_TIMEOUT_HOURS = 48;
 const STALE_STAGE_ESCALATION_HOURS = 24;
 const ACCEPTANCE_WINDOW_REMINDER_HOURS = 12;
+const STALE_OPERATIONAL_STATUS_WARNING_HOURS = 24;
 
 @Injectable()
 export class CustomOrderOpsCronService {
@@ -44,6 +46,100 @@ export class CustomOrderOpsCronService {
       }
     } catch (error) {
       this.logger.warn(`Durable custom-order side effects cron failed: ${this.formatError(error)}`);
+    }
+  }
+
+  @Cron(CronExpression.EVERY_HOUR)
+  async notifyOnStaleOperationalStatuses(): Promise<void> {
+    const now = new Date();
+    const warningThreshold = new Date(
+      now.getTime() - STALE_OPERATIONAL_STATUS_WARNING_HOURS * 60 * 60 * 1000,
+    );
+
+    try {
+      const admins = await this.getActiveAdminIds();
+      const orders = await this.prisma.customOrder.findMany({
+        where: {
+          status: {
+            in: [
+              CustomOrderStatus.ACCEPTED,
+              CustomOrderStatus.IN_PRODUCTION,
+              CustomOrderStatus.READY_FOR_DISPATCH,
+              CustomOrderStatus.IN_TRANSIT,
+            ],
+          },
+          lastBrandProgressUpdateAt: { lte: warningThreshold },
+        },
+        select: {
+          id: true,
+          buyerId: true,
+          brandId: true,
+          status: true,
+          lastBrandProgressUpdateAt: true,
+        },
+        take: 200,
+      });
+
+      for (const order of orders) {
+        const hoursWaiting = Math.max(
+          STALE_OPERATIONAL_STATUS_WARNING_HOURS,
+          Math.floor(
+            (now.getTime() - order.lastBrandProgressUpdateAt.getTime()) /
+              (60 * 60 * 1000),
+          ),
+        );
+
+        await this.sideEffects.enqueueNotification({
+          customOrderId: order.id,
+          recipientIds: [order.buyerId],
+          notificationType: NotificationType.CUSTOM_ORDER_STALE_STAGE_WARNING,
+          target: this.customOrderTarget(order.id),
+          payload: {
+            customOrderId: order.id,
+            status: order.status,
+            hoursWaiting,
+          },
+          dedupeMs: 18 * 60 * 60 * 1000,
+        });
+
+        await this.notifyBrandOwner(order.brandId, order.id, {
+          notificationType: NotificationType.CUSTOM_ORDER_REVIEW_REQUIRED,
+          payload: {
+            customOrderId: order.id,
+            status: order.status,
+            hoursWaiting,
+            reason: 'STALE_OPERATIONAL_STATUS',
+          },
+          target: this.studioCustomOrderTarget(order.id),
+          dedupeMs: 18 * 60 * 60 * 1000,
+        });
+
+        if (admins.length > 0) {
+          await this.sideEffects.enqueueNotification({
+            customOrderId: order.id,
+            recipientIds: admins,
+            notificationType: NotificationType.CUSTOM_ORDER_ADMIN_REVIEW_TRIGGERED,
+            target: this.adminCustomOrderTarget(order.id),
+            payload: {
+              customOrderId: order.id,
+              status: order.status,
+              hoursWaiting,
+              reason: 'STALE_OPERATIONAL_STATUS',
+            },
+            dedupeMs: 18 * 60 * 60 * 1000,
+          });
+        }
+      }
+
+      if (orders.length > 0) {
+        this.logger.log(
+          `Queued ${orders.length} stale operational custom-order reminder(s) for buyer, brand, and admin`,
+        );
+      }
+    } catch (error) {
+      this.logger.warn(
+        `Operational stale-status cron failed: ${this.formatError(error)}`,
+      );
     }
   }
 
@@ -512,13 +608,50 @@ export class CustomOrderOpsCronService {
   @Cron(CronExpression.EVERY_HOUR)
   async cleanupExpiredCheckoutIntents(): Promise<void> {
     try {
-      const result = await this.prisma.customOrderCheckoutIntent.deleteMany({
+      const now = new Date();
+      const abandoned = await this.prisma.customOrderCheckoutSession.updateMany({
         where: {
-          consumedAt: null,
-          expiresAt: { lt: new Date() },
+          status: { in: [CustomOrderCheckoutStatus.SUBMITTED, CustomOrderCheckoutStatus.PAYMENT_INITIATED] },
+          checkoutIntent: {
+            consumedAt: null,
+            expiresAt: { lt: now },
+          },
+        },
+        data: {
+          status: CustomOrderCheckoutStatus.ABANDONED,
+          abandonedAt: now,
         },
       });
 
+      const retentionDays = Math.max(
+        7,
+        parseInt(process.env.CUSTOM_ORDER_CHECKOUT_SESSION_RETENTION_DAYS || '', 10) || 14,
+      );
+      const abandonedCutoff = new Date(
+        Date.now() - retentionDays * 24 * 60 * 60 * 1000,
+      );
+      const cleanedSessions = await this.prisma.customOrderCheckoutSession.deleteMany({
+        where: {
+          status: CustomOrderCheckoutStatus.ABANDONED,
+          abandonedAt: { lt: abandonedCutoff },
+          customOrderId: null,
+        },
+      });
+
+      const result = await this.prisma.customOrderCheckoutIntent.deleteMany({
+        where: {
+          consumedAt: null,
+          expiresAt: { lt: now },
+          checkoutSession: { is: null },
+        },
+      });
+
+      if (abandoned.count > 0) {
+        this.logger.log(`Marked ${abandoned.count} custom order checkout session(s) as abandoned`);
+      }
+      if (cleanedSessions.count > 0) {
+        this.logger.log(`Deleted ${cleanedSessions.count} abandoned custom order checkout session(s)`);
+      }
       if (result.count > 0) {
         this.logger.log(`Deleted ${result.count} expired custom order checkout intent(s)`);
       }
@@ -662,6 +795,14 @@ export class CustomOrderOpsCronService {
       type: 'SYSTEM' as const,
       id: `admin-custom-order:${customOrderId}`,
       preview: `/admin/custom-orders/${customOrderId}`,
+    };
+  }
+
+  private studioCustomOrderTarget(customOrderId: string) {
+    return {
+      type: 'SYSTEM' as const,
+      id: `studio-custom-order:${customOrderId}`,
+      preview: `/studio/custom-orders/${customOrderId}`,
     };
   }
 

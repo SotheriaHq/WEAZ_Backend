@@ -58,6 +58,17 @@ export class CustomOrdersBuyerController {
     return this.ordersService.createOrder(req.user.id, dto);
   }
 
+  @Post('checkout/:id/payment/initialize')
+  @UseInterceptors(IdempotencyInterceptor)
+  async initializePaymentForCheckoutIntent(
+    @Param('id') id: string,
+    @Req() req: Request & { user: { id: string } },
+    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true }))
+    dto: InitializeCustomOrderPaymentDto,
+  ) {
+    return this.paymentsService.initializePaymentForCheckoutIntent(req.user.id, id, dto);
+  }
+
   @Post(':id/payment/initialize')
   @UseInterceptors(IdempotencyInterceptor)
   async initializePayment(
@@ -67,6 +78,15 @@ export class CustomOrdersBuyerController {
     dto: InitializeCustomOrderPaymentDto,
   ) {
     return this.paymentsService.initializePayment(req.user.id, id, dto);
+  }
+
+  @Post('payment/verify')
+  async verifyPaymentByReference(
+    @Req() req: Request & { user: { id: string } },
+    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true }))
+    dto: VerifyCustomOrderPaymentDto,
+  ) {
+    return this.paymentsService.verifyPaymentByReference(req.user.id, dto);
   }
 
   @Post(':id/payment/verify')
@@ -103,12 +123,36 @@ export class CustomOrdersBuyerController {
     return this.ordersService.updateDisplayChartPreference(req.user.id, dto);
   }
 
+  @Get('checkout-sessions/resume/:token')
+  async getCheckoutSessionByToken(
+    @Param('token') token: string,
+    @Req() req: Request & { user: { id: string } },
+  ) {
+    return this.ordersService.getCheckoutSessionByToken(req.user.id, token);
+  }
+
+  @Get('checkout-sessions/:id')
+  async getCheckoutSession(
+    @Param('id') id: string,
+    @Req() req: Request & { user: { id: string } },
+  ) {
+    return this.ordersService.getCheckoutSession(req.user.id, id);
+  }
+
   @Get(':id')
   async getOrder(
     @Param('id') id: string,
     @Req() req: Request & { user: { id: string } },
   ) {
     return this.ordersService.getBuyerOrder(req.user.id, id);
+  }
+
+  @Get(':id/payment-attempts')
+  async listPaymentAttempts(
+    @Param('id') id: string,
+    @Req() req: Request & { user: { id: string } },
+  ) {
+    return this.paymentsService.listBuyerPaymentAttempts(req.user.id, id);
   }
 
   @Post(':id/cancel')

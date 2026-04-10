@@ -141,6 +141,7 @@ export interface PaymentAttemptSummary {
   reference: string;
   subjectType: 'STANDARD_ORDER' | 'CUSTOM_ORDER';
   customOrderId?: string;
+  checkoutIntentId?: string;
   gateway: string;
   providerMode: 'mock' | 'live';
   paymentMethod: PaymentMethod;

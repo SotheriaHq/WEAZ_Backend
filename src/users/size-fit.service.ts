@@ -712,7 +712,7 @@ export class SizeFitService {
 
   async shareSizeFit(actorId: string, dto: ShareSizeFitDto) {
     const ownerId = dto.profileUserId ?? actorId;
-    const targetUserId = dto.targetUserId;
+    const targetUserId = await this.resolveShareTargetUserId(dto);
 
     if (ownerId === targetUserId) {
       throw new BadRequestException('Cannot share size fit with the profile owner');
@@ -722,12 +722,8 @@ export class SizeFitService {
       throw new BadRequestException('Cannot target yourself for this share action');
     }
 
-    const [owner, target] = await Promise.all([
-      this.prisma.user.findUnique({ where: { id: ownerId }, select: { id: true } }),
-      this.prisma.user.findUnique({ where: { id: targetUserId }, select: { id: true } }),
-    ]);
+    const owner = await this.prisma.user.findUnique({ where: { id: ownerId }, select: { id: true } });
     if (!owner) throw new NotFoundException('Size fit owner not found');
-    if (!target) throw new NotFoundException('Target user not found');
 
     const profile =
       ownerId === actorId
@@ -884,6 +880,38 @@ export class SizeFitService {
     }
 
     return { status: shared.status, shareId: shared.id, requiresApproval: false };
+  }
+
+  private async resolveShareTargetUserId(dto: ShareSizeFitDto): Promise<string> {
+    if (dto.targetUserId) {
+      const target = await this.prisma.user.findUnique({ where: { id: dto.targetUserId }, select: { id: true } });
+      if (!target) {
+        throw new NotFoundException('Target user not found');
+      }
+      return target.id;
+    }
+
+    const targetIdentifier = dto.targetUserIdentifier?.trim();
+    if (!targetIdentifier) {
+      throw new BadRequestException('Target user identifier is required');
+    }
+
+    const normalizedHandle = targetIdentifier.startsWith('@') ? targetIdentifier.slice(1) : targetIdentifier;
+    const target = await this.prisma.user.findFirst({
+      where: {
+        OR: [
+          { username: { equals: normalizedHandle, mode: 'insensitive' } },
+          { email: { equals: targetIdentifier, mode: 'insensitive' } },
+        ],
+      },
+      select: { id: true },
+    });
+
+    if (!target) {
+      throw new NotFoundException('Target user not found');
+    }
+
+    return target.id;
   }
 
   async respondToShareRequest(ownerId: string, shareId: string, dto: RespondSizeFitShareDto) {

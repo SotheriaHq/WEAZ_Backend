@@ -19,6 +19,21 @@ export class CustomOrderThreadBootstrapService {
     private readonly sideEffects: MessagingSideEffectsService,
   ) {}
 
+  private resolveThreadTargetUrl(
+    customOrderId: string,
+    recipientRole: MessageParticipantRole,
+  ): string {
+    if (recipientRole === MessageParticipantRole.BRAND_OWNER) {
+      return `/studio/custom-orders/${customOrderId}#messages`;
+    }
+
+    if (recipientRole === MessageParticipantRole.ADMIN) {
+      return `/admin/custom-orders/${customOrderId}#messages`;
+    }
+
+    return `/custom-orders/${customOrderId}#messages`;
+  }
+
   async ensureOrderPlacedThread(params: {
     customOrderId: string;
     status: CustomOrderStatus;
@@ -132,21 +147,45 @@ export class CustomOrderThreadBootstrapService {
       },
     });
 
-    await this.prisma.messageNotificationOutbox.create({
-      data: {
-        threadId: thread.id,
-        messageId: message.id,
-        recipientId: params.brandOwnerUserId,
-        notificationType: NotificationType.MESSAGE_RECEIVED,
-        payloadJson: {
+    await this.prisma.messageNotificationOutbox.createMany({
+      data: [
+        {
           threadId: thread.id,
           messageId: message.id,
-          contextType: thread.contextType,
-          customOrderId: params.customOrderId,
-          actionType: 'CUSTOM_ORDER_PLACED',
-          targetUrl: `/studio/messages?thread=${thread.id}&messageId=${message.id}&customOrderId=${params.customOrderId}`,
-        } as Prisma.InputJsonValue,
-      },
+          recipientId: params.brandOwnerUserId,
+          notificationType: NotificationType.MESSAGE_RECEIVED,
+          payloadJson: {
+            threadId: thread.id,
+            messageId: message.id,
+            contextType: thread.contextType,
+            customOrderId: params.customOrderId,
+            actionType: 'CUSTOM_ORDER_PLACED',
+            message: bodyText,
+            targetUrl: this.resolveThreadTargetUrl(
+              params.customOrderId,
+              MessageParticipantRole.BRAND_OWNER,
+            ),
+          } as Prisma.InputJsonValue,
+        },
+        {
+          threadId: thread.id,
+          messageId: message.id,
+          recipientId: params.buyerId,
+          notificationType: NotificationType.MESSAGE_RECEIVED,
+          payloadJson: {
+            threadId: thread.id,
+            messageId: message.id,
+            contextType: thread.contextType,
+            customOrderId: params.customOrderId,
+            actionType: 'CUSTOM_ORDER_PLACED',
+            message: bodyText,
+            targetUrl: this.resolveThreadTargetUrl(
+              params.customOrderId,
+              MessageParticipantRole.BUYER,
+            ),
+          } as Prisma.InputJsonValue,
+        },
+      ],
     });
 
     await this.sideEffects.dispatchMessageOutboxForMessage(message.id);

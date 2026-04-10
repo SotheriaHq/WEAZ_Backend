@@ -15,6 +15,7 @@ import { EmailVerificationHelperService } from './helper/email-verification-help
 import { NotificationsModule } from 'src/notifications/notifications.module';
 import { RefreshTokenCleanupService } from './helper/refresh-token-cleanup.service';
 import { TrustedDeviceService } from './helper/trusted-device.service';
+import { AppThrottlerGuard } from './guard/app-throttler.guard';
 
 @Module({
   imports: [
@@ -74,7 +75,7 @@ import { TrustedDeviceService } from './helper/trusted-device.service';
     JwtStrategy,
     {
       provide: APP_GUARD,
-      useClass: ThrottlerGuard,
+      useClass: AppThrottlerGuard,
     },
   ],
   exports: [

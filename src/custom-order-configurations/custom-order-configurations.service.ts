@@ -7,6 +7,7 @@ import {
 import {
   CustomOrderSourceType,
   CustomFabricRuleBasisStatus,
+  Gender,
   MeasurementPointSource,
   Prisma,
 } from '@prisma/client';
@@ -20,6 +21,13 @@ import {
   QueryVisibleCustomOrderConfigurationsDto,
   UpdateCustomOrderConfigurationDto,
 } from './dto/custom-order-configurations.dto';
+import {
+  measurementKeysContainOppositeGender,
+  normalizeIdList as normalizeIdArray,
+  normalizeMeasurementKeyList as normalizeMeasurementKeyArray,
+  resolveGarmentMeasurementTemplate,
+  resolveSourceMeasurementGender,
+} from '../custom-orders/custom-order-measurement-contract.util';
 
 @Injectable()
 export class CustomOrderConfigurationsService {
@@ -38,7 +46,13 @@ export class CustomOrderConfigurationsService {
     const normalizedRules = this.pricingService.validateConfigurationRules(dto.rules);
     this.validateConfigurationGuardrails(dto, dto.rules);
 
-    const created = await this.prisma.$transaction(async (tx) => {
+const created = await this.prisma.$transaction(async (tx) => {
+      await this.deactivateSiblingConfigurations(
+        tx,
+        dto.sourceType,
+        dto.sourceId,
+      );
+
       const configuration = await tx.customOrderConfiguration.create({
         data: {
           brandId: brand.id,
@@ -187,6 +201,12 @@ export class CustomOrderConfigurationsService {
     const updated = await this.prisma.$transaction(async (tx) => {
       const nextVersion = existing.currentVersion + 1;
       const resolvedTitle = this.resolveConfigurationTitle(mergedConfiguration.title, existing.title);
+      await this.deactivateSiblingConfigurations(
+        tx,
+        mergedConfiguration.sourceType,
+        mergedConfiguration.sourceId,
+        configurationId,
+      );
       const configuration = await tx.customOrderConfiguration.update({
         where: { id: configurationId },
         data: {
@@ -210,6 +230,7 @@ export class CustomOrderConfigurationsService {
           returnPolicy: String(mergedConfiguration.returnPolicy).trim(),
           defectPolicy: String(mergedConfiguration.defectPolicy).trim(),
           fabricSourcingMode: mergedConfiguration.fabricSourcingMode,
+          isActive: true,
           notes: this.composeConfigurationNotes(
             mergedConfiguration.notes,
             mergedConfiguration.averageBaseYards,
@@ -289,10 +310,12 @@ export class CustomOrderConfigurationsService {
       throw new NotFoundException('Custom order configuration not found');
     }
 
+    const normalizedConfiguration = await this.normalizeLegacyMeasurementContract(configuration);
+
     return {
       statusCode: 200,
       message: 'Custom order configuration retrieved',
-      data: configuration,
+      data: normalizedConfiguration,
     };
   }
 
@@ -329,10 +352,12 @@ export class CustomOrderConfigurationsService {
       throw new NotFoundException('Custom order configuration not found');
     }
 
+    const normalizedConfiguration = await this.normalizeLegacyMeasurementContract(configuration);
+
     return {
       statusCode: 200,
       message: 'Custom order configuration retrieved',
-      data: configuration,
+      data: normalizedConfiguration,
     };
   }
 
@@ -377,12 +402,15 @@ export class CustomOrderConfigurationsService {
     const visibleItems = brand?.id
       ? items.filter((item) => item.isActive || item.brandId === brand.id)
       : items.filter((item) => item.isActive);
+    const normalizedItems = await Promise.all(
+      visibleItems.map((item) => this.normalizeLegacyMeasurementContract(item)),
+    );
 
     return {
       statusCode: 200,
       message: 'Custom order configurations retrieved',
       data: {
-        items: visibleItems,
+        items: normalizedItems,
         page,
         limit: take,
         total,
@@ -728,6 +756,216 @@ export class CustomOrderConfigurationsService {
     await tx.collection.update({
       where: { id: sourceId },
       data: { customOrderEnabled: true },
+    });
+  }
+
+  private normalizeMeasurementKeyList(keys: string[] | null | undefined) {
+    return normalizeMeasurementKeyArray(keys);
+  }
+
+  private normalizeIdList(ids: string[] | null | undefined) {
+    return normalizeIdArray(ids);
+  }
+
+  private async normalizeLegacyMeasurementContract<T extends {
+    brandId: string;
+    sourceType: CustomOrderSourceType;
+    sourceId: string;
+    requiredMeasurementKeys: string[];
+    requiredFreeformPointIds: string[];
+  }>(configuration: T): Promise<T> {
+    const normalizedKeys = this.normalizeMeasurementKeyList(configuration.requiredMeasurementKeys);
+    const normalizedFreeformPointIds = this.normalizeIdList(configuration.requiredFreeformPointIds);
+
+    if (normalizedKeys.length === 0) {
+      return {
+        ...configuration,
+        requiredMeasurementKeys: normalizedKeys,
+        requiredFreeformPointIds: normalizedFreeformPointIds,
+      };
+    }
+
+    const sourceContract = await this.loadSourceMeasurementContract(
+      configuration.sourceType,
+      configuration.sourceId,
+    );
+    const sourceMeasurementKeys = this.normalizeMeasurementKeyList(
+      sourceContract.customMeasurementKeys,
+    );
+    const sourceGenderHint = resolveSourceMeasurementGender({
+      sourceType: configuration.sourceType,
+      categoryTypeSlug: sourceContract.categoryTypeSlug,
+      collectionType: sourceContract.collectionType,
+      customGender: sourceContract.customGender ?? null,
+    });
+
+    const sourceProvidesASmallerSubset =
+      sourceMeasurementKeys.length > 0 &&
+      sourceMeasurementKeys.length < normalizedKeys.length &&
+      sourceMeasurementKeys.every((key) => normalizedKeys.includes(key));
+
+    if (sourceProvidesASmallerSubset) {
+      return {
+        ...configuration,
+        requiredMeasurementKeys: sourceMeasurementKeys,
+        requiredFreeformPointIds: normalizedFreeformPointIds,
+      };
+    }
+
+    const registryKeys = await this.loadMeasurementPoolKeys(
+      configuration.brandId,
+      sourceGenderHint ?? sourceContract.customGender ?? null,
+    );
+    const LEGACY_REGISTRY_WIDTH_THRESHOLD = 8;
+    const looksLikeRegistryWideLegacySelection =
+      registryKeys.length >= LEGACY_REGISTRY_WIDTH_THRESHOLD &&
+      registryKeys.every((key) => normalizedKeys.includes(key));
+    const sourceLooksLikeRegistryWideLegacySelection =
+      registryKeys.length >= LEGACY_REGISTRY_WIDTH_THRESHOLD &&
+      registryKeys.every((key) => sourceMeasurementKeys.includes(key));
+    const templateMeasurementKeys = resolveGarmentMeasurementTemplate(
+      {
+        sourceType: configuration.sourceType,
+        categoryTypeSlug: sourceContract.categoryTypeSlug,
+        collectionType: sourceContract.collectionType,
+        customGender: sourceContract.customGender ?? null,
+      },
+      registryKeys,
+    );
+    const configurationContainsOppositeGenderKeys =
+      sourceGenderHint != null &&
+      measurementKeysContainOppositeGender(normalizedKeys, sourceGenderHint);
+    const sourceContainsOppositeGenderKeys =
+      sourceGenderHint != null &&
+      measurementKeysContainOppositeGender(sourceMeasurementKeys, sourceGenderHint);
+
+    if (
+      templateMeasurementKeys.length > 0 &&
+      templateMeasurementKeys.length < normalizedKeys.length &&
+      (
+        looksLikeRegistryWideLegacySelection ||
+        sourceLooksLikeRegistryWideLegacySelection ||
+        configurationContainsOppositeGenderKeys ||
+        sourceContainsOppositeGenderKeys
+      )
+    ) {
+      return {
+        ...configuration,
+        requiredMeasurementKeys: templateMeasurementKeys,
+        requiredFreeformPointIds: normalizedFreeformPointIds,
+      };
+    }
+
+    return {
+      ...configuration,
+      requiredMeasurementKeys: normalizedKeys,
+      requiredFreeformPointIds: normalizedFreeformPointIds,
+    };
+  }
+
+  private async loadSourceMeasurementContract(
+    sourceType: CustomOrderSourceType,
+    sourceId: string,
+  ) {
+    if (sourceType === CustomOrderSourceType.PRODUCT) {
+      const product = await this.prisma.product.findUnique({
+        where: { id: sourceId },
+        select: {
+          customMeasurementKeys: true,
+          customFreeformPointIds: true,
+          customGender: true,
+          gender: true,
+          categoryType: {
+            select: { slug: true },
+          },
+        },
+      });
+
+      if (!product) {
+        throw new NotFoundException('Product source was not found for this configuration');
+      }
+
+      return {
+        customMeasurementKeys: product.customMeasurementKeys,
+        customFreeformPointIds: product.customFreeformPointIds,
+        customGender: product.customGender,
+        categoryTypeSlug: product.categoryType?.slug ?? null,
+        collectionType: product.gender,
+      };
+    }
+
+    const design = await this.prisma.collection.findUnique({
+      where: { id: sourceId },
+      select: {
+        customMeasurementKeys: true,
+        customFreeformPointIds: true,
+        customGender: true,
+        type: true,
+        categoryType: {
+          select: { slug: true },
+        },
+      },
+    });
+
+    if (!design) {
+      throw new NotFoundException('Design source was not found for this configuration');
+    }
+
+    return {
+      customMeasurementKeys: design.customMeasurementKeys,
+      customFreeformPointIds: design.customFreeformPointIds,
+      customGender: design.customGender,
+      categoryTypeSlug: design.categoryType?.slug ?? null,
+      collectionType: design.type,
+    };
+  }
+
+  private async loadMeasurementPoolKeys(brandId: string, gender: Gender | null) {
+    const points = await this.prisma.measurementPoint.findMany({
+      where: {
+        isActive: true,
+        OR: [
+          {
+            source: MeasurementPointSource.SYSTEM,
+            status: 'APPROVED_GLOBAL',
+          },
+          {
+            source: MeasurementPointSource.BRAND_FREEFORM,
+            brandId,
+          },
+        ],
+        ...(gender && gender !== 'UNISEX'
+          ? {
+              AND: [
+                {
+                  OR: [{ gender }, { gender: 'UNISEX' }, { gender: null }],
+                },
+              ],
+            }
+          : {}),
+      },
+      select: { key: true },
+    });
+
+    return this.normalizeMeasurementKeyList(points.map((point) => point.key));
+  }
+
+  private async deactivateSiblingConfigurations(
+    tx: Prisma.TransactionClient,
+    sourceType: CustomOrderSourceType,
+    sourceId: string,
+    keepConfigurationId?: string,
+  ) {
+    await tx.customOrderConfiguration.updateMany({
+      where: {
+        sourceType,
+        sourceId,
+        ...(keepConfigurationId
+          ? { id: { not: keepConfigurationId } }
+          : {}),
+        isActive: true,
+      },
+      data: { isActive: false },
     });
   }
 }

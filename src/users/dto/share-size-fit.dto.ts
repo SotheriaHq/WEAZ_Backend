@@ -5,8 +5,13 @@ export class ShareSizeFitDto {
   @IsUUID()
   profileUserId?: string;
 
+  @IsOptional()
   @IsUUID()
-  targetUserId: string;
+  targetUserId?: string;
+
+  @IsOptional()
+  @IsString()
+  targetUserIdentifier?: string;
 
   @IsOptional()
   @IsBoolean()

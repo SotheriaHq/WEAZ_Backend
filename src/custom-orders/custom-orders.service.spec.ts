@@ -78,6 +78,9 @@ describe('CustomOrdersService', () => {
         findUnique: jest.fn(),
         upsert: jest.fn(),
       },
+      customOrderCheckoutSession: {
+        upsert: jest.fn(),
+      },
       measurementPoint: {
         findMany: jest.fn(),
       },

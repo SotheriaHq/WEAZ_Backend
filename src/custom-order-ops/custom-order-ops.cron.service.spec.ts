@@ -37,6 +37,10 @@ describe('CustomOrderOpsCronService', () => {
       customOrderCheckoutIntent: {
         deleteMany: jest.fn(),
       },
+      customOrderCheckoutSession: {
+        updateMany: jest.fn(),
+        deleteMany: jest.fn(),
+      },
       customOrderProgressEvent: {
         findMany: jest.fn(),
         update: jest.fn(),
@@ -172,14 +176,37 @@ describe('CustomOrderOpsCronService', () => {
   });
 
   it('deletes only expired unconsumed checkout intents', async () => {
+    prisma.customOrderCheckoutSession.updateMany.mockResolvedValue({ count: 1 });
+    prisma.customOrderCheckoutSession.deleteMany.mockResolvedValue({ count: 0 });
     prisma.customOrderCheckoutIntent.deleteMany.mockResolvedValue({ count: 2 });
 
     await service.cleanupExpiredCheckoutIntents();
 
+    expect(prisma.customOrderCheckoutSession.updateMany).toHaveBeenCalledWith({
+      where: {
+        status: { in: ['SUBMITTED', 'PAYMENT_INITIATED'] },
+        checkoutIntent: {
+          consumedAt: null,
+          expiresAt: { lt: fixedNow },
+        },
+      },
+      data: {
+        status: 'ABANDONED',
+        abandonedAt: fixedNow,
+      },
+    });
+    expect(prisma.customOrderCheckoutSession.deleteMany).toHaveBeenCalledWith({
+      where: {
+        status: 'ABANDONED',
+        abandonedAt: { lt: new Date(fixedNow.getTime() - 14 * 24 * 60 * 60 * 1000) },
+        customOrderId: null,
+      },
+    });
     expect(prisma.customOrderCheckoutIntent.deleteMany).toHaveBeenCalledWith({
       where: {
         consumedAt: null,
         expiresAt: { lt: fixedNow },
+        checkoutSession: { is: null },
       },
     });
   });

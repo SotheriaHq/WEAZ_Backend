@@ -569,6 +569,13 @@ export class MessagingService {
           null,
         );
 
+        const orderDetailUrl = this.resolveOrderDetailUrl(
+          thread.contextType,
+          thread.orderId,
+          thread.customOrderId,
+          actorRole,
+        );
+
         return {
           threadId: thread.id,
           contextType: isInquiry ? 'INQUIRY' : thread.contextType,
@@ -598,6 +605,7 @@ export class MessagingService {
           mutedUntil: summary?.mutedUntil ?? null,
           archivedAt: summary?.archivedAt ?? null,
           targetUrl,
+          orderDetailUrl,
         };
       })
       .filter((item) => (filter === 'unread' ? item.hasUnread || item.unreadCount > 0 : true));
@@ -649,6 +657,13 @@ export class MessagingService {
       null,
     );
 
+    const orderDetailUrl = this.resolveOrderDetailUrl(
+      thread.contextType,
+      thread.orderId,
+      thread.customOrderId,
+      participant.role,
+    );
+
     return {
       threadId: thread.id,
       contextType: thread.contextType,
@@ -656,6 +671,7 @@ export class MessagingService {
       customOrderId: thread.customOrderId,
       inquiryType: String((thread.subjectSnapshotJson as any)?.type || ''),
       targetUrl,
+      orderDetailUrl,
     };
   }
 
@@ -2566,5 +2582,40 @@ export class MessagingService {
     }
 
     return '/settings?tab=notifications';
+  }
+
+  /**
+   * Returns the canonical order-detail page URL for a given thread actor.
+   * Used by the "View Order" action in the inbox UI — distinct from targetUrl
+   * which is optimised for notification deep-links (always opens the messaging
+   * surface).  Returns null for inquiry threads or when IDs are missing.
+   */
+  private resolveOrderDetailUrl(
+    contextType: MessageContextType,
+    orderId: string | null,
+    customOrderId: string | null,
+    recipientRole: MessageParticipantRole,
+  ): string | null {
+    if (contextType === MessageContextType.CUSTOM_ORDER && customOrderId) {
+      if (recipientRole === MessageParticipantRole.BRAND_OWNER) {
+        return `/studio/custom-orders/${encodeURIComponent(customOrderId)}`;
+      }
+      if (recipientRole === MessageParticipantRole.ADMIN) {
+        return `/admin/custom-orders/${encodeURIComponent(customOrderId)}`;
+      }
+      return `/custom-orders/${encodeURIComponent(customOrderId)}`;
+    }
+
+    if (contextType === MessageContextType.STANDARD_ORDER && orderId) {
+      if (recipientRole === MessageParticipantRole.BRAND_OWNER) {
+        return `/studio?tab=orders&orderId=${encodeURIComponent(orderId)}`;
+      }
+      if (recipientRole === MessageParticipantRole.ADMIN) {
+        return `/admin/orders/${encodeURIComponent(orderId)}`;
+      }
+      return `/orders/${encodeURIComponent(orderId)}`;
+    }
+
+    return null;
   }
 }

@@ -83,7 +83,7 @@ export class MeasurementPointsService implements OnModuleInit, OnModuleDestroy {
               category: params.category,
               brandId: params.brandId,
               submittedByUserId: params.submittedByUserId,
-              targetUrl: '/admin/taxonomy',
+              targetUrl: '/admin/taxonomy?tab=measurements',
             },
           })
           .catch((error) => {

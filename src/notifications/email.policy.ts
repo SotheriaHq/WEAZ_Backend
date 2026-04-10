@@ -7,6 +7,7 @@ import {
   renderEmailButton,
   renderEmailShell,
 } from '../email/email.branding';
+import { collectionPublishedEmail } from '../email/email.templates';
 
 const CRITICAL_SCENARIOS = new Set<string>([
   'auth.signin.new_device',
@@ -243,6 +244,20 @@ export function renderNotificationEmail(args: {
       appName: companyName,
       targetUrl: args.targetUrl,
     });
+  }
+
+  if (args.notificationType === NotificationType.COLLECTION_UPLOAD) {
+    const brandName =
+      asTrimmedString(args.payload?.brandName) ||
+      asTrimmedString(args.payload?.brandDisplayName) ||
+      'Your brand';
+    const designTitle =
+      asTrimmedString(args.payload?.collectionTitle) ||
+      asTrimmedString(args.payload?.collectionName) ||
+      'Your design';
+    const designUrl = asTrimmedString(args.targetUrl) || asTrimmedString(args.payload?.targetUrl as string) || '/';
+    const result = collectionPublishedEmail(brandName, designTitle, designUrl, companyName);
+    return { subject: result.subject, html: result.html, text: result.text ?? '' };
   }
 
   const cta = args.targetUrl

@@ -358,7 +358,7 @@ export class OrderService {
             status,
             previousStatus,
             brandName: order.brand?.name ?? null,
-            targetUrl: `/orders/access/${order.id}`,
+            targetUrl: `/orders/${order.id}`,
           },
         },
       );

@@ -114,6 +114,7 @@ model User {
   // Orders as buyer
   ordersAsBuyer           Order[]                         @relation("OrderBuyer")
   customOrdersAsBuyer     CustomOrder[]                   @relation("CustomOrderBuyer")
+  customOrderCheckoutSessions CustomOrderCheckoutSession[]
   sizeFitProfile          UserSizeFitProfile?
   sizeFitSharesOwned      UserSizeFitShare[]             @relation("SizeFitOwnerShares")
   sizeFitSharesReceived   UserSizeFitShare[]             @relation("SizeFitViewerShares")
@@ -325,6 +326,13 @@ enum CustomOrderStatus {
   REFUND_IN_PROGRESS
   DISPUTED
   CLOSED
+}
+
+enum CustomOrderCheckoutStatus {
+  SUBMITTED
+  PAYMENT_INITIATED
+  PAID_CONFIRMED
+  ABANDONED
 }
 
 enum CustomOrderProgressStage {
@@ -2265,6 +2273,7 @@ model CustomOrder {
   notificationOutboxEvents      CustomOrderNotificationOutbox[]
   analyticsEvents               CustomOrderAnalyticsEvent[]
   messageThread                 MessageThread?
+  checkoutSession               CustomOrderCheckoutSession?
 
   @@index([brandId, status, createdAt])
   @@index([buyerId, status, createdAt])
@@ -2415,9 +2424,39 @@ model CustomOrderCheckoutIntent {
   createdAt             DateTime      @default(now())
   updatedAt             DateTime      @updatedAt
   orders                CustomOrder[]
+  checkoutSession       CustomOrderCheckoutSession?
+  paymentAttempts       PaymentAttempt[]
 
   @@index([buyerId, expiresAt])
   @@index([configurationId, configurationVersionId])
+}
+
+model CustomOrderCheckoutSession {
+  id                   String                   @id @default(uuid()) @db.Uuid
+  buyerId              String                   @db.Uuid
+  buyer                User                     @relation(fields: [buyerId], references: [id], onDelete: Restrict)
+  checkoutIntentId     String                   @db.Uuid
+  checkoutIntent       CustomOrderCheckoutIntent @relation(fields: [checkoutIntentId], references: [id], onDelete: Cascade)
+  customOrderId        String?                  @unique @db.Uuid
+  customOrder          CustomOrder?             @relation(fields: [customOrderId], references: [id], onDelete: SetNull)
+  status               CustomOrderCheckoutStatus @default(SUBMITTED)
+  submittedAt          DateTime                 @default(now())
+  paymentInitiatedAt   DateTime?
+  paidConfirmedAt      DateTime?
+  abandonedAt          DateTime?
+  lastAttemptId        String?                  @db.Uuid
+  lastAttemptReference String?
+  lastAttemptStatus    String?
+  attemptsCount        Int                      @default(0)
+  resumeToken          String                   @unique
+  resumePath           String?
+  uiStateJson          Json?
+  createdAt            DateTime                 @default(now())
+  updatedAt            DateTime                 @updatedAt
+
+  @@unique([checkoutIntentId])
+  @@index([buyerId, status, createdAt])
+  @@index([customOrderId])
 }
 
 model CustomOrderProgressEvent {
@@ -2575,6 +2614,8 @@ model PaymentAttempt {
   buyerId          String?      @db.Uuid
   subjectType      PaymentSubjectType @default(STANDARD_ORDER)
   customOrderId    String?      @db.Uuid
+  checkoutIntentId String?      @db.Uuid
+  checkoutIntent   CustomOrderCheckoutIntent? @relation(fields: [checkoutIntentId], references: [id], onDelete: SetNull)
   provider         String
   providerMode     String
   providerReference String?
@@ -2611,6 +2652,7 @@ model PaymentAttempt {
   @@index([buyerId, createdAt])
   @@index([status, createdAt])
   @@index([subjectType, customOrderId])
+  @@index([subjectType, checkoutIntentId])
   @@index([buyerId, subjectType, customOrderId, idempotencyKey])
   @@index([exchangeRateSnapshotId])
 }

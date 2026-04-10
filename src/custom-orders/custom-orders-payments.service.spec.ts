@@ -8,6 +8,7 @@ import { PaymentService } from 'src/payment/payment.service';
 import { CustomOrderSideEffectsService } from './custom-order-side-effects.service';
 import { CustomOrdersPaymentsService } from './custom-orders-payments.service';
 import { CustomOrderThreadBootstrapService } from 'src/messaging/custom-order-thread-bootstrap.service';
+import { CustomOrdersService } from './custom-orders.service';
 
 describe('CustomOrdersPaymentsService', () => {
   let service: CustomOrdersPaymentsService;
@@ -44,6 +45,13 @@ describe('CustomOrdersPaymentsService', () => {
         count: jest.fn(),
         createMany: jest.fn(),
         updateMany: jest.fn(),
+      },
+      customOrderCheckoutSession: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        create: jest.fn().mockResolvedValue(undefined),
+      },
+      customOrderCheckoutIntent: {
+        findUnique: jest.fn(),
       },
       $transaction: jest.fn(),
     };
@@ -138,6 +146,7 @@ describe('CustomOrdersPaymentsService', () => {
         CustomOrdersPaymentsService,
         { provide: PrismaService, useValue: prisma },
         { provide: PaymentService, useValue: paymentService },
+        { provide: CustomOrdersService, useValue: { buildPaidOrderCreateInput: jest.fn() } },
         { provide: CommissionService, useValue: commissionService },
         { provide: LedgerService, useValue: ledgerService },
         { provide: FinancialDocumentsService, useValue: financialDocumentsService },
@@ -261,7 +270,7 @@ describe('CustomOrdersPaymentsService', () => {
     expect(result.data.reference).toBe('TH-CO-active');
   });
 
-  it('refreshes the existing custom-order attempt instead of creating a second row', async () => {
+  it('creates a new custom-order attempt after a terminal attempt', async () => {
     prisma.customOrder.findFirst.mockResolvedValue({
       id: 'co_refresh',
       buyerId: 'buyer_1',
@@ -273,15 +282,10 @@ describe('CustomOrdersPaymentsService', () => {
 
     prisma.paymentAttempt.findFirst
       .mockResolvedValueOnce(null)
-      .mockResolvedValueOnce(null)
-      .mockResolvedValueOnce({
-        id: 'attempt_old',
-        reference: 'TH-CO-old',
-        status: 'FAILED',
-      });
+      .mockResolvedValueOnce(null);
 
-    const refreshedAttempt = {
-      id: 'attempt_old',
+    const createdAttempt = {
+      id: 'attempt_new',
       reference: 'TH-CO-refresh',
       provider: 'PAYSTACK',
       status: 'REQUIRES_ACTION',
@@ -294,8 +298,8 @@ describe('CustomOrdersPaymentsService', () => {
 
     const tx = {
       paymentAttempt: {
-        update: jest.fn().mockResolvedValue(refreshedAttempt),
-        create: jest.fn(),
+        update: jest.fn(),
+        create: jest.fn().mockResolvedValue(createdAttempt),
       },
       customOrder: {
         update: jest.fn().mockResolvedValue(undefined),
@@ -305,6 +309,13 @@ describe('CustomOrdersPaymentsService', () => {
       },
       customOrderTimelineEvent: {
         create: jest.fn().mockResolvedValue(undefined),
+      },
+      customOrderCheckoutSession: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        create: jest.fn().mockResolvedValue(undefined),
+      },
+      customOrderCheckoutIntent: {
+        findUnique: jest.fn(),
       },
     };
     prisma.$transaction.mockImplementation(async (callback: (innerTx: typeof tx) => Promise<unknown>) =>
@@ -317,12 +328,16 @@ describe('CustomOrdersPaymentsService', () => {
       idempotencyKey: 'idem-refresh',
     });
 
-    expect(tx.paymentAttempt.update).toHaveBeenCalledWith(
+    expect(tx.paymentAttempt.create).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: 'attempt_old' },
+        data: expect.objectContaining({
+          customOrderId: 'co_refresh',
+          idempotencyKey: 'idem-refresh',
+          reference: expect.stringMatching(/^TH-CO-/),
+        }),
       }),
     );
-    expect(tx.paymentAttempt.create).not.toHaveBeenCalled();
+    expect(tx.paymentAttempt.update).not.toHaveBeenCalled();
     expect(result.data.reference).toBe('TH-CO-refresh');
   });
 
@@ -356,6 +371,13 @@ describe('CustomOrdersPaymentsService', () => {
         count: jest.fn().mockResolvedValue(0),
         createMany: jest.fn().mockResolvedValue({ count: 2 }),
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      customOrderCheckoutSession: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        create: jest.fn().mockResolvedValue(undefined),
+      },
+      customOrderCheckoutIntent: {
+        findUnique: jest.fn(),
       },
     };
     prisma.$transaction.mockImplementation(async (callback: (innerTx: typeof tx) => Promise<unknown>) =>
@@ -633,6 +655,13 @@ describe('CustomOrdersPaymentsService', () => {
         count: jest.fn(),
         createMany: jest.fn(),
       },
+      customOrderCheckoutSession: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        create: jest.fn().mockResolvedValue(undefined),
+      },
+      customOrderCheckoutIntent: {
+        findUnique: jest.fn(),
+      },
     };
     prisma.$transaction.mockImplementation(async (callback: (innerTx: typeof tx) => Promise<unknown>) =>
       callback(tx),
@@ -734,6 +763,13 @@ describe('CustomOrdersPaymentsService', () => {
         count: jest.fn().mockResolvedValue(2),
         createMany: jest.fn().mockResolvedValue({ count: 0 }),
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      customOrderCheckoutSession: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        create: jest.fn().mockResolvedValue(undefined),
+      },
+      customOrderCheckoutIntent: {
+        findUnique: jest.fn(),
       },
     };
     prisma.$transaction.mockImplementation(async (callback: (innerTx: typeof tx) => Promise<unknown>) =>

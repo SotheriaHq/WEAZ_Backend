@@ -25,7 +25,7 @@ describe('Custom-order admin reconciliation routes (e2e)', () => {
   const releasableAllocationId = uuidv4();
 
   beforeAll(async () => {
-    jest.spyOn(JwtAuthGuard.prototype, 'canActivate').mockImplementation((context: any) => {
+    jest.spyOn(JwtAuthGuard.prototype, 'canActivate').mockImplementation(async (context: any) => {
       const req = context.switchToHttp().getRequest();
       req.user = {
         id: adminId,

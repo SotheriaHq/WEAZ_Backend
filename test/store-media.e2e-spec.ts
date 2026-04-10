@@ -17,7 +17,7 @@ describe('Store media rules (e2e)', () => {
   beforeAll(async () => {
     jest
       .spyOn(JwtAuthGuard.prototype, 'canActivate')
-      .mockImplementation((context: any) => {
+      .mockImplementation(async (context: any) => {
         const req = context.switchToHttp().getRequest();
         req.user = { id: userId, type: 'BRAND' };
         return true;
