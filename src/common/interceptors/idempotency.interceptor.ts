@@ -8,7 +8,7 @@ import {
   NestInterceptor,
 } from '@nestjs/common';
 import { Observable, from, of } from 'rxjs';
-import { catchError, mergeMap, tap } from 'rxjs/operators';
+import { catchError, map, mergeMap } from 'rxjs/operators';
 import { throwError } from 'rxjs';
 import { PrismaService } from '../../prisma/prisma.service';
 import { createHash } from 'crypto';
@@ -133,12 +133,31 @@ export class IdempotencyInterceptor implements NestInterceptor {
         }
 
         return next.handle().pipe(
-          tap(async (body) => {
+          mergeMap((body) => {
             const statusCode = res.statusCode;
-            await idempotencyKeyModel.update({
-              where: { userId_key_method_path: { userId, key, method, path } },
-              data: { responseBody: body, statusCode },
-            });
+            return from(
+              idempotencyKeyModel
+                .update({
+                  where: { userId_key_method_path: { userId, key, method, path } },
+                  data: { responseBody: body, statusCode },
+                })
+                .catch(async (persistErr: unknown) => {
+                  // If we cannot persist the final response, remove the pending key so
+                  // callers can safely retry instead of getting stuck on "in progress".
+                  await idempotencyKeyModel
+                    .deleteMany({ where: { userId, key, method, path } })
+                    .catch((cleanupErr: unknown) => {
+                      console.error(
+                        '[IdempotencyInterceptor] Failed to clean up key after persist error:',
+                        cleanupErr,
+                      );
+                    });
+                  console.error(
+                    '[IdempotencyInterceptor] Failed to persist idempotent response:',
+                    persistErr,
+                  );
+                }),
+            ).pipe(map(() => body));
           }),
           catchError((err) => {
             // On error: delete the idempotency key record so the caller can

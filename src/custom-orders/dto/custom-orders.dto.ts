@@ -167,13 +167,6 @@ export class VerifyCustomOrderPaymentDto {
   statusHint?: string;
 }
 
-export class CancelCustomOrderDto {
-  @IsString()
-  @MinLength(3)
-  @MaxLength(300)
-  reason: string;
-}
-
 export class ConfirmCustomOrderDeliveryDto {
   @IsOptional()
   @IsString()
@@ -221,13 +214,6 @@ export class AcceptCustomOrderDto {
   @IsString()
   @MaxLength(500)
   note?: string;
-}
-
-export class RejectCustomOrderDto {
-  @IsString()
-  @MinLength(5)
-  @MaxLength(500)
-  reason: string;
 }
 
 export class UpdateCustomOrderProgressStageDto {

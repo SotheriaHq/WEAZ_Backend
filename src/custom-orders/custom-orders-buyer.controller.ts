@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   Post,
@@ -18,7 +19,6 @@ import { IdempotencyInterceptor } from 'src/common/interceptors/idempotency.inte
 import { CustomOrdersPaymentsService } from './custom-orders-payments.service';
 import { CustomOrdersService } from './custom-orders.service';
 import {
-  CancelCustomOrderDto,
   ConfirmCustomOrderDeliveryDto,
   CreateCustomOrderDto,
   CustomOrderPricePreviewDto,
@@ -131,6 +131,29 @@ export class CustomOrdersBuyerController {
     return this.ordersService.getCheckoutSessionByToken(req.user.id, token);
   }
 
+  @Get('checkout-bag')
+  async listCheckoutBagLines(
+    @Req() req: Request & { user: { id: string } },
+  ) {
+    return this.ordersService.listCheckoutBagLines(req.user.id);
+  }
+
+  @Post('checkout-sessions/:id/relock')
+  async relockCheckoutBagLine(
+    @Param('id') id: string,
+    @Req() req: Request & { user: { id: string } },
+  ) {
+    return this.ordersService.relockCheckoutBagLine(req.user.id, id);
+  }
+
+  @Delete('checkout-sessions/:id')
+  async removeCheckoutBagLine(
+    @Param('id') id: string,
+    @Req() req: Request & { user: { id: string } },
+  ) {
+    return this.ordersService.removeCheckoutBagLine(req.user.id, id);
+  }
+
   @Get('checkout-sessions/:id')
   async getCheckoutSession(
     @Param('id') id: string,
@@ -153,16 +176,6 @@ export class CustomOrdersBuyerController {
     @Req() req: Request & { user: { id: string } },
   ) {
     return this.paymentsService.listBuyerPaymentAttempts(req.user.id, id);
-  }
-
-  @Post(':id/cancel')
-  async cancelOrder(
-    @Param('id') id: string,
-    @Req() req: Request & { user: { id: string } },
-    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true }))
-    dto: CancelCustomOrderDto,
-  ) {
-    return this.ordersService.cancelBuyerOrder(req.user.id, id, dto);
   }
 
   @Post(':id/confirm-delivery')

@@ -4,7 +4,9 @@ import {
   CustomOrderLedgerAllocationType,
   CustomOrderStatus,
   NotificationType,
+  PaymentSubjectType,
 } from '@prisma/client';
+import { CustomOrdersPaymentsService } from 'src/custom-orders/custom-orders-payments.service';
 import { CustomOrderRefundService } from 'src/custom-orders/custom-order-refund.service';
 import { CustomOrderSideEffectsService } from 'src/custom-orders/custom-order-side-effects.service';
 import { PrismaService } from 'src/prisma/prisma.service';
@@ -14,6 +16,7 @@ describe('CustomOrderOpsCronService', () => {
   let service: CustomOrderOpsCronService;
   let prisma: any;
   let sideEffects: any;
+  let customOrdersPaymentsService: any;
 
   const fixedNow = new Date('2026-03-12T12:00:00.000Z');
 
@@ -52,6 +55,9 @@ describe('CustomOrderOpsCronService', () => {
         findMany: jest.fn(),
         updateMany: jest.fn(),
       },
+      paymentAttempt: {
+        findMany: jest.fn(),
+      },
       $transaction: jest.fn(),
     };
 
@@ -59,6 +65,10 @@ describe('CustomOrderOpsCronService', () => {
       enqueueNotification: jest.fn(),
       syncTimelineAnalytics: jest.fn().mockResolvedValue(0),
       dispatchPendingNotifications: jest.fn().mockResolvedValue(0),
+    };
+
+    customOrdersPaymentsService = {
+      verifyPaymentByReference: jest.fn(),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -71,6 +81,10 @@ describe('CustomOrderOpsCronService', () => {
           useValue: {
             initiateRefund: jest.fn(),
           },
+        },
+        {
+          provide: CustomOrdersPaymentsService,
+          useValue: customOrdersPaymentsService,
         },
       ],
     }).compile();
@@ -110,6 +124,55 @@ describe('CustomOrderOpsCronService', () => {
         customOrderId: 'co_1',
         recipientIds: ['owner_1'],
         notificationType: NotificationType.CUSTOM_ORDER_REVIEW_REQUIRED,
+      }),
+    );
+  });
+
+  it('reconciles stale pending custom-order payment attempts', async () => {
+    prisma.paymentAttempt.findMany.mockResolvedValue([
+      {
+        reference: 'TH-CO-1',
+        buyerId: 'buyer_1',
+        provider: 'PAYSTACK',
+      },
+      {
+        reference: 'TH-CO-2',
+        buyerId: 'buyer_2',
+        provider: 'PAYSTACK',
+      },
+    ]);
+    customOrdersPaymentsService.verifyPaymentByReference
+      .mockResolvedValueOnce({ status: 'PAID' })
+      .mockResolvedValueOnce({ status: 'PROCESSING' });
+
+    await service.reconcilePendingCustomOrderPayments();
+
+    expect(prisma.paymentAttempt.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          subjectType: PaymentSubjectType.CUSTOM_ORDER,
+          status: { in: ['PENDING', 'REQUIRES_ACTION', 'PROCESSING'] },
+          providerMode: 'live',
+          buyerId: { not: null },
+        }),
+        take: 100,
+      }),
+    );
+
+    expect(customOrdersPaymentsService.verifyPaymentByReference).toHaveBeenNthCalledWith(
+      1,
+      'buyer_1',
+      expect.objectContaining({
+        reference: 'TH-CO-1',
+        gateway: 'PAYSTACK',
+      }),
+    );
+    expect(customOrdersPaymentsService.verifyPaymentByReference).toHaveBeenNthCalledWith(
+      2,
+      'buyer_2',
+      expect.objectContaining({
+        reference: 'TH-CO-2',
+        gateway: 'PAYSTACK',
       }),
     );
   });
@@ -265,6 +328,7 @@ describe('CustomOrderOpsCronService', () => {
       where: {
         status: CustomOrderLedgerAllocationStatus.PAYOUT_ELIGIBLE,
         paidOutAt: null,
+        payoutId: null,
         customOrder: {
           status: {
             in: [CustomOrderStatus.ACCEPTED, CustomOrderStatus.COMPLETED, CustomOrderStatus.CLOSED],

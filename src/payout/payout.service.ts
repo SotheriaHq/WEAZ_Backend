@@ -440,7 +440,7 @@ export class PayoutService {
     const safeLimit = Math.min(100, Math.max(1, Number(limit) || 20));
     const skip = (safePage - 1) * safeLimit;
 
-    const [standardHolds, customHeldAllocations] = await Promise.all([
+    const [standardHolds, customHeldAllocations, customAcceptanceAllocations] = await Promise.all([
       this.prisma.escrowHold.findMany({
         where: {
           brandId,
@@ -451,9 +451,13 @@ export class PayoutService {
           id: true,
           orderId: true,
           totalAmount: true,
+          commissionAmount: true,
+          netBrandAmount: true,
           currency: true,
           status: true,
+          firstReleaseAmount: true,
           firstReleaseNetAmount: true,
+          secondReleaseAmount: true,
           secondReleaseNetAmount: true,
           firstReleasedAt: true,
           secondReleaseEligibleAt: true,
@@ -479,6 +483,7 @@ export class PayoutService {
           id: true,
           customOrderId: true,
           amount: true,
+          commissionAmount: true,
           netBrandAmount: true,
           currency: true,
           createdAt: true,
@@ -496,7 +501,38 @@ export class PayoutService {
           },
         },
       }),
+      this.prisma.customOrderLedgerAllocation.findMany({
+        where: {
+          customOrder: { brandId },
+          allocationType: CustomOrderLedgerAllocationType.BRAND_ACCEPTANCE_PORTION,
+          status: {
+            in: [
+              CustomOrderLedgerAllocationStatus.HELD,
+              CustomOrderLedgerAllocationStatus.PAYOUT_ELIGIBLE,
+              CustomOrderLedgerAllocationStatus.PAID_OUT,
+            ],
+          },
+        },
+        orderBy: [{ customOrderId: 'asc' }, { createdAt: 'asc' }],
+        select: {
+          customOrderId: true,
+          amount: true,
+          commissionAmount: true,
+          netBrandAmount: true,
+          status: true,
+        },
+      }),
     ]);
+
+    const acceptanceAllocationByCustomOrderId = new Map<
+      string,
+      (typeof customAcceptanceAllocations)[number]
+    >();
+    for (const allocation of customAcceptanceAllocations) {
+      if (!acceptanceAllocationByCustomOrderId.has(allocation.customOrderId)) {
+        acceptanceAllocationByCustomOrderId.set(allocation.customOrderId, allocation);
+      }
+    }
 
     const items = [
       ...standardHolds.map((hold) => ({
@@ -509,9 +545,15 @@ export class PayoutService {
         counterparty: hold.order?.customerName ?? 'Buyer',
         currency: hold.currency,
         grossAmount: this.roundMoney(Number(hold.totalAmount ?? 0)),
+        commissionAmount: this.roundMoney(Number(hold.commissionAmount ?? 0)),
+        netBrandAmount: this.roundMoney(Number(hold.netBrandAmount ?? 0)),
+        releasedGrossAmount: this.roundMoney(
+          hold.firstReleasedAt ? Number(hold.firstReleaseAmount ?? 0) : 0,
+        ),
         releasedNetAmount: this.roundMoney(
           hold.firstReleasedAt ? Number(hold.firstReleaseNetAmount ?? 0) : 0,
         ),
+        heldGrossAmount: this.roundMoney(Number(hold.secondReleaseAmount ?? 0)),
         heldNetAmount: this.roundMoney(Number(hold.secondReleaseNetAmount ?? 0)),
         status: hold.status,
         nextReleaseAt: hold.secondReleaseEligibleAt,
@@ -530,6 +572,30 @@ export class PayoutService {
           .filter(Boolean)
           .join(' ');
 
+        const acceptanceAllocation =
+          acceptanceAllocationByCustomOrderId.get(allocation.customOrderId) ?? null;
+        const acceptanceStatus = acceptanceAllocation?.status ?? null;
+        const acceptanceGrossAmount = Number(acceptanceAllocation?.amount ?? 0);
+        const acceptanceCommissionAmount = Number(
+          acceptanceAllocation?.commissionAmount ?? 0,
+        );
+        const acceptanceNetAmount = Number(acceptanceAllocation?.netBrandAmount ?? 0);
+        const acceptanceIsReleased =
+          acceptanceStatus === CustomOrderLedgerAllocationStatus.PAYOUT_ELIGIBLE ||
+          acceptanceStatus === CustomOrderLedgerAllocationStatus.PAID_OUT;
+        const acceptanceIsHeld = acceptanceStatus === CustomOrderLedgerAllocationStatus.HELD;
+        const finalGrossAmount = Number(allocation.amount ?? 0);
+        const finalCommissionAmount = Number(allocation.commissionAmount ?? 0);
+        const finalNetAmount = Number(allocation.netBrandAmount ?? 0);
+
+        const releasedGrossAmount = acceptanceIsReleased ? acceptanceGrossAmount : 0;
+        const releasedNetAmount = acceptanceIsReleased ? acceptanceNetAmount : 0;
+        const heldGrossAmount = finalGrossAmount + (acceptanceIsHeld ? acceptanceGrossAmount : 0);
+        const heldNetAmount = finalNetAmount + (acceptanceIsHeld ? acceptanceNetAmount : 0);
+        const grossAmount = acceptanceGrossAmount + finalGrossAmount;
+        const commissionAmount = acceptanceCommissionAmount + finalCommissionAmount;
+        const netBrandAmount = this.roundMoney(releasedNetAmount + heldNetAmount);
+
         return {
           id: allocation.id,
           holdType: 'CUSTOM_ORDER',
@@ -539,9 +605,13 @@ export class PayoutService {
             `Custom Order #${allocation.customOrderId.slice(0, 8).toUpperCase()}`,
           counterparty: buyerName || String(allocation.customOrder?.buyer?.username || 'Buyer'),
           currency: allocation.currency || 'NGN',
-          grossAmount: this.roundMoney(Number(allocation.amount ?? 0)),
-          releasedNetAmount: 0,
-          heldNetAmount: this.roundMoney(Number(allocation.netBrandAmount ?? 0)),
+          grossAmount: this.roundMoney(grossAmount),
+          commissionAmount: this.roundMoney(commissionAmount),
+          netBrandAmount,
+          releasedGrossAmount: this.roundMoney(releasedGrossAmount),
+          releasedNetAmount: this.roundMoney(releasedNetAmount),
+          heldGrossAmount: this.roundMoney(heldGrossAmount),
+          heldNetAmount: this.roundMoney(heldNetAmount),
           status: 'HELD',
           nextReleaseAt: null,
           releaseCondition: 'BUYER_DELIVERY_CONFIRMED',

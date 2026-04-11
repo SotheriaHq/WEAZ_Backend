@@ -19,8 +19,8 @@ export class OrderService {
 
   /** Brand-side transitions: brands stop at SHIPPED. DELIVERED is buyer-initiated. */
   private readonly validTransitions: Record<OrderStatus, ReadonlyArray<OrderStatus>> = {
-    [OrderStatus.PENDING]: [OrderStatus.PROCESSING, OrderStatus.CANCELLED],
-    [OrderStatus.PROCESSING]: [OrderStatus.SHIPPED, OrderStatus.CANCELLED],
+    [OrderStatus.PENDING]: [OrderStatus.PROCESSING],
+    [OrderStatus.PROCESSING]: [OrderStatus.SHIPPED],
     [OrderStatus.SHIPPED]: [],
     [OrderStatus.DELIVERED]: [OrderStatus.RETURNED],
     [OrderStatus.CANCELLED]: [],
@@ -225,6 +225,7 @@ export class OrderService {
             contactEmail: true,
             owner: {
               select: {
+                id: true,
                 phoneNumber: true,
                 address: true,
               },
@@ -254,6 +255,7 @@ export class OrderService {
             contactEmail: true,
             owner: {
               select: {
+                id: true,
                 phoneNumber: true,
                 address: true,
               },
@@ -268,6 +270,160 @@ export class OrderService {
     }
 
     return this.hydrateOrderDetail(order);
+  }
+
+  async findAllForAdmin(
+    page = 1,
+    limit = 20,
+    status?: OrderStatus,
+    search?: string,
+  ) {
+    const normalizedPage = Number.isFinite(page) && page > 0 ? page : 1;
+    const normalizedLimit = Number.isFinite(limit)
+      ? Math.min(100, Math.max(1, limit))
+      : 20;
+    const skip = (normalizedPage - 1) * normalizedLimit;
+
+    const where: Prisma.OrderWhereInput = {
+      ...(status ? { status } : {}),
+      ...(search
+        ? {
+            OR: [
+              { customerName: { contains: search, mode: 'insensitive' } },
+              { paymentReference: { contains: search, mode: 'insensitive' } },
+              {
+                contactInfo: {
+                  path: ['email'],
+                  string_contains: search,
+                  mode: 'insensitive',
+                },
+              },
+              {
+                brand: {
+                  name: {
+                    contains: search,
+                    mode: 'insensitive',
+                  },
+                },
+              },
+              ...(this.isValidUuid(search) ? [{ id: { equals: search } }] : []),
+            ],
+          }
+        : {}),
+    };
+
+    const [total, orders, summaryAggregate, statusBreakdown] = await Promise.all([
+      this.prisma.order.count({ where }),
+      this.prisma.order.findMany({
+        where,
+        skip,
+        take: normalizedLimit,
+        orderBy: { createdAt: 'desc' },
+        include: {
+          orderItems: {
+            select: {
+              id: true,
+              quantity: true,
+              unitPrice: true,
+              totalPrice: true,
+              nameAtPurchase: true,
+              thumbnailAtPurchase: true,
+            },
+          },
+          brand: {
+            select: {
+              id: true,
+              ownerId: true,
+              name: true,
+            },
+          },
+        },
+      }),
+      this.prisma.order.aggregate({
+        where,
+        _count: { id: true },
+        _sum: { totalAmount: true },
+      }),
+      this.prisma.order.groupBy({
+        by: ['status'],
+        where,
+        _count: { _all: true },
+      }),
+    ]);
+
+    const paymentStatusByOrderId = await reconcileStandardOrderPaymentStatuses(
+      this.prisma,
+      orders,
+    );
+    const paidOrderIds = orders
+      .filter(
+        (order) => paymentStatusByOrderId.get(order.id) === PaymentStatus.PAID,
+      )
+      .map((order) => order.id);
+    if (paidOrderIds.length > 0) {
+      await this.standardOrderFinanceSyncService.syncPaidOrdersByOrderIds(
+        paidOrderIds,
+      );
+    }
+
+    const countsByStatus = statusBreakdown.reduce<Record<string, number>>(
+      (acc, entry) => {
+        acc[entry.status] = entry._count._all;
+        return acc;
+      },
+      {},
+    );
+
+    const items = orders.map((order) => ({
+      id: order.id,
+      brandId: order.brandId,
+      buyerId: order.buyerId ?? null,
+      customerName: order.customerName,
+      customerEmail:
+        order.contactInfo && typeof order.contactInfo === 'object'
+          ? ((order.contactInfo as Record<string, any>).email ?? null)
+          : null,
+      customerPhone:
+        order.contactInfo && typeof order.contactInfo === 'object'
+          ? ((order.contactInfo as Record<string, any>).phone ?? null)
+          : null,
+      totalAmount: order.totalAmount,
+      currency: order.currency,
+      status: order.status,
+      paymentStatus:
+        paymentStatusByOrderId.get(order.id) ?? order.paymentStatus,
+      paymentReference: order.paymentReference ?? null,
+      paidAt: order.paidAt ?? null,
+      createdAt: order.createdAt,
+      updatedAt: order.updatedAt,
+      itemCount: order.orderItems.length,
+      primaryItemName: order.orderItems[0]?.nameAtPurchase ?? null,
+      primaryItemImage: order.orderItems[0]?.thumbnailAtPurchase ?? null,
+      brand: order.brand
+        ? {
+            id: order.brand.id,
+            ownerId: order.brand.ownerId,
+            name: order.brand.name ?? null,
+          }
+        : null,
+    }));
+
+    return {
+      items,
+      total,
+      page: normalizedPage,
+      totalPages: Math.ceil(total / normalizedLimit),
+      summary: {
+        totalOrders: summaryAggregate._count.id ?? 0,
+        totalRevenue: summaryAggregate._sum.totalAmount ?? new Prisma.Decimal(0),
+        pendingCount: countsByStatus.PENDING ?? 0,
+        processingCount: countsByStatus.PROCESSING ?? 0,
+        shippedCount: countsByStatus.SHIPPED ?? 0,
+        deliveredCount: countsByStatus.DELIVERED ?? 0,
+        cancelledCount: countsByStatus.CANCELLED ?? 0,
+        returnedCount: countsByStatus.RETURNED ?? 0,
+      },
+    };
   }
 
   async updateStatus(brandId: string, orderId: string, status: OrderStatus) {
@@ -294,19 +450,13 @@ export class OrderService {
       return order;
     }
 
+    if (status === OrderStatus.CANCELLED) {
+      throw new BadRequestException('ORDER_CANCEL_BLOCKED_SUPER_ADMIN_ONLY');
+    }
+
     const allowedNext = this.validTransitions[order.status] ?? [];
     if (!allowedNext.includes(status)) {
       throw new BadRequestException('ORDER_INVALID_STATUS_TRANSITION');
-    }
-
-    // Brands cannot cancel an order once payment has been confirmed
-    if (
-      status === OrderStatus.CANCELLED &&
-      order.paymentStatus === PaymentStatus.PAID
-    ) {
-      throw new BadRequestException(
-        'ORDER_CANCEL_BLOCKED_PAYMENT_CONFIRMED',
-      );
     }
 
     const previousStatus = order.status;

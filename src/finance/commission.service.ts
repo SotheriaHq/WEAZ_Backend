@@ -11,10 +11,13 @@ const COMMISSION_RULE_SCOPE = {
 type CommissionRuleScope =
   (typeof COMMISSION_RULE_SCOPE)[keyof typeof COMMISSION_RULE_SCOPE];
 
+type CommissionOrderType = 'STANDARD_ORDER' | 'CUSTOM_ORDER';
+
 type ResolveCommissionRuleParams = {
   brandId?: string | null;
   currency?: string | null;
   at?: Date;
+  orderType?: CommissionOrderType;
 };
 
 type CommissionClient = PrismaService | Prisma.TransactionClient;
@@ -100,7 +103,7 @@ export class CommissionService {
     }
 
     const fallbackRate = await this.systemConfigService.getNumber(
-      'finance.commission.defaultPercent',
+      this.getFallbackConfigKey(params.orderType),
     );
     return {
       ruleId: null,
@@ -211,6 +214,16 @@ export class CommissionService {
 
   private getClient(tx?: Prisma.TransactionClient): CommissionClient {
     return tx ?? this.prisma;
+  }
+
+  private getFallbackConfigKey(orderType?: CommissionOrderType) {
+    if (orderType === 'STANDARD_ORDER') {
+      return 'finance.commission.standardOrderPercent';
+    }
+    if (orderType === 'CUSTOM_ORDER') {
+      return 'finance.commission.customOrderPercent';
+    }
+    return 'finance.commission.defaultPercent';
   }
 
   private roundMoney(value: number) {

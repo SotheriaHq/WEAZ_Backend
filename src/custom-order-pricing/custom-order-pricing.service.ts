@@ -11,6 +11,7 @@ export interface CustomOrderPriceSummary {
   rush: string;
   grandTotal: string;
   currency: string;
+  fabricCharge: string;
 }
 
 export interface CustomOrderInternalBreakdown {
@@ -99,6 +100,7 @@ export class CustomOrderPricingService {
       rush: this.formatMoney(rushFeeValue),
       grandTotal: this.formatMoney(grandTotal),
       currency: input.currency ?? 'NGN',
+      fabricCharge: this.formatMoney(fabricComponentTotal),
     };
 
     const internalPriceBreakdown: CustomOrderInternalBreakdown = {

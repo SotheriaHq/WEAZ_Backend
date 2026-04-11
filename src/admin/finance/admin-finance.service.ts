@@ -22,6 +22,7 @@ import { ReconciliationService } from 'src/finance/reconciliation.service';
 import { StandardOrderEscrowService } from 'src/finance/standard-order-escrow.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { resolveWebAppBaseUrl } from 'src/common/utils/web-app-url';
+import { SystemConfigService } from '../system-config/system-config.service';
 
 const COMMISSION_RULE_SCOPE = {
   PLATFORM: 'PLATFORM',
@@ -81,6 +82,7 @@ export class AdminFinanceService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly commissionService: CommissionService,
+    private readonly systemConfigService: SystemConfigService,
     private readonly reconciliationService: ReconciliationService,
     private readonly financialDocumentsService: FinancialDocumentsService,
     private readonly standardOrderEscrowService: StandardOrderEscrowService,
@@ -172,7 +174,41 @@ export class AdminFinanceService {
   }
 
   async listCommissionRules() {
-    return this.commissionService.listRules();
+    const rules = await this.commissionService.listRules();
+    if (Array.isArray(rules) && rules.length > 0) {
+      return rules;
+    }
+
+    const [defaultRate, standardRate, customRate] = await Promise.all([
+      this.systemConfigService.getNumber('finance.commission.defaultPercent'),
+      this.systemConfigService.getNumber('finance.commission.standardOrderPercent'),
+      this.systemConfigService.getNumber('finance.commission.customOrderPercent'),
+    ]);
+
+    const nowIso = new Date().toISOString();
+    return [
+      this.buildSystemCommissionFallbackRule({
+        idSuffix: 'default',
+        name: 'System default commission',
+        ratePercent: defaultRate,
+        isDefault: true,
+        createdAt: nowIso,
+      }),
+      this.buildSystemCommissionFallbackRule({
+        idSuffix: 'standard-order',
+        name: 'System standard-order commission',
+        ratePercent: standardRate,
+        isDefault: false,
+        createdAt: nowIso,
+      }),
+      this.buildSystemCommissionFallbackRule({
+        idSuffix: 'custom-order',
+        name: 'System custom-order commission',
+        ratePercent: customRate,
+        isDefault: false,
+        createdAt: nowIso,
+      }),
+    ];
   }
 
   async createCommissionRule(
@@ -974,7 +1010,11 @@ export class AdminFinanceService {
           brandId: true,
           currency: true,
           totalAmount: true,
+          commissionAmount: true,
+          netBrandAmount: true,
+          firstReleaseAmount: true,
           firstReleaseNetAmount: true,
+          secondReleaseAmount: true,
           secondReleaseNetAmount: true,
           firstReleasedAt: true,
           secondReleaseEligibleAt: true,
@@ -1008,6 +1048,19 @@ export class AdminFinanceService {
               sourceTitleSnapshot: true,
               buyerId: true,
               brand: { select: { id: true, name: true } },
+              ledgerAllocations: {
+                where: {
+                  allocationType: CustomOrderLedgerAllocationType.BRAND_ACCEPTANCE_PORTION,
+                },
+                orderBy: { createdAt: 'asc' },
+                take: 1,
+                select: {
+                  amount: true,
+                  commissionAmount: true,
+                  netBrandAmount: true,
+                  status: true,
+                },
+              },
             },
           },
         },
@@ -1045,7 +1098,11 @@ export class AdminFinanceService {
         buyerName: hold.order?.customerName ?? 'Buyer',
         currency: hold.currency,
         grossAmount: Number(hold.totalAmount ?? 0),
+        commissionAmount: Number(hold.commissionAmount ?? 0),
+        netBrandAmount: Number(hold.netBrandAmount ?? 0),
+        releasedGrossAmount: hold.firstReleasedAt ? Number(hold.firstReleaseAmount ?? 0) : 0,
         releasedNetAmount: hold.firstReleasedAt ? Number(hold.firstReleaseNetAmount ?? 0) : 0,
+        heldGrossAmount: Number(hold.secondReleaseAmount ?? 0),
         heldNetAmount: Number(hold.secondReleaseNetAmount ?? 0),
         status: hold.status,
         nextReleaseAt: hold.secondReleaseEligibleAt,
@@ -1062,6 +1119,27 @@ export class AdminFinanceService {
           allocation.customOrder?.buyerId
             ? buyersById.get(allocation.customOrder.buyerId) ?? null
             : null;
+        const acceptanceAllocation = allocation.customOrder?.ledgerAllocations?.[0] ?? null;
+        const acceptanceStatus = acceptanceAllocation?.status ?? null;
+        const acceptanceGrossAmount = Number(acceptanceAllocation?.amount ?? 0);
+        const acceptanceCommissionAmount = Number(
+          acceptanceAllocation?.commissionAmount ?? 0,
+        );
+        const acceptanceNetAmount = Number(acceptanceAllocation?.netBrandAmount ?? 0);
+        const acceptanceIsReleased =
+          acceptanceStatus === CustomOrderLedgerAllocationStatus.PAYOUT_ELIGIBLE ||
+          acceptanceStatus === CustomOrderLedgerAllocationStatus.PAID_OUT;
+        const acceptanceIsHeld = acceptanceStatus === CustomOrderLedgerAllocationStatus.HELD;
+        const finalGrossAmount = Number(allocation.amount ?? 0);
+        const finalCommissionAmount = Number(allocation.commissionAmount ?? 0);
+        const finalNetAmount = Number(allocation.netBrandAmount ?? 0);
+        const releasedGrossAmount = acceptanceIsReleased ? acceptanceGrossAmount : 0;
+        const releasedNetAmount = acceptanceIsReleased ? acceptanceNetAmount : 0;
+        const heldGrossAmount = finalGrossAmount + (acceptanceIsHeld ? acceptanceGrossAmount : 0);
+        const heldNetAmount = finalNetAmount + (acceptanceIsHeld ? acceptanceNetAmount : 0);
+        const grossAmount = acceptanceGrossAmount + finalGrossAmount;
+        const commissionAmount = acceptanceCommissionAmount + finalCommissionAmount;
+        const netBrandAmount = this.roundMoney(releasedNetAmount + heldNetAmount);
 
         return {
           id: allocation.id,
@@ -1081,9 +1159,13 @@ export class AdminFinanceService {
           brand: allocation.customOrder?.brand ?? null,
           buyerName: this.formatBuyerName(buyer),
           currency: allocation.currency,
-          grossAmount: Number(allocation.amount ?? 0),
-          releasedNetAmount: 0,
-          heldNetAmount: Number(allocation.netBrandAmount ?? 0),
+          grossAmount: this.roundMoney(grossAmount),
+          commissionAmount: this.roundMoney(commissionAmount),
+          netBrandAmount,
+          releasedGrossAmount: this.roundMoney(releasedGrossAmount),
+          releasedNetAmount: this.roundMoney(releasedNetAmount),
+          heldGrossAmount: this.roundMoney(heldGrossAmount),
+          heldNetAmount: this.roundMoney(heldNetAmount),
           status: 'HELD',
           nextReleaseAt: null,
           releaseCondition: 'BUYER_DELIVERY_CONFIRMED',
@@ -1316,6 +1398,34 @@ export class AdminFinanceService {
       customOrder.sourceTitleSnapshot ||
       `Custom Order #${String(customOrder.id).slice(0, 8).toUpperCase()}`
     );
+  }
+
+  private buildSystemCommissionFallbackRule(params: {
+    idSuffix: string;
+    name: string;
+    ratePercent: number;
+    isDefault: boolean;
+    createdAt: string;
+  }) {
+    const ratePercent = this.roundMoney(Number(params.ratePercent) || 0).toFixed(2);
+    return {
+      id: `system-config-${params.idSuffix}`,
+      name: params.name,
+      scope: COMMISSION_RULE_SCOPE.PLATFORM,
+      brandId: null,
+      currency: null,
+      ratePercent,
+      minFeeAmount: null,
+      maxFeeAmount: null,
+      isDefault: params.isDefault,
+      isActive: true,
+      effectiveFrom: params.createdAt,
+      effectiveTo: null,
+      createdById: null,
+      updatedById: null,
+      createdAt: params.createdAt,
+      updatedAt: params.createdAt,
+    };
   }
 
   private async recordAudit(

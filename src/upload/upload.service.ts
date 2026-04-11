@@ -136,6 +136,21 @@ export class UploadService {
     this.s3 = new S3Client(s3Config);
   }
 
+  private encodeS3KeyForUrl(key: string): string {
+    return String(key)
+      .split('/')
+      .map((segment) => encodeURIComponent(segment))
+      .join('/');
+  }
+
+  private buildS3ObjectUrl(key: string): string {
+    return `https://${this.bucketName}.s3.${this.region}.amazonaws.com/${this.encodeS3KeyForUrl(key)}`;
+  }
+
+  private buildS3BucketUrl(): string {
+    return `https://${this.bucketName}.s3.${this.region}.amazonaws.com`;
+  }
+
   async uploadFile(
     file: Express.Multer.File,
     userId: string,
@@ -164,7 +179,7 @@ export class UploadService {
       await this.s3.send(command);
 
       // Construct S3 URL
-      const s3Url = `https://${this.bucketName}.s3.${this.region}.amazonaws.com/${key}`;
+      const s3Url = this.buildS3ObjectUrl(key);
 
       // Save to database
       const uploadRecord = await this.prisma.fileUpload.create({
@@ -335,8 +350,7 @@ export class UploadService {
     });
 
     // Build a region-specific upload URL to avoid region-signature mismatches
-    const region = this.region;
-    const uploadUrl = `https://${this.bucketName}.s3.${region}.amazonaws.com`;
+    const uploadUrl = this.buildS3BucketUrl();
 
     return {
       ...presigned,
@@ -678,9 +692,7 @@ export class UploadService {
     } as any);
 
     const fileName = key.split('/').pop() || key;
-    const region =
-      (this.s3.config && (this.s3.config as any).region) || this.region;
-    const url = `https://${this.bucketName}.s3.${region}.amazonaws.com/${encodeURIComponent(key)}`;
+    const url = this.buildS3ObjectUrl(key);
 
     const record = await this.prisma.fileUpload.create({
       data: {
@@ -725,7 +737,7 @@ export class UploadService {
     await this.s3.send(command);
 
     // Construct S3 URL
-    const s3Url = `https://${this.bucketName}.s3.${this.region}.amazonaws.com/${key}`;
+    const s3Url = this.buildS3ObjectUrl(key);
 
     const record = await this.prisma.fileUpload.create({
       data: {
@@ -851,7 +863,7 @@ export class UploadService {
     await this.s3.send(command);
     return {
       key: params.key,
-      url: `https://${this.bucketName}.s3.${this.region}.amazonaws.com/${params.key}`,
+      url: this.buildS3ObjectUrl(params.key),
     };
   }
 

@@ -8,6 +8,7 @@ type PaidOrderSnapshot = {
   id: string;
   brandId: string;
   buyerId: string | null;
+  createdAt: Date;
   customerName: string;
   paymentReference: string | null;
   totalAmount: Prisma.Decimal;
@@ -47,6 +48,7 @@ export class StandardOrderFinanceSyncService {
         id: true,
         brandId: true,
         buyerId: true,
+        createdAt: true,
         customerName: true,
         paymentReference: true,
         totalAmount: true,
@@ -72,6 +74,7 @@ export class StandardOrderFinanceSyncService {
         id: true,
         brandId: true,
         buyerId: true,
+        createdAt: true,
         customerName: true,
         paymentReference: true,
         totalAmount: true,

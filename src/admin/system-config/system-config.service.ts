@@ -22,6 +22,8 @@ export const DEFAULT_FILE_SIZE_LIMITS: Record<string, number> = {
 
 export const DEFAULT_NUMBER_CONFIGS: Record<string, number> = {
   'finance.commission.defaultPercent': 10,
+  'finance.commission.standardOrderPercent': 10,
+  'finance.commission.customOrderPercent': 12,
   'finance.standardEscrow.firstReleasePercent': 50,
   'finance.standardEscrow.settlementHours': 48,
   'finance.standardEscrow.autoReleaseDays': 7,
@@ -46,6 +48,8 @@ const KEY_DESCRIPTIONS: Record<string, string> = {
   'upload.maxSize.productMedia':     'Max file size for product media uploads (bytes)',
   'upload.maxSize.collectionBulk':   'Max file size for collection bulk uploads (bytes)',
   'finance.commission.defaultPercent': 'Default platform commission percent for finance settlements',
+  'finance.commission.standardOrderPercent': 'Default commission percent applied to new standard checkout orders',
+  'finance.commission.customOrderPercent': 'Default commission percent applied to new custom orders',
   'finance.standardEscrow.firstReleasePercent': 'Percent of a paid standard-order hold released when the brand confirms shipment',
   'finance.standardEscrow.settlementHours': 'Hours to wait after buyer delivery confirmation before releasing the final standard-order tranche',
   'finance.standardEscrow.autoReleaseDays': 'Days after a delivered standard order before the system auto-confirms delivery',

@@ -40,7 +40,6 @@ import {
 import {
   AcceptCustomOrderDto,
   BrandRespondToCustomOrderExtensionCounterDto,
-  CancelCustomOrderDto,
   ConfirmCustomOrderDeliveryDto,
   CreateExceptionReviewRequestDto,
   CreateCustomOrderDto,
@@ -49,7 +48,6 @@ import {
   CustomOrderPricePreviewDto,
   CustomOrderResolverPolicy,
   QueryCustomOrdersDto,
-  RejectCustomOrderDto,
   ReportCustomOrderIssueDto,
   RespondToCustomOrderExtensionDto,
   UpdateDisplayChartPreferenceDto,
@@ -176,12 +174,56 @@ type CustomOrderSubmissionMeta = {
   noDirectMatchAcknowledged: boolean;
 };
 
+type CheckoutBagLine = {
+  sessionId: string;
+  status: string;
+  checkoutIntentId: string;
+  customOrderId: string | null;
+  sourceType: CustomOrderSourceType;
+  sourceId: string;
+  sourceTitle: string;
+  sourcePrimaryMediaUrl: string | null;
+  sourceBrandName: string | null;
+  configurationId: string;
+  configurationVersionId: string;
+  quoteStatus: 'AUTO_PRICED' | 'MANUAL_QUOTE_REQUIRED';
+  pricingChartFamily: CustomOrderChartFamily;
+  displayChartFamily: CustomOrderChartFamily;
+  rushSelected: boolean;
+  measurementCount: number;
+  buyerPriceSummary: {
+    fabricCharge: number;
+    subtotal: number;
+    shippingFee: number;
+    rushFee: number;
+    grandTotal: number;
+    currency: string;
+  };
+  priceLockExpiresAt: string;
+  isPriceLockExpired: boolean;
+  canRelockPrice: boolean;
+  canProceedToPayment: boolean;
+  lastAttemptReference: string | null;
+  lastAttemptStatus: string | null;
+  attemptsCount: number;
+  submittedAt: string;
+  updatedAt: string;
+  resumePath: string | null;
+};
+
 const hasEphemeralMediaSignature = (value: unknown) => {
   if (typeof value !== 'string') return true;
   const trimmed = value.trim();
   if (!trimmed) return true;
   const lower = trimmed.toLowerCase();
+  const regionMatch = lower.match(/\.s3\.([^.]+)\.amazonaws\.com/);
+  const hasMalformedRegionSegment =
+    !!regionMatch && !/^[a-z0-9-]+$/.test(regionMatch[1]);
   return (
+    lower.includes('async () =>') ||
+    lower.includes('const providedregion') ||
+    lower.includes('[object promise]') ||
+    hasMalformedRegionSegment ||
     lower.includes('x-amz-algorithm=') ||
     lower.includes('x-amz-signature=') ||
     lower.includes('x-amz-credential=') ||
@@ -317,7 +359,14 @@ export class CustomOrdersService {
         configurationId: configuration.id,
         configurationVersionId: configuration.version.id,
         currency: configuration.brand.currency,
-        buyerPriceSummary: preview.buyerPriceSummary,
+        buyerPriceSummary: {
+          fabricCharge: Number(preview.buyerPriceSummary.fabricCharge),
+          subtotal: Number(preview.buyerPriceSummary.outfitTotal),
+          shippingFee: Number(preview.buyerPriceSummary.delivery),
+          rushFee: Number(preview.buyerPriceSummary.rush),
+          grandTotal: Number(preview.buyerPriceSummary.grandTotal),
+          currency: preview.buyerPriceSummary.currency,
+        },
         priceLockExpiresAt: checkoutIntent.expiresAt.toISOString(),
           quoteStatus: 'AUTO_PRICED' as const,
         pricingChartFamily: chartEvaluation.pricingChartFamily,
@@ -399,6 +448,39 @@ export class CustomOrdersService {
     const alreadySubmitted = submissionMeta.submissionIdempotencyKey === dto.idempotencyKey;
 
     const configuration = await this.getConfigurationVersion(intent.configurationId, intent.configurationVersionId);
+    if (!alreadySubmitted) {
+      const sourceConfigIds = (
+        await this.prisma.customOrderConfiguration.findMany({
+          where: {
+            sourceType: configuration.configuration.sourceType,
+            sourceId: configuration.configuration.sourceId,
+          },
+          select: { id: true },
+        })
+      ).map((item) => item.id);
+
+      if (sourceConfigIds.length > 0) {
+        const duplicateBagLine = await this.prisma.customOrderCheckoutSession.findFirst({
+          where: {
+            buyerId: userId,
+            customOrderId: null,
+            checkoutIntentId: { not: intent.id },
+            checkoutIntent: {
+              configurationId: { in: sourceConfigIds },
+            },
+          },
+          select: {
+            id: true,
+            checkoutIntentId: true,
+          },
+        });
+
+        if (duplicateBagLine) {
+          throw new BadRequestException('CUSTOM_ORDER_DUPLICATE_IN_BAG');
+        }
+      }
+    }
+
     const requiredMeasurementKeys = await this.resolveRequiredMeasurementKeys(
       configuration.snapshot.requiredMeasurementKeys ?? [],
       configuration.snapshot.requiredFreeformPointIds ?? [],
@@ -753,92 +835,358 @@ export class CustomOrdersService {
     };
   }
 
-  async cancelBuyerOrder(userId: string, customOrderId: string, dto: CancelCustomOrderDto) {
-    const order = await this.requireBuyerOrder(userId, customOrderId);
-    if (
-      ![
-        CustomOrderStatus.DRAFT,
-        CustomOrderStatus.PENDING_PAYMENT,
-        CustomOrderStatus.PENDING_BRAND_ACCEPTANCE,
-      ].includes(order.status as 'DRAFT' | 'PENDING_PAYMENT' | 'PENDING_BRAND_ACCEPTANCE')
-    ) {
-      throw new BadRequestException('CUSTOM_ORDER_INVALID_STATE');
-    }
-
-    const cancellationWindowMs = Math.max(
-      0,
-      parseInt(process.env.CUSTOM_ORDER_CANCEL_WINDOW_MS || '', 10) || 30 * 60 * 1000,
-    );
-    if (
-      order.status === CustomOrderStatus.PENDING_BRAND_ACCEPTANCE &&
-      order.createdAt &&
-      Date.now() - new Date(order.createdAt).getTime() > cancellationWindowMs
-    ) {
-      throw new BadRequestException(
-        'CUSTOM_ORDER_CANCELLATION_WINDOW_EXPIRED: You can only cancel within 30 minutes of placing the order',
-      );
-    }
-
-    const updated = await this.prisma.$transaction(async (tx) => {
-      const paidPreAcceptance = order.paymentStatus === PaymentStatus.PAID;
-
-      const next = await tx.customOrder.update({
-        where: { id: customOrderId },
-        data: {
-          status: CustomOrderStatus.CANCELLED_BY_BUYER_PRE_ACCEPTANCE,
-          timelineEvents: {
-            create: paidPreAcceptance
-              ? [
-                  {
-                    actorType: CustomOrderActorType.BUYER,
-                    actorId: userId,
-                    eventType: CustomOrderTimelineEventType.BUYER_CANCELLED,
-                    payloadJson: { reason: dto.reason, cancellationType: 'BUYER_PRE_ACCEPTANCE' },
-                  },
-                  {
-                    actorType: CustomOrderActorType.SYSTEM,
-                    eventType: 'REFUND_INITIATED',
-                    payloadJson: {
-                      reason: 'BUYER_CANCELLED_PRE_ACCEPTANCE',
-                    },
-                  },
-                ]
-              : {
-                  actorType: CustomOrderActorType.BUYER,
-                  actorId: userId,
-                  eventType: CustomOrderTimelineEventType.BUYER_CANCELLED,
-                  payloadJson: { reason: dto.reason, cancellationType: 'BUYER_PRE_ACCEPTANCE' },
-                },
+  async listCheckoutBagLines(userId: string) {
+    const sessions = await this.prisma.customOrderCheckoutSession.findMany({
+      where: {
+        buyerId: userId,
+        customOrderId: null,
+      },
+      include: {
+        checkoutIntent: {
+          select: {
+            id: true,
+            configurationId: true,
+            configurationVersionId: true,
+            currency: true,
+            requestSnapshotJson: true,
+            buyerPriceSummaryJson: true,
+            expiresAt: true,
+            consumedAt: true,
           },
         },
-        include: this.detailIncludes,
+      },
+      orderBy: { submittedAt: 'asc' },
+    });
+
+    if (sessions.length === 0) {
+      return {
+        statusCode: 200,
+        message: 'Custom checkout bag is empty',
+        data: {
+          items: [] as CheckoutBagLine[],
+          total: 0,
+        },
+      };
+    }
+
+    const configurationIds = Array.from(
+      new Set(sessions.map((session) => session.checkoutIntent.configurationId)),
+    );
+    const configurations = await this.prisma.customOrderConfiguration.findMany({
+      where: { id: { in: configurationIds } },
+      select: {
+        id: true,
+        sourceType: true,
+        sourceId: true,
+        title: true,
+      },
+    });
+    const configurationById = new Map(configurations.map((entry) => [entry.id, entry]));
+
+    const items: CheckoutBagLine[] = [];
+    for (const session of sessions) {
+      const mapped = await this.mapCheckoutBagLine(session, configurationById);
+      if (mapped) {
+        items.push(mapped);
+      }
+    }
+
+    return {
+      statusCode: 200,
+      message: 'Custom checkout bag retrieved',
+      data: {
+        items,
+        total: items.length,
+      },
+    };
+  }
+
+  async removeCheckoutBagLine(userId: string, sessionId: string) {
+    const session = await this.prisma.customOrderCheckoutSession.findFirst({
+      where: {
+        id: sessionId,
+        buyerId: userId,
+      },
+      select: {
+        id: true,
+        customOrderId: true,
+        checkoutIntentId: true,
+      },
+    });
+
+    if (!session) {
+      throw new NotFoundException('Custom order checkout session not found');
+    }
+    if (session.customOrderId) {
+      throw new BadRequestException('This checkout session is already linked to a placed order');
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.customOrderCheckoutSession.delete({
+        where: { id: session.id },
       });
 
-      if (paidPreAcceptance) {
-        await tx.customOrderLedgerAllocation.updateMany({
-          where: { customOrderId },
-          data: {
-            status: CustomOrderLedgerAllocationStatus.REVERSED,
-            reversedAt: new Date(),
-            reversalReason: 'BUYER_CANCELLED_PRE_ACCEPTANCE',
+      const [orderUsage, paymentUsage] = await Promise.all([
+        tx.customOrder.findFirst({
+          where: { checkoutIntentId: session.checkoutIntentId },
+          select: { id: true },
+        }),
+        tx.paymentAttempt.findFirst({
+          where: { checkoutIntentId: session.checkoutIntentId },
+          select: { id: true },
+        }),
+      ]);
+
+      if (!orderUsage && !paymentUsage) {
+        await tx.customOrderCheckoutIntent.deleteMany({
+          where: {
+            id: session.checkoutIntentId,
+            consumedAt: null,
           },
         });
-
-        await this.refundService.initiateRefund(tx, {
-          customOrderId,
-          reason: 'BUYER_CANCELLED_PRE_ACCEPTANCE',
-          actorType: CustomOrderActorType.BUYER,
-          actorId: userId,
-        });
       }
-
-      return next;
     });
 
     return {
       statusCode: 200,
-      message: 'Custom order cancelled',
-      data: this.mapDetail(updated),
+      message: 'Custom checkout bag line removed',
+      data: { removed: true },
+    };
+  }
+
+  async relockCheckoutBagLine(userId: string, sessionId: string) {
+    const session = await this.prisma.customOrderCheckoutSession.findFirst({
+      where: {
+        id: sessionId,
+        buyerId: userId,
+      },
+      include: {
+        checkoutIntent: true,
+      },
+    });
+
+    if (!session) {
+      throw new NotFoundException('Custom order checkout session not found');
+    }
+    if (session.customOrderId) {
+      throw new BadRequestException('This checkout session is already linked to a placed order');
+    }
+
+    const existingIntent = session.checkoutIntent;
+    if (existingIntent.consumedAt) {
+      throw new BadRequestException('Checkout intent has already been consumed');
+    }
+
+    const intentSnapshot = this.normalizeCheckoutIntentRequestSnapshot(existingIntent.requestSnapshotJson);
+    if (intentSnapshot.chartLock.quoteStatus === 'MANUAL_QUOTE_REQUIRED') {
+      throw new BadRequestException('MANUAL_QUOTE_REQUIRED');
+    }
+
+    const submissionMeta = this.extractCheckoutIntentSubmissionMeta(existingIntent.requestSnapshotJson);
+    const configuration = await this.getConfigurationVersion(
+      existingIntent.configurationId,
+      existingIntent.configurationVersionId,
+    );
+
+    const sourceConfigIds = (
+      await this.prisma.customOrderConfiguration.findMany({
+        where: {
+          sourceType: configuration.configuration.sourceType,
+          sourceId: configuration.configuration.sourceId,
+        },
+        select: { id: true },
+      })
+    ).map((item) => item.id);
+
+    if (sourceConfigIds.length > 0) {
+      const duplicateBagLine = await this.prisma.customOrderCheckoutSession.findFirst({
+        where: {
+          buyerId: userId,
+          customOrderId: null,
+          id: { not: session.id },
+          checkoutIntent: {
+            configurationId: { in: sourceConfigIds },
+          },
+        },
+        select: {
+          id: true,
+        },
+      });
+
+      if (duplicateBagLine) {
+        throw new BadRequestException('CUSTOM_ORDER_DUPLICATE_IN_BAG');
+      }
+    }
+
+    const requiredMeasurementKeys = await this.resolveRequiredMeasurementKeys(
+      configuration.snapshot.requiredMeasurementKeys ?? [],
+      configuration.snapshot.requiredFreeformPointIds ?? [],
+    );
+    await this.validateMeasurementRanges(requiredMeasurementKeys, intentSnapshot.measurementValues);
+
+    const preview = await this.pricingService.preview({
+      configuration,
+      measurementValues: intentSnapshot.measurementValues,
+      rushSelected: intentSnapshot.rushSelected,
+      shippingAddress: intentSnapshot.shippingAddress,
+      chartLock: {
+        pricingChartFamily: intentSnapshot.chartLock.pricingChartFamily,
+        displayChartFamily: intentSnapshot.chartLock.displayChartFamily,
+        resolverPolicy: intentSnapshot.chartLock.resolverPolicy,
+        computedSize: intentSnapshot.chartLock.computedSize,
+        chartVersionId: intentSnapshot.chartLock.chartVersionId,
+      },
+    });
+
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + 30 * 60 * 1000);
+    const requestSnapshot = this.buildCheckoutIntentRequestSnapshot(
+      intentSnapshot.measurementValues,
+      intentSnapshot.rushSelected,
+      intentSnapshot.shippingAddress,
+      preview.matchedRule.id,
+      {
+        pricingChartFamily: intentSnapshot.chartLock.pricingChartFamily,
+        displayChartFamily: intentSnapshot.chartLock.displayChartFamily,
+        resolverPolicy: intentSnapshot.chartLock.resolverPolicy,
+        chartVersionId: intentSnapshot.chartLock.chartVersionId,
+        computedSize: intentSnapshot.chartLock.computedSize,
+        noDirectMatch: intentSnapshot.chartLock.noDirectMatch,
+        conversionGuidance: intentSnapshot.chartLock.conversionGuidance,
+      },
+    );
+
+    const finalSnapshot = submissionMeta.contactInfo || submissionMeta.customerName
+      ? this.buildCheckoutIntentSubmissionSnapshot(requestSnapshot, {
+          contactInfo: submissionMeta.contactInfo,
+          customerName: submissionMeta.customerName,
+          idempotencyKey: submissionMeta.submissionIdempotencyKey,
+          noDirectMatchAcknowledged: submissionMeta.noDirectMatchAcknowledged,
+        })
+      : requestSnapshot;
+
+    const previewHash = createHash('sha256')
+      .update(
+        stableStringify({
+          userId,
+          configurationId: configuration.id,
+          configurationVersionId: configuration.version.id,
+          requestSnapshot,
+        }),
+      )
+      .digest('hex');
+
+    const reusableIntent = await this.prisma.customOrderCheckoutIntent.findUnique({
+      where: { previewHash },
+      select: {
+        id: true,
+        expiresAt: true,
+        consumedAt: true,
+        checkoutSession: {
+          select: { id: true },
+        },
+      },
+    });
+
+    if (
+      reusableIntent?.checkoutSession?.id &&
+      reusableIntent.checkoutSession.id !== session.id &&
+      reusableIntent.expiresAt > now &&
+      !reusableIntent.consumedAt
+    ) {
+      throw new BadRequestException('CUSTOM_ORDER_DUPLICATE_IN_BAG');
+    }
+
+    const nextIntent =
+      reusableIntent && reusableIntent.expiresAt > now && !reusableIntent.consumedAt
+        ? await this.prisma.customOrderCheckoutIntent.findUniqueOrThrow({
+            where: { id: reusableIntent.id },
+          })
+        : await this.prisma.customOrderCheckoutIntent.upsert({
+            where: { previewHash },
+            update: {
+              configurationId: configuration.id,
+              configurationVersionId: configuration.version.id,
+              requestSnapshotJson: finalSnapshot as Prisma.InputJsonValue,
+              buyerPriceSummaryJson: {
+                fabricCharge: preview.buyerPriceSummary.fabricCharge.toNumber(),
+                subtotal: preview.buyerPriceSummary.outfitTotal.toNumber(),
+                shippingFee: preview.buyerPriceSummary.delivery.toNumber(),
+                rushFee: preview.buyerPriceSummary.rush.toNumber(),
+                grandTotal: preview.buyerPriceSummary.grandTotal.toNumber(),
+              } as Prisma.InputJsonValue,
+              expiresAt,
+              consumedAt: null,
+            },
+            create: {
+              buyerId: userId,
+              configurationId: configuration.id,
+              configurationVersionId: configuration.version.id,
+              currency: configuration.brand.currency,
+              previewHash,
+              requestSnapshotJson: finalSnapshot as Prisma.InputJsonValue,
+              buyerPriceSummaryJson: {
+                fabricCharge: preview.buyerPriceSummary.fabricCharge.toNumber(),
+                subtotal: preview.buyerPriceSummary.outfitTotal.toNumber(),
+                shippingFee: preview.buyerPriceSummary.delivery.toNumber(),
+                rushFee: preview.buyerPriceSummary.rush.toNumber(),
+                grandTotal: preview.buyerPriceSummary.grandTotal.toNumber(),
+              } as Prisma.InputJsonValue,
+              expiresAt,
+            },
+          });
+
+    const updatedSession = await this.prisma.customOrderCheckoutSession.update({
+      where: { id: session.id },
+      data: {
+        checkoutIntentId: nextIntent.id,
+        status: CustomOrderCheckoutStatus.SUBMITTED,
+        submittedAt: now,
+        paymentInitiatedAt: null,
+        abandonedAt: null,
+        lastAttemptId: null,
+        lastAttemptReference: null,
+        lastAttemptStatus: null,
+        attemptsCount: 0,
+        resumePath: null,
+      },
+      include: {
+        checkoutIntent: {
+          select: {
+            id: true,
+            configurationId: true,
+            configurationVersionId: true,
+            currency: true,
+            requestSnapshotJson: true,
+            buyerPriceSummaryJson: true,
+            expiresAt: true,
+            consumedAt: true,
+          },
+        },
+      },
+    });
+
+    const configMap = new Map([
+      [
+        configuration.id,
+        {
+          id: configuration.id,
+          sourceType: configuration.configuration.sourceType,
+          sourceId: configuration.configuration.sourceId,
+          title: configuration.configuration.title,
+        },
+      ],
+    ]);
+
+    const mapped = await this.mapCheckoutBagLine(updatedSession, configMap);
+    if (!mapped) {
+      throw new BadRequestException('Unable to re-lock this custom checkout line');
+    }
+
+    return {
+      statusCode: 200,
+      message: 'Custom checkout line re-locked successfully',
+      data: mapped,
     };
   }
 
@@ -1460,90 +1808,6 @@ export class CustomOrdersService {
     return {
       statusCode: 200,
       message: 'Custom order accepted',
-      data: this.mapDetail(updated),
-    };
-  }
-
-  async rejectBrandOrder(ownerUserId: string, brandId: string, customOrderId: string, dto: RejectCustomOrderDto) {
-    await this.assertBrandOwnership(ownerUserId, brandId);
-    const order = await this.prisma.customOrder.findFirst({
-      where: { id: customOrderId, brandId },
-      include: this.detailIncludes,
-    });
-    if (!order) {
-      throw new NotFoundException('Custom order not found');
-    }
-    if (order.status === CustomOrderStatus.REJECTED_BY_BRAND) {
-      return {
-        statusCode: 200,
-        message: 'Custom order already rejected',
-        data: this.mapDetail(order),
-      };
-    }
-    if (order.paymentStatus === PaymentStatus.PAID) {
-      throw new ForbiddenException(
-        'Paid custom orders are auto-accepted. Only a super admin can cancel the order and trigger a full refund.',
-      );
-    }
-    if (order.status !== CustomOrderStatus.PENDING_BRAND_ACCEPTANCE) {
-      throw new BadRequestException('CUSTOM_ORDER_INVALID_STATE');
-    }
-
-    const updated = await this.prisma.$transaction(async (tx) => {
-      const next = await tx.customOrder.update({
-        where: { id: customOrderId },
-        data: {
-          status: CustomOrderStatus.REJECTED_BY_BRAND,
-          rejectedAt: new Date(),
-          timelineEvents: {
-            create: [
-              {
-                actorType: CustomOrderActorType.BRAND,
-                actorId: ownerUserId,
-                eventType: 'BRAND_REJECTED',
-                payloadJson: { reason: dto.reason },
-              },
-              {
-                actorType: CustomOrderActorType.SYSTEM,
-                eventType: 'REFUND_INITIATED',
-                payloadJson: { reason: 'brand_rejected' },
-              },
-            ],
-          },
-        },
-        include: this.detailIncludes,
-      });
-
-      await tx.customOrderLedgerAllocation.updateMany({
-        where: { customOrderId },
-        data: {
-          status: CustomOrderLedgerAllocationStatus.REVERSED,
-          reversedAt: new Date(),
-          reversalReason: 'BRAND_REJECTED',
-        },
-      });
-
-      await this.refundService.initiateRefund(tx, {
-        customOrderId,
-        reason: 'BRAND_REJECTED',
-        actorType: CustomOrderActorType.BRAND,
-        actorId: ownerUserId,
-      });
-
-      return next;
-    });
-
-    await this.queueBuyerNotification(
-      order.buyerId,
-      'CUSTOM_ORDER_BRAND_REJECTED' as NotificationType,
-      customOrderId,
-      { reason: dto.reason },
-      ownerUserId,
-    );
-
-    return {
-      statusCode: 200,
-      message: 'Custom order rejected',
       data: this.mapDetail(updated),
     };
   }
@@ -2472,6 +2736,114 @@ export class CustomOrdersService {
     };
   }
 
+  private async mapCheckoutBagLine(
+    session: {
+      id: string;
+      status: string;
+      checkoutIntentId: string;
+      customOrderId: string | null;
+      submittedAt: Date;
+      updatedAt: Date;
+      lastAttemptReference: string | null;
+      lastAttemptStatus: string | null;
+      attemptsCount: number;
+      resumePath: string | null;
+      checkoutIntent: {
+        id: string;
+        configurationId: string;
+        configurationVersionId: string;
+        currency: string;
+        requestSnapshotJson: Prisma.JsonValue;
+        buyerPriceSummaryJson: Prisma.JsonValue;
+        expiresAt: Date;
+        consumedAt: Date | null;
+      };
+    },
+    configurationById: Map<
+      string,
+      { id: string; sourceType: CustomOrderSourceType; sourceId: string; title: string }
+    >,
+  ): Promise<CheckoutBagLine | null> {
+    const configuration = configurationById.get(session.checkoutIntent.configurationId);
+    if (!configuration) {
+      return null;
+    }
+
+    let sourceTitle = configuration.title || 'Custom order item';
+    let sourcePrimaryMediaUrl: string | null = null;
+    let sourceBrandName: string | null = null;
+    try {
+      const sourceSnapshot = await this.resolveSourceSnapshot(
+        configuration.sourceType,
+        configuration.sourceId,
+      );
+      sourceTitle = sourceSnapshot.title || sourceTitle;
+      sourcePrimaryMediaUrl = sourceSnapshot.primaryMediaUrl;
+      sourceBrandName = sourceSnapshot.brandName;
+    } catch {
+      // Preserve bag lines even when source records are no longer available.
+    }
+
+    const requestSnapshot = this.normalizeCheckoutIntentRequestSnapshot(
+      session.checkoutIntent.requestSnapshotJson,
+    );
+    const rawSummary =
+      session.checkoutIntent.buyerPriceSummaryJson &&
+      typeof session.checkoutIntent.buyerPriceSummaryJson === 'object' &&
+      !Array.isArray(session.checkoutIntent.buyerPriceSummaryJson)
+        ? (session.checkoutIntent.buyerPriceSummaryJson as Record<string, unknown>)
+        : {};
+    const nowMs = Date.now();
+    const expiresAtMs = session.checkoutIntent.expiresAt.getTime();
+    const isPriceLockExpired = expiresAtMs <= nowMs;
+
+    const subtotal = Number(rawSummary.subtotal ?? rawSummary.outfitTotal ?? 0);
+    const shippingFee = Number(rawSummary.shippingFee ?? rawSummary.delivery ?? 0);
+    const rushFee = Number(rawSummary.rushFee ?? rawSummary.rush ?? 0);
+    const grandTotal = Number(rawSummary.grandTotal ?? 0);
+    const fabricCharge = Number(rawSummary.fabricCharge ?? 0);
+
+    return {
+      sessionId: session.id,
+      status: session.status,
+      checkoutIntentId: session.checkoutIntent.id,
+      customOrderId: session.customOrderId,
+      sourceType: configuration.sourceType,
+      sourceId: configuration.sourceId,
+      sourceTitle,
+      sourcePrimaryMediaUrl,
+      sourceBrandName,
+      configurationId: session.checkoutIntent.configurationId,
+      configurationVersionId: session.checkoutIntent.configurationVersionId,
+      quoteStatus: requestSnapshot.chartLock.quoteStatus,
+      pricingChartFamily: requestSnapshot.chartLock.pricingChartFamily,
+      displayChartFamily: requestSnapshot.chartLock.displayChartFamily,
+      rushSelected: requestSnapshot.rushSelected,
+      measurementCount: Object.keys(requestSnapshot.measurementValues).length,
+      buyerPriceSummary: {
+        fabricCharge: Number.isFinite(fabricCharge) ? fabricCharge : 0,
+        subtotal: Number.isFinite(subtotal) ? subtotal : 0,
+        shippingFee: Number.isFinite(shippingFee) ? shippingFee : 0,
+        rushFee: Number.isFinite(rushFee) ? rushFee : 0,
+        grandTotal: Number.isFinite(grandTotal) ? grandTotal : 0,
+        currency: session.checkoutIntent.currency,
+      },
+      priceLockExpiresAt: session.checkoutIntent.expiresAt.toISOString(),
+      isPriceLockExpired,
+      canRelockPrice: isPriceLockExpired,
+      canProceedToPayment:
+        !isPriceLockExpired &&
+        !session.checkoutIntent.consumedAt &&
+        requestSnapshot.chartLock.quoteStatus !== 'MANUAL_QUOTE_REQUIRED',
+      lastAttemptReference: session.lastAttemptReference,
+      lastAttemptStatus: session.lastAttemptStatus,
+      attemptsCount: session.attemptsCount,
+      submittedAt: session.submittedAt.toISOString(),
+      updatedAt: session.updatedAt.toISOString(),
+      resumePath: session.resumePath,
+    };
+  }
+
   private normalizeChartFamily(value: unknown): CustomOrderChartFamily {
     const v = typeof value === 'string' ? value.toUpperCase() : '';
     if (
@@ -3280,7 +3652,17 @@ export class CustomOrdersService {
         brandName: order.sourceBrandNameSnapshot,
       },
       configurationVersionId: order.configurationVersionId,
-      buyerPriceSummary: order.buyerPriceSummaryJson,
+      buyerPriceSummary: (() => {
+        const raw = (order.buyerPriceSummaryJson ?? {}) as Record<string, unknown>;
+        return {
+          fabricCharge: Number(raw.fabricCharge ?? 0),
+          subtotal: Number(raw.subtotal ?? raw.outfitTotal ?? 0),
+          shippingFee: Number(raw.shippingFee ?? raw.delivery ?? 0),
+          rushFee: Number(raw.rushFee ?? raw.rush ?? 0),
+          grandTotal: Number(raw.grandTotal ?? 0),
+          currency: order.currency ?? raw.currency ?? 'NGN',
+        };
+      })(),
       internalPriceBreakdown: order.internalPriceBreakdownJson,
       quoteStatus: (chartLock?.quoteStatus as string | undefined) ?? 'AUTO_PRICED',
       chartLock,

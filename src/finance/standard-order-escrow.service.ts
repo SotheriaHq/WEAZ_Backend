@@ -9,6 +9,7 @@ type OrderSettlementInput = {
   id: string;
   brandId: string;
   buyerId: string | null;
+  createdAt?: Date | string | null;
   totalAmount: Prisma.Decimal | number;
   shippingCost?: Prisma.Decimal | number | null;
   discountAmount?: Prisma.Decimal | number | null;
@@ -43,7 +44,13 @@ export class StandardOrderEscrowService {
     let remainingSettlement = this.roundMoney(settlementAmount);
 
     for (const [index, order] of orders.entries()) {
-      const commissionRate = await this.getCommissionRate(tx, order.brandId, currency);
+      const effectiveAt = order.createdAt ? new Date(order.createdAt) : undefined;
+      const commissionRate = await this.getCommissionRate(
+        tx,
+        order.brandId,
+        currency,
+        Number.isNaN(effectiveAt?.getTime() ?? NaN) ? undefined : effectiveAt,
+      );
       const proportionalAmount =
         index === orders.length - 1
           ? remainingSettlement
@@ -94,6 +101,8 @@ export class StandardOrderEscrowService {
       });
 
       await this.ledgerService.postStandardOrderPaymentReceived(tx, hold);
+      // Immediate first-tranche release on payment confirmation.
+      await this.releaseShipmentPortion(tx, order.id);
     }
   }
 
@@ -399,9 +408,10 @@ export class StandardOrderEscrowService {
     tx: Prisma.TransactionClient,
     brandId: string,
     currency: string,
+    at?: Date,
   ) {
     const resolved = await this.commissionService.resolveRule(
-      { brandId, currency },
+      { brandId, currency, at, orderType: 'STANDARD_ORDER' },
       tx,
     );
     return resolved.ratePercent;

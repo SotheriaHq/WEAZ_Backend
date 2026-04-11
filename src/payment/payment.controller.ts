@@ -45,7 +45,7 @@ export class PaymentController {
       to,
       amount: Number(amount),
     });
-    return { status: 'success', data: result };
+    return result;
   }
 
   @Post('initialize')
@@ -56,32 +56,28 @@ export class PaymentController {
     @Req() req: Request,
   ) {
     const userId = (req as any).user?.id ?? (req as any).user?.sub;
-    const result = await this.paymentService.initializePayment(dto, userId);
-    return { status: 'success', data: result };
+    return this.paymentService.initializePayment(dto, userId);
   }
 
   @Get('attempts/:reference')
   @UseGuards(JwtAuthGuard)
   async getAttempt(@Param('reference') reference: string, @Req() req: Request) {
     const userId = (req as any).user?.id ?? (req as any).user?.sub;
-    const result = await this.paymentService.getPaymentAttemptByReference(reference, userId);
-    return { status: 'success', data: result };
+    return this.paymentService.getPaymentAttemptByReference(reference, userId);
   }
 
   @Get('attempts/by-order/:orderId')
   @UseGuards(JwtAuthGuard)
   async getAttemptByOrderId(@Param('orderId') orderId: string, @Req() req: Request) {
     const userId = (req as any).user?.id ?? (req as any).user?.sub;
-    const result = await this.paymentService.getPaymentAttemptByOrderId(orderId, userId);
-    return { status: 'success', data: result };
+    return this.paymentService.getPaymentAttemptByOrderId(orderId, userId);
   }
 
   @Post('verify')
   @UseGuards(JwtAuthGuard)
   async verify(@Body() dto: VerifyPaymentDto, @Req() req: Request) {
     const userId = (req as any).user?.id ?? (req as any).user?.sub;
-    const result = await this.paymentService.verifyPayment(dto, userId);
-    return { status: 'success', data: result };
+    return this.paymentService.verifyPayment(dto, userId);
   }
 
   @Post('mock/:reference/simulate')
@@ -93,8 +89,7 @@ export class PaymentController {
     @Req() req: Request,
   ) {
     const userId = (req as any).user?.id ?? (req as any).user?.sub;
-    const result = await this.paymentService.simulatePaymentAttempt(reference, dto, userId);
-    return { status: 'success', data: result };
+    return this.paymentService.simulatePaymentAttempt(reference, dto, userId);
   }
 
   /**

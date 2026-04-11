@@ -6,11 +6,13 @@ import {
   CustomOrderLedgerAllocationType,
   CustomOrderStatus,
   NotificationType,
+  PaymentSubjectType,
   Prisma,
   Role,
   UserStatus,
 } from '@prisma/client';
 import { Cron, CronExpression } from '@nestjs/schedule';
+import { CustomOrdersPaymentsService } from 'src/custom-orders/custom-orders-payments.service';
 import { CustomOrderRefundService } from 'src/custom-orders/custom-order-refund.service';
 import { CustomOrderSideEffectsService } from 'src/custom-orders/custom-order-side-effects.service';
 import { PrismaService } from 'src/prisma/prisma.service';
@@ -20,6 +22,9 @@ const ACCEPTANCE_TIMEOUT_HOURS = 48;
 const STALE_STAGE_ESCALATION_HOURS = 24;
 const ACCEPTANCE_WINDOW_REMINDER_HOURS = 12;
 const STALE_OPERATIONAL_STATUS_WARNING_HOURS = 24;
+const PAYMENT_RECONCILIATION_LOOKBACK_HOURS = 24 * 14;
+const PAYMENT_RECONCILIATION_REVERIFY_MINUTES = 15;
+const PAYMENT_RECONCILIATION_BATCH_SIZE = 100;
 
 @Injectable()
 export class CustomOrderOpsCronService {
@@ -29,6 +34,7 @@ export class CustomOrderOpsCronService {
     private readonly prisma: PrismaService,
     private readonly sideEffects: CustomOrderSideEffectsService,
     private readonly refundService: CustomOrderRefundService,
+    private readonly customOrdersPaymentsService: CustomOrdersPaymentsService,
   ) { }
 
   @Cron(CronExpression.EVERY_MINUTE)
@@ -46,6 +52,87 @@ export class CustomOrderOpsCronService {
       }
     } catch (error) {
       this.logger.warn(`Durable custom-order side effects cron failed: ${this.formatError(error)}`);
+    }
+  }
+
+  @Cron(CronExpression.EVERY_10_MINUTES)
+  async reconcilePendingCustomOrderPayments(): Promise<void> {
+    const now = new Date();
+    const reverifyBefore = new Date(
+      now.getTime() - PAYMENT_RECONCILIATION_REVERIFY_MINUTES * 60 * 1000,
+    );
+    const lookbackStart = new Date(
+      now.getTime() - PAYMENT_RECONCILIATION_LOOKBACK_HOURS * 60 * 60 * 1000,
+    );
+
+    try {
+      const attempts = await this.prisma.paymentAttempt.findMany({
+        where: {
+          subjectType: PaymentSubjectType.CUSTOM_ORDER,
+          providerMode: 'live',
+          status: {
+            in: ['PENDING', 'REQUIRES_ACTION', 'PROCESSING'],
+          },
+          buyerId: { not: null },
+          createdAt: { gte: lookbackStart },
+          OR: [
+            { lastVerifiedAt: null },
+            { lastVerifiedAt: { lte: reverifyBefore } },
+          ],
+        },
+        select: {
+          reference: true,
+          buyerId: true,
+          provider: true,
+        },
+        orderBy: [{ lastVerifiedAt: 'asc' }, { createdAt: 'desc' }],
+        take: PAYMENT_RECONCILIATION_BATCH_SIZE,
+      });
+
+      if (attempts.length === 0) {
+        return;
+      }
+
+      let paid = 0;
+      let unresolved = 0;
+      let failed = 0;
+
+      for (const attempt of attempts) {
+        const buyerId = String(attempt.buyerId ?? '').trim();
+        if (!buyerId) {
+          failed += 1;
+          continue;
+        }
+
+        try {
+          const verification = await this.customOrdersPaymentsService.verifyPaymentByReference(
+            buyerId,
+            {
+              reference: attempt.reference,
+              gateway: String(attempt.provider || 'PAYSTACK'),
+            },
+          );
+
+          if (verification.status === 'PAID') {
+            paid += 1;
+          } else {
+            unresolved += 1;
+          }
+        } catch (error) {
+          failed += 1;
+          this.logger.warn(
+            `Custom-order payment reconciliation failed for ${attempt.reference}: ${this.formatError(error)}`,
+          );
+        }
+      }
+
+      this.logger.log(
+        `Custom-order payment reconciliation processed ${attempts.length} attempt(s): paid=${paid}, unresolved=${unresolved}, failed=${failed}`,
+      );
+    } catch (error) {
+      this.logger.warn(
+        `Custom-order payment reconciliation cron failed: ${this.formatError(error)}`,
+      );
     }
   }
 

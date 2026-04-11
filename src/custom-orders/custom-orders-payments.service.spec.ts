@@ -197,18 +197,15 @@ describe('CustomOrdersPaymentsService', () => {
     });
 
     expect(result).toEqual({
-      status: 'success',
-      data: {
-        paymentAttemptId: 'attempt_1',
-        reference: 'TH-CO-existing',
-        gateway: 'mockpay',
-        status: 'PENDING',
-        channel: 'CARD',
-        callbackUrl: 'https://callback.test',
-        authorizationUrl: 'https://authorize.test',
-        bankAccount: undefined,
-        nextAction: { type: 'REDIRECT' },
-      },
+      paymentAttemptId: 'attempt_1',
+      reference: 'TH-CO-existing',
+      gateway: 'mockpay',
+      status: 'PENDING',
+      channel: 'CARD',
+      callbackUrl: 'https://callback.test',
+      authorizationUrl: 'https://authorize.test',
+      bankAccount: undefined,
+      nextAction: { type: 'REDIRECT' },
     });
     expect(paymentService.validatePaymentRequest).not.toHaveBeenCalled();
     expect(prisma.$transaction).not.toHaveBeenCalled();
@@ -267,7 +264,7 @@ describe('CustomOrdersPaymentsService', () => {
       },
     });
     expect(paymentService.validatePaymentRequest).not.toHaveBeenCalled();
-    expect(result.data.reference).toBe('TH-CO-active');
+    expect(result.reference).toBe('TH-CO-active');
   });
 
   it('creates a new custom-order attempt after a terminal attempt', async () => {
@@ -338,7 +335,7 @@ describe('CustomOrdersPaymentsService', () => {
       }),
     );
     expect(tx.paymentAttempt.update).not.toHaveBeenCalled();
-    expect(result.data.reference).toBe('TH-CO-refresh');
+    expect(result.reference).toBe('TH-CO-refresh');
   });
 
   it('verifies a successful payment and creates ledger allocations once', async () => {
@@ -355,7 +352,25 @@ describe('CustomOrdersPaymentsService', () => {
       failureMessage: null,
     };
     const tx = {
+      $queryRaw: jest.fn().mockResolvedValue(undefined),
       paymentAttempt: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'attempt_2',
+          buyerId: 'buyer_1',
+          customOrderId: 'co_2',
+          reference: 'TH-CO-paid',
+          status: 'PENDING',
+          confirmedAt: null,
+          finalizedAt: null,
+          providerReference: null,
+          providerTransactionId: null,
+          providerAccessCode: null,
+          providerChannel: null,
+          channel: 'CARD',
+          responseSnapshot: { mockReturnStatus: 'success' },
+          settlementCurrency: 'NGN',
+          settlementAmount: 1000,
+        }),
         update: jest.fn().mockResolvedValue(updatedAttempt),
       },
       customOrder: {
@@ -486,19 +501,16 @@ describe('CustomOrdersPaymentsService', () => {
       }),
     );
     expect(result).toEqual({
-      status: 'success',
-      data: {
-        success: true,
-        status: 'PAID',
-        paymentAttemptId: 'attempt_2',
-        reference: 'TH-CO-paid',
-        amount: 1000,
-        currency: 'NGN',
-        paidAt: '2026-03-12T10:00:00.000Z',
-        channel: 'CARD',
-        failureMessage: undefined,
-        customOrderId: 'co_2',
-      },
+      success: true,
+      status: 'PAID',
+      paymentAttemptId: 'attempt_2',
+      reference: 'TH-CO-paid',
+      amount: 1000,
+      currency: 'NGN',
+      paidAt: '2026-03-12T10:00:00.000Z',
+      channel: 'CARD',
+      failureMessage: undefined,
+      customOrderId: 'co_2',
     });
   });
 
@@ -536,19 +548,16 @@ describe('CustomOrdersPaymentsService', () => {
 
     expect(prisma.$transaction).not.toHaveBeenCalled();
     expect(result).toEqual({
-      status: 'success',
-      data: {
-        success: false,
-        status: 'FAILED',
-        paymentAttemptId: 'attempt_3',
-        reference: 'TH-CO-failed',
-        amount: 825,
-        currency: 'NGN',
-        paidAt: undefined,
-        channel: 'BANK_TRANSFER',
-        failureMessage: 'Mock payment marked as failed.',
-        customOrderId: 'co_3',
-      },
+      success: false,
+      status: 'FAILED',
+      paymentAttemptId: 'attempt_3',
+      reference: 'TH-CO-failed',
+      amount: 825,
+      currency: 'NGN',
+      paidAt: undefined,
+      channel: 'BANK_TRANSFER',
+      failureMessage: 'Mock payment marked as failed.',
+      customOrderId: 'co_3',
     });
   });
 
@@ -639,7 +648,25 @@ describe('CustomOrdersPaymentsService', () => {
       },
     };
     const tx = {
+      $queryRaw: jest.fn().mockResolvedValue(undefined),
       paymentAttempt: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'attempt_live_pending',
+          buyerId: 'buyer_1',
+          customOrderId: 'co_live_pending',
+          reference: 'TH-CO-live-pending',
+          status: 'PENDING',
+          confirmedAt: null,
+          finalizedAt: null,
+          providerReference: null,
+          providerTransactionId: null,
+          providerAccessCode: null,
+          providerChannel: null,
+          channel: 'CARD',
+          responseSnapshot: null,
+          settlementCurrency: 'NGN',
+          settlementAmount: 825,
+        }),
         update: jest.fn().mockResolvedValue(updatedAttempt),
       },
       customOrder: {
@@ -713,23 +740,20 @@ describe('CustomOrdersPaymentsService', () => {
     });
     expect(tx.customOrderLedgerAllocation.createMany).not.toHaveBeenCalled();
     expect(result).toEqual({
-      status: 'success',
-      data: {
-        success: false,
-        status: 'PENDING',
-        paymentAttemptId: 'attempt_live_pending',
-        reference: 'TH-CO-live-pending',
-        amount: 825,
-        currency: 'NGN',
-        paidAt: undefined,
-        channel: 'CARD',
-        failureMessage: undefined,
-        customOrderId: 'co_live_pending',
-        awaitingProviderConfirmation: true,
-        recoveryAction: 'WAIT_FOR_PROVIDER_CONFIRMATION',
-        recoveryMessage:
-          'Payment is still awaiting provider callback or webhook confirmation. Recheck in a moment or after returning from the gateway.',
-      },
+      success: false,
+      status: 'PENDING',
+      paymentAttemptId: 'attempt_live_pending',
+      reference: 'TH-CO-live-pending',
+      amount: 825,
+      currency: 'NGN',
+      paidAt: undefined,
+      channel: 'CARD',
+      failureMessage: undefined,
+      customOrderId: 'co_live_pending',
+      awaitingProviderConfirmation: true,
+      recoveryAction: 'WAIT_FOR_PROVIDER_CONFIRMATION',
+      recoveryMessage:
+        'Payment is still awaiting provider callback or webhook confirmation. Recheck in a moment or after returning from the gateway.',
     });
   });
 
@@ -747,7 +771,25 @@ describe('CustomOrdersPaymentsService', () => {
       failureMessage: null,
     };
     const tx = {
+      $queryRaw: jest.fn().mockResolvedValue(undefined),
       paymentAttempt: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'attempt_4',
+          buyerId: 'buyer_1',
+          customOrderId: 'co_4',
+          reference: 'TH-CO-paid-existing-alloc',
+          status: 'PENDING',
+          confirmedAt: null,
+          finalizedAt: null,
+          providerReference: null,
+          providerTransactionId: null,
+          providerAccessCode: null,
+          providerChannel: null,
+          channel: 'CARD',
+          responseSnapshot: { mockReturnStatus: 'success' },
+          settlementCurrency: 'NGN',
+          settlementAmount: 2000,
+        }),
         update: jest.fn().mockResolvedValue(updatedAttempt),
       },
       customOrder: {
@@ -835,7 +877,7 @@ describe('CustomOrdersPaymentsService', () => {
         grossAmount: 2000,
       }),
     );
-    expect(result.data.success).toBe(true);
-    expect(result.data.customOrderId).toBe('co_4');
+    expect(result.success).toBe(true);
+    expect(result.customOrderId).toBe('co_4');
   });
 });

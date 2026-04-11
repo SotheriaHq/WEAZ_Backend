@@ -21,7 +21,6 @@ import {
   CreateExceptionReviewRequestDto,
   CreateCustomOrderExtensionRequestDto,
   QueryCustomOrdersDto,
-  RejectCustomOrderDto,
   UpdateCustomOrderLifecycleStatusDto,
   UpdateCustomOrderProgressStageDto,
 } from './dto/custom-orders.dto';
@@ -58,17 +57,6 @@ export class CustomOrdersBrandController {
     dto: AcceptCustomOrderDto,
   ) {
     return this.service.acceptBrandOrder(req.user.id, brandId, id, dto);
-  }
-
-  @Post(':id/reject')
-  async rejectOrder(
-    @Param('brandId') brandId: string,
-    @Param('id') id: string,
-    @Req() req: Request & { user: { id: string } },
-    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true }))
-    dto: RejectCustomOrderDto,
-  ) {
-    return this.service.rejectBrandOrder(req.user.id, brandId, id, dto);
   }
 
   @Post(':id/progress-stage')

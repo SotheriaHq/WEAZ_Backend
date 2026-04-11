@@ -1,4 +1,3 @@
-import { ForbiddenException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import {
   CustomOrderActorType,
@@ -74,6 +73,12 @@ describe('CustomOrdersService', () => {
       customOrderConfiguration: {
         findUnique: jest.fn(),
       },
+      product: {
+        findUnique: jest.fn(),
+      },
+      collection: {
+        findUnique: jest.fn(),
+      },
       customOrderCheckoutIntent: {
         findUnique: jest.fn(),
         upsert: jest.fn(),
@@ -114,6 +119,21 @@ describe('CustomOrdersService', () => {
     ledgerService = {
       postCustomOrderFinalRelease: jest.fn().mockResolvedValue(undefined),
     };
+
+    prisma.product.findUnique.mockResolvedValue({
+      customMeasurementKeys: ['WOMEN_WAIST'],
+      customFreeformPointIds: [],
+      customGender: 'WOMEN',
+      gender: 'WOMEN',
+      categoryType: { slug: 'dresses' },
+    });
+    prisma.collection.findUnique.mockResolvedValue({
+      customMeasurementKeys: ['WOMEN_WAIST'],
+      customFreeformPointIds: [],
+      customGender: 'WOMEN',
+      type: 'WOMEN',
+      categoryType: { slug: 'dresses' },
+    });
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -347,24 +367,6 @@ describe('CustomOrdersService', () => {
     expect(result.data.disputes).toHaveLength(1);
   });
 
-  it('returns the existing order when the brand retries a rejection request', async () => {
-    prisma.brand.findUnique.mockResolvedValue({ id: 'brand_1' });
-    prisma.customOrder.findFirst.mockResolvedValue(
-      buildOrder({
-        status: CustomOrderStatus.REJECTED_BY_BRAND,
-      }),
-    );
-
-    const result = await service.rejectBrandOrder('owner_1', 'brand_1', 'co_1', {
-      reason: 'Unable to fulfill',
-    });
-
-    expect(prisma.$transaction).not.toHaveBeenCalled();
-    expect(result.statusCode).toBe(200);
-    expect(result.message).toBe('Custom order already rejected');
-    expect(result.data.status).toBe(CustomOrderStatus.REJECTED_BY_BRAND);
-  });
-
   it('reports a buyer issue, opens a dispute, and forfeits the final allocation', async () => {
     prisma.brand.findUnique.mockResolvedValue({ ownerId: 'owner_1' });
     prisma.customOrder.findFirst.mockResolvedValue(
@@ -569,62 +571,6 @@ describe('CustomOrdersService', () => {
     );
   });
 
-  it('cancels a paid pre-acceptance order and triggers refund handling', async () => {
-    prisma.customOrder.findFirst.mockResolvedValue(
-      buildOrder({
-        status: CustomOrderStatus.PENDING_BRAND_ACCEPTANCE,
-        paymentStatus: PaymentStatus.PAID,
-        createdAt: new Date(),
-      }),
-    );
-
-    const updatedOrder = buildOrder({
-      status: CustomOrderStatus.CANCELLED_BY_BUYER_PRE_ACCEPTANCE,
-      paymentStatus: PaymentStatus.REFUNDED,
-    });
-
-    const tx = {
-      customOrder: {
-        update: jest.fn().mockResolvedValue(updatedOrder),
-      },
-      customOrderLedgerAllocation: {
-        updateMany: jest.fn().mockResolvedValue({ count: 2 }),
-      },
-    };
-
-    prisma.$transaction.mockImplementation(async (callback: (innerTx: typeof tx) => Promise<unknown>) =>
-      callback(tx),
-    );
-
-    const result = await service.cancelBuyerOrder('buyer_1', 'co_1', {
-      reason: 'I need to change the design brief before the brand accepts it.',
-    });
-
-    expect(tx.customOrder.update).toHaveBeenCalledWith({
-      where: { id: 'co_1' },
-      data: expect.objectContaining({
-        status: CustomOrderStatus.CANCELLED_BY_BUYER_PRE_ACCEPTANCE,
-      }),
-      include: expect.any(Object),
-    });
-    expect(tx.customOrderLedgerAllocation.updateMany).toHaveBeenCalledWith({
-      where: { customOrderId: 'co_1' },
-      data: {
-        status: CustomOrderLedgerAllocationStatus.REVERSED,
-        reversedAt: expect.any(Date),
-        reversalReason: 'BUYER_CANCELLED_PRE_ACCEPTANCE',
-      },
-    });
-    expect(refundService.initiateRefund).toHaveBeenCalledWith(tx, {
-      customOrderId: 'co_1',
-      reason: 'BUYER_CANCELLED_PRE_ACCEPTANCE',
-      actorType: CustomOrderActorType.BUYER,
-      actorId: 'buyer_1',
-    });
-    expect(result.statusCode).toBe(200);
-    expect(result.data.status).toBe(CustomOrderStatus.CANCELLED_BY_BUYER_PRE_ACCEPTANCE);
-  });
-
   it('accepts a paid custom order and releases the acceptance allocation', async () => {
     prisma.brand.findUnique.mockResolvedValue({ id: 'brand_1' });
     prisma.customOrder.findFirst.mockResolvedValue(
@@ -692,22 +638,6 @@ describe('CustomOrdersService', () => {
     );
     expect(result.statusCode).toBe(200);
     expect(result.data.status).toBe(CustomOrderStatus.ACCEPTED);
-  });
-
-  it('blocks brand rejection once a custom order is fully paid', async () => {
-    prisma.brand.findUnique.mockResolvedValue({ id: 'brand_1' });
-    prisma.customOrder.findFirst.mockResolvedValue(
-      buildOrder({
-        status: CustomOrderStatus.PENDING_BRAND_ACCEPTANCE,
-        paymentStatus: PaymentStatus.PAID,
-      }),
-    );
-
-    await expect(
-      service.rejectBrandOrder('owner_1', 'brand_1', 'co_1', {
-        reason: 'The selected fabric is unavailable.',
-      }),
-    ).rejects.toThrow(ForbiddenException);
   });
 
   it('blocks extension requests when the order state is no longer eligible', async () => {

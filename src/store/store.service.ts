@@ -6168,14 +6168,11 @@ export class StoreService {
     return this.getMyOrder(userId, orderId);
   }
 
-  async cancelMyOrder(userId: string, orderId: string, reason?: string) {
+  async cancelMyOrder(userId: string, orderId: string, _reason?: string) {
     const order = await this.prisma.order.findFirst({
       where: { id: orderId, buyerId: userId },
       select: {
         id: true,
-        status: true,
-        paymentStatus: true,
-        brandId: true,
       },
     });
 
@@ -6183,32 +6180,7 @@ export class StoreService {
       throw new NotFoundException('Order not found');
     }
 
-    if (order.status !== 'PENDING') {
-      throw new BadRequestException('Only pending orders can be cancelled by buyer');
-    }
-
-    const updated = await this.prisma.order.update({
-      where: { id: orderId },
-      data: { status: 'CANCELLED' },
-    });
-
-    if (this.notifications) {
-      await this.notifications
-        .create(order.brandId, NotificationType.ORDER_STATUS_UPDATED, {
-          actorId: userId,
-          payload: {
-            orderId,
-            status: 'CANCELLED',
-            previousStatus: 'PENDING',
-            reason: reason ?? null,
-            cancelledByBuyer: true,
-            targetUrl: `/studio?tab=orders&orderId=${orderId}`,
-          },
-        })
-        .catch(() => undefined);
-    }
-
-    return updated;
+    throw new BadRequestException('ORDER_CANCEL_BLOCKED_SUPER_ADMIN_ONLY');
   }
 
   private async getReviewStateByOrderItemId(

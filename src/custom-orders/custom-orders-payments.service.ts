@@ -97,10 +97,7 @@ export class CustomOrdersPaymentsService {
           false,
         );
       }
-      return {
-        status: 'success',
-        data: this.toInitResult(existingAttempt),
-      };
+      return this.toInitResult(existingAttempt);
     }
 
     const latestActiveAttempt = await this.prisma.paymentAttempt.findFirst({
@@ -145,10 +142,7 @@ export class CustomOrdersPaymentsService {
           );
         }
 
-        return {
-          status: 'success',
-          data: this.toInitResult(latestActiveAttempt),
-        };
+        return this.toInitResult(latestActiveAttempt);
       }
     }
 
@@ -265,10 +259,7 @@ export class CustomOrdersPaymentsService {
       return attempt;
     });
 
-    return {
-      status: 'success',
-      data: this.toInitResult(createdAttempt),
-    };
+    return this.toInitResult(createdAttempt);
   }
 
   async initializePaymentForCheckoutIntent(
@@ -342,10 +333,7 @@ export class CustomOrdersPaymentsService {
         existingAttempt.provider,
         false,
       );
-      return {
-        status: 'success',
-        data: this.toInitResult(existingAttempt),
-      };
+      return this.toInitResult(existingAttempt);
     }
 
     const latestActiveAttempt = await this.prisma.paymentAttempt.findFirst({
@@ -377,10 +365,7 @@ export class CustomOrdersPaymentsService {
           latestActiveAttempt.provider,
           false,
         );
-        return {
-          status: 'success',
-          data: this.toInitResult(latestActiveAttempt),
-        };
+        return this.toInitResult(latestActiveAttempt);
       }
     }
 
@@ -471,10 +456,7 @@ export class CustomOrdersPaymentsService {
       return attempt;
     });
 
-    return {
-      status: 'success',
-      data: this.toInitResult(createdAttempt),
-    };
+    return this.toInitResult(createdAttempt);
   }
 
   async verifyPayment(
@@ -486,6 +468,7 @@ export class CustomOrdersPaymentsService {
       where: { id: customOrderId, buyerId: userId },
       select: {
         id: true,
+        createdAt: true,
         buyerId: true,
         brandId: true,
         currency: true,
@@ -514,7 +497,9 @@ export class CustomOrdersPaymentsService {
     if (!attempt || attempt.customOrderId !== customOrderId || attempt.buyerId !== userId) {
       throw new BadRequestException('No custom-order payment attempt found for this reference');
     }
-    if (dto.gateway.trim().toLowerCase() !== attempt.provider.trim().toLowerCase()) {
+    const requestedGateway = this.normalizeGateway(dto.gateway);
+    const attemptGateway = this.normalizeGateway(attempt.provider);
+    if (requestedGateway !== attemptGateway) {
       throw new BadRequestException('Payment verification gateway does not match the initialized payment attempt');
     }
 
@@ -553,7 +538,28 @@ export class CustomOrdersPaymentsService {
           })
         : null;
 
-    const updatedAttempt = await this.prisma.$transaction(async (tx) => {
+    const transitionResult = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "reference" FROM "PaymentAttempt" WHERE "reference" = ${dto.reference} FOR UPDATE`;
+
+      const lockedAttempt = await tx.paymentAttempt.findUnique({
+        where: { reference: dto.reference },
+      });
+
+      if (
+        !lockedAttempt ||
+        lockedAttempt.customOrderId !== customOrderId ||
+        lockedAttempt.buyerId !== userId
+      ) {
+        throw new BadRequestException('No custom-order payment attempt found for this reference');
+      }
+
+      if (this.paymentService.isAttemptTerminalStatus(lockedAttempt.status as any)) {
+        return {
+          attempt: lockedAttempt,
+          transitionedToPaid: false,
+        };
+      }
+
       const promisedProductionAt =
         nextStatus === 'PAID'
           ? new Date(now.getTime() + order.productionLeadDaysSnapshot * 24 * 60 * 60 * 1000)
@@ -570,24 +576,29 @@ export class CustomOrdersPaymentsService {
         where: { reference: dto.reference },
         data: {
           status: nextStatus,
-          confirmedAt: nextStatus === 'PAID' ? now : attempt.confirmedAt,
+          confirmedAt: nextStatus === 'PAID' ? now : lockedAttempt.confirmedAt,
           finalizedAt:
             ['PAID', 'FAILED', 'CANCELLED', 'EXPIRED'].includes(nextStatus)
               ? now
-              : attempt.finalizedAt,
+              : lockedAttempt.finalizedAt,
           lastVerifiedAt: now,
-          providerReference: resolvedVerification.providerReference ?? attempt.providerReference,
+          providerReference: resolvedVerification.providerReference ?? lockedAttempt.providerReference,
           providerTransactionId:
-            resolvedVerification.providerTransactionId ?? attempt.providerTransactionId,
+            resolvedVerification.providerTransactionId ?? lockedAttempt.providerTransactionId,
           providerAccessCode:
-            resolvedVerification.providerAccessCode ?? attempt.providerAccessCode,
+            resolvedVerification.providerAccessCode ?? lockedAttempt.providerAccessCode,
           providerChannel:
             resolvedVerification.providerChannel ??
-            attempt.providerChannel ??
-            attempt.channel,
-          channel: resolvedVerification.providerChannel ?? attempt.channel,
+            lockedAttempt.providerChannel ??
+            lockedAttempt.channel,
+          channel: resolvedVerification.providerChannel ?? lockedAttempt.channel,
           responseSnapshot:
-            resolvedVerification.responseSnapshotPatch as Prisma.InputJsonValue,
+            resolvedVerification.responseSnapshotPatch
+              ? ({
+                  ...(this.asObject(lockedAttempt.responseSnapshot) ?? {}),
+                  ...resolvedVerification.responseSnapshotPatch,
+                } as Prisma.InputJsonValue)
+              : lockedAttempt.responseSnapshot,
           failureCode: failureState.failureCode,
           failureMessage: failureState.failureMessage,
         },
@@ -661,7 +672,12 @@ export class CustomOrdersPaymentsService {
         const acceptanceAmount = this.roundMoney(grandTotal * 0.6);
         const completionAmount = this.roundMoney(grandTotal - acceptanceAmount);
         const commissionRule = await this.commissionService.resolveRule(
-          { brandId: order.brandId, currency: order.currency },
+          {
+            brandId: order.brandId,
+            currency: order.currency,
+            at: order.createdAt,
+            orderType: 'CUSTOM_ORDER',
+          },
           tx,
         );
         const commissionRate = commissionRule.ratePercent;
@@ -738,8 +754,8 @@ export class CustomOrdersPaymentsService {
           customOrderId,
           currency: order.currency,
           grossAmount: grandTotal,
-          settlementCurrency: attempt.settlementCurrency ?? order.currency,
-          settlementAmount: Number(attempt.settlementAmount ?? grandTotal),
+          settlementCurrency: lockedAttempt.settlementCurrency ?? order.currency,
+          settlementAmount: Number(lockedAttempt.settlementAmount ?? grandTotal),
           lineItems: [
             {
               label: `Custom order ${customOrderId.slice(0, 8)}`,
@@ -749,10 +765,15 @@ export class CustomOrdersPaymentsService {
         });
       }
 
-      return updated;
+      return {
+        attempt: updated,
+        transitionedToPaid: nextStatus === 'PAID',
+      };
     });
 
-    if (nextStatus === 'PAID') {
+    const updatedAttempt = transitionResult.attempt;
+
+    if (transitionResult.transitionedToPaid) {
       await this.sideEffects.enqueueNotification({
         customOrderId,
         recipientIds: [order.buyerId],
@@ -827,7 +848,9 @@ export class CustomOrdersPaymentsService {
       throw new BadRequestException('Custom-order payment attempt is missing its checkout intent reference');
     }
 
-    if (dto.gateway.trim().toLowerCase() !== attempt.provider.trim().toLowerCase()) {
+    const requestedGateway = this.normalizeGateway(dto.gateway);
+    const attemptGateway = this.normalizeGateway(attempt.provider);
+    if (requestedGateway !== attemptGateway) {
       throw new BadRequestException('Payment verification gateway does not match the initialized payment attempt');
     }
 
@@ -894,29 +917,55 @@ export class CustomOrdersPaymentsService {
       ),
     );
 
-    const updatedAttempt = await this.prisma.$transaction(async (tx) => {
+    const transitionResult = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "reference" FROM "PaymentAttempt" WHERE "reference" = ${dto.reference} FOR UPDATE`;
+
+      const lockedAttempt = await tx.paymentAttempt.findUnique({
+        where: { reference: dto.reference },
+      });
+
+      if (
+        !lockedAttempt ||
+        lockedAttempt.subjectType !== PaymentSubjectType.CUSTOM_ORDER ||
+        lockedAttempt.buyerId !== userId
+      ) {
+        throw new BadRequestException('No custom-order payment attempt found for this reference');
+      }
+
+      if (this.paymentService.isAttemptTerminalStatus(lockedAttempt.status as any)) {
+        return {
+          attempt: lockedAttempt,
+          transitionedToPaid: false,
+        };
+      }
+
       const updated = await tx.paymentAttempt.update({
         where: { reference: dto.reference },
         data: {
           status: nextStatus,
-          confirmedAt: nextStatus === 'PAID' ? now : attempt.confirmedAt,
+          confirmedAt: nextStatus === 'PAID' ? now : lockedAttempt.confirmedAt,
           finalizedAt:
             ['PAID', 'FAILED', 'CANCELLED', 'EXPIRED'].includes(nextStatus)
               ? now
-              : attempt.finalizedAt,
+              : lockedAttempt.finalizedAt,
           lastVerifiedAt: now,
-          providerReference: resolvedVerification.providerReference ?? attempt.providerReference,
+          providerReference: resolvedVerification.providerReference ?? lockedAttempt.providerReference,
           providerTransactionId:
-            resolvedVerification.providerTransactionId ?? attempt.providerTransactionId,
+            resolvedVerification.providerTransactionId ?? lockedAttempt.providerTransactionId,
           providerAccessCode:
-            resolvedVerification.providerAccessCode ?? attempt.providerAccessCode,
+            resolvedVerification.providerAccessCode ?? lockedAttempt.providerAccessCode,
           providerChannel:
             resolvedVerification.providerChannel ??
-            attempt.providerChannel ??
-            attempt.channel,
-          channel: resolvedVerification.providerChannel ?? attempt.channel,
+            lockedAttempt.providerChannel ??
+            lockedAttempt.channel,
+          channel: resolvedVerification.providerChannel ?? lockedAttempt.channel,
           responseSnapshot:
-            resolvedVerification.responseSnapshotPatch as Prisma.InputJsonValue,
+            resolvedVerification.responseSnapshotPatch
+              ? ({
+                  ...(this.asObject(lockedAttempt.responseSnapshot) ?? {}),
+                  ...resolvedVerification.responseSnapshotPatch,
+                } as Prisma.InputJsonValue)
+              : lockedAttempt.responseSnapshot,
           failureCode: failureState.failureCode,
           failureMessage: failureState.failureMessage,
         },
@@ -935,16 +984,21 @@ export class CustomOrdersPaymentsService {
             providerStatus: nextStatus,
             verifiedAt: now.toISOString(),
             subjectType: PaymentSubjectType.CUSTOM_ORDER,
-            checkoutIntentId: attempt.checkoutIntentId,
+            checkoutIntentId: lockedAttempt.checkoutIntentId,
             awaitingProviderConfirmation: resolvedVerification.awaitingProviderConfirmation,
           },
         },
       });
 
-      return updated;
+      return {
+        attempt: updated,
+        transitionedToPaid: nextStatus === 'PAID',
+      };
     });
 
-    if (nextStatus === 'PAID') {
+    const updatedAttempt = transitionResult.attempt;
+
+    if (transitionResult.transitionedToPaid) {
       await this.ensurePaidCustomOrderSettlement(updatedAttempt.reference);
       const refreshedAttempt = await this.prisma.paymentAttempt.findUnique({
         where: { reference: dto.reference },
@@ -966,7 +1020,7 @@ export class CustomOrdersPaymentsService {
       });
     }
 
-    if (['FAILED', 'CANCELLED', 'EXPIRED'].includes(nextStatus)) {
+    if (['FAILED', 'CANCELLED', 'EXPIRED'].includes(updatedAttempt.status)) {
       await this.markCheckoutSessionAbandoned(attempt.checkoutIntentId, updatedAttempt);
     }
 
@@ -1120,6 +1174,7 @@ export class CustomOrdersPaymentsService {
         where: { id: resolvedCustomOrderId },
         select: {
           id: true,
+          createdAt: true,
           buyerId: true,
           brandId: true,
           currency: true,
@@ -1259,7 +1314,12 @@ export class CustomOrdersPaymentsService {
       const acceptanceAmount = this.roundMoney(grandTotal * 0.6);
       const completionAmount = this.roundMoney(grandTotal - acceptanceAmount);
       const commissionRule = await this.commissionService.resolveRule(
-        { brandId: order.brandId, currency: order.currency },
+        {
+          brandId: order.brandId,
+          currency: order.currency,
+          at: order.createdAt,
+          orderType: 'CUSTOM_ORDER',
+        },
         tx,
       );
       const commissionRate = commissionRule.ratePercent;
@@ -1607,26 +1667,23 @@ export class CustomOrdersPaymentsService {
       Boolean(responseSnapshot?.awaitingProviderConfirmation) && attempt.status !== 'PAID';
 
     return {
-      status: 'success',
-      data: {
-        success: attempt.status === 'PAID',
-        status: attempt.status,
-        paymentAttemptId: attempt.id,
-        reference: attempt.reference,
-        amount: Number((order.buyerPriceSummaryJson as Record<string, unknown>)?.grandTotal ?? 0),
-        currency: order.currency,
-        paidAt: attempt.confirmedAt?.toISOString(),
-        channel: attempt.channel ?? undefined,
-        failureMessage: attempt.failureMessage ?? undefined,
-        customOrderId: order.id,
-        ...(awaitingProviderConfirmation
-          ? {
-              awaitingProviderConfirmation: true,
-              recoveryAction: responseSnapshot?.recoveryAction ?? undefined,
-              recoveryMessage: responseSnapshot?.recoveryMessage ?? undefined,
-            }
-          : {}),
-      },
+      success: attempt.status === 'PAID',
+      status: attempt.status,
+      paymentAttemptId: attempt.id,
+      reference: attempt.reference,
+      amount: Number((order.buyerPriceSummaryJson as Record<string, unknown>)?.grandTotal ?? 0),
+      currency: order.currency,
+      paidAt: attempt.confirmedAt?.toISOString(),
+      channel: attempt.channel ?? undefined,
+      failureMessage: attempt.failureMessage ?? undefined,
+      customOrderId: order.id,
+      ...(awaitingProviderConfirmation
+        ? {
+            awaitingProviderConfirmation: true,
+            recoveryAction: responseSnapshot?.recoveryAction ?? undefined,
+            recoveryMessage: responseSnapshot?.recoveryMessage ?? undefined,
+          }
+        : {}),
     };
   }
 
@@ -1652,26 +1709,23 @@ export class CustomOrdersPaymentsService {
       Boolean(responseSnapshot?.awaitingProviderConfirmation) && attempt.status !== 'PAID';
 
     return {
-      status: 'success',
-      data: {
-        success: attempt.status === 'PAID',
-        status: attempt.status,
-        paymentAttemptId: attempt.id,
-        reference: attempt.reference,
-        amount: summary.amount,
-        currency: summary.currency,
-        paidAt: attempt.confirmedAt?.toISOString(),
-        channel: attempt.channel ?? undefined,
-        failureMessage: attempt.failureMessage ?? undefined,
-        customOrderId: summary.customOrderId ?? undefined,
-        ...(awaitingProviderConfirmation
-          ? {
-              awaitingProviderConfirmation: true,
-              recoveryAction: responseSnapshot?.recoveryAction ?? undefined,
-              recoveryMessage: responseSnapshot?.recoveryMessage ?? undefined,
-            }
-          : {}),
-      },
+      success: attempt.status === 'PAID',
+      status: attempt.status,
+      paymentAttemptId: attempt.id,
+      reference: attempt.reference,
+      amount: summary.amount,
+      currency: summary.currency,
+      paidAt: attempt.confirmedAt?.toISOString(),
+      channel: attempt.channel ?? undefined,
+      failureMessage: attempt.failureMessage ?? undefined,
+      customOrderId: summary.customOrderId ?? undefined,
+      ...(awaitingProviderConfirmation
+        ? {
+            awaitingProviderConfirmation: true,
+            recoveryAction: responseSnapshot?.recoveryAction ?? undefined,
+            recoveryMessage: responseSnapshot?.recoveryMessage ?? undefined,
+          }
+        : {}),
     };
   }
 
@@ -1683,6 +1737,14 @@ export class CustomOrdersPaymentsService {
       return PaymentStatus.FAILED;
     }
     return PaymentStatus.PENDING;
+  }
+
+  private normalizeGateway(value: string | null | undefined) {
+    const normalized = String(value ?? '').trim().toUpperCase();
+    if (!normalized) {
+      throw new BadRequestException('Payment verification gateway is required');
+    }
+    return normalized;
   }
 
   private async notifyFinanceAdminsOfCustomOrderPayment(params: {

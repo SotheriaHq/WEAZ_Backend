@@ -42,6 +42,8 @@ import { resolveWebAppBaseUrl as resolveConfiguredWebAppBaseUrl } from 'src/comm
 
 const PASSWORD_RESET_TOKEN_TTL_MS = 60 * 60 * 1000;
 const RESET_REQUEST_SUPPRESSION_MS = 2 * 60 * 1000;
+const INVISIBLE_AUTH_SPACING_REGEX =
+  /[\u00A0\u1680\u180E\u2000-\u200D\u202F\u205F\u2060\u3000\uFEFF]/g;
 
 @Injectable()
 export class AuthService {
@@ -112,6 +114,13 @@ export class AuthService {
     return userType === UserType.BRAND
       ? '/profile?modal=brand-setup&modalOrigin=prompt'
       : '/profile';
+  }
+
+  private normalizeLoginIdentifier(value: string): string {
+    return String(value ?? '')
+      .normalize('NFKC')
+      .replace(INVISIBLE_AUTH_SPACING_REGEX, '')
+      .trim();
   }
 
   private readHeaderValue(req: Request, name: string): string {
@@ -442,7 +451,10 @@ export class AuthService {
 
   async login(dto: LoginDto, req: Request, res: Response) {
     try {
-      const user = await this.validateUser(dto.email, dto.password);
+      const identifier = this.normalizeLoginIdentifier(
+        String(dto.identifier ?? dto.email ?? ''),
+      );
+      const user = await this.validateUser(identifier, dto.password);
       if (!user) {
         throw new UnauthorizedException('Invalid email or password');
       }
@@ -506,15 +518,43 @@ export class AuthService {
   }
 
   // Validates user credentials for login
-  async validateUser(email: string, password: string) {
-    // Normalize email: trim whitespace and convert to lowercase for case-insensitive matching
-    const normalizedEmail = email?.trim().toLowerCase();
+  async validateUser(identifier: string, password: string) {
+    const normalizedIdentifier = this.normalizeLoginIdentifier(identifier);
+    const normalizedLower = normalizedIdentifier?.toLowerCase();
+
+    if (!normalizedIdentifier || !normalizedLower) {
+      return null;
+    }
+
+    const looksLikeEmail = normalizedIdentifier.includes('@');
 
     try {
       const user = await this.prisma.user
         .findFirst({
           where: {
-            email: normalizedEmail,
+            ...(looksLikeEmail
+              ? {
+                  email: {
+                    equals: normalizedLower,
+                    mode: 'insensitive',
+                  },
+                }
+              : {
+                  OR: [
+                    {
+                      username: {
+                        equals: normalizedIdentifier,
+                        mode: 'insensitive',
+                      },
+                    },
+                    {
+                      email: {
+                        equals: normalizedLower,
+                        mode: 'insensitive',
+                      },
+                    },
+                  ],
+                }),
           },
           select: {
             ...authUserSelect,
