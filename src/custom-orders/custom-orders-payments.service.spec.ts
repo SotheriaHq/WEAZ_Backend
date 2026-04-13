@@ -57,6 +57,7 @@ describe('CustomOrdersPaymentsService', () => {
     };
 
     const preparePaymentRequest = jest.fn();
+    const preparePaymentGatewayRequest = jest.fn();
     const resolvePaymentCallbackUrl = jest.fn();
     const initializeGatewayForAttempt = jest.fn();
     const getAttemptProviderMode = jest.fn();
@@ -64,6 +65,10 @@ describe('CustomOrdersPaymentsService', () => {
     const isAttemptTerminalStatus = jest.fn();
 
     preparePaymentRequest.mockImplementation((_paymentMethod: PaymentMethod, paymentData?: Record<string, unknown>) => paymentData ?? {});
+    preparePaymentGatewayRequest.mockImplementation(
+      (_paymentMethod: PaymentMethod, paymentData?: Record<string, unknown>) =>
+        paymentData ?? {},
+    );
     resolvePaymentCallbackUrl.mockImplementation((callbackUrl?: string) => callbackUrl ?? 'https://callback.test');
     initializeGatewayForAttempt.mockResolvedValue({
       gateway: 'PAYSTACK',
@@ -121,6 +126,7 @@ describe('CustomOrdersPaymentsService', () => {
       resolveVerificationStatus: jest.fn(),
       isTerminalStatus: isAttemptTerminalStatus,
       preparePaymentRequest,
+      preparePaymentGatewayRequest,
       resolvePaymentCallbackUrl,
       initializeGatewayForAttempt,
       getAttemptProviderMode,
@@ -475,7 +481,11 @@ describe('CustomOrdersPaymentsService', () => {
     expect(String(createManyArg.data[1].commissionAmount)).toBe('40');
     expect(String(createManyArg.data[1].netBrandAmount)).toBe('360');
     expect(commissionService.resolveRule).toHaveBeenCalledWith(
-      { brandId: 'brand_1', currency: 'NGN' },
+      expect.objectContaining({
+        brandId: 'brand_1',
+        currency: 'NGN',
+        orderType: 'CUSTOM_ORDER',
+      }),
       tx,
     );
     expect(ledgerService.postCustomOrderPaymentReceived).toHaveBeenCalledWith(tx, {

@@ -15,6 +15,7 @@ import {
   CustomOrderSourceType,
   CustomOrderStatus,
   CustomOrderTimelineEventType,
+  FileType,
   Gender,
   MeasurementPointSource,
   NotificationType,
@@ -231,6 +232,43 @@ const hasEphemeralMediaSignature = (value: unknown) => {
     lower.includes('signature=') ||
     /[?&]expires=/.test(lower)
   );
+};
+
+const normalizeCheckoutMediaUrlCandidate = (value: unknown): string | null => {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const lower = trimmed.toLowerCase();
+  if (
+    lower.includes('async () =>') ||
+    lower.includes('const providedregion') ||
+    lower.includes('[object promise]')
+  ) {
+    return null;
+  }
+
+  if (hasEphemeralMediaSignature(trimmed)) {
+    const [withoutQuery] = trimmed.split('?');
+    return withoutQuery?.trim() || null;
+  }
+
+  return trimmed;
+};
+
+const pickFirstRenderableMediaUrl = (candidates: unknown[]): string | null => {
+  for (const candidate of candidates) {
+    const normalized = normalizeCheckoutMediaUrlCandidate(candidate);
+    if (normalized) {
+      return normalized;
+    }
+  }
+  return null;
 };
 
 @Injectable()
@@ -1024,19 +1062,38 @@ export class CustomOrdersService {
     );
     await this.validateMeasurementRanges(requiredMeasurementKeys, intentSnapshot.measurementValues);
 
-    const preview = await this.pricingService.preview({
-      configuration,
+    const snapshotYardProfile = this.parseConfigurationYardProfile(
+      typeof configuration.snapshot.notes === 'string' ? configuration.snapshot.notes : null,
+    );
+    const preview = this.pricingService.buildPricePreview({
+      baseProductionCharge: configuration.snapshot.baseProductionCharge,
+      fabricCostPerYard: configuration.snapshot.fabricCostPerYard,
+      rushEnabled: configuration.snapshot.rushEnabled,
+      rushFee: configuration.snapshot.rushFee,
+      baseYardsOverride: snapshotYardProfile?.averageBaseYards,
+      additionalYards: this.resolveAdditionalYardsFromProfile(
+        snapshotYardProfile,
+        intentSnapshot.chartLock.computedSize,
+      ),
+      rules: this.pricingService.validateConfigurationRules(
+        (configuration.snapshot.rules ?? []).map((rule: Record<string, unknown>) => ({
+          priority: Number(rule.priority),
+          outputYards: String(rule.outputYards),
+          isFallback: Boolean(rule.isFallback),
+          conditionsJson: this.conditionsFromSnapshot(rule.conditions),
+        })),
+      ),
+      requiredMeasurementKeys,
       measurementValues: intentSnapshot.measurementValues,
       rushSelected: intentSnapshot.rushSelected,
-      shippingAddress: intentSnapshot.shippingAddress,
-      chartLock: {
-        pricingChartFamily: intentSnapshot.chartLock.pricingChartFamily,
-        displayChartFamily: intentSnapshot.chartLock.displayChartFamily,
-        resolverPolicy: intentSnapshot.chartLock.resolverPolicy,
-        computedSize: intentSnapshot.chartLock.computedSize,
-        chartVersionId: intentSnapshot.chartLock.chartVersionId,
-      },
+      shippingAddress: intentSnapshot.shippingAddress ?? undefined,
+      currency: configuration.configuration.brand.currency,
     });
+    const matchedRuleRecord = (configuration.snapshot.rules ?? []).find(
+      (rule: Record<string, unknown>) =>
+        Number(rule.priority) === preview.matchedRule.priority &&
+        Boolean(rule.isFallback) === preview.matchedRule.isFallback,
+    );
 
     const now = new Date();
     const expiresAt = new Date(now.getTime() + 30 * 60 * 1000);
@@ -1044,7 +1101,7 @@ export class CustomOrdersService {
       intentSnapshot.measurementValues,
       intentSnapshot.rushSelected,
       intentSnapshot.shippingAddress,
-      preview.matchedRule.id,
+      typeof matchedRuleRecord?.id === 'string' ? matchedRuleRecord.id : null,
       {
         pricingChartFamily: intentSnapshot.chartLock.pricingChartFamily,
         displayChartFamily: intentSnapshot.chartLock.displayChartFamily,
@@ -1053,6 +1110,7 @@ export class CustomOrdersService {
         computedSize: intentSnapshot.chartLock.computedSize,
         noDirectMatch: intentSnapshot.chartLock.noDirectMatch,
         conversionGuidance: intentSnapshot.chartLock.conversionGuidance,
+        quoteStatus: intentSnapshot.chartLock.quoteStatus,
       },
     );
 
@@ -1069,7 +1127,7 @@ export class CustomOrdersService {
       .update(
         stableStringify({
           userId,
-          configurationId: configuration.id,
+          configurationId: configuration.configuration.id,
           configurationVersionId: configuration.version.id,
           requestSnapshot,
         }),
@@ -1105,32 +1163,32 @@ export class CustomOrdersService {
         : await this.prisma.customOrderCheckoutIntent.upsert({
             where: { previewHash },
             update: {
-              configurationId: configuration.id,
+              configurationId: configuration.configuration.id,
               configurationVersionId: configuration.version.id,
               requestSnapshotJson: finalSnapshot as Prisma.InputJsonValue,
               buyerPriceSummaryJson: {
-                fabricCharge: preview.buyerPriceSummary.fabricCharge.toNumber(),
-                subtotal: preview.buyerPriceSummary.outfitTotal.toNumber(),
-                shippingFee: preview.buyerPriceSummary.delivery.toNumber(),
-                rushFee: preview.buyerPriceSummary.rush.toNumber(),
-                grandTotal: preview.buyerPriceSummary.grandTotal.toNumber(),
+                fabricCharge: Number(preview.buyerPriceSummary.fabricCharge),
+                subtotal: Number(preview.buyerPriceSummary.outfitTotal),
+                shippingFee: Number(preview.buyerPriceSummary.delivery),
+                rushFee: Number(preview.buyerPriceSummary.rush),
+                grandTotal: Number(preview.buyerPriceSummary.grandTotal),
               } as Prisma.InputJsonValue,
               expiresAt,
               consumedAt: null,
             },
             create: {
               buyerId: userId,
-              configurationId: configuration.id,
+              configurationId: configuration.configuration.id,
               configurationVersionId: configuration.version.id,
-              currency: configuration.brand.currency,
+              currency: configuration.configuration.brand.currency,
               previewHash,
               requestSnapshotJson: finalSnapshot as Prisma.InputJsonValue,
               buyerPriceSummaryJson: {
-                fabricCharge: preview.buyerPriceSummary.fabricCharge.toNumber(),
-                subtotal: preview.buyerPriceSummary.outfitTotal.toNumber(),
-                shippingFee: preview.buyerPriceSummary.delivery.toNumber(),
-                rushFee: preview.buyerPriceSummary.rush.toNumber(),
-                grandTotal: preview.buyerPriceSummary.grandTotal.toNumber(),
+                fabricCharge: Number(preview.buyerPriceSummary.fabricCharge),
+                subtotal: Number(preview.buyerPriceSummary.outfitTotal),
+                shippingFee: Number(preview.buyerPriceSummary.delivery),
+                rushFee: Number(preview.buyerPriceSummary.rush),
+                grandTotal: Number(preview.buyerPriceSummary.grandTotal),
               } as Prisma.InputJsonValue,
               expiresAt,
             },
@@ -1168,9 +1226,9 @@ export class CustomOrdersService {
 
     const configMap = new Map([
       [
-        configuration.id,
+        configuration.configuration.id,
         {
-          id: configuration.id,
+          id: configuration.configuration.id,
           sourceType: configuration.configuration.sourceType,
           sourceId: configuration.configuration.sourceId,
           title: configuration.configuration.title,
@@ -2336,9 +2394,15 @@ export class CustomOrdersService {
               id: true,
               title: true,
               owner: { select: { brand: { select: { name: true } } } },
-              coverMedia: { select: { file: { select: { s3Url: true } } } },
+              coverMedia: {
+                select: {
+                  mediaType: true,
+                  file: { select: { s3Url: true } },
+                },
+              },
               medias: {
-                take: 1,
+                where: { mediaType: FileType.POST_IMAGE },
+                take: 6,
                 orderBy: { orderIndex: 'asc' },
                 select: { file: { select: { s3Url: true } } },
               },
@@ -2353,7 +2417,10 @@ export class CustomOrdersService {
         {
           title: product.name,
           brandName: product.brand.name,
-          mediaUrl: product.thumbnail ?? product.images[0] ?? null,
+          mediaUrl: pickFirstRenderableMediaUrl([
+            product.thumbnail,
+            ...(Array.isArray(product.images) ? product.images : []),
+          ]),
         },
       ]),
     );
@@ -2363,7 +2430,10 @@ export class CustomOrdersService {
         {
           title: design.title ?? 'Untitled design',
           brandName: design.owner.brand?.name ?? null,
-          mediaUrl: design.coverMedia?.file.s3Url ?? design.medias[0]?.file.s3Url ?? null,
+          mediaUrl: pickFirstRenderableMediaUrl([
+            design.coverMedia?.mediaType === FileType.POST_IMAGE ? design.coverMedia?.file?.s3Url : null,
+            ...design.medias.map((media) => media.file?.s3Url),
+          ]),
         },
       ]),
     );
@@ -3470,7 +3540,10 @@ export class CustomOrdersService {
       return {
         title: product.name,
         slug: product.slug,
-        primaryMediaUrl: product.thumbnail ?? product.images[0] ?? null,
+        primaryMediaUrl: pickFirstRenderableMediaUrl([
+          product.thumbnail,
+          ...(Array.isArray(product.images) ? product.images : []),
+        ]),
         brandName: product.brand.name,
       };
     }
@@ -3484,14 +3557,16 @@ export class CustomOrdersService {
           },
         },
         coverMedia: {
-          include: {
+          select: {
+            mediaType: true,
             file: { select: { s3Url: true } },
           },
         },
         medias: {
-          take: 1,
+          where: { mediaType: FileType.POST_IMAGE },
+          take: 6,
           orderBy: { orderIndex: 'asc' },
-          include: {
+          select: {
             file: { select: { s3Url: true } },
           },
         },
@@ -3504,7 +3579,10 @@ export class CustomOrdersService {
     return {
       title: design.title ?? 'Untitled design',
       slug: null,
-      primaryMediaUrl: design.coverMedia?.file.s3Url ?? design.medias[0]?.file.s3Url ?? null,
+      primaryMediaUrl: pickFirstRenderableMediaUrl([
+        design.coverMedia?.mediaType === FileType.POST_IMAGE ? design.coverMedia?.file?.s3Url : null,
+        ...design.medias.map((media) => media.file?.s3Url),
+      ]),
       brandName: design.owner.brand?.name ?? null,
     };
   }

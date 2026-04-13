@@ -146,6 +146,13 @@ export class CustomOrdersPaymentsService {
       }
     }
 
+    const gatewayPaymentData = this.paymentService.preparePaymentGatewayRequest(
+      dto.paymentMethod,
+      {
+        ...(dto.paymentData ?? {}),
+        email: dto.email,
+      },
+    );
     const paymentData = this.paymentService.preparePaymentRequest(dto.paymentMethod, {
       ...(dto.paymentData ?? {}),
       email: dto.email,
@@ -156,10 +163,11 @@ export class CustomOrdersPaymentsService {
     const gatewayResult = await this.paymentService.initializeGatewayForAttempt(
       dto.paymentMethod,
       reference,
-      paymentData,
+      gatewayPaymentData,
       amount,
       order.currency,
       callbackUrl,
+      { buyerId: userId },
     );
 
     const createdAttempt = await this.prisma.$transaction(async (tx) => {
@@ -369,6 +377,13 @@ export class CustomOrdersPaymentsService {
       }
     }
 
+    const gatewayPaymentData = this.paymentService.preparePaymentGatewayRequest(
+      dto.paymentMethod,
+      {
+        ...(dto.paymentData ?? {}),
+        email: dto.email,
+      },
+    );
     const paymentData = this.paymentService.preparePaymentRequest(dto.paymentMethod, {
       ...(dto.paymentData ?? {}),
       email: dto.email,
@@ -379,10 +394,11 @@ export class CustomOrdersPaymentsService {
     const gatewayResult = await this.paymentService.initializeGatewayForAttempt(
       dto.paymentMethod,
       reference,
-      paymentData,
+      gatewayPaymentData,
       amount,
       intent.currency,
       callbackUrl,
+      { buyerId: userId },
     );
 
     const createdAttempt = await this.prisma.$transaction(async (tx) => {
@@ -482,6 +498,7 @@ export class CustomOrdersPaymentsService {
             firstName: true,
             lastName: true,
             username: true,
+            email: true,
           },
         },
       },
@@ -774,12 +791,27 @@ export class CustomOrdersPaymentsService {
     const updatedAttempt = transitionResult.attempt;
 
     if (transitionResult.transitionedToPaid) {
+      const buyerDisplayName = [order.buyer?.firstName, order.buyer?.lastName]
+        .map((value) => String(value ?? '').trim())
+        .filter(Boolean)
+        .join(' ');
+      const buyerName = buyerDisplayName || String(order.buyer?.username || 'Buyer');
+
       await this.sideEffects.enqueueNotification({
         customOrderId,
         recipientIds: [order.buyerId],
         notificationType: 'CUSTOM_ORDER_PAYMENT_RECEIVED' as NotificationType,
         payload: {
           customOrderId,
+          sourceTitle: order.sourceTitleSnapshot || 'Untitled custom order',
+          sourceBrandName: order.sourceBrandNameSnapshot || 'the brand',
+          orderAmount: lockedAmount,
+          currency: order.currency,
+          buyerDisplayName: buyerDisplayName || undefined,
+          buyerFirstName: order.buyer?.firstName || undefined,
+          buyerLastName: order.buyer?.lastName || undefined,
+          buyerUsername: order.buyer?.username || undefined,
+          buyerEmail: order.buyer?.email || undefined,
           targetUrl: `/custom-orders/${customOrderId}`,
           message: `Payment received and ${order.sourceBrandNameSnapshot || 'the brand'} has been auto-confirmed for your custom order.`,
         },
@@ -787,10 +819,6 @@ export class CustomOrdersPaymentsService {
       });
 
       if (brand?.ownerId) {
-        const buyerDisplayName = [order.buyer?.firstName, order.buyer?.lastName]
-          .map((value) => String(value ?? '').trim())
-          .filter(Boolean)
-          .join(' ');
         await this.customOrderThreadBootstrap.ensureOrderPlacedThread({
           customOrderId,
           status: CustomOrderStatus.ACCEPTED,
@@ -798,7 +826,7 @@ export class CustomOrdersPaymentsService {
           buyerId: order.buyerId,
           brandOwnerUserId: brand.ownerId,
           actorId: order.buyerId,
-          buyerDisplayName: buyerDisplayName || String(order.buyer?.username || 'Buyer'),
+          buyerDisplayName: buyerName,
           sourceTitle: order.sourceTitleSnapshot || 'Untitled custom order',
         });
         await this.sideEffects.enqueueNotification({
@@ -807,7 +835,17 @@ export class CustomOrdersPaymentsService {
           notificationType: 'CUSTOM_ORDER_REVIEW_REQUIRED' as NotificationType,
           payload: {
             customOrderId,
+            sourceTitle: order.sourceTitleSnapshot || 'Untitled custom order',
             brandName: order.sourceBrandNameSnapshot,
+            sourceBrandName: order.sourceBrandNameSnapshot || 'the brand',
+            buyerName,
+            buyerDisplayName: buyerDisplayName || undefined,
+            buyerFirstName: order.buyer?.firstName || undefined,
+            buyerLastName: order.buyer?.lastName || undefined,
+            buyerUsername: order.buyer?.username || undefined,
+            buyerEmail: order.buyer?.email || undefined,
+            orderAmount: lockedAmount,
+            currency: order.currency,
             targetUrl: `/studio/custom-orders/${customOrderId}`,
             message: `Payment confirmed for ${customOrderId.slice(0, 8)}. The order was auto-accepted and is ready for production updates.`,
           },
@@ -1196,6 +1234,7 @@ export class CustomOrdersPaymentsService {
               firstName: true,
               lastName: true,
               username: true,
+              email: true,
             },
           },
         },
@@ -1436,6 +1475,19 @@ export class CustomOrdersPaymentsService {
       notificationType: 'CUSTOM_ORDER_PAYMENT_RECEIVED' as NotificationType,
       payload: {
         customOrderId: reconciliation.customOrderId,
+        sourceTitle: reconciliation.sourceTitle,
+        sourceBrandName: reconciliation.sourceBrandName,
+        orderAmount: reconciliation.amount,
+        currency: reconciliation.currency,
+        buyerDisplayName:
+          [reconciliation.buyer?.firstName, reconciliation.buyer?.lastName]
+            .map((value) => String(value ?? '').trim())
+            .filter(Boolean)
+            .join(' ') || undefined,
+        buyerFirstName: reconciliation.buyer?.firstName || undefined,
+        buyerLastName: reconciliation.buyer?.lastName || undefined,
+        buyerUsername: reconciliation.buyer?.username || undefined,
+        buyerEmail: reconciliation.buyer?.email || undefined,
         targetUrl: `/custom-orders/${reconciliation.customOrderId}`,
         message: `Payment received and ${reconciliation.sourceBrandName} has been auto-confirmed for your custom order.`,
       },
@@ -1468,6 +1520,17 @@ export class CustomOrdersPaymentsService {
         payload: {
           customOrderId: reconciliation.customOrderId,
           brandName: reconciliation.sourceBrandName,
+          sourceTitle: reconciliation.sourceTitle,
+          sourceBrandName: reconciliation.sourceBrandName,
+          buyerName:
+            buyerDisplayName || String(reconciliation.buyer?.username || 'Buyer'),
+          buyerDisplayName: buyerDisplayName || undefined,
+          buyerFirstName: reconciliation.buyer?.firstName || undefined,
+          buyerLastName: reconciliation.buyer?.lastName || undefined,
+          buyerUsername: reconciliation.buyer?.username || undefined,
+          buyerEmail: reconciliation.buyer?.email || undefined,
+          orderAmount: reconciliation.amount,
+          currency: reconciliation.currency,
           targetUrl: `/studio/custom-orders/${reconciliation.customOrderId}`,
           message: `Payment confirmed for ${reconciliation.customOrderId.slice(0, 8)}. The order was auto-accepted and is ready for production updates.`,
         },
@@ -1532,7 +1595,7 @@ export class CustomOrdersPaymentsService {
 
   private buildPaymentReturnPath(reference: string, gateway: string) {
     const safeGateway = String(gateway || 'PAYSTACK').trim() || 'PAYSTACK';
-    return `/checkout/payment-return?reference=${encodeURIComponent(reference)}&gateway=${encodeURIComponent(safeGateway)}`;
+    return `/bag/payment-return?reference=${encodeURIComponent(reference)}&gateway=${encodeURIComponent(safeGateway)}`;
   }
 
   private async recordCheckoutSessionPaymentInitiated(

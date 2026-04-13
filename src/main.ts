@@ -27,7 +27,8 @@ import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { requestLoggerMiddleware } from './common/middleware/request-logger.middleware';
 import { InputSanitizationPipe } from './common/pipes/input-sanitization.pipe';
 import * as express from 'express';
-import { join } from 'path';
+import { existsSync, readFileSync } from 'fs';
+import { join, resolve } from 'path';
 
 const DEFAULT_BODY_LIMIT = '10mb';
 const DEFAULT_PORT = 3040;
@@ -73,6 +74,39 @@ const parsePort = (value: string | undefined) => {
     throw new Error(`APP_PORT must be a positive number. Received "${value}".`);
   }
   return parsed;
+};
+
+const resolveOptionalHttpsOptions = (
+  env: NodeJS.ProcessEnv = process.env,
+): { key: Buffer; cert: Buffer } | undefined => {
+  const certPath = String(env.APP_HTTPS_CERT_PATH ?? '').trim();
+  const keyPath = String(env.APP_HTTPS_KEY_PATH ?? '').trim();
+
+  if (!certPath && !keyPath) {
+    return undefined;
+  }
+
+  if (!certPath || !keyPath) {
+    throw new Error(
+      'APP_HTTPS_CERT_PATH and APP_HTTPS_KEY_PATH must both be set to enable HTTPS.',
+    );
+  }
+
+  const resolvedCertPath = resolve(process.cwd(), certPath);
+  const resolvedKeyPath = resolve(process.cwd(), keyPath);
+
+  if (!existsSync(resolvedCertPath)) {
+    throw new Error(`APP_HTTPS_CERT_PATH file was not found at ${resolvedCertPath}.`);
+  }
+
+  if (!existsSync(resolvedKeyPath)) {
+    throw new Error(`APP_HTTPS_KEY_PATH file was not found at ${resolvedKeyPath}.`);
+  }
+
+  return {
+    cert: readFileSync(resolvedCertPath),
+    key: readFileSync(resolvedKeyPath),
+  };
 };
 
 const applyTrustProxy = (
@@ -166,7 +200,11 @@ async function bootstrap() {
   const logger = new Logger('Bootstrap');
 
   try {
-    const app = await NestFactory.create(AppModule);
+    const httpsOptions = resolveOptionalHttpsOptions();
+    const app = await NestFactory.create(
+      AppModule,
+      httpsOptions ? { httpsOptions } : undefined,
+    );
     const configService = app.get(ConfigService);
     applyTrustProxy(app, configService.get<string>('TRUST_PROXY', 'false'));
 
@@ -405,9 +443,10 @@ async function bootstrap() {
 
     const port = parsePort(configService.get<string>('APP_PORT'));
     const host = configService.get<string>('APP_HOST', DEFAULT_HOST);
+    const protocol = httpsOptions ? 'https' : 'http';
 
     await app.listen(port, host);
-    logger.log(`Application is running on: http://${host}:${port}`);
+    logger.log(`Application is running on: ${protocol}://${host}:${port}`);
 
     // Seed system config defaults (idempotent) without holding server startup.
     void (async () => {

@@ -30,6 +30,7 @@ import {
   PaymentInitResult,
   PaymentAttemptSummary,
   PaymentNextAction,
+  SavedPaymentCardSummary,
   PaymentVerifyResult,
   SimulatePaymentAttemptDto,
   VerifyPaymentDto,
@@ -38,6 +39,7 @@ import {
   describePaystackSecretEnvKeys,
   resolvePaystackSecret as resolvePaystackSecretFromEnv,
 } from 'src/common/utils/paystack-secret';
+import { resolveWebAppBaseUrl } from 'src/common/utils/web-app-url';
 
 type PaymentAttemptRecord = Awaited<ReturnType<PrismaService['paymentAttempt']['findUnique']>>;
 
@@ -66,6 +68,23 @@ type ResolvedAttemptVerification = {
   providerAccessCode?: string | null;
   providerChannel?: string | null;
 };
+
+type ExtractedPaystackCard = {
+  brand: string | null;
+  bank: string | null;
+  last4: string;
+  expMonth: string | null;
+  expYear: string | null;
+  reusable: boolean;
+  authorizationCode: string | null;
+  identityKey: string;
+};
+
+type PaymentGatewayContext = {
+  buyerId?: string | null;
+};
+
+type PaystackCardholderNameMatchMode = 'strict' | 'soft' | 'off';
 
 interface GatewayInitializationResult {
   gateway: string;
@@ -157,7 +176,14 @@ export class PaymentService {
       throw new BadRequestException('One or more selected orders can no longer be paid');
     }
 
-    const paymentData = this.validatePaymentRequest(dto.paymentMethod, dto.paymentData);
+    const gatewayPaymentData = this.preparePaymentGatewayRequest(
+      dto.paymentMethod,
+      dto.paymentData,
+    );
+    const paymentData = this.sanitizePaymentDataForStorage(
+      dto.paymentMethod,
+      gatewayPaymentData,
+    );
     const amount = orders.reduce(
       (sum, order) => sum + Number(order.totalAmount ?? 0),
       0,
@@ -233,10 +259,11 @@ export class PaymentService {
     const gatewayResult = await this.initializeGateway(
       dto.paymentMethod,
       reference,
-      paymentData,
+      gatewayPaymentData,
       amount,
       currency,
       callbackBaseUrl,
+      { buyerId: userId },
     );
 
     const attempt = await this.prisma.$transaction(async (tx) => {
@@ -331,6 +358,123 @@ export class PaymentService {
     return this.getPaymentAttemptByReference(order.paymentReference, userId);
   }
 
+  async listSavedPaymentCards(userId: string): Promise<SavedPaymentCardSummary[]> {
+    const attempts = await this.prisma.paymentAttempt.findMany({
+      where: {
+        buyerId: userId,
+        provider: 'PAYSTACK',
+        status: 'PAID',
+      },
+      select: {
+        id: true,
+        reference: true,
+        channel: true,
+        providerChannel: true,
+        requestSnapshot: true,
+        responseSnapshot: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+      orderBy: { updatedAt: 'desc' },
+      take: 120,
+    });
+
+    if (attempts.length === 0) {
+      return [];
+    }
+
+    const attemptIds = attempts.map((attempt) => attempt.id);
+    const events = await this.prisma.paymentEvent.findMany({
+      where: {
+        paymentAttemptId: { in: attemptIds },
+        source: 'webhook',
+      },
+      select: {
+        paymentAttemptId: true,
+        payload: true,
+        createdAt: true,
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 400,
+    });
+
+    const webhookPayloadByAttemptId = new Map<string, Record<string, any>>();
+    for (const event of events) {
+      if (webhookPayloadByAttemptId.has(event.paymentAttemptId)) {
+        continue;
+      }
+      const payload = this.asObject(event.payload);
+      if (payload) {
+        webhookPayloadByAttemptId.set(event.paymentAttemptId, payload);
+      }
+    }
+
+    const summariesByIdentity = new Map<string, SavedPaymentCardSummary>();
+    for (const attempt of attempts) {
+      const requestSnapshot = this.asObject(attempt.requestSnapshot);
+      const responseSnapshot = this.asObject(attempt.responseSnapshot);
+      if (requestSnapshot?.saveNewCard === false) {
+        continue;
+      }
+      const channelCandidates = [
+        attempt.channel,
+        attempt.providerChannel,
+        responseSnapshot?.providerVerificationChannel,
+        responseSnapshot?.providerWebhookChannel,
+        requestSnapshot?.channel,
+      ];
+      const isCardAttempt = channelCandidates.some(
+        (value) => String(value ?? '').trim().toUpperCase() === 'CARD',
+      );
+      if (!isCardAttempt) {
+        continue;
+      }
+
+      const extracted = this.extractSavedPaystackCard(
+        responseSnapshot,
+        webhookPayloadByAttemptId.get(attempt.id) ?? null,
+      );
+      if (!extracted) {
+        continue;
+      }
+
+      const existing = summariesByIdentity.get(extracted.identityKey);
+      const addedAt = attempt.createdAt.toISOString();
+      const lastUsedAt = attempt.updatedAt.toISOString();
+
+      if (!existing) {
+        summariesByIdentity.set(extracted.identityKey, {
+          id: `paystack-${attempt.id}`,
+          gateway: 'PAYSTACK',
+          brand: extracted.brand,
+          bank: extracted.bank,
+          last4: extracted.last4,
+          expMonth: extracted.expMonth,
+          expYear: extracted.expYear,
+          reusable: extracted.reusable,
+          addedAt,
+          lastUsedAt,
+        });
+        continue;
+      }
+
+      summariesByIdentity.set(extracted.identityKey, {
+        ...existing,
+        brand: existing.brand || extracted.brand,
+        bank: existing.bank || extracted.bank,
+        expMonth: existing.expMonth || extracted.expMonth,
+        expYear: existing.expYear || extracted.expYear,
+        reusable: existing.reusable || extracted.reusable,
+        addedAt: existing.addedAt < addedAt ? existing.addedAt : addedAt,
+        lastUsedAt: existing.lastUsedAt > lastUsedAt ? existing.lastUsedAt : lastUsedAt,
+      });
+    }
+
+    return Array.from(summariesByIdentity.values()).sort((a, b) =>
+      a.lastUsedAt < b.lastUsedAt ? 1 : -1,
+    );
+  }
+
   async verifyPayment(
     dto: VerifyPaymentDto,
     userId: string,
@@ -409,6 +553,16 @@ export class PaymentService {
     paymentMethod: PaymentMethod,
     paymentData?: Record<string, any>,
   ) {
+    return this.sanitizePaymentDataForStorage(
+      paymentMethod,
+      this.validatePaymentRequest(paymentMethod, paymentData),
+    );
+  }
+
+  preparePaymentGatewayRequest(
+    paymentMethod: PaymentMethod,
+    paymentData?: Record<string, any>,
+  ) {
     return this.validatePaymentRequest(paymentMethod, paymentData);
   }
 
@@ -423,6 +577,7 @@ export class PaymentService {
     amount: number,
     currency: string,
     callbackBaseUrl: string,
+    context?: PaymentGatewayContext,
   ) {
     return this.initializeGateway(
       paymentMethod,
@@ -431,6 +586,7 @@ export class PaymentService {
       amount,
       currency,
       callbackBaseUrl,
+      context,
     );
   }
 
@@ -480,6 +636,7 @@ export class PaymentService {
           recoveryMessage: awaitingProviderConfirmation
             ? 'Payment is still awaiting provider callback or settlement confirmation.'
             : null,
+          providerVerificationAuthorization: verification.authorization,
         },
         providerReference: verification.reference,
         providerTransactionId: verification.transactionId,
@@ -704,6 +861,10 @@ export class PaymentService {
       return;
     }
 
+    const webhookAuthorization = this.extractPaystackAuthorizationSnapshot(
+      this.asObject(payload?.data)?.authorization ?? payload?.authorization,
+    );
+
     await this.applyAttemptStatus(reference, attempt.buyerId ?? '', nextStatus, 'webhook', {
       eventPayload: payload,
       responseSnapshotPatch: {
@@ -715,6 +876,9 @@ export class PaymentService {
         providerWebhookCurrency: payloadCurrency,
         providerWebhookEvent: this.extractWebhookEvent(normalizedGateway, payload),
         providerWebhookVerified: true,
+        ...(webhookAuthorization
+          ? { providerWebhookAuthorization: webhookAuthorization }
+          : {}),
       },
       providerReference: this.extractWebhookReference(normalizedGateway, payload),
       providerTransactionId: this.extractWebhookTransactionId(normalizedGateway, payload),
@@ -731,10 +895,18 @@ export class PaymentService {
     amount: number,
     currency: string,
     callbackBaseUrl: string,
+    context?: PaymentGatewayContext,
   ): Promise<GatewayInitializationResult> {
     switch (paymentMethod) {
       case PaymentMethod.PAYSTACK:
-        return this.initPaystack(reference, paymentData, amount, currency, callbackBaseUrl);
+        return this.initPaystack(
+          reference,
+          paymentData,
+          amount,
+          currency,
+          callbackBaseUrl,
+          context,
+        );
       case PaymentMethod.FLUTTERWAVE:
         return this.initFlutterwave(reference, paymentData, amount, currency, callbackBaseUrl);
       case PaymentMethod.BANK_TRANSFER:
@@ -752,42 +924,38 @@ export class PaymentService {
     amount: number,
     currency: string,
     callbackBaseUrl: string,
+    context?: PaymentGatewayContext,
   ): Promise<GatewayInitializationResult> {
     const channel = (paymentData.channel as PaymentChannel | undefined) ?? 'CARD';
-    const mockReturnStatus = this.resolveMockReturnStatus(paymentData);
     if (this.isMockMode()) {
-      return {
-        gateway: 'PAYSTACK',
-        status: 'REQUIRES_ACTION',
-        channel,
-        callbackUrl: callbackBaseUrl,
-        authorizationUrl: this.buildMockReturnUrl(callbackBaseUrl, reference, 'PAYSTACK', mockReturnStatus),
-        nextAction: {
-          type: 'REDIRECT',
-          title:
-            channel === 'BANK_TRANSFER'
-              ? 'Continue to Paystack transfer checkout'
-              : 'Continue to Paystack checkout',
-          description:
-            channel === 'BANK_TRANSFER'
-              ? 'Transfer instructions will be collected on the hosted Paystack checkout flow.'
-              : 'Card details will be collected on the hosted checkout flow.',
-          ctaLabel: 'Continue to Paystack',
-          instructions: [
-            `Use ${paymentData.email} as the payer email if prompted.`,
-            'In mock mode, the return status is simulated through the payment-return route.',
-            'The order is not treated as paid until verification confirms success.',
-          ],
-        },
-        responseSnapshot: {
-          mockReturnStatus,
-          providerChannel: channel,
-        },
-      };
+      throw new BadRequestException(
+        'Internal Paystack mock behavior is disabled. Use Paystack test keys so checkout behaves the same way across environments.',
+      );
     }
 
     if (currency !== 'NGN') {
       throw new BadRequestException('Paystack is only enabled for NGN payments in this phase');
+    }
+
+    if (channel === 'CARD' && paymentData.useSavedCard && paymentData.savedCardId) {
+      return this.chargePaystackSavedAuthorization(
+        reference,
+        paymentData,
+        amount,
+        currency,
+        callbackBaseUrl,
+        context,
+      );
+    }
+
+    if (channel === 'CARD' && this.hasRawPaystackCardDetails(paymentData)) {
+      return this.chargePaystackNewCard(
+        reference,
+        paymentData,
+        amount,
+        currency,
+        callbackBaseUrl,
+      );
     }
 
     const secret = this.getRequiredPaystackSecret('live payment processing');
@@ -820,6 +988,14 @@ export class PaymentService {
       );
     }
 
+    const providerAccessCode =
+      String(payload.data.access_code || '').trim() || undefined;
+    if (!providerAccessCode) {
+      throw new BadRequestException(
+        'Paystack did not return an inline access code. Threadly only supports in-app secure checkout and will not route buyers out of the product.',
+      );
+    }
+
     return {
       gateway: 'PAYSTACK',
       status: 'REQUIRES_ACTION',
@@ -827,22 +1003,26 @@ export class PaymentService {
       callbackUrl: callbackBaseUrl,
       authorizationUrl: String(payload.data.authorization_url || '').trim() || undefined,
       providerReference: String(payload.data.reference || reference),
-      providerAccessCode: String(payload.data.access_code || '').trim() || undefined,
+      providerAccessCode,
       providerChannel: channel,
       nextAction: {
-        type: 'REDIRECT',
+        type: 'INLINE_POPUP',
         title:
           channel === 'BANK_TRANSFER'
-            ? 'Continue to Paystack transfer checkout'
-            : 'Continue to Paystack checkout',
+            ? 'Open secure transfer instructions'
+            : 'Open secure card checkout',
         description:
           channel === 'BANK_TRANSFER'
-            ? 'Paystack will display the bank-transfer instructions on the hosted checkout page.'
-            : 'Card details will be collected on Paystack’s hosted checkout flow.',
-        ctaLabel: 'Continue to Paystack',
+            ? 'Paystack will show the transfer account details inside Threadly\'s secure checkout window.'
+            : 'Card details and any issuer verification steps stay inside Threadly\'s secure checkout window.',
+        ctaLabel:
+          channel === 'BANK_TRANSFER'
+            ? 'Open transfer instructions'
+            : 'Open secure checkout',
         instructions: [
-          `Use ${paymentData.email} as the payer email if prompted.`,
-          'Threadly will verify the payment after Paystack redirects you back.',
+          `Use ${paymentData.email} as the payer email if prompted by Paystack.`,
+          'Complete the authorization inside the secure payment window that opens over Threadly.',
+          'Threadly verifies the transaction by reference before the order is treated as paid.',
           'The order is not treated as paid until provider verification confirms success.',
         ],
       },
@@ -851,6 +1031,167 @@ export class PaymentService {
         providerStatus: 'INITIALIZED',
         providerMessage: payload?.message ?? null,
         providerChannel: channel,
+      },
+    };
+  }
+
+  private async chargePaystackNewCard(
+    reference: string,
+    paymentData: Record<string, any>,
+    amount: number,
+    currency: string,
+    callbackBaseUrl: string,
+  ): Promise<GatewayInitializationResult> {
+    const draft = this.getNormalizedPaystackCardDraft(paymentData);
+
+    return this.executePaystackCharge(reference, paymentData, amount, currency, callbackBaseUrl, {
+      card: {
+        cvv: draft.cvv,
+        expiry_month: draft.expiryMonth,
+        expiry_year: draft.expiryYear,
+        number: draft.cardNumber,
+      },
+      use_hosted_url: true,
+    });
+  }
+
+  private async chargePaystackSavedAuthorization(
+    reference: string,
+    paymentData: Record<string, any>,
+    amount: number,
+    currency: string,
+    callbackBaseUrl: string,
+    context?: PaymentGatewayContext,
+  ): Promise<GatewayInitializationResult> {
+    const buyerId = String(context?.buyerId ?? '').trim();
+    if (!buyerId) {
+      throw new BadRequestException(
+        'A buyer context is required before Threadly can charge a saved Paystack card.',
+      );
+    }
+
+    const savedCardId = String(paymentData.savedCardId ?? '').trim();
+    const authorizationCode = await this.resolveSavedPaystackAuthorizationCode(
+      buyerId,
+      savedCardId,
+    );
+
+    return this.executePaystackCharge(reference, paymentData, amount, currency, callbackBaseUrl, {
+      authorization_code: authorizationCode,
+    });
+  }
+
+  private async executePaystackCharge(
+    reference: string,
+    paymentData: Record<string, any>,
+    amount: number,
+    currency: string,
+    callbackBaseUrl: string,
+    extraPayload: Record<string, any>,
+  ): Promise<GatewayInitializationResult> {
+    const secret = this.getRequiredPaystackSecret('live payment processing');
+    const response = await fetch('https://api.paystack.co/charge', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${secret}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        email: paymentData.email,
+        amount: Math.round(this.roundMoney(amount) * 100),
+        currency,
+        reference,
+        callback_url: callbackBaseUrl,
+        metadata: {
+          threadlyReference: reference,
+          threadlyChannel: 'CARD',
+          payerPhone: paymentData.phone,
+          source: 'threadly-checkout',
+          saveNewCard: Boolean(paymentData.saveNewCard ?? true),
+        },
+        ...extraPayload,
+      }),
+    });
+
+    const payload = await this.parseJsonResponse(response);
+    const data = this.asObject(payload?.data);
+
+    if (!response.ok || payload?.status === false || !data) {
+      throw new BadRequestException(
+        String(payload?.message || 'Unable to initialize Paystack card charge'),
+      );
+    }
+
+    const providerReference =
+      String(data.reference ?? reference).trim() || reference;
+    const rawStatus = String(data.status ?? '').trim().toLowerCase();
+    const authorizationUrl =
+      String(data.url ?? data.authorization_url ?? '').trim() || undefined;
+    const providerMessage =
+      String(data.display_text ?? data.gateway_response ?? payload?.message ?? '')
+        .trim() || null;
+
+    if (authorizationUrl) {
+      return {
+        gateway: 'PAYSTACK',
+        status: 'REQUIRES_ACTION',
+        channel: 'CARD',
+        callbackUrl: callbackBaseUrl,
+        authorizationUrl,
+        providerReference,
+        providerChannel: 'CARD',
+        nextAction: {
+          type: 'INLINE_POPUP',
+          title: 'Complete secure card verification',
+          description:
+            'Threadly validated the card details. Complete the remaining issuer verification in the secure payment window.',
+          ctaLabel: 'Open secure verification',
+          instructions: [
+            `Use ${paymentData.email} as the payer email if prompted by Paystack.`,
+            'Complete the card challenge in the secure payment window and Threadly will resume automatically.',
+            'The order is not treated as paid until provider verification confirms success.',
+          ],
+        },
+        responseSnapshot: {
+          initializedAt: new Date().toISOString(),
+          providerStatus: rawStatus || 'OPEN_URL',
+          providerMessage,
+          providerChannel: 'CARD',
+        },
+      };
+    }
+
+    const mappedStatus =
+      rawStatus === 'success'
+        ? 'PROCESSING'
+        : rawStatus === 'failed' || rawStatus === 'error'
+          ? 'FAILED'
+          : 'PROCESSING';
+
+    return {
+      gateway: 'PAYSTACK',
+      status: mappedStatus,
+      channel: 'CARD',
+      callbackUrl: callbackBaseUrl,
+      providerReference,
+      providerChannel: 'CARD',
+      nextAction:
+        mappedStatus === 'FAILED'
+          ? undefined
+          : {
+              type: 'PENDING_CONFIRMATION',
+              title: 'Confirming payment',
+              description:
+                'Threadly is waiting for Paystack to confirm the card charge.',
+              instructions: [
+                'Keep this window open while Threadly verifies the payment reference.',
+              ],
+            },
+      responseSnapshot: {
+        initializedAt: new Date().toISOString(),
+        providerStatus: rawStatus || 'PROCESSING',
+        providerMessage,
+        providerChannel: 'CARD',
       },
     };
   }
@@ -1089,6 +1430,7 @@ export class PaymentService {
           settlementAmount: Number(attempt.settlementAmount ?? attempt.amount ?? grandTotal),
           exchangeRateSnapshotId: attempt.exchangeRateSnapshotId ?? undefined,
           channel: (attempt.channel as PaymentChannel | null) ?? undefined,
+          providerAccessCode: attempt.providerAccessCode ?? undefined,
           authorizationUrl: attempt.authorizationUrl ?? undefined,
           callbackUrl: attempt.callbackUrl ?? undefined,
           bankAccount: this.asObject(attempt.bankAccount) as PaymentInitResult['bankAccount'],
@@ -1165,6 +1507,7 @@ export class PaymentService {
         settlementAmount: Number(attempt.settlementAmount ?? attempt.amount ?? grandTotal),
         exchangeRateSnapshotId: attempt.exchangeRateSnapshotId ?? undefined,
         channel: (attempt.channel as PaymentChannel | null) ?? undefined,
+        providerAccessCode: attempt.providerAccessCode ?? undefined,
         authorizationUrl: attempt.authorizationUrl ?? undefined,
         callbackUrl: attempt.callbackUrl ?? undefined,
         bankAccount: this.asObject(attempt.bankAccount) as PaymentInitResult['bankAccount'],
@@ -1224,6 +1567,7 @@ export class PaymentService {
       ),
       exchangeRateSnapshotId: attempt.exchangeRateSnapshotId ?? undefined,
       channel: (attempt.channel as PaymentChannel | null) ?? undefined,
+      providerAccessCode: attempt.providerAccessCode ?? undefined,
       authorizationUrl: attempt.authorizationUrl ?? undefined,
       callbackUrl: attempt.callbackUrl ?? undefined,
       bankAccount: this.asObject(attempt.bankAccount) as PaymentInitResult['bankAccount'],
@@ -1411,6 +1755,7 @@ export class PaymentService {
       exchangeRateSnapshotId: attempt.exchangeRateSnapshotId ?? undefined,
       channel: (attempt.channel as PaymentChannel | null) ?? undefined,
       callbackUrl: attempt.callbackUrl ?? undefined,
+      providerAccessCode: attempt.providerAccessCode ?? undefined,
       authorizationUrl: attempt.authorizationUrl ?? undefined,
       bankAccount: this.asObject(attempt.bankAccount) as PaymentInitResult['bankAccount'],
       nextAction: this.asObject(attempt.nextAction) as PaymentNextAction | undefined,
@@ -1641,6 +1986,37 @@ export class PaymentService {
           'Paystack requires a supported hosted checkout channel',
         );
       }
+
+      if (
+        String(paymentData.channel || '').toUpperCase() === 'CARD' &&
+        paymentData.useSavedCard
+      ) {
+        if (!String(paymentData.savedCardId ?? '').trim()) {
+          throw new BadRequestException('Select a saved card or switch to a new card');
+        }
+        return paymentData;
+      }
+
+      if (this.hasRawPaystackCardDetails(paymentData)) {
+        if (!this.isPaystackCustomCardEntryEnabled()) {
+          throw new BadRequestException(
+            'Do not send raw card details to Threadly. Enter card number, CVV, PIN, and OTP on the hosted secure checkout screen.',
+          );
+        }
+
+        this.validatePaystackCardDraft(paymentData);
+        return paymentData;
+      }
+
+      if (
+        String(paymentData.channel || '').toUpperCase() === 'CARD' &&
+        !paymentData.useSavedCard &&
+        this.isPaystackCustomCardEntryEnabled()
+      ) {
+        throw new BadRequestException(
+          'Enter the new card details on the payment step or choose a saved card before continuing.',
+        );
+      }
       return paymentData;
     }
 
@@ -1759,7 +2135,7 @@ export class PaymentService {
     // The callback URL is always resolved from the server environment only.
     return (
       process.env.FRONTEND_PUBLIC_CHECKOUT_CALLBACK_URL?.trim() ||
-      'http://localhost:5173/checkout/payment-return'
+      `${resolveWebAppBaseUrl()}/bag/payment-return`
     );
   }
 
@@ -2156,6 +2532,389 @@ export class PaymentService {
     return secret;
   }
 
+  private isPaystackCustomCardEntryEnabled(): boolean {
+    return (
+      String(process.env.PAYSTACK_CUSTOM_CARD_ENTRY_ENABLED ?? 'true')
+        .trim()
+        .toLowerCase() !== 'false'
+    );
+  }
+
+  private resolvePaystackCardholderNameMatchMode(): PaystackCardholderNameMatchMode {
+    const configured = String(
+      process.env.PAYSTACK_CARDHOLDER_NAME_MATCH_MODE ?? '',
+    )
+      .trim()
+      .toLowerCase();
+
+    if (configured === 'strict' || configured === 'soft' || configured === 'off') {
+      return configured;
+    }
+
+    const envMarker = String(
+      process.env.APP_ENV ?? process.env.DEPLOY_ENV ?? process.env.NODE_ENV ?? '',
+    )
+      .trim()
+      .toLowerCase();
+
+    return ['development', 'dev', 'test', 'qa', 'uat', 'local'].includes(envMarker)
+      ? 'soft'
+      : 'strict';
+  }
+
+  private sanitizePaymentDataForStorage(
+    paymentMethod: PaymentMethod,
+    paymentData: Record<string, any>,
+  ): Record<string, any> {
+    if (paymentMethod !== PaymentMethod.PAYSTACK) {
+      return paymentData;
+    }
+
+    const next = { ...paymentData };
+    delete next.cardNumber;
+    delete next.cvv;
+    delete next.expiry;
+    delete next.cardHolderName;
+    delete next.pin;
+    delete next.otp;
+    delete next.phoneOtp;
+    delete next.pan;
+    delete next.cvc;
+
+    if (this.hasRawPaystackCardDetails(paymentData)) {
+      const draft = this.getNormalizedPaystackCardDraft(paymentData);
+      next.newCardDraft = {
+        cardHolderName: draft.cardHolderName,
+        expiry: `${draft.expiryMonth}/${draft.expiryYear}`,
+        last4: draft.last4,
+        maskedCardNumber: draft.maskedCardNumber,
+      };
+    } else {
+      next.newCardDraft = null;
+    }
+
+    next.saveNewCard = Boolean(paymentData.saveNewCard ?? true);
+    return next;
+  }
+
+  private normalizeNameTokens(value: string): string[] {
+    return String(value ?? '')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/gi, ' ')
+      .split(' ')
+      .map((token) => token.trim())
+      .filter(Boolean)
+      .sort();
+  }
+
+  private namesMatch(left: string, right: string): boolean {
+    const leftTokens = this.normalizeNameTokens(left);
+    const rightTokens = this.normalizeNameTokens(right);
+    if (leftTokens.length === 0 || rightTokens.length === 0) {
+      return true;
+    }
+    if (leftTokens.length !== rightTokens.length) {
+      return false;
+    }
+    return leftTokens.every((token, index) => token === rightTokens[index]);
+  }
+
+  private isLuhnValid(value: string): boolean {
+    const digits = String(value ?? '').replace(/\D/g, '');
+    if (digits.length < 12) {
+      return false;
+    }
+
+    let sum = 0;
+    let shouldDouble = false;
+    for (let index = digits.length - 1; index >= 0; index -= 1) {
+      let digit = Number(digits[index]);
+      if (shouldDouble) {
+        digit *= 2;
+        if (digit > 9) {
+          digit -= 9;
+        }
+      }
+      sum += digit;
+      shouldDouble = !shouldDouble;
+    }
+
+    return sum % 10 === 0;
+  }
+
+  private getNormalizedPaystackCardDraft(paymentData: Record<string, any>) {
+    const draft = this.asObject(paymentData.newCardDraft) ?? {};
+    const cardNumber = String(draft.cardNumber ?? paymentData.cardNumber ?? '')
+      .replace(/\D/g, '')
+      .trim();
+    const cvv = String(draft.cvv ?? paymentData.cvv ?? '')
+      .replace(/\D/g, '')
+      .trim();
+    const expiry = String(draft.expiry ?? paymentData.expiry ?? '').trim();
+    const expiryMatch = expiry.match(/^(\d{2})\/(\d{2})$/);
+    const expiryMonth = expiryMatch?.[1] ?? '';
+    const expiryYear = expiryMatch?.[2] ?? '';
+    const last4 = cardNumber.length >= 4 ? cardNumber.slice(-4) : '';
+    const maskedCardNumber =
+      cardNumber.length >= 4
+        ? `${'*'.repeat(Math.max(cardNumber.length - 4, 6))}${last4}`
+        : '';
+
+    return {
+      cardHolderName: String(
+        draft.cardHolderName ?? paymentData.cardHolderName ?? '',
+      ).trim(),
+      cardNumber,
+      cvv,
+      expiry,
+      expiryMonth,
+      expiryYear,
+      last4,
+      maskedCardNumber,
+    };
+  }
+
+  private validatePaystackCardDraft(paymentData: Record<string, any>) {
+    const draft = this.getNormalizedPaystackCardDraft(paymentData);
+
+    if (!draft.cardHolderName) {
+      throw new BadRequestException('Card holder name is required');
+    }
+
+    if (
+      draft.cardNumber.length < 12 ||
+      draft.cardNumber.length > 19 ||
+      !this.isLuhnValid(draft.cardNumber)
+    ) {
+      throw new BadRequestException('Enter a valid card number');
+    }
+
+    if (!draft.expiryMonth || !draft.expiryYear) {
+      throw new BadRequestException('Expiry must be in MM/YY format');
+    }
+
+    const expiryMonth = Number(draft.expiryMonth);
+    const expiryYear = Number(draft.expiryYear);
+    if (expiryMonth < 1 || expiryMonth > 12) {
+      throw new BadRequestException('Enter a valid expiry month');
+    }
+
+    const expiryDate = new Date(2000 + expiryYear, expiryMonth, 0, 23, 59, 59, 999);
+    if (Number.isNaN(expiryDate.getTime()) || expiryDate.getTime() < Date.now()) {
+      throw new BadRequestException('Card expiry date has passed');
+    }
+
+    if (draft.cvv.length < 3 || draft.cvv.length > 4) {
+      throw new BadRequestException('CVV must be 3 or 4 digits');
+    }
+
+    if (this.resolvePaystackCardholderNameMatchMode() === 'strict') {
+      const billingAddress = this.asObject(paymentData.billingAddress);
+      const billingName = `${String(billingAddress?.firstName ?? '').trim()} ${String(
+        billingAddress?.lastName ?? '',
+      ).trim()}`.trim();
+      if (billingName && !this.namesMatch(draft.cardHolderName, billingName)) {
+        throw new BadRequestException(
+          'Card holder name must match the billing name for this order',
+        );
+      }
+    }
+  }
+
+  private async resolveSavedPaystackAuthorizationCode(
+    buyerId: string,
+    savedCardId: string,
+  ): Promise<string> {
+    const attemptId = savedCardId.startsWith('paystack-')
+      ? savedCardId.slice('paystack-'.length)
+      : savedCardId;
+
+    if (!attemptId) {
+      throw new BadRequestException('Select a valid saved card before continuing');
+    }
+
+    const attempt = await this.prisma.paymentAttempt.findFirst({
+      where: {
+        id: attemptId,
+        buyerId,
+        provider: 'PAYSTACK',
+        status: 'PAID',
+      },
+      select: {
+        id: true,
+        requestSnapshot: true,
+        responseSnapshot: true,
+      },
+    });
+
+    if (!attempt) {
+      throw new BadRequestException('The selected saved card is no longer available');
+    }
+
+    const requestSnapshot = this.asObject(attempt.requestSnapshot);
+    if (requestSnapshot?.saveNewCard === false) {
+      throw new BadRequestException('This card was not saved for reuse');
+    }
+
+    const event = await this.prisma.paymentEvent.findFirst({
+      where: {
+        paymentAttemptId: attempt.id,
+        source: 'webhook',
+      },
+      select: { payload: true },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    const extracted = this.extractSavedPaystackCard(
+      this.asObject(attempt.responseSnapshot),
+      this.asObject(event?.payload),
+    );
+
+    if (!extracted?.reusable || !extracted.authorizationCode) {
+      throw new BadRequestException(
+        'This saved card is not reusable yet. Complete a fresh card payment first.',
+      );
+    }
+
+    return extracted.authorizationCode;
+  }
+
+  private hasRawPaystackCardDetails(paymentData: Record<string, any>) {
+    const sensitiveFields = [
+      'cardNumber',
+      'cvv',
+      'expiry',
+      'cardHolderName',
+      'pin',
+      'otp',
+      'phoneOtp',
+      'pan',
+      'cvc',
+    ];
+    const draft = this.asObject(paymentData.newCardDraft);
+
+    return sensitiveFields.some((field) =>
+      this.hasMeaningfulCardDetailValue(draft[field] ?? paymentData[field]),
+    );
+  }
+
+  private hasMeaningfulCardDetailValue(value: unknown) {
+    if (typeof value === 'string') {
+      return value.trim().length > 0;
+    }
+
+    return typeof value === 'number';
+  }
+
+  private normalizeCardText(value: unknown): string | null {
+    const normalized = String(value ?? '').trim();
+    return normalized.length > 0 ? normalized : null;
+  }
+
+  private normalizeCardLast4(value: unknown): string | null {
+    const digits = String(value ?? '').replace(/\D/g, '');
+    if (digits.length < 4) {
+      return null;
+    }
+    return digits.slice(-4);
+  }
+
+  private extractPaystackAuthorizationSnapshot(raw: unknown): Record<string, any> | null {
+    const authorization = this.asObject(raw);
+    if (!authorization) {
+      return null;
+    }
+
+    const last4 = this.normalizeCardLast4(
+      authorization.last4 ?? authorization.last_4 ?? authorization.lastDigits,
+    );
+    if (!last4) {
+      return null;
+    }
+
+    return {
+      brand: this.normalizeCardText(
+        authorization.brand ?? authorization.card_type ?? authorization.cardType,
+      ),
+      bank: this.normalizeCardText(authorization.bank),
+      last4,
+      expMonth: this.normalizeCardText(
+        authorization.exp_month ?? authorization.expMonth,
+      ),
+      expYear: this.normalizeCardText(
+        authorization.exp_year ?? authorization.expYear,
+      ),
+      reusable: Boolean(authorization.reusable),
+      signature: this.normalizeCardText(authorization.signature),
+      authorizationCode: this.normalizeCardText(
+        authorization.authorization_code ?? authorization.authorizationCode,
+      ),
+    };
+  }
+
+  private buildPaystackCardIdentityKey(snapshot: Record<string, any>): string {
+    const signature = this.normalizeCardText(snapshot.signature);
+    if (signature) {
+      return `sig:${signature}`;
+    }
+
+    const authorizationCode = this.normalizeCardText(snapshot.authorizationCode);
+    if (authorizationCode) {
+      return `auth:${authorizationCode}`;
+    }
+
+    const brand = this.normalizeCardText(snapshot.brand) ?? 'CARD';
+    const bank = this.normalizeCardText(snapshot.bank) ?? 'BANK';
+    const last4 = this.normalizeCardLast4(snapshot.last4) ?? '0000';
+    const expMonth = this.normalizeCardText(snapshot.expMonth) ?? '--';
+    const expYear = this.normalizeCardText(snapshot.expYear) ?? '----';
+
+    return `${brand}|${bank}|${last4}|${expMonth}|${expYear}`.toUpperCase();
+  }
+
+  private extractSavedPaystackCard(
+    responseSnapshot: Record<string, any> | null,
+    webhookPayload: Record<string, any> | null,
+  ): ExtractedPaystackCard | null {
+    const webhookData = this.asObject(webhookPayload?.data);
+    const verificationPayload = this.asObject(responseSnapshot?.providerVerificationPayload);
+
+    const candidates: unknown[] = [
+      responseSnapshot?.providerAuthorization,
+      responseSnapshot?.providerVerificationAuthorization,
+      responseSnapshot?.providerWebhookAuthorization,
+      responseSnapshot?.authorization,
+      verificationPayload?.authorization,
+      webhookData?.authorization,
+      webhookPayload?.authorization,
+    ];
+
+    for (const candidate of candidates) {
+      const snapshot = this.extractPaystackAuthorizationSnapshot(candidate);
+      if (!snapshot) {
+        continue;
+      }
+
+      const last4 = this.normalizeCardLast4(snapshot.last4);
+      if (!last4) {
+        continue;
+      }
+
+      return {
+        brand: this.normalizeCardText(snapshot.brand),
+        bank: this.normalizeCardText(snapshot.bank),
+        last4,
+        expMonth: this.normalizeCardText(snapshot.expMonth),
+        expYear: this.normalizeCardText(snapshot.expYear),
+        reusable: Boolean(snapshot.reusable),
+        authorizationCode: this.normalizeCardText(snapshot.authorizationCode),
+        identityKey: this.buildPaystackCardIdentityKey(snapshot),
+      };
+    }
+
+    return null;
+  }
+
   private async verifyPaystackAttempt(
     attempt: NonNullable<PaymentAttemptRecord>,
   ): Promise<{
@@ -2168,6 +2927,7 @@ export class PaymentService {
     channel: string | null;
     paidAt: string | null;
     message: string | null;
+    authorization: Record<string, any> | null;
   }> {
     const secret = this.getRequiredPaystackSecret('Paystack payment verification');
     const response = await fetch(
@@ -2229,6 +2989,9 @@ export class PaymentService {
             : ['pending', 'ongoing', 'processing', 'queued'].includes(rawStatus)
               ? 'PROCESSING'
               : this.normalizeStatusHint(rawStatus) ?? 'PROCESSING';
+      const authorization = this.extractPaystackAuthorizationSnapshot(
+        payload?.data?.authorization,
+      );
 
     return {
       status: normalizedStatus,
@@ -2254,6 +3017,7 @@ export class PaymentService {
             : payload?.message != null
               ? String(payload.message)
               : null,
+      authorization,
     };
   }
 

@@ -214,6 +214,90 @@ function renderEmailVerifiedConfirmationEmail(args: {
   };
 }
 
+type NotificationEmailDetail = {
+  label: string;
+  value: string;
+};
+
+function toCurrencyDisplay(amount: number, currency: string): string {
+  try {
+    return new Intl.NumberFormat('en-NG', {
+      style: 'currency',
+      currency,
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 2,
+    }).format(amount);
+  } catch {
+    return `${currency} ${amount.toFixed(2)}`;
+  }
+}
+
+function buildCustomOrderEmailDetails(
+  payload: Record<string, unknown> | null | undefined,
+): NotificationEmailDetail[] {
+  if (!payload) return [];
+
+  const details: NotificationEmailDetail[] = [];
+  const customOrderId = asTrimmedString(payload.customOrderId);
+  const sourceTitle = asTrimmedString(payload.sourceTitle);
+  const sourceBrandName = asTrimmedString(payload.sourceBrandName);
+  const buyerDisplayName =
+    asTrimmedString(payload.buyerDisplayName) ||
+    [
+      asTrimmedString(payload.buyerFirstName),
+      asTrimmedString(payload.buyerLastName),
+    ]
+      .filter(Boolean)
+      .join(' ');
+  const buyerUsername = asTrimmedString(payload.buyerUsername).replace(/^@+/, '');
+  const buyerEmail = asTrimmedString(payload.buyerEmail);
+  const amount = Number(payload.orderAmount);
+  const currency = asTrimmedString(payload.currency) || 'NGN';
+
+  if (customOrderId) {
+    details.push({ label: 'Order ID', value: customOrderId });
+  }
+  if (sourceTitle) {
+    details.push({ label: 'Order Item', value: sourceTitle });
+  }
+  if (sourceBrandName) {
+    details.push({ label: 'Brand', value: sourceBrandName });
+  }
+  if (Number.isFinite(amount) && amount > 0) {
+    details.push({
+      label: 'Order Total',
+      value: toCurrencyDisplay(amount, currency),
+    });
+  }
+  if (buyerDisplayName) {
+    details.push({ label: 'Customer', value: buyerDisplayName });
+  }
+  if (buyerUsername) {
+    details.push({ label: 'Customer Username', value: `@${buyerUsername}` });
+  }
+  if (buyerEmail) {
+    details.push({ label: 'Customer Email', value: buyerEmail });
+  }
+
+  return details;
+}
+
+function renderNotificationDetailsTable(details: NotificationEmailDetail[]): string {
+  if (!details.length) return '';
+
+  const rows = details
+    .map((detail, index) => {
+      const background = index % 2 === 0 ? '#ffffff' : '#f9fafb';
+      return `<div style="display:flex;justify-content:space-between;gap:14px;padding:10px 12px;background:${background}">
+        <span style="font-size:12px;color:${EMAIL_COLORS.textMuted};font-weight:600">${escapeHtml(detail.label)}</span>
+        <span style="font-size:13px;color:${EMAIL_COLORS.textPrimary};font-weight:600;text-align:right">${escapeHtml(detail.value)}</span>
+      </div>`;
+    })
+    .join('');
+
+  return `<div style="margin:14px 0 8px;border:1px solid #e5e7eb;border-radius:12px;overflow:hidden">${rows}</div>`;
+}
+
 export function renderNotificationEmail(args: {
   appName: string;
   heading: string;
@@ -264,16 +348,32 @@ export function renderNotificationEmail(args: {
     ? `<p style="margin:20px 0">${renderEmailButton(args.targetUrl, `Open in ${companyName}`, { padding: '11px 18px' })}</p>`
     : '';
 
+  const customOrderDetailTypes = new Set<NotificationType>([
+    NotificationType.CUSTOM_ORDER_PAYMENT_RECEIVED,
+    NotificationType.CUSTOM_ORDER_REVIEW_REQUIRED,
+  ]);
+  const detailRows = customOrderDetailTypes.has(args.notificationType as NotificationType)
+    ? buildCustomOrderEmailDetails(args.payload)
+    : [];
+  const detailTable = renderNotificationDetailsTable(detailRows);
+
   const html = renderEmailShell({
     appName: companyName,
     headerSubtitle: 'Account activity update',
     bodyHtml: `<h1 style="margin:0 0 12px;font-size:22px;color:${EMAIL_COLORS.textPrimary}">${escapeHtml(args.heading)}</h1>
       <p style="margin:0 0 10px;line-height:1.7;color:${EMAIL_COLORS.textSecondary}">${escapeHtml(args.message)}</p>
+      ${detailTable}
       ${cta}`,
     footerContextText: `You are receiving this email because your ${companyName} account has email notifications enabled.`,
   });
 
   const textParts = [args.heading, '', args.message];
+  if (detailRows.length > 0) {
+    textParts.push('', 'Details:');
+    for (const detail of detailRows) {
+      textParts.push(`- ${detail.label}: ${detail.value}`);
+    }
+  }
   if (args.targetUrl) {
     textParts.push('', `Open in ${companyName}: ${args.targetUrl}`);
   }

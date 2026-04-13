@@ -47,6 +47,7 @@ export type PaymentChannel =
 export interface PaymentNextAction {
   type:
     | 'REDIRECT'
+    | 'INLINE_POPUP'
     | 'BANK_TRANSFER_INSTRUCTIONS'
     | 'USSD_INSTRUCTIONS'
     | 'MOBILE_MONEY_APPROVAL'
@@ -80,6 +81,7 @@ export interface PaymentInitResult {
   settlementAmount: number;
   exchangeRateSnapshotId?: string;
   channel?: PaymentChannel;
+  providerAccessCode?: string;
   /** URL to redirect user (for Paystack/Flutterwave) */
   authorizationUrl?: string;
   callbackUrl?: string;
@@ -151,6 +153,7 @@ export interface PaymentAttemptSummary {
   settlementAmount: number;
   exchangeRateSnapshotId?: string;
   channel?: PaymentChannel;
+  providerAccessCode?: string;
   authorizationUrl?: string;
   callbackUrl?: string;
   bankAccount?: {
@@ -176,6 +179,19 @@ export interface PaymentAttemptSummary {
     shippingCity: string;
     shippingState: string;
   };
+}
+
+export interface SavedPaymentCardSummary {
+  id: string;
+  gateway: 'PAYSTACK';
+  brand: string | null;
+  bank: string | null;
+  last4: string;
+  expMonth: string | null;
+  expYear: string | null;
+  reusable: boolean;
+  addedAt: string;
+  lastUsedAt: string;
 }
 
 export class SimulatePaymentAttemptDto {

@@ -20,6 +20,7 @@ import { PaymentService } from './payment.service';
 import { FxRateService } from './fx-rate.service';
 import {
   InitializePaymentDto,
+  SavedPaymentCardSummary,
   SimulatePaymentAttemptDto,
   VerifyPaymentDto,
 } from './payment.types';
@@ -71,6 +72,13 @@ export class PaymentController {
   async getAttemptByOrderId(@Param('orderId') orderId: string, @Req() req: Request) {
     const userId = (req as any).user?.id ?? (req as any).user?.sub;
     return this.paymentService.getPaymentAttemptByOrderId(orderId, userId);
+  }
+
+  @Get('saved-cards')
+  @UseGuards(JwtAuthGuard)
+  async listSavedCards(@Req() req: Request): Promise<SavedPaymentCardSummary[]> {
+    const userId = (req as any).user?.id ?? (req as any).user?.sub;
+    return this.paymentService.listSavedPaymentCards(userId);
   }
 
   @Post('verify')

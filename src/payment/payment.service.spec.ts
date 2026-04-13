@@ -1,0 +1,244 @@
+import { BadRequestException } from '@nestjs/common';
+import { PaymentMethod } from '@prisma/client';
+import { PaymentService } from './payment.service';
+
+describe('PaymentService', () => {
+  let originalPaymentsMode: string | undefined;
+  let originalPaystackSecretKey: string | undefined;
+  let originalFrontendPublicCheckoutCallbackUrl: string | undefined;
+  let originalWebAppUrl: string | undefined;
+  let originalWebAppUseHttps: string | undefined;
+  let originalPaystackCustomCardEntryEnabled: string | undefined;
+  let originalPaystackCardholderNameMatchMode: string | undefined;
+  let service: PaymentService;
+
+  beforeEach(() => {
+    originalPaymentsMode = process.env.PAYMENTS_MODE;
+    originalPaystackSecretKey = process.env.PAYSTACK_SECRET_KEY;
+    originalFrontendPublicCheckoutCallbackUrl =
+      process.env.FRONTEND_PUBLIC_CHECKOUT_CALLBACK_URL;
+    originalWebAppUrl = process.env.WEB_APP_URL;
+    originalWebAppUseHttps = process.env.WEB_APP_USE_HTTPS;
+    originalPaystackCustomCardEntryEnabled =
+      process.env.PAYSTACK_CUSTOM_CARD_ENTRY_ENABLED;
+    originalPaystackCardholderNameMatchMode =
+      process.env.PAYSTACK_CARDHOLDER_NAME_MATCH_MODE;
+    process.env.PAYMENTS_MODE = 'live';
+    process.env.PAYSTACK_CUSTOM_CARD_ENTRY_ENABLED = 'true';
+    process.env.PAYSTACK_CARDHOLDER_NAME_MATCH_MODE = 'soft';
+    service = new PaymentService(
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+    );
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+
+    if (originalPaymentsMode === undefined) delete process.env.PAYMENTS_MODE;
+    else process.env.PAYMENTS_MODE = originalPaymentsMode;
+
+    if (originalPaystackSecretKey === undefined) delete process.env.PAYSTACK_SECRET_KEY;
+    else process.env.PAYSTACK_SECRET_KEY = originalPaystackSecretKey;
+
+    if (originalFrontendPublicCheckoutCallbackUrl === undefined) {
+      delete process.env.FRONTEND_PUBLIC_CHECKOUT_CALLBACK_URL;
+    } else {
+      process.env.FRONTEND_PUBLIC_CHECKOUT_CALLBACK_URL =
+        originalFrontendPublicCheckoutCallbackUrl;
+    }
+
+    if (originalWebAppUrl === undefined) delete process.env.WEB_APP_URL;
+    else process.env.WEB_APP_URL = originalWebAppUrl;
+
+    if (originalWebAppUseHttps === undefined) delete process.env.WEB_APP_USE_HTTPS;
+    else process.env.WEB_APP_USE_HTTPS = originalWebAppUseHttps;
+
+    if (originalPaystackCustomCardEntryEnabled === undefined) {
+      delete process.env.PAYSTACK_CUSTOM_CARD_ENTRY_ENABLED;
+    } else {
+      process.env.PAYSTACK_CUSTOM_CARD_ENTRY_ENABLED =
+        originalPaystackCustomCardEntryEnabled;
+    }
+
+    if (originalPaystackCardholderNameMatchMode === undefined) {
+      delete process.env.PAYSTACK_CARDHOLDER_NAME_MATCH_MODE;
+    } else {
+      process.env.PAYSTACK_CARDHOLDER_NAME_MATCH_MODE =
+        originalPaystackCardholderNameMatchMode;
+    }
+  });
+
+  it('accepts new-card Paystack payloads for gateway use and sanitizes stored snapshots', () => {
+    const paymentData = {
+      email: 'buyer@example.com',
+      phone: '08030000000',
+      consentAccepted: true,
+      billingSameAsShipping: true,
+      billingAddress: {
+        firstName: 'Test',
+        lastName: 'User',
+        street: '10 Broad Street',
+        city: 'Lagos',
+        state: 'Lagos',
+        country: 'Nigeria',
+      },
+      channel: 'CARD',
+      newCardDraft: {
+        cardHolderName: 'Test User',
+        cardNumber: '4084 0840 8408 4081',
+        expiry: '12/99',
+        cvv: '408',
+      },
+    };
+
+    expect(
+      service.preparePaymentGatewayRequest(PaymentMethod.PAYSTACK, paymentData),
+    ).toMatchObject({
+      channel: 'CARD',
+      newCardDraft: {
+        cardHolderName: 'Test User',
+        cardNumber: '4084 0840 8408 4081',
+        expiry: '12/99',
+        cvv: '408',
+      },
+    });
+
+    expect(service.preparePaymentRequest(PaymentMethod.PAYSTACK, paymentData)).toEqual(
+      expect.objectContaining({
+        email: 'buyer@example.com',
+        phone: '08030000000',
+        channel: 'CARD',
+        saveNewCard: true,
+        newCardDraft: {
+          cardHolderName: 'Test User',
+          expiry: '12/99',
+          last4: '4081',
+          maskedCardNumber: '************4081',
+        },
+      }),
+    );
+  });
+
+  it('rejects card checkout when neither a saved card nor a new card draft is provided', () => {
+    expect(
+      () =>
+        service.preparePaymentRequest(PaymentMethod.PAYSTACK, {
+          email: 'buyer@example.com',
+          phone: '08030000000',
+          consentAccepted: true,
+          billingSameAsShipping: true,
+          channel: 'CARD',
+          useSavedCard: false,
+          savedCardId: null,
+          savedCardDisplay: null,
+        }),
+    ).toThrow(
+      'Enter the new card details on the payment step or choose a saved card before continuing.',
+    );
+  });
+
+  it('rejects raw Paystack card payloads when custom in-screen entry is disabled', () => {
+    process.env.PAYSTACK_CUSTOM_CARD_ENTRY_ENABLED = 'false';
+
+    expect(() =>
+      service.preparePaymentGatewayRequest(PaymentMethod.PAYSTACK, {
+        email: 'buyer@example.com',
+        phone: '08030000000',
+        consentAccepted: true,
+        billingSameAsShipping: true,
+        channel: 'CARD',
+        newCardDraft: {
+          cardHolderName: 'Test User',
+          cardNumber: '4084 0840 8408 4081',
+          expiry: '12/99',
+          cvv: '408',
+        },
+      }),
+    ).toThrow(BadRequestException);
+  });
+
+  it('initializes Paystack with an inline popup action and local HTTPS callback parity', async () => {
+    process.env.PAYSTACK_SECRET_KEY = 'sk_test_inline';
+    delete process.env.FRONTEND_PUBLIC_CHECKOUT_CALLBACK_URL;
+    delete process.env.WEB_APP_URL;
+    process.env.WEB_APP_USE_HTTPS = 'true';
+
+    const fetchSpy = jest
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          status: true,
+          message: 'Authorization URL created',
+          data: {
+            reference: 'TH-REF-1',
+            access_code: 'ACCESS-CODE-1',
+            authorization_url: 'https://checkout.paystack.com/example',
+          },
+        }),
+      } as Response);
+
+    const callbackBaseUrl = service['resolveCallbackBaseUrl']();
+    const result = await service['initPaystack'](
+      'TH-REF-1',
+      {
+        email: 'buyer@example.com',
+        phone: '08030000000',
+        channel: 'CARD',
+      },
+      5000,
+      'NGN',
+      callbackBaseUrl,
+    );
+
+    expect(callbackBaseUrl).toBe('https://localhost:3000/bag/payment-return');
+    expect(fetchSpy).toHaveBeenCalledWith(
+      'https://api.paystack.co/transaction/initialize',
+      expect.objectContaining({
+        body: expect.stringContaining(
+          '"callback_url":"https://localhost:3000/bag/payment-return"',
+        ),
+      }),
+    );
+    expect(result.providerAccessCode).toBe('ACCESS-CODE-1');
+    expect(result.nextAction?.type).toBe('INLINE_POPUP');
+  });
+
+  it('rejects Paystack initialize responses that do not return an inline access code', async () => {
+    process.env.PAYSTACK_SECRET_KEY = 'sk_test_inline';
+    process.env.FRONTEND_PUBLIC_CHECKOUT_CALLBACK_URL =
+      'https://checkout.threadly.test/bag/payment-return';
+
+    jest.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        status: true,
+        message: 'Authorization URL created',
+        data: {
+          reference: 'TH-REF-2',
+          authorization_url: 'https://checkout.paystack.com/example',
+        },
+      }),
+    } as Response);
+
+    await expect(
+      service['initPaystack'](
+        'TH-REF-2',
+        {
+          email: 'buyer@example.com',
+          phone: '08030000000',
+          channel: 'CARD',
+        },
+        7500,
+        'NGN',
+        service['resolveCallbackBaseUrl'](),
+      ),
+    ).rejects.toThrow(
+      'Paystack did not return an inline access code. Threadly only supports in-app secure checkout and will not route buyers out of the product.',
+    );
+  });
+});

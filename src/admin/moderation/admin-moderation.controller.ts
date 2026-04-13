@@ -51,7 +51,7 @@ export class AdminModerationController {
   }
 
   @Get('measurement-points')
-  @RequirePermissions(ADMIN_PERMISSIONS.MODERATION_READ)
+  @RequirePermissions(ADMIN_PERMISSIONS.MEASUREMENTS_READ)
   @ApiOperation({ summary: 'List measurement points for lifecycle management' })
   async getMeasurementPoints(
     @Query('cursor') cursor?: string,
@@ -76,14 +76,14 @@ export class AdminModerationController {
   }
 
   @Get('measurement-points/:id/lifecycle')
-  @RequirePermissions(ADMIN_PERMISSIONS.MODERATION_READ)
+  @RequirePermissions(ADMIN_PERMISSIONS.MEASUREMENTS_READ)
   @ApiOperation({ summary: 'Get lifecycle details for a measurement point' })
   async getMeasurementPointLifecycle(@Param('id') id: string) {
     return this.service.getMeasurementPointLifecycle(id);
   }
 
   @Patch('measurement-points/:id/lifecycle')
-  @RequirePermissions(ADMIN_PERMISSIONS.MODERATION_WRITE)
+  @RequirePermissions(ADMIN_PERMISSIONS.MEASUREMENTS_REVIEW)
   @ApiOperation({ summary: 'Apply lifecycle action to a measurement point' })
   async updateMeasurementPointLifecycle(
     @Param('id') id: string,
