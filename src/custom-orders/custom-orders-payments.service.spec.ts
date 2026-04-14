@@ -58,6 +58,8 @@ describe('CustomOrdersPaymentsService', () => {
 
     const preparePaymentRequest = jest.fn();
     const preparePaymentGatewayRequest = jest.fn();
+    const resolveCardValidationSessionForInitialize = jest.fn();
+    const consumeCardValidationSessionForInitialize = jest.fn();
     const resolvePaymentCallbackUrl = jest.fn();
     const initializeGatewayForAttempt = jest.fn();
     const getAttemptProviderMode = jest.fn();
@@ -69,6 +71,8 @@ describe('CustomOrdersPaymentsService', () => {
       (_paymentMethod: PaymentMethod, paymentData?: Record<string, unknown>) =>
         paymentData ?? {},
     );
+    resolveCardValidationSessionForInitialize.mockResolvedValue(null);
+    consumeCardValidationSessionForInitialize.mockResolvedValue(undefined);
     resolvePaymentCallbackUrl.mockImplementation((callbackUrl?: string) => callbackUrl ?? 'https://callback.test');
     initializeGatewayForAttempt.mockResolvedValue({
       gateway: 'PAYSTACK',
@@ -127,6 +131,8 @@ describe('CustomOrdersPaymentsService', () => {
       isTerminalStatus: isAttemptTerminalStatus,
       preparePaymentRequest,
       preparePaymentGatewayRequest,
+      resolveCardValidationSessionForInitialize,
+      consumeCardValidationSessionForInitialize,
       resolvePaymentCallbackUrl,
       initializeGatewayForAttempt,
       getAttemptProviderMode,
@@ -342,6 +348,100 @@ describe('CustomOrdersPaymentsService', () => {
     );
     expect(tx.paymentAttempt.update).not.toHaveBeenCalled();
     expect(result.reference).toBe('TH-CO-refresh');
+  });
+
+  it('binds and consumes canonical card validation sessions during custom-order initialize', async () => {
+    prisma.customOrder.findFirst.mockResolvedValue({
+      id: 'co_validated',
+      buyerId: 'buyer_1',
+      status: 'PENDING_PAYMENT',
+      paymentStatus: PaymentStatus.PENDING,
+      buyerPriceSummaryJson: { grandTotal: 2100 },
+      currency: 'NGN',
+      checkoutIntentId: 'intent_validated',
+      sourceBrandNameSnapshot: 'Threadly Atelier',
+      productionLeadDaysSnapshot: 5,
+      deliveryMaxDaysSnapshot: 4,
+    });
+
+    prisma.paymentAttempt.findFirst
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null);
+
+    paymentService.resolveCardValidationSessionForInitialize.mockResolvedValue({
+      sessionId: 'session_custom_1',
+      savedPaymentMethodId: 'saved_method_1',
+      canonicalSessionId: 'session_custom_1',
+      storage: 'canonical',
+    });
+
+    const createdAttempt = {
+      id: 'attempt_validated',
+      reference: 'TH-CO-validated',
+      provider: 'PAYSTACK',
+      status: 'REQUIRES_ACTION',
+      channel: 'CARD',
+      callbackUrl: 'https://callback.test',
+      authorizationUrl: 'https://authorize.test',
+      bankAccount: null,
+      nextAction: { type: 'REDIRECT' },
+    };
+
+    const tx = {
+      paymentAttempt: {
+        update: jest.fn(),
+        create: jest.fn().mockResolvedValue(createdAttempt),
+      },
+      customOrder: {
+        update: jest.fn().mockResolvedValue(undefined),
+      },
+      paymentEvent: {
+        create: jest.fn().mockResolvedValue(undefined),
+      },
+      customOrderTimelineEvent: {
+        create: jest.fn().mockResolvedValue(undefined),
+      },
+      customOrderCheckoutSession: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        create: jest.fn().mockResolvedValue(undefined),
+      },
+      customOrderCheckoutIntent: {
+        findUnique: jest.fn(),
+      },
+    };
+    prisma.$transaction.mockImplementation(async (callback: (innerTx: typeof tx) => Promise<unknown>) =>
+      callback(tx),
+    );
+
+    await service.initializePayment('buyer_1', 'co_validated', {
+      paymentMethod: PaymentMethod.PAYSTACK,
+      email: 'buyer@example.com',
+      idempotencyKey: 'idem-validated',
+      validationSessionId: 'session_custom_1',
+    });
+
+    expect(paymentService.resolveCardValidationSessionForInitialize).toHaveBeenCalledWith(
+      expect.objectContaining({
+        paymentMethod: PaymentMethod.PAYSTACK,
+        validationSessionId: 'session_custom_1',
+        userId: 'buyer_1',
+      }),
+    );
+    expect(paymentService.consumeCardValidationSessionForInitialize).toHaveBeenCalledWith(
+      tx,
+      'buyer_1',
+      expect.objectContaining({
+        canonicalSessionId: 'session_custom_1',
+      }),
+    );
+    expect(tx.paymentAttempt.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          savedPaymentMethodId: 'saved_method_1',
+          cardValidationSessionId: 'session_custom_1',
+        }),
+      }),
+    );
   });
 
   it('verifies a successful payment and creates ledger allocations once', async () => {

@@ -1,10 +1,18 @@
 import {
   BadRequestException,
+  InternalServerErrorException,
   Injectable,
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { createHmac, timingSafeEqual } from 'crypto';
+import {
+  createCipheriv,
+  createDecipheriv,
+  createHash,
+  createHmac,
+  randomBytes,
+  timingSafeEqual,
+} from 'crypto';
 import {
   NotificationType,
   PaymentMethod,
@@ -24,15 +32,20 @@ import {
   type PaymentWebhookProcessJob,
 } from 'src/queue/webhook-events.queue.service';
 import {
+  CardValidationSessionSummary,
   InitializePaymentDto,
+  PaymentClientCheckoutPolicy,
   PaymentAttemptStatus,
   PaymentChannel,
   PaymentInitResult,
   PaymentAttemptSummary,
   PaymentNextAction,
+  ReconcileStalePaymentsDto,
+  ReconcileStalePaymentsResult,
   SavedPaymentCardSummary,
   PaymentVerifyResult,
   SimulatePaymentAttemptDto,
+  ValidatePaymentCardDto,
   VerifyPaymentDto,
 } from './payment.types';
 import {
@@ -101,6 +114,33 @@ interface GatewayInitializationResult {
   expiresAt?: string;
   responseSnapshot?: Record<string, any>;
 }
+
+type StoredCardValidationSession = CardValidationSessionSummary & {
+  paymentMethod: PaymentMethod;
+  paymentDataFingerprint: string;
+  storage: 'canonical' | 'idempotency';
+};
+
+type CardValidationSessionBinding = {
+  sessionId: string;
+  savedPaymentMethodId: string | null;
+  canonicalSessionId: string | null;
+  storage: 'canonical' | 'idempotency';
+};
+
+const CARD_VALIDATION_SESSION_METHOD = 'POST';
+const CARD_VALIDATION_SESSION_PATH = '/payment/cards/validate';
+const CARD_VALIDATION_SESSION_KEY_PREFIX = 'payment:card-validation:';
+const DEFAULT_CARD_VALIDATION_TTL_MINUTES = 20;
+const PAYMENT_SAVED_METHODS_FLAG = 'PAYMENT_CANONICAL_SAVED_METHODS_ENABLED';
+const PAYMENT_SAVED_METHODS_CANARY_PERCENT =
+  'PAYMENT_CANONICAL_SAVED_METHODS_CANARY_PERCENT';
+const PAYMENT_VALIDATION_GATE_FLAG = 'PAYMENT_VALIDATION_GATE_ENABLED';
+const PAYMENT_SAVED_METHODS_BACKFILL_FLAG =
+  'PAYMENT_CANONICAL_SAVED_METHODS_BACKFILL_ENABLED';
+const PAYMENT_SAVED_METHODS_BACKFILL_LEGACY_FLAG =
+  'PAYMENT_CANONICAL_SAVED_METHODS_BACKFILL_ON_READ';
+const PAYMENT_SAVED_METHODS_SECRET = 'PAYMENT_SAVED_METHODS_SECRET';
 
 const TERMINAL_ATTEMPT_STATUSES = new Set<PaymentAttemptStatus>([
   'PAID',
@@ -249,6 +289,14 @@ export class PaymentService {
       }
     }
 
+    const validatedCardSession = await this.resolveCardValidationSessionForInitialize({
+      paymentMethod: dto.paymentMethod,
+      validationSessionId: dto.validationSessionId,
+      userId,
+      gatewayPaymentData,
+      sanitizedPaymentData: paymentData,
+    });
+
     const settlementQuote = await this.fxRateService.quoteAndPersist({
       from: currency,
       amount,
@@ -266,10 +314,22 @@ export class PaymentService {
       { buyerId: userId },
     );
 
+    const canonicalSavedPaymentMethodId =
+      validatedCardSession?.savedPaymentMethodId ?? null;
+    const canonicalCardValidationSessionId = validatedCardSession?.canonicalSessionId ?? null;
+
     const attempt = await this.prisma.$transaction(async (tx) => {
+      await this.consumeCardValidationSessionForInitialize(
+        tx,
+        userId,
+        validatedCardSession,
+      );
+
       const createdAttempt = await tx.paymentAttempt.create({
         data: {
           buyerId: userId,
+          savedPaymentMethodId: canonicalSavedPaymentMethodId,
+          cardValidationSessionId: canonicalCardValidationSessionId,
           provider: gatewayResult.gateway,
           providerMode,
           paymentMethod: dto.paymentMethod,
@@ -359,6 +419,24 @@ export class PaymentService {
   }
 
   async listSavedPaymentCards(userId: string): Promise<SavedPaymentCardSummary[]> {
+    if (this.isCanonicalSavedMethodsEnabledForUser(userId)) {
+      const canonicalCards = await this.listCanonicalSavedPaymentCards(userId);
+      if (canonicalCards.length > 0) {
+        return canonicalCards;
+      }
+
+      if (this.isSavedPaymentMethodBackfillEnabled()) {
+        await this.backfillSavedPaymentMethodsFromAttempts(userId);
+        return this.listCanonicalSavedPaymentCards(userId);
+      }
+    }
+
+    return this.listSavedPaymentCardsFromAttemptHistory(userId);
+  }
+
+  private async listSavedPaymentCardsFromAttemptHistory(
+    userId: string,
+  ): Promise<SavedPaymentCardSummary[]> {
     const attempts = await this.prisma.paymentAttempt.findMany({
       where: {
         buyerId: userId,
@@ -473,6 +551,355 @@ export class PaymentService {
     return Array.from(summariesByIdentity.values()).sort((a, b) =>
       a.lastUsedAt < b.lastUsedAt ? 1 : -1,
     );
+  }
+
+  async validatePaymentCardSelection(
+    dto: ValidatePaymentCardDto,
+    userId: string,
+  ): Promise<CardValidationSessionSummary> {
+    if (dto.paymentMethod !== PaymentMethod.PAYSTACK) {
+      throw new BadRequestException(
+        'Card validation sessions are currently supported for Paystack only',
+      );
+    }
+
+    const gatewayPaymentData = this.preparePaymentGatewayRequest(
+      dto.paymentMethod,
+      dto.paymentData,
+    );
+    const channel = String(gatewayPaymentData.channel ?? '').trim().toUpperCase();
+    if (channel !== 'CARD') {
+      throw new BadRequestException(
+        'Only card checkouts require validation sessions',
+      );
+    }
+
+    const useSavedCard = Boolean(gatewayPaymentData.useSavedCard);
+    let savedCardId: string | null = null;
+    let savedPaymentMethodId: string | null = null;
+    let cardSummary: CardValidationSessionSummary['cardSummary'];
+
+    if (useSavedCard) {
+      savedCardId = String(gatewayPaymentData.savedCardId ?? '').trim();
+      if (!savedCardId) {
+        throw new BadRequestException('Select a saved card before validating');
+      }
+
+      // Ensures the selected card is still reusable and belongs to this user.
+      await this.resolveSavedPaystackAuthorizationCode(userId, savedCardId);
+      const savedCards = await this.listSavedPaymentCards(userId);
+      const selectedCard = savedCards.find((card) => card.id === savedCardId);
+      if (!selectedCard) {
+        throw new BadRequestException('The selected saved card is no longer available');
+      }
+      savedPaymentMethodId = await this.resolveCanonicalSavedPaymentMethodId(
+        userId,
+        savedCardId,
+      );
+
+      cardSummary = {
+        source: 'saved',
+        brand: selectedCard.brand,
+        bank: selectedCard.bank,
+        last4: selectedCard.last4,
+        expMonth: selectedCard.expMonth,
+        expYear: selectedCard.expYear,
+        holderName: null,
+      };
+    } else {
+      if (!this.hasRawPaystackCardDetails(gatewayPaymentData)) {
+        throw new BadRequestException(
+          'Enter your new card details before continuing',
+        );
+      }
+
+      this.validatePaystackCardDraft(gatewayPaymentData);
+      const draft = this.getNormalizedPaystackCardDraft(gatewayPaymentData);
+      cardSummary = {
+        source: 'new',
+        brand: null,
+        bank: null,
+        last4: draft.last4,
+        expMonth: draft.expiryMonth || null,
+        expYear: draft.expiryYear || null,
+        holderName: draft.cardHolderName || null,
+      };
+    }
+
+    const sanitizedPaymentData = this.sanitizePaymentDataForStorage(
+      dto.paymentMethod,
+      gatewayPaymentData,
+    );
+
+    return this.createCardValidationSession({
+      userId,
+      paymentMethod: dto.paymentMethod,
+      sanitizedPaymentData,
+      useSavedCard,
+      savedPaymentMethodId,
+      savedCardId,
+      email: String(gatewayPaymentData.email ?? '').trim(),
+      cardSummary,
+    });
+  }
+
+  async getPaymentCardValidationSession(
+    sessionId: string,
+    userId: string,
+  ): Promise<CardValidationSessionSummary> {
+    const storedSession = await this.getStoredCardValidationSession(sessionId, userId);
+    if (!storedSession) {
+      throw new NotFoundException('Card validation session not found');
+    }
+
+    if (new Date(storedSession.expiresAt).getTime() <= Date.now()) {
+      return {
+        ...storedSession,
+        status: 'EXPIRED',
+      };
+    }
+
+    return storedSession;
+  }
+
+  getClientCheckoutPolicy(userId: string): PaymentClientCheckoutPolicy {
+    return {
+      paystack: {
+        customCardEntryEnabled: this.isPaystackCustomCardEntryEnabled(),
+        cardholderNameMatchMode: this.resolvePaystackCardholderNameMatchMode(),
+        validationSessionRequired: this.isValidationGateEnabledForUser(userId),
+      },
+      savedMethods: {
+        canonicalEnabled: this.isCanonicalSavedMethodsEnabledForUser(userId),
+      },
+    };
+  }
+
+  async removeSavedPaymentCard(savedCardId: string, userId: string) {
+    if (!this.isCanonicalSavedMethodsEnabledForUser(userId)) {
+      throw new BadRequestException(
+        'Saved card management is not enabled yet for this environment.',
+      );
+    }
+
+    const savedPaymentMethodModel = this.getSavedPaymentMethodModel();
+    if (!savedPaymentMethodModel) {
+      throw new InternalServerErrorException(
+        'Saved payment method storage is unavailable on this deployment.',
+      );
+    }
+
+    const normalizedId = this.normalizeSavedCardIdentifier(savedCardId);
+    const existing = await savedPaymentMethodModel.findFirst({
+      where: {
+        id: normalizedId,
+        buyerId: userId,
+        status: 'ACTIVE',
+      },
+    });
+
+    if (!existing) {
+      throw new NotFoundException('Saved card not found');
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      const model = (tx as any)['savedPaymentMethod'];
+      await model.update({
+        where: { id: normalizedId },
+        data: {
+          status: 'DISABLED',
+          isDefault: false,
+        },
+      });
+
+      if (existing.isDefault) {
+        const replacement = await model.findFirst({
+          where: {
+            buyerId: userId,
+            status: 'ACTIVE',
+            id: { not: normalizedId },
+          },
+          orderBy: [{ lastUsedAt: 'desc' }, { updatedAt: 'desc' }],
+        });
+
+        if (replacement) {
+          await model.update({
+            where: { id: replacement.id },
+            data: { isDefault: true },
+          });
+        }
+      }
+    });
+
+    return {
+      success: true,
+      method: this.mapSavedPaymentMethodToSummary(existing),
+    };
+  }
+
+  async setDefaultSavedPaymentCard(savedCardId: string, userId: string) {
+    if (!this.isCanonicalSavedMethodsEnabledForUser(userId)) {
+      throw new BadRequestException(
+        'Saved card management is not enabled yet for this environment.',
+      );
+    }
+
+    const savedPaymentMethodModel = this.getSavedPaymentMethodModel();
+    if (!savedPaymentMethodModel) {
+      throw new InternalServerErrorException(
+        'Saved payment method storage is unavailable on this deployment.',
+      );
+    }
+
+    const normalizedId = this.normalizeSavedCardIdentifier(savedCardId);
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const model = (tx as any)['savedPaymentMethod'];
+      const existing = await model.findFirst({
+        where: {
+          id: normalizedId,
+          buyerId: userId,
+          status: 'ACTIVE',
+        },
+      });
+
+      if (!existing) {
+        throw new NotFoundException('Saved card not found');
+      }
+
+      await model.updateMany({
+        where: {
+          buyerId: userId,
+          status: 'ACTIVE',
+          isDefault: true,
+          id: { not: normalizedId },
+        },
+        data: {
+          isDefault: false,
+        },
+      });
+
+      return model.update({
+        where: { id: normalizedId },
+        data: {
+          isDefault: true,
+          lastUsedAt: new Date(),
+        },
+      });
+    });
+
+    return {
+      success: true,
+      method: this.mapSavedPaymentMethodToSummary(updated),
+    };
+  }
+
+  async reconcileStalePaymentAttempts(
+    dto: ReconcileStalePaymentsDto,
+    _actorUserId: string,
+  ): Promise<ReconcileStalePaymentsResult> {
+    const olderThanMinutes = dto.olderThanMinutes ?? 30;
+    const limit = dto.limit ?? 60;
+    const cutoff = new Date(Date.now() - olderThanMinutes * 60 * 1000);
+
+    const staleAttempts = await this.prisma.paymentAttempt.findMany({
+      where: {
+        subjectType: PaymentSubjectType.STANDARD_ORDER,
+        providerMode: 'live',
+        status: { in: ['PENDING', 'REQUIRES_ACTION', 'PROCESSING'] },
+        updatedAt: { lt: cutoff },
+      },
+      orderBy: { updatedAt: 'asc' },
+      take: limit,
+    });
+
+    const result: ReconcileStalePaymentsResult = {
+      scanned: staleAttempts.length,
+      updated: 0,
+      skipped: [],
+      reconciled: [],
+      failed: [],
+    };
+
+    const now = new Date();
+
+    for (const attempt of staleAttempts) {
+      const gateway = String(attempt.provider || '').trim().toUpperCase();
+      if (gateway !== 'PAYSTACK') {
+        result.skipped.push(`${attempt.reference}:unsupported-gateway`);
+        continue;
+      }
+
+      try {
+        if (attempt.expiresAt && attempt.expiresAt <= now) {
+          const expired = await this.applyAttemptStatus(
+            attempt.reference,
+            '',
+            'EXPIRED',
+            'reconcile',
+            {
+              eventPayload: {
+                reason: 'STALE_ATTEMPT_EXPIRED_RECONCILIATION',
+              },
+              responseSnapshotPatch: {
+                ...(this.asObject(attempt.responseSnapshot) ?? {}),
+                staleReconciledAt: new Date().toISOString(),
+                staleReconcileReason: 'EXPIRED_BEFORE_PROVIDER_CONFIRMATION',
+              },
+            },
+          );
+
+          result.updated += 1;
+          result.reconciled.push(
+            `${expired.reference}:${attempt.status}->${expired.status}`,
+          );
+          continue;
+        }
+
+        const verification = await this.resolveAttemptVerification(attempt, {
+          reference: attempt.reference,
+          gateway: gateway,
+        });
+
+        if (
+          verification.nextStatus === (attempt.status as PaymentAttemptStatus) &&
+          verification.awaitingProviderConfirmation
+        ) {
+          result.skipped.push(`${attempt.reference}:awaiting-provider-confirmation`);
+          continue;
+        }
+
+        const reconciled = await this.applyAttemptStatus(
+          attempt.reference,
+          '',
+          verification.nextStatus,
+          'reconcile',
+          {
+            ...verification,
+            eventPayload: {
+              ...(verification.eventPayload ?? {}),
+              reason: 'STALE_ATTEMPT_RECONCILIATION',
+            },
+            responseSnapshotPatch: {
+              ...(verification.responseSnapshotPatch ?? {}),
+              staleReconciledAt: new Date().toISOString(),
+              staleReconcileReason: 'PROVIDER_REVERIFICATION',
+            },
+          },
+        );
+
+        result.updated += 1;
+        result.reconciled.push(
+          `${reconciled.reference}:${attempt.status}->${reconciled.status}`,
+        );
+      } catch (error: any) {
+        result.failed.push({
+          reference: attempt.reference,
+          reason: this.extractErrorMessage(error),
+        });
+      }
+    }
+
+    return result;
   }
 
   async verifyPayment(
@@ -1597,7 +2024,7 @@ export class PaymentService {
     reference: string,
     userId: string,
     nextStatus: PaymentAttemptStatus,
-    source: 'verify' | 'simulation' | 'webhook',
+    source: 'verify' | 'simulation' | 'webhook' | 'reconcile',
     payload?: AttemptStatusUpdatePayload,
   ) {
     const now = new Date();
@@ -1945,6 +2372,892 @@ export class PaymentService {
     }
   }
 
+  async resolveCardValidationSessionForInitialize(params: {
+    paymentMethod: PaymentMethod;
+    validationSessionId?: string | null;
+    userId: string;
+    gatewayPaymentData: Record<string, any>;
+    sanitizedPaymentData: Record<string, any>;
+  }): Promise<CardValidationSessionBinding | null> {
+    const storedSession = await this.assertCardValidationSessionForInitialize(params);
+    if (!storedSession) {
+      return null;
+    }
+
+    return {
+      sessionId: storedSession.sessionId,
+      savedPaymentMethodId: storedSession.savedPaymentMethodId,
+      canonicalSessionId:
+        storedSession.storage === 'canonical' ? storedSession.sessionId : null,
+      storage: storedSession.storage,
+    };
+  }
+
+  async consumeCardValidationSessionForInitialize(
+    tx: Prisma.TransactionClient,
+    userId: string,
+    session: CardValidationSessionBinding | null,
+  ): Promise<void> {
+    if (!session || session.storage !== 'canonical' || !session.canonicalSessionId) {
+      return;
+    }
+
+    const cardValidationSessionModel = (tx as any)['cardValidationSession'];
+    if (!cardValidationSessionModel) {
+      return;
+    }
+
+    const consumedAt = new Date();
+    const updateResult = await cardValidationSessionModel.updateMany({
+      where: {
+        id: session.canonicalSessionId,
+        buyerId: userId,
+        status: 'VALIDATED',
+        consumedAt: null,
+        expiresAt: { gt: consumedAt },
+      },
+      data: {
+        status: 'USED',
+        consumedAt,
+      },
+    });
+
+    if (Number(updateResult?.count ?? 0) === 0) {
+      throw new BadRequestException(
+        'Card validation session is no longer usable. Validate your payment details again.',
+      );
+    }
+  }
+
+  private async assertCardValidationSessionForInitialize(params: {
+    paymentMethod: PaymentMethod;
+    validationSessionId?: string | null;
+    userId: string;
+    gatewayPaymentData: Record<string, any>;
+    sanitizedPaymentData: Record<string, any>;
+  }): Promise<StoredCardValidationSession | null> {
+    if (params.paymentMethod !== PaymentMethod.PAYSTACK) {
+      return null;
+    }
+
+    const userId = String(params.userId ?? '').trim();
+    if (!userId) {
+      return null;
+    }
+
+    const channel = String(params.gatewayPaymentData.channel ?? '').trim().toUpperCase();
+    if (channel !== 'CARD') {
+      return null;
+    }
+
+    if (!this.isValidationGateEnabledForUser(userId)) {
+      return null;
+    }
+
+    const sessionId = String(params.validationSessionId ?? '').trim();
+    if (!sessionId) {
+      throw new BadRequestException(
+        'Complete card validation on the payment step before placing your order.',
+      );
+    }
+
+    const storedSession = await this.getStoredCardValidationSession(sessionId, userId);
+    if (!storedSession) {
+      throw new BadRequestException(
+        'Card validation session was not found. Validate your payment details again.',
+      );
+    }
+
+    if (storedSession.status !== 'VALIDATED') {
+      throw new BadRequestException(
+        'Card validation session is no longer usable. Validate your payment details again.',
+      );
+    }
+
+    if (new Date(storedSession.expiresAt).getTime() <= Date.now()) {
+      throw new BadRequestException(
+        'Your card validation session has expired. Validate your payment details again.',
+      );
+    }
+
+    if (
+      storedSession.paymentMethod !== PaymentMethod.PAYSTACK ||
+      storedSession.gateway !== 'PAYSTACK' ||
+      storedSession.channel !== 'CARD'
+    ) {
+      throw new BadRequestException('Card validation session is invalid for this checkout attempt');
+    }
+
+    const useSavedCard = Boolean(params.gatewayPaymentData.useSavedCard);
+    if (useSavedCard !== storedSession.useSavedCard) {
+      throw new BadRequestException(
+        'Payment card selection changed after validation. Validate again before placing your order.',
+      );
+    }
+
+    if (useSavedCard) {
+      const savedCardId = String(params.gatewayPaymentData.savedCardId ?? '').trim();
+      if (!savedCardId || savedCardId !== String(storedSession.savedCardId ?? '').trim()) {
+        throw new BadRequestException(
+          'Selected saved card changed after validation. Validate again before placing your order.',
+        );
+      }
+    }
+
+    const fingerprint = this.buildPaymentDataFingerprint(
+      params.sanitizedPaymentData,
+    );
+    if (storedSession.paymentDataFingerprint !== fingerprint) {
+      throw new BadRequestException(
+        'Payment details changed after validation. Validate again before placing your order.',
+      );
+    }
+
+    const payerEmail = String(params.gatewayPaymentData.email ?? '')
+      .trim()
+      .toLowerCase();
+    if (payerEmail && storedSession.email.trim().toLowerCase() !== payerEmail) {
+      throw new BadRequestException(
+        'Payment email changed after validation. Validate again before placing your order.',
+      );
+    }
+
+    return storedSession;
+  }
+
+  private async createCardValidationSession(params: {
+    userId: string;
+    paymentMethod: PaymentMethod;
+    sanitizedPaymentData: Record<string, any>;
+    useSavedCard: boolean;
+    savedPaymentMethodId: string | null;
+    savedCardId: string | null;
+    email: string;
+    cardSummary: CardValidationSessionSummary['cardSummary'];
+  }): Promise<CardValidationSessionSummary> {
+    const now = new Date();
+    const ttlMinutes = this.getCardValidationSessionTtlMinutes();
+    const expiresAt = new Date(now.getTime() + ttlMinutes * 60 * 1000);
+    const sessionId = uuidv4();
+    const paymentDataFingerprint = this.buildPaymentDataFingerprint(
+      params.sanitizedPaymentData,
+    );
+
+    const session: StoredCardValidationSession = {
+      sessionId,
+      status: 'VALIDATED',
+      gateway: 'PAYSTACK',
+      channel: 'CARD',
+      useSavedCard: params.useSavedCard,
+      savedPaymentMethodId: params.savedPaymentMethodId,
+      savedCardId: params.useSavedCard ? params.savedCardId : null,
+      email: params.email,
+      validatedAt: now.toISOString(),
+      expiresAt: expiresAt.toISOString(),
+      cardSummary: params.cardSummary,
+      paymentMethod: params.paymentMethod,
+      paymentDataFingerprint,
+      storage: 'idempotency',
+    };
+
+    const cardValidationSessionModel = this.getCardValidationSessionModel();
+    if (cardValidationSessionModel) {
+      await cardValidationSessionModel.create({
+        data: {
+          id: sessionId,
+          buyerId: params.userId,
+          paymentMethod: params.paymentMethod,
+          gateway: 'PAYSTACK',
+          channel: 'CARD',
+          status: 'VALIDATED',
+          email: params.email,
+          useSavedCard: params.useSavedCard,
+          savedPaymentMethodId: params.savedPaymentMethodId,
+          savedCardLegacyId: params.savedCardId,
+          paymentDataFingerprint,
+          cardSummary: params.cardSummary,
+          validatedAt: now,
+          expiresAt,
+        },
+      });
+
+      return this.toCardValidationSessionSummary({
+        ...session,
+        storage: 'canonical',
+      });
+    }
+
+    const idempotencyKeyModel = this.getIdempotencyKeyModel();
+    const sessionKey = this.buildCardValidationSessionKey(sessionId);
+
+    await idempotencyKeyModel.create({
+      data: {
+        id: uuidv4(),
+        userId: params.userId,
+        key: sessionKey,
+        method: CARD_VALIDATION_SESSION_METHOD,
+        path: CARD_VALIDATION_SESSION_PATH,
+        requestHash: createHash('sha256').update(paymentDataFingerprint).digest('hex'),
+        responseBody: session,
+        statusCode: 201,
+        expiresAt,
+      },
+    });
+
+    if (Math.random() < 0.05) {
+      void idempotencyKeyModel.deleteMany({
+        where: {
+          path: CARD_VALIDATION_SESSION_PATH,
+          method: CARD_VALIDATION_SESSION_METHOD,
+          expiresAt: { lt: new Date() },
+        },
+      });
+    }
+
+    return this.toCardValidationSessionSummary(session);
+  }
+
+  private async getStoredCardValidationSession(
+    sessionId: string,
+    userId: string,
+  ): Promise<StoredCardValidationSession | null> {
+    const normalizedSessionId = String(sessionId ?? '').trim();
+    if (!normalizedSessionId) {
+      return null;
+    }
+
+    const cardValidationSessionModel = this.getCardValidationSessionModel();
+    if (cardValidationSessionModel) {
+      const persistedSession = await cardValidationSessionModel.findFirst({
+        where: {
+          id: normalizedSessionId,
+          buyerId: userId,
+        },
+        select: {
+          id: true,
+          paymentMethod: true,
+          gateway: true,
+          channel: true,
+          status: true,
+          email: true,
+          useSavedCard: true,
+          savedPaymentMethodId: true,
+          savedCardLegacyId: true,
+          paymentDataFingerprint: true,
+          cardSummary: true,
+          validatedAt: true,
+          expiresAt: true,
+        },
+      });
+
+      if (persistedSession) {
+        const cardSummary = this.asObject(persistedSession.cardSummary);
+        const cardLast4 = this.normalizeCardLast4(cardSummary.last4);
+        if (!cardLast4) {
+          return null;
+        }
+
+        const normalizedStatus = String(persistedSession.status ?? '')
+          .trim()
+          .toUpperCase();
+        const isExpired =
+          normalizedStatus !== 'VALIDATED' ||
+          persistedSession.expiresAt.getTime() <= Date.now();
+
+        return {
+          sessionId: normalizedSessionId,
+          status: isExpired ? 'EXPIRED' : 'VALIDATED',
+          gateway: 'PAYSTACK',
+          channel: 'CARD',
+          useSavedCard: Boolean(persistedSession.useSavedCard),
+          savedPaymentMethodId: String(
+            persistedSession.savedPaymentMethodId ?? '',
+          ).trim() || null,
+          savedCardId:
+            String(persistedSession.savedCardLegacyId ?? '').trim() ||
+            String(persistedSession.savedPaymentMethodId ?? '').trim() ||
+            null,
+          email: String(persistedSession.email ?? '').trim(),
+          validatedAt: persistedSession.validatedAt.toISOString(),
+          expiresAt: persistedSession.expiresAt.toISOString(),
+          cardSummary: {
+            source:
+              String(cardSummary.source ?? '').trim().toLowerCase() === 'saved'
+                ? 'saved'
+                : 'new',
+            brand: this.normalizeCardText(cardSummary.brand),
+            bank: this.normalizeCardText(cardSummary.bank),
+            last4: cardLast4,
+            expMonth: this.normalizeCardText(cardSummary.expMonth),
+            expYear: this.normalizeCardText(cardSummary.expYear),
+            holderName: this.normalizeCardText(cardSummary.holderName),
+          },
+          paymentMethod: PaymentMethod.PAYSTACK,
+          paymentDataFingerprint: String(
+            persistedSession.paymentDataFingerprint ?? '',
+          ).trim(),
+          storage: 'canonical',
+        };
+      }
+    }
+
+    const idempotencyKeyModel = this.getIdempotencyKeyModel();
+    const sessionKey = this.buildCardValidationSessionKey(normalizedSessionId);
+
+    const persisted = await idempotencyKeyModel.findUnique({
+      where: {
+        userId_key_method_path: {
+          userId,
+          key: sessionKey,
+          method: CARD_VALIDATION_SESSION_METHOD,
+          path: CARD_VALIDATION_SESSION_PATH,
+        },
+      },
+      select: {
+        responseBody: true,
+        expiresAt: true,
+      },
+    });
+
+    if (!persisted) {
+      return null;
+    }
+
+    const payload = this.asObject(persisted.responseBody);
+    const fingerprint = String(payload.paymentDataFingerprint ?? '').trim();
+    const email = String(payload.email ?? '').trim();
+    const validatedAt = String(payload.validatedAt ?? '').trim();
+    const cardSummary = this.asObject(payload.cardSummary);
+    const cardLast4 = this.normalizeCardLast4(cardSummary.last4);
+
+    if (!fingerprint || !email || !validatedAt || !cardLast4) {
+      return null;
+    }
+
+    return {
+      sessionId: normalizedSessionId,
+      status:
+        String(payload.status ?? '').trim().toUpperCase() === 'EXPIRED'
+          ? 'EXPIRED'
+          : 'VALIDATED',
+      gateway: 'PAYSTACK',
+      channel: 'CARD',
+      useSavedCard: Boolean(payload.useSavedCard),
+      savedPaymentMethodId: null,
+      savedCardId: String(payload.savedCardId ?? '').trim() || null,
+      email,
+      validatedAt,
+      expiresAt: persisted.expiresAt.toISOString(),
+      cardSummary: {
+        source: String(cardSummary.source ?? '').trim().toLowerCase() === 'saved' ? 'saved' : 'new',
+        brand: this.normalizeCardText(cardSummary.brand),
+        bank: this.normalizeCardText(cardSummary.bank),
+        last4: cardLast4,
+        expMonth: this.normalizeCardText(cardSummary.expMonth),
+        expYear: this.normalizeCardText(cardSummary.expYear),
+        holderName: this.normalizeCardText(cardSummary.holderName),
+      },
+      paymentMethod: PaymentMethod.PAYSTACK,
+      paymentDataFingerprint: fingerprint,
+      storage: 'idempotency',
+    };
+  }
+
+  private getCardValidationSessionTtlMinutes(): number {
+    const parsed = Number.parseInt(
+      String(process.env.PAYMENT_CARD_VALIDATION_TTL_MINUTES ?? ''),
+      10,
+    );
+
+    if (!Number.isFinite(parsed)) {
+      return DEFAULT_CARD_VALIDATION_TTL_MINUTES;
+    }
+
+    return Math.min(240, Math.max(5, parsed));
+  }
+
+  private buildCardValidationSessionKey(sessionId: string): string {
+    const normalized = String(sessionId ?? '').trim();
+    return `${CARD_VALIDATION_SESSION_KEY_PREFIX}${normalized}`;
+  }
+
+  private getIdempotencyKeyModel() {
+    const idempotencyKeyModel = (this.prisma as any)['idempotencyKey'];
+    if (!idempotencyKeyModel) {
+      throw new InternalServerErrorException(
+        'Prisma model delegate "idempotencyKey" is not available on PrismaService',
+      );
+    }
+
+    return idempotencyKeyModel;
+  }
+
+  private getSavedPaymentMethodModel() {
+    return (this.prisma as any)['savedPaymentMethod'] ?? null;
+  }
+
+  private getCardValidationSessionModel() {
+    return (this.prisma as any)['cardValidationSession'] ?? null;
+  }
+
+  private toCardValidationSessionSummary(
+    session: StoredCardValidationSession,
+  ): CardValidationSessionSummary {
+    return {
+      sessionId: session.sessionId,
+      status: session.status,
+      gateway: session.gateway,
+      channel: session.channel,
+      useSavedCard: session.useSavedCard,
+      savedPaymentMethodId: session.savedPaymentMethodId,
+      savedCardId: session.savedCardId,
+      email: session.email,
+      validatedAt: session.validatedAt,
+      expiresAt: session.expiresAt,
+      cardSummary: session.cardSummary,
+    };
+  }
+
+  private parseBooleanEnv(name: string, defaultValue: boolean) {
+    const raw = String(process.env[name] ?? '').trim().toLowerCase();
+    if (!raw) {
+      return defaultValue;
+    }
+    if (['1', 'true', 'yes', 'on'].includes(raw)) {
+      return true;
+    }
+    if (['0', 'false', 'no', 'off'].includes(raw)) {
+      return false;
+    }
+    return defaultValue;
+  }
+
+  private parseBooleanEnvOptional(name: string): boolean | null {
+    const raw = String(process.env[name] ?? '').trim().toLowerCase();
+    if (!raw) {
+      return null;
+    }
+    if (['1', 'true', 'yes', 'on'].includes(raw)) {
+      return true;
+    }
+    if (['0', 'false', 'no', 'off'].includes(raw)) {
+      return false;
+    }
+    return null;
+  }
+
+  private parsePercentEnv(name: string, defaultValue: number) {
+    const parsed = Number.parseInt(String(process.env[name] ?? ''), 10);
+    if (!Number.isFinite(parsed)) {
+      return defaultValue;
+    }
+    return Math.min(100, Math.max(0, parsed));
+  }
+
+  private getUserCanaryBucket(userId: string) {
+    const digest = createHash('sha256').update(String(userId ?? '')).digest('hex');
+    return Number.parseInt(digest.slice(0, 8), 16) % 100;
+  }
+
+  private isCanonicalSavedMethodsEnabledForUser(userId: string) {
+    if (!this.parseBooleanEnv(PAYMENT_SAVED_METHODS_FLAG, false)) {
+      return false;
+    }
+
+    const percent = this.parsePercentEnv(PAYMENT_SAVED_METHODS_CANARY_PERCENT, 100);
+    if (percent >= 100) {
+      return true;
+    }
+    if (percent <= 0) {
+      return false;
+    }
+
+    return this.getUserCanaryBucket(userId) < percent;
+  }
+
+  private isValidationGateEnabledForUser(_userId: string) {
+    if (!this.parseBooleanEnv(PAYMENT_VALIDATION_GATE_FLAG, true)) {
+      return false;
+    }
+
+    // Validation-gate behavior must remain deterministic for all users in an environment.
+    return true;
+  }
+
+  private isSavedPaymentMethodBackfillEnabled() {
+    const configured = this.parseBooleanEnvOptional(PAYMENT_SAVED_METHODS_BACKFILL_FLAG);
+    if (configured != null) {
+      return configured;
+    }
+
+    const legacyConfigured = this.parseBooleanEnvOptional(
+      PAYMENT_SAVED_METHODS_BACKFILL_LEGACY_FLAG,
+    );
+    if (legacyConfigured != null) {
+      return legacyConfigured;
+    }
+
+    return true;
+  }
+
+  private normalizeSavedCardIdentifier(value: string) {
+    const normalized = String(value ?? '').trim();
+    if (!normalized) {
+      return '';
+    }
+    return normalized.startsWith('paystack-')
+      ? normalized.slice('paystack-'.length)
+      : normalized;
+  }
+
+  private mapSavedPaymentMethodToSummary(savedMethod: any): SavedPaymentCardSummary {
+    const createdAt = savedMethod?.createdAt
+      ? new Date(savedMethod.createdAt).toISOString()
+      : new Date().toISOString();
+    const updatedAt = savedMethod?.updatedAt
+      ? new Date(savedMethod.updatedAt).toISOString()
+      : createdAt;
+    const lastUsedAt = savedMethod?.lastUsedAt
+      ? new Date(savedMethod.lastUsedAt).toISOString()
+      : updatedAt;
+
+    return {
+      id: String(savedMethod?.id ?? '').trim(),
+      gateway: 'PAYSTACK',
+      brand: this.normalizeCardText(savedMethod?.brand),
+      bank: this.normalizeCardText(savedMethod?.bank),
+      last4: this.normalizeCardLast4(savedMethod?.last4) ?? '0000',
+      expMonth: this.normalizeCardText(savedMethod?.expMonth),
+      expYear: this.normalizeCardText(savedMethod?.expYear),
+      reusable: String(savedMethod?.status ?? '').trim().toUpperCase() === 'ACTIVE',
+      isDefault: Boolean(savedMethod?.isDefault),
+      addedAt: createdAt,
+      lastUsedAt,
+    };
+  }
+
+  private async listCanonicalSavedPaymentCards(
+    userId: string,
+  ): Promise<SavedPaymentCardSummary[]> {
+    const savedPaymentMethodModel = this.getSavedPaymentMethodModel();
+    if (!savedPaymentMethodModel) {
+      return [];
+    }
+
+    const methods = await savedPaymentMethodModel.findMany({
+      where: {
+        buyerId: userId,
+        provider: 'PAYSTACK',
+        paymentMethod: PaymentMethod.PAYSTACK,
+        status: 'ACTIVE',
+      },
+      orderBy: [{ isDefault: 'desc' }, { lastUsedAt: 'desc' }, { updatedAt: 'desc' }],
+      take: 50,
+    });
+
+    return methods.map((method: any) => this.mapSavedPaymentMethodToSummary(method));
+  }
+
+  private async resolveCanonicalSavedPaymentMethodId(
+    userId: string,
+    savedCardId: string,
+  ): Promise<string | null> {
+    const normalizedId = this.normalizeSavedCardIdentifier(savedCardId);
+    if (!normalizedId || !this.isCanonicalSavedMethodsEnabledForUser(userId)) {
+      return null;
+    }
+
+    const savedPaymentMethodModel = this.getSavedPaymentMethodModel();
+    if (!savedPaymentMethodModel) {
+      return null;
+    }
+
+    const method = await savedPaymentMethodModel.findFirst({
+      where: {
+        id: normalizedId,
+        buyerId: userId,
+        provider: 'PAYSTACK',
+        paymentMethod: PaymentMethod.PAYSTACK,
+        status: 'ACTIVE',
+      },
+      select: { id: true },
+    });
+
+    return method?.id ?? null;
+  }
+
+  private getSavedPaymentMethodEncryptionKey(): Buffer | null {
+    const secret = String(process.env[PAYMENT_SAVED_METHODS_SECRET] ?? '').trim();
+    if (!secret) {
+      return null;
+    }
+    return createHash('sha256').update(secret).digest();
+  }
+
+  private encryptSavedPaymentMethodAuthorizationCode(value: string | null): string | null {
+    const raw = String(value ?? '').trim();
+    if (!raw) {
+      return null;
+    }
+
+    const key = this.getSavedPaymentMethodEncryptionKey();
+    if (!key) {
+      this.logger.warn(
+        `${PAYMENT_SAVED_METHODS_SECRET} is not configured. Skipping authorization-code encryption for saved method migration.`,
+      );
+      return null;
+    }
+
+    const iv = randomBytes(12);
+    const cipher = createCipheriv('aes-256-gcm', key, iv);
+    const encrypted = Buffer.concat([cipher.update(raw, 'utf8'), cipher.final()]);
+    const tag = cipher.getAuthTag();
+    return `${iv.toString('base64')}.${tag.toString('base64')}.${encrypted.toString('base64')}`;
+  }
+
+  private decryptSavedPaymentMethodAuthorizationCode(value?: string | null): string | null {
+    const payload = String(value ?? '').trim();
+    if (!payload) {
+      return null;
+    }
+
+    const key = this.getSavedPaymentMethodEncryptionKey();
+    if (!key) {
+      return null;
+    }
+
+    try {
+      const [ivText, tagText, encryptedText] = payload.split('.');
+      if (!ivText || !tagText || !encryptedText) {
+        return null;
+      }
+
+      const decipher = createDecipheriv(
+        'aes-256-gcm',
+        key,
+        Buffer.from(ivText, 'base64'),
+      );
+      decipher.setAuthTag(Buffer.from(tagText, 'base64'));
+      const decrypted = Buffer.concat([
+        decipher.update(Buffer.from(encryptedText, 'base64')),
+        decipher.final(),
+      ]);
+      return decrypted.toString('utf8');
+    } catch {
+      return null;
+    }
+  }
+
+  private async collectLegacySavedPaystackCardsWithAuthorization(userId: string) {
+    const attempts = await this.prisma.paymentAttempt.findMany({
+      where: {
+        buyerId: userId,
+        provider: 'PAYSTACK',
+        status: 'PAID',
+      },
+      select: {
+        id: true,
+        channel: true,
+        providerChannel: true,
+        requestSnapshot: true,
+        responseSnapshot: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+      orderBy: { updatedAt: 'desc' },
+      take: 240,
+    });
+
+    if (attempts.length === 0) {
+      return [] as Array<{
+        summary: SavedPaymentCardSummary;
+        sourcePaymentAttemptId: string;
+        authorizationCode: string | null;
+        identityKey: string;
+      }>;
+    }
+
+    const events = await this.prisma.paymentEvent.findMany({
+      where: {
+        paymentAttemptId: { in: attempts.map((attempt) => attempt.id) },
+        source: 'webhook',
+      },
+      select: {
+        paymentAttemptId: true,
+        payload: true,
+        createdAt: true,
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 600,
+    });
+
+    const webhookPayloadByAttemptId = new Map<string, Record<string, any>>();
+    for (const event of events) {
+      if (webhookPayloadByAttemptId.has(event.paymentAttemptId)) {
+        continue;
+      }
+      const payload = this.asObject(event.payload);
+      if (payload) {
+        webhookPayloadByAttemptId.set(event.paymentAttemptId, payload);
+      }
+    }
+
+    const results: Array<{
+      summary: SavedPaymentCardSummary;
+      sourcePaymentAttemptId: string;
+      authorizationCode: string | null;
+      identityKey: string;
+    }> = [];
+    const seenIdentityKeys = new Set<string>();
+
+    for (const attempt of attempts) {
+      const requestSnapshot = this.asObject(attempt.requestSnapshot);
+      const responseSnapshot = this.asObject(attempt.responseSnapshot);
+      if (requestSnapshot?.saveNewCard === false) {
+        continue;
+      }
+
+      const channelCandidates = [
+        attempt.channel,
+        attempt.providerChannel,
+        responseSnapshot?.providerVerificationChannel,
+        responseSnapshot?.providerWebhookChannel,
+        requestSnapshot?.channel,
+      ];
+      const isCardAttempt = channelCandidates.some(
+        (value) => String(value ?? '').trim().toUpperCase() === 'CARD',
+      );
+      if (!isCardAttempt) {
+        continue;
+      }
+
+      const extracted = this.extractSavedPaystackCard(
+        responseSnapshot,
+        webhookPayloadByAttemptId.get(attempt.id) ?? null,
+      );
+      if (!extracted || seenIdentityKeys.has(extracted.identityKey)) {
+        continue;
+      }
+
+      seenIdentityKeys.add(extracted.identityKey);
+      results.push({
+        sourcePaymentAttemptId: attempt.id,
+        authorizationCode: extracted.authorizationCode,
+        identityKey: extracted.identityKey,
+        summary: {
+          id: attempt.id,
+          gateway: 'PAYSTACK',
+          brand: extracted.brand,
+          bank: extracted.bank,
+          last4: extracted.last4,
+          expMonth: extracted.expMonth,
+          expYear: extracted.expYear,
+          reusable: extracted.reusable,
+          addedAt: attempt.createdAt.toISOString(),
+          lastUsedAt: attempt.updatedAt.toISOString(),
+        },
+      });
+    }
+
+    return results;
+  }
+
+  private async backfillSavedPaymentMethodsFromAttempts(userId: string) {
+    const savedPaymentMethodModel = this.getSavedPaymentMethodModel();
+    if (!savedPaymentMethodModel) {
+      return 0;
+    }
+
+    const inferredCards = await this.collectLegacySavedPaystackCardsWithAuthorization(userId);
+    if (inferredCards.length === 0) {
+      return 0;
+    }
+
+    let hasDefault = Boolean(
+      await savedPaymentMethodModel.findFirst({
+        where: {
+          buyerId: userId,
+          status: 'ACTIVE',
+          isDefault: true,
+        },
+        select: { id: true },
+      }),
+    );
+
+    let processed = 0;
+    for (const card of inferredCards) {
+      const encryptedAuthorizationCode = this.encryptSavedPaymentMethodAuthorizationCode(
+        card.authorizationCode,
+      );
+
+      const upserted = await savedPaymentMethodModel.upsert({
+        where: {
+          buyerId_providerAuthorizationSignature: {
+            buyerId: userId,
+            providerAuthorizationSignature: card.identityKey,
+          },
+        },
+        update: {
+          status: 'ACTIVE',
+          brand: card.summary.brand,
+          bank: card.summary.bank,
+          last4: card.summary.last4,
+          expMonth: card.summary.expMonth,
+          expYear: card.summary.expYear,
+          lastUsedAt: new Date(card.summary.lastUsedAt),
+          providerAuthorizationCodeEncrypted:
+            encryptedAuthorizationCode ?? undefined,
+          providerAuthorizationMeta: {
+            reusable: card.summary.reusable,
+            migratedFromAttemptId: card.sourcePaymentAttemptId,
+          },
+        },
+        create: {
+          id: uuidv4(),
+          buyerId: userId,
+          provider: 'PAYSTACK',
+          paymentMethod: PaymentMethod.PAYSTACK,
+          status: 'ACTIVE',
+          isDefault: !hasDefault,
+          brand: card.summary.brand,
+          bank: card.summary.bank,
+          last4: card.summary.last4,
+          expMonth: card.summary.expMonth,
+          expYear: card.summary.expYear,
+          holderName: null,
+          providerAuthorizationCodeEncrypted:
+            encryptedAuthorizationCode ?? undefined,
+          providerAuthorizationSignature: card.identityKey,
+          providerAuthorizationMeta: {
+            reusable: card.summary.reusable,
+            migratedFromAttemptId: card.sourcePaymentAttemptId,
+          },
+          sourcePaymentAttemptId: card.sourcePaymentAttemptId,
+          lastUsedAt: new Date(card.summary.lastUsedAt),
+        },
+      });
+
+      if (!hasDefault && upserted) {
+        hasDefault = true;
+      }
+      processed += 1;
+    }
+
+    return processed;
+  }
+
+  private extractErrorMessage(error: any): string {
+    if (Array.isArray(error?.response?.message)) {
+      return error.response.message.map((entry: unknown) => String(entry)).join('; ');
+    }
+
+    if (typeof error?.response?.message === 'string') {
+      return error.response.message;
+    }
+
+    return String(error?.message || 'Unknown reconciliation failure');
+  }
+
   private validatePaymentRequest(
     paymentMethod: PaymentMethod,
     paymentData?: Record<string, any>,
@@ -1981,6 +3294,9 @@ export class PaymentService {
     }
 
     if (paymentMethod === PaymentMethod.PAYSTACK) {
+      const hasValidationSessionId =
+        String(paymentData.validationSessionId ?? '').trim().length > 0;
+
       if (!['CARD', 'BANK_TRANSFER'].includes(String(paymentData.channel || '').toUpperCase())) {
         throw new BadRequestException(
           'Paystack requires a supported hosted checkout channel',
@@ -2011,7 +3327,8 @@ export class PaymentService {
       if (
         String(paymentData.channel || '').toUpperCase() === 'CARD' &&
         !paymentData.useSavedCard &&
-        this.isPaystackCustomCardEntryEnabled()
+        this.isPaystackCustomCardEntryEnabled() &&
+        !hasValidationSessionId
       ) {
         throw new BadRequestException(
           'Enter the new card details on the payment step or choose a saved card before continuing.',
@@ -2580,6 +3897,7 @@ export class PaymentService {
     delete next.phoneOtp;
     delete next.pan;
     delete next.cvc;
+    delete next.validationSessionId;
 
     if (this.hasRawPaystackCardDetails(paymentData)) {
       const draft = this.getNormalizedPaystackCardDraft(paymentData);
@@ -2590,7 +3908,21 @@ export class PaymentService {
         maskedCardNumber: draft.maskedCardNumber,
       };
     } else {
-      next.newCardDraft = null;
+      const storedDraft = this.asObject(paymentData.newCardDraft);
+      const storedLast4 = this.normalizeCardLast4(storedDraft.last4);
+      if (!storedLast4) {
+        next.newCardDraft = null;
+      } else {
+        const storedMasked =
+          this.normalizeCardText(storedDraft.maskedCardNumber) ??
+          `******${storedLast4}`;
+        next.newCardDraft = {
+          cardHolderName: this.normalizeCardText(storedDraft.cardHolderName) ?? '',
+          expiry: this.normalizeCardText(storedDraft.expiry) ?? '',
+          last4: storedLast4,
+          maskedCardNumber: storedMasked,
+        };
+      }
     }
 
     next.saveNewCard = Boolean(paymentData.saveNewCard ?? true);
@@ -2617,6 +3949,17 @@ export class PaymentService {
       return false;
     }
     return leftTokens.every((token, index) => token === rightTokens[index]);
+  }
+
+  private namesSoftMatch(left: string, right: string): boolean {
+    const leftTokens = this.normalizeNameTokens(left);
+    const rightTokens = this.normalizeNameTokens(right);
+    if (leftTokens.length === 0 || rightTokens.length === 0) {
+      return true;
+    }
+
+    const rightTokenSet = new Set(rightTokens);
+    return leftTokens.some((token) => rightTokenSet.has(token));
   }
 
   private isLuhnValid(value: string): boolean {
@@ -2708,15 +4051,26 @@ export class PaymentService {
       throw new BadRequestException('CVV must be 3 or 4 digits');
     }
 
-    if (this.resolvePaystackCardholderNameMatchMode() === 'strict') {
+    const cardholderMode = this.resolvePaystackCardholderNameMatchMode();
+    if (cardholderMode === 'strict' || cardholderMode === 'soft') {
       const billingAddress = this.asObject(paymentData.billingAddress);
       const billingName = `${String(billingAddress?.firstName ?? '').trim()} ${String(
         billingAddress?.lastName ?? '',
       ).trim()}`.trim();
-      if (billingName && !this.namesMatch(draft.cardHolderName, billingName)) {
-        throw new BadRequestException(
-          'Card holder name must match the billing name for this order',
-        );
+
+      if (billingName) {
+        const nameMatches =
+          cardholderMode === 'strict'
+            ? this.namesMatch(draft.cardHolderName, billingName)
+            : this.namesSoftMatch(draft.cardHolderName, billingName);
+
+        if (!nameMatches) {
+          throw new BadRequestException(
+            cardholderMode === 'strict'
+              ? 'Card holder name must match the billing name for this order'
+              : 'Card holder name must closely match the billing name for this order',
+          );
+        }
       }
     }
   }
@@ -2725,13 +4079,51 @@ export class PaymentService {
     buyerId: string,
     savedCardId: string,
   ): Promise<string> {
-    const attemptId = savedCardId.startsWith('paystack-')
-      ? savedCardId.slice('paystack-'.length)
-      : savedCardId;
-
-    if (!attemptId) {
+    const normalizedSavedCardId = this.normalizeSavedCardIdentifier(savedCardId);
+    if (!normalizedSavedCardId) {
       throw new BadRequestException('Select a valid saved card before continuing');
     }
+
+    if (this.isCanonicalSavedMethodsEnabledForUser(buyerId)) {
+      const savedPaymentMethodModel = this.getSavedPaymentMethodModel();
+      if (savedPaymentMethodModel) {
+        const canonicalMethod = await savedPaymentMethodModel.findFirst({
+          where: {
+            id: normalizedSavedCardId,
+            buyerId,
+            provider: 'PAYSTACK',
+            paymentMethod: PaymentMethod.PAYSTACK,
+            status: 'ACTIVE',
+          },
+          select: {
+            id: true,
+            providerAuthorizationCodeEncrypted: true,
+          },
+        });
+
+        if (canonicalMethod) {
+          const authorizationCode = this.decryptSavedPaymentMethodAuthorizationCode(
+            canonicalMethod.providerAuthorizationCodeEncrypted,
+          );
+          if (!authorizationCode) {
+            throw new BadRequestException(
+              'This saved card can no longer be used. Remove it and add a new reusable card.',
+            );
+          }
+
+          await savedPaymentMethodModel.update({
+            where: { id: canonicalMethod.id },
+            data: { lastUsedAt: new Date() },
+          });
+
+          return authorizationCode;
+        }
+      }
+    }
+
+    const attemptId = normalizedSavedCardId;
+
+    // Legacy migration fallback: infer reusable authorization from historical paid attempts.
 
     const attempt = await this.prisma.paymentAttempt.findFirst({
       where: {

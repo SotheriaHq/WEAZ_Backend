@@ -146,17 +146,27 @@ export class CustomOrdersPaymentsService {
       }
     }
 
-    const gatewayPaymentData = this.paymentService.preparePaymentGatewayRequest(
-      dto.paymentMethod,
-      {
-        ...(dto.paymentData ?? {}),
-        email: dto.email,
-      },
-    );
-    const paymentData = this.paymentService.preparePaymentRequest(dto.paymentMethod, {
+    const paymentRequestData = {
       ...(dto.paymentData ?? {}),
       email: dto.email,
-    });
+      validationSessionId: dto.validationSessionId,
+    };
+    const gatewayPaymentData = this.paymentService.preparePaymentGatewayRequest(
+      dto.paymentMethod,
+      paymentRequestData,
+    );
+    const paymentData = this.paymentService.preparePaymentRequest(
+      dto.paymentMethod,
+      paymentRequestData,
+    );
+    const validatedCardSession =
+      await this.paymentService.resolveCardValidationSessionForInitialize({
+        paymentMethod: dto.paymentMethod,
+        validationSessionId: dto.validationSessionId,
+        userId,
+        gatewayPaymentData,
+        sanitizedPaymentData: paymentData,
+      });
     const callbackUrl = this.paymentService.resolvePaymentCallbackUrl(dto.callbackUrl);
     const amount = Number((order.buyerPriceSummaryJson as Record<string, unknown>)?.grandTotal ?? 0);
     const reference = `TH-CO-${Date.now()}-${customOrderId.slice(0, 8)}`;
@@ -171,11 +181,19 @@ export class CustomOrdersPaymentsService {
     );
 
     const createdAttempt = await this.prisma.$transaction(async (tx) => {
+      await this.paymentService.consumeCardValidationSessionForInitialize(
+        tx,
+        userId,
+        validatedCardSession,
+      );
+
       const attemptPayload = {
         buyerId: userId,
         subjectType: PaymentSubjectType.CUSTOM_ORDER,
         customOrderId,
         checkoutIntentId: order.checkoutIntentId ?? null,
+        savedPaymentMethodId: validatedCardSession?.savedPaymentMethodId ?? null,
+        cardValidationSessionId: validatedCardSession?.canonicalSessionId ?? null,
         provider: gatewayResult.gateway,
         providerMode: this.paymentService.getAttemptProviderMode(),
         providerReference: gatewayResult.providerReference,
@@ -377,17 +395,27 @@ export class CustomOrdersPaymentsService {
       }
     }
 
-    const gatewayPaymentData = this.paymentService.preparePaymentGatewayRequest(
-      dto.paymentMethod,
-      {
-        ...(dto.paymentData ?? {}),
-        email: dto.email,
-      },
-    );
-    const paymentData = this.paymentService.preparePaymentRequest(dto.paymentMethod, {
+    const paymentRequestData = {
       ...(dto.paymentData ?? {}),
       email: dto.email,
-    });
+      validationSessionId: dto.validationSessionId,
+    };
+    const gatewayPaymentData = this.paymentService.preparePaymentGatewayRequest(
+      dto.paymentMethod,
+      paymentRequestData,
+    );
+    const paymentData = this.paymentService.preparePaymentRequest(
+      dto.paymentMethod,
+      paymentRequestData,
+    );
+    const validatedCardSession =
+      await this.paymentService.resolveCardValidationSessionForInitialize({
+        paymentMethod: dto.paymentMethod,
+        validationSessionId: dto.validationSessionId,
+        userId,
+        gatewayPaymentData,
+        sanitizedPaymentData: paymentData,
+      });
     const callbackUrl = this.paymentService.resolvePaymentCallbackUrl(dto.callbackUrl);
     const amount = Number((intent.buyerPriceSummaryJson as Record<string, unknown>)?.grandTotal ?? 0);
     const reference = `TH-CO-${Date.now()}-${checkoutIntentId.slice(0, 8)}`;
@@ -402,11 +430,19 @@ export class CustomOrdersPaymentsService {
     );
 
     const createdAttempt = await this.prisma.$transaction(async (tx) => {
+      await this.paymentService.consumeCardValidationSessionForInitialize(
+        tx,
+        userId,
+        validatedCardSession,
+      );
+
       const attemptPayload = {
         buyerId: userId,
         subjectType: PaymentSubjectType.CUSTOM_ORDER,
         customOrderId: null,
         checkoutIntentId,
+        savedPaymentMethodId: validatedCardSession?.savedPaymentMethodId ?? null,
+        cardValidationSessionId: validatedCardSession?.canonicalSessionId ?? null,
         provider: gatewayResult.gateway,
         providerMode: this.paymentService.getAttemptProviderMode(),
         providerReference: gatewayResult.providerReference,

@@ -123,6 +123,8 @@ model User {
 
   // Idempotency keys (safe retries for POST requests)
   idempotencyKeys         IdempotencyKey[]
+  savedPaymentMethods     SavedPaymentMethod[]
+  cardValidationSessions  CardValidationSession[]
   messageThreadParticipants MessageThreadParticipant[]
   messagesAuthored        Message[]                @relation("MessageSender")
   messageDeliveryReceipts MessageDeliveryReceipt[] @relation("MessageDeliveryReceipts")
@@ -2616,6 +2618,10 @@ model PaymentAttempt {
   customOrderId    String?      @db.Uuid
   checkoutIntentId String?      @db.Uuid
   checkoutIntent   CustomOrderCheckoutIntent? @relation(fields: [checkoutIntentId], references: [id], onDelete: SetNull)
+  savedPaymentMethodId String?  @db.Uuid
+  savedPaymentMethod SavedPaymentMethod? @relation("PaymentAttemptSavedMethod", fields: [savedPaymentMethodId], references: [id], onDelete: SetNull)
+  cardValidationSessionId String? @db.Uuid
+  cardValidationSession CardValidationSession? @relation("PaymentAttemptValidationSession", fields: [cardValidationSessionId], references: [id], onDelete: SetNull)
   provider         String
   providerMode     String
   providerReference String?
@@ -2648,11 +2654,14 @@ model PaymentAttempt {
   lastVerifiedAt   DateTime?
   createdAt        DateTime     @default(now())
   updatedAt        DateTime     @updatedAt
+  savedPaymentMethodsCreated SavedPaymentMethod[] @relation("SavedPaymentMethodSourceAttempt")
 
   @@index([buyerId, createdAt])
   @@index([status, createdAt])
   @@index([subjectType, customOrderId])
   @@index([subjectType, checkoutIntentId])
+  @@index([savedPaymentMethodId])
+  @@index([cardValidationSessionId])
   @@index([buyerId, subjectType, customOrderId, idempotencyKey])
   @@index([exchangeRateSnapshotId])
 }
@@ -2671,6 +2680,66 @@ model PaymentEvent {
 
   @@index([paymentAttemptId, createdAt])
   @@index([providerEventType, createdAt])
+}
+
+model SavedPaymentMethod {
+  id              String          @id @default(uuid()) @db.Uuid
+  buyerId         String          @db.Uuid
+  buyer           User            @relation(fields: [buyerId], references: [id], onDelete: Cascade)
+  provider        String
+  paymentMethod   PaymentMethod
+  status          String          @default("ACTIVE")
+  isDefault       Boolean         @default(false)
+  brand           String?
+  bank            String?
+  last4           String
+  expMonth        String?
+  expYear         String?
+  holderName      String?
+  providerAuthorizationCodeEncrypted String?
+  providerAuthorizationSignature String?
+  providerAuthorizationMeta Json?
+  sourcePaymentAttemptId String?  @db.Uuid
+  sourcePaymentAttempt PaymentAttempt? @relation("SavedPaymentMethodSourceAttempt", fields: [sourcePaymentAttemptId], references: [id], onDelete: SetNull)
+  lastUsedAt       DateTime?
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+  cardValidationSessions CardValidationSession[]
+  paymentAttempts  PaymentAttempt[] @relation("PaymentAttemptSavedMethod")
+
+  @@index([buyerId, status, updatedAt])
+  @@index([buyerId, isDefault])
+  @@index([provider, paymentMethod, status])
+  @@index([sourcePaymentAttemptId])
+  @@unique([buyerId, providerAuthorizationSignature])
+}
+
+model CardValidationSession {
+  id                String                      @id @default(uuid()) @db.Uuid
+  buyerId           String                      @db.Uuid
+  buyer             User                        @relation(fields: [buyerId], references: [id], onDelete: Cascade)
+  paymentMethod     PaymentMethod
+  gateway           String
+  channel           String
+  status            CardValidationSessionStatus @default(VALIDATED)
+  email             String
+  useSavedCard      Boolean                     @default(false)
+  savedPaymentMethodId String?                  @db.Uuid
+  savedPaymentMethod SavedPaymentMethod?        @relation(fields: [savedPaymentMethodId], references: [id], onDelete: SetNull)
+  savedCardLegacyId String?
+  paymentDataFingerprint String
+  cardSummary       Json?
+  validatedAt       DateTime                    @default(now())
+  expiresAt         DateTime
+  consumedAt        DateTime?
+  createdAt         DateTime                    @default(now())
+  updatedAt         DateTime                    @updatedAt
+  paymentAttempts   PaymentAttempt[]            @relation("PaymentAttemptValidationSession")
+
+  @@index([buyerId, status, expiresAt])
+  @@index([savedPaymentMethodId, status])
+  @@index([expiresAt])
+  @@index([paymentDataFingerprint])
 }
 
 model OrderItem {
@@ -2850,6 +2919,13 @@ enum StorePaymentAccountStatus {
 enum PaymentSubjectType {
   STANDARD_ORDER
   CUSTOM_ORDER
+}
+
+enum CardValidationSessionStatus {
+  VALIDATED
+  USED
+  EXPIRED
+  REVOKED
 }
 
 enum PayoutStatus {

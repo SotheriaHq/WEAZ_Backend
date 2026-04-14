@@ -1,5 +1,14 @@
 import { PaymentMethod } from '@prisma/client';
-import { IsArray, IsEnum, IsObject, IsOptional, IsString } from 'class-validator';
+import {
+  IsArray,
+  IsEnum,
+  IsInt,
+  IsObject,
+  IsOptional,
+  IsString,
+  Max,
+  Min,
+} from 'class-validator';
 
 export interface ShippingAddress {
   firstName: string;
@@ -35,6 +44,10 @@ export class InitializePaymentDto {
   @IsOptional()
   @IsString()
   idempotencyKey?: string;
+
+  @IsOptional()
+  @IsString()
+  validationSessionId?: string;
 }
 
 export type PaymentChannel =
@@ -115,6 +128,69 @@ export class VerifyPaymentDto {
   statusHint?: string;
 }
 
+export class ValidatePaymentCardDto {
+  @IsEnum(PaymentMethod)
+  paymentMethod: PaymentMethod;
+
+  @IsObject()
+  paymentData: Record<string, any>;
+}
+
+export interface CardValidationSessionSummary {
+  sessionId: string;
+  status: 'VALIDATED' | 'EXPIRED';
+  gateway: 'PAYSTACK';
+  channel: 'CARD';
+  useSavedCard: boolean;
+  savedPaymentMethodId?: string | null;
+  savedCardId?: string | null;
+  email: string;
+  validatedAt: string;
+  expiresAt: string;
+  cardSummary: {
+    source: 'saved' | 'new';
+    brand: string | null;
+    bank: string | null;
+    last4: string;
+    expMonth: string | null;
+    expYear: string | null;
+    holderName: string | null;
+  };
+}
+
+export interface PaymentClientCheckoutPolicy {
+  paystack: {
+    customCardEntryEnabled: boolean;
+    cardholderNameMatchMode: 'strict' | 'soft' | 'off';
+    validationSessionRequired: boolean;
+  };
+  savedMethods: {
+    canonicalEnabled: boolean;
+  };
+}
+
+export class ReconcileStalePaymentsDto {
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(240)
+  olderThanMinutes?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(200)
+  limit?: number;
+}
+
+export interface ReconcileStalePaymentsResult {
+  scanned: number;
+  updated: number;
+  skipped: string[];
+  reconciled: string[];
+  failed: Array<{ reference: string; reason: string }>;
+}
+
 export interface PaymentVerifyResult {
   success: boolean;
   status: PaymentAttemptStatus;
@@ -190,8 +266,14 @@ export interface SavedPaymentCardSummary {
   expMonth: string | null;
   expYear: string | null;
   reusable: boolean;
+  isDefault?: boolean;
   addedAt: string;
   lastUsedAt: string;
+}
+
+export interface SavedPaymentMethodMutationResult {
+  success: boolean;
+  method: SavedPaymentCardSummary;
 }
 
 export class SimulatePaymentAttemptDto {

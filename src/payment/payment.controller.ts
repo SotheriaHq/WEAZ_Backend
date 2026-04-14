@@ -2,6 +2,7 @@ import {
   Controller,
   Post,
   Body,
+  Delete,
   Get,
   Param,
   Query,
@@ -19,8 +20,12 @@ import { IdempotencyInterceptor } from 'src/common/interceptors/idempotency.inte
 import { PaymentService } from './payment.service';
 import { FxRateService } from './fx-rate.service';
 import {
+  PaymentClientCheckoutPolicy,
+  ReconcileStalePaymentsDto,
+  ValidatePaymentCardDto,
   InitializePaymentDto,
   SavedPaymentCardSummary,
+  SavedPaymentMethodMutationResult,
   SimulatePaymentAttemptDto,
   VerifyPaymentDto,
 } from './payment.types';
@@ -81,6 +86,53 @@ export class PaymentController {
     return this.paymentService.listSavedPaymentCards(userId);
   }
 
+  @Delete('saved-cards/:savedCardId')
+  @UseGuards(JwtAuthGuard)
+  async removeSavedCard(
+    @Param('savedCardId') savedCardId: string,
+    @Req() req: Request,
+  ): Promise<SavedPaymentMethodMutationResult> {
+    const userId = (req as any).user?.id ?? (req as any).user?.sub;
+    return this.paymentService.removeSavedPaymentCard(savedCardId, userId);
+  }
+
+  @Post('saved-cards/:savedCardId/default')
+  @UseGuards(JwtAuthGuard)
+  async setDefaultSavedCard(
+    @Param('savedCardId') savedCardId: string,
+    @Req() req: Request,
+  ): Promise<SavedPaymentMethodMutationResult> {
+    const userId = (req as any).user?.id ?? (req as any).user?.sub;
+    return this.paymentService.setDefaultSavedPaymentCard(savedCardId, userId);
+  }
+
+  @Post('cards/validate')
+  @UseGuards(JwtAuthGuard)
+  @UseInterceptors(IdempotencyInterceptor)
+  async validateCard(@Body() dto: ValidatePaymentCardDto, @Req() req: Request) {
+    const userId = (req as any).user?.id ?? (req as any).user?.sub;
+    return this.paymentService.validatePaymentCardSelection(dto, userId);
+  }
+
+  @Get('cards/validate/:sessionId')
+  @UseGuards(JwtAuthGuard)
+  async getCardValidationSession(
+    @Param('sessionId') sessionId: string,
+    @Req() req: Request,
+  ) {
+    const userId = (req as any).user?.id ?? (req as any).user?.sub;
+    return this.paymentService.getPaymentCardValidationSession(sessionId, userId);
+  }
+
+  @Get('policy')
+  @UseGuards(JwtAuthGuard)
+  async getCheckoutPolicy(
+    @Req() req: Request,
+  ): Promise<PaymentClientCheckoutPolicy> {
+    const userId = (req as any).user?.id ?? (req as any).user?.sub;
+    return this.paymentService.getClientCheckoutPolicy(userId);
+  }
+
   @Post('verify')
   @UseGuards(JwtAuthGuard)
   async verify(@Body() dto: VerifyPaymentDto, @Req() req: Request) {
@@ -98,6 +150,17 @@ export class PaymentController {
   ) {
     const userId = (req as any).user?.id ?? (req as any).user?.sub;
     return this.paymentService.simulatePaymentAttempt(reference, dto, userId);
+  }
+
+  @Post('reconcile/stale')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.SuperAdmin, Role.Admin)
+  async reconcileStaleAttempts(
+    @Body() dto: ReconcileStalePaymentsDto,
+    @Req() req: Request,
+  ) {
+    const userId = (req as any).user?.id ?? (req as any).user?.sub;
+    return this.paymentService.reconcileStalePaymentAttempts(dto, userId);
   }
 
   /**

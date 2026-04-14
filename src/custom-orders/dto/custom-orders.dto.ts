@@ -149,6 +149,10 @@ export class InitializeCustomOrderPaymentDto {
   @IsString()
   @MaxLength(120)
   idempotencyKey: string;
+
+  @IsOptional()
+  @IsString()
+  validationSessionId?: string;
 }
 
 export class VerifyCustomOrderPaymentDto {

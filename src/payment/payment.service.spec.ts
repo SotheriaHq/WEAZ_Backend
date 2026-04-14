@@ -161,6 +161,85 @@ describe('PaymentService', () => {
     ).toThrow(BadRequestException);
   });
 
+  it('rejects soft-mode cardholder names when there is no billing-name overlap', () => {
+    process.env.PAYSTACK_CARDHOLDER_NAME_MATCH_MODE = 'soft';
+
+    expect(() =>
+      service.preparePaymentGatewayRequest(PaymentMethod.PAYSTACK, {
+        email: 'buyer@example.com',
+        phone: '08030000000',
+        consentAccepted: true,
+        billingSameAsShipping: true,
+        billingAddress: {
+          firstName: 'Test',
+          lastName: 'User',
+          street: '10 Broad Street',
+          city: 'Lagos',
+          state: 'Lagos',
+          country: 'Nigeria',
+        },
+        channel: 'CARD',
+        newCardDraft: {
+          cardHolderName: 'Another Person',
+          cardNumber: '4084 0840 8408 4081',
+          expiry: '12/99',
+          cvv: '408',
+        },
+      }),
+    ).toThrow('Card holder name must closely match the billing name for this order');
+  });
+
+  it('fails closed before provider initialization when validation session is not VALIDATED', async () => {
+    const getStoredSessionSpy = jest
+      .spyOn(service as any, 'getStoredCardValidationSession')
+      .mockResolvedValue({
+        sessionId: 'session-used-1',
+        status: 'EXPIRED',
+        gateway: 'PAYSTACK',
+        channel: 'CARD',
+        useSavedCard: false,
+        savedPaymentMethodId: null,
+        savedCardId: null,
+        email: 'buyer@example.com',
+        validatedAt: new Date().toISOString(),
+        expiresAt: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
+        cardSummary: {
+          source: 'new',
+          brand: null,
+          bank: null,
+          last4: '4081',
+          expMonth: '12',
+          expYear: '99',
+          holderName: 'Test User',
+        },
+        paymentMethod: PaymentMethod.PAYSTACK,
+        paymentDataFingerprint: 'fingerprint',
+        storage: 'canonical',
+      });
+
+    await expect(
+      service.resolveCardValidationSessionForInitialize({
+        paymentMethod: PaymentMethod.PAYSTACK,
+        validationSessionId: 'session-used-1',
+        userId: 'buyer_1',
+        gatewayPaymentData: {
+          channel: 'CARD',
+          email: 'buyer@example.com',
+          useSavedCard: false,
+        },
+        sanitizedPaymentData: {
+          channel: 'CARD',
+          email: 'buyer@example.com',
+          useSavedCard: false,
+        },
+      }),
+    ).rejects.toThrow(
+      'Card validation session is no longer usable. Validate your payment details again.',
+    );
+
+    expect(getStoredSessionSpy).toHaveBeenCalledWith('session-used-1', 'buyer_1');
+  });
+
   it('initializes Paystack with an inline popup action and local HTTPS callback parity', async () => {
     process.env.PAYSTACK_SECRET_KEY = 'sk_test_inline';
     delete process.env.FRONTEND_PUBLIC_CHECKOUT_CALLBACK_URL;
