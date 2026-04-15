@@ -2642,6 +2642,7 @@ model PaymentAttempt {
   exchangeRateSnapshotId String? @db.Uuid
   exchangeRateSnapshot ExchangeRateSnapshot? @relation(fields: [exchangeRateSnapshotId], references: [id], onDelete: SetNull)
   orderIds         String[]
+  unifiedCheckoutManifestJson Json?
   requestSnapshot  Json?
   responseSnapshot Json?
   nextAction       Json?
@@ -2919,6 +2920,7 @@ enum StorePaymentAccountStatus {
 enum PaymentSubjectType {
   STANDARD_ORDER
   CUSTOM_ORDER
+  UNIFIED_CHECKOUT
 }
 
 enum CardValidationSessionStatus {

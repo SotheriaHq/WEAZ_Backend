@@ -2454,6 +2454,13 @@ export class PaymentService {
       return null;
     }
 
+    if (
+      !Boolean(params.gatewayPaymentData.useSavedCard) &&
+      !this.hasRawPaystackCardDetails(params.gatewayPaymentData)
+    ) {
+      return null;
+    }
+
     const sessionId = String(params.validationSessionId ?? '').trim();
     if (!sessionId) {
       throw new BadRequestException(
@@ -3294,9 +3301,6 @@ export class PaymentService {
     }
 
     if (paymentMethod === PaymentMethod.PAYSTACK) {
-      const hasValidationSessionId =
-        String(paymentData.validationSessionId ?? '').trim().length > 0;
-
       if (!['CARD', 'BANK_TRANSFER'].includes(String(paymentData.channel || '').toUpperCase())) {
         throw new BadRequestException(
           'Paystack requires a supported hosted checkout channel',
@@ -3324,16 +3328,6 @@ export class PaymentService {
         return paymentData;
       }
 
-      if (
-        String(paymentData.channel || '').toUpperCase() === 'CARD' &&
-        !paymentData.useSavedCard &&
-        this.isPaystackCustomCardEntryEnabled() &&
-        !hasValidationSessionId
-      ) {
-        throw new BadRequestException(
-          'Enter the new card details on the payment step or choose a saved card before continuing.',
-        );
-      }
       return paymentData;
     }
 
@@ -3851,7 +3845,7 @@ export class PaymentService {
 
   private isPaystackCustomCardEntryEnabled(): boolean {
     return (
-      String(process.env.PAYSTACK_CUSTOM_CARD_ENTRY_ENABLED ?? 'true')
+      String(process.env.PAYSTACK_CUSTOM_CARD_ENTRY_ENABLED ?? 'false')
         .trim()
         .toLowerCase() !== 'false'
     );

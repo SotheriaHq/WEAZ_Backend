@@ -123,21 +123,26 @@ describe('PaymentService', () => {
     );
   });
 
-  it('rejects card checkout when neither a saved card nor a new card draft is provided', () => {
+  it('accepts hosted card checkout when neither a saved card nor a local new-card draft is provided', () => {
     expect(
-      () =>
-        service.preparePaymentRequest(PaymentMethod.PAYSTACK, {
-          email: 'buyer@example.com',
-          phone: '08030000000',
-          consentAccepted: true,
-          billingSameAsShipping: true,
-          channel: 'CARD',
-          useSavedCard: false,
-          savedCardId: null,
-          savedCardDisplay: null,
-        }),
-    ).toThrow(
-      'Enter the new card details on the payment step or choose a saved card before continuing.',
+      service.preparePaymentRequest(PaymentMethod.PAYSTACK, {
+        email: 'buyer@example.com',
+        phone: '08030000000',
+        consentAccepted: true,
+        billingSameAsShipping: true,
+        channel: 'CARD',
+        useSavedCard: false,
+        savedCardId: null,
+        savedCardDisplay: null,
+        newCardDraft: null,
+      }),
+    ).toEqual(
+      expect.objectContaining({
+        channel: 'CARD',
+        useSavedCard: false,
+        saveNewCard: true,
+        newCardDraft: null,
+      }),
     );
   });
 
@@ -226,11 +231,23 @@ describe('PaymentService', () => {
           channel: 'CARD',
           email: 'buyer@example.com',
           useSavedCard: false,
+          newCardDraft: {
+            cardHolderName: 'Test User',
+            cardNumber: '4084 0840 8408 4081',
+            expiry: '12/99',
+            cvv: '408',
+          },
         },
         sanitizedPaymentData: {
           channel: 'CARD',
           email: 'buyer@example.com',
           useSavedCard: false,
+          newCardDraft: {
+            cardHolderName: 'Test User',
+            expiry: '12/99',
+            last4: '4081',
+            maskedCardNumber: '************4081',
+          },
         },
       }),
     ).rejects.toThrow(
@@ -238,6 +255,28 @@ describe('PaymentService', () => {
     );
 
     expect(getStoredSessionSpy).toHaveBeenCalledWith('session-used-1', 'buyer_1');
+  });
+
+  it('does not require a validation session before initializing hosted new-card checkout', async () => {
+    await expect(
+      service.resolveCardValidationSessionForInitialize({
+        paymentMethod: PaymentMethod.PAYSTACK,
+        validationSessionId: undefined,
+        userId: 'buyer_1',
+        gatewayPaymentData: {
+          channel: 'CARD',
+          email: 'buyer@example.com',
+          useSavedCard: false,
+          newCardDraft: null,
+        },
+        sanitizedPaymentData: {
+          channel: 'CARD',
+          email: 'buyer@example.com',
+          useSavedCard: false,
+          newCardDraft: null,
+        },
+      }),
+    ).resolves.toBeNull();
   });
 
   it('initializes Paystack with an inline popup action and local HTTPS callback parity', async () => {
