@@ -606,6 +606,142 @@ export class CustomOrdersService {
     };
   }
 
+  async prepareForUnifiedCheckout(userId: string, customOrderId: string) {
+    const order = await this.prisma.customOrder.findFirst({
+      where: { id: customOrderId, buyerId: userId },
+      select: {
+        id: true,
+        paymentStatus: true,
+        checkoutIntentId: true,
+        checkoutSession: {
+          select: {
+            id: true,
+            resumeToken: true,
+          },
+        },
+      },
+    });
+
+    if (!order) {
+      throw new NotFoundException('Custom order not found');
+    }
+
+    if (order.paymentStatus === PaymentStatus.PAID) {
+      throw new BadRequestException('Custom order has already been paid');
+    }
+
+    const checkoutIntentId = String(order.checkoutIntentId ?? '').trim();
+    if (!checkoutIntentId) {
+      throw new BadRequestException(
+        'This custom order cannot be routed to unified checkout because no checkout intent is attached.',
+      );
+    }
+
+    const intent = await this.prisma.customOrderCheckoutIntent.findFirst({
+      where: {
+        id: checkoutIntentId,
+        buyerId: userId,
+      },
+      select: {
+        id: true,
+      },
+    });
+
+    if (!intent) {
+      throw new NotFoundException('Custom order checkout intent not found');
+    }
+
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + 30 * 60 * 1000);
+    await this.prisma.customOrderCheckoutIntent.update({
+      where: { id: intent.id },
+      data: {
+        consumedAt: null,
+        expiresAt,
+      },
+    });
+
+    const preparedSession = order.checkoutSession
+      ? await this.prisma.customOrderCheckoutSession.update({
+          where: { id: order.checkoutSession.id },
+          data: {
+            checkoutIntentId: intent.id,
+            customOrderId: null,
+            status: CustomOrderCheckoutStatus.SUBMITTED,
+            submittedAt: now,
+            paymentInitiatedAt: null,
+            paidConfirmedAt: null,
+            abandonedAt: null,
+            lastAttemptId: null,
+            lastAttemptReference: null,
+            lastAttemptStatus: null,
+            attemptsCount: 0,
+            resumePath: null,
+          },
+          select: {
+            id: true,
+            resumeToken: true,
+          },
+        })
+      : await this.prisma.customOrderCheckoutSession.upsert({
+          where: { checkoutIntentId: intent.id },
+          update: {
+            buyerId: userId,
+            customOrderId: null,
+            status: CustomOrderCheckoutStatus.SUBMITTED,
+            submittedAt: now,
+            paymentInitiatedAt: null,
+            paidConfirmedAt: null,
+            abandonedAt: null,
+            lastAttemptId: null,
+            lastAttemptReference: null,
+            lastAttemptStatus: null,
+            attemptsCount: 0,
+            resumePath: null,
+          },
+          create: {
+            buyerId: userId,
+            checkoutIntentId: intent.id,
+            customOrderId: null,
+            status: CustomOrderCheckoutStatus.SUBMITTED,
+            submittedAt: now,
+            resumeToken: this.generateCheckoutResumeToken(),
+            uiStateJson: {
+              step: 'SUBMITTED',
+              preparedFromCustomOrderId: customOrderId,
+            } as Prisma.InputJsonValue,
+          },
+          select: {
+            id: true,
+            resumeToken: true,
+          },
+        });
+
+    const relocked = await this.relockCheckoutBagLine(userId, preparedSession.id);
+    const refreshedSession = await this.prisma.customOrderCheckoutSession.findUnique({
+      where: { id: preparedSession.id },
+      select: {
+        id: true,
+        checkoutIntentId: true,
+        resumeToken: true,
+      },
+    });
+
+    return {
+      statusCode: 200,
+      message: 'Custom order moved to bag checkout. Continue through unified checkout.',
+      data: {
+        customOrderId,
+        checkoutSessionId: refreshedSession?.id ?? preparedSession.id,
+        checkoutIntentId: refreshedSession?.checkoutIntentId ?? intent.id,
+        resumeUrl: this.buildCheckoutResumeUrl(
+          refreshedSession?.resumeToken ?? preparedSession.resumeToken,
+        ),
+        bagLine: relocked.data,
+      },
+    };
+  }
+
   async buildPaidOrderCreateInput(params: {
     intent: Prisma.CustomOrderCheckoutIntentGetPayload<{}>;
     buyerId: string;

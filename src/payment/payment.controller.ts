@@ -22,9 +22,7 @@ import { FxRateService } from './fx-rate.service';
 import {
   PaymentClientCheckoutPolicy,
   InitializeUnifiedCheckoutDto,
-  ReconcileStalePaymentsDto,
   ValidatePaymentCardDto,
-  InitializePaymentDto,
   SavedPaymentCardSummary,
   SavedPaymentMethodMutationResult,
   SimulatePaymentAttemptDto,
@@ -53,17 +51,6 @@ export class PaymentController {
       amount: Number(amount),
     });
     return result;
-  }
-
-  @Post('initialize')
-  @UseGuards(JwtAuthGuard)
-  @UseInterceptors(IdempotencyInterceptor)
-  async initialize(
-    @Body() dto: InitializePaymentDto,
-    @Req() req: Request,
-  ) {
-    const userId = (req as any).user?.id ?? (req as any).user?.sub;
-    return this.paymentService.initializePayment(dto, userId);
   }
 
   @Post('initialize-unified')
@@ -162,17 +149,6 @@ export class PaymentController {
   ) {
     const userId = (req as any).user?.id ?? (req as any).user?.sub;
     return this.paymentService.simulatePaymentAttempt(reference, dto, userId);
-  }
-
-  @Post('reconcile/stale')
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.SuperAdmin, Role.Admin)
-  async reconcileStaleAttempts(
-    @Body() dto: ReconcileStalePaymentsDto,
-    @Req() req: Request,
-  ) {
-    const userId = (req as any).user?.id ?? (req as any).user?.sub;
-    return this.paymentService.reconcileStalePaymentAttempts(dto, userId);
   }
 
   /**

@@ -508,8 +508,12 @@ export class PaymentService {
     );
 
     const callbackBaseUrl = this.resolveCallbackBaseUrl(dto.callbackUrl);
-    const idempotencyKey =
-      String(dto.idempotencyKey ?? '').trim() || `ucs-${uuidv4()}`;
+    const idempotencyKey = String(dto.idempotencyKey ?? '').trim();
+    if (!idempotencyKey) {
+      throw new BadRequestException(
+        'Idempotency key is required for unified checkout initialization',
+      );
+    }
     const providerMode = this.getProviderMode();
     const now = new Date();
 
@@ -1604,12 +1608,32 @@ export class PaymentService {
       return;
     }
 
-    await this.webhookEventsQueue.enqueuePaymentWebhook({
-      gateway: receipt.gateway,
-      payload,
-      providerEventKey: receipt.providerEventKey,
-      reference: receipt.reference,
-    });
+    try {
+      await this.webhookEventsQueue.enqueuePaymentWebhook({
+        gateway: receipt.gateway,
+        payload,
+        providerEventKey: receipt.providerEventKey,
+        reference: receipt.reference,
+      });
+    } catch (queueError) {
+      this.logger.error(
+        `Webhook enqueue failed for ${receipt.gateway} (${receipt.reference}); processing inline fallback`,
+        (queueError as Error | undefined)?.stack,
+      );
+      try {
+        await this.processWebhookPayload(
+          receipt.gateway,
+          payload,
+          receipt.reference,
+          receipt.providerEventKey,
+        );
+      } catch (fallbackError) {
+        this.logger.error(
+          `Inline webhook fallback failed for ${receipt.gateway} (${receipt.reference})`,
+          (fallbackError as Error | undefined)?.stack,
+        );
+      }
+    }
   }
 
   async handleWebhook(
@@ -1637,6 +1661,99 @@ export class PaymentService {
       job.reference,
       job.providerEventKey,
     );
+  }
+
+  async reprocessPendingWebhookReceipts(limit = 50): Promise<{
+    scanned: number;
+    processed: number;
+    skipped: number;
+    failed: number;
+  }> {
+    const safeLimit = Number.isFinite(limit)
+      ? Math.max(1, Math.min(200, Math.trunc(limit)))
+      : 50;
+    const pendingEvents = await this.prisma.paymentEvent.findMany({
+      where: {
+        type: 'WEBHOOK_RECEIVED',
+        processedAt: null,
+        providerEventKey: { not: null },
+      },
+      orderBy: [
+        { providerEventReceivedAt: 'asc' },
+        { createdAt: 'asc' },
+      ],
+      take: safeLimit,
+      select: {
+        paymentAttemptId: true,
+        providerEventKey: true,
+        payload: true,
+      },
+    });
+
+    const attemptIds = Array.from(
+      new Set(
+        pendingEvents
+          .map((event) => String(event.paymentAttemptId ?? '').trim())
+          .filter(Boolean),
+      ),
+    );
+    const attempts =
+      attemptIds.length > 0
+        ? await this.prisma.paymentAttempt.findMany({
+            where: {
+              id: {
+                in: attemptIds,
+              },
+            },
+            select: {
+              id: true,
+              provider: true,
+              reference: true,
+            },
+          })
+        : [];
+    const attemptById = new Map(
+      attempts.map((attempt) => [attempt.id, attempt]),
+    );
+
+    let processed = 0;
+    let skipped = 0;
+    let failed = 0;
+
+    for (const event of pendingEvents) {
+      const providerEventKey = String(event.providerEventKey ?? '').trim();
+      const attempt = attemptById.get(String(event.paymentAttemptId ?? '').trim());
+      const gateway = String(attempt?.provider ?? '').trim().toUpperCase();
+      const reference = String(attempt?.reference ?? '').trim();
+      const payload = this.asObject(event.payload);
+
+      if (!providerEventKey || !gateway || !reference || !payload) {
+        skipped += 1;
+        continue;
+      }
+
+      try {
+        await this.processWebhookPayload(
+          gateway,
+          payload,
+          reference,
+          providerEventKey,
+        );
+        processed += 1;
+      } catch (error) {
+        failed += 1;
+        this.logger.warn(
+          `Webhook reprocess failed for ${providerEventKey}: ${this.extractErrorMessage(error)}`,
+        );
+      }
+    }
+
+    return {
+      scanned: pendingEvents.length,
+      processed,
+      skipped,
+      failed,
+    };
   }
 
   private async recordWebhookReceipt(

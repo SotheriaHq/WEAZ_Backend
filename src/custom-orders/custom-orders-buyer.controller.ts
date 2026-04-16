@@ -22,7 +22,6 @@ import {
   ConfirmCustomOrderDeliveryDto,
   CreateCustomOrderDto,
   CustomOrderPricePreviewDto,
-  InitializeCustomOrderPaymentDto,
   QueryCustomOrdersDto,
   ReportCustomOrderIssueDto,
   RespondToCustomOrderExtensionDto,
@@ -58,26 +57,12 @@ export class CustomOrdersBuyerController {
     return this.ordersService.createOrder(req.user.id, dto);
   }
 
-  @Post('checkout/:id/payment/initialize')
-  @UseInterceptors(IdempotencyInterceptor)
-  async initializePaymentForCheckoutIntent(
+  @Post(':id/checkout/prepare')
+  async prepareForUnifiedCheckout(
     @Param('id') id: string,
     @Req() req: Request & { user: { id: string } },
-    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true }))
-    dto: InitializeCustomOrderPaymentDto,
   ) {
-    return this.paymentsService.initializePaymentForCheckoutIntent(req.user.id, id, dto);
-  }
-
-  @Post(':id/payment/initialize')
-  @UseInterceptors(IdempotencyInterceptor)
-  async initializePayment(
-    @Param('id') id: string,
-    @Req() req: Request & { user: { id: string } },
-    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true }))
-    dto: InitializeCustomOrderPaymentDto,
-  ) {
-    return this.paymentsService.initializePayment(req.user.id, id, dto);
+    return this.ordersService.prepareForUnifiedCheckout(req.user.id, id);
   }
 
   @Post('payment/verify')

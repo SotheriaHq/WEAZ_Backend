@@ -19,7 +19,6 @@ import { StoreService } from './store.service';
 import { CreateProductDto, UpdateProductDto } from './dto/create-product.dto';
 import { AddToCartDto, UpdateCartItemDto } from './dto/cart.dto';
 import { AddToWishlistDto } from './dto/wishlist.dto';
-import { CheckoutDto } from './dto/checkout.dto';
 import {
   BulkArchiveProductsDto,
   BulkDeleteProductsDto,
@@ -470,15 +469,6 @@ export class StoreController {
   ])
   async isInWishlist(@Param('productId') productId: string, @Req() req: any) {
     return this.storeService.isInWishlist(req.user.id, productId);
-  }
-
-  // ==================== CHECKOUT ====================
-
-  @UseGuards(JwtAuthGuard)
-  @Post(['checkout', 'store/checkout'])
-  @UseInterceptors(IdempotencyInterceptor)
-  async checkout(@Body(ValidationPipe) dto: CheckoutDto, @Req() req: any) {
-    return this.storeService.checkout(req.user.id, dto);
   }
 
   // ==================== BUYER ORDERS ====================

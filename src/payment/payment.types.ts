@@ -41,9 +41,8 @@ export class InitializePaymentDto {
   @IsObject()
   paymentData?: Record<string, any>;
 
-  @IsOptional()
   @IsString()
-  idempotencyKey?: string;
+  idempotencyKey: string;
 
   @IsOptional()
   @IsString()
