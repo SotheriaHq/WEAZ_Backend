@@ -5403,6 +5403,17 @@ export class StoreService {
   // ==================== CHECKOUT ====================
 
   async checkout(userId: string, dto: CheckoutDto) {
+    const legacyCheckoutEnabled =
+      String(process.env.PAYMENT_ALLOW_LEGACY_STORE_CHECKOUT || '')
+        .trim()
+        .toLowerCase() === 'true';
+
+    if (!legacyCheckoutEnabled) {
+      throw new BadRequestException(
+        'Direct cart checkout is disabled. Initialize payment via /payment/initialize-unified.',
+      );
+    }
+
     const cartItems = await this.prisma.cartItem.findMany({
       where: { userId },
       include: {

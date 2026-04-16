@@ -14,12 +14,20 @@ import {
   timingSafeEqual,
 } from 'crypto';
 import {
+  CheckoutSessionLineStatus,
+  CheckoutSessionLineType,
+  CheckoutSessionStatus,
+  CustomOrderCheckoutStatus,
+  CustomOrderProgressStage,
+  CustomOrderStatus,
+  InventoryReservationStatus,
   NotificationType,
   PaymentMethod,
   PaymentStatus,
   PaymentSubjectType,
   Prisma,
   Role,
+  SizingMode,
 } from '@prisma/client';
 import { ADMIN_PERMISSIONS } from 'src/admin/constants/permissions';
 import { PrismaService } from 'src/prisma/prisma.service';
@@ -34,6 +42,7 @@ import {
 import {
   CardValidationSessionSummary,
   InitializePaymentDto,
+  InitializeUnifiedCheckoutDto,
   PaymentClientCheckoutPolicy,
   PaymentAttemptStatus,
   PaymentChannel,
@@ -128,6 +137,72 @@ type CardValidationSessionBinding = {
   storage: 'canonical' | 'idempotency';
 };
 
+type UnifiedCheckoutStandardLineDraft = {
+  cartItemId: string;
+  brandId: string;
+  productId: string;
+  productName: string;
+  thumbnail: string | null;
+  quantity: number;
+  selectedSize: string | null;
+  selectedColor: string | null;
+  currency: string;
+  unitPrice: number;
+  lineTotal: number;
+  sizingMode: string;
+  requiredMeasurementKeys: string[];
+  sizeFitData: Record<string, any> | null;
+  variantId: string | null;
+  reserveInventory: boolean;
+  sourceProduct: {
+    id: string;
+    trackInventory: boolean;
+    allowBackorders: boolean;
+    totalStock: number;
+    sizeStock: Record<string, number> | null;
+    sizes: string[];
+    colors: string[];
+  };
+};
+
+type UnifiedCheckoutCustomLineDraft = {
+  sessionId: string;
+  checkoutIntentId: string;
+  sourceTitle: string;
+  sourceType: string;
+  sourceId: string;
+  sourcePrimaryMediaUrl: string | null;
+  sourceBrandName: string | null;
+  currency: string;
+  lineTotal: number;
+  unitPrice: number;
+};
+
+type UnifiedCheckoutBlockedCustomLine = {
+  type: 'CUSTOM_ORDER';
+  sessionId: string;
+  checkoutIntentId: string;
+  sourceTitle: string;
+  reason: string;
+};
+
+type UnifiedCheckoutFinalizeResult = {
+  checkoutSessionId: string;
+  orderIds: string[];
+  customOrderIds: string[];
+  summary: {
+    currency: string;
+    items: Array<{ name: string; quantity: number; price: number }>;
+    subtotal: number;
+    shippingCost: number;
+    discount: number;
+    grandTotal: number;
+    shippingName: string;
+    shippingCity: string;
+    shippingState: string;
+  };
+};
+
 const CARD_VALIDATION_SESSION_METHOD = 'POST';
 const CARD_VALIDATION_SESSION_PATH = '/payment/cards/validate';
 const CARD_VALIDATION_SESSION_KEY_PREFIX = 'payment:card-validation:';
@@ -154,6 +229,22 @@ const PAYSTACK_WEBHOOK_IPS = [
   '52.49.173.169',
   '52.214.14.220',
 ] as const;
+
+const ACTIVE_UNIFIED_ATTEMPT_STATUSES: PaymentAttemptStatus[] = [
+  'PENDING',
+  'REQUIRES_ACTION',
+  'PROCESSING',
+];
+
+const CHECKOUT_SHIPPING_RATES: Record<string, number> = {
+  LAGOS: 2500,
+  ABUJA: 3500,
+  FCT: 3500,
+  'PORT HARCOURT': 3500,
+  RIVERS: 3500,
+};
+
+const CHECKOUT_DEFAULT_SHIPPING_RATE = 4000;
 
 @Injectable()
 export class PaymentService {
@@ -385,6 +476,365 @@ export class PaymentService {
     });
 
     return this.buildInitResultFromAttempt(attempt);
+  }
+
+  async initializeUnifiedCheckout(
+    dto: InitializeUnifiedCheckoutDto,
+    userId: string,
+  ): Promise<PaymentInitResult> {
+    const customerName = String(dto.customerName ?? '').trim();
+    if (!customerName) {
+      throw new BadRequestException('Customer name is required');
+    }
+
+    const shippingAddress = this.asObject(dto.shippingAddress);
+    const contactInfo = this.asObject(dto.contactInfo);
+    const shippingState = String(shippingAddress.state ?? '').trim();
+    if (!shippingState) {
+      throw new BadRequestException('Shipping state is required');
+    }
+
+    const paymentRequestData = {
+      ...(dto.paymentData ?? {}),
+      email: dto.email,
+    };
+    const gatewayPaymentData = this.preparePaymentGatewayRequest(
+      dto.paymentMethod,
+      paymentRequestData,
+    );
+    const paymentData = this.preparePaymentRequest(
+      dto.paymentMethod,
+      paymentRequestData,
+    );
+
+    const callbackBaseUrl = this.resolveCallbackBaseUrl(dto.callbackUrl);
+    const idempotencyKey =
+      String(dto.idempotencyKey ?? '').trim() || `ucs-${uuidv4()}`;
+    const providerMode = this.getProviderMode();
+    const now = new Date();
+
+    const existingSession = await this.prisma.checkoutSession.findFirst({
+      where: {
+        buyerId: userId,
+        idempotencyKey,
+      },
+      include: {
+        paymentAttempt: true,
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    if (existingSession?.paymentAttempt) {
+      let existingAttempt = existingSession.paymentAttempt;
+      if (
+        ACTIVE_UNIFIED_ATTEMPT_STATUSES.includes(
+          existingAttempt.status as PaymentAttemptStatus,
+        ) &&
+        existingAttempt.expiresAt &&
+        existingAttempt.expiresAt <= now
+      ) {
+        existingAttempt = await this.applyAttemptStatus(
+          existingAttempt.reference,
+          userId,
+          'EXPIRED',
+          'verify',
+          {
+            eventPayload: {
+              reason: 'UNIFIED_ATTEMPT_REUSED_AFTER_EXPIRY',
+            },
+            responseSnapshotPatch: {
+              expiredAt: new Date().toISOString(),
+            },
+          },
+        );
+      }
+
+      return {
+        ...this.buildInitResultFromAttempt(existingAttempt),
+        checkoutSessionId: existingSession.id,
+        summary: this.asObject(existingSession.summaryJson) as PaymentInitResult['summary'],
+        blockedLines:
+          (this.asObject(existingSession.blockedLinesJson).items as PaymentInitResult['blockedLines']) ??
+          [],
+      };
+    }
+
+    const [standardLineDrafts, customLineResult] = await Promise.all([
+      this.loadUnifiedStandardLineDrafts(userId),
+      this.loadUnifiedCustomLineDrafts(userId),
+    ]);
+
+    const customLineDrafts = customLineResult.lines;
+    const blockedCustomLines = customLineResult.blocked;
+
+    if (standardLineDrafts.length === 0 && customLineDrafts.length === 0) {
+      throw new BadRequestException(
+        blockedCustomLines.length > 0
+          ? 'No payable lines are ready. Re-lock expired custom lines before retrying checkout.'
+          : 'Your bag is empty. Add at least one item before checkout.',
+      );
+    }
+
+    const currencies = [
+      ...standardLineDrafts.map((line) => line.currency),
+      ...customLineDrafts.map((line) => line.currency),
+    ];
+    this.ensureSingleCurrency(currencies);
+    const currency = String(currencies[0] ?? 'NGN').trim().toUpperCase();
+
+    const standardSubtotal = this.roundMoney(
+      standardLineDrafts.reduce((sum, line) => sum + line.lineTotal, 0),
+    );
+    const customSubtotal = this.roundMoney(
+      customLineDrafts.reduce((sum, line) => sum + line.lineTotal, 0),
+    );
+    const distinctStandardBrands = new Set(
+      standardLineDrafts.map((line) => line.brandId),
+    ).size;
+    const shippingCost =
+      distinctStandardBrands > 0
+        ? this.roundMoney(
+            this.resolveShippingCostForState(shippingState) * distinctStandardBrands,
+          )
+        : 0;
+    const discountAmount = 0;
+    const subtotal = this.roundMoney(standardSubtotal + customSubtotal);
+    const grandTotal = this.roundMoney(subtotal + shippingCost - discountAmount);
+
+    const validatedCardSession = await this.resolveCardValidationSessionForInitialize({
+      paymentMethod: dto.paymentMethod,
+      validationSessionId: dto.validationSessionId,
+      userId,
+      gatewayPaymentData,
+      sanitizedPaymentData: paymentData,
+    });
+
+    const settlementQuote = await this.fxRateService.quoteAndPersist({
+      from: currency,
+      amount: grandTotal,
+      actorId: userId,
+    });
+    const reference = `TH-UC-${Date.now()}-${uuidv4().slice(0, 8)}`;
+    const gatewayResult = await this.initializeGateway(
+      dto.paymentMethod,
+      reference,
+      gatewayPaymentData,
+      grandTotal,
+      currency,
+      callbackBaseUrl,
+      { buyerId: userId },
+    );
+    const attemptExpiresAt = gatewayResult.expiresAt
+      ? new Date(gatewayResult.expiresAt)
+      : new Date(Date.now() + 30 * 60 * 1000);
+
+    const created = await this.prisma.$transaction(async (tx) => {
+      await this.consumeCardValidationSessionForInitialize(
+        tx,
+        userId,
+        validatedCardSession,
+      );
+
+      const checkoutSession = await tx.checkoutSession.create({
+        data: {
+          buyerId: userId,
+          status: CheckoutSessionStatus.PAYMENT_PROCESSING,
+          idempotencyKey,
+          paymentMethod: dto.paymentMethod,
+          shippingAddressJson: shippingAddress as Prisma.InputJsonValue,
+          contactInfoJson: contactInfo as Prisma.InputJsonValue,
+          customerName,
+          currency,
+          subtotal: new Prisma.Decimal(subtotal.toFixed(2)),
+          shippingCost: new Prisma.Decimal(shippingCost.toFixed(2)),
+          discountAmount: new Prisma.Decimal(discountAmount.toFixed(2)),
+          grandTotal: new Prisma.Decimal(grandTotal.toFixed(2)),
+          summaryJson: {
+            items: [
+              ...standardLineDrafts.map((line) => ({
+                name: line.productName,
+                quantity: line.quantity,
+                price: line.unitPrice,
+              })),
+              ...customLineDrafts.map((line) => ({
+                name: `${line.sourceTitle} (Custom)`,
+                quantity: 1,
+                price: line.unitPrice,
+              })),
+            ],
+            subtotal,
+            shippingCost,
+            discount: discountAmount,
+            grandTotal,
+            shippingName: customerName,
+            shippingCity: String(shippingAddress.city ?? ''),
+            shippingState,
+          } as Prisma.InputJsonValue,
+          blockedLinesJson: {
+            items: blockedCustomLines,
+          } as Prisma.InputJsonValue,
+          expiresAt: attemptExpiresAt,
+        },
+      });
+
+      for (let index = 0; index < standardLineDrafts.length; index += 1) {
+        const line = standardLineDrafts[index];
+        const createdLine = await tx.checkoutSessionLine.create({
+          data: {
+            checkoutSessionId: checkoutSession.id,
+            lineType: CheckoutSessionLineType.STANDARD_ITEM,
+            status: line.reserveInventory
+              ? CheckoutSessionLineStatus.RESERVED
+              : CheckoutSessionLineStatus.PENDING,
+            lineOrder: index,
+            brandId: line.brandId,
+            productId: line.productId,
+            cartItemId: line.cartItemId,
+            quantity: line.quantity,
+            unitPrice: new Prisma.Decimal(line.unitPrice.toFixed(2)),
+            lineTotal: new Prisma.Decimal(line.lineTotal.toFixed(2)),
+            currency: line.currency,
+            selectedSize: line.selectedSize,
+            selectedColor: line.selectedColor,
+            itemSnapshotJson: {
+              name: line.productName,
+              thumbnail: line.thumbnail,
+              sizingMode: line.sizingMode,
+              requiredMeasurementKeys: line.requiredMeasurementKeys,
+              sizeFitData: line.sizeFitData,
+            } as Prisma.InputJsonValue,
+          },
+        });
+
+        await this.reserveUnifiedStandardLineInventory(
+          tx,
+          checkoutSession.id,
+          createdLine.id,
+          line,
+          attemptExpiresAt,
+        );
+      }
+
+      for (let index = 0; index < customLineDrafts.length; index += 1) {
+        const line = customLineDrafts[index];
+        await tx.checkoutSessionLine.create({
+          data: {
+            checkoutSessionId: checkoutSession.id,
+            lineType: CheckoutSessionLineType.CUSTOM_ORDER,
+            status: CheckoutSessionLineStatus.PENDING,
+            lineOrder: standardLineDrafts.length + index,
+            checkoutIntentId: line.checkoutIntentId,
+            quantity: 1,
+            unitPrice: new Prisma.Decimal(line.unitPrice.toFixed(2)),
+            lineTotal: new Prisma.Decimal(line.lineTotal.toFixed(2)),
+            currency: line.currency,
+            itemSnapshotJson: {
+              sourceType: line.sourceType,
+              sourceId: line.sourceId,
+              sourceTitle: line.sourceTitle,
+              sourcePrimaryMediaUrl: line.sourcePrimaryMediaUrl,
+              sourceBrandName: line.sourceBrandName,
+            } as Prisma.InputJsonValue,
+            metadataJson: {
+              sessionId: line.sessionId,
+            } as Prisma.InputJsonValue,
+          },
+        });
+      }
+
+      const createdAttempt = await tx.paymentAttempt.create({
+        data: {
+          buyerId: userId,
+          subjectType: PaymentSubjectType.UNIFIED_CHECKOUT,
+          checkoutSessionId: checkoutSession.id,
+          savedPaymentMethodId: validatedCardSession?.savedPaymentMethodId ?? null,
+          cardValidationSessionId: validatedCardSession?.canonicalSessionId ?? null,
+          provider: gatewayResult.gateway,
+          providerMode,
+          providerReference: gatewayResult.providerReference,
+          providerTransactionId: gatewayResult.providerTransactionId,
+          providerAccessCode: gatewayResult.providerAccessCode,
+          providerChannel: gatewayResult.providerChannel ?? gatewayResult.channel,
+          paymentMethod: dto.paymentMethod,
+          channel: gatewayResult.channel,
+          status: gatewayResult.status,
+          reference,
+          idempotencyKey,
+          callbackUrl: gatewayResult.callbackUrl ?? callbackBaseUrl,
+          authorizationUrl: gatewayResult.authorizationUrl,
+          amount: grandTotal,
+          currency,
+          settlementCurrency: this.fxRateService.getBaseCurrency(),
+          settlementAmount: settlementQuote.convertedAmount,
+          exchangeRateSnapshotId: settlementQuote.snapshot.id,
+          orderIds: [],
+          unifiedCheckoutManifestJson: {
+            standardLineCount: standardLineDrafts.length,
+            customLineCount: customLineDrafts.length,
+            blockedLines: blockedCustomLines,
+          } as Prisma.InputJsonValue,
+          requestSnapshot: paymentData as Prisma.InputJsonValue,
+          responseSnapshot:
+            (gatewayResult.responseSnapshot ?? null) as unknown as Prisma.InputJsonValue,
+          nextAction: (gatewayResult.nextAction ?? null) as unknown as Prisma.InputJsonValue,
+          bankAccount: (gatewayResult.bankAccount ?? null) as unknown as Prisma.InputJsonValue,
+          expiresAt: gatewayResult.expiresAt ? new Date(gatewayResult.expiresAt) : null,
+        },
+      });
+
+      if (customLineDrafts.length > 0) {
+        await tx.customOrderCheckoutSession.updateMany({
+          where: {
+            buyerId: userId,
+            customOrderId: null,
+            checkoutIntentId: {
+              in: customLineDrafts.map((line) => line.checkoutIntentId),
+            },
+          },
+          data: {
+            status: CustomOrderCheckoutStatus.PAYMENT_INITIATED,
+            paymentInitiatedAt: new Date(),
+            lastAttemptId: createdAttempt.id,
+            lastAttemptReference: createdAttempt.reference,
+            lastAttemptStatus: createdAttempt.status,
+            attemptsCount: { increment: 1 },
+            resumePath: this.buildPaymentReturnPath(
+              createdAttempt.reference,
+              gatewayResult.gateway,
+            ),
+            abandonedAt: null,
+          },
+        });
+      }
+
+      await tx.paymentEvent.create({
+        data: {
+          paymentAttemptId: createdAttempt.id,
+          type: 'INITIALIZED',
+          source: providerMode === 'mock' ? 'mock-initialize' : 'initialize',
+          payload: {
+            paymentMethod: dto.paymentMethod,
+            gateway: gatewayResult.gateway,
+            channel: gatewayResult.channel,
+            status: gatewayResult.status,
+            subjectType: PaymentSubjectType.UNIFIED_CHECKOUT,
+            checkoutSessionId: checkoutSession.id,
+          },
+        },
+      });
+
+      return {
+        attempt: createdAttempt,
+        checkoutSession,
+      };
+    });
+
+    return {
+      ...this.buildInitResultFromAttempt(created.attempt),
+      checkoutSessionId: created.checkoutSession.id,
+      summary: this.asObject(created.checkoutSession.summaryJson) as PaymentInitResult['summary'],
+      blockedLines: blockedCustomLines,
+    };
   }
 
   async getPaymentAttemptByReference(
@@ -803,7 +1253,12 @@ export class PaymentService {
 
     const staleAttempts = await this.prisma.paymentAttempt.findMany({
       where: {
-        subjectType: PaymentSubjectType.STANDARD_ORDER,
+        subjectType: {
+          in: [
+            PaymentSubjectType.STANDARD_ORDER,
+            PaymentSubjectType.UNIFIED_CHECKOUT,
+          ],
+        },
         providerMode: 'live',
         status: { in: ['PENDING', 'REQUIRES_ACTION', 'PROCESSING'] },
         updatedAt: { lt: cutoff },
@@ -917,6 +1372,43 @@ export class PaymentService {
     if (attempt.subjectType === PaymentSubjectType.CUSTOM_ORDER) {
       throw new BadRequestException(
         'This payment reference belongs to a custom order. Verify it through /custom-orders/payment/verify (or /custom-orders/:id/payment/verify if the order already exists).',
+      );
+    }
+
+    if (attempt.subjectType === PaymentSubjectType.UNIFIED_CHECKOUT) {
+      if (attempt.status === 'PAID') {
+        const finalized = await this.finalizeUnifiedCheckoutAttempt(
+          attempt.reference,
+          userId,
+        );
+        return this.buildUnifiedVerifyResult(
+          attempt,
+          true,
+          finalized ?? undefined,
+        );
+      }
+
+      if (this.isTerminalStatus(attempt.status as PaymentAttemptStatus)) {
+        return this.buildUnifiedVerifyResult(attempt, false);
+      }
+
+      const resolvedVerification = await this.resolveAttemptVerification(attempt, dto);
+      const updatedAttempt = await this.applyAttemptStatus(
+        attempt.reference,
+        userId,
+        resolvedVerification.nextStatus,
+        'verify',
+        resolvedVerification,
+      );
+
+      const finalized =
+        updatedAttempt.status === 'PAID'
+          ? await this.finalizeUnifiedCheckoutAttempt(updatedAttempt.reference, userId)
+          : undefined;
+      return this.buildUnifiedVerifyResult(
+        updatedAttempt,
+        updatedAttempt.status === 'PAID',
+        finalized,
       );
     }
 
@@ -1811,6 +2303,134 @@ export class PaymentService {
     attempt: NonNullable<PaymentAttemptRecord>,
     userId: string,
   ): Promise<PaymentAttemptSummary> {
+    if (attempt.subjectType === PaymentSubjectType.UNIFIED_CHECKOUT) {
+      if (!attempt.checkoutSessionId) {
+        throw new NotFoundException('Unified checkout session is missing for this payment attempt');
+      }
+
+      const checkoutSession = await this.prisma.checkoutSession.findFirst({
+        where: {
+          id: attempt.checkoutSessionId,
+          buyerId: userId,
+        },
+        include: {
+          lines: {
+            select: {
+              orderId: true,
+              customOrderId: true,
+              quantity: true,
+              unitPrice: true,
+              itemSnapshotJson: true,
+            },
+            orderBy: { lineOrder: 'asc' },
+          },
+        },
+      });
+
+      if (!checkoutSession) {
+        throw new NotFoundException('Unified checkout session not found for this payment attempt');
+      }
+
+      const summarySnapshot = this.asObject(checkoutSession.summaryJson);
+      const shippingSnapshot = this.asObject(checkoutSession.shippingAddressJson);
+      const summaryItemsFromSnapshot = Array.isArray(summarySnapshot.items)
+        ? summarySnapshot.items
+            .map((item) => {
+              const candidate = this.asObject(item);
+              const name = String(candidate.name ?? '').trim();
+              const quantity = Number(candidate.quantity ?? 0);
+              const price = Number(candidate.price ?? 0);
+              if (!name || !Number.isFinite(quantity) || quantity <= 0 || !Number.isFinite(price)) {
+                return null;
+              }
+              return {
+                name,
+                quantity,
+                price,
+              };
+            })
+            .filter((item): item is { name: string; quantity: number; price: number } => Boolean(item))
+        : [];
+
+      const summaryItems =
+        summaryItemsFromSnapshot.length > 0
+          ? summaryItemsFromSnapshot
+          : checkoutSession.lines.map((line) => {
+              const itemSnapshot = this.asObject(line.itemSnapshotJson);
+              return {
+                name: String(itemSnapshot.name ?? itemSnapshot.sourceTitle ?? 'Item'),
+                quantity: Number(line.quantity ?? 1),
+                price: Number(line.unitPrice ?? 0),
+              };
+            });
+
+      const subtotal = this.roundMoney(
+        Number(
+          summarySnapshot.subtotal ??
+            summaryItems.reduce(
+              (sum, item) => sum + Number(item.price ?? 0) * Number(item.quantity ?? 1),
+              0,
+            ),
+        ),
+      );
+      const shippingCost = this.roundMoney(Number(summarySnapshot.shippingCost ?? 0));
+      const discount = this.roundMoney(Number(summarySnapshot.discount ?? 0));
+      const grandTotal = this.roundMoney(
+        Number(summarySnapshot.grandTotal ?? subtotal + shippingCost - discount),
+      );
+
+      const orderIds = Array.from(
+        new Set(
+          checkoutSession.lines
+            .map((line) => String(line.orderId ?? '').trim())
+            .filter(Boolean),
+        ),
+      );
+      const customOrderIds = Array.from(
+        new Set(
+          checkoutSession.lines
+            .map((line) => String(line.customOrderId ?? '').trim())
+            .filter(Boolean),
+        ),
+      );
+
+      return {
+        paymentAttemptId: attempt.id,
+        reference: attempt.reference,
+        subjectType: 'UNIFIED_CHECKOUT',
+        customOrderIds,
+        checkoutSessionId: checkoutSession.id,
+        gateway: attempt.provider,
+        providerMode: attempt.providerMode === 'live' ? 'live' : 'mock',
+        paymentMethod: attempt.paymentMethod,
+        status: attempt.status as PaymentAttemptStatus,
+        currency: attempt.currency,
+        settlementCurrency: attempt.settlementCurrency,
+        settlementAmount: Number(attempt.settlementAmount ?? attempt.amount ?? grandTotal),
+        exchangeRateSnapshotId: attempt.exchangeRateSnapshotId ?? undefined,
+        channel: (attempt.channel as PaymentChannel | null) ?? undefined,
+        providerAccessCode: attempt.providerAccessCode ?? undefined,
+        authorizationUrl: attempt.authorizationUrl ?? undefined,
+        callbackUrl: attempt.callbackUrl ?? undefined,
+        bankAccount: this.asObject(attempt.bankAccount) as PaymentInitResult['bankAccount'],
+        paymentData: this.asObject(attempt.requestSnapshot),
+        nextAction: this.asObject(attempt.nextAction) as PaymentNextAction | undefined,
+        canRetry: ['FAILED', 'CANCELLED', 'EXPIRED'].includes(attempt.status),
+        canSimulate: this.isMockMode() && this.allowPaymentSimulation() && attempt.status !== 'PAID',
+        orderIds,
+        summary: {
+          items: summaryItems,
+          subtotal,
+          shippingCost,
+          discount,
+          grandTotal,
+          shippingName: String(summarySnapshot.shippingName ?? checkoutSession.customerName ?? ''),
+          shippingCity: String(summarySnapshot.shippingCity ?? shippingSnapshot.city ?? ''),
+          shippingState: String(summarySnapshot.shippingState ?? shippingSnapshot.state ?? ''),
+        },
+      };
+    }
+
     if (attempt.subjectType === PaymentSubjectType.CUSTOM_ORDER) {
       if (attempt.customOrderId) {
         const customOrder = await this.prisma.customOrder.findFirst({
@@ -2135,8 +2755,21 @@ export class PaymentService {
 
     const updatedAttempt = transitionResult.attempt;
 
+    if (updatedAttempt.subjectType === PaymentSubjectType.UNIFIED_CHECKOUT) {
+      if (transitionResult.transitionedToPaid) {
+        await this.finalizeUnifiedCheckoutAttempt(updatedAttempt.reference, userId);
+      } else if (
+        ['FAILED', 'CANCELLED', 'EXPIRED'].includes(updatedAttempt.status)
+      ) {
+        await this.releaseUnifiedCheckoutAttempt(updatedAttempt.reference, userId, {
+          reason: `ATTEMPT_${updatedAttempt.status}`,
+        });
+      }
+    }
+
     const linkedOrders =
-      transitionResult.transitionedToPaid
+      transitionResult.transitionedToPaid &&
+      updatedAttempt.subjectType === PaymentSubjectType.STANDARD_ORDER
         ? await this.prisma.order.findMany({
             where: {
               paymentReference: reference,
@@ -2225,6 +2858,52 @@ export class PaymentService {
           : 'Payment remains unresolved or failed',
       failureMessage: attempt.failureMessage ?? undefined,
       orderIds: orders.map((order) => order.id),
+    };
+  }
+
+  private buildUnifiedVerifyResult(
+    attempt: NonNullable<PaymentAttemptRecord>,
+    success: boolean,
+    finalized?: UnifiedCheckoutFinalizeResult,
+  ): PaymentVerifyResult {
+    const summary = finalized?.summary;
+    const amount = this.roundMoney(Number(summary?.grandTotal ?? attempt.amount ?? 0));
+
+    return {
+      success,
+      status: attempt.status as PaymentAttemptStatus,
+      paymentAttemptId: attempt.id,
+      reference: attempt.reference,
+      amount,
+      currency: summary?.currency ?? attempt.currency,
+      settlementCurrency: attempt.settlementCurrency,
+      settlementAmount: Number(attempt.settlementAmount ?? attempt.amount ?? amount),
+      exchangeRateSnapshotId: attempt.exchangeRateSnapshotId ?? undefined,
+      paidAt: attempt.confirmedAt?.toISOString(),
+      channel: attempt.channel ?? undefined,
+      gatewayResponse: success
+        ? this.getProviderModeForAttempt(attempt) === 'mock'
+          ? 'Mock payment verified successfully'
+          : 'Payment verified successfully'
+        : this.getProviderModeForAttempt(attempt) === 'mock'
+          ? 'Mock payment remains unresolved or failed'
+          : 'Payment remains unresolved or failed',
+      failureMessage: attempt.failureMessage ?? undefined,
+      orderIds: finalized?.orderIds ?? [],
+      customOrderIds: finalized?.customOrderIds ?? [],
+      checkoutSessionId: finalized?.checkoutSessionId ?? attempt.checkoutSessionId ?? undefined,
+      summary: summary
+        ? {
+            items: summary.items,
+            subtotal: summary.subtotal,
+            shippingCost: summary.shippingCost,
+            discount: summary.discount,
+            grandTotal: summary.grandTotal,
+            shippingName: summary.shippingName,
+            shippingCity: summary.shippingCity,
+            shippingState: summary.shippingState,
+          }
+        : undefined,
     };
   }
 
@@ -4404,6 +5083,1431 @@ export class PaymentService {
               ? String(payload.message)
               : null,
       authorization,
+    };
+  }
+
+  private resolveShippingCostForState(state: string): number {
+    const normalizedState = String(state ?? '').trim().toUpperCase();
+    if (!normalizedState) {
+      return CHECKOUT_DEFAULT_SHIPPING_RATE;
+    }
+
+    return CHECKOUT_SHIPPING_RATES[normalizedState] ?? CHECKOUT_DEFAULT_SHIPPING_RATE;
+  }
+
+  private buildPaymentReturnPath(reference: string, gateway: string) {
+    const safeGateway = String(gateway || 'PAYSTACK').trim() || 'PAYSTACK';
+    return `/bag/payment-return?reference=${encodeURIComponent(reference)}&gateway=${encodeURIComponent(safeGateway)}`;
+  }
+
+  private async loadUnifiedStandardLineDrafts(
+    userId: string,
+  ): Promise<UnifiedCheckoutStandardLineDraft[]> {
+    const cartItems = await this.prisma.cartItem.findMany({
+      where: { userId },
+      include: {
+        product: {
+          select: {
+            id: true,
+            brandId: true,
+            name: true,
+            thumbnail: true,
+            currency: true,
+            price: true,
+            salePrice: true,
+            saleStartAt: true,
+            saleEndAt: true,
+            isActive: true,
+            deletedAt: true,
+            standardCheckoutEnabled: true,
+            sizes: true,
+            colors: true,
+            totalStock: true,
+            sizeStock: true,
+            trackInventory: true,
+            allowBackorders: true,
+            sizingMode: true,
+            customMeasurementKeys: true,
+            brand: {
+              select: {
+                ownerId: true,
+                isStoreOpen: true,
+              },
+            },
+            variants: {
+              select: {
+                id: true,
+                size: true,
+                color: true,
+                price: true,
+                stock: true,
+              },
+            },
+          },
+        },
+      },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    if (cartItems.length === 0) {
+      return [];
+    }
+
+    const selfOwned = cartItems.find((item) => item.product?.brand?.ownerId === userId);
+    if (selfOwned) {
+      throw new BadRequestException('You cannot place orders on your own products');
+    }
+
+    return cartItems.map((item) => {
+      const product = item.product;
+      if (!product || !product.isActive || product.deletedAt) {
+        throw new BadRequestException('One or more cart products are no longer available');
+      }
+      if (product.standardCheckoutEnabled === false) {
+        throw new BadRequestException(`Product is not available for checkout: ${product.name}`);
+      }
+      if (!product.brand?.isStoreOpen) {
+        throw new BadRequestException(`Store is closed for product: ${product.name}`);
+      }
+
+      const variants = Array.isArray(product.variants) ? product.variants : [];
+      const hasVariantSizes = variants.some((variant) => Boolean(variant.size));
+      const hasVariantColors = variants.some((variant) => Boolean(variant.color));
+
+      if ((hasVariantSizes || product.sizes.length > 0) && !item.selectedSize) {
+        throw new BadRequestException(`Please select a size for ${product.name}`);
+      }
+      if (
+        item.selectedSize &&
+        product.sizes.length > 0 &&
+        !product.sizes.includes(item.selectedSize)
+      ) {
+        throw new BadRequestException(`Invalid size selected for ${product.name}`);
+      }
+
+      if ((hasVariantColors || product.colors.length > 0) && !item.selectedColor) {
+        throw new BadRequestException(`Please select a color for ${product.name}`);
+      }
+      if (
+        item.selectedColor &&
+        product.colors.length > 0 &&
+        !product.colors.includes(item.selectedColor)
+      ) {
+        throw new BadRequestException(`Invalid color selected for ${product.name}`);
+      }
+
+      const selectedVariant =
+        variants.length > 0
+          ? variants.find(
+              (variant) =>
+                (variant.size || null) === (item.selectedSize || null) &&
+                (variant.color || null) === (item.selectedColor || null),
+            )
+          : null;
+
+      if (variants.length > 0 && !selectedVariant) {
+        throw new BadRequestException(
+          `Selected variant is not available for ${product.name}`,
+        );
+      }
+
+      const quantity = Number(item.quantity ?? 0);
+      if (!Number.isFinite(quantity) || quantity <= 0) {
+        throw new BadRequestException(`Invalid quantity selected for ${product.name}`);
+      }
+
+      const baseUnitPrice = selectedVariant?.price
+        ? Number(selectedVariant.price)
+        : Number(product.price);
+      const onSale = this.isProductOnSale(product);
+      const unitPrice = selectedVariant?.price
+        ? baseUnitPrice
+        : onSale && product.salePrice
+          ? Number(product.salePrice)
+          : baseUnitPrice;
+
+      if (!Number.isFinite(unitPrice) || unitPrice < 0) {
+        throw new BadRequestException(`Invalid pricing detected for ${product.name}`);
+      }
+
+      const reserveInventory = Boolean(product.trackInventory) && !product.allowBackorders;
+      if (reserveInventory) {
+        if (selectedVariant) {
+          if (Number(selectedVariant.stock ?? 0) < quantity) {
+            throw new BadRequestException(
+              `Insufficient stock for ${product.name} (${item.selectedSize || ''} ${item.selectedColor || ''})`,
+            );
+          }
+        } else {
+          const sizeStock = this.parseSizeStock(product.sizeStock);
+          if (item.selectedSize && sizeStock && sizeStock[item.selectedSize] !== undefined) {
+            if (Number(sizeStock[item.selectedSize] ?? 0) < quantity) {
+              throw new BadRequestException(
+                `Only ${sizeStock[item.selectedSize] || 0} left for ${product.name} (${item.selectedSize})`,
+              );
+            }
+          } else if (Number(product.totalStock ?? 0) < quantity) {
+            throw new BadRequestException(
+              `Only ${product.totalStock} left for ${product.name}`,
+            );
+          }
+        }
+      }
+
+      const sizingMode = this.normalizeSizingModeValue(item.sizingMode ?? product.sizingMode ?? null);
+      const requiredMeasurementKeys = this.normalizeRequiredMeasurementKeys(
+        item.requiredMeasurementKeys,
+      );
+      const sizeFitData = this.asObject(item.sizeFitData);
+
+      return {
+        cartItemId: item.id,
+        brandId: product.brandId,
+        productId: product.id,
+        productName: product.name,
+        thumbnail: product.thumbnail ?? null,
+        quantity,
+        selectedSize: item.selectedSize ?? null,
+        selectedColor: item.selectedColor ?? null,
+        currency: String(product.currency || 'NGN').trim().toUpperCase(),
+        unitPrice: this.roundMoney(unitPrice),
+        lineTotal: this.roundMoney(unitPrice * quantity),
+        sizingMode,
+        requiredMeasurementKeys,
+        sizeFitData: Object.keys(sizeFitData).length > 0 ? sizeFitData : null,
+        variantId: selectedVariant?.id ?? null,
+        reserveInventory,
+        sourceProduct: {
+          id: product.id,
+          trackInventory: Boolean(product.trackInventory),
+          allowBackorders: Boolean(product.allowBackorders),
+          totalStock: Number(product.totalStock ?? 0),
+          sizeStock: this.parseSizeStock(product.sizeStock),
+          sizes: Array.isArray(product.sizes) ? product.sizes : [],
+          colors: Array.isArray(product.colors) ? product.colors : [],
+        },
+      };
+    });
+  }
+
+  private async loadUnifiedCustomLineDrafts(userId: string): Promise<{
+    lines: UnifiedCheckoutCustomLineDraft[];
+    blocked: UnifiedCheckoutBlockedCustomLine[];
+  }> {
+    const sessions = await this.prisma.customOrderCheckoutSession.findMany({
+      where: {
+        buyerId: userId,
+        customOrderId: null,
+      },
+      include: {
+        checkoutIntent: {
+          select: {
+            id: true,
+            configurationId: true,
+            currency: true,
+            requestSnapshotJson: true,
+            buyerPriceSummaryJson: true,
+            expiresAt: true,
+            consumedAt: true,
+          },
+        },
+      },
+      orderBy: { submittedAt: 'asc' },
+    });
+
+    if (sessions.length === 0) {
+      return {
+        lines: [],
+        blocked: [],
+      };
+    }
+
+    const configurationIds = Array.from(
+      new Set(sessions.map((session) => session.checkoutIntent.configurationId)),
+    );
+    const configurations = await this.prisma.customOrderConfiguration.findMany({
+      where: {
+        id: {
+          in: configurationIds,
+        },
+      },
+      select: {
+        id: true,
+        sourceType: true,
+        sourceId: true,
+        title: true,
+        brand: {
+          select: {
+            name: true,
+          },
+        },
+      },
+    });
+    const configurationById = new Map(
+      configurations.map((configuration) => [configuration.id, configuration]),
+    );
+
+    const now = Date.now();
+    const lines: UnifiedCheckoutCustomLineDraft[] = [];
+    const blocked: UnifiedCheckoutBlockedCustomLine[] = [];
+
+    for (const session of sessions) {
+      const configuration = configurationById.get(session.checkoutIntent.configurationId);
+      if (!configuration) {
+        blocked.push({
+          type: 'CUSTOM_ORDER',
+          sessionId: session.id,
+          checkoutIntentId: session.checkoutIntent.id,
+          sourceTitle: 'Custom order item',
+          reason: 'CONFIGURATION_NOT_FOUND',
+        });
+        continue;
+      }
+
+      const sourceTitle = String(configuration.title || 'Custom order item');
+      if (session.checkoutIntent.consumedAt) {
+        blocked.push({
+          type: 'CUSTOM_ORDER',
+          sessionId: session.id,
+          checkoutIntentId: session.checkoutIntent.id,
+          sourceTitle,
+          reason: 'INTENT_ALREADY_CONSUMED',
+        });
+        continue;
+      }
+
+      if (session.checkoutIntent.expiresAt.getTime() <= now) {
+        blocked.push({
+          type: 'CUSTOM_ORDER',
+          sessionId: session.id,
+          checkoutIntentId: session.checkoutIntent.id,
+          sourceTitle,
+          reason: 'PRICE_LOCK_EXPIRED',
+        });
+        continue;
+      }
+
+      const requestSnapshot = this.asObject(session.checkoutIntent.requestSnapshotJson);
+      const chartLock = this.asObject(requestSnapshot.chartLock);
+      const quoteStatus = String(chartLock.quoteStatus || '').trim().toUpperCase();
+      if (quoteStatus === 'MANUAL_QUOTE_REQUIRED') {
+        blocked.push({
+          type: 'CUSTOM_ORDER',
+          sessionId: session.id,
+          checkoutIntentId: session.checkoutIntent.id,
+          sourceTitle,
+          reason: 'MANUAL_QUOTE_REQUIRED',
+        });
+        continue;
+      }
+
+      const summary = this.asObject(session.checkoutIntent.buyerPriceSummaryJson);
+      const grandTotal = this.roundMoney(Number(summary.grandTotal ?? 0));
+      if (!Number.isFinite(grandTotal) || grandTotal <= 0) {
+        blocked.push({
+          type: 'CUSTOM_ORDER',
+          sessionId: session.id,
+          checkoutIntentId: session.checkoutIntent.id,
+          sourceTitle,
+          reason: 'INVALID_PRICE_LOCK',
+        });
+        continue;
+      }
+
+      lines.push({
+        sessionId: session.id,
+        checkoutIntentId: session.checkoutIntent.id,
+        sourceTitle,
+        sourceType: configuration.sourceType,
+        sourceId: configuration.sourceId,
+        sourcePrimaryMediaUrl: null,
+        sourceBrandName: configuration.brand?.name ?? null,
+        currency: String(session.checkoutIntent.currency || 'NGN').trim().toUpperCase(),
+        lineTotal: grandTotal,
+        unitPrice: grandTotal,
+      });
+    }
+
+    return {
+      lines,
+      blocked,
+    };
+  }
+
+  private normalizeSizingModeValue(value: unknown): SizingMode {
+    const normalized = String(value ?? '').trim().toUpperCase();
+    if (
+      normalized === 'RTW' ||
+      normalized === 'CUSTOM' ||
+      normalized === 'RTW_PLUS_CUSTOM' ||
+      normalized === 'RTW_PLUS_FITTINGS'
+    ) {
+      return normalized as SizingMode;
+    }
+    return SizingMode.NONE;
+  }
+
+  private normalizeRequiredMeasurementKeys(raw: unknown): string[] {
+    if (!Array.isArray(raw)) {
+      return [];
+    }
+    return Array.from(
+      new Set(
+        raw
+          .map((entry) => String(entry ?? '').trim())
+          .filter((entry) => entry.length > 0),
+      ),
+    );
+  }
+
+  private parseSizeStock(value: unknown): Record<string, number> | null {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return null;
+    }
+
+    const parsed: Record<string, number> = {};
+    for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+      const numeric = Number(raw);
+      if (Number.isFinite(numeric)) {
+        parsed[key] = numeric;
+      }
+    }
+
+    return Object.keys(parsed).length > 0 ? parsed : null;
+  }
+
+  private isProductOnSale(product: {
+    salePrice: Prisma.Decimal | null;
+    saleStartAt: Date | null;
+    saleEndAt: Date | null;
+  }) {
+    if (!product.salePrice) {
+      return false;
+    }
+
+    const now = Date.now();
+    if (product.saleStartAt && product.saleStartAt.getTime() > now) {
+      return false;
+    }
+    if (product.saleEndAt && product.saleEndAt.getTime() < now) {
+      return false;
+    }
+    return true;
+  }
+
+  private buildUnifiedSummaryFromSession(
+    checkoutSession: {
+      id: string;
+      currency: string;
+      customerName: string | null;
+      shippingAddressJson: unknown;
+      summaryJson: unknown;
+      lines?: Array<{
+        quantity: number;
+        unitPrice: Prisma.Decimal;
+        itemSnapshotJson: unknown;
+      }>;
+    },
+  ): UnifiedCheckoutFinalizeResult['summary'] {
+    const summarySnapshot = this.asObject(checkoutSession.summaryJson);
+    const shippingSnapshot = this.asObject(checkoutSession.shippingAddressJson);
+
+    const itemsFromSnapshot = Array.isArray(summarySnapshot.items)
+      ? summarySnapshot.items
+          .map((entry) => {
+            const item = this.asObject(entry);
+            const name = String(item.name ?? '').trim();
+            const quantity = Number(item.quantity ?? 0);
+            const price = Number(item.price ?? 0);
+            if (!name || !Number.isFinite(quantity) || quantity <= 0 || !Number.isFinite(price)) {
+              return null;
+            }
+            return {
+              name,
+              quantity,
+              price,
+            };
+          })
+          .filter((entry): entry is { name: string; quantity: number; price: number } =>
+            Boolean(entry),
+          )
+      : [];
+
+    const fallbackItems = Array.isArray(checkoutSession.lines)
+      ? checkoutSession.lines.map((line) => {
+          const snapshot = this.asObject(line.itemSnapshotJson);
+          return {
+            name: String(snapshot.name ?? snapshot.sourceTitle ?? 'Item'),
+            quantity: Number(line.quantity ?? 1),
+            price: Number(line.unitPrice ?? 0),
+          };
+        })
+      : [];
+
+    const items = itemsFromSnapshot.length > 0 ? itemsFromSnapshot : fallbackItems;
+    const subtotal = this.roundMoney(
+      Number(
+        summarySnapshot.subtotal ??
+          items.reduce(
+            (sum, item) => sum + Number(item.price ?? 0) * Number(item.quantity ?? 1),
+            0,
+          ),
+      ),
+    );
+    const shippingCost = this.roundMoney(Number(summarySnapshot.shippingCost ?? 0));
+    const discount = this.roundMoney(Number(summarySnapshot.discount ?? 0));
+    const grandTotal = this.roundMoney(
+      Number(summarySnapshot.grandTotal ?? subtotal + shippingCost - discount),
+    );
+
+    return {
+      currency: checkoutSession.currency,
+      items,
+      subtotal,
+      shippingCost,
+      discount,
+      grandTotal,
+      shippingName: String(summarySnapshot.shippingName ?? checkoutSession.customerName ?? ''),
+      shippingCity: String(summarySnapshot.shippingCity ?? shippingSnapshot.city ?? ''),
+      shippingState: String(summarySnapshot.shippingState ?? shippingSnapshot.state ?? ''),
+    };
+  }
+
+  private async reserveUnifiedStandardLineInventory(
+    tx: Prisma.TransactionClient,
+    checkoutSessionId: string,
+    checkoutSessionLineId: string,
+    line: UnifiedCheckoutStandardLineDraft,
+    expiresAt: Date,
+  ): Promise<void> {
+    if (!line.reserveInventory) {
+      return;
+    }
+
+    await tx.$queryRaw`SELECT "id" FROM "Product" WHERE "id" = ${line.productId}::uuid FOR UPDATE`;
+    const lockedProduct = await tx.product.findUnique({
+      where: { id: line.productId },
+      select: {
+        id: true,
+        name: true,
+        totalStock: true,
+        sizeStock: true,
+        trackInventory: true,
+        allowBackorders: true,
+      },
+    });
+
+    if (!lockedProduct) {
+      throw new BadRequestException(`Product is no longer available: ${line.productName}`);
+    }
+
+    if (!lockedProduct.trackInventory || lockedProduct.allowBackorders) {
+      return;
+    }
+
+    let nextSizeStock = this.parseSizeStock(lockedProduct.sizeStock);
+
+    if (line.variantId) {
+      await tx.$queryRaw`SELECT "id" FROM "ProductVariant" WHERE "id" = ${line.variantId}::uuid FOR UPDATE`;
+      const updatedVariant = await tx.productVariant.updateMany({
+        where: {
+          id: line.variantId,
+          productId: line.productId,
+          stock: { gte: line.quantity },
+        },
+        data: {
+          stock: {
+            decrement: line.quantity,
+          },
+        },
+      });
+
+      if (updatedVariant.count === 0) {
+        throw new BadRequestException(
+          `Insufficient stock for ${line.productName} (${line.selectedSize || ''} ${line.selectedColor || ''})`,
+        );
+      }
+
+      if (line.selectedSize && nextSizeStock && nextSizeStock[line.selectedSize] !== undefined) {
+        const available = Number(nextSizeStock[line.selectedSize] ?? 0);
+        if (available < line.quantity) {
+          throw new BadRequestException(
+            `Only ${available} left for ${line.productName} (${line.selectedSize})`,
+          );
+        }
+        nextSizeStock[line.selectedSize] = available - line.quantity;
+      }
+
+      if (Number(lockedProduct.totalStock ?? 0) < line.quantity) {
+        throw new BadRequestException(`Only ${lockedProduct.totalStock} left for ${line.productName}`);
+      }
+
+      await tx.product.update({
+        where: { id: line.productId },
+        data: {
+          totalStock: {
+            decrement: line.quantity,
+          },
+          ...(nextSizeStock ? { sizeStock: nextSizeStock } : {}),
+        },
+      });
+
+      await tx.inventoryReservation.create({
+        data: {
+          checkoutSessionId,
+          checkoutSessionLineId,
+          productId: line.productId,
+          productVariantId: line.variantId,
+          quantity: line.quantity,
+          reservedSize: line.selectedSize,
+          reservedColor: line.selectedColor,
+          status: InventoryReservationStatus.RESERVED,
+          expiresAt,
+        },
+      });
+      return;
+    }
+
+    if (line.selectedSize && nextSizeStock && nextSizeStock[line.selectedSize] !== undefined) {
+      const available = Number(nextSizeStock[line.selectedSize] ?? 0);
+      if (available < line.quantity) {
+        throw new BadRequestException(
+          `Only ${available} left for ${line.productName} (${line.selectedSize})`,
+        );
+      }
+      nextSizeStock[line.selectedSize] = available - line.quantity;
+    }
+
+    if (Number(lockedProduct.totalStock ?? 0) < line.quantity) {
+      throw new BadRequestException(`Only ${lockedProduct.totalStock} left for ${line.productName}`);
+    }
+
+    await tx.product.update({
+      where: { id: line.productId },
+      data: {
+        totalStock: {
+          decrement: line.quantity,
+        },
+        ...(nextSizeStock ? { sizeStock: nextSizeStock } : {}),
+      },
+    });
+
+    await tx.inventoryReservation.create({
+      data: {
+        checkoutSessionId,
+        checkoutSessionLineId,
+        productId: line.productId,
+        quantity: line.quantity,
+        reservedSize: line.selectedSize,
+        reservedColor: line.selectedColor,
+        status: InventoryReservationStatus.RESERVED,
+        expiresAt,
+      },
+    });
+  }
+
+  private async releaseUnifiedCheckoutAttempt(
+    reference: string,
+    userId: string,
+    options?: { reason?: string },
+  ): Promise<void> {
+    const reason = String(options?.reason ?? 'ATTEMPT_FAILED').trim() || 'ATTEMPT_FAILED';
+    const now = new Date();
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "reference" FROM "PaymentAttempt" WHERE "reference" = ${reference} FOR UPDATE`;
+      const attempt = await tx.paymentAttempt.findUnique({
+        where: { reference },
+      });
+
+      if (
+        !attempt ||
+        attempt.subjectType !== PaymentSubjectType.UNIFIED_CHECKOUT ||
+        !attempt.checkoutSessionId
+      ) {
+        return;
+      }
+
+      if (attempt.buyerId && userId && attempt.buyerId !== userId) {
+        throw new NotFoundException('Payment attempt not found');
+      }
+
+      await tx.$queryRaw`SELECT "id" FROM "CheckoutSession" WHERE "id" = ${attempt.checkoutSessionId}::uuid FOR UPDATE`;
+      const checkoutSession = await tx.checkoutSession.findUnique({
+        where: { id: attempt.checkoutSessionId },
+        include: {
+          lines: {
+            select: {
+              id: true,
+              lineType: true,
+              status: true,
+              checkoutIntentId: true,
+            },
+          },
+          inventoryReservations: {
+            where: {
+              status: InventoryReservationStatus.RESERVED,
+            },
+            select: {
+              id: true,
+              productId: true,
+              productVariantId: true,
+              quantity: true,
+              reservedSize: true,
+            },
+          },
+        },
+      });
+
+      if (!checkoutSession || checkoutSession.status === CheckoutSessionStatus.COMPLETED) {
+        return;
+      }
+
+      for (const reservation of checkoutSession.inventoryReservations) {
+        await tx.$queryRaw`SELECT "id" FROM "Product" WHERE "id" = ${reservation.productId}::uuid FOR UPDATE`;
+
+        const product = await tx.product.findUnique({
+          where: { id: reservation.productId },
+          select: {
+            id: true,
+            sizeStock: true,
+          },
+        });
+
+        if (!product) {
+          continue;
+        }
+
+        const nextSizeStock = this.parseSizeStock(product.sizeStock);
+        if (
+          reservation.reservedSize &&
+          nextSizeStock &&
+          nextSizeStock[reservation.reservedSize] !== undefined
+        ) {
+          nextSizeStock[reservation.reservedSize] =
+            Number(nextSizeStock[reservation.reservedSize] ?? 0) + reservation.quantity;
+        }
+
+        if (reservation.productVariantId) {
+          await tx.productVariant.updateMany({
+            where: {
+              id: reservation.productVariantId,
+              productId: reservation.productId,
+            },
+            data: {
+              stock: {
+                increment: reservation.quantity,
+              },
+            },
+          });
+        }
+
+        await tx.product.update({
+          where: { id: reservation.productId },
+          data: {
+            totalStock: {
+              increment: reservation.quantity,
+            },
+            ...(nextSizeStock ? { sizeStock: nextSizeStock } : {}),
+          },
+        });
+
+        await tx.inventoryReservation.update({
+          where: { id: reservation.id },
+          data: {
+            status: InventoryReservationStatus.RELEASED,
+            releasedAt: now,
+            releaseReason: reason,
+          },
+        });
+      }
+
+      const standardLineIdsToCancel = checkoutSession.lines
+        .filter((line) => line.lineType === CheckoutSessionLineType.STANDARD_ITEM)
+        .map((line) => line.id);
+      if (standardLineIdsToCancel.length > 0) {
+        await tx.checkoutSessionLine.updateMany({
+          where: {
+            id: {
+              in: standardLineIdsToCancel,
+            },
+          },
+          data: {
+            status: CheckoutSessionLineStatus.CANCELLED,
+          },
+        });
+      }
+
+      const customLineIdsToCancel = checkoutSession.lines
+        .filter((line) => line.lineType === CheckoutSessionLineType.CUSTOM_ORDER)
+        .map((line) => line.id);
+      if (customLineIdsToCancel.length > 0) {
+        await tx.checkoutSessionLine.updateMany({
+          where: {
+            id: {
+              in: customLineIdsToCancel,
+            },
+          },
+          data: {
+            status: CheckoutSessionLineStatus.CANCELLED,
+          },
+        });
+      }
+
+      const customCheckoutIntentIds = Array.from(
+        new Set(
+          checkoutSession.lines
+            .map((line) => String(line.checkoutIntentId ?? '').trim())
+            .filter(Boolean),
+        ),
+      );
+      if (customCheckoutIntentIds.length > 0) {
+        await tx.customOrderCheckoutSession.updateMany({
+          where: {
+            checkoutIntentId: {
+              in: customCheckoutIntentIds,
+            },
+            customOrderId: null,
+          },
+          data: {
+            status: CustomOrderCheckoutStatus.ABANDONED,
+            abandonedAt: now,
+            lastAttemptId: attempt.id,
+            lastAttemptReference: attempt.reference,
+            lastAttemptStatus: attempt.status,
+          },
+        });
+      }
+
+      const failedStatus =
+        reason.includes('EXPIRED')
+          ? CheckoutSessionStatus.EXPIRED
+          : reason.includes('CANCELLED')
+            ? CheckoutSessionStatus.CANCELLED
+            : CheckoutSessionStatus.FAILED;
+
+      await tx.checkoutSession.update({
+        where: { id: checkoutSession.id },
+        data: {
+          status: failedStatus,
+          failedAt: now,
+          failureReason: reason,
+        },
+      });
+    });
+  }
+
+  private async finalizeUnifiedCheckoutAttempt(
+    reference: string,
+    userId: string,
+  ): Promise<UnifiedCheckoutFinalizeResult | null> {
+    const now = new Date();
+
+    const finalized = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "reference" FROM "PaymentAttempt" WHERE "reference" = ${reference} FOR UPDATE`;
+      const attempt = await tx.paymentAttempt.findUnique({
+        where: { reference },
+      });
+
+      if (
+        !attempt ||
+        attempt.subjectType !== PaymentSubjectType.UNIFIED_CHECKOUT ||
+        !attempt.checkoutSessionId
+      ) {
+        return null;
+      }
+
+      if (attempt.buyerId && userId && attempt.buyerId !== userId) {
+        throw new NotFoundException('Payment attempt not found');
+      }
+
+      if (attempt.status !== 'PAID') {
+        return null;
+      }
+
+      await tx.$queryRaw`SELECT "id" FROM "CheckoutSession" WHERE "id" = ${attempt.checkoutSessionId}::uuid FOR UPDATE`;
+      const checkoutSession = await tx.checkoutSession.findUnique({
+        where: { id: attempt.checkoutSessionId },
+        include: {
+          lines: {
+            orderBy: { lineOrder: 'asc' },
+          },
+        },
+      });
+
+      if (!checkoutSession) {
+        return null;
+      }
+
+      if (checkoutSession.buyerId && attempt.buyerId && checkoutSession.buyerId !== attempt.buyerId) {
+        throw new NotFoundException('Checkout session not found for this payment attempt');
+      }
+
+      const summary = this.buildUnifiedSummaryFromSession(checkoutSession);
+
+      const existingOrderIds = Array.from(
+        new Set(
+          checkoutSession.lines
+            .map((line) => String(line.orderId ?? '').trim())
+            .filter(Boolean),
+        ),
+      );
+      const existingCustomOrderIds = Array.from(
+        new Set(
+          checkoutSession.lines
+            .map((line) => String(line.customOrderId ?? '').trim())
+            .filter(Boolean),
+        ),
+      );
+
+      if (checkoutSession.status === CheckoutSessionStatus.COMPLETED) {
+        return {
+          checkoutSessionId: checkoutSession.id,
+          orderIds: existingOrderIds,
+          customOrderIds: existingCustomOrderIds,
+          summary,
+        } satisfies UnifiedCheckoutFinalizeResult;
+      }
+
+      const standardPendingLines = checkoutSession.lines.filter(
+        (line) =>
+          line.lineType === CheckoutSessionLineType.STANDARD_ITEM &&
+          !line.orderId &&
+          line.status !== CheckoutSessionLineStatus.CANCELLED,
+      );
+      const customPendingLines = checkoutSession.lines.filter(
+        (line) =>
+          line.lineType === CheckoutSessionLineType.CUSTOM_ORDER &&
+          !line.customOrderId &&
+          line.status !== CheckoutSessionLineStatus.CANCELLED,
+      );
+
+      const shippingAddress = this.asObject(checkoutSession.shippingAddressJson);
+      const contactInfo = this.asObject(checkoutSession.contactInfoJson);
+      const shippingState = String(shippingAddress.state ?? '').trim();
+      const perBrandShippingCost = this.resolveShippingCostForState(shippingState);
+
+      const standardLinesByBrand = new Map<string, typeof standardPendingLines>();
+      for (const line of standardPendingLines) {
+        const brandId = String(line.brandId ?? '').trim();
+        if (!brandId) {
+          throw new BadRequestException('Standard checkout line is missing brand information');
+        }
+        if (!line.productId) {
+          throw new BadRequestException('Standard checkout line is missing product information');
+        }
+
+        const group = standardLinesByBrand.get(brandId) ?? [];
+        group.push(line);
+        standardLinesByBrand.set(brandId, group);
+      }
+
+      const createdOrderIds: string[] = [];
+
+      for (const [brandId, brandLines] of standardLinesByBrand.entries()) {
+        const subtotal = this.roundMoney(
+          brandLines.reduce((sum, line) => sum + Number(line.lineTotal ?? 0), 0),
+        );
+        const shippingCost = this.roundMoney(perBrandShippingCost);
+        const totalAmount = this.roundMoney(subtotal + shippingCost);
+
+        const orderItemsPayload = brandLines.map((line) => {
+          const snapshot = this.asObject(line.itemSnapshotJson);
+          const sizingMode = this.normalizeSizingModeValue(snapshot.sizingMode);
+          return {
+            productId: line.productId,
+            name: String(snapshot.name ?? 'Item'),
+            thumbnail: snapshot.thumbnail ? String(snapshot.thumbnail) : null,
+            price: this.roundMoney(Number(line.unitPrice ?? 0)),
+            quantity: Number(line.quantity ?? 1),
+            selectedSize: line.selectedSize ?? null,
+            selectedColor: line.selectedColor ?? null,
+            sizingMode,
+            requiredMeasurementKeys: this.normalizeRequiredMeasurementKeys(
+              snapshot.requiredMeasurementKeys,
+            ),
+            sizeFitSnapshot: this.asObject(snapshot.sizeFitData),
+          };
+        });
+
+        const order = await tx.order.create({
+          data: {
+            id: uuidv4(),
+            brandId,
+            buyerId: attempt.buyerId,
+            customerName:
+              String(checkoutSession.customerName ?? '').trim() ||
+              String(contactInfo.customerName ?? 'Customer').trim() ||
+              'Customer',
+            shippingAddress: shippingAddress as Prisma.InputJsonValue,
+            contactInfo: contactInfo as Prisma.InputJsonValue,
+            items: orderItemsPayload as Prisma.InputJsonValue,
+            totalAmount: new Prisma.Decimal(totalAmount.toFixed(2)),
+            shippingCost: new Prisma.Decimal(shippingCost.toFixed(2)),
+            discountAmount: new Prisma.Decimal('0.00'),
+            currency: checkoutSession.currency,
+            status: 'PENDING',
+            paymentStatus: PaymentStatus.PAID,
+            paymentMethod: attempt.paymentMethod,
+            paymentReference: attempt.reference,
+            paymentGateway: attempt.provider,
+            unifiedCheckoutSessionId: checkoutSession.id,
+            paidAt: attempt.confirmedAt ?? now,
+          },
+        });
+
+        if (orderItemsPayload.length > 0) {
+          await tx.orderItem.createMany({
+            data: orderItemsPayload.map((item) => ({
+              id: uuidv4(),
+              orderId: order.id,
+              productId: String(item.productId ?? ''),
+              brandId,
+              buyerId: attempt.buyerId,
+              quantity: Number(item.quantity ?? 1),
+              currency: checkoutSession.currency,
+              unitPrice: new Prisma.Decimal(Number(item.price ?? 0).toFixed(2)),
+              totalPrice: new Prisma.Decimal(
+                this.roundMoney(Number(item.price ?? 0) * Number(item.quantity ?? 1)).toFixed(2),
+              ),
+              selectedSize: item.selectedSize,
+              selectedColor: item.selectedColor,
+              sizingMode: item.sizingMode,
+              requiredMeasurementKeys: item.requiredMeasurementKeys,
+              sizeFitSnapshot:
+                Object.keys(item.sizeFitSnapshot).length > 0
+                  ? (item.sizeFitSnapshot as Prisma.InputJsonValue)
+                  : null,
+              thumbnailAtPurchase: item.thumbnail,
+              nameAtPurchase: item.name,
+            })),
+          });
+        }
+
+        await tx.checkoutSessionLine.updateMany({
+          where: {
+            id: {
+              in: brandLines.map((line) => line.id),
+            },
+          },
+          data: {
+            orderId: order.id,
+            status: CheckoutSessionLineStatus.COMMITTED,
+          },
+        });
+
+        createdOrderIds.push(order.id);
+      }
+
+      const customOrderIds: string[] = [];
+      const customIntentIds = Array.from(
+        new Set(
+          customPendingLines
+            .map((line) => String(line.checkoutIntentId ?? '').trim())
+            .filter(Boolean),
+        ),
+      );
+
+      const intents = customIntentIds.length
+        ? await tx.customOrderCheckoutIntent.findMany({
+            where: {
+              id: {
+                in: customIntentIds,
+              },
+            },
+          })
+        : [];
+      const intentById = new Map(intents.map((intent) => [intent.id, intent]));
+
+      const configIds = Array.from(new Set(intents.map((intent) => intent.configurationId)));
+      const configurations = configIds.length
+        ? await tx.customOrderConfiguration.findMany({
+            where: {
+              id: {
+                in: configIds,
+              },
+            },
+            select: {
+              id: true,
+              brandId: true,
+              sourceType: true,
+              sourceId: true,
+            },
+          })
+        : [];
+      const configurationById = new Map(
+        configurations.map((configuration) => [configuration.id, configuration]),
+      );
+
+      const versionIds = Array.from(
+        new Set(intents.map((intent) => intent.configurationVersionId)),
+      );
+      const versions = versionIds.length
+        ? await tx.customOrderConfigurationVersion.findMany({
+            where: {
+              id: {
+                in: versionIds,
+              },
+            },
+            select: {
+              id: true,
+              snapshotJson: true,
+            },
+          })
+        : [];
+      const versionById = new Map(versions.map((version) => [version.id, version]));
+
+      for (const line of customPendingLines) {
+        const checkoutIntentId = String(line.checkoutIntentId ?? '').trim();
+        if (!checkoutIntentId) {
+          continue;
+        }
+
+        const existingOrder = await tx.customOrder.findUnique({
+          where: { checkoutIntentId },
+          select: { id: true },
+        });
+
+        let customOrderId = existingOrder?.id ?? null;
+        if (!customOrderId) {
+          const intent = intentById.get(checkoutIntentId);
+          if (!intent) {
+            throw new BadRequestException('Custom checkout intent no longer exists');
+          }
+
+          const configuration = configurationById.get(intent.configurationId);
+          const version = versionById.get(intent.configurationVersionId);
+          if (!configuration || !version) {
+            throw new BadRequestException('Custom checkout configuration is no longer available');
+          }
+
+          await tx.customOrderCheckoutIntent.updateMany({
+            where: {
+              id: intent.id,
+              consumedAt: null,
+            },
+            data: {
+              consumedAt: now,
+            },
+          });
+
+          const createData = this.buildUnifiedCustomOrderCreateData({
+            checkoutSession,
+            line,
+            attempt,
+            intent,
+            configuration,
+            versionSnapshot: this.asObject(version.snapshotJson),
+            acceptedAt: attempt.confirmedAt ?? now,
+          });
+
+          try {
+            const created = await tx.customOrder.create({
+              data: createData,
+              select: {
+                id: true,
+              },
+            });
+            customOrderId = created.id;
+          } catch (error) {
+            if (
+              error instanceof Prisma.PrismaClientKnownRequestError &&
+              error.code === 'P2002'
+            ) {
+              const duplicate = await tx.customOrder.findUnique({
+                where: { checkoutIntentId },
+                select: { id: true },
+              });
+              customOrderId = duplicate?.id ?? null;
+            } else {
+              throw error;
+            }
+          }
+        }
+
+        if (!customOrderId) {
+          continue;
+        }
+
+        await tx.checkoutSessionLine.update({
+          where: { id: line.id },
+          data: {
+            customOrderId,
+            status: CheckoutSessionLineStatus.COMMITTED,
+          },
+        });
+
+        await tx.customOrderCheckoutSession.updateMany({
+          where: {
+            checkoutIntentId,
+          },
+          data: {
+            customOrderId,
+            status: CustomOrderCheckoutStatus.PAID_CONFIRMED,
+            paidConfirmedAt: attempt.confirmedAt ?? now,
+            lastAttemptId: attempt.id,
+            lastAttemptReference: attempt.reference,
+            lastAttemptStatus: attempt.status,
+            abandonedAt: null,
+          },
+        });
+
+        customOrderIds.push(customOrderId);
+      }
+
+      await tx.inventoryReservation.updateMany({
+        where: {
+          checkoutSessionId: checkoutSession.id,
+          status: InventoryReservationStatus.RESERVED,
+        },
+        data: {
+          status: InventoryReservationStatus.COMMITTED,
+          committedAt: attempt.confirmedAt ?? now,
+        },
+      });
+
+      const cartItemIdsToDelete = Array.from(
+        new Set(
+          standardPendingLines
+            .map((line) => String(line.cartItemId ?? '').trim())
+            .filter(Boolean),
+        ),
+      );
+      if (cartItemIdsToDelete.length > 0 && attempt.buyerId) {
+        await tx.cartItem.deleteMany({
+          where: {
+            userId: attempt.buyerId,
+            id: {
+              in: cartItemIdsToDelete,
+            },
+          },
+        });
+      }
+
+      const finalOrderIds = Array.from(new Set([...existingOrderIds, ...createdOrderIds]));
+      const finalCustomOrderIds = Array.from(
+        new Set([...existingCustomOrderIds, ...customOrderIds]),
+      );
+
+      await tx.paymentAttempt.update({
+        where: { id: attempt.id },
+        data: {
+          orderIds: finalOrderIds,
+        },
+      });
+
+      await tx.checkoutSession.update({
+        where: { id: checkoutSession.id },
+        data: {
+          status: CheckoutSessionStatus.COMPLETED,
+          completedAt: attempt.confirmedAt ?? now,
+          failedAt: null,
+          failureReason: null,
+        },
+      });
+
+      return {
+        checkoutSessionId: checkoutSession.id,
+        orderIds: finalOrderIds,
+        customOrderIds: finalCustomOrderIds,
+        summary,
+      } satisfies UnifiedCheckoutFinalizeResult;
+    });
+
+    if (finalized && finalized.orderIds.length > 0) {
+      const linkedOrders = await this.prisma.order.findMany({
+        where: {
+          id: {
+            in: finalized.orderIds,
+          },
+        },
+        select: {
+          id: true,
+          brandId: true,
+          buyerId: true,
+          customerName: true,
+          totalAmount: true,
+          brand: {
+            select: {
+              ownerId: true,
+              name: true,
+            },
+          },
+        },
+      });
+
+      if (linkedOrders.length > 0) {
+        await this.standardOrderFinanceSyncService.syncPaidOrdersByReferences([reference]);
+        const attemptForNotification = await this.prisma.paymentAttempt.findUnique({
+          where: { reference },
+        });
+        if (attemptForNotification) {
+          await this.notifyFinanceAdminsOfStandardPayment(attemptForNotification, linkedOrders);
+        }
+        await this.notifyOrderPlacementAfterPayment(linkedOrders);
+      }
+    }
+
+    return finalized;
+  }
+
+  private buildUnifiedCustomOrderCreateData(params: {
+    checkoutSession: {
+      id: string;
+      buyerId: string;
+      customerName: string | null;
+      shippingAddressJson: unknown;
+    };
+    line: {
+      id: string;
+      itemSnapshotJson: unknown;
+    };
+    attempt: {
+      paymentMethod: PaymentMethod;
+      reference: string;
+      confirmedAt: Date | null;
+    };
+    intent: {
+      id: string;
+      requestSnapshotJson: Prisma.JsonValue;
+      buyerPriceSummaryJson: Prisma.JsonValue;
+      configurationId: string;
+      configurationVersionId: string;
+      currency: string;
+    };
+    configuration: {
+      id: string;
+      brandId: string;
+      sourceType: any;
+      sourceId: string;
+    };
+    versionSnapshot: Record<string, any>;
+    acceptedAt: Date;
+  }): Prisma.CustomOrderUncheckedCreateInput {
+    const lineSnapshot = this.asObject(params.line.itemSnapshotJson);
+    const requestSnapshot = this.asObject(params.intent.requestSnapshotJson);
+    const buyerSummary = this.asObject(params.intent.buyerPriceSummaryJson);
+    const contactInfo = this.asObject(requestSnapshot.contactInfo);
+    const shippingAddress = this.asObject(
+      Object.keys(this.asObject(requestSnapshot.shippingAddress)).length > 0
+        ? requestSnapshot.shippingAddress
+        : params.checkoutSession.shippingAddressJson,
+    );
+    const measurementSnapshot = this.asObject(requestSnapshot.measurementValues);
+
+    const baseProductionCharge = this.roundMoney(
+      Number(params.versionSnapshot.baseProductionCharge ?? 0),
+    );
+    const fabricCostPerYard = this.roundMoney(
+      Number(params.versionSnapshot.fabricCostPerYard ?? 0),
+    );
+    const deliveryMinDays = Math.max(0, Number(params.versionSnapshot.deliveryMinDays ?? 0));
+    const deliveryMaxDays = Math.max(
+      deliveryMinDays,
+      Number(params.versionSnapshot.deliveryMaxDays ?? deliveryMinDays),
+    );
+    const productionLeadDays = Math.max(
+      0,
+      Number(params.versionSnapshot.productionLeadDays ?? 0),
+    );
+
+    const fabricCharge = this.roundMoney(Number(buyerSummary.fabricCharge ?? 0));
+    const computedYards = this.roundMoney(
+      Number(
+        buyerSummary.computedYards ??
+          buyerSummary.fabricYards ??
+          (fabricCostPerYard > 0 ? fabricCharge / fabricCostPerYard : 0),
+      ),
+    );
+
+    const rushFee = this.roundMoney(Number(buyerSummary.rushFee ?? 0));
+    const customerName =
+      String(requestSnapshot.customerName ?? '').trim() ||
+      String(contactInfo.customerName ?? '').trim() ||
+      String(params.checkoutSession.customerName ?? '').trim() ||
+      'Customer';
+    const acceptedAt = params.acceptedAt;
+    const promisedProductionAt = new Date(
+      acceptedAt.getTime() + productionLeadDays * 24 * 60 * 60 * 1000,
+    );
+    const promisedDispatchAt = promisedProductionAt;
+    const promisedDeliveryAt = new Date(
+      promisedDispatchAt.getTime() + deliveryMaxDays * 24 * 60 * 60 * 1000,
+    );
+    const retentionUntil = new Date(acceptedAt.getTime() + 180 * 24 * 60 * 60 * 1000);
+
+    return {
+      brandId: params.configuration.brandId,
+      buyerId: params.checkoutSession.buyerId,
+      sourceType: params.configuration.sourceType,
+      sourceId: params.configuration.sourceId,
+      sourceTitleSnapshot:
+        String(lineSnapshot.sourceTitle ?? '').trim() || 'Custom order item',
+      sourceSlugSnapshot: null,
+      sourcePrimaryMediaUrlSnapshot:
+        lineSnapshot.sourcePrimaryMediaUrl != null
+          ? String(lineSnapshot.sourcePrimaryMediaUrl)
+          : null,
+      sourceBrandNameSnapshot:
+        lineSnapshot.sourceBrandName != null ? String(lineSnapshot.sourceBrandName) : null,
+      configurationId: params.configuration.id,
+      configurationVersionId: params.intent.configurationVersionId,
+      status: CustomOrderStatus.ACCEPTED,
+      paymentStatus: PaymentStatus.PAID,
+      paymentMethod: params.attempt.paymentMethod,
+      paymentReference: params.attempt.reference,
+      unifiedCheckoutSessionId: params.checkoutSession.id,
+      currency: params.intent.currency,
+      checkoutIntentId: params.intent.id,
+      baseProductionChargeSnapshot: new Prisma.Decimal(baseProductionCharge.toFixed(2)),
+      fabricCostPerYardSnapshot: new Prisma.Decimal(fabricCostPerYard.toFixed(2)),
+      computedYards: new Prisma.Decimal(computedYards.toFixed(2)),
+      matchedFabricRuleId:
+        typeof requestSnapshot.matchedFabricRuleId === 'string'
+          ? requestSnapshot.matchedFabricRuleId
+          : null,
+      internalPriceBreakdownJson: {
+        source: 'UNIFIED_CHECKOUT',
+        checkoutSessionId: params.checkoutSession.id,
+        checkoutSessionLineId: params.line.id,
+        chartLock: this.asObject(requestSnapshot.chartLock),
+        fabricCharge,
+        rushFee,
+      } as Prisma.InputJsonValue,
+      buyerPriceSummaryJson: params.intent.buyerPriceSummaryJson,
+      measurementSnapshotJson:
+        Object.keys(measurementSnapshot).length > 0
+          ? (measurementSnapshot as Prisma.InputJsonValue)
+          : ({ } as Prisma.InputJsonValue),
+      measurementConfirmedAt:
+        typeof requestSnapshot.submittedAt === 'string' && requestSnapshot.submittedAt.trim().length > 0
+          ? new Date(requestSnapshot.submittedAt)
+          : acceptedAt,
+      rushSelected: Boolean(requestSnapshot.rushSelected),
+      rushFeeSnapshot:
+        Number.isFinite(rushFee) && rushFee > 0
+          ? new Prisma.Decimal(rushFee.toFixed(2))
+          : null,
+      productionLeadDaysSnapshot: productionLeadDays,
+      deliveryMinDaysSnapshot: deliveryMinDays,
+      deliveryMaxDaysSnapshot: deliveryMaxDays,
+      shippingAddressJson: shippingAddress as Prisma.InputJsonValue,
+      contactInfoJson: {
+        ...contactInfo,
+        customerName,
+      } as Prisma.InputJsonValue,
+      idempotencyKey:
+        typeof requestSnapshot.submissionIdempotencyKey === 'string'
+          ? requestSnapshot.submissionIdempotencyKey
+          : null,
+      measurementRetentionUntil: retentionUntil,
+      acceptedAt,
+      promisedProductionAt,
+      promisedDispatchAt,
+      promisedDeliveryAt,
+      currentProgressStage: CustomOrderProgressStage.ORDER_RECEIVED,
+      currentProgressStageEnteredAt: acceptedAt,
+      lastBrandProgressUpdateAt: acceptedAt,
     };
   }
 

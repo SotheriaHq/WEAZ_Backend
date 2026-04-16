@@ -115,6 +115,7 @@ model User {
   ordersAsBuyer           Order[]                         @relation("OrderBuyer")
   customOrdersAsBuyer     CustomOrder[]                   @relation("CustomOrderBuyer")
   customOrderCheckoutSessions CustomOrderCheckoutSession[]
+  checkoutSessions        CheckoutSession[]
   sizeFitProfile          UserSizeFitProfile?
   sizeFitSharesOwned      UserSizeFitShare[]             @relation("SizeFitOwnerShares")
   sizeFitSharesReceived   UserSizeFitShare[]             @relation("SizeFitViewerShares")
@@ -2003,11 +2004,14 @@ model Order {
   paymentMethod  PaymentMethod @default(PENDING_SELECTION)
   paymentReference String?
   paymentGateway   String?
+  unifiedCheckoutSessionId String? @db.Uuid
+  unifiedCheckoutSession   CheckoutSession? @relation(fields: [unifiedCheckoutSessionId], references: [id], onDelete: SetNull)
   paidAt           DateTime?
   deliveredAt      DateTime?
   buyerConfirmedDeliveryAt DateTime?
   escrowHold      EscrowHold?
   messageThread    MessageThread?
+  checkoutSessionLines CheckoutSessionLine[]
   
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
@@ -2016,6 +2020,7 @@ model Order {
   @@index([brandId, status])
   @@index([buyerId])
   @@index([paymentReference])
+  @@index([unifiedCheckoutSessionId])
 }
 
 model EscrowHold {
@@ -2225,6 +2230,8 @@ model CustomOrder {
   paymentStatus                 PaymentStatus             @default(PENDING)
   paymentMethod                 PaymentMethod             @default(PENDING_SELECTION)
   paymentReference              String?
+  unifiedCheckoutSessionId      String?                   @db.Uuid
+  unifiedCheckoutSession        CheckoutSession?          @relation(fields: [unifiedCheckoutSessionId], references: [id], onDelete: SetNull)
   idempotencyKey                String?
   currency                      String                    @default("NGN")
   checkoutIntentId              String?                   @db.Uuid
@@ -2276,10 +2283,12 @@ model CustomOrder {
   analyticsEvents               CustomOrderAnalyticsEvent[]
   messageThread                 MessageThread?
   checkoutSession               CustomOrderCheckoutSession?
+  checkoutSessionLines          CheckoutSessionLine[]
 
   @@index([brandId, status, createdAt])
   @@index([buyerId, status, createdAt])
   @@index([paymentReference])
+  @@index([unifiedCheckoutSessionId])
   @@unique([checkoutIntentId])
   @@index([sourceType, sourceId])
   @@index([currentProgressStage, lastBrandProgressUpdateAt])
@@ -2428,6 +2437,7 @@ model CustomOrderCheckoutIntent {
   orders                CustomOrder[]
   checkoutSession       CustomOrderCheckoutSession?
   paymentAttempts       PaymentAttempt[]
+  checkoutSessionLines  CheckoutSessionLine[]
 
   @@index([buyerId, expiresAt])
   @@index([configurationId, configurationVersionId])
@@ -2459,6 +2469,105 @@ model CustomOrderCheckoutSession {
   @@unique([checkoutIntentId])
   @@index([buyerId, status, createdAt])
   @@index([customOrderId])
+}
+
+model CheckoutSession {
+  id                   String                 @id @default(uuid()) @db.Uuid
+  buyerId              String                 @db.Uuid
+  buyer                User                   @relation(fields: [buyerId], references: [id], onDelete: Restrict)
+  status               CheckoutSessionStatus  @default(PENDING_PAYMENT)
+  idempotencyKey       String
+  paymentMethod        PaymentMethod          @default(PENDING_SELECTION)
+  shippingAddressJson  Json?
+  contactInfoJson      Json?
+  customerName         String?
+  currency             String                 @default("NGN")
+  subtotal             Decimal                @db.Decimal(10, 2)
+  shippingCost         Decimal                @default(0) @db.Decimal(10, 2)
+  discountAmount       Decimal                @default(0) @db.Decimal(10, 2)
+  grandTotal           Decimal                @db.Decimal(10, 2)
+  summaryJson          Json?
+  blockedLinesJson     Json?
+  expiresAt            DateTime
+  completedAt          DateTime?
+  failedAt             DateTime?
+  failureReason        String?
+  createdAt            DateTime               @default(now())
+  updatedAt            DateTime               @updatedAt
+  paymentAttempt       PaymentAttempt?        @relation("UnifiedCheckoutSessionAttempt")
+  lines                CheckoutSessionLine[]
+  inventoryReservations InventoryReservation[]
+  orders               Order[]
+  customOrders         CustomOrder[]
+
+  @@unique([buyerId, idempotencyKey])
+  @@index([buyerId, status, createdAt])
+  @@index([status, expiresAt])
+}
+
+model CheckoutSessionLine {
+  id                   String                  @id @default(uuid()) @db.Uuid
+  checkoutSessionId    String                  @db.Uuid
+  checkoutSession      CheckoutSession         @relation(fields: [checkoutSessionId], references: [id], onDelete: Cascade)
+  lineType             CheckoutSessionLineType
+  status               CheckoutSessionLineStatus @default(PENDING)
+  lineOrder            Int                     @default(0)
+  brandId              String?                 @db.Uuid
+  productId            String?                 @db.Uuid
+  product              Product?                @relation(fields: [productId], references: [id], onDelete: SetNull)
+  checkoutIntentId     String?                 @db.Uuid
+  checkoutIntent       CustomOrderCheckoutIntent? @relation(fields: [checkoutIntentId], references: [id], onDelete: SetNull)
+  customOrderId        String?                 @db.Uuid
+  customOrder          CustomOrder?            @relation(fields: [customOrderId], references: [id], onDelete: SetNull)
+  orderId              String?                 @db.Uuid
+  order                Order?                  @relation(fields: [orderId], references: [id], onDelete: SetNull)
+  cartItemId           String?                 @db.Uuid
+  cartItem             CartItem?               @relation(fields: [cartItemId], references: [id], onDelete: SetNull)
+  quantity             Int                     @default(1)
+  unitPrice            Decimal                 @db.Decimal(10, 2)
+  lineTotal            Decimal                 @db.Decimal(10, 2)
+  currency             String                  @default("NGN")
+  selectedSize         String?
+  selectedColor        String?
+  itemSnapshotJson     Json
+  metadataJson         Json?
+  createdAt            DateTime                @default(now())
+  updatedAt            DateTime                @updatedAt
+  inventoryReservations InventoryReservation[]
+
+  @@index([checkoutSessionId, lineOrder])
+  @@index([checkoutIntentId])
+  @@index([productId])
+  @@index([orderId])
+  @@index([customOrderId])
+  @@index([cartItemId])
+}
+
+model InventoryReservation {
+  id                    String                    @id @default(uuid()) @db.Uuid
+  checkoutSessionId     String                    @db.Uuid
+  checkoutSession       CheckoutSession           @relation(fields: [checkoutSessionId], references: [id], onDelete: Cascade)
+  checkoutSessionLineId String?                   @db.Uuid
+  checkoutSessionLine   CheckoutSessionLine?      @relation(fields: [checkoutSessionLineId], references: [id], onDelete: SetNull)
+  productId             String                    @db.Uuid
+  product               Product                   @relation(fields: [productId], references: [id], onDelete: Cascade)
+  productVariantId      String?                   @db.Uuid
+  productVariant        ProductVariant?           @relation(fields: [productVariantId], references: [id], onDelete: SetNull)
+  quantity              Int
+  reservedSize          String?
+  reservedColor         String?
+  status                InventoryReservationStatus @default(RESERVED)
+  expiresAt             DateTime
+  committedAt           DateTime?
+  releasedAt            DateTime?
+  releaseReason         String?
+  createdAt             DateTime                  @default(now())
+  updatedAt             DateTime                  @updatedAt
+
+  @@index([checkoutSessionId, status])
+  @@index([checkoutSessionLineId])
+  @@index([productId, status, expiresAt])
+  @@index([productVariantId, status, expiresAt])
 }
 
 model CustomOrderProgressEvent {
@@ -2615,6 +2724,8 @@ model PaymentAttempt {
   id               String       @id @default(uuid()) @db.Uuid
   buyerId          String?      @db.Uuid
   subjectType      PaymentSubjectType @default(STANDARD_ORDER)
+  checkoutSessionId String?     @unique @db.Uuid
+  checkoutSession   CheckoutSession? @relation("UnifiedCheckoutSessionAttempt", fields: [checkoutSessionId], references: [id], onDelete: SetNull)
   customOrderId    String?      @db.Uuid
   checkoutIntentId String?      @db.Uuid
   checkoutIntent   CustomOrderCheckoutIntent? @relation(fields: [checkoutIntentId], references: [id], onDelete: SetNull)
@@ -2659,6 +2770,7 @@ model PaymentAttempt {
 
   @@index([buyerId, createdAt])
   @@index([status, createdAt])
+  @@index([subjectType, checkoutSessionId])
   @@index([subjectType, customOrderId])
   @@index([subjectType, checkoutIntentId])
   @@index([savedPaymentMethodId])
@@ -2921,6 +3033,37 @@ enum PaymentSubjectType {
   STANDARD_ORDER
   CUSTOM_ORDER
   UNIFIED_CHECKOUT
+}
+
+enum CheckoutSessionStatus {
+  PENDING_PAYMENT
+  PAYMENT_PROCESSING
+  PAID
+  COMPLETED
+  FAILED
+  EXPIRED
+  CANCELLED
+}
+
+enum CheckoutSessionLineType {
+  STANDARD_ITEM
+  CUSTOM_ORDER
+}
+
+enum CheckoutSessionLineStatus {
+  PENDING
+  BLOCKED
+  RESERVED
+  COMMITTED
+  FAILED
+  CANCELLED
+}
+
+enum InventoryReservationStatus {
+  RESERVED
+  COMMITTED
+  RELEASED
+  EXPIRED
 }
 
 enum CardValidationSessionStatus {
@@ -3205,6 +3348,8 @@ model Product {
   // Relations
   cartItems       CartItem[]
   orderItems      OrderItem[]
+  checkoutSessionLines CheckoutSessionLine[]
+  inventoryReservations InventoryReservation[]
   wishlistItems   WishlistItem[]
   variants        ProductVariant[]
   designCollections CollectionProduct[]
@@ -3243,6 +3388,7 @@ model ProductVariant {
   price       Decimal? @db.Decimal(10, 2)
   stock       Int      @default(0)
   colorHex    String?
+  inventoryReservations InventoryReservation[]
 
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
@@ -3299,6 +3445,7 @@ model CartItem {
   quantity        Int           @default(1)
   selectedSize    String?
   selectedColor   String?
+  checkoutSessionLines CheckoutSessionLine[]
   sizingMode      SizingMode    @default(NONE)
   sizeFitData     Json?
   requiredMeasurementKeys String[] @default([])

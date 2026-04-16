@@ -9,13 +9,22 @@ import { CustomOrderRefundService } from './custom-order-refund.service';
 describe('CustomOrderRefundService', () => {
   let service: CustomOrderRefundService;
   let tx: any;
+  let prisma: any;
   let ledgerService: any;
 
   beforeEach(() => {
+    prisma = {
+      paymentEvent: {
+        create: jest.fn().mockResolvedValue(undefined),
+      },
+      paymentAttempt: {
+        update: jest.fn().mockResolvedValue(undefined),
+      },
+    };
     ledgerService = {
       postCustomOrderRefund: jest.fn().mockResolvedValue(undefined),
     };
-    service = new CustomOrderRefundService(ledgerService);
+    service = new CustomOrderRefundService(prisma, ledgerService);
     tx = {
       customOrder: {
         findUnique: jest.fn(),
@@ -24,6 +33,7 @@ describe('CustomOrderRefundService', () => {
       paymentAttempt: {
         findUnique: jest.fn(),
         findFirst: jest.fn(),
+        updateMany: jest.fn(),
         update: jest.fn(),
       },
       paymentEvent: {
@@ -49,6 +59,7 @@ describe('CustomOrderRefundService', () => {
       amount: 1000,
       status: 'PAID',
     });
+    tx.paymentAttempt.updateMany.mockResolvedValue({ count: 1 });
     tx.customOrderLedgerAllocation.findMany.mockResolvedValue([
       {
         amount: 600,
@@ -78,6 +89,13 @@ describe('CustomOrderRefundService', () => {
     expect(tx.paymentAttempt.update).toHaveBeenCalledWith({
       where: { reference: 'ref_1' },
       data: expect.objectContaining({ status: 'REFUNDED' }),
+    });
+    expect(tx.paymentAttempt.updateMany).toHaveBeenCalledWith({
+      where: {
+        reference: 'ref_1',
+        status: 'PAID',
+      },
+      data: expect.objectContaining({ status: 'REFUND_IN_PROGRESS' }),
     });
     expect(tx.paymentEvent.create).toHaveBeenCalledWith({
       data: expect.objectContaining({

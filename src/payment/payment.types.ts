@@ -50,6 +50,43 @@ export class InitializePaymentDto {
   validationSessionId?: string;
 }
 
+export class InitializeUnifiedCheckoutDto {
+  @IsString()
+  customerName: string;
+
+  @IsObject()
+  shippingAddress: ShippingAddress;
+
+  @IsObject()
+  contactInfo: Record<string, any>;
+
+  @IsEnum(PaymentMethod)
+  paymentMethod: PaymentMethod;
+
+  @IsString()
+  email: string;
+
+  @IsOptional()
+  @IsString()
+  callbackUrl?: string;
+
+  @IsOptional()
+  @IsObject()
+  paymentData?: Record<string, any>;
+
+  @IsOptional()
+  @IsString()
+  promoCode?: string;
+
+  @IsOptional()
+  @IsString()
+  idempotencyKey?: string;
+
+  @IsOptional()
+  @IsString()
+  validationSessionId?: string;
+}
+
 export type PaymentChannel =
   | 'CARD'
   | 'BANK_TRANSFER'
@@ -110,6 +147,24 @@ export interface PaymentInitResult {
   /** True if no redirect needed (e.g. pay on delivery) */
   directApproval?: boolean;
   nextAction?: PaymentNextAction;
+  checkoutSessionId?: string;
+  summary?: {
+    items: PaymentAttemptOrderSummaryItem[];
+    subtotal: number;
+    shippingCost: number;
+    discount: number;
+    grandTotal: number;
+    shippingName: string;
+    shippingCity: string;
+    shippingState: string;
+  };
+  blockedLines?: Array<{
+    type: 'CUSTOM_ORDER';
+    sessionId: string;
+    checkoutIntentId: string;
+    sourceTitle: string;
+    reason: string;
+  }>;
 }
 
 export class VerifyPaymentDto {
@@ -206,6 +261,18 @@ export interface PaymentVerifyResult {
   gatewayResponse?: string;
   failureMessage?: string;
   orderIds?: string[];
+  customOrderIds?: string[];
+  checkoutSessionId?: string;
+  summary?: {
+    items: PaymentAttemptOrderSummaryItem[];
+    subtotal: number;
+    shippingCost: number;
+    discount: number;
+    grandTotal: number;
+    shippingName: string;
+    shippingCity: string;
+    shippingState: string;
+  };
 }
 
 export interface PaymentAttemptOrderSummaryItem {
@@ -217,9 +284,11 @@ export interface PaymentAttemptOrderSummaryItem {
 export interface PaymentAttemptSummary {
   paymentAttemptId: string;
   reference: string;
-  subjectType: 'STANDARD_ORDER' | 'CUSTOM_ORDER';
+  subjectType: 'STANDARD_ORDER' | 'CUSTOM_ORDER' | 'UNIFIED_CHECKOUT';
   customOrderId?: string;
+  customOrderIds?: string[];
   checkoutIntentId?: string;
+  checkoutSessionId?: string;
   gateway: string;
   providerMode: 'mock' | 'live';
   paymentMethod: PaymentMethod;

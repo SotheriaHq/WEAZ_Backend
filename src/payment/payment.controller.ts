@@ -21,6 +21,7 @@ import { PaymentService } from './payment.service';
 import { FxRateService } from './fx-rate.service';
 import {
   PaymentClientCheckoutPolicy,
+  InitializeUnifiedCheckoutDto,
   ReconcileStalePaymentsDto,
   ValidatePaymentCardDto,
   InitializePaymentDto,
@@ -63,6 +64,17 @@ export class PaymentController {
   ) {
     const userId = (req as any).user?.id ?? (req as any).user?.sub;
     return this.paymentService.initializePayment(dto, userId);
+  }
+
+  @Post('initialize-unified')
+  @UseGuards(JwtAuthGuard)
+  @UseInterceptors(IdempotencyInterceptor)
+  async initializeUnified(
+    @Body() dto: InitializeUnifiedCheckoutDto,
+    @Req() req: Request,
+  ) {
+    const userId = (req as any).user?.id ?? (req as any).user?.sub;
+    return this.paymentService.initializeUnifiedCheckout(dto, userId);
   }
 
   @Get('attempts/:reference')
