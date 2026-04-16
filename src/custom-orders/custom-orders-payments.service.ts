@@ -47,11 +47,31 @@ export class CustomOrdersPaymentsService {
     private readonly customOrderThreadBootstrap: CustomOrderThreadBootstrapService,
   ) {}
 
+  private isLegacyCustomOrderPaymentInitializationEnabled(): boolean {
+    return (
+      String(process.env.PAYMENT_LEGACY_CUSTOM_ORDER_INIT_ENABLED ?? '')
+        .trim()
+        .toLowerCase() === 'true'
+    );
+  }
+
+  private assertLegacyCustomOrderPaymentInitializationEnabled(): void {
+    if (this.isLegacyCustomOrderPaymentInitializationEnabled()) {
+      return;
+    }
+
+    throw new BadRequestException(
+      'Legacy custom-order payment initialization is disabled. Use unified bag checkout via /payment/initialize-unified.',
+    );
+  }
+
   async initializePayment(
     userId: string,
     customOrderId: string,
     dto: InitializeCustomOrderPaymentDto,
   ) {
+    this.assertLegacyCustomOrderPaymentInitializationEnabled();
+
     const now = new Date();
     const order = await this.prisma.customOrder.findFirst({
       where: { id: customOrderId, buyerId: userId },
@@ -293,6 +313,8 @@ export class CustomOrdersPaymentsService {
     checkoutIntentId: string,
     dto: InitializeCustomOrderPaymentDto,
   ) {
+    this.assertLegacyCustomOrderPaymentInitializationEnabled();
+
     const now = new Date();
     const intent = await this.prisma.customOrderCheckoutIntent.findFirst({
       where: { id: checkoutIntentId, buyerId: userId },

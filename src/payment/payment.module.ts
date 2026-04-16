@@ -7,11 +7,17 @@ import { FinanceModule } from 'src/finance/finance.module';
 import { NotificationsModule } from 'src/notifications/notifications.module';
 import { QueueModule } from 'src/queue/queue.module';
 import { PaymentOpsCronService } from './payment-ops.cron.service';
+import { PaymentRuntimeHealthService } from './payment-runtime-health.service';
 
 @Module({
   imports: [PrismaModule, FinanceModule, NotificationsModule, QueueModule],
   controllers: [PaymentController],
-  providers: [PaymentService, FxRateService, PaymentOpsCronService],
-  exports: [PaymentService, FxRateService],
+  providers: [
+    PaymentService,
+    FxRateService,
+    PaymentOpsCronService,
+    PaymentRuntimeHealthService,
+  ],
+  exports: [PaymentService, FxRateService, PaymentRuntimeHealthService],
 })
 export class PaymentModule {}

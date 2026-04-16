@@ -1,9 +1,11 @@
 import {
+  BadRequestException,
   Controller,
   Post,
   Body,
   Delete,
   Get,
+  GoneException,
   Param,
   Query,
   UseGuards,
@@ -29,6 +31,7 @@ import {
   VerifyPaymentDto,
 } from './payment.types';
 import { Request } from 'express';
+import { PaymentRuntimeHealthService } from './payment-runtime-health.service';
 
 @Controller('payment')
 export class PaymentController {
@@ -37,7 +40,64 @@ export class PaymentController {
   constructor(
     private readonly paymentService: PaymentService,
     private readonly fxRateService: FxRateService,
+    private readonly paymentRuntimeHealthService: PaymentRuntimeHealthService,
   ) {}
+
+  private readIdempotencyHeader(req: Request): string | null {
+    const candidates = [
+      req.headers['idempotency-key'],
+      req.headers['x-idempotency-key'],
+    ];
+
+    for (const candidate of candidates) {
+      if (typeof candidate === 'string') {
+        const value = candidate.trim();
+        if (value) return value;
+      }
+      if (Array.isArray(candidate) && candidate.length > 0) {
+        const value = String(candidate[0] ?? '').trim();
+        if (value) return value;
+      }
+    }
+
+    return null;
+  }
+
+  private assertUnifiedIdempotencyKey(
+    req: Request,
+    bodyKey: string | null | undefined,
+  ): void {
+    const headerKey = this.readIdempotencyHeader(req);
+    const normalizedBodyKey = String(bodyKey ?? '').trim();
+
+    if (!headerKey || !normalizedBodyKey) {
+      throw new BadRequestException(
+        'Idempotency-Key header and body idempotencyKey are required for unified checkout initialization.',
+      );
+    }
+
+    if (headerKey !== normalizedBodyKey) {
+      throw new BadRequestException(
+        'Idempotency-Key header must match body idempotencyKey for unified checkout initialization.',
+      );
+    }
+  }
+
+  private isLegacyPaystackWebhookAliasEnabled(): boolean {
+    return (
+      String(process.env.PAYMENT_LEGACY_PAYSTACK_WEBHOOK_ALIASES_ENABLED ?? '')
+        .trim()
+        .toLowerCase() === 'true'
+    );
+  }
+
+  private isLegacyFlutterwaveWebhookAliasEnabled(): boolean {
+    return (
+      String(process.env.PAYMENT_LEGACY_FLUTTERWAVE_WEBHOOK_ALIAS_ENABLED ?? '')
+        .trim()
+        .toLowerCase() === 'true'
+    );
+  }
 
   @Get('fx/quote')
   async getFxQuote(
@@ -60,6 +120,7 @@ export class PaymentController {
     @Body() dto: InitializeUnifiedCheckoutDto,
     @Req() req: Request,
   ) {
+    this.assertUnifiedIdempotencyKey(req, dto.idempotencyKey);
     const userId = (req as any).user?.id ?? (req as any).user?.sub;
     return this.paymentService.initializeUnifiedCheckout(dto, userId);
   }
@@ -151,6 +212,13 @@ export class PaymentController {
     return this.paymentService.simulatePaymentAttempt(reference, dto, userId);
   }
 
+  @Get('ops/runtime-health')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.SuperAdmin, Role.Admin)
+  async runtimeHealth() {
+    return this.paymentRuntimeHealthService.getRuntimeHealth();
+  }
+
   /**
    * Webhook endpoints for Paystack and Flutterwave.
    * These receive POST requests from the payment gateways
@@ -163,6 +231,15 @@ export class PaymentController {
     @Body() payload: Record<string, any>,
     @Req() req: Request & { rawBody?: string },
   ) {
+    if (!this.isLegacyPaystackWebhookAliasEnabled()) {
+      this.logger.warn(
+        'Blocked request to legacy /payment/webhook/paystack because legacy aliases are disabled.',
+      );
+      throw new GoneException(
+        'Legacy Paystack webhook alias is disabled. Configure Paystack to POST /webhooks/paystack.',
+      );
+    }
+
     this.logger.warn(
       'Received Paystack webhook on legacy /payment/webhook/paystack. Use /webhooks/paystack in the Paystack dashboard instead.',
     );
@@ -180,6 +257,18 @@ export class PaymentController {
     @Body() payload: Record<string, any>,
     @Req() req: Request & { rawBody?: string },
   ) {
+    if (!this.isLegacyFlutterwaveWebhookAliasEnabled()) {
+      this.logger.warn(
+        'Blocked request to legacy /payment/webhook/flutterwave because legacy aliases are disabled.',
+      );
+      throw new GoneException(
+        'Legacy Flutterwave webhook alias is disabled. Configure Flutterwave to POST /webhooks/flutterwave.',
+      );
+    }
+
+    this.logger.warn(
+      'Received Flutterwave webhook on legacy /payment/webhook/flutterwave. Use /webhooks/flutterwave in the Flutterwave dashboard instead.',
+    );
     await this.paymentService.enqueueWebhook('FLUTTERWAVE', payload, {
       headers: req.headers,
       rawBody: req.rawBody,

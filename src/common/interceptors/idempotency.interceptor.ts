@@ -5,6 +5,7 @@ import {
   ExecutionContext,
   Injectable,
   InternalServerErrorException,
+  Logger,
   NestInterceptor,
 } from '@nestjs/common';
 import { Observable, from, of } from 'rxjs';
@@ -29,6 +30,8 @@ function stableStringify(value: unknown): string {
 
 @Injectable()
 export class IdempotencyInterceptor implements NestInterceptor {
+  private readonly logger = new Logger(IdempotencyInterceptor.name);
+
   constructor(private readonly prisma: PrismaService) {}
 
   intercept(context: ExecutionContext, next: CallHandler): Observable<any> {
@@ -79,6 +82,9 @@ export class IdempotencyInterceptor implements NestInterceptor {
         .then(async (existing: any) => {
           if (existing) {
             if (existing.requestHash !== requestHash) {
+              this.logger.warn(
+                `Idempotency conflict: payload mismatch for user=${userId} method=${method} path=${path}`,
+              );
               throw new ConflictException(
                 'Idempotency-Key reuse with different request payload',
               );
@@ -91,6 +97,9 @@ export class IdempotencyInterceptor implements NestInterceptor {
             }
 
             // In-flight request with same key; best-effort: treat as conflict.
+            this.logger.warn(
+              `Idempotency conflict: in-flight request for user=${userId} method=${method} path=${path}`,
+            );
             throw new ConflictException('Request with this Idempotency-Key is in progress');
           }
 
@@ -116,6 +125,9 @@ export class IdempotencyInterceptor implements NestInterceptor {
               res.status(raced.statusCode);
               return { replay: true, body: raced.responseBody };
             }
+            this.logger.warn(
+              `Idempotency conflict: race detected for user=${userId} method=${method} path=${path}`,
+            );
             throw new ConflictException('Request with this Idempotency-Key is in progress');
           }
 
@@ -147,14 +159,16 @@ export class IdempotencyInterceptor implements NestInterceptor {
                   await idempotencyKeyModel
                     .deleteMany({ where: { userId, key, method, path } })
                     .catch((cleanupErr: unknown) => {
-                      console.error(
-                        '[IdempotencyInterceptor] Failed to clean up key after persist error:',
-                        cleanupErr,
+                      this.logger.error(
+                        `Failed to clean up idempotency key after persist error for user=${userId} method=${method} path=${path}: ${
+                          cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)
+                        }`,
                       );
                     });
-                  console.error(
-                    '[IdempotencyInterceptor] Failed to persist idempotent response:',
-                    persistErr,
+                  this.logger.error(
+                    `Failed to persist idempotent response for user=${userId} method=${method} path=${path}: ${
+                      persistErr instanceof Error ? persistErr.message : String(persistErr)
+                    }`,
                   );
                 }),
             ).pipe(map(() => body));
@@ -173,9 +187,10 @@ export class IdempotencyInterceptor implements NestInterceptor {
                 where: { userId, key, method, path },
               })
               .catch((deleteErr: unknown) => {
-                console.error(
-                  '[IdempotencyInterceptor] Failed to clean up key after error:',
-                  deleteErr,
+                this.logger.error(
+                  `Failed to clean up idempotency key after request error for user=${userId} method=${method} path=${path}: ${
+                    deleteErr instanceof Error ? deleteErr.message : String(deleteErr)
+                  }`,
                 );
               });
             return throwError(() => err);

@@ -15,6 +15,7 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import { CustomOrdersPaymentsService } from 'src/custom-orders/custom-orders-payments.service';
 import { CustomOrderRefundService } from 'src/custom-orders/custom-order-refund.service';
 import { CustomOrderSideEffectsService } from 'src/custom-orders/custom-order-side-effects.service';
+import { PaymentRuntimeHealthService } from 'src/payment/payment-runtime-health.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 
 const ACCEPTANCE_SLA_WARNING_HOURS = 24;
@@ -35,6 +36,7 @@ export class CustomOrderOpsCronService {
     private readonly sideEffects: CustomOrderSideEffectsService,
     private readonly refundService: CustomOrderRefundService,
     private readonly customOrdersPaymentsService: CustomOrdersPaymentsService,
+    private readonly paymentRuntimeHealthService: PaymentRuntimeHealthService,
   ) { }
 
   @Cron(CronExpression.EVERY_MINUTE)
@@ -129,9 +131,28 @@ export class CustomOrderOpsCronService {
       this.logger.log(
         `Custom-order payment reconciliation processed ${attempts.length} attempt(s): paid=${paid}, unresolved=${unresolved}, failed=${failed}`,
       );
+
+      await this.paymentRuntimeHealthService.recordCronHeartbeat(
+        'custom-order-payment-reconcile',
+        'ok',
+        {
+          scanned: attempts.length,
+          paid,
+          unresolved,
+          failed,
+        },
+      );
     } catch (error) {
       this.logger.warn(
         `Custom-order payment reconciliation cron failed: ${this.formatError(error)}`,
+      );
+
+      await this.paymentRuntimeHealthService.recordCronHeartbeat(
+        'custom-order-payment-reconcile',
+        'error',
+        {
+          error: this.formatError(error),
+        },
       );
     }
   }

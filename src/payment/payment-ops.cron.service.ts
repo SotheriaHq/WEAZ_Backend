@@ -1,12 +1,16 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { PaymentService } from './payment.service';
+import { PaymentRuntimeHealthService } from './payment-runtime-health.service';
 
 @Injectable()
 export class PaymentOpsCronService {
   private readonly logger = new Logger(PaymentOpsCronService.name);
 
-  constructor(private readonly paymentService: PaymentService) {}
+  constructor(
+    private readonly paymentService: PaymentService,
+    private readonly paymentRuntimeHealthService: PaymentRuntimeHealthService,
+  ) {}
 
   @Cron(CronExpression.EVERY_10_MINUTES)
   async reconcileStalePaymentAttempts(): Promise<void> {
@@ -24,11 +28,29 @@ export class PaymentOpsCronService {
           `Stale payment reconcile scanned=${result.scanned} updated=${result.updated} failed=${result.failed.length}`,
         );
       }
+
+      await this.paymentRuntimeHealthService.recordCronHeartbeat(
+        'stale-payment-reconcile',
+        'ok',
+        {
+          scanned: result.scanned,
+          updated: result.updated,
+          failed: result.failed.length,
+        },
+      );
     } catch (error) {
       this.logger.warn(
         `Stale payment reconcile cron failed: ${
           error instanceof Error ? error.message : String(error)
         }`,
+      );
+
+      await this.paymentRuntimeHealthService.recordCronHeartbeat(
+        'stale-payment-reconcile',
+        'error',
+        {
+          error: error instanceof Error ? error.message : String(error),
+        },
       );
     }
   }
@@ -42,11 +64,68 @@ export class PaymentOpsCronService {
           `Webhook receipt reprocess scanned=${result.scanned} processed=${result.processed} skipped=${result.skipped} failed=${result.failed}`,
         );
       }
+
+      await this.paymentRuntimeHealthService.recordCronHeartbeat(
+        'webhook-reprocess',
+        'ok',
+        {
+          scanned: result.scanned,
+          processed: result.processed,
+          skipped: result.skipped,
+          failed: result.failed,
+        },
+      );
     } catch (error) {
       this.logger.warn(
         `Webhook receipt reprocess cron failed: ${
           error instanceof Error ? error.message : String(error)
         }`,
+      );
+
+      await this.paymentRuntimeHealthService.recordCronHeartbeat(
+        'webhook-reprocess',
+        'error',
+        {
+          error: error instanceof Error ? error.message : String(error),
+        },
+      );
+    }
+  }
+
+  @Cron(CronExpression.EVERY_5_MINUTES)
+  async reconcilePaidUnifiedCheckoutFinalization(): Promise<void> {
+    try {
+      const result =
+        await this.paymentService.reconcilePaidUnifiedCheckoutFinalization(120);
+
+      if (result.scanned > 0 || result.failed.length > 0) {
+        this.logger.log(
+          `Paid unified finalize reconcile scanned=${result.scanned} finalized=${result.finalized} failed=${result.failed.length}`,
+        );
+      }
+
+      await this.paymentRuntimeHealthService.recordCronHeartbeat(
+        'paid-unified-finalize-reconcile',
+        'ok',
+        {
+          scanned: result.scanned,
+          finalized: result.finalized,
+          failed: result.failed.length,
+        },
+      );
+    } catch (error) {
+      this.logger.warn(
+        `Paid unified finalize reconcile cron failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+
+      await this.paymentRuntimeHealthService.recordCronHeartbeat(
+        'paid-unified-finalize-reconcile',
+        'error',
+        {
+          error: error instanceof Error ? error.message : String(error),
+        },
       );
     }
   }

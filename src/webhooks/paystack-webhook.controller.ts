@@ -37,4 +37,19 @@ export class PaystackWebhookController {
 
     return { status: 'ok' };
   }
+
+  @Post('flutterwave')
+  @HttpCode(200)
+  async handleFlutterwaveWebhook(
+    @Body() payload: Record<string, any>,
+    @Req() req: Request & { rawBody?: string },
+  ) {
+    await this.paymentService.enqueueWebhook('FLUTTERWAVE', payload, {
+      headers: req.headers,
+      rawBody: req.rawBody,
+      remoteAddress: req.ip ?? req.socket?.remoteAddress ?? null,
+    });
+
+    return { status: 'ok' };
+  }
 }

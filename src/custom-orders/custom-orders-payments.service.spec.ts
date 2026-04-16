@@ -17,8 +17,12 @@ describe('CustomOrdersPaymentsService', () => {
   let commissionService: any;
   let ledgerService: any;
   let financialDocumentsService: any;
+  let originalLegacyCustomOrderInit: string | undefined;
 
   beforeEach(async () => {
+    originalLegacyCustomOrderInit = process.env.PAYMENT_LEGACY_CUSTOM_ORDER_INIT_ENABLED;
+    process.env.PAYMENT_LEGACY_CUSTOM_ORDER_INIT_ENABLED = 'true';
+
     prisma = {
       brand: {
         findUnique: jest.fn(),
@@ -179,6 +183,15 @@ describe('CustomOrdersPaymentsService', () => {
     }).compile();
 
     service = module.get<CustomOrdersPaymentsService>(CustomOrdersPaymentsService);
+  });
+
+  afterEach(() => {
+    if (originalLegacyCustomOrderInit === undefined) {
+      delete process.env.PAYMENT_LEGACY_CUSTOM_ORDER_INIT_ENABLED;
+      return;
+    }
+
+    process.env.PAYMENT_LEGACY_CUSTOM_ORDER_INIT_ENABLED = originalLegacyCustomOrderInit;
   });
 
   it('returns an existing payment attempt for the same idempotency key', async () => {

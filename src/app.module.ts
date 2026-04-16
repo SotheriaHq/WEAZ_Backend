@@ -35,6 +35,9 @@ import { CustomOrderOpsModule } from './custom-order-ops/custom-order-ops.module
 import { MessagingModule } from './messaging/messaging.module';
 import { WebhooksModule } from './webhooks/webhooks.module';
 
+const isProductionEnvironment =
+  String(process.env.NODE_ENV ?? '').trim().toLowerCase() === 'production';
+
 @Module({
   imports: [
     ConfigModule.forRoot({
@@ -53,7 +56,7 @@ import { WebhooksModule } from './webhooks/webhooks.module';
     PostsModule,
     CommentsV2Module,
     AnalyticsModule,
-    DevToolsModule,
+    ...(isProductionEnvironment ? [] : [DevToolsModule]),
     NotificationsModule,
     TagsModule,
     CategoriesModule,

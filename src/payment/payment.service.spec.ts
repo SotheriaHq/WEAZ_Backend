@@ -123,6 +123,40 @@ describe('PaymentService', () => {
     );
   });
 
+  it('reconciles paid unified checkout attempts that still need finalization', async () => {
+    const prisma = {
+      paymentAttempt: {
+        findMany: jest.fn().mockResolvedValue([
+          { reference: 'TH-UC-1', buyerId: 'buyer_1' },
+          { reference: 'TH-UC-2', buyerId: null },
+        ]),
+      },
+    } as any;
+
+    const target = new PaymentService(
+      prisma,
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+    );
+    const finalizeSpy = jest
+      .spyOn(target as any, 'finalizeUnifiedCheckoutAttempt')
+      .mockResolvedValue({} as any);
+
+    await expect(
+      target.reconcilePaidUnifiedCheckoutFinalization(10),
+    ).resolves.toEqual({
+      scanned: 2,
+      finalized: 2,
+      failed: [],
+    });
+
+    expect(prisma.paymentAttempt.findMany).toHaveBeenCalledTimes(1);
+    expect(finalizeSpy).toHaveBeenNthCalledWith(1, 'TH-UC-1', 'buyer_1');
+    expect(finalizeSpy).toHaveBeenNthCalledWith(2, 'TH-UC-2', '');
+  });
+
   it('accepts hosted card checkout when neither a saved card nor a local new-card draft is provided', () => {
     expect(
       service.preparePaymentRequest(PaymentMethod.PAYSTACK, {
@@ -144,6 +178,21 @@ describe('PaymentService', () => {
         newCardDraft: null,
       }),
     );
+  });
+
+  it('fails closed for Flutterwave initialization in live mode', async () => {
+    await expect(
+      (service as any).initFlutterwave(
+        'TH-FLW-1',
+        {
+          channel: 'CARD',
+          email: 'buyer@example.com',
+        },
+        15000,
+        'NGN',
+        'https://localhost:3000/bag/payment-return',
+      ),
+    ).rejects.toThrow('Flutterwave live checkout is not enabled');
   });
 
   it('rejects raw Paystack card payloads when custom in-screen entry is disabled', () => {

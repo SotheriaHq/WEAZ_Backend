@@ -271,4 +271,50 @@ describe('AdminPayoutsService', () => {
 
     expect(prisma.$transaction).not.toHaveBeenCalled();
   });
+
+  it('falls back to inline processing when payout webhook queue enqueue fails', async () => {
+    const payload = {
+      event: 'transfer.success',
+      data: {
+        transfer_code: 'TRF_123',
+        reference: 'threadly-payout-ref',
+        status: 'success',
+      },
+    };
+    const receipt = {
+      payoutId: 'p_1',
+      providerEventKey: 'PAYSTACK:transfer.success:p_1',
+      providerEventType: 'transfer.success',
+      processedAt: null,
+    };
+    const context = {
+      headers: { 'x-paystack-signature': 'sig' },
+      rawBody: JSON.stringify(payload),
+    } as any;
+
+    jest
+      .spyOn(service as any, 'recordPaystackWebhookReceipt')
+      .mockResolvedValue(receipt);
+    webhookEventsQueue.enqueuePayoutWebhook.mockRejectedValue(
+      new Error('Queue unavailable'),
+    );
+    const fallbackSpy = jest
+      .spyOn(service, 'processQueuedPaystackWebhook')
+      .mockResolvedValue(undefined);
+
+    await expect(service.enqueuePaystackWebhook(payload, context)).resolves.toBeUndefined();
+
+    expect(webhookEventsQueue.enqueuePayoutWebhook).toHaveBeenCalledWith({
+      payload,
+      providerEventKey: receipt.providerEventKey,
+      payoutId: receipt.payoutId,
+      providerEventType: receipt.providerEventType,
+    });
+    expect(fallbackSpy).toHaveBeenCalledWith({
+      payload,
+      providerEventKey: receipt.providerEventKey,
+      payoutId: receipt.payoutId,
+      providerEventType: receipt.providerEventType,
+    });
+  });
 });

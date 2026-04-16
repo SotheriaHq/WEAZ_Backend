@@ -4,6 +4,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  OnModuleInit,
 } from '@nestjs/common';
 import {
   createCipheriv,
@@ -247,7 +248,7 @@ const CHECKOUT_SHIPPING_RATES: Record<string, number> = {
 const CHECKOUT_DEFAULT_SHIPPING_RATE = 4000;
 
 @Injectable()
-export class PaymentService {
+export class PaymentService implements OnModuleInit {
   private readonly logger = new Logger(PaymentService.name);
 
   constructor(
@@ -257,6 +258,43 @@ export class PaymentService {
     private readonly notificationsService: NotificationsService,
     private readonly webhookEventsQueue: WebhookEventsQueueService,
   ) {}
+
+  onModuleInit(): void {
+    const runtimeEnv = String(process.env.NODE_ENV ?? '').trim().toLowerCase();
+    const isProduction = runtimeEnv === 'production';
+
+    if (!isProduction) {
+      return;
+    }
+
+    if (this.isMockMode()) {
+      throw new Error('PAYMENTS_MODE must be set to "live" in production.');
+    }
+
+    if (this.isLegacyPaystackWebhookAliasEnabled()) {
+      throw new Error(
+        'PAYMENT_LEGACY_PAYSTACK_WEBHOOK_ALIASES_ENABLED must be false in production.',
+      );
+    }
+
+    if (this.isLegacyFlutterwaveWebhookAliasEnabled()) {
+      throw new Error(
+        'PAYMENT_LEGACY_FLUTTERWAVE_WEBHOOK_ALIAS_ENABLED must be false in production.',
+      );
+    }
+
+    if (!this.resolvePaystackSecret()) {
+      throw new Error(
+        `A Paystack secret is required in production. Configure one of: ${describePaystackSecretEnvKeys()}`,
+      );
+    }
+
+    if (!this.hasRedisRuntimeConfiguration()) {
+      throw new Error(
+        'Redis configuration is required in production for payment queues and reconciliation (set REDIS_URL or REDIS_HOST/REDIS_PORT).',
+      );
+    }
+  }
 
   async initializePayment(
     dto: InitializePaymentDto,
@@ -553,6 +591,10 @@ export class PaymentService {
         );
       }
 
+      this.logger.log(
+        `Unified checkout replayed existing idempotent session ${existingSession.id} for ${existingAttempt.reference}`,
+      );
+
       return {
         ...this.buildInitResultFromAttempt(existingAttempt),
         checkoutSessionId: existingSession.id,
@@ -561,6 +603,62 @@ export class PaymentService {
           (this.asObject(existingSession.blockedLinesJson).items as PaymentInitResult['blockedLines']) ??
           [],
       };
+    }
+
+    const activeSession = await this.prisma.checkoutSession.findFirst({
+      where: {
+        buyerId: userId,
+        status: {
+          in: [
+            CheckoutSessionStatus.PENDING_PAYMENT,
+            CheckoutSessionStatus.PAYMENT_PROCESSING,
+          ],
+        },
+      },
+      include: {
+        paymentAttempt: true,
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    if (activeSession?.paymentAttempt) {
+      let activeAttempt = activeSession.paymentAttempt;
+      const isActiveStatus = ACTIVE_UNIFIED_ATTEMPT_STATUSES.includes(
+        activeAttempt.status as PaymentAttemptStatus,
+      );
+
+      if (isActiveStatus) {
+        if (activeAttempt.expiresAt && activeAttempt.expiresAt <= now) {
+          activeAttempt = await this.applyAttemptStatus(
+            activeAttempt.reference,
+            userId,
+            'EXPIRED',
+            'verify',
+            {
+              eventPayload: {
+                reason: 'UNIFIED_ATTEMPT_REUSED_AFTER_EXPIRY',
+              },
+              responseSnapshotPatch: {
+                expiredAt: new Date().toISOString(),
+              },
+            },
+          );
+        } else {
+          this.logger.log(
+            `Unified checkout reused active session ${activeSession.id} for ${activeAttempt.reference}`,
+          );
+
+          return {
+            ...this.buildInitResultFromAttempt(activeAttempt),
+            checkoutSessionId: activeSession.id,
+            summary: this.asObject(activeSession.summaryJson) as PaymentInitResult['summary'],
+            blockedLines:
+              (this.asObject(activeSession.blockedLinesJson)
+                .items as PaymentInitResult['blockedLines']) ??
+              [],
+          };
+        }
+      }
     }
 
     const [standardLineDrafts, customLineResult] = await Promise.all([
@@ -1361,6 +1459,64 @@ export class PaymentService {
     return result;
   }
 
+  async reconcilePaidUnifiedCheckoutFinalization(limit = 80): Promise<{
+    scanned: number;
+    finalized: number;
+    failed: Array<{ reference: string; reason: string }>;
+  }> {
+    const safeLimit = Number.isFinite(limit)
+      ? Math.max(1, Math.min(200, Math.trunc(limit)))
+      : 80;
+
+    const attempts = await this.prisma.paymentAttempt.findMany({
+      where: {
+        subjectType: PaymentSubjectType.UNIFIED_CHECKOUT,
+        providerMode: 'live',
+        status: 'PAID',
+        checkoutSessionId: { not: null },
+        checkoutSession: {
+          is: {
+            status: {
+              not: CheckoutSessionStatus.COMPLETED,
+            },
+          },
+        },
+      },
+      orderBy: { updatedAt: 'asc' },
+      take: safeLimit,
+      select: {
+        reference: true,
+        buyerId: true,
+      },
+    });
+
+    const failed: Array<{ reference: string; reason: string }> = [];
+    let finalized = 0;
+
+    for (const attempt of attempts) {
+      try {
+        const result = await this.finalizeUnifiedCheckoutAttempt(
+          attempt.reference,
+          String(attempt.buyerId ?? ''),
+        );
+        if (result) {
+          finalized += 1;
+        }
+      } catch (error) {
+        failed.push({
+          reference: attempt.reference,
+          reason: this.extractErrorMessage(error),
+        });
+      }
+    }
+
+    return {
+      scanned: attempts.length,
+      finalized,
+      failed,
+    };
+  }
+
   async verifyPayment(
     dto: VerifyPaymentDto,
     userId: string,
@@ -1865,6 +2021,16 @@ export class PaymentService {
     }
 
     if (this.isTerminalStatus(attempt.status as PaymentAttemptStatus)) {
+      if (
+        attempt.status === 'PAID' &&
+        attempt.subjectType === PaymentSubjectType.UNIFIED_CHECKOUT
+      ) {
+        await this.finalizeUnifiedCheckoutAttempt(
+          attempt.reference,
+          String(attempt.buyerId ?? ''),
+        );
+      }
+
       await this.markProviderEventProcessed(providerEventKey);
       return;
     }
@@ -2239,6 +2405,12 @@ export class PaymentService {
     currency: string,
     callbackBaseUrl: string,
   ): Promise<GatewayInitializationResult> {
+    if (!this.isMockMode()) {
+      throw new BadRequestException(
+        'Flutterwave live checkout is not enabled on this deployment. Use Paystack for live checkout.',
+      );
+    }
+
     const channel = paymentData.channel as PaymentChannel;
     const mockReturnStatus = this.resolveMockReturnStatus(paymentData);
 
@@ -4268,6 +4440,33 @@ export class PaymentService {
     // Default is 'live'. To use mock/test mode, explicitly set PAYMENTS_MODE=mock in your .env.
     // We do NOT default to mock to prevent accidental mock-mode deploys in production.
     return (process.env.PAYMENTS_MODE ?? 'live').trim().toLowerCase() !== 'live';
+  }
+
+  private isLegacyPaystackWebhookAliasEnabled(): boolean {
+    return (
+      String(process.env.PAYMENT_LEGACY_PAYSTACK_WEBHOOK_ALIASES_ENABLED ?? '')
+        .trim()
+        .toLowerCase() === 'true'
+    );
+  }
+
+  private isLegacyFlutterwaveWebhookAliasEnabled(): boolean {
+    return (
+      String(process.env.PAYMENT_LEGACY_FLUTTERWAVE_WEBHOOK_ALIAS_ENABLED ?? '')
+        .trim()
+        .toLowerCase() === 'true'
+    );
+  }
+
+  private hasRedisRuntimeConfiguration(): boolean {
+    const redisUrl = String(process.env.REDIS_URL ?? '').trim();
+    if (redisUrl) {
+      return true;
+    }
+
+    const redisHost = String(process.env.REDIS_HOST ?? '').trim();
+    const redisPort = String(process.env.REDIS_PORT ?? '').trim();
+    return Boolean(redisHost && redisPort);
   }
 
   private allowPaymentSimulation(): boolean {

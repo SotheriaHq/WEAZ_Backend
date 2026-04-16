@@ -711,12 +711,29 @@ export class AdminPayoutsService {
       return;
     }
 
-    await this.webhookEventsQueue.enqueuePayoutWebhook({
+    const job = {
       payload,
       providerEventKey: receipt.providerEventKey,
       payoutId: receipt.payoutId,
       providerEventType: receipt.providerEventType,
-    });
+    } satisfies PayoutWebhookProcessJob;
+
+    try {
+      await this.webhookEventsQueue.enqueuePayoutWebhook(job);
+    } catch (queueError) {
+      this.logger.error(
+        `Payout webhook enqueue failed for ${job.payoutId}; processing inline fallback`,
+        (queueError as Error | undefined)?.stack,
+      );
+      try {
+        await this.processQueuedPaystackWebhook(job);
+      } catch (fallbackError) {
+        this.logger.error(
+          `Inline payout webhook fallback failed for ${job.payoutId}`,
+          (fallbackError as Error | undefined)?.stack,
+        );
+      }
+    }
   }
 
   async processQueuedPaystackWebhook(
