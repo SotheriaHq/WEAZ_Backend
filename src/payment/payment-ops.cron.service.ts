@@ -129,4 +129,46 @@ export class PaymentOpsCronService {
       );
     }
   }
+
+  @Cron(CronExpression.EVERY_DAY_AT_2AM)
+  async purgeOldPaymentTelemetry(): Promise<void> {
+    try {
+      const result = await this.paymentService.purgeOldPaymentTelemetry();
+
+      if (
+        result.paymentEventsDeleted > 0 ||
+        result.retryHistoryDeleted > 0 ||
+        result.webhookIngressAuditsDeleted > 0
+      ) {
+        this.logger.log(
+          `Payment telemetry retention deleted events=${result.paymentEventsDeleted} retries=${result.retryHistoryDeleted} audits=${result.webhookIngressAuditsDeleted}`,
+        );
+      }
+
+      await this.paymentRuntimeHealthService.recordCronHeartbeat(
+        'payment-telemetry-retention',
+        'ok',
+        {
+          paymentEventsDeleted: result.paymentEventsDeleted,
+          retryHistoryDeleted: result.retryHistoryDeleted,
+          webhookIngressAuditsDeleted: result.webhookIngressAuditsDeleted,
+          retainedDays: result.retainedDays,
+        },
+      );
+    } catch (error) {
+      this.logger.warn(
+        `Payment telemetry retention cron failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+
+      await this.paymentRuntimeHealthService.recordCronHeartbeat(
+        'payment-telemetry-retention',
+        'error',
+        {
+          error: error instanceof Error ? error.message : String(error),
+        },
+      );
+    }
+  }
 }

@@ -43,7 +43,6 @@ import {
 } from 'src/queue/webhook-events.queue.service';
 import {
   CardValidationSessionSummary,
-  InitializePaymentDto,
   InitializeUnifiedCheckoutDto,
   PaymentClientCheckoutPolicy,
   PaymentAttemptStatus,
@@ -265,6 +264,9 @@ const ACTIVE_UNIFIED_ATTEMPT_STATUSES: PaymentAttemptStatus[] = [
 
 const FINALIZATION_ESCALATION_FAILURE_THRESHOLD = 3;
 const FINALIZATION_REFUND_REVIEW_FAILURE_THRESHOLD = 6;
+const DEFAULT_PAYMENT_EVENT_RETENTION_DAYS = 180;
+const DEFAULT_PAYMENT_RETRY_HISTORY_RETENTION_DAYS = 180;
+const DEFAULT_PAYMENT_WEBHOOK_AUDIT_RETENTION_DAYS = 120;
 
 const CHECKOUT_SHIPPING_RATES: Record<string, number> = {
   LAGOS: 2500,
@@ -327,231 +329,13 @@ export class PaymentService implements OnModuleInit {
     this.assertProductionCheckoutCallbackConfiguration();
   }
 
-  async initializePayment(
-    dto: InitializePaymentDto,
-    userId: string,
-  ): Promise<PaymentInitResult> {
-    const normalizedOrderIds = Array.from(
-      new Set(
-        (dto.orderIds ?? [])
-          .map((orderId) => String(orderId || '').trim())
-          .filter(Boolean),
-      ),
-    ).sort();
-
-    if (normalizedOrderIds.length === 0) {
-      throw new BadRequestException('At least one order is required for checkout');
-    }
-
-    const orders = await this.prisma.order.findMany({
-      where: { id: { in: normalizedOrderIds }, buyerId: userId },
-      select: {
-        id: true,
-        status: true,
-        paymentStatus: true,
-        customerName: true,
-        shippingAddress: true,
-        items: true,
-        totalAmount: true,
-        shippingCost: true,
-        discountAmount: true,
-        currency: true,
-      },
-    });
-
-    if (orders.length !== normalizedOrderIds.length) {
-      throw new BadRequestException('No eligible orders found');
-    }
-
-    this.ensureSingleCurrency(orders.map((order) => order.currency));
-
-    const payableStatuses = new Set(['PENDING', 'PROCESSING', 'SHIPPED', 'DELIVERED']);
-    const invalidOrder = orders.find(
-      (order) =>
-        order.paymentStatus === PaymentStatus.PAID ||
-        order.paymentStatus === PaymentStatus.REFUNDED ||
-        !payableStatuses.has(String(order.status || '').trim().toUpperCase()),
-    );
-    if (invalidOrder) {
-      throw new BadRequestException('One or more selected orders can no longer be paid');
-    }
-
-    const gatewayPaymentData = this.preparePaymentGatewayRequest(
-      dto.paymentMethod,
-      dto.paymentData,
-    );
-    const paymentData = this.sanitizePaymentDataForStorage(
-      dto.paymentMethod,
-      gatewayPaymentData,
-    );
-    const amount = orders.reduce(
-      (sum, order) => sum + Number(order.totalAmount ?? 0),
-      0,
-    );
-    const currency = orders[0].currency;
-    const callbackBaseUrl = this.resolveCallbackBaseUrl(dto.callbackUrl);
-    const providerMode = this.getProviderMode();
-    const idempotentAttempt = dto.idempotencyKey
-      ? await this.prisma.paymentAttempt.findFirst({
-          where: {
-            buyerId: userId,
-            subjectType: PaymentSubjectType.STANDARD_ORDER,
-            idempotencyKey: dto.idempotencyKey,
-          },
-          orderBy: { createdAt: 'desc' },
-        })
-      : null;
-    let existingAttempt =
-      idempotentAttempt ??
-      (await this.prisma.paymentAttempt.findFirst({
-        where: {
-          buyerId: userId,
-          subjectType: PaymentSubjectType.STANDARD_ORDER,
-          paymentMethod: dto.paymentMethod,
-          status: { in: ['PENDING', 'REQUIRES_ACTION', 'PROCESSING'] },
-          orderIds: { equals: normalizedOrderIds },
-        },
-        orderBy: { createdAt: 'desc' },
-      }));
-
-    if (
-      existingAttempt &&
-      !idempotentAttempt &&
-      !this.canReusePendingAttempt(existingAttempt.requestSnapshot, paymentData)
-    ) {
-      existingAttempt = null;
-    }
-
-    if (existingAttempt) {
-      if (existingAttempt.expiresAt && existingAttempt.expiresAt <= new Date()) {
-        await this.applyAttemptStatus(existingAttempt.reference, userId, 'EXPIRED', 'verify', {
-          eventPayload: {
-            reason: 'ATTEMPT_REUSED_AFTER_EXPIRY',
-          },
-          responseSnapshotPatch: {
-            expiredAt: new Date().toISOString(),
-          },
-        });
-      } else {
-        await this.prisma.order.updateMany({
-          where: { id: { in: normalizedOrderIds }, buyerId: userId },
-          data: {
-            paymentMethod: existingAttempt.paymentMethod,
-            paymentReference: existingAttempt.reference,
-            paymentGateway: existingAttempt.provider,
-            paymentStatus: this.mapAttemptStatusToOrderPaymentStatus(
-              existingAttempt.status as PaymentAttemptStatus,
-            ),
-          },
-        });
-
-        return this.buildInitResultFromAttempt(existingAttempt);
-      }
-    }
-
-    const validatedCardSession = await this.resolveCardValidationSessionForInitialize({
-      paymentMethod: dto.paymentMethod,
-      validationSessionId: dto.validationSessionId,
-      userId,
-      gatewayPaymentData,
-      sanitizedPaymentData: paymentData,
-    });
-
-    const settlementQuote = await this.fxRateService.quoteAndPersist({
-      from: currency,
-      amount,
-      actorId: userId,
-    });
-    const reference = `TH-${Date.now()}-${uuidv4().slice(0, 8)}`;
-
-    const gatewayResult = await this.initializeGateway(
-      dto.paymentMethod,
-      reference,
-      gatewayPaymentData,
-      amount,
-      currency,
-      callbackBaseUrl,
-      { buyerId: userId },
-    );
-
-    const canonicalSavedPaymentMethodId =
-      validatedCardSession?.savedPaymentMethodId ?? null;
-    const canonicalCardValidationSessionId = validatedCardSession?.canonicalSessionId ?? null;
-
-    const attempt = await this.prisma.$transaction(async (tx) => {
-      await this.consumeCardValidationSessionForInitialize(
-        tx,
-        userId,
-        validatedCardSession,
-      );
-
-      const createdAttempt = await tx.paymentAttempt.create({
-        data: {
-          buyerId: userId,
-          savedPaymentMethodId: canonicalSavedPaymentMethodId,
-          cardValidationSessionId: canonicalCardValidationSessionId,
-          provider: gatewayResult.gateway,
-          providerMode,
-          paymentMethod: dto.paymentMethod,
-          providerReference: gatewayResult.providerReference,
-          providerTransactionId: gatewayResult.providerTransactionId,
-          providerAccessCode: gatewayResult.providerAccessCode,
-          providerChannel: gatewayResult.providerChannel ?? gatewayResult.channel,
-          channel: gatewayResult.channel,
-          status: gatewayResult.status,
-          reference,
-          idempotencyKey: dto.idempotencyKey,
-          callbackUrl: gatewayResult.callbackUrl ?? callbackBaseUrl,
-          authorizationUrl: gatewayResult.authorizationUrl,
-          amount,
-          currency,
-          settlementCurrency: this.fxRateService.getBaseCurrency(),
-          settlementAmount: settlementQuote.convertedAmount,
-          exchangeRateSnapshotId: settlementQuote.snapshot.id,
-          orderIds: normalizedOrderIds,
-          requestSnapshot: paymentData as unknown as Prisma.InputJsonValue,
-          responseSnapshot: (gatewayResult.responseSnapshot ?? null) as unknown as Prisma.InputJsonValue,
-          nextAction: (gatewayResult.nextAction ?? null) as unknown as Prisma.InputJsonValue,
-          bankAccount: (gatewayResult.bankAccount ?? null) as unknown as Prisma.InputJsonValue,
-          expiresAt: gatewayResult.expiresAt ? new Date(gatewayResult.expiresAt) : null,
-        },
-      });
-
-      await tx.order.updateMany({
-        where: { id: { in: orders.map((order) => order.id) }, buyerId: userId },
-        data: {
-          paymentMethod: dto.paymentMethod,
-          paymentReference: reference,
-          paymentGateway: gatewayResult.gateway,
-          paymentStatus: this.mapAttemptStatusToOrderPaymentStatus(gatewayResult.status),
-        },
-      });
-
-      await tx.paymentEvent.create({
-        data: {
-          paymentAttemptId: createdAttempt.id,
-          type: 'INITIALIZED',
-          source: providerMode === 'mock' ? 'mock-initialize' : 'initialize',
-          payload: {
-            paymentMethod: dto.paymentMethod,
-            gateway: gatewayResult.gateway,
-            channel: gatewayResult.channel,
-            status: gatewayResult.status,
-          },
-        },
-      });
-
-      return createdAttempt;
-    });
-
-    return this.buildInitResultFromAttempt(attempt);
-  }
-
   async initializeUnifiedCheckout(
     dto: InitializeUnifiedCheckoutDto,
     userId: string,
     requestCorrelationId?: string | null,
   ): Promise<PaymentInitResult> {
+    // Unified checkout is intentionally bag-driven. Callers must stage standard
+    // cart lines and custom-order checkout sessions before initialization.
     const customerName = String(dto.customerName ?? '').trim();
     if (!customerName) {
       throw new BadRequestException('Customer name is required');
@@ -1597,6 +1381,113 @@ export class PaymentService implements OnModuleInit {
       scanned: attempts.length,
       finalized,
       failed,
+    };
+  }
+
+  async purgeOldPaymentTelemetry(): Promise<{
+    paymentEventsDeleted: number;
+    retryHistoryDeleted: number;
+    webhookIngressAuditsDeleted: number;
+    retainedDays: {
+      paymentEvents: number;
+      retryHistory: number;
+      webhookIngressAudit: number;
+    };
+  }> {
+    const paymentEventRetentionDays = this.resolveRetentionDays(
+      'PAYMENT_EVENT_RETENTION_DAYS',
+      DEFAULT_PAYMENT_EVENT_RETENTION_DAYS,
+    );
+    const retryHistoryRetentionDays = this.resolveRetentionDays(
+      'PAYMENT_RETRY_HISTORY_RETENTION_DAYS',
+      DEFAULT_PAYMENT_RETRY_HISTORY_RETENTION_DAYS,
+    );
+    const webhookAuditRetentionDays = this.resolveRetentionDays(
+      'PAYMENT_WEBHOOK_AUDIT_RETENTION_DAYS',
+      DEFAULT_PAYMENT_WEBHOOK_AUDIT_RETENTION_DAYS,
+    );
+
+    const paymentEventCutoff = new Date(
+      Date.now() - paymentEventRetentionDays * 24 * 60 * 60 * 1000,
+    );
+    const retryHistoryCutoff = new Date(
+      Date.now() - retryHistoryRetentionDays * 24 * 60 * 60 * 1000,
+    );
+    const webhookAuditCutoff = new Date(
+      Date.now() - webhookAuditRetentionDays * 24 * 60 * 60 * 1000,
+    );
+
+    const [paymentEventsDeleted, retryHistoryDeleted, webhookIngressAuditsDeleted] =
+      await this.prisma.$transaction(async (tx) => {
+        const terminalAttemptRetentionFilter = {
+          OR: [
+            {
+              status: {
+                in: ['FAILED', 'CANCELLED', 'EXPIRED'],
+              },
+            },
+            {
+              status: 'PAID',
+              finalizedAt: { not: null },
+              OR: [
+                { finalizationCompensationStatus: null },
+                { finalizationCompensationStatus: 'RESOLVED' },
+              ],
+            },
+          ],
+        } as Prisma.PaymentAttemptWhereInput;
+
+        const deletedPaymentEvents = await tx.paymentEvent.deleteMany({
+          where: {
+            createdAt: { lt: paymentEventCutoff },
+            processedAt: { not: null },
+            paymentAttempt: {
+              is: terminalAttemptRetentionFilter,
+            },
+          },
+        });
+
+        const deletedRetryHistory = await tx.paymentAttemptRetryHistory.deleteMany({
+          where: {
+            occurredAt: { lt: retryHistoryCutoff },
+            paymentAttempt: {
+              is: terminalAttemptRetentionFilter,
+            },
+          },
+        });
+
+        const deletedWebhookIngressAudits = await tx.webhookIngressAudit.deleteMany({
+          where: {
+            receivedAt: { lt: webhookAuditCutoff },
+            OR: [
+              {
+                paymentAttemptId: null,
+              },
+              {
+                paymentAttempt: {
+                  is: terminalAttemptRetentionFilter,
+                },
+              },
+            ],
+          },
+        });
+
+        return [
+          deletedPaymentEvents.count,
+          deletedRetryHistory.count,
+          deletedWebhookIngressAudits.count,
+        ] as const;
+      });
+
+    return {
+      paymentEventsDeleted,
+      retryHistoryDeleted,
+      webhookIngressAuditsDeleted,
+      retainedDays: {
+        paymentEvents: paymentEventRetentionDays,
+        retryHistory: retryHistoryRetentionDays,
+        webhookIngressAudit: webhookAuditRetentionDays,
+      },
     };
   }
 
@@ -4076,6 +3967,15 @@ export class PaymentService implements OnModuleInit {
     }
 
     return Math.min(240, Math.max(5, parsed));
+  }
+
+  private resolveRetentionDays(name: string, fallback: number): number {
+    const parsed = Number.parseInt(String(process.env[name] ?? ''), 10);
+    if (!Number.isFinite(parsed)) {
+      return fallback;
+    }
+
+    return Math.max(30, Math.min(730, parsed));
   }
 
   private buildCardValidationSessionKey(sessionId: string): string {

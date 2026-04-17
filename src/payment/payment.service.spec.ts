@@ -452,4 +452,397 @@ describe('PaymentService', () => {
       'Paystack did not return an inline access code. Threadly only supports in-app secure checkout and will not route buyers out of the product.',
     );
   });
+
+  it('replays the same unified checkout attempt for an existing idempotent checkout session', async () => {
+    const redis = {
+      set: jest.fn().mockResolvedValue('OK'),
+      eval: jest.fn().mockResolvedValue(1),
+    };
+    const prisma = {
+      checkoutSession: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: 'checkout-session-1',
+          summaryJson: {
+            items: [{ name: 'Threadly Tee', quantity: 1, price: 12000 }],
+            subtotal: 12000,
+            shippingCost: 2500,
+            discount: 0,
+            grandTotal: 14500,
+            shippingName: 'Ada Okafor',
+            shippingCity: 'Lagos',
+            shippingState: 'Lagos',
+          },
+          blockedLinesJson: { items: [] },
+          paymentAttempt: {
+            id: 'attempt-1',
+            reference: 'TH-UC-existing',
+            correlationId: 'corr-existing',
+            provider: 'PAYSTACK',
+            status: 'REQUIRES_ACTION',
+            currency: 'NGN',
+            settlementCurrency: 'NGN',
+            settlementAmount: 14500,
+            exchangeRateSnapshotId: 'fx-1',
+            channel: 'CARD',
+            callbackUrl: 'https://threadly.test/bag/payment-return',
+            providerAccessCode: 'access-1',
+            authorizationUrl: 'https://checkout.paystack.com/example',
+            bankAccount: null,
+            nextAction: { type: 'INLINE_POPUP' },
+            expiresAt: new Date(Date.now() + 10 * 60 * 1000),
+            amount: 14500,
+          },
+        }),
+      },
+    } as any;
+
+    const target = new PaymentService(
+      prisma,
+      {} as any,
+      {} as any,
+      {} as any,
+      {
+        getRedisClient: jest.fn().mockResolvedValue(redis),
+      } as any,
+    );
+
+    await expect(
+      target.initializeUnifiedCheckout(
+        {
+          customerName: 'Ada Okafor',
+          shippingAddress: {
+            firstName: 'Ada',
+            lastName: 'Okafor',
+            street: '1 Allen Avenue',
+            city: 'Lagos',
+            state: 'Lagos',
+            country: 'Nigeria',
+            phone: '08030000000',
+          },
+          contactInfo: { phone: '08030000000' },
+          paymentMethod: PaymentMethod.PAYSTACK,
+          email: 'ada@example.com',
+          idempotencyKey: 'idem-checkout-1',
+        },
+        'buyer_1',
+        'corr-existing',
+      ),
+    ).resolves.toMatchObject({
+      paymentAttemptId: 'attempt-1',
+      reference: 'TH-UC-existing',
+      checkoutSessionId: 'checkout-session-1',
+      status: 'REQUIRES_ACTION',
+    });
+
+    expect(prisma.checkoutSession.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          buyerId: 'buyer_1',
+          idempotencyKey: 'idem-checkout-1',
+        },
+      }),
+    );
+  });
+
+  it('rejects concurrent unified checkout initialization while the buyer lock is held', async () => {
+    const target = new PaymentService(
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      {
+        getRedisClient: jest.fn().mockResolvedValue({
+          set: jest.fn().mockResolvedValue(null),
+          eval: jest.fn(),
+        }),
+      } as any,
+    );
+
+    await expect(
+      (target as any).withUnifiedCheckoutInitializationLock(
+        'buyer_1',
+        'corr-lock',
+        async () => 'ok',
+      ),
+    ).rejects.toThrow(
+      'A checkout initialization is already in progress for this account. Please retry in a few seconds.',
+    );
+  });
+
+  it('falls back to inline webhook processing when queue enqueue fails', async () => {
+    const target = new PaymentService(
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      {
+        enqueuePaymentWebhook: jest.fn().mockRejectedValue(new Error('queue unavailable')),
+      } as any,
+    );
+
+    jest.spyOn(target as any, 'recordWebhookReceipt').mockResolvedValue({
+      gateway: 'PAYSTACK',
+      reference: 'TH-UC-queue-fallback',
+      providerEventKey: 'paystack:charge.success:TH-UC-queue-fallback',
+      attemptId: 'attempt-queue-fallback',
+      correlationId: 'corr-queue-fallback',
+      processedAt: null,
+    });
+    const processSpy = jest
+      .spyOn(target as any, 'processWebhookPayload')
+      .mockResolvedValue(undefined);
+
+    await expect(
+      target.enqueueWebhook(
+        'PAYSTACK',
+        { event: 'charge.success', data: { reference: 'TH-UC-queue-fallback' } },
+        {
+          headers: {},
+          rawBody: '{}',
+          correlationId: 'corr-queue-fallback',
+        },
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(processSpy).toHaveBeenCalledWith(
+      'PAYSTACK',
+      { event: 'charge.success', data: { reference: 'TH-UC-queue-fallback' } },
+      'TH-UC-queue-fallback',
+      'paystack:charge.success:TH-UC-queue-fallback',
+      expect.objectContaining({
+        source: 'INLINE_FALLBACK',
+        correlationId: 'corr-queue-fallback',
+      }),
+    );
+  });
+
+  it('dedupes duplicate webhook receipts by durable provider event key', async () => {
+    const processedAt = new Date('2026-04-17T08:00:00.000Z');
+    const target = new PaymentService(
+      {
+        paymentAttempt: {
+          findUnique: jest.fn().mockResolvedValue({
+            id: 'attempt-dup-1',
+            provider: 'PAYSTACK',
+            correlationId: 'corr-dup-1',
+          }),
+          updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+        },
+        paymentEvent: {
+          create: jest.fn().mockRejectedValue(
+            new Error('Unique constraint failed on the fields: (`providerEventKey`)'),
+          ),
+          findFirst: jest.fn().mockResolvedValue({
+            processedAt,
+            correlationId: 'corr-dup-existing',
+          }),
+        },
+      } as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+    );
+
+    jest.spyOn(target as any, 'verifyWebhookSignature').mockReturnValue(true);
+
+    await expect(
+      (target as any).recordWebhookReceipt(
+        'PAYSTACK',
+        {
+          event: 'charge.success',
+          data: {
+            reference: 'TH-UC-dup-1',
+            status: 'success',
+            id: 'provider-tx-1',
+            paid_at: '2026-04-17T07:59:00.000Z',
+          },
+        },
+        {
+          headers: {},
+          rawBody: '{}',
+          correlationId: 'corr-dup-incoming',
+        },
+      ),
+    ).resolves.toEqual({
+      gateway: 'PAYSTACK',
+      reference: 'TH-UC-dup-1',
+      providerEventKey:
+        'PAYSTACK:charge.success:TH-UC-dup-1:provider-tx-1:2026-04-17T07:59:00.000Z',
+      attemptId: 'attempt-dup-1',
+      correlationId: 'corr-dup-existing',
+      processedAt,
+    });
+  });
+
+  it('releases unified checkout reservations and abandons custom bag lines after a failed attempt', async () => {
+    const tx = {
+      $queryRaw: jest.fn().mockResolvedValue(undefined),
+      paymentAttempt: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'attempt-release-1',
+          reference: 'TH-UC-release-1',
+          buyerId: 'buyer_1',
+          subjectType: 'UNIFIED_CHECKOUT',
+          checkoutSessionId: 'checkout-session-release-1',
+          status: 'FAILED',
+        }),
+      },
+      checkoutSession: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'checkout-session-release-1',
+          status: 'PAYMENT_PROCESSING',
+          lines: [
+            {
+              id: 'line-standard-1',
+              lineType: 'STANDARD_ITEM',
+              status: 'RESERVED',
+              checkoutIntentId: null,
+            },
+            {
+              id: 'line-custom-1',
+              lineType: 'CUSTOM_ORDER',
+              status: 'PENDING',
+              checkoutIntentId: 'intent-release-1',
+            },
+          ],
+          inventoryReservations: [
+            {
+              id: 'reservation-1',
+              productId: 'product-1',
+              productVariantId: 'variant-1',
+              quantity: 2,
+              reservedSize: 'M',
+            },
+          ],
+        }),
+        update: jest.fn().mockResolvedValue(undefined),
+      },
+      product: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'product-1',
+          sizeStock: { M: 3 },
+        }),
+        update: jest.fn().mockResolvedValue(undefined),
+      },
+      productVariant: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      inventoryReservation: {
+        update: jest.fn().mockResolvedValue(undefined),
+      },
+      checkoutSessionLine: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      customOrderCheckoutSession: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      paymentAttemptCheckoutIntentLink: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+    };
+
+    const target = new PaymentService(
+      {
+        $transaction: jest.fn().mockImplementation(async (callback: (client: typeof tx) => Promise<void>) =>
+          callback(tx),
+        ),
+      } as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+    );
+
+    await expect(
+      (target as any).releaseUnifiedCheckoutAttempt('TH-UC-release-1', 'buyer_1', {
+        reason: 'ATTEMPT_FAILED',
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(tx.inventoryReservation.update).toHaveBeenCalledWith({
+      where: { id: 'reservation-1' },
+      data: expect.objectContaining({
+        status: 'RELEASED',
+        releaseReason: 'ATTEMPT_FAILED',
+      }),
+    });
+    expect(tx.customOrderCheckoutSession.updateMany).toHaveBeenCalledWith({
+      where: {
+        checkoutIntentId: {
+          in: ['intent-release-1'],
+        },
+        customOrderId: null,
+      },
+      data: expect.objectContaining({
+        status: 'ABANDONED',
+        lastAttemptReference: 'TH-UC-release-1',
+        lastAttemptStatus: 'FAILED',
+      }),
+    });
+    expect(tx.checkoutSession.update).toHaveBeenCalledWith({
+      where: { id: 'checkout-session-release-1' },
+      data: expect.objectContaining({
+        status: 'FAILED',
+        failureReason: 'ATTEMPT_FAILED',
+      }),
+    });
+  });
+
+  it('purges old payment telemetry only for closed attempts', async () => {
+    const tx = {
+      paymentEvent: {
+        deleteMany: jest.fn().mockResolvedValue({ count: 9 }),
+      },
+      paymentAttemptRetryHistory: {
+        deleteMany: jest.fn().mockResolvedValue({ count: 4 }),
+      },
+      webhookIngressAudit: {
+        deleteMany: jest.fn().mockResolvedValue({ count: 3 }),
+      },
+    };
+    const target = new PaymentService(
+      {
+        $transaction: jest.fn().mockImplementation(async (callback: (client: typeof tx) => Promise<readonly [number, number, number]>) =>
+          callback(tx),
+        ),
+      } as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+    );
+
+    await expect(target.purgeOldPaymentTelemetry()).resolves.toEqual({
+      paymentEventsDeleted: 9,
+      retryHistoryDeleted: 4,
+      webhookIngressAuditsDeleted: 3,
+      retainedDays: {
+        paymentEvents: 180,
+        retryHistory: 180,
+        webhookIngressAudit: 120,
+      },
+    });
+
+    expect(tx.paymentEvent.deleteMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          processedAt: { not: null },
+          paymentAttempt: {
+            is: expect.objectContaining({
+              OR: expect.arrayContaining([
+                expect.objectContaining({
+                  status: {
+                    in: ['FAILED', 'CANCELLED', 'EXPIRED'],
+                  },
+                }),
+              ]),
+            }),
+          },
+        }),
+      }),
+    );
+    expect(tx.paymentAttemptRetryHistory.deleteMany).toHaveBeenCalled();
+    expect(tx.webhookIngressAudit.deleteMany).toHaveBeenCalled();
+  });
 });

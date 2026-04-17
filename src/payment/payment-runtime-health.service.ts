@@ -39,6 +39,10 @@ const RUNTIME_CRON_CHECKS: RuntimeCronCheckDefinition[] = [
     name: 'custom-order-payment-reconcile',
     maxAgeSeconds: 25 * 60,
   },
+  {
+    name: 'payment-telemetry-retention',
+    maxAgeSeconds: 36 * 60 * 60,
+  },
 ];
 
 const PAYMENT_RUNTIME_ALERT_CONTRACT_VERSION = '2026-04-17';

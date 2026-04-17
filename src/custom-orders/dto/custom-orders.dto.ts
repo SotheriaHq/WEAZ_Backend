@@ -5,11 +5,9 @@ import {
   CustomOrderIssueType,
   CustomOrderProgressStage,
   CustomOrderStatus,
-  PaymentMethod,
 } from '@prisma/client';
 import {
   IsBoolean,
-  IsEmail,
   IsEnum,
   IsInt,
   IsObject,
@@ -129,30 +127,6 @@ export class CreateExceptionReviewRequestDto {
   @IsString()
   @MaxLength(50)
   requestedQuoteTotal?: string;
-}
-
-export class InitializeCustomOrderPaymentDto {
-  @IsEnum(PaymentMethod)
-  paymentMethod: PaymentMethod;
-
-  @IsEmail()
-  email: string;
-
-  @IsOptional()
-  @IsString()
-  callbackUrl?: string;
-
-  @IsOptional()
-  @IsObject()
-  paymentData?: Record<string, unknown>;
-
-  @IsString()
-  @MaxLength(120)
-  idempotencyKey: string;
-
-  @IsOptional()
-  @IsString()
-  validationSessionId?: string;
 }
 
 export class VerifyCustomOrderPaymentDto {

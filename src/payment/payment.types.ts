@@ -1,6 +1,5 @@
 import { PaymentMethod } from '@prisma/client';
 import {
-  IsArray,
   IsEnum,
   IsInt,
   IsObject,
@@ -20,33 +19,6 @@ export interface ShippingAddress {
   postalCode?: string;
   country: string;
   phone: string;
-}
-
-export class InitializePaymentDto {
-  @IsArray()
-  @IsString({ each: true })
-  orderIds: string[];
-
-  @IsEnum(PaymentMethod)
-  paymentMethod: PaymentMethod;
-
-  @IsString()
-  email: string;
-
-  @IsOptional()
-  @IsString()
-  callbackUrl?: string;
-
-  @IsOptional()
-  @IsObject()
-  paymentData?: Record<string, any>;
-
-  @IsString()
-  idempotencyKey: string;
-
-  @IsOptional()
-  @IsString()
-  validationSessionId?: string;
 }
 
 export class InitializeUnifiedCheckoutDto {
