@@ -2744,6 +2744,7 @@ model PaymentAttempt {
   status           String
   reference        String       @unique
   idempotencyKey   String?
+  correlationId    String?
   callbackUrl      String?
   authorizationUrl String?
   amount           Decimal      @db.Decimal(10, 2)
@@ -2760,6 +2761,10 @@ model PaymentAttempt {
   bankAccount      Json?
   failureCode      String?
   failureMessage   String?
+  webhookRetryCount Int         @default(0)
+  webhookFirstRetriedAt DateTime?
+  webhookLastRetriedAt DateTime?
+  webhookLastRetryReason String?
   expiresAt        DateTime?
   confirmedAt      DateTime?
   finalizedAt      DateTime?
@@ -2767,6 +2772,7 @@ model PaymentAttempt {
   createdAt        DateTime     @default(now())
   updatedAt        DateTime     @updatedAt
   savedPaymentMethodsCreated SavedPaymentMethod[] @relation("SavedPaymentMethodSourceAttempt")
+  webhookIngressAudits WebhookIngressAudit[]
 
   @@index([buyerId, createdAt])
   @@index([status, createdAt])
@@ -2777,6 +2783,8 @@ model PaymentAttempt {
   @@index([cardValidationSessionId])
   @@index([buyerId, subjectType, customOrderId, idempotencyKey])
   @@index([exchangeRateSnapshotId])
+  @@index([correlationId])
+  @@index([webhookRetryCount, updatedAt])
 }
 
 model PaymentEvent {
@@ -2784,6 +2792,7 @@ model PaymentEvent {
   paymentAttemptId String   @db.Uuid
   type             String
   source           String
+  correlationId    String?
   providerEventKey String?  @unique
   providerEventType String?
   providerEventReceivedAt DateTime?
@@ -2793,6 +2802,31 @@ model PaymentEvent {
 
   @@index([paymentAttemptId, createdAt])
   @@index([providerEventType, createdAt])
+  @@index([correlationId, createdAt])
+}
+
+model WebhookIngressAudit {
+  id                String         @id @default(uuid()) @db.Uuid
+  domain            String
+  provider          String
+  rejectionReason   String
+  correlationId     String?
+  paymentAttemptId  String?        @db.Uuid
+  paymentAttempt    PaymentAttempt? @relation(fields: [paymentAttemptId], references: [id], onDelete: SetNull)
+  reference         String?
+  providerEventType String?
+  providerEventKey  String?
+  remoteAddress     String?
+  headersSnapshot   Json?
+  payloadSnapshot   Json?
+  receivedAt        DateTime       @default(now())
+  createdAt         DateTime       @default(now())
+
+  @@index([domain, provider, receivedAt])
+  @@index([rejectionReason, receivedAt])
+  @@index([correlationId, receivedAt])
+  @@index([reference, receivedAt])
+  @@index([paymentAttemptId, receivedAt])
 }
 
 model SavedPaymentMethod {

@@ -12,6 +12,7 @@ import {
   AdminAuditAction,
   CustomOrderLedgerAllocationStatus,
   PayoutStatus,
+  Prisma,
   Role,
 } from '@prisma/client';
 import { createHmac, timingSafeEqual } from 'crypto';
@@ -33,6 +34,7 @@ type WebhookContext = {
   headers: Record<string, any>;
   rawBody?: string;
   remoteAddress?: string | null;
+  correlationId?: string | null;
 };
 
 const PAYSTACK_WEBHOOK_IPS = [
@@ -773,13 +775,29 @@ export class AdminPayoutsService {
     payload: Record<string, any>,
     context: WebhookContext,
   ) {
+    const correlationId = this.resolveWebhookCorrelationId(context);
+
     if (!this.verifyPaystackWebhookOrigin(context)) {
+      await this.recordWebhookIngressRejection({
+        rejectionReason: 'INVALID_SIGNATURE',
+        correlationId,
+        context,
+        payloadSnapshot: payload,
+        providerEventType: String(payload?.event || '').trim() || null,
+      });
       this.logger.warn('Rejected payout webhook due to origin verification failure');
       return null;
     }
 
     const eventType = String(payload?.event || '').trim();
     if (!eventType.startsWith('transfer.')) {
+      await this.recordWebhookIngressRejection({
+        rejectionReason: 'MALFORMED_PAYLOAD',
+        correlationId,
+        context,
+        payloadSnapshot: payload,
+        providerEventType: eventType || null,
+      });
       return null;
     }
 
@@ -788,6 +806,13 @@ export class AdminPayoutsService {
     const transferReference = this.extractTransferReference(providerPayload);
 
     if (!transferCode && !transferReference) {
+      await this.recordWebhookIngressRejection({
+        rejectionReason: 'MALFORMED_PAYLOAD',
+        correlationId,
+        context,
+        payloadSnapshot: payload,
+        providerEventType: eventType,
+      });
       this.logger.warn(`Rejected payout webhook ${eventType}: missing transfer reference`);
       return null;
     }
@@ -804,6 +829,14 @@ export class AdminPayoutsService {
     });
 
     if (!payout) {
+      await this.recordWebhookIngressRejection({
+        rejectionReason: 'UNKNOWN_REFERENCE',
+        correlationId,
+        context,
+        payloadSnapshot: payload,
+        reference: transferReference ?? transferCode,
+        providerEventType: eventType,
+      });
       this.logger.warn(
         `Payout webhook ${eventType}: unknown transfer (${transferCode ?? transferReference})`,
       );
@@ -817,6 +850,14 @@ export class AdminPayoutsService {
     );
 
     if (!providerEventKey) {
+      await this.recordWebhookIngressRejection({
+        rejectionReason: 'MALFORMED_PAYLOAD',
+        correlationId,
+        context,
+        payloadSnapshot: payload,
+        reference: payout.id,
+        providerEventType: eventType,
+      });
       this.logger.warn(`Payout webhook ${eventType}: unable to compute event key`);
       return null;
     }
@@ -1236,6 +1277,84 @@ export class AdminPayoutsService {
       return false;
     }
     return this.verifyPaystackWebhookSignature(context);
+  }
+
+  private resolveWebhookCorrelationId(context: WebhookContext): string {
+    const candidate =
+      context.correlationId ??
+      this.getHeader(context.headers, 'x-correlation-id') ??
+      this.getHeader(context.headers, 'x-request-id');
+    const normalized = String(candidate ?? '').trim();
+    if (normalized) {
+      return normalized.slice(0, 128);
+    }
+    return `payout-webhook-${uuidv4()}`;
+  }
+
+  private async recordWebhookIngressRejection(params: {
+    rejectionReason: 'INVALID_SIGNATURE' | 'UNKNOWN_REFERENCE' | 'MALFORMED_PAYLOAD';
+    correlationId: string;
+    context: WebhookContext;
+    payloadSnapshot: unknown;
+    reference?: string | null;
+    providerEventType?: string | null;
+  }): Promise<void> {
+    try {
+      const auditModel = (this.prisma as any).webhookIngressAudit;
+      if (!auditModel?.create) {
+        return;
+      }
+
+      await auditModel.create({
+        data: {
+          domain: 'PAYOUT',
+          provider: 'PAYSTACK',
+          rejectionReason: params.rejectionReason,
+          correlationId: params.correlationId,
+          reference: params.reference ?? null,
+          providerEventType: params.providerEventType ?? null,
+          remoteAddress: params.context.remoteAddress ?? null,
+          headersSnapshot: this.buildWebhookHeadersSnapshot(params.context.headers),
+          payloadSnapshot: params.payloadSnapshot as Prisma.InputJsonValue,
+          receivedAt: new Date(),
+        },
+      });
+    } catch (error) {
+      this.logger.error(
+        `Failed to persist payout webhook ingress rejection audit: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+
+  private buildWebhookHeadersSnapshot(
+    headers: Record<string, any>,
+  ): Record<string, string | string[]> {
+    const snapshot: Record<string, string | string[]> = {};
+
+    for (const [key, value] of Object.entries(headers ?? {})) {
+      if (value == null) {
+        continue;
+      }
+
+      if (Array.isArray(value)) {
+        const normalized = value
+          .map((entry) => String(entry ?? '').trim())
+          .filter(Boolean);
+        if (normalized.length > 0) {
+          snapshot[key.toLowerCase()] = normalized;
+        }
+        continue;
+      }
+
+      const normalized = String(value).trim();
+      if (normalized) {
+        snapshot[key.toLowerCase()] = normalized;
+      }
+    }
+
+    return snapshot;
   }
 
   private verifyPaystackWebhookSignature(context: WebhookContext) {

@@ -12,6 +12,27 @@ export class PaystackWebhookController {
     private readonly adminPayoutsService: AdminPayoutsService,
   ) {}
 
+  private readCorrelationHeader(req: Request): string | null {
+    const candidates: Array<unknown> = [
+      req.headers['x-correlation-id'],
+      req.headers['x-request-id'],
+      (req as any).requestId,
+    ];
+
+    for (const candidate of candidates) {
+      if (typeof candidate === 'string') {
+        const value = candidate.trim();
+        if (value) return value;
+      }
+      if (Array.isArray(candidate) && candidate.length > 0) {
+        const value = String(candidate[0] ?? '').trim();
+        if (value) return value;
+      }
+    }
+
+    return null;
+  }
+
   @Post('paystack')
   @HttpCode(200)
   async handlePaystackWebhook(
@@ -23,6 +44,7 @@ export class PaystackWebhookController {
       headers: req.headers,
       rawBody: req.rawBody,
       remoteAddress: req.ip ?? req.socket?.remoteAddress ?? null,
+      correlationId: this.readCorrelationHeader(req),
     };
 
     if (event.startsWith('transfer.')) {
@@ -48,6 +70,7 @@ export class PaystackWebhookController {
       headers: req.headers,
       rawBody: req.rawBody,
       remoteAddress: req.ip ?? req.socket?.remoteAddress ?? null,
+      correlationId: this.readCorrelationHeader(req),
     });
 
     return { status: 'ok' };

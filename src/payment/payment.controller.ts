@@ -63,6 +63,27 @@ export class PaymentController {
     return null;
   }
 
+  private readCorrelationHeader(req: Request): string | null {
+    const candidates: Array<unknown> = [
+      req.headers['x-correlation-id'],
+      req.headers['x-request-id'],
+      (req as any).requestId,
+    ];
+
+    for (const candidate of candidates) {
+      if (typeof candidate === 'string') {
+        const value = candidate.trim();
+        if (value) return value;
+      }
+      if (Array.isArray(candidate) && candidate.length > 0) {
+        const value = String(candidate[0] ?? '').trim();
+        if (value) return value;
+      }
+    }
+
+    return null;
+  }
+
   private assertUnifiedIdempotencyKey(
     req: Request,
     bodyKey: string | null | undefined,
@@ -122,7 +143,11 @@ export class PaymentController {
   ) {
     this.assertUnifiedIdempotencyKey(req, dto.idempotencyKey);
     const userId = (req as any).user?.id ?? (req as any).user?.sub;
-    return this.paymentService.initializeUnifiedCheckout(dto, userId);
+    return this.paymentService.initializeUnifiedCheckout(
+      dto,
+      userId,
+      this.readCorrelationHeader(req),
+    );
   }
 
   @Get('attempts/:reference')
@@ -247,6 +272,7 @@ export class PaymentController {
       headers: req.headers,
       rawBody: req.rawBody,
       remoteAddress: req.ip ?? req.socket?.remoteAddress ?? null,
+      correlationId: this.readCorrelationHeader(req),
     });
     return { status: 'ok' };
   }
@@ -273,6 +299,7 @@ export class PaymentController {
       headers: req.headers,
       rawBody: req.rawBody,
       remoteAddress: req.ip ?? req.socket?.remoteAddress ?? null,
+      correlationId: this.readCorrelationHeader(req),
     });
     return { status: 'ok' };
   }

@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   InternalServerErrorException,
   Injectable,
   Logger,
@@ -63,6 +64,10 @@ import {
   resolvePaystackSecret as resolvePaystackSecretFromEnv,
 } from 'src/common/utils/paystack-secret';
 import { resolveWebAppBaseUrl } from 'src/common/utils/web-app-url';
+import {
+  PAYMENT_UNIFIED_INIT_LOCK_TTL_MS,
+  paymentUnifiedInitLockKey,
+} from 'src/common/runtime/payment-runtime.keys';
 
 type PaymentAttemptRecord = Awaited<ReturnType<PrismaService['paymentAttempt']['findUnique']>>;
 
@@ -70,6 +75,7 @@ type WebhookContext = {
   headers: Record<string, string | string[] | undefined>;
   rawBody?: string;
   remoteAddress?: string | null;
+  correlationId?: string | null;
 };
 
 type AttemptStatusUpdatePayload = {
@@ -79,6 +85,20 @@ type AttemptStatusUpdatePayload = {
   providerTransactionId?: string | null;
   providerAccessCode?: string | null;
   providerChannel?: string | null;
+  correlationId?: string | null;
+};
+
+type WebhookProcessSource =
+  | 'QUEUE'
+  | 'INLINE_FALLBACK'
+  | 'INLINE_DIRECT'
+  | 'CRON_REPROCESS';
+
+type WebhookProcessContext = {
+  source: WebhookProcessSource;
+  correlationId?: string | null;
+  queueAttempt?: number | null;
+  queueJobId?: string | null;
 };
 
 type ResolvedAttemptVerification = {
@@ -294,6 +314,8 @@ export class PaymentService implements OnModuleInit {
         'Redis configuration is required in production for payment queues and reconciliation (set REDIS_URL or REDIS_HOST/REDIS_PORT).',
       );
     }
+
+    this.assertProductionCheckoutCallbackConfiguration();
   }
 
   async initializePayment(
@@ -519,6 +541,7 @@ export class PaymentService implements OnModuleInit {
   async initializeUnifiedCheckout(
     dto: InitializeUnifiedCheckoutDto,
     userId: string,
+    requestCorrelationId?: string | null,
   ): Promise<PaymentInitResult> {
     const customerName = String(dto.customerName ?? '').trim();
     if (!customerName) {
@@ -552,19 +575,28 @@ export class PaymentService implements OnModuleInit {
         'Idempotency key is required for unified checkout initialization',
       );
     }
+    const correlationId = this.resolveCorrelationId(
+      requestCorrelationId ?? dto.correlationId ?? idempotencyKey,
+      'unified-checkout',
+    );
     const providerMode = this.getProviderMode();
-    const now = new Date();
 
-    const existingSession = await this.prisma.checkoutSession.findFirst({
-      where: {
-        buyerId: userId,
-        idempotencyKey,
-      },
-      include: {
-        paymentAttempt: true,
-      },
-      orderBy: { createdAt: 'desc' },
-    });
+    return this.withUnifiedCheckoutInitializationLock(
+      userId,
+      correlationId,
+      async () => {
+        const now = new Date();
+
+        const existingSession = await this.prisma.checkoutSession.findFirst({
+          where: {
+            buyerId: userId,
+            idempotencyKey,
+          },
+          include: {
+            paymentAttempt: true,
+          },
+          orderBy: { createdAt: 'desc' },
+        });
 
     if (existingSession?.paymentAttempt) {
       let existingAttempt = existingSession.paymentAttempt;
@@ -592,7 +624,7 @@ export class PaymentService implements OnModuleInit {
       }
 
       this.logger.log(
-        `Unified checkout replayed existing idempotent session ${existingSession.id} for ${existingAttempt.reference}`,
+        `Unified checkout replayed existing idempotent session ${existingSession.id} for ${existingAttempt.reference} (corr=${correlationId})`,
       );
 
       return {
@@ -645,7 +677,7 @@ export class PaymentService implements OnModuleInit {
           );
         } else {
           this.logger.log(
-            `Unified checkout reused active session ${activeSession.id} for ${activeAttempt.reference}`,
+            `Unified checkout reused active session ${activeSession.id} for ${activeAttempt.reference} (corr=${correlationId})`,
           );
 
           return {
@@ -848,6 +880,7 @@ export class PaymentService implements OnModuleInit {
         data: {
           buyerId: userId,
           subjectType: PaymentSubjectType.UNIFIED_CHECKOUT,
+          correlationId,
           checkoutSessionId: checkoutSession.id,
           savedPaymentMethodId: validatedCardSession?.savedPaymentMethodId ?? null,
           cardValidationSessionId: validatedCardSession?.canonicalSessionId ?? null,
@@ -914,6 +947,7 @@ export class PaymentService implements OnModuleInit {
           paymentAttemptId: createdAttempt.id,
           type: 'INITIALIZED',
           source: providerMode === 'mock' ? 'mock-initialize' : 'initialize',
+          correlationId,
           payload: {
             paymentMethod: dto.paymentMethod,
             gateway: gatewayResult.gateway,
@@ -921,6 +955,7 @@ export class PaymentService implements OnModuleInit {
             status: gatewayResult.status,
             subjectType: PaymentSubjectType.UNIFIED_CHECKOUT,
             checkoutSessionId: checkoutSession.id,
+            correlationId,
           },
         },
       });
@@ -931,12 +966,14 @@ export class PaymentService implements OnModuleInit {
       };
     });
 
-    return {
-      ...this.buildInitResultFromAttempt(created.attempt),
-      checkoutSessionId: created.checkoutSession.id,
-      summary: this.asObject(created.checkoutSession.summaryJson) as PaymentInitResult['summary'],
-      blockedLines: blockedCustomLines,
-    };
+        return {
+          ...this.buildInitResultFromAttempt(created.attempt),
+          checkoutSessionId: created.checkoutSession.id,
+          summary: this.asObject(created.checkoutSession.summaryJson) as PaymentInitResult['summary'],
+          blockedLines: blockedCustomLines,
+        };
+      },
+    );
   }
 
   async getPaymentAttemptByReference(
@@ -1770,10 +1807,11 @@ export class PaymentService implements OnModuleInit {
         payload,
         providerEventKey: receipt.providerEventKey,
         reference: receipt.reference,
+        correlationId: receipt.correlationId,
       });
     } catch (queueError) {
       this.logger.error(
-        `Webhook enqueue failed for ${receipt.gateway} (${receipt.reference}); processing inline fallback`,
+        `Webhook enqueue failed for ${receipt.gateway} (${receipt.reference}) [corr=${receipt.correlationId ?? 'n/a'}]; processing inline fallback`,
         (queueError as Error | undefined)?.stack,
       );
       try {
@@ -1782,10 +1820,14 @@ export class PaymentService implements OnModuleInit {
           payload,
           receipt.reference,
           receipt.providerEventKey,
+          {
+            source: 'INLINE_FALLBACK',
+            correlationId: receipt.correlationId,
+          },
         );
       } catch (fallbackError) {
         this.logger.error(
-          `Inline webhook fallback failed for ${receipt.gateway} (${receipt.reference})`,
+          `Inline webhook fallback failed for ${receipt.gateway} (${receipt.reference}) [corr=${receipt.correlationId ?? 'n/a'}]`,
           (fallbackError as Error | undefined)?.stack,
         );
       }
@@ -1807,15 +1849,28 @@ export class PaymentService implements OnModuleInit {
       payload,
       receipt.reference,
       receipt.providerEventKey,
+      {
+        source: 'INLINE_DIRECT',
+        correlationId: receipt.correlationId,
+      },
     );
   }
 
-  async processQueuedWebhook(job: PaymentWebhookProcessJob): Promise<void> {
+  async processQueuedWebhook(
+    job: PaymentWebhookProcessJob,
+    context?: { queueAttempt?: number; queueJobId?: string | null },
+  ): Promise<void> {
     await this.processWebhookPayload(
       job.gateway,
       job.payload,
       job.reference,
       job.providerEventKey,
+      {
+        source: 'QUEUE',
+        correlationId: job.correlationId,
+        queueAttempt: context?.queueAttempt ?? null,
+        queueJobId: context?.queueJobId ?? null,
+      },
     );
   }
 
@@ -1842,6 +1897,7 @@ export class PaymentService implements OnModuleInit {
       select: {
         paymentAttemptId: true,
         providerEventKey: true,
+        correlationId: true,
         payload: true,
       },
     });
@@ -1865,6 +1921,7 @@ export class PaymentService implements OnModuleInit {
               id: true,
               provider: true,
               reference: true,
+              correlationId: true,
             },
           })
         : [];
@@ -1894,6 +1951,13 @@ export class PaymentService implements OnModuleInit {
           payload,
           reference,
           providerEventKey,
+          {
+            source: 'CRON_REPROCESS',
+            correlationId:
+              String(event.correlationId ?? '').trim() ||
+              String(attempt?.correlationId ?? '').trim() ||
+              null,
+          },
         );
         processed += 1;
       } catch (error) {
@@ -1918,7 +1982,34 @@ export class PaymentService implements OnModuleInit {
     context: WebhookContext,
   ) {
     const normalizedGateway = String(gateway || '').trim().toUpperCase();
+    const correlationId = this.resolveCorrelationId(
+      context.correlationId ??
+        this.getHeader(context.headers, 'x-correlation-id') ??
+        this.getHeader(context.headers, 'x-request-id'),
+      `webhook-${normalizedGateway.toLowerCase()}`,
+    );
+
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+      await this.recordWebhookIngressRejection({
+        provider: normalizedGateway,
+        rejectionReason: 'MALFORMED_PAYLOAD',
+        payloadSnapshot: payload,
+        context,
+        correlationId,
+      });
+      this.logger.warn(`Rejected ${normalizedGateway} webhook due to malformed payload`);
+      return null;
+    }
+
     if (!this.verifyWebhookSignature(normalizedGateway, payload, context)) {
+      await this.recordWebhookIngressRejection({
+        provider: normalizedGateway,
+        rejectionReason: 'INVALID_SIGNATURE',
+        payloadSnapshot: payload,
+        context,
+        correlationId,
+        providerEventType: this.extractWebhookEvent(normalizedGateway, payload),
+      });
       this.logger.warn(
         `Rejected ${normalizedGateway} webhook due to signature verification failure`,
       );
@@ -1927,6 +2018,14 @@ export class PaymentService implements OnModuleInit {
 
     const reference = this.extractWebhookReference(normalizedGateway, payload);
     if (!reference) {
+      await this.recordWebhookIngressRejection({
+        provider: normalizedGateway,
+        rejectionReason: 'MALFORMED_PAYLOAD',
+        payloadSnapshot: payload,
+        context,
+        correlationId,
+        providerEventType: this.extractWebhookEvent(normalizedGateway, payload),
+      });
       this.logger.warn(`Webhook from ${normalizedGateway}: missing reference`);
       return null;
     }
@@ -1936,6 +2035,15 @@ export class PaymentService implements OnModuleInit {
     });
 
     if (!attempt) {
+      await this.recordWebhookIngressRejection({
+        provider: normalizedGateway,
+        rejectionReason: 'UNKNOWN_REFERENCE',
+        payloadSnapshot: payload,
+        context,
+        correlationId,
+        reference,
+        providerEventType: this.extractWebhookEvent(normalizedGateway, payload),
+      });
       this.logger.warn(
         `Webhook from ${normalizedGateway}: unknown reference ${reference}`,
       );
@@ -1943,6 +2051,16 @@ export class PaymentService implements OnModuleInit {
     }
 
     if (String(attempt.provider || '').trim().toUpperCase() !== normalizedGateway) {
+      await this.recordWebhookIngressRejection({
+        provider: normalizedGateway,
+        rejectionReason: 'MALFORMED_PAYLOAD',
+        payloadSnapshot: payload,
+        context,
+        correlationId,
+        reference,
+        paymentAttemptId: attempt.id,
+        providerEventType: this.extractWebhookEvent(normalizedGateway, payload),
+      });
       this.logger.warn(
         `Webhook gateway mismatch for ${reference}: expected ${attempt.provider}, received ${normalizedGateway}`,
       );
@@ -1955,6 +2073,16 @@ export class PaymentService implements OnModuleInit {
       reference,
     );
     if (!providerEventKey) {
+      await this.recordWebhookIngressRejection({
+        provider: normalizedGateway,
+        rejectionReason: 'MALFORMED_PAYLOAD',
+        payloadSnapshot: payload,
+        context,
+        correlationId,
+        reference,
+        paymentAttemptId: attempt.id,
+        providerEventType: this.extractWebhookEvent(normalizedGateway, payload),
+      });
       this.logger.warn(
         `Webhook from ${normalizedGateway}: unable to compute durable event key for ${reference}`,
       );
@@ -1963,12 +2091,25 @@ export class PaymentService implements OnModuleInit {
 
     const providerEventType = this.extractWebhookEvent(normalizedGateway, payload);
 
+    if (!attempt.correlationId) {
+      await this.prisma.paymentAttempt.updateMany({
+        where: {
+          id: attempt.id,
+          correlationId: null,
+        },
+        data: {
+          correlationId,
+        },
+      });
+    }
+
     try {
       await this.prisma.paymentEvent.create({
         data: {
           paymentAttemptId: attempt.id,
           type: 'WEBHOOK_RECEIVED',
           source: 'webhook-receipt',
+          correlationId,
           providerEventKey,
           providerEventType,
           providerEventReceivedAt: new Date(),
@@ -1980,24 +2121,30 @@ export class PaymentService implements OnModuleInit {
       if (message.includes('providerEventKey') || message.includes('Unique constraint')) {
         const existing = await this.prisma.paymentEvent.findFirst({
           where: { providerEventKey },
-          select: { processedAt: true },
+          select: { processedAt: true, correlationId: true },
         });
         return {
           gateway: normalizedGateway,
           reference,
           providerEventKey,
+          attemptId: attempt.id,
+          correlationId: existing?.correlationId ?? attempt.correlationId ?? correlationId,
           processedAt: existing?.processedAt ?? null,
         };
       }
       throw error;
     }
 
-    this.logger.log(`Webhook received from ${normalizedGateway}: ${reference}`);
+    this.logger.log(
+      `Webhook received from ${normalizedGateway}: ${reference} [corr=${attempt.correlationId ?? correlationId}]`,
+    );
 
     return {
       gateway: normalizedGateway,
       reference,
       providerEventKey,
+      attemptId: attempt.id,
+      correlationId: attempt.correlationId ?? correlationId,
       processedAt: null,
     };
   }
@@ -2007,6 +2154,7 @@ export class PaymentService implements OnModuleInit {
     payload: Record<string, any>,
     reference: string,
     providerEventKey: string,
+    context: WebhookProcessContext,
   ) {
     const attempt = await this.prisma.paymentAttempt.findUnique({
       where: { reference },
@@ -2020,74 +2168,123 @@ export class PaymentService implements OnModuleInit {
       return;
     }
 
-    if (this.isTerminalStatus(attempt.status as PaymentAttemptStatus)) {
-      if (
-        attempt.status === 'PAID' &&
-        attempt.subjectType === PaymentSubjectType.UNIFIED_CHECKOUT
-      ) {
-        await this.finalizeUnifiedCheckoutAttempt(
-          attempt.reference,
-          String(attempt.buyerId ?? ''),
-        );
-      }
-
-      await this.markProviderEventProcessed(providerEventKey);
-      return;
-    }
-
-    const nextStatus = this.resolveWebhookStatus(normalizedGateway, payload);
-    if (!nextStatus) {
-      this.logger.warn(
-        `Webhook from ${normalizedGateway}: unsupported status payload for ${reference}`,
-      );
-      await this.markProviderEventProcessed(providerEventKey);
-      return;
-    }
-
-    const payloadAmount = this.extractWebhookAmount(normalizedGateway, payload);
-    const payloadCurrency = this.extractWebhookCurrency(payload);
-
-    if (
-      nextStatus === 'PAID' &&
-      !this.webhookAmountsMatch(
-        Number(attempt.amount ?? 0),
-        attempt.currency,
-        payloadAmount,
-        payloadCurrency,
-      )
-    ) {
-      this.logger.warn(
-        `Webhook from ${normalizedGateway}: amount or currency mismatch for ${reference}`,
-      );
-      await this.markProviderEventProcessed(providerEventKey);
-      return;
-    }
-
-    const webhookAuthorization = this.extractPaystackAuthorizationSnapshot(
-      this.asObject(payload?.data)?.authorization ?? payload?.authorization,
+    const correlationId = this.resolveCorrelationId(
+      context.correlationId ?? attempt.correlationId ?? providerEventKey,
+      'webhook-process',
     );
 
-    await this.applyAttemptStatus(reference, attempt.buyerId ?? '', nextStatus, 'webhook', {
-      eventPayload: payload,
-      responseSnapshotPatch: {
-        ...(this.asObject(attempt.responseSnapshot) ?? {}),
-        providerWebhookGateway: normalizedGateway,
-        providerWebhookStatus: nextStatus,
-        providerWebhookReceivedAt: new Date().toISOString(),
-        providerWebhookAmount: payloadAmount,
-        providerWebhookCurrency: payloadCurrency,
-        providerWebhookEvent: this.extractWebhookEvent(normalizedGateway, payload),
-        providerWebhookVerified: true,
-        ...(webhookAuthorization
-          ? { providerWebhookAuthorization: webhookAuthorization }
-          : {}),
-      },
-      providerReference: this.extractWebhookReference(normalizedGateway, payload),
-      providerTransactionId: this.extractWebhookTransactionId(normalizedGateway, payload),
-      providerChannel: this.extractWebhookChannel(payload),
-    });
+    if (!attempt.correlationId) {
+      await this.prisma.paymentAttempt.updateMany({
+        where: {
+          id: attempt.id,
+          correlationId: null,
+        },
+        data: {
+          correlationId,
+        },
+      });
+    }
 
-    await this.markProviderEventProcessed(providerEventKey);
+    try {
+      if (this.isTerminalStatus(attempt.status as PaymentAttemptStatus)) {
+        if (
+          attempt.status === 'PAID' &&
+          attempt.subjectType === PaymentSubjectType.UNIFIED_CHECKOUT
+        ) {
+          await this.finalizeUnifiedCheckoutAttempt(
+            attempt.reference,
+            String(attempt.buyerId ?? ''),
+          );
+        }
+
+        await this.markProviderEventProcessed(providerEventKey);
+        return;
+      }
+
+      const nextStatus = this.resolveWebhookStatus(normalizedGateway, payload);
+      if (!nextStatus) {
+        this.logger.warn(
+          `Webhook from ${normalizedGateway}: unsupported status payload for ${reference}`,
+        );
+        await this.markProviderEventProcessed(providerEventKey);
+        return;
+      }
+
+      const payloadAmount = this.extractWebhookAmount(normalizedGateway, payload);
+      const payloadCurrency = this.extractWebhookCurrency(payload);
+
+      if (
+        nextStatus === 'PAID' &&
+        !this.webhookAmountsMatch(
+          Number(attempt.amount ?? 0),
+          attempt.currency,
+          payloadAmount,
+          payloadCurrency,
+        )
+      ) {
+        this.logger.warn(
+          `Webhook from ${normalizedGateway}: amount or currency mismatch for ${reference}`,
+        );
+        await this.markProviderEventProcessed(providerEventKey);
+        return;
+      }
+
+      const webhookAuthorization = this.extractPaystackAuthorizationSnapshot(
+        this.asObject(payload?.data)?.authorization ?? payload?.authorization,
+      );
+
+      await this.applyAttemptStatus(reference, attempt.buyerId ?? '', nextStatus, 'webhook', {
+        eventPayload: payload,
+        correlationId,
+        responseSnapshotPatch: {
+          ...(this.asObject(attempt.responseSnapshot) ?? {}),
+          providerWebhookGateway: normalizedGateway,
+          providerWebhookStatus: nextStatus,
+          providerWebhookSource: context.source,
+          providerWebhookQueueAttempt: context.queueAttempt ?? null,
+          providerWebhookQueueJobId: context.queueJobId ?? null,
+          providerWebhookReceivedAt: new Date().toISOString(),
+          providerWebhookAmount: payloadAmount,
+          providerWebhookCurrency: payloadCurrency,
+          providerWebhookEvent: this.extractWebhookEvent(normalizedGateway, payload),
+          providerWebhookVerified: true,
+          providerWebhookCorrelationId: correlationId,
+          ...(webhookAuthorization
+            ? { providerWebhookAuthorization: webhookAuthorization }
+            : {}),
+        },
+        providerReference: this.extractWebhookReference(normalizedGateway, payload),
+        providerTransactionId: this.extractWebhookTransactionId(normalizedGateway, payload),
+        providerChannel: this.extractWebhookChannel(payload),
+      });
+
+      await this.markProviderEventProcessed(providerEventKey);
+    } catch (error) {
+      await this.recordWebhookRetryAttempt({
+        paymentAttemptId: attempt.id,
+        reference,
+        providerEventKey,
+        correlationId,
+        source: context.source,
+        queueAttempt: context.queueAttempt ?? null,
+        queueJobId: context.queueJobId ?? null,
+        error,
+      });
+      await this.recordWebhookProcessingFailure({
+        paymentAttemptId: attempt.id,
+        gateway: normalizedGateway,
+        reference,
+        providerEventKey,
+        providerEventType: this.extractWebhookEvent(normalizedGateway, payload),
+        payload,
+        correlationId,
+        source: context.source,
+        queueAttempt: context.queueAttempt ?? null,
+        queueJobId: context.queueJobId ?? null,
+        error,
+      });
+      throw error;
+    }
   }
 
   private async initializeGateway(
@@ -2686,6 +2883,7 @@ export class PaymentService implements OnModuleInit {
       return {
         paymentAttemptId: attempt.id,
         reference: attempt.reference,
+        correlationId: attempt.correlationId ?? undefined,
         subjectType: 'UNIFIED_CHECKOUT',
         customOrderIds,
         checkoutSessionId: checkoutSession.id,
@@ -2706,6 +2904,10 @@ export class PaymentService implements OnModuleInit {
         nextAction: this.asObject(attempt.nextAction) as PaymentNextAction | undefined,
         canRetry: ['FAILED', 'CANCELLED', 'EXPIRED'].includes(attempt.status),
         canSimulate: this.isMockMode() && this.allowPaymentSimulation() && attempt.status !== 'PAID',
+        webhookRetryCount: Number(attempt.webhookRetryCount ?? 0),
+        webhookFirstRetriedAt: attempt.webhookFirstRetriedAt?.toISOString(),
+        webhookLastRetriedAt: attempt.webhookLastRetriedAt?.toISOString(),
+        webhookLastRetryReason: attempt.webhookLastRetryReason ?? undefined,
         orderIds,
         summary: {
           items: summaryItems,
@@ -2754,6 +2956,7 @@ export class PaymentService implements OnModuleInit {
         return {
           paymentAttemptId: attempt.id,
           reference: attempt.reference,
+          correlationId: attempt.correlationId ?? undefined,
           subjectType: 'CUSTOM_ORDER',
           customOrderId: customOrder.id,
           checkoutIntentId: customOrder.checkoutIntentId ?? attempt.checkoutIntentId ?? undefined,
@@ -2774,6 +2977,10 @@ export class PaymentService implements OnModuleInit {
           nextAction: this.asObject(attempt.nextAction) as PaymentNextAction | undefined,
           canRetry: ['FAILED', 'CANCELLED', 'EXPIRED'].includes(attempt.status),
           canSimulate: this.isMockMode() && this.allowPaymentSimulation() && attempt.status !== 'PAID',
+          webhookRetryCount: Number(attempt.webhookRetryCount ?? 0),
+          webhookFirstRetriedAt: attempt.webhookFirstRetriedAt?.toISOString(),
+          webhookLastRetriedAt: attempt.webhookLastRetriedAt?.toISOString(),
+          webhookLastRetryReason: attempt.webhookLastRetryReason ?? undefined,
           orderIds: [],
           summary: {
             items: [
@@ -2831,6 +3038,7 @@ export class PaymentService implements OnModuleInit {
       return {
         paymentAttemptId: attempt.id,
         reference: attempt.reference,
+        correlationId: attempt.correlationId ?? undefined,
         subjectType: 'CUSTOM_ORDER',
         customOrderId: undefined,
         checkoutIntentId: checkoutIntent.id,
@@ -2851,6 +3059,10 @@ export class PaymentService implements OnModuleInit {
         nextAction: this.asObject(attempt.nextAction) as PaymentNextAction | undefined,
         canRetry: ['FAILED', 'CANCELLED', 'EXPIRED'].includes(attempt.status),
         canSimulate: this.isMockMode() && this.allowPaymentSimulation() && attempt.status !== 'PAID',
+        webhookRetryCount: Number(attempt.webhookRetryCount ?? 0),
+        webhookFirstRetriedAt: attempt.webhookFirstRetriedAt?.toISOString(),
+        webhookLastRetriedAt: attempt.webhookLastRetriedAt?.toISOString(),
+        webhookLastRetryReason: attempt.webhookLastRetryReason ?? undefined,
         orderIds: [],
         summary: {
           items: [
@@ -2891,6 +3103,7 @@ export class PaymentService implements OnModuleInit {
     return {
       paymentAttemptId: attempt.id,
       reference: attempt.reference,
+      correlationId: attempt.correlationId ?? undefined,
       subjectType: 'STANDARD_ORDER',
       gateway: attempt.provider,
       providerMode: attempt.providerMode === 'live' ? 'live' : 'mock',
@@ -2911,6 +3124,10 @@ export class PaymentService implements OnModuleInit {
       nextAction: this.asObject(attempt.nextAction) as PaymentNextAction | undefined,
       canRetry: ['FAILED', 'CANCELLED', 'EXPIRED'].includes(attempt.status),
       canSimulate: this.isMockMode() && this.allowPaymentSimulation() && attempt.status !== 'PAID',
+      webhookRetryCount: Number(attempt.webhookRetryCount ?? 0),
+      webhookFirstRetriedAt: attempt.webhookFirstRetriedAt?.toISOString(),
+      webhookLastRetriedAt: attempt.webhookLastRetriedAt?.toISOString(),
+      webhookLastRetryReason: attempt.webhookLastRetryReason ?? undefined,
       orderIds: orders.map((order) => order.id),
       summary: {
         items: items.map((item) => ({
@@ -2966,6 +3183,7 @@ export class PaymentService implements OnModuleInit {
         where: { reference },
         data: {
           status: nextStatus,
+          correlationId: payload?.correlationId ?? attempt.correlationId,
           confirmedAt: nextStatus === 'PAID' ? now : attempt.confirmedAt,
           finalizedAt: this.isTerminalStatus(nextStatus) ? now : attempt.finalizedAt,
           lastVerifiedAt: now,
@@ -3026,6 +3244,7 @@ export class PaymentService implements OnModuleInit {
           paymentAttemptId: updated.id,
           type: `STATUS_${nextStatus}`,
           source,
+          correlationId: payload?.correlationId ?? attempt.correlationId,
           providerEventType:
             source === 'webhook'
               ? this.extractWebhookEvent(String(attempt.provider || ''), eventPayload ?? {})
@@ -3096,6 +3315,7 @@ export class PaymentService implements OnModuleInit {
     return {
       paymentAttemptId: attempt.id,
       reference: attempt.reference,
+      correlationId: attempt.correlationId ?? undefined,
       gateway: attempt.provider,
       status: attempt.status as PaymentAttemptStatus,
       currency: attempt.currency,
@@ -3131,6 +3351,7 @@ export class PaymentService implements OnModuleInit {
       status: attempt.status as PaymentAttemptStatus,
       paymentAttemptId: attempt.id,
       reference: attempt.reference,
+      correlationId: attempt.correlationId ?? undefined,
       amount,
       currency: orders[0]?.currency ?? attempt.currency,
       settlementCurrency: attempt.settlementCurrency,
@@ -3163,6 +3384,7 @@ export class PaymentService implements OnModuleInit {
       status: attempt.status as PaymentAttemptStatus,
       paymentAttemptId: attempt.id,
       reference: attempt.reference,
+      correlationId: attempt.correlationId ?? undefined,
       amount,
       currency: summary?.currency ?? attempt.currency,
       settlementCurrency: attempt.settlementCurrency,
@@ -4469,6 +4691,147 @@ export class PaymentService implements OnModuleInit {
     return Boolean(redisHost && redisPort);
   }
 
+  private resolveUnifiedInitLockTtlMs(): number {
+    const configured = Number(
+      String(process.env.PAYMENT_UNIFIED_INIT_LOCK_TTL_MS ?? '').trim(),
+    );
+    if (!Number.isFinite(configured) || configured <= 0) {
+      return PAYMENT_UNIFIED_INIT_LOCK_TTL_MS;
+    }
+
+    return Math.max(5_000, Math.min(120_000, Math.trunc(configured)));
+  }
+
+  private resolveCorrelationId(candidate: unknown, prefix = 'payment'): string {
+    const normalized = String(candidate ?? '').trim();
+    if (normalized) {
+      return normalized.slice(0, 128);
+    }
+
+    return `${prefix}-${uuidv4()}`;
+  }
+
+  private async withUnifiedCheckoutInitializationLock<T>(
+    userId: string,
+    correlationId: string,
+    callback: () => Promise<T>,
+  ): Promise<T> {
+    const normalizedUserId = String(userId ?? '').trim();
+    if (!normalizedUserId) {
+      throw new BadRequestException('Unable to resolve buyer identity for checkout initialization');
+    }
+
+    const redis = await this.webhookEventsQueue.getRedisClient().catch((error) => {
+      this.logger.error(
+        `Failed to resolve Redis client for checkout initialization lock [corr=${correlationId}]: ${this.extractErrorMessage(error)}`,
+      );
+      throw new InternalServerErrorException(
+        'Unable to enforce checkout initialization concurrency lock.',
+      );
+    });
+
+    const lockKey = paymentUnifiedInitLockKey(normalizedUserId);
+    const ownerToken = uuidv4();
+    const ttlMs = this.resolveUnifiedInitLockTtlMs();
+
+    let acquired = false;
+    try {
+      const result = await redis.set(lockKey, ownerToken, 'NX', 'PX', ttlMs);
+      acquired = result === 'OK';
+    } catch (error) {
+      this.logger.error(
+        `Checkout initialization lock acquisition failed for user=${normalizedUserId} [corr=${correlationId}]: ${this.extractErrorMessage(error)}`,
+      );
+      throw new InternalServerErrorException(
+        'Unable to enforce checkout initialization concurrency lock.',
+      );
+    }
+
+    if (!acquired) {
+      throw new ConflictException(
+        'A checkout initialization is already in progress for this account. Please retry in a few seconds.',
+      );
+    }
+
+    try {
+      return await callback();
+    } finally {
+      try {
+        await redis.eval(
+          'if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("del", KEYS[1]) else return 0 end',
+          1,
+          lockKey,
+          ownerToken,
+        );
+      } catch (error) {
+        this.logger.warn(
+          `Checkout initialization lock release failed for user=${normalizedUserId} [corr=${correlationId}]: ${this.extractErrorMessage(error)}`,
+        );
+      }
+    }
+  }
+
+  private assertProductionCheckoutCallbackConfiguration(): void {
+    const callbackUrl = this.resolveCallbackBaseUrl();
+
+    let parsed: URL;
+    try {
+      parsed = new URL(callbackUrl);
+    } catch {
+      throw new Error(
+        'FRONTEND_PUBLIC_CHECKOUT_CALLBACK_URL (or WEB_APP_URL) must be a valid absolute URL in production.',
+      );
+    }
+
+    if (parsed.protocol !== 'https:') {
+      throw new Error(
+        'Checkout callback URL must use HTTPS in production (set FRONTEND_PUBLIC_CHECKOUT_CALLBACK_URL).',
+      );
+    }
+
+    if (this.isPrivateOrLoopbackHostname(parsed.hostname)) {
+      throw new Error(
+        'Checkout callback URL cannot point to loopback/private network hosts in production.',
+      );
+    }
+  }
+
+  private isPrivateOrLoopbackHostname(hostname: string): boolean {
+    const normalized = String(hostname ?? '').trim().toLowerCase();
+    if (!normalized) {
+      return true;
+    }
+
+    if (
+      normalized === 'localhost' ||
+      normalized === '127.0.0.1' ||
+      normalized === '::1'
+    ) {
+      return true;
+    }
+
+    if (/^10\./.test(normalized)) {
+      return true;
+    }
+    if (/^192\.168\./.test(normalized)) {
+      return true;
+    }
+    if (/^169\.254\./.test(normalized)) {
+      return true;
+    }
+
+    const octets = normalized.split('.');
+    if (octets.length === 4 && octets.every((part) => /^\d+$/.test(part))) {
+      const first = Number(octets[0]);
+      const second = Number(octets[1]);
+      if (first === 172 && second >= 16 && second <= 31) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
   private allowPaymentSimulation(): boolean {
     // Default is false. Simulation must be explicitly enabled for dev/staging only.
     return (process.env.ALLOW_PAYMENT_SIMULATION ?? 'false').trim().toLowerCase() === 'true';
@@ -4806,6 +5169,182 @@ export class PaymentService implements OnModuleInit {
       where: { providerEventKey },
       data: { processedAt: new Date() },
     });
+  }
+
+  private async recordWebhookIngressRejection(params: {
+    provider: string;
+    rejectionReason: 'INVALID_SIGNATURE' | 'UNKNOWN_REFERENCE' | 'MALFORMED_PAYLOAD';
+    payloadSnapshot: unknown;
+    context: WebhookContext;
+    correlationId: string;
+    reference?: string | null;
+    paymentAttemptId?: string | null;
+    providerEventType?: string | null;
+    providerEventKey?: string | null;
+  }): Promise<void> {
+    try {
+      await (this.prisma as any).webhookIngressAudit.create({
+        data: {
+          domain: 'PAYMENT',
+          provider: params.provider,
+          rejectionReason: params.rejectionReason,
+          correlationId: params.correlationId,
+          paymentAttemptId: params.paymentAttemptId ?? null,
+          reference: params.reference ?? null,
+          providerEventType: params.providerEventType ?? null,
+          providerEventKey: params.providerEventKey ?? null,
+          remoteAddress: params.context.remoteAddress ?? null,
+          headersSnapshot: this.buildWebhookHeadersSnapshot(params.context.headers),
+          payloadSnapshot: params.payloadSnapshot as Prisma.InputJsonValue,
+          receivedAt: new Date(),
+        },
+      });
+    } catch (error) {
+      this.logger.error(
+        `Failed to persist webhook ingress rejection audit for ${params.provider}: ${this.extractErrorMessage(error)}`,
+      );
+    }
+  }
+
+  private async recordWebhookRetryAttempt(params: {
+    paymentAttemptId: string;
+    reference: string;
+    providerEventKey: string;
+    correlationId: string;
+    source: WebhookProcessSource;
+    queueAttempt: number | null;
+    queueJobId: string | null;
+    error: unknown;
+  }): Promise<void> {
+    const now = new Date();
+    const reason = this.extractErrorMessage(params.error);
+
+    try {
+      await this.prisma.$transaction(async (tx) => {
+        const current = await tx.paymentAttempt.findUnique({
+          where: { id: params.paymentAttemptId },
+          select: {
+            id: true,
+            webhookFirstRetriedAt: true,
+          },
+        });
+        if (!current) {
+          return;
+        }
+
+        await tx.paymentAttempt.update({
+          where: { id: params.paymentAttemptId },
+          data: {
+            webhookRetryCount: {
+              increment: 1,
+            },
+            webhookFirstRetriedAt: current.webhookFirstRetriedAt ?? now,
+            webhookLastRetriedAt: now,
+            webhookLastRetryReason: reason,
+          },
+        });
+
+        await tx.paymentEvent.create({
+          data: {
+            paymentAttemptId: params.paymentAttemptId,
+            type: 'WEBHOOK_RETRY',
+            source: 'webhook-retry',
+            correlationId: params.correlationId,
+            processedAt: now,
+            payload: {
+              reference: params.reference,
+              providerEventKey: params.providerEventKey,
+              source: params.source,
+              queueAttempt: params.queueAttempt,
+              queueJobId: params.queueJobId,
+              reason,
+              recordedAt: now.toISOString(),
+            },
+          },
+        });
+      });
+    } catch (error) {
+      this.logger.error(
+        `Failed to persist webhook retry metadata for ${params.reference}: ${this.extractErrorMessage(error)}`,
+      );
+    }
+  }
+
+  private async recordWebhookProcessingFailure(params: {
+    paymentAttemptId: string;
+    gateway: string;
+    reference: string;
+    providerEventKey: string;
+    providerEventType: string | null;
+    payload: Record<string, any>;
+    correlationId: string;
+    source: WebhookProcessSource;
+    queueAttempt: number | null;
+    queueJobId: string | null;
+    error: unknown;
+  }): Promise<void> {
+    const now = new Date();
+    const errorMessage = this.extractErrorMessage(params.error);
+
+    this.logger.error(
+      `Webhook processing failure for ${params.gateway} ${params.reference}: ${errorMessage}`,
+    );
+
+    try {
+      await this.prisma.paymentEvent.create({
+        data: {
+          paymentAttemptId: params.paymentAttemptId,
+          type: 'WEBHOOK_PROCESS_FAILED',
+          source: 'webhook-processor',
+          correlationId: params.correlationId,
+          providerEventType: params.providerEventType,
+          providerEventReceivedAt: now,
+          payload: {
+            gateway: params.gateway,
+            reference: params.reference,
+            providerEventKey: params.providerEventKey,
+            source: params.source,
+            queueAttempt: params.queueAttempt,
+            queueJobId: params.queueJobId,
+            correlationId: params.correlationId,
+            failedAt: now.toISOString(),
+            error: errorMessage,
+            providerPayload: params.payload,
+          },
+        },
+      });
+    } catch (persistError) {
+      this.logger.error(
+        `Failed to persist webhook processing failure event for ${params.gateway} ${params.reference}: ${this.extractErrorMessage(
+          persistError,
+        )}`,
+      );
+    }
+  }
+
+  private buildWebhookHeadersSnapshot(
+    headers: Record<string, string | string[] | undefined>,
+  ): Record<string, string | string[]> {
+    const snapshot: Record<string, string | string[]> = {};
+    for (const [key, value] of Object.entries(headers ?? {})) {
+      if (value == null) {
+        continue;
+      }
+
+      if (Array.isArray(value)) {
+        snapshot[key.toLowerCase()] = value
+          .map((entry) => String(entry ?? '').trim())
+          .filter(Boolean);
+        continue;
+      }
+
+      const normalized = String(value).trim();
+      if (normalized) {
+        snapshot[key.toLowerCase()] = normalized;
+      }
+    }
+
+    return snapshot;
   }
 
   private async parseJsonResponse(response: Response) {

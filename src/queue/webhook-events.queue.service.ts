@@ -12,6 +12,7 @@ export interface PaymentWebhookProcessJob {
   payload: Record<string, any>;
   providerEventKey: string;
   reference: string;
+  correlationId?: string;
 }
 
 export interface PayoutWebhookProcessJob {
@@ -24,6 +25,10 @@ export interface PayoutWebhookProcessJob {
 @Injectable()
 export class WebhookEventsQueueService {
   constructor(@InjectQueue(WEBHOOK_EVENTS_QUEUE) private readonly queue: Queue) {}
+
+  async getRedisClient(): Promise<any> {
+    return (this.queue as any).client;
+  }
 
   async enqueuePaymentWebhook(job: PaymentWebhookProcessJob): Promise<void> {
     await this.queue.add(WEBHOOK_PAYMENT_PROCESS_JOB, job, {

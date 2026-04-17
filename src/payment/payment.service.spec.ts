@@ -5,6 +5,10 @@ import { PaymentService } from './payment.service';
 describe('PaymentService', () => {
   let originalPaymentsMode: string | undefined;
   let originalPaystackSecretKey: string | undefined;
+  let originalNodeEnv: string | undefined;
+  let originalRedisUrl: string | undefined;
+  let originalRedisHost: string | undefined;
+  let originalRedisPort: string | undefined;
   let originalFrontendPublicCheckoutCallbackUrl: string | undefined;
   let originalWebAppUrl: string | undefined;
   let originalWebAppUseHttps: string | undefined;
@@ -15,6 +19,10 @@ describe('PaymentService', () => {
   beforeEach(() => {
     originalPaymentsMode = process.env.PAYMENTS_MODE;
     originalPaystackSecretKey = process.env.PAYSTACK_SECRET_KEY;
+    originalNodeEnv = process.env.NODE_ENV;
+    originalRedisUrl = process.env.REDIS_URL;
+    originalRedisHost = process.env.REDIS_HOST;
+    originalRedisPort = process.env.REDIS_PORT;
     originalFrontendPublicCheckoutCallbackUrl =
       process.env.FRONTEND_PUBLIC_CHECKOUT_CALLBACK_URL;
     originalWebAppUrl = process.env.WEB_APP_URL;
@@ -43,6 +51,18 @@ describe('PaymentService', () => {
 
     if (originalPaystackSecretKey === undefined) delete process.env.PAYSTACK_SECRET_KEY;
     else process.env.PAYSTACK_SECRET_KEY = originalPaystackSecretKey;
+
+    if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = originalNodeEnv;
+
+    if (originalRedisUrl === undefined) delete process.env.REDIS_URL;
+    else process.env.REDIS_URL = originalRedisUrl;
+
+    if (originalRedisHost === undefined) delete process.env.REDIS_HOST;
+    else process.env.REDIS_HOST = originalRedisHost;
+
+    if (originalRedisPort === undefined) delete process.env.REDIS_PORT;
+    else process.env.REDIS_PORT = originalRedisPort;
 
     if (originalFrontendPublicCheckoutCallbackUrl === undefined) {
       delete process.env.FRONTEND_PUBLIC_CHECKOUT_CALLBACK_URL;
@@ -193,6 +213,30 @@ describe('PaymentService', () => {
         'https://localhost:3000/bag/payment-return',
       ),
     ).rejects.toThrow('Flutterwave live checkout is not enabled');
+  });
+
+  it('fails production startup when checkout callback URL is not HTTPS', () => {
+    process.env.NODE_ENV = 'production';
+    process.env.REDIS_URL = 'redis://127.0.0.1:6379/0';
+    process.env.PAYSTACK_SECRET_KEY = 'sk_live_required';
+    process.env.FRONTEND_PUBLIC_CHECKOUT_CALLBACK_URL =
+      'http://checkout.threadly.com/bag/payment-return';
+
+    expect(() => service.onModuleInit()).toThrow(
+      'Checkout callback URL must use HTTPS in production',
+    );
+  });
+
+  it('fails production startup when checkout callback URL points to loopback host', () => {
+    process.env.NODE_ENV = 'production';
+    process.env.REDIS_URL = 'redis://127.0.0.1:6379/0';
+    process.env.PAYSTACK_SECRET_KEY = 'sk_live_required';
+    process.env.FRONTEND_PUBLIC_CHECKOUT_CALLBACK_URL =
+      'https://localhost:3000/bag/payment-return';
+
+    expect(() => service.onModuleInit()).toThrow(
+      'Checkout callback URL cannot point to loopback/private network hosts in production.',
+    );
   });
 
   it('rejects raw Paystack card payloads when custom in-screen entry is disabled', () => {

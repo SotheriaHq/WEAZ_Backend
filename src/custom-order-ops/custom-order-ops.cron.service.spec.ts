@@ -9,6 +9,7 @@ import {
 import { CustomOrdersPaymentsService } from 'src/custom-orders/custom-orders-payments.service';
 import { CustomOrderRefundService } from 'src/custom-orders/custom-order-refund.service';
 import { CustomOrderSideEffectsService } from 'src/custom-orders/custom-order-side-effects.service';
+import { PaymentRuntimeHealthService } from 'src/payment/payment-runtime-health.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { CustomOrderOpsCronService } from './custom-order-ops.cron.service';
 
@@ -17,6 +18,7 @@ describe('CustomOrderOpsCronService', () => {
   let prisma: any;
   let sideEffects: any;
   let customOrdersPaymentsService: any;
+  let paymentRuntimeHealthService: any;
 
   const fixedNow = new Date('2026-03-12T12:00:00.000Z');
 
@@ -71,6 +73,10 @@ describe('CustomOrderOpsCronService', () => {
       verifyPaymentByReference: jest.fn(),
     };
 
+    paymentRuntimeHealthService = {
+      recordCronHeartbeat: jest.fn().mockResolvedValue(undefined),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         CustomOrderOpsCronService,
@@ -85,6 +91,10 @@ describe('CustomOrderOpsCronService', () => {
         {
           provide: CustomOrdersPaymentsService,
           useValue: customOrdersPaymentsService,
+        },
+        {
+          provide: PaymentRuntimeHealthService,
+          useValue: paymentRuntimeHealthService,
         },
       ],
     }).compile();
@@ -174,6 +184,24 @@ describe('CustomOrderOpsCronService', () => {
         reference: 'TH-CO-2',
         gateway: 'PAYSTACK',
       }),
+    );
+  });
+
+  it('records a healthy payment reconciliation heartbeat when no attempts are eligible', async () => {
+    prisma.paymentAttempt.findMany.mockResolvedValue([]);
+
+    await service.reconcilePendingCustomOrderPayments();
+
+    expect(customOrdersPaymentsService.verifyPaymentByReference).not.toHaveBeenCalled();
+    expect(paymentRuntimeHealthService.recordCronHeartbeat).toHaveBeenCalledWith(
+      'custom-order-payment-reconcile',
+      'ok',
+      {
+        scanned: 0,
+        paid: 0,
+        unresolved: 0,
+        failed: 0,
+      },
     );
   });
 

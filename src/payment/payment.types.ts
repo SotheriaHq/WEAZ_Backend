@@ -84,6 +84,10 @@ export class InitializeUnifiedCheckoutDto {
   @IsOptional()
   @IsString()
   validationSessionId?: string;
+
+  @IsOptional()
+  @IsString()
+  correlationId?: string;
 }
 
 export type PaymentChannel =
@@ -123,6 +127,7 @@ export type PaymentAttemptStatus =
 export interface PaymentInitResult {
   paymentAttemptId: string;
   reference: string;
+  correlationId?: string;
   gateway: string;
   status: PaymentAttemptStatus;
   currency: string;
@@ -250,6 +255,7 @@ export interface PaymentVerifyResult {
   status: PaymentAttemptStatus;
   paymentAttemptId?: string;
   reference: string;
+  correlationId?: string;
   amount: number;
   currency: string;
   settlementCurrency: string;
@@ -283,6 +289,7 @@ export interface PaymentAttemptOrderSummaryItem {
 export interface PaymentAttemptSummary {
   paymentAttemptId: string;
   reference: string;
+  correlationId?: string;
   subjectType: 'STANDARD_ORDER' | 'CUSTOM_ORDER' | 'UNIFIED_CHECKOUT';
   customOrderId?: string;
   customOrderIds?: string[];
@@ -312,6 +319,10 @@ export interface PaymentAttemptSummary {
   nextAction?: PaymentNextAction;
   canRetry: boolean;
   canSimulate: boolean;
+  webhookRetryCount?: number;
+  webhookFirstRetriedAt?: string;
+  webhookLastRetriedAt?: string;
+  webhookLastRetryReason?: string;
   orderIds: string[];
   summary: {
     items: PaymentAttemptOrderSummaryItem[];

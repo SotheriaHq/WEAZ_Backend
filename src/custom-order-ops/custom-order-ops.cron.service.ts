@@ -92,6 +92,16 @@ export class CustomOrderOpsCronService {
       });
 
       if (attempts.length === 0) {
+        await this.paymentRuntimeHealthService.recordCronHeartbeat(
+          'custom-order-payment-reconcile',
+          'ok',
+          {
+            scanned: 0,
+            paid: 0,
+            unresolved: 0,
+            failed: 0,
+          },
+        );
         return;
       }
 

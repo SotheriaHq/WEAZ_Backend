@@ -219,6 +219,10 @@ describe('PaymentController', () => {
       reference: 'TH-UC-1',
     });
 
-    expect(paymentService.initializeUnifiedCheckout).toHaveBeenCalledWith(dto, 'buyer_1');
+    expect(paymentService.initializeUnifiedCheckout).toHaveBeenCalledWith(
+      dto,
+      'buyer_1',
+      null,
+    );
   });
 });

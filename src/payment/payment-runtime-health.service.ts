@@ -41,6 +41,13 @@ const RUNTIME_CRON_CHECKS: RuntimeCronCheckDefinition[] = [
   },
 ];
 
+const PAYMENT_RUNTIME_ALERT_CONTRACT_VERSION = '2026-04-16';
+
+const PAYMENT_RUNTIME_ALERT_THRESHOLDS = {
+  webhookQueueBacklogHigh: 300,
+  webhookProcessingFailures24hHigh: 20,
+} as const;
+
 @Injectable()
 export class PaymentRuntimeHealthService {
   private readonly logger = new Logger(PaymentRuntimeHealthService.name);
@@ -120,7 +127,47 @@ export class PaymentRuntimeHealthService {
     };
     backlog: {
       pendingWebhookReceipts: number;
+      oldestPendingWebhookAgeSeconds: number | null;
+      recentWebhookProcessingFailures24h: number;
       staleLiveAttempts: number;
+    };
+    alertContract: {
+      version: string;
+      thresholds: {
+        workerHeartbeatStaleSeconds: number;
+        cronHeartbeatChecks: Array<{
+          name: string;
+          maxAgeSeconds: number;
+        }>;
+        webhookQueueBacklogHigh: number;
+        webhookProcessingFailures24hHigh: number;
+      };
+      states: {
+        workerHeartbeat: {
+          state: 'ok' | 'alert';
+          reason: string | null;
+          lastHeartbeatAt: string | null;
+          ageSeconds: number | null;
+          maxAgeSeconds: number;
+        };
+        cronHeartbeats: {
+          state: 'ok' | 'alert';
+          reason: string | null;
+          staleOrMissing: string[];
+        };
+        webhookQueueBacklog: {
+          state: 'ok' | 'alert';
+          reason: string | null;
+          backlog: number | null;
+          threshold: number;
+        };
+        webhookFailureSpike24h: {
+          state: 'ok' | 'alert';
+          reason: string | null;
+          failures: number;
+          threshold: number;
+        };
+      };
     };
     degradedReasons: string[];
   }> {
@@ -128,11 +175,25 @@ export class PaymentRuntimeHealthService {
     const checkedAtIso = checkedAt.toISOString();
     const degradedReasons: string[] = [];
 
-    const [pendingWebhookReceipts, staleLiveAttempts] = await Promise.all([
+    const [pendingWebhookReceipts, oldestPendingWebhookReceipt, staleLiveAttempts, recentWebhookProcessingFailures24h] = await Promise.all([
       this.prisma.paymentEvent.count({
         where: {
           type: 'WEBHOOK_RECEIVED',
           processedAt: null,
+        },
+      }),
+      this.prisma.paymentEvent.findFirst({
+        where: {
+          type: 'WEBHOOK_RECEIVED',
+          processedAt: null,
+        },
+        orderBy: [
+          { providerEventReceivedAt: 'asc' },
+          { createdAt: 'asc' },
+        ],
+        select: {
+          providerEventReceivedAt: true,
+          createdAt: true,
         },
       }),
       this.prisma.paymentAttempt.count({
@@ -146,7 +207,26 @@ export class PaymentRuntimeHealthService {
           },
         },
       }),
+      this.prisma.paymentEvent.count({
+        where: {
+          type: 'WEBHOOK_PROCESS_FAILED',
+          createdAt: {
+            gte: new Date(Date.now() - 24 * 60 * 60 * 1000),
+          },
+        },
+      }),
     ]);
+
+    const oldestPendingWebhookAt =
+      oldestPendingWebhookReceipt?.providerEventReceivedAt ??
+      oldestPendingWebhookReceipt?.createdAt ??
+      null;
+    const oldestPendingWebhookAgeSeconds = oldestPendingWebhookAt
+      ? Math.max(
+          0,
+          Math.floor((checkedAt.getTime() - oldestPendingWebhookAt.getTime()) / 1000),
+        )
+      : null;
 
     const redisResult: {
       ready: boolean;
@@ -306,6 +386,15 @@ export class PaymentRuntimeHealthService {
     if (pendingWebhookReceipts > 200) {
       degradedReasons.push('payment_webhook_receipts_backlog_high');
     }
+    if ((oldestPendingWebhookAgeSeconds ?? 0) > 15 * 60) {
+      degradedReasons.push('payment_webhook_receipts_oldest_age_high');
+    }
+    if (
+      recentWebhookProcessingFailures24h >
+      PAYMENT_RUNTIME_ALERT_THRESHOLDS.webhookProcessingFailures24hHigh
+    ) {
+      degradedReasons.push('payment_webhook_processing_failures_24h_high');
+    }
     if (staleLiveAttempts > 120) {
       degradedReasons.push('payment_stale_live_attempts_high');
     }
@@ -335,7 +424,10 @@ export class PaymentRuntimeHealthService {
         paused: Number(counts.paused ?? 0),
       };
 
-      if (queueCounts.waiting + queueCounts.delayed > 300) {
+      if (
+        queueCounts.waiting + queueCounts.delayed >
+        PAYMENT_RUNTIME_ALERT_THRESHOLDS.webhookQueueBacklogHigh
+      ) {
         degradedReasons.push('payment_webhook_queue_backlog_high');
       }
       if (queueCounts.failed > 200) {
@@ -345,6 +437,80 @@ export class PaymentRuntimeHealthService {
       queueError = this.extractErrorMessage(error);
       degradedReasons.push('payment_webhook_queue_unavailable');
     }
+
+    const queueBacklog = queueCounts
+      ? Number(queueCounts.waiting ?? 0) + Number(queueCounts.delayed ?? 0)
+      : null;
+    const staleOrMissingCrons = cronResults
+      .filter((cron) => !cron.exists || cron.stale || cron.status === 'error')
+      .map((cron) => cron.name);
+
+    const alertContract = {
+      version: PAYMENT_RUNTIME_ALERT_CONTRACT_VERSION,
+      thresholds: {
+        workerHeartbeatStaleSeconds: workerResult.maxAgeSeconds,
+        cronHeartbeatChecks: RUNTIME_CRON_CHECKS.map((check) => ({
+          name: check.name,
+          maxAgeSeconds: check.maxAgeSeconds,
+        })),
+        webhookQueueBacklogHigh:
+          PAYMENT_RUNTIME_ALERT_THRESHOLDS.webhookQueueBacklogHigh,
+        webhookProcessingFailures24hHigh:
+          PAYMENT_RUNTIME_ALERT_THRESHOLDS.webhookProcessingFailures24hHigh,
+      },
+      states: {
+        workerHeartbeat: {
+          state:
+            workerResult.seen && !workerResult.stale
+              ? ('ok' as const)
+              : ('alert' as const),
+          reason:
+            workerResult.seen && !workerResult.stale
+              ? null
+              : workerResult.seen
+                ? 'stale'
+                : 'missing',
+          lastHeartbeatAt: workerResult.lastHeartbeatAt,
+          ageSeconds: workerResult.ageSeconds,
+          maxAgeSeconds: workerResult.maxAgeSeconds,
+        },
+        cronHeartbeats: {
+          state: staleOrMissingCrons.length === 0 ? ('ok' as const) : ('alert' as const),
+          reason: staleOrMissingCrons.length === 0 ? null : 'stale_or_missing',
+          staleOrMissing: staleOrMissingCrons,
+        },
+        webhookQueueBacklog: {
+          state:
+            queueBacklog != null &&
+            queueBacklog <= PAYMENT_RUNTIME_ALERT_THRESHOLDS.webhookQueueBacklogHigh &&
+            !queueError
+              ? ('ok' as const)
+              : ('alert' as const),
+          reason:
+            queueError ??
+            (queueBacklog != null &&
+            queueBacklog > PAYMENT_RUNTIME_ALERT_THRESHOLDS.webhookQueueBacklogHigh
+              ? 'backlog_high'
+              : null),
+          backlog: queueBacklog,
+          threshold: PAYMENT_RUNTIME_ALERT_THRESHOLDS.webhookQueueBacklogHigh,
+        },
+        webhookFailureSpike24h: {
+          state:
+            recentWebhookProcessingFailures24h <=
+            PAYMENT_RUNTIME_ALERT_THRESHOLDS.webhookProcessingFailures24hHigh
+              ? ('ok' as const)
+              : ('alert' as const),
+          reason:
+            recentWebhookProcessingFailures24h <=
+            PAYMENT_RUNTIME_ALERT_THRESHOLDS.webhookProcessingFailures24hHigh
+              ? null
+              : 'failure_spike',
+          failures: recentWebhookProcessingFailures24h,
+          threshold: PAYMENT_RUNTIME_ALERT_THRESHOLDS.webhookProcessingFailures24hHigh,
+        },
+      },
+    };
 
     return {
       ok: degradedReasons.length === 0,
@@ -358,8 +524,11 @@ export class PaymentRuntimeHealthService {
       },
       backlog: {
         pendingWebhookReceipts,
+        oldestPendingWebhookAgeSeconds,
+        recentWebhookProcessingFailures24h,
         staleLiveAttempts,
       },
+      alertContract,
       degradedReasons: Array.from(new Set(degradedReasons)),
     };
   }

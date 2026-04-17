@@ -38,19 +38,29 @@ export class IdempotencyInterceptor implements NestInterceptor {
     const req = context.switchToHttp().getRequest<any>();
     const res = context.switchToHttp().getResponse<any>();
 
-    const userId: string | undefined = req.user?.id;
+    const userIdCandidate = req.user?.id ?? req.user?.sub;
+    const userId =
+      typeof userIdCandidate === 'string' && userIdCandidate.trim().length > 0
+        ? userIdCandidate.trim()
+        : undefined;
     if (!userId) {
       // Only support authenticated idempotency for now.
       return next.handle();
     }
 
+    const resolveHeaderValue = (value: unknown): string | undefined => {
+      if (typeof value === 'string') {
+        return value;
+      }
+      if (Array.isArray(value) && value.length > 0) {
+        return typeof value[0] === 'string' ? value[0] : undefined;
+      }
+      return undefined;
+    };
+
     const rawKey =
-      (typeof req.headers['idempotency-key'] === 'string'
-        ? req.headers['idempotency-key']
-        : undefined) ??
-      (typeof req.headers['x-idempotency-key'] === 'string'
-        ? req.headers['x-idempotency-key']
-        : undefined);
+      resolveHeaderValue(req.headers['idempotency-key']) ??
+      resolveHeaderValue(req.headers['x-idempotency-key']);
 
     if (!rawKey) return next.handle();
 
