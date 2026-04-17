@@ -224,6 +224,12 @@ type UnifiedCheckoutFinalizeResult = {
   };
 };
 
+type UnifiedFinalizationCompensationStatus =
+  | 'PENDING_RETRY'
+  | 'ESCALATED'
+  | 'REFUND_REVIEW'
+  | 'RESOLVED';
+
 const CARD_VALIDATION_SESSION_METHOD = 'POST';
 const CARD_VALIDATION_SESSION_PATH = '/payment/cards/validate';
 const CARD_VALIDATION_SESSION_KEY_PREFIX = 'payment:card-validation:';
@@ -256,6 +262,9 @@ const ACTIVE_UNIFIED_ATTEMPT_STATUSES: PaymentAttemptStatus[] = [
   'REQUIRES_ACTION',
   'PROCESSING',
 ];
+
+const FINALIZATION_ESCALATION_FAILURE_THRESHOLD = 3;
+const FINALIZATION_REFUND_REVIEW_FAILURE_THRESHOLD = 6;
 
 const CHECKOUT_SHIPPING_RATES: Record<string, number> = {
   LAGOS: 2500,
@@ -849,9 +858,15 @@ export class PaymentService implements OnModuleInit {
         );
       }
 
+      const createdCustomCheckoutLines: Array<{
+        checkoutIntentId: string;
+        checkoutSessionLineId: string;
+        sessionId: string;
+      }> = [];
+
       for (let index = 0; index < customLineDrafts.length; index += 1) {
         const line = customLineDrafts[index];
-        await tx.checkoutSessionLine.create({
+        const createdCustomLine = await tx.checkoutSessionLine.create({
           data: {
             checkoutSessionId: checkoutSession.id,
             lineType: CheckoutSessionLineType.CUSTOM_ORDER,
@@ -874,6 +889,12 @@ export class PaymentService implements OnModuleInit {
             } as Prisma.InputJsonValue,
           },
         });
+
+        createdCustomCheckoutLines.push({
+          checkoutIntentId: line.checkoutIntentId,
+          checkoutSessionLineId: createdCustomLine.id,
+          sessionId: line.sessionId,
+        });
       }
 
       const createdAttempt = await tx.paymentAttempt.create({
@@ -882,6 +903,8 @@ export class PaymentService implements OnModuleInit {
           subjectType: PaymentSubjectType.UNIFIED_CHECKOUT,
           correlationId,
           checkoutSessionId: checkoutSession.id,
+          checkoutIntentId:
+            customLineDrafts.length === 1 ? customLineDrafts[0].checkoutIntentId : null,
           savedPaymentMethodId: validatedCardSession?.savedPaymentMethodId ?? null,
           cardValidationSessionId: validatedCardSession?.canonicalSessionId ?? null,
           provider: gatewayResult.gateway,
@@ -916,6 +939,29 @@ export class PaymentService implements OnModuleInit {
           expiresAt: gatewayResult.expiresAt ? new Date(gatewayResult.expiresAt) : null,
         },
       });
+
+      const uniqueCustomIntentLinks = Array.from(
+        new Map(
+          createdCustomCheckoutLines.map((line) => [line.checkoutIntentId, line]),
+        ).values(),
+      );
+
+      if (uniqueCustomIntentLinks.length > 0) {
+        await tx.paymentAttemptCheckoutIntentLink.createMany({
+          data: uniqueCustomIntentLinks.map((line) => ({
+            id: uuidv4(),
+            paymentAttemptId: createdAttempt.id,
+            checkoutIntentId: line.checkoutIntentId,
+            checkoutSessionId: checkoutSession.id,
+            checkoutSessionLineId: line.checkoutSessionLineId,
+            status: 'PENDING',
+            metadataJson: {
+              customCheckoutSessionId: line.sessionId,
+            } as Prisma.InputJsonValue,
+          })),
+          skipDuplicates: true,
+        });
+      }
 
       if (customLineDrafts.length > 0) {
         await tx.customOrderCheckoutSession.updateMany({
@@ -1830,6 +1876,21 @@ export class PaymentService implements OnModuleInit {
           `Inline webhook fallback failed for ${receipt.gateway} (${receipt.reference}) [corr=${receipt.correlationId ?? 'n/a'}]`,
           (fallbackError as Error | undefined)?.stack,
         );
+        this.emitReliabilityAlert('PAYMENT_WEBHOOK_PIPELINE_FAILURE', {
+          gateway: receipt.gateway,
+          reference: receipt.reference,
+          providerEventKey: receipt.providerEventKey,
+          correlationId: receipt.correlationId ?? null,
+          queueError:
+            queueError instanceof Error ? queueError.message : String(queueError),
+          fallbackError:
+            fallbackError instanceof Error
+              ? fallbackError.message
+              : String(fallbackError),
+        });
+        throw new InternalServerErrorException(
+          'Unable to durably process payment webhook event.',
+        );
       }
     }
   }
@@ -2260,29 +2321,37 @@ export class PaymentService implements OnModuleInit {
 
       await this.markProviderEventProcessed(providerEventKey);
     } catch (error) {
-      await this.recordWebhookRetryAttempt({
-        paymentAttemptId: attempt.id,
-        reference,
-        providerEventKey,
-        correlationId,
-        source: context.source,
-        queueAttempt: context.queueAttempt ?? null,
-        queueJobId: context.queueJobId ?? null,
-        error,
-      });
-      await this.recordWebhookProcessingFailure({
-        paymentAttemptId: attempt.id,
-        gateway: normalizedGateway,
-        reference,
-        providerEventKey,
-        providerEventType: this.extractWebhookEvent(normalizedGateway, payload),
-        payload,
-        correlationId,
-        source: context.source,
-        queueAttempt: context.queueAttempt ?? null,
-        queueJobId: context.queueJobId ?? null,
-        error,
-      });
+      try {
+        await this.recordWebhookRetryAttempt({
+          paymentAttemptId: attempt.id,
+          reference,
+          providerEventKey,
+          correlationId,
+          source: context.source,
+          queueAttempt: context.queueAttempt ?? null,
+          queueJobId: context.queueJobId ?? null,
+          error,
+        });
+        await this.recordWebhookProcessingFailure({
+          paymentAttemptId: attempt.id,
+          gateway: normalizedGateway,
+          reference,
+          providerEventKey,
+          providerEventType: this.extractWebhookEvent(normalizedGateway, payload),
+          payload,
+          correlationId,
+          source: context.source,
+          queueAttempt: context.queueAttempt ?? null,
+          queueJobId: context.queueJobId ?? null,
+          error,
+        });
+      } catch (persistenceError) {
+        throw new InternalServerErrorException(
+          `Webhook failure persistence failed for ${reference}: ${this.extractErrorMessage(
+            persistenceError,
+          )}`,
+        );
+      }
       throw error;
     }
   }
@@ -2908,6 +2977,15 @@ export class PaymentService implements OnModuleInit {
         webhookFirstRetriedAt: attempt.webhookFirstRetriedAt?.toISOString(),
         webhookLastRetriedAt: attempt.webhookLastRetriedAt?.toISOString(),
         webhookLastRetryReason: attempt.webhookLastRetryReason ?? undefined,
+        finalizationFailureCount: Number(attempt.finalizationFailureCount ?? 0),
+        finalizationFirstFailedAt:
+          attempt.finalizationFirstFailedAt?.toISOString(),
+        finalizationLastFailedAt:
+          attempt.finalizationLastFailedAt?.toISOString(),
+        finalizationLastFailureReason:
+          attempt.finalizationLastFailureReason ?? undefined,
+        finalizationCompensationStatus:
+          attempt.finalizationCompensationStatus ?? undefined,
         orderIds,
         summary: {
           items: summaryItems,
@@ -2981,6 +3059,15 @@ export class PaymentService implements OnModuleInit {
           webhookFirstRetriedAt: attempt.webhookFirstRetriedAt?.toISOString(),
           webhookLastRetriedAt: attempt.webhookLastRetriedAt?.toISOString(),
           webhookLastRetryReason: attempt.webhookLastRetryReason ?? undefined,
+          finalizationFailureCount: Number(attempt.finalizationFailureCount ?? 0),
+          finalizationFirstFailedAt:
+            attempt.finalizationFirstFailedAt?.toISOString(),
+          finalizationLastFailedAt:
+            attempt.finalizationLastFailedAt?.toISOString(),
+          finalizationLastFailureReason:
+            attempt.finalizationLastFailureReason ?? undefined,
+          finalizationCompensationStatus:
+            attempt.finalizationCompensationStatus ?? undefined,
           orderIds: [],
           summary: {
             items: [
@@ -3063,6 +3150,15 @@ export class PaymentService implements OnModuleInit {
         webhookFirstRetriedAt: attempt.webhookFirstRetriedAt?.toISOString(),
         webhookLastRetriedAt: attempt.webhookLastRetriedAt?.toISOString(),
         webhookLastRetryReason: attempt.webhookLastRetryReason ?? undefined,
+        finalizationFailureCount: Number(attempt.finalizationFailureCount ?? 0),
+        finalizationFirstFailedAt:
+          attempt.finalizationFirstFailedAt?.toISOString(),
+        finalizationLastFailedAt:
+          attempt.finalizationLastFailedAt?.toISOString(),
+        finalizationLastFailureReason:
+          attempt.finalizationLastFailureReason ?? undefined,
+        finalizationCompensationStatus:
+          attempt.finalizationCompensationStatus ?? undefined,
         orderIds: [],
         summary: {
           items: [
@@ -3128,6 +3224,15 @@ export class PaymentService implements OnModuleInit {
       webhookFirstRetriedAt: attempt.webhookFirstRetriedAt?.toISOString(),
       webhookLastRetriedAt: attempt.webhookLastRetriedAt?.toISOString(),
       webhookLastRetryReason: attempt.webhookLastRetryReason ?? undefined,
+      finalizationFailureCount: Number(attempt.finalizationFailureCount ?? 0),
+      finalizationFirstFailedAt:
+        attempt.finalizationFirstFailedAt?.toISOString(),
+      finalizationLastFailedAt:
+        attempt.finalizationLastFailedAt?.toISOString(),
+      finalizationLastFailureReason:
+        attempt.finalizationLastFailureReason ?? undefined,
+      finalizationCompensationStatus:
+        attempt.finalizationCompensationStatus ?? undefined,
       orderIds: orders.map((order) => order.id),
       summary: {
         items: items.map((item) => ({
@@ -4455,6 +4560,10 @@ export class PaymentService implements OnModuleInit {
     return String(error?.message || 'Unknown reconciliation failure');
   }
 
+  private emitReliabilityAlert(code: string, details: Record<string, unknown>): void {
+    this.logger.error(`ALERT ${code} ${JSON.stringify(details)}`);
+  }
+
   private validatePaymentRequest(
     paymentMethod: PaymentMethod,
     paymentData?: Record<string, any>,
@@ -5182,8 +5291,21 @@ export class PaymentService implements OnModuleInit {
     providerEventType?: string | null;
     providerEventKey?: string | null;
   }): Promise<void> {
+    const auditModel = (this.prisma as any).webhookIngressAudit;
+    if (!auditModel?.create) {
+      this.emitReliabilityAlert('PAYMENT_WEBHOOK_AUDIT_MODEL_UNAVAILABLE', {
+        provider: params.provider,
+        rejectionReason: params.rejectionReason,
+        reference: params.reference ?? null,
+        correlationId: params.correlationId,
+      });
+      throw new InternalServerErrorException(
+        'Webhook audit persistence is unavailable for payment webhook handling.',
+      );
+    }
+
     try {
-      await (this.prisma as any).webhookIngressAudit.create({
+      await auditModel.create({
         data: {
           domain: 'PAYMENT',
           provider: params.provider,
@@ -5200,8 +5322,17 @@ export class PaymentService implements OnModuleInit {
         },
       });
     } catch (error) {
-      this.logger.error(
-        `Failed to persist webhook ingress rejection audit for ${params.provider}: ${this.extractErrorMessage(error)}`,
+      this.emitReliabilityAlert('PAYMENT_WEBHOOK_AUDIT_PERSIST_FAILED', {
+        provider: params.provider,
+        rejectionReason: params.rejectionReason,
+        reference: params.reference ?? null,
+        correlationId: params.correlationId,
+        providerEventType: params.providerEventType ?? null,
+        providerEventKey: params.providerEventKey ?? null,
+        error: this.extractErrorMessage(error),
+      });
+      throw new InternalServerErrorException(
+        `Failed to persist webhook ingress rejection audit for ${params.provider}.`,
       );
     }
   }
@@ -5229,7 +5360,9 @@ export class PaymentService implements OnModuleInit {
           },
         });
         if (!current) {
-          return;
+          throw new NotFoundException(
+            `Payment attempt ${params.paymentAttemptId} not found while recording retry metadata.`,
+          );
         }
 
         await tx.paymentAttempt.update({
@@ -5244,6 +5377,30 @@ export class PaymentService implements OnModuleInit {
           },
         });
 
+        const retryPayload = {
+          reference: params.reference,
+          providerEventKey: params.providerEventKey,
+          source: params.source,
+          queueAttempt: params.queueAttempt,
+          queueJobId: params.queueJobId,
+          reason,
+          recordedAt: now.toISOString(),
+        };
+
+        await tx.paymentAttemptRetryHistory.create({
+          data: {
+            paymentAttemptId: params.paymentAttemptId,
+            providerEventKey: params.providerEventKey,
+            source: params.source,
+            queueAttempt: params.queueAttempt,
+            queueJobId: params.queueJobId,
+            errorReason: reason,
+            payload: retryPayload as Prisma.InputJsonValue,
+            correlationId: params.correlationId,
+            occurredAt: now,
+          },
+        });
+
         await tx.paymentEvent.create({
           data: {
             paymentAttemptId: params.paymentAttemptId,
@@ -5251,21 +5408,20 @@ export class PaymentService implements OnModuleInit {
             source: 'webhook-retry',
             correlationId: params.correlationId,
             processedAt: now,
-            payload: {
-              reference: params.reference,
-              providerEventKey: params.providerEventKey,
-              source: params.source,
-              queueAttempt: params.queueAttempt,
-              queueJobId: params.queueJobId,
-              reason,
-              recordedAt: now.toISOString(),
-            },
+            payload: retryPayload,
           },
         });
       });
     } catch (error) {
-      this.logger.error(
-        `Failed to persist webhook retry metadata for ${params.reference}: ${this.extractErrorMessage(error)}`,
+      this.emitReliabilityAlert('PAYMENT_WEBHOOK_RETRY_PERSIST_FAILED', {
+        reference: params.reference,
+        providerEventKey: params.providerEventKey,
+        correlationId: params.correlationId,
+        source: params.source,
+        error: this.extractErrorMessage(error),
+      });
+      throw new InternalServerErrorException(
+        `Failed to persist webhook retry metadata for ${params.reference}.`,
       );
     }
   }
@@ -5314,10 +5470,15 @@ export class PaymentService implements OnModuleInit {
         },
       });
     } catch (persistError) {
-      this.logger.error(
-        `Failed to persist webhook processing failure event for ${params.gateway} ${params.reference}: ${this.extractErrorMessage(
-          persistError,
-        )}`,
+      this.emitReliabilityAlert('PAYMENT_WEBHOOK_FAILURE_EVENT_PERSIST_FAILED', {
+        gateway: params.gateway,
+        reference: params.reference,
+        providerEventKey: params.providerEventKey,
+        correlationId: params.correlationId,
+        error: this.extractErrorMessage(persistError),
+      });
+      throw new InternalServerErrorException(
+        `Failed to persist webhook processing failure event for ${params.reference}.`,
       );
     }
   }
@@ -6732,6 +6893,22 @@ export class PaymentService implements OnModuleInit {
             lastAttemptStatus: attempt.status,
           },
         });
+
+        await tx.paymentAttemptCheckoutIntentLink.updateMany({
+          where: {
+            paymentAttemptId: attempt.id,
+            checkoutIntentId: {
+              in: customCheckoutIntentIds,
+            },
+            status: {
+              not: 'COMMITTED',
+            },
+          },
+          data: {
+            status: 'RELEASED',
+            finalizedAt: now,
+          },
+        });
       }
 
       const failedStatus =
@@ -6758,7 +6935,9 @@ export class PaymentService implements OnModuleInit {
   ): Promise<UnifiedCheckoutFinalizeResult | null> {
     const now = new Date();
 
-    const finalized = await this.prisma.$transaction(async (tx) => {
+    let finalized: UnifiedCheckoutFinalizeResult | null;
+    try {
+      finalized = await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT "reference" FROM "PaymentAttempt" WHERE "reference" = ${reference} FOR UPDATE`;
       const attempt = await tx.paymentAttempt.findUnique({
         where: { reference },
@@ -6836,6 +7015,116 @@ export class PaymentService implements OnModuleInit {
           !line.customOrderId &&
           line.status !== CheckoutSessionLineStatus.CANCELLED,
       );
+
+      const customSessionLines = checkoutSession.lines.filter(
+        (line) =>
+          line.lineType === CheckoutSessionLineType.CUSTOM_ORDER &&
+          line.status !== CheckoutSessionLineStatus.CANCELLED,
+      );
+
+      for (const line of customSessionLines) {
+        const checkoutIntentId = String(line.checkoutIntentId ?? '').trim();
+        if (!checkoutIntentId) {
+          throw new ConflictException(
+            `Unified checkout custom line ${line.id} is missing checkout intent linkage.`,
+          );
+        }
+      }
+
+      let linkedIntentRows = await tx.paymentAttemptCheckoutIntentLink.findMany({
+        where: {
+          paymentAttemptId: attempt.id,
+        },
+        select: {
+          checkoutIntentId: true,
+        },
+      });
+
+      if (linkedIntentRows.length === 0 && customSessionLines.length > 0) {
+        await tx.paymentAttemptCheckoutIntentLink.createMany({
+          data: customSessionLines.map((line) => ({
+            id: uuidv4(),
+            paymentAttemptId: attempt.id,
+            checkoutIntentId: String(line.checkoutIntentId ?? '').trim(),
+            checkoutSessionId: checkoutSession.id,
+            checkoutSessionLineId: line.id,
+            status: 'PENDING',
+            metadataJson: {
+              backfilledBy: 'finalizeUnifiedCheckoutAttempt',
+            } as Prisma.InputJsonValue,
+          })),
+          skipDuplicates: true,
+        });
+
+        linkedIntentRows = await tx.paymentAttemptCheckoutIntentLink.findMany({
+          where: {
+            paymentAttemptId: attempt.id,
+          },
+          select: {
+            checkoutIntentId: true,
+          },
+        });
+      }
+
+      const requiredCustomIntentIds = Array.from(
+        new Set(
+          linkedIntentRows
+            .map((row) => String(row.checkoutIntentId ?? '').trim())
+            .filter(Boolean),
+        ),
+      );
+
+      const sessionCustomIntentIds = Array.from(
+        new Set(
+          customSessionLines
+            .map((line) => String(line.checkoutIntentId ?? '').trim())
+            .filter(Boolean),
+        ),
+      );
+
+      if (sessionCustomIntentIds.length !== customSessionLines.length) {
+        throw new ConflictException('Duplicate or missing custom checkout intent linkage detected.');
+      }
+
+      for (const sessionIntentId of sessionCustomIntentIds) {
+        if (!requiredCustomIntentIds.includes(sessionIntentId)) {
+          throw new ConflictException(
+            `Custom checkout intent ${sessionIntentId} is not linked to payment attempt ${attempt.reference}.`,
+          );
+        }
+      }
+
+      const existingOrdersForRequiredIntents = requiredCustomIntentIds.length
+        ? await tx.customOrder.findMany({
+            where: {
+              checkoutIntentId: {
+                in: requiredCustomIntentIds,
+              },
+            },
+            select: {
+              id: true,
+              checkoutIntentId: true,
+            },
+          })
+        : [];
+      const existingOrderByIntentId = new Map(
+        existingOrdersForRequiredIntents.map((order) => [
+          String(order.checkoutIntentId ?? '').trim(),
+          order.id,
+        ]),
+      );
+
+      for (const linkedIntentId of requiredCustomIntentIds) {
+        if (sessionCustomIntentIds.includes(linkedIntentId)) {
+          continue;
+        }
+
+        if (!existingOrderByIntentId.has(linkedIntentId)) {
+          throw new ConflictException(
+            `Linked checkout intent ${linkedIntentId} is missing from checkout session and has no committed custom order.`,
+          );
+        }
+      }
 
       const shippingAddress = this.asObject(checkoutSession.shippingAddressJson);
       const contactInfo = this.asObject(checkoutSession.contactInfoJson);
@@ -7015,7 +7304,9 @@ export class PaymentService implements OnModuleInit {
       for (const line of customPendingLines) {
         const checkoutIntentId = String(line.checkoutIntentId ?? '').trim();
         if (!checkoutIntentId) {
-          continue;
+          throw new ConflictException(
+            `Unified checkout custom line ${line.id} is missing checkout intent linkage.`,
+          );
         }
 
         const existingOrder = await tx.customOrder.findUnique({
@@ -7081,8 +7372,12 @@ export class PaymentService implements OnModuleInit {
         }
 
         if (!customOrderId) {
-          continue;
+          throw new ConflictException(
+            `Unable to commit custom order for checkout intent ${checkoutIntentId}.`,
+          );
         }
+
+        existingOrderByIntentId.set(checkoutIntentId, customOrderId);
 
         await tx.checkoutSessionLine.update({
           where: { id: line.id },
@@ -7139,6 +7434,59 @@ export class PaymentService implements OnModuleInit {
         });
       }
 
+      for (const requiredIntentId of requiredCustomIntentIds) {
+        if (!existingOrderByIntentId.has(requiredIntentId)) {
+          throw new ConflictException(
+            `Required custom checkout intent ${requiredIntentId} has no committed custom order.`,
+          );
+        }
+      }
+
+      if (requiredCustomIntentIds.length > 0) {
+        await tx.paymentAttemptCheckoutIntentLink.updateMany({
+          where: {
+            paymentAttemptId: attempt.id,
+            checkoutIntentId: {
+              in: requiredCustomIntentIds,
+            },
+          },
+          data: {
+            status: 'COMMITTED',
+            finalizedAt: now,
+          },
+        });
+      }
+
+      const unresolvedLines = await tx.checkoutSessionLine.findMany({
+        where: {
+          checkoutSessionId: checkoutSession.id,
+          status: {
+            not: CheckoutSessionLineStatus.CANCELLED,
+          },
+          OR: [
+            {
+              lineType: CheckoutSessionLineType.STANDARD_ITEM,
+              orderId: null,
+            },
+            {
+              lineType: CheckoutSessionLineType.CUSTOM_ORDER,
+              customOrderId: null,
+            },
+          ],
+        },
+        select: {
+          id: true,
+          lineType: true,
+          checkoutIntentId: true,
+        },
+      });
+
+      if (unresolvedLines.length > 0) {
+        throw new ConflictException(
+          `Unified checkout finalization left ${unresolvedLines.length} unresolved line(s); refusing completion.`,
+        );
+      }
+
       const finalOrderIds = Array.from(new Set([...existingOrderIds, ...createdOrderIds]));
       const finalCustomOrderIds = Array.from(
         new Set([...existingCustomOrderIds, ...customOrderIds]),
@@ -7167,7 +7515,15 @@ export class PaymentService implements OnModuleInit {
         customOrderIds: finalCustomOrderIds,
         summary,
       } satisfies UnifiedCheckoutFinalizeResult;
-    });
+      });
+    } catch (error) {
+      await this.recordUnifiedFinalizationFailure(reference, userId, error);
+      throw error;
+    }
+
+    if (finalized) {
+      await this.markUnifiedFinalizationRecovered(reference);
+    }
 
     if (finalized && finalized.orderIds.length > 0) {
       const linkedOrders = await this.prisma.order.findMany({
@@ -7204,6 +7560,181 @@ export class PaymentService implements OnModuleInit {
     }
 
     return finalized;
+  }
+
+  private resolveFinalizationCompensationStatus(
+    failureCount: number,
+  ): UnifiedFinalizationCompensationStatus {
+    if (failureCount >= FINALIZATION_REFUND_REVIEW_FAILURE_THRESHOLD) {
+      return 'REFUND_REVIEW';
+    }
+    if (failureCount >= FINALIZATION_ESCALATION_FAILURE_THRESHOLD) {
+      return 'ESCALATED';
+    }
+    return 'PENDING_RETRY';
+  }
+
+  private async recordUnifiedFinalizationFailure(
+    reference: string,
+    userId: string,
+    error: unknown,
+  ): Promise<void> {
+    const now = new Date();
+    const reason = this.extractErrorMessage(error);
+
+    let trackedFailure:
+      | {
+          failureCount: number;
+          compensationStatus: UnifiedFinalizationCompensationStatus;
+          correlationId: string | null;
+          checkoutSessionId: string | null;
+        }
+      | null = null;
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "reference" FROM "PaymentAttempt" WHERE "reference" = ${reference} FOR UPDATE`;
+      const attempt = await tx.paymentAttempt.findUnique({
+        where: { reference },
+        select: {
+          id: true,
+          buyerId: true,
+          subjectType: true,
+          status: true,
+          correlationId: true,
+          checkoutSessionId: true,
+          finalizationFailureCount: true,
+          finalizationFirstFailedAt: true,
+        },
+      });
+
+      if (
+        !attempt ||
+        attempt.subjectType !== PaymentSubjectType.UNIFIED_CHECKOUT ||
+        attempt.status !== 'PAID'
+      ) {
+        return;
+      }
+
+      if (attempt.buyerId && userId && attempt.buyerId !== userId) {
+        throw new NotFoundException('Payment attempt not found');
+      }
+
+      const nextFailureCount = Number(attempt.finalizationFailureCount ?? 0) + 1;
+      const compensationStatus = this.resolveFinalizationCompensationStatus(
+        nextFailureCount,
+      );
+
+      await tx.paymentAttempt.update({
+        where: { id: attempt.id },
+        data: {
+          finalizationFailureCount: {
+            increment: 1,
+          },
+          finalizationFirstFailedAt: attempt.finalizationFirstFailedAt ?? now,
+          finalizationLastFailedAt: now,
+          finalizationLastFailureReason: reason,
+          finalizationCompensationStatus: compensationStatus,
+        },
+      });
+
+      await tx.paymentEvent.create({
+        data: {
+          paymentAttemptId: attempt.id,
+          type: 'FINALIZATION_FAILED',
+          source: 'finalize',
+          correlationId: attempt.correlationId,
+          processedAt: now,
+          payload: {
+            reference,
+            reason,
+            failureCount: nextFailureCount,
+            compensationStatus,
+            checkoutSessionId: attempt.checkoutSessionId,
+            failedAt: now.toISOString(),
+          } as Prisma.InputJsonValue,
+        },
+      });
+
+      trackedFailure = {
+        failureCount: nextFailureCount,
+        compensationStatus,
+        correlationId: attempt.correlationId ?? null,
+        checkoutSessionId: attempt.checkoutSessionId ?? null,
+      };
+    });
+
+    if (!trackedFailure) {
+      return;
+    }
+
+    if (trackedFailure.compensationStatus !== 'PENDING_RETRY') {
+      this.emitReliabilityAlert('UNIFIED_FINALIZATION_COMPENSATION_REQUIRED', {
+        reference,
+        failureCount: trackedFailure.failureCount,
+        compensationStatus: trackedFailure.compensationStatus,
+        correlationId: trackedFailure.correlationId,
+        checkoutSessionId: trackedFailure.checkoutSessionId,
+        reason,
+      });
+    }
+  }
+
+  private async markUnifiedFinalizationRecovered(reference: string): Promise<void> {
+    const now = new Date();
+
+    await this.prisma.$transaction(async (tx) => {
+      const attempt = await tx.paymentAttempt.findUnique({
+        where: { reference },
+        select: {
+          id: true,
+          subjectType: true,
+          status: true,
+          correlationId: true,
+          finalizationFailureCount: true,
+          finalizationCompensationStatus: true,
+        },
+      });
+
+      if (
+        !attempt ||
+        attempt.subjectType !== PaymentSubjectType.UNIFIED_CHECKOUT ||
+        attempt.status !== 'PAID'
+      ) {
+        return;
+      }
+
+      if (
+        Number(attempt.finalizationFailureCount ?? 0) <= 0 &&
+        !attempt.finalizationCompensationStatus
+      ) {
+        return;
+      }
+
+      await tx.paymentAttempt.update({
+        where: { id: attempt.id },
+        data: {
+          finalizationFailureCount: 0,
+          finalizationFirstFailedAt: null,
+          finalizationLastFailedAt: null,
+          finalizationLastFailureReason: null,
+          finalizationCompensationStatus: 'RESOLVED',
+        },
+      });
+
+      await tx.paymentEvent.create({
+        data: {
+          paymentAttemptId: attempt.id,
+          type: 'FINALIZATION_RECOVERED',
+          source: 'finalize',
+          correlationId: attempt.correlationId,
+          processedAt: now,
+          payload: {
+            reference,
+            recoveredAt: now.toISOString(),
+          } as Prisma.InputJsonValue,
+        },
+      });
+    });
   }
 
   private buildUnifiedCustomOrderCreateData(params: {

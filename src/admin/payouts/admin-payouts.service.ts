@@ -3,6 +3,7 @@ import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
+  InternalServerErrorException,
   Injectable,
   Logger,
   NotFoundException,
@@ -701,6 +702,7 @@ export class AdminPayoutsService {
       providerEventKey: receipt.providerEventKey,
       payoutId: receipt.payoutId,
       providerEventType: receipt.providerEventType,
+      correlationId: receipt.correlationId,
     });
   }
 
@@ -718,6 +720,7 @@ export class AdminPayoutsService {
       providerEventKey: receipt.providerEventKey,
       payoutId: receipt.payoutId,
       providerEventType: receipt.providerEventType,
+      correlationId: receipt.correlationId,
     } satisfies PayoutWebhookProcessJob;
 
     try {
@@ -733,6 +736,21 @@ export class AdminPayoutsService {
         this.logger.error(
           `Inline payout webhook fallback failed for ${job.payoutId}`,
           (fallbackError as Error | undefined)?.stack,
+        );
+        this.emitReliabilityAlert('PAYOUT_WEBHOOK_PIPELINE_FAILURE', {
+          payoutId: job.payoutId,
+          providerEventKey: job.providerEventKey,
+          providerEventType: job.providerEventType,
+          correlationId: job.correlationId ?? null,
+          queueError:
+            queueError instanceof Error ? queueError.message : String(queueError),
+          fallbackError:
+            fallbackError instanceof Error
+              ? fallbackError.message
+              : String(fallbackError),
+        });
+        throw new InternalServerErrorException(
+          'Unable to durably process payout webhook event.',
         );
       }
     }
@@ -762,6 +780,7 @@ export class AdminPayoutsService {
         providerPayload,
         'provider-webhook',
         job.providerEventType,
+        job.correlationId ?? null,
       );
 
       await (tx as any).payoutEvent.updateMany({
@@ -869,6 +888,7 @@ export class AdminPayoutsService {
           payoutId: payout.id,
           type: 'WEBHOOK_RECEIVED',
           source: 'webhook-receipt',
+          correlationId,
           providerEventKey,
           providerEventType: eventType,
           providerEventReceivedAt: new Date(),
@@ -880,12 +900,13 @@ export class AdminPayoutsService {
       if (message.includes('providerEventKey') || message.includes('Unique constraint')) {
         const existing = await (this.prisma as any).payoutEvent.findFirst({
           where: { providerEventKey },
-          select: { processedAt: true },
+          select: { processedAt: true, correlationId: true },
         });
         return {
           payoutId: payout.id,
           providerEventKey,
           providerEventType: eventType,
+          correlationId: existing?.correlationId ?? correlationId,
           processedAt: existing?.processedAt ?? null,
         };
       }
@@ -896,6 +917,7 @@ export class AdminPayoutsService {
       payoutId: payout.id,
       providerEventKey,
       providerEventType: eventType,
+      correlationId,
       processedAt: null,
     };
   }
@@ -943,6 +965,7 @@ export class AdminPayoutsService {
       | 'provider-fetch'
       | 'provider-webhook',
     providerEventType?: string,
+    correlationId?: string | null,
   ) {
     const now = new Date();
     const nextStatus = this.mapProviderTransferStatus(
@@ -1027,6 +1050,7 @@ export class AdminPayoutsService {
       payoutId: payout.id,
       type: `STATUS_${updated.status}`,
       source,
+      correlationId: correlationId ?? null,
       providerEventType:
         providerEventType ?? this.normalizeProviderStatus(providerPayload?.status),
       providerEventReceivedAt: source === 'provider-webhook' ? now : null,
@@ -1136,6 +1160,7 @@ export class AdminPayoutsService {
       payoutId: string;
       type: string;
       source: string;
+      correlationId?: string | null;
       providerEventType?: string | null;
       providerEventReceivedAt?: Date | null;
       processedAt?: Date | null;
@@ -1148,6 +1173,7 @@ export class AdminPayoutsService {
         payoutId: params.payoutId,
         type: params.type,
         source: params.source,
+        correlationId: params.correlationId ?? null,
         providerEventType: params.providerEventType ?? null,
         providerEventReceivedAt: params.providerEventReceivedAt ?? null,
         processedAt: params.processedAt ?? null,
@@ -1299,12 +1325,19 @@ export class AdminPayoutsService {
     reference?: string | null;
     providerEventType?: string | null;
   }): Promise<void> {
-    try {
-      const auditModel = (this.prisma as any).webhookIngressAudit;
-      if (!auditModel?.create) {
-        return;
-      }
+    const auditModel = (this.prisma as any).webhookIngressAudit;
+    if (!auditModel?.create) {
+      this.emitReliabilityAlert('PAYOUT_WEBHOOK_AUDIT_MODEL_UNAVAILABLE', {
+        rejectionReason: params.rejectionReason,
+        reference: params.reference ?? null,
+        correlationId: params.correlationId,
+      });
+      throw new InternalServerErrorException(
+        'Webhook audit persistence is unavailable for payout webhook handling.',
+      );
+    }
 
+    try {
       await auditModel.create({
         data: {
           domain: 'PAYOUT',
@@ -1320,12 +1353,23 @@ export class AdminPayoutsService {
         },
       });
     } catch (error) {
-      this.logger.error(
-        `Failed to persist payout webhook ingress rejection audit: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
+      this.emitReliabilityAlert('PAYOUT_WEBHOOK_AUDIT_PERSIST_FAILED', {
+        rejectionReason: params.rejectionReason,
+        reference: params.reference ?? null,
+        correlationId: params.correlationId,
+        providerEventType: params.providerEventType ?? null,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw new InternalServerErrorException(
+        'Failed to persist payout webhook ingress audit record.',
       );
     }
+  }
+
+  private emitReliabilityAlert(code: string, details: Record<string, unknown>): void {
+    this.logger.error(
+      `ALERT ${code} ${JSON.stringify(details)}`,
+    );
   }
 
   private buildWebhookHeadersSnapshot(

@@ -41,11 +41,12 @@ const RUNTIME_CRON_CHECKS: RuntimeCronCheckDefinition[] = [
   },
 ];
 
-const PAYMENT_RUNTIME_ALERT_CONTRACT_VERSION = '2026-04-16';
+const PAYMENT_RUNTIME_ALERT_CONTRACT_VERSION = '2026-04-17';
 
 const PAYMENT_RUNTIME_ALERT_THRESHOLDS = {
   webhookQueueBacklogHigh: 300,
   webhookProcessingFailures24hHigh: 20,
+  openFinalizationCompensationCasesHigh: 0,
 } as const;
 
 @Injectable()
@@ -130,6 +131,7 @@ export class PaymentRuntimeHealthService {
       oldestPendingWebhookAgeSeconds: number | null;
       recentWebhookProcessingFailures24h: number;
       staleLiveAttempts: number;
+      openFinalizationCompensationCases: number;
     };
     alertContract: {
       version: string;
@@ -141,6 +143,7 @@ export class PaymentRuntimeHealthService {
         }>;
         webhookQueueBacklogHigh: number;
         webhookProcessingFailures24hHigh: number;
+        openFinalizationCompensationCasesHigh: number;
       };
       states: {
         workerHeartbeat: {
@@ -167,6 +170,12 @@ export class PaymentRuntimeHealthService {
           failures: number;
           threshold: number;
         };
+        finalizationCompensation: {
+          state: 'ok' | 'alert';
+          reason: string | null;
+          openCases: number;
+          threshold: number;
+        };
       };
     };
     degradedReasons: string[];
@@ -175,7 +184,13 @@ export class PaymentRuntimeHealthService {
     const checkedAtIso = checkedAt.toISOString();
     const degradedReasons: string[] = [];
 
-    const [pendingWebhookReceipts, oldestPendingWebhookReceipt, staleLiveAttempts, recentWebhookProcessingFailures24h] = await Promise.all([
+    const [
+      pendingWebhookReceipts,
+      oldestPendingWebhookReceipt,
+      staleLiveAttempts,
+      recentWebhookProcessingFailures24h,
+      openFinalizationCompensationCases,
+    ] = await Promise.all([
       this.prisma.paymentEvent.count({
         where: {
           type: 'WEBHOOK_RECEIVED',
@@ -212,6 +227,15 @@ export class PaymentRuntimeHealthService {
           type: 'WEBHOOK_PROCESS_FAILED',
           createdAt: {
             gte: new Date(Date.now() - 24 * 60 * 60 * 1000),
+          },
+        },
+      }),
+      this.prisma.paymentAttempt.count({
+        where: {
+          subjectType: 'UNIFIED_CHECKOUT',
+          status: 'PAID',
+          finalizationCompensationStatus: {
+            in: ['ESCALATED', 'REFUND_REVIEW'],
           },
         },
       }),
@@ -398,6 +422,12 @@ export class PaymentRuntimeHealthService {
     if (staleLiveAttempts > 120) {
       degradedReasons.push('payment_stale_live_attempts_high');
     }
+    if (
+      openFinalizationCompensationCases >
+      PAYMENT_RUNTIME_ALERT_THRESHOLDS.openFinalizationCompensationCasesHigh
+    ) {
+      degradedReasons.push('payment_finalization_compensation_required');
+    }
 
     let queueCounts: {
       waiting: number;
@@ -457,6 +487,8 @@ export class PaymentRuntimeHealthService {
           PAYMENT_RUNTIME_ALERT_THRESHOLDS.webhookQueueBacklogHigh,
         webhookProcessingFailures24hHigh:
           PAYMENT_RUNTIME_ALERT_THRESHOLDS.webhookProcessingFailures24hHigh,
+        openFinalizationCompensationCasesHigh:
+          PAYMENT_RUNTIME_ALERT_THRESHOLDS.openFinalizationCompensationCasesHigh,
       },
       states: {
         workerHeartbeat: {
@@ -509,6 +541,21 @@ export class PaymentRuntimeHealthService {
           failures: recentWebhookProcessingFailures24h,
           threshold: PAYMENT_RUNTIME_ALERT_THRESHOLDS.webhookProcessingFailures24hHigh,
         },
+        finalizationCompensation: {
+          state:
+            openFinalizationCompensationCases <=
+            PAYMENT_RUNTIME_ALERT_THRESHOLDS.openFinalizationCompensationCasesHigh
+              ? ('ok' as const)
+              : ('alert' as const),
+          reason:
+            openFinalizationCompensationCases <=
+            PAYMENT_RUNTIME_ALERT_THRESHOLDS.openFinalizationCompensationCasesHigh
+              ? null
+              : 'compensation_required',
+          openCases: openFinalizationCompensationCases,
+          threshold:
+            PAYMENT_RUNTIME_ALERT_THRESHOLDS.openFinalizationCompensationCasesHigh,
+        },
       },
     };
 
@@ -527,6 +574,7 @@ export class PaymentRuntimeHealthService {
         oldestPendingWebhookAgeSeconds,
         recentWebhookProcessingFailures24h,
         staleLiveAttempts,
+        openFinalizationCompensationCases,
       },
       alertContract,
       degradedReasons: Array.from(new Set(degradedReasons)),

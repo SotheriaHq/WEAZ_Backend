@@ -2438,6 +2438,7 @@ model CustomOrderCheckoutIntent {
   checkoutSession       CustomOrderCheckoutSession?
   paymentAttempts       PaymentAttempt[]
   checkoutSessionLines  CheckoutSessionLine[]
+  paymentAttemptIntentLinks PaymentAttemptCheckoutIntentLink[]
 
   @@index([buyerId, expiresAt])
   @@index([configurationId, configurationVersionId])
@@ -2499,6 +2500,7 @@ model CheckoutSession {
   inventoryReservations InventoryReservation[]
   orders               Order[]
   customOrders         CustomOrder[]
+  paymentAttemptIntentLinks PaymentAttemptCheckoutIntentLink[]
 
   @@unique([buyerId, idempotencyKey])
   @@index([buyerId, status, createdAt])
@@ -2534,6 +2536,7 @@ model CheckoutSessionLine {
   createdAt            DateTime                @default(now())
   updatedAt            DateTime                @updatedAt
   inventoryReservations InventoryReservation[]
+  paymentAttemptIntentLinks PaymentAttemptCheckoutIntentLink[]
 
   @@index([checkoutSessionId, lineOrder])
   @@index([checkoutIntentId])
@@ -2765,6 +2768,11 @@ model PaymentAttempt {
   webhookFirstRetriedAt DateTime?
   webhookLastRetriedAt DateTime?
   webhookLastRetryReason String?
+  finalizationFailureCount Int   @default(0)
+  finalizationFirstFailedAt DateTime?
+  finalizationLastFailedAt DateTime?
+  finalizationLastFailureReason String?
+  finalizationCompensationStatus String?
   expiresAt        DateTime?
   confirmedAt      DateTime?
   finalizedAt      DateTime?
@@ -2773,6 +2781,8 @@ model PaymentAttempt {
   updatedAt        DateTime     @updatedAt
   savedPaymentMethodsCreated SavedPaymentMethod[] @relation("SavedPaymentMethodSourceAttempt")
   webhookIngressAudits WebhookIngressAudit[]
+  retryHistory PaymentAttemptRetryHistory[]
+  checkoutIntentLinks PaymentAttemptCheckoutIntentLink[]
 
   @@index([buyerId, createdAt])
   @@index([status, createdAt])
@@ -2785,6 +2795,50 @@ model PaymentAttempt {
   @@index([exchangeRateSnapshotId])
   @@index([correlationId])
   @@index([webhookRetryCount, updatedAt])
+  @@index([finalizationFailureCount, updatedAt])
+  @@index([finalizationCompensationStatus, updatedAt])
+}
+
+model PaymentAttemptRetryHistory {
+  id               String          @id @default(uuid()) @db.Uuid
+  paymentAttemptId String          @db.Uuid
+  paymentAttempt   PaymentAttempt  @relation(fields: [paymentAttemptId], references: [id], onDelete: Cascade)
+  providerEventKey String?
+  source           String
+  queueAttempt     Int?
+  queueJobId       String?
+  errorReason      String
+  payload          Json?
+  correlationId    String?
+  occurredAt       DateTime        @default(now())
+  createdAt        DateTime        @default(now())
+
+  @@index([paymentAttemptId, occurredAt])
+  @@index([providerEventKey, occurredAt])
+  @@index([correlationId, occurredAt])
+}
+
+model PaymentAttemptCheckoutIntentLink {
+  id                  String                   @id @default(uuid()) @db.Uuid
+  paymentAttemptId    String                   @db.Uuid
+  paymentAttempt      PaymentAttempt           @relation(fields: [paymentAttemptId], references: [id], onDelete: Cascade)
+  checkoutIntentId    String                   @db.Uuid
+  checkoutIntent      CustomOrderCheckoutIntent @relation(fields: [checkoutIntentId], references: [id], onDelete: Restrict)
+  checkoutSessionId   String?                  @db.Uuid
+  checkoutSession     CheckoutSession?         @relation(fields: [checkoutSessionId], references: [id], onDelete: SetNull)
+  checkoutSessionLineId String?                @db.Uuid
+  checkoutSessionLine CheckoutSessionLine?     @relation(fields: [checkoutSessionLineId], references: [id], onDelete: SetNull)
+  status              String                   @default("PENDING")
+  finalizedAt         DateTime?
+  metadataJson        Json?
+  createdAt           DateTime                 @default(now())
+  updatedAt           DateTime                 @updatedAt
+
+  @@unique([paymentAttemptId, checkoutIntentId])
+  @@index([checkoutIntentId, createdAt])
+  @@index([paymentAttemptId, status, createdAt])
+  @@index([checkoutSessionId])
+  @@index([checkoutSessionLineId])
 }
 
 model PaymentEvent {
@@ -3001,6 +3055,7 @@ model PayoutEvent {
   payout           Payout   @relation(fields: [payoutId], references: [id], onDelete: Cascade)
   type             String
   source           String
+  correlationId    String?
   providerEventKey String?  @unique
   providerEventType String?
   providerEventReceivedAt DateTime?
@@ -3010,6 +3065,7 @@ model PayoutEvent {
 
   @@index([payoutId, createdAt])
   @@index([providerEventType, createdAt])
+  @@index([correlationId, createdAt])
 }
 
 model PayoutLedgerSourceAllocation {

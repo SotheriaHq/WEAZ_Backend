@@ -323,6 +323,11 @@ export interface PaymentAttemptSummary {
   webhookFirstRetriedAt?: string;
   webhookLastRetriedAt?: string;
   webhookLastRetryReason?: string;
+  finalizationFailureCount?: number;
+  finalizationFirstFailedAt?: string;
+  finalizationLastFailedAt?: string;
+  finalizationLastFailureReason?: string;
+  finalizationCompensationStatus?: string;
   orderIds: string[];
   summary: {
     items: PaymentAttemptOrderSummaryItem[];

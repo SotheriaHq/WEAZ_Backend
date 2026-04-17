@@ -20,6 +20,7 @@ export interface PayoutWebhookProcessJob {
   providerEventKey: string;
   payoutId: string;
   providerEventType: string;
+  correlationId?: string;
 }
 
 @Injectable()

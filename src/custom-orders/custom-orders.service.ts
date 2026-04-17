@@ -1096,11 +1096,57 @@ export class CustomOrdersService {
     }
 
     await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "id" FROM "CustomOrderCheckoutIntent" WHERE "id" = ${session.checkoutIntentId}::uuid FOR UPDATE`;
+
+      const [linkedAttemptUsage, legacyAttemptUsage, checkoutLineUsage] = await Promise.all([
+        tx.paymentAttemptCheckoutIntentLink.findFirst({
+          where: {
+            checkoutIntentId: session.checkoutIntentId,
+          },
+          select: {
+            id: true,
+            paymentAttemptId: true,
+            status: true,
+          },
+        }),
+        tx.paymentAttempt.findFirst({
+          where: {
+            checkoutIntentId: session.checkoutIntentId,
+          },
+          select: {
+            id: true,
+            status: true,
+            subjectType: true,
+          },
+        }),
+        tx.checkoutSessionLine.findFirst({
+          where: {
+            checkoutIntentId: session.checkoutIntentId,
+          },
+          select: {
+            id: true,
+            checkoutSession: {
+              select: {
+                id: true,
+                status: true,
+              },
+            },
+          },
+        }),
+      ]);
+
+      if (linkedAttemptUsage || legacyAttemptUsage || checkoutLineUsage) {
+        throw new BadRequestException(
+          'This checkout line cannot be removed because payment processing has started for it.',
+        );
+      }
+
       await tx.customOrderCheckoutSession.delete({
         where: { id: session.id },
       });
 
-      const [orderUsage, paymentUsage] = await Promise.all([
+      const [orderUsage, paymentUsage, linkedUsageAfterDelete, checkoutLineUsageAfterDelete] =
+        await Promise.all([
         tx.customOrder.findFirst({
           where: { checkoutIntentId: session.checkoutIntentId },
           select: { id: true },
@@ -1109,9 +1155,17 @@ export class CustomOrdersService {
           where: { checkoutIntentId: session.checkoutIntentId },
           select: { id: true },
         }),
+        tx.paymentAttemptCheckoutIntentLink.findFirst({
+          where: { checkoutIntentId: session.checkoutIntentId },
+          select: { id: true },
+        }),
+        tx.checkoutSessionLine.findFirst({
+          where: { checkoutIntentId: session.checkoutIntentId },
+          select: { id: true },
+        }),
       ]);
 
-      if (!orderUsage && !paymentUsage) {
+      if (!orderUsage && !paymentUsage && !linkedUsageAfterDelete && !checkoutLineUsageAfterDelete) {
         await tx.customOrderCheckoutIntent.deleteMany({
           where: {
             id: session.checkoutIntentId,

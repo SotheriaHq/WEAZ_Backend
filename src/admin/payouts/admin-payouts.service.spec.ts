@@ -21,6 +21,9 @@ describe('AdminPayoutsService', () => {
       findFirst: jest.fn(),
       updateMany: jest.fn(),
     },
+    webhookIngressAudit: {
+      create: jest.fn(),
+    },
     storePaymentAccount: {
       findUnique: jest.fn(),
     },
@@ -55,6 +58,7 @@ describe('AdminPayoutsService', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     process.env.PAYSTACK_SECRET_KEY = 'sk_test_123';
+    process.env.PAYSTACK_PAYOUT_TRANSFERS_ENABLED = 'true';
     (global as any).fetch = jest.fn();
   });
 
@@ -265,6 +269,7 @@ describe('AdminPayoutsService', () => {
         {
           headers: { 'x-paystack-signature': signature },
           rawBody,
+          remoteAddress: '52.31.139.75',
         },
       ),
     ).resolves.toBeUndefined();
@@ -285,6 +290,7 @@ describe('AdminPayoutsService', () => {
       payoutId: 'p_1',
       providerEventKey: 'PAYSTACK:transfer.success:p_1',
       providerEventType: 'transfer.success',
+      correlationId: 'corr-payout-1',
       processedAt: null,
     };
     const context = {
@@ -309,12 +315,14 @@ describe('AdminPayoutsService', () => {
       providerEventKey: receipt.providerEventKey,
       payoutId: receipt.payoutId,
       providerEventType: receipt.providerEventType,
+      correlationId: receipt.correlationId,
     });
     expect(fallbackSpy).toHaveBeenCalledWith({
       payload,
       providerEventKey: receipt.providerEventKey,
       payoutId: receipt.payoutId,
       providerEventType: receipt.providerEventType,
+      correlationId: receipt.correlationId,
     });
   });
 });
