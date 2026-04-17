@@ -12,8 +12,6 @@ import {
 } from '../src/categories/default-taxonomy';
 import { seedMeasurementPoints } from './seed_measurement_points';
 
-const DEMO_BRAND_EMAIL = 'brand@example.com';
-const DEMO_BRAND_PASSWORD = 'password123';
 const SYSTEM_ADMIN_EMAIL = 'adminoversee@test.com';
 const SYSTEM_ADMIN_PASSWORD = 'Password@123';
 
@@ -213,105 +211,6 @@ async function ensureDefaultTaxonomy() {
   return idsBySlug;
 }
 
-async function ensureDemoBrand(categoryId: string) {
-  const hashedPassword = await argon2.hash(DEMO_BRAND_PASSWORD, {
-    type: argon2.argon2id,
-    memoryCost: 2 ** 16,
-    timeCost: 3,
-    parallelism: 8,
-  });
-
-  const existingUser = await prisma.user.findUnique({
-    where: { email: DEMO_BRAND_EMAIL },
-    select: { id: true },
-  });
-
-  const userId = existingUser?.id ?? randomUUID();
-
-  await prisma.user.upsert({
-    where: { email: DEMO_BRAND_EMAIL },
-    update: {
-      password: hashedPassword,
-      type: 'BRAND',
-      isActive: 'Active',
-    },
-    create: {
-      id: userId,
-      email: DEMO_BRAND_EMAIL,
-      username: 'brand_demo',
-      firstName: 'Demo',
-      lastName: 'Brand',
-      password: hashedPassword,
-      type: 'BRAND',
-      isActive: 'Active',
-    },
-    select: { id: true },
-  });
-
-  await prisma.brand.upsert({
-    where: { ownerId: userId },
-    update: {
-      name: 'Vogue Vendor',
-      description: 'Premium fashion for the modern era.',
-      currency: 'NGN',
-    },
-    create: {
-      id: randomUUID(),
-      name: 'Vogue Vendor',
-      ownerId: userId,
-      description: 'Premium fashion for the modern era.',
-      currency: 'NGN',
-    },
-    select: { id: true },
-  });
-
-  const existingCollection = await prisma.storeCollection.findFirst({
-    where: {
-      ownerId: userId,
-      title: 'Demo Store Collection',
-    },
-    select: { id: true },
-  });
-
-  if (existingCollection) {
-    await prisma.storeCollection.update({
-      where: { id: existingCollection.id },
-      data: {
-        status: 'PUBLISHED',
-        visibility: 'PUBLIC',
-        type: 'EVERYBODY',
-        categoryId,
-        isAvailableInStore: true,
-      },
-    });
-  } else {
-    await prisma.storeCollection.create({
-      data: {
-        id: randomUUID(),
-        ownerId: userId,
-        title: 'Demo Store Collection',
-        description: 'Seeded collection for Studio product creation.',
-        status: 'PUBLISHED',
-        visibility: 'PUBLIC',
-        type: 'EVERYBODY',
-        categoryId,
-        isAvailableInStore: true,
-        tags: [],
-      },
-      select: { id: true },
-    });
-  }
-
-  // Cleanup from legacy schema where demo store collection lived in Collection domain STORE.
-  await prisma.collection.deleteMany({
-    where: {
-      ownerId: userId,
-      title: 'Demo Store Collection',
-      domain: 'STORE',
-    },
-  });
-}
-
 async function ensureSystemAdmin() {
   const existing = await prisma.user.findUnique({
     where: { email: SYSTEM_ADMIN_EMAIL },
@@ -348,16 +247,7 @@ async function ensureSystemAdmin() {
 async function main() {
   await ensureSystemAdmin();
   await seedMeasurementPoints(prisma);
-
-  const idsBySlug = await ensureDefaultTaxonomy();
-  // Use new category slug — Women's Wear is the first active category
-  const demoCategoryId = idsBySlug.get('womens-wear');
-
-  if (!demoCategoryId) {
-    throw new Error('Missing seeded category: womens-wear');
-  }
-
-  await ensureDemoBrand(demoCategoryId);
+  await ensureDefaultTaxonomy();
 }
 
 main()
