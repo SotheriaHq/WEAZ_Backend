@@ -523,6 +523,16 @@ describe('PaymentService', () => {
           paymentMethod: PaymentMethod.PAYSTACK,
           email: 'ada@example.com',
           idempotencyKey: 'idem-checkout-1',
+          paymentData: {
+            phone: '08030000000',
+            consentAccepted: true,
+            billingSameAsShipping: true,
+            channel: 'CARD',
+            useSavedCard: false,
+            newCardDraft: null,
+            savedCardId: null,
+            savedCardDisplay: null,
+          },
         },
         'buyer_1',
         'corr-existing',
@@ -567,6 +577,74 @@ describe('PaymentService', () => {
     ).rejects.toThrow(
       'A checkout initialization is already in progress for this account. Please retry in a few seconds.',
     );
+  });
+
+  it('finalizes a webhook-first paid unified checkout when frontend verification arrives later', async () => {
+    const prisma = {
+      paymentAttempt: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'attempt-paid-webhook-1',
+          buyerId: 'buyer_1',
+          subjectType: 'UNIFIED_CHECKOUT',
+          status: 'PAID',
+          reference: 'TH-UC-paid-webhook-1',
+          currency: 'NGN',
+          settlementCurrency: 'NGN',
+          settlementAmount: 14500,
+          amount: 14500,
+          exchangeRateSnapshotId: 'fx-1',
+          confirmedAt: new Date('2026-04-17T09:00:00.000Z'),
+          channel: 'CARD',
+          failureMessage: null,
+          checkoutSessionId: 'checkout-session-paid-webhook-1',
+          providerMode: 'live',
+        }),
+      },
+    } as any;
+
+    const target = new PaymentService(
+      prisma,
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+    );
+    const finalizeSpy = jest
+      .spyOn(target as any, 'finalizeUnifiedCheckoutAttempt')
+      .mockResolvedValue({
+        checkoutSessionId: 'checkout-session-paid-webhook-1',
+        orderIds: ['order-1'],
+        customOrderIds: ['custom-order-1'],
+        summary: {
+          currency: 'NGN',
+          items: [{ name: 'Threadly Tee', quantity: 1, price: 12000 }],
+          subtotal: 12000,
+          shippingCost: 2500,
+          discount: 0,
+          grandTotal: 14500,
+          shippingName: 'Ada Okafor',
+          shippingCity: 'Lagos',
+          shippingState: 'Lagos',
+        },
+      });
+
+    await expect(
+      target.verifyPayment(
+        { reference: 'TH-UC-paid-webhook-1', gateway: 'PAYSTACK' },
+        'buyer_1',
+      ),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        success: true,
+        status: 'PAID',
+        reference: 'TH-UC-paid-webhook-1',
+        orderIds: ['order-1'],
+        customOrderIds: ['custom-order-1'],
+        checkoutSessionId: 'checkout-session-paid-webhook-1',
+      }),
+    );
+
+    expect(finalizeSpy).toHaveBeenCalledWith('TH-UC-paid-webhook-1', 'buyer_1');
   });
 
   it('falls back to inline webhook processing when queue enqueue fails', async () => {
@@ -791,6 +869,9 @@ describe('PaymentService', () => {
 
   it('purges old payment telemetry only for closed attempts', async () => {
     const tx = {
+      paymentAttempt: {
+        findMany: jest.fn().mockResolvedValue([{ id: 'attempt-retain-1' }]),
+      },
       paymentEvent: {
         deleteMany: jest.fn().mockResolvedValue({ count: 9 }),
       },
@@ -828,17 +909,7 @@ describe('PaymentService', () => {
       expect.objectContaining({
         where: expect.objectContaining({
           processedAt: { not: null },
-          paymentAttempt: {
-            is: expect.objectContaining({
-              OR: expect.arrayContaining([
-                expect.objectContaining({
-                  status: {
-                    in: ['FAILED', 'CANCELLED', 'EXPIRED'],
-                  },
-                }),
-              ]),
-            }),
-          },
+          paymentAttemptId: { in: ['attempt-retain-1'] },
         }),
       }),
     );

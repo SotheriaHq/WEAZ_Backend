@@ -1419,42 +1419,58 @@ export class PaymentService implements OnModuleInit {
 
     const [paymentEventsDeleted, retryHistoryDeleted, webhookIngressAuditsDeleted] =
       await this.prisma.$transaction(async (tx) => {
-        const terminalAttemptRetentionFilter = {
-          OR: [
-            {
-              status: {
-                in: ['FAILED', 'CANCELLED', 'EXPIRED'],
+        const terminalAttemptRetentionCutoff = new Date(
+          Math.min(
+            paymentEventCutoff.getTime(),
+            retryHistoryCutoff.getTime(),
+            webhookAuditCutoff.getTime(),
+          ),
+        );
+        const closedAttempts = await tx.paymentAttempt.findMany({
+          where: {
+            updatedAt: { lt: terminalAttemptRetentionCutoff },
+            OR: [
+              {
+                status: {
+                  in: ['FAILED', 'CANCELLED', 'EXPIRED'],
+                },
               },
-            },
-            {
-              status: 'PAID',
-              finalizedAt: { not: null },
-              OR: [
-                { finalizationCompensationStatus: null },
-                { finalizationCompensationStatus: 'RESOLVED' },
-              ],
-            },
-          ],
-        } as Prisma.PaymentAttemptWhereInput;
-
-        const deletedPaymentEvents = await tx.paymentEvent.deleteMany({
-          where: {
-            createdAt: { lt: paymentEventCutoff },
-            processedAt: { not: null },
-            paymentAttempt: {
-              is: terminalAttemptRetentionFilter,
-            },
+              {
+                status: 'PAID',
+                finalizedAt: { not: null },
+                OR: [
+                  { finalizationCompensationStatus: null },
+                  { finalizationCompensationStatus: 'RESOLVED' },
+                ],
+              },
+            ],
+          },
+          select: {
+            id: true,
           },
         });
+        const closedAttemptIds = closedAttempts.map((attempt) => attempt.id);
 
-        const deletedRetryHistory = await tx.paymentAttemptRetryHistory.deleteMany({
-          where: {
-            occurredAt: { lt: retryHistoryCutoff },
-            paymentAttempt: {
-              is: terminalAttemptRetentionFilter,
-            },
-          },
-        });
+        const deletedPaymentEvents =
+          closedAttemptIds.length > 0
+            ? await tx.paymentEvent.deleteMany({
+                where: {
+                  createdAt: { lt: paymentEventCutoff },
+                  processedAt: { not: null },
+                  paymentAttemptId: { in: closedAttemptIds },
+                },
+              })
+            : { count: 0 };
+
+        const deletedRetryHistory =
+          closedAttemptIds.length > 0
+            ? await tx.paymentAttemptRetryHistory.deleteMany({
+                where: {
+                  occurredAt: { lt: retryHistoryCutoff },
+                  paymentAttemptId: { in: closedAttemptIds },
+                },
+              })
+            : { count: 0 };
 
         const deletedWebhookIngressAudits = await tx.webhookIngressAudit.deleteMany({
           where: {
@@ -1463,11 +1479,13 @@ export class PaymentService implements OnModuleInit {
               {
                 paymentAttemptId: null,
               },
-              {
-                paymentAttempt: {
-                  is: terminalAttemptRetentionFilter,
-                },
-              },
+              ...(closedAttemptIds.length > 0
+                ? [
+                    {
+                      paymentAttemptId: { in: closedAttemptIds },
+                    },
+                  ]
+                : []),
             ],
           },
         });
