@@ -75,6 +75,10 @@ export class BrandVerificationService {
     private readonly configService: ConfigService,
   ) {}
 
+  private normalizePhoneNumber(value: unknown): string {
+    return typeof value === 'string' ? value.trim() : '';
+  }
+
   async presignUpload(ownerId: string, dto: PresignVerificationUploadDto) {
     const normalizedName = `${dto.documentType}-${dto.fileName}`;
     const presign = await this.uploadService.createPresignedPost(
@@ -177,6 +181,9 @@ export class BrandVerificationService {
     if (Buffer.byteLength(payload, 'utf8') > 50_000) {
       throw new BadRequestException('Verification draft is too large');
     }
+    const resolvedOwnerPhoneNumber = this.normalizePhoneNumber(
+      (dto.draftData as { ownerPhoneNumber?: unknown }).ownerPhoneNumber,
+    );
 
     await this.prisma.brand.update({
       where: { id: brand.id },
@@ -186,6 +193,15 @@ export class BrandVerificationService {
           currentStep: dto.currentStep ?? null,
         }),
         verificationDraftUpdatedAt: new Date(),
+        ...(resolvedOwnerPhoneNumber
+          ? {
+              owner: {
+                update: {
+                  phoneNumber: resolvedOwnerPhoneNumber,
+                },
+              },
+            }
+          : {}),
       },
     });
 
@@ -262,8 +278,8 @@ export class BrandVerificationService {
     await this.validateVerificationDocuments(ownerId, dto);
     await this.ensureNinNotApprovedElsewhere(dto.ownerNin, brand.id);
     const resolvedOwnerPhoneNumber =
-      String(dto.ownerPhoneNumber ?? '').trim() ||
-      String(brand.owner.phoneNumber ?? '').trim();
+      this.normalizePhoneNumber(dto.ownerPhoneNumber) ||
+      this.normalizePhoneNumber(brand.owner.phoneNumber);
 
     if (!resolvedOwnerPhoneNumber) {
       throw new BadRequestException('Owner phone number is required');
@@ -338,6 +354,15 @@ export class BrandVerificationService {
           verificationAddress: `${dto.businessAddress.street}, ${dto.businessAddress.city}, ${dto.businessAddress.state}, ${dto.businessAddress.country}`,
           verificationDraftData: null,
           verificationDraftUpdatedAt: null,
+          ...(resolvedOwnerPhoneNumber
+            ? {
+                owner: {
+                  update: {
+                    phoneNumber: resolvedOwnerPhoneNumber,
+                  },
+                },
+              }
+            : {}),
         },
       });
     });
@@ -438,6 +463,7 @@ export class BrandVerificationService {
     const latestAttempt = await this.getLatestAttemptOrThrow(brand.id);
     const now = new Date();
     const patch: Record<string, unknown> = {};
+    const resolvedOwnerPhoneNumber = this.normalizePhoneNumber(dto.ownerPhoneNumber);
 
     for (const [key, value] of Object.entries(dto)) {
       if (value !== undefined) {
@@ -465,6 +491,15 @@ export class BrandVerificationService {
           verificationInfoRequestedAt: null,
           verificationInfoRequestedItems: null,
           verificationInfoRequestMessage: null,
+          ...(resolvedOwnerPhoneNumber
+            ? {
+                owner: {
+                  update: {
+                    phoneNumber: resolvedOwnerPhoneNumber,
+                  },
+                },
+              }
+            : {}),
         },
       });
     });

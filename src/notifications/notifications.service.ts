@@ -51,6 +51,9 @@ type UpdateEmailSettingsPayload = {
   complianceAcknowledged?: boolean;
 };
 
+const DEFAULT_SEMANTIC_DEDUPE_MS = 45_000;
+const MAX_SEMANTIC_DEDUPE_CANDIDATES = 25;
+
 @Injectable()
 export class NotificationsService {
   private readonly logger = new Logger(NotificationsService.name);
@@ -541,6 +544,72 @@ export class NotificationsService {
       return null;
     }
     return value as Record<string, unknown>;
+  }
+
+  private stableJson(value: unknown): unknown {
+    if (Array.isArray(value)) {
+      return value.map((entry) => this.stableJson(entry));
+    }
+    if (value && typeof value === 'object') {
+      const sortedEntries = Object.entries(value as Record<string, unknown>)
+        .filter(([, entry]) => entry !== undefined)
+        .sort(([a], [b]) => a.localeCompare(b));
+      return sortedEntries.reduce<Record<string, unknown>>((acc, [key, entry]) => {
+        acc[key] = this.stableJson(entry);
+        return acc;
+      }, {});
+    }
+    return value;
+  }
+
+  private buildSemanticFingerprint(
+    type: NotificationType,
+    payload: Record<string, unknown> | null | undefined,
+    target: NotificationTarget | null,
+  ): string {
+    const source = payload ?? {};
+    const summary: Record<string, unknown> = {};
+    const keys = [
+      'collectionId',
+      'collectionTitle',
+      'postId',
+      'productId',
+      'orderId',
+      'commentId',
+      'parentId',
+      'threadId',
+      'sourceId',
+      'targetUrl',
+      'status',
+      'message',
+    ];
+
+    for (const key of keys) {
+      const value = source[key];
+      if (value === undefined || value === null || value === '') {
+        continue;
+      }
+      summary[key] = value;
+    }
+
+    const nestedTarget = source.target;
+    if (nestedTarget && typeof nestedTarget === 'object' && !Array.isArray(nestedTarget)) {
+      const targetRecord = nestedTarget as Record<string, unknown>;
+      if (typeof targetRecord.type === 'string' && typeof targetRecord.id === 'string') {
+        summary.target = {
+          type: targetRecord.type,
+          id: targetRecord.id,
+        };
+      }
+    }
+
+    const canonical = this.stableJson({
+      type,
+      target: target ? { type: target.type, id: target.id } : null,
+      payload: summary,
+    });
+
+    return JSON.stringify(canonical);
   }
 
   private async isEmailAllowedForScenario(
@@ -1071,27 +1140,61 @@ export class NotificationsService {
       }
       this.logger.debug('Payload validated and sanitized');
 
-      // Optional dedupe within window based on same recipient/type/actor and target id in payload
-      if (opts?.dedupeMs && opts.dedupeMs > 0) {
-        const since = new Date(Date.now() - opts.dedupeMs);
-        const whereClause: any = {
-          recipientId,
-          type,
-          actorId: actorId ?? undefined,
-          createdAt: { gte: since },
-        };
-        if (opts.target) {
-          whereClause.payload = {
-            path: ['target', 'id'],
-            equals: opts.target.id,
-          };
+      const dedupeWindowMs = Math.max(opts?.dedupeMs ?? DEFAULT_SEMANTIC_DEDUPE_MS, 0);
+      if (dedupeWindowMs > 0) {
+        const since = new Date(Date.now() - dedupeWindowMs);
+
+        // Fast path: when explicit target and dedupe window are provided, use JSON path lookup.
+        if (opts?.dedupeMs && opts.target) {
+          const existing = await this.prisma.notification.findFirst({
+            where: {
+              recipientId,
+              type,
+              actorId: actorId ?? undefined,
+              createdAt: { gte: since },
+              payload: {
+                path: ['target', 'id'],
+                equals: opts.target.id,
+              },
+            },
+          });
+          if (existing) {
+            this.logger.debug('Duplicate notification found via target path, skipping creation');
+            return existing;
+          }
         }
-        const existing = await this.prisma.notification.findFirst({
-          where: whereClause,
+
+        const resolvedTarget =
+          opts?.target ?? this.extractTarget(type, sanitizedPayload as Record<string, any>);
+        const incomingFingerprint = this.buildSemanticFingerprint(
+          type,
+          sanitizedPayload as Record<string, unknown>,
+          resolvedTarget,
+        );
+
+        const candidates = await this.prisma.notification.findMany({
+          where: {
+            recipientId,
+            type,
+            actorId: actorId ?? undefined,
+            createdAt: { gte: since },
+          },
+          orderBy: { createdAt: 'desc' },
+          take: MAX_SEMANTIC_DEDUPE_CANDIDATES,
         });
-        if (existing) {
-          this.logger.debug('Duplicate notification found, skipping creation');
-          return existing;
+
+        for (const candidate of candidates) {
+          const candidatePayload = this.toRecord(candidate.payload as Prisma.JsonValue | null);
+          const candidateTarget = this.extractTarget(type, candidatePayload as Record<string, any> | null);
+          const candidateFingerprint = this.buildSemanticFingerprint(
+            type,
+            candidatePayload,
+            candidateTarget,
+          );
+          if (candidateFingerprint === incomingFingerprint) {
+            this.logger.debug('Duplicate notification found via semantic fingerprint, skipping creation');
+            return candidate;
+          }
         }
       }
 

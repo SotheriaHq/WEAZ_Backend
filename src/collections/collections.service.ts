@@ -131,6 +131,32 @@ export class CollectionsService {
     return unique;
   }
 
+  private async assertDesignCustomOrderPublishReady(
+    sourceId: string,
+    ownerId: string,
+    customOrderEnabled: boolean,
+    tx?: Prisma.TransactionClient,
+  ) {
+    if (!customOrderEnabled) return;
+
+    const prismaClient = tx ?? this.prisma;
+    const activeConfiguration = await prismaClient.customOrderConfiguration.findFirst({
+      where: {
+        sourceType: CustomOrderSourceType.DESIGN,
+        sourceId,
+        isActive: true,
+        brand: { ownerId },
+      },
+      select: { id: true },
+    });
+
+    if (!activeConfiguration) {
+      throw new BadRequestException(
+        'Custom orders are enabled, but no active custom-order configuration exists for this design.',
+      );
+    }
+  }
+
   private async collectStoreCollectionFilterValueIds(collectionId: string): Promise<string[]> {
     const links = await this.prisma.storeCollectionProduct.findMany({
       where: { collectionId },
@@ -1893,6 +1919,10 @@ export class CollectionsService {
       const resolvedNextTags = Array.isArray(metadata.tags)
         ? sanitizeTags(metadata.tags, 30)
         : collection.tags ?? [];
+      const nextCustomOrderEnabled =
+        typeof (metadata as any).customOrderEnabled === 'boolean'
+          ? Boolean((metadata as any).customOrderEnabled)
+          : Boolean((collection as any).customOrderEnabled);
 
       if (action === 'publish') {
         const nextTitle = metadata.title ?? collection.title;
@@ -1916,6 +1946,11 @@ export class CollectionsService {
         await this.assertCategoryTypeMatchesCategory(
           nextCategoryId,
           nextCategoryTypeId,
+        );
+        await this.assertDesignCustomOrderPublishReady(
+          collectionId,
+          userId,
+          nextCustomOrderEnabled,
         );
       }
 
@@ -2332,7 +2367,20 @@ export class CollectionsService {
     }
 
     // Mark collection as published (or keep as DRAFT if requested)
-    const newStatus = dto.shouldPublish === false ? 'DRAFT' : 'PUBLISHED';
+    const completionAction = dto.action ?? (dto.shouldPublish === false ? 'draft' : 'publish');
+    const newStatus = completionAction === 'publish' ? 'PUBLISHED' : 'DRAFT';
+    const completionCustomOrderEnabled =
+      typeof dto.collectionMetadata?.customOrderEnabled === 'boolean'
+        ? Boolean(dto.collectionMetadata.customOrderEnabled)
+        : Boolean((collection as any).customOrderEnabled);
+    if (newStatus === 'PUBLISHED') {
+      await this.assertDesignCustomOrderPublishReady(
+        collectionId,
+        userId,
+        completionCustomOrderEnabled,
+      );
+    }
+
     const finalizeAt = new Date();
     const publishedCollection = await this.prisma.collection.update({
       where: { id: collectionId },
@@ -6734,6 +6782,7 @@ export class CollectionsService {
         metadataEditedAt: true,
         categoryId: true,
         categoryTypeId: true,
+        customOrderEnabled: true,
       } as any,
     } as any)) as any;
     if (!existing) throw new NotFoundException('Collection not found');
@@ -6883,6 +6932,18 @@ export class CollectionsService {
     if (existing.status === 'DRAFT') {
       data.lastActivityAt = now;
       data.draftVersion = { increment: 1 };
+    }
+
+    const nextCustomOrderEnabled =
+      typeof body.customOrderEnabled === 'boolean'
+        ? body.customOrderEnabled
+        : Boolean(existing.customOrderEnabled);
+    if (existing.status === 'PUBLISHED') {
+      await this.assertDesignCustomOrderPublishReady(
+        collectionId,
+        ownerId,
+        nextCustomOrderEnabled,
+      );
     }
 
     const updated = await this.prisma.collection.update({

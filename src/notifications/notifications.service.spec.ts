@@ -5,6 +5,8 @@ import { EventsGateway } from 'src/realtime/events.gateway';
 import { NotificationType } from '@prisma/client';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import { NotificationRegistry } from './notifications.registry';
+import { EmailService } from 'src/email/email.service';
+import { ConfigService } from '@nestjs/config';
 
 describe('NotificationsService', () => {
   let service: NotificationsService;
@@ -26,10 +28,20 @@ describe('NotificationsService', () => {
         findUnique: jest.fn().mockResolvedValue({ notificationSettings: null }),
         update: jest.fn(),
       },
+      userEmailPreference: {
+        findUnique: jest.fn().mockResolvedValue(null),
+      },
+      userEmailScenarioPreference: {
+        findUnique: jest.fn().mockResolvedValue(null),
+      },
+      emailSuppression: {
+        findFirst: jest.fn().mockResolvedValue(null),
+      },
       patchConnection: {
         findFirst: jest.fn(),
       },
     };
+    mockPrisma.notification.findMany.mockResolvedValue([]);
 
     const mockEvents = {
       server: {
@@ -58,6 +70,15 @@ describe('NotificationsService', () => {
       del: jest.fn(),
     };
 
+    const mockEmailService: Partial<EmailService> = {
+      getAppName: jest.fn().mockReturnValue('Threadly'),
+      send: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const mockConfigService: Partial<ConfigService> = {
+      get: jest.fn(),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         NotificationsService,
@@ -65,6 +86,8 @@ describe('NotificationsService', () => {
         { provide: EventsGateway, useValue: mockEvents },
         { provide: CACHE_MANAGER, useValue: mockCacheManager },
         { provide: NotificationRegistry, useValue: mockRegistry },
+        { provide: EmailService, useValue: mockEmailService },
+        { provide: ConfigService, useValue: mockConfigService },
       ],
     }).compile();
 
@@ -200,6 +223,30 @@ describe('NotificationsService', () => {
       );
 
       expect(result.id).toBe('existing');
+      expect(mockPrisma.notification.create).not.toHaveBeenCalled();
+    });
+
+    it('should dedupe semantically without explicit dedupeMs', async () => {
+      mockPrisma.notification.findMany.mockResolvedValue([
+        {
+          id: 'semantic-existing',
+          type: NotificationType.THREAD,
+          payload: {
+            target: { type: 'POST', id: 'post-1' },
+            message: 'New thread reply',
+          },
+          createdAt: new Date(),
+        },
+      ]);
+
+      const result = await service.create('recipient-id', NotificationType.THREAD, {
+        payload: {
+          target: { type: 'POST', id: 'post-1' },
+          message: 'New thread reply',
+        },
+      });
+
+      expect(result?.id).toBe('semantic-existing');
       expect(mockPrisma.notification.create).not.toHaveBeenCalled();
     });
 
