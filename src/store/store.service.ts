@@ -1086,7 +1086,11 @@ export class StoreService {
           colorHex?: string;
         }
     >,
+    options?: {
+      strictValidation?: boolean;
+    },
   ) {
+    const strictValidation = options?.strictValidation !== false;
     const normalized: Array<{
       size: string | null;
       color: string | null;
@@ -1105,15 +1109,17 @@ export class StoreService {
 
     for (const v of variants) {
       if (!v) continue;
-      const size = this.normalizeRequiredVariantSize(v.size);
-      if (!size) {
+      const size = strictValidation
+        ? this.normalizeRequiredVariantSize(v.size)
+        : this.normalizeVariantDimension(v.size);
+      if (strictValidation && !size) {
         throw new BadRequestException(
           `Each variant must include a supported size: ${PRODUCT_VARIANT_SIZE_VALUES.join(', ')}`,
         );
       }
       const color = this.normalizeVariantDimension(v.color);
       const key = `${size ?? ''}::${color ?? ''}`;
-      if (seen.has(key)) {
+      if (strictValidation && seen.has(key)) {
         throw new BadRequestException(
           `Duplicate variant detected for size="${size ?? ''}" color="${color ?? ''}"`,
         );
@@ -1690,7 +1696,9 @@ export class StoreService {
     }
 
     const derivedFromVariants = Array.isArray((dto as any).variants)
-      ? this.computeVariantDerived((dto as any).variants)
+      ? this.computeVariantDerived((dto as any).variants, {
+          strictValidation: nextIsActive,
+        })
       : null;
     if (nextIsActive) {
       this.assertProductVariantRequirements(derivedFromVariants?.variants ?? [], {
@@ -2034,10 +2042,12 @@ export class StoreService {
       }
     }
 
-    const derivedFromVariants = Array.isArray((dto as any).variants)
-      ? this.computeVariantDerived((dto as any).variants)
-      : null;
     const finalIsActive = dto.isActive !== undefined ? dto.isActive : product.isActive;
+    const derivedFromVariants = Array.isArray((dto as any).variants)
+      ? this.computeVariantDerived((dto as any).variants, {
+          strictValidation: finalIsActive,
+        })
+      : null;
     if ((dto as any).variants !== undefined && finalIsActive) {
       this.assertProductVariantRequirements(derivedFromVariants?.variants ?? [], {
         requireInStockVariant: false,
