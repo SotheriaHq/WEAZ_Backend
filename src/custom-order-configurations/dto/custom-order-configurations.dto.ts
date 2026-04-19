@@ -4,7 +4,7 @@ import {
   FabricSourcingMode,
   Gender,
 } from '@prisma/client';
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import {
   IsArray,
   IsBoolean,
@@ -77,8 +77,16 @@ export class CreateCustomOrderConfigurationDto {
   @IsUUID('4', { each: true })
   requiredFreeformPointIds?: string[];
 
+  @IsOptional()
+  @Transform(({ value }) => {
+    if (typeof value !== 'string') {
+      return value;
+    }
+    const normalized = value.trim();
+    return normalized.length > 0 ? normalized : undefined;
+  })
   @IsUUID()
-  fabricRuleBasisId: string;
+  fabricRuleBasisId?: string;
 
   @IsNumberString()
   baseProductionCharge: string;

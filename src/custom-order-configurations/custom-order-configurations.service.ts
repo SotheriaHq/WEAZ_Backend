@@ -39,14 +39,22 @@ export class CustomOrderConfigurationsService {
   async createConfiguration(ownerUserId: string, dto: CreateCustomOrderConfigurationDto) {
     const brand = await this.resolveBrand(ownerUserId);
     await this.assertSourceOwnership(brand.id, ownerUserId, dto.sourceType, dto.sourceId);
-    await this.assertBasisAccessible(brand.id, dto.fabricRuleBasisId);
     await this.assertFreeformPointsAccessible(brand.id, dto.requiredFreeformPointIds ?? []);
     const resolvedTitle = this.resolveConfigurationTitle(dto.title);
 
     const normalizedRules = this.pricingService.validateConfigurationRules(dto.rules);
     this.validateConfigurationGuardrails(dto, dto.rules);
 
-const created = await this.prisma.$transaction(async (tx) => {
+    const created = await this.prisma.$transaction(async (tx) => {
+      const resolvedFabricRuleBasisId = await this.resolveConfigurationBasisId(
+        tx,
+        brand.id,
+        dto.sourceType,
+        resolvedTitle,
+        dto.fabricRuleBasisId,
+        dto.requiredMeasurementKeys,
+      );
+
       await this.deactivateSiblingConfigurations(
         tx,
         dto.sourceType,
@@ -62,7 +70,7 @@ const created = await this.prisma.$transaction(async (tx) => {
           buyerInstructionText: dto.buyerInstructionText?.trim() || null,
           requiredMeasurementKeys: dto.requiredMeasurementKeys,
           requiredFreeformPointIds: dto.requiredFreeformPointIds ?? [],
-          fabricRuleBasisId: dto.fabricRuleBasisId,
+          fabricRuleBasisId: resolvedFabricRuleBasisId,
           baseProductionCharge: new Prisma.Decimal(dto.baseProductionCharge),
           fabricCostPerYard: new Prisma.Decimal(dto.fabricCostPerYard),
           rushEnabled: dto.rushEnabled,
@@ -152,8 +160,9 @@ const created = await this.prisma.$transaction(async (tx) => {
       );
     }
 
-    if (dto.fabricRuleBasisId) {
-      await this.assertBasisAccessible(brand.id, dto.fabricRuleBasisId);
+    const normalizedRequestedBasisId = this.normalizeBasisId(dto.fabricRuleBasisId);
+    if (normalizedRequestedBasisId) {
+      await this.assertBasisAccessible(brand.id, normalizedRequestedBasisId);
     }
     if (dto.requiredFreeformPointIds) {
       await this.assertFreeformPointsAccessible(brand.id, dto.requiredFreeformPointIds);
@@ -176,7 +185,7 @@ const created = await this.prisma.$transaction(async (tx) => {
       requiredMeasurementKeys: dto.requiredMeasurementKeys ?? existing.requiredMeasurementKeys,
       requiredFreeformPointIds:
         dto.requiredFreeformPointIds ?? existing.requiredFreeformPointIds,
-      fabricRuleBasisId: dto.fabricRuleBasisId ?? existing.fabricRuleBasisId,
+      fabricRuleBasisId: normalizedRequestedBasisId ?? existing.fabricRuleBasisId,
       baseProductionCharge: dto.baseProductionCharge ?? String(existing.baseProductionCharge),
       fabricCostPerYard: dto.fabricCostPerYard ?? String(existing.fabricCostPerYard),
       rushEnabled: dto.rushEnabled ?? existing.rushEnabled,
@@ -513,6 +522,51 @@ const created = await this.prisma.$transaction(async (tx) => {
     if (!design) {
       throw new BadRequestException('Design source was not found for this brand');
     }
+  }
+
+  private normalizeBasisId(basisId: string | null | undefined) {
+    const normalized = String(basisId ?? '').trim();
+    return normalized.length > 0 ? normalized : null;
+  }
+
+  private buildHiddenBasisLabel(
+    sourceType: CustomOrderSourceType,
+    sourceTitle?: string | null,
+  ) {
+    const fallbackLabel =
+      sourceType === CustomOrderSourceType.PRODUCT ? 'Product' : 'Design';
+    const normalizedTitle = this.resolveConfigurationTitle(sourceTitle, fallbackLabel);
+    const label = `${normalizedTitle} fabric rules`.trim();
+    return label.slice(0, 120);
+  }
+
+  private async resolveConfigurationBasisId(
+    tx: Prisma.TransactionClient,
+    brandId: string,
+    sourceType: CustomOrderSourceType,
+    sourceTitle: string | null | undefined,
+    requestedBasisId: string | null | undefined,
+    requiredMeasurementKeys: string[],
+  ) {
+    const normalizedBasisId = this.normalizeBasisId(requestedBasisId);
+    if (normalizedBasisId) {
+      await this.assertBasisAccessible(brandId, normalizedBasisId);
+      return normalizedBasisId;
+    }
+
+    const measurementKeys = normalizeMeasurementKeyArray(requiredMeasurementKeys);
+    const createdBasis = await tx.customFabricRuleBasis.create({
+      data: {
+        label: this.buildHiddenBasisLabel(sourceType, sourceTitle),
+        measurementKeys,
+        brandId,
+        source: 'BRAND_FREEFORM',
+        status: 'BRAND_ONLY',
+      },
+      select: { id: true },
+    });
+
+    return createdBasis.id;
   }
 
   private async assertBasisAccessible(brandId: string, basisId: string) {

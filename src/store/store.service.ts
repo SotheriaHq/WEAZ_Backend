@@ -864,15 +864,30 @@ export class StoreService {
     options: {
       requireInStockVariant: boolean;
       messagePrefix: string;
+      requireSupportedSize?: boolean;
     },
   ): void {
-    if (variants.length === 0) {
+    const normalized = variants.map((variant) => ({
+      size: this.normalizeRequiredVariantSize(variant.size),
+      stock: Number(variant.stock ?? 0) || 0,
+    }));
+
+    if (normalized.length === 0) {
       throw new BadRequestException(
         `${options.messagePrefix} must include at least one size variant.`,
       );
     }
 
-    const hasInStockVariant = variants.some((variant) => variant.stock > 0);
+    if (options.requireSupportedSize !== false) {
+      const hasMissingVariantSize = normalized.some((variant) => !variant.size);
+      if (hasMissingVariantSize) {
+        throw new BadRequestException(
+          `Each variant must include a supported size: ${PRODUCT_VARIANT_SIZE_VALUES.join(', ')}`,
+        );
+      }
+    }
+
+    const hasInStockVariant = normalized.some((variant) => variant.stock > 0);
     if (options.requireInStockVariant && !hasInStockVariant) {
       throw new BadRequestException(
         `${options.messagePrefix} must include at least one in-stock size variant.`,
@@ -1302,7 +1317,14 @@ export class StoreService {
   ) {
     const limit = typeof maxProducts === 'number' ? maxProducts : this.maxProductsPerCollection;
     const count = await tx.storeCollectionProduct.count({
-      where: { collectionId },
+      where: {
+        collectionId,
+        product: {
+          isActive: true,
+          deletedAt: null,
+          archivedAt: null,
+        },
+      },
     });
     if (count >= limit) {
       throw new BadRequestException(
@@ -1633,6 +1655,7 @@ export class StoreService {
     const requestedCollectionId = (dto.collectionId || '').trim() || null;
     const requestedCategoryId = (dto.categoryId || '').trim() || null;
     const requestedCategoryTypeId = (dto.categoryTypeId || '').trim() || null;
+    const nextIsActive = dto.isActive ?? true;
 
     // If a collectionId is provided, verify it belongs to this brand.
     if (requestedCollectionId) {
@@ -1669,10 +1692,12 @@ export class StoreService {
     const derivedFromVariants = Array.isArray((dto as any).variants)
       ? this.computeVariantDerived((dto as any).variants)
       : null;
-    this.assertProductVariantRequirements(derivedFromVariants?.variants ?? [], {
-      requireInStockVariant: true,
-      messagePrefix: 'A product',
-    });
+    if (nextIsActive) {
+      this.assertProductVariantRequirements(derivedFromVariants?.variants ?? [], {
+        requireInStockVariant: true,
+        messagePrefix: 'A product',
+      });
+    }
 
     const currency = (dto.currency || brand.currency || 'NGN').trim();
 
@@ -1694,7 +1719,6 @@ export class StoreService {
     // Resolve product name and slug
     const resolvedName = (dto.name || 'Untitled Product').trim();
     const resolvedTags = this.buildTagSet(dto.tags || []);
-    const nextIsActive = dto.isActive ?? true;
     const nextCustomOrderEnabled = dto.customOrderEnabled === true;
     const initialTotalStock =
       derivedFromVariants?.totalStock ?? (dto.totalStock || 0);
@@ -1745,7 +1769,9 @@ export class StoreService {
       }
 
       await this.lockCollectionForUpdate(tx, collectionId);
-      await this.assertCollectionCapacity(tx, collectionId);
+      if (nextIsActive) {
+        await this.assertCollectionCapacity(tx, collectionId);
+      }
       const orderIndex = await tx.storeCollectionProduct.count({
         where: { collectionId },
       });
@@ -2011,7 +2037,8 @@ export class StoreService {
     const derivedFromVariants = Array.isArray((dto as any).variants)
       ? this.computeVariantDerived((dto as any).variants)
       : null;
-    if ((dto as any).variants !== undefined) {
+    const finalIsActive = dto.isActive !== undefined ? dto.isActive : product.isActive;
+    if ((dto as any).variants !== undefined && finalIsActive) {
       this.assertProductVariantRequirements(derivedFromVariants?.variants ?? [], {
         requireInStockVariant: false,
         messagePrefix: 'A product',
@@ -2194,6 +2221,14 @@ export class StoreService {
           const hasLink = existingLinks.some(
             (l) => l.collectionId === finalCollectionId,
           );
+          const shouldCheckCollectionCapacity =
+            finalIsActive &&
+            (!hasLink || !product.isActive || finalCollectionId !== product.collectionId);
+
+          if (shouldCheckCollectionCapacity) {
+            await this.lockCollectionForUpdate(tx, finalCollectionId);
+            await this.assertCollectionCapacity(tx, finalCollectionId);
+          }
 
           if (!hasLink) {
             if (existingLinks.length >= 3) {
@@ -2206,8 +2241,9 @@ export class StoreService {
               } as any);
             }
 
-            await this.lockCollectionForUpdate(tx, finalCollectionId);
-            await this.assertCollectionCapacity(tx, finalCollectionId);
+            if (!shouldCheckCollectionCapacity) {
+              await this.lockCollectionForUpdate(tx, finalCollectionId);
+            }
             const orderIndex = await tx.storeCollectionProduct.count({
               where: { collectionId: finalCollectionId },
             });
@@ -2274,8 +2310,6 @@ export class StoreService {
         finalCategoryTypeId,
       );
 
-      const finalIsActive =
-        dto.isActive !== undefined ? dto.isActive : product.isActive;
       const finalTotalStock =
         derivedFromVariants?.totalStock ??
         (dto.totalStock !== undefined ? dto.totalStock : product.totalStock);
@@ -2642,7 +2676,6 @@ export class StoreService {
           brandOwnerId,
         );
         await this.lockCollectionForUpdate(tx, fallbackCollectionId);
-        await this.assertCollectionCapacity(tx, fallbackCollectionId);
         const orderIndex = await tx.storeCollectionProduct.count({
           where: { collectionId: fallbackCollectionId },
         });
@@ -2663,7 +2696,6 @@ export class StoreService {
       } else {
         for (const link of sourceCollections) {
           await this.lockCollectionForUpdate(tx, link.collectionId);
-          await this.assertCollectionCapacity(tx, link.collectionId);
           const orderIndex = await tx.storeCollectionProduct.count({
             where: { collectionId: link.collectionId },
           });

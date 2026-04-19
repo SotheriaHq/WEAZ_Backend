@@ -41,6 +41,10 @@ export class CreateCollectionDto {
   @IsString()
   mode?: 'existing' | 'new-individual' | 'new-template' | 'bulk';
 
+  @IsOptional()
+  @IsBoolean()
+  draftOnly?: boolean;
+
   @IsString()
   @IsOptional()
   title?: string;

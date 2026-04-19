@@ -1491,6 +1491,135 @@ export class CollectionsService {
       };
     }
 
+    if (dto.draftOnly) {
+      if (dto.categoryId) {
+        await this.assertActiveCategory(dto.categoryId);
+      }
+      if (dto.categoryTypeId) {
+        await this.assertCategoryTypeMatchesCategory(
+          dto.categoryId ?? null,
+          dto.categoryTypeId,
+        );
+      }
+
+      const sanitizedTags = sanitizeTags(dto.tags ?? []);
+      const collectionId = uuidv4();
+      const now = new Date();
+      const collection = await (this.prisma.collection as any).create({
+        data: {
+          id: collectionId,
+          owner: { connect: { id: userId } },
+          domain: 'DESIGN',
+          title: dto.title?.trim() || null,
+          description: dto.description?.trim() || null,
+          minPrice: dto.minPrice,
+          maxPrice: dto.maxPrice,
+          isAvailableInStore: dto.isAvailableInStore ?? false,
+          sizingMode: dto.sizingMode ?? 'NONE',
+          rtwSizes: Array.isArray(dto.rtwSizes) ? dto.rtwSizes : [],
+          rtwSizeSystem: dto.rtwSizeSystem ?? null,
+          rtwSizeType: dto.rtwSizeType ?? null,
+          customGender: dto.customGender ?? null,
+          customMeasurementKeys: this.normalizeMeasurementKeys(
+            dto.customMeasurementKeys,
+          ),
+          customFreeformPointIds: Array.isArray(dto.customFreeformPointIds)
+            ? dto.customFreeformPointIds
+            : [],
+          fitPreference: dto.fitPreference ?? null,
+          targetAgeGroup: dto.targetAgeGroup ?? 'ADULT',
+          tags: sanitizedTags,
+          status: 'DRAFT',
+          visibility: dto.visibility ?? CollectionVisibility.PUBLIC,
+          type: dto.type ?? CollectionType.EVERYBODY,
+          ...(dto.categoryId
+            ? { category: { connect: { id: dto.categoryId } } }
+            : {}),
+          ...(dto.categoryTypeId
+            ? { categoryType: { connect: { id: dto.categoryTypeId } } }
+            : {}),
+          lastActivityAt: now,
+          draftVersion: 0,
+        },
+      });
+
+      const initialFilterValueIds = this.normalizeFilterValueIds(
+        dto.filterValueIds,
+      );
+      if (this.categoriesService) {
+        await this.categoriesService.setEntityFilters(
+          'COLLECTION',
+          collection.id,
+          initialFilterValueIds,
+        );
+      }
+
+      const indexedCollectionTags = this.getIndexedCollectionTags(
+        {
+          status: collection.status,
+          visibility: collection.visibility as CollectionVisibility,
+          deletedAt: null,
+          tags: sanitizedTags,
+        },
+        sanitizedTags,
+      );
+      if (this.tagIndex && indexedCollectionTags.length > 0) {
+        await this.tagIndex.syncEntityTags(
+          TAG_ENTITY_TYPE.COLLECTION,
+          collection.id,
+          [],
+          indexedCollectionTags,
+          { maxCount: 30 },
+        );
+      }
+
+      if (!hasFiles) {
+        return {
+          collectionId: collection.id,
+          uploads: [],
+          expiresIn: 30 * 60 * 1000,
+        };
+      }
+
+      const uploadData = await Promise.all(
+        dto.files.map(async (fileSpec, index) => {
+          // Validate and determine file type
+          const fileType = this.helperservice.determineFileType(
+            fileSpec.type,
+            fileSpec.fileType,
+          );
+          await this.helperservice.validateFileSpec(fileSpec, fileType);
+
+          const presign = await this.uploadService.createPresignedPost(
+            userId,
+            fileSpec.name,
+            fileType as any,
+            fileSpec.type,
+            { collectionId, orderIndex: index },
+          );
+
+          return {
+            fileId: (presign as any).fileId,
+            orderIndex: index,
+            expectedKey: (presign as any).key,
+            uploadUrl: (presign as any).url,
+            uploadFields: (presign as any).fields,
+            expiresIn: (presign as any).expiresIn || 600,
+          };
+        }),
+      );
+
+      return {
+        collectionId: collection.id,
+        uploads: uploadData,
+        expiresIn: 600,
+        tags: sanitizedTags,
+        draftStatus: {
+          isDraft: true,
+        },
+      };
+    }
+
     if (!dto.title || !dto.title.trim()) {
       throw new BadRequestException('Title is required');
     }
