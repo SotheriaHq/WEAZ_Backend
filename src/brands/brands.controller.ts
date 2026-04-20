@@ -76,15 +76,33 @@ export class BrandsController {
   @Get('brands/:id/patches')
   async getBrandPatches(
     @Param('id') brandId: string,
+    @Query('status') status?: 'PENDING' | 'ACCEPTED' | 'REJECTED',
     @Query('page') page?: string,
     @Query('limit') limit?: string,
+    @Req() req?: any,
   ) {
+    if (req?.user?.id !== brandId) {
+      throw new BadRequestException('Not authorized for this brand');
+    }
     return this.brandsService.getBrandPatches(
       brandId,
-      PatchStatus.ACCEPTED,
+      status === 'PENDING'
+        ? PatchStatus.PENDING
+        : status === 'REJECTED'
+          ? PatchStatus.REJECTED
+          : PatchStatus.ACCEPTED,
       page ? parseInt(page, 10) : 1,
       limit ? parseInt(limit, 10) : 20,
     );
+  }
+
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Delete('brands/patches/:patchId')
+  async cancelBrandPatch(
+    @Param('patchId') patchId: string,
+    @Req() req: any,
+  ) {
+    return this.brandsService.cancelBrandPatch(req.user.id, patchId);
   }
 
   @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))

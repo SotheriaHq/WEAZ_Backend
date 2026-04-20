@@ -868,6 +868,44 @@ export class BrandsService {
     return { status, message: `Patch request ${status.toLowerCase()}` };
   }
 
+  async cancelBrandPatch(actorId: string, patchId: string) {
+    const patch = await this.prisma.brandPatch.findUnique({
+      where: { id: patchId },
+    });
+
+    if (!patch) {
+      throw new NotFoundException('Patch request not found');
+    }
+
+    const isRequester = patch.requesterId === actorId;
+    const isReceiver = patch.receiverId === actorId;
+    if (!isRequester && !isReceiver) {
+      throw new ForbiddenException('Not authorized to manage this patch');
+    }
+
+    if (patch.status === PatchStatus.PENDING) {
+      if (!isRequester) {
+        throw new ForbiddenException('Only the requester can cancel a pending patch');
+      }
+
+      await this.prisma.brandPatch.delete({
+        where: { id: patchId },
+      });
+
+      return { status: 'CANCELLED', message: 'Patch request cancelled' };
+    }
+
+    if (patch.status === PatchStatus.ACCEPTED) {
+      await this.prisma.brandPatch.delete({
+        where: { id: patchId },
+      });
+
+      return { status: 'REMOVED', message: 'Patch connection removed' };
+    }
+
+    throw new BadRequestException('This patch can no longer be changed');
+  }
+
   async getBrandPatches(
     brandId: string,
     status: PatchStatus = PatchStatus.ACCEPTED,

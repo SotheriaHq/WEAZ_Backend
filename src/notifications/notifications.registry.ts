@@ -418,6 +418,7 @@ export class NotificationRegistry {
       schema: Joi.object({
         collectionId: Joi.string().required(),
         requesterId: Joi.string().required(),
+        brandName: Joi.string().allow(null).optional(),
         targetUrl: Joi.string().optional(),
       }),
       formatter: (n: any) => {
@@ -425,7 +426,7 @@ export class NotificationRegistry {
           ? n.actor.username ||
             `${n.actor.firstName ?? ''} ${n.actor.lastName ?? ''}`.trim()
           : 'Someone';
-        return `${actorName} requested access to a private collection`;
+        return `${actorName} requested access to view your private collections`;
       },
     });
 
@@ -434,9 +435,19 @@ export class NotificationRegistry {
       type: NotificationType.PRIVATE_ACCESS_APPROVED,
       schema: Joi.object({
         collectionId: Joi.string().required(),
+        brandName: Joi.string().allow(null).optional(),
+        username: Joi.string().allow(null).optional(),
         targetUrl: Joi.string().optional(),
       }),
-      formatter: () => 'Your request to view a private collection was approved',
+      formatter: (n: any) => {
+        const actorName = n.actor
+          ? n.actor.username ||
+            `${n.actor.firstName ?? ''} ${n.actor.lastName ?? ''}`.trim()
+          : null;
+        const brandName = n.payload?.brandName || actorName || 'the brand';
+        const username = n.payload?.username || 'there';
+        return `Congratulations ${username}, ${brandName} approved your request`;
+      },
     });
 
     // PRIVATE ACCESS REJECTED
@@ -444,10 +455,20 @@ export class NotificationRegistry {
       type: NotificationType.PRIVATE_ACCESS_REJECTED,
       schema: Joi.object({
         collectionId: Joi.string().required(),
+        brandName: Joi.string().allow(null).optional(),
+        username: Joi.string().allow(null).optional(),
         note: Joi.string().optional(),
         targetUrl: Joi.string().optional(),
       }),
-      formatter: () => 'Your request to view a private collection was rejected',
+      formatter: (n: any) => {
+        const actorName = n.actor
+          ? n.actor.username ||
+            `${n.actor.firstName ?? ''} ${n.actor.lastName ?? ''}`.trim()
+          : null;
+        const brandName = n.payload?.brandName || actorName || 'the brand';
+        const username = n.payload?.username || 'there';
+        return `Sorry ${username}, ${brandName} rejected your request`;
+      },
     });
 
     // PRIVATE ACCESS REVOKED

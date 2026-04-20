@@ -602,13 +602,20 @@ export class CollectionsService {
 
     // For other private collections, check access approval
     if (requesterId) {
-      const access = await this.prisma.collectionAccess.findUnique({
+      const access = await this.prisma.collectionAccess.findFirst({
         where: {
-          collectionId_viewerId: { collectionId, viewerId: requesterId },
+          viewerId: requesterId,
+          state: 'APPROVED',
+          collection: {
+            ownerId: c.ownerId,
+            visibility: CollectionVisibility.PRIVATE,
+            status: 'PUBLISHED',
+            deletedAt: null,
+          },
         },
-        select: { state: true },
-      });
-      return access?.state === 'APPROVED';
+        select: { id: true },
+      } as any);
+      return Boolean(access);
     }
     return false;
   }
@@ -693,10 +700,130 @@ export class CollectionsService {
   }
 
   // ===================== Access Management =====================
+  private deriveBrandAccessState(
+    rows: Array<{ state?: string | null }>,
+  ): 'APPROVED' | 'PENDING' | 'REVOKED' | 'NONE' {
+    if (rows.some((row) => row.state === 'APPROVED')) return 'APPROVED';
+    if (rows.some((row) => row.state === 'PENDING')) return 'PENDING';
+    if (rows.some((row) => row.state === 'REVOKED')) return 'REVOKED';
+    return 'NONE';
+  }
+
+  private getLatestRejectedBrandAccess(
+    rows: Array<{
+      state?: string | null;
+      notes?: string | null;
+      updatedAt: Date;
+      createdAt?: Date;
+    }>,
+  ) {
+    return rows
+      .filter((row) => row.state === 'REVOKED' && row.notes === 'REJECTED')
+      .sort((left, right) => {
+        const leftTime = left.updatedAt?.getTime?.() ?? left.createdAt?.getTime?.() ?? 0;
+        const rightTime =
+          right.updatedAt?.getTime?.() ?? right.createdAt?.getTime?.() ?? 0;
+        return rightTime - leftTime;
+      })[0] ?? null;
+  }
+
+  private async applyBrandAccessState(
+    collectionId: string,
+    ownerId: string,
+    viewerIds: string[],
+    state: 'PENDING' | 'APPROVED' | 'REVOKED',
+    options?: {
+      notes?: string | null;
+      grantedBy?: string | null;
+      createdAt?: Date;
+      updatedAt?: Date;
+    },
+  ) {
+    const uniqueViewerIds = Array.from(
+      new Set(viewerIds.map((viewerId) => String(viewerId ?? '').trim()).filter(Boolean)),
+    );
+
+    if (uniqueViewerIds.length === 0) {
+      return;
+    }
+
+    const now = options?.updatedAt ?? new Date();
+    const existingRows = await this.prisma.collectionAccess.findMany({
+      where: {
+        viewerId: { in: uniqueViewerIds },
+        collection: {
+          ownerId,
+          visibility: CollectionVisibility.PRIVATE,
+          status: 'PUBLISHED',
+          deletedAt: null,
+        },
+      },
+      select: { id: true, viewerId: true },
+    } as any);
+
+    const existingIdsByViewer = new Map<string, string[]>();
+    for (const row of existingRows) {
+      const ids = existingIdsByViewer.get(row.viewerId) ?? [];
+      ids.push(row.id);
+      existingIdsByViewer.set(row.viewerId, ids);
+    }
+
+    const operations: Prisma.PrismaPromise<any>[] = [];
+
+    for (const viewerId of uniqueViewerIds) {
+      const existingIds = existingIdsByViewer.get(viewerId) ?? [];
+      if (existingIds.length > 0) {
+        operations.push(
+          this.prisma.collectionAccess.updateMany({
+            where: { id: { in: existingIds } },
+            data: {
+              state,
+              notes: options?.notes ?? null,
+              grantedBy: options?.grantedBy ?? null,
+              updatedAt: now,
+            },
+          } as any),
+        );
+        continue;
+      }
+
+      operations.push(
+        this.prisma.collectionAccess.create({
+          data: {
+            id: uuidv4(),
+            collectionId,
+            viewerId,
+            state,
+            notes: options?.notes ?? null,
+            grantedBy: options?.grantedBy ?? null,
+            createdAt: options?.createdAt ?? now,
+            updatedAt: now,
+          },
+        } as any),
+      );
+    }
+
+    if (operations.length > 0) {
+      await this.prisma.$transaction(operations);
+    }
+  }
+
   async requestAccess(collectionId: string, requesterId: string) {
     const c = (await this.prisma.collection.findUnique({
       where: { id: collectionId },
-      select: { id: true, ownerId: true, status: true, visibility: true, deletedAt: true } as any,
+      select: {
+        id: true,
+        ownerId: true,
+        status: true,
+        visibility: true,
+        deletedAt: true,
+        owner: {
+          select: {
+            username: true,
+            brandFullName: true,
+          },
+        },
+      } as any,
     } as any)) as any;
     if (!c || c.deletedAt || c.status !== 'PUBLISHED')
       throw new NotFoundException('Collection not found');
@@ -704,9 +831,27 @@ export class CollectionsService {
       return { state: 'APPROVED' };
     if (c.ownerId === requesterId) return { state: 'APPROVED' };
     const now = new Date();
-    const existing = await this.prisma.collectionAccess.findUnique({
-      where: { collectionId_viewerId: { collectionId, viewerId: requesterId } },
-    });
+    const existingRows = await this.prisma.collectionAccess.findMany({
+      where: {
+        viewerId: requesterId,
+        collection: {
+          ownerId: c.ownerId,
+          visibility: CollectionVisibility.PRIVATE,
+          status: 'PUBLISHED',
+          deletedAt: null,
+        },
+      },
+      select: {
+        id: true,
+        collectionId: true,
+        state: true,
+        notes: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+      orderBy: [{ updatedAt: 'desc' }, { createdAt: 'desc' }],
+    } as any);
+    const brandState = this.deriveBrandAccessState(existingRows);
     // Cooldown after rejection
     // Default cooldown: 72h (configurable via env PRIVATE_ACCESS_COOLDOWN_MS)
     const cooldownMs = Math.max(
@@ -714,60 +859,53 @@ export class CollectionsService {
       parseInt(process.env.PRIVATE_ACCESS_COOLDOWN_MS || '') ||
       72 * 60 * 60 * 1000,
     );
-    if (
-      existing &&
-      existing.state === 'REVOKED' &&
-      existing.notes === 'REJECTED'
-    ) {
-      const elapsed = now.getTime() - new Date(existing.updatedAt).getTime();
+    const rejectedAccess = this.getLatestRejectedBrandAccess(existingRows);
+    if (brandState === 'APPROVED') {
+      return { state: 'APPROVED' };
+    }
+    if (brandState === 'PENDING') {
+      console.log('metrics.access_request', { collectionId, requesterId });
+      return { state: 'PENDING' };
+    }
+    if (rejectedAccess) {
+      const elapsed = now.getTime() - new Date(rejectedAccess.updatedAt).getTime();
       if (elapsed < cooldownMs) {
         const nextAllowedAt = new Date(
-          existing.updatedAt.getTime() + cooldownMs,
+          rejectedAccess.updatedAt.getTime() + cooldownMs,
         ).toISOString();
         return { state: 'PENDING', cooldownActive: true, nextAllowedAt } as any;
       }
     }
-    if (!existing) {
-      await this.prisma.collectionAccess.create({
-        data: {
-          id: uuidv4(),
-          collectionId,
-          viewerId: requesterId,
-          state: 'PENDING',
-          createdAt: now,
-        },
-      } as any);
-      // Notify owner about new request
-      try {
-        await this.notifications?.create(
-          c.ownerId,
-          NotificationType.PRIVATE_ACCESS_REQUESTED,
-          {
-            actorId: requesterId,
-            payload: {
-              collectionId,
-              requesterId,
-              targetUrl: `/settings/collections?collectionId=${collectionId}&tab=requests`,
-            },
+    await this.applyBrandAccessState(
+      collectionId,
+      c.ownerId,
+      [requesterId],
+      'PENDING',
+      {
+        notes: null,
+        grantedBy: null,
+        createdAt: now,
+        updatedAt: now,
+      },
+    );
+    // Notify owner about new request
+    try {
+      await this.notifications?.create(
+        c.ownerId,
+        NotificationType.PRIVATE_ACCESS_REQUESTED,
+        {
+          actorId: requesterId,
+          payload: {
+            collectionId,
+            requesterId,
+            brandName: c.owner?.brandFullName || c.owner?.username || null,
+            targetUrl: `/settings/collections?collectionId=${collectionId}&tab=requests`,
           },
-        );
-      } catch (e) {
-        // non-blocking
-      }
-      console.log('metrics.access_request', { collectionId, requesterId });
-      return { state: 'PENDING' };
+        },
+      );
+    } catch (e) {
+      // non-blocking
     }
-    if (existing.state === 'APPROVED') {
-      return { state: 'APPROVED' };
-    }
-    if (existing.state === 'PENDING') {
-      console.log('metrics.access_request', { collectionId, requesterId });
-      return { state: 'PENDING' };
-    }
-    await this.prisma.collectionAccess.update({
-      where: { collectionId_viewerId: { collectionId, viewerId: requesterId } },
-      data: { state: 'PENDING', updatedAt: now },
-    } as any);
     console.log('metrics.access_request', { collectionId, requesterId });
     return { state: 'PENDING' };
   }
@@ -881,8 +1019,12 @@ export class CollectionsService {
   ) {
     if (brandId !== ownerId) throw new ForbiddenException('Not owner');
     const where: Prisma.CollectionAccessWhereInput = {
-      state,
-      collection: { ownerId: brandId },
+      collection: {
+        ownerId: brandId,
+        visibility: CollectionVisibility.PRIVATE,
+        status: 'PUBLISHED',
+        deletedAt: null,
+      },
       ...(q
         ? {
           OR: [
@@ -899,8 +1041,14 @@ export class CollectionsService {
 
     const take = Math.min(Math.max(limit, 1), 100);
     const pageNum = page && page > 0 ? page : undefined;
-
-    const totalCount = await this.prisma.collectionAccess.count({ where });
+    const privateCollectionCount = await this.prisma.collection.count({
+      where: {
+        ownerId: brandId,
+        visibility: CollectionVisibility.PRIVATE,
+        status: 'PUBLISHED',
+        deletedAt: null,
+      } as any,
+    });
 
     const rows = await this.prisma.collectionAccess.findMany({
       where,
@@ -938,31 +1086,74 @@ export class CollectionsService {
           },
         },
       },
-      take: pageNum ? take : take + 1,
-      ...(pageNum ? { skip: (pageNum - 1) * take } : {}),
       orderBy: { createdAt: 'desc' },
-      ...(cursor && !pageNum ? { skip: 1, cursor: { id: cursor } } : {}),
     } as any);
-    const hasNextPage = pageNum
-      ? pageNum * take < totalCount
-      : rows.length > take;
-    const data = pageNum ? rows : hasNextPage ? rows.slice(0, -1) : rows;
-    const items = data.map((row: any) => {
-      const cover = this.resolveCoverMedia(
-        row?.collection?.medias,
-        row?.collection?.coverMediaId ?? null,
+
+    const groupedByViewer = new Map<string, any[]>();
+    for (const row of rows as any[]) {
+      const group = groupedByViewer.get(row.viewerId) ?? [];
+      group.push(row);
+      groupedByViewer.set(row.viewerId, group);
+    }
+
+    const aggregated = Array.from(groupedByViewer.values())
+      .map((groupRows) => {
+        const orderedRows = [...groupRows].sort(
+          (left, right) =>
+            right.updatedAt.getTime() - left.updatedAt.getTime() ||
+            right.createdAt.getTime() - left.createdAt.getTime(),
+        );
+        const latest = orderedRows[0];
+        const earliest = [...groupRows].sort(
+          (left, right) => left.createdAt.getTime() - right.createdAt.getTime(),
+        )[0];
+        const brandState = this.deriveBrandAccessState(groupRows);
+        if (brandState !== state) {
+          return null;
+        }
+        const cover = this.resolveCoverMedia(
+          latest?.collection?.medias,
+          latest?.collection?.coverMediaId ?? null,
+        );
+        return {
+          id: latest.id,
+          collectionId: latest.collectionId,
+          viewerId: latest.viewerId,
+          state: brandState,
+          createdAt: earliest.createdAt,
+          updatedAt: latest.updatedAt,
+          privateCollectionCount,
+          viewer: latest.viewer,
+          collection: latest?.collection
+            ? {
+                ...latest.collection,
+                title:
+                  privateCollectionCount > 1
+                    ? `${privateCollectionCount} private designs`
+                    : latest.collection.title,
+                coverMediaId: latest.collection.coverMediaId ?? cover?.id ?? null,
+                medias: cover ? [cover] : [],
+              }
+            : latest?.collection,
+        };
+      })
+      .filter(Boolean)
+      .sort(
+        (left: any, right: any) =>
+          right.updatedAt.getTime() - left.updatedAt.getTime(),
       );
-      return {
-        ...row,
-        collection: row?.collection
-          ? {
-              ...row.collection,
-              coverMediaId: row.collection.coverMediaId ?? cover?.id ?? null,
-              medias: cover ? [cover] : [],
-            }
-          : row?.collection,
-      };
-    });
+
+    const totalCount = aggregated.length;
+    const startIndex = pageNum
+      ? (pageNum - 1) * take
+      : cursor
+        ? Math.max(
+            0,
+            aggregated.findIndex((item: any) => item.id === cursor) + 1,
+          )
+        : 0;
+    const items = aggregated.slice(startIndex, startIndex + take);
+    const hasNextPage = startIndex + take < totalCount;
     const totalPages = Math.max(1, Math.ceil(totalCount / take));
     return {
       items,
@@ -987,6 +1178,7 @@ export class CollectionsService {
         ownerId: brandId,
         status: 'PUBLISHED',
         visibility: CollectionVisibility.PRIVATE,
+        deletedAt: null,
       },
       select: {
         id: true,
@@ -1004,14 +1196,25 @@ export class CollectionsService {
       },
     });
 
-    const states: Record<string, 'APPROVED' | 'PENDING' | 'REVOKED'> = {};
+    let brandState: 'APPROVED' | 'PENDING' | 'REVOKED' | 'NONE' = 'NONE';
     if (viewerId) {
       const acc = await this.prisma.collectionAccess.findMany({
-        where: { viewerId, collectionId: { in: collections.map((c) => c.id) } },
-      });
-      for (const a of acc) {
-        states[a.collectionId] = a.state as any;
-      }
+        where: {
+          viewerId,
+          collection: {
+            ownerId: brandId,
+            visibility: CollectionVisibility.PRIVATE,
+            status: 'PUBLISHED',
+            deletedAt: null,
+          },
+        },
+        select: {
+          state: true,
+          notes: true,
+          updatedAt: true,
+        },
+      } as any);
+      brandState = this.deriveBrandAccessState(acc as any);
     }
 
     return {
@@ -1024,7 +1227,7 @@ export class CollectionsService {
           coverFileId: cover?.file?.id ?? null,
           coverUrl: cover?.file?.s3Url ?? null,
           itemCount: c._count.medias,
-          state: (states[c.id] ?? 'NONE') as
+          state: brandState as
             | 'APPROVED'
             | 'PENDING'
             | 'REVOKED'
@@ -1041,21 +1244,31 @@ export class CollectionsService {
   ) {
     await this.assertOwner(collectionId, ownerId);
     const now = new Date();
-    await this.prisma.$transaction(
-      userIds.map((uid) =>
-        this.prisma.collectionAccess.upsert({
-          where: { collectionId_viewerId: { collectionId, viewerId: uid } },
-          update: { state: 'APPROVED', grantedBy: ownerId, updatedAt: now },
-          create: {
-            id: uuidv4(),
-            collectionId,
-            viewerId: uid,
-            state: 'APPROVED',
-            grantedBy: ownerId,
-            createdAt: now,
-          },
-        } as any),
-      ),
+    const owner = await this.prisma.user.findUnique({
+      where: { id: ownerId },
+      select: { username: true, brandFullName: true },
+    });
+    const viewers = await this.prisma.user.findMany({
+      where: { id: { in: userIds } },
+      select: { id: true, username: true, firstName: true },
+    });
+    const viewerNameById = new Map(
+      viewers.map((viewer) => [
+        viewer.id,
+        viewer.username || viewer.firstName || null,
+      ]),
+    );
+    await this.applyBrandAccessState(
+      collectionId,
+      ownerId,
+      userIds,
+      'APPROVED',
+      {
+        notes: null,
+        grantedBy: ownerId,
+        createdAt: now,
+        updatedAt: now,
+      },
     );
     // Notify users approved
     for (const uid of userIds) {
@@ -1067,7 +1280,9 @@ export class CollectionsService {
             actorId: ownerId,
             payload: {
               collectionId,
-              targetUrl: `/collections/${collectionId}`,
+              brandName: owner?.brandFullName || owner?.username || null,
+              username: viewerNameById.get(uid) ?? null,
+              targetUrl: `/profile/${ownerId}?tab=Content&visibility=Private`,
             },
           },
         );
@@ -1087,17 +1302,27 @@ export class CollectionsService {
     state: 'APPROVED' | 'REVOKED',
   ) {
     await this.assertOwner(collectionId, ownerId);
-    await this.prisma.collectionAccess.upsert({
-      where: { collectionId_viewerId: { collectionId, viewerId: userId } },
-      update: { state, grantedBy: ownerId, updatedAt: new Date() },
-      create: {
-        id: uuidv4(),
-        collectionId,
-        viewerId: userId,
-        state,
+    const now = new Date();
+    const owner = await this.prisma.user.findUnique({
+      where: { id: ownerId },
+      select: { username: true, brandFullName: true },
+    });
+    const viewer = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { username: true, firstName: true },
+    });
+    await this.applyBrandAccessState(
+      collectionId,
+      ownerId,
+      [userId],
+      state,
+      {
+        notes: state === 'REVOKED' ? 'REVOKED' : null,
         grantedBy: ownerId,
+        createdAt: now,
+        updatedAt: now,
       },
-    } as any);
+    );
     // Notify viewer on decision
     try {
       await this.notifications?.create(
@@ -1109,9 +1334,11 @@ export class CollectionsService {
           actorId: ownerId,
           payload: {
             collectionId,
+            brandName: owner?.brandFullName || owner?.username || null,
+            username: viewer?.username || viewer?.firstName || null,
             targetUrl:
               state === 'APPROVED'
-                ? `/collections/${collectionId}`
+                ? `/profile/${ownerId}?tab=Content&visibility=Private`
                 : `/profile/${ownerId}?tab=private`,
           },
         },
@@ -1123,22 +1350,41 @@ export class CollectionsService {
 
   async rejectAccess(collectionId: string, ownerId: string, userId: string) {
     await this.assertOwner(collectionId, ownerId);
-    const existing = await this.prisma.collectionAccess.findUnique({
-      where: { collectionId_viewerId: { collectionId, viewerId: userId } },
+    const owner = await this.prisma.user.findUnique({
+      where: { id: ownerId },
+      select: { username: true, brandFullName: true },
     });
-    if (!existing || existing.state !== 'PENDING') {
+    const viewer = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { username: true, firstName: true },
+    });
+    const existing = await this.prisma.collectionAccess.findMany({
+      where: {
+        viewerId: userId,
+        collection: {
+          ownerId,
+          visibility: CollectionVisibility.PRIVATE,
+          status: 'PUBLISHED',
+          deletedAt: null,
+        },
+      },
+      select: { state: true },
+    } as any);
+    if (this.deriveBrandAccessState(existing as any) !== 'PENDING') {
       // Idempotent: no-op if already decided
       return { success: true };
     }
-    await this.prisma.collectionAccess.update({
-      where: { collectionId_viewerId: { collectionId, viewerId: userId } },
-      data: {
-        state: 'REVOKED' as any,
+    await this.applyBrandAccessState(
+      collectionId,
+      ownerId,
+      [userId],
+      'REVOKED',
+      {
         notes: 'REJECTED',
-        updatedAt: new Date(),
         grantedBy: ownerId,
+        updatedAt: new Date(),
       },
-    } as any);
+    );
     try {
       await this.notifications?.create(
         userId,
@@ -1147,6 +1393,8 @@ export class CollectionsService {
           actorId: ownerId,
           payload: {
             collectionId,
+            brandName: owner?.brandFullName || owner?.username || null,
+            username: viewer?.username || viewer?.firstName || null,
             targetUrl: `/profile/${ownerId}?tab=private`,
           },
         },
@@ -1173,16 +1421,15 @@ export class CollectionsService {
       rejected: 'REVOKED',
     };
 
-    const where: Prisma.CollectionAccessWhereInput = {
-      viewerId: userId,
-      ...(status ? { state: stateMap[status] } : {}),
-    };
-
-    const totalCount = await this.prisma.collectionAccess.count({ where });
-    const skip = (page - 1) * take;
-
     const rows = await this.prisma.collectionAccess.findMany({
-      where,
+      where: {
+        viewerId: userId,
+        collection: {
+          visibility: CollectionVisibility.PRIVATE,
+          status: 'PUBLISHED',
+          deletedAt: null,
+        },
+      },
       include: {
         collection: {
           select: {
@@ -1217,39 +1464,91 @@ export class CollectionsService {
           },
         },
       },
-      skip,
-      take,
-      orderBy: { createdAt: 'desc' },
+      orderBy: [{ updatedAt: 'desc' }, { createdAt: 'desc' }],
     });
 
-    const totalPages = Math.ceil(totalCount / take);
+    const groupedByBrand = new Map<string, typeof rows>();
+    for (const row of rows) {
+      const brandKey = row.collection?.ownerId;
+      if (!brandKey) continue;
+      const group = groupedByBrand.get(brandKey) ?? [];
+      group.push(row);
+      groupedByBrand.set(brandKey, group);
+    }
 
-    return {
-      items: rows.map((r) => {
+    const ownerIds = Array.from(groupedByBrand.keys());
+    const privateCollectionCounts = new Map<string, number>(
+      await Promise.all(
+        ownerIds.map(async (ownerId): Promise<[string, number]> => [
+          ownerId,
+          await this.prisma.collection.count({
+            where: {
+              ownerId,
+              visibility: CollectionVisibility.PRIVATE,
+              status: 'PUBLISHED',
+              deletedAt: null,
+            } as any,
+          }),
+        ]),
+      ),
+    );
+
+    const aggregated = Array.from(groupedByBrand.entries())
+      .map(([ownerId, groupRows]) => {
+        const brandState = this.deriveBrandAccessState(groupRows as any);
+        if (status && brandState !== stateMap[status]) {
+          return null;
+        }
+        const orderedRows = [...groupRows].sort(
+          (left, right) =>
+            right.updatedAt.getTime() - left.updatedAt.getTime() ||
+            right.createdAt.getTime() - left.createdAt.getTime(),
+        );
+        const latest = orderedRows[0];
+        const earliest = [...groupRows].sort(
+          (left, right) => left.createdAt.getTime() - right.createdAt.getTime(),
+        )[0];
+        const privateCollectionCount = privateCollectionCounts.get(ownerId) ?? 0;
         const cover = this.resolveCoverMedia(
-          r.collection?.medias,
-          r.collection?.coverMediaId ?? null,
+          latest.collection?.medias,
+          latest.collection?.coverMediaId ?? null,
         );
         return {
-          id: r.id,
-          collectionId: r.collectionId,
-          title: r.collection?.title || 'Untitled',
+          id: latest.id,
+          collectionId: latest.collectionId,
+          title:
+            privateCollectionCount > 1
+              ? `${privateCollectionCount} private designs`
+              : latest.collection?.title || 'Untitled',
           brand: {
-            id: r.collection?.owner?.id,
+            id: latest.collection?.owner?.id,
             name:
-              r.collection?.owner?.brandFullName ||
-              r.collection?.owner?.username,
-            profileImage: r.collection?.owner?.profileImage,
-            profileImageId: r.collection?.owner?.profileImageId,
-            profileImageFile: r.collection?.owner?.profileImageFile,
+              latest.collection?.owner?.brandFullName ||
+              latest.collection?.owner?.username,
+            profileImage: latest.collection?.owner?.profileImage,
+            profileImageId: latest.collection?.owner?.profileImageId,
+            profileImageFile: latest.collection?.owner?.profileImageFile,
           },
           coverUrl: cover?.file?.s3Url || null,
-          itemCount: r.collection?._count?.medias || 0,
-          state: r.state,
-          requestedAt: r.createdAt,
-          updatedAt: r.updatedAt,
+          itemCount: privateCollectionCount,
+          state: brandState,
+          requestedAt: earliest.createdAt,
+          updatedAt: latest.updatedAt,
         };
-      }),
+      })
+      .filter(Boolean)
+      .sort(
+        (left: any, right: any) =>
+          right.updatedAt.getTime() - left.updatedAt.getTime(),
+      );
+
+    const totalCount = aggregated.length;
+    const skip = (page - 1) * take;
+    const items = aggregated.slice(skip, skip + take);
+    const totalPages = Math.max(1, Math.ceil(totalCount / take));
+
+    return {
+      items,
       totalCount,
       page,
       pageSize: take,
@@ -1262,16 +1561,15 @@ export class CollectionsService {
    * List all granted accesses for the user (approved collections they can view)
    */
   async listUserGrantedAccesses(userId: string, take = 20, page = 1) {
-    const where: Prisma.CollectionAccessWhereInput = {
-      viewerId: userId,
-      state: 'APPROVED',
-    };
-
-    const totalCount = await this.prisma.collectionAccess.count({ where });
-    const skip = (page - 1) * take;
-
     const rows = await this.prisma.collectionAccess.findMany({
-      where,
+      where: {
+        viewerId: userId,
+        collection: {
+          visibility: CollectionVisibility.PRIVATE,
+          status: 'PUBLISHED',
+          deletedAt: null,
+        },
+      },
       include: {
         collection: {
           select: {
@@ -1306,37 +1604,86 @@ export class CollectionsService {
           },
         },
       },
-      skip,
-      take,
-      orderBy: { updatedAt: 'desc' },
+      orderBy: [{ updatedAt: 'desc' }, { createdAt: 'desc' }],
     });
 
-    const totalPages = Math.ceil(totalCount / take);
+    const groupedByBrand = new Map<string, typeof rows>();
+    for (const row of rows) {
+      const brandKey = row.collection?.ownerId;
+      if (!brandKey) continue;
+      const group = groupedByBrand.get(brandKey) ?? [];
+      group.push(row);
+      groupedByBrand.set(brandKey, group);
+    }
 
-    return {
-      items: rows.map((r) => {
+    const ownerIds = Array.from(groupedByBrand.keys());
+    const privateCollectionCounts = new Map<string, number>(
+      await Promise.all(
+        ownerIds.map(async (ownerId): Promise<[string, number]> => [
+          ownerId,
+          await this.prisma.collection.count({
+            where: {
+              ownerId,
+              visibility: CollectionVisibility.PRIVATE,
+              status: 'PUBLISHED',
+              deletedAt: null,
+            } as any,
+          }),
+        ]),
+      ),
+    );
+
+    const aggregated = Array.from(groupedByBrand.entries())
+      .map(([ownerId, groupRows]) => {
+        const brandState = this.deriveBrandAccessState(groupRows as any);
+        if (brandState !== 'APPROVED') {
+          return null;
+        }
+        const orderedRows = [...groupRows].sort(
+          (left, right) =>
+            right.updatedAt.getTime() - left.updatedAt.getTime() ||
+            right.createdAt.getTime() - left.createdAt.getTime(),
+        );
+        const latest = orderedRows[0];
+        const privateCollectionCount = privateCollectionCounts.get(ownerId) ?? 0;
         const cover = this.resolveCoverMedia(
-          r.collection?.medias,
-          r.collection?.coverMediaId ?? null,
+          latest.collection?.medias,
+          latest.collection?.coverMediaId ?? null,
         );
         return {
-          id: r.id,
-          collectionId: r.collectionId,
-          title: r.collection?.title || 'Untitled',
+          id: latest.id,
+          collectionId: latest.collectionId,
+          title:
+            privateCollectionCount > 1
+              ? `${privateCollectionCount} private designs`
+              : latest.collection?.title || 'Untitled',
           brand: {
-            id: r.collection?.owner?.id,
+            id: latest.collection?.owner?.id,
             name:
-              r.collection?.owner?.brandFullName ||
-              r.collection?.owner?.username,
-            profileImage: r.collection?.owner?.profileImage,
-            profileImageId: r.collection?.owner?.profileImageId,
-            profileImageFile: r.collection?.owner?.profileImageFile,
+              latest.collection?.owner?.brandFullName ||
+              latest.collection?.owner?.username,
+            profileImage: latest.collection?.owner?.profileImage,
+            profileImageId: latest.collection?.owner?.profileImageId,
+            profileImageFile: latest.collection?.owner?.profileImageFile,
           },
           coverUrl: cover?.file?.s3Url || null,
-          itemCount: r.collection?._count?.medias || 0,
-          grantedAt: r.updatedAt,
+          itemCount: privateCollectionCount,
+          grantedAt: latest.updatedAt,
         };
-      }),
+      })
+      .filter(Boolean)
+      .sort(
+        (left: any, right: any) =>
+          right.grantedAt.getTime() - left.grantedAt.getTime(),
+      );
+
+    const totalCount = aggregated.length;
+    const skip = (page - 1) * take;
+    const items = aggregated.slice(skip, skip + take);
+    const totalPages = Math.max(1, Math.ceil(totalCount / take));
+
+    return {
+      items,
       totalCount,
       page,
       pageSize: take,
@@ -1367,9 +1714,18 @@ export class CollectionsService {
       throw new BadRequestException('Can only cancel pending requests');
     }
 
-    await this.prisma.collectionAccess.delete({
-      where: { id: requestId },
-    });
+    await this.prisma.collectionAccess.deleteMany({
+      where: {
+        viewerId: userId,
+        state: 'PENDING',
+        collection: {
+          ownerId: access.collection.ownerId,
+          visibility: CollectionVisibility.PRIVATE,
+          status: 'PUBLISHED',
+          deletedAt: null,
+        },
+      },
+    } as any);
 
     console.log('metrics.access_request_cancelled', {
       requestId,
@@ -1402,9 +1758,18 @@ export class CollectionsService {
       throw new BadRequestException('Can only revoke approved access');
     }
 
-    await this.prisma.collectionAccess.delete({
-      where: { id: accessId },
-    });
+    await this.prisma.collectionAccess.deleteMany({
+      where: {
+        viewerId: userId,
+        state: 'APPROVED',
+        collection: {
+          ownerId: access.collection.ownerId,
+          visibility: CollectionVisibility.PRIVATE,
+          status: 'PUBLISHED',
+          deletedAt: null,
+        },
+      },
+    } as any);
 
     console.log('metrics.access_user_revoked', {
       accessId,
