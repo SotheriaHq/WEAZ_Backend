@@ -6,11 +6,13 @@ import {
   Patch,
   Post,
   Query,
+  Req,
   UseGuards,
 } from '@nestjs/common';
 import { TagsService } from './tags.service';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from 'src/auth/guard/jwt-auth.guard';
+import { OptionalJwtAuthGuard } from 'src/auth/guard/optional-jwt-auth.guard';
 import { RolesGuard } from 'src/auth/guard/role.guard';
 import { Roles } from 'src/auth/decorator/roles.decorator';
 import { Role } from '@prisma/client';
@@ -20,6 +22,7 @@ import { Role } from '@prisma/client';
 export class TagsController {
   constructor(private readonly tags: TagsService) {}
 
+  @UseGuards(OptionalJwtAuthGuard)
   @Get()
   @ApiOperation({
     summary: 'List popular tags',
@@ -30,29 +33,20 @@ export class TagsController {
     @Query('sort') sort?: string,
     @Query('state') state?: string,
     @Query('includeBanned') includeBanned?: string,
+    @Req() req?: any,
   ) {
     const lim = limit ? parseInt(limit, 10) : 50;
-    const normalizedSort = String(sort ?? '').trim().toLowerCase();
-    const isAdminSort = ['recent', 'popular', 'last-used', 'name-asc'].includes(normalizedSort);
-    const shouldReturnAdminRows =
-      isAdminSort ||
-      Boolean(state) ||
-      ['1', 'true', 'yes', 'on'].includes((includeBanned || '').toLowerCase());
+    const viewerId = req?.user?.id ?? null;
+    const isSuperAdmin = req?.user?.role === Role.SuperAdmin;
 
-    if (shouldReturnAdminRows) {
-      return this.tags.getAdminTagQueue({
-        cursor,
-        limit: lim,
-        sort: isAdminSort ? (normalizedSort as any) : 'recent',
-        state: state ? (String(state).trim().toLowerCase() as any) : undefined,
-        includeBanned: ['1', 'true', 'yes', 'on'].includes((includeBanned || '').toLowerCase()),
-      });
-    }
-
-    const popular = await this.tags.getPopularTags(lim);
+    const popular = await this.tags.getPopularTags(lim, {
+      viewerId,
+      isSuperAdmin,
+    });
     return popular.map((p) => ({ name: p.tag, usageCount: p.count }));
   }
 
+  @UseGuards(OptionalJwtAuthGuard)
   @Get('search')
   @ApiOperation({
     summary: 'Search tags by prefix',
@@ -63,36 +57,23 @@ export class TagsController {
     @Query('sort') sort?: string,
     @Query('state') state?: string,
     @Query('includeBanned') includeBanned?: string,
+    @Req() req?: any,
   ) {
     const lim = limit ? parseInt(limit, 10) : 10;
-    const normalizedSort = String(sort ?? '').trim().toLowerCase();
-    const isAdminSort = ['recent', 'popular', 'last-used', 'name-asc'].includes(normalizedSort);
-    const shouldReturnAdminRows =
-      isAdminSort ||
-      Boolean(state) ||
-      ['1', 'true', 'yes', 'on'].includes((includeBanned || '').toLowerCase());
+    const viewerId = req?.user?.id ?? null;
+    const isSuperAdmin = req?.user?.role === Role.SuperAdmin;
 
-    if (shouldReturnAdminRows) {
-      const items = await this.tags.searchAdminTags(
-        q,
-        lim,
-        ['1', 'true', 'yes', 'on'].includes((includeBanned || '').toLowerCase()),
-        isAdminSort ? (normalizedSort as any) : 'popular',
-        state ? (String(state).trim().toLowerCase() as any) : undefined,
-      );
-      return {
-        query: q,
-        items,
-      };
-    }
-
-    const rows = await this.tags.searchTags(q, lim);
+    const rows = await this.tags.searchTags(q, lim, {
+      viewerId,
+      isSuperAdmin,
+    });
     return {
       query: q,
       items: rows.map((p) => ({ name: p.tag, usageCount: p.count })),
     };
   }
 
+  @UseGuards(OptionalJwtAuthGuard)
   @Get('trending')
   @ApiOperation({
     summary: 'List trending tags for a time window',
@@ -100,31 +81,111 @@ export class TagsController {
   async trending(
     @Query('window') window = '24h',
     @Query('limit') limit?: string,
+    @Req() req?: any,
   ) {
     const lim = limit ? parseInt(limit, 10) : 20;
-    const rows = await this.tags.getTrendingTags(window, lim);
+    const viewerId = req?.user?.id ?? null;
+    const isSuperAdmin = req?.user?.role === Role.SuperAdmin;
+    const rows = await this.tags.getTrendingTags(window, lim, {
+      viewerId,
+      isSuperAdmin,
+    });
     return {
       window,
       items: rows.map((p) => ({ name: p.tag, usageCount: p.count })),
     };
   }
 
+  @Get('admin')
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.SuperAdmin)
+  @ApiOperation({
+    summary: 'List tag moderation queue rows',
+  })
+  async listAdmin(
+    @Query('limit') limit?: string,
+    @Query('cursor') cursor?: string,
+    @Query('sort') sort?: string,
+    @Query('state') state?: string,
+    @Query('includeBanned') includeBanned?: string,
+  ) {
+    const lim = limit ? parseInt(limit, 10) : 50;
+    const normalizedSort = String(sort ?? '').trim().toLowerCase();
+    const isAdminSort = ['recent', 'popular', 'last-used', 'name-asc'].includes(normalizedSort);
+
+    return this.tags.getAdminTagQueue({
+      cursor,
+      limit: lim,
+      sort: isAdminSort ? (normalizedSort as any) : 'recent',
+      state: state ? (String(state).trim().toLowerCase() as any) : undefined,
+      includeBanned: ['1', 'true', 'yes', 'on'].includes((includeBanned || '').toLowerCase()),
+    });
+  }
+
+  @Get('admin/search')
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.SuperAdmin)
+  @ApiOperation({
+    summary: 'Search tag moderation queue rows',
+  })
+  async searchAdmin(
+    @Query('q') q = '',
+    @Query('limit') limit?: string,
+    @Query('sort') sort?: string,
+    @Query('state') state?: string,
+    @Query('includeBanned') includeBanned?: string,
+  ) {
+    const lim = limit ? parseInt(limit, 10) : 50;
+    const normalizedSort = String(sort ?? '').trim().toLowerCase();
+    const isAdminSort = ['recent', 'popular', 'last-used', 'name-asc'].includes(normalizedSort);
+
+    const items = await this.tags.searchAdminTags(
+      q,
+      lim,
+      ['1', 'true', 'yes', 'on'].includes((includeBanned || '').toLowerCase()),
+      isAdminSort ? (normalizedSort as any) : 'popular',
+      state ? (String(state).trim().toLowerCase() as any) : undefined,
+    );
+
+    return {
+      query: q,
+      items,
+    };
+  }
+
+  @UseGuards(OptionalJwtAuthGuard)
   @Get(':normalizedName/lifecycle')
   @ApiOperation({
     summary: 'Get tag lifecycle details, usage actors, and timeline',
   })
-  async lifecycle(@Param('normalizedName') normalizedName: string) {
-    return this.tags.getTagDetails(normalizedName);
+  async lifecycle(
+    @Param('normalizedName') normalizedName: string,
+    @Req() req?: any,
+  ) {
+    return this.tags.getTagDetails(normalizedName, {
+      viewerId: req?.user?.id ?? null,
+      isSuperAdmin: req?.user?.role === Role.SuperAdmin,
+    });
   }
 
+  @UseGuards(OptionalJwtAuthGuard)
   @Get(':normalizedName')
   @ApiOperation({
     summary: 'Get tag details',
   })
-  async details(@Param('normalizedName') normalizedName: string) {
-    return this.tags.getTagDetails(normalizedName);
+  async details(
+    @Param('normalizedName') normalizedName: string,
+    @Req() req?: any,
+  ) {
+    return this.tags.getTagDetails(normalizedName, {
+      viewerId: req?.user?.id ?? null,
+      isSuperAdmin: req?.user?.role === Role.SuperAdmin,
+    });
   }
 
+  @UseGuards(OptionalJwtAuthGuard)
   @Get(':normalizedName/posts')
   @ApiOperation({
     summary: 'Get cursor-paginated feed for a tag',
@@ -133,9 +194,28 @@ export class TagsController {
     @Param('normalizedName') normalizedName: string,
     @Query('cursor') cursor?: string,
     @Query('limit') limit?: string,
+    @Req() req?: any,
   ) {
     const lim = limit ? parseInt(limit, 10) : 20;
-    return this.tags.getTagFeed(normalizedName, cursor, lim);
+    return this.tags.getTagFeed(normalizedName, cursor, lim, {
+      viewerId: req?.user?.id ?? null,
+      isSuperAdmin: req?.user?.role === Role.SuperAdmin,
+    });
+  }
+
+  @Patch('admin/status/:normalizedName')
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.SuperAdmin)
+  @ApiOperation({
+    summary: 'Set moderation status for a tag',
+  })
+  async setStatus(
+    @Param('normalizedName') normalizedName: string,
+    @Body() body: { status?: 'PENDING' | 'APPROVED' | 'REJECTED' },
+  ) {
+    const nextStatus = body?.status ?? 'APPROVED';
+    return this.tags.setTagStatus(normalizedName, nextStatus);
   }
 
   @Post('admin/ban/:normalizedName')
@@ -151,8 +231,9 @@ export class TagsController {
   ) {
     const shouldBan =
       banned === undefined ? true : ['1', 'true', 'yes', 'on'].includes(banned.toLowerCase());
-    await this.tags.banTag(normalizedName, shouldBan);
-    return { success: true, normalizedName, banned: shouldBan };
+    const status = shouldBan ? 'REJECTED' : 'APPROVED';
+    const updated = await this.tags.setTagStatus(normalizedName, status);
+    return { success: true, normalizedName, banned: shouldBan, status: updated.status };
   }
 
   @Post('admin/merge')

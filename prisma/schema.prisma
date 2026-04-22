@@ -85,6 +85,7 @@ model User {
   // Brand Patching (Mutual)
   sentPatchRequests       BrandPatch[]                    @relation("SentPatchRequests")
   receivedPatchRequests   BrandPatch[]                    @relation("ReceivedPatchRequests")
+  createdTags             Tag[]                           @relation("TagCreator")
 
   // Contributions
   contributionRequests    ContributionRequest[]           @relation("UserContributionRequests")
@@ -611,6 +612,12 @@ enum TagEntityType {
   PRODUCT
   BRAND
   USER_BRAND
+}
+
+enum TagStatus {
+  PENDING
+  APPROVED
+  REJECTED
 }
 
 model Thread {
@@ -1683,6 +1690,29 @@ model BrandPatch {
   @@index([receiverId, status])
 }
 
+enum BrandPatchHistoryAction {
+  REQUESTED
+  ACCEPTED
+  REJECTED
+  CANCELLED
+  REMOVED
+}
+
+model BrandPatchHistory {
+  id         String                  @id @map("_id") @db.Uuid
+  patchId    String?                 @db.Uuid
+  brandId    String                  @db.Uuid
+  partnerId  String                  @db.Uuid
+  actorId    String?                 @db.Uuid
+  action     BrandPatchHistoryAction
+  isOutgoing Boolean                 @default(false)
+  createdAt  DateTime                @default(now())
+
+  @@index([brandId, createdAt(sort: Desc)])
+  @@index([partnerId, createdAt(sort: Desc)])
+  @@index([patchId, createdAt(sort: Desc)])
+}
+
 model ContributionRequest {
   id           String      @id @map("_id") @db.Uuid
   requesterId  String      @db.Uuid
@@ -1953,6 +1983,9 @@ model Tag {
   normalizedName String       @unique
   displayName    String
   usageCount     Int          @default(0)
+  status         TagStatus    @default(PENDING)
+  createdById    String?      @db.Uuid
+  createdBy      User?        @relation("TagCreator", fields: [createdById], references: [id], onDelete: SetNull)
   isBanned       Boolean      @default(false)
   aliasOfTagId   String?      @db.Uuid
   aliasOfTag     Tag?         @relation("TagAliases", fields: [aliasOfTagId], references: [id], onDelete: SetNull)
@@ -1964,6 +1997,8 @@ model Tag {
 
   @@index([usageCount(sort: Desc), updatedAt(sort: Desc)])
   @@index([isBanned, usageCount(sort: Desc)])
+  @@index([status, usageCount(sort: Desc)])
+  @@index([createdById, status])
 }
 
 model TagBinding {

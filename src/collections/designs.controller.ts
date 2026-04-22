@@ -20,6 +20,10 @@ import {
   CreateCollectionDto,
   FinalizeCollectionDto,
 } from './collections.service';
+import {
+  InitializeCollectionMediaUploadsDto,
+  ReorderCollectionMediaDto,
+} from './dto/collection-media.dto';
 import { UpdateCollectionDto } from './dto/update-collection.dto';
 
 @ApiTags('designs')
@@ -53,6 +57,50 @@ export class DesignsController {
       req.user.id,
       dto,
       'design',
+    );
+  }
+
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Post(':designId/media/initialize')
+  async initializeDesignMediaUploads(
+    @Param('designId') designId: string,
+    @Req() req: any,
+    @Body() dto: InitializeCollectionMediaUploadsDto,
+  ) {
+    return this.collectionsService.initializeCollectionMediaUploads(
+      designId,
+      req.user.id,
+      dto.files,
+      'design',
+    );
+  }
+
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Patch(':designId/reorder-media')
+  async reorderDesignMedia(
+    @Param('designId') designId: string,
+    @Req() req: any,
+    @Body() dto: ReorderCollectionMediaDto,
+  ) {
+    return this.collectionsService.reorderCollectionMedia(
+      designId,
+      req.user.id,
+      dto.items,
+      'design',
+    );
+  }
+
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Delete(':designId/media/:mediaId')
+  async deleteDesignMedia(
+    @Param('designId') designId: string,
+    @Param('mediaId') mediaId: string,
+    @Req() req: any,
+  ) {
+    return this.collectionsService.deleteCollectionMedia(
+      designId,
+      mediaId,
+      req.user.id,
     );
   }
 

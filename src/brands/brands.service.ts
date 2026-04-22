@@ -87,6 +87,13 @@ type DashboardActionItem = {
   count?: number;
 };
 
+type BrandPatchHistoryActionValue =
+  | 'REQUESTED'
+  | 'ACCEPTED'
+  | 'REJECTED'
+  | 'CANCELLED'
+  | 'REMOVED';
+
 @Injectable()
 export class BrandsService {
   constructor(
@@ -704,6 +711,67 @@ export class BrandsService {
     return toAuthUserResponse(updatedUser);
   }
 
+  private getPatchHistoryDelegate(): any | null {
+    const delegate = (this.prisma as any).brandPatchHistory;
+    return delegate && typeof delegate.create === 'function' ? delegate : null;
+  }
+
+  private async recordPatchHistory(entry: {
+    patchId?: string | null;
+    brandId: string;
+    partnerId: string;
+    actorId?: string | null;
+    action: BrandPatchHistoryActionValue;
+    isOutgoing: boolean;
+  }): Promise<void> {
+    const historyDelegate = this.getPatchHistoryDelegate();
+    if (!historyDelegate) return;
+
+    try {
+      await historyDelegate.create({
+        data: {
+          id: uuidv4(),
+          patchId: entry.patchId ?? null,
+          brandId: entry.brandId,
+          partnerId: entry.partnerId,
+          actorId: entry.actorId ?? null,
+          action: entry.action,
+          isOutgoing: entry.isOutgoing,
+        },
+      });
+    } catch (error: any) {
+      // Gracefully no-op if migration/client generation has not yet provisioned this model.
+      if (error?.code === 'P2021') return;
+    }
+  }
+
+  private async recordPatchHistoryForPair(entry: {
+    patchId?: string | null;
+    requesterId: string;
+    receiverId: string;
+    actorId?: string | null;
+    action: BrandPatchHistoryActionValue;
+  }): Promise<void> {
+    await Promise.all([
+      this.recordPatchHistory({
+        patchId: entry.patchId,
+        brandId: entry.requesterId,
+        partnerId: entry.receiverId,
+        actorId: entry.actorId,
+        action: entry.action,
+        isOutgoing: true,
+      }),
+      this.recordPatchHistory({
+        patchId: entry.patchId,
+        brandId: entry.receiverId,
+        partnerId: entry.requesterId,
+        actorId: entry.actorId,
+        action: entry.action,
+        isOutgoing: false,
+      }),
+    ]);
+  }
+
   // ============================================
   // BRAND PATCHING (Mutual Connection)
   // ============================================
@@ -789,17 +857,35 @@ export class BrandsService {
         where: { id: existing.id },
         data: { status: PatchStatus.PENDING, updatedAt: new Date() },
       });
+
+      await this.recordPatchHistoryForPair({
+        patchId: existing.id,
+        requesterId,
+        receiverId,
+        actorId: requesterId,
+        action: 'REQUESTED',
+      });
+
       return { status: 'PENDING', message: 'Patch request resent' };
     }
 
     // Create new request
+    const patchId = uuidv4();
     await this.prisma.brandPatch.create({
       data: {
-        id: uuidv4(),
+        id: patchId,
         requesterId,
         receiverId,
         status: PatchStatus.PENDING,
       },
+    });
+
+    await this.recordPatchHistoryForPair({
+      patchId,
+      requesterId,
+      receiverId,
+      actorId: requesterId,
+      action: 'REQUESTED',
     });
 
     // Notify receiver
@@ -843,29 +929,48 @@ export class BrandsService {
       throw new BadRequestException('Request already processed');
     }
 
+    const nextStatus =
+      status === PatchStatus.ACCEPTED
+        ? PatchStatus.ACCEPTED
+        : PatchStatus.REJECTED;
+
     await this.prisma.brandPatch.update({
       where: { id: patchId },
-      data: { status, updatedAt: new Date() },
+      data: { status: nextStatus, updatedAt: new Date() },
+    });
+
+    await this.recordPatchHistoryForPair({
+      patchId,
+      requesterId: patch.requesterId,
+      receiverId: patch.receiverId,
+      actorId: responderId,
+      action: nextStatus === PatchStatus.ACCEPTED ? 'ACCEPTED' : 'REJECTED',
     });
 
     // Notify requester
     if (this.notifications) {
       try {
         const type =
-          status === PatchStatus.ACCEPTED
+          nextStatus === PatchStatus.ACCEPTED
             ? NotificationType.BRAND_PATCH_ACCEPTED
             : NotificationType.BRAND_PATCH_REJECTED;
         await this.notifications.create(patch.requesterId, type, {
           actorId: responderId,
           payload: {
-            message: `Your patch request was ${status.toLowerCase()}`,
-            targetUrl: '/settings?tab=patches&filter=active',
+            message: `Your patch request was ${nextStatus.toLowerCase()}`,
+            targetUrl:
+              nextStatus === PatchStatus.ACCEPTED
+                ? '/settings?tab=patches&filter=active'
+                : '/settings?tab=patches&filter=history',
           },
         });
       } catch { }
     }
 
-    return { status, message: `Patch request ${status.toLowerCase()}` };
+    return {
+      status: nextStatus,
+      message: `Patch request ${nextStatus.toLowerCase()}`,
+    };
   }
 
   async cancelBrandPatch(actorId: string, patchId: string) {
@@ -888,16 +993,34 @@ export class BrandsService {
         throw new ForbiddenException('Only the requester can cancel a pending patch');
       }
 
-      await this.prisma.brandPatch.delete({
+      await this.prisma.brandPatch.update({
         where: { id: patchId },
+        data: { status: PatchStatus.REJECTED, updatedAt: new Date() },
+      });
+
+      await this.recordPatchHistoryForPair({
+        patchId,
+        requesterId: patch.requesterId,
+        receiverId: patch.receiverId,
+        actorId,
+        action: 'CANCELLED',
       });
 
       return { status: 'CANCELLED', message: 'Patch request cancelled' };
     }
 
     if (patch.status === PatchStatus.ACCEPTED) {
-      await this.prisma.brandPatch.delete({
+      await this.prisma.brandPatch.update({
         where: { id: patchId },
+        data: { status: PatchStatus.REJECTED, updatedAt: new Date() },
+      });
+
+      await this.recordPatchHistoryForPair({
+        patchId,
+        requesterId: patch.requesterId,
+        receiverId: patch.receiverId,
+        actorId,
+        action: 'REMOVED',
       });
 
       return { status: 'REMOVED', message: 'Patch connection removed' };
@@ -912,7 +1035,9 @@ export class BrandsService {
     page = 1,
     limit = 20,
   ) {
-    const skip = (page - 1) * limit;
+    const safePage = Math.max(1, page);
+    const safeLimit = Math.max(1, Math.min(limit, 100));
+    const skip = (safePage - 1) * safeLimit;
     const [total, patches] = await Promise.all([
       this.prisma.brandPatch.count({
         where: {
@@ -948,7 +1073,7 @@ export class BrandsService {
           },
         },
         skip,
-        take: limit,
+        take: safeLimit,
         orderBy: { updatedAt: 'desc' },
       }),
     ]);
@@ -958,11 +1083,151 @@ export class BrandsService {
         id: p.id,
         partner: p.requesterId === brandId ? p.receiver : p.requester,
         status: p.status,
+        isOutgoing: p.requesterId === brandId,
         createdAt: p.createdAt,
+        updatedAt: p.updatedAt,
       })),
       total,
-      page,
-      totalPages: Math.ceil(total / limit),
+      page: safePage,
+      totalPages: Math.max(1, Math.ceil(total / safeLimit)),
+    };
+  }
+
+  async getBrandPatchHistory(brandId: string, page = 1, limit = 20) {
+    const safePage = Math.max(1, page);
+    const safeLimit = Math.max(1, Math.min(limit, 100));
+    const skip = (safePage - 1) * safeLimit;
+    const historyDelegate = this.getPatchHistoryDelegate();
+
+    if (historyDelegate) {
+      try {
+        const [total, rows] = await Promise.all([
+          historyDelegate.count({ where: { brandId } }),
+          historyDelegate.findMany({
+            where: { brandId },
+            orderBy: { createdAt: 'desc' },
+            skip,
+            take: safeLimit,
+          }),
+        ]);
+
+        const partnerIds: string[] = Array.from(
+          new Set(
+            rows
+              .map((row: any) => String(row.partnerId || ''))
+              .filter((id: string) => id.length > 0),
+          ),
+        );
+
+        const partners = partnerIds.length
+          ? await this.prisma.user.findMany({
+              where: { id: { in: partnerIds } },
+              select: {
+                id: true,
+                username: true,
+                brandFullName: true,
+                profileImage: true,
+              },
+            })
+          : [];
+
+        const partnerMap = new Map(partners.map((partner) => [partner.id, partner]));
+
+        return {
+          items: rows.map((row: any) => {
+            const partner = partnerMap.get(row.partnerId);
+            const action = String(row.action) as BrandPatchHistoryActionValue;
+            const status =
+              action === 'ACCEPTED'
+                ? PatchStatus.ACCEPTED
+                : action === 'REQUESTED'
+                  ? PatchStatus.PENDING
+                  : PatchStatus.REJECTED;
+
+            return {
+              id: row.id,
+              patchId: row.patchId,
+              partner: partner ?? {
+                id: row.partnerId,
+                username: 'Unknown brand',
+                brandFullName: null,
+                profileImage: null,
+              },
+              action,
+              status,
+              isOutgoing: Boolean(row.isOutgoing),
+              actorId: row.actorId ?? null,
+              createdAt: row.createdAt,
+            };
+          }),
+          total,
+          page: safePage,
+          totalPages: Math.max(1, Math.ceil(total / safeLimit)),
+        };
+      } catch (error: any) {
+        if (error?.code !== 'P2021') {
+          throw error;
+        }
+      }
+    }
+
+    const [total, rows] = await Promise.all([
+      this.prisma.brandPatch.count({
+        where: {
+          OR: [
+            { requesterId: brandId, status: PatchStatus.REJECTED },
+            { receiverId: brandId, status: PatchStatus.REJECTED },
+          ],
+        },
+      }),
+      this.prisma.brandPatch.findMany({
+        where: {
+          OR: [
+            { requesterId: brandId, status: PatchStatus.REJECTED },
+            { receiverId: brandId, status: PatchStatus.REJECTED },
+          ],
+        },
+        include: {
+          requester: {
+            select: {
+              id: true,
+              username: true,
+              brandFullName: true,
+              profileImage: true,
+            },
+          },
+          receiver: {
+            select: {
+              id: true,
+              username: true,
+              brandFullName: true,
+              profileImage: true,
+            },
+          },
+        },
+        orderBy: { updatedAt: 'desc' },
+        skip,
+        take: safeLimit,
+      }),
+    ]);
+
+    return {
+      items: rows.map((row) => {
+        const isOutgoing = row.requesterId === brandId;
+        return {
+          id: row.id,
+          patchId: row.id,
+          partner: isOutgoing ? row.receiver : row.requester,
+          action: 'REJECTED' as BrandPatchHistoryActionValue,
+          status: PatchStatus.REJECTED,
+          isOutgoing,
+          actorId: null,
+          createdAt: row.updatedAt,
+        };
+      }),
+      total,
+      page: safePage,
+      totalPages: Math.max(1, Math.ceil(total / safeLimit)),
     };
   }
 

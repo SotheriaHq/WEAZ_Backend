@@ -96,6 +96,25 @@ export class BrandsController {
     );
   }
 
+  @UseGuards(JwtAuthGuard)
+  @Get('brands/:id/patches/history')
+  async getBrandPatchHistory(
+    @Param('id') brandId: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Req() req?: any,
+  ) {
+    if (req?.user?.id !== brandId) {
+      throw new BadRequestException('Not authorized for this brand');
+    }
+
+    return this.brandsService.getBrandPatchHistory(
+      brandId,
+      page ? parseInt(page, 10) : 1,
+      limit ? parseInt(limit, 10) : 20,
+    );
+  }
+
   @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
   @Delete('brands/patches/:patchId')
   async cancelBrandPatch(

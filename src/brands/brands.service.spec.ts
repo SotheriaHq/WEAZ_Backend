@@ -5,6 +5,8 @@ import { UploadService } from '../upload/upload.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { BadRequestException } from '@nestjs/common';
 import { PatchStatus, UserType } from '@prisma/client';
+import { SystemTagsService } from '../tags/system-tags.service';
+import { TagIndexService } from '../tags/tag-index.service';
 
 describe('BrandsService', () => {
   let service: BrandsService;
@@ -31,6 +33,8 @@ describe('BrandsService', () => {
         { provide: PrismaService, useValue: mockPrisma },
         { provide: UploadService, useValue: {} },
         { provide: NotificationsService, useValue: { create: jest.fn() } },
+        { provide: SystemTagsService, useValue: {} },
+        { provide: TagIndexService, useValue: { syncEntityTags: jest.fn() } },
       ],
     }).compile();
 

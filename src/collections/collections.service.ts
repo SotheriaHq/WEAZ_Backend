@@ -35,6 +35,7 @@ import { NotificationsService } from 'src/notifications/notifications.service';
 import { AnalyticsService } from 'src/analytics/analytics.service';
 import {
   CreateCollectionDto,
+  FileSpecDto,
   FinalizeCollectionDto,
 } from './dto/create-collection.dto';
 import { HelperService } from './helper/Helper.service';
@@ -2136,6 +2137,72 @@ export class CollectionsService {
     };
   }
 
+  async initializeCollectionMediaUploads(
+    collectionId: string,
+    userId: string,
+    files: FileSpecDto[],
+    scope: CollectionScope = 'design',
+  ) {
+    const resolvedScope = this.normalizeCollectionScope(scope);
+    const expectedDomain = this.scopeToDomain(resolvedScope);
+    if (expectedDomain !== 'DESIGN') {
+      throw new BadRequestException(
+        'Media upload initialization is only supported for designs.',
+      );
+    }
+
+    await this.assertOwner(collectionId, userId, 'DESIGN');
+
+    if (!Array.isArray(files) || files.length === 0) {
+      throw new BadRequestException('At least one file is required');
+    }
+    if (files.length > 20) {
+      throw new BadRequestException('Maximum 20 files per design');
+    }
+
+    const existingMediaCount = await this.prisma.collectionMedia.count({
+      where: { collectionId },
+    });
+    if (existingMediaCount + files.length > 20) {
+      throw new BadRequestException(
+        'Adding these files would exceed the 20-file design limit.',
+      );
+    }
+
+    const uploads = await Promise.all(
+      files.map(async (fileSpec, index) => {
+        const fileType = this.helperservice.determineFileType(
+          fileSpec.type,
+          fileSpec.fileType,
+        );
+        await this.helperservice.validateFileSpec(fileSpec, fileType);
+
+        const presign = await this.uploadService.createPresignedPost(
+          userId,
+          fileSpec.name,
+          fileType as any,
+          fileSpec.type,
+          { collectionId, orderIndex: existingMediaCount + index },
+        );
+
+        return {
+          fileId: (presign as any).fileId,
+          orderIndex: existingMediaCount + index,
+          expectedKey: (presign as any).key,
+          uploadUrl: (presign as any).url,
+          uploadFields: (presign as any).fields,
+          expiresIn: (presign as any).expiresIn || 600,
+        };
+      }),
+    );
+
+    return {
+      collectionId,
+      uploads,
+      expiresIn: 600,
+    };
+  }
+
   async getMarketFeed(options?: {
     cursor?: string;
     limit?: number;
@@ -3438,6 +3505,121 @@ export class CollectionsService {
       }
 
       await this.touchDraftActivity(tx, collectionId, 'STORE');
+    });
+
+    return { success: true };
+  }
+
+  async reorderCollectionMedia(
+    collectionId: string,
+    ownerId: string,
+    items: Array<{ mediaId: string; orderIndex: number }>,
+    scope: CollectionScope = 'design',
+  ) {
+    const resolvedScope = this.normalizeCollectionScope(scope);
+    const expectedDomain = this.scopeToDomain(resolvedScope);
+    if (expectedDomain !== 'DESIGN') {
+      throw new BadRequestException(
+        'Media reordering is only supported for designs.',
+      );
+    }
+
+    await this.assertOwner(collectionId, ownerId, 'DESIGN');
+
+    if (!Array.isArray(items) || items.length === 0) {
+      throw new BadRequestException('items is required');
+    }
+
+    const mediaIdSet = new Set(items.map((item) => item.mediaId));
+    if (mediaIdSet.size !== items.length) {
+      throw new BadRequestException('Duplicate mediaId in reorder request');
+    }
+
+    const orderIndexSet = new Set(items.map((item) => item.orderIndex));
+    if (orderIndexSet.size !== items.length) {
+      throw new BadRequestException('Duplicate orderIndex in reorder request');
+    }
+
+    if (items.some((item) => item.orderIndex < 0)) {
+      throw new BadRequestException('orderIndex must be non-negative');
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      await this.lockCollectionForUpdate(tx, collectionId, 'DESIGN');
+
+      const collection = await tx.collection.findUnique({
+        where: { id: collectionId },
+        select: {
+          id: true,
+          status: true,
+          coverMediaId: true,
+        } as any,
+      });
+      if (!collection) {
+        throw new NotFoundException('Collection not found');
+      }
+
+      const existingMedia = await tx.collectionMedia.findMany({
+        where: { collectionId },
+        select: { id: true },
+        orderBy: { orderIndex: 'asc' },
+      });
+
+      if (existingMedia.length !== items.length) {
+        throw new BadRequestException(
+          'Reorder request must include every design media item exactly once.',
+        );
+      }
+
+      const existingIdSet = new Set(existingMedia.map((media) => media.id));
+      for (const mediaId of items.map((item) => item.mediaId)) {
+        if (!existingIdSet.has(mediaId)) {
+          throw new BadRequestException(
+            'Reorder request contains media that does not belong to design.',
+          );
+        }
+      }
+
+      const normalizedItems = [...items]
+        .sort((a, b) => a.orderIndex - b.orderIndex)
+        .map((item, index) => ({
+          mediaId: item.mediaId,
+          orderIndex: index,
+        }));
+
+      for (const item of normalizedItems) {
+        await tx.collectionMedia.update({
+          where: { id: item.mediaId },
+          data: { orderIndex: item.orderIndex },
+        });
+      }
+
+      const currentCoverMediaId =
+        typeof (collection as any).coverMediaId === 'string'
+          ? ((collection as any).coverMediaId as string)
+          : null;
+      const currentStatus =
+        typeof (collection as any).status === 'string'
+          ? ((collection as any).status as string)
+          : null;
+      const nextCoverMediaId =
+        normalizedItems.find((item) => item.mediaId === currentCoverMediaId)
+          ?.mediaId ??
+        normalizedItems[0]?.mediaId ??
+        null;
+
+      await tx.collection.update({
+        where: { id: collectionId },
+        data: {
+          coverMediaId: nextCoverMediaId,
+          ...(currentStatus === 'DRAFT'
+            ? {
+                lastActivityAt: new Date(),
+                draftVersion: { increment: 1 },
+              }
+            : {}),
+        } as any,
+      });
     });
 
     return { success: true };

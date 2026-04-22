@@ -5,7 +5,7 @@ import {
   Optional,
 } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
-import { NotificationType } from '@prisma/client';
+import { NotificationType, TagStatus } from '@prisma/client';
 import { NotificationsService } from 'src/notifications/notifications.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { v4 as uuidv4 } from 'uuid';
@@ -96,7 +96,10 @@ export class TagIndexService {
     let banned: Array<{ normalizedName: string }> = [];
     try {
       banned = await prismaClient.tag.findMany({
-        where: { normalizedName: { in: added }, isBanned: true },
+        where: {
+          normalizedName: { in: added },
+          OR: [{ isBanned: true }, { status: TagStatus.REJECTED }],
+        },
         select: { normalizedName: true },
       });
     } catch (error: any) {
@@ -134,8 +137,11 @@ export class TagIndexService {
               id: uuidv4(),
               normalizedName: name,
               displayName: name,
+              status: TagStatus.PENDING,
+              createdById: options?.actorId ?? null,
               usageCount: 0,
               lastUsedAt: now,
+              isBanned: false,
             },
             update: { displayName: name },
             select: { id: true, normalizedName: true },
@@ -206,8 +212,18 @@ export class TagIndexService {
 
         const allNext = Array.from(next);
         if (allNext.length > 0) {
+          const approvedRows = await (tx as any).tag.findMany({
+            where: {
+              normalizedName: { in: allNext },
+              status: TagStatus.APPROVED,
+              isBanned: false,
+              aliasOfTagId: null,
+            },
+            select: { normalizedName: true },
+          });
+
           await tx.systemTag.createMany({
-            data: allNext.map((tag) => ({ id: uuidv4(), tag })),
+            data: approvedRows.map((row: any) => ({ id: uuidv4(), tag: row.normalizedName })),
             skipDuplicates: true,
           });
         }

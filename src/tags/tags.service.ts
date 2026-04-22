@@ -1,5 +1,5 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
-import { CollectionVisibility } from '@prisma/client';
+import { CollectionVisibility, TagStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { TagIndexService } from './tag-index.service';
 import * as crypto from 'crypto';
@@ -62,14 +62,28 @@ type TagAdminRow = {
   name: string;
   displayName: string;
   usageCount: number;
+  status: 'PENDING' | 'APPROVED' | 'REJECTED';
   isBanned: boolean;
   aliasOfTagName: string | null;
+  createdById: string | null;
+  createdBy: {
+    id: string;
+    username: string | null;
+    brandFullName: string | null;
+    profileImage: string | null;
+  } | null;
   createdAt: string;
   lastUsedAt: string | null;
-  lifecycleStage: 'LIVE' | 'REJECTED' | 'ALIAS' | 'DORMANT';
 };
 
-type TagLifecycleStage = 'all' | 'live' | 'rejected' | 'alias' | 'dormant';
+type TagLifecycleStage = 'all' | 'pending' | 'approved' | 'rejected';
+
+type TagStatusValue = 'PENDING' | 'APPROVED' | 'REJECTED';
+
+type TagVisibilityOptions = {
+  viewerId?: string | null;
+  isSuperAdmin?: boolean;
+};
 
 type TagAdminSortMode = 'recent' | 'popular' | 'last-used' | 'name-asc';
 
@@ -79,8 +93,9 @@ type TagLifecycleEvent = {
     | 'TAG_CREATED'
     | 'FIRST_USAGE'
     | 'LAST_USAGE'
+    | 'STATUS_PENDING'
+    | 'STATUS_APPROVED'
     | 'STATUS_REJECTED'
-    | 'STATUS_ALLOWED'
     | 'ALIASED_TO'
     | 'TAG_UPDATED';
   at: string;
@@ -143,11 +158,38 @@ export class TagsService {
 
   private parseLifecycleStage(state?: string): TagLifecycleStage {
     const normalized = String(state ?? 'all').trim().toLowerCase();
-    if (normalized === 'live') return 'live';
+    if (normalized === 'pending') return 'pending';
+    if (normalized === 'approved') return 'approved';
     if (normalized === 'rejected') return 'rejected';
-    if (normalized === 'alias') return 'alias';
-    if (normalized === 'dormant') return 'dormant';
     return 'all';
+  }
+
+  private parseTagStatus(input?: string | TagStatus | null): TagStatusValue {
+    const normalized = String(input ?? '').trim().toUpperCase();
+    if (normalized === 'PENDING') return 'PENDING';
+    if (normalized === 'REJECTED') return 'REJECTED';
+    return 'APPROVED';
+  }
+
+  private parseModerationStatus(input?: string): TagStatusValue {
+    const normalized = String(input ?? '').trim().toUpperCase();
+    if (normalized === 'PENDING') return 'PENDING';
+    if (normalized === 'REJECTED') return 'REJECTED';
+    return 'APPROVED';
+  }
+
+  private mapLegacyLifecycleStage(row: {
+    status?: TagStatus | string | null;
+    isBanned?: boolean;
+    aliasOfTagId?: string | null;
+    usageCount: number;
+  }): 'LIVE' | 'REJECTED' | 'ALIAS' | 'DORMANT' {
+    if (row.aliasOfTagId) return 'ALIAS';
+    const status = this.parseTagStatus(row.status as any);
+    if (row.isBanned || status === 'REJECTED') return 'REJECTED';
+    if (status === 'PENDING') return 'DORMANT';
+    if ((row.usageCount ?? 0) <= 0) return 'DORMANT';
+    return 'LIVE';
   }
 
   private parseAdminSort(sort?: string): TagAdminSortMode {
@@ -158,15 +200,17 @@ export class TagsService {
     return 'recent';
   }
 
-  private mapLifecycleStage(row: {
-    isBanned: boolean;
-    aliasOfTagId?: string | null;
-    usageCount: number;
-  }): TagAdminRow['lifecycleStage'] {
-    if (row.aliasOfTagId) return 'ALIAS';
-    if (row.isBanned) return 'REJECTED';
-    if ((row.usageCount ?? 0) <= 0) return 'DORMANT';
-    return 'LIVE';
+  private isTagVisibleToViewer(tag: {
+    status?: TagStatus | null;
+    isBanned?: boolean;
+    createdById?: string | null;
+  }, viewerId?: string | null, isSuperAdmin = false): boolean {
+    if (isSuperAdmin) return true;
+
+    const status = (tag.status ?? (tag.isBanned ? TagStatus.REJECTED : TagStatus.APPROVED)) as TagStatus;
+    if (status === TagStatus.APPROVED && !tag.isBanned) return true;
+    if (status === TagStatus.PENDING && viewerId && tag.createdById === viewerId) return true;
+    return false;
   }
 
   private async queryAdminTagRows(params: {
@@ -180,25 +224,23 @@ export class TagsService {
     const take = this.clampLimit(params.limit, 1, 100);
     const normalizedQuery = this.normalizeLookup(params.query ?? '');
 
-    const where: Record<string, unknown> = {};
-    if (!params.includeBanned) {
-      where.isBanned = false;
-    }
+    const where: Record<string, any> = {};
     if (normalizedQuery) {
       where.normalizedName = { startsWith: normalizedQuery };
     }
 
     const state = this.parseLifecycleStage(params.state);
-    if (state === 'live') {
+    if (state === 'pending') {
+      where.status = TagStatus.PENDING;
       where.isBanned = false;
-      where.aliasOfTagId = null;
-      where.usageCount = { gt: 0 };
+    } else if (state === 'approved') {
+      where.status = TagStatus.APPROVED;
+      where.isBanned = false;
     } else if (state === 'rejected') {
-      where.isBanned = true;
-    } else if (state === 'alias') {
-      where.aliasOfTagId = { not: null };
-    } else if (state === 'dormant') {
-      where.usageCount = { lte: 0 };
+      where.OR = [{ status: TagStatus.REJECTED }, { isBanned: true }];
+    } else if (!params.includeBanned) {
+      where.status = { not: TagStatus.REJECTED };
+      where.isBanned = false;
     }
 
     const sort = this.parseAdminSort(params.sort);
@@ -221,11 +263,21 @@ export class TagsService {
         normalizedName: true,
         displayName: true,
         usageCount: true,
+        status: true,
         isBanned: true,
         aliasOfTagId: true,
         aliasOfTag: {
           select: {
             normalizedName: true,
+          },
+        },
+        createdById: true,
+        createdBy: {
+          select: {
+            id: true,
+            username: true,
+            brandFullName: true,
+            profileImage: true,
           },
         },
         createdAt: true,
@@ -241,11 +293,20 @@ export class TagsService {
         name: row.normalizedName,
         displayName: row.displayName,
         usageCount: row.usageCount,
+        status: this.parseTagStatus(row.status),
         isBanned: row.isBanned,
         aliasOfTagName: row.aliasOfTag?.normalizedName ?? null,
+        createdById: row.createdById ?? null,
+        createdBy: row.createdBy
+          ? {
+              id: row.createdBy.id,
+              username: row.createdBy.username,
+              brandFullName: row.createdBy.brandFullName,
+              profileImage: row.createdBy.profileImage,
+            }
+          : null,
         createdAt: row.createdAt.toISOString(),
         lastUsedAt: row.lastUsedAt ? row.lastUsedAt.toISOString() : null,
-        lifecycleStage: this.mapLifecycleStage(row),
       })),
       nextCursor: hasMore ? pageRows[pageRows.length - 1]?.id ?? null : null,
     };
@@ -324,13 +385,30 @@ export class TagsService {
    * Returns popular tags from the unified tag index.
    * Falls back to legacy aggregation if index is empty.
    */
-  async getPopularTags(limit = 50): Promise<{ tag: string; count: number }[]> {
+  async getPopularTags(
+    limit = 50,
+    options?: TagVisibilityOptions,
+  ): Promise<{ tag: string; count: number }[]> {
     const take = this.clampLimit(limit, 1, 200);
+    const viewerId = options?.viewerId ?? null;
+    const isSuperAdmin = Boolean(options?.isSuperAdmin);
+
+    const visibilityWhere = !isSuperAdmin
+      ? {
+          OR: [
+            { status: TagStatus.APPROVED, isBanned: false },
+            ...(viewerId
+              ? [{ status: TagStatus.PENDING, createdById: viewerId, isBanned: false }]
+              : []),
+          ],
+        }
+      : {};
+
     const indexed = await (this.prisma as any).tag.findMany({
       where: {
-        isBanned: false,
         aliasOfTagId: null,
         usageCount: { gt: 0 },
+        ...visibilityWhere,
       },
       orderBy: [
         { usageCount: 'desc' },
@@ -392,24 +470,65 @@ export class TagsService {
     for (const b of brands) for (const t of b.tags ?? []) bump(t);
     for (const u of users) for (const t of u.brandTags ?? []) bump(t);
 
-    return Array.from(counts.entries())
+    const ranked = Array.from(counts.entries())
       .map(([tag, count]) => ({ tag, count }))
-      .sort((a, b) => b.count - a.count)
+      .sort((a, b) => b.count - a.count);
+
+    if (ranked.length === 0) return [];
+
+    const tagRows = await (this.prisma as any).tag.findMany({
+      where: {
+        normalizedName: { in: ranked.map((entry) => entry.tag) },
+      },
+      select: {
+        normalizedName: true,
+        status: true,
+        isBanned: true,
+        createdById: true,
+      },
+    });
+    const tagMetaByName = new Map(
+      tagRows.map((row: any) => [row.normalizedName, row] as const),
+    );
+
+    return ranked
+      .filter((entry) => {
+        const meta = tagMetaByName.get(entry.tag);
+        if (!meta) return isSuperAdmin;
+        return this.isTagVisibleToViewer(meta, viewerId, isSuperAdmin);
+      })
       .slice(0, take);
   }
 
-  async searchTags(query: string, limit = 10): Promise<{ tag: string; count: number }[]> {
+  async searchTags(
+    query: string,
+    limit = 10,
+    options?: TagVisibilityOptions,
+  ): Promise<{ tag: string; count: number }[]> {
     const take = this.clampLimit(limit, 1, 100);
     const normalized = this.normalizeLookup(query);
+    const viewerId = options?.viewerId ?? null;
+    const isSuperAdmin = Boolean(options?.isSuperAdmin);
     if (!normalized) {
-      return this.getPopularTags(take);
+      return this.getPopularTags(take, options);
     }
+
+    const visibilityWhere = !isSuperAdmin
+      ? {
+          OR: [
+            { status: TagStatus.APPROVED, isBanned: false },
+            ...(viewerId
+              ? [{ status: TagStatus.PENDING, createdById: viewerId, isBanned: false }]
+              : []),
+          ],
+        }
+      : {};
 
     const rows = await (this.prisma as any).tag.findMany({
       where: {
         normalizedName: { startsWith: normalized },
-        isBanned: false,
         aliasOfTagId: null,
+        ...visibilityWhere,
       },
       orderBy: [
         { usageCount: 'desc' },
@@ -417,43 +536,73 @@ export class TagsService {
         { normalizedName: 'asc' },
       ],
       take,
-      select: { normalizedName: true, usageCount: true },
+      select: {
+        normalizedName: true,
+        usageCount: true,
+        status: true,
+        isBanned: true,
+        createdById: true,
+      },
     });
 
-    return rows.map((row: any) => ({
-      tag: row.normalizedName,
-      count: row.usageCount,
-    }));
+    return rows
+      .filter((row: any) => this.isTagVisibleToViewer(row, viewerId, isSuperAdmin))
+      .map((row: any) => ({
+        tag: row.normalizedName,
+        count: row.usageCount,
+      }));
   }
 
-  async getTrendingTags(window: string, limit = 20): Promise<{ tag: string; count: number }[]> {
+  async getTrendingTags(
+    window: string,
+    limit = 20,
+    options?: TagVisibilityOptions,
+  ): Promise<{ tag: string; count: number }[]> {
     const take = this.clampLimit(limit, 1, 100);
     const windowMs = this.parseTrendingWindow(window);
     const from = new Date(Date.now() - windowMs);
+    const viewerId = options?.viewerId ?? null;
+    const isSuperAdmin = Boolean(options?.isSuperAdmin);
 
     const rows = await this.prisma.$queryRaw<
-      Array<{ tag: string; usageCount: bigint }>
+      Array<{
+        tag: string;
+        usageCount: bigint;
+        status: TagStatus | null;
+        isBanned: boolean;
+        createdById: string | null;
+      }>
     >`
-      SELECT t."normalizedName" AS "tag", COUNT(tb."_id") AS "usageCount"
+      SELECT
+        t."normalizedName" AS "tag",
+        COUNT(tb."_id") AS "usageCount",
+        t."status" AS "status",
+        t."isBanned" AS "isBanned",
+        t."createdById" AS "createdById"
       FROM "TagBinding" tb
       INNER JOIN "Tag" t ON t."_id" = tb."tagId"
       WHERE tb."createdAt" >= ${from}
-        AND t."isBanned" = false
         AND t."aliasOfTagId" IS NULL
-      GROUP BY t."_id", t."normalizedName"
+      GROUP BY t."_id", t."normalizedName", t."status", t."isBanned", t."createdById"
       ORDER BY COUNT(tb."_id") DESC, t."normalizedName" ASC
-      LIMIT ${take}
+      LIMIT ${take * 3}
     `;
 
-    return rows.map((row) => ({
-      tag: row.tag,
-      count: Number(row.usageCount ?? 0),
-    }));
+    return rows
+      .filter((row) => this.isTagVisibleToViewer(row, viewerId, isSuperAdmin))
+      .slice(0, take)
+      .map((row) => ({
+        tag: row.tag,
+        count: Number(row.usageCount ?? 0),
+      }));
   }
 
-  async getTagDetails(inputName: string) {
+  async getTagDetails(inputName: string, options?: TagVisibilityOptions) {
     const normalizedName = this.normalizeLookup(inputName);
     if (!normalizedName) throw new NotFoundException('Tag not found');
+
+    const viewerId = options?.viewerId ?? null;
+    const isSuperAdmin = Boolean(options?.isSuperAdmin);
 
     const tag = await (this.prisma as any).tag.findUnique({
       where: { normalizedName },
@@ -462,6 +611,16 @@ export class TagsService {
         normalizedName: true,
         displayName: true,
         usageCount: true,
+        status: true,
+        createdById: true,
+        createdBy: {
+          select: {
+            id: true,
+            username: true,
+            brandFullName: true,
+            profileImage: true,
+          },
+        },
         isBanned: true,
         lastUsedAt: true,
         aliasOfTagId: true,
@@ -489,6 +648,9 @@ export class TagsService {
     });
 
     if (!tag) throw new NotFoundException('Tag not found');
+    if (!this.isTagVisibleToViewer(tag, viewerId, isSuperAdmin)) {
+      throw new NotFoundException('Tag not found');
+    }
 
     const resolvedTagId = tag.aliasOfTagId ?? tag.id;
     const resolvedTag =
@@ -719,19 +881,27 @@ export class TagsService {
       });
     }
 
-    if (tag.isBanned) {
+    const normalizedStatus = this.parseTagStatus(tag.status);
+    if (normalizedStatus === 'REJECTED' || tag.isBanned) {
       timeline.push({
         id: `rejected:${tag.id}`,
         type: 'STATUS_REJECTED',
         at: tag.updatedAt.toISOString(),
         summary: 'Tag is currently rejected from global use.',
       });
-    } else if (tag.updatedAt.getTime() > tag.createdAt.getTime()) {
+    } else if (normalizedStatus === 'PENDING') {
       timeline.push({
-        id: `allowed:${tag.id}`,
-        type: 'STATUS_ALLOWED',
+        id: `pending:${tag.id}`,
+        type: 'STATUS_PENDING',
         at: tag.updatedAt.toISOString(),
-        summary: 'Tag is currently allowed for global use.',
+        summary: 'Tag is currently pending moderation.',
+      });
+    } else if (tag.updatedAt.getTime() >= tag.createdAt.getTime()) {
+      timeline.push({
+        id: `approved:${tag.id}`,
+        type: 'STATUS_APPROVED',
+        at: tag.updatedAt.toISOString(),
+        summary: 'Tag is currently approved for global use.',
       });
     }
 
@@ -776,12 +946,23 @@ export class TagsService {
       name: tag.normalizedName,
       displayName: tag.displayName,
       usageCount: resolvedUsageCount,
+      status: normalizedStatus,
       isBanned: tag.isBanned,
-      lifecycleStage: this.mapLifecycleStage({
+      lifecycleStage: this.mapLegacyLifecycleStage({
+        status: tag.status,
         isBanned: tag.isBanned,
         aliasOfTagId: tag.aliasOfTagId,
         usageCount: resolvedUsageCount,
       }),
+      createdById: tag.createdById ?? null,
+      createdBy: tag.createdBy
+        ? {
+            id: tag.createdBy.id,
+            username: tag.createdBy.username,
+            brandFullName: tag.createdBy.brandFullName,
+            profileImage: tag.createdBy.profileImage,
+          }
+        : null,
       lastUsedAt: tag.lastUsedAt ? tag.lastUsedAt.toISOString() : null,
       aliasOf: tag.aliasOfTag
         ? {
@@ -807,8 +988,8 @@ export class TagsService {
         entities: usageSamples,
       },
       timeline,
-      createdAt: tag.createdAt,
-      updatedAt: tag.updatedAt,
+      createdAt: tag.createdAt.toISOString(),
+      updatedAt: tag.updatedAt.toISOString(),
     };
   }
 
@@ -816,10 +997,14 @@ export class TagsService {
     inputName: string,
     cursor?: string,
     limit = 20,
+    options?: TagVisibilityOptions,
   ): Promise<{ tag: string; items: TagFeedItem[]; nextCursor: string | null }> {
     const take = this.clampLimit(limit, 1, 40);
     const normalizedName = this.normalizeLookup(inputName);
     if (!normalizedName) throw new NotFoundException('Tag not found');
+
+    const viewerId = options?.viewerId ?? null;
+    const isSuperAdmin = Boolean(options?.isSuperAdmin);
 
     const requested = await (this.prisma as any).tag.findUnique({
       where: { normalizedName },
@@ -827,10 +1012,16 @@ export class TagsService {
         id: true,
         normalizedName: true,
         aliasOfTagId: true,
+        status: true,
+        isBanned: true,
+        createdById: true,
       },
     });
 
     if (!requested) throw new NotFoundException('Tag not found');
+    if (!this.isTagVisibleToViewer(requested, viewerId, isSuperAdmin)) {
+      throw new NotFoundException('Tag not found');
+    }
 
     const resolvedTagId = requested.aliasOfTagId ?? requested.id;
     const resolvedTag = requested.aliasOfTagId
@@ -1049,24 +1240,60 @@ export class TagsService {
     };
   }
 
-  async banTag(inputName: string, banned = true): Promise<void> {
+  async setTagStatus(
+    inputName: string,
+    statusInput: 'PENDING' | 'APPROVED' | 'REJECTED',
+  ) {
     const normalizedName = this.normalizeLookup(inputName);
     if (!normalizedName) throw new BadRequestException('Invalid tag');
 
-    await (this.prisma as any).tag.upsert({
+    const nextStatus = this.parseModerationStatus(statusInput);
+    const shouldBan = nextStatus === 'REJECTED';
+
+    const updated = await (this.prisma as any).tag.upsert({
       where: { normalizedName },
       create: {
         id: crypto.randomUUID(),
         normalizedName,
         displayName: normalizedName,
-        isBanned: banned,
+        status: nextStatus,
+        isBanned: shouldBan,
       },
-      update: { isBanned: banned },
+      update: {
+        status: nextStatus,
+        isBanned: shouldBan,
+        updatedAt: new Date(),
+      },
+      select: {
+        normalizedName: true,
+        displayName: true,
+        status: true,
+        isBanned: true,
+        aliasOfTagId: true,
+        updatedAt: true,
+      },
     });
 
-    if (banned) {
+    if (nextStatus === 'APPROVED' && !updated.isBanned && !updated.aliasOfTagId) {
+      await this.prisma.systemTag.createMany({
+        data: [{ id: crypto.randomUUID(), tag: normalizedName }],
+        skipDuplicates: true,
+      });
+    } else {
       await this.prisma.systemTag.deleteMany({ where: { tag: normalizedName } });
     }
+
+    return {
+      name: updated.normalizedName,
+      displayName: updated.displayName,
+      status: this.parseTagStatus(updated.status),
+      isBanned: updated.isBanned,
+      updatedAt: updated.updatedAt.toISOString(),
+    };
+  }
+
+  async banTag(inputName: string, banned = true): Promise<void> {
+    await this.setTagStatus(inputName, banned ? 'REJECTED' : 'APPROVED');
   }
 
   async mergeTags(sourceInput: string, targetInput: string): Promise<void> {

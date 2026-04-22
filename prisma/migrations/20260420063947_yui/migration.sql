@@ -1,0 +1,5 @@
+-- RenameIndex
+ALTER INDEX "PaymentAttemptCheckoutIntentLink_paymentAttemptId_checkoutInten" RENAME TO "PaymentAttemptCheckoutIntentLink_paymentAttemptId_checkoutI_key";
+
+-- RenameIndex
+ALTER INDEX "PaymentAttemptCheckoutIntentLink_paymentAttemptId_status_create" RENAME TO "PaymentAttemptCheckoutIntentLink_paymentAttemptId_status_cr_idx";
