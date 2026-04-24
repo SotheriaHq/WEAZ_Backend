@@ -59,8 +59,8 @@ export class QueryInboxDto {
   filter?: 'all' | 'unread' | 'archived';
 
   @IsOptional()
-  @IsIn(['all', 'STANDARD_ORDER', 'CUSTOM_ORDER', 'INQUIRY'])
-  contextType?: 'all' | 'STANDARD_ORDER' | 'CUSTOM_ORDER' | 'INQUIRY';
+  @IsIn(['all', 'DIRECT', 'INQUIRY', 'STANDARD_ORDER', 'CUSTOM_ORDER'])
+  contextType?: 'all' | 'DIRECT' | 'INQUIRY' | 'STANDARD_ORDER' | 'CUSTOM_ORDER';
 
   @IsOptional()
   @IsString()
@@ -83,6 +83,12 @@ export class SendMessageDto {
   @ArrayMaxSize(5)
   @IsUUID('4', { each: true })
   attachmentFileIds?: string[];
+}
+
+export class QueryThreadOrdersDto {
+  @IsOptional()
+  @IsIn(['all', 'active', 'closed', 'cancelled', 'disputed'])
+  filter?: 'all' | 'active' | 'closed' | 'cancelled' | 'disputed';
 }
 
 export class MarkThreadReadDto {

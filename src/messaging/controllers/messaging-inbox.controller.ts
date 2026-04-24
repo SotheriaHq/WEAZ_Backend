@@ -1,7 +1,7 @@
 import { Body, Controller, Get, Headers, Param, Post, Query, Req, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from 'src/auth/guard/jwt-auth.guard';
 import { MessagingService } from '../messaging.service';
-import { MarkThreadReadDto, QueryInboxDto, QueryMessagesDto, SendMessageDto } from '../dto/messaging.dto';
+import { MarkThreadReadDto, QueryInboxDto, QueryMessagesDto, QueryThreadOrdersDto, SendMessageDto } from '../dto/messaging.dto';
 
 @Controller('messaging')
 @UseGuards(JwtAuthGuard)
@@ -31,6 +31,25 @@ export class MessagingInboxController {
     @Query() query: QueryMessagesDto,
   ) {
     return this.messaging.listThreadMessagesForActor(req.user.id, threadId, query);
+  }
+
+  @Get('threads/:threadId/orders')
+  async listThreadOrders(
+    @Req() req: { user: { id: string } },
+    @Param('threadId') threadId: string,
+    @Query() query: QueryThreadOrdersDto,
+  ) {
+    return this.messaging.listThreadOrdersForActor(req.user.id, threadId, query);
+  }
+
+  @Post('brands/:brandId/messages')
+  async sendBrandEntryMessage(
+    @Req() req: { user: { id: string } },
+    @Param('brandId') brandId: string,
+    @Body() dto: SendMessageDto,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.messaging.sendBrandEntryMessage(req.user.id, brandId, dto, idempotencyKey);
   }
 
   @Post('threads/:threadId/messages')

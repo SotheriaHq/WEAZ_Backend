@@ -27,6 +27,7 @@ export class AdminAuditController {
     @Query('actorUserId') actorUserId?: string,
     @Query('action') action?: AdminAuditAction,
     @Query('targetType') targetType?: string,
+    @Query('targetId') targetId?: string,
   ) {
     return this.auditService.findMany({
       cursor,
@@ -34,6 +35,7 @@ export class AdminAuditController {
       actorUserId,
       action,
       targetType,
+      targetId,
     });
   }
 }

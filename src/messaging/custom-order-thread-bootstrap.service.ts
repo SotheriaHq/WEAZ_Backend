@@ -1,9 +1,11 @@
 import { Injectable } from '@nestjs/common';
 import {
   CustomOrderStatus,
+  MessageConversationType,
   MessageContextType,
   MessageKind,
   MessageParticipantRole,
+  MessageThreadStatus,
   NotificationType,
   Prisma,
 } from '@prisma/client';
@@ -18,6 +20,10 @@ export class CustomOrderThreadBootstrapService {
     private readonly policy: MessagingPolicyService,
     private readonly sideEffects: MessagingSideEffectsService,
   ) {}
+
+  private buildPairKey(buyerId: string, brandId: string) {
+    return `BUYER_BRAND:${buyerId}:${brandId}`;
+  }
 
   private resolveThreadTargetUrl(
     customOrderId: string,
@@ -44,31 +50,86 @@ export class CustomOrderThreadBootstrapService {
     buyerDisplayName: string;
     sourceTitle: string;
   }) {
-    const thread =
-      (await this.prisma.messageThread.findUnique({
+    const pairKey = this.buildPairKey(params.buyerId, params.brandId);
+    const thread = await this.prisma.$transaction(async (tx) => {
+      const linked = await tx.messageThreadOrderLink.findUnique({
         where: { customOrderId: params.customOrderId },
+        include: { thread: { include: { participants: true } } },
+      });
+      if (linked?.thread) return linked.thread;
+
+      const existingPair = await tx.messageThread.findFirst({
+        where: { pairKey },
         include: { participants: true },
-      })) ??
-      (await this.prisma.messageThread.create({
-        data: {
-          contextType: MessageContextType.CUSTOM_ORDER,
-          customOrderId: params.customOrderId,
+      });
+      if (existingPair) {
+        await tx.messageThreadOrderLink.upsert({
+          where: { customOrderId: params.customOrderId },
+          create: { threadId: existingPair.id, customOrderId: params.customOrderId },
+          update: { threadId: existingPair.id },
+        });
+        return existingPair;
+      }
+
+      const legacyPair = await tx.messageThread.findFirst({
+        where: {
+          pairKey: null,
           brandId: params.brandId,
           buyerId: params.buyerId,
-          status: this.policy.resolveThreadStatusForCustomOrder(params.status),
-          subjectSnapshotJson: {
-            title: params.sourceTitle,
-            type: 'CUSTOM_ORDER',
-          } as Prisma.InputJsonValue,
-          participants: {
-            create: [
-              { userId: params.buyerId, role: MessageParticipantRole.BUYER },
-              { userId: params.brandOwnerUserId, role: MessageParticipantRole.BRAND_OWNER },
-            ],
-          },
         },
+        orderBy: [{ lastMessageAt: 'desc' }, { createdAt: 'desc' }],
         include: { participants: true },
-      }));
+      });
+      if (legacyPair) {
+        const updated = await tx.messageThread.update({
+          where: { id: legacyPair.id },
+          data: {
+            contextType: MessageContextType.DIRECT,
+            conversationType: MessageConversationType.BUYER_BRAND,
+            buyerUserId: params.buyerId,
+            brandOwnerUserId: params.brandOwnerUserId,
+            pairKey,
+            status: MessageThreadStatus.OPEN,
+          },
+          include: { participants: true },
+        });
+        await tx.messageThreadOrderLink.upsert({
+          where: { customOrderId: params.customOrderId },
+          create: { threadId: updated.id, customOrderId: params.customOrderId },
+          update: { threadId: updated.id },
+        });
+        return updated;
+      }
+
+      const created = await tx.messageThread.create({
+          data: {
+            contextType: MessageContextType.DIRECT,
+            conversationType: MessageConversationType.BUYER_BRAND,
+            brandId: params.brandId,
+            buyerId: params.buyerId,
+            buyerUserId: params.buyerId,
+            brandOwnerUserId: params.brandOwnerUserId,
+            pairKey,
+            status: this.policy.resolveThreadStatusForCustomOrder(params.status),
+            subjectSnapshotJson: {
+              title: params.sourceTitle,
+              type: 'BUYER_BRAND_CONVERSATION',
+            } as Prisma.InputJsonValue,
+            participants: {
+              create: [
+                { userId: params.buyerId, role: MessageParticipantRole.BUYER },
+                { userId: params.brandOwnerUserId, role: MessageParticipantRole.BRAND_OWNER },
+              ],
+            },
+          },
+          include: { participants: true },
+        });
+
+      await tx.messageThreadOrderLink.create({
+        data: { threadId: created.id, customOrderId: params.customOrderId },
+      });
+      return created;
+    });
 
     const missingParticipantRows = [
       { userId: params.buyerId, role: MessageParticipantRole.BUYER },
@@ -95,6 +156,7 @@ export class CustomOrderThreadBootstrapService {
     const existingPlacementMessage = await this.prisma.message.findFirst({
       where: {
         threadId: thread.id,
+        customOrderId: params.customOrderId,
         kind: MessageKind.SYSTEM,
         metadataJson: {
           path: ['eventType'],
@@ -113,7 +175,6 @@ export class CustomOrderThreadBootstrapService {
           lastVisibleMessageAt: existingPlacementMessage.createdAt,
           lastMessagePreview: String(existingPlacementMessage.bodyText ?? '').slice(0, 200),
           lastSenderUserId: null,
-          status: this.policy.resolveThreadStatusForCustomOrder(params.status),
         },
       });
       return { threadId: thread.id, messageId: existingPlacementMessage.id };
@@ -123,12 +184,15 @@ export class CustomOrderThreadBootstrapService {
     const message = await this.prisma.message.create({
       data: {
         threadId: thread.id,
+        contextType: MessageContextType.CUSTOM_ORDER,
+        customOrderId: params.customOrderId,
         senderUserId: null,
         senderRole: MessageParticipantRole.SYSTEM,
         kind: MessageKind.SYSTEM,
         bodyText,
         metadataJson: {
           eventType: 'CUSTOM_ORDER_PLACED',
+          customOrderId: params.customOrderId,
           source: 'CUSTOM_ORDER_BOOTSTRAP',
           actorId: params.actorId,
         } as Prisma.InputJsonValue,
@@ -143,7 +207,6 @@ export class CustomOrderThreadBootstrapService {
         lastVisibleMessageAt: message.createdAt,
         lastMessagePreview: bodyText.slice(0, 200),
         lastSenderUserId: null,
-        status: this.policy.resolveThreadStatusForCustomOrder(params.status),
       },
     });
 

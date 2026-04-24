@@ -24,6 +24,7 @@ import {
   NotificationType,
   CollectionVisibility,
   CollectionType,
+  MessageConversationType,
   MessageContextType,
   MessageKind,
   MessageParticipantRole,
@@ -8338,9 +8339,10 @@ export class CollectionsService {
 
     const inquiryId = uuidv4();
 
-    const threadId = uuidv4();
     const now = new Date();
     const trimmedMessage = dto.message.trim();
+    const brandId = collection.owner?.brand?.id ?? null;
+    const pairKey = brandId ? `BUYER_BRAND:${requesterId}:${brandId}` : null;
     const metadata: Record<string, unknown> = {
       inquiryId,
       collectionId,
@@ -8351,43 +8353,73 @@ export class CollectionsService {
     };
 
     const createdThread = await this.prisma.$transaction(async (tx) => {
-      const thread = await tx.messageThread.create({
-        data: {
-          id: threadId,
-          contextType: MessageContextType.CUSTOM_ORDER,
-          brandId: collection.owner?.brand?.id ?? null,
-          buyerId: requesterId,
-          subjectSnapshotJson: {
-            type: 'CUSTOM_FIT_INQUIRY',
-            collectionId,
-            collectionTitle: collection.title ?? null,
-            inquiryId,
-          } as Prisma.InputJsonValue,
-          status: 'OPEN',
-        },
-      });
+      const existing = pairKey
+        ? await tx.messageThread.findFirst({ where: { pairKey } })
+        : await tx.messageThread.findFirst({
+            where: {
+              pairKey: null,
+              brandId,
+              buyerId: requesterId,
+            },
+            orderBy: [{ lastMessageAt: 'desc' }, { createdAt: 'desc' }],
+          });
+
+      const thread = existing
+        ? await tx.messageThread.update({
+            where: { id: existing.id },
+            data: {
+              contextType: MessageContextType.INQUIRY,
+              conversationType: MessageConversationType.BUYER_BRAND,
+              brandId,
+              buyerId: requesterId,
+              buyerUserId: requesterId,
+              brandOwnerUserId: collection.ownerId,
+              pairKey,
+              status: 'OPEN',
+            },
+          })
+        : await tx.messageThread.create({
+            data: {
+              contextType: MessageContextType.INQUIRY,
+              conversationType: MessageConversationType.BUYER_BRAND,
+              brandId,
+              buyerId: requesterId,
+              buyerUserId: requesterId,
+              brandOwnerUserId: collection.ownerId,
+              pairKey,
+              subjectSnapshotJson: {
+                type: 'CUSTOM_FIT_INQUIRY',
+                collectionId,
+                collectionTitle: collection.title ?? null,
+                inquiryId,
+              } as Prisma.InputJsonValue,
+              status: 'OPEN',
+            },
+          });
 
       await tx.messageThreadParticipant.createMany({
         data: [
           {
             id: uuidv4(),
-            threadId,
+            threadId: thread.id,
             userId: requesterId,
             role: MessageParticipantRole.BUYER,
           },
           {
             id: uuidv4(),
-            threadId,
+            threadId: thread.id,
             userId: collection.ownerId,
             role: MessageParticipantRole.BRAND_OWNER,
           },
         ],
+        skipDuplicates: true,
       });
 
       const message = await tx.message.create({
         data: {
           id: uuidv4(),
-          threadId,
+          threadId: thread.id,
+          contextType: MessageContextType.INQUIRY,
           senderUserId: requesterId,
           senderRole: MessageParticipantRole.BUYER,
           kind: MessageKind.USER,
@@ -8397,7 +8429,7 @@ export class CollectionsService {
       });
 
       await tx.messageThread.update({
-        where: { id: threadId },
+        where: { id: thread.id },
         data: {
           lastMessageId: message.id,
           lastMessageAt: now,

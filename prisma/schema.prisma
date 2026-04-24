@@ -757,8 +757,15 @@ enum EmailSuppressionReason {
 }
 
 enum MessageContextType {
+  DIRECT
+  INQUIRY
   CUSTOM_ORDER
   STANDARD_ORDER
+}
+
+enum MessageConversationType {
+  BUYER_BRAND
+  BRAND_BRAND
 }
 
 enum MessageThreadStatus {
@@ -2046,6 +2053,7 @@ model Order {
   buyerConfirmedDeliveryAt DateTime?
   escrowHold      EscrowHold?
   messageThread    MessageThread?
+  messageThreadLinks MessageThreadOrderLink[] @relation("MessageThreadOrderLinkOrder")
   checkoutSessionLines CheckoutSessionLine[]
   
   createdAt      DateTime      @default(now())
@@ -2317,6 +2325,7 @@ model CustomOrder {
   notificationOutboxEvents      CustomOrderNotificationOutbox[]
   analyticsEvents               CustomOrderAnalyticsEvent[]
   messageThread                 MessageThread?
+  messageThreadLinks            MessageThreadOrderLink[] @relation("MessageThreadOrderLinkCustomOrder")
   checkoutSession               CustomOrderCheckoutSession?
   checkoutSessionLines          CheckoutSessionLine[]
 
@@ -2334,12 +2343,18 @@ model CustomOrder {
 model MessageThread {
   id                   String                     @id @default(uuid()) @db.Uuid
   contextType          MessageContextType
+  conversationType     MessageConversationType?
   customOrderId        String?                    @unique @db.Uuid
   customOrder          CustomOrder?               @relation(fields: [customOrderId], references: [id], onDelete: Cascade)
   orderId              String?                    @unique @db.Uuid
   order                Order?                     @relation(fields: [orderId], references: [id], onDelete: Cascade)
   brandId              String?                    @db.Uuid
   buyerId              String?                    @db.Uuid
+  buyerUserId          String?                    @db.Uuid
+  brandOwnerUserId     String?                    @db.Uuid
+  brandAId             String?                    @db.Uuid
+  brandBId             String?                    @db.Uuid
+  pairKey              String?
   status               MessageThreadStatus        @default(OPEN)
   subjectSnapshotJson  Json?
   lastMessageId        String?                    @db.Uuid
@@ -2355,10 +2370,30 @@ model MessageThread {
   messages             Message[]
   participants         MessageThreadParticipant[]
   outboxEvents         MessageNotificationOutbox[]
+  orderLinks           MessageThreadOrderLink[]
 
   @@index([contextType, lastMessageAt])
   @@index([brandId, lastMessageAt])
   @@index([buyerId, lastMessageAt])
+  @@index([pairKey])
+  @@index([conversationType, lastMessageAt])
+}
+
+model MessageThreadOrderLink {
+  id            String             @id @default(uuid()) @db.Uuid
+  threadId      String             @db.Uuid
+  orderId       String?            @db.Uuid
+  customOrderId String?            @db.Uuid
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+
+  thread        MessageThread      @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  order         Order?             @relation("MessageThreadOrderLinkOrder", fields: [orderId], references: [id], onDelete: Cascade)
+  customOrder   CustomOrder?       @relation("MessageThreadOrderLinkCustomOrder", fields: [customOrderId], references: [id], onDelete: Cascade)
+
+  @@unique([orderId])
+  @@unique([customOrderId])
+  @@index([threadId, createdAt])
 }
 
 model MessageThreadParticipant {
@@ -2382,6 +2417,9 @@ model MessageThreadParticipant {
 model Message {
   id                String                 @id @default(uuid()) @db.Uuid
   threadId          String                 @db.Uuid
+  contextType       MessageContextType     @default(DIRECT)
+  orderId           String?                @db.Uuid
+  customOrderId     String?                @db.Uuid
   senderUserId      String?                @db.Uuid
   senderRole        MessageParticipantRole
   kind              MessageKind            @default(USER)
@@ -2402,6 +2440,8 @@ model Message {
 
   @@index([threadId, createdAt, id])
   @@index([threadId, visibilityState, createdAt])
+  @@index([contextType, orderId])
+  @@index([contextType, customOrderId])
   @@unique([threadId, senderUserId, clientMessageId])
 }
 

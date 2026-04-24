@@ -23,6 +23,11 @@ import {
   CustomOrderProgressStage,
   CustomOrderStatus,
   InventoryReservationStatus,
+  MessageConversationType,
+  MessageContextType,
+  MessageKind,
+  MessageParticipantRole,
+  MessageThreadStatus,
   NotificationType,
   PaymentMethod,
   PaymentStatus,
@@ -3303,6 +3308,7 @@ export class PaymentService implements OnModuleInit {
               buyerId: true,
               customerName: true,
               totalAmount: true,
+              currency: true,
               brand: {
                 select: {
                   ownerId: true,
@@ -3505,6 +3511,188 @@ export class PaymentService implements OnModuleInit {
     );
   }
 
+  private async ensureStandardOrderPlacedMessage(order: {
+    id: string;
+    brandId: string;
+    buyerId: string | null;
+    customerName: string | null;
+    totalAmount: Prisma.Decimal;
+    currency: string;
+    brand: {
+      ownerId: string;
+      name: string;
+    } | null;
+  }) {
+    if (!order.buyerId || !order.brand?.ownerId) {
+      return null;
+    }
+
+    const pairKey = `BUYER_BRAND:${order.buyerId}:${order.brandId}`;
+    const bodyText = `A new order for ${order.brand.name} has been placed by ${order.customerName || 'Customer'}.`;
+
+    return this.prisma.$transaction(async (tx) => {
+      const linked = await tx.messageThreadOrderLink.findUnique({
+        where: { orderId: order.id },
+        include: { thread: true },
+      });
+
+      const thread = linked?.thread ?? await (async () => {
+        const existingPair = await tx.messageThread.findFirst({ where: { pairKey } });
+        if (existingPair) {
+          await tx.messageThreadOrderLink.upsert({
+            where: { orderId: order.id },
+            create: { threadId: existingPair.id, orderId: order.id },
+            update: { threadId: existingPair.id },
+          });
+          return existingPair;
+        }
+
+        const legacyPair = await tx.messageThread.findFirst({
+          where: {
+            pairKey: null,
+            brandId: order.brandId,
+            buyerId: order.buyerId,
+          },
+          orderBy: [{ lastMessageAt: 'desc' }, { createdAt: 'desc' }],
+        });
+        if (legacyPair) {
+          const updated = await tx.messageThread.update({
+            where: { id: legacyPair.id },
+            data: {
+              contextType: MessageContextType.DIRECT,
+              conversationType: MessageConversationType.BUYER_BRAND,
+              buyerUserId: order.buyerId,
+              brandOwnerUserId: order.brand!.ownerId,
+              pairKey,
+              status: MessageThreadStatus.OPEN,
+            },
+          });
+          await tx.messageThreadOrderLink.upsert({
+            where: { orderId: order.id },
+            create: { threadId: updated.id, orderId: order.id },
+            update: { threadId: updated.id },
+          });
+          return updated;
+        }
+
+        const created = await tx.messageThread.create({
+          data: {
+            contextType: MessageContextType.DIRECT,
+            conversationType: MessageConversationType.BUYER_BRAND,
+            brandId: order.brandId,
+            buyerId: order.buyerId,
+            buyerUserId: order.buyerId,
+            brandOwnerUserId: order.brand!.ownerId,
+            pairKey,
+            status: MessageThreadStatus.OPEN,
+            subjectSnapshotJson: {
+              type: 'BUYER_BRAND_CONVERSATION',
+              brandName: order.brand!.name,
+            },
+            participants: {
+              create: [
+                { userId: order.buyerId!, role: MessageParticipantRole.BUYER },
+                { userId: order.brand!.ownerId, role: MessageParticipantRole.BRAND_OWNER },
+              ],
+            },
+          },
+        });
+        await tx.messageThreadOrderLink.create({
+          data: { threadId: created.id, orderId: order.id },
+        });
+        return created;
+      })();
+
+      await tx.messageThreadParticipant.createMany({
+        data: [
+          { threadId: thread.id, userId: order.buyerId, role: MessageParticipantRole.BUYER },
+          { threadId: thread.id, userId: order.brand.ownerId, role: MessageParticipantRole.BRAND_OWNER },
+        ],
+        skipDuplicates: true,
+      });
+
+      const existingMessage = await tx.message.findFirst({
+        where: {
+          threadId: thread.id,
+          orderId: order.id,
+          kind: MessageKind.SYSTEM,
+          metadataJson: { path: ['eventType'], equals: 'STANDARD_ORDER_PLACED' },
+        },
+        select: { id: true },
+      });
+      if (existingMessage) {
+        return existingMessage;
+      }
+
+      const message = await tx.message.create({
+        data: {
+          threadId: thread.id,
+          contextType: MessageContextType.STANDARD_ORDER,
+          orderId: order.id,
+          senderUserId: null,
+          senderRole: MessageParticipantRole.SYSTEM,
+          kind: MessageKind.SYSTEM,
+          bodyText,
+          metadataJson: {
+            eventType: 'STANDARD_ORDER_PLACED',
+            orderId: order.id,
+            source: 'PAYMENT_ORDER_PLACEMENT',
+            totalAmount: Number(order.totalAmount ?? 0),
+            currency: order.currency,
+          },
+        },
+      });
+
+      await tx.messageThread.update({
+        where: { id: thread.id },
+        data: {
+          lastMessageId: message.id,
+          lastMessageAt: message.createdAt,
+          lastVisibleMessageAt: message.createdAt,
+          lastMessagePreview: bodyText.slice(0, 200),
+          lastSenderUserId: null,
+        },
+      });
+
+      await tx.messageNotificationOutbox.createMany({
+        data: [
+          {
+            threadId: thread.id,
+            messageId: message.id,
+            recipientId: order.brand.ownerId,
+            notificationType: NotificationType.MESSAGE_RECEIVED,
+            payloadJson: {
+              threadId: thread.id,
+              messageId: message.id,
+              contextType: MessageContextType.STANDARD_ORDER,
+              orderId: order.id,
+              actionType: 'STANDARD_ORDER_PLACED',
+              targetUrl: `/studio/messages?thread=${thread.id}&orderId=${order.id}`,
+              message: bodyText,
+            },
+          },
+          {
+            threadId: thread.id,
+            messageId: message.id,
+            recipientId: order.buyerId,
+            notificationType: NotificationType.MESSAGE_RECEIVED,
+            payloadJson: {
+              threadId: thread.id,
+              messageId: message.id,
+              contextType: MessageContextType.STANDARD_ORDER,
+              orderId: order.id,
+              actionType: 'STANDARD_ORDER_PLACED',
+              targetUrl: `/messages?thread=${thread.id}&orderId=${order.id}`,
+              message: bodyText,
+            },
+          },
+        ],
+      });
+
+      return message;
+    });
+  }
+
   private async notifyOrderPlacementAfterPayment(
     linkedOrders: Array<{
       id: string;
@@ -3512,6 +3700,7 @@ export class PaymentService implements OnModuleInit {
       buyerId: string | null;
       customerName: string | null;
       totalAmount: Prisma.Decimal;
+      currency: string;
       brand: {
         ownerId: string;
         name: string;
@@ -3523,6 +3712,10 @@ export class PaymentService implements OnModuleInit {
     for (const order of linkedOrders) {
       const totalAmount = Number(order.totalAmount ?? 0);
       const brandName = order.brand?.name ?? 'Brand';
+
+      if (order.buyerId && order.brand?.ownerId) {
+        jobs.push(this.ensureStandardOrderPlacedMessage(order));
+      }
 
       if (order.brand?.ownerId) {
         jobs.push(
@@ -7456,6 +7649,7 @@ export class PaymentService implements OnModuleInit {
           buyerId: true,
           customerName: true,
           totalAmount: true,
+          currency: true,
           brand: {
             select: {
               ownerId: true,

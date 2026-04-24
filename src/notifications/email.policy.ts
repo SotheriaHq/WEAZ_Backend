@@ -13,6 +13,7 @@ const CRITICAL_SCENARIOS = new Set<string>([
   'auth.signin.new_device',
   'auth.signin.high_risk',
   'notification.LOGIN',
+  'notification.LOGOUT_ALL',
 ]);
 
 export function getEmailScenarioKey(

@@ -102,18 +102,30 @@ export class TrustedDeviceService {
   }
 
   async revokeDevice(userId: string, deviceId: string) {
-    const result = await this.prisma.trustedDevice.updateMany({
+    const existing = await this.prisma.trustedDevice.findFirst({
       where: {
         id: deviceId,
         userId,
-        revokedAt: null,
       },
+      select: { revokedAt: true },
+    });
+
+    if (!existing) {
+      return { success: false };
+    }
+
+    if (existing.revokedAt) {
+      return { success: true, alreadyRevoked: true };
+    }
+
+    await this.prisma.trustedDevice.update({
+      where: { id: deviceId },
       data: {
         revokedAt: new Date(),
         isTrusted: false,
       },
     });
 
-    return { success: result.count > 0 };
+    return { success: true };
   }
 }

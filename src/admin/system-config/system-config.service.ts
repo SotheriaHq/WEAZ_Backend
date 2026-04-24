@@ -31,6 +31,7 @@ export const DEFAULT_NUMBER_CONFIGS: Record<string, number> = {
 
 export const DEFAULT_BOOLEAN_CONFIGS: Record<string, boolean> = {
   'admin.dashboard.showDailySignupCount': true,
+  'messaging.brandToBrand.enabled': false,
 };
 
 /** Descriptions for each config key */
@@ -54,6 +55,7 @@ const KEY_DESCRIPTIONS: Record<string, string> = {
   'finance.standardEscrow.settlementHours': 'Hours to wait after buyer delivery confirmation before releasing the final standard-order tranche',
   'finance.standardEscrow.autoReleaseDays': 'Days after a delivered standard order before the system auto-confirms delivery',
   'admin.dashboard.showDailySignupCount': 'Controls whether the admin dashboard shows the daily signup count card',
+  'messaging.brandToBrand.enabled': 'Controls whether brand accounts can initiate direct messages to other brands',
 };
 
 @Injectable()
