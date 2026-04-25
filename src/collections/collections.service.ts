@@ -8462,7 +8462,7 @@ export class CollectionsService {
     return {
       success: true,
       inquiryId,
-      threadId,
+      threadId: createdThread.id,
       message: 'Your inquiry has been sent to the brand. They will respond soon.',
       estimatedResponseTime: '24-48 hours',
     };

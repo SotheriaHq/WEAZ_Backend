@@ -58,6 +58,13 @@ import {
   UpdateThreadPreferencesDto,
 } from './dto/messaging.dto';
 
+const ACTIVE_DISPUTE_STATUSES: ReadonlySet<AdminDisputeStatus> = new Set([
+  AdminDisputeStatus.OPEN,
+  AdminDisputeStatus.ASSIGNED,
+  AdminDisputeStatus.IN_PROGRESS,
+  AdminDisputeStatus.REOPENED,
+]);
+
 @Injectable()
 export class MessagingService {
   private readonly logger = new Logger(MessagingService.name);
@@ -865,14 +872,7 @@ export class MessagingService {
     });
     const openDisputeKeys = new Set(
       disputes
-        .filter((dispute) =>
-          [
-            AdminDisputeStatus.OPEN,
-            AdminDisputeStatus.ASSIGNED,
-            AdminDisputeStatus.IN_PROGRESS,
-            AdminDisputeStatus.REOPENED,
-          ].includes(dispute.status),
-        )
+        .filter((dispute) => ACTIVE_DISPUTE_STATUSES.has(dispute.status))
         .map((dispute) => `${dispute.targetType}:${dispute.targetId}`),
     );
 
