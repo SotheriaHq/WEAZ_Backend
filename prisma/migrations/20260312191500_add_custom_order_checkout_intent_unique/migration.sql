@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "CustomOrder_checkoutIntentId_key" ON "CustomOrder"("checkoutIntentId");

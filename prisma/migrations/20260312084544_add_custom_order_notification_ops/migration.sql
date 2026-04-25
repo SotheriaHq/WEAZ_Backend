@@ -1,0 +1,24 @@
+-- AlterEnum
+-- This migration adds more than one value to an enum.
+-- With PostgreSQL versions 11 and earlier, this is not possible
+-- in a single migration. This can be worked around by creating
+-- multiple migrations, each migration adding only one value to
+-- the enum.
+
+
+ALTER TYPE "NotificationType" ADD VALUE 'CUSTOM_ORDER_PAYMENT_RECEIVED';
+ALTER TYPE "NotificationType" ADD VALUE 'CUSTOM_ORDER_REVIEW_REQUIRED';
+ALTER TYPE "NotificationType" ADD VALUE 'CUSTOM_ORDER_BRAND_ACCEPTED';
+ALTER TYPE "NotificationType" ADD VALUE 'CUSTOM_ORDER_BRAND_REJECTED';
+ALTER TYPE "NotificationType" ADD VALUE 'CUSTOM_ORDER_PROGRESS_UPDATED';
+ALTER TYPE "NotificationType" ADD VALUE 'CUSTOM_ORDER_EXTENSION_REQUESTED';
+ALTER TYPE "NotificationType" ADD VALUE 'CUSTOM_ORDER_EXTENSION_RESOLVED';
+ALTER TYPE "NotificationType" ADD VALUE 'CUSTOM_ORDER_BUYER_COUNTERED';
+ALTER TYPE "NotificationType" ADD VALUE 'CUSTOM_ORDER_BUYER_REJECTED_EXTENSION';
+ALTER TYPE "NotificationType" ADD VALUE 'CUSTOM_ORDER_DELIVERED';
+ALTER TYPE "NotificationType" ADD VALUE 'CUSTOM_ORDER_ACCEPTANCE_WINDOW_REMINDER';
+ALTER TYPE "NotificationType" ADD VALUE 'CUSTOM_ORDER_ISSUE_REPORTED';
+ALTER TYPE "NotificationType" ADD VALUE 'CUSTOM_ORDER_DISPUTE_CREATED';
+ALTER TYPE "NotificationType" ADD VALUE 'CUSTOM_ORDER_STALE_STAGE_WARNING';
+ALTER TYPE "NotificationType" ADD VALUE 'CUSTOM_ORDER_ADMIN_REVIEW_TRIGGERED';
+ALTER TYPE "NotificationType" ADD VALUE 'CUSTOM_ORDER_ACCEPTANCE_SLA_RISK';

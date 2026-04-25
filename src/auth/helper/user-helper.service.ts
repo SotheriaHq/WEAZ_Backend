@@ -9,11 +9,16 @@ export class UserHelperService {
   ) {}
 
   // Generates a concise, unique username. Prefers short forms, no hyphens unless needed.
-  async generateUniqueUsername(firstName: string, lastName: string): Promise<string> {
-    const clean = (s: string) => (s || '')
-      .toLowerCase()
-      .normalize('NFD').replace(/\p{Diacritic}/gu, '')
-      .replace(/[^a-z0-9]/g, '');
+  async generateUniqueUsername(
+    firstName: string,
+    lastName: string,
+  ): Promise<string> {
+    const clean = (s: string) =>
+      (s || '')
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/\p{Diacritic}/gu, '')
+        .replace(/[^a-z0-9]/g, '');
 
     const f = clean(firstName);
     const l = clean(lastName);
@@ -21,7 +26,7 @@ export class UserHelperService {
     // Base candidate: first initial + last name, trimmed to max 12 chars
     const baseRaw = `${f.slice(0, 1)}${l}`;
     const MAX = 12;
-    const base = baseRaw.slice(0, MAX) || (f || l || 'user');
+    const base = baseRaw.slice(0, MAX) || f || l || 'user';
 
     // Try base, then append numbers; avoid hyphens unless necessary
     if (await this.isUsernameAvailable(base)) return base;
@@ -39,10 +44,12 @@ export class UserHelperService {
 
   // Generate username from brandFullName using short slug without hyphens unless necessary
   async generateUsernameFromBrand(brandFullName: string): Promise<string> {
-    const clean = (s: string) => (s || '')
-      .toLowerCase()
-      .normalize('NFD').replace(/\p{Diacritic}/gu, '')
-      .replace(/[^a-z0-9]/g, '');
+    const clean = (s: string) =>
+      (s || '')
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/\p{Diacritic}/gu, '')
+        .replace(/[^a-z0-9]/g, '');
 
     const raw = clean(brandFullName);
     const base = raw.slice(0, 14) || 'brand';

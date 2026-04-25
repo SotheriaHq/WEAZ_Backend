@@ -17,6 +17,14 @@ export class UpdateProfileDto {
 
   profileImage?: string;
 
+  @IsOptional()
+  @IsString({ message: 'Phone number must be a string' })
+  phoneNumber?: string;
+
+  @IsOptional()
+  @IsString({ message: 'Address must be a string' })
+  address?: string;
+
   @IsNotEmpty({ message: 'First name is required' })
   @IsString({ message: 'First name must be a string' })
   @Matches(/^[a-zA-Z\s-]+$/, {

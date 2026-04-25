@@ -12,10 +12,15 @@ import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { APP_GUARD } from '@nestjs/core';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { EmailVerificationHelperService } from './helper/email-verification-helper.service';
+import { NotificationsModule } from 'src/notifications/notifications.module';
+import { RefreshTokenCleanupService } from './helper/refresh-token-cleanup.service';
+import { TrustedDeviceService } from './helper/trusted-device.service';
+import { AppThrottlerGuard } from './guard/app-throttler.guard';
 
 @Module({
   imports: [
     ConfigModule,
+    NotificationsModule,
     PassportModule.register({ defaultStrategy: 'jwt' }),
     JwtModule.registerAsync({
       imports: [ConfigModule],
@@ -25,10 +30,16 @@ import { EmailVerificationHelperService } from './helper/email-verification-help
         if (!secret) {
           throw new Error('JWT_ACCESS_SECRET must be configured');
         }
+        const accessTtlSeconds = Number(
+          config.get<string>('JWT_ACCESS_TTL_SECONDS', '900'),
+        );
         return {
           secret,
           signOptions: {
-            expiresIn: config.get<string>('JWT_ACCESS_EXPIRES_IN', '15m'),
+            expiresIn:
+              Number.isFinite(accessTtlSeconds) && accessTtlSeconds > 0
+                ? accessTtlSeconds
+                : 900,
           },
         };
       },
@@ -37,17 +48,17 @@ import { EmailVerificationHelperService } from './helper/email-verification-help
       {
         name: 'short',
         ttl: 1000,
-        limit: 100, // Increased for development
+        limit: 20,
       },
       {
         name: 'medium',
         ttl: 10000,
-        limit: 200, // Increased for development
+        limit: 60,
       },
       {
         name: 'long',
         ttl: 60000,
-        limit: 1000, // Increased for development
+        limit: 180,
       },
     ]),
   ],
@@ -59,10 +70,12 @@ import { EmailVerificationHelperService } from './helper/email-verification-help
     TokenService,
     UserHelperService,
     EmailVerificationHelperService,
+    RefreshTokenCleanupService,
+    TrustedDeviceService,
     JwtStrategy,
     {
       provide: APP_GUARD,
-      useClass: ThrottlerGuard,
+      useClass: AppThrottlerGuard,
     },
   ],
   exports: [

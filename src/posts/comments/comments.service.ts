@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, Logger } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { Comment } from '@prisma/client';
 import {
@@ -13,6 +13,7 @@ import { ReactionType } from '@prisma/client';
 
 @Injectable()
 export class CommentsService {
+  private readonly logger = new Logger(CommentsService.name);
   constructor(private prisma: PrismaService) {}
 
   async create(
@@ -20,6 +21,9 @@ export class CommentsService {
     userId: string,
     dto: CreateCommentDto,
   ): Promise<Comment> {
+    this.logger.warn(
+      'Deprecated CommentsService.create called; prefer CommentsV2Service for POST target',
+    );
     // Check if post exists
     const post = await this.prisma.post.findUnique({
       where: { id: postId },
@@ -58,6 +62,9 @@ export class CommentsService {
     postId: string,
     { cursor, limit = 20 }: GetCommentsDto,
   ): Promise<PaginatedResult<Comment>> {
+    this.logger.warn(
+      'Deprecated CommentsService.getComments called; prefer CommentsV2Service for POST target',
+    );
     const items = await this.prisma.comment.findMany({
       where: {
         postId,
@@ -101,6 +108,9 @@ export class CommentsService {
     userId: string,
     dto: UpdateCommentDto,
   ): Promise<Comment> {
+    this.logger.warn(
+      'Deprecated CommentsService.update called; prefer CommentsV2Service for POST target',
+    );
     const comment = await this.prisma.comment.findFirst({
       where: {
         id: commentId,
@@ -132,6 +142,9 @@ export class CommentsService {
   }
 
   async delete(commentId: string, userId: string): Promise<void> {
+    this.logger.warn(
+      'Deprecated CommentsService.delete called; prefer CommentsV2Service for POST target',
+    );
     const comment = await this.prisma.comment.findFirst({
       where: {
         id: commentId,
@@ -148,7 +161,7 @@ export class CommentsService {
     });
   }
 
-  // Toggle reaction (LIKE/DISLIKE) on a comment
+  // Toggle reaction (THREAD/DISLIKE) on a comment
   async toggleReaction(
     commentId: string,
     userId: string,
@@ -156,9 +169,12 @@ export class CommentsService {
   ): Promise<{
     reacted: boolean;
     type: ReactionType;
-    likes: number;
+    threads: number;
     dislikes: number;
   }> {
+    this.logger.warn(
+      'Deprecated CommentsService.toggleReaction called; prefer CommentsV2Service for POST target',
+    );
     const comment = await this.prisma.comment.findUnique({
       where: { id: commentId },
     });
@@ -191,23 +207,26 @@ export class CommentsService {
     }
 
     // Return counts
-    const [likes, dislikes] = await Promise.all([
+    const [threads, dislikes] = await Promise.all([
       this.prisma.commentReaction.count({
-        where: { commentId, type: ReactionType.LIKE },
+        where: { commentId, type: ReactionType.THREAD },
       }),
       this.prisma.commentReaction.count({
         where: { commentId, type: ReactionType.DISLIKE },
       }),
     ]);
 
-    return { reacted: true, type, likes, dislikes };
+    return { reacted: true, type, threads, dislikes };
   }
 
   // Get users who reacted to a comment (latest N)
   async getReactions(commentId: string, limit = 20) {
-    const [reactions, totalLikes, totalDislikes] = await Promise.all([
+    this.logger.warn(
+      'Deprecated CommentsService.getReactions called; prefer CommentsV2Service for POST target',
+    );
+    const [reactions, totalThreads, totalDislikes] = await Promise.all([
       this.prisma.commentReaction.findMany({
-        where: { commentId, type: ReactionType.LIKE },
+        where: { commentId, type: ReactionType.THREAD },
         include: {
           user: {
             select: {
@@ -223,13 +242,13 @@ export class CommentsService {
         take: limit,
       }),
       this.prisma.commentReaction.count({
-        where: { commentId, type: ReactionType.LIKE },
+        where: { commentId, type: ReactionType.THREAD },
       }),
       this.prisma.commentReaction.count({
         where: { commentId, type: ReactionType.DISLIKE },
       }),
     ]);
 
-    return { users: reactions.map((r) => r.user), totalLikes, totalDislikes };
+    return { users: reactions.map((r) => r.user), totalThreads, totalDislikes };
   }
 }

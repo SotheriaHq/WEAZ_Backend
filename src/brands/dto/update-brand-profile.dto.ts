@@ -1,4 +1,5 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
+import { Transform } from 'class-transformer';
 import {
   ArrayMaxSize,
   IsArray,
@@ -9,7 +10,13 @@ import {
   MaxLength,
 } from 'class-validator';
 
-const NAME_REGEX = /^[a-zA-Z\s-]+$/;
+// Allow unicode letters (incl. accents), spaces, apostrophes, dots, and hyphens for locations.
+const NAME_REGEX = /^[\p{L}\p{M}\s'.-]+$/u;
+const trimToUndefined = ({ value }: { value: unknown }) => {
+  if (typeof value !== 'string') return value;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+};
 
 export class UpdateBrandProfileDto {
   @ApiPropertyOptional({
@@ -31,36 +38,39 @@ export class UpdateBrandProfileDto {
 
   @ApiPropertyOptional()
   @IsOptional()
+  @Transform(trimToUndefined)
   @IsString()
   @Matches(NAME_REGEX, {
-    message: 'Country can only contain letters, spaces, or hyphens',
+    message: 'Country can only contain letters, spaces, apostrophes, dots, or hyphens',
   })
   brandCountry?: string;
 
   @ApiPropertyOptional()
   @IsOptional()
+  @Transform(trimToUndefined)
   @IsString()
   @Matches(NAME_REGEX, {
-    message: 'State can only contain letters, spaces, or hyphens',
+    message: 'State can only contain letters, spaces, apostrophes, dots, or hyphens',
   })
   brandState?: string;
 
   @ApiPropertyOptional()
   @IsOptional()
+  @Transform(trimToUndefined)
   @IsString()
   @Matches(NAME_REGEX, {
-    message: 'City can only contain letters, spaces, or hyphens',
+    message: 'City can only contain letters, spaces, apostrophes, dots, or hyphens',
   })
   brandCity?: string;
 
   @ApiPropertyOptional({
     isArray: true,
     type: String,
-    description: 'Selected brand tags (up to 3)',
+    description: 'Selected brand tags (up to 5)',
   })
   @IsOptional()
   @IsArray()
-  @ArrayMaxSize(6)
+  @ArrayMaxSize(5)
   @IsString({ each: true })
   brandTags?: string[];
 

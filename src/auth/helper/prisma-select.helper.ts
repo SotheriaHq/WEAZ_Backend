@@ -4,6 +4,7 @@ import {
   AuthProfileImageFileDto,
   AuthUserResponseDto,
 } from '../dto/auth-response.dto';
+import { getBrandVerificationTruth } from 'src/brand-verification/verification-truth.util';
 
 type SelectedFileUpload = {
   id: string;
@@ -22,6 +23,18 @@ export const authUserSelect = Prisma.validator<Prisma.UserSelect>()({
   firstName: true,
   lastName: true,
   email: true,
+  status: true,
+  brand: {
+    select: {
+      id: true,
+      name: true,
+      isStoreOpen: true,
+      verificationStatus: true,
+    },
+  },
+  adminPermissionGrants: {
+    select: { permissionCode: true },
+  },
   phoneNumber: true,
   address: true,
   brandFullName: true,
@@ -47,6 +60,8 @@ export const authUserSelect = Prisma.validator<Prisma.UserSelect>()({
   bannerImageId: true,
   isEmailVerified: true,
   isActive: true,
+  mustResetPassword: true,
+  authVersion: true,
   createdAt: true,
   updatedAt: true,
 });
@@ -95,59 +110,86 @@ const mapFileUploadToDto = (
 };
 export const toAuthUserResponse = (
   user: AuthUser | ProfileUser,
-): AuthUserResponseDto => ({
-  id: user.id,
-  username: user.username,
-  email: user.email,
-  firstName: user.firstName,
-  lastName: user.lastName,
-  role: user.role,
-  type: user.type,
-  phoneNumber: user.phoneNumber ?? null,
-  address: user.address ?? null,
-  brandFullName: user.brandFullName ?? null,
-  brandDescription: user.brandDescription ?? null,
-  brandCountry: user.brandCountry ?? null,
-  brandState: user.brandState ?? null,
-  brandCity: user.brandCity ?? null,
-  brandTags: user.brandTags ?? [],
-  brandBusinessType: user.brandBusinessType ?? null,
-  socialInstagram: user.socialInstagram ?? null,
-  socialFacebook: user.socialFacebook ?? null,
-  socialTwitter: user.socialTwitter ?? null,
-  socialWebsite: user.socialWebsite ?? null,
-  cacNumber: user.cacNumber ?? null,
-  tin: user.tin ?? null,
-  ceoNin: user.ceoNin ?? null,
-  ceoFirstName: user.ceoFirstName ?? null,
-  ceoLastName: user.ceoLastName ?? null,
-  companyLocation: user.companyLocation ?? null,
-  profileImage: user.profileImage ?? null,
-  profileImageId: user.profileImageId ?? null,
-  profileImageFile:
-    'profileImageFile' in user
-      ? mapFileUploadToDto((user as ProfileUser).profileImageFile)
-      : null,
-  bannerImage: user.bannerImage ?? null,
-  bannerImageId: user.bannerImageId ?? null,
-  bannerImageFile:
-    'bannerImageFile' in user
-      ? mapFileUploadToDto((user as ProfileUser).bannerImageFile ?? null)
-      : null,
-  isEmailVerified: user.isEmailVerified,
-  isActive: user.isActive,
-  createdAt: user.createdAt.toISOString(),
-  updatedAt: user.updatedAt.toISOString(),
-});
+): AuthUserResponseDto => {
+  const verificationTruth = getBrandVerificationTruth({
+    verificationStatus: user.brand?.verificationStatus,
+    isStoreOpen: user.brand?.isStoreOpen,
+    ownerStatus: (user as any).status ?? null,
+  });
+
+  return {
+    id: user.id,
+    username: user.username,
+    email: user.email,
+    firstName: user.firstName,
+    lastName: user.lastName,
+    role: user.role,
+    type: user.type,
+    phoneNumber: user.phoneNumber ?? null,
+    address: user.address ?? null,
+    brandFullName: user.brandFullName ?? null,
+    brandDescription: user.brandDescription ?? null,
+    brandCountry: user.brandCountry ?? null,
+    brandState: user.brandState ?? null,
+    brandCity: user.brandCity ?? null,
+    brandTags: user.brandTags ?? [],
+    brandBusinessType: user.brandBusinessType ?? null,
+    socialInstagram: user.socialInstagram ?? null,
+    socialFacebook: user.socialFacebook ?? null,
+    socialTwitter: user.socialTwitter ?? null,
+    socialWebsite: user.socialWebsite ?? null,
+    cacNumber: user.cacNumber ?? null,
+    tin: user.tin ?? null,
+    ceoNin: user.ceoNin ?? null,
+    ceoFirstName: user.ceoFirstName ?? null,
+    ceoLastName: user.ceoLastName ?? null,
+    companyLocation: user.companyLocation ?? null,
+    profileImage: user.profileImage ?? null,
+    profileImageId: user.profileImageId ?? null,
+    profileImageFile:
+      'profileImageFile' in user
+        ? mapFileUploadToDto((user as ProfileUser).profileImageFile)
+        : null,
+    bannerImage: user.bannerImage ?? null,
+    bannerImageId: user.bannerImageId ?? null,
+    bannerImageFile:
+      'bannerImageFile' in user
+        ? mapFileUploadToDto((user as ProfileUser).bannerImageFile ?? null)
+        : null,
+    isEmailVerified: user.isEmailVerified,
+    storeId: user.brand?.id ?? null,
+    verificationStatus: user.brand?.verificationStatus ?? null,
+    isVerifiedBrand: verificationTruth.isVerifiedBrand,
+    verificationBadgeVisible: verificationTruth.verificationBadgeVisible,
+    verifiedExplanationUrl: verificationTruth.verifiedExplanationUrl,
+    isActive: user.isActive,
+    status: (user as any).status ?? null,
+    mustResetPassword: (user as any).mustResetPassword ?? false,
+    createdAt: user.createdAt.toISOString(),
+    updatedAt: user.updatedAt.toISOString(),
+  };
+};
 export const toAuthUsersResponse = (
   users: Array<AuthUser | ProfileUser>,
 ): AuthUserResponseDto[] => users.map((user) => toAuthUserResponse(user));
-export const buildAuthTokenPayload = (user: AuthUser): AuthJwtClaims => ({
-  sub: user.id,
-  username: user.username,
-  role: user.role,
-  type: user.type,
-  email: user.email,
-  firstName: user.firstName,
-  lastName: user.lastName,
-});
+export const buildAuthTokenPayload = (user: AuthUser): AuthJwtClaims => {
+  const base: AuthJwtClaims = {
+    sub: user.id,
+    username: user.username,
+    role: user.role,
+    type: user.type,
+    email: user.email,
+    firstName: user.firstName,
+    lastName: user.lastName,
+    authVersion: (user as any).authVersion ?? 0,
+  };
+
+  // Embed admin permissions in JWT for zero-DB-query guard checks
+  if (user.role === 'SuperAdmin' || user.role === 'Admin') {
+    base.permissions = (user as any).adminPermissionGrants?.map(
+      (g: { permissionCode: string }) => g.permissionCode,
+    ) ?? [];
+  }
+
+  return base;
+};

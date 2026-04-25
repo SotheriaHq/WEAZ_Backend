@@ -1,11 +1,11 @@
 ﻿import {
+  BadRequestException,
   Controller,
   Get,
   Post,
   Body,
   Patch,
   Param,
-  Delete,
   UseInterceptors,
   ValidationPipe,
   Req,
@@ -18,14 +18,13 @@
 import { Request, Response } from 'express';
 import { AuthService } from './auth.service';
 import { CreateUserDto } from './dto/create-auth.dto';
-import { UpdateAuthDto } from './dto/update-auth.dto';
 import { TransformInterceptor } from 'src/transform/transform.interceptor';
 import { TokenService } from './helper/general.helper';
 import { LoginDto } from './dto/login-auth.dto';
 import { JwtAuthGuard } from './guard/jwt-auth.guard';
 import { RolesGuard } from './guard/role.guard';
 import { Roles } from './decorator/roles.decorator';
-import { Role } from '@prisma/client';
+import { Role, NotificationType } from '@prisma/client';
 import { Throttle, ThrottlerGuard, SkipThrottle } from '@nestjs/throttler';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import {
@@ -35,8 +34,17 @@ import {
   ApiBearerAuth,
   ApiBody,
   ApiParam,
+  ApiQuery,
 } from '@nestjs/swagger';
 import { ConfigService } from '@nestjs/config';
+import { NotificationsService } from 'src/notifications/notifications.service';
+import { RequestAccountReactivationDto } from './dto/request-account-reactivation.dto';
+import { RequestAdminPasswordResetDto } from './dto/request-admin-password-reset.dto';
+import { ConfirmAdminPasswordResetDto } from './dto/confirm-admin-password-reset.dto';
+import { ChangeAuthenticatedPasswordDto } from './dto/change-authenticated-password.dto';
+import { CompleteAdminFirstLoginResetDto } from './dto/complete-admin-first-login-reset.dto';
+import { RequestPasswordResetDto } from './dto/request-password-reset.dto';
+import { ConfirmPasswordResetDto } from './dto/confirm-password-reset.dto';
 
 @ApiTags('auth')
 @ApiBearerAuth()
@@ -47,6 +55,7 @@ export class AuthController {
     private readonly authService: AuthService,
     private readonly tokenService: TokenService,
     private readonly configService: ConfigService,
+    private readonly notifications: NotificationsService,
   ) {}
 
   private get accessTokenCookieName(): string {
@@ -69,6 +78,10 @@ export class AuthController {
       sameSite: 'strict' as const,
       path: '/',
     };
+  }
+
+  private extractClientIp(req: Request): string | null {
+    return req.ip || req.socket?.remoteAddress || null;
   }
 
   @Post('login')
@@ -98,9 +111,97 @@ export class AuthController {
     @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
   ) {
-    // console.log('try', res);
-
     return this.authService.CreateUser(dto, req, res);
+  }
+
+  @Post('account-reactivation/request')
+  @ApiOperation({
+    summary: 'Submit account reactivation/leniency request for suspended or deactivated users',
+  })
+  @Throttle({ default: { limit: 3, ttl: 300000 } })
+  async requestAccountReactivation(
+    @Body(ValidationPipe) body: RequestAccountReactivationDto,
+  ) {
+    return this.authService.requestAccountReactivation(body.email, body.reason);
+  }
+
+  @Post('admin/reset-password/request')
+  @ApiOperation({ summary: 'Request admin reset password token' })
+  @Throttle({ default: { limit: 3, ttl: 900000 } })
+  async requestAdminResetPassword(
+    @Body(ValidationPipe) body: RequestAdminPasswordResetDto,
+  ) {
+    return this.authService.requestAdminPasswordReset(body.email);
+  }
+
+  @Post('admin/reset-password/confirm')
+  @ApiOperation({ summary: 'Confirm admin reset password with token' })
+  @Throttle({ default: { limit: 5, ttl: 900000 } })
+  async confirmAdminResetPassword(
+    @Body(ValidationPipe) body: ConfirmAdminPasswordResetDto,
+  ) {
+    return this.authService.resetAdminPassword(body.token, body.newPassword);
+  }
+
+  @Post('admin/reset-password/first-login')
+  @ApiOperation({ summary: 'Complete first-login required admin password reset' })
+  @Throttle({ default: { limit: 6, ttl: 900000 } })
+  async completeAdminFirstLoginReset(
+    @Body(ValidationPipe) body: CompleteAdminFirstLoginResetDto,
+  ) {
+    return this.authService.completeAdminFirstLoginReset(
+      body.email,
+      body.currentPassword,
+      body.newPassword,
+    );
+  }
+
+  @Post('password-reset/request')
+  @ApiOperation({ summary: 'Request password reset token for regular users' })
+  @Throttle({ default: { limit: 3, ttl: 900000 } })
+  async requestPasswordReset(
+    @Body(ValidationPipe) body: RequestPasswordResetDto,
+  ) {
+    return this.authService.requestPasswordReset(body.email);
+  }
+
+  @Post('password-reset/confirm')
+  @ApiOperation({ summary: 'Confirm password reset with token for regular users' })
+  @Throttle({ default: { limit: 5, ttl: 900000 } })
+  async confirmPasswordReset(
+    @Body(ValidationPipe) body: ConfirmPasswordResetDto,
+  ) {
+    return this.authService.confirmPasswordReset(body.token, body.newPassword);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 6, ttl: 900000 } })
+  @Post('admin/change-password')
+  @ApiOperation({ summary: 'Change password for authenticated admin/user' })
+  async changeAuthenticatedPassword(
+    @Req() req: Request & { user: { id: string } },
+    @Body(ValidationPipe) body: ChangeAuthenticatedPasswordDto,
+  ) {
+    return this.authService.changePasswordForAuthenticatedUser(
+      req.user.id,
+      body.currentPassword,
+      body.newPassword,
+    );
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 6, ttl: 900000 } })
+  @Post('change-password')
+  @ApiOperation({ summary: 'Change password for authenticated user' })
+  async changeAuthenticatedPasswordAlias(
+    @Req() req: Request & { user: { id: string } },
+    @Body(ValidationPipe) body: ChangeAuthenticatedPasswordDto,
+  ) {
+    return this.authService.changePasswordForAuthenticatedUser(
+      req.user.id,
+      body.currentPassword,
+      body.newPassword,
+    );
   }
 
   @Post('refresh')
@@ -115,14 +216,26 @@ export class AuthController {
   @UseInterceptors(TransformInterceptor)
   async refresh(
     @Req() req: Request,
+    @Body('refreshToken') bodyRefreshToken: string | undefined,
     @Res({ passthrough: true }) res: Response,
   ) {
-    const refreshToken = req.cookies[this.refreshTokenCookieName];
+    const refreshToken =
+      req.cookies[this.refreshTokenCookieName] ?? bodyRefreshToken;
     if (!refreshToken) {
+      const cookieOptions = this.cookieBaseOptions;
+      res.clearCookie(this.refreshTokenCookieName, cookieOptions);
+      res.clearCookie(this.accessTokenCookieName, cookieOptions);
       throw new UnauthorizedException('Refresh token not found');
     }
 
-    return this.tokenService.refreshToken(refreshToken, req, res);
+    try {
+      return await this.tokenService.refreshToken(refreshToken, req, res);
+    } catch (error) {
+      const cookieOptions = this.cookieBaseOptions;
+      res.clearCookie(this.refreshTokenCookieName, cookieOptions);
+      res.clearCookie(this.accessTokenCookieName, cookieOptions);
+      throw error;
+    }
   }
 
   @Post('logout')
@@ -132,9 +245,11 @@ export class AuthController {
   @ApiResponse({ status: 200, description: 'Logout successful' })
   async logout(
     @Req() req: Request & { user: { id: string } },
+    @Body('refreshToken') bodyRefreshToken: string | undefined,
     @Res({ passthrough: true }) res: Response,
   ) {
-    const refreshToken = req.cookies[this.refreshTokenCookieName];
+    const refreshToken =
+      req.cookies[this.refreshTokenCookieName] ?? bodyRefreshToken;
 
     const cookieOptions = this.cookieBaseOptions;
 
@@ -142,6 +257,17 @@ export class AuthController {
     res.clearCookie(this.accessTokenCookieName, cookieOptions);
 
     await this.tokenService.revokeRefreshToken(refreshToken);
+
+    // Emit logout activity without blocking API response.
+    const ipAddress = this.extractClientIp(req);
+    void this.notifications
+      .create(req.user.id, NotificationType.LOGOUT, {
+        payload: {
+          ip: ipAddress,
+          userAgent: req.headers['user-agent'] ?? null,
+        },
+      })
+      .catch(() => undefined);
 
     return { message: 'Logged out successfully' };
   }
@@ -161,6 +287,16 @@ export class AuthController {
     res.clearCookie(this.accessTokenCookieName, cookieOptions);
 
     await this.tokenService.revokeAllRefreshTokens(req.user.id);
+
+    const ipAddress = this.extractClientIp(req);
+    void this.notifications
+      .create(req.user.id, NotificationType.LOGOUT_ALL, {
+        payload: {
+          ip: ipAddress,
+          userAgent: req.headers['user-agent'] ?? null,
+        },
+      })
+      .catch(() => undefined);
 
     return { message: 'Logged out from all devices' };
   }
@@ -194,36 +330,27 @@ export class AuthController {
     return this.authService.updateProfile(id, dto);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.SuperAdmin)
-  @Patch('update-role/:id')
-  @ApiOperation({ summary: 'Update user role (SuperAdmin only)' })
-  @ApiParam({ name: 'id', required: true })
-  @ApiBody({
-    schema: {
-      type: 'object',
-      properties: {
-        role: { type: 'string', enum: ['SuperAdmin', 'Admin', 'User'] },
-      },
-    },
-  })
-  @ApiResponse({ status: 200, description: 'Role updated' })
-  @ApiResponse({ status: 401, description: 'Unauthorized' })
-  @UseInterceptors(TransformInterceptor)
-  async updateUserRole(@Param('id') id: string, @Body('role') role: Role) {
-    // Only SuperAdmin can access
-    return this.authService.updateUserRole(id, role);
-  }
-
   @Get('verify-email')
   @ApiOperation({ summary: 'Verify email by link' })
-  @ApiParam({ name: 'userId', required: true })
-  @ApiParam({ name: 'code', required: true })
+  @ApiQuery({ name: 'token', required: false })
+  @ApiQuery({ name: 'userId', required: false })
+  @ApiQuery({ name: 'code', required: false })
   async verifyEmailByLink(
-    @Query('userId') userId: string,
-    @Query('code') code: string,
+    @Query('token') token?: string,
+    @Query('userId') userId?: string,
+    @Query('code') code?: string,
   ) {
-    return this.authService.verifyEmailByLink(userId, code);
+    if (token) {
+      return this.authService.verifyEmailByToken(token);
+    }
+
+    if (userId && code) {
+      return this.authService.verifyEmailByLink(userId, code);
+    }
+
+    throw new BadRequestException(
+      'Verification token is required. Use the verification link sent to your email.',
+    );
   }
 
   @Post('verify-email-code')
@@ -240,34 +367,31 @@ export class AuthController {
     return this.authService.verifyEmailByCode(email, code);
   }
 
-  @Get('users')
-  @ApiOperation({ summary: 'Get all users' })
-  async getAllUsers() {
-    return this.authService.getAllUsers();
-  }
-
-  @Get('user/:id')
-  @ApiOperation({ summary: 'Get single user' })
-  @ApiParam({ name: 'id', required: true })
-  async getUserById(@Param('id') id: string) {
-    return this.authService.getUserById(id);
-  }
-
-  @Patch('user/:id')
-  @ApiOperation({ summary: 'Update user (not profile)' })
-  @ApiParam({ name: 'id', required: true })
-  @ApiBody({ type: UpdateAuthDto })
-  async updateUser(
-    @Param('id') id: string,
-    @Body(ValidationPipe) dto: UpdateAuthDto,
+  @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 3, ttl: 300000 } })
+  @Post('verify-email/resend')
+  @ApiOperation({ summary: 'Resend email verification link for authenticated user' })
+  async resendEmailVerification(
+    @Req() req: Request & { user: { id: string } },
   ) {
-    return this.authService.updateUser(id, dto);
+    return this.authService.resendVerificationEmail(req.user.id);
   }
 
-  @Delete('user/:id')
-  @ApiOperation({ summary: 'Soft delete user (set isActive to Inactive)' })
-  @ApiParam({ name: 'id', required: true })
-  async softDeleteUser(@Param('id') id: string) {
-    return this.authService.softDeleteUser(id);
+  @Get('security/devices')
+  @UseGuards(JwtAuthGuard)
+  @ApiOperation({ summary: 'List recognized and trusted devices for the authenticated user' })
+  async listSecurityDevices(@Req() req: Request & { user: { id: string } }) {
+    return this.authService.getTrustedDevices(req.user.id);
   }
+
+  @Patch('security/devices/:id/revoke')
+  @UseGuards(JwtAuthGuard)
+  @ApiOperation({ summary: 'Revoke a recognized device for the authenticated user' })
+  async revokeSecurityDevice(
+    @Req() req: Request & { user: { id: string } },
+    @Param('id') id: string,
+  ) {
+    return this.authService.revokeTrustedDevice(req.user.id, id);
+  }
+
 }

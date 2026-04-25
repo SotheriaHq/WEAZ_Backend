@@ -2,23 +2,33 @@ import { FileType } from '@prisma/client';
 import { FileSpecDto } from '../dto/create-collection.dto';
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { UploadService } from 'src/upload/upload.service';
+import { SystemConfigService } from 'src/admin/system-config/system-config.service';
+
+const FILE_TYPE_CONFIG_KEYS: Record<string, string> = {
+  [FileType.POST_IMAGE]: 'upload.maxSize.postImage',
+  [FileType.POST_VIDEO]: 'upload.maxSize.postVideo',
+  [FileType.DOCUMENT]: 'upload.maxSize.document',
+  [FileType.PROFILE_IMAGE]: 'upload.maxSize.profileImage',
+  [FileType.BANNER_IMAGE]: 'upload.maxSize.bannerImage',
+};
 
 @Injectable()
 export class HelperService {
-  constructor(private readonly uploadService: UploadService) {}
+  constructor(
+    private readonly uploadService: UploadService,
+    private readonly systemConfigService: SystemConfigService,
+  ) {}
 
-  public validateFileSpec(fileSpec: FileSpecDto, fileType: FileType) {
-    const maxSizes = {
-      [FileType.POST_IMAGE]: 10 * 1024 * 1024, // 10MB
-      [FileType.POST_VIDEO]: 100 * 1024 * 1024, // 100MB
-      [FileType.DOCUMENT]: 20 * 1024 * 1024, // 20MB
-      [FileType.PROFILE_IMAGE]: 5 * 1024 * 1024, // 5MB
-      [FileType.BANNER_IMAGE]: 8 * 1024 * 1024, // 8MB
-    };
+  public async validateFileSpec(fileSpec: FileSpecDto, fileType: FileType) {
+    const configKey = FILE_TYPE_CONFIG_KEYS[fileType];
+    const maxSize = configKey
+      ? await this.systemConfigService.getMaxFileSize(configKey)
+      : 2 * 1024 * 1024;
 
-    if (fileSpec.size > maxSizes[fileType]) {
+    if (fileSpec.size > maxSize) {
+      const limitMB = (maxSize / (1024 * 1024)).toFixed(1);
       throw new BadRequestException(
-        `File ${fileSpec.name} exceeds size limit for ${fileType}`,
+        `File ${fileSpec.name} exceeds the ${limitMB}MB limit for ${fileType}`,
       );
     }
 
@@ -83,12 +93,15 @@ export class HelperService {
     userId: string,
     originalName: string,
     fileType: FileType,
+    options?: { collectionId?: string; orderIndex?: number },
   ) {
     // UploadService will create a presigned DB entry and return url/fields
     return this.uploadService.createPresignedPost(
       userId,
       originalName,
       fileType as any,
+      undefined,
+      options,
     );
   }
 

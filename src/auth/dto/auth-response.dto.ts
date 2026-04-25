@@ -1,4 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
+import { BrandVerificationStatus } from '@prisma/client';
 
 export class AuthProfileImageFileDto {
   @ApiProperty()
@@ -124,8 +125,34 @@ export class AuthUserResponseDto {
   @ApiProperty()
   isEmailVerified: boolean;
 
+  @ApiProperty({
+    required: false,
+    nullable: true,
+    description:
+      'Brand store id (Brand.id) for BRAND users; null for regular users',
+  })
+  storeId: string | null;
+
+  @ApiProperty({ required: false, nullable: true, enum: BrandVerificationStatus })
+  verificationStatus?: BrandVerificationStatus | null;
+
+  @ApiProperty({ required: false })
+  isVerifiedBrand?: boolean;
+
+  @ApiProperty({ required: false })
+  verificationBadgeVisible?: boolean;
+
+  @ApiProperty({ required: false, nullable: true })
+  verifiedExplanationUrl?: string | null;
+
   @ApiProperty()
   isActive: string;
+
+  @ApiProperty({ required: false, nullable: true })
+  status?: string | null;
+
+  @ApiProperty({ required: false })
+  mustResetPassword?: boolean;
 
   @ApiProperty()
   createdAt: string;
@@ -139,6 +166,9 @@ export class AuthTokensResponseDto {
 
   @ApiProperty({ required: false, nullable: true })
   accessToken?: string | null;
+
+  @ApiProperty({ required: false, nullable: true })
+  refreshToken?: string | null;
 
   @ApiProperty({ required: false })
   message?: string;
@@ -155,4 +185,6 @@ export interface AuthJwtClaims {
   email: string;
   firstName: string;
   lastName: string;
+  authVersion: number;
+  permissions?: string[];
 }

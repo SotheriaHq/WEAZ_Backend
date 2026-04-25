@@ -1,0 +1,33 @@
+import { Module } from '@nestjs/common';
+import { UserProfileController } from './user-profile.controller';
+import { UserProfileService } from './user-profile.service';
+import { SavedItemsController } from './saved-items.controller';
+import { SavedItemsService } from './saved-items.service';
+import { PatchingController, UserPatchesController, PatchStatusBatchController } from './patching.controller';
+import { PatchingService } from './patching.service';
+import { PrismaModule } from '../prisma/prisma.module';
+import { NotificationsModule } from '../notifications/notifications.module';
+import { SizeFitController } from './size-fit.controller';
+import { SizeFitService } from './size-fit.service';
+import { SizeFitReminderService } from './size-fit-reminder.service';
+
+@Module({
+  imports: [PrismaModule, NotificationsModule],
+  controllers: [
+    UserProfileController,
+    SavedItemsController,
+    PatchingController,
+    UserPatchesController,
+    PatchStatusBatchController,
+    SizeFitController,
+  ],
+  providers: [
+    UserProfileService,
+    SavedItemsService,
+    PatchingService,
+    SizeFitService,
+    SizeFitReminderService,
+  ],
+  exports: [UserProfileService, SavedItemsService, PatchingService, SizeFitService],
+})
+export class UsersModule {}

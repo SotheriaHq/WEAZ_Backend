@@ -67,9 +67,9 @@ export class CommentsController {
     return this.commentsService.delete(id, req.user.id);
   }
 
-  // Toggle like/dislike on a comment
+  // Toggle thread/dislike on a comment
   @Post(':id/reactions/:type')
-  @ApiOperation({ summary: 'Toggle like/dislike on a comment' })
+  @ApiOperation({ summary: 'Toggle thread/dislike on a comment' })
   @ApiResponse({ status: 200, description: 'Reaction toggled' })
   toggleReaction(
     @Param('id') id: string,
@@ -80,7 +80,15 @@ export class CommentsController {
     return this.commentsService.toggleReaction(id, req.user.id, reactionType);
   }
 
-  // Get users who liked a comment
+  // Thread alias for explicit thread action
+  @Post(':id/reactions/thread')
+  @ApiOperation({ summary: 'Toggle thread on a comment' })
+  @ApiResponse({ status: 200, description: 'Reaction toggled' })
+  toggleThread(@Param('id') id: string, @Req() req: any) {
+    return this.commentsService.toggleReaction(id, req.user.id, 'THREAD' as any);
+  }
+
+  // Get users who threaded a comment
   @Get(':id/reactions')
   @ApiOperation({ summary: 'Get reactions for a comment' })
   @ApiResponse({ status: 200, description: 'Reactions list' })

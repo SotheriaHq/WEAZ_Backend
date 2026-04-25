@@ -5,15 +5,49 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreatePostDto, UpdatePostDto, GetPostsDto } from './dto/post.dto';
-import { Post } from '@prisma/client';
+import {
+  Post,
+  ContentTarget,
+  NotificationType,
+  UserType,
+  PatchStatus,
+  PatchMode,
+} from '@prisma/client';
+import { NotificationsService } from 'src/notifications/notifications.service';
+import { AnalyticsService } from 'src/analytics/analytics.service';
+import { NotificationsQueueService } from 'src/queue/notifications.queue.service';
 import { PaginatedResult } from '../upload/dto/pagination.dto';
 import { v4 as uuidv4 } from 'uuid';
 
 @Injectable()
 export class PostsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private readonly analytics?: AnalyticsService,
+    private readonly notifications?: NotificationsService,
+    private readonly notificationsQueue?: NotificationsQueueService,
+  ) {}
 
-  async create(userId: string, dto: CreatePostDto): Promise<Post> {
+  private mapPost<T extends Post & { _count?: { threads?: number; comments?: number } }>(
+    post: T,
+  ) {
+    const { _count, ...rest } = post as any;
+    const threadsCount =
+      typeof post.threadsCount === 'number'
+        ? post.threadsCount
+        : _count?.threads ?? 0;
+    const commentsCount =
+      typeof post.commentsCount === 'number'
+        ? post.commentsCount
+        : _count?.comments ?? 0;
+    return {
+      ...rest,
+      threadsCount,
+      commentsCount,
+    };
+  }
+
+  async create(userId: string, dto: CreatePostDto): Promise<any> {
     // Verify that all referenced files exist and belong to the user
     if (dto.imageIds?.length) {
       const files = await this.prisma.fileUpload.findMany({
@@ -47,7 +81,7 @@ export class PostsService {
 
     // Create the post with file relationships
     const postId = uuidv4();
-    return this.prisma.post.create({
+    const created = await this.prisma.post.create({
       data: {
         id: postId,
         content: dto.content,
@@ -79,20 +113,16 @@ export class PostsService {
           },
           take: 5, // Get latest 5 comments by default
         },
-        _count: {
-          select: {
-            likes: true,
-            comments: true,
-          },
-        },
+        _count: { select: { threads: true, comments: true } },
       },
     });
+    return this.mapPost(created);
   }
 
   async getPosts(
     userId: string,
     { cursor, limit = 20 }: GetPostsDto,
-  ): Promise<PaginatedResult<Post>> {
+  ): Promise<PaginatedResult<any>> {
     const items = await this.prisma.post.findMany({
       where: {
         ...(cursor && {
@@ -118,12 +148,7 @@ export class PostsService {
           },
           take: 5,
         },
-        _count: {
-          select: {
-            likes: true,
-            comments: true,
-          },
-        },
+        _count: { select: { threads: true, comments: true } },
       },
     });
 
@@ -133,13 +158,13 @@ export class PostsService {
       data.length > 0 ? data[data.length - 1].createdAt.toISOString() : null;
 
     return {
-      items: data,
+      items: data.map((post) => this.mapPost(post)),
       hasNextPage,
       endCursor,
     };
   }
 
-  async getPost(id: string): Promise<Post> {
+  async getPost(id: string): Promise<any> {
     const post = await this.prisma.post.findUnique({
       where: { id },
       include: {
@@ -154,12 +179,7 @@ export class PostsService {
             createdAt: 'desc',
           },
         },
-        _count: {
-          select: {
-            likes: true,
-            comments: true,
-          },
-        },
+        _count: { select: { threads: true, comments: true } },
       },
     });
 
@@ -167,10 +187,10 @@ export class PostsService {
       throw new NotFoundException('Post not found');
     }
 
-    return post;
+    return this.mapPost(post);
   }
 
-  async update(id: string, userId: string, dto: UpdatePostDto): Promise<Post> {
+  async update(id: string, userId: string, dto: UpdatePostDto): Promise<any> {
     const post = await this.prisma.post.findFirst({
       where: { id, userId },
     });
@@ -179,7 +199,7 @@ export class PostsService {
       throw new NotFoundException('Post not found or not owned by user');
     }
 
-    return this.prisma.post.update({
+    const updated = await this.prisma.post.update({
       where: { id },
       data: {
         content: dto.content,
@@ -197,14 +217,10 @@ export class PostsService {
           },
           take: 5,
         },
-        _count: {
-          select: {
-            likes: true,
-            comments: true,
-          },
-        },
+        _count: { select: { threads: true, comments: true } },
       },
     });
+    return this.mapPost(updated);
   }
 
   async delete(id: string, userId: string): Promise<void> {
@@ -221,19 +237,30 @@ export class PostsService {
     });
   }
 
-  async toggleLike(
+  async toggleThread(
     postId: string,
     userId: string,
-  ): Promise<{ liked: boolean; likesCount: number }> {
+  ): Promise<{ threaded: boolean; threadsCount: number }> {
     const post = await this.prisma.post.findUnique({
       where: { id: postId },
+      select: {
+        id: true,
+        userId: true,
+        user: {
+          select: {
+            type: true,
+            brandFullName: true,
+            username: true,
+          },
+        },
+      },
     });
 
     if (!post) {
       throw new NotFoundException('Post not found');
     }
 
-    const existingLike = await this.prisma.like.findUnique({
+    const existingThread = await this.prisma.thread.findUnique({
       where: {
         postId_userId: {
           postId,
@@ -242,9 +269,9 @@ export class PostsService {
       },
     });
 
-    if (existingLike) {
-      // Unlike
-      await this.prisma.like.delete({
+    if (existingThread) {
+      // Unthread
+      await this.prisma.thread.delete({
         where: {
           postId_userId: {
             postId,
@@ -256,19 +283,23 @@ export class PostsService {
       const updatedPost = await this.prisma.post.update({
         where: { id: postId },
         data: {
-          likesCount: {
+          threadsCount: {
             decrement: 1,
           },
         },
       });
 
+      if (this.analytics) {
+        await this.analytics.updateDailyThread(ContentTarget.POST, postId, -1);
+      }
+
       return {
-        liked: false,
-        likesCount: updatedPost.likesCount,
+        threaded: false,
+        threadsCount: updatedPost.threadsCount,
       };
     } else {
-      // Like
-      await this.prisma.like.create({
+      // Thread
+      await this.prisma.thread.create({
         data: {
           id: uuidv4(),
           post: {
@@ -283,22 +314,102 @@ export class PostsService {
       const updatedPost = await this.prisma.post.update({
         where: { id: postId },
         data: {
-          likesCount: {
+          threadsCount: {
             increment: 1,
           },
         },
       });
 
+      if (this.analytics) {
+        await this.analytics.updateDailyThread(ContentTarget.POST, postId, +1);
+      }
+
+      // Notify post owner
+      try {
+        if (
+          updatedPost.userId &&
+          updatedPost.userId !== userId &&
+          this.notifications
+        ) {
+          await this.notifications.create(
+            updatedPost.userId,
+            NotificationType.THREAD,
+            {
+              actorId: userId,
+              payload: { postId, targetType: 'POST' },
+              dedupeMs: 5 * 60 * 1000,
+            },
+          );
+        }
+      } catch {}
+
+      // Notify patchers about engagement on brand content
+      if (this.notifications && post.user?.type === UserType.BRAND) {
+        const patchers = await this.prisma.patchConnection.findMany({
+          where: {
+            targetId: post.userId,
+            status: PatchStatus.ACCEPTED,
+            mode: PatchMode.USER_TO_BRAND,
+          },
+          select: { requesterId: true },
+        });
+        const message = 'threaded post';
+
+        const recipientIds = patchers
+          .map((p) => p.requesterId)
+          .filter((id) => id && id !== userId);
+
+        if (recipientIds.length > 0 && this.notificationsQueue) {
+          try {
+            await this.notificationsQueue.enqueueFanout({
+              recipientIds,
+              notificationType: NotificationType.THREAD,
+              actorId: userId,
+              payload: {
+                postId,
+                targetType: 'POST',
+                targetUrl: `/posts/${postId}`,
+                message,
+              },
+              dedupeMs: 2 * 60 * 1000,
+            });
+          } catch (e) {
+            console.warn('Failed to enqueue thread fanout', e);
+          }
+        } else if (recipientIds.length > 0) {
+          for (const recipientId of recipientIds) {
+            try {
+              await this.notifications.create(
+                recipientId,
+                NotificationType.THREAD,
+                {
+                  actorId: userId,
+                  payload: {
+                    postId,
+                    targetType: 'POST',
+                    targetUrl: `/posts/${postId}`,
+                    message,
+                  },
+                  dedupeMs: 2 * 60 * 1000,
+                },
+              );
+            } catch (e) {
+              console.warn('Failed to notify patcher of post thread', e);
+            }
+          }
+        }
+      }
+
       return {
-        liked: true,
-        likesCount: updatedPost.likesCount,
+        threaded: true,
+        threadsCount: updatedPost.threadsCount,
       };
     }
   }
 
-  async getLikes(postId: string): Promise<{ users: any[]; total: number }> {
-    const [likes, count] = await Promise.all([
-      this.prisma.like.findMany({
+  async getThreads(postId: string): Promise<{ users: any[]; total: number }> {
+    const [threads, count] = await Promise.all([
+      this.prisma.thread.findMany({
         where: { postId },
         orderBy: { createdAt: 'desc' },
         include: {
@@ -312,21 +423,21 @@ export class PostsService {
             },
           },
         },
-        take: 10, // Just get the latest 10 users who liked
+        take: 10, // Just get the latest 10 users who threaded
       }),
-      this.prisma.like.count({
+      this.prisma.thread.count({
         where: { postId },
       }),
     ]);
 
     return {
-      users: likes.map((like) => like.user),
+      users: threads.map((thread) => thread.user),
       total: count,
     };
   }
 
-  async isLiked(postId: string, userId: string): Promise<boolean> {
-    const like = await this.prisma.like.findUnique({
+  async isThreaded(postId: string, userId: string): Promise<boolean> {
+    const thread = await this.prisma.thread.findUnique({
       where: {
         postId_userId: {
           postId,
@@ -335,6 +446,6 @@ export class PostsService {
       },
     });
 
-    return !!like;
+    return !!thread;
   }
 }

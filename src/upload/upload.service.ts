@@ -1,19 +1,48 @@
-import { Injectable, Logger, BadRequestException } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  BadRequestException,
+  ForbiddenException,
+  Optional,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { FileUpload } from '@prisma/client';
-import * as AWS from 'aws-sdk';
+import {
+  S3Client,
+  PutObjectCommand,
+  DeleteObjectCommand,
+  DeleteObjectsCommand,
+  HeadObjectCommand,
+  GetObjectCommand,
+} from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import { createPresignedPost } from '@aws-sdk/s3-presigned-post';
 import { v4 as uuidv4 } from 'uuid';
 import { GetFilesDto } from './dto/get-files.dto';
 import { PaginatedResult } from './dto/pagination.dto';
 import { ConfigService } from '@nestjs/config';
+import { FileType } from './upload.enums';
+import * as path from 'path';
+import { mkdir, writeFile } from 'fs/promises';
+import { ImageProcessingQueueService } from 'src/queue/image-processing.queue.service';
+import { SystemConfigService } from 'src/admin/system-config/system-config.service';
 
-export enum FileType {
-  PROFILE_IMAGE = 'PROFILE_IMAGE',
-  BANNER_IMAGE = 'BANNER_IMAGE',
-  POST_IMAGE = 'POST_IMAGE',
-  POST_VIDEO = 'POST_VIDEO',
-  DOCUMENT = 'DOCUMENT',
-}
+type VariantView = {
+  url: string;
+  width: number;
+  height: number;
+  format: string;
+};
+
+type VariantsMap = {
+  thumb?: VariantView;
+  card?: VariantView;
+  detail?: VariantView;
+  zoom?: VariantView;
+  avatar?: VariantView;
+  banner?: VariantView;
+};
 
 export interface FileUploadResult {
   id: string;
@@ -24,6 +53,7 @@ export interface FileUploadResult {
   size: number;
   mimeType: string;
   fileType: FileType;
+  processingStatus?: 'PENDING' | 'READY' | 'FAILED';
   createdAt: string;
   updatedAt: string;
 }
@@ -31,13 +61,45 @@ export interface FileUploadResult {
 @Injectable()
 export class UploadService {
   private readonly logger = new Logger(UploadService.name);
-  private readonly s3: AWS.S3;
+  private readonly s3: S3Client;
   private readonly bucketName: string;
   private readonly region: string;
+
+  private summarizeAwsError(error: unknown): {
+    name?: string;
+    message?: string;
+    code?: string;
+    httpStatusCode?: number;
+    requestId?: string;
+  } {
+    const anyErr = error as any;
+    return {
+      name: typeof anyErr?.name === 'string' ? anyErr.name : undefined,
+      message:
+        typeof anyErr?.message === 'string' ? anyErr.message : undefined,
+      code:
+        typeof anyErr?.code === 'string'
+          ? anyErr.code
+          : typeof anyErr?.Code === 'string'
+            ? anyErr.Code
+            : undefined,
+      httpStatusCode:
+        typeof anyErr?.$metadata?.httpStatusCode === 'number'
+          ? anyErr.$metadata.httpStatusCode
+          : undefined,
+      requestId:
+        typeof anyErr?.$metadata?.requestId === 'string'
+          ? anyErr.$metadata.requestId
+          : undefined,
+    };
+  }
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly configService: ConfigService,
+    private readonly systemConfigService: SystemConfigService,
+    @Optional()
+    private readonly imageQueue?: ImageProcessingQueueService,
   ) {
     this.bucketName =
       this.configService.get<string>('AWS_S3_BUCKET') ??
@@ -60,7 +122,7 @@ export class UploadService {
       this.configService.get<string>('AWS_SECRET_ACCESS_KEY') ??
       this.configService.get<string>('SECRET_ACCESS_KEY');
 
-    const s3Config: AWS.S3.ClientConfiguration = {
+    const s3Config: any = {
       region: this.region,
     };
 
@@ -71,7 +133,22 @@ export class UploadService {
       };
     }
 
-    this.s3 = new AWS.S3(s3Config);
+    this.s3 = new S3Client(s3Config);
+  }
+
+  private encodeS3KeyForUrl(key: string): string {
+    return String(key)
+      .split('/')
+      .map((segment) => encodeURIComponent(segment))
+      .join('/');
+  }
+
+  private buildS3ObjectUrl(key: string): string {
+    return `https://${this.bucketName}.s3.${this.region}.amazonaws.com/${this.encodeS3KeyForUrl(key)}`;
+  }
+
+  private buildS3BucketUrl(): string {
+    return `https://${this.bucketName}.s3.${this.region}.amazonaws.com`;
   }
 
   async uploadFile(
@@ -79,24 +156,30 @@ export class UploadService {
     userId: string,
     fileType: FileType,
   ): Promise<FileUploadResult> {
-    this.validateFile(file, fileType);
+    await this.validateFile(file, fileType);
 
     const fileId = uuidv4();
     const key = this.generateS3Key(fileType, userId, fileId, file.originalname);
+
+    const nodeEnv = (this.configService.get<string>('NODE_ENV') ?? '').trim();
+    const isProduction = nodeEnv.toLowerCase() === 'production';
 
     try {
       this.logger.debug(
         `Uploading file to S3 bucket ${this.bucketName} with key ${key}`,
       );
-      const s3Result = await this.s3
-        .upload({
-          Bucket: this.bucketName,
-          Key: key,
-          Body: file.buffer,
-          ContentType: file.mimetype,
-          ContentDisposition: 'inline',
-        })
-        .promise();
+      const command = new PutObjectCommand({
+        Bucket: this.bucketName,
+        Key: key,
+        Body: file.buffer,
+        ContentType: file.mimetype,
+        ContentDisposition: 'inline',
+      });
+
+      await this.s3.send(command);
+
+      // Construct S3 URL
+      const s3Url = this.buildS3ObjectUrl(key);
 
       // Save to database
       const uploadRecord = await this.prisma.fileUpload.create({
@@ -106,30 +189,114 @@ export class UploadService {
           originalName: file.originalname,
           fileName: key.split('/').pop()!,
           s3Key: key,
-          s3Url: s3Result.Location,
+          s3Url: s3Url,
           fileType: fileType,
           mimeType: file.mimetype,
           size: file.size,
-        },
+          processingStatus: this.shouldOptimizeFile(fileType, file.mimetype)
+            ? 'PENDING'
+            : 'READY',
+        } as any,
       });
+
+      await this.enqueueImageProcessing(uploadRecord.id);
 
       return {
         id: uploadRecord.id,
         url: uploadRecord.s3Url,
-      key: uploadRecord.s3Key,
-      fileName: uploadRecord.fileName,
-      originalName: uploadRecord.originalName,
+        key: uploadRecord.s3Key,
+        fileName: uploadRecord.fileName,
+        originalName: uploadRecord.originalName,
         size: uploadRecord.size,
         mimeType: uploadRecord.mimeType,
         fileType: uploadRecord.fileType as FileType,
+        processingStatus: (uploadRecord as any).processingStatus,
         createdAt: uploadRecord.createdAt.toISOString(),
         updatedAt: uploadRecord.updatedAt.toISOString(),
       };
     } catch (error) {
-      this.logger.error('File upload failed:', error);
-      this.logger.error('File upload error details:', error);
+      const details = this.summarizeAwsError(error);
+      this.logger.error(
+        `S3 file upload failed (${details.name ?? 'UnknownError'}): ${details.message ?? ''}`,
+        details as any,
+      );
+
+      // Dev fallback: if S3 isn't configured/available locally, still allow uploads
+      // by writing to disk under the API's /uploads static route.
+      if (!isProduction) {
+        this.logger.warn(
+          'Falling back to local disk upload (non-production).',
+        );
+        return this.uploadFileToLocalDisk(file, userId, fileType, fileId, key);
+      }
+
       throw new BadRequestException('File upload failed');
     }
+  }
+
+  private getLocalPublicBaseUrl(): string {
+    const explicit =
+      this.configService.get<string>('APP_PUBLIC_URL') ??
+      this.configService.get<string>('PUBLIC_BASE_URL') ??
+      this.configService.get<string>('APP_URL');
+
+    if (explicit && explicit.trim().length > 0) {
+      return explicit.trim().replace(/\/+$/, '');
+    }
+
+    const port = this.configService.get<string>('APP_PORT') ?? '3040';
+    return `http://localhost:${port}`;
+  }
+
+  private async uploadFileToLocalDisk(
+    file: Express.Multer.File,
+    userId: string,
+    fileType: FileType,
+    fileId: string,
+    key: string,
+  ): Promise<FileUploadResult> {
+    const uploadsRoot = path.join(process.cwd(), 'uploads');
+    const diskPath = path.join(uploadsRoot, key);
+    const diskDir = path.dirname(diskPath);
+
+    await mkdir(diskDir, { recursive: true });
+    await writeFile(diskPath, file.buffer);
+
+    const baseUrl = this.getLocalPublicBaseUrl();
+    const publicUrl = `${baseUrl}/uploads/${key.split(path.sep).join('/')}`;
+
+    const uploadRecord = await this.prisma.fileUpload.create({
+      data: {
+        id: fileId,
+        userId,
+        originalName: file.originalname,
+        fileName: key.split('/').pop()!,
+        s3Key: key,
+        s3Url: publicUrl,
+        fileType: fileType,
+        mimeType: file.mimetype,
+        size: file.size,
+        processingStatus: this.shouldOptimizeFile(fileType, file.mimetype)
+          ? 'PENDING'
+          : 'READY',
+      } as any,
+    });
+
+    await this.enqueueImageProcessing(uploadRecord.id);
+
+    return {
+      id: uploadRecord.id,
+      url: uploadRecord.s3Url,
+      key: uploadRecord.s3Key,
+      fileName: uploadRecord.fileName,
+      originalName: uploadRecord.originalName,
+      size: uploadRecord.size,
+      mimeType: uploadRecord.mimeType,
+      fileType: uploadRecord.fileType as FileType,
+      processingStatus: (uploadRecord as any).processingStatus,
+      createdAt: uploadRecord.createdAt.toISOString(),
+      updatedAt: uploadRecord.updatedAt.toISOString(),
+    };
   }
 
   // Generate presigned POST data for client direct-to-S3 uploads
@@ -138,29 +305,24 @@ export class UploadService {
     originalName: string,
     fileType: FileType,
     contentType?: string,
+    options?: { collectionId?: string; orderIndex?: number },
   ) {
     // create presigned post and persist a pending PresignedUpload record
     const fileId = uuidv4();
     const key = this.generateS3Key(fileType, userId, fileId, originalName);
 
-    const params: any = {
-      Bucket: this.bucketName,
-      Fields: {
-        key,
-      },
-      Conditions: [['starts-with', '$Content-Type', '']],
-      Expires: 600, // 10 minutes
-    };
+    // Build fields and conditions for AWS v3 createPresignedPost
+    const baseConditions: any[] = [];
+    let fields: Record<string, string> = { key };
 
-    // If the caller provided a specific contentType, include it in the form fields and tighten policy
     if (contentType) {
-      params.Fields['Content-Type'] = contentType;
-      // Replace the starts-with condition with exact match for the content type
-      params.Conditions = params.Conditions.map((c: any) =>
-        Array.isArray(c) && c[0] === 'starts-with' && c[1] === '$Content-Type'
-          ? ['eq', '$Content-Type', contentType]
-          : c,
-      );
+      fields = {
+        ...fields,
+        'Content-Type': contentType,
+      };
+      baseConditions.push(['eq', '$Content-Type', contentType]);
+    } else {
+      baseConditions.push(['starts-with', '$Content-Type', '']);
     }
 
     // create DB presign record
@@ -169,6 +331,8 @@ export class UploadService {
       data: {
         id: fileId,
         userId,
+        collectionId: options?.collectionId,
+        orderIndex: typeof options?.orderIndex === 'number' ? options.orderIndex : null,
         originalName,
         contentType: '',
         fileType,
@@ -177,20 +341,19 @@ export class UploadService {
       },
     } as any);
 
-    const presigned = await new Promise((resolve, reject) => {
-      (this.s3 as any).createPresignedPost(params, (err, data) => {
-        if (err) return reject(err);
-        resolve({ ...data, key, fileId, expiresIn: 600 });
-      });
+    const presigned = await createPresignedPost(this.s3, {
+      Bucket: this.bucketName,
+      Key: key,
+      Fields: fields,
+      Conditions: baseConditions,
+      Expires: 600, // seconds
     });
 
     // Build a region-specific upload URL to avoid region-signature mismatches
-    const region =
-      (this.s3.config && (this.s3.config as any).region) || this.region;
-    const uploadUrl = `https://${this.bucketName}.s3.${region}.amazonaws.com`;
+    const uploadUrl = this.buildS3BucketUrl();
 
     return {
-      ...(presigned as any),
+      ...presigned,
       url: uploadUrl,
       key,
       fileId,
@@ -202,20 +365,48 @@ export class UploadService {
     userId: string,
     file: Pick<FileUploadResult, 'id' | 'url'>,
   ): Promise<void> {
-    await this.prisma.user.update({
-      where: { id: userId },
-      data: { profileImageId: file.id, profileImage: file.url },
-    });
+    await this.prisma.$transaction([
+      this.prisma.user.update({
+        where: { id: userId },
+        data: { profileImageId: file.id, profileImage: file.url },
+      }),
+      // Strict sync: store logo mirrors brand profile image.
+      this.prisma.brand.updateMany({
+        where: { ownerId: userId },
+        data: { logo: file.url },
+      }),
+    ]);
+  }
+
+  async clearUserProfileImage(userId: string): Promise<void> {
+    await this.prisma.$transaction([
+      this.prisma.user.update({
+        where: { id: userId },
+        data: { profileImageId: null, profileImage: null },
+      }),
+      // Strict sync: store logo mirrors brand profile image.
+      this.prisma.brand.updateMany({
+        where: { ownerId: userId },
+        data: { logo: null },
+      }),
+    ]);
   }
 
   async updateUserBannerImage(
     userId: string,
     file: Pick<FileUploadResult, 'id' | 'url'>,
   ): Promise<void> {
-    await this.prisma.user.update({
-      where: { id: userId },
-      data: { bannerImageId: file.id, bannerImage: file.url },
-    });
+    await this.prisma.$transaction([
+      this.prisma.user.update({
+        where: { id: userId },
+        data: { bannerImageId: file.id, bannerImage: file.url },
+      }),
+      // Strict sync: store banner mirrors brand banner image.
+      this.prisma.brand.updateMany({
+        where: { ownerId: userId },
+        data: { banner: file.url },
+      }),
+    ]);
   }
 
   async getUserFiles(
@@ -258,11 +449,12 @@ export class UploadService {
       throw new BadRequestException('File not found');
     }
 
-    return this.s3.getSignedUrl('getObject', {
+    const command = new GetObjectCommand({
       Bucket: this.bucketName,
       Key: file.s3Key,
-      Expires: 3600, // 1 hour
     });
+
+    return await getSignedUrl(this.s3, command, { expiresIn: 3600 }); // 1 hour
   }
 
   /**
@@ -278,31 +470,61 @@ export class UploadService {
       return null;
     }
 
-    return this.s3.getSignedUrl('getObject', {
+    const command = new GetObjectCommand({
       Bucket: this.bucketName,
       Key: file.s3Key,
-      Expires: 3600, // 1 hour
     });
+
+    return await getSignedUrl(this.s3, command, { expiresIn: 3600 }); // 1 hour
+  }
+
+  /**
+   * Get signed URL by raw S3 key (no DB lookup required).
+   * Used when the frontend only has a raw S3 URL and needs a signed version.
+   */
+  async getPublicSignedUrlByKey(s3Key: string): Promise<string> {
+    const command = new GetObjectCommand({
+      Bucket: this.bucketName,
+      Key: s3Key,
+    });
+
+    return await getSignedUrl(this.s3, command, { expiresIn: 3600 }); // 1 hour
   }
 
   /**
    * Batch generate signed URLs for multiple files (optimized for feeds)
    */
-  async getBatchPublicSignedUrls(fileIds: string[]): Promise<Map<string, string>> {
+  async getBatchPublicSignedUrls(
+    fileIds: string[],
+  ): Promise<Map<string, string>> {
+    if (!fileIds || fileIds.length === 0) {
+      return new Map<string, string>();
+    }
     const files = await this.prisma.fileUpload.findMany({
       where: { id: { in: fileIds } },
       select: { id: true, s3Key: true },
     });
 
     const urlMap = new Map<string, string>();
-    
-    for (const file of files) {
-      const signedUrl = this.s3.getSignedUrl('getObject', {
-        Bucket: this.bucketName,
-        Key: file.s3Key,
-        Expires: 3600, // 1 hour
-      });
-      urlMap.set(file.id, signedUrl);
+
+    const chunkSize = 25;
+    for (let i = 0; i < files.length; i += chunkSize) {
+      const chunk = files.slice(i, i + chunkSize);
+      const results = await Promise.all(
+        chunk.map(async (file) => {
+          const command = new GetObjectCommand({
+            Bucket: this.bucketName,
+            Key: file.s3Key,
+          });
+          const signedUrl = await getSignedUrl(this.s3, command, {
+            expiresIn: 3600,
+          }); // 1 hour
+          return [file.id, signedUrl] as const;
+        }),
+      );
+      for (const [id, url] of results) {
+        urlMap.set(id, url);
+      }
     }
 
     return urlMap;
@@ -319,12 +541,11 @@ export class UploadService {
 
     try {
       // Delete from S3
-      await this.s3
-        .deleteObject({
-          Bucket: this.bucketName,
-          Key: file.s3Key,
-        })
-        .promise();
+      const command = new DeleteObjectCommand({
+        Bucket: this.bucketName,
+        Key: file.s3Key,
+      });
+      await this.s3.send(command);
 
       // Delete from database
       await this.prisma.fileUpload.delete({
@@ -341,9 +562,11 @@ export class UploadService {
    */
   async deleteS3ObjectByKey(key: string): Promise<void> {
     try {
-      await this.s3
-        .deleteObject({ Bucket: this.bucketName, Key: key })
-        .promise();
+      const command = new DeleteObjectCommand({
+        Bucket: this.bucketName,
+        Key: key,
+      });
+      await this.s3.send(command);
     } catch (err) {
       this.logger.error('S3 deleteObject failed for key:', key, err);
       throw err;
@@ -358,12 +581,13 @@ export class UploadService {
     const objects = keys.map((k) => ({ Key: k }));
     try {
       // AWS SDK deleteObjects returns details about deleted vs errors
-      const res = await this.s3
-        .deleteObjects({
-          Bucket: this.bucketName,
-          Delete: { Objects: objects },
-        })
-        .promise();
+      const command = new DeleteObjectsCommand({
+        Bucket: this.bucketName,
+        Delete: { Objects: objects },
+      });
+
+      const res = await this.s3.send(command);
+
       if (res.Errors && res.Errors.length) {
         this.logger.error('S3 deleteObjects reported errors', res.Errors);
         throw new Error('One or more S3 deletions failed');
@@ -377,11 +601,37 @@ export class UploadService {
   // Verify S3 object exists by key
   async verifyObjectExists(key: string): Promise<boolean> {
     try {
-      await this.s3.headObject({ Bucket: this.bucketName, Key: key }).promise();
+      const command = new HeadObjectCommand({
+        Bucket: this.bucketName,
+        Key: key,
+      });
+      await this.s3.send(command);
       return true;
     } catch (err) {
-      this.logger.warn('S3 headObject failed for key:', key, err);
-      return false;
+      const details = this.summarizeAwsError(err);
+      const errorCode = String(details.code ?? '').toUpperCase();
+      const errorName = String(details.name ?? '').toUpperCase();
+      const statusCode = details.httpStatusCode;
+      const message = String(details.message ?? '').toUpperCase();
+
+      const isNotFound =
+        statusCode === 404 ||
+        errorCode === 'NOTFOUND' ||
+        errorCode === 'NOSUCHKEY' ||
+        errorName === 'NOTFOUND' ||
+        errorName === 'NOSUCHKEY' ||
+        message.includes('NOT FOUND') ||
+        message.includes('NO SUCH KEY');
+
+      if (isNotFound) {
+        this.logger.warn('S3 object was not found for key:', key);
+        return false;
+      }
+
+      this.logger.error('S3 headObject failed for key:', key, details as any);
+      throw new ServiceUnavailableException(
+        'Storage is temporarily unavailable. Please retry in a moment.',
+      );
     }
   }
 
@@ -402,16 +652,47 @@ export class UploadService {
       throw new BadRequestException('Presign record not found');
     }
 
+    if (presign.userId !== userId) {
+      throw new ForbiddenException('Presign record does not belong to user');
+    }
+
+    if (presign.s3Key !== key) {
+      throw new BadRequestException('S3 key mismatch for presign record');
+    }
+
+    const now = new Date();
+    if (presign.expiresAt && presign.expiresAt < now) {
+      await (this.prisma as any)['presignedUpload'].update({
+        where: { id },
+        data: { status: 'EXPIRED' },
+      } as any);
+      throw new BadRequestException('Presign has expired');
+    }
+
+    if (presign.status === 'USED') {
+      const existing = await this.prisma.fileUpload.findUnique({
+        where: { id },
+      });
+      if (existing) return existing;
+      throw new BadRequestException('Presign already used');
+    }
+
+    if (presign.status === 'EXPIRED') {
+      throw new BadRequestException('Presign has expired');
+    }
+
+    if (presign.status !== 'PENDING' && presign.status !== 'READY') {
+      throw new BadRequestException('Presign is not ready for use');
+    }
+
     // Mark presign as USED
     await (this.prisma as any)['presignedUpload'].update({
       where: { id },
-      data: { status: 'USED' },
+      data: { status: 'USED', finalizedAt: new Date() },
     } as any);
 
     const fileName = key.split('/').pop() || key;
-    const region =
-      (this.s3.config && (this.s3.config as any).region) || this.region;
-    const url = `https://${this.bucketName}.s3.${region}.amazonaws.com/${encodeURIComponent(key)}`;
+    const url = this.buildS3ObjectUrl(key);
 
     const record = await this.prisma.fileUpload.create({
       data: {
@@ -424,8 +705,13 @@ export class UploadService {
         fileType: presign.fileType as any,
         mimeType,
         size: size || 0,
-      },
+        processingStatus: this.shouldOptimizeFile(presign.fileType as FileType, mimeType)
+          ? 'PENDING'
+          : 'READY',
+      } as any,
     });
+
+    await this.enqueueImageProcessing(record.id);
 
     return record;
   }
@@ -441,14 +727,17 @@ export class UploadService {
     const fileId = uuidv4();
     const key = this.generateS3Key(fileType, userId, fileId, originalName);
 
-    const s3Result = await this.s3
-      .upload({
-        Bucket: this.bucketName,
-        Key: key,
-        Body: buffer,
-        ContentType: mimeType,
-      })
-      .promise();
+    const command = new PutObjectCommand({
+      Bucket: this.bucketName,
+      Key: key,
+      Body: buffer,
+      ContentType: mimeType,
+    });
+
+    await this.s3.send(command);
+
+    // Construct S3 URL
+    const s3Url = this.buildS3ObjectUrl(key);
 
     const record = await this.prisma.fileUpload.create({
       data: {
@@ -457,23 +746,192 @@ export class UploadService {
         originalName,
         fileName: key.split('/').pop()!,
         s3Key: key,
-        s3Url: s3Result.Location,
+        s3Url: s3Url,
         fileType,
         mimeType,
         size: buffer.length,
-      },
+        processingStatus: this.shouldOptimizeFile(fileType, mimeType)
+          ? 'PENDING'
+          : 'READY',
+      } as any,
     });
+    await this.enqueueImageProcessing(record.id);
     return record;
   }
 
-  private validateFile(file: Express.Multer.File, fileType: FileType): void {
-    const maxSizes = {
-      [FileType.PROFILE_IMAGE]: 5 * 1024 * 1024, // 5MB
-      [FileType.BANNER_IMAGE]: 8 * 1024 * 1024, // 8MB
-      [FileType.POST_IMAGE]: 10 * 1024 * 1024, // 10MB
-      [FileType.POST_VIDEO]: 100 * 1024 * 1024, // 100MB
-      [FileType.DOCUMENT]: 20 * 1024 * 1024, // 20MB
+  async getFileVariants(fileId: string, userId?: string) {
+    const file = await this.prisma.fileUpload.findFirst({
+      where: userId ? { id: fileId, userId } : { id: fileId },
+    });
+    if (!file) {
+      throw new BadRequestException('File not found');
+    }
+
+    const variantRows = await (this.prisma as any).fileVariant.findMany({
+      where: { fileUploadId: fileId, assetVersion: (file as any).assetVersion ?? 1 },
+      orderBy: [{ variantKind: 'asc' }, { format: 'asc' }],
+    });
+
+    const variants: VariantsMap = {};
+    for (const row of variantRows ?? []) {
+      const key = String((row.variantKind || '')).toLowerCase();
+      const mapped =
+        key === 'thumb' ||
+        key === 'card' ||
+        key === 'detail' ||
+        key === 'zoom' ||
+        key === 'avatar' ||
+        key === 'banner'
+          ? key
+          : null;
+      if (!mapped) continue;
+      if ((variants as any)[mapped]) continue;
+      (variants as any)[mapped] = {
+        url: row.s3Url,
+        width: row.width,
+        height: row.height,
+        format: row.format,
+      } as VariantView;
+    }
+
+    return {
+      fileId: file.id,
+      processingStatus: (file as any).processingStatus ?? 'READY',
+      version: (file as any).assetVersion ?? 1,
+      variants,
+      fallbackUrl: file.s3Url,
+      s3Url: file.s3Url,
     };
+  }
+
+  async reprocessFile(fileId: string, userId: string) {
+    const file = await this.prisma.fileUpload.findFirst({
+      where: { id: fileId, userId },
+      select: { id: true },
+    });
+    if (!file) {
+      throw new BadRequestException('File not found');
+    }
+
+    await this.prisma.fileUpload.update({
+      where: { id: fileId },
+      data: {
+        processingStatus: 'PENDING',
+        processingError: null,
+      } as any,
+    } as any);
+
+    await this.enqueueImageProcessing(fileId, true);
+    return { fileId, processingStatus: 'PENDING' };
+  }
+
+  async enqueueImageProcessing(fileId: string, force = false): Promise<void> {
+    if (!fileId || !this.imageQueue || !this.isImageOptimizationEnabled()) {
+      return;
+    }
+    try {
+      await this.imageQueue.enqueueSingle(fileId, force);
+    } catch (error) {
+      this.logger.warn(`Failed to enqueue image processing for ${fileId}: ${String(error)}`);
+    }
+  }
+
+  buildVariantS3Key(params: {
+    variantKind: string;
+    fileId: string;
+    assetVersion: number;
+    ext: string;
+  }): string {
+    const suffix = params.ext.replace(/[^a-z0-9]/gi, '').toLowerCase() || 'bin';
+    return `variant/${String(params.variantKind).toUpperCase()}/${params.fileId}/v${params.assetVersion}.${suffix}`;
+  }
+
+  async putObjectBuffer(params: {
+    key: string;
+    body: Buffer;
+    contentType: string;
+    isPublic?: boolean;
+  }): Promise<{ key: string; url: string }> {
+    const command = new PutObjectCommand({
+      Bucket: this.bucketName,
+      Key: params.key,
+      Body: params.body,
+      ContentType: params.contentType,
+      CacheControl: 'public, max-age=31536000, immutable',
+      ACL: params.isPublic ? 'public-read' : undefined,
+    } as any);
+    await this.s3.send(command);
+    return {
+      key: params.key,
+      url: this.buildS3ObjectUrl(params.key),
+    };
+  }
+
+  async getObjectBufferByKey(key: string): Promise<Buffer> {
+    const result = await this.s3.send(
+      new GetObjectCommand({
+        Bucket: this.bucketName,
+        Key: key,
+      }),
+    );
+
+    const body = result.Body as any;
+    if (!body) {
+      throw new BadRequestException('File object body is empty');
+    }
+
+    if (typeof body.transformToByteArray === 'function') {
+      const bytes = await body.transformToByteArray();
+      return Buffer.from(bytes);
+    }
+
+    const chunks: Buffer[] = [];
+    for await (const chunk of body as AsyncIterable<Buffer | Uint8Array | string>) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    }
+    return Buffer.concat(chunks);
+  }
+
+  private shouldOptimizeFile(fileType: FileType, mimeType: string): boolean {
+    if (!this.isImageOptimizationEnabled()) return false;
+    if (
+      fileType === FileType.POST_VIDEO ||
+      fileType === FileType.REVIEW_VIDEO ||
+      fileType === FileType.DOCUMENT ||
+      fileType === FileType.MESSAGE_DOCUMENT
+    ) {
+      return false;
+    }
+    return String(mimeType || '').toLowerCase().startsWith('image/');
+  }
+
+  private isImageOptimizationEnabled(): boolean {
+    const raw =
+      this.configService.get<string>('IMAGE_OPTIMIZATION_ENABLED') ??
+      this.configService.get<string>('IMAGE_VARIANTS_ENABLED') ??
+      'false';
+    return ['1', 'true', 'yes', 'on'].includes(String(raw).toLowerCase());
+  }
+
+  /** Map FileType enum → SystemConfig key */
+  private static readonly FILE_TYPE_CONFIG_KEYS: Record<string, string> = {
+    [FileType.PROFILE_IMAGE]: 'upload.maxSize.profileImage',
+    [FileType.BANNER_IMAGE]: 'upload.maxSize.bannerImage',
+    [FileType.POST_IMAGE]: 'upload.maxSize.postImage',
+    [FileType.POST_VIDEO]: 'upload.maxSize.postVideo',
+    [FileType.REVIEW_IMAGE]: 'upload.maxSize.reviewImage',
+    [FileType.REVIEW_VIDEO]: 'upload.maxSize.reviewVideo',
+    [FileType.DOCUMENT]: 'upload.maxSize.document',
+    [FileType.BRAND_VERIFICATION]: 'upload.maxSize.brandVerification',
+    [FileType.MESSAGE_IMAGE]: 'upload.maxSize.messageImage',
+    [FileType.MESSAGE_DOCUMENT]: 'upload.maxSize.messageDocument',
+  };
+
+  private async validateFile(file: Express.Multer.File, fileType: FileType): Promise<void> {
+    const configKey = UploadService.FILE_TYPE_CONFIG_KEYS[fileType];
+    const maxSize = configKey
+      ? await this.systemConfigService.getMaxFileSize(configKey)
+      : 2 * 1024 * 1024; // 2MB fallback
 
     const allowedMimeTypes = {
       [FileType.PROFILE_IMAGE]: ['image/jpeg', 'image/png', 'image/webp'],
@@ -490,15 +948,31 @@ export class UploadService {
         'image/gif',
       ],
       [FileType.POST_VIDEO]: ['video/mp4', 'video/webm', 'video/quicktime'],
+      [FileType.REVIEW_IMAGE]: [
+        'image/jpeg',
+        'image/png',
+        'image/webp',
+        'image/gif',
+      ],
+      [FileType.REVIEW_VIDEO]: ['video/mp4', 'video/webm', 'video/quicktime'],
       [FileType.DOCUMENT]: [
         'application/pdf',
         'application/msword',
         'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
       ],
+      [FileType.BRAND_VERIFICATION]: [
+        'image/jpeg',
+        'image/png',
+        'image/webp',
+        'application/pdf',
+      ],
+      [FileType.MESSAGE_IMAGE]: ['image/jpeg', 'image/png', 'image/webp'],
+      [FileType.MESSAGE_DOCUMENT]: ['application/pdf'],
     };
 
-    if (file.size > maxSizes[fileType]) {
-      throw new BadRequestException(`File size exceeds limit for ${fileType}`);
+    if (file.size > maxSize) {
+      const limitMB = (maxSize / (1024 * 1024)).toFixed(1);
+      throw new BadRequestException(`File size exceeds the ${limitMB}MB limit for ${fileType}`);
     }
 
     if (!allowedMimeTypes[fileType].includes(file.mimetype)) {
