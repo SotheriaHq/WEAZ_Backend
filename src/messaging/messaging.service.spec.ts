@@ -58,6 +58,7 @@ describe('MessagingService', () => {
       query,
       sideEffects,
       {} as any,
+      {} as any,
     );
 
     return { service, prisma, query };

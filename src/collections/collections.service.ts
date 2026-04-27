@@ -368,6 +368,8 @@ export class CollectionsService {
     publishedCollectionId: string,
     title: string | null | undefined,
     deletedAt: Date,
+    domain?: 'DESIGN' | 'STORE' | null,
+    isAvailableInStore?: boolean | null,
   ) {
     const normalizedTitle = String(title ?? '').trim();
     if (!normalizedTitle) return;
@@ -379,6 +381,8 @@ export class CollectionsService {
         status: 'DRAFT',
         deletedAt: null,
         title: normalizedTitle,
+        ...(domain ? { domain } : {}),
+        ...(typeof isAvailableInStore === 'boolean' ? { isAvailableInStore } : {}),
       },
       data: {
         deletedAt,
@@ -2638,6 +2642,8 @@ export class CollectionsService {
               collectionId,
               updatedCollection.title,
               now,
+              'DESIGN',
+              false,
             );
           }
           return updatedCollection;
@@ -2774,6 +2780,8 @@ export class CollectionsService {
             collectionId,
             updatedCollection.title,
             now,
+            (updatedCollection as any).domain ?? null,
+            Boolean((updatedCollection as any).isAvailableInStore),
           );
         }
         return updatedCollection;
@@ -3029,6 +3037,8 @@ export class CollectionsService {
         collectionId,
         publishedCollection.title,
         finalizeAt,
+        'DESIGN',
+        false,
       );
     }
 
@@ -7031,6 +7041,7 @@ export class CollectionsService {
 
         // Update collection in a transaction
         await this.prisma.$transaction(async (tx) => {
+          const publishedAt = new Date();
           await tx.collection.update({
             where: { id: collection.id },
             data: {
@@ -7039,9 +7050,18 @@ export class CollectionsService {
               pendingCategorySuggestionId: null,
               draftReason: null,
               status: 'PUBLISHED',
-              updatedAt: new Date(),
+              updatedAt: publishedAt,
             },
           });
+          await this.cleanupSupersededDraftCollections(
+            tx,
+            collection.ownerId,
+            collection.id,
+            collection.title,
+            publishedAt,
+            (collection as any).domain ?? null,
+            Boolean((collection as any).isAvailableInStore),
+          );
         });
 
         results.published++;
