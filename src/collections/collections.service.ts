@@ -362,6 +362,32 @@ export class CollectionsService {
     });
   }
 
+  private async cleanupSupersededDraftCollections(
+    tx: Prisma.TransactionClient,
+    ownerId: string,
+    publishedCollectionId: string,
+    title: string | null | undefined,
+    deletedAt: Date,
+  ) {
+    const normalizedTitle = String(title ?? '').trim();
+    if (!normalizedTitle) return;
+
+    await (tx as any).collection.updateMany({
+      where: {
+        ownerId,
+        id: { not: publishedCollectionId },
+        status: 'DRAFT',
+        deletedAt: null,
+        title: normalizedTitle,
+      },
+      data: {
+        deletedAt,
+        draftReason: 'Superseded by published collection',
+        lastActivityAt: deletedAt,
+      },
+    });
+  }
+
   private async enforcePrimaryMembership(
     tx: Prisma.TransactionClient,
     productId: string,
@@ -2431,7 +2457,14 @@ export class CollectionsService {
       );
     }
 
+    const requestedAction = dto.action ?? (dto.shouldPublish === false ? 'draft' : 'publish');
+
     if (collection.status !== 'DRAFT') {
+      if (collection.status === 'PUBLISHED' && requestedAction === 'draft') {
+        throw new BadRequestException(
+          'This collection is already published. Unpublish it before saving draft changes, or discard the draft.',
+        );
+      }
       if (collection.status === 'PUBLISHED' && !hasCompletions) {
         const published = await this.prisma.collection.findUnique({
           where: { id: collectionId },
@@ -2550,7 +2583,7 @@ export class CollectionsService {
           }
 
           const now = new Date();
-          return tx.collection.update({
+          const updatedCollection = await tx.collection.update({
             where: { id: collectionId },
             data: {
               title: metadata.title ?? collection.title,
@@ -2598,6 +2631,16 @@ export class CollectionsService {
                 : {}),
             },
           });
+          if (action === 'publish') {
+            await this.cleanupSupersededDraftCollections(
+              tx,
+              userId,
+              collectionId,
+              updatedCollection.title,
+              now,
+            );
+          }
+          return updatedCollection;
         }
 
         const links = await tx.storeCollectionProduct.findMany({
@@ -2700,7 +2743,7 @@ export class CollectionsService {
           })
           .filter((v): v is number => typeof v === 'number' && v > 0);
 
-        return tx.collection.update({
+        const updatedCollection = await tx.collection.update({
           where: { id: collectionId },
           data: {
             title: metadata.title ?? collection.title,
@@ -2724,6 +2767,16 @@ export class CollectionsService {
               : {}),
           },
         });
+        if (action === 'publish') {
+          await this.cleanupSupersededDraftCollections(
+            tx,
+            userId,
+            collectionId,
+            updatedCollection.title,
+            now,
+          );
+        }
+        return updatedCollection;
       });
 
       if (
@@ -2968,6 +3021,16 @@ export class CollectionsService {
         },
       },
     });
+
+    if (newStatus === 'PUBLISHED') {
+      await this.cleanupSupersededDraftCollections(
+        this.prisma as any,
+        userId,
+        collectionId,
+        publishedCollection.title,
+        finalizeAt,
+      );
+    }
 
     const normalizedFinalizeFilterValueIds = this.normalizeFilterValueIds(
       dto.collectionMetadata?.filterValueIds,
@@ -4418,11 +4481,26 @@ export class CollectionsService {
    * PHASE 6: Get draft collections for current user
    */
   async getMyDraftCollections(userId: string) {
+    const publishedTitleRows = await this.prisma.collection.findMany({
+      where: {
+        ownerId: userId,
+        status: 'PUBLISHED',
+        deletedAt: null,
+      },
+      select: { title: true },
+    });
+    const publishedTitles = publishedTitleRows
+      .map((item) => item.title?.trim())
+      .filter((title): title is string => Boolean(title));
+
     const items = await this.prisma.collection.findMany({
       where: {
         ownerId: userId,
         status: 'DRAFT',
         deletedAt: null,
+        ...(publishedTitles.length > 0
+          ? { title: { notIn: publishedTitles } }
+          : {}),
       },
       orderBy: { createdAt: 'desc' },
       select: {
