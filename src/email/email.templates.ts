@@ -345,6 +345,61 @@ export function accountReactivatedEmail(
   };
 }
 
+export function confirmEmailChangeEmail(
+  confirmLink: string,
+  newEmail: string,
+  appName: string,
+): EmailContent {
+  const companyName = normalizeCompanyName(appName);
+  return {
+    subject: `Confirm your new ${companyName} email address`,
+    html: wrap(
+      'Confirm Email Change',
+      `${p(`We received a request to change the email address on your <strong>${companyName}</strong> account to <strong>${newEmail}</strong>.`)}
+      ${p('Click the button below to confirm the new email address. Your current email stays active until you complete this confirmation.')}
+      <div style="text-align:center;margin:24px 0">${btn(confirmLink, 'Confirm New Email')}</div>
+      ${warningBox('<p style="margin:0;color:#9a3412;font-size:13px">If you did not request this change, you can ignore this email and your account email will remain unchanged.</p>')}`,
+      companyName,
+    ),
+    text: `Confirm your new ${companyName} email address\n\nConfirm this email change: ${confirmLink}\n\nIf you did not request it, ignore this email.`,
+  };
+}
+
+export function passwordChangedSecurityAlertEmail(
+  appName: string,
+): EmailContent {
+  const companyName = normalizeCompanyName(appName);
+  return {
+    subject: `${companyName} security alert: your password was changed`,
+    html: wrap(
+      'Password Changed',
+      `${successBox('<p style="margin:0;color:#166534;font-size:14px;font-weight:600">Your password was updated successfully.</p>')}
+      ${p("If this was you, no further action is needed. If this wasn't you, secure your account immediately by resetting your password and reviewing recent sessions.")}
+      <div style="text-align:center;margin:24px 0">${btn(resolveAppUrl('/settings?tab=account-security'), 'Review Account Security')}</div>`,
+      companyName,
+    ),
+    text: `Your ${companyName} password was changed.\n\nIf this wasn't you, secure your account immediately: ${resolveAppUrl('/settings?tab=account-security')}`,
+  };
+}
+
+export function emailChangedSecurityAlertEmail(
+  previousEmail: string,
+  newEmail: string,
+  appName: string,
+): EmailContent {
+  const companyName = normalizeCompanyName(appName);
+  return {
+    subject: `${companyName} security alert: your email address was changed`,
+    html: wrap(
+      'Email Address Changed',
+      `${infoBox(`<p style="margin:0;color:${BRAND_PRIMARY};font-size:14px">Your account email was changed from <strong>${previousEmail}</strong> to <strong>${newEmail}</strong>.</p>`)}
+      ${p("If this was you, you're all set. If this wasn't you, secure your account immediately and contact support.")}`,
+      companyName,
+    ),
+    text: `Your ${companyName} account email changed from ${previousEmail} to ${newEmail}. If this wasn't you, secure your account immediately.`,
+  };
+}
+
 // ─────────────────────────────────────────────
 // CONTENT
 // ─────────────────────────────────────────────

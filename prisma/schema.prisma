@@ -60,6 +60,9 @@ model User {
   commentV2Threads      CommentV2Thread[]
   isEmailVerified       Boolean         @default(false)
   emailVerificationCode String?         @unique
+  pendingEmail          String?         @unique
+  pendingEmailTokenHash String?         @unique
+  pendingEmailExpiresAt DateTime?
   isActive              String          @default("Active")
   notificationSettings  Json?           // Stores user preferences { security: { login: true }, engagement: { threads: true } }
   emailPreference       UserEmailPreference?
@@ -258,6 +261,7 @@ model RefreshToken {
   user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   userAgent  String?
   ipAddress  String?
+  locationLabel String?
   lastUsedAt DateTime?
   expiresAt  DateTime
   createdAt  DateTime  @default(now())

@@ -116,6 +116,93 @@ export class AuthService {
       : '/profile';
   }
 
+  private resolveRequestLocation(req: Request): string | null {
+    const city =
+      this.readHeaderValue(req, 'x-vercel-ip-city') ||
+      this.readHeaderValue(req, 'cf-ipcity') ||
+      this.readHeaderValue(req, 'x-appengine-city');
+    const country =
+      this.readHeaderValue(req, 'x-vercel-ip-country') ||
+      this.readHeaderValue(req, 'cf-ipcountry') ||
+      this.readHeaderValue(req, 'x-appengine-country');
+    const parts = [city, country].filter(Boolean);
+    return parts.length > 0 ? parts.join(', ') : null;
+  }
+
+  private maskIpAddress(ipAddress?: string | null): string | null {
+    const value = String(ipAddress ?? '').trim();
+    if (!value) {
+      return null;
+    }
+
+    if (value.includes(':')) {
+      const segments = value.split(':').filter(Boolean);
+      if (segments.length === 0) {
+        return value;
+      }
+      return `${segments.slice(0, 2).join(':')}:xxxx:xxxx`;
+    }
+
+    const parts = value.split('.');
+    if (parts.length !== 4) {
+      return value;
+    }
+
+    return `${parts[0]}.${parts[1]}.xxx.xxx`;
+  }
+
+  private extractRefreshSessionId(rawRefreshToken?: string | null): string | null {
+    if (!rawRefreshToken) {
+      return null;
+    }
+
+    const [sessionId, secret] = String(rawRefreshToken).split('.');
+    if (!sessionId || !secret) {
+      return null;
+    }
+
+    return sessionId;
+  }
+
+  private async sendScenarioEmailIfAllowed(args: {
+    userId: string;
+    to: string;
+    scenarioKey: string;
+    subject: string;
+    html: string;
+    text: string;
+    priority: EmailPriority;
+    idempotencyKey?: string;
+  }): Promise<void> {
+    const allowed = await this.notifications.canSendScenarioEmail(
+      args.userId,
+      args.scenarioKey,
+    );
+    if (!allowed) {
+      return;
+    }
+
+    const result = await this.emailService.send(
+      args.to,
+      args.subject,
+      args.html,
+      args.text,
+      {
+        recipientUserId: args.userId,
+        scenarioKey: args.scenarioKey,
+        priority: args.priority,
+        idempotencyKey: args.idempotencyKey,
+      },
+    );
+
+    this.logEmailDispatchOutcome({
+      scenarioKey: args.scenarioKey,
+      userId: args.userId,
+      recipientEmail: args.to,
+      result,
+    });
+  }
+
   private normalizeLoginIdentifier(value: string): string {
     return String(value ?? '')
       .normalize('NFKC')
@@ -517,6 +604,56 @@ export class AuthService {
     return this.trustedDeviceService.revokeDevice(userId, deviceId);
   }
 
+  async listSecuritySessions(userId: string, currentRawRefreshToken?: string | null) {
+    const currentSessionId = this.extractRefreshSessionId(currentRawRefreshToken);
+    const sessions = await this.prisma.refreshToken.findMany({
+      where: { userId },
+      orderBy: { lastUsedAt: 'desc' },
+      take: 25,
+      select: {
+        id: true,
+        userAgent: true,
+        ipAddress: true,
+        locationLabel: true,
+        createdAt: true,
+        lastUsedAt: true,
+        expiresAt: true,
+      },
+    } as any);
+
+    return sessions.map((session) => ({
+      id: session.id,
+      userAgent: session.userAgent,
+      ipAddressMasked: this.maskIpAddress(session.ipAddress),
+      location: (session as any).locationLabel ?? null,
+      createdAt: session.createdAt,
+      lastUsedAt: session.lastUsedAt,
+      expiresAt: session.expiresAt,
+      isCurrentSession: currentSessionId != null && session.id === currentSessionId,
+    }));
+  }
+
+  async revokeSecuritySession(
+    userId: string,
+    sessionId: string,
+    currentRawRefreshToken?: string | null,
+  ) {
+    const currentSessionId = this.extractRefreshSessionId(currentRawRefreshToken);
+    if (currentSessionId && sessionId === currentSessionId) {
+      throw new BadRequestException('Use logout to end the current session');
+    }
+
+    const result = await this.prisma.refreshToken.deleteMany({
+      where: { id: sessionId, userId },
+    });
+
+    return { success: result.count > 0 };
+  }
+
+  async logoutOtherSessions(userId: string, currentRawRefreshToken?: string | null) {
+    return this.tokenService.revokeOtherRefreshTokens(userId, currentRawRefreshToken);
+  }
+
   // Validates user credentials for login
   async validateUser(identifier: string, password: string) {
     const normalizedIdentifier = this.normalizeLoginIdentifier(identifier);
@@ -835,6 +972,221 @@ export class AuthService {
         `Profile fetch failed: ${error.message || 'Unknown error'}`,
       );
     }
+  }
+
+  async requestEmailChange(
+    userId: string,
+    newEmail: string,
+    currentPassword: string,
+  ) {
+    const normalizedEmail = newEmail.trim().toLowerCase();
+    if (!normalizedEmail) {
+      throw new BadRequestException('New email is required');
+    }
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        email: true,
+        password: true,
+      },
+    });
+    if (!user) {
+      throw new UnauthorizedException('User not found');
+    }
+
+    if (user.email === normalizedEmail) {
+      throw new BadRequestException('New email must be different from your current email');
+    }
+
+    const passwordValid = await this.passwordService.verifyPassword(
+      user.password,
+      currentPassword,
+    );
+    if (!passwordValid) {
+      throw new UnauthorizedException('Incorrect password');
+    }
+
+    const existing = await this.prisma.user.findFirst({
+      where: {
+        OR: [{ email: normalizedEmail }, { pendingEmail: normalizedEmail }],
+        id: { not: userId },
+      },
+      select: { id: true },
+    } as any);
+    if (existing) {
+      throw new BadRequestException('That email address is already in use');
+    }
+
+    const rawToken = randomBytes(32).toString('hex');
+    const tokenHash = createHash('sha256').update(rawToken).digest('hex');
+    const expiresAt = new Date(Date.now() + 60 * 60 * 1000);
+
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: {
+        pendingEmail: normalizedEmail,
+        pendingEmailTokenHash: tokenHash,
+        pendingEmailExpiresAt: expiresAt,
+      },
+    } as any);
+
+    const confirmLink = `${this.resolveWebAppBaseUrl()}/settings?tab=account-security&emailChangeToken=${rawToken}`;
+    const emailContent = emailTemplates.confirmEmailChangeEmail(
+      confirmLink,
+      normalizedEmail,
+      this.emailService.getAppName(),
+    );
+    const result = await this.emailService.send(
+      normalizedEmail,
+      emailContent.subject,
+      emailContent.html,
+      emailContent.text,
+      {
+        recipientUserId: userId,
+        scenarioKey: 'auth.email_change.confirm',
+        priority: EmailPriority.P0_SECURITY,
+        idempotencyKey: `auth:email-change:${userId}:${tokenHash}`,
+      },
+    );
+    this.logEmailDispatchOutcome({
+      scenarioKey: 'auth.email_change.confirm',
+      userId,
+      recipientEmail: normalizedEmail,
+      result,
+    });
+
+    return {
+      message: `A confirmation link has been sent to ${normalizedEmail}. Your email will update once confirmed.`,
+      pendingEmail: normalizedEmail,
+    };
+  }
+
+  async confirmEmailChange(token: string) {
+    const tokenHash = createHash('sha256').update(token).digest('hex');
+    const user = await this.prisma.user.findFirst({
+      where: {
+        pendingEmailTokenHash: tokenHash,
+        pendingEmailExpiresAt: { gt: new Date() },
+      },
+      select: {
+        id: true,
+        email: true,
+        pendingEmail: true,
+      },
+    } as any);
+
+    if (!user || !user.pendingEmail) {
+      throw new BadRequestException('Invalid or expired email change link');
+    }
+
+    const previousEmail = user.email;
+    const nextEmail = user.pendingEmail;
+
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: {
+        email: nextEmail,
+        pendingEmail: null,
+        pendingEmailTokenHash: null,
+        pendingEmailExpiresAt: null,
+        isEmailVerified: true,
+      },
+    } as any);
+
+    const changedEmail = emailTemplates.emailChangedSecurityAlertEmail(
+      previousEmail,
+      nextEmail,
+      this.emailService.getAppName(),
+    );
+
+    await this.sendScenarioEmailIfAllowed({
+      userId: user.id,
+      to: previousEmail,
+      scenarioKey: 'auth.email.changed',
+      subject: changedEmail.subject,
+      html: changedEmail.html,
+      text: changedEmail.text,
+      priority: EmailPriority.P0_SECURITY,
+      idempotencyKey: `auth:email-changed:old:${user.id}:${tokenHash}`,
+    });
+
+    await this.sendScenarioEmailIfAllowed({
+      userId: user.id,
+      to: nextEmail,
+      scenarioKey: 'auth.email.changed',
+      subject: changedEmail.subject,
+      html: changedEmail.html,
+      text: changedEmail.text,
+      priority: EmailPriority.P0_SECURITY,
+      idempotencyKey: `auth:email-changed:new:${user.id}:${tokenHash}`,
+    });
+
+    return { message: 'Email updated successfully' };
+  }
+
+  async deleteOwnAccount(
+    userId: string,
+    confirmationWord: string,
+    currentPassword: string,
+    currentRawRefreshToken?: string | null,
+  ) {
+    if (String(confirmationWord).trim().toUpperCase() !== 'DELETE') {
+      throw new BadRequestException('Type DELETE to confirm account deletion');
+    }
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        email: true,
+        username: true,
+        password: true,
+      },
+    });
+    if (!user) {
+      throw new UnauthorizedException('User not found');
+    }
+
+    const passwordValid = await this.passwordService.verifyPassword(
+      user.password,
+      currentPassword,
+    );
+    if (!passwordValid) {
+      throw new UnauthorizedException('Incorrect password');
+    }
+
+    const deletedAt = new Date();
+    const suffix = deletedAt.getTime().toString(36);
+    const deletedEmail = `deleted+${suffix}-${user.id}@threadly.local`;
+    const deletedUsername = `deleted_${suffix}`;
+    const placeholderPassword = await this.passwordService.hashPassword(
+      randomBytes(32).toString('hex'),
+    );
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.refreshToken.deleteMany({ where: { userId } });
+      await tx.user.update({
+        where: { id: userId },
+        data: {
+          email: deletedEmail,
+          username: deletedUsername,
+          password: placeholderPassword,
+          status: UserStatus.DEACTIVATED,
+          deactivatedAt: deletedAt,
+          deactivatedReason: 'USER_SELF_DELETE',
+          pendingEmail: null,
+          pendingEmailTokenHash: null,
+          pendingEmailExpiresAt: null,
+          authVersion: { increment: 1 },
+        },
+      } as any);
+    });
+
+    await this.tokenService.revokeRefreshToken(currentRawRefreshToken);
+
+    return { message: 'Your account has been deleted.' };
   }
 
   async requestAccountReactivation(email: string, reason: string) {
@@ -1380,6 +1732,7 @@ export class AuthService {
     userId: string,
     currentPassword: string | undefined,
     newPassword: string,
+    currentRawRefreshToken?: string | null,
   ) {
     if (!newPassword) {
       throw new BadRequestException('New password is required');
@@ -1438,17 +1791,27 @@ export class AuthService {
 
     const password = await this.passwordService.hashPassword(newPassword);
 
-    await this.prisma.$transaction(async (tx) => {
-      await tx.refreshToken.deleteMany({ where: { userId } });
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: {
+        password,
+        mustResetPassword: false,
+      },
+    });
+    await this.tokenService.revokeOtherRefreshTokens(userId, currentRawRefreshToken);
 
-      await tx.user.update({
-        where: { id: userId },
-        data: {
-          password,
-          mustResetPassword: false,
-          authVersion: { increment: 1 },
-        },
-      });
+    const passwordChangedEmail = emailTemplates.passwordChangedSecurityAlertEmail(
+      this.emailService.getAppName(),
+    );
+    await this.sendScenarioEmailIfAllowed({
+      userId,
+      to: user.email,
+      scenarioKey: 'auth.password.changed',
+      subject: passwordChangedEmail.subject,
+      html: passwordChangedEmail.html,
+      text: passwordChangedEmail.text,
+      priority: EmailPriority.P0_SECURITY,
+      idempotencyKey: `auth:password-changed:${userId}:${Date.now()}`,
     });
 
     return { message: 'Password updated successfully' };

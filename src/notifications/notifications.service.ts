@@ -53,6 +53,11 @@ type UpdateEmailSettingsPayload = {
 
 const DEFAULT_SEMANTIC_DEDUPE_MS = 45_000;
 const MAX_SEMANTIC_DEDUPE_CANDIDATES = 25;
+const EXTRA_EMAIL_SCENARIO_KEYS = [
+  'auth.password.changed',
+  'auth.email.changed',
+  'auth.two_factor.disabled',
+] as const;
 
 @Injectable()
 export class NotificationsService {
@@ -518,7 +523,17 @@ export class NotificationsService {
     const fromRegistry = this.registry
       .getAllTypes()
       .map((type) => getEmailScenarioKey(type, null));
-    return Array.from(new Set([...fromRegistry, ...getCriticalEmailScenarios()]));
+    return Array.from(
+      new Set([
+        ...fromRegistry,
+        ...getCriticalEmailScenarios(),
+        ...EXTRA_EMAIL_SCENARIO_KEYS,
+      ]),
+    );
+  }
+
+  async canSendScenarioEmail(userId: string, scenarioKey: string): Promise<boolean> {
+    return this.isEmailAllowedForScenario(userId, scenarioKey);
   }
 
   private normalizeEmail(email: string): string {

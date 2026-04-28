@@ -108,6 +108,23 @@ export class TokenService {
     return req.ip || req.socket?.remoteAddress || null;
   }
 
+  private describeRequestLocation(req: Request): string | null {
+    const readHeaderValue = (name: string) => {
+      const value = req.headers[name];
+      if (Array.isArray(value)) {
+        return String(value[0] ?? '').trim();
+      }
+      return typeof value === 'string' ? value.trim() : '';
+    };
+    const city = readHeaderValue('x-vercel-ip-city') || readHeaderValue('cf-ipcity');
+    const country =
+      readHeaderValue('x-vercel-ip-country') ||
+      readHeaderValue('cf-ipcountry') ||
+      readHeaderValue('x-appengine-country');
+    const parts = [city, country].filter(Boolean);
+    return parts.length > 0 ? parts.join(', ') : null;
+  }
+
   private attachAuthCookies(
     res: Response,
     accessToken: string,
@@ -155,10 +172,11 @@ export class TokenService {
         userId,
         userAgent: req.headers['user-agent'] ?? null,
         ipAddress: this.extractClientIp(req),
+        locationLabel: this.describeRequestLocation(req),
         lastUsedAt: new Date(),
         expiresAt,
       },
-    });
+    } as any);
 
     return `${sessionId}.${secret}`;
   }
@@ -178,10 +196,11 @@ export class TokenService {
         tokenHash,
         userAgent: req.headers['user-agent'] ?? null,
         ipAddress: this.extractClientIp(req),
+        locationLabel: this.describeRequestLocation(req),
         lastUsedAt: new Date(),
         expiresAt,
       },
-    });
+    } as any);
 
     return `${currentToken.id}.${secret}`;
   }
@@ -320,5 +339,30 @@ export class TokenService {
     } catch (error: any) {
       this.logger.warn('Failed to revoke all refresh tokens:', error.message);
     }
+  }
+
+  async revokeOtherRefreshTokens(
+    userId: string,
+    currentRawRefreshToken?: string | null,
+  ) {
+    let currentSessionId: string | null = null;
+    if (currentRawRefreshToken) {
+      try {
+        currentSessionId = this.parseRefreshToken(currentRawRefreshToken).sessionId;
+      } catch {
+        currentSessionId = null;
+      }
+    }
+
+    const result = await this.prisma.refreshToken.deleteMany({
+      where: currentSessionId
+        ? { userId, id: { not: currentSessionId } }
+        : { userId },
+    });
+
+    return {
+      revokedCount: result.count,
+      currentSessionId,
+    };
   }
 }

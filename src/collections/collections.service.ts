@@ -2287,6 +2287,9 @@ export class CollectionsService {
                 originalName: true,
               },
             },
+            brand: {
+              select: { id: true },
+            },
           },
         },
         medias: {
@@ -2407,7 +2410,7 @@ export class CollectionsService {
         commentsCount: media.commentsCount,
         collectionCollabCount: collection.collectionCollabsCount,
         tags: collection.tags ?? [],
-        brandId: owner.id,
+        brandId: owner.brand?.id ?? owner.id,
         brandName: owner.brandFullName ?? owner.username ?? '',
         username: owner.username ?? '',
         brandLogo: logoSignedUrl ?? owner.profileImage ?? null,
