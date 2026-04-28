@@ -224,8 +224,10 @@ export class MessagingService {
         where: { id: actorId },
         select: { id: true, type: true },
       }),
-      this.prisma.brand.findUnique({
-        where: { id: brandId },
+      this.prisma.brand.findFirst({
+        where: {
+          OR: [{ id: brandId }, { ownerId: brandId }],
+        },
         select: { id: true, ownerId: true, name: true },
       }),
     ]);

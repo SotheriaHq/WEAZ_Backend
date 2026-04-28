@@ -25,6 +25,7 @@ export interface CreateNotificationOptions {
 export interface NotificationSettings {
   security: {
     login: boolean;
+    logout: boolean;
   };
   social: {
     threads: boolean;
@@ -76,7 +77,8 @@ export interface NotificationSettings {
 
 export const DEFAULT_NOTIFICATION_SETTINGS: NotificationSettings = {
   security: {
-    login: true,
+    login: false,
+    logout: false,
   },
   social: {
     threads: true,

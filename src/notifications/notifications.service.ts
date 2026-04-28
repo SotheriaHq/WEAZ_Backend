@@ -378,6 +378,10 @@ export class NotificationsService {
       security: {
         ...DEFAULT_NOTIFICATION_SETTINGS.security,
         ...(raw.security ?? {}),
+        logout:
+          raw.security?.logout ??
+          raw.security?.login ??
+          DEFAULT_NOTIFICATION_SETTINGS.security.logout,
       },
       social: {
         ...DEFAULT_NOTIFICATION_SETTINGS.social,
@@ -907,9 +911,10 @@ export class NotificationsService {
   ): boolean {
     switch (type) {
       case NotificationType.LOGIN:
+        return settings.security.login;
       case NotificationType.LOGOUT:
       case NotificationType.LOGOUT_ALL:
-        return settings.security.login;
+        return settings.security.logout;
       case NotificationType.THREAD:
         return settings.social.threads;
       case NotificationType.COMMENT:
@@ -1120,6 +1125,32 @@ export class NotificationsService {
         return null;
       }
     } else if (!this.isNotificationEnabled(type, settings)) {
+      if (type === NotificationType.LOGIN) {
+        const sanitizedPayload = this.validateAndSanitizePayload(
+          type,
+          opts?.payload ?? {},
+        );
+        const syntheticNotificationId = uuidv4();
+        const message = this.formatMessage({
+          id: syntheticNotificationId,
+          type,
+          payload: sanitizedPayload,
+        });
+
+        void this.enqueueEmailForNotification({
+          recipientId,
+          notificationId: syntheticNotificationId,
+          type,
+          message,
+          payload: this.toRecord(sanitizedPayload as Prisma.JsonValue),
+          targetUrl: undefined,
+        }).catch((error) => {
+          this.logger.warn(
+            `Failed to enqueue login email-only notification for user=${recipientId}: ${String(error)}`,
+          );
+        });
+      }
+
       this.logger.debug(
         `Notification type ${type} disabled by user settings. Skipping.`,
       );
