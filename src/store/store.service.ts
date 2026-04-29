@@ -12,6 +12,14 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateProductDto, UpdateProductDto } from './dto/create-product.dto';
 import { AddToCartDto, UpdateCartItemDto } from './dto/cart.dto';
+import type {
+  BagDefaultAction,
+  BagFittingState,
+  BagHeartbeatState,
+  BagMode,
+  BagStatusDto,
+  BagStockState,
+} from './dto/bag-status.dto';
 import { AddToWishlistDto } from './dto/wishlist.dto';
 import { CheckoutDto } from './dto/checkout.dto';
 import { calculateShipping } from '../payment/payment.types';
@@ -30,7 +38,6 @@ import {
 import {
   CollectionType,
   CustomOrderSourceType,
-  CustomOrderCheckoutStatus,
   Prisma,
   NotificationType,
   OrderStatus,
@@ -3632,7 +3639,24 @@ export class StoreService {
     return { ...withMedia, isWishlisted };
   }
 
-  async getProductBagStatus(productId: string, userId?: string) {
+  async getProductBagStatus(productId: string, userId?: string): Promise<
+    BagStatusDto & {
+      baggable: boolean;
+      reason: string | null;
+      modes: { standard: boolean; customOrder: boolean };
+      customOrder: {
+        enabled: boolean;
+        inBag: boolean;
+        sessionId: string | null;
+        checkoutIntentId: string | null;
+        configurationId: string | null;
+        requiredMeasurementKeys: string[];
+        requiredFreeformPointIds: string[];
+        fittingsComplete: boolean;
+        missingMeasurementKeys: string[];
+      };
+    }
+  > {
     const product = await this.prisma.product.findFirst({
       where: { id: productId, deletedAt: null },
       include: {
@@ -3670,9 +3694,11 @@ export class StoreService {
 
     const isOwner = Boolean(userId && product.brand?.ownerId === userId);
     const publicProduct =
+      !product.deletedAt &&
+      !product.archivedAt &&
+      product.isActive !== false &&
       Boolean(product.brand?.isStoreOpen) &&
-      this.isProductPubliclyAvailable(product) &&
-      this.isProductPubliclyInventoryEligible(product);
+      this.hasPublicStoreAccess(product);
     const inStock =
       !product.trackInventory ||
       product.allowBackorders ||
@@ -3748,7 +3774,7 @@ export class StoreService {
         ? await this.prisma.customOrderCheckoutSession.findFirst({
             where: {
               buyerId: userId,
-              status: CustomOrderCheckoutStatus.SUBMITTED,
+              customOrderId: null,
               checkoutIntent: {
                 configurationId: customConfiguration.id,
                 consumedAt: null,
@@ -3757,8 +3783,25 @@ export class StoreService {
             },
             select: { id: true, checkoutIntentId: true },
             orderBy: { createdAt: 'desc' },
-          })
+        })
         : null;
+
+    const [previousStandardOrder, previousCustomOrder] = userId
+      ? await Promise.all([
+          this.prisma.orderItem.findFirst({
+            where: { buyerId: userId, productId },
+            select: { id: true },
+          }),
+          this.prisma.customOrder.findFirst({
+            where: {
+              buyerId: userId,
+              sourceType: CustomOrderSourceType.PRODUCT,
+              sourceId: productId,
+            },
+            select: { id: true },
+          }),
+        ])
+      : await Promise.all([Promise.resolve(null), Promise.resolve(null)]);
 
     const measurementRecord =
       sizeFitProfile?.measurements &&
@@ -3777,6 +3820,15 @@ export class StoreService {
       return !Number.isFinite(numeric) || numeric <= 0;
     });
 
+    const fittingState: BagFittingState =
+      !customConfiguration || requiredMeasurementKeys.length === 0
+        ? 'NOT_REQUIRED'
+        : missingMeasurementKeys.length === 0
+          ? 'COMPLETE'
+          : missingMeasurementKeys.length === requiredMeasurementKeys.length
+            ? 'MISSING'
+            : 'PARTIAL';
+
     const standardEnabled =
       product.standardCheckoutEnabled !== false &&
       publicProduct &&
@@ -3788,43 +3840,126 @@ export class StoreService {
       publicProduct &&
       !isOwner;
 
-    return {
+    const canBag = standardEnabled || customEnabled;
+    const bagMode: BagMode =
+      standardEnabled && customEnabled
+        ? 'STANDARD_OR_CUSTOM'
+        : standardEnabled
+          ? 'STANDARD'
+          : customEnabled
+            ? 'CUSTOM'
+            : 'UNAVAILABLE';
+    const stockState: BagStockState =
+      !publicProduct
+        ? 'UNAVAILABLE'
+        : inStock
+          ? 'IN_STOCK'
+          : customEnabled
+            ? 'CUSTOM_ONLY'
+            : 'OUT_OF_STOCK';
+    const hasPreviouslyBaggedOrOrdered = Boolean(
+      cartItem ||
+        customBagLine ||
+        previousStandardOrder ||
+        previousCustomOrder,
+    );
+    const disabledReason = isOwner
+      ? 'Brands cannot bag their own products.'
+      : !publicProduct
+        ? 'This product is unavailable.'
+        : !standardEnabled && !customEnabled && product.customOrderEnabled === true && !customConfiguration
+          ? 'This product needs an active custom-order configuration before it can be bagged.'
+          : !standardEnabled && !customEnabled && !inStock
+            ? 'This product is out of stock.'
+            : !standardEnabled && !customEnabled
+              ? 'This product is not available for bagging.'
+              : null;
+    const heartbeatState: BagHeartbeatState =
+      !canBag
+        ? 'disabled'
+        : cartItem || customBagLine
+          ? 'currently_bagged'
+          : hasPreviouslyBaggedOrOrdered
+            ? 'previously_bagged'
+            : 'not_bagged';
+    const defaultAction: BagDefaultAction =
+      !canBag
+        ? 'DISABLED'
+        : standardEnabled && customEnabled
+          ? 'OPEN_SELECTOR'
+          : standardEnabled && (requiresSize || requiresColor)
+            ? 'OPEN_SELECTOR'
+            : standardEnabled
+              ? 'ADD_STANDARD'
+              : fittingState === 'MISSING' || fittingState === 'PARTIAL'
+                ? 'OPEN_FITTINGS'
+                : 'OPEN_CUSTOM_FLOW';
+
+    const response: BagStatusDto = {
       productId,
-      baggable: standardEnabled || customEnabled,
-      reason: isOwner
-        ? 'OWN_PRODUCT'
-        : !publicProduct
-          ? 'PRODUCT_UNAVAILABLE'
-          : !standardEnabled && !customEnabled
-            ? 'NO_BAG_MODE'
-            : null,
-      modes: {
-        standard: standardEnabled,
-        customOrder: customEnabled,
-      },
+      canBag,
+      bagMode,
       standard: {
-        enabled: standardEnabled,
-        inBag: Boolean(cartItem),
+        available: standardEnabled,
+        alreadyBagged: Boolean(cartItem),
         cartItemId: cartItem?.id ?? null,
-        selectedSize: cartItem?.selectedSize ?? null,
-        selectedColor: cartItem?.selectedColor ?? null,
-        quantity: cartItem?.quantity ?? 0,
         requiresSize,
         requiresColor,
+        selectedSize: cartItem?.selectedSize ?? null,
+        selectedColor: cartItem?.selectedColor ?? null,
         sizes,
         colors,
+        quantity: cartItem?.quantity ?? 0,
         stock: Number(product.totalStock || 0),
       },
-      customOrder: {
-        enabled: customEnabled,
-        inBag: Boolean(customBagLine),
-        sessionId: customBagLine?.id ?? null,
+      custom: {
+        available: customEnabled,
+        alreadyBagged: Boolean(customBagLine),
+        checkoutSessionId: customBagLine?.id ?? null,
         checkoutIntentId: customBagLine?.checkoutIntentId ?? null,
         configurationId: customConfiguration?.id ?? null,
         requiredMeasurementKeys,
         requiredFreeformPointIds: customConfiguration?.requiredFreeformPointIds ?? [],
-        fittingsComplete: missingMeasurementKeys.length === 0,
+        fittingState,
         missingMeasurementKeys,
+      },
+      stockState,
+      userState: {
+        authenticated: Boolean(userId),
+        isOwner,
+        hasPreviouslyBaggedOrOrdered,
+      },
+      ui: {
+        heartbeatState,
+        defaultAction,
+        disabledReason,
+      },
+    };
+
+    return {
+      ...response,
+      baggable: response.canBag,
+      reason: disabledReason
+        ? disabledReason
+        : !response.canBag
+          ? 'NO_BAG_MODE'
+          : null,
+      modes: {
+        standard: response.standard.available,
+        customOrder: response.custom.available,
+      },
+      customOrder: {
+        enabled: response.custom.available,
+        inBag: response.custom.alreadyBagged,
+        sessionId: response.custom.checkoutSessionId,
+        checkoutIntentId: response.custom.checkoutIntentId,
+        configurationId: response.custom.configurationId,
+        requiredMeasurementKeys: response.custom.requiredMeasurementKeys,
+        requiredFreeformPointIds: response.custom.requiredFreeformPointIds,
+        fittingsComplete:
+          response.custom.fittingState === 'COMPLETE' ||
+          response.custom.fittingState === 'NOT_REQUIRED',
+        missingMeasurementKeys: response.custom.missingMeasurementKeys,
       },
     };
   }
