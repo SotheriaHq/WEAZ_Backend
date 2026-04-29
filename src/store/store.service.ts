@@ -30,6 +30,7 @@ import {
 import {
   CollectionType,
   CustomOrderSourceType,
+  CustomOrderCheckoutStatus,
   Prisma,
   NotificationType,
   OrderStatus,
@@ -3629,6 +3630,203 @@ export class StoreService {
     const { wishlistItems, ...productData } = product;
     const withMedia = await this.attachProductMedia(productData);
     return { ...withMedia, isWishlisted };
+  }
+
+  async getProductBagStatus(productId: string, userId?: string) {
+    const product = await this.prisma.product.findFirst({
+      where: { id: productId, deletedAt: null },
+      include: {
+        brand: {
+          select: {
+            ownerId: true,
+            isStoreOpen: true,
+          },
+        },
+        collection: {
+          select: {
+            status: true,
+            isAvailableInStore: true,
+            deletedAt: true,
+          },
+        },
+        collections: {
+          select: {
+            collection: {
+              select: {
+                status: true,
+                isAvailableInStore: true,
+                deletedAt: true,
+              },
+            },
+          },
+        },
+        variants: true,
+      },
+    });
+
+    if (!product) {
+      throw new NotFoundException('Product not found');
+    }
+
+    const isOwner = Boolean(userId && product.brand?.ownerId === userId);
+    const publicProduct =
+      Boolean(product.brand?.isStoreOpen) &&
+      this.isProductPubliclyAvailable(product) &&
+      this.isProductPubliclyInventoryEligible(product);
+    const inStock =
+      !product.trackInventory ||
+      product.allowBackorders ||
+      Number(product.totalStock || 0) > 0 ||
+      (Array.isArray((product as any).variants) &&
+        ((product as any).variants as any[]).some((variant) => Number(variant.stock || 0) > 0));
+
+    const variants = Array.isArray((product as any).variants)
+      ? ((product as any).variants as any[])
+      : [];
+    const inStockVariants = variants.filter((variant) => Number(variant.stock || 0) > 0);
+    const variantSource = inStockVariants.length > 0 ? inStockVariants : variants;
+    const requiresSize =
+      variantSource.some((variant) => Boolean(variant.size)) || product.sizes.length > 0;
+    const requiresColor =
+      variantSource.some((variant) => Boolean(variant.color)) || product.colors.length > 0;
+    const sizes = Array.from(
+      new Set([
+        ...variantSource.map((variant) => String(variant.size || '').trim()).filter(Boolean),
+        ...product.sizes,
+      ]),
+    );
+    const colors = Array.from(
+      new Set([
+        ...variantSource.map((variant) => String(variant.color || '').trim()).filter(Boolean),
+        ...product.colors,
+      ]),
+    );
+
+    const [cartItem, customConfiguration, sizeFitProfile] = userId
+      ? await Promise.all([
+          this.prisma.cartItem.findFirst({
+            where: { userId, productId },
+            select: { id: true, selectedSize: true, selectedColor: true, quantity: true },
+            orderBy: { createdAt: 'desc' },
+          }),
+          this.prisma.customOrderConfiguration.findFirst({
+            where: {
+              sourceType: CustomOrderSourceType.PRODUCT,
+              sourceId: productId,
+              isActive: true,
+            },
+            select: {
+              id: true,
+              requiredMeasurementKeys: true,
+              requiredFreeformPointIds: true,
+            },
+          }),
+          this.prisma.userSizeFitProfile.findUnique({
+            where: { userId },
+            select: { measurements: true },
+          }),
+        ])
+      : await Promise.all([
+          Promise.resolve(null),
+          this.prisma.customOrderConfiguration.findFirst({
+            where: {
+              sourceType: CustomOrderSourceType.PRODUCT,
+              sourceId: productId,
+              isActive: true,
+            },
+            select: {
+              id: true,
+              requiredMeasurementKeys: true,
+              requiredFreeformPointIds: true,
+            },
+          }),
+          Promise.resolve(null),
+        ]);
+
+    const customBagLine =
+      userId && customConfiguration
+        ? await this.prisma.customOrderCheckoutSession.findFirst({
+            where: {
+              buyerId: userId,
+              status: CustomOrderCheckoutStatus.SUBMITTED,
+              checkoutIntent: {
+                configurationId: customConfiguration.id,
+                consumedAt: null,
+                expiresAt: { gt: new Date() },
+              },
+            },
+            select: { id: true, checkoutIntentId: true },
+            orderBy: { createdAt: 'desc' },
+          })
+        : null;
+
+    const measurementRecord =
+      sizeFitProfile?.measurements &&
+      typeof sizeFitProfile.measurements === 'object' &&
+      !Array.isArray(sizeFitProfile.measurements)
+        ? (sizeFitProfile.measurements as Record<string, unknown>)
+        : {};
+    const requiredMeasurementKeys = customConfiguration?.requiredMeasurementKeys ?? [];
+    const missingMeasurementKeys = requiredMeasurementKeys.filter((key) => {
+      const raw = measurementRecord[key];
+      const value =
+        raw && typeof raw === 'object' && 'value' in (raw as Record<string, unknown>)
+          ? (raw as Record<string, unknown>).value
+          : raw;
+      const numeric = Number(value);
+      return !Number.isFinite(numeric) || numeric <= 0;
+    });
+
+    const standardEnabled =
+      product.standardCheckoutEnabled !== false &&
+      publicProduct &&
+      inStock &&
+      !isOwner;
+    const customEnabled =
+      product.customOrderEnabled === true &&
+      Boolean(customConfiguration) &&
+      publicProduct &&
+      !isOwner;
+
+    return {
+      productId,
+      baggable: standardEnabled || customEnabled,
+      reason: isOwner
+        ? 'OWN_PRODUCT'
+        : !publicProduct
+          ? 'PRODUCT_UNAVAILABLE'
+          : !standardEnabled && !customEnabled
+            ? 'NO_BAG_MODE'
+            : null,
+      modes: {
+        standard: standardEnabled,
+        customOrder: customEnabled,
+      },
+      standard: {
+        enabled: standardEnabled,
+        inBag: Boolean(cartItem),
+        cartItemId: cartItem?.id ?? null,
+        selectedSize: cartItem?.selectedSize ?? null,
+        selectedColor: cartItem?.selectedColor ?? null,
+        quantity: cartItem?.quantity ?? 0,
+        requiresSize,
+        requiresColor,
+        sizes,
+        colors,
+        stock: Number(product.totalStock || 0),
+      },
+      customOrder: {
+        enabled: customEnabled,
+        inBag: Boolean(customBagLine),
+        sessionId: customBagLine?.id ?? null,
+        checkoutIntentId: customBagLine?.checkoutIntentId ?? null,
+        configurationId: customConfiguration?.id ?? null,
+        requiredMeasurementKeys,
+        requiredFreeformPointIds: customConfiguration?.requiredFreeformPointIds ?? [],
+        fittingsComplete: missingMeasurementKeys.length === 0,
+        missingMeasurementKeys,
+      },
+    };
   }
 
   async resolvePublicProductBySlug(slug: string, userId?: string) {

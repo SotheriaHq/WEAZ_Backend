@@ -322,6 +322,13 @@ export class StoreController {
   }
 
   @UseGuards(OptionalJwtAuthGuard)
+  @Get(['products/:id/bag-status', 'store/products/:id/bag-status'])
+  @Throttle({ default: { limit: 120, ttl: 60000 } })
+  async getProductBagStatus(@Param('id') productId: string, @Req() req: any) {
+    return this.storeService.getProductBagStatus(productId, req.user?.id);
+  }
+
+  @UseGuards(OptionalJwtAuthGuard)
   @Get(['products/:id', 'store/products/:id'])
   @Throttle({ default: { limit: 120, ttl: 60000 } })
   async getProduct(
