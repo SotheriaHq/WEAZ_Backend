@@ -51,6 +51,18 @@ describe('StudioHandoffService', () => {
     ).rejects.toBeInstanceOf(BadRequestException);
   });
 
+  it('rejects studio paths that are not part of the mobile handoff allowlist', async () => {
+    await expect(
+      service.create({ id: 'user-1', type: 'BRAND' }, '/studio/admin/unsafe', req),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('rejects unsupported studio tabs', async () => {
+    await expect(
+      service.create({ id: 'user-1', type: 'BRAND' }, '/studio?tab=unsafe', req),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
   it('creates one-time handoff codes with hashed secret only', async () => {
     const result = await service.create({ id: 'user-1', type: 'BRAND' }, '/studio/store', req);
 
@@ -67,6 +79,16 @@ describe('StudioHandoffService', () => {
     expect(prisma.studioHandoffCode.create.mock.calls[0][0].data.codeHash).not.toContain(
       result.code.split('.')[1],
     );
+  });
+
+  it('allows supported studio tab routes', async () => {
+    const result = await service.create(
+      { id: 'user-1', type: 'BRAND' },
+      '/studio?tab=orders',
+      req,
+    );
+
+    expect(result.intendedPath).toBe('/studio?tab=orders');
   });
 
   it('rejects missing or malformed exchange codes', async () => {

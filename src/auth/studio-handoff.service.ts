@@ -15,6 +15,32 @@ import { TokenService } from './helper/general.helper';
 
 const HANDOFF_TTL_MS = 60_000;
 const HANDOFF_BCRYPT_ROUNDS = 10;
+const ALLOWED_STUDIO_TABS = new Set([
+  'overview',
+  'store',
+  'orders',
+  'messages',
+  'customers',
+  'analytics',
+  'finance',
+]);
+
+const ALLOWED_STUDIO_PATHS = [
+  /^\/studio$/,
+  /^\/studio\/store$/,
+  /^\/studio\/verification$/,
+  /^\/studio\/verification\/apply$/,
+  /^\/studio\/verification\/submitted$/,
+  /^\/studio\/store\/collections\/new$/,
+  /^\/studio\/store\/products\/new$/,
+  /^\/studio\/store\/products\/[A-Za-z0-9_-]+$/,
+  /^\/studio\/store\/products\/[A-Za-z0-9_-]+\/edit$/,
+  /^\/studio\/custom-orders$/,
+  /^\/studio\/custom-orders\/[A-Za-z0-9_-]+$/,
+  /^\/studio\/messages$/,
+  /^\/studio\/store\/setup$/,
+  /^\/studio\/store\/essentials$/,
+];
 
 type RequestUser = {
   id: string;
@@ -42,6 +68,13 @@ export class StudioHandoffService {
       const parsed = new URL(trimmed, 'https://threadly.local');
       if (parsed.pathname !== '/studio' && !parsed.pathname.startsWith('/studio/')) {
         throw new BadRequestException('Studio handoff requires a Studio path');
+      }
+      if (!ALLOWED_STUDIO_PATHS.some((pattern) => pattern.test(parsed.pathname))) {
+        throw new BadRequestException('Studio handoff path is not allowed');
+      }
+      const tab = parsed.searchParams.get('tab');
+      if (parsed.pathname === '/studio' && tab && !ALLOWED_STUDIO_TABS.has(tab)) {
+        throw new BadRequestException('Studio handoff tab is not allowed');
       }
       return `${parsed.pathname}${parsed.search}${parsed.hash}`;
     } catch {
