@@ -48,6 +48,11 @@ import { ConfirmPasswordResetDto } from './dto/confirm-password-reset.dto';
 import { RequestEmailChangeDto } from './dto/request-email-change.dto';
 import { ConfirmEmailChangeDto } from './dto/confirm-email-change.dto';
 import { DeleteAccountDto } from './dto/delete-account.dto';
+import {
+  CreateStudioHandoffDto,
+  ExchangeStudioHandoffDto,
+} from './dto/studio-handoff.dto';
+import { StudioHandoffService } from './studio-handoff.service';
 
 @ApiTags('auth')
 @ApiBearerAuth()
@@ -59,6 +64,7 @@ export class AuthController {
     private readonly tokenService: TokenService,
     private readonly configService: ConfigService,
     private readonly notifications: NotificationsService,
+    private readonly studioHandoff: StudioHandoffService,
   ) {}
 
   private get accessTokenCookieName(): string {
@@ -267,6 +273,32 @@ export class AuthController {
       res.clearCookie(this.accessTokenCookieName, cookieOptions);
       throw error;
     }
+  }
+
+  @Post('studio-handoff')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(201)
+  @Throttle({ default: { limit: 8, ttl: 60000 } })
+  @ApiOperation({ summary: 'Create a short-lived mobile-to-web Studio handoff code' })
+  @UseInterceptors(TransformInterceptor)
+  async createStudioHandoff(
+    @Req() req: Request & { user: { id: string; type?: string | null } },
+    @Body(ValidationPipe) body: CreateStudioHandoffDto,
+  ) {
+    return this.studioHandoff.create(req.user, body.intendedPath, req);
+  }
+
+  @Post('studio-handoff/exchange')
+  @HttpCode(200)
+  @Throttle({ default: { limit: 12, ttl: 60000 } })
+  @ApiOperation({ summary: 'Exchange a Studio handoff code for a normal web session' })
+  @UseInterceptors(TransformInterceptor)
+  async exchangeStudioHandoff(
+    @Req() req: Request,
+    @Body(ValidationPipe) body: ExchangeStudioHandoffDto,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    return this.studioHandoff.exchange(body.code, req, res);
   }
 
   @Post('logout')

@@ -236,6 +236,32 @@ export class TokenService {
     }
   }
 
+  async generateWebSessionForUserId(userId: string, req: Request, res: Response) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: authUserSelect,
+    });
+
+    if (!user) {
+      throw new UnauthorizedException('User not found');
+    }
+    if (user.status !== 'ACTIVE') {
+      throw new UnauthorizedException('User account is suspended or deactivated');
+    }
+
+    const payload = buildAuthTokenPayload(user);
+    const refreshTtl = this.getRefreshTtlForUser(user);
+    const accessToken = await this.jwtService.signAsync(payload, {
+      secret: this.accessTokenSecret,
+      expiresIn: this.accessTokenTtlSeconds,
+    });
+    const refreshToken = await this.issueRefreshToken(user.id, req, refreshTtl);
+
+    this.attachAuthCookies(res, accessToken, refreshToken, refreshTtl);
+
+    return { accessToken };
+  }
+
   async refreshToken(rawRefreshToken: string, req: Request, res: Response) {
     try {
       const { sessionId, secret } = this.parseRefreshToken(rawRefreshToken);

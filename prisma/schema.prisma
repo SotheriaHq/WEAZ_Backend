@@ -52,6 +52,7 @@ model User {
   createdAt             DateTime        @default(now())
   updatedAt             DateTime        @updatedAt
   refreshTokens         RefreshToken[]
+  studioHandoffCodes    StudioHandoffCode[]
   fileUploads           FileUpload[]    @relation("UserFiles")
   posts                 Post[]
   comments              Comment[]
@@ -269,6 +270,24 @@ model RefreshToken {
 
   @@index([userId, createdAt])
   @@index([expiresAt])
+}
+
+model StudioHandoffCode {
+  id           String    @id @map("_id") @db.Uuid
+  codeHash     String    @unique
+  userId       String    @db.Uuid
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  intendedPath String
+  userAgent    String?
+  ipAddress    String?
+  expiresAt    DateTime
+  usedAt       DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@index([userId, createdAt])
+  @@index([expiresAt])
+  @@index([usedAt])
 }
 
 enum Role {
