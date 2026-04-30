@@ -63,6 +63,22 @@ describe('StudioHandoffService', () => {
     ).rejects.toBeInstanceOf(BadRequestException);
   });
 
+  it('rejects arbitrary handoff query params on studio paths', async () => {
+    await expect(
+      service.create(
+        { id: 'user-1', type: 'BRAND' },
+        '/studio/store/products/new?returnTo=https%3A%2F%2Fexample.com',
+        req,
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('rejects arbitrary handoff query params on studio tab routes', async () => {
+    await expect(
+      service.create({ id: 'user-1', type: 'BRAND' }, '/studio?tab=orders&next=/profile', req),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
   it('creates one-time handoff codes with hashed secret only', async () => {
     const result = await service.create({ id: 'user-1', type: 'BRAND' }, '/studio/store', req);
 

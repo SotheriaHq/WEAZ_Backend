@@ -73,6 +73,16 @@ export class StudioHandoffService {
         throw new BadRequestException('Studio handoff path is not allowed');
       }
       const tab = parsed.searchParams.get('tab');
+      const queryKeys = Array.from(parsed.searchParams.keys());
+      if (parsed.pathname !== '/studio' && queryKeys.length > 0) {
+        throw new BadRequestException('Studio handoff query is not allowed for this path');
+      }
+      if (
+        parsed.pathname === '/studio' &&
+        queryKeys.some((key) => key !== 'tab')
+      ) {
+        throw new BadRequestException('Studio handoff query is not allowed');
+      }
       if (parsed.pathname === '/studio' && tab && !ALLOWED_STUDIO_TABS.has(tab)) {
         throw new BadRequestException('Studio handoff tab is not allowed');
       }
