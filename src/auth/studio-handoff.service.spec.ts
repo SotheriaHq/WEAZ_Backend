@@ -39,6 +39,12 @@ describe('StudioHandoffService', () => {
     service = new StudioHandoffService(prisma as any, tokenService as any);
   });
 
+  it('rejects unauthenticated create requests', async () => {
+    await expect(
+      service.create({ id: '' }, '/studio', req),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+  });
+
   it('rejects non-brand create requests', async () => {
     await expect(
       service.create({ id: 'user-1', type: 'REGULAR' }, '/studio', req),
@@ -94,6 +100,22 @@ describe('StudioHandoffService', () => {
     );
     expect(prisma.studioHandoffCode.create.mock.calls[0][0].data.codeHash).not.toContain(
       result.code.split('.')[1],
+    );
+  });
+
+  it('creates a valid brand handoff for the Studio overview', async () => {
+    const result = await service.create({ id: 'user-1', type: 'BRAND' }, '/studio', req);
+
+    expect(result.intendedPath).toBe('/studio');
+    expect(result.expiresAt).toEqual(expect.any(String));
+    expect(result.code).toContain('.');
+    expect(prisma.studioHandoffCode.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          userId: 'user-1',
+          intendedPath: '/studio',
+        }),
+      }),
     );
   });
 
