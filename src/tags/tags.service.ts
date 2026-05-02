@@ -407,7 +407,10 @@ export class TagsService {
     const indexed = await (this.prisma as any).tag.findMany({
       where: {
         aliasOfTagId: null,
-        usageCount: { gt: 0 },
+        OR: [
+          { usageCount: { gt: 0 } },
+          { status: TagStatus.APPROVED, isBanned: false },
+        ],
         ...visibilityWhere,
       },
       orderBy: [
@@ -528,6 +531,10 @@ export class TagsService {
       where: {
         normalizedName: { startsWith: normalized },
         aliasOfTagId: null,
+        OR: [
+          { usageCount: { gt: 0 } },
+          { status: TagStatus.APPROVED, isBanned: false },
+        ],
         ...visibilityWhere,
       },
       orderBy: [
@@ -1274,14 +1281,7 @@ export class TagsService {
       },
     });
 
-    if (nextStatus === 'APPROVED' && !updated.isBanned && !updated.aliasOfTagId) {
-      await this.prisma.systemTag.createMany({
-        data: [{ id: crypto.randomUUID(), tag: normalizedName }],
-        skipDuplicates: true,
-      });
-    } else {
-      await this.prisma.systemTag.deleteMany({ where: { tag: normalizedName } });
-    }
+    // Note: systemTag table not in schema, skipping systemTag operations
 
     return {
       name: updated.normalizedName,
@@ -1370,14 +1370,7 @@ export class TagsService {
         }),
       ]);
 
-      await tx.systemTag.deleteMany({
-        where: { tag: sourceTag.normalizedName },
-      });
-
-      await tx.systemTag.createMany({
-        data: [{ id: crypto.randomUUID(), tag: targetTag.normalizedName }],
-        skipDuplicates: true,
-      });
+      // Note: systemTag table not in schema, skipping systemTag operations
     });
   }
 

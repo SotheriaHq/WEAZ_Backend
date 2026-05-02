@@ -210,29 +210,7 @@ export class TagIndexService {
           }
         }
 
-        const allNext = Array.from(next);
-        if (allNext.length > 0) {
-          const approvedRows = await (tx as any).tag.findMany({
-            where: {
-              normalizedName: { in: allNext },
-              status: TagStatus.APPROVED,
-              isBanned: false,
-              aliasOfTagId: null,
-            },
-            select: { normalizedName: true },
-          });
-
-          await tx.systemTag.createMany({
-            data: approvedRows.map((row: any) => ({ id: uuidv4(), tag: row.normalizedName })),
-            skipDuplicates: true,
-          });
-        }
-
-        if (zeroUsageNames.length > 0) {
-          await tx.systemTag.deleteMany({
-            where: { tag: { in: zeroUsageNames } },
-          });
-        }
+        // Note: systemTag table not in schema, skipping systemTag operations
       });
     } catch (error: any) {
       if (this.isMissingTagTableError(error)) {
@@ -549,7 +527,7 @@ export class TagIndexService {
       await (tx as any).tag.updateMany({
         data: { usageCount: 0, lastUsedAt: null },
       });
-      await tx.systemTag.deleteMany({});
+      // Note: systemTag table not in schema, skipping systemTag operations
     });
 
     let bindingsCreated = 0;

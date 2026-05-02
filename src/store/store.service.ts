@@ -1250,11 +1250,9 @@ export class StoreService {
   private async refreshSystemTags(): Promise<string[]> {
     if (this.systemTagsRefresh) return this.systemTagsRefresh;
     this.systemTagsRefresh = (async () => {
-      const rows = await this.prisma.systemTag.findMany({
-        select: { tag: true },
-        orderBy: { tag: 'asc' },
-      });
-      const normalized = rows.map((row) => row.tag);
+      // Note: systemTag table not in schema, returning empty
+      console.warn('SystemTags cache refresh attempted but systemTag table not available');
+      const normalized: string[] = [];
       this.systemTagsCache = {
         tags: normalized,
         expiresAt: Date.now() + this.systemTagsTtlMs,
