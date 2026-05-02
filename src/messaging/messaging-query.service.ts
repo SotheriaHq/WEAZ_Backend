@@ -16,6 +16,21 @@ export class MessagingQueryService {
     });
   }
 
+  async getUnreadMessageCountForActor(actorId: string): Promise<number> {
+    const rows = await this.prisma.$queryRaw<Array<{ unreadCount: bigint | number }>>(Prisma.sql`
+      SELECT COUNT(*)::bigint AS "unreadCount"
+      FROM "Message" m
+      INNER JOIN "MessageThreadParticipant" p
+        ON p."threadId" = m."threadId" AND p."userId" = ${actorId}
+      WHERE p."archivedAt" IS NULL
+        AND m."visibilityState" = 'VISIBLE'
+        AND m."senderUserId" IS DISTINCT FROM ${actorId}
+        AND (p."lastReadAt" IS NULL OR m."createdAt" > p."lastReadAt")
+    `);
+
+    return Number(rows[0]?.unreadCount ?? 0);
+  }
+
   async getMessages(
     threadId: string,
     options?: { cursorCreatedAt?: string; cursorId?: string; limit?: number; actorId?: string },

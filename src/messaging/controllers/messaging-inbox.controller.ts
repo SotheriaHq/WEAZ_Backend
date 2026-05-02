@@ -1,7 +1,15 @@
 import { Body, Controller, Get, Headers, Param, Post, Query, Req, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from 'src/auth/guard/jwt-auth.guard';
 import { MessagingService } from '../messaging.service';
-import { MarkThreadReadDto, QueryInboxDto, QueryMessagesDto, QueryThreadOrdersDto, SendMessageDto } from '../dto/messaging.dto';
+import {
+  MarkThreadReadDto,
+  QueryInboxDto,
+  QueryMessagesDto,
+  QueryThreadOrdersDto,
+  ResolveConversationQueryDto,
+  SendMessageDto,
+  StartConversationDto,
+} from '../dto/messaging.dto';
 
 @Controller('messaging')
 @UseGuards(JwtAuthGuard)
@@ -14,6 +22,28 @@ export class MessagingInboxController {
     @Query() query: QueryInboxDto,
   ) {
     return this.messaging.getInboxForActor(req.user.id, query);
+  }
+
+  @Get('unread-count')
+  async unreadCount(@Req() req: { user: { id: string } }) {
+    return this.messaging.getUnreadMessageCountForActor(req.user.id);
+  }
+
+  @Get('conversations/resolve')
+  async resolveConversation(
+    @Req() req: { user: { id: string } },
+    @Query() query: ResolveConversationQueryDto,
+  ) {
+    return this.messaging.resolveConversationForActor(req.user.id, query);
+  }
+
+  @Post('conversations/start')
+  async startConversation(
+    @Req() req: { user: { id: string } },
+    @Body() dto: StartConversationDto,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.messaging.startConversationForActor(req.user.id, dto, idempotencyKey);
   }
 
   @Get('threads/:threadId/resolve')

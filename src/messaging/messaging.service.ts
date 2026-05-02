@@ -50,11 +50,13 @@ import {
   QueryMessagesDto,
   QueryThreadOrdersDto,
   QueryThreadSummaryDto,
+  ResolveConversationQueryDto,
   RequestCustomOrderExtensionDto,
   RequestOrderExtensionDto,
   RespondCustomOrderExtensionDto,
   RespondOrderExtensionDto,
   SendMessageDto,
+  StartConversationDto,
   UpdateThreadPreferencesDto,
 } from './dto/messaging.dto';
 
@@ -444,24 +446,13 @@ export class MessagingService {
           messageId: message.id,
           recipientId: recipient.id,
           notificationType: NotificationType.MESSAGE_RECEIVED,
-          payloadJson: {
-            threadId: thread.id,
+          payloadJson: this.buildMessageNotificationPayload({
+            thread,
             messageId: message.id,
-            contextType: thread.contextType,
-            orderId: thread.orderId,
-            customOrderId: thread.customOrderId,
             actorUserId: actorId,
+            recipientRole: recipient.role,
             message: `${senderDisplayName} sent a new message`,
-            targetUrl: this.resolveThreadTargetUrl(
-              thread.contextType,
-              thread.orderId,
-              thread.customOrderId,
-              thread.brandId,
-              recipient.role,
-              thread.id,
-              message.id,
-            ),
-          } as Prisma.InputJsonValue,
+          }),
         })),
       });
     }
@@ -716,6 +707,104 @@ export class MessagingService {
     };
   }
 
+  async getUnreadMessageCountForActor(actorId: string) {
+    return {
+      unreadCount: await this.query.getUnreadMessageCountForActor(actorId),
+    };
+  }
+
+  async resolveConversationForActor(actorId: string, queryDto: ResolveConversationQueryDto) {
+    if (queryDto.designId || queryDto.productId) {
+      throw new BadRequestException(
+        'Design/product-specific messaging resolution is not supported yet',
+      );
+    }
+
+    const threadId = queryDto.threadId ?? queryDto.conversationId;
+    if (threadId) {
+      return this.resolveThreadForActor(actorId, threadId);
+    }
+
+    if (queryDto.messageId) {
+      const message = await this.prisma.message.findUnique({
+        where: { id: queryDto.messageId },
+        select: { threadId: true },
+      });
+      if (!message) {
+        throw new NotFoundException('Message not found');
+      }
+      return this.resolveThreadForActor(actorId, message.threadId);
+    }
+
+    if (queryDto.orderId) {
+      const thread = await this.findActorThreadByOrderId(actorId, queryDto.orderId);
+      if (!thread) {
+        throw new NotFoundException('Conversation not found for order');
+      }
+      return this.resolveThreadForActor(actorId, thread.id);
+    }
+
+    if (queryDto.customOrderId) {
+      const thread = await this.findActorThreadByCustomOrderId(actorId, queryDto.customOrderId);
+      if (!thread) {
+        throw new NotFoundException('Conversation not found for custom order');
+      }
+      return this.resolveThreadForActor(actorId, thread.id);
+    }
+
+    if (queryDto.brandId) {
+      const thread = await this.findActorThreadByBrandId(actorId, queryDto.brandId);
+      if (!thread) {
+        throw new NotFoundException('Conversation not found for brand');
+      }
+      return this.resolveThreadForActor(actorId, thread.id);
+    }
+
+    if (queryDto.customerId) {
+      const thread = await this.findActorThreadByCustomerId(actorId, queryDto.customerId);
+      if (!thread) {
+        throw new NotFoundException('Conversation not found for customer');
+      }
+      return this.resolveThreadForActor(actorId, thread.id);
+    }
+
+    throw new BadRequestException('A conversation resolution parameter is required');
+  }
+
+  async startConversationForActor(actorId: string, dto: StartConversationDto, idempotencyKey?: string) {
+    if (dto.designId || dto.productId) {
+      throw new BadRequestException(
+        'Design/product-specific conversation start is not supported yet',
+      );
+    }
+
+    if (dto.orderId && dto.customOrderId) {
+      throw new BadRequestException('Only one order context can be used to start a conversation');
+    }
+
+    if (dto.orderId) {
+      return dto.brandId
+        ? this.sendOrderMessageForBrand(actorId, dto.brandId, dto.orderId, dto, idempotencyKey)
+        : this.sendOrderMessageForBuyer(actorId, dto.orderId, dto, idempotencyKey);
+    }
+
+    if (dto.customOrderId) {
+      return dto.brandId
+        ? this.sendCustomOrderMessageForBrand(actorId, dto.brandId, dto.customOrderId, dto, idempotencyKey)
+        : this.sendCustomOrderMessageForBuyer(actorId, dto.customOrderId, dto, idempotencyKey);
+    }
+
+    if (dto.customerId) {
+      throw new BadRequestException('Customer-specific conversation start requires a supported brand/customer contract');
+    }
+
+    if (dto.brandId) {
+      return this.sendBrandEntryMessage(actorId, dto.brandId, dto, idempotencyKey);
+    }
+
+    throw new BadRequestException('brandId, orderId, or customOrderId is required');
+  }
+
   async resolveThreadForActor(actorId: string, threadId: string) {
     const participant = await this.prisma.messageThreadParticipant.findUnique({
       where: { threadId_userId: { threadId, userId: actorId } },
@@ -727,6 +816,8 @@ export class MessagingService {
             orderId: true,
             customOrderId: true,
             brandId: true,
+            buyerId: true,
+            buyerUserId: true,
             subjectSnapshotJson: true,
           },
         },
@@ -757,9 +848,12 @@ export class MessagingService {
 
     return {
       threadId: thread.id,
+      conversationId: thread.id,
       contextType: thread.contextType,
       orderId: thread.orderId,
       customOrderId: thread.customOrderId,
+      brandId: thread.brandId,
+      customerId: thread.buyerUserId ?? thread.buyerId,
       inquiryType: String((thread.subjectSnapshotJson as any)?.type || ''),
       targetUrl,
       orderDetailUrl,
@@ -925,6 +1019,112 @@ export class MessagingService {
     return {
       items: filter === 'all' ? items : items.filter((item) => item.state === filter),
     };
+  }
+
+  private async findActorThreadByOrderId(actorId: string, orderId: string) {
+    return this.prisma.messageThread.findFirst({
+      where: {
+        participants: { some: { userId: actorId } },
+        OR: [
+          { orderId },
+          { orderLinks: { some: { orderId } } },
+        ],
+      },
+      orderBy: [{ lastMessageAt: 'desc' }, { createdAt: 'desc' }],
+      select: { id: true },
+    });
+  }
+
+  private async findActorThreadByCustomOrderId(actorId: string, customOrderId: string) {
+    return this.prisma.messageThread.findFirst({
+      where: {
+        participants: { some: { userId: actorId } },
+        OR: [
+          { customOrderId },
+          { orderLinks: { some: { customOrderId } } },
+        ],
+      },
+      orderBy: [{ lastMessageAt: 'desc' }, { createdAt: 'desc' }],
+      select: { id: true },
+    });
+  }
+
+  private async findActorThreadByBrandId(actorId: string, brandId: string) {
+    const [actor, targetBrand] = await Promise.all([
+      this.prisma.user.findUnique({
+        where: { id: actorId },
+        select: { id: true, type: true },
+      }),
+      this.prisma.brand.findFirst({
+        where: { OR: [{ id: brandId }, { ownerId: brandId }] },
+        select: { id: true, ownerId: true },
+      }),
+    ]);
+
+    if (!actor) {
+      throw new ForbiddenException('Actor not found');
+    }
+    if (!targetBrand) {
+      throw new NotFoundException('Brand not found');
+    }
+
+    if (actor.type === UserType.BRAND) {
+      const actorBrand = await this.prisma.brand.findFirst({
+        where: { ownerId: actorId },
+        select: { id: true },
+      });
+      if (!actorBrand) {
+        throw new ForbiddenException('Brand account does not own a brand');
+      }
+      if (actorBrand.id === targetBrand.id) {
+        throw new BadRequestException('Cannot resolve your own brand conversation');
+      }
+      const { pairKey } = this.buildBrandBrandPairKey(actorBrand.id, targetBrand.id);
+      return this.prisma.messageThread.findFirst({
+        where: {
+          pairKey,
+          participants: { some: { userId: actorId } },
+        },
+        orderBy: [{ lastMessageAt: 'desc' }, { createdAt: 'desc' }],
+        select: { id: true },
+      });
+    }
+
+    const pairKey = this.buildBuyerBrandPairKey(actorId, targetBrand.id);
+    return this.prisma.messageThread.findFirst({
+      where: {
+        participants: { some: { userId: actorId } },
+        OR: [
+          { pairKey },
+          { pairKey: null, brandId: targetBrand.id, buyerId: actorId },
+          { pairKey: null, brandId: targetBrand.id, buyerUserId: actorId },
+        ],
+      },
+      orderBy: [{ lastMessageAt: 'desc' }, { createdAt: 'desc' }],
+      select: { id: true },
+    });
+  }
+
+  private async findActorThreadByCustomerId(actorId: string, customerId: string) {
+    return this.prisma.messageThread.findFirst({
+      where: {
+        participants: {
+          some: { userId: actorId },
+        },
+        AND: [
+          { participants: { some: { userId: customerId } } },
+          {
+            OR: [
+              { conversationType: MessageConversationType.BUYER_BRAND },
+              { buyerId: customerId },
+              { buyerUserId: customerId },
+            ],
+          },
+        ],
+      },
+      orderBy: [{ lastMessageAt: 'desc' }, { createdAt: 'desc' }],
+      select: { id: true },
+    });
   }
 
   private classifyThreadOrderState(
@@ -1811,21 +2011,13 @@ export class MessagingService {
           messageId: reopenMessage.id,
           recipientId: recipient.userId,
           notificationType: NotificationType.MESSAGE_THREAD_REOPENED,
-          payloadJson: {
-            threadId: thread.id,
-            contextType: thread.contextType,
-            orderId: thread.orderId,
-            customOrderId: thread.customOrderId,
-            targetUrl: this.resolveThreadTargetUrl(
-              thread.contextType,
-              thread.orderId,
-              thread.customOrderId,
-              thread.brandId,
-              recipient.role,
-              thread.id,
-              reopenMessage.id,
-            ),
-          } as Prisma.InputJsonValue,
+          payloadJson: this.buildMessageNotificationPayload({
+            thread,
+            messageId: reopenMessage.id,
+            recipientRole: recipient.role,
+            actorUserId: actorId,
+            actionType: 'THREAD_REOPENED',
+          }),
         },
       });
     }
@@ -2173,24 +2365,13 @@ export class MessagingService {
             messageId: message.id,
             recipientId: recipient.id,
             notificationType: NotificationType.MESSAGE_RECEIVED,
-            payloadJson: {
-              threadId: thread.id,
+            payloadJson: this.buildMessageNotificationPayload({
+              thread,
               messageId: message.id,
-              contextType: thread.contextType,
-              orderId: thread.orderId,
-              customOrderId: thread.customOrderId,
               actorUserId: params.actorId,
+              recipientRole: recipient.role,
               message: `${senderName} sent a new message`,
-              targetUrl: this.resolveThreadTargetUrl(
-                thread.contextType,
-                thread.orderId,
-                thread.customOrderId,
-                thread.brandId,
-                recipient.role,
-                thread.id,
-                message.id,
-              ),
-            } as Prisma.InputJsonValue,
+            }),
           })),
         });
       }
@@ -2920,12 +3101,17 @@ export class MessagingService {
         recipientId: p.userId,
         notificationType: NotificationType.MESSAGE_MODERATED,
         payloadJson: {
+          type: 'message',
+          category: 'message',
           threadId: thread.id,
+          conversationId: thread.id,
           messageId,
           reason: reason ?? null,
           contextType: thread.contextType,
           orderId: thread.orderId,
           customOrderId: thread.customOrderId,
+          brandId: thread.brandId,
+          customerId: null,
           moderatedBy: adminId,
           targetUrl: this.resolveThreadTargetUrl(
             thread.contextType,
@@ -3083,23 +3269,12 @@ export class MessagingService {
           messageId: actionMessage.id,
           recipientId: recipient.userId,
           notificationType: NotificationType.MESSAGE_RECEIVED,
-          payloadJson: {
-            threadId: thread.id,
+          payloadJson: this.buildMessageNotificationPayload({
+            thread,
             messageId: actionMessage.id,
-            contextType: thread.contextType,
-            orderId: thread.orderId,
-            customOrderId: thread.customOrderId,
+            recipientRole: recipient.role,
             actionType: params.metadata.eventType ?? null,
-            targetUrl: this.resolveThreadTargetUrl(
-              thread.contextType,
-              thread.orderId,
-              thread.customOrderId,
-              thread.brandId,
-              recipient.role,
-              thread.id,
-              actionMessage.id,
-            ),
-          } as Prisma.InputJsonValue,
+          }),
         })),
       });
     }
@@ -3114,6 +3289,49 @@ export class MessagingService {
     this.sideEffects.emitThreadInvalidation(thread, recipientIds);
 
     return actionMessage;
+  }
+
+  private buildMessageNotificationPayload(params: {
+    thread: {
+      id: string;
+      contextType: MessageContextType;
+      orderId: string | null;
+      customOrderId: string | null;
+      brandId: string | null;
+      buyerId?: string | null;
+      buyerUserId?: string | null;
+    };
+    recipientRole: MessageParticipantRole;
+    messageId?: string | null;
+    actorUserId?: string | null;
+    actionType?: unknown;
+    message?: string | null;
+  }): Prisma.InputJsonValue {
+    const { thread } = params;
+    return {
+      type: 'message',
+      category: 'message',
+      threadId: thread.id,
+      conversationId: thread.id,
+      messageId: params.messageId ?? null,
+      contextType: thread.contextType,
+      orderId: thread.orderId,
+      customOrderId: thread.customOrderId,
+      brandId: thread.brandId,
+      customerId: thread.buyerUserId ?? thread.buyerId ?? null,
+      actorUserId: params.actorUserId ?? null,
+      actionType: params.actionType ?? null,
+      message: params.message ?? null,
+      targetUrl: this.resolveThreadTargetUrl(
+        thread.contextType,
+        thread.orderId,
+        thread.customOrderId,
+        thread.brandId,
+        params.recipientRole,
+        thread.id,
+        params.messageId ?? null,
+      ),
+    } as Prisma.InputJsonValue;
   }
 
   private resolveThreadTargetUrl(

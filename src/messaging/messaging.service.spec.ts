@@ -4,6 +4,8 @@ import {
   MessageContextType,
   MessageParticipantRole,
   MessageThreadStatus,
+  NotificationType,
+  UserType,
 } from '@prisma/client';
 import { MessagingAttachmentService } from './messaging-attachment.service';
 import { MessagingPolicyService } from './messaging-policy.service';
@@ -20,10 +22,13 @@ describe('MessagingService', () => {
       ({
         customOrder: { findUnique: jest.fn() },
         order: { findUnique: jest.fn() },
-        messageThread: { findFirst: jest.fn(), findUnique: jest.fn() },
-        message: { findFirst: jest.fn(), create: jest.fn() },
-        messageThreadParticipant: { upsert: jest.fn(), findMany: jest.fn() },
+        messageThread: { findFirst: jest.fn(), findUnique: jest.fn(), update: jest.fn(), findMany: jest.fn() },
+        messageThreadOrderLink: { findMany: jest.fn().mockResolvedValue([]), findUnique: jest.fn(), upsert: jest.fn() },
+        message: { findFirst: jest.fn(), findUnique: jest.fn(), create: jest.fn() },
+        messageThreadParticipant: { upsert: jest.fn(), findMany: jest.fn(), findUnique: jest.fn(), update: jest.fn() },
         messageNotificationOutbox: { createMany: jest.fn(), create: jest.fn() },
+        user: { findUnique: jest.fn() },
+        brand: { findFirst: jest.fn() },
         $transaction: jest.fn(),
       } as any);
 
@@ -32,6 +37,8 @@ describe('MessagingService', () => {
       ({
         getMessages: jest.fn(),
         getSummariesForActor: jest.fn(),
+        getUnreadMessageCountForActor: jest.fn(),
+        markMessagesRead: jest.fn(),
       } as any);
 
     const attachments =
@@ -78,11 +85,23 @@ describe('MessagingService', () => {
       id: 'thread_1',
       contextType: MessageContextType.CUSTOM_ORDER,
       customOrderId: 'co_1',
+      pairKey: 'BUYER_BRAND:buyer_1:brand_1',
+      conversationType: 'BUYER_BRAND',
       participants: [
         { userId: 'buyer_1', role: MessageParticipantRole.BUYER },
         { userId: 'owner_1', role: MessageParticipantRole.BRAND_OWNER },
       ],
     });
+    prisma.$transaction.mockImplementation(async (callback: (tx: any) => Promise<unknown>) =>
+      callback({
+        messageThreadOrderLink: {
+          findUnique: jest.fn().mockResolvedValue(null),
+        },
+        messageThread: {
+          findFirst: prisma.messageThread.findFirst,
+        },
+      }),
+    );
     query.getMessages.mockResolvedValue({ items: [], hasNextPage: false, endCursor: null });
 
     await service.listCustomOrderMessagesForBuyer('buyer_1', 'co_1', { limit: 20 });
@@ -177,5 +196,181 @@ describe('MessagingService', () => {
         summary: { id: 'thread_2', hasUnread: false, unreadCount: 0, responseRequired: false },
       },
     ]);
+  });
+
+  it('returns aggregate unread message count from messaging read state only', async () => {
+    const { service, query } = buildService();
+    query.getUnreadMessageCountForActor.mockResolvedValue(7);
+
+    await expect(service.getUnreadMessageCountForActor('user_1')).resolves.toEqual({
+      unreadCount: 7,
+    });
+
+    expect(query.getUnreadMessageCountForActor).toHaveBeenCalledWith('user_1');
+  });
+
+  it('resolves messageId to an authorized conversation route', async () => {
+    const { service, prisma } = buildService();
+
+    prisma.message.findUnique.mockResolvedValue({ threadId: 'thread_1' });
+    prisma.messageThreadParticipant.findUnique.mockResolvedValue({
+      role: MessageParticipantRole.BUYER,
+      thread: {
+        id: 'thread_1',
+        contextType: MessageContextType.STANDARD_ORDER,
+        orderId: 'order_1',
+        customOrderId: null,
+        brandId: 'brand_1',
+        buyerId: 'buyer_1',
+        buyerUserId: 'buyer_1',
+        subjectSnapshotJson: null,
+      },
+    });
+
+    await expect(
+      service.resolveConversationForActor('buyer_1', { messageId: 'message_1' }),
+    ).resolves.toMatchObject({
+      threadId: 'thread_1',
+      conversationId: 'thread_1',
+      orderId: 'order_1',
+      brandId: 'brand_1',
+      customerId: 'buyer_1',
+    });
+  });
+
+  it('does not resolve another user conversation by messageId', async () => {
+    const { service, prisma } = buildService();
+
+    prisma.message.findUnique.mockResolvedValue({ threadId: 'thread_1' });
+    prisma.messageThreadParticipant.findUnique.mockResolvedValue(null);
+
+    await expect(
+      service.resolveConversationForActor('intruder_1', { messageId: 'message_1' }),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it('starts order conversations through the existing order messaging path', async () => {
+    const { service } = buildService();
+    const sendOrderMessageForBuyer = jest
+      .spyOn(service, 'sendOrderMessageForBuyer')
+      .mockResolvedValue({ statusCode: 201 } as any);
+
+    await service.startConversationForActor(
+      'buyer_1',
+      {
+        orderId: 'order_1',
+        clientMessageId: 'client_1',
+        bodyText: 'Hello',
+      },
+      'client_1',
+    );
+
+    expect(sendOrderMessageForBuyer).toHaveBeenCalledWith(
+      'buyer_1',
+      'order_1',
+      expect.objectContaining({ clientMessageId: 'client_1' }),
+      'client_1',
+    );
+  });
+
+  it('adds native routing params to message notification payloads', async () => {
+    const { service, prisma } = buildService();
+    const createdAt = new Date('2026-05-01T12:00:00.000Z');
+
+    prisma.messageThread.findFirst.mockResolvedValue({
+      id: 'thread_1',
+      contextType: MessageContextType.DIRECT,
+      orderId: null,
+      customOrderId: null,
+      brandId: 'brand_1',
+      buyerId: 'buyer_1',
+      buyerUserId: 'buyer_1',
+      pairKey: 'BUYER_BRAND:buyer_1:brand_1',
+      conversationType: 'BUYER_BRAND',
+      status: MessageThreadStatus.OPEN,
+      participants: [
+        { userId: 'buyer_1', role: MessageParticipantRole.BUYER },
+        { userId: 'owner_1', role: MessageParticipantRole.BRAND_OWNER },
+      ],
+    });
+    prisma.message.findFirst.mockResolvedValue(null);
+    prisma.message.create.mockResolvedValue({
+      id: 'message_1',
+      threadId: 'thread_1',
+      senderRole: MessageParticipantRole.BUYER,
+      createdAt,
+      sender: { firstName: 'Buyer', username: 'buyer' },
+      attachments: [],
+    });
+    prisma.messageThread.update.mockResolvedValue({});
+    prisma.messageThreadParticipant.upsert.mockResolvedValue({});
+    prisma.messageNotificationOutbox.createMany.mockResolvedValue({ count: 1 });
+
+    await service.sendMessageToThread(
+      'buyer_1',
+      'thread_1',
+      { clientMessageId: 'client_1', bodyText: 'Hello' },
+      'client_1',
+    );
+
+    expect(prisma.messageNotificationOutbox.createMany).toHaveBeenCalledWith({
+      data: [
+        expect.objectContaining({
+          threadId: 'thread_1',
+          messageId: 'message_1',
+          recipientId: 'owner_1',
+          notificationType: NotificationType.MESSAGE_RECEIVED,
+          payloadJson: expect.objectContaining({
+            type: 'message',
+            category: 'message',
+            threadId: 'thread_1',
+            conversationId: 'thread_1',
+            messageId: 'message_1',
+            brandId: 'brand_1',
+            customerId: 'buyer_1',
+            actorUserId: 'buyer_1',
+          }),
+        }),
+      ],
+    });
+  });
+
+  it('resolves existing brand-entry conversation without creating a duplicate', async () => {
+    const { service, prisma } = buildService();
+
+    prisma.user.findUnique.mockResolvedValue({ id: 'buyer_1', type: UserType.REGULAR });
+    prisma.brand.findFirst.mockResolvedValueOnce({ id: 'brand_1', ownerId: 'owner_1' });
+    prisma.messageThread.findFirst.mockResolvedValueOnce({ id: 'thread_1' });
+    prisma.messageThreadParticipant.findUnique.mockResolvedValue({
+      role: MessageParticipantRole.BUYER,
+      thread: {
+        id: 'thread_1',
+        contextType: MessageContextType.INQUIRY,
+        orderId: null,
+        customOrderId: null,
+        brandId: 'brand_1',
+        buyerId: 'buyer_1',
+        buyerUserId: 'buyer_1',
+        subjectSnapshotJson: { type: 'DIRECT_BRAND_ENTRY' },
+      },
+    });
+
+    await expect(
+      service.resolveConversationForActor('buyer_1', { brandId: 'brand_1' }),
+    ).resolves.toMatchObject({
+      threadId: 'thread_1',
+      brandId: 'brand_1',
+      customerId: 'buyer_1',
+    });
+
+    expect(prisma.messageThread.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          OR: expect.arrayContaining([
+            expect.objectContaining({ pairKey: 'BUYER_BRAND:buyer_1:brand_1' }),
+          ]),
+        }),
+      }),
+    );
   });
 });
