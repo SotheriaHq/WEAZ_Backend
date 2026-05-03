@@ -29,6 +29,7 @@
     "prisma:migrate": "prisma migrate dev",
     "prisma:generate": "prisma generate",
     "prisma:seed": "ts-node prisma/seed.ts",
+    "seed": "prisma db seed",
     "reset:all": "node scripts/reset-all-data.cjs"
   },
   "_moduleAliases": {
