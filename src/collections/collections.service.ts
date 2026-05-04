@@ -36,6 +36,8 @@ import { NotificationsService } from 'src/notifications/notifications.service';
 import { AnalyticsService } from 'src/analytics/analytics.service';
 import {
   CreateCollectionDto,
+  DESIGN_MAX_MEDIA_COUNT,
+  DESIGN_REQUIRED_MEDIA_COUNT,
   FileSpecDto,
   FinalizeCollectionDto,
 } from './dto/create-collection.dto';
@@ -1824,6 +1826,9 @@ export class CollectionsService {
     }
 
     const hasFiles = Array.isArray(dto.files) && dto.files.length > 0;
+    if (hasFiles && dto.files!.length > DESIGN_MAX_MEDIA_COUNT) {
+      throw new BadRequestException(`Maximum ${DESIGN_MAX_MEDIA_COUNT} files per design`);
+    }
 
     // Store-collection session initialization (no media required)
     if (!hasFiles && dto.mode) {
@@ -2034,8 +2039,8 @@ export class CollectionsService {
       throw new BadRequestException('At least one file is required');
     }
 
-    if (dto.files.length > 20) {
-      throw new BadRequestException('Maximum 20 files per collection');
+    if (dto.files.length > DESIGN_MAX_MEDIA_COUNT) {
+      throw new BadRequestException(`Maximum ${DESIGN_MAX_MEDIA_COUNT} files per design`);
     }
 
     // PHASE 2: Use shared tag normalization utility
@@ -2187,16 +2192,16 @@ export class CollectionsService {
     if (!Array.isArray(files) || files.length === 0) {
       throw new BadRequestException('At least one file is required');
     }
-    if (files.length > 20) {
-      throw new BadRequestException('Maximum 20 files per design');
+    if (files.length > DESIGN_MAX_MEDIA_COUNT) {
+      throw new BadRequestException(`Maximum ${DESIGN_MAX_MEDIA_COUNT} files per design`);
     }
 
     const existingMediaCount = await this.prisma.collectionMedia.count({
       where: { collectionId },
     });
-    if (existingMediaCount + files.length > 20) {
+    if (existingMediaCount + files.length > DESIGN_MAX_MEDIA_COUNT) {
       throw new BadRequestException(
-        'Adding these files would exceed the 20-file design limit.',
+        `Adding these files would exceed the ${DESIGN_MAX_MEDIA_COUNT}-file design limit.`,
       );
     }
 
@@ -2582,9 +2587,14 @@ export class CollectionsService {
             const mediaCount = await tx.collectionMedia.count({
               where: { collectionId },
             });
-            if (mediaCount === 0) {
+            if (mediaCount < DESIGN_REQUIRED_MEDIA_COUNT) {
               throw new BadRequestException(
-                'At least one design media is required to publish',
+                `Front, Back, Left, and Right media are required to publish (${DESIGN_REQUIRED_MEDIA_COUNT} media minimum).`,
+              );
+            }
+            if (mediaCount > DESIGN_MAX_MEDIA_COUNT) {
+              throw new BadRequestException(
+                `Maximum ${DESIGN_MAX_MEDIA_COUNT} design media assets can be published.`,
               );
             }
           }

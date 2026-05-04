@@ -19,6 +19,9 @@ import {
 const normalizeSizingMode = ({ value }: { value: unknown }) =>
   value === 'RTW_PLUS_CUSTOM' ? 'RTW_PLUS_FITTINGS' : value;
 
+export const DESIGN_REQUIRED_MEDIA_COUNT = 4;
+export const DESIGN_MAX_MEDIA_COUNT = 6;
+
 export class FileSpecDto {
   @IsString()
   @IsNotEmpty()
