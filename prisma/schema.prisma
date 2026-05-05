@@ -66,6 +66,7 @@ model User {
   pendingEmailExpiresAt DateTime?
   isActive              String          @default("Active")
   notificationSettings  Json?           // Stores user preferences { security: { login: true }, engagement: { threads: true } }
+  themePreference       String          @default("system") // Saved appearance preference: light, dark, or system. Resolved theme stays client-only.
   emailPreference       UserEmailPreference?
   emailScenarioPreferences UserEmailScenarioPreference[]
   trustedDevices        TrustedDevice[]

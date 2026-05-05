@@ -13,6 +13,7 @@ import { UserProfileService } from './user-profile.service';
 import { UpdateProfileVisibilityDto } from './dto/update-profile-visibility.dto';
 import { UserProfileResponseDto } from './dto/user-profile.dto';
 import { OptionalJwtAuthGuard } from '../auth/guard/optional-jwt-auth.guard';
+import { UpdateUserPreferencesDto } from './dto/update-user-preferences.dto';
 
 @Controller('users')
 export class UserProfileController {
@@ -61,6 +62,18 @@ export class UserProfileController {
     return this.userProfileService.updateProfileVisibility(
       this.getAuthUserId(req),
       updateProfileVisibilityDto.profileVisibility,
+    );
+  }
+
+  @Patch('me/preferences')
+  @UseGuards(AuthGuard('jwt'))
+  async updatePreferences(
+    @Req() req,
+    @Body() updateUserPreferencesDto: UpdateUserPreferencesDto,
+  ) {
+    return this.userProfileService.updatePreferences(
+      this.getAuthUserId(req),
+      updateUserPreferencesDto.themePreference,
     );
   }
 

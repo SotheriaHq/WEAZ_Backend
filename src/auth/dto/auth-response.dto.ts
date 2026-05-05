@@ -1,5 +1,6 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { BrandVerificationStatus } from '@prisma/client';
+import { THEME_PREFERENCES, type ThemePreference } from 'src/common/theme.contract';
 
 export class AuthProfileImageFileDto {
   @ApiProperty()
@@ -147,6 +148,9 @@ export class AuthUserResponseDto {
 
   @ApiProperty()
   isActive: string;
+
+  @ApiProperty({ enum: THEME_PREFERENCES })
+  themePreference: ThemePreference;
 
   @ApiProperty({ required: false, nullable: true })
   status?: string | null;

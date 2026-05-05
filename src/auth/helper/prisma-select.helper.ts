@@ -5,6 +5,7 @@ import {
   AuthUserResponseDto,
 } from '../dto/auth-response.dto';
 import { getBrandVerificationTruth } from 'src/brand-verification/verification-truth.util';
+import { normalizeThemePreference } from 'src/common/theme.contract';
 
 type SelectedFileUpload = {
   id: string;
@@ -60,6 +61,7 @@ export const authUserSelect = Prisma.validator<Prisma.UserSelect>()({
   bannerImageId: true,
   isEmailVerified: true,
   isActive: true,
+  themePreference: true,
   mustResetPassword: true,
   authVersion: true,
   createdAt: true,
@@ -163,6 +165,7 @@ export const toAuthUserResponse = (
     verificationBadgeVisible: verificationTruth.verificationBadgeVisible,
     verifiedExplanationUrl: verificationTruth.verifiedExplanationUrl,
     isActive: user.isActive,
+    themePreference: normalizeThemePreference((user as any).themePreference),
     status: (user as any).status ?? null,
     mustResetPassword: (user as any).mustResetPassword ?? false,
     createdAt: user.createdAt.toISOString(),

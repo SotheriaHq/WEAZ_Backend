@@ -1,7 +1,12 @@
-import { Injectable, NotFoundException, ForbiddenException, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException, UnauthorizedException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { ProfileVisibility, User } from '@prisma/client';
 import { UserProfileResponseDto } from './dto/user-profile.dto';
+import {
+  isThemePreference,
+  normalizeThemePreference,
+  type ThemePreference,
+} from 'src/common/theme.contract';
 
 @Injectable()
 export class UserProfileService {
@@ -37,6 +42,7 @@ export class UserProfileService {
           },
         },
         address: true,
+        themePreference: true,
         profileVisibility: true,
         createdAt: true,
       },
@@ -56,6 +62,7 @@ export class UserProfileService {
     return new UserProfileResponseDto({
       ...user,
       location,
+      themePreference: normalizeThemePreference(user.themePreference),
       createdAt: user.createdAt.toISOString(),
     });
   }
@@ -167,6 +174,31 @@ export class UserProfileService {
     });
 
     return user;
+  }
+
+  async updatePreferences(
+    userId: string,
+    themePreference: unknown,
+  ): Promise<{ themePreference: ThemePreference }> {
+    if (!userId) {
+      throw new UnauthorizedException('Unauthorized');
+    }
+
+    if (!isThemePreference(themePreference)) {
+      throw new BadRequestException(
+        'themePreference must be one of: light, dark, system',
+      );
+    }
+
+    const user = await this.prisma.user.update({
+      where: { id: userId },
+      data: { themePreference },
+      select: { themePreference: true },
+    });
+
+    return {
+      themePreference: normalizeThemePreference(user.themePreference),
+    };
   }
 
   async getPatchedBrands(userId: string, viewerId?: string): Promise<any[]> {

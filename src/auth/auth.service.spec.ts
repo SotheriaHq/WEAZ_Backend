@@ -82,7 +82,10 @@ describe('AuthService', () => {
     expect(mockPrisma.user.findFirst).toHaveBeenCalledWith(
       expect.objectContaining({
         where: {
-          email: 'test@example.com',
+          email: {
+            equals: 'test@example.com',
+            mode: 'insensitive',
+          },
         },
       }),
     );
@@ -137,4 +140,3 @@ describe('AuthService', () => {
     expect(result).not.toHaveProperty('password');
   });
 });
-

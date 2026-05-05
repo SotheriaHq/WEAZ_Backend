@@ -57,6 +57,7 @@ export class ProfileService {
       address: true,
       role: true,
       type: true,
+      themePreference: true,
       createdAt: true,
       updatedAt: true,
     };
