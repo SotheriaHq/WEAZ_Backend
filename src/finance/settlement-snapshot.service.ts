@@ -3,20 +3,26 @@ import { Prisma, SettlementOrderType } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { SettlementCalculationResult } from './settlement-calculator.service';
 
+type SettlementSnapshotClient = PrismaService | Prisma.TransactionClient;
+
 @Injectable()
 export class SettlementSnapshotService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async createFromCalculation(calculation: SettlementCalculationResult) {
+  async createFromCalculation(
+    calculation: SettlementCalculationResult,
+    tx?: Prisma.TransactionClient,
+  ) {
+    const client = tx ?? this.prisma;
     this.validateBusinessObject(calculation);
 
-    const existing = await this.findExisting(calculation);
+    const existing = await this.findExisting(client, calculation);
     if (existing) {
       return existing;
     }
 
     try {
-      return await this.prisma.settlementSnapshot.create({
+      return await client.settlementSnapshot.create({
         data: this.toSnapshotData(calculation),
       });
     } catch (error) {
@@ -24,7 +30,7 @@ export class SettlementSnapshotService {
         throw error;
       }
 
-      const snapshot = await this.findExisting(calculation);
+      const snapshot = await this.findExisting(client, calculation);
       if (snapshot) {
         return snapshot;
       }
@@ -33,25 +39,37 @@ export class SettlementSnapshotService {
     }
   }
 
-  async getByOrderId(orderId: string) {
-    return this.prisma.settlementSnapshot.findFirst({
+  async getByOrderId(orderId: string, tx?: Prisma.TransactionClient) {
+    const client = tx ?? this.prisma;
+    return client.settlementSnapshot.findFirst({
       where: { orderId },
     });
   }
 
-  async getByCustomOrderId(customOrderId: string) {
-    return this.prisma.settlementSnapshot.findFirst({
+  async getByCustomOrderId(
+    customOrderId: string,
+    tx?: Prisma.TransactionClient,
+  ) {
+    const client = tx ?? this.prisma;
+    return client.settlementSnapshot.findFirst({
       where: { customOrderId },
     });
   }
 
-  private async findExisting(calculation: SettlementCalculationResult) {
+  private async findExisting(
+    client: SettlementSnapshotClient,
+    calculation: SettlementCalculationResult,
+  ) {
     if (calculation.orderId) {
-      return this.getByOrderId(calculation.orderId);
+      return client.settlementSnapshot.findFirst({
+        where: { orderId: calculation.orderId },
+      });
     }
 
     if (calculation.customOrderId) {
-      return this.getByCustomOrderId(calculation.customOrderId);
+      return client.settlementSnapshot.findFirst({
+        where: { customOrderId: calculation.customOrderId },
+      });
     }
 
     return null;
