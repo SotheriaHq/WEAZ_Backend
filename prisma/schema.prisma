@@ -3407,6 +3407,41 @@ model SettlementPolicy {
   @@index([effectiveFrom, effectiveTo])
 }
 
+model SettlementSnapshot {
+  id                                   String                         @id @default(uuid()) @db.Uuid
+  orderType                            SettlementOrderType
+  orderId                              String?                        @db.Uuid
+  customOrderId                        String?                        @db.Uuid
+  brandId                              String                         @db.Uuid
+  grossAmount                          Decimal                        @db.Decimal(18, 2)
+  currency                             String
+  commissionRuleId                     String?                        @db.Uuid
+  commissionSource                     String?
+  commissionRate                       Decimal                        @db.Decimal(5, 2)
+  commissionAmount                     Decimal                        @db.Decimal(18, 2)
+  brandNetAmount                       Decimal                        @db.Decimal(18, 2)
+  settlementPolicyId                   String?                        @db.Uuid
+  releaseMode                          SettlementReleaseMode
+  upfrontReleaseEnabled                Boolean
+  upfrontReleasePercent                Decimal                        @db.Decimal(5, 2)
+  upfrontReleaseGrossAmount            Decimal                        @db.Decimal(18, 2)
+  upfrontReleaseCommissionAmount       Decimal                        @db.Decimal(18, 2)
+  upfrontReleaseNetBrandAmount         Decimal                        @db.Decimal(18, 2)
+  finalReleaseGrossAmount              Decimal                        @db.Decimal(18, 2)
+  finalReleaseCommissionAmount         Decimal                        @db.Decimal(18, 2)
+  finalReleaseNetBrandAmount           Decimal                        @db.Decimal(18, 2)
+  settlementDelayHours                 Int
+  autoReleaseDays                      Int
+  finalReleaseTrigger                  SettlementFinalReleaseTrigger
+  calculatedAt                         DateTime
+  createdAt                            DateTime                       @default(now())
+
+  @@map("settlement_snapshot")
+  @@index([brandId, orderType, createdAt])
+  @@index([settlementPolicyId])
+  @@index([commissionRuleId])
+}
+
 model ReconciliationRun {
   id           String                  @id @default(uuid()) @db.Uuid
   scope        ReconciliationScope

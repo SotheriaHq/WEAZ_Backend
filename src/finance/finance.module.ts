@@ -8,6 +8,8 @@ import { ReconciliationService } from './reconciliation.service';
 import { FinancialDocumentsService } from './financial-documents.service';
 import { StandardOrderFinanceSyncService } from './standard-order-finance-sync.service';
 import { SettlementPolicyService } from './settlement-policy.service';
+import { SettlementCalculatorService } from './settlement-calculator.service';
+import { SettlementSnapshotService } from './settlement-snapshot.service';
 
 @Module({
   imports: [PrismaModule, SystemConfigModule],
@@ -19,6 +21,8 @@ import { SettlementPolicyService } from './settlement-policy.service';
     FinancialDocumentsService,
     StandardOrderFinanceSyncService,
     SettlementPolicyService,
+    SettlementCalculatorService,
+    SettlementSnapshotService,
   ],
   exports: [
     StandardOrderEscrowService,
@@ -28,6 +32,8 @@ import { SettlementPolicyService } from './settlement-policy.service';
     FinancialDocumentsService,
     StandardOrderFinanceSyncService,
     SettlementPolicyService,
+    SettlementCalculatorService,
+    SettlementSnapshotService,
   ],
 })
 export class FinanceModule {}

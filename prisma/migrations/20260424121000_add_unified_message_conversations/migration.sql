@@ -79,8 +79,6 @@ WHERE m."threadId" = mt."id"
 UPDATE "MessageThread" mt
 SET
   "conversationType" = 'BUYER_BRAND',
-  "buyerUserId" = COALESCE(mt."buyerId", co."buyerId"),
-  "brandId" = COALESCE(mt."brandId", co."brandId"),
   "brandOwnerUserId" = b."ownerId"
 FROM "CustomOrder" co
 JOIN "Brand" b ON b."_id" = co."brandId"
