@@ -58,6 +58,8 @@ type SettlementPolicyInput = {
   effectiveTo?: Date | string | null;
 };
 
+export type SettlementPolicyAdminInput = SettlementPolicyInput;
+
 type SettlementPolicyResolution = {
   id: string | null;
   orderType: SettlementOrderType;
@@ -109,12 +111,23 @@ export class SettlementPolicyService {
     });
   }
 
+  async getPolicy(id: string) {
+    const policy = await this.prisma.settlementPolicy.findUnique({
+      where: { id },
+    });
+    if (!policy) {
+      throw new NotFoundException('Settlement policy not found');
+    }
+    return policy;
+  }
+
   async createPolicy(actorId: string | null, input: SettlementPolicyInput) {
     const normalized = this.normalizeInput(input);
     this.validateInput(normalized);
 
     return this.prisma.$transaction(async (tx) => {
       await this.assertNoDuplicateActiveDefaultPolicy(tx, normalized);
+      await this.assertNoOverlappingActivePolicy(tx, normalized);
 
       return tx.settlementPolicy.create({
         data: {
@@ -146,6 +159,7 @@ export class SettlementPolicyService {
 
     return this.prisma.$transaction(async (tx) => {
       await this.assertNoDuplicateActiveDefaultPolicy(tx, normalized, id);
+      await this.assertNoOverlappingActivePolicy(tx, normalized, id);
 
       return tx.settlementPolicy.update({
         where: { id },
@@ -155,6 +169,37 @@ export class SettlementPolicyService {
           upfrontReleasePercent: new Prisma.Decimal(
             normalized.upfrontReleasePercent.toFixed(2),
           ),
+        },
+      });
+    });
+  }
+
+  async activatePolicy(id: string, actorId: string | null) {
+    const existing = await this.prisma.settlementPolicy.findUnique({
+      where: { id },
+    });
+    if (!existing) {
+      throw new NotFoundException('Settlement policy not found');
+    }
+
+    const normalized = this.normalizeInput(
+      {
+        orderType: existing.orderType,
+        isActive: true,
+      },
+      existing,
+    );
+    this.validateInput(normalized);
+
+    return this.prisma.$transaction(async (tx) => {
+      await this.assertNoDuplicateActiveDefaultPolicy(tx, normalized, id);
+      await this.assertNoOverlappingActivePolicy(tx, normalized, id);
+
+      return tx.settlementPolicy.update({
+        where: { id },
+        data: {
+          isActive: true,
+          updatedById: actorId,
         },
       });
     });
@@ -319,6 +364,36 @@ export class SettlementPolicyService {
     if (duplicate) {
       throw new ConflictException(
         'An active default settlement policy already exists for this combination',
+      );
+    }
+  }
+
+  private async assertNoOverlappingActivePolicy(
+    client: Prisma.TransactionClient | PrismaService,
+    input: ReturnType<typeof this.normalizeInput>,
+    id?: string,
+  ) {
+    if (!input.isActive) {
+      return;
+    }
+
+    const overlap = await client.settlementPolicy.findFirst({
+      where: {
+        id: id ? { not: id } : undefined,
+        orderType: input.orderType,
+        scope: input.scope,
+        brandId: input.brandId,
+        currency: input.currency,
+        isActive: true,
+        effectiveFrom: input.effectiveTo ? { lte: input.effectiveTo } : undefined,
+        OR: [{ effectiveTo: null }, { effectiveTo: { gte: input.effectiveFrom } }],
+      },
+      select: { id: true },
+    });
+
+    if (overlap) {
+      throw new ConflictException(
+        'An active settlement policy already overlaps this order type, scope, brand, currency, and effective window',
       );
     }
   }

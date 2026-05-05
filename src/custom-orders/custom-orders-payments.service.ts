@@ -1098,35 +1098,43 @@ export class CustomOrdersPaymentsService {
       tx,
     );
 
-    const allocationCount = await tx.customOrderLedgerAllocation.count({
+    const existingAllocations = await tx.customOrderLedgerAllocation.findMany({
       where: { customOrderId: params.customOrderId },
+      select: { allocationType: true },
     });
-    if (allocationCount === 0) {
+    const existingAllocationTypes = new Set(
+      existingAllocations.map((allocation) => allocation.allocationType),
+    );
+    const missingAllocations = [
+      {
+        customOrderId: params.customOrderId,
+        allocationType:
+          CustomOrderLedgerAllocationType.BRAND_ACCEPTANCE_PORTION,
+        amount: snapshot.upfrontReleaseGrossAmount,
+        commissionRate: snapshot.commissionRate,
+        commissionAmount: snapshot.upfrontReleaseCommissionAmount,
+        netBrandAmount: snapshot.upfrontReleaseNetBrandAmount,
+        currency: params.currency,
+        status: CustomOrderLedgerAllocationStatus.HELD,
+      },
+      {
+        customOrderId: params.customOrderId,
+        allocationType:
+          CustomOrderLedgerAllocationType.FINAL_COMPLETION_PORTION,
+        amount: snapshot.finalReleaseGrossAmount,
+        commissionRate: snapshot.commissionRate,
+        commissionAmount: snapshot.finalReleaseCommissionAmount,
+        netBrandAmount: snapshot.finalReleaseNetBrandAmount,
+        currency: params.currency,
+        status: CustomOrderLedgerAllocationStatus.HELD,
+      },
+    ].filter(
+      (allocation) => !existingAllocationTypes.has(allocation.allocationType),
+    );
+
+    if (missingAllocations.length > 0) {
       await tx.customOrderLedgerAllocation.createMany({
-        data: [
-          {
-            customOrderId: params.customOrderId,
-            allocationType:
-              CustomOrderLedgerAllocationType.BRAND_ACCEPTANCE_PORTION,
-            amount: snapshot.upfrontReleaseGrossAmount,
-            commissionRate: snapshot.commissionRate,
-            commissionAmount: snapshot.upfrontReleaseCommissionAmount,
-            netBrandAmount: snapshot.upfrontReleaseNetBrandAmount,
-            currency: params.currency,
-            status: CustomOrderLedgerAllocationStatus.HELD,
-          },
-          {
-            customOrderId: params.customOrderId,
-            allocationType:
-              CustomOrderLedgerAllocationType.FINAL_COMPLETION_PORTION,
-            amount: snapshot.finalReleaseGrossAmount,
-            commissionRate: snapshot.commissionRate,
-            commissionAmount: snapshot.finalReleaseCommissionAmount,
-            netBrandAmount: snapshot.finalReleaseNetBrandAmount,
-            currency: params.currency,
-            status: CustomOrderLedgerAllocationStatus.HELD,
-          },
-        ],
+        data: missingAllocations,
       });
     }
 

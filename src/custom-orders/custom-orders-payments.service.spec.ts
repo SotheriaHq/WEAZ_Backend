@@ -145,7 +145,7 @@ describe('CustomOrdersPaymentsService', () => {
         create: jest.fn(),
       },
       customOrderLedgerAllocation: {
-        count: jest.fn(),
+        findMany: jest.fn(),
         createMany: jest.fn(),
         updateMany: jest.fn(),
       },
@@ -383,7 +383,7 @@ describe('CustomOrdersPaymentsService', () => {
         create: jest.fn().mockResolvedValue(undefined),
       },
       customOrderLedgerAllocation: {
-        count: jest.fn().mockResolvedValue(0),
+        findMany: jest.fn().mockResolvedValue([]),
         createMany: jest.fn().mockResolvedValue({ count: 2 }),
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       },
@@ -706,7 +706,7 @@ describe('CustomOrdersPaymentsService', () => {
         create: jest.fn().mockResolvedValue(undefined),
       },
       customOrderLedgerAllocation: {
-        count: jest.fn(),
+        findMany: jest.fn(),
         createMany: jest.fn(),
       },
       customOrderCheckoutSession: {
@@ -830,7 +830,10 @@ describe('CustomOrdersPaymentsService', () => {
         create: jest.fn().mockResolvedValue(undefined),
       },
       customOrderLedgerAllocation: {
-        count: jest.fn().mockResolvedValue(2),
+        findMany: jest.fn().mockResolvedValue([
+          { allocationType: 'BRAND_ACCEPTANCE_PORTION' },
+          { allocationType: 'FINAL_COMPLETION_PORTION' },
+        ]),
         createMany: jest.fn().mockResolvedValue({ count: 0 }),
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       },
@@ -880,8 +883,9 @@ describe('CustomOrdersPaymentsService', () => {
       statusHint: 'success',
     });
 
-    expect(tx.customOrderLedgerAllocation.count).toHaveBeenCalledWith({
+    expect(tx.customOrderLedgerAllocation.findMany).toHaveBeenCalledWith({
       where: { customOrderId: 'co_4' },
+      select: { allocationType: true },
     });
     expect(tx.customOrderLedgerAllocation.createMany).not.toHaveBeenCalled();
     expect(ledgerService.postCustomOrderPaymentReceived).toHaveBeenCalledWith(
@@ -914,5 +918,150 @@ describe('CustomOrdersPaymentsService', () => {
     );
     expect(result.success).toBe(true);
     expect(result.customOrderId).toBe('co_4');
+  });
+
+  it('creates only the missing custom-order allocation when a retry finds partial rows', async () => {
+    const calculation = buildSettlementCalculation(
+      {
+        customOrderId: 'co_partial',
+        brandId: 'brand_partial',
+        grossAmount: 1000,
+        currency: 'NGN',
+      },
+      60,
+    );
+    settlementCalculatorService.calculate.mockResolvedValueOnce(calculation);
+    settlementSnapshotService.createFromCalculation.mockResolvedValueOnce(
+      buildSnapshot(calculation),
+    );
+
+    const tx = {
+      customOrderLedgerAllocation: {
+        findMany: jest
+          .fn()
+          .mockResolvedValue([{ allocationType: 'BRAND_ACCEPTANCE_PORTION' }]),
+        createMany: jest.fn().mockResolvedValue({ count: 1 }),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+    };
+
+    await (service as any).applyPaidCustomOrderSettlement(tx, {
+      customOrderId: 'co_partial',
+      brandId: 'brand_partial',
+      grossAmount: 1000,
+      currency: 'NGN',
+      effectiveAt: new Date('2026-03-12T09:00:00.000Z'),
+      releaseEligibleAt: new Date('2026-03-12T10:00:00.000Z'),
+    });
+
+    expect(tx.customOrderLedgerAllocation.createMany).toHaveBeenCalledWith({
+      data: [
+        expect.objectContaining({
+          allocationType: 'FINAL_COMPLETION_PORTION',
+          amount: expect.any(Prisma.Decimal),
+        }),
+      ],
+    });
+    expect(
+      tx.customOrderLedgerAllocation.createMany.mock.calls[0][0].data,
+    ).toHaveLength(1);
+  });
+
+  it('uses existing snapshot values instead of recalculated policy values', async () => {
+    const recalculated = buildSettlementCalculation(
+      {
+        customOrderId: 'co_snapshot_locked',
+        brandId: 'brand_1',
+        grossAmount: 1000,
+        currency: 'NGN',
+      },
+      50,
+    );
+    const originalSnapshot = buildSnapshot(
+      buildSettlementCalculation(
+        {
+          customOrderId: 'co_snapshot_locked',
+          brandId: 'brand_1',
+          grossAmount: 1000,
+          currency: 'NGN',
+        },
+        60,
+      ),
+    );
+    settlementCalculatorService.calculate.mockResolvedValueOnce(recalculated);
+    settlementSnapshotService.createFromCalculation.mockResolvedValueOnce(
+      originalSnapshot,
+    );
+
+    const tx = {
+      customOrderLedgerAllocation: {
+        findMany: jest.fn().mockResolvedValue([]),
+        createMany: jest.fn().mockResolvedValue({ count: 2 }),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+    };
+
+    await (service as any).applyPaidCustomOrderSettlement(tx, {
+      customOrderId: 'co_snapshot_locked',
+      brandId: 'brand_1',
+      grossAmount: 1000,
+      currency: 'NGN',
+      effectiveAt: new Date('2026-03-12T09:00:00.000Z'),
+      releaseEligibleAt: new Date('2026-03-12T10:00:00.000Z'),
+    });
+
+    const allocations = tx.customOrderLedgerAllocation.createMany.mock.calls[0][0]
+      .data;
+    expect(String(allocations[0].amount)).toBe('600');
+    expect(String(allocations[1].amount)).toBe('400');
+    expect(ledgerService.postCustomOrderImmediateRelease).toHaveBeenCalledWith(
+      tx,
+      expect.objectContaining({
+        amount: 600,
+        commissionAmount: 60,
+        netBrandAmount: 540,
+      }),
+    );
+  });
+
+  it('does not release an upfront tranche for hold-until-delivery custom-order policy', async () => {
+    const calculation = buildSettlementCalculation(
+      {
+        customOrderId: 'co_hold',
+        brandId: 'brand_hold',
+        grossAmount: 1000,
+        currency: 'NGN',
+      },
+      0,
+      SettlementReleaseMode.HOLD_UNTIL_DELIVERY,
+    );
+    settlementCalculatorService.calculate.mockResolvedValueOnce(calculation);
+    settlementSnapshotService.createFromCalculation.mockResolvedValueOnce(
+      buildSnapshot(calculation),
+    );
+
+    const tx = {
+      customOrderLedgerAllocation: {
+        findMany: jest.fn().mockResolvedValue([]),
+        createMany: jest.fn().mockResolvedValue({ count: 2 }),
+        updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+      },
+    };
+
+    await (service as any).applyPaidCustomOrderSettlement(tx, {
+      customOrderId: 'co_hold',
+      brandId: 'brand_hold',
+      grossAmount: 1000,
+      currency: 'NGN',
+      effectiveAt: new Date('2026-03-12T09:00:00.000Z'),
+      releaseEligibleAt: new Date('2026-03-12T10:00:00.000Z'),
+    });
+
+    const allocations = tx.customOrderLedgerAllocation.createMany.mock.calls[0][0]
+      .data;
+    expect(String(allocations[0].amount)).toBe('0');
+    expect(String(allocations[1].amount)).toBe('1000');
+    expect(tx.customOrderLedgerAllocation.updateMany).not.toHaveBeenCalled();
+    expect(ledgerService.postCustomOrderImmediateRelease).not.toHaveBeenCalled();
   });
 });

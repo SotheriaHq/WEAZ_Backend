@@ -124,6 +124,108 @@ describe('CustomOrderRefundService', () => {
     });
   });
 
+  it('refunds safely before any custom-order tranche has been released', async () => {
+    tx.customOrder.findUnique.mockResolvedValue({
+      id: 'co_held',
+      brandId: 'brand_1',
+      currency: 'NGN',
+      paymentReference: 'ref_held',
+      paymentStatus: PaymentStatus.PAID,
+    });
+    tx.paymentAttempt.findUnique.mockResolvedValue({
+      id: 'attempt_held',
+      reference: 'ref_held',
+      amount: 1000,
+      status: 'PAID',
+    });
+    tx.paymentAttempt.updateMany.mockResolvedValue({ count: 1 });
+    tx.customOrderLedgerAllocation.findMany.mockResolvedValue([
+      {
+        amount: 0,
+        commissionAmount: 0,
+        netBrandAmount: 0,
+        status: CustomOrderLedgerAllocationStatus.HELD,
+        eligibleAt: null,
+        paidOutAt: null,
+      },
+      {
+        amount: 1000,
+        commissionAmount: 100,
+        netBrandAmount: 900,
+        status: CustomOrderLedgerAllocationStatus.HELD,
+        eligibleAt: null,
+        paidOutAt: null,
+      },
+    ]);
+
+    await service.initiateRefund(tx, {
+      customOrderId: 'co_held',
+      reason: 'BUYER_CANCELLED',
+      actorType: CustomOrderActorType.SYSTEM,
+    });
+
+    expect(ledgerService.postCustomOrderRefund).toHaveBeenCalledWith(tx, {
+      customOrderId: 'co_held',
+      brandId: 'brand_1',
+      currency: 'NGN',
+      totalAmount: 1000,
+      releasedCommission: 0,
+      releasedNet: 0,
+      unreleasedGross: 1000,
+    });
+  });
+
+  it('refunds using all released allocation values after final release', async () => {
+    tx.customOrder.findUnique.mockResolvedValue({
+      id: 'co_final_released',
+      brandId: 'brand_1',
+      currency: 'NGN',
+      paymentReference: 'ref_final_released',
+      paymentStatus: PaymentStatus.PAID,
+    });
+    tx.paymentAttempt.findUnique.mockResolvedValue({
+      id: 'attempt_final_released',
+      reference: 'ref_final_released',
+      amount: 1000,
+      status: 'PAID',
+    });
+    tx.paymentAttempt.updateMany.mockResolvedValue({ count: 1 });
+    tx.customOrderLedgerAllocation.findMany.mockResolvedValue([
+      {
+        amount: 600,
+        commissionAmount: 60,
+        netBrandAmount: 540,
+        status: CustomOrderLedgerAllocationStatus.PAID_OUT,
+        eligibleAt: new Date('2026-03-12T10:00:00.000Z'),
+        paidOutAt: new Date('2026-03-13T10:00:00.000Z'),
+      },
+      {
+        amount: 400,
+        commissionAmount: 40,
+        netBrandAmount: 360,
+        status: CustomOrderLedgerAllocationStatus.PAYOUT_ELIGIBLE,
+        eligibleAt: new Date('2026-03-14T10:00:00.000Z'),
+        paidOutAt: null,
+      },
+    ]);
+
+    await service.initiateRefund(tx, {
+      customOrderId: 'co_final_released',
+      reason: 'DISPUTE_RESOLUTION',
+      actorType: CustomOrderActorType.SYSTEM,
+    });
+
+    expect(ledgerService.postCustomOrderRefund).toHaveBeenCalledWith(tx, {
+      customOrderId: 'co_final_released',
+      brandId: 'brand_1',
+      currency: 'NGN',
+      totalAmount: 1000,
+      releasedCommission: 100,
+      releasedNet: 900,
+      unreleasedGross: 0,
+    });
+  });
+
   it('is idempotent when refund was already recorded', async () => {
     tx.customOrder.findUnique.mockResolvedValue({
       id: 'co_1',

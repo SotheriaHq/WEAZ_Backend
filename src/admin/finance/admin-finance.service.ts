@@ -10,8 +10,14 @@ import {
   CustomOrderLedgerAllocationType,
   EscrowReleaseCondition,
   EscrowHoldStatus,
+  LedgerEntryDirection,
+  PayoutStatus,
   Prisma,
   Role,
+  SettlementFinalReleaseTrigger,
+  SettlementOrderType,
+  SettlementPolicyScope,
+  SettlementReleaseMode,
 } from '@prisma/client';
 import { Request } from 'express';
 import { v4 as uuidv4 } from 'uuid';
@@ -19,6 +25,11 @@ import { CommissionService } from 'src/finance/commission.service';
 import { FinancialDocumentsService } from 'src/finance/financial-documents.service';
 import { LedgerService } from 'src/finance/ledger.service';
 import { ReconciliationService } from 'src/finance/reconciliation.service';
+import { SettlementCalculatorService } from 'src/finance/settlement-calculator.service';
+import {
+  SettlementPolicyAdminInput,
+  SettlementPolicyService,
+} from 'src/finance/settlement-policy.service';
 import { StandardOrderEscrowService } from 'src/finance/standard-order-escrow.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { resolveWebAppBaseUrl } from 'src/common/utils/web-app-url';
@@ -87,6 +98,8 @@ export class AdminFinanceService {
     private readonly financialDocumentsService: FinancialDocumentsService,
     private readonly standardOrderEscrowService: StandardOrderEscrowService,
     private readonly ledgerService: LedgerService,
+    private readonly settlementPolicyService: SettlementPolicyService,
+    private readonly settlementCalculatorService: SettlementCalculatorService,
   ) {}
 
   async getOverview() {
@@ -101,6 +114,7 @@ export class AdminFinanceService {
       recentDocuments,
       pendingPayouts,
       activeEscrowHolds,
+      settlementState,
     ] = await Promise.all([
       this.prisma.paymentAttempt.aggregate({
         where: { status: 'PAID' },
@@ -145,6 +159,7 @@ export class AdminFinanceService {
           status: { in: [EscrowHoldStatus.HELD, EscrowHoldStatus.PARTIALLY_RELEASED, EscrowHoldStatus.FROZEN] },
         },
       }),
+      this.getSettlementStateSummary(),
     ]);
 
     const totalCommissions = this.roundMoney(
@@ -168,8 +183,163 @@ export class AdminFinanceService {
       unresolvedReconciliationItems: unresolvedItems,
       pendingPayouts,
       activeEscrowHolds,
+      settlementState,
       recentRuns,
       recentDocuments,
+    };
+  }
+
+  async listSettlementPolicies(params?: {
+    orderType?: SettlementOrderType;
+    scope?: SettlementPolicyScope;
+    brandId?: string | null;
+    currency?: string | null;
+    isActive?: boolean;
+    take?: number;
+  }) {
+    return this.settlementPolicyService.listPolicies(params);
+  }
+
+  async getSettlementPolicy(id: string) {
+    return this.settlementPolicyService.getPolicy(id);
+  }
+
+  async createSettlementPolicy(
+    actorId: string,
+    req: Request,
+    dto: SettlementPolicyAdminInput,
+  ) {
+    const created = await this.settlementPolicyService.createPolicy(
+      actorId,
+      this.normalizeSettlementPolicyDto(dto),
+    );
+
+    await this.recordAudit(req, actorId, AdminAuditAction.ADMIN_SYSTEM_SETTINGS_UPDATE, {
+      targetType: 'SettlementPolicy',
+      targetId: created.id,
+      newState: created,
+    });
+
+    return created;
+  }
+
+  async updateSettlementPolicy(
+    id: string,
+    actorId: string,
+    req: Request,
+    dto: Partial<SettlementPolicyAdminInput>,
+  ) {
+    const existing = await this.settlementPolicyService.getPolicy(id);
+    const updated = await this.settlementPolicyService.updatePolicy(
+      id,
+      actorId,
+      this.normalizeSettlementPolicyDto({
+        ...dto,
+        orderType: dto.orderType ?? existing.orderType,
+      }),
+    );
+
+    await this.recordAudit(req, actorId, AdminAuditAction.ADMIN_SYSTEM_SETTINGS_UPDATE, {
+      targetType: 'SettlementPolicy',
+      targetId: updated.id,
+      previousState: existing,
+      newState: updated,
+    });
+
+    return updated;
+  }
+
+  async deactivateSettlementPolicy(id: string, actorId: string, req: Request) {
+    const existing = await this.settlementPolicyService.getPolicy(id);
+    const updated = await this.settlementPolicyService.deactivatePolicy(
+      id,
+      actorId,
+    );
+
+    await this.recordAudit(req, actorId, AdminAuditAction.ADMIN_SYSTEM_SETTINGS_UPDATE, {
+      targetType: 'SettlementPolicy',
+      targetId: updated.id,
+      previousState: existing,
+      newState: updated,
+    });
+
+    return updated;
+  }
+
+  async activateSettlementPolicy(id: string, actorId: string, req: Request) {
+    const existing = await this.settlementPolicyService.getPolicy(id);
+    const updated = await this.settlementPolicyService.activatePolicy(
+      id,
+      actorId,
+    );
+
+    await this.recordAudit(req, actorId, AdminAuditAction.ADMIN_SYSTEM_SETTINGS_UPDATE, {
+      targetType: 'SettlementPolicy',
+      targetId: updated.id,
+      previousState: existing,
+      newState: updated,
+    });
+
+    return updated;
+  }
+
+  async previewSettlementPolicy(dto: {
+    orderType: SettlementOrderType;
+    brandId: string;
+    currency: string;
+    amount: number;
+    effectiveAt?: string | Date;
+  }) {
+    const orderType = dto.orderType;
+    const brandId = String(dto.brandId ?? '').trim();
+    const currency = String(dto.currency ?? '').trim().toUpperCase();
+    const grossAmount = Number(dto.amount);
+    const effectiveAt = dto.effectiveAt ? new Date(dto.effectiveAt) : new Date();
+
+    if (!Object.values(SettlementOrderType).includes(orderType)) {
+      throw new BadRequestException('orderType is invalid');
+    }
+    if (!brandId) {
+      throw new BadRequestException('brandId is required');
+    }
+    if (!currency) {
+      throw new BadRequestException('currency is required');
+    }
+    if (!Number.isFinite(grossAmount) || grossAmount <= 0) {
+      throw new BadRequestException('amount must be greater than 0');
+    }
+    if (Number.isNaN(effectiveAt.getTime())) {
+      throw new BadRequestException('effectiveAt must be a valid date');
+    }
+
+    const [resolvedPolicy, calculation] = await Promise.all([
+      this.settlementPolicyService.resolveActivePolicy({
+        orderType,
+        brandId,
+        currency,
+        at: effectiveAt,
+      }),
+      this.settlementCalculatorService.calculate({
+        orderType,
+        brandId,
+        grossAmount,
+        currency,
+        effectiveAt,
+      }),
+    ]);
+
+    return {
+      writesSnapshot: false,
+      writesLedger: false,
+      resolvedSettlementPolicy: resolvedPolicy,
+      settlementBreakdown: calculation,
+      commissionBreakdown: {
+        commissionRuleId: calculation.commissionRuleId,
+        commissionSource: calculation.commissionSource,
+        commissionScope: calculation.commissionScope,
+        commissionRate: calculation.commissionRate,
+        commissionAmount: calculation.commissionAmount,
+      },
     };
   }
 
@@ -688,6 +858,11 @@ export class AdminFinanceService {
         })
       : [];
     const buyersById = new Map(buyers.map((buyer) => [buyer.id, buyer]));
+    const settlementDetails = await this.buildPaymentSettlementDetails(
+      attempt,
+      orders,
+      customOrder,
+    );
 
     return {
       id: attempt.id,
@@ -719,6 +894,7 @@ export class AdminFinanceService {
             buyer: buyersById.get(customOrder.buyerId) ?? null,
           }
         : null,
+      settlementDetails,
       events,
     };
   }
@@ -985,6 +1161,169 @@ export class AdminFinanceService {
   private buildCheckoutResumeUrl(token: string) {
     const baseUrl = resolveWebAppBaseUrl();
     return `${baseUrl}/custom-orders/resume/${encodeURIComponent(token)}`;
+  }
+
+  private async getSettlementStateSummary() {
+    const now = new Date();
+    const [
+      standardHolds,
+      customAllocations,
+      brandWalletEntries,
+      pendingPayouts,
+      paidPayouts,
+    ] = await Promise.all([
+      this.prisma.escrowHold.findMany({
+        select: {
+          status: true,
+          totalAmount: true,
+          firstReleaseAmount: true,
+          secondReleaseAmount: true,
+          firstReleasedAt: true,
+          secondReleasedAt: true,
+          secondReleaseEligibleAt: true,
+        },
+      }),
+      this.prisma.customOrderLedgerAllocation.findMany({
+        select: {
+          allocationType: true,
+          amount: true,
+          status: true,
+        },
+      }),
+      this.prisma.ledgerEntry.findMany({
+        where: { account: { subType: 'BRAND_AVAILABLE' } },
+        select: {
+          direction: true,
+          amount: true,
+        },
+      }),
+      this.prisma.payout.aggregate({
+        where: {
+          status: {
+            in: [
+              PayoutStatus.PENDING_APPROVAL,
+              PayoutStatus.APPROVED,
+              PayoutStatus.PROCESSING,
+              PayoutStatus.ON_HOLD,
+              PayoutStatus.RECONCILIATION_REVIEW,
+            ],
+          },
+        },
+        _sum: { amount: true },
+      }),
+      this.prisma.payout.aggregate({
+        where: { status: PayoutStatus.PAID },
+        _sum: { amount: true },
+      }),
+    ]);
+
+    let standardHeld = 0;
+    let standardUpfrontReleased = 0;
+    let standardFinalPending = 0;
+    let standardFinalEligible = 0;
+    let standardFrozen = 0;
+    let standardRefunded = 0;
+
+    for (const hold of standardHolds) {
+      const firstAmount = Number(hold.firstReleaseAmount ?? 0);
+      const secondAmount = Number(hold.secondReleaseAmount ?? 0);
+      const totalAmount = Number(hold.totalAmount ?? 0);
+      const firstUnreleased = hold.firstReleasedAt ? 0 : firstAmount;
+      const secondUnreleased = hold.secondReleasedAt ? 0 : secondAmount;
+
+      if (hold.firstReleasedAt) {
+        standardUpfrontReleased += firstAmount;
+      }
+      if (hold.status === EscrowHoldStatus.REFUNDED) {
+        standardRefunded += totalAmount;
+        continue;
+      }
+      if (hold.status === EscrowHoldStatus.FROZEN) {
+        standardFrozen += firstUnreleased + secondUnreleased;
+        continue;
+      }
+      if (
+        hold.status === EscrowHoldStatus.HELD ||
+        hold.status === EscrowHoldStatus.PARTIALLY_RELEASED
+      ) {
+        standardHeld += firstUnreleased + secondUnreleased;
+        if (secondUnreleased > 0) {
+          if (hold.secondReleaseEligibleAt && hold.secondReleaseEligibleAt <= now) {
+            standardFinalEligible += secondUnreleased;
+          } else {
+            standardFinalPending += secondUnreleased;
+          }
+        }
+      }
+    }
+
+    let customHeld = 0;
+    let customUpfrontReleased = 0;
+    let customFinalPending = 0;
+    let customFinalEligible = 0;
+    let customRefunded = 0;
+
+    for (const allocation of customAllocations) {
+      const amount = Number(allocation.amount ?? 0);
+      if (allocation.status === CustomOrderLedgerAllocationStatus.HELD) {
+        customHeld += amount;
+        if (
+          allocation.allocationType ===
+          CustomOrderLedgerAllocationType.FINAL_COMPLETION_PORTION
+        ) {
+          customFinalPending += amount;
+        }
+      }
+      if (
+        allocation.status === CustomOrderLedgerAllocationStatus.PAYOUT_ELIGIBLE ||
+        allocation.status === CustomOrderLedgerAllocationStatus.PAID_OUT
+      ) {
+        if (
+          allocation.allocationType ===
+          CustomOrderLedgerAllocationType.BRAND_ACCEPTANCE_PORTION
+        ) {
+          customUpfrontReleased += amount;
+        } else {
+          customFinalEligible +=
+            allocation.status === CustomOrderLedgerAllocationStatus.PAYOUT_ELIGIBLE
+              ? amount
+              : 0;
+        }
+      }
+      if (allocation.status === CustomOrderLedgerAllocationStatus.REVERSED) {
+        customRefunded += amount;
+      }
+    }
+
+    const availableBrandWalletFunds = brandWalletEntries.reduce(
+      (sum, entry) =>
+        sum +
+        (entry.direction === LedgerEntryDirection.CREDIT
+          ? Number(entry.amount ?? 0)
+          : -Number(entry.amount ?? 0)),
+      0,
+    );
+
+    return {
+      currency: 'NGN',
+      totalHeldFunds: this.roundMoney(standardHeld + customHeld),
+      upfrontReleasedFunds: this.roundMoney(
+        standardUpfrontReleased + customUpfrontReleased,
+      ),
+      finalReleasePendingFunds: this.roundMoney(
+        standardFinalPending + customFinalPending,
+      ),
+      finalReleaseEligibleFunds: this.roundMoney(
+        standardFinalEligible + customFinalEligible,
+      ),
+      frozenFunds: this.roundMoney(standardFrozen),
+      refundedFunds: this.roundMoney(standardRefunded + customRefunded),
+      availableBrandWalletFunds: this.roundMoney(availableBrandWalletFunds),
+      payoutPendingFunds: this.roundMoney(
+        Number(pendingPayouts._sum.amount ?? 0),
+      ),
+      paidOutFunds: this.roundMoney(Number(paidPayouts._sum.amount ?? 0)),
+    };
   }
 
   async listEscrowHolds(params?: {
@@ -1428,12 +1767,177 @@ export class AdminFinanceService {
     };
   }
 
+  private normalizeSettlementPolicyDto(
+    dto: Partial<SettlementPolicyAdminInput>,
+  ): SettlementPolicyAdminInput {
+    return {
+      ...(dto as SettlementPolicyAdminInput),
+      ...(dto.effectiveFrom !== undefined
+        ? { effectiveFrom: new Date(dto.effectiveFrom) }
+        : {}),
+      ...(dto.effectiveTo !== undefined
+        ? { effectiveTo: dto.effectiveTo ? new Date(dto.effectiveTo) : null }
+        : {}),
+    };
+  }
+
+  private async buildPaymentSettlementDetails(
+    attempt: {
+      orderIds: string[] | null;
+      customOrderId: string | null;
+    },
+    orders: Array<{
+      id: string;
+      totalAmount: Prisma.Decimal;
+      currency: string;
+      brand: { id: string; name: string | null } | null;
+    }>,
+    customOrder: {
+      id: string;
+      brand: { id: string; name: string | null } | null;
+    } | null,
+  ) {
+    const orderIds = attempt.orderIds ?? [];
+    const customOrderId = attempt.customOrderId;
+
+    const [standardSnapshots, standardHolds, customSnapshot, customAllocations] =
+      await Promise.all([
+        orderIds.length
+          ? this.prisma.settlementSnapshot.findMany({
+              where: { orderId: { in: orderIds } },
+            })
+          : Promise.resolve([]),
+        orderIds.length
+          ? this.prisma.escrowHold.findMany({
+              where: { orderId: { in: orderIds } },
+            })
+          : Promise.resolve([]),
+        customOrderId
+          ? this.prisma.settlementSnapshot.findFirst({
+              where: { customOrderId },
+            })
+          : Promise.resolve(null),
+        customOrderId
+          ? this.prisma.customOrderLedgerAllocation.findMany({
+              where: { customOrderId },
+              orderBy: { createdAt: 'asc' },
+            })
+          : Promise.resolve([]),
+      ]);
+
+    const snapshotsByOrderId = new Map(
+      standardSnapshots
+        .filter((snapshot) => snapshot.orderId)
+        .map((snapshot) => [snapshot.orderId as string, snapshot]),
+    );
+    const holdsByOrderId = new Map(
+      standardHolds
+        .filter((hold) => hold.orderId)
+        .map((hold) => [hold.orderId as string, hold]),
+    );
+
+    const standardDetails = orders.map((order) => {
+      const snapshot = snapshotsByOrderId.get(order.id) ?? null;
+      const hold = holdsByOrderId.get(order.id) ?? null;
+      const upfrontReleasedAmount = hold?.firstReleasedAt
+        ? Number(hold.firstReleaseAmount ?? 0)
+        : 0;
+      const finalHeldAmount = hold?.secondReleasedAt
+        ? 0
+        : Number(hold?.secondReleaseAmount ?? snapshot?.finalReleaseGrossAmount ?? 0);
+
+      return {
+        orderType: SettlementOrderType.STANDARD_ORDER,
+        orderId: order.id,
+        customOrderId: null,
+        brand: order.brand,
+        grossAmount: Number(snapshot?.grossAmount ?? hold?.totalAmount ?? order.totalAmount ?? 0),
+        commissionAmount: Number(snapshot?.commissionAmount ?? hold?.commissionAmount ?? 0),
+        brandNetAmount: Number(snapshot?.brandNetAmount ?? hold?.netBrandAmount ?? 0),
+        releaseMode: snapshot?.releaseMode ?? null,
+        upfrontReleasePercent: Number(snapshot?.upfrontReleasePercent ?? 0),
+        upfrontReleasedAmount,
+        finalHeldAmount,
+        snapshotId: snapshot?.id ?? null,
+        settlementPolicyId: snapshot?.settlementPolicyId ?? null,
+        commissionRuleId: snapshot?.commissionRuleId ?? null,
+        releaseStatus: hold?.status ?? 'NO_HOLD',
+      };
+    });
+
+    if (!customOrderId) {
+      return standardDetails;
+    }
+
+    const acceptanceAllocation =
+      customAllocations.find(
+        (allocation) =>
+          allocation.allocationType ===
+          CustomOrderLedgerAllocationType.BRAND_ACCEPTANCE_PORTION,
+      ) ?? null;
+    const finalAllocation =
+      customAllocations.find(
+        (allocation) =>
+          allocation.allocationType ===
+          CustomOrderLedgerAllocationType.FINAL_COMPLETION_PORTION,
+      ) ?? null;
+
+    return [
+      ...standardDetails,
+      {
+        orderType: SettlementOrderType.CUSTOM_ORDER,
+        orderId: null,
+        customOrderId,
+        brand: customOrder?.brand ?? null,
+        grossAmount: Number(
+          customSnapshot?.grossAmount ??
+            customAllocations.reduce(
+              (sum, allocation) => sum + Number(allocation.amount ?? 0),
+              0,
+            ),
+        ),
+        commissionAmount: Number(
+          customSnapshot?.commissionAmount ??
+            customAllocations.reduce(
+              (sum, allocation) => sum + Number(allocation.commissionAmount ?? 0),
+              0,
+            ),
+        ),
+        brandNetAmount: Number(
+          customSnapshot?.brandNetAmount ??
+            customAllocations.reduce(
+              (sum, allocation) => sum + Number(allocation.netBrandAmount ?? 0),
+              0,
+            ),
+        ),
+        releaseMode: customSnapshot?.releaseMode ?? null,
+        upfrontReleasePercent: Number(customSnapshot?.upfrontReleasePercent ?? 0),
+        upfrontReleasedAmount:
+          acceptanceAllocation &&
+          (acceptanceAllocation.status ===
+            CustomOrderLedgerAllocationStatus.PAYOUT_ELIGIBLE ||
+            acceptanceAllocation.status === CustomOrderLedgerAllocationStatus.PAID_OUT)
+            ? Number(acceptanceAllocation.amount ?? 0)
+            : 0,
+        finalHeldAmount:
+          finalAllocation?.status === CustomOrderLedgerAllocationStatus.HELD
+            ? Number(finalAllocation.amount ?? 0)
+            : 0,
+        snapshotId: customSnapshot?.id ?? null,
+        settlementPolicyId: customSnapshot?.settlementPolicyId ?? null,
+        commissionRuleId: customSnapshot?.commissionRuleId ?? null,
+        releaseStatus: finalAllocation?.status ?? 'NO_ALLOCATION',
+      },
+    ];
+  }
+
   private async recordAudit(
     req: Request,
     actorId: string,
     action: AdminAuditAction,
     params: {
       targetId: string;
+      targetType?: string;
       previousState?: unknown;
       newState?: unknown;
     },
@@ -1443,7 +1947,7 @@ export class AdminFinanceService {
         id: uuidv4(),
         actorUserId: actorId,
         action,
-        targetType: 'Finance',
+        targetType: params.targetType ?? 'Finance',
         targetId: params.targetId,
         previousState: params.previousState ?? null,
         newState: params.newState ?? null,

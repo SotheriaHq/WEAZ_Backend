@@ -9,7 +9,13 @@ import {
   Req,
   UseGuards,
 } from '@nestjs/common';
-import { Role } from '@prisma/client';
+import {
+  Role,
+  SettlementFinalReleaseTrigger,
+  SettlementOrderType,
+  SettlementPolicyScope,
+  SettlementReleaseMode,
+} from '@prisma/client';
 import { Request } from 'express';
 import { Roles } from 'src/auth/decorator/roles.decorator';
 import { JwtAuthGuard } from 'src/auth/guard/jwt-auth.guard';
@@ -64,6 +70,23 @@ const FINANCIAL_DOCUMENT_TYPE = {
 
 type FinancialDocumentType =
   (typeof FINANCIAL_DOCUMENT_TYPE)[keyof typeof FINANCIAL_DOCUMENT_TYPE];
+
+type SettlementPolicyDto = {
+  orderType: SettlementOrderType;
+  scope?: SettlementPolicyScope;
+  brandId?: string | null;
+  currency?: string | null;
+  releaseMode?: SettlementReleaseMode;
+  upfrontReleaseEnabled?: boolean;
+  upfrontReleasePercent?: number;
+  settlementDelayHours?: number;
+  autoReleaseDays?: number;
+  finalReleaseTrigger?: SettlementFinalReleaseTrigger;
+  isDefault?: boolean;
+  isActive?: boolean;
+  effectiveFrom?: string;
+  effectiveTo?: string | null;
+};
 
 @Controller('admin/finance')
 @UseGuards(JwtAuthGuard, RolesGuard, AdminPermissionGuard)
@@ -168,6 +191,83 @@ export class AdminFinanceController {
   unfreezeEscrowHold(@Param('id') id: string, @Req() req: Request) {
     const actorId = (req as any).user.id ?? (req as any).user.sub;
     return this.financeService.unfreezeEscrowHold(id, actorId, req);
+  }
+
+  @Get('settlement-policies')
+  @RequirePermissions(ADMIN_PERMISSIONS.PAYOUTS_READ)
+  listSettlementPolicies(
+    @Query('orderType') orderType?: SettlementOrderType,
+    @Query('scope') scope?: SettlementPolicyScope,
+    @Query('brandId') brandId?: string,
+    @Query('currency') currency?: string,
+    @Query('isActive') isActive?: string,
+    @Query('take') take?: string,
+  ) {
+    return this.financeService.listSettlementPolicies({
+      orderType,
+      scope,
+      brandId: brandId === '' ? null : brandId,
+      currency: currency === '' ? null : currency,
+      isActive:
+        isActive === undefined ? undefined : String(isActive).toLowerCase() === 'true',
+      take: take ? parseInt(take, 10) : undefined,
+    });
+  }
+
+  @Post('settlement-policies/preview')
+  @RequirePermissions(ADMIN_PERMISSIONS.PAYOUTS_READ)
+  previewSettlementPolicy(
+    @Body()
+    dto: {
+      orderType: SettlementOrderType;
+      brandId: string;
+      currency: string;
+      amount: number;
+      effectiveAt?: string;
+    },
+  ) {
+    return this.financeService.previewSettlementPolicy(dto);
+  }
+
+  @Get('settlement-policies/:id')
+  @RequirePermissions(ADMIN_PERMISSIONS.PAYOUTS_READ)
+  getSettlementPolicy(@Param('id') id: string) {
+    return this.financeService.getSettlementPolicy(id);
+  }
+
+  @Post('settlement-policies')
+  @RequirePermissions(ADMIN_PERMISSIONS.PAYOUTS_PROCESS)
+  createSettlementPolicy(
+    @Body() dto: SettlementPolicyDto,
+    @Req() req: Request,
+  ) {
+    const actorId = (req as any).user.id ?? (req as any).user.sub;
+    return this.financeService.createSettlementPolicy(actorId, req, dto);
+  }
+
+  @Patch('settlement-policies/:id')
+  @RequirePermissions(ADMIN_PERMISSIONS.PAYOUTS_PROCESS)
+  updateSettlementPolicy(
+    @Param('id') id: string,
+    @Body() dto: Partial<SettlementPolicyDto>,
+    @Req() req: Request,
+  ) {
+    const actorId = (req as any).user.id ?? (req as any).user.sub;
+    return this.financeService.updateSettlementPolicy(id, actorId, req, dto);
+  }
+
+  @Post('settlement-policies/:id/deactivate')
+  @RequirePermissions(ADMIN_PERMISSIONS.PAYOUTS_PROCESS)
+  deactivateSettlementPolicy(@Param('id') id: string, @Req() req: Request) {
+    const actorId = (req as any).user.id ?? (req as any).user.sub;
+    return this.financeService.deactivateSettlementPolicy(id, actorId, req);
+  }
+
+  @Post('settlement-policies/:id/activate')
+  @RequirePermissions(ADMIN_PERMISSIONS.PAYOUTS_PROCESS)
+  activateSettlementPolicy(@Param('id') id: string, @Req() req: Request) {
+    const actorId = (req as any).user.id ?? (req as any).user.sub;
+    return this.financeService.activateSettlementPolicy(id, actorId, req);
   }
 
   @Get('commission-rules')

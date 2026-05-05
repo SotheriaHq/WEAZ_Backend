@@ -1,4 +1,4 @@
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, ConflictException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import {
   Prisma,
@@ -429,6 +429,34 @@ describe('SettlementPolicyService', () => {
       }),
     );
     expect(result.id).toBe('created_policy');
+  });
+
+  it('rejects overlapping active policies for the same brand/order type/currency window', async () => {
+    prisma = buildPrismaMock([
+      makePolicy({
+        id: 'existing_brand_policy',
+        scope: SettlementPolicyScope.BRAND,
+        brandId: 'brand_1',
+        currency: 'NGN',
+        isDefault: false,
+        effectiveFrom: new Date('2026-05-01T00:00:00.000Z'),
+        effectiveTo: null,
+      }),
+    ]);
+    service = new SettlementPolicyService(prisma, systemConfigService as any);
+
+    await expect(
+      service.createPolicy('admin_1', {
+        orderType: SettlementOrderType.CUSTOM_ORDER,
+        scope: SettlementPolicyScope.BRAND,
+        brandId: 'brand_1',
+        currency: 'NGN',
+        releaseMode: SettlementReleaseMode.SPLIT_RELEASE,
+        upfrontReleaseEnabled: true,
+        upfrontReleasePercent: 50,
+        effectiveFrom: new Date('2026-05-05T00:00:00.000Z'),
+      }),
+    ).rejects.toBeInstanceOf(ConflictException);
   });
 
   it('falls back to SystemConfig timing values when no DB policy exists', async () => {
