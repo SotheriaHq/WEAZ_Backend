@@ -15,6 +15,7 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import { CustomOrdersPaymentsService } from 'src/custom-orders/custom-orders-payments.service';
 import { CustomOrderRefundService } from 'src/custom-orders/custom-order-refund.service';
 import { CustomOrderSideEffectsService } from 'src/custom-orders/custom-order-side-effects.service';
+import { LedgerService } from 'src/finance/ledger.service';
 import { PaymentRuntimeHealthService } from 'src/payment/payment-runtime-health.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 
@@ -37,15 +38,17 @@ export class CustomOrderOpsCronService {
     private readonly refundService: CustomOrderRefundService,
     private readonly customOrdersPaymentsService: CustomOrdersPaymentsService,
     private readonly paymentRuntimeHealthService: PaymentRuntimeHealthService,
-  ) { }
+    private readonly ledgerService: LedgerService,
+  ) {}
 
   @Cron(CronExpression.EVERY_MINUTE)
   async processDurableCustomOrderSideEffects(): Promise<void> {
     try {
-      const [syncedAnalyticsCount, dispatchedNotificationsCount] = await Promise.all([
-        this.sideEffects.syncTimelineAnalytics(),
-        this.sideEffects.dispatchPendingNotifications(),
-      ]);
+      const [syncedAnalyticsCount, dispatchedNotificationsCount] =
+        await Promise.all([
+          this.sideEffects.syncTimelineAnalytics(),
+          this.sideEffects.dispatchPendingNotifications(),
+        ]);
 
       if (syncedAnalyticsCount > 0 || dispatchedNotificationsCount > 0) {
         this.logger.log(
@@ -53,7 +56,9 @@ export class CustomOrderOpsCronService {
         );
       }
     } catch (error) {
-      this.logger.warn(`Durable custom-order side effects cron failed: ${this.formatError(error)}`);
+      this.logger.warn(
+        `Durable custom-order side effects cron failed: ${this.formatError(error)}`,
+      );
     }
   }
 
@@ -117,13 +122,14 @@ export class CustomOrderOpsCronService {
         }
 
         try {
-          const verification = await this.customOrdersPaymentsService.verifyPaymentByReference(
-            buyerId,
-            {
-              reference: attempt.reference,
-              gateway: String(attempt.provider || 'PAYSTACK'),
-            },
-          );
+          const verification =
+            await this.customOrdersPaymentsService.verifyPaymentByReference(
+              buyerId,
+              {
+                reference: attempt.reference,
+                gateway: String(attempt.provider || 'PAYSTACK'),
+              },
+            );
 
           if (verification.status === 'PAID') {
             paid += 1;
@@ -236,7 +242,8 @@ export class CustomOrderOpsCronService {
           await this.sideEffects.enqueueNotification({
             customOrderId: order.id,
             recipientIds: admins,
-            notificationType: NotificationType.CUSTOM_ORDER_ADMIN_REVIEW_TRIGGERED,
+            notificationType:
+              NotificationType.CUSTOM_ORDER_ADMIN_REVIEW_TRIGGERED,
             target: this.adminCustomOrderTarget(order.id),
             payload: {
               customOrderId: order.id,
@@ -294,7 +301,9 @@ export class CustomOrderOpsCronService {
       for (const order of orders) {
         const hoursWaiting = Math.max(
           ACCEPTANCE_SLA_WARNING_HOURS,
-          Math.floor((now.getTime() - order.createdAt.getTime()) / (60 * 60 * 1000)),
+          Math.floor(
+            (now.getTime() - order.createdAt.getTime()) / (60 * 60 * 1000),
+          ),
         );
 
         await this.sideEffects.enqueueNotification({
@@ -315,10 +324,14 @@ export class CustomOrderOpsCronService {
       }
 
       if (orders.length > 0) {
-        this.logger.log(`Flagged ${orders.length} custom order(s) at acceptance SLA risk`);
+        this.logger.log(
+          `Flagged ${orders.length} custom order(s) at acceptance SLA risk`,
+        );
       }
     } catch (error) {
-      this.logger.warn(`Acceptance SLA cron failed: ${this.formatError(error)}`);
+      this.logger.warn(
+        `Acceptance SLA cron failed: ${this.formatError(error)}`,
+      );
     }
   }
 
@@ -389,7 +402,8 @@ export class CustomOrderOpsCronService {
         await this.sideEffects.enqueueNotification({
           customOrderId: order.id,
           recipientIds: [order.buyerId],
-          notificationType: NotificationType.CUSTOM_ORDER_ADMIN_REVIEW_TRIGGERED,
+          notificationType:
+            NotificationType.CUSTOM_ORDER_ADMIN_REVIEW_TRIGGERED,
           target: this.customOrderTarget(order.id),
           payload: {
             customOrderId: order.id,
@@ -401,7 +415,8 @@ export class CustomOrderOpsCronService {
           await this.sideEffects.enqueueNotification({
             customOrderId: order.id,
             recipientIds: admins,
-            notificationType: NotificationType.CUSTOM_ORDER_ADMIN_REVIEW_TRIGGERED,
+            notificationType:
+              NotificationType.CUSTOM_ORDER_ADMIN_REVIEW_TRIGGERED,
             target: this.adminCustomOrderTarget(order.id),
             payload: {
               customOrderId: order.id,
@@ -413,10 +428,14 @@ export class CustomOrderOpsCronService {
       }
 
       if (orders.length > 0) {
-        this.logger.log(`Escalated ${orders.length} custom order(s) for acceptance timeout`);
+        this.logger.log(
+          `Escalated ${orders.length} custom order(s) for acceptance timeout`,
+        );
       }
     } catch (error) {
-      this.logger.warn(`Acceptance timeout cron failed: ${this.formatError(error)}`);
+      this.logger.warn(
+        `Acceptance timeout cron failed: ${this.formatError(error)}`,
+      );
     }
   }
 
@@ -449,14 +468,15 @@ export class CustomOrderOpsCronService {
           1,
           Math.ceil(
             (order.buyerAcceptanceWindowEndsAt!.getTime() - now.getTime()) /
-            (60 * 60 * 1000),
+              (60 * 60 * 1000),
           ),
         );
 
         await this.sideEffects.enqueueNotification({
           customOrderId: order.id,
           recipientIds: [order.buyerId],
-          notificationType: NotificationType.CUSTOM_ORDER_ACCEPTANCE_WINDOW_REMINDER,
+          notificationType:
+            NotificationType.CUSTOM_ORDER_ACCEPTANCE_WINDOW_REMINDER,
           target: this.customOrderTarget(order.id),
           payload: { customOrderId: order.id, hoursRemaining },
           dedupeMs: 10 * 60 * 60 * 1000,
@@ -464,10 +484,14 @@ export class CustomOrderOpsCronService {
       }
 
       if (orders.length > 0) {
-        this.logger.log(`Queued ${orders.length} custom order acceptance reminder(s)`);
+        this.logger.log(
+          `Queued ${orders.length} custom order acceptance reminder(s)`,
+        );
       }
     } catch (error) {
-      this.logger.warn(`Acceptance reminder cron failed: ${this.formatError(error)}`);
+      this.logger.warn(
+        `Acceptance reminder cron failed: ${this.formatError(error)}`,
+      );
     }
   }
 
@@ -523,16 +547,42 @@ export class CustomOrderOpsCronService {
             },
           });
 
-          await tx.customOrderLedgerAllocation.updateMany({
-            where: {
-              customOrderId: order.id,
-              allocationType: CustomOrderLedgerAllocationType.FINAL_COMPLETION_PORTION,
-              status: CustomOrderLedgerAllocationStatus.HELD,
-            },
+          const finalAllocation =
+            await tx.customOrderLedgerAllocation.findFirst({
+              where: {
+                customOrderId: order.id,
+                allocationType:
+                  CustomOrderLedgerAllocationType.FINAL_COMPLETION_PORTION,
+                status: CustomOrderLedgerAllocationStatus.HELD,
+              },
+              select: {
+                id: true,
+                amount: true,
+                commissionAmount: true,
+                netBrandAmount: true,
+                currency: true,
+              },
+            });
+
+          if (!finalAllocation) {
+            return;
+          }
+
+          await tx.customOrderLedgerAllocation.update({
+            where: { id: finalAllocation.id },
             data: {
               status: CustomOrderLedgerAllocationStatus.PAYOUT_ELIGIBLE,
               eligibleAt: now,
             },
+          });
+
+          await this.ledgerService.postCustomOrderFinalRelease(tx, {
+            customOrderId: order.id,
+            brandId: order.brandId,
+            currency: finalAllocation.currency,
+            amount: Number(finalAllocation.amount),
+            commissionAmount: Number(finalAllocation.commissionAmount),
+            netBrandAmount: Number(finalAllocation.netBrandAmount),
           });
         });
 
@@ -562,10 +612,14 @@ export class CustomOrderOpsCronService {
       }
 
       if (orders.length > 0) {
-        this.logger.log(`Auto-completed ${orders.length} delivered custom order(s)`);
+        this.logger.log(
+          `Auto-completed ${orders.length} delivered custom order(s)`,
+        );
       }
     } catch (error) {
-      this.logger.warn(`Acceptance window completion cron failed: ${this.formatError(error)}`);
+      this.logger.warn(
+        `Acceptance window completion cron failed: ${this.formatError(error)}`,
+      );
     }
   }
 
@@ -622,10 +676,14 @@ export class CustomOrderOpsCronService {
       }
 
       if (events.length > 0) {
-        this.logger.log(`Warned buyers on ${events.length} stale custom order stage(s)`);
+        this.logger.log(
+          `Warned buyers on ${events.length} stale custom order stage(s)`,
+        );
       }
     } catch (error) {
-      this.logger.warn(`Stale stage warning cron failed: ${this.formatError(error)}`);
+      this.logger.warn(
+        `Stale stage warning cron failed: ${this.formatError(error)}`,
+      );
     }
   }
 
@@ -689,7 +747,8 @@ export class CustomOrderOpsCronService {
         await this.sideEffects.enqueueNotification({
           customOrderId: event.customOrder.id,
           recipientIds: [event.customOrder.buyerId],
-          notificationType: NotificationType.CUSTOM_ORDER_ADMIN_REVIEW_TRIGGERED,
+          notificationType:
+            NotificationType.CUSTOM_ORDER_ADMIN_REVIEW_TRIGGERED,
           target: this.customOrderTarget(event.customOrder.id),
           payload: {
             customOrderId: event.customOrder.id,
@@ -703,7 +762,8 @@ export class CustomOrderOpsCronService {
           await this.sideEffects.enqueueNotification({
             customOrderId: event.customOrder.id,
             recipientIds: admins,
-            notificationType: NotificationType.CUSTOM_ORDER_ADMIN_REVIEW_TRIGGERED,
+            notificationType:
+              NotificationType.CUSTOM_ORDER_ADMIN_REVIEW_TRIGGERED,
             target: this.adminCustomOrderTarget(event.customOrder.id),
             payload: {
               customOrderId: event.customOrder.id,
@@ -716,10 +776,14 @@ export class CustomOrderOpsCronService {
       }
 
       if (events.length > 0) {
-        this.logger.log(`Escalated ${events.length} persistently stale custom order stage(s)`);
+        this.logger.log(
+          `Escalated ${events.length} persistently stale custom order stage(s)`,
+        );
       }
     } catch (error) {
-      this.logger.warn(`Stale stage escalation cron failed: ${this.formatError(error)}`);
+      this.logger.warn(
+        `Stale stage escalation cron failed: ${this.formatError(error)}`,
+      );
     }
   }
 
@@ -727,34 +791,45 @@ export class CustomOrderOpsCronService {
   async cleanupExpiredCheckoutIntents(): Promise<void> {
     try {
       const now = new Date();
-      const abandoned = await this.prisma.customOrderCheckoutSession.updateMany({
-        where: {
-          status: { in: [CustomOrderCheckoutStatus.SUBMITTED, CustomOrderCheckoutStatus.PAYMENT_INITIATED] },
-          checkoutIntent: {
-            consumedAt: null,
-            expiresAt: { lt: now },
+      const abandoned = await this.prisma.customOrderCheckoutSession.updateMany(
+        {
+          where: {
+            status: {
+              in: [
+                CustomOrderCheckoutStatus.SUBMITTED,
+                CustomOrderCheckoutStatus.PAYMENT_INITIATED,
+              ],
+            },
+            checkoutIntent: {
+              consumedAt: null,
+              expiresAt: { lt: now },
+            },
+          },
+          data: {
+            status: CustomOrderCheckoutStatus.ABANDONED,
+            abandonedAt: now,
           },
         },
-        data: {
-          status: CustomOrderCheckoutStatus.ABANDONED,
-          abandonedAt: now,
-        },
-      });
+      );
 
       const retentionDays = Math.max(
         7,
-        parseInt(process.env.CUSTOM_ORDER_CHECKOUT_SESSION_RETENTION_DAYS || '', 10) || 14,
+        parseInt(
+          process.env.CUSTOM_ORDER_CHECKOUT_SESSION_RETENTION_DAYS || '',
+          10,
+        ) || 14,
       );
       const abandonedCutoff = new Date(
         Date.now() - retentionDays * 24 * 60 * 60 * 1000,
       );
-      const cleanedSessions = await this.prisma.customOrderCheckoutSession.deleteMany({
-        where: {
-          status: CustomOrderCheckoutStatus.ABANDONED,
-          abandonedAt: { lt: abandonedCutoff },
-          customOrderId: null,
-        },
-      });
+      const cleanedSessions =
+        await this.prisma.customOrderCheckoutSession.deleteMany({
+          where: {
+            status: CustomOrderCheckoutStatus.ABANDONED,
+            abandonedAt: { lt: abandonedCutoff },
+            customOrderId: null,
+          },
+        });
 
       const result = await this.prisma.customOrderCheckoutIntent.deleteMany({
         where: {
@@ -765,16 +840,24 @@ export class CustomOrderOpsCronService {
       });
 
       if (abandoned.count > 0) {
-        this.logger.log(`Marked ${abandoned.count} custom order checkout session(s) as abandoned`);
+        this.logger.log(
+          `Marked ${abandoned.count} custom order checkout session(s) as abandoned`,
+        );
       }
       if (cleanedSessions.count > 0) {
-        this.logger.log(`Deleted ${cleanedSessions.count} abandoned custom order checkout session(s)`);
+        this.logger.log(
+          `Deleted ${cleanedSessions.count} abandoned custom order checkout session(s)`,
+        );
       }
       if (result.count > 0) {
-        this.logger.log(`Deleted ${result.count} expired custom order checkout intent(s)`);
+        this.logger.log(
+          `Deleted ${result.count} expired custom order checkout intent(s)`,
+        );
       }
     } catch (error) {
-      this.logger.warn(`Checkout intent cleanup cron failed: ${this.formatError(error)}`);
+      this.logger.warn(
+        `Checkout intent cleanup cron failed: ${this.formatError(error)}`,
+      );
     }
   }
 
@@ -810,10 +893,14 @@ export class CustomOrderOpsCronService {
       });
 
       if (result.count > 0) {
-        this.logger.log(`Anonymized measurements for ${result.count} custom order(s)`);
+        this.logger.log(
+          `Anonymized measurements for ${result.count} custom order(s)`,
+        );
       }
     } catch (error) {
-      this.logger.warn(`Measurement anonymization cron failed: ${this.formatError(error)}`);
+      this.logger.warn(
+        `Measurement anonymization cron failed: ${this.formatError(error)}`,
+      );
     }
   }
 
@@ -821,36 +908,41 @@ export class CustomOrderOpsCronService {
   async queueEligibleCustomOrderPayouts(): Promise<void> {
     try {
       const now = new Date();
-      const allocations = await this.prisma.customOrderLedgerAllocation.findMany({
-        where: {
-          status: CustomOrderLedgerAllocationStatus.PAYOUT_ELIGIBLE,
-          paidOutAt: null,
-          payoutId: null,
-          customOrder: {
-            status: {
-              in: [CustomOrderStatus.ACCEPTED, CustomOrderStatus.COMPLETED, CustomOrderStatus.CLOSED],
-            },
-            disputes: {
-              none: {
-                status: {
-                  in: ['OPEN', 'BRAND_RESPONDED', 'ADMIN_REVIEW'],
+      const allocations =
+        await this.prisma.customOrderLedgerAllocation.findMany({
+          where: {
+            status: CustomOrderLedgerAllocationStatus.PAYOUT_ELIGIBLE,
+            paidOutAt: null,
+            payoutId: null,
+            customOrder: {
+              status: {
+                in: [
+                  CustomOrderStatus.ACCEPTED,
+                  CustomOrderStatus.COMPLETED,
+                  CustomOrderStatus.CLOSED,
+                ],
+              },
+              disputes: {
+                none: {
+                  status: {
+                    in: ['OPEN', 'BRAND_RESPONDED', 'ADMIN_REVIEW'],
+                  },
                 },
               },
             },
           },
-        },
-        select: {
-          id: true,
-          customOrderId: true,
-          customOrder: {
-            select: {
-              brandId: true,
-              buyerId: true,
+          select: {
+            id: true,
+            customOrderId: true,
+            customOrder: {
+              select: {
+                brandId: true,
+                buyerId: true,
+              },
             },
           },
-        },
-        take: 500,
-      });
+          take: 500,
+        });
 
       if (allocations.length === 0) {
         return;
@@ -861,12 +953,15 @@ export class CustomOrderOpsCronService {
         return;
       }
 
-      const orderIds = Array.from(new Set(allocations.map((allocation) => allocation.customOrderId)));
+      const orderIds = Array.from(
+        new Set(allocations.map((allocation) => allocation.customOrderId)),
+      );
       for (const customOrderId of orderIds) {
         await this.sideEffects.enqueueNotification({
           customOrderId,
           recipientIds: admins,
-          notificationType: NotificationType.CUSTOM_ORDER_ADMIN_REVIEW_TRIGGERED,
+          notificationType:
+            NotificationType.CUSTOM_ORDER_ADMIN_REVIEW_TRIGGERED,
           target: this.adminCustomOrderTarget(customOrderId),
           payload: {
             customOrderId,
@@ -896,7 +991,9 @@ export class CustomOrderOpsCronService {
         );
       }
     } catch (error) {
-      this.logger.warn(`Custom-order payout queue cron failed: ${this.formatError(error)}`);
+      this.logger.warn(
+        `Custom-order payout queue cron failed: ${this.formatError(error)}`,
+      );
     }
   }
 

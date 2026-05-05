@@ -1,8 +1,17 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { PaymentMethod, PaymentStatus, PaymentSubjectType } from '@prisma/client';
-import { CommissionService } from 'src/finance/commission.service';
+import {
+  PaymentMethod,
+  PaymentStatus,
+  PaymentSubjectType,
+  Prisma,
+  SettlementFinalReleaseTrigger,
+  SettlementOrderType,
+  SettlementReleaseMode,
+} from '@prisma/client';
 import { FinancialDocumentsService } from 'src/finance/financial-documents.service';
 import { LedgerService } from 'src/finance/ledger.service';
+import { SettlementCalculatorService } from 'src/finance/settlement-calculator.service';
+import { SettlementSnapshotService } from 'src/finance/settlement-snapshot.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { PaymentService } from 'src/payment/payment.service';
 import { CustomOrderSideEffectsService } from './custom-order-side-effects.service';
@@ -10,11 +19,105 @@ import { CustomOrdersPaymentsService } from './custom-orders-payments.service';
 import { CustomOrderThreadBootstrapService } from 'src/messaging/custom-order-thread-bootstrap.service';
 import { CustomOrdersService } from './custom-orders.service';
 
+function roundMoney(value: number) {
+  return Math.round((value + Number.EPSILON) * 100) / 100;
+}
+
+function decimal(value: number) {
+  return new Prisma.Decimal(value.toFixed(2));
+}
+
+function buildSettlementCalculation(
+  input: {
+    customOrderId: string;
+    brandId: string;
+    grossAmount: number;
+    currency: string;
+  },
+  upfrontPercent: number,
+  releaseMode: SettlementReleaseMode = SettlementReleaseMode.SPLIT_RELEASE,
+) {
+  const commissionAmount = roundMoney(input.grossAmount * 0.1);
+  const brandNetAmount = roundMoney(input.grossAmount - commissionAmount);
+  const effectiveUpfrontPercent =
+    releaseMode === SettlementReleaseMode.SPLIT_RELEASE ? upfrontPercent : 0;
+  const upfrontGross = roundMoney(
+    (input.grossAmount * effectiveUpfrontPercent) / 100,
+  );
+  const upfrontCommission = roundMoney(
+    (commissionAmount * effectiveUpfrontPercent) / 100,
+  );
+  const upfrontNet = roundMoney(upfrontGross - upfrontCommission);
+  const finalGross = roundMoney(input.grossAmount - upfrontGross);
+  const finalCommission = roundMoney(commissionAmount - upfrontCommission);
+  const finalNet = roundMoney(finalGross - finalCommission);
+
+  return {
+    orderType: SettlementOrderType.CUSTOM_ORDER,
+    orderId: null,
+    customOrderId: input.customOrderId,
+    brandId: input.brandId,
+    grossAmount: input.grossAmount,
+    currency: input.currency,
+    commissionRuleId: 'commission_1',
+    commissionScope: 'PLATFORM',
+    commissionSource: 'RULE',
+    commissionRate: 10,
+    commissionAmount,
+    brandNetAmount,
+    settlementPolicyId:
+      releaseMode === SettlementReleaseMode.SPLIT_RELEASE
+        ? `policy_custom_${effectiveUpfrontPercent}`
+        : 'policy_custom_hold',
+    releaseMode,
+    upfrontReleaseEnabled:
+      releaseMode === SettlementReleaseMode.SPLIT_RELEASE &&
+      effectiveUpfrontPercent > 0,
+    upfrontReleasePercent: effectiveUpfrontPercent,
+    upfrontReleaseGrossAmount: upfrontGross,
+    upfrontReleaseCommissionAmount: upfrontCommission,
+    upfrontReleaseNetBrandAmount: upfrontNet,
+    finalReleaseGrossAmount: finalGross,
+    finalReleaseCommissionAmount: finalCommission,
+    finalReleaseNetBrandAmount: finalNet,
+    settlementDelayHours: 48,
+    autoReleaseDays: 7,
+    finalReleaseTrigger: SettlementFinalReleaseTrigger.BUYER_CONFIRMATION,
+    calculatedAt: new Date('2026-03-12T10:00:00.000Z'),
+  };
+}
+
+function buildSnapshot(calculation: ReturnType<typeof buildSettlementCalculation>) {
+  return {
+    id: `snapshot_${calculation.customOrderId}`,
+    ...calculation,
+    grossAmount: decimal(calculation.grossAmount),
+    commissionRate: decimal(calculation.commissionRate),
+    commissionAmount: decimal(calculation.commissionAmount),
+    brandNetAmount: decimal(calculation.brandNetAmount),
+    upfrontReleasePercent: decimal(calculation.upfrontReleasePercent),
+    upfrontReleaseGrossAmount: decimal(calculation.upfrontReleaseGrossAmount),
+    upfrontReleaseCommissionAmount: decimal(
+      calculation.upfrontReleaseCommissionAmount,
+    ),
+    upfrontReleaseNetBrandAmount: decimal(
+      calculation.upfrontReleaseNetBrandAmount,
+    ),
+    finalReleaseGrossAmount: decimal(calculation.finalReleaseGrossAmount),
+    finalReleaseCommissionAmount: decimal(
+      calculation.finalReleaseCommissionAmount,
+    ),
+    finalReleaseNetBrandAmount: decimal(calculation.finalReleaseNetBrandAmount),
+    createdAt: new Date('2026-03-12T10:00:00.000Z'),
+  };
+}
+
 describe('CustomOrdersPaymentsService', () => {
   let service: CustomOrdersPaymentsService;
   let prisma: any;
   let paymentService: any;
-  let commissionService: any;
+  let settlementCalculatorService: any;
+  let settlementSnapshotService: any;
   let ledgerService: any;
   let financialDocumentsService: any;
 
@@ -66,14 +169,19 @@ describe('CustomOrdersPaymentsService', () => {
     const resolveAttemptVerification = jest.fn();
     const isAttemptTerminalStatus = jest.fn();
 
-    preparePaymentRequest.mockImplementation((_paymentMethod: PaymentMethod, paymentData?: Record<string, unknown>) => paymentData ?? {});
+    preparePaymentRequest.mockImplementation(
+      (_paymentMethod: PaymentMethod, paymentData?: Record<string, unknown>) =>
+        paymentData ?? {},
+    );
     preparePaymentGatewayRequest.mockImplementation(
       (_paymentMethod: PaymentMethod, paymentData?: Record<string, unknown>) =>
         paymentData ?? {},
     );
     resolveCardValidationSessionForInitialize.mockResolvedValue(null);
     consumeCardValidationSessionForInitialize.mockResolvedValue(undefined);
-    resolvePaymentCallbackUrl.mockImplementation((callbackUrl?: string) => callbackUrl ?? 'https://callback.test');
+    resolvePaymentCallbackUrl.mockImplementation(
+      (callbackUrl?: string) => callbackUrl ?? 'https://callback.test',
+    );
     initializeGatewayForAttempt.mockResolvedValue({
       gateway: 'PAYSTACK',
       status: 'REQUIRES_ACTION',
@@ -85,42 +193,58 @@ describe('CustomOrdersPaymentsService', () => {
       responseSnapshot: { mockReturnStatus: 'success' },
     });
     getAttemptProviderMode.mockReturnValue('mock');
-    resolveAttemptVerification.mockImplementation((attempt: any, dto: { statusHint?: string }) => {
-      const normalize = (value?: string | null) => {
-        const normalized = String(value ?? '').trim().toUpperCase();
-        if (!normalized) return undefined;
-        if (normalized === 'SUCCESS' || normalized === 'PAID') return 'PAID';
-        if (normalized === 'PENDING' || normalized === 'PROCESSING') return 'PENDING';
-        if (normalized === 'FAILED' || normalized === 'FAIL') return 'FAILED';
-        if (normalized === 'CANCELLED' || normalized === 'CANCEL') return 'CANCELLED';
-        if (normalized === 'EXPIRED' || normalized === 'EXPIRE') return 'EXPIRED';
-        return normalized;
-      };
+    resolveAttemptVerification.mockImplementation(
+      (attempt: any, dto: { statusHint?: string }) => {
+        const normalize = (value?: string | null) => {
+          const normalized = String(value ?? '')
+            .trim()
+            .toUpperCase();
+          if (!normalized) return undefined;
+          if (normalized === 'SUCCESS' || normalized === 'PAID') return 'PAID';
+          if (normalized === 'PENDING' || normalized === 'PROCESSING')
+            return 'PENDING';
+          if (normalized === 'FAILED' || normalized === 'FAIL') return 'FAILED';
+          if (normalized === 'CANCELLED' || normalized === 'CANCEL')
+            return 'CANCELLED';
+          if (normalized === 'EXPIRED' || normalized === 'EXPIRE')
+            return 'EXPIRED';
+          return normalized;
+        };
 
-      const storedStatus = normalize(attempt?.responseSnapshot?.mockReturnStatus);
-      const hintedStatus = normalize(dto?.statusHint);
-      if (storedStatus && hintedStatus && storedStatus !== hintedStatus) {
-        throw new Error('Payment verification payload does not match the provider-confirmed attempt status');
-      }
+        const storedStatus = normalize(
+          attempt?.responseSnapshot?.mockReturnStatus,
+        );
+        const hintedStatus = normalize(dto?.statusHint);
+        if (storedStatus && hintedStatus && storedStatus !== hintedStatus) {
+          throw new Error(
+            'Payment verification payload does not match the provider-confirmed attempt status',
+          );
+        }
 
-      const nextStatus = storedStatus ?? hintedStatus ?? normalize(attempt?.status) ?? 'PENDING';
-      const awaitingProviderConfirmation =
-        String(attempt?.providerMode || '').trim().toLowerCase() === 'live' &&
-        nextStatus === 'PENDING';
+        const nextStatus =
+          storedStatus ??
+          hintedStatus ??
+          normalize(attempt?.status) ??
+          'PENDING';
+        const awaitingProviderConfirmation =
+          String(attempt?.providerMode || '')
+            .trim()
+            .toLowerCase() === 'live' && nextStatus === 'PENDING';
 
-      return {
-        nextStatus,
-        awaitingProviderConfirmation,
-        responseSnapshotPatch: awaitingProviderConfirmation
-          ? {
-              awaitingProviderConfirmation: true,
-              recoveryAction: 'WAIT_FOR_PROVIDER_CONFIRMATION',
-              recoveryMessage:
-                'Payment is still awaiting provider callback or webhook confirmation. Recheck in a moment or after returning from the gateway.',
-            }
-          : {},
-      };
-    });
+        return {
+          nextStatus,
+          awaitingProviderConfirmation,
+          responseSnapshotPatch: awaitingProviderConfirmation
+            ? {
+                awaitingProviderConfirmation: true,
+                recoveryAction: 'WAIT_FOR_PROVIDER_CONFIRMATION',
+                recoveryMessage:
+                  'Payment is still awaiting provider callback or webhook confirmation. Recheck in a moment or after returning from the gateway.',
+              }
+            : {},
+        };
+      },
+    );
 
     paymentService = {
       validatePaymentRequest: jest.fn(),
@@ -140,8 +264,26 @@ describe('CustomOrdersPaymentsService', () => {
       isAttemptTerminalStatus,
     };
 
-    commissionService = {
-      resolveRule: jest.fn().mockResolvedValue({ ratePercent: 10 }),
+    settlementCalculatorService = {
+      calculate: jest.fn().mockImplementation(async (input: any) => {
+        return buildSettlementCalculation(
+          {
+            customOrderId: input.customOrderId,
+            brandId: input.brandId,
+            grossAmount: Number(input.grossAmount),
+            currency: input.currency,
+          },
+          60,
+        );
+      }),
+    };
+
+    settlementSnapshotService = {
+      createFromCalculation: jest
+        .fn()
+        .mockImplementation(async (calculation: any) =>
+          buildSnapshot(calculation),
+        ),
     };
 
     ledgerService = {
@@ -158,10 +300,23 @@ describe('CustomOrdersPaymentsService', () => {
         CustomOrdersPaymentsService,
         { provide: PrismaService, useValue: prisma },
         { provide: PaymentService, useValue: paymentService },
-        { provide: CustomOrdersService, useValue: { buildPaidOrderCreateInput: jest.fn() } },
-        { provide: CommissionService, useValue: commissionService },
+        {
+          provide: CustomOrdersService,
+          useValue: { buildPaidOrderCreateInput: jest.fn() },
+        },
         { provide: LedgerService, useValue: ledgerService },
-        { provide: FinancialDocumentsService, useValue: financialDocumentsService },
+        {
+          provide: FinancialDocumentsService,
+          useValue: financialDocumentsService,
+        },
+        {
+          provide: SettlementCalculatorService,
+          useValue: settlementCalculatorService,
+        },
+        {
+          provide: SettlementSnapshotService,
+          useValue: settlementSnapshotService,
+        },
         {
           provide: CustomOrderSideEffectsService,
           useValue: {
@@ -178,7 +333,9 @@ describe('CustomOrdersPaymentsService', () => {
       ],
     }).compile();
 
-    service = module.get<CustomOrdersPaymentsService>(CustomOrdersPaymentsService);
+    service = module.get<CustomOrdersPaymentsService>(
+      CustomOrdersPaymentsService,
+    );
   });
 
   it('verifies a successful payment and creates ledger allocations once', async () => {
@@ -238,8 +395,9 @@ describe('CustomOrdersPaymentsService', () => {
         findUnique: jest.fn(),
       },
     };
-    prisma.$transaction.mockImplementation(async (callback: (innerTx: typeof tx) => Promise<unknown>) =>
-      callback(tx),
+    prisma.$transaction.mockImplementation(
+      async (callback: (innerTx: typeof tx) => Promise<unknown>) =>
+        callback(tx),
     );
     prisma.customOrder.findFirst.mockResolvedValue({
       id: 'co_2',
@@ -295,7 +453,8 @@ describe('CustomOrdersPaymentsService', () => {
         eligibleAt: expect.any(Date),
       },
     });
-    const createManyArg = tx.customOrderLedgerAllocation.createMany.mock.calls[0][0];
+    const createManyArg =
+      tx.customOrderLedgerAllocation.createMany.mock.calls[0][0];
     expect(createManyArg.data).toHaveLength(2);
     expect(createManyArg.data[0]).toMatchObject({
       customOrderId: 'co_2',
@@ -317,27 +476,44 @@ describe('CustomOrdersPaymentsService', () => {
     expect(String(createManyArg.data[1].commissionRate)).toBe('10');
     expect(String(createManyArg.data[1].commissionAmount)).toBe('40');
     expect(String(createManyArg.data[1].netBrandAmount)).toBe('360');
-    expect(commissionService.resolveRule).toHaveBeenCalledWith(
+    expect(settlementCalculatorService.calculate).toHaveBeenCalledWith(
       expect.objectContaining({
         brandId: 'brand_1',
         currency: 'NGN',
-        orderType: 'CUSTOM_ORDER',
+        orderType: SettlementOrderType.CUSTOM_ORDER,
+        customOrderId: 'co_2',
+        grossAmount: 1000,
+      }),
+    );
+    expect(
+      settlementSnapshotService.createFromCalculation,
+    ).toHaveBeenCalledWith(
+      expect.objectContaining({
+        customOrderId: 'co_2',
+        upfrontReleaseGrossAmount: 600,
+        finalReleaseGrossAmount: 400,
       }),
       tx,
     );
-    expect(ledgerService.postCustomOrderPaymentReceived).toHaveBeenCalledWith(tx, {
-      customOrderId: 'co_2',
-      totalAmount: 1000,
-      currency: 'NGN',
-    });
-    expect(ledgerService.postCustomOrderImmediateRelease).toHaveBeenCalledWith(tx, {
-      customOrderId: 'co_2',
-      brandId: 'brand_1',
-      currency: 'NGN',
-      amount: 600,
-      commissionAmount: 60,
-      netBrandAmount: 540,
-    });
+    expect(ledgerService.postCustomOrderPaymentReceived).toHaveBeenCalledWith(
+      tx,
+      {
+        customOrderId: 'co_2',
+        totalAmount: 1000,
+        currency: 'NGN',
+      },
+    );
+    expect(ledgerService.postCustomOrderImmediateRelease).toHaveBeenCalledWith(
+      tx,
+      {
+        customOrderId: 'co_2',
+        brandId: 'brand_1',
+        currency: 'NGN',
+        amount: 600,
+        commissionAmount: 60,
+        netBrandAmount: 540,
+      },
+    );
     expect(financialDocumentsService.issueBuyerReceipt).toHaveBeenCalledWith(
       tx,
       expect.objectContaining({
@@ -437,7 +613,9 @@ describe('CustomOrdersPaymentsService', () => {
         gateway: 'flutterwave',
         statusHint: 'success',
       }),
-    ).rejects.toThrow('Payment verification gateway does not match the initialized payment attempt');
+    ).rejects.toThrow(
+      'Payment verification gateway does not match the initialized payment attempt',
+    );
   });
 
   it('rejects verification when the provided status hint conflicts with the stored provider result', async () => {
@@ -472,7 +650,9 @@ describe('CustomOrdersPaymentsService', () => {
         gateway: 'paystack',
         statusHint: 'failed',
       }),
-    ).rejects.toThrow('Payment verification payload does not match the provider-confirmed attempt status');
+    ).rejects.toThrow(
+      'Payment verification payload does not match the provider-confirmed attempt status',
+    );
   });
 
   it('returns a recoverable pending state for live payments awaiting provider confirmation', async () => {
@@ -537,8 +717,9 @@ describe('CustomOrdersPaymentsService', () => {
         findUnique: jest.fn(),
       },
     };
-    prisma.$transaction.mockImplementation(async (callback: (innerTx: typeof tx) => Promise<unknown>) =>
-      callback(tx),
+    prisma.$transaction.mockImplementation(
+      async (callback: (innerTx: typeof tx) => Promise<unknown>) =>
+        callback(tx),
     );
     prisma.customOrder.findFirst.mockResolvedValue({
       id: 'co_live_pending',
@@ -661,8 +842,9 @@ describe('CustomOrdersPaymentsService', () => {
         findUnique: jest.fn(),
       },
     };
-    prisma.$transaction.mockImplementation(async (callback: (innerTx: typeof tx) => Promise<unknown>) =>
-      callback(tx),
+    prisma.$transaction.mockImplementation(
+      async (callback: (innerTx: typeof tx) => Promise<unknown>) =>
+        callback(tx),
     );
     prisma.customOrder.findFirst.mockResolvedValue({
       id: 'co_4',
@@ -702,19 +884,25 @@ describe('CustomOrdersPaymentsService', () => {
       where: { customOrderId: 'co_4' },
     });
     expect(tx.customOrderLedgerAllocation.createMany).not.toHaveBeenCalled();
-    expect(ledgerService.postCustomOrderPaymentReceived).toHaveBeenCalledWith(tx, {
-      customOrderId: 'co_4',
-      totalAmount: 2000,
-      currency: 'NGN',
-    });
-    expect(ledgerService.postCustomOrderImmediateRelease).toHaveBeenCalledWith(tx, {
-      customOrderId: 'co_4',
-      brandId: 'brand_4',
-      currency: 'NGN',
-      amount: 1200,
-      commissionAmount: 120,
-      netBrandAmount: 1080,
-    });
+    expect(ledgerService.postCustomOrderPaymentReceived).toHaveBeenCalledWith(
+      tx,
+      {
+        customOrderId: 'co_4',
+        totalAmount: 2000,
+        currency: 'NGN',
+      },
+    );
+    expect(ledgerService.postCustomOrderImmediateRelease).toHaveBeenCalledWith(
+      tx,
+      {
+        customOrderId: 'co_4',
+        brandId: 'brand_4',
+        currency: 'NGN',
+        amount: 1200,
+        commissionAmount: 120,
+        netBrandAmount: 1080,
+      },
+    );
     expect(financialDocumentsService.issueBuyerReceipt).toHaveBeenCalledWith(
       tx,
       expect.objectContaining({

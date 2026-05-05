@@ -16,6 +16,8 @@ import {
   PaymentSubjectType,
   Prisma,
   Role,
+  SettlementOrderType,
+  SettlementReleaseMode,
 } from '@prisma/client';
 import { ADMIN_PERMISSIONS } from 'src/admin/constants/permissions';
 import { PrismaService } from 'src/prisma/prisma.service';
@@ -23,14 +25,17 @@ import { PaymentService } from 'src/payment/payment.service';
 import { CustomOrderSideEffectsService } from './custom-order-side-effects.service';
 import { CustomOrdersService } from './custom-orders.service';
 import { LedgerService } from 'src/finance/ledger.service';
-import { CommissionService } from 'src/finance/commission.service';
 import { FinancialDocumentsService } from 'src/finance/financial-documents.service';
 import { CustomOrderThreadBootstrapService } from 'src/messaging/custom-order-thread-bootstrap.service';
-import {
-  VerifyCustomOrderPaymentDto,
-} from './dto/custom-orders.dto';
+import { SettlementCalculatorService } from 'src/finance/settlement-calculator.service';
+import { SettlementSnapshotService } from 'src/finance/settlement-snapshot.service';
+import { VerifyCustomOrderPaymentDto } from './dto/custom-orders.dto';
 
-const ACTIVE_PAYMENT_ATTEMPT_STATUSES = new Set(['PENDING', 'REQUIRES_ACTION', 'PROCESSING']);
+const ACTIVE_PAYMENT_ATTEMPT_STATUSES = new Set([
+  'PENDING',
+  'REQUIRES_ACTION',
+  'PROCESSING',
+]);
 
 @Injectable()
 export class CustomOrdersPaymentsService {
@@ -40,9 +45,10 @@ export class CustomOrdersPaymentsService {
     private readonly sideEffects: CustomOrderSideEffectsService,
     private readonly ordersService: CustomOrdersService,
     private readonly ledgerService: LedgerService,
-    private readonly commissionService: CommissionService,
     private readonly financialDocumentsService: FinancialDocumentsService,
     private readonly customOrderThreadBootstrap: CustomOrderThreadBootstrapService,
+    private readonly settlementCalculatorService: SettlementCalculatorService,
+    private readonly settlementSnapshotService: SettlementSnapshotService,
   ) {}
 
   async verifyPayment(
@@ -81,17 +87,30 @@ export class CustomOrdersPaymentsService {
     const attempt = await this.prisma.paymentAttempt.findUnique({
       where: { reference: dto.reference },
     });
-    if (!attempt || attempt.customOrderId !== customOrderId || attempt.buyerId !== userId) {
-      throw new BadRequestException('No custom-order payment attempt found for this reference');
+    if (
+      !attempt ||
+      attempt.customOrderId !== customOrderId ||
+      attempt.buyerId !== userId
+    ) {
+      throw new BadRequestException(
+        'No custom-order payment attempt found for this reference',
+      );
     }
     const requestedGateway = this.normalizeGateway(dto.gateway);
     const attemptGateway = this.normalizeGateway(attempt.provider);
     if (requestedGateway !== attemptGateway) {
-      throw new BadRequestException('Payment verification gateway does not match the initialized payment attempt');
+      throw new BadRequestException(
+        'Payment verification gateway does not match the initialized payment attempt',
+      );
     }
 
-    const lockedAmount = Number((order.buyerPriceSummaryJson as Record<string, unknown>)?.grandTotal ?? 0);
-    if (Number(attempt.amount) !== lockedAmount || attempt.currency !== order.currency) {
+    const lockedAmount = Number(
+      (order.buyerPriceSummaryJson as Record<string, unknown>)?.grandTotal ?? 0,
+    );
+    if (
+      Number(attempt.amount) !== lockedAmount ||
+      attempt.currency !== order.currency
+    ) {
       throw new BadRequestException(
         'Custom-order payment attempt no longer matches the locked order total',
       );
@@ -106,7 +125,8 @@ export class CustomOrdersPaymentsService {
       return this.toVerifyResult(attempt, order);
     }
 
-    const resolvedVerification = await this.paymentService.resolveAttemptVerification(attempt as any, dto);
+    const resolvedVerification =
+      await this.paymentService.resolveAttemptVerification(attempt as any, dto);
     const nextStatus = resolvedVerification.nextStatus;
     const now = new Date();
     const failureState = this.getFailureState(
@@ -137,10 +157,14 @@ export class CustomOrdersPaymentsService {
         lockedAttempt.customOrderId !== customOrderId ||
         lockedAttempt.buyerId !== userId
       ) {
-        throw new BadRequestException('No custom-order payment attempt found for this reference');
+        throw new BadRequestException(
+          'No custom-order payment attempt found for this reference',
+        );
       }
 
-      if (this.paymentService.isAttemptTerminalStatus(lockedAttempt.status as any)) {
+      if (
+        this.paymentService.isAttemptTerminalStatus(lockedAttempt.status as any)
+      ) {
         return {
           attempt: lockedAttempt,
           transitionedToPaid: false,
@@ -149,13 +173,17 @@ export class CustomOrdersPaymentsService {
 
       const promisedProductionAt =
         nextStatus === 'PAID'
-          ? new Date(now.getTime() + order.productionLeadDaysSnapshot * 24 * 60 * 60 * 1000)
+          ? new Date(
+              now.getTime() +
+                order.productionLeadDaysSnapshot * 24 * 60 * 60 * 1000,
+            )
           : null;
       const promisedDispatchAt = promisedProductionAt;
       const promisedDeliveryAt =
         nextStatus === 'PAID' && promisedDispatchAt
           ? new Date(
-              promisedDispatchAt.getTime() + order.deliveryMaxDaysSnapshot * 24 * 60 * 60 * 1000,
+              promisedDispatchAt.getTime() +
+                order.deliveryMaxDaysSnapshot * 24 * 60 * 60 * 1000,
             )
           : null;
 
@@ -164,28 +192,33 @@ export class CustomOrdersPaymentsService {
         data: {
           status: nextStatus,
           confirmedAt: nextStatus === 'PAID' ? now : lockedAttempt.confirmedAt,
-          finalizedAt:
-            ['PAID', 'FAILED', 'CANCELLED', 'EXPIRED'].includes(nextStatus)
-              ? now
-              : lockedAttempt.finalizedAt,
+          finalizedAt: ['PAID', 'FAILED', 'CANCELLED', 'EXPIRED'].includes(
+            nextStatus,
+          )
+            ? now
+            : lockedAttempt.finalizedAt,
           lastVerifiedAt: now,
-          providerReference: resolvedVerification.providerReference ?? lockedAttempt.providerReference,
+          providerReference:
+            resolvedVerification.providerReference ??
+            lockedAttempt.providerReference,
           providerTransactionId:
-            resolvedVerification.providerTransactionId ?? lockedAttempt.providerTransactionId,
+            resolvedVerification.providerTransactionId ??
+            lockedAttempt.providerTransactionId,
           providerAccessCode:
-            resolvedVerification.providerAccessCode ?? lockedAttempt.providerAccessCode,
+            resolvedVerification.providerAccessCode ??
+            lockedAttempt.providerAccessCode,
           providerChannel:
             resolvedVerification.providerChannel ??
             lockedAttempt.providerChannel ??
             lockedAttempt.channel,
-          channel: resolvedVerification.providerChannel ?? lockedAttempt.channel,
-          responseSnapshot:
-            resolvedVerification.responseSnapshotPatch
-              ? ({
-                  ...(this.asObject(lockedAttempt.responseSnapshot) ?? {}),
-                  ...resolvedVerification.responseSnapshotPatch,
-                } as Prisma.InputJsonValue)
-              : lockedAttempt.responseSnapshot,
+          channel:
+            resolvedVerification.providerChannel ?? lockedAttempt.channel,
+          responseSnapshot: resolvedVerification.responseSnapshotPatch
+            ? ({
+                ...(this.asObject(lockedAttempt.responseSnapshot) ?? {}),
+                ...resolvedVerification.responseSnapshotPatch,
+              } as Prisma.InputJsonValue)
+            : lockedAttempt.responseSnapshot,
           failureCode: failureState.failureCode,
           failureMessage: failureState.failureMessage,
         },
@@ -200,12 +233,18 @@ export class CustomOrdersPaymentsService {
               ? CustomOrderStatus.ACCEPTED
               : CustomOrderStatus.PENDING_PAYMENT,
           acceptedAt: nextStatus === 'PAID' ? now : undefined,
-          promisedProductionAt: nextStatus === 'PAID' ? promisedProductionAt : undefined,
-          promisedDispatchAt: nextStatus === 'PAID' ? promisedDispatchAt : undefined,
-          promisedDeliveryAt: nextStatus === 'PAID' ? promisedDeliveryAt : undefined,
+          promisedProductionAt:
+            nextStatus === 'PAID' ? promisedProductionAt : undefined,
+          promisedDispatchAt:
+            nextStatus === 'PAID' ? promisedDispatchAt : undefined,
+          promisedDeliveryAt:
+            nextStatus === 'PAID' ? promisedDeliveryAt : undefined,
           currentProgressStage:
-            nextStatus === 'PAID' ? CustomOrderProgressStage.ORDER_RECEIVED : undefined,
-          currentProgressStageEnteredAt: nextStatus === 'PAID' ? now : undefined,
+            nextStatus === 'PAID'
+              ? CustomOrderProgressStage.ORDER_RECEIVED
+              : undefined,
+          currentProgressStageEnteredAt:
+            nextStatus === 'PAID' ? now : undefined,
           lastBrandProgressUpdateAt: nextStatus === 'PAID' ? now : undefined,
           progressEvents:
             nextStatus === 'PAID' && brand?.ownerId
@@ -214,7 +253,9 @@ export class CustomOrdersPaymentsService {
                     stage: CustomOrderProgressStage.ORDER_RECEIVED,
                     note: 'Order auto-accepted after payment confirmation.',
                     changedById: brand.ownerId,
-                    staleThresholdAt: new Date(now.getTime() + 24 * 60 * 60 * 1000),
+                    staleThresholdAt: new Date(
+                      now.getTime() + 24 * 60 * 60 * 1000,
+                    ),
                   },
                 }
               : undefined,
@@ -235,7 +276,8 @@ export class CustomOrdersPaymentsService {
             verifiedAt: now.toISOString(),
             subjectType: PaymentSubjectType.CUSTOM_ORDER,
             customOrderId,
-            awaitingProviderConfirmation: resolvedVerification.awaitingProviderConfirmation,
+            awaitingProviderConfirmation:
+              resolvedVerification.awaitingProviderConfirmation,
           },
         },
       });
@@ -244,109 +286,41 @@ export class CustomOrdersPaymentsService {
         data: {
           customOrderId,
           actorType: 'SYSTEM',
-          eventType: nextStatus === 'PAID' ? 'PAYMENT_CONFIRMED' : 'PAYMENT_INITIALIZED',
+          eventType:
+            nextStatus === 'PAID' ? 'PAYMENT_CONFIRMED' : 'PAYMENT_INITIALIZED',
           payloadJson: {
             reference: updated.reference,
             status: nextStatus,
-            awaitingProviderConfirmation: resolvedVerification.awaitingProviderConfirmation,
+            awaitingProviderConfirmation:
+              resolvedVerification.awaitingProviderConfirmation,
             autoAccepted: nextStatus === 'PAID',
           },
         },
       });
 
       if (nextStatus === 'PAID') {
-        const grandTotal = lockedAmount;
-        const acceptanceAmount = this.roundMoney(grandTotal * 0.6);
-        const completionAmount = this.roundMoney(grandTotal - acceptanceAmount);
-        const commissionRule = await this.commissionService.resolveRule(
-          {
-            brandId: order.brandId,
-            currency: order.currency,
-            at: order.createdAt,
-            orderType: 'CUSTOM_ORDER',
-          },
-          tx,
-        );
-        const commissionRate = commissionRule.ratePercent;
-        const totalCommissionAmount = this.roundMoney((grandTotal * commissionRate) / 100);
-        const acceptanceCommissionAmount = this.roundMoney(
-          (totalCommissionAmount * acceptanceAmount) / grandTotal,
-        );
-        const completionCommissionAmount = this.roundMoney(
-          totalCommissionAmount - acceptanceCommissionAmount,
-        );
-        const acceptanceNetAmount = this.roundMoney(
-          acceptanceAmount - acceptanceCommissionAmount,
-        );
-        const completionNetAmount = this.roundMoney(
-          completionAmount - completionCommissionAmount,
-        );
-        const allocations = await tx.customOrderLedgerAllocation.count({
-          where: { customOrderId },
-        });
-        if (allocations === 0) {
-          await tx.customOrderLedgerAllocation.createMany({
-            data: [
-              {
-                customOrderId,
-                allocationType: CustomOrderLedgerAllocationType.BRAND_ACCEPTANCE_PORTION,
-                amount: new Prisma.Decimal(acceptanceAmount.toFixed(2)),
-                commissionRate: new Prisma.Decimal(commissionRate.toFixed(2)),
-                commissionAmount: new Prisma.Decimal(acceptanceCommissionAmount.toFixed(2)),
-                netBrandAmount: new Prisma.Decimal(acceptanceNetAmount.toFixed(2)),
-                currency: order.currency,
-                status: CustomOrderLedgerAllocationStatus.HELD,
-              },
-              {
-                customOrderId,
-                allocationType: CustomOrderLedgerAllocationType.FINAL_COMPLETION_PORTION,
-                amount: new Prisma.Decimal(completionAmount.toFixed(2)),
-                commissionRate: new Prisma.Decimal(commissionRate.toFixed(2)),
-                commissionAmount: new Prisma.Decimal(completionCommissionAmount.toFixed(2)),
-                netBrandAmount: new Prisma.Decimal(completionNetAmount.toFixed(2)),
-                currency: order.currency,
-                status: CustomOrderLedgerAllocationStatus.HELD,
-              },
-            ],
-          });
-        }
-
-        await tx.customOrderLedgerAllocation.updateMany({
-          where: {
-            customOrderId,
-            allocationType: CustomOrderLedgerAllocationType.BRAND_ACCEPTANCE_PORTION,
-            status: CustomOrderLedgerAllocationStatus.HELD,
-          },
-          data: {
-            status: CustomOrderLedgerAllocationStatus.PAYOUT_ELIGIBLE,
-            eligibleAt: now,
-          },
-        });
-
-        await this.ledgerService.postCustomOrderPaymentReceived(tx, {
-          customOrderId,
-          totalAmount: grandTotal,
-          currency: order.currency,
-        });
-        await this.ledgerService.postCustomOrderImmediateRelease(tx, {
+        await this.applyPaidCustomOrderSettlement(tx, {
           customOrderId,
           brandId: order.brandId,
+          grossAmount: lockedAmount,
           currency: order.currency,
-          amount: acceptanceAmount,
-          commissionAmount: acceptanceCommissionAmount,
-          netBrandAmount: acceptanceNetAmount,
+          effectiveAt: order.createdAt,
+          releaseEligibleAt: now,
         });
         await this.financialDocumentsService.issueBuyerReceipt(tx, {
           paymentAttemptId: updated.id,
           customOrderId,
           currency: order.currency,
-          grossAmount: grandTotal,
-          settlementCurrency: lockedAttempt.settlementCurrency ?? order.currency,
-          settlementAmount: Number(lockedAttempt.settlementAmount ?? grandTotal),
+          grossAmount: lockedAmount,
+          settlementCurrency:
+            lockedAttempt.settlementCurrency ?? order.currency,
+          settlementAmount: Number(
+            lockedAttempt.settlementAmount ?? lockedAmount,
+          ),
           lineItems: [
             {
               label: `Custom order ${customOrderId.slice(0, 8)}`,
-              amount: grandTotal,
+              amount: lockedAmount,
             },
           ],
         });
@@ -365,7 +339,8 @@ export class CustomOrdersPaymentsService {
         .map((value) => String(value ?? '').trim())
         .filter(Boolean)
         .join(' ');
-      const buyerName = buyerDisplayName || String(order.buyer?.username || 'Buyer');
+      const buyerName =
+        buyerDisplayName || String(order.buyer?.username || 'Buyer');
 
       await this.sideEffects.enqueueNotification({
         customOrderId,
@@ -444,8 +419,14 @@ export class CustomOrdersPaymentsService {
       where: { reference: dto.reference },
     });
 
-    if (!attempt || attempt.subjectType !== PaymentSubjectType.CUSTOM_ORDER || attempt.buyerId !== userId) {
-      throw new BadRequestException('No custom-order payment attempt found for this reference');
+    if (
+      !attempt ||
+      attempt.subjectType !== PaymentSubjectType.CUSTOM_ORDER ||
+      attempt.buyerId !== userId
+    ) {
+      throw new BadRequestException(
+        'No custom-order payment attempt found for this reference',
+      );
     }
 
     if (attempt.customOrderId) {
@@ -453,13 +434,17 @@ export class CustomOrdersPaymentsService {
     }
 
     if (!attempt.checkoutIntentId) {
-      throw new BadRequestException('Custom-order payment attempt is missing its checkout intent reference');
+      throw new BadRequestException(
+        'Custom-order payment attempt is missing its checkout intent reference',
+      );
     }
 
     const requestedGateway = this.normalizeGateway(dto.gateway);
     const attemptGateway = this.normalizeGateway(attempt.provider);
     if (requestedGateway !== attemptGateway) {
-      throw new BadRequestException('Payment verification gateway does not match the initialized payment attempt');
+      throw new BadRequestException(
+        'Payment verification gateway does not match the initialized payment attempt',
+      );
     }
 
     const intent = await this.prisma.customOrderCheckoutIntent.findFirst({
@@ -475,8 +460,14 @@ export class CustomOrdersPaymentsService {
       throw new NotFoundException('Custom order checkout intent not found');
     }
 
-    const lockedAmount = Number((intent.buyerPriceSummaryJson as Record<string, unknown>)?.grandTotal ?? 0);
-    if (Number(attempt.amount) !== lockedAmount || attempt.currency !== intent.currency) {
+    const lockedAmount = Number(
+      (intent.buyerPriceSummaryJson as Record<string, unknown>)?.grandTotal ??
+        0,
+    );
+    if (
+      Number(attempt.amount) !== lockedAmount ||
+      attempt.currency !== intent.currency
+    ) {
       throw new BadRequestException(
         'Custom-order payment attempt no longer matches the locked order total',
       );
@@ -505,7 +496,10 @@ export class CustomOrdersPaymentsService {
     }
 
     if (this.paymentService.isAttemptTerminalStatus(attempt.status as any)) {
-      await this.markCheckoutSessionAbandoned(attempt.checkoutIntentId, attempt);
+      await this.markCheckoutSessionAbandoned(
+        attempt.checkoutIntentId,
+        attempt,
+      );
       return this.toVerifyResultWithSummary(attempt, {
         amount: lockedAmount,
         currency: intent.currency,
@@ -513,7 +507,8 @@ export class CustomOrdersPaymentsService {
       });
     }
 
-    const resolvedVerification = await this.paymentService.resolveAttemptVerification(attempt as any, dto);
+    const resolvedVerification =
+      await this.paymentService.resolveAttemptVerification(attempt as any, dto);
     const nextStatus = resolvedVerification.nextStatus;
     const now = new Date();
     const failureState = this.getFailureState(
@@ -537,10 +532,14 @@ export class CustomOrdersPaymentsService {
         lockedAttempt.subjectType !== PaymentSubjectType.CUSTOM_ORDER ||
         lockedAttempt.buyerId !== userId
       ) {
-        throw new BadRequestException('No custom-order payment attempt found for this reference');
+        throw new BadRequestException(
+          'No custom-order payment attempt found for this reference',
+        );
       }
 
-      if (this.paymentService.isAttemptTerminalStatus(lockedAttempt.status as any)) {
+      if (
+        this.paymentService.isAttemptTerminalStatus(lockedAttempt.status as any)
+      ) {
         return {
           attempt: lockedAttempt,
           transitionedToPaid: false,
@@ -552,28 +551,33 @@ export class CustomOrdersPaymentsService {
         data: {
           status: nextStatus,
           confirmedAt: nextStatus === 'PAID' ? now : lockedAttempt.confirmedAt,
-          finalizedAt:
-            ['PAID', 'FAILED', 'CANCELLED', 'EXPIRED'].includes(nextStatus)
-              ? now
-              : lockedAttempt.finalizedAt,
+          finalizedAt: ['PAID', 'FAILED', 'CANCELLED', 'EXPIRED'].includes(
+            nextStatus,
+          )
+            ? now
+            : lockedAttempt.finalizedAt,
           lastVerifiedAt: now,
-          providerReference: resolvedVerification.providerReference ?? lockedAttempt.providerReference,
+          providerReference:
+            resolvedVerification.providerReference ??
+            lockedAttempt.providerReference,
           providerTransactionId:
-            resolvedVerification.providerTransactionId ?? lockedAttempt.providerTransactionId,
+            resolvedVerification.providerTransactionId ??
+            lockedAttempt.providerTransactionId,
           providerAccessCode:
-            resolvedVerification.providerAccessCode ?? lockedAttempt.providerAccessCode,
+            resolvedVerification.providerAccessCode ??
+            lockedAttempt.providerAccessCode,
           providerChannel:
             resolvedVerification.providerChannel ??
             lockedAttempt.providerChannel ??
             lockedAttempt.channel,
-          channel: resolvedVerification.providerChannel ?? lockedAttempt.channel,
-          responseSnapshot:
-            resolvedVerification.responseSnapshotPatch
-              ? ({
-                  ...(this.asObject(lockedAttempt.responseSnapshot) ?? {}),
-                  ...resolvedVerification.responseSnapshotPatch,
-                } as Prisma.InputJsonValue)
-              : lockedAttempt.responseSnapshot,
+          channel:
+            resolvedVerification.providerChannel ?? lockedAttempt.channel,
+          responseSnapshot: resolvedVerification.responseSnapshotPatch
+            ? ({
+                ...(this.asObject(lockedAttempt.responseSnapshot) ?? {}),
+                ...resolvedVerification.responseSnapshotPatch,
+              } as Prisma.InputJsonValue)
+            : lockedAttempt.responseSnapshot,
           failureCode: failureState.failureCode,
           failureMessage: failureState.failureMessage,
         },
@@ -593,7 +597,8 @@ export class CustomOrdersPaymentsService {
             verifiedAt: now.toISOString(),
             subjectType: PaymentSubjectType.CUSTOM_ORDER,
             checkoutIntentId: lockedAttempt.checkoutIntentId,
-            awaitingProviderConfirmation: resolvedVerification.awaitingProviderConfirmation,
+            awaitingProviderConfirmation:
+              resolvedVerification.awaitingProviderConfirmation,
           },
         },
       });
@@ -621,15 +626,21 @@ export class CustomOrdersPaymentsService {
           return this.toVerifyResult(refreshedAttempt ?? updatedAttempt, order);
         }
       }
-      return this.toVerifyResultWithSummary(refreshedAttempt ?? updatedAttempt, {
-        amount: lockedAmount,
-        currency: intent.currency,
-        customOrderId,
-      });
+      return this.toVerifyResultWithSummary(
+        refreshedAttempt ?? updatedAttempt,
+        {
+          amount: lockedAmount,
+          currency: intent.currency,
+          customOrderId,
+        },
+      );
     }
 
     if (['FAILED', 'CANCELLED', 'EXPIRED'].includes(updatedAttempt.status)) {
-      await this.markCheckoutSessionAbandoned(attempt.checkoutIntentId, updatedAttempt);
+      await this.markCheckoutSessionAbandoned(
+        attempt.checkoutIntentId,
+        updatedAttempt,
+      );
     }
 
     return this.toVerifyResultWithSummary(updatedAttempt, {
@@ -658,10 +669,13 @@ export class CustomOrdersPaymentsService {
       return { reconciled: false };
     }
 
-    const reconciliation = await this.ensurePaidCustomOrderSettlement(attempt.reference);
+    const reconciliation = await this.ensurePaidCustomOrderSettlement(
+      attempt.reference,
+    );
     return {
       reconciled: Boolean(reconciliation),
-      customOrderId: reconciliation?.customOrderId ?? attempt.customOrderId ?? null,
+      customOrderId:
+        reconciliation?.customOrderId ?? attempt.customOrderId ?? null,
     };
   }
 
@@ -734,13 +748,14 @@ export class CustomOrdersPaymentsService {
           }
 
           if (shouldCreate) {
-            const createInput = await this.ordersService.buildPaidOrderCreateInput({
-              intent,
-              buyerId: attempt.buyerId,
-              paymentReference: attempt.reference,
-              paymentMethod: attempt.paymentMethod,
-              confirmedAt: attempt.confirmedAt,
-            });
+            const createInput =
+              await this.ordersService.buildPaidOrderCreateInput({
+                intent,
+                buyerId: attempt.buyerId,
+                paymentReference: attempt.reference,
+                paymentMethod: attempt.paymentMethod,
+                confirmedAt: attempt.confirmedAt,
+              });
             try {
               const created = await tx.customOrder.create({
                 data: createInput,
@@ -764,7 +779,10 @@ export class CustomOrdersPaymentsService {
           }
         }
 
-        if (resolvedCustomOrderId && resolvedCustomOrderId !== attempt.customOrderId) {
+        if (
+          resolvedCustomOrderId &&
+          resolvedCustomOrderId !== attempt.customOrderId
+        ) {
           await tx.paymentAttempt.update({
             where: { id: attempt.id },
             data: { customOrderId: resolvedCustomOrderId },
@@ -819,13 +837,16 @@ export class CustomOrdersPaymentsService {
       const promisedProductionAt =
         order.promisedProductionAt ??
         new Date(
-          acceptedAt.getTime() + order.productionLeadDaysSnapshot * 24 * 60 * 60 * 1000,
+          acceptedAt.getTime() +
+            order.productionLeadDaysSnapshot * 24 * 60 * 60 * 1000,
         );
-      const promisedDispatchAt = order.promisedDispatchAt ?? promisedProductionAt;
+      const promisedDispatchAt =
+        order.promisedDispatchAt ?? promisedProductionAt;
       const promisedDeliveryAt =
         order.promisedDeliveryAt ??
         new Date(
-          promisedDispatchAt.getTime() + order.deliveryMaxDaysSnapshot * 24 * 60 * 60 * 1000,
+          promisedDispatchAt.getTime() +
+            order.deliveryMaxDaysSnapshot * 24 * 60 * 60 * 1000,
         );
 
       const brand = await tx.brand.findUnique({
@@ -841,13 +862,14 @@ export class CustomOrdersPaymentsService {
         select: { id: true },
       });
 
-      const existingOrderReceivedProgress = await tx.customOrderProgressEvent.findFirst({
-        where: {
-          customOrderId: order.id,
-          stage: CustomOrderProgressStage.ORDER_RECEIVED,
-        },
-        select: { id: true },
-      });
+      const existingOrderReceivedProgress =
+        await tx.customOrderProgressEvent.findFirst({
+          where: {
+            customOrderId: order.id,
+            stage: CustomOrderProgressStage.ORDER_RECEIVED,
+          },
+          select: { id: true },
+        });
 
       await tx.customOrder.update({
         where: { id: order.id },
@@ -868,8 +890,9 @@ export class CustomOrdersPaymentsService {
           currentProgressStageEnteredAt:
             order.currentProgressStage === CustomOrderProgressStage.ORDER_PLACED
               ? acceptedAt
-              : order.currentProgressStageEnteredAt ?? acceptedAt,
-          lastBrandProgressUpdateAt: order.lastBrandProgressUpdateAt ?? acceptedAt,
+              : (order.currentProgressStageEnteredAt ?? acceptedAt),
+          lastBrandProgressUpdateAt:
+            order.lastBrandProgressUpdateAt ?? acceptedAt,
         },
       });
 
@@ -896,7 +919,9 @@ export class CustomOrdersPaymentsService {
             stage: CustomOrderProgressStage.ORDER_RECEIVED,
             note: 'Order auto-accepted after payment confirmation.',
             changedById: brand.ownerId,
-            staleThresholdAt: new Date(acceptedAt.getTime() + 24 * 60 * 60 * 1000),
+            staleThresholdAt: new Date(
+              acceptedAt.getTime() + 24 * 60 * 60 * 1000,
+            ),
           },
         });
       }
@@ -918,89 +943,17 @@ export class CustomOrdersPaymentsService {
       }
 
       const grandTotal = Number(
-        (order.buyerPriceSummaryJson as Record<string, unknown>)?.grandTotal ?? 0,
-      );
-      const acceptanceAmount = this.roundMoney(grandTotal * 0.6);
-      const completionAmount = this.roundMoney(grandTotal - acceptanceAmount);
-      const commissionRule = await this.commissionService.resolveRule(
-        {
-          brandId: order.brandId,
-          currency: order.currency,
-          at: order.createdAt,
-          orderType: 'CUSTOM_ORDER',
-        },
-        tx,
-      );
-      const commissionRate = commissionRule.ratePercent;
-      const totalCommissionAmount = this.roundMoney((grandTotal * commissionRate) / 100);
-      const acceptanceCommissionAmount =
-        grandTotal > 0
-          ? this.roundMoney((totalCommissionAmount * acceptanceAmount) / grandTotal)
-          : 0;
-      const completionCommissionAmount = this.roundMoney(
-        totalCommissionAmount - acceptanceCommissionAmount,
-      );
-      const acceptanceNetAmount = this.roundMoney(
-        acceptanceAmount - acceptanceCommissionAmount,
-      );
-      const completionNetAmount = this.roundMoney(
-        completionAmount - completionCommissionAmount,
+        (order.buyerPriceSummaryJson as Record<string, unknown>)?.grandTotal ??
+          0,
       );
 
-      const allocations = await tx.customOrderLedgerAllocation.count({
-        where: { customOrderId: order.id },
-      });
-      if (allocations === 0) {
-        await tx.customOrderLedgerAllocation.createMany({
-          data: [
-            {
-              customOrderId: order.id,
-              allocationType: CustomOrderLedgerAllocationType.BRAND_ACCEPTANCE_PORTION,
-              amount: new Prisma.Decimal(acceptanceAmount.toFixed(2)),
-              commissionRate: new Prisma.Decimal(commissionRate.toFixed(2)),
-              commissionAmount: new Prisma.Decimal(acceptanceCommissionAmount.toFixed(2)),
-              netBrandAmount: new Prisma.Decimal(acceptanceNetAmount.toFixed(2)),
-              currency: order.currency,
-              status: CustomOrderLedgerAllocationStatus.HELD,
-            },
-            {
-              customOrderId: order.id,
-              allocationType: CustomOrderLedgerAllocationType.FINAL_COMPLETION_PORTION,
-              amount: new Prisma.Decimal(completionAmount.toFixed(2)),
-              commissionRate: new Prisma.Decimal(commissionRate.toFixed(2)),
-              commissionAmount: new Prisma.Decimal(completionCommissionAmount.toFixed(2)),
-              netBrandAmount: new Prisma.Decimal(completionNetAmount.toFixed(2)),
-              currency: order.currency,
-              status: CustomOrderLedgerAllocationStatus.HELD,
-            },
-          ],
-        });
-      }
-
-      await tx.customOrderLedgerAllocation.updateMany({
-        where: {
-          customOrderId: order.id,
-          allocationType: CustomOrderLedgerAllocationType.BRAND_ACCEPTANCE_PORTION,
-          status: CustomOrderLedgerAllocationStatus.HELD,
-        },
-        data: {
-          status: CustomOrderLedgerAllocationStatus.PAYOUT_ELIGIBLE,
-          eligibleAt: acceptedAt,
-        },
-      });
-
-      await this.ledgerService.postCustomOrderPaymentReceived(tx, {
-        customOrderId: order.id,
-        totalAmount: grandTotal,
-        currency: order.currency,
-      });
-      await this.ledgerService.postCustomOrderImmediateRelease(tx, {
+      await this.applyPaidCustomOrderSettlement(tx, {
         customOrderId: order.id,
         brandId: order.brandId,
+        grossAmount: grandTotal,
         currency: order.currency,
-        amount: acceptanceAmount,
-        commissionAmount: acceptanceCommissionAmount,
-        netBrandAmount: acceptanceNetAmount,
+        effectiveAt: order.createdAt,
+        releaseEligibleAt: acceptedAt,
       });
       await this.financialDocumentsService.issueBuyerReceipt(tx, {
         paymentAttemptId: attempt.id,
@@ -1093,7 +1046,8 @@ export class CustomOrdersPaymentsService {
           sourceTitle: reconciliation.sourceTitle,
           sourceBrandName: reconciliation.sourceBrandName,
           buyerName:
-            buyerDisplayName || String(reconciliation.buyer?.username || 'Buyer'),
+            buyerDisplayName ||
+            String(reconciliation.buyer?.username || 'Buyer'),
           buyerDisplayName: buyerDisplayName || undefined,
           buyerFirstName: reconciliation.buyer?.firstName || undefined,
           buyerLastName: reconciliation.buyer?.lastName || undefined,
@@ -1120,6 +1074,109 @@ export class CustomOrdersPaymentsService {
     return reconciliation;
   }
 
+  private async applyPaidCustomOrderSettlement(
+    tx: Prisma.TransactionClient,
+    params: {
+      customOrderId: string;
+      brandId: string;
+      grossAmount: number;
+      currency: string;
+      effectiveAt: Date;
+      releaseEligibleAt: Date;
+    },
+  ) {
+    const calculation = await this.settlementCalculatorService.calculate({
+      orderType: SettlementOrderType.CUSTOM_ORDER,
+      customOrderId: params.customOrderId,
+      brandId: params.brandId,
+      grossAmount: params.grossAmount,
+      currency: params.currency,
+      effectiveAt: params.effectiveAt,
+    });
+    const snapshot = await this.settlementSnapshotService.createFromCalculation(
+      calculation,
+      tx,
+    );
+
+    const allocationCount = await tx.customOrderLedgerAllocation.count({
+      where: { customOrderId: params.customOrderId },
+    });
+    if (allocationCount === 0) {
+      await tx.customOrderLedgerAllocation.createMany({
+        data: [
+          {
+            customOrderId: params.customOrderId,
+            allocationType:
+              CustomOrderLedgerAllocationType.BRAND_ACCEPTANCE_PORTION,
+            amount: snapshot.upfrontReleaseGrossAmount,
+            commissionRate: snapshot.commissionRate,
+            commissionAmount: snapshot.upfrontReleaseCommissionAmount,
+            netBrandAmount: snapshot.upfrontReleaseNetBrandAmount,
+            currency: params.currency,
+            status: CustomOrderLedgerAllocationStatus.HELD,
+          },
+          {
+            customOrderId: params.customOrderId,
+            allocationType:
+              CustomOrderLedgerAllocationType.FINAL_COMPLETION_PORTION,
+            amount: snapshot.finalReleaseGrossAmount,
+            commissionRate: snapshot.commissionRate,
+            commissionAmount: snapshot.finalReleaseCommissionAmount,
+            netBrandAmount: snapshot.finalReleaseNetBrandAmount,
+            currency: params.currency,
+            status: CustomOrderLedgerAllocationStatus.HELD,
+          },
+        ],
+      });
+    }
+
+    await this.ledgerService.postCustomOrderPaymentReceived(tx, {
+      customOrderId: params.customOrderId,
+      totalAmount: Number(snapshot.grossAmount),
+      currency: params.currency,
+    });
+
+    if (this.shouldReleaseCustomOrderUpfront(snapshot)) {
+      await tx.customOrderLedgerAllocation.updateMany({
+        where: {
+          customOrderId: params.customOrderId,
+          allocationType:
+            CustomOrderLedgerAllocationType.BRAND_ACCEPTANCE_PORTION,
+          status: CustomOrderLedgerAllocationStatus.HELD,
+        },
+        data: {
+          status: CustomOrderLedgerAllocationStatus.PAYOUT_ELIGIBLE,
+          eligibleAt: params.releaseEligibleAt,
+        },
+      });
+
+      await this.ledgerService.postCustomOrderImmediateRelease(tx, {
+        customOrderId: params.customOrderId,
+        brandId: params.brandId,
+        currency: params.currency,
+        amount: Number(snapshot.upfrontReleaseGrossAmount),
+        commissionAmount: Number(snapshot.upfrontReleaseCommissionAmount),
+        netBrandAmount: Number(snapshot.upfrontReleaseNetBrandAmount),
+      });
+    }
+
+    return snapshot;
+  }
+
+  private shouldReleaseCustomOrderUpfront(snapshot: {
+    orderType: SettlementOrderType;
+    releaseMode: SettlementReleaseMode;
+    upfrontReleaseEnabled: boolean;
+    upfrontReleaseGrossAmount: Prisma.Decimal;
+  }) {
+    return (
+      snapshot.orderType === SettlementOrderType.CUSTOM_ORDER &&
+      snapshot.releaseMode === SettlementReleaseMode.SPLIT_RELEASE &&
+      snapshot.upfrontReleaseEnabled &&
+      Number(snapshot.upfrontReleaseGrossAmount) > 0
+    );
+  }
+
   async listBuyerPaymentAttempts(userId: string, customOrderId: string) {
     const order = await this.prisma.customOrder.findFirst({
       where: { id: customOrderId, buyerId: userId },
@@ -1135,7 +1192,9 @@ export class CustomOrdersPaymentsService {
         subjectType: PaymentSubjectType.CUSTOM_ORDER,
         OR: [
           { customOrderId: order.id },
-          ...(order.checkoutIntentId ? [{ checkoutIntentId: order.checkoutIntentId }] : []),
+          ...(order.checkoutIntentId
+            ? [{ checkoutIntentId: order.checkoutIntentId }]
+            : []),
         ],
       },
       orderBy: { createdAt: 'desc' },
@@ -1170,7 +1229,12 @@ export class CustomOrdersPaymentsService {
 
   private async markCheckoutSessionAbandoned(
     checkoutIntentId: string,
-    attempt: { id: string; reference: string; status: string; provider?: string | null },
+    attempt: {
+      id: string;
+      reference: string;
+      status: string;
+      provider?: string | null;
+    },
   ) {
     const activeAttempt = await this.prisma.paymentAttempt.findFirst({
       where: {
@@ -1192,7 +1256,10 @@ export class CustomOrdersPaymentsService {
         lastAttemptId: attempt.id,
         lastAttemptReference: attempt.reference,
         lastAttemptStatus: attempt.status,
-        resumePath: this.buildPaymentReturnPath(attempt.reference, attempt.provider ?? 'PAYSTACK'),
+        resumePath: this.buildPaymentReturnPath(
+          attempt.reference,
+          attempt.provider ?? 'PAYSTACK',
+        ),
       },
     });
   }
@@ -1213,17 +1280,22 @@ export class CustomOrdersPaymentsService {
     },
   ) {
     const responseSnapshot = this.asObject(
-      (attempt as { responseSnapshot?: Prisma.JsonValue | null }).responseSnapshot ?? null,
+      (attempt as { responseSnapshot?: Prisma.JsonValue | null })
+        .responseSnapshot ?? null,
     );
     const awaitingProviderConfirmation =
-      Boolean(responseSnapshot?.awaitingProviderConfirmation) && attempt.status !== 'PAID';
+      Boolean(responseSnapshot?.awaitingProviderConfirmation) &&
+      attempt.status !== 'PAID';
 
     return {
       success: attempt.status === 'PAID',
       status: attempt.status,
       paymentAttemptId: attempt.id,
       reference: attempt.reference,
-      amount: Number((order.buyerPriceSummaryJson as Record<string, unknown>)?.grandTotal ?? 0),
+      amount: Number(
+        (order.buyerPriceSummaryJson as Record<string, unknown>)?.grandTotal ??
+          0,
+      ),
       currency: order.currency,
       paidAt: attempt.confirmedAt?.toISOString(),
       channel: attempt.channel ?? undefined,
@@ -1255,10 +1327,12 @@ export class CustomOrdersPaymentsService {
     },
   ) {
     const responseSnapshot = this.asObject(
-      (attempt as { responseSnapshot?: Prisma.JsonValue | null }).responseSnapshot ?? null,
+      (attempt as { responseSnapshot?: Prisma.JsonValue | null })
+        .responseSnapshot ?? null,
     );
     const awaitingProviderConfirmation =
-      Boolean(responseSnapshot?.awaitingProviderConfirmation) && attempt.status !== 'PAID';
+      Boolean(responseSnapshot?.awaitingProviderConfirmation) &&
+      attempt.status !== 'PAID';
 
     return {
       success: attempt.status === 'PAID',
@@ -1292,7 +1366,9 @@ export class CustomOrdersPaymentsService {
   }
 
   private normalizeGateway(value: string | null | undefined) {
-    const normalized = String(value ?? '').trim().toUpperCase();
+    const normalized = String(value ?? '')
+      .trim()
+      .toUpperCase();
     if (!normalized) {
       throw new BadRequestException('Payment verification gateway is required');
     }
@@ -1361,13 +1437,15 @@ export class CustomOrdersPaymentsService {
         return {
           failureCode: 'PAYMENT_FAILED',
           failureMessage:
-            normalizedProviderMessage ?? 'Payment provider reported the payment as failed.',
+            normalizedProviderMessage ??
+            'Payment provider reported the payment as failed.',
         };
       case 'CANCELLED':
         return {
           failureCode: 'CANCELLED',
           failureMessage:
-            normalizedProviderMessage ?? 'Payment provider reported the payment as cancelled.',
+            normalizedProviderMessage ??
+            'Payment provider reported the payment as cancelled.',
         };
       case 'EXPIRED':
         return {
