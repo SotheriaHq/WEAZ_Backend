@@ -3304,6 +3304,28 @@ enum CommissionRuleScope {
   BRAND
 }
 
+enum SettlementOrderType {
+  STANDARD_ORDER
+  CUSTOM_ORDER
+}
+
+enum SettlementPolicyScope {
+  PLATFORM
+  BRAND
+}
+
+enum SettlementReleaseMode {
+  HOLD_UNTIL_DELIVERY
+  SPLIT_RELEASE
+}
+
+enum SettlementFinalReleaseTrigger {
+  BUYER_CONFIRMATION
+  BUYER_TIMEOUT
+  ADMIN_APPROVAL
+  DISPUTE_RESOLUTION
+}
+
 enum ReconciliationScope {
   PAYMENTS
   PAYOUTS
@@ -3355,6 +3377,34 @@ model CommissionRule {
 
   @@index([scope, brandId, isActive])
   @@index([currency, effectiveFrom, effectiveTo])
+}
+
+model SettlementPolicy {
+  id                    String                         @id @default(uuid()) @db.Uuid
+  orderType             SettlementOrderType
+  scope                 SettlementPolicyScope          @default(PLATFORM)
+  brandId               String?                        @db.Uuid
+  currency              String?
+  releaseMode           SettlementReleaseMode          @default(HOLD_UNTIL_DELIVERY)
+  upfrontReleaseEnabled Boolean                        @default(false)
+  upfrontReleasePercent Decimal                        @default(0) @db.Decimal(5, 2)
+  settlementDelayHours  Int                            @default(48)
+  autoReleaseDays       Int                            @default(7)
+  finalReleaseTrigger   SettlementFinalReleaseTrigger  @default(BUYER_CONFIRMATION)
+  isDefault             Boolean                        @default(false)
+  isActive              Boolean                        @default(true)
+  effectiveFrom         DateTime                       @default(now())
+  effectiveTo           DateTime?
+  createdById           String?                        @db.Uuid
+  updatedById           String?                        @db.Uuid
+  createdAt             DateTime                       @default(now())
+  updatedAt             DateTime                       @updatedAt
+
+  @@map("settlement_policy")
+  @@index([orderType, scope, brandId, currency, isActive, effectiveFrom])
+  @@index([orderType, isDefault, isActive])
+  @@index([brandId])
+  @@index([effectiveFrom, effectiveTo])
 }
 
 model ReconciliationRun {

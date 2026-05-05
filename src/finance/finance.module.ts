@@ -7,6 +7,7 @@ import { CommissionService } from './commission.service';
 import { ReconciliationService } from './reconciliation.service';
 import { FinancialDocumentsService } from './financial-documents.service';
 import { StandardOrderFinanceSyncService } from './standard-order-finance-sync.service';
+import { SettlementPolicyService } from './settlement-policy.service';
 
 @Module({
   imports: [PrismaModule, SystemConfigModule],
@@ -17,6 +18,7 @@ import { StandardOrderFinanceSyncService } from './standard-order-finance-sync.s
     ReconciliationService,
     FinancialDocumentsService,
     StandardOrderFinanceSyncService,
+    SettlementPolicyService,
   ],
   exports: [
     StandardOrderEscrowService,
@@ -25,6 +27,7 @@ import { StandardOrderFinanceSyncService } from './standard-order-finance-sync.s
     ReconciliationService,
     FinancialDocumentsService,
     StandardOrderFinanceSyncService,
+    SettlementPolicyService,
   ],
 })
 export class FinanceModule {}
