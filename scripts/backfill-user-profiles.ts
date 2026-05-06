@@ -1,8 +1,12 @@
-import { PrismaClient } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 import { v4 as uuidv4 } from 'uuid';
+import {
+  createScriptPrismaClient,
+  type ScriptPrismaClient,
+} from './helpers/create-script-prisma';
 
-const prisma = new PrismaClient();
 const BATCH_SIZE = 500;
+let scriptPrisma: ScriptPrismaClient | null = null;
 
 type LegacyUserProfileFields = {
   id: string;
@@ -23,8 +27,38 @@ function hasFlag(name: string): boolean {
   return process.argv.includes(name);
 }
 
+async function userProfileTableExists(
+  prisma: ScriptPrismaClient['prisma'],
+): Promise<boolean> {
+  const rows = await prisma.$queryRaw<Array<{ table_name: string }>>(
+    Prisma.sql`
+      SELECT table_name
+      FROM information_schema.tables
+      WHERE table_schema = current_schema()
+        AND table_name = 'UserProfile'
+    `,
+  );
+  return rows.length > 0;
+}
+
 async function main() {
+  scriptPrisma = createScriptPrismaClient();
+  const prisma = scriptPrisma.prisma;
   const write = hasFlag('--write');
+
+  if (!(await userProfileTableExists(prisma))) {
+    const message =
+      '[user-profile-backfill] missing UserProfile table. Apply the UserProfile migration before running this backfill.';
+
+    if (write) {
+      throw new Error(message);
+    }
+
+    console.warn(message);
+    console.log('[user-profile-backfill] mode=dry-run missing=0');
+    return;
+  }
+
   const totalMissing = await prisma.user.count({
     where: { userProfile: null },
   });
@@ -105,5 +139,5 @@ main()
     process.exitCode = 1;
   })
   .finally(async () => {
-    await prisma.$disconnect();
+    await scriptPrisma?.disconnect();
   });

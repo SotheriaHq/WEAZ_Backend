@@ -1,8 +1,26 @@
-import { PrismaClient } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 import { v4 as uuidv4 } from 'uuid';
+import {
+  createScriptPrismaClient,
+  type ScriptPrismaClient,
+} from './helpers/create-script-prisma';
 
-const prisma = new PrismaClient();
 const BATCH_SIZE = 250;
+let scriptPrisma: ScriptPrismaClient | null = null;
+const REQUIRED_BRAND_COLUMNS = [
+  'country',
+  'state',
+  'city',
+  'businessType',
+  'companyLocation',
+  'socialFacebook',
+  'cacNumber',
+  'tin',
+  'ceoNin',
+  'ceoFirstName',
+  'ceoLastName',
+  'industriNumber',
+] as const;
 
 function hasFlag(name: string): boolean {
   return process.argv.includes(name);
@@ -55,7 +73,25 @@ function detectTagConflict(
   );
 }
 
+async function findMissingBrandColumns(
+  prisma: ScriptPrismaClient['prisma'],
+): Promise<string[]> {
+  const rows = await prisma.$queryRaw<Array<{ column_name: string }>>(
+    Prisma.sql`
+      SELECT column_name
+      FROM information_schema.columns
+      WHERE table_schema = current_schema()
+        AND table_name = 'Brand'
+        AND column_name IN (${Prisma.join(REQUIRED_BRAND_COLUMNS)})
+    `,
+  );
+  const presentColumns = new Set(rows.map((row) => row.column_name));
+  return REQUIRED_BRAND_COLUMNS.filter((column) => !presentColumns.has(column));
+}
+
 async function main() {
+  scriptPrisma = createScriptPrismaClient();
+  const prisma = scriptPrisma.prisma;
   const write = hasFlag('--write');
   const overwrite = hasFlag('--overwrite');
   const counts = {
@@ -70,6 +106,26 @@ async function main() {
   console.log(
     `[brand-profile-backfill] mode=${write ? 'write' : 'dry-run'} overwrite=${overwrite}`,
   );
+
+  const missingBrandColumns = await findMissingBrandColumns(prisma);
+  if (missingBrandColumns.length > 0) {
+    const message =
+      `[brand-profile-backfill] missing Brand columns: ${missingBrandColumns.join(', ')}. ` +
+      'Apply the Phase 3 Brand profile migration before running this backfill.';
+
+    if (write) {
+      throw new Error(message);
+    }
+
+    console.warn(message);
+    console.log('[brand-profile-backfill] users scanned: 0');
+    console.log('[brand-profile-backfill] brands created: 0');
+    console.log('[brand-profile-backfill] brands updated: 0');
+    console.log('[brand-profile-backfill] skipped already canonical: 0');
+    console.log('[brand-profile-backfill] conflicts detected: 0');
+    console.log('[brand-profile-backfill] errors: 0');
+    return;
+  }
 
   let cursor: string | undefined;
   while (true) {
@@ -231,5 +287,5 @@ main()
     process.exitCode = 1;
   })
   .finally(async () => {
-    await prisma.$disconnect();
+    await scriptPrisma?.disconnect();
   });
