@@ -343,6 +343,14 @@ enum BrandMemberStatus {
   REMOVED
 }
 
+enum BrandStaffInviteStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+  EXPIRED
+  CANCELLED
+}
+
 enum ProfileVisibility {
   UNLOCKED
   LOCKED
@@ -1907,6 +1915,7 @@ model Brand {
   verificationNotes         BrandVerificationNote[]
   reviews                   ProductReview[]            @relation("BrandProductReviews")
   members                   BrandMember[]
+  staffInvites              BrandStaffInvite[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1949,6 +1958,33 @@ model BrandPermissionGrant {
 
   @@unique([brandMemberId, permissionCode])
   @@index([brandMemberId])
+}
+
+model BrandStaffInvite {
+  id            String                 @id @default(uuid()) @db.Uuid
+  brandId       String                 @db.Uuid
+  email         String
+  role          BrandMemberRole
+  status        BrandStaffInviteStatus @default(PENDING)
+  tokenHash     String                 @unique
+  invitedById   String                 @db.Uuid
+  invitedUserId String?                @db.Uuid
+  expiresAt     DateTime
+  acceptedAt    DateTime?
+  rejectedAt    DateTime?
+  cancelledAt   DateTime?
+
+  brand Brand @relation(fields: [brandId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([brandId])
+  @@index([email])
+  @@index([status])
+  @@index([invitedById])
+  @@index([invitedUserId])
+  @@index([expiresAt])
 }
 
 model BrandVerificationAttempt {

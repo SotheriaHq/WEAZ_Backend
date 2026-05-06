@@ -148,6 +148,75 @@ export class BrandAccessService {
     }
   }
 
+  async isActiveOwner(userId: string, brandId: string): Promise<boolean> {
+    return this.isBrandOwner(userId, brandId);
+  }
+
+  async getActiveOwnersCount(brandId: string): Promise<number> {
+    const brand = await this.resolveBrand(brandId);
+    const [ownerMemberships, legacyOwnerMembership] = await Promise.all([
+      this.prisma.brandMember.count({
+        where: {
+          brandId: brand.id,
+          role: BrandMemberRole.OWNER,
+          status: BrandMemberStatus.ACTIVE,
+        },
+      }),
+      this.prisma.brandMember.findUnique({
+        where: {
+          brandId_userId: {
+            brandId: brand.id,
+            userId: brand.ownerId,
+          },
+        },
+        select: { role: true, status: true },
+      }),
+    ]);
+
+    const legacyOwnerAlreadyCounted =
+      legacyOwnerMembership?.role === BrandMemberRole.OWNER &&
+      legacyOwnerMembership.status === BrandMemberStatus.ACTIVE;
+
+    return ownerMemberships + (legacyOwnerAlreadyCounted ? 0 : 1);
+  }
+
+  async assertCanManageStaff(userId: string, brandId: string): Promise<void> {
+    const canManage = await this.isActiveOwner(userId, brandId);
+    if (!canManage) {
+      throw new ForbiddenException('Only a brand owner can manage staff');
+    }
+  }
+
+  async assertNotLastOwner(
+    brandId: string,
+    targetMemberId: string,
+  ): Promise<void> {
+    const brand = await this.resolveBrand(brandId);
+    const targetMember = await this.prisma.brandMember.findUnique({
+      where: { id: targetMemberId },
+      select: { id: true, brandId: true, userId: true, role: true, status: true },
+    });
+
+    if (!targetMember || targetMember.brandId !== brand.id) {
+      throw new NotFoundException('Brand member not found');
+    }
+
+    const isActiveOwner =
+      targetMember.role === BrandMemberRole.OWNER &&
+      targetMember.status === BrandMemberStatus.ACTIVE;
+    if (!isActiveOwner) {
+      return;
+    }
+
+    const activeOwnersCount = await this.getActiveOwnersCount(brand.id);
+    const legacyOwnerProvidesIndependentOwner =
+      brand.ownerId !== targetMember.userId;
+
+    if (activeOwnersCount <= 1 && !legacyOwnerProvidesIndependentOwner) {
+      throw new ForbiddenException('A brand must have at least one active owner');
+    }
+  }
+
   async getPrimaryBrandContext(userId: string): Promise<{
     activeBrandId: string | null;
     memberships: Array<{

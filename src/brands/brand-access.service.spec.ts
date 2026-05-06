@@ -9,6 +9,7 @@ describe('BrandAccessService', () => {
       findMany: jest.fn(),
     },
     brandMember: {
+      count: jest.fn(),
       findMany: jest.fn(),
       findUnique: jest.fn(),
     },
@@ -137,6 +138,72 @@ describe('BrandAccessService', () => {
 
     await expect(
       service.assertCanManageCatalog('user-1', 'brand-1'),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it('legacy Brand.ownerId can manage staff', async () => {
+    prisma.brand.findFirst.mockResolvedValue({ id: 'brand-1', ownerId: 'owner-1' });
+
+    await expect(
+      service.assertCanManageStaff('owner-1', 'brand-1'),
+    ).resolves.toBeUndefined();
+  });
+
+  it.each([
+    BrandMemberRole.MANAGER,
+    BrandMemberRole.CATALOG_MANAGER,
+    BrandMemberRole.ORDER_MANAGER,
+    BrandMemberRole.SUPPORT_AGENT,
+    BrandMemberRole.VIEWER,
+  ])('%s cannot manage staff', async (role) => {
+    prisma.brand.findFirst.mockResolvedValue({ id: 'brand-1', ownerId: 'owner-1' });
+    prisma.brandMember.findUnique.mockResolvedValue({
+      role,
+      status: BrandMemberStatus.ACTIVE,
+    });
+
+    await expect(
+      service.assertCanManageStaff('staff-1', 'brand-1'),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it('inactive OWNER cannot manage staff', async () => {
+    prisma.brand.findFirst.mockResolvedValue({ id: 'brand-1', ownerId: 'owner-1' });
+    prisma.brandMember.findUnique.mockResolvedValue({
+      role: BrandMemberRole.OWNER,
+      status: BrandMemberStatus.SUSPENDED,
+    });
+
+    await expect(
+      service.assertCanManageStaff('staff-1', 'brand-1'),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it('active OWNER BrandMember can manage staff', async () => {
+    prisma.brand.findFirst.mockResolvedValue({ id: 'brand-1', ownerId: 'owner-1' });
+    prisma.brandMember.findUnique.mockResolvedValue({
+      role: BrandMemberRole.OWNER,
+      status: BrandMemberStatus.ACTIVE,
+    });
+
+    await expect(
+      service.assertCanManageStaff('staff-owner-1', 'brand-1'),
+    ).resolves.toBeUndefined();
+  });
+
+  it('protects the last active owner from removal or demotion', async () => {
+    prisma.brand.findFirst.mockResolvedValue({ id: 'brand-1', ownerId: 'owner-1' });
+    prisma.brandMember.findUnique.mockResolvedValue({
+      id: 'member-1',
+      brandId: 'brand-1',
+      userId: 'owner-1',
+      role: BrandMemberRole.OWNER,
+      status: BrandMemberStatus.ACTIVE,
+    });
+    prisma.brandMember.count.mockResolvedValue(1);
+
+    await expect(
+      service.assertNotLastOwner('brand-1', 'member-1'),
     ).rejects.toBeInstanceOf(ForbiddenException);
   });
 });

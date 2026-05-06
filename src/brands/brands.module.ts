@@ -8,6 +8,8 @@ import { UploadModule } from '../upload/upload.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { TagsModule } from '../tags/tags.module';
 import { BrandVerificationModule } from '../brand-verification/brand-verification.module';
+import { BrandStaffController } from './staff/brand-staff.controller';
+import { BrandStaffService } from './staff/brand-staff.service';
 
 @Module({
   imports: [
@@ -17,8 +19,8 @@ import { BrandVerificationModule } from '../brand-verification/brand-verificatio
     TagsModule,
     BrandVerificationModule,
   ],
-  providers: [BrandsService, BrandAccessService, PrismaService],
-  controllers: [BrandsController],
-  exports: [BrandsService, BrandAccessService],
+  providers: [BrandsService, BrandAccessService, BrandStaffService, PrismaService],
+  controllers: [BrandsController, BrandStaffController],
+  exports: [BrandsService, BrandAccessService, BrandStaffService],
 })
 export class BrandsModule {}
