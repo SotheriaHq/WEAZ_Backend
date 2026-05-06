@@ -549,7 +549,7 @@ export class StoreController {
     return this.storeService.updateStoreName(req.user.id, dto);
   }
 
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseGuards(JwtAuthGuard)
   @Get('store/status')
   async getStoreStatus(@Req() req: any) {
     return this.storeService.getStoreStatus(req.user.id);
@@ -626,13 +626,13 @@ export class StoreController {
     return this.storeService.verifyStorePaymentAccount(req.user.id, dto);
   }
 
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseGuards(JwtAuthGuard)
   @Get('store/wallet')
   async getStoreWallet(@Req() req: any) {
     return this.storeService.getStoreWallet(req.user.id);
   }
 
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseGuards(JwtAuthGuard)
   @Get('store/payouts')
   async listStorePayouts(
     @Req() req: any,
@@ -647,7 +647,7 @@ export class StoreController {
     });
   }
 
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseGuards(JwtAuthGuard)
   @Get('store/payouts/:payoutId')
   async getStorePayoutDetail(
     @Req() req: any,
@@ -656,7 +656,7 @@ export class StoreController {
     return this.storeService.getStorePayoutDetail(req.user.id, payoutId);
   }
 
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseGuards(JwtAuthGuard)
   @Get('store/payouts/:payoutId/statement')
   async getStorePayoutStatement(
     @Req() req: any,

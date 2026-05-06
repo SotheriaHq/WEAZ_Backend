@@ -694,6 +694,16 @@ export class StoreService {
       });
     }
 
+    if (!brand && this.brandAccessService) {
+      const context = await this.brandAccessService.getPrimaryBrandContext(brandIdOrOwnerId);
+      if (context.activeBrandId) {
+        brand = await this.prisma.brand.findUnique({
+          where: { id: context.activeBrandId },
+          select: { id: true, isStoreOpen: true, ownerId: true },
+        });
+      }
+    }
+
     if (!brand) {
       const owner = await this.prisma.user.findUnique({
         where: { id: brandIdOrOwnerId },
@@ -770,6 +780,28 @@ export class StoreService {
     }
 
     return brand;
+  }
+
+  private async resolveBrandForPayoutRead(actorUserId: string) {
+    const resolvedBrand = await this.resolveBrandByIdOrOwner(actorUserId);
+    if (!resolvedBrand) {
+      throw new NotFoundException('Brand not found');
+    }
+
+    if (this.brandPermissionService) {
+      await this.brandPermissionService.assertPermission(
+        actorUserId,
+        resolvedBrand.id,
+        BRAND_PERMISSIONS.PAYOUTS_READ,
+      );
+      return resolvedBrand;
+    }
+
+    if (resolvedBrand.ownerId !== actorUserId) {
+      throw new ForbiddenException('You do not have permission to view brand payouts');
+    }
+
+    return resolvedBrand;
   }
 
   async uploadProductMedia(
@@ -7879,10 +7911,7 @@ export class StoreService {
   }
 
   async getStoreWallet(ownerId: string) {
-    const resolvedBrand = await this.resolveBrandByIdOrOwner(ownerId);
-    if (!resolvedBrand) {
-      throw new NotFoundException('Brand not found');
-    }
+    const resolvedBrand = await this.resolveBrandForPayoutRead(ownerId);
 
     const brandId = resolvedBrand.id;
     const pendingStatuses = [
@@ -8028,10 +8057,7 @@ export class StoreService {
     ownerId: string,
     params?: { page?: number; limit?: number; status?: string },
   ) {
-    const resolvedBrand = await this.resolveBrandByIdOrOwner(ownerId);
-    if (!resolvedBrand) {
-      throw new NotFoundException('Brand not found');
-    }
+    const resolvedBrand = await this.resolveBrandForPayoutRead(ownerId);
 
     const page = Math.max(1, Number(params?.page ?? 1));
     const limit = Math.min(100, Math.max(1, Number(params?.limit ?? 20)));
@@ -8135,10 +8161,7 @@ export class StoreService {
   }
 
   async getStorePayoutDetail(ownerId: string, payoutId: string) {
-    const resolvedBrand = await this.resolveBrandByIdOrOwner(ownerId);
-    if (!resolvedBrand) {
-      throw new NotFoundException('Brand not found');
-    }
+    const resolvedBrand = await this.resolveBrandForPayoutRead(ownerId);
 
     const payout = await this.prisma.payout.findFirst({
       where: {
@@ -8290,10 +8313,7 @@ export class StoreService {
   }
 
   async getStorePayoutStatement(ownerId: string, payoutId: string) {
-    const resolvedBrand = await this.resolveBrandByIdOrOwner(ownerId);
-    if (!resolvedBrand) {
-      throw new NotFoundException('Brand not found');
-    }
+    const resolvedBrand = await this.resolveBrandForPayoutRead(ownerId);
 
     const payout = await this.prisma.payout.findFirst({
       where: {
@@ -8486,18 +8506,19 @@ export class StoreService {
         tagline: true,
         logo: true,
         banner: true,
-          tags: true,
-          country: true,
-          state: true,
-          city: true,
-          contactEmail: true,
-          socialInstagram: true,
-          socialFacebook: true,
-          socialTwitter: true,
-          socialTiktok: true,
-          socialWebsite: true,
-          responseTimeSla: true,
-          isStoreOpen: true,
+        tags: true,
+        country: true,
+        state: true,
+        city: true,
+        contactEmail: true,
+        socialInstagram: true,
+        socialFacebook: true,
+        socialTwitter: true,
+        socialTiktok: true,
+        socialWebsite: true,
+        responseTimeSla: true,
+        isStoreOpen: true,
+        ownerId: true,
         },
       });
 
@@ -8525,6 +8546,7 @@ export class StoreService {
             socialWebsite: true,
             responseTimeSla: true,
             isStoreOpen: true,
+            ownerId: true,
           },
         });
       }
@@ -8543,7 +8565,7 @@ export class StoreService {
         where: { brandId: brand.id },
       }),
       this.prisma.user.findUnique({
-        where: { id: ownerId },
+        where: { id: brand.ownerId },
         select: {
           isEmailVerified: true,
           brandDescription: true,
