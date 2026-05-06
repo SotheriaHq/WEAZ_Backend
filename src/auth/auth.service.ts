@@ -469,6 +469,11 @@ export class AuthService {
                 joinedAt: createdAt,
               },
             });
+
+            return tx.user.findUnique({
+              where: { id: createdUser.id },
+              select: authUserSelect,
+            });
           }
 
           return createdUser;
@@ -482,7 +487,11 @@ export class AuthService {
           throw new BadRequestException('Failed to create user account');
         });
 
-    const postVerificationNextPath = this.resolvePostVerificationNextPath(
+      if (!user) {
+        throw new BadRequestException('Failed to create user account');
+      }
+
+      const postVerificationNextPath = this.resolvePostVerificationNextPath(
       user.type,
     );
 

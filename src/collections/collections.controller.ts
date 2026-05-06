@@ -58,7 +58,7 @@ export class CollectionsController {
   // ============================================
   // STEP 1: Initialize Collection (Get Presigned URLs)
   // ============================================
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseGuards(JwtAuthGuard)
   @Post('initialize')
   @ApiOperation({
     summary: 'Initialize collection and get presigned upload URLs',
@@ -147,7 +147,7 @@ export class CollectionsController {
   // ============================================
   // STEP 2: Finalize Collection (Confirm Uploads)
   // ============================================
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseGuards(JwtAuthGuard)
   @UseInterceptors(IdempotencyInterceptor)
   @Post(':collectionId/finalize')
   @ApiOperation({
@@ -206,7 +206,7 @@ export class CollectionsController {
   // Store Collection Product Membership
   // ============================================
 
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseGuards(JwtAuthGuard)
   @Post(':collectionId/add-products')
   async addProductsToCollection(
     @Param('collectionId') collectionId: string,
@@ -220,7 +220,7 @@ export class CollectionsController {
     );
   }
 
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseGuards(JwtAuthGuard)
   @Post(':collectionId/remove-products')
   async removeProductsFromCollection(
     @Param('collectionId') collectionId: string,
@@ -234,7 +234,7 @@ export class CollectionsController {
     );
   }
 
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseGuards(JwtAuthGuard)
   @Patch(':collectionId/reorder-products')
   async reorderCollectionProducts(
     @Param('collectionId') collectionId: string,
@@ -248,7 +248,7 @@ export class CollectionsController {
     );
   }
 
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseGuards(JwtAuthGuard)
   @Post(':collectionId/apply-template')
   async applyTemplate(
     @Param('collectionId') collectionId: string,
@@ -262,7 +262,7 @@ export class CollectionsController {
     );
   }
 
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseGuards(JwtAuthGuard)
   @Post(':collectionId/products')
   async createProductInCollection(
     @Param('collectionId') collectionId: string,
@@ -280,7 +280,7 @@ export class CollectionsController {
   // Archive / Unarchive
   // ============================================
 
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseGuards(JwtAuthGuard)
   @Patch(':collectionId/archive')
   async archiveCollection(
     @Param('collectionId') collectionId: string,
@@ -290,7 +290,7 @@ export class CollectionsController {
     return this.collectionsService.archiveCollection(collectionId, req.user.id, scope);
   }
 
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseGuards(JwtAuthGuard)
   @Patch(':collectionId/unarchive')
   async unarchiveCollection(
     @Param('collectionId') collectionId: string,
@@ -304,7 +304,7 @@ export class CollectionsController {
     );
   }
 
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseGuards(JwtAuthGuard)
   @Post(':collectionId/republish-request')
   async requestCollectionRepublish(
     @Param('collectionId') collectionId: string,
@@ -693,7 +693,7 @@ export class CollectionsController {
   // ============================================
   // DELETE COLLECTION / DELETE ITEM
   // ============================================
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseGuards(JwtAuthGuard)
   @Delete(':id')
   @ApiOperation({ summary: 'Delete entire collection (owner only)' })
   async deleteCollection(
@@ -704,7 +704,7 @@ export class CollectionsController {
     return this.collectionsService.deleteCollection(collectionId, req.user.id, scope);
   }
 
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseGuards(JwtAuthGuard)
   @Post(':id/duplicate')
   @ApiOperation({ summary: 'Duplicate a collection (owner only)' })
   async duplicateCollection(
@@ -719,7 +719,7 @@ export class CollectionsController {
     );
   }
 
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseGuards(JwtAuthGuard)
   @Delete(':collectionId/items/:itemId')
   @ApiOperation({
     summary: 'Delete a single item from a collection (owner only)',
@@ -955,7 +955,7 @@ export class CollectionsController {
   }
 
   // ===================== Update collection meta (price/tags/discount) =====================
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseGuards(JwtAuthGuard)
   @Patch(':id')
   @ApiOperation({ summary: 'Update collection fields (owner only)' })
   async updateCollection(
@@ -991,7 +991,7 @@ export class CollectionsController {
   }
 
   // ===================== Bulk Upload (Scaffold) =====================
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseGuards(JwtAuthGuard)
   @Post(':id/bulk-upload')
   @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 100 * 1024 * 1024 } })) // Hard cap; dynamic limit enforced in service
   @ApiOperation({
@@ -1012,7 +1012,7 @@ export class CollectionsController {
     );
   }
 
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseGuards(JwtAuthGuard)
   @Get('bulk-upload/:jobId')
   @ApiOperation({ summary: 'Get bulk upload job status' })
   async getBulkUploadStatus(
@@ -1022,7 +1022,7 @@ export class CollectionsController {
     return this.collectionsService.getBulkUploadStatus(jobId, req.user.id);
   }
 
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseGuards(JwtAuthGuard)
   @Post('bulk-upload/:jobId/retry')
   @ApiOperation({ summary: 'Retry failed bulk upload rows' })
   async retryBulkUploadRows(
@@ -1067,7 +1067,7 @@ export class CollectionsController {
   }
 
   // ===================== Draft Conflict Detection =====================
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseGuards(JwtAuthGuard)
   @Post(':id/draft-session')
   @ApiOperation({
     summary: 'Start draft editing session',
@@ -1089,7 +1089,7 @@ export class CollectionsController {
   }
 
   // ===================== Restore Deleted Collection =====================
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseGuards(JwtAuthGuard)
   @Post(':id/restore')
   @ApiOperation({
     summary: 'Restore a soft-deleted collection',
@@ -1099,7 +1099,7 @@ export class CollectionsController {
     return this.collectionsService.restoreCollection(collectionId, req.user.id);
   }
 
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseGuards(JwtAuthGuard)
   @Delete(':id/permanent')
   @ApiOperation({
     summary: 'Permanently delete a soft-deleted collection',
@@ -1118,7 +1118,7 @@ export class CollectionsController {
   }
 
   // ===================== Delete Collection Media =====================
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseGuards(JwtAuthGuard)
   @Delete(':id/media/:mediaId')
   @ApiOperation({
     summary: 'Delete collection media',

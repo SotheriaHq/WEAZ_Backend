@@ -59,6 +59,7 @@ import {
 } from 'src/queue/queue.constants';
 import { TAG_ENTITY_TYPE } from 'src/tags/tag-entity-type';
 import { CategoriesService } from 'src/categories/categories.service';
+import { BrandAccessService } from 'src/brands/brand-access.service';
 
 type CollectionScope = 'design' | 'store' | 'all';
 type CollectionDomainValue = 'DESIGN' | 'STORE';
@@ -82,6 +83,8 @@ export class CollectionsService {
     private readonly notificationsQueue?: NotificationsQueueService,
     @InjectQueue(BULK_UPLOAD_QUEUE) private readonly bulkUploadQueue?: Queue,
     private readonly systemConfigService?: SystemConfigService,
+    @Optional()
+    private readonly brandAccessService?: BrandAccessService,
   ) { }
 
   private readonly maxProductsPerCollection = Math.max(
@@ -100,7 +103,7 @@ export class CollectionsService {
       },
     });
 
-    if (!user || user.type !== UserType.BRAND) {
+    if (!user) {
       throw new ForbiddenException('Only brands can create designs');
     }
 
@@ -108,7 +111,95 @@ export class CollectionsService {
       throw new ForbiddenException('Verify your email before creating designs.');
     }
 
+    if (this.brandAccessService) {
+      const context = await this.brandAccessService.getPrimaryBrandContext(userId);
+      if (context.activeBrandId) {
+        await this.brandAccessService.assertCanManageCatalog(
+          userId,
+          context.activeBrandId,
+        );
+        return user;
+      }
+    }
+
+    if (user.type !== UserType.BRAND) {
+      throw new ForbiddenException('Only brands can create designs');
+    }
+
     return user;
+  }
+
+  private async resolveCatalogOwnerContext(actorUserId: string): Promise<{
+    actorUserId: string;
+    ownerId: string;
+    brandId: string;
+  }> {
+    const user = await this.prisma.user.findUnique({
+      where: { id: actorUserId },
+      select: { id: true, type: true, isEmailVerified: true },
+    });
+
+    if (!user) {
+      throw new ForbiddenException('Only brands can create collections');
+    }
+
+    if (!user.isEmailVerified) {
+      throw new ForbiddenException('Verify your email before creating designs.');
+    }
+
+    if (this.brandAccessService) {
+      const context = await this.brandAccessService.getPrimaryBrandContext(actorUserId);
+      if (context.activeBrandId) {
+        await this.brandAccessService.assertCanManageCatalog(
+          actorUserId,
+          context.activeBrandId,
+        );
+        const brand = await this.prisma.brand.findUnique({
+          where: { id: context.activeBrandId },
+          select: { id: true, ownerId: true },
+        });
+        if (brand) {
+          return {
+            actorUserId,
+            ownerId: brand.ownerId,
+            brandId: brand.id,
+          };
+        }
+      }
+    }
+
+    if (user.type !== UserType.BRAND) {
+      throw new ForbiddenException('Only brands can create collections');
+    }
+
+    const brand = await this.prisma.brand.findUnique({
+      where: { ownerId: actorUserId },
+      select: { id: true, ownerId: true },
+    });
+    if (!brand) {
+      throw new ForbiddenException('Only brands can create collections');
+    }
+
+    return { actorUserId, ownerId: brand.ownerId, brandId: brand.id };
+  }
+
+  private async assertActorCanManageLegacyOwnerCatalog(
+    actorUserId: string,
+    legacyOwnerId: string,
+  ) {
+    if (legacyOwnerId === actorUserId) {
+      return;
+    }
+
+    if (!this.brandAccessService) {
+      throw new ForbiddenException('Not owner');
+    }
+
+    const brandId =
+      await this.brandAccessService.resolveBrandIdFromBrandOrOwnerId(
+        legacyOwnerId,
+      );
+    await this.brandAccessService.assertCanManageCatalog(actorUserId, brandId);
   }
 
   private normalizeMeasurementKeys(raw?: string[] | null): string[] {
@@ -956,7 +1047,7 @@ export class CollectionsService {
       });
       if (!s) throw new NotFoundException('Collection not found');
       if (s.deletedAt) throw new GoneException('Collection has been deleted');
-      if (s.ownerId !== ownerId) throw new ForbiddenException('Not owner');
+      await this.assertActorCanManageLegacyOwnerCatalog(ownerId, s.ownerId);
       return {
         ownerId: s.ownerId,
         deletedAt: s.deletedAt,
@@ -975,7 +1066,7 @@ export class CollectionsService {
       });
       if (!s) throw new NotFoundException('Collection not found');
       if (s.deletedAt) throw new GoneException('Collection has been deleted');
-      if (s.ownerId !== ownerId) throw new ForbiddenException('Not owner');
+      await this.assertActorCanManageLegacyOwnerCatalog(ownerId, s.ownerId);
       return {
         ownerId: s.ownerId,
         deletedAt: s.deletedAt,
@@ -984,7 +1075,7 @@ export class CollectionsService {
     }
     if (!c) throw new NotFoundException('Collection not found');
     if (c.deletedAt) throw new GoneException('Collection has been deleted');
-    if (c.ownerId !== ownerId) throw new ForbiddenException('Not owner');
+    await this.assertActorCanManageLegacyOwnerCatalog(ownerId, c.ownerId);
     if (expectedDomain && c.domain !== expectedDomain) {
       throw new BadRequestException('Design action attempted on a store collection.');
     }
@@ -1819,11 +1910,8 @@ export class CollectionsService {
    * Simplified: category suggestions removed; categoryId is required and must be active.
    */
   async initializeCollection(userId: string, dto: CreateCollectionDto) {
-    // Validate user is brand
-    const user = await this.prisma.user.findUnique({ where: { id: userId } });
-    if (!user || user.type !== UserType.BRAND) {
-      throw new ForbiddenException('Only brands can create collections');
-    }
+    const catalogContext = await this.resolveCatalogOwnerContext(userId);
+    const ownerId = catalogContext.ownerId;
 
     const hasFiles = Array.isArray(dto.files) && dto.files.length > 0;
     if (hasFiles && dto.files!.length > DESIGN_MAX_MEDIA_COUNT) {
@@ -1843,7 +1931,7 @@ export class CollectionsService {
       }
 
       const draftsCount = await (this.prisma.storeCollection as any).count({
-        where: { ownerId: userId, status: 'DRAFT', deletedAt: null },
+        where: { ownerId, status: 'DRAFT', deletedAt: null },
       });
       if (draftsCount >= 4) {
         throw new BadRequestException(
@@ -1856,7 +1944,7 @@ export class CollectionsService {
       const collection = await (this.prisma.storeCollection as any).create({
         data: {
           id: collectionId,
-          ownerId: userId,
+          ownerId,
           title: dto.title?.trim() || null,
           description: dto.description?.trim() || null,
           status: 'DRAFT',
@@ -1910,7 +1998,7 @@ export class CollectionsService {
       const collection = await (this.prisma.collection as any).create({
         data: {
           id: collectionId,
-          owner: { connect: { id: userId } },
+          owner: { connect: { id: ownerId } },
           domain: 'DESIGN',
           title: dto.title?.trim() || null,
           description: dto.description?.trim() || null,
@@ -2067,7 +2155,7 @@ export class CollectionsService {
     const collection = await (this.prisma.collection as any).create({
       data: {
         id: collectionId,
-        owner: { connect: { id: userId } },
+        owner: { connect: { id: ownerId } },
         domain: 'DESIGN',
         title: dto.title,
         description: dto.description,
@@ -2454,13 +2542,13 @@ export class CollectionsService {
       return this.finalizeStoreCollection(collectionId, userId, dto);
     }
 
-    // Verify collection exists and belongs to user
-    const collection = await this.prisma.collection.findFirst({
-      where: { id: collectionId, ownerId: userId },
+    await this.assertOwner(collectionId, userId, expectedDomain ?? 'DESIGN');
+    const collection = await this.prisma.collection.findUnique({
+      where: { id: collectionId },
     });
 
     if (!collection) {
-      throw new NotFoundException('Collection not found or not owned by user');
+      throw new NotFoundException('Collection not found');
     }
 
     if (expectedDomain && (collection as any).domain !== expectedDomain) {
@@ -2510,7 +2598,11 @@ export class CollectionsService {
         serverVersion: (collection as any).draftVersion,
       } as any);
     }
-    await this.enforceDraftSessionLock(collectionId, userId, dto.draftSessionToken);
+    await this.enforceDraftSessionLock(
+      collectionId,
+      collection.ownerId,
+      dto.draftSessionToken,
+    );
 
     if (!hasCompletions) {
       const previousVisibility = collection.visibility;
@@ -2556,7 +2648,7 @@ export class CollectionsService {
         );
         await this.assertDesignCustomOrderPublishReady(
           collectionId,
-          userId,
+          collection.ownerId,
           nextCustomOrderEnabled,
         );
       }
@@ -2651,7 +2743,7 @@ export class CollectionsService {
           if (action === 'publish') {
             await this.cleanupSupersededDraftCollections(
               tx,
-              userId,
+              collection.ownerId,
               collectionId,
               updatedCollection.title,
               now,
@@ -3012,7 +3104,7 @@ export class CollectionsService {
     if (newStatus === 'PUBLISHED') {
       await this.assertDesignCustomOrderPublishReady(
         collectionId,
-        userId,
+        collection.ownerId,
         completionCustomOrderEnabled,
       );
     }
@@ -3046,7 +3138,7 @@ export class CollectionsService {
     if (newStatus === 'PUBLISHED') {
       await this.cleanupSupersededDraftCollections(
         this.prisma as any,
-        userId,
+        collection.ownerId,
         collectionId,
         publishedCollection.title,
         finalizeAt,
@@ -3071,7 +3163,7 @@ export class CollectionsService {
       // Fetch patchers (user-to-brand patches)
       const patchers = await this.prisma.patchConnection.findMany({
         where: {
-          targetId: userId,
+          targetId: collection.ownerId,
           status: PatchStatus.ACCEPTED,
           mode: PatchMode.USER_TO_BRAND,
         },
@@ -3079,7 +3171,7 @@ export class CollectionsService {
       });
       const recipientIds = patchers
         .map((p) => p.requesterId)
-        .filter((id) => id && id !== userId);
+        .filter((id) => id && id !== collection.ownerId);
 
       if (recipientIds.length > 0 && this.notificationsQueue) {
         try {
@@ -3143,11 +3235,12 @@ export class CollectionsService {
     userId: string,
     dto: FinalizeCollectionDto,
   ) {
-    const collection = await this.prisma.storeCollection.findFirst({
-      where: { id: collectionId, ownerId: userId },
+    await this.assertOwner(collectionId, userId, 'STORE');
+    const collection = await this.prisma.storeCollection.findUnique({
+      where: { id: collectionId },
     });
     if (!collection) {
-      throw new NotFoundException('Collection not found or not owned by user');
+      throw new NotFoundException('Collection not found');
     }
     if (collection.status !== 'DRAFT') {
       if (collection.status === 'PUBLISHED') {
@@ -3407,7 +3500,7 @@ export class CollectionsService {
     ownerId: string,
     productIds: string[],
   ) {
-    await this.assertOwner(collectionId, ownerId, 'STORE');
+    const collectionOwner = await this.assertOwner(collectionId, ownerId, 'STORE');
     if (!Array.isArray(productIds) || productIds.length === 0) {
       throw new BadRequestException('productIds is required');
     }
@@ -3424,7 +3517,7 @@ export class CollectionsService {
       }
 
       for (const p of products) {
-        if (p.brand?.ownerId !== ownerId) {
+        if (p.brand?.ownerId !== collectionOwner.ownerId) {
           throw new ForbiddenException('Not owner of one or more products');
         }
       }
@@ -5266,8 +5359,10 @@ export class CollectionsService {
       include: { medias: { include: { file: true } } },
     } as any)) as any;
     if (!collection) throw new NotFoundException('Collection not found');
-    if (collection.ownerId !== requesterId)
-      throw new ForbiddenException('Not owner of collection');
+    await this.assertActorCanManageLegacyOwnerCatalog(
+      requesterId,
+      collection.ownerId,
+    );
     if (expectedDomain && collection.domain !== expectedDomain) {
       throw new BadRequestException(
         'Delete requested with design scope for a store collection.',
@@ -5356,9 +5451,10 @@ export class CollectionsService {
         where: { id: collectionId },
       });
       if (!source) throw new NotFoundException('Collection not found');
-      if (source.ownerId !== requesterId) {
-        throw new ForbiddenException('Not owner of collection');
-      }
+      await this.assertActorCanManageLegacyOwnerCatalog(
+        requesterId,
+        source.ownerId,
+      );
       if (source.deletedAt) {
         throw new GoneException('Collection has been deleted');
       }
@@ -5400,7 +5496,7 @@ export class CollectionsService {
         await tx.storeCollection.create({
           data: {
             id: duplicateId,
-            ownerId: requesterId,
+            ownerId: source.ownerId,
             title: duplicateTitle,
             description: source.description ?? null,
             status: 'DRAFT',
@@ -5506,9 +5602,7 @@ export class CollectionsService {
     } as any)) as any;
 
     if (!source) throw new NotFoundException('Collection not found');
-    if (source.ownerId !== requesterId) {
-      throw new ForbiddenException('Not owner of collection');
-    }
+    await this.assertActorCanManageLegacyOwnerCatalog(requesterId, source.ownerId);
     if (expectedDomain && source.domain !== expectedDomain) {
       throw new BadRequestException(
         'Duplicate requested with design scope for a store collection.',
@@ -5553,7 +5647,7 @@ export class CollectionsService {
       await tx.collection.create({
         data: {
           id: duplicateId,
-          ownerId: requesterId,
+          ownerId: source.ownerId,
           domain: duplicateDomain,
           title: duplicateTitle,
           description: source.description ?? null,
@@ -5645,9 +5739,10 @@ export class CollectionsService {
       },
     });
     if (storeCollection) {
-      if (storeCollection.ownerId !== ownerId) {
-        throw new ForbiddenException('Not owner of collection');
-      }
+      await this.assertActorCanManageLegacyOwnerCatalog(
+        ownerId,
+        storeCollection.ownerId,
+      );
       if (!storeCollection.deletedAt) {
         throw new BadRequestException('Collection is not deleted');
       }
@@ -5707,9 +5802,7 @@ export class CollectionsService {
       } as any,
     } as any)) as any;
     if (!collection) throw new NotFoundException('Collection not found');
-    if (collection.ownerId !== ownerId) {
-      throw new ForbiddenException('Not owner of collection');
-    }
+    await this.assertActorCanManageLegacyOwnerCatalog(ownerId, collection.ownerId);
     if (!collection.deletedAt) {
       throw new BadRequestException('Collection is not deleted');
     }
@@ -5772,9 +5865,10 @@ export class CollectionsService {
         select: { id: true, ownerId: true, deletedAt: true },
       });
       if (!storeCollection) throw new NotFoundException('Collection not found');
-      if (storeCollection.ownerId !== ownerId) {
-        throw new ForbiddenException('Not owner of collection');
-      }
+      await this.assertActorCanManageLegacyOwnerCatalog(
+        ownerId,
+        storeCollection.ownerId,
+      );
       if (!storeCollection.deletedAt) {
         throw new BadRequestException(
           'Collection must be deleted before permanent removal',
@@ -5790,9 +5884,7 @@ export class CollectionsService {
       include: { medias: { include: { file: true } } },
     });
     if (!collection) throw new NotFoundException('Collection not found');
-    if (collection.ownerId !== ownerId) {
-      throw new ForbiddenException('Not owner of collection');
-    }
+    await this.assertActorCanManageLegacyOwnerCatalog(ownerId, collection.ownerId);
     if (expectedDomain && collection.domain !== expectedDomain) {
       throw new BadRequestException(
         'Permanent delete requested with design scope for a store collection.',
@@ -5846,8 +5938,10 @@ export class CollectionsService {
       include: { medias: { include: { file: true } } },
     });
     if (!collection) throw new NotFoundException('Collection not found');
-    if (collection.ownerId !== requesterId)
-      throw new ForbiddenException('Not owner of collection');
+    await this.assertActorCanManageLegacyOwnerCatalog(
+      requesterId,
+      collection.ownerId,
+    );
 
     const media = collection.medias.find(
       (m) =>
@@ -7949,9 +8043,7 @@ export class CollectionsService {
     });
 
     if (!product) throw new NotFoundException('Product not found');
-    if (product.brand.ownerId !== ownerId) {
-      throw new ForbiddenException('You can only preview your own products');
-    }
+    await this.assertActorCanManageLegacyOwnerCatalog(ownerId, product.brand.ownerId);
 
     const memberships = await this.prisma.storeCollectionProduct.findMany({
       where: { productId },

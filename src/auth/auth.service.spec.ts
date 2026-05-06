@@ -1,6 +1,12 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { BadRequestException, UnauthorizedException } from '@nestjs/common';
-import { Role, UserStatus, UserType } from '@prisma/client';
+import {
+  BrandMemberRole,
+  BrandMemberStatus,
+  Role,
+  UserStatus,
+  UserType,
+} from '@prisma/client';
 
 import { AuthService } from './auth.service';
 import { PrismaService } from 'src/prisma/prisma.service';
@@ -402,6 +408,192 @@ describe('AuthService', () => {
     expect(result.isVerifiedBrand).toBe(true);
   });
 
+  it('auth responses include empty brand membership context for regular users', () => {
+    const result = toAuthUserResponse({
+      id: 'user-1',
+      username: 'alex',
+      role: Role.User,
+      type: UserType.REGULAR,
+      firstName: 'Alex',
+      lastName: 'Doe',
+      email: 'alex@example.com',
+      status: UserStatus.ACTIVE,
+      brand: null,
+      brandMemberships: [],
+      adminPermissionGrants: [],
+      phoneNumber: null,
+      address: null,
+      brandFullName: null,
+      brandDescription: null,
+      brandCountry: null,
+      brandState: null,
+      brandCity: null,
+      brandTags: [],
+      brandBusinessType: null,
+      socialInstagram: null,
+      socialFacebook: null,
+      socialTwitter: null,
+      socialWebsite: null,
+      cacNumber: null,
+      tin: null,
+      ceoNin: null,
+      ceoFirstName: null,
+      ceoLastName: null,
+      companyLocation: null,
+      profileImage: null,
+      profileImageId: null,
+      bannerImage: null,
+      bannerImageId: null,
+      isEmailVerified: true,
+      isActive: 'active',
+      themePreference: 'system',
+      mustResetPassword: false,
+      authVersion: 0,
+      createdAt: new Date('2026-05-05T00:00:00.000Z'),
+      updatedAt: new Date('2026-05-05T00:00:00.000Z'),
+    } as any);
+
+    expect(result.brandMemberships).toEqual([]);
+    expect(result.activeBrandId).toBeNull();
+  });
+
+  it('auth responses include brand owner membership and keep legacy flat fields', () => {
+    const result = toAuthUserResponse({
+      id: 'user-1',
+      username: 'brand-owner',
+      role: Role.User,
+      type: UserType.BRAND,
+      firstName: 'Ada',
+      lastName: 'Owner',
+      email: 'brand@example.com',
+      status: UserStatus.ACTIVE,
+      brand: {
+        id: 'brand-1',
+        name: 'Canonical Brand',
+        description: 'Canonical description',
+        tags: ['canonical'],
+        isStoreOpen: true,
+        verificationStatus: 'APPROVED',
+      },
+      brandMemberships: [
+        {
+          brandId: 'brand-1',
+          role: BrandMemberRole.OWNER,
+          status: BrandMemberStatus.ACTIVE,
+          brand: { id: 'brand-1', name: 'Canonical Brand' },
+        },
+      ],
+      adminPermissionGrants: [],
+      phoneNumber: null,
+      address: null,
+      brandFullName: 'Legacy Brand',
+      brandDescription: 'Legacy description',
+      brandCountry: null,
+      brandState: null,
+      brandCity: null,
+      brandTags: ['legacy'],
+      brandBusinessType: null,
+      socialInstagram: null,
+      socialFacebook: null,
+      socialTwitter: null,
+      socialWebsite: null,
+      cacNumber: null,
+      tin: null,
+      ceoNin: null,
+      ceoFirstName: null,
+      ceoLastName: null,
+      companyLocation: null,
+      profileImage: null,
+      profileImageId: null,
+      bannerImage: null,
+      bannerImageId: null,
+      isEmailVerified: true,
+      isActive: 'active',
+      themePreference: 'system',
+      mustResetPassword: false,
+      authVersion: 0,
+      createdAt: new Date('2026-05-05T00:00:00.000Z'),
+      updatedAt: new Date('2026-05-05T00:00:00.000Z'),
+    } as any);
+
+    expect(result.storeId).toBe('brand-1');
+    expect(result.activeBrandId).toBe('brand-1');
+    expect(result.activeBrandId).not.toBe('user-1');
+    expect(result.brandFullName).toBe('Canonical Brand');
+    expect(result.brandDescription).toBe('Canonical description');
+    expect(result.brandMemberships).toEqual([
+      {
+        brandId: 'brand-1',
+        brandName: 'Canonical Brand',
+        role: BrandMemberRole.OWNER,
+        status: BrandMemberStatus.ACTIVE,
+        isOwner: true,
+      },
+    ]);
+  });
+
+  it('auth responses include inactive memberships but choose activeBrandId from ACTIVE only', () => {
+    const result = toAuthUserResponse({
+      id: 'staff-1',
+      username: 'staff',
+      role: Role.User,
+      type: UserType.REGULAR,
+      firstName: 'Staff',
+      lastName: 'Member',
+      email: 'staff@example.com',
+      status: UserStatus.ACTIVE,
+      brand: null,
+      brandMemberships: [
+        {
+          brandId: 'brand-invited',
+          role: BrandMemberRole.MANAGER,
+          status: BrandMemberStatus.INVITED,
+          brand: { id: 'brand-invited', name: 'Invited Brand' },
+        },
+        {
+          brandId: 'brand-active',
+          role: BrandMemberRole.CATALOG_MANAGER,
+          status: BrandMemberStatus.ACTIVE,
+          brand: { id: 'brand-active', name: 'Active Brand' },
+        },
+      ],
+      adminPermissionGrants: [],
+      phoneNumber: null,
+      address: null,
+      brandFullName: null,
+      brandDescription: null,
+      brandCountry: null,
+      brandState: null,
+      brandCity: null,
+      brandTags: [],
+      brandBusinessType: null,
+      socialInstagram: null,
+      socialFacebook: null,
+      socialTwitter: null,
+      socialWebsite: null,
+      cacNumber: null,
+      tin: null,
+      ceoNin: null,
+      ceoFirstName: null,
+      ceoLastName: null,
+      companyLocation: null,
+      profileImage: null,
+      profileImageId: null,
+      bannerImage: null,
+      bannerImageId: null,
+      isEmailVerified: true,
+      isActive: 'active',
+      themePreference: 'system',
+      mustResetPassword: false,
+      authVersion: 0,
+      createdAt: new Date('2026-05-05T00:00:00.000Z'),
+      updatedAt: new Date('2026-05-05T00:00:00.000Z'),
+    } as any);
+
+    expect(result.brandMemberships).toHaveLength(2);
+    expect(result.activeBrandId).toBe('brand-active');
+  });
+
   it('auth responses fall back to legacy User brand fields when Brand is missing or incomplete', () => {
     const result = toAuthUserResponse({
       id: 'user-1',
@@ -797,16 +989,7 @@ describe('AuthService', () => {
   });
 
   it('signup creates a UserProfile for brand users', async () => {
-    mockPrisma.user.findUnique.mockResolvedValue(null);
-    mockUserHelperService.generateUsernameFromBrand.mockResolvedValue('ada-style');
-    mockUserHelperService.generateIndustriNumber.mockResolvedValue('IND-123');
-    mockPasswordService.hashPassword.mockResolvedValue('hashed-password');
-    mockEmailVerificationHelper.generateVerificationCode.mockReturnValue('123456');
-    mockEmailVerificationHelper.generateVerificationLink.mockReturnValue('https://threadly.test/verify');
-    mockEmailService.send.mockResolvedValue({ dispatchStatus: 'SENT' });
-    mockNotifications.create.mockResolvedValue({});
-    mockTokenService.generateTokens.mockResolvedValue({ accessToken: 'access-token' });
-    mockPrisma.user.create.mockResolvedValue({
+    const createdBrandUser = {
       id: 'user-1',
       username: 'ada-style',
       role: Role.User,
@@ -816,6 +999,14 @@ describe('AuthService', () => {
       email: 'ada@example.com',
       status: UserStatus.ACTIVE,
       brand: { id: 'brand-1', name: 'Ada Style', isStoreOpen: false, verificationStatus: 'NOT_SUBMITTED' },
+      brandMemberships: [
+        {
+          brandId: 'brand-1',
+          role: BrandMemberRole.OWNER,
+          status: BrandMemberStatus.ACTIVE,
+          brand: { id: 'brand-1', name: 'Ada Style' },
+        },
+      ],
       adminPermissionGrants: [],
       phoneNumber: null,
       address: null,
@@ -860,7 +1051,19 @@ describe('AuthService', () => {
         bannerImageFile: null,
         profileVisibility: 'UNLOCKED',
       },
-    });
+    };
+    mockPrisma.user.findUnique
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(createdBrandUser);
+    mockUserHelperService.generateUsernameFromBrand.mockResolvedValue('ada-style');
+    mockUserHelperService.generateIndustriNumber.mockResolvedValue('IND-123');
+    mockPasswordService.hashPassword.mockResolvedValue('hashed-password');
+    mockEmailVerificationHelper.generateVerificationCode.mockReturnValue('123456');
+    mockEmailVerificationHelper.generateVerificationLink.mockReturnValue('https://threadly.test/verify');
+    mockEmailService.send.mockResolvedValue({ dispatchStatus: 'SENT' });
+    mockNotifications.create.mockResolvedValue({});
+    mockTokenService.generateTokens.mockResolvedValue({ accessToken: 'access-token' });
+    mockPrisma.user.create.mockResolvedValue(createdBrandUser);
 
     await service.CreateUser(
       {

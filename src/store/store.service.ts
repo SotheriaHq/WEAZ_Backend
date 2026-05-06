@@ -605,11 +605,62 @@ export class StoreService {
     });
 
     if (!product) throw new NotFoundException('Product not found');
-    if (product.brand.ownerId !== brandOwnerId) {
-      throw new ForbiddenException('You can only modify your own products');
-    }
+    await this.assertCanManageBrandCatalog(
+      brandOwnerId,
+      product.brandId,
+      product.brand.ownerId,
+      'You can only modify your own products',
+    );
 
     return product;
+  }
+
+  private async assertCanManageBrandCatalog(
+    actorUserId: string,
+    brandId: string,
+    legacyOwnerId: string | null | undefined,
+    message = 'You can only modify your own products',
+  ) {
+    if (this.brandAccessService) {
+      await this.brandAccessService.assertCanManageCatalog(actorUserId, brandId);
+      return;
+    }
+
+    if (legacyOwnerId !== actorUserId) {
+      throw new ForbiddenException(message);
+    }
+  }
+
+  private async resolveCatalogBrandForActor(actorUserId: string) {
+    if (this.brandAccessService) {
+      const context = await this.brandAccessService.getPrimaryBrandContext(actorUserId);
+      if (!context.activeBrandId) {
+        throw new ForbiddenException('You must have an active brand membership to create products');
+      }
+
+      await this.brandAccessService.assertCanManageCatalog(
+        actorUserId,
+        context.activeBrandId,
+      );
+
+      const brand = await this.prisma.brand.findUnique({
+        where: { id: context.activeBrandId },
+        select: { id: true, currency: true, ownerId: true },
+      });
+      if (!brand) {
+        throw new ForbiddenException('You must have an active brand membership to create products');
+      }
+      return brand;
+    }
+
+    const brand = await this.prisma.brand.findFirst({
+      where: { ownerId: actorUserId },
+      select: { id: true, currency: true, ownerId: true },
+    });
+    if (!brand) {
+      throw new ForbiddenException('You must be a brand owner to create products');
+    }
+    return brand;
   }
 
   private async resolveBrandByIdOrOwner(brandIdOrOwnerId: string) {
@@ -772,13 +823,16 @@ export class StoreService {
     const product = await this.assertBrandOwnsProduct(brandOwnerId, productId);
 
     const upload = await this.prisma.fileUpload.findFirst({
-      where: { id: mediaId, userId: brandOwnerId },
-      select: { id: true, s3Url: true },
+      where: { id: mediaId },
+      select: { id: true, s3Url: true, userId: true },
     });
 
     if (!upload) throw new NotFoundException('Media not found');
 
     const existingImages = Array.isArray(product.images) ? product.images : [];
+    if (!existingImages.includes(upload.s3Url)) {
+      throw new NotFoundException('Media not found');
+    }
     const nextImages = existingImages.filter((u) => u !== upload.s3Url);
 
     let nextThumbnail = product.thumbnail ?? null;
@@ -791,7 +845,9 @@ export class StoreService {
       data: { images: nextImages, thumbnail: nextThumbnail },
     });
 
-    await this.uploadService.deleteFile(mediaId, brandOwnerId);
+    if (upload.userId === brandOwnerId) {
+      await this.uploadService.deleteFile(mediaId, brandOwnerId);
+    }
 
     return { success: true };
   }
@@ -818,7 +874,7 @@ export class StoreService {
     }
 
     const uploads = await this.prisma.fileUpload.findMany({
-      where: { id: { in: ids }, userId: brandOwnerId },
+      where: { id: { in: ids } },
       select: { id: true, s3Url: true },
     });
 
@@ -830,6 +886,10 @@ export class StoreService {
     for (const u of uploads) urlById.set(u.id, u.s3Url);
 
     const nextImages = ids.map((id) => urlById.get(id)!).filter(Boolean);
+    const existingImages = Array.isArray(product.images) ? product.images : [];
+    if (nextImages.some((url) => !existingImages.includes(url))) {
+      throw new BadRequestException('One or more mediaIds are invalid');
+    }
 
     const thumbUrl = product.thumbnail ?? null;
     const nextThumbnail =
@@ -851,13 +911,16 @@ export class StoreService {
     const product = await this.assertBrandOwnsProduct(brandOwnerId, productId);
 
     const upload = await this.prisma.fileUpload.findFirst({
-      where: { id: mediaId, userId: brandOwnerId },
+      where: { id: mediaId },
       select: { id: true, s3Url: true },
     });
 
     if (!upload) throw new NotFoundException('Media not found');
 
     const existingImages = Array.isArray(product.images) ? product.images : [];
+    if (!existingImages.includes(upload.s3Url)) {
+      throw new NotFoundException('Media not found');
+    }
     if (
       !existingImages.includes(upload.s3Url) &&
       existingImages.length >= this.maxProductMediaCount
@@ -1682,17 +1745,8 @@ export class StoreService {
   }
 
   async createProduct(brandOwnerId: string, dto: CreateProductDto) {
-    // Verify brand ownership
-    const brand = await this.prisma.brand.findFirst({
-      where: { ownerId: brandOwnerId },
-      select: { id: true, currency: true },
-    });
-
-    if (!brand) {
-      throw new ForbiddenException(
-        'You must be a brand owner to create products',
-      );
-    }
+    const brand = await this.resolveCatalogBrandForActor(brandOwnerId);
+    const brandOwnerUserId = brand.ownerId;
 
     if ((dto as any).sizingModeDeprecatedAliasUsed) {
       this.logger.warn(
@@ -1708,7 +1762,7 @@ export class StoreService {
     // If a collectionId is provided, verify it belongs to this brand.
     if (requestedCollectionId) {
       const collection = await this.prisma.storeCollection.findFirst({
-        where: { id: requestedCollectionId, ownerId: brandOwnerId },
+        where: { id: requestedCollectionId, ownerId: brandOwnerUserId },
         select: { id: true, deletedAt: true },
       });
 
@@ -1787,7 +1841,7 @@ export class StoreService {
       let collectionId = requestedCollectionId;
 
       if (!collectionId) {
-        collectionId = await this.ensureDefaultStoreCollection(tx, brandOwnerId);
+        collectionId = await this.ensureDefaultStoreCollection(tx, brandOwnerUserId);
       }
 
       await this.assertCategoryTypeForCollection(
@@ -1990,7 +2044,7 @@ export class StoreService {
     }
 
     if (this.isProductPublished(product)) {
-      await this.notifyPatchersOfProduct(brandOwnerId, product);
+      await this.notifyPatchersOfProduct(brandOwnerUserId, product);
     }
 
     return this.attachProductMedia(product);
@@ -2022,9 +2076,12 @@ export class StoreService {
       throw new NotFoundException('Product not found');
     }
 
-    if (product.brand.ownerId !== brandOwnerId) {
-      throw new ForbiddenException('You can only update your own products');
-    }
+    await this.assertCanManageBrandCatalog(
+      brandOwnerId,
+      product.brandId,
+      product.brand.ownerId,
+      'You can only update your own products',
+    );
 
     if ((dto as any).sizingModeDeprecatedAliasUsed) {
       this.logger.warn(
@@ -2044,7 +2101,7 @@ export class StoreService {
       const requestedCollectionId = (dto.collectionId || '').trim();
       if (requestedCollectionId) {
         const collection = await this.prisma.storeCollection.findFirst({
-          where: { id: requestedCollectionId, ownerId: brandOwnerId },
+          where: { id: requestedCollectionId, ownerId: product.brand.ownerId },
           select: { id: true },
         });
 
@@ -2261,7 +2318,7 @@ export class StoreService {
         if (finalCollectionId === null) {
           finalCollectionId = await this.ensureDefaultStoreCollection(
             tx,
-            brandOwnerId,
+            product.brand.ownerId,
           );
         }
 
@@ -2573,9 +2630,12 @@ export class StoreService {
     if (!product) {
       throw new NotFoundException('Product not found');
     }
-    if (product.brand.ownerId !== brandOwnerId) {
-      throw new ForbiddenException('You can only request republish for your own product');
-    }
+    await this.assertCanManageBrandCatalog(
+      brandOwnerId,
+      product.brandId,
+      product.brand.ownerId,
+      'You can only request republish for your own product',
+    );
     if (product.isActive) {
       throw new BadRequestException('Product is already published');
     }
@@ -2640,9 +2700,12 @@ export class StoreService {
     });
 
     if (!product) throw new NotFoundException('Product not found');
-    if (product.brand.ownerId !== brandOwnerId) {
-      throw new ForbiddenException('You can only modify your own products');
-    }
+    await this.assertCanManageBrandCatalog(
+      brandOwnerId,
+      product.brandId,
+      product.brand.ownerId,
+      'You can only modify your own products',
+    );
 
     const copyName = `${product.name} (Copy)`;
     const derivedFromVariants = Array.isArray(product.variants)
@@ -2725,7 +2788,7 @@ export class StoreService {
       if (sourceCollections.length === 0) {
         const fallbackCollectionId = await this.ensureDefaultStoreCollection(
           tx,
-          brandOwnerId,
+          product.brand.ownerId,
         );
         await this.lockCollectionForUpdate(tx, fallbackCollectionId);
         const orderIndex = await tx.storeCollectionProduct.count({
@@ -2835,9 +2898,12 @@ export class StoreService {
       throw new NotFoundException('Product not found');
     }
 
-    if (product.brand.ownerId !== brandOwnerId) {
-      throw new ForbiddenException('You can only check your own products');
-    }
+    await this.assertCanManageBrandCatalog(
+      brandOwnerId,
+      product.brandId,
+      product.brand.ownerId,
+      'You can only check your own products',
+    );
 
     const activeOrders = await this.prisma.order.findMany({
       where: {
@@ -2897,9 +2963,12 @@ export class StoreService {
       throw new NotFoundException('Product not found');
     }
 
-    if (product.brand.ownerId !== brandOwnerId) {
-      throw new ForbiddenException('You can only archive your own products');
-    }
+    await this.assertCanManageBrandCatalog(
+      brandOwnerId,
+      product.brandId,
+      product.brand.ownerId,
+      'You can only archive your own products',
+    );
 
     if (product.archivedAt) {
       throw new BadRequestException('Product is already archived');
@@ -2987,9 +3056,12 @@ export class StoreService {
       throw new NotFoundException('Product not found');
     }
 
-    if (product.brand.ownerId !== brandOwnerId) {
-      throw new ForbiddenException('You can only unarchive your own products');
-    }
+    await this.assertCanManageBrandCatalog(
+      brandOwnerId,
+      product.brandId,
+      product.brand.ownerId,
+      'You can only unarchive your own products',
+    );
 
     if (!product.archivedAt) {
       throw new BadRequestException('Product is not archived');
@@ -3087,9 +3159,12 @@ export class StoreService {
       throw new NotFoundException('Product not found');
     }
 
-    if (product.brand.ownerId !== brandOwnerId) {
-      throw new ForbiddenException('You can only delete your own products');
-    }
+    await this.assertCanManageBrandCatalog(
+      brandOwnerId,
+      product.brandId,
+      product.brand.ownerId,
+      'You can only delete your own products',
+    );
 
     const previousIndexedTags = this.getIndexedProductTags(product, product.tags ?? []);
 
@@ -3343,11 +3418,12 @@ export class StoreService {
         if (!product) {
           throw new NotFoundException('Product not found');
         }
-        if (product.brand.ownerId !== brandOwnerId) {
-          throw new ForbiddenException(
-            'You can only unpublish your own products',
-          );
-        }
+        await this.assertCanManageBrandCatalog(
+          brandOwnerId,
+          product.brandId,
+          product.brand.ownerId,
+          'You can only unpublish your own products',
+        );
         if (product.archivedAt) {
           throw new BadRequestException(
             'Product is archived. Unarchive it first before unpublishing.',
@@ -3414,9 +3490,12 @@ export class StoreService {
       throw new NotFoundException('Product not found');
     }
 
-    if (product.brand.ownerId !== brandOwnerId) {
-      throw new ForbiddenException('You can only preview your own products');
-    }
+    await this.assertCanManageBrandCatalog(
+      brandOwnerId,
+      product.brandId,
+      product.brand.ownerId,
+      'You can only preview your own products',
+    );
 
     // Get all collections this product belongs to
     const memberships = await this.prisma.storeCollectionProduct.findMany({
@@ -3550,9 +3629,12 @@ export class StoreService {
       throw new NotFoundException('Product not found');
     }
 
-    if (product.brand.ownerId !== brandOwnerId) {
-      throw new ForbiddenException('You can only delete your own products');
-    }
+    await this.assertCanManageBrandCatalog(
+      brandOwnerId,
+      product.brandId,
+      product.brand.ownerId,
+      'You can only delete your own products',
+    );
 
     if (!product.deletedAt) {
       throw new BadRequestException('Product must be deleted before permanent removal');
@@ -4727,9 +4809,12 @@ export class StoreService {
       throw new NotFoundException('Product not found');
     }
 
-    if (product.brand.ownerId !== brandOwnerId) {
-      throw new ForbiddenException('You can only restore your own products');
-    }
+    await this.assertCanManageBrandCatalog(
+      brandOwnerId,
+      product.brandId,
+      product.brand.ownerId,
+      'You can only restore your own products',
+    );
 
     if (!product.deletedAt) {
       throw new BadRequestException('Product is not deleted');

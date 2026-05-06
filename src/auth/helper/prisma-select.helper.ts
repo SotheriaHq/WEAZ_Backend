@@ -1,4 +1,4 @@
-import { Prisma } from '@prisma/client';
+import { BrandMemberRole, BrandMemberStatus, Prisma } from '@prisma/client';
 import {
   AuthJwtClaims,
   AuthProfileImageFileDto,
@@ -31,6 +31,20 @@ export const authUserSelect = Prisma.validator<Prisma.UserSelect>()({
   status: true,
   brand: {
     select: canonicalBrandProfileSelect,
+  },
+  brandMemberships: {
+    select: {
+      brandId: true,
+      role: true,
+      status: true,
+      brand: {
+        select: {
+          id: true,
+          name: true,
+        },
+      },
+    },
+    orderBy: [{ createdAt: 'asc' }],
   },
   adminPermissionGrants: {
     select: { permissionCode: true },
@@ -99,6 +113,47 @@ const mapFileUploadToDto = (
     updatedAt: file.updatedAt.toISOString(),
   };
 };
+
+const mapBrandMemberships = (
+  memberships: Array<{
+    brandId: string;
+    role: BrandMemberRole;
+    status: BrandMemberStatus;
+    brand?: { id: string; name: string } | null;
+  }> = [],
+) =>
+  memberships.map((membership) => ({
+    brandId: membership.brandId,
+    brandName: membership.brand?.name ?? '',
+    role: membership.role,
+    status: membership.status,
+    isOwner: membership.role === BrandMemberRole.OWNER,
+  }));
+
+const resolveActiveBrandId = (
+  user: AuthUser | ProfileUser,
+  memberships: ReturnType<typeof mapBrandMemberships>,
+): string | null => {
+  if (user.brand?.id) {
+    return user.brand.id;
+  }
+
+  const activeOwner = memberships.find(
+    (membership) =>
+      membership.status === BrandMemberStatus.ACTIVE &&
+      membership.role === BrandMemberRole.OWNER,
+  );
+  if (activeOwner) {
+    return activeOwner.brandId;
+  }
+
+  return (
+    memberships.find(
+      (membership) => membership.status === BrandMemberStatus.ACTIVE,
+    )?.brandId ?? null
+  );
+};
+
 export const toAuthUserResponse = (
   user: AuthUser | ProfileUser,
 ): AuthUserResponseDto => {
@@ -110,6 +165,8 @@ export const toAuthUserResponse = (
     isStoreOpen: user.brand?.isStoreOpen,
     ownerStatus: user.status ?? null,
   });
+  const brandMemberships = mapBrandMemberships(user.brandMemberships ?? []);
+  const activeBrandId = resolveActiveBrandId(user, brandMemberships);
 
   return {
     id: user.id,
@@ -146,6 +203,8 @@ export const toAuthUserResponse = (
     bannerImageFile: mapFileUploadToDto(bannerImage.file),
     isEmailVerified: user.isEmailVerified,
     storeId: user.brand?.id ?? null,
+    brandMemberships,
+    activeBrandId,
     verificationStatus: user.brand?.verificationStatus ?? null,
     isVerifiedBrand: verificationTruth.isVerifiedBrand,
     verificationBadgeVisible: verificationTruth.verificationBadgeVisible,

@@ -17,6 +17,7 @@ import { TagsModule } from 'src/tags/tags.module';
 import { QueueModule } from 'src/queue/queue.module';
 import { CategoriesModule } from 'src/categories/categories.module';
 import { SystemConfigModule } from 'src/admin/system-config/system-config.module';
+import { BrandAccessService } from 'src/brands/brand-access.service';
 
 @Module({
   imports: [
@@ -37,6 +38,7 @@ import { SystemConfigModule } from 'src/admin/system-config/system-config.module
     HelperService,
     EventsGateway,
     IdempotencyInterceptor,
+    BrandAccessService,
   ],
   controllers: [CollectionsController, DesignsController, StoreCollectionsController],
   exports: [CollectionsService],

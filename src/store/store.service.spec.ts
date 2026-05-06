@@ -248,4 +248,121 @@ describe('StoreService', () => {
     expect(status.profileMissingFields).toEqual(['location']);
     expect(status.isSetupComplete).toBe(false);
   });
+
+  it('resolves catalog brand from an active brand membership', async () => {
+    const brandAccess = {
+      getPrimaryBrandContext: jest.fn().mockResolvedValue({
+        activeBrandId: 'brand_1',
+        memberships: [],
+      }),
+      assertCanManageCatalog: jest.fn().mockResolvedValue(undefined),
+    };
+    const catalogPrisma = {
+      brand: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'brand_1',
+          ownerId: 'owner_1',
+          currency: 'NGN',
+        }),
+      },
+    } as any;
+    const catalogService = new StoreService(
+      catalogPrisma,
+      {} as any,
+      {} as any,
+      {} as any,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      brandAccess as any,
+    );
+
+    await expect(
+      (catalogService as any).resolveCatalogBrandForActor('staff_1'),
+    ).resolves.toEqual({
+      id: 'brand_1',
+      ownerId: 'owner_1',
+      currency: 'NGN',
+    });
+    expect(brandAccess.assertCanManageCatalog).toHaveBeenCalledWith(
+      'staff_1',
+      'brand_1',
+    );
+  });
+
+  it('allows an active catalog manager to manage an existing product', async () => {
+    const brandAccess = {
+      assertCanManageCatalog: jest.fn().mockResolvedValue(undefined),
+    };
+    const catalogPrisma = {
+      product: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: 'product_1',
+          brandId: 'brand_1',
+          brand: { id: 'brand_1', ownerId: 'owner_1' },
+        }),
+      },
+    } as any;
+    const catalogService = new StoreService(
+      catalogPrisma,
+      {} as any,
+      {} as any,
+      {} as any,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      brandAccess as any,
+    );
+
+    await expect(
+      (catalogService as any).assertBrandOwnsProduct(
+        'catalog_manager_1',
+        'product_1',
+      ),
+    ).resolves.toEqual({
+      id: 'product_1',
+      brandId: 'brand_1',
+      brand: { id: 'brand_1', ownerId: 'owner_1' },
+    });
+    expect(brandAccess.assertCanManageCatalog).toHaveBeenCalledWith(
+      'catalog_manager_1',
+      'brand_1',
+    );
+  });
+
+  it('rejects catalog brand resolution when the actor has no active brand', async () => {
+    const brandAccess = {
+      getPrimaryBrandContext: jest.fn().mockResolvedValue({
+        activeBrandId: null,
+        memberships: [],
+      }),
+      assertCanManageCatalog: jest.fn(),
+    };
+    const catalogService = new StoreService(
+      { brand: { findUnique: jest.fn() } } as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      brandAccess as any,
+    );
+
+    await expect(
+      (catalogService as any).resolveCatalogBrandForActor('regular_1'),
+    ).rejects.toThrow('active brand membership');
+  });
 });
