@@ -25,6 +25,7 @@ import {
   AuthUser,
 } from 'src/auth/helper/prisma-select.helper';
 import { resolveRequiredProfileField } from 'src/common/user-profile-source.helper';
+import { resolveRequiredBrandField } from 'src/common/brand-profile-source.helper';
 import { TokenService } from './helper/general.helper';
 import { Request, Response } from 'express';
 import { UserHelperService } from './helper/user-helper.service';
@@ -281,7 +282,7 @@ export class AuthService {
   }
 
   private resolveSignupDisplayName(user: AuthUser): string {
-    const brandName = String(user.brandFullName ?? '').trim();
+    const brandName = resolveRequiredBrandField(user, 'brandFullName').trim();
     if (brandName) {
       return brandName;
     }
@@ -439,6 +440,7 @@ export class AuthService {
                   create: {
                     id: uuidv4(),
                     name: signupDto.brandFullName!,
+                    industriNumber,
                     storeNameLastChangedAt: new Date(),
                     currency: 'NGN',
                   },
@@ -808,12 +810,17 @@ export class AuthService {
       'brandCity',
       'brandTags',
       'brandBusinessType',
+      'socialInstagram',
+      'socialFacebook',
+      'socialTwitter',
+      'socialWebsite',
       'cacNumber',
       'tin',
       'ceoNin',
       'ceoFirstName',
       'ceoLastName',
       'companyLocation',
+      'industriNumber',
     ] as const;
     type ForbiddenProfileUpdateField = (typeof forbiddenFields)[number];
     type AllowedProfileUpdateField =

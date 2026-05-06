@@ -14,6 +14,11 @@ describe('BrandsService', () => {
   const mockPrisma = {
     user: {
       findUnique: jest.fn(),
+      update: jest.fn(),
+    },
+    brand: {
+      findUnique: jest.fn(),
+      upsert: jest.fn(),
     },
     collection: {
       count: jest.fn(),
@@ -24,16 +29,20 @@ describe('BrandsService', () => {
       create: jest.fn(),
       update: jest.fn(),
     },
+    $transaction: jest.fn((callback) => callback(mockPrisma)),
   };
 
   beforeEach(async () => {
+    jest.clearAllMocks();
+    mockPrisma.$transaction.mockImplementation((callback) => callback(mockPrisma));
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         BrandsService,
         { provide: PrismaService, useValue: mockPrisma },
         { provide: UploadService, useValue: {} },
         { provide: NotificationsService, useValue: { create: jest.fn() } },
-        { provide: SystemTagsService, useValue: {} },
+        { provide: SystemTagsService, useValue: { syncTags: jest.fn() } },
         { provide: TagIndexService, useValue: { syncEntityTags: jest.fn() } },
       ],
     }).compile();
@@ -116,6 +125,154 @@ describe('BrandsService', () => {
           data: expect.objectContaining({ status: PatchStatus.PENDING }),
         }),
       );
+    });
+  });
+
+  describe('updateBrandProfile', () => {
+    it('writes Brand canonical fields and dual-writes legacy User fields', async () => {
+      mockPrisma.user.findUnique
+        .mockResolvedValueOnce({
+          id: 'owner-1',
+          username: 'brand-owner',
+          firstName: 'Ada',
+          lastName: 'Okafor',
+          email: 'ada@example.com',
+          phoneNumber: null,
+          address: null,
+          brandFullName: 'Legacy Name',
+          brandDescription: null,
+          brandCountry: null,
+          brandState: null,
+          brandCity: null,
+          brandTags: [],
+          brandBusinessType: null,
+          socialInstagram: null,
+          socialFacebook: null,
+          socialTwitter: null,
+          socialWebsite: null,
+          companyLocation: null,
+          industriNumber: 'IND-1',
+          profileImage: null,
+          profileImageFile: null,
+          bannerImage: null,
+          bannerImageId: null,
+          bannerImageFile: null,
+          cacNumber: null,
+          tin: null,
+          isEmailVerified: true,
+          status: 'ACTIVE',
+          deactivatedAt: null,
+          createdAt: new Date('2026-05-05T00:00:00.000Z'),
+          updatedAt: new Date('2026-05-05T00:00:00.000Z'),
+          type: UserType.BRAND,
+          brand: {
+            id: 'brand-1',
+            name: 'Legacy Name',
+            tags: [],
+            isStoreOpen: false,
+            verificationStatus: 'NOT_SUBMITTED',
+            avgRating: 0,
+            totalReviews: 0,
+          },
+        })
+        .mockResolvedValueOnce({
+          id: 'owner-1',
+          username: 'brand-owner',
+          role: 'User',
+          type: UserType.BRAND,
+          firstName: 'Ada',
+          lastName: 'Okafor',
+          email: 'ada@example.com',
+          status: 'ACTIVE',
+          brand: {
+            id: 'brand-1',
+            name: 'Canonical Name',
+            description: 'Canonical description',
+            tags: ['ankara'],
+            country: 'Nigeria',
+            state: 'Lagos',
+            city: 'Ikeja',
+            businessType: 'Atelier',
+            socialInstagram: 'https://instagram.com/canonical',
+            socialFacebook: null,
+            socialTwitter: null,
+            socialWebsite: null,
+            isStoreOpen: false,
+            verificationStatus: 'NOT_SUBMITTED',
+          },
+          adminPermissionGrants: [],
+          phoneNumber: null,
+          address: null,
+          brandFullName: 'Canonical Name',
+          brandDescription: 'Canonical description',
+          brandCountry: 'Nigeria',
+          brandState: 'Lagos',
+          brandCity: 'Ikeja',
+          brandTags: ['ankara'],
+          brandBusinessType: 'Atelier',
+          socialInstagram: 'https://instagram.com/canonical',
+          socialFacebook: null,
+          socialTwitter: null,
+          socialWebsite: null,
+          cacNumber: null,
+          tin: null,
+          ceoNin: null,
+          ceoFirstName: null,
+          ceoLastName: null,
+          companyLocation: 'Ikeja, Lagos, Nigeria',
+          profileImage: null,
+          profileImageId: null,
+          bannerImage: null,
+          bannerImageId: null,
+          isEmailVerified: true,
+          isActive: 'Active',
+          themePreference: 'system',
+          mustResetPassword: false,
+          authVersion: 0,
+          createdAt: new Date('2026-05-05T00:00:00.000Z'),
+          updatedAt: new Date('2026-05-05T00:00:00.000Z'),
+          userProfile: null,
+        });
+      mockPrisma.brand.upsert.mockResolvedValue({});
+      mockPrisma.user.update.mockResolvedValue({});
+
+      const response = await service.updateBrandProfile('owner-1', {
+        brandFullName: 'Canonical Name',
+        brandDescription: 'Canonical description',
+        brandCountry: 'Nigeria',
+        brandState: 'Lagos',
+        brandCity: 'Ikeja',
+        brandTags: ['ankara'],
+        businessType: 'Atelier',
+        socialInstagram: 'https://instagram.com/canonical',
+      });
+
+      expect(mockPrisma.brand.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { ownerId: 'owner-1' },
+          update: expect.objectContaining({
+            name: 'Canonical Name',
+            description: 'Canonical description',
+            country: 'Nigeria',
+            tags: ['ankara'],
+            businessType: 'Atelier',
+          }),
+        }),
+      );
+      expect(mockPrisma.user.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: 'owner-1' },
+          data: expect.objectContaining({
+            brandFullName: 'Canonical Name',
+            brandDescription: 'Canonical description',
+            brandCountry: 'Nigeria',
+            brandTags: ['ankara'],
+            brandBusinessType: 'Atelier',
+          }),
+        }),
+      );
+      expect(response.brandFullName).toBe('Canonical Name');
+      expect(response.brandTags).toEqual(['ankara']);
     });
   });
 });

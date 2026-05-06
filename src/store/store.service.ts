@@ -630,6 +630,23 @@ export class StoreService {
           id: true,
           type: true,
           brandFullName: true,
+          brandDescription: true,
+          brandTags: true,
+          brandCountry: true,
+          brandState: true,
+          brandCity: true,
+          brandBusinessType: true,
+          socialInstagram: true,
+          socialFacebook: true,
+          socialTwitter: true,
+          socialWebsite: true,
+          cacNumber: true,
+          tin: true,
+          ceoNin: true,
+          ceoFirstName: true,
+          ceoLastName: true,
+          companyLocation: true,
+          industriNumber: true,
           firstName: true,
           lastName: true,
           username: true,
@@ -645,6 +662,23 @@ export class StoreService {
             data: {
               id: uuidv4(),
               name,
+              description: owner.brandDescription,
+              tags: owner.brandTags ?? [],
+              country: owner.brandCountry,
+              state: owner.brandState,
+              city: owner.brandCity,
+              businessType: owner.brandBusinessType,
+              socialInstagram: owner.socialInstagram,
+              socialFacebook: owner.socialFacebook,
+              socialTwitter: owner.socialTwitter,
+              socialWebsite: owner.socialWebsite,
+              cacNumber: owner.cacNumber,
+              tin: owner.tin,
+              ceoNin: owner.ceoNin,
+              ceoFirstName: owner.ceoFirstName,
+              ceoLastName: owner.ceoLastName,
+              companyLocation: owner.companyLocation,
+              industriNumber: owner.industriNumber,
               storeNameLastChangedAt: new Date(),
               currency: 'NGN',
               ownerId: owner.id,
@@ -1349,7 +1383,7 @@ export class StoreService {
     user: { brandFullName: string | null },
     brand?: { name: string } | null,
   ) {
-    return (user.brandFullName || brand?.name || '').trim();
+    return (brand?.name || user.brandFullName || '').trim();
   }
 
   private canonicalStoreSlug(user: { username: string }) {
@@ -6378,6 +6412,7 @@ export class StoreService {
           brandDescription: true,
           brandTags: true,
           socialInstagram: true,
+          socialFacebook: true,
           socialTwitter: true,
           socialWebsite: true,
         },
@@ -6392,6 +6427,7 @@ export class StoreService {
           tags: true,
           contactEmail: true,
           socialInstagram: true,
+          socialFacebook: true,
           socialTwitter: true,
           socialTiktok: true,
           socialWebsite: true,
@@ -6421,6 +6457,7 @@ export class StoreService {
     const description = (brand?.description || user.brandDescription || '').trim();
     const contactEmail = brand?.contactEmail || user.email || '';
     const instagram = brand?.socialInstagram || user.socialInstagram || '';
+    const facebook = brand?.socialFacebook || user.socialFacebook || '';
     const twitter = brand?.socialTwitter || user.socialTwitter || '';
     const website = brand?.socialWebsite || user.socialWebsite || '';
     const tiktok = brand?.socialTiktok || '';
@@ -6440,6 +6477,7 @@ export class StoreService {
         contactEmail,
         description,
         instagram,
+        facebook,
         twitter,
         tiktok,
         website,
@@ -8203,20 +8241,28 @@ export class StoreService {
    * required before store setup can be opened.
    */
   private computeBrandProfileCompleteness(brand: {
+    description?: string | null;
+    tags?: string[] | null;
+    country?: string | null;
+    state?: string | null;
     brandDescription?: string | null;
     brandTags?: string[] | null;
     brandCountry?: string | null;
     brandState?: string | null;
   }): { isComplete: boolean; missingFields: string[] } {
     const missingFields: string[] = [];
+    const description = brand.description ?? brand.brandDescription ?? null;
+    const tags = brand.tags ?? brand.brandTags ?? [];
+    const country = brand.country ?? brand.brandCountry ?? null;
+    const state = brand.state ?? brand.brandState ?? null;
 
-    if ((brand.brandDescription ?? '').trim().length < 20) {
+    if ((description ?? '').trim().length < 20) {
       missingFields.push('description');
     }
-    if (!brand.brandTags || brand.brandTags.length === 0) {
+    if (!tags || tags.length === 0) {
       missingFields.push('tags');
     }
-    if (!String(brand.brandCountry ?? '').trim() && !String(brand.brandState ?? '').trim()) {
+    if (!String(country ?? '').trim() && !String(state ?? '').trim()) {
       missingFields.push('location');
     }
 
@@ -8271,8 +8317,12 @@ export class StoreService {
         logo: true,
         banner: true,
           tags: true,
+          country: true,
+          state: true,
+          city: true,
           contactEmail: true,
           socialInstagram: true,
+          socialFacebook: true,
           socialTwitter: true,
           socialTiktok: true,
           socialWebsite: true,
@@ -8294,8 +8344,12 @@ export class StoreService {
             logo: true,
             banner: true,
             tags: true,
+            country: true,
+            state: true,
+            city: true,
             contactEmail: true,
             socialInstagram: true,
+            socialFacebook: true,
             socialTwitter: true,
             socialTiktok: true,
             socialWebsite: true,
@@ -8329,7 +8383,9 @@ export class StoreService {
         },
       }),
     ]);
-    const profileCompleteness = this.computeBrandProfileCompleteness(owner ?? {});
+    const profileCompleteness = this.computeBrandProfileCompleteness(
+      brand ?? owner ?? {},
+    );
     const { isComplete, missingFields } = this.computeStoreCompleteness(
       brand,
       paymentAccount,
@@ -8352,6 +8408,7 @@ export class StoreService {
         tags: brand.tags,
         contactEmail: brand.contactEmail,
         socialInstagram: brand.socialInstagram,
+        socialFacebook: brand.socialFacebook,
         socialTwitter: brand.socialTwitter,
         socialTiktok: brand.socialTiktok,
         socialWebsite: brand.socialWebsite,
@@ -8530,6 +8587,7 @@ export class StoreService {
     }
     if (dto.contactEmail !== undefined) updateData.contactEmail = dto.contactEmail;
     if (dto.socialInstagram !== undefined) updateData.socialInstagram = dto.socialInstagram;
+    if (dto.socialFacebook !== undefined) updateData.socialFacebook = dto.socialFacebook;
     if (dto.socialTwitter !== undefined) updateData.socialTwitter = dto.socialTwitter;
     if (dto.socialTiktok !== undefined) updateData.socialTiktok = dto.socialTiktok;
     if (dto.socialWebsite !== undefined) updateData.socialWebsite = dto.socialWebsite;
@@ -8538,9 +8596,35 @@ export class StoreService {
       return this.getStoreStatus(ownerId);
     }
 
-    await this.prisma.brand.update({
-      where: { id: brand.id },
-      data: updateData,
+    const legacyUserData: Prisma.UserUpdateInput = {
+      ...(dto.description !== undefined && { brandDescription: dto.description }),
+      ...(nextStoreTags !== undefined && { brandTags: nextStoreTags }),
+      ...(dto.socialInstagram !== undefined && {
+        socialInstagram: dto.socialInstagram,
+      }),
+      ...(dto.socialFacebook !== undefined && {
+        socialFacebook: dto.socialFacebook,
+      }),
+      ...(dto.socialTwitter !== undefined && {
+        socialTwitter: dto.socialTwitter,
+      }),
+      ...(dto.socialWebsite !== undefined && {
+        socialWebsite: dto.socialWebsite,
+      }),
+    };
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.brand.update({
+        where: { id: brand.id },
+        data: updateData,
+      });
+
+      if (Object.keys(legacyUserData).length > 0) {
+        await tx.user.update({
+          where: { id: ownerId },
+          data: legacyUserData,
+        });
+      }
     });
     if (nextStoreTags !== undefined) {
       const nextIndexedTags = this.getIndexedBrandTags(

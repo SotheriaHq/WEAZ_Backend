@@ -322,6 +322,142 @@ describe('AuthService', () => {
     expect(result.bannerImage).toBe('profile-banner.jpg');
   });
 
+  it('auth responses use Brand fields before legacy User brand fields', () => {
+    const result = toAuthUserResponse({
+      id: 'user-1',
+      username: 'brand-owner',
+      role: Role.User,
+      type: UserType.BRAND,
+      firstName: 'Ada',
+      lastName: 'Owner',
+      email: 'brand@example.com',
+      status: UserStatus.ACTIVE,
+      brand: {
+        id: 'brand-1',
+        name: 'Canonical Brand',
+        description: 'Canonical description',
+        country: 'Ghana',
+        state: 'Greater Accra',
+        city: 'Accra',
+        tags: ['canonical'],
+        businessType: 'Atelier',
+        companyLocation: 'Accra, Ghana',
+        socialInstagram: 'https://instagram.com/canonical',
+        socialFacebook: 'https://facebook.com/canonical',
+        socialTwitter: 'https://x.com/canonical',
+        socialWebsite: 'https://canonical.example',
+        cacNumber: 'CAC-CANON',
+        tin: 'TIN-CANON',
+        ceoNin: 'NIN-CANON',
+        ceoFirstName: 'Canon',
+        ceoLastName: 'Owner',
+        isStoreOpen: true,
+        verificationStatus: 'APPROVED',
+      },
+      adminPermissionGrants: [],
+      phoneNumber: null,
+      address: null,
+      brandFullName: 'Legacy Brand',
+      brandDescription: 'Legacy description',
+      brandCountry: 'Nigeria',
+      brandState: 'Lagos',
+      brandCity: 'Ikeja',
+      brandTags: ['legacy'],
+      brandBusinessType: 'Legacy Type',
+      socialInstagram: 'https://instagram.com/legacy',
+      socialFacebook: 'https://facebook.com/legacy',
+      socialTwitter: 'https://x.com/legacy',
+      socialWebsite: 'https://legacy.example',
+      cacNumber: 'CAC-LEGACY',
+      tin: 'TIN-LEGACY',
+      ceoNin: 'NIN-LEGACY',
+      ceoFirstName: 'Legacy',
+      ceoLastName: 'Owner',
+      companyLocation: 'Lagos, Nigeria',
+      profileImage: null,
+      profileImageId: null,
+      bannerImage: null,
+      bannerImageId: null,
+      isEmailVerified: true,
+      isActive: 'Active',
+      themePreference: 'system',
+      mustResetPassword: false,
+      authVersion: 0,
+      createdAt: new Date('2026-05-05T00:00:00.000Z'),
+      updatedAt: new Date('2026-05-05T00:00:00.000Z'),
+      userProfile: null,
+    } as any);
+
+    expect(result.brandFullName).toBe('Canonical Brand');
+    expect(result.brandDescription).toBe('Canonical description');
+    expect(result.brandCountry).toBe('Ghana');
+    expect(result.brandTags).toEqual(['canonical']);
+    expect(result.socialFacebook).toBe('https://facebook.com/canonical');
+    expect(result.cacNumber).toBe('CAC-CANON');
+    expect(result.storeId).toBe('brand-1');
+    expect(result.verificationStatus).toBe('APPROVED');
+    expect(result.isVerifiedBrand).toBe(true);
+  });
+
+  it('auth responses fall back to legacy User brand fields when Brand is missing or incomplete', () => {
+    const result = toAuthUserResponse({
+      id: 'user-1',
+      username: 'legacy-brand',
+      role: Role.User,
+      type: UserType.BRAND,
+      firstName: 'Ada',
+      lastName: 'Owner',
+      email: 'legacy@example.com',
+      status: UserStatus.ACTIVE,
+      brand: {
+        id: 'brand-1',
+        name: '',
+        description: null,
+        tags: [],
+        isStoreOpen: false,
+        verificationStatus: 'NOT_SUBMITTED',
+      },
+      adminPermissionGrants: [],
+      phoneNumber: null,
+      address: null,
+      brandFullName: 'Legacy Brand',
+      brandDescription: 'Legacy description',
+      brandCountry: 'Nigeria',
+      brandState: 'Lagos',
+      brandCity: 'Ikeja',
+      brandTags: ['legacy'],
+      brandBusinessType: 'Legacy Type',
+      socialInstagram: 'https://instagram.com/legacy',
+      socialFacebook: 'https://facebook.com/legacy',
+      socialTwitter: 'https://x.com/legacy',
+      socialWebsite: 'https://legacy.example',
+      cacNumber: 'CAC-LEGACY',
+      tin: 'TIN-LEGACY',
+      ceoNin: 'NIN-LEGACY',
+      ceoFirstName: 'Legacy',
+      ceoLastName: 'Owner',
+      companyLocation: 'Lagos, Nigeria',
+      profileImage: null,
+      profileImageId: null,
+      bannerImage: null,
+      bannerImageId: null,
+      isEmailVerified: true,
+      isActive: 'Active',
+      themePreference: 'system',
+      mustResetPassword: false,
+      authVersion: 0,
+      createdAt: new Date('2026-05-05T00:00:00.000Z'),
+      updatedAt: new Date('2026-05-05T00:00:00.000Z'),
+      userProfile: null,
+    } as any);
+
+    expect(result.brandFullName).toBe('Legacy Brand');
+    expect(result.brandDescription).toBe('Legacy description');
+    expect(result.brandTags).toEqual(['legacy']);
+    expect(result.socialWebsite).toBe('https://legacy.example');
+    expect(result.cacNumber).toBe('CAC-LEGACY');
+  });
+
   it('/auth/profile returns UserProfile fields when UserProfile exists', async () => {
     const profileFileCreatedAt = new Date('2026-05-05T01:00:00.000Z');
     const profileFileUpdatedAt = new Date('2026-05-05T02:00:00.000Z');
@@ -739,7 +875,12 @@ describe('AuthService', () => {
     expect(mockPrisma.user.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
-          brand: expect.any(Object),
+          brand: {
+            create: expect.objectContaining({
+              name: 'Ada Style',
+              industriNumber: 'IND-123',
+            }),
+          },
           userProfile: {
             create: expect.objectContaining({
               firstName: 'Ada',
@@ -855,6 +996,11 @@ describe('AuthService', () => {
     ['role', Role.SuperAdmin],
     ['type', UserType.BRAND],
     ['brandFullName', 'Hijacked Brand'],
+    ['socialInstagram', 'https://instagram.com/hijack'],
+    ['cacNumber', 'CAC-HIJACK'],
+    ['tin', 'TIN-HIJACK'],
+    ['ceoNin', 'NIN-HIJACK'],
+    ['industriNumber', 'IND-HIJACK'],
   ])('profile update rejects sensitive field %s', async (field, value) => {
     await expect(
       service.updateProfile('user-1', {

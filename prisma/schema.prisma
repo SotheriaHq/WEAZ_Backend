@@ -1801,14 +1801,28 @@ model Brand {
   logo            String?
   banner          String?
   tags            String[]                 @default([])
+  country         String?
+  state           String?
+  city            String?
+  businessType    String?
+  companyLocation String?
   contactEmail    String?
   responseTimeSla String                   @default("24h")
 
   // Social links
   socialInstagram String?
+  socialFacebook  String?
   socialTwitter   String?
   socialTiktok    String?
   socialWebsite   String?
+
+  // Business and verification profile fields
+  cacNumber      String? @unique
+  tin            String? @unique
+  ceoNin         String? @unique
+  ceoFirstName   String?
+  ceoLastName    String?
+  industriNumber String? @unique
 
   // Store state
   isStoreOpen Boolean @default(false)

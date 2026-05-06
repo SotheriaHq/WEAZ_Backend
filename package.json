@@ -31,6 +31,8 @@
     "prisma:seed": "ts-node prisma/seed.ts",
     "finance:settlement-backfill:audit": "ts-node -r tsconfig-paths/register scripts/audit-settlement-backfill.ts",
     "users:profile-backfill": "ts-node -r tsconfig-paths/register scripts/backfill-user-profiles.ts",
+    "brands:profile-backfill": "ts-node -r tsconfig-paths/register scripts/backfill-brand-profiles.ts",
+    "brands:profile-backfill:write": "ts-node -r tsconfig-paths/register scripts/backfill-brand-profiles.ts --write",
     "seed": "prisma db seed",
     "reset:all": "node scripts/reset-all-data.cjs"
   },

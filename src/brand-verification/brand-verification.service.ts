@@ -280,6 +280,7 @@ export class BrandVerificationService {
     const resolvedOwnerPhoneNumber =
       this.normalizePhoneNumber(dto.ownerPhoneNumber) ||
       this.normalizePhoneNumber(brand.owner.phoneNumber);
+    const companyLocation = `${dto.businessAddress.street}, ${dto.businessAddress.city}, ${dto.businessAddress.state}, ${dto.businessAddress.country}`;
 
     if (!resolvedOwnerPhoneNumber) {
       throw new BadRequestException('Owner phone number is required');
@@ -351,18 +352,30 @@ export class BrandVerificationService {
           verificationPhoto2Key: dto.idDocumentBackKey ?? dto.idDocumentFrontKey,
           verificationNinKey: dto.idDocumentFrontKey,
           verificationCacKey: dto.cacCertificateKey,
-          verificationAddress: `${dto.businessAddress.street}, ${dto.businessAddress.city}, ${dto.businessAddress.state}, ${dto.businessAddress.country}`,
+          verificationAddress: companyLocation,
+          cacNumber: dto.cacNumber,
+          ceoNin: dto.ownerNin,
+          ceoFirstName: dto.ownerLegalFirstName,
+          ceoLastName: dto.ownerLegalLastName,
+          companyLocation,
+          country: dto.businessAddress.country,
+          state: dto.businessAddress.state,
+          city: dto.businessAddress.city,
           verificationDraftData: null,
           verificationDraftUpdatedAt: null,
-          ...(resolvedOwnerPhoneNumber
-            ? {
-                owner: {
-                  update: {
-                    phoneNumber: resolvedOwnerPhoneNumber,
-                  },
-                },
-              }
-            : {}),
+          owner: {
+            update: {
+              phoneNumber: resolvedOwnerPhoneNumber,
+              cacNumber: dto.cacNumber,
+              ceoNin: dto.ownerNin,
+              ceoFirstName: dto.ownerLegalFirstName,
+              ceoLastName: dto.ownerLegalLastName,
+              companyLocation,
+              brandCountry: dto.businessAddress.country,
+              brandState: dto.businessAddress.state,
+              brandCity: dto.businessAddress.city,
+            },
+          },
         },
       });
     });
@@ -464,6 +477,49 @@ export class BrandVerificationService {
     const now = new Date();
     const patch: Record<string, unknown> = {};
     const resolvedOwnerPhoneNumber = this.normalizePhoneNumber(dto.ownerPhoneNumber);
+    const companyLocation = dto.businessAddress
+      ? `${dto.businessAddress.street}, ${dto.businessAddress.city}, ${dto.businessAddress.state}, ${dto.businessAddress.country}`
+      : null;
+    const brandIdentityData: Record<string, unknown> = {
+      ...(dto.cacNumber !== undefined ? { cacNumber: dto.cacNumber } : {}),
+      ...(dto.ownerNin !== undefined ? { ceoNin: dto.ownerNin } : {}),
+      ...(dto.ownerLegalFirstName !== undefined
+        ? { ceoFirstName: dto.ownerLegalFirstName }
+        : {}),
+      ...(dto.ownerLegalLastName !== undefined
+        ? { ceoLastName: dto.ownerLegalLastName }
+        : {}),
+      ...(companyLocation
+        ? {
+            companyLocation,
+            verificationAddress: companyLocation,
+            country: dto.businessAddress?.country,
+            state: dto.businessAddress?.state,
+            city: dto.businessAddress?.city,
+          }
+        : {}),
+    };
+    const legacyIdentityData: Record<string, unknown> = {
+      ...(resolvedOwnerPhoneNumber
+        ? { phoneNumber: resolvedOwnerPhoneNumber }
+        : {}),
+      ...(dto.cacNumber !== undefined ? { cacNumber: dto.cacNumber } : {}),
+      ...(dto.ownerNin !== undefined ? { ceoNin: dto.ownerNin } : {}),
+      ...(dto.ownerLegalFirstName !== undefined
+        ? { ceoFirstName: dto.ownerLegalFirstName }
+        : {}),
+      ...(dto.ownerLegalLastName !== undefined
+        ? { ceoLastName: dto.ownerLegalLastName }
+        : {}),
+      ...(companyLocation
+        ? {
+            companyLocation,
+            brandCountry: dto.businessAddress?.country,
+            brandState: dto.businessAddress?.state,
+            brandCity: dto.businessAddress?.city,
+          }
+        : {}),
+    };
 
     for (const [key, value] of Object.entries(dto)) {
       if (value !== undefined) {
@@ -491,12 +547,11 @@ export class BrandVerificationService {
           verificationInfoRequestedAt: null,
           verificationInfoRequestedItems: null,
           verificationInfoRequestMessage: null,
-          ...(resolvedOwnerPhoneNumber
+          ...brandIdentityData,
+          ...(Object.keys(legacyIdentityData).length > 0
             ? {
                 owner: {
-                  update: {
-                    phoneNumber: resolvedOwnerPhoneNumber,
-                  },
+                  update: legacyIdentityData,
                 },
               }
             : {}),

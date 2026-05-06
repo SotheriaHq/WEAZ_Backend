@@ -29,6 +29,11 @@ import { TagIndexService } from '../tags/tag-index.service';
 import { sanitizeTags } from 'src/common/utils/tag-validator';
 import { TAG_ENTITY_TYPE } from 'src/tags/tag-entity-type';
 import { getBrandVerificationTruth } from 'src/brand-verification/verification-truth.util';
+import {
+  canonicalBrandProfileSelect,
+  normalizeBrandProfileForBrandResponse,
+  resolveBrandTags,
+} from 'src/common/brand-profile-source.helper';
 
 export interface BrandMediaAsset {
   fileId: string;
@@ -125,6 +130,7 @@ export class BrandsService {
       socialTwitter: true,
       socialWebsite: true,
       companyLocation: true,
+      industriNumber: true,
       profileImage: true,
       profileImageFile: {
         select: {
@@ -150,6 +156,9 @@ export class BrandsService {
       },
       cacNumber: true,
       tin: true,
+      ceoNin: true,
+      ceoFirstName: true,
+      ceoLastName: true,
       isEmailVerified: true,
       status: true,
       deactivatedAt: true,
@@ -157,13 +166,7 @@ export class BrandsService {
       updatedAt: true,
       type: true,
       brand: {
-        select: {
-          id: true,
-          isStoreOpen: true,
-          verificationStatus: true,
-          avgRating: true,
-          totalReviews: true,
-        },
+        select: canonicalBrandProfileSelect,
       },
     } as const;
 
@@ -518,21 +521,7 @@ export class BrandsService {
       },
     });
 
-    const fullName =
-      brand.brandFullName ||
-      [brand.firstName, brand.lastName].filter(Boolean).join(' ').trim() ||
-      brand.username;
-
-    const country = brand.brandCountry || null;
-    const state = brand.brandState || null;
-    const city = brand.brandCity || null;
-
-    const computedLocation = [city, state, country]
-      .filter((part) => Boolean(part && part.trim().length > 0))
-      .join(', ');
-
-    const location =
-      computedLocation || brand.companyLocation || brand.address || null;
+    const canonicalProfile = normalizeBrandProfileForBrandResponse(brand);
 
     const logoAsset = brand.profileImageFile
       ? {
@@ -582,31 +571,31 @@ export class BrandsService {
 
     return {
       id: brand.id,
-      brandFullName: fullName,
-      description: brand.brandDescription ?? null,
-      country,
-      state,
-      city,
-      location,
+      brandFullName: canonicalProfile.brandFullName,
+      description: canonicalProfile.description,
+      country: canonicalProfile.country,
+      state: canonicalProfile.state,
+      city: canonicalProfile.city,
+      location: canonicalProfile.location,
       bannerImage,
       bannerImageMeta: bannerAsset,
       logoImage,
       logoImageMeta: logoAsset,
       socialLinks: {
-        instagram: brand.socialInstagram ?? null,
-        facebook: brand.socialFacebook ?? null,
-        twitter: brand.socialTwitter ?? null,
-        website: brand.socialWebsite ?? null,
+        instagram: canonicalProfile.socialLinks.instagram,
+        facebook: canonicalProfile.socialLinks.facebook,
+        twitter: canonicalProfile.socialLinks.twitter,
+        website: canonicalProfile.socialLinks.website,
       },
       contactInfo: {
         email: brand.email,
         phone: brand.phoneNumber ?? null,
-        businessType: brand.brandBusinessType?.trim() || 'Fashion Brand',
+        businessType: canonicalProfile.businessType || 'Fashion Brand',
       },
-      tags: brand.brandTags ?? [],
-      hashtags: brand.brandTags ?? [],
-      cacNumber: brand.cacNumber ?? null,
-      tin: brand.tin ?? null,
+      tags: canonicalProfile.tags,
+      hashtags: canonicalProfile.tags,
+      cacNumber: canonicalProfile.verificationFields.cacNumber,
+      tin: canonicalProfile.verificationFields.tin,
       verified: verificationTruth.isVerifiedBrand,
       verificationStatus: verificationTruth.verificationStatus,
       verificationBadgeVisible: verificationTruth.verificationBadgeVisible,
@@ -652,7 +641,7 @@ export class BrandsService {
       dto.brandState !== undefined ||
       dto.brandCity !== undefined;
 
-    const data: Prisma.UserUpdateInput = {
+    const userData: Prisma.UserUpdateInput = {
       ...(dto.brandFullName !== undefined && {
         brandFullName: trimOrNull(dto.brandFullName),
       }),
@@ -689,20 +678,123 @@ export class BrandsService {
         : {}),
     };
 
-    const updatedUser = await this.prisma.user.update({
-      where: { id: brandId },
-      data,
-      select: profileUserSelect,
+    const brandData: Prisma.BrandUpdateInput = {
+      ...(dto.brandFullName !== undefined && {
+        name: trimOrNull(dto.brandFullName) ?? brand.brand?.name ?? brand.username,
+      }),
+      ...(dto.brandDescription !== undefined && {
+        description: trimOrNull(dto.brandDescription),
+      }),
+      ...(dto.brandCountry !== undefined && { country: brandCountry }),
+      ...(dto.brandState !== undefined && { state: brandState }),
+      ...(dto.brandCity !== undefined && { city: brandCity }),
+      ...(sanitizedTags !== undefined && { tags: sanitizedTags }),
+      ...(dto.socialInstagram !== undefined && {
+        socialInstagram: trimOrNull(dto.socialInstagram),
+      }),
+      ...(dto.socialFacebook !== undefined && {
+        socialFacebook: trimOrNull(dto.socialFacebook),
+      }),
+      ...(dto.socialTwitter !== undefined && {
+        socialTwitter: trimOrNull(dto.socialTwitter),
+      }),
+      ...(dto.socialWebsite !== undefined && {
+        socialWebsite: trimOrNull(dto.socialWebsite),
+      }),
+      ...(dto.businessType !== undefined && {
+        businessType: trimOrNull(dto.businessType),
+      }),
+      ...(locationWasProvided
+        ? {
+          companyLocation:
+            companyLocation.length > 0 ? companyLocation : null,
+        }
+        : {}),
+    };
+    const brandCreateData: Prisma.BrandUncheckedCreateInput = {
+      id: uuidv4(),
+      ownerId: brandId,
+      name:
+        trimOrNull(dto.brandFullName) ??
+        brand.brand?.name ??
+        brand.brandFullName ??
+        brand.username,
+      storeNameLastChangedAt: new Date(),
+      currency: 'NGN',
+      description:
+        dto.brandDescription !== undefined
+          ? trimOrNull(dto.brandDescription)
+          : brand.brandDescription,
+      country:
+        dto.brandCountry !== undefined ? brandCountry : brand.brandCountry,
+      state: dto.brandState !== undefined ? brandState : brand.brandState,
+      city: dto.brandCity !== undefined ? brandCity : brand.brandCity,
+      tags:
+        sanitizedTags !== undefined ? sanitizedTags : brand.brandTags ?? [],
+      businessType:
+        dto.businessType !== undefined
+          ? trimOrNull(dto.businessType)
+          : brand.brandBusinessType,
+      socialInstagram:
+        dto.socialInstagram !== undefined
+          ? trimOrNull(dto.socialInstagram)
+          : brand.socialInstagram,
+      socialFacebook:
+        dto.socialFacebook !== undefined
+          ? trimOrNull(dto.socialFacebook)
+          : brand.socialFacebook,
+      socialTwitter:
+        dto.socialTwitter !== undefined
+          ? trimOrNull(dto.socialTwitter)
+          : brand.socialTwitter,
+      socialWebsite:
+        dto.socialWebsite !== undefined
+          ? trimOrNull(dto.socialWebsite)
+          : brand.socialWebsite,
+      companyLocation: locationWasProvided
+        ? companyLocation.length > 0
+          ? companyLocation
+          : null
+        : brand.companyLocation,
+      cacNumber: brand.cacNumber,
+      tin: brand.tin,
+      ceoNin: brand.ceoNin,
+      ceoFirstName: brand.ceoFirstName,
+      ceoLastName: brand.ceoLastName,
+      industriNumber: brand.industriNumber,
+    };
+
+    const previousTags = resolveBrandTags(brand);
+    const updatedUser = await this.prisma.$transaction(async (tx) => {
+      await tx.brand.upsert({
+        where: { ownerId: brandId },
+        create: brandCreateData,
+        update: brandData,
+      });
+
+      await tx.user.update({
+        where: { id: brandId },
+        data: userData,
+      });
+
+      return tx.user.findUnique({
+        where: { id: brandId },
+        select: profileUserSelect,
+      });
     });
 
+    if (!updatedUser) {
+      throw new NotFoundException('Brand not found');
+    }
+
     if (this.systemTags && sanitizedTags !== undefined) {
-      await this.systemTags.syncTags(brand.brandTags ?? [], sanitizedTags);
+      await this.systemTags.syncTags(previousTags, sanitizedTags);
     }
     if (this.tagIndex && sanitizedTags !== undefined) {
       await this.tagIndex.syncEntityTags(
         TAG_ENTITY_TYPE.USER_BRAND,
         brandId,
-        brand.brandTags ?? [],
+        previousTags,
         sanitizedTags,
         { maxCount: 10 },
       );

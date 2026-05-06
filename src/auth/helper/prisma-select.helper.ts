@@ -15,6 +15,10 @@ import {
   resolveRequiredProfileField,
   type SelectedProfileFile,
 } from 'src/common/user-profile-source.helper';
+import {
+  canonicalBrandProfileSelect,
+  normalizeBrandProfileForAuthResponse,
+} from 'src/common/brand-profile-source.helper';
 
 export const authUserSelect = Prisma.validator<Prisma.UserSelect>()({
   id: true,
@@ -26,12 +30,7 @@ export const authUserSelect = Prisma.validator<Prisma.UserSelect>()({
   email: true,
   status: true,
   brand: {
-    select: {
-      id: true,
-      name: true,
-      isStoreOpen: true,
-      verificationStatus: true,
-    },
+    select: canonicalBrandProfileSelect,
   },
   adminPermissionGrants: {
     select: { permissionCode: true },
@@ -55,6 +54,7 @@ export const authUserSelect = Prisma.validator<Prisma.UserSelect>()({
   ceoFirstName: true,
   ceoLastName: true,
   companyLocation: true,
+  industriNumber: true,
   profileImage: true,
   profileImageId: true,
   bannerImage: true,
@@ -104,6 +104,7 @@ export const toAuthUserResponse = (
 ): AuthUserResponseDto => {
   const profileImage = resolveProfileImage(user);
   const bannerImage = resolveBannerImage(user);
+  const brandProfile = normalizeBrandProfileForAuthResponse(user);
   const verificationTruth = getBrandVerificationTruth({
     verificationStatus: user.brand?.verificationStatus,
     isStoreOpen: user.brand?.isStoreOpen,
@@ -120,23 +121,23 @@ export const toAuthUserResponse = (
     type: user.type,
     phoneNumber: resolveNullableProfileField(user, 'phoneNumber'),
     address: resolveNullableProfileField(user, 'address'),
-    brandFullName: user.brandFullName ?? null,
-    brandDescription: user.brandDescription ?? null,
-    brandCountry: user.brandCountry ?? null,
-    brandState: user.brandState ?? null,
-    brandCity: user.brandCity ?? null,
-    brandTags: user.brandTags ?? [],
-    brandBusinessType: user.brandBusinessType ?? null,
-    socialInstagram: user.socialInstagram ?? null,
-    socialFacebook: user.socialFacebook ?? null,
-    socialTwitter: user.socialTwitter ?? null,
-    socialWebsite: user.socialWebsite ?? null,
-    cacNumber: user.cacNumber ?? null,
-    tin: user.tin ?? null,
-    ceoNin: user.ceoNin ?? null,
-    ceoFirstName: user.ceoFirstName ?? null,
-    ceoLastName: user.ceoLastName ?? null,
-    companyLocation: user.companyLocation ?? null,
+    brandFullName: brandProfile.brandFullName,
+    brandDescription: brandProfile.brandDescription,
+    brandCountry: brandProfile.brandCountry,
+    brandState: brandProfile.brandState,
+    brandCity: brandProfile.brandCity,
+    brandTags: brandProfile.brandTags,
+    brandBusinessType: brandProfile.brandBusinessType,
+    socialInstagram: brandProfile.socialInstagram,
+    socialFacebook: brandProfile.socialFacebook,
+    socialTwitter: brandProfile.socialTwitter,
+    socialWebsite: brandProfile.socialWebsite,
+    cacNumber: brandProfile.cacNumber,
+    tin: brandProfile.tin,
+    ceoNin: brandProfile.ceoNin,
+    ceoFirstName: brandProfile.ceoFirstName,
+    ceoLastName: brandProfile.ceoLastName,
+    companyLocation: brandProfile.companyLocation,
     profileImage: profileImage.url,
     profileImageId: profileImage.fileId,
     profileImageFile: mapFileUploadToDto(profileImage.file),

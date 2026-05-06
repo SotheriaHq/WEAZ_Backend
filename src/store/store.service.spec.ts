@@ -245,7 +245,7 @@ describe('StoreService', () => {
 
     expect(status.isEmailVerified).toBe(true);
     expect(status.isProfileComplete).toBe(false);
-    expect(status.profileMissingFields).toEqual(['description', 'tags', 'location']);
+    expect(status.profileMissingFields).toEqual(['location']);
     expect(status.isSetupComplete).toBe(false);
   });
 });
