@@ -1,6 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { UnauthorizedException } from '@nestjs/common';
-import { UserStatus } from '@prisma/client';
+import { Role, UserStatus, UserType } from '@prisma/client';
 
 import { AuthService } from './auth.service';
 import { PrismaService } from 'src/prisma/prisma.service';
@@ -11,6 +11,7 @@ import { EmailVerificationHelperService } from './helper/email-verification-help
 import { NotificationsService } from 'src/notifications/notifications.service';
 import { EmailService } from 'src/email/email.service';
 import { TrustedDeviceService } from './helper/trusted-device.service';
+import { toAuthUserResponse } from './helper/prisma-select.helper';
 
 describe('AuthService', () => {
   let service: AuthService;
@@ -138,5 +139,101 @@ describe('AuthService', () => {
       }),
     );
     expect(result).not.toHaveProperty('password');
+  });
+
+  it('auth responses include themePreference without resolvedTheme', () => {
+    const result = toAuthUserResponse({
+      id: 'user-1',
+      username: 'alex',
+      role: Role.User,
+      type: UserType.REGULAR,
+      firstName: 'Alex',
+      lastName: 'Doe',
+      email: 'alex@example.com',
+      status: UserStatus.ACTIVE,
+      brand: null,
+      adminPermissionGrants: [],
+      phoneNumber: null,
+      address: null,
+      brandFullName: null,
+      brandDescription: null,
+      brandCountry: null,
+      brandState: null,
+      brandCity: null,
+      brandTags: [],
+      brandBusinessType: null,
+      socialInstagram: null,
+      socialFacebook: null,
+      socialTwitter: null,
+      socialWebsite: null,
+      cacNumber: null,
+      tin: null,
+      ceoNin: null,
+      ceoFirstName: null,
+      ceoLastName: null,
+      companyLocation: null,
+      profileImage: null,
+      profileImageId: null,
+      bannerImage: null,
+      bannerImageId: null,
+      isEmailVerified: true,
+      isActive: 'active',
+      themePreference: 'dark',
+      mustResetPassword: false,
+      authVersion: 0,
+      createdAt: new Date('2026-05-05T00:00:00.000Z'),
+      updatedAt: new Date('2026-05-05T00:00:00.000Z'),
+    } as any);
+
+    expect(result.themePreference).toBe('dark');
+    expect(result).not.toHaveProperty('resolvedTheme');
+  });
+
+  it('auth responses normalize legacy themePreference values to system', () => {
+    const result = toAuthUserResponse({
+      id: 'user-1',
+      username: 'alex',
+      role: Role.User,
+      type: UserType.REGULAR,
+      firstName: 'Alex',
+      lastName: 'Doe',
+      email: 'alex@example.com',
+      status: UserStatus.ACTIVE,
+      brand: null,
+      adminPermissionGrants: [],
+      phoneNumber: null,
+      address: null,
+      brandFullName: null,
+      brandDescription: null,
+      brandCountry: null,
+      brandState: null,
+      brandCity: null,
+      brandTags: [],
+      brandBusinessType: null,
+      socialInstagram: null,
+      socialFacebook: null,
+      socialTwitter: null,
+      socialWebsite: null,
+      cacNumber: null,
+      tin: null,
+      ceoNin: null,
+      ceoFirstName: null,
+      ceoLastName: null,
+      companyLocation: null,
+      profileImage: null,
+      profileImageId: null,
+      bannerImage: null,
+      bannerImageId: null,
+      isEmailVerified: true,
+      isActive: 'active',
+      themePreference: 'auto',
+      mustResetPassword: false,
+      authVersion: 0,
+      createdAt: new Date('2026-05-05T00:00:00.000Z'),
+      updatedAt: new Date('2026-05-05T00:00:00.000Z'),
+    } as any);
+
+    expect(result.themePreference).toBe('system');
+    expect(result).not.toHaveProperty('resolvedTheme');
   });
 });
