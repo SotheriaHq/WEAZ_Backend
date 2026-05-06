@@ -116,6 +116,7 @@ model User {
   decidedSuggestions       CollectionCategorySuggestion[] @relation("DecidedCategorySuggestions")
   // Brand Relation
   brand                    Brand?                         @relation("BrandOwner")
+  brandMemberships         BrandMember[]
 
   // Orders as buyer
   ordersAsBuyer               Order[]                      @relation("OrderBuyer")
@@ -324,6 +325,22 @@ enum Role {
 enum UserType {
   BRAND
   REGULAR
+}
+
+enum BrandMemberRole {
+  OWNER
+  MANAGER
+  CATALOG_MANAGER
+  ORDER_MANAGER
+  SUPPORT_AGENT
+  VIEWER
+}
+
+enum BrandMemberStatus {
+  INVITED
+  ACTIVE
+  SUSPENDED
+  REMOVED
 }
 
 enum ProfileVisibility {
@@ -1889,9 +1906,49 @@ model Brand {
   verificationAttempts      BrandVerificationAttempt[]
   verificationNotes         BrandVerificationNote[]
   reviews                   ProductReview[]            @relation("BrandProductReviews")
+  members                   BrandMember[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+model BrandMember {
+  id      String @id @default(uuid()) @db.Uuid
+  brandId String @db.Uuid
+  userId  String @db.Uuid
+
+  brand Brand @relation(fields: [brandId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  role   BrandMemberRole
+  status BrandMemberStatus @default(ACTIVE)
+
+  invitedById String?   @db.Uuid
+  joinedAt    DateTime?
+
+  permissionGrants BrandPermissionGrant[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([brandId, userId])
+  @@index([userId])
+  @@index([brandId])
+  @@index([status])
+  @@index([role])
+}
+
+model BrandPermissionGrant {
+  id             String @id @default(uuid()) @db.Uuid
+  brandMemberId  String @db.Uuid
+  permissionCode String
+
+  brandMember BrandMember @relation(fields: [brandMemberId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([brandMemberId, permissionCode])
+  @@index([brandMemberId])
 }
 
 model BrandVerificationAttempt {

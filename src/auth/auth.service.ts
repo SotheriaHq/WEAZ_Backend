@@ -17,6 +17,8 @@ import {
   UserStatus,
   Prisma,
   EmailPriority,
+  BrandMemberRole,
+  BrandMemberStatus,
 } from '@prisma/client';
 import {
   authUserSelect,
@@ -410,45 +412,66 @@ export class AuthService {
       const dbFirstName = signupDto.firstName ?? '';
       const dbLastName = signupDto.lastName ?? '';
 
-      const user = await this.prisma.user
-        .create({
-          data: {
-            id: uuidv4(),
-            username,
-            // Never trust role from client-controlled signup payload.
-            role: Role.User,
-            firstName: dbFirstName,
-            lastName: dbLastName,
-            profileImage: signupDto.profileImage,
-            email: signupDto.email,
-            password: hashedPassword,
-            brandFullName: signupDto.brandFullName,
-            type: signupDto.type ?? UserType.REGULAR,
-            industriNumber,
-            emailVerificationCode: verificationToken,
-            isEmailVerified: false,
-            userProfile: {
-              create: {
-                firstName: dbFirstName,
-                lastName: dbLastName,
-                profileImage: signupDto.profileImage,
-              },
-            },
-            ...(signupDto.type === UserType.BRAND
-              ? {
-                brand: {
-                  create: {
-                    id: uuidv4(),
-                    name: signupDto.brandFullName!,
-                    industriNumber,
-                    storeNameLastChangedAt: new Date(),
-                    currency: 'NGN',
-                  },
+      const createdAt = new Date();
+      const brandId =
+        signupDto.type === UserType.BRAND ? uuidv4() : null;
+
+      const user = await this.prisma
+        .$transaction(async (tx) => {
+          const createdUser = await tx.user.create({
+            data: {
+              id: uuidv4(),
+              username,
+              // Never trust role from client-controlled signup payload.
+              role: Role.User,
+              firstName: dbFirstName,
+              lastName: dbLastName,
+              profileImage: signupDto.profileImage,
+              email: signupDto.email,
+              password: hashedPassword,
+              brandFullName: signupDto.brandFullName,
+              type: signupDto.type ?? UserType.REGULAR,
+              industriNumber,
+              emailVerificationCode: verificationToken,
+              isEmailVerified: false,
+              userProfile: {
+                create: {
+                  firstName: dbFirstName,
+                  lastName: dbLastName,
+                  profileImage: signupDto.profileImage,
                 },
-              }
-              : {}),
-          },
-          select: authUserSelect,
+              },
+              ...(signupDto.type === UserType.BRAND && brandId
+                ? {
+                  brand: {
+                    create: {
+                      id: brandId,
+                      name: signupDto.brandFullName!,
+                      industriNumber,
+                      storeNameLastChangedAt: createdAt,
+                      currency: 'NGN',
+                    },
+                  },
+                }
+                : {}),
+            },
+            select: authUserSelect,
+          });
+
+          if (signupDto.type === UserType.BRAND && brandId) {
+            await tx.brandMember.create({
+              data: {
+                id: uuidv4(),
+                brandId,
+                userId: createdUser.id,
+                role: BrandMemberRole.OWNER,
+                status: BrandMemberStatus.ACTIVE,
+                joinedAt: createdAt,
+              },
+            });
+          }
+
+          return createdUser;
         })
         .catch((dbError) => {
           this.logger.error('Database error creating user:', dbError);

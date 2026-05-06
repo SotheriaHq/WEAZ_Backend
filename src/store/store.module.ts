@@ -11,11 +11,12 @@ import { TagsModule } from 'src/tags/tags.module';
 import { QueueModule } from 'src/queue/queue.module';
 import { CategoriesModule } from 'src/categories/categories.module';
 import { FinanceModule } from 'src/finance/finance.module';
+import { BrandAccessService } from 'src/brands/brand-access.service';
 
 @Module({
   imports: [PrismaModule, AuthModule, UploadModule, NotificationsModule, TagsModule, QueueModule, CategoriesModule, FinanceModule],
   controllers: [StoreController],
-  providers: [StoreService, ProductViewCounterService, IdempotencyInterceptor],
+  providers: [StoreService, ProductViewCounterService, IdempotencyInterceptor, BrandAccessService],
   exports: [StoreService],
 })
 export class StoreModule {}

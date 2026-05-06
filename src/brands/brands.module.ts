@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { BrandsService } from './brands.service';
 import { BrandsController } from './brands.controller';
+import { BrandAccessService } from './brand-access.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { CollectionsModule } from '../collections/collections.module';
 import { UploadModule } from '../upload/upload.module';
@@ -16,8 +17,8 @@ import { BrandVerificationModule } from '../brand-verification/brand-verificatio
     TagsModule,
     BrandVerificationModule,
   ],
-  providers: [BrandsService, PrismaService],
+  providers: [BrandsService, BrandAccessService, PrismaService],
   controllers: [BrandsController],
-  exports: [BrandsService],
+  exports: [BrandsService, BrandAccessService],
 })
 export class BrandsModule {}

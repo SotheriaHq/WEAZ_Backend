@@ -567,7 +567,7 @@ export class StoreController {
     return this.storeService.closeStore(req.user.id);
   }
 
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseGuards(JwtAuthGuard)
   @Patch('store/profile')
   async updateStoreProfile(
     @Body(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))

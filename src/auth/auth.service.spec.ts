@@ -61,6 +61,9 @@ describe('AuthService', () => {
     userProfile: {
       upsert: jest.fn(),
     },
+    brandMember: {
+      create: jest.fn(),
+    },
     $transaction: jest.fn((callback) => callback(mockPrisma)),
   };
 
@@ -887,6 +890,17 @@ describe('AuthService', () => {
               lastName: 'Okafor',
             }),
           },
+        }),
+      }),
+    );
+    expect(mockPrisma.brandMember.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          brandId: expect.any(String),
+          userId: 'user-1',
+          role: 'OWNER',
+          status: 'ACTIVE',
+          joinedAt: expect.any(Date),
         }),
       }),
     );

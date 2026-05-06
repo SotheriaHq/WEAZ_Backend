@@ -615,6 +615,7 @@ export class BrandsService {
     dto: UpdateBrandProfileDto,
   ): Promise<AuthUserResponseDto> {
     const brand = await this.getBrandOrThrow(brandId);
+    const ownerId = brand.id;
 
     const trimOrNull = (value: string | undefined): string | null => {
       if (typeof value !== 'string') {
@@ -713,7 +714,7 @@ export class BrandsService {
     };
     const brandCreateData: Prisma.BrandUncheckedCreateInput = {
       id: uuidv4(),
-      ownerId: brandId,
+      ownerId,
       name:
         trimOrNull(dto.brandFullName) ??
         brand.brand?.name ??
@@ -767,18 +768,18 @@ export class BrandsService {
     const previousTags = resolveBrandTags(brand);
     const updatedUser = await this.prisma.$transaction(async (tx) => {
       await tx.brand.upsert({
-        where: { ownerId: brandId },
+        where: { ownerId },
         create: brandCreateData,
         update: brandData,
       });
 
       await tx.user.update({
-        where: { id: brandId },
+        where: { id: ownerId },
         data: userData,
       });
 
       return tx.user.findUnique({
-        where: { id: brandId },
+        where: { id: ownerId },
         select: profileUserSelect,
       });
     });
@@ -793,7 +794,7 @@ export class BrandsService {
     if (this.tagIndex && sanitizedTags !== undefined) {
       await this.tagIndex.syncEntityTags(
         TAG_ENTITY_TYPE.USER_BRAND,
-        brandId,
+        ownerId,
         previousTags,
         sanitizedTags,
         { maxCount: 10 },

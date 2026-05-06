@@ -274,8 +274,9 @@ export class BrandVerificationService {
 
   async submit(ownerId: string, dto: SubmitBrandVerificationDto) {
     const brand = await this.getBrandByOwnerOrThrow(ownerId);
+    const ownerUserId = brand.ownerId;
     this.assertCanSubmit(brand);
-    await this.validateVerificationDocuments(ownerId, dto);
+    await this.validateVerificationDocuments(ownerUserId, dto);
     await this.ensureNinNotApprovedElsewhere(dto.ownerNin, brand.id);
     const resolvedOwnerPhoneNumber =
       this.normalizePhoneNumber(dto.ownerPhoneNumber) ||
@@ -289,7 +290,7 @@ export class BrandVerificationService {
     const attemptNumber = (brand.verificationAttemptNumber ?? 0) + 1;
     const now = new Date();
     const rejectionReasons: RejectionReasonRecord[] = [];
-    const evidenceManifest = await this.buildEvidenceManifest(ownerId, [
+    const evidenceManifest = await this.buildEvidenceManifest(ownerUserId, [
       dto.ownerPhotoKey,
       dto.idDocumentFrontKey,
       dto.idDocumentBackKey,
@@ -380,7 +381,7 @@ export class BrandVerificationService {
       });
     });
 
-    await this.notifications.create(ownerId, NotificationType.VERIFICATION_SUBMITTED, {
+    await this.notifications.create(ownerUserId, NotificationType.VERIFICATION_SUBMITTED, {
       payload: {
         brandId: brand.id,
         attemptNumber,
@@ -468,7 +469,7 @@ export class BrandVerificationService {
     return { verificationStatus: BrandVerificationStatus.CANCELLED, cancelledAt: now.toISOString() };
   }
 
-  async resubmitInfo(ownerId: string, dto: ResubmitVerificationInfoDto) {
+  async resubmitInfo(ownerId: string, dto: ResubmitVerificationInfoDto, actorId?: string) {
     const brand = await this.getBrandByOwnerOrThrow(ownerId);
     if (brand.verificationStatus !== BrandVerificationStatus.ADDITIONAL_INFO_REQUESTED) {
       throw new BadRequestException('Verification is not awaiting additional information');
@@ -561,7 +562,7 @@ export class BrandVerificationService {
 
     if (brand.verificationReviewedById) {
       await this.notifications.create(brand.verificationReviewedById, NotificationType.VERIFICATION_INFO_RESUBMITTED, {
-        actorId: ownerId,
+        actorId: actorId ?? brand.ownerId,
         payload: {
           brandId: brand.id,
           brandName: brand.name,
@@ -1103,8 +1104,10 @@ export class BrandVerificationService {
   }
 
   private async getBrandByOwnerOrThrow(ownerId: string) {
-    const brand = await this.prisma.brand.findUnique({
-      where: { ownerId },
+    const brand = await this.prisma.brand.findFirst({
+      where: {
+        OR: [{ ownerId }, { id: ownerId }],
+      },
       include: {
         owner: {
           select: {

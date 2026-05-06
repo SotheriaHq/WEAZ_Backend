@@ -10,6 +10,7 @@ import { BrandVerificationService } from './brand-verification.service';
 describe('BrandVerificationService', () => {
   const prisma: any = {
     brand: {
+      findFirst: jest.fn(),
       findUnique: jest.fn(),
       update: jest.fn(),
     },
@@ -42,7 +43,7 @@ describe('BrandVerificationService', () => {
   });
 
   it('writes verification identity fields to Brand and dual-writes legacy User fields', async () => {
-    prisma.brand.findUnique.mockResolvedValue({
+    prisma.brand.findFirst.mockResolvedValue({
       id: 'brand-1',
       name: 'Ada Style',
       ownerId: 'owner-1',

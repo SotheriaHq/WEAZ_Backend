@@ -74,6 +74,7 @@ import {
   describePaystackSecretEnvKeys,
   resolvePaystackSecret,
 } from 'src/common/utils/paystack-secret';
+import { BrandAccessService } from 'src/brands/brand-access.service';
 
 type SupportedPaymentBank = {
   id: number;
@@ -133,6 +134,7 @@ export class StoreService {
     private readonly notificationsQueue?: NotificationsQueueService,
     private readonly standardOrderEscrowService?: StandardOrderEscrowService,
     private readonly standardOrderFinanceSyncService?: StandardOrderFinanceSyncService,
+    private readonly brandAccessService?: BrandAccessService,
   ) {}
 
   private readonly maxProductsPerCollection = Math.max(
@@ -8306,6 +8308,41 @@ export class StoreService {
     );
   }
 
+  private async resolveStoreProfileMutationBrand(actorUserId: string) {
+    let brand = await this.prisma.brand.findUnique({
+      where: { ownerId: actorUserId },
+      select: { id: true, ownerId: true, tags: true, isStoreOpen: true },
+    });
+
+    if (brand) {
+      return brand;
+    }
+
+    const accessibleBrandIds =
+      (await this.brandAccessService?.getAccessibleBrandIds(actorUserId)) ?? [];
+
+    if (accessibleBrandIds.length === 0) {
+      throw new ForbiddenException('Not authorized for this brand');
+    }
+
+    if (accessibleBrandIds.length > 1) {
+      throw new BadRequestException(
+        'Multiple accessible brands found. Use a brand-scoped store profile endpoint.',
+      );
+    }
+
+    brand = await this.prisma.brand.findUnique({
+      where: { id: accessibleBrandIds[0] },
+      select: { id: true, ownerId: true, tags: true, isStoreOpen: true },
+    });
+
+    if (!brand) {
+      throw new NotFoundException('Brand not found');
+    }
+
+    return brand;
+  }
+
   async getStoreStatus(ownerId: string) {
     let brand = await this.prisma.brand.findUnique({
       where: { ownerId },
@@ -8546,26 +8583,9 @@ export class StoreService {
   }
 
   async updateStoreProfile(ownerId: string, dto: UpdateStoreProfileDto) {
+    const brand = await this.resolveStoreProfileMutationBrand(ownerId);
+    const ownerUserId = brand.ownerId;
     await this.assertEmailVerifiedForStoreSetup(ownerId, 'continue');
-
-    let brand = await this.prisma.brand.findUnique({
-      where: { ownerId },
-      select: { id: true, tags: true, isStoreOpen: true },
-    });
-
-    if (!brand) {
-      const resolved = await this.resolveBrandByIdOrOwner(ownerId);
-      if (resolved) {
-        brand = await this.prisma.brand.findUnique({
-          where: { id: resolved.id },
-          select: { id: true, tags: true, isStoreOpen: true },
-        });
-      }
-    }
-
-    if (!brand) {
-      throw new NotFoundException('Brand not found');
-    }
 
     const previousStoreTags = Array.isArray(brand.tags) ? brand.tags : [];
     const previousIndexedTags = this.getIndexedBrandTags(
@@ -8593,7 +8613,7 @@ export class StoreService {
     if (dto.socialWebsite !== undefined) updateData.socialWebsite = dto.socialWebsite;
 
     if (Object.keys(updateData).length === 0) {
-      return this.getStoreStatus(ownerId);
+      return this.getStoreStatus(ownerUserId);
     }
 
     const legacyUserData: Prisma.UserUpdateInput = {
@@ -8621,7 +8641,7 @@ export class StoreService {
 
       if (Object.keys(legacyUserData).length > 0) {
         await tx.user.update({
-          where: { id: ownerId },
+          where: { id: ownerUserId },
           data: legacyUserData,
         });
       }
@@ -8646,7 +8666,7 @@ export class StoreService {
       }
     }
 
-    return this.getStoreStatus(ownerId);
+    return this.getStoreStatus(ownerUserId);
   }
 
   async getStorePolicies(ownerId: string) {

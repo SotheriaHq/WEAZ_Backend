@@ -27,6 +27,7 @@ import { UserTypeGuard } from '../auth/guard/user-type.guard';
 import { UserType, PatchStatus } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/guard/jwt-auth.guard';
 import { BrandVerificationService } from '../brand-verification/brand-verification.service';
+import { BrandAccessService } from './brand-access.service';
 import {
   FinalizeVerificationUploadDto,
   PresignVerificationUploadDto,
@@ -44,6 +45,7 @@ export class BrandsController {
     private readonly brandsService: BrandsService,
     private readonly collectionsService: CollectionsService,
     private readonly brandVerificationService: BrandVerificationService,
+    private readonly brandAccessService: BrandAccessService,
   ) {}
 
   // ... existing methods ...
@@ -152,9 +154,7 @@ export class BrandsController {
     if (!id) {
       throw new BadRequestException('Brand id is required');
     }
-    if (!req.user || req.user.id !== id) {
-      throw new BadRequestException('You can only update your own profile');
-    }
+    await this.brandAccessService.assertBrandAccess(req.user.id, id);
     return this.brandsService.updateBrandProfile(id, dto);
   }
 
@@ -431,16 +431,14 @@ export class BrandsController {
     return this.brandVerificationService.signLetter(brandId, dto, req);
   }
 
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseGuards(JwtAuthGuard)
   @Post('brands/:id/verification')
   async submitVerification(
     @Param('id') brandId: string,
     @Body(ValidationPipe) dto: SubmitBrandVerificationDto,
     @Req() req: any,
   ) {
-    if (req.user.id !== brandId) {
-      throw new BadRequestException('Not authorized for this brand');
-    }
+    await this.brandAccessService.assertBrandAccess(req.user.id, brandId);
     return this.brandVerificationService.submit(brandId, dto);
   }
 
@@ -481,17 +479,15 @@ export class BrandsController {
     return this.brandVerificationService.cancel(brandId);
   }
 
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseGuards(JwtAuthGuard)
   @Post('brands/:id/verification/resubmit-info')
   async resubmitVerificationInfo(
     @Param('id') brandId: string,
     @Body(ValidationPipe) dto: ResubmitVerificationInfoDto,
     @Req() req: any,
   ) {
-    if (req.user.id !== brandId) {
-      throw new BadRequestException('Not authorized for this brand');
-    }
-    return this.brandVerificationService.resubmitInfo(brandId, dto);
+    await this.brandAccessService.assertBrandAccess(req.user.id, brandId);
+    return this.brandVerificationService.resubmitInfo(brandId, dto, req.user.id);
   }
 
   @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
