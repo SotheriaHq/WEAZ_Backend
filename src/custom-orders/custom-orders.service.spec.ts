@@ -13,6 +13,7 @@ import { PrismaService } from 'src/prisma/prisma.service';
 import { CustomOrderPricingService } from 'src/custom-order-pricing/custom-order-pricing.service';
 import { CustomOrderRefundService } from './custom-order-refund.service';
 import { CustomOrderSideEffectsService } from './custom-order-side-effects.service';
+import { CustomOrderAccessService } from './custom-order-access.service';
 import { CustomOrdersService } from './custom-orders.service';
 
 describe('CustomOrdersService', () => {
@@ -22,6 +23,7 @@ describe('CustomOrdersService', () => {
   let refundService: any;
   let pricingService: any;
   let ledgerService: any;
+  let customOrderAccessService: any;
 
   const buildOrder = (overrides: Record<string, unknown> = {}) => ({
     id: 'co_1',
@@ -119,6 +121,12 @@ describe('CustomOrdersService', () => {
     ledgerService = {
       postCustomOrderFinalRelease: jest.fn().mockResolvedValue(undefined),
     };
+    customOrderAccessService = {
+      assertCustomOrderBrandRead: jest.fn().mockResolvedValue(undefined),
+      assertCustomOrderBrandUpdate: jest.fn().mockResolvedValue(undefined),
+      assertBrandOrdersRead: jest.fn().mockImplementation(async (_userId: string, brandId: string) => brandId),
+      resolveBrandId: jest.fn().mockImplementation(async (brandId: string) => brandId),
+    };
 
     prisma.product.findUnique.mockResolvedValue({
       customMeasurementKeys: ['WOMEN_WAIST'],
@@ -154,6 +162,10 @@ describe('CustomOrdersService', () => {
         {
           provide: LedgerService,
           useValue: ledgerService,
+        },
+        {
+          provide: CustomOrderAccessService,
+          useValue: customOrderAccessService,
         },
       ],
     }).compile();

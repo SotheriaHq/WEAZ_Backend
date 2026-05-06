@@ -31,6 +31,7 @@ import { LedgerService } from 'src/finance/ledger.service';
 import { resolveWebAppBaseUrl } from 'src/common/utils/web-app-url';
 import { CustomOrderRefundService } from './custom-order-refund.service';
 import { CustomOrderSideEffectsService } from './custom-order-side-effects.service';
+import { CustomOrderAccessService } from './custom-order-access.service';
 import {
   measurementKeysContainOppositeGender,
   normalizeIdList as normalizeIdArray,
@@ -279,6 +280,7 @@ export class CustomOrdersService {
     private readonly sideEffects: CustomOrderSideEffectsService,
     private readonly refundService: CustomOrderRefundService,
     private readonly ledgerService: LedgerService,
+    private readonly customOrderAccessService: CustomOrderAccessService,
   ) {}
 
   async createPricePreview(userId: string, dto: CustomOrderPricePreviewDto) {
@@ -1733,9 +1735,10 @@ export class CustomOrdersService {
     requestId: string,
     dto: BrandRespondToCustomOrderExtensionCounterDto,
   ) {
-    await this.assertBrandOwnership(ownerUserId, brandId);
+    await this.customOrderAccessService.assertCustomOrderBrandUpdate(ownerUserId, customOrderId);
+    const resolvedBrandId = await this.customOrderAccessService.resolveBrandId(brandId);
     const order = await this.prisma.customOrder.findFirst({
-      where: { id: customOrderId, brandId },
+      where: { id: customOrderId, brandId: resolvedBrandId },
       include: this.detailIncludes,
     });
     if (!order) {
@@ -1872,9 +1875,10 @@ export class CustomOrdersService {
     customOrderId: string,
     dto: CreateExceptionReviewRequestDto,
   ) {
-    await this.assertBrandOwnership(ownerUserId, brandId);
+    await this.customOrderAccessService.assertCustomOrderBrandUpdate(ownerUserId, customOrderId);
+    const resolvedBrandId = await this.customOrderAccessService.resolveBrandId(brandId);
     const order = await this.prisma.customOrder.findFirst({
-      where: { id: customOrderId, brandId },
+      where: { id: customOrderId, brandId: resolvedBrandId },
       include: this.detailIncludes,
     });
     if (!order) {
@@ -1940,23 +1944,24 @@ export class CustomOrdersService {
   }
 
   async listBrandOrders(ownerUserId: string, brandId: string, query: QueryCustomOrdersDto) {
-    const brand = await this.resolveBrand(ownerUserId);
-    if (brand.id !== brandId) {
-      throw new ForbiddenException('Not authorized for this brand');
-    }
+    const resolvedBrandId = await this.customOrderAccessService.assertBrandOrdersRead(
+      ownerUserId,
+      brandId,
+    );
     // Include PENDING_PAYMENT orders so that legacy pre-refactor orders remain
     // visible to brands.  New orders skip PENDING_PAYMENT entirely (created
     // directly in ACCEPTED after payment confirmation).
     return this.listOrders(
-      { brandId },
+      { brandId: resolvedBrandId },
       query,
     );
   }
 
   async getBrandOrder(ownerUserId: string, brandId: string, customOrderId: string) {
-    await this.assertBrandOwnership(ownerUserId, brandId);
+    await this.customOrderAccessService.assertCustomOrderBrandRead(ownerUserId, customOrderId);
+    const resolvedBrandId = await this.customOrderAccessService.resolveBrandId(brandId);
     const order = await this.prisma.customOrder.findFirst({
-      where: { id: customOrderId, brandId },
+      where: { id: customOrderId, brandId: resolvedBrandId },
       include: this.detailIncludes,
     });
     if (!order) {
@@ -1972,9 +1977,10 @@ export class CustomOrdersService {
   }
 
   async acceptBrandOrder(ownerUserId: string, brandId: string, customOrderId: string, dto: AcceptCustomOrderDto) {
-    await this.assertBrandOwnership(ownerUserId, brandId);
+    await this.customOrderAccessService.assertCustomOrderBrandUpdate(ownerUserId, customOrderId);
+    const resolvedBrandId = await this.customOrderAccessService.resolveBrandId(brandId);
     const order = await this.prisma.customOrder.findFirst({
-      where: { id: customOrderId, brandId },
+      where: { id: customOrderId, brandId: resolvedBrandId },
       include: this.detailIncludes,
     });
     if (!order) {
@@ -2066,9 +2072,10 @@ export class CustomOrdersService {
     customOrderId: string,
     dto: UpdateCustomOrderProgressStageDto,
   ) {
-    await this.assertBrandOwnership(ownerUserId, brandId);
+    await this.customOrderAccessService.assertCustomOrderBrandUpdate(ownerUserId, customOrderId);
+    const resolvedBrandId = await this.customOrderAccessService.resolveBrandId(brandId);
     const order = await this.prisma.customOrder.findFirst({
-      where: { id: customOrderId, brandId },
+      where: { id: customOrderId, brandId: resolvedBrandId },
       include: this.detailIncludes,
     });
     if (!order) {
@@ -2157,9 +2164,10 @@ export class CustomOrdersService {
     customOrderId: string,
     dto: CreateCustomOrderExtensionRequestDto,
   ) {
-    await this.assertBrandOwnership(ownerUserId, brandId);
+    await this.customOrderAccessService.assertCustomOrderBrandUpdate(ownerUserId, customOrderId);
+    const resolvedBrandId = await this.customOrderAccessService.resolveBrandId(brandId);
     const order = await this.prisma.customOrder.findFirst({
-      where: { id: customOrderId, brandId },
+      where: { id: customOrderId, brandId: resolvedBrandId },
       include: this.detailIncludes,
     });
     if (!order) {
@@ -2178,7 +2186,7 @@ export class CustomOrdersService {
       data: {
         extensionRequests: {
           create: {
-            requestedByBrandId: brandId,
+            requestedByBrandId: resolvedBrandId,
             targetType: dto.targetType,
             requestedExtraDays: dto.requestedExtraDays,
             reason: dto.reason.trim(),
@@ -2224,9 +2232,10 @@ export class CustomOrdersService {
     customOrderId: string,
     dto: UpdateCustomOrderLifecycleStatusDto,
   ) {
-    await this.assertBrandOwnership(ownerUserId, brandId);
+    await this.customOrderAccessService.assertCustomOrderBrandUpdate(ownerUserId, customOrderId);
+    const resolvedBrandId = await this.customOrderAccessService.resolveBrandId(brandId);
     const order = await this.prisma.customOrder.findFirst({
-      where: { id: customOrderId, brandId },
+      where: { id: customOrderId, brandId: resolvedBrandId },
       include: this.detailIncludes,
     });
     if (!order) {

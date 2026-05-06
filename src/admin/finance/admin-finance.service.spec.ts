@@ -276,7 +276,7 @@ describe('AdminFinanceService settlement policy management', () => {
         secondReleaseAmount: 700,
         firstReleasedAt: new Date('2026-05-05T10:00:00.000Z'),
         secondReleasedAt: null,
-        secondReleaseEligibleAt: new Date('2026-05-06T10:00:00.000Z'),
+        secondReleaseEligibleAt: new Date('2099-05-06T10:00:00.000Z'),
       },
       {
         status: EscrowHoldStatus.FROZEN,

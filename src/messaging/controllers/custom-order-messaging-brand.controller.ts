@@ -10,11 +10,9 @@ import {
   UseGuards,
   ValidationPipe,
 } from '@nestjs/common';
-import { UserType } from '@prisma/client';
 import { Request } from 'express';
 import { Throttle } from '@nestjs/throttler';
 import { JwtAuthGuard } from 'src/auth/guard/jwt-auth.guard';
-import { UserTypeGuard } from 'src/auth/guard/user-type.guard';
 import { MessagingService } from '../messaging.service';
 import {
   MarkThreadReadDto,
@@ -27,7 +25,7 @@ import {
 } from '../dto/messaging.dto';
 
 @Controller('brands/:brandId/custom-orders/:orderId/messages')
-@UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+@UseGuards(JwtAuthGuard)
 export class CustomOrderMessagingBrandController {
   constructor(private readonly messaging: MessagingService) {}
 

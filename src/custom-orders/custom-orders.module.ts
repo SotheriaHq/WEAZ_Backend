@@ -6,6 +6,8 @@ import { CustomOrderPricingModule } from 'src/custom-order-pricing/custom-order-
 import { SystemConfigModule } from 'src/admin/system-config/system-config.module';
 import { FinanceModule } from 'src/finance/finance.module';
 import { MessagingModule } from 'src/messaging/messaging.module';
+import { BrandPermissionService } from 'src/brands/permissions/brand-permission.service';
+import { CustomOrderAccessService } from './custom-order-access.service';
 import { CustomOrdersBrandController } from './custom-orders-brand.controller';
 import { CustomOrdersBuyerController } from './custom-orders-buyer.controller';
 import { CustomOrdersPaymentsService } from './custom-orders-payments.service';
@@ -21,12 +23,15 @@ import { CustomOrdersService } from './custom-orders.service';
     CustomOrdersPaymentsService,
     CustomOrderRefundService,
     CustomOrderSideEffectsService,
+    CustomOrderAccessService,
+    BrandPermissionService,
   ],
   exports: [
     CustomOrdersService,
     CustomOrdersPaymentsService,
     CustomOrderRefundService,
     CustomOrderSideEffectsService,
+    CustomOrderAccessService,
   ],
 })
 export class CustomOrdersModule {}

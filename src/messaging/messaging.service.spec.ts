@@ -8,6 +8,7 @@ import {
   UserType,
 } from '@prisma/client';
 import { MessagingAttachmentService } from './messaging-attachment.service';
+import { MessagingAccessService } from './messaging-access.service';
 import { MessagingPolicyService } from './messaging-policy.service';
 import { MessagingService } from './messaging.service';
 
@@ -51,16 +52,27 @@ describe('MessagingService', () => {
       dispatchMessageOutboxForMessage: jest.fn(),
       emitMessageCreated: jest.fn(),
       emitThreadInvalidation: jest.fn(),
+      emitMessageRead: jest.fn(),
     } as any;
 
     const adminAudit = {
       log: jest.fn(),
     } as any;
 
+    const access = {
+      assertCanReadThread: jest.fn().mockResolvedValue(undefined),
+      assertCanSendMessage: jest.fn().mockResolvedValue(undefined),
+      assertBrandRead: jest.fn().mockResolvedValue(undefined),
+      assertBrandReply: jest.fn().mockResolvedValue(undefined),
+      getBrandIdsWithPermission: jest.fn().mockResolvedValue([]),
+      resolveActorThreadRole: jest.fn().mockResolvedValue(MessageParticipantRole.BRAND_OWNER),
+    } as any;
+
     const service = new MessagingService(
       prisma,
       adminAudit,
       attachments as MessagingAttachmentService,
+      access as MessagingAccessService,
       new MessagingPolicyService(),
       query,
       sideEffects,
@@ -68,7 +80,7 @@ describe('MessagingService', () => {
       {} as any,
     );
 
-    return { service, prisma, query };
+    return { service, prisma, query, access };
   };
 
   it('filters moderated messages for buyer thread listing', async () => {
@@ -239,9 +251,10 @@ describe('MessagingService', () => {
   });
 
   it('does not resolve another user conversation by messageId', async () => {
-    const { service, prisma } = buildService();
+    const { service, prisma, access } = buildService();
 
     prisma.message.findUnique.mockResolvedValue({ threadId: 'thread_1' });
+    access.assertCanReadThread.mockRejectedValue(new ForbiddenException('Thread access denied'));
     prisma.messageThreadParticipant.findUnique.mockResolvedValue(null);
 
     await expect(

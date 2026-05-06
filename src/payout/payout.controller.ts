@@ -11,13 +11,16 @@ import {
 } from '@nestjs/common';
 import { PayoutService } from './payout.service';
 import { JwtAuthGuard } from '../auth/guard/jwt-auth.guard';
-import { UserTypeGuard } from '../auth/guard/user-type.guard';
-import { UserType } from '@prisma/client';
+import { BrandPermissionService } from 'src/brands/permissions/brand-permission.service';
+import { BRAND_PERMISSIONS } from 'src/brands/permissions/brand-permissions';
 
 @Controller('brands/:brandId/payouts')
-@UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+@UseGuards(JwtAuthGuard)
 export class PayoutController {
-  constructor(private readonly payoutService: PayoutService) {}
+  constructor(
+    private readonly payoutService: PayoutService,
+    private readonly brandPermissionService: BrandPermissionService,
+  ) {}
 
   @Get()
   async findAll(
@@ -26,7 +29,11 @@ export class PayoutController {
     @Query('page') page?: string,
     @Query('limit') limit?: string,
   ) {
-    await this.payoutService.assertBrandOwnership(brandId, req.user.id);
+    await this.brandPermissionService.assertPermission(
+      req.user.id,
+      brandId,
+      BRAND_PERMISSIONS.PAYOUTS_READ,
+    );
     return this.payoutService.findAll(
       brandId,
       page ? parseInt(page, 10) : 1,
@@ -39,7 +46,11 @@ export class PayoutController {
     @Param('brandId') brandId: string,
     @Req() req: any,
   ) {
-    await this.payoutService.assertBrandOwnership(brandId, req.user.id);
+    await this.brandPermissionService.assertPermission(
+      req.user.id,
+      brandId,
+      BRAND_PERMISSIONS.PAYOUTS_READ,
+    );
     return this.payoutService.getOverview(brandId);
   }
 
@@ -50,7 +61,11 @@ export class PayoutController {
     @Query('page') page?: string,
     @Query('limit') limit?: string,
   ) {
-    await this.payoutService.assertBrandOwnership(brandId, req.user.id);
+    await this.brandPermissionService.assertPermission(
+      req.user.id,
+      brandId,
+      BRAND_PERMISSIONS.PAYOUTS_READ,
+    );
     return this.payoutService.listIncomingTransactions(
       brandId,
       page ? parseInt(page, 10) : 1,
@@ -65,7 +80,11 @@ export class PayoutController {
     @Query('page') page?: string,
     @Query('limit') limit?: string,
   ) {
-    await this.payoutService.assertBrandOwnership(brandId, req.user.id);
+    await this.brandPermissionService.assertPermission(
+      req.user.id,
+      brandId,
+      BRAND_PERMISSIONS.PAYOUTS_READ,
+    );
     return this.payoutService.listHeldFunds(
       brandId,
       page ? parseInt(page, 10) : 1,

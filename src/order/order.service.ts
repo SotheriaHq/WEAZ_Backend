@@ -426,7 +426,12 @@ export class OrderService {
     };
   }
 
-  async updateStatus(brandId: string, orderId: string, status: OrderStatus) {
+  async updateStatus(
+    brandId: string,
+    orderId: string,
+    status: OrderStatus,
+    actorUserId = brandId,
+  ) {
     const realBrandId = await this.getBrandId(brandId);
     const order = await this.prisma.order.findFirst({
       where: {
@@ -480,7 +485,7 @@ export class OrderService {
         await this.orderRefundService.initiateRefund(tx, {
           orderId,
           reason: 'ORDER_RETURNED',
-          actorId: brandId,
+          actorId: actorUserId,
         });
       }
 
@@ -501,7 +506,7 @@ export class OrderService {
         order.buyerId,
         NotificationType.ORDER_STATUS_UPDATED,
         {
-          actorId: brandId,
+          actorId: actorUserId,
           payload: {
             orderId: order.id,
             orderTitle,
@@ -518,8 +523,10 @@ export class OrderService {
   }
 
   private async getBrandId(ownerId: string): Promise<string> {
-    const brand = await this.prisma.brand.findUnique({
-      where: { ownerId },
+    const brand = await this.prisma.brand.findFirst({
+      where: {
+        OR: [{ id: ownerId }, { ownerId }],
+      },
       select: { id: true },
     });
     if (!brand) throw new NotFoundException('Brand not found');

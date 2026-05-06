@@ -75,6 +75,7 @@ import {
   resolvePaystackSecret,
 } from 'src/common/utils/paystack-secret';
 import { BrandAccessService } from 'src/brands/brand-access.service';
+import { BrandPermissionService } from 'src/brands/permissions/brand-permission.service';
 import {
   BRAND_PERMISSIONS,
   BrandPermissionCode,
@@ -139,6 +140,8 @@ export class StoreService {
     private readonly standardOrderEscrowService?: StandardOrderEscrowService,
     private readonly standardOrderFinanceSyncService?: StandardOrderFinanceSyncService,
     private readonly brandAccessService?: BrandAccessService,
+    @Optional()
+    private readonly brandPermissionService?: BrandPermissionService,
   ) {}
 
   private readonly maxProductsPerCollection = Math.max(
@@ -6504,6 +6507,21 @@ export class StoreService {
     }
 
     if (order.brand?.ownerId === user.id) {
+      return {
+        orderId: order.id,
+        viewerRole: 'BRAND' as const,
+        destination: `/studio?tab=orders&orderId=${encodeURIComponent(order.id)}`,
+      };
+    }
+
+    if (
+      this.brandPermissionService &&
+      await this.brandPermissionService.hasPermission(
+        user.id,
+        order.brandId,
+        BRAND_PERMISSIONS.ORDERS_READ,
+      )
+    ) {
       return {
         orderId: order.id,
         viewerRole: 'BRAND' as const,
