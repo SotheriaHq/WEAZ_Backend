@@ -322,6 +322,248 @@ describe('AuthService', () => {
     expect(result.bannerImage).toBe('profile-banner.jpg');
   });
 
+  it('/auth/profile returns UserProfile fields when UserProfile exists', async () => {
+    const profileFileCreatedAt = new Date('2026-05-05T01:00:00.000Z');
+    const profileFileUpdatedAt = new Date('2026-05-05T02:00:00.000Z');
+    const bannerFileCreatedAt = new Date('2026-05-05T03:00:00.000Z');
+    const bannerFileUpdatedAt = new Date('2026-05-05T04:00:00.000Z');
+
+    mockPrisma.user.findUnique.mockResolvedValue({
+      id: 'user-1',
+      username: 'alex',
+      role: Role.User,
+      type: UserType.REGULAR,
+      firstName: 'Legacy',
+      lastName: 'Name',
+      email: 'alex@example.com',
+      status: UserStatus.ACTIVE,
+      brand: null,
+      adminPermissionGrants: [],
+      phoneNumber: 'legacy-phone',
+      address: 'legacy-address',
+      brandFullName: null,
+      brandDescription: null,
+      brandCountry: null,
+      brandState: null,
+      brandCity: null,
+      brandTags: [],
+      brandBusinessType: null,
+      socialInstagram: null,
+      socialFacebook: null,
+      socialTwitter: null,
+      socialWebsite: null,
+      cacNumber: null,
+      tin: null,
+      ceoNin: null,
+      ceoFirstName: null,
+      ceoLastName: null,
+      companyLocation: null,
+      profileImage: 'legacy-avatar.jpg',
+      profileImageId: 'legacy-avatar-id',
+      profileImageFile: {
+        id: 'legacy-avatar-id',
+        s3Url: 'legacy-avatar-s3.jpg',
+        fileName: 'legacy-avatar.jpg',
+        originalName: 'legacy-avatar.jpg',
+        createdAt: profileFileCreatedAt,
+        updatedAt: profileFileUpdatedAt,
+      },
+      bannerImage: 'legacy-banner.jpg',
+      bannerImageId: 'legacy-banner-id',
+      bannerImageFile: {
+        id: 'legacy-banner-id',
+        s3Url: 'legacy-banner-s3.jpg',
+        fileName: 'legacy-banner.jpg',
+        originalName: 'legacy-banner.jpg',
+        createdAt: bannerFileCreatedAt,
+        updatedAt: bannerFileUpdatedAt,
+      },
+      isEmailVerified: true,
+      isActive: 'Active',
+      themePreference: 'system',
+      mustResetPassword: false,
+      authVersion: 0,
+      createdAt: new Date('2026-05-05T00:00:00.000Z'),
+      updatedAt: new Date('2026-05-05T00:00:00.000Z'),
+      userProfile: {
+        firstName: 'Profile',
+        lastName: 'Owner',
+        phoneNumber: 'profile-phone',
+        address: 'profile-address',
+        profileImage: 'profile-avatar.jpg',
+        profileImageId: 'profile-avatar-id',
+        profileImageFile: {
+          id: 'profile-avatar-id',
+          s3Url: 'profile-avatar-s3.jpg',
+          fileName: 'profile-avatar.jpg',
+          originalName: 'profile-avatar-original.jpg',
+          createdAt: profileFileCreatedAt,
+          updatedAt: profileFileUpdatedAt,
+        },
+        bannerImage: 'profile-banner.jpg',
+        bannerImageId: 'profile-banner-id',
+        bannerImageFile: {
+          id: 'profile-banner-id',
+          s3Url: 'profile-banner-s3.jpg',
+          fileName: 'profile-banner.jpg',
+          originalName: 'profile-banner-original.jpg',
+          createdAt: bannerFileCreatedAt,
+          updatedAt: bannerFileUpdatedAt,
+        },
+        profileVisibility: 'UNLOCKED',
+      },
+    });
+
+    const result = await service.getProfileWithImage('user-1');
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        firstName: 'Profile',
+        lastName: 'Owner',
+        phoneNumber: 'profile-phone',
+        address: 'profile-address',
+        profileImage: 'profile-avatar.jpg',
+        profileImageId: 'profile-avatar-id',
+        bannerImage: 'profile-banner.jpg',
+        bannerImageId: 'profile-banner-id',
+      }),
+    );
+    expect(result.profileImageFile).toEqual(
+      expect.objectContaining({
+        id: 'profile-avatar-id',
+        s3Url: 'profile-avatar-s3.jpg',
+        createdAt: profileFileCreatedAt.toISOString(),
+        updatedAt: profileFileUpdatedAt.toISOString(),
+      }),
+    );
+    expect(result.bannerImageFile).toEqual(
+      expect.objectContaining({
+        id: 'profile-banner-id',
+        s3Url: 'profile-banner-s3.jpg',
+        createdAt: bannerFileCreatedAt.toISOString(),
+        updatedAt: bannerFileUpdatedAt.toISOString(),
+      }),
+    );
+    expect(mockPrisma.user.findUnique).toHaveBeenCalledWith(
+      expect.objectContaining({
+        select: expect.objectContaining({ userProfile: expect.any(Object) }),
+      }),
+    );
+  });
+
+  it('/auth/profile falls back to legacy User fields when UserProfile is missing', async () => {
+    mockPrisma.user.findUnique.mockResolvedValue({
+      id: 'user-1',
+      username: 'alex',
+      role: Role.User,
+      type: UserType.REGULAR,
+      firstName: 'Legacy',
+      lastName: 'User',
+      email: 'alex@example.com',
+      status: UserStatus.ACTIVE,
+      brand: null,
+      adminPermissionGrants: [],
+      phoneNumber: 'legacy-phone',
+      address: 'legacy-address',
+      brandFullName: null,
+      brandDescription: null,
+      brandCountry: null,
+      brandState: null,
+      brandCity: null,
+      brandTags: [],
+      brandBusinessType: null,
+      socialInstagram: null,
+      socialFacebook: null,
+      socialTwitter: null,
+      socialWebsite: null,
+      cacNumber: null,
+      tin: null,
+      ceoNin: null,
+      ceoFirstName: null,
+      ceoLastName: null,
+      companyLocation: null,
+      profileImage: 'legacy-avatar.jpg',
+      profileImageId: 'legacy-avatar-id',
+      profileImageFile: null,
+      bannerImage: 'legacy-banner.jpg',
+      bannerImageId: 'legacy-banner-id',
+      bannerImageFile: null,
+      isEmailVerified: true,
+      isActive: 'Active',
+      themePreference: 'system',
+      mustResetPassword: false,
+      authVersion: 0,
+      createdAt: new Date('2026-05-05T00:00:00.000Z'),
+      updatedAt: new Date('2026-05-05T00:00:00.000Z'),
+      userProfile: null,
+    });
+
+    const result = await service.getProfileWithImage('user-1');
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        firstName: 'Legacy',
+        lastName: 'User',
+        phoneNumber: 'legacy-phone',
+        address: 'legacy-address',
+        profileImage: 'legacy-avatar.jpg',
+        profileImageId: 'legacy-avatar-id',
+        bannerImage: 'legacy-banner.jpg',
+        bannerImageId: 'legacy-banner-id',
+      }),
+    );
+  });
+
+  it('auth responses do not expose password or auth internals', () => {
+    const result = toAuthUserResponse({
+      id: 'user-1',
+      username: 'alex',
+      role: Role.User,
+      type: UserType.REGULAR,
+      firstName: 'Alex',
+      lastName: 'Doe',
+      email: 'alex@example.com',
+      password: 'hashed-password',
+      status: UserStatus.ACTIVE,
+      brand: null,
+      adminPermissionGrants: [],
+      phoneNumber: null,
+      address: null,
+      brandFullName: null,
+      brandDescription: null,
+      brandCountry: null,
+      brandState: null,
+      brandCity: null,
+      brandTags: [],
+      brandBusinessType: null,
+      socialInstagram: null,
+      socialFacebook: null,
+      socialTwitter: null,
+      socialWebsite: null,
+      cacNumber: null,
+      tin: null,
+      ceoNin: null,
+      ceoFirstName: null,
+      ceoLastName: null,
+      companyLocation: null,
+      profileImage: null,
+      profileImageId: null,
+      bannerImage: null,
+      bannerImageId: null,
+      isEmailVerified: true,
+      isActive: 'Active',
+      themePreference: 'system',
+      mustResetPassword: false,
+      authVersion: 42,
+      createdAt: new Date('2026-05-05T00:00:00.000Z'),
+      updatedAt: new Date('2026-05-05T00:00:00.000Z'),
+      userProfile: null,
+    } as any);
+
+    expect(result).not.toHaveProperty('password');
+    expect(result).not.toHaveProperty('authVersion');
+  });
+
   it('signup creates a UserProfile for regular users', async () => {
     mockPrisma.user.findUnique.mockResolvedValue(null);
     mockUserHelperService.generateUniqueUsername.mockResolvedValue('alex-doe');
@@ -336,8 +578,8 @@ describe('AuthService', () => {
       username: 'alex-doe',
       role: Role.User,
       type: UserType.REGULAR,
-      firstName: 'Alex',
-      lastName: 'Doe',
+      firstName: 'Legacy',
+      lastName: 'User',
       email: 'alex@example.com',
       status: UserStatus.ACTIVE,
       brand: null,
@@ -387,7 +629,7 @@ describe('AuthService', () => {
       },
     });
 
-    await service.CreateUser(
+    const result = await service.CreateUser(
       {
         firstName: 'Alex',
         lastName: 'Doe',
@@ -411,6 +653,8 @@ describe('AuthService', () => {
         }),
       }),
     );
+    expect(result.user.firstName).toBe('Alex');
+    expect(result.user.lastName).toBe('Doe');
   });
 
   it('signup creates a UserProfile for brand users', async () => {
@@ -605,11 +849,17 @@ describe('AuthService', () => {
     });
   });
 
-  it('profile update rejects sensitive fields', async () => {
+  it.each([
+    ['email', 'takeover@example.com'],
+    ['password', 'new-password'],
+    ['role', Role.SuperAdmin],
+    ['type', UserType.BRAND],
+    ['brandFullName', 'Hijacked Brand'],
+  ])('profile update rejects sensitive field %s', async (field, value) => {
     await expect(
       service.updateProfile('user-1', {
         firstName: 'Alex',
-        email: 'takeover@example.com',
+        [field]: value,
       } as any),
     ).rejects.toBeInstanceOf(BadRequestException);
 

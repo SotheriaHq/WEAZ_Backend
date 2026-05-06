@@ -6,47 +6,15 @@ import {
 } from '../dto/auth-response.dto';
 import { getBrandVerificationTruth } from 'src/brand-verification/verification-truth.util';
 import { normalizeThemePreference } from 'src/common/theme.contract';
-
-type SelectedFileUpload = {
-  id: string;
-  s3Url: string;
-  fileName: string | null;
-  originalName: string | null;
-  createdAt: Date;
-  updatedAt: Date;
-} | null;
-
-const userProfileSelect = Prisma.validator<Prisma.UserProfileSelect>()({
-  firstName: true,
-  lastName: true,
-  phoneNumber: true,
-  address: true,
-  profileImage: true,
-  profileImageId: true,
-  profileImageFile: {
-    select: {
-      id: true,
-      s3Url: true,
-      fileName: true,
-      originalName: true,
-      createdAt: true,
-      updatedAt: true,
-    },
-  },
-  bannerImage: true,
-  bannerImageId: true,
-  bannerImageFile: {
-    select: {
-      id: true,
-      s3Url: true,
-      fileName: true,
-      originalName: true,
-      createdAt: true,
-      updatedAt: true,
-    },
-  },
-  profileVisibility: true,
-});
+import {
+  canonicalUserProfileFileSelect,
+  canonicalUserProfileSelect,
+  resolveBannerImage,
+  resolveNullableProfileField,
+  resolveProfileImage,
+  resolveRequiredProfileField,
+  type SelectedProfileFile,
+} from 'src/common/user-profile-source.helper';
 
 export const authUserSelect = Prisma.validator<Prisma.UserSelect>()({
   id: true,
@@ -99,30 +67,16 @@ export const authUserSelect = Prisma.validator<Prisma.UserSelect>()({
   createdAt: true,
   updatedAt: true,
   userProfile: {
-    select: userProfileSelect,
+    select: canonicalUserProfileSelect,
   },
 });
 export const profileUserSelect = Prisma.validator<Prisma.UserSelect>()({
   ...authUserSelect,
   profileImageFile: {
-    select: {
-      id: true,
-      s3Url: true,
-      fileName: true,
-      originalName: true,
-      createdAt: true,
-      updatedAt: true,
-    },
+    select: canonicalUserProfileFileSelect,
   },
   bannerImageFile: {
-    select: {
-      id: true,
-      s3Url: true,
-      fileName: true,
-      originalName: true,
-      createdAt: true,
-      updatedAt: true,
-    },
+    select: canonicalUserProfileFileSelect,
   },
 });
 export type AuthUser = Prisma.UserGetPayload<{ select: typeof authUserSelect }>;
@@ -130,7 +84,7 @@ export type ProfileUser = Prisma.UserGetPayload<{
   select: typeof profileUserSelect;
 }>;
 const mapFileUploadToDto = (
-  file: SelectedFileUpload | undefined,
+  file: SelectedProfileFile | undefined,
 ): AuthProfileImageFileDto | null => {
   if (!file) {
     return null;
@@ -148,23 +102,24 @@ const mapFileUploadToDto = (
 export const toAuthUserResponse = (
   user: AuthUser | ProfileUser,
 ): AuthUserResponseDto => {
-  const profile = (user as any).userProfile ?? null;
+  const profileImage = resolveProfileImage(user);
+  const bannerImage = resolveBannerImage(user);
   const verificationTruth = getBrandVerificationTruth({
     verificationStatus: user.brand?.verificationStatus,
     isStoreOpen: user.brand?.isStoreOpen,
-    ownerStatus: (user as any).status ?? null,
+    ownerStatus: user.status ?? null,
   });
 
   return {
     id: user.id,
     username: user.username,
     email: user.email,
-    firstName: profile?.firstName ?? user.firstName,
-    lastName: profile?.lastName ?? user.lastName,
+    firstName: resolveRequiredProfileField(user, 'firstName'),
+    lastName: resolveRequiredProfileField(user, 'lastName'),
     role: user.role,
     type: user.type,
-    phoneNumber: profile?.phoneNumber ?? user.phoneNumber ?? null,
-    address: profile?.address ?? user.address ?? null,
+    phoneNumber: resolveNullableProfileField(user, 'phoneNumber'),
+    address: resolveNullableProfileField(user, 'address'),
     brandFullName: user.brandFullName ?? null,
     brandDescription: user.brandDescription ?? null,
     brandCountry: user.brandCountry ?? null,
@@ -182,22 +137,12 @@ export const toAuthUserResponse = (
     ceoFirstName: user.ceoFirstName ?? null,
     ceoLastName: user.ceoLastName ?? null,
     companyLocation: user.companyLocation ?? null,
-    profileImage: profile?.profileImage ?? user.profileImage ?? null,
-    profileImageId: profile?.profileImageId ?? user.profileImageId ?? null,
-    profileImageFile:
-      profile?.profileImageFile
-        ? mapFileUploadToDto(profile.profileImageFile)
-        : 'profileImageFile' in user
-        ? mapFileUploadToDto((user as ProfileUser).profileImageFile)
-        : null,
-    bannerImage: profile?.bannerImage ?? user.bannerImage ?? null,
-    bannerImageId: profile?.bannerImageId ?? user.bannerImageId ?? null,
-    bannerImageFile:
-      profile?.bannerImageFile
-        ? mapFileUploadToDto(profile.bannerImageFile)
-        : 'bannerImageFile' in user
-        ? mapFileUploadToDto((user as ProfileUser).bannerImageFile ?? null)
-        : null,
+    profileImage: profileImage.url,
+    profileImageId: profileImage.fileId,
+    profileImageFile: mapFileUploadToDto(profileImage.file),
+    bannerImage: bannerImage.url,
+    bannerImageId: bannerImage.fileId,
+    bannerImageFile: mapFileUploadToDto(bannerImage.file),
     isEmailVerified: user.isEmailVerified,
     storeId: user.brand?.id ?? null,
     verificationStatus: user.brand?.verificationStatus ?? null,
@@ -205,9 +150,9 @@ export const toAuthUserResponse = (
     verificationBadgeVisible: verificationTruth.verificationBadgeVisible,
     verifiedExplanationUrl: verificationTruth.verifiedExplanationUrl,
     isActive: user.isActive,
-    themePreference: normalizeThemePreference((user as any).themePreference),
-    status: (user as any).status ?? null,
-    mustResetPassword: (user as any).mustResetPassword ?? false,
+    themePreference: normalizeThemePreference(user.themePreference),
+    status: user.status ?? null,
+    mustResetPassword: user.mustResetPassword ?? false,
     createdAt: user.createdAt.toISOString(),
     updatedAt: user.updatedAt.toISOString(),
   };
@@ -222,16 +167,15 @@ export const buildAuthTokenPayload = (user: AuthUser): AuthJwtClaims => {
     role: user.role,
     type: user.type,
     email: user.email,
-    firstName: user.firstName,
-    lastName: user.lastName,
-    authVersion: (user as any).authVersion ?? 0,
+    firstName: resolveRequiredProfileField(user, 'firstName'),
+    lastName: resolveRequiredProfileField(user, 'lastName'),
+    authVersion: user.authVersion ?? 0,
   };
 
   // Embed admin permissions in JWT for zero-DB-query guard checks
   if (user.role === 'SuperAdmin' || user.role === 'Admin') {
-    base.permissions = (user as any).adminPermissionGrants?.map(
-      (g: { permissionCode: string }) => g.permissionCode,
-    ) ?? [];
+    base.permissions =
+      user.adminPermissionGrants?.map((grant) => grant.permissionCode) ?? [];
   }
 
   return base;

@@ -1,63 +1,78 @@
 import { BadRequestException, Injectable, NotFoundException, UnauthorizedException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { ProfileVisibility, User } from '@prisma/client';
+import { Prisma, ProfileVisibility, User } from '@prisma/client';
 import { UserProfileResponseDto } from './dto/user-profile.dto';
 import {
   isThemePreference,
   normalizeThemePreference,
   type ThemePreference,
 } from 'src/common/theme.contract';
+import {
+  canonicalUserProfileFileSelect,
+  canonicalUserProfileSelect,
+  resolveBannerImage,
+  resolveNullableProfileField,
+  resolveProfileImage,
+  resolveProfileVisibility,
+  resolveRequiredProfileField,
+} from 'src/common/user-profile-source.helper';
+
+const userProfileResponseSelect = Prisma.validator<Prisma.UserSelect>()({
+  id: true,
+  username: true,
+  firstName: true,
+  lastName: true,
+  type: true,
+  profileImage: true,
+  profileImageId: true,
+  profileImageFile: {
+    select: canonicalUserProfileFileSelect,
+  },
+  bannerImage: true,
+  bannerImageId: true,
+  bannerImageFile: {
+    select: canonicalUserProfileFileSelect,
+  },
+  address: true,
+  themePreference: true,
+  profileVisibility: true,
+  createdAt: true,
+  userProfile: {
+    select: canonicalUserProfileSelect,
+  },
+});
+
+type UserProfileResponseSource = Prisma.UserGetPayload<{
+  select: typeof userProfileResponseSelect;
+}>;
 
 @Injectable()
 export class UserProfileService {
   constructor(private prisma: PrismaService) { }
 
-  private readonly profileImageFileSelect = {
-    select: {
-      id: true,
-      s3Url: true,
-    },
-  };
-
-  private readonly profileSelect = {
-    select: {
-      firstName: true,
-      lastName: true,
-      phoneNumber: true,
-      address: true,
-      profileImage: true,
-      profileImageId: true,
-      profileImageFile: this.profileImageFileSelect,
-      bannerImage: true,
-      bannerImageId: true,
-      bannerImageFile: this.profileImageFileSelect,
-      profileVisibility: true,
-    },
-  };
-
   private toUserProfileResponse(
-    user: any,
+    user: UserProfileResponseSource,
     options: { includeThemePreference?: boolean } = {},
   ): UserProfileResponseDto {
-    const profile = user.userProfile ?? null;
-    const address = profile?.address ?? user.address ?? undefined;
+    const address = resolveNullableProfileField(user, 'address') ?? undefined;
+    const profileImage = resolveProfileImage(user);
+    const bannerImage = resolveBannerImage(user);
 
     return new UserProfileResponseDto({
       id: user.id,
       username: user.username,
-      firstName: profile?.firstName ?? user.firstName,
-      lastName: profile?.lastName ?? user.lastName,
+      firstName: resolveRequiredProfileField(user, 'firstName'),
+      lastName: resolveRequiredProfileField(user, 'lastName'),
       type: user.type,
-      profileImage: profile?.profileImage ?? user.profileImage ?? undefined,
-      profileImageId: profile?.profileImageId ?? user.profileImageId ?? undefined,
-      profileImageFile: profile?.profileImageFile ?? user.profileImageFile ?? null,
-      bannerImage: profile?.bannerImage ?? user.bannerImage ?? undefined,
-      bannerImageId: profile?.bannerImageId ?? user.bannerImageId ?? undefined,
-      bannerImageFile: profile?.bannerImageFile ?? user.bannerImageFile ?? null,
+      profileImage: profileImage.url ?? undefined,
+      profileImageId: profileImage.fileId ?? undefined,
+      profileImageFile: profileImage.file,
+      bannerImage: bannerImage.url ?? undefined,
+      bannerImageId: bannerImage.fileId ?? undefined,
+      bannerImageFile: bannerImage.file,
       address,
       location: address,
-      profileVisibility:
-        profile?.profileVisibility ?? user.profileVisibility,
+      profileVisibility: resolveProfileVisibility(user),
       ...(options.includeThemePreference
         ? { themePreference: normalizeThemePreference(user.themePreference) }
         : {}),
@@ -72,34 +87,7 @@ export class UserProfileService {
 
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
-      select: {
-        id: true,
-        username: true,
-        firstName: true,
-        lastName: true,
-        type: true,
-        profileImage: true,
-        profileImageId: true,
-        profileImageFile: {
-          select: {
-            id: true,
-            s3Url: true,
-          },
-        },
-        bannerImage: true,
-        bannerImageId: true,
-        bannerImageFile: {
-          select: {
-            id: true,
-            s3Url: true,
-          },
-        },
-        address: true,
-        themePreference: true,
-        profileVisibility: true,
-        createdAt: true,
-        userProfile: this.profileSelect,
-      },
+      select: userProfileResponseSelect,
     });
 
     if (!user) {
@@ -112,33 +100,7 @@ export class UserProfileService {
   async getPublicProfile(userId: string, viewerId?: string): Promise<UserProfileResponseDto> {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
-      select: {
-        id: true,
-        username: true,
-        firstName: true,
-        lastName: true,
-        type: true,
-        profileImage: true,
-        profileImageId: true,
-        profileImageFile: {
-          select: {
-            id: true,
-            s3Url: true,
-          },
-        },
-        bannerImage: true,
-        bannerImageId: true,
-        bannerImageFile: {
-          select: {
-            id: true,
-            s3Url: true,
-          },
-        },
-        address: true,
-        profileVisibility: true,
-        createdAt: true,
-        userProfile: this.profileSelect,
-      },
+      select: userProfileResponseSelect,
     });
 
     if (!user) {
@@ -161,33 +123,7 @@ export class UserProfileService {
 
     const user = await this.prisma.user.findUnique({
       where: { username: normalizedUsername },
-      select: {
-        id: true,
-        username: true,
-        firstName: true,
-        lastName: true,
-        type: true,
-        profileImage: true,
-        profileImageId: true,
-        profileImageFile: {
-          select: {
-            id: true,
-            s3Url: true,
-          },
-        },
-        bannerImage: true,
-        bannerImageId: true,
-        bannerImageFile: {
-          select: {
-            id: true,
-            s3Url: true,
-          },
-        },
-        address: true,
-        profileVisibility: true,
-        createdAt: true,
-        userProfile: this.profileSelect,
-      },
+      select: userProfileResponseSelect,
     });
 
     if (!user) {

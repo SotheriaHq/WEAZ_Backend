@@ -24,6 +24,7 @@ import {
   toAuthUserResponse,
   AuthUser,
 } from 'src/auth/helper/prisma-select.helper';
+import { resolveRequiredProfileField } from 'src/common/user-profile-source.helper';
 import { TokenService } from './helper/general.helper';
 import { Request, Response } from 'express';
 import { UserHelperService } from './helper/user-helper.service';
@@ -285,7 +286,10 @@ export class AuthService {
       return brandName;
     }
 
-    const fullName = `${user.firstName ?? ''} ${user.lastName ?? ''}`.trim();
+    const fullName = `${resolveRequiredProfileField(
+      user,
+      'firstName',
+    )} ${resolveRequiredProfileField(user, 'lastName')}`.trim();
     if (fullName) {
       return fullName;
     }
@@ -785,7 +789,7 @@ export class AuthService {
 
   async updateProfile(
     userId: string,
-    dto: UpdateProfileDto & { profileImageId?: string },
+    dto: UpdateProfileDto,
   ) {
     const forbiddenFields = [
       'password',
@@ -810,9 +814,24 @@ export class AuthService {
       'ceoFirstName',
       'ceoLastName',
       'companyLocation',
-    ];
+    ] as const;
+    type ForbiddenProfileUpdateField = (typeof forbiddenFields)[number];
+    type AllowedProfileUpdateField =
+      | 'firstName'
+      | 'lastName'
+      | 'phoneNumber'
+      | 'address'
+      | 'profileImage'
+      | 'profileImageId'
+      | 'bannerImage'
+      | 'bannerImageId';
+    type AllowedProfileUpdateData = Partial<
+      Record<AllowedProfileUpdateField, string | null>
+    >;
+    const dtoRecord = dto as UpdateProfileDto &
+      Partial<Record<ForbiddenProfileUpdateField, unknown>>;
     const attemptedForbiddenField = forbiddenFields.find(
-      (field) => (dto as Record<string, unknown>)[field] !== undefined,
+      (field) => dtoRecord[field] !== undefined,
     );
     if (attemptedForbiddenField) {
       throw new BadRequestException(
@@ -820,8 +839,13 @@ export class AuthService {
       );
     }
 
-    const profileData: Record<string, unknown> = {};
-    const assignString = (field: keyof UpdateProfileDto) => {
+    const profileData: AllowedProfileUpdateData = {};
+    const assignString = (
+      field: Extract<
+        AllowedProfileUpdateField,
+        'firstName' | 'lastName' | 'phoneNumber' | 'address'
+      >,
+    ) => {
       const value = dto[field];
       if (value !== undefined) {
         profileData[field] =
@@ -834,17 +858,17 @@ export class AuthService {
     assignString('phoneNumber');
     assignString('address');
 
-    if ((dto as any).profileImage !== undefined) {
-      profileData.profileImage = (dto as any).profileImage;
+    if (dto.profileImage !== undefined) {
+      profileData.profileImage = dto.profileImage;
     }
-    if ((dto as any).profileImageId !== undefined) {
-      profileData.profileImageId = (dto as any).profileImageId;
+    if (dto.profileImageId !== undefined) {
+      profileData.profileImageId = dto.profileImageId;
     }
-    if ((dto as any).bannerImage !== undefined) {
-      profileData.bannerImage = (dto as any).bannerImage;
+    if (dto.bannerImage !== undefined) {
+      profileData.bannerImage = dto.bannerImage;
     }
-    if ((dto as any).bannerImageId !== undefined) {
-      profileData.bannerImageId = (dto as any).bannerImageId;
+    if (dto.bannerImageId !== undefined) {
+      profileData.bannerImageId = dto.bannerImageId;
     }
 
     try {
