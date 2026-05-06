@@ -1,9 +1,9 @@
 import {
   IsOptional,
   IsString,
-  IsEmail,
   IsNotEmpty,
   Matches,
+  IsUUID,
 } from 'class-validator';
 
 export class UpdateProfileDto {
@@ -12,10 +12,20 @@ export class UpdateProfileDto {
   username?: string;
 
   @IsOptional()
-  @IsEmail()
-  email?: string;
-
+  @IsString()
   profileImage?: string;
+
+  @IsOptional()
+  @IsUUID()
+  profileImageId?: string;
+
+  @IsOptional()
+  @IsString()
+  bannerImage?: string;
+
+  @IsOptional()
+  @IsUUID()
+  bannerImageId?: string;
 
   @IsOptional()
   @IsString({ message: 'Phone number must be a string' })
@@ -25,6 +35,7 @@ export class UpdateProfileDto {
   @IsString({ message: 'Address must be a string' })
   address?: string;
 
+  @IsOptional()
   @IsNotEmpty({ message: 'First name is required' })
   @IsString({ message: 'First name must be a string' })
   @Matches(/^[a-zA-Z\s-]+$/, {
@@ -32,6 +43,7 @@ export class UpdateProfileDto {
   })
   firstName?: string;
 
+  @IsOptional()
   @IsNotEmpty({ message: 'Last name is required' })
   @IsString({ message: 'Last name must be a string' })
   @Matches(/^[a-zA-Z\s-]+$/, {

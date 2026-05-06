@@ -10,6 +10,10 @@ describe('UserProfileService theme preferences', () => {
       findUnique: jest.fn(),
       update: jest.fn(),
     },
+    userProfile: {
+      upsert: jest.fn(),
+    },
+    $transaction: jest.fn((callback) => callback(mockPrisma)),
   } as unknown as PrismaService;
 
   let service: UserProfileService;
@@ -36,6 +40,7 @@ describe('UserProfileService theme preferences', () => {
       themePreference: 'system',
       profileVisibility: ProfileVisibility.UNLOCKED,
       createdAt: new Date('2026-05-05T00:00:00.000Z'),
+      userProfile: null,
     });
 
     const result = await service.getOwnProfile('user-1');
@@ -47,6 +52,49 @@ describe('UserProfileService theme preferences', () => {
         select: expect.objectContaining({ themePreference: true }),
       }),
     );
+  });
+
+  it('reads UserProfile fields first and falls back to legacy User fields', async () => {
+    (mockPrisma.user.findUnique as jest.Mock).mockResolvedValue({
+      id: 'user-1',
+      username: 'alex',
+      firstName: 'Legacy',
+      lastName: 'Name',
+      type: UserType.REGULAR,
+      profileImage: 'legacy-avatar.jpg',
+      profileImageId: 'legacy-avatar-id',
+      profileImageFile: { id: 'legacy-avatar-id', s3Url: 'legacy-avatar-s3.jpg' },
+      bannerImage: 'legacy-banner.jpg',
+      bannerImageId: null,
+      bannerImageFile: null,
+      address: 'legacy-address',
+      themePreference: 'system',
+      profileVisibility: ProfileVisibility.UNLOCKED,
+      createdAt: new Date('2026-05-05T00:00:00.000Z'),
+      userProfile: {
+        firstName: 'Profile',
+        lastName: 'Owner',
+        phoneNumber: null,
+        address: 'profile-address',
+        profileImage: null,
+        profileImageId: null,
+        profileImageFile: null,
+        bannerImage: 'profile-banner.jpg',
+        bannerImageId: null,
+        bannerImageFile: null,
+        profileVisibility: ProfileVisibility.LOCKED,
+      },
+    });
+
+    const result = await service.getOwnProfile('user-1');
+
+    expect(result.firstName).toBe('Profile');
+    expect(result.lastName).toBe('Owner');
+    expect(result.profileImage).toBe('legacy-avatar.jpg');
+    expect(result.bannerImage).toBe('profile-banner.jpg');
+    expect(result.address).toBe('profile-address');
+    expect(result.location).toBe('profile-address');
+    expect(result.profileVisibility).toBe(ProfileVisibility.LOCKED);
   });
 
   it.each(['light', 'dark', 'system'] as const)(

@@ -16,6 +16,38 @@ type SelectedFileUpload = {
   updatedAt: Date;
 } | null;
 
+const userProfileSelect = Prisma.validator<Prisma.UserProfileSelect>()({
+  firstName: true,
+  lastName: true,
+  phoneNumber: true,
+  address: true,
+  profileImage: true,
+  profileImageId: true,
+  profileImageFile: {
+    select: {
+      id: true,
+      s3Url: true,
+      fileName: true,
+      originalName: true,
+      createdAt: true,
+      updatedAt: true,
+    },
+  },
+  bannerImage: true,
+  bannerImageId: true,
+  bannerImageFile: {
+    select: {
+      id: true,
+      s3Url: true,
+      fileName: true,
+      originalName: true,
+      createdAt: true,
+      updatedAt: true,
+    },
+  },
+  profileVisibility: true,
+});
+
 export const authUserSelect = Prisma.validator<Prisma.UserSelect>()({
   id: true,
   username: true,
@@ -66,6 +98,9 @@ export const authUserSelect = Prisma.validator<Prisma.UserSelect>()({
   authVersion: true,
   createdAt: true,
   updatedAt: true,
+  userProfile: {
+    select: userProfileSelect,
+  },
 });
 export const profileUserSelect = Prisma.validator<Prisma.UserSelect>()({
   ...authUserSelect,
@@ -113,6 +148,7 @@ const mapFileUploadToDto = (
 export const toAuthUserResponse = (
   user: AuthUser | ProfileUser,
 ): AuthUserResponseDto => {
+  const profile = (user as any).userProfile ?? null;
   const verificationTruth = getBrandVerificationTruth({
     verificationStatus: user.brand?.verificationStatus,
     isStoreOpen: user.brand?.isStoreOpen,
@@ -123,12 +159,12 @@ export const toAuthUserResponse = (
     id: user.id,
     username: user.username,
     email: user.email,
-    firstName: user.firstName,
-    lastName: user.lastName,
+    firstName: profile?.firstName ?? user.firstName,
+    lastName: profile?.lastName ?? user.lastName,
     role: user.role,
     type: user.type,
-    phoneNumber: user.phoneNumber ?? null,
-    address: user.address ?? null,
+    phoneNumber: profile?.phoneNumber ?? user.phoneNumber ?? null,
+    address: profile?.address ?? user.address ?? null,
     brandFullName: user.brandFullName ?? null,
     brandDescription: user.brandDescription ?? null,
     brandCountry: user.brandCountry ?? null,
@@ -146,16 +182,20 @@ export const toAuthUserResponse = (
     ceoFirstName: user.ceoFirstName ?? null,
     ceoLastName: user.ceoLastName ?? null,
     companyLocation: user.companyLocation ?? null,
-    profileImage: user.profileImage ?? null,
-    profileImageId: user.profileImageId ?? null,
+    profileImage: profile?.profileImage ?? user.profileImage ?? null,
+    profileImageId: profile?.profileImageId ?? user.profileImageId ?? null,
     profileImageFile:
-      'profileImageFile' in user
+      profile?.profileImageFile
+        ? mapFileUploadToDto(profile.profileImageFile)
+        : 'profileImageFile' in user
         ? mapFileUploadToDto((user as ProfileUser).profileImageFile)
         : null,
-    bannerImage: user.bannerImage ?? null,
-    bannerImageId: user.bannerImageId ?? null,
+    bannerImage: profile?.bannerImage ?? user.bannerImage ?? null,
+    bannerImageId: profile?.bannerImageId ?? user.bannerImageId ?? null,
     bannerImageFile:
-      'bannerImageFile' in user
+      profile?.bannerImageFile
+        ? mapFileUploadToDto(profile.bannerImageFile)
+        : 'bannerImageFile' in user
         ? mapFileUploadToDto((user as ProfileUser).bannerImageFile ?? null)
         : null,
     isEmailVerified: user.isEmailVerified,

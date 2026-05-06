@@ -30,6 +30,7 @@
     "prisma:generate": "prisma generate",
     "prisma:seed": "ts-node prisma/seed.ts",
     "finance:settlement-backfill:audit": "ts-node -r tsconfig-paths/register scripts/audit-settlement-backfill.ts",
+    "users:profile-backfill": "ts-node -r tsconfig-paths/register scripts/backfill-user-profiles.ts",
     "seed": "prisma db seed",
     "reset:all": "node scripts/reset-all-data.cjs"
   },

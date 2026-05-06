@@ -12,6 +12,59 @@ import {
 export class UserProfileService {
   constructor(private prisma: PrismaService) { }
 
+  private readonly profileImageFileSelect = {
+    select: {
+      id: true,
+      s3Url: true,
+    },
+  };
+
+  private readonly profileSelect = {
+    select: {
+      firstName: true,
+      lastName: true,
+      phoneNumber: true,
+      address: true,
+      profileImage: true,
+      profileImageId: true,
+      profileImageFile: this.profileImageFileSelect,
+      bannerImage: true,
+      bannerImageId: true,
+      bannerImageFile: this.profileImageFileSelect,
+      profileVisibility: true,
+    },
+  };
+
+  private toUserProfileResponse(
+    user: any,
+    options: { includeThemePreference?: boolean } = {},
+  ): UserProfileResponseDto {
+    const profile = user.userProfile ?? null;
+    const address = profile?.address ?? user.address ?? undefined;
+
+    return new UserProfileResponseDto({
+      id: user.id,
+      username: user.username,
+      firstName: profile?.firstName ?? user.firstName,
+      lastName: profile?.lastName ?? user.lastName,
+      type: user.type,
+      profileImage: profile?.profileImage ?? user.profileImage ?? undefined,
+      profileImageId: profile?.profileImageId ?? user.profileImageId ?? undefined,
+      profileImageFile: profile?.profileImageFile ?? user.profileImageFile ?? null,
+      bannerImage: profile?.bannerImage ?? user.bannerImage ?? undefined,
+      bannerImageId: profile?.bannerImageId ?? user.bannerImageId ?? undefined,
+      bannerImageFile: profile?.bannerImageFile ?? user.bannerImageFile ?? null,
+      address,
+      location: address,
+      profileVisibility:
+        profile?.profileVisibility ?? user.profileVisibility,
+      ...(options.includeThemePreference
+        ? { themePreference: normalizeThemePreference(user.themePreference) }
+        : {}),
+      createdAt: user.createdAt.toISOString(),
+    });
+  }
+
   async getOwnProfile(userId: string): Promise<UserProfileResponseDto> {
     if (!userId) {
       throw new UnauthorizedException('Unauthorized');
@@ -45,6 +98,7 @@ export class UserProfileService {
         themePreference: true,
         profileVisibility: true,
         createdAt: true,
+        userProfile: this.profileSelect,
       },
     });
 
@@ -52,19 +106,7 @@ export class UserProfileService {
       throw new NotFoundException('User not found');
     }
 
-    // Calculate location from address if available
-    let location: string | undefined;
-    if (user.address) {
-      // Simple parsing - could be enhanced based on address format
-      location = user.address;
-    }
-
-    return new UserProfileResponseDto({
-      ...user,
-      location,
-      themePreference: normalizeThemePreference(user.themePreference),
-      createdAt: user.createdAt.toISOString(),
-    });
+    return this.toUserProfileResponse(user, { includeThemePreference: true });
   }
 
   async getPublicProfile(userId: string, viewerId?: string): Promise<UserProfileResponseDto> {
@@ -95,6 +137,7 @@ export class UserProfileService {
         address: true,
         profileVisibility: true,
         createdAt: true,
+        userProfile: this.profileSelect,
       },
     });
 
@@ -102,22 +145,12 @@ export class UserProfileService {
       throw new NotFoundException('User not found');
     }
 
-    // Calculate location from address if available
-    let location: string | undefined;
-    if (user.address) {
-      location = user.address;
-    }
-
     // Check if viewer is the owner
     const isOwner = viewerId === userId;
 
     // If it's not the owner and the profile is locked, we might need to restrict certain data
     // For now, we return the same data but in the future we could restrict based on visibility
-    return new UserProfileResponseDto({
-      ...user,
-      location,
-      createdAt: user.createdAt.toISOString(),
-    });
+    return this.toUserProfileResponse(user);
   }
 
   async resolvePublicProfileByUsername(username: string): Promise<UserProfileResponseDto> {
@@ -153,6 +186,7 @@ export class UserProfileService {
         address: true,
         profileVisibility: true,
         createdAt: true,
+        userProfile: this.profileSelect,
       },
     });
 
@@ -160,17 +194,34 @@ export class UserProfileService {
       throw new NotFoundException('User not found');
     }
 
-    return new UserProfileResponseDto({
-      ...user,
-      location: user.address ?? undefined,
-      createdAt: user.createdAt.toISOString(),
-    });
+    return this.toUserProfileResponse(user);
   }
 
   async updateProfileVisibility(userId: string, profileVisibility: ProfileVisibility): Promise<User> {
-    const user = await this.prisma.user.update({
-      where: { id: userId },
-      data: { profileVisibility },
+    const user = await this.prisma.$transaction(async (tx) => {
+      const legacyUser = await tx.user.update({
+        where: { id: userId },
+        data: { profileVisibility },
+      });
+
+      await tx.userProfile.upsert({
+        where: { userId },
+        create: {
+          userId,
+          firstName: legacyUser.firstName,
+          lastName: legacyUser.lastName,
+          phoneNumber: legacyUser.phoneNumber,
+          address: legacyUser.address,
+          profileImage: legacyUser.profileImage,
+          profileImageId: legacyUser.profileImageId,
+          bannerImage: legacyUser.bannerImage,
+          bannerImageId: legacyUser.bannerImageId,
+          profileVisibility,
+        },
+        update: { profileVisibility },
+      });
+
+      return legacyUser;
     });
 
     return user;

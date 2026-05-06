@@ -414,6 +414,7 @@ export class AuthService {
             role: Role.User,
             firstName: dbFirstName,
             lastName: dbLastName,
+            profileImage: signupDto.profileImage,
             email: signupDto.email,
             password: hashedPassword,
             brandFullName: signupDto.brandFullName,
@@ -421,6 +422,13 @@ export class AuthService {
             industriNumber,
             emailVerificationCode: verificationToken,
             isEmailVerified: false,
+            userProfile: {
+              create: {
+                firstName: dbFirstName,
+                lastName: dbLastName,
+                profileImage: signupDto.profileImage,
+              },
+            },
             ...(signupDto.type === UserType.BRAND
               ? {
                 brand: {
@@ -779,18 +787,142 @@ export class AuthService {
     userId: string,
     dto: UpdateProfileDto & { profileImageId?: string },
   ) {
-    // Prevent password update
-    if ((dto as any).password !== undefined) {
-      throw new BadRequestException('Password cannot be updated here');
+    const forbiddenFields = [
+      'password',
+      'email',
+      'role',
+      'type',
+      'status',
+      'isActive',
+      'isEmailVerified',
+      'authVersion',
+      'mustResetPassword',
+      'brandFullName',
+      'brandDescription',
+      'brandCountry',
+      'brandState',
+      'brandCity',
+      'brandTags',
+      'brandBusinessType',
+      'cacNumber',
+      'tin',
+      'ceoNin',
+      'ceoFirstName',
+      'ceoLastName',
+      'companyLocation',
+    ];
+    const attemptedForbiddenField = forbiddenFields.find(
+      (field) => (dto as Record<string, unknown>)[field] !== undefined,
+    );
+    if (attemptedForbiddenField) {
+      throw new BadRequestException(
+        `${attemptedForbiddenField} cannot be updated here`,
+      );
     }
+
+    const profileData: Record<string, unknown> = {};
+    const assignString = (field: keyof UpdateProfileDto) => {
+      const value = dto[field];
+      if (value !== undefined) {
+        profileData[field] =
+          typeof value === 'string' ? value.trim() : value;
+      }
+    };
+
+    assignString('firstName');
+    assignString('lastName');
+    assignString('phoneNumber');
+    assignString('address');
+
+    if ((dto as any).profileImage !== undefined) {
+      profileData.profileImage = (dto as any).profileImage;
+    }
+    if ((dto as any).profileImageId !== undefined) {
+      profileData.profileImageId = (dto as any).profileImageId;
+    }
+    if ((dto as any).bannerImage !== undefined) {
+      profileData.bannerImage = (dto as any).bannerImage;
+    }
+    if ((dto as any).bannerImageId !== undefined) {
+      profileData.bannerImageId = (dto as any).bannerImageId;
+    }
+
     try {
-      const updatedUser = await this.prisma.user.update({
-        where: { id: userId },
-        data: dto,
-        select: profileUserSelect,
+      const updatedUser = await this.prisma.$transaction(async (tx) => {
+        const legacyUser = await tx.user.findUnique({
+          where: { id: userId },
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            phoneNumber: true,
+            address: true,
+            profileImage: true,
+            profileImageId: true,
+            bannerImage: true,
+            bannerImageId: true,
+            profileVisibility: true,
+          },
+        });
+
+        if (!legacyUser) {
+          throw new UnauthorizedException('User not found');
+        }
+
+        const hasProfileUpdates = Object.keys(profileData).length > 0;
+        if (hasProfileUpdates) {
+          await tx.userProfile.upsert({
+            where: { userId },
+            create: {
+              userId,
+              firstName:
+                (profileData.firstName as string | undefined) ??
+                legacyUser.firstName,
+              lastName:
+                (profileData.lastName as string | undefined) ??
+                legacyUser.lastName,
+              phoneNumber:
+                (profileData.phoneNumber as string | null | undefined) ??
+                legacyUser.phoneNumber,
+              address:
+                (profileData.address as string | null | undefined) ??
+                legacyUser.address,
+              profileImage:
+                (profileData.profileImage as string | null | undefined) ??
+                legacyUser.profileImage,
+              profileImageId:
+                (profileData.profileImageId as string | null | undefined) ??
+                legacyUser.profileImageId,
+              bannerImage:
+                (profileData.bannerImage as string | null | undefined) ??
+                legacyUser.bannerImage,
+              bannerImageId:
+                (profileData.bannerImageId as string | null | undefined) ??
+                legacyUser.bannerImageId,
+              profileVisibility: legacyUser.profileVisibility,
+            },
+            update: profileData,
+          });
+
+          await tx.user.update({
+            where: { id: userId },
+            data: profileData,
+          });
+        }
+
+        return tx.user.findUnique({
+          where: { id: userId },
+          select: profileUserSelect,
+        });
       });
+      if (!updatedUser) {
+        throw new UnauthorizedException('User not found');
+      }
       return toAuthUserResponse(updatedUser);
     } catch (error) {
+      if (error instanceof BadRequestException || error instanceof UnauthorizedException) {
+        throw error;
+      }
       this.logger.error('Profile update error:', error);
       throw new BadRequestException('Failed to update profile');
     }
