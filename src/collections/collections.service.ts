@@ -60,6 +60,10 @@ import {
 import { TAG_ENTITY_TYPE } from 'src/tags/tag-entity-type';
 import { CategoriesService } from 'src/categories/categories.service';
 import { BrandAccessService } from 'src/brands/brand-access.service';
+import {
+  BRAND_PERMISSIONS,
+  BrandPermissionCode,
+} from 'src/brands/permissions/brand-permissions';
 
 type CollectionScope = 'design' | 'store' | 'all';
 type CollectionDomainValue = 'DESIGN' | 'STORE';
@@ -117,6 +121,7 @@ export class CollectionsService {
         await this.brandAccessService.assertCanManageCatalog(
           userId,
           context.activeBrandId,
+          BRAND_PERMISSIONS.CATALOG_WRITE,
         );
         return user;
       }
@@ -153,6 +158,7 @@ export class CollectionsService {
         await this.brandAccessService.assertCanManageCatalog(
           actorUserId,
           context.activeBrandId,
+          BRAND_PERMISSIONS.CATALOG_WRITE,
         );
         const brand = await this.prisma.brand.findUnique({
           where: { id: context.activeBrandId },
@@ -186,6 +192,7 @@ export class CollectionsService {
   private async assertActorCanManageLegacyOwnerCatalog(
     actorUserId: string,
     legacyOwnerId: string,
+    permission: BrandPermissionCode = BRAND_PERMISSIONS.CATALOG_WRITE,
   ) {
     if (legacyOwnerId === actorUserId) {
       return;
@@ -199,7 +206,11 @@ export class CollectionsService {
       await this.brandAccessService.resolveBrandIdFromBrandOrOwnerId(
         legacyOwnerId,
       );
-    await this.brandAccessService.assertCanManageCatalog(actorUserId, brandId);
+    await this.brandAccessService.assertCanManageCatalog(
+      actorUserId,
+      brandId,
+      permission,
+    );
   }
 
   private normalizeMeasurementKeys(raw?: string[] | null): string[] {
@@ -1039,6 +1050,7 @@ export class CollectionsService {
     collectionId: string,
     ownerId: string,
     expectedDomain?: CollectionDomainValue,
+    permission: BrandPermissionCode = BRAND_PERMISSIONS.CATALOG_WRITE,
   ) {
     if (expectedDomain === 'STORE') {
       const s = await this.prisma.storeCollection.findUnique({
@@ -1047,7 +1059,11 @@ export class CollectionsService {
       });
       if (!s) throw new NotFoundException('Collection not found');
       if (s.deletedAt) throw new GoneException('Collection has been deleted');
-      await this.assertActorCanManageLegacyOwnerCatalog(ownerId, s.ownerId);
+      await this.assertActorCanManageLegacyOwnerCatalog(
+        ownerId,
+        s.ownerId,
+        permission,
+      );
       return {
         ownerId: s.ownerId,
         deletedAt: s.deletedAt,
@@ -1066,7 +1082,11 @@ export class CollectionsService {
       });
       if (!s) throw new NotFoundException('Collection not found');
       if (s.deletedAt) throw new GoneException('Collection has been deleted');
-      await this.assertActorCanManageLegacyOwnerCatalog(ownerId, s.ownerId);
+      await this.assertActorCanManageLegacyOwnerCatalog(
+        ownerId,
+        s.ownerId,
+        permission,
+      );
       return {
         ownerId: s.ownerId,
         deletedAt: s.deletedAt,
@@ -1075,7 +1095,11 @@ export class CollectionsService {
     }
     if (!c) throw new NotFoundException('Collection not found');
     if (c.deletedAt) throw new GoneException('Collection has been deleted');
-    await this.assertActorCanManageLegacyOwnerCatalog(ownerId, c.ownerId);
+    await this.assertActorCanManageLegacyOwnerCatalog(
+      ownerId,
+      c.ownerId,
+      permission,
+    );
     if (expectedDomain && c.domain !== expectedDomain) {
       throw new BadRequestException('Design action attempted on a store collection.');
     }
@@ -3813,7 +3837,12 @@ export class CollectionsService {
     const resolvedScope = this.normalizeCollectionScope(scope);
     const expectedDomain = this.scopeToDomain(resolvedScope);
     if (expectedDomain === 'STORE') {
-      await this.assertOwner(collectionId, ownerId, 'STORE');
+      await this.assertOwner(
+        collectionId,
+        ownerId,
+        'STORE',
+        BRAND_PERMISSIONS.CATALOG_DELETE,
+      );
       const collection = await this.prisma.storeCollection.findUnique({
         where: { id: collectionId },
         select: { status: true, visibility: true, deletedAt: true, tags: true },
@@ -3865,7 +3894,12 @@ export class CollectionsService {
       return { success: true, status: 'ARCHIVED' };
     }
 
-    await this.assertOwner(collectionId, ownerId, expectedDomain ?? undefined);
+    await this.assertOwner(
+      collectionId,
+      ownerId,
+      expectedDomain ?? undefined,
+      BRAND_PERMISSIONS.CATALOG_DELETE,
+    );
     const collection = await this.prisma.collection.findUnique({
       where: { id: collectionId },
       select: { status: true, visibility: true, deletedAt: true, tags: true },
@@ -3925,7 +3959,12 @@ export class CollectionsService {
     const resolvedScope = this.normalizeCollectionScope(scope);
     const expectedDomain = this.scopeToDomain(resolvedScope);
     if (expectedDomain === 'STORE') {
-      await this.assertOwner(collectionId, ownerId, 'STORE');
+      await this.assertOwner(
+        collectionId,
+        ownerId,
+        'STORE',
+        BRAND_PERMISSIONS.CATALOG_DELETE,
+      );
       await this.ensureAdminRepublishUnlocked('StoreCollection', collectionId);
       const collection = await this.prisma.storeCollection.findUnique({
         where: { id: collectionId },
@@ -3982,7 +4021,12 @@ export class CollectionsService {
       return { success: true, status: restoreStatus };
     }
 
-    await this.assertOwner(collectionId, ownerId, expectedDomain ?? undefined);
+    await this.assertOwner(
+      collectionId,
+      ownerId,
+      expectedDomain ?? undefined,
+      BRAND_PERMISSIONS.CATALOG_DELETE,
+    );
     await this.ensureAdminRepublishUnlocked('Collection', collectionId);
     const collection = await this.prisma.collection.findUnique({
       where: { id: collectionId },
@@ -5296,7 +5340,12 @@ export class CollectionsService {
     const resolvedScope = this.normalizeCollectionScope(scope);
     const expectedDomain = this.scopeToDomain(resolvedScope);
     if (expectedDomain === 'STORE') {
-      await this.assertOwner(collectionId, requesterId, 'STORE');
+      await this.assertOwner(
+        collectionId,
+        requesterId,
+        'STORE',
+        BRAND_PERMISSIONS.CATALOG_DELETE,
+      );
       const collection = await this.prisma.storeCollection.findUnique({
         where: { id: collectionId },
       });
@@ -5362,6 +5411,7 @@ export class CollectionsService {
     await this.assertActorCanManageLegacyOwnerCatalog(
       requesterId,
       collection.ownerId,
+      BRAND_PERMISSIONS.CATALOG_DELETE,
     );
     if (expectedDomain && collection.domain !== expectedDomain) {
       throw new BadRequestException(
@@ -5742,6 +5792,7 @@ export class CollectionsService {
       await this.assertActorCanManageLegacyOwnerCatalog(
         ownerId,
         storeCollection.ownerId,
+        BRAND_PERMISSIONS.CATALOG_DELETE,
       );
       if (!storeCollection.deletedAt) {
         throw new BadRequestException('Collection is not deleted');
@@ -5802,7 +5853,11 @@ export class CollectionsService {
       } as any,
     } as any)) as any;
     if (!collection) throw new NotFoundException('Collection not found');
-    await this.assertActorCanManageLegacyOwnerCatalog(ownerId, collection.ownerId);
+    await this.assertActorCanManageLegacyOwnerCatalog(
+      ownerId,
+      collection.ownerId,
+      BRAND_PERMISSIONS.CATALOG_DELETE,
+    );
     if (!collection.deletedAt) {
       throw new BadRequestException('Collection is not deleted');
     }
@@ -5868,6 +5923,7 @@ export class CollectionsService {
       await this.assertActorCanManageLegacyOwnerCatalog(
         ownerId,
         storeCollection.ownerId,
+        BRAND_PERMISSIONS.CATALOG_DELETE,
       );
       if (!storeCollection.deletedAt) {
         throw new BadRequestException(
@@ -5884,7 +5940,11 @@ export class CollectionsService {
       include: { medias: { include: { file: true } } },
     });
     if (!collection) throw new NotFoundException('Collection not found');
-    await this.assertActorCanManageLegacyOwnerCatalog(ownerId, collection.ownerId);
+    await this.assertActorCanManageLegacyOwnerCatalog(
+      ownerId,
+      collection.ownerId,
+      BRAND_PERMISSIONS.CATALOG_DELETE,
+    );
     if (expectedDomain && collection.domain !== expectedDomain) {
       throw new BadRequestException(
         'Permanent delete requested with design scope for a store collection.',
@@ -5941,6 +6001,7 @@ export class CollectionsService {
     await this.assertActorCanManageLegacyOwnerCatalog(
       requesterId,
       collection.ownerId,
+      BRAND_PERMISSIONS.CATALOG_DELETE,
     );
 
     const media = collection.medias.find(
@@ -8818,7 +8879,12 @@ export class CollectionsService {
     mediaId: string,
     ownerId: string,
   ) {
-    await this.assertOwner(collectionId, ownerId);
+    await this.assertOwner(
+      collectionId,
+      ownerId,
+      undefined,
+      BRAND_PERMISSIONS.CATALOG_DELETE,
+    );
 
     const collection = await this.prisma.collection.findUnique({
       where: { id: collectionId },

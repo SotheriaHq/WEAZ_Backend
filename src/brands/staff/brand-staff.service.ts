@@ -13,6 +13,7 @@ import {
 import { createHash, randomBytes } from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
 import { BrandAccessService } from '../brand-access.service';
+import { BrandPermissionService } from '../permissions/brand-permission.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 
 const STAFF_INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -44,6 +45,7 @@ export class BrandStaffService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly brandAccessService: BrandAccessService,
+    private readonly brandPermissionService: BrandPermissionService,
   ) {}
 
   private normalizeEmail(email: string): string {
@@ -434,6 +436,32 @@ export class BrandStaffService {
       brandIdOrOwnerId,
       memberId,
       BrandMemberStatus.REMOVED,
+    );
+  }
+
+  async getStaffPermissions(
+    actorUserId: string,
+    brandIdOrOwnerId: string,
+    memberId: string,
+  ) {
+    return this.brandPermissionService.getMemberPermissions(
+      actorUserId,
+      brandIdOrOwnerId,
+      memberId,
+    );
+  }
+
+  async updateStaffPermissions(
+    actorUserId: string,
+    brandIdOrOwnerId: string,
+    memberId: string,
+    permissions: string[],
+  ) {
+    return this.brandPermissionService.setMemberPermissions(
+      actorUserId,
+      brandIdOrOwnerId,
+      memberId,
+      permissions,
     );
   }
 }

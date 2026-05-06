@@ -206,4 +206,48 @@ describe('BrandAccessService', () => {
       service.assertNotLastOwner('brand-1', 'member-1'),
     ).rejects.toBeInstanceOf(ForbiddenException);
   });
+
+  it('uses permission service for catalog.write checks when available', async () => {
+    const permissionService = {
+      assertPermission: jest.fn().mockResolvedValue(undefined),
+    };
+    const permissionAwareService = new BrandAccessService(
+      prisma,
+      permissionService as any,
+    );
+
+    await expect(
+      permissionAwareService.assertCanManageCatalog('viewer-1', 'brand-1'),
+    ).resolves.toBeUndefined();
+    expect(permissionService.assertPermission).toHaveBeenCalledWith(
+      'viewer-1',
+      'brand-1',
+      'catalog.write',
+    );
+  });
+
+  it('can require catalog.delete for destructive catalog actions', async () => {
+    const permissionService = {
+      assertPermission: jest.fn().mockRejectedValue(
+        new ForbiddenException('missing permission'),
+      ),
+    };
+    const permissionAwareService = new BrandAccessService(
+      prisma,
+      permissionService as any,
+    );
+
+    await expect(
+      permissionAwareService.assertCanManageCatalog(
+        'viewer-1',
+        'brand-1',
+        'catalog.delete',
+      ),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    expect(permissionService.assertPermission).toHaveBeenCalledWith(
+      'viewer-1',
+      'brand-1',
+      'catalog.delete',
+    );
+  });
 });

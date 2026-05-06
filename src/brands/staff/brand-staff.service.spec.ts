@@ -20,6 +20,10 @@ describe('BrandStaffService', () => {
     assertCanManageStaff: jest.fn(),
     assertNotLastOwner: jest.fn(),
   };
+  const brandPermissionService = {
+    getMemberPermissions: jest.fn(),
+    setMemberPermissions: jest.fn(),
+  };
 
   const prisma: any = {
     user: {
@@ -41,13 +45,33 @@ describe('BrandStaffService', () => {
     $transaction: jest.fn((callback) => callback(prisma)),
   };
 
-  const service = new BrandStaffService(prisma, brandAccessService as any);
+  const service = new BrandStaffService(
+    prisma,
+    brandAccessService as any,
+    brandPermissionService as any,
+  );
 
   beforeEach(() => {
     jest.clearAllMocks();
     brandAccessService.resolveBrandIdFromBrandOrOwnerId.mockResolvedValue('brand-1');
     brandAccessService.assertCanManageStaff.mockResolvedValue(undefined);
     brandAccessService.assertNotLastOwner.mockResolvedValue(undefined);
+    brandPermissionService.getMemberPermissions.mockResolvedValue({
+      memberId: 'member-1',
+      role: BrandMemberRole.VIEWER,
+      status: BrandMemberStatus.ACTIVE,
+      roleDefaults: [],
+      explicitPermissions: [],
+      effectivePermissions: [],
+    });
+    brandPermissionService.setMemberPermissions.mockResolvedValue({
+      memberId: 'member-1',
+      role: BrandMemberRole.VIEWER,
+      status: BrandMemberStatus.ACTIVE,
+      roleDefaults: [],
+      explicitPermissions: ['catalog.write'],
+      effectivePermissions: ['catalog.read', 'catalog.write'],
+    });
     prisma.user.findUnique.mockResolvedValue(null);
     prisma.brandMember.findUnique.mockResolvedValue(null);
     prisma.brandStaffInvite.findFirst.mockResolvedValue(null);
@@ -433,6 +457,52 @@ describe('BrandStaffService', () => {
 
     await expect(
       service.removeStaff('owner-1', 'brand-1', 'member-1'),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it('owner can view member permissions', async () => {
+    await expect(
+      service.getStaffPermissions('owner-1', 'brand-1', 'member-1'),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        memberId: 'member-1',
+        effectivePermissions: [],
+      }),
+    );
+    expect(brandPermissionService.getMemberPermissions).toHaveBeenCalledWith(
+      'owner-1',
+      'brand-1',
+      'member-1',
+    );
+  });
+
+  it('owner can update member permissions', async () => {
+    await expect(
+      service.updateStaffPermissions('owner-1', 'brand-1', 'member-1', [
+        'catalog.write',
+      ]),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        explicitPermissions: ['catalog.write'],
+      }),
+    );
+    expect(brandPermissionService.setMemberPermissions).toHaveBeenCalledWith(
+      'owner-1',
+      'brand-1',
+      'member-1',
+      ['catalog.write'],
+    );
+  });
+
+  it('non-owner cannot update permissions', async () => {
+    brandPermissionService.setMemberPermissions.mockRejectedValue(
+      new ForbiddenException('Only a brand owner can manage staff permissions'),
+    );
+
+    await expect(
+      service.updateStaffPermissions('manager-1', 'brand-1', 'member-1', [
+        'catalog.write',
+      ]),
     ).rejects.toBeInstanceOf(ForbiddenException);
   });
 });

@@ -1,10 +1,24 @@
-import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+  Optional,
+} from '@nestjs/common';
 import { BrandMemberRole, BrandMemberStatus } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
+import { BrandPermissionService } from './permissions/brand-permission.service';
+import {
+  BRAND_PERMISSIONS,
+  BrandPermissionCode,
+} from './permissions/brand-permissions';
 
 @Injectable()
 export class BrandAccessService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    @Optional()
+    private readonly brandPermissionService?: BrandPermissionService,
+  ) {}
 
   private async resolveBrand(brandIdOrOwnerId: string) {
     const brand = await this.prisma.brand.findFirst({
@@ -302,7 +316,13 @@ export class BrandAccessService {
   async assertCanManageCatalog(
     userId: string,
     brandId: string,
+    permission: BrandPermissionCode = BRAND_PERMISSIONS.CATALOG_WRITE,
   ): Promise<void> {
+    if (this.brandPermissionService) {
+      await this.brandPermissionService.assertPermission(userId, brandId, permission);
+      return;
+    }
+
     const brand = await this.resolveBrand(brandId);
     if (brand.ownerId === userId) {
       return;
@@ -331,5 +351,57 @@ export class BrandAccessService {
     }
 
     throw new ForbiddenException('You cannot manage this brand catalog');
+  }
+
+  async assertCanUpdateBrandProfile(
+    userId: string,
+    brandId: string,
+  ): Promise<void> {
+    if (this.brandPermissionService) {
+      await this.brandPermissionService.assertPermission(
+        userId,
+        brandId,
+        BRAND_PERMISSIONS.BRAND_PROFILE_UPDATE,
+      );
+      return;
+    }
+
+    await this.assertBrandAccess(userId, brandId);
+  }
+
+  async assertCanSubmitVerification(
+    userId: string,
+    brandId: string,
+  ): Promise<void> {
+    if (this.brandPermissionService) {
+      await this.brandPermissionService.assertPermission(
+        userId,
+        brandId,
+        BRAND_PERMISSIONS.VERIFICATION_SUBMIT,
+      );
+      return;
+    }
+
+    await this.assertBrandAccess(userId, brandId);
+  }
+
+  async assertCanManageStaffWithPermission(
+    userId: string,
+    brandId: string,
+  ): Promise<void> {
+    if (await this.isActiveOwner(userId, brandId)) {
+      return;
+    }
+
+    if (this.brandPermissionService) {
+      await this.brandPermissionService.assertPermission(
+        userId,
+        brandId,
+        BRAND_PERMISSIONS.BRAND_STAFF_MANAGE,
+      );
+      return;
+    }
+
+    throw new ForbiddenException('Only a brand owner can manage staff');
   }
 }

@@ -11,7 +11,8 @@ describe('BrandsController brand access endpoints', () => {
     resubmitInfo: jest.fn(),
   };
   const brandAccessService = {
-    assertBrandAccess: jest.fn(),
+    assertCanUpdateBrandProfile: jest.fn(),
+    assertCanSubmitVerification: jest.fn(),
   };
 
   const controller = new BrandsController(
@@ -26,7 +27,7 @@ describe('BrandsController brand access endpoints', () => {
   });
 
   it('brand owner can update brand profile', async () => {
-    brandAccessService.assertBrandAccess.mockResolvedValue(undefined);
+    brandAccessService.assertCanUpdateBrandProfile.mockResolvedValue(undefined);
     brandsService.updateBrandProfile.mockResolvedValue({ id: 'owner-1' });
 
     await expect(
@@ -37,14 +38,14 @@ describe('BrandsController brand access endpoints', () => {
       ),
     ).resolves.toEqual({ id: 'owner-1' });
 
-    expect(brandAccessService.assertBrandAccess).toHaveBeenCalledWith(
+    expect(brandAccessService.assertCanUpdateBrandProfile).toHaveBeenCalledWith(
       'owner-1',
       'brand-1',
     );
   });
 
   it('regular user cannot update brand profile', async () => {
-    brandAccessService.assertBrandAccess.mockRejectedValue(
+    brandAccessService.assertCanUpdateBrandProfile.mockRejectedValue(
       new ForbiddenException('Not authorized for this brand'),
     );
 
@@ -59,7 +60,7 @@ describe('BrandsController brand access endpoints', () => {
   });
 
   it('non-member brand user cannot update another brand', async () => {
-    brandAccessService.assertBrandAccess.mockRejectedValue(
+    brandAccessService.assertCanUpdateBrandProfile.mockRejectedValue(
       new ForbiddenException('Not authorized for this brand'),
     );
 
@@ -74,7 +75,7 @@ describe('BrandsController brand access endpoints', () => {
   });
 
   it('owner can submit and resubmit brand verification', async () => {
-    brandAccessService.assertBrandAccess.mockResolvedValue(undefined);
+    brandAccessService.assertCanSubmitVerification.mockResolvedValue(undefined);
     brandVerificationService.submit.mockResolvedValue({ verificationStatus: 'PENDING' });
     brandVerificationService.resubmitInfo.mockResolvedValue({
       verificationStatus: 'IN_REVIEW',
@@ -94,7 +95,7 @@ describe('BrandsController brand access endpoints', () => {
   });
 
   it('non-owner non-member cannot submit brand verification', async () => {
-    brandAccessService.assertBrandAccess.mockRejectedValue(
+    brandAccessService.assertCanSubmitVerification.mockRejectedValue(
       new ForbiddenException('Not authorized for this brand'),
     );
 

@@ -16,6 +16,7 @@ import { BrandStaffInviteTokenDto } from './dto/brand-staff-invite-token.dto';
 import { InviteBrandStaffDto } from './dto/invite-brand-staff.dto';
 import { UpdateBrandStaffRoleDto } from './dto/update-brand-staff-role.dto';
 import { UpdateBrandStaffStatusDto } from './dto/update-brand-staff-status.dto';
+import { UpdateBrandMemberPermissionsDto } from './dto/update-brand-member-permissions.dto';
 
 @Controller()
 export class BrandStaffController {
@@ -99,6 +100,37 @@ export class BrandStaffController {
       brandId,
       memberId,
       dto.status,
+    );
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Get('brands/:brandId/staff/:memberId/permissions')
+  async getStaffPermissions(
+    @Param('brandId') brandId: string,
+    @Param('memberId') memberId: string,
+    @Req() req: any,
+  ) {
+    return this.brandStaffService.getStaffPermissions(
+      req.user.id,
+      brandId,
+      memberId,
+    );
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Patch('brands/:brandId/staff/:memberId/permissions')
+  async updateStaffPermissions(
+    @Param('brandId') brandId: string,
+    @Param('memberId') memberId: string,
+    @Body(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
+    dto: UpdateBrandMemberPermissionsDto,
+    @Req() req: any,
+  ) {
+    return this.brandStaffService.updateStaffPermissions(
+      req.user.id,
+      brandId,
+      memberId,
+      dto.permissions,
     );
   }
 

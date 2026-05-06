@@ -10,6 +10,7 @@ import { TagsModule } from '../tags/tags.module';
 import { BrandVerificationModule } from '../brand-verification/brand-verification.module';
 import { BrandStaffController } from './staff/brand-staff.controller';
 import { BrandStaffService } from './staff/brand-staff.service';
+import { BrandPermissionService } from './permissions/brand-permission.service';
 
 @Module({
   imports: [
@@ -19,8 +20,19 @@ import { BrandStaffService } from './staff/brand-staff.service';
     TagsModule,
     BrandVerificationModule,
   ],
-  providers: [BrandsService, BrandAccessService, BrandStaffService, PrismaService],
+  providers: [
+    BrandsService,
+    BrandAccessService,
+    BrandStaffService,
+    BrandPermissionService,
+    PrismaService,
+  ],
   controllers: [BrandsController, BrandStaffController],
-  exports: [BrandsService, BrandAccessService, BrandStaffService],
+  exports: [
+    BrandsService,
+    BrandAccessService,
+    BrandStaffService,
+    BrandPermissionService,
+  ],
 })
 export class BrandsModule {}

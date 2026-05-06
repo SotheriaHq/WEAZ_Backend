@@ -10,6 +10,8 @@ describe('BrandStaffController', () => {
     rejectInvite: jest.fn(),
     updateStaffRole: jest.fn(),
     updateStaffStatus: jest.fn(),
+    getStaffPermissions: jest.fn(),
+    updateStaffPermissions: jest.fn(),
     removeStaff: jest.fn(),
   };
 
@@ -91,6 +93,54 @@ describe('BrandStaffController', () => {
       'brand-1',
       'member-1',
       BrandMemberStatus.SUSPENDED,
+    );
+  });
+
+  it('delegates staff permission view and update to the staff service', async () => {
+    brandStaffService.getStaffPermissions.mockResolvedValue({
+      memberId: 'member-1',
+      roleDefaults: [],
+      explicitPermissions: [],
+      effectivePermissions: [],
+    });
+    brandStaffService.updateStaffPermissions.mockResolvedValue({
+      memberId: 'member-1',
+      explicitPermissions: ['catalog.write'],
+    });
+
+    await expect(
+      controller.getStaffPermissions('brand-1', 'member-1', {
+        user: { id: 'owner-1' },
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        memberId: 'member-1',
+      }),
+    );
+
+    await expect(
+      controller.updateStaffPermissions(
+        'brand-1',
+        'member-1',
+        { permissions: ['catalog.write'] },
+        { user: { id: 'owner-1' } },
+      ),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        explicitPermissions: ['catalog.write'],
+      }),
+    );
+
+    expect(brandStaffService.getStaffPermissions).toHaveBeenCalledWith(
+      'owner-1',
+      'brand-1',
+      'member-1',
+    );
+    expect(brandStaffService.updateStaffPermissions).toHaveBeenCalledWith(
+      'owner-1',
+      'brand-1',
+      'member-1',
+      ['catalog.write'],
     );
   });
 });

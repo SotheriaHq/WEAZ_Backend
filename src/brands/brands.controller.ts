@@ -154,7 +154,7 @@ export class BrandsController {
     if (!id) {
       throw new BadRequestException('Brand id is required');
     }
-    await this.brandAccessService.assertBrandAccess(req.user.id, id);
+    await this.brandAccessService.assertCanUpdateBrandProfile(req.user.id, id);
     return this.brandsService.updateBrandProfile(id, dto);
   }
 
@@ -438,7 +438,7 @@ export class BrandsController {
     @Body(ValidationPipe) dto: SubmitBrandVerificationDto,
     @Req() req: any,
   ) {
-    await this.brandAccessService.assertBrandAccess(req.user.id, brandId);
+    await this.brandAccessService.assertCanSubmitVerification(req.user.id, brandId);
     return this.brandVerificationService.submit(brandId, dto);
   }
 
@@ -486,7 +486,7 @@ export class BrandsController {
     @Body(ValidationPipe) dto: ResubmitVerificationInfoDto,
     @Req() req: any,
   ) {
-    await this.brandAccessService.assertBrandAccess(req.user.id, brandId);
+    await this.brandAccessService.assertCanSubmitVerification(req.user.id, brandId);
     return this.brandVerificationService.resubmitInfo(brandId, dto, req.user.id);
   }
 

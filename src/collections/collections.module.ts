@@ -18,6 +18,7 @@ import { QueueModule } from 'src/queue/queue.module';
 import { CategoriesModule } from 'src/categories/categories.module';
 import { SystemConfigModule } from 'src/admin/system-config/system-config.module';
 import { BrandAccessService } from 'src/brands/brand-access.service';
+import { BrandPermissionService } from 'src/brands/permissions/brand-permission.service';
 
 @Module({
   imports: [
@@ -39,6 +40,7 @@ import { BrandAccessService } from 'src/brands/brand-access.service';
     EventsGateway,
     IdempotencyInterceptor,
     BrandAccessService,
+    BrandPermissionService,
   ],
   controllers: [CollectionsController, DesignsController, StoreCollectionsController],
   exports: [CollectionsService],

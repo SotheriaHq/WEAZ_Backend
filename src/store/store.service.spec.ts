@@ -291,6 +291,7 @@ describe('StoreService', () => {
     expect(brandAccess.assertCanManageCatalog).toHaveBeenCalledWith(
       'staff_1',
       'brand_1',
+      'catalog.write',
     );
   });
 
@@ -335,6 +336,62 @@ describe('StoreService', () => {
     expect(brandAccess.assertCanManageCatalog).toHaveBeenCalledWith(
       'catalog_manager_1',
       'brand_1',
+      'catalog.write',
+    );
+  });
+
+  it('requires catalog.delete for product media deletion', async () => {
+    const brandAccess = {
+      assertCanManageCatalog: jest.fn().mockResolvedValue(undefined),
+    };
+    const catalogPrisma = {
+      product: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: 'product_1',
+          brandId: 'brand_1',
+          brand: { id: 'brand_1', ownerId: 'owner_1' },
+          images: ['https://cdn.example.com/image.jpg'],
+          thumbnail: 'https://cdn.example.com/image.jpg',
+        }),
+        update: jest.fn().mockResolvedValue({}),
+      },
+      fileUpload: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: 'media_1',
+          s3Url: 'https://cdn.example.com/image.jpg',
+          userId: 'catalog_manager_1',
+        }),
+      },
+    } as any;
+    const uploadService = {
+      deleteFile: jest.fn().mockResolvedValue(undefined),
+    };
+    const catalogService = new StoreService(
+      catalogPrisma,
+      {} as any,
+      uploadService as any,
+      {} as any,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      brandAccess as any,
+    );
+
+    await expect(
+      catalogService.deleteProductMedia(
+        'catalog_manager_1',
+        'product_1',
+        'media_1',
+      ),
+    ).resolves.toEqual({ success: true });
+    expect(brandAccess.assertCanManageCatalog).toHaveBeenCalledWith(
+      'catalog_manager_1',
+      'brand_1',
+      'catalog.delete',
     );
   });
 

@@ -44,6 +44,7 @@ describe('CollectionsService brand catalog access', () => {
     expect(brandAccessService.assertCanManageCatalog).toHaveBeenCalledWith(
       'catalog_manager_1',
       'brand_1',
+      'catalog.write',
     );
   });
 
@@ -82,6 +83,42 @@ describe('CollectionsService brand catalog access', () => {
     expect(brandAccessService.assertCanManageCatalog).toHaveBeenCalledWith(
       'catalog_manager_1',
       'brand_1',
+      'catalog.write',
+    );
+  });
+
+  it('requires catalog.delete to delete a store collection', async () => {
+    const prisma = {
+      storeCollection: {
+        findUnique: jest.fn().mockResolvedValue({
+          ownerId: 'owner_1',
+          deletedAt: null,
+          status: 'DRAFT',
+          visibility: 'PUBLIC',
+          tags: [],
+        }),
+        update: jest.fn().mockResolvedValue({}),
+      },
+      storeCollectionProduct: {
+        findMany: jest.fn().mockResolvedValue([]),
+      },
+      cartItem: {
+        deleteMany: jest.fn(),
+      },
+    };
+    const brandAccessService = {
+      resolveBrandIdFromBrandOrOwnerId: jest.fn().mockResolvedValue('brand_1'),
+      assertCanManageCatalog: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = createService(prisma, brandAccessService);
+
+    await expect(
+      service.deleteCollection('collection_1', 'catalog_manager_1', 'store'),
+    ).resolves.toEqual(expect.objectContaining({ success: true }));
+    expect(brandAccessService.assertCanManageCatalog).toHaveBeenCalledWith(
+      'catalog_manager_1',
+      'brand_1',
+      'catalog.delete',
     );
   });
 

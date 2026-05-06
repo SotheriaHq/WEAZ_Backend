@@ -75,6 +75,10 @@ import {
   resolvePaystackSecret,
 } from 'src/common/utils/paystack-secret';
 import { BrandAccessService } from 'src/brands/brand-access.service';
+import {
+  BRAND_PERMISSIONS,
+  BrandPermissionCode,
+} from 'src/brands/permissions/brand-permissions';
 
 type SupportedPaymentBank = {
   id: number;
@@ -598,7 +602,11 @@ export class StoreService {
     });
   }
 
-  private async assertBrandOwnsProduct(brandOwnerId: string, productId: string) {
+  private async assertBrandOwnsProduct(
+    brandOwnerId: string,
+    productId: string,
+    permission: BrandPermissionCode = BRAND_PERMISSIONS.CATALOG_WRITE,
+  ) {
     const product = await this.prisma.product.findFirst({
       where: { id: productId },
       include: { brand: true },
@@ -609,6 +617,7 @@ export class StoreService {
       brandOwnerId,
       product.brandId,
       product.brand.ownerId,
+      permission,
       'You can only modify your own products',
     );
 
@@ -619,10 +628,15 @@ export class StoreService {
     actorUserId: string,
     brandId: string,
     legacyOwnerId: string | null | undefined,
+    permission: BrandPermissionCode = BRAND_PERMISSIONS.CATALOG_WRITE,
     message = 'You can only modify your own products',
   ) {
     if (this.brandAccessService) {
-      await this.brandAccessService.assertCanManageCatalog(actorUserId, brandId);
+      await this.brandAccessService.assertCanManageCatalog(
+        actorUserId,
+        brandId,
+        permission,
+      );
       return;
     }
 
@@ -641,6 +655,7 @@ export class StoreService {
       await this.brandAccessService.assertCanManageCatalog(
         actorUserId,
         context.activeBrandId,
+        BRAND_PERMISSIONS.CATALOG_WRITE,
       );
 
       const brand = await this.prisma.brand.findUnique({
@@ -820,7 +835,11 @@ export class StoreService {
     productId: string,
     mediaId: string,
   ) {
-    const product = await this.assertBrandOwnsProduct(brandOwnerId, productId);
+    const product = await this.assertBrandOwnsProduct(
+      brandOwnerId,
+      productId,
+      BRAND_PERMISSIONS.CATALOG_DELETE,
+    );
 
     const upload = await this.prisma.fileUpload.findFirst({
       where: { id: mediaId },
@@ -2080,6 +2099,7 @@ export class StoreService {
       brandOwnerId,
       product.brandId,
       product.brand.ownerId,
+      BRAND_PERMISSIONS.CATALOG_WRITE,
       'You can only update your own products',
     );
 
@@ -2634,6 +2654,7 @@ export class StoreService {
       brandOwnerId,
       product.brandId,
       product.brand.ownerId,
+      BRAND_PERMISSIONS.CATALOG_WRITE,
       'You can only request republish for your own product',
     );
     if (product.isActive) {
@@ -2704,6 +2725,7 @@ export class StoreService {
       brandOwnerId,
       product.brandId,
       product.brand.ownerId,
+      BRAND_PERMISSIONS.CATALOG_WRITE,
       'You can only modify your own products',
     );
 
@@ -2902,6 +2924,7 @@ export class StoreService {
       brandOwnerId,
       product.brandId,
       product.brand.ownerId,
+      BRAND_PERMISSIONS.CATALOG_DELETE,
       'You can only check your own products',
     );
 
@@ -2967,6 +2990,7 @@ export class StoreService {
       brandOwnerId,
       product.brandId,
       product.brand.ownerId,
+      BRAND_PERMISSIONS.CATALOG_DELETE,
       'You can only archive your own products',
     );
 
@@ -3060,6 +3084,7 @@ export class StoreService {
       brandOwnerId,
       product.brandId,
       product.brand.ownerId,
+      BRAND_PERMISSIONS.CATALOG_DELETE,
       'You can only unarchive your own products',
     );
 
@@ -3163,6 +3188,7 @@ export class StoreService {
       brandOwnerId,
       product.brandId,
       product.brand.ownerId,
+      BRAND_PERMISSIONS.CATALOG_DELETE,
       'You can only delete your own products',
     );
 
@@ -3422,6 +3448,7 @@ export class StoreService {
           brandOwnerId,
           product.brandId,
           product.brand.ownerId,
+          BRAND_PERMISSIONS.CATALOG_WRITE,
           'You can only unpublish your own products',
         );
         if (product.archivedAt) {
@@ -3494,6 +3521,7 @@ export class StoreService {
       brandOwnerId,
       product.brandId,
       product.brand.ownerId,
+      BRAND_PERMISSIONS.CATALOG_DELETE,
       'You can only preview your own products',
     );
 
@@ -3633,6 +3661,7 @@ export class StoreService {
       brandOwnerId,
       product.brandId,
       product.brand.ownerId,
+      BRAND_PERMISSIONS.CATALOG_DELETE,
       'You can only delete your own products',
     );
 
@@ -4813,6 +4842,7 @@ export class StoreService {
       brandOwnerId,
       product.brandId,
       product.brand.ownerId,
+      BRAND_PERMISSIONS.CATALOG_DELETE,
       'You can only restore your own products',
     );
 
