@@ -4,10 +4,11 @@ import { PayoutService } from './payout.service';
 import { FinanceModule } from 'src/finance/finance.module';
 import { PrismaModule } from 'src/prisma/prisma.module';
 import { BrandPermissionService } from 'src/brands/permissions/brand-permission.service';
+import { AdminAuditService } from 'src/admin/services/admin-audit.service';
 
 @Module({
   imports: [FinanceModule, PrismaModule],
   controllers: [PayoutController],
-  providers: [PayoutService, BrandPermissionService],
+  providers: [PayoutService, BrandPermissionService, AdminAuditService],
 })
 export class PayoutModule {}

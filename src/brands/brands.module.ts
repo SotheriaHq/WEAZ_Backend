@@ -11,6 +11,7 @@ import { BrandVerificationModule } from '../brand-verification/brand-verificatio
 import { BrandStaffController } from './staff/brand-staff.controller';
 import { BrandStaffService } from './staff/brand-staff.service';
 import { BrandPermissionService } from './permissions/brand-permission.service';
+import { AdminAuditService } from 'src/admin/services/admin-audit.service';
 
 @Module({
   imports: [
@@ -25,6 +26,7 @@ import { BrandPermissionService } from './permissions/brand-permission.service';
     BrandAccessService,
     BrandStaffService,
     BrandPermissionService,
+    AdminAuditService,
     PrismaService,
   ],
   controllers: [BrandsController, BrandStaffController],

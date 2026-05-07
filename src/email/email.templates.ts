@@ -1,6 +1,7 @@
 import { EmailContent } from './email.types';
 import {
   EMAIL_COLORS,
+  escapeHtml,
   normalizeCompanyName,
   renderEmailButton,
   renderEmailShell,
@@ -133,6 +134,44 @@ export function adminAccountCreatedEmail(
       companyName,
     ),
     text: `Admin Account Created\n\nEmail: ${email}\nTemporary Password: ${tempPassword}\n\nChange your password on first login. Link: ${loginUrl}`,
+  };
+}
+
+export function brandStaffInviteEmail(args: {
+  brandName: string;
+  inviterDisplayName?: string | null;
+  inviterEmail?: string | null;
+  role: string;
+  expiresAt: Date | string;
+  inviteLink: string;
+  appName: string;
+}): EmailContent {
+  const companyName = normalizeCompanyName(args.appName);
+  const brandName = args.brandName || 'a brand';
+  const roleLabel = args.role.replace(/_/g, ' ').toLowerCase();
+  const inviterLabel =
+    args.inviterDisplayName || args.inviterEmail || `A ${companyName} brand owner`;
+  const expiresAt =
+    args.expiresAt instanceof Date ? args.expiresAt : new Date(args.expiresAt);
+  const expiryLabel = Number.isNaN(expiresAt.getTime())
+    ? 'soon'
+    : expiresAt.toLocaleString('en-NG', {
+        dateStyle: 'medium',
+        timeStyle: 'short',
+      });
+
+  return {
+    subject: `${brandName} invited you to join their ${companyName} workspace`,
+    html: wrap(
+      'Brand Staff Invitation',
+      `${p(`${escapeHtml(inviterLabel)} invited you to join <strong>${escapeHtml(brandName)}</strong> on <strong>${companyName}</strong> as <strong>${escapeHtml(roleLabel)}</strong>.`)}
+      ${p(`Use the button below to review and accept or reject this invitation. It expires on <strong>${escapeHtml(expiryLabel)}</strong>.`)}
+      <div style="text-align:center;margin:24px 0">${btn(args.inviteLink, 'Review Invitation')}</div>
+      ${warningBox(`<p style="margin:0;color:#9a3412;font-size:13px">Only accept this invite if you expected access to this brand workspace. If this looks unfamiliar, reject it or ignore this email.</p>`)}`,
+      companyName,
+      `This email was sent because a ${companyName} brand owner invited this address to a brand workspace.`,
+    ),
+    text: `Brand Staff Invitation\n\n${inviterLabel} invited you to join ${brandName} on ${companyName} as ${args.role}.\n\nReview the invitation here:\n${args.inviteLink}\n\nThis invite expires on ${expiryLabel}. Only accept if expected.`,
   };
 }
 

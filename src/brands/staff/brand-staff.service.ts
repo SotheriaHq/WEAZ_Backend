@@ -5,6 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import {
+  AdminAuditAction,
   BrandMemberRole,
   BrandMemberStatus,
   BrandStaffInviteStatus,
@@ -15,6 +16,10 @@ import { v4 as uuidv4 } from 'uuid';
 import { BrandAccessService } from '../brand-access.service';
 import { BrandPermissionService } from '../permissions/brand-permission.service';
 import { PrismaService } from 'src/prisma/prisma.service';
+import { AdminAuditService } from 'src/admin/services/admin-audit.service';
+import { EmailService } from 'src/email/email.service';
+import * as emailTemplates from 'src/email/email.templates';
+import { resolveAppUrl } from 'src/email/email.branding';
 
 const STAFF_INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const STAFF_MANAGED_ROLES = new Set<BrandMemberRole>([
@@ -39,6 +44,15 @@ const STAFF_USER_SELECT = {
   type: true,
   status: true,
 } as const;
+const BRAND_STAFF_AUDIT_ACTIONS = {
+  INVITE_CREATE: 'BRAND_STAFF_INVITE_CREATE' as AdminAuditAction,
+  INVITE_ACCEPT: 'BRAND_STAFF_INVITE_ACCEPT' as AdminAuditAction,
+  INVITE_REJECT: 'BRAND_STAFF_INVITE_REJECT' as AdminAuditAction,
+  INVITE_CANCEL: 'BRAND_STAFF_INVITE_CANCEL' as AdminAuditAction,
+  ROLE_UPDATE: 'BRAND_STAFF_ROLE_UPDATE' as AdminAuditAction,
+  STATUS_UPDATE: 'BRAND_STAFF_STATUS_UPDATE' as AdminAuditAction,
+  PERMISSION_UPDATE: 'BRAND_STAFF_PERMISSION_UPDATE' as AdminAuditAction,
+} as const;
 
 @Injectable()
 export class BrandStaffService {
@@ -46,6 +60,8 @@ export class BrandStaffService {
     private readonly prisma: PrismaService,
     private readonly brandAccessService: BrandAccessService,
     private readonly brandPermissionService: BrandPermissionService,
+    private readonly emailService: EmailService,
+    private readonly adminAuditService: AdminAuditService,
   ) {}
 
   private normalizeEmail(email: string): string {
@@ -106,6 +122,85 @@ export class BrandStaffService {
       updatedAt: invite.updatedAt,
       ...(includeToken ? { inviteToken: includeToken } : {}),
     };
+  }
+
+  private getDisplayName(user?: {
+    firstName?: string | null;
+    lastName?: string | null;
+    username?: string | null;
+    email?: string | null;
+  } | null): string | null {
+    if (!user) return null;
+    const name = [user.firstName, user.lastName]
+      .map((value) => String(value ?? '').trim())
+      .filter(Boolean)
+      .join(' ');
+    return name || user.username || user.email || null;
+  }
+
+  private buildInviteLink(token: string): string {
+    return resolveAppUrl(
+      `/brand/staff/invite?token=${encodeURIComponent(token)}`,
+    );
+  }
+
+  private async queueInviteEmail(params: {
+    invite: any;
+    token: string;
+    brandId: string;
+    actorUserId: string;
+  }) {
+    try {
+      const [brand, actor] = await Promise.all([
+        this.prisma.brand.findUnique({
+          where: { id: params.brandId },
+          select: { name: true },
+        }),
+        this.prisma.user.findUnique({
+          where: { id: params.actorUserId },
+          select: {
+            email: true,
+            firstName: true,
+            lastName: true,
+            username: true,
+          },
+        }),
+      ]);
+      const inviteLink = this.buildInviteLink(params.token);
+      const email = emailTemplates.brandStaffInviteEmail({
+        brandName: brand?.name ?? 'Threadly brand',
+        inviterDisplayName: this.getDisplayName(actor),
+        inviterEmail: actor?.email ?? null,
+        role: params.invite.role,
+        expiresAt: params.invite.expiresAt,
+        inviteLink,
+        appName: this.emailService.getAppName(),
+      });
+
+      return this.emailService.send(
+        params.invite.email,
+        email.subject,
+        email.html,
+        email.text,
+        {
+          scenarioKey: 'brand.staff.invite',
+          payloadJson: {
+            inviteId: params.invite.id,
+            brandId: params.brandId,
+            role: params.invite.role,
+            expiresAt: params.invite.expiresAt,
+          },
+          idempotencyKey: `brand-staff-invite:${params.invite.id}`,
+        },
+      );
+    } catch (error: any) {
+      return {
+        outboxId: null,
+        dispatchStatus: 'FAILED' as const,
+        providerMessageId: null,
+        errorMessage: error?.message ?? String(error),
+      };
+    }
   }
 
   private async getMemberOrThrow(brandId: string, memberId: string) {
@@ -224,7 +319,37 @@ export class BrandStaffService {
       },
     });
 
-    return this.mapInvite(invite, token);
+    const emailDelivery = await this.queueInviteEmail({
+      invite,
+      token,
+      brandId,
+      actorUserId,
+    });
+
+    await this.adminAuditService.safeLog({
+      actorUserId,
+      action: BRAND_STAFF_AUDIT_ACTIONS.INVITE_CREATE,
+      targetType: 'BrandStaffInvite',
+      targetId: invite.id,
+      metadata: {
+        brandId,
+        invitedEmail: email,
+        invitedUserId: invitedUser?.id ?? null,
+        role: input.role,
+        emailDispatchStatus: emailDelivery.dispatchStatus,
+        emailOutboxId: emailDelivery.outboxId,
+      },
+      newState: {
+        status: invite.status,
+        role: invite.role,
+        expiresAt: invite.expiresAt,
+      },
+    });
+
+    return {
+      ...this.mapInvite(invite, token),
+      emailDelivery,
+    };
   }
 
   async cancelInvite(actorUserId: string, brandIdOrOwnerId: string, inviteId: string) {
@@ -250,6 +375,19 @@ export class BrandStaffService {
         status: BrandStaffInviteStatus.CANCELLED,
         cancelledAt: new Date(),
       },
+    });
+    await this.adminAuditService.safeLog({
+      actorUserId,
+      action: BRAND_STAFF_AUDIT_ACTIONS.INVITE_CANCEL,
+      targetType: 'BrandStaffInvite',
+      targetId: invite.id,
+      metadata: {
+        brandId,
+        invitedEmail: invite.email,
+        role: invite.role,
+      },
+      previousState: { status: invite.status },
+      newState: { status: updated.status, cancelledAt: updated.cancelledAt },
     });
     return this.mapInvite(updated);
   }
@@ -332,6 +470,25 @@ export class BrandStaffService {
         },
       });
 
+      await this.adminAuditService.safeLogInTransaction(tx, {
+        actorUserId,
+        action: BRAND_STAFF_AUDIT_ACTIONS.INVITE_ACCEPT,
+        targetType: 'BrandStaffInvite',
+        targetId: invite.id,
+        metadata: {
+          brandId: invite.brandId,
+          invitedEmail: invite.email,
+          memberId: member.id,
+          role: invite.role,
+        },
+        previousState: { status: invite.status },
+        newState: {
+          status: BrandStaffInviteStatus.ACCEPTED,
+          memberStatus: member.status,
+          memberRole: member.role,
+        },
+      });
+
       return this.mapMember(member);
     });
   }
@@ -366,6 +523,19 @@ export class BrandStaffService {
         rejectedAt: new Date(),
       },
     });
+    await this.adminAuditService.safeLog({
+      actorUserId,
+      action: BRAND_STAFF_AUDIT_ACTIONS.INVITE_REJECT,
+      targetType: 'BrandStaffInvite',
+      targetId: invite.id,
+      metadata: {
+        brandId: invite.brandId,
+        invitedEmail: invite.email,
+        role: invite.role,
+      },
+      previousState: { status: invite.status },
+      newState: { status: updated.status, rejectedAt: updated.rejectedAt },
+    });
     return this.mapInvite(updated);
   }
 
@@ -391,6 +561,18 @@ export class BrandStaffService {
       where: { id: member.id },
       data: { role },
       include: { user: { select: STAFF_USER_SELECT } },
+    });
+    await this.adminAuditService.safeLog({
+      actorUserId,
+      action: BRAND_STAFF_AUDIT_ACTIONS.ROLE_UPDATE,
+      targetType: 'BrandMember',
+      targetId: member.id,
+      metadata: {
+        brandId,
+        userId: member.userId,
+      },
+      previousState: { role: member.role },
+      newState: { role: updated.role },
     });
     return this.mapMember(updated);
   }
@@ -427,6 +609,19 @@ export class BrandStaffService {
       },
       include: { user: { select: STAFF_USER_SELECT } },
     });
+    await this.adminAuditService.safeLog({
+      actorUserId,
+      action: BRAND_STAFF_AUDIT_ACTIONS.STATUS_UPDATE,
+      targetType: 'BrandMember',
+      targetId: member.id,
+      metadata: {
+        brandId,
+        userId: member.userId,
+        role: member.role,
+      },
+      previousState: { status: member.status },
+      newState: { status: updated.status },
+    });
     return this.mapMember(updated);
   }
 
@@ -457,11 +652,30 @@ export class BrandStaffService {
     memberId: string,
     permissions: string[],
   ) {
-    return this.brandPermissionService.setMemberPermissions(
+    const result = await this.brandPermissionService.setMemberPermissions(
       actorUserId,
       brandIdOrOwnerId,
       memberId,
       permissions,
     );
+    const brandId =
+      await this.brandAccessService.resolveBrandIdFromBrandOrOwnerId(
+        brandIdOrOwnerId,
+      );
+    await this.adminAuditService.safeLog({
+      actorUserId,
+      action: BRAND_STAFF_AUDIT_ACTIONS.PERMISSION_UPDATE,
+      targetType: 'BrandMember',
+      targetId: memberId,
+      metadata: {
+        brandId,
+        permissions: result.explicitPermissions,
+      },
+      newState: {
+        explicitPermissions: result.explicitPermissions,
+        effectivePermissions: result.effectivePermissions,
+      },
+    });
+    return result;
   }
 }

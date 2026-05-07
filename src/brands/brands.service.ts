@@ -3,6 +3,7 @@ import {
   NotFoundException,
   BadRequestException,
   ForbiddenException,
+  Optional,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { UploadService } from '../upload/upload.service';
@@ -15,6 +16,7 @@ import {
   PatchMode,
   NotificationType,
   BrandVerificationStatus,
+  AdminAuditAction,
 } from '@prisma/client';
 import { NotificationsService } from '../notifications/notifications.service';
 import { UpdateBrandProfileDto } from './dto/update-brand-profile.dto';
@@ -34,6 +36,7 @@ import {
   normalizeBrandProfileForBrandResponse,
   resolveBrandTags,
 } from 'src/common/brand-profile-source.helper';
+import { AdminAuditService } from 'src/admin/services/admin-audit.service';
 
 export interface BrandMediaAsset {
   fileId: string;
@@ -99,6 +102,9 @@ type BrandPatchHistoryActionValue =
   | 'CANCELLED'
   | 'REMOVED';
 
+const BRAND_PROFILE_UPDATE_AUDIT_ACTION =
+  'BRAND_PROFILE_UPDATE' as AdminAuditAction;
+
 @Injectable()
 export class BrandsService {
   constructor(
@@ -107,6 +113,8 @@ export class BrandsService {
     private readonly notifications?: NotificationsService,
     private readonly systemTags?: SystemTagsService,
     private readonly tagIndex?: TagIndexService,
+    @Optional()
+    private readonly adminAuditService?: AdminAuditService,
   ) { }
 
   private async getBrandOrThrow(brandId: string) {
@@ -766,6 +774,15 @@ export class BrandsService {
     };
 
     const previousTags = resolveBrandTags(brand);
+    const previousAuditState = {
+      brandFullName: brand.brand?.name ?? brand.brandFullName ?? null,
+      brandDescription: brand.brand?.description ?? brand.brandDescription ?? null,
+      brandCountry: brand.brand?.country ?? brand.brandCountry ?? null,
+      brandState: brand.brand?.state ?? brand.brandState ?? null,
+      brandCity: brand.brand?.city ?? brand.brandCity ?? null,
+      brandTags: previousTags,
+      businessType: brand.brand?.businessType ?? brand.brandBusinessType ?? null,
+    };
     const updatedUser = await this.prisma.$transaction(async (tx) => {
       await tx.brand.upsert({
         where: { ownerId },
@@ -776,6 +793,44 @@ export class BrandsService {
       await tx.user.update({
         where: { id: ownerId },
         data: userData,
+      });
+
+      await this.adminAuditService?.safeLogInTransaction(tx, {
+        actorUserId: ownerId,
+        action: BRAND_PROFILE_UPDATE_AUDIT_ACTION,
+        targetType: 'Brand',
+        targetId: brand.brand?.id ?? ownerId,
+        metadata: {
+          ownerId,
+          fields: Object.keys(dto),
+        },
+        previousState: previousAuditState,
+        newState: {
+          brandFullName:
+            dto.brandFullName !== undefined
+              ? trimOrNull(dto.brandFullName)
+              : previousAuditState.brandFullName,
+          brandDescription:
+            dto.brandDescription !== undefined
+              ? trimOrNull(dto.brandDescription)
+              : previousAuditState.brandDescription,
+          brandCountry:
+            dto.brandCountry !== undefined
+              ? brandCountry
+              : previousAuditState.brandCountry,
+          brandState:
+            dto.brandState !== undefined
+              ? brandState
+              : previousAuditState.brandState,
+          brandCity:
+            dto.brandCity !== undefined ? brandCity : previousAuditState.brandCity,
+          brandTags:
+            sanitizedTags !== undefined ? sanitizedTags : previousAuditState.brandTags,
+          businessType:
+            dto.businessType !== undefined
+              ? trimOrNull(dto.businessType)
+              : previousAuditState.businessType,
+        },
       });
 
       return tx.user.findUnique({

@@ -56,6 +56,11 @@ describe('PayoutController', () => {
     await controller.requestPayout('brand_1', { amount: 5000 }, { user: { id: 'owner_1' } });
 
     expect(payoutService.assertBrandOwnership).toHaveBeenCalledWith('brand_1', 'owner_1');
+    expect(payoutService.requestPayout).toHaveBeenCalledWith(
+      'brand_1',
+      5000,
+      'owner_1',
+    );
     expect(brandPermissionService.assertPermission).not.toHaveBeenCalled();
   });
 });

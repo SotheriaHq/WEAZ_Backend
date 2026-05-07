@@ -102,6 +102,6 @@ export class PayoutController {
     if (!body.amount || body.amount <= 0) {
       throw new BadRequestException('Invalid amount');
     }
-    return this.payoutService.requestPayout(brandId, body.amount);
+    return this.payoutService.requestPayout(brandId, body.amount, req.user.id);
   }
 }

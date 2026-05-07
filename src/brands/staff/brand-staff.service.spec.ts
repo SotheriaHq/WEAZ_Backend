@@ -24,9 +24,20 @@ describe('BrandStaffService', () => {
     getMemberPermissions: jest.fn(),
     setMemberPermissions: jest.fn(),
   };
+  const emailService = {
+    getAppName: jest.fn(),
+    send: jest.fn(),
+  };
+  const adminAuditService = {
+    safeLog: jest.fn(),
+    safeLogInTransaction: jest.fn(),
+  };
 
   const prisma: any = {
     user: {
+      findUnique: jest.fn(),
+    },
+    brand: {
       findUnique: jest.fn(),
     },
     brandMember: {
@@ -49,6 +60,8 @@ describe('BrandStaffService', () => {
     prisma,
     brandAccessService as any,
     brandPermissionService as any,
+    emailService as any,
+    adminAuditService as any,
   );
 
   beforeEach(() => {
@@ -72,7 +85,17 @@ describe('BrandStaffService', () => {
       explicitPermissions: ['catalog.write'],
       effectivePermissions: ['catalog.read', 'catalog.write'],
     });
+    emailService.getAppName.mockReturnValue('Threadly');
+    emailService.send.mockResolvedValue({
+      outboxId: 'email-outbox-1',
+      dispatchStatus: 'QUEUED',
+      providerMessageId: null,
+      errorMessage: null,
+    });
+    adminAuditService.safeLog.mockResolvedValue(undefined);
+    adminAuditService.safeLogInTransaction.mockResolvedValue(undefined);
     prisma.user.findUnique.mockResolvedValue(null);
+    prisma.brand.findUnique.mockResolvedValue({ name: 'Test Brand' });
     prisma.brandMember.findUnique.mockResolvedValue(null);
     prisma.brandStaffInvite.findFirst.mockResolvedValue(null);
   });
@@ -104,6 +127,30 @@ describe('BrandStaffService', () => {
     expect(result.role).toBe(BrandMemberRole.MANAGER);
     expect(result.status).toBe(BrandStaffInviteStatus.PENDING);
     expect(result.inviteToken).toEqual(expect.any(String));
+    expect(result.emailDelivery.dispatchStatus).toBe('QUEUED');
+    expect(emailService.send).toHaveBeenCalledWith(
+      'staff@example.com',
+      expect.stringContaining('Test Brand'),
+      expect.stringContaining('/brand/staff/invite?token='),
+      expect.stringContaining('/brand/staff/invite?token='),
+      expect.objectContaining({
+        scenarioKey: 'brand.staff.invite',
+        payloadJson: expect.not.objectContaining({
+          inviteToken: expect.anything(),
+          token: expect.anything(),
+        }),
+      }),
+    );
+    expect(adminAuditService.safeLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        targetType: 'BrandStaffInvite',
+        targetId: expect.any(String),
+        metadata: expect.not.objectContaining({
+          inviteToken: expect.anything(),
+          token: expect.anything(),
+        }),
+      }),
+    );
     expect(prisma.brandStaffInvite.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
@@ -113,6 +160,31 @@ describe('BrandStaffService', () => {
         }),
       }),
     );
+  });
+
+  it('keeps pending invite when invite email queue fails', async () => {
+    emailService.send.mockResolvedValue({
+      outboxId: null,
+      dispatchStatus: 'FAILED',
+      providerMessageId: null,
+      errorMessage: 'outbox unavailable',
+    });
+    prisma.brandStaffInvite.create.mockImplementation(({ data }) =>
+      Promise.resolve({
+        ...data,
+        createdAt: new Date('2026-05-06T00:00:00.000Z'),
+        updatedAt: new Date('2026-05-06T00:00:00.000Z'),
+      }),
+    );
+
+    const result = await service.inviteStaff('owner-1', 'brand-1', {
+      email: 'staff@example.com',
+      role: BrandMemberRole.VIEWER,
+    });
+
+    expect(result.status).toBe(BrandStaffInviteStatus.PENDING);
+    expect(result.emailDelivery.dispatchStatus).toBe('FAILED');
+    expect(prisma.brandStaffInvite.create).toHaveBeenCalled();
   });
 
   it('non-owner cannot invite staff', async () => {
@@ -274,6 +346,16 @@ describe('BrandStaffService', () => {
         }),
       }),
     );
+    expect(adminAuditService.safeLogInTransaction).toHaveBeenCalledWith(
+      prisma,
+      expect.objectContaining({
+        targetType: 'BrandStaffInvite',
+        targetId: 'invite-1',
+        metadata: expect.objectContaining({
+          memberId: expect.any(String),
+        }),
+      }),
+    );
   });
 
   it('expired token is rejected', async () => {
@@ -353,6 +435,14 @@ describe('BrandStaffService', () => {
     );
 
     expect(result.role).toBe(BrandMemberRole.MANAGER);
+    expect(adminAuditService.safeLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        targetType: 'BrandMember',
+        targetId: 'member-1',
+        previousState: { role: BrandMemberRole.VIEWER },
+        newState: { role: BrandMemberRole.MANAGER },
+      }),
+    );
   });
 
   it('owner cannot demote last OWNER', async () => {
@@ -491,6 +581,15 @@ describe('BrandStaffService', () => {
       'brand-1',
       'member-1',
       ['catalog.write'],
+    );
+    expect(adminAuditService.safeLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        targetType: 'BrandMember',
+        targetId: 'member-1',
+        metadata: expect.objectContaining({
+          permissions: ['catalog.write'],
+        }),
+      }),
     );
   });
 

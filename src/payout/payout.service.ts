@@ -2,8 +2,10 @@ import {
   BadRequestException,
   Injectable,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import {
+  AdminAuditAction,
   CustomOrderLedgerAllocationStatus,
   CustomOrderLedgerAllocationType,
   PayoutStatus,
@@ -14,6 +16,7 @@ import { CommissionService } from 'src/finance/commission.service';
 import { StandardOrderEscrowService } from 'src/finance/standard-order-escrow.service';
 import { StandardOrderFinanceSyncService } from 'src/finance/standard-order-finance-sync.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { AdminAuditService } from 'src/admin/services/admin-audit.service';
 
 @Injectable()
 export class PayoutService {
@@ -22,6 +25,8 @@ export class PayoutService {
     private readonly standardOrderEscrowService: StandardOrderEscrowService,
     private readonly commissionService: CommissionService,
     private readonly standardOrderFinanceSyncService: StandardOrderFinanceSyncService,
+    @Optional()
+    private readonly adminAuditService?: AdminAuditService,
   ) {}
 
   async findAll(brandId: string, page = 1, limit = 20) {
@@ -45,7 +50,7 @@ export class PayoutService {
     };
   }
 
-  async requestPayout(brandId: string, amount: number) {
+  async requestPayout(brandId: string, amount: number, actorUserId?: string | null) {
     if (amount < 5000) {
       throw new BadRequestException('Minimum payout amount is 5000');
     }
@@ -82,6 +87,24 @@ export class PayoutService {
       });
 
       await this.reserveLedgerSources(tx, brandId, payoutId, amount, payout.currency);
+      if (actorUserId) {
+        await this.adminAuditService?.safeLogInTransaction(tx, {
+          actorUserId,
+          action: 'BRAND_PAYOUT_REQUEST' as AdminAuditAction,
+          targetType: 'Payout',
+          targetId: payout.id,
+          metadata: {
+            brandId,
+            currency: payout.currency,
+            status: payout.status,
+          },
+          newState: {
+            amount: payout.amount,
+            currency: payout.currency,
+            status: payout.status,
+          },
+        });
+      }
       return payout;
     });
   }

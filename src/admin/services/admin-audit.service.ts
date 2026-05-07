@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { AdminAuditAction, Prisma } from '@prisma/client';
 import { v4 as uuidv4 } from 'uuid';
@@ -16,13 +16,42 @@ export interface AuditLogEntry {
 
 @Injectable()
 export class AdminAuditService {
+  private readonly logger = new Logger(AdminAuditService.name);
+
   constructor(private readonly prisma: PrismaService) {}
+
+  private sanitizeValue(value: unknown): unknown {
+    if (Array.isArray(value)) {
+      return value.map((item) => this.sanitizeValue(item));
+    }
+
+    if (!value || typeof value !== 'object') {
+      return value;
+    }
+
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, item]) => {
+        const normalizedKey = key.toLowerCase();
+        if (
+          normalizedKey.includes('password') ||
+          normalizedKey.includes('token') ||
+          normalizedKey.includes('secret') ||
+          normalizedKey.includes('otp') ||
+          normalizedKey.includes('card')
+        ) {
+          return [key, '[redacted]'];
+        }
+
+        return [key, this.sanitizeValue(item)];
+      }),
+    );
+  }
 
   private toJson(value?: Record<string, unknown>) {
     if (value === undefined) {
       return Prisma.JsonNull;
     }
-    return value as Prisma.InputJsonValue;
+    return this.sanitizeValue(value) as Prisma.InputJsonValue;
   }
 
   /**
@@ -44,6 +73,16 @@ export class AdminAuditService {
         userAgent: req?.headers['user-agent'] ?? null,
       },
     });
+  }
+
+  async safeLog(entry: AuditLogEntry, req?: Request) {
+    try {
+      await this.log(entry, req);
+    } catch (error: any) {
+      this.logger.warn(
+        `Audit log write failed for action=${entry.action} target=${entry.targetType ?? 'unknown'}:${entry.targetId ?? 'unknown'}: ${error?.message ?? error}`,
+      );
+    }
   }
 
   /**
@@ -68,6 +107,20 @@ export class AdminAuditService {
         userAgent: req?.headers['user-agent'] ?? null,
       },
     });
+  }
+
+  async safeLogInTransaction(
+    tx: Parameters<Parameters<PrismaService['$transaction']>[0]>[0],
+    entry: AuditLogEntry,
+    req?: Request,
+  ) {
+    try {
+      await this.logInTransaction(tx, entry, req);
+    } catch (error: any) {
+      this.logger.warn(
+        `Transactional audit log write failed for action=${entry.action} target=${entry.targetType ?? 'unknown'}:${entry.targetId ?? 'unknown'}: ${error?.message ?? error}`,
+      );
+    }
   }
 
   /**
