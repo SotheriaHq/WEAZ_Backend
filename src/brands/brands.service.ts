@@ -121,52 +121,7 @@ export class BrandsService {
     const select = {
       id: true,
       username: true,
-      firstName: true,
-      lastName: true,
       email: true,
-      phoneNumber: true,
-      address: true,
-      brandFullName: true,
-      brandDescription: true,
-      brandCountry: true,
-      brandState: true,
-      brandCity: true,
-      brandTags: true,
-      brandBusinessType: true,
-      socialInstagram: true,
-      socialFacebook: true,
-      socialTwitter: true,
-      socialWebsite: true,
-      companyLocation: true,
-      industriNumber: true,
-      profileImage: true,
-      profileImageFile: {
-        select: {
-          id: true,
-          s3Url: true,
-          fileName: true,
-          originalName: true,
-          createdAt: true,
-          updatedAt: true,
-        },
-      },
-      bannerImage: true,
-      bannerImageId: true,
-      bannerImageFile: {
-        select: {
-          id: true,
-          s3Url: true,
-          fileName: true,
-          originalName: true,
-          createdAt: true,
-          updatedAt: true,
-        },
-      },
-      cacNumber: true,
-      tin: true,
-      ceoNin: true,
-      ceoFirstName: true,
-      ceoLastName: true,
       isEmailVerified: true,
       status: true,
       deactivatedAt: true,
@@ -262,6 +217,19 @@ export class BrandsService {
     }
 
     return `/studio?${params.toString()}`;
+  }
+
+  private toBrandPatchPartner(partner: {
+    id: string;
+    username: string;
+    brand?: { name: string | null; logo?: string | null } | null;
+  }) {
+    return {
+      id: partner.id,
+      username: partner.username,
+      brandFullName: partner.brand?.name ?? null,
+      profileImage: partner.brand?.logo ?? null,
+    };
   }
 
   private describeElapsedAge(date: Date, now = new Date()) {
@@ -531,45 +499,10 @@ export class BrandsService {
 
     const canonicalProfile = normalizeBrandProfileForBrandResponse(brand);
 
-    const logoAsset = brand.profileImageFile
-      ? {
-        fileId: brand.profileImageFile.id,
-        url: brand.profileImageFile.s3Url,
-        originalName: brand.profileImageFile.originalName ?? null,
-        fileName: brand.profileImageFile.fileName ?? null,
-        createdAt: brand.profileImageFile.createdAt.toISOString(),
-        updatedAt: brand.profileImageFile.updatedAt.toISOString(),
-      }
-      : null;
-    const bannerAsset = brand.bannerImageFile
-      ? {
-        fileId: brand.bannerImageFile.id,
-        url: brand.bannerImageFile.s3Url,
-        originalName: brand.bannerImageFile.originalName ?? null,
-        fileName: brand.bannerImageFile.fileName ?? null,
-        createdAt: brand.bannerImageFile.createdAt.toISOString(),
-        updatedAt: brand.bannerImageFile.updatedAt.toISOString(),
-      }
-      : null;
-
-    // Generate signed URLs
-    const fileIds: string[] = [];
-    if (logoAsset) fileIds.push(logoAsset.fileId);
-    if (bannerAsset) fileIds.push(bannerAsset.fileId);
-
-    if (fileIds.length > 0) {
-      const signedUrlMap =
-        await this.uploadService.getBatchPublicSignedUrls(fileIds);
-      if (logoAsset && signedUrlMap.has(logoAsset.fileId)) {
-        logoAsset.url = signedUrlMap.get(logoAsset.fileId)!;
-      }
-      if (bannerAsset && signedUrlMap.has(bannerAsset.fileId)) {
-        bannerAsset.url = signedUrlMap.get(bannerAsset.fileId)!;
-      }
-    }
-
-    const logoImage = logoAsset?.url || brand.profileImage || null;
-    const bannerImage = bannerAsset?.url || brand.bannerImage || null;
+    const logoAsset = null;
+    const bannerAsset = null;
+    const logoImage = brand.brand?.logo ?? null;
+    const bannerImage = brand.brand?.banner ?? null;
     const verificationTruth = getBrandVerificationTruth({
       verificationStatus: brand.brand?.verificationStatus,
       isStoreOpen: brand.brand?.isStoreOpen,
@@ -597,7 +530,7 @@ export class BrandsService {
       },
       contactInfo: {
         email: brand.email,
-        phone: brand.phoneNumber ?? null,
+        phone: null,
         businessType: canonicalProfile.businessType || 'Fashion Brand',
       },
       tags: canonicalProfile.tags,
@@ -650,43 +583,6 @@ export class BrandsService {
       dto.brandState !== undefined ||
       dto.brandCity !== undefined;
 
-    const userData: Prisma.UserUpdateInput = {
-      ...(dto.brandFullName !== undefined && {
-        brandFullName: trimOrNull(dto.brandFullName),
-      }),
-      ...(dto.brandDescription !== undefined && {
-        brandDescription: trimOrNull(dto.brandDescription),
-      }),
-      ...(dto.brandCountry !== undefined && { brandCountry }),
-      ...(dto.brandState !== undefined && { brandState }),
-      ...(dto.brandCity !== undefined && { brandCity }),
-      ...(sanitizedTags !== undefined && { brandTags: sanitizedTags }),
-      ...(dto.socialInstagram !== undefined && {
-        socialInstagram: trimOrNull(dto.socialInstagram),
-      }),
-      ...(dto.socialFacebook !== undefined && {
-        socialFacebook: trimOrNull(dto.socialFacebook),
-      }),
-      ...(dto.socialTwitter !== undefined && {
-        socialTwitter: trimOrNull(dto.socialTwitter),
-      }),
-      ...(dto.socialWebsite !== undefined && {
-        socialWebsite: trimOrNull(dto.socialWebsite),
-      }),
-      ...(dto.businessType !== undefined && {
-        brandBusinessType: trimOrNull(dto.businessType),
-      }),
-      ...(dto.phoneNumber !== undefined && {
-        phoneNumber: trimOrNull(dto.phoneNumber),
-      }),
-      ...(locationWasProvided
-        ? {
-          companyLocation:
-            companyLocation.length > 0 ? companyLocation : null,
-        }
-        : {}),
-    };
-
     const brandData: Prisma.BrandUpdateInput = {
       ...(dto.brandFullName !== undefined && {
         name: trimOrNull(dto.brandFullName) ?? brand.brand?.name ?? brand.username,
@@ -726,73 +622,67 @@ export class BrandsService {
       name:
         trimOrNull(dto.brandFullName) ??
         brand.brand?.name ??
-        brand.brandFullName ??
         brand.username,
       storeNameLastChangedAt: new Date(),
       currency: 'NGN',
       description:
         dto.brandDescription !== undefined
           ? trimOrNull(dto.brandDescription)
-          : brand.brandDescription,
+          : brand.brand?.description,
       country:
-        dto.brandCountry !== undefined ? brandCountry : brand.brandCountry,
-      state: dto.brandState !== undefined ? brandState : brand.brandState,
-      city: dto.brandCity !== undefined ? brandCity : brand.brandCity,
+        dto.brandCountry !== undefined ? brandCountry : brand.brand?.country,
+      state: dto.brandState !== undefined ? brandState : brand.brand?.state,
+      city: dto.brandCity !== undefined ? brandCity : brand.brand?.city,
       tags:
-        sanitizedTags !== undefined ? sanitizedTags : brand.brandTags ?? [],
+        sanitizedTags !== undefined ? sanitizedTags : brand.brand?.tags ?? [],
       businessType:
         dto.businessType !== undefined
           ? trimOrNull(dto.businessType)
-          : brand.brandBusinessType,
+          : brand.brand?.businessType,
       socialInstagram:
         dto.socialInstagram !== undefined
           ? trimOrNull(dto.socialInstagram)
-          : brand.socialInstagram,
+          : brand.brand?.socialInstagram,
       socialFacebook:
         dto.socialFacebook !== undefined
           ? trimOrNull(dto.socialFacebook)
-          : brand.socialFacebook,
+          : brand.brand?.socialFacebook,
       socialTwitter:
         dto.socialTwitter !== undefined
           ? trimOrNull(dto.socialTwitter)
-          : brand.socialTwitter,
+          : brand.brand?.socialTwitter,
       socialWebsite:
         dto.socialWebsite !== undefined
           ? trimOrNull(dto.socialWebsite)
-          : brand.socialWebsite,
+          : brand.brand?.socialWebsite,
       companyLocation: locationWasProvided
         ? companyLocation.length > 0
           ? companyLocation
           : null
-        : brand.companyLocation,
-      cacNumber: brand.cacNumber,
-      tin: brand.tin,
-      ceoNin: brand.ceoNin,
-      ceoFirstName: brand.ceoFirstName,
-      ceoLastName: brand.ceoLastName,
-      industriNumber: brand.industriNumber,
+        : brand.brand?.companyLocation,
+      cacNumber: brand.brand?.cacNumber,
+      tin: brand.brand?.tin,
+      ceoNin: brand.brand?.ceoNin,
+      ceoFirstName: brand.brand?.ceoFirstName,
+      ceoLastName: brand.brand?.ceoLastName,
+      industriNumber: brand.brand?.industriNumber,
     };
 
     const previousTags = resolveBrandTags(brand);
     const previousAuditState = {
-      brandFullName: brand.brand?.name ?? brand.brandFullName ?? null,
-      brandDescription: brand.brand?.description ?? brand.brandDescription ?? null,
-      brandCountry: brand.brand?.country ?? brand.brandCountry ?? null,
-      brandState: brand.brand?.state ?? brand.brandState ?? null,
-      brandCity: brand.brand?.city ?? brand.brandCity ?? null,
+      brandFullName: brand.brand?.name ?? null,
+      brandDescription: brand.brand?.description ?? null,
+      brandCountry: brand.brand?.country ?? null,
+      brandState: brand.brand?.state ?? null,
+      brandCity: brand.brand?.city ?? null,
       brandTags: previousTags,
-      businessType: brand.brand?.businessType ?? brand.brandBusinessType ?? null,
+      businessType: brand.brand?.businessType ?? null,
     };
     const updatedUser = await this.prisma.$transaction(async (tx) => {
       await tx.brand.upsert({
         where: { ownerId },
         create: brandCreateData,
         update: brandData,
-      });
-
-      await tx.user.update({
-        where: { id: ownerId },
-        data: userData,
       });
 
       await this.adminAuditService?.safeLogInTransaction(tx, {
@@ -1207,16 +1097,14 @@ export class BrandsService {
             select: {
               id: true,
               username: true,
-              brandFullName: true,
-              profileImage: true,
+              brand: { select: { name: true, logo: true } },
             },
           },
           receiver: {
             select: {
               id: true,
               username: true,
-              brandFullName: true,
-              profileImage: true,
+              brand: { select: { name: true, logo: true } },
             },
           },
         },
@@ -1229,7 +1117,7 @@ export class BrandsService {
     return {
       items: patches.map((p) => ({
         id: p.id,
-        partner: p.requesterId === brandId ? p.receiver : p.requester,
+        partner: this.toBrandPatchPartner(p.requesterId === brandId ? p.receiver : p.requester),
         status: p.status,
         isOutgoing: p.requesterId === brandId,
         createdAt: p.createdAt,
@@ -1273,8 +1161,7 @@ export class BrandsService {
               select: {
                 id: true,
                 username: true,
-                brandFullName: true,
-                profileImage: true,
+                brand: { select: { name: true, logo: true } },
               },
             })
           : [];
@@ -1295,12 +1182,11 @@ export class BrandsService {
             return {
               id: row.id,
               patchId: row.patchId,
-              partner: partner ?? {
+              partner: this.toBrandPatchPartner(partner ?? {
                 id: row.partnerId,
                 username: 'Unknown brand',
-                brandFullName: null,
-                profileImage: null,
-              },
+                brand: null,
+              }),
               action,
               status,
               isOutgoing: Boolean(row.isOutgoing),
@@ -1340,16 +1226,14 @@ export class BrandsService {
             select: {
               id: true,
               username: true,
-              brandFullName: true,
-              profileImage: true,
+              brand: { select: { name: true, logo: true } },
             },
           },
           receiver: {
             select: {
               id: true,
               username: true,
-              brandFullName: true,
-              profileImage: true,
+              brand: { select: { name: true, logo: true } },
             },
           },
         },
@@ -1365,7 +1249,7 @@ export class BrandsService {
         return {
           id: row.id,
           patchId: row.id,
-          partner: isOutgoing ? row.receiver : row.requester,
+          partner: this.toBrandPatchPartner(isOutgoing ? row.receiver : row.requester),
           action: 'REJECTED' as BrandPatchHistoryActionValue,
           status: PatchStatus.REJECTED,
           isOutgoing,
@@ -1391,8 +1275,7 @@ export class BrandsService {
           select: {
             id: true,
             username: true,
-            brandFullName: true,
-            profileImage: true,
+            brand: { select: { name: true, logo: true } },
             collections: {
               where: { status: 'PUBLISHED' },
               take: 3,

@@ -38,8 +38,8 @@ export type SelectedProfileFile = Prisma.FileUploadGetPayload<{
 }> | null;
 
 export type UserProfileSource = {
-  firstName: string;
-  lastName: string;
+  firstName?: string | null;
+  lastName?: string | null;
   phoneNumber?: string | null;
   address?: string | null;
   profileImage?: string | null;
@@ -66,14 +66,14 @@ export function resolveRequiredProfileField(
   user: UserProfileSource,
   field: RequiredProfileField,
 ): string {
-  return user.userProfile?.[field] ?? user[field] ?? '';
+  return user.userProfile?.[field] ?? '';
 }
 
 export function resolveNullableProfileField(
   user: UserProfileSource,
   field: NullableProfileField,
 ): string | null {
-  return user.userProfile?.[field] ?? user[field] ?? null;
+  return user.userProfile?.[field] ?? null;
 }
 
 function resolveProfileMedia(
@@ -87,16 +87,12 @@ function resolveProfileMedia(
     kind === 'profile' ? 'profileImageFile' : 'bannerImageFile';
 
   const canonicalId = profile?.[idField] ?? null;
-  const legacyId = user[idField] ?? null;
   const canonicalFile = profile?.[fileField] ?? null;
-  const legacyFile = user[fileField] ?? null;
-  const file =
-    canonicalFile ??
-    (!profile || !canonicalId || canonicalId === legacyId ? legacyFile : null);
+  const file = canonicalFile ?? null;
 
   return {
-    url: profile?.[urlField] ?? user[urlField] ?? file?.s3Url ?? null,
-    fileId: canonicalId ?? legacyId ?? file?.id ?? null,
+    url: profile?.[urlField] ?? file?.s3Url ?? null,
+    fileId: canonicalId ?? file?.id ?? null,
     file,
   };
 }
@@ -118,7 +114,6 @@ export function resolveProfileVisibility(
 ): ProfileVisibility {
   return (
     user.userProfile?.profileVisibility ??
-    user.profileVisibility ??
     ProfileVisibility.UNLOCKED
   );
 }

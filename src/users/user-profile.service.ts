@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable, NotFoundException, UnauthorizedException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { Prisma, ProfileVisibility, User } from '@prisma/client';
+import { Prisma, ProfileVisibility } from '@prisma/client';
 import { UserProfileResponseDto } from './dto/user-profile.dto';
 import {
   isThemePreference,
@@ -8,7 +8,6 @@ import {
   type ThemePreference,
 } from 'src/common/theme.contract';
 import {
-  canonicalUserProfileFileSelect,
   canonicalUserProfileSelect,
   resolveBannerImage,
   resolveNullableProfileField,
@@ -20,22 +19,8 @@ import {
 const userProfileResponseSelect = Prisma.validator<Prisma.UserSelect>()({
   id: true,
   username: true,
-  firstName: true,
-  lastName: true,
   type: true,
-  profileImage: true,
-  profileImageId: true,
-  profileImageFile: {
-    select: canonicalUserProfileFileSelect,
-  },
-  bannerImage: true,
-  bannerImageId: true,
-  bannerImageFile: {
-    select: canonicalUserProfileFileSelect,
-  },
-  address: true,
   themePreference: true,
-  profileVisibility: true,
   createdAt: true,
   userProfile: {
     select: canonicalUserProfileSelect,
@@ -133,31 +118,30 @@ export class UserProfileService {
     return this.toUserProfileResponse(user);
   }
 
-  async updateProfileVisibility(userId: string, profileVisibility: ProfileVisibility): Promise<User> {
+  async updateProfileVisibility(userId: string, profileVisibility: ProfileVisibility) {
     const user = await this.prisma.$transaction(async (tx) => {
-      const legacyUser = await tx.user.update({
+      const existingUser = await tx.user.findUnique({
         where: { id: userId },
-        data: { profileVisibility },
+        select: {
+          id: true,
+          userProfile: { select: { firstName: true, lastName: true } },
+        },
       });
 
-      await tx.userProfile.upsert({
+      if (!existingUser) {
+        throw new NotFoundException('User not found');
+      }
+
+      return tx.userProfile.upsert({
         where: { userId },
         create: {
           userId,
-          firstName: legacyUser.firstName,
-          lastName: legacyUser.lastName,
-          phoneNumber: legacyUser.phoneNumber,
-          address: legacyUser.address,
-          profileImage: legacyUser.profileImage,
-          profileImageId: legacyUser.profileImageId,
-          bannerImage: legacyUser.bannerImage,
-          bannerImageId: legacyUser.bannerImageId,
+          firstName: existingUser.userProfile?.firstName ?? '',
+          lastName: existingUser.userProfile?.lastName ?? '',
           profileVisibility,
         },
         update: { profileVisibility },
       });
-
-      return legacyUser;
     });
 
     return user;
@@ -194,7 +178,11 @@ export class UserProfileService {
     // Only return patched brands if the viewer is the owner or if the profile is unlocked
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
-      select: { profileVisibility: true }
+      select: {
+        userProfile: {
+          select: { profileVisibility: true },
+        },
+      },
     });
 
     if (!user) {
@@ -202,7 +190,7 @@ export class UserProfileService {
     }
 
     // If viewer is not owner and profile is locked, return empty array
-    if (!isOwner && user.profileVisibility === 'LOCKED') {
+    if (!isOwner && user.userProfile?.profileVisibility === 'LOCKED') {
       return [];
     }
 
@@ -217,30 +205,20 @@ export class UserProfileService {
           select: {
             id: true,
             username: true,
-            firstName: true,
-            lastName: true,
-            profileImage: true,
-            profileImageId: true,
-            profileImageFile: {
-              select: {
-                id: true,
-                s3Url: true,
-              },
+            userProfile: {
+              select: canonicalUserProfileSelect,
             },
-            address: true,
-            companyLocation: true,
-            brandDescription: true,
-            brandCountry: true,
-            brandState: true,
-            brandCity: true,
-            brandFullName: true,
-            bannerImage: true,
             brand: {
               select: {
                 name: true,
                 logo: true,
+                banner: true,
                 description: true,
                 tagline: true,
+                country: true,
+                state: true,
+                city: true,
+                companyLocation: true,
               }
             },
             _count: {
@@ -256,35 +234,35 @@ export class UserProfileService {
     });
 
     // Format the response to match what the frontend expects
-    return patchConnections.map(connection => ({
-      id: connection.target.id,
-      username: connection.target.username,
-      firstName: connection.target.firstName,
-      lastName: connection.target.lastName,
-      profileImage: connection.target.profileImage,
-      profileImageId: connection.target.profileImageId,
-      profileImageFile: connection.target.profileImageFile,
-      brandName: connection.target.brand?.name || `${connection.target.firstName} ${connection.target.lastName}`,
-      brandLogo: connection.target.brand?.logo,
-      brandTitle:
-        connection.target.brand?.tagline ||
-        connection.target.brandFullName ||
-        connection.target.brand?.name ||
-        null,
-      location:
-        connection.target.companyLocation ||
-        connection.target.address ||
-        [connection.target.brandCity, connection.target.brandState, connection.target.brandCountry]
+    return patchConnections.map(connection => {
+      const target = connection.target;
+      const profileImage = resolveProfileImage(target);
+      const bannerImage = resolveBannerImage(target);
+      const location =
+        target.brand?.companyLocation ||
+        [target.brand?.city, target.brand?.state, target.brand?.country]
           .filter(Boolean)
           .join(', ') ||
-        null,
-      description:
-        connection.target.brandDescription ||
-        connection.target.brand?.description ||
-        null,
-      bannerImage: connection.target.bannerImage,
-      patchedAt: connection.createdAt,
-      patchCount: connection.target._count?.patchConnectionsReceived || 0,
-    }));
+        resolveNullableProfileField(target, 'address') ||
+        null;
+
+      return {
+        id: target.id,
+        username: target.username,
+        firstName: resolveRequiredProfileField(target, 'firstName'),
+        lastName: resolveRequiredProfileField(target, 'lastName'),
+        profileImage: profileImage.url,
+        profileImageId: profileImage.fileId,
+        profileImageFile: profileImage.file,
+        brandName: target.brand?.name || target.username,
+        brandLogo: target.brand?.logo,
+        brandTitle: target.brand?.tagline || target.brand?.name || null,
+        location,
+        description: target.brand?.description || null,
+        bannerImage: target.brand?.banner || bannerImage.url,
+        patchedAt: connection.createdAt,
+        patchCount: target._count?.patchConnectionsReceived || 0,
+      };
+    });
   }
 }

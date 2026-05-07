@@ -15,6 +15,8 @@ export const canonicalBrandProfileSelect =
     id: true,
     name: true,
     description: true,
+    logo: true,
+    banner: true,
     tags: true,
     country: true,
     state: true,
@@ -118,7 +120,7 @@ export function resolveRequiredBrandField(
   field: RequiredBrandField,
 ): string {
   const brandField = brandFieldMap[field];
-  return filled(user.brand?.[brandField]) ?? filled(user[field]) ?? '';
+  return filled(user.brand?.[brandField]) ?? '';
 }
 
 export function resolveNullableBrandField(
@@ -126,7 +128,7 @@ export function resolveNullableBrandField(
   field: NullableBrandField,
 ): string | null {
   const brandField = brandFieldMap[field];
-  return filled(user.brand?.[brandField]) ?? filled(user[field]) ?? null;
+  return filled(user.brand?.[brandField]) ?? null;
 }
 
 export function resolveBrandTags(user: LegacyBrandProfileSource): string[] {
@@ -134,7 +136,7 @@ export function resolveBrandTags(user: LegacyBrandProfileSource): string[] {
   if (Array.isArray(brandTags) && brandTags.length > 0) {
     return brandTags;
   }
-  return Array.isArray(user.brandTags) ? user.brandTags : [];
+  return [];
 }
 
 export function resolveBrandSocialLinks(user: LegacyBrandProfileSource): {

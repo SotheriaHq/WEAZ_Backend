@@ -704,81 +704,6 @@ export class StoreService {
       }
     }
 
-    if (!brand) {
-      const owner = await this.prisma.user.findUnique({
-        where: { id: brandIdOrOwnerId },
-        select: {
-          id: true,
-          type: true,
-          brandFullName: true,
-          brandDescription: true,
-          brandTags: true,
-          brandCountry: true,
-          brandState: true,
-          brandCity: true,
-          brandBusinessType: true,
-          socialInstagram: true,
-          socialFacebook: true,
-          socialTwitter: true,
-          socialWebsite: true,
-          cacNumber: true,
-          tin: true,
-          ceoNin: true,
-          ceoFirstName: true,
-          ceoLastName: true,
-          companyLocation: true,
-          industriNumber: true,
-          firstName: true,
-          lastName: true,
-          username: true,
-        },
-      });
-
-      if (owner && owner.type === UserType.BRAND) {
-        const fullName = `${owner.firstName ?? ''} ${owner.lastName ?? ''}`.trim();
-        const name = (owner.brandFullName ?? '').trim() || fullName || owner.username || 'Brand';
-
-        try {
-          brand = await this.prisma.brand.create({
-            data: {
-              id: uuidv4(),
-              name,
-              description: owner.brandDescription,
-              tags: owner.brandTags ?? [],
-              country: owner.brandCountry,
-              state: owner.brandState,
-              city: owner.brandCity,
-              businessType: owner.brandBusinessType,
-              socialInstagram: owner.socialInstagram,
-              socialFacebook: owner.socialFacebook,
-              socialTwitter: owner.socialTwitter,
-              socialWebsite: owner.socialWebsite,
-              cacNumber: owner.cacNumber,
-              tin: owner.tin,
-              ceoNin: owner.ceoNin,
-              ceoFirstName: owner.ceoFirstName,
-              ceoLastName: owner.ceoLastName,
-              companyLocation: owner.companyLocation,
-              industriNumber: owner.industriNumber,
-              storeNameLastChangedAt: new Date(),
-              currency: 'NGN',
-              ownerId: owner.id,
-            },
-            select: { id: true, isStoreOpen: true, ownerId: true },
-          });
-        } catch (dbError: any) {
-          if (dbError?.code === 'P2002') {
-            brand = await this.prisma.brand.findUnique({
-              where: { ownerId: owner.id },
-              select: { id: true, isStoreOpen: true, ownerId: true },
-            });
-          } else {
-            throw dbError;
-          }
-        }
-      }
-    }
-
     return brand;
   }
 
@@ -1499,10 +1424,10 @@ export class StoreService {
   }
 
   private canonicalStoreName(
-    user: { brandFullName: string | null },
+    user: unknown,
     brand?: { name: string } | null,
   ) {
-    return (brand?.name || user.brandFullName || '').trim();
+    return (brand?.name || '').trim();
   }
 
   private canonicalStoreSlug(user: { username: string }) {
@@ -1574,14 +1499,14 @@ export class StoreService {
       }),
       this.prisma.user.findUnique({
         where: { id: brandOwnerId },
-        select: { username: true, brandFullName: true },
+        select: { username: true, brand: { select: { name: true } } },
       }),
     ]);
 
     if (patchers.length === 0) return;
 
     const brandName =
-      owner?.brandFullName || owner?.username || 'A brand';
+      owner?.brand?.name || owner?.username || 'A brand';
     const message = `${brandName} added a new product: ${product.name}`;
 
     const recipientIds = patchers
@@ -4240,7 +4165,6 @@ export class StoreService {
         id: true,
         username: true,
         type: true,
-        brandFullName: true,
         brand: {
           select: {
             name: true,
@@ -6575,13 +6499,6 @@ export class StoreService {
           username: true,
           email: true,
           isEmailVerified: true,
-          brandFullName: true,
-          brandDescription: true,
-          brandTags: true,
-          socialInstagram: true,
-          socialFacebook: true,
-          socialTwitter: true,
-          socialWebsite: true,
         },
       }),
       this.prisma.brand.findUnique({
@@ -6615,18 +6532,17 @@ export class StoreService {
     const storeName = this.canonicalStoreName(user, brand);
     const slug = this.canonicalStoreSlug(user);
 
-    const rawTags =
-      (brand?.tags && brand.tags.length > 0 ? brand.tags : user.brandTags) || [];
+    const rawTags = brand?.tags ?? [];
     const normalizedTags = rawTags
       .map((t) => this.normalizeTag(t))
       .filter(Boolean);
 
-    const description = (brand?.description || user.brandDescription || '').trim();
+    const description = (brand?.description || '').trim();
     const contactEmail = brand?.contactEmail || user.email || '';
-    const instagram = brand?.socialInstagram || user.socialInstagram || '';
-    const facebook = brand?.socialFacebook || user.socialFacebook || '';
-    const twitter = brand?.socialTwitter || user.socialTwitter || '';
-    const website = brand?.socialWebsite || user.socialWebsite || '';
+    const instagram = brand?.socialInstagram || '';
+    const facebook = brand?.socialFacebook || '';
+    const twitter = brand?.socialTwitter || '';
+    const website = brand?.socialWebsite || '';
     const tiktok = brand?.socialTiktok || '';
     const tagline = (brand?.tagline || '').trim();
     const responseTimeSla = policy?.responseTimeSla || brand?.responseTimeSla || '24h';
@@ -6672,8 +6588,6 @@ export class StoreService {
           username: true,
           email: true,
           isEmailVerified: true,
-          brandFullName: true,
-          brandDescription: true,
         },
       }),
       this.prisma.brand.findUnique({
@@ -6723,7 +6637,7 @@ export class StoreService {
       brandId: brand?.id,
       storeName,
       slug,
-      description: brand?.description || user.brandDescription || '',
+      description: brand?.description || '',
       tagline: brand?.tagline || '',
       logo: brand?.logo || '',
       banner: brand?.banner || '',
@@ -7269,9 +7183,13 @@ export class StoreService {
         select: {
           id: true,
           email: true,
-          firstName: true,
-          lastName: true,
-          phoneNumber: true,
+          userProfile: {
+            select: {
+              firstName: true,
+              lastName: true,
+              phoneNumber: true,
+            },
+          },
         },
       }),
     ]);
@@ -7297,7 +7215,7 @@ export class StoreService {
     });
 
     const suggestedContactName =
-      `${owner?.firstName ?? ''} ${owner?.lastName ?? ''}`.trim() || brand.name;
+      `${owner?.userProfile?.firstName ?? ''} ${owner?.userProfile?.lastName ?? ''}`.trim() || brand.name;
 
     return {
       brandId: brand.id,
@@ -7309,7 +7227,7 @@ export class StoreService {
         primaryContactEmail:
           account?.primaryContactEmail ?? owner?.email ?? null,
         primaryContactPhone:
-          account?.primaryContactPhone ?? owner?.phoneNumber ?? null,
+          account?.primaryContactPhone ?? owner?.userProfile?.phoneNumber ?? null,
       },
       account: this.summarizePaymentAccount(account),
     };
@@ -7413,9 +7331,13 @@ export class StoreService {
         select: {
           id: true,
           email: true,
-          firstName: true,
-          lastName: true,
-          phoneNumber: true,
+          userProfile: {
+            select: {
+              firstName: true,
+              lastName: true,
+              phoneNumber: true,
+            },
+          },
         },
       }),
     ]);
@@ -7493,7 +7415,7 @@ export class StoreService {
         const nextPrimaryContactPhone =
           String(dto.primaryContactPhone || '').trim() ||
           existingAccount?.primaryContactPhone ||
-          owner?.phoneNumber ||
+          owner?.userProfile?.phoneNumber ||
           null;
         const accountNumberEncrypted = this.encryptStorePaymentValue(accountNumber);
         const lastSuccessfulSyncAt = syncTimestamp;
@@ -7591,7 +7513,7 @@ export class StoreService {
       const primaryContactName =
         String(dto.primaryContactName || '').trim() ||
         existingAccount?.primaryContactName ||
-        `${owner?.firstName ?? ''} ${owner?.lastName ?? ''}`.trim() ||
+        `${owner?.userProfile?.firstName ?? ''} ${owner?.userProfile?.lastName ?? ''}`.trim() ||
         brand.name;
       const primaryContactEmail =
         String(dto.primaryContactEmail || '').trim() ||
@@ -7601,7 +7523,7 @@ export class StoreService {
       const primaryContactPhone =
         String(dto.primaryContactPhone || '').trim() ||
         existingAccount?.primaryContactPhone ||
-        owner?.phoneNumber ||
+        owner?.userProfile?.phoneNumber ||
         null;
 
       let subaccountPayload: any = null;
@@ -8400,16 +8322,12 @@ export class StoreService {
     tags?: string[] | null;
     country?: string | null;
     state?: string | null;
-    brandDescription?: string | null;
-    brandTags?: string[] | null;
-    brandCountry?: string | null;
-    brandState?: string | null;
   }): { isComplete: boolean; missingFields: string[] } {
     const missingFields: string[] = [];
-    const description = brand.description ?? brand.brandDescription ?? null;
-    const tags = brand.tags ?? brand.brandTags ?? [];
-    const country = brand.country ?? brand.brandCountry ?? null;
-    const state = brand.state ?? brand.brandState ?? null;
+    const description = brand.description ?? null;
+    const tags = brand.tags ?? [];
+    const country = brand.country ?? null;
+    const state = brand.state ?? null;
 
     if ((description ?? '').trim().length < 20) {
       missingFields.push('description');
@@ -8568,16 +8486,10 @@ export class StoreService {
         where: { id: brand.ownerId },
         select: {
           isEmailVerified: true,
-          brandDescription: true,
-          brandTags: true,
-          brandCountry: true,
-          brandState: true,
         },
       }),
     ]);
-    const profileCompleteness = this.computeBrandProfileCompleteness(
-      brand ?? owner ?? {},
-    );
+    const profileCompleteness = this.computeBrandProfileCompleteness(brand);
     const { isComplete, missingFields } = this.computeStoreCompleteness(
       brand,
       paymentAccount,
@@ -8771,35 +8683,11 @@ export class StoreService {
       return this.getStoreStatus(ownerUserId);
     }
 
-    const legacyUserData: Prisma.UserUpdateInput = {
-      ...(dto.description !== undefined && { brandDescription: dto.description }),
-      ...(nextStoreTags !== undefined && { brandTags: nextStoreTags }),
-      ...(dto.socialInstagram !== undefined && {
-        socialInstagram: dto.socialInstagram,
-      }),
-      ...(dto.socialFacebook !== undefined && {
-        socialFacebook: dto.socialFacebook,
-      }),
-      ...(dto.socialTwitter !== undefined && {
-        socialTwitter: dto.socialTwitter,
-      }),
-      ...(dto.socialWebsite !== undefined && {
-        socialWebsite: dto.socialWebsite,
-      }),
-    };
-
     await this.prisma.$transaction(async (tx) => {
       await tx.brand.update({
         where: { id: brand.id },
         data: updateData,
       });
-
-      if (Object.keys(legacyUserData).length > 0) {
-        await tx.user.update({
-          where: { id: ownerUserId },
-          data: legacyUserData,
-        });
-      }
     });
     if (nextStoreTags !== undefined) {
       const nextIndexedTags = this.getIndexedBrandTags(

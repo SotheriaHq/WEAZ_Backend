@@ -26,7 +26,10 @@ import {
   toAuthUserResponse,
   AuthUser,
 } from 'src/auth/helper/prisma-select.helper';
-import { resolveRequiredProfileField } from 'src/common/user-profile-source.helper';
+import {
+  canonicalUserProfileSelect,
+  resolveRequiredProfileField,
+} from 'src/common/user-profile-source.helper';
 import { resolveRequiredBrandField } from 'src/common/brand-profile-source.helper';
 import { TokenService } from './helper/general.helper';
 import { Request, Response } from 'express';
@@ -912,23 +915,21 @@ export class AuthService {
 
     try {
       const updatedUser = await this.prisma.$transaction(async (tx) => {
-        const legacyUser = await tx.user.findUnique({
+        const existingUser = await tx.user.findUnique({
           where: { id: userId },
           select: {
             id: true,
-            firstName: true,
-            lastName: true,
-            phoneNumber: true,
-            address: true,
-            profileImage: true,
-            profileImageId: true,
-            bannerImage: true,
-            bannerImageId: true,
-            profileVisibility: true,
+            userProfile: {
+              select: {
+                firstName: true,
+                lastName: true,
+                profileVisibility: true,
+              },
+            },
           },
         });
 
-        if (!legacyUser) {
+        if (!existingUser) {
           throw new UnauthorizedException('User not found');
         }
 
@@ -940,36 +941,34 @@ export class AuthService {
               userId,
               firstName:
                 (profileData.firstName as string | undefined) ??
-                legacyUser.firstName,
+                existingUser.userProfile?.firstName ??
+                '',
               lastName:
                 (profileData.lastName as string | undefined) ??
-                legacyUser.lastName,
+                existingUser.userProfile?.lastName ??
+                '',
               phoneNumber:
                 (profileData.phoneNumber as string | null | undefined) ??
-                legacyUser.phoneNumber,
+                null,
               address:
                 (profileData.address as string | null | undefined) ??
-                legacyUser.address,
+                null,
               profileImage:
                 (profileData.profileImage as string | null | undefined) ??
-                legacyUser.profileImage,
+                null,
               profileImageId:
                 (profileData.profileImageId as string | null | undefined) ??
-                legacyUser.profileImageId,
+                null,
               bannerImage:
                 (profileData.bannerImage as string | null | undefined) ??
-                legacyUser.bannerImage,
+                null,
               bannerImageId:
                 (profileData.bannerImageId as string | null | undefined) ??
-                legacyUser.bannerImageId,
-              profileVisibility: legacyUser.profileVisibility,
+                null,
+              profileVisibility:
+                existingUser.userProfile?.profileVisibility ?? 'UNLOCKED',
             },
             update: profileData,
-          });
-
-          await tx.user.update({
-            where: { id: userId },
-            data: profileData,
           });
         }
 
@@ -1614,9 +1613,8 @@ export class AuthService {
             password: true,
             email: true,
             username: true,
-            brandFullName: true,
-            firstName: true,
-            lastName: true,
+            userProfile: { select: canonicalUserProfileSelect },
+            brand: { select: { name: true } },
           },
         },
       },
@@ -1639,9 +1637,9 @@ export class AuthService {
       this.buildPasswordPolicyContext({
         email: resetToken.user.email,
         username: resetToken.user.username,
-        brandFullName: resetToken.user.brandFullName,
-        firstName: resetToken.user.firstName,
-        lastName: resetToken.user.lastName,
+        brandFullName: resolveRequiredBrandField(resetToken.user, 'brandFullName'),
+        firstName: resolveRequiredProfileField(resetToken.user, 'firstName'),
+        lastName: resolveRequiredProfileField(resetToken.user, 'lastName'),
       }),
     );
 
@@ -1848,9 +1846,8 @@ export class AuthService {
             password: true,
             email: true,
             username: true,
-            brandFullName: true,
-            firstName: true,
-            lastName: true,
+            userProfile: { select: canonicalUserProfileSelect },
+            brand: { select: { name: true } },
           },
         },
       },
@@ -1869,9 +1866,9 @@ export class AuthService {
       this.buildPasswordPolicyContext({
         email: resetToken.user.email,
         username: resetToken.user.username,
-        brandFullName: resetToken.user.brandFullName,
-        firstName: resetToken.user.firstName,
-        lastName: resetToken.user.lastName,
+        brandFullName: resolveRequiredBrandField(resetToken.user, 'brandFullName'),
+        firstName: resolveRequiredProfileField(resetToken.user, 'firstName'),
+        lastName: resolveRequiredProfileField(resetToken.user, 'lastName'),
       }),
     );
 
@@ -1939,9 +1936,8 @@ export class AuthService {
         id: true,
         email: true,
         username: true,
-        brandFullName: true,
-        firstName: true,
-        lastName: true,
+        userProfile: { select: canonicalUserProfileSelect },
+        brand: { select: { name: true } },
         password: true,
         mustResetPassword: true,
       },
@@ -1968,9 +1964,9 @@ export class AuthService {
       this.buildPasswordPolicyContext({
         email: user.email,
         username: user.username,
-        brandFullName: user.brandFullName,
-        firstName: user.firstName,
-        lastName: user.lastName,
+        brandFullName: resolveRequiredBrandField(user, 'brandFullName'),
+        firstName: resolveRequiredProfileField(user, 'firstName'),
+        lastName: resolveRequiredProfileField(user, 'lastName'),
       }),
     );
 
@@ -2034,9 +2030,8 @@ export class AuthService {
         mustResetPassword: true,
         email: true,
         username: true,
-        brandFullName: true,
-        firstName: true,
-        lastName: true,
+        userProfile: { select: canonicalUserProfileSelect },
+        brand: { select: { name: true } },
       },
     });
 
@@ -2060,9 +2055,9 @@ export class AuthService {
       this.buildPasswordPolicyContext({
         email: user.email,
         username: user.username,
-        brandFullName: user.brandFullName,
-        firstName: user.firstName,
-        lastName: user.lastName,
+        brandFullName: resolveRequiredBrandField(user, 'brandFullName'),
+        firstName: resolveRequiredProfileField(user, 'firstName'),
+        lastName: resolveRequiredProfileField(user, 'lastName'),
       }),
     );
 

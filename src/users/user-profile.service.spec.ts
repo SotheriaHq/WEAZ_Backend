@@ -54,7 +54,7 @@ describe('UserProfileService theme preferences', () => {
     );
   });
 
-  it('reads UserProfile fields first and falls back to legacy User fields', async () => {
+  it('reads UserProfile fields and ignores divergent legacy User fields', async () => {
     (mockPrisma.user.findUnique as jest.Mock).mockResolvedValue({
       id: 'user-1',
       username: 'alex',
@@ -90,7 +90,7 @@ describe('UserProfileService theme preferences', () => {
 
     expect(result.firstName).toBe('Profile');
     expect(result.lastName).toBe('Owner');
-    expect(result.profileImage).toBe('legacy-avatar.jpg');
+    expect(result.profileImage).toBeUndefined();
     expect(result.bannerImage).toBe('profile-banner.jpg');
     expect(result.address).toBe('profile-address');
     expect(result.location).toBe('profile-address');

@@ -6,6 +6,12 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { Role } from '@prisma/client';
+import { canonicalBrandProfileSelect, normalizeBrandProfileForAuthResponse } from 'src/common/brand-profile-source.helper';
+import {
+  canonicalUserProfileSelect,
+  resolveNullableProfileField,
+  resolveRequiredProfileField,
+} from 'src/common/user-profile-source.helper';
 // import { excludeFields } from '../helpers/prisma-select.helper';
 
 @Injectable()
@@ -25,7 +31,15 @@ export class ProfileService {
         throw new NotFoundException('User not found');
       }
 
-      return user;
+      const brandProfile = normalizeBrandProfileForAuthResponse(user);
+      return {
+        ...user,
+        firstName: resolveRequiredProfileField(user, 'firstName'),
+        lastName: resolveRequiredProfileField(user, 'lastName'),
+        phoneNumber: resolveNullableProfileField(user, 'phoneNumber'),
+        address: resolveNullableProfileField(user, 'address'),
+        ...brandProfile,
+      };
     } catch (error) {
       // Log and handle errors
       this.logger.error('Get profile error:', error.message, error.stack);
@@ -50,28 +64,28 @@ export class ProfileService {
     const baseFields = {
       id: true,
       username: true, // Unique username
-      firstName: true,
-      lastName: true,
       email: true,
-      phoneNumber: true,
-      address: true,
       role: true,
       type: true,
       themePreference: true,
       createdAt: true,
       updatedAt: true,
+      userProfile: {
+        select: canonicalUserProfileSelect,
+      },
     };
 
     // Additional fields for BRAND users
     const brandFields = {
-      brandFullName: true,
-      cacNumber: isSelf || isAdmin, // Sensitive, restricted to self or admins
-      tin: isSelf || isAdmin, // Sensitive, restricted to self or admins
-      ceoNin: isSelf || isAdmin, // Sensitive, restricted to self or admins
-      ceoFirstName: true,
-      ceoLastName: true,
-      companyLocation: true,
-      industriNumber: isSelf || isAdmin, // Sensitive, restricted to self or admins
+      brand: {
+        select: {
+          ...canonicalBrandProfileSelect,
+          cacNumber: isSelf || isAdmin,
+          tin: isSelf || isAdmin,
+          ceoNin: isSelf || isAdmin,
+          industriNumber: isSelf || isAdmin,
+        },
+      },
     };
 
     // Combine fields

@@ -364,20 +364,12 @@ export class BrandVerificationService {
           city: dto.businessAddress.city,
           verificationDraftData: null,
           verificationDraftUpdatedAt: null,
-          owner: {
-            update: {
-              phoneNumber: resolvedOwnerPhoneNumber,
-              cacNumber: dto.cacNumber,
-              ceoNin: dto.ownerNin,
-              ceoFirstName: dto.ownerLegalFirstName,
-              ceoLastName: dto.ownerLegalLastName,
-              companyLocation,
-              brandCountry: dto.businessAddress.country,
-              brandState: dto.businessAddress.state,
-              brandCity: dto.businessAddress.city,
-            },
-          },
         },
+      });
+
+      await tx.userProfile.updateMany({
+        where: { userId: ownerUserId },
+        data: { phoneNumber: resolvedOwnerPhoneNumber },
       });
     });
 
@@ -500,25 +492,9 @@ export class BrandVerificationService {
           }
         : {}),
     };
-    const legacyIdentityData: Record<string, unknown> = {
+    const profileIdentityData: Record<string, unknown> = {
       ...(resolvedOwnerPhoneNumber
         ? { phoneNumber: resolvedOwnerPhoneNumber }
-        : {}),
-      ...(dto.cacNumber !== undefined ? { cacNumber: dto.cacNumber } : {}),
-      ...(dto.ownerNin !== undefined ? { ceoNin: dto.ownerNin } : {}),
-      ...(dto.ownerLegalFirstName !== undefined
-        ? { ceoFirstName: dto.ownerLegalFirstName }
-        : {}),
-      ...(dto.ownerLegalLastName !== undefined
-        ? { ceoLastName: dto.ownerLegalLastName }
-        : {}),
-      ...(companyLocation
-        ? {
-            companyLocation,
-            brandCountry: dto.businessAddress?.country,
-            brandState: dto.businessAddress?.state,
-            brandCity: dto.businessAddress?.city,
-          }
         : {}),
     };
 
@@ -549,15 +525,15 @@ export class BrandVerificationService {
           verificationInfoRequestedItems: null,
           verificationInfoRequestMessage: null,
           ...brandIdentityData,
-          ...(Object.keys(legacyIdentityData).length > 0
-            ? {
-                owner: {
-                  update: legacyIdentityData,
-                },
-              }
-            : {}),
         },
       });
+
+      if (Object.keys(profileIdentityData).length > 0) {
+        await tx.userProfile.updateMany({
+          where: { userId: ownerId },
+          data: profileIdentityData,
+        });
+      }
     });
 
     if (brand.verificationReviewedById) {

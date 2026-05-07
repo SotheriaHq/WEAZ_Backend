@@ -21,6 +21,9 @@ describe('BrandVerificationService', () => {
     fileUpload: {
       findFirst: jest.fn(),
     },
+    userProfile: {
+      updateMany: jest.fn(),
+    },
     $transaction: jest.fn((callback) => callback(prisma)),
   };
   const notifications = { create: jest.fn() };
@@ -42,7 +45,7 @@ describe('BrandVerificationService', () => {
     prisma.$transaction.mockImplementation((callback: any) => callback(prisma));
   });
 
-  it('writes verification identity fields to Brand and dual-writes legacy User fields', async () => {
+  it('writes verification identity fields to Brand and updates owner UserProfile phone only', async () => {
     prisma.brand.findFirst.mockResolvedValue({
       id: 'brand-1',
       name: 'Ada Style',
@@ -114,20 +117,12 @@ describe('BrandVerificationService', () => {
           country: 'Nigeria',
           state: 'Lagos',
           city: 'Ikeja',
-          owner: {
-            update: expect.objectContaining({
-              cacNumber: 'CAC12345',
-              ceoNin: '12345678901',
-              ceoFirstName: 'Ada',
-              ceoLastName: 'Okafor',
-              companyLocation: '12 Market Road, Ikeja, Lagos, Nigeria',
-              brandCountry: 'Nigeria',
-              brandState: 'Lagos',
-              brandCity: 'Ikeja',
-            }),
-          },
         }),
       }),
     );
+    expect(prisma.userProfile.updateMany).toHaveBeenCalledWith({
+      where: { userId: 'owner-1' },
+      data: { phoneNumber: '08030000000' },
+    });
   });
 });

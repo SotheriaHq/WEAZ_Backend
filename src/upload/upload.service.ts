@@ -366,23 +366,20 @@ export class UploadService {
     file: Pick<FileUploadResult, 'id' | 'url'>,
   ): Promise<void> {
     await this.prisma.$transaction(async (tx) => {
-      const user = await tx.user.update({
+      const user = await tx.user.findUnique({
         where: { id: userId },
-        data: { profileImageId: file.id, profileImage: file.url },
+        select: {
+          userProfile: { select: { firstName: true, lastName: true } },
+        },
       });
       await tx.userProfile.upsert({
         where: { userId },
         create: {
           userId,
-          firstName: user.firstName,
-          lastName: user.lastName,
-          phoneNumber: user.phoneNumber,
-          address: user.address,
+          firstName: user?.userProfile?.firstName ?? '',
+          lastName: user?.userProfile?.lastName ?? '',
           profileImageId: file.id,
           profileImage: file.url,
-          bannerImageId: user.bannerImageId,
-          bannerImage: user.bannerImage,
-          profileVisibility: user.profileVisibility,
         },
         update: { profileImageId: file.id, profileImage: file.url },
       });
@@ -396,23 +393,20 @@ export class UploadService {
 
   async clearUserProfileImage(userId: string): Promise<void> {
     await this.prisma.$transaction(async (tx) => {
-      const user = await tx.user.update({
+      const user = await tx.user.findUnique({
         where: { id: userId },
-        data: { profileImageId: null, profileImage: null },
+        select: {
+          userProfile: { select: { firstName: true, lastName: true } },
+        },
       });
       await tx.userProfile.upsert({
         where: { userId },
         create: {
           userId,
-          firstName: user.firstName,
-          lastName: user.lastName,
-          phoneNumber: user.phoneNumber,
-          address: user.address,
+          firstName: user?.userProfile?.firstName ?? '',
+          lastName: user?.userProfile?.lastName ?? '',
           profileImageId: null,
           profileImage: null,
-          bannerImageId: user.bannerImageId,
-          bannerImage: user.bannerImage,
-          profileVisibility: user.profileVisibility,
         },
         update: { profileImageId: null, profileImage: null },
       });
@@ -429,23 +423,20 @@ export class UploadService {
     file: Pick<FileUploadResult, 'id' | 'url'>,
   ): Promise<void> {
     await this.prisma.$transaction(async (tx) => {
-      const user = await tx.user.update({
+      const user = await tx.user.findUnique({
         where: { id: userId },
-        data: { bannerImageId: file.id, bannerImage: file.url },
+        select: {
+          userProfile: { select: { firstName: true, lastName: true } },
+        },
       });
       await tx.userProfile.upsert({
         where: { userId },
         create: {
           userId,
-          firstName: user.firstName,
-          lastName: user.lastName,
-          phoneNumber: user.phoneNumber,
-          address: user.address,
-          profileImageId: user.profileImageId,
-          profileImage: user.profileImage,
+          firstName: user?.userProfile?.firstName ?? '',
+          lastName: user?.userProfile?.lastName ?? '',
           bannerImageId: file.id,
           bannerImage: file.url,
-          profileVisibility: user.profileVisibility,
         },
         update: { bannerImageId: file.id, bannerImage: file.url },
       });

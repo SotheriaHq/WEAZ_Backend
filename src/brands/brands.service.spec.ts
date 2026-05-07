@@ -129,7 +129,7 @@ describe('BrandsService', () => {
   });
 
   describe('updateBrandProfile', () => {
-    it('writes Brand canonical fields and dual-writes legacy User fields', async () => {
+    it('writes Brand canonical fields without dual-writing legacy User fields', async () => {
       mockPrisma.user.findUnique
         .mockResolvedValueOnce({
           id: 'owner-1',
@@ -259,18 +259,7 @@ describe('BrandsService', () => {
           }),
         }),
       );
-      expect(mockPrisma.user.update).toHaveBeenCalledWith(
-        expect.objectContaining({
-          where: { id: 'owner-1' },
-          data: expect.objectContaining({
-            brandFullName: 'Canonical Name',
-            brandDescription: 'Canonical description',
-            brandCountry: 'Nigeria',
-            brandTags: ['ankara'],
-            brandBusinessType: 'Atelier',
-          }),
-        }),
-      );
+      expect(mockPrisma.user.update).not.toHaveBeenCalled();
       expect(response.brandFullName).toBe('Canonical Name');
       expect(response.brandTags).toEqual(['ankara']);
     });

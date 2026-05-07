@@ -266,7 +266,7 @@ describe('AuthService', () => {
     expect(result).not.toHaveProperty('resolvedTheme');
   });
 
-  it('auth responses prefer UserProfile fields and fall back to User fields', () => {
+  it('auth responses use UserProfile fields and ignore divergent legacy User profile fields', () => {
     const result = toAuthUserResponse({
       id: 'user-1',
       username: 'alex',
@@ -325,9 +325,9 @@ describe('AuthService', () => {
 
     expect(result.firstName).toBe('Profile');
     expect(result.lastName).toBe('Owner');
-    expect(result.phoneNumber).toBe('legacy-phone');
+    expect(result.phoneNumber).toBeNull();
     expect(result.address).toBe('profile-address');
-    expect(result.profileImage).toBe('legacy-avatar.jpg');
+    expect(result.profileImage).toBeNull();
     expect(result.bannerImage).toBe('profile-banner.jpg');
   });
 
@@ -594,7 +594,7 @@ describe('AuthService', () => {
     expect(result.activeBrandId).toBe('brand-active');
   });
 
-  it('auth responses fall back to legacy User brand fields when Brand is missing or incomplete', () => {
+  it('auth responses do not fall back to legacy User brand fields when Brand is incomplete', () => {
     const result = toAuthUserResponse({
       id: 'user-1',
       username: 'legacy-brand',
@@ -646,11 +646,11 @@ describe('AuthService', () => {
       userProfile: null,
     } as any);
 
-    expect(result.brandFullName).toBe('Legacy Brand');
-    expect(result.brandDescription).toBe('Legacy description');
-    expect(result.brandTags).toEqual(['legacy']);
-    expect(result.socialWebsite).toBe('https://legacy.example');
-    expect(result.cacNumber).toBe('CAC-LEGACY');
+    expect(result.brandFullName).toBeNull();
+    expect(result.brandDescription).toBeNull();
+    expect(result.brandTags).toEqual([]);
+    expect(result.socialWebsite).toBeNull();
+    expect(result.cacNumber).toBeNull();
   });
 
   it('/auth/profile returns UserProfile fields when UserProfile exists', async () => {
@@ -782,7 +782,7 @@ describe('AuthService', () => {
     );
   });
 
-  it('/auth/profile falls back to legacy User fields when UserProfile is missing', async () => {
+  it('/auth/profile keeps flat fields null/empty when UserProfile is missing instead of using legacy User columns', async () => {
     mockPrisma.user.findUnique.mockResolvedValue({
       id: 'user-1',
       username: 'alex',
@@ -833,14 +833,14 @@ describe('AuthService', () => {
 
     expect(result).toEqual(
       expect.objectContaining({
-        firstName: 'Legacy',
-        lastName: 'User',
-        phoneNumber: 'legacy-phone',
-        address: 'legacy-address',
-        profileImage: 'legacy-avatar.jpg',
-        profileImageId: 'legacy-avatar-id',
-        bannerImage: 'legacy-banner.jpg',
-        bannerImageId: 'legacy-banner-id',
+        firstName: '',
+        lastName: '',
+        phoneNumber: null,
+        address: null,
+        profileImage: null,
+        profileImageId: null,
+        bannerImage: null,
+        bannerImageId: null,
       }),
     );
   });
@@ -1197,14 +1197,15 @@ describe('AuthService', () => {
         },
       }),
     );
-    expect(mockPrisma.user.update).toHaveBeenCalledWith({
-      where: { id: 'user-1' },
-      data: {
-        firstName: 'Alex',
-        lastName: 'Doe',
-        address: 'Lagos',
-      },
-    });
+    expect(mockPrisma.user.update).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          firstName: 'Alex',
+          lastName: 'Doe',
+          address: 'Lagos',
+        }),
+      }),
+    );
   });
 
   it.each([
