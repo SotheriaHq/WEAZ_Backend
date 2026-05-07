@@ -20,6 +20,10 @@ import { AdminAuditService } from 'src/admin/services/admin-audit.service';
 import { EmailService } from 'src/email/email.service';
 import * as emailTemplates from 'src/email/email.templates';
 import { resolveAppUrl } from 'src/email/email.branding';
+import {
+  canonicalUserProfileSelect,
+  resolveRequiredProfileField,
+} from 'src/common/user-profile-source.helper';
 
 const STAFF_INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const STAFF_MANAGED_ROLES = new Set<BrandMemberRole>([
@@ -38,8 +42,7 @@ const STAFF_USER_SELECT = {
   id: true,
   email: true,
   username: true,
-  firstName: true,
-  lastName: true,
+  userProfile: { select: canonicalUserProfileSelect },
   role: true,
   type: true,
   status: true,
@@ -94,8 +97,12 @@ export class BrandStaffService {
       userId: member.userId,
       email: member.user?.email ?? null,
       username: member.user?.username ?? null,
-      firstName: member.user?.firstName ?? null,
-      lastName: member.user?.lastName ?? null,
+      firstName: member.user
+        ? resolveRequiredProfileField(member.user, 'firstName') || null
+        : null,
+      lastName: member.user
+        ? resolveRequiredProfileField(member.user, 'lastName') || null
+        : null,
       role: member.role,
       status: member.status,
       joinedAt: member.joinedAt,
@@ -125,13 +132,12 @@ export class BrandStaffService {
   }
 
   private getDisplayName(user?: {
-    firstName?: string | null;
-    lastName?: string | null;
+    userProfile?: { firstName?: string | null; lastName?: string | null } | null;
     username?: string | null;
     email?: string | null;
   } | null): string | null {
     if (!user) return null;
-    const name = [user.firstName, user.lastName]
+    const name = [user.userProfile?.firstName, user.userProfile?.lastName]
       .map((value) => String(value ?? '').trim())
       .filter(Boolean)
       .join(' ');
@@ -160,9 +166,13 @@ export class BrandStaffService {
           where: { id: params.actorUserId },
           select: {
             email: true,
-            firstName: true,
-            lastName: true,
             username: true,
+            userProfile: {
+              select: {
+                firstName: true,
+                lastName: true,
+              },
+            },
           },
         }),
       ]);

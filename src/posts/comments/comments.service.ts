@@ -10,11 +10,30 @@ import { PaginatedResult } from '../../upload/dto/pagination.dto';
 import { v4 as uuidv4 } from 'uuid';
 
 import { ReactionType } from '@prisma/client';
+import {
+  canonicalUserProfileSelect,
+  resolveProfileImage,
+  resolveRequiredProfileField,
+} from '../../common/user-profile-source.helper';
 
 @Injectable()
 export class CommentsService {
   private readonly logger = new Logger(CommentsService.name);
   constructor(private prisma: PrismaService) {}
+
+  private mapUserDisplay<T extends { user?: any }>(row: T): T {
+    if (!row.user) return row;
+    return {
+      ...row,
+      user: {
+        id: row.user.id,
+        username: row.user.username,
+        firstName: resolveRequiredProfileField(row.user, 'firstName'),
+        lastName: resolveRequiredProfileField(row.user, 'lastName'),
+        profileImage: resolveProfileImage(row.user).url,
+      },
+    };
+  }
 
   async create(
     postId: string,
@@ -33,7 +52,7 @@ export class CommentsService {
       throw new NotFoundException('Post not found');
     }
 
-    return this.prisma.comment.create({
+    const comment = await this.prisma.comment.create({
       data: {
         id: uuidv4(),
         content: dto.content,
@@ -49,13 +68,12 @@ export class CommentsService {
           select: {
             id: true,
             username: true,
-            firstName: true,
-            lastName: true,
-            profileImage: true,
+            userProfile: { select: canonicalUserProfileSelect },
           },
         },
       },
     });
+    return this.mapUserDisplay(comment);
   }
 
   async getComments(
@@ -83,16 +101,16 @@ export class CommentsService {
           select: {
             id: true,
             username: true,
-            firstName: true,
-            lastName: true,
-            profileImage: true,
+            userProfile: { select: canonicalUserProfileSelect },
           },
         },
       },
     });
 
     const hasNextPage = items.length > limit;
-    const data = hasNextPage ? items.slice(0, -1) : items;
+    const data = (hasNextPage ? items.slice(0, -1) : items).map((item) =>
+      this.mapUserDisplay(item),
+    );
     const endCursor =
       data.length > 0 ? data[data.length - 1].createdAt.toISOString() : null;
 
@@ -122,7 +140,7 @@ export class CommentsService {
       throw new NotFoundException('Comment not found or not owned by user');
     }
 
-    return this.prisma.comment.update({
+    const comment = await this.prisma.comment.update({
       where: { id: commentId },
       data: {
         content: dto.content,
@@ -132,13 +150,12 @@ export class CommentsService {
           select: {
             id: true,
             username: true,
-            firstName: true,
-            lastName: true,
-            profileImage: true,
+            userProfile: { select: canonicalUserProfileSelect },
           },
         },
       },
     });
+    return this.mapUserDisplay(comment);
   }
 
   async delete(commentId: string, userId: string): Promise<void> {
@@ -232,9 +249,7 @@ export class CommentsService {
             select: {
               id: true,
               username: true,
-              firstName: true,
-              lastName: true,
-              profileImage: true,
+              userProfile: { select: canonicalUserProfileSelect },
             },
           },
         },
@@ -249,6 +264,10 @@ export class CommentsService {
       }),
     ]);
 
-    return { users: reactions.map((r) => r.user), totalThreads, totalDislikes };
+    return {
+      users: reactions.map((r) => this.mapUserDisplay(r).user),
+      totalThreads,
+      totalDislikes,
+    };
   }
 }

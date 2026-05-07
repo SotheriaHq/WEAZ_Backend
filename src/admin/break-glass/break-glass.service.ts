@@ -14,6 +14,7 @@ import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { PasswordService } from 'src/auth/helper/password.service';
 import { UserHelperService } from 'src/auth/helper/user-helper.service';
+import { writeLegacyUserCompatibilityFields } from 'src/common/legacy-user-compatibility.helper';
 
 const MAX_FAILURES_PER_DAY = 2;
 const BACKOFF_AFTER_FAILURE_MS = 30_000;
@@ -298,8 +299,6 @@ export class BreakGlassService {
             role: Role.SuperAdmin,
             status: UserStatus.ACTIVE,
             isActive: 'Active',
-            firstName,
-            lastName,
             password: hashedPassword,
             mustResetPassword: true,
             authVersion: { increment: 1 },
@@ -307,6 +306,12 @@ export class BreakGlassService {
             adminSuspendedReason: null,
             deactivatedAt: null,
             deactivatedReason: null,
+            userProfile: {
+              upsert: {
+                create: { firstName, lastName },
+                update: { firstName, lastName },
+              },
+            },
           },
           select: {
             id: true,
@@ -326,14 +331,19 @@ export class BreakGlassService {
             id: uuidv4(),
             username,
             email: normalizedEmail,
-            firstName,
-            lastName,
+            ...writeLegacyUserCompatibilityFields({
+              firstName,
+              lastName,
+            }),
             password: hashedPassword,
             role: Role.SuperAdmin,
             type: UserType.REGULAR,
             status: UserStatus.ACTIVE,
             isActive: 'Active',
             mustResetPassword: true,
+            userProfile: {
+              create: { firstName, lastName },
+            },
           },
           select: {
             id: true,

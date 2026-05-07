@@ -57,6 +57,10 @@ import {
   UpdateCustomOrderLifecycleStatusDto,
   UpdateCustomOrderProgressStageDto,
 } from './dto/custom-orders.dto';
+import {
+  canonicalUserProfileSelect,
+  resolveRequiredProfileField,
+} from 'src/common/user-profile-source.helper';
 
 const BUYER_ACCEPTANCE_WINDOW_HOURS = 72;
 const EXCEPTION_REVIEW_MONTHLY_QUOTA = 2;
@@ -2484,10 +2488,16 @@ export class CustomOrdersService {
   private async resolveUserDisplayName(userId: string, fallback?: string | null) {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
-      select: { username: true, firstName: true, lastName: true },
+      select: {
+        username: true,
+        userProfile: { select: canonicalUserProfileSelect },
+      },
     });
 
-    const fullName = [user?.firstName, user?.lastName]
+    const fullName = [
+      resolveRequiredProfileField(user ?? {}, 'firstName'),
+      resolveRequiredProfileField(user ?? {}, 'lastName'),
+    ]
       .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
       .join(' ')
       .trim();

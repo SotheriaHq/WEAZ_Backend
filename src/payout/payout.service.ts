@@ -17,6 +17,10 @@ import { StandardOrderEscrowService } from 'src/finance/standard-order-escrow.se
 import { StandardOrderFinanceSyncService } from 'src/finance/standard-order-finance-sync.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { AdminAuditService } from 'src/admin/services/admin-audit.service';
+import {
+  canonicalUserProfileSelect,
+  resolveRequiredProfileField,
+} from 'src/common/user-profile-source.helper';
 
 @Injectable()
 export class PayoutService {
@@ -28,6 +32,16 @@ export class PayoutService {
     @Optional()
     private readonly adminAuditService?: AdminAuditService,
   ) {}
+
+  private buyerName(buyer: any): string {
+    return [
+      resolveRequiredProfileField(buyer ?? {}, 'firstName'),
+      resolveRequiredProfileField(buyer ?? {}, 'lastName'),
+    ]
+      .map((value) => String(value || '').trim())
+      .filter(Boolean)
+      .join(' ');
+  }
 
   async findAll(brandId: string, page = 1, limit = 20) {
     const skip = (page - 1) * limit;
@@ -248,8 +262,7 @@ export class PayoutService {
               sourceTitleSnapshot: true,
               buyer: {
                 select: {
-                  firstName: true,
-                  lastName: true,
+                  userProfile: { select: canonicalUserProfileSelect },
                   username: true,
                 },
               },
@@ -302,8 +315,7 @@ export class PayoutService {
               sourceTitleSnapshot: true,
               buyer: {
                 select: {
-                  firstName: true,
-                  lastName: true,
+                  userProfile: { select: canonicalUserProfileSelect },
                   username: true,
                 },
               },
@@ -329,10 +341,7 @@ export class PayoutService {
 
     const customOrderById = new Map<string, { title: string; counterparty: string | null }>(
       customOrders.map((order: any) => {
-        const buyerName = [order?.buyer?.firstName, order?.buyer?.lastName]
-          .map((value) => String(value || '').trim())
-          .filter(Boolean)
-          .join(' ');
+        const buyerName = this.buyerName(order?.buyer);
 
         return [
           String(order.id),
@@ -411,8 +420,8 @@ export class PayoutService {
       })
       .map((allocation) => {
         const buyerName = [
-          allocation.customOrder?.buyer?.firstName,
-          allocation.customOrder?.buyer?.lastName,
+          resolveRequiredProfileField(allocation.customOrder?.buyer ?? {}, 'firstName'),
+          resolveRequiredProfileField(allocation.customOrder?.buyer ?? {}, 'lastName'),
         ]
           .map((value) => String(value || '').trim())
           .filter(Boolean)
@@ -515,8 +524,7 @@ export class PayoutService {
               sourceTitleSnapshot: true,
               buyer: {
                 select: {
-                  firstName: true,
-                  lastName: true,
+                  userProfile: { select: canonicalUserProfileSelect },
                   username: true,
                 },
               },
@@ -588,8 +596,8 @@ export class PayoutService {
       })),
       ...customHeldAllocations.map((allocation) => {
         const buyerName = [
-          allocation.customOrder?.buyer?.firstName,
-          allocation.customOrder?.buyer?.lastName,
+          resolveRequiredProfileField(allocation.customOrder?.buyer ?? {}, 'firstName'),
+          resolveRequiredProfileField(allocation.customOrder?.buyer ?? {}, 'lastName'),
         ]
           .map((value) => String(value || '').trim())
           .filter(Boolean)

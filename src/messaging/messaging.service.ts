@@ -61,6 +61,11 @@ import {
   UpdateThreadPreferencesDto,
 } from './dto/messaging.dto';
 import { BRAND_PERMISSIONS } from 'src/brands/permissions/brand-permissions';
+import {
+  canonicalUserProfileSelect,
+  resolveProfileImage,
+  resolveRequiredProfileField,
+} from 'src/common/user-profile-source.helper';
 
 const ACTIVE_DISPUTE_STATUSES: ReadonlySet<AdminDisputeStatus> = new Set([
   AdminDisputeStatus.OPEN,
@@ -68,6 +73,12 @@ const ACTIVE_DISPUTE_STATUSES: ReadonlySet<AdminDisputeStatus> = new Set([
   AdminDisputeStatus.IN_PROGRESS,
   AdminDisputeStatus.REOPENED,
 ]);
+
+const MESSAGE_USER_DISPLAY_SELECT = {
+  id: true,
+  username: true,
+  userProfile: { select: canonicalUserProfileSelect },
+} as const;
 
 @Injectable()
 export class MessagingService {
@@ -85,6 +96,27 @@ export class MessagingService {
     @Inject(forwardRef(() => CustomOrdersService))
     private readonly customOrdersService: CustomOrdersService,
   ) {}
+
+  private mapUserDisplay(user: any) {
+    if (!user) return null;
+    return {
+      id: user.id,
+      username: user.username,
+      firstName: resolveRequiredProfileField(user, 'firstName'),
+      lastName: resolveRequiredProfileField(user, 'lastName'),
+      profileImage: resolveProfileImage(user).url,
+    };
+  }
+
+  private resolveUserDisplayName(user: any, fallback: string): string {
+    if (!user) return fallback;
+    return (
+      resolveRequiredProfileField(user, 'firstName') ||
+      user.username ||
+      user.id ||
+      fallback
+    );
+  }
 
   async listCustomOrderMessagesForBuyer(actorId: string, customOrderId: string, queryDto: QueryMessagesDto) {
     const resolved = await this.resolveCustomOrderContext(customOrderId, actorId, 'BUYER');
@@ -366,13 +398,7 @@ export class MessagingService {
           },
         },
         sender: {
-          select: {
-            id: true,
-            username: true,
-            firstName: true,
-            lastName: true,
-            profileImage: true,
-          },
+          select: MESSAGE_USER_DISPLAY_SELECT,
         },
       },
     });
@@ -382,7 +408,10 @@ export class MessagingService {
         statusCode: 200,
         replay: true,
         thread,
-        message: existing,
+        message: {
+          ...existing,
+          sender: this.mapUserDisplay(existing.sender),
+        },
       };
     }
 
@@ -416,13 +445,7 @@ export class MessagingService {
           },
         },
         sender: {
-          select: {
-            id: true,
-            username: true,
-            firstName: true,
-            lastName: true,
-            profileImage: true,
-          },
+          select: MESSAGE_USER_DISPLAY_SELECT,
         },
       },
     });
@@ -460,9 +483,10 @@ export class MessagingService {
 
     if (recipients.length > 0) {
       const senderDisplayName =
-        message.sender?.firstName ||
-        message.sender?.username ||
-        (actorParticipant.role === 'BRAND_OWNER' ? 'Brand' : 'User');
+        this.resolveUserDisplayName(
+          message.sender,
+          actorParticipant.role === 'BRAND_OWNER' ? 'Brand' : 'User',
+        );
 
       await this.prisma.messageNotificationOutbox.createMany({
         data: recipients.map((recipient) => ({
@@ -494,7 +518,10 @@ export class MessagingService {
       statusCode: 201,
       replay: false,
       thread,
-      message,
+      message: {
+        ...message,
+        sender: this.mapUserDisplay(message.sender),
+      },
     };
   }
 
@@ -595,8 +622,16 @@ export class MessagingService {
                     user: {
                       OR: [
                         { username: { contains: q, mode: 'insensitive' } },
-                        { firstName: { contains: q, mode: 'insensitive' } },
-                        { lastName: { contains: q, mode: 'insensitive' } },
+                        {
+                          userProfile: {
+                            is: {
+                              OR: [
+                                { firstName: { contains: q, mode: 'insensitive' } },
+                                { lastName: { contains: q, mode: 'insensitive' } },
+                              ],
+                            },
+                          },
+                        },
                       ],
                     },
                   },
@@ -642,13 +677,7 @@ export class MessagingService {
             mutedUntil: true,
             archivedAt: true,
             user: {
-              select: {
-                id: true,
-                username: true,
-                firstName: true,
-                lastName: true,
-                profileImage: true,
-              },
+              select: MESSAGE_USER_DISPLAY_SELECT,
             },
           },
         },
@@ -685,7 +714,7 @@ export class MessagingService {
             String((thread.subjectSnapshotJson as any)?.type || '').toUpperCase() === 'CUSTOM_FIT_INQUIRY');
         const isDirect = thread.contextType === MessageContextType.DIRECT;
         const counterpartName = counterpart?.user
-          ? counterpart.user.firstName || counterpart.user.username || counterpart.user.id
+          ? this.resolveUserDisplayName(counterpart.user, counterpart.user.id)
           : null;
 
         const targetUrl = this.resolveThreadTargetUrl(
@@ -721,13 +750,7 @@ export class MessagingService {
                 : `Custom #${String(thread.customOrderId || thread.id).slice(0, 8).toUpperCase()}`,
           subtitle: thread.lastMessagePreview || 'No messages yet',
           participant: counterpart?.user
-            ? {
-                id: counterpart.user.id,
-                username: counterpart.user.username,
-                firstName: counterpart.user.firstName,
-                lastName: counterpart.user.lastName,
-                profileImage: counterpart.user.profileImage,
-              }
+            ? this.mapUserDisplay(counterpart.user)
             : null,
           lastMessageAt: thread.lastMessageAt,
           createdAt: thread.createdAt,
@@ -1840,8 +1863,16 @@ export class MessagingService {
                     user: {
                       OR: [
                         { username: { contains: q, mode: 'insensitive' as const } },
-                        { firstName: { contains: q, mode: 'insensitive' as const } },
-                        { lastName: { contains: q, mode: 'insensitive' as const } },
+                        {
+                          userProfile: {
+                            is: {
+                              OR: [
+                                { firstName: { contains: q, mode: 'insensitive' as const } },
+                                { lastName: { contains: q, mode: 'insensitive' as const } },
+                              ],
+                            },
+                          },
+                        },
                       ],
                     },
                   },
@@ -1875,13 +1906,7 @@ export class MessagingService {
             userId: true,
             role: true,
             user: {
-              select: {
-                id: true,
-                username: true,
-                firstName: true,
-                lastName: true,
-                profileImage: true,
-              },
+              select: MESSAGE_USER_DISPLAY_SELECT,
             },
           },
         },
@@ -1912,11 +1937,7 @@ export class MessagingService {
               : `Custom #${String(thread.customOrderId || thread.id).slice(0, 8).toUpperCase()}`,
         subtitle: thread.lastMessagePreview || 'No messages yet',
         participants: thread.participants.map((p) => ({
-          id: p.user.id,
-          username: p.user.username,
-          firstName: p.user.firstName,
-          lastName: p.user.lastName,
-          profileImage: p.user.profileImage,
+          ...this.mapUserDisplay(p.user),
           role: p.role,
         })),
         lastMessageAt: thread.lastMessageAt,
@@ -2330,18 +2351,19 @@ export class MessagingService {
             },
           },
           sender: {
-            select: {
-              id: true,
-              username: true,
-              firstName: true,
-              lastName: true,
-              profileImage: true,
-            },
+            select: MESSAGE_USER_DISPLAY_SELECT,
           },
         },
       });
       if (existing) {
-        return { thread, message: existing, replay: true };
+        return {
+          thread,
+          message: {
+            ...existing,
+            sender: this.mapUserDisplay(existing.sender),
+          },
+          replay: true,
+        };
       }
 
       const now = Date.now();
@@ -2407,13 +2429,7 @@ export class MessagingService {
             },
           },
           sender: {
-            select: {
-              id: true,
-              username: true,
-              firstName: true,
-              lastName: true,
-              profileImage: true,
-            },
+            select: MESSAGE_USER_DISPLAY_SELECT,
           },
         },
       });
@@ -2463,9 +2479,10 @@ export class MessagingService {
 
       if (recipients.length > 0) {
         const senderName =
-          message.sender?.firstName ||
-          message.sender?.username ||
-          (params.actorRole === 'BRAND_OWNER' ? 'Brand' : 'User');
+          this.resolveUserDisplayName(
+            message.sender,
+            params.actorRole === 'BRAND_OWNER' ? 'Brand' : 'User',
+          );
 
         await tx.messageNotificationOutbox.createMany({
           data: recipients.map((recipient) => ({
@@ -2484,7 +2501,14 @@ export class MessagingService {
         });
       }
 
-      return { thread, message, replay: false };
+      return {
+        thread,
+        message: {
+          ...message,
+          sender: this.mapUserDisplay(message.sender),
+        },
+        replay: false,
+      };
     });
 
     const recipientIds = [params.buyerId, params.brandOwnerUserId]

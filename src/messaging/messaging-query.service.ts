@@ -2,6 +2,11 @@ import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { MessageKind, MessageParticipantRole, MessageVisibilityState } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
+import {
+  canonicalUserProfileSelect,
+  resolveProfileImage,
+  resolveRequiredProfileField,
+} from 'src/common/user-profile-source.helper';
 
 @Injectable()
 export class MessagingQueryService {
@@ -61,9 +66,7 @@ export class MessagingQueryService {
           select: {
             id: true,
             username: true,
-            firstName: true,
-            lastName: true,
-            profileImage: true,
+            userProfile: { select: canonicalUserProfileSelect },
           },
         },
         attachments: {
@@ -153,6 +156,15 @@ export class MessagingQueryService {
 
       return {
         ...message,
+        sender: message.sender
+          ? {
+              id: message.sender.id,
+              username: message.sender.username,
+              firstName: resolveRequiredProfileField(message.sender, 'firstName'),
+              lastName: resolveRequiredProfileField(message.sender, 'lastName'),
+              profileImage: resolveProfileImage(message.sender).url,
+            }
+          : null,
         deliveryReceipts: [],
         deliveryStatus,
       };

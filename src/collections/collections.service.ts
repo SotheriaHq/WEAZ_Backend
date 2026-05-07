@@ -64,6 +64,15 @@ import {
   BRAND_PERMISSIONS,
   BrandPermissionCode,
 } from 'src/brands/permissions/brand-permissions';
+import {
+  canonicalUserProfileSelect,
+  resolveProfileImage,
+  resolveRequiredProfileField,
+} from 'src/common/user-profile-source.helper';
+import {
+  canonicalBrandProfileSelect,
+  resolveRequiredBrandField,
+} from 'src/common/brand-profile-source.helper';
 
 type CollectionScope = 'design' | 'store' | 'all';
 type CollectionDomainValue = 'DESIGN' | 'STORE';
@@ -90,6 +99,31 @@ export class CollectionsService {
     @Optional()
     private readonly brandAccessService?: BrandAccessService,
   ) { }
+
+  private mapCollectionOwner(owner: any) {
+    if (!owner) return null;
+    const profileImage = resolveProfileImage(owner);
+    return {
+      id: owner.id,
+      username: owner.username,
+      firstName: resolveRequiredProfileField(owner, 'firstName'),
+      lastName: resolveRequiredProfileField(owner, 'lastName'),
+      brandFullName: resolveRequiredBrandField(owner, 'brandFullName') || null,
+      profileImage: owner.brand?.logo ?? profileImage.url,
+      profileImageId: profileImage.fileId,
+      profileImageFile: profileImage.file,
+      brand: owner.brand ?? null,
+    };
+  }
+
+  private selectCollectionOwnerDisplay() {
+    return {
+      id: true,
+      username: true,
+      userProfile: { select: canonicalUserProfileSelect },
+      brand: { select: canonicalBrandProfileSelect },
+    } as const;
+  }
 
   private readonly maxProductsPerCollection = Math.max(
     1,
@@ -954,10 +988,7 @@ export class CollectionsService {
         visibility: true,
         deletedAt: true,
         owner: {
-          select: {
-            username: true,
-            brandFullName: true,
-          },
+          select: this.selectCollectionOwnerDisplay(),
         },
       } as any,
     } as any)) as any;
@@ -1034,7 +1065,10 @@ export class CollectionsService {
           payload: {
             collectionId,
             requesterId,
-            brandName: c.owner?.brandFullName || c.owner?.username || null,
+            brandName:
+              resolveRequiredBrandField(c.owner, 'brandFullName') ||
+              c.owner?.username ||
+              null,
             targetUrl: `/settings/collections?collectionId=${collectionId}&tab=requests`,
           },
         },
@@ -1116,7 +1150,7 @@ export class CollectionsService {
     const rows = await this.prisma.collectionAccess.findMany({
       where: { collectionId, state: 'PENDING' },
       include: {
-        viewer: { select: { id: true, username: true, profileImage: true } },
+        viewer: { select: this.selectCollectionOwnerDisplay() },
       },
       orderBy: { createdAt: 'desc' },
       take: limit + 1,
@@ -1141,7 +1175,7 @@ export class CollectionsService {
     const rows = await this.prisma.collectionAccess.findMany({
       where: { collectionId, state: 'APPROVED' },
       include: {
-        viewer: { select: { id: true, username: true, profileImage: true } },
+        viewer: { select: this.selectCollectionOwnerDisplay() },
       },
       orderBy: { createdAt: 'desc' },
       take: limit + 1,

@@ -35,6 +35,12 @@ import * as argon2 from 'argon2';
 import { createHash } from 'crypto';
 import { ConfigService } from '@nestjs/config';
 import { resolveWebAppBaseUrl as resolveConfiguredWebAppBaseUrl } from 'src/common/utils/web-app-url';
+import {
+  canonicalUserProfileSelect,
+  resolveProfileImage,
+  resolveRequiredProfileField,
+} from 'src/common/user-profile-source.helper';
+import { canonicalBrandProfileSelect } from 'src/common/brand-profile-source.helper';
 
 type EmailSettingsResponse = {
   globalEnabled: boolean;
@@ -42,6 +48,13 @@ type EmailSettingsResponse = {
   scenarios: Record<string, boolean>;
   securityCriticalScenarios: string[];
 };
+
+const NOTIFICATION_ACTOR_SELECT = {
+  id: true,
+  username: true,
+  userProfile: { select: canonicalUserProfileSelect },
+  brand: { select: canonicalBrandProfileSelect },
+} as const;
 
 type UpdateEmailSettingsPayload = {
   globalEnabled?: boolean;
@@ -71,6 +84,17 @@ export class NotificationsService {
     private readonly emailService: EmailService,
     private readonly config: ConfigService,
   ) {}
+
+  private mapActorDisplay(actor: any) {
+    if (!actor) return null;
+    return {
+      id: actor.id,
+      username: actor.username,
+      firstName: resolveRequiredProfileField(actor, 'firstName'),
+      lastName: resolveRequiredProfileField(actor, 'lastName'),
+      profileImage: resolveProfileImage(actor).url,
+    };
+  }
 
   private validateAndSanitizePayload(
     type: NotificationType,
@@ -166,13 +190,7 @@ export class NotificationsService {
       take: take + 1,
       include: {
         actor: {
-          select: {
-            id: true,
-            username: true,
-            firstName: true,
-            lastName: true,
-            profileImage: true,
-          },
+          select: NOTIFICATION_ACTOR_SELECT,
         },
       },
     });
@@ -194,7 +212,7 @@ export class NotificationsService {
         version: 2 as const, // All responses now use v2 structured format
         createdAt: n.createdAt,
         isRead: n.isRead,
-        actor: n.actor,
+        actor: this.mapActorDisplay(n.actor),
         message: this.formatMessage(n),
         target,
         subTargetId,
@@ -1258,13 +1276,7 @@ export class NotificationsService {
         },
         include: {
           actor: {
-            select: {
-              id: true,
-              username: true,
-              firstName: true,
-              lastName: true,
-              profileImage: true,
-            },
+            select: NOTIFICATION_ACTOR_SELECT,
           },
         },
       });
@@ -1295,7 +1307,7 @@ export class NotificationsService {
             id: created.id,
             type: created.type,
             payload: emittedPayload,
-            actor: created.actor,
+            actor: this.mapActorDisplay(created.actor),
             createdAt: created.createdAt,
             isRead: created.isRead,
             message: this.formatMessage(created),

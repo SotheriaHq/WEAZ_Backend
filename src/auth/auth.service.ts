@@ -41,6 +41,7 @@ import { EmailService, type EnqueueEmailResult } from 'src/email/email.service';
 import * as emailTemplates from 'src/email/email.templates';
 import { createHash, randomBytes } from 'crypto';
 import { TrustedDeviceService } from './helper/trusted-device.service';
+import { writeLegacyUserCompatibilityFields } from 'src/common/legacy-user-compatibility.helper';
 import {
   PasswordPolicyContext,
   validatePasswordPolicy,
@@ -427,14 +428,16 @@ export class AuthService {
               username,
               // Never trust role from client-controlled signup payload.
               role: Role.User,
-              firstName: dbFirstName,
-              lastName: dbLastName,
-              profileImage: signupDto.profileImage,
+              ...writeLegacyUserCompatibilityFields({
+                firstName: dbFirstName,
+                lastName: dbLastName,
+                profileImage: signupDto.profileImage,
+                brandFullName: signupDto.brandFullName,
+                industriNumber,
+              }),
               email: signupDto.email,
               password: hashedPassword,
-              brandFullName: signupDto.brandFullName,
               type: signupDto.type ?? UserType.REGULAR,
-              industriNumber,
               emailVerificationCode: verificationToken,
               isEmailVerified: false,
               userProfile: {

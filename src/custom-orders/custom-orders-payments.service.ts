@@ -30,6 +30,10 @@ import { CustomOrderThreadBootstrapService } from 'src/messaging/custom-order-th
 import { SettlementCalculatorService } from 'src/finance/settlement-calculator.service';
 import { SettlementSnapshotService } from 'src/finance/settlement-snapshot.service';
 import { VerifyCustomOrderPaymentDto } from './dto/custom-orders.dto';
+import {
+  canonicalUserProfileSelect,
+  resolveRequiredProfileField,
+} from 'src/common/user-profile-source.helper';
 
 const ACTIVE_PAYMENT_ATTEMPT_STATUSES = new Set([
   'PENDING',
@@ -51,6 +55,16 @@ export class CustomOrdersPaymentsService {
     private readonly settlementSnapshotService: SettlementSnapshotService,
   ) {}
 
+  private buyerDisplayName(buyer: any): string {
+    return [
+      resolveRequiredProfileField(buyer ?? {}, 'firstName'),
+      resolveRequiredProfileField(buyer ?? {}, 'lastName'),
+    ]
+      .map((value) => String(value || '').trim())
+      .filter(Boolean)
+      .join(' ');
+  }
+
   async verifyPayment(
     userId: string,
     customOrderId: string,
@@ -71,8 +85,7 @@ export class CustomOrdersPaymentsService {
         buyerPriceSummaryJson: true,
         buyer: {
           select: {
-            firstName: true,
-            lastName: true,
+            userProfile: { select: canonicalUserProfileSelect },
             username: true,
             email: true,
           },
@@ -335,10 +348,9 @@ export class CustomOrdersPaymentsService {
     const updatedAttempt = transitionResult.attempt;
 
     if (transitionResult.transitionedToPaid) {
-      const buyerDisplayName = [order.buyer?.firstName, order.buyer?.lastName]
-        .map((value) => String(value ?? '').trim())
-        .filter(Boolean)
-        .join(' ');
+      const buyerDisplayName = this.buyerDisplayName(order.buyer);
+      const buyerFirstName = resolveRequiredProfileField(order.buyer ?? {}, 'firstName');
+      const buyerLastName = resolveRequiredProfileField(order.buyer ?? {}, 'lastName');
       const buyerName =
         buyerDisplayName || String(order.buyer?.username || 'Buyer');
 
@@ -353,8 +365,8 @@ export class CustomOrdersPaymentsService {
           orderAmount: lockedAmount,
           currency: order.currency,
           buyerDisplayName: buyerDisplayName || undefined,
-          buyerFirstName: order.buyer?.firstName || undefined,
-          buyerLastName: order.buyer?.lastName || undefined,
+          buyerFirstName: buyerFirstName || undefined,
+          buyerLastName: buyerLastName || undefined,
           buyerUsername: order.buyer?.username || undefined,
           buyerEmail: order.buyer?.email || undefined,
           targetUrl: `/custom-orders/${customOrderId}`,
@@ -385,8 +397,8 @@ export class CustomOrdersPaymentsService {
             sourceBrandName: order.sourceBrandNameSnapshot || 'the brand',
             buyerName,
             buyerDisplayName: buyerDisplayName || undefined,
-            buyerFirstName: order.buyer?.firstName || undefined,
-            buyerLastName: order.buyer?.lastName || undefined,
+            buyerFirstName: buyerFirstName || undefined,
+            buyerLastName: buyerLastName || undefined,
             buyerUsername: order.buyer?.username || undefined,
             buyerEmail: order.buyer?.email || undefined,
             orderAmount: lockedAmount,
@@ -819,8 +831,7 @@ export class CustomOrdersPaymentsService {
           lastBrandProgressUpdateAt: true,
           buyer: {
             select: {
-              firstName: true,
-              lastName: true,
+              userProfile: { select: canonicalUserProfileSelect },
               username: true,
               email: true,
             },
@@ -992,6 +1003,10 @@ export class CustomOrdersPaymentsService {
       return reconciliation;
     }
 
+    const buyerDisplayName = this.buyerDisplayName(reconciliation.buyer);
+    const buyerFirstName = resolveRequiredProfileField(reconciliation.buyer ?? {}, 'firstName');
+    const buyerLastName = resolveRequiredProfileField(reconciliation.buyer ?? {}, 'lastName');
+
     await this.sideEffects.enqueueNotification({
       customOrderId: reconciliation.customOrderId,
       recipientIds: [reconciliation.buyerId],
@@ -1002,13 +1017,9 @@ export class CustomOrdersPaymentsService {
         sourceBrandName: reconciliation.sourceBrandName,
         orderAmount: reconciliation.amount,
         currency: reconciliation.currency,
-        buyerDisplayName:
-          [reconciliation.buyer?.firstName, reconciliation.buyer?.lastName]
-            .map((value) => String(value ?? '').trim())
-            .filter(Boolean)
-            .join(' ') || undefined,
-        buyerFirstName: reconciliation.buyer?.firstName || undefined,
-        buyerLastName: reconciliation.buyer?.lastName || undefined,
+        buyerDisplayName: buyerDisplayName || undefined,
+        buyerFirstName: buyerFirstName || undefined,
+        buyerLastName: buyerLastName || undefined,
         buyerUsername: reconciliation.buyer?.username || undefined,
         buyerEmail: reconciliation.buyer?.email || undefined,
         targetUrl: `/custom-orders/${reconciliation.customOrderId}`,
@@ -1018,13 +1029,6 @@ export class CustomOrdersPaymentsService {
     });
 
     if (reconciliation.brandOwnerId) {
-      const buyerDisplayName = [
-        reconciliation.buyer?.firstName,
-        reconciliation.buyer?.lastName,
-      ]
-        .map((value) => String(value ?? '').trim())
-        .filter(Boolean)
-        .join(' ');
       await this.customOrderThreadBootstrap.ensureOrderPlacedThread({
         customOrderId: reconciliation.customOrderId,
         status: CustomOrderStatus.ACCEPTED,
@@ -1049,8 +1053,8 @@ export class CustomOrdersPaymentsService {
             buyerDisplayName ||
             String(reconciliation.buyer?.username || 'Buyer'),
           buyerDisplayName: buyerDisplayName || undefined,
-          buyerFirstName: reconciliation.buyer?.firstName || undefined,
-          buyerLastName: reconciliation.buyer?.lastName || undefined,
+          buyerFirstName: buyerFirstName || undefined,
+          buyerLastName: buyerLastName || undefined,
           buyerUsername: reconciliation.buyer?.username || undefined,
           buyerEmail: reconciliation.buyer?.email || undefined,
           orderAmount: reconciliation.amount,

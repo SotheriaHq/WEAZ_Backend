@@ -2,6 +2,10 @@ type BuyerLike = {
   firstName?: string | null;
   lastName?: string | null;
   username?: string | null;
+  userProfile?: {
+    firstName?: string | null;
+    lastName?: string | null;
+  } | null;
 } | null;
 
 type StandardOrderSourceAllocation = {
@@ -80,7 +84,10 @@ const shortCode = (value?: string | null) => {
 };
 
 const buildBuyerName = (buyer?: BuyerLike) => {
-  const fullName = [buyer?.firstName, buyer?.lastName]
+  const fullName = [
+    buyer?.userProfile?.firstName,
+    buyer?.userProfile?.lastName,
+  ]
     .map((value) => String(value || '').trim())
     .filter(Boolean)
     .join(' ');

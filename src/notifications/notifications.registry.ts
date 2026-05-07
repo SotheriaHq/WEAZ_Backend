@@ -80,6 +80,35 @@ const formatCustomOrderCode = (customOrderId: unknown) => {
   return `#CO-${customOrderId.slice(0, 8).toUpperCase()}`;
 };
 
+const formatActorDisplayName = (
+  actor: {
+    username?: string | null;
+    userProfile?: { firstName?: string | null; lastName?: string | null } | null;
+  } | null | undefined,
+  fallback: string | null,
+) => {
+  if (!actor) return fallback;
+  return (
+    actor.username ||
+    [actor.userProfile?.firstName, actor.userProfile?.lastName]
+      .map((value) => String(value ?? '').trim())
+      .filter(Boolean)
+      .join(' ') ||
+    fallback
+  );
+};
+
+const formatActorBrandName = (
+  actor: {
+    username?: string | null;
+    brand?: { name?: string | null } | null;
+  } | null | undefined,
+  fallback: string,
+) => {
+  if (!actor) return fallback;
+  return actor.username || actor.brand?.name || fallback;
+};
+
 const toContentLabel = (targetType: unknown): string => {
   const normalizedType = String(targetType ?? 'content').toUpperCase();
   if (normalizedType === 'COLLECTION_MEDIA') return 'design';
@@ -196,10 +225,7 @@ export class NotificationRegistry {
 
         const orderCode = formatOrderCode(n.payload?.orderId);
         const brandName = n.payload?.brandName;
-        const actorName = n.actor
-          ? n.actor.username ||
-            `${n.actor.firstName ?? ''} ${n.actor.lastName ?? ''}`.trim()
-          : null;
+        const actorName = formatActorDisplayName(n.actor, null);
 
         if (n.payload?.isBuyerCopy) {
           return brandName
@@ -276,10 +302,7 @@ export class NotificationRegistry {
         targetUrl: Joi.string().optional(),
       }),
       formatter: (n: any) => {
-        const actorName = n.actor
-          ? n.actor.username ||
-            `${n.actor.firstName ?? ''} ${n.actor.lastName ?? ''}`.trim()
-          : null;
+        const actorName = formatActorDisplayName(n.actor, null);
         return actorName
           ? `${actorName} patched on your profile`
           : 'You have a new patch';
@@ -304,10 +327,7 @@ export class NotificationRegistry {
         if (typeof message === 'string' && message.trim().length > 0) {
           return message;
         }
-        const actorName = n.actor
-          ? n.actor.username ||
-            `${n.actor.firstName ?? ''} ${n.actor.lastName ?? ''}`.trim()
-          : null;
+        const actorName = formatActorDisplayName(n.actor, null);
         const contentTitle =
           typeof n.payload?.contentTitle === 'string' &&
           n.payload.contentTitle.trim().length > 0
@@ -343,10 +363,7 @@ export class NotificationRegistry {
         if (typeof message === 'string' && message.trim().length > 0) {
           return message;
         }
-        const actorName = n.actor
-          ? n.actor.username ||
-            `${n.actor.firstName ?? ''} ${n.actor.lastName ?? ''}`.trim()
-          : null;
+        const actorName = formatActorDisplayName(n.actor, null);
         const contentTitle =
           typeof n.payload?.contentTitle === 'string' &&
           n.payload.contentTitle.trim().length > 0
@@ -381,10 +398,7 @@ export class NotificationRegistry {
         targetUrl: Joi.string().optional(),
       }),
       formatter: (n: any) => {
-        const actorName = n.actor
-          ? n.actor.username ||
-            `${n.actor.firstName ?? ''} ${n.actor.lastName ?? ''}`.trim()
-          : null;
+        const actorName = formatActorDisplayName(n.actor, null);
         const action = n.payload?.action;
         // Profile patch (user-to-brand)
         if (action === 'PROFILE_PATCHED') {
@@ -422,10 +436,7 @@ export class NotificationRegistry {
         targetUrl: Joi.string().optional(),
       }),
       formatter: (n: any) => {
-        const actorName = n.actor
-          ? n.actor.username ||
-            `${n.actor.firstName ?? ''} ${n.actor.lastName ?? ''}`.trim()
-          : 'Someone';
+        const actorName = formatActorDisplayName(n.actor, 'Someone');
         return `${actorName} requested access to view your private collections`;
       },
     });
@@ -440,10 +451,7 @@ export class NotificationRegistry {
         targetUrl: Joi.string().optional(),
       }),
       formatter: (n: any) => {
-        const actorName = n.actor
-          ? n.actor.username ||
-            `${n.actor.firstName ?? ''} ${n.actor.lastName ?? ''}`.trim()
-          : null;
+        const actorName = formatActorDisplayName(n.actor, null);
         const brandName = n.payload?.brandName || actorName || 'the brand';
         const username = n.payload?.username || 'there';
         return `Congratulations ${username}, ${brandName} approved your request`;
@@ -461,10 +469,7 @@ export class NotificationRegistry {
         targetUrl: Joi.string().optional(),
       }),
       formatter: (n: any) => {
-        const actorName = n.actor
-          ? n.actor.username ||
-            `${n.actor.firstName ?? ''} ${n.actor.lastName ?? ''}`.trim()
-          : null;
+        const actorName = formatActorDisplayName(n.actor, null);
         const brandName = n.payload?.brandName || actorName || 'the brand';
         const username = n.payload?.username || 'there';
         return `Sorry ${username}, ${brandName} rejected your request`;
@@ -545,9 +550,7 @@ export class NotificationRegistry {
         targetUrl: Joi.string().optional(),
       }),
       formatter: (n: any) => {
-        const actorName = n.actor
-          ? n.actor.username || n.actor.brandFullName || 'A brand'
-          : 'A brand';
+        const actorName = formatActorBrandName(n.actor, 'A brand');
         return `${actorName} sent you a patch request`;
       },
     });
@@ -559,9 +562,7 @@ export class NotificationRegistry {
         targetUrl: Joi.string().optional(),
       }),
       formatter: (n: any) => {
-        const actorName = n.actor
-          ? n.actor.username || n.actor.brandFullName || 'A brand'
-          : 'A brand';
+        const actorName = formatActorBrandName(n.actor, 'A brand');
         return `${actorName} accepted your patch request`;
       },
     });
@@ -573,9 +574,7 @@ export class NotificationRegistry {
         targetUrl: Joi.string().optional(),
       }),
       formatter: (n: any) => {
-        const actorName = n.actor
-          ? n.actor.username || n.actor.brandFullName || 'A brand'
-          : 'A brand';
+        const actorName = formatActorBrandName(n.actor, 'A brand');
         return `${actorName} rejected your patch request`;
       },
     });
@@ -588,9 +587,7 @@ export class NotificationRegistry {
         targetUrl: Joi.string().optional(),
       }),
       formatter: (n: any) => {
-        const actorName = n.actor
-          ? n.actor.username || n.actor.brandFullName || 'A brand'
-          : 'A brand';
+        const actorName = formatActorBrandName(n.actor, 'A brand');
         return `${actorName} requested to contribute to your collection`;
       },
     });
@@ -603,9 +600,7 @@ export class NotificationRegistry {
         targetUrl: Joi.string().optional(),
       }),
       formatter: (n: any) => {
-        const actorName = n.actor
-          ? n.actor.username || n.actor.brandFullName || 'A brand'
-          : 'A brand';
+        const actorName = formatActorBrandName(n.actor, 'A brand');
         return `${actorName} accepted your contribution request`;
       },
     });
@@ -618,9 +613,7 @@ export class NotificationRegistry {
         targetUrl: Joi.string().optional(),
       }),
       formatter: (n: any) => {
-        const actorName = n.actor
-          ? n.actor.username || n.actor.brandFullName || 'A brand'
-          : 'A brand';
+        const actorName = formatActorBrandName(n.actor, 'A brand');
         return `${actorName} rejected your contribution request`;
       },
     });
@@ -659,10 +652,7 @@ export class NotificationRegistry {
       }),
       formatter: (n: any) => {
         if (n.payload?.message) return n.payload.message;
-        const actorName = n.actor
-          ? n.actor.username ||
-            `${n.actor.firstName ?? ''} ${n.actor.lastName ?? ''}`.trim()
-          : 'A user';
+        const actorName = formatActorDisplayName(n.actor, 'A user');
         return `${actorName} requested permission to share your size fittings`;
       },
     });

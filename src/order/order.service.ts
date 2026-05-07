@@ -12,6 +12,7 @@ import { reconcileStandardOrderPaymentStatuses } from 'src/common/payments/order
 import { OrderRefundService } from './order-refund.service';
 import { StandardOrderEscrowService } from 'src/finance/standard-order-escrow.service';
 import { StandardOrderFinanceSyncService } from 'src/finance/standard-order-finance-sync.service';
+import { canonicalUserProfileSelect } from 'src/common/user-profile-source.helper';
 
 @Injectable()
 export class OrderService {
@@ -226,8 +227,7 @@ export class OrderService {
             owner: {
               select: {
                 id: true,
-                phoneNumber: true,
-                address: true,
+                userProfile: { select: canonicalUserProfileSelect },
               },
             },
           },
@@ -256,8 +256,7 @@ export class OrderService {
             owner: {
               select: {
                 id: true,
-                phoneNumber: true,
-                address: true,
+                userProfile: { select: canonicalUserProfileSelect },
               },
             },
           },
