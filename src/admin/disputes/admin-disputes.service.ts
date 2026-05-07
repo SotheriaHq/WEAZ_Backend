@@ -13,6 +13,10 @@ import {
 } from '@prisma/client';
 import { v4 as uuidv4 } from 'uuid';
 import { Request } from 'express';
+import {
+  adminUserDisplaySelect,
+  mapAdminUserDisplay,
+} from '../admin-user-display.helper';
 
 @Injectable()
 export class AdminDisputesService {
@@ -36,10 +40,10 @@ export class AdminDisputesService {
       where,
       include: {
         reporter: {
-          select: { id: true, email: true, firstName: true, lastName: true },
+          select: adminUserDisplaySelect,
         },
         assignedTo: {
-          select: { id: true, email: true, firstName: true, lastName: true },
+          select: adminUserDisplaySelect,
         },
       },
       orderBy: { createdAt: 'desc' },
@@ -51,7 +55,10 @@ export class AdminDisputesService {
     const results = hasMore ? items.slice(0, take) : items;
     const nextCursor = hasMore ? results[results.length - 1]?.id : undefined;
 
-    return { items: results, nextCursor };
+    return {
+      items: results.map((item) => this.mapDisputeUsers(item)),
+      nextCursor,
+    };
   }
 
   async create(
@@ -133,10 +140,10 @@ export class AdminDisputesService {
         },
         include: {
           reporter: {
-            select: { id: true, email: true, firstName: true, lastName: true },
+            select: adminUserDisplaySelect,
           },
           assignedTo: {
-            select: { id: true, email: true, firstName: true, lastName: true },
+            select: adminUserDisplaySelect,
           },
         },
       });
@@ -161,7 +168,7 @@ export class AdminDisputesService {
       return result;
     });
 
-    return updated;
+    return this.mapDisputeUsers(updated);
   }
 
   async release(
@@ -191,10 +198,10 @@ export class AdminDisputesService {
         },
         include: {
           reporter: {
-            select: { id: true, email: true, firstName: true, lastName: true },
+            select: adminUserDisplaySelect,
           },
           assignedTo: {
-            select: { id: true, email: true, firstName: true, lastName: true },
+            select: adminUserDisplaySelect,
           },
         },
       });
@@ -216,7 +223,7 @@ export class AdminDisputesService {
       return result;
     });
 
-    return updated;
+    return this.mapDisputeUsers(updated);
   }
 
   async update(
@@ -271,10 +278,10 @@ export class AdminDisputesService {
         data: updateData,
         include: {
           reporter: {
-            select: { id: true, email: true, firstName: true, lastName: true },
+            select: adminUserDisplaySelect,
           },
           assignedTo: {
-            select: { id: true, email: true, firstName: true, lastName: true },
+            select: adminUserDisplaySelect,
           },
         },
       });
@@ -298,7 +305,7 @@ export class AdminDisputesService {
       return result;
     });
 
-    return updated;
+    return this.mapDisputeUsers(updated);
   }
 
   async reopen(
@@ -377,5 +384,14 @@ export class AdminDisputesService {
     if (assignedToId !== actorId) {
       throw new ForbiddenException('Dispute is assigned to another admin');
     }
+  }
+
+  private mapDisputeUsers(dispute: any) {
+    return {
+      ...dispute,
+      reporter: mapAdminUserDisplay(dispute.reporter),
+      assignedTo: mapAdminUserDisplay(dispute.assignedTo),
+      resolvedBy: mapAdminUserDisplay(dispute.resolvedBy),
+    };
   }
 }

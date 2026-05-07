@@ -9,6 +9,10 @@ import { Request } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { NotificationsService } from 'src/notifications/notifications.service';
+import {
+  adminUserDisplaySelect,
+  mapAdminUserDisplay,
+} from '../admin-user-display.helper';
 
 @Injectable()
 export class AdminDesignsService {
@@ -81,12 +85,7 @@ export class AdminDesignsService {
           },
         },
         owner: {
-          select: {
-            id: true,
-            email: true,
-            firstName: true,
-            lastName: true,
-          },
+          select: adminUserDisplaySelect,
         },
       },
       orderBy,
@@ -128,6 +127,7 @@ export class AdminDesignsService {
     return {
       items: sortedResults.map((item: any) => ({
         ...item,
+        owner: mapAdminUserDisplay(item.owner),
         coverImage:
           item.coverMedia?.file?.s3Url ?? item.medias?.[0]?.file?.s3Url ?? null,
         coverImageFileId:

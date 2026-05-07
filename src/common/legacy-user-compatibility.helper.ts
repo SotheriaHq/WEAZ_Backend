@@ -17,3 +17,20 @@ export function writeLegacyUserCompatibilityFields(
     industriNumber: input.industriNumber ?? null,
   };
 }
+
+export function writeLegacyUserAnonymizationFields(userId: string) {
+  return {
+    email: `deleted-${userId.slice(0, 8)}@erased.local`,
+    username: `deleted-${userId.slice(0, 8)}`,
+    password: '',
+    firstName: 'Deleted',
+    lastName: 'User',
+    phoneNumber: null,
+    profileImage: null,
+    bannerImage: null,
+    address: null,
+    brandFullName: null,
+    brandDescription: null,
+    companyLocation: null,
+  };
+}

@@ -17,6 +17,11 @@ import { RespondSizeFitShareDto, SizeFitShareDecision } from './dto/respond-size
 import { ShareSizeFitDto } from './dto/share-size-fit.dto';
 import { UpdateSizeFitSettingsDto } from './dto/update-size-fit-settings.dto';
 import { UpdateSizeFitDto } from './dto/update-size-fit.dto';
+import {
+  canonicalUserProfileSelect,
+  resolveProfileImage,
+  resolveRequiredProfileField,
+} from 'src/common/user-profile-source.helper';
 
 type PrismaTx = any;
 type SizeFitVisibility = 'PUBLIC' | 'PRIVATE';
@@ -107,6 +112,12 @@ const NT_SIZE_FIT_SHARE_APPROVED = 'SIZE_FIT_SHARE_APPROVED' as NotificationType
 const NT_SIZE_FIT_SHARE_REJECTED = 'SIZE_FIT_SHARE_REJECTED' as NotificationType;
 const NT_SIZE_FIT_RESHARED = 'SIZE_FIT_RESHARED' as NotificationType;
 
+const sizeFitUserDisplaySelect = {
+  id: true,
+  username: true,
+  userProfile: { select: canonicalUserProfileSelect },
+} as const;
+
 @Injectable()
 export class SizeFitService {
   private readonly logger = new Logger(SizeFitService.name);
@@ -125,6 +136,27 @@ export class SizeFitService {
     private readonly prisma: PrismaService,
     private readonly notifications: NotificationsService,
   ) {}
+
+  private mapUserDisplay(user: any) {
+    if (!user) return user;
+    const { userProfile, ...rest } = user;
+    const profileImage = resolveProfileImage({ userProfile });
+    return {
+      ...rest,
+      firstName: resolveRequiredProfileField({ userProfile }, 'firstName'),
+      lastName: resolveRequiredProfileField({ userProfile }, 'lastName'),
+      profileImage: profileImage.url,
+    };
+  }
+
+  private mapShareDisplay(share: any) {
+    return {
+      ...share,
+      owner: this.mapUserDisplay(share.owner),
+      viewer: this.mapUserDisplay(share.viewer),
+      requestedBy: this.mapUserDisplay(share.requestedBy),
+    };
+  }
 
   private toIso(date: Date | null | undefined): string | null {
     return date ? date.toISOString() : null;
@@ -620,22 +652,10 @@ export class SizeFitService {
         where: { ownerId: userId, status: SIZE_FIT_SHARE_STATUS.PENDING },
         include: {
           viewer: {
-            select: {
-              id: true,
-              username: true,
-              firstName: true,
-              lastName: true,
-              profileImage: true,
-            },
+            select: sizeFitUserDisplaySelect,
           },
           requestedBy: {
-            select: {
-              id: true,
-              username: true,
-              firstName: true,
-              lastName: true,
-              profileImage: true,
-            },
+            select: sizeFitUserDisplaySelect,
           },
           profile: { select: { userId: true, visibility: true, sharePolicy: true } },
         },
@@ -646,22 +666,10 @@ export class SizeFitService {
         where: { requestedById: userId, status: SIZE_FIT_SHARE_STATUS.PENDING },
         include: {
           owner: {
-            select: {
-              id: true,
-              username: true,
-              firstName: true,
-              lastName: true,
-              profileImage: true,
-            },
+            select: sizeFitUserDisplaySelect,
           },
           viewer: {
-            select: {
-              id: true,
-              username: true,
-              firstName: true,
-              lastName: true,
-              profileImage: true,
-            },
+            select: sizeFitUserDisplaySelect,
           },
           profile: { select: { userId: true, visibility: true, sharePolicy: true } },
         },
@@ -672,13 +680,7 @@ export class SizeFitService {
         where: { ownerId: userId, status: SIZE_FIT_SHARE_STATUS.APPROVED },
         include: {
           viewer: {
-            select: {
-              id: true,
-              username: true,
-              firstName: true,
-              lastName: true,
-              profileImage: true,
-            },
+            select: sizeFitUserDisplaySelect,
           },
         },
         orderBy: { updatedAt: 'desc' },
@@ -688,13 +690,7 @@ export class SizeFitService {
         where: { viewerId: userId, status: SIZE_FIT_SHARE_STATUS.APPROVED },
         include: {
           owner: {
-            select: {
-              id: true,
-              username: true,
-              firstName: true,
-              lastName: true,
-              profileImage: true,
-            },
+            select: sizeFitUserDisplaySelect,
           },
         },
         orderBy: { updatedAt: 'desc' },
@@ -703,10 +699,10 @@ export class SizeFitService {
     ]);
 
     return {
-      incoming,
-      outgoing,
-      sharesGiven,
-      sharesReceived,
+      incoming: incoming.map((share: any) => this.mapShareDisplay(share)),
+      outgoing: outgoing.map((share: any) => this.mapShareDisplay(share)),
+      sharesGiven: sharesGiven.map((share: any) => this.mapShareDisplay(share)),
+      sharesReceived: sharesReceived.map((share: any) => this.mapShareDisplay(share)),
     };
   }
 

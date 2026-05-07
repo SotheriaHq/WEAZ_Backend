@@ -7,6 +7,10 @@ import { PrismaService } from 'src/prisma/prisma.service';
 import { AdminAuditAction } from '@prisma/client';
 import { v4 as uuidv4 } from 'uuid';
 import { Request } from 'express';
+import {
+  adminUserDisplaySelect,
+  mapAdminUserDisplay,
+} from '../admin-user-display.helper';
 
 @Injectable()
 export class AdminSlaService {
@@ -15,14 +19,18 @@ export class AdminSlaService {
   constructor(private readonly prisma: PrismaService) {}
 
   async list() {
-    return this.prisma.adminSlaConfig.findMany({
+    const configs = await this.prisma.adminSlaConfig.findMany({
       orderBy: [{ area: 'asc' }, { createdAt: 'desc' }],
       include: {
         createdBy: {
-          select: { id: true, email: true, firstName: true, lastName: true },
+          select: adminUserDisplaySelect,
         },
       },
     });
+    return configs.map((config) => ({
+      ...config,
+      createdBy: mapAdminUserDisplay(config.createdBy),
+    }));
   }
 
   async create(

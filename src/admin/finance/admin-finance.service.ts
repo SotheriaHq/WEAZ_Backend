@@ -34,6 +34,10 @@ import { StandardOrderEscrowService } from 'src/finance/standard-order-escrow.se
 import { PrismaService } from 'src/prisma/prisma.service';
 import { resolveWebAppBaseUrl } from 'src/common/utils/web-app-url';
 import { SystemConfigService } from '../system-config/system-config.service';
+import {
+  adminUserDisplaySelect,
+  mapAdminUserDisplay,
+} from '../admin-user-display.helper';
 
 const COMMISSION_RULE_SCOPE = {
   PLATFORM: 'PLATFORM',
@@ -697,20 +701,20 @@ export class AdminFinanceService {
       ]),
     );
     const buyers = buyerIds.length
-      ? await this.prisma.user.findMany({
+        ? await this.prisma.user.findMany({
           where: { id: { in: buyerIds } },
-          select: {
-            id: true,
-            firstName: true,
-            lastName: true,
-            username: true,
-          },
+          select: adminUserDisplaySelect,
         })
       : [];
 
     const ordersById = new Map(orders.map((order) => [order.id, order]));
     const customOrdersById = new Map(customOrders.map((order) => [String(order.id), order]));
-    const buyersById = new Map(buyers.map((buyer) => [buyer.id, buyer]));
+    const buyersById = new Map(
+      buyers.map((buyer) => {
+        const display = mapAdminUserDisplay(buyer);
+        return [display.id, display] as const;
+      }),
+    );
 
     const items = attempts
       .map((attempt) => {
@@ -847,17 +851,17 @@ export class AdminFinanceService {
       ),
     );
     const buyers = buyerIds.length
-      ? await this.prisma.user.findMany({
+        ? await this.prisma.user.findMany({
           where: { id: { in: buyerIds } },
-          select: {
-            id: true,
-            firstName: true,
-            lastName: true,
-            username: true,
-          },
+          select: adminUserDisplaySelect,
         })
       : [];
-    const buyersById = new Map(buyers.map((buyer) => [buyer.id, buyer]));
+    const buyersById = new Map(
+      buyers.map((buyer) => {
+        const display = mapAdminUserDisplay(buyer);
+        return [display.id, display] as const;
+      }),
+    );
     const settlementDetails = await this.buildPaymentSettlementDetails(
       attempt,
       orders,
@@ -1098,21 +1102,21 @@ export class AdminFinanceService {
       ),
     );
     const buyers = buyerIds.length
-      ? await this.prisma.user.findMany({
+        ? await this.prisma.user.findMany({
           where: { id: { in: buyerIds } },
-          select: {
-            id: true,
-            firstName: true,
-            lastName: true,
-            username: true,
-          },
+          select: adminUserDisplaySelect,
         })
       : [];
 
     const orderById = new Map(orders.map((order) => [order.id, order]));
     const customOrderById = new Map(customOrders.map((order) => [String(order.id), order]));
     const payoutById = new Map(payouts.map((payout) => [payout.id, payout]));
-    const buyersById = new Map(buyers.map((buyer) => [buyer.id, buyer]));
+    const buyersById = new Map(
+      buyers.map((buyer) => {
+        const display = mapAdminUserDisplay(buyer);
+        return [display.id, display] as const;
+      }),
+    );
 
     return {
       items: transactions.map((transaction) => {
@@ -1413,17 +1417,17 @@ export class AdminFinanceService {
       ),
     );
     const buyers = buyerIds.length
-      ? await this.prisma.user.findMany({
+        ? await this.prisma.user.findMany({
           where: { id: { in: buyerIds } },
-          select: {
-            id: true,
-            firstName: true,
-            lastName: true,
-            username: true,
-          },
+          select: adminUserDisplaySelect,
         })
       : [];
-    const buyersById = new Map(buyers.map((buyer) => [buyer.id, buyer]));
+    const buyersById = new Map(
+      buyers.map((buyer) => {
+        const display = mapAdminUserDisplay(buyer);
+        return [display.id, display] as const;
+      }),
+    );
 
     const items = [
       ...standardHolds.map((hold) => ({

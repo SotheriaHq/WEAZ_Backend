@@ -131,11 +131,11 @@ export function mapReviewToResponse(
         reviewer: {
             id: review.user.id,
             username: review.user.username,
-            firstName: resolveRequiredProfileField(review.user, 'firstName'),
-            lastName: resolveRequiredProfileField(review.user, 'lastName'),
-            profileImage: resolveProfileImage(review.user).url,
-            profileImageId: resolveProfileImage(review.user).fileId,
-            profileImageFile: resolveProfileImage(review.user).file,
+            firstName: resolveRequiredProfileField(review.user as any, 'firstName'),
+            lastName: resolveRequiredProfileField(review.user as any, 'lastName'),
+            profileImage: resolveProfileImage(review.user as any).url,
+            profileImageId: resolveProfileImage(review.user as any).fileId,
+            profileImageFile: resolveProfileImage(review.user as any).file,
         },
         brandReply: review.brandReply
             ? {

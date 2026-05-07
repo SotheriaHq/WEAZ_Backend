@@ -21,7 +21,7 @@ export class CommentsService {
   private readonly logger = new Logger(CommentsService.name);
   constructor(private prisma: PrismaService) {}
 
-  private mapUserDisplay<T extends { user?: any }>(row: T): T {
+  private mapUserDisplay(row: any): any {
     if (!row.user) return row;
     return {
       ...row,
@@ -129,14 +129,14 @@ export class CommentsService {
     this.logger.warn(
       'Deprecated CommentsService.update called; prefer CommentsV2Service for POST target',
     );
-    const comment = await this.prisma.comment.findFirst({
+    const existingComment = await this.prisma.comment.findFirst({
       where: {
         id: commentId,
         userId,
       },
     });
 
-    if (!comment) {
+    if (!existingComment) {
       throw new NotFoundException('Comment not found or not owned by user');
     }
 

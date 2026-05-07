@@ -28,6 +28,14 @@ import { Request } from 'express';
 import { EmailService } from 'src/email/email.service';
 import * as emailTemplates from 'src/email/email.templates';
 import { resolveWebAppBaseUrl } from 'src/common/utils/web-app-url';
+import {
+  writeLegacyUserAnonymizationFields,
+  writeLegacyUserCompatibilityFields,
+} from 'src/common/legacy-user-compatibility.helper';
+import {
+  adminUserDisplaySelect,
+  mapAdminUserDisplay,
+} from '../admin-user-display.helper';
 
 @Injectable()
 export class AdminUsersService {
@@ -87,23 +95,30 @@ export class AdminUsersService {
           id: userId,
           username,
           email: normalizedEmail,
-          firstName: dto.firstName.trim(),
-          lastName: dto.lastName.trim(),
+          ...writeLegacyUserCompatibilityFields({
+            firstName: dto.firstName.trim(),
+            lastName: dto.lastName.trim(),
+          }),
           password: hashedPassword,
           role: targetRole,
           type: UserType.REGULAR,
           mustResetPassword: true,
           status: UserStatus.ACTIVE,
+          userProfile: {
+            create: {
+              firstName: dto.firstName.trim(),
+              lastName: dto.lastName.trim(),
+            },
+          },
         },
         select: {
           id: true,
           username: true,
           email: true,
-          firstName: true,
-          lastName: true,
           role: true,
           status: true,
           createdAt: true,
+          userProfile: true,
         },
       });
 
@@ -375,7 +390,7 @@ export class AdminUsersService {
       const user = await tx.user.update({
         where: { id: targetUserId },
         data: updateData,
-        select: { id: true, status: true, email: true, role: true, firstName: true },
+        select: adminUserDisplaySelect,
       });
 
       await (tx as any).adminAuditLog.create({
@@ -404,15 +419,17 @@ export class AdminUsersService {
     if (updated.email) {
       const appName = this.emailService.getAppName();
       if (newStatus === UserStatus.SUSPENDED) {
-        const mail = emailTemplates.accountSuspendedEmail(updated.firstName || 'User', reason || '', appName);
+        const display = mapAdminUserDisplay(updated);
+        const mail = emailTemplates.accountSuspendedEmail(display.firstName || 'User', reason || '', appName);
         void this.emailService.send(updated.email, mail.subject, mail.html, mail.text).catch(() => undefined);
       } else if (newStatus === UserStatus.ACTIVE && previousStatus !== UserStatus.ACTIVE) {
-        const mail = emailTemplates.accountReactivatedEmail(updated.firstName || 'User', appName);
+        const display = mapAdminUserDisplay(updated);
+        const mail = emailTemplates.accountReactivatedEmail(display.firstName || 'User', appName);
         void this.emailService.send(updated.email, mail.subject, mail.html, mail.text).catch(() => undefined);
       }
     }
 
-    return updated;
+    return mapAdminUserDisplay(updated);
   }
 
   /**
@@ -564,8 +581,8 @@ export class AdminUsersService {
     if (params.search) {
       where.OR = [
         { email: { contains: params.search, mode: 'insensitive' } },
-        { firstName: { contains: params.search, mode: 'insensitive' } },
-        { lastName: { contains: params.search, mode: 'insensitive' } },
+        { userProfile: { is: { firstName: { contains: params.search, mode: 'insensitive' } } } },
+        { userProfile: { is: { lastName: { contains: params.search, mode: 'insensitive' } } } },
         { username: { contains: params.search, mode: 'insensitive' } },
       ];
     }
@@ -573,20 +590,8 @@ export class AdminUsersService {
     const items = await this.prisma.user.findMany({
       where,
       select: {
-        id: true,
-        username: true,
-        email: true,
-        firstName: true,
-        lastName: true,
-        role: true,
-        type: true,
-        status: true,
+        ...adminUserDisplaySelect,
         isActive: true,
-        profileImage: true,
-        profileImageId: true,
-        profileImageFile: {
-          select: { id: true, s3Url: true },
-        },
         createdAt: true,
         updatedAt: true,
       },
@@ -601,7 +606,10 @@ export class AdminUsersService {
     const results = hasMore ? items.slice(0, take) : items;
     const nextCursor = hasMore ? results[results.length - 1]?.id : undefined;
 
-    return { items: results, nextCursor };
+    return {
+      items: results.map((item) => mapAdminUserDisplay(item)),
+      nextCursor,
+    };
   }
 
   /**
@@ -611,14 +619,7 @@ export class AdminUsersService {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
       select: {
-        id: true,
-        username: true,
-        email: true,
-        firstName: true,
-        lastName: true,
-        role: true,
-        type: true,
-        status: true,
+        ...adminUserDisplaySelect,
         isActive: true,
         mustResetPassword: true,
         adminSuspendedAt: true,
@@ -638,7 +639,7 @@ export class AdminUsersService {
     }
 
     return {
-      ...user,
+      ...mapAdminUserDisplay(user),
       permissions: user.adminPermissionGrants.map((g) => g.permissionCode),
       adminPermissionGrants: undefined,
     };
@@ -676,22 +677,10 @@ export class AdminUsersService {
       ...(params.cursor ? { cursor: { id: params.cursor }, skip: 1 } : {}),
       include: {
         user: {
-          select: {
-            id: true,
-            email: true,
-            firstName: true,
-            lastName: true,
-            role: true,
-            status: true,
-          },
+          select: adminUserDisplaySelect,
         },
         reviewedBy: {
-          select: {
-            id: true,
-            email: true,
-            firstName: true,
-            lastName: true,
-          },
+          select: adminUserDisplaySelect,
         },
       },
     });
@@ -700,7 +689,14 @@ export class AdminUsersService {
     const results = hasMore ? items.slice(0, take) : items;
     const nextCursor = hasMore ? results[results.length - 1]?.id : undefined;
 
-    return { items: results, nextCursor };
+    return {
+      items: results.map((item) => ({
+        ...item,
+        user: mapAdminUserDisplay(item.user),
+        reviewedBy: mapAdminUserDisplay(item.reviewedBy),
+      })),
+      nextCursor,
+    };
   }
 
   async reviewReactivationRequest(
@@ -715,12 +711,8 @@ export class AdminUsersService {
       include: {
         user: {
           select: {
-            id: true,
-            role: true,
-            status: true,
+            ...adminUserDisplaySelect,
             isActive: true,
-            email: true,
-            firstName: true,
           },
         },
       },
@@ -844,8 +836,9 @@ export class AdminUsersService {
 
     // Notify user their account has been reactivated
     if (request.user.email) {
+      const requestUser = mapAdminUserDisplay(request.user);
       const mail = emailTemplates.accountReactivatedEmail(
-        request.user.firstName || 'User',
+        requestUser.firstName || 'User',
         this.emailService.getAppName(),
       );
       void this.emailService
@@ -917,11 +910,7 @@ export class AdminUsersService {
     const target = await this.prisma.user.findUnique({
       where: { id: targetUserId },
       select: {
-        id: true,
-        email: true,
-        firstName: true,
-        lastName: true,
-        role: true,
+        ...adminUserDisplaySelect,
         brand: {
           select: { id: true },
         },
@@ -1033,7 +1022,7 @@ export class AdminUsersService {
       user: {
         id: target.id,
         email: target.email,
-        name: `${target.firstName} ${target.lastName}`.trim(),
+        name: `${mapAdminUserDisplay(target).firstName} ${mapAdminUserDisplay(target).lastName}`.trim(),
       },
     };
   }
@@ -1296,21 +1285,20 @@ export class AdminUsersService {
       await tx.user.update({
         where: { id: userId },
         data: {
-          email: `deleted-${userId.slice(0, 8)}@erased.local`,
-          firstName: 'Deleted',
-          lastName: 'User',
-          username: `deleted-${userId.slice(0, 8)}`,
-          password: '',
-          phoneNumber: null,
-          profileImage: null,
-          bannerImage: null,
-          address: null,
-          brandFullName: null,
-          brandDescription: null,
-          companyLocation: null,
+          ...writeLegacyUserAnonymizationFields(userId),
           status: UserStatus.DEACTIVATED,
           isActive: 'Inactive',
           authVersion: { increment: 1 },
+          userProfile: {
+            update: {
+              firstName: 'Deleted',
+              lastName: 'User',
+              phoneNumber: null,
+              profileImage: null,
+              bannerImage: null,
+              address: null,
+            },
+          },
         },
       });
     });

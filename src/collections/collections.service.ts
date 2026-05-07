@@ -120,6 +120,7 @@ export class CollectionsService {
     return {
       id: true,
       username: true,
+      type: true,
       userProfile: { select: canonicalUserProfileSelect },
       brand: { select: canonicalBrandProfileSelect },
     } as const;
@@ -1237,20 +1238,7 @@ export class CollectionsService {
       where,
       include: {
         viewer: {
-          select: {
-            id: true,
-            username: true,
-            firstName: true,
-            lastName: true,
-            profileImage: true,
-            profileImageId: true,
-            profileImageFile: {
-              select: {
-                id: true,
-                s3Url: true,
-              },
-            },
-          },
+          select: this.selectCollectionOwnerDisplay(),
         },
         collection: {
           select: {
@@ -1306,10 +1294,11 @@ export class CollectionsService {
           createdAt: earliest.createdAt,
           updatedAt: latest.updatedAt,
           privateCollectionCount,
-          viewer: latest.viewer,
+          viewer: this.mapCollectionOwner(latest.viewer),
           collection: latest?.collection
             ? {
                 ...latest.collection,
+                owner: this.mapCollectionOwner(latest.collection.owner),
                 title:
                   privateCollectionCount > 1
                     ? `${privateCollectionCount} private designs`
@@ -1429,18 +1418,22 @@ export class CollectionsService {
     const now = new Date();
     const owner = await this.prisma.user.findUnique({
       where: { id: ownerId },
-      select: { username: true, brandFullName: true },
+      select: this.selectCollectionOwnerDisplay(),
     });
     const viewers = await this.prisma.user.findMany({
       where: { id: { in: userIds } },
-      select: { id: true, username: true, firstName: true },
+      select: this.selectCollectionOwnerDisplay(),
     });
     const viewerNameById = new Map(
-      viewers.map((viewer) => [
-        viewer.id,
-        viewer.username || viewer.firstName || null,
-      ]),
+      viewers.map((viewer) => {
+        const display = this.mapCollectionOwner(viewer);
+        return [
+          viewer.id,
+          display?.username || display?.firstName || null,
+        ] as const;
+      }),
     );
+    const ownerDisplay = this.mapCollectionOwner(owner);
     await this.applyBrandAccessState(
       collectionId,
       ownerId,
@@ -1463,7 +1456,7 @@ export class CollectionsService {
             actorId: ownerId,
             payload: {
               collectionId,
-              brandName: owner?.brandFullName || owner?.username || null,
+              brandName: ownerDisplay?.brandFullName || ownerDisplay?.username || null,
               username: viewerNameById.get(uid) ?? null,
               targetUrl: `/profile/${ownerId}?tab=Content&visibility=Private`,
             },
@@ -1488,12 +1481,14 @@ export class CollectionsService {
     const now = new Date();
     const owner = await this.prisma.user.findUnique({
       where: { id: ownerId },
-      select: { username: true, brandFullName: true },
+      select: this.selectCollectionOwnerDisplay(),
     });
     const viewer = await this.prisma.user.findUnique({
       where: { id: userId },
-      select: { username: true, firstName: true },
+      select: this.selectCollectionOwnerDisplay(),
     });
+    const ownerDisplay = this.mapCollectionOwner(owner);
+    const viewerDisplay = this.mapCollectionOwner(viewer);
     await this.applyBrandAccessState(
       collectionId,
       ownerId,
@@ -1517,8 +1512,8 @@ export class CollectionsService {
           actorId: ownerId,
           payload: {
             collectionId,
-            brandName: owner?.brandFullName || owner?.username || null,
-            username: viewer?.username || viewer?.firstName || null,
+            brandName: ownerDisplay?.brandFullName || ownerDisplay?.username || null,
+            username: viewerDisplay?.username || viewerDisplay?.firstName || null,
             targetUrl:
               state === 'APPROVED'
                 ? `/profile/${ownerId}?tab=Content&visibility=Private`
@@ -1535,12 +1530,14 @@ export class CollectionsService {
     await this.assertOwner(collectionId, ownerId);
     const owner = await this.prisma.user.findUnique({
       where: { id: ownerId },
-      select: { username: true, brandFullName: true },
+      select: this.selectCollectionOwnerDisplay(),
     });
     const viewer = await this.prisma.user.findUnique({
       where: { id: userId },
-      select: { username: true, firstName: true },
+      select: this.selectCollectionOwnerDisplay(),
     });
+    const ownerDisplay = this.mapCollectionOwner(owner);
+    const viewerDisplay = this.mapCollectionOwner(viewer);
     const existing = await this.prisma.collectionAccess.findMany({
       where: {
         viewerId: userId,
@@ -1576,8 +1573,8 @@ export class CollectionsService {
           actorId: ownerId,
           payload: {
             collectionId,
-            brandName: owner?.brandFullName || owner?.username || null,
-            username: viewer?.username || viewer?.firstName || null,
+            brandName: ownerDisplay?.brandFullName || ownerDisplay?.username || null,
+            username: viewerDisplay?.username || viewerDisplay?.firstName || null,
             targetUrl: `/profile/${ownerId}?tab=private`,
           },
         },
@@ -1621,19 +1618,7 @@ export class CollectionsService {
             coverMediaId: true,
             ownerId: true,
             owner: {
-              select: {
-                id: true,
-                username: true,
-                brandFullName: true,
-                profileImage: true,
-                profileImageId: true,
-                profileImageFile: {
-                  select: {
-                    id: true,
-                    s3Url: true,
-                  },
-                },
-              },
+              select: this.selectCollectionOwnerDisplay(),
             },
             medias: {
               select: {
@@ -1696,6 +1681,7 @@ export class CollectionsService {
           latest.collection?.medias,
           latest.collection?.coverMediaId ?? null,
         );
+        const ownerDisplay = this.mapCollectionOwner(latest.collection?.owner);
         return {
           id: latest.id,
           collectionId: latest.collectionId,
@@ -1704,13 +1690,13 @@ export class CollectionsService {
               ? `${privateCollectionCount} private designs`
               : latest.collection?.title || 'Untitled',
           brand: {
-            id: latest.collection?.owner?.id,
+            id: ownerDisplay?.id,
             name:
-              latest.collection?.owner?.brandFullName ||
-              latest.collection?.owner?.username,
-            profileImage: latest.collection?.owner?.profileImage,
-            profileImageId: latest.collection?.owner?.profileImageId,
-            profileImageFile: latest.collection?.owner?.profileImageFile,
+              ownerDisplay?.brandFullName ||
+              ownerDisplay?.username,
+            profileImage: ownerDisplay?.profileImage,
+            profileImageId: ownerDisplay?.profileImageId,
+            profileImageFile: ownerDisplay?.profileImageFile,
           },
           coverUrl: cover?.file?.s3Url || null,
           itemCount: privateCollectionCount,
@@ -1761,19 +1747,7 @@ export class CollectionsService {
             coverMediaId: true,
             ownerId: true,
             owner: {
-              select: {
-                id: true,
-                username: true,
-                brandFullName: true,
-                profileImage: true,
-                profileImageId: true,
-                profileImageFile: {
-                  select: {
-                    id: true,
-                    s3Url: true,
-                  },
-                },
-              },
+              select: this.selectCollectionOwnerDisplay(),
             },
             medias: {
               select: {
@@ -1833,6 +1807,7 @@ export class CollectionsService {
           latest.collection?.medias,
           latest.collection?.coverMediaId ?? null,
         );
+        const ownerDisplay = this.mapCollectionOwner(latest.collection?.owner);
         return {
           id: latest.id,
           collectionId: latest.collectionId,
@@ -1841,13 +1816,13 @@ export class CollectionsService {
               ? `${privateCollectionCount} private designs`
               : latest.collection?.title || 'Untitled',
           brand: {
-            id: latest.collection?.owner?.id,
+            id: ownerDisplay?.id,
             name:
-              latest.collection?.owner?.brandFullName ||
-              latest.collection?.owner?.username,
-            profileImage: latest.collection?.owner?.profileImage,
-            profileImageId: latest.collection?.owner?.profileImageId,
-            profileImageFile: latest.collection?.owner?.profileImageFile,
+              ownerDisplay?.brandFullName ||
+              ownerDisplay?.username,
+            profileImage: ownerDisplay?.profileImage,
+            profileImageId: ownerDisplay?.profileImageId,
+            profileImageFile: ownerDisplay?.profileImageFile,
           },
           coverUrl: cover?.file?.s3Url || null,
           itemCount: privateCollectionCount,
@@ -2424,24 +2399,7 @@ export class CollectionsService {
       orderBy: [{ updatedAt: 'desc' }, { createdAt: 'desc' }],
       include: {
         owner: {
-          select: {
-            id: true,
-            username: true,
-            brandFullName: true,
-            profileImage: true,
-            profileImageId: true,
-            profileImageFile: {
-              select: {
-                id: true,
-                s3Url: true,
-                fileName: true,
-                originalName: true,
-              },
-            },
-            brand: {
-              select: { id: true },
-            },
-          },
+          select: this.selectCollectionOwnerDisplay(),
         },
         medias: {
           include: {
@@ -2512,7 +2470,8 @@ export class CollectionsService {
       if (media.fileUploadId) {
         fileIds.add(media.fileUploadId);
       }
-      const owner = collection.owner;
+      const owner = this.mapCollectionOwner(collection.owner);
+      if (!owner) return;
       if (owner.profileImageId) {
         fileIds.add(owner.profileImageId);
       } else if (owner.profileImageFile?.id) {
@@ -2526,7 +2485,7 @@ export class CollectionsService {
     );
 
     const items = feedRows.map(({ collection, media }) => {
-      const owner = collection.owner;
+      const owner = this.mapCollectionOwner(collection.owner)!;
       const file = media.file;
 
       const mediaSignedUrl = media.fileUploadId
@@ -2627,7 +2586,7 @@ export class CollectionsService {
         const published = await this.prisma.collection.findUnique({
           where: { id: collectionId },
           include: {
-            owner: true,
+            owner: { select: this.selectCollectionOwnerDisplay() },
             medias: { include: { file: true }, orderBy: { orderIndex: 'asc' } },
             _count: {
               select: {
@@ -2639,7 +2598,9 @@ export class CollectionsService {
             },
           },
         });
-        if (published) return published;
+        if (published) {
+          return { ...published, owner: this.mapCollectionOwner(published.owner) };
+        }
       }
       if (collection.status !== 'PUBLISHED' || !hasCompletions) {
         throw new BadRequestException('Collection is not in draft status');
@@ -3180,7 +3141,7 @@ export class CollectionsService {
           : {}),
       },
       include: {
-        owner: true,
+        owner: { select: this.selectCollectionOwnerDisplay() },
         medias: { include: { file: true }, orderBy: { orderIndex: 'asc' } },
         _count: {
           select: {
@@ -3193,6 +3154,7 @@ export class CollectionsService {
       },
     });
 
+    const publishedOwner = this.mapCollectionOwner(publishedCollection.owner);
     if (newStatus === 'PUBLISHED') {
       await this.cleanupSupersededDraftCollections(
         this.prisma as any,
@@ -3241,7 +3203,7 @@ export class CollectionsService {
               collectionId: publishedCollection.id,
               collectionTitle: publishedCollection.title,
               targetUrl: `/collections/${publishedCollection.id}`,
-              message: `${publishedCollection.owner.brandFullName || publishedCollection.owner.username} created a new collection: ${publishedCollection.title}`,
+              message: `${publishedOwner?.brandFullName || publishedOwner?.username} created a new collection: ${publishedCollection.title}`,
             },
           });
         } catch (e) {
@@ -3260,7 +3222,7 @@ export class CollectionsService {
                   collectionId: publishedCollection.id,
                   collectionTitle: publishedCollection.title,
                   targetUrl: `/collections/${publishedCollection.id}`,
-                  message: `${publishedCollection.owner.brandFullName || publishedCollection.owner.username} created a new collection: ${publishedCollection.title}`,
+                  message: `${publishedOwner?.brandFullName || publishedOwner?.username} created a new collection: ${publishedCollection.title}`,
                 },
               },
             );
@@ -3285,7 +3247,10 @@ export class CollectionsService {
       }
     }
 
-    return publishedCollection;
+    return {
+      ...publishedCollection,
+      owner: this.mapCollectionOwner(publishedCollection.owner),
+    };
   }
 
   private async finalizeStoreCollection(
@@ -3305,7 +3270,7 @@ export class CollectionsService {
         const existing = await this.prisma.storeCollection.findUnique({
           where: { id: collectionId },
           include: {
-            owner: true,
+            owner: { select: this.selectCollectionOwnerDisplay() },
             products: {
               include: {
                 product: {
@@ -3316,7 +3281,9 @@ export class CollectionsService {
             },
           },
         });
-        if (existing) return existing;
+        if (existing) {
+          return { ...existing, owner: this.mapCollectionOwner(existing.owner) };
+        }
       }
       throw new BadRequestException('Collection is not in draft status');
     }
@@ -4410,25 +4377,7 @@ export class CollectionsService {
       where: { id },
       include: {
         owner: {
-          select: {
-            id: true,
-            username: true,
-            firstName: true,
-            lastName: true,
-            brandFullName: true,
-            profileImage: true,
-            profileImageId: true,
-            profileImageFile: {
-              select: {
-                id: true,
-                s3Url: true,
-                fileName: true,
-                originalName: true,
-                createdAt: true,
-                updatedAt: true,
-              },
-            },
-          },
+          select: this.selectCollectionOwnerDisplay(),
         },
         medias: {
           include: { file: true },
@@ -4445,12 +4394,7 @@ export class CollectionsService {
         reactions: {
           include: {
             user: {
-              select: {
-                id: true,
-                username: true,
-                firstName: true,
-                lastName: true,
-              },
+              select: this.selectCollectionOwnerDisplay(),
             },
           },
         },
@@ -4545,6 +4489,13 @@ export class CollectionsService {
       : medias;
     return {
       ...rest,
+      owner: this.mapCollectionOwner(rest.owner),
+      reactions: Array.isArray(rest.reactions)
+        ? rest.reactions.map((reaction: any) => ({
+            ...reaction,
+            user: this.mapCollectionOwner(reaction.user),
+          }))
+        : rest.reactions,
       medias: mappedMedias,
       filters: appliedFilters,
       filterValueIds,
@@ -4579,25 +4530,7 @@ export class CollectionsService {
       where: { id },
       include: {
         owner: {
-          select: {
-            id: true,
-            username: true,
-            firstName: true,
-            lastName: true,
-            brandFullName: true,
-            profileImage: true,
-            profileImageId: true,
-            profileImageFile: {
-              select: {
-                id: true,
-                s3Url: true,
-                fileName: true,
-                originalName: true,
-                createdAt: true,
-                updatedAt: true,
-              },
-            },
-          },
+          select: this.selectCollectionOwnerDisplay(),
         },
         products: {
           include: {
@@ -4657,6 +4590,7 @@ export class CollectionsService {
 
     return {
       ...collection,
+      owner: this.mapCollectionOwner(collection.owner),
       domain: 'STORE' as const,
       isAvailableInStore: true,
       medias: [],
@@ -4941,23 +4875,7 @@ export class CollectionsService {
           },
         },
         owner: {
-          select: {
-            id: true,
-            username: true,
-            brandFullName: true,
-            profileImage: true,
-            profileImageId: true,
-            profileImageFile: {
-              select: {
-                id: true,
-                s3Url: true,
-                fileName: true,
-                originalName: true,
-                createdAt: true,
-                updatedAt: true,
-              },
-            },
-          },
+          select: this.selectCollectionOwnerDisplay(),
         },
       },
     });
@@ -5007,10 +4925,11 @@ export class CollectionsService {
         fileIds.add(preferredCover.file.id);
       }
       // Brand logo
-      if (c.owner?.profileImageFile?.id) {
-        fileIds.add(c.owner.profileImageFile.id);
-      } else if (c.owner?.profileImageId) {
-        fileIds.add(c.owner.profileImageId);
+      const owner = this.mapCollectionOwner(c.owner);
+      if (owner?.profileImageFile?.id) {
+        fileIds.add(owner.profileImageFile.id);
+      } else if (owner?.profileImageId) {
+        fileIds.add(owner.profileImageId);
       }
     });
 
@@ -5032,7 +4951,7 @@ export class CollectionsService {
           return m;
         });
 
-        const owner = c.owner;
+        const owner = this.mapCollectionOwner(c.owner);
         let ownerWithSignedUrl = owner;
         const logoId = owner?.profileImageFile?.id || owner?.profileImageId;
         if (logoId && signedUrlMap.has(logoId)) {
@@ -5161,23 +5080,7 @@ export class CollectionsService {
           take: this.maxProductsPerCollection,
         },
         owner: {
-          select: {
-            id: true,
-            username: true,
-            brandFullName: true,
-            profileImage: true,
-            profileImageId: true,
-            profileImageFile: {
-              select: {
-                id: true,
-                s3Url: true,
-                fileName: true,
-                originalName: true,
-                createdAt: true,
-                updatedAt: true,
-              },
-            },
-          },
+          select: this.selectCollectionOwnerDisplay(),
         },
       },
     });
@@ -5213,10 +5116,11 @@ export class CollectionsService {
 
     const fileIds = new Set<string>();
     data.forEach((c: any) => {
-      if (c.owner?.profileImageFile?.id) {
-        fileIds.add(c.owner.profileImageFile.id);
-      } else if (c.owner?.profileImageId) {
-        fileIds.add(c.owner.profileImageId);
+      const owner = this.mapCollectionOwner(c.owner);
+      if (owner?.profileImageFile?.id) {
+        fileIds.add(owner.profileImageFile.id);
+      } else if (owner?.profileImageId) {
+        fileIds.add(owner.profileImageId);
       }
 
       const links = Array.isArray(c.products) ? c.products : [];
@@ -5303,7 +5207,8 @@ export class CollectionsService {
 
     return {
       items: data.map((c: any) => {
-        const logoId = c.owner?.profileImageFile?.id || c.owner?.profileImageId;
+        const logoOwner = this.mapCollectionOwner(c.owner);
+        const logoId = logoOwner?.profileImageFile?.id || logoOwner?.profileImageId;
         const previewMeta = collectionPreviewById.get(c.id);
         const visibleCount = previewMeta?.visibleCount ?? 0;
         const coverFromFileId =
@@ -5331,7 +5236,7 @@ export class CollectionsService {
             (item): item is { url: string | null; fileId: string | null } =>
               Boolean(item && (item.url || item.fileId)),
           );
-        let owner = c.owner;
+        let owner = logoOwner;
         if (logoId && signedUrlMap.has(logoId)) {
           owner = {
             ...owner,
@@ -5643,12 +5548,7 @@ export class CollectionsService {
         where: { id: duplicateId },
         include: {
           owner: {
-            select: {
-              id: true,
-              username: true,
-              brandFullName: true,
-              profileImage: true,
-            },
+            select: this.selectCollectionOwnerDisplay(),
           },
           products: {
             include: { product: true },
@@ -5657,7 +5557,7 @@ export class CollectionsService {
         },
       });
       if (!duplicated) throw new NotFoundException('Collection not found');
-      return duplicated;
+      return { ...duplicated, owner: this.mapCollectionOwner(duplicated.owner) };
     }
 
     const source = (await this.prisma.collection.findUnique({
@@ -5795,19 +5695,14 @@ export class CollectionsService {
       where: { id: duplicateId },
       include: {
         owner: {
-          select: {
-            id: true,
-            username: true,
-            brandFullName: true,
-            profileImage: true,
-          },
+          select: this.selectCollectionOwnerDisplay(),
         },
         _count: { select: { medias: true, views: true, comments: true } },
       },
     });
 
     if (!duplicated) throw new NotFoundException('Collection not found');
-    return duplicated;
+    return { ...duplicated, owner: this.mapCollectionOwner(duplicated.owner) };
   }
 
   async restoreCollection(collectionId: string, ownerId: string) {
@@ -6170,25 +6065,7 @@ export class CollectionsService {
       ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
       include: {
         owner: {
-          select: {
-            id: true,
-            username: true,
-            firstName: true,
-            lastName: true,
-            brandFullName: true,
-            profileImage: true,
-            profileImageId: true,
-            profileImageFile: {
-              select: {
-                id: true,
-                s3Url: true,
-                fileName: true,
-                originalName: true,
-                createdAt: true,
-                updatedAt: true,
-              },
-            },
-          },
+          select: this.selectCollectionOwnerDisplay(),
         },
         medias: {
           select: {
@@ -6284,11 +6161,7 @@ export class CollectionsService {
         ownerId: true,
         title: true,
         owner: {
-          select: {
-            type: true,
-            brandFullName: true,
-            username: true,
-          },
+          select: this.selectCollectionOwnerDisplay(),
         },
       },
     });
@@ -6526,7 +6399,7 @@ export class CollectionsService {
   ) {
     const collection = await this.prisma.collection.findUnique({
       where: { id: collectionId },
-      include: { owner: true },
+      include: { owner: { select: this.selectCollectionOwnerDisplay() } },
     });
 
     if (!collection) {
@@ -6647,12 +6520,7 @@ export class CollectionsService {
       where: { collectionId, status: PatchStatus.PENDING },
       include: {
         requester: {
-          select: {
-            id: true,
-            username: true,
-            brandFullName: true,
-            profileImage: true,
-          },
+          select: this.selectCollectionOwnerDisplay(),
         },
       },
       orderBy: { createdAt: 'desc' },
@@ -6712,12 +6580,7 @@ export class CollectionsService {
       },
       include: {
         patchingBrand: {
-          select: {
-            id: true,
-            username: true,
-            brandFullName: true,
-            profileImage: true,
-          },
+          select: this.selectCollectionOwnerDisplay(),
         },
       },
     });
@@ -6766,12 +6629,7 @@ export class CollectionsService {
       where: { collectionId },
       include: {
         patchingBrand: {
-          select: {
-            id: true,
-            username: true,
-            brandFullName: true,
-            profileImage: true,
-          },
+          select: this.selectCollectionOwnerDisplay(),
         },
       },
       orderBy: { createdAt: 'desc' },
@@ -6802,12 +6660,7 @@ export class CollectionsService {
         collection: {
           include: {
             owner: {
-              select: {
-                id: true,
-                username: true,
-                brandFullName: true,
-                profileImage: true,
-              },
+              select: this.selectCollectionOwnerDisplay(),
             },
             medias: {
               select: {
@@ -6911,13 +6764,7 @@ export class CollectionsService {
         where: { collectionId, type: ReactionType.THREAD },
         include: {
           user: {
-            select: {
-              id: true,
-              username: true,
-              firstName: true,
-              lastName: true,
-              profileImage: true,
-            },
+            select: this.selectCollectionOwnerDisplay(),
           },
         },
         orderBy: { createdAt: 'desc' },
@@ -7011,11 +6858,7 @@ export class CollectionsService {
               ownerId: true,
               title: true,
               owner: {
-                select: {
-                  type: true,
-                  brandFullName: true,
-                  username: true,
-                },
+                select: this.selectCollectionOwnerDisplay(),
               },
             },
           },
@@ -7114,13 +6957,7 @@ export class CollectionsService {
       where: { collectionMediaId: mediaId, type: ReactionType.THREAD },
       include: {
         user: {
-          select: {
-            id: true,
-            username: true,
-            firstName: true,
-            lastName: true,
-            profileImage: true,
-          },
+          select: this.selectCollectionOwnerDisplay(),
         },
       },
       orderBy: { createdAt: 'desc' },
@@ -7695,12 +7532,7 @@ export class CollectionsService {
         data,
         include: {
           owner: {
-            select: {
-              id: true,
-              username: true,
-              brandFullName: true,
-              profileImage: true,
-            },
+            select: this.selectCollectionOwnerDisplay(),
           },
         },
       });
@@ -7928,12 +7760,7 @@ export class CollectionsService {
       data,
       include: {
         owner: {
-          select: {
-            id: true,
-            username: true,
-            brandFullName: true,
-            profileImage: true,
-          },
+          select: this.selectCollectionOwnerDisplay(),
         },
         // coverMedia relation may not be generated yet until migration applied; comment out include safely
         // coverMedia: { include: { file: true } },

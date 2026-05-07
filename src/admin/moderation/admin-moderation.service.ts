@@ -8,6 +8,10 @@ import { PrismaService } from 'src/prisma/prisma.service';
 import { AdminAuditAction, ContentTarget } from '@prisma/client';
 import { v4 as uuidv4 } from 'uuid';
 import { Request } from 'express';
+import {
+  adminUserDisplaySelect,
+  mapAdminUserDisplay,
+} from '../admin-user-display.helper';
 
 @Injectable()
 export class AdminModerationService {
@@ -99,14 +103,10 @@ export class AdminModerationService {
           select: {
             id: true,
             name: true,
+            logo: true,
             ownerId: true,
             owner: {
-              select: {
-                id: true,
-                username: true,
-                brandFullName: true,
-                profileImage: true,
-              },
+              select: adminUserDisplaySelect,
             },
           },
         },
@@ -122,12 +122,7 @@ export class AdminModerationService {
     const reviewers = reviewerIds.length
       ? await this.prisma.user.findMany({
           where: { id: { in: reviewerIds } },
-          select: {
-            id: true,
-            username: true,
-            brandFullName: true,
-            profileImage: true,
-          },
+          select: adminUserDisplaySelect,
         })
       : [];
     const reviewerMap = new Map(reviewers.map((row) => [row.id, row]));
@@ -149,7 +144,11 @@ export class AdminModerationService {
               id: row.brand.id,
               name: row.brand.name,
               ownerId: row.brand.ownerId,
-              owner: row.brand.owner,
+              owner: {
+                ...mapAdminUserDisplay(row.brand.owner),
+                brandFullName: row.brand.name,
+                profileImage: row.brand.logo,
+              },
             }
           : null,
         minValueCm: row.minValueCm == null ? null : Number(row.minValueCm),
@@ -160,10 +159,7 @@ export class AdminModerationService {
         reviewedAt: row.reviewedAt ? row.reviewedAt.toISOString() : null,
         reviewedBy: reviewer
           ? {
-              id: reviewer.id,
-              username: reviewer.username,
-              brandFullName: reviewer.brandFullName,
-              profileImage: reviewer.profileImage,
+              ...mapAdminUserDisplay(reviewer),
             }
           : null,
         rejectionReason: row.rejectionReason,
@@ -186,14 +182,10 @@ export class AdminModerationService {
           select: {
             id: true,
             name: true,
+            logo: true,
             ownerId: true,
             owner: {
-              select: {
-                id: true,
-                username: true,
-                brandFullName: true,
-                profileImage: true,
-              },
+              select: adminUserDisplaySelect,
             },
           },
         },
@@ -324,12 +316,7 @@ export class AdminModerationService {
       point.reviewedById
         ? this.prisma.user.findUnique({
             where: { id: point.reviewedById },
-            select: {
-              id: true,
-              username: true,
-              brandFullName: true,
-              profileImage: true,
-            },
+            select: adminUserDisplaySelect,
           })
         : Promise.resolve(null),
     ]);
@@ -416,12 +403,7 @@ export class AdminModerationService {
     const usageUsers = usageUserIds.length
       ? await this.prisma.user.findMany({
           where: { id: { in: usageUserIds } },
-          select: {
-            id: true,
-            username: true,
-            brandFullName: true,
-            profileImage: true,
-          },
+          select: adminUserDisplaySelect,
         })
       : [];
     const usageUsersMap = new Map(usageUsers.map((row) => [row.id, row]));
@@ -429,12 +411,13 @@ export class AdminModerationService {
     const usageActors = usageUserIds
       .map((userId) => {
         const stats = usageByUser.get(userId);
-        const user = usageUsersMap.get(userId);
+        const rawUser = usageUsersMap.get(userId);
+        const user = rawUser ? mapAdminUserDisplay(rawUser) : null;
         if (!stats || !user) return null;
         return {
           userId,
           username: user.username,
-          brandFullName: user.brandFullName,
+          brandFullName: user.username,
           profileImage: user.profileImage,
           usageCount: stats.usageCount,
           latestUsedAt: stats.latestUsedAt
@@ -534,7 +517,11 @@ export class AdminModerationService {
               id: point.brand.id,
               name: point.brand.name,
               ownerId: point.brand.ownerId,
-              owner: point.brand.owner,
+              owner: {
+                ...mapAdminUserDisplay(point.brand.owner),
+                brandFullName: point.brand.name,
+                profileImage: point.brand.logo,
+              },
             }
           : null,
         minValueCm: point.minValueCm == null ? null : Number(point.minValueCm),
@@ -549,10 +536,7 @@ export class AdminModerationService {
         reviewedAt: point.reviewedAt ? point.reviewedAt.toISOString() : null,
         reviewedBy: reviewer
           ? {
-              id: reviewer.id,
-              username: reviewer.username,
-              brandFullName: reviewer.brandFullName,
-              profileImage: reviewer.profileImage,
+              ...mapAdminUserDisplay(reviewer),
             }
           : null,
         rejectionReason: point.rejectionReason,

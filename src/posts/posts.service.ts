@@ -18,6 +18,29 @@ import { AnalyticsService } from 'src/analytics/analytics.service';
 import { NotificationsQueueService } from 'src/queue/notifications.queue.service';
 import { PaginatedResult } from '../upload/dto/pagination.dto';
 import { v4 as uuidv4 } from 'uuid';
+import {
+  canonicalUserProfileSelect,
+  resolveProfileImage,
+  resolveRequiredProfileField,
+} from 'src/common/user-profile-source.helper';
+import {
+  canonicalBrandProfileSelect,
+  resolveRequiredBrandField,
+} from 'src/common/brand-profile-source.helper';
+
+const postUserDisplaySelect = {
+  id: true,
+  username: true,
+  email: true,
+  role: true,
+  type: true,
+  status: true,
+  isEmailVerified: true,
+  createdAt: true,
+  updatedAt: true,
+  userProfile: { select: canonicalUserProfileSelect },
+  brand: { select: canonicalBrandProfileSelect },
+} as const;
 
 @Injectable()
 export class PostsService {
@@ -42,8 +65,31 @@ export class PostsService {
         : _count?.comments ?? 0;
     return {
       ...rest,
+      user: rest.user ? this.mapUserDisplay(rest.user) : rest.user,
+      comments: Array.isArray(rest.comments)
+        ? rest.comments.map((comment: any) => ({
+            ...comment,
+            user: comment.user ? this.mapUserDisplay(comment.user) : comment.user,
+          }))
+        : rest.comments,
       threadsCount,
       commentsCount,
+    };
+  }
+
+  private mapUserDisplay(user: any) {
+    const { userProfile, brand, ...rest } = user;
+    const profileImage = resolveProfileImage({ userProfile });
+
+    return {
+      ...rest,
+      firstName: resolveRequiredProfileField({ userProfile }, 'firstName'),
+      lastName: resolveRequiredProfileField({ userProfile }, 'lastName'),
+      profileImage: profileImage.url,
+      profileImageId: profileImage.fileId,
+      profileImageFile: profileImage.file,
+      brandFullName:
+        resolveRequiredBrandField({ brand }, 'brandFullName') || null,
     };
   }
 
@@ -101,12 +147,12 @@ export class PostsService {
         }),
       },
       include: {
-        user: true,
+        user: { select: postUserDisplaySelect },
         images: true,
         video: true,
         comments: {
           include: {
-            user: true,
+            user: { select: postUserDisplaySelect },
           },
           orderBy: {
             createdAt: 'desc',
@@ -136,12 +182,12 @@ export class PostsService {
       },
       take: limit + 1,
       include: {
-        user: true,
+        user: { select: postUserDisplaySelect },
         images: true,
         video: true,
         comments: {
           include: {
-            user: true,
+            user: { select: postUserDisplaySelect },
           },
           orderBy: {
             createdAt: 'desc',
@@ -168,12 +214,12 @@ export class PostsService {
     const post = await this.prisma.post.findUnique({
       where: { id },
       include: {
-        user: true,
+        user: { select: postUserDisplaySelect },
         images: true,
         video: true,
         comments: {
           include: {
-            user: true,
+            user: { select: postUserDisplaySelect },
           },
           orderBy: {
             createdAt: 'desc',
@@ -205,12 +251,12 @@ export class PostsService {
         content: dto.content,
       },
       include: {
-        user: true,
+        user: { select: postUserDisplaySelect },
         images: true,
         video: true,
         comments: {
           include: {
-            user: true,
+            user: { select: postUserDisplaySelect },
           },
           orderBy: {
             createdAt: 'desc',
@@ -249,8 +295,8 @@ export class PostsService {
         user: {
           select: {
             type: true,
-            brandFullName: true,
             username: true,
+            brand: { select: canonicalBrandProfileSelect },
           },
         },
       },
@@ -417,9 +463,8 @@ export class PostsService {
             select: {
               id: true,
               username: true,
-              firstName: true,
-              lastName: true,
-              profileImage: true,
+              userProfile: { select: canonicalUserProfileSelect },
+              brand: { select: canonicalBrandProfileSelect },
             },
           },
         },
@@ -431,7 +476,7 @@ export class PostsService {
     ]);
 
     return {
-      users: threads.map((thread) => thread.user),
+      users: threads.map((thread) => this.mapUserDisplay(thread.user)),
       total: count,
     };
   }

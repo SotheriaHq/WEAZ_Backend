@@ -80,6 +80,7 @@ import {
   BRAND_PERMISSIONS,
   BrandPermissionCode,
 } from 'src/brands/permissions/brand-permissions';
+import { canonicalUserProfileSelect } from 'src/common/user-profile-source.helper';
 
 type SupportedPaymentBank = {
   id: number;
@@ -5974,7 +5975,11 @@ export class StoreService {
             logo: true,
             currency: true,
             contactEmail: true,
-            owner: { select: { phoneNumber: true, address: true } },
+            owner: {
+              select: {
+                userProfile: { select: canonicalUserProfileSelect },
+              },
+            },
           },
         },
         orderItems: {
@@ -6704,19 +6709,12 @@ export class StoreService {
     const newName = dto.newName.trim();
     if (!newName) throw new BadRequestException('Store name cannot be empty');
 
-    await this.prisma.$transaction(async (tx) => {
-      await tx.brand.update({
-        where: { id: brand.id },
-        data: {
-          name: newName,
-          storeNameLastChangedAt: now,
-        },
-      });
-
-      await tx.user.update({
-        where: { id: ownerId },
-        data: { brandFullName: newName },
-      });
+    await this.prisma.brand.update({
+      where: { id: brand.id },
+      data: {
+        name: newName,
+        storeNameLastChangedAt: now,
+      },
     });
 
     return this.getStoreGeneralSettings(ownerId);

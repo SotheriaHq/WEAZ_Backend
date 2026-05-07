@@ -39,6 +39,12 @@ import {
 import type { Request } from 'express';
 import { ConfigService } from '@nestjs/config';
 import { getBrandVerificationTruth } from './verification-truth.util';
+import {
+  canonicalUserProfileSelect,
+  resolveNullableProfileField,
+  resolveProfileImage,
+  resolveRequiredProfileField,
+} from 'src/common/user-profile-source.helper';
 
 type RejectionReasonRecord = {
   code: string;
@@ -193,17 +199,14 @@ export class BrandVerificationService {
           currentStep: dto.currentStep ?? null,
         }),
         verificationDraftUpdatedAt: new Date(),
-        ...(resolvedOwnerPhoneNumber
-          ? {
-              owner: {
-                update: {
-                  phoneNumber: resolvedOwnerPhoneNumber,
-                },
-              },
-            }
-          : {}),
       },
     });
+    if (resolvedOwnerPhoneNumber) {
+      await this.prisma.userProfile.updateMany({
+        where: { userId: brand.ownerId },
+        data: { phoneNumber: resolvedOwnerPhoneNumber },
+      });
+    }
 
     return { ok: true, lastSavedAt: new Date().toISOString() };
   }
@@ -280,7 +283,9 @@ export class BrandVerificationService {
     await this.ensureNinNotApprovedElsewhere(dto.ownerNin, brand.id);
     const resolvedOwnerPhoneNumber =
       this.normalizePhoneNumber(dto.ownerPhoneNumber) ||
-      this.normalizePhoneNumber(brand.owner.phoneNumber);
+      this.normalizePhoneNumber(
+        resolveNullableProfileField(brand.owner, 'phoneNumber'),
+      );
     const companyLocation = `${dto.businessAddress.street}, ${dto.businessAddress.city}, ${dto.businessAddress.state}, ${dto.businessAddress.country}`;
 
     if (!resolvedOwnerPhoneNumber) {
@@ -572,8 +577,8 @@ export class BrandVerificationService {
               OR: [
                 { name: { contains: params.search, mode: 'insensitive' } },
                 { owner: { email: { contains: params.search, mode: 'insensitive' } } },
-                { owner: { firstName: { contains: params.search, mode: 'insensitive' } } },
-                { owner: { lastName: { contains: params.search, mode: 'insensitive' } } },
+                { owner: { userProfile: { is: { firstName: { contains: params.search, mode: 'insensitive' } } } } },
+                { owner: { userProfile: { is: { lastName: { contains: params.search, mode: 'insensitive' } } } } },
               ],
             }
           : {}),
@@ -590,10 +595,8 @@ export class BrandVerificationService {
           select: {
             id: true,
             email: true,
-            firstName: true,
-            lastName: true,
             status: true,
-            profileImage: true,
+            userProfile: { select: canonicalUserProfileSelect },
           },
         },
       },
@@ -605,7 +608,10 @@ export class BrandVerificationService {
     const hasMore = items.length > take;
     const results = hasMore ? items.slice(0, take) : items;
     return {
-      items: results,
+      items: results.map((item) => ({
+        ...item,
+        owner: this.mapOwnerDisplay(item.owner),
+      })),
       nextCursor: hasMore ? results[results.length - 1]?.id : undefined,
       totalPending: await this.prisma.brand.count({ where: { verificationStatus: BrandVerificationStatus.PENDING } }),
     };
@@ -619,10 +625,9 @@ export class BrandVerificationService {
           select: {
             id: true,
             email: true,
-            firstName: true,
-            lastName: true,
             status: true,
             deactivatedAt: true,
+            userProfile: { select: canonicalUserProfileSelect },
           },
         },
         verificationAttempts: {
@@ -1089,11 +1094,9 @@ export class BrandVerificationService {
           select: {
             id: true,
             email: true,
-            firstName: true,
-            lastName: true,
-            phoneNumber: true,
             status: true,
             deactivatedAt: true,
+            userProfile: { select: canonicalUserProfileSelect },
           },
         },
       },
@@ -1102,7 +1105,29 @@ export class BrandVerificationService {
     return {
       ...brand,
       email: brand.owner.email,
-      ownerName: `${brand.owner.firstName ?? ''} ${brand.owner.lastName ?? ''}`.trim() || brand.name,
+      ownerName:
+        [
+          resolveRequiredProfileField(brand.owner, 'firstName'),
+          resolveRequiredProfileField(brand.owner, 'lastName'),
+        ]
+          .filter(Boolean)
+          .join(' ')
+          .trim() || brand.name,
+    };
+  }
+
+  private mapOwnerDisplay(owner: {
+    userProfile?: any;
+    [key: string]: any;
+  }) {
+    const { userProfile, ...rest } = owner;
+    const profileImage = resolveProfileImage({ userProfile });
+    return {
+      ...rest,
+      firstName: resolveRequiredProfileField({ userProfile }, 'firstName'),
+      lastName: resolveRequiredProfileField({ userProfile }, 'lastName'),
+      phoneNumber: resolveNullableProfileField({ userProfile }, 'phoneNumber'),
+      profileImage: profileImage.url,
     };
   }
 

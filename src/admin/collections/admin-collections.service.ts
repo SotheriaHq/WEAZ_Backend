@@ -7,6 +7,10 @@ import { AdminAuditAction, CollectionStatus, NotificationType } from '@prisma/cl
 import { v4 as uuidv4 } from 'uuid';
 import { Request } from 'express';
 import { NotificationsService } from 'src/notifications/notifications.service';
+import {
+  adminUserDisplaySelect,
+  mapAdminUserDisplay,
+} from '../admin-user-display.helper';
 
 @Injectable()
 export class AdminCollectionsService {
@@ -48,12 +52,7 @@ export class AdminCollectionsService {
         createdAt: true,
         updatedAt: true,
         owner: {
-          select: {
-            id: true,
-            email: true,
-            firstName: true,
-            lastName: true,
-          },
+          select: adminUserDisplaySelect,
         },
         products: {
           orderBy: [{ isPrimary: 'desc' }, { orderIndex: 'asc' }],
@@ -122,6 +121,7 @@ export class AdminCollectionsService {
             : null);
         return {
           ...item,
+          owner: mapAdminUserDisplay(item.owner),
           coverImage,
           orderCount: collectionOrderCountMap.get(item.id) ?? 0,
         };

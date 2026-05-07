@@ -10,6 +10,10 @@ import { v4 as uuidv4 } from 'uuid';
 import { Request } from 'express';
 import { EmailService } from 'src/email/email.service';
 import * as emailTemplates from 'src/email/email.templates';
+import {
+  adminUserDisplaySelect,
+  mapAdminUserDisplay,
+} from '../admin-user-display.helper';
 
 @Injectable()
 export class AdminBrandsService {
@@ -48,14 +52,7 @@ export class AdminBrandsService {
         createdAt: true,
         updatedAt: true,
         owner: {
-          select: {
-            id: true,
-            email: true,
-            firstName: true,
-            lastName: true,
-            status: true,
-            profileImage: true,
-          },
+          select: adminUserDisplaySelect,
         },
       },
       orderBy: { createdAt: 'desc' },
@@ -67,7 +64,13 @@ export class AdminBrandsService {
     const results = hasMore ? items.slice(0, take) : items;
     const nextCursor = hasMore ? results[results.length - 1]?.id : undefined;
 
-    return { items: results, nextCursor };
+    return {
+      items: results.map((item) => ({
+        ...item,
+        owner: mapAdminUserDisplay(item.owner),
+      })),
+      nextCursor,
+    };
   }
 
   async getById(brandId: string) {
@@ -75,19 +78,13 @@ export class AdminBrandsService {
       where: { id: brandId },
       include: {
         owner: {
-          select: {
-            id: true,
-            email: true,
-            firstName: true,
-            lastName: true,
-            status: true,
-          },
+          select: adminUserDisplaySelect,
         },
         policy: true,
       },
     });
     if (!brand) throw new NotFoundException('Brand not found');
-    return brand;
+    return { ...brand, owner: mapAdminUserDisplay(brand.owner) };
   }
 
   async overrideStoreOpen(
@@ -193,12 +190,7 @@ export class AdminBrandsService {
         verificationClientEstimate: true,
         createdAt: true,
         owner: {
-          select: {
-            id: true,
-            email: true,
-            firstName: true,
-            lastName: true,
-          },
+          select: adminUserDisplaySelect,
         },
       },
       orderBy: { verificationSubmittedAt: 'asc' },
@@ -210,7 +202,13 @@ export class AdminBrandsService {
     const results = hasMore ? items.slice(0, take) : items;
     const nextCursor = hasMore ? results[results.length - 1]?.id : undefined;
 
-    return { items: results, nextCursor };
+    return {
+      items: results.map((item) => ({
+        ...item,
+        owner: mapAdminUserDisplay(item.owner),
+      })),
+      nextCursor,
+    };
   }
 
   async getVerificationDetails(brandId: string) {
@@ -232,18 +230,12 @@ export class AdminBrandsService {
         verificationClientEstimate: true,
         createdAt: true,
         owner: {
-          select: {
-            id: true,
-            email: true,
-            firstName: true,
-            lastName: true,
-            status: true,
-          },
+          select: adminUserDisplaySelect,
         },
       },
     });
     if (!brand) throw new NotFoundException('Brand not found');
-    return brand;
+    return { ...brand, owner: mapAdminUserDisplay(brand.owner) };
   }
 
   async reviewVerification(
@@ -259,7 +251,7 @@ export class AdminBrandsService {
         name: true,
         verificationStatus: true,
         ownerId: true,
-        owner: { select: { email: true, firstName: true } },
+        owner: { select: { email: true } },
       },
     });
 
