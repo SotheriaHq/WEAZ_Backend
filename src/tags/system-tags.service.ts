@@ -1,5 +1,4 @@
 import { Injectable } from '@nestjs/common';
-import { v4 as uuidv4 } from 'uuid';
 import { PrismaService } from '../prisma/prisma.service';
 import { normalizeTag } from 'src/common/utils/tag-validator';
 
@@ -35,10 +34,7 @@ export class SystemTagsService {
   }
 
   private async isTagUsed(tag: string): Promise<boolean> {
-    const [userCount, productCount, collectionCount, brandCount] = await Promise.all([
-      this.prisma.user.count({
-        where: { type: 'BRAND', brandTags: { has: tag } },
-      }),
+    const [productCount, collectionCount, brandCount] = await Promise.all([
       this.prisma.product.count({
         where: { tags: { has: tag } },
       }),
@@ -49,6 +45,6 @@ export class SystemTagsService {
         where: { tags: { has: tag } },
       }),
     ]);
-    return userCount + productCount + collectionCount + brandCount > 0;
+    return productCount + collectionCount + brandCount > 0;
   }
 }

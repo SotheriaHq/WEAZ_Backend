@@ -29,10 +29,6 @@ import { EmailService } from 'src/email/email.service';
 import * as emailTemplates from 'src/email/email.templates';
 import { resolveWebAppBaseUrl } from 'src/common/utils/web-app-url';
 import {
-  writeLegacyUserAnonymizationFields,
-  writeLegacyUserCompatibilityFields,
-} from 'src/common/legacy-user-compatibility.helper';
-import {
   adminUserDisplaySelect,
   mapAdminUserDisplay,
 } from '../admin-user-display.helper';
@@ -95,10 +91,6 @@ export class AdminUsersService {
           id: userId,
           username,
           email: normalizedEmail,
-          ...writeLegacyUserCompatibilityFields({
-            firstName: dto.firstName.trim(),
-            lastName: dto.lastName.trim(),
-          }),
           password: hashedPassword,
           role: targetRole,
           type: UserType.REGULAR,
@@ -1285,7 +1277,9 @@ export class AdminUsersService {
       await tx.user.update({
         where: { id: userId },
         data: {
-          ...writeLegacyUserAnonymizationFields(userId),
+          email: `deleted-${userId.slice(0, 8)}@erased.local`,
+          username: `deleted-${userId.slice(0, 8)}`,
+          password: '',
           status: UserStatus.DEACTIVATED,
           isActive: 'Inactive',
           authVersion: { increment: 1 },

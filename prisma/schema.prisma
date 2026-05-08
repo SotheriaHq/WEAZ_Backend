@@ -18,37 +18,8 @@ model User {
   username                 String                        @unique
   role                     Role                          @default(User)
   type                     UserType                      @default(REGULAR)
-  firstName                String
-  lastName                 String
   email                    String                        @unique
   password                 String
-  phoneNumber              String?
-  address                  String?
-  brandFullName            String?
-  cacNumber                String?                       @unique
-  tin                      String?                       @unique
-  ceoNin                   String?                       @unique
-  ceoFirstName             String?
-  ceoLastName              String?
-  companyLocation          String?
-  brandDescription         String?
-  brandCountry             String?
-  brandState               String?
-  brandCity                String?
-  brandTags                String[]                      @default([])
-  brandBusinessType        String?
-  socialInstagram          String?
-  socialFacebook           String?
-  socialTwitter            String?
-  socialWebsite            String?
-  profileImage             String?
-  profileImageId           String?                       @db.Uuid
-  profileImageFile         FileUpload?                   @relation("UserProfileImage", fields: [profileImageId], references: [id])
-  bannerImage              String?
-  bannerImageId            String?                       @db.Uuid
-  bannerImageFile          FileUpload?                   @relation("UserBannerImage", fields: [bannerImageId], references: [id])
-  industriNumber           String?                       @unique
-  profileVisibility        ProfileVisibility             @default(UNLOCKED)
   createdAt                DateTime                      @default(now())
   updatedAt                DateTime                      @updatedAt
   refreshTokens            RefreshToken[]
@@ -195,7 +166,6 @@ model FileUpload {
   updatedAt         DateTime              @updatedAt
 
   // Relations for profile images
-  profileUsers      User[]        @relation("UserProfileImage")
   userProfileImages UserProfile[] @relation("UserProfileProfileImage")
 
   // Relations for posts
@@ -204,7 +174,6 @@ model FileUpload {
 
   // Relation to collection media
   collectionMedias   CollectionMedia[]   @relation("FileUpload_to_CollectionMedia")
-  bannerUsers        User[]              @relation("UserBannerImage")
   userProfileBanners UserProfile[]       @relation("UserProfileBannerImage")
   variants           FileVariant[]
   messageAttachments MessageAttachment[]

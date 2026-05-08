@@ -128,6 +128,13 @@ export class BrandsService {
       createdAt: true,
       updatedAt: true,
       type: true,
+      userProfile: {
+        select: {
+          firstName: true,
+          lastName: true,
+          address: true,
+        },
+      },
       brand: {
         select: canonicalBrandProfileSelect,
       },
@@ -167,8 +174,8 @@ export class BrandsService {
       createdAt: Date;
       payload: Prisma.JsonValue | null;
       actor: {
-        firstName: string | null;
         username: string | null;
+        userProfile?: { firstName?: string | null } | null;
       } | null;
     }>,
   ) {
@@ -187,7 +194,7 @@ export class BrandsService {
         type: String(notification.type || 'SYSTEM').toLowerCase(),
         title: notification.html || 'Recent update',
         description: notification.actor
-          ? `From ${notification.actor.firstName || notification.actor.username || 'system'}`
+          ? `From ${notification.actor.userProfile?.firstName || notification.actor.username || 'system'}`
           : 'System update',
         createdAt: notification.createdAt,
         route,
@@ -464,9 +471,11 @@ export class BrandsService {
           select: {
             id: true,
             username: true,
-            firstName: true,
-            lastName: true,
-            profileImage: true,
+            userProfile: {
+              select: {
+                firstName: true,
+              },
+            },
           },
         },
       },
@@ -1336,9 +1345,11 @@ export class BrandsService {
             select: {
               id: true,
               username: true,
-              firstName: true,
-              lastName: true,
-              profileImage: true,
+              userProfile: {
+                select: {
+                  firstName: true,
+                },
+              },
             },
           },
         },

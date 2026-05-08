@@ -90,8 +90,8 @@ export class UserHelperService {
 
       const industriNumber = `${PREFIX}${randomDigits}`;
 
-      // Check if number is unique
-      const existing = await this.prisma.user.findUnique({
+      // Industri numbers are canonical brand identifiers.
+      const existing = await this.prisma.brand.findUnique({
         where: { industriNumber },
         select: { id: true },
       });

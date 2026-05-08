@@ -63,6 +63,11 @@ type LegacyBrandProfileSource = {
   companyLocation?: string | null;
   industriNumber?: string | null;
   brand?: Partial<CanonicalBrandProfile> | null;
+  userProfile?: {
+    firstName?: string | null;
+    lastName?: string | null;
+    address?: string | null;
+  } | null;
 };
 
 type RequiredBrandField = 'brandFullName';
@@ -202,15 +207,15 @@ export function normalizeBrandProfileForAuthResponse(
 
 export function normalizeBrandProfileForBrandResponse(
   user: LegacyBrandProfileSource & {
-    firstName?: string | null;
-    lastName?: string | null;
     username?: string | null;
-    address?: string | null;
   },
 ) {
   const brandFullName =
     resolveRequiredBrandField(user, 'brandFullName') ||
-    [user.firstName, user.lastName].filter(Boolean).join(' ').trim() ||
+    [user.userProfile?.firstName, user.userProfile?.lastName]
+      .filter(Boolean)
+      .join(' ')
+      .trim() ||
     user.username ||
     'Brand';
   const country = resolveNullableBrandField(user, 'brandCountry');
@@ -229,7 +234,7 @@ export function normalizeBrandProfileForBrandResponse(
     location:
       computedLocation ||
       resolveNullableBrandField(user, 'companyLocation') ||
-      filled(user.address) ||
+      filled(user.userProfile?.address) ||
       null,
     businessType: resolveNullableBrandField(user, 'brandBusinessType'),
     tags: resolveBrandTags(user),

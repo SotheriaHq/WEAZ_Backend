@@ -14,7 +14,6 @@ import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { PasswordService } from 'src/auth/helper/password.service';
 import { UserHelperService } from 'src/auth/helper/user-helper.service';
-import { writeLegacyUserCompatibilityFields } from 'src/common/legacy-user-compatibility.helper';
 
 const MAX_FAILURES_PER_DAY = 2;
 const BACKOFF_AFTER_FAILURE_MS = 30_000;
@@ -331,10 +330,6 @@ export class BreakGlassService {
             id: uuidv4(),
             username,
             email: normalizedEmail,
-            ...writeLegacyUserCompatibilityFields({
-              firstName,
-              lastName,
-            }),
             password: hashedPassword,
             role: Role.SuperAdmin,
             type: UserType.REGULAR,
