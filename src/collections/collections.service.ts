@@ -76,6 +76,21 @@ import {
 
 type CollectionScope = 'design' | 'store' | 'all';
 type CollectionDomainValue = 'DESIGN' | 'STORE';
+type FeedMediaAssetDto = {
+  id: string;
+  fileId: string | null;
+  type: 'IMAGE' | 'VIDEO';
+  displayUrl: string;
+  thumbnailUrl: string | null;
+  previewUrl: string | null;
+  blurHash: string | null;
+  dominantColor: string | null;
+  width: number | null;
+  height: number | null;
+  aspectRatio: number;
+  status: 'READY';
+  orderIndex: number;
+};
 
 @Injectable()
 export class CollectionsService {
@@ -435,6 +450,102 @@ export class CollectionsService {
       throw new BadRequestException('This category is not active');
     }
     return category;
+  }
+
+  private isReadyFeedFile(file: any): boolean {
+    if (!file) return false;
+    if (file.originalDeletedAt) return false;
+    if (file.processingStatus && file.processingStatus !== 'READY') return false;
+    return typeof file.s3Url === 'string' && file.s3Url.trim().length > 0;
+  }
+
+  private isVideoFileType(fileType?: string | null): boolean {
+    return String(fileType ?? '').toUpperCase().includes('VIDEO');
+  }
+
+  private getPreferredVariantUrl(
+    file: any,
+    kinds: string[],
+  ): string | null {
+    const variants = Array.isArray(file?.variants) ? file.variants : [];
+    for (const kind of kinds) {
+      const match =
+        variants.find(
+          (variant: any) =>
+            String(variant?.variantKind ?? '').toUpperCase() === kind &&
+            String(variant?.format ?? '').toUpperCase() === 'WEBP',
+        ) ??
+        variants.find(
+          (variant: any) =>
+            String(variant?.variantKind ?? '').toUpperCase() === kind,
+        );
+      if (typeof match?.s3Url === 'string' && match.s3Url.trim().length > 0) {
+        return this.uploadService.getPublicDisplayUrl(match) ?? match.s3Url.trim();
+      }
+    }
+    return null;
+  }
+
+  private buildFeedMediaAsset(
+    args: {
+      id: string | null | undefined;
+      file: any;
+      mediaType?: string | null;
+      orderIndex?: number | null;
+    },
+  ): FeedMediaAssetDto | null {
+    const file = args.file;
+    if (!this.isReadyFeedFile(file)) return null;
+
+    const displayUrl =
+      this.getPreferredVariantUrl(file, ['DETAIL', 'CARD', 'ZOOM']) ??
+      this.uploadService.getPublicDisplayUrl(file) ??
+      String(file.s3Url).trim();
+    if (!displayUrl) return null;
+
+    const width =
+      typeof file.width === 'number' && Number.isFinite(file.width)
+        ? file.width
+        : null;
+    const height =
+      typeof file.height === 'number' && Number.isFinite(file.height)
+        ? file.height
+        : null;
+    const aspectRatio =
+      width && height && height > 0 ? width / height : 1;
+
+    return {
+      id: String(args.id ?? file.id),
+      fileId: typeof file.id === 'string' && file.id.trim() ? file.id : null,
+      type: this.isVideoFileType(args.mediaType ?? file.fileType)
+        ? 'VIDEO'
+        : 'IMAGE',
+      displayUrl,
+      thumbnailUrl: this.getPreferredVariantUrl(file, ['THUMB']),
+      previewUrl: this.getPreferredVariantUrl(file, ['CARD', 'DETAIL']),
+      blurHash: null,
+      dominantColor: null,
+      width,
+      height,
+      aspectRatio,
+      status: 'READY',
+      orderIndex:
+        typeof args.orderIndex === 'number' && Number.isFinite(args.orderIndex)
+          ? args.orderIndex
+          : 0,
+    };
+  }
+
+  private buildFeedBrandAvatar(owner: any): FeedMediaAssetDto | null {
+    const brandLogoFile = owner?.brand?.logoImageFile ?? null;
+    const profileImageFile = owner?.userProfile?.profileImageFile ?? null;
+    const file = brandLogoFile ?? profileImageFile;
+    return this.buildFeedMediaAsset({
+      id: file?.id,
+      file,
+      mediaType: file?.fileType,
+      orderIndex: 0,
+    });
   }
 
   private async assertCategoryTypeMatchesCategory(
@@ -2370,12 +2481,22 @@ export class CollectionsService {
   }) {
     const { cursor, limit = 20, tag, category, requesterId } = options ?? {};
     const take = Math.min(Math.max(limit, 1), 40);
+    const readyMediaWhere = {
+      file: {
+        processingStatus: 'READY',
+        originalDeletedAt: null,
+        s3Url: { not: '' },
+      },
+    } as any;
 
     const where: Prisma.CollectionWhereInput = {
       domain: 'DESIGN',
       status: 'PUBLISHED',
       visibility: CollectionVisibility.PUBLIC,
       deletedAt: null,
+      medias: {
+        some: readyMediaWhere,
+      } as any,
       ...(tag
         ? {
             tags: {
@@ -2396,14 +2517,19 @@ export class CollectionsService {
       where,
       take: take + 1,
       ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
-      orderBy: [{ updatedAt: 'desc' }, { createdAt: 'desc' }],
+      orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
       include: {
         owner: {
           select: this.selectCollectionOwnerDisplay(),
         },
         medias: {
+          where: readyMediaWhere,
           include: {
-            file: true,
+            file: {
+              include: {
+                variants: true,
+              },
+            },
           },
           orderBy: [{ orderIndex: 'asc' }],
         },
@@ -2464,47 +2590,72 @@ export class CollectionsService {
       }
     }
 
-    // Collect all file IDs that need signed URLs
-    const fileIds = new Set<string>();
-    feedRows.forEach(({ collection, media }) => {
-      if (media.fileUploadId) {
-        fileIds.add(media.fileUploadId);
-      }
-      const owner = this.mapCollectionOwner(collection.owner);
-      if (!owner) return;
-      if (owner.profileImageId) {
-        fileIds.add(owner.profileImageId);
-      } else if (owner.profileImageFile?.id) {
-        fileIds.add(owner.profileImageFile.id);
-      }
-    });
-
-    // Batch generate signed URLs for all files
-    const signedUrlMap = await this.uploadService.getBatchPublicSignedUrls(
-      Array.from(fileIds),
-    );
-
     const items = feedRows.map(({ collection, media }) => {
       const owner = this.mapCollectionOwner(collection.owner)!;
-      const file = media.file;
+      const primaryMedia = this.buildFeedMediaAsset({
+        id: media.id,
+        file: media.file,
+        mediaType: media.mediaType,
+        orderIndex: media.orderIndex,
+      });
+      if (!primaryMedia) return null;
 
-      const mediaSignedUrl = media.fileUploadId
-        ? (signedUrlMap.get(media.fileUploadId) ?? null)
-        : null;
+      const mediaItems = collection.medias
+        .map((entry) =>
+          this.buildFeedMediaAsset({
+            id: entry.id,
+            file: entry.file,
+            mediaType: entry.mediaType,
+            orderIndex: entry.orderIndex,
+          }),
+        )
+        .filter((asset): asset is FeedMediaAssetDto => Boolean(asset));
+      if (mediaItems.length === 0) return null;
 
-      const logoFileId = owner.profileImageId ?? owner.profileImageFile?.id;
-      const logoSignedUrl = logoFileId
-        ? (signedUrlMap.get(logoFileId) ?? null)
-        : null;
+      const logoFileId = owner.profileImageId ?? owner.profileImageFile?.id ?? null;
+      const avatar = this.buildFeedBrandAvatar(collection.owner);
+      const combinedCommentsCount =
+        (collection.commentsCount ?? 0) + (media.commentsCount ?? 0);
+      const commentsCount =
+        options?.countsPolicy === 'combined'
+          ? combinedCommentsCount
+          : media.commentsCount ?? collection.commentsCount ?? 0;
 
       const base = {
         id: media.id,
         collectionId: collection.id,
+        sourceType: 'DESIGN',
+        title: collection.title ?? '',
+        description: collection.description ?? null,
+        brand: {
+          id: owner.brand?.id ?? owner.id,
+          name: owner.brandFullName ?? owner.username ?? '',
+          username: owner.username ?? null,
+          avatar,
+        },
+        primaryMedia,
+        mediaItems,
+        stats: {
+          likes: collection._count?.reactions ?? collection.threadsCount ?? 0,
+          comments: commentsCount,
+          threads: media.threadsCount ?? 0,
+          patches: collection.collectionCollabsCount ?? 0,
+        },
+        viewerState: {
+          isLiked: false,
+          isThreaded: requesterId ? !!isThreadedMap[media.id] : false,
+          isPatched: false,
+          canBag: Boolean(collection.customOrderEnabled),
+          isBagged: false,
+        },
+        tags: collection.tags ?? [],
+        createdAt: collection.createdAt.toISOString(),
+        updatedAt: collection.updatedAt.toISOString(),
+        // Temporary legacy compatibility for current web and older mobile builds.
         coverMediaId: (collection as any).coverMediaId ?? media.id,
         mediaType: media.mediaType,
         mediaFileId: media.fileUploadId,
-        mediaUrl: mediaSignedUrl,
-        createdAt: file?.createdAt ?? collection.createdAt,
+        mediaUrl: primaryMedia.displayUrl,
         collectionTitle: collection.title ?? '',
         collectionDescription: collection.description ?? '',
         minPrice: collection.minPrice,
@@ -2519,22 +2670,20 @@ export class CollectionsService {
         threadsCount: media.threadsCount,
         commentsCount: media.commentsCount,
         collectionCollabCount: collection.collectionCollabsCount,
-        tags: collection.tags ?? [],
         brandId: owner.brand?.id ?? owner.id,
         brandName: owner.brandFullName ?? owner.username ?? '',
         username: owner.username ?? '',
-        brandLogo: logoSignedUrl ?? owner.profileImage ?? null,
+        brandLogo: avatar?.displayUrl ?? owner.profileImage ?? null,
         brandLogoFileId: logoFileId ?? null,
         isThreaded: requesterId ? !!isThreadedMap[media.id] : false,
       };
 
       if (options?.countsPolicy === 'combined') {
-        (base as any).combinedCommentsCount =
-          (collection.commentsCount ?? 0) + (media.commentsCount ?? 0);
+        (base as any).combinedCommentsCount = combinedCommentsCount;
       }
 
       return base;
-    });
+    }).filter((item): item is NonNullable<typeof item> => Boolean(item));
 
     return {
       items,
@@ -3071,16 +3220,6 @@ export class CollectionsService {
     const enqueueAt = new Date();
     for (const entry of verifiedFiles) {
       const file = entry.file;
-      if (String(file.mimeType || '').toLowerCase().startsWith('image/')) {
-        await this.prisma.fileUpload.update({
-          where: { id: file.id },
-          data: {
-            processingStatus: 'PENDING',
-            processingError: null,
-          } as any,
-        } as any);
-      }
-
       await (this.prisma as any).presignedUpload.updateMany({
         where: { id: file.id, status: 'USED' },
         data: { processingEnqueuedAt: enqueueAt },

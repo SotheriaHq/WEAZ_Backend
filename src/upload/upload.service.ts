@@ -151,6 +151,22 @@ export class UploadService {
     return `https://${this.bucketName}.s3.${this.region}.amazonaws.com`;
   }
 
+  getPublicDisplayUrl(file: { s3Url?: string | null; s3Key?: string | null }): string | null {
+    const key = typeof file.s3Key === 'string' ? file.s3Key.trim() : '';
+    const configuredBase =
+      this.configService.get<string>('MEDIA_PUBLIC_BASE_URL') ??
+      this.configService.get<string>('CDN_PUBLIC_BASE_URL') ??
+      this.configService.get<string>('CLOUDFRONT_PUBLIC_BASE_URL');
+    const publicBase = configuredBase?.trim().replace(/\/+$/, '');
+
+    if (publicBase && key) {
+      return `${publicBase}/${this.encodeS3KeyForUrl(key)}`;
+    }
+
+    const directUrl = typeof file.s3Url === 'string' ? file.s3Url.trim() : '';
+    return directUrl.length > 0 ? directUrl : null;
+  }
+
   async uploadFile(
     file: Express.Multer.File,
     userId: string,
