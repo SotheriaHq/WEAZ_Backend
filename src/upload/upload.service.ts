@@ -167,6 +167,37 @@ export class UploadService {
     return directUrl.length > 0 ? directUrl : null;
   }
 
+  private isReadyStoredFile(file: any): boolean {
+    return Boolean(
+      file &&
+        !file.originalDeletedAt &&
+        file.processingStatus === 'READY' &&
+        typeof file.s3Key === 'string' &&
+        file.s3Key.trim().length > 0,
+    );
+  }
+
+  private isPublicCollectionFile(file: any): boolean {
+    const medias = Array.isArray(file?.collectionMedias)
+      ? file.collectionMedias
+      : [];
+
+    return medias.some((media: any) => {
+      const collection = media?.collection;
+      return Boolean(
+        collection &&
+          collection.status === 'PUBLISHED' &&
+          collection.visibility === 'PUBLIC' &&
+          !collection.deletedAt,
+      );
+    });
+  }
+
+  private canReturnPublicFileUrl(file: any): boolean {
+    if (!this.isReadyStoredFile(file)) return false;
+    return Boolean(file.isPublic || this.isPublicCollectionFile(file));
+  }
+
   async uploadFile(
     file: Express.Multer.File,
     userId: string,
@@ -503,6 +534,10 @@ export class UploadService {
     if (!file) {
       throw new BadRequestException('File not found');
     }
+    if (!this.isReadyStoredFile(file)) {
+      this.logger.warn(`[media] signed-url denied for unavailable file fileId=${fileId}`);
+      throw new BadRequestException('File not available');
+    }
 
     const command = new GetObjectCommand({
       Bucket: this.bucketName,
@@ -519,9 +554,24 @@ export class UploadService {
   async getPublicSignedUrl(fileId: string): Promise<string | null> {
     const file = await this.prisma.fileUpload.findUnique({
       where: { id: fileId },
+      include: {
+        collectionMedias: {
+          include: {
+            collection: {
+              select: {
+                id: true,
+                status: true,
+                visibility: true,
+                deletedAt: true,
+              },
+            },
+          },
+        },
+      } as any,
     });
 
-    if (!file) {
+    if (!file || !this.canReturnPublicFileUrl(file)) {
+      this.logger.warn(`[media] public-url denied fileId=${fileId}`);
       return null;
     }
 
@@ -537,10 +587,63 @@ export class UploadService {
    * Get signed URL by raw S3 key (no DB lookup required).
    * Used when the frontend only has a raw S3 URL and needs a signed version.
    */
-  async getPublicSignedUrlByKey(s3Key: string): Promise<string> {
+  async getPublicSignedUrlByKey(s3Key: string): Promise<string | null> {
+    const normalizedKey = typeof s3Key === 'string' ? s3Key.trim() : '';
+    if (!normalizedKey || normalizedKey.includes('..')) {
+      throw new BadRequestException('Invalid S3 key');
+    }
+
+    const directFile = await this.prisma.fileUpload.findUnique({
+      where: { s3Key: normalizedKey },
+      include: {
+        collectionMedias: {
+          include: {
+            collection: {
+              select: {
+                id: true,
+                status: true,
+                visibility: true,
+                deletedAt: true,
+              },
+            },
+          },
+        },
+      } as any,
+    } as any);
+
+    const variant = directFile
+      ? null
+      : await (this.prisma as any).fileVariant.findFirst({
+          where: { s3Key: normalizedKey },
+          include: {
+            file: {
+              include: {
+                collectionMedias: {
+                  include: {
+                    collection: {
+                      select: {
+                        id: true,
+                        status: true,
+                        visibility: true,
+                        deletedAt: true,
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        });
+
+    const sourceFile = directFile ?? variant?.file ?? null;
+    if (!sourceFile || !this.canReturnPublicFileUrl(sourceFile)) {
+      this.logger.warn('[media] public-url-by-key denied');
+      return null;
+    }
+
     const command = new GetObjectCommand({
       Bucket: this.bucketName,
-      Key: s3Key,
+      Key: normalizedKey,
     });
 
     return await getSignedUrl(this.s3, command, { expiresIn: 3600 }); // 1 hour

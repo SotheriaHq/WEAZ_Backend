@@ -3,6 +3,8 @@ import { UploadController } from './upload.controller';
 import { UploadService } from './upload.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { ConfigService } from '@nestjs/config';
+import { SystemConfigService } from 'src/admin/system-config/system-config.service';
+import { ImageProcessingQueueService } from 'src/queue/image-processing.queue.service';
 
 describe('ImageController', () => {
   let controller: UploadController;
@@ -31,6 +33,8 @@ describe('ImageController', () => {
             }),
           },
         },
+        { provide: SystemConfigService, useValue: { get: jest.fn() } },
+        { provide: ImageProcessingQueueService, useValue: { enqueueSingle: jest.fn() } },
       ],
     }).compile();
 

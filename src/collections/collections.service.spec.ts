@@ -337,6 +337,67 @@ describe('CollectionsService brand catalog access', () => {
       expect(result.items).toEqual([]);
     });
 
+    it('queries only public published non-deleted design collections', async () => {
+      const prisma = {
+        collection: {
+          findMany: jest.fn().mockResolvedValue([]),
+        },
+      };
+      const service = createService(prisma);
+
+      await service.getMarketFeed();
+
+      expect(prisma.collection.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            domain: 'DESIGN',
+            status: 'PUBLISHED',
+            visibility: 'PUBLIC',
+            deletedAt: null,
+          }),
+        }),
+      );
+    });
+
+    it('keeps one feed item per collection even when a collection has duplicate media rows', async () => {
+      const prisma = {
+        collection: {
+          findMany: jest.fn().mockResolvedValue([
+            createCollection({
+              medias: [
+                {
+                  id: 'media_1',
+                  fileUploadId: 'file_1',
+                  mediaType: 'POST_IMAGE',
+                  orderIndex: 0,
+                  threadsCount: 4,
+                  commentsCount: 3,
+                  file: readyFile,
+                },
+                {
+                  id: 'media_2',
+                  fileUploadId: 'file_1',
+                  mediaType: 'POST_IMAGE',
+                  orderIndex: 1,
+                  threadsCount: 0,
+                  commentsCount: 0,
+                  file: readyFile,
+                },
+              ],
+            }),
+          ]),
+        },
+      };
+      const service = createService(prisma);
+
+      const result = await service.getMarketFeed();
+
+      expect(result.items).toHaveLength(1);
+      expect(result.items[0].mediaItems).toHaveLength(2);
+      expect(result.items[0]).not.toHaveProperty('s3Key');
+      expect(result.items[0].primaryMedia).not.toHaveProperty('s3Key');
+    });
+
     it('uses stable cursor ordering', async () => {
       const prisma = {
         collection: {

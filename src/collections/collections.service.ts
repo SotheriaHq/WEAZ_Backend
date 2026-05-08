@@ -495,13 +495,21 @@ export class CollectionsService {
     },
   ): FeedMediaAssetDto | null {
     const file = args.file;
-    if (!this.isReadyFeedFile(file)) return null;
+    if (!this.isReadyFeedFile(file)) {
+      this.logger.debug(
+        `[feed-contract] media excluded not-ready-or-deleted fileId=${file?.id ?? 'unknown'} status=${file?.processingStatus ?? 'unknown'}`,
+      );
+      return null;
+    }
 
     const displayUrl =
       this.getPreferredVariantUrl(file, ['DETAIL', 'CARD', 'ZOOM']) ??
       this.uploadService.getPublicDisplayUrl(file) ??
       String(file.s3Url).trim();
-    if (!displayUrl) return null;
+    if (!displayUrl) {
+      this.logger.debug(`[feed-contract] media excluded missing-display-url fileId=${file?.id ?? 'unknown'}`);
+      return null;
+    }
 
     const width =
       typeof file.width === 'number' && Number.isFinite(file.width)
@@ -2481,6 +2489,9 @@ export class CollectionsService {
   }) {
     const { cursor, limit = 20, tag, category, requesterId } = options ?? {};
     const take = Math.min(Math.max(limit, 1), 40);
+    this.logger.debug(
+      `[feed] market query start cursor=${cursor ?? 'none'} limit=${take} tag=${tag ?? 'all'} category=${category ?? 'all'}`,
+    );
     const readyMediaWhere = {
       file: {
         processingStatus: 'READY',
@@ -2545,6 +2556,9 @@ export class CollectionsService {
 
     const hasNextPage = collections.length > take;
     const data = hasNextPage ? collections.slice(0, -1) : collections;
+    this.logger.debug(
+      `[feed] market query result fetched=${collections.length} page=${data.length} hasNextPage=${hasNextPage}`,
+    );
 
     const feedRows = data
       .map((collection) => {
@@ -2553,7 +2567,10 @@ export class CollectionsService {
           (coverMediaId
             ? collection.medias.find((media) => media.id === coverMediaId)
             : null) ?? collection.medias[0] ?? null;
-        if (!coverMedia) return null;
+        if (!coverMedia) {
+          this.logger.debug(`[feed-contract] collection excluded missing-ready-cover collectionId=${collection.id}`);
+          return null;
+        }
 
         return {
           collection,
@@ -2598,7 +2615,10 @@ export class CollectionsService {
         mediaType: media.mediaType,
         orderIndex: media.orderIndex,
       });
-      if (!primaryMedia) return null;
+      if (!primaryMedia) {
+        this.logger.debug(`[feed-contract] media excluded unavailable-primary collectionId=${collection.id} mediaId=${media.id}`);
+        return null;
+      }
 
       const mediaItems = collection.medias
         .map((entry) =>
@@ -2610,7 +2630,10 @@ export class CollectionsService {
           }),
         )
         .filter((asset): asset is FeedMediaAssetDto => Boolean(asset));
-      if (mediaItems.length === 0) return null;
+      if (mediaItems.length === 0) {
+        this.logger.debug(`[feed-contract] collection excluded no-valid-media collectionId=${collection.id}`);
+        return null;
+      }
 
       const logoFileId = owner.profileImageId ?? owner.profileImageFile?.id ?? null;
       const avatar = this.buildFeedBrandAvatar(collection.owner);
@@ -2684,6 +2707,9 @@ export class CollectionsService {
 
       return base;
     }).filter((item): item is NonNullable<typeof item> => Boolean(item));
+    this.logger.debug(
+      `[feed] market response items=${items.length} nextCursor=${hasNextPage ? (data[data.length - 1]?.id ?? 'none') : 'none'}`,
+    );
 
     return {
       items,
