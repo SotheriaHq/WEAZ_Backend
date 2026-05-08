@@ -248,6 +248,45 @@ describe('BagEligibilityService', () => {
     expect(result.duplicateState.reason).toBe('CUSTOM_ORDER_PAID_ACTIVE_DUPLICATE');
   });
 
+  it('supports source-aware design custom readiness with duplicate classification parity', async () => {
+    prisma.collection.findFirst.mockResolvedValue({
+      id: 'design_1',
+      ownerId: 'brand_owner',
+      status: 'PUBLISHED',
+      visibility: 'PUBLIC',
+      customOrderEnabled: true,
+    });
+    prisma.brand.findUnique.mockResolvedValue({ isStoreOpen: true });
+    prisma.customOrderConfiguration.findFirst.mockResolvedValue({
+      ...activeConfig,
+      id: 'design_config_1',
+      sourceType: CustomOrderSourceType.DESIGN,
+      sourceId: 'design_1',
+    });
+    prisma.customOrderConfiguration.findMany.mockResolvedValue([{ id: 'design_config_1' }]);
+    prisma.customOrder.findMany.mockResolvedValue([
+      {
+        id: 'order_1',
+        status: CustomOrderStatus.IN_PRODUCTION,
+        paymentStatus: PaymentStatus.PAID,
+      },
+    ]);
+    prisma.userSizeFitProfile.findUnique.mockResolvedValue({
+      measurements: { WAIST: 32 },
+      lastUpdatedAt: new Date(),
+      updatedAt: new Date(),
+      requireUpdateEveryDays: 14,
+    });
+
+    const result = await service.getSourceBagStatus('DESIGN', 'design_1', 'buyer_1');
+
+    expect(result.sourceType).toBe('DESIGN');
+    expect(result.bagMode).toBe('CUSTOM');
+    expect(result.custom.configurationId).toBe('design_config_1');
+    expect(result.duplicateState.classifications).toContain('PAID_ACTIVE');
+    expect(result.duplicateState.reason).toBe('CUSTOM_ORDER_PAID_ACTIVE_DUPLICATE');
+  });
+
   it('returns safe unavailable status for unsupported collection source', async () => {
     const result = await service.getSourceBagStatus('COLLECTION', 'collection_1', 'buyer_1');
 

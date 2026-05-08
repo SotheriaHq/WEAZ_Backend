@@ -7,6 +7,7 @@ import { SystemConfigModule } from 'src/admin/system-config/system-config.module
 import { FinanceModule } from 'src/finance/finance.module';
 import { MessagingModule } from 'src/messaging/messaging.module';
 import { BrandPermissionService } from 'src/brands/permissions/brand-permission.service';
+import { BagValidationService } from 'src/bagging/bag-validation.service';
 import { CustomOrderAccessService } from './custom-order-access.service';
 import { CustomOrdersBrandController } from './custom-orders-brand.controller';
 import { CustomOrdersBuyerController } from './custom-orders-buyer.controller';
@@ -25,6 +26,7 @@ import { CustomOrdersService } from './custom-orders.service';
     CustomOrderSideEffectsService,
     CustomOrderAccessService,
     BrandPermissionService,
+    BagValidationService,
   ],
   exports: [
     CustomOrdersService,

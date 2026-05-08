@@ -61,6 +61,7 @@ import {
   canonicalUserProfileSelect,
   resolveRequiredProfileField,
 } from 'src/common/user-profile-source.helper';
+import { BagValidationService } from 'src/bagging/bag-validation.service';
 
 const BUYER_ACCEPTANCE_WINDOW_HOURS = 72;
 const EXCEPTION_REVIEW_MONTHLY_QUOTA = 2;
@@ -285,11 +286,18 @@ export class CustomOrdersService {
     private readonly refundService: CustomOrderRefundService,
     private readonly ledgerService: LedgerService,
     private readonly customOrderAccessService: CustomOrderAccessService,
+    private readonly bagValidationService: BagValidationService,
   ) {}
 
   async createPricePreview(userId: string, dto: CustomOrderPricePreviewDto) {
     const submittedMeasurementValues = this.normalizeMeasurementValues(dto.measurementValues);
     const configuration = await this.getActiveConfiguration(dto.configurationId, dto.configurationVersionId);
+    const duplicateContext = await this.resolveCustomOrderDuplicateContext(userId, {
+      sourceType: configuration.sourceType,
+      sourceId: configuration.sourceId,
+    });
+    this.assertCustomOrderDuplicateAllowsNewCustomFlow(duplicateContext);
+
     const requiredMeasurementKeys = await this.resolveRequiredMeasurementKeys(
       configuration.requiredMeasurementKeys,
       configuration.requiredFreeformPointIds,
@@ -504,24 +512,30 @@ export class CustomOrdersService {
       ).map((item) => item.id);
 
       if (sourceConfigIds.length > 0) {
-        const duplicateBagLine = await this.prisma.customOrderCheckoutSession.findFirst({
-          where: {
-            buyerId: userId,
-            customOrderId: null,
-            checkoutIntentId: { not: intent.id },
-            checkoutIntent: {
-              configurationId: { in: sourceConfigIds },
-            },
+        const duplicateContext = await this.resolveCustomOrderDuplicateContext(
+          userId,
+          {
+            sourceType: configuration.configuration.sourceType,
+            sourceId: configuration.configuration.sourceId,
           },
-          select: {
-            id: true,
-            checkoutIntentId: true,
-          },
-        });
+          intent.id,
+        );
 
-        if (duplicateBagLine) {
-          throw new BadRequestException('CUSTOM_ORDER_DUPLICATE_IN_BAG');
+        if (duplicateContext.existingBagLine) {
+          return {
+            statusCode: 200,
+            message: 'Custom order checkout already exists in your bag',
+            data: {
+              status: 'READY_FOR_PAYMENT' as const,
+              checkoutIntentId: duplicateContext.existingBagLine.checkoutIntentId,
+              priceLockExpiresAt: duplicateContext.existingBagLine.checkoutIntent.expiresAt.toISOString(),
+              checkoutSessionId: duplicateContext.existingBagLine.id,
+              resumeUrl: this.buildCheckoutResumeUrl(duplicateContext.existingBagLine.resumeToken),
+            },
+          };
         }
+
+        this.assertCustomOrderDuplicateAllowsNewCustomFlow(duplicateContext);
       }
     }
 
@@ -1233,23 +1247,19 @@ export class CustomOrdersService {
     ).map((item) => item.id);
 
     if (sourceConfigIds.length > 0) {
-      const duplicateBagLine = await this.prisma.customOrderCheckoutSession.findFirst({
-        where: {
-          buyerId: userId,
-          customOrderId: null,
-          id: { not: session.id },
-          checkoutIntent: {
-            configurationId: { in: sourceConfigIds },
-          },
+      const duplicateContext = await this.resolveCustomOrderDuplicateContext(
+        userId,
+        {
+          sourceType: configuration.configuration.sourceType,
+          sourceId: configuration.configuration.sourceId,
         },
-        select: {
-          id: true,
-        },
-      });
-
-      if (duplicateBagLine) {
+        existingIntent.id,
+        session.id,
+      );
+      if (duplicateContext.existingBagLine) {
         throw new BadRequestException('CUSTOM_ORDER_DUPLICATE_IN_BAG');
       }
+      this.assertCustomOrderDuplicateAllowsNewCustomFlow(duplicateContext);
     }
 
     const requiredMeasurementKeys = await this.resolveRequiredMeasurementKeys(
@@ -3586,6 +3596,120 @@ export class CustomOrdersService {
       requiredMeasurementKeys: normalizedKeys,
       requiredFreeformPointIds: normalizedFreeformPointIds,
     };
+  }
+
+  private async resolveCustomOrderDuplicateContext(
+    buyerId: string,
+    source: {
+      sourceType: CustomOrderSourceType;
+      sourceId: string;
+    },
+    currentCheckoutIntentId?: string | null,
+    currentCheckoutSessionId?: string | null,
+  ) {
+    if (!source.sourceType || !source.sourceId) {
+      return {
+        existingBagLine: null,
+        hasDuplicateEvidence: false,
+        duplicateState: this.bagValidationService.classifyDuplicateState({
+          completedPolicy: 'ALLOW_REPEAT',
+        }),
+      };
+    }
+
+    const sourceConfigIds = (
+      await this.prisma.customOrderConfiguration.findMany({
+        where: {
+          sourceType: source.sourceType,
+          sourceId: source.sourceId,
+        },
+        select: { id: true },
+      })
+    ).map((item) => item.id);
+
+    if (sourceConfigIds.length === 0) {
+      return {
+        existingBagLine: null,
+        hasDuplicateEvidence: false,
+        duplicateState: this.bagValidationService.classifyDuplicateState({
+          completedPolicy: 'ALLOW_REPEAT',
+        }),
+      };
+    }
+
+    const [checkoutSessions, customOrders] = await Promise.all([
+      this.prisma.customOrderCheckoutSession.findMany({
+        where: {
+          buyerId,
+          ...(currentCheckoutSessionId ? { id: { not: currentCheckoutSessionId } } : {}),
+          ...(currentCheckoutIntentId ? { checkoutIntentId: { not: currentCheckoutIntentId } } : {}),
+          checkoutIntent: {
+            configurationId: { in: sourceConfigIds },
+          },
+        },
+        select: {
+          id: true,
+          checkoutIntentId: true,
+          customOrderId: true,
+          status: true,
+          lastAttemptStatus: true,
+          resumeToken: true,
+          checkoutIntent: {
+            select: {
+              expiresAt: true,
+            },
+          },
+        },
+        orderBy: { createdAt: 'desc' },
+      }),
+      this.prisma.customOrder.findMany({
+        where: {
+          buyerId,
+          sourceType: source.sourceType,
+          sourceId: source.sourceId,
+        },
+        select: {
+          id: true,
+          status: true,
+          paymentStatus: true,
+        },
+      }),
+    ]);
+
+    const existingBagLine =
+      checkoutSessions.find((session) => session.customOrderId === null) ?? null;
+
+    return {
+      existingBagLine,
+      hasDuplicateEvidence: checkoutSessions.length > 0 || customOrders.length > 0,
+      duplicateState: this.bagValidationService.classifyDuplicateState({
+        checkoutSessions,
+        customOrders,
+        completedPolicy: 'ALLOW_REPEAT',
+      }),
+    };
+  }
+
+  private assertCustomOrderDuplicateAllowsNewCustomFlow(input: {
+    hasDuplicateEvidence?: boolean;
+    duplicateState: {
+      classifications: string[];
+      reason: string | null;
+    };
+  }) {
+    const classifications = input.duplicateState.classifications;
+    if (classifications.includes('PAID_ACTIVE')) {
+      throw new BadRequestException('CUSTOM_ORDER_PAID_ACTIVE_DUPLICATE');
+    }
+    if (classifications.includes('SUBMITTED_UNPAID')) {
+      throw new BadRequestException('CUSTOM_ORDER_SUBMITTED_UNPAID_DUPLICATE');
+    }
+    if (classifications.includes('COMPLETED_BLOCKED')) {
+      throw new BadRequestException(input.duplicateState.reason || 'CUSTOM_ORDER_COMPLETED_DUPLICATE');
+    }
+    if (input.hasDuplicateEvidence && classifications.includes('UNKNOWN')) {
+      throw new BadRequestException('CUSTOM_ORDER_DUPLICATE_STATE_UNKNOWN');
+    }
   }
 
   private async loadSourceMeasurementContract(

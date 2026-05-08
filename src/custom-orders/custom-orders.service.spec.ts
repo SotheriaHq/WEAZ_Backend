@@ -15,6 +15,7 @@ import { CustomOrderRefundService } from './custom-order-refund.service';
 import { CustomOrderSideEffectsService } from './custom-order-side-effects.service';
 import { CustomOrderAccessService } from './custom-order-access.service';
 import { CustomOrdersService } from './custom-orders.service';
+import { BagValidationService } from 'src/bagging/bag-validation.service';
 
 describe('CustomOrdersService', () => {
   let service: CustomOrdersService;
@@ -83,9 +84,12 @@ describe('CustomOrdersService', () => {
       },
       customOrderCheckoutIntent: {
         findUnique: jest.fn(),
+        findFirst: jest.fn(),
+        update: jest.fn(),
         upsert: jest.fn(),
       },
       customOrderCheckoutSession: {
+        findMany: jest.fn(),
         upsert: jest.fn(),
       },
       measurementPoint: {
@@ -96,6 +100,7 @@ describe('CustomOrdersService', () => {
       },
       customOrder: {
         findFirst: jest.fn(),
+        findMany: jest.fn(),
         update: jest.fn(),
       },
       customOrderTimelineEvent: {
@@ -167,10 +172,15 @@ describe('CustomOrdersService', () => {
           provide: CustomOrderAccessService,
           useValue: customOrderAccessService,
         },
+        BagValidationService,
       ],
     }).compile();
 
     service = module.get<CustomOrdersService>(CustomOrdersService);
+    prisma.customOrderCheckoutSession.findMany.mockResolvedValue([]);
+    prisma.customOrder.findMany.mockResolvedValue([]);
+    prisma.customOrderConfiguration.findMany = jest.fn().mockResolvedValue([]);
+    prisma.measurementPoint.findMany.mockResolvedValue([]);
   });
 
   afterEach(() => {
@@ -774,6 +784,91 @@ describe('CustomOrdersService', () => {
     expect(result.data.conversionGuidance).toContain('bust/chest');
     expect(prisma.customOrderCheckoutIntent.upsert).toHaveBeenCalled();
     expect(pricingService.buildPricePreview).toHaveBeenCalled();
+  });
+
+  it('blocks a new custom preview when the same source has a paid active order', async () => {
+    prisma.customOrderConfiguration.findUnique.mockResolvedValue({
+      id: 'configuration_1',
+      isActive: true,
+      sourceType: 'PRODUCT',
+      sourceId: 'product_1',
+      baseProductionCharge: 100000,
+      fabricCostPerYard: 6000,
+      rushEnabled: false,
+      rushFee: null,
+      requiredMeasurementKeys: ['WOMEN_WAIST'],
+      requiredFreeformPointIds: [],
+      rules: [],
+      brand: { currency: 'NGN' },
+      versions: [{ id: 'configuration_version_1' }],
+    });
+    prisma.customOrderConfiguration.findMany.mockResolvedValue([{ id: 'configuration_1' }]);
+    prisma.customOrder.findMany.mockResolvedValue([
+      {
+        id: 'order_1',
+        status: CustomOrderStatus.IN_PRODUCTION,
+        paymentStatus: PaymentStatus.PAID,
+      },
+    ]);
+
+    await expect(
+      service.createPricePreview('buyer_1', {
+        configurationId: 'configuration_1',
+        configurationVersionId: 'configuration_version_1',
+        measurementValues: { WOMEN_WAIST: 76 },
+        rushSelected: false,
+        shippingAddress: null,
+      } as any),
+    ).rejects.toThrow('CUSTOM_ORDER_PAID_ACTIVE_DUPLICATE');
+  });
+
+  it('allows a new custom preview when the same source has only completed allowed orders', async () => {
+    prisma.customOrderConfiguration.findUnique.mockResolvedValue({
+      id: 'configuration_1',
+      isActive: true,
+      sourceType: 'PRODUCT',
+      sourceId: 'product_1',
+      baseProductionCharge: 100000,
+      fabricCostPerYard: 6000,
+      rushEnabled: false,
+      rushFee: null,
+      requiredMeasurementKeys: ['WOMEN_WAIST'],
+      requiredFreeformPointIds: [],
+      rules: [],
+      brand: { currency: 'NGN' },
+      versions: [{ id: 'configuration_version_1' }],
+    });
+    prisma.customOrderConfiguration.findMany.mockResolvedValue([{ id: 'configuration_1' }]);
+    prisma.customOrder.findMany.mockResolvedValue([
+      {
+        id: 'order_1',
+        status: CustomOrderStatus.COMPLETED,
+        paymentStatus: PaymentStatus.PAID,
+      },
+    ]);
+    prisma.measurementPoint.findMany.mockResolvedValue([]);
+    prisma.userSizeFitProfile.findUnique.mockResolvedValue(null);
+    prisma.customOrderCheckoutIntent.findUnique.mockResolvedValue(null);
+    prisma.customOrderCheckoutIntent.upsert.mockResolvedValue({
+      id: 'intent_1',
+      expiresAt: new Date('2026-03-16T12:00:00.000Z'),
+    });
+    pricingService.validateConfigurationRules.mockReturnValue([]);
+    pricingService.buildPricePreview.mockReturnValue({
+      computedYards: 3.5,
+      matchedRule: { priority: 1, isFallback: true },
+      buyerPriceSummary: { grandTotal: 121000, currency: 'NGN' },
+    });
+
+    const result = await service.createPricePreview('buyer_1', {
+      configurationId: 'configuration_1',
+      configurationVersionId: 'configuration_version_1',
+      measurementValues: { WOMEN_WAIST: 76 },
+      rushSelected: false,
+      shippingAddress: null,
+    } as any);
+
+    expect(result.data.checkoutIntentId).toBe('intent_1');
   });
 
   it('stores and returns display chart preference in user notification settings', async () => {
