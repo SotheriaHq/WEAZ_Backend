@@ -16,15 +16,31 @@ export type BagDefaultAction =
   | 'OPEN_SELECTOR'
   | 'OPEN_CUSTOM_FLOW'
   | 'OPEN_FITTINGS'
+  | 'CONFIRM_STALE_FITTINGS'
   | 'DISABLED';
+
+export type BagFreshnessState = 'FRESH' | 'STALE' | 'MISSING' | 'PARTIAL' | 'NOT_REQUIRED';
+
+export type BagSourceType = 'PRODUCT' | 'DESIGN' | 'COLLECTION';
+
+export type BagCompletedDuplicatePolicy = 'ALLOW_REPEAT' | 'BLOCK_REPEAT' | 'UNKNOWN';
 
 export interface BagStatusDto {
   productId: string;
+  sourceType?: BagSourceType;
+  sourceId?: string;
   canBag: boolean;
   bagMode: BagMode;
+  reason?: string | null;
+  modes?: {
+    standard: boolean;
+    customOrder: boolean;
+  };
   standard: {
     available: boolean;
+    enabled?: boolean;
     alreadyBagged: boolean;
+    inBag?: boolean;
     cartItemId: string | null;
     requiresSize: boolean;
     requiresColor: boolean;
@@ -44,7 +60,36 @@ export interface BagStatusDto {
     requiredMeasurementKeys: string[];
     requiredFreeformPointIds: string[];
     fittingState: BagFittingState;
+    freshnessState?: BagFreshnessState;
     missingMeasurementKeys: string[];
+    measurementUpdatedAt?: string | null;
+    staleAfterDays?: number;
+    staleAt?: string | null;
+    requiresStaleConfirmation?: boolean;
+  };
+  customOrder?: {
+    enabled: boolean;
+    inBag: boolean;
+    sessionId: string | null;
+    checkoutIntentId: string | null;
+    configurationId: string | null;
+    requiredMeasurementKeys: string[];
+    requiredFreeformPointIds: string[];
+    fittingsComplete: boolean;
+    freshnessState?: BagFreshnessState;
+    missingMeasurementKeys: string[];
+    measurementUpdatedAt?: string | null;
+    staleAfterDays?: number;
+    staleAt?: string | null;
+    requiresStaleConfirmation?: boolean;
+  };
+  duplicateState?: {
+    inBag: boolean;
+    submittedUnpaid: boolean;
+    paidActive: boolean;
+    completedPolicy: BagCompletedDuplicatePolicy;
+    reason: string | null;
+    classifications?: string[];
   };
   stockState: BagStockState;
   userState: {

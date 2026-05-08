@@ -81,6 +81,7 @@ import {
   BrandPermissionCode,
 } from 'src/brands/permissions/brand-permissions';
 import { canonicalUserProfileSelect } from 'src/common/user-profile-source.helper';
+import { BagEligibilityService } from 'src/bagging/bag-eligibility.service';
 
 type SupportedPaymentBank = {
   id: number;
@@ -143,6 +144,8 @@ export class StoreService {
     private readonly brandAccessService?: BrandAccessService,
     @Optional()
     private readonly brandPermissionService?: BrandPermissionService,
+    @Optional()
+    private readonly bagEligibilityService?: BagEligibilityService,
   ) {}
 
   private readonly maxProductsPerCollection = Math.max(
@@ -3763,6 +3766,10 @@ export class StoreService {
       };
     }
   > {
+    if (this.bagEligibilityService) {
+      return this.bagEligibilityService.getProductBagStatus(productId, userId);
+    }
+
     const product = await this.prisma.product.findFirst({
       where: { id: productId, deletedAt: null },
       include: {
@@ -8170,9 +8177,13 @@ export class StoreService {
                 sourceTitleSnapshot: true,
                 buyer: {
                   select: {
-                    firstName: true,
-                    lastName: true,
                     username: true,
+                    userProfile: {
+                      select: {
+                        firstName: true,
+                        lastName: true,
+                      },
+                    },
                   },
                 },
               },
