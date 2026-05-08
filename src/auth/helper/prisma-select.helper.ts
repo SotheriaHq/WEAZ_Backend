@@ -60,12 +60,12 @@ export const authUserSelect = Prisma.validator<Prisma.UserSelect>()({
 });
 export const profileUserSelect = Prisma.validator<Prisma.UserSelect>()({
   ...authUserSelect,
-  profileImageFile: {
-    select: canonicalUserProfileFileSelect,
-  },
-  bannerImageFile: {
-    select: canonicalUserProfileFileSelect,
-  },
+  // profileImageFile: {
+  //   select: canonicalUserProfileFileSelect,
+  // },
+  // bannerImageFile: {
+  //   select: canonicalUserProfileFileSelect,
+  // },
 });
 export type AuthUser = Prisma.UserGetPayload<{ select: typeof authUserSelect }>;
 export type ProfileUser = Prisma.UserGetPayload<{
