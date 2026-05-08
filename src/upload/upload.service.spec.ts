@@ -117,4 +117,99 @@ describe('ImageService', () => {
 
     await expect(service.getPublicSignedUrl('file_1')).resolves.toBe('signed-url');
   });
+
+  it('allows public URL fallback for ready profile identity media', async () => {
+    (service as any).prisma = {
+      fileUpload: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'avatar_1',
+          s3Key: 'PROFILE_IMAGE/user/avatar.jpg',
+          processingStatus: 'READY',
+          originalDeletedAt: null,
+          isPublic: false,
+          collectionMedias: [],
+          userProfileImages: [{ id: 'profile_1' }],
+          userProfileBanners: [],
+        }),
+      },
+    };
+
+    await expect(service.getPublicSignedUrl('avatar_1')).resolves.toBe('signed-url');
+  });
+
+  it('denies public URL fallback for unreferenced profile upload files', async () => {
+    (service as any).prisma = {
+      fileUpload: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'old_avatar_1',
+          s3Key: 'PROFILE_IMAGE/user/old-avatar.jpg',
+          processingStatus: 'READY',
+          originalDeletedAt: null,
+          isPublic: false,
+          collectionMedias: [],
+          userProfileImages: [],
+          userProfileBanners: [],
+        }),
+      },
+    };
+
+    await expect(service.getPublicSignedUrl('old_avatar_1')).resolves.toBeNull();
+  });
+
+  it('marks verified presigned uploads READY and enqueues variant generation without blocking display', async () => {
+    const enqueueSingle = jest.fn().mockResolvedValue(undefined);
+    const createdRecord = {
+      id: 'file_1',
+      userId: 'user_1',
+      s3Key: 'POST_IMAGE/user_1/file_1.jpg',
+      s3Url: 'https://test-bucket.s3.us-east-1.amazonaws.com/POST_IMAGE/user_1/file_1.jpg',
+      fileType: 'POST_IMAGE',
+      mimeType: 'image/jpeg',
+      processingStatus: 'READY',
+    };
+
+    (service as any).configService = {
+      get: jest.fn((key: string) => {
+        if (key === 'IMAGE_OPTIMIZATION_ENABLED') return 'true';
+        return undefined;
+      }),
+    };
+    (service as any).imageQueue = { enqueueSingle };
+    (service as any).prisma = {
+      presignedUpload: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'file_1',
+          userId: 'user_1',
+          s3Key: 'POST_IMAGE/user_1/file_1.jpg',
+          originalName: 'look.jpg',
+          fileType: 'POST_IMAGE',
+          status: 'PENDING',
+          expiresAt: new Date(Date.now() + 60_000),
+        }),
+        update: jest.fn().mockResolvedValue({}),
+      },
+      fileUpload: {
+        findUnique: jest.fn(),
+        create: jest.fn().mockResolvedValue(createdRecord),
+      },
+    };
+
+    const result = await service.createFileRecordFromPresign(
+      'file_1',
+      'user_1',
+      'POST_IMAGE/user_1/file_1.jpg',
+      'image/jpeg',
+      1234,
+    );
+
+    expect(result.processingStatus).toBe('READY');
+    expect((service as any).prisma.fileUpload.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          processingStatus: 'READY',
+        }),
+      }),
+    );
+    expect(enqueueSingle).toHaveBeenCalledWith('file_1', true);
+  });
 });

@@ -193,9 +193,24 @@ export class UploadService {
     });
   }
 
+  private isPublicIdentityFile(file: any): boolean {
+    const profileImages = Array.isArray(file?.userProfileImages)
+      ? file.userProfileImages
+      : [];
+    const profileBanners = Array.isArray(file?.userProfileBanners)
+      ? file.userProfileBanners
+      : [];
+
+    return profileImages.length > 0 || profileBanners.length > 0;
+  }
+
   private canReturnPublicFileUrl(file: any): boolean {
     if (!this.isReadyStoredFile(file)) return false;
-    return Boolean(file.isPublic || this.isPublicCollectionFile(file));
+    return Boolean(
+      file.isPublic ||
+      this.isPublicCollectionFile(file) ||
+      this.isPublicIdentityFile(file),
+    );
   }
 
   async uploadFile(
@@ -240,13 +255,11 @@ export class UploadService {
           fileType: fileType,
           mimeType: file.mimetype,
           size: file.size,
-          processingStatus: this.shouldOptimizeFile(fileType, file.mimetype)
-            ? 'PENDING'
-            : 'READY',
+          processingStatus: 'READY',
         } as any,
       });
 
-      await this.enqueueImageProcessing(uploadRecord.id);
+      await this.enqueueImageProcessing(uploadRecord.id, true);
 
       return {
         id: uploadRecord.id,
@@ -323,13 +336,11 @@ export class UploadService {
         fileType: fileType,
         mimeType: file.mimetype,
         size: file.size,
-        processingStatus: this.shouldOptimizeFile(fileType, file.mimetype)
-          ? 'PENDING'
-          : 'READY',
+        processingStatus: 'READY',
       } as any,
     });
 
-    await this.enqueueImageProcessing(uploadRecord.id);
+    await this.enqueueImageProcessing(uploadRecord.id, true);
 
     return {
       id: uploadRecord.id,
@@ -567,6 +578,12 @@ export class UploadService {
             },
           },
         },
+        userProfileImages: {
+          select: { id: true },
+        },
+        userProfileBanners: {
+          select: { id: true },
+        },
       } as any,
     });
 
@@ -608,6 +625,12 @@ export class UploadService {
             },
           },
         },
+        userProfileImages: {
+          select: { id: true },
+        },
+        userProfileBanners: {
+          select: { id: true },
+        },
       } as any,
     } as any);
 
@@ -629,6 +652,12 @@ export class UploadService {
                       },
                     },
                   },
+                },
+                userProfileImages: {
+                  select: { id: true },
+                },
+                userProfileBanners: {
+                  select: { id: true },
                 },
               },
             },
@@ -863,13 +892,11 @@ export class UploadService {
         fileType: presign.fileType as any,
         mimeType,
         size: size || 0,
-        processingStatus: this.shouldOptimizeFile(presign.fileType as FileType, mimeType)
-          ? 'PENDING'
-          : 'READY',
+        processingStatus: 'READY',
       } as any,
     });
 
-    await this.enqueueImageProcessing(record.id);
+    await this.enqueueImageProcessing(record.id, true);
 
     return record;
   }
@@ -908,12 +935,10 @@ export class UploadService {
         fileType,
         mimeType,
         size: buffer.length,
-        processingStatus: this.shouldOptimizeFile(fileType, mimeType)
-          ? 'PENDING'
-          : 'READY',
+        processingStatus: 'READY',
       } as any,
     });
-    await this.enqueueImageProcessing(record.id);
+    await this.enqueueImageProcessing(record.id, true);
     return record;
   }
 

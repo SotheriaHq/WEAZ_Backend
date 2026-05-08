@@ -63,7 +63,7 @@ export class ImageProcessingProcessor extends WorkerHost {
     try {
       await this.prisma.fileUpload.update({
         where: { id: fileId },
-        data: { processingStatus: 'PENDING', processingError: null } as any,
+        data: { processingError: null } as any,
       } as any);
 
       const originalBuffer = await this.uploadService.getObjectBufferByKey(file.s3Key);

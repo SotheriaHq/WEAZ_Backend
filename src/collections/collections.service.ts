@@ -2559,6 +2559,53 @@ export class CollectionsService {
     this.logger.debug(
       `[feed] market query result fetched=${collections.length} page=${data.length} hasNextPage=${hasNextPage}`,
     );
+    if (collections.length === 0 && typeof (this.prisma.collection as any).count === 'function') {
+      try {
+        const [publishedPublic, withAnyMedia, readyOriginals, blockedByProcessing] =
+          await Promise.all([
+            this.prisma.collection.count({
+              where: {
+                domain: 'DESIGN',
+                status: 'PUBLISHED',
+                visibility: CollectionVisibility.PUBLIC,
+                deletedAt: null,
+              } as any,
+            }),
+            this.prisma.collection.count({
+              where: {
+                domain: 'DESIGN',
+                status: 'PUBLISHED',
+                visibility: CollectionVisibility.PUBLIC,
+                deletedAt: null,
+                medias: { some: {} },
+              } as any,
+            }),
+            this.prisma.collection.count({ where } as any),
+            this.prisma.collection.count({
+              where: {
+                domain: 'DESIGN',
+                status: 'PUBLISHED',
+                visibility: CollectionVisibility.PUBLIC,
+                deletedAt: null,
+                medias: {
+                  some: {
+                    file: {
+                      processingStatus: { not: 'READY' },
+                      originalDeletedAt: null,
+                      s3Url: { not: '' },
+                    },
+                  },
+                },
+              } as any,
+            }),
+          ]);
+        this.logger.debug(
+          `[feed-contract] market exclusion summary publishedPublic=${publishedPublic} withAnyMedia=${withAnyMedia} readyOriginals=${readyOriginals} blockedByProcessing=${blockedByProcessing}`,
+        );
+      } catch (error) {
+        this.logger.warn(`[feed-contract] market exclusion summary failed: ${String(error)}`);
+      }
+    }
 
     const feedRows = data
       .map((collection) => {

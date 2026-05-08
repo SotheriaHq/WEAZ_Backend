@@ -18,6 +18,7 @@ import { UploadService } from './upload.service';
 import { FileType } from './upload.enums';
 import { GetFilesDto } from './dto/get-files.dto';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
+import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
 
 @ApiTags('uploads')
 @ApiBearerAuth()
@@ -30,6 +31,8 @@ export class UploadController {
   // ============================================
 
   @Get('public-url/:fileId')
+  @UseGuards(ThrottlerGuard)
+  @Throttle({ default: { limit: 120, ttl: 60000 } })
   @ApiOperation({
     summary: 'Get public signed URL for file access (no auth required)',
     description:
@@ -44,6 +47,8 @@ export class UploadController {
   }
 
   @Get('public-url-by-key')
+  @UseGuards(ThrottlerGuard)
+  @Throttle({ default: { limit: 60, ttl: 60000 } })
   @ApiOperation({
     summary: 'Get public signed URL by S3 key (no auth required)',
     description:
@@ -242,7 +247,8 @@ export class UploadController {
     return this.uploadService.getUserFiles(req.user.id, query);
   }
 
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, ThrottlerGuard)
+  @Throttle({ default: { limit: 240, ttl: 60000 } })
   @Get('signed-url/:fileId')
   @ApiOperation({ summary: 'Get signed URL for file access' })
   async getSignedUrl(@Param('fileId') fileId: string, @Req() req: any) {

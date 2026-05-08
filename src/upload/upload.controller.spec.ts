@@ -5,12 +5,14 @@ import { PrismaService } from 'src/prisma/prisma.service';
 import { ConfigService } from '@nestjs/config';
 import { SystemConfigService } from 'src/admin/system-config/system-config.service';
 import { ImageProcessingQueueService } from 'src/queue/image-processing.queue.service';
+import { ThrottlerModule } from '@nestjs/throttler';
 
 describe('ImageController', () => {
   let controller: UploadController;
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
+      imports: [ThrottlerModule.forRoot([{ ttl: 60000, limit: 120 }])],
       controllers: [UploadController],
       providers: [
         UploadService,
