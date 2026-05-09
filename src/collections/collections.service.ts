@@ -463,10 +463,47 @@ export class CollectionsService {
     return String(fileType ?? '').toUpperCase().includes('VIDEO');
   }
 
-  private getPreferredVariantUrl(
+  private summarizeDisplayUrl(value?: string | null) {
+    const url = typeof value === 'string' ? value.trim() : '';
+    if (!url) {
+      return {
+        displayHost: null,
+        pathPrefix: null,
+        isS3: false,
+        isSigned: false,
+        hasDisplayUrl: false,
+      };
+    }
+    try {
+      const parsed = new URL(url);
+      const isSigned = Boolean(
+        parsed.searchParams.get('X-Amz-Signature') ||
+          parsed.searchParams.get('Signature') ||
+          parsed.searchParams.get('Expires') ||
+          parsed.searchParams.get('token'),
+      );
+      return {
+        displayHost: parsed.hostname,
+        pathPrefix: parsed.pathname.split('/').slice(0, 3).join('/'),
+        isS3: parsed.hostname.includes('amazonaws.com') || parsed.hostname.includes('.s3.'),
+        isSigned,
+        hasDisplayUrl: true,
+      };
+    } catch {
+      return {
+        displayHost: 'invalid-url',
+        pathPrefix: null,
+        isS3: false,
+        isSigned: false,
+        hasDisplayUrl: true,
+      };
+    }
+  }
+
+  private async getPreferredVariantUrl(
     file: any,
     kinds: string[],
-  ): string | null {
+  ): Promise<string | null> {
     const variants = Array.isArray(file?.variants) ? file.variants : [];
     for (const kind of kinds) {
       const match =
@@ -479,21 +516,30 @@ export class CollectionsService {
           (variant: any) =>
             String(variant?.variantKind ?? '').toUpperCase() === kind,
         );
-      if (typeof match?.s3Url === 'string' && match.s3Url.trim().length > 0) {
-        return this.uploadService.getPublicDisplayUrl(match) ?? match.s3Url.trim();
+      if (
+        match &&
+        ((typeof match?.s3Key === 'string' && match.s3Key.trim().length > 0) ||
+          (typeof match?.s3Url === 'string' && match.s3Url.trim().length > 0))
+      ) {
+        return (
+          this.uploadService.getPublicDisplayUrl(match) ??
+          (typeof (this.uploadService as any).getTemporarySignedDisplayUrl === 'function'
+            ? await (this.uploadService as any).getTemporarySignedDisplayUrl(match)
+            : null)
+        );
       }
     }
     return null;
   }
 
-  private buildFeedMediaAsset(
+  private async buildFeedMediaAsset(
     args: {
       id: string | null | undefined;
       file: any;
       mediaType?: string | null;
       orderIndex?: number | null;
     },
-  ): FeedMediaAssetDto | null {
+  ): Promise<FeedMediaAssetDto | null> {
     const file = args.file;
     if (!this.isReadyFeedFile(file)) {
       this.logger.debug(
@@ -503,9 +549,11 @@ export class CollectionsService {
     }
 
     const displayUrl =
-      this.getPreferredVariantUrl(file, ['DETAIL', 'CARD', 'ZOOM']) ??
+      (await this.getPreferredVariantUrl(file, ['DETAIL', 'CARD', 'ZOOM'])) ??
       this.uploadService.getPublicDisplayUrl(file) ??
-      String(file.s3Url).trim();
+      (typeof (this.uploadService as any).getTemporarySignedDisplayUrl === 'function'
+        ? await (this.uploadService as any).getTemporarySignedDisplayUrl(file)
+        : null);
     if (!displayUrl) {
       this.logger.debug(`[feed-contract] media excluded missing-display-url fileId=${file?.id ?? 'unknown'}`);
       return null;
@@ -529,8 +577,8 @@ export class CollectionsService {
         ? 'VIDEO'
         : 'IMAGE',
       displayUrl,
-      thumbnailUrl: this.getPreferredVariantUrl(file, ['THUMB']),
-      previewUrl: this.getPreferredVariantUrl(file, ['CARD', 'DETAIL']),
+      thumbnailUrl: await this.getPreferredVariantUrl(file, ['THUMB']),
+      previewUrl: await this.getPreferredVariantUrl(file, ['CARD', 'DETAIL']),
       blurHash: null,
       dominantColor: null,
       width,
@@ -544,7 +592,7 @@ export class CollectionsService {
     };
   }
 
-  private buildFeedBrandAvatar(owner: any): FeedMediaAssetDto | null {
+  private async buildFeedBrandAvatar(owner: any): Promise<FeedMediaAssetDto | null> {
     const brandLogoFile = owner?.brand?.logoImageFile ?? null;
     const profileImageFile = owner?.userProfile?.profileImageFile ?? null;
     const file = brandLogoFile ?? profileImageFile;
@@ -2654,9 +2702,9 @@ export class CollectionsService {
       }
     }
 
-    const items = feedRows.map(({ collection, media }) => {
+    const items = (await Promise.all(feedRows.map(async ({ collection, media }) => {
       const owner = this.mapCollectionOwner(collection.owner)!;
-      const primaryMedia = this.buildFeedMediaAsset({
+      const primaryMedia = await this.buildFeedMediaAsset({
         id: media.id,
         file: media.file,
         mediaType: media.mediaType,
@@ -2667,23 +2715,23 @@ export class CollectionsService {
         return null;
       }
 
-      const mediaItems = collection.medias
-        .map((entry) =>
+      const mediaItems = (await Promise.all(
+        collection.medias.map((entry) =>
           this.buildFeedMediaAsset({
             id: entry.id,
             file: entry.file,
             mediaType: entry.mediaType,
             orderIndex: entry.orderIndex,
           }),
-        )
-        .filter((asset): asset is FeedMediaAssetDto => Boolean(asset));
+        ),
+      )).filter((asset): asset is FeedMediaAssetDto => Boolean(asset));
       if (mediaItems.length === 0) {
         this.logger.debug(`[feed-contract] collection excluded no-valid-media collectionId=${collection.id}`);
         return null;
       }
 
       const logoFileId = owner.profileImageId ?? owner.profileImageFile?.id ?? null;
-      const avatar = this.buildFeedBrandAvatar(collection.owner);
+      const avatar = await this.buildFeedBrandAvatar(collection.owner);
       const combinedCommentsCount =
         (collection.commentsCount ?? 0) + (media.commentsCount ?? 0);
       const commentsCount =
@@ -2753,7 +2801,25 @@ export class CollectionsService {
       }
 
       return base;
-    }).filter((item): item is NonNullable<typeof item> => Boolean(item));
+    }))).filter((item): item is NonNullable<typeof item> => Boolean(item));
+
+    if (items.length > 0) {
+      for (const item of items.slice(0, 5)) {
+        const summary = this.summarizeDisplayUrl(item.primaryMedia?.displayUrl);
+        this.logger.debug(
+          `[feed-contract] first-media-summary ${JSON.stringify({
+            mediaId: item.primaryMedia?.id ?? item.id,
+            fileId: item.primaryMedia?.fileId ?? null,
+            status: item.primaryMedia?.status ?? null,
+            displayHost: summary.displayHost,
+            pathPrefix: summary.pathPrefix,
+            isS3: summary.isS3,
+            isSigned: summary.isSigned,
+            hasDisplayUrl: summary.hasDisplayUrl,
+          })}`,
+        );
+      }
+    }
     this.logger.debug(
       `[feed] market response items=${items.length} nextCursor=${hasNextPage ? (data[data.length - 1]?.id ?? 'none') : 'none'}`,
     );

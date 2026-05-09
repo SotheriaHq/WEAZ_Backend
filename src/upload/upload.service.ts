@@ -151,12 +151,38 @@ export class UploadService {
     return `https://${this.bucketName}.s3.${this.region}.amazonaws.com`;
   }
 
-  getPublicDisplayUrl(file: { s3Url?: string | null; s3Key?: string | null }): string | null {
+  private isTruthyConfig(value?: string | null): boolean {
+    return ['1', 'true', 'yes', 'on', 'public'].includes(
+      String(value ?? '').trim().toLowerCase(),
+    );
+  }
+
+  private isRawS3ObjectUrl(value: string): boolean {
+    try {
+      const parsed = new URL(value);
+      return parsed.hostname.toLowerCase().includes('amazonaws.com');
+    } catch {
+      return false;
+    }
+  }
+
+  private isBucketPublicForDisplay(): boolean {
+    return (
+      this.isTruthyConfig(this.configService.get<string>('MEDIA_BUCKET_PUBLIC')) ||
+      this.isTruthyConfig(this.configService.get<string>('S3_BUCKET_PUBLIC')) ||
+      this.isTruthyConfig(this.configService.get<string>('AWS_S3_BUCKET_PUBLIC')) ||
+      this.isTruthyConfig(this.configService.get<string>('S3_PUBLIC_READ')) ||
+      this.isTruthyConfig(this.configService.get<string>('MEDIA_OBJECTS_PUBLIC'))
+    );
+  }
+
+  getPublicDisplayUrl(file: { s3Url?: string | null; s3Key?: string | null; isPublic?: boolean | null }): string | null {
     const key = typeof file.s3Key === 'string' ? file.s3Key.trim() : '';
     const configuredBase =
       this.configService.get<string>('MEDIA_PUBLIC_BASE_URL') ??
       this.configService.get<string>('CDN_PUBLIC_BASE_URL') ??
-      this.configService.get<string>('CLOUDFRONT_PUBLIC_BASE_URL');
+      this.configService.get<string>('CLOUDFRONT_PUBLIC_BASE_URL') ??
+      this.configService.get<string>('CLOUDFRONT_URL');
     const publicBase = configuredBase?.trim().replace(/\/+$/, '');
 
     if (publicBase && key) {
@@ -164,7 +190,39 @@ export class UploadService {
     }
 
     const directUrl = typeof file.s3Url === 'string' ? file.s3Url.trim() : '';
-    return directUrl.length > 0 ? directUrl : null;
+    if (!directUrl) return null;
+
+    if (!this.isRawS3ObjectUrl(directUrl)) {
+      return directUrl;
+    }
+
+    if (file.isPublic || this.isBucketPublicForDisplay()) {
+      return key ? this.buildS3ObjectUrl(key) : directUrl;
+    }
+
+    return null;
+  }
+
+  async getTemporarySignedDisplayUrl(
+    file: { id?: string | null; s3Key?: string | null },
+    expiresIn = 15 * 60,
+  ): Promise<string | null> {
+    const key = typeof file.s3Key === 'string' ? file.s3Key.trim() : '';
+    if (!key) return null;
+
+    const nodeEnv = String(this.configService.get<string>('NODE_ENV') ?? '').toLowerCase();
+    if (nodeEnv !== 'production') {
+      this.logger.warn(
+        `[media] temporary signed display URL fallback used fileId=${file.id ?? 'unknown'} expiresIn=${expiresIn}; configure MEDIA_PUBLIC_BASE_URL/CDN_PUBLIC_BASE_URL/CLOUDFRONT_URL for production public feed media.`,
+      );
+    }
+
+    const command = new GetObjectCommand({
+      Bucket: this.bucketName,
+      Key: key,
+    });
+
+    return await getSignedUrl(this.s3, command, { expiresIn });
   }
 
   private isReadyStoredFile(file: any): boolean {
