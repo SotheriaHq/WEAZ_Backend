@@ -593,9 +593,23 @@ export class CollectionsService {
   }
 
   private async buildFeedBrandAvatar(owner: any): Promise<FeedMediaAssetDto | null> {
-    const brandLogoFile = owner?.brand?.logoImageFile ?? null;
     const profileImageFile = owner?.userProfile?.profileImageFile ?? null;
-    const file = brandLogoFile ?? profileImageFile;
+    const brandLogoUrl =
+      typeof owner?.brand?.logo === 'string' && owner.brand.logo.trim().length > 0
+        ? owner.brand.logo.trim()
+        : null;
+    const file =
+      profileImageFile ??
+      (brandLogoUrl
+        ? {
+            id: null,
+            s3Url: brandLogoUrl,
+            fileType: 'PROFILE_IMAGE',
+            processingStatus: 'READY',
+            originalDeletedAt: null,
+          }
+        : null);
+    if (!file) return null;
     return this.buildFeedMediaAsset({
       id: file?.id,
       file,
@@ -2805,17 +2819,43 @@ export class CollectionsService {
 
     if (items.length > 0) {
       for (const item of items.slice(0, 5)) {
-        const summary = this.summarizeDisplayUrl(item.primaryMedia?.displayUrl);
+        const primarySummary = this.summarizeDisplayUrl(item.primaryMedia?.displayUrl);
+        const mediaSummaries = item.mediaItems.map((mediaItem) => {
+          const summary = this.summarizeDisplayUrl(mediaItem.displayUrl);
+          return {
+            id: mediaItem.id,
+            fileId: mediaItem.fileId,
+            type: mediaItem.type,
+            status: mediaItem.status,
+            orderIndex: mediaItem.orderIndex,
+            displayHost: summary.displayHost,
+            pathPrefix: summary.pathPrefix,
+            hasDisplayUrl: summary.hasDisplayUrl,
+          };
+        });
+        const mediaDisplayKeys = item.mediaItems.map((mediaItem) => {
+          const summary = this.summarizeDisplayUrl(mediaItem.displayUrl);
+          return `${summary.displayHost ?? 'none'}:${summary.pathPrefix ?? 'none'}:${mediaItem.fileId ?? mediaItem.id}`;
+        });
+        const uniqueDisplayKeys = new Set(mediaDisplayKeys);
         this.logger.debug(
           `[feed-contract] first-media-summary ${JSON.stringify({
+            collectionId: item.collectionId,
+            title: item.title,
             mediaId: item.primaryMedia?.id ?? item.id,
             fileId: item.primaryMedia?.fileId ?? null,
             status: item.primaryMedia?.status ?? null,
-            displayHost: summary.displayHost,
-            pathPrefix: summary.pathPrefix,
-            isS3: summary.isS3,
-            isSigned: summary.isSigned,
-            hasDisplayUrl: summary.hasDisplayUrl,
+            displayHost: primarySummary.displayHost,
+            pathPrefix: primarySummary.pathPrefix,
+            isS3: primarySummary.isS3,
+            isSigned: primarySummary.isSigned,
+            hasDisplayUrl: primarySummary.hasDisplayUrl,
+            mediaItemsLength: item.mediaItems.length,
+            mediaItemIds: item.mediaItems.map((mediaItem) => mediaItem.id),
+            mediaItems: mediaSummaries,
+            displayUrlsUnique: uniqueDisplayKeys.size === mediaDisplayKeys.length,
+            allReady: item.mediaItems.every((mediaItem) => mediaItem.status === 'READY'),
+            allTyped: item.mediaItems.every((mediaItem) => mediaItem.type === 'IMAGE' || mediaItem.type === 'VIDEO'),
           })}`,
         );
       }

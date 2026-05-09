@@ -3,9 +3,12 @@ import { Prisma, ProfileVisibility } from '@prisma/client';
 export const canonicalUserProfileFileSelect =
   Prisma.validator<Prisma.FileUploadSelect>()({
     id: true,
+    s3Key: true,
     s3Url: true,
     fileName: true,
     originalName: true,
+    processingStatus: true,
+    originalDeletedAt: true,
     createdAt: true,
     updatedAt: true,
   });
