@@ -2744,8 +2744,8 @@ export class CollectionsService {
         return null;
       }
 
-      const logoFileId = owner.profileImageId ?? owner.profileImageFile?.id ?? null;
       const avatar = await this.buildFeedBrandAvatar(collection.owner);
+      const logoFileId = avatar?.fileId ?? owner.profileImageId ?? owner.profileImageFile?.id ?? null;
       const combinedCommentsCount =
         (collection.commentsCount ?? 0) + (media.commentsCount ?? 0);
       const commentsCount =
