@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { BrandsService } from './brands.service';
 import { BrandMetricsService } from './brand-metrics.service';
+import { BrandProfileLinkService } from './brand-profile-link.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { UploadService } from '../upload/upload.service';
 import { NotificationsService } from '../notifications/notifications.service';
@@ -11,6 +12,13 @@ import { TagIndexService } from '../tags/tag-index.service';
 
 describe('BrandsService', () => {
   let service: BrandsService;
+  const mockBrandProfileLinks = {
+    getBrandProfileLinks: jest.fn(() => ({
+      publicProfileUrl: 'https://threadly.test/u/maison',
+      qrTargetUrl: 'https://threadly.test/u/maison',
+      shareUrl: 'https://threadly.test/u/maison',
+    })),
+  };
 
   const mockPrisma = {
     user: {
@@ -53,6 +61,7 @@ describe('BrandsService', () => {
       providers: [
         BrandsService,
         BrandMetricsService,
+        { provide: BrandProfileLinkService, useValue: mockBrandProfileLinks },
         { provide: PrismaService, useValue: mockPrisma },
         { provide: UploadService, useValue: {} },
         { provide: NotificationsService, useValue: { create: jest.fn() } },
@@ -392,6 +401,13 @@ describe('BrandsService', () => {
       expect(response.storeStatus).toBe('OPEN');
       expect(response.emailVerified).toBe(true);
       expect(response.totalShares).toBeNull();
+      expect(mockBrandProfileLinks.getBrandProfileLinks).toHaveBeenCalledWith({
+        ownerId: 'owner-1',
+        username: 'maison',
+      });
+      expect(response.publicProfileUrl).toBe('https://threadly.test/u/maison');
+      expect(response.qrTargetUrl).toBe('https://threadly.test/u/maison');
+      expect(response.shareUrl).toBe('https://threadly.test/u/maison');
     });
   });
 });

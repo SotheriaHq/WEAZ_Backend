@@ -46,6 +46,7 @@ import {
   BrandMetricsService,
   type BrandStoreStatus,
 } from './brand-metrics.service';
+import { BrandProfileLinkService } from './brand-profile-link.service';
 
 export interface BrandMediaAsset {
   fileId: string;
@@ -102,6 +103,9 @@ export interface BrandProfileResponse {
   totalThreads: number;
   totalLikes: number;
   totalShares: number | null;
+  publicProfileUrl: string;
+  qrTargetUrl: string;
+  shareUrl: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -130,6 +134,7 @@ export class BrandsService {
     private readonly prisma: PrismaService,
     private readonly uploadService: UploadService,
     private readonly brandMetrics: BrandMetricsService,
+    private readonly brandProfileLinks: BrandProfileLinkService,
     private readonly notifications?: NotificationsService,
     private readonly systemTags?: SystemTagsService,
     private readonly tagIndex?: TagIndexService,
@@ -593,6 +598,10 @@ export class BrandsService {
     const bannerAsset = this.mapBrandMediaAsset(bannerAssetSource.file);
     const logoImage = brand.brand?.logo ?? profileImage.url ?? null;
     const bannerImage = brand.brand?.banner ?? bannerAssetSource.url ?? null;
+    const profileLinks = this.brandProfileLinks.getBrandProfileLinks({
+      ownerId: brand.id,
+      username: brand.username,
+    });
 
     return {
       id: brand.id,
@@ -640,6 +649,9 @@ export class BrandsService {
       totalThreads: metrics.totalThreads,
       totalLikes: metrics.totalLikes,
       totalShares: metrics.totalShares,
+      publicProfileUrl: profileLinks.publicProfileUrl,
+      qrTargetUrl: profileLinks.qrTargetUrl,
+      shareUrl: profileLinks.shareUrl,
       createdAt: brand.createdAt.toISOString(),
       updatedAt: brand.updatedAt.toISOString(),
     };
