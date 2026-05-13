@@ -22,6 +22,16 @@ describe('BrandsService', () => {
     },
     collection: {
       count: jest.fn(),
+      aggregate: jest.fn(),
+    },
+    collectionMedia: {
+      aggregate: jest.fn(),
+    },
+    product: {
+      count: jest.fn(),
+    },
+    patchConnection: {
+      count: jest.fn(),
     },
     brandPatch: {
       findUnique: jest.fn(),
@@ -262,6 +272,114 @@ describe('BrandsService', () => {
       expect(mockPrisma.user.update).not.toHaveBeenCalled();
       expect(response.brandFullName).toBe('Canonical Name');
       expect(response.brandTags).toEqual(['ankara']);
+    });
+  });
+
+  describe('getBrandProfile', () => {
+    it('returns canonical media metadata and public-safe aggregate metrics', async () => {
+      const createdAt = new Date('2026-05-01T00:00:00.000Z');
+      const updatedAt = new Date('2026-05-02T00:00:00.000Z');
+      mockPrisma.user.findUnique.mockResolvedValue({
+        id: 'owner-1',
+        username: 'maison',
+        email: 'owner@example.com',
+        isEmailVerified: true,
+        status: 'ACTIVE',
+        deactivatedAt: null,
+        createdAt,
+        updatedAt,
+        type: UserType.BRAND,
+        userProfile: {
+          firstName: 'Maison',
+          lastName: 'Vant',
+          phoneNumber: null,
+          address: null,
+          profileImage: 'https://cdn.example.com/logo.jpg',
+          profileImageId: 'logo-file-id',
+          profileImageFile: {
+            id: 'logo-file-id',
+            s3Url: 's3://logo.jpg',
+            fileName: 'logo.jpg',
+            originalName: 'logo-original.jpg',
+            createdAt,
+            updatedAt,
+          },
+          bannerImage: 'https://cdn.example.com/banner.jpg',
+          bannerImageId: 'banner-file-id',
+          bannerImageFile: {
+            id: 'banner-file-id',
+            s3Url: 's3://banner.jpg',
+            fileName: 'banner.jpg',
+            originalName: 'banner-original.jpg',
+            createdAt,
+            updatedAt,
+          },
+        },
+        brand: {
+          id: 'brand-1',
+          name: 'Maison Vant',
+          description: 'Luxury menswear.',
+          logo: 'https://cdn.example.com/brand-logo.jpg',
+          banner: 'https://cdn.example.com/brand-banner.jpg',
+          tags: ['menswear', 'minimalist'],
+          country: 'USA',
+          state: 'New York',
+          city: 'New York',
+          businessType: 'Atelier',
+          companyLocation: null,
+          socialInstagram: null,
+          socialFacebook: null,
+          socialTwitter: null,
+          socialWebsite: null,
+          cacNumber: null,
+          tin: null,
+          ceoNin: null,
+          ceoFirstName: null,
+          ceoLastName: null,
+          industriNumber: null,
+          isStoreOpen: true,
+          verificationStatus: 'APPROVED',
+          avgRating: 4.8,
+          totalReviews: 12,
+        },
+      });
+      mockPrisma.collection.count.mockResolvedValue(3);
+      mockPrisma.product.count.mockResolvedValue(7);
+      mockPrisma.patchConnection.count.mockResolvedValue(42);
+      mockPrisma.collection.aggregate.mockResolvedValue({ _sum: { threadsCount: 10 } });
+      mockPrisma.collectionMedia.aggregate.mockResolvedValue({ _sum: { threadsCount: 15 } });
+
+      const response = await service.getBrandProfile('brand-1');
+
+      expect(mockPrisma.collection.count).toHaveBeenCalledWith({
+        where: expect.objectContaining({
+          ownerId: 'owner-1',
+          status: 'PUBLISHED',
+          visibility: 'PUBLIC',
+          deletedAt: null,
+        }),
+      });
+      expect(mockPrisma.collectionMedia.aggregate).toHaveBeenCalledWith({
+        where: {
+          collection: expect.objectContaining({
+            ownerId: 'owner-1',
+            status: 'PUBLISHED',
+            visibility: 'PUBLIC',
+            deletedAt: null,
+          }),
+        },
+        _sum: { threadsCount: true },
+      });
+      expect(response.logoImage).toBe('https://cdn.example.com/brand-logo.jpg');
+      expect(response.logoImageId).toBe('logo-file-id');
+      expect(response.bannerImage).toBe('https://cdn.example.com/brand-banner.jpg');
+      expect(response.bannerImageId).toBe('banner-file-id');
+      expect(response.followersCount).toBe(42);
+      expect(response.totalLikes).toBe(25);
+      expect(response.productsCount).toBe(7);
+      expect(response.storeStatus).toBe('OPEN');
+      expect(response.emailVerified).toBe(true);
+      expect(response.totalShares).toBeNull();
     });
   });
 });

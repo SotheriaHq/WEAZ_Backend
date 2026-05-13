@@ -9,6 +9,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { UploadService } from '../upload/upload.service';
 import {
   CollectionStatus,
+  CollectionVisibility,
   OrderStatus,
   Prisma,
   UserType,
@@ -36,6 +37,12 @@ import {
   normalizeBrandProfileForBrandResponse,
   resolveBrandTags,
 } from 'src/common/brand-profile-source.helper';
+import {
+  canonicalUserProfileSelect,
+  resolveBannerImage,
+  resolveProfileImage,
+  type SelectedProfileFile,
+} from 'src/common/user-profile-source.helper';
 import { AdminAuditService } from 'src/admin/services/admin-audit.service';
 
 export interface BrandMediaAsset {
@@ -56,8 +63,10 @@ export interface BrandProfileResponse {
   city: string | null;
   location: string | null;
   bannerImage: string | null;
+  bannerImageId: string | null;
   bannerImageMeta: BrandMediaAsset | null;
   logoImage: string | null;
+  logoImageId: string | null;
   logoImageMeta: BrandMediaAsset | null;
   socialLinks: {
     instagram?: string | null;
@@ -78,11 +87,17 @@ export interface BrandProfileResponse {
   verificationStatus: BrandVerificationStatus;
   verificationBadgeVisible: boolean;
   verifiedExplanationUrl: string | null;
+  emailVerified: boolean;
   isStoreOpen: boolean;
+  storeStatus: 'OPEN' | 'CLOSED' | 'PENDING_VERIFICATION';
   averageRating: number;
   totalReviews: number;
   collectionsCount: number;
+  productsCount: number;
   patchesCount: number;
+  followersCount: number;
+  totalLikes: number;
+  totalShares: number | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -129,11 +144,7 @@ export class BrandsService {
       updatedAt: true,
       type: true,
       userProfile: {
-        select: {
-          firstName: true,
-          lastName: true,
-          address: true,
-        },
+        select: canonicalUserProfileSelect,
       },
       brand: {
         select: canonicalBrandProfileSelect,
@@ -164,6 +175,38 @@ export class BrandsService {
     }
 
     return brand;
+  }
+
+  private mapBrandMediaAsset(file: SelectedProfileFile | undefined): BrandMediaAsset | null {
+    if (!file) {
+      return null;
+    }
+
+    return {
+      fileId: file.id,
+      url: file.s3Url,
+      originalName: file.originalName,
+      fileName: file.fileName,
+      createdAt: file.createdAt.toISOString(),
+      updatedAt: file.updatedAt.toISOString(),
+    };
+  }
+
+  private getStoreProfileStatus(input: {
+    isStoreOpen?: boolean | null;
+    verificationStatus?: BrandVerificationStatus | null;
+  }): BrandProfileResponse['storeStatus'] {
+    const verificationStatus = input.verificationStatus ?? BrandVerificationStatus.NOT_SUBMITTED;
+
+    if (
+      verificationStatus === BrandVerificationStatus.PENDING ||
+      verificationStatus === BrandVerificationStatus.IN_REVIEW ||
+      verificationStatus === BrandVerificationStatus.ADDITIONAL_INFO_REQUESTED
+    ) {
+      return 'PENDING_VERIFICATION';
+    }
+
+    return input.isStoreOpen ? 'OPEN' : 'CLOSED';
   }
 
   private mapNotificationsToRecentActivity(
@@ -491,33 +534,73 @@ export class BrandsService {
     const brand = await this.getBrandOrThrow(brandId);
 
     const ownerId = brand.id;
+    const brandRecordId = brand.brand?.id ?? null;
+    const publicCollectionWhere: Prisma.CollectionWhereInput = {
+      ownerId,
+      status: CollectionStatus.PUBLISHED,
+      visibility: CollectionVisibility.PUBLIC,
+      deletedAt: null,
+    };
 
-    const collectionsCount = await this.prisma.collection.count({
-      where: {
-        ownerId,
-        status: CollectionStatus.PUBLISHED,
-      },
-    });
-    const patchesCount = await this.prisma.patchConnection.count({
-      where: {
-        targetId: ownerId,
-        status: PatchStatus.ACCEPTED,
-        mode: PatchMode.USER_TO_BRAND,
-      },
-    });
+    const [
+      collectionsCount,
+      productsCount,
+      patchesCount,
+      collectionThreads,
+      mediaThreads,
+    ] = await Promise.all([
+      this.prisma.collection.count({
+        where: publicCollectionWhere,
+      }),
+      brandRecordId
+        ? this.prisma.product.count({
+          where: {
+            brandId: brandRecordId,
+            isActive: true,
+            deletedAt: null,
+          },
+        })
+        : Promise.resolve(0),
+      this.prisma.patchConnection.count({
+        where: {
+          targetId: ownerId,
+          status: PatchStatus.ACCEPTED,
+          mode: PatchMode.USER_TO_BRAND,
+        },
+      }),
+      this.prisma.collection.aggregate({
+        where: publicCollectionWhere,
+        _sum: { threadsCount: true },
+      }),
+      this.prisma.collectionMedia.aggregate({
+        where: {
+          collection: publicCollectionWhere,
+        },
+        _sum: { threadsCount: true },
+      }),
+    ]);
 
     const canonicalProfile = normalizeBrandProfileForBrandResponse(brand);
 
-    const logoAsset = null;
-    const bannerAsset = null;
-    const logoImage = brand.brand?.logo ?? null;
-    const bannerImage = brand.brand?.banner ?? null;
+    const profileImage = resolveProfileImage(brand);
+    const bannerAssetSource = resolveBannerImage(brand);
+    const logoAsset = this.mapBrandMediaAsset(profileImage.file);
+    const bannerAsset = this.mapBrandMediaAsset(bannerAssetSource.file);
+    const logoImage = brand.brand?.logo ?? profileImage.url ?? null;
+    const bannerImage = brand.brand?.banner ?? bannerAssetSource.url ?? null;
     const verificationTruth = getBrandVerificationTruth({
       verificationStatus: brand.brand?.verificationStatus,
       isStoreOpen: brand.brand?.isStoreOpen,
       ownerStatus: brand.status,
       ownerDeactivatedAt: brand.deactivatedAt ?? null,
     });
+    const storeStatus = this.getStoreProfileStatus({
+      isStoreOpen: brand.brand?.isStoreOpen,
+      verificationStatus: brand.brand?.verificationStatus,
+    });
+    const totalLikes =
+      (collectionThreads._sum.threadsCount ?? 0) +
+      (mediaThreads._sum.threadsCount ?? 0);
 
     return {
       id: brand.id,
@@ -528,8 +611,10 @@ export class BrandsService {
       city: canonicalProfile.city,
       location: canonicalProfile.location,
       bannerImage,
+      bannerImageId: bannerAssetSource.fileId,
       bannerImageMeta: bannerAsset,
       logoImage,
+      logoImageId: profileImage.fileId,
       logoImageMeta: logoAsset,
       socialLinks: {
         instagram: canonicalProfile.socialLinks.instagram,
@@ -550,11 +635,17 @@ export class BrandsService {
       verificationStatus: verificationTruth.verificationStatus,
       verificationBadgeVisible: verificationTruth.verificationBadgeVisible,
       verifiedExplanationUrl: verificationTruth.verifiedExplanationUrl,
+      emailVerified: Boolean(brand.isEmailVerified),
       isStoreOpen: Boolean(brand.brand?.isStoreOpen),
+      storeStatus,
       averageRating: brand.brand?.avgRating ?? 0,
       totalReviews: brand.brand?.totalReviews ?? 0,
       collectionsCount,
+      productsCount,
       patchesCount,
+      followersCount: patchesCount,
+      totalLikes,
+      totalShares: null,
       createdAt: brand.createdAt.toISOString(),
       updatedAt: brand.updatedAt.toISOString(),
     };
@@ -830,8 +921,20 @@ export class BrandsService {
 
     // Verify both are brands
     const [requester, receiver] = await Promise.all([
-      this.prisma.user.findUnique({ where: { id: requesterId } }),
-      this.prisma.user.findUnique({ where: { id: receiverId } }),
+      this.prisma.user.findUnique({
+        where: { id: requesterId },
+        include: {
+          brand: { select: { name: true } },
+          userProfile: { select: { firstName: true, lastName: true } },
+        },
+      }),
+      this.prisma.user.findUnique({
+        where: { id: receiverId },
+        include: {
+          brand: { select: { name: true } },
+          userProfile: { select: { firstName: true, lastName: true } },
+        },
+      }),
     ]);
 
     if (!requester || requester.type !== UserType.BRAND) {
@@ -938,13 +1041,21 @@ export class BrandsService {
     // Notify receiver
     if (this.notifications) {
       try {
+        const requesterDisplayName =
+          requester.brand?.name ||
+          [requester.userProfile?.firstName, requester.userProfile?.lastName]
+            .filter(Boolean)
+            .join(' ') ||
+          requester.username ||
+          'A brand';
+
         await this.notifications.create(
           receiverId,
           NotificationType.BRAND_PATCH_REQUEST,
           {
             actorId: requesterId,
             payload: {
-              message: `${requester.brandFullName || requester.username} wants to patch with you`,
+              message: `${requesterDisplayName} wants to patch with you`,
               targetUrl: '/settings?tab=patches&filter=pending',
             },
           },
