@@ -1,5 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { BrandsService } from './brands.service';
+import { BrandMetricsService } from './brand-metrics.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { UploadService } from '../upload/upload.service';
 import { NotificationsService } from '../notifications/notifications.service';
@@ -44,11 +45,14 @@ describe('BrandsService', () => {
 
   beforeEach(async () => {
     jest.clearAllMocks();
-    mockPrisma.$transaction.mockImplementation((callback) => callback(mockPrisma));
+    mockPrisma.$transaction.mockImplementation((callback) =>
+      callback(mockPrisma),
+    );
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         BrandsService,
+        BrandMetricsService,
         { provide: PrismaService, useValue: mockPrisma },
         { provide: UploadService, useValue: {} },
         { provide: NotificationsService, useValue: { create: jest.fn() } },
@@ -346,8 +350,12 @@ describe('BrandsService', () => {
       mockPrisma.collection.count.mockResolvedValue(3);
       mockPrisma.product.count.mockResolvedValue(7);
       mockPrisma.patchConnection.count.mockResolvedValue(42);
-      mockPrisma.collection.aggregate.mockResolvedValue({ _sum: { threadsCount: 10 } });
-      mockPrisma.collectionMedia.aggregate.mockResolvedValue({ _sum: { threadsCount: 15 } });
+      mockPrisma.collection.aggregate.mockResolvedValue({
+        _sum: { threadsCount: 10 },
+      });
+      mockPrisma.collectionMedia.aggregate.mockResolvedValue({
+        _sum: { threadsCount: 15 },
+      });
 
       const response = await service.getBrandProfile('brand-1');
 
@@ -372,10 +380,14 @@ describe('BrandsService', () => {
       });
       expect(response.logoImage).toBe('https://cdn.example.com/brand-logo.jpg');
       expect(response.logoImageId).toBe('logo-file-id');
-      expect(response.bannerImage).toBe('https://cdn.example.com/brand-banner.jpg');
+      expect(response.bannerImage).toBe(
+        'https://cdn.example.com/brand-banner.jpg',
+      );
       expect(response.bannerImageId).toBe('banner-file-id');
       expect(response.followersCount).toBe(42);
+      expect(response.totalThreads).toBe(25);
       expect(response.totalLikes).toBe(25);
+      expect(response.designsCount).toBe(3);
       expect(response.productsCount).toBe(7);
       expect(response.storeStatus).toBe('OPEN');
       expect(response.emailVerified).toBe(true);

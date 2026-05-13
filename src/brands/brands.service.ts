@@ -9,7 +9,6 @@ import { PrismaService } from '../prisma/prisma.service';
 import { UploadService } from '../upload/upload.service';
 import {
   CollectionStatus,
-  CollectionVisibility,
   OrderStatus,
   Prisma,
   UserType,
@@ -31,7 +30,6 @@ import { SystemTagsService } from '../tags/system-tags.service';
 import { TagIndexService } from '../tags/tag-index.service';
 import { sanitizeTags } from 'src/common/utils/tag-validator';
 import { TAG_ENTITY_TYPE } from 'src/tags/tag-entity-type';
-import { getBrandVerificationTruth } from 'src/brand-verification/verification-truth.util';
 import {
   canonicalBrandProfileSelect,
   normalizeBrandProfileForBrandResponse,
@@ -44,6 +42,10 @@ import {
   type SelectedProfileFile,
 } from 'src/common/user-profile-source.helper';
 import { AdminAuditService } from 'src/admin/services/admin-audit.service';
+import {
+  BrandMetricsService,
+  type BrandStoreStatus,
+} from './brand-metrics.service';
 
 export interface BrandMediaAsset {
   fileId: string;
@@ -89,13 +91,15 @@ export interface BrandProfileResponse {
   verifiedExplanationUrl: string | null;
   emailVerified: boolean;
   isStoreOpen: boolean;
-  storeStatus: 'OPEN' | 'CLOSED' | 'PENDING_VERIFICATION';
+  storeStatus: BrandStoreStatus;
   averageRating: number;
   totalReviews: number;
   collectionsCount: number;
+  designsCount: number;
   productsCount: number;
   patchesCount: number;
   followersCount: number;
+  totalThreads: number;
   totalLikes: number;
   totalShares: number | null;
   createdAt: string;
@@ -125,12 +129,13 @@ export class BrandsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly uploadService: UploadService,
+    private readonly brandMetrics: BrandMetricsService,
     private readonly notifications?: NotificationsService,
     private readonly systemTags?: SystemTagsService,
     private readonly tagIndex?: TagIndexService,
     @Optional()
     private readonly adminAuditService?: AdminAuditService,
-  ) { }
+  ) {}
 
   private async getBrandOrThrow(brandId: string) {
     const select = {
@@ -177,7 +182,9 @@ export class BrandsService {
     return brand;
   }
 
-  private mapBrandMediaAsset(file: SelectedProfileFile | undefined): BrandMediaAsset | null {
+  private mapBrandMediaAsset(
+    file: SelectedProfileFile | undefined,
+  ): BrandMediaAsset | null {
     if (!file) {
       return null;
     }
@@ -190,23 +197,6 @@ export class BrandsService {
       createdAt: file.createdAt.toISOString(),
       updatedAt: file.updatedAt.toISOString(),
     };
-  }
-
-  private getStoreProfileStatus(input: {
-    isStoreOpen?: boolean | null;
-    verificationStatus?: BrandVerificationStatus | null;
-  }): BrandProfileResponse['storeStatus'] {
-    const verificationStatus = input.verificationStatus ?? BrandVerificationStatus.NOT_SUBMITTED;
-
-    if (
-      verificationStatus === BrandVerificationStatus.PENDING ||
-      verificationStatus === BrandVerificationStatus.IN_REVIEW ||
-      verificationStatus === BrandVerificationStatus.ADDITIONAL_INFO_REQUESTED
-    ) {
-      return 'PENDING_VERIFICATION';
-    }
-
-    return input.isStoreOpen ? 'OPEN' : 'CLOSED';
   }
 
   private mapNotificationsToRecentActivity(
@@ -224,13 +214,14 @@ export class BrandsService {
   ) {
     return recentNotifications.map((notification) => {
       const payload = (notification.payload ?? {}) as Record<string, any>;
-      const targetUrl = typeof payload.targetUrl === 'string' ? payload.targetUrl : null;
+      const targetUrl =
+        typeof payload.targetUrl === 'string' ? payload.targetUrl : null;
       const notificationType = String(notification.type || '').toUpperCase();
-      const route = targetUrl || (
-        notificationType.includes('MESSAGE')
+      const route =
+        targetUrl ||
+        (notificationType.includes('MESSAGE')
           ? '/studio/messages'
-          : '/settings?tab=notifications'
-      );
+          : '/settings?tab=notifications');
 
       return {
         id: notification.id,
@@ -252,7 +243,10 @@ export class BrandsService {
     return params.toString();
   }
 
-  private buildBrandOrderRoute(orderId: string, options?: { openChat?: boolean; messageId?: string | null }) {
+  private buildBrandOrderRoute(
+    orderId: string,
+    options?: { openChat?: boolean; messageId?: string | null },
+  ) {
     const params = new URLSearchParams({
       tab: 'orders',
       orderId,
@@ -319,7 +313,16 @@ export class BrandsService {
         where: {
           brandId: brand.id,
           OR: [
-            { status: { in: [OrderStatus.PENDING, OrderStatus.PROCESSING, OrderStatus.SHIPPED, OrderStatus.DELIVERED] } },
+            {
+              status: {
+                in: [
+                  OrderStatus.PENDING,
+                  OrderStatus.PROCESSING,
+                  OrderStatus.SHIPPED,
+                  OrderStatus.DELIVERED,
+                ],
+              },
+            },
             { messageThread: { isNot: null } },
           ],
         },
@@ -372,7 +375,9 @@ export class BrandsService {
       .filter((threadId): threadId is string => Boolean(threadId));
 
     const unreadRows = threadIds.length
-      ? await this.prisma.$queryRaw<Array<{ threadId: string; unreadCount: bigint | number }>>(Prisma.sql`
+      ? await this.prisma.$queryRaw<
+          Array<{ threadId: string; unreadCount: bigint | number }>
+        >(Prisma.sql`
           SELECT m."threadId" AS "threadId", COUNT(*)::bigint AS "unreadCount"
           FROM "Message" m
           LEFT JOIN "MessageThreadParticipant" p
@@ -392,7 +397,9 @@ export class BrandsService {
     candidateOrders
       .filter((order) => {
         const threadId = order.messageThread?.id;
-        return Boolean(threadId && (unreadCountByThreadId.get(threadId) ?? 0) > 0);
+        return Boolean(
+          threadId && (unreadCountByThreadId.get(threadId) ?? 0) > 0,
+        );
       })
       .sort((left, right) => {
         const leftTime = left.messageThread?.lastMessageAt?.getTime() ?? 0;
@@ -401,8 +408,12 @@ export class BrandsService {
       })
       .slice(0, 3)
       .forEach((order) => {
-        const lastMessageAt = order.messageThread?.lastMessageAt ?? order.messageThread?.updatedAt ?? order.updatedAt;
-        const unreadCount = unreadCountByThreadId.get(order.messageThread?.id ?? '') ?? 0;
+        const lastMessageAt =
+          order.messageThread?.lastMessageAt ??
+          order.messageThread?.updatedAt ??
+          order.updatedAt;
+        const unreadCount =
+          unreadCountByThreadId.get(order.messageThread?.id ?? '') ?? 0;
         actions.push({
           type: 'MESSAGE_UNREAD',
           title: `Unread buyer message on ${this.getOrderActionTitle(order)}`,
@@ -414,8 +425,13 @@ export class BrandsService {
 
     candidateOrders
       .filter((order) => order.status === OrderStatus.PENDING)
-      .filter((order) => now.getTime() - order.createdAt.getTime() >= 24 * 60 * 60 * 1000)
-      .sort((left, right) => left.createdAt.getTime() - right.createdAt.getTime())
+      .filter(
+        (order) =>
+          now.getTime() - order.createdAt.getTime() >= 24 * 60 * 60 * 1000,
+      )
+      .sort(
+        (left, right) => left.createdAt.getTime() - right.createdAt.getTime(),
+      )
       .slice(0, 2)
       .forEach((order) => {
         actions.push({
@@ -428,8 +444,13 @@ export class BrandsService {
 
     candidateOrders
       .filter((order) => order.status === OrderStatus.PROCESSING)
-      .filter((order) => now.getTime() - order.updatedAt.getTime() >= 72 * 60 * 60 * 1000)
-      .sort((left, right) => left.updatedAt.getTime() - right.updatedAt.getTime())
+      .filter(
+        (order) =>
+          now.getTime() - order.updatedAt.getTime() >= 72 * 60 * 60 * 1000,
+      )
+      .sort(
+        (left, right) => left.updatedAt.getTime() - right.updatedAt.getTime(),
+      )
       .slice(0, 2)
       .forEach((order) => {
         actions.push({
@@ -442,8 +463,13 @@ export class BrandsService {
 
     candidateOrders
       .filter((order) => order.status === OrderStatus.SHIPPED)
-      .filter((order) => now.getTime() - order.updatedAt.getTime() >= 7 * 24 * 60 * 60 * 1000)
-      .sort((left, right) => left.updatedAt.getTime() - right.updatedAt.getTime())
+      .filter(
+        (order) =>
+          now.getTime() - order.updatedAt.getTime() >= 7 * 24 * 60 * 60 * 1000,
+      )
+      .sort(
+        (left, right) => left.updatedAt.getTime() - right.updatedAt.getTime(),
+      )
       .slice(0, 2)
       .forEach((order) => {
         actions.push({
@@ -456,9 +482,20 @@ export class BrandsService {
 
     candidateOrders
       .filter((order) => order.status === OrderStatus.DELIVERED)
-      .filter((order) => Boolean(order.deliveredAt) && !order.buyerConfirmedDeliveryAt)
-      .filter((order) => now.getTime() - (order.deliveredAt as Date).getTime() >= 3 * 24 * 60 * 60 * 1000)
-      .sort((left, right) => (left.deliveredAt as Date).getTime() - (right.deliveredAt as Date).getTime())
+      .filter(
+        (order) =>
+          Boolean(order.deliveredAt) && !order.buyerConfirmedDeliveryAt,
+      )
+      .filter(
+        (order) =>
+          now.getTime() - (order.deliveredAt as Date).getTime() >=
+          3 * 24 * 60 * 60 * 1000,
+      )
+      .sort(
+        (left, right) =>
+          (left.deliveredAt as Date).getTime() -
+          (right.deliveredAt as Date).getTime(),
+      )
       .slice(0, 1)
       .forEach((order) => {
         actions.push({
@@ -470,7 +507,11 @@ export class BrandsService {
       });
 
     lowStockProducts
-      .filter((product) => product.totalStock <= Math.max(1, Number(product.lowStockThreshold ?? 5)))
+      .filter(
+        (product) =>
+          product.totalStock <=
+          Math.max(1, Number(product.lowStockThreshold ?? 5)),
+      )
       .slice(0, 2)
       .forEach((product) => {
         actions.push({
@@ -482,11 +523,15 @@ export class BrandsService {
         });
       });
 
-    if (brand.verificationStatus === BrandVerificationStatus.ADDITIONAL_INFO_REQUESTED) {
+    if (
+      brand.verificationStatus ===
+      BrandVerificationStatus.ADDITIONAL_INFO_REQUESTED
+    ) {
       actions.push({
         type: 'VERIFICATION_UPDATE',
         title: 'Verification workspace needs updates',
-        description: 'Compliance requested more information for your store. Review the verification workspace and submit the missing details.',
+        description:
+          'Compliance requested more information for your store. Review the verification workspace and submit the missing details.',
         link: '/studio/verification',
       });
     }
@@ -533,54 +578,14 @@ export class BrandsService {
   async getBrandProfile(brandId: string): Promise<BrandProfileResponse> {
     const brand = await this.getBrandOrThrow(brandId);
 
-    const ownerId = brand.id;
-    const brandRecordId = brand.brand?.id ?? null;
-    const publicCollectionWhere: Prisma.CollectionWhereInput = {
-      ownerId,
-      status: CollectionStatus.PUBLISHED,
-      visibility: CollectionVisibility.PUBLIC,
-      deletedAt: null,
-    };
-
-    const [
-      collectionsCount,
-      productsCount,
-      patchesCount,
-      collectionThreads,
-      mediaThreads,
-    ] = await Promise.all([
-      this.prisma.collection.count({
-        where: publicCollectionWhere,
-      }),
-      brandRecordId
-        ? this.prisma.product.count({
-          where: {
-            brandId: brandRecordId,
-            isActive: true,
-            deletedAt: null,
-          },
-        })
-        : Promise.resolve(0),
-      this.prisma.patchConnection.count({
-        where: {
-          targetId: ownerId,
-          status: PatchStatus.ACCEPTED,
-          mode: PatchMode.USER_TO_BRAND,
-        },
-      }),
-      this.prisma.collection.aggregate({
-        where: publicCollectionWhere,
-        _sum: { threadsCount: true },
-      }),
-      this.prisma.collectionMedia.aggregate({
-        where: {
-          collection: publicCollectionWhere,
-        },
-        _sum: { threadsCount: true },
-      }),
-    ]);
-
     const canonicalProfile = normalizeBrandProfileForBrandResponse(brand);
+    const metrics = await this.brandMetrics.getPublicProfileMetrics({
+      ownerId: brand.id,
+      brand: brand.brand,
+      ownerStatus: brand.status,
+      ownerDeactivatedAt: brand.deactivatedAt ?? null,
+      emailVerified: brand.isEmailVerified,
+    });
 
     const profileImage = resolveProfileImage(brand);
     const bannerAssetSource = resolveBannerImage(brand);
@@ -588,19 +593,6 @@ export class BrandsService {
     const bannerAsset = this.mapBrandMediaAsset(bannerAssetSource.file);
     const logoImage = brand.brand?.logo ?? profileImage.url ?? null;
     const bannerImage = brand.brand?.banner ?? bannerAssetSource.url ?? null;
-    const verificationTruth = getBrandVerificationTruth({
-      verificationStatus: brand.brand?.verificationStatus,
-      isStoreOpen: brand.brand?.isStoreOpen,
-      ownerStatus: brand.status,
-      ownerDeactivatedAt: brand.deactivatedAt ?? null,
-    });
-    const storeStatus = this.getStoreProfileStatus({
-      isStoreOpen: brand.brand?.isStoreOpen,
-      verificationStatus: brand.brand?.verificationStatus,
-    });
-    const totalLikes =
-      (collectionThreads._sum.threadsCount ?? 0) +
-      (mediaThreads._sum.threadsCount ?? 0);
 
     return {
       id: brand.id,
@@ -631,21 +623,23 @@ export class BrandsService {
       hashtags: canonicalProfile.tags,
       cacNumber: canonicalProfile.verificationFields.cacNumber,
       tin: canonicalProfile.verificationFields.tin,
-      verified: verificationTruth.isVerifiedBrand,
-      verificationStatus: verificationTruth.verificationStatus,
-      verificationBadgeVisible: verificationTruth.verificationBadgeVisible,
-      verifiedExplanationUrl: verificationTruth.verifiedExplanationUrl,
-      emailVerified: Boolean(brand.isEmailVerified),
-      isStoreOpen: Boolean(brand.brand?.isStoreOpen),
-      storeStatus,
-      averageRating: brand.brand?.avgRating ?? 0,
-      totalReviews: brand.brand?.totalReviews ?? 0,
-      collectionsCount,
-      productsCount,
-      patchesCount,
-      followersCount: patchesCount,
-      totalLikes,
-      totalShares: null,
+      verified: metrics.verified,
+      verificationStatus: metrics.verificationStatus,
+      verificationBadgeVisible: metrics.verificationBadgeVisible,
+      verifiedExplanationUrl: metrics.verifiedExplanationUrl,
+      emailVerified: metrics.emailVerified,
+      isStoreOpen: metrics.isStoreOpen,
+      storeStatus: metrics.storeStatus,
+      averageRating: metrics.averageRating,
+      totalReviews: metrics.totalReviews,
+      collectionsCount: metrics.collectionsCount,
+      designsCount: metrics.designsCount,
+      productsCount: metrics.productsCount,
+      patchesCount: metrics.patchesCount,
+      followersCount: metrics.followersCount,
+      totalThreads: metrics.totalThreads,
+      totalLikes: metrics.totalLikes,
+      totalShares: metrics.totalShares,
       createdAt: brand.createdAt.toISOString(),
       updatedAt: brand.updatedAt.toISOString(),
     };
@@ -685,7 +679,8 @@ export class BrandsService {
 
     const brandData: Prisma.BrandUpdateInput = {
       ...(dto.brandFullName !== undefined && {
-        name: trimOrNull(dto.brandFullName) ?? brand.brand?.name ?? brand.username,
+        name:
+          trimOrNull(dto.brandFullName) ?? brand.brand?.name ?? brand.username,
       }),
       ...(dto.brandDescription !== undefined && {
         description: trimOrNull(dto.brandDescription),
@@ -711,18 +706,16 @@ export class BrandsService {
       }),
       ...(locationWasProvided
         ? {
-          companyLocation:
-            companyLocation.length > 0 ? companyLocation : null,
-        }
+            companyLocation:
+              companyLocation.length > 0 ? companyLocation : null,
+          }
         : {}),
     };
     const brandCreateData: Prisma.BrandUncheckedCreateInput = {
       id: uuidv4(),
       ownerId,
       name:
-        trimOrNull(dto.brandFullName) ??
-        brand.brand?.name ??
-        brand.username,
+        trimOrNull(dto.brandFullName) ?? brand.brand?.name ?? brand.username,
       storeNameLastChangedAt: new Date(),
       currency: 'NGN',
       description:
@@ -734,7 +727,7 @@ export class BrandsService {
       state: dto.brandState !== undefined ? brandState : brand.brand?.state,
       city: dto.brandCity !== undefined ? brandCity : brand.brand?.city,
       tags:
-        sanitizedTags !== undefined ? sanitizedTags : brand.brand?.tags ?? [],
+        sanitizedTags !== undefined ? sanitizedTags : (brand.brand?.tags ?? []),
       businessType:
         dto.businessType !== undefined
           ? trimOrNull(dto.businessType)
@@ -813,9 +806,13 @@ export class BrandsService {
               ? brandState
               : previousAuditState.brandState,
           brandCity:
-            dto.brandCity !== undefined ? brandCity : previousAuditState.brandCity,
+            dto.brandCity !== undefined
+              ? brandCity
+              : previousAuditState.brandCity,
           brandTags:
-            sanitizedTags !== undefined ? sanitizedTags : previousAuditState.brandTags,
+            sanitizedTags !== undefined
+              ? sanitizedTags
+              : previousAuditState.brandTags,
           businessType:
             dto.businessType !== undefined
               ? trimOrNull(dto.businessType)
@@ -1060,7 +1057,7 @@ export class BrandsService {
             },
           },
         );
-      } catch { }
+      } catch {}
     }
 
     return { status: 'PENDING', message: 'Patch request sent' };
@@ -1122,7 +1119,7 @@ export class BrandsService {
                 : '/settings?tab=patches&filter=history',
           },
         });
-      } catch { }
+      } catch {}
     }
 
     return {
@@ -1148,7 +1145,9 @@ export class BrandsService {
 
     if (patch.status === PatchStatus.PENDING) {
       if (!isRequester) {
-        throw new ForbiddenException('Only the requester can cancel a pending patch');
+        throw new ForbiddenException(
+          'Only the requester can cancel a pending patch',
+        );
       }
 
       await this.prisma.brandPatch.update({
@@ -1237,7 +1236,9 @@ export class BrandsService {
     return {
       items: patches.map((p) => ({
         id: p.id,
-        partner: this.toBrandPatchPartner(p.requesterId === brandId ? p.receiver : p.requester),
+        partner: this.toBrandPatchPartner(
+          p.requesterId === brandId ? p.receiver : p.requester,
+        ),
         status: p.status,
         isOutgoing: p.requesterId === brandId,
         createdAt: p.createdAt,
@@ -1286,7 +1287,9 @@ export class BrandsService {
             })
           : [];
 
-        const partnerMap = new Map(partners.map((partner) => [partner.id, partner]));
+        const partnerMap = new Map(
+          partners.map((partner) => [partner.id, partner]),
+        );
 
         return {
           items: rows.map((row: any) => {
@@ -1302,11 +1305,13 @@ export class BrandsService {
             return {
               id: row.id,
               patchId: row.patchId,
-              partner: this.toBrandPatchPartner(partner ?? {
-                id: row.partnerId,
-                username: 'Unknown brand',
-                brand: null,
-              }),
+              partner: this.toBrandPatchPartner(
+                partner ?? {
+                  id: row.partnerId,
+                  username: 'Unknown brand',
+                  brand: null,
+                },
+              ),
               action,
               status,
               isOutgoing: Boolean(row.isOutgoing),
@@ -1369,7 +1374,9 @@ export class BrandsService {
         return {
           id: row.id,
           patchId: row.id,
-          partner: this.toBrandPatchPartner(isOutgoing ? row.receiver : row.requester),
+          partner: this.toBrandPatchPartner(
+            isOutgoing ? row.receiver : row.requester,
+          ),
           action: 'REJECTED' as BrandPatchHistoryActionValue,
           status: PatchStatus.REJECTED,
           isOutgoing,
@@ -1428,7 +1435,16 @@ export class BrandsService {
     }
 
     // KPIs
-    const [totalOrders, totalSalesResult, pendingOrders, patchesCount, activeProducts, recentNotifications, recentOrders, actionRequired] = await Promise.all([
+    const [
+      totalOrders,
+      totalSalesResult,
+      pendingOrders,
+      patchesCount,
+      activeProducts,
+      recentNotifications,
+      recentOrders,
+      actionRequired,
+    ] = await Promise.all([
       this.prisma.order.count({ where: { brandId: brand.id } }),
       this.prisma.order.aggregate({
         where: { brandId: brand.id, paymentStatus: 'PAID' },
@@ -1481,7 +1497,9 @@ export class BrandsService {
     const avgOrderValue =
       totalOrders > 0 ? Number(totalSales) / totalOrders : 0;
 
-    const recentActivity = this.mapNotificationsToRecentActivity(recentNotifications as any);
+    const recentActivity = this.mapNotificationsToRecentActivity(
+      recentNotifications as any,
+    );
 
     return {
       kpis: {
@@ -1587,9 +1605,7 @@ export class BrandsService {
       throw new BadRequestException('Brand is already verified');
     }
     if (brand.verificationStatus === BrandVerificationStatus.PENDING) {
-      throw new BadRequestException(
-        'Verification is already pending review',
-      );
+      throw new BadRequestException('Verification is already pending review');
     }
 
     return this.prisma.brand.update({

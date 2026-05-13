@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { BrandsService } from './brands.service';
 import { BrandsController } from './brands.controller';
 import { BrandAccessService } from './brand-access.service';
+import { BrandMetricsService } from './brand-metrics.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { CollectionsModule } from '../collections/collections.module';
 import { UploadModule } from '../upload/upload.module';
@@ -24,6 +25,7 @@ import { AdminAuditService } from 'src/admin/services/admin-audit.service';
   providers: [
     BrandsService,
     BrandAccessService,
+    BrandMetricsService,
     BrandStaffService,
     BrandPermissionService,
     AdminAuditService,
@@ -33,6 +35,7 @@ import { AdminAuditService } from 'src/admin/services/admin-audit.service';
   exports: [
     BrandsService,
     BrandAccessService,
+    BrandMetricsService,
     BrandStaffService,
     BrandPermissionService,
   ],
