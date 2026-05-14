@@ -3,6 +3,7 @@ import { CollectionType, CollectionVisibility } from '@prisma/client';
 export class DesignResponseDto {
   id: string;
   designId: string;
+  entityType?: 'DESIGN';
   legacyCollectionId?: string;
   collectionId?: string;
   title?: string | null;

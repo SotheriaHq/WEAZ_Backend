@@ -13,6 +13,7 @@ describe('DesignResponseMapper', () => {
       expect.objectContaining({
         id: 'collection-1',
         designId: 'collection-1',
+        entityType: 'DESIGN',
         legacyCollectionId: 'collection-1',
         collectionId: 'collection-1',
         subCategoryId: 'subcategory-1',

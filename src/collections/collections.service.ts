@@ -2760,6 +2760,9 @@ export class CollectionsService {
       const base = {
         id: media.id,
         collectionId: collection.id,
+        designId: collection.id,
+        legacyCollectionId: collection.id,
+        entityType: 'DESIGN',
         sourceType: 'DESIGN',
         title: collection.title ?? '',
         description: collection.description ?? null,
@@ -4819,6 +4822,10 @@ export class CollectionsService {
       : medias;
     return {
       ...rest,
+      entityType: 'DESIGN',
+      designId: rest.id,
+      legacyCollectionId: rest.id,
+      collectionId: rest.id,
       owner: this.mapCollectionOwner(rest.owner),
       reactions: Array.isArray(rest.reactions)
         ? rest.reactions.map((reaction: any) => ({
@@ -4920,6 +4927,7 @@ export class CollectionsService {
 
     return {
       ...collection,
+      entityType: 'COLLECTION',
       owner: this.mapCollectionOwner(collection.owner),
       domain: 'STORE' as const,
       isAvailableInStore: true,
@@ -5299,6 +5307,10 @@ export class CollectionsService {
 
         return {
           ...rest,
+          entityType: 'DESIGN',
+          designId: c.id,
+          legacyCollectionId: c.id,
+          collectionId: c.id,
           collectionCollabCount: collectionCollabsCount,
           threadsCount: threadsCount,
           medias: mappedMedias,
@@ -5578,6 +5590,7 @@ export class CollectionsService {
         }
         return {
           ...c,
+          entityType: 'COLLECTION',
           domain: 'STORE',
           isAvailableInStore: true,
           deletedAt: c.deletedAt ?? null,

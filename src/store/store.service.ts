@@ -5626,6 +5626,7 @@ export class StoreService {
 
     return {
       id: product.id,
+      entityType: 'PRODUCT',
       collectionId: primaryCollectionId,
       collectionIds,
       brandId: product.brandId,

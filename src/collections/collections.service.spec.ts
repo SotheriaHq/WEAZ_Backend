@@ -253,6 +253,9 @@ describe('CollectionsService brand catalog access', () => {
         expect.objectContaining({
           id: 'media_1',
           collectionId: 'collection_1',
+          designId: 'collection_1',
+          legacyCollectionId: 'collection_1',
+          entityType: 'DESIGN',
           sourceType: 'DESIGN',
           primaryMedia: expect.objectContaining({
             id: 'media_1',

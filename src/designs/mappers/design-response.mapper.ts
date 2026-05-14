@@ -18,6 +18,7 @@ export class DesignResponseMapper {
       ...source,
       id: designId,
       designId,
+      entityType: 'DESIGN',
       legacyCollectionId,
       // Compatibility for existing mobile/web clients during migration.
       collectionId: legacyCollectionId,
