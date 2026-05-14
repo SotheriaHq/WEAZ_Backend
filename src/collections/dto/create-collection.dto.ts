@@ -22,6 +22,10 @@ const normalizeSizingMode = ({ value }: { value: unknown }) =>
 export const DESIGN_REQUIRED_MEDIA_COUNT = 4;
 export const DESIGN_MAX_MEDIA_COUNT = 6;
 
+// LEGACY_COMPAT_COLLECTION_BACKED_DESIGN:
+// This file still contains design-specific collection DTO fields because
+// existing clients create design-like records through collection-backed flows.
+// New design code should use src/designs DTOs and the legacy adapter boundary.
 export class FileSpecDto {
   @IsString()
   @IsNotEmpty()
@@ -75,6 +79,9 @@ export class CreateCollectionDto {
   @IsEnum(CollectionVisibility)
   visibility?: CollectionVisibility;
 
+  // LEGACY_COMPAT_COLLECTION_BACKED_DESIGN:
+  // categoryId/categoryTypeId/subCategoryId/type/tags remain here for legacy
+  // design creation compatibility. New design code should use Design DTOs.
   // Category (required; users must select from approved categories)
   @IsOptional()
   @IsUUID('4')
@@ -103,6 +110,9 @@ export class CreateCollectionDto {
   @Type(() => String)
   tags?: string[];
 
+  // LEGACY_COMPAT_COLLECTION_BACKED_DESIGN:
+  // files/filterValueIds remain here for legacy design media upload and design
+  // discovery-filter compatibility. New design code should use Design DTOs.
   @IsOptional()
   @IsArray()
   @ValidateNested({ each: true })
@@ -114,6 +124,10 @@ export class CreateCollectionDto {
   @IsString({ each: true })
   filterValueIds?: string[];
 
+  // LEGACY_COMPAT_COLLECTION_BACKED_DESIGN:
+  // sizingMode, rtw sizes, custom-order fields, fitPreference, and
+  // targetAgeGroup are design-owned concepts kept only for compatibility.
+  // New design code should use Design DTOs.
   @IsOptional()
   @Transform(normalizeSizingMode)
   @IsIn(['NONE', 'RTW', 'CUSTOM', 'RTW_PLUS_FITTINGS'])
@@ -159,6 +173,10 @@ export class CreateCollectionDto {
   targetAgeGroup?: 'ADULT' | 'CHILD';
 }
 
+// LEGACY_COMPAT_COLLECTION_BACKED_DESIGN:
+// This metadata DTO remains only because existing clients still finalize
+// design-like records through collectionMetadata. New design-facing code should
+// use DesignMetadataDto and map through the legacy adapter.
 export class CompleteUploadDto {
   @IsString()
   @IsNotEmpty()
@@ -193,6 +211,10 @@ export class CollectionMetadataDto {
   @IsEnum(CollectionType)
   type?: CollectionType;
 
+  // LEGACY_COMPAT_COLLECTION_BACKED_DESIGN:
+  // categoryId/categoryTypeId/subCategoryId/tags/filterValueIds and the
+  // sizing/custom-order fields below are design-owned compatibility fields.
+  // New design code should use Design DTOs.
   @IsOptional()
   @IsUUID('4')
   categoryId?: string;
@@ -285,6 +307,10 @@ export class FinalizeCollectionDto {
   @IsString()
   action?: 'publish' | 'draft';
 
+  // LEGACY_COMPAT_COLLECTION_BACKED_DESIGN:
+  // collectionMetadata, coverIndex, draftSessionToken, and draftVersion remain
+  // because old clients finalize design-like records through collection-backed
+  // routes. New design code should use FinalizeDesignUploadDto.
   @IsOptional()
   @ValidateNested()
   @Type(() => CollectionMetadataDto)

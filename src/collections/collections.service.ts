@@ -2123,6 +2123,10 @@ export class CollectionsService {
    * STEP 1: Create collection draft and return presigned URLs
    * Simplified: category suggestions removed; categoryId is required and must be active.
    */
+  // LEGACY_COMPAT_COLLECTION_BACKED_DESIGN:
+  // Existing web/mobile clients still use this collection-backed path for
+  // design creation. New design-owned entry points should call DesignsService,
+  // which delegates here through the legacy adapter until persistence is split.
   async initializeCollection(userId: string, dto: CreateCollectionDto) {
     const catalogContext = await this.resolveCatalogOwnerContext(userId);
     const ownerId = catalogContext.ownerId;
@@ -2874,6 +2878,10 @@ export class CollectionsService {
   /**
    * STEP 2: Finalize collection after S3 uploads complete
    */
+  // LEGACY_COMPAT_COLLECTION_BACKED_DESIGN:
+  // This method still finalizes legacy design-backed Collection rows. Keep it
+  // compatible for old /collections clients while /designs routes use a
+  // design-language adapter boundary.
   async finalizeCollection(
     collectionId: string,
     userId: string,

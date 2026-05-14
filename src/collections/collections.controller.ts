@@ -58,6 +58,10 @@ export class CollectionsController {
   // ============================================
   // STEP 1: Initialize Collection (Get Presigned URLs)
   // ============================================
+  // LEGACY_COMPAT_COLLECTION_BACKED_DESIGN:
+  // Existing web/mobile clients still use collection-backed paths for design
+  // creation. These paths must remain until clients migrate to explicit
+  // DesignApi and /designs endpoints.
   @UseGuards(JwtAuthGuard)
   @Post('initialize')
   @ApiOperation({
@@ -147,6 +151,9 @@ export class CollectionsController {
   // ============================================
   // STEP 2: Finalize Collection (Confirm Uploads)
   // ============================================
+  // LEGACY_COMPAT_COLLECTION_BACKED_DESIGN:
+  // Existing web/mobile clients still use collection-backed paths for design
+  // publishing. Do not remove this endpoint until compatibility clients move.
   @UseGuards(JwtAuthGuard)
   @UseInterceptors(IdempotencyInterceptor)
   @Post(':collectionId/finalize')
