@@ -7,6 +7,7 @@ import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import { NotificationRegistry } from './notifications.registry';
 import { EmailService } from 'src/email/email.service';
 import { ConfigService } from '@nestjs/config';
+import { DEFAULT_NOTIFICATION_SETTINGS } from './notifications.types';
 
 describe('NotificationsService', () => {
   let service: NotificationsService;
@@ -380,6 +381,63 @@ describe('NotificationsService', () => {
     });
   });
 
+  describe('settings', () => {
+    it('should return default settings with push settings if none stored', async () => {
+      mockPrisma.user.findUnique.mockResolvedValue({
+        notificationSettings: null,
+      });
+
+      const result = await service.getSettings('user-id');
+
+      expect(result.push).toEqual({
+        enabled: true,
+        sound: true,
+        vibration: true,
+        showPreview: true,
+        quietHoursEnabled: false,
+        quietHoursStart: null,
+        quietHoursEnd: null,
+      });
+      expect(result.social.threads).toBe(true);
+      expect(result.security.login).toBe(false);
+    });
+
+    it('should merge push defaults for users with legacy settings', async () => {
+      mockPrisma.user.findUnique.mockResolvedValue({
+        notificationSettings: {
+          social: { threads: false },
+        },
+      });
+
+      const result = await service.getSettings('user-id');
+
+      expect(result.push).toEqual(DEFAULT_NOTIFICATION_SETTINGS.push);
+      expect(result.social.threads).toBe(false);
+      expect(result.social.follows).toBe(true);
+    });
+
+    it('should normalize stored push quiet hours without breaking legacy settings', async () => {
+      mockPrisma.user.findUnique.mockResolvedValue({
+        notificationSettings: {
+          push: {
+            enabled: false,
+            quietHoursEnabled: true,
+            quietHoursStart: ' 22:30 ',
+            quietHoursEnd: '25:00',
+          },
+        },
+      });
+
+      const result = await service.getSettings('user-id');
+
+      expect(result.push.enabled).toBe(false);
+      expect(result.push.sound).toBe(true);
+      expect(result.push.quietHoursEnabled).toBe(true);
+      expect(result.push.quietHoursStart).toBe('22:30');
+      expect(result.push.quietHoursEnd).toBeNull();
+    });
+  });
+
   describe('updateSettings', () => {
     it('should ignore unknown settings keys and only persist allowed booleans', async () => {
       mockPrisma.user.findUnique.mockResolvedValue({
@@ -406,6 +464,167 @@ describe('NotificationsService', () => {
       const persisted =
         mockPrisma.user.update.mock.calls[0][0].data.notificationSettings;
       expect(persisted.bogus).toBeUndefined();
+    });
+
+    it('should patch push enabled without replacing other push defaults', async () => {
+      mockPrisma.user.findUnique.mockResolvedValue({
+        notificationSettings: null,
+      });
+      mockPrisma.user.update.mockResolvedValue({ id: 'user-id' });
+
+      const result = await service.updateSettings('user-id', {
+        push: { enabled: false },
+      });
+
+      expect(result.push).toEqual({
+        ...DEFAULT_NOTIFICATION_SETTINGS.push,
+        enabled: false,
+      });
+
+      const persisted =
+        mockPrisma.user.update.mock.calls[0][0].data.notificationSettings;
+      expect(persisted.push).toEqual({
+        ...DEFAULT_NOTIFICATION_SETTINGS.push,
+        enabled: false,
+      });
+    });
+
+    it('should patch push sound vibration and preview settings', async () => {
+      mockPrisma.user.findUnique.mockResolvedValue({
+        notificationSettings: null,
+      });
+      mockPrisma.user.update.mockResolvedValue({ id: 'user-id' });
+
+      const result = await service.updateSettings('user-id', {
+        push: {
+          sound: false,
+          vibration: false,
+          showPreview: false,
+        },
+      });
+
+      expect(result.push.sound).toBe(false);
+      expect(result.push.vibration).toBe(false);
+      expect(result.push.showPreview).toBe(false);
+      expect(result.push.enabled).toBe(true);
+    });
+
+    it('should accept valid push quiet hours and null values', async () => {
+      mockPrisma.user.findUnique.mockResolvedValue({
+        notificationSettings: null,
+      });
+      mockPrisma.user.update.mockResolvedValue({ id: 'user-id' });
+
+      const result = await service.updateSettings('user-id', {
+        push: {
+          quietHoursEnabled: true,
+          quietHoursStart: ' 22:30 ',
+          quietHoursEnd: null,
+        },
+      });
+
+      expect(result.push.quietHoursEnabled).toBe(true);
+      expect(result.push.quietHoursStart).toBe('22:30');
+      expect(result.push.quietHoursEnd).toBeNull();
+    });
+
+    it('should ignore unknown push keys and invalid push values', async () => {
+      mockPrisma.user.findUnique.mockResolvedValue({
+        notificationSettings: null,
+      });
+
+      const result = await service.updateSettings('user-id', {
+        push: {
+          enabled: 'false',
+          quietHoursStart: '24:00',
+          unknown: true,
+        } as any,
+      });
+
+      expect(result.push).toEqual(DEFAULT_NOTIFICATION_SETTINGS.push);
+      expect(mockPrisma.user.update).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('push settings helpers', () => {
+    it('should detect quiet hours across midnight', () => {
+      const settings = {
+        ...DEFAULT_NOTIFICATION_SETTINGS,
+        push: {
+          ...DEFAULT_NOTIFICATION_SETTINGS.push,
+          quietHoursEnabled: true,
+          quietHoursStart: '22:00',
+          quietHoursEnd: '06:00',
+        },
+      };
+
+      expect(
+        service.isWithinQuietHours(
+          settings,
+          new Date(Date.UTC(2026, 0, 1, 23, 0)),
+        ),
+      ).toBe(true);
+      expect(
+        service.isWithinQuietHours(
+          settings,
+          new Date(Date.UTC(2026, 0, 1, 12, 0)),
+        ),
+      ).toBe(false);
+    });
+
+    it('should require global push, quiet hours, and type settings to allow push', () => {
+      const disabledGlobally = {
+        ...DEFAULT_NOTIFICATION_SETTINGS,
+        push: {
+          ...DEFAULT_NOTIFICATION_SETTINGS.push,
+          enabled: false,
+        },
+      };
+      const disabledForType = {
+        ...DEFAULT_NOTIFICATION_SETTINGS,
+        orders: {
+          ...DEFAULT_NOTIFICATION_SETTINGS.orders,
+          placed: false,
+        },
+      };
+      const quietHours = {
+        ...DEFAULT_NOTIFICATION_SETTINGS,
+        push: {
+          ...DEFAULT_NOTIFICATION_SETTINGS.push,
+          quietHoursEnabled: true,
+          quietHoursStart: '22:00',
+          quietHoursEnd: '06:00',
+        },
+      };
+
+      expect(
+        service.isPushAllowedForType(
+          NotificationType.ORDER_PLACED,
+          DEFAULT_NOTIFICATION_SETTINGS,
+          new Date(Date.UTC(2026, 0, 1, 12, 0)),
+        ),
+      ).toBe(true);
+      expect(
+        service.isPushAllowedForType(
+          NotificationType.ORDER_PLACED,
+          disabledGlobally,
+          new Date(Date.UTC(2026, 0, 1, 12, 0)),
+        ),
+      ).toBe(false);
+      expect(
+        service.isPushAllowedForType(
+          NotificationType.ORDER_PLACED,
+          disabledForType,
+          new Date(Date.UTC(2026, 0, 1, 12, 0)),
+        ),
+      ).toBe(false);
+      expect(
+        service.isPushAllowedForType(
+          NotificationType.ORDER_PLACED,
+          quietHours,
+          new Date(Date.UTC(2026, 0, 1, 23, 0)),
+        ),
+      ).toBe(false);
     });
   });
 });

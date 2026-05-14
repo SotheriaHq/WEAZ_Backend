@@ -17,6 +17,7 @@ import {
 import {
   CreateNotificationOptions,
   NotificationSettings,
+  NotificationSettingsPatch,
   DEFAULT_NOTIFICATION_SETTINGS,
   NotificationTarget,
 } from './notifications.types';
@@ -413,6 +414,7 @@ export class NotificationsService {
           raw.security?.login ??
           DEFAULT_NOTIFICATION_SETTINGS.security.logout,
       },
+      push: this.mergePushSettings(raw.push),
       social: {
         ...DEFAULT_NOTIFICATION_SETTINGS.social,
         ...(raw.social ?? {}),
@@ -477,10 +479,7 @@ export class NotificationsService {
     };
   }
 
-  async updateSettings(
-    userId: string,
-    settings: Partial<NotificationSettings>,
-  ) {
+  async updateSettings(userId: string, settings: NotificationSettingsPatch) {
     const sanitizedPatch = this.sanitizeSettingsPatch(settings);
     const current = await this.getSettings(userId);
 
@@ -492,6 +491,7 @@ export class NotificationsService {
       ...current,
       ...sanitizedPatch,
       security: { ...current.security, ...sanitizedPatch.security },
+      push: { ...current.push, ...sanitizedPatch.push },
       social: { ...current.social, ...sanitizedPatch.social },
       comments: { ...current.comments, ...sanitizedPatch.comments },
       tags: { ...current.tags, ...sanitizedPatch.tags },
@@ -512,16 +512,16 @@ export class NotificationsService {
   }
 
   private sanitizeSettingsPatch(
-    settings: Partial<NotificationSettings>,
-  ): Partial<NotificationSettings> {
+    settings: NotificationSettingsPatch,
+  ): NotificationSettingsPatch {
     if (!settings || typeof settings !== 'object' || Array.isArray(settings)) {
       return {};
     }
 
-    const sanitized: Partial<NotificationSettings> = {};
+    const sanitized: NotificationSettingsPatch = {};
     const defaults = DEFAULT_NOTIFICATION_SETTINGS as unknown as Record<
       string,
-      Record<string, boolean>
+      Record<string, boolean | string | null>
     >;
     const incoming = settings as Record<string, unknown>;
 
@@ -535,10 +535,25 @@ export class NotificationsService {
         continue;
       }
 
-      const sanitizedSection: Record<string, boolean> = {};
+      const sanitizedSection: Record<string, boolean | string | null> = {};
       for (const settingKey of Object.keys(sectionDefaults)) {
         const nextValue = (sectionPatch as Record<string, unknown>)[settingKey];
-        if (typeof nextValue === 'boolean') {
+
+        if (
+          sectionKey === 'push' &&
+          (settingKey === 'quietHoursStart' || settingKey === 'quietHoursEnd')
+        ) {
+          const quietHour = this.sanitizeQuietHourPatchValue(nextValue);
+          if (quietHour !== undefined) {
+            sanitizedSection[settingKey] = quietHour;
+          }
+          continue;
+        }
+
+        if (
+          typeof sectionDefaults[settingKey] === 'boolean' &&
+          typeof nextValue === 'boolean'
+        ) {
           sanitizedSection[settingKey] = nextValue;
         }
       }
@@ -549,6 +564,132 @@ export class NotificationsService {
     }
 
     return sanitized;
+  }
+
+  private mergePushSettings(rawPush: unknown): NotificationSettings['push'] {
+    const defaults = DEFAULT_NOTIFICATION_SETTINGS.push;
+
+    if (!rawPush || typeof rawPush !== 'object' || Array.isArray(rawPush)) {
+      return { ...defaults };
+    }
+
+    const incoming = rawPush as Record<string, unknown>;
+
+    return {
+      enabled:
+        typeof incoming.enabled === 'boolean'
+          ? incoming.enabled
+          : defaults.enabled,
+      sound:
+        typeof incoming.sound === 'boolean' ? incoming.sound : defaults.sound,
+      vibration:
+        typeof incoming.vibration === 'boolean'
+          ? incoming.vibration
+          : defaults.vibration,
+      showPreview:
+        typeof incoming.showPreview === 'boolean'
+          ? incoming.showPreview
+          : defaults.showPreview,
+      quietHoursEnabled:
+        typeof incoming.quietHoursEnabled === 'boolean'
+          ? incoming.quietHoursEnabled
+          : defaults.quietHoursEnabled,
+      quietHoursStart: this.normalizeQuietHourForStoredSettings(
+        incoming.quietHoursStart,
+      ),
+      quietHoursEnd: this.normalizeQuietHourForStoredSettings(
+        incoming.quietHoursEnd,
+      ),
+    };
+  }
+
+  private sanitizeQuietHourPatchValue(
+    value: unknown,
+  ): string | null | undefined {
+    if (value === null) {
+      return null;
+    }
+
+    if (typeof value !== 'string') {
+      return undefined;
+    }
+
+    const trimmed = value.trim();
+    return this.isValidQuietHour(trimmed) ? trimmed : undefined;
+  }
+
+  private normalizeQuietHourForStoredSettings(value: unknown): string | null {
+    if (value === null) {
+      return null;
+    }
+
+    if (typeof value !== 'string') {
+      return null;
+    }
+
+    const trimmed = value.trim();
+    return this.isValidQuietHour(trimmed) ? trimmed : null;
+  }
+
+  private isValidQuietHour(value: string): boolean {
+    return /^([01]\d|2[0-3]):[0-5]\d$/.test(value);
+  }
+
+  private parseQuietHourToMinutes(value: string | null): number | null {
+    if (!value || !this.isValidQuietHour(value)) {
+      return null;
+    }
+
+    const [hours, minutes] = value.split(':').map(Number);
+    return hours * 60 + minutes;
+  }
+
+  isPushGloballyEnabled(settings: NotificationSettings): boolean {
+    return settings.push.enabled;
+  }
+
+  isWithinQuietHours(
+    settings: NotificationSettings,
+    date: Date = new Date(),
+  ): boolean {
+    const push = settings.push;
+    if (
+      !push.quietHoursEnabled ||
+      !push.quietHoursStart ||
+      !push.quietHoursEnd
+    ) {
+      return false;
+    }
+
+    const start = this.parseQuietHourToMinutes(push.quietHoursStart);
+    const end = this.parseQuietHourToMinutes(push.quietHoursEnd);
+
+    if (start === null || end === null) {
+      return false;
+    }
+
+    if (start === end) {
+      return true;
+    }
+
+    const current = date.getUTCHours() * 60 + date.getUTCMinutes();
+    if (start < end) {
+      return current >= start && current < end;
+    }
+
+    return current >= start || current < end;
+  }
+
+  isPushAllowedForType(
+    type: NotificationType,
+    settings: NotificationSettings,
+    date: Date = new Date(),
+  ): boolean {
+    return (
+      this.isPushGloballyEnabled(settings) &&
+      !this.isWithinQuietHours(settings, date) &&
+      this.isNotificationEnabled(type, settings)
+    );
   }
 
   private getAllEmailScenarioKeys(): string[] {
