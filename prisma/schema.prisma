@@ -78,6 +78,7 @@ model User {
   views                    View[]
   notificationsReceived    Notification[]                 @relation("UserNotificationsReceived")
   notificationsActed       Notification[]                 @relation("UserNotificationsActed")
+  pushDeviceTokens         PushDeviceToken[]
   presignedUploads         PresignedUpload[]
   CollectionMediaReaction  CollectionMediaReaction[]
   // Access to private collections (viewer side)
@@ -777,6 +778,19 @@ enum NotificationType {
   MESSAGE_MODERATED
 }
 
+enum PushProvider {
+  EXPO
+  FCM
+  APNS
+}
+
+enum PushPlatform {
+  IOS
+  ANDROID
+  WEB
+  UNKNOWN
+}
+
 enum EmailOutboxStatus {
   PENDING
   PROCESSING
@@ -1386,6 +1400,30 @@ model Notification {
   @@index([recipientId])
   @@index([recipientId, isRead])
   @@index([recipientId, createdAt])
+}
+
+model PushDeviceToken {
+  id             String       @id @default(uuid()) @db.Uuid
+  userId         String       @db.Uuid
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token          String       @unique
+  provider       PushProvider @default(EXPO)
+  platform       PushPlatform @default(UNKNOWN)
+  deviceId       String?
+  deviceName     String?
+  appVersion     String?
+  expoProjectId  String?
+  isActive       Boolean      @default(true)
+  lastSeenAt     DateTime     @default(now())
+  lastSuccessAt  DateTime?
+  lastFailureAt  DateTime?
+  failureCount   Int          @default(0)
+  disabledReason String?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@index([userId, isActive])
+  @@index([token])
 }
 
 model UserEmailPreference {

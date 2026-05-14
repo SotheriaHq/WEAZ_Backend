@@ -239,12 +239,16 @@ describe('NotificationsService', () => {
         },
       ]);
 
-      const result = await service.create('recipient-id', NotificationType.THREAD, {
-        payload: {
-          target: { type: 'POST', id: 'post-1' },
-          message: 'New thread reply',
+      const result = await service.create(
+        'recipient-id',
+        NotificationType.THREAD,
+        {
+          payload: {
+            target: { type: 'POST', id: 'post-1' },
+            message: 'New thread reply',
+          },
         },
-      });
+      );
 
       expect(result?.id).toBe('semantic-existing');
       expect(mockPrisma.notification.create).not.toHaveBeenCalled();
@@ -284,10 +288,14 @@ describe('NotificationsService', () => {
         },
       });
 
-      const result = await service.create('recipient-id', NotificationType.COMMENT, {
-        actorId: 'actor-id',
-        payload: { parentId: 'parent-comment-id' },
-      });
+      const result = await service.create(
+        'recipient-id',
+        NotificationType.COMMENT,
+        {
+          actorId: 'actor-id',
+          payload: { parentId: 'parent-comment-id' },
+        },
+      );
 
       expect(result).toBeNull();
       expect(mockPrisma.notification.create).not.toHaveBeenCalled();
@@ -332,6 +340,32 @@ describe('NotificationsService', () => {
       expect(mockPrisma.notification.create).not.toHaveBeenCalled();
     });
 
+    it.each([
+      NotificationType.WISHLIST_PRODUCT_UNAVAILABLE,
+      NotificationType.WISHLIST_PRODUCT_AVAILABLE,
+    ])(
+      'should skip %s notifications when product lifecycle notifications are disabled',
+      async (type) => {
+        mockPrisma.user.findUnique.mockResolvedValue({
+          notificationSettings: {
+            collections: { lifecycle: false },
+          },
+        });
+
+        const result = await service.create('recipient-id', type, {
+          actorId: 'brand-owner-id',
+          payload: {
+            productId: 'product-123',
+            productName: 'Linen Wrap Dress',
+            brandName: 'Threadly Studio',
+          },
+        });
+
+        expect(result).toBeNull();
+        expect(mockPrisma.notification.create).not.toHaveBeenCalled();
+      },
+    );
+
     it('should migrate legacy orders.updates settings into the split order preferences', async () => {
       mockPrisma.user.findUnique.mockResolvedValue({
         notificationSettings: {
@@ -348,7 +382,9 @@ describe('NotificationsService', () => {
 
   describe('updateSettings', () => {
     it('should ignore unknown settings keys and only persist allowed booleans', async () => {
-      mockPrisma.user.findUnique.mockResolvedValue({ notificationSettings: null });
+      mockPrisma.user.findUnique.mockResolvedValue({
+        notificationSettings: null,
+      });
       mockPrisma.user.update.mockResolvedValue({ id: 'user-id' });
 
       await service.updateSettings('user-id', {
@@ -367,7 +403,8 @@ describe('NotificationsService', () => {
         },
       });
 
-      const persisted = mockPrisma.user.update.mock.calls[0][0].data.notificationSettings;
+      const persisted =
+        mockPrisma.user.update.mock.calls[0][0].data.notificationSettings;
       expect(persisted.bogus).toBeUndefined();
     });
   });

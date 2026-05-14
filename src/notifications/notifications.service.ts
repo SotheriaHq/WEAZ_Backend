@@ -8,7 +8,12 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { EventsGateway } from 'src/realtime/events.gateway';
-import { EmailSuppressionReason, NotificationType, PatchStatus, Prisma } from '@prisma/client';
+import {
+  EmailSuppressionReason,
+  NotificationType,
+  PatchStatus,
+  Prisma,
+} from '@prisma/client';
 import {
   CreateNotificationOptions,
   NotificationSettings,
@@ -134,11 +139,11 @@ export class NotificationsService {
       '/posts/',
       '/products/',
       '/orders',
-        '/custom-orders',
-        '/admin/custom-orders',
-        '/admin/finance',
-        '/admin/messaging',
-        '/patches',
+      '/custom-orders',
+      '/admin/custom-orders',
+      '/admin/finance',
+      '/admin/messaging',
+      '/patches',
       '/settings',
       '/settings/collections',
       '/studio/',
@@ -369,11 +374,13 @@ export class NotificationsService {
     await this.cacheManager.del(`unread_count:${recipientId}`);
 
     try {
-      this.events.server?.to(`USER:${recipientId}`).emit('notification.deleted', {
-        id,
-        unreadDelta: notification.isRead ? 0 : -1,
-        ts: Date.now(),
-      });
+      this.events.server
+        ?.to(`USER:${recipientId}`)
+        .emit('notification.deleted', {
+          id,
+          unreadDelta: notification.isRead ? 0 : -1,
+          ts: Date.now(),
+        });
     } catch {
       // Ignore realtime emit errors for deletion path.
     }
@@ -512,12 +519,19 @@ export class NotificationsService {
     }
 
     const sanitized: Partial<NotificationSettings> = {};
-    const defaults = DEFAULT_NOTIFICATION_SETTINGS as unknown as Record<string, Record<string, boolean>>;
+    const defaults = DEFAULT_NOTIFICATION_SETTINGS as unknown as Record<
+      string,
+      Record<string, boolean>
+    >;
     const incoming = settings as Record<string, unknown>;
 
     for (const [sectionKey, sectionDefaults] of Object.entries(defaults)) {
       const sectionPatch = incoming[sectionKey];
-      if (!sectionPatch || typeof sectionPatch !== 'object' || Array.isArray(sectionPatch)) {
+      if (
+        !sectionPatch ||
+        typeof sectionPatch !== 'object' ||
+        Array.isArray(sectionPatch)
+      ) {
         continue;
       }
 
@@ -550,7 +564,10 @@ export class NotificationsService {
     );
   }
 
-  async canSendScenarioEmail(userId: string, scenarioKey: string): Promise<boolean> {
+  async canSendScenarioEmail(
+    userId: string,
+    scenarioKey: string,
+  ): Promise<boolean> {
     return this.isEmailAllowedForScenario(userId, scenarioKey);
   }
 
@@ -576,7 +593,9 @@ export class NotificationsService {
     return `${localPart.slice(0, 2)}***@${domainPart}`;
   }
 
-  private toRecord(value: Prisma.JsonValue | null | undefined): Record<string, unknown> | null {
+  private toRecord(
+    value: Prisma.JsonValue | null | undefined,
+  ): Record<string, unknown> | null {
     if (!value || typeof value !== 'object' || Array.isArray(value)) {
       return null;
     }
@@ -591,10 +610,13 @@ export class NotificationsService {
       const sortedEntries = Object.entries(value as Record<string, unknown>)
         .filter(([, entry]) => entry !== undefined)
         .sort(([a], [b]) => a.localeCompare(b));
-      return sortedEntries.reduce<Record<string, unknown>>((acc, [key, entry]) => {
-        acc[key] = this.stableJson(entry);
-        return acc;
-      }, {});
+      return sortedEntries.reduce<Record<string, unknown>>(
+        (acc, [key, entry]) => {
+          acc[key] = this.stableJson(entry);
+          return acc;
+        },
+        {},
+      );
     }
     return value;
   }
@@ -630,9 +652,16 @@ export class NotificationsService {
     }
 
     const nestedTarget = source.target;
-    if (nestedTarget && typeof nestedTarget === 'object' && !Array.isArray(nestedTarget)) {
+    if (
+      nestedTarget &&
+      typeof nestedTarget === 'object' &&
+      !Array.isArray(nestedTarget)
+    ) {
       const targetRecord = nestedTarget as Record<string, unknown>;
-      if (typeof targetRecord.type === 'string' && typeof targetRecord.id === 'string') {
+      if (
+        typeof targetRecord.type === 'string' &&
+        typeof targetRecord.id === 'string'
+      ) {
         summary.target = {
           type: targetRecord.type,
           id: targetRecord.id,
@@ -846,7 +875,10 @@ export class NotificationsService {
     const authValid = signatureValid || basicAuthValid;
     const eventType = String(payload?.eventType ?? payload?.event ?? 'unknown');
     const providerEventIdRaw = String(
-      payload?.eventId ?? payload?.id ?? payload?.messageId ?? this.hashValue(JSON.stringify(payload ?? {})),
+      payload?.eventId ??
+        payload?.id ??
+        payload?.messageId ??
+        this.hashValue(JSON.stringify(payload ?? {})),
     );
 
     this.logger.log(
@@ -896,10 +928,14 @@ export class NotificationsService {
         normalizedEventType.includes('complaint') ||
         normalizedEventType.includes('spam'))
     ) {
-      const reason = normalizedEventType.includes('complaint') || normalizedEventType.includes('spam')
-        ? EmailSuppressionReason.COMPLAINT
-        : EmailSuppressionReason.BOUNCE;
-      const recipientEmailHash = this.hashValue(this.normalizeEmail(recipientEmail));
+      const reason =
+        normalizedEventType.includes('complaint') ||
+        normalizedEventType.includes('spam')
+          ? EmailSuppressionReason.COMPLAINT
+          : EmailSuppressionReason.BOUNCE;
+      const recipientEmailHash = this.hashValue(
+        this.normalizeEmail(recipientEmail),
+      );
 
       await this.prisma.emailSuppression.upsert({
         where: { recipientEmailHash },
@@ -961,6 +997,10 @@ export class NotificationsService {
       case NotificationType.COLLECTION_UPLOAD:
       case NotificationType.PRODUCT_UPLOAD:
       case NotificationType.COLLECTION_DELETED:
+      case NotificationType.ITEM_FEATURED:
+      case NotificationType.FEATURED_AUTO_REMOVED:
+      case NotificationType.WISHLIST_PRODUCT_UNAVAILABLE:
+      case NotificationType.WISHLIST_PRODUCT_AVAILABLE:
         return settings.collections.lifecycle;
       case NotificationType.PRIVATE_ACCESS_REQUESTED:
       case NotificationType.PRIVATE_ACCESS_APPROVED:
@@ -968,12 +1008,26 @@ export class NotificationsService {
       case NotificationType.PRIVATE_ACCESS_REVOKED:
         return settings.collections.access;
       case NotificationType.BRAND_PATCH_REQUEST:
+      case NotificationType.BRAND_PATCH_ACCEPTED:
+      case NotificationType.BRAND_PATCH_REJECTED:
         return settings.brand.patchRequests;
       case NotificationType.CONTRIBUTION_REQUEST:
       case NotificationType.CONTRIBUTION_ACCEPTED:
       case NotificationType.CONTRIBUTION_REJECTED:
         return settings.brand.contributions;
+      case NotificationType.VERIFICATION_SUBMITTED:
+      case NotificationType.VERIFICATION_IN_REVIEW:
+      case NotificationType.VERIFICATION_INFO_REQUESTED:
+      case NotificationType.VERIFICATION_INFO_RESUBMITTED:
+      case NotificationType.VERIFICATION_APPROVED:
+      case NotificationType.VERIFICATION_REJECTED:
+      case NotificationType.VERIFICATION_CANCELLED:
+      case NotificationType.VERIFICATION_CANCELLED_ADMIN:
+      case NotificationType.VERIFICATION_COOLDOWN_EXPIRED:
       case NotificationType.VERIFICATION_NUDGE:
+      case NotificationType.VERIFICATION_SLA_WARNING:
+      case NotificationType.VERIFICATION_SLA_BREACH:
+      case NotificationType.VERIFICATION_REVIEW_DELAYED:
         return settings.brand.verificationPrompts;
       case NotificationType.ORDER_PLACED:
         return settings.orders.placed;
@@ -1000,6 +1054,29 @@ export class NotificationsService {
         return settings.messaging.reminders;
       case NotificationType.MESSAGE_MODERATED:
       case NotificationType.MESSAGE_THREAD_REOPENED:
+        // Moderation and support recovery notices are system-critical.
+        return true;
+      case NotificationType.CUSTOM_ORDER_PAYMENT_RECEIVED:
+      case NotificationType.CUSTOM_ORDER_REVIEW_REQUIRED:
+        return settings.orders.placed;
+      case NotificationType.CUSTOM_ORDER_BRAND_ACCEPTED:
+      case NotificationType.CUSTOM_ORDER_BRAND_REJECTED:
+      case NotificationType.CUSTOM_ORDER_PROGRESS_UPDATED:
+      case NotificationType.CUSTOM_ORDER_EXTENSION_REQUESTED:
+      case NotificationType.CUSTOM_ORDER_EXTENSION_RESOLVED:
+      case NotificationType.CUSTOM_ORDER_BUYER_COUNTERED:
+      case NotificationType.CUSTOM_ORDER_BUYER_REJECTED_EXTENSION:
+      case NotificationType.CUSTOM_ORDER_DELIVERED:
+      case NotificationType.CUSTOM_ORDER_ACCEPTANCE_WINDOW_REMINDER:
+      case NotificationType.CUSTOM_ORDER_ISSUE_REPORTED:
+      case NotificationType.CUSTOM_ORDER_DISPUTE_CREATED:
+      case NotificationType.CUSTOM_ORDER_STALE_STAGE_WARNING:
+      case NotificationType.CUSTOM_ORDER_ACCEPTANCE_SLA_RISK:
+        return settings.orders.statusChanges;
+      case NotificationType.SIGNUP:
+      case NotificationType.ADMIN_ACTION:
+      case NotificationType.CUSTOM_ORDER_ADMIN_REVIEW_TRIGGERED:
+        // Account creation, admin actions, and admin-review triggers are system-critical.
         return true;
       default:
         return true; // Default to true for critical/other types
@@ -1061,7 +1138,10 @@ export class NotificationsService {
     targetUrl?: string;
   }): Promise<void> {
     const scenarioKey = getEmailScenarioKey(args.type, args.payload);
-    const allowed = await this.isEmailAllowedForScenario(args.recipientId, scenarioKey);
+    const allowed = await this.isEmailAllowedForScenario(
+      args.recipientId,
+      scenarioKey,
+    );
     if (!allowed) {
       return;
     }
@@ -1204,7 +1284,10 @@ export class NotificationsService {
       }
       this.logger.debug('Payload validated and sanitized');
 
-      const dedupeWindowMs = Math.max(opts?.dedupeMs ?? DEFAULT_SEMANTIC_DEDUPE_MS, 0);
+      const dedupeWindowMs = Math.max(
+        opts?.dedupeMs ?? DEFAULT_SEMANTIC_DEDUPE_MS,
+        0,
+      );
       if (dedupeWindowMs > 0) {
         const since = new Date(Date.now() - dedupeWindowMs);
 
@@ -1223,13 +1306,16 @@ export class NotificationsService {
             },
           });
           if (existing) {
-            this.logger.debug('Duplicate notification found via target path, skipping creation');
+            this.logger.debug(
+              'Duplicate notification found via target path, skipping creation',
+            );
             return existing;
           }
         }
 
         const resolvedTarget =
-          opts?.target ?? this.extractTarget(type, sanitizedPayload as Record<string, any>);
+          opts?.target ??
+          this.extractTarget(type, sanitizedPayload as Record<string, any>);
         const incomingFingerprint = this.buildSemanticFingerprint(
           type,
           sanitizedPayload as Record<string, unknown>,
@@ -1248,15 +1334,22 @@ export class NotificationsService {
         });
 
         for (const candidate of candidates) {
-          const candidatePayload = this.toRecord(candidate.payload as Prisma.JsonValue | null);
-          const candidateTarget = this.extractTarget(type, candidatePayload as Record<string, any> | null);
+          const candidatePayload = this.toRecord(
+            candidate.payload as Prisma.JsonValue | null,
+          );
+          const candidateTarget = this.extractTarget(
+            type,
+            candidatePayload as Record<string, any> | null,
+          );
           const candidateFingerprint = this.buildSemanticFingerprint(
             type,
             candidatePayload,
             candidateTarget,
           );
           if (candidateFingerprint === incomingFingerprint) {
-            this.logger.debug('Duplicate notification found via semantic fingerprint, skipping creation');
+            this.logger.debug(
+              'Duplicate notification found via semantic fingerprint, skipping creation',
+            );
             return candidate;
           }
         }
@@ -1299,7 +1392,9 @@ export class NotificationsService {
           delete (emittedPayload as any).userAgent; // Remove user agents
 
         const target = opts?.target ?? this.extractTarget(type, emittedPayload);
-        const targetUrl = this.sanitizeTargetUrl((emittedPayload as any).targetUrl);
+        const targetUrl = this.sanitizeTargetUrl(
+          (emittedPayload as any).targetUrl,
+        );
 
         this.events.server
           ?.to(`USER:${recipientId}`)
@@ -1322,7 +1417,9 @@ export class NotificationsService {
         // Log for monitoring, but don't fail the notification creation
       }
 
-      const emailPayload = this.toRecord(created.payload as Prisma.JsonValue | null);
+      const emailPayload = this.toRecord(
+        created.payload as Prisma.JsonValue | null,
+      );
       const targetUrl = this.sanitizeTargetUrl(emailPayload?.targetUrl);
       const message = this.formatMessage(created);
 
