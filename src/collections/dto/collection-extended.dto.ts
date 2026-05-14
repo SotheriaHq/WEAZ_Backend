@@ -12,6 +12,10 @@ import { Type } from 'class-transformer';
 // ============================================
 // Cart Preview DTOs
 // ============================================
+// STORE_COLLECTION_CART_PREVIEW:
+// These DTOs expose product checkout readiness for a grouped StoreCollection
+// preview. Collection remains a container; stock, SKU, and variant data are
+// product-owned.
 
 export class CollectionCartPreviewResponseDto {
   collectionId: string;
@@ -60,6 +64,9 @@ export class CartPreviewSummary {
 // ============================================
 // Bulk Upload DTOs
 // ============================================
+// STORE_COLLECTION_PRODUCT_BULK_COMPAT:
+// Bulk upload is a collection-scoped product management workflow kept for
+// compatibility. New product inventory contracts should stay product-owned.
 
 export class BulkUploadInitiateDto {
   @IsString()

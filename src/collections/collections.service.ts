@@ -3846,6 +3846,10 @@ export class CollectionsService {
   }
 
   // ===================== Store Collection Membership =====================
+  // STORE_COLLECTION_GROUPING:
+  // These methods maintain explicit product membership/order inside
+  // StoreCollection containers. Product inventory and checkout behavior remain
+  // product-owned in StoreService.
   async addProductsToCollection(
     collectionId: string,
     ownerId: string,

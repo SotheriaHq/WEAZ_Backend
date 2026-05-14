@@ -1742,7 +1742,8 @@ export class StoreService {
     const requestedCategoryTypeId = (dto.categoryTypeId || '').trim() || null;
     const nextIsActive = dto.isActive ?? true;
 
-    // If a collectionId is provided, verify it belongs to this brand.
+    // Product boundary: collectionId is only StoreCollection membership. Product
+    // creation owns inventory/price/media, then links to a grouping container.
     if (requestedCollectionId) {
       const collection = await this.prisma.storeCollection.findFirst({
         where: { id: requestedCollectionId, ownerId: brandOwnerUserId },
@@ -1824,6 +1825,9 @@ export class StoreService {
       let collectionId = requestedCollectionId;
 
       if (!collectionId) {
+        // Product drafts still need a primary StoreCollection link under the
+        // current schema. This is compatibility storage, not collection-owned
+        // product behavior.
         collectionId = await this.ensureDefaultStoreCollection(tx, brandOwnerUserId);
       }
 
@@ -2352,7 +2356,9 @@ export class StoreService {
             membershipChanged = true;
           }
 
-          // Update the product's primary collection reference via relation
+          // Product boundary: update the product's primary StoreCollection
+          // membership without moving product inventory or checkout ownership
+          // into the collection domain.
           updateData.collection = { connect: { id: finalCollectionId } };
 
           // Keep primary membership aligned with the explicit collectionId selection.
