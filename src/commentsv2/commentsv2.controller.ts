@@ -45,6 +45,26 @@ export class CommentsV2Controller {
     );
   }
 
+  @UseGuards(JwtAuthGuard)
+  @Post('designs/:designId/comments')
+  createForDesign(
+    @Param('designId') designId: string,
+    @Body() dto: CreateCommentV2Dto,
+    @Req() req: any,
+  ) {
+    return this.service.createForTarget('DESIGN', designId, req.user.id, dto);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Post('products/:productId/comments')
+  createForProduct(
+    @Param('productId') productId: string,
+    @Body() dto: CreateCommentV2Dto,
+    @Req() req: any,
+  ) {
+    return this.service.createForTarget('PRODUCT', productId, req.user.id, dto);
+  }
+
   // Create comment for COLLECTION_MEDIA
   @UseGuards(JwtAuthGuard)
   @Post('collections/media/:mediaId/comments')
@@ -78,6 +98,24 @@ export class CommentsV2Controller {
     @Req() req: any,
   ) {
     return this.service.listForTarget('COLLECTION', id, req.user?.id, q);
+  }
+
+  @Get('designs/:designId/comments')
+  listForDesign(
+    @Param('designId') id: string,
+    @Query() q: ListQueryDto,
+    @Req() req: any,
+  ) {
+    return this.service.listForTarget('DESIGN', id, req.user?.id, q);
+  }
+
+  @Get('products/:productId/comments')
+  listForProduct(
+    @Param('productId') id: string,
+    @Query() q: ListQueryDto,
+    @Req() req: any,
+  ) {
+    return this.service.listForTarget('PRODUCT', id, req.user?.id, q);
   }
 
   @Get('collections/media/:mediaId/comments')

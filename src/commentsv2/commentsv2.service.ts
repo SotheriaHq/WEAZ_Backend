@@ -6,7 +6,12 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { v4 as uuidv4 } from 'uuid';
-type CommentTarget = 'POST' | 'COLLECTION' | 'COLLECTION_MEDIA';
+type CommentTarget =
+  | 'POST'
+  | 'COLLECTION'
+  | 'COLLECTION_MEDIA'
+  | 'DESIGN'
+  | 'PRODUCT';
 import type { CommentV2 as PrismaCommentV2 } from '@prisma/client';
 import { EventsGateway } from 'src/realtime/events.gateway';
 import { NotificationsService } from 'src/notifications/notifications.service';
@@ -111,6 +116,42 @@ export class CommentsV2Service {
     return this.canViewCollection(m.collectionId, requesterId);
   }
 
+  private async canViewDesign(designId: string, requesterId?: string) {
+    const design = await this.prisma.design.findUnique({
+      where: { id: designId },
+      select: {
+        ownerId: true,
+        status: true,
+        visibility: true,
+        legacyCollectionId: true,
+      },
+    });
+    if (!design) return false;
+    if (requesterId && requesterId === design.ownerId) return true;
+    if (design.status !== 'PUBLISHED') return false;
+    if (design.visibility === CollectionVisibility.PUBLIC) return true;
+    if (!requesterId || !design.legacyCollectionId) return false;
+    return this.canViewCollection(design.legacyCollectionId, requesterId);
+  }
+
+  private async canViewProduct(productId: string, requesterId?: string) {
+    const product = await this.prisma.product.findUnique({
+      where: { id: productId },
+      select: {
+        brand: { select: { ownerId: true } },
+        isActive: true,
+        deletedAt: true,
+        archivedAt: true,
+        publishAt: true,
+      },
+    });
+    if (!product) return false;
+    if (requesterId && requesterId === product.brand.ownerId) return true;
+    if (product.deletedAt || product.archivedAt || !product.isActive) return false;
+    if (product.publishAt && product.publishAt > new Date()) return false;
+    return true;
+  }
+
   private async assertTargetExists(
     targetType: CommentTarget,
     targetId: string,
@@ -137,6 +178,21 @@ export class CommentsV2Service {
       if (!media) throw new NotFoundException('Media not found');
       return { ownerId: media.collection.ownerId };
     }
+    if (targetType === 'DESIGN') {
+      const design = await this.prisma.design.findUnique({
+        where: { id: targetId },
+      });
+      if (!design) throw new NotFoundException('Design not found');
+      return { ownerId: design.ownerId };
+    }
+    if (targetType === 'PRODUCT') {
+      const product = await this.prisma.product.findUnique({
+        where: { id: targetId },
+        include: { brand: { select: { ownerId: true } } },
+      });
+      if (!product) throw new NotFoundException('Product not found');
+      return { ownerId: product.brand.ownerId };
+    }
     throw new BadRequestException('Invalid target');
   }
 
@@ -154,6 +210,14 @@ export class CommentsV2Service {
     if (targetType === 'COLLECTION_MEDIA') {
       const ok = await this.canViewMedia(targetId, userId);
       if (!ok) throw new NotFoundException('Media not found');
+    }
+    if (targetType === 'DESIGN') {
+      const ok = await this.canViewDesign(targetId, userId);
+      if (!ok) throw new NotFoundException('Design not found');
+    }
+    if (targetType === 'PRODUCT') {
+      const ok = await this.canViewProduct(targetId, userId);
+      if (!ok) throw new NotFoundException('Product not found');
     }
 
     let parent: PrismaCommentV2 | null = null;
@@ -214,6 +278,11 @@ export class CommentsV2Service {
         });
       } else if (targetType === 'COLLECTION_MEDIA') {
         await tx.collectionMedia.update({
+          where: { id: targetId },
+          data: { commentsCount: { increment: 1 } },
+        });
+      } else if (targetType === 'DESIGN') {
+        await tx.design.update({
           where: { id: targetId },
           data: { commentsCount: { increment: 1 } },
         });
@@ -283,6 +352,22 @@ export class CommentsV2Service {
         ownerId = media?.collection.ownerId ?? null;
         targetDescriptor = 'design';
         targetTitle = media?.collection?.title ?? null;
+      } else if (targetType === 'DESIGN') {
+        const design = await this.prisma.design.findUnique({
+          where: { id: targetId },
+          select: { ownerId: true, title: true },
+        });
+        ownerId = design?.ownerId ?? null;
+        targetDescriptor = 'design';
+        targetTitle = design?.title ?? null;
+      } else if (targetType === 'PRODUCT') {
+        const product = await this.prisma.product.findUnique({
+          where: { id: targetId },
+          select: { name: true, brand: { select: { ownerId: true } } },
+        });
+        ownerId = product?.brand.ownerId ?? null;
+        targetDescriptor = 'product';
+        targetTitle = product?.name ?? null;
       }
 
       if (ownerId) {
@@ -301,6 +386,10 @@ export class CommentsV2Service {
         targetUrl = '';
         if (targetType === 'COLLECTION') {
           targetUrl = `/collections/${targetId}?commentId=${created.id}`;
+        } else if (targetType === 'DESIGN') {
+          targetUrl = `/designs/${targetId}?commentId=${created.id}`;
+        } else if (targetType === 'PRODUCT') {
+          targetUrl = `/products/${targetId}?commentId=${created.id}`;
         } else if (targetType === 'COLLECTION_MEDIA') {
           // We fetched media earlier to check permissions, but let's ensure we have collectionId
           // If we didn't fetch it in assertTargetExists (we did), we might need to fetch again or pass it down.
@@ -398,6 +487,10 @@ export class CommentsV2Service {
         ? `"${targetTitle}"`
         : targetType === 'COLLECTION_MEDIA'
           ? 'a design'
+          : targetType === 'DESIGN'
+            ? 'a design'
+            : targetType === 'PRODUCT'
+              ? 'a product'
           : targetType === 'COLLECTION'
             ? 'a collection'
             : 'a post';
@@ -470,6 +563,14 @@ export class CommentsV2Service {
     if (targetType === 'COLLECTION_MEDIA') {
       const ok = await this.canViewMedia(targetId, requesterId);
       if (!ok) throw new NotFoundException('Media not found');
+    }
+    if (targetType === 'DESIGN') {
+      const ok = await this.canViewDesign(targetId, requesterId);
+      if (!ok) throw new NotFoundException('Design not found');
+    }
+    if (targetType === 'PRODUCT') {
+      const ok = await this.canViewProduct(targetId, requesterId);
+      if (!ok) throw new NotFoundException('Product not found');
     }
     const limit = Math.min(Math.max(q.limit ?? 20, 1), 40);
     const cursorDate = q.cursor ? new Date(q.cursor) : undefined;
@@ -549,6 +650,14 @@ export class CommentsV2Service {
     if (parent.targetType === 'COLLECTION_MEDIA') {
       const ok = await this.canViewMedia(parent.targetId, requesterId);
       if (!ok) throw new NotFoundException('Media not found');
+    }
+    if (parent.targetType === 'DESIGN') {
+      const ok = await this.canViewDesign(parent.targetId, requesterId);
+      if (!ok) throw new NotFoundException('Design not found');
+    }
+    if (parent.targetType === 'PRODUCT') {
+      const ok = await this.canViewProduct(parent.targetId, requesterId);
+      if (!ok) throw new NotFoundException('Product not found');
     }
     const limit = Math.min(Math.max(q.limit ?? 20, 1), 50);
     const cursorDate = q.cursor ? new Date(q.cursor) : undefined;

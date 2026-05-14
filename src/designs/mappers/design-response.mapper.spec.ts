@@ -51,4 +51,46 @@ describe('DesignResponseMapper', () => {
 
     expect(result.filterValueIds).toEqual(['filter-1', 'filter-2']);
   });
+
+  it('maps explicit Design records to the same design-facing response shape', () => {
+    const result = DesignResponseMapper.fromExplicitDesign({
+      id: 'design-1',
+      legacyCollectionId: 'legacy-1',
+      categoryTypeId: 'sub-1',
+      fitPreference: 'REGULAR',
+      targetAgeGroup: 'ADULT',
+      customOrderEnabled: true,
+      customMeasurementKeys: ['chest'],
+      medias: [
+        {
+          id: 'design-media-1',
+          legacyCollectionMediaId: 'collection-media-1',
+          fileUploadId: 'file-1',
+        },
+      ],
+      entityFilters: [{ filterValueId: 'filter-1' }],
+    });
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        id: 'design-1',
+        designId: 'design-1',
+        entityType: 'DESIGN',
+        legacyCollectionId: 'legacy-1',
+        collectionId: 'legacy-1',
+        subCategoryId: 'sub-1',
+        fitPreference: 'REGULAR',
+        targetAgeGroup: 'ADULT',
+        customOrderEnabled: true,
+        customMeasurementKeys: ['chest'],
+        filterValueIds: ['filter-1'],
+      }),
+    );
+    expect(result.medias?.[0]).toEqual(
+      expect.objectContaining({
+        id: 'design-media-1',
+        collectionMediaId: 'collection-media-1',
+      }),
+    );
+  });
 });
