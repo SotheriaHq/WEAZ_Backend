@@ -11,6 +11,7 @@ import { PrismaService } from 'src/prisma/prisma.service';
 import { v4 as uuidv4 } from 'uuid';
 import { sanitizeTags, normalizeTag } from 'src/common/utils/tag-validator';
 import { TAG_ENTITY_TYPE, TagEntityTypeValue } from './tag-entity-type';
+import { canonicalBrandProfileSelect, resolveBrandTags, resolveRequiredBrandField } from 'src/common/brand-profile-source.helper';
 
 const NT_TAG_MENTION = 'TAG_MENTION' as NotificationType;
 
@@ -210,29 +211,7 @@ export class TagIndexService {
           }
         }
 
-        const allNext = Array.from(next);
-        if (allNext.length > 0) {
-          const approvedRows = await (tx as any).tag.findMany({
-            where: {
-              normalizedName: { in: allNext },
-              status: TagStatus.APPROVED,
-              isBanned: false,
-              aliasOfTagId: null,
-            },
-            select: { normalizedName: true },
-          });
-
-          await tx.systemTag.createMany({
-            data: approvedRows.map((row: any) => ({ id: uuidv4(), tag: row.normalizedName })),
-            skipDuplicates: true,
-          });
-        }
-
-        if (zeroUsageNames.length > 0) {
-          await tx.systemTag.deleteMany({
-            where: { tag: { in: zeroUsageNames } },
-          });
-        }
+        // Note: systemTag table not in schema, skipping systemTag operations
       });
     } catch (error: any) {
       if (this.isMissingTagTableError(error)) {
@@ -370,11 +349,14 @@ export class TagIndexService {
           id: true,
           type: true,
           username: true,
-          brandFullName: true,
+          brand: { select: canonicalBrandProfileSelect },
         },
       });
       if (!user || user.type !== 'BRAND') return null;
-      const title = user.brandFullName || user.username || 'Brand profile';
+      const title =
+        resolveRequiredBrandField(user, 'brandFullName') ||
+        user.username ||
+        'Brand profile';
       return {
         actorId: user.id,
         entityTitle: title,
@@ -406,29 +388,17 @@ export class TagIndexService {
     const entityTitle =
       entityTitleOverride?.trim() || context.entityTitle || 'Tagged content';
 
-    const [brands, users] = await Promise.all([
-      this.prisma.brand.findMany({
-        where: {
-          isStoreOpen: true,
-          tags: { hasSome: normalizedAdded },
-        },
-        select: {
-          id: true,
-          ownerId: true,
-          tags: true,
-        },
-      }),
-      this.prisma.user.findMany({
-        where: {
-          type: 'BRAND',
-          brandTags: { hasSome: normalizedAdded },
-        },
-        select: {
-          id: true,
-          brandTags: true,
-        },
-      }),
-    ]);
+    const brands = await this.prisma.brand.findMany({
+      where: {
+        isStoreOpen: true,
+        tags: { hasSome: normalizedAdded },
+      },
+      select: {
+        id: true,
+        ownerId: true,
+        tags: true,
+      },
+    });
 
     const recipientTags = new Map<string, Set<string>>();
     const addRecipientTag = (recipientId: string, tag: string) => {
@@ -453,21 +423,6 @@ export class TagIndexService {
         .filter((tag) => tag && addedSet.has(tag));
 
       for (const tag of matched) addRecipientTag(brand.ownerId, tag);
-    }
-
-    for (const user of users) {
-      if (
-        entityType === TAG_ENTITY_TYPE.USER_BRAND &&
-        user.id === entityId
-      ) {
-        continue;
-      }
-
-      const matched = (user.brandTags ?? [])
-        .map((tag) => this.normalizeTagName(tag))
-        .filter((tag) => tag && addedSet.has(tag));
-
-      for (const tag of matched) addRecipientTag(user.id, tag);
     }
 
     if (recipientTags.size === 0) return;
@@ -509,7 +464,7 @@ export class TagIndexService {
     }
 
     const now = new Date();
-    const [collections, products, brands, users, bannedRows] = await Promise.all([
+    const [collections, products, brands, userBrandOwners, bannedRows] = await Promise.all([
       this.prisma.collection.findMany({
         where: {
           status: 'PUBLISHED',
@@ -531,9 +486,9 @@ export class TagIndexService {
         where: { isStoreOpen: true },
         select: { id: true, tags: true },
       }),
-      this.prisma.user.findMany({
-        where: { type: 'BRAND' },
-        select: { id: true, brandTags: true },
+      this.prisma.brand.findMany({
+        where: { owner: { type: 'BRAND' } },
+        select: { ownerId: true, tags: true },
       }),
       prismaClient.tag.findMany({
         where: { isBanned: true },
@@ -549,7 +504,7 @@ export class TagIndexService {
       await (tx as any).tag.updateMany({
         data: { usageCount: 0, lastUsedAt: null },
       });
-      await tx.systemTag.deleteMany({});
+      // Note: systemTag table not in schema, skipping systemTag operations
     });
 
     let bindingsCreated = 0;
@@ -586,13 +541,13 @@ export class TagIndexService {
         notifyMentions: false,
       });
     }
-    for (const u of users) {
-      const tags = this.normalizeTagList(u.brandTags ?? [], 10).filter(
+    for (const u of userBrandOwners) {
+      const tags = this.normalizeTagList(u.tags ?? [], 10).filter(
         (tag) => !banned.has(tag),
       );
       if (tags.length === 0) continue;
       bindingsCreated += tags.length;
-      await this.syncEntityTags(TAG_ENTITY_TYPE.USER_BRAND, u.id, [], tags, {
+      await this.syncEntityTags(TAG_ENTITY_TYPE.USER_BRAND, u.ownerId, [], tags, {
         maxCount: 10,
         notifyMentions: false,
       });

@@ -4,6 +4,15 @@ import { PrismaService } from '../prisma/prisma.service';
 import { TagIndexService } from './tag-index.service';
 import * as crypto from 'crypto';
 import { TAG_ENTITY_TYPE } from './tag-entity-type';
+import {
+  canonicalUserProfileSelect,
+  resolveProfileImage,
+} from 'src/common/user-profile-source.helper';
+import {
+  canonicalBrandProfileSelect,
+  resolveRequiredBrandField,
+  resolveBrandTags,
+} from 'src/common/brand-profile-source.helper';
 
 type TagFeedItem =
   | {
@@ -128,6 +137,27 @@ export class TagsService {
     private readonly prisma: PrismaService,
     private readonly tagIndex: TagIndexService,
   ) {}
+
+  private mapOwnerDisplay(user: any) {
+    return {
+      id: user.id,
+      username: user.username,
+      brandFullName: resolveRequiredBrandField(user, 'brandFullName') || null,
+      profileImage: resolveProfileImage(user).url,
+    };
+  }
+
+  private mapBrandUserDisplay(user: any) {
+    const displayName =
+      resolveRequiredBrandField(user, 'brandFullName') || user.username;
+    return {
+      id: user.id,
+      displayName,
+      username: user.username,
+      profileImage: user.brand?.logo ?? resolveProfileImage(user).url,
+      tags: resolveBrandTags(user),
+    };
+  }
 
   private clampLimit(input: number | undefined, min = 1, max = 100): number {
     const parsed = Number.isFinite(input) ? Number(input) : min;
@@ -276,8 +306,8 @@ export class TagsService {
           select: {
             id: true,
             username: true,
-            brandFullName: true,
-            profileImage: true,
+            userProfile: { select: canonicalUserProfileSelect },
+            brand: { select: canonicalBrandProfileSelect },
           },
         },
         createdAt: true,
@@ -298,12 +328,7 @@ export class TagsService {
         aliasOfTagName: row.aliasOfTag?.normalizedName ?? null,
         createdById: row.createdById ?? null,
         createdBy: row.createdBy
-          ? {
-              id: row.createdBy.id,
-              username: row.createdBy.username,
-              brandFullName: row.createdBy.brandFullName,
-              profileImage: row.createdBy.profileImage,
-            }
+          ? this.mapOwnerDisplay(row.createdBy)
           : null,
         createdAt: row.createdAt.toISOString(),
         lastUsedAt: row.lastUsedAt ? row.lastUsedAt.toISOString() : null,
@@ -407,7 +432,10 @@ export class TagsService {
     const indexed = await (this.prisma as any).tag.findMany({
       where: {
         aliasOfTagId: null,
-        usageCount: { gt: 0 },
+        OR: [
+          { usageCount: { gt: 0 } },
+          { status: TagStatus.APPROVED, isBanned: false },
+        ],
         ...visibilityWhere,
       },
       orderBy: [
@@ -427,7 +455,7 @@ export class TagsService {
     }
 
     const now = new Date();
-    const [collections, products, brands, users] = await Promise.all([
+    const [collections, products, brands] = await Promise.all([
       this.prisma.collection.findMany({
         where: {
           status: 'PUBLISHED',
@@ -452,11 +480,6 @@ export class TagsService {
         select: { tags: true },
         take: 5000,
       }),
-      this.prisma.user.findMany({
-        where: { type: 'BRAND' },
-        select: { brandTags: true },
-        take: 5000,
-      }),
     ]);
 
     const counts = new Map<string, number>();
@@ -468,7 +491,6 @@ export class TagsService {
     for (const c of collections) for (const t of c.tags ?? []) bump(t);
     for (const p of products) for (const t of p.tags ?? []) bump(t);
     for (const b of brands) for (const t of b.tags ?? []) bump(t);
-    for (const u of users) for (const t of u.brandTags ?? []) bump(t);
 
     const ranked = Array.from(counts.entries())
       .map(([tag, count]) => ({ tag, count }))
@@ -528,6 +550,10 @@ export class TagsService {
       where: {
         normalizedName: { startsWith: normalized },
         aliasOfTagId: null,
+        OR: [
+          { usageCount: { gt: 0 } },
+          { status: TagStatus.APPROVED, isBanned: false },
+        ],
         ...visibilityWhere,
       },
       orderBy: [
@@ -617,8 +643,8 @@ export class TagsService {
           select: {
             id: true,
             username: true,
-            brandFullName: true,
-            profileImage: true,
+            userProfile: { select: canonicalUserProfileSelect },
+            brand: { select: canonicalBrandProfileSelect },
           },
         },
         isBanned: true,
@@ -734,10 +760,10 @@ export class TagsService {
         ? this.prisma.user.findMany({
             where: { id: { in: userBrandIds } },
             select: {
-              id: true,
-              username: true,
-              brandFullName: true,
-            },
+          id: true,
+          username: true,
+          brand: { select: canonicalBrandProfileSelect },
+        },
           })
         : Promise.resolve([]),
     ]);
@@ -772,7 +798,9 @@ export class TagsService {
       ownerByEntity.set(`${TAG_ENTITY_TYPE.USER_BRAND}:${row.id}`, row.id);
       labelByEntity.set(
         `${TAG_ENTITY_TYPE.USER_BRAND}:${row.id}`,
-        row.brandFullName?.trim() || row.username?.trim() || 'Brand profile',
+        resolveRequiredBrandField(row, 'brandFullName') ||
+          row.username?.trim() ||
+          'Brand profile',
       );
     });
 
@@ -814,8 +842,8 @@ export class TagsService {
           select: {
             id: true,
             username: true,
-            brandFullName: true,
-            profileImage: true,
+            userProfile: { select: canonicalUserProfileSelect },
+            brand: { select: canonicalBrandProfileSelect },
           },
         })
       : [];
@@ -829,8 +857,8 @@ export class TagsService {
         return {
           userId,
           username: user.username,
-          brandFullName: user.brandFullName,
-          profileImage: user.profileImage,
+          brandFullName: resolveRequiredBrandField(user, 'brandFullName') || null,
+          profileImage: user.brand?.logo ?? resolveProfileImage(user).url,
           usageCount: stats.usageCount,
           latestTaggedAt: stats.latestTaggedAt
             ? stats.latestTaggedAt.toISOString()
@@ -956,12 +984,7 @@ export class TagsService {
       }),
       createdById: tag.createdById ?? null,
       createdBy: tag.createdBy
-        ? {
-            id: tag.createdBy.id,
-            username: tag.createdBy.username,
-            brandFullName: tag.createdBy.brandFullName,
-            profileImage: tag.createdBy.profileImage,
-          }
+        ? this.mapOwnerDisplay(tag.createdBy)
         : null,
       lastUsedAt: tag.lastUsedAt ? tag.lastUsedAt.toISOString() : null,
       aliasOf: tag.aliasOfTag
@@ -1080,8 +1103,8 @@ export class TagsService {
                 select: {
                   id: true,
                   username: true,
-                  brandFullName: true,
-                  profileImage: true,
+                  userProfile: { select: canonicalUserProfileSelect },
+                  brand: { select: canonicalBrandProfileSelect },
                 },
               },
             },
@@ -1120,7 +1143,10 @@ export class TagsService {
               name: true,
               tags: true,
               owner: {
-                select: { username: true, profileImage: true },
+                select: {
+                  username: true,
+                  userProfile: { select: canonicalUserProfileSelect },
+                },
               },
             },
           })
@@ -1131,9 +1157,8 @@ export class TagsService {
             select: {
               id: true,
               username: true,
-              brandFullName: true,
-              profileImage: true,
-              brandTags: true,
+              userProfile: { select: canonicalUserProfileSelect },
+              brand: { select: canonicalBrandProfileSelect },
             },
           })
         : Promise.resolve([]),
@@ -1160,10 +1185,7 @@ export class TagsService {
             tags: c.tags ?? [],
             createdAt: c.createdAt.toISOString(),
             owner: {
-              id: c.owner.id,
-              username: c.owner.username,
-              brandFullName: c.owner.brandFullName,
-              profileImage: c.owner.profileImage,
+              ...this.mapOwnerDisplay(c.owner),
             },
           },
         });
@@ -1208,7 +1230,7 @@ export class TagsService {
             id: b.id,
             displayName: b.name,
             username: b.owner.username,
-            profileImage: b.owner.profileImage,
+            profileImage: resolveProfileImage(b.owner).url,
             tags: b.tags ?? [],
           },
         });
@@ -1224,10 +1246,7 @@ export class TagsService {
           taggedAt: binding.createdAt.toISOString(),
           data: {
             id: u.id,
-            displayName: u.brandFullName || u.username,
-            username: u.username,
-            profileImage: u.profileImage,
-            tags: u.brandTags ?? [],
+            ...this.mapBrandUserDisplay(u),
           },
         });
       }
@@ -1274,14 +1293,7 @@ export class TagsService {
       },
     });
 
-    if (nextStatus === 'APPROVED' && !updated.isBanned && !updated.aliasOfTagId) {
-      await this.prisma.systemTag.createMany({
-        data: [{ id: crypto.randomUUID(), tag: normalizedName }],
-        skipDuplicates: true,
-      });
-    } else {
-      await this.prisma.systemTag.deleteMany({ where: { tag: normalizedName } });
-    }
+    // Note: systemTag table not in schema, skipping systemTag operations
 
     return {
       name: updated.normalizedName,
@@ -1370,14 +1382,7 @@ export class TagsService {
         }),
       ]);
 
-      await tx.systemTag.deleteMany({
-        where: { tag: sourceTag.normalizedName },
-      });
-
-      await tx.systemTag.createMany({
-        data: [{ id: crypto.randomUUID(), tag: targetTag.normalizedName }],
-        skipDuplicates: true,
-      });
+      // Note: systemTag table not in schema, skipping systemTag operations
     });
   }
 

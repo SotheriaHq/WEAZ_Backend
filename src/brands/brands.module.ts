@@ -1,12 +1,19 @@
 import { Module } from '@nestjs/common';
 import { BrandsService } from './brands.service';
 import { BrandsController } from './brands.controller';
+import { BrandAccessService } from './brand-access.service';
+import { BrandMetricsService } from './brand-metrics.service';
+import { BrandProfileLinkService } from './brand-profile-link.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { CollectionsModule } from '../collections/collections.module';
 import { UploadModule } from '../upload/upload.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { TagsModule } from '../tags/tags.module';
 import { BrandVerificationModule } from '../brand-verification/brand-verification.module';
+import { BrandStaffController } from './staff/brand-staff.controller';
+import { BrandStaffService } from './staff/brand-staff.service';
+import { BrandPermissionService } from './permissions/brand-permission.service';
+import { AdminAuditService } from 'src/admin/services/admin-audit.service';
 
 @Module({
   imports: [
@@ -16,8 +23,24 @@ import { BrandVerificationModule } from '../brand-verification/brand-verificatio
     TagsModule,
     BrandVerificationModule,
   ],
-  providers: [BrandsService, PrismaService],
-  controllers: [BrandsController],
-  exports: [BrandsService],
+  providers: [
+    BrandsService,
+    BrandAccessService,
+    BrandMetricsService,
+    BrandProfileLinkService,
+    BrandStaffService,
+    BrandPermissionService,
+    AdminAuditService,
+    PrismaService,
+  ],
+  controllers: [BrandsController, BrandStaffController],
+  exports: [
+    BrandsService,
+    BrandAccessService,
+    BrandMetricsService,
+    BrandProfileLinkService,
+    BrandStaffService,
+    BrandPermissionService,
+  ],
 })
 export class BrandsModule {}

@@ -97,6 +97,70 @@ export class MarkThreadReadDto {
   upToMessageId?: string;
 }
 
+export class ResolveConversationQueryDto {
+  @IsOptional()
+  @IsUUID('4')
+  threadId?: string;
+
+  @IsOptional()
+  @IsUUID('4')
+  conversationId?: string;
+
+  @IsOptional()
+  @IsUUID('4')
+  messageId?: string;
+
+  @IsOptional()
+  @IsUUID('4')
+  orderId?: string;
+
+  @IsOptional()
+  @IsUUID('4')
+  customOrderId?: string;
+
+  @IsOptional()
+  @IsUUID('4')
+  brandId?: string;
+
+  @IsOptional()
+  @IsUUID('4')
+  customerId?: string;
+
+  @IsOptional()
+  @IsUUID('4')
+  designId?: string;
+
+  @IsOptional()
+  @IsUUID('4')
+  productId?: string;
+}
+
+export class StartConversationDto extends SendMessageDto {
+  @IsOptional()
+  @IsUUID('4')
+  brandId?: string;
+
+  @IsOptional()
+  @IsUUID('4')
+  customerId?: string;
+
+  @IsOptional()
+  @IsUUID('4')
+  orderId?: string;
+
+  @IsOptional()
+  @IsUUID('4')
+  customOrderId?: string;
+
+  @IsOptional()
+  @IsUUID('4')
+  designId?: string;
+
+  @IsOptional()
+  @IsUUID('4')
+  productId?: string;
+}
+
 export class UpdateThreadPreferencesDto {
   @IsOptional()
   @IsBoolean()

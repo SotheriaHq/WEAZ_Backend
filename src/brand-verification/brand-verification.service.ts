@@ -39,6 +39,12 @@ import {
 import type { Request } from 'express';
 import { ConfigService } from '@nestjs/config';
 import { getBrandVerificationTruth } from './verification-truth.util';
+import {
+  canonicalUserProfileSelect,
+  resolveNullableProfileField,
+  resolveProfileImage,
+  resolveRequiredProfileField,
+} from 'src/common/user-profile-source.helper';
 
 type RejectionReasonRecord = {
   code: string;
@@ -193,17 +199,14 @@ export class BrandVerificationService {
           currentStep: dto.currentStep ?? null,
         }),
         verificationDraftUpdatedAt: new Date(),
-        ...(resolvedOwnerPhoneNumber
-          ? {
-              owner: {
-                update: {
-                  phoneNumber: resolvedOwnerPhoneNumber,
-                },
-              },
-            }
-          : {}),
       },
     });
+    if (resolvedOwnerPhoneNumber) {
+      await this.prisma.userProfile.updateMany({
+        where: { userId: brand.ownerId },
+        data: { phoneNumber: resolvedOwnerPhoneNumber },
+      });
+    }
 
     return { ok: true, lastSavedAt: new Date().toISOString() };
   }
@@ -274,12 +277,16 @@ export class BrandVerificationService {
 
   async submit(ownerId: string, dto: SubmitBrandVerificationDto) {
     const brand = await this.getBrandByOwnerOrThrow(ownerId);
+    const ownerUserId = brand.ownerId;
     this.assertCanSubmit(brand);
-    await this.validateVerificationDocuments(ownerId, dto);
+    await this.validateVerificationDocuments(ownerUserId, dto);
     await this.ensureNinNotApprovedElsewhere(dto.ownerNin, brand.id);
     const resolvedOwnerPhoneNumber =
       this.normalizePhoneNumber(dto.ownerPhoneNumber) ||
-      this.normalizePhoneNumber(brand.owner.phoneNumber);
+      this.normalizePhoneNumber(
+        resolveNullableProfileField(brand.owner, 'phoneNumber'),
+      );
+    const companyLocation = `${dto.businessAddress.street}, ${dto.businessAddress.city}, ${dto.businessAddress.state}, ${dto.businessAddress.country}`;
 
     if (!resolvedOwnerPhoneNumber) {
       throw new BadRequestException('Owner phone number is required');
@@ -288,7 +295,7 @@ export class BrandVerificationService {
     const attemptNumber = (brand.verificationAttemptNumber ?? 0) + 1;
     const now = new Date();
     const rejectionReasons: RejectionReasonRecord[] = [];
-    const evidenceManifest = await this.buildEvidenceManifest(ownerId, [
+    const evidenceManifest = await this.buildEvidenceManifest(ownerUserId, [
       dto.ownerPhotoKey,
       dto.idDocumentFrontKey,
       dto.idDocumentBackKey,
@@ -351,23 +358,27 @@ export class BrandVerificationService {
           verificationPhoto2Key: dto.idDocumentBackKey ?? dto.idDocumentFrontKey,
           verificationNinKey: dto.idDocumentFrontKey,
           verificationCacKey: dto.cacCertificateKey,
-          verificationAddress: `${dto.businessAddress.street}, ${dto.businessAddress.city}, ${dto.businessAddress.state}, ${dto.businessAddress.country}`,
+          verificationAddress: companyLocation,
+          cacNumber: dto.cacNumber,
+          ceoNin: dto.ownerNin,
+          ceoFirstName: dto.ownerLegalFirstName,
+          ceoLastName: dto.ownerLegalLastName,
+          companyLocation,
+          country: dto.businessAddress.country,
+          state: dto.businessAddress.state,
+          city: dto.businessAddress.city,
           verificationDraftData: null,
           verificationDraftUpdatedAt: null,
-          ...(resolvedOwnerPhoneNumber
-            ? {
-                owner: {
-                  update: {
-                    phoneNumber: resolvedOwnerPhoneNumber,
-                  },
-                },
-              }
-            : {}),
         },
+      });
+
+      await tx.userProfile.updateMany({
+        where: { userId: ownerUserId },
+        data: { phoneNumber: resolvedOwnerPhoneNumber },
       });
     });
 
-    await this.notifications.create(ownerId, NotificationType.VERIFICATION_SUBMITTED, {
+    await this.notifications.create(ownerUserId, NotificationType.VERIFICATION_SUBMITTED, {
       payload: {
         brandId: brand.id,
         attemptNumber,
@@ -455,7 +466,7 @@ export class BrandVerificationService {
     return { verificationStatus: BrandVerificationStatus.CANCELLED, cancelledAt: now.toISOString() };
   }
 
-  async resubmitInfo(ownerId: string, dto: ResubmitVerificationInfoDto) {
+  async resubmitInfo(ownerId: string, dto: ResubmitVerificationInfoDto, actorId?: string) {
     const brand = await this.getBrandByOwnerOrThrow(ownerId);
     if (brand.verificationStatus !== BrandVerificationStatus.ADDITIONAL_INFO_REQUESTED) {
       throw new BadRequestException('Verification is not awaiting additional information');
@@ -464,6 +475,33 @@ export class BrandVerificationService {
     const now = new Date();
     const patch: Record<string, unknown> = {};
     const resolvedOwnerPhoneNumber = this.normalizePhoneNumber(dto.ownerPhoneNumber);
+    const companyLocation = dto.businessAddress
+      ? `${dto.businessAddress.street}, ${dto.businessAddress.city}, ${dto.businessAddress.state}, ${dto.businessAddress.country}`
+      : null;
+    const brandIdentityData: Record<string, unknown> = {
+      ...(dto.cacNumber !== undefined ? { cacNumber: dto.cacNumber } : {}),
+      ...(dto.ownerNin !== undefined ? { ceoNin: dto.ownerNin } : {}),
+      ...(dto.ownerLegalFirstName !== undefined
+        ? { ceoFirstName: dto.ownerLegalFirstName }
+        : {}),
+      ...(dto.ownerLegalLastName !== undefined
+        ? { ceoLastName: dto.ownerLegalLastName }
+        : {}),
+      ...(companyLocation
+        ? {
+            companyLocation,
+            verificationAddress: companyLocation,
+            country: dto.businessAddress?.country,
+            state: dto.businessAddress?.state,
+            city: dto.businessAddress?.city,
+          }
+        : {}),
+    };
+    const profileIdentityData: Record<string, unknown> = {
+      ...(resolvedOwnerPhoneNumber
+        ? { phoneNumber: resolvedOwnerPhoneNumber }
+        : {}),
+    };
 
     for (const [key, value] of Object.entries(dto)) {
       if (value !== undefined) {
@@ -491,22 +529,21 @@ export class BrandVerificationService {
           verificationInfoRequestedAt: null,
           verificationInfoRequestedItems: null,
           verificationInfoRequestMessage: null,
-          ...(resolvedOwnerPhoneNumber
-            ? {
-                owner: {
-                  update: {
-                    phoneNumber: resolvedOwnerPhoneNumber,
-                  },
-                },
-              }
-            : {}),
+          ...brandIdentityData,
         },
       });
+
+      if (Object.keys(profileIdentityData).length > 0) {
+        await tx.userProfile.updateMany({
+          where: { userId: ownerId },
+          data: profileIdentityData,
+        });
+      }
     });
 
     if (brand.verificationReviewedById) {
       await this.notifications.create(brand.verificationReviewedById, NotificationType.VERIFICATION_INFO_RESUBMITTED, {
-        actorId: ownerId,
+        actorId: actorId ?? brand.ownerId,
         payload: {
           brandId: brand.id,
           brandName: brand.name,
@@ -540,8 +577,8 @@ export class BrandVerificationService {
               OR: [
                 { name: { contains: params.search, mode: 'insensitive' } },
                 { owner: { email: { contains: params.search, mode: 'insensitive' } } },
-                { owner: { firstName: { contains: params.search, mode: 'insensitive' } } },
-                { owner: { lastName: { contains: params.search, mode: 'insensitive' } } },
+                { owner: { userProfile: { is: { firstName: { contains: params.search, mode: 'insensitive' } } } } },
+                { owner: { userProfile: { is: { lastName: { contains: params.search, mode: 'insensitive' } } } } },
               ],
             }
           : {}),
@@ -558,10 +595,8 @@ export class BrandVerificationService {
           select: {
             id: true,
             email: true,
-            firstName: true,
-            lastName: true,
             status: true,
-            profileImage: true,
+            userProfile: { select: canonicalUserProfileSelect },
           },
         },
       },
@@ -573,7 +608,10 @@ export class BrandVerificationService {
     const hasMore = items.length > take;
     const results = hasMore ? items.slice(0, take) : items;
     return {
-      items: results,
+      items: results.map((item) => ({
+        ...item,
+        owner: this.mapOwnerDisplay(item.owner),
+      })),
       nextCursor: hasMore ? results[results.length - 1]?.id : undefined,
       totalPending: await this.prisma.brand.count({ where: { verificationStatus: BrandVerificationStatus.PENDING } }),
     };
@@ -587,10 +625,9 @@ export class BrandVerificationService {
           select: {
             id: true,
             email: true,
-            firstName: true,
-            lastName: true,
             status: true,
             deactivatedAt: true,
+            userProfile: { select: canonicalUserProfileSelect },
           },
         },
         verificationAttempts: {
@@ -1048,18 +1085,18 @@ export class BrandVerificationService {
   }
 
   private async getBrandByOwnerOrThrow(ownerId: string) {
-    const brand = await this.prisma.brand.findUnique({
-      where: { ownerId },
+    const brand = await this.prisma.brand.findFirst({
+      where: {
+        OR: [{ ownerId }, { id: ownerId }],
+      },
       include: {
         owner: {
           select: {
             id: true,
             email: true,
-            firstName: true,
-            lastName: true,
-            phoneNumber: true,
             status: true,
             deactivatedAt: true,
+            userProfile: { select: canonicalUserProfileSelect },
           },
         },
       },
@@ -1068,7 +1105,29 @@ export class BrandVerificationService {
     return {
       ...brand,
       email: brand.owner.email,
-      ownerName: `${brand.owner.firstName ?? ''} ${brand.owner.lastName ?? ''}`.trim() || brand.name,
+      ownerName:
+        [
+          resolveRequiredProfileField(brand.owner, 'firstName'),
+          resolveRequiredProfileField(brand.owner, 'lastName'),
+        ]
+          .filter(Boolean)
+          .join(' ')
+          .trim() || brand.name,
+    };
+  }
+
+  private mapOwnerDisplay(owner: {
+    userProfile?: any;
+    [key: string]: any;
+  }) {
+    const { userProfile, ...rest } = owner;
+    const profileImage = resolveProfileImage({ userProfile });
+    return {
+      ...rest,
+      firstName: resolveRequiredProfileField({ userProfile }, 'firstName'),
+      lastName: resolveRequiredProfileField({ userProfile }, 'lastName'),
+      phoneNumber: resolveNullableProfileField({ userProfile }, 'phoneNumber'),
+      profileImage: profileImage.url,
     };
   }
 

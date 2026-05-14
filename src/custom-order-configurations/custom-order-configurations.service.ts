@@ -319,7 +319,9 @@ export class CustomOrderConfigurationsService {
       throw new NotFoundException('Custom order configuration not found');
     }
 
-    const normalizedConfiguration = await this.normalizeLegacyMeasurementContract(configuration);
+    const normalizedConfiguration = await this.withResolvedBuyerMeasurementContract(
+      await this.normalizeLegacyMeasurementContract(configuration),
+    );
 
     return {
       statusCode: 200,
@@ -361,7 +363,9 @@ export class CustomOrderConfigurationsService {
       throw new NotFoundException('Custom order configuration not found');
     }
 
-    const normalizedConfiguration = await this.normalizeLegacyMeasurementContract(configuration);
+    const normalizedConfiguration = await this.withResolvedBuyerMeasurementContract(
+      await this.normalizeLegacyMeasurementContract(configuration),
+    );
 
     return {
       statusCode: 200,
@@ -412,7 +416,11 @@ export class CustomOrderConfigurationsService {
       ? items.filter((item) => item.isActive || item.brandId === brand.id)
       : items.filter((item) => item.isActive);
     const normalizedItems = await Promise.all(
-      visibleItems.map((item) => this.normalizeLegacyMeasurementContract(item)),
+      visibleItems.map(async (item) =>
+        this.withResolvedBuyerMeasurementContract(
+          await this.normalizeLegacyMeasurementContract(item),
+        ),
+      ),
     );
 
     return {
@@ -819,6 +827,78 @@ export class CustomOrderConfigurationsService {
 
   private normalizeIdList(ids: string[] | null | undefined) {
     return normalizeIdArray(ids);
+  }
+
+  private normalizeMeasurementDisplayLabel(rawLabel: string | null | undefined) {
+    return String(rawLabel ?? '')
+      .trim()
+      .replace(/^BRAND[_\-\s]+[^_\-\s]+[_\-\s]+/i, '')
+      .replace(/^(MEN|WOMEN|WOMAN|UNISEX)[_\-\s]+/i, '')
+      .replace(/[_\-\s]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  private async withResolvedBuyerMeasurementContract<T extends {
+    requiredMeasurementKeys: string[];
+    requiredFreeformPointIds: string[];
+  }>(configuration: T): Promise<T & {
+    resolvedRequiredMeasurementKeys: string[];
+    requiredMeasurementPoints: Array<{
+      id: string;
+      key: string;
+      label: string;
+      description: string | null;
+      minValueCm: number | null;
+      maxValueCm: number | null;
+    }>;
+  }> {
+    const requiredMeasurementKeys = this.normalizeMeasurementKeyList(
+      configuration.requiredMeasurementKeys,
+    );
+    const requiredFreeformPointIds = this.normalizeIdList(
+      configuration.requiredFreeformPointIds,
+    );
+
+    if (!requiredFreeformPointIds.length) {
+      return {
+        ...configuration,
+        resolvedRequiredMeasurementKeys: requiredMeasurementKeys,
+        requiredMeasurementPoints: [],
+      };
+    }
+
+    const points = await this.prisma.measurementPoint.findMany({
+      where: { id: { in: requiredFreeformPointIds } },
+      select: {
+        id: true,
+        key: true,
+        label: true,
+        description: true,
+        minValueCm: true,
+        maxValueCm: true,
+      },
+    });
+    const pointById = new Map(points.map((point) => [point.id, point]));
+    const orderedPoints = requiredFreeformPointIds
+      .map((id) => pointById.get(id))
+      .filter((point): point is NonNullable<typeof point> => Boolean(point));
+
+    return {
+      ...configuration,
+      resolvedRequiredMeasurementKeys: this.normalizeMeasurementKeyList([
+        ...requiredMeasurementKeys,
+        ...orderedPoints.map((point) => point.key),
+      ]),
+      requiredMeasurementPoints: orderedPoints.map((point) => ({
+        id: point.id,
+        key: point.key,
+        label: this.normalizeMeasurementDisplayLabel(point.label),
+        description: point.description,
+        minValueCm: point.minValueCm == null ? null : Number(point.minValueCm),
+        maxValueCm: point.maxValueCm == null ? null : Number(point.maxValueCm),
+      })),
+    };
   }
 
   private async normalizeLegacyMeasurementContract<T extends {

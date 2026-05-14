@@ -12,6 +12,14 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateProductDto, UpdateProductDto } from './dto/create-product.dto';
 import { AddToCartDto, UpdateCartItemDto } from './dto/cart.dto';
+import type {
+  BagDefaultAction,
+  BagFittingState,
+  BagHeartbeatState,
+  BagMode,
+  BagStatusDto,
+  BagStockState,
+} from './dto/bag-status.dto';
 import { AddToWishlistDto } from './dto/wishlist.dto';
 import { CheckoutDto } from './dto/checkout.dto';
 import { calculateShipping } from '../payment/payment.types';
@@ -66,6 +74,14 @@ import {
   describePaystackSecretEnvKeys,
   resolvePaystackSecret,
 } from 'src/common/utils/paystack-secret';
+import { BrandAccessService } from 'src/brands/brand-access.service';
+import { BrandPermissionService } from 'src/brands/permissions/brand-permission.service';
+import {
+  BRAND_PERMISSIONS,
+  BrandPermissionCode,
+} from 'src/brands/permissions/brand-permissions';
+import { canonicalUserProfileSelect } from 'src/common/user-profile-source.helper';
+import { BagEligibilityService } from 'src/bagging/bag-eligibility.service';
 
 type SupportedPaymentBank = {
   id: number;
@@ -125,6 +141,11 @@ export class StoreService {
     private readonly notificationsQueue?: NotificationsQueueService,
     private readonly standardOrderEscrowService?: StandardOrderEscrowService,
     private readonly standardOrderFinanceSyncService?: StandardOrderFinanceSyncService,
+    private readonly brandAccessService?: BrandAccessService,
+    @Optional()
+    private readonly brandPermissionService?: BrandPermissionService,
+    @Optional()
+    private readonly bagEligibilityService?: BagEligibilityService,
   ) {}
 
   private readonly maxProductsPerCollection = Math.max(
@@ -588,18 +609,80 @@ export class StoreService {
     });
   }
 
-  private async assertBrandOwnsProduct(brandOwnerId: string, productId: string) {
+  private async assertBrandOwnsProduct(
+    brandOwnerId: string,
+    productId: string,
+    permission: BrandPermissionCode = BRAND_PERMISSIONS.CATALOG_WRITE,
+  ) {
     const product = await this.prisma.product.findFirst({
       where: { id: productId },
       include: { brand: true },
     });
 
     if (!product) throw new NotFoundException('Product not found');
-    if (product.brand.ownerId !== brandOwnerId) {
-      throw new ForbiddenException('You can only modify your own products');
-    }
+    await this.assertCanManageBrandCatalog(
+      brandOwnerId,
+      product.brandId,
+      product.brand.ownerId,
+      permission,
+      'You can only modify your own products',
+    );
 
     return product;
+  }
+
+  private async assertCanManageBrandCatalog(
+    actorUserId: string,
+    brandId: string,
+    legacyOwnerId: string | null | undefined,
+    permission: BrandPermissionCode = BRAND_PERMISSIONS.CATALOG_WRITE,
+    message = 'You can only modify your own products',
+  ) {
+    if (this.brandAccessService) {
+      await this.brandAccessService.assertCanManageCatalog(
+        actorUserId,
+        brandId,
+        permission,
+      );
+      return;
+    }
+
+    if (legacyOwnerId !== actorUserId) {
+      throw new ForbiddenException(message);
+    }
+  }
+
+  private async resolveCatalogBrandForActor(actorUserId: string) {
+    if (this.brandAccessService) {
+      const context = await this.brandAccessService.getPrimaryBrandContext(actorUserId);
+      if (!context.activeBrandId) {
+        throw new ForbiddenException('You must have an active brand membership to create products');
+      }
+
+      await this.brandAccessService.assertCanManageCatalog(
+        actorUserId,
+        context.activeBrandId,
+        BRAND_PERMISSIONS.CATALOG_WRITE,
+      );
+
+      const brand = await this.prisma.brand.findUnique({
+        where: { id: context.activeBrandId },
+        select: { id: true, currency: true, ownerId: true },
+      });
+      if (!brand) {
+        throw new ForbiddenException('You must have an active brand membership to create products');
+      }
+      return brand;
+    }
+
+    const brand = await this.prisma.brand.findFirst({
+      where: { ownerId: actorUserId },
+      select: { id: true, currency: true, ownerId: true },
+    });
+    if (!brand) {
+      throw new ForbiddenException('You must be a brand owner to create products');
+    }
+    return brand;
   }
 
   private async resolveBrandByIdOrOwner(brandIdOrOwnerId: string) {
@@ -615,48 +698,39 @@ export class StoreService {
       });
     }
 
-    if (!brand) {
-      const owner = await this.prisma.user.findUnique({
-        where: { id: brandIdOrOwnerId },
-        select: {
-          id: true,
-          type: true,
-          brandFullName: true,
-          firstName: true,
-          lastName: true,
-          username: true,
-        },
-      });
-
-      if (owner && owner.type === UserType.BRAND) {
-        const fullName = `${owner.firstName ?? ''} ${owner.lastName ?? ''}`.trim();
-        const name = (owner.brandFullName ?? '').trim() || fullName || owner.username || 'Brand';
-
-        try {
-          brand = await this.prisma.brand.create({
-            data: {
-              id: uuidv4(),
-              name,
-              storeNameLastChangedAt: new Date(),
-              currency: 'NGN',
-              ownerId: owner.id,
-            },
-            select: { id: true, isStoreOpen: true, ownerId: true },
-          });
-        } catch (dbError: any) {
-          if (dbError?.code === 'P2002') {
-            brand = await this.prisma.brand.findUnique({
-              where: { ownerId: owner.id },
-              select: { id: true, isStoreOpen: true, ownerId: true },
-            });
-          } else {
-            throw dbError;
-          }
-        }
+    if (!brand && this.brandAccessService) {
+      const context = await this.brandAccessService.getPrimaryBrandContext(brandIdOrOwnerId);
+      if (context.activeBrandId) {
+        brand = await this.prisma.brand.findUnique({
+          where: { id: context.activeBrandId },
+          select: { id: true, isStoreOpen: true, ownerId: true },
+        });
       }
     }
 
     return brand;
+  }
+
+  private async resolveBrandForPayoutRead(actorUserId: string) {
+    const resolvedBrand = await this.resolveBrandByIdOrOwner(actorUserId);
+    if (!resolvedBrand) {
+      throw new NotFoundException('Brand not found');
+    }
+
+    if (this.brandPermissionService) {
+      await this.brandPermissionService.assertPermission(
+        actorUserId,
+        resolvedBrand.id,
+        BRAND_PERMISSIONS.PAYOUTS_READ,
+      );
+      return resolvedBrand;
+    }
+
+    if (resolvedBrand.ownerId !== actorUserId) {
+      throw new ForbiddenException('You do not have permission to view brand payouts');
+    }
+
+    return resolvedBrand;
   }
 
   async uploadProductMedia(
@@ -725,16 +799,23 @@ export class StoreService {
     productId: string,
     mediaId: string,
   ) {
-    const product = await this.assertBrandOwnsProduct(brandOwnerId, productId);
+    const product = await this.assertBrandOwnsProduct(
+      brandOwnerId,
+      productId,
+      BRAND_PERMISSIONS.CATALOG_DELETE,
+    );
 
     const upload = await this.prisma.fileUpload.findFirst({
-      where: { id: mediaId, userId: brandOwnerId },
-      select: { id: true, s3Url: true },
+      where: { id: mediaId },
+      select: { id: true, s3Url: true, userId: true },
     });
 
     if (!upload) throw new NotFoundException('Media not found');
 
     const existingImages = Array.isArray(product.images) ? product.images : [];
+    if (!existingImages.includes(upload.s3Url)) {
+      throw new NotFoundException('Media not found');
+    }
     const nextImages = existingImages.filter((u) => u !== upload.s3Url);
 
     let nextThumbnail = product.thumbnail ?? null;
@@ -747,7 +828,9 @@ export class StoreService {
       data: { images: nextImages, thumbnail: nextThumbnail },
     });
 
-    await this.uploadService.deleteFile(mediaId, brandOwnerId);
+    if (upload.userId === brandOwnerId) {
+      await this.uploadService.deleteFile(mediaId, brandOwnerId);
+    }
 
     return { success: true };
   }
@@ -774,7 +857,7 @@ export class StoreService {
     }
 
     const uploads = await this.prisma.fileUpload.findMany({
-      where: { id: { in: ids }, userId: brandOwnerId },
+      where: { id: { in: ids } },
       select: { id: true, s3Url: true },
     });
 
@@ -786,6 +869,10 @@ export class StoreService {
     for (const u of uploads) urlById.set(u.id, u.s3Url);
 
     const nextImages = ids.map((id) => urlById.get(id)!).filter(Boolean);
+    const existingImages = Array.isArray(product.images) ? product.images : [];
+    if (nextImages.some((url) => !existingImages.includes(url))) {
+      throw new BadRequestException('One or more mediaIds are invalid');
+    }
 
     const thumbUrl = product.thumbnail ?? null;
     const nextThumbnail =
@@ -807,13 +894,16 @@ export class StoreService {
     const product = await this.assertBrandOwnsProduct(brandOwnerId, productId);
 
     const upload = await this.prisma.fileUpload.findFirst({
-      where: { id: mediaId, userId: brandOwnerId },
+      where: { id: mediaId },
       select: { id: true, s3Url: true },
     });
 
     if (!upload) throw new NotFoundException('Media not found');
 
     const existingImages = Array.isArray(product.images) ? product.images : [];
+    if (!existingImages.includes(upload.s3Url)) {
+      throw new NotFoundException('Media not found');
+    }
     if (
       !existingImages.includes(upload.s3Url) &&
       existingImages.length >= this.maxProductMediaCount
@@ -1242,11 +1332,9 @@ export class StoreService {
   private async refreshSystemTags(): Promise<string[]> {
     if (this.systemTagsRefresh) return this.systemTagsRefresh;
     this.systemTagsRefresh = (async () => {
-      const rows = await this.prisma.systemTag.findMany({
-        select: { tag: true },
-        orderBy: { tag: 'asc' },
-      });
-      const normalized = rows.map((row) => row.tag);
+      // Note: systemTag table not in schema, returning empty
+      console.warn('SystemTags cache refresh attempted but systemTag table not available');
+      const normalized: string[] = [];
       this.systemTagsCache = {
         tags: normalized,
         expiresAt: Date.now() + this.systemTagsTtlMs,
@@ -1340,10 +1428,10 @@ export class StoreService {
   }
 
   private canonicalStoreName(
-    user: { brandFullName: string | null },
+    user: unknown,
     brand?: { name: string } | null,
   ) {
-    return (user.brandFullName || brand?.name || '').trim();
+    return (brand?.name || '').trim();
   }
 
   private canonicalStoreSlug(user: { username: string }) {
@@ -1415,14 +1503,14 @@ export class StoreService {
       }),
       this.prisma.user.findUnique({
         where: { id: brandOwnerId },
-        select: { username: true, brandFullName: true },
+        select: { username: true, brand: { select: { name: true } } },
       }),
     ]);
 
     if (patchers.length === 0) return;
 
     const brandName =
-      owner?.brandFullName || owner?.username || 'A brand';
+      owner?.brand?.name || owner?.username || 'A brand';
     const message = `${brandName} added a new product: ${product.name}`;
 
     const recipientIds = patchers
@@ -1640,17 +1728,8 @@ export class StoreService {
   }
 
   async createProduct(brandOwnerId: string, dto: CreateProductDto) {
-    // Verify brand ownership
-    const brand = await this.prisma.brand.findFirst({
-      where: { ownerId: brandOwnerId },
-      select: { id: true, currency: true },
-    });
-
-    if (!brand) {
-      throw new ForbiddenException(
-        'You must be a brand owner to create products',
-      );
-    }
+    const brand = await this.resolveCatalogBrandForActor(brandOwnerId);
+    const brandOwnerUserId = brand.ownerId;
 
     if ((dto as any).sizingModeDeprecatedAliasUsed) {
       this.logger.warn(
@@ -1666,7 +1745,7 @@ export class StoreService {
     // If a collectionId is provided, verify it belongs to this brand.
     if (requestedCollectionId) {
       const collection = await this.prisma.storeCollection.findFirst({
-        where: { id: requestedCollectionId, ownerId: brandOwnerId },
+        where: { id: requestedCollectionId, ownerId: brandOwnerUserId },
         select: { id: true, deletedAt: true },
       });
 
@@ -1745,7 +1824,7 @@ export class StoreService {
       let collectionId = requestedCollectionId;
 
       if (!collectionId) {
-        collectionId = await this.ensureDefaultStoreCollection(tx, brandOwnerId);
+        collectionId = await this.ensureDefaultStoreCollection(tx, brandOwnerUserId);
       }
 
       await this.assertCategoryTypeForCollection(
@@ -1948,7 +2027,7 @@ export class StoreService {
     }
 
     if (this.isProductPublished(product)) {
-      await this.notifyPatchersOfProduct(brandOwnerId, product);
+      await this.notifyPatchersOfProduct(brandOwnerUserId, product);
     }
 
     return this.attachProductMedia(product);
@@ -1980,9 +2059,13 @@ export class StoreService {
       throw new NotFoundException('Product not found');
     }
 
-    if (product.brand.ownerId !== brandOwnerId) {
-      throw new ForbiddenException('You can only update your own products');
-    }
+    await this.assertCanManageBrandCatalog(
+      brandOwnerId,
+      product.brandId,
+      product.brand.ownerId,
+      BRAND_PERMISSIONS.CATALOG_WRITE,
+      'You can only update your own products',
+    );
 
     if ((dto as any).sizingModeDeprecatedAliasUsed) {
       this.logger.warn(
@@ -2002,7 +2085,7 @@ export class StoreService {
       const requestedCollectionId = (dto.collectionId || '').trim();
       if (requestedCollectionId) {
         const collection = await this.prisma.storeCollection.findFirst({
-          where: { id: requestedCollectionId, ownerId: brandOwnerId },
+          where: { id: requestedCollectionId, ownerId: product.brand.ownerId },
           select: { id: true },
         });
 
@@ -2219,7 +2302,7 @@ export class StoreService {
         if (finalCollectionId === null) {
           finalCollectionId = await this.ensureDefaultStoreCollection(
             tx,
-            brandOwnerId,
+            product.brand.ownerId,
           );
         }
 
@@ -2531,9 +2614,13 @@ export class StoreService {
     if (!product) {
       throw new NotFoundException('Product not found');
     }
-    if (product.brand.ownerId !== brandOwnerId) {
-      throw new ForbiddenException('You can only request republish for your own product');
-    }
+    await this.assertCanManageBrandCatalog(
+      brandOwnerId,
+      product.brandId,
+      product.brand.ownerId,
+      BRAND_PERMISSIONS.CATALOG_WRITE,
+      'You can only request republish for your own product',
+    );
     if (product.isActive) {
       throw new BadRequestException('Product is already published');
     }
@@ -2598,9 +2685,13 @@ export class StoreService {
     });
 
     if (!product) throw new NotFoundException('Product not found');
-    if (product.brand.ownerId !== brandOwnerId) {
-      throw new ForbiddenException('You can only modify your own products');
-    }
+    await this.assertCanManageBrandCatalog(
+      brandOwnerId,
+      product.brandId,
+      product.brand.ownerId,
+      BRAND_PERMISSIONS.CATALOG_WRITE,
+      'You can only modify your own products',
+    );
 
     const copyName = `${product.name} (Copy)`;
     const derivedFromVariants = Array.isArray(product.variants)
@@ -2683,7 +2774,7 @@ export class StoreService {
       if (sourceCollections.length === 0) {
         const fallbackCollectionId = await this.ensureDefaultStoreCollection(
           tx,
-          brandOwnerId,
+          product.brand.ownerId,
         );
         await this.lockCollectionForUpdate(tx, fallbackCollectionId);
         const orderIndex = await tx.storeCollectionProduct.count({
@@ -2793,9 +2884,13 @@ export class StoreService {
       throw new NotFoundException('Product not found');
     }
 
-    if (product.brand.ownerId !== brandOwnerId) {
-      throw new ForbiddenException('You can only check your own products');
-    }
+    await this.assertCanManageBrandCatalog(
+      brandOwnerId,
+      product.brandId,
+      product.brand.ownerId,
+      BRAND_PERMISSIONS.CATALOG_DELETE,
+      'You can only check your own products',
+    );
 
     const activeOrders = await this.prisma.order.findMany({
       where: {
@@ -2855,9 +2950,13 @@ export class StoreService {
       throw new NotFoundException('Product not found');
     }
 
-    if (product.brand.ownerId !== brandOwnerId) {
-      throw new ForbiddenException('You can only archive your own products');
-    }
+    await this.assertCanManageBrandCatalog(
+      brandOwnerId,
+      product.brandId,
+      product.brand.ownerId,
+      BRAND_PERMISSIONS.CATALOG_DELETE,
+      'You can only archive your own products',
+    );
 
     if (product.archivedAt) {
       throw new BadRequestException('Product is already archived');
@@ -2945,9 +3044,13 @@ export class StoreService {
       throw new NotFoundException('Product not found');
     }
 
-    if (product.brand.ownerId !== brandOwnerId) {
-      throw new ForbiddenException('You can only unarchive your own products');
-    }
+    await this.assertCanManageBrandCatalog(
+      brandOwnerId,
+      product.brandId,
+      product.brand.ownerId,
+      BRAND_PERMISSIONS.CATALOG_DELETE,
+      'You can only unarchive your own products',
+    );
 
     if (!product.archivedAt) {
       throw new BadRequestException('Product is not archived');
@@ -3045,9 +3148,13 @@ export class StoreService {
       throw new NotFoundException('Product not found');
     }
 
-    if (product.brand.ownerId !== brandOwnerId) {
-      throw new ForbiddenException('You can only delete your own products');
-    }
+    await this.assertCanManageBrandCatalog(
+      brandOwnerId,
+      product.brandId,
+      product.brand.ownerId,
+      BRAND_PERMISSIONS.CATALOG_DELETE,
+      'You can only delete your own products',
+    );
 
     const previousIndexedTags = this.getIndexedProductTags(product, product.tags ?? []);
 
@@ -3301,11 +3408,13 @@ export class StoreService {
         if (!product) {
           throw new NotFoundException('Product not found');
         }
-        if (product.brand.ownerId !== brandOwnerId) {
-          throw new ForbiddenException(
-            'You can only unpublish your own products',
-          );
-        }
+        await this.assertCanManageBrandCatalog(
+          brandOwnerId,
+          product.brandId,
+          product.brand.ownerId,
+          BRAND_PERMISSIONS.CATALOG_WRITE,
+          'You can only unpublish your own products',
+        );
         if (product.archivedAt) {
           throw new BadRequestException(
             'Product is archived. Unarchive it first before unpublishing.',
@@ -3372,9 +3481,13 @@ export class StoreService {
       throw new NotFoundException('Product not found');
     }
 
-    if (product.brand.ownerId !== brandOwnerId) {
-      throw new ForbiddenException('You can only preview your own products');
-    }
+    await this.assertCanManageBrandCatalog(
+      brandOwnerId,
+      product.brandId,
+      product.brand.ownerId,
+      BRAND_PERMISSIONS.CATALOG_DELETE,
+      'You can only preview your own products',
+    );
 
     // Get all collections this product belongs to
     const memberships = await this.prisma.storeCollectionProduct.findMany({
@@ -3508,9 +3621,13 @@ export class StoreService {
       throw new NotFoundException('Product not found');
     }
 
-    if (product.brand.ownerId !== brandOwnerId) {
-      throw new ForbiddenException('You can only delete your own products');
-    }
+    await this.assertCanManageBrandCatalog(
+      brandOwnerId,
+      product.brandId,
+      product.brand.ownerId,
+      BRAND_PERMISSIONS.CATALOG_DELETE,
+      'You can only delete your own products',
+    );
 
     if (!product.deletedAt) {
       throw new BadRequestException('Product must be deleted before permanent removal');
@@ -3631,6 +3748,335 @@ export class StoreService {
     return { ...withMedia, isWishlisted };
   }
 
+  async getProductBagStatus(productId: string, userId?: string): Promise<
+    BagStatusDto & {
+      baggable: boolean;
+      reason: string | null;
+      modes: { standard: boolean; customOrder: boolean };
+      customOrder: {
+        enabled: boolean;
+        inBag: boolean;
+        sessionId: string | null;
+        checkoutIntentId: string | null;
+        configurationId: string | null;
+        requiredMeasurementKeys: string[];
+        requiredFreeformPointIds: string[];
+        fittingsComplete: boolean;
+        missingMeasurementKeys: string[];
+      };
+    }
+  > {
+    if (this.bagEligibilityService) {
+      return this.bagEligibilityService.getProductBagStatus(productId, userId);
+    }
+
+    const product = await this.prisma.product.findFirst({
+      where: { id: productId, deletedAt: null },
+      include: {
+        brand: {
+          select: {
+            ownerId: true,
+            isStoreOpen: true,
+          },
+        },
+        collection: {
+          select: {
+            status: true,
+            isAvailableInStore: true,
+            deletedAt: true,
+          },
+        },
+        collections: {
+          select: {
+            collection: {
+              select: {
+                status: true,
+                isAvailableInStore: true,
+                deletedAt: true,
+              },
+            },
+          },
+        },
+        variants: true,
+      },
+    });
+
+    if (!product) {
+      throw new NotFoundException('Product not found');
+    }
+
+    const isOwner = Boolean(userId && product.brand?.ownerId === userId);
+    const publicProduct =
+      !product.deletedAt &&
+      !product.archivedAt &&
+      product.isActive !== false &&
+      Boolean(product.brand?.isStoreOpen) &&
+      this.hasPublicStoreAccess(product);
+    const inStock =
+      !product.trackInventory ||
+      product.allowBackorders ||
+      Number(product.totalStock || 0) > 0 ||
+      (Array.isArray((product as any).variants) &&
+        ((product as any).variants as any[]).some((variant) => Number(variant.stock || 0) > 0));
+
+    const variants = Array.isArray((product as any).variants)
+      ? ((product as any).variants as any[])
+      : [];
+    const inStockVariants = variants.filter((variant) => Number(variant.stock || 0) > 0);
+    const variantSource = inStockVariants.length > 0 ? inStockVariants : variants;
+    const requiresSize =
+      variantSource.some((variant) => Boolean(variant.size)) || product.sizes.length > 0;
+    const requiresColor =
+      variantSource.some((variant) => Boolean(variant.color)) || product.colors.length > 0;
+    const sizes = Array.from(
+      new Set([
+        ...variantSource.map((variant) => String(variant.size || '').trim()).filter(Boolean),
+        ...product.sizes,
+      ]),
+    );
+    const colors = Array.from(
+      new Set([
+        ...variantSource.map((variant) => String(variant.color || '').trim()).filter(Boolean),
+        ...product.colors,
+      ]),
+    );
+
+    const [cartItem, customConfiguration, sizeFitProfile] = userId
+      ? await Promise.all([
+          this.prisma.cartItem.findFirst({
+            where: { userId, productId },
+            select: { id: true, selectedSize: true, selectedColor: true, quantity: true },
+            orderBy: { createdAt: 'desc' },
+          }),
+          this.prisma.customOrderConfiguration.findFirst({
+            where: {
+              sourceType: CustomOrderSourceType.PRODUCT,
+              sourceId: productId,
+              isActive: true,
+            },
+            select: {
+              id: true,
+              requiredMeasurementKeys: true,
+              requiredFreeformPointIds: true,
+            },
+          }),
+          this.prisma.userSizeFitProfile.findUnique({
+            where: { userId },
+            select: { measurements: true },
+          }),
+        ])
+      : await Promise.all([
+          Promise.resolve(null),
+          this.prisma.customOrderConfiguration.findFirst({
+            where: {
+              sourceType: CustomOrderSourceType.PRODUCT,
+              sourceId: productId,
+              isActive: true,
+            },
+            select: {
+              id: true,
+              requiredMeasurementKeys: true,
+              requiredFreeformPointIds: true,
+            },
+          }),
+          Promise.resolve(null),
+        ]);
+
+    const customBagLine =
+      userId && customConfiguration
+        ? await this.prisma.customOrderCheckoutSession.findFirst({
+            where: {
+              buyerId: userId,
+              customOrderId: null,
+              checkoutIntent: {
+                configurationId: customConfiguration.id,
+                consumedAt: null,
+                expiresAt: { gt: new Date() },
+              },
+            },
+            select: { id: true, checkoutIntentId: true },
+            orderBy: { createdAt: 'desc' },
+        })
+        : null;
+
+    const [previousStandardOrder, previousCustomOrder] = userId
+      ? await Promise.all([
+          this.prisma.orderItem.findFirst({
+            where: { buyerId: userId, productId },
+            select: { id: true },
+          }),
+          this.prisma.customOrder.findFirst({
+            where: {
+              buyerId: userId,
+              sourceType: CustomOrderSourceType.PRODUCT,
+              sourceId: productId,
+            },
+            select: { id: true },
+          }),
+        ])
+      : await Promise.all([Promise.resolve(null), Promise.resolve(null)]);
+
+    const measurementRecord =
+      sizeFitProfile?.measurements &&
+      typeof sizeFitProfile.measurements === 'object' &&
+      !Array.isArray(sizeFitProfile.measurements)
+        ? (sizeFitProfile.measurements as Record<string, unknown>)
+        : {};
+    const requiredMeasurementKeys = customConfiguration?.requiredMeasurementKeys ?? [];
+    const missingMeasurementKeys = requiredMeasurementKeys.filter((key) => {
+      const raw = measurementRecord[key];
+      const value =
+        raw && typeof raw === 'object' && 'value' in (raw as Record<string, unknown>)
+          ? (raw as Record<string, unknown>).value
+          : raw;
+      const numeric = Number(value);
+      return !Number.isFinite(numeric) || numeric <= 0;
+    });
+
+    const fittingState: BagFittingState =
+      !customConfiguration || requiredMeasurementKeys.length === 0
+        ? 'NOT_REQUIRED'
+        : missingMeasurementKeys.length === 0
+          ? 'COMPLETE'
+          : missingMeasurementKeys.length === requiredMeasurementKeys.length
+            ? 'MISSING'
+            : 'PARTIAL';
+
+    const standardEnabled =
+      product.standardCheckoutEnabled !== false &&
+      publicProduct &&
+      inStock &&
+      !isOwner;
+    const customEnabled =
+      product.customOrderEnabled === true &&
+      Boolean(customConfiguration) &&
+      publicProduct &&
+      !isOwner;
+
+    const canBag = standardEnabled || customEnabled;
+    const bagMode: BagMode =
+      standardEnabled && customEnabled
+        ? 'STANDARD_OR_CUSTOM'
+        : standardEnabled
+          ? 'STANDARD'
+          : customEnabled
+            ? 'CUSTOM'
+            : 'UNAVAILABLE';
+    const stockState: BagStockState =
+      !publicProduct
+        ? 'UNAVAILABLE'
+        : inStock
+          ? 'IN_STOCK'
+          : customEnabled
+            ? 'CUSTOM_ONLY'
+            : 'OUT_OF_STOCK';
+    const hasPreviouslyBaggedOrOrdered = Boolean(
+      cartItem ||
+        customBagLine ||
+        previousStandardOrder ||
+        previousCustomOrder,
+    );
+    const disabledReason = isOwner
+      ? 'Brands cannot bag their own products.'
+      : !publicProduct
+        ? 'This product is unavailable.'
+        : !standardEnabled && !customEnabled && product.customOrderEnabled === true && !customConfiguration
+          ? 'This product needs an active custom-order configuration before it can be bagged.'
+          : !standardEnabled && !customEnabled && !inStock
+            ? 'This product is out of stock.'
+            : !standardEnabled && !customEnabled
+              ? 'This product is not available for bagging.'
+              : null;
+    const heartbeatState: BagHeartbeatState =
+      !canBag
+        ? 'disabled'
+        : cartItem || customBagLine
+          ? 'currently_bagged'
+          : hasPreviouslyBaggedOrOrdered
+            ? 'previously_bagged'
+            : 'not_bagged';
+    const defaultAction: BagDefaultAction =
+      !canBag
+        ? 'DISABLED'
+        : standardEnabled && customEnabled
+          ? 'OPEN_SELECTOR'
+          : standardEnabled && (requiresSize || requiresColor)
+            ? 'OPEN_SELECTOR'
+            : standardEnabled
+              ? 'ADD_STANDARD'
+              : fittingState === 'MISSING' || fittingState === 'PARTIAL'
+                ? 'OPEN_FITTINGS'
+                : 'OPEN_CUSTOM_FLOW';
+
+    const response: BagStatusDto = {
+      productId,
+      canBag,
+      bagMode,
+      standard: {
+        available: standardEnabled,
+        alreadyBagged: Boolean(cartItem),
+        cartItemId: cartItem?.id ?? null,
+        requiresSize,
+        requiresColor,
+        selectedSize: cartItem?.selectedSize ?? null,
+        selectedColor: cartItem?.selectedColor ?? null,
+        sizes,
+        colors,
+        quantity: cartItem?.quantity ?? 0,
+        stock: Number(product.totalStock || 0),
+      },
+      custom: {
+        available: customEnabled,
+        alreadyBagged: Boolean(customBagLine),
+        checkoutSessionId: customBagLine?.id ?? null,
+        checkoutIntentId: customBagLine?.checkoutIntentId ?? null,
+        configurationId: customConfiguration?.id ?? null,
+        requiredMeasurementKeys,
+        requiredFreeformPointIds: customConfiguration?.requiredFreeformPointIds ?? [],
+        fittingState,
+        missingMeasurementKeys,
+      },
+      stockState,
+      userState: {
+        authenticated: Boolean(userId),
+        isOwner,
+        hasPreviouslyBaggedOrOrdered,
+      },
+      ui: {
+        heartbeatState,
+        defaultAction,
+        disabledReason,
+      },
+    };
+
+    return {
+      ...response,
+      baggable: response.canBag,
+      reason: disabledReason
+        ? disabledReason
+        : !response.canBag
+          ? 'NO_BAG_MODE'
+          : null,
+      modes: {
+        standard: response.standard.available,
+        customOrder: response.custom.available,
+      },
+      customOrder: {
+        enabled: response.custom.available,
+        inBag: response.custom.alreadyBagged,
+        sessionId: response.custom.checkoutSessionId,
+        checkoutIntentId: response.custom.checkoutIntentId,
+        configurationId: response.custom.configurationId,
+        requiredMeasurementKeys: response.custom.requiredMeasurementKeys,
+        requiredFreeformPointIds: response.custom.requiredFreeformPointIds,
+        fittingsComplete:
+          response.custom.fittingState === 'COMPLETE' ||
+          response.custom.fittingState === 'NOT_REQUIRED',
+        missingMeasurementKeys: response.custom.missingMeasurementKeys,
+      },
+    };
+  }
+
   async resolvePublicProductBySlug(slug: string, userId?: string) {
     const normalizedSlug = slug.trim();
     if (!normalizedSlug) {
@@ -3727,7 +4173,6 @@ export class StoreService {
         id: true,
         username: true,
         type: true,
-        brandFullName: true,
         brand: {
           select: {
             name: true,
@@ -4360,9 +4805,13 @@ export class StoreService {
       throw new NotFoundException('Product not found');
     }
 
-    if (product.brand.ownerId !== brandOwnerId) {
-      throw new ForbiddenException('You can only restore your own products');
-    }
+    await this.assertCanManageBrandCatalog(
+      brandOwnerId,
+      product.brandId,
+      product.brand.ownerId,
+      BRAND_PERMISSIONS.CATALOG_DELETE,
+      'You can only restore your own products',
+    );
 
     if (!product.deletedAt) {
       throw new BadRequestException('Product is not deleted');
@@ -5533,7 +5982,11 @@ export class StoreService {
             logo: true,
             currency: true,
             contactEmail: true,
-            owner: { select: { phoneNumber: true, address: true } },
+            owner: {
+              select: {
+                userProfile: { select: canonicalUserProfileSelect },
+              },
+            },
           },
         },
         orderItems: {
@@ -6029,6 +6482,21 @@ export class StoreService {
       };
     }
 
+    if (
+      this.brandPermissionService &&
+      await this.brandPermissionService.hasPermission(
+        user.id,
+        order.brandId,
+        BRAND_PERMISSIONS.ORDERS_READ,
+      )
+    ) {
+      return {
+        orderId: order.id,
+        viewerRole: 'BRAND' as const,
+        destination: `/studio?tab=orders&orderId=${encodeURIComponent(order.id)}`,
+      };
+    }
+
     throw new ForbiddenException('You do not have access to this order');
   }
 
@@ -6043,12 +6511,6 @@ export class StoreService {
           username: true,
           email: true,
           isEmailVerified: true,
-          brandFullName: true,
-          brandDescription: true,
-          brandTags: true,
-          socialInstagram: true,
-          socialTwitter: true,
-          socialWebsite: true,
         },
       }),
       this.prisma.brand.findUnique({
@@ -6061,6 +6523,7 @@ export class StoreService {
           tags: true,
           contactEmail: true,
           socialInstagram: true,
+          socialFacebook: true,
           socialTwitter: true,
           socialTiktok: true,
           socialWebsite: true,
@@ -6081,17 +6544,17 @@ export class StoreService {
     const storeName = this.canonicalStoreName(user, brand);
     const slug = this.canonicalStoreSlug(user);
 
-    const rawTags =
-      (brand?.tags && brand.tags.length > 0 ? brand.tags : user.brandTags) || [];
+    const rawTags = brand?.tags ?? [];
     const normalizedTags = rawTags
       .map((t) => this.normalizeTag(t))
       .filter(Boolean);
 
-    const description = (brand?.description || user.brandDescription || '').trim();
+    const description = (brand?.description || '').trim();
     const contactEmail = brand?.contactEmail || user.email || '';
-    const instagram = brand?.socialInstagram || user.socialInstagram || '';
-    const twitter = brand?.socialTwitter || user.socialTwitter || '';
-    const website = brand?.socialWebsite || user.socialWebsite || '';
+    const instagram = brand?.socialInstagram || '';
+    const facebook = brand?.socialFacebook || '';
+    const twitter = brand?.socialTwitter || '';
+    const website = brand?.socialWebsite || '';
     const tiktok = brand?.socialTiktok || '';
     const tagline = (brand?.tagline || '').trim();
     const responseTimeSla = policy?.responseTimeSla || brand?.responseTimeSla || '24h';
@@ -6109,6 +6572,7 @@ export class StoreService {
         contactEmail,
         description,
         instagram,
+        facebook,
         twitter,
         tiktok,
         website,
@@ -6136,8 +6600,6 @@ export class StoreService {
           username: true,
           email: true,
           isEmailVerified: true,
-          brandFullName: true,
-          brandDescription: true,
         },
       }),
       this.prisma.brand.findUnique({
@@ -6187,7 +6649,7 @@ export class StoreService {
       brandId: brand?.id,
       storeName,
       slug,
-      description: brand?.description || user.brandDescription || '',
+      description: brand?.description || '',
       tagline: brand?.tagline || '',
       logo: brand?.logo || '',
       banner: brand?.banner || '',
@@ -6254,19 +6716,12 @@ export class StoreService {
     const newName = dto.newName.trim();
     if (!newName) throw new BadRequestException('Store name cannot be empty');
 
-    await this.prisma.$transaction(async (tx) => {
-      await tx.brand.update({
-        where: { id: brand.id },
-        data: {
-          name: newName,
-          storeNameLastChangedAt: now,
-        },
-      });
-
-      await tx.user.update({
-        where: { id: ownerId },
-        data: { brandFullName: newName },
-      });
+    await this.prisma.brand.update({
+      where: { id: brand.id },
+      data: {
+        name: newName,
+        storeNameLastChangedAt: now,
+      },
     });
 
     return this.getStoreGeneralSettings(ownerId);
@@ -6733,9 +7188,13 @@ export class StoreService {
         select: {
           id: true,
           email: true,
-          firstName: true,
-          lastName: true,
-          phoneNumber: true,
+          userProfile: {
+            select: {
+              firstName: true,
+              lastName: true,
+              phoneNumber: true,
+            },
+          },
         },
       }),
     ]);
@@ -6761,7 +7220,7 @@ export class StoreService {
     });
 
     const suggestedContactName =
-      `${owner?.firstName ?? ''} ${owner?.lastName ?? ''}`.trim() || brand.name;
+      `${owner?.userProfile?.firstName ?? ''} ${owner?.userProfile?.lastName ?? ''}`.trim() || brand.name;
 
     return {
       brandId: brand.id,
@@ -6773,7 +7232,7 @@ export class StoreService {
         primaryContactEmail:
           account?.primaryContactEmail ?? owner?.email ?? null,
         primaryContactPhone:
-          account?.primaryContactPhone ?? owner?.phoneNumber ?? null,
+          account?.primaryContactPhone ?? owner?.userProfile?.phoneNumber ?? null,
       },
       account: this.summarizePaymentAccount(account),
     };
@@ -6877,9 +7336,13 @@ export class StoreService {
         select: {
           id: true,
           email: true,
-          firstName: true,
-          lastName: true,
-          phoneNumber: true,
+          userProfile: {
+            select: {
+              firstName: true,
+              lastName: true,
+              phoneNumber: true,
+            },
+          },
         },
       }),
     ]);
@@ -6957,7 +7420,7 @@ export class StoreService {
         const nextPrimaryContactPhone =
           String(dto.primaryContactPhone || '').trim() ||
           existingAccount?.primaryContactPhone ||
-          owner?.phoneNumber ||
+          owner?.userProfile?.phoneNumber ||
           null;
         const accountNumberEncrypted = this.encryptStorePaymentValue(accountNumber);
         const lastSuccessfulSyncAt = syncTimestamp;
@@ -7055,7 +7518,7 @@ export class StoreService {
       const primaryContactName =
         String(dto.primaryContactName || '').trim() ||
         existingAccount?.primaryContactName ||
-        `${owner?.firstName ?? ''} ${owner?.lastName ?? ''}`.trim() ||
+        `${owner?.userProfile?.firstName ?? ''} ${owner?.userProfile?.lastName ?? ''}`.trim() ||
         brand.name;
       const primaryContactEmail =
         String(dto.primaryContactEmail || '').trim() ||
@@ -7065,7 +7528,7 @@ export class StoreService {
       const primaryContactPhone =
         String(dto.primaryContactPhone || '').trim() ||
         existingAccount?.primaryContactPhone ||
-        owner?.phoneNumber ||
+        owner?.userProfile?.phoneNumber ||
         null;
 
       let subaccountPayload: any = null;
@@ -7375,10 +7838,7 @@ export class StoreService {
   }
 
   async getStoreWallet(ownerId: string) {
-    const resolvedBrand = await this.resolveBrandByIdOrOwner(ownerId);
-    if (!resolvedBrand) {
-      throw new NotFoundException('Brand not found');
-    }
+    const resolvedBrand = await this.resolveBrandForPayoutRead(ownerId);
 
     const brandId = resolvedBrand.id;
     const pendingStatuses = [
@@ -7524,10 +7984,7 @@ export class StoreService {
     ownerId: string,
     params?: { page?: number; limit?: number; status?: string },
   ) {
-    const resolvedBrand = await this.resolveBrandByIdOrOwner(ownerId);
-    if (!resolvedBrand) {
-      throw new NotFoundException('Brand not found');
-    }
+    const resolvedBrand = await this.resolveBrandForPayoutRead(ownerId);
 
     const page = Math.max(1, Number(params?.page ?? 1));
     const limit = Math.min(100, Math.max(1, Number(params?.limit ?? 20)));
@@ -7631,10 +8088,7 @@ export class StoreService {
   }
 
   async getStorePayoutDetail(ownerId: string, payoutId: string) {
-    const resolvedBrand = await this.resolveBrandByIdOrOwner(ownerId);
-    if (!resolvedBrand) {
-      throw new NotFoundException('Brand not found');
-    }
+    const resolvedBrand = await this.resolveBrandForPayoutRead(ownerId);
 
     const payout = await this.prisma.payout.findFirst({
       where: {
@@ -7723,9 +8177,13 @@ export class StoreService {
                 sourceTitleSnapshot: true,
                 buyer: {
                   select: {
-                    firstName: true,
-                    lastName: true,
                     username: true,
+                    userProfile: {
+                      select: {
+                        firstName: true,
+                        lastName: true,
+                      },
+                    },
                   },
                 },
               },
@@ -7786,10 +8244,7 @@ export class StoreService {
   }
 
   async getStorePayoutStatement(ownerId: string, payoutId: string) {
-    const resolvedBrand = await this.resolveBrandByIdOrOwner(ownerId);
-    if (!resolvedBrand) {
-      throw new NotFoundException('Brand not found');
-    }
+    const resolvedBrand = await this.resolveBrandForPayoutRead(ownerId);
 
     const payout = await this.prisma.payout.findFirst({
       where: {
@@ -7872,20 +8327,24 @@ export class StoreService {
    * required before store setup can be opened.
    */
   private computeBrandProfileCompleteness(brand: {
-    brandDescription?: string | null;
-    brandTags?: string[] | null;
-    brandCountry?: string | null;
-    brandState?: string | null;
+    description?: string | null;
+    tags?: string[] | null;
+    country?: string | null;
+    state?: string | null;
   }): { isComplete: boolean; missingFields: string[] } {
     const missingFields: string[] = [];
+    const description = brand.description ?? null;
+    const tags = brand.tags ?? [];
+    const country = brand.country ?? null;
+    const state = brand.state ?? null;
 
-    if ((brand.brandDescription ?? '').trim().length < 20) {
+    if ((description ?? '').trim().length < 20) {
       missingFields.push('description');
     }
-    if (!brand.brandTags || brand.brandTags.length === 0) {
+    if (!tags || tags.length === 0) {
       missingFields.push('tags');
     }
-    if (!String(brand.brandCountry ?? '').trim() && !String(brand.brandState ?? '').trim()) {
+    if (!String(country ?? '').trim() && !String(state ?? '').trim()) {
       missingFields.push('location');
     }
 
@@ -7929,6 +8388,41 @@ export class StoreService {
     );
   }
 
+  private async resolveStoreProfileMutationBrand(actorUserId: string) {
+    let brand = await this.prisma.brand.findUnique({
+      where: { ownerId: actorUserId },
+      select: { id: true, ownerId: true, tags: true, isStoreOpen: true },
+    });
+
+    if (brand) {
+      return brand;
+    }
+
+    const accessibleBrandIds =
+      (await this.brandAccessService?.getAccessibleBrandIds(actorUserId)) ?? [];
+
+    if (accessibleBrandIds.length === 0) {
+      throw new ForbiddenException('Not authorized for this brand');
+    }
+
+    if (accessibleBrandIds.length > 1) {
+      throw new BadRequestException(
+        'Multiple accessible brands found. Use a brand-scoped store profile endpoint.',
+      );
+    }
+
+    brand = await this.prisma.brand.findUnique({
+      where: { id: accessibleBrandIds[0] },
+      select: { id: true, ownerId: true, tags: true, isStoreOpen: true },
+    });
+
+    if (!brand) {
+      throw new NotFoundException('Brand not found');
+    }
+
+    return brand;
+  }
+
   async getStoreStatus(ownerId: string) {
     let brand = await this.prisma.brand.findUnique({
       where: { ownerId },
@@ -7939,14 +8433,19 @@ export class StoreService {
         tagline: true,
         logo: true,
         banner: true,
-          tags: true,
-          contactEmail: true,
-          socialInstagram: true,
-          socialTwitter: true,
-          socialTiktok: true,
-          socialWebsite: true,
-          responseTimeSla: true,
-          isStoreOpen: true,
+        tags: true,
+        country: true,
+        state: true,
+        city: true,
+        contactEmail: true,
+        socialInstagram: true,
+        socialFacebook: true,
+        socialTwitter: true,
+        socialTiktok: true,
+        socialWebsite: true,
+        responseTimeSla: true,
+        isStoreOpen: true,
+        ownerId: true,
         },
       });
 
@@ -7963,13 +8462,18 @@ export class StoreService {
             logo: true,
             banner: true,
             tags: true,
+            country: true,
+            state: true,
+            city: true,
             contactEmail: true,
             socialInstagram: true,
+            socialFacebook: true,
             socialTwitter: true,
             socialTiktok: true,
             socialWebsite: true,
             responseTimeSla: true,
             isStoreOpen: true,
+            ownerId: true,
           },
         });
       }
@@ -7988,17 +8492,13 @@ export class StoreService {
         where: { brandId: brand.id },
       }),
       this.prisma.user.findUnique({
-        where: { id: ownerId },
+        where: { id: brand.ownerId },
         select: {
           isEmailVerified: true,
-          brandDescription: true,
-          brandTags: true,
-          brandCountry: true,
-          brandState: true,
         },
       }),
     ]);
-    const profileCompleteness = this.computeBrandProfileCompleteness(owner ?? {});
+    const profileCompleteness = this.computeBrandProfileCompleteness(brand);
     const { isComplete, missingFields } = this.computeStoreCompleteness(
       brand,
       paymentAccount,
@@ -8021,6 +8521,7 @@ export class StoreService {
         tags: brand.tags,
         contactEmail: brand.contactEmail,
         socialInstagram: brand.socialInstagram,
+        socialFacebook: brand.socialFacebook,
         socialTwitter: brand.socialTwitter,
         socialTiktok: brand.socialTiktok,
         socialWebsite: brand.socialWebsite,
@@ -8158,26 +8659,9 @@ export class StoreService {
   }
 
   async updateStoreProfile(ownerId: string, dto: UpdateStoreProfileDto) {
+    const brand = await this.resolveStoreProfileMutationBrand(ownerId);
+    const ownerUserId = brand.ownerId;
     await this.assertEmailVerifiedForStoreSetup(ownerId, 'continue');
-
-    let brand = await this.prisma.brand.findUnique({
-      where: { ownerId },
-      select: { id: true, tags: true, isStoreOpen: true },
-    });
-
-    if (!brand) {
-      const resolved = await this.resolveBrandByIdOrOwner(ownerId);
-      if (resolved) {
-        brand = await this.prisma.brand.findUnique({
-          where: { id: resolved.id },
-          select: { id: true, tags: true, isStoreOpen: true },
-        });
-      }
-    }
-
-    if (!brand) {
-      throw new NotFoundException('Brand not found');
-    }
 
     const previousStoreTags = Array.isArray(brand.tags) ? brand.tags : [];
     const previousIndexedTags = this.getIndexedBrandTags(
@@ -8199,17 +8683,20 @@ export class StoreService {
     }
     if (dto.contactEmail !== undefined) updateData.contactEmail = dto.contactEmail;
     if (dto.socialInstagram !== undefined) updateData.socialInstagram = dto.socialInstagram;
+    if (dto.socialFacebook !== undefined) updateData.socialFacebook = dto.socialFacebook;
     if (dto.socialTwitter !== undefined) updateData.socialTwitter = dto.socialTwitter;
     if (dto.socialTiktok !== undefined) updateData.socialTiktok = dto.socialTiktok;
     if (dto.socialWebsite !== undefined) updateData.socialWebsite = dto.socialWebsite;
 
     if (Object.keys(updateData).length === 0) {
-      return this.getStoreStatus(ownerId);
+      return this.getStoreStatus(ownerUserId);
     }
 
-    await this.prisma.brand.update({
-      where: { id: brand.id },
-      data: updateData,
+    await this.prisma.$transaction(async (tx) => {
+      await tx.brand.update({
+        where: { id: brand.id },
+        data: updateData,
+      });
     });
     if (nextStoreTags !== undefined) {
       const nextIndexedTags = this.getIndexedBrandTags(
@@ -8231,7 +8718,7 @@ export class StoreService {
       }
     }
 
-    return this.getStoreStatus(ownerId);
+    return this.getStoreStatus(ownerUserId);
   }
 
   async getStorePolicies(ownerId: string) {

@@ -1,5 +1,10 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { BrandVerificationStatus } from '@prisma/client';
+import {
+  BrandMemberRole,
+  BrandMemberStatus,
+  BrandVerificationStatus,
+} from '@prisma/client';
+import { THEME_PREFERENCES, type ThemePreference } from 'src/common/theme.contract';
 
 export class AuthProfileImageFileDto {
   @ApiProperty()
@@ -19,6 +24,24 @@ export class AuthProfileImageFileDto {
   @ApiProperty()
   updatedAt: string;
 }
+
+export class AuthBrandMembershipDto {
+  @ApiProperty()
+  brandId: string;
+
+  @ApiProperty()
+  brandName: string;
+
+  @ApiProperty({ enum: BrandMemberRole })
+  role: BrandMemberRole;
+
+  @ApiProperty({ enum: BrandMemberStatus })
+  status: BrandMemberStatus;
+
+  @ApiProperty()
+  isOwner: boolean;
+}
+
 export class AuthUserResponseDto {
   @ApiProperty()
   id: string;
@@ -133,6 +156,23 @@ export class AuthUserResponseDto {
   })
   storeId: string | null;
 
+  @ApiProperty({
+    required: false,
+    isArray: true,
+    type: () => AuthBrandMembershipDto,
+    description:
+      'Brand memberships visible to the authenticated account. Includes inactive statuses for account awareness.',
+  })
+  brandMemberships?: AuthBrandMembershipDto[];
+
+  @ApiProperty({
+    required: false,
+    nullable: true,
+    description:
+      'Primary active Brand.id for brand-scoped operations; null when no active brand membership exists.',
+  })
+  activeBrandId?: string | null;
+
   @ApiProperty({ required: false, nullable: true, enum: BrandVerificationStatus })
   verificationStatus?: BrandVerificationStatus | null;
 
@@ -147,6 +187,9 @@ export class AuthUserResponseDto {
 
   @ApiProperty()
   isActive: string;
+
+  @ApiProperty({ enum: THEME_PREFERENCES })
+  themePreference: ThemePreference;
 
   @ApiProperty({ required: false, nullable: true })
   status?: string | null;

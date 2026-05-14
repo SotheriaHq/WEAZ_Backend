@@ -298,8 +298,6 @@ export class BreakGlassService {
             role: Role.SuperAdmin,
             status: UserStatus.ACTIVE,
             isActive: 'Active',
-            firstName,
-            lastName,
             password: hashedPassword,
             mustResetPassword: true,
             authVersion: { increment: 1 },
@@ -307,6 +305,12 @@ export class BreakGlassService {
             adminSuspendedReason: null,
             deactivatedAt: null,
             deactivatedReason: null,
+            userProfile: {
+              upsert: {
+                create: { firstName, lastName },
+                update: { firstName, lastName },
+              },
+            },
           },
           select: {
             id: true,
@@ -326,14 +330,15 @@ export class BreakGlassService {
             id: uuidv4(),
             username,
             email: normalizedEmail,
-            firstName,
-            lastName,
             password: hashedPassword,
             role: Role.SuperAdmin,
             type: UserType.REGULAR,
             status: UserStatus.ACTIVE,
             isActive: 'Active',
             mustResetPassword: true,
+            userProfile: {
+              create: { firstName, lastName },
+            },
           },
           select: {
             id: true,

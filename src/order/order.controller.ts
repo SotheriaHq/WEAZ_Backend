@@ -7,17 +7,22 @@ import {
   Req,
   UseGuards,
   Body,
-  ForbiddenException,
 } from '@nestjs/common';
 import { OrderService } from './order.service';
 import { JwtAuthGuard } from '../auth/guard/jwt-auth.guard';
-import { UserTypeGuard } from '../auth/guard/user-type.guard';
-import { UserType, OrderStatus } from '@prisma/client';
+import { OrderStatus } from '@prisma/client';
+import { BrandPermissionService } from 'src/brands/permissions/brand-permission.service';
+import { BRAND_PERMISSIONS } from 'src/brands/permissions/brand-permissions';
+import { OrderAccessService } from './order-access.service';
 
 @Controller('brands/:brandId/orders')
-@UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+@UseGuards(JwtAuthGuard)
 export class OrderController {
-  constructor(private readonly orderService: OrderService) {}
+  constructor(
+    private readonly orderService: OrderService,
+    private readonly orderAccessService: OrderAccessService,
+    private readonly brandPermissionService: BrandPermissionService,
+  ) {}
 
   @Get()
   async findAll(
@@ -28,9 +33,11 @@ export class OrderController {
     @Query('status') status?: OrderStatus,
     @Query('q') search?: string,
   ) {
-    if (req.user.id !== brandId) {
-      throw new ForbiddenException('Not authorized for this brand');
-    }
+    await this.brandPermissionService.assertPermission(
+      req.user.id,
+      brandId,
+      BRAND_PERMISSIONS.ORDERS_READ,
+    );
     return this.orderService.findAll(
       brandId,
       page ? parseInt(page, 10) : 1,
@@ -46,9 +53,7 @@ export class OrderController {
     @Param('orderId') orderId: string,
     @Req() req: any,
   ) {
-    if (req.user.id !== brandId) {
-      throw new ForbiddenException('Not authorized for this brand');
-    }
+    await this.orderAccessService.assertOrderBrandRead(req.user.id, orderId);
     return this.orderService.findOne(brandId, orderId);
   }
 
@@ -59,9 +64,7 @@ export class OrderController {
     @Body() body: { status: OrderStatus },
     @Req() req: any,
   ) {
-    if (req.user.id !== brandId) {
-      throw new ForbiddenException('Not authorized for this brand');
-    }
-    return this.orderService.updateStatus(brandId, orderId, body.status);
+    await this.orderAccessService.assertOrderBrandUpdate(req.user.id, orderId);
+    return this.orderService.updateStatus(brandId, orderId, body.status, req.user.id);
   }
 }

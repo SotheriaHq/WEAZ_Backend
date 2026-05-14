@@ -36,6 +36,8 @@ import { NotificationsService } from 'src/notifications/notifications.service';
 import { AnalyticsService } from 'src/analytics/analytics.service';
 import {
   CreateCollectionDto,
+  DESIGN_MAX_MEDIA_COUNT,
+  DESIGN_REQUIRED_MEDIA_COUNT,
   FileSpecDto,
   FinalizeCollectionDto,
 } from './dto/create-collection.dto';
@@ -57,9 +59,38 @@ import {
 } from 'src/queue/queue.constants';
 import { TAG_ENTITY_TYPE } from 'src/tags/tag-entity-type';
 import { CategoriesService } from 'src/categories/categories.service';
+import { BrandAccessService } from 'src/brands/brand-access.service';
+import {
+  BRAND_PERMISSIONS,
+  BrandPermissionCode,
+} from 'src/brands/permissions/brand-permissions';
+import {
+  canonicalUserProfileSelect,
+  resolveProfileImage,
+  resolveRequiredProfileField,
+} from 'src/common/user-profile-source.helper';
+import {
+  canonicalBrandProfileSelect,
+  resolveRequiredBrandField,
+} from 'src/common/brand-profile-source.helper';
 
 type CollectionScope = 'design' | 'store' | 'all';
 type CollectionDomainValue = 'DESIGN' | 'STORE';
+type FeedMediaAssetDto = {
+  id: string;
+  fileId: string | null;
+  type: 'IMAGE' | 'VIDEO';
+  displayUrl: string;
+  thumbnailUrl: string | null;
+  previewUrl: string | null;
+  blurHash: string | null;
+  dominantColor: string | null;
+  width: number | null;
+  height: number | null;
+  aspectRatio: number;
+  status: 'READY';
+  orderIndex: number;
+};
 
 @Injectable()
 export class CollectionsService {
@@ -80,7 +111,35 @@ export class CollectionsService {
     private readonly notificationsQueue?: NotificationsQueueService,
     @InjectQueue(BULK_UPLOAD_QUEUE) private readonly bulkUploadQueue?: Queue,
     private readonly systemConfigService?: SystemConfigService,
+    @Optional()
+    private readonly brandAccessService?: BrandAccessService,
   ) { }
+
+  private mapCollectionOwner(owner: any) {
+    if (!owner) return null;
+    const profileImage = resolveProfileImage(owner);
+    return {
+      id: owner.id,
+      username: owner.username,
+      firstName: resolveRequiredProfileField(owner, 'firstName'),
+      lastName: resolveRequiredProfileField(owner, 'lastName'),
+      brandFullName: resolveRequiredBrandField(owner, 'brandFullName') || null,
+      profileImage: owner.brand?.logo ?? profileImage.url,
+      profileImageId: profileImage.fileId,
+      profileImageFile: profileImage.file,
+      brand: owner.brand ?? null,
+    };
+  }
+
+  private selectCollectionOwnerDisplay() {
+    return {
+      id: true,
+      username: true,
+      type: true,
+      userProfile: { select: canonicalUserProfileSelect },
+      brand: { select: canonicalBrandProfileSelect },
+    } as const;
+  }
 
   private readonly maxProductsPerCollection = Math.max(
     1,
@@ -98,7 +157,7 @@ export class CollectionsService {
       },
     });
 
-    if (!user || user.type !== UserType.BRAND) {
+    if (!user) {
       throw new ForbiddenException('Only brands can create designs');
     }
 
@@ -106,7 +165,102 @@ export class CollectionsService {
       throw new ForbiddenException('Verify your email before creating designs.');
     }
 
+    if (this.brandAccessService) {
+      const context = await this.brandAccessService.getPrimaryBrandContext(userId);
+      if (context.activeBrandId) {
+        await this.brandAccessService.assertCanManageCatalog(
+          userId,
+          context.activeBrandId,
+          BRAND_PERMISSIONS.CATALOG_WRITE,
+        );
+        return user;
+      }
+    }
+
+    if (user.type !== UserType.BRAND) {
+      throw new ForbiddenException('Only brands can create designs');
+    }
+
     return user;
+  }
+
+  private async resolveCatalogOwnerContext(actorUserId: string): Promise<{
+    actorUserId: string;
+    ownerId: string;
+    brandId: string;
+  }> {
+    const user = await this.prisma.user.findUnique({
+      where: { id: actorUserId },
+      select: { id: true, type: true, isEmailVerified: true },
+    });
+
+    if (!user) {
+      throw new ForbiddenException('Only brands can create collections');
+    }
+
+    if (!user.isEmailVerified) {
+      throw new ForbiddenException('Verify your email before creating designs.');
+    }
+
+    if (this.brandAccessService) {
+      const context = await this.brandAccessService.getPrimaryBrandContext(actorUserId);
+      if (context.activeBrandId) {
+        await this.brandAccessService.assertCanManageCatalog(
+          actorUserId,
+          context.activeBrandId,
+          BRAND_PERMISSIONS.CATALOG_WRITE,
+        );
+        const brand = await this.prisma.brand.findUnique({
+          where: { id: context.activeBrandId },
+          select: { id: true, ownerId: true },
+        });
+        if (brand) {
+          return {
+            actorUserId,
+            ownerId: brand.ownerId,
+            brandId: brand.id,
+          };
+        }
+      }
+    }
+
+    if (user.type !== UserType.BRAND) {
+      throw new ForbiddenException('Only brands can create collections');
+    }
+
+    const brand = await this.prisma.brand.findUnique({
+      where: { ownerId: actorUserId },
+      select: { id: true, ownerId: true },
+    });
+    if (!brand) {
+      throw new ForbiddenException('Only brands can create collections');
+    }
+
+    return { actorUserId, ownerId: brand.ownerId, brandId: brand.id };
+  }
+
+  private async assertActorCanManageLegacyOwnerCatalog(
+    actorUserId: string,
+    legacyOwnerId: string,
+    permission: BrandPermissionCode = BRAND_PERMISSIONS.CATALOG_WRITE,
+  ) {
+    if (legacyOwnerId === actorUserId) {
+      return;
+    }
+
+    if (!this.brandAccessService) {
+      throw new ForbiddenException('Not owner');
+    }
+
+    const brandId =
+      await this.brandAccessService.resolveBrandIdFromBrandOrOwnerId(
+        legacyOwnerId,
+      );
+    await this.brandAccessService.assertCanManageCatalog(
+      actorUserId,
+      brandId,
+      permission,
+    );
   }
 
   private normalizeMeasurementKeys(raw?: string[] | null): string[] {
@@ -298,6 +452,172 @@ export class CollectionsService {
     return category;
   }
 
+  private isReadyFeedFile(file: any): boolean {
+    if (!file) return false;
+    if (file.originalDeletedAt) return false;
+    if (file.processingStatus && file.processingStatus !== 'READY') return false;
+    return typeof file.s3Url === 'string' && file.s3Url.trim().length > 0;
+  }
+
+  private isVideoFileType(fileType?: string | null): boolean {
+    return String(fileType ?? '').toUpperCase().includes('VIDEO');
+  }
+
+  private summarizeDisplayUrl(value?: string | null) {
+    const url = typeof value === 'string' ? value.trim() : '';
+    if (!url) {
+      return {
+        displayHost: null,
+        pathPrefix: null,
+        isS3: false,
+        isSigned: false,
+        hasDisplayUrl: false,
+      };
+    }
+    try {
+      const parsed = new URL(url);
+      const isSigned = Boolean(
+        parsed.searchParams.get('X-Amz-Signature') ||
+          parsed.searchParams.get('Signature') ||
+          parsed.searchParams.get('Expires') ||
+          parsed.searchParams.get('token'),
+      );
+      return {
+        displayHost: parsed.hostname,
+        pathPrefix: parsed.pathname.split('/').slice(0, 3).join('/'),
+        isS3: parsed.hostname.includes('amazonaws.com') || parsed.hostname.includes('.s3.'),
+        isSigned,
+        hasDisplayUrl: true,
+      };
+    } catch {
+      return {
+        displayHost: 'invalid-url',
+        pathPrefix: null,
+        isS3: false,
+        isSigned: false,
+        hasDisplayUrl: true,
+      };
+    }
+  }
+
+  private async getPreferredVariantUrl(
+    file: any,
+    kinds: string[],
+  ): Promise<string | null> {
+    const variants = Array.isArray(file?.variants) ? file.variants : [];
+    for (const kind of kinds) {
+      const match =
+        variants.find(
+          (variant: any) =>
+            String(variant?.variantKind ?? '').toUpperCase() === kind &&
+            String(variant?.format ?? '').toUpperCase() === 'WEBP',
+        ) ??
+        variants.find(
+          (variant: any) =>
+            String(variant?.variantKind ?? '').toUpperCase() === kind,
+        );
+      if (
+        match &&
+        ((typeof match?.s3Key === 'string' && match.s3Key.trim().length > 0) ||
+          (typeof match?.s3Url === 'string' && match.s3Url.trim().length > 0))
+      ) {
+        return (
+          this.uploadService.getPublicDisplayUrl(match) ??
+          (typeof (this.uploadService as any).getTemporarySignedDisplayUrl === 'function'
+            ? await (this.uploadService as any).getTemporarySignedDisplayUrl(match)
+            : null)
+        );
+      }
+    }
+    return null;
+  }
+
+  private async buildFeedMediaAsset(
+    args: {
+      id: string | null | undefined;
+      file: any;
+      mediaType?: string | null;
+      orderIndex?: number | null;
+    },
+  ): Promise<FeedMediaAssetDto | null> {
+    const file = args.file;
+    if (!this.isReadyFeedFile(file)) {
+      this.logger.debug(
+        `[feed-contract] media excluded not-ready-or-deleted fileId=${file?.id ?? 'unknown'} status=${file?.processingStatus ?? 'unknown'}`,
+      );
+      return null;
+    }
+
+    const displayUrl =
+      (await this.getPreferredVariantUrl(file, ['DETAIL', 'CARD', 'ZOOM'])) ??
+      this.uploadService.getPublicDisplayUrl(file) ??
+      (typeof (this.uploadService as any).getTemporarySignedDisplayUrl === 'function'
+        ? await (this.uploadService as any).getTemporarySignedDisplayUrl(file)
+        : null);
+    if (!displayUrl) {
+      this.logger.debug(`[feed-contract] media excluded missing-display-url fileId=${file?.id ?? 'unknown'}`);
+      return null;
+    }
+
+    const width =
+      typeof file.width === 'number' && Number.isFinite(file.width)
+        ? file.width
+        : null;
+    const height =
+      typeof file.height === 'number' && Number.isFinite(file.height)
+        ? file.height
+        : null;
+    const aspectRatio =
+      width && height && height > 0 ? width / height : 1;
+
+    return {
+      id: String(args.id ?? file.id),
+      fileId: typeof file.id === 'string' && file.id.trim() ? file.id : null,
+      type: this.isVideoFileType(args.mediaType ?? file.fileType)
+        ? 'VIDEO'
+        : 'IMAGE',
+      displayUrl,
+      thumbnailUrl: await this.getPreferredVariantUrl(file, ['THUMB']),
+      previewUrl: await this.getPreferredVariantUrl(file, ['CARD', 'DETAIL']),
+      blurHash: null,
+      dominantColor: null,
+      width,
+      height,
+      aspectRatio,
+      status: 'READY',
+      orderIndex:
+        typeof args.orderIndex === 'number' && Number.isFinite(args.orderIndex)
+          ? args.orderIndex
+          : 0,
+    };
+  }
+
+  private async buildFeedBrandAvatar(owner: any): Promise<FeedMediaAssetDto | null> {
+    const profileImageFile = owner?.userProfile?.profileImageFile ?? null;
+    const brandLogoUrl =
+      typeof owner?.brand?.logo === 'string' && owner.brand.logo.trim().length > 0
+        ? owner.brand.logo.trim()
+        : null;
+    const file =
+      profileImageFile ??
+      (brandLogoUrl
+        ? {
+            id: null,
+            s3Url: brandLogoUrl,
+            fileType: 'PROFILE_IMAGE',
+            processingStatus: 'READY',
+            originalDeletedAt: null,
+          }
+        : null);
+    if (!file) return null;
+    return this.buildFeedMediaAsset({
+      id: file?.id,
+      file,
+      mediaType: file?.fileType,
+      orderIndex: 0,
+    });
+  }
+
   private async assertCategoryTypeMatchesCategory(
     categoryId: string | null | undefined,
     categoryTypeId: string | null | undefined,
@@ -359,6 +679,36 @@ export class CollectionsService {
     await (tx as any).collection.updateMany({
       where: { id: collectionId, status: 'DRAFT', deletedAt: null },
       data: { lastActivityAt: now, draftVersion: { increment: 1 } },
+    });
+  }
+
+  private async cleanupSupersededDraftCollections(
+    tx: Prisma.TransactionClient,
+    ownerId: string,
+    publishedCollectionId: string,
+    title: string | null | undefined,
+    deletedAt: Date,
+    domain?: 'DESIGN' | 'STORE' | null,
+    isAvailableInStore?: boolean | null,
+  ) {
+    const normalizedTitle = String(title ?? '').trim();
+    if (!normalizedTitle) return;
+
+    await (tx as any).collection.updateMany({
+      where: {
+        ownerId,
+        id: { not: publishedCollectionId },
+        status: 'DRAFT',
+        deletedAt: null,
+        title: normalizedTitle,
+        ...(domain ? { domain } : {}),
+        ...(typeof isAvailableInStore === 'boolean' ? { isAvailableInStore } : {}),
+      },
+      data: {
+        deletedAt,
+        draftReason: 'Superseded by published collection',
+        lastActivityAt: deletedAt,
+      },
     });
   }
 
@@ -820,10 +1170,7 @@ export class CollectionsService {
         visibility: true,
         deletedAt: true,
         owner: {
-          select: {
-            username: true,
-            brandFullName: true,
-          },
+          select: this.selectCollectionOwnerDisplay(),
         },
       } as any,
     } as any)) as any;
@@ -900,7 +1247,10 @@ export class CollectionsService {
           payload: {
             collectionId,
             requesterId,
-            brandName: c.owner?.brandFullName || c.owner?.username || null,
+            brandName:
+              resolveRequiredBrandField(c.owner, 'brandFullName') ||
+              c.owner?.username ||
+              null,
             targetUrl: `/settings/collections?collectionId=${collectionId}&tab=requests`,
           },
         },
@@ -916,6 +1266,7 @@ export class CollectionsService {
     collectionId: string,
     ownerId: string,
     expectedDomain?: CollectionDomainValue,
+    permission: BrandPermissionCode = BRAND_PERMISSIONS.CATALOG_WRITE,
   ) {
     if (expectedDomain === 'STORE') {
       const s = await this.prisma.storeCollection.findUnique({
@@ -924,7 +1275,11 @@ export class CollectionsService {
       });
       if (!s) throw new NotFoundException('Collection not found');
       if (s.deletedAt) throw new GoneException('Collection has been deleted');
-      if (s.ownerId !== ownerId) throw new ForbiddenException('Not owner');
+      await this.assertActorCanManageLegacyOwnerCatalog(
+        ownerId,
+        s.ownerId,
+        permission,
+      );
       return {
         ownerId: s.ownerId,
         deletedAt: s.deletedAt,
@@ -943,7 +1298,11 @@ export class CollectionsService {
       });
       if (!s) throw new NotFoundException('Collection not found');
       if (s.deletedAt) throw new GoneException('Collection has been deleted');
-      if (s.ownerId !== ownerId) throw new ForbiddenException('Not owner');
+      await this.assertActorCanManageLegacyOwnerCatalog(
+        ownerId,
+        s.ownerId,
+        permission,
+      );
       return {
         ownerId: s.ownerId,
         deletedAt: s.deletedAt,
@@ -952,7 +1311,11 @@ export class CollectionsService {
     }
     if (!c) throw new NotFoundException('Collection not found');
     if (c.deletedAt) throw new GoneException('Collection has been deleted');
-    if (c.ownerId !== ownerId) throw new ForbiddenException('Not owner');
+    await this.assertActorCanManageLegacyOwnerCatalog(
+      ownerId,
+      c.ownerId,
+      permission,
+    );
     if (expectedDomain && c.domain !== expectedDomain) {
       throw new BadRequestException('Design action attempted on a store collection.');
     }
@@ -969,7 +1332,7 @@ export class CollectionsService {
     const rows = await this.prisma.collectionAccess.findMany({
       where: { collectionId, state: 'PENDING' },
       include: {
-        viewer: { select: { id: true, username: true, profileImage: true } },
+        viewer: { select: this.selectCollectionOwnerDisplay() },
       },
       orderBy: { createdAt: 'desc' },
       take: limit + 1,
@@ -994,7 +1357,7 @@ export class CollectionsService {
     const rows = await this.prisma.collectionAccess.findMany({
       where: { collectionId, state: 'APPROVED' },
       include: {
-        viewer: { select: { id: true, username: true, profileImage: true } },
+        viewer: { select: this.selectCollectionOwnerDisplay() },
       },
       orderBy: { createdAt: 'desc' },
       take: limit + 1,
@@ -1056,20 +1419,7 @@ export class CollectionsService {
       where,
       include: {
         viewer: {
-          select: {
-            id: true,
-            username: true,
-            firstName: true,
-            lastName: true,
-            profileImage: true,
-            profileImageId: true,
-            profileImageFile: {
-              select: {
-                id: true,
-                s3Url: true,
-              },
-            },
-          },
+          select: this.selectCollectionOwnerDisplay(),
         },
         collection: {
           select: {
@@ -1125,10 +1475,11 @@ export class CollectionsService {
           createdAt: earliest.createdAt,
           updatedAt: latest.updatedAt,
           privateCollectionCount,
-          viewer: latest.viewer,
+          viewer: this.mapCollectionOwner(latest.viewer),
           collection: latest?.collection
             ? {
                 ...latest.collection,
+                owner: this.mapCollectionOwner(latest.collection.owner),
                 title:
                   privateCollectionCount > 1
                     ? `${privateCollectionCount} private designs`
@@ -1248,18 +1599,22 @@ export class CollectionsService {
     const now = new Date();
     const owner = await this.prisma.user.findUnique({
       where: { id: ownerId },
-      select: { username: true, brandFullName: true },
+      select: this.selectCollectionOwnerDisplay(),
     });
     const viewers = await this.prisma.user.findMany({
       where: { id: { in: userIds } },
-      select: { id: true, username: true, firstName: true },
+      select: this.selectCollectionOwnerDisplay(),
     });
     const viewerNameById = new Map(
-      viewers.map((viewer) => [
-        viewer.id,
-        viewer.username || viewer.firstName || null,
-      ]),
+      viewers.map((viewer) => {
+        const display = this.mapCollectionOwner(viewer);
+        return [
+          viewer.id,
+          display?.username || display?.firstName || null,
+        ] as const;
+      }),
     );
+    const ownerDisplay = this.mapCollectionOwner(owner);
     await this.applyBrandAccessState(
       collectionId,
       ownerId,
@@ -1282,7 +1637,7 @@ export class CollectionsService {
             actorId: ownerId,
             payload: {
               collectionId,
-              brandName: owner?.brandFullName || owner?.username || null,
+              brandName: ownerDisplay?.brandFullName || ownerDisplay?.username || null,
               username: viewerNameById.get(uid) ?? null,
               targetUrl: `/profile/${ownerId}?tab=Content&visibility=Private`,
             },
@@ -1307,12 +1662,14 @@ export class CollectionsService {
     const now = new Date();
     const owner = await this.prisma.user.findUnique({
       where: { id: ownerId },
-      select: { username: true, brandFullName: true },
+      select: this.selectCollectionOwnerDisplay(),
     });
     const viewer = await this.prisma.user.findUnique({
       where: { id: userId },
-      select: { username: true, firstName: true },
+      select: this.selectCollectionOwnerDisplay(),
     });
+    const ownerDisplay = this.mapCollectionOwner(owner);
+    const viewerDisplay = this.mapCollectionOwner(viewer);
     await this.applyBrandAccessState(
       collectionId,
       ownerId,
@@ -1336,8 +1693,8 @@ export class CollectionsService {
           actorId: ownerId,
           payload: {
             collectionId,
-            brandName: owner?.brandFullName || owner?.username || null,
-            username: viewer?.username || viewer?.firstName || null,
+            brandName: ownerDisplay?.brandFullName || ownerDisplay?.username || null,
+            username: viewerDisplay?.username || viewerDisplay?.firstName || null,
             targetUrl:
               state === 'APPROVED'
                 ? `/profile/${ownerId}?tab=Content&visibility=Private`
@@ -1354,12 +1711,14 @@ export class CollectionsService {
     await this.assertOwner(collectionId, ownerId);
     const owner = await this.prisma.user.findUnique({
       where: { id: ownerId },
-      select: { username: true, brandFullName: true },
+      select: this.selectCollectionOwnerDisplay(),
     });
     const viewer = await this.prisma.user.findUnique({
       where: { id: userId },
-      select: { username: true, firstName: true },
+      select: this.selectCollectionOwnerDisplay(),
     });
+    const ownerDisplay = this.mapCollectionOwner(owner);
+    const viewerDisplay = this.mapCollectionOwner(viewer);
     const existing = await this.prisma.collectionAccess.findMany({
       where: {
         viewerId: userId,
@@ -1395,8 +1754,8 @@ export class CollectionsService {
           actorId: ownerId,
           payload: {
             collectionId,
-            brandName: owner?.brandFullName || owner?.username || null,
-            username: viewer?.username || viewer?.firstName || null,
+            brandName: ownerDisplay?.brandFullName || ownerDisplay?.username || null,
+            username: viewerDisplay?.username || viewerDisplay?.firstName || null,
             targetUrl: `/profile/${ownerId}?tab=private`,
           },
         },
@@ -1440,19 +1799,7 @@ export class CollectionsService {
             coverMediaId: true,
             ownerId: true,
             owner: {
-              select: {
-                id: true,
-                username: true,
-                brandFullName: true,
-                profileImage: true,
-                profileImageId: true,
-                profileImageFile: {
-                  select: {
-                    id: true,
-                    s3Url: true,
-                  },
-                },
-              },
+              select: this.selectCollectionOwnerDisplay(),
             },
             medias: {
               select: {
@@ -1515,6 +1862,7 @@ export class CollectionsService {
           latest.collection?.medias,
           latest.collection?.coverMediaId ?? null,
         );
+        const ownerDisplay = this.mapCollectionOwner(latest.collection?.owner);
         return {
           id: latest.id,
           collectionId: latest.collectionId,
@@ -1523,13 +1871,13 @@ export class CollectionsService {
               ? `${privateCollectionCount} private designs`
               : latest.collection?.title || 'Untitled',
           brand: {
-            id: latest.collection?.owner?.id,
+            id: ownerDisplay?.id,
             name:
-              latest.collection?.owner?.brandFullName ||
-              latest.collection?.owner?.username,
-            profileImage: latest.collection?.owner?.profileImage,
-            profileImageId: latest.collection?.owner?.profileImageId,
-            profileImageFile: latest.collection?.owner?.profileImageFile,
+              ownerDisplay?.brandFullName ||
+              ownerDisplay?.username,
+            profileImage: ownerDisplay?.profileImage,
+            profileImageId: ownerDisplay?.profileImageId,
+            profileImageFile: ownerDisplay?.profileImageFile,
           },
           coverUrl: cover?.file?.s3Url || null,
           itemCount: privateCollectionCount,
@@ -1580,19 +1928,7 @@ export class CollectionsService {
             coverMediaId: true,
             ownerId: true,
             owner: {
-              select: {
-                id: true,
-                username: true,
-                brandFullName: true,
-                profileImage: true,
-                profileImageId: true,
-                profileImageFile: {
-                  select: {
-                    id: true,
-                    s3Url: true,
-                  },
-                },
-              },
+              select: this.selectCollectionOwnerDisplay(),
             },
             medias: {
               select: {
@@ -1652,6 +1988,7 @@ export class CollectionsService {
           latest.collection?.medias,
           latest.collection?.coverMediaId ?? null,
         );
+        const ownerDisplay = this.mapCollectionOwner(latest.collection?.owner);
         return {
           id: latest.id,
           collectionId: latest.collectionId,
@@ -1660,13 +1997,13 @@ export class CollectionsService {
               ? `${privateCollectionCount} private designs`
               : latest.collection?.title || 'Untitled',
           brand: {
-            id: latest.collection?.owner?.id,
+            id: ownerDisplay?.id,
             name:
-              latest.collection?.owner?.brandFullName ||
-              latest.collection?.owner?.username,
-            profileImage: latest.collection?.owner?.profileImage,
-            profileImageId: latest.collection?.owner?.profileImageId,
-            profileImageFile: latest.collection?.owner?.profileImageFile,
+              ownerDisplay?.brandFullName ||
+              ownerDisplay?.username,
+            profileImage: ownerDisplay?.profileImage,
+            profileImageId: ownerDisplay?.profileImageId,
+            profileImageFile: ownerDisplay?.profileImageFile,
           },
           coverUrl: cover?.file?.s3Url || null,
           itemCount: privateCollectionCount,
@@ -1787,13 +2124,13 @@ export class CollectionsService {
    * Simplified: category suggestions removed; categoryId is required and must be active.
    */
   async initializeCollection(userId: string, dto: CreateCollectionDto) {
-    // Validate user is brand
-    const user = await this.prisma.user.findUnique({ where: { id: userId } });
-    if (!user || user.type !== UserType.BRAND) {
-      throw new ForbiddenException('Only brands can create collections');
-    }
+    const catalogContext = await this.resolveCatalogOwnerContext(userId);
+    const ownerId = catalogContext.ownerId;
 
     const hasFiles = Array.isArray(dto.files) && dto.files.length > 0;
+    if (hasFiles && dto.files!.length > DESIGN_MAX_MEDIA_COUNT) {
+      throw new BadRequestException(`Maximum ${DESIGN_MAX_MEDIA_COUNT} files per design`);
+    }
 
     // Store-collection session initialization (no media required)
     if (!hasFiles && dto.mode) {
@@ -1808,7 +2145,7 @@ export class CollectionsService {
       }
 
       const draftsCount = await (this.prisma.storeCollection as any).count({
-        where: { ownerId: userId, status: 'DRAFT', deletedAt: null },
+        where: { ownerId, status: 'DRAFT', deletedAt: null },
       });
       if (draftsCount >= 4) {
         throw new BadRequestException(
@@ -1821,7 +2158,7 @@ export class CollectionsService {
       const collection = await (this.prisma.storeCollection as any).create({
         data: {
           id: collectionId,
-          ownerId: userId,
+          ownerId,
           title: dto.title?.trim() || null,
           description: dto.description?.trim() || null,
           status: 'DRAFT',
@@ -1875,7 +2212,7 @@ export class CollectionsService {
       const collection = await (this.prisma.collection as any).create({
         data: {
           id: collectionId,
-          owner: { connect: { id: userId } },
+          owner: { connect: { id: ownerId } },
           domain: 'DESIGN',
           title: dto.title?.trim() || null,
           description: dto.description?.trim() || null,
@@ -2004,8 +2341,8 @@ export class CollectionsService {
       throw new BadRequestException('At least one file is required');
     }
 
-    if (dto.files.length > 20) {
-      throw new BadRequestException('Maximum 20 files per collection');
+    if (dto.files.length > DESIGN_MAX_MEDIA_COUNT) {
+      throw new BadRequestException(`Maximum ${DESIGN_MAX_MEDIA_COUNT} files per design`);
     }
 
     // PHASE 2: Use shared tag normalization utility
@@ -2032,7 +2369,7 @@ export class CollectionsService {
     const collection = await (this.prisma.collection as any).create({
       data: {
         id: collectionId,
-        owner: { connect: { id: userId } },
+        owner: { connect: { id: ownerId } },
         domain: 'DESIGN',
         title: dto.title,
         description: dto.description,
@@ -2157,16 +2494,16 @@ export class CollectionsService {
     if (!Array.isArray(files) || files.length === 0) {
       throw new BadRequestException('At least one file is required');
     }
-    if (files.length > 20) {
-      throw new BadRequestException('Maximum 20 files per design');
+    if (files.length > DESIGN_MAX_MEDIA_COUNT) {
+      throw new BadRequestException(`Maximum ${DESIGN_MAX_MEDIA_COUNT} files per design`);
     }
 
     const existingMediaCount = await this.prisma.collectionMedia.count({
       where: { collectionId },
     });
-    if (existingMediaCount + files.length > 20) {
+    if (existingMediaCount + files.length > DESIGN_MAX_MEDIA_COUNT) {
       throw new BadRequestException(
-        'Adding these files would exceed the 20-file design limit.',
+        `Adding these files would exceed the ${DESIGN_MAX_MEDIA_COUNT}-file design limit.`,
       );
     }
 
@@ -2214,12 +2551,25 @@ export class CollectionsService {
   }) {
     const { cursor, limit = 20, tag, category, requesterId } = options ?? {};
     const take = Math.min(Math.max(limit, 1), 40);
+    this.logger.debug(
+      `[feed] market query start cursor=${cursor ?? 'none'} limit=${take} tag=${tag ?? 'all'} category=${category ?? 'all'}`,
+    );
+    const readyMediaWhere = {
+      file: {
+        processingStatus: 'READY',
+        originalDeletedAt: null,
+        s3Url: { not: '' },
+      },
+    } as any;
 
     const where: Prisma.CollectionWhereInput = {
       domain: 'DESIGN',
       status: 'PUBLISHED',
       visibility: CollectionVisibility.PUBLIC,
       deletedAt: null,
+      medias: {
+        some: readyMediaWhere,
+      } as any,
       ...(tag
         ? {
             tags: {
@@ -2240,28 +2590,19 @@ export class CollectionsService {
       where,
       take: take + 1,
       ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
-      orderBy: [{ updatedAt: 'desc' }, { createdAt: 'desc' }],
+      orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
       include: {
         owner: {
-          select: {
-            id: true,
-            username: true,
-            brandFullName: true,
-            profileImage: true,
-            profileImageId: true,
-            profileImageFile: {
-              select: {
-                id: true,
-                s3Url: true,
-                fileName: true,
-                originalName: true,
-              },
-            },
-          },
+          select: this.selectCollectionOwnerDisplay(),
         },
         medias: {
+          where: readyMediaWhere,
           include: {
-            file: true,
+            file: {
+              include: {
+                variants: true,
+              },
+            },
           },
           orderBy: [{ orderIndex: 'asc' }],
         },
@@ -2277,6 +2618,56 @@ export class CollectionsService {
 
     const hasNextPage = collections.length > take;
     const data = hasNextPage ? collections.slice(0, -1) : collections;
+    this.logger.debug(
+      `[feed] market query result fetched=${collections.length} page=${data.length} hasNextPage=${hasNextPage}`,
+    );
+    if (collections.length === 0 && typeof (this.prisma.collection as any).count === 'function') {
+      try {
+        const [publishedPublic, withAnyMedia, readyOriginals, blockedByProcessing] =
+          await Promise.all([
+            this.prisma.collection.count({
+              where: {
+                domain: 'DESIGN',
+                status: 'PUBLISHED',
+                visibility: CollectionVisibility.PUBLIC,
+                deletedAt: null,
+              } as any,
+            }),
+            this.prisma.collection.count({
+              where: {
+                domain: 'DESIGN',
+                status: 'PUBLISHED',
+                visibility: CollectionVisibility.PUBLIC,
+                deletedAt: null,
+                medias: { some: {} },
+              } as any,
+            }),
+            this.prisma.collection.count({ where } as any),
+            this.prisma.collection.count({
+              where: {
+                domain: 'DESIGN',
+                status: 'PUBLISHED',
+                visibility: CollectionVisibility.PUBLIC,
+                deletedAt: null,
+                medias: {
+                  some: {
+                    file: {
+                      processingStatus: { not: 'READY' },
+                      originalDeletedAt: null,
+                      s3Url: { not: '' },
+                    },
+                  },
+                },
+              } as any,
+            }),
+          ]);
+        this.logger.debug(
+          `[feed-contract] market exclusion summary publishedPublic=${publishedPublic} withAnyMedia=${withAnyMedia} readyOriginals=${readyOriginals} blockedByProcessing=${blockedByProcessing}`,
+        );
+      } catch (error) {
+        this.logger.warn(`[feed-contract] market exclusion summary failed: ${String(error)}`);
+      }
+    }
 
     const feedRows = data
       .map((collection) => {
@@ -2285,7 +2676,10 @@ export class CollectionsService {
           (coverMediaId
             ? collection.medias.find((media) => media.id === coverMediaId)
             : null) ?? collection.medias[0] ?? null;
-        if (!coverMedia) return null;
+        if (!coverMedia) {
+          this.logger.debug(`[feed-contract] collection excluded missing-ready-cover collectionId=${collection.id}`);
+          return null;
+        }
 
         return {
           collection,
@@ -2322,46 +2716,78 @@ export class CollectionsService {
       }
     }
 
-    // Collect all file IDs that need signed URLs
-    const fileIds = new Set<string>();
-    feedRows.forEach(({ collection, media }) => {
-      if (media.fileUploadId) {
-        fileIds.add(media.fileUploadId);
+    const items = (await Promise.all(feedRows.map(async ({ collection, media }) => {
+      const owner = this.mapCollectionOwner(collection.owner)!;
+      const primaryMedia = await this.buildFeedMediaAsset({
+        id: media.id,
+        file: media.file,
+        mediaType: media.mediaType,
+        orderIndex: media.orderIndex,
+      });
+      if (!primaryMedia) {
+        this.logger.debug(`[feed-contract] media excluded unavailable-primary collectionId=${collection.id} mediaId=${media.id}`);
+        return null;
       }
-      const owner = collection.owner;
-      if (owner.profileImageId) {
-        fileIds.add(owner.profileImageId);
-      } else if (owner.profileImageFile?.id) {
-        fileIds.add(owner.profileImageFile.id);
+
+      const mediaItems = (await Promise.all(
+        collection.medias.map((entry) =>
+          this.buildFeedMediaAsset({
+            id: entry.id,
+            file: entry.file,
+            mediaType: entry.mediaType,
+            orderIndex: entry.orderIndex,
+          }),
+        ),
+      )).filter((asset): asset is FeedMediaAssetDto => Boolean(asset));
+      if (mediaItems.length === 0) {
+        this.logger.debug(`[feed-contract] collection excluded no-valid-media collectionId=${collection.id}`);
+        return null;
       }
-    });
 
-    // Batch generate signed URLs for all files
-    const signedUrlMap = await this.uploadService.getBatchPublicSignedUrls(
-      Array.from(fileIds),
-    );
-
-    const items = feedRows.map(({ collection, media }) => {
-      const owner = collection.owner;
-      const file = media.file;
-
-      const mediaSignedUrl = media.fileUploadId
-        ? (signedUrlMap.get(media.fileUploadId) ?? null)
-        : null;
-
-      const logoFileId = owner.profileImageId ?? owner.profileImageFile?.id;
-      const logoSignedUrl = logoFileId
-        ? (signedUrlMap.get(logoFileId) ?? null)
-        : null;
+      const avatar = await this.buildFeedBrandAvatar(collection.owner);
+      const logoFileId = avatar?.fileId ?? owner.profileImageId ?? owner.profileImageFile?.id ?? null;
+      const combinedCommentsCount =
+        (collection.commentsCount ?? 0) + (media.commentsCount ?? 0);
+      const commentsCount =
+        options?.countsPolicy === 'combined'
+          ? combinedCommentsCount
+          : media.commentsCount ?? collection.commentsCount ?? 0;
 
       const base = {
         id: media.id,
         collectionId: collection.id,
+        sourceType: 'DESIGN',
+        title: collection.title ?? '',
+        description: collection.description ?? null,
+        brand: {
+          id: owner.brand?.id ?? owner.id,
+          name: owner.brandFullName ?? owner.username ?? '',
+          username: owner.username ?? null,
+          avatar,
+        },
+        primaryMedia,
+        mediaItems,
+        stats: {
+          likes: collection._count?.reactions ?? collection.threadsCount ?? 0,
+          comments: commentsCount,
+          threads: media.threadsCount ?? 0,
+          patches: collection.collectionCollabsCount ?? 0,
+        },
+        viewerState: {
+          isLiked: false,
+          isThreaded: requesterId ? !!isThreadedMap[media.id] : false,
+          isPatched: false,
+          canBag: Boolean(collection.customOrderEnabled),
+          isBagged: false,
+        },
+        tags: collection.tags ?? [],
+        createdAt: collection.createdAt.toISOString(),
+        updatedAt: collection.updatedAt.toISOString(),
+        // Temporary legacy compatibility for current web and older mobile builds.
         coverMediaId: (collection as any).coverMediaId ?? media.id,
         mediaType: media.mediaType,
         mediaFileId: media.fileUploadId,
-        mediaUrl: mediaSignedUrl,
-        createdAt: file?.createdAt ?? collection.createdAt,
+        mediaUrl: primaryMedia.displayUrl,
         collectionTitle: collection.title ?? '',
         collectionDescription: collection.description ?? '',
         minPrice: collection.minPrice,
@@ -2376,22 +2802,67 @@ export class CollectionsService {
         threadsCount: media.threadsCount,
         commentsCount: media.commentsCount,
         collectionCollabCount: collection.collectionCollabsCount,
-        tags: collection.tags ?? [],
-        brandId: owner.id,
+        brandId: owner.brand?.id ?? owner.id,
         brandName: owner.brandFullName ?? owner.username ?? '',
         username: owner.username ?? '',
-        brandLogo: logoSignedUrl ?? owner.profileImage ?? null,
+        brandLogo: avatar?.displayUrl ?? owner.profileImage ?? null,
         brandLogoFileId: logoFileId ?? null,
         isThreaded: requesterId ? !!isThreadedMap[media.id] : false,
       };
 
       if (options?.countsPolicy === 'combined') {
-        (base as any).combinedCommentsCount =
-          (collection.commentsCount ?? 0) + (media.commentsCount ?? 0);
+        (base as any).combinedCommentsCount = combinedCommentsCount;
       }
 
       return base;
-    });
+    }))).filter((item): item is NonNullable<typeof item> => Boolean(item));
+
+    if (items.length > 0) {
+      for (const item of items.slice(0, 5)) {
+        const primarySummary = this.summarizeDisplayUrl(item.primaryMedia?.displayUrl);
+        const mediaSummaries = item.mediaItems.map((mediaItem) => {
+          const summary = this.summarizeDisplayUrl(mediaItem.displayUrl);
+          return {
+            id: mediaItem.id,
+            fileId: mediaItem.fileId,
+            type: mediaItem.type,
+            status: mediaItem.status,
+            orderIndex: mediaItem.orderIndex,
+            displayHost: summary.displayHost,
+            pathPrefix: summary.pathPrefix,
+            hasDisplayUrl: summary.hasDisplayUrl,
+          };
+        });
+        const mediaDisplayKeys = item.mediaItems.map((mediaItem) => {
+          const summary = this.summarizeDisplayUrl(mediaItem.displayUrl);
+          return `${summary.displayHost ?? 'none'}:${summary.pathPrefix ?? 'none'}:${mediaItem.fileId ?? mediaItem.id}`;
+        });
+        const uniqueDisplayKeys = new Set(mediaDisplayKeys);
+        this.logger.debug(
+          `[feed-contract] first-media-summary ${JSON.stringify({
+            collectionId: item.collectionId,
+            title: item.title,
+            mediaId: item.primaryMedia?.id ?? item.id,
+            fileId: item.primaryMedia?.fileId ?? null,
+            status: item.primaryMedia?.status ?? null,
+            displayHost: primarySummary.displayHost,
+            pathPrefix: primarySummary.pathPrefix,
+            isS3: primarySummary.isS3,
+            isSigned: primarySummary.isSigned,
+            hasDisplayUrl: primarySummary.hasDisplayUrl,
+            mediaItemsLength: item.mediaItems.length,
+            mediaItemIds: item.mediaItems.map((mediaItem) => mediaItem.id),
+            mediaItems: mediaSummaries,
+            displayUrlsUnique: uniqueDisplayKeys.size === mediaDisplayKeys.length,
+            allReady: item.mediaItems.every((mediaItem) => mediaItem.status === 'READY'),
+            allTyped: item.mediaItems.every((mediaItem) => mediaItem.type === 'IMAGE' || mediaItem.type === 'VIDEO'),
+          })}`,
+        );
+      }
+    }
+    this.logger.debug(
+      `[feed] market response items=${items.length} nextCursor=${hasNextPage ? (data[data.length - 1]?.id ?? 'none') : 'none'}`,
+    );
 
     return {
       items,
@@ -2416,13 +2887,13 @@ export class CollectionsService {
       return this.finalizeStoreCollection(collectionId, userId, dto);
     }
 
-    // Verify collection exists and belongs to user
-    const collection = await this.prisma.collection.findFirst({
-      where: { id: collectionId, ownerId: userId },
+    await this.assertOwner(collectionId, userId, expectedDomain ?? 'DESIGN');
+    const collection = await this.prisma.collection.findUnique({
+      where: { id: collectionId },
     });
 
     if (!collection) {
-      throw new NotFoundException('Collection not found or not owned by user');
+      throw new NotFoundException('Collection not found');
     }
 
     if (expectedDomain && (collection as any).domain !== expectedDomain) {
@@ -2431,12 +2902,19 @@ export class CollectionsService {
       );
     }
 
+    const requestedAction = dto.action ?? (dto.shouldPublish === false ? 'draft' : 'publish');
+
     if (collection.status !== 'DRAFT') {
+      if (collection.status === 'PUBLISHED' && requestedAction === 'draft') {
+        throw new BadRequestException(
+          'This collection is already published. Unpublish it before saving draft changes, or discard the draft.',
+        );
+      }
       if (collection.status === 'PUBLISHED' && !hasCompletions) {
         const published = await this.prisma.collection.findUnique({
           where: { id: collectionId },
           include: {
-            owner: true,
+            owner: { select: this.selectCollectionOwnerDisplay() },
             medias: { include: { file: true }, orderBy: { orderIndex: 'asc' } },
             _count: {
               select: {
@@ -2448,7 +2926,9 @@ export class CollectionsService {
             },
           },
         });
-        if (published) return published;
+        if (published) {
+          return { ...published, owner: this.mapCollectionOwner(published.owner) };
+        }
       }
       if (collection.status !== 'PUBLISHED' || !hasCompletions) {
         throw new BadRequestException('Collection is not in draft status');
@@ -2465,7 +2945,11 @@ export class CollectionsService {
         serverVersion: (collection as any).draftVersion,
       } as any);
     }
-    await this.enforceDraftSessionLock(collectionId, userId, dto.draftSessionToken);
+    await this.enforceDraftSessionLock(
+      collectionId,
+      collection.ownerId,
+      dto.draftSessionToken,
+    );
 
     if (!hasCompletions) {
       const previousVisibility = collection.visibility;
@@ -2511,7 +2995,7 @@ export class CollectionsService {
         );
         await this.assertDesignCustomOrderPublishReady(
           collectionId,
-          userId,
+          collection.ownerId,
           nextCustomOrderEnabled,
         );
       }
@@ -2542,15 +3026,20 @@ export class CollectionsService {
             const mediaCount = await tx.collectionMedia.count({
               where: { collectionId },
             });
-            if (mediaCount === 0) {
+            if (mediaCount < DESIGN_REQUIRED_MEDIA_COUNT) {
               throw new BadRequestException(
-                'At least one design media is required to publish',
+                `Front, Back, Left, and Right media are required to publish (${DESIGN_REQUIRED_MEDIA_COUNT} media minimum).`,
+              );
+            }
+            if (mediaCount > DESIGN_MAX_MEDIA_COUNT) {
+              throw new BadRequestException(
+                `Maximum ${DESIGN_MAX_MEDIA_COUNT} design media assets can be published.`,
               );
             }
           }
 
           const now = new Date();
-          return tx.collection.update({
+          const updatedCollection = await tx.collection.update({
             where: { id: collectionId },
             data: {
               title: metadata.title ?? collection.title,
@@ -2598,6 +3087,18 @@ export class CollectionsService {
                 : {}),
             },
           });
+          if (action === 'publish') {
+            await this.cleanupSupersededDraftCollections(
+              tx,
+              collection.ownerId,
+              collectionId,
+              updatedCollection.title,
+              now,
+              'DESIGN',
+              false,
+            );
+          }
+          return updatedCollection;
         }
 
         const links = await tx.storeCollectionProduct.findMany({
@@ -2700,7 +3201,7 @@ export class CollectionsService {
           })
           .filter((v): v is number => typeof v === 'number' && v > 0);
 
-        return tx.collection.update({
+        const updatedCollection = await tx.collection.update({
           where: { id: collectionId },
           data: {
             title: metadata.title ?? collection.title,
@@ -2724,6 +3225,18 @@ export class CollectionsService {
               : {}),
           },
         });
+        if (action === 'publish') {
+          await this.cleanupSupersededDraftCollections(
+            tx,
+            userId,
+            collectionId,
+            updatedCollection.title,
+            now,
+            (updatedCollection as any).domain ?? null,
+            Boolean((updatedCollection as any).isAvailableInStore),
+          );
+        }
+        return updatedCollection;
       });
 
       if (
@@ -2886,16 +3399,6 @@ export class CollectionsService {
     const enqueueAt = new Date();
     for (const entry of verifiedFiles) {
       const file = entry.file;
-      if (String(file.mimeType || '').toLowerCase().startsWith('image/')) {
-        await this.prisma.fileUpload.update({
-          where: { id: file.id },
-          data: {
-            processingStatus: 'PENDING',
-            processingError: null,
-          } as any,
-        } as any);
-      }
-
       await (this.prisma as any).presignedUpload.updateMany({
         where: { id: file.id, status: 'USED' },
         data: { processingEnqueuedAt: enqueueAt },
@@ -2938,7 +3441,7 @@ export class CollectionsService {
     if (newStatus === 'PUBLISHED') {
       await this.assertDesignCustomOrderPublishReady(
         collectionId,
-        userId,
+        collection.ownerId,
         completionCustomOrderEnabled,
       );
     }
@@ -2956,7 +3459,7 @@ export class CollectionsService {
           : {}),
       },
       include: {
-        owner: true,
+        owner: { select: this.selectCollectionOwnerDisplay() },
         medias: { include: { file: true }, orderBy: { orderIndex: 'asc' } },
         _count: {
           select: {
@@ -2968,6 +3471,19 @@ export class CollectionsService {
         },
       },
     });
+
+    const publishedOwner = this.mapCollectionOwner(publishedCollection.owner);
+    if (newStatus === 'PUBLISHED') {
+      await this.cleanupSupersededDraftCollections(
+        this.prisma as any,
+        collection.ownerId,
+        collectionId,
+        publishedCollection.title,
+        finalizeAt,
+        'DESIGN',
+        false,
+      );
+    }
 
     const normalizedFinalizeFilterValueIds = this.normalizeFilterValueIds(
       dto.collectionMetadata?.filterValueIds,
@@ -2985,7 +3501,7 @@ export class CollectionsService {
       // Fetch patchers (user-to-brand patches)
       const patchers = await this.prisma.patchConnection.findMany({
         where: {
-          targetId: userId,
+          targetId: collection.ownerId,
           status: PatchStatus.ACCEPTED,
           mode: PatchMode.USER_TO_BRAND,
         },
@@ -2993,7 +3509,7 @@ export class CollectionsService {
       });
       const recipientIds = patchers
         .map((p) => p.requesterId)
-        .filter((id) => id && id !== userId);
+        .filter((id) => id && id !== collection.ownerId);
 
       if (recipientIds.length > 0 && this.notificationsQueue) {
         try {
@@ -3005,7 +3521,7 @@ export class CollectionsService {
               collectionId: publishedCollection.id,
               collectionTitle: publishedCollection.title,
               targetUrl: `/collections/${publishedCollection.id}`,
-              message: `${publishedCollection.owner.brandFullName || publishedCollection.owner.username} created a new collection: ${publishedCollection.title}`,
+              message: `${publishedOwner?.brandFullName || publishedOwner?.username} created a new collection: ${publishedCollection.title}`,
             },
           });
         } catch (e) {
@@ -3024,7 +3540,7 @@ export class CollectionsService {
                   collectionId: publishedCollection.id,
                   collectionTitle: publishedCollection.title,
                   targetUrl: `/collections/${publishedCollection.id}`,
-                  message: `${publishedCollection.owner.brandFullName || publishedCollection.owner.username} created a new collection: ${publishedCollection.title}`,
+                  message: `${publishedOwner?.brandFullName || publishedOwner?.username} created a new collection: ${publishedCollection.title}`,
                 },
               },
             );
@@ -3049,7 +3565,10 @@ export class CollectionsService {
       }
     }
 
-    return publishedCollection;
+    return {
+      ...publishedCollection,
+      owner: this.mapCollectionOwner(publishedCollection.owner),
+    };
   }
 
   private async finalizeStoreCollection(
@@ -3057,18 +3576,19 @@ export class CollectionsService {
     userId: string,
     dto: FinalizeCollectionDto,
   ) {
-    const collection = await this.prisma.storeCollection.findFirst({
-      where: { id: collectionId, ownerId: userId },
+    await this.assertOwner(collectionId, userId, 'STORE');
+    const collection = await this.prisma.storeCollection.findUnique({
+      where: { id: collectionId },
     });
     if (!collection) {
-      throw new NotFoundException('Collection not found or not owned by user');
+      throw new NotFoundException('Collection not found');
     }
     if (collection.status !== 'DRAFT') {
       if (collection.status === 'PUBLISHED') {
         const existing = await this.prisma.storeCollection.findUnique({
           where: { id: collectionId },
           include: {
-            owner: true,
+            owner: { select: this.selectCollectionOwnerDisplay() },
             products: {
               include: {
                 product: {
@@ -3079,7 +3599,9 @@ export class CollectionsService {
             },
           },
         });
-        if (existing) return existing;
+        if (existing) {
+          return { ...existing, owner: this.mapCollectionOwner(existing.owner) };
+        }
       }
       throw new BadRequestException('Collection is not in draft status');
     }
@@ -3321,7 +3843,7 @@ export class CollectionsService {
     ownerId: string,
     productIds: string[],
   ) {
-    await this.assertOwner(collectionId, ownerId, 'STORE');
+    const collectionOwner = await this.assertOwner(collectionId, ownerId, 'STORE');
     if (!Array.isArray(productIds) || productIds.length === 0) {
       throw new BadRequestException('productIds is required');
     }
@@ -3338,7 +3860,7 @@ export class CollectionsService {
       }
 
       for (const p of products) {
-        if (p.brand?.ownerId !== ownerId) {
+        if (p.brand?.ownerId !== collectionOwner.ownerId) {
           throw new ForbiddenException('Not owner of one or more products');
         }
       }
@@ -3634,7 +4156,12 @@ export class CollectionsService {
     const resolvedScope = this.normalizeCollectionScope(scope);
     const expectedDomain = this.scopeToDomain(resolvedScope);
     if (expectedDomain === 'STORE') {
-      await this.assertOwner(collectionId, ownerId, 'STORE');
+      await this.assertOwner(
+        collectionId,
+        ownerId,
+        'STORE',
+        BRAND_PERMISSIONS.CATALOG_DELETE,
+      );
       const collection = await this.prisma.storeCollection.findUnique({
         where: { id: collectionId },
         select: { status: true, visibility: true, deletedAt: true, tags: true },
@@ -3686,7 +4213,12 @@ export class CollectionsService {
       return { success: true, status: 'ARCHIVED' };
     }
 
-    await this.assertOwner(collectionId, ownerId, expectedDomain ?? undefined);
+    await this.assertOwner(
+      collectionId,
+      ownerId,
+      expectedDomain ?? undefined,
+      BRAND_PERMISSIONS.CATALOG_DELETE,
+    );
     const collection = await this.prisma.collection.findUnique({
       where: { id: collectionId },
       select: { status: true, visibility: true, deletedAt: true, tags: true },
@@ -3746,7 +4278,12 @@ export class CollectionsService {
     const resolvedScope = this.normalizeCollectionScope(scope);
     const expectedDomain = this.scopeToDomain(resolvedScope);
     if (expectedDomain === 'STORE') {
-      await this.assertOwner(collectionId, ownerId, 'STORE');
+      await this.assertOwner(
+        collectionId,
+        ownerId,
+        'STORE',
+        BRAND_PERMISSIONS.CATALOG_DELETE,
+      );
       await this.ensureAdminRepublishUnlocked('StoreCollection', collectionId);
       const collection = await this.prisma.storeCollection.findUnique({
         where: { id: collectionId },
@@ -3803,7 +4340,12 @@ export class CollectionsService {
       return { success: true, status: restoreStatus };
     }
 
-    await this.assertOwner(collectionId, ownerId, expectedDomain ?? undefined);
+    await this.assertOwner(
+      collectionId,
+      ownerId,
+      expectedDomain ?? undefined,
+      BRAND_PERMISSIONS.CATALOG_DELETE,
+    );
     await this.ensureAdminRepublishUnlocked('Collection', collectionId);
     const collection = await this.prisma.collection.findUnique({
       where: { id: collectionId },
@@ -4153,25 +4695,7 @@ export class CollectionsService {
       where: { id },
       include: {
         owner: {
-          select: {
-            id: true,
-            username: true,
-            firstName: true,
-            lastName: true,
-            brandFullName: true,
-            profileImage: true,
-            profileImageId: true,
-            profileImageFile: {
-              select: {
-                id: true,
-                s3Url: true,
-                fileName: true,
-                originalName: true,
-                createdAt: true,
-                updatedAt: true,
-              },
-            },
-          },
+          select: this.selectCollectionOwnerDisplay(),
         },
         medias: {
           include: { file: true },
@@ -4188,12 +4712,7 @@ export class CollectionsService {
         reactions: {
           include: {
             user: {
-              select: {
-                id: true,
-                username: true,
-                firstName: true,
-                lastName: true,
-              },
+              select: this.selectCollectionOwnerDisplay(),
             },
           },
         },
@@ -4288,6 +4807,13 @@ export class CollectionsService {
       : medias;
     return {
       ...rest,
+      owner: this.mapCollectionOwner(rest.owner),
+      reactions: Array.isArray(rest.reactions)
+        ? rest.reactions.map((reaction: any) => ({
+            ...reaction,
+            user: this.mapCollectionOwner(reaction.user),
+          }))
+        : rest.reactions,
       medias: mappedMedias,
       filters: appliedFilters,
       filterValueIds,
@@ -4322,25 +4848,7 @@ export class CollectionsService {
       where: { id },
       include: {
         owner: {
-          select: {
-            id: true,
-            username: true,
-            firstName: true,
-            lastName: true,
-            brandFullName: true,
-            profileImage: true,
-            profileImageId: true,
-            profileImageFile: {
-              select: {
-                id: true,
-                s3Url: true,
-                fileName: true,
-                originalName: true,
-                createdAt: true,
-                updatedAt: true,
-              },
-            },
-          },
+          select: this.selectCollectionOwnerDisplay(),
         },
         products: {
           include: {
@@ -4400,6 +4908,7 @@ export class CollectionsService {
 
     return {
       ...collection,
+      owner: this.mapCollectionOwner(collection.owner),
       domain: 'STORE' as const,
       isAvailableInStore: true,
       medias: [],
@@ -4418,11 +4927,26 @@ export class CollectionsService {
    * PHASE 6: Get draft collections for current user
    */
   async getMyDraftCollections(userId: string) {
+    const publishedTitleRows = await this.prisma.collection.findMany({
+      where: {
+        ownerId: userId,
+        status: 'PUBLISHED',
+        deletedAt: null,
+      },
+      select: { title: true },
+    });
+    const publishedTitles = publishedTitleRows
+      .map((item) => item.title?.trim())
+      .filter((title): title is string => Boolean(title));
+
     const items = await this.prisma.collection.findMany({
       where: {
         ownerId: userId,
         status: 'DRAFT',
         deletedAt: null,
+        ...(publishedTitles.length > 0
+          ? { title: { notIn: publishedTitles } }
+          : {}),
       },
       orderBy: { createdAt: 'desc' },
       select: {
@@ -4669,23 +5193,7 @@ export class CollectionsService {
           },
         },
         owner: {
-          select: {
-            id: true,
-            username: true,
-            brandFullName: true,
-            profileImage: true,
-            profileImageId: true,
-            profileImageFile: {
-              select: {
-                id: true,
-                s3Url: true,
-                fileName: true,
-                originalName: true,
-                createdAt: true,
-                updatedAt: true,
-              },
-            },
-          },
+          select: this.selectCollectionOwnerDisplay(),
         },
       },
     });
@@ -4735,10 +5243,11 @@ export class CollectionsService {
         fileIds.add(preferredCover.file.id);
       }
       // Brand logo
-      if (c.owner?.profileImageFile?.id) {
-        fileIds.add(c.owner.profileImageFile.id);
-      } else if (c.owner?.profileImageId) {
-        fileIds.add(c.owner.profileImageId);
+      const owner = this.mapCollectionOwner(c.owner);
+      if (owner?.profileImageFile?.id) {
+        fileIds.add(owner.profileImageFile.id);
+      } else if (owner?.profileImageId) {
+        fileIds.add(owner.profileImageId);
       }
     });
 
@@ -4760,7 +5269,7 @@ export class CollectionsService {
           return m;
         });
 
-        const owner = c.owner;
+        const owner = this.mapCollectionOwner(c.owner);
         let ownerWithSignedUrl = owner;
         const logoId = owner?.profileImageFile?.id || owner?.profileImageId;
         if (logoId && signedUrlMap.has(logoId)) {
@@ -4889,23 +5398,7 @@ export class CollectionsService {
           take: this.maxProductsPerCollection,
         },
         owner: {
-          select: {
-            id: true,
-            username: true,
-            brandFullName: true,
-            profileImage: true,
-            profileImageId: true,
-            profileImageFile: {
-              select: {
-                id: true,
-                s3Url: true,
-                fileName: true,
-                originalName: true,
-                createdAt: true,
-                updatedAt: true,
-              },
-            },
-          },
+          select: this.selectCollectionOwnerDisplay(),
         },
       },
     });
@@ -4941,10 +5434,11 @@ export class CollectionsService {
 
     const fileIds = new Set<string>();
     data.forEach((c: any) => {
-      if (c.owner?.profileImageFile?.id) {
-        fileIds.add(c.owner.profileImageFile.id);
-      } else if (c.owner?.profileImageId) {
-        fileIds.add(c.owner.profileImageId);
+      const owner = this.mapCollectionOwner(c.owner);
+      if (owner?.profileImageFile?.id) {
+        fileIds.add(owner.profileImageFile.id);
+      } else if (owner?.profileImageId) {
+        fileIds.add(owner.profileImageId);
       }
 
       const links = Array.isArray(c.products) ? c.products : [];
@@ -5031,7 +5525,8 @@ export class CollectionsService {
 
     return {
       items: data.map((c: any) => {
-        const logoId = c.owner?.profileImageFile?.id || c.owner?.profileImageId;
+        const logoOwner = this.mapCollectionOwner(c.owner);
+        const logoId = logoOwner?.profileImageFile?.id || logoOwner?.profileImageId;
         const previewMeta = collectionPreviewById.get(c.id);
         const visibleCount = previewMeta?.visibleCount ?? 0;
         const coverFromFileId =
@@ -5059,7 +5554,7 @@ export class CollectionsService {
             (item): item is { url: string | null; fileId: string | null } =>
               Boolean(item && (item.url || item.fileId)),
           );
-        let owner = c.owner;
+        let owner = logoOwner;
         if (logoId && signedUrlMap.has(logoId)) {
           owner = {
             ...owner,
@@ -5102,7 +5597,12 @@ export class CollectionsService {
     const resolvedScope = this.normalizeCollectionScope(scope);
     const expectedDomain = this.scopeToDomain(resolvedScope);
     if (expectedDomain === 'STORE') {
-      await this.assertOwner(collectionId, requesterId, 'STORE');
+      await this.assertOwner(
+        collectionId,
+        requesterId,
+        'STORE',
+        BRAND_PERMISSIONS.CATALOG_DELETE,
+      );
       const collection = await this.prisma.storeCollection.findUnique({
         where: { id: collectionId },
       });
@@ -5165,8 +5665,11 @@ export class CollectionsService {
       include: { medias: { include: { file: true } } },
     } as any)) as any;
     if (!collection) throw new NotFoundException('Collection not found');
-    if (collection.ownerId !== requesterId)
-      throw new ForbiddenException('Not owner of collection');
+    await this.assertActorCanManageLegacyOwnerCatalog(
+      requesterId,
+      collection.ownerId,
+      BRAND_PERMISSIONS.CATALOG_DELETE,
+    );
     if (expectedDomain && collection.domain !== expectedDomain) {
       throw new BadRequestException(
         'Delete requested with design scope for a store collection.',
@@ -5255,9 +5758,10 @@ export class CollectionsService {
         where: { id: collectionId },
       });
       if (!source) throw new NotFoundException('Collection not found');
-      if (source.ownerId !== requesterId) {
-        throw new ForbiddenException('Not owner of collection');
-      }
+      await this.assertActorCanManageLegacyOwnerCatalog(
+        requesterId,
+        source.ownerId,
+      );
       if (source.deletedAt) {
         throw new GoneException('Collection has been deleted');
       }
@@ -5299,7 +5803,7 @@ export class CollectionsService {
         await tx.storeCollection.create({
           data: {
             id: duplicateId,
-            ownerId: requesterId,
+            ownerId: source.ownerId,
             title: duplicateTitle,
             description: source.description ?? null,
             status: 'DRAFT',
@@ -5362,12 +5866,7 @@ export class CollectionsService {
         where: { id: duplicateId },
         include: {
           owner: {
-            select: {
-              id: true,
-              username: true,
-              brandFullName: true,
-              profileImage: true,
-            },
+            select: this.selectCollectionOwnerDisplay(),
           },
           products: {
             include: { product: true },
@@ -5376,7 +5875,7 @@ export class CollectionsService {
         },
       });
       if (!duplicated) throw new NotFoundException('Collection not found');
-      return duplicated;
+      return { ...duplicated, owner: this.mapCollectionOwner(duplicated.owner) };
     }
 
     const source = (await this.prisma.collection.findUnique({
@@ -5405,9 +5904,7 @@ export class CollectionsService {
     } as any)) as any;
 
     if (!source) throw new NotFoundException('Collection not found');
-    if (source.ownerId !== requesterId) {
-      throw new ForbiddenException('Not owner of collection');
-    }
+    await this.assertActorCanManageLegacyOwnerCatalog(requesterId, source.ownerId);
     if (expectedDomain && source.domain !== expectedDomain) {
       throw new BadRequestException(
         'Duplicate requested with design scope for a store collection.',
@@ -5452,7 +5949,7 @@ export class CollectionsService {
       await tx.collection.create({
         data: {
           id: duplicateId,
-          ownerId: requesterId,
+          ownerId: source.ownerId,
           domain: duplicateDomain,
           title: duplicateTitle,
           description: source.description ?? null,
@@ -5516,19 +6013,14 @@ export class CollectionsService {
       where: { id: duplicateId },
       include: {
         owner: {
-          select: {
-            id: true,
-            username: true,
-            brandFullName: true,
-            profileImage: true,
-          },
+          select: this.selectCollectionOwnerDisplay(),
         },
         _count: { select: { medias: true, views: true, comments: true } },
       },
     });
 
     if (!duplicated) throw new NotFoundException('Collection not found');
-    return duplicated;
+    return { ...duplicated, owner: this.mapCollectionOwner(duplicated.owner) };
   }
 
   async restoreCollection(collectionId: string, ownerId: string) {
@@ -5544,9 +6036,11 @@ export class CollectionsService {
       },
     });
     if (storeCollection) {
-      if (storeCollection.ownerId !== ownerId) {
-        throw new ForbiddenException('Not owner of collection');
-      }
+      await this.assertActorCanManageLegacyOwnerCatalog(
+        ownerId,
+        storeCollection.ownerId,
+        BRAND_PERMISSIONS.CATALOG_DELETE,
+      );
       if (!storeCollection.deletedAt) {
         throw new BadRequestException('Collection is not deleted');
       }
@@ -5606,9 +6100,11 @@ export class CollectionsService {
       } as any,
     } as any)) as any;
     if (!collection) throw new NotFoundException('Collection not found');
-    if (collection.ownerId !== ownerId) {
-      throw new ForbiddenException('Not owner of collection');
-    }
+    await this.assertActorCanManageLegacyOwnerCatalog(
+      ownerId,
+      collection.ownerId,
+      BRAND_PERMISSIONS.CATALOG_DELETE,
+    );
     if (!collection.deletedAt) {
       throw new BadRequestException('Collection is not deleted');
     }
@@ -5671,9 +6167,11 @@ export class CollectionsService {
         select: { id: true, ownerId: true, deletedAt: true },
       });
       if (!storeCollection) throw new NotFoundException('Collection not found');
-      if (storeCollection.ownerId !== ownerId) {
-        throw new ForbiddenException('Not owner of collection');
-      }
+      await this.assertActorCanManageLegacyOwnerCatalog(
+        ownerId,
+        storeCollection.ownerId,
+        BRAND_PERMISSIONS.CATALOG_DELETE,
+      );
       if (!storeCollection.deletedAt) {
         throw new BadRequestException(
           'Collection must be deleted before permanent removal',
@@ -5689,9 +6187,11 @@ export class CollectionsService {
       include: { medias: { include: { file: true } } },
     });
     if (!collection) throw new NotFoundException('Collection not found');
-    if (collection.ownerId !== ownerId) {
-      throw new ForbiddenException('Not owner of collection');
-    }
+    await this.assertActorCanManageLegacyOwnerCatalog(
+      ownerId,
+      collection.ownerId,
+      BRAND_PERMISSIONS.CATALOG_DELETE,
+    );
     if (expectedDomain && collection.domain !== expectedDomain) {
       throw new BadRequestException(
         'Permanent delete requested with design scope for a store collection.',
@@ -5745,8 +6245,11 @@ export class CollectionsService {
       include: { medias: { include: { file: true } } },
     });
     if (!collection) throw new NotFoundException('Collection not found');
-    if (collection.ownerId !== requesterId)
-      throw new ForbiddenException('Not owner of collection');
+    await this.assertActorCanManageLegacyOwnerCatalog(
+      requesterId,
+      collection.ownerId,
+      BRAND_PERMISSIONS.CATALOG_DELETE,
+    );
 
     const media = collection.medias.find(
       (m) =>
@@ -5880,25 +6383,7 @@ export class CollectionsService {
       ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
       include: {
         owner: {
-          select: {
-            id: true,
-            username: true,
-            firstName: true,
-            lastName: true,
-            brandFullName: true,
-            profileImage: true,
-            profileImageId: true,
-            profileImageFile: {
-              select: {
-                id: true,
-                s3Url: true,
-                fileName: true,
-                originalName: true,
-                createdAt: true,
-                updatedAt: true,
-              },
-            },
-          },
+          select: this.selectCollectionOwnerDisplay(),
         },
         medias: {
           select: {
@@ -5994,11 +6479,7 @@ export class CollectionsService {
         ownerId: true,
         title: true,
         owner: {
-          select: {
-            type: true,
-            brandFullName: true,
-            username: true,
-          },
+          select: this.selectCollectionOwnerDisplay(),
         },
       },
     });
@@ -6236,7 +6717,7 @@ export class CollectionsService {
   ) {
     const collection = await this.prisma.collection.findUnique({
       where: { id: collectionId },
-      include: { owner: true },
+      include: { owner: { select: this.selectCollectionOwnerDisplay() } },
     });
 
     if (!collection) {
@@ -6357,12 +6838,7 @@ export class CollectionsService {
       where: { collectionId, status: PatchStatus.PENDING },
       include: {
         requester: {
-          select: {
-            id: true,
-            username: true,
-            brandFullName: true,
-            profileImage: true,
-          },
+          select: this.selectCollectionOwnerDisplay(),
         },
       },
       orderBy: { createdAt: 'desc' },
@@ -6422,12 +6898,7 @@ export class CollectionsService {
       },
       include: {
         patchingBrand: {
-          select: {
-            id: true,
-            username: true,
-            brandFullName: true,
-            profileImage: true,
-          },
+          select: this.selectCollectionOwnerDisplay(),
         },
       },
     });
@@ -6476,12 +6947,7 @@ export class CollectionsService {
       where: { collectionId },
       include: {
         patchingBrand: {
-          select: {
-            id: true,
-            username: true,
-            brandFullName: true,
-            profileImage: true,
-          },
+          select: this.selectCollectionOwnerDisplay(),
         },
       },
       orderBy: { createdAt: 'desc' },
@@ -6512,12 +6978,7 @@ export class CollectionsService {
         collection: {
           include: {
             owner: {
-              select: {
-                id: true,
-                username: true,
-                brandFullName: true,
-                profileImage: true,
-              },
+              select: this.selectCollectionOwnerDisplay(),
             },
             medias: {
               select: {
@@ -6621,13 +7082,7 @@ export class CollectionsService {
         where: { collectionId, type: ReactionType.THREAD },
         include: {
           user: {
-            select: {
-              id: true,
-              username: true,
-              firstName: true,
-              lastName: true,
-              profileImage: true,
-            },
+            select: this.selectCollectionOwnerDisplay(),
           },
         },
         orderBy: { createdAt: 'desc' },
@@ -6721,11 +7176,7 @@ export class CollectionsService {
               ownerId: true,
               title: true,
               owner: {
-                select: {
-                  type: true,
-                  brandFullName: true,
-                  username: true,
-                },
+                select: this.selectCollectionOwnerDisplay(),
               },
             },
           },
@@ -6824,13 +7275,7 @@ export class CollectionsService {
       where: { collectionMediaId: mediaId, type: ReactionType.THREAD },
       include: {
         user: {
-          select: {
-            id: true,
-            username: true,
-            firstName: true,
-            lastName: true,
-            profileImage: true,
-          },
+          select: this.selectCollectionOwnerDisplay(),
         },
       },
       orderBy: { createdAt: 'desc' },
@@ -6953,6 +7398,7 @@ export class CollectionsService {
 
         // Update collection in a transaction
         await this.prisma.$transaction(async (tx) => {
+          const publishedAt = new Date();
           await tx.collection.update({
             where: { id: collection.id },
             data: {
@@ -6961,9 +7407,18 @@ export class CollectionsService {
               pendingCategorySuggestionId: null,
               draftReason: null,
               status: 'PUBLISHED',
-              updatedAt: new Date(),
+              updatedAt: publishedAt,
             },
           });
+          await this.cleanupSupersededDraftCollections(
+            tx,
+            collection.ownerId,
+            collection.id,
+            collection.title,
+            publishedAt,
+            (collection as any).domain ?? null,
+            Boolean((collection as any).isAvailableInStore),
+          );
         });
 
         results.published++;
@@ -7395,12 +7850,7 @@ export class CollectionsService {
         data,
         include: {
           owner: {
-            select: {
-              id: true,
-              username: true,
-              brandFullName: true,
-              profileImage: true,
-            },
+            select: this.selectCollectionOwnerDisplay(),
           },
         },
       });
@@ -7628,12 +8078,7 @@ export class CollectionsService {
       data,
       include: {
         owner: {
-          select: {
-            id: true,
-            username: true,
-            brandFullName: true,
-            profileImage: true,
-          },
+          select: this.selectCollectionOwnerDisplay(),
         },
         // coverMedia relation may not be generated yet until migration applied; comment out include safely
         // coverMedia: { include: { file: true } },
@@ -7838,9 +8283,7 @@ export class CollectionsService {
     });
 
     if (!product) throw new NotFoundException('Product not found');
-    if (product.brand.ownerId !== ownerId) {
-      throw new ForbiddenException('You can only preview your own products');
-    }
+    await this.assertActorCanManageLegacyOwnerCatalog(ownerId, product.brand.ownerId);
 
     const memberships = await this.prisma.storeCollectionProduct.findMany({
       where: { productId },
@@ -8462,7 +8905,7 @@ export class CollectionsService {
     return {
       success: true,
       inquiryId,
-      threadId,
+      threadId: createdThread.id,
       message: 'Your inquiry has been sent to the brand. They will respond soon.',
       estimatedResponseTime: '24-48 hours',
     };
@@ -8615,7 +9058,12 @@ export class CollectionsService {
     mediaId: string,
     ownerId: string,
   ) {
-    await this.assertOwner(collectionId, ownerId);
+    await this.assertOwner(
+      collectionId,
+      ownerId,
+      undefined,
+      BRAND_PERMISSIONS.CATALOG_DELETE,
+    );
 
     const collection = await this.prisma.collection.findUnique({
       where: { id: collectionId },

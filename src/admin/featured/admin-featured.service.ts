@@ -11,6 +11,10 @@ import { v4 as uuidv4 } from 'uuid';
 import { Request } from 'express';
 import { CreateFeaturedDto } from './dto';
 import { NotificationsService } from 'src/notifications/notifications.service';
+import {
+  adminUserDisplaySelect,
+  mapAdminUserDisplay,
+} from '../admin-user-display.helper';
 
 const FEATURED_DURATION_DAYS = 7;
 const MAX_GLOBAL_FEATURED = 10;
@@ -63,7 +67,7 @@ export class AdminFeaturedService {
         },
         include: {
           brand: { select: { id: true, name: true } },
-          featuredBy: { select: { id: true, firstName: true, lastName: true } },
+          featuredBy: { select: adminUserDisplaySelect },
         },
       });
 
@@ -113,7 +117,11 @@ export class AdminFeaturedService {
       targetUrl: entityType === 'PRODUCT' ? `/products/${entityId}` : `/designs/${entityId}`,
     }).catch((err) => this.logger.warn(`Failed to send ITEM_FEATURED notification: ${err?.message}`));
 
-    return { ...featured, entityName };
+    return {
+      ...featured,
+      featuredBy: mapAdminUserDisplay(featured.featuredBy),
+      entityName,
+    };
   }
 
   // ── List featured items (admin view) ──
@@ -146,8 +154,8 @@ export class AdminFeaturedService {
       where,
       include: {
         brand: { select: { id: true, name: true, logo: true } },
-        featuredBy: { select: { id: true, firstName: true, lastName: true } },
-        removedBy: { select: { id: true, firstName: true, lastName: true } },
+        featuredBy: { select: adminUserDisplaySelect },
+        removedBy: { select: adminUserDisplaySelect },
       },
       orderBy: { createdAt: 'desc' },
       take: take + 1,
@@ -163,7 +171,13 @@ export class AdminFeaturedService {
       results.map(async (item) => {
         const entityName = await this.getEntityName(item.entityType, item.entityId);
         const entityThumbnail = await this.getEntityThumbnail(item.entityType, item.entityId);
-        return { ...item, entityName, entityThumbnail };
+        return {
+          ...item,
+          featuredBy: mapAdminUserDisplay(item.featuredBy),
+          removedBy: mapAdminUserDisplay(item.removedBy),
+          entityName,
+          entityThumbnail,
+        };
       }),
     );
 
@@ -270,8 +284,8 @@ export class AdminFeaturedService {
       where,
       include: {
         brand: { select: { id: true, name: true } },
-        featuredBy: { select: { id: true, firstName: true, lastName: true } },
-        removedBy: { select: { id: true, firstName: true, lastName: true } },
+        featuredBy: { select: adminUserDisplaySelect },
+        removedBy: { select: adminUserDisplaySelect },
       },
       orderBy: { createdAt: 'desc' },
       take: take + 1,
@@ -285,7 +299,12 @@ export class AdminFeaturedService {
     const enriched = await Promise.all(
       results.map(async (item) => {
         const entityName = await this.getEntityName(item.entityType, item.entityId);
-        return { ...item, entityName };
+        return {
+          ...item,
+          featuredBy: mapAdminUserDisplay(item.featuredBy),
+          removedBy: mapAdminUserDisplay(item.removedBy),
+          entityName,
+        };
       }),
     );
 

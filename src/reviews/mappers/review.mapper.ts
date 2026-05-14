@@ -1,4 +1,9 @@
-import { ProductReview, ProductReviewStatus, User, Brand } from '@prisma/client';
+import { ProductReview, ProductReviewStatus, Brand } from '@prisma/client';
+import {
+    canonicalUserProfileSelect,
+    resolveProfileImage,
+    resolveRequiredProfileField,
+} from '../../common/user-profile-source.helper';
 
 /**
  * Canonical reviewer object for review responses.
@@ -63,16 +68,16 @@ export interface ProductReviewListResponse {
 
 // Full prisma review with includes
 type ReviewWithIncludes = ProductReview & {
-    user: Pick<
-        User,
-        | 'id'
-        | 'username'
-        | 'firstName'
-        | 'lastName'
-        | 'profileImage'
-        | 'profileImageId'
-    > & {
-        profileImageFile?: { id: string; s3Url: string } | null;
+    user: {
+        id: string;
+        username: string;
+        userProfile?: {
+            firstName: string;
+            lastName: string;
+            profileImage: string | null;
+            profileImageId: string | null;
+            profileImageFile?: { id: string; s3Url: string } | null;
+        } | null;
     };
     brand: Pick<Brand, 'id' | 'name'>;
     helpfulVotes?: Array<{ userId: string }>;
@@ -126,11 +131,11 @@ export function mapReviewToResponse(
         reviewer: {
             id: review.user.id,
             username: review.user.username,
-            firstName: review.user.firstName,
-            lastName: review.user.lastName,
-            profileImage: review.user.profileImage ?? null,
-            profileImageId: review.user.profileImageId ?? null,
-            profileImageFile: review.user.profileImageFile ?? null,
+            firstName: resolveRequiredProfileField(review.user as any, 'firstName'),
+            lastName: resolveRequiredProfileField(review.user as any, 'lastName'),
+            profileImage: resolveProfileImage(review.user as any).url,
+            profileImageId: resolveProfileImage(review.user as any).fileId,
+            profileImageFile: resolveProfileImage(review.user as any).file,
         },
         brandReply: review.brandReply
             ? {
@@ -157,12 +162,8 @@ export function getReviewInclude(viewerUserId?: string) {
             select: {
                 id: true,
                 username: true,
-                firstName: true,
-                lastName: true,
-                profileImage: true,
-                profileImageId: true,
-                profileImageFile: {
-                    select: { id: true, s3Url: true },
+                userProfile: {
+                    select: canonicalUserProfileSelect,
                 },
             },
         },

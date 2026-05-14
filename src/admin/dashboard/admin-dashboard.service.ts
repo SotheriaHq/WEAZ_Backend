@@ -2,6 +2,10 @@ import { Injectable } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { BrandVerificationStatus, PayoutStatus, Role } from '@prisma/client';
 import { SystemConfigService } from '../system-config/system-config.service';
+import {
+  adminUserDisplaySelect,
+  mapAdminUserDisplay,
+} from '../admin-user-display.helper';
 
 @Injectable()
 export class AdminDashboardService {
@@ -129,27 +133,13 @@ export class AdminDashboardService {
       actorIds.size > 0
         ? this.prisma.user.findMany({
             where: { id: { in: [...actorIds] } },
-          select: {
-              id: true,
-              firstName: true,
-              lastName: true,
-              username: true,
-              email: true,
-              profileImageFile: { select: { s3Url: true } },
-            },
+            select: adminUserDisplaySelect,
           })
         : [],
       userIds.size > 0
         ? this.prisma.user.findMany({
             where: { id: { in: [...userIds] } },
-            select: {
-              id: true,
-              firstName: true,
-              lastName: true,
-              username: true,
-              status: true,
-              profileImageFile: { select: { s3Url: true } },
-            },
+            select: adminUserDisplaySelect,
           })
         : [],
       brandIds.size > 0
@@ -188,8 +178,18 @@ export class AdminDashboardService {
         : [],
     ]);
 
-    const actorMap = new Map(actors.map((a) => [a.id, a] as const));
-    const userMap = new Map(users.map((u) => [u.id, u] as const));
+    const actorMap = new Map(
+      actors.map((a) => {
+        const display = mapAdminUserDisplay(a);
+        return [display.id, display] as const;
+      }),
+    );
+    const userMap = new Map(
+      users.map((u) => {
+        const display = mapAdminUserDisplay(u);
+        return [display.id, display] as const;
+      }),
+    );
     const brandMap = new Map(brands.map((b) => [b.id, b] as const));
     const collectionMap = new Map(collections.map((c) => [c.id, c] as const));
     const productMap = new Map(products.map((p) => [p.id, p] as const));

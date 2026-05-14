@@ -20,6 +20,14 @@ import {
   PatchStatus,
   PatchMode,
 } from '@prisma/client';
+import {
+  canonicalUserProfileSelect,
+  resolveProfileImage,
+  resolveRequiredProfileField,
+} from 'src/common/user-profile-source.helper';
+import {
+  canonicalBrandProfileSelect,
+} from 'src/common/brand-profile-source.helper';
 
 function escapeHtml(input: string): string {
   return input
@@ -36,6 +44,12 @@ function truncatePreview(input: string, max = 84): string {
   return `${text.slice(0, max - 1).trimEnd()}...`;
 }
 
+const COMMENT_USER_DISPLAY_SELECT = {
+  id: true,
+  username: true,
+  userProfile: { select: canonicalUserProfileSelect },
+} as const;
+
 @Injectable()
 export class CommentsV2Service {
   constructor(
@@ -44,6 +58,29 @@ export class CommentsV2Service {
     private readonly notifications: NotificationsService,
     private readonly notificationsQueue?: NotificationsQueueService,
   ) {}
+
+  private mapUserDisplay(user: any) {
+    if (!user) return null;
+    return {
+      id: user.id,
+      username: user.username,
+      firstName: resolveRequiredProfileField(user, 'firstName'),
+      lastName: resolveRequiredProfileField(user, 'lastName'),
+      profileImage: resolveProfileImage(user).url,
+    };
+  }
+
+  private mapCommentDisplay<T extends { user?: any; children?: any[] }>(
+    comment: T,
+  ): T {
+    return {
+      ...comment,
+      user: this.mapUserDisplay(comment.user),
+      ...(Array.isArray(comment.children)
+        ? { children: comment.children.map((child) => this.mapCommentDisplay(child)) }
+        : {}),
+    };
+  }
 
   private async canViewCollection(collectionId: string, requesterId?: string) {
     const c = await this.prisma.collection.findUnique({
@@ -153,13 +190,7 @@ export class CommentsV2Service {
         },
         include: {
           user: {
-            select: {
-              id: true,
-              username: true,
-              firstName: true,
-              lastName: true,
-              profileImage: true,
-            },
+            select: COMMENT_USER_DISPLAY_SELECT,
           },
         },
       });
@@ -204,7 +235,7 @@ export class CommentsV2Service {
           id: created.id,
           targetType,
           targetId,
-          user: created.user,
+          user: this.mapUserDisplay(created.user),
           userId: created.userId,
           parentId: created.parentId,
           depth: created.depth,
@@ -228,7 +259,7 @@ export class CommentsV2Service {
     let targetDescriptor: string = 'content';
     let targetTitle: string | null = null;
     let ownerProfile:
-      | { id: string; type: UserType; brandFullName: string | null; username: string }
+      | { id: string; type: UserType; brand: any | null; username: string }
       | null = null;
     try {
       if (targetType === 'POST') {
@@ -260,7 +291,7 @@ export class CommentsV2Service {
           select: {
             id: true,
             type: true,
-            brandFullName: true,
+            brand: { select: canonicalBrandProfileSelect },
             username: true,
           },
         });
@@ -455,13 +486,7 @@ export class CommentsV2Service {
       take: limit + 1,
       include: {
         user: {
-          select: {
-            id: true,
-            username: true,
-            firstName: true,
-            lastName: true,
-            profileImage: true,
-          },
+          select: COMMENT_USER_DISPLAY_SELECT,
         },
         children: {
           where: { deletedAt: null },
@@ -469,13 +494,7 @@ export class CommentsV2Service {
           take: 2,
           include: {
             user: {
-              select: {
-                id: true,
-                username: true,
-                firstName: true,
-                lastName: true,
-                profileImage: true,
-              },
+              select: COMMENT_USER_DISPLAY_SELECT,
             },
           },
         },
@@ -497,11 +516,11 @@ export class CommentsV2Service {
 
     return {
       items: data.map((c) => ({
-        ...c,
+        ...this.mapCommentDisplay(c),
         threadCount: c.threadsCount,
         isThreadedByMe: requesterId ? threadedSet.has(c.id) : false,
         children: c.children.map((r) => ({
-          ...r,
+          ...this.mapCommentDisplay(r),
           threadCount: r.threadsCount,
           isThreadedByMe: requesterId ? threadedSet.has(r.id) : false,
         })),
@@ -543,13 +562,7 @@ export class CommentsV2Service {
       take: limit + 1,
       include: {
         user: {
-          select: {
-            id: true,
-            username: true,
-            firstName: true,
-            lastName: true,
-            profileImage: true,
-          },
+          select: COMMENT_USER_DISPLAY_SELECT,
         },
       },
     });
@@ -570,7 +583,7 @@ export class CommentsV2Service {
 
     return {
       items: data.map((r) => ({
-        ...r,
+        ...this.mapCommentDisplay(r),
         threadCount: r.threadsCount,
         isThreadedByMe: requesterId ? threadedSet.has(r.id) : false,
       })),
@@ -736,13 +749,7 @@ export class CommentsV2Service {
       take: limit + 1,
       include: {
         user: {
-          select: {
-            id: true,
-            username: true,
-            firstName: true,
-            lastName: true,
-            profileImage: true,
-          },
+          select: COMMENT_USER_DISPLAY_SELECT,
         },
         children: {
           where: { deletedAt: null },
@@ -750,13 +757,7 @@ export class CommentsV2Service {
           take: 2,
           include: {
             user: {
-              select: {
-                id: true,
-                username: true,
-                firstName: true,
-                lastName: true,
-                profileImage: true,
-              },
+              select: COMMENT_USER_DISPLAY_SELECT,
             },
           },
         },
@@ -779,11 +780,11 @@ export class CommentsV2Service {
 
     return {
       items: data.map((c) => ({
-        ...c,
+        ...this.mapCommentDisplay(c),
         threadCount: c.threadsCount,
         isThreadedByMe: requesterId ? threadedSet.has(c.id) : false,
         children: c.children.map((r) => ({
-          ...r,
+          ...this.mapCommentDisplay(r),
           threadCount: r.threadsCount,
           isThreadedByMe: requesterId ? threadedSet.has(r.id) : false,
         })),

@@ -2,8 +2,10 @@ import {
   BadRequestException,
   Injectable,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import {
+  AdminAuditAction,
   CustomOrderLedgerAllocationStatus,
   CustomOrderLedgerAllocationType,
   PayoutStatus,
@@ -14,6 +16,11 @@ import { CommissionService } from 'src/finance/commission.service';
 import { StandardOrderEscrowService } from 'src/finance/standard-order-escrow.service';
 import { StandardOrderFinanceSyncService } from 'src/finance/standard-order-finance-sync.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { AdminAuditService } from 'src/admin/services/admin-audit.service';
+import {
+  canonicalUserProfileSelect,
+  resolveRequiredProfileField,
+} from 'src/common/user-profile-source.helper';
 
 @Injectable()
 export class PayoutService {
@@ -22,7 +29,19 @@ export class PayoutService {
     private readonly standardOrderEscrowService: StandardOrderEscrowService,
     private readonly commissionService: CommissionService,
     private readonly standardOrderFinanceSyncService: StandardOrderFinanceSyncService,
+    @Optional()
+    private readonly adminAuditService?: AdminAuditService,
   ) {}
+
+  private buyerName(buyer: any): string {
+    return [
+      resolveRequiredProfileField(buyer ?? {}, 'firstName'),
+      resolveRequiredProfileField(buyer ?? {}, 'lastName'),
+    ]
+      .map((value) => String(value || '').trim())
+      .filter(Boolean)
+      .join(' ');
+  }
 
   async findAll(brandId: string, page = 1, limit = 20) {
     const skip = (page - 1) * limit;
@@ -45,7 +64,7 @@ export class PayoutService {
     };
   }
 
-  async requestPayout(brandId: string, amount: number) {
+  async requestPayout(brandId: string, amount: number, actorUserId?: string | null) {
     if (amount < 5000) {
       throw new BadRequestException('Minimum payout amount is 5000');
     }
@@ -82,6 +101,24 @@ export class PayoutService {
       });
 
       await this.reserveLedgerSources(tx, brandId, payoutId, amount, payout.currency);
+      if (actorUserId) {
+        await this.adminAuditService?.safeLogInTransaction(tx, {
+          actorUserId,
+          action: 'BRAND_PAYOUT_REQUEST' as AdminAuditAction,
+          targetType: 'Payout',
+          targetId: payout.id,
+          metadata: {
+            brandId,
+            currency: payout.currency,
+            status: payout.status,
+          },
+          newState: {
+            amount: payout.amount,
+            currency: payout.currency,
+            status: payout.status,
+          },
+        });
+      }
       return payout;
     });
   }
@@ -225,8 +262,7 @@ export class PayoutService {
               sourceTitleSnapshot: true,
               buyer: {
                 select: {
-                  firstName: true,
-                  lastName: true,
+                  userProfile: { select: canonicalUserProfileSelect },
                   username: true,
                 },
               },
@@ -279,8 +315,7 @@ export class PayoutService {
               sourceTitleSnapshot: true,
               buyer: {
                 select: {
-                  firstName: true,
-                  lastName: true,
+                  userProfile: { select: canonicalUserProfileSelect },
                   username: true,
                 },
               },
@@ -306,10 +341,7 @@ export class PayoutService {
 
     const customOrderById = new Map<string, { title: string; counterparty: string | null }>(
       customOrders.map((order: any) => {
-        const buyerName = [order?.buyer?.firstName, order?.buyer?.lastName]
-          .map((value) => String(value || '').trim())
-          .filter(Boolean)
-          .join(' ');
+        const buyerName = this.buyerName(order?.buyer);
 
         return [
           String(order.id),
@@ -388,8 +420,8 @@ export class PayoutService {
       })
       .map((allocation) => {
         const buyerName = [
-          allocation.customOrder?.buyer?.firstName,
-          allocation.customOrder?.buyer?.lastName,
+          resolveRequiredProfileField(allocation.customOrder?.buyer ?? {}, 'firstName'),
+          resolveRequiredProfileField(allocation.customOrder?.buyer ?? {}, 'lastName'),
         ]
           .map((value) => String(value || '').trim())
           .filter(Boolean)
@@ -492,8 +524,7 @@ export class PayoutService {
               sourceTitleSnapshot: true,
               buyer: {
                 select: {
-                  firstName: true,
-                  lastName: true,
+                  userProfile: { select: canonicalUserProfileSelect },
                   username: true,
                 },
               },
@@ -565,8 +596,8 @@ export class PayoutService {
       })),
       ...customHeldAllocations.map((allocation) => {
         const buyerName = [
-          allocation.customOrder?.buyer?.firstName,
-          allocation.customOrder?.buyer?.lastName,
+          resolveRequiredProfileField(allocation.customOrder?.buyer ?? {}, 'firstName'),
+          resolveRequiredProfileField(allocation.customOrder?.buyer ?? {}, 'lastName'),
         ]
           .map((value) => String(value || '').trim())
           .filter(Boolean)

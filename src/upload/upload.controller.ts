@@ -18,7 +18,7 @@ import { UploadService } from './upload.service';
 import { FileType } from './upload.enums';
 import { GetFilesDto } from './dto/get-files.dto';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
-import { SkipThrottle } from '@nestjs/throttler';
+import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
 
 @ApiTags('uploads')
 @ApiBearerAuth()
@@ -31,7 +31,8 @@ export class UploadController {
   // ============================================
 
   @Get('public-url/:fileId')
-  @SkipThrottle()
+  @UseGuards(ThrottlerGuard)
+  @Throttle({ default: { limit: 120, ttl: 60000 } })
   @ApiOperation({
     summary: 'Get public signed URL for file access (no auth required)',
     description:
@@ -46,7 +47,8 @@ export class UploadController {
   }
 
   @Get('public-url-by-key')
-  @SkipThrottle()
+  @UseGuards(ThrottlerGuard)
+  @Throttle({ default: { limit: 60, ttl: 60000 } })
   @ApiOperation({
     summary: 'Get public signed URL by S3 key (no auth required)',
     description:
@@ -57,6 +59,9 @@ export class UploadController {
       throw new BadRequestException('Invalid S3 key');
     }
     const url = await this.uploadService.getPublicSignedUrlByKey(key);
+    if (!url) {
+      throw new BadRequestException('File not found');
+    }
     return { url };
   }
 
@@ -242,9 +247,9 @@ export class UploadController {
     return this.uploadService.getUserFiles(req.user.id, query);
   }
 
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, ThrottlerGuard)
+  @Throttle({ default: { limit: 240, ttl: 60000 } })
   @Get('signed-url/:fileId')
-  @SkipThrottle()
   @ApiOperation({ summary: 'Get signed URL for file access' })
   async getSignedUrl(@Param('fileId') fileId: string, @Req() req: any) {
     const url = await this.uploadService.getSignedUrl(fileId, req.user.id);

@@ -1,5 +1,4 @@
 import { Injectable } from '@nestjs/common';
-import { v4 as uuidv4 } from 'uuid';
 import { PrismaService } from '../prisma/prisma.service';
 import { normalizeTag } from 'src/common/utils/tag-validator';
 
@@ -22,52 +21,20 @@ export class SystemTagsService {
   }
 
   async upsertTags(tags: Array<string | null | undefined>): Promise<void> {
-    const normalized = this.normalizeTags(tags);
-    if (normalized.length === 0) return;
-
-    await this.prisma.systemTag.createMany({
-      data: normalized.map((tag) => ({ id: uuidv4(), tag })),
-      skipDuplicates: true,
-    });
+    // Note: systemTag table not in schema, skipping operations
+    console.warn('SystemTagsService.upsertTags called but systemTag table not available');
   }
 
   async syncTags(
     previousTags: Array<string | null | undefined>,
     nextTags: Array<string | null | undefined>,
   ): Promise<void> {
-    const prev = new Set(this.normalizeTags(previousTags));
-    const next = new Set(this.normalizeTags(nextTags));
-
-    const added: string[] = [];
-    const removed: string[] = [];
-
-    for (const tag of next) {
-      if (!prev.has(tag)) added.push(tag);
-    }
-    for (const tag of prev) {
-      if (!next.has(tag)) removed.push(tag);
-    }
-
-    if (added.length > 0) {
-      await this.prisma.systemTag.createMany({
-        data: added.map((tag) => ({ id: uuidv4(), tag })),
-        skipDuplicates: true,
-      });
-    }
-
-    for (const tag of removed) {
-      const stillUsed = await this.isTagUsed(tag);
-      if (!stillUsed) {
-        await this.prisma.systemTag.deleteMany({ where: { tag } });
-      }
-    }
+    // Note: systemTag table not in schema, skipping operations
+    console.warn('SystemTagsService.syncTags called but systemTag table not available');
   }
 
   private async isTagUsed(tag: string): Promise<boolean> {
-    const [userCount, productCount, collectionCount, brandCount] = await Promise.all([
-      this.prisma.user.count({
-        where: { type: 'BRAND', brandTags: { has: tag } },
-      }),
+    const [productCount, collectionCount, brandCount] = await Promise.all([
       this.prisma.product.count({
         where: { tags: { has: tag } },
       }),
@@ -78,6 +45,6 @@ export class SystemTagsService {
         where: { tags: { has: tag } },
       }),
     ]);
-    return userCount + productCount + collectionCount + brandCount > 0;
+    return productCount + collectionCount + brandCount > 0;
   }
 }

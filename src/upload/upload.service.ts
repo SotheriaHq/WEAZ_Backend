@@ -151,6 +151,126 @@ export class UploadService {
     return `https://${this.bucketName}.s3.${this.region}.amazonaws.com`;
   }
 
+  private isTruthyConfig(value?: string | null): boolean {
+    return ['1', 'true', 'yes', 'on', 'public'].includes(
+      String(value ?? '').trim().toLowerCase(),
+    );
+  }
+
+  private isRawS3ObjectUrl(value: string): boolean {
+    try {
+      const parsed = new URL(value);
+      return parsed.hostname.toLowerCase().includes('amazonaws.com');
+    } catch {
+      return false;
+    }
+  }
+
+  private isBucketPublicForDisplay(): boolean {
+    return (
+      this.isTruthyConfig(this.configService.get<string>('MEDIA_BUCKET_PUBLIC')) ||
+      this.isTruthyConfig(this.configService.get<string>('S3_BUCKET_PUBLIC')) ||
+      this.isTruthyConfig(this.configService.get<string>('AWS_S3_BUCKET_PUBLIC')) ||
+      this.isTruthyConfig(this.configService.get<string>('S3_PUBLIC_READ')) ||
+      this.isTruthyConfig(this.configService.get<string>('MEDIA_OBJECTS_PUBLIC'))
+    );
+  }
+
+  getPublicDisplayUrl(file: { s3Url?: string | null; s3Key?: string | null; isPublic?: boolean | null }): string | null {
+    const key = typeof file.s3Key === 'string' ? file.s3Key.trim() : '';
+    const configuredBase =
+      this.configService.get<string>('MEDIA_PUBLIC_BASE_URL') ??
+      this.configService.get<string>('CDN_PUBLIC_BASE_URL') ??
+      this.configService.get<string>('CLOUDFRONT_PUBLIC_BASE_URL') ??
+      this.configService.get<string>('CLOUDFRONT_URL');
+    const publicBase = configuredBase?.trim().replace(/\/+$/, '');
+
+    if (publicBase && key) {
+      return `${publicBase}/${this.encodeS3KeyForUrl(key)}`;
+    }
+
+    const directUrl = typeof file.s3Url === 'string' ? file.s3Url.trim() : '';
+    if (!directUrl) return null;
+
+    if (!this.isRawS3ObjectUrl(directUrl)) {
+      return directUrl;
+    }
+
+    if (file.isPublic || this.isBucketPublicForDisplay()) {
+      return key ? this.buildS3ObjectUrl(key) : directUrl;
+    }
+
+    return null;
+  }
+
+  async getTemporarySignedDisplayUrl(
+    file: { id?: string | null; s3Key?: string | null },
+    expiresIn = 15 * 60,
+  ): Promise<string | null> {
+    const key = typeof file.s3Key === 'string' ? file.s3Key.trim() : '';
+    if (!key) return null;
+
+    const nodeEnv = String(this.configService.get<string>('NODE_ENV') ?? '').toLowerCase();
+    if (nodeEnv !== 'production') {
+      this.logger.warn(
+        `[media] temporary signed display URL fallback used fileId=${file.id ?? 'unknown'} expiresIn=${expiresIn}; configure MEDIA_PUBLIC_BASE_URL/CDN_PUBLIC_BASE_URL/CLOUDFRONT_URL for production public feed media.`,
+      );
+    }
+
+    const command = new GetObjectCommand({
+      Bucket: this.bucketName,
+      Key: key,
+    });
+
+    return await getSignedUrl(this.s3, command, { expiresIn });
+  }
+
+  private isReadyStoredFile(file: any): boolean {
+    return Boolean(
+      file &&
+        !file.originalDeletedAt &&
+        file.processingStatus === 'READY' &&
+        typeof file.s3Key === 'string' &&
+        file.s3Key.trim().length > 0,
+    );
+  }
+
+  private isPublicCollectionFile(file: any): boolean {
+    const medias = Array.isArray(file?.collectionMedias)
+      ? file.collectionMedias
+      : [];
+
+    return medias.some((media: any) => {
+      const collection = media?.collection;
+      return Boolean(
+        collection &&
+          collection.status === 'PUBLISHED' &&
+          collection.visibility === 'PUBLIC' &&
+          !collection.deletedAt,
+      );
+    });
+  }
+
+  private isPublicIdentityFile(file: any): boolean {
+    const profileImages = Array.isArray(file?.userProfileImages)
+      ? file.userProfileImages
+      : [];
+    const profileBanners = Array.isArray(file?.userProfileBanners)
+      ? file.userProfileBanners
+      : [];
+
+    return profileImages.length > 0 || profileBanners.length > 0;
+  }
+
+  private canReturnPublicFileUrl(file: any): boolean {
+    if (!this.isReadyStoredFile(file)) return false;
+    return Boolean(
+      file.isPublic ||
+      this.isPublicCollectionFile(file) ||
+      this.isPublicIdentityFile(file),
+    );
+  }
+
   async uploadFile(
     file: Express.Multer.File,
     userId: string,
@@ -193,13 +313,11 @@ export class UploadService {
           fileType: fileType,
           mimeType: file.mimetype,
           size: file.size,
-          processingStatus: this.shouldOptimizeFile(fileType, file.mimetype)
-            ? 'PENDING'
-            : 'READY',
+          processingStatus: 'READY',
         } as any,
       });
 
-      await this.enqueueImageProcessing(uploadRecord.id);
+      await this.enqueueImageProcessing(uploadRecord.id, true);
 
       return {
         id: uploadRecord.id,
@@ -276,13 +394,11 @@ export class UploadService {
         fileType: fileType,
         mimeType: file.mimetype,
         size: file.size,
-        processingStatus: this.shouldOptimizeFile(fileType, file.mimetype)
-          ? 'PENDING'
-          : 'READY',
+        processingStatus: 'READY',
       } as any,
     });
 
-    await this.enqueueImageProcessing(uploadRecord.id);
+    await this.enqueueImageProcessing(uploadRecord.id, true);
 
     return {
       id: uploadRecord.id,
@@ -365,48 +481,87 @@ export class UploadService {
     userId: string,
     file: Pick<FileUploadResult, 'id' | 'url'>,
   ): Promise<void> {
-    await this.prisma.$transaction([
-      this.prisma.user.update({
+    await this.prisma.$transaction(async (tx) => {
+      const user = await tx.user.findUnique({
         where: { id: userId },
-        data: { profileImageId: file.id, profileImage: file.url },
-      }),
+        select: {
+          userProfile: { select: { firstName: true, lastName: true } },
+        },
+      });
+      await tx.userProfile.upsert({
+        where: { userId },
+        create: {
+          userId,
+          firstName: user?.userProfile?.firstName ?? '',
+          lastName: user?.userProfile?.lastName ?? '',
+          profileImageId: file.id,
+          profileImage: file.url,
+        },
+        update: { profileImageId: file.id, profileImage: file.url },
+      });
       // Strict sync: store logo mirrors brand profile image.
-      this.prisma.brand.updateMany({
+      await tx.brand.updateMany({
         where: { ownerId: userId },
         data: { logo: file.url },
-      }),
-    ]);
+      });
+    });
   }
 
   async clearUserProfileImage(userId: string): Promise<void> {
-    await this.prisma.$transaction([
-      this.prisma.user.update({
+    await this.prisma.$transaction(async (tx) => {
+      const user = await tx.user.findUnique({
         where: { id: userId },
-        data: { profileImageId: null, profileImage: null },
-      }),
+        select: {
+          userProfile: { select: { firstName: true, lastName: true } },
+        },
+      });
+      await tx.userProfile.upsert({
+        where: { userId },
+        create: {
+          userId,
+          firstName: user?.userProfile?.firstName ?? '',
+          lastName: user?.userProfile?.lastName ?? '',
+          profileImageId: null,
+          profileImage: null,
+        },
+        update: { profileImageId: null, profileImage: null },
+      });
       // Strict sync: store logo mirrors brand profile image.
-      this.prisma.brand.updateMany({
+      await tx.brand.updateMany({
         where: { ownerId: userId },
         data: { logo: null },
-      }),
-    ]);
+      });
+    });
   }
 
   async updateUserBannerImage(
     userId: string,
     file: Pick<FileUploadResult, 'id' | 'url'>,
   ): Promise<void> {
-    await this.prisma.$transaction([
-      this.prisma.user.update({
+    await this.prisma.$transaction(async (tx) => {
+      const user = await tx.user.findUnique({
         where: { id: userId },
-        data: { bannerImageId: file.id, bannerImage: file.url },
-      }),
+        select: {
+          userProfile: { select: { firstName: true, lastName: true } },
+        },
+      });
+      await tx.userProfile.upsert({
+        where: { userId },
+        create: {
+          userId,
+          firstName: user?.userProfile?.firstName ?? '',
+          lastName: user?.userProfile?.lastName ?? '',
+          bannerImageId: file.id,
+          bannerImage: file.url,
+        },
+        update: { bannerImageId: file.id, bannerImage: file.url },
+      });
       // Strict sync: store banner mirrors brand banner image.
-      this.prisma.brand.updateMany({
+      await tx.brand.updateMany({
         where: { ownerId: userId },
         data: { banner: file.url },
-      }),
-    ]);
+      });
+    });
   }
 
   async getUserFiles(
@@ -448,6 +603,10 @@ export class UploadService {
     if (!file) {
       throw new BadRequestException('File not found');
     }
+    if (!this.isReadyStoredFile(file)) {
+      this.logger.warn(`[media] signed-url denied for unavailable file fileId=${fileId}`);
+      throw new BadRequestException('File not available');
+    }
 
     const command = new GetObjectCommand({
       Bucket: this.bucketName,
@@ -464,9 +623,30 @@ export class UploadService {
   async getPublicSignedUrl(fileId: string): Promise<string | null> {
     const file = await this.prisma.fileUpload.findUnique({
       where: { id: fileId },
+      include: {
+        collectionMedias: {
+          include: {
+            collection: {
+              select: {
+                id: true,
+                status: true,
+                visibility: true,
+                deletedAt: true,
+              },
+            },
+          },
+        },
+        userProfileImages: {
+          select: { id: true },
+        },
+        userProfileBanners: {
+          select: { id: true },
+        },
+      } as any,
     });
 
-    if (!file) {
+    if (!file || !this.canReturnPublicFileUrl(file)) {
+      this.logger.warn(`[media] public-url denied fileId=${fileId}`);
       return null;
     }
 
@@ -482,10 +662,75 @@ export class UploadService {
    * Get signed URL by raw S3 key (no DB lookup required).
    * Used when the frontend only has a raw S3 URL and needs a signed version.
    */
-  async getPublicSignedUrlByKey(s3Key: string): Promise<string> {
+  async getPublicSignedUrlByKey(s3Key: string): Promise<string | null> {
+    const normalizedKey = typeof s3Key === 'string' ? s3Key.trim() : '';
+    if (!normalizedKey || normalizedKey.includes('..')) {
+      throw new BadRequestException('Invalid S3 key');
+    }
+
+    const directFile = await this.prisma.fileUpload.findUnique({
+      where: { s3Key: normalizedKey },
+      include: {
+        collectionMedias: {
+          include: {
+            collection: {
+              select: {
+                id: true,
+                status: true,
+                visibility: true,
+                deletedAt: true,
+              },
+            },
+          },
+        },
+        userProfileImages: {
+          select: { id: true },
+        },
+        userProfileBanners: {
+          select: { id: true },
+        },
+      } as any,
+    } as any);
+
+    const variant = directFile
+      ? null
+      : await (this.prisma as any).fileVariant.findFirst({
+          where: { s3Key: normalizedKey },
+          include: {
+            file: {
+              include: {
+                collectionMedias: {
+                  include: {
+                    collection: {
+                      select: {
+                        id: true,
+                        status: true,
+                        visibility: true,
+                        deletedAt: true,
+                      },
+                    },
+                  },
+                },
+                userProfileImages: {
+                  select: { id: true },
+                },
+                userProfileBanners: {
+                  select: { id: true },
+                },
+              },
+            },
+          },
+        });
+
+    const sourceFile = directFile ?? variant?.file ?? null;
+    if (!sourceFile || !this.canReturnPublicFileUrl(sourceFile)) {
+      this.logger.warn('[media] public-url-by-key denied');
+      return null;
+    }
+
     const command = new GetObjectCommand({
       Bucket: this.bucketName,
-      Key: s3Key,
+      Key: normalizedKey,
     });
 
     return await getSignedUrl(this.s3, command, { expiresIn: 3600 }); // 1 hour
@@ -705,13 +950,11 @@ export class UploadService {
         fileType: presign.fileType as any,
         mimeType,
         size: size || 0,
-        processingStatus: this.shouldOptimizeFile(presign.fileType as FileType, mimeType)
-          ? 'PENDING'
-          : 'READY',
+        processingStatus: 'READY',
       } as any,
     });
 
-    await this.enqueueImageProcessing(record.id);
+    await this.enqueueImageProcessing(record.id, true);
 
     return record;
   }
@@ -750,12 +993,10 @@ export class UploadService {
         fileType,
         mimeType,
         size: buffer.length,
-        processingStatus: this.shouldOptimizeFile(fileType, mimeType)
-          ? 'PENDING'
-          : 'READY',
+        processingStatus: 'READY',
       } as any,
     });
-    await this.enqueueImageProcessing(record.id);
+    await this.enqueueImageProcessing(record.id, true);
     return record;
   }
 

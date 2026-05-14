@@ -1,4 +1,5 @@
 import { BadRequestException } from '@nestjs/common';
+import { BRAND_PERMISSIONS } from 'src/brands/permissions/brand-permissions';
 import { createCipheriv, createHash, randomBytes } from 'crypto';
 import { StoreService } from './store.service';
 
@@ -245,7 +246,298 @@ describe('StoreService', () => {
 
     expect(status.isEmailVerified).toBe(true);
     expect(status.isProfileComplete).toBe(false);
-    expect(status.profileMissingFields).toEqual(['description', 'tags', 'location']);
+    expect(status.profileMissingFields).toEqual(['location']);
     expect(status.isSetupComplete).toBe(false);
+  });
+
+  it('resolves store status through an active staff brand membership', async () => {
+    const brandAccess = {
+      getPrimaryBrandContext: jest.fn().mockResolvedValue({
+        activeBrandId: 'brand_1',
+        memberships: [],
+      }),
+    };
+    const statusPrisma = {
+      brand: {
+        findUnique: jest
+          .fn()
+          .mockResolvedValueOnce(null)
+          .mockResolvedValueOnce(null)
+          .mockResolvedValueOnce(null)
+          .mockResolvedValueOnce({
+            id: 'brand_1',
+            isStoreOpen: true,
+            ownerId: 'owner_1',
+          })
+          .mockResolvedValueOnce({
+            id: 'brand_1',
+            name: 'Brand One',
+            description: 'A valid store description for setup.',
+            tagline: null,
+            logo: null,
+            banner: null,
+            tags: ['fashion'],
+            country: 'Nigeria',
+            state: 'Lagos',
+            city: 'Lagos',
+            contactEmail: 'owner@example.com',
+            socialInstagram: null,
+            socialFacebook: null,
+            socialTwitter: null,
+            socialTiktok: null,
+            socialWebsite: null,
+            responseTimeSla: null,
+            isStoreOpen: true,
+            ownerId: 'owner_1',
+          }),
+      },
+      user: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'owner_1',
+          isEmailVerified: true,
+          brandDescription: 'A valid store description for setup.',
+          brandTags: ['fashion'],
+          brandCountry: 'Nigeria',
+          brandState: 'Lagos',
+        }),
+      },
+      storePolicy: { findUnique: jest.fn().mockResolvedValue({ responseTimeSla: '24h' }) },
+      storePaymentAccount: { findUnique: jest.fn().mockResolvedValue(null) },
+    } as any;
+    const statusService = new StoreService(
+      statusPrisma,
+      {} as any,
+      {} as any,
+      {} as any,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      brandAccess as any,
+    );
+
+    const status = await statusService.getStoreStatus('staff_1');
+
+    expect(status.brandId).toBe('brand_1');
+    expect(brandAccess.getPrimaryBrandContext).toHaveBeenCalledWith('staff_1');
+    expect(statusPrisma.user.findUnique).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: 'owner_1' } }),
+    );
+  });
+
+  it('requires payouts.read for staff-facing store payout reads', async () => {
+    const brandPermissionService = {
+      assertPermission: jest.fn().mockResolvedValue(undefined),
+    };
+    const payoutReadService = new StoreService(
+      { brand: { findUnique: jest.fn() } } as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      brandPermissionService as any,
+    );
+    jest.spyOn(payoutReadService as any, 'resolveBrandByIdOrOwner').mockResolvedValue({
+      id: 'brand_1',
+      isStoreOpen: true,
+      ownerId: 'owner_1',
+    });
+
+    await expect(
+      (payoutReadService as any).resolveBrandForPayoutRead('staff_1'),
+    ).resolves.toEqual({
+      id: 'brand_1',
+      isStoreOpen: true,
+      ownerId: 'owner_1',
+    });
+    expect(brandPermissionService.assertPermission).toHaveBeenCalledWith(
+      'staff_1',
+      'brand_1',
+      BRAND_PERMISSIONS.PAYOUTS_READ,
+    );
+  });
+
+  it('resolves catalog brand from an active brand membership', async () => {
+    const brandAccess = {
+      getPrimaryBrandContext: jest.fn().mockResolvedValue({
+        activeBrandId: 'brand_1',
+        memberships: [],
+      }),
+      assertCanManageCatalog: jest.fn().mockResolvedValue(undefined),
+    };
+    const catalogPrisma = {
+      brand: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'brand_1',
+          ownerId: 'owner_1',
+          currency: 'NGN',
+        }),
+      },
+    } as any;
+    const catalogService = new StoreService(
+      catalogPrisma,
+      {} as any,
+      {} as any,
+      {} as any,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      brandAccess as any,
+    );
+
+    await expect(
+      (catalogService as any).resolveCatalogBrandForActor('staff_1'),
+    ).resolves.toEqual({
+      id: 'brand_1',
+      ownerId: 'owner_1',
+      currency: 'NGN',
+    });
+    expect(brandAccess.assertCanManageCatalog).toHaveBeenCalledWith(
+      'staff_1',
+      'brand_1',
+      'catalog.write',
+    );
+  });
+
+  it('allows an active catalog manager to manage an existing product', async () => {
+    const brandAccess = {
+      assertCanManageCatalog: jest.fn().mockResolvedValue(undefined),
+    };
+    const catalogPrisma = {
+      product: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: 'product_1',
+          brandId: 'brand_1',
+          brand: { id: 'brand_1', ownerId: 'owner_1' },
+        }),
+      },
+    } as any;
+    const catalogService = new StoreService(
+      catalogPrisma,
+      {} as any,
+      {} as any,
+      {} as any,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      brandAccess as any,
+    );
+
+    await expect(
+      (catalogService as any).assertBrandOwnsProduct(
+        'catalog_manager_1',
+        'product_1',
+      ),
+    ).resolves.toEqual({
+      id: 'product_1',
+      brandId: 'brand_1',
+      brand: { id: 'brand_1', ownerId: 'owner_1' },
+    });
+    expect(brandAccess.assertCanManageCatalog).toHaveBeenCalledWith(
+      'catalog_manager_1',
+      'brand_1',
+      'catalog.write',
+    );
+  });
+
+  it('requires catalog.delete for product media deletion', async () => {
+    const brandAccess = {
+      assertCanManageCatalog: jest.fn().mockResolvedValue(undefined),
+    };
+    const catalogPrisma = {
+      product: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: 'product_1',
+          brandId: 'brand_1',
+          brand: { id: 'brand_1', ownerId: 'owner_1' },
+          images: ['https://cdn.example.com/image.jpg'],
+          thumbnail: 'https://cdn.example.com/image.jpg',
+        }),
+        update: jest.fn().mockResolvedValue({}),
+      },
+      fileUpload: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: 'media_1',
+          s3Url: 'https://cdn.example.com/image.jpg',
+          userId: 'catalog_manager_1',
+        }),
+      },
+    } as any;
+    const uploadService = {
+      deleteFile: jest.fn().mockResolvedValue(undefined),
+    };
+    const catalogService = new StoreService(
+      catalogPrisma,
+      {} as any,
+      uploadService as any,
+      {} as any,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      brandAccess as any,
+    );
+
+    await expect(
+      catalogService.deleteProductMedia(
+        'catalog_manager_1',
+        'product_1',
+        'media_1',
+      ),
+    ).resolves.toEqual({ success: true });
+    expect(brandAccess.assertCanManageCatalog).toHaveBeenCalledWith(
+      'catalog_manager_1',
+      'brand_1',
+      'catalog.delete',
+    );
+  });
+
+  it('rejects catalog brand resolution when the actor has no active brand', async () => {
+    const brandAccess = {
+      getPrimaryBrandContext: jest.fn().mockResolvedValue({
+        activeBrandId: null,
+        memberships: [],
+      }),
+      assertCanManageCatalog: jest.fn(),
+    };
+    const catalogService = new StoreService(
+      { brand: { findUnique: jest.fn() } } as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      brandAccess as any,
+    );
+
+    await expect(
+      (catalogService as any).resolveCatalogBrandForActor('regular_1'),
+    ).rejects.toThrow('active brand membership');
   });
 });

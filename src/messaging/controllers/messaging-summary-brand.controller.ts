@@ -7,15 +7,13 @@ import {
   UseGuards,
   ValidationPipe,
 } from '@nestjs/common';
-import { UserType } from '@prisma/client';
 import { Request } from 'express';
 import { JwtAuthGuard } from 'src/auth/guard/jwt-auth.guard';
-import { UserTypeGuard } from 'src/auth/guard/user-type.guard';
 import { MessagingService } from '../messaging.service';
 import { BulkQueryThreadSummaryDto } from '../dto/messaging.dto';
 
 @Controller()
-@UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+@UseGuards(JwtAuthGuard)
 export class MessagingSummaryBrandController {
   constructor(private readonly messaging: MessagingService) {}
 

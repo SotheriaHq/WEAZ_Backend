@@ -10,10 +10,8 @@ import {
   UseGuards,
   ValidationPipe,
 } from '@nestjs/common';
-import { UserType } from '@prisma/client';
 import { Request } from 'express';
 import { JwtAuthGuard } from 'src/auth/guard/jwt-auth.guard';
-import { UserTypeGuard } from 'src/auth/guard/user-type.guard';
 import { CustomOrdersService } from './custom-orders.service';
 import {
   AcceptCustomOrderDto,
@@ -26,7 +24,7 @@ import {
 } from './dto/custom-orders.dto';
 
 @Controller('brands/:brandId/custom-orders')
-@UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+@UseGuards(JwtAuthGuard)
 export class CustomOrdersBrandController {
   constructor(private readonly service: CustomOrdersService) {}
 

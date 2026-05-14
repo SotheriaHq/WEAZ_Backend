@@ -34,6 +34,11 @@ export class UpdateStoreProfileDto {
   @IsOptional()
   @IsString()
   @MaxLength(60)
+  socialFacebook?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(60)
   socialTwitter?: string;
 
   @IsOptional()

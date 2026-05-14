@@ -16,6 +16,7 @@ import { NotificationsModule } from 'src/notifications/notifications.module';
 import { RefreshTokenCleanupService } from './helper/refresh-token-cleanup.service';
 import { TrustedDeviceService } from './helper/trusted-device.service';
 import { AppThrottlerGuard } from './guard/app-throttler.guard';
+import { StudioHandoffService } from './studio-handoff.service';
 
 @Module({
   imports: [
@@ -72,6 +73,7 @@ import { AppThrottlerGuard } from './guard/app-throttler.guard';
     EmailVerificationHelperService,
     RefreshTokenCleanupService,
     TrustedDeviceService,
+    StudioHandoffService,
     JwtStrategy,
     {
       provide: APP_GUARD,
@@ -83,6 +85,7 @@ import { AppThrottlerGuard } from './guard/app-throttler.guard';
     TokenService,
     PasswordService,
     UserHelperService,
+    StudioHandoffService,
     JwtStrategy,
     PassportModule,
     JwtModule,

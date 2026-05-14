@@ -3,6 +3,7 @@ import {
   NotFoundException,
   BadRequestException,
   ForbiddenException,
+  Optional,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { UploadService } from '../upload/upload.service';
@@ -15,6 +16,7 @@ import {
   PatchMode,
   NotificationType,
   BrandVerificationStatus,
+  AdminAuditAction,
 } from '@prisma/client';
 import { NotificationsService } from '../notifications/notifications.service';
 import { UpdateBrandProfileDto } from './dto/update-brand-profile.dto';
@@ -28,7 +30,23 @@ import { SystemTagsService } from '../tags/system-tags.service';
 import { TagIndexService } from '../tags/tag-index.service';
 import { sanitizeTags } from 'src/common/utils/tag-validator';
 import { TAG_ENTITY_TYPE } from 'src/tags/tag-entity-type';
-import { getBrandVerificationTruth } from 'src/brand-verification/verification-truth.util';
+import {
+  canonicalBrandProfileSelect,
+  normalizeBrandProfileForBrandResponse,
+  resolveBrandTags,
+} from 'src/common/brand-profile-source.helper';
+import {
+  canonicalUserProfileSelect,
+  resolveBannerImage,
+  resolveProfileImage,
+  type SelectedProfileFile,
+} from 'src/common/user-profile-source.helper';
+import { AdminAuditService } from 'src/admin/services/admin-audit.service';
+import {
+  BrandMetricsService,
+  type BrandStoreStatus,
+} from './brand-metrics.service';
+import { BrandProfileLinkService } from './brand-profile-link.service';
 
 export interface BrandMediaAsset {
   fileId: string;
@@ -48,8 +66,10 @@ export interface BrandProfileResponse {
   city: string | null;
   location: string | null;
   bannerImage: string | null;
+  bannerImageId: string | null;
   bannerImageMeta: BrandMediaAsset | null;
   logoImage: string | null;
+  logoImageId: string | null;
   logoImageMeta: BrandMediaAsset | null;
   socialLinks: {
     instagram?: string | null;
@@ -70,11 +90,22 @@ export interface BrandProfileResponse {
   verificationStatus: BrandVerificationStatus;
   verificationBadgeVisible: boolean;
   verifiedExplanationUrl: string | null;
+  emailVerified: boolean;
   isStoreOpen: boolean;
+  storeStatus: BrandStoreStatus;
   averageRating: number;
   totalReviews: number;
   collectionsCount: number;
+  designsCount: number;
+  productsCount: number;
   patchesCount: number;
+  followersCount: number;
+  totalThreads: number;
+  totalLikes: number;
+  totalShares: number | null;
+  publicProfileUrl: string;
+  qrTargetUrl: string;
+  shareUrl: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -94,76 +125,39 @@ type BrandPatchHistoryActionValue =
   | 'CANCELLED'
   | 'REMOVED';
 
+const BRAND_PROFILE_UPDATE_AUDIT_ACTION =
+  'BRAND_PROFILE_UPDATE' as AdminAuditAction;
+
 @Injectable()
 export class BrandsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly uploadService: UploadService,
+    private readonly brandMetrics: BrandMetricsService,
+    private readonly brandProfileLinks: BrandProfileLinkService,
     private readonly notifications?: NotificationsService,
     private readonly systemTags?: SystemTagsService,
     private readonly tagIndex?: TagIndexService,
-  ) { }
+    @Optional()
+    private readonly adminAuditService?: AdminAuditService,
+  ) {}
 
   private async getBrandOrThrow(brandId: string) {
     const select = {
       id: true,
       username: true,
-      firstName: true,
-      lastName: true,
       email: true,
-      phoneNumber: true,
-      address: true,
-      brandFullName: true,
-      brandDescription: true,
-      brandCountry: true,
-      brandState: true,
-      brandCity: true,
-      brandTags: true,
-      brandBusinessType: true,
-      socialInstagram: true,
-      socialFacebook: true,
-      socialTwitter: true,
-      socialWebsite: true,
-      companyLocation: true,
-      profileImage: true,
-      profileImageFile: {
-        select: {
-          id: true,
-          s3Url: true,
-          fileName: true,
-          originalName: true,
-          createdAt: true,
-          updatedAt: true,
-        },
-      },
-      bannerImage: true,
-      bannerImageId: true,
-      bannerImageFile: {
-        select: {
-          id: true,
-          s3Url: true,
-          fileName: true,
-          originalName: true,
-          createdAt: true,
-          updatedAt: true,
-        },
-      },
-      cacNumber: true,
-      tin: true,
       isEmailVerified: true,
       status: true,
       deactivatedAt: true,
       createdAt: true,
       updatedAt: true,
       type: true,
+      userProfile: {
+        select: canonicalUserProfileSelect,
+      },
       brand: {
-        select: {
-          id: true,
-          isStoreOpen: true,
-          verificationStatus: true,
-          avgRating: true,
-          totalReviews: true,
-        },
+        select: canonicalBrandProfileSelect,
       },
     } as const;
 
@@ -193,6 +187,23 @@ export class BrandsService {
     return brand;
   }
 
+  private mapBrandMediaAsset(
+    file: SelectedProfileFile | undefined,
+  ): BrandMediaAsset | null {
+    if (!file) {
+      return null;
+    }
+
+    return {
+      fileId: file.id,
+      url: file.s3Url,
+      originalName: file.originalName,
+      fileName: file.fileName,
+      createdAt: file.createdAt.toISOString(),
+      updatedAt: file.updatedAt.toISOString(),
+    };
+  }
+
   private mapNotificationsToRecentActivity(
     recentNotifications: Array<{
       id: string;
@@ -201,27 +212,28 @@ export class BrandsService {
       createdAt: Date;
       payload: Prisma.JsonValue | null;
       actor: {
-        firstName: string | null;
         username: string | null;
+        userProfile?: { firstName?: string | null } | null;
       } | null;
     }>,
   ) {
     return recentNotifications.map((notification) => {
       const payload = (notification.payload ?? {}) as Record<string, any>;
-      const targetUrl = typeof payload.targetUrl === 'string' ? payload.targetUrl : null;
+      const targetUrl =
+        typeof payload.targetUrl === 'string' ? payload.targetUrl : null;
       const notificationType = String(notification.type || '').toUpperCase();
-      const route = targetUrl || (
-        notificationType.includes('MESSAGE')
+      const route =
+        targetUrl ||
+        (notificationType.includes('MESSAGE')
           ? '/studio/messages'
-          : '/settings?tab=notifications'
-      );
+          : '/settings?tab=notifications');
 
       return {
         id: notification.id,
         type: String(notification.type || 'SYSTEM').toLowerCase(),
         title: notification.html || 'Recent update',
         description: notification.actor
-          ? `From ${notification.actor.firstName || notification.actor.username || 'system'}`
+          ? `From ${notification.actor.userProfile?.firstName || notification.actor.username || 'system'}`
           : 'System update',
         createdAt: notification.createdAt,
         route,
@@ -236,7 +248,10 @@ export class BrandsService {
     return params.toString();
   }
 
-  private buildBrandOrderRoute(orderId: string, options?: { openChat?: boolean; messageId?: string | null }) {
+  private buildBrandOrderRoute(
+    orderId: string,
+    options?: { openChat?: boolean; messageId?: string | null },
+  ) {
     const params = new URLSearchParams({
       tab: 'orders',
       orderId,
@@ -251,6 +266,19 @@ export class BrandsService {
     }
 
     return `/studio?${params.toString()}`;
+  }
+
+  private toBrandPatchPartner(partner: {
+    id: string;
+    username: string;
+    brand?: { name: string | null; logo?: string | null } | null;
+  }) {
+    return {
+      id: partner.id,
+      username: partner.username,
+      brandFullName: partner.brand?.name ?? null,
+      profileImage: partner.brand?.logo ?? null,
+    };
   }
 
   private describeElapsedAge(date: Date, now = new Date()) {
@@ -290,7 +318,16 @@ export class BrandsService {
         where: {
           brandId: brand.id,
           OR: [
-            { status: { in: [OrderStatus.PENDING, OrderStatus.PROCESSING, OrderStatus.SHIPPED, OrderStatus.DELIVERED] } },
+            {
+              status: {
+                in: [
+                  OrderStatus.PENDING,
+                  OrderStatus.PROCESSING,
+                  OrderStatus.SHIPPED,
+                  OrderStatus.DELIVERED,
+                ],
+              },
+            },
             { messageThread: { isNot: null } },
           ],
         },
@@ -343,7 +380,9 @@ export class BrandsService {
       .filter((threadId): threadId is string => Boolean(threadId));
 
     const unreadRows = threadIds.length
-      ? await this.prisma.$queryRaw<Array<{ threadId: string; unreadCount: bigint | number }>>(Prisma.sql`
+      ? await this.prisma.$queryRaw<
+          Array<{ threadId: string; unreadCount: bigint | number }>
+        >(Prisma.sql`
           SELECT m."threadId" AS "threadId", COUNT(*)::bigint AS "unreadCount"
           FROM "Message" m
           LEFT JOIN "MessageThreadParticipant" p
@@ -363,7 +402,9 @@ export class BrandsService {
     candidateOrders
       .filter((order) => {
         const threadId = order.messageThread?.id;
-        return Boolean(threadId && (unreadCountByThreadId.get(threadId) ?? 0) > 0);
+        return Boolean(
+          threadId && (unreadCountByThreadId.get(threadId) ?? 0) > 0,
+        );
       })
       .sort((left, right) => {
         const leftTime = left.messageThread?.lastMessageAt?.getTime() ?? 0;
@@ -372,8 +413,12 @@ export class BrandsService {
       })
       .slice(0, 3)
       .forEach((order) => {
-        const lastMessageAt = order.messageThread?.lastMessageAt ?? order.messageThread?.updatedAt ?? order.updatedAt;
-        const unreadCount = unreadCountByThreadId.get(order.messageThread?.id ?? '') ?? 0;
+        const lastMessageAt =
+          order.messageThread?.lastMessageAt ??
+          order.messageThread?.updatedAt ??
+          order.updatedAt;
+        const unreadCount =
+          unreadCountByThreadId.get(order.messageThread?.id ?? '') ?? 0;
         actions.push({
           type: 'MESSAGE_UNREAD',
           title: `Unread buyer message on ${this.getOrderActionTitle(order)}`,
@@ -385,8 +430,13 @@ export class BrandsService {
 
     candidateOrders
       .filter((order) => order.status === OrderStatus.PENDING)
-      .filter((order) => now.getTime() - order.createdAt.getTime() >= 24 * 60 * 60 * 1000)
-      .sort((left, right) => left.createdAt.getTime() - right.createdAt.getTime())
+      .filter(
+        (order) =>
+          now.getTime() - order.createdAt.getTime() >= 24 * 60 * 60 * 1000,
+      )
+      .sort(
+        (left, right) => left.createdAt.getTime() - right.createdAt.getTime(),
+      )
       .slice(0, 2)
       .forEach((order) => {
         actions.push({
@@ -399,8 +449,13 @@ export class BrandsService {
 
     candidateOrders
       .filter((order) => order.status === OrderStatus.PROCESSING)
-      .filter((order) => now.getTime() - order.updatedAt.getTime() >= 72 * 60 * 60 * 1000)
-      .sort((left, right) => left.updatedAt.getTime() - right.updatedAt.getTime())
+      .filter(
+        (order) =>
+          now.getTime() - order.updatedAt.getTime() >= 72 * 60 * 60 * 1000,
+      )
+      .sort(
+        (left, right) => left.updatedAt.getTime() - right.updatedAt.getTime(),
+      )
       .slice(0, 2)
       .forEach((order) => {
         actions.push({
@@ -413,8 +468,13 @@ export class BrandsService {
 
     candidateOrders
       .filter((order) => order.status === OrderStatus.SHIPPED)
-      .filter((order) => now.getTime() - order.updatedAt.getTime() >= 7 * 24 * 60 * 60 * 1000)
-      .sort((left, right) => left.updatedAt.getTime() - right.updatedAt.getTime())
+      .filter(
+        (order) =>
+          now.getTime() - order.updatedAt.getTime() >= 7 * 24 * 60 * 60 * 1000,
+      )
+      .sort(
+        (left, right) => left.updatedAt.getTime() - right.updatedAt.getTime(),
+      )
       .slice(0, 2)
       .forEach((order) => {
         actions.push({
@@ -427,9 +487,20 @@ export class BrandsService {
 
     candidateOrders
       .filter((order) => order.status === OrderStatus.DELIVERED)
-      .filter((order) => Boolean(order.deliveredAt) && !order.buyerConfirmedDeliveryAt)
-      .filter((order) => now.getTime() - (order.deliveredAt as Date).getTime() >= 3 * 24 * 60 * 60 * 1000)
-      .sort((left, right) => (left.deliveredAt as Date).getTime() - (right.deliveredAt as Date).getTime())
+      .filter(
+        (order) =>
+          Boolean(order.deliveredAt) && !order.buyerConfirmedDeliveryAt,
+      )
+      .filter(
+        (order) =>
+          now.getTime() - (order.deliveredAt as Date).getTime() >=
+          3 * 24 * 60 * 60 * 1000,
+      )
+      .sort(
+        (left, right) =>
+          (left.deliveredAt as Date).getTime() -
+          (right.deliveredAt as Date).getTime(),
+      )
       .slice(0, 1)
       .forEach((order) => {
         actions.push({
@@ -441,7 +512,11 @@ export class BrandsService {
       });
 
     lowStockProducts
-      .filter((product) => product.totalStock <= Math.max(1, Number(product.lowStockThreshold ?? 5)))
+      .filter(
+        (product) =>
+          product.totalStock <=
+          Math.max(1, Number(product.lowStockThreshold ?? 5)),
+      )
       .slice(0, 2)
       .forEach((product) => {
         actions.push({
@@ -453,11 +528,15 @@ export class BrandsService {
         });
       });
 
-    if (brand.verificationStatus === BrandVerificationStatus.ADDITIONAL_INFO_REQUESTED) {
+    if (
+      brand.verificationStatus ===
+      BrandVerificationStatus.ADDITIONAL_INFO_REQUESTED
+    ) {
       actions.push({
         type: 'VERIFICATION_UPDATE',
         title: 'Verification workspace needs updates',
-        description: 'Compliance requested more information for your store. Review the verification workspace and submit the missing details.',
+        description:
+          'Compliance requested more information for your store. Review the verification workspace and submit the missing details.',
         link: '/studio/verification',
       });
     }
@@ -485,9 +564,11 @@ export class BrandsService {
           select: {
             id: true,
             username: true,
-            firstName: true,
-            lastName: true,
-            profileImage: true,
+            userProfile: {
+              select: {
+                firstName: true,
+              },
+            },
           },
         },
       },
@@ -502,120 +583,75 @@ export class BrandsService {
   async getBrandProfile(brandId: string): Promise<BrandProfileResponse> {
     const brand = await this.getBrandOrThrow(brandId);
 
-    const ownerId = brand.id;
-
-    const collectionsCount = await this.prisma.collection.count({
-      where: {
-        ownerId,
-        status: CollectionStatus.PUBLISHED,
-      },
-    });
-    const patchesCount = await this.prisma.patchConnection.count({
-      where: {
-        targetId: ownerId,
-        status: PatchStatus.ACCEPTED,
-        mode: PatchMode.USER_TO_BRAND,
-      },
-    });
-
-    const fullName =
-      brand.brandFullName ||
-      [brand.firstName, brand.lastName].filter(Boolean).join(' ').trim() ||
-      brand.username;
-
-    const country = brand.brandCountry || null;
-    const state = brand.brandState || null;
-    const city = brand.brandCity || null;
-
-    const computedLocation = [city, state, country]
-      .filter((part) => Boolean(part && part.trim().length > 0))
-      .join(', ');
-
-    const location =
-      computedLocation || brand.companyLocation || brand.address || null;
-
-    const logoAsset = brand.profileImageFile
-      ? {
-        fileId: brand.profileImageFile.id,
-        url: brand.profileImageFile.s3Url,
-        originalName: brand.profileImageFile.originalName ?? null,
-        fileName: brand.profileImageFile.fileName ?? null,
-        createdAt: brand.profileImageFile.createdAt.toISOString(),
-        updatedAt: brand.profileImageFile.updatedAt.toISOString(),
-      }
-      : null;
-    const bannerAsset = brand.bannerImageFile
-      ? {
-        fileId: brand.bannerImageFile.id,
-        url: brand.bannerImageFile.s3Url,
-        originalName: brand.bannerImageFile.originalName ?? null,
-        fileName: brand.bannerImageFile.fileName ?? null,
-        createdAt: brand.bannerImageFile.createdAt.toISOString(),
-        updatedAt: brand.bannerImageFile.updatedAt.toISOString(),
-      }
-      : null;
-
-    // Generate signed URLs
-    const fileIds: string[] = [];
-    if (logoAsset) fileIds.push(logoAsset.fileId);
-    if (bannerAsset) fileIds.push(bannerAsset.fileId);
-
-    if (fileIds.length > 0) {
-      const signedUrlMap =
-        await this.uploadService.getBatchPublicSignedUrls(fileIds);
-      if (logoAsset && signedUrlMap.has(logoAsset.fileId)) {
-        logoAsset.url = signedUrlMap.get(logoAsset.fileId)!;
-      }
-      if (bannerAsset && signedUrlMap.has(bannerAsset.fileId)) {
-        bannerAsset.url = signedUrlMap.get(bannerAsset.fileId)!;
-      }
-    }
-
-    const logoImage = logoAsset?.url || brand.profileImage || null;
-    const bannerImage = bannerAsset?.url || brand.bannerImage || null;
-    const verificationTruth = getBrandVerificationTruth({
-      verificationStatus: brand.brand?.verificationStatus,
-      isStoreOpen: brand.brand?.isStoreOpen,
+    const canonicalProfile = normalizeBrandProfileForBrandResponse(brand);
+    const metrics = await this.brandMetrics.getPublicProfileMetrics({
+      ownerId: brand.id,
+      brand: brand.brand,
       ownerStatus: brand.status,
       ownerDeactivatedAt: brand.deactivatedAt ?? null,
+      emailVerified: brand.isEmailVerified,
+    });
+
+    const profileImage = resolveProfileImage(brand);
+    const bannerAssetSource = resolveBannerImage(brand);
+    const logoAsset = this.mapBrandMediaAsset(profileImage.file);
+    const bannerAsset = this.mapBrandMediaAsset(bannerAssetSource.file);
+    const logoImage = brand.brand?.logo ?? profileImage.url ?? null;
+    const bannerImage = brand.brand?.banner ?? bannerAssetSource.url ?? null;
+    const profileLinks = this.brandProfileLinks.getBrandProfileLinks({
+      ownerId: brand.id,
+      username: brand.username,
     });
 
     return {
       id: brand.id,
-      brandFullName: fullName,
-      description: brand.brandDescription ?? null,
-      country,
-      state,
-      city,
-      location,
+      brandFullName: canonicalProfile.brandFullName,
+      description: canonicalProfile.description,
+      country: canonicalProfile.country,
+      state: canonicalProfile.state,
+      city: canonicalProfile.city,
+      location: canonicalProfile.location,
       bannerImage,
+      bannerImageId: bannerAssetSource.fileId,
       bannerImageMeta: bannerAsset,
       logoImage,
+      logoImageId: profileImage.fileId,
       logoImageMeta: logoAsset,
       socialLinks: {
-        instagram: brand.socialInstagram ?? null,
-        facebook: brand.socialFacebook ?? null,
-        twitter: brand.socialTwitter ?? null,
-        website: brand.socialWebsite ?? null,
+        instagram: canonicalProfile.socialLinks.instagram,
+        facebook: canonicalProfile.socialLinks.facebook,
+        twitter: canonicalProfile.socialLinks.twitter,
+        website: canonicalProfile.socialLinks.website,
       },
       contactInfo: {
         email: brand.email,
-        phone: brand.phoneNumber ?? null,
-        businessType: brand.brandBusinessType?.trim() || 'Fashion Brand',
+        phone: null,
+        businessType: canonicalProfile.businessType || 'Fashion Brand',
       },
-      tags: brand.brandTags ?? [],
-      hashtags: brand.brandTags ?? [],
-      cacNumber: brand.cacNumber ?? null,
-      tin: brand.tin ?? null,
-      verified: verificationTruth.isVerifiedBrand,
-      verificationStatus: verificationTruth.verificationStatus,
-      verificationBadgeVisible: verificationTruth.verificationBadgeVisible,
-      verifiedExplanationUrl: verificationTruth.verifiedExplanationUrl,
-      isStoreOpen: Boolean(brand.brand?.isStoreOpen),
-      averageRating: brand.brand?.avgRating ?? 0,
-      totalReviews: brand.brand?.totalReviews ?? 0,
-      collectionsCount,
-      patchesCount,
+      tags: canonicalProfile.tags,
+      hashtags: canonicalProfile.tags,
+      cacNumber: canonicalProfile.verificationFields.cacNumber,
+      tin: canonicalProfile.verificationFields.tin,
+      verified: metrics.verified,
+      verificationStatus: metrics.verificationStatus,
+      verificationBadgeVisible: metrics.verificationBadgeVisible,
+      verifiedExplanationUrl: metrics.verifiedExplanationUrl,
+      emailVerified: metrics.emailVerified,
+      isStoreOpen: metrics.isStoreOpen,
+      storeStatus: metrics.storeStatus,
+      averageRating: metrics.averageRating,
+      totalReviews: metrics.totalReviews,
+      collectionsCount: metrics.collectionsCount,
+      designsCount: metrics.designsCount,
+      productsCount: metrics.productsCount,
+      patchesCount: metrics.patchesCount,
+      followersCount: metrics.followersCount,
+      totalThreads: metrics.totalThreads,
+      totalLikes: metrics.totalLikes,
+      totalShares: metrics.totalShares,
+      publicProfileUrl: profileLinks.publicProfileUrl,
+      qrTargetUrl: profileLinks.qrTargetUrl,
+      shareUrl: profileLinks.shareUrl,
       createdAt: brand.createdAt.toISOString(),
       updatedAt: brand.updatedAt.toISOString(),
     };
@@ -626,6 +662,7 @@ export class BrandsService {
     dto: UpdateBrandProfileDto,
   ): Promise<AuthUserResponseDto> {
     const brand = await this.getBrandOrThrow(brandId);
+    const ownerId = brand.id;
 
     const trimOrNull = (value: string | undefined): string | null => {
       if (typeof value !== 'string') {
@@ -652,17 +689,18 @@ export class BrandsService {
       dto.brandState !== undefined ||
       dto.brandCity !== undefined;
 
-    const data: Prisma.UserUpdateInput = {
+    const brandData: Prisma.BrandUpdateInput = {
       ...(dto.brandFullName !== undefined && {
-        brandFullName: trimOrNull(dto.brandFullName),
+        name:
+          trimOrNull(dto.brandFullName) ?? brand.brand?.name ?? brand.username,
       }),
       ...(dto.brandDescription !== undefined && {
-        brandDescription: trimOrNull(dto.brandDescription),
+        description: trimOrNull(dto.brandDescription),
       }),
-      ...(dto.brandCountry !== undefined && { brandCountry }),
-      ...(dto.brandState !== undefined && { brandState }),
-      ...(dto.brandCity !== undefined && { brandCity }),
-      ...(sanitizedTags !== undefined && { brandTags: sanitizedTags }),
+      ...(dto.brandCountry !== undefined && { country: brandCountry }),
+      ...(dto.brandState !== undefined && { state: brandState }),
+      ...(dto.brandCity !== undefined && { city: brandCity }),
+      ...(sanitizedTags !== undefined && { tags: sanitizedTags }),
       ...(dto.socialInstagram !== undefined && {
         socialInstagram: trimOrNull(dto.socialInstagram),
       }),
@@ -676,33 +714,142 @@ export class BrandsService {
         socialWebsite: trimOrNull(dto.socialWebsite),
       }),
       ...(dto.businessType !== undefined && {
-        brandBusinessType: trimOrNull(dto.businessType),
-      }),
-      ...(dto.phoneNumber !== undefined && {
-        phoneNumber: trimOrNull(dto.phoneNumber),
+        businessType: trimOrNull(dto.businessType),
       }),
       ...(locationWasProvided
         ? {
-          companyLocation:
-            companyLocation.length > 0 ? companyLocation : null,
-        }
+            companyLocation:
+              companyLocation.length > 0 ? companyLocation : null,
+          }
         : {}),
     };
+    const brandCreateData: Prisma.BrandUncheckedCreateInput = {
+      id: uuidv4(),
+      ownerId,
+      name:
+        trimOrNull(dto.brandFullName) ?? brand.brand?.name ?? brand.username,
+      storeNameLastChangedAt: new Date(),
+      currency: 'NGN',
+      description:
+        dto.brandDescription !== undefined
+          ? trimOrNull(dto.brandDescription)
+          : brand.brand?.description,
+      country:
+        dto.brandCountry !== undefined ? brandCountry : brand.brand?.country,
+      state: dto.brandState !== undefined ? brandState : brand.brand?.state,
+      city: dto.brandCity !== undefined ? brandCity : brand.brand?.city,
+      tags:
+        sanitizedTags !== undefined ? sanitizedTags : (brand.brand?.tags ?? []),
+      businessType:
+        dto.businessType !== undefined
+          ? trimOrNull(dto.businessType)
+          : brand.brand?.businessType,
+      socialInstagram:
+        dto.socialInstagram !== undefined
+          ? trimOrNull(dto.socialInstagram)
+          : brand.brand?.socialInstagram,
+      socialFacebook:
+        dto.socialFacebook !== undefined
+          ? trimOrNull(dto.socialFacebook)
+          : brand.brand?.socialFacebook,
+      socialTwitter:
+        dto.socialTwitter !== undefined
+          ? trimOrNull(dto.socialTwitter)
+          : brand.brand?.socialTwitter,
+      socialWebsite:
+        dto.socialWebsite !== undefined
+          ? trimOrNull(dto.socialWebsite)
+          : brand.brand?.socialWebsite,
+      companyLocation: locationWasProvided
+        ? companyLocation.length > 0
+          ? companyLocation
+          : null
+        : brand.brand?.companyLocation,
+      cacNumber: brand.brand?.cacNumber,
+      tin: brand.brand?.tin,
+      ceoNin: brand.brand?.ceoNin,
+      ceoFirstName: brand.brand?.ceoFirstName,
+      ceoLastName: brand.brand?.ceoLastName,
+      industriNumber: brand.brand?.industriNumber,
+    };
 
-    const updatedUser = await this.prisma.user.update({
-      where: { id: brandId },
-      data,
-      select: profileUserSelect,
+    const previousTags = resolveBrandTags(brand);
+    const previousAuditState = {
+      brandFullName: brand.brand?.name ?? null,
+      brandDescription: brand.brand?.description ?? null,
+      brandCountry: brand.brand?.country ?? null,
+      brandState: brand.brand?.state ?? null,
+      brandCity: brand.brand?.city ?? null,
+      brandTags: previousTags,
+      businessType: brand.brand?.businessType ?? null,
+    };
+    const updatedUser = await this.prisma.$transaction(async (tx) => {
+      await tx.brand.upsert({
+        where: { ownerId },
+        create: brandCreateData,
+        update: brandData,
+      });
+
+      await this.adminAuditService?.safeLogInTransaction(tx, {
+        actorUserId: ownerId,
+        action: BRAND_PROFILE_UPDATE_AUDIT_ACTION,
+        targetType: 'Brand',
+        targetId: brand.brand?.id ?? ownerId,
+        metadata: {
+          ownerId,
+          fields: Object.keys(dto),
+        },
+        previousState: previousAuditState,
+        newState: {
+          brandFullName:
+            dto.brandFullName !== undefined
+              ? trimOrNull(dto.brandFullName)
+              : previousAuditState.brandFullName,
+          brandDescription:
+            dto.brandDescription !== undefined
+              ? trimOrNull(dto.brandDescription)
+              : previousAuditState.brandDescription,
+          brandCountry:
+            dto.brandCountry !== undefined
+              ? brandCountry
+              : previousAuditState.brandCountry,
+          brandState:
+            dto.brandState !== undefined
+              ? brandState
+              : previousAuditState.brandState,
+          brandCity:
+            dto.brandCity !== undefined
+              ? brandCity
+              : previousAuditState.brandCity,
+          brandTags:
+            sanitizedTags !== undefined
+              ? sanitizedTags
+              : previousAuditState.brandTags,
+          businessType:
+            dto.businessType !== undefined
+              ? trimOrNull(dto.businessType)
+              : previousAuditState.businessType,
+        },
+      });
+
+      return tx.user.findUnique({
+        where: { id: ownerId },
+        select: profileUserSelect,
+      });
     });
 
+    if (!updatedUser) {
+      throw new NotFoundException('Brand not found');
+    }
+
     if (this.systemTags && sanitizedTags !== undefined) {
-      await this.systemTags.syncTags(brand.brandTags ?? [], sanitizedTags);
+      await this.systemTags.syncTags(previousTags, sanitizedTags);
     }
     if (this.tagIndex && sanitizedTags !== undefined) {
       await this.tagIndex.syncEntityTags(
         TAG_ENTITY_TYPE.USER_BRAND,
-        brandId,
-        brand.brandTags ?? [],
+        ownerId,
+        previousTags,
         sanitizedTags,
         { maxCount: 10 },
       );
@@ -783,8 +930,20 @@ export class BrandsService {
 
     // Verify both are brands
     const [requester, receiver] = await Promise.all([
-      this.prisma.user.findUnique({ where: { id: requesterId } }),
-      this.prisma.user.findUnique({ where: { id: receiverId } }),
+      this.prisma.user.findUnique({
+        where: { id: requesterId },
+        include: {
+          brand: { select: { name: true } },
+          userProfile: { select: { firstName: true, lastName: true } },
+        },
+      }),
+      this.prisma.user.findUnique({
+        where: { id: receiverId },
+        include: {
+          brand: { select: { name: true } },
+          userProfile: { select: { firstName: true, lastName: true } },
+        },
+      }),
     ]);
 
     if (!requester || requester.type !== UserType.BRAND) {
@@ -891,18 +1050,26 @@ export class BrandsService {
     // Notify receiver
     if (this.notifications) {
       try {
+        const requesterDisplayName =
+          requester.brand?.name ||
+          [requester.userProfile?.firstName, requester.userProfile?.lastName]
+            .filter(Boolean)
+            .join(' ') ||
+          requester.username ||
+          'A brand';
+
         await this.notifications.create(
           receiverId,
           NotificationType.BRAND_PATCH_REQUEST,
           {
             actorId: requesterId,
             payload: {
-              message: `${requester.brandFullName || requester.username} wants to patch with you`,
+              message: `${requesterDisplayName} wants to patch with you`,
               targetUrl: '/settings?tab=patches&filter=pending',
             },
           },
         );
-      } catch { }
+      } catch {}
     }
 
     return { status: 'PENDING', message: 'Patch request sent' };
@@ -964,7 +1131,7 @@ export class BrandsService {
                 : '/settings?tab=patches&filter=history',
           },
         });
-      } catch { }
+      } catch {}
     }
 
     return {
@@ -990,7 +1157,9 @@ export class BrandsService {
 
     if (patch.status === PatchStatus.PENDING) {
       if (!isRequester) {
-        throw new ForbiddenException('Only the requester can cancel a pending patch');
+        throw new ForbiddenException(
+          'Only the requester can cancel a pending patch',
+        );
       }
 
       await this.prisma.brandPatch.update({
@@ -1059,16 +1228,14 @@ export class BrandsService {
             select: {
               id: true,
               username: true,
-              brandFullName: true,
-              profileImage: true,
+              brand: { select: { name: true, logo: true } },
             },
           },
           receiver: {
             select: {
               id: true,
               username: true,
-              brandFullName: true,
-              profileImage: true,
+              brand: { select: { name: true, logo: true } },
             },
           },
         },
@@ -1081,7 +1248,9 @@ export class BrandsService {
     return {
       items: patches.map((p) => ({
         id: p.id,
-        partner: p.requesterId === brandId ? p.receiver : p.requester,
+        partner: this.toBrandPatchPartner(
+          p.requesterId === brandId ? p.receiver : p.requester,
+        ),
         status: p.status,
         isOutgoing: p.requesterId === brandId,
         createdAt: p.createdAt,
@@ -1125,13 +1294,14 @@ export class BrandsService {
               select: {
                 id: true,
                 username: true,
-                brandFullName: true,
-                profileImage: true,
+                brand: { select: { name: true, logo: true } },
               },
             })
           : [];
 
-        const partnerMap = new Map(partners.map((partner) => [partner.id, partner]));
+        const partnerMap = new Map(
+          partners.map((partner) => [partner.id, partner]),
+        );
 
         return {
           items: rows.map((row: any) => {
@@ -1147,12 +1317,13 @@ export class BrandsService {
             return {
               id: row.id,
               patchId: row.patchId,
-              partner: partner ?? {
-                id: row.partnerId,
-                username: 'Unknown brand',
-                brandFullName: null,
-                profileImage: null,
-              },
+              partner: this.toBrandPatchPartner(
+                partner ?? {
+                  id: row.partnerId,
+                  username: 'Unknown brand',
+                  brand: null,
+                },
+              ),
               action,
               status,
               isOutgoing: Boolean(row.isOutgoing),
@@ -1192,16 +1363,14 @@ export class BrandsService {
             select: {
               id: true,
               username: true,
-              brandFullName: true,
-              profileImage: true,
+              brand: { select: { name: true, logo: true } },
             },
           },
           receiver: {
             select: {
               id: true,
               username: true,
-              brandFullName: true,
-              profileImage: true,
+              brand: { select: { name: true, logo: true } },
             },
           },
         },
@@ -1217,7 +1386,9 @@ export class BrandsService {
         return {
           id: row.id,
           patchId: row.id,
-          partner: isOutgoing ? row.receiver : row.requester,
+          partner: this.toBrandPatchPartner(
+            isOutgoing ? row.receiver : row.requester,
+          ),
           action: 'REJECTED' as BrandPatchHistoryActionValue,
           status: PatchStatus.REJECTED,
           isOutgoing,
@@ -1243,8 +1414,7 @@ export class BrandsService {
           select: {
             id: true,
             username: true,
-            brandFullName: true,
-            profileImage: true,
+            brand: { select: { name: true, logo: true } },
             collections: {
               where: { status: 'PUBLISHED' },
               take: 3,
@@ -1277,7 +1447,16 @@ export class BrandsService {
     }
 
     // KPIs
-    const [totalOrders, totalSalesResult, pendingOrders, patchesCount, activeProducts, recentNotifications, recentOrders, actionRequired] = await Promise.all([
+    const [
+      totalOrders,
+      totalSalesResult,
+      pendingOrders,
+      patchesCount,
+      activeProducts,
+      recentNotifications,
+      recentOrders,
+      actionRequired,
+    ] = await Promise.all([
       this.prisma.order.count({ where: { brandId: brand.id } }),
       this.prisma.order.aggregate({
         where: { brandId: brand.id, paymentStatus: 'PAID' },
@@ -1305,9 +1484,11 @@ export class BrandsService {
             select: {
               id: true,
               username: true,
-              firstName: true,
-              lastName: true,
-              profileImage: true,
+              userProfile: {
+                select: {
+                  firstName: true,
+                },
+              },
             },
           },
         },
@@ -1328,7 +1509,9 @@ export class BrandsService {
     const avgOrderValue =
       totalOrders > 0 ? Number(totalSales) / totalOrders : 0;
 
-    const recentActivity = this.mapNotificationsToRecentActivity(recentNotifications as any);
+    const recentActivity = this.mapNotificationsToRecentActivity(
+      recentNotifications as any,
+    );
 
     return {
       kpis: {
@@ -1434,9 +1617,7 @@ export class BrandsService {
       throw new BadRequestException('Brand is already verified');
     }
     if (brand.verificationStatus === BrandVerificationStatus.PENDING) {
-      throw new BadRequestException(
-        'Verification is already pending review',
-      );
+      throw new BadRequestException('Verification is already pending review');
     }
 
     return this.prisma.brand.update({

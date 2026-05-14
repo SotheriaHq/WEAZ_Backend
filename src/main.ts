@@ -460,6 +460,16 @@ async function bootstrap() {
       } catch (err) {
         logger.warn('SystemConfig seed skipped (non-fatal):', err);
       }
+
+      try {
+        const { SettlementPolicyService } = await import(
+          './finance/settlement-policy.service'
+        );
+        const settlementPolicyService = app.get(SettlementPolicyService);
+        await settlementPolicyService.seedDefaults();
+      } catch (err) {
+        logger.warn('SettlementPolicy seed skipped (non-fatal):', err);
+      }
     })();
 
     process.on('SIGTERM', async () => {

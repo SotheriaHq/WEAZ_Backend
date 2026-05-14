@@ -79,14 +79,33 @@ WHERE m."threadId" = mt."id"
 UPDATE "MessageThread" mt
 SET
   "conversationType" = 'BUYER_BRAND',
-  "buyerUserId" = COALESCE(mt."buyerId", co."buyerId", o."buyerId"),
-  "brandId" = COALESCE(mt."brandId", co."brandId", o."brandId"),
+  "brandOwnerUserId" = b."ownerId"
+FROM "CustomOrder" co
+JOIN "Brand" b ON b."_id" = co."brandId"
+WHERE co."id" = mt."customOrderId"
+  AND COALESCE(mt."buyerId", co."buyerId") IS NOT NULL
+  AND mt."conversationType" IS NULL;
+
+UPDATE "MessageThread" mt
+SET
+  "conversationType" = 'BUYER_BRAND',
+  "buyerUserId" = COALESCE(mt."buyerId", o."buyerId"),
+  "brandId" = COALESCE(mt."brandId", o."brandId"),
+  "brandOwnerUserId" = b."ownerId"
+FROM "Order" o
+JOIN "Brand" b ON b."_id" = o."brandId"
+WHERE o."_id" = mt."orderId"
+  AND COALESCE(mt."buyerId", o."buyerId") IS NOT NULL
+  AND mt."conversationType" IS NULL;
+
+UPDATE "MessageThread" mt
+SET
+  "conversationType" = 'BUYER_BRAND',
+  "buyerUserId" = mt."buyerId",
   "brandOwnerUserId" = b."ownerId"
 FROM "Brand" b
-LEFT JOIN "CustomOrder" co ON co."id" = mt."customOrderId"
-LEFT JOIN "Order" o ON o."_id" = mt."orderId"
-WHERE b."id" = COALESCE(mt."brandId", co."brandId", o."brandId")
-  AND COALESCE(mt."buyerId", co."buyerId", o."buyerId") IS NOT NULL
+WHERE b."_id" = mt."brandId"
+  AND mt."buyerId" IS NOT NULL
   AND mt."conversationType" IS NULL;
 
 CREATE INDEX IF NOT EXISTS "MessageThread_conversationType_lastMessageAt_idx"

@@ -7,10 +7,33 @@ import {
 import { v4 as uuidv4 } from 'uuid';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateSavedItemDto, SavedItemTypeDto } from './dto/create-saved-item.dto';
+import {
+  canonicalUserProfileSelect,
+  resolveProfileImage,
+  resolveRequiredProfileField,
+} from 'src/common/user-profile-source.helper';
+import {
+  canonicalBrandProfileSelect,
+  resolveRequiredBrandField,
+} from 'src/common/brand-profile-source.helper';
 
 @Injectable()
 export class SavedItemsService {
   constructor(private prisma: PrismaService) {}
+
+  private mapSavedBrand(owner: any) {
+    if (!owner) return owner;
+    const { userProfile, brand, ...rest } = owner;
+    const profileImage = resolveProfileImage({ userProfile });
+    return {
+      ...rest,
+      firstName: resolveRequiredProfileField({ userProfile }, 'firstName'),
+      lastName: resolveRequiredProfileField({ userProfile }, 'lastName'),
+      profileImage: brand?.logo ?? profileImage.url,
+      brandFullName:
+        resolveRequiredBrandField({ brand }, 'brandFullName') || null,
+    };
+  }
 
   async saveItem(userId: string, createSavedItemDto: CreateSavedItemDto) {
     // Check if item already exists in saved items
@@ -92,7 +115,7 @@ export class SavedItemsService {
         userId,
       },
       include: {
-        user: true,
+        user: { select: { id: true, username: true, email: true, type: true } },
       },
       orderBy: {
         createdAt: 'desc',
@@ -112,9 +135,8 @@ export class SavedItemsService {
                 select: {
                   id: true,
                   username: true,
-                  firstName: true,
-                  lastName: true,
-                  profileImage: true,
+                  userProfile: { select: canonicalUserProfileSelect },
+                  brand: { select: canonicalBrandProfileSelect },
                 },
               },
               medias: {
@@ -131,7 +153,7 @@ export class SavedItemsService {
               title: collection.title,
               thumbnail: collection.medias[0]?.file.s3Url,
               collectionId: collection.id,
-              brand: collection.owner,
+              brand: this.mapSavedBrand(collection.owner),
             };
           }
         } else if (item.targetType === SavedItemTypeDto.COLLECTION_MEDIA) {
@@ -145,9 +167,8 @@ export class SavedItemsService {
                     select: {
                       id: true,
                       username: true,
-                      firstName: true,
-                      lastName: true,
-                      profileImage: true,
+                      userProfile: { select: canonicalUserProfileSelect },
+                      brand: { select: canonicalBrandProfileSelect },
                     },
                   },
                 },
@@ -160,7 +181,7 @@ export class SavedItemsService {
               title: media.file.originalName,
               thumbnail: media.file.s3Url,
               collectionId: media.collectionId,
-              brand: media.collection.owner,
+              brand: this.mapSavedBrand(media.collection.owner),
             };
           }
         }

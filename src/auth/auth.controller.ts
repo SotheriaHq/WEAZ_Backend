@@ -45,6 +45,14 @@ import { ChangeAuthenticatedPasswordDto } from './dto/change-authenticated-passw
 import { CompleteAdminFirstLoginResetDto } from './dto/complete-admin-first-login-reset.dto';
 import { RequestPasswordResetDto } from './dto/request-password-reset.dto';
 import { ConfirmPasswordResetDto } from './dto/confirm-password-reset.dto';
+import { RequestEmailChangeDto } from './dto/request-email-change.dto';
+import { ConfirmEmailChangeDto } from './dto/confirm-email-change.dto';
+import { DeleteAccountDto } from './dto/delete-account.dto';
+import {
+  CreateStudioHandoffDto,
+  ExchangeStudioHandoffDto,
+} from './dto/studio-handoff.dto';
+import { StudioHandoffService } from './studio-handoff.service';
 
 @ApiTags('auth')
 @ApiBearerAuth()
@@ -56,6 +64,7 @@ export class AuthController {
     private readonly tokenService: TokenService,
     private readonly configService: ConfigService,
     private readonly notifications: NotificationsService,
+    private readonly studioHandoff: StudioHandoffService,
   ) {}
 
   private get accessTokenCookieName(): string {
@@ -182,10 +191,12 @@ export class AuthController {
     @Req() req: Request & { user: { id: string } },
     @Body(ValidationPipe) body: ChangeAuthenticatedPasswordDto,
   ) {
+    const refreshToken = req.cookies[this.refreshTokenCookieName];
     return this.authService.changePasswordForAuthenticatedUser(
       req.user.id,
       body.currentPassword,
       body.newPassword,
+      refreshToken,
     );
   }
 
@@ -197,11 +208,37 @@ export class AuthController {
     @Req() req: Request & { user: { id: string } },
     @Body(ValidationPipe) body: ChangeAuthenticatedPasswordDto,
   ) {
+    const refreshToken = req.cookies[this.refreshTokenCookieName];
     return this.authService.changePasswordForAuthenticatedUser(
       req.user.id,
       body.currentPassword,
       body.newPassword,
+      refreshToken,
     );
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 4, ttl: 900000 } })
+  @Post('change-email/request')
+  @ApiOperation({ summary: 'Request authenticated email change confirmation' })
+  async requestEmailChange(
+    @Req() req: Request & { user: { id: string } },
+    @Body(ValidationPipe) body: RequestEmailChangeDto,
+  ) {
+    return this.authService.requestEmailChange(
+      req.user.id,
+      body.newEmail,
+      body.currentPassword,
+    );
+  }
+
+  @Post('change-email/confirm')
+  @Throttle({ default: { limit: 8, ttl: 900000 } })
+  @ApiOperation({ summary: 'Confirm pending authenticated email change' })
+  async confirmEmailChange(
+    @Body(ValidationPipe) body: ConfirmEmailChangeDto,
+  ) {
+    return this.authService.confirmEmailChange(body.token);
   }
 
   @Post('refresh')
@@ -236,6 +273,32 @@ export class AuthController {
       res.clearCookie(this.accessTokenCookieName, cookieOptions);
       throw error;
     }
+  }
+
+  @Post('studio-handoff')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(201)
+  @Throttle({ default: { limit: 8, ttl: 60000 } })
+  @ApiOperation({ summary: 'Create a short-lived mobile-to-web Studio handoff code' })
+  @UseInterceptors(TransformInterceptor)
+  async createStudioHandoff(
+    @Req() req: Request & { user: { id: string; type?: string | null } },
+    @Body(ValidationPipe) body: CreateStudioHandoffDto,
+  ) {
+    return this.studioHandoff.create(req.user, body.intendedPath, req);
+  }
+
+  @Post('studio-handoff/exchange')
+  @HttpCode(200)
+  @Throttle({ default: { limit: 12, ttl: 60000 } })
+  @ApiOperation({ summary: 'Exchange a Studio handoff code for a normal web session' })
+  @UseInterceptors(TransformInterceptor)
+  async exchangeStudioHandoff(
+    @Req() req: Request,
+    @Body(ValidationPipe) body: ExchangeStudioHandoffDto,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    return this.studioHandoff.exchange(body.code, req, res);
   }
 
   @Post('logout')
@@ -392,6 +455,60 @@ export class AuthController {
     @Param('id') id: string,
   ) {
     return this.authService.revokeTrustedDevice(req.user.id, id);
+  }
+
+  @Get('security/sessions')
+  @UseGuards(JwtAuthGuard)
+  @ApiOperation({ summary: 'List recent login sessions for the authenticated user' })
+  async listSecuritySessions(
+    @Req() req: Request & { user: { id: string } },
+  ) {
+    const refreshToken = req.cookies[this.refreshTokenCookieName];
+    return this.authService.listSecuritySessions(req.user.id, refreshToken);
+  }
+
+  @Patch('security/sessions/:id/revoke')
+  @UseGuards(JwtAuthGuard)
+  @ApiOperation({ summary: 'Revoke a login session for the authenticated user' })
+  async revokeSecuritySession(
+    @Req() req: Request & { user: { id: string } },
+    @Param('id') id: string,
+  ) {
+    const refreshToken = req.cookies[this.refreshTokenCookieName];
+    return this.authService.revokeSecuritySession(req.user.id, id, refreshToken);
+  }
+
+  @Post('security/sessions/logout-others')
+  @UseGuards(JwtAuthGuard)
+  @ApiOperation({ summary: 'Revoke all other login sessions while preserving the current session' })
+  async logoutOtherSessions(
+    @Req() req: Request & { user: { id: string } },
+  ) {
+    const refreshToken = req.cookies[this.refreshTokenCookieName];
+    return this.authService.logoutOtherSessions(req.user.id, refreshToken);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 2, ttl: 900000 } })
+  @Post('account/delete')
+  @ApiOperation({ summary: 'Permanently delete the authenticated account' })
+  async deleteAccount(
+    @Req() req: Request & { user: { id: string } },
+    @Body(ValidationPipe) body: DeleteAccountDto,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const refreshToken = req.cookies[this.refreshTokenCookieName];
+    const result = await this.authService.deleteOwnAccount(
+      req.user.id,
+      body.confirmationWord,
+      body.currentPassword,
+      refreshToken,
+    );
+
+    const cookieOptions = this.cookieBaseOptions;
+    res.clearCookie(this.refreshTokenCookieName, cookieOptions);
+    res.clearCookie(this.accessTokenCookieName, cookieOptions);
+    return result;
   }
 
 }

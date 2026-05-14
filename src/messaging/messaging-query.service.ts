@@ -2,6 +2,11 @@ import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { MessageKind, MessageParticipantRole, MessageVisibilityState } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
+import {
+  canonicalUserProfileSelect,
+  resolveProfileImage,
+  resolveRequiredProfileField,
+} from 'src/common/user-profile-source.helper';
 
 @Injectable()
 export class MessagingQueryService {
@@ -14,6 +19,21 @@ export class MessagingQueryService {
         participants: true,
       },
     });
+  }
+
+  async getUnreadMessageCountForActor(actorId: string): Promise<number> {
+    const rows = await this.prisma.$queryRaw<Array<{ unreadCount: bigint | number }>>(Prisma.sql`
+      SELECT COUNT(*)::bigint AS "unreadCount"
+      FROM "Message" m
+      INNER JOIN "MessageThreadParticipant" p
+        ON p."threadId" = m."threadId" AND p."userId" = ${actorId}
+      WHERE p."archivedAt" IS NULL
+        AND m."visibilityState" = 'VISIBLE'
+        AND m."senderUserId" IS DISTINCT FROM ${actorId}
+        AND (p."lastReadAt" IS NULL OR m."createdAt" > p."lastReadAt")
+    `);
+
+    return Number(rows[0]?.unreadCount ?? 0);
   }
 
   async getMessages(
@@ -46,9 +66,7 @@ export class MessagingQueryService {
           select: {
             id: true,
             username: true,
-            firstName: true,
-            lastName: true,
-            profileImage: true,
+            userProfile: { select: canonicalUserProfileSelect },
           },
         },
         attachments: {
@@ -138,6 +156,15 @@ export class MessagingQueryService {
 
       return {
         ...message,
+        sender: message.sender
+          ? {
+              id: message.sender.id,
+              username: message.sender.username,
+              firstName: resolveRequiredProfileField(message.sender, 'firstName'),
+              lastName: resolveRequiredProfileField(message.sender, 'lastName'),
+              profileImage: resolveProfileImage(message.sender).url,
+            }
+          : null,
         deliveryReceipts: [],
         deliveryStatus,
       };

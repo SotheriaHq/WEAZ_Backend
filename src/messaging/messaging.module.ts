@@ -14,11 +14,13 @@ import { MessagingAttachmentService } from './messaging-attachment.service';
 import { CustomOrderThreadBootstrapService } from './custom-order-thread-bootstrap.service';
 import { MessagingPolicyService } from './messaging-policy.service';
 import { MessagingQueryService } from './messaging-query.service';
+import { MessagingAccessService } from './messaging-access.service';
 import { MessagingService } from './messaging.service';
 import { MessagingSideEffectsService } from './messaging-side-effects.service';
 import { UploadModule } from 'src/upload/upload.module';
 import { CustomOrdersModule } from 'src/custom-orders/custom-orders.module';
 import { SystemConfigModule } from 'src/admin/system-config/system-config.module';
+import { BrandPermissionService } from 'src/brands/permissions/brand-permission.service';
 
 @Module({
   imports: [PrismaModule, QueueModule, UploadModule, forwardRef(() => CustomOrdersModule), SystemConfigModule],
@@ -37,10 +39,12 @@ import { SystemConfigModule } from 'src/admin/system-config/system-config.module
     CustomOrderThreadBootstrapService,
     MessagingQueryService,
     MessagingPolicyService,
+    MessagingAccessService,
     MessagingAttachmentService,
     MessagingSideEffectsService,
     AdminAuditService,
+    BrandPermissionService,
   ],
-  exports: [MessagingService, CustomOrderThreadBootstrapService],
+  exports: [MessagingService, CustomOrderThreadBootstrapService, MessagingAccessService],
 })
 export class MessagingModule {}

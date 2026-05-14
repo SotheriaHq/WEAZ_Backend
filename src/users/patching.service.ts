@@ -8,6 +8,13 @@ import { v4 as uuidv4 } from 'uuid';
 import { PrismaService } from '../prisma/prisma.service';
 import { PatchMode, PatchStatus, NotificationType } from '@prisma/client';
 import { NotificationsService } from '../notifications/notifications.service';
+import {
+  canonicalUserProfileSelect,
+  resolveBannerImage,
+  resolveNullableProfileField,
+  resolveProfileImage,
+  resolveRequiredProfileField,
+} from 'src/common/user-profile-source.helper';
 
 @Injectable()
 export class PatchingService {
@@ -155,23 +162,18 @@ export class PatchingService {
           select: {
             id: true,
             username: true,
-            firstName: true,
-            lastName: true,
-            profileImage: true,
-            address: true,
-            companyLocation: true,
-            brandDescription: true,
-            brandCountry: true,
-            brandState: true,
-            brandCity: true,
-            brandFullName: true,
-            bannerImage: true,
+            userProfile: { select: canonicalUserProfileSelect },
             brand: {
               select: {
                 name: true,
                 logo: true,
+                banner: true,
                 description: true,
                 tagline: true,
+                country: true,
+                state: true,
+                city: true,
+                companyLocation: true,
               }
             }
           }
@@ -183,33 +185,33 @@ export class PatchingService {
     });
 
     // Format the response
-    return patchConnections.map(connection => ({
-      id: connection.target.id,
-      username: connection.target.username,
-      firstName: connection.target.firstName,
-      lastName: connection.target.lastName,
-      profileImage: connection.target.profileImage,
-      brandName: connection.target.brand?.name || `${connection.target.firstName} ${connection.target.lastName}`,
-      brandLogo: connection.target.brand?.logo,
-      brandTitle:
-        connection.target.brand?.tagline ||
-        connection.target.brandFullName ||
-        connection.target.brand?.name ||
-        null,
-      location:
-        connection.target.companyLocation ||
-        connection.target.address ||
-        [connection.target.brandCity, connection.target.brandState, connection.target.brandCountry]
+    return patchConnections.map(connection => {
+      const target = connection.target;
+      const profileImage = resolveProfileImage(target);
+      const bannerImage = resolveBannerImage(target);
+      const location =
+        target.brand?.companyLocation ||
+        [target.brand?.city, target.brand?.state, target.brand?.country]
           .filter(Boolean)
           .join(', ') ||
-        null,
-      description:
-        connection.target.brandDescription ||
-        connection.target.brand?.description ||
-        null,
-      bannerImage: connection.target.bannerImage,
-      patchedAt: connection.createdAt,
-    }));
+        resolveNullableProfileField(target, 'address') ||
+        null;
+
+      return {
+        id: target.id,
+        username: target.username,
+        firstName: resolveRequiredProfileField(target, 'firstName'),
+        lastName: resolveRequiredProfileField(target, 'lastName'),
+        profileImage: profileImage.url,
+        brandName: target.brand?.name || target.username,
+        brandLogo: target.brand?.logo,
+        brandTitle: target.brand?.tagline || target.brand?.name || null,
+        location,
+        description: target.brand?.description || null,
+        bannerImage: target.brand?.banner || bannerImage.url,
+        patchedAt: connection.createdAt,
+      };
+    });
   }
 
   async checkPatchStatus(requesterId: string, targetId: string) {

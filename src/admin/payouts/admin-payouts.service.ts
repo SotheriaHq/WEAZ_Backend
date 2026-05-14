@@ -30,6 +30,10 @@ import {
   describePaystackSecretEnvKeys,
   resolvePaystackSecret,
 } from 'src/common/utils/paystack-secret';
+import {
+  adminUserDisplaySelect,
+  mapAdminUserDisplay,
+} from '../admin-user-display.helper';
 
 type WebhookContext = {
   headers: Record<string, any>;
@@ -186,11 +190,7 @@ export class AdminPayoutsService {
                 id: true,
                 sourceTitleSnapshot: true,
                 buyer: {
-                  select: {
-                    firstName: true,
-                    lastName: true,
-                    username: true,
-                  },
+                  select: adminUserDisplaySelect,
                 },
               },
             },
@@ -213,8 +213,28 @@ export class AdminPayoutsService {
 
     return {
       ...payout,
+      ledgerAllocations: payout.ledgerAllocations.map((allocation: any) => ({
+        ...allocation,
+        customOrder: allocation.customOrder
+          ? {
+              ...allocation.customOrder,
+              buyer: mapAdminUserDisplay(allocation.customOrder.buyer),
+            }
+          : allocation.customOrder,
+      })),
       payoutAccount: this.summarizeStorePaymentAccount(paymentAccount),
-      sourceBreakdown: buildPayoutSourceBreakdown(payout),
+      sourceBreakdown: buildPayoutSourceBreakdown({
+        ...payout,
+        ledgerAllocations: payout.ledgerAllocations.map((allocation: any) => ({
+          ...allocation,
+          customOrder: allocation.customOrder
+            ? {
+                ...allocation.customOrder,
+                buyer: mapAdminUserDisplay(allocation.customOrder.buyer),
+              }
+            : allocation.customOrder,
+        })),
+      }),
     };
   }
 
@@ -926,10 +946,10 @@ export class AdminPayoutsService {
     return {
       brand: { select: { id: true, name: true } },
       assignedAdmin: {
-        select: { id: true, firstName: true, lastName: true, email: true },
+        select: adminUserDisplaySelect,
       },
       approvedBy: {
-        select: { id: true, firstName: true, lastName: true, email: true },
+        select: adminUserDisplaySelect,
       },
     };
   }

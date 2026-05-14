@@ -9,6 +9,7 @@ import {
 import { CustomOrdersPaymentsService } from 'src/custom-orders/custom-orders-payments.service';
 import { CustomOrderRefundService } from 'src/custom-orders/custom-order-refund.service';
 import { CustomOrderSideEffectsService } from 'src/custom-orders/custom-order-side-effects.service';
+import { LedgerService } from 'src/finance/ledger.service';
 import { PaymentRuntimeHealthService } from 'src/payment/payment-runtime-health.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { CustomOrderOpsCronService } from './custom-order-ops.cron.service';
@@ -19,6 +20,7 @@ describe('CustomOrderOpsCronService', () => {
   let sideEffects: any;
   let customOrdersPaymentsService: any;
   let paymentRuntimeHealthService: any;
+  let ledgerService: any;
 
   const fixedNow = new Date('2026-03-12T12:00:00.000Z');
 
@@ -76,6 +78,9 @@ describe('CustomOrderOpsCronService', () => {
     paymentRuntimeHealthService = {
       recordCronHeartbeat: jest.fn().mockResolvedValue(undefined),
     };
+    ledgerService = {
+      postCustomOrderFinalRelease: jest.fn().mockResolvedValue(undefined),
+    };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -95,6 +100,10 @@ describe('CustomOrderOpsCronService', () => {
         {
           provide: PaymentRuntimeHealthService,
           useValue: paymentRuntimeHealthService,
+        },
+        {
+          provide: LedgerService,
+          useValue: ledgerService,
         },
       ],
     }).compile();
@@ -223,7 +232,14 @@ describe('CustomOrderOpsCronService', () => {
         create: jest.fn().mockResolvedValue(undefined),
       },
       customOrderLedgerAllocation: {
-        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        findFirst: jest.fn().mockResolvedValue({
+          id: 'alloc_final_1',
+          amount: 400,
+          commissionAmount: 40,
+          netBrandAmount: 360,
+          currency: 'NGN',
+        }),
+        update: jest.fn().mockResolvedValue(undefined),
       },
     };
     prisma.$transaction.mockImplementation(async (callback: (innerTx: typeof tx) => Promise<unknown>) =>
@@ -243,16 +259,34 @@ describe('CustomOrderOpsCronService', () => {
         completedAt: fixedNow,
       },
     });
-    expect(tx.customOrderLedgerAllocation.updateMany).toHaveBeenCalledWith({
+    expect(tx.customOrderLedgerAllocation.findFirst).toHaveBeenCalledWith({
       where: {
         customOrderId: 'co_1',
         allocationType: CustomOrderLedgerAllocationType.FINAL_COMPLETION_PORTION,
         status: CustomOrderLedgerAllocationStatus.HELD,
       },
+      select: {
+        id: true,
+        amount: true,
+        commissionAmount: true,
+        netBrandAmount: true,
+        currency: true,
+      },
+    });
+    expect(tx.customOrderLedgerAllocation.update).toHaveBeenCalledWith({
+      where: { id: 'alloc_final_1' },
       data: {
         status: CustomOrderLedgerAllocationStatus.PAYOUT_ELIGIBLE,
         eligibleAt: fixedNow,
       },
+    });
+    expect(ledgerService.postCustomOrderFinalRelease).toHaveBeenCalledWith(tx, {
+      customOrderId: 'co_1',
+      brandId: 'brand_1',
+      currency: 'NGN',
+      amount: 400,
+      commissionAmount: 40,
+      netBrandAmount: 360,
     });
     expect(sideEffects.enqueueNotification).toHaveBeenCalledTimes(2);
   });

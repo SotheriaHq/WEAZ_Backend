@@ -11,10 +11,8 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
-import { UserType } from '@prisma/client';
 import { JwtAuthGuard } from 'src/auth/guard/jwt-auth.guard';
 import { OptionalJwtAuthGuard } from 'src/auth/guard/optional-jwt-auth.guard';
-import { UserTypeGuard } from 'src/auth/guard/user-type.guard';
 import {
   CollectionsService,
   CreateCollectionDto,
@@ -32,7 +30,7 @@ import { UpdateCollectionDto } from './dto/update-collection.dto';
 export class DesignsController {
   constructor(private readonly collectionsService: CollectionsService) {}
 
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseGuards(JwtAuthGuard)
   @Post('initialize')
   async initializeDesign(@Req() req: any, @Body() dto: CreateCollectionDto) {
     await this.collectionsService.assertDesignCreationAllowed(req.user.id);
@@ -45,7 +43,7 @@ export class DesignsController {
     return this.collectionsService.initializeCollection(req.user.id, payload);
   }
 
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseGuards(JwtAuthGuard)
   @Post(':designId/finalize')
   async finalizeDesign(
     @Param('designId') designId: string,
@@ -60,7 +58,7 @@ export class DesignsController {
     );
   }
 
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseGuards(JwtAuthGuard)
   @Post(':designId/media/initialize')
   async initializeDesignMediaUploads(
     @Param('designId') designId: string,
@@ -75,7 +73,7 @@ export class DesignsController {
     );
   }
 
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseGuards(JwtAuthGuard)
   @Patch(':designId/reorder-media')
   async reorderDesignMedia(
     @Param('designId') designId: string,
@@ -90,7 +88,7 @@ export class DesignsController {
     );
   }
 
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseGuards(JwtAuthGuard)
   @Delete(':designId/media/:mediaId')
   async deleteDesignMedia(
     @Param('designId') designId: string,
@@ -138,7 +136,7 @@ export class DesignsController {
     return this.collectionsService.getCollection(designId, req.user?.id, 'design');
   }
 
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseGuards(JwtAuthGuard)
   @Patch(':id')
   async updateDesign(
     @Param('id') designId: string,
@@ -148,31 +146,31 @@ export class DesignsController {
     return this.collectionsService.updateCollection(designId, req.user.id, dto, 'design');
   }
 
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseGuards(JwtAuthGuard)
   @Patch(':id/archive')
   async archiveDesign(@Param('id') designId: string, @Req() req: any) {
     return this.collectionsService.archiveCollection(designId, req.user.id, 'design');
   }
 
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseGuards(JwtAuthGuard)
   @Patch(':id/unarchive')
   async unarchiveDesign(@Param('id') designId: string, @Req() req: any) {
     return this.collectionsService.unarchiveCollection(designId, req.user.id, 'design');
   }
 
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseGuards(JwtAuthGuard)
   @Delete(':id')
   async deleteDesign(@Param('id') designId: string, @Req() req: any) {
     return this.collectionsService.deleteCollection(designId, req.user.id, 'design');
   }
 
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseGuards(JwtAuthGuard)
   @Post(':id/restore')
   async restoreDesign(@Param('id') designId: string, @Req() req: any) {
     return this.collectionsService.restoreCollection(designId, req.user.id);
   }
 
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseGuards(JwtAuthGuard)
   @Delete(':id/permanent')
   async permanentlyDeleteDesign(@Param('id') designId: string, @Req() req: any) {
     return this.collectionsService.permanentlyDeleteCollection(
@@ -182,13 +180,13 @@ export class DesignsController {
     );
   }
 
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseGuards(JwtAuthGuard)
   @Post(':id/duplicate')
   async duplicateDesign(@Param('id') designId: string, @Req() req: any) {
     return this.collectionsService.duplicateCollection(designId, req.user.id, 'design');
   }
 
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseGuards(JwtAuthGuard)
   @Post(':id/draft-session')
   async startDesignDraftSession(
     @Param('id') designId: string,

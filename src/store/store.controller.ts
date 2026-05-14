@@ -72,7 +72,7 @@ export class StoreController {
     return this.storeService.getProductCategories();
   }
 
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseGuards(JwtAuthGuard)
   @Post('products')
   @UseInterceptors(IdempotencyInterceptor)
   async createProduct(
@@ -82,7 +82,7 @@ export class StoreController {
     return this.storeService.createProduct(req.user.id, dto);
   }
 
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseGuards(JwtAuthGuard)
   @Post('products/:id/media')
   @Throttle({ default: { limit: 20, ttl: 60000 } })
   @UseInterceptors(FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } })) // Hard cap; dynamic limit enforced in service
@@ -105,7 +105,7 @@ export class StoreController {
     );
   }
 
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseGuards(JwtAuthGuard)
   @Delete('products/:id/media/:mediaId')
   async deleteProductMedia(
     @Param('id') productId: string,
@@ -115,7 +115,7 @@ export class StoreController {
     return this.storeService.deleteProductMedia(req.user.id, productId, mediaId);
   }
 
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseGuards(JwtAuthGuard)
   @Patch('products/:id/media/reorder')
   async reorderProductMedia(
     @Param('id') productId: string,
@@ -125,7 +125,7 @@ export class StoreController {
     return this.storeService.reorderProductMedia(req.user.id, productId, mediaIds);
   }
 
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseGuards(JwtAuthGuard)
   @Patch('products/:id/media/:mediaId/primary')
   async setPrimaryProductMedia(
     @Param('id') productId: string,
@@ -135,7 +135,7 @@ export class StoreController {
     return this.storeService.setPrimaryProductMedia(req.user.id, productId, mediaId);
   }
 
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseGuards(JwtAuthGuard)
   @Patch('products/:id')
   async updateProduct(
     @Param('id') productId: string,
@@ -145,7 +145,7 @@ export class StoreController {
     return this.storeService.updateProduct(req.user.id, productId, dto);
   }
 
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseGuards(JwtAuthGuard)
   @Post('products/:id/duplicate')
   async duplicateProduct(@Param('id') productId: string, @Req() req: any) {
     return this.storeService.duplicateProduct(req.user.id, productId);
@@ -155,25 +155,25 @@ export class StoreController {
   // ARCHIVE & DELETE ENDPOINTS
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseGuards(JwtAuthGuard)
   @Get('products/:id/delete-impact')
   async getDeleteImpact(@Param('id') productId: string, @Req() req: any) {
     return this.storeService.getDeleteImpact(req.user.id, productId);
   }
 
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseGuards(JwtAuthGuard)
   @Post('products/:id/archive')
   async archiveProduct(@Param('id') productId: string, @Req() req: any) {
     return this.storeService.archiveProduct(req.user.id, productId);
   }
 
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseGuards(JwtAuthGuard)
   @Post('products/:id/unarchive')
   async unarchiveProduct(@Param('id') productId: string, @Req() req: any) {
     return this.storeService.unarchiveProduct(req.user.id, productId);
   }
 
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseGuards(JwtAuthGuard)
   @Post('products/:id/republish-request')
   async requestProductRepublish(
     @Param('id') productId: string,
@@ -189,7 +189,7 @@ export class StoreController {
 
   // toggleFeatured removed — featuring is now admin-only via /admin/featured
 
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseGuards(JwtAuthGuard)
   @Post('products/bulk/delete')
   @UseInterceptors(IdempotencyInterceptor)
   async bulkDeleteProducts(
@@ -199,7 +199,7 @@ export class StoreController {
     return this.storeService.bulkDeleteProducts(req.user.id, dto);
   }
 
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseGuards(JwtAuthGuard)
   @Post('products/bulk/archive')
   @UseInterceptors(IdempotencyInterceptor)
   async bulkArchiveProducts(
@@ -209,7 +209,7 @@ export class StoreController {
     return this.storeService.bulkArchiveProducts(req.user.id, dto);
   }
 
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseGuards(JwtAuthGuard)
   @Post('products/bulk/unpublish')
   @UseInterceptors(IdempotencyInterceptor)
   async bulkUnpublishProducts(
@@ -219,7 +219,7 @@ export class StoreController {
     return this.storeService.bulkUnpublishProducts(req.user.id, dto);
   }
 
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseGuards(JwtAuthGuard)
   @Delete('products/:id')
   async deleteProduct(
     @Param('id') productId: string,
@@ -230,13 +230,13 @@ export class StoreController {
     return this.storeService.deleteProduct(req.user.id, productId, cancelFlag);
   }
 
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseGuards(JwtAuthGuard)
   @Delete('products/:id/permanent')
   async permanentlyDeleteProduct(@Param('id') productId: string, @Req() req: any) {
     return this.storeService.permanentlyDeleteProduct(req.user.id, productId);
   }
 
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseGuards(JwtAuthGuard)
   @Post('products/:id/restore')
   async restoreProduct(@Param('id') productId: string, @Req() req: any) {
     return this.storeService.restoreProduct(req.user.id, productId);
@@ -246,7 +246,7 @@ export class StoreController {
   // PRICE CHANGE PREVIEW
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseGuards(JwtAuthGuard)
   @Post('products/:id/price-preview')
   async getProductPriceChangePreview(
     @Param('id') productId: string,
@@ -319,6 +319,13 @@ export class StoreController {
       sortBy: resolvedSortBy,
       search: resolveSearchQuery(q, search),
     });
+  }
+
+  @UseGuards(OptionalJwtAuthGuard)
+  @Get(['products/:id/bag-status', 'store/products/:id/bag-status'])
+  @Throttle({ default: { limit: 120, ttl: 60000 } })
+  async getProductBagStatus(@Param('id') productId: string, @Req() req: any) {
+    return this.storeService.getProductBagStatus(productId, req.user?.id);
   }
 
   @UseGuards(OptionalJwtAuthGuard)
@@ -542,7 +549,7 @@ export class StoreController {
     return this.storeService.updateStoreName(req.user.id, dto);
   }
 
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseGuards(JwtAuthGuard)
   @Get('store/status')
   async getStoreStatus(@Req() req: any) {
     return this.storeService.getStoreStatus(req.user.id);
@@ -560,7 +567,7 @@ export class StoreController {
     return this.storeService.closeStore(req.user.id);
   }
 
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseGuards(JwtAuthGuard)
   @Patch('store/profile')
   async updateStoreProfile(
     @Body(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
@@ -619,13 +626,13 @@ export class StoreController {
     return this.storeService.verifyStorePaymentAccount(req.user.id, dto);
   }
 
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseGuards(JwtAuthGuard)
   @Get('store/wallet')
   async getStoreWallet(@Req() req: any) {
     return this.storeService.getStoreWallet(req.user.id);
   }
 
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseGuards(JwtAuthGuard)
   @Get('store/payouts')
   async listStorePayouts(
     @Req() req: any,
@@ -640,7 +647,7 @@ export class StoreController {
     });
   }
 
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseGuards(JwtAuthGuard)
   @Get('store/payouts/:payoutId')
   async getStorePayoutDetail(
     @Req() req: any,
@@ -649,7 +656,7 @@ export class StoreController {
     return this.storeService.getStorePayoutDetail(req.user.id, payoutId);
   }
 
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseGuards(JwtAuthGuard)
   @Get('store/payouts/:payoutId/statement')
   async getStorePayoutStatement(
     @Req() req: any,
