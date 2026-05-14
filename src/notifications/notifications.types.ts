@@ -1,4 +1,5 @@
 export type TargetType =
+  | 'DESIGN'
   | 'POST'
   | 'COLLECTION'
   | 'COLLECTION_MEDIA'

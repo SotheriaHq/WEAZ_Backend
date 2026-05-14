@@ -12,6 +12,7 @@ import {
   NotificationSettings,
   NotificationTarget,
 } from './notifications.types';
+import { normalizeCatalogTarget } from 'src/common/domain/catalog-target';
 
 const INVALID_EXPO_TOKEN_DISABLED_REASON = 'INVALID_EXPO_TOKEN';
 const DEVICE_NOT_REGISTERED_DISABLED_REASON = 'DEVICE_NOT_REGISTERED';
@@ -315,6 +316,22 @@ export class PushNotificationsService {
     if (!payload) return null;
 
     if (payload.target?.type && payload.target?.id) {
+      const catalogTarget = normalizeCatalogTarget({
+        targetType: payload.target.type,
+        targetId: payload.target.id,
+        legacyCollectionId: payload.target.legacyCollectionId,
+        collectionId: payload.target.collectionId,
+      });
+      if (catalogTarget) {
+        return {
+          type: catalogTarget.targetType,
+          id: catalogTarget.targetId,
+          preview:
+            typeof payload.target.preview === 'string'
+              ? payload.target.preview
+              : undefined,
+        };
+      }
       return {
         type: payload.target.type,
         id: String(payload.target.id),
@@ -322,6 +339,31 @@ export class PushNotificationsService {
           typeof payload.target.preview === 'string'
             ? payload.target.preview
             : undefined,
+      };
+    }
+
+    const explicitCatalogTarget = normalizeCatalogTarget({
+      targetType: payload.targetType ?? payload.entityType,
+      targetId: payload.targetId,
+      designId: payload.designId,
+      productId: payload.productId,
+      collectionId: payload.collectionId,
+      legacyCollectionId: payload.legacyCollectionId,
+    });
+    if (explicitCatalogTarget) {
+      return {
+        type: explicitCatalogTarget.targetType,
+        id: explicitCatalogTarget.targetId,
+        preview:
+          typeof payload.designTitle === 'string'
+            ? payload.designTitle
+            : typeof payload.collectionTitle === 'string'
+              ? payload.collectionTitle
+              : typeof payload.collectionName === 'string'
+                ? payload.collectionName
+                : typeof payload.productName === 'string'
+                  ? payload.productName
+                  : undefined,
       };
     }
 

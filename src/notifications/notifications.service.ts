@@ -48,6 +48,7 @@ import {
 } from 'src/common/user-profile-source.helper';
 import { canonicalBrandProfileSelect } from 'src/common/brand-profile-source.helper';
 import { PushNotificationsService } from './push-notifications.service';
+import { normalizeCatalogTarget } from 'src/common/domain/catalog-target';
 
 type EmailSettingsResponse = {
   globalEnabled: boolean;
@@ -249,6 +250,19 @@ export class NotificationsService {
 
     // Direct target object
     if (payload.target?.type && payload.target?.id) {
+      const catalogTarget = normalizeCatalogTarget({
+        targetType: payload.target.type,
+        targetId: payload.target.id,
+        legacyCollectionId: payload.target.legacyCollectionId,
+        collectionId: payload.target.collectionId,
+      });
+      if (catalogTarget) {
+        return {
+          type: catalogTarget.targetType,
+          id: catalogTarget.targetId,
+          preview: payload.target.preview,
+        };
+      }
       return {
         type: payload.target.type,
         id: payload.target.id,
@@ -257,6 +271,26 @@ export class NotificationsService {
     }
 
     // Infer from payload fields
+    const explicitCatalogTarget = normalizeCatalogTarget({
+      targetType: payload.targetType ?? payload.entityType,
+      targetId: payload.targetId,
+      designId: payload.designId,
+      productId: payload.productId,
+      collectionId: payload.collectionId,
+      legacyCollectionId: payload.legacyCollectionId,
+    });
+    if (explicitCatalogTarget) {
+      return {
+        type: explicitCatalogTarget.targetType,
+        id: explicitCatalogTarget.targetId,
+        preview:
+          payload.designTitle ||
+          payload.collectionName ||
+          payload.collectionTitle ||
+          payload.productName,
+      };
+    }
+
     if (payload.collectionId) {
       return {
         type: 'COLLECTION',
@@ -280,6 +314,10 @@ export class NotificationsService {
     // Infer from targetUrl
     const url = payload.targetUrl as string | undefined;
     if (url) {
+      const designMatch = url.match(/\/designs\/([a-f0-9-]+)/);
+      if (designMatch) {
+        return { type: 'DESIGN', id: designMatch[1] };
+      }
       const collectionMatch = url.match(/\/collections\/([a-f0-9-]+)/);
       if (collectionMatch) {
         return { type: 'COLLECTION', id: collectionMatch[1] };
