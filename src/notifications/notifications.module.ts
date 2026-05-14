@@ -8,6 +8,7 @@ import { EventsGateway } from 'src/realtime/events.gateway';
 import { NotificationRegistry } from './notifications.registry';
 import { EmailOutboxDispatcherService } from './email-outbox-dispatcher.service';
 import { PushDeviceTokensService } from './push-device-tokens.service';
+import { PushNotificationsService } from './push-notifications.service';
 
 @Module({
   imports: [CacheModule.register()],
@@ -21,8 +22,13 @@ import { PushDeviceTokensService } from './push-device-tokens.service';
     },
     EmailOutboxDispatcherService,
     PushDeviceTokensService,
+    PushNotificationsService,
   ],
   controllers: [NotificationsController, NotificationsEmailWebhookController],
-  exports: [NotificationsService, PushDeviceTokensService],
+  exports: [
+    NotificationsService,
+    PushDeviceTokensService,
+    PushNotificationsService,
+  ],
 })
 export class NotificationsModule {}

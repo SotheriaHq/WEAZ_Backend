@@ -72,6 +72,7 @@
     "class-validator": "^0.14.2",
     "cookie-parser": "^1.4.7",
     "csv-parse": "^5.5.0",
+    "expo-server-sdk": "^6.1.0",
     "joi": "^18.0.1",
     "mime-types": "^3.0.1",
     "module-alias": "^2.2.3",

@@ -8,11 +8,13 @@ import { NotificationRegistry } from './notifications.registry';
 import { EmailService } from 'src/email/email.service';
 import { ConfigService } from '@nestjs/config';
 import { DEFAULT_NOTIFICATION_SETTINGS } from './notifications.types';
+import { PushNotificationsService } from './push-notifications.service';
 
 describe('NotificationsService', () => {
   let service: NotificationsService;
   let mockPrisma: any;
   let cacheManager: any;
+  let mockPushNotifications: { deliverAfterNotificationCreated: jest.Mock };
 
   beforeEach(async () => {
     mockPrisma = {
@@ -79,6 +81,14 @@ describe('NotificationsService', () => {
     const mockConfigService: Partial<ConfigService> = {
       get: jest.fn(),
     };
+    mockPushNotifications = {
+      deliverAfterNotificationCreated: jest.fn().mockResolvedValue({
+        sent: 0,
+        failed: 0,
+        deactivated: 0,
+        skippedReason: 'no-active-tokens',
+      }),
+    };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -89,6 +99,7 @@ describe('NotificationsService', () => {
         { provide: NotificationRegistry, useValue: mockRegistry },
         { provide: EmailService, useValue: mockEmailService },
         { provide: ConfigService, useValue: mockConfigService },
+        { provide: PushNotificationsService, useValue: mockPushNotifications },
       ],
     }).compile();
 
@@ -205,6 +216,15 @@ describe('NotificationsService', () => {
       expect(cacheManager.del).toHaveBeenCalledWith(
         'unread_count:recipient-id',
       );
+      expect(
+        mockPushNotifications.deliverAfterNotificationCreated,
+      ).toHaveBeenCalledWith(
+        expect.objectContaining({
+          recipientId: 'recipient-id',
+          notification: mockCreated,
+          notificationTypeEnabled: true,
+        }),
+      );
     });
 
     it('should dedupe notifications within window', async () => {
@@ -253,6 +273,31 @@ describe('NotificationsService', () => {
 
       expect(result?.id).toBe('semantic-existing');
       expect(mockPrisma.notification.create).not.toHaveBeenCalled();
+    });
+
+    it('should not fail notification creation if push delivery fails', async () => {
+      const mockCreated = {
+        id: 'push-failure-notification',
+        type: NotificationType.THREAD,
+        payload: { target: { type: 'POST', id: 'post-1' } },
+        isRead: false,
+        createdAt: new Date(),
+        actor: null,
+      };
+      mockPrisma.notification.create.mockResolvedValue(mockCreated);
+      mockPushNotifications.deliverAfterNotificationCreated.mockRejectedValue(
+        new Error('Expo is unavailable'),
+      );
+
+      await expect(
+        service.create('recipient-id', NotificationType.THREAD, {
+          payload: { target: { type: 'POST', id: 'post-1' } },
+        }),
+      ).resolves.toEqual(mockCreated);
+
+      expect(
+        mockPushNotifications.deliverAfterNotificationCreated,
+      ).toHaveBeenCalled();
     });
 
     it('should throw error for invalid payload', async () => {

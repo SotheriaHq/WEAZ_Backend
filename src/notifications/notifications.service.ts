@@ -47,6 +47,7 @@ import {
   resolveRequiredProfileField,
 } from 'src/common/user-profile-source.helper';
 import { canonicalBrandProfileSelect } from 'src/common/brand-profile-source.helper';
+import { PushNotificationsService } from './push-notifications.service';
 
 type EmailSettingsResponse = {
   globalEnabled: boolean;
@@ -89,6 +90,7 @@ export class NotificationsService {
     private readonly registry: NotificationRegistry,
     private readonly emailService: EmailService,
     private readonly config: ConfigService,
+    private readonly pushNotifications: PushNotificationsService,
   ) {}
 
   private mapActorDisplay(actor: any) {
@@ -1576,6 +1578,19 @@ export class NotificationsService {
           `Failed to enqueue notification email for notification=${created.id}: ${String(error)}`,
         );
       });
+
+      void this.pushNotifications
+        .deliverAfterNotificationCreated({
+          recipientId,
+          notification: created,
+          settings,
+          notificationTypeEnabled: this.isNotificationEnabled(type, settings),
+        })
+        .catch((error) => {
+          this.logger.warn(
+            `Failed to deliver push notification=${created.id}: ${String(error)}`,
+          );
+        });
 
       return created;
     } catch (error) {
