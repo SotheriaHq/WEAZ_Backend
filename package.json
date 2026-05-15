@@ -40,6 +40,7 @@
     "designs:verify-backfill": "ts-node -r tsconfig-paths/register scripts/verify-design-domain-backfill.ts",
     "catalog-targets:backfill": "ts-node -r tsconfig-paths/register scripts/backfill-catalog-targets.ts --dry-run",
     "catalog-targets:backfill:apply": "ts-node -r tsconfig-paths/register scripts/backfill-catalog-targets.ts --apply",
+    "seed:verify": "ts-node -r tsconfig-paths/register scripts/verify-fresh-db-seed.ts",
     "seed": "prisma db seed",
     "reset:all": "node scripts/reset-all-data.cjs"
   },
