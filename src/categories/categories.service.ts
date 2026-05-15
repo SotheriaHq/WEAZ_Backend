@@ -230,11 +230,12 @@ export class CategoriesService {
       where: { id },
     });
     if (!existing) throw new NotFoundException('Category not found');
-    const [designReferencing, storeReferencing] = await Promise.all([
+    const [legacyDesignReferencing, explicitDesignReferencing, storeReferencing] = await Promise.all([
       this.prisma.collection.count({ where: { categoryId: id } }),
+      this.prisma.design.count({ where: { categoryId: id } }),
       this.prisma.storeCollection.count({ where: { categoryId: id } }),
     ]);
-    if (designReferencing > 0 || storeReferencing > 0)
+    if (legacyDesignReferencing > 0 || explicitDesignReferencing > 0 || storeReferencing > 0)
       throw new BadRequestException('Cannot delete category in use');
     await this.prisma.collectionCategory.delete({ where: { id } });
 
@@ -485,7 +486,7 @@ export class CategoriesService {
   // =====================
 
   /**
-   * Set filter values for an entity (collection or product).
+   * Set filter values for an entity (collection, store collection, design, or product).
    * Replaces all existing filters of the given entity with the new set.
    */
   async setEntityFilters(
