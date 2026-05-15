@@ -1,7 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import {
   AdminAuditAction,
-  CollectionDomain,
   CollectionStatus,
   NotificationType,
 } from '@prisma/client';
@@ -37,7 +36,6 @@ export class AdminDesignsService {
     const take = Math.min(params.limit ?? 50, 100);
     const where: Record<string, unknown> = {
       deletedAt: null,
-      domain: CollectionDomain.DESIGN,
     };
 
     if (params.search) {
@@ -54,7 +52,7 @@ export class AdminDesignsService {
     if (params.sortBy === 'oldest') orderBy = { createdAt: 'asc' };
     else if (params.sortBy === 'views') orderBy = { viewsCount: 'desc' };
 
-    const items = await this.prisma.collection.findMany({
+    const items = await this.prisma.design.findMany({
       where,
       select: {
         id: true,
@@ -121,7 +119,7 @@ export class AdminDesignsService {
     const nextCursor = hasMore ? results[results.length - 1]?.id : undefined;
     const filterMetadata = await loadAdminCatalogFilters(
       this.prisma,
-      'COLLECTION',
+      'DESIGN',
       results.map((item) => item.id),
     );
     const designIds = results.map((item) => item.id);
@@ -155,6 +153,7 @@ export class AdminDesignsService {
     return {
       items: sortedResults.map((item: any) => ({
         ...item,
+        entityType: 'DESIGN',
         owner: mapAdminUserDisplay(item.owner),
         taxonomy: {
           garmentCategory: item.category ?? null,
@@ -185,18 +184,17 @@ export class AdminDesignsService {
     actorId: string,
     req: Request,
   ) {
-    const existing = await this.prisma.collection.findUnique({
+    const existing = await this.prisma.design.findUnique({
       where: { id: designId },
       select: {
         id: true,
-        domain: true,
         title: true,
         ownerId: true,
         status: true,
       },
     });
 
-    if (!existing || existing.domain !== CollectionDomain.DESIGN) {
+    if (!existing) {
       throw new NotFoundException('Design not found');
     }
 
@@ -220,7 +218,7 @@ export class AdminDesignsService {
 
     const updated = await this.prisma.$transaction(async (tx) => {
       if (action === 'HARD_DELETE') {
-        const deleted = await tx.collection.delete({
+        const deleted = await tx.design.delete({
           where: { id: designId },
           select: {
             id: true,
@@ -233,7 +231,7 @@ export class AdminDesignsService {
             id: uuidv4(),
             actorUserId: actorId,
             action: AdminAuditAction.ADMIN_COLLECTION_MODERATE,
-            targetType: 'Collection',
+            targetType: 'Design',
             targetId: designId,
             previousState: {
               status: existing.status,
@@ -257,7 +255,7 @@ export class AdminDesignsService {
         };
       }
 
-      const design = await tx.collection.update({
+      const design = await tx.design.update({
         where: { id: designId },
         data: updateData,
         select: {
@@ -273,7 +271,7 @@ export class AdminDesignsService {
           id: uuidv4(),
           actorUserId: actorId,
           action: AdminAuditAction.ADMIN_COLLECTION_MODERATE,
-          targetType: 'Collection',
+          targetType: 'Design',
           targetId: designId,
           previousState: {
             status: existing.status,
@@ -307,7 +305,7 @@ export class AdminDesignsService {
         await this.notifications.create(existing.ownerId, NotificationType.ADMIN_ACTION, {
           actorId,
           payload: {
-            targetType: 'COLLECTION',
+            targetType: 'DESIGN',
             targetId: designId,
             message: `Admin ${verb} your design "${existing.title ?? 'Untitled'}".${reasonSuffix}`,
             reason: reasonText,
