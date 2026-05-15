@@ -80,9 +80,24 @@ async function main() {
       })
     : null;
 
+  const productWithCategory = await prisma.product.findFirst({
+    where: {
+      categoryId: { not: null },
+      categoryTypeId: { not: null },
+    },
+    include: {
+      category: true,
+      categoryType: true,
+    },
+  });
+
   const storeCollectionWithProduct = await prisma.storeCollection.findFirst({
     where: { products: { some: {} } },
-    include: { products: true },
+    include: {
+      category: true,
+      categoryType: true,
+      products: true,
+    },
   });
 
   const savedDesignTarget = design
@@ -125,7 +140,17 @@ async function main() {
     customOrderConfiguration?.rules.length ?? 0,
   );
   record('Product exists', products > 0, products);
+  record('Product has category and subcategory', Boolean(productWithCategory), {
+    productId: productWithCategory?.id,
+    categoryId: productWithCategory?.categoryId,
+    categoryTypeId: productWithCategory?.categoryTypeId,
+  });
   record('StoreCollection exists', storeCollections > 0, storeCollections);
+  record('StoreCollection has category and subcategory', Boolean(storeCollectionWithProduct?.categoryId && storeCollectionWithProduct.categoryTypeId), {
+    collectionId: storeCollectionWithProduct?.id,
+    categoryId: storeCollectionWithProduct?.categoryId,
+    categoryTypeId: storeCollectionWithProduct?.categoryTypeId,
+  });
   record(
     'StoreCollection has product membership',
     Boolean(storeCollectionWithProduct && storeCollectionWithProduct.products.length > 0),
