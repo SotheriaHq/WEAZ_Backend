@@ -13,6 +13,10 @@ import {
   adminUserDisplaySelect,
   mapAdminUserDisplay,
 } from '../admin-user-display.helper';
+import {
+  emptyAdminCatalogFilterMetadata,
+  loadAdminCatalogFilters,
+} from '../catalog-metadata.helper';
 
 @Injectable()
 export class AdminDesignsService {
@@ -58,6 +62,10 @@ export class AdminDesignsService {
         description: true,
         status: true,
         visibility: true,
+        type: true,
+        categoryId: true,
+        categoryTypeId: true,
+        tags: true,
         viewsCount: true,
         ownerId: true,
         createdAt: true,
@@ -87,6 +95,21 @@ export class AdminDesignsService {
         owner: {
           select: adminUserDisplaySelect,
         },
+        category: {
+          select: {
+            id: true,
+            slug: true,
+            name: true,
+          },
+        },
+        categoryType: {
+          select: {
+            id: true,
+            categoryId: true,
+            slug: true,
+            name: true,
+          },
+        },
       },
       orderBy,
       take: take + 1,
@@ -96,6 +119,11 @@ export class AdminDesignsService {
     const hasMore = items.length > take;
     const results = hasMore ? items.slice(0, take) : items;
     const nextCursor = hasMore ? results[results.length - 1]?.id : undefined;
+    const filterMetadata = await loadAdminCatalogFilters(
+      this.prisma,
+      'COLLECTION',
+      results.map((item) => item.id),
+    );
     const designIds = results.map((item) => item.id);
     const groupedOrders =
       designIds.length > 0
@@ -128,6 +156,14 @@ export class AdminDesignsService {
       items: sortedResults.map((item: any) => ({
         ...item,
         owner: mapAdminUserDisplay(item.owner),
+        taxonomy: {
+          garmentCategory: item.category ?? null,
+          garmentSubcategory: item.categoryType ?? null,
+          audience: item.type ?? null,
+          hashtags: item.tags ?? [],
+          discoveryMetadata:
+            filterMetadata.get(item.id) ?? emptyAdminCatalogFilterMetadata(),
+        },
         coverImage:
           item.coverMedia?.file?.s3Url ?? item.medias?.[0]?.file?.s3Url ?? null,
         coverImageFileId:

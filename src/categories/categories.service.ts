@@ -3,13 +3,15 @@ import {
   BadRequestException,
   NotFoundException,
   Logger,
+  Optional,
 } from '@nestjs/common';
-import { NotificationType, Role, UserStatus } from '@prisma/client';
+import { AdminAuditAction, NotificationType, Role, UserStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { NotificationsService } from 'src/notifications/notifications.service';
 import { UpsertCategoryDto } from './dto/upsert-category.dto';
 import { UpsertSubCategoryDto } from './dto/upsert-sub-category.dto';
 import { v4 as uuidv4 } from 'uuid';
+import { AdminAuditService } from 'src/admin/services/admin-audit.service';
 import {
   DEFAULT_COLLECTION_CATEGORIES,
   DEFAULT_SUB_CATEGORIES,
@@ -18,6 +20,10 @@ import {
   LEGACY_CATEGORY_TYPE_SLUGS,
   LEGACY_FILTER_DIMENSION_SLUGS,
 } from './default-taxonomy';
+import {
+  assertGarmentCategoryTermAllowed,
+  assertGarmentSubCategoryTermAllowed,
+} from './taxonomy-governance';
 
 type CatalogFilterEntityType = 'COLLECTION' | 'STORE_COLLECTION' | 'DESIGN' | 'PRODUCT';
 
@@ -28,7 +34,80 @@ export class CategoriesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly notifications: NotificationsService,
+    @Optional() private readonly adminAudit?: AdminAuditService,
   ) {}
+
+  private normalizeRequiredDescription(
+    value: string | null | undefined,
+    label: string,
+  ): string {
+    const description = String(value ?? '').trim();
+    if (!description) {
+      throw new BadRequestException(`${label} requires a description.`);
+    }
+    return description;
+  }
+
+  private async recordTaxonomyAudit(params: {
+    actorUserId?: string;
+    action: AdminAuditAction;
+    targetType: string;
+    targetId: string;
+    metadata?: Record<string, unknown>;
+    previousState?: Record<string, unknown>;
+    newState?: Record<string, unknown>;
+  }) {
+    if (!params.actorUserId || !this.adminAudit) return;
+    await this.adminAudit.safeLog({
+      actorUserId: params.actorUserId,
+      action: params.action,
+      targetType: params.targetType,
+      targetId: params.targetId,
+      metadata: params.metadata,
+      previousState: params.previousState,
+      newState: params.newState,
+    });
+  }
+
+  private async assertActiveCategoryNameAvailable(
+    name: string,
+    excludeId?: string,
+  ) {
+    const existing = await this.prisma.collectionCategory.findFirst({
+      where: {
+        isActive: true,
+        name: { equals: name, mode: 'insensitive' },
+        ...(excludeId ? { NOT: { id: excludeId } } : {}),
+      },
+      select: { id: true },
+    });
+    if (existing) {
+      throw new BadRequestException(
+        'An active garment category with this name already exists.',
+      );
+    }
+  }
+
+  private async assertActiveSubCategoryNameAvailable(
+    categoryId: string,
+    name: string,
+    excludeId?: string,
+  ) {
+    const existing = await this.prisma.collectionCategoryType.findFirst({
+      where: {
+        categoryId,
+        isActive: true,
+        name: { equals: name, mode: 'insensitive' },
+        ...(excludeId ? { NOT: { id: excludeId } } : {}),
+      },
+      select: { id: true },
+    });
+    if (existing) {
+      throw new BadRequestException(
+        'An active garment type with this name already exists under this garment category.',
+      );
+    }
+  }
 
   private async notifyAdminsOfTaxonomyAction(params: {
     action: string;
@@ -116,14 +195,21 @@ export class CategoriesService {
   }
 
   async create(dto: UpsertCategoryDto, actorUserId?: string) {
+    const name = dto.name.trim();
+    assertGarmentCategoryTermAllowed(name);
+    await this.assertActiveCategoryNameAvailable(name);
+    const description = this.normalizeRequiredDescription(
+      dto.description,
+      'Garment category',
+    );
     const slug = await this.generateUniqueSlug(dto.name);
     const id = uuidv4();
     const row = await this.prisma.collectionCategory.create({
       data: {
         id,
         slug,
-        name: dto.name.trim(),
-        description: dto.description?.trim() || null,
+        name,
+        description,
         order: dto.order ?? 0,
         isActive: true,
       },
@@ -134,6 +220,20 @@ export class CategoriesService {
       message: `Category created: ${row.name}`,
       actorUserId,
       categoryId: row.id,
+    });
+    await this.recordTaxonomyAudit({
+      actorUserId,
+      action: AdminAuditAction.ADMIN_TAXONOMY_WRITE,
+      targetType: 'CollectionCategory',
+      targetId: row.id,
+      metadata: { operation: 'category_created' },
+      newState: {
+        slug: row.slug,
+        name: row.name,
+        description: row.description,
+        order: row.order,
+        isActive: row.isActive,
+      },
     });
 
     return {
@@ -153,13 +253,21 @@ export class CategoriesService {
     if (!existing) throw new NotFoundException('Category not found');
     const data: any = {};
     if (dto.name && dto.name.trim() !== existing.name) {
-      data.name = dto.name.trim();
+      const nextName = dto.name.trim();
+      assertGarmentCategoryTermAllowed(nextName);
+      await this.assertActiveCategoryNameAvailable(nextName, id);
+      data.name = nextName;
     }
     if (dto.description !== undefined) {
       data.description = dto.description?.trim() || null;
     }
     if (dto.order !== undefined) {
       data.order = dto.order;
+    }
+    const nextDescription =
+      data.description !== undefined ? data.description : existing.description;
+    if (existing.isActive && !String(nextDescription ?? '').trim()) {
+      throw new BadRequestException('Garment category requires a description.');
     }
     if (Object.keys(data).length === 0) {
       return existing;
@@ -174,6 +282,25 @@ export class CategoriesService {
       message: `Category updated: ${updated.name}`,
       actorUserId,
       categoryId: updated.id,
+    });
+    await this.recordTaxonomyAudit({
+      actorUserId,
+      action: AdminAuditAction.ADMIN_TAXONOMY_WRITE,
+      targetType: 'CollectionCategory',
+      targetId: updated.id,
+      metadata: { operation: 'category_updated' },
+      previousState: {
+        name: existing.name,
+        description: existing.description,
+        order: existing.order,
+        isActive: existing.isActive,
+      },
+      newState: {
+        name: updated.name,
+        description: updated.description,
+        order: updated.order,
+        isActive: updated.isActive,
+      },
     });
 
     return {
@@ -192,6 +319,9 @@ export class CategoriesService {
     });
     if (!existing) throw new NotFoundException('Category not found');
     if (existing.isActive) return existing;
+    assertGarmentCategoryTermAllowed(existing.name);
+    this.normalizeRequiredDescription(existing.description, 'Garment category');
+    await this.assertActiveCategoryNameAvailable(existing.name, id);
     const updated = await this.prisma.collectionCategory.update({
       where: { id },
       data: { isActive: true },
@@ -202,6 +332,15 @@ export class CategoriesService {
       message: `Category activated: ${updated.name}`,
       actorUserId,
       categoryId: updated.id,
+    });
+    await this.recordTaxonomyAudit({
+      actorUserId,
+      action: AdminAuditAction.ADMIN_TAXONOMY_WRITE,
+      targetType: 'CollectionCategory',
+      targetId: updated.id,
+      metadata: { operation: 'category_reactivated' },
+      previousState: { isActive: existing.isActive },
+      newState: { isActive: updated.isActive },
     });
 
     return updated;
@@ -224,6 +363,15 @@ export class CategoriesService {
       actorUserId,
       categoryId: updated.id,
     });
+    await this.recordTaxonomyAudit({
+      actorUserId,
+      action: AdminAuditAction.ADMIN_TAXONOMY_WRITE,
+      targetType: 'CollectionCategory',
+      targetId: updated.id,
+      metadata: { operation: 'category_deactivated' },
+      previousState: { isActive: existing.isActive },
+      newState: { isActive: updated.isActive },
+    });
 
     return updated;
   }
@@ -233,13 +381,19 @@ export class CategoriesService {
       where: { id },
     });
     if (!existing) throw new NotFoundException('Category not found');
-    const [legacyDesignReferencing, explicitDesignReferencing, storeReferencing] = await Promise.all([
+    const [legacyDesignReferencing, explicitDesignReferencing, storeReferencing, productReferencing] = await Promise.all([
       this.prisma.collection.count({ where: { categoryId: id } }),
       this.prisma.design.count({ where: { categoryId: id } }),
       this.prisma.storeCollection.count({ where: { categoryId: id } }),
+      this.prisma.product.count({ where: { categoryId: id } }),
     ]);
-    if (legacyDesignReferencing > 0 || explicitDesignReferencing > 0 || storeReferencing > 0)
-      throw new BadRequestException('Cannot delete category in use');
+    if (
+      legacyDesignReferencing > 0 ||
+      explicitDesignReferencing > 0 ||
+      storeReferencing > 0 ||
+      productReferencing > 0
+    )
+      throw new BadRequestException('Cannot delete category in use. Deactivate it instead to preserve existing item metadata.');
     await this.prisma.collectionCategory.delete({ where: { id } });
 
     await this.notifyAdminsOfTaxonomyAction({
@@ -247,6 +401,20 @@ export class CategoriesService {
       message: `Category deleted: ${existing.name}`,
       actorUserId,
       categoryId: existing.id,
+    });
+    await this.recordTaxonomyAudit({
+      actorUserId,
+      action: AdminAuditAction.ADMIN_TAXONOMY_WRITE,
+      targetType: 'CollectionCategory',
+      targetId: existing.id,
+      metadata: { operation: 'category_deleted' },
+      previousState: {
+        slug: existing.slug,
+        name: existing.name,
+        description: existing.description,
+        order: existing.order,
+        isActive: existing.isActive,
+      },
     });
 
     return { success: true };
@@ -281,16 +449,26 @@ export class CategoriesService {
     if (!category) {
       throw new NotFoundException('Category not found');
     }
+    if (!category.isActive) {
+      throw new BadRequestException('Create garment types under an active garment category.');
+    }
 
-    const slug = await this.generateUniqueSubCategorySlug(categoryId, dto.name);
+    const name = dto.name.trim();
+    assertGarmentSubCategoryTermAllowed(name);
+    await this.assertActiveSubCategoryNameAvailable(categoryId, name);
+    const description = this.normalizeRequiredDescription(
+      dto.description,
+      'Garment type',
+    );
+    const slug = await this.generateUniqueSubCategorySlug(categoryId, name);
 
     const row = await this.prisma.collectionCategoryType.create({
       data: {
         id: uuidv4(),
         categoryId,
         slug,
-        name: dto.name.trim(),
-        description: dto.description?.trim() || null,
+        name,
+        description,
         order: dto.order ?? 0,
         isActive: true,
       },
@@ -302,6 +480,21 @@ export class CategoriesService {
       actorUserId,
       categoryId: row.categoryId,
       subCategoryId: row.id,
+    });
+    await this.recordTaxonomyAudit({
+      actorUserId,
+      action: AdminAuditAction.ADMIN_TAXONOMY_WRITE,
+      targetType: 'CollectionCategoryType',
+      targetId: row.id,
+      metadata: { operation: 'subcategory_created', categoryId: row.categoryId },
+      newState: {
+        categoryId: row.categoryId,
+        slug: row.slug,
+        name: row.name,
+        description: row.description,
+        order: row.order,
+        isActive: row.isActive,
+      },
     });
 
     return {
@@ -325,13 +518,25 @@ export class CategoriesService {
 
     const data: any = {};
     if (dto.name && dto.name.trim() !== existing.name) {
-      data.name = dto.name.trim();
+      const nextName = dto.name.trim();
+      assertGarmentSubCategoryTermAllowed(nextName);
+      await this.assertActiveSubCategoryNameAvailable(
+        existing.categoryId,
+        nextName,
+        subCategoryId,
+      );
+      data.name = nextName;
     }
     if (dto.description !== undefined) {
       data.description = dto.description?.trim() || null;
     }
     if (dto.order !== undefined) {
       data.order = dto.order;
+    }
+    const nextDescription =
+      data.description !== undefined ? data.description : existing.description;
+    if (existing.isActive && !String(nextDescription ?? '').trim()) {
+      throw new BadRequestException('Garment type requires a description.');
     }
 
     if (Object.keys(data).length === 0) {
@@ -349,6 +554,25 @@ export class CategoriesService {
       actorUserId,
       categoryId: updated.categoryId,
       subCategoryId: updated.id,
+    });
+    await this.recordTaxonomyAudit({
+      actorUserId,
+      action: AdminAuditAction.ADMIN_TAXONOMY_WRITE,
+      targetType: 'CollectionCategoryType',
+      targetId: updated.id,
+      metadata: { operation: 'subcategory_updated', categoryId: updated.categoryId },
+      previousState: {
+        name: existing.name,
+        description: existing.description,
+        order: existing.order,
+        isActive: existing.isActive,
+      },
+      newState: {
+        name: updated.name,
+        description: updated.description,
+        order: updated.order,
+        isActive: updated.isActive,
+      },
     });
 
     return {
@@ -372,6 +596,20 @@ export class CategoriesService {
     if (existing.isActive) {
       return existing;
     }
+    const category = await this.prisma.collectionCategory.findUnique({
+      where: { id: existing.categoryId },
+      select: { id: true, isActive: true },
+    });
+    if (!category?.isActive) {
+      throw new BadRequestException('Activate the parent garment category before activating this garment type.');
+    }
+    assertGarmentSubCategoryTermAllowed(existing.name);
+    this.normalizeRequiredDescription(existing.description, 'Garment type');
+    await this.assertActiveSubCategoryNameAvailable(
+      existing.categoryId,
+      existing.name,
+      subCategoryId,
+    );
     const updated = await this.prisma.collectionCategoryType.update({
       where: { id: subCategoryId },
       data: { isActive: true },
@@ -383,6 +621,15 @@ export class CategoriesService {
       actorUserId,
       categoryId: updated.categoryId,
       subCategoryId: updated.id,
+    });
+    await this.recordTaxonomyAudit({
+      actorUserId,
+      action: AdminAuditAction.ADMIN_TAXONOMY_WRITE,
+      targetType: 'CollectionCategoryType',
+      targetId: updated.id,
+      metadata: { operation: 'subcategory_reactivated', categoryId: updated.categoryId },
+      previousState: { isActive: existing.isActive },
+      newState: { isActive: updated.isActive },
     });
 
     return updated;
@@ -407,6 +654,15 @@ export class CategoriesService {
       actorUserId,
       categoryId: updated.categoryId,
       subCategoryId: updated.id,
+    });
+    await this.recordTaxonomyAudit({
+      actorUserId,
+      action: AdminAuditAction.ADMIN_TAXONOMY_WRITE,
+      targetType: 'CollectionCategoryType',
+      targetId: updated.id,
+      metadata: { operation: 'subcategory_deactivated', categoryId: updated.categoryId },
+      previousState: { isActive: existing.isActive },
+      newState: { isActive: updated.isActive },
     });
 
     return updated;

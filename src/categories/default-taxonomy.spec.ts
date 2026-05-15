@@ -3,7 +3,13 @@ import {
   DEFAULT_FILTER_DIMENSIONS,
   DEFAULT_SUB_CATEGORIES,
   LEGACY_CATEGORY_SLUGS,
+  LEGACY_FILTER_DIMENSION_SLUGS,
 } from './default-taxonomy';
+import {
+  LEGACY_DISCOVERY_DIMENSION_SLUGS,
+  REQUIRED_DISCOVERY_APPLIES_TO,
+  REQUIRED_DISCOVERY_DIMENSION_SLUGS,
+} from './taxonomy-governance';
 
 describe('default taxonomy contract', () => {
   it('does not seed audience or service concepts as top-level garment categories', () => {
@@ -86,6 +92,25 @@ describe('default taxonomy contract', () => {
         'hausa-arewa-traditional',
       ]),
     );
+  });
+
+  it('keeps the active discovery metadata contract verifyable from seed data', () => {
+    const dimensionsBySlug = new Map(
+      DEFAULT_FILTER_DIMENSIONS.map((dimension) => [dimension.slug, dimension]),
+    );
+
+    for (const slug of REQUIRED_DISCOVERY_DIMENSION_SLUGS) {
+      const dimension = dimensionsBySlug.get(slug);
+      expect(dimension).toBeDefined();
+      expect(dimension?.appliesTo).toEqual(
+        expect.arrayContaining([...REQUIRED_DISCOVERY_APPLIES_TO]),
+      );
+    }
+
+    for (const legacySlug of LEGACY_DISCOVERY_DIMENSION_SLUGS) {
+      expect(dimensionsBySlug.has(legacySlug)).toBe(false);
+      expect(LEGACY_FILTER_DIMENSION_SLUGS).toContain(legacySlug);
+    }
   });
 
   it('does not seed known audience, occasion, price, or service concepts as subcategories', () => {

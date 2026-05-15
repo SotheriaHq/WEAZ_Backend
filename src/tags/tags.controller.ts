@@ -16,6 +16,9 @@ import { OptionalJwtAuthGuard } from 'src/auth/guard/optional-jwt-auth.guard';
 import { RolesGuard } from 'src/auth/guard/role.guard';
 import { Roles } from 'src/auth/decorator/roles.decorator';
 import { Role } from '@prisma/client';
+import { AdminPermissionGuard } from 'src/admin/guards/admin-permission.guard';
+import { RequirePermissions } from 'src/admin/decorators/require-permissions.decorator';
+import { ADMIN_PERMISSIONS } from 'src/admin/constants/permissions';
 
 @ApiTags('tags')
 @Controller('tags')
@@ -98,8 +101,9 @@ export class TagsController {
 
   @Get('admin')
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.SuperAdmin)
+  @UseGuards(JwtAuthGuard, RolesGuard, AdminPermissionGuard)
+  @Roles(Role.SuperAdmin, Role.Admin)
+  @RequirePermissions(ADMIN_PERMISSIONS.TAGS_READ)
   @ApiOperation({
     summary: 'List tag moderation queue rows',
   })
@@ -125,8 +129,9 @@ export class TagsController {
 
   @Get('admin/search')
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.SuperAdmin)
+  @UseGuards(JwtAuthGuard, RolesGuard, AdminPermissionGuard)
+  @Roles(Role.SuperAdmin, Role.Admin)
+  @RequirePermissions(ADMIN_PERMISSIONS.TAGS_READ)
   @ApiOperation({
     summary: 'Search tag moderation queue rows',
   })
@@ -205,53 +210,66 @@ export class TagsController {
 
   @Patch('admin/status/:normalizedName')
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.SuperAdmin)
+  @UseGuards(JwtAuthGuard, RolesGuard, AdminPermissionGuard)
+  @Roles(Role.SuperAdmin, Role.Admin)
+  @RequirePermissions(ADMIN_PERMISSIONS.TAGS_MODERATE)
   @ApiOperation({
     summary: 'Set moderation status for a tag',
   })
   async setStatus(
     @Param('normalizedName') normalizedName: string,
     @Body() body: { status?: 'PENDING' | 'APPROVED' | 'REJECTED' },
+    @Req() req?: any,
   ) {
     const nextStatus = body?.status ?? 'APPROVED';
-    return this.tags.setTagStatus(normalizedName, nextStatus);
+    return this.tags.setTagStatus(normalizedName, nextStatus, req?.user?.id ?? req?.user?.sub);
   }
 
   @Post('admin/ban/:normalizedName')
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.SuperAdmin)
+  @UseGuards(JwtAuthGuard, RolesGuard, AdminPermissionGuard)
+  @Roles(Role.SuperAdmin, Role.Admin)
+  @RequirePermissions(ADMIN_PERMISSIONS.TAGS_MODERATE)
   @ApiOperation({
     summary: 'Ban or unban a tag',
   })
   async ban(
     @Param('normalizedName') normalizedName: string,
     @Query('banned') banned?: string,
+    @Req() req?: any,
   ) {
     const shouldBan =
       banned === undefined ? true : ['1', 'true', 'yes', 'on'].includes(banned.toLowerCase());
     const status = shouldBan ? 'REJECTED' : 'APPROVED';
-    const updated = await this.tags.setTagStatus(normalizedName, status);
+    const updated = await this.tags.setTagStatus(
+      normalizedName,
+      status,
+      req?.user?.id ?? req?.user?.sub,
+    );
     return { success: true, normalizedName, banned: shouldBan, status: updated.status };
   }
 
   @Post('admin/merge')
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.SuperAdmin)
+  @UseGuards(JwtAuthGuard, RolesGuard, AdminPermissionGuard)
+  @Roles(Role.SuperAdmin, Role.Admin)
+  @RequirePermissions(ADMIN_PERMISSIONS.TAGS_MODERATE)
   @ApiOperation({
     summary: 'Merge source tag into target tag',
   })
-  async merge(@Body() body: { sourceTag: string; targetTag: string }) {
-    await this.tags.mergeTags(body?.sourceTag, body?.targetTag);
+  async merge(
+    @Body() body: { sourceTag: string; targetTag: string },
+    @Req() req?: any,
+  ) {
+    await this.tags.mergeTags(body?.sourceTag, body?.targetTag, req?.user?.id ?? req?.user?.sub);
     return { success: true };
   }
 
   @Post('admin/reindex')
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.SuperAdmin)
+  @UseGuards(JwtAuthGuard, RolesGuard, AdminPermissionGuard)
+  @Roles(Role.SuperAdmin, Role.Admin)
+  @RequirePermissions(ADMIN_PERMISSIONS.TAGS_MODERATE)
   @ApiOperation({
     summary: 'Rebuild unified tag index from existing entities',
   })
@@ -261,17 +279,19 @@ export class TagsController {
 
   @Patch('admin/meta/:normalizedName')
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.SuperAdmin)
+  @UseGuards(JwtAuthGuard, RolesGuard, AdminPermissionGuard)
+  @Roles(Role.SuperAdmin, Role.Admin)
+  @RequirePermissions(ADMIN_PERMISSIONS.TAGS_MODERATE)
   @ApiOperation({
     summary: 'Update tag metadata (display name)',
   })
   async updateMetadata(
     @Param('normalizedName') normalizedName: string,
     @Body() body: { displayName?: string },
+    @Req() req?: any,
   ) {
     return this.tags.updateTagMetadata(normalizedName, {
       displayName: body?.displayName,
-    });
+    }, req?.user?.id ?? req?.user?.sub);
   }
 }

@@ -1,9 +1,10 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
-import { CollectionVisibility, TagStatus } from '@prisma/client';
+import { BadRequestException, Injectable, NotFoundException, Optional } from '@nestjs/common';
+import { AdminAuditAction, CollectionVisibility, TagStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { TagIndexService } from './tag-index.service';
 import * as crypto from 'crypto';
 import { TAG_ENTITY_TYPE } from './tag-entity-type';
+import { AdminAuditService } from 'src/admin/services/admin-audit.service';
 import {
   canonicalUserProfileSelect,
   resolveProfileImage,
@@ -136,7 +137,27 @@ export class TagsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly tagIndex: TagIndexService,
+    @Optional() private readonly adminAudit?: AdminAuditService,
   ) {}
+
+  private async recordTagAudit(params: {
+    actorUserId?: string | null;
+    operation: string;
+    targetId: string;
+    previousState?: Record<string, unknown>;
+    newState?: Record<string, unknown>;
+  }) {
+    if (!params.actorUserId || !this.adminAudit) return;
+    await this.adminAudit.safeLog({
+      actorUserId: params.actorUserId,
+      action: AdminAuditAction.ADMIN_TAG_MODERATE,
+      targetType: 'Tag',
+      targetId: params.targetId,
+      metadata: { operation: params.operation },
+      previousState: params.previousState,
+      newState: params.newState,
+    });
+  }
 
   private mapOwnerDisplay(user: any) {
     return {
@@ -371,7 +392,11 @@ export class TagsService {
     return rows.items;
   }
 
-  async updateTagMetadata(inputName: string, payload: { displayName?: string }) {
+  async updateTagMetadata(
+    inputName: string,
+    payload: { displayName?: string },
+    actorUserId?: string | null,
+  ) {
     const normalizedName = this.normalizeLookup(inputName);
     if (!normalizedName) throw new BadRequestException('Invalid tag');
 
@@ -381,6 +406,16 @@ export class TagsService {
     if (!nextDisplayName) {
       throw new BadRequestException('Display name is required');
     }
+
+    const previous = await (this.prisma as any).tag.findUnique({
+      where: { normalizedName },
+      select: {
+        normalizedName: true,
+        displayName: true,
+        status: true,
+        isBanned: true,
+      },
+    });
 
     const updated = await (this.prisma as any).tag.upsert({
       where: { normalizedName },
@@ -396,6 +431,16 @@ export class TagsService {
         normalizedName: true,
         displayName: true,
         updatedAt: true,
+      },
+    });
+    await this.recordTagAudit({
+      actorUserId,
+      operation: 'tag_metadata_updated',
+      targetId: updated.normalizedName,
+      previousState: previous ?? undefined,
+      newState: {
+        normalizedName: updated.normalizedName,
+        displayName: updated.displayName,
       },
     });
 
@@ -1262,12 +1307,24 @@ export class TagsService {
   async setTagStatus(
     inputName: string,
     statusInput: 'PENDING' | 'APPROVED' | 'REJECTED',
+    actorUserId?: string | null,
   ) {
     const normalizedName = this.normalizeLookup(inputName);
     if (!normalizedName) throw new BadRequestException('Invalid tag');
 
     const nextStatus = this.parseModerationStatus(statusInput);
     const shouldBan = nextStatus === 'REJECTED';
+
+    const previous = await (this.prisma as any).tag.findUnique({
+      where: { normalizedName },
+      select: {
+        normalizedName: true,
+        displayName: true,
+        status: true,
+        isBanned: true,
+        aliasOfTagId: true,
+      },
+    });
 
     const updated = await (this.prisma as any).tag.upsert({
       where: { normalizedName },
@@ -1292,6 +1349,19 @@ export class TagsService {
         updatedAt: true,
       },
     });
+    await this.recordTagAudit({
+      actorUserId,
+      operation: shouldBan ? 'hashtag_rejected_or_banned' : 'hashtag_status_updated',
+      targetId: updated.normalizedName,
+      previousState: previous ?? undefined,
+      newState: {
+        normalizedName: updated.normalizedName,
+        displayName: updated.displayName,
+        status: this.parseTagStatus(updated.status),
+        isBanned: updated.isBanned,
+        aliasOfTagId: updated.aliasOfTagId,
+      },
+    });
 
     // Note: systemTag table not in schema, skipping systemTag operations
 
@@ -1308,7 +1378,11 @@ export class TagsService {
     await this.setTagStatus(inputName, banned ? 'REJECTED' : 'APPROVED');
   }
 
-  async mergeTags(sourceInput: string, targetInput: string): Promise<void> {
+  async mergeTags(
+    sourceInput: string,
+    targetInput: string,
+    actorUserId?: string | null,
+  ): Promise<void> {
     const source = this.normalizeLookup(sourceInput);
     const target = this.normalizeLookup(targetInput);
     if (!source || !target) throw new BadRequestException('Invalid tag merge input');
@@ -1383,6 +1457,15 @@ export class TagsService {
       ]);
 
       // Note: systemTag table not in schema, skipping systemTag operations
+    });
+    await this.recordTagAudit({
+      actorUserId,
+      operation: 'hashtag_merged',
+      targetId: source,
+      newState: {
+        sourceTag: source,
+        targetTag: target,
+      },
     });
   }
 

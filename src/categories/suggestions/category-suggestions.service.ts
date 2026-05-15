@@ -4,7 +4,9 @@ import {
   NotFoundException,
   Inject,
   forwardRef,
+  Optional,
 } from '@nestjs/common';
+import { AdminAuditAction } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SubmitCategorySuggestionDto } from './dto/submit-category-suggestion.dto';
 import {
@@ -13,6 +15,11 @@ import {
 } from './dto/moderate-category-suggestion.dto';
 import { v4 as uuidv4 } from 'uuid';
 import { CollectionsService } from '../../collections/collections.service';
+import { AdminAuditService } from 'src/admin/services/admin-audit.service';
+import {
+  assertGarmentCategoryTermAllowed,
+  getBlockedTaxonomyGuidance,
+} from '../taxonomy-governance';
 // Use local types to avoid build-time coupling to generated Prisma enums
 export type CategorySuggestionStatus = 'PENDING' | 'APPROVED' | 'REJECTED';
 
@@ -37,6 +44,7 @@ export class CategorySuggestionsService {
     private readonly prisma: PrismaService,
     @Inject(forwardRef(() => CollectionsService))
     private readonly collectionsService: CollectionsService,
+    @Optional() private readonly adminAudit?: AdminAuditService,
   ) {}
 
   private normalizeSlug(base: string): string {
@@ -67,11 +75,30 @@ export class CategorySuggestionsService {
     };
   }
 
+  private async recordSuggestionAudit(params: {
+    actorUserId: string;
+    suggestionId: string;
+    operation: 'approved' | 'rejected';
+    previousState?: Record<string, unknown>;
+    newState?: Record<string, unknown>;
+  }) {
+    await this.adminAudit?.safeLog({
+      actorUserId: params.actorUserId,
+      action: AdminAuditAction.ADMIN_TAXONOMY_SUGGESTION_MODERATE,
+      targetType: 'CollectionCategorySuggestion',
+      targetId: params.suggestionId,
+      metadata: { operation: `category_suggestion_${params.operation}` },
+      previousState: params.previousState,
+      newState: params.newState,
+    });
+  }
+
   async submit(userId: string, dto: SubmitCategorySuggestionDto) {
     const name = dto.name.trim();
     if (name.length < 2 || name.length > 48) {
       throw new BadRequestException('Name length out of bounds');
     }
+    assertGarmentCategoryTermAllowed(name);
     const slug = this.normalizeSlug(name);
 
     // Duplicate checks against existing categories
@@ -156,15 +183,37 @@ export class CategorySuggestionsService {
     }
 
     if (dto.decision === ModerationDecision.REJECT) {
+      const blockedGuidance = getBlockedTaxonomyGuidance(
+        suggestion.name,
+        'category',
+      );
+      const rejectionReason =
+        dto.rejectionReason?.trim() ||
+        blockedGuidance ||
+        'This suggestion does not fit the garment category taxonomy.';
       const updated = await (
         this.prisma as any
       ).collectionCategorySuggestion.update({
         where: { id },
         data: {
           status: 'REJECTED',
-          rejectionReason: dto.rejectionReason?.trim() || null,
+          rejectionReason,
           decisionByUserId: adminUserId,
           decidedAt: new Date(),
+        },
+      });
+      await this.recordSuggestionAudit({
+        actorUserId: adminUserId,
+        suggestionId: id,
+        operation: 'rejected',
+        previousState: {
+          status: suggestion.status,
+          name: suggestion.name,
+          slug: suggestion.slug,
+        },
+        newState: {
+          status: updated.status,
+          rejectionReason: updated.rejectionReason,
         },
       });
 
@@ -173,8 +222,7 @@ export class CategorySuggestionsService {
         const rejectionResult =
           await this.collectionsService.handleRejectedCategory(
             id,
-            dto.rejectionReason?.trim() ||
-              'Your category suggestion was not approved.',
+            rejectionReason,
           );
         console.log(
           `Rejection handled: ${rejectionResult.updated} collections updated, ${rejectionResult.notified} users notified`,
@@ -188,10 +236,21 @@ export class CategorySuggestionsService {
     }
 
     // APPROVE
+    assertGarmentCategoryTermAllowed(suggestion.name);
     const slug = suggestion.slug;
     let category = await this.prisma.collectionCategory.findUnique({
       where: { slug },
     });
+    const approvedDescription =
+      dto.approvalDescription?.trim() ||
+      suggestion.description?.trim() ||
+      category?.description?.trim() ||
+      null;
+    if (!approvedDescription) {
+      throw new BadRequestException(
+        'Add a garment category description before approval.',
+      );
+    }
     if (!category) {
       // Create new category directly with same slug & name
       category = await this.prisma.collectionCategory.create({
@@ -199,9 +258,17 @@ export class CategorySuggestionsService {
           id: uuidv4(),
           slug,
           name: suggestion.name,
-          description: suggestion.description,
+          description: approvedDescription,
           isActive: true,
           order: 0,
+        },
+      });
+    } else if (!category.isActive || !category.description) {
+      category = await this.prisma.collectionCategory.update({
+        where: { id: category.id },
+        data: {
+          isActive: true,
+          description: category.description || approvedDescription,
         },
       });
     }
@@ -215,6 +282,20 @@ export class CategorySuggestionsService {
         approvedCategoryId: category.id,
         decisionByUserId: adminUserId,
         decidedAt: new Date(),
+      },
+    });
+    await this.recordSuggestionAudit({
+      actorUserId: adminUserId,
+      suggestionId: id,
+      operation: 'approved',
+      previousState: {
+        status: suggestion.status,
+        name: suggestion.name,
+        slug: suggestion.slug,
+      },
+      newState: {
+        status: updated.status,
+        approvedCategoryId: category.id,
       },
     });
 

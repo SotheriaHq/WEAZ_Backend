@@ -159,4 +159,68 @@ describe('CategoriesService entity filters', () => {
 
     expect(prisma.entityFilter.deleteMany).not.toHaveBeenCalled();
   });
+
+  it('rejects blocked audience/use-case terms as garment categories', async () => {
+    const prisma = {
+      collectionCategory: {
+        findUnique: jest.fn(),
+        create: jest.fn(),
+      },
+    };
+    const service = createService(prisma);
+
+    await expect(
+      service.create({
+        name: 'Women',
+        description: 'Audience term',
+        order: 0,
+      }),
+    ).rejects.toThrow('not garment category');
+
+    expect(prisma.collectionCategory.create).not.toHaveBeenCalled();
+  });
+
+  it('allows valid item-based garment categories with descriptions', async () => {
+    const prisma = {
+      collectionCategory: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        findUnique: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue({
+          id: 'category-1',
+          slug: 'kaftans',
+          name: 'Kaftans',
+          description: 'Loose-fitting robe-style garments.',
+          order: 4,
+          isActive: true,
+        }),
+      },
+      user: {
+        findMany: jest.fn().mockResolvedValue([]),
+      },
+    };
+    const service = createService(prisma);
+
+    await expect(
+      service.create({
+        name: 'Kaftans',
+        description: 'Loose-fitting robe-style garments.',
+        order: 4,
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        slug: 'kaftans',
+        name: 'Kaftans',
+      }),
+    );
+
+    expect(prisma.collectionCategory.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          slug: 'kaftans',
+          name: 'Kaftans',
+          description: 'Loose-fitting robe-style garments.',
+        }),
+      }),
+    );
+  });
 });

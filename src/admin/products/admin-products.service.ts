@@ -7,6 +7,10 @@ import { AdminAuditAction, NotificationType } from '@prisma/client';
 import { v4 as uuidv4 } from 'uuid';
 import { Request } from 'express';
 import { NotificationsService } from 'src/notifications/notifications.service';
+import {
+  emptyAdminCatalogFilterMetadata,
+  loadAdminCatalogFilters,
+} from '../catalog-metadata.helper';
 
 @Injectable()
 export class AdminProductsService {
@@ -42,6 +46,10 @@ export class AdminProductsService {
         id: true,
         name: true,
         description: true,
+        categoryId: true,
+        categoryTypeId: true,
+        gender: true,
+        tags: true,
         brandId: true,
         isActive: true,
         isFeatured: true,
@@ -63,6 +71,21 @@ export class AdminProductsService {
             name: true,
           },
         },
+        category: {
+          select: {
+            id: true,
+            slug: true,
+            name: true,
+          },
+        },
+        categoryType: {
+          select: {
+            id: true,
+            categoryId: true,
+            slug: true,
+            name: true,
+          },
+        },
       },
       orderBy: { createdAt: 'desc' },
       take: take + 1,
@@ -72,12 +95,25 @@ export class AdminProductsService {
     const hasMore = items.length > take;
     const results = hasMore ? items.slice(0, take) : items;
     const nextCursor = hasMore ? results[results.length - 1]?.id : undefined;
+    const filterMetadata = await loadAdminCatalogFilters(
+      this.prisma,
+      'PRODUCT',
+      results.map((item) => item.id),
+    );
 
     return {
       items: results.map((item) => ({
         ...item,
         orderCount: item._count?.orderItems ?? 0,
         primaryMediaUrl: item.thumbnail || (item.images?.length ? item.images[0] : null),
+        taxonomy: {
+          garmentCategory: item.category ?? null,
+          garmentSubcategory: item.categoryType ?? null,
+          audience: item.gender ?? null,
+          hashtags: item.tags ?? [],
+          discoveryMetadata:
+            filterMetadata.get(item.id) ?? emptyAdminCatalogFilterMetadata(),
+        },
       })),
       nextCursor,
     };

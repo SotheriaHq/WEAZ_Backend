@@ -11,6 +11,10 @@ import {
   adminUserDisplaySelect,
   mapAdminUserDisplay,
 } from '../admin-user-display.helper';
+import {
+  emptyAdminCatalogFilterMetadata,
+  loadAdminCatalogFilters,
+} from '../catalog-metadata.helper';
 
 @Injectable()
 export class AdminCollectionsService {
@@ -48,11 +52,30 @@ export class AdminCollectionsService {
         description: true,
         status: true,
         visibility: true,
+        type: true,
+        categoryId: true,
+        categoryTypeId: true,
+        tags: true,
         ownerId: true,
         createdAt: true,
         updatedAt: true,
         owner: {
           select: adminUserDisplaySelect,
+        },
+        category: {
+          select: {
+            id: true,
+            slug: true,
+            name: true,
+          },
+        },
+        categoryType: {
+          select: {
+            id: true,
+            categoryId: true,
+            slug: true,
+            name: true,
+          },
         },
         products: {
           orderBy: [{ isPrimary: 'desc' }, { orderIndex: 'asc' }],
@@ -75,6 +98,11 @@ export class AdminCollectionsService {
     const hasMore = items.length > take;
     const results = hasMore ? items.slice(0, take) : items;
     const nextCursor = hasMore ? results[results.length - 1]?.id : undefined;
+    const filterMetadata = await loadAdminCatalogFilters(
+      this.prisma,
+      'STORE_COLLECTION',
+      results.map((item) => item.id),
+    );
     const collectionIds = results.map((item) => item.id);
     const links =
       collectionIds.length > 0
@@ -122,6 +150,14 @@ export class AdminCollectionsService {
         return {
           ...item,
           owner: mapAdminUserDisplay(item.owner),
+          taxonomy: {
+            garmentCategory: item.category ?? null,
+            garmentSubcategory: item.categoryType ?? null,
+            audience: item.type ?? null,
+            hashtags: item.tags ?? [],
+            discoveryMetadata:
+              filterMetadata.get(item.id) ?? emptyAdminCatalogFilterMetadata(),
+          },
           coverImage,
           orderCount: collectionOrderCountMap.get(item.id) ?? 0,
         };
