@@ -41,36 +41,18 @@ function shouldSet(
   return overwrite || !filled(current);
 }
 
-function shouldSetTags(
-  current: string[] | null | undefined,
-  legacy: string[] | null | undefined,
-  overwrite: boolean,
-): boolean {
-  const legacyTags = Array.isArray(legacy) ? legacy.filter(Boolean) : [];
-  if (legacyTags.length === 0) return false;
-  return overwrite || !Array.isArray(current) || current.length === 0;
-}
-
-function detectConflict(
-  current: string | null | undefined,
-  legacy: string | null | undefined,
-): boolean {
-  const currentValue = filled(current);
-  const legacyValue = filled(legacy);
-  return Boolean(currentValue && legacyValue && currentValue !== legacyValue);
-}
-
-function detectTagConflict(
-  current: string[] | null | undefined,
-  legacy: string[] | null | undefined,
-): boolean {
-  const currentTags = Array.isArray(current) ? current.filter(Boolean) : [];
-  const legacyTags = Array.isArray(legacy) ? legacy.filter(Boolean) : [];
-  return (
-    currentTags.length > 0 &&
-    legacyTags.length > 0 &&
-    currentTags.join('|') !== legacyTags.join('|')
-  );
+function buildBrandName(user: {
+  username: string;
+  userProfile?: { firstName: string; lastName: string } | null;
+}): string {
+  const profileName = [
+    user.userProfile?.firstName,
+    user.userProfile?.lastName,
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .trim();
+  return filled(profileName) ?? user.username ?? 'Brand';
 }
 
 async function findMissingBrandColumns(
@@ -137,27 +119,18 @@ async function main() {
       select: {
         id: true,
         username: true,
-        firstName: true,
-        lastName: true,
-        brandFullName: true,
-        brandDescription: true,
-        brandCountry: true,
-        brandState: true,
-        brandCity: true,
-        brandTags: true,
-        brandBusinessType: true,
-        socialInstagram: true,
-        socialFacebook: true,
-        socialTwitter: true,
-        socialWebsite: true,
-        cacNumber: true,
-        tin: true,
-        ceoNin: true,
-        ceoFirstName: true,
-        ceoLastName: true,
-        companyLocation: true,
-        industriNumber: true,
-        brand: true,
+        userProfile: {
+          select: {
+            firstName: true,
+            lastName: true,
+          },
+        },
+        brand: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
       },
     });
 
@@ -165,11 +138,7 @@ async function main() {
 
     for (const user of users) {
       counts.usersScanned += 1;
-      const fallbackName =
-        filled(user.brandFullName) ||
-        [user.firstName, user.lastName].filter(Boolean).join(' ').trim() ||
-        user.username ||
-        'Brand';
+      const fallbackName = buildBrandName(user);
 
       try {
         if (!user.brand) {
@@ -180,23 +149,6 @@ async function main() {
                 id: uuidv4(),
                 ownerId: user.id,
                 name: fallbackName,
-                description: user.brandDescription,
-                tags: user.brandTags ?? [],
-                country: user.brandCountry,
-                state: user.brandState,
-                city: user.brandCity,
-                businessType: user.brandBusinessType,
-                socialInstagram: user.socialInstagram,
-                socialFacebook: user.socialFacebook,
-                socialTwitter: user.socialTwitter,
-                socialWebsite: user.socialWebsite,
-                cacNumber: user.cacNumber,
-                tin: user.tin,
-                ceoNin: user.ceoNin,
-                ceoFirstName: user.ceoFirstName,
-                ceoLastName: user.ceoLastName,
-                companyLocation: user.companyLocation,
-                industriNumber: user.industriNumber,
                 storeNameLastChangedAt: new Date(),
                 currency: 'NGN',
               },
@@ -206,41 +158,8 @@ async function main() {
         }
 
         const updates: Record<string, unknown> = {};
-        const stringPairs = [
-          ['name', user.brandFullName],
-          ['description', user.brandDescription],
-          ['country', user.brandCountry],
-          ['state', user.brandState],
-          ['city', user.brandCity],
-          ['businessType', user.brandBusinessType],
-          ['socialInstagram', user.socialInstagram],
-          ['socialFacebook', user.socialFacebook],
-          ['socialTwitter', user.socialTwitter],
-          ['socialWebsite', user.socialWebsite],
-          ['cacNumber', user.cacNumber],
-          ['tin', user.tin],
-          ['ceoNin', user.ceoNin],
-          ['ceoFirstName', user.ceoFirstName],
-          ['ceoLastName', user.ceoLastName],
-          ['companyLocation', user.companyLocation],
-          ['industriNumber', user.industriNumber],
-        ] as const;
-
-        for (const [brandField, legacyValue] of stringPairs) {
-          const currentValue = user.brand[brandField];
-          if (detectConflict(currentValue as string | null, legacyValue)) {
-            counts.conflictsDetected += 1;
-          }
-          if (shouldSet(currentValue as string | null, legacyValue, overwrite)) {
-            updates[brandField] = filled(legacyValue);
-          }
-        }
-
-        if (detectTagConflict(user.brand.tags, user.brandTags)) {
-          counts.conflictsDetected += 1;
-        }
-        if (shouldSetTags(user.brand.tags, user.brandTags, overwrite)) {
-          updates.tags = user.brandTags;
+        if (shouldSet(user.brand.name, fallbackName, overwrite)) {
+          updates.name = fallbackName;
         }
 
         if (Object.keys(updates).length === 0) {

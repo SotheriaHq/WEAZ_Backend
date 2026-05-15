@@ -67,6 +67,7 @@ model User {
   contributionRequests ContributionRequest[] @relation("UserContributionRequests")
 
   collections              Collection[]
+  designs                  Design[]                       @relation("UserDesigns")
   storeCollections         StoreCollection[]
   collectionReactions      CollectionReaction[]
   collectionComments       CollectionComment[]
@@ -110,6 +111,7 @@ model User {
   messagesAuthored          Message[]                  @relation("MessageSender")
   messageDeliveryReceipts   MessageDeliveryReceipt[]   @relation("MessageDeliveryReceipts")
   collectionDraftSessions   CollectionDraftSession[]
+  designDraftSessions       DesignDraftSession[]       @relation("UserDesignDraftSessions")
   collectionBulkUploadJobs  CollectionBulkUploadJob[]
 
   // Admin Console relations
@@ -175,6 +177,7 @@ model FileUpload {
 
   // Relation to collection media
   collectionMedias   CollectionMedia[]   @relation("FileUpload_to_CollectionMedia")
+  designMedias       DesignMedia[]       @relation("FileUpload_to_DesignMedia")
   userProfileBanners UserProfile[]       @relation("UserProfileBannerImage")
   variants           FileVariant[]
   messageAttachments MessageAttachment[]
@@ -868,6 +871,8 @@ enum CommentTarget {
   POST
   COLLECTION
   COLLECTION_MEDIA
+  DESIGN
+  PRODUCT
 }
 
 model CommentV2 {
@@ -994,6 +999,7 @@ model Collection {
   products       CollectionProduct[]
   draftSessions  CollectionDraftSession[]
   bulkUploadJobs CollectionBulkUploadJob[]
+  designMirror   Design?                   @relation("LegacyCollectionDesign")
 
   @@index([status, createdAt])
   @@index([status, collectionCollabsCount])
@@ -1001,6 +1007,71 @@ model Collection {
   @@index([status, pendingCategorySuggestionId]) // PHASE 1: Fast lookup of drafts waiting for category approval
   @@index([ownerId, status, createdAt]) // PHASE 1: User's draft management
   @@index([ownerId, domain, status, createdAt])
+  @@index([categoryTypeId])
+  @@index([deletedAt])
+  @@index([deleteExpiresAt])
+  @@index([lastActivityAt])
+}
+
+model Design {
+  id                     String                   @id @default(uuid()) @map("_id") @db.Uuid
+  ownerId                String                   @db.Uuid
+  owner                  User                     @relation("UserDesigns", fields: [ownerId], references: [id], onDelete: Cascade)
+  brandId                String?                  @db.Uuid
+  brand                  Brand?                   @relation("BrandDesigns", fields: [brandId], references: [id], onDelete: SetNull)
+  legacyCollectionId     String?                  @unique @db.Uuid
+  legacyCollection       Collection?              @relation("LegacyCollectionDesign", fields: [legacyCollectionId], references: [id], onDelete: SetNull)
+  title                  String?
+  description            String?
+  searchVector           Unsupported("tsvector")? @map("search_vector")
+  status                 CollectionStatus         @default(DRAFT)
+  archivedFromStatus     CollectionStatus?
+  visibility             CollectionVisibility     @default(PUBLIC)
+  type                   CollectionType           @default(EVERYBODY)
+  categoryId             String?                  @db.Uuid
+  category               CollectionCategory?      @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  categoryTypeId         String?                  @db.Uuid
+  categoryType           CollectionCategoryType?  @relation(fields: [categoryTypeId], references: [id], onDelete: SetNull)
+  coverMediaId           String?                  @db.Uuid
+  coverMedia             DesignMedia?             @relation("DesignCoverMedia", fields: [coverMediaId], references: [id], onDelete: SetNull)
+  deletedAt              DateTime?
+  deleteExpiresAt        DateTime?
+  lastActivityAt         DateTime?
+  draftVersion           Int                      @default(0)
+  minPrice               Float?
+  maxPrice               Float?
+  customOrderEnabled     Boolean                  @default(false)
+  tags                   String[]                 @default([])
+  saleMinPrice           Float?
+  saleMaxPrice           Float?
+  saleStartAt            DateTime?
+  saleEndAt              DateTime?
+  sizingMode             SizingMode               @default(NONE)
+  rtwSizes               String[]                 @default([])
+  rtwSizeSystem          String?
+  rtwSizeType            RtwSizeType?
+  customGender           Gender?
+  customMeasurementKeys  String[]                 @default([])
+  customFreeformPointIds String[]                 @default([])
+  fitPreference          FitPreference?
+  targetAgeGroup         AgeGroup                 @default(ADULT)
+  createdAt              DateTime                 @default(now())
+  updatedAt              DateTime                 @updatedAt
+  metadataEditedAt       DateTime?
+  threadsCount           Int                      @default(0)
+  dislikesCount          Int                      @default(0)
+  commentsCount          Int                      @default(0)
+  collectionCollabsCount Int                      @default(0)
+  viewsCount             Int                      @default(0)
+  medias                 DesignMedia[]            @relation("Design_to_Media")
+  draftSessions          DesignDraftSession[]
+  entityFilters          EntityFilter[]           @relation("DesignEntityFilters")
+
+  @@index([ownerId, status, createdAt])
+  @@index([brandId, status, createdAt])
+  @@index([legacyCollectionId])
+  @@index([status, visibility, createdAt])
+  @@index([categoryId])
   @@index([categoryTypeId])
   @@index([deletedAt])
   @@index([deleteExpiresAt])
@@ -1090,12 +1161,36 @@ model CollectionDraftSession {
   expiresAt       DateTime
   isActive        Boolean  @default(true)
 
-  collection Collection @relation(fields: [collectionId], references: [id], onDelete: Cascade)
-  owner      User       @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  collection               Collection          @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+  owner                    User                @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  designDraftSessionMirror DesignDraftSession? @relation("LegacyCollectionDraftSessionDesign")
 
   @@index([collectionId, isActive])
   @@index([ownerId])
   @@index([expiresAt])
+}
+
+model DesignDraftSession {
+  id                             String   @id @default(uuid()) @map("_id") @db.Uuid
+  designId                       String   @db.Uuid
+  ownerId                        String   @db.Uuid
+  sessionToken                   String   @unique
+  deviceName                     String?
+  deviceType                     String?
+  startedAt                      DateTime @default(now())
+  lastHeartbeatAt                DateTime @default(now())
+  expiresAt                      DateTime
+  isActive                       Boolean  @default(true)
+  legacyCollectionDraftSessionId String?  @unique @db.Uuid
+
+  design                       Design                  @relation(fields: [designId], references: [id], onDelete: Cascade)
+  owner                        User                    @relation("UserDesignDraftSessions", fields: [ownerId], references: [id], onDelete: Cascade)
+  legacyCollectionDraftSession CollectionDraftSession? @relation("LegacyCollectionDraftSessionDesign", fields: [legacyCollectionDraftSessionId], references: [id], onDelete: SetNull)
+
+  @@index([designId, isActive])
+  @@index([ownerId])
+  @@index([expiresAt])
+  @@index([legacyCollectionDraftSessionId])
 }
 
 model CollectionBulkUploadJob {
@@ -1201,6 +1296,7 @@ model CollectionCategory {
   createdAt           DateTime                       @default(now())
   updatedAt           DateTime                       @updatedAt
   collections         Collection[]
+  designs             Design[]
   storeCollections    StoreCollection[]
   products            Product[]
   types               CollectionCategoryType[]
@@ -1222,6 +1318,7 @@ model CollectionCategoryType {
   createdAt        DateTime           @default(now())
   updatedAt        DateTime           @updatedAt
   collections      Collection[]
+  designs          Design[]
   storeCollections StoreCollection[]
   products         Product[]
 
@@ -1297,6 +1394,27 @@ model CollectionMedia {
   commentsCount           Int                       @default(0)
   // inverse relation for cover usage
   coverOf                 Collection[]              @relation("CollectionCoverMedia")
+  designMediaMirror       DesignMedia?              @relation("LegacyCollectionMediaDesign")
+}
+
+model DesignMedia {
+  id                      String           @id @default(uuid()) @map("_id") @db.Uuid
+  designId                String           @db.Uuid
+  design                  Design           @relation("Design_to_Media", fields: [designId], references: [id], onDelete: Cascade)
+  fileUploadId            String           @db.Uuid
+  file                    FileUpload       @relation("FileUpload_to_DesignMedia", fields: [fileUploadId], references: [id])
+  orderIndex              Int              @default(0)
+  mediaType               FileType
+  threadsCount            Int              @default(0)
+  commentsCount           Int              @default(0)
+  legacyCollectionMediaId String?          @unique @db.Uuid
+  legacyCollectionMedia   CollectionMedia? @relation("LegacyCollectionMediaDesign", fields: [legacyCollectionMediaId], references: [id], onDelete: SetNull)
+  coverOf                 Design[]         @relation("DesignCoverMedia")
+  createdAt               DateTime         @default(now())
+  updatedAt               DateTime         @updatedAt
+
+  @@index([designId, orderIndex])
+  @@index([legacyCollectionMediaId])
 }
 
 model CollectionReaction {
@@ -1713,6 +1831,8 @@ model PresignedUpload {
 enum ContentTarget {
   POST
   COLLECTION
+  DESIGN
+  PRODUCT
 }
 
 model DailyThreadAggregate {
@@ -1917,6 +2037,7 @@ model Brand {
   sizingTemplates           SizingTemplate[]
   payouts                   Payout[]
   products                  Product[]                  @relation("Brand_to_Products")
+  designs                   Design[]                   @relation("BrandDesigns")
   featuredItems             FeaturedItem[]
   verificationAttempts      BrandVerificationAttempt[]
   verificationNotes         BrandVerificationNote[]
@@ -3846,6 +3967,8 @@ model SavedItem {
 enum SavedItemType {
   COLLECTION
   COLLECTION_MEDIA
+  DESIGN
+  PRODUCT
 }
 
 model CartItem {
@@ -3887,6 +4010,7 @@ enum FilterEntityType {
   COLLECTION
   STORE_COLLECTION
   PRODUCT
+  DESIGN
 }
 
 model FilterDimension {
@@ -3934,11 +4058,14 @@ model EntityFilter {
   // Optional back-reference for Product direct relation queries
   productId String?  @db.Uuid
   product   Product? @relation("ProductEntityFilters", fields: [productId], references: [id], onDelete: Cascade)
+  designId  String?  @db.Uuid
+  design    Design?  @relation("DesignEntityFilters", fields: [designId], references: [id], onDelete: Cascade)
 
   @@unique([filterValueId, entityType, entityId])
   @@index([entityType, entityId])
   @@index([filterValueId])
   @@index([productId])
+  @@index([designId])
 }
 
 // ===== Featured System =====

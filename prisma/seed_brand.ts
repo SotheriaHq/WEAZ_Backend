@@ -1,7 +1,10 @@
-import { PrismaClient, UserType, OrderStatus, PaymentStatus, PayoutStatus } from '@prisma/client';
+import { UserType, OrderStatus, PaymentStatus, PayoutStatus } from '@prisma/client';
 import { randomUUID } from 'crypto';
+import * as argon2 from 'argon2';
+import { createScriptPrismaClient } from '../scripts/helpers/create-script-prisma';
 
-const prisma = new PrismaClient();
+const scriptPrisma = createScriptPrismaClient();
+const prisma = scriptPrisma.prisma;
 
 async function main() {
     console.log('Seeding Brand Dashboard data...');
@@ -11,21 +14,38 @@ async function main() {
     let user = await prisma.user.findUnique({ where: { email: brandEmail } });
 
     if (!user) {
+        const hashedPassword = await argon2.hash('password123');
         user = await prisma.user.create({
             data: {
                 id: randomUUID(),
                 email: brandEmail,
                 username: 'brand_demo',
-                firstName: 'Demo',
-                lastName: 'Brand',
-                password: 'password123', // In real app, hash this
+                password: hashedPassword,
                 type: UserType.BRAND,
                 isActive: 'Active',
+                userProfile: {
+                    create: {
+                        firstName: 'Demo',
+                        lastName: 'Brand',
+                    },
+                },
             },
         });
         console.log('Created Brand User:', user.id);
     } else {
         console.log('Found Brand User:', user.id);
+        await prisma.userProfile.upsert({
+            where: { userId: user.id },
+            update: {
+                firstName: 'Demo',
+                lastName: 'Brand',
+            },
+            create: {
+                userId: user.id,
+                firstName: 'Demo',
+                lastName: 'Brand',
+            },
+        });
     }
 
     // 2. Create Brand
@@ -101,5 +121,5 @@ main()
         process.exit(1);
     })
     .finally(async () => {
-        await prisma.$disconnect();
+        await scriptPrisma.disconnect();
     });

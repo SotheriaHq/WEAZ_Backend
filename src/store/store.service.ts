@@ -280,6 +280,43 @@ export class StoreService {
     };
   }
 
+  private async getProductEntityFilterValueIds(productId: string): Promise<string[]> {
+    const rows = await this.prisma.entityFilter.findMany({
+      where: { entityType: 'PRODUCT', entityId: productId },
+      select: { filterValueId: true },
+    });
+    return Array.from(new Set(rows.map((row) => row.filterValueId)));
+  }
+
+  private async assertProductStructuredFiltersForPublish(
+    productId: string | null,
+    providedFilterValueIds?: string[] | null,
+  ): Promise<string[]> {
+    if (!this.categoriesService) {
+      throw new BadRequestException('Add at least one style detail.');
+    }
+    const filterValueIds = Array.isArray(providedFilterValueIds)
+      ? this.normalizeFilterValueIds(providedFilterValueIds)
+      : productId
+        ? await this.getProductEntityFilterValueIds(productId)
+        : [];
+    const validFilterValueIds = await this.categoriesService.validateEntityFilterValues(
+      'PRODUCT',
+      filterValueIds,
+    );
+    if (validFilterValueIds.length === 0) {
+      throw new BadRequestException('Add at least one style detail.');
+    }
+    return validFilterValueIds;
+  }
+
+  private assertProductAudienceForPublish(gender?: CollectionType | string | null) {
+    const normalizedGender = String(gender ?? '').toUpperCase();
+    if (!['MALE', 'FEMALE', 'EVERYBODY'].includes(normalizedGender)) {
+      throw new BadRequestException('Choose who this item is for.');
+    }
+  }
+
   private async lockCollectionForUpdate(
     tx: Prisma.TransactionClient,
     collectionId: string,
@@ -392,6 +429,7 @@ export class StoreService {
       description?: string | null;
       categoryId?: string | null;
       categoryTypeId?: string | null;
+      gender?: CollectionType | string | null;
       tags?: string[] | null;
       price?: number | Prisma.Decimal | null;
       images?: string[] | null;
@@ -427,21 +465,20 @@ export class StoreService {
 
     const categoryId = String(input.categoryId || '').trim();
     if (!categoryId) {
-      throw new BadRequestException('Category is required to publish');
+      throw new BadRequestException('Choose what this item is.');
     }
 
     const categoryTypeId = String(input.categoryTypeId || '').trim();
     if (!categoryTypeId) {
-      throw new BadRequestException('Sub-category is required to publish');
+      throw new BadRequestException('Choose a garment type.');
     }
 
     await this.assertProductTaxonomy(tx, categoryId, categoryTypeId);
+    this.assertProductAudienceForPublish(input.gender);
 
     const tags = this.buildTagSet(input.tags || []);
     if (tags.length === 0) {
-      throw new BadRequestException(
-        'At least one tag is required to publish',
-      );
+      throw new BadRequestException('Add at least one hashtag.');
     }
 
     const price = Number(input.price ?? 0);
@@ -1740,9 +1777,11 @@ export class StoreService {
     const requestedCollectionId = (dto.collectionId || '').trim() || null;
     const requestedCategoryId = (dto.categoryId || '').trim() || null;
     const requestedCategoryTypeId = (dto.categoryTypeId || '').trim() || null;
+    const requestedFilterValueIds = this.normalizeFilterValueIds(dto.filterValueIds);
     const nextIsActive = dto.isActive ?? true;
 
-    // If a collectionId is provided, verify it belongs to this brand.
+    // Product boundary: collectionId is only StoreCollection membership. Product
+    // creation owns inventory/price/media, then links to a grouping container.
     if (requestedCollectionId) {
       const collection = await this.prisma.storeCollection.findFirst({
         where: { id: requestedCollectionId, ownerId: brandOwnerUserId },
@@ -1806,6 +1845,14 @@ export class StoreService {
     // Resolve product name and slug
     const resolvedName = (dto.name || 'Untitled Product').trim();
     const resolvedTags = this.buildTagSet(dto.tags || []);
+    let validatedProductFilterValueIds = requestedFilterValueIds;
+    if (nextIsActive) {
+      validatedProductFilterValueIds =
+        await this.assertProductStructuredFiltersForPublish(
+          null,
+          requestedFilterValueIds,
+        );
+    }
     const nextCustomOrderEnabled = dto.customOrderEnabled === true;
     const initialTotalStock =
       derivedFromVariants?.totalStock ?? (dto.totalStock || 0);
@@ -1824,6 +1871,9 @@ export class StoreService {
       let collectionId = requestedCollectionId;
 
       if (!collectionId) {
+        // Product drafts still need a primary StoreCollection link under the
+        // current schema. This is compatibility storage, not collection-owned
+        // product behavior.
         collectionId = await this.ensureDefaultStoreCollection(tx, brandOwnerUserId);
       }
 
@@ -1843,6 +1893,7 @@ export class StoreService {
           description: dto.description,
           categoryId: requestedCategoryId,
           categoryTypeId: requestedCategoryTypeId,
+          gender: dto.gender || 'EVERYBODY',
           tags: resolvedTags,
           price: resolvedPrice,
           images: normalizedImages,
@@ -1996,11 +2047,14 @@ export class StoreService {
       throw new NotFoundException('Product not found');
     }
 
-    if (this.categoriesService && Array.isArray(dto.filterValueIds)) {
+    if (
+      this.categoriesService &&
+      (Array.isArray(dto.filterValueIds) || nextIsActive)
+    ) {
       await this.categoriesService.setEntityFilters(
         'PRODUCT',
         product.id,
-        this.normalizeFilterValueIds(dto.filterValueIds),
+        validatedProductFilterValueIds,
       );
     }
 
@@ -2126,6 +2180,11 @@ export class StoreService {
     }
 
     const finalIsActive = dto.isActive !== undefined ? dto.isActive : product.isActive;
+    const requestedUpdateFilterValueIds =
+      dto.filterValueIds !== undefined
+        ? this.normalizeFilterValueIds(dto.filterValueIds)
+        : undefined;
+    let validatedUpdateFilterValueIds = requestedUpdateFilterValueIds;
     const derivedFromVariants = Array.isArray((dto as any).variants)
       ? this.computeVariantDerived((dto as any).variants, {
           strictValidation: finalIsActive,
@@ -2136,6 +2195,13 @@ export class StoreService {
         requireInStockVariant: false,
         messagePrefix: 'A product',
       });
+    }
+    if (finalIsActive) {
+      validatedUpdateFilterValueIds =
+        await this.assertProductStructuredFiltersForPublish(
+          productId,
+          requestedUpdateFilterValueIds,
+        );
     }
 
     const updateData: Prisma.ProductUpdateInput = {};
@@ -2352,7 +2418,9 @@ export class StoreService {
             membershipChanged = true;
           }
 
-          // Update the product's primary collection reference via relation
+          // Product boundary: update the product's primary StoreCollection
+          // membership without moving product inventory or checkout ownership
+          // into the collection domain.
           updateData.collection = { connect: { id: finalCollectionId } };
 
           // Keep primary membership aligned with the explicit collectionId selection.
@@ -2435,6 +2503,10 @@ export class StoreService {
               : product.description,
           categoryId: finalCategoryId,
           categoryTypeId: finalCategoryTypeId,
+          gender:
+            dto.gender !== undefined
+              ? dto.gender
+              : (product.gender ?? 'EVERYBODY'),
           tags: nextTags ?? previousTags,
           price:
             dto.price !== undefined ? dto.price : Number(product.price || 0),
@@ -2502,7 +2574,7 @@ export class StoreService {
       await this.categoriesService.setEntityFilters(
         'PRODUCT',
         productId,
-        this.normalizeFilterValueIds(dto.filterValueIds),
+        validatedUpdateFilterValueIds ?? [],
       );
     }
 
@@ -5620,6 +5692,7 @@ export class StoreService {
 
     return {
       id: product.id,
+      entityType: 'PRODUCT',
       collectionId: primaryCollectionId,
       collectionIds,
       brandId: product.brandId,

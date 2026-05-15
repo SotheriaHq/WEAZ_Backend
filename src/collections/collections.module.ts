@@ -2,7 +2,6 @@ import { Module } from '@nestjs/common';
 import { ScheduleModule } from '@nestjs/schedule';
 import { CollectionsService } from './collections.service';
 import { CollectionsController } from './collections.controller';
-import { DesignsController } from './designs.controller';
 import { StoreCollectionsController } from './store-collections.controller';
 import { CollectionSchedulerService } from './collection-scheduler.service';
 import { PrismaService } from 'src/prisma/prisma.service';
@@ -42,7 +41,7 @@ import { BrandPermissionService } from 'src/brands/permissions/brand-permission.
     BrandAccessService,
     BrandPermissionService,
   ],
-  controllers: [CollectionsController, DesignsController, StoreCollectionsController],
+  controllers: [CollectionsController, StoreCollectionsController],
   exports: [CollectionsService],
 })
 export class CollectionsModule {}

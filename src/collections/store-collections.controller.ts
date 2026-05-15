@@ -205,6 +205,9 @@ export class StoreCollectionsController {
 
   @UseGuards(JwtAuthGuard)
   @Post(':collectionId/products')
+  // STORE_COLLECTION_GROUPING:
+  // Creates a Product inside a StoreCollection grouping. StoreService remains
+  // the owner for product price, inventory, media, SKU, and checkout behavior.
   async createProductInCollection(
     @Param('collectionId') collectionId: string,
     @Req() req: any,

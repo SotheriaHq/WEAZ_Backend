@@ -74,6 +74,29 @@ export class SavedItemsService {
           'You cannot save media from your own collection',
         );
       }
+    } else if (createSavedItemDto.targetType === SavedItemTypeDto.DESIGN) {
+      const design = await this.prisma.design.findFirst({
+        where: {
+          OR: [
+            { id: createSavedItemDto.targetId },
+            { legacyCollectionId: createSavedItemDto.targetId },
+          ],
+        },
+        select: { id: true, ownerId: true },
+      });
+      targetExists = !!design;
+      if (design?.ownerId === userId) {
+        throw new ForbiddenException('You cannot save your own design');
+      }
+    } else if (createSavedItemDto.targetType === SavedItemTypeDto.PRODUCT) {
+      const product = await this.prisma.product.findUnique({
+        where: { id: createSavedItemDto.targetId },
+        select: { id: true, brand: { select: { ownerId: true } } },
+      });
+      targetExists = !!product;
+      if (product?.brand?.ownerId === userId) {
+        throw new ForbiddenException('You cannot save your own product');
+      }
     }
 
     if (!targetExists) {
@@ -182,6 +205,65 @@ export class SavedItemsService {
               thumbnail: media.file.s3Url,
               collectionId: media.collectionId,
               brand: this.mapSavedBrand(media.collection.owner),
+            };
+          }
+        } else if (item.targetType === SavedItemTypeDto.DESIGN) {
+          const design = await this.prisma.design.findUnique({
+            where: { id: item.targetId },
+            include: {
+              owner: {
+                select: {
+                  id: true,
+                  username: true,
+                  userProfile: { select: canonicalUserProfileSelect },
+                  brand: { select: canonicalBrandProfileSelect },
+                },
+              },
+              medias: {
+                take: 1,
+                include: { file: true },
+                orderBy: { orderIndex: 'asc' },
+              },
+            },
+          });
+
+          if (design) {
+            additionalData = {
+              title: design.title,
+              thumbnail: design.medias[0]?.file.s3Url,
+              designId: design.id,
+              legacyCollectionId: design.legacyCollectionId,
+              collectionId: design.legacyCollectionId ?? design.id,
+              entityType: 'DESIGN',
+              brand: this.mapSavedBrand(design.owner),
+            };
+          }
+        } else if (item.targetType === SavedItemTypeDto.PRODUCT) {
+          const product = await this.prisma.product.findUnique({
+            where: { id: item.targetId },
+            include: {
+              brand: {
+                select: {
+                  owner: {
+                    select: {
+                      id: true,
+                      username: true,
+                      userProfile: { select: canonicalUserProfileSelect },
+                      brand: { select: canonicalBrandProfileSelect },
+                    },
+                  },
+                },
+              },
+            },
+          });
+
+          if (product) {
+            additionalData = {
+              title: product.name,
+              thumbnail: product.thumbnail ?? product.images[0] ?? null,
+              productId: product.id,
+              entityType: 'PRODUCT',
+              brand: this.mapSavedBrand(product.brand?.owner),
             };
           }
         }

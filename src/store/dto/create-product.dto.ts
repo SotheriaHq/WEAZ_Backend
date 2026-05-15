@@ -68,6 +68,9 @@ export class ProductVariantDto {
 }
 
 export class CreateProductDto {
+  // Product boundary: collectionId means optional StoreCollection membership
+  // for merchandising/grouping. It is not design draft or collection creation
+  // behavior.
   @IsOptional()
   @IsUUID('4')
   collectionId?: string;

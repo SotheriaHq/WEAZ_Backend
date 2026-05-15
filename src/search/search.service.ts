@@ -763,6 +763,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     return {
       id: product.id,
       type: 'product',
+      entityType: 'PRODUCT',
       title: product.name,
       subtitle: product.brand?.name || null,
       description: product.description || null,
@@ -820,6 +821,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     return {
       id: collection.id,
       type: 'design',
+      entityType: 'DESIGN',
       title: collection.title || 'Untitled design',
       subtitle: 'Design',
       description: collection.description || null,
@@ -846,6 +848,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     return {
       id: collection.id,
       type: 'collection',
+      entityType: 'COLLECTION',
       title: collection.title || 'Untitled collection',
       subtitle: 'Store Collection',
       description: collection.description || null,

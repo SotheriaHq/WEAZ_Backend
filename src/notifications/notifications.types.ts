@@ -1,4 +1,5 @@
 export type TargetType =
+  | 'DESIGN'
   | 'POST'
   | 'COLLECTION'
   | 'COLLECTION_MEDIA'
@@ -26,6 +27,15 @@ export interface NotificationSettings {
   security: {
     login: boolean;
     logout: boolean;
+  };
+  push: {
+    enabled: boolean;
+    sound: boolean;
+    vibration: boolean;
+    showPreview: boolean;
+    quietHoursEnabled: boolean;
+    quietHoursStart: string | null;
+    quietHoursEnd: string | null;
   };
   social: {
     threads: boolean;
@@ -75,10 +85,23 @@ export interface NotificationSettings {
   };
 }
 
+export type NotificationSettingsPatch = {
+  [K in keyof NotificationSettings]?: Partial<NotificationSettings[K]>;
+};
+
 export const DEFAULT_NOTIFICATION_SETTINGS: NotificationSettings = {
   security: {
     login: false,
     logout: false,
+  },
+  push: {
+    enabled: true,
+    sound: true,
+    vibration: true,
+    showPreview: true,
+    quietHoursEnabled: false,
+    quietHoursStart: null,
+    quietHoursEnd: null,
   },
   social: {
     threads: true,

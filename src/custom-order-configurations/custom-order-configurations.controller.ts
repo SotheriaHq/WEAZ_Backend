@@ -42,8 +42,9 @@ export class CustomOrderConfigurationsController {
     );
   }
 
-  @Get('designs/:designId/custom-order-configuration')
-  @UseGuards(OptionalJwtAuthGuard)
+  // Route ownership moved to DesignsController. Keep custom-order business
+  // behavior in CustomOrderConfigurationsService so the endpoint response stays
+  // compatible while /designs owns design-facing routes.
   async getActiveDesignConfiguration(
     @Param('designId') designId: string,
     @Req() req: Request & { user?: { id?: string } },

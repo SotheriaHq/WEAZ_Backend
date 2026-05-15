@@ -7,6 +7,8 @@ import { PrismaService } from 'src/prisma/prisma.service';
 import { EventsGateway } from 'src/realtime/events.gateway';
 import { NotificationRegistry } from './notifications.registry';
 import { EmailOutboxDispatcherService } from './email-outbox-dispatcher.service';
+import { PushDeviceTokensService } from './push-device-tokens.service';
+import { PushNotificationsService } from './push-notifications.service';
 
 @Module({
   imports: [CacheModule.register()],
@@ -19,8 +21,14 @@ import { EmailOutboxDispatcherService } from './email-outbox-dispatcher.service'
       useFactory: () => NotificationRegistry.createDefault(),
     },
     EmailOutboxDispatcherService,
+    PushDeviceTokensService,
+    PushNotificationsService,
   ],
   controllers: [NotificationsController, NotificationsEmailWebhookController],
-  exports: [NotificationsService],
+  exports: [
+    NotificationsService,
+    PushDeviceTokensService,
+    PushNotificationsService,
+  ],
 })
 export class NotificationsModule {}

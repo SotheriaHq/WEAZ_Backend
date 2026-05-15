@@ -342,7 +342,7 @@ export class CustomOrderConfigurationsService {
         })
       : null;
 
-    const configuration = await this.prisma.customOrderConfiguration.findFirst({
+    let configuration = await this.prisma.customOrderConfiguration.findFirst({
       where: {
         sourceType,
         sourceId,
@@ -358,6 +358,31 @@ export class CustomOrderConfigurationsService {
       },
       orderBy: [{ isActive: 'desc' }, { updatedAt: 'desc' }],
     });
+
+    if (!configuration && sourceType === CustomOrderSourceType.DESIGN) {
+      const migratedDesign = await this.prisma.design.findUnique({
+        where: { id: sourceId },
+        select: { legacyCollectionId: true },
+      });
+      if (migratedDesign?.legacyCollectionId) {
+        configuration = await this.prisma.customOrderConfiguration.findFirst({
+          where: {
+            sourceType,
+            sourceId: migratedDesign.legacyCollectionId,
+            OR: brand?.id
+              ? [{ isActive: true }, { brandId: brand.id }]
+              : [{ isActive: true }],
+          },
+          include: {
+            brand: { select: { ownerId: true, name: true } },
+            fabricRuleBasis: true,
+            rules: { orderBy: { priority: 'asc' } },
+            versions: { orderBy: { version: 'desc' }, take: 1 },
+          },
+          orderBy: [{ isActive: 'desc' }, { updatedAt: 'desc' }],
+        });
+      }
+    }
 
     if (!configuration) {
       throw new NotFoundException('Custom order configuration not found');
@@ -515,6 +540,18 @@ export class CustomOrderConfigurationsService {
       if (!product) {
         throw new BadRequestException('Product source was not found for this brand');
       }
+      return;
+    }
+
+    const explicitDesign = await this.prisma.design.findFirst({
+      where: {
+        id: sourceId,
+        OR: [{ brandId }, { ownerId: ownerUserId }],
+      },
+      select: { id: true },
+    });
+
+    if (explicitDesign) {
       return;
     }
 
@@ -815,10 +852,13 @@ export class CustomOrderConfigurationsService {
       return;
     }
 
-    await tx.collection.update({
+    const updatedDesign = await tx.design.updateMany({
       where: { id: sourceId },
       data: { customOrderEnabled: true },
     });
+    if (updatedDesign.count > 0) return;
+
+    await tx.collection.update({ where: { id: sourceId }, data: { customOrderEnabled: true } });
   }
 
   private normalizeMeasurementKeyList(keys: string[] | null | undefined) {
@@ -1025,6 +1065,30 @@ export class CustomOrderConfigurationsService {
         customGender: product.customGender,
         categoryTypeSlug: product.categoryType?.slug ?? null,
         collectionType: product.gender,
+      };
+    }
+
+    const explicitDesign = await this.prisma.design.findUnique({
+      where: { id: sourceId },
+      select: {
+        customMeasurementKeys: true,
+        customFreeformPointIds: true,
+        customGender: true,
+        type: true,
+        legacyCollectionId: true,
+        categoryType: {
+          select: { slug: true },
+        },
+      },
+    });
+
+    if (explicitDesign) {
+      return {
+        customMeasurementKeys: explicitDesign.customMeasurementKeys,
+        customFreeformPointIds: explicitDesign.customFreeformPointIds,
+        customGender: explicitDesign.customGender,
+        categoryTypeSlug: explicitDesign.categoryType?.slug ?? null,
+        collectionType: explicitDesign.type,
       };
     }
 

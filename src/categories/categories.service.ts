@@ -16,7 +16,10 @@ import {
   DEFAULT_FILTER_DIMENSIONS,
   LEGACY_CATEGORY_SLUGS,
   LEGACY_CATEGORY_TYPE_SLUGS,
+  LEGACY_FILTER_DIMENSION_SLUGS,
 } from './default-taxonomy';
+
+type CatalogFilterEntityType = 'COLLECTION' | 'STORE_COLLECTION' | 'DESIGN' | 'PRODUCT';
 
 @Injectable()
 export class CategoriesService {
@@ -230,11 +233,12 @@ export class CategoriesService {
       where: { id },
     });
     if (!existing) throw new NotFoundException('Category not found');
-    const [designReferencing, storeReferencing] = await Promise.all([
+    const [legacyDesignReferencing, explicitDesignReferencing, storeReferencing] = await Promise.all([
       this.prisma.collection.count({ where: { categoryId: id } }),
+      this.prisma.design.count({ where: { categoryId: id } }),
       this.prisma.storeCollection.count({ where: { categoryId: id } }),
     ]);
-    if (designReferencing > 0 || storeReferencing > 0)
+    if (legacyDesignReferencing > 0 || explicitDesignReferencing > 0 || storeReferencing > 0)
       throw new BadRequestException('Cannot delete category in use');
     await this.prisma.collectionCategory.delete({ where: { id } });
 
@@ -485,38 +489,100 @@ export class CategoriesService {
   // =====================
 
   /**
-   * Set filter values for an entity (collection or product).
+   * Set filter values for an entity (collection, store collection, design, or product).
    * Replaces all existing filters of the given entity with the new set.
    */
+  private normalizeFilterValueIds(filterValueIds?: string[] | null): string[] {
+    if (!Array.isArray(filterValueIds)) return [];
+    return Array.from(
+      new Set(
+        filterValueIds
+          .map((value) => (typeof value === 'string' ? value.trim() : ''))
+          .filter((value) => value.length > 0),
+      ),
+    );
+  }
+
+  async validateEntityFilterValues(
+    entityType: CatalogFilterEntityType,
+    filterValueIds: string[],
+  ): Promise<string[]> {
+    const uniqueFilterValueIds = this.normalizeFilterValueIds(filterValueIds);
+    if (uniqueFilterValueIds.length === 0) return [];
+
+    const values = await this.prisma.filterValue.findMany({
+      where: { id: { in: uniqueFilterValueIds } },
+      select: {
+        id: true,
+        slug: true,
+        name: true,
+        isActive: true,
+        dimension: {
+          select: {
+            id: true,
+            slug: true,
+            name: true,
+            isActive: true,
+            appliesTo: true,
+          },
+        },
+      },
+    });
+
+    const valuesById = new Map(values.map((value) => [value.id, value]));
+    const missingIds = uniqueFilterValueIds.filter((id) => !valuesById.has(id));
+    const invalidValues = values.filter((value) => {
+      const appliesTo = Array.isArray(value.dimension?.appliesTo)
+        ? value.dimension.appliesTo
+        : [];
+      return (
+        !value.isActive ||
+        !value.dimension ||
+        !value.dimension.isActive ||
+        !appliesTo.includes(entityType)
+      );
+    });
+
+    if (missingIds.length > 0 || invalidValues.length > 0) {
+      this.logger.warn(
+        `Invalid discovery metadata for ${entityType}: missing=${missingIds.join(',') || 'none'} invalid=${
+          invalidValues
+            .map((value) => `${value.id}:${value.dimension?.slug ?? 'no-dimension'}/${value.slug}`)
+            .join(',') || 'none'
+        }`,
+      );
+      throw new BadRequestException(
+        'Some selected style details are invalid for this item type.',
+      );
+    }
+
+    return uniqueFilterValueIds;
+  }
+
   async setEntityFilters(
-    entityType: 'COLLECTION' | 'STORE_COLLECTION' | 'PRODUCT',
+    entityType: CatalogFilterEntityType,
     entityId: string,
     filterValueIds: string[],
   ) {
-    // Remove existing filters for this entity
+    const validFilterValueIds = await this.validateEntityFilterValues(
+      entityType,
+      filterValueIds,
+    );
+
     await this.prisma.entityFilter.deleteMany({
       where: { entityType, entityId },
     });
 
-    if (filterValueIds.length === 0) return [];
+    if (validFilterValueIds.length === 0) return [];
 
-    // Validate all filter value IDs exist
-    const validValues = await this.prisma.filterValue.findMany({
-      where: { id: { in: filterValueIds }, isActive: true },
-      select: { id: true },
-    });
-    const validIds = new Set(validValues.map((v) => v.id));
-
-    // Create new entity filter records
-    const records = filterValueIds
-      .filter((id) => validIds.has(id))
-      .map((filterValueId) => ({
-        id: uuidv4(),
-        filterValueId,
-        entityType: entityType as any,
-        entityId,
-        ...(entityType === 'PRODUCT' ? { productId: entityId } : {}),
-      }));
+    const records = validFilterValueIds.map((filterValueId) => ({
+      id: uuidv4(),
+      filterValueId,
+      entityType: entityType as any,
+      entityId,
+      ...(entityType === 'PRODUCT' ? { productId: entityId } : {}),
+      ...(entityType === 'DESIGN' ? { designId: entityId } : {}),
+    }));
 
     if (records.length > 0) {
       await this.prisma.entityFilter.createMany({ data: records });
@@ -529,7 +595,7 @@ export class CategoriesService {
    * Get filter values applied to a specific entity.
    */
   async getEntityFilters(
-    entityType: 'COLLECTION' | 'STORE_COLLECTION' | 'PRODUCT',
+    entityType: 'COLLECTION' | 'STORE_COLLECTION' | 'DESIGN' | 'PRODUCT',
     entityId: string,
   ) {
     const filters = await this.prisma.entityFilter.findMany({
@@ -659,15 +725,36 @@ export class CategoriesService {
       activeSlugsPerCategory.set(categoryId, new Set(subs.map((s) => s.slug)));
     }
 
+    const activeTypeKeys = new Set<string>();
+    for (const [categoryId, activeSlugs] of activeSlugsPerCategory.entries()) {
+      for (const slug of activeSlugs) {
+        activeTypeKeys.add(`${categoryId}:${slug}`);
+      }
+    }
+
     const allTypes = await this.prisma.collectionCategoryType.findMany({
-      where: { isActive: true },
-      select: { id: true, slug: true, categoryId: true },
+      where: {
+        isActive: true,
+        OR: [
+          { slug: { in: LEGACY_CATEGORY_TYPE_SLUGS } },
+          { category: { slug: { in: LEGACY_CATEGORY_SLUGS } } },
+        ],
+      },
+      select: {
+        id: true,
+        slug: true,
+        categoryId: true,
+        category: { select: { slug: true } },
+      },
     });
 
     for (const type of allTypes) {
-      const activeForCategory = activeSlugsPerCategory.get(type.categoryId);
-      // If this type doesn't belong to any active category, or its slug is not in the new set
-      if (!activeForCategory || !activeForCategory.has(type.slug)) {
+      if (activeTypeKeys.has(`${type.categoryId}:${type.slug}`)) continue;
+      const isLegacyType = LEGACY_CATEGORY_TYPE_SLUGS.includes(type.slug);
+      const isUnderLegacyCategory = LEGACY_CATEGORY_SLUGS.includes(
+        type.category.slug,
+      );
+      if (isLegacyType || isUnderLegacyCategory) {
         await this.prisma.collectionCategoryType.update({
           where: { id: type.id },
           data: { isActive: false },
@@ -753,6 +840,37 @@ export class CategoriesService {
             },
           });
         }
+      }
+
+      const activeValueSlugs = dim.values.map((value) => value.slug);
+      const deactivatedValues = await this.prisma.filterValue.updateMany({
+        where: {
+          dimensionId,
+          isActive: true,
+          slug: { notIn: activeValueSlugs },
+        },
+        data: { isActive: false },
+      });
+      if (deactivatedValues.count > 0) {
+        this.logger.log(
+          `Deactivated ${deactivatedValues.count} obsolete values in filter dimension: ${dim.slug}`,
+        );
+      }
+    }
+
+    const activeDimensionSlugs = DEFAULT_FILTER_DIMENSIONS.map((dim) => dim.slug);
+    const legacyFilterSlugs = LEGACY_FILTER_DIMENSION_SLUGS.filter(
+      (slug) => !activeDimensionSlugs.includes(slug),
+    );
+    if (legacyFilterSlugs.length > 0) {
+      const deactivatedDimensions = await this.prisma.filterDimension.updateMany({
+        where: { slug: { in: legacyFilterSlugs }, isActive: true },
+        data: { isActive: false },
+      });
+      if (deactivatedDimensions.count > 0) {
+        this.logger.log(
+          `Deactivated ${deactivatedDimensions.count} legacy filter dimensions: ${legacyFilterSlugs.join(', ')}`,
+        );
       }
     }
   }

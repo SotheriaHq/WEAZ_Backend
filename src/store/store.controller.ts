@@ -67,8 +67,8 @@ export class StoreController {
 
   @Get('products/categories')
   async getProductCategories() {
-    // Product creation uses Collection categories.
-    // We expose this alias for frontend compatibility.
+    // Product creation reuses shared catalog category tables. This is taxonomy
+    // reuse only, not collection ownership of product creation.
     return this.storeService.getProductCategories();
   }
 

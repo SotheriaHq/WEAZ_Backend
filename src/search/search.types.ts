@@ -1,3 +1,5 @@
+import type { CatalogEntityType } from '../common/domain/catalog-domain';
+
 export const SEARCH_ENTITY_TYPES = [
   'product',
   'brand',
@@ -16,6 +18,7 @@ export interface SearchHighlightOffset {
 export interface SearchItem {
   id: string;
   type: SearchEntityType;
+  entityType?: CatalogEntityType;
   title: string;
   subtitle?: string | null;
   description?: string | null;

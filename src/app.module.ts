@@ -8,6 +8,7 @@ import { UploadModule } from './upload/upload.module';
 import { DevToolsModule } from './dev-tools/dev-tools.module';
 import { BrandsModule } from './brands/brands.module';
 import { CollectionsModule } from './collections/collections.module';
+import { DesignsModule } from './designs/designs.module';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { EventsGateway } from './realtime/events.gateway';
 import { AnalyticsModule } from './analytics/analytics.module';
@@ -53,6 +54,7 @@ const isProductionEnvironment =
     BrandsModule,
     // Collections for brands
     CollectionsModule,
+    DesignsModule,
     PostsModule,
     CommentsV2Module,
     AnalyticsModule,
