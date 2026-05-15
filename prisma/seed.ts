@@ -9,6 +9,8 @@ import {
   DEFAULT_SUB_CATEGORIES,
   DEFAULT_FILTER_DIMENSIONS,
   LEGACY_CATEGORY_SLUGS,
+  LEGACY_CATEGORY_TYPE_SLUGS,
+  LEGACY_FILTER_DIMENSION_SLUGS,
   FILTER_TAG_SUGGESTIONS,
 } from '../src/categories/default-taxonomy';
 import { seedMeasurementPoints } from './seed_measurement_points';
@@ -139,6 +141,17 @@ async function ensureDefaultTags() {
     'african-fashion',
     'traditional-wear',
     'modern-african',
+    'ankara-fashion',
+    'aso-ebi',
+    'owambe',
+    'office-style',
+    'wedding-guest',
+    'modest-fashion',
+    'statement-piece',
+    'bridal',
+    'adire',
+    'aso-oke',
+    'kente',
     'handmade',
     'sustainable-fashion',
     'artisanal',
@@ -229,7 +242,45 @@ async function ensureDefaultTaxonomy() {
     }
   }
 
-  // 4. Seed filter dimensions + values
+  // 4. Deactivate legacy category types without touching valid seeded types.
+  const activeTypeKeys = new Set<string>();
+  for (const [parentSlug, subCategories] of Object.entries(DEFAULT_SUB_CATEGORIES)) {
+    const categoryId = idsBySlug.get(parentSlug);
+    if (!categoryId) continue;
+    for (const sub of subCategories) {
+      activeTypeKeys.add(`${categoryId}:${sub.slug}`);
+    }
+  }
+  const legacyTypes = await prisma.collectionCategoryType.findMany({
+    where: {
+      isActive: true,
+      OR: [
+        { slug: { in: LEGACY_CATEGORY_TYPE_SLUGS } },
+        { category: { slug: { in: LEGACY_CATEGORY_SLUGS } } },
+      ],
+    },
+    select: {
+      id: true,
+      slug: true,
+      categoryId: true,
+      category: { select: { slug: true } },
+    },
+  });
+  for (const type of legacyTypes) {
+    if (activeTypeKeys.has(`${type.categoryId}:${type.slug}`)) continue;
+    const isLegacyType = LEGACY_CATEGORY_TYPE_SLUGS.includes(type.slug);
+    const isUnderLegacyCategory = LEGACY_CATEGORY_SLUGS.includes(
+      type.category.slug,
+    );
+    if (!isLegacyType && !isUnderLegacyCategory) continue;
+    await prisma.collectionCategoryType.update({
+      where: { id: type.id },
+      data: { isActive: false },
+    });
+    console.log(`  Deactivated legacy category type: ${type.slug}`);
+  }
+
+  // 5. Seed filter dimensions + values
   for (const dim of DEFAULT_FILTER_DIMENSIONS) {
     const existingDim = await prisma.filterDimension.findUnique({
       where: { slug: dim.slug },
@@ -291,6 +342,37 @@ async function ensureDefaultTaxonomy() {
           },
         });
       }
+    }
+
+    const activeValueSlugs = dim.values.map((value) => value.slug);
+    const deactivatedValues = await prisma.filterValue.updateMany({
+      where: {
+        dimensionId,
+        isActive: true,
+        slug: { notIn: activeValueSlugs },
+      },
+      data: { isActive: false },
+    });
+    if (deactivatedValues.count > 0) {
+      console.log(
+        `  Deactivated ${deactivatedValues.count} obsolete values in filter dimension: ${dim.slug}`,
+      );
+    }
+  }
+
+  const activeDimensionSlugs = DEFAULT_FILTER_DIMENSIONS.map((dim) => dim.slug);
+  const legacyFilterSlugs = LEGACY_FILTER_DIMENSION_SLUGS.filter(
+    (slug) => !activeDimensionSlugs.includes(slug),
+  );
+  if (legacyFilterSlugs.length > 0) {
+    const deactivatedDimensions = await prisma.filterDimension.updateMany({
+      where: { slug: { in: legacyFilterSlugs }, isActive: true },
+      data: { isActive: false },
+    });
+    if (deactivatedDimensions.count > 0) {
+      console.log(
+        `  Deactivated ${deactivatedDimensions.count} legacy filter dimensions: ${legacyFilterSlugs.join(', ')}`,
+      );
     }
   }
 
@@ -394,6 +476,63 @@ async function findSubCategoryId(categoryId: string, slug: string) {
   return categoryType?.id ?? null;
 }
 
+type SeedEntityType = 'DESIGN' | 'PRODUCT' | 'STORE_COLLECTION';
+type SeedFilterSelection = { dimensionSlug: string; valueSlug: string };
+
+async function findFilterValueIdsForSeed(
+  entityType: SeedEntityType,
+  selections: SeedFilterSelection[],
+) {
+  const ids: string[] = [];
+  for (const selection of selections) {
+    const filterValue = await prisma.filterValue.findFirst({
+      where: {
+        slug: selection.valueSlug,
+        isActive: true,
+        dimension: {
+          slug: selection.dimensionSlug,
+          isActive: true,
+        },
+      },
+      select: {
+        id: true,
+        dimension: { select: { appliesTo: true } },
+      },
+    });
+    const appliesTo = Array.isArray(filterValue?.dimension?.appliesTo)
+      ? filterValue.dimension.appliesTo
+      : [];
+    if (filterValue?.id && appliesTo.includes(entityType)) {
+      ids.push(filterValue.id);
+    } else {
+      console.warn(
+        `Missing seeded filter value ${selection.dimensionSlug}/${selection.valueSlug} for ${entityType}`,
+      );
+    }
+  }
+  return Array.from(new Set(ids));
+}
+
+async function setSeedEntityFilters(
+  entityType: SeedEntityType,
+  entityId: string,
+  selections: SeedFilterSelection[],
+) {
+  const filterValueIds = await findFilterValueIdsForSeed(entityType, selections);
+  await prisma.entityFilter.deleteMany({ where: { entityType, entityId } });
+  if (filterValueIds.length === 0) return;
+  await prisma.entityFilter.createMany({
+    data: filterValueIds.map((filterValueId) => ({
+      id: randomUUID(),
+      filterValueId,
+      entityType,
+      entityId,
+      ...(entityType === 'PRODUCT' ? { productId: entityId } : {}),
+      ...(entityType === 'DESIGN' ? { designId: entityId } : {}),
+    })),
+  });
+}
+
 async function upsertDemoFileUpload(userId: string, index: number) {
   const s3Key = `seed/design/domain-sample-${index + 1}.jpg`;
   const s3Url = `https://threadly.local/uploads/${s3Key}`;
@@ -480,9 +619,9 @@ async function ensureDemoCatalogSeed(idsBySlug: Map<string, string>) {
     select: { id: true },
   });
 
-  const categoryId = idsBySlug.get('womens-wear') ?? null;
+  const categoryId = idsBySlug.get('dresses-gowns') ?? null;
   const categoryTypeId = categoryId
-    ? await findSubCategoryId(categoryId, 'dresses-gowns')
+    ? await findSubCategoryId(categoryId, 'maxi-dress')
     : null;
   const mediaFiles = await Promise.all(
     DEMO_FILE_UPLOAD_IDS.map((_, index) => upsertDemoFileUpload(brandOwnerId, index)),
@@ -500,7 +639,7 @@ async function ensureDemoCatalogSeed(idsBySlug: Map<string, string>) {
       type: 'FEMALE',
       categoryId,
       categoryTypeId,
-      tags: ['ankara', 'evening', 'custom-order'],
+      tags: ['ankara-fashion', 'eveningwear', 'custom-order', 'statement-piece'],
       customOrderEnabled: true,
       sizingMode: 'CUSTOM',
       customMeasurementKeys: ['WOMEN_CHEST_FULL_BUST', 'WOMEN_WAIST', 'WOMEN_HIP'],
@@ -518,7 +657,7 @@ async function ensureDemoCatalogSeed(idsBySlug: Map<string, string>) {
       type: 'FEMALE',
       categoryId,
       categoryTypeId,
-      tags: ['ankara', 'evening', 'custom-order'],
+      tags: ['ankara-fashion', 'eveningwear', 'custom-order', 'statement-piece'],
       customOrderEnabled: true,
       sizingMode: 'CUSTOM',
       customMeasurementKeys: ['WOMEN_CHEST_FULL_BUST', 'WOMEN_WAIST', 'WOMEN_HIP'],
@@ -550,6 +689,16 @@ async function ensureDemoCatalogSeed(idsBySlug: Map<string, string>) {
     where: { id: DEMO_DESIGN_ID },
     data: { coverMediaId: DEMO_DESIGN_MEDIA_IDS[0] },
   });
+
+  await setSeedEntityFilters('DESIGN', DEMO_DESIGN_ID, [
+    { dimensionSlug: 'style', valueSlug: 'statement-bold' },
+    { dimensionSlug: 'heritage', valueSlug: 'african-cultural' },
+    { dimensionSlug: 'heritage', valueSlug: 'ankara' },
+    { dimensionSlug: 'occasion', valueSlug: 'owambe-party' },
+    { dimensionSlug: 'fabric', valueSlug: 'ankara' },
+    { dimensionSlug: 'color-family', valueSlug: 'multicolor' },
+    { dimensionSlug: 'fit', valueSlug: 'regular' },
+  ]);
 
   const fabricBasis = await prisma.customFabricRuleBasis.upsert({
     where: { id: DEMO_FABRIC_BASIS_ID },
@@ -680,7 +829,8 @@ async function ensureDemoCatalogSeed(idsBySlug: Map<string, string>) {
       totalStock: 8,
       sizes: ['S', 'M', 'L'],
       sizeStock: { S: 2, M: 4, L: 2 },
-      tags: ['ankara', 'ready-to-wear'],
+      tags: ['ankara-fashion', 'ready-to-wear', 'wedding-guest'],
+      gender: 'FEMALE',
       isActive: true,
     },
     create: {
@@ -698,11 +848,22 @@ async function ensureDemoCatalogSeed(idsBySlug: Map<string, string>) {
       totalStock: 8,
       sizes: ['S', 'M', 'L'],
       sizeStock: { S: 2, M: 4, L: 2 },
-      tags: ['ankara', 'ready-to-wear'],
+      tags: ['ankara-fashion', 'ready-to-wear', 'wedding-guest'],
+      gender: 'FEMALE',
       isActive: true,
     },
     select: { id: true },
   });
+
+  await setSeedEntityFilters('PRODUCT', product.id, [
+    { dimensionSlug: 'style', valueSlug: 'bridal-wedding' },
+    { dimensionSlug: 'style', valueSlug: 'statement-bold' },
+    { dimensionSlug: 'heritage', valueSlug: 'ankara' },
+    { dimensionSlug: 'occasion', valueSlug: 'wedding' },
+    { dimensionSlug: 'fabric', valueSlug: 'ankara' },
+    { dimensionSlug: 'color-family', valueSlug: 'multicolor' },
+    { dimensionSlug: 'fit', valueSlug: 'regular' },
+  ]);
 
   await prisma.storeCollection.upsert({
     where: { id: DEMO_STORE_COLLECTION_ID },
@@ -716,7 +877,7 @@ async function ensureDemoCatalogSeed(idsBySlug: Map<string, string>) {
       categoryId,
       categoryTypeId,
       isAvailableInStore: true,
-      tags: ['capsule', 'evening'],
+      tags: ['capsule', 'eveningwear', 'owambe'],
     },
     create: {
       id: DEMO_STORE_COLLECTION_ID,
@@ -729,9 +890,18 @@ async function ensureDemoCatalogSeed(idsBySlug: Map<string, string>) {
       categoryId,
       categoryTypeId,
       isAvailableInStore: true,
-      tags: ['capsule', 'evening'],
+      tags: ['capsule', 'eveningwear', 'owambe'],
     },
   });
+
+  await setSeedEntityFilters('STORE_COLLECTION', DEMO_STORE_COLLECTION_ID, [
+    { dimensionSlug: 'style', valueSlug: 'evening-luxury' },
+    { dimensionSlug: 'heritage', valueSlug: 'african-cultural' },
+    { dimensionSlug: 'occasion', valueSlug: 'owambe-party' },
+    { dimensionSlug: 'fabric', valueSlug: 'ankara' },
+    { dimensionSlug: 'color-family', valueSlug: 'multicolor' },
+    { dimensionSlug: 'fit', valueSlug: 'regular' },
+  ]);
 
   await prisma.storeCollectionProduct.upsert({
     where: {

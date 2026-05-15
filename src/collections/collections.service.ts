@@ -76,6 +76,7 @@ import {
 
 type CollectionScope = 'design' | 'store' | 'all';
 type CollectionDomainValue = 'DESIGN' | 'STORE';
+type CatalogFilterEntityType = 'COLLECTION' | 'STORE_COLLECTION' | 'DESIGN' | 'PRODUCT';
 type FeedMediaAssetDto = {
   id: string;
   fileId: string | null;
@@ -281,7 +282,7 @@ export class CollectionsService {
       new Set(
         raw
           .map((value) => (typeof value === 'string' ? value.trim() : ''))
-          .filter((value) => value.length > 0 && isUuid(value)),
+          .filter((value) => value.length > 0),
       ),
     );
     return unique;
@@ -332,6 +333,45 @@ export class CollectionsService {
     });
 
     return Array.from(new Set(rows.map((row) => row.filterValueId)));
+  }
+
+  private async getEntityFilterValueIds(
+    entityType: CatalogFilterEntityType,
+    entityId: string,
+  ): Promise<string[]> {
+    const rows = await this.prisma.entityFilter.findMany({
+      where: { entityType, entityId },
+      select: { filterValueId: true },
+    });
+    return Array.from(new Set(rows.map((row) => row.filterValueId)));
+  }
+
+  private async assertStructuredFiltersForPublish(
+    entityType: CatalogFilterEntityType,
+    entityId: string,
+    providedFilterValueIds?: string[] | null,
+  ): Promise<string[]> {
+    if (!this.categoriesService) {
+      throw new BadRequestException('Add at least one style detail.');
+    }
+    const filterValueIds = Array.isArray(providedFilterValueIds)
+      ? this.normalizeFilterValueIds(providedFilterValueIds)
+      : await this.getEntityFilterValueIds(entityType, entityId);
+    const validFilterValueIds = await this.categoriesService.validateEntityFilterValues(
+      entityType,
+      filterValueIds,
+    );
+    if (validFilterValueIds.length === 0) {
+      throw new BadRequestException('Add at least one style detail.');
+    }
+    return validFilterValueIds;
+  }
+
+  private assertAudienceForPublish(type?: CollectionType | string | null) {
+    const normalizedType = String(type ?? '').toUpperCase();
+    if (!['MALE', 'FEMALE', 'EVERYBODY'].includes(normalizedType)) {
+      throw new BadRequestException('Choose who this item is for.');
+    }
   }
 
   private async syncStoreCollectionFiltersFromProducts(collectionId: string) {
@@ -2972,6 +3012,7 @@ export class CollectionsService {
       const normalizedFilterValueIds = this.normalizeFilterValueIds(
         metadata.filterValueIds,
       );
+      let validatedFilterValueIds = normalizedFilterValueIds;
       const shouldUpdateFilters = Array.isArray(metadata.filterValueIds);
       const resolvedNextTags = Array.isArray(metadata.tags)
         ? sanitizeTags(metadata.tags, 30)
@@ -2987,22 +3028,28 @@ export class CollectionsService {
           throw new BadRequestException('Title is required to publish');
         }
         if (resolvedNextTags.length === 0) {
-          throw new BadRequestException('At least one descriptive tag is required');
+          throw new BadRequestException('Add at least one hashtag.');
         }
         const nextCategoryId = metadata.categoryId ?? collection.categoryId;
         if (!nextCategoryId) {
-          throw new BadRequestException('Category is required to publish');
+          throw new BadRequestException('Choose what this item is.');
         }
         await this.assertActiveCategory(nextCategoryId);
 
         const nextCategoryTypeId =
           metadata.categoryTypeId ?? (collection as any).categoryTypeId;
         if (!nextCategoryTypeId) {
-          throw new BadRequestException('Sub-category is required to publish');
+          throw new BadRequestException('Choose a garment type.');
         }
         await this.assertCategoryTypeMatchesCategory(
           nextCategoryId,
           nextCategoryTypeId,
+        );
+        this.assertAudienceForPublish(metadata.type ?? collection.type);
+        validatedFilterValueIds = await this.assertStructuredFiltersForPublish(
+          'COLLECTION',
+          collectionId,
+          shouldUpdateFilters ? normalizedFilterValueIds : undefined,
         );
         await this.assertDesignCustomOrderPublishReady(
           collectionId,
@@ -3296,7 +3343,7 @@ export class CollectionsService {
         await this.categoriesService.setEntityFilters(
           'COLLECTION',
           collectionId,
-          normalizedFilterValueIds,
+          validatedFilterValueIds,
         );
       }
 
@@ -3445,11 +3492,61 @@ export class CollectionsService {
     // Mark collection as published (or keep as DRAFT if requested)
     const completionAction = dto.action ?? (dto.shouldPublish === false ? 'draft' : 'publish');
     const newStatus = completionAction === 'publish' ? 'PUBLISHED' : 'DRAFT';
+    const completionMetadata = dto.collectionMetadata ?? {};
+    const completionResolvedTags = Array.isArray(completionMetadata.tags)
+      ? sanitizeTags(completionMetadata.tags, 30)
+      : collection.tags ?? [];
+    const completionFilterValueIds = this.normalizeFilterValueIds(
+      completionMetadata.filterValueIds,
+    );
+    let validatedCompletionFilterValueIds = completionFilterValueIds;
     const completionCustomOrderEnabled =
-      typeof dto.collectionMetadata?.customOrderEnabled === 'boolean'
-        ? Boolean(dto.collectionMetadata.customOrderEnabled)
+      typeof completionMetadata.customOrderEnabled === 'boolean'
+        ? Boolean(completionMetadata.customOrderEnabled)
         : Boolean((collection as any).customOrderEnabled);
     if (newStatus === 'PUBLISHED') {
+      const nextTitle = completionMetadata.title ?? collection.title;
+      if (!nextTitle || !nextTitle.trim()) {
+        throw new BadRequestException('Title is required to publish');
+      }
+      if (completionResolvedTags.length === 0) {
+        throw new BadRequestException('Add at least one hashtag.');
+      }
+      const nextCategoryId = completionMetadata.categoryId ?? collection.categoryId;
+      if (!nextCategoryId) {
+        throw new BadRequestException('Choose what this item is.');
+      }
+      await this.assertActiveCategory(nextCategoryId);
+      const nextCategoryTypeId =
+        completionMetadata.categoryTypeId ?? (collection as any).categoryTypeId;
+      if (!nextCategoryTypeId) {
+        throw new BadRequestException('Choose a garment type.');
+      }
+      await this.assertCategoryTypeMatchesCategory(
+        nextCategoryId,
+        nextCategoryTypeId,
+      );
+      this.assertAudienceForPublish(completionMetadata.type ?? collection.type);
+      validatedCompletionFilterValueIds = await this.assertStructuredFiltersForPublish(
+        'COLLECTION',
+        collectionId,
+        Array.isArray(completionMetadata.filterValueIds)
+          ? completionFilterValueIds
+          : undefined,
+      );
+      const mediaCount = await this.prisma.collectionMedia.count({
+        where: { collectionId },
+      });
+      if (mediaCount < DESIGN_REQUIRED_MEDIA_COUNT) {
+        throw new BadRequestException(
+          `Front, Back, Left, and Right media are required to publish (${DESIGN_REQUIRED_MEDIA_COUNT} media minimum).`,
+        );
+      }
+      if (mediaCount > DESIGN_MAX_MEDIA_COUNT) {
+        throw new BadRequestException(
+          `Maximum ${DESIGN_MAX_MEDIA_COUNT} design media assets can be published.`,
+        );
+      }
       await this.assertDesignCustomOrderPublishReady(
         collectionId,
         collection.ownerId,
@@ -3463,6 +3560,39 @@ export class CollectionsService {
       data: {
         domain: 'DESIGN',
         isAvailableInStore: false,
+        title: completionMetadata.title ?? collection.title,
+        description: completionMetadata.description ?? collection.description,
+        visibility: completionMetadata.visibility ?? collection.visibility,
+        type: completionMetadata.type ?? collection.type,
+        categoryId: completionMetadata.categoryId ?? collection.categoryId,
+        categoryTypeId:
+          completionMetadata.categoryTypeId ?? (collection as any).categoryTypeId,
+        tags: completionResolvedTags,
+        sizingMode: completionMetadata.sizingMode ?? (collection as any).sizingMode,
+        rtwSizes: Array.isArray(completionMetadata.rtwSizes)
+          ? completionMetadata.rtwSizes
+          : (collection as any).rtwSizes,
+        rtwSizeSystem:
+          completionMetadata.rtwSizeSystem ?? (collection as any).rtwSizeSystem,
+        rtwSizeType:
+          completionMetadata.rtwSizeType ?? (collection as any).rtwSizeType,
+        customGender:
+          completionMetadata.customGender ?? (collection as any).customGender,
+        customMeasurementKeys: Array.isArray(
+          completionMetadata.customMeasurementKeys,
+        )
+          ? this.normalizeMeasurementKeys(completionMetadata.customMeasurementKeys)
+          : (collection as any).customMeasurementKeys,
+        customOrderEnabled: completionCustomOrderEnabled,
+        customFreeformPointIds: Array.isArray(
+          completionMetadata.customFreeformPointIds,
+        )
+          ? completionMetadata.customFreeformPointIds
+          : (collection as any).customFreeformPointIds,
+        fitPreference:
+          completionMetadata.fitPreference ?? (collection as any).fitPreference,
+        targetAgeGroup:
+          completionMetadata.targetAgeGroup ?? (collection as any).targetAgeGroup,
         status: newStatus,
         coverMediaId,
         ...(newStatus === 'DRAFT'
@@ -3496,15 +3626,54 @@ export class CollectionsService {
       );
     }
 
-    const normalizedFinalizeFilterValueIds = this.normalizeFilterValueIds(
-      dto.collectionMetadata?.filterValueIds,
-    );
-    if (Array.isArray(dto.collectionMetadata?.filterValueIds) && this.categoriesService) {
+    if (Array.isArray(completionMetadata.filterValueIds) && this.categoriesService) {
       await this.categoriesService.setEntityFilters(
         'COLLECTION',
         collectionId,
-        normalizedFinalizeFilterValueIds,
+        validatedCompletionFilterValueIds,
       );
+    }
+
+    const completionPreviousIndexedTags = this.getIndexedCollectionTags(
+      {
+        status: collection.status,
+        visibility: collection.visibility as CollectionVisibility,
+        deletedAt: collection.deletedAt,
+        tags: collection.tags ?? [],
+      },
+      collection.tags ?? [],
+    );
+    const completionNextIndexedTags = this.getIndexedCollectionTags(
+      {
+        status: newStatus,
+        visibility: publishedCollection.visibility as CollectionVisibility,
+        deletedAt: null,
+        tags: completionResolvedTags,
+      },
+      completionResolvedTags,
+    );
+    const shouldSyncCompletionTags =
+      Array.isArray(completionMetadata.tags) ||
+      !this.areTagsEqual(
+        completionPreviousIndexedTags,
+        completionNextIndexedTags,
+      );
+    if (shouldSyncCompletionTags) {
+      if (this.systemTags) {
+        await this.systemTags.syncTags(
+          completionPreviousIndexedTags,
+          completionNextIndexedTags,
+        );
+      }
+      if (this.tagIndex) {
+        await this.tagIndex.syncEntityTags(
+          TAG_ENTITY_TYPE.COLLECTION,
+          collectionId,
+          completionPreviousIndexedTags,
+          completionNextIndexedTags,
+          { maxCount: 30 },
+        );
+      }
     }
 
     // Notify patchers if published
@@ -3637,6 +3806,7 @@ export class CollectionsService {
     const resolvedFilterValueIds = Array.isArray(metadata.filterValueIds)
       ? normalizedManualFilterValueIds
       : await this.collectStoreCollectionFilterValueIds(collectionId);
+    let validatedResolvedFilterValueIds = resolvedFilterValueIds;
 
     if (action === 'publish') {
       const nextTitle = metadata.title ?? collection.title;
@@ -3644,21 +3814,27 @@ export class CollectionsService {
         throw new BadRequestException('Title is required to publish');
       }
       if (resolvedNextTags.length === 0) {
-        throw new BadRequestException('At least one descriptive tag is required');
+        throw new BadRequestException('Add at least one hashtag.');
       }
       const nextCategoryId = metadata.categoryId ?? collection.categoryId;
       if (!nextCategoryId) {
-        throw new BadRequestException('Category is required to publish');
+        throw new BadRequestException('Choose what this item is.');
       }
       await this.assertActiveCategory(nextCategoryId);
       const nextCategoryTypeId =
         metadata.categoryTypeId ?? (collection as any).categoryTypeId;
       if (!nextCategoryTypeId) {
-        throw new BadRequestException('Sub-category is required to publish');
+        throw new BadRequestException('Choose a garment type.');
       }
       await this.assertCategoryTypeMatchesCategory(
         nextCategoryId,
         nextCategoryTypeId,
+      );
+      this.assertAudienceForPublish(metadata.type ?? collection.type);
+      validatedResolvedFilterValueIds = await this.assertStructuredFiltersForPublish(
+        'STORE_COLLECTION',
+        collectionId,
+        resolvedFilterValueIds,
       );
     }
 
@@ -3841,7 +4017,7 @@ export class CollectionsService {
       await this.categoriesService.setEntityFilters(
         'STORE_COLLECTION',
         collectionId,
-        this.normalizeFilterValueIds(resolvedFilterValueIds),
+        this.normalizeFilterValueIds(validatedResolvedFilterValueIds),
       );
     }
 
@@ -7778,6 +7954,7 @@ export class CollectionsService {
           title: true,
           description: true,
           metadataEditedAt: true,
+          type: true,
           categoryId: true,
           categoryTypeId: true,
         },
@@ -7852,6 +8029,32 @@ export class CollectionsService {
           targetCategoryTypeId,
         );
       }
+      const validatedStoreFilterValueIds = Array.isArray(body.filterValueIds)
+        ? this.normalizeFilterValueIds(body.filterValueIds)
+        : undefined;
+      if (existing.status === 'PUBLISHED') {
+        const nextTitle =
+          body.title !== undefined ? body.title || null : existing.title;
+        if (!nextTitle || !String(nextTitle).trim()) {
+          throw new BadRequestException('Title is required to publish');
+        }
+        const nextPublishedTags = nextTags ?? previousTags;
+        if (nextPublishedTags.length === 0) {
+          throw new BadRequestException('Add at least one hashtag.');
+        }
+        if (!targetCategoryId) {
+          throw new BadRequestException('Choose what this item is.');
+        }
+        if (!targetCategoryTypeId) {
+          throw new BadRequestException('Choose a garment type.');
+        }
+        this.assertAudienceForPublish(body.type ?? existing.type);
+        await this.assertStructuredFiltersForPublish(
+          'STORE_COLLECTION',
+          collectionId,
+          validatedStoreFilterValueIds,
+        );
+      }
       if (typeof body.categoryId === 'string' || body.categoryId === null) {
         data.categoryId = body.categoryId || null;
       }
@@ -7916,6 +8119,13 @@ export class CollectionsService {
           );
         }
       }
+      if (Array.isArray(body.filterValueIds) && this.categoriesService) {
+        await this.categoriesService.setEntityFilters(
+          'STORE_COLLECTION',
+          collectionId,
+          validatedStoreFilterValueIds ?? [],
+        );
+      }
       return { ...updated, domain: 'STORE', isAvailableInStore: true };
     }
 
@@ -7932,6 +8142,7 @@ export class CollectionsService {
         title: true,
         description: true,
         metadataEditedAt: true,
+        type: true,
         categoryId: true,
         categoryTypeId: true,
         customOrderEnabled: true,
@@ -8066,6 +8277,32 @@ export class CollectionsService {
         targetCategoryTypeId,
       );
     }
+    const validatedDesignFilterValueIds = Array.isArray(body.filterValueIds)
+      ? this.normalizeFilterValueIds(body.filterValueIds)
+      : undefined;
+    if (existing.status === 'PUBLISHED') {
+      const nextTitle =
+        body.title !== undefined ? body.title || null : existing.title;
+      if (!nextTitle || !String(nextTitle).trim()) {
+        throw new BadRequestException('Title is required to publish');
+      }
+      const nextPublishedTags = nextTags ?? previousTags;
+      if (nextPublishedTags.length === 0) {
+        throw new BadRequestException('Add at least one hashtag.');
+      }
+      if (!targetCategoryId) {
+        throw new BadRequestException('Choose what this item is.');
+      }
+      if (!targetCategoryTypeId) {
+        throw new BadRequestException('Choose a garment type.');
+      }
+      this.assertAudienceForPublish(body.type ?? existing.type);
+      await this.assertStructuredFiltersForPublish(
+        'COLLECTION',
+        collectionId,
+        validatedDesignFilterValueIds,
+      );
+    }
 
     if (typeof body.categoryId === 'string' || body.categoryId === null) {
       data.categoryId = body.categoryId || null;
@@ -8171,7 +8408,7 @@ export class CollectionsService {
       await this.categoriesService.setEntityFilters(
         'COLLECTION',
         collectionId,
-        this.normalizeFilterValueIds(body.filterValueIds),
+        validatedDesignFilterValueIds ?? [],
       );
     }
 

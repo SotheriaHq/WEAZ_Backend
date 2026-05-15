@@ -1,8 +1,12 @@
-import { ForbiddenException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException } from '@nestjs/common';
 import { CollectionsService } from './collections.service';
 
 describe('CollectionsService brand catalog access', () => {
-  const createService = (prisma: any, brandAccessService?: any) =>
+  const createService = (
+    prisma: any,
+    brandAccessService?: any,
+    categoriesService?: any,
+  ) =>
     new CollectionsService(
       prisma,
       {} as any,
@@ -12,7 +16,7 @@ describe('CollectionsService brand catalog access', () => {
       undefined,
       undefined,
       undefined,
-      undefined,
+      categoriesService,
       undefined,
       undefined,
       undefined,
@@ -156,6 +160,73 @@ describe('CollectionsService brand catalog access', () => {
     await expect(
       (service as any).assertOwner('collection_1', 'regular_1', 'STORE'),
     ).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  describe('taxonomy metadata validation', () => {
+    const categoryId = '11111111-1111-4111-8111-111111111111';
+    const otherCategoryId = '22222222-2222-4222-8222-222222222222';
+    const categoryTypeId = '33333333-3333-4333-8333-333333333333';
+
+    it('rejects a garment type that does not belong to the selected category', async () => {
+      const prisma = {
+        collectionCategoryType: {
+          findUnique: jest.fn().mockResolvedValue({
+            id: categoryTypeId,
+            categoryId: otherCategoryId,
+            isActive: true,
+          }),
+        },
+      };
+      const service = createService(prisma);
+
+      await expect(
+        (service as any).assertCategoryTypeMatchesCategory(
+          categoryId,
+          categoryTypeId,
+        ),
+      ).rejects.toThrow('Sub-category does not belong to selected category');
+    });
+
+    it('allows draft helpers to remain flexible but rejects publish without structured filters', async () => {
+      const prisma = {
+        entityFilter: {
+          findMany: jest.fn().mockResolvedValue([]),
+        },
+      };
+      const categoriesService = {
+        validateEntityFilterValues: jest.fn().mockResolvedValue([]),
+      };
+      const service = createService(prisma, undefined, categoriesService);
+
+      await expect(
+        (service as any).assertStructuredFiltersForPublish(
+          'COLLECTION',
+          'collection-1',
+        ),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('accepts complete structured filters for publish validation', async () => {
+      const prisma = {};
+      const categoriesService = {
+        validateEntityFilterValues: jest
+          .fn()
+          .mockResolvedValue(['filter-style']),
+      };
+      const service = createService(prisma, undefined, categoriesService);
+
+      await expect(
+        (service as any).assertStructuredFiltersForPublish(
+          'COLLECTION',
+          'collection-1',
+          ['filter-style'],
+        ),
+      ).resolves.toEqual(['filter-style']);
+      expect(categoriesService.validateEntityFilterValues).toHaveBeenCalledWith(
+        'COLLECTION',
+        ['filter-style'],
+      );
+    });
   });
 
   describe('market feed DTO', () => {

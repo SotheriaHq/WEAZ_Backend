@@ -24,6 +24,21 @@ describe('StoreService', () => {
     {} as any,
   );
 
+  const createProductValidationService = (
+    validationPrisma: any,
+    categoriesService: any,
+  ) =>
+    new StoreService(
+      validationPrisma,
+      {} as any,
+      {} as any,
+      {} as any,
+      undefined,
+      undefined,
+      undefined,
+      categoriesService,
+    );
+
   beforeEach(() => {
     jest.clearAllMocks();
     process.env.STORE_PAYMENT_ACCOUNT_SECRET = 'store-secret';
@@ -80,6 +95,51 @@ describe('StoreService', () => {
     const payload = `${iv.toString('base64')}.${tag.toString('base64')}.${encrypted.toString('base64')}`;
 
     expect((service as any).decryptStorePaymentValue(payload)).toBe('1234567890');
+  });
+
+  it('rejects active product publish validation without structured filters', async () => {
+    const validationPrisma = {
+      entityFilter: {
+        findMany: jest.fn().mockResolvedValue([]),
+      },
+    };
+    const categoriesService = {
+      validateEntityFilterValues: jest.fn().mockResolvedValue([]),
+    };
+    const validationService = createProductValidationService(
+      validationPrisma,
+      categoriesService,
+    );
+
+    await expect(
+      (validationService as any).assertProductStructuredFiltersForPublish(
+        'product-1',
+      ),
+    ).rejects.toThrow('Add at least one style detail.');
+  });
+
+  it('accepts valid structured filters for active product publish validation', async () => {
+    const validationPrisma = {};
+    const categoriesService = {
+      validateEntityFilterValues: jest
+        .fn()
+        .mockResolvedValue(['filter-style']),
+    };
+    const validationService = createProductValidationService(
+      validationPrisma,
+      categoriesService,
+    );
+
+    await expect(
+      (validationService as any).assertProductStructuredFiltersForPublish(
+        null,
+        ['filter-style'],
+      ),
+    ).resolves.toEqual(['filter-style']);
+    expect(categoriesService.validateEntityFilterValues).toHaveBeenCalledWith(
+      'PRODUCT',
+      ['filter-style'],
+    );
   });
 
   it('keeps the last known good payout-account state when a sync attempt fails midway', async () => {
