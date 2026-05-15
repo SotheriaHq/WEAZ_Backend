@@ -79,6 +79,9 @@ describe('CustomOrdersService', () => {
       product: {
         findUnique: jest.fn(),
       },
+      design: {
+        findUnique: jest.fn(),
+      },
       collection: {
         findUnique: jest.fn(),
       },
@@ -140,6 +143,7 @@ describe('CustomOrdersService', () => {
       gender: 'WOMEN',
       categoryType: { slug: 'dresses' },
     });
+    prisma.design.findUnique.mockResolvedValue(null);
     prisma.collection.findUnique.mockResolvedValue({
       customMeasurementKeys: ['WOMEN_WAIST'],
       customFreeformPointIds: [],
@@ -733,6 +737,67 @@ describe('CustomOrdersService', () => {
       shippingAddress: null,
     } as any);
 
+    expect(pricingService.buildPricePreview).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requiredMeasurementKeys: ['WOMEN_WAIST'],
+      }),
+    );
+  });
+
+  it('uses explicit Design measurement contracts for preview pricing before legacy collection fallback', async () => {
+    prisma.customOrderConfiguration.findUnique.mockResolvedValue({
+      id: 'configuration_1',
+      brandId: 'brand_1',
+      isActive: true,
+      sourceType: 'DESIGN',
+      sourceId: 'design_1',
+      baseProductionCharge: 100000,
+      fabricCostPerYard: 6000,
+      rushEnabled: false,
+      rushFee: null,
+      requiredMeasurementKeys: ['WOMEN_CHEST_FULL_BUST', 'WOMEN_WAIST', 'WOMEN_HIP'],
+      requiredFreeformPointIds: [],
+      notes: null,
+      rules: [],
+      brand: { currency: 'NGN' },
+      versions: [{ id: 'configuration_version_1' }],
+    });
+    prisma.design.findUnique.mockResolvedValue({
+      customMeasurementKeys: ['WOMEN_WAIST'],
+      customFreeformPointIds: [],
+      customGender: 'WOMEN',
+      type: 'WOMEN',
+      legacyCollectionId: null,
+      categoryType: { slug: 'eveningwear' },
+    });
+    prisma.measurementPoint.findMany.mockResolvedValue([]);
+    prisma.userSizeFitProfile.findUnique.mockResolvedValue(null);
+    prisma.customOrderCheckoutIntent.findUnique.mockResolvedValue(null);
+    prisma.customOrderCheckoutIntent.upsert.mockResolvedValue({
+      id: 'intent_1',
+      expiresAt: new Date('2026-03-16T12:00:00.000Z'),
+    });
+    pricingService.validateConfigurationRules.mockReturnValue([]);
+    pricingService.buildPricePreview.mockReturnValue({
+      computedYards: 3.5,
+      matchedRule: { priority: 1, isFallback: true },
+      buyerPriceSummary: { grandTotal: 121000, currency: 'NGN' },
+    });
+
+    await service.createPricePreview('buyer_1', {
+      configurationId: 'configuration_1',
+      configurationVersionId: 'configuration_version_1',
+      measurementValues: {
+        WOMEN_WAIST: 76,
+      },
+      rushSelected: false,
+      shippingAddress: null,
+    } as any);
+
+    expect(prisma.design.findUnique).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: 'design_1' } }),
+    );
+    expect(prisma.collection.findUnique).not.toHaveBeenCalled();
     expect(pricingService.buildPricePreview).toHaveBeenCalledWith(
       expect.objectContaining({
         requiredMeasurementKeys: ['WOMEN_WAIST'],

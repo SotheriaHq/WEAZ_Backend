@@ -74,6 +74,9 @@ async function main() {
             sourceId: design.id,
           },
         },
+        include: {
+          rules: true,
+        },
       })
     : null;
 
@@ -116,6 +119,11 @@ async function main() {
   });
   record('Design has custom-order flag enabled', design?.customOrderEnabled === true, design?.customOrderEnabled);
   record('Design custom-order configuration exists', Boolean(customOrderConfiguration), customOrderConfiguration?.id);
+  record(
+    'Design custom-order configuration has pricing rule',
+    Boolean(customOrderConfiguration && customOrderConfiguration.rules.length > 0),
+    customOrderConfiguration?.rules.length ?? 0,
+  );
   record('Product exists', products > 0, products);
   record('StoreCollection exists', storeCollections > 0, storeCollections);
   record(

@@ -27,6 +27,7 @@ const DEMO_STORE_COLLECTION_ID = '66666666-6666-4666-8666-666666666666';
 const DEMO_FABRIC_BASIS_ID = '77777777-7777-4777-8777-777777777777';
 const DEMO_CUSTOM_ORDER_CONFIG_ID = '88888888-8888-4888-8888-888888888888';
 const DEMO_CUSTOM_ORDER_CONFIG_VERSION_ID = '99999999-9999-4999-8999-999999999999';
+const DEMO_CUSTOM_FABRIC_RULE_ID = '98989898-9898-4989-8989-989898989898';
 const DEMO_STORE_COLLECTION_PRODUCT_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const DEMO_DESIGN_MEDIA_IDS = [
   'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1',
@@ -616,6 +617,25 @@ async function ensureDemoCatalogSeed(idsBySlug: Map<string, string>) {
       isActive: true,
     },
     select: { id: true },
+  });
+
+  await prisma.customFabricRule.upsert({
+    where: { id: DEMO_CUSTOM_FABRIC_RULE_ID },
+    update: {
+      configurationId: customOrderConfiguration.id,
+      priority: 1,
+      conditionsJson: {},
+      outputYards: 4.5,
+      isFallback: true,
+    },
+    create: {
+      id: DEMO_CUSTOM_FABRIC_RULE_ID,
+      configurationId: customOrderConfiguration.id,
+      priority: 1,
+      conditionsJson: {},
+      outputYards: 4.5,
+      isFallback: true,
+    },
   });
 
   await prisma.customOrderConfigurationVersion.upsert({
