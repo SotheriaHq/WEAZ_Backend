@@ -10,21 +10,28 @@ let scriptPrisma: ScriptPrismaClient | null = null;
 
 type LegacyUserProfileFields = {
   id: string;
-  firstName: string;
-  lastName: string;
-  phoneNumber: string | null;
-  address: string | null;
-  profileImage: string | null;
-  profileImageId: string | null;
-  bannerImage: string | null;
-  bannerImageId: string | null;
-  profileVisibility: 'UNLOCKED' | 'LOCKED';
+  username: string;
+  email: string;
   createdAt: Date;
   updatedAt: Date;
 };
 
 function hasFlag(name: string): boolean {
   return process.argv.includes(name);
+}
+
+function deriveProfileName(user: Pick<LegacyUserProfileFields, 'username' | 'email'>) {
+  const fallback = user.username || user.email.split('@')[0] || 'User';
+  const parts = fallback
+    .replace(/[_-]+/g, ' ')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+
+  return {
+    firstName: parts[0] ?? 'User',
+    lastName: parts.slice(1).join(' ') || '',
+  };
 }
 
 async function userProfileTableExists(
@@ -78,15 +85,8 @@ async function main() {
       where: { userProfile: null },
       select: {
         id: true,
-        firstName: true,
-        lastName: true,
-        phoneNumber: true,
-        address: true,
-        profileImage: true,
-        profileImageId: true,
-        bannerImage: true,
-        bannerImageId: true,
-        profileVisibility: true,
+        username: true,
+        email: true,
         createdAt: true,
         updatedAt: true,
       },
@@ -99,21 +99,18 @@ async function main() {
     }
 
     const result = await prisma.userProfile.createMany({
-      data: users.map((user) => ({
-        id: uuidv4(),
-        userId: user.id,
-        firstName: user.firstName,
-        lastName: user.lastName,
-        phoneNumber: user.phoneNumber,
-        address: user.address,
-        profileImage: user.profileImage,
-        profileImageId: user.profileImageId,
-        bannerImage: user.bannerImage,
-        bannerImageId: user.bannerImageId,
-        profileVisibility: user.profileVisibility,
-        createdAt: user.createdAt,
-        updatedAt: user.updatedAt,
-      })),
+      data: users.map((user) => {
+        const profileName = deriveProfileName(user);
+        return {
+          id: uuidv4(),
+          userId: user.id,
+          firstName: profileName.firstName,
+          lastName: profileName.lastName,
+          profileVisibility: 'UNLOCKED',
+          createdAt: user.createdAt,
+          updatedAt: user.updatedAt,
+        };
+      }),
       skipDuplicates: true,
     });
 

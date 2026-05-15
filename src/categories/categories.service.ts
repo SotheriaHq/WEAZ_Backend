@@ -489,7 +489,7 @@ export class CategoriesService {
    * Replaces all existing filters of the given entity with the new set.
    */
   async setEntityFilters(
-    entityType: 'COLLECTION' | 'STORE_COLLECTION' | 'PRODUCT',
+    entityType: 'COLLECTION' | 'STORE_COLLECTION' | 'DESIGN' | 'PRODUCT',
     entityId: string,
     filterValueIds: string[],
   ) {
@@ -516,6 +516,7 @@ export class CategoriesService {
         entityType: entityType as any,
         entityId,
         ...(entityType === 'PRODUCT' ? { productId: entityId } : {}),
+        ...(entityType === 'DESIGN' ? { designId: entityId } : {}),
       }));
 
     if (records.length > 0) {
@@ -529,7 +530,7 @@ export class CategoriesService {
    * Get filter values applied to a specific entity.
    */
   async getEntityFilters(
-    entityType: 'COLLECTION' | 'STORE_COLLECTION' | 'PRODUCT',
+    entityType: 'COLLECTION' | 'STORE_COLLECTION' | 'DESIGN' | 'PRODUCT',
     entityId: string,
   ) {
     const filters = await this.prisma.entityFilter.findMany({

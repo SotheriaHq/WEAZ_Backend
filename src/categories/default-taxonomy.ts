@@ -52,6 +52,8 @@ export interface FilterDimensionSeed {
   values: FilterValueSeed[];
 }
 
+const CATALOG_FILTER_APPLIES_TO = ['COLLECTION', 'STORE_COLLECTION', 'DESIGN', 'PRODUCT'];
+
 // =====================
 // Main Categories (4)
 // =====================
@@ -135,7 +137,7 @@ export const DEFAULT_FILTER_DIMENSIONS: FilterDimensionSeed[] = [
     description: 'Material/textile used in the garment',
     order: 1,
     isMulti: true,
-    appliesTo: ['COLLECTION', 'PRODUCT'],
+    appliesTo: CATALOG_FILTER_APPLIES_TO,
     values: [
       { slug: 'ankara', name: 'Ankara', order: 1 },
       { slug: 'aso-oke', name: 'Aso-Oke', order: 2 },
@@ -159,7 +161,7 @@ export const DEFAULT_FILTER_DIMENSIONS: FilterDimensionSeed[] = [
     description: 'Design aesthetic / fashion style',
     order: 2,
     isMulti: true,
-    appliesTo: ['COLLECTION', 'PRODUCT'],
+    appliesTo: CATALOG_FILTER_APPLIES_TO,
     values: [
       { slug: 'traditional-nigerian', name: 'Traditional Nigerian', order: 1 },
       { slug: 'afro-modern', name: 'Afro-Modern', order: 2 },
@@ -179,7 +181,7 @@ export const DEFAULT_FILTER_DIMENSIONS: FilterDimensionSeed[] = [
     description: 'When/where to wear it',
     order: 3,
     isMulti: true,
-    appliesTo: ['COLLECTION', 'PRODUCT'],
+    appliesTo: CATALOG_FILTER_APPLIES_TO,
     values: [
       { slug: 'everyday', name: 'Everyday', order: 1 },
       { slug: 'work-office', name: 'Work / Office', order: 2 },
@@ -197,7 +199,7 @@ export const DEFAULT_FILTER_DIMENSIONS: FilterDimensionSeed[] = [
     description: 'Dominant color palette',
     order: 4,
     isMulti: true,
-    appliesTo: ['COLLECTION', 'PRODUCT'],
+    appliesTo: CATALOG_FILTER_APPLIES_TO,
     values: [
       { slug: 'bold-print-colors', name: 'Bold Prints', order: 1 },
       { slug: 'earth-tones', name: 'Earth Tones', order: 2 },
@@ -213,7 +215,7 @@ export const DEFAULT_FILTER_DIMENSIONS: FilterDimensionSeed[] = [
     description: 'Garment silhouette and fit',
     order: 5,
     isMulti: true,
-    appliesTo: ['COLLECTION', 'PRODUCT'],
+    appliesTo: CATALOG_FILTER_APPLIES_TO,
     values: [
       { slug: 'loose-flowy', name: 'Loose / Flowy', order: 1 },
       { slug: 'fitted', name: 'Fitted', order: 2 },
@@ -228,7 +230,7 @@ export const DEFAULT_FILTER_DIMENSIONS: FilterDimensionSeed[] = [
     description: 'Where the designer/brand is based',
     order: 6,
     isMulti: false,
-    appliesTo: ['COLLECTION', 'PRODUCT'],
+    appliesTo: CATALOG_FILTER_APPLIES_TO,
     values: [
       { slug: 'lagos', name: 'Lagos', order: 1 },
       { slug: 'abuja', name: 'Abuja', order: 2 },
@@ -244,7 +246,7 @@ export const DEFAULT_FILTER_DIMENSIONS: FilterDimensionSeed[] = [
     description: 'Approximate price bracket (NGN)',
     order: 7,
     isMulti: false,
-    appliesTo: ['COLLECTION', 'PRODUCT'],
+    appliesTo: CATALOG_FILTER_APPLIES_TO,
     values: [
       { slug: 'budget-5k-20k', name: '₦5k – ₦20k', order: 1 },
       { slug: 'mid-range-20k-50k', name: '₦20k – ₦50k', order: 2 },

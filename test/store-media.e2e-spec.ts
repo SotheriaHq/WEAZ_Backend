@@ -52,10 +52,14 @@ describe('Store media rules (e2e)', () => {
         username: `brand_${userId.slice(0, 6)}`,
         email: `brand_${userId.slice(0, 6)}@example.com`,
         password: 'password123',
-        firstName: 'Brand',
-        lastName: 'Owner',
         type: 'BRAND',
         role: 'User',
+        userProfile: {
+          create: {
+            firstName: 'Brand',
+            lastName: 'Owner',
+          },
+        },
       },
     });
 

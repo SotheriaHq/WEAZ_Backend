@@ -67,8 +67,6 @@ describe('Custom-order admin reconciliation routes (e2e)', () => {
           username: `admin_${adminId.slice(0, 6)}`,
           email: `admin_${adminId.slice(0, 6)}@example.com`,
           password: 'password123',
-          firstName: 'Admin',
-          lastName: 'Operator',
           type: 'REGULAR',
           role: 'SuperAdmin',
         },
@@ -77,8 +75,6 @@ describe('Custom-order admin reconciliation routes (e2e)', () => {
           username: `brand_${ownerId.slice(0, 6)}`,
           email: `brand_${ownerId.slice(0, 6)}@example.com`,
           password: 'password123',
-          firstName: 'Brand',
-          lastName: 'Owner',
           type: 'BRAND',
           role: 'User',
         },
@@ -87,10 +83,28 @@ describe('Custom-order admin reconciliation routes (e2e)', () => {
           username: `buyer_${buyerId.slice(0, 6)}`,
           email: `buyer_${buyerId.slice(0, 6)}@example.com`,
           password: 'password123',
-          firstName: 'Buyer',
-          lastName: 'User',
           type: 'REGULAR',
           role: 'User',
+        },
+      ],
+    });
+
+    await prisma.userProfile.createMany({
+      data: [
+        {
+          userId: adminId,
+          firstName: 'Admin',
+          lastName: 'Operator',
+        },
+        {
+          userId: ownerId,
+          firstName: 'Brand',
+          lastName: 'Owner',
+        },
+        {
+          userId: buyerId,
+          firstName: 'Buyer',
+          lastName: 'User',
         },
       ],
     });

@@ -15,6 +15,31 @@ import { seedMeasurementPoints } from './seed_measurement_points';
 
 const SYSTEM_ADMIN_EMAIL = 'adminoversee@test.com';
 const SYSTEM_ADMIN_PASSWORD = 'Password@123';
+const DEMO_BRAND_OWNER_EMAIL = 'brand.owner@test.com';
+const DEMO_BUYER_EMAIL = 'buyer@test.com';
+const DEMO_USER_PASSWORD = 'Password@123';
+const DEMO_BRAND_OWNER_ID = '11111111-1111-4111-8111-111111111111';
+const DEMO_BUYER_ID = '22222222-2222-4222-8222-222222222222';
+const DEMO_BRAND_ID = '33333333-3333-4333-8333-333333333333';
+const DEMO_DESIGN_ID = '44444444-4444-4444-8444-444444444444';
+const DEMO_PRODUCT_ID = '55555555-5555-4555-8555-555555555555';
+const DEMO_STORE_COLLECTION_ID = '66666666-6666-4666-8666-666666666666';
+const DEMO_FABRIC_BASIS_ID = '77777777-7777-4777-8777-777777777777';
+const DEMO_CUSTOM_ORDER_CONFIG_ID = '88888888-8888-4888-8888-888888888888';
+const DEMO_CUSTOM_ORDER_CONFIG_VERSION_ID = '99999999-9999-4999-8999-999999999999';
+const DEMO_STORE_COLLECTION_PRODUCT_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const DEMO_DESIGN_MEDIA_IDS = [
+  'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1',
+  'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2',
+  'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb3',
+  'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb4',
+];
+const DEMO_FILE_UPLOAD_IDS = [
+  'cccccccc-cccc-4ccc-8ccc-ccccccccccc1',
+  'cccccccc-cccc-4ccc-8ccc-ccccccccccc2',
+  'cccccccc-cccc-4ccc-8ccc-ccccccccccc3',
+  'cccccccc-cccc-4ccc-8ccc-ccccccccccc4',
+];
 
 const datasourceUrl = process.env.DATABASE_URL;
 
@@ -289,8 +314,6 @@ async function ensureSystemAdmin() {
       id: randomUUID(),
       email: SYSTEM_ADMIN_EMAIL,
       username: 'systemadmin',
-      firstName: 'System',
-      lastName: 'Admin',
       password: hashedPassword,
       role: 'SuperAdmin',
       type: 'REGULAR',
@@ -298,10 +321,450 @@ async function ensureSystemAdmin() {
       isActive: 'Active',
       isEmailVerified: true,
       mustResetPassword: false,
+      userProfile: {
+        create: {
+          firstName: 'System',
+          lastName: 'Admin',
+        },
+      },
     },
   });
 
   console.log(`System SuperAdmin created: ${SYSTEM_ADMIN_EMAIL}`);
+}
+
+async function upsertUserWithProfile(args: {
+  id: string;
+  email: string;
+  username: string;
+  firstName: string;
+  lastName: string;
+  type: 'BRAND' | 'REGULAR';
+  role?: 'User' | 'Admin' | 'SuperAdmin';
+}) {
+  const hashedPassword = await argon2.hash(DEMO_USER_PASSWORD);
+  const user = await prisma.user.upsert({
+    where: { email: args.email },
+    update: {
+      username: args.username,
+      type: args.type,
+      role: args.role ?? 'User',
+      status: 'ACTIVE',
+      isActive: 'Active',
+      isEmailVerified: true,
+      mustResetPassword: false,
+    },
+    create: {
+      id: args.id,
+      email: args.email,
+      username: args.username,
+      password: hashedPassword,
+      type: args.type,
+      role: args.role ?? 'User',
+      status: 'ACTIVE',
+      isActive: 'Active',
+      isEmailVerified: true,
+      mustResetPassword: false,
+    },
+    select: { id: true },
+  });
+
+  await prisma.userProfile.upsert({
+    where: { userId: user.id },
+    update: {
+      firstName: args.firstName,
+      lastName: args.lastName,
+    },
+    create: {
+      userId: user.id,
+      firstName: args.firstName,
+      lastName: args.lastName,
+    },
+  });
+
+  return user.id;
+}
+
+async function findSubCategoryId(categoryId: string, slug: string) {
+  const categoryType = await prisma.collectionCategoryType.findFirst({
+    where: { categoryId, slug, isActive: true },
+    select: { id: true },
+  });
+  return categoryType?.id ?? null;
+}
+
+async function upsertDemoFileUpload(userId: string, index: number) {
+  const s3Key = `seed/design/domain-sample-${index + 1}.jpg`;
+  const s3Url = `https://threadly.local/uploads/${s3Key}`;
+  const existing = await prisma.fileUpload.findUnique({
+    where: { s3Key },
+    select: { id: true },
+  });
+
+  const data = {
+    userId,
+    originalName: `domain-sample-${index + 1}.jpg`,
+    fileName: `domain-sample-${index + 1}.jpg`,
+    s3Key,
+    s3Url,
+    fileType: 'POST_IMAGE' as const,
+    mimeType: 'image/jpeg',
+    size: 100_000 + index,
+    processingStatus: 'READY' as const,
+    width: 1200,
+    height: 1600,
+    isPublic: true,
+  };
+
+  if (existing) {
+    await prisma.fileUpload.update({
+      where: { id: existing.id },
+      data,
+    });
+    return { id: existing.id, s3Url };
+  }
+
+  const created = await prisma.fileUpload.create({
+    data: {
+      id: DEMO_FILE_UPLOAD_IDS[index],
+      ...data,
+    },
+    select: { id: true },
+  });
+  return { id: created.id, s3Url };
+}
+
+async function ensureDemoCatalogSeed(idsBySlug: Map<string, string>) {
+  const brandOwnerId = await upsertUserWithProfile({
+    id: DEMO_BRAND_OWNER_ID,
+    email: DEMO_BRAND_OWNER_EMAIL,
+    username: 'threadly_brand_owner',
+    firstName: 'Demo',
+    lastName: 'Designer',
+    type: 'BRAND',
+  });
+  const buyerId = await upsertUserWithProfile({
+    id: DEMO_BUYER_ID,
+    email: DEMO_BUYER_EMAIL,
+    username: 'threadly_buyer',
+    firstName: 'Demo',
+    lastName: 'Buyer',
+    type: 'REGULAR',
+  });
+
+  const brand = await prisma.brand.upsert({
+    where: { ownerId: brandOwnerId },
+    update: {
+      name: 'Threadly Atelier',
+      description: 'Demo African fashion brand for local reset validation.',
+      tags: ['demo', 'ankara', 'custom-order'],
+      country: 'Nigeria',
+      state: 'Lagos',
+      city: 'Lagos',
+      isStoreOpen: true,
+      currency: 'NGN',
+    },
+    create: {
+      id: DEMO_BRAND_ID,
+      ownerId: brandOwnerId,
+      name: 'Threadly Atelier',
+      description: 'Demo African fashion brand for local reset validation.',
+      tags: ['demo', 'ankara', 'custom-order'],
+      country: 'Nigeria',
+      state: 'Lagos',
+      city: 'Lagos',
+      isStoreOpen: true,
+      currency: 'NGN',
+    },
+    select: { id: true },
+  });
+
+  const categoryId = idsBySlug.get('womens-wear') ?? null;
+  const categoryTypeId = categoryId
+    ? await findSubCategoryId(categoryId, 'dresses-gowns')
+    : null;
+  const mediaFiles = await Promise.all(
+    DEMO_FILE_UPLOAD_IDS.map((_, index) => upsertDemoFileUpload(brandOwnerId, index)),
+  );
+
+  await prisma.design.upsert({
+    where: { id: DEMO_DESIGN_ID },
+    update: {
+      ownerId: brandOwnerId,
+      brandId: brand.id,
+      title: 'Ankara Evening Concept',
+      description: 'Four-view sample design for fresh database validation.',
+      status: 'PUBLISHED',
+      visibility: 'PUBLIC',
+      type: 'FEMALE',
+      categoryId,
+      categoryTypeId,
+      tags: ['ankara', 'evening', 'custom-order'],
+      customOrderEnabled: true,
+      sizingMode: 'CUSTOM',
+      customMeasurementKeys: ['WOMEN_CHEST_FULL_BUST', 'WOMEN_WAIST', 'WOMEN_HIP'],
+      fitPreference: 'REGULAR',
+      targetAgeGroup: 'ADULT',
+    },
+    create: {
+      id: DEMO_DESIGN_ID,
+      ownerId: brandOwnerId,
+      brandId: brand.id,
+      title: 'Ankara Evening Concept',
+      description: 'Four-view sample design for fresh database validation.',
+      status: 'PUBLISHED',
+      visibility: 'PUBLIC',
+      type: 'FEMALE',
+      categoryId,
+      categoryTypeId,
+      tags: ['ankara', 'evening', 'custom-order'],
+      customOrderEnabled: true,
+      sizingMode: 'CUSTOM',
+      customMeasurementKeys: ['WOMEN_CHEST_FULL_BUST', 'WOMEN_WAIST', 'WOMEN_HIP'],
+      fitPreference: 'REGULAR',
+      targetAgeGroup: 'ADULT',
+    },
+  });
+
+  for (const [index, file] of mediaFiles.entries()) {
+    await prisma.designMedia.upsert({
+      where: { id: DEMO_DESIGN_MEDIA_IDS[index] },
+      update: {
+        designId: DEMO_DESIGN_ID,
+        fileUploadId: file.id,
+        orderIndex: index,
+        mediaType: 'POST_IMAGE',
+      },
+      create: {
+        id: DEMO_DESIGN_MEDIA_IDS[index],
+        designId: DEMO_DESIGN_ID,
+        fileUploadId: file.id,
+        orderIndex: index,
+        mediaType: 'POST_IMAGE',
+      },
+    });
+  }
+
+  await prisma.design.update({
+    where: { id: DEMO_DESIGN_ID },
+    data: { coverMediaId: DEMO_DESIGN_MEDIA_IDS[0] },
+  });
+
+  const fabricBasis = await prisma.customFabricRuleBasis.upsert({
+    where: { id: DEMO_FABRIC_BASIS_ID },
+    update: {
+      label: 'Demo gown measurement basis',
+      measurementKeys: ['WOMEN_CHEST_FULL_BUST', 'WOMEN_WAIST', 'WOMEN_HIP'],
+      brandId: brand.id,
+      status: 'BRAND_ONLY',
+    },
+    create: {
+      id: DEMO_FABRIC_BASIS_ID,
+      label: 'Demo gown measurement basis',
+      measurementKeys: ['WOMEN_CHEST_FULL_BUST', 'WOMEN_WAIST', 'WOMEN_HIP'],
+      brandId: brand.id,
+      status: 'BRAND_ONLY',
+    },
+    select: { id: true },
+  });
+
+  const customOrderConfiguration = await prisma.customOrderConfiguration.upsert({
+    where: {
+      sourceType_sourceId: {
+        sourceType: 'DESIGN',
+        sourceId: DEMO_DESIGN_ID,
+      },
+    },
+    update: {
+      brandId: brand.id,
+      title: 'Ankara Evening Custom Order',
+      buyerInstructionText: 'Share event date, preferred sleeve style, and exact measurements.',
+      requiredMeasurementKeys: ['WOMEN_CHEST_FULL_BUST', 'WOMEN_WAIST', 'WOMEN_HIP'],
+      fabricRuleBasisId: fabricBasis.id,
+      baseProductionCharge: 15000,
+      fabricCostPerYard: 3500,
+      productionLeadDays: 14,
+      deliveryMinDays: 2,
+      deliveryMaxDays: 5,
+      deliveryScope: 'NATIONWIDE',
+      revisionPolicy: 'One fitting adjustment is included.',
+      returnPolicy: 'Custom orders are final after buyer approval.',
+      defectPolicy: 'Defects are repaired or remade after review.',
+      fabricSourcingMode: 'BRAND_SOURCED',
+      isActive: true,
+    },
+    create: {
+      id: DEMO_CUSTOM_ORDER_CONFIG_ID,
+      brandId: brand.id,
+      sourceType: 'DESIGN',
+      sourceId: DEMO_DESIGN_ID,
+      title: 'Ankara Evening Custom Order',
+      buyerInstructionText: 'Share event date, preferred sleeve style, and exact measurements.',
+      requiredMeasurementKeys: ['WOMEN_CHEST_FULL_BUST', 'WOMEN_WAIST', 'WOMEN_HIP'],
+      requiredFreeformPointIds: [],
+      fabricRuleBasisId: fabricBasis.id,
+      baseProductionCharge: 15000,
+      fabricCostPerYard: 3500,
+      productionLeadDays: 14,
+      deliveryMinDays: 2,
+      deliveryMaxDays: 5,
+      deliveryScope: 'NATIONWIDE',
+      revisionPolicy: 'One fitting adjustment is included.',
+      returnPolicy: 'Custom orders are final after buyer approval.',
+      defectPolicy: 'Defects are repaired or remade after review.',
+      fabricSourcingMode: 'BRAND_SOURCED',
+      isActive: true,
+    },
+    select: { id: true },
+  });
+
+  await prisma.customOrderConfigurationVersion.upsert({
+    where: {
+      configurationId_version: {
+        configurationId: customOrderConfiguration.id,
+        version: 1,
+      },
+    },
+    update: {
+      snapshotJson: {
+        sourceType: 'DESIGN',
+        sourceId: DEMO_DESIGN_ID,
+        title: 'Ankara Evening Custom Order',
+      },
+    },
+    create: {
+      id: DEMO_CUSTOM_ORDER_CONFIG_VERSION_ID,
+      configurationId: customOrderConfiguration.id,
+      version: 1,
+      snapshotJson: {
+        sourceType: 'DESIGN',
+        sourceId: DEMO_DESIGN_ID,
+        title: 'Ankara Evening Custom Order',
+      },
+      createdById: brandOwnerId,
+    },
+  });
+
+  const product = await prisma.product.upsert({
+    where: { id: DEMO_PRODUCT_ID },
+    update: {
+      brandId: brand.id,
+      categoryId,
+      categoryTypeId,
+      name: 'Ready-to-Wear Ankara Gown',
+      description: 'Sellable ready-to-wear sample product.',
+      price: 65000,
+      currency: 'NGN',
+      images: mediaFiles.map((file) => file.s3Url),
+      thumbnail: mediaFiles[0]?.s3Url,
+      totalStock: 8,
+      sizes: ['S', 'M', 'L'],
+      sizeStock: { S: 2, M: 4, L: 2 },
+      tags: ['ankara', 'ready-to-wear'],
+      isActive: true,
+    },
+    create: {
+      id: DEMO_PRODUCT_ID,
+      brandId: brand.id,
+      categoryId,
+      categoryTypeId,
+      name: 'Ready-to-Wear Ankara Gown',
+      slug: 'ready-to-wear-ankara-gown',
+      description: 'Sellable ready-to-wear sample product.',
+      price: 65000,
+      currency: 'NGN',
+      images: mediaFiles.map((file) => file.s3Url),
+      thumbnail: mediaFiles[0]?.s3Url,
+      totalStock: 8,
+      sizes: ['S', 'M', 'L'],
+      sizeStock: { S: 2, M: 4, L: 2 },
+      tags: ['ankara', 'ready-to-wear'],
+      isActive: true,
+    },
+    select: { id: true },
+  });
+
+  await prisma.storeCollection.upsert({
+    where: { id: DEMO_STORE_COLLECTION_ID },
+    update: {
+      ownerId: brandOwnerId,
+      title: 'Evening Capsule',
+      description: 'Grouping sample that contains a sellable product.',
+      status: 'PUBLISHED',
+      visibility: 'PUBLIC',
+      type: 'FEMALE',
+      categoryId,
+      categoryTypeId,
+      isAvailableInStore: true,
+      tags: ['capsule', 'evening'],
+    },
+    create: {
+      id: DEMO_STORE_COLLECTION_ID,
+      ownerId: brandOwnerId,
+      title: 'Evening Capsule',
+      description: 'Grouping sample that contains a sellable product.',
+      status: 'PUBLISHED',
+      visibility: 'PUBLIC',
+      type: 'FEMALE',
+      categoryId,
+      categoryTypeId,
+      isAvailableInStore: true,
+      tags: ['capsule', 'evening'],
+    },
+  });
+
+  await prisma.storeCollectionProduct.upsert({
+    where: {
+      collectionId_productId: {
+        collectionId: DEMO_STORE_COLLECTION_ID,
+        productId: product.id,
+      },
+    },
+    update: { orderIndex: 0, isPrimary: true },
+    create: {
+      id: DEMO_STORE_COLLECTION_PRODUCT_ID,
+      collectionId: DEMO_STORE_COLLECTION_ID,
+      productId: product.id,
+      orderIndex: 0,
+      isPrimary: true,
+    },
+  });
+
+  await prisma.savedItem.upsert({
+    where: {
+      userId_targetType_targetId: {
+        userId: buyerId,
+        targetType: 'DESIGN',
+        targetId: DEMO_DESIGN_ID,
+      },
+    },
+    update: {},
+    create: {
+      id: randomUUID(),
+      userId: buyerId,
+      targetType: 'DESIGN',
+      targetId: DEMO_DESIGN_ID,
+    },
+  });
+
+  await prisma.savedItem.upsert({
+    where: {
+      userId_targetType_targetId: {
+        userId: buyerId,
+        targetType: 'PRODUCT',
+        targetId: product.id,
+      },
+    },
+    update: {},
+    create: {
+      id: randomUUID(),
+      userId: buyerId,
+      targetType: 'PRODUCT',
+      targetId: product.id,
+    },
+  });
+
+  console.log('Seeded reset-ready demo Design/Product/StoreCollection data.');
 }
 
 async function main() {
@@ -311,9 +774,11 @@ async function main() {
 
   await seedMeasurementPoints(prisma);
 
-  await ensureDefaultTaxonomy();
+  const idsBySlug = await ensureDefaultTaxonomy();
 
   const seededTagCount = await ensureDefaultTags();
+
+  await ensureDemoCatalogSeed(idsBySlug);
 
   // Log final counts
   const [totalTags, approvedTags, pendingTags, rejectedTags] = await Promise.all([
