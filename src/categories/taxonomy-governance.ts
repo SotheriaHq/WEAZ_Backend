@@ -59,6 +59,21 @@ export const BLOCKED_GARMENT_TAXONOMY_SLUGS = new Set([
   'rtw',
   'price-range',
   'designer-location',
+  'accessories',
+  'accessory',
+  'footwear',
+  'shoes',
+  'shoe',
+  'bags',
+  'bag',
+  'jewelry',
+  'jewellery',
+  'watches',
+  'watch',
+  'cosmetics',
+  'beauty',
+  'perfume',
+  'perfumes',
 ]);
 
 export function normalizeTaxonomySlug(input: string): string {
@@ -85,7 +100,7 @@ export function getBlockedTaxonomyGuidance(
   }
 
   const target = level === 'category' ? 'garment category' : 'garment type';
-  return `This belongs under audience, style, heritage, occasion, availability, price, or location metadata, not ${target}. Use item-based terms like Dresses & Gowns, Agbada, Tops & Shirts, Maxi dress, Headwrap, or Handbag.`;
+  return `This belongs under audience, style, heritage, occasion, availability, price, location, or future non-garment metadata, not ${target}. Use V1 clothing terms like Dresses & Gowns, Agbada, Tops & Shirts, Maxi dress, Senator Wear, Kaftans, or Native Sets.`;
 }
 
 export function assertGarmentCategoryTermAllowed(input: string): void {

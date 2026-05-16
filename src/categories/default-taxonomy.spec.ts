@@ -12,7 +12,7 @@ import {
 } from './taxonomy-governance';
 
 describe('default taxonomy contract', () => {
-  it('does not seed audience or service concepts as top-level garment categories', () => {
+  it('does not seed audience, service, or future non-garment concepts as top-level garment categories', () => {
     const forbiddenCategorySlugs = new Set([
       'womens-wear',
       'mens-wear',
@@ -30,6 +30,11 @@ describe('default taxonomy contract', () => {
       'bespoke',
       'custom',
       'ready-to-wear',
+      'accessories',
+      'footwear',
+      'bags',
+      'jewelry',
+      'shoes',
     ]);
 
     const categorySlugs = DEFAULT_COLLECTION_CATEGORIES.map(
@@ -43,7 +48,6 @@ describe('default taxonomy contract', () => {
         'skirts',
         'agbada',
         'bridal-wear',
-        'accessories',
       ]),
     );
     expect(categorySlugs.some((slug) => forbiddenCategorySlugs.has(slug))).toBe(
@@ -61,6 +65,10 @@ describe('default taxonomy contract', () => {
         'african-fashion',
         'western-fashion',
         'indian-fashion',
+        'accessories',
+        'footwear',
+        'bags',
+        'jewelry',
       ]),
     );
   });

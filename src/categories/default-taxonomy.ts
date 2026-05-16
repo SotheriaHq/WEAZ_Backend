@@ -139,30 +139,6 @@ export const DEFAULT_COLLECTION_CATEGORIES: CategorySeed[] = [
     description: 'Garments made for bridal parties, including bridal gowns, reception dresses, robes, and groom traditional sets.',
     order: 13,
   },
-  {
-    slug: 'accessories',
-    name: 'Accessories',
-    description: 'Wearable finishing items such as headwraps, gele, caps, belts, scarves, and ties.',
-    order: 14,
-  },
-  {
-    slug: 'footwear',
-    name: 'Footwear',
-    description: 'Shoes and foot coverings including sandals, heels, loafers, sneakers, and slippers.',
-    order: 15,
-  },
-  {
-    slug: 'bags',
-    name: 'Bags',
-    description: 'Carried fashion items including totes, clutches, handbags, backpacks, and beaded bags.',
-    order: 16,
-  },
-  {
-    slug: 'jewelry',
-    name: 'Jewelry',
-    description: 'Decorative wearable items including necklaces, earrings, bracelets, beads, and cufflinks.',
-    order: 17,
-  },
 ];
 
 // =====================
@@ -262,36 +238,6 @@ export const DEFAULT_SUB_CATEGORIES: Record<string, SubCategorySeed[]> = {
     { slug: 'bridesmaid-dress', name: 'Bridesmaid dress', order: 3, description: 'Dress made for bridal party attendants.' },
     { slug: 'bridal-robe', name: 'Bridal robe', order: 4, description: 'Robe made for bridal preparation or ceremony styling.' },
     { slug: 'groom-traditional-set', name: 'Groom traditional set', order: 5, description: 'Traditional outfit set made for a groom.' },
-  ],
-  accessories: [
-    { slug: 'headwrap', name: 'Headwrap', order: 1, description: 'Fabric wrap worn on the head.' },
-    { slug: 'gele', name: 'Gele', order: 2, description: 'Structured head tie worn as a statement accessory.' },
-    { slug: 'cap-fila', name: 'Cap / Fila', order: 3, description: 'Traditional cap or fila headwear.' },
-    { slug: 'belt', name: 'Belt', order: 4, description: 'Waist accessory used to secure or finish an outfit.' },
-    { slug: 'scarf', name: 'Scarf', order: 5, description: 'Fabric accessory worn around the neck, head, or shoulders.' },
-    { slug: 'tie', name: 'Tie', order: 6, description: 'Neckwear accessory including standard ties and bow ties.' },
-  ],
-  footwear: [
-    { slug: 'sandals', name: 'Sandals', order: 1, description: 'Open footwear with straps.' },
-    { slug: 'heels', name: 'Heels', order: 2, description: 'Raised-heel footwear.' },
-    { slug: 'loafers', name: 'Loafers', order: 3, description: 'Slip-on closed shoes.' },
-    { slug: 'sneakers', name: 'Sneakers', order: 4, description: 'Casual athletic-style shoes.' },
-    { slug: 'slippers', name: 'Slippers', order: 5, description: 'Easy slip-on footwear.' },
-  ],
-  bags: [
-    { slug: 'tote-bag', name: 'Tote bag', order: 1, description: 'Open carry bag with handles.' },
-    { slug: 'clutch', name: 'Clutch', order: 2, description: 'Small handheld bag.' },
-    { slug: 'handbag', name: 'Handbag', order: 3, description: 'Structured or soft bag carried by hand or shoulder.' },
-    { slug: 'backpack', name: 'Backpack', order: 4, description: 'Bag carried on the back with shoulder straps.' },
-    { slug: 'beaded-bag', name: 'Beaded bag', order: 5, description: 'Bag decorated or constructed with beads.' },
-  ],
-  jewelry: [
-    { slug: 'necklace', name: 'Necklace', order: 1, description: 'Jewelry worn around the neck.' },
-    { slug: 'earrings', name: 'Earrings', order: 2, description: 'Jewelry worn on the ears.' },
-    { slug: 'bracelet', name: 'Bracelet', order: 3, description: 'Jewelry worn around the wrist.' },
-    { slug: 'coral-beads', name: 'Coral beads', order: 4, description: 'Coral bead jewelry often used in traditional styling.' },
-    { slug: 'waist-beads', name: 'Waist beads', order: 5, description: 'Beads worn around the waist.' },
-    { slug: 'cufflinks', name: 'Cufflinks', order: 6, description: 'Jewelry fasteners for shirt cuffs.' },
   ],
 };
 
@@ -532,6 +478,10 @@ export const LEGACY_CATEGORY_SLUGS = [
   'african-fashion',
   'western-fashion',
   'indian-fashion',
+  'accessories',
+  'footwear',
+  'bags',
+  'jewelry',
 ];
 
 export const LEGACY_CATEGORY_TYPE_SLUGS = [

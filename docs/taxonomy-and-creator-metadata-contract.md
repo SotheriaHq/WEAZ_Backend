@@ -20,7 +20,7 @@ Feed scoring, feed rendering, and interaction event tracking are intentionally o
 
 ### Garment Category
 
-A garment category is the top-level physical item family. It answers the internal question: what broad kind of garment or fashion item is this?
+A garment category is the top-level physical clothing family for V1. It answers the internal question: what broad kind of garment is this?
 
 Garment categories must be item families, not audience, occasion, style, price tier, culture, or marketing language.
 
@@ -31,8 +31,11 @@ Valid direction examples:
 - Bottoms
 - Outerwear
 - Traditional sets
-- Accessories
-- Footwear
+- Agbada
+- Kaftans
+- Native sets
+
+V1 intentionally excludes non-garment fashion items such as shoes, bags, jewelry, accessories, watches, cosmetics, beauty products, and perfumes. Those can be revisited in a future taxonomy expansion.
 
 Invalid garment category examples:
 
