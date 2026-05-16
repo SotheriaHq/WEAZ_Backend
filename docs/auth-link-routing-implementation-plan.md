@@ -256,13 +256,110 @@ Phase 2 checklist:
 - [x] Added focused backend tests for the changed behavior.
 - [x] Deferred mobile deep links and native reset/verify screens to a later phase.
 
+## Phase 3 Web And Mobile Auth-Link Handling Notes
+
+Status: completed 2026-05-16.
+
+Re-audit confirmed current web state:
+- `/forgot-password` is registered as a guest route and requests a reset link with a generic response.
+- `/reset-password` is registered as a guest route, reads `token` from the query string, posts to `AuthApi.confirmPasswordReset()`, and removes the token from browser history after successful reset.
+- `/verify-email` is registered outside authenticated route guards, trims the token query param, verifies through `/auth/verify-email`, and keeps `next` sanitized to same-app relative paths.
+- `/settings?tab=account-security&emailChangeToken=...` still processes email-change confirmation inside `AccountSecuritySettings`.
+
+Re-audit confirmed current mobile state before implementation:
+- `app.json` defines the Expo custom scheme `threadlymobile`.
+- `app.json` does not define iOS associated domains or Android App Links intent filters.
+- `app/(auth)/forgot-password.tsx` existed and called `requestPasswordReset()`.
+- `src/api/AuthApi.ts` already exposed `confirmPasswordReset(token, newPassword)`.
+- `app/(auth)/_layout.tsx` did not register a reset-password route.
+- `src/utils/notificationRouting.ts` only handled message/inbox deep links and did not route auth links.
+
+Implemented in Phase 3:
+- Added the native mobile route `app/(auth)/reset-password.tsx`.
+- Registered `reset-password` in `app/(auth)/_layout.tsx`.
+- The mobile reset screen reads `token` from route/query params, handles missing-token state, validates a minimum 12-character password consistently with current mobile signup and web reset expectations, blocks mismatched passwords, calls `confirmPasswordReset(token, newPassword)`, never displays/logs the token, and routes back to login after success by explicit user action.
+- Added `src/utils/authLinkRouting.ts` to resolve supported mobile auth links into Expo Router targets.
+- Updated root deep-link handling so custom-scheme reset links route to the native reset screen.
+- Confirmed custom-scheme readiness for:
+
+```txt
+threadlymobile://reset-password?token=<token>
+threadlymobile:///reset-password?token=<token>
+```
+
+- The helper can also map an HTTPS `/reset-password?token=...` URL if the OS ever delivers that URL to the app, but production Universal Links/App Links are not claimed because platform association config is missing.
+- Updated mobile forgot-password success copy to say the reset email contains a secure link that can be opened on the device or in a browser, and that the web page remains valid if the app cannot open the link.
+- Hardened web reset token handling by trimming the query token before submit.
+- Hardened web email-change token handling by trimming the token and removing an empty `emailChangeToken` query param from URL history.
+
+Web fallback decision:
+- Backend-generated email links remain normal HTTPS web links.
+- Web `/reset-password`, `/verify-email`, admin reset, and email-change routes remain stable.
+- Mobile support is additive through custom-scheme readiness and does not make app installation mandatory.
+- Users must not be sent to an app store before completing password reset.
+
+Universal/App Links status:
+- iOS Universal Links are deferred because `app.json` has no associated domains and no Apple App Site Association file/domain was provided.
+- Android App Links are deferred because `app.json` has no intent filters and no Digital Asset Links domain was provided.
+- Email verification, admin password reset, email-change confirmation, and brand-staff invite remain web fallback routes in Phase 3.
+
+Local mobile auth-link test values:
+- Native/dev-client custom scheme: `threadlymobile://reset-password?token=TEST_TOKEN`
+- Triple-slash custom scheme variant: `threadlymobile:///reset-password?token=TEST_TOKEN`
+- Backend email fallback remains configured by backend `WEB_APP_URL`.
+- For physical-device local web fallback QA, use a LAN web origin for backend `WEB_APP_URL` and mobile `EXPO_PUBLIC_WEB_APP_URL`; do not use `localhost` from a device.
+
+Phase 3 tests and checks:
+- Web focused Vitest: `npm test -- ResetPasswordPage --run`
+- Mobile auth-link contract: `npm run test:auth-link-routing-contract`
+- Mobile TypeScript: `npm exec tsc -- --noEmit`
+- Mobile design-system audit: `npm run audit:design-system`
+- Web build was retried with extended timeout during final validation.
+- Backend docs-only diff check is sufficient because no backend runtime behavior changed.
+
+Phase 3 manual QA checklist:
+
+Web local/test:
+- [ ] Request password reset from `/forgot-password` and confirm the UI shows the generic check-inbox response.
+- [ ] Open `/reset-password?token=<real-or-test-token>` and confirm the reset form appears.
+- [ ] Submit a valid new password and confirm reset success.
+- [ ] Confirm the browser URL is `/reset-password` after success, with no token query param.
+- [ ] Open `/reset-password?token=invalid` and confirm a clear invalid/expired-token error.
+- [ ] Open `/verify-email?token=<token>` and confirm verification works without requiring a prior authenticated route.
+- [ ] Open `/settings?tab=account-security&emailChangeToken=<token>` while signed in and confirm the token param is removed after processing.
+
+Mobile local/test:
+- [ ] Open the native forgot-password screen and submit an email.
+- [ ] Confirm the success copy says the secure link can open on this device or in a browser.
+- [ ] Open `threadlymobile://reset-password?token=TEST_TOKEN` in a native/dev-client build and confirm the reset screen appears.
+- [ ] Open `threadlymobile://reset-password` and confirm the missing-token state appears.
+- [ ] Enter mismatched passwords and confirm submission is blocked.
+- [ ] Enter a password shorter than 12 characters and confirm submission is blocked.
+- [ ] With a real backend token, submit a valid password and confirm the screen shows success and routes to login only by user action.
+
+Cross-surface:
+- [ ] Confirm the HTTPS email reset link still opens the web fallback when the app is not installed.
+- [ ] Confirm the custom scheme opens the mobile reset screen when the app/dev client is installed.
+- [ ] Confirm app installation is not required to finish password reset on the web.
+
+Phase 3 checklist:
+- [x] Re-audited web and mobile auth-link handling from actual files.
+- [x] Kept backend auth-link routes unchanged.
+- [x] Verified web reset, verify-email, forgot-password, and email-change handling.
+- [x] Added mobile reset-password route and auth stack registration.
+- [x] Added custom-scheme reset-password route readiness.
+- [x] Preserved web fallback as the production-safe default.
+- [x] Documented Universal/App Links as deferred because platform/domain config is not present.
+- [x] Added focused web and mobile contract validation where practical.
+- [x] Added manual QA steps for web, mobile, and cross-surface auth-link flows.
+
 ## Decisions Still Needed From The Human
 
-1. Should password reset and email verification remain web-only for now, or should mobile own native reset/verify screens later?
+1. Should email verification remain web-only for now, or should mobile own a native verify-email screen later?
 
 2. What are the canonical production web, API, and mobile domains?
 
-3. Should Threadly support universal links/app links for auth URLs, or only the Expo custom scheme plus web fallback?
+3. Should Threadly support Universal Links/App Links for auth URLs, or only the Expo custom scheme plus web fallback?
 
 4. Should email-change confirmation require an authenticated web session, or should it continue to be a token-only confirmation flow reachable from `/settings?tab=account-security`?
 
@@ -272,12 +369,12 @@ Phase 2 checklist:
 
 ## Later Implementation Work
 
-This work is intentionally not started in Phase 1.
+This work is intentionally outside the completed Phase 1-3 scope.
 
-- Decide the target routing model for auth links: web-only, native-first with web fallback, or universal-link hybrid.
-- Align `.env.example` defaults and comments across backend, web, and mobile after the routing model is chosen.
-- If native auth links are approved, add mobile reset-password and verify-email screens, then route `threadlymobile://reset-password`, `threadlymobile://verify-email`, and matching universal/app links explicitly.
-- Add mobile tests or contract scripts proving reset/verify deep links route correctly and do not interfere with message notification routing.
+- Decide whether email verification, email-change confirmation, admin reset, and staff invites should remain web-only or gain native mobile handlers.
+- Configure production Universal Links/App Links only after canonical domains and platform association files are available.
+- Align `.env.example` defaults and comments across backend, web, and mobile after canonical production/local domains are chosen.
+- Add mobile tests or contract scripts for any future native verify/email-change/staff-invite link routing.
 - Add web route tests for `/verify-email`, `/reset-password`, `/admin/reset-password`, `/settings?tab=account-security&emailChangeToken=...`, and `/brand/staff/invite`.
 - Add backend tests that enumerate every auth/email URL producer and confirm it uses the standard web-app URL resolver or documented checkout callback resolver.
 - Add deployment checklist entries requiring `WEB_APP_URL`, `FRONTEND_PUBLIC_CHECKOUT_CALLBACK_URL`, `VITE_APP_URL`, `EXPO_PUBLIC_WEB_APP_URL`, and trusted origins to be reviewed together.
