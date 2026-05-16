@@ -45,7 +45,12 @@ import {
   PasswordPolicyContext,
   validatePasswordPolicy,
 } from './helper/password-policy.helper';
-import { resolveWebAppBaseUrl as resolveConfiguredWebAppBaseUrl } from 'src/common/utils/web-app-url';
+import {
+  buildAdminPasswordResetLink,
+  buildEmailChangeConfirmationLink,
+  buildPasswordResetLink,
+} from 'src/common/utils/auth-links';
+import { maskEmailForLog } from 'src/common/utils/sensitive-log';
 
 const PASSWORD_RESET_TOKEN_TTL_MS = 60 * 60 * 1000;
 const RESET_REQUEST_SUPPRESSION_MS = 2 * 60 * 1000;
@@ -111,10 +116,6 @@ export class AuthService {
 
   private extractClientIp(req: Request): string | null {
     return req.ip || req.socket?.remoteAddress || null;
-  }
-
-  private resolveWebAppBaseUrl(): string {
-    return resolveConfiguredWebAppBaseUrl();
   }
 
   private resolvePostVerificationNextPath(userType: UserType): string {
@@ -1221,7 +1222,7 @@ export class AuthService {
       },
     } as any);
 
-    const confirmLink = `${this.resolveWebAppBaseUrl()}/settings?tab=account-security&emailChangeToken=${rawToken}`;
+    const confirmLink = buildEmailChangeConfirmationLink(rawToken);
     const emailContent = emailTemplates.confirmEmailChangeEmail(
       confirmLink,
       normalizedEmail,
@@ -1556,8 +1557,7 @@ export class AuthService {
     }
 
     // Send reset email
-    const baseUrl = this.resolveWebAppBaseUrl();
-    const resetLink = `${baseUrl}/admin/reset-password?token=${rawTokenToSend}`;
+    const resetLink = buildAdminPasswordResetLink(rawTokenToSend);
     const resetEmail = emailTemplates.passwordResetEmail(
       resetLink,
       this.emailService.getAppName(),
@@ -1682,6 +1682,20 @@ export class AuthService {
       },
     );
 
+    const passwordChangedEmail = emailTemplates.passwordChangedSecurityAlertEmail(
+      this.emailService.getAppName(),
+    );
+    await this.sendScenarioEmailIfAllowed({
+      userId: resetToken.userId,
+      to: resetToken.user.email,
+      scenarioKey: 'auth.password.changed',
+      subject: passwordChangedEmail.subject,
+      html: passwordChangedEmail.html,
+      text: passwordChangedEmail.text,
+      priority: EmailPriority.P0_SECURITY,
+      idempotencyKey: `auth:admin-password-reset-confirmed:${resetToken.userId}:${resetToken.id}`,
+    });
+
     return { message: 'Password reset successful' };
   }
 
@@ -1704,7 +1718,7 @@ export class AuthService {
     // Always return generic response to prevent email enumeration
     if (!user || user.status !== UserStatus.ACTIVE) {
       this.logger.log(
-        `Password reset requested for unknown or inactive email: ${normalizedEmail}`,
+        `Password reset requested for unknown or inactive account ${maskEmailForLog(normalizedEmail)}`,
       );
       return genericResponse;
     }
@@ -1788,8 +1802,7 @@ export class AuthService {
     }
 
     // Send reset email
-    const baseUrl = this.resolveWebAppBaseUrl();
-    const resetLink = `${baseUrl}/reset-password?token=${rawTokenToSend}`;
+    const resetLink = buildPasswordResetLink(rawTokenToSend);
     const resetEmail = emailTemplates.passwordResetEmail(
       resetLink,
       this.emailService.getAppName(),
@@ -1910,6 +1923,20 @@ export class AuthService {
       },
     );
 
+    const passwordChangedEmail = emailTemplates.passwordChangedSecurityAlertEmail(
+      this.emailService.getAppName(),
+    );
+    await this.sendScenarioEmailIfAllowed({
+      userId: resetToken.userId,
+      to: resetToken.user.email,
+      scenarioKey: 'auth.password.changed',
+      subject: passwordChangedEmail.subject,
+      html: passwordChangedEmail.html,
+      text: passwordChangedEmail.text,
+      priority: EmailPriority.P0_SECURITY,
+      idempotencyKey: `auth:password-reset-confirmed:${resetToken.userId}:${resetToken.id}`,
+    });
+
     this.logger.log(`Password reset confirmed for user ${resetToken.userId}`);
 
     return { message: 'Password reset successful' };
@@ -1982,6 +2009,7 @@ export class AuthService {
       data: {
         password,
         mustResetPassword: false,
+        authVersion: { increment: 1 },
       },
     });
     await this.tokenService.revokeOtherRefreshTokens(userId, currentRawRefreshToken);

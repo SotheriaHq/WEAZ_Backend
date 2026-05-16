@@ -216,6 +216,46 @@ Local development standard:
 - Physical mobile-device QA: backend `WEB_APP_URL=http://<LAN-IP>:3000`, mobile `EXPO_PUBLIC_WEB_APP_URL=http://<LAN-IP>:3000`, and frontend dev server bound to `0.0.0.0`.
 - Emulator API QA may use emulator-specific API host handling, but email/browser URLs should still target a reachable web app origin.
 
+## Phase 2 Backend Implementation Notes
+
+Status: completed 2026-05-16.
+
+Implemented backend-only hardening:
+- Added `src/common/utils/auth-links.ts` as the focused auth email link builder on top of `resolveWebAppBaseUrl()`.
+- Centralized construction for `/reset-password?token=...`, `/admin/reset-password?token=...`, `/verify-email?token=...&next=...`, and `/settings?tab=account-security&emailChangeToken=...`.
+- Kept all current user-facing web routes stable. No mobile deep links, mobile reset-password route, frontend UI route change, Google auth, or Apple auth work was added.
+- Encoded all auth-link token query values with `encodeURIComponent`.
+- Sanitized verification `next` paths to same-app absolute paths only: single `/` prefix required, empty values rejected, protocol-relative `//...` rejected, and external `http://` / `https://` URLs rejected.
+- Replaced backend manual auth-link string construction in `AuthService` and `EmailVerificationHelperService`.
+- Preserved `WEB_APP_URL` as the primary backend frontend URL variable and `FRONTEND_URL` as the backward-compatible fallback.
+- Hardened authenticated password changes so successful changes update the password, clear `mustResetPassword`, increment `authVersion`, and continue revoking other refresh tokens while preserving the current refresh session path.
+- Added password-changed security alert emails after successful regular password reset and admin password reset, using `passwordChangedSecurityAlertEmail()` and the existing `auth.password.changed` scenario convention.
+- Replaced the raw unknown/inactive password-reset email log with a short normalized email fingerprint via `maskEmailForLog()`.
+- Added focused unit coverage for auth-link generation, safe `next` path filtering, email log fingerprinting, generic reset responses, WEB_APP_URL reset links, expired/reused reset-token rejection, refresh-token revocation, `authVersion` increments, and reset-success security alerts.
+
+Route decisions intentionally deferred:
+- Email-change confirmation remains on `/settings?tab=account-security&emailChangeToken=...` because Phase 1 confirmed the frontend handler exists there and no dedicated public email-change route exists.
+- Password reset, email verification, admin reset, and email change remain web-link flows in Phase 2.
+- Mobile native auth-link handling remains deferred until the product owner approves the routing model and mobile screens/routes.
+
+Environment compatibility decisions:
+- `WEB_APP_URL` remains authoritative for backend-generated auth/email links.
+- `FRONTEND_URL` remains a fallback for older deployments.
+- `WEB_APP_BASE_URL` was not introduced in Phase 2 to avoid creating a third backend naming path without a migration need.
+- `.env.example` did not need further changes for Phase 2 because Phase 1 already documented the local `WEB_APP_URL=http://localhost:3000` standard.
+
+Phase 2 checklist:
+- [x] Re-read Phase 1 audit and confirmed backend-only scope.
+- [x] Centralized auth email route construction behind a focused helper.
+- [x] Replaced scattered manual auth-link string building in backend auth flows.
+- [x] Kept current password reset, admin reset, verification, and email-change web routes stable.
+- [x] Hardened authenticated password change `authVersion` consistency.
+- [x] Added password-reset-success security alerts for regular and admin reset flows.
+- [x] Masked sensitive unknown/inactive password-reset email logging.
+- [x] Preserved existing reset-token hashing, expiry, single-use, active-token invalidation, suppression, refresh-token deletion, and reset `authVersion` behavior.
+- [x] Added focused backend tests for the changed behavior.
+- [x] Deferred mobile deep links and native reset/verify screens to a later phase.
+
 ## Decisions Still Needed From The Human
 
 1. Should password reset and email verification remain web-only for now, or should mobile own native reset/verify screens later?
