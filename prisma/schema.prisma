@@ -19,7 +19,8 @@ model User {
   role                     Role                          @default(User)
   type                     UserType                      @default(REGULAR)
   email                    String                        @unique
-  password                 String
+  password                 String?
+  passwordCredentialStatus PasswordCredentialStatus      @default(ENABLED)
   createdAt                DateTime                      @default(now())
   updatedAt                DateTime                      @updatedAt
   refreshTokens            RefreshToken[]
@@ -44,6 +45,9 @@ model User {
   emailPreferenceAudits    UserEmailPreferenceAudit[]    @relation("EmailPreferenceAuditSubject")
   emailPreferenceChanges   UserEmailPreferenceAudit[]    @relation("EmailPreferenceAuditActor")
   emailOutboxEvents        EmailOutbox[]                 @relation("EmailOutboxRecipient")
+  authIdentities           AuthIdentity[]
+  emailLoginCodes          EmailLoginCode[]
+  passwordSetupTokens      PasswordSetupToken[]
 
   // Admin Console fields
   status               UserStatus @default(ACTIVE)
@@ -289,6 +293,49 @@ model StudioHandoffCode {
   @@index([usedAt])
 }
 
+model AuthIdentity {
+  id              String       @id @default(uuid()) @db.Uuid
+  userId          String       @db.Uuid
+  user            User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  provider        AuthProvider
+  providerSubject String
+  email           String?
+  emailVerified   Boolean      @default(false)
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  @@unique([provider, providerSubject])
+  @@index([userId])
+  @@index([email])
+}
+
+model EmailLoginCode {
+  id        String           @id @default(uuid()) @db.Uuid
+  userId    String           @db.Uuid
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  purpose   LoginCodePurpose
+  codeHash  String
+  expiresAt DateTime
+  usedAt    DateTime?
+  attempts  Int              @default(0)
+  createdAt DateTime         @default(now())
+
+  @@index([userId, purpose, expiresAt])
+  @@index([codeHash])
+}
+
+model PasswordSetupToken {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @db.Uuid
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId, expiresAt])
+}
+
 enum Role {
   SuperAdmin
   Admin
@@ -298,6 +345,20 @@ enum Role {
 enum UserType {
   BRAND
   REGULAR
+}
+
+enum AuthProvider {
+  GOOGLE
+}
+
+enum PasswordCredentialStatus {
+  ENABLED
+  NOT_SET
+  DISABLED
+}
+
+enum LoginCodePurpose {
+  PASSWORD_SETUP
 }
 
 enum BrandMemberRole {

@@ -18,6 +18,7 @@ import { NotificationsService } from 'src/notifications/notifications.service';
 import { EmailService } from 'src/email/email.service';
 import { TrustedDeviceService } from './helper/trusted-device.service';
 import { toAuthUserResponse } from './helper/prisma-select.helper';
+import { GoogleTokenVerifierService } from './helper/google-token-verifier.service';
 
 describe('AuthService', () => {
   let service: AuthService;
@@ -57,6 +58,10 @@ describe('AuthService', () => {
     revokeDevice: jest.fn(),
   };
 
+  const mockGoogleTokenVerifier = {
+    verifyIdToken: jest.fn(),
+  };
+
   const mockPrisma: any = {
     user: {
       findFirst: jest.fn(),
@@ -93,6 +98,7 @@ describe('AuthService', () => {
         { provide: NotificationsService, useValue: mockNotifications },
         { provide: EmailService, useValue: mockEmailService },
         { provide: TrustedDeviceService, useValue: mockTrustedDeviceService },
+        { provide: GoogleTokenVerifierService, useValue: mockGoogleTokenVerifier },
       ],
     }).compile();
 

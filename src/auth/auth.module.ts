@@ -17,6 +17,7 @@ import { RefreshTokenCleanupService } from './helper/refresh-token-cleanup.servi
 import { TrustedDeviceService } from './helper/trusted-device.service';
 import { AppThrottlerGuard } from './guard/app-throttler.guard';
 import { StudioHandoffService } from './studio-handoff.service';
+import { GoogleTokenVerifierService } from './helper/google-token-verifier.service';
 
 @Module({
   imports: [
@@ -74,6 +75,7 @@ import { StudioHandoffService } from './studio-handoff.service';
     RefreshTokenCleanupService,
     TrustedDeviceService,
     StudioHandoffService,
+    GoogleTokenVerifierService,
     JwtStrategy,
     {
       provide: APP_GUARD,
@@ -86,6 +88,7 @@ import { StudioHandoffService } from './studio-handoff.service';
     PasswordService,
     UserHelperService,
     StudioHandoffService,
+    GoogleTokenVerifierService,
     JwtStrategy,
     PassportModule,
     JwtModule,

@@ -53,6 +53,13 @@ import {
   ExchangeStudioHandoffDto,
 } from './dto/studio-handoff.dto';
 import { StudioHandoffService } from './studio-handoff.service';
+import {
+  ConfirmEmailLoginCodeDto,
+  GoogleAuthDto,
+  LoginOptionsDto,
+  PasswordSetupDto,
+  RequestEmailLoginCodeDto,
+} from './dto/google-auth.dto';
 
 @ApiTags('auth')
 @ApiBearerAuth()
@@ -121,6 +128,74 @@ export class AuthController {
     @Res({ passthrough: true }) res: Response,
   ) {
     return this.authService.CreateUser(dto, req, res);
+  }
+
+  @Post('google')
+  @HttpCode(200)
+  @ApiOperation({ summary: 'Sign up or log in with a Google ID token' })
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
+  @UseInterceptors(TransformInterceptor)
+  async googleAuth(
+    @Body(ValidationPipe) body: GoogleAuthDto,
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    return this.authService.googleAuth(body, req, res);
+  }
+
+  @Post('login-options')
+  @HttpCode(200)
+  @ApiOperation({ summary: 'Resolve safe sign-in method options after email Continue' })
+  @Throttle({ default: { limit: 8, ttl: 60000 } })
+  async loginOptions(@Body(ValidationPipe) body: LoginOptionsDto) {
+    return this.authService.getLoginOptions(body.email);
+  }
+
+  @Post('email-login-code/request')
+  @HttpCode(200)
+  @ApiOperation({ summary: 'Request an email code for Google-only password setup' })
+  @Throttle({ default: { limit: 3, ttl: 900000 } })
+  async requestEmailLoginCode(
+    @Body(ValidationPipe) body: RequestEmailLoginCodeDto,
+  ) {
+    return this.authService.requestEmailLoginCode(body.email, body.purpose);
+  }
+
+  @Post('email-login-code/confirm')
+  @HttpCode(200)
+  @ApiOperation({ summary: 'Confirm an email code for Google-only password setup' })
+  @Throttle({ default: { limit: 5, ttl: 900000 } })
+  async confirmEmailLoginCode(
+    @Body(ValidationPipe) body: ConfirmEmailLoginCodeDto,
+  ) {
+    return this.authService.confirmEmailLoginCode(
+      body.email,
+      body.code,
+      body.purpose,
+    );
+  }
+
+  @Post('password/setup')
+  @HttpCode(200)
+  @ApiOperation({ summary: 'Set the first local password after email-code verification' })
+  @Throttle({ default: { limit: 5, ttl: 900000 } })
+  async setupPassword(@Body(ValidationPipe) body: PasswordSetupDto) {
+    return this.authService.setupPassword(
+      body.passwordSetupToken,
+      body.newPassword,
+    );
+  }
+
+  @Post('google/link')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(200)
+  @ApiOperation({ summary: 'Link Google sign-in to the authenticated account' })
+  @Throttle({ default: { limit: 4, ttl: 900000 } })
+  async linkGoogle(
+    @Req() req: Request & { user: { id: string } },
+    @Body(ValidationPipe) body: GoogleAuthDto,
+  ) {
+    return this.authService.linkGoogle(req.user.id, body.idToken);
   }
 
   @Post('account-reactivation/request')

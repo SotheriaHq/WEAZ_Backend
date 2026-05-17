@@ -4,9 +4,53 @@
 
 This plan covers Google signup, Google login, Google account linking, email-first progressive login, Google-only user password setup, web requirements, mobile requirements, backend security, and QA/UAT readiness.
 
-This is G1 only: audit and architecture documentation. It does not implement Google auth, schema changes, migrations, buttons, SDK logic, or backend Google token verification code.
+This document began as the G1 audit and architecture plan. It now also records G2 backend implementation notes. G2 remains backend-only and does not implement web/mobile Google buttons, frontend/mobile SDK logic, Apple auth, or automatic login after password reset/password setup.
 
 User story: As a Threadly user, I want to sign up or log in with Google so that I can access Threadly without creating a password first, while still being able to securely create a password later if I want email/password login.
+
+## G2 Backend Implementation Notes
+
+Implemented in G2:
+
+- Secret hygiene gate cleaned `.env.example` so Google values are placeholders only:
+  - `GOOGLE_ALLOWED_CLIENT_IDS=<google-web-client-id>,<google-ios-client-id>,<google-android-client-id>`
+  - `GOOGLE_CLIENT_ID=<google-web-client-id>`
+  - `GOOGLE_CLIENT_SECRET=<google-client-secret-if-code-exchange-is-used>`
+- A real-looking Google client secret had previously been found in the backend working tree. It was removed from `.env.example`; if that value was real, it must be rotated outside the repository.
+- Added Prisma migration `20260517100000_add_google_auth_foundation` with:
+  - `AuthProvider`
+  - `PasswordCredentialStatus`
+  - `LoginCodePurpose`
+  - nullable `User.password`
+  - `User.passwordCredentialStatus`
+  - `AuthIdentity`
+  - `EmailLoginCode`
+  - `PasswordSetupToken`
+- Added backend Google ID-token verification through a backend-only Google verifier service using allowed web/iOS/Android client IDs.
+- Added backend endpoints:
+  - `POST /auth/google`
+  - `POST /auth/login-options`
+  - `POST /auth/email-login-code/request`
+  - `POST /auth/email-login-code/confirm`
+  - `POST /auth/password/setup`
+  - `POST /auth/google/link`
+- Google auth uses Google `sub` as `AuthIdentity.providerSubject` and requires `email_verified=true`.
+- Existing password users are auto-linked only when the backend-verified Google email exactly matches an active Threadly account email.
+- Suspended or deactivated matching accounts are rejected and are not duplicated.
+- Google-only users are represented with `password = null` and `passwordCredentialStatus = NOT_SET`.
+- Email-code setup stores hashed, expiring, single-use `EmailLoginCode` rows and returns only a short-lived `PasswordSetupToken` after successful code confirmation.
+- Password setup stores the local password, sets `passwordCredentialStatus = ENABLED`, revokes existing refresh tokens, increments `authVersion`, sends the existing password-changed alert, and does not issue a login session.
+- Existing password reset and authenticated password-change flows now set `passwordCredentialStatus = ENABLED` when a password is successfully stored.
+
+G2 deliberately did not implement:
+
+- Web Google buttons.
+- Mobile Google buttons.
+- Frontend/mobile Google SDK code.
+- Apple auth.
+- Universal/App Links.
+- Auth-link route changes.
+- Automatic login after password reset or Google-only password setup.
 
 ## Repositories Audited
 
@@ -942,14 +986,9 @@ Cross-surface:
 - Should login-options always return a generic state for unknown emails, or can it show a low-risk signup prompt?
 - Should login-options include CAPTCHA/risk scoring in QA/UAT, or is rate limiting enough for launch?
 
-## Recommended Next Phase
+## Backend G2 Boundary And Remaining Readiness
 
-Safe to proceed:
-
-- It is architecturally safe to proceed to G2 backend implementation after the backend `.env.example` secret-like values are removed and any real exposed secret is rotated.
-- G2 can begin once product confirms Google client IDs, ID-token verification vs OAuth code exchange, and the local credential representation.
-
-G2 should implement:
+G2 implemented:
 
 - `AuthIdentity` with Google provider support.
 - Backend Google ID token verification.
@@ -959,12 +998,21 @@ G2 should implement:
 - `POST /auth/email-login-code/request`.
 - `POST /auth/email-login-code/confirm`.
 - `POST /auth/password/setup`.
-- `User.password` nullable plus `User.passwordCredentialStatus`, unless the team chooses the larger `LocalCredential` table.
+- `POST /auth/google/link`.
+- `User.password` nullable plus `User.passwordCredentialStatus`.
 - `EmailLoginCode` and `PasswordSetupToken` with hashed, expiring, single-use storage.
-- Backend tests for token verification, duplicate prevention, account linking, login-options, email-code security, password setup, rate limits, and secret/log redaction.
-- Placeholder-only environment documentation.
+- Backend tests for token verification, duplicate prevention, account linking, login-options, email-code security, password setup, and no auto-login from setup.
+- Placeholder-only backend environment documentation.
 
-G2 must not implement:
+Still required before QA/UAT:
+
+- Configure real Google web/iOS/Android client IDs in environment secrets, not committed files.
+- Rotate the previously exposed secret-like value if it was a real Google client secret.
+- Apply the G2 Prisma migration in target environments.
+- Confirm whether production launch uses ID-token verification only or later adds backend OAuth code exchange.
+- Confirm whether Google auth is enabled for brand users, admin users, or regular users first.
+
+Still out of scope for G2:
 
 - Web or mobile Google buttons.
 - Frontend/mobile Google SDK logic.

@@ -1,4 +1,9 @@
-import { BrandMemberRole, BrandMemberStatus, Prisma } from '@prisma/client';
+import {
+  BrandMemberRole,
+  BrandMemberStatus,
+  PasswordCredentialStatus,
+  Prisma,
+} from '@prisma/client';
 import {
   AuthJwtClaims,
   AuthProfileImageFileDto,
@@ -48,6 +53,7 @@ export const authUserSelect = Prisma.validator<Prisma.UserSelect>()({
     select: { permissionCode: true },
   },
   isEmailVerified: true,
+  passwordCredentialStatus: true,
   isActive: true,
   themePreference: true,
   mustResetPassword: true,
@@ -176,6 +182,8 @@ export const toAuthUserResponse = (
     bannerImageId: bannerImage.fileId,
     bannerImageFile: mapFileUploadToDto(bannerImage.file),
     isEmailVerified: user.isEmailVerified,
+    passwordCredentialStatus:
+      user.passwordCredentialStatus ?? PasswordCredentialStatus.ENABLED,
     storeId: user.brand?.id ?? null,
     brandMemberships,
     activeBrandId,

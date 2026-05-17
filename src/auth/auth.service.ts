@@ -19,6 +19,9 @@ import {
   EmailPriority,
   BrandMemberRole,
   BrandMemberStatus,
+  AuthProvider,
+  PasswordCredentialStatus,
+  LoginCodePurpose,
 } from '@prisma/client';
 import {
   authUserSelect,
@@ -39,7 +42,7 @@ import { NotificationsService } from 'src/notifications/notifications.service';
 import { EmailVerificationHelperService } from './helper/email-verification-helper.service';
 import { EmailService, type EnqueueEmailResult } from 'src/email/email.service';
 import * as emailTemplates from 'src/email/email.templates';
-import { createHash, randomBytes } from 'crypto';
+import { createHash, randomBytes, randomInt } from 'crypto';
 import { TrustedDeviceService } from './helper/trusted-device.service';
 import {
   PasswordPolicyContext,
@@ -51,9 +54,16 @@ import {
   buildPasswordResetLink,
 } from 'src/common/utils/auth-links';
 import { maskEmailForLog } from 'src/common/utils/sensitive-log';
+import {
+  GoogleTokenVerifierService,
+  VerifiedGoogleIdentity,
+} from './helper/google-token-verifier.service';
 
 const PASSWORD_RESET_TOKEN_TTL_MS = 60 * 60 * 1000;
 const RESET_REQUEST_SUPPRESSION_MS = 2 * 60 * 1000;
+const EMAIL_LOGIN_CODE_TTL_MS = 10 * 60 * 1000;
+const PASSWORD_SETUP_TOKEN_TTL_MS = 15 * 60 * 1000;
+const EMAIL_LOGIN_CODE_MAX_ATTEMPTS = 5;
 const INVISIBLE_AUTH_SPACING_REGEX =
   /[\u00A0\u1680\u180E\u2000-\u200D\u202F\u205F\u2060\u3000\uFEFF]/g;
 
@@ -70,6 +80,7 @@ export class AuthService {
     private readonly notifications: NotificationsService,
     private readonly emailService: EmailService,
     private readonly trustedDeviceService: TrustedDeviceService,
+    private readonly googleTokenVerifier: GoogleTokenVerifierService,
   ) { }
 
   private buildPasswordPolicyContext(
@@ -81,6 +92,80 @@ export class AuthService {
       brandFullName: context.brandFullName ?? null,
       firstName: context.firstName ?? null,
       lastName: context.lastName ?? null,
+    };
+  }
+
+  private hashSetupToken(token: string): string {
+    return createHash('sha256').update(token).digest('hex');
+  }
+
+  private generateEmailLoginCode(): string {
+    return randomInt(0, 100_000_000).toString().padStart(8, '0');
+  }
+
+  private hasLocalPassword(user: {
+    password?: string | null;
+    passwordCredentialStatus?: PasswordCredentialStatus | null;
+  }): boolean {
+    const status =
+      user.passwordCredentialStatus ?? PasswordCredentialStatus.ENABLED;
+    return (
+      status === PasswordCredentialStatus.ENABLED &&
+      typeof user.password === 'string' &&
+      user.password.length > 0
+    );
+  }
+
+  private async verifyOptionalPassword(
+    hashedPassword: string | null | undefined,
+    plainPassword: string,
+  ): Promise<boolean> {
+    if (!hashedPassword) {
+      return false;
+    }
+    return this.passwordService.verifyPassword(hashedPassword, plainPassword);
+  }
+
+  private isGoogleOnlyPasswordSetupCandidate(user: {
+    password?: string | null;
+    passwordCredentialStatus?: PasswordCredentialStatus | null;
+    authIdentities?: Array<{ provider: AuthProvider }>;
+  }): boolean {
+    return (
+      user.passwordCredentialStatus === PasswordCredentialStatus.NOT_SET &&
+      !user.password &&
+      (user.authIdentities ?? []).some(
+        (identity) => identity.provider === AuthProvider.GOOGLE,
+      )
+    );
+  }
+
+  private resolveGoogleDisplayNames(identity: VerifiedGoogleIdentity): {
+    firstName: string;
+    lastName: string;
+  } {
+    const givenName = identity.givenName?.trim();
+    const familyName = identity.familyName?.trim();
+    if (givenName && familyName) {
+      return { firstName: givenName, lastName: familyName };
+    }
+
+    const nameParts = String(identity.name ?? '')
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean);
+    if (nameParts.length >= 2) {
+      return {
+        firstName: nameParts[0],
+        lastName: nameParts.slice(1).join(' '),
+      };
+    }
+
+    const emailLocalPart =
+      identity.email.split('@')[0]?.replace(/[._-]+/g, ' ').trim() || 'Threadly';
+    return {
+      firstName: givenName || nameParts[0] || emailLocalPart,
+      lastName: familyName || 'Member',
     };
   }
 
@@ -430,6 +515,7 @@ export class AuthService {
               role: Role.User,
               email: signupDto.email,
               password: hashedPassword,
+              passwordCredentialStatus: PasswordCredentialStatus.ENABLED,
               type: signupDto.type ?? UserType.REGULAR,
               emailVerificationCode: verificationToken,
               isEmailVerified: false,
@@ -641,6 +727,611 @@ export class AuthService {
     }
   }
 
+  async googleAuth(
+    dto: {
+      idToken: string;
+      type?: UserType;
+      brandFullName?: string;
+    },
+    req: Request,
+    res: Response,
+  ) {
+    const identity = await this.googleTokenVerifier.verifyIdToken(dto.idToken);
+    const requestedType = dto.type ?? UserType.REGULAR;
+    const createdAt = new Date();
+
+    if (requestedType === UserType.BRAND && !dto.brandFullName?.trim()) {
+      throw new BadRequestException('Brand full name is required');
+    }
+
+    const user = await this.prisma
+      .$transaction(async (tx) => {
+        const existingIdentity = await tx.authIdentity.findUnique({
+          where: {
+            provider_providerSubject: {
+              provider: AuthProvider.GOOGLE,
+              providerSubject: identity.providerSubject,
+            },
+          },
+          select: {
+            id: true,
+            email: true,
+            emailVerified: true,
+            user: { select: authUserSelect },
+          },
+        });
+
+        if (existingIdentity) {
+          if (existingIdentity.user.status !== UserStatus.ACTIVE) {
+            throw new UnauthorizedException(
+              'User account is suspended or deactivated',
+            );
+          }
+
+          if (
+            existingIdentity.email !== identity.email ||
+            existingIdentity.emailVerified !== identity.emailVerified
+          ) {
+            await tx.authIdentity.update({
+              where: { id: existingIdentity.id },
+              data: {
+                email: identity.email,
+                emailVerified: identity.emailVerified,
+              },
+            });
+          }
+
+          return existingIdentity.user;
+        }
+
+        const existingUser = await tx.user.findUnique({
+          where: { email: identity.email },
+          select: authUserSelect,
+        });
+
+        if (existingUser) {
+          if (existingUser.status !== UserStatus.ACTIVE) {
+            throw new UnauthorizedException(
+              'User account is suspended or deactivated',
+            );
+          }
+
+          await tx.authIdentity.create({
+            data: {
+              userId: existingUser.id,
+              provider: AuthProvider.GOOGLE,
+              providerSubject: identity.providerSubject,
+              email: identity.email,
+              emailVerified: identity.emailVerified,
+            },
+          });
+
+          return existingUser;
+        }
+
+        const displayNames = this.resolveGoogleDisplayNames(identity);
+        const username =
+          requestedType === UserType.BRAND && dto.brandFullName?.trim()
+            ? await this.userHelperService.generateUsernameFromBrand(
+                dto.brandFullName.trim(),
+              )
+            : await this.userHelperService.generateUniqueUsername(
+                displayNames.firstName,
+                displayNames.lastName,
+              );
+        const brandId = requestedType === UserType.BRAND ? uuidv4() : null;
+        const industriNumber =
+          requestedType === UserType.BRAND
+            ? await this.userHelperService.generateIndustriNumber()
+            : null;
+
+        const createdUser = await tx.user.create({
+          data: {
+            id: uuidv4(),
+            username,
+            role: Role.User,
+            email: identity.email,
+            password: null,
+            passwordCredentialStatus: PasswordCredentialStatus.NOT_SET,
+            type: requestedType,
+            isEmailVerified: true,
+            emailVerificationCode: null,
+            userProfile: {
+              create: {
+                firstName: displayNames.firstName,
+                lastName: displayNames.lastName,
+                profileImage: identity.picture,
+              },
+            },
+            authIdentities: {
+              create: {
+                provider: AuthProvider.GOOGLE,
+                providerSubject: identity.providerSubject,
+                email: identity.email,
+                emailVerified: identity.emailVerified,
+              },
+            },
+            ...(requestedType === UserType.BRAND && brandId
+              ? {
+                  brand: {
+                    create: {
+                      id: brandId,
+                      name: dto.brandFullName!.trim(),
+                      industriNumber,
+                      storeNameLastChangedAt: createdAt,
+                      currency: 'NGN',
+                    },
+                  },
+                }
+              : {}),
+          },
+          select: authUserSelect,
+        });
+
+        if (requestedType === UserType.BRAND && brandId) {
+          await tx.brandMember.create({
+            data: {
+              id: uuidv4(),
+              brandId,
+              userId: createdUser.id,
+              role: BrandMemberRole.OWNER,
+              status: BrandMemberStatus.ACTIVE,
+              joinedAt: createdAt,
+            },
+          });
+
+          const reloaded = await tx.user.findUnique({
+            where: { id: createdUser.id },
+            select: authUserSelect,
+          });
+          if (!reloaded) {
+            throw new BadRequestException('Failed to create user account');
+          }
+          return reloaded;
+        }
+
+        return createdUser;
+      })
+      .catch((error) => {
+        if (error?.code === 'P2002') {
+          throw new BadRequestException(
+            'Google sign-in could not be completed. Please retry.',
+          );
+        }
+        throw error;
+      });
+
+    const tokenResult = await this.tokenService.generateTokens(user, req, res);
+    const deviceResult = await this.trustedDeviceService.recordLoginDevice(
+      user.id,
+      req,
+    );
+    void this.notifications
+      .create(user.id, NotificationType.LOGIN, {
+        payload: {
+          ip: this.extractClientIp(req),
+          userAgent: req.headers?.['user-agent'] ?? null,
+          newDevice: deviceResult.isNewDevice,
+          method: 'GOOGLE',
+        },
+      })
+      .catch(() => undefined);
+
+    return {
+      user: toAuthUserResponse(user),
+      accessToken: tokenResult.accessToken,
+      ...(tokenResult.refreshToken
+        ? { refreshToken: tokenResult.refreshToken }
+        : {}),
+      message: 'Welcome Back',
+    };
+  }
+
+  async getLoginOptions(email: string) {
+    const genericResponse = {
+      requestId: uuidv4(),
+      methods: {
+        password: false,
+        google: false,
+        passwordSetupAvailable: false,
+      },
+      message: 'Continue with an available sign-in method.',
+    };
+
+    const normalizedEmail = email?.trim().toLowerCase();
+    if (!normalizedEmail) {
+      throw new BadRequestException('Email is required');
+    }
+
+    const user = await this.prisma.user.findUnique({
+      where: { email: normalizedEmail },
+      select: {
+        id: true,
+        status: true,
+        password: true,
+        passwordCredentialStatus: true,
+        authIdentities: {
+          select: { provider: true },
+        },
+      },
+    });
+
+    if (!user || user.status !== UserStatus.ACTIVE) {
+      return genericResponse;
+    }
+
+    const hasGoogle = user.authIdentities.some(
+      (identity) => identity.provider === AuthProvider.GOOGLE,
+    );
+    return {
+      requestId: genericResponse.requestId,
+      methods: {
+        password: this.hasLocalPassword(user),
+        google: hasGoogle,
+        passwordSetupAvailable:
+          hasGoogle &&
+          user.passwordCredentialStatus === PasswordCredentialStatus.NOT_SET &&
+          !user.password,
+      },
+      message: genericResponse.message,
+    };
+  }
+
+  async requestEmailLoginCode(
+    email: string,
+    purpose: LoginCodePurpose = LoginCodePurpose.PASSWORD_SETUP,
+  ) {
+    const genericResponse = {
+      message:
+        'If this account can set up a password, a verification code has been sent.',
+    };
+
+    if (purpose !== LoginCodePurpose.PASSWORD_SETUP) {
+      throw new BadRequestException('Unsupported email login code purpose');
+    }
+
+    const normalizedEmail = email?.trim().toLowerCase();
+    if (!normalizedEmail) {
+      throw new BadRequestException('Email is required');
+    }
+
+    const user = await this.prisma.user.findUnique({
+      where: { email: normalizedEmail },
+      select: {
+        id: true,
+        email: true,
+        status: true,
+        password: true,
+        passwordCredentialStatus: true,
+        authIdentities: {
+          select: { provider: true },
+        },
+      },
+    });
+
+    if (
+      !user ||
+      user.status !== UserStatus.ACTIVE ||
+      !this.isGoogleOnlyPasswordSetupCandidate(user)
+    ) {
+      return genericResponse;
+    }
+
+    const code = this.generateEmailLoginCode();
+    const codeHash = await this.passwordService.hashPassword(code);
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + EMAIL_LOGIN_CODE_TTL_MS);
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.emailLoginCode.updateMany({
+        where: {
+          userId: user.id,
+          purpose,
+          usedAt: null,
+          expiresAt: { gt: now },
+        },
+        data: { usedAt: now },
+      });
+
+      await tx.emailLoginCode.create({
+        data: {
+          id: uuidv4(),
+          userId: user.id,
+          purpose,
+          codeHash,
+          expiresAt,
+        },
+      });
+    });
+
+    const emailContent = emailTemplates.emailLoginCodeEmail(
+      code,
+      this.emailService.getAppName(),
+    );
+    await this.sendScenarioEmailIfAllowed({
+      userId: user.id,
+      to: user.email,
+      scenarioKey: 'auth.email_login_code.password_setup',
+      subject: emailContent.subject,
+      html: emailContent.html,
+      text: emailContent.text,
+      priority: EmailPriority.P0_SECURITY,
+      idempotencyKey: `auth:email-login-code:${user.id}:${expiresAt.getTime()}`,
+    });
+
+    return genericResponse;
+  }
+
+  async confirmEmailLoginCode(
+    email: string,
+    code: string,
+    purpose: LoginCodePurpose = LoginCodePurpose.PASSWORD_SETUP,
+  ) {
+    if (purpose !== LoginCodePurpose.PASSWORD_SETUP) {
+      throw new BadRequestException('Unsupported email login code purpose');
+    }
+
+    const normalizedEmail = email?.trim().toLowerCase();
+    const submittedCode = code?.trim();
+    if (!normalizedEmail || !submittedCode) {
+      throw new BadRequestException('Email and verification code are required');
+    }
+
+    const user = await this.prisma.user.findUnique({
+      where: { email: normalizedEmail },
+      select: {
+        id: true,
+        status: true,
+        password: true,
+        passwordCredentialStatus: true,
+        authIdentities: {
+          select: { provider: true },
+        },
+      },
+    });
+
+    if (
+      !user ||
+      user.status !== UserStatus.ACTIVE ||
+      !this.isGoogleOnlyPasswordSetupCandidate(user)
+    ) {
+      throw new BadRequestException('Invalid or expired verification code');
+    }
+
+    const now = new Date();
+    const activeCode = await this.prisma.emailLoginCode.findFirst({
+      where: {
+        userId: user.id,
+        purpose,
+        usedAt: null,
+        expiresAt: { gt: now },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    if (!activeCode || activeCode.attempts >= EMAIL_LOGIN_CODE_MAX_ATTEMPTS) {
+      throw new BadRequestException('Invalid or expired verification code');
+    }
+
+    const valid = await this.verifyOptionalPassword(
+      activeCode.codeHash,
+      submittedCode,
+    ).catch(() => false);
+    if (!valid) {
+      await this.prisma.emailLoginCode.update({
+        where: { id: activeCode.id },
+        data: {
+          attempts: { increment: 1 },
+          ...(activeCode.attempts + 1 >= EMAIL_LOGIN_CODE_MAX_ATTEMPTS
+            ? { usedAt: now }
+            : {}),
+        },
+      });
+      throw new BadRequestException('Invalid or expired verification code');
+    }
+
+    const rawSetupToken = randomBytes(32).toString('hex');
+    const tokenHash = this.hashSetupToken(rawSetupToken);
+    const expiresAt = new Date(now.getTime() + PASSWORD_SETUP_TOKEN_TTL_MS);
+
+    await this.prisma.$transaction(async (tx) => {
+      const claimedCode = await tx.emailLoginCode.updateMany({
+        where: {
+          id: activeCode.id,
+          usedAt: null,
+          expiresAt: { gt: now },
+        },
+        data: { usedAt: now },
+      });
+      if (claimedCode.count !== 1) {
+        throw new BadRequestException('Invalid or expired verification code');
+      }
+
+      await tx.passwordSetupToken.updateMany({
+        where: {
+          userId: user.id,
+          usedAt: null,
+          expiresAt: { gt: now },
+        },
+        data: { usedAt: now },
+      });
+
+      await tx.passwordSetupToken.create({
+        data: {
+          id: uuidv4(),
+          userId: user.id,
+          tokenHash,
+          expiresAt,
+        },
+      });
+    });
+
+    return {
+      passwordSetupToken: rawSetupToken,
+      expiresInSeconds: Math.floor(PASSWORD_SETUP_TOKEN_TTL_MS / 1000),
+    };
+  }
+
+  async setupPassword(passwordSetupToken: string, newPassword: string) {
+    const rawToken = passwordSetupToken?.trim();
+    if (!rawToken || !newPassword) {
+      throw new BadRequestException(
+        'Password setup token and new password are required',
+      );
+    }
+
+    const tokenHash = this.hashSetupToken(rawToken);
+    const now = new Date();
+    const setupToken = await this.prisma.passwordSetupToken.findFirst({
+      where: {
+        tokenHash,
+        usedAt: null,
+        expiresAt: { gt: now },
+      },
+      include: {
+        user: {
+          select: {
+            id: true,
+            email: true,
+            username: true,
+            status: true,
+            password: true,
+            passwordCredentialStatus: true,
+            authIdentities: {
+              select: { provider: true },
+            },
+            userProfile: { select: canonicalUserProfileSelect },
+            brand: { select: { name: true } },
+          },
+        },
+      },
+    });
+
+    if (
+      !setupToken ||
+      setupToken.user.status !== UserStatus.ACTIVE ||
+      !this.isGoogleOnlyPasswordSetupCandidate(setupToken.user)
+    ) {
+      throw new UnauthorizedException('Invalid or expired password setup token');
+    }
+
+    validatePasswordPolicy(
+      newPassword,
+      this.buildPasswordPolicyContext({
+        email: setupToken.user.email,
+        username: setupToken.user.username,
+        brandFullName: resolveRequiredBrandField(
+          setupToken.user,
+          'brandFullName',
+        ),
+        firstName: resolveRequiredProfileField(setupToken.user, 'firstName'),
+        lastName: resolveRequiredProfileField(setupToken.user, 'lastName'),
+      }),
+    );
+
+    const password = await this.passwordService.hashPassword(newPassword);
+
+    await this.prisma.$transaction(
+      async (tx) => {
+        const claimedToken = await tx.passwordSetupToken.updateMany({
+          where: {
+            id: setupToken.id,
+            usedAt: null,
+            expiresAt: { gt: now },
+          },
+          data: { usedAt: now },
+        });
+        if (claimedToken.count !== 1) {
+          throw new UnauthorizedException(
+            'Invalid or expired password setup token',
+          );
+        }
+
+        await tx.refreshToken.deleteMany({ where: { userId: setupToken.userId } });
+        await tx.user.update({
+          where: { id: setupToken.userId },
+          data: {
+            password,
+            passwordCredentialStatus: PasswordCredentialStatus.ENABLED,
+            mustResetPassword: false,
+            authVersion: { increment: 1 },
+          },
+        });
+      },
+      {
+        isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+      },
+    );
+
+    const passwordChangedEmail = emailTemplates.passwordChangedSecurityAlertEmail(
+      this.emailService.getAppName(),
+    );
+    await this.sendScenarioEmailIfAllowed({
+      userId: setupToken.userId,
+      to: setupToken.user.email,
+      scenarioKey: 'auth.password.changed',
+      subject: passwordChangedEmail.subject,
+      html: passwordChangedEmail.html,
+      text: passwordChangedEmail.text,
+      priority: EmailPriority.P0_SECURITY,
+      idempotencyKey: `auth:password-setup:${setupToken.userId}:${setupToken.id}`,
+    });
+
+    return { message: 'Password set successfully. Sign in with your new password.' };
+  }
+
+  async linkGoogle(userId: string, idToken: string) {
+    const identity = await this.googleTokenVerifier.verifyIdToken(idToken);
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        email: true,
+        status: true,
+      },
+    });
+    if (!user) {
+      throw new UnauthorizedException('User not found');
+    }
+    if (user.status !== UserStatus.ACTIVE) {
+      throw new UnauthorizedException('User account is suspended or deactivated');
+    }
+    if (user.email.trim().toLowerCase() !== identity.email) {
+      throw new BadRequestException(
+        'Google account email must match your Threadly email',
+      );
+    }
+
+    const existing = await this.prisma.authIdentity.findUnique({
+      where: {
+        provider_providerSubject: {
+          provider: AuthProvider.GOOGLE,
+          providerSubject: identity.providerSubject,
+        },
+      },
+      select: { userId: true },
+    });
+
+    if (existing) {
+      if (existing.userId === user.id) {
+        return { message: 'Google sign-in is already linked.' };
+      }
+      throw new BadRequestException('Google sign-in is already linked.');
+    }
+
+    await this.prisma.authIdentity.create({
+      data: {
+        userId: user.id,
+        provider: AuthProvider.GOOGLE,
+        providerSubject: identity.providerSubject,
+        email: identity.email,
+        emailVerified: identity.emailVerified,
+      },
+    });
+
+    return { message: 'Google sign-in linked.' };
+  }
+
   async getTrustedDevices(userId: string) {
     return this.trustedDeviceService.listDevices(userId);
   }
@@ -741,6 +1432,7 @@ export class AuthService {
           select: {
             ...authUserSelect,
             password: true,
+            passwordCredentialStatus: true,
           },
         })
         .catch((dbError) => {
@@ -752,10 +1444,23 @@ export class AuthService {
         return null;
       }
 
-      const { password: hashedPassword, ...publicUser } = user;
+      const {
+        password: hashedPassword,
+        passwordCredentialStatus,
+        ...publicUser
+      } = user;
+
+      if (
+        !this.hasLocalPassword({
+          password: hashedPassword,
+          passwordCredentialStatus,
+        })
+      ) {
+        return null;
+      }
 
       const isPasswordValid = await this.passwordService
-        .verifyPassword(hashedPassword, password)
+        .verifyPassword(hashedPassword!, password)
         .catch((verifyError) => {
           this.logger.error('Password verification failed:', verifyError);
           return false;
@@ -1180,6 +1885,7 @@ export class AuthService {
         id: true,
         email: true,
         password: true,
+        passwordCredentialStatus: true,
       },
     });
     if (!user) {
@@ -1190,7 +1896,13 @@ export class AuthService {
       throw new BadRequestException('New email must be different from your current email');
     }
 
-    const passwordValid = await this.passwordService.verifyPassword(
+    if (!this.hasLocalPassword(user)) {
+      throw new BadRequestException(
+        'Set a password before changing your email address',
+      );
+    }
+
+    const passwordValid = await this.verifyOptionalPassword(
       user.password,
       currentPassword,
     );
@@ -1333,13 +2045,20 @@ export class AuthService {
         email: true,
         username: true,
         password: true,
+        passwordCredentialStatus: true,
       },
     });
     if (!user) {
       throw new UnauthorizedException('User not found');
     }
 
-    const passwordValid = await this.passwordService.verifyPassword(
+    if (!this.hasLocalPassword(user)) {
+      throw new BadRequestException(
+        'Set a password before deleting your account',
+      );
+    }
+
+    const passwordValid = await this.verifyOptionalPassword(
       user.password,
       currentPassword,
     );
@@ -1363,6 +2082,7 @@ export class AuthService {
           email: deletedEmail,
           username: deletedUsername,
           password: placeholderPassword,
+          passwordCredentialStatus: PasswordCredentialStatus.DISABLED,
           status: UserStatus.DEACTIVATED,
           deactivatedAt: deletedAt,
           deactivatedReason: 'USER_SELF_DELETE',
@@ -1606,6 +2326,7 @@ export class AuthService {
             role: true,
             status: true,
             password: true,
+            passwordCredentialStatus: true,
             email: true,
             username: true,
             userProfile: { select: canonicalUserProfileSelect },
@@ -1638,7 +2359,7 @@ export class AuthService {
       }),
     );
 
-    const isSamePassword = await this.passwordService.verifyPassword(
+    const isSamePassword = await this.verifyOptionalPassword(
       resetToken.user.password,
       newPassword,
     );
@@ -1672,6 +2393,7 @@ export class AuthService {
           where: { id: resetToken.userId },
           data: {
             password,
+            passwordCredentialStatus: PasswordCredentialStatus.ENABLED,
             mustResetPassword: false,
             authVersion: { increment: 1 },
           },
@@ -1712,13 +2434,22 @@ export class AuthService {
 
     const user = await this.prisma.user.findUnique({
       where: { email: normalizedEmail },
-      select: { id: true, status: true },
+      select: {
+        id: true,
+        status: true,
+        password: true,
+        passwordCredentialStatus: true,
+      },
     });
 
     // Always return generic response to prevent email enumeration
-    if (!user || user.status !== UserStatus.ACTIVE) {
+    if (
+      !user ||
+      user.status !== UserStatus.ACTIVE ||
+      !this.hasLocalPassword(user)
+    ) {
       this.logger.log(
-        `Password reset requested for unknown or inactive account ${maskEmailForLog(normalizedEmail)}`,
+        `Password reset requested for unknown, inactive, or passwordless account ${maskEmailForLog(normalizedEmail)}`,
       );
       return genericResponse;
     }
@@ -1852,6 +2583,7 @@ export class AuthService {
             id: true,
             status: true,
             password: true,
+            passwordCredentialStatus: true,
             email: true,
             username: true,
             userProfile: { select: canonicalUserProfileSelect },
@@ -1880,7 +2612,7 @@ export class AuthService {
       }),
     );
 
-    const isSamePassword = await this.passwordService.verifyPassword(
+    const isSamePassword = await this.verifyOptionalPassword(
       resetToken.user.password,
       newPassword,
     );
@@ -1914,6 +2646,7 @@ export class AuthService {
           where: { id: resetToken.userId },
           data: {
             password,
+            passwordCredentialStatus: PasswordCredentialStatus.ENABLED,
             authVersion: { increment: 1 },
           },
         });
@@ -1961,10 +2694,17 @@ export class AuthService {
         userProfile: { select: canonicalUserProfileSelect },
         brand: { select: { name: true } },
         password: true,
+        passwordCredentialStatus: true,
         mustResetPassword: true,
       },
     });
     if (!user) throw new UnauthorizedException('User not found');
+
+    if (!this.hasLocalPassword(user)) {
+      throw new BadRequestException(
+        'Use the password setup flow before changing your password',
+      );
+    }
 
     // If not in forced-reset mode, verify current password.
     if (!user.mustResetPassword) {
@@ -1972,7 +2712,7 @@ export class AuthService {
         throw new BadRequestException('Current password is required');
       }
 
-      const valid = await this.passwordService.verifyPassword(
+      const valid = await this.verifyOptionalPassword(
         user.password,
         currentPassword,
       );
@@ -1992,7 +2732,7 @@ export class AuthService {
       }),
     );
 
-    const isSamePassword = await this.passwordService.verifyPassword(
+    const isSamePassword = await this.verifyOptionalPassword(
       user.password,
       newPassword,
     );
@@ -2008,6 +2748,7 @@ export class AuthService {
       where: { id: userId },
       data: {
         password,
+        passwordCredentialStatus: PasswordCredentialStatus.ENABLED,
         mustResetPassword: false,
         authVersion: { increment: 1 },
       },
@@ -2050,6 +2791,7 @@ export class AuthService {
         id: true,
         role: true,
         password: true,
+        passwordCredentialStatus: true,
         mustResetPassword: true,
         email: true,
         username: true,
@@ -2065,7 +2807,11 @@ export class AuthService {
       throw new BadRequestException('This account does not require a password reset');
     }
 
-    const valid = await this.passwordService.verifyPassword(
+    if (!this.hasLocalPassword(user)) {
+      throw new UnauthorizedException('Invalid account or credentials');
+    }
+
+    const valid = await this.verifyOptionalPassword(
       user.password,
       currentPassword,
     );
@@ -2084,7 +2830,7 @@ export class AuthService {
       }),
     );
 
-    const isSamePassword = await this.passwordService.verifyPassword(
+    const isSamePassword = await this.verifyOptionalPassword(
       user.password,
       newPassword,
     );
@@ -2101,6 +2847,7 @@ export class AuthService {
         where: { id: user.id },
         data: {
           password,
+          passwordCredentialStatus: PasswordCredentialStatus.ENABLED,
           mustResetPassword: false,
           authVersion: { increment: 1 },
         },

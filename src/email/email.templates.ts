@@ -91,6 +91,29 @@ export function emailVerificationEmail(
   };
 }
 
+export function emailLoginCodeEmail(
+  code: string,
+  appName: string,
+): EmailContent {
+  const companyName = normalizeCompanyName(appName);
+  const safeCode = escapeHtml(code);
+
+  return {
+    subject: `Your ${companyName} password setup code`,
+    html: wrap(
+      'Create Your Password',
+      `${p(`Use this verification code to create a password for your <strong>${companyName}</strong> account.`)}
+      <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:12px;padding:18px;text-align:center;margin:20px 0">
+        <span style="font-size:28px;font-weight:700;letter-spacing:6px;color:${BRAND_PRIMARY};font-family:monospace">${safeCode}</span>
+      </div>
+      ${warningBox(`<p style="margin:0;color:#9a3412;font-size:13px">This code expires in <strong>10 minutes</strong> and can only be used once. If you didn't request it, ignore this email.</p>`)}`,
+      companyName,
+      `This email was sent because someone requested password setup for a Google-created ${companyName} account.`,
+    ),
+    text: `Create Your Password\n\nYour ${companyName} verification code is: ${code}\n\nThis code expires in 10 minutes and can only be used once. If you didn't request it, ignore this email.`,
+  };
+}
+
 export function breakGlassCodeEmail(
   code: string,
   appName: string,

@@ -3,6 +3,7 @@ import {
   BrandMemberRole,
   BrandMemberStatus,
   BrandVerificationStatus,
+  PasswordCredentialStatus,
 } from '@prisma/client';
 import { THEME_PREFERENCES, type ThemePreference } from 'src/common/theme.contract';
 
@@ -147,6 +148,9 @@ export class AuthUserResponseDto {
 
   @ApiProperty()
   isEmailVerified: boolean;
+
+  @ApiProperty({ enum: PasswordCredentialStatus })
+  passwordCredentialStatus: PasswordCredentialStatus;
 
   @ApiProperty({
     required: false,

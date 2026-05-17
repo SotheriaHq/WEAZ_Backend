@@ -76,6 +76,7 @@ describe('AuthService password reset hardening', () => {
       mockNotifications,
       mockEmailService,
       {} as any,
+      {} as any,
     );
     loggerLogSpy = jest
       .spyOn((service as any).logger, 'log')
@@ -117,7 +118,7 @@ describe('AuthService password reset hardening', () => {
     );
     expect(loggerLogSpy).toHaveBeenCalledWith(
       expect.stringMatching(
-        /^Password reset requested for unknown or inactive account email_fingerprint=[a-f0-9]{12}$/,
+        /^Password reset requested for unknown, inactive, or passwordless account email_fingerprint=[a-f0-9]{12}$/,
       ),
     );
     expect(loggerLogSpy.mock.calls[0][0]).not.toContain(
@@ -129,6 +130,7 @@ describe('AuthService password reset hardening', () => {
     mockPrisma.user.findUnique.mockResolvedValue({
       id: 'user-1',
       status: UserStatus.ACTIVE,
+      password: 'old-password-hash',
     });
     mockPrisma.passwordResetToken.findFirst.mockResolvedValue(null);
     mockPrisma.passwordResetToken.updateMany.mockResolvedValue({ count: 1 });
@@ -230,6 +232,7 @@ describe('AuthService password reset hardening', () => {
       where: { id: 'user-1' },
       data: {
         password: 'new-password-hash',
+        passwordCredentialStatus: 'ENABLED',
         authVersion: { increment: 1 },
       },
     });
@@ -276,6 +279,7 @@ describe('AuthService password reset hardening', () => {
       where: { id: 'admin-1' },
       data: {
         password: 'admin-password-hash',
+        passwordCredentialStatus: 'ENABLED',
         mustResetPassword: false,
         authVersion: { increment: 1 },
       },
@@ -316,6 +320,7 @@ describe('AuthService password reset hardening', () => {
       where: { id: 'user-1' },
       data: {
         password: 'changed-password-hash',
+        passwordCredentialStatus: 'ENABLED',
         mustResetPassword: false,
         authVersion: { increment: 1 },
       },
