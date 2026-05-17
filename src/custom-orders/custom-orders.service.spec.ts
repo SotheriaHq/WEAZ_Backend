@@ -851,6 +851,39 @@ describe('CustomOrdersService', () => {
     expect(pricingService.buildPricePreview).toHaveBeenCalled();
   });
 
+  it('rejects preview pricing when a configured required measurement is missing without registry rows', async () => {
+    prisma.customOrderConfiguration.findUnique.mockResolvedValue({
+      id: 'configuration_1',
+      isActive: true,
+      baseProductionCharge: 100000,
+      fabricCostPerYard: 6000,
+      rushEnabled: false,
+      rushFee: null,
+      requiredMeasurementKeys: ['WOMEN_WAIST'],
+      requiredFreeformPointIds: [],
+      rules: [],
+      brand: { currency: 'NGN' },
+      versions: [{ id: 'configuration_version_1' }],
+    });
+    prisma.measurementPoint.findMany.mockResolvedValue([]);
+    prisma.userSizeFitProfile.findUnique.mockResolvedValue(null);
+    prisma.customOrderCheckoutIntent.findUnique.mockResolvedValue(null);
+    pricingService.validateConfigurationRules.mockReturnValue([]);
+
+    await expect(
+      service.createPricePreview('buyer_1', {
+        configurationId: 'configuration_1',
+        configurationVersionId: 'configuration_version_1',
+        measurementValues: {},
+        rushSelected: false,
+        shippingAddress: null,
+      } as any),
+    ).rejects.toThrow('Missing measurement value for WOMEN_WAIST');
+
+    expect(prisma.customOrderCheckoutIntent.upsert).not.toHaveBeenCalled();
+    expect(pricingService.buildPricePreview).not.toHaveBeenCalled();
+  });
+
   it('blocks a new custom preview when the same source has a paid active order', async () => {
     prisma.customOrderConfiguration.findUnique.mockResolvedValue({
       id: 'configuration_1',

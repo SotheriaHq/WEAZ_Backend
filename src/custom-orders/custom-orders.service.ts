@@ -3867,15 +3867,27 @@ export class CustomOrdersService {
     requiredMeasurementKeys: string[],
     measurementValues: Record<string, number>,
   ) {
+    const normalizedRequiredKeys = Array.from(
+      new Set(
+        requiredMeasurementKeys
+          .map((key) => (typeof key === 'string' ? key.trim() : ''))
+          .filter(Boolean),
+      ),
+    );
+
+    for (const key of normalizedRequiredKeys) {
+      const value = Number(measurementValues[key]);
+      if (!Number.isFinite(value)) {
+        throw new BadRequestException(`Missing measurement value for ${key}`);
+      }
+    }
+
     const points = await this.prisma.measurementPoint.findMany({
-      where: { key: { in: requiredMeasurementKeys } },
+      where: { key: { in: normalizedRequiredKeys } },
       select: { key: true, minValueCm: true, maxValueCm: true },
     });
     for (const point of points) {
       const value = Number(measurementValues[point.key]);
-      if (!Number.isFinite(value)) {
-        throw new BadRequestException(`Missing measurement value for ${point.key}`);
-      }
       if (point.minValueCm != null && value < Number(point.minValueCm)) {
         throw new BadRequestException(`Measurement value for ${point.key} is below the allowed minimum`);
       }
