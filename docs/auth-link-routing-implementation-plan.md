@@ -353,6 +353,44 @@ Phase 3 checklist:
 - [x] Added focused web and mobile contract validation where practical.
 - [x] Added manual QA steps for web, mobile, and cross-surface auth-link flows.
 
+## Phase 4 QA/UAT Readiness Notes
+
+Phase 4 completed QA/UAT readiness documentation without changing production auth behavior.
+
+Implemented in Phase 4:
+- Added `docs/auth-link-routing-qa-uat-checklist.md` with local/test, QA/UAT, and production environment setup guidance.
+- Added release blockers for missing QA/UAT env configuration, untested real reset/verification emails, untested token reuse/expiry behavior, untested mobile custom scheme, and any unsupported Universal/App Links claim.
+- Confirmed the completed password reset flow has all required screens/states:
+  - forgot-password request
+  - check-inbox response
+  - reset form
+  - missing-token state
+  - password validation
+  - success state
+  - login routing after reset
+- Confirmed automatic login after password reset is intentionally not implemented. Password reset revokes sessions and increments `authVersion`, so users must sign in again with the new password.
+- Confirmed Universal Links/App Links are not production-ready unless canonical domains, AASA/Digital Asset Links files, and mobile app config are added later.
+- Added lightweight route/readiness contract checks where practical for frontend and mobile.
+
+Readiness checks used for Phase 4:
+- Backend targeted Jest specs for web URL resolution, auth-link builders, sensitive log masking, and password-reset hardening.
+- Backend `npx prisma validate`.
+- Backend `npm run build`.
+- Frontend focused reset-password Vitest coverage.
+- Frontend auth-link route readiness contract.
+- Frontend `npm run build`.
+- Mobile auth-link routing contract.
+- Mobile `npm exec tsc -- --noEmit`.
+- Mobile `npm run audit:design-system`.
+- `git diff --check` in each changed repo.
+
+What cannot be claimed yet:
+- Production Universal Links/App Links support.
+- Native mobile email verification.
+- Native mobile email-change confirmation.
+- Native mobile admin reset.
+- Release readiness before real QA/UAT reset and verification emails are tested end-to-end.
+
 ## Decisions Still Needed From The Human
 
 1. Should email verification remain web-only for now, or should mobile own a native verify-email screen later?
