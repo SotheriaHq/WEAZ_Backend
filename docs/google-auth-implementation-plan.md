@@ -182,24 +182,29 @@ Recommended additions:
 - Add an explicit local credential state. Preferred shape:
 
 ```prisma
-enum LocalCredentialStatus {
+enum PasswordCredentialStatus {
   ENABLED
   NOT_SET
   DISABLED
 }
 ```
 
-- Add `localCredentialStatus LocalCredentialStatus @default(ENABLED)` to `User`, or create a dedicated `LocalCredential` table if the team accepts a larger auth refactor.
+- Add `passwordCredentialStatus PasswordCredentialStatus @default(ENABLED)` to `User`, or create a dedicated `LocalCredential` table if the team accepts a larger auth refactor.
 - Make `User.password` nullable in the migration if local credential state lives on `User`.
 
-Evaluation of password representation options:
+Credential model option evaluation:
 
-- Unusable password hash: not preferred as final design. It preserves the current non-null `User.password` shape but hides an account state in a fake credential. It can be used only as a temporary zero-downtime bridge if needed.
-- Nullable password migration: recommended pragmatic path for this codebase if paired with `localCredentialStatus`. It makes Google-only users explicit and requires targeted guards in login, password reset, email change, account deletion, and password change.
-- Local credential status field: recommended. It allows the backend and UI to distinguish password-enabled, Google-only, disabled, or future states without inferring from hash presence.
-- Separate local credential table: cleanest long-term architecture. It removes password concerns from `User`, but it requires backfilling all current passwords and touching every password path. If schedule allows, name it `LocalCredential` with `userId`, `passwordHash`, `status`, `createdAt`, `updatedAt`, and `lastChangedAt`.
+| Option | Pros | Cons | Recommendation |
+| --- | --- | --- | --- |
+| `User.hasLocalPassword` | Simple boolean for UI and login-options decisions. Small migration. | Can drift from actual password hash, does not represent disabled/local-credential states, and becomes another field to keep in sync. | Do not use as the primary model. It may be a computed response field derived from credential status. |
+| `User.password` nullable | Directly represents Google-only users with no local password. Smallest schema change from current model. | Requires auditing every password read/write path because the current schema requires `password String`. Nullable alone does not explain why password is absent. | Recommended only when paired with `User.passwordCredentialStatus`. |
+| `User.passwordCredentialStatus` | Explicitly represents `ENABLED`, `NOT_SET`, and `DISABLED` states for login-options and password setup. Avoids inferring account state from hash presence. | Requires careful updates in login, signup, password reset, password change, account deletion, and admin flows. | Recommended G2 field if password remains on `User`. |
+| `LocalCredential` model | Cleanest long-term separation. Password hash, status, changed-at metadata, and future credential history live outside `User`. | Larger refactor and backfill; every current password path must move from `User.password`. More migration risk in the first Google auth phase. | Good long-term target, but not the recommended first implementation unless the team accepts a broader credential refactor. |
+| `LoginSetupCode` / `EmailLoginCode` table | Gives Google-only users a secure email-code setup flow with hashed, expiring, single-use codes. Can track attempts and rate-limit by purpose. | Adds a new auth challenge lifecycle and email template. Must avoid public enumeration and raw code storage. | Recommended. Prefer the name `EmailLoginCode` with purpose `PASSWORD_SETUP`. |
+| `PasswordSetupToken` table | Separates code confirmation from password creation and avoids making email code usable as a password-set bearer token. Can be hashed, short-lived, and single-use. | Adds one more short-lived auth artifact to clean up and test. | Recommended for G2/G3 backend foundation. Use after code confirmation; do not issue a full session. |
+| Unusable password hash | Avoids nullable migration and keeps current `User.password` non-null. | Hides account state in fake credentials, risks accidental password login behavior, and is difficult to reason about securely. | Not preferred. Use only as a temporary zero-downtime bridge if migration sequencing requires it. |
 
-Recommended G2 choice: Add `AuthIdentity`, make `User.password` nullable, and add `localCredentialStatus`. This is smaller than a full credential-table extraction while still representing Google-only users safely and explicitly.
+Final recommendation: G2 should add `AuthIdentity`, make `User.password` nullable, and add `User.passwordCredentialStatus`. It should also add `EmailLoginCode` and `PasswordSetupToken` for Google-only first-password setup. This is smaller than a full `LocalCredential` extraction while still representing Google-only users safely and explicitly.
 
 Recommended email-code/password-setup model:
 
@@ -224,7 +229,23 @@ model EmailLoginCode {
 }
 ```
 
-Password setup should use a second short-lived hashed `PasswordSetupToken` or equivalent challenge row after code confirmation. Do not reuse normal password reset tokens unless the flow is explicitly treated as account recovery; this product flow is first-password creation after email ownership proof.
+Password setup should use a second short-lived hashed `PasswordSetupToken` after code confirmation:
+
+```prisma
+model PasswordSetupToken {
+  id          String    @id @default(uuid()) @db.Uuid
+  userId      String    @db.Uuid
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash   String    @unique
+  expiresAt   DateTime
+  usedAt      DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@index([userId, expiresAt])
+}
+```
+
+Do not reuse normal password reset tokens unless the flow is explicitly treated as account recovery; this product flow is first-password creation after email ownership proof.
 
 ## Recommended Backend Endpoints
 
@@ -264,7 +285,7 @@ Security rules:
 - Use a transaction when creating/linking `AuthIdentity` and `User`.
 - If `AuthIdentity(provider=GOOGLE, sub)` exists, sign in that user.
 - If identity does not exist and email matches an existing active Threadly user, link identity to that user only when Google email is verified.
-- If identity does not exist and no user exists, create a user with `localCredentialStatus=NOT_SET` and no password.
+- If identity does not exist and no user exists, create a user with `passwordCredentialStatus=NOT_SET` and no password.
 - If email matches a suspended/deactivated account, do not create a duplicate; return a safe account-restricted response.
 
 Rate limits:
@@ -382,6 +403,11 @@ Rate limits:
 
 - Per-IP, per-email, and per-user cooldown.
 
+Account enumeration considerations:
+
+- Always return the generic response, including for unknown emails, existing password accounts, disabled accounts, and Google-linked accounts that already have a password.
+- Do not reveal whether an email is Google-only through HTTP status, response body, timing differences, or email template bounce behavior where practical.
+
 Tests required:
 
 - Generic response for unknown emails.
@@ -430,6 +456,11 @@ Rate limits:
 
 - Per-IP and per-code challenge.
 
+Account enumeration considerations:
+
+- Use generic failure messages for invalid, expired, reused, or over-attempt codes.
+- Do not reveal whether the email exists separately from whether the code is valid.
+
 Tests required:
 
 - Valid code returns setup token.
@@ -465,7 +496,7 @@ Security rules:
 
 - Treat as first-password creation, not normal reset-password.
 - Validate the existing password policy.
-- Require `localCredentialStatus=NOT_SET` or no local credential.
+- Require `passwordCredentialStatus=NOT_SET` or no local credential.
 - Store Argon2id password hash.
 - Set local credential status to `ENABLED`.
 - Mark setup token used.
@@ -477,6 +508,11 @@ Security rules:
 Rate limits:
 
 - Per-IP and per-setup-token.
+
+Account enumeration considerations:
+
+- Setup token validation should not reveal account email, provider state, or whether a local password already exists beyond a generic invalid/expired challenge response.
+- The endpoint should require the setup token and should not accept raw email alone.
 
 Tests required:
 
@@ -520,6 +556,11 @@ Security rules:
 Rate limits:
 
 - Per-user and per-IP.
+
+Account enumeration considerations:
+
+- Because this endpoint is authenticated, it may return current-user-specific linking errors.
+- It must not reveal whether another Threadly account owns the Google identity beyond a generic already-linked response.
 
 Tests required:
 
@@ -591,15 +632,23 @@ Duplicate prevention:
 - Unique `(provider, providerSubject)` prevents duplicate Google identities.
 - Linking by verified email prevents a second user row for an already registered email.
 
+Automatic vs explicit linking:
+
+- Recommended launch default: allow automatic linking during `POST /auth/google` only after the backend verifies the Google ID token, confirms `email_verified=true`, and the normalized Google email exactly matches an active Threadly account email.
+- Explicit confirmation should be required for settings-based linking while already signed in, any attempted link where the Google email differs from the current Threadly email, or any future flow that links more than one external provider.
+- If product wants a stricter trust boundary, automatic linking can be replaced with an email-code confirmation step before creating `AuthIdentity`; that is safer but adds friction for existing password users.
+
 ## Google Token Verification Rules
 
 Backend must:
 
 - Validate ID token signature.
 - Validate `aud` against allowed client IDs.
+- Handle separate web, iOS, and Android client IDs through `GOOGLE_ALLOWED_CLIENT_IDS`; do not assume the web client ID is the only valid audience.
 - Validate issuer: `accounts.google.com` or `https://accounts.google.com`.
 - Validate expiry and issued-at tolerance.
 - Require `email_verified=true`.
+- Reject invalid, expired, wrong-audience, wrong-issuer, or unverified-email tokens before any user lookup or account creation.
 - Normalize email for user lookup, but use `sub` as the provider identity.
 - Store only provider, provider subject, email snapshot, and verification flag.
 - Never trust frontend/mobile profile payloads by themselves.
@@ -636,6 +685,7 @@ Rules:
 
 - Google client IDs may be public.
 - Google client secret must remain backend-only.
+- Documentation and `.env.example` files must use placeholders only, for example `<google-web-client-id>` and `<google-client-secret-if-code-exchange-is-used>`.
 - Never commit real client secrets, OAuth JSON files, downloaded credential files, raw ID tokens, raw auth codes, or production `.env` files.
 - Current backend `.env.example` must be cleaned before any Google auth commit that touches env examples.
 
@@ -654,6 +704,8 @@ Required web changes in later phases:
 - Loading, missing-code, invalid-code, expired-code, too-many-attempts, and success states.
 - Account linking messaging for existing password users whose verified Google email matches.
 - Signup flow entry for Google signup, including account type and brand name collection where needed.
+- Login with Google path for returning Google-created users.
+- Signup with Google path for new regular users and allowed brand users.
 
 Do not use current static Google/Apple buttons as proof of implementation; they are UI placeholders only.
 
@@ -672,6 +724,8 @@ Required mobile changes in later phases:
 - Loading, missing-code, invalid-code, expired-code, too-many-attempts, network-error, and success states.
 - Account linking messaging for existing password users.
 - Signup path for Google-created regular users and brand users.
+- Login with Google path for returning Google-created users.
+- Signup with Google path for new regular users and allowed brand users.
 
 Mobile package decision:
 
@@ -718,6 +772,11 @@ Stale email-code tokens:
 - Risk: old setup codes remain valid.
 - Mitigation: invalidate previous active code on new request, expire quickly, mark used.
 
+Raw code storage:
+
+- Risk: email login/setup codes are stored or logged in clear text.
+- Mitigation: store only code hashes, never return codes from APIs, redact request bodies in logs, and add tests that raw codes are not persisted.
+
 Login CSRF/state if OAuth code flow is used:
 
 - Risk: callback code/state substitution.
@@ -733,72 +792,137 @@ Raw token/code logging:
 - Risk: tokens or codes appear in logs.
 - Mitigation: add token/code redaction tests and logging helpers; continue current pattern of masked password diagnostics.
 
+Linking Google account to the wrong Threadly account:
+
+- Risk: provider identity is attached to the wrong user through unverified email, stale session state, or cross-account linking.
+- Mitigation: require backend token verification, `email_verified=true`, normalized exact email match for automatic linking, authenticated current-user checks for explicit linking, and unique provider-subject constraints.
+
+Google-only account stranded without password:
+
+- Risk: a Google-created user tries email/password login and sees an empty password field with no recovery path.
+- Mitigation: progressive login-options must render Google sign-in and email-code password setup for `passwordCredentialStatus=NOT_SET`.
+
+Accidental auto-login after password setup/reset:
+
+- Risk: password setup or reset issues a session and weakens the recovery boundary.
+- Mitigation: password reset must continue to require login after success; Google-only password setup from email-code flow should return success and route to login, not issue tokens.
+
+Secrets committed to repo:
+
+- Risk: Google client secret or downloaded OAuth credential JSON is committed.
+- Mitigation: keep secrets backend-only in the deployment secret manager, use placeholders in examples/docs, scan diffs before commit, and clean the current backend `.env.example` secret-like value before G2.
+
 ## Implementation Phases
 
-- G1 Audit + architecture doc: current phase; documentation only.
-- G2 Backend Google identity foundation: add provider data model, env placeholders, token verifier service, `POST /auth/google`, and backend tests.
-- G3 Email-first login-options + email-code/password setup: add method-resolution endpoint, hashed setup code/token models, password setup endpoint, templates, and tests.
-- G4 Web Google auth UI: add email-first login UX, Google web sign-in, code/password setup screens, and tests.
-- G5 Mobile Google auth UI: add mobile Google auth package/config, email-first login UX, code/password setup screens, and tests.
-- G6 QA/UAT and production readiness: environment verification, Google console client IDs/redirects, real-device mobile tests, security review, and release sign-off.
+Exactly four phases:
+
+1. G1 Audit + architecture plan
+   - Documentation only.
+   - Audit backend, web, and mobile auth surfaces.
+   - Record data model, endpoint, UX, security, environment, test, and QA decisions.
+   - Do not modify schema, migrations, Google SDKs, auth behavior, buttons, or secrets.
+
+2. G2 Backend Google auth + progressive login foundation
+   - Add `AuthIdentity`.
+   - Add Google token verification.
+   - Add Google signup/login endpoint.
+   - Add verified-email account linking.
+   - Add login-options endpoint.
+   - Add email-code request/confirm.
+   - Add password setup for Google-only users.
+   - Add backend tests.
+   - Add env documentation and placeholder-only `.env.example` changes.
+   - Add schema/migration only if needed for `AuthIdentity`, password credential status, email login code, and password setup token.
+   - Must not add web/mobile Google SDK logic or client UI wiring.
+
+3. G3 Web + mobile Google auth UI
+   - Add web email-first login UI.
+   - Add web Google button.
+   - Add web email-code verification.
+   - Add web password setup.
+   - Add mobile email-first login UI.
+   - Add mobile Google button.
+   - Add mobile email-code verification.
+   - Add mobile password setup.
+   - Add web/mobile tests.
+   - Ensure no Google client secret is exposed to frontend or mobile.
+
+4. G4 Full QA/UAT + production readiness
+   - Real Google account QA.
+   - Real email-code QA.
+   - Account linking QA.
+   - Duplicate account prevention QA.
+   - Google-only direct email login QA.
+   - Existing password user Google login QA.
+   - Environment validation.
+   - Production readiness checklist.
 
 ## Test Matrix
 
 Backend:
 
-- New Google signup creates user and identity.
-- Existing Google identity logs in.
+- New Google signup creates `User` and `AuthIdentity`.
+- Google login existing identity works.
 - Existing password user links Google by verified email.
-- Google-only user direct email login does not show an empty password dead end.
-- Login-options returns password state for password accounts.
-- Login-options returns Google/password-setup state for Google-only accounts.
-- Login-options avoids clear unknown-account enumeration.
-- Email-code request returns generic response.
-- Email-code stores only code hash.
-- Email-code confirm rejects invalid, expired, reused, and over-attempt codes.
-- Password setup validates policy.
-- Password setup creates a local password and keeps Google identity linked.
-- Duplicate email prevention works under race conditions.
+- Duplicate email prevention works under normal and race-condition paths.
 - Unverified Google email is rejected.
 - Invalid Google token is rejected.
-- Wrong Google audience/client ID is rejected.
+- Wrong audience/client ID is rejected.
+- Google-only user direct email login flow starts email-code process.
+- Email-code request is rate-limited.
+- Email-code is stored hashed.
+- Email-code expires.
+- Email-code is single-use.
+- Password setup sets local password.
+- Password setup follows password policy.
+- Password setup does not break Google login.
+- Login-options does not expose unsafe account enumeration.
+- Secrets are not logged.
+- No client secret, raw token, or raw code appears in committed files.
 - Suspended/deactivated matching account does not sign in or duplicate.
-- No client secret, raw token, or raw code appears in logs or committed files.
-- Rate limits are enforced.
-- No automatic password creation without user action.
+- No automatic password creation happens without user action.
 
 Frontend:
 
-- Login initial state shows email only and does not call backend on keystrokes.
-- Continue calls login-options once.
-- Password account renders password field.
-- Google-only account renders Google option and password setup path.
-- Google-linked password account renders both password and Google.
+- Login starts with email first.
+- Continue renders password state for password account.
+- Continue renders Google/password-setup state for Google-only account.
+- Google-linked password account renders password and Google options.
 - Unknown/generic state avoids clear "no account" copy.
-- Google button obtains an ID token and posts only token to backend.
-- Email-code screen handles missing, loading, invalid, expired, and success states.
-- Password setup uses shared 12-character policy.
-- Signup UI supports Google account type/brand-name collection.
+- Login does not call backend on every keystroke.
+- Google button sends backend token.
+- Email-code screen handles missing/invalid code.
+- Email-code screen handles loading, expired, too-many-attempts, and success states.
+- Password setup screen validates password.
+- Password setup success routes correctly.
+- Signup with Google path collects required regular/brand fields.
+- No automatic login after password reset.
 - No Google client secret is bundled.
 
 Mobile:
 
-- Login initial state shows email only and does not call backend on keystrokes.
-- Continue calls login-options once after tap.
-- Google auth package returns ID token for backend verification.
-- Password, Google-only, and Google-linked states render correctly.
-- Email-code screen handles missing, loading, invalid, expired, and success states.
-- Password setup uses shared 12-character policy.
-- Signup supports Google-created regular and brand users.
-- Mobile client IDs are configured per platform.
-- No Google client secret is bundled.
+- Login starts with email first.
+- Continue renders password state for password account.
+- Continue renders Google/password-setup state for Google-only account.
+- Google-linked password account renders password and Google options.
+- Login does not call backend on every keystroke.
+- Google button sends backend token.
+- Email-code screen handles missing/invalid code.
+- Email-code screen handles loading, expired, too-many-attempts, and success states.
+- Password setup screen validates password.
+- Password setup success routes correctly.
+- Signup with Google path collects required regular/brand fields.
+- No automatic login after password reset.
+- No secrets in mobile env except public client IDs.
 
 Cross-surface:
 
-- Same Google-created user can log in on web and mobile.
-- Password user can link Google on web and then log in with Google on mobile.
-- Google-only user can create a local password on web and then use email/password on mobile.
-- Google-only user can create a local password on mobile and then use email/password on web.
+- Google-created account can login with Google on web.
+- Google-created account can login with Google on mobile.
+- Google-created account can create password through email-code setup.
+- Existing password account can link/login with Google.
+- Same email does not create duplicate users.
+- Account remains usable across web and mobile.
 - Existing password reset still does not auto-login after reset.
 - Email verification and auth-link flows remain compatible.
 
@@ -806,20 +930,47 @@ Cross-surface:
 
 - What are the exact Google web, iOS, and Android client IDs for QA/UAT and production?
 - Will backend use ID-token verification only, or OAuth code exchange with backend client secret?
-- Should G2 use nullable `User.password` plus `localCredentialStatus`, or invest immediately in a separate `LocalCredential` table?
+- Should G2 use nullable `User.password` plus `passwordCredentialStatus`, or invest immediately in a separate `LocalCredential` table?
+- Should local credential state live on `User` for G2, or should the project absorb a separate credential table now?
 - Which mobile Google package should be used: Expo AuthSession or native Google Sign-In?
 - Should account linking by verified matching email be automatic, or should existing signed-in users explicitly confirm linking first?
 - Can brand users sign up with Google immediately, or should Google signup launch for regular users first?
+- Can admin users use Google auth, or is Google auth limited to consumer/brand accounts for launch?
 - For Google-created brand accounts, what minimum brand fields are required before creating the brand row?
+- Should email-code setup issue a limited setup session or only a single-purpose `PasswordSetupToken`?
 - Should first-password setup from an already authenticated Google session preserve the current session or require re-login after `authVersion` increment?
+- Should login-options always return a generic state for unknown emails, or can it show a low-risk signup prompt?
 - Should login-options include CAPTCHA/risk scoring in QA/UAT, or is rate limiting enough for launch?
 
-## G2 Readiness Gate
+## Recommended Next Phase
 
-It is safe to proceed to G2 backend implementation only after:
+Safe to proceed:
 
-- The backend `.env.example` secret-like values are removed and any real exposed secret is rotated.
-- Product confirms ID-token verification vs OAuth code exchange.
-- Product confirms the local credential representation: nullable password plus status, or separate local credential table.
-- Google client IDs for web/mobile are available for non-production testing.
-- The team accepts that login-options cannot be completely enumeration-free if it changes UI state by account method; mitigations must be implemented and tested.
+- It is architecturally safe to proceed to G2 backend implementation after the backend `.env.example` secret-like values are removed and any real exposed secret is rotated.
+- G2 can begin once product confirms Google client IDs, ID-token verification vs OAuth code exchange, and the local credential representation.
+
+G2 should implement:
+
+- `AuthIdentity` with Google provider support.
+- Backend Google ID token verification.
+- `POST /auth/google`.
+- Verified-email linking to existing password accounts.
+- `POST /auth/login-options`.
+- `POST /auth/email-login-code/request`.
+- `POST /auth/email-login-code/confirm`.
+- `POST /auth/password/setup`.
+- `User.password` nullable plus `User.passwordCredentialStatus`, unless the team chooses the larger `LocalCredential` table.
+- `EmailLoginCode` and `PasswordSetupToken` with hashed, expiring, single-use storage.
+- Backend tests for token verification, duplicate prevention, account linking, login-options, email-code security, password setup, rate limits, and secret/log redaction.
+- Placeholder-only environment documentation.
+
+G2 must not implement:
+
+- Web or mobile Google buttons.
+- Frontend/mobile Google SDK logic.
+- Client-side Google trust decisions.
+- Google client secret exposure to frontend or mobile.
+- Automatic login after password reset or email-code password setup.
+- Apple auth.
+- Universal/App Links.
+- Real credentials in docs or env examples.
