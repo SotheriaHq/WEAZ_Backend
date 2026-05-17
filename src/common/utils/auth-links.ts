@@ -46,5 +46,5 @@ export function buildEmailVerificationLink(
 }
 
 export function buildEmailChangeConfirmationLink(token: string): string {
-  return `${resolveAuthLinkBaseUrl()}/settings?tab=account-security&emailChangeToken=${encodeToken(token)}`;
+  return `${resolveAuthLinkBaseUrl()}/change-email/confirm?token=${encodeToken(token)}`;
 }

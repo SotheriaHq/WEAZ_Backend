@@ -2,21 +2,21 @@
 
 ## 1. Purpose
 
-This checklist verifies Threadly auth email links across backend, web, and mobile before release. The goal is to confirm that password reset, email verification, and account-security links keep a reliable HTTPS web fallback while mobile custom-scheme reset handling is ready for QA/UAT.
+This checklist verifies Threadly auth email links across backend, web, and mobile before release. The goal is to confirm that password reset, email verification, email-change confirmation, account-security links, and related web-only auth links keep a reliable HTTPS web fallback while supported mobile custom-scheme handling is ready for QA/UAT.
 
 ## 2. Scope
 
 In scope:
 - Backend auth-link URL generation and password-reset security behavior.
-- Web forgot-password, reset-password, verify-email, and account-security email-change handling.
-- Mobile forgot-password messaging, custom-scheme reset-password routing, and native reset-password screen states.
+- Web forgot-password, reset-password, verify-email, dedicated email-change confirmation, and account-security legacy email-change handling.
+- Mobile forgot-password messaging, custom-scheme reset-password and verify-email routing, and native reset-password/verify-email screen states.
 - Environment variable readiness for local, QA/UAT, and production.
 
 Out of scope:
 - Google auth and Apple auth.
 - Automatic login after password reset.
 - Production iOS Universal Links or Android App Links until real domains and association files exist.
-- New backend auth-link routes.
+- Native mobile admin reset, staff invite acceptance, and email-change confirmation unless product requirements change.
 
 ## 3. Environments
 
@@ -133,7 +133,7 @@ EXPO_PUBLIC_API_WITH_CREDENTIALS=true
 - Set frontend `VITE_API_BASE_URL` to the local API origin.
 - For a physical mobile device, set mobile API and web origins to a LAN IP such as `http://192.168.1.50:3040` and `http://192.168.1.50:3000`.
 - Do not use `localhost` for physical mobile-device API or web fallback testing.
-- For mobile custom-scheme testing, use `threadlymobile://reset-password?token=TEST_TOKEN` in a dev client or native build.
+- For mobile custom-scheme testing, use `threadlymobile://reset-password?token=TEST_TOKEN` and `threadlymobile://verify-email?token=TEST_TOKEN` in a dev client or native build.
 
 ## 6. QA/UAT Setup
 
@@ -155,7 +155,19 @@ EXPO_PUBLIC_API_WITH_CREDENTIALS=true
 - Mobile web fallback: `EXPO_PUBLIC_WEB_APP_URL=https://<production-web-domain>`
 - Universal/App Links: deferred until production domains, AASA, Digital Asset Links, and app config are all complete.
 
-## 8. Web Test Matrix
+## 8. Screen Completeness Matrix
+
+| Flow | Web screen | Mobile screen | Missing token state | Loading state | Success state | Error state | Login/profile routing | Auto-login? | Token removed from URL where applicable | Production-ready? | Manual QA required? |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Forgot password | `/forgot-password` | `app/(auth)/forgot-password.tsx` | Not applicable | Yes | Check-inbox state | Generic error state | Login link | No | Not applicable | Yes | Yes |
+| Reset password | `/reset-password` | `app/(auth)/reset-password.tsx` | Yes | Yes | Yes | Yes | Login by explicit action | No | Web removes token after success | Yes, pending real-device QA | Yes |
+| Email verification | `/verify-email` | `app/(auth)/verify-email.tsx` | Yes | Yes | Yes | Yes | Web and mobile route to profile when authenticated, otherwise login | No | Web token remains until navigation; mobile token is route state only | Yes, pending real-device QA | Yes |
+| Email change confirmation | `/change-email/confirm`; legacy `/settings?tab=account-security` | No | Yes on dedicated web route | Yes | Yes | Yes | Login or account-security link | No | Dedicated route removes token after completion; legacy settings removes `emailChangeToken` | Yes for web fallback; native mobile optional | Yes |
+| Admin reset password | `/admin/reset-password` | No | Yes | Yes | Yes | Yes | Login/admin login flow | No | Web removes token after success | Yes as web-only | Yes |
+| Staff invite | `/brand/staff/invite` | No | Yes | Yes | Accept/reject state | Yes | Login with `next` when unauthenticated | No | Not applicable | Yes as web-only | Yes |
+| Account security link | `/settings?tab=account-security` | No complete native equivalent | Not applicable | Page loading only | Account settings state | Protected-route/login state | Login if unauthenticated; settings if authenticated | No | Legacy email-change token removed by settings handler | Yes as web-only | Yes |
+
+## 9. Web Test Matrix
 
 | Flow | Expected result | Status |
 | --- | --- | --- |
@@ -171,9 +183,11 @@ EXPO_PUBLIC_API_WITH_CREDENTIALS=true
 | Open expired or invalid reset token | Clear invalid/expired error appears. | [ ] |
 | Open `/verify-email?token=<token>` | Verification works without requiring prior auth route. | [ ] |
 | Open `/verify-email` | Missing-token state appears. | [ ] |
+| Open `/change-email/confirm?token=<token>` | Email change confirmation works without requiring the settings screen. | [ ] |
+| Open `/change-email/confirm` | Missing-token state appears. | [ ] |
 | Process `emailChangeToken` in account security | Token is trimmed, processed, and removed from URL history. | [ ] |
 
-## 9. Mobile Test Matrix
+## 10. Mobile Test Matrix
 
 | Flow | Expected result | Status |
 | --- | --- | --- |
@@ -182,20 +196,23 @@ EXPO_PUBLIC_API_WITH_CREDENTIALS=true
 | Open `threadlymobile://reset-password?token=TEST_TOKEN` | Native reset-password screen opens. | [ ] |
 | Open `threadlymobile:///reset-password?token=TEST_TOKEN` | Native reset-password screen opens. | [ ] |
 | Open `threadlymobile://reset-password` | Missing-token state appears. | [ ] |
+| Open `threadlymobile://verify-email?token=TEST_TOKEN` | Native verify-email screen opens and attempts verification. | [ ] |
+| Open `threadlymobile:///verify-email?token=TEST_TOKEN` | Native verify-email screen opens and attempts verification. | [ ] |
+| Open `threadlymobile://verify-email` | Missing-token state appears. | [ ] |
 | Enter mismatched passwords | Submission is blocked and mismatch state is shown. | [ ] |
 | Enter password under 12 characters | Submission is blocked and length validation is shown. | [ ] |
 | Submit valid real reset token | Success state appears; user returns to login only by explicit action. | [ ] |
 | Confirm no raw token logging | Token is never printed in app logs. | [ ] |
 | Confirm no auto-login after reset | Auth context remains unauthenticated until user signs in. | [ ] |
 
-## 10. Backend Test Matrix
+## 11. Backend Test Matrix
 
 | Flow | Expected result | Status |
 | --- | --- | --- |
 | Password reset link generation | Uses `WEB_APP_URL` and `/reset-password?token=...`. | [ ] |
 | Admin reset link generation | Uses `WEB_APP_URL` and `/admin/reset-password?token=...`. | [ ] |
 | Email verification link generation | Uses `WEB_APP_URL` and `/verify-email?token=...`. | [ ] |
-| Email-change link generation | Remains `/settings?tab=account-security&emailChangeToken=...`. | [ ] |
+| Email-change link generation | Uses `/change-email/confirm?token=...`; legacy settings route remains supported by web. | [ ] |
 | Reset token storage | Token is stored hashed, not raw. | [ ] |
 | Reset token expiry | Expired tokens are rejected. | [ ] |
 | Reset token single use | Consumed token cannot be reused. | [ ] |
@@ -204,7 +221,7 @@ EXPO_PUBLIC_API_WITH_CREDENTIALS=true
 | Authenticated password change | `authVersion` increments and current-session behavior remains as designed. | [ ] |
 | Unknown/inactive reset logs | Logs do not expose raw email addresses. | [ ] |
 
-## 11. Cross-Device Test Matrix
+## 12. Cross-Device Test Matrix
 
 | Flow | Expected result | Status |
 | --- | --- | --- |
@@ -212,11 +229,12 @@ EXPO_PUBLIC_API_WITH_CREDENTIALS=true
 | Email HTTPS reset link on mobile browser | Opens web fallback and completes reset. | [ ] |
 | App not installed | HTTPS web fallback still works. | [ ] |
 | App/dev client installed | Custom scheme opens native reset screen. | [ ] |
+| App/dev client installed | Custom scheme opens native verify-email screen. | [ ] |
 | Real reset email opened on physical device | User can complete reset without being sent to an app store. | [ ] |
 | Real verification email opened on desktop/mobile web | User can complete verification on web fallback. | [ ] |
 | Password reset complete | User is not automatically logged in and must sign in with the new password. | [ ] |
 
-## 12. Release Blockers
+## 13. Release Blockers
 
 - QA/UAT `WEB_APP_URL` not configured.
 - QA/UAT `VITE_API_BASE_URL` not configured.
@@ -228,19 +246,19 @@ EXPO_PUBLIC_API_WITH_CREDENTIALS=true
 - Password reset token reuse not tested.
 - Expired/invalid token behavior not tested.
 - Mobile custom scheme not tested on a real device or dev client.
+- Mobile custom-scheme verify-email not tested on a real device or dev client.
 - App Links/Universal Links not configured but claimed as supported.
 
-## 13. Known Limitations
+## 14. Known Limitations
 
 - Backend-generated auth email links remain HTTPS web links by design.
-- Mobile supports custom-scheme reset links, not production Universal/App Links.
-- Native mobile email verification is not implemented.
+- Mobile supports custom-scheme reset and verify-email links, not production Universal/App Links.
 - Native mobile email-change confirmation is not implemented.
 - Native mobile admin reset is not implemented.
 - App-store redirects before password reset completion are not supported.
 - The canonical local web port remains an environment decision; use the actual active web dev port.
 
-## 14. Sign-Off Checklist
+## 15. Sign-Off Checklist
 
 - [ ] Backend auth-link tests passed in QA/UAT branch.
 - [ ] Backend Prisma validation passed.
@@ -253,5 +271,6 @@ EXPO_PUBLIC_API_WITH_CREDENTIALS=true
 - [ ] Real QA/UAT password reset email tested end-to-end.
 - [ ] Real QA/UAT email verification email tested end-to-end.
 - [ ] Real physical-device custom-scheme reset flow tested.
+- [ ] Real physical-device custom-scheme verify-email flow tested.
 - [ ] Product owner confirms no automatic login after password reset.
 - [ ] Product owner confirms Universal/App Links are not claimed for this release.

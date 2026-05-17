@@ -67,9 +67,9 @@ describe('auth link builders', () => {
     );
   });
 
-  it('keeps the current email change account-security route', () => {
+  it('builds the public email change confirmation route', () => {
     expect(buildEmailChangeConfirmationLink('email token/+')).toBe(
-      'https://app.threadly.test/settings?tab=account-security&emailChangeToken=email%20token%2F%2B',
+      'https://app.threadly.test/change-email/confirm?token=email%20token%2F%2B',
     );
   });
 

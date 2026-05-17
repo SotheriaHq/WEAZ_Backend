@@ -386,34 +386,100 @@ Readiness checks used for Phase 4:
 
 What cannot be claimed yet:
 - Production Universal Links/App Links support.
-- Native mobile email verification.
 - Native mobile email-change confirmation.
 - Native mobile admin reset.
 - Release readiness before real QA/UAT reset and verification emails are tested end-to-end.
 
+## Phase 5 Remaining Auth-Link Screens And Screen QA Notes
+
+Status: completed 2026-05-17.
+
+Phase 5 started with a fresh audit of the actual backend, web, and mobile files. The audit confirmed that password reset had native mobile handling from Phase 3, but email verification was still web-only on mobile and email-change confirmation still depended on the authenticated `/settings` screen despite the backend supporting token-only confirmation.
+
+### Phase 5 Auth-Link Screen Audit Table
+
+| Flow | Backend link route | Web screen exists? | Mobile screen exists? | Mobile route handling exists? | Current behavior | Required for production? | Action in Phase 5 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Forgot password request | No email-link route; `POST /auth/password-reset/request` sends reset email | Yes, `/forgot-password` | Yes, `app/(auth)/forgot-password.tsx` | Not applicable | User requests a reset link and receives generic check-inbox copy | Yes | Verified and documented |
+| Reset password | `/reset-password?token=<token>` | Yes, `/reset-password` | Yes, `app/(auth)/reset-password.tsx` | Yes, `/reset-password` maps to `/(auth)/reset-password` | Web fallback and native custom-scheme reset screen both exist; no auto-login | Yes, native mobile screen required | Verified, kept stable, and kept contract coverage |
+| Email verification | `/verify-email?token=<token>&next=<safe-next>` | Yes, `/verify-email` | Yes, `app/(auth)/verify-email.tsx` | Yes, `/verify-email` maps to `/(auth)/verify-email` | Web fallback remains; native mobile custom-scheme handling now verifies through `GET /auth/verify-email` | Yes, native mobile screen required because mobile signup exists | Added native mobile screen, API method, stack registration, and route mapping |
+| Email change confirmation | Phase 5 route: `/change-email/confirm?token=<token>`; legacy supported web handler remains `/settings?tab=account-security&emailChangeToken=<token>` | Yes, new `/change-email/confirm`; legacy settings handler remains | No | No | Backend confirmation is token-only, so a dedicated public web route is safer than requiring authenticated settings | Yes, web-safe route required; native mobile optional | Added dedicated web route and updated backend link builder; kept settings handler for old emails |
+| Admin reset password | `/admin/reset-password?token=<token>` | Yes, `/admin/reset-password` | No | No | Admin reset is handled by web admin route | Web-only acceptable unless admins are later required to reset from mobile | Verified and documented as web-only |
+| Password changed security alert account-security link | `/settings?tab=account-security` via email branding | Yes, `/settings` account-security tab | No | No | Takes users to web account security; mobile password/security settings are not complete | Web-only acceptable for this release | Documented as web-only |
+| Brand staff invite link | `/brand/staff/invite?token=<token>` | Yes, `/brand/staff/invite` | No native invite accept screen | No | Web route preserves invite through login and calls accept/reject staff invite endpoints | Optional native enhancement unless staff onboarding becomes mobile-first | Verified route and documented web-only status |
+| Account reactivation | No tokenized email-link route; web request route `/account-reactivation` exists | Yes, `/account-reactivation` | No | No | User submits a reactivation request; account reactivated email CTA goes to `/` | Web-only acceptable | Documented as not an auth token link |
+| Studio handoff | No email auth-link route; handoff endpoints issue short-lived codes | Web studio route exists | Mobile Studio WebView exists | Not auth-link routing | Studio handoff is an app/web handoff flow, not an email auth-link screen | Not part of auth email-link screen requirements | Documented as out of native auth-link scope |
+| Checkout/payment return | `/bag/payment-return` and `/custom-orders/resume/<token>` use web URL config | Yes, web checkout/payment return routes | No native payment return auth screen | No | Backend owns checkout callback URL; web fallback is authoritative | Web-only payment flow, not an auth-link screen | Documented as web/payment scope |
+
+### Phase 5 Screen Requirement Classification
+
+| Flow | Classification | Reason |
+| --- | --- | --- |
+| Reset password | Required native mobile screen | Mobile users can request reset from the app, and Phase 3 already added the native screen. |
+| Email verification | Required native mobile screen | Mobile signup exists, so mobile users should not be stranded on web-only verification when custom-scheme handling is available. |
+| Email change confirmation | Web-safe public route required; native mobile optional | The backend confirms by token only. A dedicated public web route avoids depending on authenticated settings while preserving HTTPS fallback. |
+| Admin reset password | Web-only acceptable | Admin reset route exists on web; mobile admin reset is not a confirmed product requirement. |
+| Brand staff invite | Web-only acceptable with optional native enhancement | Web invite acceptance exists. Native staff onboarding is not clearly mobile-first in the current codebase. |
+| Account security links | Web-only acceptable | Web account security exists; native password/security settings are not complete. |
+| Universal/App Links | Deferred | `app.json` still lacks iOS associated domains and Android intent filters, and no production/QA association domains were provided. |
+
+Implemented in Phase 5:
+- Added a native mobile email verification route at `app/(auth)/verify-email.tsx`.
+- Registered mobile `verify-email` in `app/(auth)/_layout.tsx`.
+- Added mobile `verifyEmail(token)` API support for `GET /auth/verify-email`.
+- Updated mobile auth-link routing so `threadlymobile://verify-email?token=<token>` and `threadlymobile:///verify-email?token=<token>` map to the native verification screen.
+- Preserved HTTPS web fallback. Mobile can map HTTPS `/verify-email` only if the OS already delivers the URL to the app, but Universal/App Links are still not claimed.
+- Added a dedicated web email-change confirmation route at `/change-email/confirm?token=<token>`.
+- Updated the backend email-change link builder to generate `/change-email/confirm?token=<token>`.
+- Kept the legacy `/settings?tab=account-security&emailChangeToken=<token>` handler so older email-change links continue to work.
+- Expanded frontend and mobile auth-link route contract coverage.
+
+Phase 5 checklist:
+- [x] Audited backend auth-link builders, auth services/controllers, and auth-link docs.
+- [x] Audited web auth-link routes, screens, API calls, and route-contract script.
+- [x] Audited mobile auth stack, reset screen, API calls, auth-link routing, notification routing, and route-contract script.
+- [x] Added required native mobile email verification screen.
+- [x] Added public web-safe email-change confirmation route.
+- [x] Updated backend email-change link generation only after the web route existed.
+- [x] Preserved the existing web reset-password and verify-email links.
+- [x] Preserved legacy settings email-change handling for backward compatibility.
+- [x] Documented web-only flows and deferred Universal/App Links.
+
+Phase 5 validation checks used:
+- Backend targeted auth-link/password-reset Jest specs.
+- Backend Prisma schema validation.
+- Backend production build.
+- Frontend reset-password and email-change confirmation Vitest coverage.
+- Frontend auth-link route contract.
+- Frontend production build.
+- Mobile auth-link routing contract.
+- Mobile TypeScript check.
+- Mobile design-system audit.
+- `git diff --check` in each changed repo.
+
 ## Decisions Still Needed From The Human
 
-1. Should email verification remain web-only for now, or should mobile own a native verify-email screen later?
+1. What are the canonical production web, API, and mobile domains?
 
-2. What are the canonical production web, API, and mobile domains?
+2. Should Threadly support Universal Links/App Links for auth URLs, or only the Expo custom scheme plus web fallback?
 
-3. Should Threadly support Universal Links/App Links for auth URLs, or only the Expo custom scheme plus web fallback?
+3. Should native mobile email-change confirmation be added later, or should the dedicated web-safe confirmation route remain the production path?
 
-4. Should email-change confirmation require an authenticated web session, or should it continue to be a token-only confirmation flow reachable from `/settings?tab=account-security`?
+4. Should admin password reset remain only on web, or should admin reset links be blocked from native/app-link routing permanently?
 
-5. Should admin password reset remain only on web, or should admin reset links be blocked from native/app-link routing permanently?
+5. What local dev port is canonical for the web app across all repos: `3000` or `5173`?
 
-6. What local dev port is canonical for the web app across all repos: `3000` or `5173`?
+6. Should brand staff invite acceptance become a native mobile onboarding flow later?
 
 ## Later Implementation Work
 
 This work is intentionally outside the completed Phase 1-3 scope.
 
-- Decide whether email verification, email-change confirmation, admin reset, and staff invites should remain web-only or gain native mobile handlers.
+- Decide whether email-change confirmation, admin reset, and staff invites should remain web-only or gain native mobile handlers.
 - Configure production Universal Links/App Links only after canonical domains and platform association files are available.
 - Align `.env.example` defaults and comments across backend, web, and mobile after canonical production/local domains are chosen.
-- Add mobile tests or contract scripts for any future native verify/email-change/staff-invite link routing.
-- Add web route tests for `/verify-email`, `/reset-password`, `/admin/reset-password`, `/settings?tab=account-security&emailChangeToken=...`, and `/brand/staff/invite`.
+- Add mobile tests or contract scripts for any future native email-change/staff-invite link routing.
+- Add broader web route tests for `/verify-email`, `/admin/reset-password`, `/settings?tab=account-security&emailChangeToken=...`, and `/brand/staff/invite`.
 - Add backend tests that enumerate every auth/email URL producer and confirm it uses the standard web-app URL resolver or documented checkout callback resolver.
 - Add deployment checklist entries requiring `WEB_APP_URL`, `FRONTEND_PUBLIC_CHECKOUT_CALLBACK_URL`, `VITE_APP_URL`, `EXPO_PUBLIC_WEB_APP_URL`, and trusted origins to be reviewed together.
 
