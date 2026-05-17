@@ -10,7 +10,10 @@ Phase 14 adds timing instrumentation only. It does not optimize response time or
 - Backend `BagCountPresenter` combined count duration.
 - Web `BagApi.getProductBagStatus` request duration.
 - Web `BagApi.getSourceBagStatus` request duration.
+- Mobile `MobileStoreApi.getProductBagStatus` request duration.
 - Mobile `MobileStoreApi.getSourceBagStatus` request duration.
+- Mobile `MobileStoreApi.getBagCount` request duration.
+- Native market commerce viewer initial load and Bag It action duration.
 
 ## Where Logs Appear
 
