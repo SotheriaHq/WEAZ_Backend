@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import {
   CollectionStatus,
   CollectionVisibility,
@@ -17,6 +17,8 @@ import type {
 
 @Injectable()
 export class BagEligibilityService {
+  private readonly logger = new Logger(BagEligibilityService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly freshnessPolicy: FittingFreshnessPolicy,
@@ -25,42 +27,50 @@ export class BagEligibilityService {
   ) {}
 
   async getProductBagStatus(productId: string, userId?: string): Promise<BagReadinessContract> {
-    const product = await this.prisma.product.findFirst({
-      where: { id: productId, deletedAt: null },
-      include: {
-        brand: {
-          select: {
-            ownerId: true,
-            isStoreOpen: true,
+    const startedAt = Date.now();
+    try {
+      const product = await this.prisma.product.findFirst({
+        where: { id: productId, deletedAt: null },
+        include: {
+          brand: {
+            select: {
+              ownerId: true,
+              isStoreOpen: true,
+            },
           },
-        },
-        collection: {
-          select: {
-            status: true,
-            isAvailableInStore: true,
-            deletedAt: true,
+          collection: {
+            select: {
+              status: true,
+              isAvailableInStore: true,
+              deletedAt: true,
+            },
           },
-        },
-        collections: {
-          select: {
-            collection: {
-              select: {
-                status: true,
-                isAvailableInStore: true,
-                deletedAt: true,
+          collections: {
+            select: {
+              collection: {
+                select: {
+                  status: true,
+                  isAvailableInStore: true,
+                  deletedAt: true,
+                },
               },
             },
           },
+          variants: true,
         },
-        variants: true,
-      },
-    });
+      });
 
-    if (!product) {
-      throw new NotFoundException('Product not found');
+      if (!product) {
+        throw new NotFoundException('Product not found');
+      }
+
+      return this.resolveProductReadiness(product, productId, userId);
+    } finally {
+      this.debugTiming('product_status', startedAt, {
+        productId,
+        authenticated: Boolean(userId),
+      });
     }
-
-    return this.resolveProductReadiness(product, productId, userId);
   }
 
   async getSourceBagStatus(
@@ -68,23 +78,32 @@ export class BagEligibilityService {
     sourceId: string,
     userId?: string,
   ): Promise<BagReadinessContract> {
+    const startedAt = Date.now();
     const sourceType = this.normalizeSourceType(sourceTypeRaw);
-    if (sourceType === 'PRODUCT') {
-      return this.getProductBagStatus(sourceId, userId);
-    }
+    try {
+      if (sourceType === 'PRODUCT') {
+        return this.getProductBagStatus(sourceId, userId);
+      }
 
-    if (sourceType === 'DESIGN') {
-      return this.getDesignBagStatus(sourceId, userId);
-    }
+      if (sourceType === 'DESIGN') {
+        return this.getDesignBagStatus(sourceId, userId);
+      }
 
-    return this.unavailableSourceStatus({
-      sourceType,
-      sourceId,
-      reason: 'COLLECTION_SOURCE_BAGGING_NOT_CONFIGURED',
-      disabledReason:
-        'Store collection source bagging is not configured yet. Use product-level bagging for collection products.',
-      authenticated: Boolean(userId),
-    });
+      return this.unavailableSourceStatus({
+        sourceType,
+        sourceId,
+        reason: 'COLLECTION_SOURCE_BAGGING_NOT_CONFIGURED',
+        disabledReason:
+          'Store collection source bagging is not configured yet. Use product-level bagging for collection products.',
+        authenticated: Boolean(userId),
+      });
+    } finally {
+      this.debugTiming('source_status', startedAt, {
+        sourceType,
+        sourceId,
+        authenticated: Boolean(userId),
+      });
+    }
   }
 
   private async resolveProductReadiness(
@@ -365,79 +384,96 @@ export class BagEligibilityService {
     customBagLine: { id: string; checkoutIntentId: string } | null;
     duplicateState: BagDuplicateState;
   }> {
+    const startedAt = Date.now();
     if (!input.userId) {
-      return {
-        customBagLine: null,
-        duplicateState: this.validationService.classifyDuplicateState({ completedPolicy: 'ALLOW_REPEAT' }),
-      };
-    }
-
-    const sourceConfigIds = (
-      await this.prisma.customOrderConfiguration.findMany({
-        where: {
+      try {
+        return {
+          customBagLine: null,
+          duplicateState: this.validationService.classifyDuplicateState({ completedPolicy: 'ALLOW_REPEAT' }),
+        };
+      } finally {
+        this.debugTiming('duplicate_classification', startedAt, {
           sourceType: input.sourceType,
           sourceId: input.sourceId,
-        },
-        select: { id: true },
-      })
-    ).map((entry) => entry.id);
-
-    const activeConfigIds = input.activeConfigurationId
-      ? Array.from(new Set([input.activeConfigurationId, ...sourceConfigIds]))
-      : sourceConfigIds;
-
-    if (activeConfigIds.length === 0) {
-      return {
-        customBagLine: null,
-        duplicateState: this.validationService.classifyDuplicateState({ completedPolicy: 'ALLOW_REPEAT' }),
-      };
+          authenticated: false,
+        });
+      }
     }
 
-    const [checkoutSessions, customOrders] = await Promise.all([
-      this.prisma.customOrderCheckoutSession.findMany({
-        where: {
-          buyerId: input.userId,
-          checkoutIntent: {
-            configurationId: { in: activeConfigIds },
+    try {
+      const sourceConfigIds = (
+        await this.prisma.customOrderConfiguration.findMany({
+          where: {
+            sourceType: input.sourceType,
+            sourceId: input.sourceId,
           },
-        },
-        select: {
-          id: true,
-          checkoutIntentId: true,
-          status: true,
-          customOrderId: true,
-          lastAttemptStatus: true,
-          createdAt: true,
-        },
-        orderBy: { createdAt: 'desc' },
-      }),
-      this.prisma.customOrder.findMany({
-        where: {
-          buyerId: input.userId,
-          sourceType: input.sourceType,
-          sourceId: input.sourceId,
-        },
-        select: {
-          id: true,
-          status: true,
-          paymentStatus: true,
-        },
-      }),
-    ]);
+          select: { id: true },
+        })
+      ).map((entry) => entry.id);
 
-    const customBagLine =
-      checkoutSessions.find((session) => session.customOrderId === null) ?? null;
+      const activeConfigIds = input.activeConfigurationId
+        ? Array.from(new Set([input.activeConfigurationId, ...sourceConfigIds]))
+        : sourceConfigIds;
 
-    return {
-      customBagLine: customBagLine
-        ? { id: customBagLine.id, checkoutIntentId: customBagLine.checkoutIntentId }
-        : null,
-      duplicateState: this.validationService.classifyDuplicateState({
-        checkoutSessions,
-        customOrders,
-        completedPolicy: 'ALLOW_REPEAT',
-      }),
-    };
+      if (activeConfigIds.length === 0) {
+        return {
+          customBagLine: null,
+          duplicateState: this.validationService.classifyDuplicateState({ completedPolicy: 'ALLOW_REPEAT' }),
+        };
+      }
+
+      const [checkoutSessions, customOrders] = await Promise.all([
+        this.prisma.customOrderCheckoutSession.findMany({
+          where: {
+            buyerId: input.userId,
+            checkoutIntent: {
+              configurationId: { in: activeConfigIds },
+            },
+          },
+          select: {
+            id: true,
+            checkoutIntentId: true,
+            status: true,
+            customOrderId: true,
+            lastAttemptStatus: true,
+            createdAt: true,
+          },
+          orderBy: { createdAt: 'desc' },
+        }),
+        this.prisma.customOrder.findMany({
+          where: {
+            buyerId: input.userId,
+            sourceType: input.sourceType,
+            sourceId: input.sourceId,
+          },
+          select: {
+            id: true,
+            status: true,
+            paymentStatus: true,
+          },
+        }),
+      ]);
+
+      const customBagLine =
+        checkoutSessions.find((session) => session.customOrderId === null) ?? null;
+
+      return {
+        customBagLine: customBagLine
+          ? { id: customBagLine.id, checkoutIntentId: customBagLine.checkoutIntentId }
+          : null,
+        duplicateState: this.validationService.classifyDuplicateState({
+          checkoutSessions,
+          customOrders,
+          completedPolicy: 'ALLOW_REPEAT',
+        }),
+      };
+    } finally {
+      this.debugTiming('duplicate_classification', startedAt, {
+        sourceType: input.sourceType,
+        sourceId: input.sourceId,
+        authenticated: true,
+      });
+    }
   }
 
   private unavailableSourceStatus(input: {
@@ -491,5 +527,19 @@ export class BagEligibilityService {
       if (collection.deletedAt) return false;
       return collection.isAvailableInStore && collection.status === 'PUBLISHED';
     });
+  }
+
+  private debugTiming(label: string, startedAt: number, context: Record<string, unknown>): void {
+    if (!this.shouldLogTiming()) return;
+    this.logger.debug({
+      event: `bagging.${label}.duration`,
+      durationMs: Date.now() - startedAt,
+      ...context,
+    });
+  }
+
+  private shouldLogTiming(): boolean {
+    const explicitFlag = String(process.env.BAGGING_OBSERVABILITY || '').toLowerCase();
+    return explicitFlag === 'true' || explicitFlag === '1' || process.env.NODE_ENV !== 'production';
   }
 }
