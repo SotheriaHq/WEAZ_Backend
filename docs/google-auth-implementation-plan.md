@@ -52,6 +52,65 @@ G2 deliberately did not implement:
 - Auth-link route changes.
 - Automatic login after password reset or Google-only password setup.
 
+## G3 Web And Mobile Implementation Notes
+
+Implemented in G3:
+
+- Web `AuthApi` now exposes `googleAuth`, `googleLink`, `getLoginOptions`, `requestEmailLoginCode`, `confirmEmailLoginCode`, and `setupPassword`.
+- Web environment config documents and reads placeholder-only `VITE_GOOGLE_CLIENT_ID`; no Google client secret is present in web env/source.
+- Web Google login/signup uses Google Identity Services to obtain an ID token, then sends only `{ idToken }` plus allowed signup account metadata to the backend.
+- Web login now starts email-first. It calls `/auth/login-options` only after Continue, then renders password, Google-only, Google-linked, or generic states from the backend response.
+- Web Google-only password setup is implemented as inline login states: request email code, enter code, create password, setup success, then explicit sign-in.
+- Web password setup does not issue or store a login session.
+- Web signup now supports Google signup after account type selection; brand signup requires brand name before calling `/auth/google`.
+- Mobile `AuthApi` now exposes the same G2 endpoint surface.
+- Mobile environment config documents and reads placeholder-only `EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID`, `EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID`, and `EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID`; no Google client secret is present in mobile env/source.
+- Mobile selected `expo-auth-session/providers/google` for Expo-managed Google ID-token auth. The app uses `useIdTokenAuthRequest()` and sends only the returned ID token to the backend.
+- Mobile `AuthContext` now has `signInWithGoogle()` and reuses the existing SecureStore access/refresh token flow.
+- Mobile login now starts email-first. It calls `/auth/login-options` only after Continue, then renders password, Google-only, Google-linked, or generic states from the backend response.
+- Mobile Google-only password setup is implemented inline in the login screen: request email code, enter code, create password, setup success, then explicit sign-in.
+- Mobile signup now supports Google signup after account type selection; brand signup requires brand name before calling `/auth/google`.
+- Existing auth-link password reset and email verification routes remain unchanged.
+
+G3 deliberately did not implement:
+
+- Apple auth.
+- Universal Links/App Links.
+- Backend auth behavior changes.
+- Automatic login after password reset.
+- Automatic login after Google-only password setup.
+- Real Google client IDs or secrets in committed files.
+
+G3 package and SDK decisions:
+
+- Web uses Google Identity Services loaded from `https://accounts.google.com/gsi/client`.
+- Mobile uses `expo-auth-session/providers/google` with `expo-web-browser` completion handling.
+- Frontend and mobile clients do not verify Google tokens as the trust boundary. Backend verification remains authoritative.
+
+G3 known limits before G4 QA:
+
+- Real QA/UAT Google web/iOS/Android client IDs must be configured outside the repo.
+- Mobile Google redirect behavior must be tested in Expo Go/dev client with the real client IDs.
+- Production App Links/Universal Links are still not configured or claimed.
+- Google account linking is backend-supported but still needs real-account QA across web and mobile.
+- Google-only password setup uses inline login states rather than separate route screens; this matches the current auth UI shape and avoids adding extra auth routes in G3.
+
+### G3 Screen Completeness Matrix
+
+| Flow | Web screen/state exists? | Mobile screen/state exists? | Backend endpoint exists? | Loading state | Error state | Success state | Auto-login? | Manual QA required? |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Email-first login | Yes | Yes | `POST /auth/login-options` | Yes | Yes | N/A | No | Yes |
+| Password login | Yes | Yes | `POST /auth/login` | Yes | Yes | Yes, normal login | Yes, normal login only | Yes |
+| Google login | Yes | Yes | `POST /auth/google` | Yes | Yes | Yes, backend-issued session | Yes, because this is sign-in | Yes |
+| Google signup regular | Yes | Yes | `POST /auth/google` | Yes | Yes | Yes, backend-issued session | Yes, because this is signup | Yes |
+| Google signup brand | Yes | Yes | `POST /auth/google` | Yes | Yes | Yes, backend-issued session | Yes, because this is signup | Yes |
+| Google-only password setup code request | Yes | Yes | `POST /auth/email-login-code/request` | Yes | Yes | Code-sent/check-inbox state | No | Yes |
+| Google-only code confirmation | Yes | Yes | `POST /auth/email-login-code/confirm` | Yes | Yes | Password setup token state | No | Yes |
+| Google-only password setup | Yes | Yes | `POST /auth/password/setup` | Yes | Yes | Setup success, explicit sign-in | No | Yes |
+| Google-linked password user login | Yes | Yes | `POST /auth/login` and `POST /auth/google` | Yes | Yes | Yes, chosen method signs in | Yes, sign-in only | Yes |
+| Unknown/generic login state | Yes | Yes | `POST /auth/login-options` | Yes | Yes | Signup/Google guidance | No | Yes |
+| Google misconfiguration/error state | Yes | Yes | N/A | N/A | Yes | N/A | No | Yes |
+
 ## Repositories Audited
 
 - `threadly-backend` (`bthreadly`)
@@ -81,7 +140,7 @@ Files audited:
 - `.env.example`
 - auth specs under `src/auth/*.spec.ts` and `src/auth/helper/*.spec.ts`
 
-Confirmed findings:
+G1 audit baseline findings:
 
 - `User` has a required `password String` field. Google-only users cannot be represented honestly today without a schema change or an unusable placeholder password.
 - `User.email` and `User.username` are unique. Email is currently the duplicate-account prevention boundary for local signup.
@@ -132,7 +191,7 @@ Files audited:
 - `.env.example`
 - focused auth-link tests under `src/__tests__/`
 
-Confirmed findings:
+G1 audit baseline findings:
 
 - Routes are centralized in `src/App.tsx`.
 - `/verify-email` and `/change-email/confirm` are public route entries outside the guest-only and protected groups.
@@ -172,7 +231,7 @@ Files audited:
 - `package.json`
 - `.env.example`
 
-Confirmed findings:
+G1 audit baseline findings:
 
 - Mobile uses Expo Router with an auth stack containing `login`, `signup`, `forgot-password`, `reset-password`, and `verify-email`.
 - `app.json` has the custom scheme `threadlymobile`.
@@ -735,7 +794,7 @@ Rules:
 
 ## Web Screens Needed
 
-Required web changes in later phases:
+Original web screen requirements. G3 implemented these states; G4 must still verify them with real Google credentials:
 
 - Email-first login screen.
 - Continue button that calls login-options only after click.
@@ -751,11 +810,11 @@ Required web changes in later phases:
 - Login with Google path for returning Google-created users.
 - Signup with Google path for new regular users and allowed brand users.
 
-Do not use current static Google/Apple buttons as proof of implementation; they are UI placeholders only.
+Do not treat Apple buttons as implemented; Apple auth remains out of scope.
 
 ## Mobile Screens Needed
 
-Required mobile changes in later phases:
+Original mobile screen requirements. G3 implemented these states; G4 must still verify them with real Google credentials:
 
 - Email-first login screen.
 - Continue button that calls login-options only after tap.
@@ -774,10 +833,9 @@ Required mobile changes in later phases:
 Mobile package decision:
 
 - Current app already has `expo-web-browser` and `expo-linking`.
-- It does not have `expo-auth-session` or native Google Sign-In.
-- Choose one later:
-  - `expo-auth-session/providers/google` for Expo-managed OAuth with redirect handling.
-  - `@react-native-google-signin/google-signin` if native Google Sign-In UX and config are required.
+- G3 added `expo-auth-session`.
+- Selected package: `expo-auth-session/providers/google` for Expo-managed ID-token auth.
+- Native Google Sign-In remains a later option only if product requires native account-picker behavior after QA.
 
 ## Security Risks and Mitigations
 
