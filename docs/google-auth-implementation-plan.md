@@ -95,6 +95,67 @@ G3 known limits before G4 QA:
 - Google account linking is backend-supported but still needs real-account QA across web and mobile.
 - Google-only password setup uses inline login states rather than separate route screens; this matches the current auth UI shape and avoids adding extra auth routes in G3.
 
+## G4 QA/UAT Readiness Notes
+
+G4 created the dedicated QA/UAT checklist at `docs/google-auth-qa-uat-checklist.md` and re-audited the backend, web, and mobile Google auth implementation.
+
+Confirmed by implementation audit:
+
+- Backend remains the trust boundary for Google ID-token verification.
+- Backend stores Google provider identity through `AuthIdentity` and uses Google `sub`, not profile email, as the provider subject.
+- Backend requires `email_verified=true`.
+- Backend `.env.example` uses placeholders only for Google values.
+- Web sends only the Google ID token and signup metadata to `POST /auth/google`; it does not contain a Google client secret.
+- Mobile sends only the Google ID token and signup metadata to `POST /auth/google`; it does not contain a Google client secret.
+- Web and mobile login call `/auth/login-options` only after Continue/tap, not while the user types.
+- Google-only password setup returns the user to explicit sign-in and does not auto-login.
+- Existing password reset remains separate from Google-only first-password setup and does not auto-login.
+
+Automated G4 checks run on 2026-05-17:
+
+- Backend `npx prisma validate` passed.
+- Backend `npx prisma generate` passed.
+- Backend focused auth Jest passed for Google foundation, Google token verifier, and password-reset hardening: 19 tests.
+- Backend `npx tsc --noEmit --pretty false` passed.
+- Backend `npm run build` passed.
+- Backend `git diff --check` passed.
+- Frontend `npm test -- LoginPage.googleAuth --run` passed: 5 tests.
+- Frontend `npm run test:auth-link-route-contract` passed.
+- Frontend `npm run build` passed with the existing large-chunk warning.
+- Frontend secret scan found no committed Google secret; only the contract script's own forbidden-pattern regex matched.
+- Frontend `git diff --check` passed.
+- Mobile `npm run test:auth-link-routing-contract` passed.
+- Mobile `npm exec tsc -- --noEmit` passed.
+- Mobile `npm run audit:design-system` passed with the existing 72/188 findings baseline.
+- Mobile secret scan found no committed Google secret; only the contract script's own forbidden-pattern regex matched.
+- Mobile `git diff --check` passed with one CRLF warning in an unrelated pre-existing feed diff.
+
+Manual QA status:
+
+- Real Google-account QA was not completed in this local G4 pass because local Google client IDs are not configured and the mobile repo has no local `.env`.
+- Backend local `.env` has `WEB_APP_URL` and `DATABASE_URL`, but lacks `APP_ENV`, `GOOGLE_ALLOWED_CLIENT_IDS`, and `GOOGLE_CLIENT_ID`.
+- Backend local `.env` has `GOOGLE_ALLOWED_CLIENT_ID` and `GOOGLE_ALLOWED_CLIENT_SECRET`; those names are not read by the current backend verifier. Rename/copy the client ID value to `GOOGLE_ALLOWED_CLIENT_IDS` for QA/UAT. Do not use or expose the secret outside backend secret storage.
+- Frontend local `.env` has `VITE_API_BASE_URL`, but lacks `VITE_APP_URL` and `VITE_GOOGLE_CLIENT_ID`.
+- Mobile local `.env` is missing, so mobile Google/AuthSession manual QA is blocked locally.
+
+Current readiness classification:
+
+- `READY_FOR_QA_UAT_AUTOMATED_GATE_PASSED`
+- `PRODUCTION_BLOCKED_PENDING_REAL_GOOGLE_QA`
+
+Remaining release blockers:
+
+- Apply the G2 migration in QA/UAT.
+- Configure real Google web/iOS/Android client IDs in deployment secrets and backend `GOOGLE_ALLOWED_CLIENT_IDS`.
+- Correct backend environment naming: `GOOGLE_ALLOWED_CLIENT_ID` is not recognized; use `GOOGLE_ALLOWED_CLIENT_IDS`.
+- Run real web Google login/signup QA.
+- Run real mobile Google login/signup QA in Expo Go/dev-client or the intended QA build.
+- Run real Google-only email-code first-password setup QA.
+- Run existing password account verified-email Google linking QA.
+- Confirm endpoint rate limiting or accepted risk for `login-options` and email-code requests.
+- Rotate the previously exposed secret-like Google value if it was real.
+- Do not claim App Links/Universal Links support until domain association files and platform config exist.
+
 ### G3 Screen Completeness Matrix
 
 | Flow | Web screen/state exists? | Mobile screen/state exists? | Backend endpoint exists? | Loading state | Error state | Success state | Auto-login? | Manual QA required? |
