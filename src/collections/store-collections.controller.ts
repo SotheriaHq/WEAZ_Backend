@@ -62,6 +62,20 @@ export class StoreCollectionsController {
   }
 
   @UseGuards(OptionalJwtAuthGuard)
+  @Get()
+  async listPublicStoreCollections(
+    @Query('cursor') cursor?: string,
+    @Query('limit') limit?: string,
+    @Req() req?: any,
+  ) {
+    return this.collectionsService.listPublicStoreCollections({
+      cursor,
+      limit: limit ? parseInt(limit, 10) : 20,
+      requesterId: req?.user?.id,
+    });
+  }
+
+  @UseGuards(OptionalJwtAuthGuard)
   @Get('user/:userId')
   async getUserStoreCollections(
     @Param('userId') userId: string,

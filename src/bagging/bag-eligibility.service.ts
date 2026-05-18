@@ -10,6 +10,9 @@ import { BagValidationService } from './bag-validation.service';
 import { FittingFreshnessPolicy } from './fitting-freshness.policy';
 import type {
   BagDuplicateState,
+  BagFreshnessState,
+  CollectionBagProductStatus,
+  CollectionBagStatusContract,
   BagReadinessContract,
   BagSourceType,
   FittingFreshnessResult,
@@ -77,7 +80,7 @@ export class BagEligibilityService {
     sourceTypeRaw: string,
     sourceId: string,
     userId?: string,
-  ): Promise<BagReadinessContract> {
+  ): Promise<BagReadinessContract | CollectionBagStatusContract> {
     const startedAt = Date.now();
     const sourceType = this.normalizeSourceType(sourceTypeRaw);
     try {
@@ -89,18 +92,219 @@ export class BagEligibilityService {
         return this.getDesignBagStatus(sourceId, userId);
       }
 
-      return this.unavailableSourceStatus({
-        sourceType,
-        sourceId,
-        reason: 'COLLECTION_SOURCE_BAGGING_NOT_CONFIGURED',
-        disabledReason:
-          'Store collection source bagging is not configured yet. Use product-level bagging for collection products.',
-        authenticated: Boolean(userId),
-      });
+      return this.getCollectionBagStatus(sourceId, userId);
     } finally {
       this.debugTiming('source_status', startedAt, {
         sourceType,
         sourceId,
+        authenticated: Boolean(userId),
+      });
+    }
+  }
+
+  async getCollectionBagStatus(
+    collectionId: string,
+    userId?: string,
+  ): Promise<CollectionBagStatusContract> {
+    const startedAt = Date.now();
+    try {
+      const collection = await this.prisma.storeCollection.findFirst({
+        where: { id: collectionId, deletedAt: null },
+        include: {
+          owner: {
+            select: {
+              id: true,
+              brand: {
+                select: {
+                  id: true,
+                  name: true,
+                  ownerId: true,
+                  currency: true,
+                  isStoreOpen: true,
+                },
+              },
+            },
+          },
+          products: {
+            include: {
+              product: {
+                include: {
+                  brand: {
+                    select: {
+                      id: true,
+                      name: true,
+                      ownerId: true,
+                      currency: true,
+                      isStoreOpen: true,
+                    },
+                  },
+                  collection: {
+                    select: {
+                      id: true,
+                      status: true,
+                      isAvailableInStore: true,
+                      deletedAt: true,
+                    },
+                  },
+                  collections: {
+                    select: {
+                      collectionId: true,
+                      collection: {
+                        select: {
+                          id: true,
+                          status: true,
+                          isAvailableInStore: true,
+                          deletedAt: true,
+                        },
+                      },
+                    },
+                  },
+                  variants: true,
+                },
+              },
+            },
+            orderBy: { orderIndex: 'asc' },
+          },
+        },
+      });
+
+      if (!collection) {
+        throw new NotFoundException('Collection not found');
+      }
+
+      const isOwner = Boolean(userId && collection.ownerId === userId);
+      const publicCollection =
+        collection.isAvailableInStore !== false &&
+        collection.status === CollectionStatus.PUBLISHED &&
+        collection.visibility === CollectionVisibility.PUBLIC &&
+        Boolean(collection.owner?.brand?.isStoreOpen) &&
+        !collection.deletedAt;
+
+      if (!isOwner && !publicCollection) {
+        throw new NotFoundException('Collection not found');
+      }
+
+      const sizeFitProfile = userId
+        ? await this.prisma.userSizeFitProfile.findUnique({
+            where: { userId },
+            select: {
+              measurements: true,
+              lastUpdatedAt: true,
+              updatedAt: true,
+              requireUpdateEveryDays: true,
+            },
+          })
+        : null;
+
+      const visibleLinks = (collection.products || []).filter((link: any) => {
+        const product = link?.product;
+        if (!product) return false;
+        if (product.deletedAt || product.archivedAt || product.isActive === false) return false;
+        if (!isOwner && product.publishAt && product.publishAt > new Date()) return false;
+        return true;
+      });
+
+      const products: CollectionBagProductStatus[] = [];
+      for (const link of visibleLinks) {
+        const product = link.product;
+        const sourceStatus = await this.resolveProductReadiness(product, product.id, userId);
+        products.push(
+          this.presentCollectionProductStatus(product, sourceStatus, sizeFitProfile),
+        );
+      }
+
+      const currency =
+        products.find((product) => product.currency)?.currency ??
+        collection.owner?.brand?.currency ??
+        'NGN';
+      const prices = products.map((product) => product.price).filter((price) => Number.isFinite(price));
+      const directEligible = products.filter((product) => product.canBag);
+      const alreadyInBagCount = products.filter((product) => product.inBag).length;
+      const blockedProducts = products.filter(
+        (product) => !product.canBag && !product.inBag,
+      );
+      const requiresSelectionCount = products.filter(
+        (product) => product.defaultAction === 'OPEN_SELECTOR',
+      ).length;
+      const requiresFittingsCount = products.filter(
+        (product) => product.defaultAction === 'OPEN_FITTINGS',
+      ).length;
+      const staleFittingsCount = products.filter(
+        (product) => product.defaultAction === 'CONFIRM_STALE_FITTINGS',
+      ).length;
+      const outOfStockCount = products.filter(
+        (product) => product.stockState === 'OUT_OF_STOCK',
+      ).length;
+      const canBagSelected = Boolean(userId) && directEligible.length > 0 && !isOwner;
+      const canBagAll =
+        Boolean(userId) &&
+        products.length > 0 &&
+        !isOwner &&
+        blockedProducts.length === 0 &&
+        directEligible.length > 0;
+      const disabledReason =
+        isOwner
+          ? 'Brands cannot bag their own collection.'
+          : !userId
+            ? 'Sign in to bag this collection.'
+            : products.length === 0
+              ? 'This collection has no available products to bag.'
+              : directEligible.length === 0
+                ? 'Resolve product blockers before bagging this collection.'
+                : null;
+
+      return {
+        sourceType: 'COLLECTION',
+        sourceId: collection.id,
+        collection: {
+          id: collection.id,
+          title: collection.title,
+          description: collection.description,
+          brandId: collection.owner?.brand?.id ?? null,
+          brandName: collection.owner?.brand?.name ?? null,
+          coverImage: this.resolveCollectionCover(products),
+          coverImageId: this.resolveCollectionCoverId(products),
+          productCount: products.length,
+          priceRange: {
+            min: prices.length ? Math.min(...prices) : collection.minPrice ?? null,
+            max: prices.length ? Math.max(...prices) : collection.maxPrice ?? null,
+            currency,
+          },
+        },
+        summary: {
+          canBagAll,
+          canBagSelected,
+          eligibleCount: directEligible.length,
+          blockedCount: blockedProducts.length,
+          alreadyInBagCount,
+          requiresSelectionCount,
+          requiresFittingsCount,
+          staleFittingsCount,
+          outOfStockCount,
+          totalPrice: directEligible.reduce((sum, product) => sum + product.price, 0),
+          currency,
+        },
+        products,
+        ui: {
+          defaultAction: !userId
+            ? 'AUTH_REQUIRED'
+            : canBagAll
+              ? 'BAG_ALL'
+              : canBagSelected
+                ? 'BAG_SELECTED'
+                : blockedProducts.length > 0
+                  ? 'RESOLVE_BLOCKERS'
+                  : 'DISABLED',
+          disabledReason,
+        },
+        featureFlags: {
+          collectionReviewsEnabled:
+            String(process.env.REVIEWS_PUBLIC_COLLECTION_ENABLED || '').toLowerCase() === 'true',
+        },
+      };
+    } finally {
+      this.debugTiming('collection_status', startedAt, {
+        collectionId,
         authenticated: Boolean(userId),
       });
     }
@@ -474,6 +678,160 @@ export class BagEligibilityService {
         authenticated: true,
       });
     }
+  }
+
+  private presentCollectionProductStatus(
+    product: any,
+    sourceStatus: BagReadinessContract,
+    sizeFitProfile: any,
+  ): CollectionBagProductStatus {
+    const price = this.effectiveProductPrice(product);
+    const media = this.resolveProductMedia(product);
+    const standardFittings = this.resolveStandardFittings(product, sizeFitProfile);
+    let defaultAction = sourceStatus.ui.defaultAction;
+    let canBag =
+      sourceStatus.modes.standard &&
+      sourceStatus.ui.defaultAction === 'ADD_STANDARD' &&
+      !sourceStatus.standard.inBag &&
+      !sourceStatus.userState.isOwner;
+    let reason = sourceStatus.ui.disabledReason ?? sourceStatus.reason;
+    let requiredMeasurementKeys = sourceStatus.custom.requiredMeasurementKeys;
+    let missingMeasurementKeys = sourceStatus.custom.missingMeasurementKeys;
+    let freshnessState = sourceStatus.custom.freshnessState;
+
+    if (sourceStatus.standard.inBag) {
+      defaultAction = 'ALREADY_IN_BAG';
+      canBag = false;
+      reason = 'ALREADY_IN_BAG';
+    }
+
+    if (
+      sourceStatus.modes.standard &&
+      standardFittings.requiredMeasurementKeys.length > 0 &&
+      !sourceStatus.standard.inBag
+    ) {
+      requiredMeasurementKeys = standardFittings.requiredMeasurementKeys;
+      missingMeasurementKeys = standardFittings.missingMeasurementKeys;
+      freshnessState = standardFittings.freshnessState;
+      if (standardFittings.fittingState === 'MISSING' || standardFittings.fittingState === 'PARTIAL') {
+        defaultAction = 'OPEN_FITTINGS';
+        canBag = false;
+        reason = 'MISSING_FITTINGS';
+      } else if (standardFittings.freshnessState === 'STALE') {
+        defaultAction = 'CONFIRM_STALE_FITTINGS';
+        canBag = false;
+        reason = 'STALE_FITTINGS';
+      }
+    }
+
+    if (defaultAction === 'OPEN_SELECTOR') {
+      canBag = false;
+      reason = reason ?? 'SELECTION_REQUIRED';
+    }
+
+    if (
+      defaultAction === 'OPEN_CUSTOM_FLOW' ||
+      defaultAction === 'OPEN_FITTINGS' ||
+      defaultAction === 'CONFIRM_STALE_FITTINGS'
+    ) {
+      canBag = false;
+      reason = reason ?? defaultAction;
+    }
+
+    return {
+      productId: product.id,
+      name: product.name,
+      coverImage: media[0]?.url ?? product.thumbnail ?? null,
+      coverImageId: media[0]?.fileId ?? null,
+      media,
+      price,
+      currency: product.currency ?? product.brand?.currency ?? 'NGN',
+      canBag,
+      inBag: sourceStatus.standard.inBag,
+      reason,
+      stockState: sourceStatus.stockState,
+      defaultAction,
+      requiresSize: sourceStatus.standard.requiresSize,
+      requiresColor: sourceStatus.standard.requiresColor,
+      availableSizes: sourceStatus.standard.sizes,
+      availableColors: sourceStatus.standard.colors,
+      requiredMeasurementKeys,
+      missingMeasurementKeys,
+      freshnessState,
+      sourceStatus,
+    };
+  }
+
+  private resolveStandardFittings(product: any, sizeFitProfile: any): {
+    requiredMeasurementKeys: string[];
+    missingMeasurementKeys: string[];
+    fittingState: string;
+    freshnessState: BagFreshnessState;
+  } {
+    const sizingMode = String(product?.sizingMode ?? 'NONE');
+    const requiredMeasurementKeys =
+      sizingMode === 'RTW_PLUS_FITTINGS'
+        ? this.normalizeKeys(product?.customMeasurementKeys)
+        : [];
+    const freshness = this.freshnessPolicy.evaluate({
+      requiredMeasurementKeys,
+      profile: sizeFitProfile,
+    });
+
+    return {
+      requiredMeasurementKeys,
+      missingMeasurementKeys: freshness.missingMeasurementKeys,
+      fittingState: freshness.fittingState,
+      freshnessState: freshness.freshnessState,
+    };
+  }
+
+  private effectiveProductPrice(product: any): number {
+    const now = new Date();
+    const salePrice =
+      product.salePrice &&
+      (!product.saleStartAt || product.saleStartAt <= now) &&
+      (!product.saleEndAt || product.saleEndAt >= now)
+        ? Number(product.salePrice)
+        : null;
+    return Number(salePrice ?? product.price ?? 0);
+  }
+
+  private resolveProductMedia(product: any): Array<{ url: string | null; fileId: string | null }> {
+    const media: Array<{ url: string | null; fileId: string | null }> = [];
+    if (typeof product.thumbnail === 'string' && product.thumbnail.trim()) {
+      media.push({ url: product.thumbnail.trim(), fileId: null });
+    }
+    if (Array.isArray(product.images)) {
+      for (const image of product.images) {
+        if (typeof image === 'string' && image.trim()) {
+          const url = image.trim();
+          if (!media.some((entry) => entry.url === url)) {
+            media.push({ url, fileId: null });
+          }
+        }
+      }
+    }
+    return media;
+  }
+
+  private resolveCollectionCover(products: CollectionBagProductStatus[]): string | null {
+    return products.find((product) => product.coverImage)?.coverImage ?? null;
+  }
+
+  private resolveCollectionCoverId(products: CollectionBagProductStatus[]): string | null {
+    return products.find((product) => product.coverImageId)?.coverImageId ?? null;
+  }
+
+  private normalizeKeys(raw?: unknown): string[] {
+    if (!Array.isArray(raw)) return [];
+    return Array.from(
+      new Set(
+        raw
+          .map((entry) => (typeof entry === 'string' ? entry.trim() : ''))
+          .filter(Boolean),
+      ),
+    );
   }
 
   private unavailableSourceStatus(input: {

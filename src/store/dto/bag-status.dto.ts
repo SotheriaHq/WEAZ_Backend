@@ -17,6 +17,7 @@ export type BagDefaultAction =
   | 'OPEN_CUSTOM_FLOW'
   | 'OPEN_FITTINGS'
   | 'CONFIRM_STALE_FITTINGS'
+  | 'ALREADY_IN_BAG'
   | 'DISABLED';
 
 export type BagFreshnessState = 'FRESH' | 'STALE' | 'MISSING' | 'PARTIAL' | 'NOT_REQUIRED';

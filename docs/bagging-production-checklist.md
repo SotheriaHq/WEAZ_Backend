@@ -2,7 +2,7 @@
 
 Final update: 2026-05-17.
 
-Seeded web Playwright evidence now uses deterministic backend data from `scripts/seed-bagging-e2e.ts`. The seeded run produced `12 passed, 0 failed, 0 skipped` for `npm run test:e2e:bagging:seeded`.
+Seeded web Playwright evidence now uses deterministic backend data from `scripts/seed-bagging-e2e.ts`. The latest seeded run produced `14 passed, 0 failed, 0 skipped` for `npm run test:e2e:bagging:seeded`, including collection bagging regression coverage.
 
 ## Command Output Summary
 
@@ -10,7 +10,7 @@ Seeded web Playwright evidence now uses deterministic backend data from `scripts
 - Backend `npx prisma generate`: PASS.
 - Backend `npx jest src/bagging src/store src/custom-orders --runInBand`: PASS; 10 suites / 78 tests.
 - Backend `npm run build`: PASS.
-- Web `npm run test:e2e:bagging:seeded`: PASS; 12 passed / 0 failed / 0 skipped.
+- Web `npm run test:e2e:bagging:seeded`: PASS; 14 passed / 0 failed / 0 skipped.
 - Web `npm run build`: PASS.
 - Web scoped ESLint on touched files: PASS.
 - Mobile `npm exec tsc -- --noEmit`: PASS.
@@ -24,7 +24,7 @@ Seeded web Playwright evidence now uses deterministic backend data from `scripts
 | Backend contracts | GET `/bag/count` exists and returns `standardQuantity`, `customLineCount`, `combinedCount`. | PASS | `src/bagging/bag.controller.ts`; `src/bagging/bag-count.presenter.ts`; Jest bagging/store/custom-orders suite. | NO | PASS |
 | Backend contracts | GET `/bag/sources/PRODUCT/:id/status` exists. | PASS | `src/bagging/bag.controller.ts`; seeded Playwright product scenarios. | NO | PASS |
 | Backend contracts | GET `/bag/sources/DESIGN/:id/status` exists. | PASS | `src/bagging/bag.controller.ts`; seeded Playwright custom design scenario. | NO | PASS |
-| Backend contracts | GET `/bag/sources/COLLECTION/:id/status` returns safe unavailable unless supported. | PASS | `BagEligibilityService.getSourceStatus`; backend supports safe unavailable for unsupported or unavailable source status. | NO | PASS |
+| Backend contracts | GET `/bag/sources/COLLECTION/:id/status` returns backend-computed collection/product readiness. | PASS | `src/bagging/bag-eligibility.service.ts`; `docs/collection-bagging-backend-contract.md`; collection Playwright regression. | NO | PASS |
 | Backend contracts | GET `/store/products/:id/bag-status` remains backward compatible. | PASS | `src/store/store.controller.ts`; `src/store/store.service.ts`; Jest store suite. | NO | PASS |
 | Backend contracts | Fitting freshness states exist: `FRESH`, `STALE`, `MISSING`, `PARTIAL`, `NOT_REQUIRED`. | PASS | `src/bagging/bag-readiness.types.ts`; `src/bagging/fitting-freshness.policy.ts`. | NO | PASS |
 | Backend contracts | `ui.defaultAction` supports `ADD_STANDARD`, `OPEN_SELECTOR`, `OPEN_CUSTOM_FLOW`, `OPEN_FITTINGS`, `CONFIRM_STALE_FITTINGS`, `DISABLED`. | PASS | `src/bagging/bag-readiness.types.ts`; seeded Playwright selector/fittings/stale/custom tests. | NO | PASS |
@@ -32,7 +32,7 @@ Seeded web Playwright evidence now uses deterministic backend data from `scripts
 | Backend contracts | Standard add-to-bag rejects missing required size/color/fittings. | PASS | `src/bagging/bag-validation.service.ts`; seeded variant/fitting Playwright tests. | NO | PASS |
 | Backend contracts | Custom add-to-bag rejects missing required fittings/features. | PASS | `src/custom-orders/custom-orders.service.ts`; required measurement regression; Jest custom-orders suite. | NO | PASS |
 | Backend contracts | Stale fitting acknowledgement is enforced or explicitly documented as frontend-only pending backend support. | PASS | Backend status returns `CONFIRM_STALE_FITTINGS`; web/mobile confirmation paths consume it; stale seeded Playwright test. | NO | PASS |
-| Backend contracts | Existing payment/checkout/settlement tests still pass. | PASS | Requested regression scope `npx jest src/bagging src/store src/custom-orders --runInBand`: PASS 10 suites / 78 tests. No payment, settlement, ledger, or payout behavior changed. | NO | PASS |
+| Backend contracts | Existing payment/checkout/settlement tests still pass. | PASS | Requested regression scope `npx jest src/bagging src/store src/custom-orders src/reviews --runInBand`: PASS 13 suites / 105 tests. No payment, settlement, ledger, or payout behavior changed. | NO | PASS |
 
 ## B. Web Surfaces
 
@@ -110,6 +110,7 @@ Seeded web Playwright evidence now uses deterministic backend data from `scripts
 | Web Playwright E2E | Headless test for mixed standard/custom checkout. | PASS | `bagging-duplicates.spec.ts`; seeded run PASS. | NO | PASS |
 | Web Playwright E2E | Headless test for Bag copy/emoji consistency. | PASS | `bagging-copy-emoji.spec.ts`; seeded run PASS. | NO | PASS |
 | Web Playwright E2E | Headless test for logged-out auth prompt/resume where possible. | PASS | `bagging-copy-emoji.spec.ts`; logged-out auth prompt test PASS. | NO | PASS |
+| Web Playwright E2E | Headless collection bagging regression test. | PASS | `bagging-collections.spec.ts`; all-eligible and mixed-blocker seeded collection scenarios PASS. | NO | PASS |
 
 ## F. Mobile QA/E2E
 

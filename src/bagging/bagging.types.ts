@@ -29,6 +29,14 @@ export type BagDefaultAction =
   | 'OPEN_CUSTOM_FLOW'
   | 'OPEN_FITTINGS'
   | 'CONFIRM_STALE_FITTINGS'
+  | 'ALREADY_IN_BAG'
+  | 'DISABLED';
+
+export type CollectionBagDefaultAction =
+  | 'BAG_ALL'
+  | 'BAG_SELECTED'
+  | 'RESOLVE_BLOCKERS'
+  | 'AUTH_REQUIRED'
   | 'DISABLED';
 
 export type CompletedDuplicatePolicy = 'ALLOW_REPEAT' | 'BLOCK_REPEAT' | 'UNKNOWN';
@@ -137,6 +145,88 @@ export interface BagCountContract {
   standardQuantity: number;
   customLineCount: number;
   combinedCount: number;
+}
+
+export interface CollectionBagStatusContract {
+  sourceType: 'COLLECTION';
+  sourceId: string;
+  collection: {
+    id: string;
+    title: string | null;
+    description: string | null;
+    brandId: string | null;
+    brandName: string | null;
+    coverImage: string | null;
+    coverImageId: string | null;
+    productCount: number;
+    priceRange: {
+      min: number | null;
+      max: number | null;
+      currency: string;
+    };
+  };
+  summary: {
+    canBagAll: boolean;
+    canBagSelected: boolean;
+    eligibleCount: number;
+    blockedCount: number;
+    alreadyInBagCount: number;
+    requiresSelectionCount: number;
+    requiresFittingsCount: number;
+    staleFittingsCount: number;
+    outOfStockCount: number;
+    totalPrice: number;
+    currency: string;
+  };
+  products: CollectionBagProductStatus[];
+  ui: {
+    defaultAction: CollectionBagDefaultAction;
+    disabledReason: string | null;
+  };
+  featureFlags: {
+    collectionReviewsEnabled: boolean;
+  };
+}
+
+export interface CollectionBagProductStatus {
+  productId: string;
+  name: string;
+  coverImage: string | null;
+  coverImageId: string | null;
+  media: Array<{ url: string | null; fileId: string | null }>;
+  price: number;
+  currency: string;
+  canBag: boolean;
+  inBag: boolean;
+  reason: string | null;
+  stockState: BagStockState;
+  defaultAction: BagDefaultAction;
+  requiresSize: boolean;
+  requiresColor: boolean;
+  availableSizes: string[];
+  availableColors: string[];
+  requiredMeasurementKeys: string[];
+  missingMeasurementKeys: string[];
+  freshnessState: BagFreshnessState;
+  sourceStatus: BagReadinessContract;
+}
+
+export interface CollectionBagMutationResult {
+  collectionId: string;
+  added: Array<{ productId: string; bagItemId: string; quantity: number }>;
+  skipped: Array<{ productId: string; reason: string }>;
+  blocked: Array<{
+    productId: string;
+    reason: string;
+    missingMeasurementKeys?: string[];
+    requiredMeasurementKeys?: string[];
+  }>;
+  summary: {
+    addedCount: number;
+    skippedCount: number;
+    blockedCount: number;
+    combinedBagCount: number;
+  };
 }
 
 export interface SizeFitProfileForFreshness {

@@ -5,6 +5,7 @@ import { BagEligibilityService } from './bag-eligibility.service';
 import { BagReadinessPresenter } from './bag-readiness.presenter';
 import { BagValidationService } from './bag-validation.service';
 import { BaggingController } from './bagging.controller';
+import { CollectionBaggingService } from './collection-bagging.service';
 import { FittingFreshnessPolicy } from './fitting-freshness.policy';
 
 @Module({
@@ -15,6 +16,7 @@ import { FittingFreshnessPolicy } from './fitting-freshness.policy';
     BagValidationService,
     BagReadinessPresenter,
     BagCountPresenter,
+    CollectionBaggingService,
     FittingFreshnessPolicy,
   ],
   exports: [
@@ -22,6 +24,7 @@ import { FittingFreshnessPolicy } from './fitting-freshness.policy';
     BagValidationService,
     BagReadinessPresenter,
     BagCountPresenter,
+    CollectionBaggingService,
     FittingFreshnessPolicy,
   ],
 })

@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import { randomUUID } from 'crypto';
 import { mkdir, writeFile } from 'fs/promises';
 import { dirname, resolve } from 'path';
 import * as argon2 from 'argon2';
@@ -58,8 +59,16 @@ const ids = {
   duplicatePaidActiveProduct: '0e2e0000-0000-4000-8000-000000000110',
   mixedStandardProduct: '0e2e0000-0000-4000-8000-000000000111',
   mixedCustomProduct: '0e2e0000-0000-4000-8000-000000000112',
+  collectionEligibleProductA: '0e2e0000-0000-4000-8000-000000000113',
+  collectionEligibleProductB: '0e2e0000-0000-4000-8000-000000000114',
+  collectionOutOfStockProduct: '0e2e0000-0000-4000-8000-000000000115',
+  collectionMissingFittingProduct: '0e2e0000-0000-4000-8000-000000000116',
+  collectionStaleFittingProduct: '0e2e0000-0000-4000-8000-000000000117',
+  collectionGalleryProductA: '0e2e0000-0000-4000-8000-000000000118',
+  collectionGalleryProductB: '0e2e0000-0000-4000-8000-000000000119',
   variantSmallIndigo: '0e2e0000-0000-4000-8000-000000000201',
   variantMediumGold: '0e2e0000-0000-4000-8000-000000000202',
+  collectionVariantBlackM: '0e2e0000-0000-4000-8000-000000000203',
   mixedCartItem: '0e2e0000-0000-4000-8000-000000000301',
   fittingConfig: '0e2e0000-0000-4000-8000-000000000401',
   fittingVersion: '0e2e0000-0000-4000-8000-000000000402',
@@ -87,9 +96,16 @@ const ids = {
   mixedCustomIntent: '0e2e0000-0000-4000-8000-000000000503',
   mixedCustomSession: '0e2e0000-0000-4000-8000-000000000504',
   duplicatePaidOrder: '0e2e0000-0000-4000-8000-000000000505',
+  collectionAllEligible: '0e2e0000-0000-4000-8000-000000000601',
+  collectionMixed: '0e2e0000-0000-4000-8000-000000000602',
+  collectionAlreadyInBag: '0e2e0000-0000-4000-8000-000000000603',
+  collectionGallery: '0e2e0000-0000-4000-8000-000000000604',
 };
 
 const imageUrl = 'https://images.unsplash.com/photo-1529139574466-a303027c1d8b';
+const galleryImageA = 'https://images.unsplash.com/photo-1539109136881-3be0616acf4b';
+const galleryImageB = 'https://images.unsplash.com/photo-1509631179647-0177331693ae';
+const galleryImageC = 'https://images.unsplash.com/photo-1496747611176-843222e1e57c';
 const staleUpdatedAt = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
 const futureExpiry = () => new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
 
@@ -111,6 +127,8 @@ type ProductSeed = {
   colors?: string[];
   sizingMode?: SizingMode;
   customMeasurementKeys?: string[];
+  images?: string[];
+  thumbnail?: string;
 };
 
 type CustomConfigurationSeed = {
@@ -217,6 +235,104 @@ const productSeeds: ProductSeed[] = [
     standardCheckoutEnabled: false,
     customOrderEnabled: true,
     sizingMode: SizingMode.CUSTOM,
+  },
+  {
+    id: ids.collectionEligibleProductA,
+    name: 'E2E Collection Eligible Linen Top',
+    slug: 'e2e-collection-eligible-linen-top',
+    description: 'Deterministic collection product for Bag All success.',
+    price: '14000',
+    totalStock: 7,
+  },
+  {
+    id: ids.collectionEligibleProductB,
+    name: 'E2E Collection Eligible Wide Pants',
+    slug: 'e2e-collection-eligible-wide-pants',
+    description: 'Second deterministic collection product for Bag All success.',
+    price: '24000',
+    totalStock: 6,
+  },
+  {
+    id: ids.collectionOutOfStockProduct,
+    name: 'E2E Collection Out Of Stock Vest',
+    slug: 'e2e-collection-out-of-stock-vest',
+    description: 'Deterministic blocked collection product with no stock.',
+    price: '18000',
+    totalStock: 0,
+  },
+  {
+    id: ids.collectionMissingFittingProduct,
+    name: 'E2E Collection Missing Fittings Blazer',
+    slug: 'e2e-collection-missing-fittings-blazer',
+    description: 'Deterministic collection product requiring missing standard fittings.',
+    price: '61000',
+    totalStock: 3,
+    sizingMode: SizingMode.RTW_PLUS_FITTINGS,
+    customMeasurementKeys: ['WOMEN_CHEST_FULL_BUST'],
+  },
+  {
+    id: ids.collectionStaleFittingProduct,
+    name: 'E2E Collection Stale Fittings Wrapper',
+    slug: 'e2e-collection-stale-fittings-wrapper',
+    description: 'Deterministic collection product requiring stale standard fittings.',
+    price: '33000',
+    totalStock: 3,
+    sizingMode: SizingMode.RTW_PLUS_FITTINGS,
+    customMeasurementKeys: ['WOMEN_WAIST', 'WOMEN_HIP'],
+  },
+  {
+    id: ids.collectionGalleryProductA,
+    name: 'E2E Collection Gallery Gown',
+    slug: 'e2e-collection-gallery-gown',
+    description: 'Deterministic gallery collection product with multiple images.',
+    price: '55000',
+    totalStock: 4,
+    images: [galleryImageA, galleryImageB],
+    thumbnail: galleryImageA,
+  },
+  {
+    id: ids.collectionGalleryProductB,
+    name: 'E2E Collection Gallery Headwrap',
+    slug: 'e2e-collection-gallery-headwrap',
+    description: 'Deterministic gallery collection product with extra media.',
+    price: '9000',
+    totalStock: 8,
+    images: [galleryImageC, imageUrl],
+    thumbnail: galleryImageC,
+  },
+];
+
+const collectionSeeds = [
+  {
+    id: ids.collectionAllEligible,
+    title: 'E2E All Eligible Collection',
+    description: 'All products can be added through collection Bag All.',
+    productIds: [ids.collectionEligibleProductA, ids.collectionEligibleProductB],
+  },
+  {
+    id: ids.collectionMixed,
+    title: 'E2E Mixed Blocker Collection',
+    description: 'Includes eligible, size/color, fitting, stale, out-of-stock, and already-in-bag products.',
+    productIds: [
+      ids.collectionEligibleProductA,
+      ids.variantProduct,
+      ids.collectionMissingFittingProduct,
+      ids.collectionStaleFittingProduct,
+      ids.collectionOutOfStockProduct,
+      ids.mixedStandardProduct,
+    ],
+  },
+  {
+    id: ids.collectionAlreadyInBag,
+    title: 'E2E Already In Bag Collection',
+    description: 'Includes a product already in the buyer standard bag.',
+    productIds: [ids.mixedStandardProduct, ids.collectionEligibleProductB],
+  },
+  {
+    id: ids.collectionGallery,
+    title: 'E2E Gallery Collection',
+    description: 'Collection with enough product media to validate gallery swiping.',
+    productIds: [ids.collectionGalleryProductA, ids.collectionGalleryProductB],
   },
 ];
 
@@ -506,8 +622,8 @@ async function seedProducts(prisma: ReturnType<typeof createScriptPrismaClient>[
         customFreeformPointIds: [],
         fitPreference: product.customMeasurementKeys?.length ? FitPreference.REGULAR : null,
         targetAgeGroup: AgeGroup.ADULT,
-        images: [imageUrl],
-        thumbnail: imageUrl,
+        images: product.images ?? [imageUrl],
+        thumbnail: product.thumbnail ?? product.images?.[0] ?? imageUrl,
         totalStock: product.totalStock,
         trackInventory: true,
         allowBackorders: false,
@@ -536,8 +652,8 @@ async function seedProducts(prisma: ReturnType<typeof createScriptPrismaClient>[
         customFreeformPointIds: [],
         fitPreference: product.customMeasurementKeys?.length ? FitPreference.REGULAR : null,
         targetAgeGroup: AgeGroup.ADULT,
-        images: [imageUrl],
-        thumbnail: imageUrl,
+        images: product.images ?? [imageUrl],
+        thumbnail: product.thumbnail ?? product.images?.[0] ?? imageUrl,
         totalStock: product.totalStock,
         trackInventory: true,
         allowBackorders: false,
@@ -585,6 +701,85 @@ async function seedProducts(prisma: ReturnType<typeof createScriptPrismaClient>[
       sku: 'E2E-BAG-M-GOLD',
     },
   });
+}
+
+async function seedStoreCollections(prisma: ReturnType<typeof createScriptPrismaClient>['prisma']) {
+  const productPriceRows = await prisma.product.findMany({
+    where: { id: { in: productSeeds.map((product) => product.id) } },
+    select: { id: true, price: true, salePrice: true },
+  });
+  const priceByProductId = new Map(
+    productPriceRows.map((product) => [
+      product.id,
+      Number(product.salePrice ?? product.price ?? 0),
+    ] as const),
+  );
+
+  for (const collection of collectionSeeds) {
+    const prices = collection.productIds
+      .map((productId) => priceByProductId.get(productId) ?? 0)
+      .filter((price) => Number.isFinite(price) && price > 0);
+    await prisma.storeCollection.upsert({
+      where: { id: collection.id },
+      update: {
+        ownerId: ids.brandUser,
+        title: collection.title,
+        description: collection.description,
+        status: CollectionStatus.PUBLISHED,
+        visibility: CollectionVisibility.PUBLIC,
+        type: CollectionType.FEMALE,
+        isAvailableInStore: true,
+        isSystemGenerated: false,
+        minPrice: prices.length ? Math.min(...prices) : null,
+        maxPrice: prices.length ? Math.max(...prices) : null,
+        tags: ['e2e', 'bagging', 'collection'],
+        deletedAt: null,
+      },
+      create: {
+        id: collection.id,
+        ownerId: ids.brandUser,
+        title: collection.title,
+        description: collection.description,
+        status: CollectionStatus.PUBLISHED,
+        visibility: CollectionVisibility.PUBLIC,
+        type: CollectionType.FEMALE,
+        isAvailableInStore: true,
+        isSystemGenerated: false,
+        minPrice: prices.length ? Math.min(...prices) : null,
+        maxPrice: prices.length ? Math.max(...prices) : null,
+        tags: ['e2e', 'bagging', 'collection'],
+      },
+    });
+
+    await prisma.storeCollectionProduct.deleteMany({
+      where: {
+        collectionId: collection.id,
+        productId: { notIn: collection.productIds },
+      },
+    });
+
+    for (const [index, productId] of collection.productIds.entries()) {
+      await prisma.storeCollectionProduct.upsert({
+        where: {
+          collectionId_productId: {
+            collectionId: collection.id,
+            productId,
+          },
+        },
+        update: {
+          orderIndex: index,
+          isPrimary: index === 0,
+        },
+        create: {
+          id: randomUUID(),
+          collectionId: collection.id,
+          productId,
+          orderIndex: index,
+          isPrimary: index === 0,
+        },
+      });
+    }
+  }
 }
 
 async function seedDesign(prisma: ReturnType<typeof createScriptPrismaClient>['prisma']) {
@@ -996,6 +1191,14 @@ async function writeWebEnvFile() {
     `THREADLY_E2E_DUPLICATE_PAID_ACTIVE_PATH=/products/${ids.duplicatePaidActiveProduct}`,
     'THREADLY_E2E_MIXED_CHECKOUT_PATH=/checkout',
     `THREADLY_E2E_LOGGED_OUT_BAG_PATH=/products/${ids.standardProduct}`,
+    `THREADLY_E2E_COLLECTION_ALL_ELIGIBLE_ID=${ids.collectionAllEligible}`,
+    `THREADLY_E2E_COLLECTION_ALL_ELIGIBLE_PATH=/collections/${ids.collectionAllEligible}`,
+    `THREADLY_E2E_COLLECTION_MIXED_ID=${ids.collectionMixed}`,
+    `THREADLY_E2E_COLLECTION_MIXED_PATH=/collections/${ids.collectionMixed}`,
+    `THREADLY_E2E_COLLECTION_ALREADY_IN_BAG_ID=${ids.collectionAlreadyInBag}`,
+    `THREADLY_E2E_COLLECTION_ALREADY_IN_BAG_PATH=/collections/${ids.collectionAlreadyInBag}`,
+    `THREADLY_E2E_COLLECTION_GALLERY_ID=${ids.collectionGallery}`,
+    `THREADLY_E2E_COLLECTION_GALLERY_PATH=/collections/${ids.collectionGallery}`,
   ];
 
   await mkdir(dirname(webEnvPath), { recursive: true });
@@ -1011,6 +1214,7 @@ async function main() {
     await seedUsersAndBrand(prisma);
     await seedBuyerMeasurements(prisma);
     await seedProducts(prisma);
+    await seedStoreCollections(prisma);
     await seedDesign(prisma);
     await seedFabricBasis(prisma);
     for (const seed of customConfigurationSeeds) {
@@ -1024,6 +1228,7 @@ async function main() {
     console.log(`Buyer: ${BUYER_EMAIL}`);
     console.log(`Brand: ${BRAND_EMAIL}`);
     console.log(`Products: ${productSeeds.length}`);
+    console.log(`Store collections: ${collectionSeeds.length}`);
     console.log('Custom design source: 1');
     console.log('Seeded existing standard bag lines: 1');
     console.log('Seeded existing custom bag lines: 2');

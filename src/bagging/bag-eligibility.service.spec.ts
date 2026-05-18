@@ -25,6 +25,7 @@ describe('BagEligibilityService', () => {
     },
     customOrderCheckoutSession: { findMany: jest.fn() },
     collection: { findFirst: jest.fn() },
+    storeCollection: { findFirst: jest.fn() },
     brand: { findUnique: jest.fn() },
   } as any;
 
@@ -75,6 +76,7 @@ describe('BagEligibilityService', () => {
     prisma.customOrder.findFirst.mockResolvedValue(null);
     prisma.customOrder.findMany.mockResolvedValue([]);
     prisma.customOrderCheckoutSession.findMany.mockResolvedValue([]);
+    prisma.storeCollection.findFirst.mockResolvedValue(null);
   });
 
   it('returns ADD_STANDARD for an in-stock product with no options', async () => {
@@ -278,7 +280,7 @@ describe('BagEligibilityService', () => {
       requireUpdateEveryDays: 14,
     });
 
-    const result = await service.getSourceBagStatus('DESIGN', 'design_1', 'buyer_1');
+    const result = (await service.getSourceBagStatus('DESIGN', 'design_1', 'buyer_1')) as any;
 
     expect(result.sourceType).toBe('DESIGN');
     expect(result.bagMode).toBe('CUSTOM');
@@ -287,11 +289,57 @@ describe('BagEligibilityService', () => {
     expect(result.duplicateState.reason).toBe('CUSTOM_ORDER_PAID_ACTIVE_DUPLICATE');
   });
 
-  it('returns safe unavailable status for unsupported collection source', async () => {
+  it('returns collection readiness with product-level statuses', async () => {
+    prisma.storeCollection.findFirst.mockResolvedValue({
+      id: 'collection_1',
+      ownerId: 'brand_owner',
+      title: 'Capsule',
+      description: 'Collection products',
+      status: 'PUBLISHED',
+      visibility: 'PUBLIC',
+      isAvailableInStore: true,
+      deletedAt: null,
+      minPrice: null,
+      maxPrice: null,
+      owner: {
+        brand: {
+          id: 'brand_1',
+          name: 'Brand',
+          ownerId: 'brand_owner',
+          currency: 'NGN',
+          isStoreOpen: true,
+        },
+      },
+      products: [
+        {
+          product: {
+            ...baseProduct,
+            id: 'product_1',
+            price: 12500,
+            currency: 'NGN',
+            thumbnail: 'https://example.test/product.jpg',
+            images: ['https://example.test/product.jpg'],
+            brand: {
+              id: 'brand_1',
+              name: 'Brand',
+              ownerId: 'brand_owner',
+              currency: 'NGN',
+              isStoreOpen: true,
+            },
+          },
+        },
+      ],
+    });
+
     const result = await service.getSourceBagStatus('COLLECTION', 'collection_1', 'buyer_1');
 
     expect(result.sourceType).toBe('COLLECTION');
-    expect(result.canBag).toBe(false);
-    expect(result.ui.defaultAction).toBe('DISABLED');
+    expect((result as any).summary.canBagAll).toBe(true);
+    expect((result as any).summary.eligibleCount).toBe(1);
+    expect((result as any).products[0]).toMatchObject({
+      productId: 'product_1',
+      defaultAction: 'ADD_STANDARD',
+      canBag: true,
+    });
   });
 });

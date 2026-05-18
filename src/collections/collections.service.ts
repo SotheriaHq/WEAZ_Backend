@@ -22,6 +22,7 @@ import {
   ContentTarget,
   CustomOrderSourceType,
   NotificationType,
+  CollectionStatus,
   CollectionVisibility,
   CollectionType,
   MessageConversationType,
@@ -5495,6 +5496,129 @@ export class CollectionsService {
         };
       }),
       hasNextPage: hasNext,
+      endCursor: data.length ? data[data.length - 1].id : null,
+    };
+  }
+
+  async listPublicStoreCollections(options?: {
+    cursor?: string;
+    limit?: number;
+    requesterId?: string;
+  }) {
+    const { cursor, limit = 20 } = options || {};
+    const take = Math.min(Math.max(limit || 20, 1), 50);
+    const items = await this.prisma.storeCollection.findMany({
+      where: {
+        status: CollectionStatus.PUBLISHED,
+        visibility: CollectionVisibility.PUBLIC,
+        isAvailableInStore: true,
+        deletedAt: null,
+        owner: {
+          brand: {
+            isStoreOpen: true,
+          },
+        },
+      },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      take: take + 1,
+      ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
+      select: {
+        id: true,
+        ownerId: true,
+        title: true,
+        description: true,
+        status: true,
+        visibility: true,
+        minPrice: true,
+        maxPrice: true,
+        saleMinPrice: true,
+        saleMaxPrice: true,
+        createdAt: true,
+        updatedAt: true,
+        products: {
+          orderBy: [{ orderIndex: 'asc' }],
+          include: {
+            product: {
+              select: {
+                id: true,
+                name: true,
+                thumbnail: true,
+                images: true,
+                price: true,
+                salePrice: true,
+                currency: true,
+                totalStock: true,
+                isActive: true,
+                archivedAt: true,
+                deletedAt: true,
+                publishAt: true,
+              },
+            },
+          },
+          take: this.maxProductsPerCollection,
+        },
+        owner: {
+          select: this.selectCollectionOwnerDisplay(),
+        },
+        _count: {
+          select: {
+            products: true,
+          },
+        },
+      },
+    });
+
+    const hasNextPage = items.length > take;
+    const data = hasNextPage ? items.slice(0, -1) : items;
+    const now = new Date();
+
+    return {
+      items: data.map((collection: any) => {
+        const visibleLinks = (collection.products || []).filter((link: any) => {
+          const product = link?.product;
+          if (!product) return false;
+          if (product.deletedAt || product.archivedAt || product.isActive === false) return false;
+          if (product.publishAt && product.publishAt > now) return false;
+          return true;
+        });
+        const products = visibleLinks.map((link: any) => link.product);
+        const coverImage =
+          products.find((product: any) => product.thumbnail)?.thumbnail ??
+          products
+            .flatMap((product: any) => (Array.isArray(product.images) ? product.images : []))
+            .find((image: unknown) => typeof image === 'string' && image.trim()) ??
+          null;
+        const prices = products
+          .map((product: any) => Number(product.salePrice ?? product.price ?? 0))
+          .filter((price: number) => Number.isFinite(price) && price > 0);
+        const owner = this.mapCollectionOwner(collection.owner);
+
+        return {
+          id: collection.id,
+          entityType: 'COLLECTION',
+          domain: 'STORE',
+          ownerId: collection.ownerId,
+          title: collection.title,
+          description: collection.description,
+          status: collection.status,
+          visibility: collection.visibility,
+          brandId: owner?.brand?.id ?? null,
+          brandName: owner?.brand?.name ?? owner?.brandFullName ?? null,
+          brandLogo: owner?.profileImage ?? null,
+          coverImage,
+          productCount: collection._count?.products ?? products.length,
+          itemCount: products.length,
+          priceRange: {
+            min: prices.length ? Math.min(...prices) : collection.minPrice ?? null,
+            max: prices.length ? Math.max(...prices) : collection.maxPrice ?? null,
+            currency: products[0]?.currency ?? owner?.brand?.currency ?? 'NGN',
+          },
+          products: visibleLinks,
+          createdAt: collection.createdAt,
+          updatedAt: collection.updatedAt,
+        };
+      }),
+      hasNextPage,
       endCursor: data.length ? data[data.length - 1].id : null,
     };
   }
