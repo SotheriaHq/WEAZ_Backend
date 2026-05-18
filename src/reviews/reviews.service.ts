@@ -1392,6 +1392,17 @@ export class ReviewsService {
         return this.lifecycleAggregate.getBrandSummary(brandId);
     }
 
+    async getLifecycleBrandReviews(brandId: string, query: ReviewQueryDto) {
+        await this.assertFeatureEnabled(REVIEW_FEATURE_FLAGS.PUBLIC_BRAND);
+        const limit = query.limit ?? 20;
+        const [items, summary] = await Promise.all([
+            this.lifecycleAggregate.listPublicReviews({ brandId }, limit),
+            this.lifecycleAggregate.getBrandSummary(brandId),
+        ]);
+
+        return { items, summary, nextCursor: null };
+    }
+
     async adminHideLifecycleReview(
         adminId: string,
         reviewId: string,

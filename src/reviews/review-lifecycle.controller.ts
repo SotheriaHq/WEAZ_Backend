@@ -106,4 +106,12 @@ export class ReviewLifecycleController {
     async getBrandSummary(@Param('brandId') brandId: string) {
         return this.reviewsService.getLifecycleBrandSummary(brandId);
     }
+
+    @Get('brand/:brandId')
+    async getBrandReviews(
+        @Param('brandId') brandId: string,
+        @Query(new ValidationPipe({ transform: true })) query: ReviewQueryDto,
+    ) {
+        return this.reviewsService.getLifecycleBrandReviews(brandId, query);
+    }
 }

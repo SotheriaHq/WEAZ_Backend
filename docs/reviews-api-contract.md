@@ -72,6 +72,50 @@ Marks the authenticated buyer's prompt as `SKIPPED`. Skipped prompts do not loop
 
 Returns approved lifecycle product reviews plus summary when `reviews.publicDisplay.product.enabled` is enabled.
 
+Response shape for product, collection, design, and brand list endpoints:
+
+```json
+{
+  "items": [
+    {
+      "id": "review-id",
+      "reviewerId": "buyer-id",
+      "brandId": "brand-id",
+      "productId": "product-id-or-null",
+      "collectionId": "collection-id-or-null",
+      "legacyCollectionId": "legacy-collection-id-or-null",
+      "designId": "design-id-or-null",
+      "customOrderId": "custom-order-id-or-null",
+      "targetType": "PRODUCT",
+      "rating": 5,
+      "satisfaction": "HAPPY",
+      "reviewText": "Optional review text",
+      "verifiedPurchase": true,
+      "editWindowExpiresAt": "2026-05-19T10:00:00.000Z",
+      "createdAt": "2026-05-18T10:00:00.000Z",
+      "updatedAt": "2026-05-18T10:00:00.000Z",
+      "editedAt": null
+    }
+  ],
+  "summary": {
+    "averageRating": 4.75,
+    "reviewCount": 12,
+    "ratingBreakdown": { "1": 0, "2": 0, "3": 1, "4": 2, "5": 9 },
+    "satisfactionDistribution": {
+      "NONE": 0,
+      "ANGRY": 0,
+      "SAD": 0,
+      "OKAY": 1,
+      "HAPPY": 5,
+      "EXCITED": 6
+    }
+  },
+  "nextCursor": null
+}
+```
+
+Public list DTOs include `reviewerId` and `editWindowExpiresAt` so authenticated clients can safely hide edit controls after the original 24-hour window without using `updatedAt`. Public clients must still call `PATCH /reviews/:id` and `DELETE /reviews/:id`; the backend remains the source of truth for ownership and permissions.
+
 `GET /reviews/collection/:collectionId`
 
 Returns approved lifecycle collection reviews plus summary when `reviews.publicDisplay.collection.enabled` is enabled. Default is disabled.
@@ -83,6 +127,10 @@ Returns approved lifecycle design reviews plus summary when `reviews.publicDispl
 `GET /reviews/brand/:brandId/summary`
 
 Returns approved lifecycle brand summary when `reviews.publicDisplay.brand.enabled` is enabled.
+
+`GET /reviews/brand/:brandId`
+
+Returns approved lifecycle brand reviews plus summary when `reviews.publicDisplay.brand.enabled` is enabled. This endpoint is read-only and exists for brand catalog/profile Reviews tabs.
 
 ## Admin Endpoints
 

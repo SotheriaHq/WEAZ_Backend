@@ -107,11 +107,11 @@ export class ReviewAggregateService {
     };
   }
 
-  private mapPublicReview(review: {
-    id: string;
-    reviewerId: string;
-    brandId: string | null;
-    productId: string | null;
+    private mapPublicReview(review: {
+        id: string;
+        reviewerId: string;
+        brandId: string | null;
+        productId: string | null;
     collectionId: string | null;
     legacyCollectionId: string | null;
     designId: string | null;
@@ -119,14 +119,16 @@ export class ReviewAggregateService {
     targetType: ReviewTargetType;
     rating: number;
     satisfaction: ReviewSatisfaction;
-    reviewText: string | null;
-    verifiedPurchase: boolean;
-    createdAt: Date;
-    editedAt: Date | null;
-  }) {
-    return {
-      id: review.id,
-      reviewerId: review.reviewerId,
+        reviewText: string | null;
+        verifiedPurchase: boolean;
+        editWindowExpiresAt: Date;
+        createdAt: Date;
+        updatedAt: Date;
+        editedAt: Date | null;
+    }) {
+        return {
+            id: review.id,
+            reviewerId: review.reviewerId,
       brandId: review.brandId,
       productId: review.productId,
       collectionId: review.collectionId,
@@ -136,10 +138,12 @@ export class ReviewAggregateService {
       targetType: review.targetType,
       rating: review.rating,
       satisfaction: review.satisfaction,
-      reviewText: review.reviewText,
-      verifiedPurchase: review.verifiedPurchase,
-      createdAt: review.createdAt,
-      editedAt: review.editedAt,
-    };
-  }
+            reviewText: review.reviewText,
+            verifiedPurchase: review.verifiedPurchase,
+            editWindowExpiresAt: review.editWindowExpiresAt,
+            createdAt: review.createdAt,
+            updatedAt: review.updatedAt,
+            editedAt: review.editedAt,
+        };
+    }
 }
