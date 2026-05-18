@@ -78,6 +78,25 @@ export class ReviewLifecycleController {
         return this.reviewsService.skipReviewPrompt(req.user.id, id);
     }
 
+    @UseGuards(JwtAuthGuard)
+    @Get('me')
+    async getMyReviews(
+        @Req() req: any,
+        @Query('cursor') cursor?: string,
+        @Query('limit') limit?: string,
+        @Query('status') status?: string,
+        @Query('targetType') targetType?: string,
+        @Query('includeDeleted') includeDeleted?: string,
+    ) {
+        return this.reviewsService.getMyLifecycleReviews(req.user.id, {
+            cursor,
+            limit: limit ? parseInt(limit, 10) : undefined,
+            status,
+            targetType,
+            includeDeleted,
+        });
+    }
+
     @Get('product/:productId')
     async getProductReviews(
         @Param('productId') productId: string,

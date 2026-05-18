@@ -66,6 +66,22 @@ Soft deletes the authenticated buyer's own review at any time.
 
 Marks the authenticated buyer's prompt as `SKIPPED`. Skipped prompts do not loop.
 
+`GET /reviews/me`
+
+Returns the authenticated buyer's own submitted lifecycle reviews for the Buyer My Reviews screen.
+
+Supported query params:
+- `status`: `APPROVED`, `PENDING_MODERATION`, `HIDDEN`, `FLAGGED`, `DELETED`
+- `targetType`: `PRODUCT`, `COLLECTION`, `DESIGN`, `CUSTOM_ORDER`, `BRAND`
+- `includeDeleted`: optional boolean; defaults to non-deleted reviews
+- `cursor`, `limit`: pagination
+
+Rules:
+- Auth required.
+- The endpoint never returns another buyer's reviews.
+- Items include target context and `canEdit` / `canDelete` so clients do not calculate editability from `updatedAt`.
+- Default response excludes soft-deleted reviews.
+
 ## Public Endpoints
 
 `GET /reviews/product/:productId`
@@ -132,6 +148,91 @@ Returns approved lifecycle brand summary when `reviews.publicDisplay.brand.enabl
 
 Returns approved lifecycle brand reviews plus summary when `reviews.publicDisplay.brand.enabled` is enabled. This endpoint is read-only and exists for brand catalog/profile Reviews tabs.
 
+## Brand/Vendor Endpoints
+
+`GET /brands/reviews/lifecycle`
+
+Returns lifecycle reviews for the authenticated brand/vendor dashboard. This is read-only brand feedback management and does not expose delete, hide, or approve powers.
+
+Supported query params:
+- `status`: `APPROVED`, `PENDING_MODERATION`, `HIDDEN`, `FLAGGED`, `DELETED`
+- `targetType`: `PRODUCT`, `COLLECTION`, `DESIGN`, `CUSTOM_ORDER`, `BRAND`
+- `productId`, `collectionId`, `legacyCollectionId`, `designId`: target-specific filters
+- `rating`: integer `1` to `5`
+- `dateFrom`, `dateTo`: created-at date filters
+- `cursor`, `limit`: pagination
+
+Response shape:
+
+```json
+{
+  "items": [],
+  "summary": {
+    "averageRating": 4.7,
+    "reviewCount": 14,
+    "ratingBreakdown": { "1": 0, "2": 0, "3": 1, "4": 2, "5": 11 },
+    "satisfactionDistribution": {
+      "NONE": 0,
+      "ANGRY": 0,
+      "SAD": 0,
+      "OKAY": 1,
+      "HAPPY": 6,
+      "EXCITED": 7
+    },
+    "statusCounts": {
+      "APPROVED": 12,
+      "PENDING_MODERATION": 0,
+      "HIDDEN": 1,
+      "FLAGGED": 1,
+      "DELETED": 0
+    },
+    "targetTypeCounts": {
+      "PRODUCT": 10,
+      "COLLECTION": 1,
+      "DESIGN": 1,
+      "CUSTOM_ORDER": 2,
+      "BRAND": 0
+    },
+    "flaggedCount": 1,
+    "hiddenCount": 1,
+    "deletedCount": 0,
+    "pendingModerationCount": 0
+  },
+  "breakdown": {
+    "targets": [
+      {
+        "targetType": "PRODUCT",
+        "targetId": "product-id",
+        "name": "Product name",
+        "reviewCount": 8,
+        "averageRating": 4.9
+      }
+    ]
+  },
+  "nextCursor": null
+}
+```
+
+`POST /brands/reviews/lifecycle/:reviewId/report`
+
+Lets a brand/vendor report a lifecycle review tied to their own brand/products/sources for admin moderation.
+
+Body:
+
+```json
+{
+  "reason": "OFF_TOPIC",
+  "details": "Optional context up to 1000 chars"
+}
+```
+
+Rules:
+- Auth required.
+- The review must belong to the authenticated brand/vendor's own brand scope.
+- Brands cannot delete, hide, approve, or directly moderate buyer reviews.
+- Current implementation escalates the lifecycle review to `FLAGGED` and records the brand report reason in `hiddenReason` for admin review.
+- Re-reporting an already flagged review is idempotent enough for UI retry behavior and does not grant brand delete powers.
+
 ## Admin Endpoints
 
 `GET /admin/reviews/lifecycle`
@@ -151,6 +252,25 @@ Each item includes reviewer context, brand context, target IDs, lifecycle timest
 `GET /admin/reviews/lifecycle/:id`
 
 Returns lifecycle review detail for admin inspection. Requires moderation read permission.
+
+`GET /admin/reviews/analytics`
+
+Returns lifecycle review analytics for the admin review analytics panel. Requires moderation read permission.
+
+Response includes:
+- `totalReviews`
+- `activeReviewCount`
+- `averageRating`
+- `statusCounts`
+- `targetTypeCounts`
+- `satisfactionDistribution`
+- `flaggedCount`
+- `hiddenCount`
+- `deletedCount`
+- `pendingModerationCount`
+- `reviewsCreatedOverTime`
+- `topReviewedBrands`
+- `topReviewedProducts`
 
 `PATCH /admin/reviews/:id/hide`
 

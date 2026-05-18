@@ -72,6 +72,16 @@ export class AdminReviewsController {
     }
 
     /**
+     * GET /admin/reviews/analytics
+     * Admin lifecycle review analytics.
+     */
+    @Get('analytics')
+    @RequirePermissions(ADMIN_PERMISSIONS.MODERATION_READ)
+    async getReviewAnalytics() {
+        return this.reviewsService.adminGetReviewAnalytics();
+    }
+
+    /**
      * GET /admin/reviews/lifecycle/:reviewId
      * Admin lifecycle review detail.
      */

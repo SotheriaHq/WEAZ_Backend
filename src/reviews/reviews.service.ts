@@ -14,10 +14,12 @@ import {
     Prisma,
     ProductReviewStatus,
     ReviewPromptStatus,
+    ReviewSatisfaction,
     ReviewStatus,
     ReviewTargetType,
     DisputeStatus,
     FileType,
+    BrandMemberStatus,
 } from '@prisma/client';
 import type { Request } from 'express';
 import {
@@ -62,7 +64,7 @@ const REVIEW_MEDIA_FILE_TYPES: FileType[] = [
     FileType.REVIEW_VIDEO,
 ];
 
-const ADMIN_LIFECYCLE_REVIEW_INCLUDE = {
+const LIFECYCLE_REVIEW_CONTEXT_INCLUDE = {
     reviewer: {
         select: {
             id: true,
@@ -99,6 +101,24 @@ const ADMIN_LIFECYCLE_REVIEW_INCLUDE = {
             thumbnail: true,
         },
     },
+    collection: {
+        select: {
+            id: true,
+            title: true,
+        },
+    },
+    legacyCollection: {
+        select: {
+            id: true,
+            title: true,
+        },
+    },
+    design: {
+        select: {
+            id: true,
+            title: true,
+        },
+    },
     orderItem: {
         select: {
             id: true,
@@ -117,9 +137,11 @@ const ADMIN_LIFECYCLE_REVIEW_INCLUDE = {
     },
 } satisfies Prisma.ReviewInclude;
 
-type AdminLifecycleReviewRecord = Prisma.ReviewGetPayload<{
-    include: typeof ADMIN_LIFECYCLE_REVIEW_INCLUDE;
+type LifecycleReviewContextRecord = Prisma.ReviewGetPayload<{
+    include: typeof LIFECYCLE_REVIEW_CONTEXT_INCLUDE;
 }>;
+
+type AdminLifecycleReviewRecord = LifecycleReviewContextRecord;
 
 @Injectable()
 export class ReviewsService {
@@ -1410,6 +1432,71 @@ export class ReviewsService {
         });
     }
 
+    async getMyLifecycleReviews(
+        userId: string,
+        query: {
+            cursor?: string;
+            limit?: number;
+            status?: string;
+            targetType?: string;
+            includeDeleted?: string | boolean;
+        },
+    ) {
+        await this.assertFeatureEnabled(REVIEW_FEATURE_FLAGS.CAPTURE);
+        const limit = Math.min(Math.max(query.limit ?? 30, 1), 100);
+        const includeDeleted =
+            query.includeDeleted === true || query.includeDeleted === 'true';
+        const and: Prisma.ReviewWhereInput[] = [{ reviewerId: userId }];
+
+        if (!includeDeleted) {
+            and.push({ status: { not: ReviewStatus.DELETED } });
+        }
+
+        if (query.status) {
+            if (!Object.values(ReviewStatus).includes(query.status as ReviewStatus)) {
+                throw new BadRequestException('Invalid review status filter');
+            }
+            and.push({ status: query.status as ReviewStatus });
+        }
+
+        if (query.targetType) {
+            if (
+                !Object.values(ReviewTargetType).includes(
+                    query.targetType as ReviewTargetType,
+                )
+            ) {
+                throw new BadRequestException('Invalid review target type filter');
+            }
+            and.push({ targetType: query.targetType as ReviewTargetType });
+        }
+
+        const cursorWhere = buildCreatedAtCursorWhere(query.cursor);
+        if (cursorWhere) {
+            and.push(cursorWhere as Prisma.ReviewWhereInput);
+        }
+
+        const reviews = await this.prisma.review.findMany({
+            where: { AND: and },
+            orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+            take: limit + 1,
+            include: LIFECYCLE_REVIEW_CONTEXT_INCLUDE,
+        });
+
+        const hasMore = reviews.length > limit;
+        const items = hasMore ? reviews.slice(0, limit) : reviews;
+
+        return {
+            items: items.map((review) =>
+                this.mapLifecycleReviewWithContext(review, userId, {
+                    includeReviewerEmail: false,
+                }),
+            ),
+            nextCursor: hasMore
+                ? buildCreatedAtCursor(items[items.length - 1])
+                : null,
+        };
+    }
+
     async getLifecycleProductReviews(productId: string, query: ReviewQueryDto) {
         await this.assertFeatureEnabled(REVIEW_FEATURE_FLAGS.PUBLIC_PRODUCT);
         const limit = query.limit ?? 20;
@@ -1460,6 +1547,101 @@ export class ReviewsService {
         ]);
 
         return { items, summary, nextCursor: null };
+    }
+
+    async getBrandLifecycleDashboard(
+        userId: string,
+        query: {
+            cursor?: string;
+            limit?: number;
+            status?: string;
+            targetType?: string;
+            productId?: string;
+            collectionId?: string;
+            legacyCollectionId?: string;
+            designId?: string;
+            rating?: number;
+            dateFrom?: string;
+            dateTo?: string;
+        },
+    ) {
+        await this.assertFeatureEnabled(REVIEW_FEATURE_FLAGS.CAPTURE);
+        const brandId = await this.resolveBrandIdForUser(userId);
+        const limit = Math.min(Math.max(query.limit ?? 30, 1), 100);
+        const where = this.buildBrandLifecycleReviewWhere(brandId, query);
+        const cursorWhere = buildCreatedAtCursorWhere(query.cursor);
+
+        const [reviews, dashboardSummary] = await Promise.all([
+            this.prisma.review.findMany({
+                where: cursorWhere
+                    ? { AND: [where, cursorWhere as Prisma.ReviewWhereInput] }
+                    : where,
+                orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+                take: limit + 1,
+                include: LIFECYCLE_REVIEW_CONTEXT_INCLUDE,
+            }),
+            this.getBrandLifecycleDashboardSummary(brandId),
+        ]);
+
+        const hasMore = reviews.length > limit;
+        const items = hasMore ? reviews.slice(0, limit) : reviews;
+
+        return {
+            items: items.map((review) =>
+                this.mapLifecycleReviewWithContext(review, userId, {
+                    includeReviewerEmail: false,
+                }),
+            ),
+            summary: dashboardSummary.summary,
+            breakdown: dashboardSummary.breakdown,
+            nextCursor: hasMore
+                ? buildCreatedAtCursor(items[items.length - 1])
+                : null,
+        };
+    }
+
+    async reportLifecycleReviewForBrand(
+        userId: string,
+        reviewId: string,
+        dto: ReportReviewDto,
+    ) {
+        await this.assertFeatureEnabled(REVIEW_FEATURE_FLAGS.CAPTURE);
+        const brandId = await this.resolveBrandIdForUser(userId);
+        const review = await this.prisma.review.findUnique({
+            where: { id: reviewId },
+            include: LIFECYCLE_REVIEW_CONTEXT_INCLUDE,
+        });
+
+        if (!review || review.status === ReviewStatus.DELETED) {
+            throw new NotFoundException(REVIEW_ERRORS.NOT_FOUND);
+        }
+
+        if (review.brandId !== brandId) {
+            throw new ForbiddenException(REVIEW_ERRORS.FORBIDDEN);
+        }
+
+        const reason = [
+            `Brand report: ${dto.reason}`,
+            dto.details?.trim() ? dto.details.trim() : null,
+        ]
+            .filter(Boolean)
+            .join(' - ');
+
+        const updated =
+            review.status === ReviewStatus.FLAGGED && review.hiddenReason
+                ? review
+                : await this.prisma.review.update({
+                    where: { id: reviewId },
+                    data: {
+                        status: ReviewStatus.FLAGGED,
+                        hiddenReason: reason,
+                    },
+                    include: LIFECYCLE_REVIEW_CONTEXT_INCLUDE,
+                });
+
+        return this.mapLifecycleReviewWithContext(updated, userId, {
+            includeReviewerEmail: false,
+        });
     }
 
     async adminGetLifecycleReviews(query: {
@@ -1531,7 +1713,7 @@ export class ReviewsService {
                 : where,
             orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
             take: limit + 1,
-            include: ADMIN_LIFECYCLE_REVIEW_INCLUDE,
+            include: LIFECYCLE_REVIEW_CONTEXT_INCLUDE,
         });
 
         const hasMore = reviews.length > limit;
@@ -1550,7 +1732,7 @@ export class ReviewsService {
         await this.assertFeatureEnabled(REVIEW_FEATURE_FLAGS.ADMIN_MODERATION);
         const review = await this.prisma.review.findUnique({
             where: { id: reviewId },
-            include: ADMIN_LIFECYCLE_REVIEW_INCLUDE,
+            include: LIFECYCLE_REVIEW_CONTEXT_INCLUDE,
         });
 
         if (!review) {
@@ -1558,6 +1740,160 @@ export class ReviewsService {
         }
 
         return this.mapAdminLifecycleReview(review);
+    }
+
+    async adminGetReviewAnalytics() {
+        await this.assertFeatureEnabled(REVIEW_FEATURE_FLAGS.ADMIN_MODERATION);
+        const nonDeletedWhere: Prisma.ReviewWhereInput = {
+            status: { not: ReviewStatus.DELETED },
+        };
+        const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+
+        const [
+            totalReviews,
+            visibleStats,
+            byStatus,
+            byTargetType,
+            bySatisfaction,
+            recentReviews,
+            brandGroups,
+            productGroups,
+        ] = await Promise.all([
+            this.prisma.review.count(),
+            this.prisma.review.aggregate({
+                where: nonDeletedWhere,
+                _avg: { rating: true },
+                _count: { rating: true },
+            }),
+            this.prisma.review.groupBy({
+                by: ['status'],
+                _count: { _all: true },
+            }),
+            this.prisma.review.groupBy({
+                by: ['targetType'],
+                where: nonDeletedWhere,
+                _count: { _all: true },
+            }),
+            this.prisma.review.groupBy({
+                by: ['satisfaction'],
+                where: nonDeletedWhere,
+                _count: { _all: true },
+            }),
+            this.prisma.review.findMany({
+                where: { createdAt: { gte: thirtyDaysAgo } },
+                select: { createdAt: true },
+                orderBy: { createdAt: 'asc' },
+            }),
+            this.prisma.review.groupBy({
+                by: ['brandId'],
+                where: {
+                    brandId: { not: null },
+                    status: { not: ReviewStatus.DELETED },
+                },
+                _count: { _all: true },
+                _avg: { rating: true },
+            }),
+            this.prisma.review.groupBy({
+                by: ['productId'],
+                where: {
+                    productId: { not: null },
+                    status: { not: ReviewStatus.DELETED },
+                },
+                _count: { _all: true },
+                _avg: { rating: true },
+            }),
+        ]);
+
+        const statusCounts = this.initializeEnumCount(ReviewStatus);
+        for (const row of byStatus) {
+            statusCounts[row.status] = row._count._all;
+        }
+
+        const targetTypeCounts = this.initializeEnumCount(ReviewTargetType);
+        for (const row of byTargetType) {
+            targetTypeCounts[row.targetType] = row._count._all;
+        }
+
+        const satisfactionDistribution = this.initializeEnumCount(ReviewSatisfaction);
+        for (const row of bySatisfaction) {
+            satisfactionDistribution[row.satisfaction] = row._count._all;
+        }
+
+        const reviewsCreatedOverTime = recentReviews.reduce<Record<string, number>>(
+            (result, review) => {
+                const key = review.createdAt.toISOString().slice(0, 10);
+                result[key] = (result[key] ?? 0) + 1;
+                return result;
+            },
+            {},
+        );
+
+        const topBrandIds = brandGroups
+            .filter((row) => row.brandId)
+            .sort((a, b) => b._count._all - a._count._all)
+            .slice(0, 5)
+            .map((row) => row.brandId as string);
+        const topProductIds = productGroups
+            .filter((row) => row.productId)
+            .sort((a, b) => b._count._all - a._count._all)
+            .slice(0, 5)
+            .map((row) => row.productId as string);
+
+        const [brands, products] = await Promise.all([
+            topBrandIds.length
+                ? this.prisma.brand.findMany({
+                    where: { id: { in: topBrandIds } },
+                    select: { id: true, name: true },
+                })
+                : [],
+            topProductIds.length
+                ? this.prisma.product.findMany({
+                    where: { id: { in: topProductIds } },
+                    select: { id: true, name: true },
+                })
+                : [],
+        ]);
+        const brandNameById = new Map(
+            brands.map((brand) => [brand.id, brand.name] as const),
+        );
+        const productNameById = new Map(
+            products.map((product) => [product.id, product.name] as const),
+        );
+
+        return {
+            totalReviews,
+            averageRating: Math.round((visibleStats._avg.rating ?? 0) * 100) / 100,
+            activeReviewCount: visibleStats._count.rating,
+            statusCounts,
+            targetTypeCounts,
+            satisfactionDistribution,
+            flaggedCount: statusCounts[ReviewStatus.FLAGGED] ?? 0,
+            hiddenCount: statusCounts[ReviewStatus.HIDDEN] ?? 0,
+            deletedCount: statusCounts[ReviewStatus.DELETED] ?? 0,
+            pendingModerationCount:
+                statusCounts[ReviewStatus.PENDING_MODERATION] ?? 0,
+            reviewsCreatedOverTime,
+            topReviewedBrands: brandGroups
+                .filter((row) => row.brandId)
+                .sort((a, b) => b._count._all - a._count._all)
+                .slice(0, 5)
+                .map((row) => ({
+                    brandId: row.brandId,
+                    name: brandNameById.get(row.brandId as string) ?? null,
+                    reviewCount: row._count._all,
+                    averageRating: Math.round((row._avg.rating ?? 0) * 100) / 100,
+                })),
+            topReviewedProducts: productGroups
+                .filter((row) => row.productId)
+                .sort((a, b) => b._count._all - a._count._all)
+                .slice(0, 5)
+                .map((row) => ({
+                    productId: row.productId,
+                    name: productNameById.get(row.productId as string) ?? null,
+                    reviewCount: row._count._all,
+                    averageRating: Math.round((row._avg.rating ?? 0) * 100) / 100,
+                })),
+        };
     }
 
     async adminHideLifecycleReview(
@@ -1649,22 +1985,307 @@ export class ReviewsService {
     // PRIVATE HELPERS
     // ──────────────────────────────────────────────
 
+    private async resolveBrandIdForUser(userId: string): Promise<string> {
+        const brand = await this.prisma.brand.findFirst({
+            where: {
+                OR: [
+                    { ownerId: userId },
+                    {
+                        members: {
+                            some: {
+                                userId,
+                                status: BrandMemberStatus.ACTIVE,
+                            },
+                        },
+                    },
+                ],
+            },
+            select: { id: true },
+        });
+
+        if (!brand) {
+            throw new NotFoundException('Brand not found');
+        }
+
+        return brand.id;
+    }
+
+    private buildBrandLifecycleReviewWhere(
+        brandId: string,
+        query: {
+            status?: string;
+            targetType?: string;
+            productId?: string;
+            collectionId?: string;
+            legacyCollectionId?: string;
+            designId?: string;
+            rating?: number;
+            dateFrom?: string;
+            dateTo?: string;
+        },
+    ): Prisma.ReviewWhereInput {
+        const where: Prisma.ReviewWhereInput = { brandId };
+
+        if (query.status) {
+            if (!Object.values(ReviewStatus).includes(query.status as ReviewStatus)) {
+                throw new BadRequestException('Invalid review status filter');
+            }
+            where.status = query.status as ReviewStatus;
+        } else {
+            where.status = { not: ReviewStatus.DELETED };
+        }
+
+        if (query.targetType) {
+            if (
+                !Object.values(ReviewTargetType).includes(
+                    query.targetType as ReviewTargetType,
+                )
+            ) {
+                throw new BadRequestException('Invalid review target type filter');
+            }
+            where.targetType = query.targetType as ReviewTargetType;
+        }
+
+        if (query.rating !== undefined) {
+            if (!Number.isInteger(query.rating) || query.rating < 1 || query.rating > 5) {
+                throw new BadRequestException('Invalid rating filter');
+            }
+            where.rating = query.rating;
+        }
+
+        if (query.productId) where.productId = query.productId;
+        if (query.collectionId) where.collectionId = query.collectionId;
+        if (query.legacyCollectionId) where.legacyCollectionId = query.legacyCollectionId;
+        if (query.designId) where.designId = query.designId;
+
+        const createdAt: Prisma.DateTimeFilter = {};
+        if (query.dateFrom) {
+            const parsed = new Date(query.dateFrom);
+            if (Number.isNaN(parsed.getTime())) {
+                throw new BadRequestException('Invalid dateFrom filter');
+            }
+            createdAt.gte = parsed;
+        }
+        if (query.dateTo) {
+            const parsed = new Date(query.dateTo);
+            if (Number.isNaN(parsed.getTime())) {
+                throw new BadRequestException('Invalid dateTo filter');
+            }
+            createdAt.lte = parsed;
+        }
+        if (createdAt.gte || createdAt.lte) {
+            where.createdAt = createdAt;
+        }
+
+        return where;
+    }
+
+    private async getBrandLifecycleDashboardSummary(brandId: string) {
+        const where: Prisma.ReviewWhereInput = {
+            brandId,
+            status: { not: ReviewStatus.DELETED },
+        };
+
+        const [
+            ratingStats,
+            ratingRows,
+            satisfactionRows,
+            statusRows,
+            targetRows,
+            breakdownReviews,
+        ] = await Promise.all([
+            this.prisma.review.aggregate({
+                where,
+                _avg: { rating: true },
+                _count: { rating: true },
+            }),
+            this.prisma.review.groupBy({
+                by: ['rating'],
+                where,
+                _count: { rating: true },
+            }),
+            this.prisma.review.groupBy({
+                by: ['satisfaction'],
+                where,
+                _count: { _all: true },
+            }),
+            this.prisma.review.groupBy({
+                by: ['status'],
+                where: { brandId },
+                _count: { _all: true },
+            }),
+            this.prisma.review.groupBy({
+                by: ['targetType'],
+                where,
+                _count: { _all: true },
+            }),
+            this.prisma.review.findMany({
+                where,
+                select: {
+                    targetType: true,
+                    productId: true,
+                    collectionId: true,
+                    legacyCollectionId: true,
+                    designId: true,
+                    customOrderId: true,
+                    brandId: true,
+                    rating: true,
+                    product: { select: { id: true, name: true } },
+                    collection: { select: { id: true, title: true } },
+                    legacyCollection: { select: { id: true, title: true } },
+                    design: { select: { id: true, title: true } },
+                    customOrder: {
+                        select: {
+                            id: true,
+                            sourceTitleSnapshot: true,
+                        },
+                    },
+                    brand: { select: { id: true, name: true } },
+                },
+            }),
+        ]);
+
+        const ratingBreakdown = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 } as Record<
+            1 | 2 | 3 | 4 | 5,
+            number
+        >;
+        for (const row of ratingRows) {
+            if (row.rating >= 1 && row.rating <= 5) {
+                ratingBreakdown[row.rating as 1 | 2 | 3 | 4 | 5] = row._count.rating;
+            }
+        }
+
+        const satisfactionDistribution = this.initializeEnumCount(ReviewSatisfaction);
+        for (const row of satisfactionRows) {
+            satisfactionDistribution[row.satisfaction] = row._count._all;
+        }
+
+        const statusCounts = this.initializeEnumCount(ReviewStatus);
+        for (const row of statusRows) {
+            statusCounts[row.status] = row._count._all;
+        }
+
+        const targetTypeCounts = this.initializeEnumCount(ReviewTargetType);
+        for (const row of targetRows) {
+            targetTypeCounts[row.targetType] = row._count._all;
+        }
+
+        const breakdownByKey = new Map<
+            string,
+            {
+                targetType: ReviewTargetType;
+                targetId: string | null;
+                name: string | null;
+                reviewCount: number;
+                ratingTotal: number;
+            }
+        >();
+
+        for (const review of breakdownReviews) {
+            const context = this.getLifecycleTargetContext(
+                review as unknown as LifecycleReviewContextRecord,
+            );
+            const key = `${review.targetType}:${context.id ?? 'unknown'}`;
+            const current =
+                breakdownByKey.get(key) ?? {
+                    targetType: review.targetType,
+                    targetId: context.id,
+                    name: context.name,
+                    reviewCount: 0,
+                    ratingTotal: 0,
+                };
+            current.reviewCount += 1;
+            current.ratingTotal += review.rating;
+            breakdownByKey.set(key, current);
+        }
+
+        return {
+            summary: {
+                averageRating: Math.round((ratingStats._avg.rating ?? 0) * 100) / 100,
+                reviewCount: ratingStats._count.rating,
+                ratingBreakdown,
+                satisfactionDistribution,
+                statusCounts,
+                targetTypeCounts,
+                flaggedCount: statusCounts[ReviewStatus.FLAGGED] ?? 0,
+                hiddenCount: statusCounts[ReviewStatus.HIDDEN] ?? 0,
+                deletedCount: statusCounts[ReviewStatus.DELETED] ?? 0,
+                pendingModerationCount:
+                    statusCounts[ReviewStatus.PENDING_MODERATION] ?? 0,
+            },
+            breakdown: {
+                targets: Array.from(breakdownByKey.values())
+                    .sort((a, b) => b.reviewCount - a.reviewCount)
+                    .map((entry) => ({
+                        targetType: entry.targetType,
+                        targetId: entry.targetId,
+                        name: entry.name,
+                        reviewCount: entry.reviewCount,
+                        averageRating:
+                            entry.reviewCount > 0
+                                ? Math.round((entry.ratingTotal / entry.reviewCount) * 100) / 100
+                                : 0,
+                    })),
+            },
+        };
+    }
+
+    private initializeEnumCount<T extends string>(
+        enumLike: Record<string, T>,
+    ): Record<T, number> {
+        return Object.values(enumLike).reduce(
+            (result, value) => {
+                result[value] = 0;
+                return result;
+            },
+            {} as Record<T, number>,
+        );
+    }
+
+    private getLifecycleTargetContext(review: LifecycleReviewContextRecord) {
+        const targetName =
+            review.product?.name ??
+            review.collection?.title ??
+            review.legacyCollection?.title ??
+            review.design?.title ??
+            review.orderItem?.nameAtPurchase ??
+            review.customOrder?.sourceTitleSnapshot ??
+            review.brand?.name ??
+            null;
+        const targetMediaUrl =
+            review.product?.thumbnail ??
+            review.orderItem?.thumbnailAtPurchase ??
+            review.customOrder?.sourcePrimaryMediaUrlSnapshot ??
+            review.brand?.logo ??
+            null;
+
+        return {
+            type: review.targetType,
+            id:
+                review.productId ??
+                review.collectionId ??
+                review.legacyCollectionId ??
+                review.designId ??
+                review.customOrderId ??
+                review.brandId,
+            name: targetName,
+            mediaUrl: targetMediaUrl,
+            product: review.product,
+            collection: review.collection,
+            legacyCollection: review.legacyCollection,
+            design: review.design,
+            orderItem: review.orderItem,
+            customOrder: review.customOrder,
+        };
+    }
+
     private mapAdminLifecycleReview(review: AdminLifecycleReviewRecord) {
         const reviewerProfile = review.reviewer.userProfile;
         const reviewerName = [reviewerProfile?.firstName, reviewerProfile?.lastName]
             .filter(Boolean)
             .join(' ')
             .trim();
-        const targetName =
-            review.product?.name ??
-            review.orderItem?.nameAtPurchase ??
-            review.customOrder?.sourceTitleSnapshot ??
-            null;
-        const targetMediaUrl =
-            review.product?.thumbnail ??
-            review.orderItem?.thumbnailAtPurchase ??
-            review.customOrder?.sourcePrimaryMediaUrlSnapshot ??
-            null;
+        const target = this.getLifecycleTargetContext(review);
 
         return {
             ...this.mapLifecycleReview(review),
@@ -1691,20 +2312,31 @@ export class ReviewsService {
                     logo: review.brand.logo,
                 }
                 : null,
-            target: {
-                type: review.targetType,
-                id:
-                    review.productId ??
-                    review.collectionId ??
-                    review.legacyCollectionId ??
-                    review.designId ??
-                    review.customOrderId ??
-                    review.brandId,
-                name: targetName,
-                mediaUrl: targetMediaUrl,
-                product: review.product,
-                orderItem: review.orderItem,
-                customOrder: review.customOrder,
+            target,
+        };
+    }
+
+    private mapLifecycleReviewWithContext(
+        review: LifecycleReviewContextRecord,
+        viewerId?: string,
+        options: { includeReviewerEmail?: boolean } = {},
+    ) {
+        const reviewerProfile = review.reviewer.userProfile;
+        const reviewerName = [reviewerProfile?.firstName, reviewerProfile?.lastName]
+            .filter(Boolean)
+            .join(' ')
+            .trim();
+
+        return {
+            ...this.mapLifecycleReview(review, viewerId),
+            hiddenReason: review.hiddenReason,
+            target: this.getLifecycleTargetContext(review),
+            reviewer: {
+                id: review.reviewer.id,
+                username: review.reviewer.username,
+                displayName: reviewerName || review.reviewer.username || 'Verified buyer',
+                profileImage: reviewerProfile?.profileImage ?? null,
+                ...(options.includeReviewerEmail ? { email: review.reviewer.email } : {}),
             },
         };
     }

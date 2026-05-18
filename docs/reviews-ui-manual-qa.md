@@ -8,8 +8,8 @@ Updated: 2026-05-18.
 | --- | --- | --- |
 | Review lifecycle migration applied locally | PASS | `npx prisma migrate status` returned: `Database schema is up to date!` |
 | Deterministic review seed data | PASS | `npm run seed:e2e:reviews` completed and wrote `docs/reviews-e2e-seed-data.md` |
-| Backend focused regression | PASS | `npx jest src/reviews src/bagging src/store src/custom-orders --runInBand`: 12 suites, 96 tests passed |
-| Web review focused tests | PASS | `npm run test -- ReviewApi.test.ts ReviewFormModal.test.tsx AdminReviewsPage.test.tsx`: 3 files, 6 tests passed |
+| Backend focused regression | PASS | `npx jest src/reviews src/bagging src/store src/custom-orders --runInBand`: 12 suites, 100 tests passed |
+| Web review focused tests | PASS | `npm run test -- ReviewApi.test.ts MyReviewsPage.test.tsx BrandReviewsDashboardPage.test.tsx AdminReviewsPage.test.tsx`: 4 files, 12 tests passed |
 | Web build | PASS | `npm run build` completed |
 | Mobile static validation | PASS | `npm exec tsc -- --noEmit`, `npm run ci:design-system`, and `npm run audit:theme` passed |
 
@@ -32,10 +32,17 @@ Manual browser/device execution was not completed in this coding pass. Rows that
 | Web | Parent catalog/profile tab does not shake/reset | NOT RUN | Interact with Reviews tab list, edit, and delete flows. | Active tab and parent scroll remain stable. | Not executed manually. | NOT TESTED | Needs browser QA. |
 | Web | Review list pagination does not reset active tab | NOT RUN | Use review list pagination/lazy load if enabled. | Active catalog tab remains Reviews. | Not executed manually. | NOT TESTED | Backend public review list currently returns `nextCursor: null`. |
 | Web | Review card buttons do not trigger parent navigation | NOT RUN | Click Edit/Delete inside review cards rendered in catalog context. | Only review action fires. | Not executed manually. | NOT TESTED | Web review cards stop propagation in code. |
+| Web | Buyer My Reviews list/edit/delete | NOT RUN | Sign in as `e2e.reviews.buyer@threadly.test`; open `/account/reviews`; filter reviews; edit seeded in-window review; delete seeded expired review. | Buyer reviews list loads; edit is visible only before `editWindowExpiresAt`; delete remains available; updates happen without full page reload. | Not executed manually. | NOT TESTED | `MyReviewsPage.test.tsx` covers local edit/delete wiring; browser QA pending. |
+| Web | Brand Dashboard Reviews list/filter | NOT RUN | Sign in as `e2e.reviews.brand@threadly.test`; open `/brand/reviews` or `/studio?tab=reviews`; filter by target/status/rating. | Read-only brand dashboard loads summary, target breakdown, and filtered lifecycle review rows with no delete button. | Not executed manually. | NOT TESTED | `BrandReviewsDashboardPage.test.tsx` covers read-only render; browser QA pending. |
+| Web | Brand report/flag review | NOT RUN | In brand Reviews Dashboard, click `Report`, choose a reason, add optional details, submit. | `POST /brands/reviews/lifecycle/:id/report` succeeds and escalates to admin moderation without brand hide/delete power. | Not executed manually. | NOT TESTED | Backend focused tests and `BrandReviewsDashboardPage.test.tsx` cover endpoint/UI wiring. |
 | Web admin | Admin moderation screen lists reviews | NOT RUN | Sign in as `e2e.reviews.admin@threadly.test`; open `/admin/reviews`. | Lifecycle review table loads seeded approved/hidden/flagged/pending/deleted reviews. | Not executed manually. | PARTIAL | Automated `AdminReviewsPage.test.tsx` verifies list rendering. Manual browser QA pending. |
 | Web admin | Admin hide/approve/flag works | NOT RUN | Use `/admin/reviews` action buttons and detail modal. | Status changes call lifecycle hide/approve/flag endpoints; no hard delete exists. | Not executed manually. | PARTIAL | Automated test verifies Approve endpoint wiring; backend lifecycle endpoints exist. Manual hide/flag QA pending. |
 | Web admin | Admin review detail opens | NOT RUN | Click `View detail` on a review row. | Modal shows IDs, timestamps, reviewer, brand, target, deleted/hidden state. | Not executed manually. | PARTIAL | `AdminReviewsPage.tsx` implementation and build passed. |
+| Web admin | Admin analytics visible | NOT RUN | Open `/admin/reviews` as an admin with moderation read access. | Review Analytics panel shows totals, average rating, status counts, target counts, satisfaction distribution, flagged/hidden/deleted/pending counts, and top reviewed brands/products. | Not executed manually. | PARTIAL | `GET /admin/reviews/analytics`; `AdminReviewsPage.test.tsx` covers analytics render. |
+| Web admin | Admin permission-limited user cannot moderate | NOT RUN | Sign in as admin without moderation write permission; open `/admin/reviews`. | Approve/Hide/Flag actions are hidden or disabled; View detail remains available if read permission allows. | Not executed manually. | PARTIAL | `AdminReviewsPage.test.tsx` covers action hiding with permission mock; backend permission guards remain enforced. |
+| Web admin | SuperAdmin can moderate | NOT RUN | Sign in as SuperAdmin; open `/admin/reviews`; use approve/hide/flag actions. | SuperAdmin sees moderation actions and backend accepts permitted moderation calls. | Not executed manually. | NOT TESTED | Requires seeded SuperAdmin browser session. |
 | Web admin | Admin feature flags visible | NOT RUN | Open `/admin/settings`, select `Review Rules`. | Review capture/public-display/moderation flags and edit-window input are visible. | Not executed manually. | PARTIAL | `AdminSettingsPage.tsx` implementation and build passed. |
+| Web admin | Feature flag edits persist | NOT RUN | Change a Review Rules flag or edit window value; save; reload settings. | Valid values persist through SystemConfig and invalid edit-window values are blocked. | Not executed manually. | NOT TESTED | Requires browser QA; static UI already exists. |
 
 ## Mobile QA Matrix
 
@@ -52,6 +59,7 @@ Manual browser/device execution was not completed in this coding pass. Rows that
 | Mobile | Brand Reviews tab displays | NOT RUN | Open native catalog Reviews tab. | Lifecycle brand summary/list renders. | Not executed on device/simulator. | NOT TESTED | Static validation only. |
 | Mobile | Collection/design public reviews hidden when flags OFF | NOT RUN | Open design/collection market viewer with default flags. | No public collection/design review list appears. | Not executed on device/simulator. | NOT TESTED | Static validation only. |
 | Mobile | Parent catalog/profile tab does not shake/reset | NOT RUN | Interact with Reviews tab and edit/delete sheets. | Tab content remains stable; parent does not reload all tabs. | Not executed on device/simulator. | NOT TESTED | Requires emulator/device. |
+| Mobile | Buyer My Reviews list/edit/delete | NOT RUN | Sign in on native app; open Profile > Reviews; filter reviews; edit in-window review; delete expired review. | Buyer review list loads; edit is hidden after expiry; delete uses confirmation sheet and removes item locally. | Not executed on device/simulator. | NOT TESTED | `threadly-mobile/app/reviews/index.tsx`; static validation pending this phase. |
 
 ## Manual QA Blockers
 

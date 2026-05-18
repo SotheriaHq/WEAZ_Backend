@@ -62,6 +62,40 @@ describe('completed-order review lifecycle', () => {
         ...overrides,
     });
 
+    const buildContextReview = (overrides: Record<string, unknown> = {}) => ({
+        ...buildReview(),
+        hiddenReason: null,
+        deletedById: null,
+        reviewer: {
+            id: 'buyer_1',
+            email: 'buyer@example.test',
+            username: 'buyer_one',
+            userProfile: {
+                firstName: 'Ada',
+                lastName: 'Buyer',
+                profileImage: null,
+            },
+        },
+        deletedBy: null,
+        brand: {
+            id: 'brand_1',
+            name: 'Review Brand',
+            logo: null,
+        },
+        product: {
+            id: 'product_1',
+            name: 'Reviewed Product',
+            slug: 'reviewed-product',
+            thumbnail: null,
+        },
+        collection: null,
+        legacyCollection: null,
+        design: null,
+        orderItem: null,
+        customOrder: null,
+        ...overrides,
+    });
+
     beforeEach(() => {
         prisma = {
             order: {
@@ -77,6 +111,8 @@ describe('completed-order review lifecycle', () => {
             },
             brand: {
                 findUnique: jest.fn(),
+                findFirst: jest.fn(),
+                findMany: jest.fn(),
             },
             reviewPrompt: {
                 upsert: jest.fn(async ({ create }: any) => ({
@@ -92,6 +128,7 @@ describe('completed-order review lifecycle', () => {
                 updateMany: jest.fn(),
             },
             review: {
+                count: jest.fn(),
                 findFirst: jest.fn(),
                 findUnique: jest.fn(),
                 findMany: jest.fn(),
@@ -125,6 +162,7 @@ describe('completed-order review lifecycle', () => {
             },
             product: {
                 findUnique: jest.fn(),
+                findMany: jest.fn(),
                 update: jest.fn(),
             },
             $transaction: jest.fn(async (callbackOrQueries: any) => {
@@ -679,5 +717,180 @@ describe('completed-order review lifecycle', () => {
         );
         expect(result.status).toBe(ReviewStatus.PENDING_MODERATION);
         expect(result.target.name).toBe('Order Item Product');
+    });
+
+    it('lists only the authenticated buyer lifecycle reviews by default', async () => {
+        prisma.review.findMany.mockResolvedValue([buildContextReview()]);
+
+        const result = await service.getMyLifecycleReviews('buyer_1', {});
+
+        expect(prisma.review.findMany).toHaveBeenCalledWith(
+            expect.objectContaining({
+                where: expect.objectContaining({
+                    AND: expect.arrayContaining([
+                        { reviewerId: 'buyer_1' },
+                        { status: { not: ReviewStatus.DELETED } },
+                    ]),
+                }),
+            }),
+        );
+        expect(result.items[0].reviewer.displayName).toBe('Ada Buyer');
+        expect(result.items[0].target.name).toBe('Reviewed Product');
+        expect(result.items[0].canDelete).toBe(true);
+    });
+
+    it('lists brand-owned lifecycle reviews with summary and target breakdown', async () => {
+        prisma.brand.findFirst.mockResolvedValue({ id: 'brand_1' });
+        prisma.review.findMany
+            .mockResolvedValueOnce([buildContextReview()])
+            .mockResolvedValueOnce([
+                {
+                    targetType: ReviewTargetType.PRODUCT,
+                    productId: 'product_1',
+                    collectionId: null,
+                    legacyCollectionId: null,
+                    designId: null,
+                    customOrderId: null,
+                    brandId: 'brand_1',
+                    rating: 5,
+                    product: { id: 'product_1', name: 'Reviewed Product' },
+                    collection: null,
+                    legacyCollection: null,
+                    design: null,
+                    customOrder: null,
+                    brand: { id: 'brand_1', name: 'Review Brand' },
+                },
+            ]);
+        prisma.review.aggregate.mockResolvedValue({
+            _avg: { rating: 5 },
+            _count: { rating: 1 },
+        });
+        prisma.review.groupBy
+            .mockResolvedValueOnce([{ rating: 5, _count: { rating: 1 } }])
+            .mockResolvedValueOnce([
+                { satisfaction: ReviewSatisfaction.EXCITED, _count: { _all: 1 } },
+            ])
+            .mockResolvedValueOnce([
+                { status: ReviewStatus.APPROVED, _count: { _all: 1 } },
+            ])
+            .mockResolvedValueOnce([
+                { targetType: ReviewTargetType.PRODUCT, _count: { _all: 1 } },
+            ]);
+
+        const result = await service.getBrandLifecycleDashboard('brand_owner_1', {
+            targetType: ReviewTargetType.PRODUCT,
+        });
+
+        expect(prisma.brand.findFirst).toHaveBeenCalledWith(
+            expect.objectContaining({
+                where: expect.objectContaining({
+                    OR: expect.arrayContaining([{ ownerId: 'brand_owner_1' }]),
+                }),
+            }),
+        );
+        expect(prisma.review.findMany).toHaveBeenCalledWith(
+            expect.objectContaining({
+                where: expect.objectContaining({
+                    brandId: 'brand_1',
+                    targetType: ReviewTargetType.PRODUCT,
+                    status: { not: ReviewStatus.DELETED },
+                }),
+            }),
+        );
+        expect(result.summary.reviewCount).toBe(1);
+        expect(result.breakdown.targets[0]).toMatchObject({
+            targetType: ReviewTargetType.PRODUCT,
+            targetId: 'product_1',
+            name: 'Reviewed Product',
+            reviewCount: 1,
+        });
+    });
+
+    it('lets a brand report only its own lifecycle reviews without delete power', async () => {
+        prisma.brand.findFirst.mockResolvedValue({ id: 'brand_1' });
+        prisma.review.findUnique.mockResolvedValue(buildContextReview());
+        prisma.review.update.mockResolvedValue(
+            buildContextReview({
+                status: ReviewStatus.FLAGGED,
+                hiddenReason: 'Brand report: OFF_TOPIC',
+            }),
+        );
+
+        const result = await service.reportLifecycleReviewForBrand(
+            'brand_owner_1',
+            'review_1',
+            { reason: 'OFF_TOPIC' as any },
+        );
+
+        expect(prisma.review.update).toHaveBeenCalledWith(
+            expect.objectContaining({
+                data: expect.objectContaining({
+                    status: ReviewStatus.FLAGGED,
+                    hiddenReason: 'Brand report: OFF_TOPIC',
+                }),
+            }),
+        );
+        expect(result.status).toBe(ReviewStatus.FLAGGED);
+
+        prisma.review.findUnique.mockResolvedValue(
+            buildContextReview({ brandId: 'brand_other' }),
+        );
+        await expect(
+            service.reportLifecycleReviewForBrand(
+                'brand_owner_1',
+                'review_1',
+                { reason: 'SPAM' as any },
+            ),
+        ).rejects.toBeInstanceOf(ForbiddenException);
+    });
+
+    it('returns admin review analytics structure', async () => {
+        prisma.review.count.mockResolvedValue(8);
+        prisma.review.aggregate.mockResolvedValue({
+            _avg: { rating: 4.25 },
+            _count: { rating: 7 },
+        });
+        prisma.review.groupBy
+            .mockResolvedValueOnce([
+                { status: ReviewStatus.APPROVED, _count: { _all: 5 } },
+                { status: ReviewStatus.FLAGGED, _count: { _all: 1 } },
+                { status: ReviewStatus.DELETED, _count: { _all: 1 } },
+            ])
+            .mockResolvedValueOnce([
+                { targetType: ReviewTargetType.PRODUCT, _count: { _all: 6 } },
+            ])
+            .mockResolvedValueOnce([
+                { satisfaction: ReviewSatisfaction.HAPPY, _count: { _all: 4 } },
+            ])
+            .mockResolvedValueOnce([
+                {
+                    brandId: 'brand_1',
+                    _count: { _all: 6 },
+                    _avg: { rating: 4.5 },
+                },
+            ])
+            .mockResolvedValueOnce([
+                {
+                    productId: 'product_1',
+                    _count: { _all: 4 },
+                    _avg: { rating: 5 },
+                },
+            ]);
+        prisma.review.findMany.mockResolvedValue([
+            { createdAt: new Date('2026-05-18T10:00:00.000Z') },
+        ]);
+        prisma.brand.findMany.mockResolvedValue([{ id: 'brand_1', name: 'Review Brand' }]);
+        prisma.product.findMany.mockResolvedValue([
+            { id: 'product_1', name: 'Reviewed Product' },
+        ]);
+
+        const result = await service.adminGetReviewAnalytics();
+
+        expect(result.totalReviews).toBe(8);
+        expect(result.flaggedCount).toBe(1);
+        expect(result.deletedCount).toBe(1);
+        expect(result.targetTypeCounts.PRODUCT).toBe(6);
+        expect(result.topReviewedBrands[0].name).toBe('Review Brand');
+        expect(result.reviewsCreatedOverTime['2026-05-18']).toBe(1);
     });
 });

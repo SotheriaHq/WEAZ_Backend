@@ -75,12 +75,12 @@ Status values: `PASS`, `FAIL`, `PARTIAL`, `NOT TESTED`.
 | Product/brand review summaries | Collection/design placeholder allowed only behind flag or disabled note | PASS | No public collection/design placeholder exposed | NO | PASS |
 | Smooth interaction / no parent shake | Reviews tab state isolated | PARTIAL | Web/mobile lifecycle state lives inside `ReviewsTab`; edit/delete update local list | NO | PASS |
 | Smooth interaction / no parent shake | Parent catalog/profile does not refetch all tabs when review page changes | PARTIAL | Review edit/delete does not call catalog/profile reload; legacy parent fetch still runs on tab open | NO | PASS |
-| Smooth interaction / no parent shake | Parent scroll position does not reset unnecessarily | NOT TESTED | Needs browser/device QA | TBD | NOT TESTED |
+| Smooth interaction / no parent shake | Parent scroll position does not reset unnecessarily | NOT TESTED | Needs browser/device QA | YES - manual QA | NOT TESTED |
 | Smooth interaction / no parent shake | Review edit/delete does not reload full profile | FAIL | Web/mobile local item updates only | NO | PASS |
 | Smooth interaction / no parent shake | Nested review button clicks do not trigger parent card navigation | PARTIAL | Web `ReviewCard` stops propagation; mobile cards are not nested in pressable catalog cards | NO | PASS |
 | Smooth interaction / no parent shake | Stable keys used | PARTIAL | Web/mobile maps use `review.id` | NO | PASS |
 | Smooth interaction / no parent shake | Fixed-height skeletons used where needed | PARTIAL | Web fixed skeleton blocks; mobile fixed loading/empty heights | NO | PASS |
-| Smooth interaction / no parent shake | Tab transition remains smooth | NOT TESTED | Needs browser/device QA | TBD | NOT TESTED |
+| Smooth interaction / no parent shake | Tab transition remains smooth | NOT TESTED | Needs browser/device QA | YES - manual QA | NOT TESTED |
 | Smooth interaction / no parent shake | No layout jump when loading reviews | PARTIAL | Skeleton/loading blocks added; manual visual QA still needed | NO | PARTIAL |
 | Web tests | Prompts render | FAIL | Prompt card implemented; no dedicated render test | YES | PARTIAL |
 | Web tests | Submit review | FAIL | `ReviewFormModal.test.tsx`; `ReviewApi.test.ts` | NO | PASS |
@@ -91,7 +91,7 @@ Status values: `PASS`, `FAIL`, `PARTIAL`, `NOT TESTED`.
 | Web tests | Reviews tab renders summary/list | FAIL | Existing `ReviewsTab.test.tsx` renders wrapper; lifecycle summary/list not directly asserted | YES | PARTIAL |
 | Web tests | Empty/error states | PARTIAL | Not directly tested | YES | PARTIAL |
 | Web tests | Feature flags respected | FAIL | 403 handling implemented; not directly tested | YES | PARTIAL |
-| Web tests | Parent tab does not reset where testable | NOT TESTED | Needs browser/integration test | TBD | NOT TESTED |
+| Web tests | Parent tab does not reset where testable | NOT TESTED | Needs browser/integration test | YES - manual QA | NOT TESTED |
 | Mobile validation/manual QA | TypeScript passes | NOT TESTED | `npm exec tsc -- --noEmit` passed | NO | PASS |
 | Mobile validation/manual QA | Design-system CI passes | NOT TESTED | `npm run ci:design-system` passed | NO | PASS |
 | Mobile validation/manual QA | Theme audit passes | NOT TESTED | `npm run audit:theme` passed | NO | PASS |
@@ -123,9 +123,9 @@ Status values: `PASS`, `FAIL`, `PARTIAL`, `NOT TESTED`.
 ## Validation Evidence
 
 - Backend: `npx prisma generate` passed.
-- Backend: `npx jest src/reviews src/bagging src/store src/custom-orders --runInBand` passed, 12 suites / 96 tests.
+- Backend: `npx jest src/reviews src/bagging src/store src/custom-orders --runInBand` passed, 12 suites / 100 tests.
 - Backend: `npm run build` passed.
-- Web: `npm run test -- ReviewApi.test.ts ReviewFormModal.test.tsx AdminReviewsPage.test.tsx` passed, 3 files / 6 tests.
+- Web: `npm run test -- ReviewApi.test.ts MyReviewsPage.test.tsx BrandReviewsDashboardPage.test.tsx AdminReviewsPage.test.tsx` passed, 4 files / 12 tests.
 - Web: `npm run build` passed.
 - Web: scoped ESLint on changed review/catalog/order files passed.
 - Mobile: `npm exec tsc -- --noEmit` passed.
@@ -153,8 +153,9 @@ Status values: `PASS`, `FAIL`, `PARTIAL`, `NOT TESTED`.
 | Web admin moderation | Lifecycle admin review list screen | PASS | `/admin/reviews`; `fthreadly/src/pages/admin/AdminReviewsPage.tsx`; `AdminReviewsPage.test.tsx` passed | NO | PASS |
 | Web admin moderation | Admin hide/approve/flag action UI | PARTIAL | UI actions implemented; approve wiring tested; hide/flag need browser QA | NO | PARTIAL |
 | Web admin settings | Review feature flag/edit-window controls | PASS | `AdminSettingsPage.tsx` `Review Rules` tab; web build passed | NO | PASS |
-| Buyer My Reviews | Dedicated management screen | FAIL | No route added | NO - documented deferral | DEFERRED |
-| Brand dashboard reviews | Read-only vendor management screen | FAIL | No dashboard route added | NO - documented deferral | DEFERRED |
-| Admin analytics | Review analytics screen | FAIL | No analytics screen added | NO - documented deferral | DEFERRED |
+| Buyer My Reviews | Dedicated management screen | PASS | Web `/account/reviews`; mobile `/reviews`; `MyReviewsPage.test.tsx` passed | NO | PASS - manual QA pending |
+| Brand dashboard reviews | Read-only vendor management screen | PASS | Web Studio Reviews dashboard; no delete action; `BrandReviewsDashboardPage.test.tsx` passed | NO | PASS - manual QA pending |
+| Brand lifecycle report/flag | Vendor escalation without delete power | PASS | `POST /brands/reviews/lifecycle/:reviewId/report`; web report modal; backend/web tests passed | NO | PASS - manual QA pending |
+| Admin analytics | Review analytics screen | PASS | `GET /admin/reviews/analytics`; `AdminReviewsPage.tsx` analytics panel; test passed | NO | PASS - manual QA pending |
 | Manual QA | Web seeded lifecycle execution | NOT TESTED | `reviews-ui-manual-qa.md` updated with seeded credentials and blockers | YES | NOT TESTED |
 | Manual QA | Mobile lifecycle execution | NOT TESTED | Static validation passed; no emulator/device execution | YES | NOT TESTED |
