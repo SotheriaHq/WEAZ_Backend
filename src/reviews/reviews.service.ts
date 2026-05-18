@@ -62,6 +62,65 @@ const REVIEW_MEDIA_FILE_TYPES: FileType[] = [
     FileType.REVIEW_VIDEO,
 ];
 
+const ADMIN_LIFECYCLE_REVIEW_INCLUDE = {
+    reviewer: {
+        select: {
+            id: true,
+            email: true,
+            username: true,
+            userProfile: {
+                select: {
+                    firstName: true,
+                    lastName: true,
+                    profileImage: true,
+                },
+            },
+        },
+    },
+    deletedBy: {
+        select: {
+            id: true,
+            email: true,
+            username: true,
+        },
+    },
+    brand: {
+        select: {
+            id: true,
+            name: true,
+            logo: true,
+        },
+    },
+    product: {
+        select: {
+            id: true,
+            name: true,
+            slug: true,
+            thumbnail: true,
+        },
+    },
+    orderItem: {
+        select: {
+            id: true,
+            nameAtPurchase: true,
+            thumbnailAtPurchase: true,
+        },
+    },
+    customOrder: {
+        select: {
+            id: true,
+            sourceType: true,
+            sourceId: true,
+            sourceTitleSnapshot: true,
+            sourcePrimaryMediaUrlSnapshot: true,
+        },
+    },
+} satisfies Prisma.ReviewInclude;
+
+type AdminLifecycleReviewRecord = Prisma.ReviewGetPayload<{
+    include: typeof ADMIN_LIFECYCLE_REVIEW_INCLUDE;
+}>;
+
 @Injectable()
 export class ReviewsService {
     private readonly logger = new Logger(ReviewsService.name);
@@ -1403,6 +1462,104 @@ export class ReviewsService {
         return { items, summary, nextCursor: null };
     }
 
+    async adminGetLifecycleReviews(query: {
+        cursor?: string;
+        limit?: number;
+        status?: string;
+        targetType?: string;
+        rating?: number;
+        brandId?: string;
+        dateFrom?: string;
+        dateTo?: string;
+    }) {
+        await this.assertFeatureEnabled(REVIEW_FEATURE_FLAGS.ADMIN_MODERATION);
+        const limit = Math.min(Math.max(query.limit ?? 30, 1), 100);
+        const where: Prisma.ReviewWhereInput = {};
+
+        if (query.status) {
+            if (!Object.values(ReviewStatus).includes(query.status as ReviewStatus)) {
+                throw new BadRequestException('Invalid review status filter');
+            }
+            where.status = query.status as ReviewStatus;
+        }
+
+        if (query.targetType) {
+            if (
+                !Object.values(ReviewTargetType).includes(
+                    query.targetType as ReviewTargetType,
+                )
+            ) {
+                throw new BadRequestException('Invalid review target type filter');
+            }
+            where.targetType = query.targetType as ReviewTargetType;
+        }
+
+        if (query.rating !== undefined) {
+            if (!Number.isInteger(query.rating) || query.rating < 1 || query.rating > 5) {
+                throw new BadRequestException('Invalid rating filter');
+            }
+            where.rating = query.rating;
+        }
+
+        if (query.brandId) {
+            where.brandId = query.brandId;
+        }
+
+        const createdAt: Prisma.DateTimeFilter = {};
+        if (query.dateFrom) {
+            const parsed = new Date(query.dateFrom);
+            if (Number.isNaN(parsed.getTime())) {
+                throw new BadRequestException('Invalid dateFrom filter');
+            }
+            createdAt.gte = parsed;
+        }
+        if (query.dateTo) {
+            const parsed = new Date(query.dateTo);
+            if (Number.isNaN(parsed.getTime())) {
+                throw new BadRequestException('Invalid dateTo filter');
+            }
+            createdAt.lte = parsed;
+        }
+        if (createdAt.gte || createdAt.lte) {
+            where.createdAt = createdAt;
+        }
+
+        const cursorWhere = buildCreatedAtCursorWhere(query.cursor);
+        const reviews = await this.prisma.review.findMany({
+            where: cursorWhere
+                ? { AND: [where, cursorWhere as Prisma.ReviewWhereInput] }
+                : where,
+            orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+            take: limit + 1,
+            include: ADMIN_LIFECYCLE_REVIEW_INCLUDE,
+        });
+
+        const hasMore = reviews.length > limit;
+        const items = hasMore ? reviews.slice(0, limit) : reviews;
+        const nextCursor = hasMore
+            ? buildCreatedAtCursor(items[items.length - 1])
+            : null;
+
+        return {
+            items: items.map((review) => this.mapAdminLifecycleReview(review)),
+            nextCursor,
+        };
+    }
+
+    async adminGetLifecycleReview(reviewId: string) {
+        await this.assertFeatureEnabled(REVIEW_FEATURE_FLAGS.ADMIN_MODERATION);
+        const review = await this.prisma.review.findUnique({
+            where: { id: reviewId },
+            include: ADMIN_LIFECYCLE_REVIEW_INCLUDE,
+        });
+
+        if (!review) {
+            throw new NotFoundException(REVIEW_ERRORS.NOT_FOUND);
+        }
+
+        return this.mapAdminLifecycleReview(review);
+    }
+
     async adminHideLifecycleReview(
         adminId: string,
         reviewId: string,
@@ -1491,6 +1648,66 @@ export class ReviewsService {
     // ──────────────────────────────────────────────
     // PRIVATE HELPERS
     // ──────────────────────────────────────────────
+
+    private mapAdminLifecycleReview(review: AdminLifecycleReviewRecord) {
+        const reviewerProfile = review.reviewer.userProfile;
+        const reviewerName = [reviewerProfile?.firstName, reviewerProfile?.lastName]
+            .filter(Boolean)
+            .join(' ')
+            .trim();
+        const targetName =
+            review.product?.name ??
+            review.orderItem?.nameAtPurchase ??
+            review.customOrder?.sourceTitleSnapshot ??
+            null;
+        const targetMediaUrl =
+            review.product?.thumbnail ??
+            review.orderItem?.thumbnailAtPurchase ??
+            review.customOrder?.sourcePrimaryMediaUrlSnapshot ??
+            null;
+
+        return {
+            ...this.mapLifecycleReview(review),
+            hiddenReason: review.hiddenReason,
+            deletedById: review.deletedById,
+            deletedBy: review.deletedBy
+                ? {
+                    id: review.deletedBy.id,
+                    email: review.deletedBy.email,
+                    username: review.deletedBy.username,
+                }
+                : null,
+            reviewer: {
+                id: review.reviewer.id,
+                email: review.reviewer.email,
+                username: review.reviewer.username,
+                displayName: reviewerName || review.reviewer.username || review.reviewer.email,
+                profileImage: reviewerProfile?.profileImage ?? null,
+            },
+            brand: review.brand
+                ? {
+                    id: review.brand.id,
+                    name: review.brand.name,
+                    logo: review.brand.logo,
+                }
+                : null,
+            target: {
+                type: review.targetType,
+                id:
+                    review.productId ??
+                    review.collectionId ??
+                    review.legacyCollectionId ??
+                    review.designId ??
+                    review.customOrderId ??
+                    review.brandId,
+                name: targetName,
+                mediaUrl: targetMediaUrl,
+                product: review.product,
+                orderItem: review.orderItem,
+                customOrder: review.customOrder,
+            },
+        };
+    }
 
     private mapLifecycleReview(
         review: {

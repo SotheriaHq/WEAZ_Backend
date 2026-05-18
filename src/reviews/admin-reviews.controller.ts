@@ -44,6 +44,44 @@ export class AdminReviewsController {
     }
 
     /**
+     * GET /admin/reviews/lifecycle
+     * Admin lifecycle review list with moderation-oriented filters.
+     */
+    @Get('lifecycle')
+    @RequirePermissions(ADMIN_PERMISSIONS.MODERATION_READ)
+    async getLifecycleReviews(
+        @Query('cursor') cursor?: string,
+        @Query('limit') limit?: string,
+        @Query('status') status?: string,
+        @Query('targetType') targetType?: string,
+        @Query('rating') rating?: string,
+        @Query('brandId') brandId?: string,
+        @Query('dateFrom') dateFrom?: string,
+        @Query('dateTo') dateTo?: string,
+    ) {
+        return this.reviewsService.adminGetLifecycleReviews({
+            cursor,
+            limit: limit ? parseInt(limit, 10) : undefined,
+            status,
+            targetType,
+            rating: rating ? parseInt(rating, 10) : undefined,
+            brandId,
+            dateFrom,
+            dateTo,
+        });
+    }
+
+    /**
+     * GET /admin/reviews/lifecycle/:reviewId
+     * Admin lifecycle review detail.
+     */
+    @Get('lifecycle/:reviewId')
+    @RequirePermissions(ADMIN_PERMISSIONS.MODERATION_READ)
+    async getLifecycleReview(@Param('reviewId') reviewId: string) {
+        return this.reviewsService.adminGetLifecycleReview(reviewId);
+    }
+
+    /**
      * GET /admin/reviews/reports
      * Admin report queue.
      */

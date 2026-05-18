@@ -586,4 +586,98 @@ describe('completed-order review lifecycle', () => {
             service.getLifecycleDesignReviews('design_1', { limit: 20 }),
         ).rejects.toBeInstanceOf(ForbiddenException);
     });
+
+    it('lists lifecycle reviews for admin moderation with filters and reviewer context', async () => {
+        prisma.review.findMany.mockResolvedValue([
+            {
+                ...buildReview({
+                    status: ReviewStatus.FLAGGED,
+                    rating: 2,
+                    hiddenReason: 'Reported language',
+                }),
+                reviewer: {
+                    id: 'buyer_1',
+                    email: 'buyer@example.test',
+                    username: 'buyer_one',
+                    userProfile: {
+                        firstName: 'Ada',
+                        lastName: 'Buyer',
+                        profileImage: null,
+                    },
+                },
+                deletedBy: null,
+                brand: {
+                    id: 'brand_1',
+                    name: 'Review Brand',
+                    logo: null,
+                },
+                product: {
+                    id: 'product_1',
+                    name: 'Reviewed Product',
+                    slug: 'reviewed-product',
+                    thumbnail: null,
+                },
+                orderItem: null,
+                customOrder: null,
+            },
+        ]);
+
+        const result = await service.adminGetLifecycleReviews({
+            status: ReviewStatus.FLAGGED,
+            targetType: ReviewTargetType.PRODUCT,
+            rating: 2,
+            brandId: 'brand_1',
+        });
+
+        expect(featureFlags.isEnabled).toHaveBeenCalledWith(
+            REVIEW_FEATURE_FLAGS.ADMIN_MODERATION,
+        );
+        expect(prisma.review.findMany).toHaveBeenCalledWith(
+            expect.objectContaining({
+                where: expect.objectContaining({
+                    status: ReviewStatus.FLAGGED,
+                    targetType: ReviewTargetType.PRODUCT,
+                    rating: 2,
+                    brandId: 'brand_1',
+                }),
+            }),
+        );
+        expect(result.items[0].reviewer.displayName).toBe('Ada Buyer');
+        expect(result.items[0].brand.name).toBe('Review Brand');
+        expect(result.items[0].target.name).toBe('Reviewed Product');
+        expect(result.items[0].canDelete).toBe(false);
+    });
+
+    it('returns lifecycle review detail for admin moderation', async () => {
+        prisma.review.findUnique.mockResolvedValue({
+            ...buildReview({ status: ReviewStatus.PENDING_MODERATION }),
+            reviewer: {
+                id: 'buyer_1',
+                email: 'buyer@example.test',
+                username: 'buyer_one',
+                userProfile: null,
+            },
+            deletedBy: null,
+            brand: {
+                id: 'brand_1',
+                name: 'Review Brand',
+                logo: null,
+            },
+            product: null,
+            orderItem: {
+                id: 'order_item_1',
+                nameAtPurchase: 'Order Item Product',
+                thumbnailAtPurchase: null,
+            },
+            customOrder: null,
+        });
+
+        const result = await service.adminGetLifecycleReview('review_1');
+
+        expect(prisma.review.findUnique).toHaveBeenCalledWith(
+            expect.objectContaining({ where: { id: 'review_1' } }),
+        );
+        expect(result.status).toBe(ReviewStatus.PENDING_MODERATION);
+        expect(result.target.name).toBe('Order Item Product');
+    });
 });

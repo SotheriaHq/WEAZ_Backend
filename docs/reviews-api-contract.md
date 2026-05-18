@@ -134,6 +134,24 @@ Returns approved lifecycle brand reviews plus summary when `reviews.publicDispla
 
 ## Admin Endpoints
 
+`GET /admin/reviews/lifecycle`
+
+Returns lifecycle `Review` records for admin moderation. Requires moderation read permission.
+
+Supported query params:
+- `status`: `APPROVED`, `PENDING_MODERATION`, `HIDDEN`, `FLAGGED`, `DELETED`
+- `targetType`: `PRODUCT`, `COLLECTION`, `DESIGN`, `CUSTOM_ORDER`, `BRAND`
+- `rating`: integer `1` to `5`
+- `brandId`: brand UUID
+- `dateFrom`, `dateTo`: created-at date filters
+- `cursor`, `limit`: pagination
+
+Each item includes reviewer context, brand context, target IDs, lifecycle timestamps, `hiddenReason`, `deletedAt`, and `deletedById`. This endpoint is the source for the web admin review moderation screen.
+
+`GET /admin/reviews/lifecycle/:id`
+
+Returns lifecycle review detail for admin inspection. Requires moderation read permission.
+
 `PATCH /admin/reviews/:id/hide`
 
 Sets lifecycle review status to `HIDDEN`. Requires admin moderation write permission.

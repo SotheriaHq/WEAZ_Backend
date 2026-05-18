@@ -123,9 +123,9 @@ Status values: `PASS`, `FAIL`, `PARTIAL`, `NOT TESTED`.
 ## Validation Evidence
 
 - Backend: `npx prisma generate` passed.
-- Backend: `npx jest src/reviews src/bagging src/store src/custom-orders --runInBand` passed, 12 suites / 94 tests.
+- Backend: `npx jest src/reviews src/bagging src/store src/custom-orders --runInBand` passed, 12 suites / 96 tests.
 - Backend: `npm run build` passed.
-- Web: `npm run test -- ReviewApi.test.ts ReviewFormModal.test.tsx ReviewsTab.test.tsx` passed, 3 files / 5 tests.
+- Web: `npm run test -- ReviewApi.test.ts ReviewFormModal.test.tsx AdminReviewsPage.test.tsx` passed, 3 files / 6 tests.
 - Web: `npm run build` passed.
 - Web: scoped ESLint on changed review/catalog/order files passed.
 - Mobile: `npm exec tsc -- --noEmit` passed.
@@ -141,4 +141,20 @@ Status values: `PASS`, `FAIL`, `PARTIAL`, `NOT TESTED`.
 ## Production Blockers
 
 - Phase 16B should not be called production-ready until manual QA in `docs/reviews-ui-manual-qa.md` is executed with completed-order review prompt data.
-- Seeded review data is still needed to verify edit-after-24h hidden state and delete-anytime behavior through UI.
+- Seeded review data exists, but edit-after-24h hidden state and delete-anytime behavior still need browser/device verification.
+
+## Phase 16B-2 Addendum
+
+| Area | Requirement | Current status | Evidence | Fix required | Final status |
+| --- | --- | --- | --- | --- | --- |
+| Backend admin lifecycle contract | Admin lifecycle review list available | PASS | `GET /admin/reviews/lifecycle`; `ReviewsService.adminGetLifecycleReviews()`; focused review tests passed | NO | PASS |
+| Backend admin lifecycle contract | Admin lifecycle review detail available | PASS | `GET /admin/reviews/lifecycle/:id`; `ReviewsService.adminGetLifecycleReview()`; focused review tests passed | NO | PASS |
+| Backend seeded QA | Deterministic review lifecycle data | PASS | `scripts/seed-reviews-e2e.ts`; `npm run seed:e2e:reviews` passed; `docs/reviews-e2e-seed-data.md` | NO | PASS |
+| Web admin moderation | Lifecycle admin review list screen | PASS | `/admin/reviews`; `fthreadly/src/pages/admin/AdminReviewsPage.tsx`; `AdminReviewsPage.test.tsx` passed | NO | PASS |
+| Web admin moderation | Admin hide/approve/flag action UI | PARTIAL | UI actions implemented; approve wiring tested; hide/flag need browser QA | NO | PARTIAL |
+| Web admin settings | Review feature flag/edit-window controls | PASS | `AdminSettingsPage.tsx` `Review Rules` tab; web build passed | NO | PASS |
+| Buyer My Reviews | Dedicated management screen | FAIL | No route added | NO - documented deferral | DEFERRED |
+| Brand dashboard reviews | Read-only vendor management screen | FAIL | No dashboard route added | NO - documented deferral | DEFERRED |
+| Admin analytics | Review analytics screen | FAIL | No analytics screen added | NO - documented deferral | DEFERRED |
+| Manual QA | Web seeded lifecycle execution | NOT TESTED | `reviews-ui-manual-qa.md` updated with seeded credentials and blockers | YES | NOT TESTED |
+| Manual QA | Mobile lifecycle execution | NOT TESTED | Static validation passed; no emulator/device execution | YES | NOT TESTED |
