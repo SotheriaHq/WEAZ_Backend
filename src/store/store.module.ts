@@ -14,9 +14,10 @@ import { FinanceModule } from 'src/finance/finance.module';
 import { BrandAccessService } from 'src/brands/brand-access.service';
 import { BrandPermissionService } from 'src/brands/permissions/brand-permission.service';
 import { BaggingModule } from 'src/bagging/bagging.module';
+import { ReviewsModule } from 'src/reviews/reviews.module';
 
 @Module({
-  imports: [PrismaModule, AuthModule, UploadModule, NotificationsModule, TagsModule, QueueModule, CategoriesModule, FinanceModule, BaggingModule],
+  imports: [PrismaModule, AuthModule, UploadModule, NotificationsModule, TagsModule, QueueModule, CategoriesModule, FinanceModule, BaggingModule, ReviewsModule],
   controllers: [StoreController],
   providers: [
     StoreService,

@@ -82,6 +82,7 @@ import {
 } from 'src/brands/permissions/brand-permissions';
 import { canonicalUserProfileSelect } from 'src/common/user-profile-source.helper';
 import { BagEligibilityService } from 'src/bagging/bag-eligibility.service';
+import { ReviewEligibilityService } from 'src/reviews/review-eligibility.service';
 
 type SupportedPaymentBank = {
   id: number;
@@ -146,6 +147,8 @@ export class StoreService {
     private readonly brandPermissionService?: BrandPermissionService,
     @Optional()
     private readonly bagEligibilityService?: BagEligibilityService,
+    @Optional()
+    private readonly reviewEligibilityService?: ReviewEligibilityService,
   ) {}
 
   private readonly maxProductsPerCollection = Math.max(
@@ -6412,6 +6415,17 @@ export class StoreService {
         })
         .catch(() => undefined);
     }
+
+    await this.reviewEligibilityService
+      ?.createPromptsForCompletedStandardOrder(orderId)
+      .catch((error) => {
+        this.logger.warn(
+          'Failed to create standard-order review prompts for orderId=' +
+            orderId +
+            ': ' +
+            (error instanceof Error ? error.message : 'unknown error'),
+        );
+      });
 
     return this.getMyOrder(userId, orderId);
   }

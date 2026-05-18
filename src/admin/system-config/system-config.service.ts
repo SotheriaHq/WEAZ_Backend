@@ -27,6 +27,7 @@ export const DEFAULT_NUMBER_CONFIGS: Record<string, number> = {
   'finance.standardEscrow.firstReleasePercent': 50,
   'finance.standardEscrow.settlementHours': 48,
   'finance.standardEscrow.autoReleaseDays': 7,
+  'reviews.editWindowHours': 24,
 };
 
 export const DEFAULT_BOOLEAN_CONFIGS: Record<string, boolean> = {
@@ -54,6 +55,7 @@ const KEY_DESCRIPTIONS: Record<string, string> = {
   'finance.standardEscrow.firstReleasePercent': 'Percent of a paid standard-order hold released when the brand confirms shipment',
   'finance.standardEscrow.settlementHours': 'Hours to wait after buyer delivery confirmation before releasing the final standard-order tranche',
   'finance.standardEscrow.autoReleaseDays': 'Days after a delivered standard order before the system auto-confirms delivery',
+  'reviews.editWindowHours': 'Hours after original review creation during which the buyer may edit the review',
   'admin.dashboard.showDailySignupCount': 'Controls whether the admin dashboard shows the daily signup count card',
   'messaging.brandToBrand.enabled': 'Controls whether brand accounts can initiate direct messages to other brands',
 };

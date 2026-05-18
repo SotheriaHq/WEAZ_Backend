@@ -141,6 +141,9 @@ model User {
   productReviews            ProductReview[]            @relation("UserProductReviews")
   reviewHelpfulVotes        ProductReviewHelpfulVote[] @relation("UserReviewHelpfulVotes")
   productReviewReports      ProductReviewReport[]      @relation("UserProductReviewReports")
+  lifecycleReviews          Review[]                   @relation("ReviewReviewer")
+  lifecycleReviewsDeleted   Review[]                   @relation("ReviewDeletedBy")
+  reviewPrompts             ReviewPrompt[]             @relation("ReviewPromptBuyer")
   systemConfigUpdates       SystemConfig[]             @relation("SystemConfigUpdater")
   ledgerTransactionsCreated LedgerTransaction[]        @relation("LedgerTransactionCreatedBy")
 }
@@ -1057,10 +1060,12 @@ model Collection {
   // Featured system
   isFeaturedBlocked Boolean @default(false)
 
-  products       CollectionProduct[]
-  draftSessions  CollectionDraftSession[]
-  bulkUploadJobs CollectionBulkUploadJob[]
-  designMirror   Design?                   @relation("LegacyCollectionDesign")
+  products         CollectionProduct[]
+  draftSessions    CollectionDraftSession[]
+  bulkUploadJobs   CollectionBulkUploadJob[]
+  designMirror     Design?                   @relation("LegacyCollectionDesign")
+  lifecycleReviews Review[]                  @relation("ReviewLegacyCollection")
+  reviewPrompts    ReviewPrompt[]            @relation("ReviewPromptLegacyCollection")
 
   @@index([status, createdAt])
   @@index([status, collectionCollabsCount])
@@ -1127,6 +1132,8 @@ model Design {
   medias                 DesignMedia[]            @relation("Design_to_Media")
   draftSessions          DesignDraftSession[]
   entityFilters          EntityFilter[]           @relation("DesignEntityFilters")
+  lifecycleReviews       Review[]                 @relation("ReviewDesign")
+  reviewPrompts          ReviewPrompt[]           @relation("ReviewPromptDesign")
 
   @@index([ownerId, status, createdAt])
   @@index([brandId, status, createdAt])
@@ -1178,6 +1185,8 @@ model StoreCollection {
   viewsCount             Int                      @default(0)
   products               StoreCollectionProduct[]
   primaryProducts        Product[]                @relation("PrimaryStoreCollection")
+  lifecycleReviews       Review[]                 @relation("ReviewStoreCollection")
+  reviewPrompts          ReviewPrompt[]           @relation("ReviewPromptStoreCollection")
 
   @@index([status, createdAt])
   @@index([status, visibility, createdAt])
@@ -2103,6 +2112,8 @@ model Brand {
   verificationAttempts      BrandVerificationAttempt[]
   verificationNotes         BrandVerificationNote[]
   reviews                   ProductReview[]            @relation("BrandProductReviews")
+  lifecycleReviews          Review[]                   @relation("ReviewBrand")
+  reviewPrompts             ReviewPrompt[]             @relation("ReviewPromptBrand")
   members                   BrandMember[]
   staffInvites              BrandStaffInvite[]
 
@@ -2399,6 +2410,8 @@ model Order {
   messageThread            MessageThread?
   messageThreadLinks       MessageThreadOrderLink[] @relation("MessageThreadOrderLinkOrder")
   checkoutSessionLines     CheckoutSessionLine[]
+  lifecycleReviews         Review[]                 @relation("ReviewOrder")
+  reviewPrompts            ReviewPrompt[]           @relation("ReviewPromptOrder")
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -2672,6 +2685,8 @@ model CustomOrder {
   messageThreadLinks            MessageThreadOrderLink[]        @relation("MessageThreadOrderLinkCustomOrder")
   checkoutSession               CustomOrderCheckoutSession?
   checkoutSessionLines          CheckoutSessionLine[]
+  lifecycleReviews              Review[]                        @relation("ReviewCustomOrder")
+  reviewPrompts                 ReviewPrompt[]                  @relation("ReviewPromptCustomOrder")
 
   @@unique([checkoutIntentId])
   @@unique([buyerId, idempotencyKey])
@@ -3390,6 +3405,8 @@ model OrderItem {
   updatedAt               DateTime        @updatedAt
   disputes                SizingDispute[]
   reviews                 ProductReview[] @relation("OrderItemProductReviews")
+  lifecycleReviews        Review[]        @relation("ReviewOrderItem")
+  reviewPrompts           ReviewPrompt[]  @relation("ReviewPromptOrderItem")
 
   @@index([orderId])
   @@index([productId])
@@ -3950,6 +3967,8 @@ model Product {
   collections           StoreCollectionProduct[]
   entityFilters         EntityFilter[]           @relation("ProductEntityFilters")
   reviews               ProductReview[]          @relation("ProductReviews")
+  lifecycleReviews      Review[]                 @relation("ReviewProduct")
+  reviewPrompts         ReviewPrompt[]           @relation("ReviewPromptProduct")
 
   // Performance indexes
   @@index([brandId])
@@ -4563,6 +4582,134 @@ model ProductReviewReport {
 
   @@unique([reviewId, reporterId])
   @@index([reason, createdAt])
+}
+
+
+enum ReviewTargetType {
+  PRODUCT
+  COLLECTION
+  DESIGN
+  CUSTOM_ORDER
+  BRAND
+}
+
+enum ReviewSatisfaction {
+  NONE
+  ANGRY
+  SAD
+  OKAY
+  HAPPY
+  EXCITED
+}
+
+enum ReviewStatus {
+  APPROVED
+  PENDING_MODERATION
+  HIDDEN
+  FLAGGED
+  DELETED
+}
+
+enum ReviewPromptStatus {
+  PENDING
+  SHOWN
+  SKIPPED
+  SUBMITTED
+  EXPIRED
+}
+
+model Review {
+  id                  String             @id @default(uuid()) @db.Uuid
+  reviewerId          String             @db.Uuid
+  reviewer            User               @relation("ReviewReviewer", fields: [reviewerId], references: [id], onDelete: Restrict)
+  brandId             String?            @db.Uuid
+  brand               Brand?             @relation("ReviewBrand", fields: [brandId], references: [id], onDelete: SetNull)
+  productId           String?            @db.Uuid
+  product             Product?           @relation("ReviewProduct", fields: [productId], references: [id], onDelete: SetNull)
+  collectionId        String?            @db.Uuid
+  collection          StoreCollection?   @relation("ReviewStoreCollection", fields: [collectionId], references: [id], onDelete: SetNull)
+  legacyCollectionId  String?            @db.Uuid
+  legacyCollection    Collection?        @relation("ReviewLegacyCollection", fields: [legacyCollectionId], references: [id], onDelete: SetNull)
+  designId            String?            @db.Uuid
+  design              Design?            @relation("ReviewDesign", fields: [designId], references: [id], onDelete: SetNull)
+  orderId             String?            @db.Uuid
+  order               Order?             @relation("ReviewOrder", fields: [orderId], references: [id], onDelete: SetNull)
+  orderItemId         String?            @db.Uuid
+  orderItem           OrderItem?         @relation("ReviewOrderItem", fields: [orderItemId], references: [id], onDelete: SetNull)
+  customOrderId       String?            @db.Uuid
+  customOrder         CustomOrder?       @relation("ReviewCustomOrder", fields: [customOrderId], references: [id], onDelete: SetNull)
+  targetType          ReviewTargetType
+  rating              Int
+  satisfaction        ReviewSatisfaction
+  reviewText          String?
+  verifiedPurchase    Boolean            @default(true)
+  status              ReviewStatus       @default(APPROVED)
+  editWindowExpiresAt DateTime
+  editedAt            DateTime?
+  deletedAt           DateTime?
+  deletedById         String?            @db.Uuid
+  deletedBy           User?              @relation("ReviewDeletedBy", fields: [deletedById], references: [id], onDelete: SetNull)
+  hiddenReason        String?
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
+  prompts             ReviewPrompt[]     @relation("ReviewPromptSubmittedReview")
+
+  @@unique([reviewerId, orderItemId, targetType])
+  @@unique([reviewerId, customOrderId, targetType])
+  @@unique([reviewerId, orderId, brandId, targetType])
+  @@index([targetType, status, createdAt])
+  @@index([productId, status, createdAt])
+  @@index([collectionId, status, createdAt])
+  @@index([legacyCollectionId, status, createdAt])
+  @@index([designId, status, createdAt])
+  @@index([brandId, status, createdAt])
+  @@index([reviewerId, createdAt])
+  @@map("reviews")
+}
+
+model ReviewPrompt {
+  id                 String             @id @default(uuid()) @db.Uuid
+  buyerId            String             @db.Uuid
+  buyer              User               @relation("ReviewPromptBuyer", fields: [buyerId], references: [id], onDelete: Cascade)
+  brandId            String?            @db.Uuid
+  brand              Brand?             @relation("ReviewPromptBrand", fields: [brandId], references: [id], onDelete: SetNull)
+  orderId            String?            @db.Uuid
+  order              Order?             @relation("ReviewPromptOrder", fields: [orderId], references: [id], onDelete: SetNull)
+  orderItemId        String?            @db.Uuid
+  orderItem          OrderItem?         @relation("ReviewPromptOrderItem", fields: [orderItemId], references: [id], onDelete: SetNull)
+  customOrderId      String?            @db.Uuid
+  customOrder        CustomOrder?       @relation("ReviewPromptCustomOrder", fields: [customOrderId], references: [id], onDelete: SetNull)
+  productId          String?            @db.Uuid
+  product            Product?           @relation("ReviewPromptProduct", fields: [productId], references: [id], onDelete: SetNull)
+  collectionId       String?            @db.Uuid
+  collection         StoreCollection?   @relation("ReviewPromptStoreCollection", fields: [collectionId], references: [id], onDelete: SetNull)
+  legacyCollectionId String?            @db.Uuid
+  legacyCollection   Collection?        @relation("ReviewPromptLegacyCollection", fields: [legacyCollectionId], references: [id], onDelete: SetNull)
+  designId           String?            @db.Uuid
+  design             Design?            @relation("ReviewPromptDesign", fields: [designId], references: [id], onDelete: SetNull)
+  targetType         ReviewTargetType
+  status             ReviewPromptStatus @default(PENDING)
+  shownAt            DateTime?
+  skippedAt          DateTime?
+  submittedAt        DateTime?
+  expiresAt          DateTime?
+  submittedReviewId  String?            @db.Uuid
+  submittedReview    Review?            @relation("ReviewPromptSubmittedReview", fields: [submittedReviewId], references: [id], onDelete: SetNull)
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  @@unique([buyerId, orderItemId, targetType])
+  @@unique([buyerId, customOrderId, targetType])
+  @@unique([buyerId, orderId, brandId, targetType])
+  @@index([buyerId, status, createdAt])
+  @@index([targetType, status, createdAt])
+  @@index([productId, status, createdAt])
+  @@index([collectionId, status, createdAt])
+  @@index([legacyCollectionId, status, createdAt])
+  @@index([designId, status, createdAt])
+  @@index([brandId, status, createdAt])
+  @@index([submittedReviewId])
+  @@map("review_prompts")
 }
 
 // ─── System Configuration (key-value, admin-managed) ─────────────────────────

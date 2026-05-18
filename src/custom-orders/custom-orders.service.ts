@@ -2,7 +2,9 @@ import {
   BadRequestException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import {
   CustomOrderCheckoutStatus,
@@ -62,6 +64,7 @@ import {
   resolveRequiredProfileField,
 } from 'src/common/user-profile-source.helper';
 import { BagValidationService } from 'src/bagging/bag-validation.service';
+import { ReviewEligibilityService } from 'src/reviews/review-eligibility.service';
 
 const BUYER_ACCEPTANCE_WINDOW_HOURS = 72;
 const EXCEPTION_REVIEW_MONTHLY_QUOTA = 2;
@@ -279,6 +282,8 @@ const pickFirstRenderableMediaUrl = (candidates: unknown[]): string | null => {
 
 @Injectable()
 export class CustomOrdersService {
+  private readonly logger = new Logger(CustomOrdersService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly pricingService: CustomOrderPricingService,
@@ -287,6 +292,8 @@ export class CustomOrdersService {
     private readonly ledgerService: LedgerService,
     private readonly customOrderAccessService: CustomOrderAccessService,
     private readonly bagValidationService: BagValidationService,
+    @Optional()
+    private readonly reviewEligibilityService?: ReviewEligibilityService,
   ) {}
 
   async createPricePreview(userId: string, dto: CustomOrderPricePreviewDto) {
@@ -1522,6 +1529,17 @@ export class CustomOrdersService {
 
       return next;
     });
+
+    await this.reviewEligibilityService
+      ?.createPromptsForCompletedCustomOrder(customOrderId)
+      .catch((error) => {
+        this.logger.warn(
+          'Failed to create custom-order review prompts for customOrderId=' +
+            customOrderId +
+            ': ' +
+            (error instanceof Error ? error.message : 'unknown error'),
+        );
+      });
 
     return {
       statusCode: 200,

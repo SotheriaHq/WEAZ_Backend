@@ -8,6 +8,7 @@ import { FinanceModule } from 'src/finance/finance.module';
 import { MessagingModule } from 'src/messaging/messaging.module';
 import { BrandPermissionService } from 'src/brands/permissions/brand-permission.service';
 import { BagValidationService } from 'src/bagging/bag-validation.service';
+import { ReviewsModule } from 'src/reviews/reviews.module';
 import { CustomOrderAccessService } from './custom-order-access.service';
 import { CustomOrdersBrandController } from './custom-orders-brand.controller';
 import { CustomOrdersBuyerController } from './custom-orders-buyer.controller';
@@ -17,7 +18,7 @@ import { CustomOrderSideEffectsService } from './custom-order-side-effects.servi
 import { CustomOrdersService } from './custom-orders.service';
 
 @Module({
-  imports: [PrismaModule, PaymentModule, QueueModule, CustomOrderPricingModule, SystemConfigModule, FinanceModule, forwardRef(() => MessagingModule)],
+  imports: [PrismaModule, PaymentModule, QueueModule, CustomOrderPricingModule, SystemConfigModule, FinanceModule, ReviewsModule, forwardRef(() => MessagingModule)],
   controllers: [CustomOrdersBuyerController, CustomOrdersBrandController],
   providers: [
     CustomOrdersService,

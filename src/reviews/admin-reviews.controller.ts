@@ -17,7 +17,7 @@ import { AdminPermissionGuard } from '../admin/guards/admin-permission.guard';
 import { RequirePermissions } from '../admin/decorators/require-permissions.decorator';
 import { ADMIN_PERMISSIONS } from '../admin/constants/permissions';
 import { ReviewsService } from './reviews.service';
-import { AdminModerationDto } from './dto';
+import { AdminModerationDto, AdminReviewStatusDto } from './dto';
 
 @Controller('admin/reviews')
 @UseGuards(JwtAuthGuard, RolesGuard, AdminPermissionGuard)
@@ -74,6 +74,49 @@ export class AdminReviewsController {
             req.user.id,
             reviewId,
             dto,
+            req,
+        );
+    }
+
+    @Patch(':reviewId/hide')
+    @RequirePermissions(ADMIN_PERMISSIONS.MODERATION_WRITE)
+    async hideLifecycleReview(
+        @Param('reviewId') reviewId: string,
+        @Body(ValidationPipe) dto: AdminReviewStatusDto,
+        @Req() req: any,
+    ) {
+        return this.reviewsService.adminHideLifecycleReview(
+            req.user.id,
+            reviewId,
+            dto.reason,
+            req,
+        );
+    }
+
+    @Patch(':reviewId/approve')
+    @RequirePermissions(ADMIN_PERMISSIONS.MODERATION_WRITE)
+    async approveLifecycleReview(
+        @Param('reviewId') reviewId: string,
+        @Req() req: any,
+    ) {
+        return this.reviewsService.adminApproveLifecycleReview(
+            req.user.id,
+            reviewId,
+            req,
+        );
+    }
+
+    @Patch(':reviewId/flag')
+    @RequirePermissions(ADMIN_PERMISSIONS.MODERATION_WRITE)
+    async flagLifecycleReview(
+        @Param('reviewId') reviewId: string,
+        @Body(ValidationPipe) dto: AdminReviewStatusDto,
+        @Req() req: any,
+    ) {
+        return this.reviewsService.adminFlagLifecycleReview(
+            req.user.id,
+            reviewId,
+            dto.reason,
             req,
         );
     }

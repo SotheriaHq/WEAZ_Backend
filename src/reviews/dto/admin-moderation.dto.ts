@@ -21,3 +21,10 @@ export class AdminModerationDto {
     @MaxLength(1000)
     moderatorNote?: string;
 }
+
+export class AdminReviewStatusDto {
+    @IsOptional()
+    @IsString()
+    @MaxLength(500)
+    reason?: string;
+}

@@ -24,7 +24,10 @@ export class ReviewsObservabilityService {
             | 'helpful-remove'
             | 'report'
             | 'brand-reply'
-            | 'moderation';
+            | 'moderation'
+            | 'lifecycle-create'
+            | 'lifecycle-update'
+            | 'lifecycle-delete';
         durationMs: number;
         outcome: 'success' | 'failure';
         detail?: string;

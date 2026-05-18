@@ -13,13 +13,18 @@ import {
     OrderStatus,
     Prisma,
     ProductReviewStatus,
+    ReviewPromptStatus,
+    ReviewStatus,
+    ReviewTargetType,
     DisputeStatus,
     FileType,
 } from '@prisma/client';
 import type { Request } from 'express';
 import {
     CreateProductReviewDto,
+    CreateReviewDto,
     UpdateProductReviewDto,
+    UpdateReviewDto,
     ReviewQueryDto,
     ReviewSortOption,
     ReviewFilterOption,
@@ -41,6 +46,10 @@ import { NotificationsService } from '../notifications/notifications.service';
 import { AdminAuditService } from '../admin/services/admin-audit.service';
 import { REVIEW_ERRORS, REVIEW_FEATURE_FLAGS } from './review.constants';
 import { ReviewsObservabilityService } from './reviews-observability.service';
+import { SystemConfigService } from '../admin/system-config/system-config.service';
+import { ReviewEligibilityService } from './review-eligibility.service';
+import { ReviewAggregateService } from './review-aggregate.service';
+import { REVIEW_CONFIG_KEYS } from './review.constants';
 import {
     buildCreatedAtCursor,
     buildCreatedAtCursorWhere,
@@ -64,6 +73,9 @@ export class ReviewsService {
         private readonly notifications: NotificationsService,
         private readonly adminAudit: AdminAuditService,
         private readonly observability: ReviewsObservabilityService,
+        private readonly systemConfig: SystemConfigService,
+        private readonly lifecycleEligibility: ReviewEligibilityService,
+        private readonly lifecycleAggregate: ReviewAggregateService,
     ) { }
 
     async getRuntimeFlags() {
@@ -704,8 +716,14 @@ export class ReviewsService {
                 break;
 
             case ModerationAction.DELETE:
-                await this.prisma.productReview.delete({
+                await this.prisma.productReview.update({
                     where: { id: reviewId },
+                    data: {
+                        status: ProductReviewStatus.HIDDEN_BY_ADMIN,
+                        hiddenReason: dto.reason ?? 'Admin removed review from public display',
+                        hiddenAt: now,
+                        hiddenByAdminId: adminId,
+                    },
                 });
                 this.enqueueAggregateRecalc(review.productId, review.brandId);
                 break;
@@ -731,7 +749,7 @@ export class ReviewsService {
                 newState: {
                     status:
                         dto.action === ModerationAction.DELETE
-                            ? 'DELETED'
+                            ? ProductReviewStatus.HIDDEN_BY_ADMIN
                             : dto.action === ModerationAction.KEEP
                               ? previousStatus
                               : dto.action === ModerationAction.HIDE
@@ -749,7 +767,7 @@ export class ReviewsService {
             detail: dto.action,
         });
 
-        return { status: dto.action === ModerationAction.DELETE ? 'DELETED' : 'OK' };
+        return { status: 'OK' };
     }
 
     // ──────────────────────────────────────────────
@@ -1110,9 +1128,425 @@ export class ReviewsService {
         return summary;
     }
 
+    async getReviewPrompts(userId: string) {
+        const prompts = await this.prisma.reviewPrompt.findMany({
+            where: {
+                buyerId: userId,
+                status: {
+                    in: [ReviewPromptStatus.PENDING, ReviewPromptStatus.SHOWN],
+                },
+            },
+            orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+        });
+
+        const pendingIds = prompts
+            .filter((prompt) => prompt.status === ReviewPromptStatus.PENDING)
+            .map((prompt) => prompt.id);
+
+        if (pendingIds.length > 0) {
+            const shownAt = new Date();
+            await this.prisma.reviewPrompt.updateMany({
+                where: { id: { in: pendingIds }, buyerId: userId },
+                data: {
+                    status: ReviewPromptStatus.SHOWN,
+                    shownAt,
+                },
+            });
+
+            return prompts.map((prompt) =>
+                pendingIds.includes(prompt.id)
+                    ? { ...prompt, status: ReviewPromptStatus.SHOWN, shownAt }
+                    : prompt,
+            );
+        }
+
+        return prompts;
+    }
+
+    async getReviewEligibility(
+        userId: string,
+        query: { orderId?: string; customOrderId?: string },
+    ) {
+        if (query.orderId) {
+            return this.lifecycleEligibility.getEligibilityForOrder(
+                userId,
+                query.orderId,
+            );
+        }
+
+        if (query.customOrderId) {
+            return this.lifecycleEligibility.getEligibilityForCustomOrder(
+                userId,
+                query.customOrderId,
+            );
+        }
+
+        throw new BadRequestException('orderId or customOrderId is required');
+    }
+
+    async submitLifecycleReview(userId: string, dto: CreateReviewDto) {
+        const startedAt = Date.now();
+        await this.assertFeatureEnabled(REVIEW_FEATURE_FLAGS.CAPTURE);
+        const target = await this.lifecycleEligibility.assertEligibleForSubmission(
+            userId,
+            dto,
+        );
+        const now = new Date();
+        const editWindowHours = await this.getLifecycleEditWindowHours();
+        const editWindowExpiresAt = new Date(
+            now.getTime() + editWindowHours * 60 * 60 * 1000,
+        );
+        const status = (await this.featureFlags.isEnabled(
+            REVIEW_FEATURE_FLAGS.MODERATION_REQUIRED,
+        ))
+            ? ReviewStatus.PENDING_MODERATION
+            : ReviewStatus.APPROVED;
+
+        const review = await this.prisma.$transaction(async (tx) => {
+            const created = await tx.review.create({
+                data: {
+                    reviewerId: userId,
+                    brandId: target.brandId ?? null,
+                    productId: target.productId ?? null,
+                    collectionId: target.collectionId ?? null,
+                    legacyCollectionId: target.legacyCollectionId ?? null,
+                    designId: target.designId ?? null,
+                    orderId: target.orderId ?? null,
+                    orderItemId: target.orderItemId ?? null,
+                    customOrderId: target.customOrderId ?? null,
+                    targetType: target.targetType,
+                    rating: dto.rating,
+                    satisfaction: dto.satisfaction,
+                    reviewText: dto.reviewText?.trim() || null,
+                    verifiedPurchase: true,
+                    status,
+                    editWindowExpiresAt,
+                },
+            });
+
+            if (target.promptId) {
+                await tx.reviewPrompt.update({
+                    where: { id: target.promptId },
+                    data: {
+                        status: ReviewPromptStatus.SUBMITTED,
+                        submittedAt: now,
+                        submittedReviewId: created.id,
+                    },
+                });
+            }
+
+            return created;
+        });
+
+        this.observability.recordWrite({
+            action: 'lifecycle-create',
+            durationMs: Date.now() - startedAt,
+            outcome: 'success',
+            detail: target.targetType,
+        });
+
+        return this.mapLifecycleReview(review, userId);
+    }
+
+    async updateLifecycleReview(
+        userId: string,
+        reviewId: string,
+        dto: UpdateReviewDto,
+    ) {
+        const startedAt = Date.now();
+        await this.assertFeatureEnabled(REVIEW_FEATURE_FLAGS.CAPTURE);
+        const review = await this.prisma.review.findUnique({
+            where: { id: reviewId },
+        });
+
+        if (!review || review.status === ReviewStatus.DELETED) {
+            throw new NotFoundException(REVIEW_ERRORS.NOT_FOUND);
+        }
+
+        if (review.reviewerId !== userId) {
+            throw new ForbiddenException(REVIEW_ERRORS.FORBIDDEN);
+        }
+
+        if (review.status === ReviewStatus.HIDDEN) {
+            throw new ForbiddenException(REVIEW_ERRORS.FORBIDDEN);
+        }
+
+        if (Date.now() >= review.editWindowExpiresAt.getTime()) {
+            throw new ForbiddenException('REVIEW_EDIT_WINDOW_EXPIRED');
+        }
+
+        const updated = await this.prisma.review.update({
+            where: { id: reviewId },
+            data: {
+                ...(dto.rating !== undefined ? { rating: dto.rating } : {}),
+                ...(dto.satisfaction !== undefined
+                    ? { satisfaction: dto.satisfaction }
+                    : {}),
+                ...(dto.reviewText !== undefined
+                    ? { reviewText: dto.reviewText?.trim() || null }
+                    : {}),
+                editedAt: new Date(),
+            },
+        });
+
+        this.observability.recordWrite({
+            action: 'lifecycle-update',
+            durationMs: Date.now() - startedAt,
+            outcome: 'success',
+        });
+
+        return this.mapLifecycleReview(updated, userId);
+    }
+
+    async deleteLifecycleReview(userId: string, reviewId: string) {
+        const startedAt = Date.now();
+        await this.assertFeatureEnabled(REVIEW_FEATURE_FLAGS.CAPTURE);
+        const review = await this.prisma.review.findUnique({
+            where: { id: reviewId },
+        });
+
+        if (!review || review.status === ReviewStatus.DELETED) {
+            throw new NotFoundException(REVIEW_ERRORS.NOT_FOUND);
+        }
+
+        if (review.reviewerId !== userId) {
+            throw new ForbiddenException(REVIEW_ERRORS.FORBIDDEN);
+        }
+
+        await this.prisma.review.update({
+            where: { id: reviewId },
+            data: {
+                status: ReviewStatus.DELETED,
+                deletedAt: new Date(),
+                deletedById: userId,
+            },
+        });
+
+        this.observability.recordWrite({
+            action: 'lifecycle-delete',
+            durationMs: Date.now() - startedAt,
+            outcome: 'success',
+        });
+    }
+
+    async skipReviewPrompt(userId: string, promptId: string) {
+        const prompt = await this.prisma.reviewPrompt.findUnique({
+            where: { id: promptId },
+        });
+
+        if (!prompt || prompt.buyerId !== userId) {
+            throw new NotFoundException('Review prompt not found');
+        }
+
+        if (prompt.status === ReviewPromptStatus.SUBMITTED) {
+            return prompt;
+        }
+
+        return this.prisma.reviewPrompt.update({
+            where: { id: promptId },
+            data: {
+                status: ReviewPromptStatus.SKIPPED,
+                skippedAt: new Date(),
+            },
+        });
+    }
+
+    async getLifecycleProductReviews(productId: string, query: ReviewQueryDto) {
+        await this.assertFeatureEnabled(REVIEW_FEATURE_FLAGS.PUBLIC_PRODUCT);
+        const limit = query.limit ?? 20;
+        const [items, summary] = await Promise.all([
+            this.lifecycleAggregate.listPublicReviews({ productId }, limit),
+            this.lifecycleAggregate.getProductSummary(productId),
+        ]);
+
+        return { items, summary, nextCursor: null };
+    }
+
+    async getLifecycleCollectionReviews(
+        collectionId: string,
+        query: ReviewQueryDto,
+    ) {
+        await this.assertFeatureEnabled(REVIEW_FEATURE_FLAGS.PUBLIC_COLLECTION);
+        const limit = query.limit ?? 20;
+        const [items, summary] = await Promise.all([
+            this.lifecycleAggregate.listPublicReviews({ collectionId }, limit),
+            this.lifecycleAggregate.getCollectionSummary(collectionId),
+        ]);
+
+        return { items, summary, nextCursor: null };
+    }
+
+    async getLifecycleDesignReviews(designId: string, query: ReviewQueryDto) {
+        await this.assertFeatureEnabled(REVIEW_FEATURE_FLAGS.PUBLIC_DESIGN);
+        const limit = query.limit ?? 20;
+        const [items, summary] = await Promise.all([
+            this.lifecycleAggregate.listPublicReviews({ designId }, limit),
+            this.lifecycleAggregate.getDesignSummary(designId),
+        ]);
+
+        return { items, summary, nextCursor: null };
+    }
+
+    async getLifecycleBrandSummary(brandId: string) {
+        await this.assertFeatureEnabled(REVIEW_FEATURE_FLAGS.PUBLIC_BRAND);
+        return this.lifecycleAggregate.getBrandSummary(brandId);
+    }
+
+    async adminHideLifecycleReview(
+        adminId: string,
+        reviewId: string,
+        reason?: string,
+        req?: Request,
+    ) {
+        return this.adminUpdateLifecycleReviewStatus(
+            adminId,
+            reviewId,
+            ReviewStatus.HIDDEN,
+            reason,
+            req,
+        );
+    }
+
+    async adminApproveLifecycleReview(
+        adminId: string,
+        reviewId: string,
+        req?: Request,
+    ) {
+        return this.adminUpdateLifecycleReviewStatus(
+            adminId,
+            reviewId,
+            ReviewStatus.APPROVED,
+            null,
+            req,
+        );
+    }
+
+    async adminFlagLifecycleReview(
+        adminId: string,
+        reviewId: string,
+        reason?: string,
+        req?: Request,
+    ) {
+        return this.adminUpdateLifecycleReviewStatus(
+            adminId,
+            reviewId,
+            ReviewStatus.FLAGGED,
+            reason,
+            req,
+        );
+    }
+
+    private async adminUpdateLifecycleReviewStatus(
+        adminId: string,
+        reviewId: string,
+        status: ReviewStatus,
+        reason?: string | null,
+        req?: Request,
+    ) {
+        await this.assertFeatureEnabled(REVIEW_FEATURE_FLAGS.ADMIN_MODERATION);
+        const review = await this.prisma.review.findUnique({
+            where: { id: reviewId },
+        });
+
+        if (!review || review.status === ReviewStatus.DELETED) {
+            throw new NotFoundException(REVIEW_ERRORS.NOT_FOUND);
+        }
+
+        const updated = await this.prisma.review.update({
+            where: { id: reviewId },
+            data: {
+                status,
+                hiddenReason:
+                    status === ReviewStatus.APPROVED ? null : reason ?? null,
+            },
+        });
+
+        await this.adminAudit.log(
+            {
+                actorUserId: adminId,
+                action: AdminAuditAction.ADMIN_MODERATION_ITEM_UPDATE,
+                targetType: 'Review',
+                targetId: reviewId,
+                metadata: { reason: reason ?? null },
+                previousState: { status: review.status },
+                newState: { status },
+            },
+            req,
+        );
+
+        return this.mapLifecycleReview(updated, adminId);
+    }
+
     // ──────────────────────────────────────────────
     // PRIVATE HELPERS
     // ──────────────────────────────────────────────
+
+    private mapLifecycleReview(
+        review: {
+            id: string;
+            reviewerId: string;
+            brandId: string | null;
+            productId: string | null;
+            collectionId: string | null;
+            legacyCollectionId: string | null;
+            designId: string | null;
+            orderId: string | null;
+            orderItemId: string | null;
+            customOrderId: string | null;
+            targetType: ReviewTargetType;
+            rating: number;
+            satisfaction: string;
+            reviewText: string | null;
+            verifiedPurchase: boolean;
+            status: ReviewStatus;
+            editWindowExpiresAt: Date;
+            editedAt: Date | null;
+            deletedAt: Date | null;
+            createdAt: Date;
+            updatedAt: Date;
+        },
+        viewerId?: string,
+    ) {
+        const isOwner = Boolean(viewerId && review.reviewerId === viewerId);
+        const canEdit =
+            isOwner &&
+            review.status !== ReviewStatus.DELETED &&
+            review.status !== ReviewStatus.HIDDEN &&
+            Date.now() < review.editWindowExpiresAt.getTime();
+
+        return {
+            id: review.id,
+            reviewerId: review.reviewerId,
+            brandId: review.brandId,
+            productId: review.productId,
+            collectionId: review.collectionId,
+            legacyCollectionId: review.legacyCollectionId,
+            designId: review.designId,
+            orderId: review.orderId,
+            orderItemId: review.orderItemId,
+            customOrderId: review.customOrderId,
+            targetType: review.targetType,
+            rating: review.rating,
+            satisfaction: review.satisfaction,
+            reviewText: review.reviewText,
+            verifiedPurchase: review.verifiedPurchase,
+            status: review.status,
+            editWindowExpiresAt: review.editWindowExpiresAt,
+            editedAt: review.editedAt,
+            deletedAt: review.deletedAt,
+            createdAt: review.createdAt,
+            updatedAt: review.updatedAt,
+            canEdit,
+            canDelete: isOwner && review.status !== ReviewStatus.DELETED,
+        };
+    }
+
+    private async getLifecycleEditWindowHours(): Promise<number> {
+        const value = await this.systemConfig.getNumber(
+            REVIEW_CONFIG_KEYS.EDIT_WINDOW_HOURS,
+        );
+        return Number.isFinite(value) && value > 0 ? value : 24;
+    }
 
     private async checkDisputeGate(orderItemId: string): Promise<void> {
         const openDispute = await this.prisma.sizingDispute.findFirst({

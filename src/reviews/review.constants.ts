@@ -17,4 +17,15 @@ export const REVIEW_FEATURE_FLAGS = {
     BRAND_REPLIES: 'reviews.v1.brand-replies',
     ADMIN_MODERATION: 'reviews.v1.admin-moderation',
     REMINDERS: 'reviews.v1.reminders',
+    CAPTURE: 'reviews.capture.enabled',
+    PROMPT_AFTER_COMPLETION: 'reviews.prompt.afterCompletion.enabled',
+    PUBLIC_PRODUCT: 'reviews.publicDisplay.product.enabled',
+    PUBLIC_COLLECTION: 'reviews.publicDisplay.collection.enabled',
+    PUBLIC_DESIGN: 'reviews.publicDisplay.design.enabled',
+    PUBLIC_BRAND: 'reviews.publicDisplay.brand.enabled',
+    MODERATION_REQUIRED: 'reviews.moderation.required',
+} as const;
+
+export const REVIEW_CONFIG_KEYS = {
+    EDIT_WINDOW_HOURS: 'reviews.editWindowHours',
 } as const;
