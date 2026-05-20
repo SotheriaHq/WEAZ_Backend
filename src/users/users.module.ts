@@ -3,16 +3,21 @@ import { UserProfileController } from './user-profile.controller';
 import { UserProfileService } from './user-profile.service';
 import { SavedItemsController } from './saved-items.controller';
 import { SavedItemsService } from './saved-items.service';
-import { PatchingController, UserPatchesController, PatchStatusBatchController } from './patching.controller';
+import {
+  PatchingController,
+  UserPatchesController,
+  PatchStatusBatchController,
+} from './patching.controller';
 import { PatchingService } from './patching.service';
 import { PrismaModule } from '../prisma/prisma.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { SizeFitController } from './size-fit.controller';
 import { SizeFitService } from './size-fit.service';
 import { SizeFitReminderService } from './size-fit-reminder.service';
+import { SizingModule } from 'src/sizing/sizing.module';
 
 @Module({
-  imports: [PrismaModule, NotificationsModule],
+  imports: [PrismaModule, NotificationsModule, SizingModule],
   controllers: [
     UserProfileController,
     SavedItemsController,
@@ -28,6 +33,11 @@ import { SizeFitReminderService } from './size-fit-reminder.service';
     SizeFitService,
     SizeFitReminderService,
   ],
-  exports: [UserProfileService, SavedItemsService, PatchingService, SizeFitService],
+  exports: [
+    UserProfileService,
+    SavedItemsService,
+    PatchingService,
+    SizeFitService,
+  ],
 })
 export class UsersModule {}

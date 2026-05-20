@@ -73,7 +73,9 @@ import {
   paymentUnifiedInitLockKey,
 } from 'src/common/runtime/payment-runtime.keys';
 
-type PaymentAttemptRecord = Awaited<ReturnType<PrismaService['paymentAttempt']['findUnique']>>;
+type PaymentAttemptRecord = Awaited<
+  ReturnType<PrismaService['paymentAttempt']['findUnique']>
+>;
 
 type WebhookContext = {
   headers: Record<string, string | string[] | undefined>;
@@ -177,6 +179,7 @@ type UnifiedCheckoutStandardLineDraft = {
   sizingMode: string;
   requiredMeasurementKeys: string[];
   sizeFitData: Record<string, any> | null;
+  sizeRecommendationSnapshot: Record<string, any> | null;
   variantId: string | null;
   reserveInventory: boolean;
   sourceProduct: {
@@ -296,7 +299,9 @@ export class PaymentService implements OnModuleInit {
   ) {}
 
   onModuleInit(): void {
-    const runtimeEnv = String(process.env.NODE_ENV ?? '').trim().toLowerCase();
+    const runtimeEnv = String(process.env.NODE_ENV ?? '')
+      .trim()
+      .toLowerCase();
     const isProduction = runtimeEnv === 'production';
 
     if (!isProduction) {
@@ -396,415 +401,445 @@ export class PaymentService implements OnModuleInit {
           orderBy: { createdAt: 'desc' },
         });
 
-    if (existingSession?.paymentAttempt) {
-      let existingAttempt = existingSession.paymentAttempt;
-      if (
-        ACTIVE_UNIFIED_ATTEMPT_STATUSES.includes(
-          existingAttempt.status as PaymentAttemptStatus,
-        ) &&
-        existingAttempt.expiresAt &&
-        existingAttempt.expiresAt <= now
-      ) {
-        existingAttempt = await this.applyAttemptStatus(
-          existingAttempt.reference,
-          userId,
-          'EXPIRED',
-          'verify',
-          {
-            eventPayload: {
-              reason: 'UNIFIED_ATTEMPT_REUSED_AFTER_EXPIRY',
-            },
-            responseSnapshotPatch: {
-              expiredAt: new Date().toISOString(),
-            },
-          },
-        );
-      }
-
-      this.logger.log(
-        `Unified checkout replayed existing idempotent session ${existingSession.id} for ${existingAttempt.reference} (corr=${correlationId})`,
-      );
-
-      return {
-        ...this.buildInitResultFromAttempt(existingAttempt),
-        checkoutSessionId: existingSession.id,
-        summary: this.asObject(existingSession.summaryJson) as PaymentInitResult['summary'],
-        blockedLines:
-          (this.asObject(existingSession.blockedLinesJson).items as PaymentInitResult['blockedLines']) ??
-          [],
-      };
-    }
-
-    const activeSession = await this.prisma.checkoutSession.findFirst({
-      where: {
-        buyerId: userId,
-        status: {
-          in: [
-            CheckoutSessionStatus.PENDING_PAYMENT,
-            CheckoutSessionStatus.PAYMENT_PROCESSING,
-          ],
-        },
-      },
-      include: {
-        paymentAttempt: true,
-      },
-      orderBy: { createdAt: 'desc' },
-    });
-
-    if (activeSession?.paymentAttempt) {
-      let activeAttempt = activeSession.paymentAttempt;
-      const isActiveStatus = ACTIVE_UNIFIED_ATTEMPT_STATUSES.includes(
-        activeAttempt.status as PaymentAttemptStatus,
-      );
-
-      if (isActiveStatus) {
-        if (activeAttempt.expiresAt && activeAttempt.expiresAt <= now) {
-          activeAttempt = await this.applyAttemptStatus(
-            activeAttempt.reference,
-            userId,
-            'EXPIRED',
-            'verify',
-            {
-              eventPayload: {
-                reason: 'UNIFIED_ATTEMPT_REUSED_AFTER_EXPIRY',
+        if (existingSession?.paymentAttempt) {
+          let existingAttempt = existingSession.paymentAttempt;
+          if (
+            ACTIVE_UNIFIED_ATTEMPT_STATUSES.includes(
+              existingAttempt.status as PaymentAttemptStatus,
+            ) &&
+            existingAttempt.expiresAt &&
+            existingAttempt.expiresAt <= now
+          ) {
+            existingAttempt = await this.applyAttemptStatus(
+              existingAttempt.reference,
+              userId,
+              'EXPIRED',
+              'verify',
+              {
+                eventPayload: {
+                  reason: 'UNIFIED_ATTEMPT_REUSED_AFTER_EXPIRY',
+                },
+                responseSnapshotPatch: {
+                  expiredAt: new Date().toISOString(),
+                },
               },
-              responseSnapshotPatch: {
-                expiredAt: new Date().toISOString(),
-              },
-            },
-          );
-        } else {
+            );
+          }
+
           this.logger.log(
-            `Unified checkout reused active session ${activeSession.id} for ${activeAttempt.reference} (corr=${correlationId})`,
+            `Unified checkout replayed existing idempotent session ${existingSession.id} for ${existingAttempt.reference} (corr=${correlationId})`,
           );
 
           return {
-            ...this.buildInitResultFromAttempt(activeAttempt),
-            checkoutSessionId: activeSession.id,
-            summary: this.asObject(activeSession.summaryJson) as PaymentInitResult['summary'],
+            ...this.buildInitResultFromAttempt(existingAttempt),
+            checkoutSessionId: existingSession.id,
+            summary: this.asObject(
+              existingSession.summaryJson,
+            ) as PaymentInitResult['summary'],
             blockedLines:
-              (this.asObject(activeSession.blockedLinesJson)
-                .items as PaymentInitResult['blockedLines']) ??
-              [],
+              (this.asObject(existingSession.blockedLinesJson)
+                .items as PaymentInitResult['blockedLines']) ?? [],
           };
         }
-      }
-    }
 
-    const [standardLineDrafts, customLineResult] = await Promise.all([
-      this.loadUnifiedStandardLineDrafts(userId),
-      this.loadUnifiedCustomLineDrafts(userId),
-    ]);
-
-    const customLineDrafts = customLineResult.lines;
-    const blockedCustomLines = customLineResult.blocked;
-
-    if (standardLineDrafts.length === 0 && customLineDrafts.length === 0) {
-      throw new BadRequestException(
-        blockedCustomLines.length > 0
-          ? 'No payable lines are ready. Re-lock expired custom lines before retrying checkout.'
-          : 'Your bag is empty. Add at least one item before checkout.',
-      );
-    }
-
-    const currencies = [
-      ...standardLineDrafts.map((line) => line.currency),
-      ...customLineDrafts.map((line) => line.currency),
-    ];
-    this.ensureSingleCurrency(currencies);
-    const currency = String(currencies[0] ?? 'NGN').trim().toUpperCase();
-
-    const standardSubtotal = this.roundMoney(
-      standardLineDrafts.reduce((sum, line) => sum + line.lineTotal, 0),
-    );
-    const customSubtotal = this.roundMoney(
-      customLineDrafts.reduce((sum, line) => sum + line.lineTotal, 0),
-    );
-    const distinctStandardBrands = new Set(
-      standardLineDrafts.map((line) => line.brandId),
-    ).size;
-    const shippingCost =
-      distinctStandardBrands > 0
-        ? this.roundMoney(
-            this.resolveShippingCostForState(shippingState) * distinctStandardBrands,
-          )
-        : 0;
-    const discountAmount = 0;
-    const subtotal = this.roundMoney(standardSubtotal + customSubtotal);
-    const grandTotal = this.roundMoney(subtotal + shippingCost - discountAmount);
-
-    const validatedCardSession = await this.resolveCardValidationSessionForInitialize({
-      paymentMethod: dto.paymentMethod,
-      validationSessionId: dto.validationSessionId,
-      userId,
-      gatewayPaymentData,
-      sanitizedPaymentData: paymentData,
-    });
-
-    const settlementQuote = await this.fxRateService.quoteAndPersist({
-      from: currency,
-      amount: grandTotal,
-      actorId: userId,
-    });
-    const reference = `TH-UC-${Date.now()}-${uuidv4().slice(0, 8)}`;
-    const gatewayResult = await this.initializeGateway(
-      dto.paymentMethod,
-      reference,
-      gatewayPaymentData,
-      grandTotal,
-      currency,
-      callbackBaseUrl,
-      { buyerId: userId },
-    );
-    const attemptExpiresAt = gatewayResult.expiresAt
-      ? new Date(gatewayResult.expiresAt)
-      : new Date(Date.now() + 30 * 60 * 1000);
-
-    const created = await this.prisma.$transaction(async (tx) => {
-      await this.consumeCardValidationSessionForInitialize(
-        tx,
-        userId,
-        validatedCardSession,
-      );
-
-      const checkoutSession = await tx.checkoutSession.create({
-        data: {
-          buyerId: userId,
-          status: CheckoutSessionStatus.PAYMENT_PROCESSING,
-          idempotencyKey,
-          paymentMethod: dto.paymentMethod,
-          shippingAddressJson: shippingAddress as Prisma.InputJsonValue,
-          contactInfoJson: contactInfo as Prisma.InputJsonValue,
-          customerName,
-          currency,
-          subtotal: new Prisma.Decimal(subtotal.toFixed(2)),
-          shippingCost: new Prisma.Decimal(shippingCost.toFixed(2)),
-          discountAmount: new Prisma.Decimal(discountAmount.toFixed(2)),
-          grandTotal: new Prisma.Decimal(grandTotal.toFixed(2)),
-          summaryJson: {
-            items: [
-              ...standardLineDrafts.map((line) => ({
-                name: line.productName,
-                quantity: line.quantity,
-                price: line.unitPrice,
-              })),
-              ...customLineDrafts.map((line) => ({
-                name: `${line.sourceTitle} (Custom)`,
-                quantity: 1,
-                price: line.unitPrice,
-              })),
-            ],
-            subtotal,
-            shippingCost,
-            discount: discountAmount,
-            grandTotal,
-            shippingName: customerName,
-            shippingCity: String(shippingAddress.city ?? ''),
-            shippingState,
-          } as Prisma.InputJsonValue,
-          blockedLinesJson: {
-            items: blockedCustomLines,
-          } as Prisma.InputJsonValue,
-          expiresAt: attemptExpiresAt,
-        },
-      });
-
-      for (let index = 0; index < standardLineDrafts.length; index += 1) {
-        const line = standardLineDrafts[index];
-        const createdLine = await tx.checkoutSessionLine.create({
-          data: {
-            checkoutSessionId: checkoutSession.id,
-            lineType: CheckoutSessionLineType.STANDARD_ITEM,
-            status: line.reserveInventory
-              ? CheckoutSessionLineStatus.RESERVED
-              : CheckoutSessionLineStatus.PENDING,
-            lineOrder: index,
-            brandId: line.brandId,
-            productId: line.productId,
-            cartItemId: line.cartItemId,
-            quantity: line.quantity,
-            unitPrice: new Prisma.Decimal(line.unitPrice.toFixed(2)),
-            lineTotal: new Prisma.Decimal(line.lineTotal.toFixed(2)),
-            currency: line.currency,
-            selectedSize: line.selectedSize,
-            selectedColor: line.selectedColor,
-            itemSnapshotJson: {
-              name: line.productName,
-              thumbnail: line.thumbnail,
-              sizingMode: line.sizingMode,
-              requiredMeasurementKeys: line.requiredMeasurementKeys,
-              sizeFitData: line.sizeFitData,
-            } as Prisma.InputJsonValue,
-          },
-        });
-
-        await this.reserveUnifiedStandardLineInventory(
-          tx,
-          checkoutSession.id,
-          createdLine.id,
-          line,
-          attemptExpiresAt,
-        );
-      }
-
-      const createdCustomCheckoutLines: Array<{
-        checkoutIntentId: string;
-        checkoutSessionLineId: string;
-        sessionId: string;
-      }> = [];
-
-      for (let index = 0; index < customLineDrafts.length; index += 1) {
-        const line = customLineDrafts[index];
-        const createdCustomLine = await tx.checkoutSessionLine.create({
-          data: {
-            checkoutSessionId: checkoutSession.id,
-            lineType: CheckoutSessionLineType.CUSTOM_ORDER,
-            status: CheckoutSessionLineStatus.PENDING,
-            lineOrder: standardLineDrafts.length + index,
-            checkoutIntentId: line.checkoutIntentId,
-            quantity: 1,
-            unitPrice: new Prisma.Decimal(line.unitPrice.toFixed(2)),
-            lineTotal: new Prisma.Decimal(line.lineTotal.toFixed(2)),
-            currency: line.currency,
-            itemSnapshotJson: {
-              sourceType: line.sourceType,
-              sourceId: line.sourceId,
-              sourceTitle: line.sourceTitle,
-              sourcePrimaryMediaUrl: line.sourcePrimaryMediaUrl,
-              sourceBrandName: line.sourceBrandName,
-            } as Prisma.InputJsonValue,
-            metadataJson: {
-              sessionId: line.sessionId,
-            } as Prisma.InputJsonValue,
-          },
-        });
-
-        createdCustomCheckoutLines.push({
-          checkoutIntentId: line.checkoutIntentId,
-          checkoutSessionLineId: createdCustomLine.id,
-          sessionId: line.sessionId,
-        });
-      }
-
-      const createdAttempt = await tx.paymentAttempt.create({
-        data: {
-          buyerId: userId,
-          subjectType: PaymentSubjectType.UNIFIED_CHECKOUT,
-          correlationId,
-          checkoutSessionId: checkoutSession.id,
-          checkoutIntentId:
-            customLineDrafts.length === 1 ? customLineDrafts[0].checkoutIntentId : null,
-          savedPaymentMethodId: validatedCardSession?.savedPaymentMethodId ?? null,
-          cardValidationSessionId: validatedCardSession?.canonicalSessionId ?? null,
-          provider: gatewayResult.gateway,
-          providerMode,
-          providerReference: gatewayResult.providerReference,
-          providerTransactionId: gatewayResult.providerTransactionId,
-          providerAccessCode: gatewayResult.providerAccessCode,
-          providerChannel: gatewayResult.providerChannel ?? gatewayResult.channel,
-          paymentMethod: dto.paymentMethod,
-          channel: gatewayResult.channel,
-          status: gatewayResult.status,
-          reference,
-          idempotencyKey,
-          callbackUrl: gatewayResult.callbackUrl ?? callbackBaseUrl,
-          authorizationUrl: gatewayResult.authorizationUrl,
-          amount: grandTotal,
-          currency,
-          settlementCurrency: this.fxRateService.getBaseCurrency(),
-          settlementAmount: settlementQuote.convertedAmount,
-          exchangeRateSnapshotId: settlementQuote.snapshot.id,
-          orderIds: [],
-          unifiedCheckoutManifestJson: {
-            standardLineCount: standardLineDrafts.length,
-            customLineCount: customLineDrafts.length,
-            blockedLines: blockedCustomLines,
-          } as Prisma.InputJsonValue,
-          requestSnapshot: paymentData as Prisma.InputJsonValue,
-          responseSnapshot:
-            (gatewayResult.responseSnapshot ?? null) as unknown as Prisma.InputJsonValue,
-          nextAction: (gatewayResult.nextAction ?? null) as unknown as Prisma.InputJsonValue,
-          bankAccount: (gatewayResult.bankAccount ?? null) as unknown as Prisma.InputJsonValue,
-          expiresAt: gatewayResult.expiresAt ? new Date(gatewayResult.expiresAt) : null,
-        },
-      });
-
-      const uniqueCustomIntentLinks = Array.from(
-        new Map(
-          createdCustomCheckoutLines.map((line) => [line.checkoutIntentId, line]),
-        ).values(),
-      );
-
-      if (uniqueCustomIntentLinks.length > 0) {
-        await tx.paymentAttemptCheckoutIntentLink.createMany({
-          data: uniqueCustomIntentLinks.map((line) => ({
-            id: uuidv4(),
-            paymentAttemptId: createdAttempt.id,
-            checkoutIntentId: line.checkoutIntentId,
-            checkoutSessionId: checkoutSession.id,
-            checkoutSessionLineId: line.checkoutSessionLineId,
-            status: 'PENDING',
-            metadataJson: {
-              customCheckoutSessionId: line.sessionId,
-            } as Prisma.InputJsonValue,
-          })),
-          skipDuplicates: true,
-        });
-      }
-
-      if (customLineDrafts.length > 0) {
-        await tx.customOrderCheckoutSession.updateMany({
+        const activeSession = await this.prisma.checkoutSession.findFirst({
           where: {
             buyerId: userId,
-            customOrderId: null,
-            checkoutIntentId: {
-              in: customLineDrafts.map((line) => line.checkoutIntentId),
+            status: {
+              in: [
+                CheckoutSessionStatus.PENDING_PAYMENT,
+                CheckoutSessionStatus.PAYMENT_PROCESSING,
+              ],
             },
           },
-          data: {
-            status: CustomOrderCheckoutStatus.PAYMENT_INITIATED,
-            paymentInitiatedAt: new Date(),
-            lastAttemptId: createdAttempt.id,
-            lastAttemptReference: createdAttempt.reference,
-            lastAttemptStatus: createdAttempt.status,
-            attemptsCount: { increment: 1 },
-            resumePath: this.buildPaymentReturnPath(
-              createdAttempt.reference,
-              gatewayResult.gateway,
-            ),
-            abandonedAt: null,
+          include: {
+            paymentAttempt: true,
           },
+          orderBy: { createdAt: 'desc' },
         });
-      }
 
-      await tx.paymentEvent.create({
-        data: {
-          paymentAttemptId: createdAttempt.id,
-          type: 'INITIALIZED',
-          source: providerMode === 'mock' ? 'mock-initialize' : 'initialize',
-          correlationId,
-          payload: {
+        if (activeSession?.paymentAttempt) {
+          let activeAttempt = activeSession.paymentAttempt;
+          const isActiveStatus = ACTIVE_UNIFIED_ATTEMPT_STATUSES.includes(
+            activeAttempt.status as PaymentAttemptStatus,
+          );
+
+          if (isActiveStatus) {
+            if (activeAttempt.expiresAt && activeAttempt.expiresAt <= now) {
+              activeAttempt = await this.applyAttemptStatus(
+                activeAttempt.reference,
+                userId,
+                'EXPIRED',
+                'verify',
+                {
+                  eventPayload: {
+                    reason: 'UNIFIED_ATTEMPT_REUSED_AFTER_EXPIRY',
+                  },
+                  responseSnapshotPatch: {
+                    expiredAt: new Date().toISOString(),
+                  },
+                },
+              );
+            } else {
+              this.logger.log(
+                `Unified checkout reused active session ${activeSession.id} for ${activeAttempt.reference} (corr=${correlationId})`,
+              );
+
+              return {
+                ...this.buildInitResultFromAttempt(activeAttempt),
+                checkoutSessionId: activeSession.id,
+                summary: this.asObject(
+                  activeSession.summaryJson,
+                ) as PaymentInitResult['summary'],
+                blockedLines:
+                  (this.asObject(activeSession.blockedLinesJson)
+                    .items as PaymentInitResult['blockedLines']) ?? [],
+              };
+            }
+          }
+        }
+
+        const [standardLineDrafts, customLineResult] = await Promise.all([
+          this.loadUnifiedStandardLineDrafts(userId),
+          this.loadUnifiedCustomLineDrafts(userId),
+        ]);
+
+        const customLineDrafts = customLineResult.lines;
+        const blockedCustomLines = customLineResult.blocked;
+
+        if (standardLineDrafts.length === 0 && customLineDrafts.length === 0) {
+          throw new BadRequestException(
+            blockedCustomLines.length > 0
+              ? 'No payable lines are ready. Re-lock expired custom lines before retrying checkout.'
+              : 'Your bag is empty. Add at least one item before checkout.',
+          );
+        }
+
+        const currencies = [
+          ...standardLineDrafts.map((line) => line.currency),
+          ...customLineDrafts.map((line) => line.currency),
+        ];
+        this.ensureSingleCurrency(currencies);
+        const currency = String(currencies[0] ?? 'NGN')
+          .trim()
+          .toUpperCase();
+
+        const standardSubtotal = this.roundMoney(
+          standardLineDrafts.reduce((sum, line) => sum + line.lineTotal, 0),
+        );
+        const customSubtotal = this.roundMoney(
+          customLineDrafts.reduce((sum, line) => sum + line.lineTotal, 0),
+        );
+        const distinctStandardBrands = new Set(
+          standardLineDrafts.map((line) => line.brandId),
+        ).size;
+        const shippingCost =
+          distinctStandardBrands > 0
+            ? this.roundMoney(
+                this.resolveShippingCostForState(shippingState) *
+                  distinctStandardBrands,
+              )
+            : 0;
+        const discountAmount = 0;
+        const subtotal = this.roundMoney(standardSubtotal + customSubtotal);
+        const grandTotal = this.roundMoney(
+          subtotal + shippingCost - discountAmount,
+        );
+
+        const validatedCardSession =
+          await this.resolveCardValidationSessionForInitialize({
             paymentMethod: dto.paymentMethod,
-            gateway: gatewayResult.gateway,
-            channel: gatewayResult.channel,
-            status: gatewayResult.status,
-            subjectType: PaymentSubjectType.UNIFIED_CHECKOUT,
-            checkoutSessionId: checkoutSession.id,
-            correlationId,
-          },
-        },
-      });
+            validationSessionId: dto.validationSessionId,
+            userId,
+            gatewayPaymentData,
+            sanitizedPaymentData: paymentData,
+          });
 
-      return {
-        attempt: createdAttempt,
-        checkoutSession,
-      };
-    });
+        const settlementQuote = await this.fxRateService.quoteAndPersist({
+          from: currency,
+          amount: grandTotal,
+          actorId: userId,
+        });
+        const reference = `TH-UC-${Date.now()}-${uuidv4().slice(0, 8)}`;
+        const gatewayResult = await this.initializeGateway(
+          dto.paymentMethod,
+          reference,
+          gatewayPaymentData,
+          grandTotal,
+          currency,
+          callbackBaseUrl,
+          { buyerId: userId },
+        );
+        const attemptExpiresAt = gatewayResult.expiresAt
+          ? new Date(gatewayResult.expiresAt)
+          : new Date(Date.now() + 30 * 60 * 1000);
+
+        const created = await this.prisma.$transaction(async (tx) => {
+          await this.consumeCardValidationSessionForInitialize(
+            tx,
+            userId,
+            validatedCardSession,
+          );
+
+          const checkoutSession = await tx.checkoutSession.create({
+            data: {
+              buyerId: userId,
+              status: CheckoutSessionStatus.PAYMENT_PROCESSING,
+              idempotencyKey,
+              paymentMethod: dto.paymentMethod,
+              shippingAddressJson: shippingAddress as Prisma.InputJsonValue,
+              contactInfoJson: contactInfo as Prisma.InputJsonValue,
+              customerName,
+              currency,
+              subtotal: new Prisma.Decimal(subtotal.toFixed(2)),
+              shippingCost: new Prisma.Decimal(shippingCost.toFixed(2)),
+              discountAmount: new Prisma.Decimal(discountAmount.toFixed(2)),
+              grandTotal: new Prisma.Decimal(grandTotal.toFixed(2)),
+              summaryJson: {
+                items: [
+                  ...standardLineDrafts.map((line) => ({
+                    name: line.productName,
+                    quantity: line.quantity,
+                    price: line.unitPrice,
+                  })),
+                  ...customLineDrafts.map((line) => ({
+                    name: `${line.sourceTitle} (Custom)`,
+                    quantity: 1,
+                    price: line.unitPrice,
+                  })),
+                ],
+                subtotal,
+                shippingCost,
+                discount: discountAmount,
+                grandTotal,
+                shippingName: customerName,
+                shippingCity: String(shippingAddress.city ?? ''),
+                shippingState,
+              } as Prisma.InputJsonValue,
+              blockedLinesJson: {
+                items: blockedCustomLines,
+              } as Prisma.InputJsonValue,
+              expiresAt: attemptExpiresAt,
+            },
+          });
+
+          for (let index = 0; index < standardLineDrafts.length; index += 1) {
+            const line = standardLineDrafts[index];
+            const createdLine = await tx.checkoutSessionLine.create({
+              data: {
+                checkoutSessionId: checkoutSession.id,
+                lineType: CheckoutSessionLineType.STANDARD_ITEM,
+                status: line.reserveInventory
+                  ? CheckoutSessionLineStatus.RESERVED
+                  : CheckoutSessionLineStatus.PENDING,
+                lineOrder: index,
+                brandId: line.brandId,
+                productId: line.productId,
+                cartItemId: line.cartItemId,
+                quantity: line.quantity,
+                unitPrice: new Prisma.Decimal(line.unitPrice.toFixed(2)),
+                lineTotal: new Prisma.Decimal(line.lineTotal.toFixed(2)),
+                currency: line.currency,
+                selectedSize: line.selectedSize,
+                selectedColor: line.selectedColor,
+                itemSnapshotJson: {
+                  name: line.productName,
+                  thumbnail: line.thumbnail,
+                  sizingMode: line.sizingMode,
+                  requiredMeasurementKeys: line.requiredMeasurementKeys,
+                  sizeFitData: line.sizeFitData,
+                  sizeRecommendationSnapshot: line.sizeRecommendationSnapshot,
+                } as Prisma.InputJsonValue,
+                sizeRecommendationSnapshot:
+                  line.sizeRecommendationSnapshot &&
+                  Object.keys(line.sizeRecommendationSnapshot).length > 0
+                    ? (line.sizeRecommendationSnapshot as Prisma.InputJsonValue)
+                    : undefined,
+              },
+            });
+
+            await this.reserveUnifiedStandardLineInventory(
+              tx,
+              checkoutSession.id,
+              createdLine.id,
+              line,
+              attemptExpiresAt,
+            );
+          }
+
+          const createdCustomCheckoutLines: Array<{
+            checkoutIntentId: string;
+            checkoutSessionLineId: string;
+            sessionId: string;
+          }> = [];
+
+          for (let index = 0; index < customLineDrafts.length; index += 1) {
+            const line = customLineDrafts[index];
+            const createdCustomLine = await tx.checkoutSessionLine.create({
+              data: {
+                checkoutSessionId: checkoutSession.id,
+                lineType: CheckoutSessionLineType.CUSTOM_ORDER,
+                status: CheckoutSessionLineStatus.PENDING,
+                lineOrder: standardLineDrafts.length + index,
+                checkoutIntentId: line.checkoutIntentId,
+                quantity: 1,
+                unitPrice: new Prisma.Decimal(line.unitPrice.toFixed(2)),
+                lineTotal: new Prisma.Decimal(line.lineTotal.toFixed(2)),
+                currency: line.currency,
+                itemSnapshotJson: {
+                  sourceType: line.sourceType,
+                  sourceId: line.sourceId,
+                  sourceTitle: line.sourceTitle,
+                  sourcePrimaryMediaUrl: line.sourcePrimaryMediaUrl,
+                  sourceBrandName: line.sourceBrandName,
+                } as Prisma.InputJsonValue,
+                metadataJson: {
+                  sessionId: line.sessionId,
+                } as Prisma.InputJsonValue,
+              },
+            });
+
+            createdCustomCheckoutLines.push({
+              checkoutIntentId: line.checkoutIntentId,
+              checkoutSessionLineId: createdCustomLine.id,
+              sessionId: line.sessionId,
+            });
+          }
+
+          const createdAttempt = await tx.paymentAttempt.create({
+            data: {
+              buyerId: userId,
+              subjectType: PaymentSubjectType.UNIFIED_CHECKOUT,
+              correlationId,
+              checkoutSessionId: checkoutSession.id,
+              checkoutIntentId:
+                customLineDrafts.length === 1
+                  ? customLineDrafts[0].checkoutIntentId
+                  : null,
+              savedPaymentMethodId:
+                validatedCardSession?.savedPaymentMethodId ?? null,
+              cardValidationSessionId:
+                validatedCardSession?.canonicalSessionId ?? null,
+              provider: gatewayResult.gateway,
+              providerMode,
+              providerReference: gatewayResult.providerReference,
+              providerTransactionId: gatewayResult.providerTransactionId,
+              providerAccessCode: gatewayResult.providerAccessCode,
+              providerChannel:
+                gatewayResult.providerChannel ?? gatewayResult.channel,
+              paymentMethod: dto.paymentMethod,
+              channel: gatewayResult.channel,
+              status: gatewayResult.status,
+              reference,
+              idempotencyKey,
+              callbackUrl: gatewayResult.callbackUrl ?? callbackBaseUrl,
+              authorizationUrl: gatewayResult.authorizationUrl,
+              amount: grandTotal,
+              currency,
+              settlementCurrency: this.fxRateService.getBaseCurrency(),
+              settlementAmount: settlementQuote.convertedAmount,
+              exchangeRateSnapshotId: settlementQuote.snapshot.id,
+              orderIds: [],
+              unifiedCheckoutManifestJson: {
+                standardLineCount: standardLineDrafts.length,
+                customLineCount: customLineDrafts.length,
+                blockedLines: blockedCustomLines,
+              } as Prisma.InputJsonValue,
+              requestSnapshot: paymentData as Prisma.InputJsonValue,
+              responseSnapshot: (gatewayResult.responseSnapshot ??
+                null) as unknown as Prisma.InputJsonValue,
+              nextAction: (gatewayResult.nextAction ??
+                null) as unknown as Prisma.InputJsonValue,
+              bankAccount: (gatewayResult.bankAccount ??
+                null) as unknown as Prisma.InputJsonValue,
+              expiresAt: gatewayResult.expiresAt
+                ? new Date(gatewayResult.expiresAt)
+                : null,
+            },
+          });
+
+          const uniqueCustomIntentLinks = Array.from(
+            new Map(
+              createdCustomCheckoutLines.map((line) => [
+                line.checkoutIntentId,
+                line,
+              ]),
+            ).values(),
+          );
+
+          if (uniqueCustomIntentLinks.length > 0) {
+            await tx.paymentAttemptCheckoutIntentLink.createMany({
+              data: uniqueCustomIntentLinks.map((line) => ({
+                id: uuidv4(),
+                paymentAttemptId: createdAttempt.id,
+                checkoutIntentId: line.checkoutIntentId,
+                checkoutSessionId: checkoutSession.id,
+                checkoutSessionLineId: line.checkoutSessionLineId,
+                status: 'PENDING',
+                metadataJson: {
+                  customCheckoutSessionId: line.sessionId,
+                } as Prisma.InputJsonValue,
+              })),
+              skipDuplicates: true,
+            });
+          }
+
+          if (customLineDrafts.length > 0) {
+            await tx.customOrderCheckoutSession.updateMany({
+              where: {
+                buyerId: userId,
+                customOrderId: null,
+                checkoutIntentId: {
+                  in: customLineDrafts.map((line) => line.checkoutIntentId),
+                },
+              },
+              data: {
+                status: CustomOrderCheckoutStatus.PAYMENT_INITIATED,
+                paymentInitiatedAt: new Date(),
+                lastAttemptId: createdAttempt.id,
+                lastAttemptReference: createdAttempt.reference,
+                lastAttemptStatus: createdAttempt.status,
+                attemptsCount: { increment: 1 },
+                resumePath: this.buildPaymentReturnPath(
+                  createdAttempt.reference,
+                  gatewayResult.gateway,
+                ),
+                abandonedAt: null,
+              },
+            });
+          }
+
+          await tx.paymentEvent.create({
+            data: {
+              paymentAttemptId: createdAttempt.id,
+              type: 'INITIALIZED',
+              source:
+                providerMode === 'mock' ? 'mock-initialize' : 'initialize',
+              correlationId,
+              payload: {
+                paymentMethod: dto.paymentMethod,
+                gateway: gatewayResult.gateway,
+                channel: gatewayResult.channel,
+                status: gatewayResult.status,
+                subjectType: PaymentSubjectType.UNIFIED_CHECKOUT,
+                checkoutSessionId: checkoutSession.id,
+                correlationId,
+              },
+            },
+          });
+
+          return {
+            attempt: createdAttempt,
+            checkoutSession,
+          };
+        });
 
         return {
           ...this.buildInitResultFromAttempt(created.attempt),
           checkoutSessionId: created.checkoutSession.id,
-          summary: this.asObject(created.checkoutSession.summaryJson) as PaymentInitResult['summary'],
+          summary: this.asObject(
+            created.checkoutSession.summaryJson,
+          ) as PaymentInitResult['summary'],
           blockedLines: blockedCustomLines,
         };
       },
@@ -842,7 +877,9 @@ export class PaymentService implements OnModuleInit {
     return this.getPaymentAttemptByReference(order.paymentReference, userId);
   }
 
-  async listSavedPaymentCards(userId: string): Promise<SavedPaymentCardSummary[]> {
+  async listSavedPaymentCards(
+    userId: string,
+  ): Promise<SavedPaymentCardSummary[]> {
     if (this.isCanonicalSavedMethodsEnabledForUser(userId)) {
       const canonicalCards = await this.listCanonicalSavedPaymentCards(userId);
       if (canonicalCards.length > 0) {
@@ -926,7 +963,10 @@ export class PaymentService implements OnModuleInit {
         requestSnapshot?.channel,
       ];
       const isCardAttempt = channelCandidates.some(
-        (value) => String(value ?? '').trim().toUpperCase() === 'CARD',
+        (value) =>
+          String(value ?? '')
+            .trim()
+            .toUpperCase() === 'CARD',
       );
       if (!isCardAttempt) {
         continue;
@@ -968,7 +1008,8 @@ export class PaymentService implements OnModuleInit {
         expYear: existing.expYear || extracted.expYear,
         reusable: existing.reusable || extracted.reusable,
         addedAt: existing.addedAt < addedAt ? existing.addedAt : addedAt,
-        lastUsedAt: existing.lastUsedAt > lastUsedAt ? existing.lastUsedAt : lastUsedAt,
+        lastUsedAt:
+          existing.lastUsedAt > lastUsedAt ? existing.lastUsedAt : lastUsedAt,
       });
     }
 
@@ -991,7 +1032,9 @@ export class PaymentService implements OnModuleInit {
       dto.paymentMethod,
       dto.paymentData,
     );
-    const channel = String(gatewayPaymentData.channel ?? '').trim().toUpperCase();
+    const channel = String(gatewayPaymentData.channel ?? '')
+      .trim()
+      .toUpperCase();
     if (channel !== 'CARD') {
       throw new BadRequestException(
         'Only card checkouts require validation sessions',
@@ -1014,7 +1057,9 @@ export class PaymentService implements OnModuleInit {
       const savedCards = await this.listSavedPaymentCards(userId);
       const selectedCard = savedCards.find((card) => card.id === savedCardId);
       if (!selectedCard) {
-        throw new BadRequestException('The selected saved card is no longer available');
+        throw new BadRequestException(
+          'The selected saved card is no longer available',
+        );
       }
       savedPaymentMethodId = await this.resolveCanonicalSavedPaymentMethodId(
         userId,
@@ -1071,7 +1116,10 @@ export class PaymentService implements OnModuleInit {
     sessionId: string,
     userId: string,
   ): Promise<CardValidationSessionSummary> {
-    const storedSession = await this.getStoredCardValidationSession(sessionId, userId);
+    const storedSession = await this.getStoredCardValidationSession(
+      sessionId,
+      userId,
+    );
     if (!storedSession) {
       throw new NotFoundException('Card validation session not found');
     }
@@ -1252,7 +1300,9 @@ export class PaymentService implements OnModuleInit {
     const now = new Date();
 
     for (const attempt of staleAttempts) {
-      const gateway = String(attempt.provider || '').trim().toUpperCase();
+      const gateway = String(attempt.provider || '')
+        .trim()
+        .toUpperCase();
       if (gateway !== 'PAYSTACK') {
         result.skipped.push(`${attempt.reference}:unsupported-gateway`);
         continue;
@@ -1290,10 +1340,13 @@ export class PaymentService implements OnModuleInit {
         });
 
         if (
-          verification.nextStatus === (attempt.status as PaymentAttemptStatus) &&
+          verification.nextStatus ===
+            (attempt.status as PaymentAttemptStatus) &&
           verification.awaitingProviderConfirmation
         ) {
-          result.skipped.push(`${attempt.reference}:awaiting-provider-confirmation`);
+          result.skipped.push(
+            `${attempt.reference}:awaiting-provider-confirmation`,
+          );
           continue;
         }
 
@@ -1422,62 +1475,66 @@ export class PaymentService implements OnModuleInit {
       Date.now() - webhookAuditRetentionDays * 24 * 60 * 60 * 1000,
     );
 
-    const [paymentEventsDeleted, retryHistoryDeleted, webhookIngressAuditsDeleted] =
-      await this.prisma.$transaction(async (tx) => {
-        const terminalAttemptRetentionCutoff = new Date(
-          Math.min(
-            paymentEventCutoff.getTime(),
-            retryHistoryCutoff.getTime(),
-            webhookAuditCutoff.getTime(),
-          ),
-        );
-        const closedAttempts = await tx.paymentAttempt.findMany({
-          where: {
-            updatedAt: { lt: terminalAttemptRetentionCutoff },
-            OR: [
-              {
-                status: {
-                  in: ['FAILED', 'CANCELLED', 'EXPIRED'],
-                },
+    const [
+      paymentEventsDeleted,
+      retryHistoryDeleted,
+      webhookIngressAuditsDeleted,
+    ] = await this.prisma.$transaction(async (tx) => {
+      const terminalAttemptRetentionCutoff = new Date(
+        Math.min(
+          paymentEventCutoff.getTime(),
+          retryHistoryCutoff.getTime(),
+          webhookAuditCutoff.getTime(),
+        ),
+      );
+      const closedAttempts = await tx.paymentAttempt.findMany({
+        where: {
+          updatedAt: { lt: terminalAttemptRetentionCutoff },
+          OR: [
+            {
+              status: {
+                in: ['FAILED', 'CANCELLED', 'EXPIRED'],
               },
-              {
-                status: 'PAID',
-                finalizedAt: { not: null },
-                OR: [
-                  { finalizationCompensationStatus: null },
-                  { finalizationCompensationStatus: 'RESOLVED' },
-                ],
+            },
+            {
+              status: 'PAID',
+              finalizedAt: { not: null },
+              OR: [
+                { finalizationCompensationStatus: null },
+                { finalizationCompensationStatus: 'RESOLVED' },
+              ],
+            },
+          ],
+        },
+        select: {
+          id: true,
+        },
+      });
+      const closedAttemptIds = closedAttempts.map((attempt) => attempt.id);
+
+      const deletedPaymentEvents =
+        closedAttemptIds.length > 0
+          ? await tx.paymentEvent.deleteMany({
+              where: {
+                createdAt: { lt: paymentEventCutoff },
+                processedAt: { not: null },
+                paymentAttemptId: { in: closedAttemptIds },
               },
-            ],
-          },
-          select: {
-            id: true,
-          },
-        });
-        const closedAttemptIds = closedAttempts.map((attempt) => attempt.id);
+            })
+          : { count: 0 };
 
-        const deletedPaymentEvents =
-          closedAttemptIds.length > 0
-            ? await tx.paymentEvent.deleteMany({
-                where: {
-                  createdAt: { lt: paymentEventCutoff },
-                  processedAt: { not: null },
-                  paymentAttemptId: { in: closedAttemptIds },
-                },
-              })
-            : { count: 0 };
+      const deletedRetryHistory =
+        closedAttemptIds.length > 0
+          ? await tx.paymentAttemptRetryHistory.deleteMany({
+              where: {
+                occurredAt: { lt: retryHistoryCutoff },
+                paymentAttemptId: { in: closedAttemptIds },
+              },
+            })
+          : { count: 0 };
 
-        const deletedRetryHistory =
-          closedAttemptIds.length > 0
-            ? await tx.paymentAttemptRetryHistory.deleteMany({
-                where: {
-                  occurredAt: { lt: retryHistoryCutoff },
-                  paymentAttemptId: { in: closedAttemptIds },
-                },
-              })
-            : { count: 0 };
-
-        const deletedWebhookIngressAudits = await tx.webhookIngressAudit.deleteMany({
+      const deletedWebhookIngressAudits =
+        await tx.webhookIngressAudit.deleteMany({
           where: {
             receivedAt: { lt: webhookAuditCutoff },
             OR: [
@@ -1495,12 +1552,12 @@ export class PaymentService implements OnModuleInit {
           },
         });
 
-        return [
-          deletedPaymentEvents.count,
-          deletedRetryHistory.count,
-          deletedWebhookIngressAudits.count,
-        ] as const;
-      });
+      return [
+        deletedPaymentEvents.count,
+        deletedRetryHistory.count,
+        deletedWebhookIngressAudits.count,
+      ] as const;
+    });
 
     return {
       paymentEventsDeleted,
@@ -1523,7 +1580,9 @@ export class PaymentService implements OnModuleInit {
     });
 
     if (!attempt || attempt.buyerId !== userId) {
-      throw new BadRequestException('No payment attempt found for this reference');
+      throw new BadRequestException(
+        'No payment attempt found for this reference',
+      );
     }
 
     if (attempt.subjectType === PaymentSubjectType.CUSTOM_ORDER) {
@@ -1549,7 +1608,10 @@ export class PaymentService implements OnModuleInit {
         return this.buildUnifiedVerifyResult(attempt, false);
       }
 
-      const resolvedVerification = await this.resolveAttemptVerification(attempt, dto);
+      const resolvedVerification = await this.resolveAttemptVerification(
+        attempt,
+        dto,
+      );
       const updatedAttempt = await this.applyAttemptStatus(
         attempt.reference,
         userId,
@@ -1560,7 +1622,10 @@ export class PaymentService implements OnModuleInit {
 
       const finalized =
         updatedAttempt.status === 'PAID'
-          ? await this.finalizeUnifiedCheckoutAttempt(updatedAttempt.reference, userId)
+          ? await this.finalizeUnifiedCheckoutAttempt(
+              updatedAttempt.reference,
+              userId,
+            )
           : undefined;
       return this.buildUnifiedVerifyResult(
         updatedAttempt,
@@ -1582,7 +1647,10 @@ export class PaymentService implements OnModuleInit {
       return this.buildVerifyResult(attempt, orders, false);
     }
 
-    const resolvedVerification = await this.resolveAttemptVerification(attempt, dto);
+    const resolvedVerification = await this.resolveAttemptVerification(
+      attempt,
+      dto,
+    );
     const updatedAttempt = await this.applyAttemptStatus(
       attempt.reference,
       userId,
@@ -1591,7 +1659,10 @@ export class PaymentService implements OnModuleInit {
       resolvedVerification,
     );
 
-    const refreshedOrders = await this.getOwnedOrdersForAttempt(updatedAttempt, userId);
+    const refreshedOrders = await this.getOwnedOrdersForAttempt(
+      updatedAttempt,
+      userId,
+    );
     return this.buildVerifyResult(
       updatedAttempt,
       refreshedOrders,
@@ -1670,18 +1741,26 @@ export class PaymentService implements OnModuleInit {
     attempt: NonNullable<PaymentAttemptRecord>,
     dto: Pick<VerifyPaymentDto, 'reference' | 'gateway' | 'otp' | 'statusHint'>,
   ): Promise<ResolvedAttemptVerification> {
-    const requestedGateway = String(dto.gateway || '').trim().toUpperCase();
-    const attemptGateway = String(attempt.provider || '').trim().toUpperCase();
+    const requestedGateway = String(dto.gateway || '')
+      .trim()
+      .toUpperCase();
+    const attemptGateway = String(attempt.provider || '')
+      .trim()
+      .toUpperCase();
     if (requestedGateway && requestedGateway !== attemptGateway) {
       throw new BadRequestException(
         'Payment verification gateway does not match the initialized payment attempt',
       );
     }
 
-    if (attemptGateway === 'PAYSTACK' && this.getProviderModeForAttempt(attempt) === 'live') {
+    if (
+      attemptGateway === 'PAYSTACK' &&
+      this.getProviderModeForAttempt(attempt) === 'live'
+    ) {
       const verification = await this.verifyPaystackAttempt(attempt);
       const nextStatus = verification.status;
-      const awaitingProviderConfirmation = this.isPendingVerificationStatus(nextStatus);
+      const awaitingProviderConfirmation =
+        this.isPendingVerificationStatus(nextStatus);
 
       return {
         nextStatus,
@@ -1720,7 +1799,10 @@ export class PaymentService implements OnModuleInit {
       };
     }
 
-    const nextStatus = this.resolveVerificationStatus(attempt, dto as VerifyPaymentDto);
+    const nextStatus = this.resolveVerificationStatus(
+      attempt,
+      dto as VerifyPaymentDto,
+    );
     const now = new Date();
     const awaitingProviderConfirmation =
       this.getProviderModeForAttempt(attempt) === 'live' &&
@@ -1796,7 +1878,9 @@ export class PaymentService implements OnModuleInit {
           providerEventKey: receipt.providerEventKey,
           correlationId: receipt.correlationId ?? null,
           queueError:
-            queueError instanceof Error ? queueError.message : String(queueError),
+            queueError instanceof Error
+              ? queueError.message
+              : String(queueError),
           fallbackError:
             fallbackError instanceof Error
               ? fallbackError.message
@@ -1864,10 +1948,7 @@ export class PaymentService implements OnModuleInit {
         processedAt: null,
         providerEventKey: { not: null },
       },
-      orderBy: [
-        { providerEventReceivedAt: 'asc' },
-        { createdAt: 'asc' },
-      ],
+      orderBy: [{ providerEventReceivedAt: 'asc' }, { createdAt: 'asc' }],
       take: safeLimit,
       select: {
         paymentAttemptId: true,
@@ -1910,8 +1991,12 @@ export class PaymentService implements OnModuleInit {
 
     for (const event of pendingEvents) {
       const providerEventKey = String(event.providerEventKey ?? '').trim();
-      const attempt = attemptById.get(String(event.paymentAttemptId ?? '').trim());
-      const gateway = String(attempt?.provider ?? '').trim().toUpperCase();
+      const attempt = attemptById.get(
+        String(event.paymentAttemptId ?? '').trim(),
+      );
+      const gateway = String(attempt?.provider ?? '')
+        .trim()
+        .toUpperCase();
       const reference = String(attempt?.reference ?? '').trim();
       const payload = this.asObject(event.payload);
 
@@ -1956,7 +2041,9 @@ export class PaymentService implements OnModuleInit {
     payload: Record<string, any>,
     context: WebhookContext,
   ) {
-    const normalizedGateway = String(gateway || '').trim().toUpperCase();
+    const normalizedGateway = String(gateway || '')
+      .trim()
+      .toUpperCase();
     const correlationId = this.resolveCorrelationId(
       context.correlationId ??
         this.getHeader(context.headers, 'x-correlation-id') ??
@@ -1972,7 +2059,9 @@ export class PaymentService implements OnModuleInit {
         context,
         correlationId,
       });
-      this.logger.warn(`Rejected ${normalizedGateway} webhook due to malformed payload`);
+      this.logger.warn(
+        `Rejected ${normalizedGateway} webhook due to malformed payload`,
+      );
       return null;
     }
 
@@ -2025,7 +2114,11 @@ export class PaymentService implements OnModuleInit {
       return null;
     }
 
-    if (String(attempt.provider || '').trim().toUpperCase() !== normalizedGateway) {
+    if (
+      String(attempt.provider || '')
+        .trim()
+        .toUpperCase() !== normalizedGateway
+    ) {
       await this.recordWebhookIngressRejection({
         provider: normalizedGateway,
         rejectionReason: 'MALFORMED_PAYLOAD',
@@ -2064,7 +2157,10 @@ export class PaymentService implements OnModuleInit {
       return null;
     }
 
-    const providerEventType = this.extractWebhookEvent(normalizedGateway, payload);
+    const providerEventType = this.extractWebhookEvent(
+      normalizedGateway,
+      payload,
+    );
 
     if (!attempt.correlationId) {
       await this.prisma.paymentAttempt.updateMany({
@@ -2093,7 +2189,10 @@ export class PaymentService implements OnModuleInit {
       });
     } catch (error: any) {
       const message = String(error?.message || '');
-      if (message.includes('providerEventKey') || message.includes('Unique constraint')) {
+      if (
+        message.includes('providerEventKey') ||
+        message.includes('Unique constraint')
+      ) {
         const existing = await this.prisma.paymentEvent.findFirst({
           where: { providerEventKey },
           select: { processedAt: true, correlationId: true },
@@ -2103,7 +2202,8 @@ export class PaymentService implements OnModuleInit {
           reference,
           providerEventKey,
           attemptId: attempt.id,
-          correlationId: existing?.correlationId ?? attempt.correlationId ?? correlationId,
+          correlationId:
+            existing?.correlationId ?? attempt.correlationId ?? correlationId,
           processedAt: existing?.processedAt ?? null,
         };
       }
@@ -2185,7 +2285,10 @@ export class PaymentService implements OnModuleInit {
         return;
       }
 
-      const payloadAmount = this.extractWebhookAmount(normalizedGateway, payload);
+      const payloadAmount = this.extractWebhookAmount(
+        normalizedGateway,
+        payload,
+      );
       const payloadCurrency = this.extractWebhookCurrency(payload);
 
       if (
@@ -2208,30 +2311,45 @@ export class PaymentService implements OnModuleInit {
         this.asObject(payload?.data)?.authorization ?? payload?.authorization,
       );
 
-      await this.applyAttemptStatus(reference, attempt.buyerId ?? '', nextStatus, 'webhook', {
-        eventPayload: payload,
-        correlationId,
-        responseSnapshotPatch: {
-          ...(this.asObject(attempt.responseSnapshot) ?? {}),
-          providerWebhookGateway: normalizedGateway,
-          providerWebhookStatus: nextStatus,
-          providerWebhookSource: context.source,
-          providerWebhookQueueAttempt: context.queueAttempt ?? null,
-          providerWebhookQueueJobId: context.queueJobId ?? null,
-          providerWebhookReceivedAt: new Date().toISOString(),
-          providerWebhookAmount: payloadAmount,
-          providerWebhookCurrency: payloadCurrency,
-          providerWebhookEvent: this.extractWebhookEvent(normalizedGateway, payload),
-          providerWebhookVerified: true,
-          providerWebhookCorrelationId: correlationId,
-          ...(webhookAuthorization
-            ? { providerWebhookAuthorization: webhookAuthorization }
-            : {}),
+      await this.applyAttemptStatus(
+        reference,
+        attempt.buyerId ?? '',
+        nextStatus,
+        'webhook',
+        {
+          eventPayload: payload,
+          correlationId,
+          responseSnapshotPatch: {
+            ...(this.asObject(attempt.responseSnapshot) ?? {}),
+            providerWebhookGateway: normalizedGateway,
+            providerWebhookStatus: nextStatus,
+            providerWebhookSource: context.source,
+            providerWebhookQueueAttempt: context.queueAttempt ?? null,
+            providerWebhookQueueJobId: context.queueJobId ?? null,
+            providerWebhookReceivedAt: new Date().toISOString(),
+            providerWebhookAmount: payloadAmount,
+            providerWebhookCurrency: payloadCurrency,
+            providerWebhookEvent: this.extractWebhookEvent(
+              normalizedGateway,
+              payload,
+            ),
+            providerWebhookVerified: true,
+            providerWebhookCorrelationId: correlationId,
+            ...(webhookAuthorization
+              ? { providerWebhookAuthorization: webhookAuthorization }
+              : {}),
+          },
+          providerReference: this.extractWebhookReference(
+            normalizedGateway,
+            payload,
+          ),
+          providerTransactionId: this.extractWebhookTransactionId(
+            normalizedGateway,
+            payload,
+          ),
+          providerChannel: this.extractWebhookChannel(payload),
         },
-        providerReference: this.extractWebhookReference(normalizedGateway, payload),
-        providerTransactionId: this.extractWebhookTransactionId(normalizedGateway, payload),
-        providerChannel: this.extractWebhookChannel(payload),
-      });
+      );
 
       await this.markProviderEventProcessed(providerEventKey);
     } catch (error) {
@@ -2251,7 +2369,10 @@ export class PaymentService implements OnModuleInit {
           gateway: normalizedGateway,
           reference,
           providerEventKey,
-          providerEventType: this.extractWebhookEvent(normalizedGateway, payload),
+          providerEventType: this.extractWebhookEvent(
+            normalizedGateway,
+            payload,
+          ),
           payload,
           correlationId,
           source: context.source,
@@ -2290,13 +2411,29 @@ export class PaymentService implements OnModuleInit {
           context,
         );
       case PaymentMethod.FLUTTERWAVE:
-        return this.initFlutterwave(reference, paymentData, amount, currency, callbackBaseUrl);
+        return this.initFlutterwave(
+          reference,
+          paymentData,
+          amount,
+          currency,
+          callbackBaseUrl,
+        );
       case PaymentMethod.BANK_TRANSFER:
-        return this.initBankTransfer(reference, paymentData, amount, currency, callbackBaseUrl);
+        return this.initBankTransfer(
+          reference,
+          paymentData,
+          amount,
+          currency,
+          callbackBaseUrl,
+        );
       case PaymentMethod.PAY_ON_DELIVERY:
-        throw new BadRequestException('Pay on delivery is temporarily unavailable');
+        throw new BadRequestException(
+          'Pay on delivery is temporarily unavailable',
+        );
       default:
-        throw new BadRequestException(`Unsupported payment method: ${paymentMethod}`);
+        throw new BadRequestException(
+          `Unsupported payment method: ${paymentMethod}`,
+        );
     }
   }
 
@@ -2308,7 +2445,8 @@ export class PaymentService implements OnModuleInit {
     callbackBaseUrl: string,
     context?: PaymentGatewayContext,
   ): Promise<GatewayInitializationResult> {
-    const channel = (paymentData.channel as PaymentChannel | undefined) ?? 'CARD';
+    const channel =
+      (paymentData.channel as PaymentChannel | undefined) ?? 'CARD';
     if (this.isMockMode()) {
       throw new BadRequestException(
         'Internal Paystack mock behavior is disabled. Use Paystack test keys so checkout behaves the same way across environments.',
@@ -2316,10 +2454,16 @@ export class PaymentService implements OnModuleInit {
     }
 
     if (currency !== 'NGN') {
-      throw new BadRequestException('Paystack is only enabled for NGN payments in this phase');
+      throw new BadRequestException(
+        'Paystack is only enabled for NGN payments in this phase',
+      );
     }
 
-    if (channel === 'CARD' && paymentData.useSavedCard && paymentData.savedCardId) {
+    if (
+      channel === 'CARD' &&
+      paymentData.useSavedCard &&
+      paymentData.savedCardId
+    ) {
       return this.chargePaystackSavedAuthorization(
         reference,
         paymentData,
@@ -2341,30 +2485,37 @@ export class PaymentService implements OnModuleInit {
     }
 
     const secret = this.getRequiredPaystackSecret('live payment processing');
-    const response = await fetch('https://api.paystack.co/transaction/initialize', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${secret}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        email: paymentData.email,
-        amount: Math.round(this.roundMoney(amount) * 100),
-        currency,
-        reference,
-        callback_url: callbackBaseUrl,
-        channels: [channel === 'BANK_TRANSFER' ? 'bank_transfer' : 'card'],
-        metadata: {
-          threadlyReference: reference,
-          threadlyChannel: channel,
-          payerPhone: paymentData.phone,
-          source: 'threadly-checkout',
+    const response = await fetch(
+      'https://api.paystack.co/transaction/initialize',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${secret}`,
+          'Content-Type': 'application/json',
         },
-      }),
-    });
+        body: JSON.stringify({
+          email: paymentData.email,
+          amount: Math.round(this.roundMoney(amount) * 100),
+          currency,
+          reference,
+          callback_url: callbackBaseUrl,
+          channels: [channel === 'BANK_TRANSFER' ? 'bank_transfer' : 'card'],
+          metadata: {
+            threadlyReference: reference,
+            threadlyChannel: channel,
+            payerPhone: paymentData.phone,
+            source: 'threadly-checkout',
+          },
+        }),
+      },
+    );
 
     const payload = await this.parseJsonResponse(response);
-    if (!response.ok || payload?.status === false || !payload?.data?.reference) {
+    if (
+      !response.ok ||
+      payload?.status === false ||
+      !payload?.data?.reference
+    ) {
       throw new BadRequestException(
         String(payload?.message || 'Unable to initialize Paystack payment'),
       );
@@ -2383,7 +2534,8 @@ export class PaymentService implements OnModuleInit {
       status: 'REQUIRES_ACTION',
       channel,
       callbackUrl: callbackBaseUrl,
-      authorizationUrl: String(payload.data.authorization_url || '').trim() || undefined,
+      authorizationUrl:
+        String(payload.data.authorization_url || '').trim() || undefined,
       providerReference: String(payload.data.reference || reference),
       providerAccessCode,
       providerChannel: channel,
@@ -2395,8 +2547,8 @@ export class PaymentService implements OnModuleInit {
             : 'Open secure card checkout',
         description:
           channel === 'BANK_TRANSFER'
-            ? 'Paystack will show the transfer account details inside Threadly\'s secure checkout window.'
-            : 'Card details and any issuer verification steps stay inside Threadly\'s secure checkout window.',
+            ? "Paystack will show the transfer account details inside Threadly's secure checkout window."
+            : "Card details and any issuer verification steps stay inside Threadly's secure checkout window.",
         ctaLabel:
           channel === 'BANK_TRANSFER'
             ? 'Open transfer instructions'
@@ -2426,15 +2578,22 @@ export class PaymentService implements OnModuleInit {
   ): Promise<GatewayInitializationResult> {
     const draft = this.getNormalizedPaystackCardDraft(paymentData);
 
-    return this.executePaystackCharge(reference, paymentData, amount, currency, callbackBaseUrl, {
-      card: {
-        cvv: draft.cvv,
-        expiry_month: draft.expiryMonth,
-        expiry_year: draft.expiryYear,
-        number: draft.cardNumber,
+    return this.executePaystackCharge(
+      reference,
+      paymentData,
+      amount,
+      currency,
+      callbackBaseUrl,
+      {
+        card: {
+          cvv: draft.cvv,
+          expiry_month: draft.expiryMonth,
+          expiry_year: draft.expiryYear,
+          number: draft.cardNumber,
+        },
+        use_hosted_url: true,
       },
-      use_hosted_url: true,
-    });
+    );
   }
 
   private async chargePaystackSavedAuthorization(
@@ -2458,9 +2617,16 @@ export class PaymentService implements OnModuleInit {
       savedCardId,
     );
 
-    return this.executePaystackCharge(reference, paymentData, amount, currency, callbackBaseUrl, {
-      authorization_code: authorizationCode,
-    });
+    return this.executePaystackCharge(
+      reference,
+      paymentData,
+      amount,
+      currency,
+      callbackBaseUrl,
+      {
+        authorization_code: authorizationCode,
+      },
+    );
   }
 
   private async executePaystackCharge(
@@ -2506,12 +2672,15 @@ export class PaymentService implements OnModuleInit {
 
     const providerReference =
       String(data.reference ?? reference).trim() || reference;
-    const rawStatus = String(data.status ?? '').trim().toLowerCase();
+    const rawStatus = String(data.status ?? '')
+      .trim()
+      .toLowerCase();
     const authorizationUrl =
       String(data.url ?? data.authorization_url ?? '').trim() || undefined;
     const providerMessage =
-      String(data.display_text ?? data.gateway_response ?? payload?.message ?? '')
-        .trim() || null;
+      String(
+        data.display_text ?? data.gateway_response ?? payload?.message ?? '',
+      ).trim() || null;
 
     if (authorizationUrl) {
       return {
@@ -2600,11 +2769,17 @@ export class PaymentService implements OnModuleInit {
         status: 'REQUIRES_ACTION',
         channel,
         callbackUrl: callbackBaseUrl,
-        authorizationUrl: this.buildMockReturnUrl(callbackBaseUrl, reference, 'FLUTTERWAVE', mockReturnStatus),
+        authorizationUrl: this.buildMockReturnUrl(
+          callbackBaseUrl,
+          reference,
+          'FLUTTERWAVE',
+          mockReturnStatus,
+        ),
         nextAction: {
           type: 'REDIRECT',
           title: 'Continue to Flutterwave checkout',
-          description: 'The hosted checkout will simulate card authorization and then return to Threadly.',
+          description:
+            'The hosted checkout will simulate card authorization and then return to Threadly.',
           ctaLabel: 'Continue to Flutterwave',
           instructions: [
             `Proceed with ${paymentData.email} as the payer email.`,
@@ -2619,7 +2794,15 @@ export class PaymentService implements OnModuleInit {
     }
 
     if (channel === 'BANK_TRANSFER') {
-      return this.buildVirtualAccountResult(reference, 'FLUTTERWAVE', amount, currency, 45, paymentData.email, callbackBaseUrl);
+      return this.buildVirtualAccountResult(
+        reference,
+        'FLUTTERWAVE',
+        amount,
+        currency,
+        45,
+        paymentData.email,
+        callbackBaseUrl,
+      );
     }
 
     if (channel === 'BANK_ACCOUNT') {
@@ -2628,11 +2811,17 @@ export class PaymentService implements OnModuleInit {
         status: 'REQUIRES_ACTION',
         channel,
         callbackUrl: callbackBaseUrl,
-        authorizationUrl: this.buildMockReturnUrl(callbackBaseUrl, reference, 'FLUTTERWAVE', mockReturnStatus),
+        authorizationUrl: this.buildMockReturnUrl(
+          callbackBaseUrl,
+          reference,
+          'FLUTTERWAVE',
+          mockReturnStatus,
+        ),
         nextAction: {
           type: 'BANK_ACCOUNT_AUTH',
           title: 'Authorize the bank account payment',
-          description: 'This flow simulates issuer-side bank-account authorization before completion.',
+          description:
+            'This flow simulates issuer-side bank-account authorization before completion.',
           ctaLabel: 'Authorize bank account',
           instructions: [
             `Bank: ${paymentData.bankAccount.bankName}`,
@@ -2661,7 +2850,8 @@ export class PaymentService implements OnModuleInit {
         nextAction: {
           type: 'USSD_INSTRUCTIONS',
           title: 'Complete payment with USSD',
-          description: 'Dial the generated code and then use the mock simulator if you want to mark the payment outcome.',
+          description:
+            'Dial the generated code and then use the mock simulator if you want to mark the payment outcome.',
           instructions: [
             `Selected bank: ${paymentData.ussd.bankName}`,
             `Dial ${ussdCode} on your phone.`,
@@ -2684,7 +2874,8 @@ export class PaymentService implements OnModuleInit {
         nextAction: {
           type: 'MOBILE_MONEY_APPROVAL',
           title: 'Approve the mobile money request',
-          description: 'A wallet approval is expected. In mock mode, this remains pending until you simulate or verify an outcome.',
+          description:
+            'A wallet approval is expected. In mock mode, this remains pending until you simulate or verify an outcome.',
           instructions: [
             `Network: ${paymentData.mobileMoney.networkName}`,
             `Phone: ${paymentData.mobileMoney.phone}`,
@@ -2697,7 +2888,9 @@ export class PaymentService implements OnModuleInit {
       };
     }
 
-    throw new BadRequestException(`Unsupported Flutterwave channel: ${channel}`);
+    throw new BadRequestException(
+      `Unsupported Flutterwave channel: ${channel}`,
+    );
   }
 
   private async initBankTransfer(
@@ -2747,7 +2940,8 @@ export class PaymentService implements OnModuleInit {
       nextAction: {
         type: 'BANK_TRANSFER_INSTRUCTIONS',
         title: 'Transfer to the generated virtual account',
-        description: 'Use the exact amount and narration below. In mock mode, the payment remains pending until you simulate completion or failure.',
+        description:
+          'Use the exact amount and narration below. In mock mode, the payment remains pending until you simulate completion or failure.',
         expiresAt: expiresAt.toISOString(),
         instructions: [
           `Send ${amount.toFixed(2)} ${currency} to the generated account.`,
@@ -2763,7 +2957,9 @@ export class PaymentService implements OnModuleInit {
         },
       },
       responseSnapshot: {
-        mockReturnStatus: this.resolveMockReturnStatus({ email: accountNameSeed }),
+        mockReturnStatus: this.resolveMockReturnStatus({
+          email: accountNameSeed,
+        }),
       },
     };
   }
@@ -2774,7 +2970,9 @@ export class PaymentService implements OnModuleInit {
   ): Promise<PaymentAttemptSummary> {
     if (attempt.subjectType === PaymentSubjectType.UNIFIED_CHECKOUT) {
       if (!attempt.checkoutSessionId) {
-        throw new NotFoundException('Unified checkout session is missing for this payment attempt');
+        throw new NotFoundException(
+          'Unified checkout session is missing for this payment attempt',
+        );
       }
 
       const checkoutSession = await this.prisma.checkoutSession.findFirst({
@@ -2797,11 +2995,15 @@ export class PaymentService implements OnModuleInit {
       });
 
       if (!checkoutSession) {
-        throw new NotFoundException('Unified checkout session not found for this payment attempt');
+        throw new NotFoundException(
+          'Unified checkout session not found for this payment attempt',
+        );
       }
 
       const summarySnapshot = this.asObject(checkoutSession.summaryJson);
-      const shippingSnapshot = this.asObject(checkoutSession.shippingAddressJson);
+      const shippingSnapshot = this.asObject(
+        checkoutSession.shippingAddressJson,
+      );
       const summaryItemsFromSnapshot = Array.isArray(summarySnapshot.items)
         ? summarySnapshot.items
             .map((item) => {
@@ -2809,7 +3011,12 @@ export class PaymentService implements OnModuleInit {
               const name = String(candidate.name ?? '').trim();
               const quantity = Number(candidate.quantity ?? 0);
               const price = Number(candidate.price ?? 0);
-              if (!name || !Number.isFinite(quantity) || quantity <= 0 || !Number.isFinite(price)) {
+              if (
+                !name ||
+                !Number.isFinite(quantity) ||
+                quantity <= 0 ||
+                !Number.isFinite(price)
+              ) {
                 return null;
               }
               return {
@@ -2818,7 +3025,12 @@ export class PaymentService implements OnModuleInit {
                 price,
               };
             })
-            .filter((item): item is { name: string; quantity: number; price: number } => Boolean(item))
+            .filter(
+              (
+                item,
+              ): item is { name: string; quantity: number; price: number } =>
+                Boolean(item),
+            )
         : [];
 
       const summaryItems =
@@ -2827,7 +3039,9 @@ export class PaymentService implements OnModuleInit {
           : checkoutSession.lines.map((line) => {
               const itemSnapshot = this.asObject(line.itemSnapshotJson);
               return {
-                name: String(itemSnapshot.name ?? itemSnapshot.sourceTitle ?? 'Item'),
+                name: String(
+                  itemSnapshot.name ?? itemSnapshot.sourceTitle ?? 'Item',
+                ),
                 quantity: Number(line.quantity ?? 1),
                 price: Number(line.unitPrice ?? 0),
               };
@@ -2837,15 +3051,20 @@ export class PaymentService implements OnModuleInit {
         Number(
           summarySnapshot.subtotal ??
             summaryItems.reduce(
-              (sum, item) => sum + Number(item.price ?? 0) * Number(item.quantity ?? 1),
+              (sum, item) =>
+                sum + Number(item.price ?? 0) * Number(item.quantity ?? 1),
               0,
             ),
         ),
       );
-      const shippingCost = this.roundMoney(Number(summarySnapshot.shippingCost ?? 0));
+      const shippingCost = this.roundMoney(
+        Number(summarySnapshot.shippingCost ?? 0),
+      );
       const discount = this.roundMoney(Number(summarySnapshot.discount ?? 0));
       const grandTotal = this.roundMoney(
-        Number(summarySnapshot.grandTotal ?? subtotal + shippingCost - discount),
+        Number(
+          summarySnapshot.grandTotal ?? subtotal + shippingCost - discount,
+        ),
       );
 
       const orderIds = Array.from(
@@ -2876,17 +3095,26 @@ export class PaymentService implements OnModuleInit {
         status: attempt.status as PaymentAttemptStatus,
         currency: attempt.currency,
         settlementCurrency: attempt.settlementCurrency,
-        settlementAmount: Number(attempt.settlementAmount ?? attempt.amount ?? grandTotal),
+        settlementAmount: Number(
+          attempt.settlementAmount ?? attempt.amount ?? grandTotal,
+        ),
         exchangeRateSnapshotId: attempt.exchangeRateSnapshotId ?? undefined,
         channel: (attempt.channel as PaymentChannel | null) ?? undefined,
         providerAccessCode: attempt.providerAccessCode ?? undefined,
         authorizationUrl: attempt.authorizationUrl ?? undefined,
         callbackUrl: attempt.callbackUrl ?? undefined,
-        bankAccount: this.asObject(attempt.bankAccount) as PaymentInitResult['bankAccount'],
+        bankAccount: this.asObject(
+          attempt.bankAccount,
+        ) as PaymentInitResult['bankAccount'],
         paymentData: this.asObject(attempt.requestSnapshot),
-        nextAction: this.asObject(attempt.nextAction) as PaymentNextAction | undefined,
+        nextAction: this.asObject(attempt.nextAction) as
+          | PaymentNextAction
+          | undefined,
         canRetry: ['FAILED', 'CANCELLED', 'EXPIRED'].includes(attempt.status),
-        canSimulate: this.isMockMode() && this.allowPaymentSimulation() && attempt.status !== 'PAID',
+        canSimulate:
+          this.isMockMode() &&
+          this.allowPaymentSimulation() &&
+          attempt.status !== 'PAID',
         webhookRetryCount: Number(attempt.webhookRetryCount ?? 0),
         webhookFirstRetriedAt: attempt.webhookFirstRetriedAt?.toISOString(),
         webhookLastRetriedAt: attempt.webhookLastRetriedAt?.toISOString(),
@@ -2907,9 +3135,15 @@ export class PaymentService implements OnModuleInit {
           shippingCost,
           discount,
           grandTotal,
-          shippingName: String(summarySnapshot.shippingName ?? checkoutSession.customerName ?? ''),
-          shippingCity: String(summarySnapshot.shippingCity ?? shippingSnapshot.city ?? ''),
-          shippingState: String(summarySnapshot.shippingState ?? shippingSnapshot.state ?? ''),
+          shippingName: String(
+            summarySnapshot.shippingName ?? checkoutSession.customerName ?? '',
+          ),
+          shippingCity: String(
+            summarySnapshot.shippingCity ?? shippingSnapshot.city ?? '',
+          ),
+          shippingState: String(
+            summarySnapshot.shippingState ?? shippingSnapshot.state ?? '',
+          ),
         },
       };
     }
@@ -2933,16 +3167,24 @@ export class PaymentService implements OnModuleInit {
         });
 
         if (!customOrder) {
-          throw new NotFoundException('No custom order found for this payment attempt');
+          throw new NotFoundException(
+            'No custom order found for this payment attempt',
+          );
         }
 
         const priceSummary = this.asObject(customOrder.buyerPriceSummaryJson);
         const shippingAddress = this.asObject(customOrder.shippingAddressJson);
-        const grandTotal = this.roundMoney(Number(priceSummary?.grandTotal ?? attempt.amount ?? 0));
-        const shippingCost = this.roundMoney(Number(priceSummary?.shippingFee ?? 0));
+        const grandTotal = this.roundMoney(
+          Number(priceSummary?.grandTotal ?? attempt.amount ?? 0),
+        );
+        const shippingCost = this.roundMoney(
+          Number(priceSummary?.shippingFee ?? 0),
+        );
         const discount = this.roundMoney(Number(priceSummary?.discount ?? 0));
         const subtotal = this.roundMoney(
-          Number(priceSummary?.subtotal ?? grandTotal - shippingCost + discount),
+          Number(
+            priceSummary?.subtotal ?? grandTotal - shippingCost + discount,
+          ),
         );
 
         return {
@@ -2951,29 +3193,43 @@ export class PaymentService implements OnModuleInit {
           correlationId: attempt.correlationId ?? undefined,
           subjectType: 'CUSTOM_ORDER',
           customOrderId: customOrder.id,
-          checkoutIntentId: customOrder.checkoutIntentId ?? attempt.checkoutIntentId ?? undefined,
+          checkoutIntentId:
+            customOrder.checkoutIntentId ??
+            attempt.checkoutIntentId ??
+            undefined,
           gateway: attempt.provider,
           providerMode: attempt.providerMode === 'live' ? 'live' : 'mock',
           paymentMethod: attempt.paymentMethod,
           status: attempt.status as PaymentAttemptStatus,
           currency: attempt.currency,
           settlementCurrency: attempt.settlementCurrency,
-          settlementAmount: Number(attempt.settlementAmount ?? attempt.amount ?? grandTotal),
+          settlementAmount: Number(
+            attempt.settlementAmount ?? attempt.amount ?? grandTotal,
+          ),
           exchangeRateSnapshotId: attempt.exchangeRateSnapshotId ?? undefined,
           channel: (attempt.channel as PaymentChannel | null) ?? undefined,
           providerAccessCode: attempt.providerAccessCode ?? undefined,
           authorizationUrl: attempt.authorizationUrl ?? undefined,
           callbackUrl: attempt.callbackUrl ?? undefined,
-          bankAccount: this.asObject(attempt.bankAccount) as PaymentInitResult['bankAccount'],
+          bankAccount: this.asObject(
+            attempt.bankAccount,
+          ) as PaymentInitResult['bankAccount'],
           paymentData: this.asObject(attempt.requestSnapshot),
-          nextAction: this.asObject(attempt.nextAction) as PaymentNextAction | undefined,
+          nextAction: this.asObject(attempt.nextAction) as
+            | PaymentNextAction
+            | undefined,
           canRetry: ['FAILED', 'CANCELLED', 'EXPIRED'].includes(attempt.status),
-          canSimulate: this.isMockMode() && this.allowPaymentSimulation() && attempt.status !== 'PAID',
+          canSimulate:
+            this.isMockMode() &&
+            this.allowPaymentSimulation() &&
+            attempt.status !== 'PAID',
           webhookRetryCount: Number(attempt.webhookRetryCount ?? 0),
           webhookFirstRetriedAt: attempt.webhookFirstRetriedAt?.toISOString(),
           webhookLastRetriedAt: attempt.webhookLastRetriedAt?.toISOString(),
           webhookLastRetryReason: attempt.webhookLastRetryReason ?? undefined,
-          finalizationFailureCount: Number(attempt.finalizationFailureCount ?? 0),
+          finalizationFailureCount: Number(
+            attempt.finalizationFailureCount ?? 0,
+          ),
           finalizationFirstFailedAt:
             attempt.finalizationFirstFailedAt?.toISOString(),
           finalizationLastFailedAt:
@@ -2997,7 +3253,9 @@ export class PaymentService implements OnModuleInit {
             shippingCost,
             discount,
             grandTotal,
-            shippingName: String(customOrder.sourceBrandNameSnapshot ?? 'Custom order'),
+            shippingName: String(
+              customOrder.sourceBrandNameSnapshot ?? 'Custom order',
+            ),
             shippingCity: String(shippingAddress.city ?? ''),
             shippingState: String(shippingAddress.state ?? ''),
           },
@@ -3010,27 +3268,36 @@ export class PaymentService implements OnModuleInit {
         );
       }
 
-      const checkoutIntent = await this.prisma.customOrderCheckoutIntent.findFirst({
-        where: { id: attempt.checkoutIntentId, buyerId: userId },
-        select: {
-          id: true,
-          buyerPriceSummaryJson: true,
-          requestSnapshotJson: true,
-          currency: true,
-        },
-      });
+      const checkoutIntent =
+        await this.prisma.customOrderCheckoutIntent.findFirst({
+          where: { id: attempt.checkoutIntentId, buyerId: userId },
+          select: {
+            id: true,
+            buyerPriceSummaryJson: true,
+            requestSnapshotJson: true,
+            currency: true,
+          },
+        });
 
       if (!checkoutIntent) {
-        throw new NotFoundException('Custom order checkout intent not found for this payment attempt');
+        throw new NotFoundException(
+          'Custom order checkout intent not found for this payment attempt',
+        );
       }
 
       const priceSummary = this.asObject(checkoutIntent.buyerPriceSummaryJson);
       const requestSnapshot = this.asObject(checkoutIntent.requestSnapshotJson);
       const shippingAddress = this.asObject(requestSnapshot?.shippingAddress);
       const contactInfo = this.asObject(requestSnapshot?.contactInfo);
-      const shippingName = String(contactInfo?.customerName ?? requestSnapshot?.customerName ?? '');
-      const grandTotal = this.roundMoney(Number(priceSummary?.grandTotal ?? attempt.amount ?? 0));
-      const shippingCost = this.roundMoney(Number(priceSummary?.shippingFee ?? 0));
+      const shippingName = String(
+        contactInfo?.customerName ?? requestSnapshot?.customerName ?? '',
+      );
+      const grandTotal = this.roundMoney(
+        Number(priceSummary?.grandTotal ?? attempt.amount ?? 0),
+      );
+      const shippingCost = this.roundMoney(
+        Number(priceSummary?.shippingFee ?? 0),
+      );
       const discount = this.roundMoney(Number(priceSummary?.discount ?? 0));
       const subtotal = this.roundMoney(
         Number(priceSummary?.subtotal ?? grandTotal - shippingCost + discount),
@@ -3049,17 +3316,26 @@ export class PaymentService implements OnModuleInit {
         status: attempt.status as PaymentAttemptStatus,
         currency: checkoutIntent.currency,
         settlementCurrency: attempt.settlementCurrency,
-        settlementAmount: Number(attempt.settlementAmount ?? attempt.amount ?? grandTotal),
+        settlementAmount: Number(
+          attempt.settlementAmount ?? attempt.amount ?? grandTotal,
+        ),
         exchangeRateSnapshotId: attempt.exchangeRateSnapshotId ?? undefined,
         channel: (attempt.channel as PaymentChannel | null) ?? undefined,
         providerAccessCode: attempt.providerAccessCode ?? undefined,
         authorizationUrl: attempt.authorizationUrl ?? undefined,
         callbackUrl: attempt.callbackUrl ?? undefined,
-        bankAccount: this.asObject(attempt.bankAccount) as PaymentInitResult['bankAccount'],
+        bankAccount: this.asObject(
+          attempt.bankAccount,
+        ) as PaymentInitResult['bankAccount'],
         paymentData: this.asObject(attempt.requestSnapshot),
-        nextAction: this.asObject(attempt.nextAction) as PaymentNextAction | undefined,
+        nextAction: this.asObject(attempt.nextAction) as
+          | PaymentNextAction
+          | undefined,
         canRetry: ['FAILED', 'CANCELLED', 'EXPIRED'].includes(attempt.status),
-        canSimulate: this.isMockMode() && this.allowPaymentSimulation() && attempt.status !== 'PAID',
+        canSimulate:
+          this.isMockMode() &&
+          this.allowPaymentSimulation() &&
+          attempt.status !== 'PAID',
         webhookRetryCount: Number(attempt.webhookRetryCount ?? 0),
         webhookFirstRetriedAt: attempt.webhookFirstRetriedAt?.toISOString(),
         webhookLastRetriedAt: attempt.webhookLastRetriedAt?.toISOString(),
@@ -3103,12 +3379,22 @@ export class PaymentService implements OnModuleInit {
     const items = orders.flatMap((order) => this.asOrderItems(order.items));
     const subtotal = items.reduce(
       (sum, item) =>
-        sum + Number(item.price ?? item.unitPrice ?? 0) * Number(item.quantity ?? 1),
+        sum +
+        Number(item.price ?? item.unitPrice ?? 0) * Number(item.quantity ?? 1),
       0,
     );
-    const shippingCost = orders.reduce((sum, order) => sum + Number(order.shippingCost ?? 0), 0);
-    const discount = orders.reduce((sum, order) => sum + Number(order.discountAmount ?? 0), 0);
-    const grandTotal = orders.reduce((sum, order) => sum + Number(order.totalAmount ?? 0), 0);
+    const shippingCost = orders.reduce(
+      (sum, order) => sum + Number(order.shippingCost ?? 0),
+      0,
+    );
+    const discount = orders.reduce(
+      (sum, order) => sum + Number(order.discountAmount ?? 0),
+      0,
+    );
+    const grandTotal = orders.reduce(
+      (sum, order) => sum + Number(order.totalAmount ?? 0),
+      0,
+    );
 
     return {
       paymentAttemptId: attempt.id,
@@ -3129,11 +3415,18 @@ export class PaymentService implements OnModuleInit {
       providerAccessCode: attempt.providerAccessCode ?? undefined,
       authorizationUrl: attempt.authorizationUrl ?? undefined,
       callbackUrl: attempt.callbackUrl ?? undefined,
-      bankAccount: this.asObject(attempt.bankAccount) as PaymentInitResult['bankAccount'],
+      bankAccount: this.asObject(
+        attempt.bankAccount,
+      ) as PaymentInitResult['bankAccount'],
       paymentData: this.asObject(attempt.requestSnapshot),
-      nextAction: this.asObject(attempt.nextAction) as PaymentNextAction | undefined,
+      nextAction: this.asObject(attempt.nextAction) as
+        | PaymentNextAction
+        | undefined,
       canRetry: ['FAILED', 'CANCELLED', 'EXPIRED'].includes(attempt.status),
-      canSimulate: this.isMockMode() && this.allowPaymentSimulation() && attempt.status !== 'PAID',
+      canSimulate:
+        this.isMockMode() &&
+        this.allowPaymentSimulation() &&
+        attempt.status !== 'PAID',
       webhookRetryCount: Number(attempt.webhookRetryCount ?? 0),
       webhookFirstRetriedAt: attempt.webhookFirstRetriedAt?.toISOString(),
       webhookLastRetriedAt: attempt.webhookLastRetriedAt?.toISOString(),
@@ -3141,8 +3434,7 @@ export class PaymentService implements OnModuleInit {
       finalizationFailureCount: Number(attempt.finalizationFailureCount ?? 0),
       finalizationFirstFailedAt:
         attempt.finalizationFirstFailedAt?.toISOString(),
-      finalizationLastFailedAt:
-        attempt.finalizationLastFailedAt?.toISOString(),
+      finalizationLastFailedAt: attempt.finalizationLastFailedAt?.toISOString(),
       finalizationLastFailureReason:
         attempt.finalizationLastFailureReason ?? undefined,
       finalizationCompensationStatus:
@@ -3181,7 +3473,10 @@ export class PaymentService implements OnModuleInit {
         where: { reference },
       });
 
-      if (!attempt || (attempt.buyerId && userId && attempt.buyerId !== userId)) {
+      if (
+        !attempt ||
+        (attempt.buyerId && userId && attempt.buyerId !== userId)
+      ) {
         throw new NotFoundException('Payment attempt not found');
       }
 
@@ -3204,20 +3499,27 @@ export class PaymentService implements OnModuleInit {
           status: nextStatus,
           correlationId: payload?.correlationId ?? attempt.correlationId,
           confirmedAt: nextStatus === 'PAID' ? now : attempt.confirmedAt,
-          finalizedAt: this.isTerminalStatus(nextStatus) ? now : attempt.finalizedAt,
+          finalizedAt: this.isTerminalStatus(nextStatus)
+            ? now
+            : attempt.finalizedAt,
           lastVerifiedAt: now,
-          providerReference: payload?.providerReference ?? attempt.providerReference,
+          providerReference:
+            payload?.providerReference ?? attempt.providerReference,
           providerTransactionId:
             payload?.providerTransactionId ?? attempt.providerTransactionId,
-          providerAccessCode: payload?.providerAccessCode ?? attempt.providerAccessCode,
+          providerAccessCode:
+            payload?.providerAccessCode ?? attempt.providerAccessCode,
           providerChannel:
-            payload?.providerChannel ?? attempt.providerChannel ?? attempt.channel,
+            payload?.providerChannel ??
+            attempt.providerChannel ??
+            attempt.channel,
           channel: payload?.providerChannel ?? attempt.channel,
           settlementCurrency: settlement.settlementCurrency,
           settlementAmount: settlement.settlementAmount,
           exchangeRateSnapshotId: settlement.exchangeRateSnapshotId,
           responseSnapshot:
-            responseSnapshotPatch && Object.keys(responseSnapshotPatch).length > 0
+            responseSnapshotPatch &&
+            Object.keys(responseSnapshotPatch).length > 0
               ? ({
                   ...(this.asObject(attempt.responseSnapshot) ?? {}),
                   ...responseSnapshotPatch,
@@ -3251,7 +3553,10 @@ export class PaymentService implements OnModuleInit {
       });
 
       await tx.order.updateMany({
-        where: { paymentReference: reference, buyerId: attempt.buyerId ?? undefined },
+        where: {
+          paymentReference: reference,
+          buyerId: attempt.buyerId ?? undefined,
+        },
         data: {
           paymentStatus: this.mapAttemptStatusToOrderPaymentStatus(nextStatus),
           paidAt: nextStatus === 'PAID' ? now : null,
@@ -3266,7 +3571,10 @@ export class PaymentService implements OnModuleInit {
           correlationId: payload?.correlationId ?? attempt.correlationId,
           providerEventType:
             source === 'webhook'
-              ? this.extractWebhookEvent(String(attempt.provider || ''), eventPayload ?? {})
+              ? this.extractWebhookEvent(
+                  String(attempt.provider || ''),
+                  eventPayload ?? {},
+                )
               : nextStatus,
           providerEventReceivedAt: source === 'webhook' ? now : null,
           processedAt: now,
@@ -3284,13 +3592,20 @@ export class PaymentService implements OnModuleInit {
 
     if (updatedAttempt.subjectType === PaymentSubjectType.UNIFIED_CHECKOUT) {
       if (transitionResult.transitionedToPaid) {
-        await this.finalizeUnifiedCheckoutAttempt(updatedAttempt.reference, userId);
+        await this.finalizeUnifiedCheckoutAttempt(
+          updatedAttempt.reference,
+          userId,
+        );
       } else if (
         ['FAILED', 'CANCELLED', 'EXPIRED'].includes(updatedAttempt.status)
       ) {
-        await this.releaseUnifiedCheckoutAttempt(updatedAttempt.reference, userId, {
-          reason: `ATTEMPT_${updatedAttempt.status}`,
-        });
+        await this.releaseUnifiedCheckoutAttempt(
+          updatedAttempt.reference,
+          userId,
+          {
+            reason: `ATTEMPT_${updatedAttempt.status}`,
+          },
+        );
       }
     }
 
@@ -3300,7 +3615,9 @@ export class PaymentService implements OnModuleInit {
         ? await this.prisma.order.findMany({
             where: {
               paymentReference: reference,
-              ...(updatedAttempt.buyerId ? { buyerId: updatedAttempt.buyerId } : {}),
+              ...(updatedAttempt.buyerId
+                ? { buyerId: updatedAttempt.buyerId }
+                : {}),
             },
             select: {
               id: true,
@@ -3321,8 +3638,13 @@ export class PaymentService implements OnModuleInit {
         : [];
 
     if (transitionResult.transitionedToPaid && linkedOrders.length > 0) {
-      await this.standardOrderFinanceSyncService.syncPaidOrdersByReferences([reference]);
-      await this.notifyFinanceAdminsOfStandardPayment(updatedAttempt, linkedOrders);
+      await this.standardOrderFinanceSyncService.syncPaidOrdersByReferences([
+        reference,
+      ]);
+      await this.notifyFinanceAdminsOfStandardPayment(
+        updatedAttempt,
+        linkedOrders,
+      );
       await this.notifyOrderPlacementAfterPayment(linkedOrders);
     }
 
@@ -3346,8 +3668,12 @@ export class PaymentService implements OnModuleInit {
       callbackUrl: attempt.callbackUrl ?? undefined,
       providerAccessCode: attempt.providerAccessCode ?? undefined,
       authorizationUrl: attempt.authorizationUrl ?? undefined,
-      bankAccount: this.asObject(attempt.bankAccount) as PaymentInitResult['bankAccount'],
-      nextAction: this.asObject(attempt.nextAction) as PaymentNextAction | undefined,
+      bankAccount: this.asObject(
+        attempt.bankAccount,
+      ) as PaymentInitResult['bankAccount'],
+      nextAction: this.asObject(attempt.nextAction) as
+        | PaymentNextAction
+        | undefined,
     };
   }
 
@@ -3397,7 +3723,9 @@ export class PaymentService implements OnModuleInit {
     finalized?: UnifiedCheckoutFinalizeResult,
   ): PaymentVerifyResult {
     const summary = finalized?.summary;
-    const amount = this.roundMoney(Number(summary?.grandTotal ?? attempt.amount ?? 0));
+    const amount = this.roundMoney(
+      Number(summary?.grandTotal ?? attempt.amount ?? 0),
+    );
 
     return {
       success,
@@ -3408,7 +3736,9 @@ export class PaymentService implements OnModuleInit {
       amount,
       currency: summary?.currency ?? attempt.currency,
       settlementCurrency: attempt.settlementCurrency,
-      settlementAmount: Number(attempt.settlementAmount ?? attempt.amount ?? amount),
+      settlementAmount: Number(
+        attempt.settlementAmount ?? attempt.amount ?? amount,
+      ),
       exchangeRateSnapshotId: attempt.exchangeRateSnapshotId ?? undefined,
       paidAt: attempt.confirmedAt?.toISOString(),
       channel: attempt.channel ?? undefined,
@@ -3422,7 +3752,8 @@ export class PaymentService implements OnModuleInit {
       failureMessage: attempt.failureMessage ?? undefined,
       orderIds: finalized?.orderIds ?? [],
       customOrderIds: finalized?.customOrderIds ?? [],
-      checkoutSessionId: finalized?.checkoutSessionId ?? attempt.checkoutSessionId ?? undefined,
+      checkoutSessionId:
+        finalized?.checkoutSessionId ?? attempt.checkoutSessionId ?? undefined,
       summary: summary
         ? {
             items: summary.items,
@@ -3463,7 +3794,11 @@ export class PaymentService implements OnModuleInit {
 
   private async notifyFinanceAdminsOfStandardPayment(
     attempt: NonNullable<PaymentAttemptRecord>,
-    linkedOrders: Array<{ id: string; brandId: string; buyerId: string | null }>,
+    linkedOrders: Array<{
+      id: string;
+      brandId: string;
+      buyerId: string | null;
+    }>,
   ) {
     const recipients = await this.prisma.user.findMany({
       where: {
@@ -3489,24 +3824,29 @@ export class PaymentService implements OnModuleInit {
 
     const amount = this.roundMoney(Number(attempt.amount ?? 0)).toFixed(2);
     const orderCount = linkedOrders.length;
-    const subjectLabel = orderCount === 1 ? 'standard order' : 'standard orders';
+    const subjectLabel =
+      orderCount === 1 ? 'standard order' : 'standard orders';
 
     await Promise.allSettled(
       recipientIds.map((recipientId) =>
-        this.notificationsService.create(recipientId, NotificationType.ADMIN_ACTION, {
-          actorId: linkedOrders[0]?.buyerId ?? undefined,
-          dedupeMs: 5 * 60 * 1000,
-          payload: {
-            action: 'FINANCE_PAYMENT_RECEIVED',
-            paymentAttemptId: attempt.id,
-            reference: attempt.reference,
-            amount: Number(attempt.amount ?? 0),
-            currency: attempt.currency,
-            orderIds: linkedOrders.map((order) => order.id),
-            message: `Payment received: ${attempt.reference} for ${orderCount} ${subjectLabel} worth ${attempt.currency} ${amount}.`,
-            targetUrl: '/admin/finance',
+        this.notificationsService.create(
+          recipientId,
+          NotificationType.ADMIN_ACTION,
+          {
+            actorId: linkedOrders[0]?.buyerId ?? undefined,
+            dedupeMs: 5 * 60 * 1000,
+            payload: {
+              action: 'FINANCE_PAYMENT_RECEIVED',
+              paymentAttemptId: attempt.id,
+              reference: attempt.reference,
+              amount: Number(attempt.amount ?? 0),
+              currency: attempt.currency,
+              orderIds: linkedOrders.map((order) => order.id),
+              message: `Payment received: ${attempt.reference} for ${orderCount} ${subjectLabel} worth ${attempt.currency} ${amount}.`,
+              targetUrl: '/admin/finance',
+            },
           },
-        }),
+        ),
       ),
     );
   }
@@ -3536,77 +3876,95 @@ export class PaymentService implements OnModuleInit {
         include: { thread: true },
       });
 
-      const thread = linked?.thread ?? await (async () => {
-        const existingPair = await tx.messageThread.findFirst({ where: { pairKey } });
-        if (existingPair) {
-          await tx.messageThreadOrderLink.upsert({
-            where: { orderId: order.id },
-            create: { threadId: existingPair.id, orderId: order.id },
-            update: { threadId: existingPair.id },
+      const thread =
+        linked?.thread ??
+        (await (async () => {
+          const existingPair = await tx.messageThread.findFirst({
+            where: { pairKey },
           });
-          return existingPair;
-        }
+          if (existingPair) {
+            await tx.messageThreadOrderLink.upsert({
+              where: { orderId: order.id },
+              create: { threadId: existingPair.id, orderId: order.id },
+              update: { threadId: existingPair.id },
+            });
+            return existingPair;
+          }
 
-        const legacyPair = await tx.messageThread.findFirst({
-          where: {
-            pairKey: null,
-            brandId: order.brandId,
-            buyerId: order.buyerId,
-          },
-          orderBy: [{ lastMessageAt: 'desc' }, { createdAt: 'desc' }],
-        });
-        if (legacyPair) {
-          const updated = await tx.messageThread.update({
-            where: { id: legacyPair.id },
+          const legacyPair = await tx.messageThread.findFirst({
+            where: {
+              pairKey: null,
+              brandId: order.brandId,
+              buyerId: order.buyerId,
+            },
+            orderBy: [{ lastMessageAt: 'desc' }, { createdAt: 'desc' }],
+          });
+          if (legacyPair) {
+            const updated = await tx.messageThread.update({
+              where: { id: legacyPair.id },
+              data: {
+                contextType: MessageContextType.DIRECT,
+                conversationType: MessageConversationType.BUYER_BRAND,
+                buyerUserId: order.buyerId,
+                brandOwnerUserId: order.brand!.ownerId,
+                pairKey,
+                status: MessageThreadStatus.OPEN,
+              },
+            });
+            await tx.messageThreadOrderLink.upsert({
+              where: { orderId: order.id },
+              create: { threadId: updated.id, orderId: order.id },
+              update: { threadId: updated.id },
+            });
+            return updated;
+          }
+
+          const created = await tx.messageThread.create({
             data: {
               contextType: MessageContextType.DIRECT,
               conversationType: MessageConversationType.BUYER_BRAND,
+              brandId: order.brandId,
+              buyerId: order.buyerId,
               buyerUserId: order.buyerId,
               brandOwnerUserId: order.brand!.ownerId,
               pairKey,
               status: MessageThreadStatus.OPEN,
+              subjectSnapshotJson: {
+                type: 'BUYER_BRAND_CONVERSATION',
+                brandName: order.brand!.name,
+              },
+              participants: {
+                create: [
+                  {
+                    userId: order.buyerId!,
+                    role: MessageParticipantRole.BUYER,
+                  },
+                  {
+                    userId: order.brand!.ownerId,
+                    role: MessageParticipantRole.BRAND_OWNER,
+                  },
+                ],
+              },
             },
           });
-          await tx.messageThreadOrderLink.upsert({
-            where: { orderId: order.id },
-            create: { threadId: updated.id, orderId: order.id },
-            update: { threadId: updated.id },
+          await tx.messageThreadOrderLink.create({
+            data: { threadId: created.id, orderId: order.id },
           });
-          return updated;
-        }
-
-        const created = await tx.messageThread.create({
-          data: {
-            contextType: MessageContextType.DIRECT,
-            conversationType: MessageConversationType.BUYER_BRAND,
-            brandId: order.brandId,
-            buyerId: order.buyerId,
-            buyerUserId: order.buyerId,
-            brandOwnerUserId: order.brand!.ownerId,
-            pairKey,
-            status: MessageThreadStatus.OPEN,
-            subjectSnapshotJson: {
-              type: 'BUYER_BRAND_CONVERSATION',
-              brandName: order.brand!.name,
-            },
-            participants: {
-              create: [
-                { userId: order.buyerId!, role: MessageParticipantRole.BUYER },
-                { userId: order.brand!.ownerId, role: MessageParticipantRole.BRAND_OWNER },
-              ],
-            },
-          },
-        });
-        await tx.messageThreadOrderLink.create({
-          data: { threadId: created.id, orderId: order.id },
-        });
-        return created;
-      })();
+          return created;
+        })());
 
       await tx.messageThreadParticipant.createMany({
         data: [
-          { threadId: thread.id, userId: order.buyerId, role: MessageParticipantRole.BUYER },
-          { threadId: thread.id, userId: order.brand.ownerId, role: MessageParticipantRole.BRAND_OWNER },
+          {
+            threadId: thread.id,
+            userId: order.buyerId,
+            role: MessageParticipantRole.BUYER,
+          },
+          {
+            threadId: thread.id,
+            userId: order.brand.ownerId,
+            role: MessageParticipantRole.BRAND_OWNER,
+          },
         ],
         skipDuplicates: true,
       });
@@ -3616,7 +3974,10 @@ export class PaymentService implements OnModuleInit {
           threadId: thread.id,
           orderId: order.id,
           kind: MessageKind.SYSTEM,
-          metadataJson: { path: ['eventType'], equals: 'STANDARD_ORDER_PLACED' },
+          metadataJson: {
+            path: ['eventType'],
+            equals: 'STANDARD_ORDER_PLACED',
+          },
         },
         select: { id: true },
       });
@@ -3740,18 +4101,22 @@ export class PaymentService implements OnModuleInit {
 
       if (order.buyerId) {
         jobs.push(
-          this.notificationsService.create(order.buyerId, NotificationType.ORDER_PLACED, {
-            actorId: null,
-            dedupeMs: 5 * 60 * 1000,
-            payload: {
-              orderId: order.id,
-              totalAmount,
-              brandId: order.brandId,
-              brandName,
-              isBuyerCopy: true,
-              targetUrl: `/orders/${order.id}`,
+          this.notificationsService.create(
+            order.buyerId,
+            NotificationType.ORDER_PLACED,
+            {
+              actorId: null,
+              dedupeMs: 5 * 60 * 1000,
+              payload: {
+                orderId: order.id,
+                totalAmount,
+                brandId: order.brandId,
+                brandName,
+                isBuyerCopy: true,
+                targetUrl: `/orders/${order.id}`,
+              },
             },
-          }),
+          ),
         );
       }
     }
@@ -3776,7 +4141,8 @@ export class PaymentService implements OnModuleInit {
     gatewayPaymentData: Record<string, any>;
     sanitizedPaymentData: Record<string, any>;
   }): Promise<CardValidationSessionBinding | null> {
-    const storedSession = await this.assertCardValidationSessionForInitialize(params);
+    const storedSession =
+      await this.assertCardValidationSessionForInitialize(params);
     if (!storedSession) {
       return null;
     }
@@ -3795,7 +4161,11 @@ export class PaymentService implements OnModuleInit {
     userId: string,
     session: CardValidationSessionBinding | null,
   ): Promise<void> {
-    if (!session || session.storage !== 'canonical' || !session.canonicalSessionId) {
+    if (
+      !session ||
+      session.storage !== 'canonical' ||
+      !session.canonicalSessionId
+    ) {
       return;
     }
 
@@ -3842,7 +4212,9 @@ export class PaymentService implements OnModuleInit {
       return null;
     }
 
-    const channel = String(params.gatewayPaymentData.channel ?? '').trim().toUpperCase();
+    const channel = String(params.gatewayPaymentData.channel ?? '')
+      .trim()
+      .toUpperCase();
     if (channel !== 'CARD') {
       return null;
     }
@@ -3865,7 +4237,10 @@ export class PaymentService implements OnModuleInit {
       );
     }
 
-    const storedSession = await this.getStoredCardValidationSession(sessionId, userId);
+    const storedSession = await this.getStoredCardValidationSession(
+      sessionId,
+      userId,
+    );
     if (!storedSession) {
       throw new BadRequestException(
         'Card validation session was not found. Validate your payment details again.',
@@ -3889,7 +4264,9 @@ export class PaymentService implements OnModuleInit {
       storedSession.gateway !== 'PAYSTACK' ||
       storedSession.channel !== 'CARD'
     ) {
-      throw new BadRequestException('Card validation session is invalid for this checkout attempt');
+      throw new BadRequestException(
+        'Card validation session is invalid for this checkout attempt',
+      );
     }
 
     const useSavedCard = Boolean(params.gatewayPaymentData.useSavedCard);
@@ -3900,8 +4277,13 @@ export class PaymentService implements OnModuleInit {
     }
 
     if (useSavedCard) {
-      const savedCardId = String(params.gatewayPaymentData.savedCardId ?? '').trim();
-      if (!savedCardId || savedCardId !== String(storedSession.savedCardId ?? '').trim()) {
+      const savedCardId = String(
+        params.gatewayPaymentData.savedCardId ?? '',
+      ).trim();
+      if (
+        !savedCardId ||
+        savedCardId !== String(storedSession.savedCardId ?? '').trim()
+      ) {
         throw new BadRequestException(
           'Selected saved card changed after validation. Validate again before placing your order.',
         );
@@ -4001,7 +4383,9 @@ export class PaymentService implements OnModuleInit {
         key: sessionKey,
         method: CARD_VALIDATION_SESSION_METHOD,
         path: CARD_VALIDATION_SESSION_PATH,
-        requestHash: createHash('sha256').update(paymentDataFingerprint).digest('hex'),
+        requestHash: createHash('sha256')
+          .update(paymentDataFingerprint)
+          .digest('hex'),
         responseBody: session,
         statusCode: 201,
         expiresAt,
@@ -4074,9 +4458,8 @@ export class PaymentService implements OnModuleInit {
           gateway: 'PAYSTACK',
           channel: 'CARD',
           useSavedCard: Boolean(persistedSession.useSavedCard),
-          savedPaymentMethodId: String(
-            persistedSession.savedPaymentMethodId ?? '',
-          ).trim() || null,
+          savedPaymentMethodId:
+            String(persistedSession.savedPaymentMethodId ?? '').trim() || null,
           savedCardId:
             String(persistedSession.savedCardLegacyId ?? '').trim() ||
             String(persistedSession.savedPaymentMethodId ?? '').trim() ||
@@ -4086,7 +4469,9 @@ export class PaymentService implements OnModuleInit {
           expiresAt: persistedSession.expiresAt.toISOString(),
           cardSummary: {
             source:
-              String(cardSummary.source ?? '').trim().toLowerCase() === 'saved'
+              String(cardSummary.source ?? '')
+                .trim()
+                .toLowerCase() === 'saved'
                 ? 'saved'
                 : 'new',
             brand: this.normalizeCardText(cardSummary.brand),
@@ -4141,7 +4526,9 @@ export class PaymentService implements OnModuleInit {
     return {
       sessionId: normalizedSessionId,
       status:
-        String(payload.status ?? '').trim().toUpperCase() === 'EXPIRED'
+        String(payload.status ?? '')
+          .trim()
+          .toUpperCase() === 'EXPIRED'
           ? 'EXPIRED'
           : 'VALIDATED',
       gateway: 'PAYSTACK',
@@ -4153,7 +4540,12 @@ export class PaymentService implements OnModuleInit {
       validatedAt,
       expiresAt: persisted.expiresAt.toISOString(),
       cardSummary: {
-        source: String(cardSummary.source ?? '').trim().toLowerCase() === 'saved' ? 'saved' : 'new',
+        source:
+          String(cardSummary.source ?? '')
+            .trim()
+            .toLowerCase() === 'saved'
+            ? 'saved'
+            : 'new',
         brand: this.normalizeCardText(cardSummary.brand),
         bank: this.normalizeCardText(cardSummary.bank),
         last4: cardLast4,
@@ -4232,7 +4624,9 @@ export class PaymentService implements OnModuleInit {
   }
 
   private parseBooleanEnv(name: string, defaultValue: boolean) {
-    const raw = String(process.env[name] ?? '').trim().toLowerCase();
+    const raw = String(process.env[name] ?? '')
+      .trim()
+      .toLowerCase();
     if (!raw) {
       return defaultValue;
     }
@@ -4246,7 +4640,9 @@ export class PaymentService implements OnModuleInit {
   }
 
   private parseBooleanEnvOptional(name: string): boolean | null {
-    const raw = String(process.env[name] ?? '').trim().toLowerCase();
+    const raw = String(process.env[name] ?? '')
+      .trim()
+      .toLowerCase();
     if (!raw) {
       return null;
     }
@@ -4268,7 +4664,9 @@ export class PaymentService implements OnModuleInit {
   }
 
   private getUserCanaryBucket(userId: string) {
-    const digest = createHash('sha256').update(String(userId ?? '')).digest('hex');
+    const digest = createHash('sha256')
+      .update(String(userId ?? ''))
+      .digest('hex');
     return Number.parseInt(digest.slice(0, 8), 16) % 100;
   }
 
@@ -4277,7 +4675,10 @@ export class PaymentService implements OnModuleInit {
       return false;
     }
 
-    const percent = this.parsePercentEnv(PAYMENT_SAVED_METHODS_CANARY_PERCENT, 100);
+    const percent = this.parsePercentEnv(
+      PAYMENT_SAVED_METHODS_CANARY_PERCENT,
+      100,
+    );
     if (percent >= 100) {
       return true;
     }
@@ -4298,7 +4699,9 @@ export class PaymentService implements OnModuleInit {
   }
 
   private isSavedPaymentMethodBackfillEnabled() {
-    const configured = this.parseBooleanEnvOptional(PAYMENT_SAVED_METHODS_BACKFILL_FLAG);
+    const configured = this.parseBooleanEnvOptional(
+      PAYMENT_SAVED_METHODS_BACKFILL_FLAG,
+    );
     if (configured != null) {
       return configured;
     }
@@ -4323,7 +4726,9 @@ export class PaymentService implements OnModuleInit {
       : normalized;
   }
 
-  private mapSavedPaymentMethodToSummary(savedMethod: any): SavedPaymentCardSummary {
+  private mapSavedPaymentMethodToSummary(
+    savedMethod: any,
+  ): SavedPaymentCardSummary {
     const createdAt = savedMethod?.createdAt
       ? new Date(savedMethod.createdAt).toISOString()
       : new Date().toISOString();
@@ -4342,7 +4747,10 @@ export class PaymentService implements OnModuleInit {
       last4: this.normalizeCardLast4(savedMethod?.last4) ?? '0000',
       expMonth: this.normalizeCardText(savedMethod?.expMonth),
       expYear: this.normalizeCardText(savedMethod?.expYear),
-      reusable: String(savedMethod?.status ?? '').trim().toUpperCase() === 'ACTIVE',
+      reusable:
+        String(savedMethod?.status ?? '')
+          .trim()
+          .toUpperCase() === 'ACTIVE',
       isDefault: Boolean(savedMethod?.isDefault),
       addedAt: createdAt,
       lastUsedAt,
@@ -4364,11 +4772,17 @@ export class PaymentService implements OnModuleInit {
         paymentMethod: PaymentMethod.PAYSTACK,
         status: 'ACTIVE',
       },
-      orderBy: [{ isDefault: 'desc' }, { lastUsedAt: 'desc' }, { updatedAt: 'desc' }],
+      orderBy: [
+        { isDefault: 'desc' },
+        { lastUsedAt: 'desc' },
+        { updatedAt: 'desc' },
+      ],
       take: 50,
     });
 
-    return methods.map((method: any) => this.mapSavedPaymentMethodToSummary(method));
+    return methods.map((method: any) =>
+      this.mapSavedPaymentMethodToSummary(method),
+    );
   }
 
   private async resolveCanonicalSavedPaymentMethodId(
@@ -4400,14 +4814,18 @@ export class PaymentService implements OnModuleInit {
   }
 
   private getSavedPaymentMethodEncryptionKey(): Buffer | null {
-    const secret = String(process.env[PAYMENT_SAVED_METHODS_SECRET] ?? '').trim();
+    const secret = String(
+      process.env[PAYMENT_SAVED_METHODS_SECRET] ?? '',
+    ).trim();
     if (!secret) {
       return null;
     }
     return createHash('sha256').update(secret).digest();
   }
 
-  private encryptSavedPaymentMethodAuthorizationCode(value: string | null): string | null {
+  private encryptSavedPaymentMethodAuthorizationCode(
+    value: string | null,
+  ): string | null {
     const raw = String(value ?? '').trim();
     if (!raw) {
       return null;
@@ -4423,12 +4841,17 @@ export class PaymentService implements OnModuleInit {
 
     const iv = randomBytes(12);
     const cipher = createCipheriv('aes-256-gcm', key, iv);
-    const encrypted = Buffer.concat([cipher.update(raw, 'utf8'), cipher.final()]);
+    const encrypted = Buffer.concat([
+      cipher.update(raw, 'utf8'),
+      cipher.final(),
+    ]);
     const tag = cipher.getAuthTag();
     return `${iv.toString('base64')}.${tag.toString('base64')}.${encrypted.toString('base64')}`;
   }
 
-  private decryptSavedPaymentMethodAuthorizationCode(value?: string | null): string | null {
+  private decryptSavedPaymentMethodAuthorizationCode(
+    value?: string | null,
+  ): string | null {
     const payload = String(value ?? '').trim();
     if (!payload) {
       return null;
@@ -4461,7 +4884,9 @@ export class PaymentService implements OnModuleInit {
     }
   }
 
-  private async collectLegacySavedPaystackCardsWithAuthorization(userId: string) {
+  private async collectLegacySavedPaystackCardsWithAuthorization(
+    userId: string,
+  ) {
     const attempts = await this.prisma.paymentAttempt.findMany({
       where: {
         buyerId: userId,
@@ -4538,7 +4963,10 @@ export class PaymentService implements OnModuleInit {
         requestSnapshot?.channel,
       ];
       const isCardAttempt = channelCandidates.some(
-        (value) => String(value ?? '').trim().toUpperCase() === 'CARD',
+        (value) =>
+          String(value ?? '')
+            .trim()
+            .toUpperCase() === 'CARD',
       );
       if (!isCardAttempt) {
         continue;
@@ -4581,7 +5009,8 @@ export class PaymentService implements OnModuleInit {
       return 0;
     }
 
-    const inferredCards = await this.collectLegacySavedPaystackCardsWithAuthorization(userId);
+    const inferredCards =
+      await this.collectLegacySavedPaystackCardsWithAuthorization(userId);
     if (inferredCards.length === 0) {
       return 0;
     }
@@ -4599,9 +5028,8 @@ export class PaymentService implements OnModuleInit {
 
     let processed = 0;
     for (const card of inferredCards) {
-      const encryptedAuthorizationCode = this.encryptSavedPaymentMethodAuthorizationCode(
-        card.authorizationCode,
-      );
+      const encryptedAuthorizationCode =
+        this.encryptSavedPaymentMethodAuthorizationCode(card.authorizationCode);
 
       const upserted = await savedPaymentMethodModel.upsert({
         where: {
@@ -4661,7 +5089,9 @@ export class PaymentService implements OnModuleInit {
 
   private extractErrorMessage(error: any): string {
     if (Array.isArray(error?.response?.message)) {
-      return error.response.message.map((entry: unknown) => String(entry)).join('; ');
+      return error.response.message
+        .map((entry: unknown) => String(entry))
+        .join('; ');
     }
 
     if (typeof error?.response?.message === 'string') {
@@ -4671,7 +5101,10 @@ export class PaymentService implements OnModuleInit {
     return String(error?.message || 'Unknown reconciliation failure');
   }
 
-  private emitReliabilityAlert(code: string, details: Record<string, unknown>): void {
+  private emitReliabilityAlert(
+    code: string,
+    details: Record<string, unknown>,
+  ): void {
     this.logger.error(`ALERT ${code} ${JSON.stringify(details)}`);
   }
 
@@ -4689,7 +5122,9 @@ export class PaymentService implements OnModuleInit {
     }
 
     if (!paymentData || typeof paymentData !== 'object') {
-      throw new BadRequestException('Payment details are required for the selected method');
+      throw new BadRequestException(
+        'Payment details are required for the selected method',
+      );
     }
 
     const email = String(paymentData.email ?? '').trim();
@@ -4707,11 +5142,17 @@ export class PaymentService implements OnModuleInit {
     }
 
     if (!paymentData.billingSameAsShipping && !paymentData.billingAddress) {
-      throw new BadRequestException('Billing address is required when different from shipping');
+      throw new BadRequestException(
+        'Billing address is required when different from shipping',
+      );
     }
 
     if (paymentMethod === PaymentMethod.PAYSTACK) {
-      if (!['CARD', 'BANK_TRANSFER'].includes(String(paymentData.channel || '').toUpperCase())) {
+      if (
+        !['CARD', 'BANK_TRANSFER'].includes(
+          String(paymentData.channel || '').toUpperCase(),
+        )
+      ) {
         throw new BadRequestException(
           'Paystack requires a supported hosted checkout channel',
         );
@@ -4722,7 +5163,9 @@ export class PaymentService implements OnModuleInit {
         paymentData.useSavedCard
       ) {
         if (!String(paymentData.savedCardId ?? '').trim()) {
-          throw new BadRequestException('Select a saved card or switch to a new card');
+          throw new BadRequestException(
+            'Select a saved card or switch to a new card',
+          );
         }
         return paymentData;
       }
@@ -4744,7 +5187,9 @@ export class PaymentService implements OnModuleInit {
     if (paymentMethod === PaymentMethod.FLUTTERWAVE) {
       const channel = paymentData.channel as PaymentChannel;
       if (!channel) {
-        throw new BadRequestException('Flutterwave payment channel is required');
+        throw new BadRequestException(
+          'Flutterwave payment channel is required',
+        );
       }
 
       if (
@@ -4825,7 +5270,9 @@ export class PaymentService implements OnModuleInit {
     const normalized =
       requested ??
       authoritative ??
-      this.normalizeStatusHint(this.asObject(attempt.responseSnapshot)?.mockReturnStatus);
+      this.normalizeStatusHint(
+        this.asObject(attempt.responseSnapshot)?.mockReturnStatus,
+      );
 
     if (!normalized) {
       return attempt.status as PaymentAttemptStatus;
@@ -4881,7 +5328,9 @@ export class PaymentService implements OnModuleInit {
   private isMockMode(): boolean {
     // Default is 'live'. To use mock/test mode, explicitly set PAYMENTS_MODE=mock in your .env.
     // We do NOT default to mock to prevent accidental mock-mode deploys in production.
-    return (process.env.PAYMENTS_MODE ?? 'live').trim().toLowerCase() !== 'live';
+    return (
+      (process.env.PAYMENTS_MODE ?? 'live').trim().toLowerCase() !== 'live'
+    );
   }
 
   private isLegacyPaystackWebhookAliasEnabled(): boolean {
@@ -4938,17 +5387,21 @@ export class PaymentService implements OnModuleInit {
   ): Promise<T> {
     const normalizedUserId = String(userId ?? '').trim();
     if (!normalizedUserId) {
-      throw new BadRequestException('Unable to resolve buyer identity for checkout initialization');
+      throw new BadRequestException(
+        'Unable to resolve buyer identity for checkout initialization',
+      );
     }
 
-    const redis = await this.webhookEventsQueue.getRedisClient().catch((error) => {
-      this.logger.error(
-        `Failed to resolve Redis client for checkout initialization lock [corr=${correlationId}]: ${this.extractErrorMessage(error)}`,
-      );
-      throw new InternalServerErrorException(
-        'Unable to enforce checkout initialization concurrency lock.',
-      );
-    });
+    const redis = await this.webhookEventsQueue
+      .getRedisClient()
+      .catch((error) => {
+        this.logger.error(
+          `Failed to resolve Redis client for checkout initialization lock [corr=${correlationId}]: ${this.extractErrorMessage(error)}`,
+        );
+        throw new InternalServerErrorException(
+          'Unable to enforce checkout initialization concurrency lock.',
+        );
+      });
 
     const lockKey = paymentUnifiedInitLockKey(normalizedUserId);
     const ownerToken = uuidv4();
@@ -5017,7 +5470,9 @@ export class PaymentService implements OnModuleInit {
   }
 
   private isPrivateOrLoopbackHostname(hostname: string): boolean {
-    const normalized = String(hostname ?? '').trim().toLowerCase();
+    const normalized = String(hostname ?? '')
+      .trim()
+      .toLowerCase();
     if (!normalized) {
       return true;
     }
@@ -5054,20 +5509,30 @@ export class PaymentService implements OnModuleInit {
 
   private allowPaymentSimulation(): boolean {
     // Default is false. Simulation must be explicitly enabled for dev/staging only.
-    return (process.env.ALLOW_PAYMENT_SIMULATION ?? 'false').trim().toLowerCase() === 'true';
+    return (
+      (process.env.ALLOW_PAYMENT_SIMULATION ?? 'false').trim().toLowerCase() ===
+      'true'
+    );
   }
 
   private resolveMockReturnStatus(paymentData: Record<string, any>): string {
-    const hint = String(paymentData.mockScenario ?? paymentData.email ?? '').toLowerCase();
+    const hint = String(
+      paymentData.mockScenario ?? paymentData.email ?? '',
+    ).toLowerCase();
     if (hint.includes('fail')) return 'failed';
     if (hint.includes('cancel')) return 'cancelled';
     if (hint.includes('expire')) return 'expired';
-    if (hint.includes('pending') || hint.includes('process')) return 'processing';
+    if (hint.includes('pending') || hint.includes('process'))
+      return 'processing';
     return 'success';
   }
 
-  private normalizeStatusHint(value: unknown): PaymentAttemptStatus | undefined {
-    const normalized = String(value ?? '').trim().toLowerCase();
+  private normalizeStatusHint(
+    value: unknown,
+  ): PaymentAttemptStatus | undefined {
+    const normalized = String(value ?? '')
+      .trim()
+      .toLowerCase();
     switch (normalized) {
       case 'success':
       case 'paid':
@@ -5095,7 +5560,9 @@ export class PaymentService implements OnModuleInit {
 
   private isPendingVerificationStatus(status: string | null | undefined) {
     return ['PENDING', 'REQUIRES_ACTION', 'PROCESSING'].includes(
-      String(status ?? '').trim().toUpperCase(),
+      String(status ?? '')
+        .trim()
+        .toUpperCase(),
     );
   }
 
@@ -5113,8 +5580,12 @@ export class PaymentService implements OnModuleInit {
     );
   }
 
-  private getProviderModeForAttempt(attempt: NonNullable<PaymentAttemptRecord>) {
-    return String(attempt.providerMode || '').trim().toLowerCase() === 'live'
+  private getProviderModeForAttempt(
+    attempt: NonNullable<PaymentAttemptRecord>,
+  ) {
+    return String(attempt.providerMode || '')
+      .trim()
+      .toLowerCase() === 'live'
       ? 'live'
       : 'mock';
   }
@@ -5201,7 +5672,9 @@ export class PaymentService implements OnModuleInit {
       return this.safeCompare(signature, secret);
     }
 
-    this.logger.warn(`Webhook verification not configured for gateway ${gateway}`);
+    this.logger.warn(
+      `Webhook verification not configured for gateway ${gateway}`,
+    );
     return false;
   }
 
@@ -5215,7 +5688,9 @@ export class PaymentService implements OnModuleInit {
       return true;
     }
 
-    const configuredIps = String(process.env.PAYSTACK_WEBHOOK_IP_ALLOWLIST ?? '')
+    const configuredIps = String(
+      process.env.PAYSTACK_WEBHOOK_IP_ALLOWLIST ?? '',
+    )
       .split(',')
       .map((value) => this.normalizeIp(value))
       .filter((value): value is string => Boolean(value));
@@ -5253,7 +5728,10 @@ export class PaymentService implements OnModuleInit {
     return normalized;
   }
 
-  private extractWebhookReference(gateway: string, payload: Record<string, any>) {
+  private extractWebhookReference(
+    gateway: string,
+    payload: Record<string, any>,
+  ) {
     if (gateway === 'PAYSTACK') {
       return String(payload?.data?.reference ?? '').trim() || null;
     }
@@ -5261,7 +5739,11 @@ export class PaymentService implements OnModuleInit {
     if (gateway === 'FLUTTERWAVE') {
       return (
         String(
-          payload?.data?.tx_ref ?? payload?.data?.txRef ?? payload?.txRef ?? payload?.tx_ref ?? '',
+          payload?.data?.tx_ref ??
+            payload?.data?.txRef ??
+            payload?.txRef ??
+            payload?.tx_ref ??
+            '',
         ).trim() || null
       );
     }
@@ -5275,8 +5757,8 @@ export class PaymentService implements OnModuleInit {
   ): PaymentAttemptStatus | null {
     const rawStatus =
       gateway === 'PAYSTACK'
-        ? payload?.data?.status ?? payload?.event
-        : payload?.data?.status ?? payload?.status ?? payload?.event;
+        ? (payload?.data?.status ?? payload?.event)
+        : (payload?.data?.status ?? payload?.status ?? payload?.event);
 
     return this.normalizeStatusHint(rawStatus) ?? null;
   }
@@ -5322,11 +5804,13 @@ export class PaymentService implements OnModuleInit {
   }
 
   private extractWebhookEvent(gateway: string, payload: Record<string, any>) {
-    return String(
-      gateway === 'PAYSTACK'
-        ? payload?.event ?? payload?.data?.status ?? ''
-        : payload?.event ?? payload?.type ?? payload?.data?.status ?? '',
-    ).trim() || null;
+    return (
+      String(
+        gateway === 'PAYSTACK'
+          ? (payload?.event ?? payload?.data?.status ?? '')
+          : (payload?.event ?? payload?.type ?? payload?.data?.status ?? ''),
+      ).trim() || null
+    );
   }
 
   private webhookAmountsMatch(
@@ -5335,7 +5819,13 @@ export class PaymentService implements OnModuleInit {
     payloadAmount: number | null,
     payloadCurrency: string | null,
   ) {
-    if (payloadCurrency && payloadCurrency !== String(attemptCurrency || '').trim().toUpperCase()) {
+    if (
+      payloadCurrency &&
+      payloadCurrency !==
+        String(attemptCurrency || '')
+          .trim()
+          .toUpperCase()
+    ) {
       return false;
     }
 
@@ -5343,14 +5833,19 @@ export class PaymentService implements OnModuleInit {
       return true;
     }
 
-    return Math.abs(this.roundMoney(attemptAmount) - this.roundMoney(payloadAmount)) < 0.01;
+    return (
+      Math.abs(
+        this.roundMoney(attemptAmount) - this.roundMoney(payloadAmount),
+      ) < 0.01
+    );
   }
 
   private getHeader(
     headers: Record<string, string | string[] | undefined>,
     key: string,
   ) {
-    const value = headers[key] ?? headers[key.toLowerCase()] ?? headers[key.toUpperCase()];
+    const value =
+      headers[key] ?? headers[key.toLowerCase()] ?? headers[key.toUpperCase()];
     if (Array.isArray(value)) {
       return value[0] ?? null;
     }
@@ -5393,7 +5888,10 @@ export class PaymentService implements OnModuleInit {
 
   private async recordWebhookIngressRejection(params: {
     provider: string;
-    rejectionReason: 'INVALID_SIGNATURE' | 'UNKNOWN_REFERENCE' | 'MALFORMED_PAYLOAD';
+    rejectionReason:
+      | 'INVALID_SIGNATURE'
+      | 'UNKNOWN_REFERENCE'
+      | 'MALFORMED_PAYLOAD';
     payloadSnapshot: unknown;
     context: WebhookContext;
     correlationId: string;
@@ -5427,7 +5925,9 @@ export class PaymentService implements OnModuleInit {
           providerEventType: params.providerEventType ?? null,
           providerEventKey: params.providerEventKey ?? null,
           remoteAddress: params.context.remoteAddress ?? null,
-          headersSnapshot: this.buildWebhookHeadersSnapshot(params.context.headers),
+          headersSnapshot: this.buildWebhookHeadersSnapshot(
+            params.context.headers,
+          ),
           payloadSnapshot: params.payloadSnapshot as Prisma.InputJsonValue,
           receivedAt: new Date(),
         },
@@ -5581,13 +6081,16 @@ export class PaymentService implements OnModuleInit {
         },
       });
     } catch (persistError) {
-      this.emitReliabilityAlert('PAYMENT_WEBHOOK_FAILURE_EVENT_PERSIST_FAILED', {
-        gateway: params.gateway,
-        reference: params.reference,
-        providerEventKey: params.providerEventKey,
-        correlationId: params.correlationId,
-        error: this.extractErrorMessage(persistError),
-      });
+      this.emitReliabilityAlert(
+        'PAYMENT_WEBHOOK_FAILURE_EVENT_PERSIST_FAILED',
+        {
+          gateway: params.gateway,
+          reference: params.reference,
+          providerEventKey: params.providerEventKey,
+          correlationId: params.correlationId,
+          error: this.extractErrorMessage(persistError),
+        },
+      );
       throw new InternalServerErrorException(
         `Failed to persist webhook processing failure event for ${params.reference}.`,
       );
@@ -5630,7 +6133,9 @@ export class PaymentService implements OnModuleInit {
   private getRequiredEnv(name: string) {
     const value = String(process.env[name] ?? '').trim();
     if (!value) {
-      throw new BadRequestException(`${name} is required for live payment processing`);
+      throw new BadRequestException(
+        `${name} is required for live payment processing`,
+      );
     }
     return value;
   }
@@ -5664,17 +6169,26 @@ export class PaymentService implements OnModuleInit {
       .trim()
       .toLowerCase();
 
-    if (configured === 'strict' || configured === 'soft' || configured === 'off') {
+    if (
+      configured === 'strict' ||
+      configured === 'soft' ||
+      configured === 'off'
+    ) {
       return configured;
     }
 
     const envMarker = String(
-      process.env.APP_ENV ?? process.env.DEPLOY_ENV ?? process.env.NODE_ENV ?? '',
+      process.env.APP_ENV ??
+        process.env.DEPLOY_ENV ??
+        process.env.NODE_ENV ??
+        '',
     )
       .trim()
       .toLowerCase();
 
-    return ['development', 'dev', 'test', 'qa', 'uat', 'local'].includes(envMarker)
+    return ['development', 'dev', 'test', 'qa', 'uat', 'local'].includes(
+      envMarker,
+    )
       ? 'soft'
       : 'strict';
   }
@@ -5717,7 +6231,8 @@ export class PaymentService implements OnModuleInit {
           this.normalizeCardText(storedDraft.maskedCardNumber) ??
           `******${storedLast4}`;
         next.newCardDraft = {
-          cardHolderName: this.normalizeCardText(storedDraft.cardHolderName) ?? '',
+          cardHolderName:
+            this.normalizeCardText(storedDraft.cardHolderName) ?? '',
           expiry: this.normalizeCardText(storedDraft.expiry) ?? '',
           last4: storedLast4,
           maskedCardNumber: storedMasked,
@@ -5842,8 +6357,19 @@ export class PaymentService implements OnModuleInit {
       throw new BadRequestException('Enter a valid expiry month');
     }
 
-    const expiryDate = new Date(2000 + expiryYear, expiryMonth, 0, 23, 59, 59, 999);
-    if (Number.isNaN(expiryDate.getTime()) || expiryDate.getTime() < Date.now()) {
+    const expiryDate = new Date(
+      2000 + expiryYear,
+      expiryMonth,
+      0,
+      23,
+      59,
+      59,
+      999,
+    );
+    if (
+      Number.isNaN(expiryDate.getTime()) ||
+      expiryDate.getTime() < Date.now()
+    ) {
       throw new BadRequestException('Card expiry date has passed');
     }
 
@@ -5854,9 +6380,10 @@ export class PaymentService implements OnModuleInit {
     const cardholderMode = this.resolvePaystackCardholderNameMatchMode();
     if (cardholderMode === 'strict' || cardholderMode === 'soft') {
       const billingAddress = this.asObject(paymentData.billingAddress);
-      const billingName = `${String(billingAddress?.firstName ?? '').trim()} ${String(
-        billingAddress?.lastName ?? '',
-      ).trim()}`.trim();
+      const billingName =
+        `${String(billingAddress?.firstName ?? '').trim()} ${String(
+          billingAddress?.lastName ?? '',
+        ).trim()}`.trim();
 
       if (billingName) {
         const nameMatches =
@@ -5879,9 +6406,12 @@ export class PaymentService implements OnModuleInit {
     buyerId: string,
     savedCardId: string,
   ): Promise<string> {
-    const normalizedSavedCardId = this.normalizeSavedCardIdentifier(savedCardId);
+    const normalizedSavedCardId =
+      this.normalizeSavedCardIdentifier(savedCardId);
     if (!normalizedSavedCardId) {
-      throw new BadRequestException('Select a valid saved card before continuing');
+      throw new BadRequestException(
+        'Select a valid saved card before continuing',
+      );
     }
 
     if (this.isCanonicalSavedMethodsEnabledForUser(buyerId)) {
@@ -5902,9 +6432,10 @@ export class PaymentService implements OnModuleInit {
         });
 
         if (canonicalMethod) {
-          const authorizationCode = this.decryptSavedPaymentMethodAuthorizationCode(
-            canonicalMethod.providerAuthorizationCodeEncrypted,
-          );
+          const authorizationCode =
+            this.decryptSavedPaymentMethodAuthorizationCode(
+              canonicalMethod.providerAuthorizationCodeEncrypted,
+            );
           if (!authorizationCode) {
             throw new BadRequestException(
               'This saved card can no longer be used. Remove it and add a new reusable card.',
@@ -5940,7 +6471,9 @@ export class PaymentService implements OnModuleInit {
     });
 
     if (!attempt) {
-      throw new BadRequestException('The selected saved card is no longer available');
+      throw new BadRequestException(
+        'The selected saved card is no longer available',
+      );
     }
 
     const requestSnapshot = this.asObject(attempt.requestSnapshot);
@@ -6011,7 +6544,9 @@ export class PaymentService implements OnModuleInit {
     return digits.slice(-4);
   }
 
-  private extractPaystackAuthorizationSnapshot(raw: unknown): Record<string, any> | null {
+  private extractPaystackAuthorizationSnapshot(
+    raw: unknown,
+  ): Record<string, any> | null {
     const authorization = this.asObject(raw);
     if (!authorization) {
       return null;
@@ -6026,7 +6561,9 @@ export class PaymentService implements OnModuleInit {
 
     return {
       brand: this.normalizeCardText(
-        authorization.brand ?? authorization.card_type ?? authorization.cardType,
+        authorization.brand ??
+          authorization.card_type ??
+          authorization.cardType,
       ),
       bank: this.normalizeCardText(authorization.bank),
       last4,
@@ -6050,7 +6587,9 @@ export class PaymentService implements OnModuleInit {
       return `sig:${signature}`;
     }
 
-    const authorizationCode = this.normalizeCardText(snapshot.authorizationCode);
+    const authorizationCode = this.normalizeCardText(
+      snapshot.authorizationCode,
+    );
     if (authorizationCode) {
       return `auth:${authorizationCode}`;
     }
@@ -6069,7 +6608,9 @@ export class PaymentService implements OnModuleInit {
     webhookPayload: Record<string, any> | null,
   ): ExtractedPaystackCard | null {
     const webhookData = this.asObject(webhookPayload?.data);
-    const verificationPayload = this.asObject(responseSnapshot?.providerVerificationPayload);
+    const verificationPayload = this.asObject(
+      responseSnapshot?.providerVerificationPayload,
+    );
 
     const candidates: unknown[] = [
       responseSnapshot?.providerAuthorization,
@@ -6121,7 +6662,9 @@ export class PaymentService implements OnModuleInit {
     message: string | null;
     authorization: Record<string, any> | null;
   }> {
-    const secret = this.getRequiredPaystackSecret('Paystack payment verification');
+    const secret = this.getRequiredPaystackSecret(
+      'Paystack payment verification',
+    );
     const response = await fetch(
       `https://api.paystack.co/transaction/verify/${encodeURIComponent(attempt.reference)}`,
       {
@@ -6139,9 +6682,13 @@ export class PaymentService implements OnModuleInit {
       );
     }
 
-    const providerReference = String(payload.data.reference || attempt.reference).trim();
+    const providerReference = String(
+      payload.data.reference || attempt.reference,
+    ).trim();
     if (providerReference !== attempt.reference) {
-      throw new BadRequestException('Provider verification reference does not match the payment attempt');
+      throw new BadRequestException(
+        'Provider verification reference does not match the payment attempt',
+      );
     }
 
     const rawAmount = payload?.data?.amount;
@@ -6159,18 +6706,35 @@ export class PaymentService implements OnModuleInit {
     }
 
     const amount = amountMinor / 100;
-    const currency = String(payload.data.currency || '').trim().toUpperCase() || null;
+    const currency =
+      String(payload.data.currency || '')
+        .trim()
+        .toUpperCase() || null;
     if (
-      Math.abs(this.roundMoney(amount) - this.roundMoney(Number(attempt.amount ?? 0))) >= 0.01
+      Math.abs(
+        this.roundMoney(amount) - this.roundMoney(Number(attempt.amount ?? 0)),
+      ) >= 0.01
     ) {
-      throw new BadRequestException('Provider verification amount does not match the payment attempt');
+      throw new BadRequestException(
+        'Provider verification amount does not match the payment attempt',
+      );
     }
 
-    if (currency && currency !== String(attempt.currency || '').trim().toUpperCase()) {
-      throw new BadRequestException('Provider verification currency does not match the payment attempt');
+    if (
+      currency &&
+      currency !==
+        String(attempt.currency || '')
+          .trim()
+          .toUpperCase()
+    ) {
+      throw new BadRequestException(
+        'Provider verification currency does not match the payment attempt',
+      );
     }
 
-    const rawStatus = String(payload.data.status || '').trim().toLowerCase();
+    const rawStatus = String(payload.data.status || '')
+      .trim()
+      .toLowerCase();
     const normalizedStatus =
       rawStatus === 'success'
         ? 'PAID'
@@ -6180,10 +6744,10 @@ export class PaymentService implements OnModuleInit {
             ? 'CANCELLED'
             : ['pending', 'ongoing', 'processing', 'queued'].includes(rawStatus)
               ? 'PROCESSING'
-              : this.normalizeStatusHint(rawStatus) ?? 'PROCESSING';
-      const authorization = this.extractPaystackAuthorizationSnapshot(
-        payload?.data?.authorization,
-      );
+              : (this.normalizeStatusHint(rawStatus) ?? 'PROCESSING');
+    const authorization = this.extractPaystackAuthorizationSnapshot(
+      payload?.data?.authorization,
+    );
 
     return {
       status: normalizedStatus,
@@ -6214,12 +6778,16 @@ export class PaymentService implements OnModuleInit {
   }
 
   private resolveShippingCostForState(state: string): number {
-    const normalizedState = String(state ?? '').trim().toUpperCase();
+    const normalizedState = String(state ?? '')
+      .trim()
+      .toUpperCase();
     if (!normalizedState) {
       return CHECKOUT_DEFAULT_SHIPPING_RATE;
     }
 
-    return CHECKOUT_SHIPPING_RATES[normalizedState] ?? CHECKOUT_DEFAULT_SHIPPING_RATE;
+    return (
+      CHECKOUT_SHIPPING_RATES[normalizedState] ?? CHECKOUT_DEFAULT_SHIPPING_RATE
+    );
   }
 
   private buildPaymentReturnPath(reference: string, gateway: string) {
@@ -6280,47 +6848,70 @@ export class PaymentService implements OnModuleInit {
       return [];
     }
 
-    const selfOwned = cartItems.find((item) => item.product?.brand?.ownerId === userId);
+    const selfOwned = cartItems.find(
+      (item) => item.product?.brand?.ownerId === userId,
+    );
     if (selfOwned) {
-      throw new BadRequestException('You cannot place orders on your own products');
+      throw new BadRequestException(
+        'You cannot place orders on your own products',
+      );
     }
 
     return cartItems.map((item) => {
       const product = item.product;
       if (!product || !product.isActive || product.deletedAt) {
-        throw new BadRequestException('One or more cart products are no longer available');
+        throw new BadRequestException(
+          'One or more cart products are no longer available',
+        );
       }
       if (product.standardCheckoutEnabled === false) {
-        throw new BadRequestException(`Product is not available for checkout: ${product.name}`);
+        throw new BadRequestException(
+          `Product is not available for checkout: ${product.name}`,
+        );
       }
       if (!product.brand?.isStoreOpen) {
-        throw new BadRequestException(`Store is closed for product: ${product.name}`);
+        throw new BadRequestException(
+          `Store is closed for product: ${product.name}`,
+        );
       }
 
       const variants = Array.isArray(product.variants) ? product.variants : [];
       const hasVariantSizes = variants.some((variant) => Boolean(variant.size));
-      const hasVariantColors = variants.some((variant) => Boolean(variant.color));
+      const hasVariantColors = variants.some((variant) =>
+        Boolean(variant.color),
+      );
 
       if ((hasVariantSizes || product.sizes.length > 0) && !item.selectedSize) {
-        throw new BadRequestException(`Please select a size for ${product.name}`);
+        throw new BadRequestException(
+          `Please select a size for ${product.name}`,
+        );
       }
       if (
         item.selectedSize &&
         product.sizes.length > 0 &&
         !product.sizes.includes(item.selectedSize)
       ) {
-        throw new BadRequestException(`Invalid size selected for ${product.name}`);
+        throw new BadRequestException(
+          `Invalid size selected for ${product.name}`,
+        );
       }
 
-      if ((hasVariantColors || product.colors.length > 0) && !item.selectedColor) {
-        throw new BadRequestException(`Please select a color for ${product.name}`);
+      if (
+        (hasVariantColors || product.colors.length > 0) &&
+        !item.selectedColor
+      ) {
+        throw new BadRequestException(
+          `Please select a color for ${product.name}`,
+        );
       }
       if (
         item.selectedColor &&
         product.colors.length > 0 &&
         !product.colors.includes(item.selectedColor)
       ) {
-        throw new BadRequestException(`Invalid color selected for ${product.name}`);
+        throw new BadRequestException(
+          `Invalid color selected for ${product.name}`,
+        );
       }
 
       const selectedVariant =
@@ -6340,7 +6931,9 @@ export class PaymentService implements OnModuleInit {
 
       const quantity = Number(item.quantity ?? 0);
       if (!Number.isFinite(quantity) || quantity <= 0) {
-        throw new BadRequestException(`Invalid quantity selected for ${product.name}`);
+        throw new BadRequestException(
+          `Invalid quantity selected for ${product.name}`,
+        );
       }
 
       const baseUnitPrice = selectedVariant?.price
@@ -6354,10 +6947,13 @@ export class PaymentService implements OnModuleInit {
           : baseUnitPrice;
 
       if (!Number.isFinite(unitPrice) || unitPrice < 0) {
-        throw new BadRequestException(`Invalid pricing detected for ${product.name}`);
+        throw new BadRequestException(
+          `Invalid pricing detected for ${product.name}`,
+        );
       }
 
-      const reserveInventory = Boolean(product.trackInventory) && !product.allowBackorders;
+      const reserveInventory =
+        Boolean(product.trackInventory) && !product.allowBackorders;
       if (reserveInventory) {
         if (selectedVariant) {
           if (Number(selectedVariant.stock ?? 0) < quantity) {
@@ -6367,7 +6963,11 @@ export class PaymentService implements OnModuleInit {
           }
         } else {
           const sizeStock = this.parseSizeStock(product.sizeStock);
-          if (item.selectedSize && sizeStock && sizeStock[item.selectedSize] !== undefined) {
+          if (
+            item.selectedSize &&
+            sizeStock &&
+            sizeStock[item.selectedSize] !== undefined
+          ) {
             if (Number(sizeStock[item.selectedSize] ?? 0) < quantity) {
               throw new BadRequestException(
                 `Only ${sizeStock[item.selectedSize] || 0} left for ${product.name} (${item.selectedSize})`,
@@ -6381,11 +6981,16 @@ export class PaymentService implements OnModuleInit {
         }
       }
 
-      const sizingMode = this.normalizeSizingModeValue(item.sizingMode ?? product.sizingMode ?? null);
+      const sizingMode = this.normalizeSizingModeValue(
+        item.sizingMode ?? product.sizingMode ?? null,
+      );
       const requiredMeasurementKeys = this.normalizeRequiredMeasurementKeys(
         item.requiredMeasurementKeys,
       );
       const sizeFitData = this.asObject(item.sizeFitData);
+      const sizeRecommendationSnapshot = this.asObject(
+        item.sizeRecommendationSnapshot,
+      );
 
       return {
         cartItemId: item.id,
@@ -6396,12 +7001,18 @@ export class PaymentService implements OnModuleInit {
         quantity,
         selectedSize: item.selectedSize ?? null,
         selectedColor: item.selectedColor ?? null,
-        currency: String(product.currency || 'NGN').trim().toUpperCase(),
+        currency: String(product.currency || 'NGN')
+          .trim()
+          .toUpperCase(),
         unitPrice: this.roundMoney(unitPrice),
         lineTotal: this.roundMoney(unitPrice * quantity),
         sizingMode,
         requiredMeasurementKeys,
         sizeFitData: Object.keys(sizeFitData).length > 0 ? sizeFitData : null,
+        sizeRecommendationSnapshot:
+          Object.keys(sizeRecommendationSnapshot).length > 0
+            ? sizeRecommendationSnapshot
+            : null,
         variantId: selectedVariant?.id ?? null,
         reserveInventory,
         sourceProduct: {
@@ -6450,7 +7061,9 @@ export class PaymentService implements OnModuleInit {
     }
 
     const configurationIds = Array.from(
-      new Set(sessions.map((session) => session.checkoutIntent.configurationId)),
+      new Set(
+        sessions.map((session) => session.checkoutIntent.configurationId),
+      ),
     );
     const configurations = await this.prisma.customOrderConfiguration.findMany({
       where: {
@@ -6479,7 +7092,9 @@ export class PaymentService implements OnModuleInit {
     const blocked: UnifiedCheckoutBlockedCustomLine[] = [];
 
     for (const session of sessions) {
-      const configuration = configurationById.get(session.checkoutIntent.configurationId);
+      const configuration = configurationById.get(
+        session.checkoutIntent.configurationId,
+      );
       if (!configuration) {
         blocked.push({
           type: 'CUSTOM_ORDER',
@@ -6514,9 +7129,13 @@ export class PaymentService implements OnModuleInit {
         continue;
       }
 
-      const requestSnapshot = this.asObject(session.checkoutIntent.requestSnapshotJson);
+      const requestSnapshot = this.asObject(
+        session.checkoutIntent.requestSnapshotJson,
+      );
       const chartLock = this.asObject(requestSnapshot.chartLock);
-      const quoteStatus = String(chartLock.quoteStatus || '').trim().toUpperCase();
+      const quoteStatus = String(chartLock.quoteStatus || '')
+        .trim()
+        .toUpperCase();
       if (quoteStatus === 'MANUAL_QUOTE_REQUIRED') {
         blocked.push({
           type: 'CUSTOM_ORDER',
@@ -6528,7 +7147,9 @@ export class PaymentService implements OnModuleInit {
         continue;
       }
 
-      const summary = this.asObject(session.checkoutIntent.buyerPriceSummaryJson);
+      const summary = this.asObject(
+        session.checkoutIntent.buyerPriceSummaryJson,
+      );
       const grandTotal = this.roundMoney(Number(summary.grandTotal ?? 0));
       if (!Number.isFinite(grandTotal) || grandTotal <= 0) {
         blocked.push({
@@ -6549,7 +7170,9 @@ export class PaymentService implements OnModuleInit {
         sourceId: configuration.sourceId,
         sourcePrimaryMediaUrl: null,
         sourceBrandName: configuration.brand?.name ?? null,
-        currency: String(session.checkoutIntent.currency || 'NGN').trim().toUpperCase(),
+        currency: String(session.checkoutIntent.currency || 'NGN')
+          .trim()
+          .toUpperCase(),
         lineTotal: grandTotal,
         unitPrice: grandTotal,
       });
@@ -6562,7 +7185,9 @@ export class PaymentService implements OnModuleInit {
   }
 
   private normalizeSizingModeValue(value: unknown): SizingMode {
-    const normalized = String(value ?? '').trim().toUpperCase();
+    const normalized = String(value ?? '')
+      .trim()
+      .toUpperCase();
     if (
       normalized === 'RTW' ||
       normalized === 'CUSTOM' ||
@@ -6622,20 +7247,18 @@ export class PaymentService implements OnModuleInit {
     return true;
   }
 
-  private buildUnifiedSummaryFromSession(
-    checkoutSession: {
-      id: string;
-      currency: string;
-      customerName: string | null;
-      shippingAddressJson: unknown;
-      summaryJson: unknown;
-      lines?: Array<{
-        quantity: number;
-        unitPrice: Prisma.Decimal;
-        itemSnapshotJson: unknown;
-      }>;
-    },
-  ): UnifiedCheckoutFinalizeResult['summary'] {
+  private buildUnifiedSummaryFromSession(checkoutSession: {
+    id: string;
+    currency: string;
+    customerName: string | null;
+    shippingAddressJson: unknown;
+    summaryJson: unknown;
+    lines?: Array<{
+      quantity: number;
+      unitPrice: Prisma.Decimal;
+      itemSnapshotJson: unknown;
+    }>;
+  }): UnifiedCheckoutFinalizeResult['summary'] {
     const summarySnapshot = this.asObject(checkoutSession.summaryJson);
     const shippingSnapshot = this.asObject(checkoutSession.shippingAddressJson);
 
@@ -6646,7 +7269,12 @@ export class PaymentService implements OnModuleInit {
             const name = String(item.name ?? '').trim();
             const quantity = Number(item.quantity ?? 0);
             const price = Number(item.price ?? 0);
-            if (!name || !Number.isFinite(quantity) || quantity <= 0 || !Number.isFinite(price)) {
+            if (
+              !name ||
+              !Number.isFinite(quantity) ||
+              quantity <= 0 ||
+              !Number.isFinite(price)
+            ) {
               return null;
             }
             return {
@@ -6655,8 +7283,11 @@ export class PaymentService implements OnModuleInit {
               price,
             };
           })
-          .filter((entry): entry is { name: string; quantity: number; price: number } =>
-            Boolean(entry),
+          .filter(
+            (
+              entry,
+            ): entry is { name: string; quantity: number; price: number } =>
+              Boolean(entry),
           )
       : [];
 
@@ -6671,17 +7302,21 @@ export class PaymentService implements OnModuleInit {
         })
       : [];
 
-    const items = itemsFromSnapshot.length > 0 ? itemsFromSnapshot : fallbackItems;
+    const items =
+      itemsFromSnapshot.length > 0 ? itemsFromSnapshot : fallbackItems;
     const subtotal = this.roundMoney(
       Number(
         summarySnapshot.subtotal ??
           items.reduce(
-            (sum, item) => sum + Number(item.price ?? 0) * Number(item.quantity ?? 1),
+            (sum, item) =>
+              sum + Number(item.price ?? 0) * Number(item.quantity ?? 1),
             0,
           ),
       ),
     );
-    const shippingCost = this.roundMoney(Number(summarySnapshot.shippingCost ?? 0));
+    const shippingCost = this.roundMoney(
+      Number(summarySnapshot.shippingCost ?? 0),
+    );
     const discount = this.roundMoney(Number(summarySnapshot.discount ?? 0));
     const grandTotal = this.roundMoney(
       Number(summarySnapshot.grandTotal ?? subtotal + shippingCost - discount),
@@ -6694,9 +7329,15 @@ export class PaymentService implements OnModuleInit {
       shippingCost,
       discount,
       grandTotal,
-      shippingName: String(summarySnapshot.shippingName ?? checkoutSession.customerName ?? ''),
-      shippingCity: String(summarySnapshot.shippingCity ?? shippingSnapshot.city ?? ''),
-      shippingState: String(summarySnapshot.shippingState ?? shippingSnapshot.state ?? ''),
+      shippingName: String(
+        summarySnapshot.shippingName ?? checkoutSession.customerName ?? '',
+      ),
+      shippingCity: String(
+        summarySnapshot.shippingCity ?? shippingSnapshot.city ?? '',
+      ),
+      shippingState: String(
+        summarySnapshot.shippingState ?? shippingSnapshot.state ?? '',
+      ),
     };
   }
 
@@ -6725,14 +7366,16 @@ export class PaymentService implements OnModuleInit {
     });
 
     if (!lockedProduct) {
-      throw new BadRequestException(`Product is no longer available: ${line.productName}`);
+      throw new BadRequestException(
+        `Product is no longer available: ${line.productName}`,
+      );
     }
 
     if (!lockedProduct.trackInventory || lockedProduct.allowBackorders) {
       return;
     }
 
-    let nextSizeStock = this.parseSizeStock(lockedProduct.sizeStock);
+    const nextSizeStock = this.parseSizeStock(lockedProduct.sizeStock);
 
     if (line.variantId) {
       await tx.$queryRaw`SELECT "id" FROM "ProductVariant" WHERE "id" = ${line.variantId}::uuid FOR UPDATE`;
@@ -6755,7 +7398,11 @@ export class PaymentService implements OnModuleInit {
         );
       }
 
-      if (line.selectedSize && nextSizeStock && nextSizeStock[line.selectedSize] !== undefined) {
+      if (
+        line.selectedSize &&
+        nextSizeStock &&
+        nextSizeStock[line.selectedSize] !== undefined
+      ) {
         const available = Number(nextSizeStock[line.selectedSize] ?? 0);
         if (available < line.quantity) {
           throw new BadRequestException(
@@ -6766,7 +7413,9 @@ export class PaymentService implements OnModuleInit {
       }
 
       if (Number(lockedProduct.totalStock ?? 0) < line.quantity) {
-        throw new BadRequestException(`Only ${lockedProduct.totalStock} left for ${line.productName}`);
+        throw new BadRequestException(
+          `Only ${lockedProduct.totalStock} left for ${line.productName}`,
+        );
       }
 
       await tx.product.update({
@@ -6795,7 +7444,11 @@ export class PaymentService implements OnModuleInit {
       return;
     }
 
-    if (line.selectedSize && nextSizeStock && nextSizeStock[line.selectedSize] !== undefined) {
+    if (
+      line.selectedSize &&
+      nextSizeStock &&
+      nextSizeStock[line.selectedSize] !== undefined
+    ) {
       const available = Number(nextSizeStock[line.selectedSize] ?? 0);
       if (available < line.quantity) {
         throw new BadRequestException(
@@ -6806,7 +7459,9 @@ export class PaymentService implements OnModuleInit {
     }
 
     if (Number(lockedProduct.totalStock ?? 0) < line.quantity) {
-      throw new BadRequestException(`Only ${lockedProduct.totalStock} left for ${line.productName}`);
+      throw new BadRequestException(
+        `Only ${lockedProduct.totalStock} left for ${line.productName}`,
+      );
     }
 
     await tx.product.update({
@@ -6838,7 +7493,8 @@ export class PaymentService implements OnModuleInit {
     userId: string,
     options?: { reason?: string },
   ): Promise<void> {
-    const reason = String(options?.reason ?? 'ATTEMPT_FAILED').trim() || 'ATTEMPT_FAILED';
+    const reason =
+      String(options?.reason ?? 'ATTEMPT_FAILED').trim() || 'ATTEMPT_FAILED';
     const now = new Date();
 
     await this.prisma.$transaction(async (tx) => {
@@ -6886,7 +7542,10 @@ export class PaymentService implements OnModuleInit {
         },
       });
 
-      if (!checkoutSession || checkoutSession.status === CheckoutSessionStatus.COMPLETED) {
+      if (
+        !checkoutSession ||
+        checkoutSession.status === CheckoutSessionStatus.COMPLETED
+      ) {
         return;
       }
 
@@ -6912,7 +7571,8 @@ export class PaymentService implements OnModuleInit {
           nextSizeStock[reservation.reservedSize] !== undefined
         ) {
           nextSizeStock[reservation.reservedSize] =
-            Number(nextSizeStock[reservation.reservedSize] ?? 0) + reservation.quantity;
+            Number(nextSizeStock[reservation.reservedSize] ?? 0) +
+            reservation.quantity;
         }
 
         if (reservation.productVariantId) {
@@ -6950,7 +7610,9 @@ export class PaymentService implements OnModuleInit {
       }
 
       const standardLineIdsToCancel = checkoutSession.lines
-        .filter((line) => line.lineType === CheckoutSessionLineType.STANDARD_ITEM)
+        .filter(
+          (line) => line.lineType === CheckoutSessionLineType.STANDARD_ITEM,
+        )
         .map((line) => line.id);
       if (standardLineIdsToCancel.length > 0) {
         await tx.checkoutSessionLine.updateMany({
@@ -6966,7 +7628,9 @@ export class PaymentService implements OnModuleInit {
       }
 
       const customLineIdsToCancel = checkoutSession.lines
-        .filter((line) => line.lineType === CheckoutSessionLineType.CUSTOM_ORDER)
+        .filter(
+          (line) => line.lineType === CheckoutSessionLineType.CUSTOM_ORDER,
+        )
         .map((line) => line.id);
       if (customLineIdsToCancel.length > 0) {
         await tx.checkoutSessionLine.updateMany({
@@ -7022,12 +7686,11 @@ export class PaymentService implements OnModuleInit {
         });
       }
 
-      const failedStatus =
-        reason.includes('EXPIRED')
-          ? CheckoutSessionStatus.EXPIRED
-          : reason.includes('CANCELLED')
-            ? CheckoutSessionStatus.CANCELLED
-            : CheckoutSessionStatus.FAILED;
+      const failedStatus = reason.includes('EXPIRED')
+        ? CheckoutSessionStatus.EXPIRED
+        : reason.includes('CANCELLED')
+          ? CheckoutSessionStatus.CANCELLED
+          : CheckoutSessionStatus.FAILED;
 
       await tx.checkoutSession.update({
         where: { id: checkoutSession.id },
@@ -7049,271 +7712,300 @@ export class PaymentService implements OnModuleInit {
     let finalized: UnifiedCheckoutFinalizeResult | null;
     try {
       finalized = await this.prisma.$transaction(async (tx) => {
-      await tx.$queryRaw`SELECT "reference" FROM "PaymentAttempt" WHERE "reference" = ${reference} FOR UPDATE`;
-      const attempt = await tx.paymentAttempt.findUnique({
-        where: { reference },
-      });
+        await tx.$queryRaw`SELECT "reference" FROM "PaymentAttempt" WHERE "reference" = ${reference} FOR UPDATE`;
+        const attempt = await tx.paymentAttempt.findUnique({
+          where: { reference },
+        });
 
-      if (
-        !attempt ||
-        attempt.subjectType !== PaymentSubjectType.UNIFIED_CHECKOUT ||
-        !attempt.checkoutSessionId
-      ) {
-        return null;
-      }
+        if (
+          !attempt ||
+          attempt.subjectType !== PaymentSubjectType.UNIFIED_CHECKOUT ||
+          !attempt.checkoutSessionId
+        ) {
+          return null;
+        }
 
-      if (attempt.buyerId && userId && attempt.buyerId !== userId) {
-        throw new NotFoundException('Payment attempt not found');
-      }
+        if (attempt.buyerId && userId && attempt.buyerId !== userId) {
+          throw new NotFoundException('Payment attempt not found');
+        }
 
-      if (attempt.status !== 'PAID') {
-        return null;
-      }
+        if (attempt.status !== 'PAID') {
+          return null;
+        }
 
-      await tx.$queryRaw`SELECT "id" FROM "CheckoutSession" WHERE "id" = ${attempt.checkoutSessionId}::uuid FOR UPDATE`;
-      const checkoutSession = await tx.checkoutSession.findUnique({
-        where: { id: attempt.checkoutSessionId },
-        include: {
-          lines: {
-            orderBy: { lineOrder: 'asc' },
+        await tx.$queryRaw`SELECT "id" FROM "CheckoutSession" WHERE "id" = ${attempt.checkoutSessionId}::uuid FOR UPDATE`;
+        const checkoutSession = await tx.checkoutSession.findUnique({
+          where: { id: attempt.checkoutSessionId },
+          include: {
+            lines: {
+              orderBy: { lineOrder: 'asc' },
+            },
           },
-        },
-      });
+        });
 
-      if (!checkoutSession) {
-        return null;
-      }
+        if (!checkoutSession) {
+          return null;
+        }
 
-      if (checkoutSession.buyerId && attempt.buyerId && checkoutSession.buyerId !== attempt.buyerId) {
-        throw new NotFoundException('Checkout session not found for this payment attempt');
-      }
-
-      const summary = this.buildUnifiedSummaryFromSession(checkoutSession);
-
-      const existingOrderIds = Array.from(
-        new Set(
-          checkoutSession.lines
-            .map((line) => String(line.orderId ?? '').trim())
-            .filter(Boolean),
-        ),
-      );
-      const existingCustomOrderIds = Array.from(
-        new Set(
-          checkoutSession.lines
-            .map((line) => String(line.customOrderId ?? '').trim())
-            .filter(Boolean),
-        ),
-      );
-
-      if (checkoutSession.status === CheckoutSessionStatus.COMPLETED) {
-        return {
-          checkoutSessionId: checkoutSession.id,
-          orderIds: existingOrderIds,
-          customOrderIds: existingCustomOrderIds,
-          summary,
-        } satisfies UnifiedCheckoutFinalizeResult;
-      }
-
-      const standardPendingLines = checkoutSession.lines.filter(
-        (line) =>
-          line.lineType === CheckoutSessionLineType.STANDARD_ITEM &&
-          !line.orderId &&
-          line.status !== CheckoutSessionLineStatus.CANCELLED,
-      );
-      const customPendingLines = checkoutSession.lines.filter(
-        (line) =>
-          line.lineType === CheckoutSessionLineType.CUSTOM_ORDER &&
-          !line.customOrderId &&
-          line.status !== CheckoutSessionLineStatus.CANCELLED,
-      );
-
-      const customSessionLines = checkoutSession.lines.filter(
-        (line) =>
-          line.lineType === CheckoutSessionLineType.CUSTOM_ORDER &&
-          line.status !== CheckoutSessionLineStatus.CANCELLED,
-      );
-
-      for (const line of customSessionLines) {
-        const checkoutIntentId = String(line.checkoutIntentId ?? '').trim();
-        if (!checkoutIntentId) {
-          throw new ConflictException(
-            `Unified checkout custom line ${line.id} is missing checkout intent linkage.`,
+        if (
+          checkoutSession.buyerId &&
+          attempt.buyerId &&
+          checkoutSession.buyerId !== attempt.buyerId
+        ) {
+          throw new NotFoundException(
+            'Checkout session not found for this payment attempt',
           );
         }
-      }
 
-      let linkedIntentRows = await tx.paymentAttemptCheckoutIntentLink.findMany({
-        where: {
-          paymentAttemptId: attempt.id,
-        },
-        select: {
-          checkoutIntentId: true,
-        },
-      });
+        const summary = this.buildUnifiedSummaryFromSession(checkoutSession);
 
-      if (linkedIntentRows.length === 0 && customSessionLines.length > 0) {
-        await tx.paymentAttemptCheckoutIntentLink.createMany({
-          data: customSessionLines.map((line) => ({
-            id: uuidv4(),
-            paymentAttemptId: attempt.id,
-            checkoutIntentId: String(line.checkoutIntentId ?? '').trim(),
+        const existingOrderIds = Array.from(
+          new Set(
+            checkoutSession.lines
+              .map((line) => String(line.orderId ?? '').trim())
+              .filter(Boolean),
+          ),
+        );
+        const existingCustomOrderIds = Array.from(
+          new Set(
+            checkoutSession.lines
+              .map((line) => String(line.customOrderId ?? '').trim())
+              .filter(Boolean),
+          ),
+        );
+
+        if (checkoutSession.status === CheckoutSessionStatus.COMPLETED) {
+          return {
             checkoutSessionId: checkoutSession.id,
-            checkoutSessionLineId: line.id,
-            status: 'PENDING',
-            metadataJson: {
-              backfilledBy: 'finalizeUnifiedCheckoutAttempt',
-            } as Prisma.InputJsonValue,
-          })),
-          skipDuplicates: true,
-        });
-
-        linkedIntentRows = await tx.paymentAttemptCheckoutIntentLink.findMany({
-          where: {
-            paymentAttemptId: attempt.id,
-          },
-          select: {
-            checkoutIntentId: true,
-          },
-        });
-      }
-
-      const requiredCustomIntentIds = Array.from(
-        new Set(
-          linkedIntentRows
-            .map((row) => String(row.checkoutIntentId ?? '').trim())
-            .filter(Boolean),
-        ),
-      );
-
-      const sessionCustomIntentIds = Array.from(
-        new Set(
-          customSessionLines
-            .map((line) => String(line.checkoutIntentId ?? '').trim())
-            .filter(Boolean),
-        ),
-      );
-
-      if (sessionCustomIntentIds.length !== customSessionLines.length) {
-        throw new ConflictException('Duplicate or missing custom checkout intent linkage detected.');
-      }
-
-      for (const sessionIntentId of sessionCustomIntentIds) {
-        if (!requiredCustomIntentIds.includes(sessionIntentId)) {
-          throw new ConflictException(
-            `Custom checkout intent ${sessionIntentId} is not linked to payment attempt ${attempt.reference}.`,
-          );
+            orderIds: existingOrderIds,
+            customOrderIds: existingCustomOrderIds,
+            summary,
+          } satisfies UnifiedCheckoutFinalizeResult;
         }
-      }
 
-      const existingOrdersForRequiredIntents = requiredCustomIntentIds.length
-        ? await tx.customOrder.findMany({
+        const standardPendingLines = checkoutSession.lines.filter(
+          (line) =>
+            line.lineType === CheckoutSessionLineType.STANDARD_ITEM &&
+            !line.orderId &&
+            line.status !== CheckoutSessionLineStatus.CANCELLED,
+        );
+        const customPendingLines = checkoutSession.lines.filter(
+          (line) =>
+            line.lineType === CheckoutSessionLineType.CUSTOM_ORDER &&
+            !line.customOrderId &&
+            line.status !== CheckoutSessionLineStatus.CANCELLED,
+        );
+
+        const customSessionLines = checkoutSession.lines.filter(
+          (line) =>
+            line.lineType === CheckoutSessionLineType.CUSTOM_ORDER &&
+            line.status !== CheckoutSessionLineStatus.CANCELLED,
+        );
+
+        for (const line of customSessionLines) {
+          const checkoutIntentId = String(line.checkoutIntentId ?? '').trim();
+          if (!checkoutIntentId) {
+            throw new ConflictException(
+              `Unified checkout custom line ${line.id} is missing checkout intent linkage.`,
+            );
+          }
+        }
+
+        let linkedIntentRows =
+          await tx.paymentAttemptCheckoutIntentLink.findMany({
             where: {
-              checkoutIntentId: {
-                in: requiredCustomIntentIds,
-              },
+              paymentAttemptId: attempt.id,
             },
             select: {
-              id: true,
               checkoutIntentId: true,
             },
-          })
-        : [];
-      const existingOrderByIntentId = new Map(
-        existingOrdersForRequiredIntents.map((order) => [
-          String(order.checkoutIntentId ?? '').trim(),
-          order.id,
-        ]),
-      );
+          });
 
-      for (const linkedIntentId of requiredCustomIntentIds) {
-        if (sessionCustomIntentIds.includes(linkedIntentId)) {
-          continue;
-        }
+        if (linkedIntentRows.length === 0 && customSessionLines.length > 0) {
+          await tx.paymentAttemptCheckoutIntentLink.createMany({
+            data: customSessionLines.map((line) => ({
+              id: uuidv4(),
+              paymentAttemptId: attempt.id,
+              checkoutIntentId: String(line.checkoutIntentId ?? '').trim(),
+              checkoutSessionId: checkoutSession.id,
+              checkoutSessionLineId: line.id,
+              status: 'PENDING',
+              metadataJson: {
+                backfilledBy: 'finalizeUnifiedCheckoutAttempt',
+              } as Prisma.InputJsonValue,
+            })),
+            skipDuplicates: true,
+          });
 
-        if (!existingOrderByIntentId.has(linkedIntentId)) {
-          throw new ConflictException(
-            `Linked checkout intent ${linkedIntentId} is missing from checkout session and has no committed custom order.`,
+          linkedIntentRows = await tx.paymentAttemptCheckoutIntentLink.findMany(
+            {
+              where: {
+                paymentAttemptId: attempt.id,
+              },
+              select: {
+                checkoutIntentId: true,
+              },
+            },
           );
         }
-      }
 
-      const shippingAddress = this.asObject(checkoutSession.shippingAddressJson);
-      const contactInfo = this.asObject(checkoutSession.contactInfoJson);
-      const shippingState = String(shippingAddress.state ?? '').trim();
-      const perBrandShippingCost = this.resolveShippingCostForState(shippingState);
-
-      const standardLinesByBrand = new Map<string, typeof standardPendingLines>();
-      for (const line of standardPendingLines) {
-        const brandId = String(line.brandId ?? '').trim();
-        if (!brandId) {
-          throw new BadRequestException('Standard checkout line is missing brand information');
-        }
-        if (!line.productId) {
-          throw new BadRequestException('Standard checkout line is missing product information');
-        }
-
-        const group = standardLinesByBrand.get(brandId) ?? [];
-        group.push(line);
-        standardLinesByBrand.set(brandId, group);
-      }
-
-      const createdOrderIds: string[] = [];
-
-      for (const [brandId, brandLines] of standardLinesByBrand.entries()) {
-        const subtotal = this.roundMoney(
-          brandLines.reduce((sum, line) => sum + Number(line.lineTotal ?? 0), 0),
+        const requiredCustomIntentIds = Array.from(
+          new Set(
+            linkedIntentRows
+              .map((row) => String(row.checkoutIntentId ?? '').trim())
+              .filter(Boolean),
+          ),
         );
-        const shippingCost = this.roundMoney(perBrandShippingCost);
-        const totalAmount = this.roundMoney(subtotal + shippingCost);
 
-        const orderItemsPayload = brandLines.map((line) => {
-          const snapshot = this.asObject(line.itemSnapshotJson);
-          const sizingMode = this.normalizeSizingModeValue(snapshot.sizingMode);
-          return {
-            productId: line.productId,
-            name: String(snapshot.name ?? 'Item'),
-            thumbnail: snapshot.thumbnail ? String(snapshot.thumbnail) : null,
-            price: this.roundMoney(Number(line.unitPrice ?? 0)),
-            quantity: Number(line.quantity ?? 1),
-            selectedSize: line.selectedSize ?? null,
-            selectedColor: line.selectedColor ?? null,
-            sizingMode,
-            requiredMeasurementKeys: this.normalizeRequiredMeasurementKeys(
-              snapshot.requiredMeasurementKeys,
+        const sessionCustomIntentIds = Array.from(
+          new Set(
+            customSessionLines
+              .map((line) => String(line.checkoutIntentId ?? '').trim())
+              .filter(Boolean),
+          ),
+        );
+
+        if (sessionCustomIntentIds.length !== customSessionLines.length) {
+          throw new ConflictException(
+            'Duplicate or missing custom checkout intent linkage detected.',
+          );
+        }
+
+        for (const sessionIntentId of sessionCustomIntentIds) {
+          if (!requiredCustomIntentIds.includes(sessionIntentId)) {
+            throw new ConflictException(
+              `Custom checkout intent ${sessionIntentId} is not linked to payment attempt ${attempt.reference}.`,
+            );
+          }
+        }
+
+        const existingOrdersForRequiredIntents = requiredCustomIntentIds.length
+          ? await tx.customOrder.findMany({
+              where: {
+                checkoutIntentId: {
+                  in: requiredCustomIntentIds,
+                },
+              },
+              select: {
+                id: true,
+                checkoutIntentId: true,
+              },
+            })
+          : [];
+        const existingOrderByIntentId = new Map(
+          existingOrdersForRequiredIntents.map((order) => [
+            String(order.checkoutIntentId ?? '').trim(),
+            order.id,
+          ]),
+        );
+
+        for (const linkedIntentId of requiredCustomIntentIds) {
+          if (sessionCustomIntentIds.includes(linkedIntentId)) {
+            continue;
+          }
+
+          if (!existingOrderByIntentId.has(linkedIntentId)) {
+            throw new ConflictException(
+              `Linked checkout intent ${linkedIntentId} is missing from checkout session and has no committed custom order.`,
+            );
+          }
+        }
+
+        const shippingAddress = this.asObject(
+          checkoutSession.shippingAddressJson,
+        );
+        const contactInfo = this.asObject(checkoutSession.contactInfoJson);
+        const shippingState = String(shippingAddress.state ?? '').trim();
+        const perBrandShippingCost =
+          this.resolveShippingCostForState(shippingState);
+
+        const standardLinesByBrand = new Map<
+          string,
+          typeof standardPendingLines
+        >();
+        for (const line of standardPendingLines) {
+          const brandId = String(line.brandId ?? '').trim();
+          if (!brandId) {
+            throw new BadRequestException(
+              'Standard checkout line is missing brand information',
+            );
+          }
+          if (!line.productId) {
+            throw new BadRequestException(
+              'Standard checkout line is missing product information',
+            );
+          }
+
+          const group = standardLinesByBrand.get(brandId) ?? [];
+          group.push(line);
+          standardLinesByBrand.set(brandId, group);
+        }
+
+        const createdOrderIds: string[] = [];
+
+        for (const [brandId, brandLines] of standardLinesByBrand.entries()) {
+          const subtotal = this.roundMoney(
+            brandLines.reduce(
+              (sum, line) => sum + Number(line.lineTotal ?? 0),
+              0,
             ),
-            sizeFitSnapshot: this.asObject(snapshot.sizeFitData),
-          };
-        });
+          );
+          const shippingCost = this.roundMoney(perBrandShippingCost);
+          const totalAmount = this.roundMoney(subtotal + shippingCost);
 
-        const order = await tx.order.create({
-          data: {
-            id: uuidv4(),
-            brandId,
-            buyerId: attempt.buyerId,
-            customerName:
-              String(checkoutSession.customerName ?? '').trim() ||
-              String(contactInfo.customerName ?? 'Customer').trim() ||
-              'Customer',
-            shippingAddress: shippingAddress as Prisma.InputJsonValue,
-            contactInfo: contactInfo as Prisma.InputJsonValue,
-            items: orderItemsPayload as Prisma.InputJsonValue,
-            totalAmount: new Prisma.Decimal(totalAmount.toFixed(2)),
-            shippingCost: new Prisma.Decimal(shippingCost.toFixed(2)),
-            discountAmount: new Prisma.Decimal('0.00'),
-            currency: checkoutSession.currency,
-            status: 'PENDING',
-            paymentStatus: PaymentStatus.PAID,
-            paymentMethod: attempt.paymentMethod,
-            paymentReference: attempt.reference,
-            paymentGateway: attempt.provider,
-            unifiedCheckoutSessionId: checkoutSession.id,
-            paidAt: attempt.confirmedAt ?? now,
-          },
-        });
+          const orderItemsPayload = brandLines.map((line) => {
+            const snapshot = this.asObject(line.itemSnapshotJson);
+            const sizingMode = this.normalizeSizingModeValue(
+              snapshot.sizingMode,
+            );
+            return {
+              productId: line.productId,
+              name: String(snapshot.name ?? 'Item'),
+              thumbnail: snapshot.thumbnail ? String(snapshot.thumbnail) : null,
+              price: this.roundMoney(Number(line.unitPrice ?? 0)),
+              quantity: Number(line.quantity ?? 1),
+              selectedSize: line.selectedSize ?? null,
+              selectedColor: line.selectedColor ?? null,
+              sizingMode,
+              requiredMeasurementKeys: this.normalizeRequiredMeasurementKeys(
+                snapshot.requiredMeasurementKeys,
+              ),
+              sizeFitSnapshot: this.asObject(snapshot.sizeFitData),
+              sizeRecommendationSnapshot: this.asObject(
+                line.sizeRecommendationSnapshot ??
+                  snapshot.sizeRecommendationSnapshot,
+              ),
+            };
+          });
 
-        if (orderItemsPayload.length > 0) {
-          await tx.orderItem.createMany({
-            data: orderItemsPayload.map((item) => ({
+          const order = await tx.order.create({
+            data: {
+              id: uuidv4(),
+              brandId,
+              buyerId: attempt.buyerId,
+              customerName:
+                String(checkoutSession.customerName ?? '').trim() ||
+                String(contactInfo.customerName ?? 'Customer').trim() ||
+                'Customer',
+              shippingAddress: shippingAddress as Prisma.InputJsonValue,
+              contactInfo: contactInfo as Prisma.InputJsonValue,
+              items: orderItemsPayload as Prisma.InputJsonValue,
+              totalAmount: new Prisma.Decimal(totalAmount.toFixed(2)),
+              shippingCost: new Prisma.Decimal(shippingCost.toFixed(2)),
+              discountAmount: new Prisma.Decimal('0.00'),
+              currency: checkoutSession.currency,
+              status: 'PENDING',
+              paymentStatus: PaymentStatus.PAID,
+              paymentMethod: attempt.paymentMethod,
+              paymentReference: attempt.reference,
+              paymentGateway: attempt.provider,
+              unifiedCheckoutSessionId: checkoutSession.id,
+              paidAt: attempt.confirmedAt ?? now,
+            },
+          });
+
+          if (orderItemsPayload.length > 0) {
+            const orderItemRows = orderItemsPayload.map((item) => ({
               id: uuidv4(),
               orderId: order.id,
               productId: String(item.productId ?? ''),
@@ -7323,7 +8015,9 @@ export class PaymentService implements OnModuleInit {
               currency: checkoutSession.currency,
               unitPrice: new Prisma.Decimal(Number(item.price ?? 0).toFixed(2)),
               totalPrice: new Prisma.Decimal(
-                this.roundMoney(Number(item.price ?? 0) * Number(item.quantity ?? 1)).toFixed(2),
+                this.roundMoney(
+                  Number(item.price ?? 0) * Number(item.quantity ?? 1),
+                ).toFixed(2),
               ),
               selectedSize: item.selectedSize,
               selectedColor: item.selectedColor,
@@ -7335,297 +8029,336 @@ export class PaymentService implements OnModuleInit {
                   : null,
               thumbnailAtPurchase: item.thumbnail,
               nameAtPurchase: item.name,
-            })),
-          });
-        }
+            }));
 
-        await tx.checkoutSessionLine.updateMany({
-          where: {
-            id: {
-              in: brandLines.map((line) => line.id),
-            },
-          },
-          data: {
-            orderId: order.id,
-            status: CheckoutSessionLineStatus.COMMITTED,
-          },
-        });
-
-        createdOrderIds.push(order.id);
-      }
-
-      const customOrderIds: string[] = [];
-      const customIntentIds = Array.from(
-        new Set(
-          customPendingLines
-            .map((line) => String(line.checkoutIntentId ?? '').trim())
-            .filter(Boolean),
-        ),
-      );
-
-      const intents = customIntentIds.length
-        ? await tx.customOrderCheckoutIntent.findMany({
-            where: {
-              id: {
-                in: customIntentIds,
-              },
-            },
-          })
-        : [];
-      const intentById = new Map(intents.map((intent) => [intent.id, intent]));
-
-      const configIds = Array.from(new Set(intents.map((intent) => intent.configurationId)));
-      const configurations = configIds.length
-        ? await tx.customOrderConfiguration.findMany({
-            where: {
-              id: {
-                in: configIds,
-              },
-            },
-            select: {
-              id: true,
-              brandId: true,
-              sourceType: true,
-              sourceId: true,
-            },
-          })
-        : [];
-      const configurationById = new Map(
-        configurations.map((configuration) => [configuration.id, configuration]),
-      );
-
-      const versionIds = Array.from(
-        new Set(intents.map((intent) => intent.configurationVersionId)),
-      );
-      const versions = versionIds.length
-        ? await tx.customOrderConfigurationVersion.findMany({
-            where: {
-              id: {
-                in: versionIds,
-              },
-            },
-            select: {
-              id: true,
-              snapshotJson: true,
-            },
-          })
-        : [];
-      const versionById = new Map(versions.map((version) => [version.id, version]));
-
-      for (const line of customPendingLines) {
-        const checkoutIntentId = String(line.checkoutIntentId ?? '').trim();
-        if (!checkoutIntentId) {
-          throw new ConflictException(
-            `Unified checkout custom line ${line.id} is missing checkout intent linkage.`,
-          );
-        }
-
-        const existingOrder = await tx.customOrder.findUnique({
-          where: { checkoutIntentId },
-          select: { id: true },
-        });
-
-        let customOrderId = existingOrder?.id ?? null;
-        if (!customOrderId) {
-          const intent = intentById.get(checkoutIntentId);
-          if (!intent) {
-            throw new BadRequestException('Custom checkout intent no longer exists');
-          }
-
-          const configuration = configurationById.get(intent.configurationId);
-          const version = versionById.get(intent.configurationVersionId);
-          if (!configuration || !version) {
-            throw new BadRequestException('Custom checkout configuration is no longer available');
-          }
-
-          await tx.customOrderCheckoutIntent.updateMany({
-            where: {
-              id: intent.id,
-              consumedAt: null,
-            },
-            data: {
-              consumedAt: now,
-            },
-          });
-
-          const createData = this.buildUnifiedCustomOrderCreateData({
-            checkoutSession,
-            line,
-            attempt,
-            intent,
-            configuration,
-            versionSnapshot: this.asObject(version.snapshotJson),
-            acceptedAt: attempt.confirmedAt ?? now,
-          });
-
-          try {
-            const created = await tx.customOrder.create({
-              data: createData,
-              select: {
-                id: true,
-              },
+            await tx.orderItem.createMany({
+              data: orderItemRows,
             });
-            customOrderId = created.id;
-          } catch (error) {
-            if (
-              error instanceof Prisma.PrismaClientKnownRequestError &&
-              error.code === 'P2002'
-            ) {
-              const duplicate = await tx.customOrder.findUnique({
-                where: { checkoutIntentId },
-                select: { id: true },
+
+            const recommendationRows = orderItemsPayload
+              .map((item, index) =>
+                this.buildOrderSizeRecommendationSnapshotRow(
+                  orderItemRows[index].id,
+                  item.sizeRecommendationSnapshot,
+                  item.selectedSize,
+                ),
+              )
+              .filter(
+                (
+                  row,
+                ): row is Prisma.OrderSizeRecommendationSnapshotCreateManyInput =>
+                  Boolean(row),
+              );
+
+            if (recommendationRows.length > 0) {
+              await tx.orderSizeRecommendationSnapshot.createMany({
+                data: recommendationRows,
               });
-              customOrderId = duplicate?.id ?? null;
-            } else {
-              throw error;
             }
           }
+
+          await tx.checkoutSessionLine.updateMany({
+            where: {
+              id: {
+                in: brandLines.map((line) => line.id),
+              },
+            },
+            data: {
+              orderId: order.id,
+              status: CheckoutSessionLineStatus.COMMITTED,
+            },
+          });
+
+          createdOrderIds.push(order.id);
         }
 
-        if (!customOrderId) {
-          throw new ConflictException(
-            `Unable to commit custom order for checkout intent ${checkoutIntentId}.`,
-          );
-        }
-
-        existingOrderByIntentId.set(checkoutIntentId, customOrderId);
-
-        await tx.checkoutSessionLine.update({
-          where: { id: line.id },
-          data: {
-            customOrderId,
-            status: CheckoutSessionLineStatus.COMMITTED,
-          },
-        });
-
-        await tx.customOrderCheckoutSession.updateMany({
-          where: {
-            checkoutIntentId,
-          },
-          data: {
-            customOrderId,
-            status: CustomOrderCheckoutStatus.PAID_CONFIRMED,
-            paidConfirmedAt: attempt.confirmedAt ?? now,
-            lastAttemptId: attempt.id,
-            lastAttemptReference: attempt.reference,
-            lastAttemptStatus: attempt.status,
-            abandonedAt: null,
-          },
-        });
-
-        customOrderIds.push(customOrderId);
-      }
-
-      await tx.inventoryReservation.updateMany({
-        where: {
-          checkoutSessionId: checkoutSession.id,
-          status: InventoryReservationStatus.RESERVED,
-        },
-        data: {
-          status: InventoryReservationStatus.COMMITTED,
-          committedAt: attempt.confirmedAt ?? now,
-        },
-      });
-
-      const cartItemIdsToDelete = Array.from(
-        new Set(
-          standardPendingLines
-            .map((line) => String(line.cartItemId ?? '').trim())
-            .filter(Boolean),
-        ),
-      );
-      if (cartItemIdsToDelete.length > 0 && attempt.buyerId) {
-        await tx.cartItem.deleteMany({
-          where: {
-            userId: attempt.buyerId,
-            id: {
-              in: cartItemIdsToDelete,
-            },
-          },
-        });
-      }
-
-      for (const requiredIntentId of requiredCustomIntentIds) {
-        if (!existingOrderByIntentId.has(requiredIntentId)) {
-          throw new ConflictException(
-            `Required custom checkout intent ${requiredIntentId} has no committed custom order.`,
-          );
-        }
-      }
-
-      if (requiredCustomIntentIds.length > 0) {
-        await tx.paymentAttemptCheckoutIntentLink.updateMany({
-          where: {
-            paymentAttemptId: attempt.id,
-            checkoutIntentId: {
-              in: requiredCustomIntentIds,
-            },
-          },
-          data: {
-            status: 'COMMITTED',
-            finalizedAt: now,
-          },
-        });
-      }
-
-      const unresolvedLines = await tx.checkoutSessionLine.findMany({
-        where: {
-          checkoutSessionId: checkoutSession.id,
-          status: {
-            not: CheckoutSessionLineStatus.CANCELLED,
-          },
-          OR: [
-            {
-              lineType: CheckoutSessionLineType.STANDARD_ITEM,
-              orderId: null,
-            },
-            {
-              lineType: CheckoutSessionLineType.CUSTOM_ORDER,
-              customOrderId: null,
-            },
-          ],
-        },
-        select: {
-          id: true,
-          lineType: true,
-          checkoutIntentId: true,
-        },
-      });
-
-      if (unresolvedLines.length > 0) {
-        throw new ConflictException(
-          `Unified checkout finalization left ${unresolvedLines.length} unresolved line(s); refusing completion.`,
+        const customOrderIds: string[] = [];
+        const customIntentIds = Array.from(
+          new Set(
+            customPendingLines
+              .map((line) => String(line.checkoutIntentId ?? '').trim())
+              .filter(Boolean),
+          ),
         );
-      }
 
-      const finalOrderIds = Array.from(new Set([...existingOrderIds, ...createdOrderIds]));
-      const finalCustomOrderIds = Array.from(
-        new Set([...existingCustomOrderIds, ...customOrderIds]),
-      );
+        const intents = customIntentIds.length
+          ? await tx.customOrderCheckoutIntent.findMany({
+              where: {
+                id: {
+                  in: customIntentIds,
+                },
+              },
+            })
+          : [];
+        const intentById = new Map(
+          intents.map((intent) => [intent.id, intent]),
+        );
 
-      await tx.paymentAttempt.update({
-        where: { id: attempt.id },
-        data: {
+        const configIds = Array.from(
+          new Set(intents.map((intent) => intent.configurationId)),
+        );
+        const configurations = configIds.length
+          ? await tx.customOrderConfiguration.findMany({
+              where: {
+                id: {
+                  in: configIds,
+                },
+              },
+              select: {
+                id: true,
+                brandId: true,
+                sourceType: true,
+                sourceId: true,
+              },
+            })
+          : [];
+        const configurationById = new Map(
+          configurations.map((configuration) => [
+            configuration.id,
+            configuration,
+          ]),
+        );
+
+        const versionIds = Array.from(
+          new Set(intents.map((intent) => intent.configurationVersionId)),
+        );
+        const versions = versionIds.length
+          ? await tx.customOrderConfigurationVersion.findMany({
+              where: {
+                id: {
+                  in: versionIds,
+                },
+              },
+              select: {
+                id: true,
+                snapshotJson: true,
+              },
+            })
+          : [];
+        const versionById = new Map(
+          versions.map((version) => [version.id, version]),
+        );
+
+        for (const line of customPendingLines) {
+          const checkoutIntentId = String(line.checkoutIntentId ?? '').trim();
+          if (!checkoutIntentId) {
+            throw new ConflictException(
+              `Unified checkout custom line ${line.id} is missing checkout intent linkage.`,
+            );
+          }
+
+          const existingOrder = await tx.customOrder.findUnique({
+            where: { checkoutIntentId },
+            select: { id: true },
+          });
+
+          let customOrderId = existingOrder?.id ?? null;
+          if (!customOrderId) {
+            const intent = intentById.get(checkoutIntentId);
+            if (!intent) {
+              throw new BadRequestException(
+                'Custom checkout intent no longer exists',
+              );
+            }
+
+            const configuration = configurationById.get(intent.configurationId);
+            const version = versionById.get(intent.configurationVersionId);
+            if (!configuration || !version) {
+              throw new BadRequestException(
+                'Custom checkout configuration is no longer available',
+              );
+            }
+
+            await tx.customOrderCheckoutIntent.updateMany({
+              where: {
+                id: intent.id,
+                consumedAt: null,
+              },
+              data: {
+                consumedAt: now,
+              },
+            });
+
+            const createData = this.buildUnifiedCustomOrderCreateData({
+              checkoutSession,
+              line,
+              attempt,
+              intent,
+              configuration,
+              versionSnapshot: this.asObject(version.snapshotJson),
+              acceptedAt: attempt.confirmedAt ?? now,
+            });
+
+            try {
+              const created = await tx.customOrder.create({
+                data: createData,
+                select: {
+                  id: true,
+                },
+              });
+              customOrderId = created.id;
+            } catch (error) {
+              if (
+                error instanceof Prisma.PrismaClientKnownRequestError &&
+                error.code === 'P2002'
+              ) {
+                const duplicate = await tx.customOrder.findUnique({
+                  where: { checkoutIntentId },
+                  select: { id: true },
+                });
+                customOrderId = duplicate?.id ?? null;
+              } else {
+                throw error;
+              }
+            }
+          }
+
+          if (!customOrderId) {
+            throw new ConflictException(
+              `Unable to commit custom order for checkout intent ${checkoutIntentId}.`,
+            );
+          }
+
+          existingOrderByIntentId.set(checkoutIntentId, customOrderId);
+
+          await tx.checkoutSessionLine.update({
+            where: { id: line.id },
+            data: {
+              customOrderId,
+              status: CheckoutSessionLineStatus.COMMITTED,
+            },
+          });
+
+          await tx.customOrderCheckoutSession.updateMany({
+            where: {
+              checkoutIntentId,
+            },
+            data: {
+              customOrderId,
+              status: CustomOrderCheckoutStatus.PAID_CONFIRMED,
+              paidConfirmedAt: attempt.confirmedAt ?? now,
+              lastAttemptId: attempt.id,
+              lastAttemptReference: attempt.reference,
+              lastAttemptStatus: attempt.status,
+              abandonedAt: null,
+            },
+          });
+
+          customOrderIds.push(customOrderId);
+        }
+
+        await tx.inventoryReservation.updateMany({
+          where: {
+            checkoutSessionId: checkoutSession.id,
+            status: InventoryReservationStatus.RESERVED,
+          },
+          data: {
+            status: InventoryReservationStatus.COMMITTED,
+            committedAt: attempt.confirmedAt ?? now,
+          },
+        });
+
+        const cartItemIdsToDelete = Array.from(
+          new Set(
+            standardPendingLines
+              .map((line) => String(line.cartItemId ?? '').trim())
+              .filter(Boolean),
+          ),
+        );
+        if (cartItemIdsToDelete.length > 0 && attempt.buyerId) {
+          await tx.cartItem.deleteMany({
+            where: {
+              userId: attempt.buyerId,
+              id: {
+                in: cartItemIdsToDelete,
+              },
+            },
+          });
+        }
+
+        for (const requiredIntentId of requiredCustomIntentIds) {
+          if (!existingOrderByIntentId.has(requiredIntentId)) {
+            throw new ConflictException(
+              `Required custom checkout intent ${requiredIntentId} has no committed custom order.`,
+            );
+          }
+        }
+
+        if (requiredCustomIntentIds.length > 0) {
+          await tx.paymentAttemptCheckoutIntentLink.updateMany({
+            where: {
+              paymentAttemptId: attempt.id,
+              checkoutIntentId: {
+                in: requiredCustomIntentIds,
+              },
+            },
+            data: {
+              status: 'COMMITTED',
+              finalizedAt: now,
+            },
+          });
+        }
+
+        const unresolvedLines = await tx.checkoutSessionLine.findMany({
+          where: {
+            checkoutSessionId: checkoutSession.id,
+            status: {
+              not: CheckoutSessionLineStatus.CANCELLED,
+            },
+            OR: [
+              {
+                lineType: CheckoutSessionLineType.STANDARD_ITEM,
+                orderId: null,
+              },
+              {
+                lineType: CheckoutSessionLineType.CUSTOM_ORDER,
+                customOrderId: null,
+              },
+            ],
+          },
+          select: {
+            id: true,
+            lineType: true,
+            checkoutIntentId: true,
+          },
+        });
+
+        if (unresolvedLines.length > 0) {
+          throw new ConflictException(
+            `Unified checkout finalization left ${unresolvedLines.length} unresolved line(s); refusing completion.`,
+          );
+        }
+
+        const finalOrderIds = Array.from(
+          new Set([...existingOrderIds, ...createdOrderIds]),
+        );
+        const finalCustomOrderIds = Array.from(
+          new Set([...existingCustomOrderIds, ...customOrderIds]),
+        );
+
+        await tx.paymentAttempt.update({
+          where: { id: attempt.id },
+          data: {
+            orderIds: finalOrderIds,
+          },
+        });
+
+        await tx.checkoutSession.update({
+          where: { id: checkoutSession.id },
+          data: {
+            status: CheckoutSessionStatus.COMPLETED,
+            completedAt: attempt.confirmedAt ?? now,
+            failedAt: null,
+            failureReason: null,
+          },
+        });
+
+        return {
+          checkoutSessionId: checkoutSession.id,
           orderIds: finalOrderIds,
-        },
-      });
-
-      await tx.checkoutSession.update({
-        where: { id: checkoutSession.id },
-        data: {
-          status: CheckoutSessionStatus.COMPLETED,
-          completedAt: attempt.confirmedAt ?? now,
-          failedAt: null,
-          failureReason: null,
-        },
-      });
-
-      return {
-        checkoutSessionId: checkoutSession.id,
-        orderIds: finalOrderIds,
-        customOrderIds: finalCustomOrderIds,
-        summary,
-      } satisfies UnifiedCheckoutFinalizeResult;
+          customOrderIds: finalCustomOrderIds,
+          summary,
+        } satisfies UnifiedCheckoutFinalizeResult;
       });
     } catch (error) {
       await this.recordUnifiedFinalizationFailure(reference, userId, error);
@@ -7660,12 +8393,18 @@ export class PaymentService implements OnModuleInit {
       });
 
       if (linkedOrders.length > 0) {
-        await this.standardOrderFinanceSyncService.syncPaidOrdersByReferences([reference]);
-        const attemptForNotification = await this.prisma.paymentAttempt.findUnique({
-          where: { reference },
-        });
+        await this.standardOrderFinanceSyncService.syncPaidOrdersByReferences([
+          reference,
+        ]);
+        const attemptForNotification =
+          await this.prisma.paymentAttempt.findUnique({
+            where: { reference },
+          });
         if (attemptForNotification) {
-          await this.notifyFinanceAdminsOfStandardPayment(attemptForNotification, linkedOrders);
+          await this.notifyFinanceAdminsOfStandardPayment(
+            attemptForNotification,
+            linkedOrders,
+          );
         }
         await this.notifyOrderPlacementAfterPayment(linkedOrders);
       }
@@ -7694,14 +8433,12 @@ export class PaymentService implements OnModuleInit {
     const now = new Date();
     const reason = this.extractErrorMessage(error);
 
-    let trackedFailure:
-      | {
-          failureCount: number;
-          compensationStatus: UnifiedFinalizationCompensationStatus;
-          correlationId: string | null;
-          checkoutSessionId: string | null;
-        }
-      | null = null;
+    let trackedFailure: {
+      failureCount: number;
+      compensationStatus: UnifiedFinalizationCompensationStatus;
+      correlationId: string | null;
+      checkoutSessionId: string | null;
+    } | null = null;
 
     await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT "reference" FROM "PaymentAttempt" WHERE "reference" = ${reference} FOR UPDATE`;
@@ -7731,10 +8468,10 @@ export class PaymentService implements OnModuleInit {
         throw new NotFoundException('Payment attempt not found');
       }
 
-      const nextFailureCount = Number(attempt.finalizationFailureCount ?? 0) + 1;
-      const compensationStatus = this.resolveFinalizationCompensationStatus(
-        nextFailureCount,
-      );
+      const nextFailureCount =
+        Number(attempt.finalizationFailureCount ?? 0) + 1;
+      const compensationStatus =
+        this.resolveFinalizationCompensationStatus(nextFailureCount);
 
       await tx.paymentAttempt.update({
         where: { id: attempt.id },
@@ -7791,7 +8528,9 @@ export class PaymentService implements OnModuleInit {
     }
   }
 
-  private async markUnifiedFinalizationRecovered(reference: string): Promise<void> {
+  private async markUnifiedFinalizationRecovered(
+    reference: string,
+  ): Promise<void> {
     const now = new Date();
 
     await this.prisma.$transaction(async (tx) => {
@@ -7891,7 +8630,9 @@ export class PaymentService implements OnModuleInit {
         ? requestSnapshot.shippingAddress
         : params.checkoutSession.shippingAddressJson,
     );
-    const measurementSnapshot = this.asObject(requestSnapshot.measurementValues);
+    const measurementSnapshot = this.asObject(
+      requestSnapshot.measurementValues,
+    );
 
     const baseProductionCharge = this.roundMoney(
       Number(params.versionSnapshot.baseProductionCharge ?? 0),
@@ -7899,7 +8640,10 @@ export class PaymentService implements OnModuleInit {
     const fabricCostPerYard = this.roundMoney(
       Number(params.versionSnapshot.fabricCostPerYard ?? 0),
     );
-    const deliveryMinDays = Math.max(0, Number(params.versionSnapshot.deliveryMinDays ?? 0));
+    const deliveryMinDays = Math.max(
+      0,
+      Number(params.versionSnapshot.deliveryMinDays ?? 0),
+    );
     const deliveryMaxDays = Math.max(
       deliveryMinDays,
       Number(params.versionSnapshot.deliveryMaxDays ?? deliveryMinDays),
@@ -7909,7 +8653,9 @@ export class PaymentService implements OnModuleInit {
       Number(params.versionSnapshot.productionLeadDays ?? 0),
     );
 
-    const fabricCharge = this.roundMoney(Number(buyerSummary.fabricCharge ?? 0));
+    const fabricCharge = this.roundMoney(
+      Number(buyerSummary.fabricCharge ?? 0),
+    );
     const computedYards = this.roundMoney(
       Number(
         buyerSummary.computedYards ??
@@ -7932,7 +8678,9 @@ export class PaymentService implements OnModuleInit {
     const promisedDeliveryAt = new Date(
       promisedDispatchAt.getTime() + deliveryMaxDays * 24 * 60 * 60 * 1000,
     );
-    const retentionUntil = new Date(acceptedAt.getTime() + 180 * 24 * 60 * 60 * 1000);
+    const retentionUntil = new Date(
+      acceptedAt.getTime() + 180 * 24 * 60 * 60 * 1000,
+    );
 
     return {
       brandId: params.configuration.brandId,
@@ -7947,7 +8695,9 @@ export class PaymentService implements OnModuleInit {
           ? String(lineSnapshot.sourcePrimaryMediaUrl)
           : null,
       sourceBrandNameSnapshot:
-        lineSnapshot.sourceBrandName != null ? String(lineSnapshot.sourceBrandName) : null,
+        lineSnapshot.sourceBrandName != null
+          ? String(lineSnapshot.sourceBrandName)
+          : null,
       configurationId: params.configuration.id,
       configurationVersionId: params.intent.configurationVersionId,
       status: CustomOrderStatus.ACCEPTED,
@@ -7957,8 +8707,12 @@ export class PaymentService implements OnModuleInit {
       unifiedCheckoutSessionId: params.checkoutSession.id,
       currency: params.intent.currency,
       checkoutIntentId: params.intent.id,
-      baseProductionChargeSnapshot: new Prisma.Decimal(baseProductionCharge.toFixed(2)),
-      fabricCostPerYardSnapshot: new Prisma.Decimal(fabricCostPerYard.toFixed(2)),
+      baseProductionChargeSnapshot: new Prisma.Decimal(
+        baseProductionCharge.toFixed(2),
+      ),
+      fabricCostPerYardSnapshot: new Prisma.Decimal(
+        fabricCostPerYard.toFixed(2),
+      ),
       computedYards: new Prisma.Decimal(computedYards.toFixed(2)),
       matchedFabricRuleId:
         typeof requestSnapshot.matchedFabricRuleId === 'string'
@@ -7976,9 +8730,10 @@ export class PaymentService implements OnModuleInit {
       measurementSnapshotJson:
         Object.keys(measurementSnapshot).length > 0
           ? (measurementSnapshot as Prisma.InputJsonValue)
-          : ({ } as Prisma.InputJsonValue),
+          : ({} as Prisma.InputJsonValue),
       measurementConfirmedAt:
-        typeof requestSnapshot.submittedAt === 'string' && requestSnapshot.submittedAt.trim().length > 0
+        typeof requestSnapshot.submittedAt === 'string' &&
+        requestSnapshot.submittedAt.trim().length > 0
           ? new Date(requestSnapshot.submittedAt)
           : acceptedAt,
       rushSelected: Boolean(requestSnapshot.rushSelected),
@@ -8011,7 +8766,13 @@ export class PaymentService implements OnModuleInit {
 
   private ensureSingleCurrency(currencies: string[]) {
     const normalized = Array.from(
-      new Set(currencies.map((currency) => String(currency || '').trim().toUpperCase())),
+      new Set(
+        currencies.map((currency) =>
+          String(currency || '')
+            .trim()
+            .toUpperCase(),
+        ),
+      ),
     );
 
     if (normalized.length > 1) {
@@ -8041,7 +8802,9 @@ export class PaymentService implements OnModuleInit {
 
   private normalizePaymentDataForFingerprint(value: unknown): unknown {
     if (Array.isArray(value)) {
-      return value.map((entry) => this.normalizePaymentDataForFingerprint(entry));
+      return value.map((entry) =>
+        this.normalizePaymentDataForFingerprint(entry),
+      );
     }
 
     if (value && typeof value === 'object') {
@@ -8071,6 +8834,170 @@ export class PaymentService implements OnModuleInit {
     }
 
     return null;
+  }
+
+  private buildOrderSizeRecommendationSnapshotRow(
+    orderItemId: string,
+    snapshot: Record<string, any>,
+    selectedSize: string | null,
+  ): Prisma.OrderSizeRecommendationSnapshotCreateManyInput | null {
+    if (!snapshot || Object.keys(snapshot).length === 0) {
+      return null;
+    }
+
+    const recommendedSize = this.toNullableString(snapshot.recommendedSize);
+    const resolvedSelectedSize =
+      selectedSize ?? this.toNullableString(snapshot.selectedSize);
+    const confidenceScore = Number(snapshot.confidenceScore ?? 0);
+    const confidenceLabel = this.normalizeRecommendationConfidenceLabel(
+      snapshot.confidenceLabel,
+    );
+    const selectedRegion = this.normalizeSizingRegion(snapshot.selectedRegion);
+    const garmentCategory = this.normalizeGarmentCategory(
+      snapshot.garmentCategory,
+    );
+
+    if (!recommendedSize && !resolvedSelectedSize) {
+      return null;
+    }
+
+    const wasManuallyChanged =
+      Boolean(resolvedSelectedSize) &&
+      Boolean(recommendedSize) &&
+      resolvedSelectedSize !== recommendedSize;
+    const generatedAtRaw = snapshot.generatedAt
+      ? new Date(String(snapshot.generatedAt))
+      : null;
+    const generatedAt =
+      generatedAtRaw && !Number.isNaN(generatedAtRaw.getTime())
+        ? generatedAtRaw
+        : new Date();
+
+    return {
+      id: uuidv4(),
+      orderItemId,
+      recommendedSize,
+      selectedSize: resolvedSelectedSize,
+      alternativeSize: this.toNullableString(snapshot.alternativeSize),
+      displayRange: this.toNullableString(snapshot.displayRange),
+      confidenceScore: Number.isFinite(confidenceScore) ? confidenceScore : 0,
+      confidenceLabel,
+      selectedRegion,
+      garmentCategory,
+      chartSource: this.toNullableString(snapshot.chartSource),
+      chartVersionNumber: this.toNullableNumber(
+        snapshot.chartVersion ?? snapshot.chartVersionNumber,
+      ),
+      reasonSummary: this.toNullableJson(
+        snapshot.reasonSummary ?? snapshot.reasons,
+      ),
+      warningsSummary: this.toNullableJson(
+        snapshot.warningsSummary ?? snapshot.warnings,
+      ),
+      userFitPreference: this.toNullableString(snapshot.userFitPreference),
+      productFitType: this.normalizeProductFitType(snapshot.productFitType),
+      fabricStretch: this.normalizeFabricStretch(snapshot.fabricStretch),
+      wasManuallyChanged,
+      manualOverrideHistory: wasManuallyChanged
+        ? ([
+            {
+              selectedSize: resolvedSelectedSize,
+              recommendedSize,
+              changedAt: generatedAt.toISOString(),
+              reason:
+                this.toNullableString(snapshot.manualOverrideReason) ??
+                'Manual size override',
+            },
+          ] as Prisma.InputJsonValue)
+        : Prisma.JsonNull,
+      generatedAt,
+    };
+  }
+
+  private normalizeRecommendationConfidenceLabel(value: unknown) {
+    const normalized = String(value ?? '')
+      .trim()
+      .toUpperCase();
+    return ['VERY_HIGH', 'HIGH', 'MODERATE', 'LOW'].includes(normalized)
+      ? (normalized as any)
+      : 'LOW';
+  }
+
+  private normalizeSizingRegion(value: unknown) {
+    const normalized = String(value ?? '')
+      .trim()
+      .toUpperCase();
+    if (
+      normalized === 'NG' ||
+      normalized === 'NIGERIA' ||
+      normalized === 'WEST_AFRICA'
+    ) {
+      return 'NG_WEST_AFRICA' as any;
+    }
+    return ['NG_WEST_AFRICA', 'UK', 'US', 'EU', 'INTERNATIONAL'].includes(
+      normalized,
+    )
+      ? (normalized as any)
+      : 'INTERNATIONAL';
+  }
+
+  private normalizeGarmentCategory(value: unknown) {
+    const normalized = String(value ?? '')
+      .trim()
+      .toUpperCase();
+    return [
+      'TOP',
+      'BOTTOM',
+      'GOWN',
+      'DRESS',
+      'FORMAL_SHIRT',
+      'JACKET',
+      'SKIRT',
+      'UNISEX_TOP',
+      'UNISEX_BOTTOM',
+      'OTHER',
+    ].includes(normalized)
+      ? (normalized as any)
+      : 'OTHER';
+  }
+
+  private normalizeProductFitType(value: unknown) {
+    const normalized = String(value ?? '')
+      .trim()
+      .toUpperCase();
+    return ['SLIM', 'REGULAR', 'RELAXED', 'OVERSIZED', 'CUSTOM'].includes(
+      normalized,
+    )
+      ? (normalized as any)
+      : undefined;
+  }
+
+  private normalizeFabricStretch(value: unknown) {
+    const normalized = String(value ?? '')
+      .trim()
+      .toUpperCase();
+    return ['NONE', 'LOW', 'MEDIUM', 'HIGH', 'UNKNOWN'].includes(normalized)
+      ? (normalized as any)
+      : 'UNKNOWN';
+  }
+
+  private toNullableString(value: unknown): string | null {
+    const normalized = String(value ?? '').trim();
+    return normalized || null;
+  }
+
+  private toNullableNumber(value: unknown): number | null {
+    const normalized = Number(value);
+    return Number.isFinite(normalized) ? normalized : null;
+  }
+
+  private toNullableJson(
+    value: unknown,
+  ): Prisma.InputJsonValue | typeof Prisma.JsonNull {
+    if (value == null) {
+      return Prisma.JsonNull;
+    }
+    return value as Prisma.InputJsonValue;
   }
 
   private asObject(value: unknown): Record<string, any> {

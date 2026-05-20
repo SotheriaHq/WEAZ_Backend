@@ -78,6 +78,21 @@ const NT_MESSAGE_THREAD_REOPENED =
   'MESSAGE_THREAD_REOPENED' as NotificationType;
 const NT_MESSAGE_MODERATED = 'MESSAGE_MODERATED' as NotificationType;
 
+const optionalMessageRoutingString = Joi.string().allow(null).optional();
+
+const messageRoutingPayloadShape = {
+  type: optionalMessageRoutingString,
+  category: optionalMessageRoutingString,
+  conversationId: optionalMessageRoutingString,
+  orderId: optionalMessageRoutingString,
+  customOrderId: optionalMessageRoutingString,
+  brandId: optionalMessageRoutingString,
+  customerId: optionalMessageRoutingString,
+  actorUserId: optionalMessageRoutingString,
+  targetUrl: optionalMessageRoutingString,
+  message: optionalMessageRoutingString,
+};
+
 const formatOrderCode = (orderId: unknown) => {
   if (typeof orderId !== 'string' || orderId.trim().length === 0) {
     return 'order';
@@ -1300,10 +1315,9 @@ export class NotificationRegistry {
     registry.register({
       type: NT_MESSAGE_RECEIVED,
       schema: Joi.object({
+        ...messageRoutingPayloadShape,
         threadId: Joi.string().required(),
         messageId: Joi.string().required(),
-        targetUrl: Joi.string().optional(),
-        message: Joi.string().optional(),
       }),
       formatter: (n: any) =>
         n.payload?.message || 'You received a new message on an order thread',
@@ -1312,9 +1326,9 @@ export class NotificationRegistry {
     registry.register({
       type: NT_MESSAGE_UNREAD_REMINDER,
       schema: Joi.object({
+        ...messageRoutingPayloadShape,
         threadId: Joi.string().required(),
-        targetUrl: Joi.string().optional(),
-        message: Joi.string().optional(),
+        messageId: optionalMessageRoutingString,
       }),
       formatter: (n: any) =>
         n.payload?.message || 'You have unread order messages waiting',
@@ -1323,9 +1337,9 @@ export class NotificationRegistry {
     registry.register({
       type: NT_MESSAGE_THREAD_REOPENED,
       schema: Joi.object({
+        ...messageRoutingPayloadShape,
         threadId: Joi.string().required(),
-        targetUrl: Joi.string().optional(),
-        message: Joi.string().optional(),
+        messageId: optionalMessageRoutingString,
       }),
       formatter: (n: any) =>
         n.payload?.message || 'A thread has been reopened by support',
@@ -1334,10 +1348,9 @@ export class NotificationRegistry {
     registry.register({
       type: NT_MESSAGE_MODERATED,
       schema: Joi.object({
+        ...messageRoutingPayloadShape,
         threadId: Joi.string().required(),
         messageId: Joi.string().required(),
-        targetUrl: Joi.string().optional(),
-        message: Joi.string().optional(),
       }),
       formatter: (n: any) =>
         n.payload?.message || 'A message in your order thread was moderated',

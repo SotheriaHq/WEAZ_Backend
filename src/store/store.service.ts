@@ -82,6 +82,7 @@ import {
 } from 'src/brands/permissions/brand-permissions';
 import { canonicalUserProfileSelect } from 'src/common/user-profile-source.helper';
 import { BagEligibilityService } from 'src/bagging/bag-eligibility.service';
+import { SizeComputationService } from 'src/sizing/size-computation.service';
 import { ReviewEligibilityService } from 'src/reviews/review-eligibility.service';
 
 type SupportedPaymentBank = {
@@ -92,8 +93,7 @@ type SupportedPaymentBank = {
 };
 
 const PAYSTACK_TEST_BANK_CODE = '001';
-const PAYSTACK_TEST_BANK_FALLBACK_UNTIL_ENV =
-  'PAYSTACK_TEST_BANK_001_UNTIL';
+const PAYSTACK_TEST_BANK_FALLBACK_UNTIL_ENV = 'PAYSTACK_TEST_BANK_001_UNTIL';
 const STORE_PAYMENT_TEST_ACCOUNT_DEV_BYPASS_ENV =
   'STORE_PAYMENT_ALLOW_TEST_ACCOUNT_IN_DEV';
 const PRODUCT_VARIANT_SIZE_VALUES = [
@@ -107,17 +107,17 @@ const PRODUCT_VARIANT_SIZE_VALUES = [
   'XXXL',
   'XXXXL',
 ] as const;
-const PRODUCT_VARIANT_SIZE_LABEL_SET = new Set<string>(PRODUCT_VARIANT_SIZE_VALUES);
+const PRODUCT_VARIANT_SIZE_LABEL_SET = new Set<string>(
+  PRODUCT_VARIANT_SIZE_VALUES,
+);
 const PRODUCT_VARIANT_SIZE_ALIASES: Record<string, string> = {
   XSM: 'XS',
   '2XL': 'XXL',
   '3XL': 'XXXL',
   '4XL': 'XXXXL',
 };
-const CUSTOM_ORDER_OUT_OF_STOCK_GRACE_MS =
-  7 * 24 * 60 * 60 * 1000;
-const CUSTOM_ORDER_OUT_OF_STOCK_REMINDER_INTERVAL_MS =
-  24 * 60 * 60 * 1000;
+const CUSTOM_ORDER_OUT_OF_STOCK_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
+const CUSTOM_ORDER_OUT_OF_STOCK_REMINDER_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 @Injectable()
 export class StoreService {
@@ -126,8 +126,12 @@ export class StoreService {
   private systemTagsCache: { tags: string[]; expiresAt: number } | null = null;
   private systemTagsRefresh: Promise<string[]> | null = null;
   private readonly supportedPaymentBanksTtlMs = 60 * 60 * 1000;
-  private supportedPaymentBanksCache: { banks: SupportedPaymentBank[]; expiresAt: number } | null = null;
-  private supportedPaymentBanksRefresh: Promise<SupportedPaymentBank[]> | null = null;
+  private supportedPaymentBanksCache: {
+    banks: SupportedPaymentBank[];
+    expiresAt: number;
+  } | null = null;
+  private supportedPaymentBanksRefresh: Promise<SupportedPaymentBank[]> | null =
+    null;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -147,6 +151,8 @@ export class StoreService {
     private readonly brandPermissionService?: BrandPermissionService,
     @Optional()
     private readonly bagEligibilityService?: BagEligibilityService,
+    @Optional()
+    private readonly sizeComputationService?: SizeComputationService,
     @Optional()
     private readonly reviewEligibilityService?: ReviewEligibilityService,
   ) {}
@@ -179,7 +185,12 @@ export class StoreService {
           id: string;
           slug: string;
           name: string;
-          dimension: { id: string; slug: string; name: string; isMulti: boolean };
+          dimension: {
+            id: string;
+            slug: string;
+            name: string;
+            isMulti: boolean;
+          };
         };
       }>;
     }
@@ -231,13 +242,11 @@ export class StoreService {
 
     for (const row of rows) {
       const entityId = row.entityId;
-      const existing =
-        map.get(entityId) ??
-        {
-          filters: [],
-          filterValueIds: [],
-          filterSelection: {},
-        };
+      const existing = map.get(entityId) ?? {
+        filters: [],
+        filterValueIds: [],
+        filterSelection: {},
+      };
 
       const filterItem = {
         dimensionId: row.filterValue.dimension.id,
@@ -253,7 +262,8 @@ export class StoreService {
         existing.filterValueIds.push(filterItem.valueId);
       }
 
-      const currentSelection = existing.filterSelection[filterItem.dimensionId] ?? [];
+      const currentSelection =
+        existing.filterSelection[filterItem.dimensionId] ?? [];
       if (!currentSelection.includes(filterItem.valueId)) {
         existing.filterSelection[filterItem.dimensionId] = [
           ...currentSelection,
@@ -267,7 +277,10 @@ export class StoreService {
     return map;
   }
 
-  private async attachProductFiltersToView(productView: any, productId: string) {
+  private async attachProductFiltersToView(
+    productView: any,
+    productId: string,
+  ) {
     const rows = await this.getProductFilterRows([productId]);
     const filterMap = this.buildProductFilterPayloadByProductId(rows);
     const payload = filterMap.get(productId) ?? {
@@ -283,7 +296,9 @@ export class StoreService {
     };
   }
 
-  private async getProductEntityFilterValueIds(productId: string): Promise<string[]> {
+  private async getProductEntityFilterValueIds(
+    productId: string,
+  ): Promise<string[]> {
     const rows = await this.prisma.entityFilter.findMany({
       where: { entityType: 'PRODUCT', entityId: productId },
       select: { filterValueId: true },
@@ -303,17 +318,20 @@ export class StoreService {
       : productId
         ? await this.getProductEntityFilterValueIds(productId)
         : [];
-    const validFilterValueIds = await this.categoriesService.validateEntityFilterValues(
-      'PRODUCT',
-      filterValueIds,
-    );
+    const validFilterValueIds =
+      await this.categoriesService.validateEntityFilterValues(
+        'PRODUCT',
+        filterValueIds,
+      );
     if (validFilterValueIds.length === 0) {
       throw new BadRequestException('Add at least one style detail.');
     }
     return validFilterValueIds;
   }
 
-  private assertProductAudienceForPublish(gender?: CollectionType | string | null) {
+  private assertProductAudienceForPublish(
+    gender?: CollectionType | string | null,
+  ) {
     const normalizedGender = String(gender ?? '').toUpperCase();
     if (!['MALE', 'FEMALE', 'EVERYBODY'].includes(normalizedGender)) {
       throw new BadRequestException('Choose who this item is for.');
@@ -539,7 +557,10 @@ export class StoreService {
 
   private async attachProductMedia(product: any) {
     const base = this.transformProduct(product);
-    const baseWithFilters = await this.attachProductFiltersToView(base, product.id);
+    const baseWithFilters = await this.attachProductFiltersToView(
+      base,
+      product.id,
+    );
     const images: string[] = Array.isArray(product?.images)
       ? product.images.filter(Boolean)
       : [];
@@ -694,9 +715,12 @@ export class StoreService {
 
   private async resolveCatalogBrandForActor(actorUserId: string) {
     if (this.brandAccessService) {
-      const context = await this.brandAccessService.getPrimaryBrandContext(actorUserId);
+      const context =
+        await this.brandAccessService.getPrimaryBrandContext(actorUserId);
       if (!context.activeBrandId) {
-        throw new ForbiddenException('You must have an active brand membership to create products');
+        throw new ForbiddenException(
+          'You must have an active brand membership to create products',
+        );
       }
 
       await this.brandAccessService.assertCanManageCatalog(
@@ -710,7 +734,9 @@ export class StoreService {
         select: { id: true, currency: true, ownerId: true },
       });
       if (!brand) {
-        throw new ForbiddenException('You must have an active brand membership to create products');
+        throw new ForbiddenException(
+          'You must have an active brand membership to create products',
+        );
       }
       return brand;
     }
@@ -720,7 +746,9 @@ export class StoreService {
       select: { id: true, currency: true, ownerId: true },
     });
     if (!brand) {
-      throw new ForbiddenException('You must be a brand owner to create products');
+      throw new ForbiddenException(
+        'You must be a brand owner to create products',
+      );
     }
     return brand;
   }
@@ -739,7 +767,8 @@ export class StoreService {
     }
 
     if (!brand && this.brandAccessService) {
-      const context = await this.brandAccessService.getPrimaryBrandContext(brandIdOrOwnerId);
+      const context =
+        await this.brandAccessService.getPrimaryBrandContext(brandIdOrOwnerId);
       if (context.activeBrandId) {
         brand = await this.prisma.brand.findUnique({
           where: { id: context.activeBrandId },
@@ -767,7 +796,9 @@ export class StoreService {
     }
 
     if (resolvedBrand.ownerId !== actorUserId) {
-      throw new ForbiddenException('You do not have permission to view brand payouts');
+      throw new ForbiddenException(
+        'You do not have permission to view brand payouts',
+      );
     }
 
     return resolvedBrand;
@@ -811,7 +842,9 @@ export class StoreService {
         throw new NotFoundException('Product not found');
       }
 
-      const nextImages = Array.isArray(product.images) ? [...product.images] : [];
+      const nextImages = Array.isArray(product.images)
+        ? [...product.images]
+        : [];
       if (nextImages.length >= this.maxProductMediaCount) {
         throw new BadRequestException(
           `You can upload up to ${this.maxProductMediaCount} images`,
@@ -916,7 +949,9 @@ export class StoreService {
 
     const thumbUrl = product.thumbnail ?? null;
     const nextThumbnail =
-      thumbUrl && nextImages.includes(thumbUrl) ? thumbUrl : nextImages[0] ?? null;
+      thumbUrl && nextImages.includes(thumbUrl)
+        ? thumbUrl
+        : (nextImages[0] ?? null);
 
     await this.prisma.product.update({
       where: { id: productId },
@@ -968,7 +1003,9 @@ export class StoreService {
     return normalizeTagValue(tag);
   }
 
-  private normalizeVariantDimension(value: string | null | undefined): string | null {
+  private normalizeVariantDimension(
+    value: string | null | undefined,
+  ): string | null {
     const normalized = (value || '').trim().replace(/\s+/g, ' ');
     return normalized ? normalized.slice(0, 40) : null;
   }
@@ -1116,7 +1153,8 @@ export class StoreService {
     name?: string | null;
     customOrderOutOfStockDiscontinueAt?: Date | null;
   }): string {
-    const name = String(product.name || 'Your product').trim() || 'Your product';
+    const name =
+      String(product.name || 'Your product').trim() || 'Your product';
     const deadline = product.customOrderOutOfStockDiscontinueAt;
     if (!deadline) {
       return `${name} is out of stock and shoppers are still bagging it as a custom-order item. Restock it to keep it strong in the market.`;
@@ -1161,7 +1199,11 @@ export class StoreService {
         targetUrl: `/studio/products/${product.id}`,
         message: resolvedMessage,
       },
-      target: { type: 'PRODUCT', id: product.id, preview: product.name ?? undefined },
+      target: {
+        type: 'PRODUCT',
+        id: product.id,
+        preview: product.name ?? undefined,
+      },
       dedupeMs: 6 * 60 * 60 * 1000,
     });
   }
@@ -1295,7 +1337,8 @@ export class StoreService {
       sizes,
       colors,
       sizeStock: Object.keys(sizeStock).length > 0 ? sizeStock : null,
-      colorHexCodes: Object.keys(colorHexCodes).length > 0 ? colorHexCodes : null,
+      colorHexCodes:
+        Object.keys(colorHexCodes).length > 0 ? colorHexCodes : null,
       totalStock,
     };
   }
@@ -1373,7 +1416,9 @@ export class StoreService {
     if (this.systemTagsRefresh) return this.systemTagsRefresh;
     this.systemTagsRefresh = (async () => {
       // Note: systemTag table not in schema, returning empty
-      console.warn('SystemTags cache refresh attempted but systemTag table not available');
+      console.warn(
+        'SystemTags cache refresh attempted but systemTag table not available',
+      );
       const normalized: string[] = [];
       this.systemTagsCache = {
         tags: normalized,
@@ -1437,7 +1482,10 @@ export class StoreService {
         orderBy: { updatedAt: 'desc' },
         select: { id: true },
       });
-      if (!retry?.id) throw new InternalServerErrorException('Failed to ensure default store collection');
+      if (!retry?.id)
+        throw new InternalServerErrorException(
+          'Failed to ensure default store collection',
+        );
       return retry.id;
     }
 
@@ -1449,7 +1497,10 @@ export class StoreService {
     collectionId: string,
     maxProducts?: number,
   ) {
-    const limit = typeof maxProducts === 'number' ? maxProducts : this.maxProductsPerCollection;
+    const limit =
+      typeof maxProducts === 'number'
+        ? maxProducts
+        : this.maxProductsPerCollection;
     const count = await tx.storeCollectionProduct.count({
       where: {
         collectionId,
@@ -1467,10 +1518,7 @@ export class StoreService {
     }
   }
 
-  private canonicalStoreName(
-    user: unknown,
-    brand?: { name: string } | null,
-  ) {
+  private canonicalStoreName(user: unknown, brand?: { name: string } | null) {
     return (brand?.name || '').trim();
   }
 
@@ -1502,7 +1550,8 @@ export class StoreService {
     fallbackTags?: Array<string | null | undefined>,
   ): string[] {
     if (!this.isProductPublished(product)) return [];
-    const source = fallbackTags ?? (Array.isArray(product.tags) ? product.tags : []);
+    const source =
+      fallbackTags ?? (Array.isArray(product.tags) ? product.tags : []);
     return this.buildTagSet(source);
   }
 
@@ -1522,7 +1571,8 @@ export class StoreService {
     fallbackTags?: Array<string | null | undefined>,
   ): string[] {
     if (!brand.isStoreOpen) return [];
-    const source = fallbackTags ?? (Array.isArray(brand.tags) ? brand.tags : []);
+    const source =
+      fallbackTags ?? (Array.isArray(brand.tags) ? brand.tags : []);
     return this.buildTagSet(source);
   }
 
@@ -1549,8 +1599,7 @@ export class StoreService {
 
     if (patchers.length === 0) return;
 
-    const brandName =
-      owner?.brand?.name || owner?.username || 'A brand';
+    const brandName = owner?.brand?.name || owner?.username || 'A brand';
     const message = `${brandName} added a new product: ${product.name}`;
 
     const recipientIds = patchers
@@ -1598,7 +1647,11 @@ export class StoreService {
                   targetUrl: `/products/${product.id}`,
                   message,
                 },
-                target: { type: 'PRODUCT', id: product.id, preview: product.name },
+                target: {
+                  type: 'PRODUCT',
+                  id: product.id,
+                  preview: product.name,
+                },
               },
             );
           } catch (e) {
@@ -1780,7 +1833,9 @@ export class StoreService {
     const requestedCollectionId = (dto.collectionId || '').trim() || null;
     const requestedCategoryId = (dto.categoryId || '').trim() || null;
     const requestedCategoryTypeId = (dto.categoryTypeId || '').trim() || null;
-    const requestedFilterValueIds = this.normalizeFilterValueIds(dto.filterValueIds);
+    const requestedFilterValueIds = this.normalizeFilterValueIds(
+      dto.filterValueIds,
+    );
     const nextIsActive = dto.isActive ?? true;
 
     // Product boundary: collectionId is only StoreCollection membership. Product
@@ -1822,10 +1877,13 @@ export class StoreService {
         })
       : null;
     if (nextIsActive) {
-      this.assertProductVariantRequirements(derivedFromVariants?.variants ?? [], {
-        requireInStockVariant: true,
-        messagePrefix: 'A product',
-      });
+      this.assertProductVariantRequirements(
+        derivedFromVariants?.variants ?? [],
+        {
+          requireInStockVariant: true,
+          messagePrefix: 'A product',
+        },
+      );
     }
 
     const currency = (dto.currency || brand.currency || 'NGN').trim();
@@ -1877,7 +1935,10 @@ export class StoreService {
         // Product drafts still need a primary StoreCollection link under the
         // current schema. This is compatibility storage, not collection-owned
         // product behavior.
-        collectionId = await this.ensureDefaultStoreCollection(tx, brandOwnerUserId);
+        collectionId = await this.ensureDefaultStoreCollection(
+          tx,
+          brandOwnerUserId,
+        );
       }
 
       await this.assertCategoryTypeForCollection(
@@ -1902,8 +1963,7 @@ export class StoreService {
           images: normalizedImages,
           thumbnail: resolvedThumbnail,
           variants: derivedFromVariants?.variants ?? [],
-          totalStock:
-            derivedFromVariants?.totalStock ?? (dto.totalStock || 0),
+          totalStock: derivedFromVariants?.totalStock ?? (dto.totalStock || 0),
           trackInventory: dto.trackInventory ?? true,
           customOrderEnabled: nextCustomOrderEnabled,
         });
@@ -1917,7 +1977,9 @@ export class StoreService {
         where: { collectionId },
       });
 
-      let created = null as Awaited<ReturnType<typeof tx.product.create>> | null;
+      let created = null as Awaited<
+        ReturnType<typeof tx.product.create>
+      > | null;
       for (let attempt = 0; attempt < 3; attempt += 1) {
         try {
           created = await tx.product.create({
@@ -1931,11 +1993,12 @@ export class StoreService {
               slug,
               description: dto.description,
               currency,
-              standardCheckoutEnabled:
-                dto.standardCheckoutEnabled !== false,
+              standardCheckoutEnabled: dto.standardCheckoutEnabled !== false,
               customOrderEnabled: nextCustomOrderEnabled,
               price: new Prisma.Decimal(resolvedPrice),
-              salePrice: dto.salePrice ? new Prisma.Decimal(dto.salePrice) : null,
+              salePrice: dto.salePrice
+                ? new Prisma.Decimal(dto.salePrice)
+                : null,
               saleStartAt: dto.saleStartAt ? new Date(dto.saleStartAt) : null,
               saleEndAt: dto.saleEndAt ? new Date(dto.saleEndAt) : null,
               // Product details
@@ -1949,16 +2012,19 @@ export class StoreService {
                 : null,
               // Variants (legacy + derived)
               sizes: derivedFromVariants?.sizes ?? dto.sizes ?? [],
-              sizeStock: derivedFromVariants?.sizeStock ?? dto.sizeStock ?? null,
+              sizeStock:
+                derivedFromVariants?.sizeStock ?? dto.sizeStock ?? null,
               sizingMode: this.normalizeSizingMode(dto.sizingMode),
               rtwSizeSystem: dto.rtwSizeSystem || null,
               rtwSizeType: dto.rtwSizeType || null,
               rtwLinkedToInventory: dto.rtwLinkedToInventory ?? false,
               customGender: dto.customGender || null,
-              customMeasurementKeys:
-                this.normalizeRequiredMeasurementKeys(dto.customMeasurementKeys),
-              customFreeformPointIds:
-                this.normalizeRequiredMeasurementKeys(dto.customFreeformPointIds),
+              customMeasurementKeys: this.normalizeRequiredMeasurementKeys(
+                dto.customMeasurementKeys,
+              ),
+              customFreeformPointIds: this.normalizeRequiredMeasurementKeys(
+                dto.customFreeformPointIds,
+              ),
               fitPreference: dto.fitPreference || null,
               targetAgeGroup: dto.targetAgeGroup || 'ADULT',
               colors: derivedFromVariants?.colors ?? dto.colors ?? [],
@@ -1973,8 +2039,7 @@ export class StoreService {
               lowStockThreshold: dto.lowStockThreshold || 5,
               trackInventory: dto.trackInventory ?? true,
               allowBackorders: dto.allowBackorders ?? false,
-              customOrderOutOfStockTriggeredAt:
-                initialOutOfStockTriggeredAt,
+              customOrderOutOfStockTriggeredAt: initialOutOfStockTriggeredAt,
               customOrderOutOfStockReminderSentAt: null,
               customOrderOutOfStockDiscontinueAt:
                 initialOutOfStockDiscontinueAt,
@@ -2040,7 +2105,9 @@ export class StoreService {
         where: { id: created.id },
         include: {
           collections: { select: { collectionId: true, orderIndex: true } },
-          brand: { select: { id: true, name: true, logo: true, currency: true } },
+          brand: {
+            select: { id: true, name: true, logo: true, currency: true },
+          },
           variants: true,
         },
       });
@@ -2147,7 +2214,9 @@ export class StoreService {
         });
 
         if (!collection) {
-          throw new NotFoundException('Collection not found or does not belong to you');
+          throw new NotFoundException(
+            'Collection not found or does not belong to you',
+          );
         }
 
         resolvedCollectionId = requestedCollectionId;
@@ -2168,13 +2237,21 @@ export class StoreService {
       resolvedCategoryId = requestedCategoryId || null;
     }
 
-    if (dto.salePrice !== undefined && dto.salePrice !== null && dto.price !== undefined) {
+    if (
+      dto.salePrice !== undefined &&
+      dto.salePrice !== null &&
+      dto.price !== undefined
+    ) {
       if (dto.salePrice > dto.price) {
         throw new BadRequestException('salePrice cannot be greater than price');
       }
     }
 
-    if (dto.costPerItem !== undefined && dto.costPerItem !== null && dto.price !== undefined) {
+    if (
+      dto.costPerItem !== undefined &&
+      dto.costPerItem !== null &&
+      dto.price !== undefined
+    ) {
       if (dto.costPerItem > dto.price) {
         throw new BadRequestException(
           'costPerItem cannot be greater than price (negative margin)',
@@ -2182,7 +2259,8 @@ export class StoreService {
       }
     }
 
-    const finalIsActive = dto.isActive !== undefined ? dto.isActive : product.isActive;
+    const finalIsActive =
+      dto.isActive !== undefined ? dto.isActive : product.isActive;
     const requestedUpdateFilterValueIds =
       dto.filterValueIds !== undefined
         ? this.normalizeFilterValueIds(dto.filterValueIds)
@@ -2194,10 +2272,13 @@ export class StoreService {
         })
       : null;
     if ((dto as any).variants !== undefined && finalIsActive) {
-      this.assertProductVariantRequirements(derivedFromVariants?.variants ?? [], {
-        requireInStockVariant: false,
-        messagePrefix: 'A product',
-      });
+      this.assertProductVariantRequirements(
+        derivedFromVariants?.variants ?? [],
+        {
+          requireInStockVariant: false,
+          messagePrefix: 'A product',
+        },
+      );
     }
     if (finalIsActive) {
       validatedUpdateFilterValueIds =
@@ -2215,15 +2296,16 @@ export class StoreService {
 
     // Basic info
     if (dto.name !== undefined) updateData.name = dto.name;
-    
+
     // ===================== Item #14: Slug Immutability After Publish =====================
     // Once a product has been published (isActive=true and publishAt is in the past or null),
     // the slug cannot be changed to maintain URL stability and SEO preservation.
     if (dto.slug !== undefined) {
       const now = new Date();
-      const isPublished = product.isActive && (!product.publishAt || product.publishAt <= now);
+      const isPublished =
+        product.isActive && (!product.publishAt || product.publishAt <= now);
       const hasExistingSlug = !!product.slug;
-      
+
       if (isPublished && hasExistingSlug && dto.slug !== product.slug) {
         throw new BadRequestException(
           'Slug cannot be changed after product has been published. This ensures URL stability and SEO preservation.',
@@ -2231,7 +2313,7 @@ export class StoreService {
       }
       updateData.slug = dto.slug;
     }
-    
+
     if (dto.description !== undefined) updateData.description = dto.description;
     if (dto.currency !== undefined) {
       updateData.currency = (dto.currency || product.currency || 'NGN').trim();
@@ -2239,26 +2321,35 @@ export class StoreService {
     if (dto.standardCheckoutEnabled !== undefined) {
       updateData.standardCheckoutEnabled = dto.standardCheckoutEnabled;
     }
-    
+
     // Pricing
-    if (dto.price !== undefined) updateData.price = new Prisma.Decimal(dto.price);
+    if (dto.price !== undefined)
+      updateData.price = new Prisma.Decimal(dto.price);
     if (dto.salePrice !== undefined)
-      updateData.salePrice = dto.salePrice ? new Prisma.Decimal(dto.salePrice) : null;
+      updateData.salePrice = dto.salePrice
+        ? new Prisma.Decimal(dto.salePrice)
+        : null;
     if (dto.saleStartAt !== undefined)
-      updateData.saleStartAt = dto.saleStartAt ? new Date(dto.saleStartAt) : null;
+      updateData.saleStartAt = dto.saleStartAt
+        ? new Date(dto.saleStartAt)
+        : null;
     if (dto.saleEndAt !== undefined)
       updateData.saleEndAt = dto.saleEndAt ? new Date(dto.saleEndAt) : null;
-    
+
     // Product details
     if (dto.sku !== undefined) updateData.sku = dto.sku || null;
     if (dto.weight !== undefined)
       updateData.weight = dto.weight ? new Prisma.Decimal(dto.weight) : null;
     if (dto.weightUnit !== undefined) updateData.weightUnit = dto.weightUnit;
-    if (dto.materials !== undefined) updateData.materials = dto.materials || null;
-    if (dto.careInstructions !== undefined) updateData.careInstructions = dto.careInstructions || null;
+    if (dto.materials !== undefined)
+      updateData.materials = dto.materials || null;
+    if (dto.careInstructions !== undefined)
+      updateData.careInstructions = dto.careInstructions || null;
     if (dto.costPerItem !== undefined)
-      updateData.costPerItem = dto.costPerItem ? new Prisma.Decimal(dto.costPerItem) : null;
-    
+      updateData.costPerItem = dto.costPerItem
+        ? new Prisma.Decimal(dto.costPerItem)
+        : null;
+
     // Variants
     if (derivedFromVariants) {
       updateData.sizes = derivedFromVariants.sizes;
@@ -2270,8 +2361,10 @@ export class StoreService {
       if (dto.sizes !== undefined) updateData.sizes = dto.sizes;
       if (dto.sizeStock !== undefined) updateData.sizeStock = dto.sizeStock;
       if (dto.colors !== undefined) updateData.colors = dto.colors;
-      if (dto.colorImages !== undefined) updateData.colorImages = dto.colorImages;
-      if (dto.colorHexCodes !== undefined) updateData.colorHexCodes = dto.colorHexCodes;
+      if (dto.colorImages !== undefined)
+        updateData.colorImages = dto.colorImages;
+      if (dto.colorHexCodes !== undefined)
+        updateData.colorHexCodes = dto.colorHexCodes;
     }
     if (dto.sizingMode !== undefined)
       updateData.sizingMode = this.normalizeSizingMode(dto.sizingMode);
@@ -2295,7 +2388,7 @@ export class StoreService {
       updateData.fitPreference = dto.fitPreference || null;
     if (dto.targetAgeGroup !== undefined)
       updateData.targetAgeGroup = dto.targetAgeGroup;
-    
+
     // Media
     if (dto.images !== undefined) {
       const normalizedImages = Array.isArray(dto.images)
@@ -2310,7 +2403,10 @@ export class StoreService {
       let resolvedThumbnail: string | null = dto.thumbnail ?? null;
       if (normalizedImages.length === 0) {
         resolvedThumbnail = null;
-      } else if (!resolvedThumbnail || !normalizedImages.includes(resolvedThumbnail)) {
+      } else if (
+        !resolvedThumbnail ||
+        !normalizedImages.includes(resolvedThumbnail)
+      ) {
         resolvedThumbnail = normalizedImages[0];
       }
 
@@ -2319,16 +2415,19 @@ export class StoreService {
     } else if (dto.thumbnail !== undefined) {
       updateData.thumbnail = dto.thumbnail;
     }
-    
+
     // Inventory
     if (dto.totalStock !== undefined) updateData.totalStock = dto.totalStock;
-    if (dto.lowStockThreshold !== undefined) updateData.lowStockThreshold = dto.lowStockThreshold;
-    if (dto.trackInventory !== undefined) updateData.trackInventory = dto.trackInventory;
-    if (dto.allowBackorders !== undefined) updateData.allowBackorders = dto.allowBackorders;
+    if (dto.lowStockThreshold !== undefined)
+      updateData.lowStockThreshold = dto.lowStockThreshold;
+    if (dto.trackInventory !== undefined)
+      updateData.trackInventory = dto.trackInventory;
+    if (dto.allowBackorders !== undefined)
+      updateData.allowBackorders = dto.allowBackorders;
     if (dto.customOrderEnabled !== undefined) {
       updateData.customOrderEnabled = dto.customOrderEnabled;
     }
-    
+
     // Metadata
     const nextTags =
       dto.tags !== undefined ? this.buildTagSet(dto.tags || []) : undefined;
@@ -2351,18 +2450,24 @@ export class StoreService {
         : { disconnect: true };
     }
     if (dto.isActive !== undefined) updateData.isActive = dto.isActive;
-    if (dto.isPhysicalProduct !== undefined) updateData.isPhysicalProduct = dto.isPhysicalProduct;
-    if (dto.customsRegion !== undefined) updateData.customsRegion = dto.customsRegion || null;
-    
+    if (dto.isPhysicalProduct !== undefined)
+      updateData.isPhysicalProduct = dto.isPhysicalProduct;
+    if (dto.customsRegion !== undefined)
+      updateData.customsRegion = dto.customsRegion || null;
+
     // Policies
-    if (dto.returnsEligible !== undefined) updateData.returnsEligible = dto.returnsEligible;
-    
+    if (dto.returnsEligible !== undefined)
+      updateData.returnsEligible = dto.returnsEligible;
+
     // SEO
-    if (dto.metaTitle !== undefined) updateData.metaTitle = dto.metaTitle || null;
-    if (dto.metaDescription !== undefined) updateData.metaDescription = dto.metaDescription || null;
-    
+    if (dto.metaTitle !== undefined)
+      updateData.metaTitle = dto.metaTitle || null;
+    if (dto.metaDescription !== undefined)
+      updateData.metaDescription = dto.metaDescription || null;
+
     // Scheduling
-    if (dto.publishAt !== undefined) updateData.publishAt = dto.publishAt ? new Date(dto.publishAt) : null;
+    if (dto.publishAt !== undefined)
+      updateData.publishAt = dto.publishAt ? new Date(dto.publishAt) : null;
 
     let membershipChanged = false;
     const updated = await this.prisma.$transaction(async (tx) => {
@@ -2385,7 +2490,9 @@ export class StoreService {
           );
           const shouldCheckCollectionCapacity =
             finalIsActive &&
-            (!hasLink || !product.isActive || finalCollectionId !== product.collectionId);
+            (!hasLink ||
+              !product.isActive ||
+              finalCollectionId !== product.collectionId);
 
           if (shouldCheckCollectionCapacity) {
             await this.lockCollectionForUpdate(tx, finalCollectionId);
@@ -2489,13 +2596,17 @@ export class StoreService {
       if (finalIsActive) {
         const nextImages =
           dto.images !== undefined
-            ? (Array.isArray(dto.images) ? dto.images.filter(Boolean) : [])
-            : (Array.isArray(product.images) ? product.images : []);
+            ? Array.isArray(dto.images)
+              ? dto.images.filter(Boolean)
+              : []
+            : Array.isArray(product.images)
+              ? product.images
+              : [];
         const nextThumbnail =
           dto.images !== undefined
             ? (updateData.thumbnail as string | null | undefined)
             : dto.thumbnail !== undefined
-              ? (dto.thumbnail || null)
+              ? dto.thumbnail || null
               : (product.thumbnail ?? null);
 
         await this.assertProductPublishReady(tx, {
@@ -2573,7 +2684,11 @@ export class StoreService {
       });
     });
 
-    if (updated && this.categoriesService && Array.isArray(dto.filterValueIds)) {
+    if (
+      updated &&
+      this.categoriesService &&
+      Array.isArray(dto.filterValueIds)
+    ) {
       await this.categoriesService.setEntityFilters(
         'PRODUCT',
         productId,
@@ -2607,8 +2722,15 @@ export class StoreService {
 
     const resolvedUpdatedTags =
       nextTags ??
-      this.buildTagSet(Array.isArray(updated?.tags) ? (updated?.tags as string[]) : previousTags);
-    const previousIndexedTags = this.getIndexedProductTags(product, previousTags);
+      this.buildTagSet(
+        Array.isArray(updated?.tags)
+          ? (updated?.tags as string[])
+          : previousTags,
+      );
+    const previousIndexedTags = this.getIndexedProductTags(
+      product,
+      previousTags,
+    );
     const nextIndexedTags = updated
       ? this.getIndexedProductTags(
           {
@@ -2658,7 +2780,9 @@ export class StoreService {
 
     for (const log of logs) {
       const state =
-        log?.newState && typeof log.newState === 'object' && !Array.isArray(log.newState)
+        log?.newState &&
+        typeof log.newState === 'object' &&
+        !Array.isArray(log.newState)
           ? (log.newState as Record<string, unknown>)
           : {};
       const action = String(state.action ?? '').toUpperCase();
@@ -2712,7 +2836,9 @@ export class StoreService {
     }
 
     if (!isAdminLocked) {
-      throw new BadRequestException('This product is not currently blocked by admin moderation');
+      throw new BadRequestException(
+        'This product is not currently blocked by admin moderation',
+      );
     }
 
     const admins = await this.prisma.user.findMany({
@@ -2729,16 +2855,20 @@ export class StoreService {
         admins
           .filter((admin) => admin.id !== brandOwnerId)
           .map((admin) =>
-            this.notifications!.create(admin.id, NotificationType.ADMIN_ACTION, {
-              actorId: brandOwnerId,
-              payload: {
-                targetType: 'PRODUCT',
-                targetId: productId,
-                action: 'REPUBLISH_REQUEST',
-                reason: reason?.trim() || null,
-                message: `A brand requested republish approval for product "${product.name}".${reason?.trim() ? ` Reason: ${reason.trim()}` : ''}`,
+            this.notifications!.create(
+              admin.id,
+              NotificationType.ADMIN_ACTION,
+              {
+                actorId: brandOwnerId,
+                payload: {
+                  targetType: 'PRODUCT',
+                  targetId: productId,
+                  action: 'REPUBLISH_REQUEST',
+                  reason: reason?.trim() || null,
+                  message: `A brand requested republish approval for product "${product.name}".${reason?.trim() ? ` Reason: ${reason.trim()}` : ''}`,
+                },
               },
-            }).catch(() => undefined),
+            ).catch(() => undefined),
           ),
       );
     }
@@ -2812,11 +2942,17 @@ export class StoreService {
           careInstructions: product.careInstructions,
           costPerItem: product.costPerItem,
           // Variants (legacy + derived)
-          sizes: derivedFromVariants?.sizes ?? (Array.isArray(product.sizes) ? product.sizes : []),
-          sizeStock: derivedFromVariants?.sizeStock ?? (product.sizeStock ?? null),
-          colors: derivedFromVariants?.colors ?? (Array.isArray(product.colors) ? product.colors : []),
+          sizes:
+            derivedFromVariants?.sizes ??
+            (Array.isArray(product.sizes) ? product.sizes : []),
+          sizeStock:
+            derivedFromVariants?.sizeStock ?? product.sizeStock ?? null,
+          colors:
+            derivedFromVariants?.colors ??
+            (Array.isArray(product.colors) ? product.colors : []),
           colorImages: product.colorImages ?? null,
-          colorHexCodes: derivedFromVariants?.colorHexCodes ?? (product.colorHexCodes ?? null),
+          colorHexCodes:
+            derivedFromVariants?.colorHexCodes ?? product.colorHexCodes ?? null,
           // Media
           images: Array.isArray(product.images) ? product.images : [],
           thumbnail: product.thumbnail,
@@ -2906,7 +3042,9 @@ export class StoreService {
         where: { id: created.id },
         include: {
           collections: { select: { collectionId: true, orderIndex: true } },
-          brand: { select: { id: true, name: true, logo: true, currency: true } },
+          brand: {
+            select: { id: true, name: true, logo: true, currency: true },
+          },
           variants: true,
         },
       });
@@ -3040,7 +3178,10 @@ export class StoreService {
     const now = new Date();
     const expiresAt = new Date(now.getTime() + 60 * 24 * 60 * 60 * 1000); // 60 days from now
 
-    const previousIndexedTags = this.getIndexedProductTags(product, product.tags ?? []);
+    const previousIndexedTags = this.getIndexedProductTags(
+      product,
+      product.tags ?? [],
+    );
 
     const archived = await this.prisma.product.update({
       where: { id: productId },
@@ -3086,14 +3227,18 @@ export class StoreService {
           select: { userId: true },
         });
         for (const wi of wishlistItems) {
-          await this.notifications.create(wi.userId, 'WISHLIST_PRODUCT_UNAVAILABLE', {
-            actorId: brandOwnerId,
-            payload: {
-              productId,
-              productName: product.name,
-              brandName: product.brand.name,
+          await this.notifications.create(
+            wi.userId,
+            'WISHLIST_PRODUCT_UNAVAILABLE',
+            {
+              actorId: brandOwnerId,
+              payload: {
+                productId,
+                productName: product.name,
+                brandName: product.brand.name,
+              },
             },
-          });
+          );
         }
       } catch (err) {
         // Non-critical — don't fail the archive operation
@@ -3131,7 +3276,10 @@ export class StoreService {
       throw new BadRequestException('Product is not archived');
     }
 
-    const previousIndexedTags = this.getIndexedProductTags(product, product.tags ?? []);
+    const previousIndexedTags = this.getIndexedProductTags(
+      product,
+      product.tags ?? [],
+    );
 
     const restored = await this.prisma.product.update({
       where: { id: productId },
@@ -3156,12 +3304,21 @@ export class StoreService {
       await this.recalculateCollectionPriceRange(id);
     }
 
-    const nextIndexedTags = this.getIndexedProductTags(restored, restored.tags ?? []);
-    if (this.systemTags && !this.areTagsEqual(previousIndexedTags, nextIndexedTags)) {
+    const nextIndexedTags = this.getIndexedProductTags(
+      restored,
+      restored.tags ?? [],
+    );
+    if (
+      this.systemTags &&
+      !this.areTagsEqual(previousIndexedTags, nextIndexedTags)
+    ) {
       await this.systemTags.syncTags(previousIndexedTags, nextIndexedTags);
       this.systemTagsCache = null;
     }
-    if (this.tagIndex && !this.areTagsEqual(previousIndexedTags, nextIndexedTags)) {
+    if (
+      this.tagIndex &&
+      !this.areTagsEqual(previousIndexedTags, nextIndexedTags)
+    ) {
       await this.tagIndex.syncEntityTags(
         TAG_ENTITY_TYPE.PRODUCT,
         productId,
@@ -3171,8 +3328,6 @@ export class StoreService {
       );
     }
 
-
-
     // Only notify availability when the product is actually active/published.
     if (this.notifications && restored.isActive) {
       try {
@@ -3181,14 +3336,18 @@ export class StoreService {
           select: { userId: true },
         });
         for (const wi of wishlistItems) {
-          await this.notifications.create(wi.userId, 'WISHLIST_PRODUCT_AVAILABLE', {
-            actorId: brandOwnerId,
-            payload: {
-              productId,
-              productName: product.name,
-              brandName: product.brand.name,
+          await this.notifications.create(
+            wi.userId,
+            'WISHLIST_PRODUCT_AVAILABLE',
+            {
+              actorId: brandOwnerId,
+              payload: {
+                productId,
+                productName: product.name,
+                brandName: product.brand.name,
+              },
             },
-          });
+          );
         }
       } catch (err) {
         console.warn('Failed to send wishlist available notifications:', err);
@@ -3201,7 +3360,6 @@ export class StoreService {
 
   // toggleFeatured removed - featuring is now admin-only via AdminFeaturedService
 
-
   async deleteProduct(
     brandOwnerId: string,
     productId: string,
@@ -3209,7 +3367,7 @@ export class StoreService {
   ) {
     const product = await this.prisma.product.findFirst({
       where: { id: productId },
-      include: { 
+      include: {
         brand: true,
         collections: {
           include: {
@@ -3231,7 +3389,10 @@ export class StoreService {
       'You can only delete your own products',
     );
 
-    const previousIndexedTags = this.getIndexedProductTags(product, product.tags ?? []);
+    const previousIndexedTags = this.getIndexedProductTags(
+      product,
+      product.tags ?? [],
+    );
 
     const activeOrders = await this.prisma.order.findMany({
       where: {
@@ -3374,17 +3535,14 @@ export class StoreService {
       }
     }
 
-    return { 
-      success: true, 
+    return {
+      success: true,
       message: 'Product deleted',
       affectedCollections,
     };
   }
 
-  async bulkDeleteProducts(
-    brandOwnerId: string,
-    dto: BulkDeleteProductsDto,
-  ) {
+  async bulkDeleteProducts(brandOwnerId: string, dto: BulkDeleteProductsDto) {
     const productIds = this.normalizeBulkProductIds(dto.productIds);
 
     if (productIds.length === 0) {
@@ -3421,10 +3579,7 @@ export class StoreService {
     };
   }
 
-  async bulkArchiveProducts(
-    brandOwnerId: string,
-    dto: BulkArchiveProductsDto,
-  ) {
+  async bulkArchiveProducts(brandOwnerId: string, dto: BulkArchiveProductsDto) {
     const productIds = this.normalizeBulkProductIds(dto.productIds);
 
     if (productIds.length === 0) {
@@ -3569,10 +3724,10 @@ export class StoreService {
       where: { productId },
       include: {
         collection: {
-          select: { 
-            id: true, 
-            title: true, 
-            minPrice: true, 
+          select: {
+            id: true,
+            title: true,
+            minPrice: true,
             maxPrice: true,
             saleMinPrice: true,
             saleMaxPrice: true,
@@ -3584,17 +3739,20 @@ export class StoreService {
     const affectedCollections: any[] = [];
 
     const collectionIds = memberships.map((m) => m.collectionId);
-    const linksByCollection = new Map<string, Array<{
-      productId: string;
-      product: {
-        id: string;
-        price: any;
-        salePrice: any;
-        isActive: boolean;
-        deletedAt: Date | null;
-        archivedAt: Date | null;
-      } | null;
-    }>>();
+    const linksByCollection = new Map<
+      string,
+      Array<{
+        productId: string;
+        product: {
+          id: string;
+          price: any;
+          salePrice: any;
+          isActive: boolean;
+          deletedAt: Date | null;
+          archivedAt: Date | null;
+        } | null;
+      }>
+    >();
 
     if (collectionIds.length > 0) {
       const links = await this.prisma.storeCollectionProduct.findMany({
@@ -3629,22 +3787,40 @@ export class StoreService {
 
       // Calculate new price range
       const activePrices = links
-        .filter(l => l.product && l.product.isActive && !l.product.deletedAt && !l.product.archivedAt)
-        .map((l) => l.productId === productId ? newPrice : Number(l.product?.price || 0))
+        .filter(
+          (l) =>
+            l.product &&
+            l.product.isActive &&
+            !l.product.deletedAt &&
+            !l.product.archivedAt,
+        )
+        .map((l) =>
+          l.productId === productId ? newPrice : Number(l.product?.price || 0),
+        )
         .filter((p) => p > 0);
 
       const activeSalePrices = links
-        .filter(l => l.product && l.product.isActive && !l.product.deletedAt && !l.product.archivedAt)
+        .filter(
+          (l) =>
+            l.product &&
+            l.product.isActive &&
+            !l.product.deletedAt &&
+            !l.product.archivedAt,
+        )
         .map((l) => {
           if (l.productId === productId) return newSalePrice || null;
           return l.product?.salePrice ? Number(l.product.salePrice) : null;
         })
         .filter((p): p is number => p !== null && p > 0);
 
-      const newMinPrice = activePrices.length > 0 ? Math.min(...activePrices) : null;
-      const newMaxPrice = activePrices.length > 0 ? Math.max(...activePrices) : null;
-      const newSaleMinPrice = activeSalePrices.length > 0 ? Math.min(...activeSalePrices) : null;
-      const newSaleMaxPrice = activeSalePrices.length > 0 ? Math.max(...activeSalePrices) : null;
+      const newMinPrice =
+        activePrices.length > 0 ? Math.min(...activePrices) : null;
+      const newMaxPrice =
+        activePrices.length > 0 ? Math.max(...activePrices) : null;
+      const newSaleMinPrice =
+        activeSalePrices.length > 0 ? Math.min(...activeSalePrices) : null;
+      const newSaleMaxPrice =
+        activeSalePrices.length > 0 ? Math.max(...activeSalePrices) : null;
 
       affectedCollections.push({
         collectionId: m.collection.id,
@@ -3668,9 +3844,8 @@ export class StoreService {
 
     const currentPrice = Number(product.price);
     const priceChange = newPrice - currentPrice;
-    const percentageChange = currentPrice > 0 
-      ? ((priceChange / currentPrice) * 100) 
-      : 0;
+    const percentageChange =
+      currentPrice > 0 ? (priceChange / currentPrice) * 100 : 0;
 
     return {
       productId,
@@ -3682,7 +3857,9 @@ export class StoreService {
       currentSalePrice: product.salePrice ? Number(product.salePrice) : null,
       newSalePrice: newSalePrice || null,
       affectedCollections,
-      collectionsAffectedCount: affectedCollections.filter(c => c.priceRangeChanged || c.saleRangeChanged).length,
+      collectionsAffectedCount: affectedCollections.filter(
+        (c) => c.priceRangeChanged || c.saleRangeChanged,
+      ).length,
     };
   }
 
@@ -3705,10 +3882,15 @@ export class StoreService {
     );
 
     if (!product.deletedAt) {
-      throw new BadRequestException('Product must be deleted before permanent removal');
+      throw new BadRequestException(
+        'Product must be deleted before permanent removal',
+      );
     }
 
-    const previousIndexedTags = this.getIndexedProductTags(product, product.tags ?? []);
+    const previousIndexedTags = this.getIndexedProductTags(
+      product,
+      product.tags ?? [],
+    );
 
     await this.prisma.$transaction(async (tx) => {
       await tx.cartItem.deleteMany({ where: { productId } });
@@ -3737,7 +3919,9 @@ export class StoreService {
   async getProduct(productId: string, userId?: string, includeDeleted = false) {
     // Optimized: Include wishlist check in same query when user is authenticated
     const product = await this.prisma.product.findFirst({
-      where: includeDeleted ? { id: productId } : { id: productId, deletedAt: null },
+      where: includeDeleted
+        ? { id: productId }
+        : { id: productId, deletedAt: null },
       include: {
         categoryType: {
           select: {
@@ -3798,7 +3982,9 @@ export class StoreService {
     const isOwner = userId && product.brand.ownerId === userId;
 
     if (product.deletedAt && includeDeleted && !isOwner) {
-      throw new ForbiddenException('You can only view your own deleted products');
+      throw new ForbiddenException(
+        'You can only view your own deleted products',
+      );
     }
 
     // Store gating: brand must be open and product must be publicly available for non-owners.
@@ -3812,7 +3998,8 @@ export class StoreService {
     }
 
     // Check if user has wishlisted (from inline query)
-    const isWishlisted = Array.isArray(product.wishlistItems) && product.wishlistItems.length > 0;
+    const isWishlisted =
+      Array.isArray(product.wishlistItems) && product.wishlistItems.length > 0;
 
     // Buffered view counting (process-local).
     this.viewCounter.increment(productId);
@@ -3823,7 +4010,10 @@ export class StoreService {
     return { ...withMedia, isWishlisted };
   }
 
-  async getProductBagStatus(productId: string, userId?: string): Promise<
+  async getProductBagStatus(
+    productId: string,
+    userId?: string,
+  ): Promise<
     BagStatusDto & {
       baggable: boolean;
       reason: string | null;
@@ -3892,26 +4082,37 @@ export class StoreService {
       product.allowBackorders ||
       Number(product.totalStock || 0) > 0 ||
       (Array.isArray((product as any).variants) &&
-        ((product as any).variants as any[]).some((variant) => Number(variant.stock || 0) > 0));
+        ((product as any).variants as any[]).some(
+          (variant) => Number(variant.stock || 0) > 0,
+        ));
 
     const variants = Array.isArray((product as any).variants)
       ? ((product as any).variants as any[])
       : [];
-    const inStockVariants = variants.filter((variant) => Number(variant.stock || 0) > 0);
-    const variantSource = inStockVariants.length > 0 ? inStockVariants : variants;
+    const inStockVariants = variants.filter(
+      (variant) => Number(variant.stock || 0) > 0,
+    );
+    const variantSource =
+      inStockVariants.length > 0 ? inStockVariants : variants;
     const requiresSize =
-      variantSource.some((variant) => Boolean(variant.size)) || product.sizes.length > 0;
+      variantSource.some((variant) => Boolean(variant.size)) ||
+      product.sizes.length > 0;
     const requiresColor =
-      variantSource.some((variant) => Boolean(variant.color)) || product.colors.length > 0;
+      variantSource.some((variant) => Boolean(variant.color)) ||
+      product.colors.length > 0;
     const sizes = Array.from(
       new Set([
-        ...variantSource.map((variant) => String(variant.size || '').trim()).filter(Boolean),
+        ...variantSource
+          .map((variant) => String(variant.size || '').trim())
+          .filter(Boolean),
         ...product.sizes,
       ]),
     );
     const colors = Array.from(
       new Set([
-        ...variantSource.map((variant) => String(variant.color || '').trim()).filter(Boolean),
+        ...variantSource
+          .map((variant) => String(variant.color || '').trim())
+          .filter(Boolean),
         ...product.colors,
       ]),
     );
@@ -3920,7 +4121,12 @@ export class StoreService {
       ? await Promise.all([
           this.prisma.cartItem.findFirst({
             where: { userId, productId },
-            select: { id: true, selectedSize: true, selectedColor: true, quantity: true },
+            select: {
+              id: true,
+              selectedSize: true,
+              selectedColor: true,
+              quantity: true,
+            },
             orderBy: { createdAt: 'desc' },
           }),
           this.prisma.customOrderConfiguration.findFirst({
@@ -3971,7 +4177,7 @@ export class StoreService {
             },
             select: { id: true, checkoutIntentId: true },
             orderBy: { createdAt: 'desc' },
-        })
+          })
         : null;
 
     const [previousStandardOrder, previousCustomOrder] = userId
@@ -3997,11 +4203,14 @@ export class StoreService {
       !Array.isArray(sizeFitProfile.measurements)
         ? (sizeFitProfile.measurements as Record<string, unknown>)
         : {};
-    const requiredMeasurementKeys = customConfiguration?.requiredMeasurementKeys ?? [];
+    const requiredMeasurementKeys =
+      customConfiguration?.requiredMeasurementKeys ?? [];
     const missingMeasurementKeys = requiredMeasurementKeys.filter((key) => {
       const raw = measurementRecord[key];
       const value =
-        raw && typeof raw === 'object' && 'value' in (raw as Record<string, unknown>)
+        raw &&
+        typeof raw === 'object' &&
+        'value' in (raw as Record<string, unknown>)
           ? (raw as Record<string, unknown>).value
           : raw;
       const numeric = Number(value);
@@ -4037,51 +4246,48 @@ export class StoreService {
           : customEnabled
             ? 'CUSTOM'
             : 'UNAVAILABLE';
-    const stockState: BagStockState =
-      !publicProduct
-        ? 'UNAVAILABLE'
-        : inStock
-          ? 'IN_STOCK'
-          : customEnabled
-            ? 'CUSTOM_ONLY'
-            : 'OUT_OF_STOCK';
+    const stockState: BagStockState = !publicProduct
+      ? 'UNAVAILABLE'
+      : inStock
+        ? 'IN_STOCK'
+        : customEnabled
+          ? 'CUSTOM_ONLY'
+          : 'OUT_OF_STOCK';
     const hasPreviouslyBaggedOrOrdered = Boolean(
-      cartItem ||
-        customBagLine ||
-        previousStandardOrder ||
-        previousCustomOrder,
+      cartItem || customBagLine || previousStandardOrder || previousCustomOrder,
     );
     const disabledReason = isOwner
       ? 'Brands cannot bag their own products.'
       : !publicProduct
         ? 'This product is unavailable.'
-        : !standardEnabled && !customEnabled && product.customOrderEnabled === true && !customConfiguration
+        : !standardEnabled &&
+            !customEnabled &&
+            product.customOrderEnabled === true &&
+            !customConfiguration
           ? 'This product needs an active custom-order configuration before it can be bagged.'
           : !standardEnabled && !customEnabled && !inStock
             ? 'This product is out of stock.'
             : !standardEnabled && !customEnabled
               ? 'This product is not available for bagging.'
               : null;
-    const heartbeatState: BagHeartbeatState =
-      !canBag
-        ? 'disabled'
-        : cartItem || customBagLine
-          ? 'currently_bagged'
-          : hasPreviouslyBaggedOrOrdered
-            ? 'previously_bagged'
-            : 'not_bagged';
-    const defaultAction: BagDefaultAction =
-      !canBag
-        ? 'DISABLED'
-        : standardEnabled && customEnabled
+    const heartbeatState: BagHeartbeatState = !canBag
+      ? 'disabled'
+      : cartItem || customBagLine
+        ? 'currently_bagged'
+        : hasPreviouslyBaggedOrOrdered
+          ? 'previously_bagged'
+          : 'not_bagged';
+    const defaultAction: BagDefaultAction = !canBag
+      ? 'DISABLED'
+      : standardEnabled && customEnabled
+        ? 'OPEN_SELECTOR'
+        : standardEnabled && (requiresSize || requiresColor)
           ? 'OPEN_SELECTOR'
-          : standardEnabled && (requiresSize || requiresColor)
-            ? 'OPEN_SELECTOR'
-            : standardEnabled
-              ? 'ADD_STANDARD'
-              : fittingState === 'MISSING' || fittingState === 'PARTIAL'
-                ? 'OPEN_FITTINGS'
-                : 'OPEN_CUSTOM_FLOW';
+          : standardEnabled
+            ? 'ADD_STANDARD'
+            : fittingState === 'MISSING' || fittingState === 'PARTIAL'
+              ? 'OPEN_FITTINGS'
+              : 'OPEN_CUSTOM_FLOW';
 
     const response: BagStatusDto = {
       productId,
@@ -4107,7 +4313,8 @@ export class StoreService {
         checkoutIntentId: customBagLine?.checkoutIntentId ?? null,
         configurationId: customConfiguration?.id ?? null,
         requiredMeasurementKeys,
-        requiredFreeformPointIds: customConfiguration?.requiredFreeformPointIds ?? [],
+        requiredFreeformPointIds:
+          customConfiguration?.requiredFreeformPointIds ?? [],
         fittingState,
         missingMeasurementKeys,
       },
@@ -4532,19 +4739,21 @@ export class StoreService {
       this.prisma.product.count({ where }),
     ]);
 
-    const nextCursor = products.length > 0 ? products[products.length - 1].id : null;
+    const nextCursor =
+      products.length > 0 ? products[products.length - 1].id : null;
 
     const baseItems = products.map((p) => this.transformProduct(p));
     const productFilterRows = await this.getProductFilterRows(
       baseItems.map((item: any) => item.id).filter(Boolean),
     );
-    const productFilterMap = this.buildProductFilterPayloadByProductId(
-      productFilterRows,
-    );
+    const productFilterMap =
+      this.buildProductFilterPayloadByProductId(productFilterRows);
     const urls = Array.from(
       new Set(
         baseItems
-          .flatMap((p) => (Array.isArray((p as any).images) ? (p as any).images : []))
+          .flatMap((p) =>
+            Array.isArray((p as any).images) ? (p as any).images : [],
+          )
           .filter((u) => typeof u === 'string' && u.length > 0),
       ),
     );
@@ -4559,7 +4768,9 @@ export class StoreService {
     }
 
     const itemsWithMedia = baseItems.map((base: any) => {
-      const images: string[] = Array.isArray(base.images) ? base.images.filter(Boolean) : [];
+      const images: string[] = Array.isArray(base.images)
+        ? base.images.filter(Boolean)
+        : [];
       const filterPayload = productFilterMap.get(base.id) ?? {
         filters: [],
         filterValueIds: [],
@@ -4804,19 +5015,21 @@ export class StoreService {
       this.prisma.product.count({ where }),
     ]);
 
-    const nextCursor = products.length > 0 ? products[products.length - 1].id : null;
+    const nextCursor =
+      products.length > 0 ? products[products.length - 1].id : null;
 
     const baseItems = products.map((p) => this.transformProduct(p));
     const productFilterRows = await this.getProductFilterRows(
       baseItems.map((item: any) => item.id).filter(Boolean),
     );
-    const productFilterMap = this.buildProductFilterPayloadByProductId(
-      productFilterRows,
-    );
+    const productFilterMap =
+      this.buildProductFilterPayloadByProductId(productFilterRows);
     const urls = Array.from(
       new Set(
         baseItems
-          .flatMap((p) => (Array.isArray((p as any).images) ? (p as any).images : []))
+          .flatMap((p) =>
+            Array.isArray((p as any).images) ? (p as any).images : [],
+          )
           .filter((u) => typeof u === 'string' && u.length > 0),
       ),
     );
@@ -4831,7 +5044,9 @@ export class StoreService {
     }
 
     const itemsWithMedia = baseItems.map((base: any) => {
-      const images: string[] = Array.isArray(base.images) ? base.images.filter(Boolean) : [];
+      const images: string[] = Array.isArray(base.images)
+        ? base.images.filter(Boolean)
+        : [];
       const filterPayload = productFilterMap.get(base.id) ?? {
         filters: [],
         filterValueIds: [],
@@ -4892,7 +5107,10 @@ export class StoreService {
       throw new BadRequestException('Product is not deleted');
     }
 
-    const previousIndexedTags = this.getIndexedProductTags(product, product.tags ?? []);
+    const previousIndexedTags = this.getIndexedProductTags(
+      product,
+      product.tags ?? [],
+    );
 
     const restored = await this.prisma.product.update({
       where: { id: productId },
@@ -4904,12 +5122,21 @@ export class StoreService {
       },
     });
 
-    const nextIndexedTags = this.getIndexedProductTags(restored, restored.tags ?? []);
-    if (this.systemTags && !this.areTagsEqual(previousIndexedTags, nextIndexedTags)) {
+    const nextIndexedTags = this.getIndexedProductTags(
+      restored,
+      restored.tags ?? [],
+    );
+    if (
+      this.systemTags &&
+      !this.areTagsEqual(previousIndexedTags, nextIndexedTags)
+    ) {
       await this.systemTags.syncTags(previousIndexedTags, nextIndexedTags);
       this.systemTagsCache = null;
     }
-    if (this.tagIndex && !this.areTagsEqual(previousIndexedTags, nextIndexedTags)) {
+    if (
+      this.tagIndex &&
+      !this.areTagsEqual(previousIndexedTags, nextIndexedTags)
+    ) {
       await this.tagIndex.syncEntityTags(
         TAG_ENTITY_TYPE.PRODUCT,
         productId,
@@ -4965,9 +5192,7 @@ export class StoreService {
       )?.ownerId;
 
     if (resolvedBrandOwnerId === userId || product.brandId === userId) {
-      throw new ForbiddenException(
-        'You cannot add your own product to cart',
-      );
+      throw new ForbiddenException('You cannot add your own product to cart');
     }
 
     const variants = Array.isArray((product as any).variants)
@@ -4975,22 +5200,62 @@ export class StoreService {
       : [];
     const hasVariantSizes = variants.some((v) => v.size);
     const hasVariantColors = variants.some((v) => v.color);
+    const availableProductSizes = new Set<string>([
+      ...(Array.isArray(product.sizes) ? product.sizes : []),
+      ...variants
+        .map((variant) => variant.size)
+        .filter(
+          (size): size is string =>
+            typeof size === 'string' && size.trim().length > 0,
+        ),
+    ]);
+    let resolvedSelectedSize = dto.selectedSize || null;
+    let recommendationSnapshot: Record<string, any> | null =
+      dto.sizeRecommendationSnapshot &&
+      typeof dto.sizeRecommendationSnapshot === 'object'
+        ? dto.sizeRecommendationSnapshot
+        : null;
+
+    if (!resolvedSelectedSize && this.sizeComputationService) {
+      const profile = await (this.prisma as any).userSizeFitProfile.findUnique({
+        where: { userId },
+        select: { autoSizeRecommendation: true },
+      });
+      if (profile?.autoSizeRecommendation === 'ON') {
+        const recommendation = await this.sizeComputationService
+          .computeProductRecommendation(userId, product.id)
+          .catch(() => null);
+        if (
+          recommendation?.recommendedSize &&
+          (availableProductSizes.size === 0 ||
+            availableProductSizes.has(recommendation.recommendedSize))
+        ) {
+          resolvedSelectedSize = recommendation.recommendedSize;
+          recommendationSnapshot = this.sizeComputationService.toSnapshotJson(
+            recommendation,
+            { selectedSize: resolvedSelectedSize },
+          );
+        }
+      }
+    }
+
     // Validate size
     if (
       (hasVariantSizes || product.sizes.length > 0) &&
-      !dto.selectedSize
+      !resolvedSelectedSize
     ) {
       throw new BadRequestException('Please select a size');
     }
-    if (dto.selectedSize && !product.sizes.includes(dto.selectedSize)) {
+    if (
+      resolvedSelectedSize &&
+      availableProductSizes.size > 0 &&
+      !availableProductSizes.has(resolvedSelectedSize)
+    ) {
       throw new BadRequestException('Invalid size selected');
     }
 
     // Validate color
-    if (
-      (hasVariantColors || product.colors.length > 0) &&
-      !dto.selectedColor
-    ) {
+    if ((hasVariantColors || product.colors.length > 0) && !dto.selectedColor) {
       throw new BadRequestException('Please select a color');
     }
     if (dto.selectedColor && !product.colors.includes(dto.selectedColor)) {
@@ -5011,7 +5276,7 @@ export class StoreService {
       where: {
         userId,
         productId: dto.productId,
-        selectedSize: dto.selectedSize || null,
+        selectedSize: resolvedSelectedSize,
         selectedColor: dto.selectedColor || null,
       },
     });
@@ -5024,7 +5289,7 @@ export class StoreService {
       variants.length > 0
         ? variants.find(
             (v) =>
-              (v.size || null) === (dto.selectedSize || null) &&
+              (v.size || null) === resolvedSelectedSize &&
               (v.color || null) === (dto.selectedColor || null),
           )
         : null;
@@ -5040,10 +5305,7 @@ export class StoreService {
     }
 
     // Check stock (variant-aware)
-    if (
-      product.trackInventory &&
-      !product.allowBackorders
-    ) {
+    if (product.trackInventory && !product.allowBackorders) {
       if (selectedVariant) {
         const available = Number(selectedVariant.stock || 0);
         if (available < resultingQuantity) {
@@ -5051,16 +5313,36 @@ export class StoreService {
             `Only ${available} items available for the selected variant`,
           );
         }
-      } else if (dto.selectedSize && product.sizeStock) {
+      } else if (resolvedSelectedSize && product.sizeStock) {
         const sizeStock = product.sizeStock as Record<string, number>;
-        const available = sizeStock[dto.selectedSize] || 0;
+        const available = sizeStock[resolvedSelectedSize] || 0;
         if (available < resultingQuantity) {
           throw new BadRequestException(
-            `Only ${available} items available in size ${dto.selectedSize}`,
+            `Only ${available} items available in size ${resolvedSelectedSize}`,
           );
         }
       } else if (product.totalStock < resultingQuantity) {
-        throw new BadRequestException(`Only ${product.totalStock} items available`);
+        throw new BadRequestException(
+          `Only ${product.totalStock} items available`,
+        );
+      }
+    }
+
+    if (!recommendationSnapshot && this.sizeComputationService) {
+      const recommendation = await this.sizeComputationService
+        .computeProductRecommendation(userId, product.id, {
+          selectedSize: resolvedSelectedSize,
+          measurementsOverride:
+            sizingPayload.sizeFitData?.measurements ??
+            sizingPayload.sizeFitData ??
+            null,
+        })
+        .catch(() => null);
+      if (recommendation) {
+        recommendationSnapshot = this.sizeComputationService.toSnapshotJson(
+          recommendation,
+          { selectedSize: resolvedSelectedSize },
+        );
       }
     }
 
@@ -5073,6 +5355,7 @@ export class StoreService {
             sizingMode: sizingPayload.sizingMode,
             requiredMeasurementKeys: sizingPayload.requiredMeasurementKeys,
             sizeFitData: sizingPayload.sizeFitData,
+            sizeRecommendationSnapshot: recommendationSnapshot,
           },
         });
       } else {
@@ -5082,15 +5365,15 @@ export class StoreService {
             userId,
             productId: dto.productId,
             quantity: quantityToAdd,
-            selectedSize: dto.selectedSize || null,
+            selectedSize: resolvedSelectedSize,
             selectedColor: dto.selectedColor || null,
             sizingMode: sizingPayload.sizingMode,
             requiredMeasurementKeys: sizingPayload.requiredMeasurementKeys,
             sizeFitData: sizingPayload.sizeFitData,
+            sizeRecommendationSnapshot: recommendationSnapshot,
           },
         });
       }
-
     });
 
     return this.getCart(userId);
@@ -5163,10 +5446,7 @@ export class StoreService {
               (v.color || null) === (item.selectedColor || null),
           );
           const available = Number(match?.stock || 0);
-          if (
-            !match ||
-            available <= 0
-          ) {
+          if (!match || available <= 0) {
             unavailableItemIds.push(item.id);
             return false;
           }
@@ -5187,7 +5467,9 @@ export class StoreService {
     });
 
     if (unavailableItemIds.length > 0) {
-      await this.prisma.cartItem.deleteMany({ where: { id: { in: unavailableItemIds } } });
+      await this.prisma.cartItem.deleteMany({
+        where: { id: { in: unavailableItemIds } },
+      });
     }
 
     const cartItems = availableItems.map((item) => {
@@ -5210,12 +5492,11 @@ export class StoreService {
         ? Number(selectedVariant.price)
         : Number(product.price);
 
-      const effectivePrice =
-        selectedVariant?.price
-          ? basePrice
-          : isOnSale && product.salePrice
-            ? Number(product.salePrice)
-            : basePrice;
+      const effectivePrice = selectedVariant?.price
+        ? basePrice
+        : isOnSale && product.salePrice
+          ? Number(product.salePrice)
+          : basePrice;
 
       return {
         id: item.id,
@@ -5228,6 +5509,11 @@ export class StoreService {
         sizeFitData:
           item.sizeFitData && typeof item.sizeFitData === 'object'
             ? item.sizeFitData
+            : null,
+        sizeRecommendationSnapshot:
+          item.sizeRecommendationSnapshot &&
+          typeof item.sizeRecommendationSnapshot === 'object'
+            ? item.sizeRecommendationSnapshot
             : null,
         product: {
           id: product.id,
@@ -5342,7 +5628,10 @@ export class StoreService {
 
   // ==================== WISHLIST ====================
 
-  private resolveWishlistAvailability(product: any, userId: string): {
+  private resolveWishlistAvailability(
+    product: any,
+    userId: string,
+  ): {
     status:
       | 'AVAILABLE'
       | 'OUT_OF_STOCK'
@@ -5559,7 +5848,10 @@ export class StoreService {
     // Keep wishlist immutable on read: expose availability state instead of
     // deleting items when products become unavailable.
     const wishlistItems = items.map((item) => {
-      const availability = this.resolveWishlistAvailability(item.product, userId);
+      const availability = this.resolveWishlistAvailability(
+        item.product,
+        userId,
+      );
       return {
         id: item.id,
         addedAt: item.createdAt,
@@ -5600,8 +5892,12 @@ export class StoreService {
     return true;
   }
 
-  private hasPublicStoreAccess(product: { collections?: Array<any> } | null | undefined): boolean {
-    const links = Array.isArray(product?.collections) ? product.collections : [];
+  private hasPublicStoreAccess(
+    product: { collections?: Array<any> } | null | undefined,
+  ): boolean {
+    const links = Array.isArray(product?.collections)
+      ? product.collections
+      : [];
     if (links.length === 0) return true;
 
     return links.some((link: any) => {
@@ -5837,7 +6133,9 @@ export class StoreService {
     return raw as Record<string, any>;
   }
 
-  private extractProvidedMeasurementKeys(sizeFitData: Record<string, any> | null): string[] {
+  private extractProvidedMeasurementKeys(
+    sizeFitData: Record<string, any> | null,
+  ): string[] {
     if (!sizeFitData) return [];
 
     const measurements =
@@ -5854,7 +6152,9 @@ export class StoreService {
         if (typeof value === 'number') return Number.isFinite(value);
         if (typeof value === 'object' && value !== null) {
           const numericValue = (value as any).value;
-          return typeof numericValue === 'number' && Number.isFinite(numericValue);
+          return (
+            typeof numericValue === 'number' && Number.isFinite(numericValue)
+          );
         }
         return false;
       });
@@ -5883,7 +6183,9 @@ export class StoreService {
     const productSizingMode = this.normalizeSizingMode(product?.sizingMode);
     const requestSizingMode = this.normalizeSizingMode(payload?.sizingMode);
     const sizingMode =
-      requestSizingMode === SizingMode.NONE ? productSizingMode : requestSizingMode;
+      requestSizingMode === SizingMode.NONE
+        ? productSizingMode
+        : requestSizingMode;
 
     const productRequiredKeys = this.normalizeRequiredMeasurementKeys(
       product?.customMeasurementKeys,
@@ -5933,7 +6235,9 @@ export class StoreService {
     requiredMeasurementKeys?: string[];
     sizeFitSnapshot?: Record<string, any> | null;
   }> {
-    const relationalItems = Array.isArray(order?.orderItems) ? order.orderItems : [];
+    const relationalItems = Array.isArray(order?.orderItems)
+      ? order.orderItems
+      : [];
     if (relationalItems.length > 0) {
       return relationalItems.map((item: any) => ({
         productId: item.productId,
@@ -6013,12 +6317,19 @@ export class StoreService {
       orders.flatMap((order) => order.orderItems),
       orders,
     );
-    const paymentStatusByOrderId = await reconcileStandardOrderPaymentStatuses(this.prisma, orders);
+    const paymentStatusByOrderId = await reconcileStandardOrderPaymentStatuses(
+      this.prisma,
+      orders,
+    );
     const paidOrderIds = orders
-      .filter((order) => paymentStatusByOrderId.get(order.id) === PaymentStatus.PAID)
+      .filter(
+        (order) => paymentStatusByOrderId.get(order.id) === PaymentStatus.PAID,
+      )
       .map((order) => order.id);
     if (paidOrderIds.length > 0 && this.standardOrderFinanceSyncService) {
-      await this.standardOrderFinanceSyncService.syncPaidOrdersByOrderIds(paidOrderIds);
+      await this.standardOrderFinanceSyncService.syncPaidOrdersByOrderIds(
+        paidOrderIds,
+      );
     }
 
     const normalizedOrders = orders.map((order) => ({
@@ -6031,7 +6342,9 @@ export class StoreService {
         orderItemId: item.id,
         productName: item.nameAtPurchase,
         thumbnail: item.thumbnailAtPurchase,
-        reviewState: reviewStatesByOrderItemId.get(item.id)?.reviewState ?? 'NOT_DELIVERED',
+        reviewState:
+          reviewStatesByOrderItemId.get(item.id)?.reviewState ??
+          'NOT_DELIVERED',
         existingReviewId:
           reviewStatesByOrderItemId.get(item.id)?.existingReviewId ?? null,
       })),
@@ -6092,12 +6405,17 @@ export class StoreService {
       order.orderItems,
       [order],
     );
-    const paymentStatusByOrderId = await reconcileStandardOrderPaymentStatuses(this.prisma, [order]);
+    const paymentStatusByOrderId = await reconcileStandardOrderPaymentStatuses(
+      this.prisma,
+      [order],
+    );
     if (
       paymentStatusByOrderId.get(order.id) === PaymentStatus.PAID &&
       this.standardOrderFinanceSyncService
     ) {
-      await this.standardOrderFinanceSyncService.syncPaidOrdersByOrderIds([order.id]);
+      await this.standardOrderFinanceSyncService.syncPaidOrdersByOrderIds([
+        order.id,
+      ]);
     }
 
     const financeSnapshot = await this.buildStandardOrderFinanceSnapshot(order);
@@ -6114,7 +6432,9 @@ export class StoreService {
         orderItemId: item.id,
         productName: item.nameAtPurchase,
         thumbnail: item.thumbnailAtPurchase,
-        reviewState: reviewStatesByOrderItemId.get(item.id)?.reviewState ?? 'NOT_DELIVERED',
+        reviewState:
+          reviewStatesByOrderItemId.get(item.id)?.reviewState ??
+          'NOT_DELIVERED',
         existingReviewId:
           reviewStatesByOrderItemId.get(item.id)?.existingReviewId ?? null,
       })),
@@ -6181,7 +6501,9 @@ export class StoreService {
         where: {
           type: 'BUYER_RECEIPT',
           OR: [
-            ...(paymentAttempt?.id ? [{ paymentAttemptId: paymentAttempt.id }] : []),
+            ...(paymentAttempt?.id
+              ? [{ paymentAttemptId: paymentAttempt.id }]
+              : []),
             { orderId: order.id },
           ],
         },
@@ -6218,47 +6540,66 @@ export class StoreService {
             if (item.totalPrice != null) {
               return sum + Number(item.totalPrice);
             }
-            return sum + Number(item.unitPrice ?? 0) * Number(item.quantity ?? 0);
+            return (
+              sum + Number(item.unitPrice ?? 0) * Number(item.quantity ?? 0)
+            );
           }, 0)
         : 0,
     );
     const shippingAmount = this.roundCurrency(Number(order.shippingCost ?? 0));
-    const discountAmount = this.roundCurrency(Number(order.discountAmount ?? 0));
+    const discountAmount = this.roundCurrency(
+      Number(order.discountAmount ?? 0),
+    );
     const grossAmount = this.roundCurrency(Number(order.totalAmount ?? 0));
     const receiptMetadata = this.asJsonObject(receipt?.metadataJson);
 
     return {
       breakdown: {
-        currency: String(order.currency || paymentAttempt?.currency || hold?.currency || 'NGN'),
+        currency: String(
+          order.currency || paymentAttempt?.currency || hold?.currency || 'NGN',
+        ),
         itemSubtotal,
         shippingAmount,
         discountAmount,
         grossAmount,
-        paymentReference: order.paymentReference ?? paymentAttempt?.reference ?? null,
+        paymentReference:
+          order.paymentReference ?? paymentAttempt?.reference ?? null,
         paymentStatus: order.paymentStatus ?? null,
         paidAt: order.paidAt ?? paymentAttempt?.confirmedAt ?? null,
         escrowStatus: hold?.status ?? null,
         commissionRate: hold ? Number(hold.commissionRate ?? 0) : null,
-        commissionAmount: hold ? this.roundCurrency(Number(hold.commissionAmount ?? 0)) : null,
-        netBrandAmount: hold ? this.roundCurrency(Number(hold.netBrandAmount ?? 0)) : null,
+        commissionAmount: hold
+          ? this.roundCurrency(Number(hold.commissionAmount ?? 0))
+          : null,
+        netBrandAmount: hold
+          ? this.roundCurrency(Number(hold.netBrandAmount ?? 0))
+          : null,
         releaseSchedule: hold
           ? [
               {
                 stage: 'SHIPPED_RELEASE',
-                grossAmount: this.roundCurrency(Number(hold.firstReleaseAmount ?? 0)),
+                grossAmount: this.roundCurrency(
+                  Number(hold.firstReleaseAmount ?? 0),
+                ),
                 commissionAmount: this.roundCurrency(
                   Number(hold.firstReleaseCommissionAmount ?? 0),
                 ),
-                netAmount: this.roundCurrency(Number(hold.firstReleaseNetAmount ?? 0)),
+                netAmount: this.roundCurrency(
+                  Number(hold.firstReleaseNetAmount ?? 0),
+                ),
                 releasedAt: hold.firstReleasedAt ?? null,
               },
               {
                 stage: 'DELIVERED_RELEASE',
-                grossAmount: this.roundCurrency(Number(hold.secondReleaseAmount ?? 0)),
+                grossAmount: this.roundCurrency(
+                  Number(hold.secondReleaseAmount ?? 0),
+                ),
                 commissionAmount: this.roundCurrency(
                   Number(hold.secondReleaseCommissionAmount ?? 0),
                 ),
-                netAmount: this.roundCurrency(Number(hold.secondReleaseNetAmount ?? 0)),
+                netAmount: this.roundCurrency(
+                  Number(hold.secondReleaseNetAmount ?? 0),
+                ),
                 eligibleAt: hold.secondReleaseEligibleAt ?? null,
                 condition: hold.secondReleaseCondition ?? null,
                 releasedAt: hold.secondReleasedAt ?? null,
@@ -6270,7 +6611,9 @@ export class StoreService {
               id: transaction.id,
               type: transaction.type,
               description: transaction.description,
-              totalAmount: this.roundCurrency(Number(transaction.totalAmount ?? 0)),
+              totalAmount: this.roundCurrency(
+                Number(transaction.totalAmount ?? 0),
+              ),
               currency: transaction.currency,
               createdAt: transaction.createdAt,
               entries: Array.isArray(transaction.entries)
@@ -6303,12 +6646,14 @@ export class StoreService {
               receipt.netAmount != null
                 ? this.roundCurrency(Number(receipt.netAmount))
                 : null,
-            paymentAttemptId: receipt.paymentAttemptId ?? paymentAttempt?.id ?? null,
-            paymentReference: paymentAttempt?.reference ?? order.paymentReference ?? null,
+            paymentAttemptId:
+              receipt.paymentAttemptId ?? paymentAttempt?.id ?? null,
+            paymentReference:
+              paymentAttempt?.reference ?? order.paymentReference ?? null,
             settlementCurrency:
               typeof receiptMetadata?.settlementCurrency === 'string'
                 ? receiptMetadata.settlementCurrency
-                : paymentAttempt?.settlementCurrency ?? null,
+                : (paymentAttempt?.settlementCurrency ?? null),
             settlementAmount:
               receiptMetadata?.settlementAmount != null
                 ? this.roundCurrency(Number(receiptMetadata.settlementAmount))
@@ -6371,8 +6716,13 @@ export class StoreService {
     }
 
     // Buyer can confirm delivery when order is SHIPPED (new flow) or DELIVERED (legacy)
-    if (order.status !== OrderStatus.SHIPPED && order.status !== OrderStatus.DELIVERED) {
-      throw new BadRequestException('Only shipped or delivered orders can be confirmed');
+    if (
+      order.status !== OrderStatus.SHIPPED &&
+      order.status !== OrderStatus.DELIVERED
+    ) {
+      throw new BadRequestException(
+        'Only shipped or delivered orders can be confirmed',
+      );
     }
 
     if (order.paymentStatus !== PaymentStatus.PAID) {
@@ -6396,7 +6746,10 @@ export class StoreService {
       });
 
       if (this.standardOrderEscrowService) {
-        await this.standardOrderEscrowService.markBuyerDeliveryConfirmed(tx, orderId);
+        await this.standardOrderEscrowService.markBuyerDeliveryConfirmed(
+          tx,
+          orderId,
+        );
       }
     });
 
@@ -6448,10 +6801,17 @@ export class StoreService {
   private async getReviewStateByOrderItemId(
     userId: string,
     orderItems: Array<{ id: string; productId: string | null }>,
-    orders: Array<{ id: string; status: string; orderItems: Array<{ id: string }> }>,
+    orders: Array<{
+      id: string;
+      status: string;
+      orderItems: Array<{ id: string }>;
+    }>,
   ) {
     if (orderItems.length === 0) {
-      return new Map<string, { reviewState: string; existingReviewId: string | null }>();
+      return new Map<
+        string,
+        { reviewState: string; existingReviewId: string | null }
+      >();
     }
 
     const productIds = Array.from(
@@ -6463,7 +6823,9 @@ export class StoreService {
     );
     const orderItemIds = orderItems.map((item) => item.id);
     const deliveredOrderIds = new Set(
-      orders.filter((order) => order.status === 'DELIVERED').map((order) => order.id),
+      orders
+        .filter((order) => order.status === 'DELIVERED')
+        .map((order) => order.id),
     );
 
     const [existingReviews, openDisputes] = await Promise.all([
@@ -6497,7 +6859,9 @@ export class StoreService {
       }
     }
 
-    const disputeOrderItemIds = new Set(openDisputes.map((dispute) => dispute.orderItemId));
+    const disputeOrderItemIds = new Set(
+      openDisputes.map((dispute) => dispute.orderItemId),
+    );
     const orderIdByOrderItemId = new Map<string, string>();
     for (const order of orders) {
       for (const item of order.orderItems) {
@@ -6505,10 +6869,15 @@ export class StoreService {
       }
     }
 
-    const states = new Map<string, { reviewState: string; existingReviewId: string | null }>();
+    const states = new Map<
+      string,
+      { reviewState: string; existingReviewId: string | null }
+    >();
     for (const item of orderItems) {
       const orderId = orderIdByOrderItemId.get(item.id);
-      const existingReviewId = item.productId ? reviewByProductId.get(item.productId) ?? null : null;
+      const existingReviewId = item.productId
+        ? (reviewByProductId.get(item.productId) ?? null)
+        : null;
 
       if (!orderId || !deliveredOrderIds.has(orderId)) {
         states.set(item.id, { reviewState: 'NOT_DELIVERED', existingReviewId });
@@ -6516,16 +6885,25 @@ export class StoreService {
       }
 
       if (existingReviewId) {
-        states.set(item.id, { reviewState: 'ALREADY_REVIEWED', existingReviewId });
+        states.set(item.id, {
+          reviewState: 'ALREADY_REVIEWED',
+          existingReviewId,
+        });
         continue;
       }
 
       if (disputeOrderItemIds.has(item.id)) {
-        states.set(item.id, { reviewState: 'BLOCKED_BY_DISPUTE', existingReviewId: null });
+        states.set(item.id, {
+          reviewState: 'BLOCKED_BY_DISPUTE',
+          existingReviewId: null,
+        });
         continue;
       }
 
-      states.set(item.id, { reviewState: 'CAN_CREATE', existingReviewId: null });
+      states.set(item.id, {
+        reviewState: 'CAN_CREATE',
+        existingReviewId: null,
+      });
     }
 
     return states;
@@ -6571,11 +6949,11 @@ export class StoreService {
 
     if (
       this.brandPermissionService &&
-      await this.brandPermissionService.hasPermission(
+      (await this.brandPermissionService.hasPermission(
         user.id,
         order.brandId,
         BRAND_PERMISSIONS.ORDERS_READ,
-      )
+      ))
     ) {
       return {
         orderId: order.id,
@@ -6644,12 +7022,15 @@ export class StoreService {
     const website = brand?.socialWebsite || '';
     const tiktok = brand?.socialTiktok || '';
     const tagline = (brand?.tagline || '').trim();
-    const responseTimeSla = policy?.responseTimeSla || brand?.responseTimeSla || '24h';
+    const responseTimeSla =
+      policy?.responseTimeSla || brand?.responseTimeSla || '24h';
 
     const taglineFromDescription =
       description.split(/(?<=[.!?])\s+/)[0]?.trim() || '';
     const suggestedTagline = (
-      tagline || taglineFromDescription || normalizedTags.slice(0, 3).join(' â€¢ ')
+      tagline ||
+      taglineFromDescription ||
+      normalizedTags.slice(0, 3).join(' â€¢ ')
     ).slice(0, 60);
 
     return {
@@ -6730,7 +7111,10 @@ export class StoreService {
         : null;
     const completeness = brand
       ? this.computeStoreCompleteness(brand, paymentAccount)
-      : { isComplete: false, missingFields: ['name', 'description', 'tags', 'paymentAccount'] };
+      : {
+          isComplete: false,
+          missingFields: ['name', 'description', 'tags', 'paymentAccount'],
+        };
 
     return {
       brandId: brand?.id,
@@ -6748,7 +7132,8 @@ export class StoreService {
       missingFields: completeness.missingFields,
       storeNameLastChangedAt: lastChangedAt,
       storeNameNextAllowedAt: nextAllowedAt,
-      responseTimeSla: policy?.responseTimeSla || brand?.responseTimeSla || '24h',
+      responseTimeSla:
+        policy?.responseTimeSla || brand?.responseTimeSla || '24h',
       paymentAccount: this.summarizePaymentAccount(paymentAccount),
     };
   }
@@ -6819,7 +7204,9 @@ export class StoreService {
   }
 
   private getStorePaymentAccountSecret() {
-    const secret = String(process.env.STORE_PAYMENT_ACCOUNT_SECRET ?? '').trim();
+    const secret = String(
+      process.env.STORE_PAYMENT_ACCOUNT_SECRET ?? '',
+    ).trim();
     if (!secret) {
       throw new BadRequestException(
         'STORE_PAYMENT_ACCOUNT_SECRET is required before brand payout accounts can be encrypted',
@@ -6829,7 +7216,9 @@ export class StoreService {
   }
 
   private getStorePaymentAccountEncryptionKey() {
-    return createHash('sha256').update(this.getStorePaymentAccountSecret()).digest();
+    return createHash('sha256')
+      .update(this.getStorePaymentAccountSecret())
+      .digest();
   }
 
   private getStorePaymentAccountDecryptionKeys() {
@@ -6845,8 +7234,15 @@ export class StoreService {
 
   private encryptStorePaymentValue(value: string) {
     const iv = randomBytes(12);
-    const cipher = createCipheriv('aes-256-gcm', this.getStorePaymentAccountEncryptionKey(), iv);
-    const encrypted = Buffer.concat([cipher.update(value, 'utf8'), cipher.final()]);
+    const cipher = createCipheriv(
+      'aes-256-gcm',
+      this.getStorePaymentAccountEncryptionKey(),
+      iv,
+    );
+    const encrypted = Buffer.concat([
+      cipher.update(value, 'utf8'),
+      cipher.final(),
+    ]);
     const tag = cipher.getAuthTag();
     return `${iv.toString('base64')}.${tag.toString('base64')}.${encrypted.toString('base64')}`;
   }
@@ -6891,7 +7287,11 @@ export class StoreService {
   private normalizeBrandShippingRules(
     shippingRules: Record<string, any> | null | undefined,
   ): Prisma.JsonObject | null {
-    if (!shippingRules || typeof shippingRules !== 'object' || Array.isArray(shippingRules)) {
+    if (
+      !shippingRules ||
+      typeof shippingRules !== 'object' ||
+      Array.isArray(shippingRules)
+    ) {
       return null;
     }
 
@@ -6961,12 +7361,16 @@ export class StoreService {
 
   private sanitizePaystackSnapshot(value: unknown): Prisma.JsonValue | null {
     if (Array.isArray(value)) {
-      return value.map((entry) => this.sanitizePaystackSnapshot(entry)) as Prisma.JsonValue;
+      return value.map((entry) =>
+        this.sanitizePaystackSnapshot(entry),
+      ) as Prisma.JsonValue;
     }
 
     if (value && typeof value === 'object') {
       const output: Record<string, Prisma.JsonValue> = {};
-      for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+      for (const [key, entry] of Object.entries(
+        value as Record<string, unknown>,
+      )) {
         if (key === 'account_number') {
           output[key] = this.maskAccountNumber(String(entry ?? ''));
           continue;
@@ -7011,11 +7415,13 @@ export class StoreService {
       resolvedAccountNumber:
         params.resolvedAccountNumber != null
           ? this.maskAccountNumber(params.resolvedAccountNumber)
-          : (existing['resolvedAccountNumber'] as Prisma.JsonValue | undefined) ?? null,
+          : ((existing['resolvedAccountNumber'] as
+              | Prisma.JsonValue
+              | undefined) ?? null),
       paystackBankId:
         params.paystackBankId != null
           ? params.paystackBankId
-          : (existing['paystackBankId'] as number | null | undefined) ?? null,
+          : ((existing['paystackBankId'] as number | null | undefined) ?? null),
       lastProviderSyncAt:
         params.lastProviderSyncAt?.toISOString() ??
         (existing['lastProviderSyncAt'] as string | null | undefined) ??
@@ -7029,11 +7435,15 @@ export class StoreService {
       subaccountResponseSnapshot:
         params.subaccountPayload != null
           ? this.sanitizePaystackSnapshot(params.subaccountPayload)
-          : (existing['subaccountResponseSnapshot'] as Prisma.JsonValue | undefined) ?? null,
+          : ((existing['subaccountResponseSnapshot'] as
+              | Prisma.JsonValue
+              | undefined) ?? null),
       transferRecipientResponseSnapshot:
         params.transferRecipientPayload != null
           ? this.sanitizePaystackSnapshot(params.transferRecipientPayload)
-          : (existing['transferRecipientResponseSnapshot'] as Prisma.JsonValue | undefined) ?? null,
+          : ((existing['transferRecipientResponseSnapshot'] as
+              | Prisma.JsonValue
+              | undefined) ?? null),
     };
   }
 
@@ -7075,7 +7485,9 @@ export class StoreService {
       account?.accountNumberEncrypted,
     );
     const metadata =
-      account?.metadata && typeof account.metadata === 'object' && !Array.isArray(account.metadata)
+      account?.metadata &&
+      typeof account.metadata === 'object' &&
+      !Array.isArray(account.metadata)
         ? (account.metadata as Record<string, any>)
         : {};
     return {
@@ -7091,7 +7503,8 @@ export class StoreService {
       bankName: account?.bankName ?? null,
       accountName: account?.accountName ?? null,
       maskedAccountNumber:
-        account?.accountNumberLast4 && typeof account.accountNumberLast4 === 'string'
+        account?.accountNumberLast4 &&
+        typeof account.accountNumberLast4 === 'string'
           ? `******${account.accountNumberLast4}`
           : decryptedAccountNumber
             ? `******${decryptedAccountNumber.slice(-4)}`
@@ -7116,7 +7529,9 @@ export class StoreService {
           ? metadata.lastSuccessfulSyncAt
           : null,
       paystackBankId:
-        metadata.paystackBankId != null ? String(metadata.paystackBankId) : null,
+        metadata.paystackBankId != null
+          ? String(metadata.paystackBankId)
+          : null,
       updatedAt: account?.updatedAt ?? null,
     };
   }
@@ -7171,13 +7586,13 @@ export class StoreService {
   }
 
   private isLocalOrDevRuntime() {
-    const runtime = String(
-      process.env.APP_ENV ?? process.env.NODE_ENV ?? '',
-    )
+    const runtime = String(process.env.APP_ENV ?? process.env.NODE_ENV ?? '')
       .trim()
       .toLowerCase();
 
-    return !['production', 'prod', 'staging', 'stage', 'qa', 'uat'].includes(runtime);
+    return !['production', 'prod', 'staging', 'stage', 'qa', 'uat'].includes(
+      runtime,
+    );
   }
 
   private isStorePaymentTestBypassEnabled() {
@@ -7257,7 +7672,12 @@ export class StoreService {
     >('/bank?country=nigeria&currency=NGN');
 
     return rows
-      .filter((row) => row && row.active !== false && String(row.type || 'nuban') === 'nuban')
+      .filter(
+        (row) =>
+          row &&
+          row.active !== false &&
+          String(row.type || 'nuban') === 'nuban',
+      )
       .map((row) => ({
         id: row.id,
         code: row.code,
@@ -7307,7 +7727,8 @@ export class StoreService {
     });
 
     const suggestedContactName =
-      `${owner?.userProfile?.firstName ?? ''} ${owner?.userProfile?.lastName ?? ''}`.trim() || brand.name;
+      `${owner?.userProfile?.firstName ?? ''} ${owner?.userProfile?.lastName ?? ''}`.trim() ||
+      brand.name;
 
     return {
       brandId: brand.id,
@@ -7319,7 +7740,9 @@ export class StoreService {
         primaryContactEmail:
           account?.primaryContactEmail ?? owner?.email ?? null,
         primaryContactPhone:
-          account?.primaryContactPhone ?? owner?.userProfile?.phoneNumber ?? null,
+          account?.primaryContactPhone ??
+          owner?.userProfile?.phoneNumber ??
+          null,
       },
       account: this.summarizePaymentAccount(account),
     };
@@ -7345,7 +7768,9 @@ export class StoreService {
       throw new BadRequestException('Select the settlement bank first');
     }
     if (!/^\d{10}$/.test(accountNumber)) {
-      throw new BadRequestException('Account number must be a valid 10-digit NUBAN');
+      throw new BadRequestException(
+        'Account number must be a valid 10-digit NUBAN',
+      );
     }
 
     const banks = await this.listSupportedPaymentBanks();
@@ -7451,9 +7876,10 @@ export class StoreService {
     }
 
     return this.withStorePaymentAccountSyncLock(brand.id, async () => {
-      const existingAccount = await this.getStorePaymentAccountModel().findUnique({
-        where: { brandId: brand.id },
-      });
+      const existingAccount =
+        await this.getStorePaymentAccountModel().findUnique({
+          where: { brandId: brand.id },
+        });
 
       const providedBankCode = String(dto.bankCode || '').trim();
       const providedAccountNumber = String(dto.accountNumber || '').trim();
@@ -7463,25 +7889,30 @@ export class StoreService {
       const bankCode =
         providedBankCode || String(existingAccount?.bankCode || '').trim();
       const accountNumber =
-        providedAccountNumber || String(decryptedExistingAccountNumber || '').trim();
+        providedAccountNumber ||
+        String(decryptedExistingAccountNumber || '').trim();
 
       if (!bankCode) {
         throw new BadRequestException('Select the settlement bank first');
       }
       if (!/^\d{10}$/.test(accountNumber)) {
-        throw new BadRequestException('Account number must be a valid 10-digit NUBAN');
+        throw new BadRequestException(
+          'Account number must be a valid 10-digit NUBAN',
+        );
       }
 
       const bankDetailsChanged =
         !existingAccount ||
         bankCode !== String(existingAccount?.bankCode || '').trim() ||
         (providedAccountNumber.length > 0 &&
-          accountNumber !== String(decryptedExistingAccountNumber || '').trim());
-      const syncMode: 'INITIAL_SETUP' | 'RESYNC' | 'BANK_DETAILS_UPDATE' = !existingAccount
-        ? 'INITIAL_SETUP'
-        : bankDetailsChanged
-          ? 'BANK_DETAILS_UPDATE'
-          : 'RESYNC';
+          accountNumber !==
+            String(decryptedExistingAccountNumber || '').trim());
+      const syncMode: 'INITIAL_SETUP' | 'RESYNC' | 'BANK_DETAILS_UPDATE' =
+        !existingAccount
+          ? 'INITIAL_SETUP'
+          : bankDetailsChanged
+            ? 'BANK_DETAILS_UPDATE'
+            : 'RESYNC';
 
       const banks = await this.listSupportedPaymentBanks();
       const selectedBank = banks.find((bank) => bank.code === bankCode);
@@ -7509,7 +7940,8 @@ export class StoreService {
           existingAccount?.primaryContactPhone ||
           owner?.userProfile?.phoneNumber ||
           null;
-        const accountNumberEncrypted = this.encryptStorePaymentValue(accountNumber);
+        const accountNumberEncrypted =
+          this.encryptStorePaymentValue(accountNumber);
         const lastSuccessfulSyncAt = syncTimestamp;
         const metadata = this.buildStorePaymentMetadata({
           existingMetadata: existingAccount?.metadata,
@@ -7547,9 +7979,12 @@ export class StoreService {
             subaccountActive: Boolean(existingAccount?.subaccountActive),
             subaccountVerified: Boolean(existingAccount?.subaccountVerified),
             subaccountLastSyncAt: existingAccount?.subaccountLastSyncAt ?? null,
-            transferRecipientCode: existingAccount?.transferRecipientCode ?? null,
+            transferRecipientCode:
+              existingAccount?.transferRecipientCode ?? null,
             transferRecipientId: existingAccount?.transferRecipientId ?? null,
-            transferRecipientActive: Boolean(existingAccount?.transferRecipientActive),
+            transferRecipientActive: Boolean(
+              existingAccount?.transferRecipientActive,
+            ),
             transferRecipientLastSyncAt:
               existingAccount?.transferRecipientLastSyncAt ?? null,
             lastSyncError: null,
@@ -7576,9 +8011,12 @@ export class StoreService {
             subaccountActive: Boolean(existingAccount?.subaccountActive),
             subaccountVerified: Boolean(existingAccount?.subaccountVerified),
             subaccountLastSyncAt: existingAccount?.subaccountLastSyncAt ?? null,
-            transferRecipientCode: existingAccount?.transferRecipientCode ?? null,
+            transferRecipientCode:
+              existingAccount?.transferRecipientCode ?? null,
             transferRecipientId: existingAccount?.transferRecipientId ?? null,
-            transferRecipientActive: Boolean(existingAccount?.transferRecipientActive),
+            transferRecipientActive: Boolean(
+              existingAccount?.transferRecipientActive,
+            ),
             transferRecipientLastSyncAt:
               existingAccount?.transferRecipientLastSyncAt ?? null,
             lastSyncError: null,
@@ -7667,15 +8105,17 @@ export class StoreService {
           },
         };
 
-        const existingRecipientCode = String(
-          existingAccount?.transferRecipientCode ?? '',
-        ).trim() || null;
+        const existingRecipientCode =
+          String(existingAccount?.transferRecipientCode ?? '').trim() || null;
 
         if (!existingRecipientCode) {
-          transferRecipientPayload = await this.callPaystack('/transferrecipient', {
-            method: 'POST',
-            bodyJson: transferRecipientCreateBody,
-          });
+          transferRecipientPayload = await this.callPaystack(
+            '/transferrecipient',
+            {
+              method: 'POST',
+              bodyJson: transferRecipientCreateBody,
+            },
+          );
         } else {
           let existingRecipientPayload: any = null;
           try {
@@ -7695,7 +8135,9 @@ export class StoreService {
             !Array.isArray(existingRecipientPayload.details)
               ? existingRecipientPayload.details
               : null;
-          const existingBankCode = String(existingDetails?.bank_code ?? '').trim();
+          const existingBankCode = String(
+            existingDetails?.bank_code ?? '',
+          ).trim();
           const existingAccountNumber = String(
             existingDetails?.account_number ?? '',
           )
@@ -7723,8 +8165,7 @@ export class StoreService {
               ...existingRecipientPayload,
               ...updatedRecipient,
               recipient_code:
-                updatedRecipient?.recipient_code ??
-                existingRecipientCode,
+                updatedRecipient?.recipient_code ?? existingRecipientCode,
               id:
                 updatedRecipient?.id ??
                 existingRecipientPayload?.id ??
@@ -7736,15 +8177,21 @@ export class StoreService {
                 true,
             };
           } else {
-            transferRecipientPayload = await this.callPaystack('/transferrecipient', {
-              method: 'POST',
-              bodyJson: transferRecipientCreateBody,
-            });
+            transferRecipientPayload = await this.callPaystack(
+              '/transferrecipient',
+              {
+                method: 'POST',
+                bodyJson: transferRecipientCreateBody,
+              },
+            );
 
             const nextRecipientCode = String(
               transferRecipientPayload?.recipient_code ?? '',
             ).trim();
-            if (nextRecipientCode && nextRecipientCode !== existingRecipientCode) {
+            if (
+              nextRecipientCode &&
+              nextRecipientCode !== existingRecipientCode
+            ) {
               rollbackTransferRecipientCode = nextRecipientCode;
               try {
                 await this.callPaystack(
@@ -7809,11 +8256,14 @@ export class StoreService {
         ? {
             subaccountCode: subaccountPayload?.subaccount_code ?? null,
             subaccountId:
-              subaccountPayload?.id != null ? String(subaccountPayload.id) : null,
+              subaccountPayload?.id != null
+                ? String(subaccountPayload.id)
+                : null,
             subaccountActive: Boolean(subaccountPayload?.active),
             subaccountVerified: Boolean(subaccountPayload?.is_verified),
             subaccountLastSyncAt: syncTimestamp,
-            transferRecipientCode: transferRecipientPayload?.recipient_code ?? null,
+            transferRecipientCode:
+              transferRecipientPayload?.recipient_code ?? null,
             transferRecipientId:
               transferRecipientPayload?.id != null
                 ? String(transferRecipientPayload.id)
@@ -7830,7 +8280,9 @@ export class StoreService {
             transferRecipientCode:
               existingAccount?.transferRecipientCode ?? null,
             transferRecipientId: existingAccount?.transferRecipientId ?? null,
-            transferRecipientActive: Boolean(existingAccount?.transferRecipientActive),
+            transferRecipientActive: Boolean(
+              existingAccount?.transferRecipientActive,
+            ),
             transferRecipientLastSyncAt:
               existingAccount?.transferRecipientLastSyncAt ?? null,
           };
@@ -7936,67 +8388,73 @@ export class StoreService {
       'RECONCILIATION_REVIEW',
     ];
 
-    const [paymentAccount, availableAccount, pendingPayouts, paidOut, heldHolds, recentPayouts] =
-      await Promise.all([
-        this.getStorePaymentAccountModel().findUnique({
-          where: { brandId },
-        }),
-        this.prisma.ledgerAccount.findFirst({
-          where: {
-            entityType: 'BRAND',
-            entityId: brandId,
-            subType: 'BRAND_AVAILABLE',
-            isActive: true,
+    const [
+      paymentAccount,
+      availableAccount,
+      pendingPayouts,
+      paidOut,
+      heldHolds,
+      recentPayouts,
+    ] = await Promise.all([
+      this.getStorePaymentAccountModel().findUnique({
+        where: { brandId },
+      }),
+      this.prisma.ledgerAccount.findFirst({
+        where: {
+          entityType: 'BRAND',
+          entityId: brandId,
+          subType: 'BRAND_AVAILABLE',
+          isActive: true,
+        },
+        select: { currentBalance: true },
+      }),
+      this.prisma.payout.aggregate({
+        where: {
+          brandId,
+          status: { in: pendingStatuses as any },
+        },
+        _sum: { amount: true },
+        _count: { id: true },
+      }),
+      this.prisma.payout.aggregate({
+        where: {
+          brandId,
+          status: 'PAID' as any,
+        },
+        _sum: { amount: true },
+        _count: { id: true },
+      }),
+      this.prisma.escrowHold.findMany({
+        where: {
+          brandId,
+          status: {
+            in: ['HELD', 'PARTIALLY_RELEASED', 'FROZEN'] as any,
           },
-          select: { currentBalance: true },
-        }),
-        this.prisma.payout.aggregate({
-          where: {
-            brandId,
-            status: { in: pendingStatuses as any },
-          },
-          _sum: { amount: true },
-          _count: { id: true },
-        }),
-        this.prisma.payout.aggregate({
-          where: {
-            brandId,
-            status: 'PAID' as any,
-          },
-          _sum: { amount: true },
-          _count: { id: true },
-        }),
-        this.prisma.escrowHold.findMany({
-          where: {
-            brandId,
-            status: {
-              in: ['HELD', 'PARTIALLY_RELEASED', 'FROZEN'] as any,
-            },
-          },
-          select: {
-            netBrandAmount: true,
-            firstReleaseNetAmount: true,
-            secondReleaseNetAmount: true,
-            firstReleasedAt: true,
-            secondReleasedAt: true,
-          },
-        }),
-        this.prisma.payout.findMany({
-          where: { brandId },
-          orderBy: { createdAt: 'desc' },
-          take: 8,
-          select: {
-            id: true,
-            amount: true,
-            currency: true,
-            status: true,
-            providerTransferStatus: true,
-            createdAt: true,
-            processedAt: true,
-            paidAt: true,
-          },
-        }),
-      ]);
+        },
+        select: {
+          netBrandAmount: true,
+          firstReleaseNetAmount: true,
+          secondReleaseNetAmount: true,
+          firstReleasedAt: true,
+          secondReleasedAt: true,
+        },
+      }),
+      this.prisma.payout.findMany({
+        where: { brandId },
+        orderBy: { createdAt: 'desc' },
+        take: 8,
+        select: {
+          id: true,
+          amount: true,
+          currency: true,
+          status: true,
+          providerTransferStatus: true,
+          createdAt: true,
+          processedAt: true,
+          paidAt: true,
+        },
+      }),
+    ]);
 
     const payoutIds = recentPayouts.map((payout) => payout.id);
     const statementRows =
@@ -8020,11 +8478,16 @@ export class StoreService {
       statementRows.map((row: any) => [String(row.payoutId), row]),
     );
 
-    const availableForPayout = this.toMoney(availableAccount?.currentBalance ?? 0);
+    const availableForPayout = this.toMoney(
+      availableAccount?.currentBalance ?? 0,
+    );
     const pendingPayoutTotal = this.toMoney(pendingPayouts?._sum?.amount ?? 0);
     const totalPaidOut = this.toMoney(paidOut?._sum?.amount ?? 0);
     const heldInEscrow = this.toMoney(
-      heldHolds.reduce((sum, hold) => sum + this.getEscrowRemainingAmount(hold), 0),
+      heldHolds.reduce(
+        (sum, hold) => sum + this.getEscrowRemainingAmount(hold),
+        0,
+      ),
     );
     const totalEarnings = this.toMoney(
       availableForPayout + pendingPayoutTotal + totalPaidOut + heldInEscrow,
@@ -8076,7 +8539,9 @@ export class StoreService {
     const page = Math.max(1, Number(params?.page ?? 1));
     const limit = Math.min(100, Math.max(1, Number(params?.limit ?? 20)));
     const skip = (page - 1) * limit;
-    const normalizedStatus = String(params?.status ?? '').trim().toUpperCase();
+    const normalizedStatus = String(params?.status ?? '')
+      .trim()
+      .toUpperCase();
     const validStatuses = new Set([
       'PENDING_APPROVAL',
       'APPROVED',
@@ -8387,19 +8852,26 @@ export class StoreService {
    * NOTE: Store logo/banner are derived from the Brand's profile images (synced from User)
    * and should not block store opening.
    */
-  private computeStoreCompleteness(brand: {
-    name: string;
-    description?: string | null;
-    tags?: string[];
-    logo?: string | null;
-    banner?: string | null;
-  }, paymentAccount?: { status?: string | null } | null): { isComplete: boolean; missingFields: string[] } {
+  private computeStoreCompleteness(
+    brand: {
+      name: string;
+      description?: string | null;
+      tags?: string[];
+      logo?: string | null;
+      banner?: string | null;
+    },
+    paymentAccount?: { status?: string | null } | null,
+  ): { isComplete: boolean; missingFields: string[] } {
     const missingFields: string[] = [];
 
     if (!brand.name?.trim()) missingFields.push('name');
     if (!brand.description?.trim()) missingFields.push('description');
     if (!brand.tags || brand.tags.length === 0) missingFields.push('tags');
-    if (String(paymentAccount?.status || '').trim().toUpperCase() !== 'ACTIVE') {
+    if (
+      String(paymentAccount?.status || '')
+        .trim()
+        .toUpperCase() !== 'ACTIVE'
+    ) {
       missingFields.push('paymentAccount');
     }
 
@@ -8533,8 +9005,8 @@ export class StoreService {
         responseTimeSla: true,
         isStoreOpen: true,
         ownerId: true,
-        },
-      });
+      },
+    });
 
     if (!brand) {
       const resolved = await this.resolveBrandByIdOrOwner(ownerId);
@@ -8639,7 +9111,11 @@ export class StoreService {
     }
 
     if (brand.isStoreOpen) {
-      return { success: true, message: 'Store is already open', brandId: brand.id };
+      return {
+        success: true,
+        message: 'Store is already open',
+        brandId: brand.id,
+      };
     }
 
     const paymentAccount = await this.getStorePaymentAccountModel().findUnique({
@@ -8652,7 +9128,8 @@ export class StoreService {
 
     if (!isComplete) {
       throw new BadRequestException({
-        message: 'Store setup is incomplete. Please complete all required fields before opening.',
+        message:
+          'Store setup is incomplete. Please complete all required fields before opening.',
         missingFields,
       });
     }
@@ -8715,7 +9192,11 @@ export class StoreService {
     }
 
     if (!brand.isStoreOpen) {
-      return { success: true, message: 'Store is already closed', brandId: brand.id };
+      return {
+        success: true,
+        message: 'Store is already closed',
+        brandId: brand.id,
+      };
     }
 
     const previousIndexedTags = this.getIndexedBrandTags(
@@ -8768,12 +9249,18 @@ export class StoreService {
       nextStoreTags = this.buildTagSet(dto.tags || []);
       updateData.tags = nextStoreTags;
     }
-    if (dto.contactEmail !== undefined) updateData.contactEmail = dto.contactEmail;
-    if (dto.socialInstagram !== undefined) updateData.socialInstagram = dto.socialInstagram;
-    if (dto.socialFacebook !== undefined) updateData.socialFacebook = dto.socialFacebook;
-    if (dto.socialTwitter !== undefined) updateData.socialTwitter = dto.socialTwitter;
-    if (dto.socialTiktok !== undefined) updateData.socialTiktok = dto.socialTiktok;
-    if (dto.socialWebsite !== undefined) updateData.socialWebsite = dto.socialWebsite;
+    if (dto.contactEmail !== undefined)
+      updateData.contactEmail = dto.contactEmail;
+    if (dto.socialInstagram !== undefined)
+      updateData.socialInstagram = dto.socialInstagram;
+    if (dto.socialFacebook !== undefined)
+      updateData.socialFacebook = dto.socialFacebook;
+    if (dto.socialTwitter !== undefined)
+      updateData.socialTwitter = dto.socialTwitter;
+    if (dto.socialTiktok !== undefined)
+      updateData.socialTiktok = dto.socialTiktok;
+    if (dto.socialWebsite !== undefined)
+      updateData.socialWebsite = dto.socialWebsite;
 
     if (Object.keys(updateData).length === 0) {
       return this.getStoreStatus(ownerUserId);
@@ -8846,14 +9333,16 @@ export class StoreService {
       processingTime: policy?.processingTime || '',
       shippingMethods: policy?.shippingMethods || [],
       freeShippingThreshold:
-        policy?.freeShippingThreshold !== null && policy?.freeShippingThreshold !== undefined
+        policy?.freeShippingThreshold !== null &&
+        policy?.freeShippingThreshold !== undefined
           ? Number(policy.freeShippingThreshold)
           : null,
       returnsAccepted: policy?.returnsAccepted ?? true,
       returnWindow: policy?.returnWindow || '14',
       returnConditions: policy?.returnConditions || [],
       refundMethod: policy?.refundMethod || 'original',
-      responseTimeSla: policy?.responseTimeSla || brand.responseTimeSla || '24h',
+      responseTimeSla:
+        policy?.responseTimeSla || brand.responseTimeSla || '24h',
       sizeChart: policy?.sizeChart || null,
       shippingRules: normalizedShippingRules,
     };
@@ -8948,5 +9437,3 @@ export class StoreService {
     return this.getStorePolicies(ownerId);
   }
 }
-
-

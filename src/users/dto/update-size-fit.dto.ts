@@ -1,4 +1,12 @@
-import { IsEnum, IsInt, IsObject, IsOptional, IsString, Max, Min } from 'class-validator';
+import {
+  IsEnum,
+  IsInt,
+  IsObject,
+  IsOptional,
+  IsString,
+  Max,
+  Min,
+} from 'class-validator';
 
 export enum LengthUnitDto {
   CM = 'CM',
@@ -15,6 +23,20 @@ export enum FitPreferenceDto {
   REGULAR = 'REGULAR',
   LOOSE = 'LOOSE',
   OVERSIZED = 'OVERSIZED',
+}
+
+export enum SizingRegionDto {
+  NG_WEST_AFRICA = 'NG_WEST_AFRICA',
+  UK = 'UK',
+  US = 'US',
+  EU = 'EU',
+  INTERNATIONAL = 'INTERNATIONAL',
+}
+
+export enum AutoSizeRecommendationModeDto {
+  ON = 'ON',
+  OFF = 'OFF',
+  ASK_EVERY_TIME = 'ASK_EVERY_TIME',
 }
 
 export class UpdateSizeFitDto {
@@ -49,8 +71,15 @@ export class UpdateSizeFitDto {
   fitPreference?: FitPreferenceDto;
 
   @IsOptional()
+  @IsEnum(SizingRegionDto)
+  preferredSizingRegion?: SizingRegionDto;
+
+  @IsOptional()
+  @IsEnum(AutoSizeRecommendationModeDto)
+  autoSizeRecommendation?: AutoSizeRecommendationModeDto;
+
+  @IsOptional()
   @IsInt()
   @Min(0)
   version?: number;
 }
-

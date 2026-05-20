@@ -72,4 +72,45 @@ describe('NotificationRegistry', () => {
       'Linen Wrap Dress from Threadly Studio is available again from your wishlist',
     );
   });
+
+  it('preserves message routing fields while stripping private message body fields', () => {
+    const config = registry.getConfig(NotificationType.MESSAGE_RECEIVED);
+    const payload = {
+      type: 'message',
+      category: 'message',
+      threadId: 'thread-123',
+      conversationId: 'thread-123',
+      messageId: 'message-123',
+      orderId: null,
+      customOrderId: 'custom-order-123',
+      brandId: 'brand-123',
+      customerId: 'customer-123',
+      actorUserId: 'actor-123',
+      targetUrl: '/messages?thread=thread-123&messageId=message-123',
+      message: 'A brand sent a new message',
+      bodyText: 'Private message body must not pass notification schema',
+    };
+
+    const { error, value } = config!.schema.validate(payload, {
+      stripUnknown: true,
+    });
+
+    expect(error).toBeUndefined();
+    expect(value).toEqual(
+      expect.objectContaining({
+        type: 'message',
+        category: 'message',
+        threadId: 'thread-123',
+        conversationId: 'thread-123',
+        messageId: 'message-123',
+        orderId: null,
+        customOrderId: 'custom-order-123',
+        brandId: 'brand-123',
+        customerId: 'customer-123',
+        actorUserId: 'actor-123',
+        targetUrl: '/messages?thread=thread-123&messageId=message-123',
+      }),
+    );
+    expect(value.bodyText).toBeUndefined();
+  });
 });

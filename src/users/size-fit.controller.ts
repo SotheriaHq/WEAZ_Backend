@@ -6,6 +6,7 @@ import {
   Patch,
   Post,
   Put,
+  Query,
   Req,
   UnauthorizedException,
   UseGuards,
@@ -18,10 +19,14 @@ import { ShareSizeFitDto } from './dto/share-size-fit.dto';
 import { UpdateSizeFitSettingsDto } from './dto/update-size-fit-settings.dto';
 import { UpdateSizeFitDto } from './dto/update-size-fit.dto';
 import { SizeFitService } from './size-fit.service';
+import { SizeComputationService } from 'src/sizing/size-computation.service';
 
 @Controller('users')
 export class SizeFitController {
-  constructor(private readonly sizeFitService: SizeFitService) {}
+  constructor(
+    private readonly sizeFitService: SizeFitService,
+    private readonly sizeComputation: SizeComputationService,
+  ) {}
 
   private getAuthUserId(req: any): string {
     const userId = req?.user?.id ?? req?.user?.sub;
@@ -35,6 +40,15 @@ export class SizeFitController {
   @UseGuards(AuthGuard('jwt'))
   async getMySizeFit(@Req() req: any) {
     return this.sizeFitService.getMySizeFit(this.getAuthUserId(req));
+  }
+
+  @Get('me/size-fit/computed')
+  @UseGuards(AuthGuard('jwt'))
+  async getMyComputedSizeFit(@Req() req: any, @Query('region') region?: any) {
+    return this.sizeComputation.getComputedUserSizing(
+      this.getAuthUserId(req),
+      region,
+    );
   }
 
   @Get(':id/size-fit/public')
@@ -70,7 +84,9 @@ export class SizeFitController {
   @Get('me/size-fit/shares')
   @UseGuards(AuthGuard('jwt'))
   async getMySizeFitShares(@Req() req: any) {
-    return this.sizeFitService.listMySizeFitShareRequests(this.getAuthUserId(req));
+    return this.sizeFitService.listMySizeFitShareRequests(
+      this.getAuthUserId(req),
+    );
   }
 
   @Post('me/size-fit/share')
@@ -98,4 +114,3 @@ export class SizeFitController {
     );
   }
 }
-

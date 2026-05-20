@@ -96,16 +96,18 @@ model User {
   brandMemberships         BrandMember[]
 
   // Orders as buyer
-  ordersAsBuyer               Order[]                      @relation("OrderBuyer")
-  customOrdersAsBuyer         CustomOrder[]                @relation("CustomOrderBuyer")
-  customOrderCheckoutSessions CustomOrderCheckoutSession[]
-  checkoutSessions            CheckoutSession[]
-  userProfile                 UserProfile?
-  sizeFitProfile              UserSizeFitProfile?
-  sizeFitSharesOwned          UserSizeFitShare[]           @relation("SizeFitOwnerShares")
-  sizeFitSharesReceived       UserSizeFitShare[]           @relation("SizeFitViewerShares")
-  sizeFitShareRequestsMade    UserSizeFitShare[]           @relation("SizeFitRequestedBy")
-  sizeFitRevisions            UserSizeFitRevision[]        @relation("SizeFitRevisionAuthor")
+  ordersAsBuyer                       Order[]                              @relation("OrderBuyer")
+  customOrdersAsBuyer                 CustomOrder[]                        @relation("CustomOrderBuyer")
+  customOrderCheckoutSessions         CustomOrderCheckoutSession[]
+  checkoutSessions                    CheckoutSession[]
+  userProfile                         UserProfile?
+  sizeFitProfile                      UserSizeFitProfile?
+  sizeFitSharesOwned                  UserSizeFitShare[]                   @relation("SizeFitOwnerShares")
+  sizeFitSharesReceived               UserSizeFitShare[]                   @relation("SizeFitViewerShares")
+  sizeFitShareRequestsMade            UserSizeFitShare[]                   @relation("SizeFitRequestedBy")
+  sizeFitRevisions                    UserSizeFitRevision[]                @relation("SizeFitRevisionAuthor")
+  sizeRecommendationSnapshots         UserSizeRecommendationSnapshot[]
+  customOrderMeasurementContributions CustomOrderMeasurementContribution[]
 
   // Idempotency keys (safe retries for POST requests)
   idempotencyKeys           IdempotencyKey[]
@@ -621,6 +623,81 @@ enum FitPreference {
   REGULAR
   LOOSE
   OVERSIZED
+}
+
+enum SizingRegion {
+  NG_WEST_AFRICA
+  UK
+  US
+  EU
+  INTERNATIONAL
+}
+
+enum GarmentCategory {
+  TOP
+  BOTTOM
+  GOWN
+  DRESS
+  FORMAL_SHIRT
+  JACKET
+  SKIRT
+  UNISEX_TOP
+  UNISEX_BOTTOM
+  OTHER
+}
+
+enum SizeChartOwnerType {
+  SYSTEM
+  ADMIN
+  BRAND
+  VENDOR
+}
+
+enum SizeChartScopeType {
+  PRODUCT
+  VARIANT
+  DESIGN
+  CATEGORY
+  BRAND
+  REGIONAL
+  SYSTEM
+}
+
+enum SizeChartStatus {
+  DRAFT
+  PENDING_APPROVAL
+  APPROVED
+  REJECTED
+  ARCHIVED
+}
+
+enum FitType {
+  SLIM
+  REGULAR
+  RELAXED
+  OVERSIZED
+  CUSTOM
+}
+
+enum FabricStretch {
+  NONE
+  LOW
+  MEDIUM
+  HIGH
+  UNKNOWN
+}
+
+enum AutoSizeRecommendationMode {
+  ON
+  OFF
+  ASK_EVERY_TIME
+}
+
+enum RecommendationConfidenceLabel {
+  VERY_HIGH
+  HIGH
+  MODERATE
+  LOW
 }
 
 enum AgeGroup {
@@ -1755,29 +1832,34 @@ model EmailWebhookEvent {
 }
 
 model UserSizeFitProfile {
-  id                     String                @id @map("_id") @db.Uuid
-  userId                 String                @unique @db.Uuid
-  user                   User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
-  visibility             SizeFitVisibility     @default(PRIVATE)
-  sharePolicy            SizeFitSharePolicy    @default(REQUIRE_PERMISSION)
-  notifyOnShare          Boolean               @default(true)
-  requireUpdateEveryDays Int                   @default(14)
-  version                Int                   @default(0)
-  preferredLengthUnit    String                @default("CM")
-  preferredWeightUnit    String                @default("KG")
-  fitPreference          FitPreference?        @default(REGULAR)
-  label                  String                @default("My Measurements")
-  measurements           Json?
-  notes                  String?
-  lastUpdatedAt          DateTime?
-  nextReminderAt         DateTime?
-  createdAt              DateTime              @default(now())
-  updatedAt              DateTime              @updatedAt
-  revisions              UserSizeFitRevision[]
-  shares                 UserSizeFitShare[]
+  id                       String                               @id @map("_id") @db.Uuid
+  userId                   String                               @unique @db.Uuid
+  user                     User                                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  visibility               SizeFitVisibility                    @default(PRIVATE)
+  sharePolicy              SizeFitSharePolicy                   @default(REQUIRE_PERMISSION)
+  notifyOnShare            Boolean                              @default(true)
+  requireUpdateEveryDays   Int                                  @default(14)
+  version                  Int                                  @default(0)
+  preferredLengthUnit      String                               @default("CM")
+  preferredWeightUnit      String                               @default("KG")
+  fitPreference            FitPreference?                       @default(REGULAR)
+  preferredSizingRegion    SizingRegion                         @default(INTERNATIONAL)
+  autoSizeRecommendation   AutoSizeRecommendationMode           @default(ASK_EVERY_TIME)
+  label                    String                               @default("My Measurements")
+  measurements             Json?
+  notes                    String?
+  lastUpdatedAt            DateTime?
+  nextReminderAt           DateTime?
+  createdAt                DateTime                             @default(now())
+  updatedAt                DateTime                             @updatedAt
+  revisions                UserSizeFitRevision[]
+  shares                   UserSizeFitShare[]
+  recommendationSnapshots  UserSizeRecommendationSnapshot[]
+  measurementContributions CustomOrderMeasurementContribution[]
 
   @@index([nextReminderAt])
   @@index([visibility, sharePolicy])
+  @@index([preferredSizingRegion])
 }
 
 model UserSizeFitRevision {
@@ -1861,6 +1943,237 @@ model BrandSizeChart {
 
   @@unique([brandId, version])
   @@index([brandId, createdAt])
+  @@index([status])
+}
+
+model SizeChart {
+  id              String             @id @default(uuid()) @db.Uuid
+  name            String
+  ownerType       SizeChartOwnerType @default(SYSTEM)
+  ownerId         String?            @db.Uuid
+  brandId         String?            @db.Uuid
+  brand           Brand?             @relation(fields: [brandId], references: [id], onDelete: SetNull)
+  region          SizingRegion       @default(INTERNATIONAL)
+  garmentCategory GarmentCategory    @default(OTHER)
+  scopeType       SizeChartScopeType @default(SYSTEM)
+  scopeId         String?            @db.Uuid
+  status          SizeChartStatus    @default(DRAFT)
+  fitType         FitType?
+  fabricStretch   FabricStretch      @default(UNKNOWN)
+  sourceReference String?
+  notes           String?
+  metadataJson    Json?
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+
+  versions        SizeChartVersion[]
+  productMetadata ProductSizingMetadata[]           @relation("ProductSizingChart")
+  variantMetadata VariantSizingMetadata[]           @relation("VariantSizingChart")
+  orderSnapshots  OrderSizeRecommendationSnapshot[] @relation("OrderRecommendationSizeChart")
+  userSnapshots   UserSizeRecommendationSnapshot[]  @relation("UserRecommendationSizeChart")
+
+  @@index([region, garmentCategory, status])
+  @@index([ownerType, ownerId])
+  @@index([brandId, status])
+  @@index([scopeType, scopeId, status])
+  @@index([status])
+}
+
+model SizeChartVersion {
+  id              String          @id @default(uuid()) @db.Uuid
+  chartId         String          @db.Uuid
+  chart           SizeChart       @relation(fields: [chartId], references: [id], onDelete: Cascade)
+  version         Int
+  status          SizeChartStatus @default(DRAFT)
+  isActive        Boolean         @default(false)
+  approvedAt      DateTime?
+  approvedById    String?         @db.Uuid
+  effectiveFrom   DateTime?
+  retiredAt       DateTime?
+  checksum        String?
+  sourceReference String?
+  notes           String?
+  metadataJson    Json?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  rows            SizeChartRow[]
+  productMetadata ProductSizingMetadata[]           @relation("ProductSizingChartVersion")
+  variantMetadata VariantSizingMetadata[]           @relation("VariantSizingChartVersion")
+  orderSnapshots  OrderSizeRecommendationSnapshot[] @relation("OrderRecommendationSizeChartVersion")
+  userSnapshots   UserSizeRecommendationSnapshot[]  @relation("UserRecommendationSizeChartVersion")
+
+  @@unique([chartId, version])
+  @@index([chartId, status, isActive])
+  @@index([status, isActive])
+  @@index([effectiveFrom])
+}
+
+model SizeChartRow {
+  id                 String           @id @default(uuid()) @db.Uuid
+  chartVersionId     String           @db.Uuid
+  chartVersion       SizeChartVersion @relation(fields: [chartVersionId], references: [id], onDelete: Cascade)
+  sizeLabel          String
+  normalizedSizeCode String?
+  displayLabels      Json?
+  sortOrder          Int              @default(0)
+  heightMinCm        Decimal?         @db.Decimal(7, 2)
+  heightMaxCm        Decimal?         @db.Decimal(7, 2)
+  neckCollarMinCm    Decimal?         @db.Decimal(7, 2)
+  neckCollarMaxCm    Decimal?         @db.Decimal(7, 2)
+  chestBustMinCm     Decimal?         @db.Decimal(7, 2)
+  chestBustMaxCm     Decimal?         @db.Decimal(7, 2)
+  waistMinCm         Decimal?         @db.Decimal(7, 2)
+  waistMaxCm         Decimal?         @db.Decimal(7, 2)
+  hipSeatMinCm       Decimal?         @db.Decimal(7, 2)
+  hipSeatMaxCm       Decimal?         @db.Decimal(7, 2)
+  shoulderMinCm      Decimal?         @db.Decimal(7, 2)
+  shoulderMaxCm      Decimal?         @db.Decimal(7, 2)
+  sleeveLengthMinCm  Decimal?         @db.Decimal(7, 2)
+  sleeveLengthMaxCm  Decimal?         @db.Decimal(7, 2)
+  inseamMinCm        Decimal?         @db.Decimal(7, 2)
+  inseamMaxCm        Decimal?         @db.Decimal(7, 2)
+  easeNotes          String?
+  metadataJson       Json?
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+
+  @@index([chartVersionId, sortOrder])
+  @@index([sizeLabel])
+}
+
+model ProductSizingMetadata {
+  id              String            @id @default(uuid()) @db.Uuid
+  productId       String            @unique @db.Uuid
+  product         Product           @relation(fields: [productId], references: [id], onDelete: Cascade)
+  chartId         String?           @db.Uuid
+  chart           SizeChart?        @relation("ProductSizingChart", fields: [chartId], references: [id], onDelete: SetNull)
+  chartVersionId  String?           @db.Uuid
+  chartVersion    SizeChartVersion? @relation("ProductSizingChartVersion", fields: [chartVersionId], references: [id], onDelete: SetNull)
+  region          SizingRegion?
+  garmentCategory GarmentCategory   @default(OTHER)
+  fitType         FitType?
+  fabricStretch   FabricStretch     @default(UNKNOWN)
+  autoRecommend   Boolean           @default(true)
+  metadataJson    Json?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  @@index([region, garmentCategory])
+  @@index([chartId])
+  @@index([chartVersionId])
+}
+
+model VariantSizingMetadata {
+  id              String            @id @default(uuid()) @db.Uuid
+  variantId       String            @unique @db.Uuid
+  variant         ProductVariant    @relation(fields: [variantId], references: [id], onDelete: Cascade)
+  chartId         String?           @db.Uuid
+  chart           SizeChart?        @relation("VariantSizingChart", fields: [chartId], references: [id], onDelete: SetNull)
+  chartVersionId  String?           @db.Uuid
+  chartVersion    SizeChartVersion? @relation("VariantSizingChartVersion", fields: [chartVersionId], references: [id], onDelete: SetNull)
+  region          SizingRegion?
+  garmentCategory GarmentCategory?
+  fitType         FitType?
+  fabricStretch   FabricStretch     @default(UNKNOWN)
+  metadataJson    Json?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  @@index([region, garmentCategory])
+  @@index([chartId])
+  @@index([chartVersionId])
+}
+
+model UserSizeRecommendationSnapshot {
+  id                      String                        @id @default(uuid()) @db.Uuid
+  userId                  String                        @db.Uuid
+  user                    User                          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  profileId               String?                       @db.Uuid
+  profile                 UserSizeFitProfile?           @relation(fields: [profileId], references: [id], onDelete: SetNull)
+  profileVersion          Int?
+  garmentCategory         GarmentCategory
+  estimatedSize           String?
+  recommendedSize         String?
+  displayRange            String?
+  alternativeSize         String?
+  confidenceScore         Float
+  confidenceLabel         RecommendationConfidenceLabel
+  selectedRegion          SizingRegion
+  chartId                 String?                       @db.Uuid
+  chart                   SizeChart?                    @relation("UserRecommendationSizeChart", fields: [chartId], references: [id], onDelete: SetNull)
+  chartVersionId          String?                       @db.Uuid
+  chartVersion            SizeChartVersion?             @relation("UserRecommendationSizeChartVersion", fields: [chartVersionId], references: [id], onDelete: SetNull)
+  chartVersionNumber      Int?
+  reasons                 Json?
+  warnings                Json?
+  usedMeasurements        String[]                      @default([])
+  missingMeasurements     String[]                      @default([])
+  fallbackUsed            Boolean                       @default(false)
+  staleMeasurementWarning Boolean                       @default(false)
+  generatedAt             DateTime                      @default(now())
+  createdAt               DateTime                      @default(now())
+
+  @@index([userId, garmentCategory, generatedAt])
+  @@index([profileId, profileVersion])
+  @@index([chartVersionId])
+}
+
+model OrderSizeRecommendationSnapshot {
+  id                    String                        @id @default(uuid()) @db.Uuid
+  orderItemId           String                        @unique @db.Uuid
+  orderItem             OrderItem                     @relation(fields: [orderItemId], references: [id], onDelete: Cascade)
+  recommendedSize       String?
+  selectedSize          String?
+  alternativeSize       String?
+  displayRange          String?
+  confidenceScore       Float
+  confidenceLabel       RecommendationConfidenceLabel
+  reasonSummary         Json?
+  warningsSummary       Json?
+  chartSource           String?
+  chartId               String?                       @db.Uuid
+  chart                 SizeChart?                    @relation("OrderRecommendationSizeChart", fields: [chartId], references: [id], onDelete: SetNull)
+  chartVersionId        String?                       @db.Uuid
+  chartVersion          SizeChartVersion?             @relation("OrderRecommendationSizeChartVersion", fields: [chartVersionId], references: [id], onDelete: SetNull)
+  chartVersionNumber    Int?
+  selectedRegion        SizingRegion?
+  garmentCategory       GarmentCategory?
+  userFitPreference     String?
+  productFitType        FitType?
+  fabricStretch         FabricStretch                 @default(UNKNOWN)
+  wasManuallyChanged    Boolean                       @default(false)
+  manualOverrideHistory Json?
+  generatedAt           DateTime                      @default(now())
+  createdAt             DateTime                      @default(now())
+
+  @@index([chartVersionId])
+  @@index([selectedRegion])
+  @@index([generatedAt])
+}
+
+model CustomOrderMeasurementContribution {
+  id                     String              @id @default(uuid()) @db.Uuid
+  customOrderId          String              @db.Uuid
+  customOrder            CustomOrder         @relation(fields: [customOrderId], references: [id], onDelete: Cascade)
+  userId                 String              @db.Uuid
+  user                   User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  profileId              String?             @db.Uuid
+  profile                UserSizeFitProfile? @relation(fields: [profileId], references: [id], onDelete: SetNull)
+  profileVersionBefore   Int?
+  sourceMeasurements     Json
+  normalizedMeasurements Json
+  acceptedMeasurements   Json?
+  preservedConflicts     Json?
+  unmappedMeasurements   Json?
+  status                 String              @default("STAGED")
+  mergedAt               DateTime?
+  createdAt              DateTime            @default(now())
+  updatedAt              DateTime            @updatedAt
+
+  @@index([customOrderId])
+  @@index([userId, createdAt])
+  @@index([profileId, createdAt])
   @@index([status])
 }
 
@@ -2104,6 +2417,7 @@ model Brand {
   orderItems                OrderItem[]
   measurementPoints         MeasurementPoint[]
   brandSizeCharts           BrandSizeChart[]
+  sizeCharts                SizeChart[]
   sizingTemplates           SizingTemplate[]
   payouts                   Payout[]
   products                  Product[]                  @relation("Brand_to_Products")
@@ -2611,41 +2925,41 @@ model CustomFabricRule {
 }
 
 model CustomOrder {
-  id                            String                          @id @default(uuid()) @db.Uuid
-  brandId                       String                          @db.Uuid
-  brand                         Brand                           @relation(fields: [brandId], references: [id], onDelete: Restrict)
-  buyerId                       String                          @db.Uuid
-  buyer                         User                            @relation("CustomOrderBuyer", fields: [buyerId], references: [id], onDelete: Restrict)
+  id                            String                               @id @default(uuid()) @db.Uuid
+  brandId                       String                               @db.Uuid
+  brand                         Brand                                @relation(fields: [brandId], references: [id], onDelete: Restrict)
+  buyerId                       String                               @db.Uuid
+  buyer                         User                                 @relation("CustomOrderBuyer", fields: [buyerId], references: [id], onDelete: Restrict)
   sourceType                    CustomOrderSourceType
-  sourceId                      String                          @db.Uuid
+  sourceId                      String                               @db.Uuid
   sourceTitleSnapshot           String
   sourceSlugSnapshot            String?
   sourcePrimaryMediaUrlSnapshot String?
   sourceBrandNameSnapshot       String?
-  configurationId               String                          @db.Uuid
-  configuration                 CustomOrderConfiguration        @relation(fields: [configurationId], references: [id], onDelete: Restrict)
-  configurationVersionId        String                          @db.Uuid
-  configurationVersion          CustomOrderConfigurationVersion @relation(fields: [configurationVersionId], references: [id], onDelete: Restrict)
-  status                        CustomOrderStatus               @default(DRAFT)
-  paymentStatus                 PaymentStatus                   @default(PENDING)
-  paymentMethod                 PaymentMethod                   @default(PENDING_SELECTION)
+  configurationId               String                               @db.Uuid
+  configuration                 CustomOrderConfiguration             @relation(fields: [configurationId], references: [id], onDelete: Restrict)
+  configurationVersionId        String                               @db.Uuid
+  configurationVersion          CustomOrderConfigurationVersion      @relation(fields: [configurationVersionId], references: [id], onDelete: Restrict)
+  status                        CustomOrderStatus                    @default(DRAFT)
+  paymentStatus                 PaymentStatus                        @default(PENDING)
+  paymentMethod                 PaymentMethod                        @default(PENDING_SELECTION)
   paymentReference              String?
-  unifiedCheckoutSessionId      String?                         @db.Uuid
-  unifiedCheckoutSession        CheckoutSession?                @relation(fields: [unifiedCheckoutSessionId], references: [id], onDelete: SetNull)
+  unifiedCheckoutSessionId      String?                              @db.Uuid
+  unifiedCheckoutSession        CheckoutSession?                     @relation(fields: [unifiedCheckoutSessionId], references: [id], onDelete: SetNull)
   idempotencyKey                String?
-  currency                      String                          @default("NGN")
-  checkoutIntentId              String?                         @db.Uuid
-  checkoutIntent                CustomOrderCheckoutIntent?      @relation(fields: [checkoutIntentId], references: [id], onDelete: SetNull)
-  baseProductionChargeSnapshot  Decimal                         @db.Decimal(10, 2)
-  fabricCostPerYardSnapshot     Decimal                         @db.Decimal(10, 2)
-  computedYards                 Decimal                         @db.Decimal(10, 2)
-  matchedFabricRuleId           String?                         @db.Uuid
+  currency                      String                               @default("NGN")
+  checkoutIntentId              String?                              @db.Uuid
+  checkoutIntent                CustomOrderCheckoutIntent?           @relation(fields: [checkoutIntentId], references: [id], onDelete: SetNull)
+  baseProductionChargeSnapshot  Decimal                              @db.Decimal(10, 2)
+  fabricCostPerYardSnapshot     Decimal                              @db.Decimal(10, 2)
+  computedYards                 Decimal                              @db.Decimal(10, 2)
+  matchedFabricRuleId           String?                              @db.Uuid
   internalPriceBreakdownJson    Json
   buyerPriceSummaryJson         Json
   measurementSnapshotJson       Json
   measurementConfirmedAt        DateTime
-  rushSelected                  Boolean                         @default(false)
-  rushFeeSnapshot               Decimal?                        @db.Decimal(10, 2)
+  rushSelected                  Boolean                              @default(false)
+  rushFeeSnapshot               Decimal?                             @db.Decimal(10, 2)
   productionLeadDaysSnapshot    Int
   deliveryMinDaysSnapshot       Int
   deliveryMaxDaysSnapshot       Int
@@ -2654,8 +2968,8 @@ model CustomOrder {
   promisedProductionAt          DateTime?
   promisedDispatchAt            DateTime?
   promisedDeliveryAt            DateTime?
-  currentProgressStage          CustomOrderProgressStage        @default(ORDER_PLACED)
-  currentProgressStageEnteredAt DateTime                        @default(now())
+  currentProgressStage          CustomOrderProgressStage             @default(ORDER_PLACED)
+  currentProgressStageEnteredAt DateTime                             @default(now())
   lastBrandProgressUpdateAt     DateTime?
   buyerAcceptanceWindowEndsAt   DateTime?
   acceptedAt                    DateTime?
@@ -2669,10 +2983,10 @@ model CustomOrder {
   retentionHoldType             CustomOrderRetentionHoldType?
   retentionHoldReason           String?
   retentionHoldUntil            DateTime?
-  retentionHoldSetById          String?                         @db.Uuid
+  retentionHoldSetById          String?                              @db.Uuid
   retentionHoldSetAt            DateTime?
-  createdAt                     DateTime                        @default(now())
-  updatedAt                     DateTime                        @updatedAt
+  createdAt                     DateTime                             @default(now())
+  updatedAt                     DateTime                             @updatedAt
   progressEvents                CustomOrderProgressEvent[]
   extensionRequests             CustomOrderExtensionRequest[]
   timelineEvents                CustomOrderTimelineEvent[]
@@ -2682,11 +2996,12 @@ model CustomOrder {
   notificationOutboxEvents      CustomOrderNotificationOutbox[]
   analyticsEvents               CustomOrderAnalyticsEvent[]
   messageThread                 MessageThread?
-  messageThreadLinks            MessageThreadOrderLink[]        @relation("MessageThreadOrderLinkCustomOrder")
+  messageThreadLinks            MessageThreadOrderLink[]             @relation("MessageThreadOrderLinkCustomOrder")
   checkoutSession               CustomOrderCheckoutSession?
   checkoutSessionLines          CheckoutSessionLine[]
-  lifecycleReviews              Review[]                        @relation("ReviewCustomOrder")
-  reviewPrompts                 ReviewPrompt[]                  @relation("ReviewPromptCustomOrder")
+  measurementContributions      CustomOrderMeasurementContribution[]
+  lifecycleReviews              Review[]                             @relation("ReviewCustomOrder")
+  reviewPrompts                 ReviewPrompt[]                       @relation("ReviewPromptCustomOrder")
 
   @@unique([checkoutIntentId])
   @@unique([buyerId, idempotencyKey])
@@ -2942,35 +3257,36 @@ model CheckoutSession {
 }
 
 model CheckoutSessionLine {
-  id                        String                             @id @default(uuid()) @db.Uuid
-  checkoutSessionId         String                             @db.Uuid
-  checkoutSession           CheckoutSession                    @relation(fields: [checkoutSessionId], references: [id], onDelete: Cascade)
-  lineType                  CheckoutSessionLineType
-  status                    CheckoutSessionLineStatus          @default(PENDING)
-  lineOrder                 Int                                @default(0)
-  brandId                   String?                            @db.Uuid
-  productId                 String?                            @db.Uuid
-  product                   Product?                           @relation(fields: [productId], references: [id], onDelete: SetNull)
-  checkoutIntentId          String?                            @db.Uuid
-  checkoutIntent            CustomOrderCheckoutIntent?         @relation(fields: [checkoutIntentId], references: [id], onDelete: SetNull)
-  customOrderId             String?                            @db.Uuid
-  customOrder               CustomOrder?                       @relation(fields: [customOrderId], references: [id], onDelete: SetNull)
-  orderId                   String?                            @db.Uuid
-  order                     Order?                             @relation(fields: [orderId], references: [id], onDelete: SetNull)
-  cartItemId                String?                            @db.Uuid
-  cartItem                  CartItem?                          @relation(fields: [cartItemId], references: [id], onDelete: SetNull)
-  quantity                  Int                                @default(1)
-  unitPrice                 Decimal                            @db.Decimal(10, 2)
-  lineTotal                 Decimal                            @db.Decimal(10, 2)
-  currency                  String                             @default("NGN")
-  selectedSize              String?
-  selectedColor             String?
-  itemSnapshotJson          Json
-  metadataJson              Json?
-  createdAt                 DateTime                           @default(now())
-  updatedAt                 DateTime                           @updatedAt
-  inventoryReservations     InventoryReservation[]
-  paymentAttemptIntentLinks PaymentAttemptCheckoutIntentLink[]
+  id                         String                             @id @default(uuid()) @db.Uuid
+  checkoutSessionId          String                             @db.Uuid
+  checkoutSession            CheckoutSession                    @relation(fields: [checkoutSessionId], references: [id], onDelete: Cascade)
+  lineType                   CheckoutSessionLineType
+  status                     CheckoutSessionLineStatus          @default(PENDING)
+  lineOrder                  Int                                @default(0)
+  brandId                    String?                            @db.Uuid
+  productId                  String?                            @db.Uuid
+  product                    Product?                           @relation(fields: [productId], references: [id], onDelete: SetNull)
+  checkoutIntentId           String?                            @db.Uuid
+  checkoutIntent             CustomOrderCheckoutIntent?         @relation(fields: [checkoutIntentId], references: [id], onDelete: SetNull)
+  customOrderId              String?                            @db.Uuid
+  customOrder                CustomOrder?                       @relation(fields: [customOrderId], references: [id], onDelete: SetNull)
+  orderId                    String?                            @db.Uuid
+  order                      Order?                             @relation(fields: [orderId], references: [id], onDelete: SetNull)
+  cartItemId                 String?                            @db.Uuid
+  cartItem                   CartItem?                          @relation(fields: [cartItemId], references: [id], onDelete: SetNull)
+  quantity                   Int                                @default(1)
+  unitPrice                  Decimal                            @db.Decimal(10, 2)
+  lineTotal                  Decimal                            @db.Decimal(10, 2)
+  currency                   String                             @default("NGN")
+  selectedSize               String?
+  selectedColor              String?
+  itemSnapshotJson           Json
+  sizeRecommendationSnapshot Json?
+  metadataJson               Json?
+  createdAt                  DateTime                           @default(now())
+  updatedAt                  DateTime                           @updatedAt
+  inventoryReservations      InventoryReservation[]
+  paymentAttemptIntentLinks  PaymentAttemptCheckoutIntentLink[]
 
   @@index([checkoutSessionId, lineOrder])
   @@index([checkoutIntentId])
@@ -3378,35 +3694,36 @@ model CardValidationSession {
 }
 
 model OrderItem {
-  id                      String          @id @default(uuid()) @db.Uuid
-  orderId                 String          @db.Uuid
-  order                   Order           @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  productId               String          @db.Uuid
-  product                 Product         @relation(fields: [productId], references: [id], onDelete: Restrict)
-  brandId                 String          @db.Uuid
-  brand                   Brand           @relation(fields: [brandId], references: [id], onDelete: Restrict)
-  buyerId                 String?         @db.Uuid
-  quantity                Int             @default(1)
-  currency                String          @default("NGN")
-  unitPrice               Decimal         @db.Decimal(10, 2)
-  totalPrice              Decimal         @db.Decimal(10, 2)
-  selectedSize            String?
-  selectedColor           String?
-  sizingMode              SizingMode      @default(NONE)
-  requiredMeasurementKeys String[]        @default([])
-  sizeFitSnapshot         Json?
-  correctionDeadline      DateTime?
-  thumbnailAtPurchase     String?
-  nameAtPurchase          String?
-  skuAtPurchase           String?
-  reviewReminderSentAt    DateTime?
-  reviewReminderLastError String?
-  createdAt               DateTime        @default(now())
-  updatedAt               DateTime        @updatedAt
-  disputes                SizingDispute[]
-  reviews                 ProductReview[] @relation("OrderItemProductReviews")
-  lifecycleReviews        Review[]        @relation("ReviewOrderItem")
-  reviewPrompts           ReviewPrompt[]  @relation("ReviewPromptOrderItem")
+  id                         String                           @id @default(uuid()) @db.Uuid
+  orderId                    String                           @db.Uuid
+  order                      Order                            @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId                  String                           @db.Uuid
+  product                    Product                          @relation(fields: [productId], references: [id], onDelete: Restrict)
+  brandId                    String                           @db.Uuid
+  brand                      Brand                            @relation(fields: [brandId], references: [id], onDelete: Restrict)
+  buyerId                    String?                          @db.Uuid
+  quantity                   Int                              @default(1)
+  currency                   String                           @default("NGN")
+  unitPrice                  Decimal                          @db.Decimal(10, 2)
+  totalPrice                 Decimal                          @db.Decimal(10, 2)
+  selectedSize               String?
+  selectedColor              String?
+  sizingMode                 SizingMode                       @default(NONE)
+  requiredMeasurementKeys    String[]                         @default([])
+  sizeFitSnapshot            Json?
+  correctionDeadline         DateTime?
+  thumbnailAtPurchase        String?
+  nameAtPurchase             String?
+  skuAtPurchase              String?
+  reviewReminderSentAt       DateTime?
+  reviewReminderLastError    String?
+  createdAt                  DateTime                         @default(now())
+  updatedAt                  DateTime                         @updatedAt
+  disputes                   SizingDispute[]
+  reviews                    ProductReview[]                  @relation("OrderItemProductReviews")
+  lifecycleReviews           Review[]                         @relation("ReviewOrderItem")
+  reviewPrompts              ReviewPrompt[]                   @relation("ReviewPromptOrderItem")
+  sizeRecommendationSnapshot OrderSizeRecommendationSnapshot?
 
   @@index([orderId])
   @@index([productId])
@@ -3963,6 +4280,7 @@ model Product {
   inventoryReservations InventoryReservation[]
   wishlistItems         WishlistItem[]
   variants              ProductVariant[]
+  sizingMetadata        ProductSizingMetadata?
   designCollections     CollectionProduct[]
   collections           StoreCollectionProduct[]
   entityFilters         EntityFilter[]           @relation("ProductEntityFilters")
@@ -4002,6 +4320,7 @@ model ProductVariant {
   stock                 Int                    @default(0)
   colorHex              String?
   inventoryReservations InventoryReservation[]
+  sizingMetadata        VariantSizingMetadata?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -4057,13 +4376,14 @@ model CartItem {
   productId String  @db.Uuid
   product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
 
-  quantity                Int                   @default(1)
-  selectedSize            String?
-  selectedColor           String?
-  checkoutSessionLines    CheckoutSessionLine[]
-  sizingMode              SizingMode            @default(NONE)
-  sizeFitData             Json?
-  requiredMeasurementKeys String[]              @default([])
+  quantity                   Int                   @default(1)
+  selectedSize               String?
+  selectedColor              String?
+  checkoutSessionLines       CheckoutSessionLine[]
+  sizingMode                 SizingMode            @default(NONE)
+  sizeFitData                Json?
+  sizeRecommendationSnapshot Json?
+  requiredMeasurementKeys    String[]              @default([])
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -4583,7 +4903,6 @@ model ProductReviewReport {
   @@unique([reviewId, reporterId])
   @@index([reason, createdAt])
 }
-
 
 enum ReviewTargetType {
   PRODUCT

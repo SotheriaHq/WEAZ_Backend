@@ -36,10 +36,15 @@ import { UserType } from '@prisma/client';
 import { Throttle } from '@nestjs/throttler';
 import { IdempotencyInterceptor } from '../common/interceptors/idempotency.interceptor';
 import { resolveSearchQuery } from '../common/utils/search-query';
+import { SizeComputationService } from 'src/sizing/size-computation.service';
+import { ProductSizeRecommendationQueryDto } from 'src/sizing/dto/size-recommendation.dto';
 
 @Controller()
 export class StoreController {
-  constructor(private readonly storeService: StoreService) {}
+  constructor(
+    private readonly storeService: StoreService,
+    private readonly sizeComputation: SizeComputationService,
+  ) {}
 
   private parseListParam(value?: string | string[]): string[] | undefined {
     if (!value) return undefined;
@@ -85,7 +90,12 @@ export class StoreController {
   @UseGuards(JwtAuthGuard)
   @Post('products/:id/media')
   @Throttle({ default: { limit: 20, ttl: 60000 } })
-  @UseInterceptors(FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } })) // Hard cap; dynamic limit enforced in service
+  @UseInterceptors(
+    FileInterceptor('file', {
+      storage: memoryStorage(),
+      limits: { fileSize: 50 * 1024 * 1024 },
+    }),
+  ) // Hard cap; dynamic limit enforced in service
   async uploadProductMedia(
     @Param('id') productId: string,
     @UploadedFile() file: Express.Multer.File,
@@ -112,7 +122,11 @@ export class StoreController {
     @Param('mediaId') mediaId: string,
     @Req() req: any,
   ) {
-    return this.storeService.deleteProductMedia(req.user.id, productId, mediaId);
+    return this.storeService.deleteProductMedia(
+      req.user.id,
+      productId,
+      mediaId,
+    );
   }
 
   @UseGuards(JwtAuthGuard)
@@ -122,7 +136,11 @@ export class StoreController {
     @Body('mediaIds') mediaIds: string[],
     @Req() req: any,
   ) {
-    return this.storeService.reorderProductMedia(req.user.id, productId, mediaIds);
+    return this.storeService.reorderProductMedia(
+      req.user.id,
+      productId,
+      mediaIds,
+    );
   }
 
   @UseGuards(JwtAuthGuard)
@@ -132,7 +150,11 @@ export class StoreController {
     @Param('mediaId') mediaId: string,
     @Req() req: any,
   ) {
-    return this.storeService.setPrimaryProductMedia(req.user.id, productId, mediaId);
+    return this.storeService.setPrimaryProductMedia(
+      req.user.id,
+      productId,
+      mediaId,
+    );
   }
 
   @UseGuards(JwtAuthGuard)
@@ -232,7 +254,10 @@ export class StoreController {
 
   @UseGuards(JwtAuthGuard)
   @Delete('products/:id/permanent')
-  async permanentlyDeleteProduct(@Param('id') productId: string, @Req() req: any) {
+  async permanentlyDeleteProduct(
+    @Param('id') productId: string,
+    @Req() req: any,
+  ) {
     return this.storeService.permanentlyDeleteProduct(req.user.id, productId);
   }
 
@@ -299,7 +324,8 @@ export class StoreController {
     @Query('search') search?: string,
   ) {
     const resolvedSortBy = sortBy ?? sort;
-    const resolvedOnSale = this.parseBoolParam(onSale) ?? this.parseBoolParam(isOnSale);
+    const resolvedOnSale =
+      this.parseBoolParam(onSale) ?? this.parseBoolParam(isOnSale);
     const resolvedIsFeatured = this.parseBoolParam(isFeatured);
 
     return this.storeService.getMarketplaceProducts({
@@ -328,6 +354,29 @@ export class StoreController {
     return this.storeService.getProductBagStatus(productId, req.user?.id);
   }
 
+  @UseGuards(JwtAuthGuard)
+  @Get([
+    'products/:id/size-recommendation',
+    'store/products/:id/size-recommendation',
+  ])
+  @Throttle({ default: { limit: 120, ttl: 60000 } })
+  async getProductSizeRecommendation(
+    @Param('id') productId: string,
+    @Query(new ValidationPipe({ transform: true, whitelist: true }))
+    query: ProductSizeRecommendationQueryDto,
+    @Req() req: any,
+  ) {
+    return this.sizeComputation.computeProductRecommendation(
+      req.user.id,
+      productId,
+      {
+        variantId: query.variantId,
+        region: query.region,
+        selectedSize: query.selectedSize,
+      },
+    );
+  }
+
   @UseGuards(OptionalJwtAuthGuard)
   @Get(['products/:id', 'store/products/:id'])
   @Throttle({ default: { limit: 120, ttl: 60000 } })
@@ -337,7 +386,11 @@ export class StoreController {
     @Query('includeDeleted') includeDeleted?: string,
   ) {
     const includeDeletedFlag = this.parseBoolParam(includeDeleted) === true;
-    return this.storeService.getProduct(productId, req.user?.id, includeDeletedFlag);
+    return this.storeService.getProduct(
+      productId,
+      req.user?.id,
+      includeDeletedFlag,
+    );
   }
 
   @UseGuards(OptionalJwtAuthGuard)
@@ -369,7 +422,8 @@ export class StoreController {
     @Query('onlyDeleted') onlyDeleted?: string,
   ) {
     const resolvedSortBy = sortBy ?? sort;
-    const resolvedOnSale = this.parseBoolParam(onSale) ?? this.parseBoolParam(isOnSale);
+    const resolvedOnSale =
+      this.parseBoolParam(onSale) ?? this.parseBoolParam(isOnSale);
     const resolvedIsFeatured = this.parseBoolParam(isFeatured);
     const resolvedIncludeDeleted = this.parseBoolParam(includeDeleted);
     const resolvedOnlyDeleted = this.parseBoolParam(onlyDeleted);
@@ -507,13 +561,20 @@ export class StoreController {
   }
 
   @UseGuards(JwtAuthGuard)
-  @Post(['orders/:orderId/confirm-delivery', 'store/orders/:orderId/confirm-delivery'])
+  @Post([
+    'orders/:orderId/confirm-delivery',
+    'store/orders/:orderId/confirm-delivery',
+  ])
   async confirmMyOrderDelivery(
     @Param('orderId') orderId: string,
     @Body() body: { note?: string },
     @Req() req: any,
   ) {
-    return this.storeService.confirmOrderDelivery(req.user.id, orderId, body?.note);
+    return this.storeService.confirmOrderDelivery(
+      req.user.id,
+      orderId,
+      body?.note,
+    );
   }
 
   @UseGuards(JwtAuthGuard)

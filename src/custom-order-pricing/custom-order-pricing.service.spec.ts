@@ -6,7 +6,9 @@ describe('CustomOrderPricingService', () => {
   let service: CustomOrderPricingService;
 
   beforeEach(() => {
-    service = new CustomOrderPricingService(new CustomOrderRuleValidatorService());
+    service = new CustomOrderPricingService(
+      new CustomOrderRuleValidatorService(),
+    );
   });
 
   it('builds a price preview from the matching rule with rush and delivery', () => {
@@ -43,6 +45,7 @@ describe('CustomOrderPricingService', () => {
       outfitTotal: '29000.00',
       delivery: '2500.00',
       rush: '5000.00',
+      fabricCharge: '9000.00',
       grandTotal: '31500.00',
       currency: 'NGN',
     });
@@ -126,6 +129,10 @@ describe('CustomOrderPricingService', () => {
         rushSelected: true,
         currency: 'NGN',
       }),
-    ).toThrow(new BadRequestException('Rush ordering is not enabled for this custom configuration'));
+    ).toThrow(
+      new BadRequestException(
+        'Rush ordering is not enabled for this custom configuration',
+      ),
+    );
   });
 });

@@ -172,6 +172,62 @@ describe('PushNotificationsService', () => {
     ]);
   });
 
+  it('preserves message routing fields in Expo push data without exposing message body', async () => {
+    prisma.pushDeviceToken.findMany.mockResolvedValue([makeToken()]);
+
+    const messageNotification = {
+      id: '33333333-3333-4333-8333-333333333333',
+      type: NotificationType.MESSAGE_RECEIVED,
+      payload: {
+        type: 'message',
+        category: 'message',
+        threadId: 'thread-123',
+        conversationId: 'thread-123',
+        messageId: 'message-123',
+        orderId: null,
+        customOrderId: 'custom-order-123',
+        brandId: 'brand-123',
+        customerId: 'customer-123',
+        actorUserId: 'actor-123',
+        targetUrl: '/messages?thread=thread-123&messageId=message-123',
+        message: 'A brand sent a new message',
+        bodyText: 'Private body should not be copied to push data',
+      },
+      actor: null,
+    };
+
+    const result = await service.deliverAfterNotificationCreated({
+      recipientId: 'user-1',
+      notification: messageNotification,
+      settings: DEFAULT_NOTIFICATION_SETTINGS,
+      notificationTypeEnabled: true,
+      date: now,
+    });
+
+    expect(result.sent).toBe(1);
+    expect(client.sendPushNotificationsAsync).toHaveBeenCalledWith([
+      expect.objectContaining({
+        data: expect.objectContaining({
+          notificationId: messageNotification.id,
+          notificationType: NotificationType.MESSAGE_RECEIVED,
+          type: 'message',
+          category: 'message',
+          threadId: 'thread-123',
+          conversationId: 'thread-123',
+          messageId: 'message-123',
+          orderId: null,
+          customOrderId: 'custom-order-123',
+          brandId: 'brand-123',
+          customerId: 'customer-123',
+          actorUserId: 'actor-123',
+          targetUrl: '/messages?thread=thread-123&messageId=message-123',
+        }),
+      }),
+    ]);
+    expect(client.sendPushNotificationsAsync.mock.calls[0][0][0].data).not.toHaveProperty('message');
+    expect(client.sendPushNotificationsAsync.mock.calls[0][0][0].data).not.toHaveProperty('bodyText');
+  });
+
   it('deactivates invalid Expo tokens before sending', async () => {
     service = new TestPushNotificationsService(
       prisma as unknown as PrismaService,

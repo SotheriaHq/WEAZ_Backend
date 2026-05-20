@@ -42,6 +42,14 @@ export class AddToCartDto {
   sizeFitData?: Record<string, any>;
 
   @IsOptional()
+  @IsObject()
+  sizeRecommendationSnapshot?: Record<string, any>;
+
+  @IsOptional()
+  @IsString()
+  manualOverrideReason?: string;
+
+  @IsOptional()
   @IsArray()
   @IsString({ each: true })
   requiredMeasurementKeys?: string[];

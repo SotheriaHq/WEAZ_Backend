@@ -6,14 +6,14 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import {
-  NotificationType,
-  Prisma,
-} from '@prisma/client';
+import { NotificationType, Prisma } from '@prisma/client';
 import { v4 as uuidv4 } from 'uuid';
 import { NotificationsService } from 'src/notifications/notifications.service';
 import { PrismaService } from 'src/prisma/prisma.service';
-import { RespondSizeFitShareDto, SizeFitShareDecision } from './dto/respond-size-fit-share.dto';
+import {
+  RespondSizeFitShareDto,
+  SizeFitShareDecision,
+} from './dto/respond-size-fit-share.dto';
 import { ShareSizeFitDto } from './dto/share-size-fit.dto';
 import { UpdateSizeFitSettingsDto } from './dto/update-size-fit-settings.dto';
 import { UpdateSizeFitDto } from './dto/update-size-fit.dto';
@@ -22,6 +22,7 @@ import {
   resolveProfileImage,
   resolveRequiredProfileField,
 } from 'src/common/user-profile-source.helper';
+import { MeasurementNormalizationService } from 'src/sizing/measurement-normalization.service';
 
 type PrismaTx = any;
 type SizeFitVisibility = 'PUBLIC' | 'PRIVATE';
@@ -49,6 +50,8 @@ const SIZE_FIT_SHARE_STATUS = {
 type SafeMeasurements = Record<string, string | number | boolean | null>;
 type BaselineMeasurementGender = 'MEN' | 'WOMEN';
 type BaselineMeasurementSlot =
+  | 'HEIGHT'
+  | 'NECK_COLLAR'
   | 'SHOULDER'
   | 'CHEST'
   | 'WAIST'
@@ -57,6 +60,8 @@ type BaselineMeasurementSlot =
   | 'SLEEVE_LENGTH';
 
 const BASELINE_MEASUREMENT_SLOTS: BaselineMeasurementSlot[] = [
+  'HEIGHT',
+  'NECK_COLLAR',
   'SHOULDER',
   'CHEST',
   'WAIST',
@@ -69,6 +74,16 @@ const BASELINE_SLOT_KEY_CANDIDATES: Record<
   BaselineMeasurementSlot,
   { men: string[]; women: string[]; neutral: string[] }
 > = {
+  HEIGHT: {
+    men: ['MEN_HEIGHT'],
+    women: ['WOMEN_HEIGHT'],
+    neutral: ['UNISEX_HEIGHT', 'HEIGHT', 'STATURE', 'BODY_HEIGHT'],
+  },
+  NECK_COLLAR: {
+    men: ['MEN_NECK'],
+    women: ['WOMEN_NECK'],
+    neutral: ['UNISEX_NECK', 'NECK', 'COLLAR', 'COLLAR_SIZE', 'NECK_COLLAR'],
+  },
   SHOULDER: {
     men: ['MEN_SHOULDER'],
     women: ['WOMEN_SHOULDER_WIDTH'],
@@ -105,11 +120,14 @@ const REMINDER_TARGET = {
   type: 'USER',
 } as const;
 
-const NT_SIZE_FIT_UPDATE_REMINDER = 'SIZE_FIT_UPDATE_REMINDER' as NotificationType;
+const NT_SIZE_FIT_UPDATE_REMINDER =
+  'SIZE_FIT_UPDATE_REMINDER' as NotificationType;
 const NT_SIZE_FIT_SHARED = 'SIZE_FIT_SHARED' as NotificationType;
 const NT_SIZE_FIT_SHARE_REQUEST = 'SIZE_FIT_SHARE_REQUEST' as NotificationType;
-const NT_SIZE_FIT_SHARE_APPROVED = 'SIZE_FIT_SHARE_APPROVED' as NotificationType;
-const NT_SIZE_FIT_SHARE_REJECTED = 'SIZE_FIT_SHARE_REJECTED' as NotificationType;
+const NT_SIZE_FIT_SHARE_APPROVED =
+  'SIZE_FIT_SHARE_APPROVED' as NotificationType;
+const NT_SIZE_FIT_SHARE_REJECTED =
+  'SIZE_FIT_SHARE_REJECTED' as NotificationType;
 const NT_SIZE_FIT_RESHARED = 'SIZE_FIT_RESHARED' as NotificationType;
 
 const sizeFitUserDisplaySelect = {
@@ -135,6 +153,7 @@ export class SizeFitService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly notifications: NotificationsService,
+    private readonly measurementNormalizer: MeasurementNormalizationService,
   ) {}
 
   private mapUserDisplay(user: any) {
@@ -204,7 +223,10 @@ export class SizeFitService {
         ? (prevRaw as Record<string, unknown>)
         : {};
 
-    const keySet = new Set<string>([...Object.keys(prev), ...Object.keys(next)]);
+    const keySet = new Set<string>([
+      ...Object.keys(prev),
+      ...Object.keys(next),
+    ]);
     const changed = Array.from(keySet).filter((key) => {
       const a = prev[key];
       const b = next[key];
@@ -244,11 +266,15 @@ export class SizeFitService {
     return false;
   }
 
-  private normalizeBaselineGender(gender: BaselineMeasurementGender | null): BaselineMeasurementGender {
+  private normalizeBaselineGender(
+    gender: BaselineMeasurementGender | null,
+  ): BaselineMeasurementGender {
     return gender ?? 'WOMEN';
   }
 
-  private buildBaselineSlotCandidates(gender: BaselineMeasurementGender | null) {
+  private buildBaselineSlotCandidates(
+    gender: BaselineMeasurementGender | null,
+  ) {
     const preferredGender = this.normalizeBaselineGender(gender);
 
     return BASELINE_MEASUREMENT_SLOTS.map((slot) => {
@@ -270,9 +296,13 @@ export class SizeFitService {
       .replace(/\b\w/g, (char) => char.toUpperCase());
   }
 
-  private async resolveBaselineMeasurementPoints(gender: BaselineMeasurementGender | null) {
+  private async resolveBaselineMeasurementPoints(
+    gender: BaselineMeasurementGender | null,
+  ) {
     const slots = this.buildBaselineSlotCandidates(gender);
-    const orderedKeys = Array.from(new Set(slots.flatMap((slot) => slot.orderedCandidates)));
+    const orderedKeys = Array.from(
+      new Set(slots.flatMap((slot) => slot.orderedCandidates)),
+    );
 
     const points = await (this.prisma as any).measurementPoint.findMany({
       where: {
@@ -291,7 +321,9 @@ export class SizeFitService {
       },
     });
 
-    const byKey = new Map<string, any>(points.map((point: any) => [point.key, point]));
+    const byKey = new Map<string, any>(
+      points.map((point: any) => [point.key, point]),
+    );
 
     // Always return baseline slots so users can continue updating fittings incrementally,
     // even if measurement-point rows are temporarily missing in a given environment.
@@ -377,11 +409,25 @@ export class SizeFitService {
     const inferredGender = this.inferMeasurementGender(
       this.sanitizeMeasurements(profile.measurements),
     );
-    const baselineMeasurementPoints = await this.resolveBaselineMeasurementPoints(inferredGender);
-    const baselineRequiredKeys = baselineMeasurementPoints.map((point: any) => point.key);
-    const missingBaselineKeys = baselineRequiredKeys.filter(
-      (key) => !this.hasUsableMeasurementValue(measurements[key]),
+    const normalizedMeasurements = this.measurementNormalizer.normalizeRecord(
+      measurements,
+      {
+        gender: this.normalizeBaselineGender(inferredGender),
+      },
     );
+    const baselineMeasurementPoints =
+      await this.resolveBaselineMeasurementPoints(inferredGender);
+    const baselineRequiredKeys = baselineMeasurementPoints.map(
+      (point: any) => point.key,
+    );
+    const missingBaselineKeys = baselineRequiredKeys.filter((key) => {
+      if (this.hasUsableMeasurementValue(measurements[key])) return false;
+      const canonicalKey = this.measurementNormalizer.resolveCanonicalKey(key);
+      return (
+        !canonicalKey ||
+        normalizedMeasurements.canonicalMeasurements[canonicalKey] == null
+      );
+    });
 
     const [latestRevision, incomingPending, outgoingPending, sharedWithMe] =
       await Promise.all([
@@ -412,7 +458,9 @@ export class SizeFitService {
 
     const due =
       !profile.lastUpdatedAt ||
-      (profile.nextReminderAt ? profile.nextReminderAt.getTime() <= now.getTime() : true);
+      (profile.nextReminderAt
+        ? profile.nextReminderAt.getTime() <= now.getTime()
+        : true);
 
     return {
       id: profile.id,
@@ -425,8 +473,12 @@ export class SizeFitService {
       preferredLengthUnit: profile.preferredLengthUnit,
       preferredWeightUnit: profile.preferredWeightUnit,
       fitPreference: profile.fitPreference,
+      preferredSizingRegion: profile.preferredSizingRegion,
+      autoSizeRecommendation: profile.autoSizeRecommendation,
       label: profile.label,
       measurements,
+      canonicalMeasurements: normalizedMeasurements.canonicalMeasurements,
+      unmappedMeasurements: normalizedMeasurements.unknownMeasurements,
       measurementGender: this.normalizeBaselineGender(inferredGender),
       baselineMeasurementPoints,
       baselineRequiredKeys,
@@ -468,6 +520,8 @@ export class SizeFitService {
         preferredLengthUnit: true,
         preferredWeightUnit: true,
         fitPreference: true,
+        preferredSizingRegion: true,
+        autoSizeRecommendation: true,
         label: true,
         measurements: true,
         notes: true,
@@ -498,6 +552,8 @@ export class SizeFitService {
       preferredLengthUnit: profile.preferredLengthUnit,
       preferredWeightUnit: profile.preferredWeightUnit,
       fitPreference: profile.fitPreference,
+      preferredSizingRegion: profile.preferredSizingRegion,
+      autoSizeRecommendation: profile.autoSizeRecommendation,
       label: profile.label,
       measurements:
         profile.measurements &&
@@ -519,23 +575,43 @@ export class SizeFitService {
     return this.prisma.$transaction(async (tx) => {
       const profile = await this.ensureProfile(userId, tx);
 
-      const currentMeasurements = this.sanitizeMeasurements(profile.measurements);
+      const currentMeasurements = this.sanitizeMeasurements(
+        profile.measurements,
+      );
+      const mergeGender = this.normalizeBaselineGender(
+        this.inferMeasurementGender(
+          currentMeasurements,
+          Object.keys(dto.measurements ?? {}),
+        ),
+      );
       const nextMeasurements = dto.measurements
-        ? {
-            ...currentMeasurements,
-            ...this.sanitizeMeasurements(dto.measurements),
-          }
-        : currentMeasurements;
-      const changedKeys = this.computeChangedKeys(profile.measurements, nextMeasurements);
+        ? this.measurementNormalizer.mergeForStorage(
+            currentMeasurements,
+            dto.measurements,
+            {
+              gender: mergeGender,
+            },
+          ).storedMeasurements
+        : this.measurementNormalizer.normalizeRecord(currentMeasurements, {
+            gender: mergeGender,
+          }).storedMeasurements;
+      const changedKeys = this.computeChangedKeys(
+        profile.measurements,
+        nextMeasurements,
+      );
 
       const reminderDays = this.normalizeReminderDays(
         dto.requireUpdateEveryDays ?? profile.requireUpdateEveryDays,
       );
       if (typeof dto.version === 'number' && dto.version !== profile.version) {
-        throw new ConflictException('Size fit profile has been updated. Refresh and retry.');
+        throw new ConflictException(
+          'Size fit profile has been updated. Refresh and retry.',
+        );
       }
       const now = new Date();
-      const nextReminderAt = new Date(now.getTime() + this.daysToMs(reminderDays));
+      const nextReminderAt = new Date(
+        now.getTime() + this.daysToMs(reminderDays),
+      );
 
       const updated = await (tx as any).userSizeFitProfile.update({
         where: { id: profile.id },
@@ -553,6 +629,11 @@ export class SizeFitService {
           fitPreference:
             (dto.fitPreference as unknown as string | undefined) ??
             profile.fitPreference,
+          preferredSizingRegion:
+            (dto.preferredSizingRegion as any) ?? profile.preferredSizingRegion,
+          autoSizeRecommendation:
+            (dto.autoSizeRecommendation as any) ??
+            profile.autoSizeRecommendation,
           version: profile.version + 1,
           lastUpdatedAt: now,
           nextReminderAt,
@@ -578,11 +659,26 @@ export class SizeFitService {
       });
 
       const inferredGender = this.inferMeasurementGender(nextMeasurements);
-      const baselineMeasurementPoints = await this.resolveBaselineMeasurementPoints(inferredGender);
-      const baselineRequiredKeys = baselineMeasurementPoints.map((point: any) => point.key);
-      const missingBaselineKeys = baselineRequiredKeys.filter(
-        (key) => !this.hasUsableMeasurementValue(nextMeasurements[key]),
+      const normalizedMeasurements = this.measurementNormalizer.normalizeRecord(
+        nextMeasurements,
+        {
+          gender: this.normalizeBaselineGender(inferredGender),
+        },
       );
+      const baselineMeasurementPoints =
+        await this.resolveBaselineMeasurementPoints(inferredGender);
+      const baselineRequiredKeys = baselineMeasurementPoints.map(
+        (point: any) => point.key,
+      );
+      const missingBaselineKeys = baselineRequiredKeys.filter((key) => {
+        if (this.hasUsableMeasurementValue(nextMeasurements[key])) return false;
+        const canonicalKey =
+          this.measurementNormalizer.resolveCanonicalKey(key);
+        return (
+          !canonicalKey ||
+          normalizedMeasurements.canonicalMeasurements[canonicalKey] == null
+        );
+      });
 
       return {
         id: updated.id,
@@ -595,8 +691,12 @@ export class SizeFitService {
         preferredLengthUnit: updated.preferredLengthUnit,
         preferredWeightUnit: updated.preferredWeightUnit,
         fitPreference: updated.fitPreference,
+        preferredSizingRegion: updated.preferredSizingRegion,
+        autoSizeRecommendation: updated.autoSizeRecommendation,
         label: updated.label,
         measurements: nextMeasurements,
+        canonicalMeasurements: normalizedMeasurements.canonicalMeasurements,
+        unmappedMeasurements: normalizedMeasurements.unknownMeasurements,
         measurementGender: this.normalizeBaselineGender(inferredGender),
         baselineMeasurementPoints,
         baselineRequiredKeys,
@@ -626,6 +726,19 @@ export class SizeFitService {
         sharePolicy: dto.sharePolicy ?? profile.sharePolicy,
         notifyOnShare: dto.notifyOnShare ?? profile.notifyOnShare,
         requireUpdateEveryDays: reminderDays,
+        preferredLengthUnit:
+          (dto.preferredLengthUnit as unknown as string | undefined) ??
+          profile.preferredLengthUnit,
+        preferredWeightUnit:
+          (dto.preferredWeightUnit as unknown as string | undefined) ??
+          profile.preferredWeightUnit,
+        fitPreference:
+          (dto.fitPreference as unknown as string | undefined) ??
+          profile.fitPreference,
+        preferredSizingRegion:
+          (dto.preferredSizingRegion as any) ?? profile.preferredSizingRegion,
+        autoSizeRecommendation:
+          (dto.autoSizeRecommendation as any) ?? profile.autoSizeRecommendation,
       },
     });
 
@@ -640,6 +753,8 @@ export class SizeFitService {
       preferredLengthUnit: updated.preferredLengthUnit,
       preferredWeightUnit: updated.preferredWeightUnit,
       fitPreference: updated.fitPreference,
+      preferredSizingRegion: updated.preferredSizingRegion,
+      autoSizeRecommendation: updated.autoSizeRecommendation,
       label: updated.label,
       lastUpdatedAt: this.toIso(updated.lastUpdatedAt),
       nextReminderAt: this.toIso(updated.nextReminderAt),
@@ -647,62 +762,73 @@ export class SizeFitService {
   }
 
   async listMySizeFitShareRequests(userId: string) {
-    const [incoming, outgoing, sharesGiven, sharesReceived] = await Promise.all([
-      (this.prisma as any).userSizeFitShare.findMany({
-        where: { ownerId: userId, status: SIZE_FIT_SHARE_STATUS.PENDING },
-        include: {
-          viewer: {
-            select: sizeFitUserDisplaySelect,
+    const [incoming, outgoing, sharesGiven, sharesReceived] = await Promise.all(
+      [
+        (this.prisma as any).userSizeFitShare.findMany({
+          where: { ownerId: userId, status: SIZE_FIT_SHARE_STATUS.PENDING },
+          include: {
+            viewer: {
+              select: sizeFitUserDisplaySelect,
+            },
+            requestedBy: {
+              select: sizeFitUserDisplaySelect,
+            },
+            profile: {
+              select: { userId: true, visibility: true, sharePolicy: true },
+            },
           },
-          requestedBy: {
-            select: sizeFitUserDisplaySelect,
+          orderBy: { createdAt: 'desc' },
+          take: 50,
+        }),
+        (this.prisma as any).userSizeFitShare.findMany({
+          where: {
+            requestedById: userId,
+            status: SIZE_FIT_SHARE_STATUS.PENDING,
           },
-          profile: { select: { userId: true, visibility: true, sharePolicy: true } },
-        },
-        orderBy: { createdAt: 'desc' },
-        take: 50,
-      }),
-      (this.prisma as any).userSizeFitShare.findMany({
-        where: { requestedById: userId, status: SIZE_FIT_SHARE_STATUS.PENDING },
-        include: {
-          owner: {
-            select: sizeFitUserDisplaySelect,
+          include: {
+            owner: {
+              select: sizeFitUserDisplaySelect,
+            },
+            viewer: {
+              select: sizeFitUserDisplaySelect,
+            },
+            profile: {
+              select: { userId: true, visibility: true, sharePolicy: true },
+            },
           },
-          viewer: {
-            select: sizeFitUserDisplaySelect,
+          orderBy: { createdAt: 'desc' },
+          take: 50,
+        }),
+        (this.prisma as any).userSizeFitShare.findMany({
+          where: { ownerId: userId, status: SIZE_FIT_SHARE_STATUS.APPROVED },
+          include: {
+            viewer: {
+              select: sizeFitUserDisplaySelect,
+            },
           },
-          profile: { select: { userId: true, visibility: true, sharePolicy: true } },
-        },
-        orderBy: { createdAt: 'desc' },
-        take: 50,
-      }),
-      (this.prisma as any).userSizeFitShare.findMany({
-        where: { ownerId: userId, status: SIZE_FIT_SHARE_STATUS.APPROVED },
-        include: {
-          viewer: {
-            select: sizeFitUserDisplaySelect,
+          orderBy: { updatedAt: 'desc' },
+          take: 100,
+        }),
+        (this.prisma as any).userSizeFitShare.findMany({
+          where: { viewerId: userId, status: SIZE_FIT_SHARE_STATUS.APPROVED },
+          include: {
+            owner: {
+              select: sizeFitUserDisplaySelect,
+            },
           },
-        },
-        orderBy: { updatedAt: 'desc' },
-        take: 100,
-      }),
-      (this.prisma as any).userSizeFitShare.findMany({
-        where: { viewerId: userId, status: SIZE_FIT_SHARE_STATUS.APPROVED },
-        include: {
-          owner: {
-            select: sizeFitUserDisplaySelect,
-          },
-        },
-        orderBy: { updatedAt: 'desc' },
-        take: 100,
-      }),
-    ]);
+          orderBy: { updatedAt: 'desc' },
+          take: 100,
+        }),
+      ],
+    );
 
     return {
       incoming: incoming.map((share: any) => this.mapShareDisplay(share)),
       outgoing: outgoing.map((share: any) => this.mapShareDisplay(share)),
       sharesGiven: sharesGiven.map((share: any) => this.mapShareDisplay(share)),
-      sharesReceived: sharesReceived.map((share: any) => this.mapShareDisplay(share)),
+      sharesReceived: sharesReceived.map((share: any) =>
+        this.mapShareDisplay(share),
+      ),
     };
   }
 
@@ -711,20 +837,29 @@ export class SizeFitService {
     const targetUserId = await this.resolveShareTargetUserId(dto);
 
     if (ownerId === targetUserId) {
-      throw new BadRequestException('Cannot share size fit with the profile owner');
+      throw new BadRequestException(
+        'Cannot share size fit with the profile owner',
+      );
     }
 
     if (actorId === targetUserId) {
-      throw new BadRequestException('Cannot target yourself for this share action');
+      throw new BadRequestException(
+        'Cannot target yourself for this share action',
+      );
     }
 
-    const owner = await this.prisma.user.findUnique({ where: { id: ownerId }, select: { id: true } });
+    const owner = await this.prisma.user.findUnique({
+      where: { id: ownerId },
+      select: { id: true },
+    });
     if (!owner) throw new NotFoundException('Size fit owner not found');
 
     const profile =
       ownerId === actorId
         ? await this.ensureProfile(ownerId)
-        : await (this.prisma as any).userSizeFitProfile.findUnique({ where: { userId: ownerId } });
+        : await (this.prisma as any).userSizeFitProfile.findUnique({
+            where: { userId: ownerId },
+          });
 
     if (!profile) {
       throw new NotFoundException('Size fitting profile not found');
@@ -736,11 +871,15 @@ export class SizeFitService {
       profile.visibility === SIZE_FIT_VISIBILITY.PUBLIC ||
       (await this.hasApprovedShare(profile.id, actorId));
     if (!actorCanView) {
-      throw new ForbiddenException('You do not have access to this size fitting profile');
+      throw new ForbiddenException(
+        'You do not have access to this size fitting profile',
+      );
     }
 
     const existing = await (this.prisma as any).userSizeFitShare.findUnique({
-      where: { profileId_viewerId: { profileId: profile.id, viewerId: targetUserId } },
+      where: {
+        profileId_viewerId: { profileId: profile.id, viewerId: targetUserId },
+      },
     });
 
     if (actorIsOwner) {
@@ -781,11 +920,17 @@ export class SizeFitService {
         dedupeMs: 60_000,
       });
 
-      return { status: share.status, shareId: share.id, requiresApproval: false };
+      return {
+        status: share.status,
+        shareId: share.id,
+        requiresApproval: false,
+      };
     }
 
     if (profile.sharePolicy === SIZE_FIT_SHARE_POLICY.OWNER_ONLY) {
-      throw new ForbiddenException('This size fitting profile does not allow re-sharing');
+      throw new ForbiddenException(
+        'This size fitting profile does not allow re-sharing',
+      );
     }
 
     if (profile.sharePolicy === SIZE_FIT_SHARE_POLICY.REQUIRE_PERMISSION) {
@@ -817,13 +962,18 @@ export class SizeFitService {
         target: { ...REMINDER_TARGET, id: ownerId },
         payload: {
           targetUrl: `/profile/${ownerId}`,
-          message: 'A user requested permission to share your private fitting profile',
+          message:
+            'A user requested permission to share your private fitting profile',
           requestedViewerId: targetUserId,
         },
         dedupeMs: 60_000,
       });
 
-      return { status: pending.status, shareId: pending.id, requiresApproval: true };
+      return {
+        status: pending.status,
+        shareId: pending.id,
+        requiresApproval: true,
+      };
     }
 
     const shared = existing
@@ -875,12 +1025,21 @@ export class SizeFitService {
       });
     }
 
-    return { status: shared.status, shareId: shared.id, requiresApproval: false };
+    return {
+      status: shared.status,
+      shareId: shared.id,
+      requiresApproval: false,
+    };
   }
 
-  private async resolveShareTargetUserId(dto: ShareSizeFitDto): Promise<string> {
+  private async resolveShareTargetUserId(
+    dto: ShareSizeFitDto,
+  ): Promise<string> {
     if (dto.targetUserId) {
-      const target = await this.prisma.user.findUnique({ where: { id: dto.targetUserId }, select: { id: true } });
+      const target = await this.prisma.user.findUnique({
+        where: { id: dto.targetUserId },
+        select: { id: true },
+      });
       if (!target) {
         throw new NotFoundException('Target user not found');
       }
@@ -892,7 +1051,9 @@ export class SizeFitService {
       throw new BadRequestException('Target user identifier is required');
     }
 
-    const normalizedHandle = targetIdentifier.startsWith('@') ? targetIdentifier.slice(1) : targetIdentifier;
+    const normalizedHandle = targetIdentifier.startsWith('@')
+      ? targetIdentifier.slice(1)
+      : targetIdentifier;
     const target = await this.prisma.user.findFirst({
       where: {
         OR: [
@@ -910,7 +1071,11 @@ export class SizeFitService {
     return target.id;
   }
 
-  async respondToShareRequest(ownerId: string, shareId: string, dto: RespondSizeFitShareDto) {
+  async respondToShareRequest(
+    ownerId: string,
+    shareId: string,
+    dto: RespondSizeFitShareDto,
+  ) {
     const share = await (this.prisma as any).userSizeFitShare.findUnique({
       where: { id: shareId },
       include: {
@@ -944,28 +1109,36 @@ export class SizeFitService {
     });
 
     if (status === SIZE_FIT_SHARE_STATUS.APPROVED) {
-      await this.notifications.create(updated.viewerId, NT_SIZE_FIT_SHARE_APPROVED, {
-        actorId: ownerId,
-        target: { ...REMINDER_TARGET, id: ownerId },
-        payload: {
-          targetUrl: `/profile/${ownerId}`,
-          message: 'Your fitting share request was approved',
+      await this.notifications.create(
+        updated.viewerId,
+        NT_SIZE_FIT_SHARE_APPROVED,
+        {
+          actorId: ownerId,
+          target: { ...REMINDER_TARGET, id: ownerId },
+          payload: {
+            targetUrl: `/profile/${ownerId}`,
+            message: 'Your fitting share request was approved',
+          },
+          dedupeMs: 60_000,
         },
-        dedupeMs: 60_000,
-      });
+      );
     } else {
-      await this.notifications.create(updated.viewerId, NT_SIZE_FIT_SHARE_REJECTED, {
-        actorId: ownerId,
-        target: { ...REMINDER_TARGET, id: ownerId },
-        payload: {
-          targetUrl: `/profile/${ownerId}`,
-          message:
-            status === SIZE_FIT_SHARE_STATUS.REVOKED
-              ? 'Your fitting access was revoked'
-              : 'Your fitting share request was rejected',
+      await this.notifications.create(
+        updated.viewerId,
+        NT_SIZE_FIT_SHARE_REJECTED,
+        {
+          actorId: ownerId,
+          target: { ...REMINDER_TARGET, id: ownerId },
+          payload: {
+            targetUrl: `/profile/${ownerId}`,
+            message:
+              status === SIZE_FIT_SHARE_STATUS.REVOKED
+                ? 'Your fitting access was revoked'
+                : 'Your fitting share request was rejected',
+          },
+          dedupeMs: 60_000,
         },
-        dedupeMs: 60_000,
-      });
+      );
     }
 
     return {
@@ -1012,7 +1185,9 @@ export class SizeFitService {
           },
         );
 
-        const nextDays = this.normalizeReminderDays(profile.requireUpdateEveryDays);
+        const nextDays = this.normalizeReminderDays(
+          profile.requireUpdateEveryDays,
+        );
         await (this.prisma as any).userSizeFitProfile.update({
           where: { id: profile.id },
           data: {

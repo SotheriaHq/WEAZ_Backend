@@ -18,6 +18,26 @@ const INVALID_EXPO_TOKEN_DISABLED_REASON = 'INVALID_EXPO_TOKEN';
 const DEVICE_NOT_REGISTERED_DISABLED_REASON = 'DEVICE_NOT_REGISTERED';
 const GENERIC_PUSH_BODY = 'You have a new notification.';
 
+const MESSAGE_NOTIFICATION_TYPES = new Set<NotificationType>([
+  NotificationType.MESSAGE_RECEIVED,
+  NotificationType.MESSAGE_UNREAD_REMINDER,
+  NotificationType.MESSAGE_THREAD_REOPENED,
+  NotificationType.MESSAGE_MODERATED,
+]);
+
+const MESSAGE_PUSH_ROUTING_FIELDS = [
+  'type',
+  'category',
+  'threadId',
+  'conversationId',
+  'messageId',
+  'orderId',
+  'customOrderId',
+  'brandId',
+  'customerId',
+  'actorUserId',
+] as const;
+
 type ExpoClientLike = {
   chunkPushNotifications(messages: ExpoPushMessage[]): ExpoPushMessage[][];
   sendPushNotificationsAsync(
@@ -278,6 +298,10 @@ export class PushNotificationsService {
     const body = args.settings.push.showPreview
       ? this.formatPushBody(args.notification)
       : GENERIC_PUSH_BODY;
+    const messageRoutingData = this.extractMessageRoutingData(
+      args.notification.type,
+      payload,
+    );
     const message: ExpoPushMessage = {
       to: args.token,
       title: 'Threadly',
@@ -288,6 +312,7 @@ export class PushNotificationsService {
         targetUrl: this.sanitizeTargetUrl(payload?.targetUrl),
         target: this.extractTarget(payload),
         subTargetId: payload?.subTargetId ?? payload?.commentId ?? null,
+        ...messageRoutingData,
       },
     };
 
@@ -296,6 +321,37 @@ export class PushNotificationsService {
     }
 
     return message;
+  }
+
+  private extractMessageRoutingData(
+    notificationType: NotificationType,
+    payload: Record<string, any> | null,
+  ): Record<string, string | null> {
+    if (!MESSAGE_NOTIFICATION_TYPES.has(notificationType) || !payload) {
+      return {};
+    }
+
+    const data: Record<string, string | null> = {
+      notificationType,
+    };
+
+    for (const field of MESSAGE_PUSH_ROUTING_FIELDS) {
+      const value = payload[field];
+      if (typeof value === 'string') {
+        data[field] = value;
+      } else if (value === null) {
+        data[field] = null;
+      }
+    }
+
+    const targetUrl = this.sanitizeTargetUrl(payload.targetUrl);
+    if (targetUrl) {
+      data.targetUrl = targetUrl;
+    } else if (payload.targetUrl === null) {
+      data.targetUrl = null;
+    }
+
+    return data;
   }
 
   private formatPushBody(notification: PushDeliveryNotification): string {

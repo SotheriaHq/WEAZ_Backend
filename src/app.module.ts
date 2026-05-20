@@ -35,9 +35,12 @@ import { CustomOrderAdminModule } from './custom-order-admin/custom-order-admin.
 import { CustomOrderOpsModule } from './custom-order-ops/custom-order-ops.module';
 import { MessagingModule } from './messaging/messaging.module';
 import { WebhooksModule } from './webhooks/webhooks.module';
+import { SizingModule } from './sizing/sizing.module';
 
 const isProductionEnvironment =
-  String(process.env.NODE_ENV ?? '').trim().toLowerCase() === 'production';
+  String(process.env.NODE_ENV ?? '')
+    .trim()
+    .toLowerCase() === 'production';
 
 @Module({
   imports: [
@@ -78,8 +81,9 @@ const isProductionEnvironment =
     CustomOrderOpsModule,
     MessagingModule,
     WebhooksModule,
+    SizingModule,
   ],
   controllers: [AppController],
   providers: [AppService, EventsGateway],
 })
-export class AppModule { }
+export class AppModule {}

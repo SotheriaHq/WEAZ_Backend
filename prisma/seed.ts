@@ -14,6 +14,7 @@ import {
   FILTER_TAG_SUGGESTIONS,
 } from '../src/categories/default-taxonomy';
 import { seedMeasurementPoints } from './seed_measurement_points';
+import { seedSizeCharts } from './seed_size_charts';
 
 const SYSTEM_ADMIN_EMAIL = 'adminoversee@test.com';
 const SYSTEM_ADMIN_PASSWORD = 'Password@123';
@@ -28,7 +29,8 @@ const DEMO_PRODUCT_ID = '55555555-5555-4555-8555-555555555555';
 const DEMO_STORE_COLLECTION_ID = '66666666-6666-4666-8666-666666666666';
 const DEMO_FABRIC_BASIS_ID = '77777777-7777-4777-8777-777777777777';
 const DEMO_CUSTOM_ORDER_CONFIG_ID = '88888888-8888-4888-8888-888888888888';
-const DEMO_CUSTOM_ORDER_CONFIG_VERSION_ID = '99999999-9999-4999-8999-999999999999';
+const DEMO_CUSTOM_ORDER_CONFIG_VERSION_ID =
+  '99999999-9999-4999-8999-999999999999';
 const DEMO_CUSTOM_FABRIC_RULE_ID = '98989898-9898-4989-8989-989898989898';
 const DEMO_STORE_COLLECTION_PRODUCT_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const DEMO_DESIGN_MEDIA_IDS = [
@@ -171,7 +173,9 @@ async function ensureDefaultTags() {
 
   for (const tagName of allTags) {
     const normalizedName = tagName.toLowerCase().replace(/[^a-z0-9]/g, '');
-    const displayName = tagName.replace(/-/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+    const displayName = tagName
+      .replace(/-/g, ' ')
+      .replace(/\b\w/g, (l) => l.toUpperCase());
 
     await (prisma as any).tag.upsert({
       where: { normalizedName },
@@ -227,7 +231,9 @@ async function ensureDefaultTaxonomy() {
   }
 
   // 3. Upsert sub-categories (scoped per parent)
-  for (const [parentSlug, subCategories] of Object.entries(DEFAULT_SUB_CATEGORIES)) {
+  for (const [parentSlug, subCategories] of Object.entries(
+    DEFAULT_SUB_CATEGORIES,
+  )) {
     const categoryId = idsBySlug.get(parentSlug);
     if (!categoryId) continue;
 
@@ -244,7 +250,9 @@ async function ensureDefaultTaxonomy() {
 
   // 4. Deactivate legacy category types without touching valid seeded types.
   const activeTypeKeys = new Set<string>();
-  for (const [parentSlug, subCategories] of Object.entries(DEFAULT_SUB_CATEGORIES)) {
+  for (const [parentSlug, subCategories] of Object.entries(
+    DEFAULT_SUB_CATEGORIES,
+  )) {
     const categoryId = idsBySlug.get(parentSlug);
     if (!categoryId) continue;
     for (const sub of subCategories) {
@@ -518,7 +526,10 @@ async function setSeedEntityFilters(
   entityId: string,
   selections: SeedFilterSelection[],
 ) {
-  const filterValueIds = await findFilterValueIdsForSeed(entityType, selections);
+  const filterValueIds = await findFilterValueIdsForSeed(
+    entityType,
+    selections,
+  );
   await prisma.entityFilter.deleteMany({ where: { entityType, entityId } });
   if (filterValueIds.length === 0) return;
   await prisma.entityFilter.createMany({
@@ -624,7 +635,9 @@ async function ensureDemoCatalogSeed(idsBySlug: Map<string, string>) {
     ? await findSubCategoryId(categoryId, 'maxi-dress')
     : null;
   const mediaFiles = await Promise.all(
-    DEMO_FILE_UPLOAD_IDS.map((_, index) => upsertDemoFileUpload(brandOwnerId, index)),
+    DEMO_FILE_UPLOAD_IDS.map((_, index) =>
+      upsertDemoFileUpload(brandOwnerId, index),
+    ),
   );
 
   await prisma.design.upsert({
@@ -639,10 +652,19 @@ async function ensureDemoCatalogSeed(idsBySlug: Map<string, string>) {
       type: 'FEMALE',
       categoryId,
       categoryTypeId,
-      tags: ['ankara-fashion', 'eveningwear', 'custom-order', 'statement-piece'],
+      tags: [
+        'ankara-fashion',
+        'eveningwear',
+        'custom-order',
+        'statement-piece',
+      ],
       customOrderEnabled: true,
       sizingMode: 'CUSTOM',
-      customMeasurementKeys: ['WOMEN_CHEST_FULL_BUST', 'WOMEN_WAIST', 'WOMEN_HIP'],
+      customMeasurementKeys: [
+        'WOMEN_CHEST_FULL_BUST',
+        'WOMEN_WAIST',
+        'WOMEN_HIP',
+      ],
       fitPreference: 'REGULAR',
       targetAgeGroup: 'ADULT',
     },
@@ -657,10 +679,19 @@ async function ensureDemoCatalogSeed(idsBySlug: Map<string, string>) {
       type: 'FEMALE',
       categoryId,
       categoryTypeId,
-      tags: ['ankara-fashion', 'eveningwear', 'custom-order', 'statement-piece'],
+      tags: [
+        'ankara-fashion',
+        'eveningwear',
+        'custom-order',
+        'statement-piece',
+      ],
       customOrderEnabled: true,
       sizingMode: 'CUSTOM',
-      customMeasurementKeys: ['WOMEN_CHEST_FULL_BUST', 'WOMEN_WAIST', 'WOMEN_HIP'],
+      customMeasurementKeys: [
+        'WOMEN_CHEST_FULL_BUST',
+        'WOMEN_WAIST',
+        'WOMEN_HIP',
+      ],
       fitPreference: 'REGULAR',
       targetAgeGroup: 'ADULT',
     },
@@ -718,55 +749,67 @@ async function ensureDemoCatalogSeed(idsBySlug: Map<string, string>) {
     select: { id: true },
   });
 
-  const customOrderConfiguration = await prisma.customOrderConfiguration.upsert({
-    where: {
-      sourceType_sourceId: {
+  const customOrderConfiguration = await prisma.customOrderConfiguration.upsert(
+    {
+      where: {
+        sourceType_sourceId: {
+          sourceType: 'DESIGN',
+          sourceId: DEMO_DESIGN_ID,
+        },
+      },
+      update: {
+        brandId: brand.id,
+        title: 'Ankara Evening Custom Order',
+        buyerInstructionText:
+          'Share event date, preferred sleeve style, and exact measurements.',
+        requiredMeasurementKeys: [
+          'WOMEN_CHEST_FULL_BUST',
+          'WOMEN_WAIST',
+          'WOMEN_HIP',
+        ],
+        fabricRuleBasisId: fabricBasis.id,
+        baseProductionCharge: 15000,
+        fabricCostPerYard: 3500,
+        productionLeadDays: 14,
+        deliveryMinDays: 2,
+        deliveryMaxDays: 5,
+        deliveryScope: 'NATIONWIDE',
+        revisionPolicy: 'One fitting adjustment is included.',
+        returnPolicy: 'Custom orders are final after buyer approval.',
+        defectPolicy: 'Defects are repaired or remade after review.',
+        fabricSourcingMode: 'BRAND_SOURCED',
+        isActive: true,
+      },
+      create: {
+        id: DEMO_CUSTOM_ORDER_CONFIG_ID,
+        brandId: brand.id,
         sourceType: 'DESIGN',
         sourceId: DEMO_DESIGN_ID,
+        title: 'Ankara Evening Custom Order',
+        buyerInstructionText:
+          'Share event date, preferred sleeve style, and exact measurements.',
+        requiredMeasurementKeys: [
+          'WOMEN_CHEST_FULL_BUST',
+          'WOMEN_WAIST',
+          'WOMEN_HIP',
+        ],
+        requiredFreeformPointIds: [],
+        fabricRuleBasisId: fabricBasis.id,
+        baseProductionCharge: 15000,
+        fabricCostPerYard: 3500,
+        productionLeadDays: 14,
+        deliveryMinDays: 2,
+        deliveryMaxDays: 5,
+        deliveryScope: 'NATIONWIDE',
+        revisionPolicy: 'One fitting adjustment is included.',
+        returnPolicy: 'Custom orders are final after buyer approval.',
+        defectPolicy: 'Defects are repaired or remade after review.',
+        fabricSourcingMode: 'BRAND_SOURCED',
+        isActive: true,
       },
+      select: { id: true },
     },
-    update: {
-      brandId: brand.id,
-      title: 'Ankara Evening Custom Order',
-      buyerInstructionText: 'Share event date, preferred sleeve style, and exact measurements.',
-      requiredMeasurementKeys: ['WOMEN_CHEST_FULL_BUST', 'WOMEN_WAIST', 'WOMEN_HIP'],
-      fabricRuleBasisId: fabricBasis.id,
-      baseProductionCharge: 15000,
-      fabricCostPerYard: 3500,
-      productionLeadDays: 14,
-      deliveryMinDays: 2,
-      deliveryMaxDays: 5,
-      deliveryScope: 'NATIONWIDE',
-      revisionPolicy: 'One fitting adjustment is included.',
-      returnPolicy: 'Custom orders are final after buyer approval.',
-      defectPolicy: 'Defects are repaired or remade after review.',
-      fabricSourcingMode: 'BRAND_SOURCED',
-      isActive: true,
-    },
-    create: {
-      id: DEMO_CUSTOM_ORDER_CONFIG_ID,
-      brandId: brand.id,
-      sourceType: 'DESIGN',
-      sourceId: DEMO_DESIGN_ID,
-      title: 'Ankara Evening Custom Order',
-      buyerInstructionText: 'Share event date, preferred sleeve style, and exact measurements.',
-      requiredMeasurementKeys: ['WOMEN_CHEST_FULL_BUST', 'WOMEN_WAIST', 'WOMEN_HIP'],
-      requiredFreeformPointIds: [],
-      fabricRuleBasisId: fabricBasis.id,
-      baseProductionCharge: 15000,
-      fabricCostPerYard: 3500,
-      productionLeadDays: 14,
-      deliveryMinDays: 2,
-      deliveryMaxDays: 5,
-      deliveryScope: 'NATIONWIDE',
-      revisionPolicy: 'One fitting adjustment is included.',
-      returnPolicy: 'Custom orders are final after buyer approval.',
-      defectPolicy: 'Defects are repaired or remade after review.',
-      fabricSourcingMode: 'BRAND_SOURCED',
-      isActive: true,
-    },
-    select: { id: true },
-  });
+  );
 
   await prisma.customFabricRule.upsert({
     where: { id: DEMO_CUSTOM_FABRIC_RULE_ID },
@@ -963,6 +1006,7 @@ async function main() {
   await ensureSystemAdmin();
 
   await seedMeasurementPoints(prisma);
+  await seedSizeCharts(prisma);
 
   const idsBySlug = await ensureDefaultTaxonomy();
 
@@ -971,15 +1015,18 @@ async function main() {
   await ensureDemoCatalogSeed(idsBySlug);
 
   // Log final counts
-  const [totalTags, approvedTags, pendingTags, rejectedTags] = await Promise.all([
-    (prisma as any).tag.count(),
-    (prisma as any).tag.count({ where: { status: 'APPROVED' } }),
-    (prisma as any).tag.count({ where: { status: 'PENDING' } }),
-    (prisma as any).tag.count({ where: { status: 'REJECTED' } }),
-  ]);
+  const [totalTags, approvedTags, pendingTags, rejectedTags] =
+    await Promise.all([
+      (prisma as any).tag.count(),
+      (prisma as any).tag.count({ where: { status: 'APPROVED' } }),
+      (prisma as any).tag.count({ where: { status: 'PENDING' } }),
+      (prisma as any).tag.count({ where: { status: 'REJECTED' } }),
+    ]);
 
   console.log(`Seeded ${seededTagCount} platform tags`);
-  console.log(`Total tags: ${totalTags} (Approved: ${approvedTags}, Pending: ${pendingTags}, Rejected: ${rejectedTags})`);
+  console.log(
+    `Total tags: ${totalTags} (Approved: ${approvedTags}, Pending: ${pendingTags}, Rejected: ${rejectedTags})`,
+  );
 }
 
 main()

@@ -1,4 +1,18 @@
-import { IsBoolean, IsEnum, IsInt, IsOptional, Max, Min } from 'class-validator';
+import {
+  IsBoolean,
+  IsEnum,
+  IsInt,
+  IsOptional,
+  Max,
+  Min,
+} from 'class-validator';
+import {
+  AutoSizeRecommendationModeDto,
+  FitPreferenceDto,
+  LengthUnitDto,
+  SizingRegionDto,
+  WeightUnitDto,
+} from './update-size-fit.dto';
 
 export enum SizeFitVisibilityDto {
   PUBLIC = 'PUBLIC',
@@ -29,4 +43,24 @@ export class UpdateSizeFitSettingsDto {
   @Min(14)
   @Max(90)
   requireUpdateEveryDays?: number;
+
+  @IsOptional()
+  @IsEnum(LengthUnitDto)
+  preferredLengthUnit?: LengthUnitDto;
+
+  @IsOptional()
+  @IsEnum(WeightUnitDto)
+  preferredWeightUnit?: WeightUnitDto;
+
+  @IsOptional()
+  @IsEnum(FitPreferenceDto)
+  fitPreference?: FitPreferenceDto;
+
+  @IsOptional()
+  @IsEnum(SizingRegionDto)
+  preferredSizingRegion?: SizingRegionDto;
+
+  @IsOptional()
+  @IsEnum(AutoSizeRecommendationModeDto)
+  autoSizeRecommendation?: AutoSizeRecommendationModeDto;
 }
