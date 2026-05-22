@@ -4,6 +4,7 @@ import { PrismaService } from 'src/prisma/prisma.service';
 import { ConfigService } from '@nestjs/config';
 import { SystemConfigService } from 'src/admin/system-config/system-config.service';
 import { ImageProcessingQueueService } from 'src/queue/image-processing.queue.service';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
 jest.mock('@aws-sdk/s3-request-presigner', () => ({
   getSignedUrl: jest.fn().mockResolvedValue('signed-url'),
@@ -13,6 +14,8 @@ describe('ImageService', () => {
   let service: UploadService;
 
   beforeEach(async () => {
+    (getSignedUrl as jest.Mock).mockClear();
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         UploadService,
@@ -118,6 +121,35 @@ describe('ImageService', () => {
     await expect(service.getPublicSignedUrl('file_1')).resolves.toBe('signed-url');
   });
 
+  it('returns stable external public URLs without signing missing S3 fixture keys', async () => {
+    (service as any).prisma = {
+      fileUpload: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'file_1',
+          s3Key: 'e2e/bagging/custom-design.jpg',
+          s3Url: 'https://images.example/look.jpg',
+          processingStatus: 'READY',
+          originalDeletedAt: null,
+          isPublic: true,
+          collectionMedias: [
+            {
+              collection: {
+                status: 'PUBLISHED',
+                visibility: 'PUBLIC',
+                deletedAt: null,
+              },
+            },
+          ],
+        }),
+      },
+    };
+
+    await expect(service.getPublicSignedUrl('file_1')).resolves.toBe(
+      'https://images.example/look.jpg',
+    );
+    expect(getSignedUrl).not.toHaveBeenCalled();
+  });
+
   it('allows public URL fallback for ready profile identity media', async () => {
     (service as any).prisma = {
       fileUpload: {
@@ -154,6 +186,31 @@ describe('ImageService', () => {
     };
 
     await expect(service.getPublicSignedUrl('old_avatar_1')).resolves.toBeNull();
+  });
+
+  it('batch public URL resolution prefers stable external URLs before signing', async () => {
+    (service as any).prisma = {
+      fileUpload: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            id: 'file_1',
+            s3Key: 'e2e/bagging/custom-design.jpg',
+            s3Url: 'https://images.example/look.jpg',
+          },
+          {
+            id: 'file_2',
+            s3Key: 'POST_IMAGE/user/file.jpg',
+            s3Url: 'https://test-bucket.s3.us-east-1.amazonaws.com/POST_IMAGE/user/file.jpg',
+          },
+        ]),
+      },
+    };
+
+    const result = await service.getBatchPublicSignedUrls(['file_1', 'file_2']);
+
+    expect(result.get('file_1')).toBe('https://images.example/look.jpg');
+    expect(result.get('file_2')).toBe('signed-url');
+    expect(getSignedUrl).toHaveBeenCalledTimes(1);
   });
 
   it('marks verified presigned uploads READY and enqueues variant generation without blocking display', async () => {

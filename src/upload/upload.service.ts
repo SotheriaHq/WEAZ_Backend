@@ -176,14 +176,34 @@ export class UploadService {
     );
   }
 
-  getPublicDisplayUrl(file: { s3Url?: string | null; s3Key?: string | null; isPublic?: boolean | null }): string | null {
-    const key = typeof file.s3Key === 'string' ? file.s3Key.trim() : '';
+  private getConfiguredPublicBaseUrl(): string | null {
     const configuredBase =
       this.configService.get<string>('MEDIA_PUBLIC_BASE_URL') ??
       this.configService.get<string>('CDN_PUBLIC_BASE_URL') ??
       this.configService.get<string>('CLOUDFRONT_PUBLIC_BASE_URL') ??
       this.configService.get<string>('CLOUDFRONT_URL');
-    const publicBase = configuredBase?.trim().replace(/\/+$/, '');
+    return configuredBase?.trim().replace(/\/+$/, '') || null;
+  }
+
+  private getStablePublicDisplayUrl(file: { s3Url?: string | null; s3Key?: string | null }): string | null {
+    const key = typeof file.s3Key === 'string' ? file.s3Key.trim() : '';
+    const publicBase = this.getConfiguredPublicBaseUrl();
+
+    if (publicBase && key) {
+      return `${publicBase}/${this.encodeS3KeyForUrl(key)}`;
+    }
+
+    const directUrl = typeof file.s3Url === 'string' ? file.s3Url.trim() : '';
+    if (directUrl && !this.isRawS3ObjectUrl(directUrl)) {
+      return directUrl;
+    }
+
+    return null;
+  }
+
+  getPublicDisplayUrl(file: { s3Url?: string | null; s3Key?: string | null; isPublic?: boolean | null }): string | null {
+    const key = typeof file.s3Key === 'string' ? file.s3Key.trim() : '';
+    const publicBase = this.getConfiguredPublicBaseUrl();
 
     if (publicBase && key) {
       return `${publicBase}/${this.encodeS3KeyForUrl(key)}`;
@@ -650,6 +670,11 @@ export class UploadService {
       return null;
     }
 
+    const stablePublicUrl = this.getStablePublicDisplayUrl(file);
+    if (stablePublicUrl) {
+      return stablePublicUrl;
+    }
+
     const command = new GetObjectCommand({
       Bucket: this.bucketName,
       Key: file.s3Key,
@@ -728,6 +753,14 @@ export class UploadService {
       return null;
     }
 
+    const stablePublicUrl = this.getStablePublicDisplayUrl({
+      s3Key: normalizedKey,
+      s3Url: directFile?.s3Url,
+    });
+    if (stablePublicUrl) {
+      return stablePublicUrl;
+    }
+
     const command = new GetObjectCommand({
       Bucket: this.bucketName,
       Key: normalizedKey,
@@ -747,7 +780,7 @@ export class UploadService {
     }
     const files = await this.prisma.fileUpload.findMany({
       where: { id: { in: fileIds } },
-      select: { id: true, s3Key: true },
+      select: { id: true, s3Key: true, s3Url: true },
     });
 
     const urlMap = new Map<string, string>();
@@ -757,6 +790,11 @@ export class UploadService {
       const chunk = files.slice(i, i + chunkSize);
       const results = await Promise.all(
         chunk.map(async (file) => {
+          const stablePublicUrl = this.getStablePublicDisplayUrl(file);
+          if (stablePublicUrl) {
+            return [file.id, stablePublicUrl] as const;
+          }
+
           const command = new GetObjectCommand({
             Bucket: this.bucketName,
             Key: file.s3Key,
