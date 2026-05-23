@@ -26,6 +26,10 @@
 
 [Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
 
+## Architecture documentation
+
+- [Feed and market implementation guide](docs/feeds/threadly_feed_market_docs/00-index.md)
+
 ## Installation
 
 ```bash
