@@ -1,18 +1,49 @@
 import { DesignResponseDto } from '../dto/design-response.dto';
 
 export class DesignResponseMapper {
+  private static sanitizePrivateMedia(media: any): any {
+    const file = media?.file;
+    if (!file || file.isPublic !== false) return media;
+
+    const sanitizedVariants = Array.isArray(file.variants)
+      ? file.variants.map((variant: any) => ({
+          ...variant,
+          s3Key: null,
+          s3Url: null,
+          url: null,
+        }))
+      : file.variants;
+
+    return {
+      ...media,
+      s3Key: null,
+      s3Url: null,
+      url: null,
+      file: {
+        ...file,
+        s3Key: null,
+        s3Url: null,
+        url: null,
+        variants: sanitizedVariants,
+      },
+    };
+  }
+
   static fromExplicitDesign(source: any): DesignResponseDto {
     if (!source) return source;
 
     const designId = source.designId ?? source.id;
     const legacyCollectionId = source.legacyCollectionId ?? null;
     const medias = Array.isArray(source.medias)
-      ? source.medias.map((media: any) => ({
-          ...media,
-          collectionMediaId:
-            media.collectionMediaId ?? media.legacyCollectionMediaId ?? null,
-          fileUploadId: media.fileUploadId ?? media.file?.id ?? null,
-        }))
+      ? source.medias.map((media: any) => {
+          const safeMedia = this.sanitizePrivateMedia(media);
+          return {
+            ...safeMedia,
+            collectionMediaId:
+              safeMedia.collectionMediaId ?? safeMedia.legacyCollectionMediaId ?? null,
+            fileUploadId: safeMedia.fileUploadId ?? safeMedia.file?.id ?? null,
+          };
+        })
       : [];
     const appliedFilters = Array.isArray(source.filters)
       ? source.filters

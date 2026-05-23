@@ -93,4 +93,53 @@ describe('DesignResponseMapper', () => {
       }),
     );
   });
+
+  it('keeps private explicit design media owner-gated by omitting direct storage URLs', () => {
+    const result = DesignResponseMapper.fromExplicitDesign({
+      id: 'design-private',
+      medias: [
+        {
+          id: 'design-media-private',
+          fileUploadId: 'file-private',
+          s3Url: 'https://bucket.example/private-file.png',
+          file: {
+            id: 'file-private',
+            isPublic: false,
+            s3Key: 'POST_IMAGE/user/private-file.png',
+            s3Url: 'https://bucket.example/private-file.png',
+            variants: [
+              {
+                id: 'variant-private',
+                s3Key: 'POST_IMAGE/user/private-file-card.webp',
+                s3Url: 'https://bucket.example/private-file-card.webp',
+              },
+            ],
+          },
+        },
+      ],
+    });
+    const media = result.medias?.[0] as any;
+
+    expect(media).toEqual(
+      expect.objectContaining({
+        fileUploadId: 'file-private',
+        s3Key: null,
+        s3Url: null,
+      }),
+    );
+    expect(media?.file).toEqual(
+      expect.objectContaining({
+        id: 'file-private',
+        isPublic: false,
+        s3Key: null,
+        s3Url: null,
+      }),
+    );
+    expect(media?.file?.variants?.[0]).toEqual(
+      expect.objectContaining({
+        s3Key: null,
+        s3Url: null,
+      }),
+    );
+  });
 });

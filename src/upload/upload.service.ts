@@ -386,6 +386,50 @@ export class UploadService {
     return `http://localhost:${port}`;
   }
 
+  private isProductionRuntime(): boolean {
+    return (
+      String(this.configService.get<string>('NODE_ENV') ?? '')
+        .trim()
+        .toLowerCase() === 'production'
+    );
+  }
+
+  private isPrivateNetworkHost(hostname: string): boolean {
+    const normalized = hostname.trim().toLowerCase();
+    if (
+      normalized === 'localhost' ||
+      normalized === '127.0.0.1' ||
+      normalized === '0.0.0.0' ||
+      normalized === '::1' ||
+      normalized.startsWith('10.') ||
+      normalized.startsWith('192.168.')
+    ) {
+      return true;
+    }
+
+    const match = normalized.match(/^172\.(\d{1,2})\./);
+    if (!match) return false;
+    const secondOctet = Number(match[1]);
+    return secondOctet >= 16 && secondOctet <= 31;
+  }
+
+  private getLocalDevSignedDisplayUrl(file: { s3Url?: string | null }): string | null {
+    if (this.isProductionRuntime()) return null;
+
+    const directUrl = typeof file.s3Url === 'string' ? file.s3Url.trim() : '';
+    if (!directUrl) return null;
+
+    try {
+      const parsed = new URL(directUrl);
+      if (!['http:', 'https:'].includes(parsed.protocol)) return null;
+      if (!parsed.pathname.startsWith('/uploads/')) return null;
+      if (!this.isPrivateNetworkHost(parsed.hostname)) return null;
+      return directUrl;
+    } catch {
+      return null;
+    }
+  }
+
   private async uploadFileToLocalDisk(
     file: Express.Multer.File,
     userId: string,
@@ -626,6 +670,11 @@ export class UploadService {
     if (!this.isReadyStoredFile(file)) {
       this.logger.warn(`[media] signed-url denied for unavailable file fileId=${fileId}`);
       throw new BadRequestException('File not available');
+    }
+
+    const localDevUrl = this.getLocalDevSignedDisplayUrl(file);
+    if (localDevUrl) {
+      return localDevUrl;
     }
 
     const command = new GetObjectCommand({

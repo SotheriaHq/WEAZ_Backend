@@ -96,6 +96,53 @@ describe('ImageService', () => {
     );
   });
 
+  it('returns owner-gated local disk upload URLs for non-production signed media validation', async () => {
+    (service as any).prisma = {
+      fileUpload: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: 'file_1',
+          s3Key: 'POST_IMAGE/user_1/file_1.png',
+          s3Url: 'http://localhost:3040/uploads/POST_IMAGE/user_1/file_1.png',
+          processingStatus: 'READY',
+          originalDeletedAt: null,
+          userId: 'user_1',
+        }),
+      },
+    };
+
+    await expect(service.getSignedUrl('file_1', 'user_1')).resolves.toBe(
+      'http://localhost:3040/uploads/POST_IMAGE/user_1/file_1.png',
+    );
+    expect(getSignedUrl).not.toHaveBeenCalled();
+  });
+
+  it('keeps production signed media on the S3 presigned URL path', async () => {
+    const existingConfigService = (service as any).configService;
+    (service as any).configService = {
+      get: jest.fn((key: string) => {
+        if (key === 'NODE_ENV') return 'production';
+        return existingConfigService.get(key);
+      }),
+    };
+    (service as any).prisma = {
+      fileUpload: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: 'file_1',
+          s3Key: 'POST_IMAGE/user_1/file_1.png',
+          s3Url: 'http://localhost:3040/uploads/POST_IMAGE/user_1/file_1.png',
+          processingStatus: 'READY',
+          originalDeletedAt: null,
+          userId: 'user_1',
+        }),
+      },
+    };
+
+    await expect(service.getSignedUrl('file_1', 'user_1')).resolves.toBe(
+      'signed-url',
+    );
+    expect(getSignedUrl).toHaveBeenCalledTimes(1);
+  });
+
   it('allows public URL fallback for public published ready collection media', async () => {
     (service as any).prisma = {
       fileUpload: {
