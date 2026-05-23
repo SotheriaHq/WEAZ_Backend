@@ -46,7 +46,8 @@
     "seed:phase5c:private-media": "ts-node -r tsconfig-paths/register scripts/seed-phase5c-private-media.ts",
     "smoke:fresh-db-api": "ts-node -r tsconfig-paths/register scripts/smoke-fresh-db-api.ts",
     "seed": "prisma db seed",
-    "reset:all": "node scripts/reset-all-data.cjs"
+    "reset:all": "node scripts/reset-all-data.cjs",
+    "check:perf-regressions": "node scripts/check-perf-regressions.cjs"
   },
   "_moduleAliases": {
     "src": "dist"
