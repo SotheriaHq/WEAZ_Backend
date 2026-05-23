@@ -47,7 +47,8 @@
     "smoke:fresh-db-api": "ts-node -r tsconfig-paths/register scripts/smoke-fresh-db-api.ts",
     "seed": "prisma db seed",
     "reset:all": "node scripts/reset-all-data.cjs",
-    "check:perf-regressions": "node scripts/check-perf-regressions.cjs"
+    "check:perf-regressions": "node scripts/check-perf-regressions.cjs",
+    "ci:phase8": "npm test -- src/upload/upload.service.spec.ts src/designs/mappers/design-response.mapper.spec.ts --runInBand && npm run build && npm run check:perf-regressions"
   },
   "_moduleAliases": {
     "src": "dist"
