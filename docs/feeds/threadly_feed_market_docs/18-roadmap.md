@@ -118,7 +118,32 @@ Deferred from Phase 4:
 - non-personalized toggle UI;
 - durable mobile offline queue.
 
-## Phase 5 - Context-aware market suggestion blocks
+## Phase 5 - Migration QA, feature flag/rollback plan, and ranking gate acceptance
+
+Status: Phase 5 gate documentation added on 2026-05-24. Ranking remains disabled.
+
+- re-audit Phase 4 artifacts and confirm aggregate tables are not used for feed or market ordering;
+- harden migration QA instructions for the Phase 3 and Phase 4 aggregate migrations;
+- define disabled-by-default ranking feature flags and deterministic fallback behavior;
+- define rollback triggers, owner placeholders, and kill-switch behavior;
+- define backend, product, and infrastructure monitoring requirements;
+- define the Redis/BullMQ decision gate before high-volume ranking;
+- keep `/market/sections`, `/market/sections/:key`, feed output, and market ordering deterministic/non-personalized.
+
+Outcome:
+- `docs/market-ranking-release-plan.md` defines the release gate, feature flags, rollout stages, rollback behavior, owner placeholders, monitoring requirements, kill switch, and Redis/BullMQ decision gate;
+- `docs/market-signal-aggregation-qa-checklist.md` now includes exact aggregate migration order, backup requirements, `migrate deploy` guidance, post-migration SQL checks, rollback notes, advisory-lock guidance, and a destructive-reset warning;
+- local validation still reports the two aggregate migrations as pending until they are applied through the normal development or QA/UAT deploy path;
+- ranking implementation remains blocked until aggregate migrations are applied in QA/UAT, feature flags are implemented and tested, owner placeholders are replaced, monitoring is ready, and rollback is rehearsed.
+
+Deferred from Phase 5:
+- signal-driven market/feed ranking;
+- context-aware product/detail suggestion blocks;
+- Redis/BullMQ market signal worker;
+- admin ranking governance UI;
+- durable mobile offline queue.
+
+## Future phase - Context-aware market suggestion blocks
 
 - product detail suggestions;
 - collection detail suggestions;
@@ -127,9 +152,6 @@ Deferred from Phase 4:
 - new-brand reserved slots;
 - suggestion suppression;
 - suggestion analytics.
-
-Outcome:
-- market-related screens have context-aware suggestions.
 
 ## Phase 6 - User controls and admin governance
 

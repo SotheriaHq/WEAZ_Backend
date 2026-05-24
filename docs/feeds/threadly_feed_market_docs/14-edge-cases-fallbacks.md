@@ -136,3 +136,19 @@ Still deferred:
 - concurrent duplicate batch replay hardening under true race conditions;
 - queued retry/dead-letter handling;
 - aggregate-driven ranking rollout and rollback controls.
+
+## Phase 5 release-gate fallbacks - 2026-05-24
+
+Documented before ranking implementation:
+- ranking must be disabled by default;
+- deterministic Phase 1 section ordering must remain the fallback when ranking flags are off, aggregate reads fail, or latency exceeds threshold;
+- rollback must keep suppression filters active;
+- rollback must not delete raw signals, seen rows, suppressions, reset markers, or global aggregate counters;
+- empty-section spikes, repeated item spikes, one-brand domination, suppressed content appearing, aggregate query failures, user complaints, or error-rate increases must trigger rollback review;
+- signal ingestion can remain active during rollback only if it is healthy and not increasing database risk.
+
+Still deferred:
+- code-level ranking feature flags;
+- ranking shadow-mode implementation;
+- production monitoring dashboards and alerts;
+- Redis/BullMQ market signal worker and dead-letter handling.

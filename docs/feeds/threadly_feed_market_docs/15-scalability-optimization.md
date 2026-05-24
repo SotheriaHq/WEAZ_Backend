@@ -169,3 +169,22 @@ Redis/BullMQ status:
 - not implemented for market signals in Phase 4;
 - still recommended before high-volume production ranking uses signal volume;
 - current synchronous aggregation remains acceptable only as a bounded foundation and QA path.
+
+## Phase 5 release scalability gate - 2026-05-24
+
+Phase 5 keeps ranking disabled and defines the scalability controls required before aggregate-driven ranking can ship.
+
+Implemented in documentation:
+- `docs/market-ranking-release-plan.md` defines disabled-by-default ranking flags, shadow mode, deterministic fallback, rollout stages, rollback behavior, monitoring requirements, kill-switch behavior, and owner placeholders;
+- `docs/market-signal-aggregation-qa-checklist.md` defines the exact aggregate migration order, backup requirement, deployment command, post-migration SQL checks, rollback guidance, advisory-lock handling, and destructive-reset warning.
+
+Required before ranking:
+- apply both aggregate migrations in QA/UAT with `npx prisma migrate deploy`;
+- prove deterministic fallback when ranking flags are disabled or aggregate reads fail;
+- monitor `/market/sections` latency p50/p95/p99, aggregate read latency, aggregate query failures, empty section rate, fallback activation, suppression violations, signal ingestion, dedupe, aggregation failures, batch replays, repeated item rate, and brand concentration;
+- replace owner placeholders for engineering, product, and QA rollback decisions.
+
+Redis/BullMQ status:
+- still deferred for the market signal path;
+- current synchronous aggregation remains acceptable only for bounded QA and low-volume shadow mode;
+- queue/worker adoption becomes mandatory before high-volume ranking if signal volume, latency, database load, aggregate failures, or personalized-section count exceeds the thresholds in `docs/market-ranking-release-plan.md`.

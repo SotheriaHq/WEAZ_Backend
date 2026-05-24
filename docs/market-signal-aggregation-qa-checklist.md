@@ -1,16 +1,72 @@
 # Market Signal Aggregation QA Checklist
 
-Status: Phase 4 ranking-readiness checklist. Ranking is not live.
+Status: Phase 5 migration and ranking-release QA checklist. Ranking is not live.
 Date: 2026-05-24
 
-## Migration checklist
+## Migration execution checklist
 
+Required aggregate migrations, in order:
+
+1. `20260524150000_add_market_signal_idempotency_aggregation`
+2. `20260524170000_widen_market_signal_aggregate_key`
+
+Prerequisite:
+- `20260524120000_add_market_signal_suppression_foundation` must already be applied because it creates the Phase 2 signal, seen, suppression, and reset tables.
+
+Pre-migration requirements:
+- Take a QA/UAT database backup before applying either aggregate migration.
+- Confirm the application version being deployed contains both migration folders and the matching Prisma schema.
 - Confirm `npx prisma validate` passes.
 - Confirm `npx prisma generate` passes.
-- Confirm migrations through `20260524150000_add_market_signal_idempotency_aggregation` are applied in QA/UAT before aggregate QA.
-- Confirm `20260524170000_widen_market_signal_aggregate_key` is applied before max-length section/block/target signal testing.
-- Do not run destructive reset commands to clear advisory locks.
-- If local `migrate status` reports pending migrations because of advisory-lock timeout, apply through the normal deploy/UAT migration path once the lock clears.
+- Run `npx prisma migrate status` and record whether the two aggregate migrations are pending or already applied.
+- Do not run `prisma migrate reset`, manual table drops, or destructive reset commands to clear an advisory lock.
+
+Execution:
+- QA/UAT/deploy environments must use `npx prisma migrate deploy`.
+- Development environments may use the normal local workflow only after the advisory lock clears.
+- Apply the two aggregate migrations in timestamp order. Do not apply `20260524170000_widen_market_signal_aggregate_key` before `20260524150000_add_market_signal_idempotency_aggregation`.
+
+Post-migration validation:
+- Run `npx prisma migrate status` and confirm no pending migrations remain.
+- Run `npx prisma validate`.
+- Run `npx prisma generate`.
+- Verify `market_signal_batch_receipts` exists.
+- Verify `market_signal_aggregate_daily` exists.
+- Verify `market_signal_aggregate_daily.aggregateKey` is `VARCHAR(512)`.
+- Verify aggregate uniqueness exists for daily aggregate identity.
+- Run focused market signal, aggregation, suppression, and feed preference tests.
+
+Suggested SQL checks for QA/UAT:
+
+```sql
+SELECT to_regclass('public.market_signal_batch_receipts') AS batch_receipts_table;
+SELECT to_regclass('public.market_signal_aggregate_daily') AS aggregate_daily_table;
+
+SELECT character_maximum_length
+FROM information_schema.columns
+WHERE table_schema = 'public'
+  AND table_name = 'market_signal_aggregate_daily'
+  AND column_name = 'aggregateKey';
+
+SELECT indexname
+FROM pg_indexes
+WHERE schemaname = 'public'
+  AND tablename IN ('market_signal_batch_receipts', 'market_signal_aggregate_daily')
+ORDER BY tablename, indexname;
+```
+
+Rollback guidance:
+- If migration deployment fails before schema changes are applied, stop the rollout, keep ranking disabled, and redeploy the previous application version if needed.
+- If schema changes were applied and the application must roll back, restore from the pre-migration backup or use an explicitly reviewed forward-fix migration. Do not use destructive reset.
+- Signal ingestion can remain active only if raw signal writes and suppression filters still pass validation after rollback. Ranking must remain disabled.
+
+Advisory-lock handling:
+- If `npx prisma migrate status` or local apply reports a Prisma advisory-lock timeout, do not force reset the database.
+- Check for long-running local database sessions, stop the conflicting local process if safe, then rerun `npx prisma migrate status`.
+- For QA/UAT, use the deploy pipeline and database operational procedure to clear stale locks.
+- As of Phase 5 local validation on 2026-05-24, `npx prisma migrate status` still reports these migrations as pending locally:
+  - `20260524150000_add_market_signal_idempotency_aggregation`
+  - `20260524170000_widen_market_signal_aggregate_key`
 
 ## Signal ingestion checklist
 

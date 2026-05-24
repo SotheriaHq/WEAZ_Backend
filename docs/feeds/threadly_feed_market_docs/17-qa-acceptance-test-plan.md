@@ -251,3 +251,32 @@ Phase 4 validation must include:
 - `git diff --check`.
 
 Ranking remains deferred. These tests prove readiness of the signal pipeline, not personalized ordering.
+
+## Phase 5 release-gate QA - 2026-05-24
+
+Phase 5 does not implement ranking. It hardens the release gate that must pass before aggregate-driven ranking code is written or enabled.
+
+Docs added/updated:
+- `docs/market-ranking-release-plan.md`
+  - defines disabled-by-default ranking flags, shadow rollout, deterministic fallback, rollback triggers, owner placeholders, monitoring requirements, kill-switch behavior, and the Redis/BullMQ decision gate.
+- `docs/market-signal-aggregation-qa-checklist.md`
+  - now lists exact aggregate migration names, required order, backup requirement, `migrate deploy` path, post-migration SQL checks, rollback guidance, advisory-lock handling, and destructive-reset warning.
+
+Phase 5 validation must include:
+- `npx prisma validate`;
+- `npx prisma generate`;
+- `npx prisma migrate status`;
+- `npm run build`;
+- `git diff --check`;
+- patch terminology search for changed docs.
+
+Acceptance before ranking implementation:
+- QA/UAT has applied `20260524150000_add_market_signal_idempotency_aggregation`;
+- QA/UAT has applied `20260524170000_widen_market_signal_aggregate_key`;
+- feature flags are implemented and tested with ranking disabled by default;
+- deterministic fallback is proven when flags are disabled or aggregate reads fail;
+- monitoring exists for latency, aggregate read failures, empty sections, fallback activation, suppression violations, signal ingestion, dedupe, aggregation failures, repeated item rate, and brand concentration;
+- rollback owners are named and rollback is rehearsed.
+
+Current blocker:
+- local `npx prisma migrate status` still reports the two aggregate migrations pending. Do not use destructive reset to clear this; apply migrations through the normal development or deploy path once the advisory lock is clear.

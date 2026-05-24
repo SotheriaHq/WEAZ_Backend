@@ -424,3 +424,21 @@ Phase 4 hardening:
 - `MarketSignalAggregateDaily.aggregateKey` was widened to `VARCHAR(512)` because max-length aggregate inputs can exceed the original `VARCHAR(320)` budget.
 
 Ready for ranking implementation: **No** until the ranking design gate is accepted, aggregate migrations are applied in QA/UAT, a feature flag/rollback path exists, and production queue/monitoring decisions are made.
+
+## Phase 5 release-gate audit result - 2026-05-24
+
+Phase 5 re-audit confirmed:
+- ranking is still not live;
+- aggregate tables are not used by `MarketSectionService` to order `/market/sections` or `/market/sections/:key`;
+- market section output remains deterministic/non-personalized and suppression-aware where section item metadata supports filtering;
+- `FeedPreferencesService` reset behavior remains marker-based and does not delete raw signals, seen rows, suppressions, or global aggregate counters;
+- `MarketSignalAggregateDaily.aggregateKey` is `VARCHAR(512)` in Prisma schema and the widening migration;
+- local `npx prisma migrate status` still reports the two aggregate migrations pending:
+  - `20260524150000_add_market_signal_idempotency_aggregation`;
+  - `20260524170000_widen_market_signal_aggregate_key`.
+
+Phase 5 documentation changes:
+- `docs/market-ranking-release-plan.md` defines the feature flag strategy, rollout stages, rollback behavior, owner placeholders, monitoring requirements, kill-switch behavior, and Redis/BullMQ decision gate;
+- `docs/market-signal-aggregation-qa-checklist.md` now includes migration execution order, backup requirements, deploy commands, post-migration SQL checks, rollback guidance, advisory-lock handling, and destructive-reset warnings.
+
+Ready for ranking implementation: **No** until QA/UAT migrations are applied, disabled-by-default ranking flags are implemented and tested, deterministic fallback is proven, monitoring exists, owner placeholders are replaced, and rollback is rehearsed.

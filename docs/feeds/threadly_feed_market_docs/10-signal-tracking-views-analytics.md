@@ -289,3 +289,21 @@ Still not implemented:
 - aggregate-driven reordering;
 - Redis/BullMQ market signal worker;
 - ranking profile/formula admin governance.
+
+## Phase 5 release-gate result - 2026-05-24
+
+Phase 5 does not change signal capture, aggregation, or ranking behavior. It defines the release controls required before aggregates can influence ordering.
+
+Confirmed:
+- raw signals and aggregate counters remain a future-ranking foundation only;
+- aggregate tables are not read by market section ordering;
+- suppression and reset semantics remain unchanged;
+- the two aggregate migrations must be applied in QA/UAT before aggregate QA is complete.
+
+Release controls now documented:
+- ranking feature flags must default to disabled;
+- shadow mode must run before served ranking;
+- deterministic fallback must remain available on every ranked request;
+- signal ingestion may continue during rollback only while healthy;
+- aggregate-driven reads must stop when the kill switch is off;
+- Redis/BullMQ remains deferred until the thresholds in `docs/market-ranking-release-plan.md` require queue adoption.
