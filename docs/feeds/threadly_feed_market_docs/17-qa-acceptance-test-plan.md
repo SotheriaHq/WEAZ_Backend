@@ -301,3 +301,33 @@ Validation command:
 - `npm test -- market-ranking-config market-section --runInBand`
 
 Ranking remains deferred. These tests prove the feature-flag guardrail, not personalized ordering.
+
+## Phase 7 operational QA - 2026-05-24
+
+Phase 7 does not implement ranking. It documents the monitoring and rollback rehearsal gates that must pass before any aggregate-driven ranking implementation starts.
+
+Docs added/updated:
+- `docs/market-ranking-monitoring-plan.md`
+  - defines required metrics, dashboard filters, alert thresholds, log fields, fallback activation tracking, suppression violation monitoring, empty-section monitoring, repeated-item monitoring, brand concentration monitoring, aggregate read monitoring, signal ingest/dedupe monitoring, and owner placeholders.
+- `docs/market-ranking-rollback-rehearsal.md`
+  - defines QA/UAT prerequisites, baseline ranking flag values, enable/disable sequence, deterministic fallback expectations, aggregate read failure simulation plan, suppression verification, empty-section fallback verification, cache checks, pass/fail criteria, and rehearsal record template.
+- `docs/market-ranking-release-plan.md`
+  - now includes Phase 7 operational gate status.
+- `docs/market-signal-aggregation-qa-checklist.md`
+  - now includes Phase 7 migration, monitoring, and rollback-readiness checks.
+
+Phase 7 validation must include:
+- `npx prisma validate`;
+- `npx prisma generate`;
+- `npx prisma migrate status`;
+- `npm test -- market-ranking-config market-section --runInBand` if no code changed but fallback tests remain the closest focused coverage;
+- `npm run build`;
+- `git diff --check`;
+- patch terminology search for changed docs.
+
+Acceptance before ranking implementation:
+- QA/UAT applies the pending aggregate migrations;
+- monitoring dashboard and alert thresholds are available or an approved QA/UAT manual substitute exists;
+- owner placeholders are replaced or explicitly carried as release blockers;
+- rollback rehearsal is executed and passes;
+- ranking remains disabled until those gates are complete.

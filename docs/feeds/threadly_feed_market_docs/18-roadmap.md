@@ -165,6 +165,28 @@ Deferred from Phase 6:
 - admin ranking governance UI;
 - durable mobile offline queue.
 
+## Phase 7 - QA/UAT migration, monitoring, and rollback rehearsal
+
+Status: Phase 7 gate documentation added on 2026-05-24. Ranking remains disabled.
+
+- re-audit aggregate migration readiness;
+- document monitoring dashboard, alert, and logging requirements;
+- document rollback rehearsal sequence and pass/fail criteria;
+- keep `/market/sections`, `/market/sections/:key`, feed output, and market ordering deterministic/non-personalized;
+- keep Redis/BullMQ deferred for the market signal path.
+
+Outcome:
+- `docs/market-ranking-monitoring-plan.md` defines required metrics, dashboard filters, alert thresholds, log fields, fallback activation tracking, suppression violation monitoring, empty-section monitoring, repeated-item monitoring, brand concentration monitoring, aggregate read monitoring, signal ingest/dedupe monitoring, and owner placeholders;
+- `docs/market-ranking-rollback-rehearsal.md` defines QA/UAT prerequisites, baseline flags, enable/disable sequence, deterministic fallback expectations, aggregate read failure simulation, suppression verification, empty-section fallback verification, cache checks, pass/fail criteria, and rehearsal record template;
+- `docs/market-ranking-release-plan.md` and `docs/market-signal-aggregation-qa-checklist.md` now reflect Phase 7 operational blockers.
+
+Deferred from Phase 7:
+- signal-driven market/feed ranking;
+- aggregate reads for served ordering;
+- monitoring dashboard implementation;
+- Redis/BullMQ market signal worker;
+- admin ranking governance UI.
+
 ## Future phase - Context-aware market suggestion blocks
 
 - product detail suggestions;
@@ -188,7 +210,7 @@ Deferred from Phase 6:
 Outcome:
 - production governance and user control.
 
-## Phase 7 - Optimization and fairness
+## Future phase - Optimization and fairness
 
 - aggregate jobs;
 - velocity scoring;

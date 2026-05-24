@@ -1,6 +1,6 @@
 # Market Signal Aggregation QA Checklist
 
-Status: Phase 5 migration and ranking-release QA checklist. Ranking is not live.
+Status: Phase 7 migration, monitoring, and rollback-readiness QA checklist. Ranking is not live.
 Date: 2026-05-24
 
 ## Migration execution checklist
@@ -64,7 +64,7 @@ Advisory-lock handling:
 - If `npx prisma migrate status` or local apply reports a Prisma advisory-lock timeout, do not force reset the database.
 - Check for long-running local database sessions, stop the conflicting local process if safe, then rerun `npx prisma migrate status`.
 - For QA/UAT, use the deploy pipeline and database operational procedure to clear stale locks.
-- As of Phase 5 local validation on 2026-05-24, `npx prisma migrate status` still reports these migrations as pending locally:
+- As of Phase 7 local validation on 2026-05-24, `npx prisma migrate status` still reports these migrations as pending locally:
   - `20260524150000_add_market_signal_idempotency_aggregation`
   - `20260524170000_widen_market_signal_aggregate_key`
 
@@ -152,6 +152,9 @@ Advisory-lock handling:
 - Aggregate update failure that blocks signal ingestion.
 - User reset deleting global aggregate counters.
 - Personalized/ranked output shipping without a feature flag and fallback.
+- Monitoring dashboard and alert thresholds not implemented or not verified in QA/UAT.
+- Rollback rehearsal not executed after aggregate migrations are applied.
+- `<engineering-owner>`, `<product-owner>`, and `<qa-owner>` placeholders not replaced or explicitly accepted as release blockers.
 
 ## Phase 6 ranking flag checklist
 
@@ -164,3 +167,27 @@ Advisory-lock handling:
 - `/market/sections` remains deterministic with `MARKET_RANKING_ENABLED=true` until ranking implementation exists.
 - Suppression filtering still applies after flag wiring.
 - Cache headers remain `Cache-Control: private, no-store`.
+
+## Phase 7 operational readiness checklist
+
+Migration readiness:
+- `npx prisma validate` passes.
+- `npx prisma generate` passes.
+- `npx prisma migrate status` is recorded before QA/UAT rollout.
+- QA/UAT applies the pending aggregate migrations with `npx prisma migrate deploy`.
+- No destructive reset is used to clear local advisory locks or pending migration state.
+
+Monitoring readiness:
+- `docs/market-ranking-monitoring-plan.md` is reviewed and accepted.
+- Dashboard requirements cover market latency, aggregate read latency/failures, empty sections, fallback activation, suppression violations, repeated items, brand concentration, signal ingest, dedupe, aggregation failures, and batch replays.
+- Alert thresholds are configured in the chosen observability stack or a documented manual substitute exists for QA/UAT.
+- Required log fields include request ID, section key, ranking flags, fallback reason, aggregate read timing, suppression counts, repeated item count, top-brand share, duration, status code, and deployment ID.
+
+Rollback rehearsal readiness:
+- `docs/market-ranking-rollback-rehearsal.md` is reviewed and accepted.
+- Baseline flag values keep ranking disabled and deterministic fallback enabled.
+- QA/UAT captures baseline `/market/sections` and `/market/sections/:key` responses before any flag rehearsal.
+- Suppressed-content verification passes during the rehearsal.
+- Empty-section fallback behavior is verified during the rehearsal.
+- Cache headers remain private/no-store.
+- Rehearsal result is recorded with environment, deployment ID, migration status, flags, fallback evidence, monitoring evidence, pass/fail result, and owner sign-off.

@@ -453,3 +453,22 @@ Phase 6 implementation confirmed:
 - tests prove default disabled ranking config, safe invalid value handling, bounded section keys, deterministic fallback when ranking is disabled, deterministic fallback if ranking is enabled before implementation exists, suppression filtering, and cache headers.
 
 Ready for ranking implementation: **No**. Phase 6 closes the code-level flag foundation only. Remaining blockers are QA/UAT aggregate migrations, owner placeholders, monitoring dashboard, rollback rehearsal, and actual ranking implementation behind the disabled-by-default flags.
+
+## Phase 7 operational readiness audit result - 2026-05-24
+
+Phase 7 re-audit confirmed:
+- ranking remains disabled;
+- `/market/sections` and `/market/sections/:key` still serve deterministic ordering;
+- aggregate tables are not read for served ordering;
+- pending aggregate migrations remain locally:
+  - `20260524150000_add_market_signal_idempotency_aggregation`;
+  - `20260524170000_widen_market_signal_aggregate_key`;
+- `npx prisma validate` and `npx prisma generate` pass against the current schema;
+- QA/UAT must apply pending migrations with `npx prisma migrate deploy` before aggregate QA or rollback rehearsal.
+
+Phase 7 documentation changes:
+- `docs/market-ranking-monitoring-plan.md` specifies required metrics, dashboard filters, alert thresholds, log fields, fallback tracking, suppression violation monitoring, empty-section monitoring, repeated-item monitoring, brand concentration monitoring, aggregate read monitoring, signal ingest/dedupe monitoring, and owner placeholders;
+- `docs/market-ranking-rollback-rehearsal.md` specifies the QA/UAT rehearsal prerequisites, flag sequence, deterministic fallback expectations, aggregate read failure simulation plan, suppression verification, empty-section fallback verification, cache checks, owner placeholders, and pass/fail criteria;
+- `docs/market-ranking-release-plan.md` and `docs/market-signal-aggregation-qa-checklist.md` now include Phase 7 status and remaining operational blockers.
+
+Ready for ranking implementation: **No**. Phase 7 closes documentation for monitoring and rollback rehearsal only. Remaining blockers are applying QA/UAT migrations, provisioning monitoring/alerts, replacing owner placeholders, executing and passing rollback rehearsal, and then implementing ranking behind disabled-by-default flags.

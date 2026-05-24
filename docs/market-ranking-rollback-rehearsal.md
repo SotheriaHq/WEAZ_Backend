@@ -1,0 +1,180 @@
+# Market Ranking Rollback Rehearsal
+
+Status: Phase 7 rollback rehearsal plan. Ranking is disabled.
+Date: 2026-05-24
+
+## Purpose
+
+Define the QA/UAT rehearsal that proves Threadly can disable future market ranking and return to deterministic fallback without breaking market rendering, suppressions, or signal ingestion.
+
+This plan does not enable ranking, implement ranking, query aggregates for served ordering, or add Redis/BullMQ.
+
+## Prerequisites
+
+- QA/UAT database backup exists.
+- Aggregate migrations are applied in QA/UAT:
+  - `20260524150000_add_market_signal_idempotency_aggregation`
+  - `20260524170000_widen_market_signal_aggregate_key`
+- `npx prisma migrate status` reports no pending migrations in QA/UAT.
+- `npx prisma validate` passes.
+- `npx prisma generate` passes.
+- `npm run build` passes.
+- Monitoring dashboard from `docs/market-ranking-monitoring-plan.md` exists or is represented by a documented manual substitute for rehearsal.
+- Owner placeholders are assigned or explicitly accepted as release blockers:
+  - `<engineering-owner>`
+  - `<product-owner>`
+  - `<qa-owner>`
+
+## Feature flag values before rehearsal
+
+Baseline values:
+
+```text
+MARKET_RANKING_ENABLED=false
+MARKET_RANKING_SHADOW_MODE=true
+MARKET_RANKING_SECTION_KEYS=
+MARKET_RANKING_MAX_PERSONALIZED_SECTIONS=1
+MARKET_RANKING_FALLBACK_DETERMINISTIC=true
+MARKET_RANKING_EXPLORATION_PERCENT=10
+MARKET_RANKING_BRAND_MAX_SHARE=35
+MARKET_RANKING_AGGREGATE_TIMEOUT_MS=150
+```
+
+Expected baseline behavior:
+- `/market/sections` serves deterministic V1 ordering.
+- `/market/sections/:key` serves deterministic V1 ordering.
+- response metadata remains `ranking: deterministic-v1` and `personalization: disabled`.
+- suppressions still filter eligible output.
+- signal ingestion can continue independently.
+
+## Rehearsal sequence
+
+1. Confirm clean build and migration status.
+2. Capture baseline `/market/sections` response with ranking disabled.
+3. Capture baseline `/market/sections/fresh-drops` response with ranking disabled.
+4. Create or use an existing QA suppression for one visible product/brand/category.
+5. Confirm suppressed content is excluded from `/market/sections`.
+6. Set `MARKET_RANKING_ENABLED=true` in the QA runtime only if the runtime supports non-production env changes.
+7. Keep ranking implementation absent. This should still return deterministic fallback because Phase 6 does not implement ranking.
+8. Confirm `/market/sections` response remains deterministic and suppression-aware.
+9. Set `MARKET_RANKING_ENABLED=false`.
+10. Confirm response remains deterministic and stable after rollback.
+11. Record fallback activation metrics or manual evidence.
+12. Restore baseline env values.
+
+If env changes require deployment, use a QA-only deployment and record commit/deployment ID. Do not run this against production without explicit release approval.
+
+## Enable/disable expectations
+
+When `MARKET_RANKING_ENABLED=false`:
+- deterministic ordering is served;
+- aggregate reads for ordering do not run;
+- suppressions still apply;
+- cache remains private/no-store;
+- no user-visible error is shown.
+
+When `MARKET_RANKING_ENABLED=true` before ranking exists:
+- deterministic fallback remains served;
+- aggregate reads for ordering do not run;
+- response metadata remains deterministic/non-personalized;
+- no shadow-ranked result is served.
+
+## Aggregate read failure simulation plan
+
+Current Phase 7 state does not read aggregates for ordering, so there is no production aggregate-read failure path to trigger.
+
+For rehearsal:
+- use tests or manual inspection to confirm `marketSignalAggregateDaily` is not called by market section serving;
+- document this as the expected pre-ranking behavior;
+- once ranking implementation exists, simulate aggregate read failure by forcing the aggregate reader to timeout or throw in QA and verify deterministic fallback.
+
+Do not break the QA database, revoke schema permissions, or drop aggregate tables to simulate failure.
+
+## Suppressed content verification
+
+Verify with one of:
+
+- authenticated QA user suppression;
+- anonymous QA session suppression;
+- seeded suppression fixture.
+
+Required checks:
+- item suppression removes matching target;
+- brand suppression removes matching brand items;
+- category suppression removes matching category items where metadata exists;
+- section suppression hides the matching section;
+- deleting suppression restores eligibility.
+
+Any suppressed content appearing in market output fails the rehearsal.
+
+## Empty-section fallback verification
+
+Verify:
+
+- empty sections are hidden safely on market home;
+- section detail returns bounded pagination or a controlled empty list;
+- no broken cards are returned;
+- no unhandled exception occurs;
+- deterministic fallback remains available when ranking flags are disabled.
+
+## Cache and response verification
+
+Required:
+- `/market/sections` returns `Cache-Control: private, no-store`;
+- `/market/sections/:key` returns `Cache-Control: private, no-store`;
+- metadata remains deterministic/non-personalized until ranking is implemented;
+- no ranked or personalized claim is returned.
+
+## Rollback owner placeholders
+
+| Responsibility | Owner |
+|---|---|
+| Start rehearsal | `<qa-owner>` |
+| Change ranking flags | `<engineering-owner>` |
+| Approve product quality after rehearsal | `<product-owner>` |
+| Decide rollback during incident | `<engineering-owner>` |
+| Communicate user-facing incident if needed | `<product-owner>` |
+
+Owner placeholders must be replaced before production rollout.
+
+## Pass criteria
+
+- QA/UAT migrations are applied.
+- Deterministic baseline responses are captured.
+- Ranking flag disable path returns deterministic output.
+- Ranking flag enable-before-implementation still returns deterministic output.
+- Suppressions remain respected.
+- Empty sections hide or fall back safely.
+- Cache headers remain private/no-store.
+- Fallback activation can be observed or manually recorded.
+- Owner placeholders are resolved or explicitly listed as blockers.
+
+## Fail criteria
+
+- Any ranking flag changes served ordering before approved ranking implementation.
+- Any aggregate table is read for served ordering before ranking implementation.
+- Suppressed content appears.
+- Empty sections return broken cards.
+- Cache headers become public/cacheable.
+- Rollback requires code revert instead of flag disable.
+- Owner placeholders remain unresolved for production release.
+
+## Rehearsal record template
+
+```text
+Date:
+Environment:
+Deployment ID:
+Database backup ID:
+Migrate status result:
+Ranking flags before:
+Ranking flags during:
+Ranking flags after:
+Baseline sections captured:
+Suppression fixture:
+Fallback evidence:
+Monitoring evidence:
+Pass/Fail:
+Owner sign-off:
+Notes:
+```

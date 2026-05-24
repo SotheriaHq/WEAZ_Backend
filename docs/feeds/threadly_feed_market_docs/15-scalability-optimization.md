@@ -203,3 +203,23 @@ Remaining scalability blockers before ranking:
 - apply pending aggregate migrations in QA/UAT;
 - add monitoring for aggregate read latency and fallback activation;
 - keep Redis/BullMQ deferred until the release-plan thresholds require queue adoption.
+
+## Phase 7 operational scalability gate - 2026-05-24
+
+Phase 7 keeps ranking disabled and documents the operational controls required before aggregate-driven ranking can be implemented or enabled.
+
+Implemented in documentation:
+- `docs/market-ranking-monitoring-plan.md` defines dashboard requirements, alert thresholds, log fields, fallback activation tracking, suppression violation monitoring, empty-section monitoring, repeated-item monitoring, brand concentration monitoring, aggregate read latency monitoring, signal ingest/dedupe monitoring, and owner placeholders;
+- `docs/market-ranking-rollback-rehearsal.md` defines the QA/UAT rehearsal sequence for proving deterministic fallback, suppression preservation, empty-section fallback, cache safety, and flag-based rollback behavior.
+
+Confirmed:
+- aggregate tables are still not read for served ordering;
+- `/market/sections` and `/market/sections/:key` remain deterministic;
+- Redis/BullMQ remains deferred for the market signal path;
+- local migration status still reports the two aggregate migrations pending.
+
+Remaining scalability blockers before ranking:
+- apply pending aggregate migrations in QA/UAT with `npx prisma migrate deploy`;
+- provision monitoring dashboards and alerts in the chosen observability stack;
+- replace owner placeholders;
+- execute and pass rollback rehearsal.

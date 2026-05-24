@@ -1,6 +1,6 @@
 # Market Ranking Release Plan
 
-Status: Phase 6 flag foundation. Ranking is currently disabled.
+Status: Phase 7 operational readiness gate. Ranking is currently disabled.
 Date: 2026-05-24
 
 ## 1. Purpose
@@ -16,6 +16,7 @@ This document is a release gate, not a ranking implementation. It must be accept
 - Raw market/feed signals are captured through bounded batch ingestion.
 - Daily aggregates exist as a foundation for future ranking.
 - Phase 6 adds code-level env ranking flags through `MarketRankingConfigService`.
+- Phase 7 adds monitoring and rollback rehearsal specifications; it does not enable ranking.
 - Redis/BullMQ is deferred for the market signal path.
 - The Phase 3 and Phase 4 aggregate migrations must be applied in QA/UAT before aggregate QA is considered complete.
 
@@ -235,3 +236,33 @@ Still not implemented:
 - shadow-ranked response generation;
 - admin flag UI;
 - Redis/BullMQ market ranking worker.
+
+## 14. Phase 7 operational gate
+
+Phase 7 adds the operational evidence required before ranking implementation can start. It does not change served ordering, read aggregate tables for `/market/sections`, or enable personalization.
+
+Added:
+- `docs/market-ranking-monitoring-plan.md`;
+- `docs/market-ranking-rollback-rehearsal.md`.
+
+Migration status:
+- local validation on 2026-05-24 still reports these migrations as pending:
+  - `20260524150000_add_market_signal_idempotency_aggregation`;
+  - `20260524170000_widen_market_signal_aggregate_key`;
+- QA/UAT must apply them with `npx prisma migrate deploy`;
+- destructive reset remains forbidden.
+
+Monitoring status:
+- required dashboard metrics, alert thresholds, log fields, fallback tracking, suppression violation monitoring, empty-section monitoring, repeated-item monitoring, brand concentration monitoring, aggregate read monitoring, and signal ingest/dedupe monitoring are specified;
+- dashboards and alerts are not implemented in this repository.
+
+Rollback rehearsal status:
+- the QA/UAT rehearsal now defines baseline flags, enable/disable sequence, expected deterministic fallback behavior, aggregate read failure simulation, suppression verification, empty-section verification, cache checks, and pass/fail criteria;
+- the rehearsal is not complete until it runs in QA/UAT after the pending aggregate migrations are applied.
+
+Remaining release blockers:
+- apply both aggregate migrations in QA/UAT;
+- implement or provision the monitoring dashboard and alerts;
+- replace `<engineering-owner>`, `<product-owner>`, and `<qa-owner>`;
+- execute and pass rollback rehearsal;
+- keep ranking disabled until the above gates are complete.
