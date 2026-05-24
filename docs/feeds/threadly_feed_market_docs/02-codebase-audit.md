@@ -42,7 +42,7 @@ Implication:
 
 Observed file: `src/store/product-view-counter.service.ts`
 
-Current behavior:
+Phase 0 behavior before Phase 1:
 - buffers product view count increments;
 - uses Redis if `REDIS_URL` is set;
 - falls back to in-process buffer;
@@ -96,7 +96,7 @@ Implication:
 |---|---|---|---|
 | Chronological design feed | `orderBy updatedAt desc, id desc` | identical feeds | Feed scoring + seeded shuffle |
 | Requester identity not used for ranking | `requesterId` only hydrates threaded state | no personalization | user context in candidate scoring |
-| Web loads up to 4800 products | `MARKET_LOAD_MAX_ROWS = 4800` | latency, memory, CPU | backend paginated sections |
+| Web loaded up to 4800 products before Phase 1 | `MARKET_LOAD_MAX_ROWS = 4800` in Phase 0 | latency, memory, CPU | backend paginated sections, implemented in Phase 1 |
 | Web filters are hardcoded | `FOR_YOU`, `MENSWEAR`, etc. | not admin-driven | DB-managed categories/sections |
 | Mobile sections are local | `buildRows()` | platform drift | backend section DTO |
 | Blazing uses local category counts | `buildBlazingTrends()` | weak social proof | velocity score |
@@ -128,7 +128,7 @@ Reason: the implementation path is technically clear, but the feeds documentatio
 - Canonical repo path: `bthreadly/docs/feeds/threadly_feed_market_docs/`.
 - Backend owns the canonical copy because the backend defines shared APIs, schemas, ranking contracts, signal ingestion, and cross-platform feed/market contracts.
 - The original workspace docs path remains a non-canonical source copy unless it is intentionally deleted later.
-- Phase 1 remains blocked until the Phase 0B canonical docs commit is pushed to `origin/main`.
+- Phase 0B resolved the documentation ownership blocker by committing the canonical copy under the backend repo.
 
 ### Backend ground truth
 
@@ -197,7 +197,7 @@ Files inspected:
 
 Findings:
 - `/` and `/market` route to `Market` in design mode. `/market-place` routes to `MarketPlace`.
-- `MarketPlace.tsx` still implements the high-risk `120 x 40 = 4800` max-row client aggregation pattern.
+- Phase 0 found `MarketPlace.tsx` implementing the high-risk `120 x 40 = 4800` max-row client aggregation pattern.
 - `MarketPlace` builds hero, Fresh Drops, custom-order, filters, and visible load-more locally after pulling large product batches.
 - Web `For You` is a static filter label, not personalized ranking.
 - Market filters are hardcoded in `MarketPlace` and partially hardcoded in `Market`.
@@ -284,7 +284,7 @@ Remaining legacy terminology:
 - Product view counting can be reused as a low-cost pattern for counters, but broader signal ingestion must be new.
 - Admin/audit primitives exist but feed/ranking governance requires new models and permissions.
 - Mobile UX direction is closer to the desired section-first market architecture than web.
-- Web market must be refactored before personalization, because the current 4800-row client aggregation pattern is not a safe foundation.
+- Web market had to be refactored before personalization, because the Phase 0 4800-row client aggregation pattern was not a safe foundation.
 
 ### Unvalidated assumptions
 
@@ -293,12 +293,12 @@ Remaining legacy terminology:
 - Any external analytics vendor contract is not configured in the inspected mobile analytics client.
 - Real production data distribution for categories, store collections, standalone products, and design media readiness is not known from code alone.
 
-### Blockers before Phase 1
+### Historical blockers before Phase 1
 
-- Move or register the feeds docs pack inside a Git repository so Phase 0 documentation changes can be committed and pushed.
-- Decide whether `collections/market` should expose category filtering in Phase 1 or whether category filtering moves only to the new section endpoint.
-- Define the backend section DTO before web/mobile implementation to prevent a second round of platform drift.
-- Add or confirm Redis production availability before using Redis for seen/suppression/rate/counter workloads beyond optional local fallbacks.
+- Resolved in Phase 0B: the feeds docs pack was moved into the backend repository.
+- Resolved in Phase 1: `collections/market` exposes category passthrough.
+- Resolved in Phase 1: the backend section DTO was defined before web/mobile implementation.
+- Still deferred to Phase 2+: add or confirm Redis production availability before using Redis for seen/suppression/rate/counter workloads beyond optional local fallbacks.
 
 ### Known risks
 
@@ -333,3 +333,38 @@ Remaining legacy terminology:
 - Expo notification docs state remote push notifications are unavailable in Expo Go on Android from SDK 53, confirming the current code guard: https://docs.expo.dev/versions/latest/sdk/notifications/
 - MDN Cache-Control docs require `private` for personalized content and `no-store` when responses must not be stored: https://developer.mozilla.org/docs/Web/HTTP/Reference/Headers/Cache-Control
 - FTC privacy guidance reinforces clear disclosure for personal data use: https://www.ftc.gov/business-guidance/privacy-security/consumer-privacy
+
+## Phase 1 implementation result - 2026-05-24
+
+Ready for Phase 2: **Yes, with Phase 1 limits preserved**.
+
+Implemented backend findings:
+- `collections/market` now accepts and passes `category` from controller to `CollectionsService.getMarketFeed`.
+- New additive backend endpoints exist:
+  - `GET /market/sections`
+  - `GET /market/sections/:key`
+- Existing endpoints remain in place:
+  - `GET /collections/market`
+  - `GET /products/market`
+  - `GET /store/products/market`
+- `MarketSectionDto` and related item, metadata, view-all, and pagination DTOs are explicit in `src/market/dto/market-section.dto.ts`.
+- Section queries are bounded and use Prisma `select` payloads for previews/detail.
+- Home sections hide when empty. Detail endpoint returns a controlled `404` for unsupported section keys.
+- Cache headers for both new section routes are `Cache-Control: private, no-store`.
+
+Implemented web findings:
+- `MarketPlace.tsx` now calls `/market/sections` as the primary market home source.
+- The old 120 x 40 / 4800-row aggregation loop was removed from the primary path.
+- If `/market/sections` fails or returns no product cards, fallback is capped to one `/store/products/market` request with `limit=24`.
+- Web section fetches use `AbortSignal` cancellation on unmount/navigation.
+- The visible static `For You` filter label on this touched surface was changed to `Discover` to avoid implying personalization.
+
+Implemented mobile findings:
+- Mobile rendering remains local-section based in Phase 1.
+- `threadly-mobile/src/api/MarketApi.ts` now exposes typed `getMarketSections` and `getMarketSectionDetail` methods for later migration.
+
+Known Phase 1 limits:
+- Ranking is deterministic V1 only: newest, view/thread count, latest collection, active category, custom-ready, and new brand ordering.
+- No personalized For You ranking exists yet.
+- No signal ingestion, seen tracking, suppression model, ranking profile, formula version, admin section config, or suggestion engine was implemented.
+- Product market direct category semantics outside the new section contract remain a later hardening item.

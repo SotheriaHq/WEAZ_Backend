@@ -36,6 +36,7 @@ import { CustomOrderOpsModule } from './custom-order-ops/custom-order-ops.module
 import { MessagingModule } from './messaging/messaging.module';
 import { WebhooksModule } from './webhooks/webhooks.module';
 import { SizingModule } from './sizing/sizing.module';
+import { MarketModule } from './market/market.module';
 
 const isProductionEnvironment =
   String(process.env.NODE_ENV ?? '')
@@ -82,6 +83,7 @@ const isProductionEnvironment =
     MessagingModule,
     WebhooksModule,
     SizingModule,
+    MarketModule,
   ],
   controllers: [AppController],
   providers: [AppService, EventsGateway],

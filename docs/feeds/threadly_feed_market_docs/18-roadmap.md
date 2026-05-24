@@ -12,9 +12,11 @@ Current Phase 0 result on 2026-05-23:
 - backend/web/mobile audit complete;
 - original docs pack found outside the allowed repos;
 - Phase 0B canonical path is `bthreadly/docs/feeds/threadly_feed_market_docs/`;
-- Phase 1 should not start until the Phase 0B backend docs commit is pushed to `origin/main`.
+- Phase 0B resolved documentation ownership by committing the canonical docs pack under the backend repo.
 
 ## Phase 1 - Stop static/client-heavy rendering and define shared section contract
+
+Status: completed on 2026-05-24, with deterministic V1 behavior only.
 
 - create backend market section preview DTO and cursor-backed View All endpoint;
 - stop web `MarketPlace.tsx` from loading up to 4800 products client-side;
@@ -24,9 +26,12 @@ Current Phase 0 result on 2026-05-23:
 - align mobile Discover and web Market on the shared section contract.
 
 Outcome:
-- web/mobile market sections can align.
-- no more huge client-side market product aggregation.
-- category/section expansion becomes safe.
+- backend now exposes `GET /market/sections` and `GET /market/sections/:key`.
+- `collections/market` category passthrough is wired controller-to-service.
+- web Market home uses backend section previews first and falls back to one capped 24-product request.
+- mobile has typed market section API methods but still renders local sections.
+- no personalization, signal engine, admin config, ML ranking, or suggestion engine was implemented in Phase 1.
+- Phase 2 must not start until the Phase 1 repo commits are pushed to `origin/main`.
 
 ## Phase 2 - Signal, seen, suppression, and cache safety foundation
 

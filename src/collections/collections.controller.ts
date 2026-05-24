@@ -375,6 +375,7 @@ export class CollectionsController {
     @Query('cursor') cursor?: string,
     @Query('limit') limit?: string,
     @Query('tag') tag?: string,
+    @Query('category') category?: string,
     @Query('counts') countsPolicy?: string,
     @Req() req?: any,
   ) {
@@ -382,6 +383,7 @@ export class CollectionsController {
       cursor,
       limit: limit ? parseInt(limit, 10) : undefined,
       tag,
+      category,
       countsPolicy: countsPolicy === 'combined' ? 'combined' : undefined,
       requesterId: req?.user?.id, // Pass userId if authenticated
     });

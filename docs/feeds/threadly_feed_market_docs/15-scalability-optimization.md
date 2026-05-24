@@ -2,7 +2,7 @@
 
 ## Phase 0 alignment note - 2026-05-23
 
-- The web `MarketPlace.tsx` 4800-row load pattern is the highest immediate scalability risk.
+- The Phase 0 web `MarketPlace.tsx` 4800-row load pattern was the highest immediate scalability risk.
 - Product market supports cursor pagination, but web currently aggregates many pages before rendering the main experience.
 - Design feed cursor pagination exists, but ranking is chronological and category wiring is incomplete.
 - Product/detail suggestions should not issue N+1 requests. Use server-side relation includes/joins or batched `in` queries.
@@ -11,13 +11,28 @@
 
 Phase 1 performance target: section preview payloads should be small, cursor-backed, and render without loading the full catalog into the client.
 
+## Phase 1 scalability result - 2026-05-24
+
+- Web `MarketPlace.tsx` no longer uses the 120 x 40 / 4800-row product aggregation loop as the primary market home data path.
+- Primary web market home load is now `GET /market/sections`.
+- Fallback product loading is capped to one `/store/products/market` request with `limit=24`.
+- Web passes `AbortSignal` to the section request and fallback request so stale market home requests can be cancelled on unmount/navigation.
+- Backend section preview/detail queries are bounded and return preview-card DTOs instead of full product/detail payloads.
+- `/market/sections` and `/market/sections/:key` use `Cache-Control: private, no-store` until personalized/public cache boundaries are split deliberately.
+
+Remaining scalability work:
+- product market direct category filtering still needs deeper category semantics hardening;
+- long View All grids still need dedicated web/mobile virtualization;
+- cross-section dedupe and diversity caps across the whole home response are not implemented yet;
+- signal ingestion and aggregate jobs are deferred to Phase 2+.
+
 ## Core performance principle
 
 Do not move large candidate sets to the client for ranking. Backend should return ranked, paginated sections and suggestions.
 
 ## Current risk
 
-The web Market page currently allows loading up to 4800 products client-side. This should be replaced with backend-ranked section APIs.
+Before Phase 1, the web Market page allowed loading up to 4800 products client-side. Phase 1 replaced the primary path with backend section previews and left only a bounded 24-product fallback.
 
 ## Backend optimization requirements
 

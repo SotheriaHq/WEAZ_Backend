@@ -2,13 +2,106 @@
 
 ## Phase 0 alignment note - 2026-05-23
 
-- No shared backend market section endpoint exists today.
-- Backend product market is `GET /products/market` and alias `GET /store/products/market`; backend design feed is `GET /collections/market`.
-- Web `MarketPlace.tsx` still builds sections client-side after loading up to 4800 products.
+- Phase 0 found no shared backend market section endpoint.
+- Backend product market compatibility endpoints were `GET /products/market` and alias `GET /store/products/market`; backend design feed was `GET /collections/market`.
+- Phase 0 found web `MarketPlace.tsx` building sections client-side after loading up to 4800 products.
 - Mobile `MarketScreen.tsx` builds a good local section model: hero, live themes, fresh row, moodboard row, latest collections, product grids, editorial cards, and custom-ready row.
 - View All is not a general backend-driven section route on either web or mobile.
 
 Implementation standard: create the backend section contract first, then adapt web and mobile to the same DTO. Do not keep expanding local section builders as the primary architecture.
+
+## Phase 1 implemented contract - 2026-05-24
+
+Phase 1 added the first additive backend section foundation without replacing legacy endpoints.
+
+Endpoints:
+
+```text
+GET /market/sections
+GET /market/sections/:key?cursor=<cursor>&limit=<bounded-limit>
+```
+
+Cache policy:
+
+```text
+Cache-Control: private, no-store
+```
+
+Implemented sections:
+
+| Key | Source | Layout | V1 ranking |
+|---|---|---|---|
+| `fresh-drops` | PRODUCT | HORIZONTAL_RAIL | `createdAt desc`, `id desc` |
+| `hot-right-now` | PRODUCT | HORIZONTAL_RAIL | `viewsCount desc`, `threadsCount desc`, `createdAt desc`, `id desc` |
+| `latest-collections` | COLLECTION | COLLECTION_RAIL | `createdAt desc`, `id desc` |
+| `shop-by-style` | MIXED | CATEGORY_GRID | active category `order asc`, `slug asc` |
+| `custom-ready` | PRODUCT | PRODUCT_GRID | custom-order products, `createdAt desc`, `id desc` |
+| `new-designers-to-watch` | BRAND | BRAND_RAIL | open stores with marketable products, `createdAt desc`, `id desc` |
+
+Response shape:
+
+```text
+MarketSectionsResponse
+- generatedAt
+- sections[]
+- metadata.version = phase1.v1
+- metadata.personalization = disabled
+- metadata.cachePolicy = private-no-store
+
+MarketSection
+- key
+- title
+- subtitle
+- emotionalLabel
+- layout
+- sourceType
+- items[]
+- viewAll.enabled
+- viewAll.key
+- viewAll.route
+- viewAll.label
+- pagination.limit
+- pagination.hasNextPage
+- pagination.nextCursor
+- metadata.ranking = deterministic-v1
+- metadata.personalization = disabled
+
+MarketSectionItem
+- id
+- sourceId
+- sourceType
+- entityType
+- title
+- subtitle
+- description
+- brand
+- media
+- price
+- priceRange
+- availability
+- category
+- tags
+- stats
+- target
+- createdAt
+- updatedAt
+```
+
+Safety behavior:
+- home response hides sections with no valid cards;
+- detail response rejects unsupported keys with a controlled `404`;
+- product cards require active, non-deleted, non-archived, marketable inventory/custom-order availability, open store, and usable image data;
+- store collection cards require at least one visible product with usable media;
+- brand cards require an open store with at least one marketable product and a logo or product image;
+- duplicate item IDs are removed within each section response;
+- preview/detail limits are bounded server-side.
+
+Deferred:
+- admin-managed section config;
+- ranking profiles and formula versions;
+- personalized For You;
+- cross-section dedupe across the whole home response;
+- mobile rendering migration to this contract.
 
 ## Decision
 

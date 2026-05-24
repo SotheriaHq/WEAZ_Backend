@@ -17,6 +17,36 @@ Safe commands identified during Phase 0:
 - web: `npm run build`, `npm run lint`, `npm run test`;
 - mobile: `npm exec tsc -- --noEmit`, `npm run ci:phase8` where Expo/native dependencies and scripts are available.
 
+## Phase 1 implemented validation - 2026-05-24
+
+Backend tests added:
+- `src/collections/collections.controller.spec.ts`
+  - proves `collections/market` passes `category`, `cursor`, `limit`, `tag`, `counts`, and requester ID to `CollectionsService.getMarketFeed`.
+- `src/market/market-section.service.spec.ts`
+  - verifies active section previews;
+  - hides empty home sections;
+  - dedupes duplicate item IDs inside one section;
+  - bounds preview item queries;
+  - bounds section detail pagination and emits cursor metadata;
+  - rejects unsupported section keys with `NotFoundException`.
+- `src/market/market-section.controller.spec.ts`
+  - verifies `Cache-Control: private, no-store` metadata on both section endpoints;
+  - verifies controller query forwarding.
+
+Commands run for Phase 1:
+- backend `npm test -- collections.controller market-section --runInBand`: passed;
+- backend `npm run build`: passed;
+- web `npm exec tsc -- -b --pretty false`: passed;
+- web `npm run build`: passed with existing Vite chunk-size warning;
+- mobile `npm exec tsc -- --noEmit`: passed.
+
+Deferred tests:
+- real DB/API e2e coverage for `/market/sections` and `/market/sections/:key`;
+- browser route test proving request counts on `/market-place`;
+- mobile runtime test consuming backend sections;
+- long View All virtualization and scroll restoration tests;
+- signal, seen, suppression, personalization, and admin governance tests.
+
 ## Backend API tests
 
 ### Feed
