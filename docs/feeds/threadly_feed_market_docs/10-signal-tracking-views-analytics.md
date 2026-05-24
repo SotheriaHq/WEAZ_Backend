@@ -8,7 +8,7 @@
 - Web hidden content is localStorage-backed; this does not provide cross-device suppression or ranking feedback.
 - Search requests have cancellation support; market/detail requests generally need signal propagation before batched signal work begins.
 
-Phase 2 added bounded backend batch ingestion and web flush behavior. Mobile durable/offline queueing and server-side async queue hardening remain deferred. Signals must stay bounded, privacy-aware, and safe to drop without breaking user flows.
+Phase 2 added bounded backend batch ingestion and web flush behavior. Phase 3 added DB-backed idempotency receipts, client event IDs, daily aggregate counters, and mobile runtime flushing. Redis/BullMQ remains deferred for the market signal path until deployment config can support it safely. Signals must stay bounded, privacy-aware, and safe to drop without breaking user flows.
 
 ## Signal principles
 
@@ -33,6 +33,8 @@ UserFeedSignal
 - suggestionBlockKey
 - screenContext
 - sessionId
+- clientEventId
+- batchId
 - createdAt
 ```
 
@@ -48,6 +50,7 @@ UserSeenItem
 - suggestionBlockKey
 - seenAt
 - sessionId
+- clientEventId
 ```
 
 ```text
@@ -59,6 +62,7 @@ MarketSectionSignal
 - value
 - screenContext
 - sessionId
+- clientEventId
 - createdAt
 ```
 
@@ -73,7 +77,42 @@ SuggestionSignal
 - value
 - screenContext
 - sessionId
+- clientEventId
 - createdAt
+```
+
+```text
+MarketSignalBatchReceipt
+- id
+- userId nullable
+- anonymousSessionId nullable
+- batchId
+- received
+- persisted
+- createdAt
+```
+
+```text
+MarketSignalAggregateDaily
+- aggregateKey
+- bucketDate
+- userId nullable
+- anonymousSessionId nullable
+- surface
+- sectionKey
+- suggestionBlockKey
+- targetType
+- targetId
+- sectionImpressions
+- itemImpressions
+- productOpens
+- itemOpens
+- clicks
+- viewAllClicks
+- suppressions
+- seenItems
+- eventCount
+- latestSeenAt
 ```
 
 ## Feed signals
@@ -163,7 +202,8 @@ Mobile:
 Backend:
 - clear timers on module destroy;
 - cap in-memory buffers;
-- Redis optional, not required;
+- Redis optional only for local/non-critical fallback paths;
+- for market signal ingestion Phase 3 uses synchronous DB aggregation behind a service abstraction; Redis/BullMQ is not forced without safe runtime config;
 - never use unbounded maps keyed by user/session without TTL.
 
 ## Phase 2 implemented foundation - 2026-05-24
@@ -188,7 +228,7 @@ Implemented limits:
 - web in-memory queue max: 100 events;
 - web client flush batch max: 25 events;
 - web interval flush: 5 seconds;
-- metadata max before pruning: 2048 UTF-8 bytes;
+- metadata max: 2048 UTF-8 bytes, rejected when exceeded;
 - target/session IDs max: 128 chars;
 - section/suggestion keys max: 80 chars.
 
@@ -198,7 +238,7 @@ Implemented semantics:
 - seen records are created for impression/view/open-style item events;
 - suppression records can target items, brands, categories, sections, and suggestion blocks;
 - market section output excludes active matching suppressions where section DTO metadata supports it;
-- `batchId` is accepted for traceability, but strict duplicate-batch idempotency is deferred.
+- Phase 2 accepted `batchId` for traceability only; Phase 3 adds durable duplicate batch replay checks.
 
 Deferred:
 - Redis/BullMQ async signal queue;
@@ -207,3 +247,23 @@ Deferred:
 - seen-content ranking dedupe;
 - mobile durable queue and AppState flush;
 - suggestion block runtime instrumentation.
+
+## Phase 3 implemented foundation - 2026-05-24
+
+Implemented now:
+- optional `clientEventId` on signal events for durable client-side event identity;
+- `MarketSignalBatchReceipt` to skip duplicate batch replays for the same authenticated user or anonymous session;
+- service-level dedupe for duplicate `clientEventId` values inside one batch and recently persisted client event IDs;
+- `MarketSignalAggregateDaily` for daily section impression, item impression, open, click, view-all, suppression, and seen counters;
+- bounded synchronous aggregation after raw signal writes;
+- mobile runtime signal queue with 100-event memory cap, 25-event flush batches, 5-second interval flush, AppState background/inactive flush, unmount flush, and bounded retry on network failure;
+- web signal events now include client event IDs.
+
+Not implemented:
+- signal-driven ranking or personalized ordering;
+- Redis/BullMQ market signal producer/consumer;
+- durable persisted mobile offline queue;
+- admin ranking governance UI;
+- suggestion engine ranking.
+
+Phase 3 idempotency is practical but not absolute: `batchId` replay protection is durable through `MarketSignalBatchReceipt`; `clientEventId` duplicate checks are bounded to a recent replay window; events without client IDs are deduped only inside the current batch by fingerprint.

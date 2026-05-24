@@ -1,6 +1,14 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import {
+  BadRequestException,
+  Injectable,
+  Logger,
+  NotFoundException,
+  Optional,
+} from '@nestjs/common';
+import {
+  MarketSignalSurface,
   MarketSignalTargetType,
+  MarketSignalType,
   MarketSuppressionType,
   Prisma,
   UserContentSuppression,
@@ -10,6 +18,7 @@ import {
   CreateMarketSuppressionDto,
   MarketSuppressionQueryDto,
 } from './dto/market-signal.dto';
+import { MarketSignalAggregationService } from './market-signal-aggregation.service';
 import { MarketSignalIdentity } from './market-signal.service';
 
 export interface MarketSuppressionScope {
@@ -22,7 +31,13 @@ export interface MarketSuppressionScope {
 
 @Injectable()
 export class MarketSuppressionService {
-  constructor(private readonly prisma: PrismaService) {}
+  private readonly logger = new Logger(MarketSuppressionService.name);
+
+  constructor(
+    private readonly prisma: PrismaService,
+    @Optional()
+    private readonly aggregationService?: MarketSignalAggregationService,
+  ) {}
 
   async createSuppression(
     dto: CreateMarketSuppressionDto,
@@ -31,7 +46,7 @@ export class MarketSuppressionService {
     const owner = this.resolveOwner(identity, dto.anonymousSessionId);
     const normalized = this.normalizeSuppression(dto);
 
-    return this.prisma.userContentSuppression.create({
+    const suppression = await this.prisma.userContentSuppression.create({
       data: {
         userId: owner.userId,
         anonymousSessionId: owner.anonymousSessionId,
@@ -46,6 +61,9 @@ export class MarketSuppressionService {
         expiresAt: normalized.expiresAt,
       },
     });
+
+    await this.aggregateSuppression(owner, suppression);
+    return suppression;
   }
 
   async listSuppressions(
@@ -220,6 +238,46 @@ export class MarketSuppressionService {
       reason: this.clean(dto.reason),
       expiresAt: dto.expiresAt ? new Date(dto.expiresAt) : null,
     };
+  }
+
+  private async aggregateSuppression(
+    owner: { userId: string | null; anonymousSessionId: string | null },
+    suppression: UserContentSuppression,
+  ) {
+    if (!this.aggregationService) return;
+
+    const targetId =
+      suppression.targetId ??
+      suppression.brandId ??
+      suppression.categoryId ??
+      suppression.sectionKey ??
+      suppression.suggestionBlockKey;
+    if (!targetId) return;
+
+    try {
+      await this.aggregationService.aggregateBatch(
+        [
+          {
+            targetType: suppression.targetType,
+            targetId,
+            signalType:
+              suppression.suppressionType === MarketSuppressionType.NOT_INTERESTED
+                ? MarketSignalType.NOT_INTERESTED
+                : MarketSignalType.HIDE,
+            surface: MarketSignalSurface.MARKET_HOME,
+            sectionKey: suppression.sectionKey,
+            suggestionBlockKey: suppression.suggestionBlockKey,
+          },
+        ],
+        owner,
+      );
+    } catch (error) {
+      this.logger.warn(
+        `Suppression aggregation failed; suppression was retained: ${
+          (error as any)?.message || error
+        }`,
+      );
+    }
   }
 
   private resolveOwner(identity: MarketSignalIdentity, dtoAnonymous?: string) {

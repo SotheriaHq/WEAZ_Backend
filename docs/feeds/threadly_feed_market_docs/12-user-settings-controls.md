@@ -104,3 +104,18 @@ Deferred:
 - hard deletion of signal history after reset.
 
 Reset behavior remains a soft reset: `PersonalizationReset` records a marker for future ranking to ignore older personalization signals, while analytics rows are retained unless a later privacy/legal requirement changes that policy.
+
+## Phase 3 reset and suppression consistency - 2026-05-24
+
+Implemented now:
+- reset response includes an explicit `resetPolicy` summary;
+- feed/market reset does not delete raw signal rows, seen rows, suppression rows, or global aggregate counters;
+- global aggregate counters are retained because one user's reset must not destroy platform analytics;
+- suppressions remain separate controls and continue to hide matching market section items until deleted/restored;
+- suppression creation also contributes to the daily aggregate foundation without changing ranking.
+
+Deferred:
+- mobile hide/not-interested UI;
+- full hidden content management;
+- user-facing reset/feed preference screen;
+- hard deletion/privacy export workflow if legal requirements later require it.

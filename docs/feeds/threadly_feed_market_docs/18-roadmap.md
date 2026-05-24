@@ -60,7 +60,39 @@ Deferred from Phase 2:
 - ranking personalization;
 - admin ranking/signal governance UI.
 
-## Phase 3 - Ranking profiles, formula versions, and personalization
+## Former Phase 3 - Ranking profiles, formula versions, and personalization
+
+Superseded sequencing note on 2026-05-24: Phase 3 was re-scoped to durable signal queue/idempotency, aggregation foundation, and mobile runtime instrumentation before ranking. Ranking profiles and personalized ordering remain deferred.
+
+## Phase 3 - Durable signal queue, aggregation foundation, and mobile runtime instrumentation
+
+Status: completed on 2026-05-24 after Phase 3 commits are pushed, with ranking personalization still deferred.
+
+- re-audit Phase 2 signal, suppression, reset, cache, web, mobile, and docs implementation;
+- add optional client event IDs and durable duplicate batch receipts;
+- add daily aggregate counter foundation without changing ranking;
+- keep `/market/sections` and feed ordering deterministic/non-personalized;
+- add mobile runtime queue, AppState flush, section/item/open instrumentation, and bounded retry;
+- align web signal events to backend idempotency;
+- document Redis/BullMQ decision.
+
+Outcome:
+- backend skips duplicate `batchId` replays for the same user/session;
+- backend skips duplicate client event IDs inside a batch and recently persisted client event IDs;
+- backend writes `MarketSignalAggregateDaily` counter buckets for future ranking work;
+- web emits client event IDs through the existing bounded queue;
+- mobile MarketScreen now emits bounded runtime signals and flushes on AppState background/inactive;
+- reset returns explicit soft-reset policy and does not delete raw analytics, seen history, suppressions, or global aggregates;
+- Redis/BullMQ market signal queue remains deferred until a safe queue/worker gate is added.
+
+Deferred from Phase 3:
+- signal-driven feed/market ranking;
+- Redis/BullMQ market signal producer/consumer;
+- persisted mobile offline queue;
+- admin ranking governance;
+- full hide/not-interested mobile UI.
+
+## Phase 4 - Ranking profiles, formula versions, and personalization
 
 - implement deterministic scoring formulas with stable cursor tie-breakers;
 - add user affinity aggregates;
@@ -73,7 +105,7 @@ Deferred from Phase 2:
 Outcome:
 - feeds and market sections become personalized.
 
-## Phase 4 - Context-aware market suggestion blocks
+## Phase 5 - Context-aware market suggestion blocks
 
 - product detail suggestions;
 - collection detail suggestions;
@@ -86,7 +118,7 @@ Outcome:
 Outcome:
 - market-related screens have context-aware suggestions.
 
-## Phase 5 - User controls and admin governance
+## Phase 6 - User controls and admin governance
 
 - user feed settings;
 - hidden/muted management;
@@ -99,7 +131,7 @@ Outcome:
 Outcome:
 - production governance and user control.
 
-## Phase 6 - Optimization and fairness
+## Phase 7 - Optimization and fairness
 
 - aggregate jobs;
 - velocity scoring;

@@ -101,8 +101,22 @@ Implemented:
 - market section responses remain private/no-store and exclude active suppressions without enabling personalization ranking.
 
 Still deferred:
-- durable mobile signal queue;
-- AppState-driven mobile dwell flush;
 - server-side queue retry/dead-letter handling;
 - suppression-aware fallbacks when a user hides so much content that a section becomes empty;
 - hidden-item link warning and restore flow.
+
+## Phase 3 edge-case handling - 2026-05-24
+
+Implemented:
+- mobile now has a bounded runtime signal queue that flushes every 5 seconds, on background/inactive AppState, and on MarketScreen unmount;
+- mobile signal failures requeue the current batch at the front of the bounded 100-event memory queue, so failed calls do not block browsing or create unbounded memory growth;
+- mobile queue is not persisted across process death; this avoids adding a risky storage dependency before a deliberate durable offline design;
+- duplicate `clientEventId` values in one backend batch are skipped;
+- duplicate `batchId` replays for the same user/session are skipped using `MarketSignalBatchReceipt`;
+- reset behavior is explicit: it records a reset marker but does not delete raw signals, seen items, suppressions, or global aggregates.
+
+Still deferred:
+- Redis/BullMQ market signal retry/dead-letter handling;
+- persisted offline mobile queue;
+- hidden-item deep-link warning and restore flow;
+- suppression-aware content broadening when a user hides enough content to empty a section.

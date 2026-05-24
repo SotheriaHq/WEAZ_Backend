@@ -6,9 +6,9 @@ import { ResetFeedPreferencesDto } from './dto/feed-preferences.dto';
 export class FeedPreferencesService {
   constructor(private readonly prisma: PrismaService) {}
 
-  resetFeedPreferences(userId: string, dto: ResetFeedPreferencesDto) {
+  async resetFeedPreferences(userId: string, dto: ResetFeedPreferencesDto) {
     const resetAt = new Date();
-    return this.prisma.personalizationReset.create({
+    const reset = await this.prisma.personalizationReset.create({
       data: {
         userId,
         resetAt,
@@ -16,5 +16,15 @@ export class FeedPreferencesService {
         reason: dto.reason?.trim() || null,
       },
     });
+
+    return {
+      ...reset,
+      resetPolicy: {
+        suppressionsCleared: false,
+        rawSignalsDeleted: false,
+        seenHistoryDeleted: false,
+        globalAggregatesCleared: false,
+      },
+    };
   }
 }

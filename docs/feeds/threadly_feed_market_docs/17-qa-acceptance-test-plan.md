@@ -182,3 +182,44 @@ Deferred tests:
 - mobile runtime tests for future AppState queue flushing;
 - durable queue retry/dead-letter tests;
 - suppression-aware empty-section fallback tests beyond current bounded filtering.
+
+## Phase 3 tests added - 2026-05-24
+
+Backend tests added/updated:
+- `src/market/market-signal.service.spec.ts`
+  - deduplicates duplicate `clientEventId` values inside one batch;
+  - skips duplicate `batchId` replays using `MarketSignalBatchReceipt`;
+  - skips recently persisted client event IDs for the same guest;
+  - keeps server-derived user identity;
+  - rejects oversized metadata;
+  - preserves guest `anonymousSessionId` support and seen-item creation.
+- `src/market/market-signal-aggregation.service.spec.ts`
+  - aggregates section impressions, item impressions, product opens, seen counts, and event counts into daily buckets;
+  - aggregates suppression counters without changing ranking behavior.
+- `src/users/feed-preferences.service.spec.ts`
+  - verifies reset marker creation;
+  - verifies reset does not delete raw signals, seen rows, suppressions, or global aggregates.
+
+Mobile contract test added:
+- `scripts/test-market-signal-queue-contract.js`
+  - verifies queue cap, batch size, interval flush, AppState flush, client event IDs, bounded retry, MarketScreen instrumentation, and no user-facing follow language in touched MarketScreen code.
+
+Commands run for Phase 3:
+- backend `npx prisma generate`: passed;
+- backend `npx prisma validate`: passed;
+- backend `npx prisma migrate status`: migration `20260524150000_add_market_signal_idempotency_aggregation` pending locally;
+- backend `npx prisma migrate dev`: failed with Prisma `P1002` advisory-lock timeout; no destructive action run;
+- backend `npm test -- market-signal market-suppression market-section market-cache feed-preferences --runInBand`: passed;
+- backend `npm run build`: passed;
+- web `npm exec tsc -- -b --pretty false`: passed;
+- web `npm run build`: passed with existing Vite chunk-size warning;
+- web `npm run lint`: passed with existing warnings only;
+- mobile `npm exec tsc -- --noEmit`: passed;
+- mobile `npm run test:market-signal-queue-contract`: passed;
+- mobile `npm run audit:design-system`: passed.
+
+Deferred tests:
+- backend real database e2e for duplicate batch replay under concurrent requests;
+- Redis/BullMQ retry/dead-letter tests after market signal queue infrastructure exists;
+- React Native integration test that simulates AppState transitions instead of static contract checks;
+- Playwright/Vitest coverage for web pagehide/visibility flushing.

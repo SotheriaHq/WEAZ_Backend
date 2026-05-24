@@ -42,7 +42,7 @@ Before Phase 1, the web Market page allowed loading up to 4800 products client-s
 - Use aggregate tables for signal-heavy metrics.
 - Use lightweight deterministic scoring for V1.
 - Precompute daily/hourly aggregates.
-- Keep Redis optional.
+- Keep Redis optional for local/non-critical paths, but treat it as required before production queue scale.
 - Avoid paid infra dependency.
 - Use bounded query limits.
 - Return minimal DTOs for previews.
@@ -121,14 +121,36 @@ Implemented:
 - signal writes are batched through `POST /market/signals/batch`;
 - backend batch limit is 50 events;
 - web queue is bounded to 100 events and flushes at 25 events per request;
-- metadata is pruned above 2048 bytes instead of storing unbounded JSON;
+- metadata above 2048 bytes is rejected instead of storing unbounded JSON;
 - signal/suppression/reset tables have indexes for user/session, target, section, suggestion block, createdAt, brand, and expiry lookups;
 - market section suppression lookup is capped and applied to bounded section DTO output;
 - personalized/requester-aware market section responses remain `Cache-Control: private, no-store`.
 
 Production hardening still required:
 - move signal ingestion from direct bounded Prisma `createMany` into Redis/BullMQ or another durable queue;
-- add aggregate jobs before using raw event tables for ranking;
-- add strict batch idempotency when a durable queue/idempotency store is available;
+- move synchronous aggregate updates to a worker/job path before using signal volume for ranking;
+- harden idempotency with queue-level job IDs and monitoring;
 - add mobile persistent queue only after choosing the storage abstraction;
 - add monitoring for queue lag, DB write volume, and suppression table growth.
+
+## Phase 3 scalability result - 2026-05-24
+
+Implemented:
+- raw signal ingestion remains batch-based and bounded;
+- `clientEventId` and `MarketSignalBatchReceipt` reduce wasted duplicate writes from client retries and batch replays;
+- `MarketSignalAggregateDaily` stores daily counter summaries for section impressions, item impressions, product opens, item opens, clicks, view-all clicks, suppressions, seen items, and total events;
+- aggregation runs behind `MarketSignalAggregationService` and updates aggregate rows by stable `aggregateKey`;
+- mobile MarketScreen now has a bounded runtime queue with AppState flush and low-risk section/item/open instrumentation;
+- web signals now include client event IDs for backend idempotency.
+
+Redis/BullMQ decision:
+- existing backend queue infrastructure is Redis-backed and useful for worker-driven jobs, but Phase 3 did not add a market signal queue because the current market module does not have a safe dedicated queue/worker/runtime gate;
+- the implemented fallback is synchronous DB aggregation after raw writes, with failures logged and raw signals retained;
+- moving aggregation to Redis/BullMQ remains the next hardening step before using signal volume for ranking at production scale.
+
+Still not implemented:
+- signal-driven feed ordering;
+- hourly aggregate rollups;
+- queue lag monitoring;
+- durable mobile offline storage;
+- ranking profile cache invalidation.

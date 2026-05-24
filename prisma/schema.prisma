@@ -5113,6 +5113,7 @@ model UserFeedSignal {
   id                 String                 @id @default(uuid()) @map("_id") @db.Uuid
   userId             String?                @db.Uuid
   anonymousSessionId String?                @db.VarChar(128)
+  clientEventId      String?                @db.VarChar(128)
   targetType         MarketSignalTargetType
   targetId           String                 @db.VarChar(128)
   signalType         MarketSignalType
@@ -5129,6 +5130,9 @@ model UserFeedSignal {
 
   @@index([userId, createdAt])
   @@index([anonymousSessionId, createdAt])
+  @@index([userId, clientEventId])
+  @@index([anonymousSessionId, clientEventId])
+  @@index([clientEventId, createdAt])
   @@index([targetType, targetId, createdAt])
   @@index([sectionKey, createdAt])
   @@index([suggestionBlockKey, createdAt])
@@ -5140,6 +5144,7 @@ model UserSeenItem {
   id                 String                 @id @default(uuid()) @map("_id") @db.Uuid
   userId             String?                @db.Uuid
   anonymousSessionId String?                @db.VarChar(128)
+  clientEventId      String?                @db.VarChar(128)
   targetType         MarketSignalTargetType
   targetId           String                 @db.VarChar(128)
   surface            MarketSignalSurface
@@ -5152,6 +5157,9 @@ model UserSeenItem {
 
   @@index([userId, createdAt])
   @@index([anonymousSessionId, createdAt])
+  @@index([userId, clientEventId])
+  @@index([anonymousSessionId, clientEventId])
+  @@index([clientEventId, createdAt])
   @@index([targetType, targetId, createdAt])
   @@index([sectionKey, createdAt])
   @@index([suggestionBlockKey, createdAt])
@@ -5163,6 +5171,7 @@ model MarketSectionSignal {
   id                 String           @id @default(uuid()) @map("_id") @db.Uuid
   userId             String?          @db.Uuid
   anonymousSessionId String?          @db.VarChar(128)
+  clientEventId      String?          @db.VarChar(128)
   sectionKey         String           @db.VarChar(80)
   signalType         MarketSignalType
   value              Float?
@@ -5175,6 +5184,9 @@ model MarketSectionSignal {
 
   @@index([userId, createdAt])
   @@index([anonymousSessionId, createdAt])
+  @@index([userId, clientEventId])
+  @@index([anonymousSessionId, clientEventId])
+  @@index([clientEventId, createdAt])
   @@index([sectionKey, createdAt])
   @@map("market_section_signals")
 }
@@ -5183,6 +5195,7 @@ model SuggestionSignal {
   id                 String                  @id @default(uuid()) @map("_id") @db.Uuid
   userId             String?                 @db.Uuid
   anonymousSessionId String?                 @db.VarChar(128)
+  clientEventId      String?                 @db.VarChar(128)
   blockKey           String                  @db.VarChar(80)
   targetType         MarketSignalTargetType?
   targetId           String?                 @db.VarChar(128)
@@ -5197,9 +5210,61 @@ model SuggestionSignal {
 
   @@index([userId, createdAt])
   @@index([anonymousSessionId, createdAt])
+  @@index([userId, clientEventId])
+  @@index([anonymousSessionId, clientEventId])
+  @@index([clientEventId, createdAt])
   @@index([targetType, targetId, createdAt])
   @@index([blockKey, createdAt])
   @@map("suggestion_signals")
+}
+
+model MarketSignalBatchReceipt {
+  id                 String   @id @default(uuid()) @map("_id") @db.Uuid
+  userId             String?  @db.Uuid
+  anonymousSessionId String?  @db.VarChar(128)
+  batchId            String   @db.VarChar(128)
+  received           Int      @default(0)
+  persisted          Json?
+  createdAt          DateTime @default(now())
+
+  @@unique([userId, batchId])
+  @@unique([anonymousSessionId, batchId])
+  @@index([userId, createdAt])
+  @@index([anonymousSessionId, createdAt])
+  @@map("market_signal_batch_receipts")
+}
+
+model MarketSignalAggregateDaily {
+  id                 String                  @id @default(uuid()) @map("_id") @db.Uuid
+  aggregateKey       String                  @unique @db.VarChar(320)
+  bucketDate         DateTime
+  userId             String?                 @db.Uuid
+  anonymousSessionId String?                 @db.VarChar(128)
+  surface            MarketSignalSurface?
+  sectionKey         String?                 @db.VarChar(80)
+  suggestionBlockKey String?                 @db.VarChar(80)
+  targetType         MarketSignalTargetType?
+  targetId           String?                 @db.VarChar(128)
+  sectionImpressions Int                     @default(0)
+  itemImpressions    Int                     @default(0)
+  productOpens       Int                     @default(0)
+  itemOpens          Int                     @default(0)
+  clicks             Int                     @default(0)
+  viewAllClicks      Int                     @default(0)
+  suppressions       Int                     @default(0)
+  seenItems          Int                     @default(0)
+  eventCount         Int                     @default(0)
+  latestSeenAt       DateTime?
+  createdAt          DateTime                @default(now())
+  updatedAt          DateTime                @updatedAt
+
+  @@index([bucketDate])
+  @@index([sectionKey, bucketDate])
+  @@index([suggestionBlockKey, bucketDate])
+  @@index([targetType, targetId, bucketDate])
+  @@index([userId, bucketDate])
+  @@index([anonymousSessionId, bucketDate])
+  @@map("market_signal_aggregate_daily")
 }
 
 model UserContentSuppression {
