@@ -213,4 +213,33 @@ describe('MarketSectionService', () => {
       NotFoundException,
     );
   });
+
+  it('excludes suppressed items from market section output', async () => {
+    const suppressionService = {
+      targetKey: jest.fn((targetType: string, targetId: string) => {
+        return `${targetType}:${targetId}`;
+      }),
+      getSuppressionScope: jest.fn().mockResolvedValue({
+        targetKeys: new Set(['PRODUCT:product_1']),
+        brandIds: new Set(),
+        categoryIds: new Set(),
+        sectionKeys: new Set(),
+        suggestionBlockKeys: new Set(),
+      }),
+    };
+    const service = new MarketSectionService(
+      createPrisma() as any,
+      suppressionService as any,
+    );
+
+    const result = await service.getSectionDetail('fresh-drops', {
+      userId: 'user_1',
+    });
+
+    expect(result.section.items).toEqual([]);
+    expect(suppressionService.getSuppressionScope).toHaveBeenCalledWith({
+      userId: 'user_1',
+      anonymousSessionId: undefined,
+    });
+  });
 });

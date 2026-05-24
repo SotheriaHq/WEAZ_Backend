@@ -5032,6 +5032,216 @@ model ReviewPrompt {
 }
 
 // ─── System Configuration (key-value, admin-managed) ─────────────────────────
+enum MarketSignalTargetType {
+  PRODUCT
+  COLLECTION
+  DESIGN
+  BRAND
+  CATEGORY
+  SECTION
+  SUGGESTION_BLOCK
+}
+
+enum MarketSignalType {
+  IMPRESSION
+  VIEW
+  CLICK
+  OPEN
+  VIEW_ALL_CLICK
+  HIDE
+  NOT_INTERESTED
+  DWELL_SHORT
+  DWELL_MEDIUM
+  DWELL_LONG
+  SCROLL_SKIP
+  LIKE
+  SAVE
+  COMMENT
+  THREAD
+  SHARE
+  PROFILE_TAP
+  PRODUCT_VIEW
+  ADD_TO_CART
+  WISHLIST
+  PURCHASE
+  MARKET_SECTION_VIEW
+  MARKET_SECTION_SCROLL
+  MARKET_SECTION_VIEW_ALL_CLICK
+  MARKET_SECTION_DETAIL_VIEW
+  MARKET_SECTION_DETAIL_SCROLL
+  MARKET_SECTION_DISMISS
+  MARKET_SECTION_BACK_TO_HOME
+  SUGGESTION_BLOCK_VIEW
+  SUGGESTION_ITEM_VIEW
+  SUGGESTION_ITEM_CLICK
+  SUGGESTION_ITEM_WISHLIST
+  SUGGESTION_ITEM_CART_ADD
+  SUGGESTION_ITEM_HIDE
+  SUGGESTION_BLOCK_HIDE
+  SUGGESTION_VIEW_ALL_CLICK
+}
+
+enum MarketSignalSurface {
+  MARKET_HOME
+  MARKET_SECTION_DETAIL
+  DESIGN_FEED
+  PRODUCT_DETAIL
+  COLLECTION_DETAIL
+  BRAND_DETAIL
+  SEARCH
+  SUGGESTION_BLOCK
+}
+
+enum MarketSuppressionType {
+  HIDE_ITEM
+  NOT_INTERESTED
+  HIDE_BRAND
+  HIDE_CATEGORY
+  HIDE_SECTION
+  HIDE_SUGGESTION_BLOCK
+  SHOW_LESS
+}
+
+enum PersonalizationResetType {
+  FEED
+  MARKET
+  SUGGESTIONS
+  ALL
+}
+
+model UserFeedSignal {
+  id                 String                 @id @default(uuid()) @map("_id") @db.Uuid
+  userId             String?                @db.Uuid
+  anonymousSessionId String?                @db.VarChar(128)
+  targetType         MarketSignalTargetType
+  targetId           String                 @db.VarChar(128)
+  signalType         MarketSignalType
+  value              Float?
+  sectionKey         String?                @db.VarChar(80)
+  suggestionBlockKey String?                @db.VarChar(80)
+  surface            MarketSignalSurface?
+  screenContext      String?                @db.VarChar(120)
+  sessionId          String?                @db.VarChar(128)
+  batchId            String?                @db.VarChar(128)
+  position           Int?
+  metadata           Json?
+  createdAt          DateTime               @default(now())
+
+  @@index([userId, createdAt])
+  @@index([anonymousSessionId, createdAt])
+  @@index([targetType, targetId, createdAt])
+  @@index([sectionKey, createdAt])
+  @@index([suggestionBlockKey, createdAt])
+  @@index([userId, targetType, targetId])
+  @@map("user_feed_signals")
+}
+
+model UserSeenItem {
+  id                 String                 @id @default(uuid()) @map("_id") @db.Uuid
+  userId             String?                @db.Uuid
+  anonymousSessionId String?                @db.VarChar(128)
+  targetType         MarketSignalTargetType
+  targetId           String                 @db.VarChar(128)
+  surface            MarketSignalSurface
+  sectionKey         String?                @db.VarChar(80)
+  suggestionBlockKey String?                @db.VarChar(80)
+  sessionId          String?                @db.VarChar(128)
+  batchId            String?                @db.VarChar(128)
+  seenAt             DateTime
+  createdAt          DateTime               @default(now())
+
+  @@index([userId, createdAt])
+  @@index([anonymousSessionId, createdAt])
+  @@index([targetType, targetId, createdAt])
+  @@index([sectionKey, createdAt])
+  @@index([suggestionBlockKey, createdAt])
+  @@index([userId, targetType, targetId])
+  @@map("user_seen_items")
+}
+
+model MarketSectionSignal {
+  id                 String           @id @default(uuid()) @map("_id") @db.Uuid
+  userId             String?          @db.Uuid
+  anonymousSessionId String?          @db.VarChar(128)
+  sectionKey         String           @db.VarChar(80)
+  signalType         MarketSignalType
+  value              Float?
+  surface            MarketSignalSurface?
+  screenContext      String?          @db.VarChar(120)
+  sessionId          String?          @db.VarChar(128)
+  batchId            String?          @db.VarChar(128)
+  metadata           Json?
+  createdAt          DateTime         @default(now())
+
+  @@index([userId, createdAt])
+  @@index([anonymousSessionId, createdAt])
+  @@index([sectionKey, createdAt])
+  @@map("market_section_signals")
+}
+
+model SuggestionSignal {
+  id                 String                  @id @default(uuid()) @map("_id") @db.Uuid
+  userId             String?                 @db.Uuid
+  anonymousSessionId String?                 @db.VarChar(128)
+  blockKey           String                  @db.VarChar(80)
+  targetType         MarketSignalTargetType?
+  targetId           String?                 @db.VarChar(128)
+  signalType         MarketSignalType
+  value              Float?
+  surface            MarketSignalSurface?
+  screenContext      String?                 @db.VarChar(120)
+  sessionId          String?                 @db.VarChar(128)
+  batchId            String?                 @db.VarChar(128)
+  metadata           Json?
+  createdAt          DateTime                @default(now())
+
+  @@index([userId, createdAt])
+  @@index([anonymousSessionId, createdAt])
+  @@index([targetType, targetId, createdAt])
+  @@index([blockKey, createdAt])
+  @@map("suggestion_signals")
+}
+
+model UserContentSuppression {
+  id                 String                 @id @default(uuid()) @map("_id") @db.Uuid
+  userId             String?                @db.Uuid
+  anonymousSessionId String?                @db.VarChar(128)
+  targetType         MarketSignalTargetType
+  targetId           String?                @db.VarChar(128)
+  brandId            String?                @db.Uuid
+  categoryId         String?                @db.Uuid
+  sectionKey         String?                @db.VarChar(80)
+  suggestionBlockKey String?                @db.VarChar(80)
+  suppressionType    MarketSuppressionType
+  reason             String?                @db.VarChar(240)
+  expiresAt          DateTime?
+  createdAt          DateTime               @default(now())
+  updatedAt          DateTime               @updatedAt
+
+  @@index([userId, createdAt])
+  @@index([anonymousSessionId, createdAt])
+  @@index([targetType, targetId, createdAt])
+  @@index([sectionKey, createdAt])
+  @@index([suggestionBlockKey, createdAt])
+  @@index([userId, targetType, targetId])
+  @@index([userId, brandId])
+  @@index([expiresAt])
+  @@map("user_content_suppressions")
+}
+
+model PersonalizationReset {
+  id        String                   @id @default(uuid()) @map("_id") @db.Uuid
+  userId    String                   @db.Uuid
+  resetAt   DateTime
+  resetType PersonalizationResetType
+  reason    String?                  @db.VarChar(240)
+  createdAt DateTime                 @default(now())
+
+  @@index([userId, createdAt])
+  @@index([userId, resetAt])
+  @@map("personalization_resets")
+}
+
 model SystemConfig {
   key         String   @id
   value       String

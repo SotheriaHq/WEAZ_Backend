@@ -368,3 +368,38 @@ Known Phase 1 limits:
 - No personalized For You ranking exists yet.
 - No signal ingestion, seen tracking, suppression model, ranking profile, formula version, admin section config, or suggestion engine was implemented.
 - Product market direct category semantics outside the new section contract remain a later hardening item.
+
+## Phase 2 implementation result - 2026-05-24
+
+Ready for Phase 3: **Yes, after Phase 2 commits are pushed**, with ranking personalization still deferred.
+
+Implemented backend findings:
+- Prisma now includes V1 signal and control models: `UserFeedSignal`, `UserSeenItem`, `MarketSectionSignal`, `SuggestionSignal`, `UserContentSuppression`, and `PersonalizationReset`.
+- Migration `20260524120000_add_market_signal_suppression_foundation` creates the signal/suppression/reset tables, enums, and query indexes.
+- New endpoints:
+  - `POST /market/signals/batch`
+  - `POST /market/suppressions`
+  - `GET /market/suppressions`
+  - `DELETE /market/suppressions/:id`
+  - `POST /user/preferences/feed/reset`
+- Signal ingestion is batch-based with a 50-event server maximum and 2048-byte metadata pruning.
+- Authenticated `userId` is derived from the server request context. Guest events and suppressions require `anonymousSessionId`.
+- `/market/sections` and `/market/sections/:key` now exclude active user/session suppressions where safe.
+- Cache headers remain safe: market sections and control/reset endpoints are private/no-store; signal ingestion is no-store.
+
+Implemented web findings:
+- `src/hooks/useMarketSignals.ts` adds a bounded in-memory signal queue with 100-event max queue, 25-event client batch size, 5-second interval flush, visibility/pagehide flush, and cleanup on unmount.
+- `MarketPlace.tsx` instruments section impressions, item impressions, product opens, and not-interested actions for the Phase 1 section surface.
+- Web suppression calls `POST /market/suppressions`, removes the item locally, and offers an undo action using `DELETE /market/suppressions/:id`.
+- Web still keeps the Phase 1 capped product fallback and does not migrate product-detail suggestions or admin screens in this phase.
+
+Implemented mobile findings:
+- `threadly-mobile/src/api/MarketApi.ts` now exposes typed signal batch, suppression create/delete, and feed preference reset API methods.
+- Mobile runtime instrumentation and durable/offline signal queues remain deferred.
+
+Known Phase 2 limits:
+- `batchId` is accepted for client idempotency correlation, but strict duplicate batch de-dupe is deferred until a queue/idempotency store is added.
+- Signals write directly through bounded Prisma `createMany` calls in this phase; Redis/BullMQ ingestion is deferred to Phase 2B/Phase 3 hardening.
+- Seen tracking is recorded but not used for heavy dedupe or ranking yet.
+- Suppression affects market section output only where the section DTO has enough item metadata.
+- No ranking profile, formula versioning, ML, admin ranking UI, or full suggestion engine was implemented.

@@ -15,6 +15,8 @@ import { SizeFitController } from './size-fit.controller';
 import { SizeFitService } from './size-fit.service';
 import { SizeFitReminderService } from './size-fit-reminder.service';
 import { SizingModule } from 'src/sizing/sizing.module';
+import { FeedPreferencesController } from './feed-preferences.controller';
+import { FeedPreferencesService } from './feed-preferences.service';
 
 @Module({
   imports: [PrismaModule, NotificationsModule, SizingModule],
@@ -25,6 +27,7 @@ import { SizingModule } from 'src/sizing/sizing.module';
     UserPatchesController,
     PatchStatusBatchController,
     SizeFitController,
+    FeedPreferencesController,
   ],
   providers: [
     UserProfileService,
@@ -32,6 +35,7 @@ import { SizingModule } from 'src/sizing/sizing.module';
     PatchingService,
     SizeFitService,
     SizeFitReminderService,
+    FeedPreferencesService,
   ],
   exports: [
     UserProfileService,

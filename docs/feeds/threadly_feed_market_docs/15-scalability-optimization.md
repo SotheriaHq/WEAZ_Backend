@@ -24,7 +24,7 @@ Remaining scalability work:
 - product market direct category filtering still needs deeper category semantics hardening;
 - long View All grids still need dedicated web/mobile virtualization;
 - cross-section dedupe and diversity caps across the whole home response are not implemented yet;
-- signal ingestion and aggregate jobs are deferred to Phase 2+.
+- aggregate jobs and durable signal queue hardening are deferred to Phase 3+.
 
 ## Core performance principle
 
@@ -114,3 +114,21 @@ Mobile:
 ## Low-cost implementation
 
 V1 must avoid paid recommendation APIs, heavy ML, paid geolocation services, external analytics as dependency, and full-text search replacement unless already available. Use PostgreSQL, Prisma, optional Redis, deterministic formulas, scheduled aggregates, browser APIs, and Expo APIs.
+
+## Phase 2 scalability result - 2026-05-24
+
+Implemented:
+- signal writes are batched through `POST /market/signals/batch`;
+- backend batch limit is 50 events;
+- web queue is bounded to 100 events and flushes at 25 events per request;
+- metadata is pruned above 2048 bytes instead of storing unbounded JSON;
+- signal/suppression/reset tables have indexes for user/session, target, section, suggestion block, createdAt, brand, and expiry lookups;
+- market section suppression lookup is capped and applied to bounded section DTO output;
+- personalized/requester-aware market section responses remain `Cache-Control: private, no-store`.
+
+Production hardening still required:
+- move signal ingestion from direct bounded Prisma `createMany` into Redis/BullMQ or another durable queue;
+- add aggregate jobs before using raw event tables for ranking;
+- add strict batch idempotency when a durable queue/idempotency store is available;
+- add mobile persistent queue only after choosing the storage abstraction;
+- add monitoring for queue lag, DB write volume, and suppression table growth.

@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, Optional } from '@nestjs/common';
 import { CollectionStatus, CollectionVisibility, Prisma } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 import {
@@ -8,6 +8,15 @@ import {
   MarketSectionLayout,
   MarketSectionSourceType,
 } from './dto/market-section.dto';
+import {
+  MarketSuppressionScope,
+  MarketSuppressionService,
+} from './market-suppression.service';
+
+type MarketSectionIdentityOptions = {
+  userId?: string | null;
+  anonymousSessionId?: string | null;
+};
 
 type SectionConfig = {
   key: MarketSectionKey;
@@ -100,18 +109,26 @@ export class MarketSectionService {
   private readonly defaultDetailLimit = 24;
   private readonly maxDetailLimit = 60;
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    @Optional()
+    private readonly marketSuppressionService?: MarketSuppressionService,
+  ) {}
 
-  async getSections(options?: { limit?: number }) {
+  async getSections(options?: { limit?: number } & MarketSectionIdentityOptions) {
     const limitOverride =
       typeof options?.limit === 'number' && Number.isFinite(options.limit)
         ? Math.min(this.maxPreviewLimit, Math.max(1, Math.floor(options.limit)))
         : undefined;
+    const suppressionScope = await this.getSuppressionScope(options);
 
     const sections = await Promise.all(
-      SECTION_CONFIGS.map((config) =>
+      SECTION_CONFIGS.filter(
+        (config) => !suppressionScope.sectionKeys.has(config.key),
+      ).map((config) =>
         this.buildSection(config.key, {
           limit: limitOverride ?? config.previewItemLimit,
+          suppressionScope,
         }),
       ),
     );
@@ -131,13 +148,15 @@ export class MarketSectionService {
 
   async getSectionDetail(
     key: string,
-    options?: { cursor?: string; limit?: number },
+    options?: { cursor?: string; limit?: number } & MarketSectionIdentityOptions,
   ) {
     const sectionKey = this.normalizeSectionKey(key);
     const safeLimit = this.normalizeLimit(options?.limit, this.defaultDetailLimit);
+    const suppressionScope = await this.getSuppressionScope(options);
     const section = await this.buildSection(sectionKey, {
       cursor: options?.cursor,
       limit: safeLimit,
+      suppressionScope,
     });
 
     return {
@@ -163,11 +182,19 @@ export class MarketSectionService {
 
   private async buildSection(
     key: MarketSectionKey,
-    options: { cursor?: string; limit: number },
+    options: {
+      cursor?: string;
+      limit: number;
+      suppressionScope?: MarketSuppressionScope;
+    },
   ): Promise<MarketSectionDto> {
     const config = SECTION_CONFIG_BY_KEY.get(key);
     if (!config) {
       throw new NotFoundException(`Unsupported market section: ${key}`);
+    }
+
+    if (options.suppressionScope?.sectionKeys.has(key)) {
+      return this.buildEmptySection(config, options.limit);
     }
 
     let items: MarketSectionItemDto[] = [];
@@ -244,7 +271,10 @@ export class MarketSectionService {
       emotionalLabel: config.emotionalLabel,
       layout: config.layout,
       sourceType: config.sourceType,
-      items: this.dedupeItems(items).slice(0, options.limit),
+      items: this.filterSuppressedItems(
+        this.dedupeItems(items),
+        options.suppressionScope,
+      ).slice(0, options.limit),
       viewAll: {
         enabled: true,
         key,
@@ -265,6 +295,38 @@ export class MarketSectionService {
     };
   }
 
+  private buildEmptySection(
+    config: SectionConfig,
+    limit: number,
+  ): MarketSectionDto {
+    return {
+      key: config.key,
+      title: config.title,
+      subtitle: config.subtitle,
+      emotionalLabel: config.emotionalLabel,
+      layout: config.layout,
+      sourceType: config.sourceType,
+      items: [],
+      viewAll: {
+        enabled: true,
+        key: config.key,
+        route: `/market/sections/${config.key}`,
+        label: config.viewAllLabel,
+      },
+      pagination: {
+        limit,
+        hasNextPage: false,
+        nextCursor: null,
+      },
+      metadata: {
+        ranking: 'deterministic-v1',
+        personalization: 'disabled',
+        minimumItems: config.minimumItems,
+        previewItemLimit: config.previewItemLimit,
+      },
+    };
+  }
+
   private dedupeItems(items: MarketSectionItemDto[]) {
     const seen = new Set<string>();
     return items.filter((item) => {
@@ -273,6 +335,69 @@ export class MarketSectionService {
       seen.add(key);
       return true;
     });
+  }
+
+  private filterSuppressedItems(
+    items: MarketSectionItemDto[],
+    scope?: MarketSuppressionScope,
+  ) {
+    if (!scope) return items;
+    return items.filter((item) => !this.isSuppressedItem(item, scope));
+  }
+
+  private isSuppressedItem(
+    item: MarketSectionItemDto,
+    scope: MarketSuppressionScope,
+  ) {
+    if (
+      scope.targetKeys.has(
+        this.marketSuppressionService?.targetKey(item.entityType, item.sourceId) ??
+          `${item.entityType}:${item.sourceId}`,
+      )
+    ) {
+      return true;
+    }
+
+    if (
+      item.target?.id &&
+      scope.targetKeys.has(
+        this.marketSuppressionService?.targetKey(item.target.type, item.target.id) ??
+          `${item.target.type}:${item.target.id}`,
+      )
+    ) {
+      return true;
+    }
+
+    if (item.brand?.id && scope.brandIds.has(item.brand.id)) {
+      return true;
+    }
+
+    if (item.category?.id && scope.categoryIds.has(item.category.id)) {
+      return true;
+    }
+
+    return false;
+  }
+
+  private async getSuppressionScope(options?: MarketSectionIdentityOptions) {
+    if (!this.marketSuppressionService) {
+      return this.emptySuppressionScope();
+    }
+
+    return this.marketSuppressionService.getSuppressionScope({
+      userId: options?.userId,
+      anonymousSessionId: options?.anonymousSessionId,
+    });
+  }
+
+  private emptySuppressionScope(): MarketSuppressionScope {
+    return {
+      targetKeys: new Set(),
+      brandIds: new Set(),
+      categoryIds: new Set(),
+      sectionKeys: new Set(),
+      suggestionBlockKeys: new Set(),
+    };
   }
 
   private buildMarketableProductWhere(

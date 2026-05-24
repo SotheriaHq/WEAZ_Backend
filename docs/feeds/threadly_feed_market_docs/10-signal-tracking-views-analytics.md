@@ -8,7 +8,7 @@
 - Web hidden content is localStorage-backed; this does not provide cross-device suppression or ranking feedback.
 - Search requests have cancellation support; market/detail requests generally need signal propagation before batched signal work begins.
 
-Phase 2 should add batched signal ingestion, an offline/flush strategy for mobile, and explicit async ingestion failure handling. Signals must be bounded, privacy-aware, and safe to drop without breaking user flows.
+Phase 2 added bounded backend batch ingestion and web flush behavior. Mobile durable/offline queueing and server-side async queue hardening remain deferred. Signals must stay bounded, privacy-aware, and safe to drop without breaking user flows.
 
 ## Signal principles
 
@@ -165,3 +165,45 @@ Backend:
 - cap in-memory buffers;
 - Redis optional, not required;
 - never use unbounded maps keyed by user/session without TTL.
+
+## Phase 2 implemented foundation - 2026-05-24
+
+Implemented models:
+- `UserFeedSignal`
+- `UserSeenItem`
+- `MarketSectionSignal`
+- `SuggestionSignal`
+- `UserContentSuppression`
+- `PersonalizationReset`
+
+Implemented endpoints:
+- `POST /market/signals/batch`
+- `POST /market/suppressions`
+- `GET /market/suppressions`
+- `DELETE /market/suppressions/:id`
+- `POST /user/preferences/feed/reset`
+
+Implemented limits:
+- backend signal batch max: 50 events;
+- web in-memory queue max: 100 events;
+- web client flush batch max: 25 events;
+- web interval flush: 5 seconds;
+- metadata max before pruning: 2048 UTF-8 bytes;
+- target/session IDs max: 128 chars;
+- section/suggestion keys max: 80 chars.
+
+Implemented semantics:
+- authenticated identity is server-derived from the request, not accepted from the client body;
+- guest clients must send `anonymousSessionId`;
+- seen records are created for impression/view/open-style item events;
+- suppression records can target items, brands, categories, sections, and suggestion blocks;
+- market section output excludes active matching suppressions where section DTO metadata supports it;
+- `batchId` is accepted for traceability, but strict duplicate-batch idempotency is deferred.
+
+Deferred:
+- Redis/BullMQ async signal queue;
+- daily aggregate jobs;
+- taste/profile updates;
+- seen-content ranking dedupe;
+- mobile durable queue and AppState flush;
+- suggestion block runtime instrumentation.

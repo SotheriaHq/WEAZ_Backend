@@ -83,3 +83,24 @@ Potentially destructive actions need confirmation:
 After hiding an item/block:
 - show short undo toast/snackbar;
 - allow later restore in settings.
+
+## Phase 2 implemented controls - 2026-05-24
+
+Implemented now:
+- backend suppression creation, listing, and delete/restore endpoints;
+- backend feed preference reset marker endpoint;
+- web Market section cards expose a minimal `Not interested` action on touched market section previews;
+- web removes suppressed section items locally and offers an undo action;
+- guest suppressions use `anonymousSessionId`;
+- authenticated suppressions use the server-derived user ID.
+
+Deferred:
+- full Feed Preferences screen;
+- Hidden Content management screen;
+- muted brand management;
+- location personalization controls;
+- non-personalized toggle UI;
+- mobile hide/not-interested runtime controls;
+- hard deletion of signal history after reset.
+
+Reset behavior remains a soft reset: `PersonalizationReset` records a marker for future ranking to ignore older personalization signals, while analytics rows are retained unless a later privacy/legal requirement changes that policy.

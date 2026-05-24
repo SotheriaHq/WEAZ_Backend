@@ -29,13 +29,21 @@ describe('MarketSectionController', () => {
     };
     const controller = new MarketSectionController(service as any);
 
-    await controller.getSections('5');
-    await controller.getSectionDetail('fresh-drops', 'product_1', '9');
+    await controller.getSections('5', 'anon_1', { user: { id: 'user_1' } });
+    await controller.getSectionDetail('fresh-drops', 'product_1', '9', 'anon_1', {
+      user: { id: 'user_1' },
+    });
 
-    expect(service.getSections).toHaveBeenCalledWith({ limit: 5 });
+    expect(service.getSections).toHaveBeenCalledWith({
+      limit: 5,
+      userId: 'user_1',
+      anonymousSessionId: 'anon_1',
+    });
     expect(service.getSectionDetail).toHaveBeenCalledWith('fresh-drops', {
       cursor: 'product_1',
       limit: 9,
+      userId: 'user_1',
+      anonymousSessionId: 'anon_1',
     });
   });
 });

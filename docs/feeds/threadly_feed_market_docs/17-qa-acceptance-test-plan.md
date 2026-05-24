@@ -140,3 +140,45 @@ Deferred tests:
 - location denied.
 - network failure during suggestions.
 - signal endpoint unavailable.
+
+## Phase 2 tests added - 2026-05-24
+
+Backend tests added/updated:
+- `src/market/market-signal.service.spec.ts`
+  - accepts a valid batch;
+  - uses server-derived authenticated `userId`;
+  - supports guest `anonymousSessionId`;
+  - rejects oversized batches;
+  - rejects invalid signal/target types;
+  - creates seen records for impression/view-style events.
+- `src/market/market-suppression.service.spec.ts`
+  - creates guest suppressions;
+  - rejects guest suppressions without `anonymousSessionId`;
+  - builds suppression scope for target, brand, category, and section filters;
+  - deletes suppressions as restore;
+  - returns controlled not-found errors.
+- `src/market/market-section.service.spec.ts`
+  - verifies active suppressions exclude section items.
+- `src/market/market-cache.controller.spec.ts`
+  - verifies signal ingestion is `Cache-Control: no-store`;
+  - verifies suppression endpoints are `Cache-Control: private, no-store`.
+- `src/users/feed-preferences.service.spec.ts`
+  - verifies reset marker creation.
+- `src/users/feed-preferences.controller.spec.ts`
+  - verifies reset cache headers and server-derived user context.
+
+Commands run for Phase 2:
+- backend `npx prisma validate`: passed;
+- backend `npx prisma generate`: passed;
+- backend `npm test -- market-signal market-suppression market-section market-cache feed-preferences --runInBand`: passed;
+- backend `npm run build`: passed;
+- web `npm exec tsc -- -b --pretty false`: passed;
+- web `npm run build`: passed with existing Vite chunk-size warning;
+- mobile `npm exec tsc -- --noEmit`: passed.
+
+Deferred tests:
+- real API e2e for signal/suppression/reset endpoints against a database;
+- Playwright test proving web signals are batched and observers clean up after navigation;
+- mobile runtime tests for future AppState queue flushing;
+- durable queue retry/dead-letter tests;
+- suppression-aware empty-section fallback tests beyond current bounded filtering.

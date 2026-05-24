@@ -88,3 +88,21 @@
 | Admin saves bad weight config | reject with validation |
 | Super admin rollback formula | new sessions use previous version |
 | Missing fallback after deletion | block publish |
+
+## Phase 2 edge-case handling - 2026-05-24
+
+Implemented:
+- signal API is batch-based, so the web client does not send one request per impression;
+- web signal failures requeue the current batch within the bounded in-memory queue and do not block rendering;
+- web observers disconnect on unmount;
+- web flushes queued signals on interval, visibility hidden, pagehide, and cleanup;
+- guest signals/suppressions fail closed unless `anonymousSessionId` is present;
+- suppressing an item removes it locally immediately and restores the previous local state if the backend call fails;
+- market section responses remain private/no-store and exclude active suppressions without enabling personalization ranking.
+
+Still deferred:
+- durable mobile signal queue;
+- AppState-driven mobile dwell flush;
+- server-side queue retry/dead-letter handling;
+- suppression-aware fallbacks when a user hides so much content that a section becomes empty;
+- hidden-item link warning and restore flow.

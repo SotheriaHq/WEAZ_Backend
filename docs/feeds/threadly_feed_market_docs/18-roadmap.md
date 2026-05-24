@@ -35,16 +35,30 @@ Outcome:
 
 ## Phase 2 - Signal, seen, suppression, and cache safety foundation
 
+Status: completed on 2026-05-24 after Phase 2 commits are pushed, with ranking personalization still deferred.
+
 - add feed/market/suggestion signal models;
 - add seen-content tracking;
 - add suppression models;
-- add batched signal emission web/mobile;
-- add mobile offline queue/AppState flush behavior;
+- add batched signal emission on web;
+- add typed mobile signal/suppression API methods;
 - add personalized response cache-control policy;
-- add section/suggestion analytics.
+- add section/suggestion analytics foundation.
 
 Outcome:
-- system begins collecting usable ranking data.
+- backend can collect bounded feed/market/suggestion signals;
+- backend can persist seen items, suppressions, and reset markers;
+- market sections exclude active suppressions where safe;
+- web emits batched section/item/open/not-interested signals for the Phase 1 Market section surface;
+- mobile has the shared API contract but no runtime queue yet.
+
+Deferred from Phase 2:
+- mobile offline queue/AppState flush behavior;
+- strict batch idempotency;
+- Redis/BullMQ signal ingestion;
+- aggregate jobs;
+- ranking personalization;
+- admin ranking/signal governance UI.
 
 ## Phase 3 - Ranking profiles, formula versions, and personalization
 
