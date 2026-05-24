@@ -124,6 +124,34 @@ describe('MarketSignalService', () => {
     );
   });
 
+  it('fingerprint-deduplicates repeated events without clientEventId in the same batch', async () => {
+    const prisma = createPrisma();
+    const aggregation = createAggregation();
+    const service = new MarketSignalService(prisma as any, aggregation as any);
+
+    const result = await service.ingestBatch(
+      {
+        anonymousSessionId: 'anon_1',
+        events: [
+          event({ clientEventId: undefined, targetId: 'product_1' }),
+          event({ clientEventId: undefined, targetId: 'product_1' }),
+        ],
+      },
+      {},
+    );
+
+    expect(result.received).toBe(2);
+    expect(result.deduplicated).toBe(1);
+    expect(prisma.userFeedSignal.createMany).toHaveBeenCalledWith({
+      data: [expect.objectContaining({ clientEventId: null, targetId: 'product_1' })],
+    });
+    expect(aggregation.aggregateBatch).toHaveBeenCalledWith(
+      [expect.objectContaining({ targetId: 'product_1' })],
+      { userId: null, anonymousSessionId: 'anon_1' },
+      expect.any(Date),
+    );
+  });
+
   it('skips a duplicate batch replay when batchId already has a receipt', async () => {
     const prisma = createPrisma();
     prisma.marketSignalBatchReceipt.findFirst.mockResolvedValue({
@@ -274,5 +302,22 @@ describe('MarketSignalService', () => {
         }),
       ],
     });
+  });
+
+  it('queries recent clientEventId duplicates using the authenticated server user only', async () => {
+    const prisma = createPrisma();
+    const service = new MarketSignalService(prisma as any, createAggregation() as any);
+
+    await service.ingestBatch(
+      {
+        anonymousSessionId: 'anon_should_not_win',
+        events: [event({ clientEventId: 'event_auth_1' })],
+      },
+      { userId: 'user_1' },
+    );
+
+    const query = prisma.userFeedSignal.findMany.mock.calls[0][0];
+    expect(query.where.userId).toBe('user_1');
+    expect(query.where).not.toHaveProperty('anonymousSessionId');
   });
 });

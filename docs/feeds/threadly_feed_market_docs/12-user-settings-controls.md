@@ -119,3 +119,19 @@ Deferred:
 - full hidden content management;
 - user-facing reset/feed preference screen;
 - hard deletion/privacy export workflow if legal requirements later require it.
+
+## Phase 4 reset and suppression QA - 2026-05-24
+
+Phase 4 confirmed reset/suppression semantics for ranking readiness:
+- suppressions remain hard eligibility filters for market sections where suppression-aware filtering exists;
+- deleting a suppression restores eligibility but does not force the item to appear immediately;
+- reset is a soft personalization reset marker, not a data deletion action;
+- reset does not clear raw signals, seen history, suppressions, or global aggregate counters;
+- future ranking must ignore or strongly downweight user-level personalization signals before the latest applicable reset marker;
+- suppression and reset endpoints remain private/no-store.
+
+User-facing controls still deferred:
+- mobile not-interested/hide action;
+- hidden content management;
+- non-personalized mode toggle;
+- settings UI explaining reset scope.

@@ -120,3 +120,19 @@ Still deferred:
 - persisted offline mobile queue;
 - hidden-item deep-link warning and restore flow;
 - suppression-aware content broadening when a user hides enough content to empty a section.
+
+## Phase 4 readiness edge cases - 2026-05-24
+
+Validated or documented:
+- Phase 3 aggregate migration must be applied in QA/UAT before aggregate QA can be trusted;
+- local migration apply may remain blocked by a Postgres advisory lock, so destructive reset must not be used just to unblock it;
+- aggregation failure must not block raw signal persistence or market rendering;
+- aggregate keys must fit the schema budget for max-length session, section, block, and target values;
+- reset must not destroy global counters shared by the platform;
+- anonymous aggregate data must not attach to a logged-in user without an accepted merge design;
+- ranked output must fall back to deterministic Phase 1 section ordering if aggregate reads fail.
+
+Still deferred:
+- concurrent duplicate batch replay hardening under true race conditions;
+- queued retry/dead-letter handling;
+- aggregate-driven ranking rollout and rollback controls.

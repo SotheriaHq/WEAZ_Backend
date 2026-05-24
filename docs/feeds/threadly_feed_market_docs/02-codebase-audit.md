@@ -403,3 +403,24 @@ Known Phase 2 limits:
 - Seen tracking is recorded but not used for heavy dedupe or ranking yet.
 - Suppression affects market section output only where the section DTO has enough item metadata.
 - No ranking profile, formula versioning, ML, admin ranking UI, or full suggestion engine was implemented.
+
+## Phase 3 and Phase 4 re-audit result - 2026-05-24
+
+Phase 3 verified:
+- backend added `clientEventId`, `MarketSignalBatchReceipt`, `MarketSignalAggregateDaily`, duplicate batch replay checks, recent client-event dedupe, synchronous aggregate updates, and explicit reset retention policy;
+- web market signals now carry client event IDs through the existing bounded signal queue;
+- mobile added `src/services/marketSignals.ts` and light `MarketScreen` runtime instrumentation with bounded queue, 25-event flushes, 5-second interval, AppState background/inactive flush, and bounded retry;
+- Redis/BullMQ remains deferred for the market signal path;
+- aggregate counters are not used for ranking.
+
+Phase 4 verified:
+- `MarketSignalService` persists raw accepted events and skips duplicate event IDs, duplicate batch replays, recent duplicate client IDs, and same-batch no-ID fingerprints;
+- `MarketSignalAggregationService` summarizes section impressions, item impressions, opens, View All clicks, suppressions, seen counts, and latest seen timestamps into daily UTC aggregate buckets;
+- authenticated aggregate buckets use the server-derived user ID and do not attach the anonymous session;
+- reset creates a marker and does not delete raw signals, seen rows, suppressions, or global aggregate counters;
+- market section output remains deterministic/non-personalized and suppression-aware where item metadata supports it.
+
+Phase 4 hardening:
+- `MarketSignalAggregateDaily.aggregateKey` was widened to `VARCHAR(512)` because max-length aggregate inputs can exceed the original `VARCHAR(320)` budget.
+
+Ready for ranking implementation: **No** until the ranking design gate is accepted, aggregate migrations are applied in QA/UAT, a feature flag/rollback path exists, and production queue/monitoring decisions are made.

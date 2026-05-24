@@ -223,3 +223,31 @@ Deferred tests:
 - Redis/BullMQ retry/dead-letter tests after market signal queue infrastructure exists;
 - React Native integration test that simulates AppState transitions instead of static contract checks;
 - Playwright/Vitest coverage for web pagehide/visibility flushing.
+
+## Phase 4 ranking-readiness QA - 2026-05-24
+
+Backend tests strengthened:
+- `src/market/market-signal.service.spec.ts`
+  - verifies same-batch fingerprint dedupe for events without `clientEventId`;
+  - verifies recent duplicate lookup uses the authenticated server user, not the client-provided anonymous session.
+- `src/market/market-signal-aggregation.service.spec.ts`
+  - verifies View All clicks increment aggregate counters;
+  - verifies latest seen timestamp updates for view-like item events;
+  - verifies anonymous aggregate buckets do not attach to authenticated user buckets;
+  - verifies max-length aggregate keys remain inside the widened 512-character schema budget.
+
+New QA docs:
+- `docs/market-ranking-design-gate.md`
+  - defines conservative ranking rules and acceptance criteria before implementation.
+- `docs/market-signal-aggregation-qa-checklist.md`
+  - defines migration, ingestion, idempotency, aggregation, suppression, reset, web queue, mobile queue, and ranking-readiness checks.
+
+Phase 4 validation must include:
+- `npx prisma validate`;
+- `npx prisma generate`;
+- `npx prisma migrate status`;
+- focused backend market signal/suppression/aggregation/feed-preferences tests;
+- `npm run build`;
+- `git diff --check`.
+
+Ranking remains deferred. These tests prove readiness of the signal pipeline, not personalized ordering.

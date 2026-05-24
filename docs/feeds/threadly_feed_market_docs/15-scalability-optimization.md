@@ -154,3 +154,18 @@ Still not implemented:
 - queue lag monitoring;
 - durable mobile offline storage;
 - ranking profile cache invalidation.
+
+## Phase 4 scalability readiness - 2026-05-24
+
+Phase 4 keeps ranking disabled and validates whether aggregates are safe to depend on later.
+
+Readiness updates:
+- aggregate counter tests now cover section impressions, item impressions, opens, View All clicks, suppressions, seen counts, UTC daily buckets, anonymous/user separation, and reset retention;
+- `aggregateKey` storage is widened to 512 characters to avoid max-length key failures;
+- the QA checklist requires Phase 3 and Phase 4 migrations to be applied before aggregate UAT;
+- ranking design must use aggregate tables, bounded candidate pools, hard suppression filters, diversity caps, and deterministic fallback.
+
+Redis/BullMQ status:
+- not implemented for market signals in Phase 4;
+- still recommended before high-volume production ranking uses signal volume;
+- current synchronous aggregation remains acceptable only as a bounded foundation and QA path.

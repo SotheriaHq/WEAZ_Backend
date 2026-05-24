@@ -267,3 +267,25 @@ Not implemented:
 - suggestion engine ranking.
 
 Phase 3 idempotency is practical but not absolute: `batchId` replay protection is durable through `MarketSignalBatchReceipt`; `clientEventId` duplicate checks are bounded to a recent replay window; events without client IDs are deduped only inside the current batch by fingerprint.
+
+## Phase 4 aggregate QA result - 2026-05-24
+
+Phase 4 did not make ranking live. It validated the Phase 3 pipeline and added a design gate for future ranking.
+
+Confirmed by tests:
+- raw signal batches still persist accepted events;
+- duplicate `clientEventId` values in one batch are skipped;
+- duplicate `batchId` replays are skipped when a receipt exists;
+- events without client IDs are fingerprint-deduped inside the same batch;
+- section impressions, item impressions, product opens, View All clicks, suppressions, seen counts, and latest seen timestamps aggregate into daily UTC buckets;
+- anonymous aggregate buckets stay separate from authenticated user buckets;
+- reset markers do not delete raw signals, seen rows, suppressions, or global aggregate counters.
+
+Readiness fix:
+- `MarketSignalAggregateDaily.aggregateKey` was widened from `VARCHAR(320)` to `VARCHAR(512)` because max-length anonymous session, section key, suggestion block key, target type, and target ID values can exceed the original 320-character budget.
+
+Still not implemented:
+- feed or market personalization;
+- aggregate-driven reordering;
+- Redis/BullMQ market signal worker;
+- ranking profile/formula admin governance.

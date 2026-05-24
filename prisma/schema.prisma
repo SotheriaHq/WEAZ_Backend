@@ -5236,7 +5236,7 @@ model MarketSignalBatchReceipt {
 
 model MarketSignalAggregateDaily {
   id                 String                  @id @default(uuid()) @map("_id") @db.Uuid
-  aggregateKey       String                  @unique @db.VarChar(320)
+  aggregateKey       String                  @unique @db.VarChar(512)
   bucketDate         DateTime
   userId             String?                 @db.Uuid
   anonymousSessionId String?                 @db.VarChar(128)

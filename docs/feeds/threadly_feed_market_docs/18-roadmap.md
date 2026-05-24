@@ -92,18 +92,31 @@ Deferred from Phase 3:
 - admin ranking governance;
 - full hide/not-interested mobile UI.
 
-## Phase 4 - Ranking profiles, formula versions, and personalization
+## Phase 4 - Ranking design gate, aggregate QA, and safe personalization readiness
 
-- implement deterministic scoring formulas with stable cursor tie-breakers;
-- add user affinity aggregates;
-- add brand/category affinity;
-- add cold-start phases;
-- add For You eligibility;
-- add market item ranking;
-- expose non-personalized fallback mode.
+Status: completed on 2026-05-24 after Phase 4 commit is pushed. Ranking personalization remains deferred.
+
+- re-audit Phase 3 signal ingestion, idempotency, aggregation, suppression, reset, web signal IDs, and mobile runtime queue;
+- confirm migration readiness without destructive database reset;
+- strengthen aggregate/idempotency/reset tests;
+- document conservative ranking rules before implementation;
+- create aggregate QA/UAT checklist;
+- keep `/market/sections`, `/market/sections/:key`, feed output, and market ordering deterministic/non-personalized.
 
 Outcome:
-- feeds and market sections become personalized.
+- `docs/market-ranking-design-gate.md` defines ranking goals, non-goals, hard filters, cold-start behavior, guest behavior, freshness, repetition control, suppression/reset behavior, diversity/fairness, scoring proposal, rollout, metrics, fallback, QA acceptance, and open decisions;
+- `docs/market-signal-aggregation-qa-checklist.md` defines migration, ingestion, idempotency, aggregation, suppression, reset, mobile queue, web queue, ranking-readiness, and release-blocker checks;
+- aggregate tests now cover View All clicks, seen timestamps, anonymous/user bucket isolation, fingerprint dedupe without client IDs, and widened aggregate-key budget;
+- `MarketSignalAggregateDaily.aggregateKey` is widened to `VARCHAR(512)` to avoid max-length aggregate-key failures;
+- local migration status may still show pending aggregate migrations until the target database advisory lock clears or deployment migration flow applies them.
+
+Deferred from Phase 4:
+- signal-driven market/feed ranking;
+- Redis/BullMQ market signal worker;
+- ranking profile/formula version tables;
+- admin ranking governance UI;
+- non-personalized toggle UI;
+- durable mobile offline queue.
 
 ## Phase 5 - Context-aware market suggestion blocks
 
