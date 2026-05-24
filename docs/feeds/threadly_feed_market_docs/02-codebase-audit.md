@@ -442,3 +442,14 @@ Phase 5 documentation changes:
 - `docs/market-signal-aggregation-qa-checklist.md` now includes migration execution order, backup requirements, deploy commands, post-migration SQL checks, rollback guidance, advisory-lock handling, and destructive-reset warnings.
 
 Ready for ranking implementation: **No** until QA/UAT migrations are applied, disabled-by-default ranking flags are implemented and tested, deterministic fallback is proven, monitoring exists, owner placeholders are replaced, and rollback is rehearsed.
+
+## Phase 6 ranking flag foundation result - 2026-05-24
+
+Phase 6 implementation confirmed:
+- `src/market/market-ranking-config.service.ts` reads `MARKET_RANKING_*` env values with safe defaults, clamping, and section-key normalization;
+- `src/market/market-section.service.ts` reads ranking config in a no-op path;
+- `/market/sections` and `/market/sections/:key` still serve deterministic V1 ordering;
+- aggregate tables are not read for ordering;
+- tests prove default disabled ranking config, safe invalid value handling, bounded section keys, deterministic fallback when ranking is disabled, deterministic fallback if ranking is enabled before implementation exists, suppression filtering, and cache headers.
+
+Ready for ranking implementation: **No**. Phase 6 closes the code-level flag foundation only. Remaining blockers are QA/UAT aggregate migrations, owner placeholders, monitoring dashboard, rollback rehearsal, and actual ranking implementation behind the disabled-by-default flags.

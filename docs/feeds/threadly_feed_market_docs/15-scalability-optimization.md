@@ -188,3 +188,18 @@ Redis/BullMQ status:
 - still deferred for the market signal path;
 - current synchronous aggregation remains acceptable only for bounded QA and low-volume shadow mode;
 - queue/worker adoption becomes mandatory before high-volume ranking if signal volume, latency, database load, aggregate failures, or personalized-section count exceeds the thresholds in `docs/market-ranking-release-plan.md`.
+
+## Phase 6 fallback scalability guard - 2026-05-24
+
+Phase 6 adds code-level ranking flags without changing market query behavior.
+
+Confirmed:
+- ranking flags do not add aggregate reads to `/market/sections` or `/market/sections/:key`;
+- deterministic V1 section queries remain the only served ordering path;
+- invalid flag values fall back or clamp safely;
+- section-key allowlists are normalized and bounded before any future ranking implementation can consume them.
+
+Remaining scalability blockers before ranking:
+- apply pending aggregate migrations in QA/UAT;
+- add monitoring for aggregate read latency and fallback activation;
+- keep Redis/BullMQ deferred until the release-plan thresholds require queue adoption.

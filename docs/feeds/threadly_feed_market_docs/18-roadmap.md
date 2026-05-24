@@ -143,6 +143,28 @@ Deferred from Phase 5:
 - admin ranking governance UI;
 - durable mobile offline queue.
 
+## Phase 6 - Ranking flag foundation and deterministic fallback tests
+
+Status: completed on 2026-05-24 after Phase 6 commit is pushed. Ranking remains disabled.
+
+- add backend ranking flag parsing with safe defaults;
+- wire ranking config into market sections as a no-op fallback guard;
+- prove deterministic market section ordering remains served when ranking flags are absent, disabled, or enabled before implementation exists;
+- prove aggregate tables are not read for ordering;
+- keep `/market/sections`, `/market/sections/:key`, feed output, and market ordering deterministic/non-personalized.
+
+Outcome:
+- `MarketRankingConfigService` reads `MARKET_RANKING_*` env values with safe defaults, clamping, and section-key normalization;
+- market section service consumes the config without changing served output;
+- focused tests cover config defaults, invalid/clamped values, section-key bounds, deterministic fallback, suppression preservation, and cache headers.
+
+Deferred from Phase 6:
+- signal-driven market/feed ranking;
+- shadow-ranked response generation;
+- Redis/BullMQ market signal worker;
+- admin ranking governance UI;
+- durable mobile offline queue.
+
 ## Future phase - Context-aware market suggestion blocks
 
 - product detail suggestions;
@@ -153,7 +175,7 @@ Deferred from Phase 5:
 - suggestion suppression;
 - suggestion analytics.
 
-## Phase 6 - User controls and admin governance
+## Future phase - User controls and admin governance
 
 - user feed settings;
 - hidden/muted management;

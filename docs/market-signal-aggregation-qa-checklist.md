@@ -140,6 +140,10 @@ Advisory-lock handling:
 - Suppression and reset semantics are documented.
 - Redis/BullMQ decision is explicit.
 - Feature flag and rollback path are defined before ranking code starts.
+- Ranking flags default disabled in code.
+- Deterministic fallback remains served when ranking flags are absent or disabled.
+- Deterministic fallback remains served if ranking is enabled before implementation exists.
+- Aggregate tables are not read for served ordering.
 
 ## Release blockers
 
@@ -148,3 +152,15 @@ Advisory-lock handling:
 - Aggregate update failure that blocks signal ingestion.
 - User reset deleting global aggregate counters.
 - Personalized/ranked output shipping without a feature flag and fallback.
+
+## Phase 6 ranking flag checklist
+
+- `MarketRankingConfigService` returns safe defaults.
+- Invalid boolean values fall back safely.
+- Invalid numeric values fall back or clamp safely.
+- Section keys are normalized, deduped, and bounded.
+- `/market/sections` remains deterministic without ranking env values.
+- `/market/sections` remains deterministic with `MARKET_RANKING_ENABLED=false`.
+- `/market/sections` remains deterministic with `MARKET_RANKING_ENABLED=true` until ranking implementation exists.
+- Suppression filtering still applies after flag wiring.
+- Cache headers remain `Cache-Control: private, no-store`.

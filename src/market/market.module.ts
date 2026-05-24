@@ -7,6 +7,7 @@ import { MarketSignalController } from './market-signal.controller';
 import { MarketSignalService } from './market-signal.service';
 import { MarketSuppressionController } from './market-suppression.controller';
 import { MarketSuppressionService } from './market-suppression.service';
+import { MarketRankingConfigService } from './market-ranking-config.service';
 
 @Module({
   imports: [PrismaModule],
@@ -17,10 +18,15 @@ import { MarketSuppressionService } from './market-suppression.service';
   ],
   providers: [
     MarketSectionService,
+    MarketRankingConfigService,
     MarketSignalAggregationService,
     MarketSignalService,
     MarketSuppressionService,
   ],
-  exports: [MarketSectionService, MarketSuppressionService],
+  exports: [
+    MarketSectionService,
+    MarketRankingConfigService,
+    MarketSuppressionService,
+  ],
 })
 export class MarketModule {}

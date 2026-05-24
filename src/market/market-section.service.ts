@@ -12,6 +12,10 @@ import {
   MarketSuppressionScope,
   MarketSuppressionService,
 } from './market-suppression.service';
+import {
+  MarketRankingConfig,
+  MarketRankingConfigService,
+} from './market-ranking-config.service';
 
 type MarketSectionIdentityOptions = {
   userId?: string | null;
@@ -113,6 +117,8 @@ export class MarketSectionService {
     private readonly prisma: PrismaService,
     @Optional()
     private readonly marketSuppressionService?: MarketSuppressionService,
+    @Optional()
+    private readonly marketRankingConfigService?: MarketRankingConfigService,
   ) {}
 
   async getSections(options?: { limit?: number } & MarketSectionIdentityOptions) {
@@ -121,14 +127,17 @@ export class MarketSectionService {
         ? Math.min(this.maxPreviewLimit, Math.max(1, Math.floor(options.limit)))
         : undefined;
     const suppressionScope = await this.getSuppressionScope(options);
+    const rankingConfig = this.marketRankingConfigService?.getConfig();
+    const sectionConfigs = this.getServedSectionConfigs(rankingConfig);
 
     const sections = await Promise.all(
-      SECTION_CONFIGS.filter(
+      sectionConfigs.filter(
         (config) => !suppressionScope.sectionKeys.has(config.key),
       ).map((config) =>
         this.buildSection(config.key, {
           limit: limitOverride ?? config.previewItemLimit,
           suppressionScope,
+          rankingConfig,
         }),
       ),
     );
@@ -153,10 +162,12 @@ export class MarketSectionService {
     const sectionKey = this.normalizeSectionKey(key);
     const safeLimit = this.normalizeLimit(options?.limit, this.defaultDetailLimit);
     const suppressionScope = await this.getSuppressionScope(options);
+    const rankingConfig = this.marketRankingConfigService?.getConfig();
     const section = await this.buildSection(sectionKey, {
       cursor: options?.cursor,
       limit: safeLimit,
       suppressionScope,
+      rankingConfig,
     });
 
     return {
@@ -173,6 +184,18 @@ export class MarketSectionService {
     return normalized;
   }
 
+  private getServedSectionConfigs(
+    rankingConfig?: MarketRankingConfig,
+  ): SectionConfig[] {
+    if (!rankingConfig?.enabled) {
+      return SECTION_CONFIGS;
+    }
+
+    // Phase 6 only wires release flags. No ranking implementation exists yet,
+    // so served output must continue through deterministic fallback.
+    return SECTION_CONFIGS;
+  }
+
   private normalizeLimit(limit: number | undefined, fallback: number) {
     if (typeof limit !== 'number' || !Number.isFinite(limit)) {
       return fallback;
@@ -186,6 +209,7 @@ export class MarketSectionService {
       cursor?: string;
       limit: number;
       suppressionScope?: MarketSuppressionScope;
+      rankingConfig?: MarketRankingConfig;
     },
   ): Promise<MarketSectionDto> {
     const config = SECTION_CONFIG_BY_KEY.get(key);
@@ -194,7 +218,7 @@ export class MarketSectionService {
     }
 
     if (options.suppressionScope?.sectionKeys.has(key)) {
-      return this.buildEmptySection(config, options.limit);
+      return this.buildEmptySection(config, options.limit, options.rankingConfig);
     }
 
     let items: MarketSectionItemDto[] = [];
@@ -287,7 +311,7 @@ export class MarketSectionService {
         nextCursor,
       },
       metadata: {
-        ranking: 'deterministic-v1',
+        ranking: this.resolveServedRanking(options.rankingConfig),
         personalization: 'disabled',
         minimumItems: config.minimumItems,
         previewItemLimit: config.previewItemLimit,
@@ -298,6 +322,7 @@ export class MarketSectionService {
   private buildEmptySection(
     config: SectionConfig,
     limit: number,
+    rankingConfig?: MarketRankingConfig,
   ): MarketSectionDto {
     return {
       key: config.key,
@@ -319,12 +344,18 @@ export class MarketSectionService {
         nextCursor: null,
       },
       metadata: {
-        ranking: 'deterministic-v1',
+        ranking: this.resolveServedRanking(rankingConfig),
         personalization: 'disabled',
         minimumItems: config.minimumItems,
         previewItemLimit: config.previewItemLimit,
       },
     };
+  }
+
+  private resolveServedRanking(
+    _rankingConfig?: MarketRankingConfig,
+  ): 'deterministic-v1' {
+    return 'deterministic-v1';
   }
 
   private dedupeItems(items: MarketSectionItemDto[]) {

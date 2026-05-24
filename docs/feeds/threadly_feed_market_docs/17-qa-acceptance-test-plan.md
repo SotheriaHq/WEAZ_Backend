@@ -280,3 +280,24 @@ Acceptance before ranking implementation:
 
 Current blocker:
 - local `npx prisma migrate status` still reports the two aggregate migrations pending. Do not use destructive reset to clear this; apply migrations through the normal development or deploy path once the advisory lock is clear.
+
+## Phase 6 ranking flag tests - 2026-05-24
+
+Phase 6 does not implement ranking. It adds code-level ranking flag parsing and proves deterministic fallback remains the served behavior.
+
+Backend tests added/updated:
+- `src/market/market-ranking-config.service.spec.ts`
+  - verifies ranking defaults disabled;
+  - verifies shadow mode defaults true;
+  - verifies deterministic fallback defaults true;
+  - verifies invalid values fall back or clamp safely;
+  - verifies section keys are normalized, deduped, and bounded.
+- `src/market/market-section.service.spec.ts`
+  - verifies deterministic ordering when ranking is explicitly disabled;
+  - verifies deterministic fallback remains served when ranking is enabled before implementation exists;
+  - verifies aggregate tables are not read for ordering in the fallback path.
+
+Validation command:
+- `npm test -- market-ranking-config market-section --runInBand`
+
+Ranking remains deferred. These tests prove the feature-flag guardrail, not personalized ordering.

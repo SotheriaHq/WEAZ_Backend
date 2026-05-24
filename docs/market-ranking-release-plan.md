@@ -1,6 +1,6 @@
 # Market Ranking Release Plan
 
-Status: Phase 5 release gate. Ranking is currently disabled.
+Status: Phase 6 flag foundation. Ranking is currently disabled.
 Date: 2026-05-24
 
 ## 1. Purpose
@@ -15,6 +15,7 @@ This document is a release gate, not a ranking implementation. It must be accept
 - `/market/sections` and `/market/sections/:key` remain deterministic and suppression-aware.
 - Raw market/feed signals are captured through bounded batch ingestion.
 - Daily aggregates exist as a foundation for future ranking.
+- Phase 6 adds code-level env ranking flags through `MarketRankingConfigService`.
 - Redis/BullMQ is deferred for the market signal path.
 - The Phase 3 and Phase 4 aggregate migrations must be applied in QA/UAT before aggregate QA is considered complete.
 
@@ -34,7 +35,13 @@ Existing backend patterns that can support this later:
 - `SystemConfigService.getBoolean(...)` for admin-managed boolean config.
 - The existing `FeatureFlag` bootstrap pattern used by review features.
 
-Phase 5 does not implement these flags in code. Ranking implementation must add tests proving flags default disabled and deterministic fallback remains the default served path.
+Phase 6 implementation:
+- `src/market/market-ranking-config.service.ts` reads the ranking env flags with safe defaults.
+- `MarketSectionService` reads the config but still serves deterministic V1 output.
+- Tests prove ranking defaults disabled, invalid values fall back/clamp safely, section keys are normalized/bounded, deterministic fallback remains served when ranking is disabled, and deterministic fallback remains served even when `MARKET_RANKING_ENABLED=true` before ranking exists.
+- Aggregate tables are not read for served ordering.
+
+Admin-managed ranking flags remain deferred until audit-backed governance is added.
 
 ## 4. Suggested environment variables
 
@@ -198,9 +205,33 @@ Required Redis/BullMQ design inputs before adoption:
 ## 12. Open decisions
 
 - Final ranking owner names.
-- Whether ranking flags should live first in environment config, `SystemConfig`, `FeatureFlag`, or both.
+- Whether ranking flags should later mirror from environment config into `SystemConfig`, `FeatureFlag`, or both for audited admin governance.
 - Initial section key for shadow mode.
 - Exact production rollout percentage.
 - Accepted thresholds for repeated item rate and brand concentration.
 - Whether anonymous aggregate data can ever merge into authenticated user state.
 - Whether signal ingestion should continue during every rollback scenario or pause on high DB load.
+
+## 13. Phase 6 implemented code gate
+
+Implemented:
+- env-backed `MarketRankingConfigService`;
+- safe defaults:
+  - ranking enabled: `false`;
+  - shadow mode: `true`;
+  - section keys: empty list;
+  - max personalized sections: `1`;
+  - deterministic fallback: `true`;
+  - exploration percent: `10`;
+  - brand max share: `35`;
+  - aggregate timeout: `150ms`;
+- clamping/normalization for invalid numeric and section-key values;
+- no-op wiring into `MarketSectionService`;
+- deterministic fallback tests.
+
+Still not implemented:
+- ranking formulas;
+- aggregate reads for ordering;
+- shadow-ranked response generation;
+- admin flag UI;
+- Redis/BullMQ market ranking worker.

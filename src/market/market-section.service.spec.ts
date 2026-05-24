@@ -109,6 +109,20 @@ describe('MarketSectionService', () => {
     ...overrides,
   });
 
+  const rankingConfigService = (overrides: Record<string, any> = {}) => ({
+    getConfig: jest.fn().mockReturnValue({
+      enabled: false,
+      shadowMode: true,
+      sectionKeys: [],
+      maxPersonalizedSections: 1,
+      fallbackDeterministic: true,
+      explorationPercent: 10,
+      brandMaxShare: 35,
+      aggregateTimeoutMs: 150,
+      ...overrides,
+    }),
+  });
+
   it('returns active section previews with deterministic V1 metadata', async () => {
     const prisma = createPrisma();
     const service = new MarketSectionService(prisma as any);
@@ -135,6 +149,66 @@ describe('MarketSectionService', () => {
         title: 'Aso oke jacket',
       }),
     );
+  });
+
+  it('keeps deterministic ordering when ranking flags are explicitly disabled', async () => {
+    const prisma = createPrisma();
+    const rankingConfig = rankingConfigService({ enabled: false });
+    const service = new MarketSectionService(
+      prisma as any,
+      undefined,
+      rankingConfig as any,
+    );
+
+    const result = await service.getSectionDetail('fresh-drops');
+
+    expect(rankingConfig.getConfig).toHaveBeenCalled();
+    expect(result.section.metadata).toEqual(
+      expect.objectContaining({
+        ranking: 'deterministic-v1',
+        personalization: 'disabled',
+      }),
+    );
+    expect(prisma.product.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      }),
+    );
+  });
+
+  it('keeps deterministic fallback when ranking is enabled before implementation exists', async () => {
+    const aggregateFindMany = jest.fn();
+    const prisma = createPrisma({
+      marketSignalAggregateDaily: { findMany: aggregateFindMany },
+    });
+    const rankingConfig = rankingConfigService({
+      enabled: true,
+      fallbackDeterministic: false,
+      sectionKeys: ['fresh-drops'],
+    });
+    const service = new MarketSectionService(
+      prisma as any,
+      undefined,
+      rankingConfig as any,
+    );
+
+    const result = await service.getSectionDetail('fresh-drops');
+
+    expect(result.section.items.map((item) => item.sourceId)).toEqual([
+      'product_1',
+    ]);
+    expect(result.section.metadata).toEqual(
+      expect.objectContaining({
+        ranking: 'deterministic-v1',
+        personalization: 'disabled',
+      }),
+    );
+    expect(prisma.product.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      }),
+    );
+    expect(aggregateFindMany).not.toHaveBeenCalled();
   });
 
   it('hides empty sections on the market home response', async () => {

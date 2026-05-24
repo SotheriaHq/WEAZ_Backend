@@ -10,6 +10,7 @@ Define the minimum safe rules Threadly must accept before any market/feed endpoi
 ## 2. Current state
 
 - `/market/sections` and `/market/sections/:key` remain deterministic and non-personalized.
+- Phase 6 adds code-level ranking flags, but the flags do not change served ordering.
 - Raw signals, seen items, suppressions, reset markers, batch receipts, and daily aggregates exist in backend schema.
 - Web sends market section signal batches with client event IDs.
 - Mobile has an in-memory runtime signal queue and light MarketScreen instrumentation.
@@ -206,6 +207,7 @@ If aggregate reads fail, return deterministic Phase 1 section ordering with acti
 - Stable cursor pagination does not duplicate or skip obvious items.
 - Cache headers stay private/no-store.
 - Ranking can be disabled without deploy rollback.
+- Ranking flags default disabled and deterministic fallback is covered by automated tests.
 
 ## 24. Open decisions before implementation
 
@@ -216,3 +218,13 @@ If aggregate reads fail, return deterministic Phase 1 section ordering with acti
 - Exposure cap thresholds per section.
 - Whether to add hourly aggregate rollups before ranking.
 - Admin audit model for formula/version changes.
+
+## 25. Phase 6 flag foundation
+
+Phase 6 implements the release-gate flag reader only:
+- `MarketRankingConfigService` reads `MARKET_RANKING_*` env values with safe defaults, normalization, and clamping;
+- `MarketSectionService` consumes the config in a no-op path;
+- deterministic V1 output remains served whether ranking flags are absent, disabled, or enabled before ranking implementation exists;
+- aggregate tables are not queried for ordering.
+
+This does not satisfy the ranking implementation gate by itself. QA/UAT migrations, owner assignment, monitoring, rollback rehearsal, and actual ranking design acceptance remain required.
