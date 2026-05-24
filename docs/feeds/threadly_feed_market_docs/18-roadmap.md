@@ -187,6 +187,31 @@ Deferred from Phase 7:
 - Redis/BullMQ market signal worker;
 - admin ranking governance UI.
 
+## Phase 7B - Operational readiness gate before ranking implementation
+
+Status: Phase 7B gate verification added on 2026-05-24. Ranking remains disabled and not ready for implementation.
+
+- verify Prisma schema and migration status;
+- verify ranking flags still default to deterministic fallback;
+- verify market section routes do not read aggregate tables for served ordering;
+- verify web and mobile clients do not assume personalized/ranked market output;
+- formalize monitoring implementability and owner placeholders;
+- make rollback rehearsal checklist executable for QA/UAT.
+
+Outcome:
+- backend validation confirms schema/generate pass and the two aggregate migrations remain pending locally;
+- focused backend tests now cover market home deterministic fallback with ranking enabled-before-implementation and no aggregate read for served ordering;
+- monitoring docs now distinguish existing logging foundations from missing dashboard/alert infrastructure;
+- rollback docs now include a concrete QA/UAT execution checklist;
+- ranking remains blocked until QA/UAT migrations, monitoring/alerts or an approved manual substitute, owner assignment, and rollback rehearsal are complete.
+
+Deferred from Phase 7B:
+- signal-driven market/feed ranking;
+- aggregate reads for served ordering;
+- suggestion engine implementation;
+- production monitoring dashboard implementation;
+- Redis/BullMQ market signal worker.
+
 ## Future phase - Context-aware market suggestion blocks
 
 - product detail suggestions;

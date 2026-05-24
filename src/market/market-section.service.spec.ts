@@ -211,6 +211,38 @@ describe('MarketSectionService', () => {
     expect(aggregateFindMany).not.toHaveBeenCalled();
   });
 
+  it('keeps market home previews deterministic and does not read aggregates when ranking is enabled', async () => {
+    const aggregateFindMany = jest.fn();
+    const prisma = createPrisma({
+      marketSignalAggregateDaily: { findMany: aggregateFindMany },
+    });
+    const rankingConfig = rankingConfigService({
+      enabled: true,
+      fallbackDeterministic: true,
+      sectionKeys: ['fresh-drops', 'hot-right-now'],
+    });
+    const service = new MarketSectionService(
+      prisma as any,
+      undefined,
+      rankingConfig as any,
+    );
+
+    const result = await service.getSections();
+
+    expect(result.metadata).toEqual({
+      version: 'phase1.v1',
+      personalization: 'disabled',
+      cachePolicy: 'private-no-store',
+    });
+    expect(result.sections.every((section) => {
+      return (
+        section.metadata.ranking === 'deterministic-v1' &&
+        section.metadata.personalization === 'disabled'
+      );
+    })).toBe(true);
+    expect(aggregateFindMany).not.toHaveBeenCalled();
+  });
+
   it('hides empty sections on the market home response', async () => {
     const prisma = createPrisma({
       product: { findMany: jest.fn().mockResolvedValue([]) },

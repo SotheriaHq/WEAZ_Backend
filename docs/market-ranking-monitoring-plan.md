@@ -260,3 +260,30 @@ Ranking implementation must not be enabled until:
 - suppression violations are monitored;
 - owner placeholders are replaced;
 - rollback rehearsal passes.
+
+## Phase 7B implementability audit
+
+Current backend foundations:
+- `src/common/middleware/request-logger.middleware.ts` assigns and returns `x-request-id`, records method, path, status, duration, and IP through Nest `Logger`;
+- `src/prisma/prisma.service.ts` can emit slow-query logs when `PRISMA_LOG_QUERIES=true` and `PRISMA_SLOW_QUERY_MS` is configured;
+- `src/reviews/reviews-observability.service.ts` provides a local precedent for structured metric-like logger events;
+- market signal and suppression services already use Nest `Logger` for service-level warnings.
+
+Missing infrastructure:
+- no shared metrics sink was found for market ranking metrics;
+- no production dashboard definition is implemented in this repository;
+- no alerting integration is implemented in this repository;
+- no `Server-Timing` header or per-route market latency metric is implemented for ranking readiness;
+- no approved QA manual substitute has been recorded.
+
+Phase 7B decision:
+- do not add a full monitoring stack inside this phase;
+- keep this document as the required implementation contract for the chosen observability stack;
+- allow QA/UAT to use a manual evidence substitute only after `<engineering-owner>`, `<product-owner>`, and `<qa-owner>` explicitly accept it for that environment.
+
+Owner assignment required before production ranking rollout:
+- `<engineering-owner>` must own dashboard and alert implementation;
+- `<product-owner>` must approve product quality thresholds for repetition, brand concentration, suppression violations, and engagement;
+- `<qa-owner>` must own QA/UAT evidence capture and rehearsal sign-off.
+
+These placeholders are intentional release blockers. They must not be interpreted as assigned owners.

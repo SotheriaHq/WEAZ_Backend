@@ -191,3 +191,34 @@ Rollback rehearsal readiness:
 - Empty-section fallback behavior is verified during the rehearsal.
 - Cache headers remain private/no-store.
 - Rehearsal result is recorded with environment, deployment ID, migration status, flags, fallback evidence, monitoring evidence, pass/fail result, and owner sign-off.
+
+## Phase 7B operational gate checklist
+
+Backend verification:
+- `npx prisma validate` passes.
+- `npx prisma generate` passes.
+- `npx prisma migrate status` is recorded and pending aggregate migrations are identified.
+- `MarketRankingConfigService` defaults ranking disabled.
+- `MarketSectionService` returns deterministic fallback even if `MARKET_RANKING_ENABLED=true` before ranking implementation exists.
+- `MarketSectionService` does not read `marketSignalAggregateDaily` for served ordering.
+- Suppression filtering still applies.
+- Market section cache headers remain private/no-store.
+
+Web verification:
+- web market section types tolerate `metadata.ranking` and `metadata.personalization` as informational strings;
+- web does not claim market sections are personalized;
+- web signal batching remains bounded and accepts dedupe/aggregation response fields;
+- stashed auth/design work remains untouched.
+
+Mobile verification:
+- mobile market signal queue remains bounded to 100 events;
+- flush batch size remains 25 events;
+- AppState background/inactive flush remains wired;
+- mobile does not assume ranked/personalized market section output;
+- stashed auth work remains untouched.
+
+Operational blockers:
+- apply pending aggregate migrations in QA/UAT;
+- provision monitoring dashboards and alerts or obtain explicit owner-approved QA manual substitute;
+- replace `<engineering-owner>`, `<product-owner>`, and `<qa-owner>` placeholders;
+- execute and pass rollback rehearsal before ranking implementation starts.

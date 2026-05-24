@@ -331,3 +331,31 @@ Acceptance before ranking implementation:
 - owner placeholders are replaced or explicitly carried as release blockers;
 - rollback rehearsal is executed and passes;
 - ranking remains disabled until those gates are complete.
+
+## Phase 7B readiness QA - 2026-05-24
+
+Phase 7B adds one focused backend fallback test and tightens the operational QA checklist without enabling ranking.
+
+Backend test coverage:
+- `src/market/market-section.service.spec.ts`
+  - verifies market home previews remain deterministic when ranking is enabled before implementation exists;
+  - verifies section metadata stays `ranking: deterministic-v1` and `personalization: disabled`;
+  - verifies `marketSignalAggregateDaily.findMany` is not called for served market home ordering.
+
+Operational QA additions:
+- rollback rehearsal now has a step-by-step QA/UAT execution checklist;
+- monitoring plan now records current backend logging foundations and missing dashboard/alert infrastructure;
+- owner placeholders are explicitly release blockers, not assigned owners.
+
+Phase 7B validation must include:
+- `npx prisma validate`;
+- `npx prisma generate`;
+- `npx prisma migrate status`;
+- `npm test -- market-ranking-config market-section --runInBand`;
+- `npm run build`;
+- web `npm exec tsc -- -b --pretty false`;
+- web `npm run build`;
+- mobile `npm exec tsc -- --noEmit`;
+- mobile `npm run test:market-signal-queue-contract`;
+- `git diff --check`;
+- search changed docs/code for inaccurate live-ranking/personalization claims and new user-facing follow/follower language.

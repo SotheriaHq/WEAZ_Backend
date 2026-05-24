@@ -223,3 +223,25 @@ Remaining scalability blockers before ranking:
 - provision monitoring dashboards and alerts in the chosen observability stack;
 - replace owner placeholders;
 - execute and pass rollback rehearsal.
+
+## Phase 7B operational scalability verification - 2026-05-24
+
+Phase 7B keeps ranking disabled and confirms the scalability gate is still blocked on operations, not code-path ranking behavior.
+
+Confirmed:
+- market section routes still use bounded deterministic queries;
+- aggregate tables are not read for served ordering;
+- suppression filtering remains the only user-specific eligibility change in market section output;
+- cache headers remain private/no-store;
+- web and mobile clients do not require aggregate-ranked response fields.
+
+Monitoring readiness:
+- existing backend logging can supply request ID and coarse latency evidence;
+- optional Prisma slow-query logging can support migration/aggregate QA investigation;
+- no production-grade market ranking dashboard, alerting, metrics sink, or fallback activation metric exists yet.
+
+Scalability gate remains blocked until:
+- QA/UAT applies pending aggregate migrations;
+- monitoring and alerting are provisioned or an owner-approved QA manual substitute is accepted;
+- rollback rehearsal proves deterministic fallback under flag changes;
+- owner placeholders are replaced.

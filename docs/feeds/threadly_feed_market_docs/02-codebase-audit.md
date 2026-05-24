@@ -472,3 +472,25 @@ Phase 7 documentation changes:
 - `docs/market-ranking-release-plan.md` and `docs/market-signal-aggregation-qa-checklist.md` now include Phase 7 status and remaining operational blockers.
 
 Ready for ranking implementation: **No**. Phase 7 closes documentation for monitoring and rollback rehearsal only. Remaining blockers are applying QA/UAT migrations, provisioning monitoring/alerts, replacing owner placeholders, executing and passing rollback rehearsal, and then implementing ranking behind disabled-by-default flags.
+
+## Phase 7B operational readiness gate result - 2026-05-24
+
+Phase 7B verified:
+- backend `npx prisma validate` and `npx prisma generate` pass;
+- local `npx prisma migrate status` still reports pending aggregate migrations:
+  - `20260524150000_add_market_signal_idempotency_aggregation`;
+  - `20260524170000_widen_market_signal_aggregate_key`;
+- migration files are committed and present in `prisma/migrations`;
+- ranking remains disabled by default through `MarketRankingConfigService`;
+- `/market/sections` and `/market/sections/:key` still serve deterministic fallback output;
+- aggregate tables are not read for served market ordering;
+- suppression filtering and private/no-store cache headers remain covered by focused tests;
+- web market code does not claim personalized sections and tolerates dedupe/aggregation response fields;
+- mobile market signal queue remains bounded and does not assume ranked output.
+
+Monitoring audit:
+- backend has request ID HTTP logging, structured request duration logs, optional Prisma slow-query logs, and a review observability precedent;
+- no market ranking dashboard, alert integration, shared metrics sink, or `Server-Timing` instrumentation is implemented;
+- no QA manual monitoring substitute is accepted by default.
+
+Ready for ranking implementation: **No**. Remaining blockers are QA/UAT migration application, monitoring/alert readiness or explicitly approved manual QA substitute, owner assignment, and passed rollback rehearsal.

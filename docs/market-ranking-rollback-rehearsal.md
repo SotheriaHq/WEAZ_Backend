@@ -149,6 +149,53 @@ Owner placeholders must be replaced before production rollout.
 - Fallback activation can be observed or manually recorded.
 - Owner placeholders are resolved or explicitly listed as blockers.
 
+## Phase 7B QA/UAT execution checklist
+
+Use this checklist in QA/UAT only. Do not run it against production and do not use destructive database reset.
+
+1. Backup confirmation
+   - Confirm a restorable QA/UAT database backup exists.
+   - Record backup ID in the rehearsal record.
+
+2. Migration status confirmation
+   - Run `npx prisma migrate status`.
+   - Confirm these migrations are applied:
+     - `20260524150000_add_market_signal_idempotency_aggregation`;
+     - `20260524170000_widen_market_signal_aggregate_key`.
+   - If either migration is pending, stop the rehearsal and apply migrations through the deploy path with `npx prisma migrate deploy`.
+
+3. Baseline deterministic capture
+   - Set `MARKET_RANKING_ENABLED=false`.
+   - Set `MARKET_RANKING_FALLBACK_DETERMINISTIC=true`.
+   - Capture `GET /market/sections`.
+   - Capture one detail route such as `GET /market/sections/fresh-drops`.
+   - Record response item IDs, `metadata.personalization`, section `metadata.ranking`, and cache headers.
+
+4. Suppression fixture setup
+   - Create a QA-only suppression for a known product, brand, category, or section using the existing suppression endpoint.
+   - Re-run the same market section request.
+   - Confirm the suppressed target is absent.
+
+5. Ranking flag enable-before-implementation rehearsal
+   - In QA only, set `MARKET_RANKING_ENABLED=true`.
+   - Keep `MARKET_RANKING_FALLBACK_DETERMINISTIC=true`.
+   - Re-run the same baseline requests.
+   - Confirm served ordering remains deterministic and aggregate tables are not used for served ordering.
+
+6. Disable/rollback rehearsal
+   - Set `MARKET_RANKING_ENABLED=false`.
+   - Re-run the same baseline requests.
+   - Confirm the item order and metadata match deterministic fallback expectations.
+
+7. Cache header verification
+   - Confirm `/market/sections` returns `Cache-Control: private, no-store`.
+   - Confirm `/market/sections/:key` returns `Cache-Control: private, no-store`.
+
+8. Result record
+   - Complete the rehearsal record template in this document.
+   - Mark pass/fail.
+   - Attach owner sign-off or explicitly list unresolved owner placeholders as blockers.
+
 ## Fail criteria
 
 - Any ranking flag changes served ordering before approved ranking implementation.

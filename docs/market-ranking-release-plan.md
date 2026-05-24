@@ -266,3 +266,40 @@ Remaining release blockers:
 - replace `<engineering-owner>`, `<product-owner>`, and `<qa-owner>`;
 - execute and pass rollback rehearsal;
 - keep ranking disabled until the above gates are complete.
+
+## 15. Phase 7B readiness verification
+
+Phase 7B verified the operational gate without implementing ranking.
+
+Current status:
+- ranking remains disabled by default through `MarketRankingConfigService`;
+- `/market/sections` and `/market/sections/:key` still serve deterministic fallback output;
+- aggregate tables are not read for served ordering;
+- suppression filtering still applies through `MarketSuppressionService`;
+- cache headers remain `Cache-Control: private, no-store` for market section routes.
+
+Migration status:
+- `npx prisma validate` passes;
+- `npx prisma generate` passes;
+- local `npx prisma migrate status` still reports:
+  - `20260524150000_add_market_signal_idempotency_aggregation`;
+  - `20260524170000_widen_market_signal_aggregate_key`;
+- the migration files are committed and present in `prisma/migrations`;
+- no migration drift was reported by `migrate status`; the blocker is unapplied local/QA/UAT migrations.
+
+Monitoring implementability:
+- the backend has request ID logging, structured HTTP duration logs, optional Prisma slow-query logs, and a review-specific structured logging precedent;
+- no market ranking dashboard, alerting stack, shared metrics sink, or `Server-Timing` instrumentation is implemented;
+- a QA manual substitute is not accepted by default and must be explicitly approved by owner placeholders before use.
+
+Owner assignment required before production ranking rollout:
+- `<engineering-owner>`, `<product-owner>`, and `<qa-owner>` remain explicit release blockers;
+- no owner names should be inferred or invented from repository history.
+
+Rollback rehearsal:
+- `docs/market-ranking-rollback-rehearsal.md` now contains an executable QA/UAT checklist;
+- rehearsal is blocked until QA/UAT migrations are applied and owner placeholders are resolved or explicitly carried as blockers.
+
+Verdict:
+- ready for ranking implementation: **No**;
+- required next action: apply pending aggregate migrations in QA/UAT, provision monitoring/alerts or approve a manual QA substitute, assign owners, and pass rollback rehearsal.
