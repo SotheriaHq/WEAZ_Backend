@@ -266,6 +266,29 @@ Deferred from Phase R1:
 - suggestion engine;
 - Redis/BullMQ ranking worker.
 
+## Phase R2 - Web/mobile ranking contract integration
+
+Status: completed on 2026-05-25 after client type/build validation and commits. Ranking remains disabled by default and no UI redesign is included.
+
+- update web and mobile market API contracts to understand Phase R1 section metadata;
+- normalize old/missing metadata safely so pre-R1 responses still render;
+- keep web MarketPlace neutral and avoid visible personalization claims unless backend metadata says aggregate ranking is actually served;
+- preserve web signal batching, `clientEventId`, and bounded queue behavior;
+- preserve mobile runtime signal queue and local section-first MarketScreen rendering;
+- document that mobile backend-section migration, suggestions, admin governance UI, and new ranking formulas remain deferred.
+
+Outcome:
+- clients can consume deterministic, shadow, fallback, and aggregate metadata safely;
+- backend ranking remains behind disabled-by-default flags;
+- no production readiness, ML, or full personalization claim is made.
+
+Deferred from Phase R2:
+- View All pagination hardening;
+- suggestion engine;
+- admin ranking governance;
+- mobile full backend-section migration;
+- ranking-specific visible UI.
+
 ## Future phase - Context-aware market suggestion blocks
 
 - product detail suggestions;

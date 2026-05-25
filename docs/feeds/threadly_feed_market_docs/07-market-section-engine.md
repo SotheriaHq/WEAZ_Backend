@@ -103,6 +103,33 @@ Deferred:
 - cross-section dedupe across the whole home response;
 - mobile rendering migration to this contract.
 
+## Phase R2 client ranking metadata contract - 2026-05-25
+
+Phase R2 updates web and mobile clients to understand the Phase R1 section metadata without changing the visible market UI or enabling ranking by default.
+
+Backend section metadata fields now supported by clients:
+
+```text
+MarketSection.metadata
+- ranking: deterministic-v1 | aggregate-v1
+- personalization: disabled | aggregate-contextual
+- fallbackUsed: boolean
+- fallbackReason: string | null
+- rankingVersion: aggregate-v1 | null
+- shadowMode: boolean
+- rankingEnabled: boolean
+- minimumItems: number
+- previewItemLimit: number
+```
+
+Client handling rules:
+- old section responses without ranking metadata must still render;
+- `fallbackReason` and `rankingVersion` may be `null`;
+- shadow mode must not be presented as served personalization;
+- clients must not show personalized copy unless `ranking=aggregate-v1` and `personalization=aggregate-contextual`;
+- mobile still keeps its local section-first MarketScreen rendering until a later backend-section migration phase;
+- suggestions, admin governance UI, and new ranking formulas remain deferred.
+
 ## Decision
 
 The Market screen is not a flat feed and should not be category-first. It should be:

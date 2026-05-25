@@ -359,3 +359,27 @@ Not implemented in R1:
 - web/mobile ranking UI;
 - Redis/BullMQ market ranking workers;
 - production monitoring dashboard or alerting.
+
+## 18. Phase R2 client ranking contract integration
+
+Phase R2 aligns web and mobile clients with the Phase R1 metadata contract only.
+
+Implemented:
+- web and mobile section API types support `ranking`, `personalization`, `fallbackUsed`, `fallbackReason`, `rankingVersion`, `shadowMode`, and `rankingEnabled`;
+- client parsing tolerates old responses where section metadata is absent;
+- clients tolerate `null` fallback reason and ranking version values;
+- web keeps neutral market copy and must not claim personalization unless served metadata is `ranking=aggregate-v1` and `personalization=aggregate-contextual`;
+- mobile keeps its existing local MarketScreen rendering and runtime signal queue.
+
+Still not enabled by default:
+- `MARKET_RANKING_ENABLED` remains `false`;
+- `MARKET_RANKING_SHADOW_MODE` remains `true`;
+- deterministic fallback remains available for every market section request.
+
+Not implemented in R2:
+- ranking-specific UI;
+- mobile full backend-section migration;
+- suggestions;
+- admin governance UI;
+- new ranking formulas or ML;
+- production monitoring dashboard or alerting.

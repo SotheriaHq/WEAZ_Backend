@@ -435,3 +435,26 @@ Deferred QA:
 - production backup/restore rehearsal;
 - web/mobile ranking-specific UI checks;
 - admin governance checks.
+
+## Phase R2 client ranking contract QA - 2026-05-25
+
+Phase R2 QA verifies that clients can consume the Phase R1 metadata contract without claiming live personalization or redesigning market surfaces.
+
+Expected client behavior:
+- web and mobile API types include `ranking`, `personalization`, `fallbackUsed`, `fallbackReason`, `rankingVersion`, `shadowMode`, and `rankingEnabled`;
+- API normalization tolerates older section responses with missing metadata;
+- `fallbackReason` and `rankingVersion` tolerate `null`;
+- web MarketPlace keeps neutral market copy and must not claim personalization unless the backend serves `ranking=aggregate-v1` with `personalization=aggregate-contextual`;
+- existing web signal batching remains bounded and keeps `clientEventId` support;
+- mobile signal runtime keeps queue cap `100`, batch cap `25`, AppState background/inactive flush, and bounded retry behavior;
+- mobile MarketScreen remains locally sectioned and is not migrated to backend-ranked sections in R2.
+
+Validation commands:
+- backend `npm test -- market-ranking market-section --runInBand`;
+- backend `npm run build`;
+- web `npm exec tsc -- -b --pretty false`;
+- web `npm run build`;
+- mobile `npm exec tsc -- --noEmit`;
+- mobile `npm run test:market-signal-queue-contract`;
+- changed docs/code search for false live-ranking, full-personalization, ML, or production-ready claims;
+- touched files search for new user-facing follow/follower/following language.
