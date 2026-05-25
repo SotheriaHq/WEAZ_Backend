@@ -1,8 +1,53 @@
 # Context-Aware Market Suggestion Engine
 
+## Phase 11B runtime implementation - 2026-05-25
+
+Status: first runtime implementation complete. Suggestions are deterministic V1 blocks, not ML, embeddings, admin-configured recommendations, or full personalization.
+
+Implemented backend runtime:
+- `GET /market/suggestions` is registered in the market module through `MarketSuggestionController`.
+- `MarketSuggestionService` supports `PRODUCT_DETAIL`, `COLLECTION_DETAIL`, `BRAND_DETAIL`, `SEARCH_EMPTY`, and a safe deferred response for `MARKET_SECTION_DETAIL`.
+- `MarketSuggestionQueryDto` validates the shared query contract and the service clamps suggestion limits to 12.
+- responses use `Cache-Control: private, no-store`;
+- authenticated user identity is derived from the request and guests can pass `anonymousSessionId`;
+- active suppressions filter candidate items and suggestion blocks;
+- products, collections, and brands are filtered for availability, open store status, usable media, archived/deleted state, and bounded query size;
+- suggestion items align with `MarketSectionItemDto`;
+- response metadata stays `personalization: disabled`.
+
+Implemented V1 contexts:
+
+| Context | Runtime behavior | Status |
+|---|---|---|
+| `PRODUCT_DETAIL` | More Like This, More From This Brand, Fresh Alternatives | Implemented |
+| `COLLECTION_DETAIL` | Pieces From This Edit, More From This Brand, Similar Collections | Implemented |
+| `BRAND_DETAIL` | Best From This Brand, Latest Collections, Designers to Watch fallback | Implemented in backend, web UI deferred |
+| `SEARCH_EMPTY` | Try These Instead, Fresh Market Picks, Latest Collections | Implemented |
+| `MARKET_SECTION_DETAIL` | Safe empty response with `fallbackReason=deferred-context` | Deferred |
+
+Implemented web integration:
+- `src/api/MarketApi.ts` includes suggestion response types and `getMarketSuggestions`.
+- `src/components/market/MarketSuggestionBlocks.tsx` lazy-loads suggestion blocks, aborts stale requests, hides itself on empty/error responses, tracks suggestion block/item view and click signals, and calls existing suppression APIs for Not interested.
+- `ProductDetailsPage.tsx` and `InlineProductDetail.tsx` render product-detail suggestions below primary content.
+- `InlineStoreCollectionView.tsx` renders collection-detail suggestions below collection content.
+- `SearchResultsPage.tsx` augments non-empty search-empty states with suggestion blocks.
+
+Implemented mobile support:
+- `threadly-mobile/src/api/MarketApi.ts` includes suggestion response types and `getMarketSuggestions`.
+- Mobile runtime UI integration remains deferred; the existing market signal queue is unchanged.
+
+Still deferred:
+- admin suggestion configuration/governance;
+- ML, embeddings, visual similarity, and collaborative filtering;
+- cart/checkout suggestions;
+- brand/store UI suggestion block on web;
+- mobile product/collection/search UI wiring;
+- suggestion block View All/detail pages;
+- production suggestion monitoring dashboard.
+
 ## Phase 11A contract gate - 2026-05-25
 
-Status: contract/design gate complete. Runtime suggestion endpoints and UI blocks are not implemented yet.
+Status: contract/design gate complete. Phase 11B now implements the first runtime endpoint and low-risk web surfaces described above.
 
 Phase 11A confirms that suggestions must be context-aware market blocks, not a generic global widget. The shared contract is designed for product detail, collection detail, brand/store, search-empty, and market section detail surfaces. Phase 11B can implement this contract without changing ranking defaults or claiming full personalization.
 
@@ -284,6 +329,7 @@ Phase 11B event mapping:
 
 DTO gap:
 - The user-facing prompt names `SUGGESTION_ITEM_OPEN` and `SUGGESTION_DISMISS`; the codebase currently uses `SUGGESTION_ITEM_CLICK` and `SUGGESTION_BLOCK_HIDE`. Phase 11B should either map the prompt language to the existing enum names or add new enum values only if a migration is justified.
+- Phase 11B maps item open behavior to the existing `SUGGESTION_ITEM_CLICK` enum and does not add a migration for aliases.
 
 ## Suppression behavior
 
@@ -293,7 +339,7 @@ Existing suppression support can cover Phase 11B:
 - category hide: target `CATEGORY` or `categoryId`;
 - block hide: target `SUGGESTION_BLOCK` and/or `suggestionBlockKey`.
 
-Phase 11B should reuse the existing suppression endpoint before adding any suggestion-specific suppression endpoint.
+Phase 11B reuses the existing suppression endpoint and does not add a suggestion-specific suppression endpoint.
 
 ## Phase 11B implementation file map
 

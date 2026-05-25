@@ -336,3 +336,22 @@ Phase 11B must not:
 - add ML/embedding infrastructure;
 - require Redis/BullMQ for the first low-volume deterministic implementation;
 - claim full personalization from deterministic context matching.
+
+## Phase 11B suggestion scalability result - 2026-05-25
+
+Implemented:
+- `GET /market/suggestions` uses small bounded candidate pools and clamps the effective limit to 12;
+- backend product, collection, and brand candidates use explicit Prisma `select` projections instead of full-detail hydration;
+- suggestion items reuse `MarketSectionItemDto`-aligned card fields;
+- candidate queries fetch at most a small overfetch window for suppression/dedupe, not full catalog pages;
+- web suggestion blocks lazy-load below primary product, collection, and search-empty content;
+- web stale suggestion requests are aborted with `AbortController`;
+- web suggestion impressions/clicks/hides reuse the existing bounded signal queue;
+- mobile adds only API/types in Phase 11B to avoid introducing nested list risk before a dedicated mobile suggestion design pass.
+
+Not implemented:
+- Redis/BullMQ suggestion queue;
+- aggregate-driven suggestion ranking;
+- suggestion-specific cache layer;
+- mobile persisted offline suggestion queue;
+- production suggestion dashboard.

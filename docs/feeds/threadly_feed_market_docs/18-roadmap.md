@@ -34,7 +34,7 @@ Phase names are normalized here so future feed/market work continues with normal
 | Phase 9 | Web/mobile ranking metadata contract integration | Completed; formerly Phase R2 |
 | Phase 10 | Market section View All and pagination hardening | Completed |
 | Phase 11A | Context-aware market suggestion engine contract gate | Completed; runtime deferred |
-| Phase 11B | Context-aware market suggestion engine implementation | Not started |
+| Phase 11B | Context-aware market suggestion engine implementation | Completed for backend runtime, web core surfaces, and mobile API contract |
 | Phase 12 | User market/feed controls | Not started |
 | Phase 13 | Admin governance and configuration | Not started |
 | Phase 14 | Final hardening and MVP release gate | Not started |
@@ -352,7 +352,7 @@ Deferred from Phase 10:
 
 ## Phase 11A - Context-aware market suggestion engine contract gate
 
-Status: completed on 2026-05-25 as a documentation/contract gate only. Runtime suggestion endpoints and UI blocks remain pending Phase 11B.
+Status: completed on 2026-05-25 as a documentation/contract gate only. Runtime suggestion endpoints and UI blocks were pending until the Phase 11B implementation.
 
 - audited backend, web, and mobile product detail, collection detail, brand/store, search-empty, and market section detail surfaces;
 - selected additive backend contract `GET /market/suggestions`;
@@ -379,13 +379,42 @@ Outcome:
 
 ## Phase 11B - Context-aware market suggestion implementation
 
-Planned scope:
-- add `GET /market/suggestions` in the backend market module;
-- implement deterministic V1 blocks for product detail, collection detail, brand/store, and search-empty contexts;
-- reuse existing suppression and batched signal infrastructure;
-- add web suggestion blocks only where they can lazy-load below primary content;
-- add mobile API types and only low-risk UI wiring that respects the mobile design system;
-- keep market section detail suggestions deferred unless the core contexts are stable.
+Status: completed on 2026-05-25 after backend, web, and mobile validation and commits. Suggestions are deterministic V1 blocks only.
+
+Implemented:
+- backend `GET /market/suggestions` in the market module;
+- backend DTOs, controller, service, and tests for deterministic suggestion blocks;
+- product detail suggestions:
+  - More Like This;
+  - More From This Brand;
+  - Fresh Alternatives;
+- collection detail suggestions:
+  - Pieces From This Edit;
+  - More From This Brand;
+  - Similar Collections;
+- brand detail suggestions in the backend:
+  - Best From This Brand;
+  - Latest Collections;
+  - Designers to Watch fallback;
+- search-empty suggestions:
+  - Try These Instead;
+  - Fresh Market Picks;
+  - Latest Collections;
+- active suppression filtering for item, brand, category, section, and suggestion-block suppressions where metadata supports it;
+- private/no-store cache headers;
+- web suggestion API contract and reusable `MarketSuggestionBlocks`;
+- web integration on product detail, inline product detail, collection detail, and search-empty states;
+- web suggestion block/item view, click, and hide events through the existing batched signal queue;
+- mobile suggestion API contract only.
+
+Deferred:
+- market section detail suggestions, which currently return a safe deferred response;
+- brand/store web UI integration;
+- mobile runtime suggestion UI;
+- suggestion block View All/detail pages;
+- admin suggestion governance;
+- ML, embeddings, collaborative filtering, and visual similarity;
+- production suggestion monitoring dashboard.
 
 Deferred beyond Phase 11B:
 - admin suggestion block configuration;

@@ -5,6 +5,8 @@ import { MarketSectionService } from './market-section.service';
 import { MarketSignalAggregationService } from './market-signal-aggregation.service';
 import { MarketSignalController } from './market-signal.controller';
 import { MarketSignalService } from './market-signal.service';
+import { MarketSuggestionController } from './market-suggestion.controller';
+import { MarketSuggestionService } from './market-suggestion.service';
 import { MarketSuppressionController } from './market-suppression.controller';
 import { MarketSuppressionService } from './market-suppression.service';
 import { MarketRankingConfigService } from './market-ranking-config.service';
@@ -16,6 +18,7 @@ import { MarketRankingScorerService } from './market-ranking-scorer.service';
   controllers: [
     MarketSectionController,
     MarketSignalController,
+    MarketSuggestionController,
     MarketSuppressionController,
   ],
   providers: [
@@ -25,6 +28,7 @@ import { MarketRankingScorerService } from './market-ranking-scorer.service';
     MarketRankingScorerService,
     MarketSignalAggregationService,
     MarketSignalService,
+    MarketSuggestionService,
     MarketSuppressionService,
   ],
   exports: [
@@ -32,6 +36,7 @@ import { MarketRankingScorerService } from './market-ranking-scorer.service';
     MarketRankingConfigService,
     MarketRankingAggregateReaderService,
     MarketRankingScorerService,
+    MarketSuggestionService,
     MarketSuppressionService,
   ],
 })

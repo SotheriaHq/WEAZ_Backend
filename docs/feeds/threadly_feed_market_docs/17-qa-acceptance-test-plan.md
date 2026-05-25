@@ -560,3 +560,42 @@ Validation commands for Phase 11A:
 - mobile `npm run test:market-signal-queue-contract`;
 - changed docs search for false claims about live suggestions, live ranking, full personalization, ML, production readiness, or admin governance;
 - touched files search for new user-facing follow/follower/following language.
+
+## Phase 11B suggestion runtime QA - 2026-05-25
+
+Backend tests added:
+- `src/market/market-suggestion.controller.spec.ts`
+  - verifies `GET /market/suggestions` uses `Cache-Control: private, no-store`;
+  - verifies authenticated user identity is derived from the request and anonymous session is forwarded.
+- `src/market/market-suggestion.service.spec.ts`
+  - verifies product detail suggestions return More Like This, More From This Brand, and Fresh Alternatives;
+  - verifies product detail suggestions exclude the current product;
+  - verifies oversized limits clamp to the backend maximum;
+  - verifies blank search-empty queries are rejected safely;
+  - verifies suppressions filter suggestion candidates;
+  - verifies no-media candidates are excluded;
+  - verifies duplicate items across blocks are avoided where feasible;
+  - verifies collection detail and brand detail return safe blocks;
+  - verifies market section detail returns a safe deferred response;
+  - verifies metadata stays deterministic and does not expose score or aggregate internals;
+  - verifies collection candidates are limited to published, public, non-deleted collections.
+
+Web validation:
+- `MarketApi.ts` includes suggestion types and `getMarketSuggestions`;
+- `MarketSuggestionBlocks.tsx` lazy-loads, aborts stale requests, tracks suggestion view/click/hide events, and removes hidden cards locally;
+- product detail, inline product detail, collection detail, and search-empty surfaces integrate the reusable block without blocking primary content.
+
+Mobile validation:
+- `src/api/MarketApi.ts` includes suggestion types and `getMarketSuggestions`;
+- no mobile UI wiring is added in Phase 11B, so the runtime signal queue contract must remain unchanged.
+
+Required commands:
+- backend `npx prisma validate`;
+- backend `npx prisma generate`;
+- backend `npm test -- market-suggestion market-ranking market-section --runInBand`;
+- backend `npm run build`;
+- web `npm exec tsc -- -b --pretty false`;
+- web `npm run build`;
+- mobile `npm exec tsc -- --noEmit`;
+- mobile `npm run test:market-signal-queue-contract`;
+- changed docs/code search for false suggestion personalization, ML, ranking-live, production-ready, or admin-governance claims.

@@ -71,7 +71,7 @@
 
 ## Phase 11A suggestion fallback contract - 2026-05-25
 
-Phase 11A defines the fallback rules for Phase 11B. Runtime suggestion behavior is still pending.
+Phase 11A defined the fallback rules for Phase 11B. Phase 11B now implements the first runtime behavior and the result is recorded below.
 
 | Scenario | Phase 11B required behavior |
 |---|---|
@@ -91,6 +91,26 @@ Phase 11A defines the fallback rules for Phase 11B. Runtime suggestion behavior 
 | Oversized limit | clamp to Phase 11B backend maximum |
 | Ranking flags are off | deterministic context/fallback strategy only |
 | Aggregate data missing | deterministic fallback strategy only |
+
+## Phase 11B suggestion fallback result - 2026-05-25
+
+Implemented:
+- unsupported or malformed suggestion requests fail as controlled client errors through DTO/service validation;
+- blank `SEARCH_EMPTY` queries are rejected safely and web only calls suggestions for non-empty search text;
+- product, collection, or brand targets that are missing or ineligible return safe empty suggestion responses;
+- `MARKET_SECTION_DETAIL` returns a safe empty response with `fallbackReason=deferred-context`;
+- products without usable media are excluded;
+- inactive, archived, deleted, unpublished, out-of-stock non-custom, and closed-store product candidates are excluded;
+- store collections must be published, public, available in store, not deleted, owned by an open brand, and have at least one marketable product;
+- brands must be open and have marketable products;
+- active item, brand, category, section, and suggestion-block suppressions filter suggestion candidates where metadata exists;
+- duplicate items are removed inside a block and across later blocks;
+- web suggestion blocks abort stale requests and hide themselves on empty/error responses.
+
+Still deferred:
+- hidden-item deep-link warning and undo-management UI beyond local card removal;
+- suggestion block View All pages;
+- suppression-aware broadening when a user hides enough content to empty every suggestion block.
 
 ## Network and performance
 

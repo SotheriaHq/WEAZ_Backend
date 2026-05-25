@@ -310,6 +310,27 @@ Suggestion signal payload rules:
 - never include raw search secrets, payment data, or private user notes in metadata;
 - batch through the existing `POST /market/signals/batch` endpoint.
 
+## Phase 11B suggestion signal runtime - 2026-05-25
+
+Phase 11B reuses the existing batched signal endpoint and does not add a separate suggestion event endpoint.
+
+Implemented web events:
+- suggestion block visible: `SUGGESTION_BLOCK_VIEW`;
+- suggestion item visible: `SUGGESTION_ITEM_VIEW`;
+- suggestion item opened: `SUGGESTION_ITEM_CLICK`;
+- suggestion item hidden: `SUGGESTION_ITEM_HIDE` plus `POST /market/suppressions`.
+
+Client behavior:
+- `MarketSuggestionBlocks` uses the existing bounded `useMarketSignals` queue;
+- events include `suggestionBlockKey`;
+- stale suggestion requests are aborted on unmount or parameter change;
+- empty or failed suggestion responses do not block the parent detail/search page.
+
+Backend behavior:
+- `SuggestionSignal` rows remain populated through `POST /market/signals/batch`;
+- suppression records can filter future suggestion candidates through `MarketSuppressionService`;
+- no aggregate-driven suggestion ranking is implemented in Phase 11B.
+
 ## Phase 4 aggregate QA result - 2026-05-24
 
 Phase 4 did not activate ranking. It validated the Phase 3 pipeline and added a design gate for future ranking.
