@@ -287,3 +287,35 @@ Owner assignment required before production ranking rollout:
 - `<qa-owner>` must own QA/UAT evidence capture and rehearsal sign-off.
 
 These placeholders are intentional release blockers. They must not be interpreted as assigned owners.
+
+## Phase 7D local MVP monitoring substitute
+
+External QA/UAT monitoring remains unavailable. For the local/single-environment MVP workflow, Phase 7D accepts a manual local monitoring substitute only for ranking implementation readiness.
+
+Local substitute:
+- backend request logs provide `x-request-id`;
+- backend request logs provide request duration evidence;
+- Prisma slow-query logs can be enabled locally with:
+
+```text
+PRISMA_LOG_QUERIES=true
+PRISMA_SLOW_QUERY_MS=100
+```
+
+- cache headers are captured manually with local HTTP requests;
+- response metadata is captured manually;
+- item IDs are captured before, during, and after ranking-flag rehearsal;
+- suppression fixture evidence is captured manually;
+- fallback evidence is captured manually.
+
+Owner simulation for local MVP:
+- Engineering owner: Shawn / solo project owner;
+- Product owner: Shawn / solo project owner;
+- QA owner: Shawn / solo project owner.
+
+Limitations:
+- no production dashboard is provisioned;
+- no alerting stack is provisioned;
+- no metrics sink is implemented;
+- no production `Server-Timing` or fallback counter is implemented;
+- this substitute must not be treated as hosted production readiness.

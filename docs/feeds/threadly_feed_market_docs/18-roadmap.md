@@ -212,6 +212,35 @@ Deferred from Phase 7B:
 - production monitoring dashboard implementation;
 - Redis/BullMQ market signal worker.
 
+## Phase 7D - Local MVP ranking readiness simulation
+
+Status: completed locally on 2026-05-25 after validation and backend docs commit. Ranking remains disabled and not live.
+
+- replace external QA/UAT assumptions with local/single-environment MVP simulation;
+- create a local database restore point without committing dumps;
+- apply pending aggregate migrations locally without destructive reset;
+- verify deterministic fallback with ranking disabled;
+- verify ranking enable-before-implementation still serves deterministic fallback;
+- verify suppression filtering and private/no-store cache headers;
+- document local owner simulation and monitoring substitute.
+
+Outcome:
+- local database target `localhost:5432/threadly/public` is up to date after applying:
+  - `20260524150000_add_market_signal_idempotency_aggregation`;
+  - `20260524170000_widen_market_signal_aggregate_key`;
+- `docs/market-ranking-local-simulation.md` records the local backup, migration, monitoring substitute, owner simulation, and rollback rehearsal evidence;
+- Shawn is recorded as engineering/product/QA owner only for local MVP simulation;
+- external QA/UAT approval, production monitoring, and enterprise governance remain separate future rollout concerns.
+
+Ready for ranking implementation locally: **Yes**.
+
+Deferred from Phase 7D:
+- signal-driven market/feed ranking implementation;
+- aggregate reads for served ordering;
+- production monitoring dashboard implementation;
+- production owner governance;
+- Redis/BullMQ market signal worker.
+
 ## Future phase - Context-aware market suggestion blocks
 
 - product detail suggestions;

@@ -245,3 +245,24 @@ Scalability gate remains blocked until:
 - monitoring and alerting are provisioned or an owner-approved QA manual substitute is accepted;
 - rollback rehearsal proves deterministic fallback under flag changes;
 - owner placeholders are replaced.
+
+## Phase 7D local MVP scalability simulation - 2026-05-25
+
+Phase 7D validates only local MVP readiness.
+
+Confirmed:
+- aggregate migrations are now applied in the local database;
+- deterministic market section queries remain the served ordering path;
+- aggregate tables are still not read for served ordering;
+- suppression filtering remains an eligibility filter only;
+- cache headers remain private/no-store;
+- local monitoring substitute is manual evidence capture using request IDs, request duration logs, Prisma slow-query logs when enabled, metadata capture, cache-header capture, item-ID capture, suppression evidence, and fallback evidence.
+
+Scalability limitations:
+- no production dashboard exists;
+- no alert stack exists;
+- no shared metrics sink exists;
+- Redis/BullMQ remains deferred;
+- local owner simulation does not replace production governance.
+
+Local ranking implementation can start after validation because the local MVP gate passed, but production rollout remains blocked until hosted monitoring, alerting, backup/restore rehearsal, and real owner governance are revisited.

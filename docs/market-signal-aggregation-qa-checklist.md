@@ -222,3 +222,33 @@ Operational blockers:
 - provision monitoring dashboards and alerts or obtain explicit owner-approved QA manual substitute;
 - replace `<engineering-owner>`, `<product-owner>`, and `<qa-owner>` placeholders;
 - execute and pass rollback rehearsal before ranking implementation starts.
+
+## Phase 7D local MVP simulation checklist
+
+Phase 7D replaces the external QA/UAT assumption with a local MVP simulation only.
+
+Completed locally on 2026-05-25:
+- clean backend, web, and mobile workspaces confirmed before changes;
+- local database access confirmed;
+- `pg_dump` local restore point created under ignored `backups/`;
+- initial migrate status recorded both aggregate migrations as pending;
+- stale local Prisma advisory-lock sessions were cleared without destructive reset;
+- `npx prisma migrate deploy` applied:
+  - `20260524150000_add_market_signal_idempotency_aggregation`;
+  - `20260524170000_widen_market_signal_aggregate_key`;
+- final migrate status reports schema is up to date;
+- deterministic baseline was captured;
+- suppression fixture was verified;
+- ranking enable-before-implementation was rehearsed locally and remained deterministic;
+- rollback was verified;
+- cache headers stayed private/no-store.
+
+Owner simulation:
+- Engineering owner: Shawn / solo project owner;
+- Product owner: Shawn / solo project owner;
+- QA owner: Shawn / solo project owner.
+
+Remaining non-local blockers:
+- hosted production monitoring/alerts are still not implemented;
+- hosted backup/restore rehearsal is still not complete;
+- real owner governance should be revisited before multi-user production rollout.

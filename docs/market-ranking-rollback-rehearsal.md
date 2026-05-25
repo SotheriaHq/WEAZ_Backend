@@ -225,3 +225,35 @@ Pass/Fail:
 Owner sign-off:
 Notes:
 ```
+
+## Phase 7D local MVP rehearsal result
+
+Phase 7D ran a local/single-environment rehearsal because external QA/UAT access is unavailable.
+
+Local prerequisites:
+- local database connection was available;
+- current local backup was created with `pg_dump` under ignored `backups/`;
+- destructive reset was not used;
+- both aggregate migrations were applied locally with `npx prisma migrate deploy` after stale local Prisma advisory-lock sessions were terminated;
+- final `npx prisma migrate status` reported the schema is up to date.
+
+Local rehearsal:
+- baseline used the existing local backend on port `3040` with ranking disabled;
+- enable-before-implementation used an isolated local backend on `127.0.0.1:3041` with `MARKET_RANKING_ENABLED=true` and deterministic fallback enabled;
+- rollback returned to the existing local backend with ranking disabled;
+- the temporary `3041` process was stopped after capture.
+
+Evidence:
+- `/market/sections` returned status `200`, `Cache-Control: private, no-store`, `metadata.personalization=disabled`, and `metadata.cachePolicy=private-no-store`;
+- `/market/sections/fresh-drops` returned status `200`, `Cache-Control: private, no-store`, `metadata.ranking=deterministic-v1`, and `metadata.personalization=disabled`;
+- first fresh-drops IDs matched across baseline, enabled-before-implementation, and rollback captures;
+- guest product suppression for `11111111-1111-4111-8111-111111111103` removed the target from fresh drops and was deleted after rehearsal.
+
+Local pass/fail:
+- Pass for local MVP simulation.
+
+Scope limit:
+- This is not external QA/UAT approval.
+- This is not production monitoring approval.
+- This is not enterprise owner sign-off.
+- Ranking remains disabled and not live.

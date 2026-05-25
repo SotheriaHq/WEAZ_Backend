@@ -359,3 +359,42 @@ Phase 7B validation must include:
 - mobile `npm run test:market-signal-queue-contract`;
 - `git diff --check`;
 - search changed docs/code for inaccurate live-ranking/personalization claims and new user-facing follow/follower language.
+
+## Phase 7D local MVP QA - 2026-05-25
+
+Phase 7D acceptance checks:
+- clean backend, web, and mobile workspaces before work;
+- local database access;
+- local restore point or acceptable restore path;
+- aggregate migrations applied locally;
+- deterministic fallback with ranking disabled;
+- deterministic fallback when ranking is enabled before implementation;
+- suppression fixture filters a visible product from fresh drops;
+- rollback keeps deterministic metadata and item ordering;
+- cache headers remain private/no-store;
+- docs clearly distinguish local MVP simulation from hosted QA/UAT or production approval.
+
+Evidence captured:
+- baseline fresh-drops IDs:
+  - `11111111-1111-4111-8111-111111111103`;
+  - `11111111-1111-4111-8111-111111111102`;
+  - `11111111-1111-4111-8111-111111111101`;
+  - `0e2e0000-0000-4000-8000-000000000119`;
+  - `0e2e0000-0000-4000-8000-000000000118`.
+- enabled-before-implementation fresh-drops IDs matched the baseline.
+- rollback fresh-drops IDs matched the baseline.
+- suppression fixture target `11111111-1111-4111-8111-111111111103` was absent after guest suppression.
+
+Final Phase 7D validation must include:
+- `npx prisma validate`;
+- `npx prisma generate`;
+- `npx prisma migrate status`;
+- `npm test -- market-ranking-config market-section --runInBand`;
+- `npm run build`;
+- web `npm exec tsc -- -b --pretty false`;
+- web `npm run build`;
+- mobile `npm exec tsc -- --noEmit`;
+- mobile `npm run test:market-signal-queue-contract`;
+- `git diff --check`;
+- search changed docs/code for inaccurate live-ranking, live-personalization, external-QA-approved, or production-ready claims;
+- search touched docs/code for new user-facing follow/follower/following language.

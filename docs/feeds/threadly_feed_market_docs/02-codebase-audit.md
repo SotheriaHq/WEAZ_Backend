@@ -494,3 +494,30 @@ Monitoring audit:
 - no QA manual monitoring substitute is accepted by default.
 
 Ready for ranking implementation: **No**. Remaining blockers are QA/UAT migration application, monitoring/alert readiness or explicitly approved manual QA substitute, owner assignment, and passed rollback rehearsal.
+
+## Phase 7D local MVP readiness simulation result - 2026-05-25
+
+Phase 7D corrected the earlier external QA/UAT assumption for the current solo MVP workflow and ran a local readiness simulation.
+
+Verified locally:
+- backend, web, and mobile were clean on `main` before work;
+- local database target `localhost:5432/threadly/public` was reachable;
+- `npx prisma validate` and `npx prisma generate` passed;
+- a current local `pg_dump` restore point was created under ignored `backups/`;
+- initial local migration status reported the two aggregate migrations pending;
+- stale local Prisma advisory-lock sessions were terminated safely without destructive reset;
+- `npx prisma migrate deploy` applied both aggregate migrations;
+- final local migration status reports the database schema is up to date;
+- `/market/sections` and `/market/sections/fresh-drops` still return deterministic/non-personalized metadata;
+- ranking enabled before implementation, on an isolated local process, still returned deterministic fallback;
+- guest product suppression still filtered the target from fresh drops;
+- cache headers remained private/no-store.
+
+Ready for ranking implementation locally: **Yes**.
+
+Scope limit:
+- this is local MVP simulation only;
+- it is not external QA/UAT approval;
+- it is not production monitoring approval;
+- it is not enterprise governance sign-off;
+- ranking remains disabled and not live.

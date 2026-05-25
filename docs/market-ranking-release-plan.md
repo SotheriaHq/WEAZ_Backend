@@ -303,3 +303,31 @@ Rollback rehearsal:
 Verdict:
 - ready for ranking implementation: **No**;
 - required next action: apply pending aggregate migrations in QA/UAT, provision monitoring/alerts or approve a manual QA substitute, assign owners, and pass rollback rehearsal.
+
+## 16. Phase 7D local MVP simulation
+
+Phase 7C was blocked because no external QA/UAT environment, backup marker, monitoring approval, or owner assignment exists. Phase 7D replaces that blocked external gate with a local/single-environment MVP simulation.
+
+Local MVP result on 2026-05-25:
+- local database target label: `localhost:5432/threadly/public`;
+- local `pg_dump` custom-format restore point was created under ignored `backups/`;
+- stale local Prisma advisory-lock sessions were identified and terminated without destructive reset;
+- `npx prisma migrate deploy` applied:
+  - `20260524150000_add_market_signal_idempotency_aggregation`;
+  - `20260524170000_widen_market_signal_aggregate_key`;
+- final `npx prisma migrate status` reports the database schema is up to date;
+- ranking remained disabled after rehearsal;
+- an isolated local process with `MARKET_RANKING_ENABLED=true` still served deterministic fallback metadata and ordering;
+- suppressions remained respected;
+- `/market/sections` and `/market/sections/:key` kept `Cache-Control: private, no-store`.
+
+Local owner simulation:
+- Engineering owner: Shawn / solo project owner;
+- Product owner: Shawn / solo project owner;
+- QA owner: Shawn / solo project owner.
+
+This is local MVP owner simulation only. It is not external QA/UAT approval, enterprise governance, production monitoring, or production rollout approval.
+
+Local readiness verdict:
+- ready for ranking implementation locally: **Yes**;
+- production rollout readiness: **No** until hosted monitoring/alerts, production backup/restore rehearsal, and real owner governance are revisited.
