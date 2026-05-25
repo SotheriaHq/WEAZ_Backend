@@ -1,4 +1,4 @@
-import { NotFoundException } from '@nestjs/common';
+import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { MarketSignalTargetType } from '@prisma/client';
 import { MarketSectionService } from './market-section.service';
 import { MarketRankingScorerService } from './market-ranking-scorer.service';
@@ -697,6 +697,92 @@ describe('MarketSectionService', () => {
       limit: 1,
       hasNextPage: true,
       nextCursor: 'product_1',
+    });
+  });
+
+  it('clamps oversized section detail limits to the safe maximum', async () => {
+    const prisma = createPrisma({
+      product: {
+        findMany: jest.fn().mockResolvedValue([product({ id: 'product_1' })]),
+      },
+    });
+    const service = new MarketSectionService(prisma as any);
+
+    const result = await service.getSectionDetail('fresh-drops', {
+      limit: 999,
+    });
+
+    expect(prisma.product.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ take: 61 }),
+    );
+    expect(result.section.pagination).toEqual({
+      limit: 60,
+      hasNextPage: false,
+      nextCursor: null,
+    });
+  });
+
+  it('passes a normalized stable cursor to section detail queries', async () => {
+    const prisma = createPrisma({
+      product: {
+        findMany: jest.fn().mockResolvedValue([product({ id: 'product_2' })]),
+      },
+    });
+    const service = new MarketSectionService(prisma as any);
+
+    await service.getSectionDetail('fresh-drops', {
+      cursor: ' product_1 ',
+      limit: 5,
+    });
+
+    expect(prisma.product.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cursor: { id: 'product_1' },
+        skip: 1,
+      }),
+    );
+  });
+
+  it('rejects malformed section detail cursors without querying Prisma', async () => {
+    const prisma = createPrisma();
+    const service = new MarketSectionService(prisma as any);
+
+    await expect(
+      service.getSectionDetail('fresh-drops', {
+        cursor: `product_1\nnext`,
+      }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(prisma.product.findMany).not.toHaveBeenCalled();
+  });
+
+  it('returns a controlled error for stale section detail cursors', async () => {
+    const prisma = createPrisma({
+      product: {
+        findMany: jest.fn().mockRejectedValue({ code: 'P2025' }),
+      },
+    });
+    const service = new MarketSectionService(prisma as any);
+
+    await expect(
+      service.getSectionDetail('fresh-drops', { cursor: 'missing_product' }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('returns a safe empty section detail state when no eligible items exist', async () => {
+    const prisma = createPrisma({
+      product: {
+        findMany: jest.fn().mockResolvedValue([]),
+      },
+    });
+    const service = new MarketSectionService(prisma as any);
+
+    const result = await service.getSectionDetail('fresh-drops', { limit: 5 });
+
+    expect(result.section.items).toEqual([]);
+    expect(result.section.pagination).toEqual({
+      limit: 5,
+      hasNextPage: false,
+      nextCursor: null,
     });
   });
 

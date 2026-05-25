@@ -32,7 +32,7 @@ Phase names are normalized here so future feed/market work continues with normal
 | Phase 8 | Backend aggregate ranking behind safety flags | Implemented; formerly Phase R1 |
 | Phase 8B | Workspace safety gate after backend ranking | Completed; formerly Phase R1C |
 | Phase 9 | Web/mobile ranking metadata contract integration | Completed; formerly Phase R2 |
-| Phase 10 | Market section View All and pagination hardening | Not started |
+| Phase 10 | Market section View All and pagination hardening | Completed |
 | Phase 11 | Context-aware market suggestion engine | Not started |
 | Phase 12 | User market/feed controls | Not started |
 | Phase 13 | Admin governance and configuration | Not started |
@@ -324,6 +324,30 @@ Deferred from Phase 9:
 - admin ranking governance;
 - mobile full backend-section migration;
 - ranking-specific visible UI.
+
+## Phase 10 - Market section View All and pagination hardening
+
+Status: completed on 2026-05-25 after backend/web validation and commits. Ranking remains disabled by default.
+
+- harden backend `GET /market/sections/:key` cursor handling for web View All pages;
+- keep section detail limit bounded and clamp oversized client limits;
+- preserve ranking metadata, private/no-store cache headers, and suppression filtering;
+- add web `/market/sections/:sectionKey` route that loads detail pages from the backend section contract;
+- add bounded Load More pagination without reintroducing the old multi-thousand-row client aggregation pattern;
+- preserve web signal batching and record View All/detail impressions and opens;
+- keep mobile API/type support as-is and defer a dedicated mobile detail screen.
+
+Outcome:
+- malformed cursors are rejected before Prisma is queried;
+- stale Prisma cursor errors are returned as controlled bad requests;
+- web View All uses `getMarketSectionDetail` with `limit=24`, aborts stale requests, de-duplicates appended items, and stops at `hasNextPage=false`;
+- no suggestions, admin governance, new ranking formula, or production rollout claim is included.
+
+Deferred from Phase 10:
+- mobile dedicated section detail screen;
+- web scroll restoration after deep product navigation;
+- long-grid virtualization if future page sizes grow;
+- context-aware market suggestions.
 
 ## Future phase - Context-aware market suggestion blocks
 

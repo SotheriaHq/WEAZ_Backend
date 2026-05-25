@@ -152,3 +152,22 @@ Still deferred:
 - ranking shadow-mode implementation;
 - production monitoring dashboards and alerts;
 - Redis/BullMQ market signal worker and dead-letter handling.
+
+## Phase 10 View All and pagination edge cases - 2026-05-25
+
+Implemented:
+- malformed section detail cursors are rejected with a controlled bad request instead of reaching Prisma;
+- stale Prisma cursors are translated into a controlled bad request instead of a server crash;
+- oversized section detail limits are clamped to the backend maximum;
+- unsupported section keys continue to return a controlled not-found response;
+- empty section detail responses return an empty `items` array with safe pagination metadata;
+- suppressions continue to filter section detail output where safe;
+- web View All requests are aborted on route change/unmount;
+- web Load More de-duplicates returned items and stops when `hasNextPage=false`;
+- web section detail keeps neutral copy and does not claim personalization.
+
+Still deferred:
+- hidden-item deep-link warning and restore flow;
+- dedicated mobile section detail screen;
+- scroll restoration for web section detail after returning from product detail;
+- virtualized long section detail grids if future page sizes increase.

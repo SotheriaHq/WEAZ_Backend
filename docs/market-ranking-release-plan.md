@@ -388,3 +388,27 @@ Not implemented in Phase 9:
 - admin governance UI;
 - new ranking formulas or ML;
 - production monitoring dashboard or alerting.
+
+## 19. Phase 10 View All and pagination hardening
+
+Phase 10 improves section detail pagination and web View All navigation without changing ranking defaults or rollout posture.
+
+Implemented:
+- backend `GET /market/sections/:key` clamps oversized limits and validates cursors safely;
+- stale Prisma cursors are returned as controlled bad requests instead of server errors;
+- section detail responses preserve ranking metadata, suppression filtering, and `Cache-Control: private, no-store`;
+- web Market home renders View All CTAs for backend-enabled sections;
+- web `/market/sections/:sectionKey` uses bounded cursor pagination, Load More, request aborts, and de-duplicated appends;
+- web detail impressions and item opens continue through the bounded market signal queue.
+
+Still not enabled by default:
+- aggregate ranking remains behind `MARKET_RANKING_ENABLED=false`;
+- deterministic fallback remains the default served behavior;
+- View All does not make personalization claims unless served backend metadata explicitly indicates aggregate ranking.
+
+Not implemented in Phase 10:
+- suggestions;
+- admin governance UI;
+- new ranking formulas or ML;
+- mobile full backend-section migration;
+- production monitoring dashboard or alerting.

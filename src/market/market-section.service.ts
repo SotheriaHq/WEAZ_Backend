@@ -1,4 +1,10 @@
-import { Injectable, Logger, NotFoundException, Optional } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  Logger,
+  NotFoundException,
+  Optional,
+} from '@nestjs/common';
 import { CollectionStatus, CollectionVisibility, Prisma } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 import {
@@ -169,10 +175,11 @@ export class MarketSectionService {
   ) {
     const sectionKey = this.normalizeSectionKey(key);
     const safeLimit = this.normalizeLimit(options?.limit, this.defaultDetailLimit);
+    const safeCursor = this.normalizeCursor(options?.cursor);
     const suppressionScope = await this.getSuppressionScope(options);
     const rankingConfig = this.marketRankingConfigService?.getConfig();
     const section = await this.buildSection(sectionKey, {
-      cursor: options?.cursor,
+      cursor: safeCursor,
       limit: safeLimit,
       suppressionScope,
       rankingConfig,
@@ -209,6 +216,34 @@ export class MarketSectionService {
       return fallback;
     }
     return Math.min(this.maxDetailLimit, Math.max(1, Math.floor(limit)));
+  }
+
+  private normalizeCursor(cursor: string | undefined) {
+    if (typeof cursor !== 'string') return undefined;
+    const trimmed = cursor.trim();
+    if (!trimmed) return undefined;
+    if (trimmed.length > 160 || /[\u0000-\u001F\u007F]/.test(trimmed)) {
+      throw new BadRequestException('Invalid market section cursor');
+    }
+    return trimmed;
+  }
+
+  private async runCursorQuery<T>(operation: () => Promise<T>) {
+    try {
+      return await operation();
+    } catch (error) {
+      if (this.isInvalidCursorError(error)) {
+        throw new BadRequestException('Invalid market section cursor');
+      }
+      throw error;
+    }
+  }
+
+  private isInvalidCursorError(error: unknown) {
+    return (
+      error instanceof Prisma.PrismaClientKnownRequestError ||
+      typeof error === 'object'
+    ) && (error as { code?: string } | null)?.code === 'P2025';
   }
 
   private async buildSection(
@@ -675,7 +710,7 @@ export class MarketSectionService {
     orderBy: Prisma.ProductOrderByWithRelationInput[];
   }) {
     const take = this.normalizeLimit(options.limit, this.defaultDetailLimit);
-    const products = await this.prisma.product.findMany({
+    const products = await this.runCursorQuery(() => this.prisma.product.findMany({
       where: this.buildMarketableProductWhere(options.extraAnd),
       orderBy: options.orderBy,
       ...(options.cursor ? { cursor: { id: options.cursor }, skip: 1 } : {}),
@@ -718,7 +753,7 @@ export class MarketSectionService {
           },
         },
       },
-    });
+    }));
 
     const hasNextPage = products.length > take;
     const page = hasNextPage ? products.slice(0, take) : products;
@@ -736,7 +771,7 @@ export class MarketSectionService {
     limit: number;
   }) {
     const take = this.normalizeLimit(options.limit, this.defaultDetailLimit);
-    const collections = await this.prisma.storeCollection.findMany({
+    const collections = await this.runCursorQuery(() => this.prisma.storeCollection.findMany({
       where: {
         status: CollectionStatus.PUBLISHED,
         visibility: CollectionVisibility.PUBLIC,
@@ -815,7 +850,7 @@ export class MarketSectionService {
           },
         },
       },
-    });
+    }));
 
     const hasNextPage = collections.length > take;
     const page = hasNextPage ? collections.slice(0, take) : collections;
@@ -830,7 +865,7 @@ export class MarketSectionService {
 
   private async getCategoryItems(options: { cursor?: string; limit: number }) {
     const take = this.normalizeLimit(options.limit, this.defaultDetailLimit);
-    const categories = await this.prisma.collectionCategory.findMany({
+    const categories = await this.runCursorQuery(() => this.prisma.collectionCategory.findMany({
       where: {
         isActive: true,
       },
@@ -844,7 +879,7 @@ export class MarketSectionService {
         description: true,
         updatedAt: true,
       },
-    });
+    }));
 
     const hasNextPage = categories.length > take;
     const page = hasNextPage ? categories.slice(0, take) : categories;
@@ -892,7 +927,7 @@ export class MarketSectionService {
     const productWhere = this.buildMarketableProductWhere([], {
       includeBrandOpen: false,
     });
-    const brands = await this.prisma.brand.findMany({
+    const brands = await this.runCursorQuery(() => this.prisma.brand.findMany({
       where: {
         isStoreOpen: true,
         products: {
@@ -927,7 +962,7 @@ export class MarketSectionService {
           },
         },
       },
-    });
+    }));
 
     const hasNextPage = brands.length > take;
     const page = hasNextPage ? brands.slice(0, take) : brands;

@@ -22,7 +22,7 @@ Phase 1 performance target: section preview payloads should be small, cursor-bac
 
 Remaining scalability work:
 - product market direct category filtering still needs deeper category semantics hardening;
-- long View All grids still need dedicated web/mobile virtualization;
+- long View All grids still need dedicated mobile support and web virtualization if page sizes grow beyond bounded Load More;
 - cross-section dedupe and diversity caps across the whole home response are not implemented yet;
 - aggregate jobs and durable signal queue hardening are deferred to Phase 3+.
 
@@ -89,7 +89,7 @@ Required likely indexes:
 Web:
 - no 4800-row aggregate load;
 - lazy-load below-fold sections;
-- virtualize long View All grids;
+- use bounded cursor-backed View All pages before adding any long-grid virtualization;
 - cancel stale requests;
 - disconnect observers;
 - preserve scroll state.
@@ -294,3 +294,20 @@ Default production posture:
 - no section allowlist;
 - shadow mode on;
 - deterministic fallback on.
+
+## Phase 10 View All scalability result - 2026-05-25
+
+Implemented:
+- web View All uses `GET /market/sections/:key` with `limit=24` and cursor-based Load More;
+- web section detail appends de-duplicated items instead of loading every page at once;
+- web section detail aborts stale requests on route change/unmount;
+- backend section detail clamps limits to the server maximum of 60;
+- backend rejects malformed cursors and translates stale Prisma cursors into controlled client errors;
+- cache headers remain `private, no-store`;
+- ranking remains disabled by default and no new aggregate ranking formula is introduced.
+
+Still deferred:
+- mobile dedicated section detail route/screen;
+- web scroll restoration after product-modal/back navigation;
+- virtualization if product teams later request larger page sizes or infinite scrolling;
+- suggestions and admin governance.

@@ -458,3 +458,40 @@ Validation commands:
 - mobile `npm run test:market-signal-queue-contract`;
 - changed docs/code search for false live-ranking, full-personalization, ML, or production-ready claims;
 - touched files search for new user-facing follow/follower/following language.
+
+## Phase 10 View All and pagination QA - 2026-05-25
+
+Phase 10 QA verifies that section detail pagination is bounded and safe for web View All flows while ranking remains disabled by default.
+
+Backend tests added/updated:
+- section detail clamps oversized limits to the 60-item backend maximum;
+- section detail trims stable cursor values before querying Prisma;
+- malformed cursors are rejected before Prisma is queried;
+- stale Prisma cursor errors are returned as controlled bad requests;
+- empty eligible section detail responses return safe empty items and pagination metadata;
+- existing tests continue to cover section detail cursor metadata, unsupported section keys, duplicate removal, suppression filtering, ranking metadata, cache headers, and deterministic fallback.
+
+Web validation:
+- `/market/sections/:sectionKey` route fetches `getMarketSectionDetail` with `limit=24`;
+- Load More uses `pagination.nextCursor` and stops when `hasNextPage=false`;
+- stale requests are aborted on route change/unmount;
+- returned items are de-duplicated before append;
+- section detail records section view, item impression, and item open signals through the bounded web signal queue;
+- UI copy remains neutral and does not claim personalization.
+
+Mobile validation:
+- mobile API/types already support section detail and Phase 8 metadata;
+- mobile full section detail screen remains deferred;
+- mobile signal queue contract must continue to pass.
+
+Validation commands:
+- backend `npx prisma validate`;
+- backend `npx prisma generate`;
+- backend `npm test -- market-ranking market-section --runInBand`;
+- backend `npm run build`;
+- web `npm exec tsc -- -b --pretty false`;
+- web `npm run build`;
+- mobile `npm exec tsc -- --noEmit`;
+- mobile `npm run test:market-signal-queue-contract`;
+- changed docs/code search for false ranking-live, full-personalization, ML, production-ready, suggestions, or admin-governance claims;
+- touched files search for new user-facing follow/follower/following language.

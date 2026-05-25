@@ -6,7 +6,7 @@
 - Backend product market compatibility endpoints were `GET /products/market` and alias `GET /store/products/market`; backend design feed was `GET /collections/market`.
 - Phase 0 found web `MarketPlace.tsx` building sections client-side after loading up to 4800 products.
 - Mobile `MarketScreen.tsx` builds a good local section model: hero, live themes, fresh row, moodboard row, latest collections, product grids, editorial cards, and custom-ready row.
-- View All is not a general backend-driven section route on either web or mobile.
+- Phase 0 found View All was not a general backend-driven section route on either web or mobile.
 
 Implementation standard: create the backend section contract first, then adapt web and mobile to the same DTO. Do not keep expanding local section builders as the primary architecture.
 
@@ -129,6 +129,46 @@ Client handling rules:
 - clients must not show personalized copy unless `ranking=aggregate-v1` and `personalization=aggregate-contextual`;
 - mobile still keeps its local section-first MarketScreen rendering until a later backend-section migration phase;
 - suggestions, admin governance UI, and new ranking formulas remain deferred.
+
+## Phase 10 View All and pagination hardening - 2026-05-25
+
+Phase 10 makes the existing section detail endpoint safe enough for web View All flows without enabling ranking by default or changing the market section ranking formula.
+
+Backend detail contract:
+
+```text
+GET /market/sections/:key?cursor=<cursor>&limit=<bounded-limit>&anonymousSessionId=<guest-session>
+```
+
+Implemented behavior:
+- `limit` is clamped server-side to the safe detail maximum of 60;
+- empty or missing cursors are ignored;
+- malformed cursors are rejected with a controlled bad request before Prisma is queried;
+- stale Prisma cursors are translated into a controlled bad request instead of an internal server error;
+- unsupported section keys still return the existing controlled not-found response;
+- response pagination remains `pagination.limit`, `pagination.hasNextPage`, and `pagination.nextCursor`;
+- section metadata keeps the Phase 8/9 ranking fields and remains backward compatible;
+- active user or anonymous suppressions still filter section detail output where safe;
+- `Cache-Control` remains `private, no-store`.
+
+Web View All behavior:
+- Market section previews render a bounded View All CTA when `section.viewAll.enabled=true`;
+- `/market/sections/:sectionKey` fetches `getMarketSectionDetail` with cursor pagination and a 24-item page size;
+- Load More appends de-duplicated items and stops when `hasNextPage=false`;
+- stale section detail requests are aborted on route change/unmount;
+- section detail records section impressions, item impressions, and item opens through the existing bounded signal queue;
+- the UI does not claim personalization unless backend metadata serves aggregate ranking.
+
+Mobile status:
+- mobile already has typed `getMarketSectionDetail` support and ranking metadata normalization;
+- a dedicated mobile section detail screen remains deferred because MarketScreen is still intentionally local-section rendered.
+
+Still deferred:
+- mobile full backend-section migration;
+- long-list virtualization tuning beyond the current bounded web Load More page;
+- suggestions;
+- admin section/ranking governance UI;
+- production rollout claims.
 
 ## Decision
 
