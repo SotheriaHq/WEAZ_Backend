@@ -1,6 +1,6 @@
 # Market Ranking Local MVP Simulation
 
-Status: Phase 7D local MVP readiness simulation. Ranking is disabled.
+Status: Phase 7 local MVP readiness simulation. Ranking is disabled.
 Date: 2026-05-25
 
 ## Purpose
@@ -102,7 +102,7 @@ This is local MVP owner simulation only. Before multi-user production rollout, r
 
 ## Local monitoring substitute
 
-No production dashboard or alert stack was provisioned in Phase 7D.
+No production dashboard or alert stack was provisioned in Phase 7.
 
 Local MVP substitute:
 - use backend request logs with `x-request-id`;
@@ -221,13 +221,13 @@ Reason:
 - cache headers remain private/no-store;
 - documentation distinguishes local MVP simulation from hosted QA/UAT or production approval.
 
-Ranking remains disabled. Phase 7D does not implement ranking, personalize ordering, or read aggregate tables for served ordering.
+Ranking remains disabled. Phase 7 does not implement ranking, personalize ordering, or read aggregate tables for served ordering.
 
-## Phase R1 follow-up
+## Phase 8 follow-up
 
-Phase R1 uses this local readiness result to implement aggregate-driven market section ranking behind safety flags.
+Phase 8 uses this local readiness result to implement aggregate-driven market section ranking behind safety flags.
 
-Current R1 state:
+Current Phase 8 state:
 - aggregate ranking code exists on the backend;
 - ranking remains disabled by default;
 - shadow mode remains enabled by default;

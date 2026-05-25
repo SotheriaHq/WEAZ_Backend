@@ -192,7 +192,7 @@ Rollback rehearsal readiness:
 - Cache headers remain private/no-store.
 - Rehearsal result is recorded with environment, deployment ID, migration status, flags, fallback evidence, monitoring evidence, pass/fail result, and owner sign-off.
 
-## Phase 7B operational gate checklist
+## Phase 7 operational gate checklist
 
 Backend verification:
 - `npx prisma validate` passes.
@@ -223,9 +223,9 @@ Operational blockers:
 - replace `<engineering-owner>`, `<product-owner>`, and `<qa-owner>` placeholders;
 - execute and pass rollback rehearsal before ranking implementation starts.
 
-## Phase 7D local MVP simulation checklist
+## Phase 7 local MVP simulation checklist
 
-Phase 7D replaces the external QA/UAT assumption with a local MVP simulation only.
+Phase 7 replaces the external QA/UAT assumption with a local MVP simulation only.
 
 Completed locally on 2026-05-25:
 - clean backend, web, and mobile workspaces confirmed before changes;

@@ -224,9 +224,9 @@ Remaining scalability blockers before ranking:
 - replace owner placeholders;
 - execute and pass rollback rehearsal.
 
-## Phase 7B operational scalability verification - 2026-05-24
+## Phase 7 operational scalability verification - 2026-05-24
 
-Phase 7B keeps ranking disabled and confirms the scalability gate is still blocked on operations, not code-path ranking behavior.
+Phase 7 operational verification keeps ranking disabled and confirms the scalability gate is still blocked on operations, not code-path ranking behavior.
 
 Confirmed:
 - market section routes still use bounded deterministic queries;
@@ -246,9 +246,9 @@ Scalability gate remains blocked until:
 - rollback rehearsal proves deterministic fallback under flag changes;
 - owner placeholders are replaced.
 
-## Phase 7D local MVP scalability simulation - 2026-05-25
+## Phase 7 local MVP scalability simulation - 2026-05-25
 
-Phase 7D validates only local MVP readiness.
+Phase 7 validates only local MVP readiness.
 
 Confirmed:
 - aggregate migrations are now applied in the local database;
@@ -267,9 +267,9 @@ Scalability limitations:
 
 Local ranking implementation can start after validation because the local MVP gate passed, but production rollout remains blocked until hosted monitoring, alerting, backup/restore rehearsal, and real owner governance are revisited.
 
-## Phase R1 aggregate ranking scalability note - 2026-05-25
+## Phase 8 aggregate ranking scalability note - 2026-05-25
 
-Phase R1 introduces aggregate reads for market ranking only behind safety flags.
+Phase 8 introduces aggregate reads for market ranking only behind safety flags.
 
 Scalability controls implemented:
 - aggregate reader runs only when ranking is enabled, the section key is allowlisted, and deterministic fallback is enabled;

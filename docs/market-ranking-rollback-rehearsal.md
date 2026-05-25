@@ -149,7 +149,7 @@ Owner placeholders must be replaced before production rollout.
 - Fallback activation can be observed or manually recorded.
 - Owner placeholders are resolved or explicitly listed as blockers.
 
-## Phase 7B QA/UAT execution checklist
+## Phase 7 QA/UAT execution checklist
 
 Use this checklist in QA/UAT only. Do not run it against production and do not use destructive database reset.
 
@@ -226,9 +226,9 @@ Owner sign-off:
 Notes:
 ```
 
-## Phase 7D local MVP rehearsal result
+## Phase 7 local MVP rehearsal result
 
-Phase 7D ran a local/single-environment rehearsal because external QA/UAT access is unavailable.
+Phase 7 ran a local/single-environment rehearsal because external QA/UAT access is unavailable.
 
 Local prerequisites:
 - local database connection was available;
@@ -258,9 +258,9 @@ Scope limit:
 - This is not enterprise owner sign-off.
 - Ranking remains disabled and not live.
 
-## Phase R1 rollback behavior
+## Phase 8 rollback behavior
 
-Phase R1 adds aggregate ranking code but keeps rollback flag-based:
+Phase 8 adds aggregate ranking code but keeps rollback flag-based:
 
 1. Set `MARKET_RANKING_ENABLED=false`.
 2. Keep `MARKET_RANKING_FALLBACK_DETERMINISTIC=true`.
@@ -275,4 +275,4 @@ Expected fallback cases without operator action:
 - ranking services are unavailable in a test/module context: deterministic fallback with `fallbackReason=ranking-services-unavailable`;
 - shadow mode is enabled: ranked candidates may be computed but deterministic order is served.
 
-R1 rollback does not delete raw signals, seen rows, suppressions, reset markers, batch receipts, or aggregate rows.
+Phase 8 rollback does not delete raw signals, seen rows, suppressions, reset markers, batch receipts, or aggregate rows.

@@ -14,6 +14,30 @@ Current Phase 0 result on 2026-05-23:
 - Phase 0B canonical path is `bthreadly/docs/feeds/threadly_feed_market_docs/`;
 - Phase 0B resolved documentation ownership by committing the canonical docs pack under the backend repo.
 
+## Corrected phase map - 2026-05-25
+
+Phase names are normalized here so future feed/market work continues with normal phase numbers instead of temporary `R` labels.
+
+| Phase | Meaning | Status |
+|---|---|---|
+| Phase 0 | Ground-truth audit and docs alignment | Completed |
+| Phase 0B | Canonical docs ownership | Completed |
+| Phase 1 | Backend market section foundation and web load reduction | Completed |
+| Phase 2 | Signal, seen, suppression, reset, and cache-safety foundation | Completed |
+| Phase 3 | Signal idempotency and aggregation foundation | Implemented |
+| Phase 4 | Aggregate schema/key hardening | Implemented as part of aggregate QA/design-gate work |
+| Phase 5 | Aggregation QA and ranking release checklist | Docs/release-gate only |
+| Phase 6 | Ranking flag and deterministic fallback foundation | Implemented |
+| Phase 7 | Local MVP ranking readiness simulation | Completed locally |
+| Phase 8 | Backend aggregate ranking behind safety flags | Implemented; formerly Phase R1 |
+| Phase 8B | Workspace safety gate after backend ranking | Completed; formerly Phase R1C |
+| Phase 9 | Web/mobile ranking metadata contract integration | Completed; formerly Phase R2 |
+| Phase 10 | Market section View All and pagination hardening | Not started |
+| Phase 11 | Context-aware market suggestion engine | Not started |
+| Phase 12 | User market/feed controls | Not started |
+| Phase 13 | Admin governance and configuration | Not started |
+| Phase 14 | Final hardening and MVP release gate | Not started |
+
 ## Phase 1 - Stop static/client-heavy rendering and define shared section contract
 
 Status: completed on 2026-05-24, with deterministic V1 behavior only.
@@ -187,9 +211,9 @@ Deferred from Phase 7:
 - Redis/BullMQ market signal worker;
 - admin ranking governance UI.
 
-## Phase 7B - Operational readiness gate before ranking implementation
+## Phase 7 operational readiness verification
 
-Status: Phase 7B gate verification added on 2026-05-24. Ranking remains disabled and not ready for implementation.
+Status: readiness verification added on 2026-05-24. Ranking remains disabled and not ready for implementation.
 
 - verify Prisma schema and migration status;
 - verify ranking flags still default to deterministic fallback;
@@ -205,14 +229,14 @@ Outcome:
 - rollback docs now include a concrete QA/UAT execution checklist;
 - ranking remains blocked until QA/UAT migrations, monitoring/alerts or an approved manual substitute, owner assignment, and rollback rehearsal are complete.
 
-Deferred from Phase 7B:
+Deferred from Phase 7 operational verification:
 - signal-driven market/feed ranking;
 - aggregate reads for served ordering;
 - suggestion engine implementation;
 - production monitoring dashboard implementation;
 - Redis/BullMQ market signal worker.
 
-## Phase 7D - Local MVP ranking readiness simulation
+## Phase 7 - Local MVP ranking readiness simulation
 
 Status: completed locally on 2026-05-25 after validation and backend docs commit. Ranking remains disabled and not live.
 
@@ -234,14 +258,14 @@ Outcome:
 
 Ready for ranking implementation locally: **Yes**.
 
-Deferred from Phase 7D:
+Deferred from Phase 7:
 - signal-driven market/feed ranking implementation;
 - aggregate reads for served ordering;
 - production monitoring dashboard implementation;
 - production owner governance;
 - Redis/BullMQ market signal worker.
 
-## Phase R1 - Backend aggregate-driven market ranking behind safety flags
+## Phase 8 - Backend aggregate-driven market ranking behind safety flags
 
 Status: completed on 2026-05-25 after backend validation and commit. Ranking remains disabled by default and is not a production rollout.
 
@@ -258,7 +282,7 @@ Outcome:
 - default environment still serves deterministic V1 output;
 - no production readiness is claimed.
 
-Deferred from Phase R1:
+Deferred from Phase 8:
 - production ranking rollout;
 - hosted monitoring dashboard and alerts;
 - admin ranking governance;
@@ -266,12 +290,24 @@ Deferred from Phase R1:
 - suggestion engine;
 - Redis/BullMQ ranking worker.
 
-## Phase R2 - Web/mobile ranking contract integration
+## Phase 8B - Workspace safety gate after backend ranking
+
+Status: completed on 2026-05-25 with no repo commit.
+
+- preserve unrelated web auth/design/QR work in `stash@{0}: On main: pre-r2-unrelated-web-auth-design-qr-wip`;
+- confirm backend, web, and mobile are clean on `main`;
+- validate backend market ranking/section tests and build, web TypeScript/build, and mobile TypeScript/signal queue contract;
+- do not modify backend ranking code or start client integration.
+
+Outcome:
+- workspace was clean and safe for Phase 9 client contract work.
+
+## Phase 9 - Web/mobile ranking contract integration
 
 Status: completed on 2026-05-25 after client type/build validation and commits. Ranking remains disabled by default and no UI redesign is included.
 
-- update web and mobile market API contracts to understand Phase R1 section metadata;
-- normalize old/missing metadata safely so pre-R1 responses still render;
+- update web and mobile market API contracts to understand Phase 8 section metadata;
+- normalize old/missing metadata safely so pre-Phase 8 responses still render;
 - keep web MarketPlace neutral and avoid visible personalization claims unless backend metadata says aggregate ranking is actually served;
 - preserve web signal batching, `clientEventId`, and bounded queue behavior;
 - preserve mobile runtime signal queue and local section-first MarketScreen rendering;
@@ -282,7 +318,7 @@ Outcome:
 - backend ranking remains behind disabled-by-default flags;
 - no production readiness, ML, or full personalization claim is made.
 
-Deferred from Phase R2:
+Deferred from Phase 9:
 - View All pagination hardening;
 - suggestion engine;
 - admin ranking governance;

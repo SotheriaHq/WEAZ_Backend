@@ -1,13 +1,13 @@
 # Market Ranking Release Plan
 
-Status: Phase R1 backend implementation gate. Ranking is disabled by default.
+Status: Phase 8 backend implementation gate. Ranking is disabled by default.
 Date: 2026-05-24
 
 ## 1. Purpose
 
 This plan defines the feature flags, rollout controls, rollback path, monitoring requirements, and infrastructure decision gate required before Threadly uses signal aggregates to rank market or feed content.
 
-This document is a release gate and rollout contract. Phase R1 implements aggregate-backed market section ordering only behind disabled-by-default flags; it is not a production enablement approval.
+This document is a release gate and rollout contract. Phase 8 implements aggregate-backed market section ordering only behind disabled-by-default flags; it is not a production enablement approval.
 
 ## 2. Current state
 
@@ -17,9 +17,14 @@ This document is a release gate and rollout contract. Phase R1 implements aggreg
 - Daily aggregates exist as a foundation for future ranking.
 - Phase 6 adds code-level env ranking flags through `MarketRankingConfigService`.
 - Phase 7 adds monitoring and rollback rehearsal specifications; it does not enable ranking.
-- Phase R1 adds the first aggregate-driven backend ranking path behind the existing flags, with deterministic fallback and shadow mode preserved.
+- Phase 8 adds the first aggregate-driven backend ranking path behind the existing flags, with deterministic fallback and shadow mode preserved.
 - Redis/BullMQ is deferred for the market signal path.
 - The Phase 3 and Phase 4 aggregate migrations must be applied in QA/UAT before aggregate QA is considered complete.
+
+Phase numbering reconciliation on 2026-05-25:
+- Phase 8 is the backend aggregate ranking implementation.
+- Phase 9 is the web/mobile ranking metadata contract integration.
+- The next normal feature phase is Phase 10: Market section View All and pagination hardening.
 
 ## 3. Required feature flags
 
@@ -268,9 +273,9 @@ Remaining release blockers:
 - execute and pass rollback rehearsal;
 - keep ranking disabled until the above gates are complete.
 
-## 15. Phase 7B readiness verification
+## 15. Phase 7 readiness verification
 
-Phase 7B verified the operational gate without implementing ranking.
+Phase 7 readiness verification checked the operational gate without implementing ranking.
 
 Current status:
 - ranking remains disabled by default through `MarketRankingConfigService`;
@@ -305,9 +310,9 @@ Verdict:
 - ready for ranking implementation: **No**;
 - required next action: apply pending aggregate migrations in QA/UAT, provision monitoring/alerts or approve a manual QA substitute, assign owners, and pass rollback rehearsal.
 
-## 16. Phase 7D local MVP simulation
+## 16. Phase 7 local MVP simulation
 
-Phase 7C was blocked because no external QA/UAT environment, backup marker, monitoring approval, or owner assignment exists. Phase 7D replaces that blocked external gate with a local/single-environment MVP simulation.
+The external gate was blocked because no external QA/UAT environment, backup marker, monitoring approval, or owner assignment exists. Phase 7 replaces that blocked external gate with a local/single-environment MVP simulation.
 
 Local MVP result on 2026-05-25:
 - local database target label: `localhost:5432/threadly/public`;
@@ -333,9 +338,9 @@ Local readiness verdict:
 - ready for ranking implementation locally: **Yes**;
 - production rollout readiness: **No** until hosted monitoring/alerts, production backup/restore rehearsal, and real owner governance are revisited.
 
-## 17. Phase R1 backend aggregate ranking implementation
+## 17. Phase 8 backend aggregate ranking implementation
 
-Phase R1 implements the first real backend aggregate ranking path for market sections.
+Phase 8 implements the first real backend aggregate ranking path for market sections.
 
 Implemented:
 - `MarketRankingAggregateReaderService` reads `MarketSignalAggregateDaily` with bounded candidate IDs, a bounded lookback window, explicit Prisma `select`, and an aggregate timeout guard;
@@ -352,7 +357,7 @@ Still not enabled by default:
 - `MARKET_RANKING_SECTION_KEYS` remains empty;
 - deterministic fallback remains the default served behavior.
 
-Not implemented in R1:
+Not implemented in Phase 8:
 - ML or embeddings;
 - admin governance UI;
 - suggestion engine;
@@ -360,9 +365,9 @@ Not implemented in R1:
 - Redis/BullMQ market ranking workers;
 - production monitoring dashboard or alerting.
 
-## 18. Phase R2 client ranking contract integration
+## 18. Phase 9 client ranking contract integration
 
-Phase R2 aligns web and mobile clients with the Phase R1 metadata contract only.
+Phase 9 aligns web and mobile clients with the Phase 8 metadata contract only.
 
 Implemented:
 - web and mobile section API types support `ranking`, `personalization`, `fallbackUsed`, `fallbackReason`, `rankingVersion`, `shadowMode`, and `rankingEnabled`;
@@ -376,7 +381,7 @@ Still not enabled by default:
 - `MARKET_RANKING_SHADOW_MODE` remains `true`;
 - deterministic fallback remains available for every market section request.
 
-Not implemented in R2:
+Not implemented in Phase 9:
 - ranking-specific UI;
 - mobile full backend-section migration;
 - suggestions;

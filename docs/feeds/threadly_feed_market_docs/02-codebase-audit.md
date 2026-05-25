@@ -473,9 +473,9 @@ Phase 7 documentation changes:
 
 Ready for ranking implementation: **No**. Phase 7 closes documentation for monitoring and rollback rehearsal only. Remaining blockers are applying QA/UAT migrations, provisioning monitoring/alerts, replacing owner placeholders, executing and passing rollback rehearsal, and then implementing ranking behind disabled-by-default flags.
 
-## Phase 7B operational readiness gate result - 2026-05-24
+## Phase 7 operational readiness verification result - 2026-05-24
 
-Phase 7B verified:
+Phase 7 operational verification confirmed:
 - backend `npx prisma validate` and `npx prisma generate` pass;
 - local `npx prisma migrate status` still reports pending aggregate migrations:
   - `20260524150000_add_market_signal_idempotency_aggregation`;
@@ -495,9 +495,9 @@ Monitoring audit:
 
 Ready for ranking implementation: **No**. Remaining blockers are QA/UAT migration application, monitoring/alert readiness or explicitly approved manual QA substitute, owner assignment, and passed rollback rehearsal.
 
-## Phase 7D local MVP readiness simulation result - 2026-05-25
+## Phase 7 local MVP readiness simulation result - 2026-05-25
 
-Phase 7D corrected the earlier external QA/UAT assumption for the current solo MVP workflow and ran a local readiness simulation.
+Phase 7 corrected the earlier external QA/UAT assumption for the current solo MVP workflow and ran a local readiness simulation.
 
 Verified locally:
 - backend, web, and mobile were clean on `main` before work;
@@ -521,3 +521,21 @@ Scope limit:
 - it is not production monitoring approval;
 - it is not enterprise governance sign-off;
 - ranking remains disabled and not live.
+
+## Phase numbering reconciliation result - 2026-05-25
+
+The feed/market roadmap now uses normal phase numbers for future work. Temporary `R` labels are retained only as historical traceability in the roadmap.
+
+Corrected status evidence:
+- Phase 3 is **IMPLEMENTED**: Prisma schema, migration `20260524150000_add_market_signal_idempotency_aggregation`, `MarketSignalBatchReceipt`, `MarketSignalAggregateDaily`, `MarketSignalService`, `MarketSignalAggregationService`, web `clientEventId` emission, and mobile `src/services/marketSignals.ts` all exist.
+- Phase 4 is **IMPLEMENTED** for aggregate schema/key hardening: migration `20260524170000_widen_market_signal_aggregate_key` widens `MarketSignalAggregateDaily.aggregateKey` to `VARCHAR(512)`, and aggregate tests cover max-length key behavior.
+- Phase 5 is **DOCS ONLY**: `docs/market-ranking-release-plan.md` and `docs/market-signal-aggregation-qa-checklist.md` define migration QA, release flags, rollback, monitoring, and Redis/BullMQ gates, but do not change runtime ordering.
+- Phase 6 is **IMPLEMENTED**: `src/market/market-ranking-config.service.ts` and focused tests provide disabled-by-default ranking flags, deterministic fallback, safe clamping, section-key normalization, and no aggregate ordering reads.
+- Phase 7 is the local MVP readiness simulation that applied aggregate migrations locally and validated fallback/suppression/cache behavior without making ranking live.
+- Phase 8 is backend aggregate ranking behind disabled-by-default safety flags.
+- Phase 8B is the workspace safety gate after backend ranking.
+- Phase 9 is web/mobile ranking metadata contract integration.
+
+Next normal phase:
+- Phase 10 is Market section View All and pagination hardening.
+- Phase 10 has not started.

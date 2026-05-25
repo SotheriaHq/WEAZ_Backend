@@ -261,7 +261,7 @@ Ranking implementation must not be enabled until:
 - owner placeholders are replaced;
 - rollback rehearsal passes.
 
-## Phase 7B implementability audit
+## Phase 7 implementability audit
 
 Current backend foundations:
 - `src/common/middleware/request-logger.middleware.ts` assigns and returns `x-request-id`, records method, path, status, duration, and IP through Nest `Logger`;
@@ -276,7 +276,7 @@ Missing infrastructure:
 - no `Server-Timing` header or per-route market latency metric is implemented for ranking readiness;
 - no approved QA manual substitute has been recorded.
 
-Phase 7B decision:
+Phase 7 operational decision:
 - do not add a full monitoring stack inside this phase;
 - keep this document as the required implementation contract for the chosen observability stack;
 - allow QA/UAT to use a manual evidence substitute only after `<engineering-owner>`, `<product-owner>`, and `<qa-owner>` explicitly accept it for that environment.
@@ -288,9 +288,9 @@ Owner assignment required before production ranking rollout:
 
 These placeholders are intentional release blockers. They must not be interpreted as assigned owners.
 
-## Phase 7D local MVP monitoring substitute
+## Phase 7 local MVP monitoring substitute
 
-External QA/UAT monitoring remains unavailable. For the local/single-environment MVP workflow, Phase 7D accepts a manual local monitoring substitute only for ranking implementation readiness.
+External QA/UAT monitoring remains unavailable. For the local/single-environment MVP workflow, Phase 7 accepts a manual local monitoring substitute only for ranking implementation readiness.
 
 Local substitute:
 - backend request logs provide `x-request-id`;
@@ -320,9 +320,9 @@ Limitations:
 - no production `Server-Timing` or fallback counter is implemented;
 - this substitute must not be treated as hosted production readiness.
 
-## Phase R1 lightweight backend logging
+## Phase 8 lightweight backend logging
 
-Phase R1 does not add a dashboard, metrics sink, or alerting stack.
+Phase 8 does not add a dashboard, metrics sink, or alerting stack.
 
 It does add compact backend debug logs for the ranking path:
 - ranking skipped because disabled;
@@ -346,4 +346,4 @@ Log payloads are intentionally small and may include:
 
 Log payloads must not include raw user metadata, anonymous session IDs, payment data, secrets, or full market response payloads.
 
-Production monitoring remains required before any broad rollout. The R1 logs are a local/MVP diagnostic foundation, not a replacement for the dashboard and alerts described above.
+Production monitoring remains required before any broad rollout. The Phase 8 logs are a local/MVP diagnostic foundation, not a replacement for the dashboard and alerts described above.

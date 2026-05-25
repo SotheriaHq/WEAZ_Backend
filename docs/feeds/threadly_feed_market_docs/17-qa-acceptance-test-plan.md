@@ -332,9 +332,9 @@ Acceptance before ranking implementation:
 - rollback rehearsal is executed and passes;
 - ranking remains disabled until those gates are complete.
 
-## Phase 7B readiness QA - 2026-05-24
+## Phase 7 operational readiness QA - 2026-05-24
 
-Phase 7B adds one focused backend fallback test and tightens the operational QA checklist without enabling ranking.
+Phase 7 operational readiness adds one focused backend fallback test and tightens the operational QA checklist without enabling ranking.
 
 Backend test coverage:
 - `src/market/market-section.service.spec.ts`
@@ -347,7 +347,7 @@ Operational QA additions:
 - monitoring plan now records current backend logging foundations and missing dashboard/alert infrastructure;
 - owner placeholders are explicitly release blockers, not assigned owners.
 
-Phase 7B validation must include:
+Phase 7 operational verification must include:
 - `npx prisma validate`;
 - `npx prisma generate`;
 - `npx prisma migrate status`;
@@ -360,9 +360,9 @@ Phase 7B validation must include:
 - `git diff --check`;
 - search changed docs/code for inaccurate live-ranking/personalization claims and new user-facing follow/follower language.
 
-## Phase 7D local MVP QA - 2026-05-25
+## Phase 7 local MVP QA - 2026-05-25
 
-Phase 7D acceptance checks:
+Phase 7 local MVP acceptance checks:
 - clean backend, web, and mobile workspaces before work;
 - local database access;
 - local restore point or acceptable restore path;
@@ -385,7 +385,7 @@ Evidence captured:
 - rollback fresh-drops IDs matched the baseline.
 - suppression fixture target `11111111-1111-4111-8111-111111111103` was absent after guest suppression.
 
-Final Phase 7D validation must include:
+Final Phase 7 local MVP validation must include:
 - `npx prisma validate`;
 - `npx prisma generate`;
 - `npx prisma migrate status`;
@@ -399,9 +399,9 @@ Final Phase 7D validation must include:
 - search changed docs/code for inaccurate live-ranking, live-personalization, external-QA-approved, or production-ready claims;
 - search touched docs/code for new user-facing follow/follower/following language.
 
-## Phase R1 backend aggregate ranking QA - 2026-05-25
+## Phase 8 backend aggregate ranking QA - 2026-05-25
 
-Phase R1 QA proves aggregate ranking is implemented behind safety flags while deterministic fallback remains safe.
+Phase 8 QA proves aggregate ranking is implemented behind safety flags while deterministic fallback remains safe.
 
 Implemented test coverage:
 - ranking disabled returns deterministic order;
@@ -422,7 +422,7 @@ Implemented test coverage:
 Commands:
 - `npm test -- market-ranking market-section --runInBand`
 
-Expected behavior after R1:
+Expected behavior after Phase 8:
 - default env still serves deterministic V1 output;
 - `MARKET_RANKING_ENABLED=true` is required before aggregate ranking is considered;
 - `MARKET_RANKING_SECTION_KEYS` must explicitly allow a section;
@@ -436,9 +436,9 @@ Deferred QA:
 - web/mobile ranking-specific UI checks;
 - admin governance checks.
 
-## Phase R2 client ranking contract QA - 2026-05-25
+## Phase 9 client ranking contract QA - 2026-05-25
 
-Phase R2 QA verifies that clients can consume the Phase R1 metadata contract without claiming live personalization or redesigning market surfaces.
+Phase 9 QA verifies that clients can consume the Phase 8 metadata contract without claiming live personalization or redesigning market surfaces.
 
 Expected client behavior:
 - web and mobile API types include `ranking`, `personalization`, `fallbackUsed`, `fallbackReason`, `rankingVersion`, `shadowMode`, and `rankingEnabled`;
@@ -447,7 +447,7 @@ Expected client behavior:
 - web MarketPlace keeps neutral market copy and must not claim personalization unless the backend serves `ranking=aggregate-v1` with `personalization=aggregate-contextual`;
 - existing web signal batching remains bounded and keeps `clientEventId` support;
 - mobile signal runtime keeps queue cap `100`, batch cap `25`, AppState background/inactive flush, and bounded retry behavior;
-- mobile MarketScreen remains locally sectioned and is not migrated to backend-ranked sections in R2.
+- mobile MarketScreen remains locally sectioned and is not migrated to backend-ranked sections in Phase 9.
 
 Validation commands:
 - backend `npm test -- market-ranking market-section --runInBand`;

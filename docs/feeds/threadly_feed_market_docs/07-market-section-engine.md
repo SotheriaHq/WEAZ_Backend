@@ -103,9 +103,9 @@ Deferred:
 - cross-section dedupe across the whole home response;
 - mobile rendering migration to this contract.
 
-## Phase R2 client ranking metadata contract - 2026-05-25
+## Phase 9 client ranking metadata contract - 2026-05-25
 
-Phase R2 updates web and mobile clients to understand the Phase R1 section metadata without changing the visible market UI or enabling ranking by default.
+Phase 9 updates web and mobile clients to understand the Phase 8 section metadata without changing the visible market UI or enabling ranking by default.
 
 Backend section metadata fields now supported by clients:
 

@@ -222,9 +222,9 @@ No more than 3 consecutive items from same category.
 Same product/design cannot appear twice on same screen.
 ```
 
-## Phase R1 implemented aggregate scoring
+## Phase 8 implemented aggregate scoring
 
-Phase R1 implements a conservative deterministic formula service, not ML.
+Phase 8 implements a conservative deterministic formula service, not ML.
 
 Implemented service:
 - `src/market/market-ranking-scorer.service.ts`
