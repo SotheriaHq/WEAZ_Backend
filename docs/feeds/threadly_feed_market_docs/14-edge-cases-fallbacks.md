@@ -69,6 +69,29 @@
 | User hides suggestion item | suppress item |
 | User hides suggestion block | suppress block/context |
 
+## Phase 11A suggestion fallback contract - 2026-05-25
+
+Phase 11A defines the fallback rules for Phase 11B. Runtime suggestion behavior is still pending.
+
+| Scenario | Phase 11B required behavior |
+|---|---|
+| Unsupported suggestion context | return controlled 400 and do not affect the parent screen |
+| Missing required target for detail context | return controlled 400 or an empty safe response, depending on existing controller pattern |
+| Product/collection/brand target not found | return empty `blocks` or controlled 404 without breaking primary detail content |
+| Current target would appear in suggestions | exclude it |
+| Candidate has no usable media | exclude it from visual blocks |
+| Candidate is archived, deleted, inactive, closed-store, or unavailable | exclude it |
+| User or guest suppresses item/brand/category/block | exclude matching candidates or block |
+| All candidates are suppressed | return empty block items or hide the block |
+| Search-empty query is too narrow | relax to category/tag/fresh fallback |
+| Search-empty query is blank | do not call market suggestions; use existing search suggestions/default prompt |
+| Duplicate candidate appears in multiple blocks | keep earliest block placement and exclude from later blocks where feasible |
+| Suggestion endpoint is slow/fails | hide block or show local retry; never block product/detail/search page rendering |
+| Invalid cursor | controlled 400 or safe empty page, never server crash |
+| Oversized limit | clamp to Phase 11B backend maximum |
+| Ranking flags are off | deterministic context/fallback strategy only |
+| Aggregate data missing | deterministic fallback strategy only |
+
 ## Network and performance
 
 | Scenario | Required behavior |

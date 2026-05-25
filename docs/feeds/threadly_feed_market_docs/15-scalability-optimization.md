@@ -59,6 +59,8 @@ POST /market/suggestions/events
 POST /market/suppressions
 ```
 
+Phase 11A selected `GET /market/suggestions` as the shared market suggestion contract. `POST /market/suggestions/events` remains deferred because suggestion events can use the existing batched `POST /market/signals/batch` endpoint with suggestion signal types and `suggestionBlockKey`.
+
 ## Caching
 
 | Layer | Strategy |
@@ -311,3 +313,26 @@ Still deferred:
 - web scroll restoration after product-modal/back navigation;
 - virtualization if product teams later request larger page sizes or infinite scrolling;
 - suggestions and admin governance.
+
+## Phase 11A suggestion scalability contract - 2026-05-25
+
+Phase 11A is documentation/contract only. It defines how Phase 11B should keep suggestions bounded and safe:
+
+- use `GET /market/suggestions` with a small, clamped `limit`;
+- reuse `MarketSectionItemDto`-aligned card fields instead of hydrating full product, collection, brand, or design detail payloads;
+- use context-specific candidate pools, not full-catalog client-side ranking;
+- query products, collections, brands, categories, and search data with explicit Prisma `select` or existing service DTOs;
+- apply suppressions server-side before returning candidate blocks;
+- exclude the current target and duplicate cards before pagination metadata is computed;
+- use cursor pagination only for block View All/detail expansion;
+- return `Cache-Control: private, no-store` while requester or anonymous-session suppressions affect output;
+- allow the parent product/detail/search page to render before below-fold suggestion blocks load;
+- batch suggestion impressions/clicks/hides through `POST /market/signals/batch`;
+- keep mobile UI wiring conservative because `MarketScreen` still has local section composition and a local moodboard suggestion row.
+
+Phase 11B must not:
+- move large suggestion candidate sets to web/mobile;
+- compute suggestion ranking from raw signal rows per request;
+- add ML/embedding infrastructure;
+- require Redis/BullMQ for the first low-volume deterministic implementation;
+- claim full personalization from deterministic context matching.

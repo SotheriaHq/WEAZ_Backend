@@ -495,3 +495,68 @@ Validation commands:
 - mobile `npm run test:market-signal-queue-contract`;
 - changed docs/code search for false ranking-live, full-personalization, ML, production-ready, suggestions, or admin-governance claims;
 - touched files search for new user-facing follow/follower/following language.
+
+## Phase 11A suggestion contract QA - 2026-05-25
+
+Phase 11A is a docs/design gate. It does not add a suggestion endpoint, UI block, or runtime behavior.
+
+Audit evidence required before Phase 11B:
+- product detail surfaces identified:
+  - backend `GET products/:id` and `GET store/products/:id` through `src/store/store.controller.ts`;
+  - web `/products/:id` via `src/pages/catalog/ProductDetailsPage.tsx` and inline product detail via `src/components/catalog/InlineProductDetail.tsx`;
+  - mobile `app/products/[productId].tsx` via `src/features/market/components/MarketCommerceViewer.tsx`.
+- collection detail surfaces identified:
+  - backend `GET collections/:id` and store collection helpers in `src/collections/collections.controller.ts` and `src/collections/collections.service.ts`;
+  - web `/collections/:id` via `src/pages/catalog/CollectionRouter.tsx` and `src/components/catalog/InlineStoreCollectionView.tsx`;
+  - mobile `app/collection-viewer.tsx` via `src/features/market/components/CollectionCommerceViewer.tsx`.
+- brand/store surfaces identified:
+  - backend public storefront and brand product routes in `src/store/store.controller.ts`;
+  - web `/brand/:slug`, `/store/:brandId`, and profile/catalog routes;
+  - mobile `app/catalog/[brandId].tsx` and `app/catalog/index.tsx`.
+- search-empty surfaces identified:
+  - backend `GET /v1/search` and `GET /v1/search/suggest`;
+  - web `src/pages/SearchResultsPage.tsx`;
+  - mobile `app/search.tsx`.
+- market section detail status identified:
+  - web Phase 10 route exists at `/market/sections/:sectionKey`;
+  - mobile dedicated section detail remains deferred.
+
+Phase 11B backend tests to add:
+- `GET /market/suggestions` validates supported contexts and target types;
+- invalid context/target type/cursor returns a controlled client error;
+- limit is clamped;
+- product detail suggestions exclude the current product;
+- collection detail suggestions exclude unavailable/broken-media items;
+- brand detail suggestions respect open-store and product availability constraints;
+- search-empty suggestions use query-relaxed fallback when exact matches are empty;
+- active item/brand/category/suggestion-block suppressions filter candidates;
+- no duplicate item IDs inside one block;
+- duplicate items across blocks are avoided where feasible;
+- empty data returns safe empty blocks;
+- cache header is `private, no-store`;
+- suggestion signals use existing batched signal DTO values and `suggestionBlockKey`.
+
+Phase 11B web validation to add:
+- product detail suggestion block lazy-loads after primary detail content;
+- collection detail suggestion block lazy-loads after primary collection content;
+- search empty state can render suggestion blocks without blocking existing search retry/error behavior;
+- stale suggestion requests are aborted on route change/unmount;
+- hide/not-interested removes the local suggestion card/block and calls existing suppression endpoint;
+- visible copy does not claim personalization unless backend metadata explicitly supports it.
+
+Phase 11B mobile validation to add:
+- API types match backend `MarketSuggestionResponse`;
+- any mobile suggestion UI uses approved `AppText`, `Button`, `Card`, `StableImage`, and list primitives;
+- no nested unbounded `ScrollView`/`FlatList` regression is introduced;
+- AppState signal queue behavior remains unchanged;
+- local moodboard suggestion row is either left untouched or deliberately migrated in a separate scope.
+
+Validation commands for Phase 11A:
+- backend `npm test -- market-ranking market-section --runInBand`;
+- backend `npm run build`;
+- web `npm exec tsc -- -b --pretty false`;
+- web `npm run build`;
+- mobile `npm exec tsc -- --noEmit`;
+- mobile `npm run test:market-signal-queue-contract`;
+- changed docs search for false claims about live suggestions, live ranking, full personalization, ML, production readiness, or admin governance;
+- touched files search for new user-facing follow/follower/following language.

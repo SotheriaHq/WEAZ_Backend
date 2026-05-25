@@ -268,9 +268,51 @@ Not implemented:
 
 Phase 3 idempotency is practical but not absolute: `batchId` replay protection is durable through `MarketSignalBatchReceipt`; `clientEventId` duplicate checks are bounded to a recent replay window; events without client IDs are deduped only inside the current batch by fingerprint.
 
+## Phase 11A suggestion signal contract - 2026-05-25
+
+Phase 11A is a contract gate only. It confirms that the existing signal foundation can support future context-aware market suggestion blocks, but no suggestion endpoint or suggestion UI block is live yet.
+
+Existing enum support in `prisma/schema.prisma`:
+- `MarketSignalSurface.SUGGESTION_BLOCK`;
+- `MarketSignalTargetType.SUGGESTION_BLOCK`;
+- `MarketSignalType.SUGGESTION_BLOCK_VIEW`;
+- `MarketSignalType.SUGGESTION_ITEM_VIEW`;
+- `MarketSignalType.SUGGESTION_ITEM_CLICK`;
+- `MarketSignalType.SUGGESTION_ITEM_WISHLIST`;
+- `MarketSignalType.SUGGESTION_ITEM_CART_ADD`;
+- `MarketSignalType.SUGGESTION_ITEM_HIDE`;
+- `MarketSignalType.SUGGESTION_BLOCK_HIDE`;
+- `MarketSignalType.SUGGESTION_VIEW_ALL_CLICK`.
+
+Phase 11B should use this mapping:
+
+| Suggestion interaction | Existing signal |
+|---|---|
+| block becomes visible | `SUGGESTION_BLOCK_VIEW` |
+| item becomes visible | `SUGGESTION_ITEM_VIEW` |
+| item opens | `SUGGESTION_ITEM_CLICK` |
+| item hide/not interested | `SUGGESTION_ITEM_HIDE` plus a suppression record |
+| block dismissed | `SUGGESTION_BLOCK_HIDE` plus a suggestion-block suppression when supported |
+| block View All clicked | `SUGGESTION_VIEW_ALL_CLICK` |
+| item wishlist action | `SUGGESTION_ITEM_WISHLIST` |
+| item cart/bag action | `SUGGESTION_ITEM_CART_ADD` |
+
+DTO/enum gap to resolve in Phase 11B:
+- the product prompt uses `SUGGESTION_ITEM_OPEN` and `SUGGESTION_DISMISS`;
+- the current codebase uses `SUGGESTION_ITEM_CLICK` and `SUGGESTION_BLOCK_HIDE`;
+- Phase 11B should prefer the existing enum names unless a migration for additional aliases is justified.
+
+Suggestion signal payload rules:
+- include `suggestionBlockKey` for every suggestion block/item event;
+- include `sectionKey` only when the suggestion appears inside market section context;
+- keep `screenContext` aligned with `PRODUCT_DETAIL`, `COLLECTION_DETAIL`, `BRAND_DETAIL`, `SEARCH_EMPTY`, or `MARKET_SECTION_DETAIL`;
+- keep metadata below the existing 2048-byte limit;
+- never include raw search secrets, payment data, or private user notes in metadata;
+- batch through the existing `POST /market/signals/batch` endpoint.
+
 ## Phase 4 aggregate QA result - 2026-05-24
 
-Phase 4 did not make ranking live. It validated the Phase 3 pipeline and added a design gate for future ranking.
+Phase 4 did not activate ranking. It validated the Phase 3 pipeline and added a design gate for future ranking.
 
 Confirmed by tests:
 - raw signal batches still persist accepted events;

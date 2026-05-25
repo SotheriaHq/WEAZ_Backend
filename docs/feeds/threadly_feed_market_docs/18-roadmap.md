@@ -33,7 +33,8 @@ Phase names are normalized here so future feed/market work continues with normal
 | Phase 8B | Workspace safety gate after backend ranking | Completed; formerly Phase R1C |
 | Phase 9 | Web/mobile ranking metadata contract integration | Completed; formerly Phase R2 |
 | Phase 10 | Market section View All and pagination hardening | Completed |
-| Phase 11 | Context-aware market suggestion engine | Not started |
+| Phase 11A | Context-aware market suggestion engine contract gate | Completed; runtime deferred |
+| Phase 11B | Context-aware market suggestion engine implementation | Not started |
 | Phase 12 | User market/feed controls | Not started |
 | Phase 13 | Admin governance and configuration | Not started |
 | Phase 14 | Final hardening and MVP release gate | Not started |
@@ -349,15 +350,49 @@ Deferred from Phase 10:
 - long-grid virtualization if future page sizes grow;
 - context-aware market suggestions.
 
-## Future phase - Context-aware market suggestion blocks
+## Phase 11A - Context-aware market suggestion engine contract gate
 
-- product detail suggestions;
-- collection detail suggestions;
-- brand/store suggestions;
-- search-empty suggestions;
-- new-brand reserved slots;
-- suggestion suppression;
-- suggestion analytics.
+Status: completed on 2026-05-25 as a documentation/contract gate only. Runtime suggestion endpoints and UI blocks remain pending Phase 11B.
+
+- audited backend, web, and mobile product detail, collection detail, brand/store, search-empty, and market section detail surfaces;
+- selected additive backend contract `GET /market/suggestions`;
+- defined supported contexts:
+  - `PRODUCT_DETAIL`;
+  - `COLLECTION_DETAIL`;
+  - `BRAND_DETAIL`;
+  - `SEARCH_EMPTY`;
+  - `MARKET_SECTION_DETAIL`;
+- defined target types:
+  - `PRODUCT`;
+  - `COLLECTION`;
+  - `BRAND`;
+  - `CATEGORY`;
+  - `SECTION`;
+  - `QUERY`;
+- aligned response shape with the existing `MarketSectionItemDto` card contract;
+- documented deterministic V1 strategy matrix, fallback rules, suppression behavior, signal requirements, and Phase 11B implementation file map.
+
+Outcome:
+- Phase 11B can implement the runtime suggestion endpoint and first UI blocks from a stable contract;
+- no suggestion runtime, suggestion UI, ranking formula change, admin governance UI, ML, or production rollout was added;
+- ranking remains disabled by default and suggestions must not claim full personalization unless future backend metadata truly supports it.
+
+## Phase 11B - Context-aware market suggestion implementation
+
+Planned scope:
+- add `GET /market/suggestions` in the backend market module;
+- implement deterministic V1 blocks for product detail, collection detail, brand/store, and search-empty contexts;
+- reuse existing suppression and batched signal infrastructure;
+- add web suggestion blocks only where they can lazy-load below primary content;
+- add mobile API types and only low-risk UI wiring that respects the mobile design system;
+- keep market section detail suggestions deferred unless the core contexts are stable.
+
+Deferred beyond Phase 11B:
+- admin suggestion block configuration;
+- ML, embeddings, collaborative filtering, and visual similarity;
+- cart and checkout-success suggestions;
+- production suggestion monitoring dashboard;
+- full mobile backend-section migration.
 
 ## Future phase - User controls and admin governance
 

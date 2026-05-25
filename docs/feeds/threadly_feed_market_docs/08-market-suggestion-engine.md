@@ -1,207 +1,330 @@
 # Context-Aware Market Suggestion Engine
 
-## Phase 0 alignment note - 2026-05-23
+## Phase 11A contract gate - 2026-05-25
 
-- Suggestions must be context-aware market suggestion blocks, not a generic global widget.
-- Mobile has a local `For your moodboard` suggestion row scored by `src/recommendations/recommendationScoring.ts`; it is not backend-driven and has no shared suppression or event ingestion.
-- Web and mobile search have autocomplete/suggestion behavior, but product detail, collection detail, brand/store, and search-empty market suggestion blocks are not implemented as a shared engine.
-- No backend `market/suggestions` endpoint, suggestion event model, suggestion suppression model, or admin suggestion block config exists today.
+Status: contract/design gate complete. Runtime suggestion endpoints and UI blocks are not implemented yet.
 
-Phase 4 remains the right placement for the full suggestion engine, after Phase 1 section contracts and Phase 2 signals/suppressions exist.
+Phase 11A confirms that suggestions must be context-aware market blocks, not a generic global widget. The shared contract is designed for product detail, collection detail, brand/store, search-empty, and market section detail surfaces. Phase 11B can implement this contract without changing ranking defaults or claiming full personalization.
 
-## Decision
+## Current implementation evidence
 
-Implement a **Context-Aware Market Suggestion Engine**, not a generic global suggestion widget.
+Backend:
+- `src/market/market.module.ts` currently registers section, signal, suppression, ranking config, aggregate reader, and scorer services. It does not register a market suggestion controller/service.
+- `src/market/dto/market-section.dto.ts` defines the reusable `MarketSectionItemDto` card shape that suggestion items should align with.
+- `src/market/dto/market-signal.dto.ts` already accepts `suggestionBlockKey` on signal and suppression payloads.
+- `prisma/schema.prisma` already includes `SuggestionSignal`, `UserContentSuppression.suggestionBlockKey`, `MarketSignalTargetType.SUGGESTION_BLOCK`, and `MarketSignalSurface.SUGGESTION_BLOCK`.
+- `src/search/search.controller.ts` exposes `GET /v1/search` and `GET /v1/search/suggest`, but those are search/autocomplete endpoints, not market suggestion blocks.
 
-Scope:
-- Market-related screens only.
-- Cart suggestions are V2.
-- Suggestions lazy-load.
-- Suggestions have separate analytics.
-- Super admin can manage suggestion blocks.
-- Users can hide suggestion items or blocks.
-- New brands receive reserved suggestion exposure.
+Web:
+- Product detail route: `src/App.tsx` route `/products/:id`, page `src/pages/catalog/ProductDetailsPage.tsx`.
+- Inline product detail surface: `src/components/catalog/InlineProductDetail.tsx`.
+- Store collection route: `src/App.tsx` route `/collections/:id`, page `src/pages/catalog/CollectionRouter.tsx`, component `src/components/catalog/InlineStoreCollectionView.tsx`.
+- Brand/store routes: `src/App.tsx` routes `/brand/:slug`, `/store/:brandId`, and `/profile/:id`, rendered through catalog/profile surfaces.
+- Search empty surface: `src/pages/SearchResultsPage.tsx`.
+- Market section detail route: `src/App.tsx` route `/market/sections/:sectionKey`, page `src/pages/MarketSectionPage.tsx`.
+- Market API client: `src/api/MarketApi.ts`.
 
-## Purpose
+Mobile:
+- Market API client: `src/api/MarketApi.ts`.
+- Product detail route: `app/products/[productId].tsx`, rendered by `src/features/market/components/MarketCommerceViewer.tsx`.
+- Collection detail route: `app/collection-viewer.tsx`, rendered by `src/features/market/components/CollectionCommerceViewer.tsx`.
+- Brand/store route: `app/catalog/[brandId].tsx`, rendered by `app/catalog/index.tsx` and `components/catalog/BrandShopTab`.
+- Search empty surface: `app/search.tsx`.
+- Market home: `app/(tabs)/discover.tsx`, rendered by `src/features/market/components/MarketScreen.tsx`.
+- Mobile currently has a local moodboard suggestion row in `MarketScreen.tsx`; it is not backend-driven and should be treated as legacy/local behavior until Phase 11B+.
 
-The engine answers:
+## Contract decision
+
+Add one backend market suggestion endpoint in Phase 11B:
 
 ```text
-Given a screen context, user context, excluded IDs, and section purpose,
-which market-related items should this user see next?
+GET /market/suggestions
 ```
+
+Supported query params:
+
+```text
+context
+targetId
+targetType
+sectionKey
+query
+limit
+cursor
+anonymousSessionId
+```
+
+Rules:
+- authenticated user identity must be derived from the request, not accepted from query/body;
+- guests may pass `anonymousSessionId` for suppression-aware filtering;
+- default cache policy is `Cache-Control: private, no-store`;
+- limit must be clamped server-side;
+- invalid context/targetType/cursor should return controlled client errors;
+- empty eligible results should return an empty `blocks` array or empty block items, not a broken card.
 
 ## Supported contexts
 
 ```text
-MARKET_HOME
-MARKET_SECTION_DETAIL
 PRODUCT_DETAIL
 COLLECTION_DETAIL
-BRAND_STORE
+BRAND_DETAIL
 SEARCH_EMPTY
-WISHLIST
+MARKET_SECTION_DETAIL
 ```
 
-V2:
+Deferred contexts:
 
 ```text
 CART
 CHECKOUT_SUCCESS
+WISHLIST
 ```
 
-## Candidate types
+## Supported target types
 
 ```text
 PRODUCT
 COLLECTION
 BRAND
-DESIGN
+CATEGORY
+SECTION
+QUERY
 ```
 
-## Candidate shape
+`DESIGN` can appear as an item/entity type because the market section DTO already supports design-like cards, but `targetType=DESIGN` is deferred unless Phase 11B confirms a stable design target path is needed for direct suggestion contexts.
+
+## Response DTO contract
 
 ```text
-RecommendationCandidate
-- id
-- type
-- title
-- brandId
-- brandName
-- categoryIds
-- tags
-- colors
-- fabrics
-- occasions
-- styleKeywords
-- createdAt
-- updatedAt
-- mediaReady
-- hasValidImage
-- stats: threads, comments, likes, saves, views, orders, wishlist
-- viewerState: saved, wishlisted, threaded, bagged, viewed
-- commerce: hasPrice, orderable, inStock, customOrderEnabled, storeOpen, brandVerified
+MarketSuggestionResponse
+- generatedAt: ISO string
+- context: PRODUCT_DETAIL | COLLECTION_DETAIL | BRAND_DETAIL | SEARCH_EMPTY | MARKET_SECTION_DETAIL
+- targetType: PRODUCT | COLLECTION | BRAND | CATEGORY | SECTION | QUERY | null
+- targetId: string | null
+- query: string | null
+- sectionKey: string | null
+- blocks: MarketSuggestionBlock[]
+- metadata:
+  - version: suggestion-v1
+  - personalization: disabled | aggregate-contextual
+  - cachePolicy: private-no-store
+  - fallbackUsed: boolean
+  - fallbackReason: string | null
+  - requestedLimit: number
+  - effectiveLimit: number
 ```
 
-## Suggestion block model
+Phase 11B must not set `personalization=aggregate-contextual` unless aggregate-driven suggestion ordering is actually used and documented. Deterministic context matching should return `personalization=disabled`.
+
+## Block DTO contract
 
 ```text
 MarketSuggestionBlock
+- blockKey: string
+- title: string
+- subtitle: string | null
+- reason: string | null
+- layout: HORIZONTAL_RAIL | PRODUCT_GRID | COLLECTION_RAIL | BRAND_RAIL | MIXED_RAIL
+- sourceType: PRODUCT | COLLECTION | DESIGN | BRAND | MIXED
+- items: MarketSuggestionItem[]
+- pagination:
+  - limit: number
+  - hasNextPage: boolean
+  - nextCursor: string | null
+- metadata:
+  - strategy: string
+  - fallbackUsed: boolean
+  - fallbackReason: string | null
+  - generatedFrom: PRODUCT | COLLECTION | BRAND | CATEGORY | SECTION | QUERY | FALLBACK
+```
+
+Use emotional but accurate labels such as:
+- More Like This
+- More From This Brand
+- Fresh Alternatives
+- Similar Collections
+- Designers to Watch
+- Try These Instead
+
+Do not use visible copy that overclaims personalization, ML, or recommendation certainty.
+
+## Item DTO contract
+
+Suggestion items should align with `MarketSectionItemDto` so web and mobile can reuse card mappers:
+
+```text
+MarketSuggestionItem
 - id
-- key
+- sourceId
+- sourceType: PRODUCT | COLLECTION | DESIGN | BRAND | MIXED
+- entityType: PRODUCT | COLLECTION | DESIGN | BRAND | CATEGORY
 - title
 - subtitle
-- screenContext
-- sectionType
-- rankingProfileId
-- enabled
-- displayOrder
-- previewLimit
-- viewAllEnabled
-- newBrandReservedRatio
-- guestEnabled
-- authRequired
-- status
+- description
+- brand
+- media
+- price
+- priceRange
+- availability
+- category
+- tags
+- stats
+- target
+- createdAt
+- updatedAt
+- metadata:
+  - reason: string | null
+  - score: number | null
 ```
 
-## V1 blocks by screen
+`metadata.score` is optional and must not expose raw internal weights in production responses. It may be omitted from normal client responses if not needed.
 
-### Product detail
+## Shared exclusion and safety rules
 
-| Block | Purpose |
-|---|---|
-| More Like This | similar style/category/tags/price |
-| Complete the Look | complementary products |
-| New Designers to Watch | fairness exposure |
+Every Phase 11B strategy must:
+- apply active user or anonymous-session suppressions through `MarketSuppressionService`;
+- exclude the current target item from its own suggestions;
+- exclude unavailable, archived, deleted, closed-store, or broken-media items;
+- dedupe items inside each block;
+- avoid duplicate target items across blocks where feasible;
+- return only bounded previews;
+- use explicit Prisma `select` or existing lightweight DTO mapping;
+- avoid N+1 lookups;
+- keep primary detail/search pages usable if suggestions fail;
+- keep cache headers private/no-store while requester or guest context affects output.
 
-### Collection detail
+## Strategy matrix
 
-| Block | Purpose |
-|---|---|
-| More From This Style | related collections |
-| Pieces That Match This Edit | products that complement collection |
-| Fresh From New Designers | new brand discovery |
+| Context | Phase 11B strategy | Required data | Fallback | Status |
+|---|---|---|---|---|
+| PRODUCT_DETAIL | same category, same brand alternatives, fresh alternatives | product id, brand id, category, tags, price/media/availability | fresh-drops products, then empty block | Phase 11B |
+| PRODUCT_DETAIL | complementary/custom-ready items | category/tags and custom-ready availability | hide block if insufficient data | Deferred unless query remains cheap |
+| COLLECTION_DETAIL | products/designs from same brand and similar category/style | collection id, owner/brand id, linked products, category/tags | latest collections or fresh drops | Phase 11B |
+| COLLECTION_DETAIL | other collections from same brand | owner/brand id, visible store/design collections | hide block if same-brand pool is empty | Phase 11B |
+| BRAND_DETAIL | best available brand products and latest brand collections | brand id, open store status, visible products/collections | fresh drops/new designers | Phase 11B |
+| BRAND_DETAIL | similar brands | brand tags/categories/location if available | new designers to watch | Deferred until brand similarity rules are approved |
+| SEARCH_EMPTY | query-relaxed category/tag/product alternatives | query string, search parser, category/tag match | hot-right-now, fresh-drops, popular categories | Phase 11B |
+| MARKET_SECTION_DETAIL | adjacent section suggestions | current section key and section catalog | latest/fresh sections | Deferred unless low-risk after core contexts |
 
-### Brand/store page
+## Context details
 
-| Block | Purpose |
-|---|---|
-| More From This Brand | inventory depth |
-| Similar Brands to Explore | discovery |
-| Fresh Drops From New Designers | fairness |
+### PRODUCT_DETAIL
 
-### Search empty
+Recommended blocks:
+- More Like This: products in the same category/tag neighborhood, excluding the current product.
+- More From This Brand: other available products or collections from the same brand.
+- Fresh Alternatives: recent products with usable media when category/brand pools are thin.
 
-| Block | Purpose |
-|---|---|
-| Try These Instead | nearby tags/categories |
-| Hot Right Now | generic social fallback |
-| Fresh Drops | generic freshness fallback |
+Insertion points:
+- web `ProductDetailsPage.tsx`: below product review/primary detail body or below product actions once primary content has rendered.
+- web `InlineProductDetail.tsx`: below the inline detail body before returning to the parent collection view.
+- mobile `MarketCommerceViewer.tsx`: below the primary detail/action sheet content, lazy-loaded after product/design fetch.
 
-## Suggestion formula
+### COLLECTION_DETAIL
 
-```text
-suggestion_score =
-  (0.25 × context_match)
-+ (0.20 × commerce_readiness)
-+ (0.15 × social_proof)
-+ (0.15 × user_affinity)
-+ (0.10 × freshness)
-+ (0.10 × brand_quality)
-+ (0.05 × new_brand_fairness)
-- duplication_penalty
-- suppression_penalty
-- unavailable_penalty
-```
+Recommended blocks:
+- Pieces From This Edit: linked products from the same store collection where available.
+- More From This Brand: other visible store/design collections from the same owner.
+- Similar Collections: category/tag-related store collections.
 
-## New-brand reserved slots
+Insertion points:
+- web `InlineStoreCollectionView.tsx`: below product grid/gallery and collection bagging controls.
+- web `CollectionRouter.tsx`: pass collection context into the child suggestion component in Phase 11B.
+- mobile `CollectionCommerceViewer.tsx`: below the collection product list/actions.
 
-```text
-new_brand_reserved_ratio = 10% to 20%
-```
+### BRAND_DETAIL
 
-Eligibility:
+Recommended blocks:
+- Best From This Brand: available products from the brand.
+- Latest Collections: recent visible collections from the brand.
+- Designers to Watch: generic fallback for guest/new brands only when same-brand inventory is thin.
 
-```text
-brand profile complete
-AND valid media
-AND active sellable items
-AND no policy flags
-```
+Insertion points:
+- web catalog/profile/store pages rendered from `Catalog.tsx`/`ProfileLayout.tsx`, preferably near the Store tab or after visible catalog sections.
+- mobile `app/catalog/index.tsx` and `BrandShopTab`, below the shop/collection list.
 
-## Duplication prevention
+### SEARCH_EMPTY
 
-Suggestions must exclude the current item, products already visible on the screen, products already shown in another suggestion block, suppressed products/brands/categories, and unavailable products unless the section explicitly supports custom-order or restock context.
+Recommended blocks:
+- Try These Instead: relaxed query/category/tag matches.
+- Fresh Drops: generic product fallback.
+- Designers to Watch: brand discovery fallback when product matches are empty.
 
-## Lazy-load rule
+Insertion points:
+- web `SearchResultsPage.tsx`: replace or augment the current "Try broader terms" empty-state area after no results.
+- mobile `app/search.tsx`: augment the `resultState.status === 'empty'` card after search results fail to match.
 
-```text
-Primary content first.
-Suggestion blocks after primary render.
-Below-the-fold suggestion blocks load when near viewport.
-```
+### MARKET_SECTION_DETAIL
 
-## User-facing labels
+Recommended blocks:
+- Keep Exploring: adjacent section links or bounded section cards.
 
-Use emotional names:
-- More Like This
-- Complete the Look
-- You May Love These
-- Fresh From New Designers
-- Style Ideas For You
-- Keep Exploring
-- Looks That Match This
-- Meet More Designers
+Phase 11B should defer this context unless the core detail/search contexts are stable first. Phase 10 already made section detail pagination usable; suggestions should not complicate that path until the core suggestion engine is proven.
 
-Avoid generic labels like `Suggested For You`, `Recommended Products`, and `More Items`.
+## Suggestion signal requirements
 
-## Analytics
+Existing Prisma enum support:
+- `SUGGESTION_BLOCK_VIEW`
+- `SUGGESTION_ITEM_VIEW`
+- `SUGGESTION_ITEM_CLICK`
+- `SUGGESTION_ITEM_WISHLIST`
+- `SUGGESTION_ITEM_CART_ADD`
+- `SUGGESTION_ITEM_HIDE`
+- `SUGGESTION_BLOCK_HIDE`
+- `SUGGESTION_VIEW_ALL_CLICK`
 
-Track separately:
-- suggestion block impression;
-- suggestion item impression;
-- suggestion item click;
-- suggestion hide;
-- suggestion View All click;
-- suggestion wishlist/cart action;
-- suggestion conversion contribution.
+Phase 11B event mapping:
+- block enters viewport -> `SUGGESTION_BLOCK_VIEW`;
+- item enters viewport -> `SUGGESTION_ITEM_VIEW`;
+- item opens -> `SUGGESTION_ITEM_CLICK`;
+- item hidden -> `SUGGESTION_ITEM_HIDE`;
+- block dismissed -> `SUGGESTION_BLOCK_HIDE`;
+- suggestion block View All -> `SUGGESTION_VIEW_ALL_CLICK`;
+- wishlist/cart actions -> existing wishlist/cart suggestion signal types.
+
+DTO gap:
+- The user-facing prompt names `SUGGESTION_ITEM_OPEN` and `SUGGESTION_DISMISS`; the codebase currently uses `SUGGESTION_ITEM_CLICK` and `SUGGESTION_BLOCK_HIDE`. Phase 11B should either map the prompt language to the existing enum names or add new enum values only if a migration is justified.
+
+## Suppression behavior
+
+Existing suppression support can cover Phase 11B:
+- item hide: `POST /market/suppressions` with target `PRODUCT`, `COLLECTION`, `DESIGN`, or `BRAND` where applicable;
+- brand hide: target `BRAND` or `brandId`;
+- category hide: target `CATEGORY` or `categoryId`;
+- block hide: target `SUGGESTION_BLOCK` and/or `suggestionBlockKey`.
+
+Phase 11B should reuse the existing suppression endpoint before adding any suggestion-specific suppression endpoint.
+
+## Phase 11B implementation file map
+
+Backend:
+- add `src/market/dto/market-suggestion.dto.ts`;
+- add `src/market/market-suggestion.controller.ts`;
+- add `src/market/market-suggestion.service.ts`;
+- wire the controller/service into `src/market/market.module.ts`;
+- reuse `src/market/dto/market-section.dto.ts` for item-card shape alignment;
+- reuse `src/market/market-suppression.service.ts`;
+- reuse `src/market/market-signal.service.ts` and `src/market/market-signal-aggregation.service.ts` for suggestion events;
+- use `src/store/store.service.ts`, `src/collections/collections.service.ts`, and `src/search/search.service.ts` as data sources where safe.
+
+Web:
+- add market suggestion API methods/types in `src/api/MarketApi.ts`;
+- add a small suggestion block component/hook only after the backend endpoint exists;
+- integrate first into `src/pages/catalog/ProductDetailsPage.tsx`, `src/components/catalog/InlineProductDetail.tsx`, `src/components/catalog/InlineStoreCollectionView.tsx`, `src/pages/SearchResultsPage.tsx`, and brand/catalog surfaces if scope permits;
+- preserve Phase 10 View All and signal behavior.
+
+Mobile:
+- add API methods/types in `src/api/MarketApi.ts`;
+- defer deep UI wiring unless it is small and uses approved mobile primitives;
+- candidate future surfaces: `MarketCommerceViewer.tsx`, `CollectionCommerceViewer.tsx`, `app/catalog/index.tsx`, `app/search.tsx`;
+- keep the local moodboard row in `MarketScreen.tsx` until backend-driven suggestions can replace it deliberately.
+
+## Deferred items
+
+- admin suggestion block configuration;
+- suggestion formula admin UI;
+- ML, embeddings, collaborative filtering, and visual similarity;
+- cart and checkout-success suggestions;
+- mobile full backend-section migration;
+- production monitoring dashboard specific to suggestions;
+- cross-device suppression management UI beyond existing suppression records.
