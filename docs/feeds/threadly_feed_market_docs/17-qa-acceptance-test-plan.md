@@ -561,6 +561,27 @@ Validation commands for Phase 11A:
 - changed docs search for false claims about live suggestions, live ranking, full personalization, ML, production readiness, or admin governance;
 - touched files search for new user-facing follow/follower/following language.
 
+## Phase 11C suggestion UI polish QA - 2026-05-25
+
+Phase 11C adds only safe deferred UI wiring:
+- web `CatalogShopTab.tsx` renders `BRAND_DETAIL` suggestions below visitor Store content when `brandId` exists and the store is not explicitly closed;
+- mobile `MobileMarketSuggestionBlocks.tsx` renders bounded horizontal rails for product detail, collection detail, and search-empty contexts;
+- mobile MarketScreen remains untouched;
+- mobile suggestion UI does not add Not interested controls yet;
+- `MARKET_SECTION_DETAIL`, suggestion View All pages, admin governance, ML/embeddings, and cart/checkout suggestions remain deferred.
+
+Validation requirements:
+- backend `npx prisma validate`;
+- backend `npx prisma generate`;
+- backend `npm test -- market-suggestion market-ranking market-section --runInBand`;
+- backend `npm run build`;
+- web `npm exec tsc -- -b --pretty false`;
+- web `npm run build`;
+- mobile `npm exec tsc -- --noEmit`;
+- mobile `npm run test:market-signal-queue-contract`;
+- changed docs/code search for false suggestion personalization, ML, ranking-live, production-ready, or admin-governance claims;
+- touched files search for new user-facing follow/follower/following relationship language.
+
 ## Phase 11B suggestion runtime QA - 2026-05-25
 
 Backend tests added:

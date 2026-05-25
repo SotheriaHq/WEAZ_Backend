@@ -1,5 +1,32 @@
 # Context-Aware Market Suggestion Engine
 
+## Phase 11C UI completion and runtime polish - 2026-05-25
+
+Phase 11C completes the safe deferred suggestion UI work needed before Phase 12 user controls. It does not add admin governance, ML/embeddings, cart/checkout suggestions, suggestion View All pages, ranking formula changes, or full personalization claims.
+
+Implemented web polish:
+- `src/components/catalog/CatalogShopTab.tsx` now renders `MarketSuggestionBlocks` for visitor Store tabs when an existing `brandId` is available and the store is not explicitly closed.
+- The web brand/store insertion point is below the primary Store products/collections content, so suggestions lazy-load after the main brand/store surface.
+- The reusable web suggestion component keeps Phase 11B behavior: aborts stale requests, hides itself on empty/error responses, tracks suggestion block/item view and click signals, and supports existing Not interested suppression.
+- Owner catalog management views do not render the brand-detail suggestion block.
+
+Implemented mobile polish:
+- `threadly-mobile/src/features/market/components/MobileMarketSuggestionBlocks.tsx` adds a small reusable mobile suggestion rail using existing `AppText`, `Card`, `StableImage`, `FlatList`, and market signal services.
+- `MarketCommerceViewer.tsx` renders product-detail suggestions for `PRODUCT` sources inside the expanded detail sheet, below reviews.
+- `CollectionCommerceViewer.tsx` renders collection-detail suggestions as the collection list footer, preserving the existing sticky bagging bar and product list.
+- `app/search.tsx` renders search-empty suggestions when the submitted query is non-empty.
+- Mobile suggestion UI starts the existing bounded signal runtime, sends suggestion block view and item click signals, flushes on item open, aborts stale suggestion requests, hides itself on empty/error responses, and does not add persisted queues or hide/not-interested UI.
+
+Still deferred after Phase 11C:
+- `MARKET_SECTION_DETAIL` suggestion runtime beyond the safe deferred response;
+- suggestion block View All/detail pages;
+- mobile brand/store suggestion UI;
+- mobile Not interested suppression controls for suggestions;
+- admin suggestion block configuration/governance;
+- ML/embedding-based recommendations;
+- cart and checkout-success suggestions;
+- production suggestion monitoring dashboard.
+
 ## Phase 11B runtime implementation - 2026-05-25
 
 Status: first runtime implementation complete. Suggestions are deterministic V1 blocks, not ML, embeddings, admin-configured recommendations, or full personalization.
@@ -40,8 +67,8 @@ Still deferred:
 - admin suggestion configuration/governance;
 - ML, embeddings, visual similarity, and collaborative filtering;
 - cart/checkout suggestions;
-- brand/store UI suggestion block on web;
-- mobile product/collection/search UI wiring;
+- mobile brand/store suggestion UI wiring;
+- mobile Not interested suppression controls for suggestions;
 - suggestion block View All/detail pages;
 - production suggestion monitoring dashboard.
 

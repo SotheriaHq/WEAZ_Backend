@@ -364,6 +364,7 @@ enum PasswordCredentialStatus {
 
 enum LoginCodePurpose {
   PASSWORD_SETUP
+  DIRECT_LOGIN
 }
 
 enum BrandMemberRole {

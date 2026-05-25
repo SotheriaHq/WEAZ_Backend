@@ -983,10 +983,15 @@ export class AuthService {
   ) {
     const genericResponse = {
       message:
-        'If this account can set up a password, a verification code has been sent.',
+        purpose === LoginCodePurpose.DIRECT_LOGIN
+          ? 'If this account exists, a sign-in code has been sent.'
+          : 'If this account can set up a password, a verification code has been sent.',
     };
 
-    if (purpose !== LoginCodePurpose.PASSWORD_SETUP) {
+    if (
+      purpose !== LoginCodePurpose.PASSWORD_SETUP &&
+      purpose !== LoginCodePurpose.DIRECT_LOGIN
+    ) {
       throw new BadRequestException('Unsupported email login code purpose');
     }
 
@@ -1009,12 +1014,22 @@ export class AuthService {
       },
     });
 
-    if (
-      !user ||
-      user.status !== UserStatus.ACTIVE ||
-      !this.isGoogleOnlyPasswordSetupCandidate(user)
-    ) {
-      return genericResponse;
+    const hasGoogleIdentity = user?.authIdentities?.some(
+      (i) => i.provider === AuthProvider.GOOGLE,
+    );
+
+    if (purpose === LoginCodePurpose.DIRECT_LOGIN) {
+      if (!user || user.status !== UserStatus.ACTIVE || !hasGoogleIdentity) {
+        return genericResponse;
+      }
+    } else {
+      if (
+        !user ||
+        user.status !== UserStatus.ACTIVE ||
+        !this.isGoogleOnlyPasswordSetupCandidate(user)
+      ) {
+        return genericResponse;
+      }
     }
 
     const code = this.generateEmailLoginCode();
@@ -1048,10 +1063,14 @@ export class AuthService {
       code,
       this.emailService.getAppName(),
     );
+    const scenarioKey =
+      purpose === LoginCodePurpose.DIRECT_LOGIN
+        ? 'auth.email_login_code.direct_login'
+        : 'auth.email_login_code.password_setup';
     await this.sendScenarioEmailIfAllowed({
       userId: user.id,
       to: user.email,
-      scenarioKey: 'auth.email_login_code.password_setup',
+      scenarioKey,
       subject: emailContent.subject,
       html: emailContent.html,
       text: emailContent.text,
@@ -1066,8 +1085,13 @@ export class AuthService {
     email: string,
     code: string,
     purpose: LoginCodePurpose = LoginCodePurpose.PASSWORD_SETUP,
+    req?: Request,
+    res?: Response,
   ) {
-    if (purpose !== LoginCodePurpose.PASSWORD_SETUP) {
+    if (
+      purpose !== LoginCodePurpose.PASSWORD_SETUP &&
+      purpose !== LoginCodePurpose.DIRECT_LOGIN
+    ) {
       throw new BadRequestException('Unsupported email login code purpose');
     }
 
@@ -1090,11 +1114,17 @@ export class AuthService {
       },
     });
 
-    if (
-      !user ||
-      user.status !== UserStatus.ACTIVE ||
-      !this.isGoogleOnlyPasswordSetupCandidate(user)
-    ) {
+    if (!user || user.status !== UserStatus.ACTIVE) {
+      throw new BadRequestException('Invalid or expired verification code');
+    }
+    if (purpose === LoginCodePurpose.DIRECT_LOGIN) {
+      const hasGoogle = user.authIdentities?.some(
+        (i) => i.provider === AuthProvider.GOOGLE,
+      );
+      if (!hasGoogle) {
+        throw new BadRequestException('Invalid or expired verification code');
+      }
+    } else if (!this.isGoogleOnlyPasswordSetupCandidate(user)) {
       throw new BadRequestException('Invalid or expired verification code');
     }
 
@@ -1128,6 +1158,51 @@ export class AuthService {
         },
       });
       throw new BadRequestException('Invalid or expired verification code');
+    }
+
+    if (purpose === LoginCodePurpose.DIRECT_LOGIN) {
+      await this.prisma.$transaction(async (tx) => {
+        const claimed = await tx.emailLoginCode.updateMany({
+          where: { id: activeCode.id, usedAt: null, expiresAt: { gt: now } },
+          data: { usedAt: now },
+        });
+        if (claimed.count !== 1) {
+          throw new BadRequestException('Invalid or expired verification code');
+        }
+      });
+
+      const fullUser = await this.prisma.user.findUniqueOrThrow({
+        where: { id: user.id },
+        select: authUserSelect,
+      });
+
+      const tokenResult = await this.tokenService.generateTokens(
+        fullUser,
+        req!,
+        res!,
+      );
+      const deviceResult = await this.trustedDeviceService.recordLoginDevice(
+        user.id,
+        req!,
+      );
+      void this.notifications
+        .create(user.id, NotificationType.LOGIN, {
+          payload: {
+            ip: this.extractClientIp(req!),
+            userAgent: req!.headers?.['user-agent'] ?? null,
+            newDevice: deviceResult.isNewDevice,
+            method: 'EMAIL_CODE',
+          },
+        })
+        .catch(() => undefined);
+
+      return {
+        user: toAuthUserResponse(fullUser),
+        accessToken: tokenResult.accessToken,
+        ...(tokenResult.refreshToken
+          ? { refreshToken: tokenResult.refreshToken }
+          : {}),
+      };
     }
 
     const rawSetupToken = randomBytes(32).toString('hex');

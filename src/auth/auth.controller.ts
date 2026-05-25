@@ -167,11 +167,15 @@ export class AuthController {
   @Throttle({ default: { limit: 5, ttl: 900000 } })
   async confirmEmailLoginCode(
     @Body(ValidationPipe) body: ConfirmEmailLoginCodeDto,
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
   ) {
     return this.authService.confirmEmailLoginCode(
       body.email,
       body.code,
       body.purpose,
+      req,
+      res,
     );
   }
 

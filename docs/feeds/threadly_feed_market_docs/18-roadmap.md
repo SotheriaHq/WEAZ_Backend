@@ -35,6 +35,7 @@ Phase names are normalized here so future feed/market work continues with normal
 | Phase 10 | Market section View All and pagination hardening | Completed |
 | Phase 11A | Context-aware market suggestion engine contract gate | Completed; runtime deferred |
 | Phase 11B | Context-aware market suggestion engine implementation | Completed for backend runtime, web core surfaces, and mobile API contract |
+| Phase 11C | Deferred suggestion UI completion and runtime polish | Completed for web brand/store and mobile product/collection/search-empty UI |
 | Phase 12 | User market/feed controls | Not started |
 | Phase 13 | Admin governance and configuration | Not started |
 | Phase 14 | Final hardening and MVP release gate | Not started |
@@ -422,6 +423,33 @@ Deferred beyond Phase 11B:
 - cart and checkout-success suggestions;
 - production suggestion monitoring dashboard;
 - full mobile backend-section migration.
+
+## Phase 11C - Deferred suggestion UI completion and runtime polish
+
+Status: completed on 2026-05-25 after backend, web, and mobile validation and commits. Phase 11C does not change backend suggestion runtime behavior beyond documentation, does not enable ranking, does not add ML/embeddings, and does not add admin governance.
+
+Implemented:
+- web brand/store suggestion UI:
+  - `CatalogShopTab.tsx` renders `MarketSuggestionBlocks` with `context=BRAND_DETAIL`, `targetType=BRAND`, and the existing Store tab `brandId`;
+  - the block appears below visitor Store products/collections when the store is not explicitly closed;
+  - owner catalog management views are left untouched;
+- mobile suggestion UI:
+  - `MobileMarketSuggestionBlocks.tsx` provides a reusable bounded rail with request aborts, empty/error hiding, block-view and item-click signals, and existing signal runtime startup;
+  - `MarketCommerceViewer.tsx` renders product-detail suggestions for product sources;
+  - `CollectionCommerceViewer.tsx` renders collection-detail suggestions in the list footer;
+  - `app/search.tsx` renders search-empty suggestions for non-empty failed searches.
+
+Still deferred:
+- `MARKET_SECTION_DETAIL` suggestion runtime beyond the safe deferred response;
+- suggestion block View All/detail pages;
+- mobile brand/store suggestion UI;
+- mobile Not interested controls for suggestion cards;
+- admin suggestion governance/configuration;
+- ML/embedding recommendations;
+- cart/checkout-success suggestions;
+- production suggestion monitoring dashboard.
+
+Phase 12 can start after the Phase 11C validation/commit gate is clean. Phase 12 must keep ranking disabled by default and must not claim suggestions are fully personalized unless future backend metadata actually supports that.
 
 ## Future phase - User controls and admin governance
 

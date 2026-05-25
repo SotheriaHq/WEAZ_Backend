@@ -1,5 +1,13 @@
 # Scalability and Optimization
 
+## Phase 11C suggestion UI scalability - 2026-05-25
+
+- Web brand/store suggestions reuse the lazy `MarketSuggestionBlocks` component instead of loading catalog-wide data in the browser.
+- Mobile product, collection, and search-empty suggestions use one bounded rail component with a default limit of 6 items per request.
+- Mobile collection suggestions are a FlatList footer with horizontal rails only; Phase 11C does not introduce nested vertical lists or a MarketScreen migration.
+- Suggestion failures do not trigger parent screen refetch loops.
+- The mobile signal queue remains the existing bounded in-memory runtime: no persisted offline queue or extra background worker was added.
+
 ## Phase 0 alignment note - 2026-05-23
 
 - The Phase 0 web `MarketPlace.tsx` 4800-row load pattern was the highest immediate scalability risk.

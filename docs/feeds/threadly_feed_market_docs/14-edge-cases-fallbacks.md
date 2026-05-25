@@ -1,5 +1,15 @@
 # Edge Cases and Fallbacks
 
+## Phase 11C suggestion UI fallbacks - 2026-05-25
+
+- Web brand/store suggestions render only when the Store tab already has a `brandId` and the store is not explicitly closed; owner catalog management views do not render the block.
+- Web suggestion failures remain non-blocking because `MarketSuggestionBlocks` hides on empty/error responses and primary brand/store content remains usable.
+- Mobile product, collection, and search-empty suggestion rails hide on empty/error responses and do not block the parent detail/search screen.
+- Mobile suggestion requests are aborted on parameter changes/unmount through the existing Axios `signal` support.
+- Mobile suggestion UI does not add Not interested controls yet; suppression-aware filtering still happens on the backend for any existing suppressions.
+- If a product detail source is a design rather than a product, Phase 11C does not show product-detail suggestions.
+- `MARKET_SECTION_DETAIL` suggestions remain a safe deferred response until adjacent-section runtime behavior is intentionally implemented.
+
 ## Phase 0 alignment note - 2026-05-23
 
 - New/anonymous users: backend feed currently works chronologically without personalization; keep that as the non-personalized fallback while ranked profiles mature.
