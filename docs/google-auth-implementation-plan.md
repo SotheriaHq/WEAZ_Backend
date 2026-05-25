@@ -853,6 +853,14 @@ Rules:
 - Never commit real client secrets, OAuth JSON files, downloaded credential files, raw ID tokens, raw auth codes, or production `.env` files.
 - Current backend `.env.example` must be cleaned before any Google auth commit that touches env examples.
 
+Google client mismatch diagnostics:
+
+- Web Google Identity Services failures such as browser-side 403, prompt skipped, prompt dismissed, or "could not start" usually mean the running frontend origin and `VITE_GOOGLE_CLIENT_ID` do not match the same Google Console Web client configuration.
+- The browser request `client_id` must be the Web client ID whose Authorized JavaScript origins include the exact `window.location.origin`.
+- Backend `GOOGLE_ALLOWED_CLIENT_IDS` controls which ID-token audiences the API accepts after Google returns a token; it cannot fix a browser-side GIS 403 caused by the wrong `VITE_GOOGLE_CLIENT_ID` or missing frontend origin.
+- Mobile builds must use `EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID`, `EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID`, and `EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID` as public client IDs only.
+- Restart Vite, Expo, and the backend after env changes. Hot reload does not reliably reload OAuth env configuration.
+
 ## Web Screens Needed
 
 Original web screen requirements. G3 implemented these states; G4 must still verify them with real Google credentials:

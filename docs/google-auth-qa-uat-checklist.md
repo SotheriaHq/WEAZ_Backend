@@ -92,6 +92,19 @@ EXPO_PUBLIC_API_BASE_URL=https://qa-api.<domain>
 EXPO_PUBLIC_WEB_APP_URL=https://qa.<domain>
 ```
 
+## Google Client Mismatch Troubleshooting
+
+If Google Identity Services returns a browser-side 403, skipped prompt, dismissed prompt, or "could not start" error, verify the exact client/origin pair before changing backend code:
+
+- Frontend must use `VITE_GOOGLE_CLIENT_ID`.
+- Backend must use `GOOGLE_ALLOWED_CLIENT_IDS` for every accepted Google ID-token audience.
+- Mobile must use `EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID`, `EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID`, and `EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID`.
+- The `client_id` in the browser Google request must match the same Google Console Web client where the local, QA, or production origin was added.
+- Authorized JavaScript origins must include the exact `window.location.origin`, including scheme, host, and port.
+- The backend API port is not the same as the frontend origin unless the frontend is actually served from that port.
+- After changing Google env values, restart Vite, Expo, and the backend process so the new values are loaded.
+- Never put `GOOGLE_CLIENT_SECRET`, `client_secret`, OAuth JSON credential files, or raw Google tokens in frontend or mobile env/source.
+
 Local G4 env check on 2026-05-17:
 
 | Surface | Local value status |
