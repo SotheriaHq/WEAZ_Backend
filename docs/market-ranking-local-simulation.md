@@ -222,3 +222,18 @@ Reason:
 - documentation distinguishes local MVP simulation from hosted QA/UAT or production approval.
 
 Ranking remains disabled. Phase 7D does not implement ranking, personalize ordering, or read aggregate tables for served ordering.
+
+## Phase R1 follow-up
+
+Phase R1 uses this local readiness result to implement aggregate-driven market section ranking behind safety flags.
+
+Current R1 state:
+- aggregate ranking code exists on the backend;
+- ranking remains disabled by default;
+- shadow mode remains enabled by default;
+- section-key allowlist remains empty by default;
+- deterministic fallback remains available and tested;
+- aggregate read failures and timeouts do not break `/market/sections` or `/market/sections/:key`;
+- no ML, admin UI, suggestion engine, or production rollout approval is included.
+
+Local MVP readiness allowed implementation work to begin. It does not represent hosted QA/UAT approval or production rollout readiness.

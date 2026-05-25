@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, Optional } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, Optional } from '@nestjs/common';
 import { CollectionStatus, CollectionVisibility, Prisma } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 import {
@@ -6,6 +6,7 @@ import {
   MarketSectionItemDto,
   MarketSectionKey,
   MarketSectionLayout,
+  MarketSectionMetadataDto,
   MarketSectionSourceType,
 } from './dto/market-section.dto';
 import {
@@ -16,6 +17,8 @@ import {
   MarketRankingConfig,
   MarketRankingConfigService,
 } from './market-ranking-config.service';
+import { MarketRankingAggregateReaderService } from './market-ranking-aggregate-reader.service';
+import { MarketRankingScorerService } from './market-ranking-scorer.service';
 
 type MarketSectionIdentityOptions = {
   userId?: string | null;
@@ -109,6 +112,7 @@ const SECTION_CONFIG_BY_KEY = new Map(
 
 @Injectable()
 export class MarketSectionService {
+  private readonly logger = new Logger(MarketSectionService.name);
   private readonly maxPreviewLimit = 12;
   private readonly defaultDetailLimit = 24;
   private readonly maxDetailLimit = 60;
@@ -119,6 +123,10 @@ export class MarketSectionService {
     private readonly marketSuppressionService?: MarketSuppressionService,
     @Optional()
     private readonly marketRankingConfigService?: MarketRankingConfigService,
+    @Optional()
+    private readonly marketRankingAggregateReader?: MarketRankingAggregateReaderService,
+    @Optional()
+    private readonly marketRankingScorer?: MarketRankingScorerService,
   ) {}
 
   async getSections(options?: { limit?: number } & MarketSectionIdentityOptions) {
@@ -191,8 +199,8 @@ export class MarketSectionService {
       return SECTION_CONFIGS;
     }
 
-    // Phase 6 only wires release flags. No ranking implementation exists yet,
-    // so served output must continue through deterministic fallback.
+    // Ranking is a per-section overlay. Section availability remains controlled
+    // by deterministic source queries so fallback always has the same surface.
     return SECTION_CONFIGS;
   }
 
@@ -288,6 +296,17 @@ export class MarketSectionService {
       }
     }
 
+    const deterministicItems = this.filterSuppressedItems(
+      this.dedupeItems(items),
+      options.suppressionScope,
+    ).slice(0, options.limit);
+    const rankingResult = await this.resolveRankedItems(
+      key,
+      config,
+      deterministicItems,
+      options.rankingConfig,
+    );
+
     return {
       key,
       title: config.title,
@@ -295,10 +314,7 @@ export class MarketSectionService {
       emotionalLabel: config.emotionalLabel,
       layout: config.layout,
       sourceType: config.sourceType,
-      items: this.filterSuppressedItems(
-        this.dedupeItems(items),
-        options.suppressionScope,
-      ).slice(0, options.limit),
+      items: rankingResult.items,
       viewAll: {
         enabled: true,
         key,
@@ -311,8 +327,7 @@ export class MarketSectionService {
         nextCursor,
       },
       metadata: {
-        ranking: this.resolveServedRanking(options.rankingConfig),
-        personalization: 'disabled',
+        ...rankingResult.metadata,
         minimumItems: config.minimumItems,
         previewItemLimit: config.previewItemLimit,
       },
@@ -344,18 +359,211 @@ export class MarketSectionService {
         nextCursor: null,
       },
       metadata: {
-        ranking: this.resolveServedRanking(rankingConfig),
-        personalization: 'disabled',
+        ...this.resolveDeterministicMetadata(rankingConfig),
         minimumItems: config.minimumItems,
         previewItemLimit: config.previewItemLimit,
       },
     };
   }
 
-  private resolveServedRanking(
-    _rankingConfig?: MarketRankingConfig,
-  ): 'deterministic-v1' {
-    return 'deterministic-v1';
+  private resolveDeterministicMetadata(
+    rankingConfig?: MarketRankingConfig,
+    fallbackReason: string | null = null,
+  ): Omit<MarketSectionMetadataDto, 'minimumItems' | 'previewItemLimit'> {
+    return {
+      ranking: 'deterministic-v1',
+      personalization: 'disabled',
+      fallbackUsed: Boolean(fallbackReason),
+      fallbackReason,
+      rankingVersion: null,
+      shadowMode: Boolean(rankingConfig?.enabled && rankingConfig.shadowMode),
+      rankingEnabled: Boolean(rankingConfig?.enabled),
+    };
+  }
+
+  private async resolveRankedItems(
+    key: MarketSectionKey,
+    config: SectionConfig,
+    deterministicItems: MarketSectionItemDto[],
+    rankingConfig?: MarketRankingConfig,
+  ): Promise<{
+    items: MarketSectionItemDto[];
+    metadata: Omit<MarketSectionMetadataDto, 'minimumItems' | 'previewItemLimit'>;
+  }> {
+    if (!rankingConfig?.enabled) {
+      this.logRankingEvent('ranking-skipped-disabled', {
+        sectionKey: key,
+        candidateCount: deterministicItems.length,
+        servedItemCount: deterministicItems.length,
+      });
+      return {
+        items: deterministicItems,
+        metadata: this.resolveDeterministicMetadata(rankingConfig),
+      };
+    }
+
+    if (!this.canRankSection(key, rankingConfig)) {
+      this.logRankingEvent('ranking-skipped-section-not-allowlisted', {
+        sectionKey: key,
+        rankingEnabled: true,
+        shadowMode: rankingConfig.shadowMode,
+        candidateCount: deterministicItems.length,
+        servedItemCount: deterministicItems.length,
+      });
+      return {
+        items: deterministicItems,
+        metadata: this.resolveDeterministicMetadata(rankingConfig),
+      };
+    }
+
+    if (!rankingConfig.fallbackDeterministic) {
+      return this.resolveRankingFallback(
+        key,
+        rankingConfig,
+        deterministicItems,
+        'deterministic-fallback-disabled',
+      );
+    }
+
+    if (
+      deterministicItems.length === 0 ||
+      !this.marketRankingAggregateReader ||
+      !this.marketRankingScorer
+    ) {
+      return this.resolveRankingFallback(
+        key,
+        rankingConfig,
+        deterministicItems,
+        deterministicItems.length === 0
+          ? 'no-candidates'
+          : 'ranking-services-unavailable',
+      );
+    }
+
+    const aggregateTargets = deterministicItems.map((item) => ({
+      targetType: this.marketRankingScorer!.targetTypeForItem(item),
+      targetId: item.sourceId,
+    }));
+    const aggregateResult =
+      await this.marketRankingAggregateReader.readItemAggregates({
+        sectionKey: key,
+        targets: aggregateTargets,
+        timeoutMs: rankingConfig.aggregateTimeoutMs,
+      });
+
+    if (!aggregateResult.ok) {
+      return this.resolveRankingFallback(
+        key,
+        rankingConfig,
+        deterministicItems,
+        aggregateResult.fallbackReason ?? 'aggregate-read-failed',
+      );
+    }
+
+    if (aggregateResult.aggregates.size === 0) {
+      return this.resolveRankingFallback(
+        key,
+        rankingConfig,
+        deterministicItems,
+        'aggregate-empty',
+      );
+    }
+
+    const scored = this.marketRankingScorer.rankItems({
+      sectionKey: key,
+      items: deterministicItems,
+      aggregates: aggregateResult.aggregates,
+      config: rankingConfig,
+    });
+
+    if (scored.items.length === 0) {
+      return this.resolveRankingFallback(
+        key,
+        rankingConfig,
+        deterministicItems,
+        'ranked-empty',
+      );
+    }
+
+    if (rankingConfig.shadowMode) {
+      this.logRankingEvent('shadow-mode-computed-not-served', {
+        sectionKey: key,
+        rankingEnabled: true,
+        shadowMode: true,
+        candidateCount: deterministicItems.length,
+        servedItemCount: deterministicItems.length,
+        rankedItemCount: scored.items.length,
+        aggregateCount: aggregateResult.aggregates.size,
+        durationMs: aggregateResult.durationMs,
+      });
+      return {
+        items: deterministicItems,
+        metadata: this.resolveDeterministicMetadata(rankingConfig),
+      };
+    }
+
+    this.logRankingEvent('aggregate-ranking-served', {
+      sectionKey: key,
+      rankingEnabled: true,
+      shadowMode: false,
+      candidateCount: deterministicItems.length,
+      servedItemCount: scored.items.length,
+      aggregateCount: aggregateResult.aggregates.size,
+      durationMs: aggregateResult.durationMs,
+      layout: config.layout,
+    });
+
+    return {
+      items: scored.items,
+      metadata: {
+        ranking: 'aggregate-v1',
+        personalization: 'aggregate-contextual',
+        fallbackUsed: false,
+        fallbackReason: null,
+        rankingVersion: 'aggregate-v1',
+        shadowMode: false,
+        rankingEnabled: true,
+      },
+    };
+  }
+
+  private resolveRankingFallback(
+    key: MarketSectionKey,
+    rankingConfig: MarketRankingConfig,
+    deterministicItems: MarketSectionItemDto[],
+    fallbackReason: string,
+  ) {
+    this.logRankingEvent('deterministic-fallback-used', {
+      sectionKey: key,
+      rankingEnabled: rankingConfig.enabled,
+      shadowMode: rankingConfig.shadowMode,
+      fallbackReason,
+      candidateCount: deterministicItems.length,
+      servedItemCount: deterministicItems.length,
+    });
+    return {
+      items: deterministicItems,
+      metadata: this.resolveDeterministicMetadata(rankingConfig, fallbackReason),
+    };
+  }
+
+  private canRankSection(
+    key: MarketSectionKey,
+    rankingConfig: MarketRankingConfig,
+  ) {
+    return this.getRankingEnabledSectionKeys(rankingConfig).has(key);
+  }
+
+  private getRankingEnabledSectionKeys(rankingConfig: MarketRankingConfig) {
+    const configured = new Set(rankingConfig.sectionKeys);
+    const ordered = SECTION_CONFIGS.map((config) => config.key).filter((sectionKey) =>
+      configured.has(sectionKey),
+    );
+    return new Set(ordered.slice(0, rankingConfig.maxPersonalizedSections));
+  }
+
+  private logRankingEvent(event: string, payload: Record<string, unknown>) {
+    this.logger.debug(JSON.stringify({ event, ...payload }));
   }
 
   private dedupeItems(items: MarketSectionItemDto[]) {

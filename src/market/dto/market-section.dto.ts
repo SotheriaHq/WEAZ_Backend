@@ -105,8 +105,13 @@ export interface MarketSectionPaginationDto {
 }
 
 export interface MarketSectionMetadataDto {
-  ranking: 'deterministic-v1';
-  personalization: 'disabled';
+  ranking: 'deterministic-v1' | 'aggregate-v1';
+  personalization: 'disabled' | 'aggregate-contextual';
+  fallbackUsed: boolean;
+  fallbackReason: string | null;
+  rankingVersion: 'aggregate-v1' | null;
+  shadowMode: boolean;
+  rankingEnabled: boolean;
   minimumItems: number;
   previewItemLimit: number;
 }

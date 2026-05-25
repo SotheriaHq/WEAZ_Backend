@@ -221,3 +221,41 @@ No more than 3 consecutive items from same brand.
 No more than 3 consecutive items from same category.
 Same product/design cannot appear twice on same screen.
 ```
+
+## Phase R1 implemented aggregate scoring
+
+Phase R1 implements a conservative deterministic formula service, not ML.
+
+Implemented service:
+- `src/market/market-ranking-scorer.service.ts`
+
+Inputs:
+- deterministic candidate order from the existing section query;
+- `MarketSignalAggregateDaily` counters read for candidate item IDs only;
+- section key;
+- safe ranking config values from `MarketRankingConfigService`.
+
+V1 score components:
+- freshness score from `createdAt`;
+- aggregate interaction score using `log1p` on item impressions, item/product opens, clicks, and View All clicks;
+- commerce signal score from product opens, item opens, and clicks;
+- section relevance score, for example freshness for `fresh-drops`, aggregate interaction for `hot-right-now`, and custom-order eligibility for `custom-ready`;
+- light exploration score from the existing deterministic slot;
+- stable deterministic tie-breaker.
+
+Safety constraints:
+- scores are clamped to bounded ranges;
+- large counts use `log1p` so one item cannot dominate solely through raw count size;
+- suppressions remain hard filters before scoring;
+- missing aggregate rows do not exclude an item;
+- brand diversity cap limits repeated brand concentration when enough alternatives exist;
+- ties fall back to deterministic order and then item ID.
+
+Served ranking conditions:
+- `MARKET_RANKING_ENABLED=true`;
+- section key is explicitly allowlisted;
+- deterministic fallback is enabled;
+- aggregate reader succeeds and returns at least one aggregate row;
+- `MARKET_RANKING_SHADOW_MODE=false`.
+
+Default behavior remains deterministic because ranking is disabled by default and no section keys are allowlisted by default.

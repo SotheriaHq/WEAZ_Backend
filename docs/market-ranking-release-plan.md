@@ -1,28 +1,29 @@
 # Market Ranking Release Plan
 
-Status: Phase 7 operational readiness gate. Ranking is currently disabled.
+Status: Phase R1 backend implementation gate. Ranking is disabled by default.
 Date: 2026-05-24
 
 ## 1. Purpose
 
 This plan defines the feature flags, rollout controls, rollback path, monitoring requirements, and infrastructure decision gate required before Threadly uses signal aggregates to rank market or feed content.
 
-This document is a release gate, not a ranking implementation. It must be accepted before any code uses aggregate counters to reorder `/market/sections`, `/market/sections/:key`, or feed results.
+This document is a release gate and rollout contract. Phase R1 implements aggregate-backed market section ordering only behind disabled-by-default flags; it is not a production enablement approval.
 
 ## 2. Current state
 
-- Ranking is disabled.
+- Ranking is disabled by default.
 - `/market/sections` and `/market/sections/:key` remain deterministic and suppression-aware.
 - Raw market/feed signals are captured through bounded batch ingestion.
 - Daily aggregates exist as a foundation for future ranking.
 - Phase 6 adds code-level env ranking flags through `MarketRankingConfigService`.
 - Phase 7 adds monitoring and rollback rehearsal specifications; it does not enable ranking.
+- Phase R1 adds the first aggregate-driven backend ranking path behind the existing flags, with deterministic fallback and shadow mode preserved.
 - Redis/BullMQ is deferred for the market signal path.
 - The Phase 3 and Phase 4 aggregate migrations must be applied in QA/UAT before aggregate QA is considered complete.
 
 ## 3. Required feature flags
 
-The future ranking implementation must ship behind disabled-by-default controls:
+Aggregate ranking must remain behind disabled-by-default controls:
 
 | Flag | Required default | Purpose |
 |---|---:|---|
@@ -331,3 +332,30 @@ This is local MVP owner simulation only. It is not external QA/UAT approval, ent
 Local readiness verdict:
 - ready for ranking implementation locally: **Yes**;
 - production rollout readiness: **No** until hosted monitoring/alerts, production backup/restore rehearsal, and real owner governance are revisited.
+
+## 17. Phase R1 backend aggregate ranking implementation
+
+Phase R1 implements the first real backend aggregate ranking path for market sections.
+
+Implemented:
+- `MarketRankingAggregateReaderService` reads `MarketSignalAggregateDaily` with bounded candidate IDs, a bounded lookback window, explicit Prisma `select`, and an aggregate timeout guard;
+- `MarketRankingScorerService` applies deterministic formula scoring using freshness, aggregate interactions, commerce signals, section relevance, light exploration, and a brand diversity cap;
+- `MarketSectionService` calls the reader only when `MARKET_RANKING_ENABLED=true`, the section key is allowlisted, and deterministic fallback is available;
+- shadow mode computes ranked candidates but serves deterministic order;
+- aggregate read failure, timeout, empty aggregate maps, unavailable services, or empty ranked results fall back to deterministic V1 output;
+- section metadata reports `ranking`, `personalization`, `fallbackUsed`, `fallbackReason`, `rankingVersion`, `shadowMode`, and `rankingEnabled`;
+- suppression filtering still runs before ranking and remains a hard eligibility filter.
+
+Still not enabled by default:
+- `MARKET_RANKING_ENABLED` remains `false`;
+- `MARKET_RANKING_SHADOW_MODE` remains `true`;
+- `MARKET_RANKING_SECTION_KEYS` remains empty;
+- deterministic fallback remains the default served behavior.
+
+Not implemented in R1:
+- ML or embeddings;
+- admin governance UI;
+- suggestion engine;
+- web/mobile ranking UI;
+- Redis/BullMQ market ranking workers;
+- production monitoring dashboard or alerting.

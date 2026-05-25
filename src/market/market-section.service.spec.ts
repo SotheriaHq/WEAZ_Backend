@@ -1,5 +1,7 @@
 import { NotFoundException } from '@nestjs/common';
+import { MarketSignalTargetType } from '@prisma/client';
 import { MarketSectionService } from './market-section.service';
+import { MarketRankingScorerService } from './market-ranking-scorer.service';
 
 describe('MarketSectionService', () => {
   const now = new Date('2026-05-23T10:00:00.000Z');
@@ -123,6 +125,28 @@ describe('MarketSectionService', () => {
     }),
   });
 
+  const aggregateStats = (targetId: string, overrides: Record<string, any> = {}) => ({
+    targetType: MarketSignalTargetType.PRODUCT,
+    targetId,
+    sectionImpressions: 0,
+    itemImpressions: 0,
+    productOpens: 0,
+    itemOpens: 0,
+    clicks: 0,
+    viewAllClicks: 0,
+    suppressions: 0,
+    seenItems: 0,
+    eventCount: 0,
+    latestSeenAt: null,
+    ...overrides,
+  });
+
+  const aggregateReader = (result: Record<string, any>) => ({
+    readItemAggregates: jest.fn().mockResolvedValue(result),
+  });
+
+  const scorer = new MarketRankingScorerService();
+
   it('returns active section previews with deterministic V1 metadata', async () => {
     const prisma = createPrisma();
     const service = new MarketSectionService(prisma as any);
@@ -176,7 +200,30 @@ describe('MarketSectionService', () => {
     );
   });
 
-  it('keeps deterministic fallback when ranking is enabled before implementation exists', async () => {
+  it('does not call aggregate reader when ranking is disabled', async () => {
+    const prisma = createPrisma();
+    const rankingConfig = rankingConfigService({ enabled: false });
+    const reader = aggregateReader({
+      ok: true,
+      timedOut: false,
+      fallbackReason: null,
+      durationMs: 1,
+      aggregates: new Map(),
+    });
+    const service = new MarketSectionService(
+      prisma as any,
+      undefined,
+      rankingConfig as any,
+      reader as any,
+      scorer,
+    );
+
+    await service.getSectionDetail('fresh-drops');
+
+    expect(reader.readItemAggregates).not.toHaveBeenCalled();
+  });
+
+  it('keeps deterministic fallback when ranking is enabled but services are unavailable', async () => {
     const aggregateFindMany = jest.fn();
     const prisma = createPrisma({
       marketSignalAggregateDaily: { findMany: aggregateFindMany },
@@ -211,7 +258,7 @@ describe('MarketSectionService', () => {
     expect(aggregateFindMany).not.toHaveBeenCalled();
   });
 
-  it('keeps market home previews deterministic and does not read aggregates when ranking is enabled', async () => {
+  it('keeps market home previews deterministic when ranking services are unavailable', async () => {
     const aggregateFindMany = jest.fn();
     const prisma = createPrisma({
       marketSignalAggregateDaily: { findMany: aggregateFindMany },
@@ -241,6 +288,347 @@ describe('MarketSectionService', () => {
       );
     })).toBe(true);
     expect(aggregateFindMany).not.toHaveBeenCalled();
+  });
+
+  it('uses aggregate order when ranking is enabled, allowlisted, and not in shadow mode', async () => {
+    const prisma = createPrisma({
+      product: {
+        findMany: jest.fn().mockResolvedValue([
+          product({ id: 'product_1', name: 'Aso oke jacket' }),
+          product({ id: 'product_2', name: 'Buba set' }),
+        ]),
+      },
+    });
+    const rankingConfig = rankingConfigService({
+      enabled: true,
+      shadowMode: false,
+      fallbackDeterministic: true,
+      sectionKeys: ['fresh-drops'],
+    });
+    const reader = aggregateReader({
+      ok: true,
+      timedOut: false,
+      fallbackReason: null,
+      durationMs: 2,
+      aggregates: new Map([
+        [
+          'PRODUCT:product_2',
+          aggregateStats('product_2', {
+            productOpens: 20,
+            itemOpens: 20,
+            clicks: 8,
+            itemImpressions: 12,
+          }),
+        ],
+      ]),
+    });
+    const service = new MarketSectionService(
+      prisma as any,
+      undefined,
+      rankingConfig as any,
+      reader as any,
+      scorer,
+    );
+
+    const result = await service.getSectionDetail('fresh-drops');
+
+    expect(result.section.items.map((item) => item.sourceId)).toEqual([
+      'product_2',
+      'product_1',
+    ]);
+    expect(result.section.metadata).toEqual(
+      expect.objectContaining({
+        ranking: 'aggregate-v1',
+        personalization: 'aggregate-contextual',
+        fallbackUsed: false,
+        rankingVersion: 'aggregate-v1',
+        shadowMode: false,
+        rankingEnabled: true,
+      }),
+    );
+    expect(reader.readItemAggregates).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sectionKey: 'fresh-drops',
+        timeoutMs: 150,
+      }),
+    );
+  });
+
+  it('keeps deterministic order when ranking is enabled for a non-allowlisted section', async () => {
+    const prisma = createPrisma({
+      product: {
+        findMany: jest.fn().mockResolvedValue([
+          product({ id: 'product_1' }),
+          product({ id: 'product_2' }),
+        ]),
+      },
+    });
+    const rankingConfig = rankingConfigService({
+      enabled: true,
+      shadowMode: false,
+      sectionKeys: ['hot-right-now'],
+    });
+    const reader = aggregateReader({
+      ok: true,
+      timedOut: false,
+      fallbackReason: null,
+      durationMs: 1,
+      aggregates: new Map(),
+    });
+    const service = new MarketSectionService(
+      prisma as any,
+      undefined,
+      rankingConfig as any,
+      reader as any,
+      scorer,
+    );
+
+    const result = await service.getSectionDetail('fresh-drops');
+
+    expect(result.section.items.map((item) => item.sourceId)).toEqual([
+      'product_1',
+      'product_2',
+    ]);
+    expect(result.section.metadata).toEqual(
+      expect.objectContaining({
+        ranking: 'deterministic-v1',
+        personalization: 'disabled',
+        rankingEnabled: true,
+      }),
+    );
+    expect(reader.readItemAggregates).not.toHaveBeenCalled();
+  });
+
+  it('falls back deterministically when aggregate reading fails', async () => {
+    const prisma = createPrisma({
+      product: {
+        findMany: jest.fn().mockResolvedValue([
+          product({ id: 'product_1' }),
+          product({ id: 'product_2' }),
+        ]),
+      },
+    });
+    const rankingConfig = rankingConfigService({
+      enabled: true,
+      shadowMode: false,
+      sectionKeys: ['fresh-drops'],
+    });
+    const reader = aggregateReader({
+      ok: false,
+      timedOut: false,
+      fallbackReason: 'aggregate-read-failed',
+      durationMs: 2,
+      aggregates: new Map(),
+    });
+    const service = new MarketSectionService(
+      prisma as any,
+      undefined,
+      rankingConfig as any,
+      reader as any,
+      scorer,
+    );
+
+    const result = await service.getSectionDetail('fresh-drops');
+
+    expect(result.section.items.map((item) => item.sourceId)).toEqual([
+      'product_1',
+      'product_2',
+    ]);
+    expect(result.section.metadata).toEqual(
+      expect.objectContaining({
+        ranking: 'deterministic-v1',
+        personalization: 'disabled',
+        fallbackUsed: true,
+        fallbackReason: 'aggregate-read-failed',
+      }),
+    );
+  });
+
+  it('falls back deterministically when aggregate reading times out', async () => {
+    const prisma = createPrisma({
+      product: {
+        findMany: jest.fn().mockResolvedValue([
+          product({ id: 'product_1' }),
+          product({ id: 'product_2' }),
+        ]),
+      },
+    });
+    const rankingConfig = rankingConfigService({
+      enabled: true,
+      shadowMode: false,
+      sectionKeys: ['fresh-drops'],
+    });
+    const reader = aggregateReader({
+      ok: false,
+      timedOut: true,
+      fallbackReason: 'aggregate-timeout',
+      durationMs: 150,
+      aggregates: new Map(),
+    });
+    const service = new MarketSectionService(
+      prisma as any,
+      undefined,
+      rankingConfig as any,
+      reader as any,
+      scorer,
+    );
+
+    const result = await service.getSectionDetail('fresh-drops');
+
+    expect(result.section.metadata).toEqual(
+      expect.objectContaining({
+        fallbackUsed: true,
+        fallbackReason: 'aggregate-timeout',
+      }),
+    );
+    expect(result.section.items.map((item) => item.sourceId)).toEqual([
+      'product_1',
+      'product_2',
+    ]);
+  });
+
+  it('falls back deterministically when aggregate tables are empty', async () => {
+    const prisma = createPrisma({
+      product: {
+        findMany: jest.fn().mockResolvedValue([
+          product({ id: 'product_1' }),
+          product({ id: 'product_2' }),
+        ]),
+      },
+    });
+    const rankingConfig = rankingConfigService({
+      enabled: true,
+      shadowMode: false,
+      sectionKeys: ['fresh-drops'],
+    });
+    const reader = aggregateReader({
+      ok: true,
+      timedOut: false,
+      fallbackReason: null,
+      durationMs: 1,
+      aggregates: new Map(),
+    });
+    const service = new MarketSectionService(
+      prisma as any,
+      undefined,
+      rankingConfig as any,
+      reader as any,
+      scorer,
+    );
+
+    const result = await service.getSectionDetail('fresh-drops');
+
+    expect(result.section.items.map((item) => item.sourceId)).toEqual([
+      'product_1',
+      'product_2',
+    ]);
+    expect(result.section.metadata).toEqual(
+      expect.objectContaining({
+        fallbackUsed: true,
+        fallbackReason: 'aggregate-empty',
+      }),
+    );
+  });
+
+  it('computes in shadow mode without changing served deterministic order', async () => {
+    const prisma = createPrisma({
+      product: {
+        findMany: jest.fn().mockResolvedValue([
+          product({ id: 'product_1' }),
+          product({ id: 'product_2' }),
+        ]),
+      },
+    });
+    const rankingConfig = rankingConfigService({
+      enabled: true,
+      shadowMode: true,
+      sectionKeys: ['fresh-drops'],
+    });
+    const reader = aggregateReader({
+      ok: true,
+      timedOut: false,
+      fallbackReason: null,
+      durationMs: 1,
+      aggregates: new Map([
+        ['PRODUCT:product_2', aggregateStats('product_2', { productOpens: 20 })],
+      ]),
+    });
+    const service = new MarketSectionService(
+      prisma as any,
+      undefined,
+      rankingConfig as any,
+      reader as any,
+      scorer,
+    );
+
+    const result = await service.getSectionDetail('fresh-drops');
+
+    expect(reader.readItemAggregates).toHaveBeenCalled();
+    expect(result.section.items.map((item) => item.sourceId)).toEqual([
+      'product_1',
+      'product_2',
+    ]);
+    expect(result.section.metadata).toEqual(
+      expect.objectContaining({
+        ranking: 'deterministic-v1',
+        personalization: 'disabled',
+        fallbackUsed: false,
+        shadowMode: true,
+        rankingEnabled: true,
+      }),
+    );
+  });
+
+  it('preserves suppression filtering after ranking is enabled', async () => {
+    const suppressionService = {
+      targetKey: jest.fn((targetType: string, targetId: string) => {
+        return `${targetType}:${targetId}`;
+      }),
+      getSuppressionScope: jest.fn().mockResolvedValue({
+        targetKeys: new Set(['PRODUCT:product_2']),
+        brandIds: new Set(),
+        categoryIds: new Set(),
+        sectionKeys: new Set(),
+        suggestionBlockKeys: new Set(),
+      }),
+    };
+    const prisma = createPrisma({
+      product: {
+        findMany: jest.fn().mockResolvedValue([
+          product({ id: 'product_1' }),
+          product({ id: 'product_2' }),
+        ]),
+      },
+    });
+    const rankingConfig = rankingConfigService({
+      enabled: true,
+      shadowMode: false,
+      sectionKeys: ['fresh-drops'],
+    });
+    const reader = aggregateReader({
+      ok: true,
+      timedOut: false,
+      fallbackReason: null,
+      durationMs: 1,
+      aggregates: new Map([
+        ['PRODUCT:product_1', aggregateStats('product_1', { productOpens: 1 })],
+      ]),
+    });
+    const service = new MarketSectionService(
+      prisma as any,
+      suppressionService as any,
+      rankingConfig as any,
+      reader as any,
+      scorer,
+    );
+
+    const result = await service.getSectionDetail('fresh-drops', {
+      userId: 'user_1',
+    });
+
+    expect(result.section.items.map((item) => item.sourceId)).toEqual([
+      'product_1',
+    ]);
   });
 
   it('hides empty sections on the market home response', async () => {

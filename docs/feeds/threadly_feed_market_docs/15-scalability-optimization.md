@@ -266,3 +266,31 @@ Scalability limitations:
 - local owner simulation does not replace production governance.
 
 Local ranking implementation can start after validation because the local MVP gate passed, but production rollout remains blocked until hosted monitoring, alerting, backup/restore rehearsal, and real owner governance are revisited.
+
+## Phase R1 aggregate ranking scalability note - 2026-05-25
+
+Phase R1 introduces aggregate reads for market ranking only behind safety flags.
+
+Scalability controls implemented:
+- aggregate reader runs only when ranking is enabled, the section key is allowlisted, and deterministic fallback is enabled;
+- aggregate lookup is bounded to current section candidate IDs;
+- aggregate lookup uses explicit Prisma `select`;
+- aggregate lookup uses a bounded lookback window;
+- aggregate lookup has a timeout guard from `MARKET_RANKING_AGGREGATE_TIMEOUT_MS`;
+- failures and timeouts return deterministic fallback instead of user-visible errors;
+- ranking works on the already-bounded section candidate set and does not fetch thousands of products;
+- brand diversity cap prevents a single brand from filling the ranked result when enough alternatives exist.
+
+Still deferred:
+- Redis/BullMQ market ranking workers;
+- production metrics sink and dashboard;
+- hosted alerting;
+- server-side percentile latency counters;
+- admin-managed ranking config;
+- production rollout beyond local/MVP use.
+
+Default production posture:
+- ranking disabled;
+- no section allowlist;
+- shadow mode on;
+- deterministic fallback on.

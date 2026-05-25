@@ -257,3 +257,22 @@ Scope limit:
 - This is not production monitoring approval.
 - This is not enterprise owner sign-off.
 - Ranking remains disabled and not live.
+
+## Phase R1 rollback behavior
+
+Phase R1 adds aggregate ranking code but keeps rollback flag-based:
+
+1. Set `MARKET_RANKING_ENABLED=false`.
+2. Keep `MARKET_RANKING_FALLBACK_DETERMINISTIC=true`.
+3. Confirm `/market/sections` and `/market/sections/:key` return deterministic V1 metadata.
+4. Confirm suppressions are still applied.
+5. Confirm `Cache-Control: private, no-store` remains present.
+
+Expected fallback cases without operator action:
+- aggregate table is empty: deterministic fallback with `fallbackReason=aggregate-empty`;
+- aggregate read fails: deterministic fallback with `fallbackReason=aggregate-read-failed`;
+- aggregate read times out: deterministic fallback with `fallbackReason=aggregate-timeout`;
+- ranking services are unavailable in a test/module context: deterministic fallback with `fallbackReason=ranking-services-unavailable`;
+- shadow mode is enabled: ranked candidates may be computed but deterministic order is served.
+
+R1 rollback does not delete raw signals, seen rows, suppressions, reset markers, batch receipts, or aggregate rows.

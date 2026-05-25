@@ -398,3 +398,40 @@ Final Phase 7D validation must include:
 - `git diff --check`;
 - search changed docs/code for inaccurate live-ranking, live-personalization, external-QA-approved, or production-ready claims;
 - search touched docs/code for new user-facing follow/follower/following language.
+
+## Phase R1 backend aggregate ranking QA - 2026-05-25
+
+Phase R1 QA proves aggregate ranking is implemented behind safety flags while deterministic fallback remains safe.
+
+Implemented test coverage:
+- ranking disabled returns deterministic order;
+- ranking disabled does not call the aggregate reader;
+- ranking enabled and allowlisted section can use aggregate order;
+- ranking enabled but non-allowlisted section remains deterministic;
+- aggregate read failure falls back to deterministic order;
+- aggregate read timeout falls back to deterministic order;
+- empty aggregate result falls back to deterministic order;
+- shadow mode computes but does not alter served order;
+- metadata distinguishes deterministic, aggregate, fallback, and shadow states;
+- suppression filtering still applies before ranking;
+- brand diversity cap is enforced by the scorer when enough alternatives exist;
+- cache headers remain `private, no-store` on market section routes;
+- section detail limit/cursor behavior remains bounded;
+- duplicate items are deduped before ranking.
+
+Commands:
+- `npm test -- market-ranking market-section --runInBand`
+
+Expected behavior after R1:
+- default env still serves deterministic V1 output;
+- `MARKET_RANKING_ENABLED=true` is required before aggregate ranking is considered;
+- `MARKET_RANKING_SECTION_KEYS` must explicitly allow a section;
+- `MARKET_RANKING_SHADOW_MODE=true` computes but serves deterministic order;
+- failures never produce user-visible section errors.
+
+Deferred QA:
+- production monitoring dashboard verification;
+- hosted alert verification;
+- production backup/restore rehearsal;
+- web/mobile ranking-specific UI checks;
+- admin governance checks.

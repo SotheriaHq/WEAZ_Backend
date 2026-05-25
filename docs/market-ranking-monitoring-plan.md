@@ -319,3 +319,31 @@ Limitations:
 - no metrics sink is implemented;
 - no production `Server-Timing` or fallback counter is implemented;
 - this substitute must not be treated as hosted production readiness.
+
+## Phase R1 lightweight backend logging
+
+Phase R1 does not add a dashboard, metrics sink, or alerting stack.
+
+It does add compact backend debug logs for the ranking path:
+- ranking skipped because disabled;
+- ranking skipped because a section is not allowlisted;
+- aggregate read success;
+- aggregate read failure;
+- aggregate read timeout;
+- deterministic fallback used;
+- shadow mode computed but not served;
+- aggregate ranking served.
+
+Log payloads are intentionally small and may include:
+- section key;
+- ranking flag state;
+- shadow mode state;
+- fallback reason;
+- candidate count;
+- served item count;
+- aggregate count;
+- duration in milliseconds.
+
+Log payloads must not include raw user metadata, anonymous session IDs, payment data, secrets, or full market response payloads.
+
+Production monitoring remains required before any broad rollout. The R1 logs are a local/MVP diagnostic foundation, not a replacement for the dashboard and alerts described above.

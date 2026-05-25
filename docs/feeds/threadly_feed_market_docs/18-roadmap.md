@@ -241,6 +241,31 @@ Deferred from Phase 7D:
 - production owner governance;
 - Redis/BullMQ market signal worker.
 
+## Phase R1 - Backend aggregate-driven market ranking behind safety flags
+
+Status: completed on 2026-05-25 after backend validation and commit. Ranking remains disabled by default and is not a production rollout.
+
+- add aggregate reader for bounded `MarketSignalAggregateDaily` reads;
+- add formula scorer using freshness, aggregate interaction, commerce signals, section relevance, exploration, and brand diversity cap;
+- integrate ranking into `/market/sections` and `/market/sections/:key` only when ranking is enabled, the section key is allowlisted, deterministic fallback is enabled, and shadow mode is off;
+- preserve deterministic fallback when ranking is disabled, section is not allowlisted, aggregate reads fail, aggregate reads time out, aggregate tables are empty, or shadow mode is on;
+- preserve suppression filtering and private/no-store cache headers;
+- add section metadata for ranking state, personalization mode, fallback state, ranking version, shadow mode, and ranking-enabled state;
+- keep ML, suggestions, admin governance UI, web/mobile ranking UI, and Redis/BullMQ deferred.
+
+Outcome:
+- backend can serve aggregate-contextual section ordering in a controlled local/MVP configuration;
+- default environment still serves deterministic V1 output;
+- no production readiness is claimed.
+
+Deferred from Phase R1:
+- production ranking rollout;
+- hosted monitoring dashboard and alerts;
+- admin ranking governance;
+- web/mobile ranking-specific UI;
+- suggestion engine;
+- Redis/BullMQ ranking worker.
+
 ## Future phase - Context-aware market suggestion blocks
 
 - product detail suggestions;
