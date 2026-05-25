@@ -620,3 +620,41 @@ Required commands:
 - mobile `npm exec tsc -- --noEmit`;
 - mobile `npm run test:market-signal-queue-contract`;
 - changed docs/code search for false suggestion personalization, ML, ranking-live, production-ready, or admin-governance claims.
+
+## Phase 12 user market/feed controls QA - 2026-05-25
+
+Backend tests added/updated:
+- `src/market/market-suppression.service.spec.ts`
+  - verifies authenticated suppression listing is scoped to the server-derived user ID;
+  - verifies authenticated listing cannot be widened with a client-supplied anonymous session;
+  - verifies guest suppression listing is scoped by `anonymousSessionId`;
+  - verifies listing without authenticated or guest scope is rejected;
+  - verifies restore/delete returns a controlled not-found error for another owner's suppression.
+- `src/users/feed-preferences.service.spec.ts`
+  - continues to verify reset marker creation without deleting raw signals, seen rows, suppressions, or global aggregates.
+- `src/users/feed-preferences.controller.spec.ts`
+  - continues to verify private/no-store reset headers and server-derived user context.
+
+Web validation:
+- `Settings -> Market & Feed` lists server suppressions from `GET /market/suppressions`;
+- restore calls `DELETE /market/suppressions/:id` and rolls back optimistic removal on failure;
+- reset calls `POST /user/preferences/feed/reset` with a confirmation dialog and non-destructive copy;
+- unauthenticated users see a sign-in prompt instead of account-level preference controls.
+
+Mobile validation:
+- `src/api/MarketApi.ts` exposes `getMarketSuppressions`, `deleteMarketSuppression`, and `resetFeedPreferences`;
+- `Settings -> Market preferences` lists hidden content, restores individual suppressions, and confirms reset;
+- the screen uses existing mobile UI primitives and does not alter the market signal queue.
+
+Required commands:
+- backend `npx prisma validate`;
+- backend `npx prisma generate`;
+- backend `npm test -- auth market-suggestion market-ranking market-section market-suppression user-preferences --runInBand`;
+- backend `npm run build`;
+- web `npm exec tsc -- -b --pretty false`;
+- web `npm run build`;
+- web `npm run lint` if available;
+- mobile `npm exec tsc -- --noEmit`;
+- mobile `npm run test:market-signal-queue-contract`;
+- changed docs/code search for false suggestion personalization, ML, ranking-live, production-ready, or admin-governance claims;
+- touched files search for new user-facing follow/follower/following relationship language.

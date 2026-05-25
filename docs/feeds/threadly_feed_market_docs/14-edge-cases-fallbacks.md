@@ -10,6 +10,18 @@
 - If a product detail source is a design rather than a product, Phase 11C does not show product-detail suggestions.
 - `MARKET_SECTION_DETAIL` suggestions remain a safe deferred response until adjacent-section runtime behavior is intentionally implemented.
 
+## Phase 12 preference-control fallbacks - 2026-05-25
+
+- Web and mobile account-level preference controls require authentication; guest market browsing remains available without exposing account-level reset controls.
+- Guest suppressions remain session-scoped by `anonymousSessionId` where the existing market APIs support them.
+- Authenticated suppression list/restore ignores client-supplied anonymous session IDs and uses the server-derived user ID.
+- If the suppression list fails to load, web and mobile show retryable non-blocking errors.
+- Restoring hidden content is optimistic on web and mobile, but the item is returned to the list if the delete request fails.
+- Resetting market preferences creates a reset marker and does not delete account data, orders, saved items, products, collections, raw signals, seen history, suppressions, or global aggregates.
+- Reset does not immediately guarantee a different market order; future recommendation signals rebuild from new activity.
+- Empty hidden-content lists show a safe "nothing hidden yet" state.
+- Existing market and suggestion suppression filtering remains active after Phase 12.
+
 ## Phase 0 alignment note - 2026-05-23
 
 - New/anonymous users: backend feed currently works chronologically without personalization; keep that as the non-personalized fallback while ranked profiles mature.

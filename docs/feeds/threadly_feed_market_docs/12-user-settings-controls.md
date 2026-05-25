@@ -135,3 +135,35 @@ User-facing controls still deferred:
 - hidden content management;
 - non-personalized mode toggle;
 - settings UI explaining reset scope.
+
+## Phase 12 user market/feed controls - 2026-05-25
+
+Implemented now:
+- backend suppression list/restore scoping is covered by tests for authenticated users and guests;
+- authenticated suppression listing and restore use the server-derived user ID and cannot be widened with a client-supplied anonymous session;
+- guest suppression listing and restore remain scoped by `anonymousSessionId`;
+- web settings now exposes `Settings -> Market & Feed` for hidden/not-interested content and reset controls;
+- web users can list active market suppressions, restore individual entries, refresh the list, and reset market/feed/suggestion learning;
+- mobile now has market preference API support plus a low-risk `Settings -> Market preferences` screen for hidden content restore and reset;
+- reset remains non-destructive and creates a `PersonalizationReset` marker with a `resetPolicy` summary.
+
+Reset does not delete:
+- account data;
+- orders;
+- saved items;
+- products;
+- collections;
+- raw signals;
+- seen history;
+- suppression rows;
+- global aggregate counters.
+
+Still deferred:
+- a non-personalized mode toggle;
+- bulk restore for all suppressions;
+- dedicated muted-brand grouping;
+- mobile Not interested controls on suggestion cards;
+- location-based preference controls;
+- admin governance and configuration.
+
+User-facing copy must continue to describe this as market/feed preference control, hidden content restore, and recommendation signals. It must not claim ML, production personalization, or live global ranking.

@@ -67,6 +67,17 @@ Add clauses covering:
 | How market sections work | Education |
 | How suggestions work | Trust |
 
+## Phase 12 user-control disclosure note - 2026-05-25
+
+The product now has user-facing market/feed controls on web and mobile. Help and policy copy should explain:
+- hidden/not-interested content can be restored from market preferences;
+- reset market preferences affects market, feed, and suggestion learning signals going forward;
+- reset does not delete account data, orders, saved items, products, collections, or the hidden content list;
+- recommendation signals are retained for analytics/audit unless a separate privacy deletion flow requires removal;
+- account-level controls require sign-in, while guest suppressions remain limited to the anonymous session.
+
+This is not a claim that ML, full personalization, or production-ranked recommendations are live.
+
 ## Brand help docs
 
 | Brand doc | Purpose |

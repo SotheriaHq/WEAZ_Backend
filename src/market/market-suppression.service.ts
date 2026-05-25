@@ -79,8 +79,7 @@ export class MarketSuppressionService {
 
     return this.prisma.userContentSuppression.findMany({
       where: {
-        OR: where,
-        ...this.activeWhere(),
+        AND: [{ OR: where }, this.activeWhere()],
       },
       orderBy: [{ createdAt: 'desc' }],
       take: 100,
@@ -131,8 +130,7 @@ export class MarketSuppressionService {
 
     const suppressions = await this.prisma.userContentSuppression.findMany({
       where: {
-        OR: where,
-        ...this.activeWhere(),
+        AND: [{ OR: where }, this.activeWhere()],
       },
       select: {
         targetType: true,
@@ -307,7 +305,7 @@ export class MarketSuppressionService {
     );
     const where: Prisma.UserContentSuppressionWhereInput[] = [];
 
-    if (userId) where.push({ userId });
+    if (userId) return [{ userId }];
     if (anonymousSessionId) where.push({ anonymousSessionId });
 
     return where;

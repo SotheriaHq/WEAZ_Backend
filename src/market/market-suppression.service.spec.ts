@@ -98,6 +98,56 @@ describe('MarketSuppressionService', () => {
     expect(scope.sectionKeys.has('fresh-drops')).toBe(true);
   });
 
+  it('lists only authenticated user suppressions when user context is present', async () => {
+    const prisma = createPrisma();
+    const service = new MarketSuppressionService(prisma as any);
+
+    await service.listSuppressions(
+      { userId: 'user_1' },
+      { anonymousSessionId: 'anon_other' },
+    );
+
+    expect(prisma.userContentSuppression.findMany).toHaveBeenCalledWith({
+      where: {
+        AND: [
+          { OR: [{ userId: 'user_1' }] },
+          { OR: [{ expiresAt: null }, { expiresAt: { gt: expect.any(Date) } }] },
+        ],
+      },
+      orderBy: [{ createdAt: 'desc' }],
+      take: 100,
+    });
+  });
+
+  it('lists guest suppressions by anonymousSessionId when unauthenticated', async () => {
+    const prisma = createPrisma();
+    const service = new MarketSuppressionService(prisma as any);
+
+    await service.listSuppressions(
+      {},
+      { anonymousSessionId: 'anon_1' },
+    );
+
+    expect(prisma.userContentSuppression.findMany).toHaveBeenCalledWith({
+      where: {
+        AND: [
+          { OR: [{ anonymousSessionId: 'anon_1' }] },
+          { OR: [{ expiresAt: null }, { expiresAt: { gt: expect.any(Date) } }] },
+        ],
+      },
+      orderBy: [{ createdAt: 'desc' }],
+      take: 100,
+    });
+  });
+
+  it('rejects suppression listing without authenticated or guest scope', async () => {
+    const service = new MarketSuppressionService(createPrisma() as any);
+
+    await expect(service.listSuppressions({}, {})).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+  });
+
   it('deletes suppressions as a restore action', async () => {
     const prisma = createPrisma();
     const service = new MarketSuppressionService(prisma as any);
@@ -126,5 +176,26 @@ describe('MarketSuppressionService', () => {
     await expect(
       service.deleteSuppression('missing', { userId: 'user_1' }),
     ).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  it('does not restore another owner suppression', async () => {
+    const prisma = createPrisma({
+      userContentSuppression: {
+        create: jest.fn(),
+        findMany: jest.fn(),
+        deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
+      },
+    });
+    const service = new MarketSuppressionService(prisma as any);
+
+    await expect(
+      service.deleteSuppression('suppression_from_user_2', { userId: 'user_1' }),
+    ).rejects.toBeInstanceOf(NotFoundException);
+    expect(prisma.userContentSuppression.deleteMany).toHaveBeenCalledWith({
+      where: {
+        id: 'suppression_from_user_2',
+        OR: [{ userId: 'user_1' }],
+      },
+    });
   });
 });

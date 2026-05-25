@@ -36,7 +36,7 @@ Phase names are normalized here so future feed/market work continues with normal
 | Phase 11A | Context-aware market suggestion engine contract gate | Completed; runtime deferred |
 | Phase 11B | Context-aware market suggestion engine implementation | Completed for backend runtime, web core surfaces, and mobile API contract |
 | Phase 11C | Deferred suggestion UI completion and runtime polish | Completed for web brand/store and mobile product/collection/search-empty UI |
-| Phase 12 | User market/feed controls | Not started |
+| Phase 12 | User market/feed controls | Completed for web settings, mobile settings, and backend coverage |
 | Phase 13 | Admin governance and configuration | Not started |
 | Phase 14 | Final hardening and MVP release gate | Not started |
 
@@ -451,11 +451,31 @@ Still deferred:
 
 Phase 12 can start after the Phase 11C validation/commit gate is clean. Phase 12 must keep ranking disabled by default and must not claim suggestions are fully personalized unless future backend metadata actually supports that.
 
-## Future phase - User controls and admin governance
+## Phase 12 - User market/feed controls
 
-- user feed settings;
-- hidden/muted management;
-- reset preferences;
+Status: completed on 2026-05-25 after backend, web, and mobile validation and commits.
+
+Implemented:
+- backend suppression owner scoping is tightened so authenticated list/scope queries use the server-derived user ID and guest queries use `anonymousSessionId`;
+- backend tests cover authenticated suppression list scope, guest suppression list scope, missing scope rejection, and restore/delete isolation;
+- web `Settings -> Market & Feed` lists hidden/not-interested market suppressions, restores individual entries, refreshes the list, and resets market/feed/suggestion learning with confirmation;
+- mobile `Settings -> Market preferences` adds the same low-risk hidden content restore and reset controls using existing UI primitives;
+- mobile market API contract includes `getMarketSuppressions`;
+- reset remains a soft `PersonalizationReset` marker and does not delete account data, orders, saved items, products, collections, raw signals, seen history, suppressions, or global aggregate counters.
+
+Still deferred:
+- non-personalized mode toggle;
+- bulk restore for all suppressions;
+- grouped muted-brand management;
+- mobile suggestion-card Not interested UI;
+- location-based recommendation controls;
+- admin governance and configuration;
+- ML/embedding recommendations.
+
+Ranking remains disabled by default. Phase 12 does not change ranking formulas or claim full personalization.
+
+## Future phase - Admin governance and final hardening
+
 - admin screens for categories, sections, suggestions, ranking profiles;
 - feed/ranking-specific permissions;
 - admin audit integrity for every config/version change;
