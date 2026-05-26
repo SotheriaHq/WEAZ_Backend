@@ -83,6 +83,19 @@ export class SendMessageDto {
   @ArrayMaxSize(5)
   @IsUUID('4', { each: true })
   attachmentFileIds?: string[];
+
+  @IsOptional()
+  @IsUUID('4')
+  contextDesignId?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(300)
+  contextDesignTitle?: string;
+
+  @IsOptional()
+  @IsUUID('4')
+  contextDesignCoverFileId?: string;
 }
 
 export class QueryThreadOrdersDto {

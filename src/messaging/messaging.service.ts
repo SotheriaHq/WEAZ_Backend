@@ -415,6 +415,15 @@ export class MessagingService {
       };
     }
 
+    const designContextMeta =
+      dto.contextDesignId || dto.contextDesignTitle || dto.contextDesignCoverFileId
+        ? {
+            ...(dto.contextDesignId ? { contextDesignId: dto.contextDesignId } : {}),
+            ...(dto.contextDesignTitle ? { contextDesignTitle: dto.contextDesignTitle } : {}),
+            ...(dto.contextDesignCoverFileId ? { contextDesignCoverFileId: dto.contextDesignCoverFileId } : {}),
+          }
+        : undefined;
+
     const message = await this.prisma.message.create({
       data: {
         threadId: thread.id,
@@ -426,6 +435,7 @@ export class MessagingService {
         kind: MessageKind.USER,
         clientMessageId: dto.clientMessageId,
         bodyText: bodyText || null,
+        ...(designContextMeta ? { metadataJson: designContextMeta } : {}),
         attachments: {
           create: attachments,
         },
