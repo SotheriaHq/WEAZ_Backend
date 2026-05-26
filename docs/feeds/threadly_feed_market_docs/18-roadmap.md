@@ -40,7 +40,7 @@ Phase names are normalized here so future feed/market work continues with normal
 | Phase 13A | Admin governance contract gate | Completed as docs/contract; runtime implementation deferred |
 | Phase 13B | Backend admin governance runtime | Completed for backend runtime; web UI deferred |
 | Phase 13C | Web admin governance UI | Completed for web admin UI |
-| Phase 14 | Final hardening and MVP release gate | Not started |
+| Phase 14 | Final hardening, independent audit, and MVP blocker fixes | Phase 14C completed; controlled MVP checklist next, production readiness deferred |
 
 ## Phase 1 - Stop static/client-heavy rendering and define shared section contract
 
@@ -583,6 +583,32 @@ Outcome:
   validation, security, permission, or performance blockers.
 - Production rollout approval, hosted monitoring/alerting, and multi-user
   operational governance remain outside this local MVP gate.
+
+## Phase 14C - MVP blocker fixes
+
+Status: completed on 2026-05-26 for the controlled MVP blocker cleanup after
+the independent Phase 14B audit synthesis.
+
+Fixed:
+- brand suggestion navigation now uses a valid profile Store-tab route instead
+  of sending brand IDs through the slug storefront alias path;
+- web and mobile reset-market-preference copy now says the action records a
+  fresh preference baseline and that visible suggestions may adjust as new
+  activity is collected;
+- mobile notification/settings copy now uses patch language instead of
+  follow/follower relationship wording.
+
+Still blocked for production readiness:
+- hosted monitoring and alerting;
+- production deploy, migration, backup/restore, and rollback rehearsal;
+- signal abuse hardening, async aggregation, and retention cleanup;
+- reset-marker consumption by ranking/suggestion reads;
+- deeper fashion metadata, patch/social-commerce, conversion, fairness, and
+  content-quality intelligence.
+
+Ranking remains disabled by default. Live personalization, ML/embeddings, and
+production-ready claims remain prohibited until the later production and
+ranking-readiness gates pass.
 
 ## Future phase - Optimization and fairness
 

@@ -682,6 +682,36 @@ and no critical security, permission, performance, data-consumption, or claims
 blockers remain. Production rollout approval remains a separate operational
 gate.
 
+## Phase 14C MVP blocker fix QA - 2026-05-26
+
+Phase 14C verifies only the three controlled-MVP blockers identified by the
+independent Phase 14B audit synthesis:
+
+- brand suggestion cards must navigate to a valid profile Store-tab route and
+  must not send brand IDs into the slug storefront alias path;
+- web and mobile reset-market-preference copy must say the reset records a
+  fresh preference baseline, is non-destructive, and that visible suggestions
+  may adjust as new activity is collected;
+- mobile notification/settings copy must use patch language and must not show
+  follow/follower/following relationship wording.
+
+Validation requirements:
+- backend, if changed, `npx prisma validate`, `npx prisma generate`,
+  `npm test -- market-suggestion market-ranking market-section --runInBand`,
+  `npm run build`, and `git diff --check`;
+- web `npm exec tsc -- -b --pretty false`, `npm run build`,
+  `npm run lint`, and `git diff --check`;
+- mobile `npm exec tsc -- --noEmit`,
+  `npm run test:market-signal-queue-contract`, and `git diff --check`;
+- changed files search for false production-ready, ranking-live,
+  ML/full-personalization, or deep fashion-intelligence claims;
+- touched user-facing mobile files search for unsafe follow/follower/following
+  relationship copy.
+
+Passing Phase 14C allows the controlled MVP release checklist to start. It does
+not create production readiness, does not enable ranking, and does not permit
+live personalization, ML, or deep fashion-intelligence claims.
+
 ## Phase 11B suggestion runtime QA - 2026-05-25
 
 Backend tests added:

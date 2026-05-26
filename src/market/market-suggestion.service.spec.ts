@@ -348,6 +348,15 @@ describe('MarketSuggestionService', () => {
     expect(result.blocks.map((block) => block.blockKey)).toContain(
       'brand-detail-best-from-brand',
     );
+    const fallbackBrand = result.blocks
+      .find((block) => block.blockKey === 'brand-detail-designers-to-watch')
+      ?.items.find((item) => item.entityType === 'BRAND');
+    expect(fallbackBrand?.target).toEqual(
+      expect.objectContaining({
+        id: 'brand_2',
+        route: '/profile/owner_2?tab=Store',
+      }),
+    );
   });
 
   it('uses deterministic private metadata without raw score internals', async () => {

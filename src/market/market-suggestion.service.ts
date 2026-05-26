@@ -645,6 +645,7 @@ export class MarketSuggestionService {
       take: this.queryTake(options.limit),
       select: {
         id: true,
+        ownerId: true,
         name: true,
         description: true,
         logo: true,
@@ -1010,7 +1011,9 @@ export class MarketSuggestionService {
         type: 'BRAND',
         id: brand.id,
         key: brand.id,
-        route: `/brand/${brand.id}`,
+        route: brand.ownerId
+          ? `/profile/${encodeURIComponent(brand.ownerId)}?tab=Store`
+          : `/store/${encodeURIComponent(brand.id)}`,
       },
       createdAt: brand.createdAt?.toISOString?.() ?? null,
       updatedAt: brand.updatedAt?.toISOString?.() ?? null,
