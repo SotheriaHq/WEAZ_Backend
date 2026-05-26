@@ -67,6 +67,7 @@ export class AdminUsersController {
     @Query('status') status?: UserStatus,
     @Query('q') q?: string,
     @Query('search') search?: string,
+    @Query('sort') sort?: 'created_asc' | 'created_desc',
   ) {
     return this.adminUsersService.list({
       cursor,
@@ -74,6 +75,7 @@ export class AdminUsersController {
       role,
       status,
       search: resolveSearchQuery(q, search),
+      sort,
     });
   }
 

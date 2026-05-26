@@ -559,6 +559,7 @@ export class AdminUsersService {
     role?: Role;
     status?: UserStatus;
     search?: string;
+    sort?: 'created_asc' | 'created_desc';
   }) {
     const take = Math.min(params.limit ?? 50, 100);
     const where: Record<string, unknown> = {
@@ -579,6 +580,7 @@ export class AdminUsersService {
       ];
     }
 
+    const orderDir = params.sort === 'created_asc' ? 'asc' : 'desc';
     const items = await this.prisma.user.findMany({
       where,
       select: {
@@ -587,7 +589,7 @@ export class AdminUsersService {
         createdAt: true,
         updatedAt: true,
       },
-      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      orderBy: [{ createdAt: orderDir }, { id: orderDir }],
       take: take + 1,
       ...(params.cursor
         ? { cursor: { id: params.cursor }, skip: 1 }
