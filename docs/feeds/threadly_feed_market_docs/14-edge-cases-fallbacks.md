@@ -1,5 +1,26 @@
 # Edge Cases and Fallbacks
 
+## Phase 13A admin governance fallback contract - 2026-05-26
+
+Phase 13A is a contract gate only. Admin governance is not implemented yet, but
+Phase 13B must preserve these fallback rules:
+
+- if market governance config cannot be read, public market routes use code
+  defaults;
+- if section config is malformed, it is rejected on write and ignored on read
+  with safe fallback;
+- admin section config cannot disable every primary market section;
+- suggestion block config cannot block product, collection, brand, search, or
+  market section screens from rendering;
+- ranking profile config cannot disable deterministic fallback;
+- formula config with out-of-bounds weights stays draft or is rejected;
+- release-control mistakes must fall back to deterministic ordering rather than
+  breaking `/market/sections` or `/market/sections/:key`;
+- governance writes must be transactional with audit logging, and an audit write
+  failure should fail the governance mutation;
+- no admin setting may claim ranking, ML, or full personalization is live unless
+  serving metadata and release controls prove it.
+
 ## Phase 11C suggestion UI fallbacks - 2026-05-25
 
 - Web brand/store suggestions render only when the Store tab already has a `brandId` and the store is not explicitly closed; owner catalog management views do not render the block.

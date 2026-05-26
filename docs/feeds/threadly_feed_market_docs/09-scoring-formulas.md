@@ -2,6 +2,27 @@
 
 All scores normalize to `0.0 - 1.0` before weighting.
 
+## Phase 13A formula governance contract - 2026-05-26
+
+Phase 13A does not change any scoring formula and does not enable ranking by
+default. It defines how Phase 13B should govern formulas safely:
+
+- ranking formulas remain deterministic, bounded, and non-ML;
+- each admin-managed formula must be stored as a versioned record with draft,
+  active, deprecated, or rolled-back status;
+- formula weights must be validated against explicit min/max bounds before any
+  activation;
+- only one formula version may be active for a profile scope at a time;
+- activation and rollback must write an admin audit record with previous and new
+  state;
+- if formula config is missing, malformed, or unreadable, the market service
+  must use code defaults and deterministic fallback;
+- the admin UI should expose safe controls for weights and bounds instead of
+  making raw JSON the primary editing surface.
+
+Phase 13B may add `MarketRankingFormulaVersion` and related ranking profile
+models, but production readiness remains deferred to Phase 14.
+
 ## Design feed score
 
 ```text

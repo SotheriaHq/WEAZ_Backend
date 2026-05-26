@@ -1,5 +1,30 @@
 # QA and Acceptance Test Plan
 
+## Phase 13A admin governance contract QA - 2026-05-26
+
+Phase 13A is docs-only and does not implement admin governance runtime. Phase
+13B cannot pass until tests cover:
+
+- non-admin users receive 403 from every market governance endpoint;
+- admins without explicit market governance permissions receive 403;
+- `SuperAdmin` can perform allowed reads, writes, formula activation, and
+  rollback;
+- all writes validate safe ranges for section limits, ranking weights,
+  exploration percent, brand max share, aggregate timeout, rollout percent, and
+  suggestion item limits;
+- deterministic fallback cannot be disabled by admin config;
+- invalid section keys, contexts, source types, and profile keys return
+  controlled 400 responses;
+- every mutation writes an admin audit log with actor, action, target,
+  previous state, new state, and request metadata where available;
+- audit write failure fails the governance mutation;
+- config read failure uses code defaults and public market routes still render;
+- formula rollback restores the previous active version without deleting
+  history;
+- web admin route visibility and actions match the user's role and permission
+  grants;
+- docs and UI do not claim admin governance is production-ready before Phase 14.
+
 ## Phase 0 alignment note - 2026-05-23
 
 Phase 1 must include regression tests for:

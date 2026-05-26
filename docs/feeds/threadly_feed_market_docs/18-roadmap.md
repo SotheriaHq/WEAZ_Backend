@@ -37,7 +37,8 @@ Phase names are normalized here so future feed/market work continues with normal
 | Phase 11B | Context-aware market suggestion engine implementation | Completed for backend runtime, web core surfaces, and mobile API contract |
 | Phase 11C | Deferred suggestion UI completion and runtime polish | Completed for web brand/store and mobile product/collection/search-empty UI |
 | Phase 12 | User market/feed controls | Completed for web settings, mobile settings, and backend coverage |
-| Phase 13 | Admin governance and configuration | Not started |
+| Phase 13A | Admin governance contract gate | Completed as docs/contract; runtime implementation deferred |
+| Phase 13B | Admin governance and configuration implementation | Not started |
 | Phase 14 | Final hardening and MVP release gate | Not started |
 
 ## Phase 1 - Stop static/client-heavy rendering and define shared section contract
@@ -474,15 +475,52 @@ Still deferred:
 
 Ranking remains disabled by default. Phase 12 does not change ranking formulas or claim full personalization.
 
-## Future phase - Admin governance and final hardening
+## Phase 13A - Admin governance contract gate
 
-- admin screens for categories, sections, suggestions, ranking profiles;
-- feed/ranking-specific permissions;
-- admin audit integrity for every config/version change;
-- formula versioning and audit.
+Status: completed on 2026-05-26 as a docs-only contract gate.
+
+Implemented:
+- audited existing backend roles, guards, admin permission grants, admin audit
+  logging, feature flags, and system config support;
+- audited existing web admin route, sidebar, route protection, admin API, and
+  permission patterns;
+- defined market governance targets for market sections, ranking profiles,
+  formula versions, suggestion blocks, release controls, and audit logs;
+- defined Phase 13B backend model, admin API, web UI, safety, fallback, and
+  rollback contracts;
+- confirmed Phase 13A does not add migrations, runtime APIs, admin UI, formula
+  changes, ranking enablement, or suggestion runtime changes.
+
+Still deferred:
+- Prisma models and migrations for market governance config;
+- admin API runtime under `/admin/market-governance`;
+- web admin governance UI;
+- market-governance-specific permissions and audit actions;
+- production release signoff and final hardening.
+
+## Phase 13B - Admin governance and configuration implementation
+
+Planned scope:
+- implement typed market section config, ranking profiles, formula versions,
+  suggestion block config, release controls, and audit-backed mutations;
+- add explicit market governance permissions;
+- add guarded admin APIs under `/admin/market-governance`;
+- add the web admin market governance route and screens;
+- preserve deterministic fallback, code-default fallback, and ranking disabled
+  by default.
+
+Phase 13B must not claim production readiness. Phase 14 remains the production
+hardening and MVP release gate.
+
+## Future phase - Final hardening
+
+- production monitoring and readiness verification;
+- final fallback and rollback checks;
+- release checklist completion;
+- regression and performance hardening.
 
 Outcome:
-- production governance and user control.
+- MVP release readiness.
 
 ## Future phase - Optimization and fairness
 

@@ -1,5 +1,24 @@
 # Scalability and Optimization
 
+## Phase 13A admin governance scalability contract - 2026-05-26
+
+Phase 13A does not add runtime config reads. Phase 13B should implement admin
+governance without adding request-path bottlenecks:
+
+- market governance config should be small, typed, and cached with a short TTL;
+- config cache should be invalidated after admin publish, rollback, or disable
+  actions;
+- public market routes must not perform per-item admin config queries;
+- section, ranking profile, formula, and suggestion block reads should be
+  batched by key or loaded once per request;
+- config read failure must use code defaults rather than retry loops;
+- admin audit logs must be cursor-paginated;
+- formula controls must keep candidate ranking bounded and must not permit
+  full-table synchronous ranking;
+- release controls cannot bypass the existing ranking timeout and fallback
+  guards;
+- no Redis/BullMQ or monitoring stack is introduced by Phase 13A.
+
 ## Phase 11C suggestion UI scalability - 2026-05-25
 
 - Web brand/store suggestions reuse the lazy `MarketSuggestionBlocks` component instead of loading catalog-wide data in the browser.
