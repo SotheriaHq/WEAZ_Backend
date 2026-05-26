@@ -40,7 +40,7 @@ Phase names are normalized here so future feed/market work continues with normal
 | Phase 13A | Admin governance contract gate | Completed as docs/contract; runtime implementation deferred |
 | Phase 13B | Backend admin governance runtime | Completed for backend runtime; web UI deferred |
 | Phase 13C | Web admin governance UI | Completed for web admin UI |
-| Phase 14 | Final hardening, independent audit, and MVP blocker fixes | Phase 14C completed; controlled MVP checklist next, production readiness deferred |
+| Phase 14 | Final hardening, independent audit, MVP blocker fixes, and controlled MVP checklist | Phase 14D checklist prepared; production readiness deferred |
 
 ## Phase 1 - Stop static/client-heavy rendering and define shared section contract
 
@@ -609,6 +609,36 @@ Still blocked for production readiness:
 Ranking remains disabled by default. Live personalization, ML/embeddings, and
 production-ready claims remain prohibited until the later production and
 ranking-readiness gates pass.
+
+## Phase 14D - Controlled MVP release operational checklist
+
+Status: checklist prepared on 2026-05-26 after final validation. This is not
+production rollout approval and does not enable ranking, ML, or live
+personalization.
+
+Phase 14D created `20-controlled-mvp-release-checklist.md` with:
+
+- backend, web, mobile, and database/migration deployment readiness checks;
+- manual web, mobile, and admin smoke checklists;
+- claims/copy policy for the controlled MVP candidate;
+- rollback checklist for backend, migration, web, mobile, suggestions, and
+  admin governance risks;
+- post-release watch checklist for market endpoints, suggestions, signals,
+  frontend runtime errors, mobile queue behavior, admin access errors, and
+  database growth;
+- production blockers that must remain open after the controlled MVP candidate;
+- live ranking and personalization blockers that must remain open until the
+  ranking rollout gate.
+
+Phase 14D validation passed locally across backend Prisma validate/generate,
+Prisma migrate status, targeted feed/market/admin/auth regression, full backend
+Jest, backend build, web TypeScript/build/lint, mobile TypeScript, mobile signal
+queue contract, and diff checks.
+
+After Phase 14D, the next work is controlled MVP release execution and manual
+smoke against the intended hosted/mobile targets. Production readiness remains
+blocked by Phase 16+/17 operational, security, scalability, monitoring,
+fashion-intelligence, and live-ranking gates.
 
 ## Future phase - Optimization and fairness
 

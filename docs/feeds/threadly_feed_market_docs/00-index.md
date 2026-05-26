@@ -1,13 +1,13 @@
 # Threadly Feed, Market, Suggestions \& Personalization Documentation Pack
 
-**Status:** Phase 14A final hardening audit recorded; MVP release gate is current
+**Status:** Phase 14D controlled MVP release checklist prepared; production readiness remains blocked
 **Date:** 2026-05-26
 **Scope:** Backend `threadly-backend`, Web `Threadly-frotnend`, Mobile `threadly-mobile`  
 **Primary surfaces:** Design feed, Market home, Market section detail, product detail, collection detail, brand/store page, search/empty states, user preference screens, admin configuration screens.
 
 ## Purpose
 
-This documentation pack defines the release requirements, architecture, formulas, screens, edge cases, scalability rules, legal/user-reference implications, and QA plan for Threadly's feed intelligence, market rendering, and market suggestion architecture. The current implementation has progressed through the Phase 14A final hardening audit gate; this is not a production rollout approval or a claim that ranking, ML, or full personalization is live.
+This documentation pack defines the release requirements, architecture, formulas, screens, edge cases, scalability rules, legal/user-reference implications, and QA plan for Threadly's feed intelligence, market rendering, and market suggestion architecture. The current implementation has progressed through the Phase 14D controlled MVP release checklist gate; this is not a production rollout approval or a claim that ranking, ML, or full personalization is live.
 
 ## Canonical ownership
 
@@ -44,6 +44,7 @@ Threadly should implement a **section-first, category-supported, socially ranked
 |`17-qa-acceptance-test-plan.md`|QA, API, web/mobile, and headless E2E coverage|
 |`18-roadmap.md`|Phasing and implementation sequencing|
 |`19-glossary.md`|Shared terminology|
+|`20-controlled-mvp-release-checklist.md`|Controlled MVP deployment, migration, smoke, rollback, monitoring, and claims checklist|
 
 ## Important limits
 

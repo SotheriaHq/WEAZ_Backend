@@ -712,6 +712,37 @@ Passing Phase 14C allows the controlled MVP release checklist to start. It does
 not create production readiness, does not enable ranking, and does not permit
 live personalization, ML, or deep fashion-intelligence claims.
 
+## Phase 14D controlled MVP release checklist QA - 2026-05-26
+
+Phase 14D is a checklist and validation gate. It does not add features, enable
+ranking, enable ML/personalization, or approve broad production rollout.
+
+Validation requirements:
+- backend `npx prisma validate`;
+- backend `npx prisma generate`;
+- backend `npx prisma migrate status`;
+- backend `npm test -- auth market-suggestion market-ranking market-section market-suppression user-preferences admin-market-governance --runInBand`;
+- backend `npm run build`;
+- backend `git diff --check`;
+- backend full Jest suite `npm test -- --runInBand` when safe;
+- web `npm exec tsc -- -b --pretty false`;
+- web `npm run build`;
+- web `npm run lint`;
+- web `git diff --check`;
+- mobile `npm exec tsc -- --noEmit`;
+- mobile `npm run test:market-signal-queue-contract`;
+- mobile `git diff --check`.
+
+Manual controlled MVP smoke requirements are documented in
+`20-controlled-mvp-release-checklist.md` and cover login, Market home, View All,
+product/collection/brand/search-empty suggestions, Not Interested, Settings >
+Market & Feed, reset copy, admin market governance permissions, release status,
+rollback rehearsal, mobile market preferences, patch terminology, and mobile
+signal queue behavior.
+
+Passing Phase 14D means the controlled MVP release checklist is ready to execute.
+It does not close production blockers or live ranking/personalization blockers.
+
 ## Phase 11B suggestion runtime QA - 2026-05-25
 
 Backend tests added:
