@@ -1,6 +1,7 @@
 # Controlled MVP Release Checklist
 
-**Status:** Phase 14D checklist gate prepared on 2026-05-26.
+**Status:** Phase 14D checklist gate prepared on 2026-05-26; Phase 14E local
+execution evidence recorded on 2026-05-26.
 **Scope:** Feed, market sections, context-aware market suggestions, user market/feed controls, and admin market governance.
 **Release level:** Controlled MVP candidate only.
 
@@ -230,11 +231,35 @@ Threadly controlled MVP candidate now includes:
 - ranking still disabled by default;
 - production readiness and live personalization still deferred.
 
-## 15. Final Phase 14D Decision
+## 15. Phase 14E Execution Status
 
-The controlled MVP release checklist is ready to execute after Phase 14D
-validation. Controlled MVP release execution may proceed only with the manual
-deployment, migration, smoke, rollback, and watch checks above.
+Phase 14E executed the controlled MVP release checklist as far as the local
+workspace and available non-secret configuration allowed.
+
+| Area | Phase 14E result | Notes |
+| --- | --- | --- |
+| Backend local validation | Passed | Prisma validate/generate/migrate status, targeted market/auth/admin tests, full Jest suite, build, and diff check passed locally. |
+| Web local validation | Passed | TypeScript build, Vite build, lint, and diff check passed locally. The existing Vite chunk-size warning remains a production-hardening item. |
+| Mobile local validation | Passed | TypeScript no-emit, market signal queue contract, and diff check passed locally. |
+| Backend hosted target | Not verified | No backend deployment platform config was present in the repo, and hosted credentials/target details were not available in the workspace. |
+| Web hosted target | Not verified | No web deployment platform config was present in the repo, and deployed API target verification requires the hosting environment. |
+| Mobile build target | Not verified | Expo app config is present, but the intended release channel/device build target was not available for execution in this workspace. |
+| Hosted migration | Not run | Hosted database target and backup confirmation were not available. The required hosted command remains `npx prisma migrate deploy`; destructive commands remain blocked. |
+| Manual web smoke | Not verified | Requires the intended hosted or local browser target plus test accounts. |
+| Manual mobile smoke | Not verified | Requires a device/emulator build against the intended API target. |
+| Manual admin smoke | Not verified | Requires an authorized admin account on the intended target. |
+
+Controlled MVP exposure should wait until the hosted target, backup, migration,
+and manual smoke checks are completed and recorded. Production readiness remains
+blocked. Live ranking, ML, full personalization, and deep fashion-intelligent
+recommendation claims remain blocked.
+
+## 16. Final Phase 14D/14E Decision
+
+The controlled MVP release checklist exists and local Phase 14E validation
+passed. Controlled MVP exposure to intended test users should proceed only after
+the hosted deployment target, backup, hosted migration, manual web/mobile/admin
+smoke, rollback, and watch checks above are completed.
 
 Production readiness remains blocked. Live ranking, ML, full personalization,
 and deep fashion-intelligent recommendation claims remain blocked.
