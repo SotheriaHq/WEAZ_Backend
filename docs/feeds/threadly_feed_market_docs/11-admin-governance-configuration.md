@@ -1,9 +1,58 @@
 # Admin Governance and Configuration
 
+## Phase 13C Web Admin Governance UI Status
+
+Status: web admin UI implemented after validation. Backend runtime remains the
+Phase 13B contract; Phase 13C does not add migrations, mobile admin screens,
+public market behavior changes, ranking enablement, ML controls, or final
+release approval.
+
+Phase 13C adds the web admin surface that consumes `/admin/market-governance`:
+
+- typed admin API client methods and response/request types;
+- guarded `/admin/market-governance` route;
+- admin sidebar entry hidden unless `MARKET_GOVERNANCE_READ` is available;
+- Overview tab with release status, deterministic fallback status, Phase 14
+  requirement, rollback rehearsal, and rollback action;
+- Market Sections tab for title, subtitle, enabled state, display order,
+  preview/detail limits, minimum item count, View All state, fallback mode, and
+  audit reason;
+- Ranking Profiles tab for profile create/edit, section allowlist,
+  formula selection, shadow mode, exploration percent, brand max share,
+  aggregate timeout, and locked `rolloutPercent=0`;
+- Formulas tab for creating bounded formula versions with allowlisted weights
+  and optional activation through the backend create endpoint;
+- Suggestion Blocks tab for context, target type, title/subtitle, enabled state,
+  display order, source/fallback source, and item limit;
+- Audit Log tab with cursor loading and collapsed before/after state details;
+- existing admin user permission management includes the new market governance
+  permission grants.
+
+Permission behavior:
+
+- read UI requires `MARKET_GOVERNANCE_READ`;
+- section/profile writes require `MARKET_GOVERNANCE_WRITE`;
+- rollback rehearsal requires `MARKET_GOVERNANCE_RELEASE`;
+- formula creation/activation requires `MARKET_RANKING_FORMULA_WRITE`;
+- formula rollback requires `MARKET_RANKING_ROLLBACK`;
+- suggestion block writes require `MARKET_SUGGESTIONS_WRITE`;
+- missing write permissions hide or disable mutation controls, while the
+  backend remains the source of truth for authorization.
+
+Safety behavior:
+
+- dangerous section-disable and rollback actions are confirmation-gated;
+- rollback requires a reason;
+- deterministic fallback is displayed as mandatory;
+- `fallbackDeterministic` is not editable to `false`;
+- ranking rollout remains locked at `0` before Phase 14;
+- release readiness remains blocked until Phase 14 validation;
+- no UI copy claims ML or full personalization.
+
 ## Phase 13B Backend Runtime Status
 
-Status: backend runtime implemented after validation. Web admin UI remains
-deferred to Phase 13C, and production readiness remains deferred to Phase 14.
+Status: backend runtime implemented after validation. Web admin UI was deferred
+until Phase 13C, and release readiness remains deferred to Phase 14.
 
 Phase 13B adds additive backend governance storage and guarded APIs only:
 
@@ -35,9 +84,9 @@ Runtime safety rules that remain enforced:
   exists;
 - rollback rehearsal is non-mutating.
 
-Phase 13B does not add web admin screens, mobile admin screens, ML controls,
-production approval, or public market behavior changes beyond safe config
-read fallback services.
+Phase 13B did not add web admin screens, mobile admin screens, ML controls,
+release approval, or public market behavior changes beyond safe config read
+fallback services. Phase 13C now adds the web UI described above.
 
 ## Phase 13A Contract Gate Status
 
@@ -455,7 +504,7 @@ Backend implementation added:
 - transactional writes with audit logs
 - focused tests for permissions, validation, audit writes, fallback, and rollback
 
-Phase 13C web implementation should add:
+Phase 13C web implementation adds:
 
 - admin API client types and methods
 - admin route and sidebar entry
@@ -463,9 +512,8 @@ Phase 13C web implementation should add:
 - guarded dangerous actions with confirmation
 - no raw JSON primary editing surface
 
-Deferred beyond Phase 13B:
+Deferred beyond Phase 13B/13C:
 
-- web admin governance UI;
 - mobile admin governance
 - ML or embedding controls
 - suggestion View All governance

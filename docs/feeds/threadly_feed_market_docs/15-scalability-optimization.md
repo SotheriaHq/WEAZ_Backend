@@ -1,5 +1,22 @@
 # Scalability and Optimization
 
+## Phase 13C web admin governance UI scalability - 2026-05-26
+
+Phase 13C keeps the admin UI bounded and separate from public market traffic:
+
+- governance data loads from small configuration endpoints, not catalog-wide
+  public queries;
+- audit logs use the backend cursor endpoint and render collapsed before/after
+  details by default;
+- formulas and ranking profiles are low-cardinality admin config records;
+- suggestion block and section edits use one focused mutation at a time;
+- rollback rehearsal is non-mutating and does not execute public ranking work;
+- the UI does not add background polling, Redis/BullMQ work, or a metrics stack;
+- mobile admin governance remains out of scope.
+
+Public market request paths are unchanged by Phase 13C. Ranking remains disabled
+by default, and final rollout hardening remains Phase 14.
+
 ## Phase 13B admin governance runtime scalability - 2026-05-26
 
 Phase 13B keeps governance runtime small and bounded:
@@ -17,8 +34,8 @@ Phase 13B keeps governance runtime small and bounded:
   ranking work.
 
 No Redis/BullMQ worker, hosted metrics stack, ML service, or public request-path
-ranking change is introduced by Phase 13B. Web admin UI remains Phase 13C, and
-production rollout hardening remains Phase 14.
+ranking change is introduced by Phase 13B. Phase 13C adds the web admin UI only,
+and final rollout hardening remains Phase 14.
 
 ## Phase 13A admin governance scalability contract - 2026-05-26
 

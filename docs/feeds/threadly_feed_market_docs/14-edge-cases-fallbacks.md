@@ -1,5 +1,27 @@
 # Edge Cases and Fallbacks
 
+## Phase 13C web admin governance UI fallbacks - 2026-05-26
+
+Phase 13C adds only the web admin UI on top of the Phase 13B backend runtime.
+
+UI fallback behavior:
+
+- loading, empty, and error states are rendered for every governance tab;
+- refresh and retry do not mutate config;
+- missing write permissions hide or disable mutation controls;
+- backend validation errors are shown as user-facing errors instead of being
+  swallowed;
+- dangerous section-disable and ranking rollback actions require confirmation;
+- rollback requires a reason before calling the backend;
+- rollback rehearsal is displayed separately as non-mutating evidence;
+- audit before/after payloads stay collapsed until opened;
+- if config tables are empty, the UI displays code-default section and
+  suggestion block rows from the backend fallback response.
+
+Phase 13C does not change public market fallback behavior. Public routes still
+depend on Phase 13B code-default fallback and ranking remains disabled by
+default.
+
 ## Phase 13B admin governance runtime fallbacks - 2026-05-26
 
 Phase 13B implements backend governance runtime with safe fallbacks.
@@ -21,8 +43,9 @@ Implemented fallback behavior:
 - rollback rehearsal is non-mutating and reports what would happen.
 
 Public market routes remain safe because Phase 13B does not require DB config
-to render existing sections or suggestions. Future Phase 13C/14 work may choose
-to consume more admin config, but must preserve the same code-default fallback.
+to render existing sections or suggestions. Phase 13C only consumes governance
+config in the web admin UI. Future public-route config integration must preserve
+the same code-default fallback.
 
 ## Phase 13A admin governance fallback contract - 2026-05-26
 

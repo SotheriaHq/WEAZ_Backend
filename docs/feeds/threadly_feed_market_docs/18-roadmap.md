@@ -39,7 +39,7 @@ Phase names are normalized here so future feed/market work continues with normal
 | Phase 12 | User market/feed controls | Completed for web settings, mobile settings, and backend coverage |
 | Phase 13A | Admin governance contract gate | Completed as docs/contract; runtime implementation deferred |
 | Phase 13B | Backend admin governance runtime | Completed for backend runtime; web UI deferred |
-| Phase 13C | Web admin governance UI | Not started |
+| Phase 13C | Web admin governance UI | Completed for web admin UI |
 | Phase 14 | Final hardening and MVP release gate | Not started |
 
 ## Phase 1 - Stop static/client-heavy rendering and define shared section contract
@@ -520,7 +520,6 @@ Implemented:
   fallback, rollback, and existing market/auth regressions.
 
 Still deferred:
-- web admin governance UI and admin API client work, now Phase 13C;
 - production release approval and hardening, still Phase 14;
 - mobile admin governance;
 - ML/embedding controls.
@@ -530,13 +529,33 @@ and Phase 13B does not claim production readiness.
 
 ## Phase 13C - Web admin governance UI
 
-Planned scope:
-- add web admin API client types and methods;
-- add guarded `/admin/market-governance` route and sidebar entry;
-- add overview, market section, ranking profile, formula, suggestion block, and
-  audit-log screens;
-- keep dangerous actions confirmation-gated;
-- preserve backend safety rules and avoid production readiness claims.
+Status: completed on 2026-05-26 for web admin UI. Phase 13C consumes the
+Phase 13B backend runtime without adding migrations, changing public market
+behavior, enabling ranking by default, adding mobile admin UI, or claiming final
+release clearance.
+
+Implemented:
+- web admin API client types and methods for `/admin/market-governance`;
+- guarded `/admin/market-governance` route and sidebar entry;
+- Overview tab with release status, Phase 14 requirement, rollback rehearsal,
+  and rollback action;
+- Market Sections tab for section title/subtitle, enabled state, display order,
+  preview/detail limits, minimum items, View All state, and fallback mode;
+- Ranking Profiles tab for profile create/edit, section allowlist, formula
+  selection, shadow mode, bounded exploration/brand-share/timeout controls,
+  locked deterministic fallback, and locked `rolloutPercent=0`;
+- Formulas tab for bounded allowlisted formula weight creation and activation
+  through the backend create endpoint;
+- Suggestion Blocks tab for context, target type, title/subtitle, source,
+  fallback source, item limit, and enabled state;
+- Audit Log tab with cursor loading and collapsed before/after state;
+- existing admin user permission management now includes market governance
+  permission grants.
+
+Still deferred:
+- mobile admin governance;
+- final release hardening and approval, now Phase 14;
+- ML/embedding controls.
 
 ## Future phase - Final hardening
 

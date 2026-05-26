@@ -1,5 +1,32 @@
 # QA and Acceptance Test Plan
 
+## Phase 13C web admin governance UI QA - 2026-05-26
+
+Phase 13C acceptance requires:
+
+- web `/admin/market-governance` route is guarded by existing admin route
+  protection and `MARKET_GOVERNANCE_READ`;
+- admin sidebar entry is hidden unless the read permission is available;
+- web admin API client methods match the Phase 13B backend endpoints;
+- Overview shows ranking enabled state, default-disabled state, deterministic
+  fallback state, shadow mode, active profile/formula, config read status,
+  last rollback, and Phase 14 requirement;
+- rollback rehearsal requires release permission, confirms before running, and
+  displays non-mutating evidence;
+- rollback requires rollback permission, confirmation, and a reason;
+- Market Sections tab supports bounded edits and backend validation errors;
+- Ranking Profiles tab keeps deterministic fallback locked on and rollout locked
+  at `0`;
+- Formulas tab uses allowlisted numeric weight inputs from `0` to `1`;
+- Suggestion Blocks tab uses supported context, target type, source, fallback
+  source, and item-limit controls;
+- Audit Log tab paginates and keeps before/after state collapsed by default;
+- missing write permissions hide or disable mutation controls;
+- web TypeScript, build, lint, and diff checks pass;
+- backend Phase 13B validation still passes;
+- mobile baseline validation still passes;
+- docs and UI do not claim final release readiness before Phase 14.
+
 ## Phase 13B admin governance runtime QA - 2026-05-26
 
 Phase 13B backend runtime acceptance requires:
@@ -24,8 +51,8 @@ Phase 13B backend runtime acceptance requires:
 - existing auth, market suggestion, ranking, section, suppression, and user
   preference tests still pass.
 
-Phase 13B does not include web admin governance UI acceptance. That belongs to
-Phase 13C. Phase 14 is still required before any production-readiness claim.
+Phase 13B did not include web admin governance UI acceptance. Phase 13C now
+covers that UI gate. Phase 14 is still required before any final release claim.
 
 ## Phase 13A admin governance contract QA - 2026-05-26
 
@@ -50,7 +77,8 @@ Phase 13A is docs-only and does not implement admin governance runtime. Phase
   history;
 - web admin route visibility and actions match the user's role and permission
   grants;
-- docs and UI do not claim admin governance is production-ready before Phase 14.
+- docs and UI do not claim admin governance has final release clearance before
+  Phase 14.
 
 ## Phase 0 alignment note - 2026-05-23
 
