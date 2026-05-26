@@ -1,13 +1,13 @@
 # Threadly Feed, Market, Suggestions \& Personalization Documentation Pack
 
-**Status:** Phase 1 backend section foundation implemented and documentation aligned
-**Date:** 2026-05-24
+**Status:** Phase 14A final hardening audit recorded; MVP release gate is current
+**Date:** 2026-05-26
 **Scope:** Backend `threadly-backend`, Web `Threadly-frotnend`, Mobile `threadly-mobile`  
 **Primary surfaces:** Design feed, Market home, Market section detail, product detail, collection detail, brand/store page, search/empty states, user preference screens, admin configuration screens.
 
 ## Purpose
 
-This documentation pack defines the production-ready requirements, architecture, formulas, screens, edge cases, scalability rules, legal/user-reference implications, and QA plan for Threadly's feed intelligence, market rendering, and market suggestion architecture. Phase 0 has now validated the current implementation state against the real backend, web, and mobile repos.
+This documentation pack defines the release requirements, architecture, formulas, screens, edge cases, scalability rules, legal/user-reference implications, and QA plan for Threadly's feed intelligence, market rendering, and market suggestion architecture. The current implementation has progressed through the Phase 14A final hardening audit gate; this is not a production rollout approval or a claim that ranking, ML, or full personalization is live.
 
 ## Canonical ownership
 

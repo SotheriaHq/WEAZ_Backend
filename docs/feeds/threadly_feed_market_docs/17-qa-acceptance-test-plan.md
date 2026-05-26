@@ -662,6 +662,26 @@ Validation requirements:
 - changed docs/code search for false suggestion personalization, ML, ranking-live, production-ready, or admin-governance claims;
 - touched files search for new user-facing follow/follower/following relationship language.
 
+## Phase 14A final hardening audit gate
+
+Status: recorded on 2026-05-26.
+
+Phase 14A is an audit and release gate, not a feature implementation phase.
+The gate must verify:
+
+- backend `npx prisma validate`, `npx prisma generate`, `npx prisma migrate status`, targeted market/admin/auth regression, full Jest suite if feasible, `npm run build`, and `git diff --check`;
+- web `npm exec tsc -- -b --pretty false`, `npm run build`, `npm run lint`, and `git diff --check`;
+- mobile `npm exec tsc -- --noEmit`, `npm run test:market-signal-queue-contract`, and `git diff --check`;
+- ranking remains disabled by default and deterministic fallback remains mandatory;
+- public market, suggestion, suppression, reset, and admin governance routes remain scoped and guarded;
+- client View All, suggestions, user controls, and admin governance UI avoid unbounded loading regressions;
+- docs and user-facing copy do not claim ranking is live, ML is enabled, full personalization is live, production readiness is complete, or mobile admin governance exists.
+
+Phase 14A may declare local MVP release readiness only when all validations pass
+and no critical security, permission, performance, data-consumption, or claims
+blockers remain. Production rollout approval remains a separate operational
+gate.
+
 ## Phase 11B suggestion runtime QA - 2026-05-25
 
 Backend tests added:

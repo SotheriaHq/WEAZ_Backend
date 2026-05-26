@@ -554,18 +554,35 @@ Implemented:
 
 Still deferred:
 - mobile admin governance;
-- final release hardening and approval, now Phase 14;
+- production rollout approval and hosted monitoring;
 - ML/embedding controls.
 
-## Future phase - Final hardening
+## Phase 14A - Final hardening audit and MVP release gate
 
-- production monitoring and readiness verification;
-- final fallback and rollback checks;
-- release checklist completion;
-- regression and performance hardening.
+Status: audit gate recorded on 2026-05-26. Phase 14A validates the backend,
+web, and mobile MVP readiness posture after Phase 13C without adding new
+features, enabling ranking by default, changing formulas, adding ML, or
+starting mobile admin governance.
+
+Validated scope:
+- clean backend, web, and mobile worktrees on `main`;
+- backend Prisma validation, generation, migration status, targeted regression,
+  full Jest suite, build, and diff check;
+- web typecheck, build, lint, and diff check;
+- mobile typecheck, market signal queue contract, and diff check;
+- public market routes, section detail pagination, suppressions, suggestions,
+  preference reset, admin governance routes, release status, rollback, and
+  rollback rehearsal;
+- ranking remains disabled by default and deterministic fallback remains
+  mandatory;
+- docs and UI copy avoid false production readiness, ML, full-personalization,
+  and ranking-live claims.
 
 Outcome:
-- MVP release readiness.
+- MVP release gate may pass when the Phase 14A report shows no critical
+  validation, security, permission, or performance blockers.
+- Production rollout approval, hosted monitoring/alerting, and multi-user
+  operational governance remain outside this local MVP gate.
 
 ## Future phase - Optimization and fairness
 
