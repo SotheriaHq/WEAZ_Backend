@@ -2,6 +2,38 @@
 
 All scores normalize to `0.0 - 1.0` before weighting.
 
+## Phase 13B formula governance runtime - 2026-05-26
+
+Phase 13B adds backend formula governance storage and guarded admin APIs. It
+does not change the active public scoring formula and does not enable ranking by
+default.
+
+Implemented backend controls:
+
+- `MarketRankingFormulaVersion` stores `versionKey`, `name`, `status`,
+  bounded `weights`, optional `bounds`, notes, creator, and activation or
+  deprecation timestamps;
+- formula create/activate endpoint:
+  `POST /admin/market-governance/ranking/formulas`;
+- formula list endpoint:
+  `GET /admin/market-governance/ranking/formulas`;
+- rollback endpoint:
+  `POST /admin/market-governance/ranking/rollback`;
+- non-mutating rollback rehearsal endpoint:
+  `POST /admin/market-governance/rehearse-rollback`;
+- audit actions for create, activate, and rollback.
+
+Safety rules:
+
+- weights are allowlisted and finite;
+- each weight must be in the bounded range `0.0 - 1.0`;
+- activation deprecates the prior active formula instead of deleting it;
+- rollback restores a prior deprecated formula and marks the current formula as
+  rolled back;
+- rollback fails with a controlled error if no safe prior formula exists;
+- admin formula config alone cannot make ranking live, because ranking remains
+  disabled by default and rollout is still blocked until Phase 14.
+
 ## Phase 13A formula governance contract - 2026-05-26
 
 Phase 13A does not change any scoring formula and does not enable ranking by

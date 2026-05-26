@@ -12,6 +12,7 @@ import { MarketSuppressionService } from './market-suppression.service';
 import { MarketRankingConfigService } from './market-ranking-config.service';
 import { MarketRankingAggregateReaderService } from './market-ranking-aggregate-reader.service';
 import { MarketRankingScorerService } from './market-ranking-scorer.service';
+import { MarketGovernanceConfigService } from './market-governance-config.service';
 
 @Module({
   imports: [PrismaModule],
@@ -26,6 +27,7 @@ import { MarketRankingScorerService } from './market-ranking-scorer.service';
     MarketRankingConfigService,
     MarketRankingAggregateReaderService,
     MarketRankingScorerService,
+    MarketGovernanceConfigService,
     MarketSignalAggregationService,
     MarketSignalService,
     MarketSuggestionService,
@@ -36,6 +38,7 @@ import { MarketRankingScorerService } from './market-ranking-scorer.service';
     MarketRankingConfigService,
     MarketRankingAggregateReaderService,
     MarketRankingScorerService,
+    MarketGovernanceConfigService,
     MarketSuggestionService,
     MarketSuppressionService,
   ],

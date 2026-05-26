@@ -148,6 +148,8 @@ model User {
   reviewPrompts             ReviewPrompt[]             @relation("ReviewPromptBuyer")
   systemConfigUpdates       SystemConfig[]             @relation("SystemConfigUpdater")
   ledgerTransactionsCreated LedgerTransaction[]        @relation("LedgerTransactionCreatedBy")
+  adminEmailChangeRequests  AdminEmailChangeRequest[]  @relation("AdminEmailChangeRequests")
+  adminEmailChangeReviewed  AdminEmailChangeRequest[]  @relation("AdminEmailChangeReviewedBy")
 }
 
 model FileUpload {
@@ -921,6 +923,11 @@ enum NotificationType {
   MESSAGE_UNREAD_REMINDER
   MESSAGE_THREAD_REOPENED
   MESSAGE_MODERATED
+
+  // Admin email change approval workflow
+  ADMIN_EMAIL_CHANGE_REQUESTED
+  ADMIN_EMAIL_CHANGE_APPROVED
+  ADMIN_EMAIL_CHANGE_REJECTED
 }
 
 enum PushProvider {
@@ -4618,6 +4625,15 @@ enum AdminAuditAction {
   ADMIN_MESSAGING_MESSAGE_REDACT
   ADMIN_MESSAGING_THREAD_REOPEN
   ADMIN_MESSAGING_SYSTEM_MESSAGE
+  ADMIN_MARKET_SECTION_CONFIG_UPDATE
+  ADMIN_MARKET_RANKING_PROFILE_CREATE
+  ADMIN_MARKET_RANKING_PROFILE_UPDATE
+  ADMIN_MARKET_RANKING_FORMULA_CREATE
+  ADMIN_MARKET_RANKING_FORMULA_ACTIVATE
+  ADMIN_MARKET_RANKING_ROLLBACK
+  ADMIN_MARKET_SUGGESTION_BLOCK_CREATE
+  ADMIN_MARKET_SUGGESTION_BLOCK_UPDATE
+  ADMIN_MARKET_RELEASE_CONTROL_UPDATE
   BRAND_STAFF_INVITE_CREATE
   BRAND_STAFF_INVITE_ACCEPT
   BRAND_STAFF_INVITE_REJECT
@@ -4683,6 +4699,97 @@ model AdminAuditLog {
   @@index([createdAt])
   @@index([action, createdAt])
   @@index([action, ipAddress, userAgent, createdAt])
+}
+
+model MarketSectionConfig {
+  id               String   @id @default(uuid()) @map("_id") @db.Uuid
+  sectionKey       String   @unique @db.VarChar(80)
+  title            String   @db.VarChar(120)
+  subtitle         String?  @db.VarChar(240)
+  enabled          Boolean  @default(true)
+  displayOrder     Int      @default(0)
+  previewItemLimit Int      @default(8)
+  detailPageLimit  Int      @default(24)
+  minimumItems     Int      @default(1)
+  viewAllEnabled   Boolean  @default(true)
+  fallbackMode     String   @default("CODE_DEFAULTS") @db.VarChar(40)
+  metadata         Json?
+  createdById      String?  @db.Uuid
+  updatedById      String?  @db.Uuid
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@index([enabled, displayOrder])
+  @@index([createdById])
+  @@index([updatedById])
+}
+
+model MarketRankingProfile {
+  id                    String                       @id @default(uuid()) @map("_id") @db.Uuid
+  profileKey            String                       @unique @db.VarChar(80)
+  name                  String                       @db.VarChar(120)
+  description           String?                      @db.VarChar(500)
+  enabled               Boolean                      @default(false)
+  shadowMode            Boolean                      @default(true)
+  sectionKeys           Json?
+  formulaVersionId      String?                      @db.Uuid
+  formulaVersion        MarketRankingFormulaVersion? @relation(fields: [formulaVersionId], references: [id], onDelete: SetNull)
+  explorationPercent    Int                          @default(10)
+  brandMaxShare         Int                          @default(35)
+  aggregateTimeoutMs    Int                          @default(150)
+  rolloutPercent        Int                          @default(0)
+  fallbackDeterministic Boolean                      @default(true)
+  metadata              Json?
+  createdById           String?                      @db.Uuid
+  updatedById           String?                      @db.Uuid
+  createdAt             DateTime                     @default(now())
+  updatedAt             DateTime                     @updatedAt
+
+  @@index([enabled, shadowMode])
+  @@index([formulaVersionId])
+  @@index([createdById])
+  @@index([updatedById])
+}
+
+model MarketRankingFormulaVersion {
+  id           String                 @id @default(uuid()) @map("_id") @db.Uuid
+  versionKey   String                 @unique @db.VarChar(80)
+  name         String                 @db.VarChar(120)
+  status       String                 @default("DRAFT") @db.VarChar(40)
+  weights      Json
+  bounds       Json?
+  notes        String?                @db.Text
+  createdById  String?                @db.Uuid
+  createdAt    DateTime               @default(now())
+  activatedAt  DateTime?
+  deprecatedAt DateTime?
+  profiles     MarketRankingProfile[]
+
+  @@index([status, activatedAt])
+  @@index([createdById])
+}
+
+model MarketSuggestionBlockConfig {
+  id                 String   @id @default(uuid()) @map("_id") @db.Uuid
+  blockKey           String   @unique @db.VarChar(120)
+  context            String   @db.VarChar(60)
+  targetType         String   @db.VarChar(60)
+  title              String   @db.VarChar(120)
+  subtitle           String?  @db.VarChar(240)
+  enabled            Boolean  @default(true)
+  displayOrder       Int      @default(0)
+  sourceType         String   @db.VarChar(60)
+  fallbackSourceType String?  @db.VarChar(60)
+  itemLimit          Int      @default(8)
+  metadata           Json?
+  createdById        String?  @db.Uuid
+  updatedById        String?  @db.Uuid
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@index([context, enabled, displayOrder])
+  @@index([createdById])
+  @@index([updatedById])
 }
 
 model BreakGlassCode {
@@ -5169,19 +5276,19 @@ model UserSeenItem {
 }
 
 model MarketSectionSignal {
-  id                 String           @id @default(uuid()) @map("_id") @db.Uuid
-  userId             String?          @db.Uuid
-  anonymousSessionId String?          @db.VarChar(128)
-  clientEventId      String?          @db.VarChar(128)
-  sectionKey         String           @db.VarChar(80)
+  id                 String               @id @default(uuid()) @map("_id") @db.Uuid
+  userId             String?              @db.Uuid
+  anonymousSessionId String?              @db.VarChar(128)
+  clientEventId      String?              @db.VarChar(128)
+  sectionKey         String               @db.VarChar(80)
   signalType         MarketSignalType
   value              Float?
   surface            MarketSignalSurface?
-  screenContext      String?          @db.VarChar(120)
-  sessionId          String?          @db.VarChar(128)
-  batchId            String?          @db.VarChar(128)
+  screenContext      String?              @db.VarChar(120)
+  sessionId          String?              @db.VarChar(128)
+  batchId            String?              @db.VarChar(128)
   metadata           Json?
-  createdAt          DateTime         @default(now())
+  createdAt          DateTime             @default(now())
 
   @@index([userId, createdAt])
   @@index([anonymousSessionId, createdAt])
@@ -5317,4 +5424,36 @@ model SystemConfig {
   updatedBy   User?    @relation("SystemConfigUpdater", fields: [updatedById], references: [id], onDelete: SetNull)
 
   @@map("system_config")
+}
+
+// ====== Admin Email Change Approval Workflow ======
+
+enum AdminEmailChangeStatus {
+  PENDING_VERIFICATION
+  PENDING_APPROVAL
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+model AdminEmailChangeRequest {
+  id              String                  @id @map("_id") @db.Uuid
+  adminId         String                  @db.Uuid
+  admin           User                    @relation("AdminEmailChangeRequests", fields: [adminId], references: [id], onDelete: Cascade)
+  currentEmail    String
+  newEmail        String
+  otpHash         String?
+  otpExpiresAt    DateTime?
+  otpVerifiedAt   DateTime?
+  status          AdminEmailChangeStatus  @default(PENDING_VERIFICATION)
+  rejectionReason String?
+  reviewedById    String?                 @db.Uuid
+  reviewedBy      User?                   @relation("AdminEmailChangeReviewedBy", fields: [reviewedById], references: [id], onDelete: SetNull)
+  reviewedAt      DateTime?
+  createdAt       DateTime                @default(now())
+  updatedAt       DateTime                @updatedAt
+
+  @@index([adminId, status])
+  @@index([status, createdAt])
+  @@map("admin_email_change_requests")
 }

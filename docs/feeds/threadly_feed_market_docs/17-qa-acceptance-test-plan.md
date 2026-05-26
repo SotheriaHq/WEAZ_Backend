@@ -1,5 +1,32 @@
 # QA and Acceptance Test Plan
 
+## Phase 13B admin governance runtime QA - 2026-05-26
+
+Phase 13B backend runtime acceptance requires:
+
+- Prisma schema validation and client generation pass after migration
+  `20260526042133_add_market_governance_config`;
+- Admin/SuperAdmin role metadata is present on governance controller routes;
+- read endpoints require `MARKET_GOVERNANCE_READ`;
+- section and ranking profile writes require `MARKET_GOVERNANCE_WRITE`;
+- formula writes require `MARKET_RANKING_FORMULA_WRITE`;
+- suggestion block writes require `MARKET_SUGGESTIONS_WRITE`;
+- rollback requires `MARKET_RANKING_ROLLBACK`;
+- rehearsal requires `MARKET_GOVERNANCE_RELEASE`;
+- Admin without explicit permission is rejected by `AdminPermissionGuard`;
+- every mutation writes an audit log in the same transaction;
+- audit failure fails the mutation;
+- invalid section keys, formula weights, suggestion contexts, and unsafe rollout
+  settings return controlled errors;
+- empty or failing config reads return code defaults;
+- rollback without a prior formula fails safely;
+- rollback rehearsal is non-mutating;
+- existing auth, market suggestion, ranking, section, suppression, and user
+  preference tests still pass.
+
+Phase 13B does not include web admin governance UI acceptance. That belongs to
+Phase 13C. Phase 14 is still required before any production-readiness claim.
+
 ## Phase 13A admin governance contract QA - 2026-05-26
 
 Phase 13A is docs-only and does not implement admin governance runtime. Phase

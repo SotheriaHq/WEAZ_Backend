@@ -1,5 +1,25 @@
 # Scalability and Optimization
 
+## Phase 13B admin governance runtime scalability - 2026-05-26
+
+Phase 13B keeps governance runtime small and bounded:
+
+- governance tables are low-cardinality configuration tables, not event or
+  analytics tables;
+- read endpoints use bounded lists and audit pagination;
+- write endpoints validate ranges before persisting;
+- `MarketGovernanceConfigService` returns code defaults when config tables are
+  empty or unavailable;
+- formula weights and suggestion block limits are bounded;
+- release status reads only current config, active formula/profile state, last
+  rollback audit event, and config read status;
+- rollback rehearsal does not mutate config and does not run public market
+  ranking work.
+
+No Redis/BullMQ worker, hosted metrics stack, ML service, or public request-path
+ranking change is introduced by Phase 13B. Web admin UI remains Phase 13C, and
+production rollout hardening remains Phase 14.
+
 ## Phase 13A admin governance scalability contract - 2026-05-26
 
 Phase 13A does not add runtime config reads. Phase 13B should implement admin

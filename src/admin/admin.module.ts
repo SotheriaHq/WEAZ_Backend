@@ -52,6 +52,10 @@ import { AdminLedgerController } from './ledger/admin-ledger.controller';
 import { AdminFinanceService } from './finance/admin-finance.service';
 import { AdminFinanceController } from './finance/admin-finance.controller';
 import { QueueModule } from 'src/queue/queue.module';
+import { AdminMarketGovernanceModule } from './market-governance/admin-market-governance.module';
+import { AdminEmailChangeService } from './email-change/admin-email-change.service';
+import { AdminEmailChangeController } from './email-change/admin-email-change.controller';
+import { EmailModule } from 'src/email/email.module';
 
 @Module({
   imports: [
@@ -62,6 +66,8 @@ import { QueueModule } from 'src/queue/queue.module';
     SystemConfigModule,
     FinanceModule,
     QueueModule,
+    AdminMarketGovernanceModule,
+    EmailModule,
   ],
   controllers: [
     AdminUsersController,
@@ -83,6 +89,7 @@ import { QueueModule } from 'src/queue/queue.module';
     AdminLedgerController,
     AdminFinanceController,
     SystemConfigController,
+    AdminEmailChangeController,
   ],
   providers: [
     AdminAuditService,
@@ -107,6 +114,7 @@ import { QueueModule } from 'src/queue/queue.module';
     AdminFinanceService,
     FeaturedExpiryCronService,
     FeaturedAutoRemovalService,
+    AdminEmailChangeService,
   ],
   exports: [
     FeatureFlagsService,

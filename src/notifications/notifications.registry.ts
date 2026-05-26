@@ -1387,6 +1387,40 @@ export class NotificationRegistry {
       },
     });
 
+    const NT_EMAIL_CHANGE_REQUESTED = 'ADMIN_EMAIL_CHANGE_REQUESTED' as NotificationType;
+    registry.register({
+      type: NT_EMAIL_CHANGE_REQUESTED,
+      schema: Joi.object({
+        requestId: Joi.string().required(),
+        newEmail: Joi.string().required(),
+      }),
+      formatter: (n: any) =>
+        `An admin has requested an email address change to ${n.payload?.newEmail ?? 'a new address'}`,
+    });
+
+    const NT_EMAIL_CHANGE_APPROVED = 'ADMIN_EMAIL_CHANGE_APPROVED' as NotificationType;
+    registry.register({
+      type: NT_EMAIL_CHANGE_APPROVED,
+      schema: Joi.object({
+        newEmail: Joi.string().required(),
+      }),
+      formatter: (n: any) =>
+        `Your email change request has been approved. Your new email is ${n.payload?.newEmail ?? 'updated'}.`,
+    });
+
+    const NT_EMAIL_CHANGE_REJECTED = 'ADMIN_EMAIL_CHANGE_REJECTED' as NotificationType;
+    registry.register({
+      type: NT_EMAIL_CHANGE_REJECTED,
+      schema: Joi.object({
+        newEmail: Joi.string().required(),
+        reason: Joi.string().optional().allow(''),
+      }),
+      formatter: (n: any) => {
+        const base = `Your email change request to ${n.payload?.newEmail ?? 'the new address'} was not approved.`;
+        return n.payload?.reason ? `${base} Reason: ${n.payload.reason}` : base;
+      },
+    });
+
     return registry;
   }
 }

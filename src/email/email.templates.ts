@@ -545,3 +545,73 @@ export function payoutProcessedEmail(
     text: `Payout Update\n\n${currency} ${amount} — ${status}.\n\nView payout history: ${resolveAppUrl('/store/payouts')}`,
   };
 }
+
+// ─────────────────────────────────────────────
+// ADMIN EMAIL CHANGE WORKFLOW
+// ─────────────────────────────────────────────
+
+export function adminEmailChangeOtpEmail(
+  otp: string,
+  newEmail: string,
+  appName: string,
+): EmailContent {
+  const companyName = normalizeCompanyName(appName);
+  return {
+    subject: `Your ${companyName} admin email verification code`,
+    html: wrap(
+      'Admin Email Verification',
+      `${p(`You requested an email address change on your <strong>${companyName}</strong> admin account. Use the code below to verify ownership of <strong>${escapeHtml(newEmail)}</strong>.`)}
+      <div style="text-align:center;margin:28px 0">
+        <div style="display:inline-block;background:#f5f3ff;border:2px dashed ${BRAND_PRIMARY};border-radius:12px;padding:18px 36px">
+          <span style="font-size:36px;font-weight:700;letter-spacing:10px;color:${BRAND_PRIMARY};font-family:monospace">${otp}</span>
+        </div>
+        <p style="color:${TEXT_MUTED};font-size:13px;margin:10px 0 0">Expires in 10 minutes · Single use</p>
+      </div>
+      ${warningBox(`<p style="margin:0;color:#9a3412;font-size:13px">If you did not request this, someone may be attempting to change your admin email. Do not share this code.</p>`)}`,
+      companyName,
+    ),
+    text: `Admin Email Verification\n\nYour verification code: ${otp}\n\nThis code expires in 10 minutes. Do not share it.`,
+  };
+}
+
+export function adminEmailChangeApprovedEmail(
+  newEmail: string,
+  oldEmail: string,
+  appName: string,
+): EmailContent {
+  const companyName = normalizeCompanyName(appName);
+  return {
+    subject: `Your ${companyName} admin email has been updated`,
+    html: wrap(
+      'Email Address Updated',
+      `${p(`Your admin account email address has been successfully updated.`)}
+      ${infoBox(`<p style="margin:0;color:${BRAND_PRIMARY};font-size:14px">
+        <strong>Previous email:</strong> ${escapeHtml(oldEmail)}<br>
+        <strong>New email:</strong> ${escapeHtml(newEmail)}
+      </p>`)}
+      ${p(`You will now log in using <strong>${escapeHtml(newEmail)}</strong>. This email is your new contact address for all admin communications.`)}
+      ${warningBox(`<p style="margin:0;color:#9a3412;font-size:13px">If you did not authorise this change, contact a Super Admin immediately.</p>`)}`,
+      companyName,
+    ),
+    text: `Email Address Updated\n\nYour admin account email has been updated.\nPrevious: ${oldEmail}\nNew: ${newEmail}\n\nIf you did not authorise this, contact a Super Admin immediately.`,
+  };
+}
+
+export function adminEmailChangeRejectedEmail(
+  requestedEmail: string,
+  reason: string,
+  appName: string,
+): EmailContent {
+  const companyName = normalizeCompanyName(appName);
+  return {
+    subject: `Your ${companyName} email change request was not approved`,
+    html: wrap(
+      'Email Change Request Rejected',
+      `${p(`Your request to update your admin account email to <strong>${escapeHtml(requestedEmail)}</strong> was reviewed and not approved.`)}
+      ${reason ? errorBox(`<p style="margin:0;color:#991b1b;font-size:14px"><strong>Reason:</strong> ${escapeHtml(reason)}</p>`) : ''}
+      ${p(`If you believe this is an error or need further assistance, please contact your Super Admin.`)}`,
+      companyName,
+    ),
+    text: `Email Change Request Rejected\n\nYour request to change your admin email to ${requestedEmail} was not approved.${reason ? `\n\nReason: ${reason}` : ''}\n\nContact your Super Admin for assistance.`,
+  };
+}

@@ -1,5 +1,29 @@
 # Edge Cases and Fallbacks
 
+## Phase 13B admin governance runtime fallbacks - 2026-05-26
+
+Phase 13B implements backend governance runtime with safe fallbacks.
+
+Implemented fallback behavior:
+
+- empty market governance config tables return code defaults;
+- market section config read failure logs a compact warning and returns code
+  defaults;
+- suggestion block config read failure logs a compact warning and returns code
+  defaults;
+- malformed writes are rejected with controlled 400 responses before config is
+  persisted;
+- disabling every primary market section is rejected;
+- deterministic fallback cannot be disabled;
+- ranking rollout percent remains forced to `0` until Phase 14;
+- rollback fails safely if there is no active formula or no prior deprecated
+  formula;
+- rollback rehearsal is non-mutating and reports what would happen.
+
+Public market routes remain safe because Phase 13B does not require DB config
+to render existing sections or suggestions. Future Phase 13C/14 work may choose
+to consume more admin config, but must preserve the same code-default fallback.
+
 ## Phase 13A admin governance fallback contract - 2026-05-26
 
 Phase 13A is a contract gate only. Admin governance is not implemented yet, but

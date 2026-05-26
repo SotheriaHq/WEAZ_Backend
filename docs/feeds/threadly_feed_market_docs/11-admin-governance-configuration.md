@@ -1,5 +1,44 @@
 # Admin Governance and Configuration
 
+## Phase 13B Backend Runtime Status
+
+Status: backend runtime implemented after validation. Web admin UI remains
+deferred to Phase 13C, and production readiness remains deferred to Phase 14.
+
+Phase 13B adds additive backend governance storage and guarded APIs only:
+
+- Prisma migration `20260526042133_add_market_governance_config`;
+- `MarketSectionConfig`;
+- `MarketRankingProfile`;
+- `MarketRankingFormulaVersion`;
+- `MarketSuggestionBlockConfig`;
+- market-governance-specific `AdminAuditAction` values;
+- explicit market governance permission codes;
+- guarded `/admin/market-governance` endpoints;
+- `MarketGovernanceConfigService` with code-default fallback when config tables
+  are empty or unavailable;
+- release-status, rollback, and non-mutating rollback rehearsal endpoints.
+
+Every governance mutation is scoped to `SuperAdmin` or `Admin` with explicit
+permissions, derives the actor from the authenticated request, and writes an
+`AdminAuditLog` record in the same transaction. If the audit write fails, the
+mutation fails.
+
+Runtime safety rules that remain enforced:
+
+- ranking is disabled by default;
+- deterministic fallback cannot be disabled by admin config;
+- `rolloutPercent` is bounded to `0` until Phase 14 release gates pass;
+- config read failure uses code defaults instead of breaking public market
+  routes;
+- formula rollback preserves history and fails safely when no prior formula
+  exists;
+- rollback rehearsal is non-mutating.
+
+Phase 13B does not add web admin screens, mobile admin screens, ML controls,
+production approval, or public market behavior changes beyond safe config
+read fallback services.
+
 ## Phase 13A Contract Gate Status
 
 Status: contract gate complete after docs validation.
@@ -9,9 +48,10 @@ profiles, formula versions, suggestion blocks, release controls, and audit
 logging. It does not implement runtime admin APIs, database migrations, admin UI,
 or any user-facing market behavior changes.
 
-Admin governance remains not implemented until Phase 13B. Ranking remains
-disabled by default, deterministic fallback remains mandatory, and no admin
-configuration may remove the safe code-default path.
+Phase 13A did not implement runtime behavior. Phase 13B now implements backend
+runtime only. Ranking remains disabled by default, deterministic fallback
+remains mandatory, and no admin configuration may remove the safe code-default
+path.
 
 ## Existing Admin And Permission Audit
 
@@ -402,20 +442,20 @@ Rollback paths:
 - restore market section code defaults
 - force deterministic fallback when aggregate reads or config reads fail
 
-## Phase 13B Implementation Plan
+## Phase 13B Backend Runtime Outcome
 
-Backend implementation should add:
+Backend implementation added:
 
 - Prisma models and enums for config storage
 - market governance permission constants
 - market-specific audit actions
 - admin DTOs with safe validation
 - `MarketGovernanceModule`, controller, and service
-- config read service with short-lived cache and code-default fallback
+- config read service with code-default fallback
 - transactional writes with audit logs
 - focused tests for permissions, validation, audit writes, fallback, and rollback
 
-Web implementation should add:
+Phase 13C web implementation should add:
 
 - admin API client types and methods
 - admin route and sidebar entry
@@ -425,6 +465,7 @@ Web implementation should add:
 
 Deferred beyond Phase 13B:
 
+- web admin governance UI;
 - mobile admin governance
 - ML or embedding controls
 - suggestion View All governance
