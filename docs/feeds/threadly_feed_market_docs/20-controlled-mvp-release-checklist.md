@@ -254,12 +254,38 @@ and manual smoke checks are completed and recorded. Production readiness remains
 blocked. Live ranking, ML, full personalization, and deep fashion-intelligent
 recommendation claims remain blocked.
 
-## 16. Final Phase 14D/14E Decision
+## 16. Phase 14F Hosted and Manual Smoke Status
 
-The controlled MVP release checklist exists and local Phase 14E validation
+Phase 14F rechecked the release workspace after Phase 14E-V and attempted to
+close hosted deployment and manual smoke status as far as available targets
+allowed.
+
+| Area | Phase 14F result | Notes |
+| --- | --- | --- |
+| Backend local confirmation | Passed | Prisma validate, local migrate status, build, and diff check passed. |
+| Web local confirmation | Passed | Verified TypeScript command `npm exec -- tsc -b --pretty false`, build, and diff check passed. |
+| Mobile local confirmation | Passed | TypeScript no-emit, market signal queue contract, and diff check passed. |
+| Backend hosted target | Not verified | No hosted backend target was available from the non-secret process environment or repo metadata. |
+| Hosted database environment | Not verified | A local `.env` file exists but was not inspected. Process-level hosted `DATABASE_URL` was not present. |
+| Backup confirmation | Not verified | No hosted backup confirmation or restore owner was available in the workspace. |
+| Hosted migration | Not run | The required command remains `npx prisma migrate deploy`; it must not run until the hosted target and backup confirmation are available. |
+| Hosted web target | Not verified | Web deployment config exists, but hosted URL and deployed API base URL were not available in the process environment. |
+| Mobile build/device target | Not verified | Expo app config exists, but no release channel, device, emulator, or build target was available for smoke execution. |
+| Manual web smoke | Not verified | Requires the intended hosted/browser target and test user account. |
+| Manual admin smoke | Not verified | Requires an authorized admin account on the intended hosted target. |
+| Manual mobile smoke | Not verified | Requires a device or emulator build pointed at the intended API target. |
+
+Controlled MVP exposure remains blocked until hosted target ownership, backup
+confirmation, hosted migration status, and web/admin/mobile smoke are verified.
+Production readiness remains blocked. Live ranking, ML, full personalization,
+and deep fashion-intelligent recommendation claims remain blocked.
+
+## 17. Final Phase 14D/14E/14F Decision
+
+The controlled MVP release checklist exists and local Phase 14E/14F validation
 passed. Controlled MVP exposure to intended test users should proceed only after
 the hosted deployment target, backup, hosted migration, manual web/mobile/admin
-smoke, rollback, and watch checks above are completed.
+smoke, rollback, and watch checks above are completed and recorded.
 
 Production readiness remains blocked. Live ranking, ML, full personalization,
 and deep fashion-intelligent recommendation claims remain blocked.
