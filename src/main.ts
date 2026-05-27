@@ -18,7 +18,6 @@ import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { TransformInterceptor } from './transform/transform.interceptor';
 import { BadRequestException, Logger, ValidationPipe } from '@nestjs/common';
-import type { ValidationError } from 'class-validator';
 import { AllExceptionsFilter } from './filters/All-exception.filter';
 import cookieParser from 'cookie-parser';
 import bodyParser from 'body-parser';
@@ -26,6 +25,8 @@ import { ConfigService } from '@nestjs/config';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { requestLoggerMiddleware } from './common/middleware/request-logger.middleware';
 import { InputSanitizationPipe } from './common/pipes/input-sanitization.pipe';
+import { formatValidationErrors } from './common/utils/validation-error-redaction';
+import { sanitizeErrorForLog } from './common/utils/sensitive-log';
 import * as express from 'express';
 import { existsSync, readFileSync } from 'fs';
 import { join, resolve } from 'path';
@@ -240,52 +241,16 @@ async function bootstrap() {
         transformOptions: { enableImplicitConversion: true },
         disableErrorMessages: false,
         stopAtFirstError: false,
-        exceptionFactory: (errors: ValidationError[]) => {
+        exceptionFactory: (errors) => {
           try {
-            const flattenErrors = (
-              items: ValidationError[],
-              parentPath = '',
-            ) => {
-              const result: Array<{
-                property: string;
-                value: unknown;
-                constraints: string[];
-                messages: string[];
-              }> = [];
-
-              for (const error of items) {
-                const propertyPath = parentPath
-                  ? `${parentPath}.${error.property}`
-                  : error.property || 'unknown';
-                const constraints = error.constraints
-                  ? Object.values(error.constraints)
-                  : [];
-
-                if (constraints.length > 0) {
-                  result.push({
-                    property: propertyPath,
-                    value: error.value,
-                    constraints,
-                    messages: constraints,
-                  });
-                }
-
-                if (Array.isArray(error.children) && error.children.length > 0) {
-                  result.push(...flattenErrors(error.children, propertyPath));
-                }
-              }
-
-              return result;
-            };
-
-            const formattedErrors = flattenErrors(errors);
+            const formattedErrors = formatValidationErrors(errors);
 
             try {
               logger.warn(
                 'Validation errors:',
                 JSON.stringify(formattedErrors, null, 2),
               );
-            } catch (logError) {
+            } catch {
               logger.warn('Validation failed (details could not be logged).');
             }
 
@@ -295,7 +260,10 @@ async function bootstrap() {
               statusCode: 400,
             });
           } catch (factoryError) {
-            logger.error('Validation exception factory failed:', factoryError);
+            logger.error(
+              'Validation exception factory failed:',
+              sanitizeErrorForLog(factoryError),
+            );
             return new BadRequestException('Validation failed');
           }
         },
@@ -458,7 +426,10 @@ async function bootstrap() {
         const systemConfigService = app.get(SystemConfigService);
         await systemConfigService.seedDefaults();
       } catch (err) {
-        logger.warn('SystemConfig seed skipped (non-fatal):', err);
+        logger.warn(
+          'SystemConfig seed skipped (non-fatal):',
+          sanitizeErrorForLog(err),
+        );
       }
 
       try {
@@ -468,7 +439,10 @@ async function bootstrap() {
         const settlementPolicyService = app.get(SettlementPolicyService);
         await settlementPolicyService.seedDefaults();
       } catch (err) {
-        logger.warn('SettlementPolicy seed skipped (non-fatal):', err);
+        logger.warn(
+          'SettlementPolicy seed skipped (non-fatal):',
+          sanitizeErrorForLog(err),
+        );
       }
     })();
 
@@ -484,21 +458,21 @@ async function bootstrap() {
       process.exit(0);
     });
   } catch (error) {
-    logger.error('Failed to start application:', error);
+    logger.error('Failed to start application:', sanitizeErrorForLog(error));
     process.exit(1);
   }
 
   process.on('uncaughtException', (error) => {
     logger.error(
       'Uncaught exception; application will continue running:',
-      error,
+      sanitizeErrorForLog(error),
     );
   });
 
-  process.on('unhandledRejection', (reason, promise) => {
+  process.on('unhandledRejection', (reason) => {
     logger.error(
       'Unhandled promise rejection; application will continue running:',
-      { promise, reason },
+      sanitizeErrorForLog({ reason }),
     );
   });
 
@@ -509,6 +483,6 @@ async function bootstrap() {
 
 bootstrap().catch((error) => {
   const logger = new Logger('Bootstrap');
-  logger.error('Fatal error during bootstrap:', error);
+  logger.error('Fatal error during bootstrap:', sanitizeErrorForLog(error));
   process.exit(1);
 });

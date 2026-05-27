@@ -125,4 +125,51 @@ describe('BrandVerificationService', () => {
       data: { phoneNumber: '08030000000' },
     });
   });
+
+  it('fails production draft encryption when the secret is missing or legacy', () => {
+    const missing = new BrandVerificationService(
+      prisma,
+      {} as any,
+      notifications as any,
+      emailService as any,
+      { get: jest.fn((key: string) => (key === 'NODE_ENV' ? 'production' : undefined)) } as any,
+    );
+    expect(() => (missing as any).encryptDraft({ currentStep: 1 })).toThrow(
+      'Verification draft encryption is not configured',
+    );
+
+    const legacy = new BrandVerificationService(
+      prisma,
+      {} as any,
+      notifications as any,
+      emailService as any,
+      {
+        get: jest.fn((key: string) => {
+          if (key === 'NODE_ENV') return 'production';
+          if (key === 'VERIFICATION_DRAFT_SECRET') {
+            return 'threadly-verification-draft-secret';
+          }
+          return undefined;
+        }),
+      } as any,
+    );
+    expect(() => (legacy as any).encryptDraft({ currentStep: 1 })).toThrow(
+      'Verification draft encryption secret is unsafe',
+    );
+  });
+
+  it('keeps development draft encryption usable without the production fallback secret', () => {
+    const target = new BrandVerificationService(
+      prisma,
+      {} as any,
+      notifications as any,
+      emailService as any,
+      { get: jest.fn((key: string) => (key === 'NODE_ENV' ? 'test' : undefined)) } as any,
+    );
+
+    const encrypted = (target as any).encryptDraft({ currentStep: 2 });
+
+    expect((target as any).decryptDraft(encrypted)).toEqual({ currentStep: 2 });
+    expect(encrypted).not.toContain('threadly-verification-draft-secret');
+  });
 });

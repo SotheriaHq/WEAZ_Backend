@@ -58,6 +58,61 @@ export interface FileUploadResult {
   updatedAt: string;
 }
 
+type S3ObjectMetadata = {
+  exists: boolean;
+  contentLength: number;
+  contentType: string | null;
+};
+
+const ALLOWED_MIME_TYPES: Record<FileType, readonly string[]> = {
+  [FileType.PROFILE_IMAGE]: ['image/jpeg', 'image/png', 'image/webp'],
+  [FileType.BANNER_IMAGE]: ['image/jpeg', 'image/png', 'image/webp', 'image/gif'],
+  [FileType.POST_IMAGE]: ['image/jpeg', 'image/png', 'image/webp', 'image/gif'],
+  [FileType.POST_VIDEO]: ['video/mp4', 'video/webm', 'video/quicktime'],
+  [FileType.REVIEW_IMAGE]: ['image/jpeg', 'image/png', 'image/webp', 'image/gif'],
+  [FileType.REVIEW_VIDEO]: ['video/mp4', 'video/webm', 'video/quicktime'],
+  [FileType.DOCUMENT]: [
+    'application/pdf',
+    'application/msword',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  ],
+  [FileType.BRAND_VERIFICATION]: [
+    'image/jpeg',
+    'image/png',
+    'image/webp',
+    'application/pdf',
+  ],
+  [FileType.MESSAGE_IMAGE]: ['image/jpeg', 'image/png', 'image/webp'],
+  [FileType.MESSAGE_DOCUMENT]: ['application/pdf'],
+};
+
+const ALLOWED_EXTENSIONS: Record<FileType, readonly string[]> = {
+  [FileType.PROFILE_IMAGE]: ['jpg', 'jpeg', 'png', 'webp'],
+  [FileType.BANNER_IMAGE]: ['jpg', 'jpeg', 'png', 'webp', 'gif'],
+  [FileType.POST_IMAGE]: ['jpg', 'jpeg', 'png', 'webp', 'gif'],
+  [FileType.POST_VIDEO]: ['mp4', 'webm', 'mov'],
+  [FileType.REVIEW_IMAGE]: ['jpg', 'jpeg', 'png', 'webp', 'gif'],
+  [FileType.REVIEW_VIDEO]: ['mp4', 'webm', 'mov'],
+  [FileType.DOCUMENT]: ['pdf', 'doc', 'docx'],
+  [FileType.BRAND_VERIFICATION]: ['jpg', 'jpeg', 'png', 'webp', 'pdf'],
+  [FileType.MESSAGE_IMAGE]: ['jpg', 'jpeg', 'png', 'webp'],
+  [FileType.MESSAGE_DOCUMENT]: ['pdf'],
+};
+
+const EXTENSION_MIME_HINTS: Record<string, string> = {
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  png: 'image/png',
+  webp: 'image/webp',
+  gif: 'image/gif',
+  mp4: 'video/mp4',
+  webm: 'video/webm',
+  mov: 'video/quicktime',
+  pdf: 'application/pdf',
+  doc: 'application/msword',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+};
+
 @Injectable()
 export class UploadService {
   private readonly logger = new Logger(UploadService.name);
@@ -149,6 +204,46 @@ export class UploadService {
 
   private buildS3BucketUrl(): string {
     return `https://${this.bucketName}.s3.${this.region}.amazonaws.com`;
+  }
+
+  private getFileExtension(fileName: string): string {
+    return path.extname(String(fileName ?? '')).replace('.', '').toLowerCase();
+  }
+
+  private assertAllowedExtension(originalName: string, fileType: FileType): void {
+    const extension = this.getFileExtension(originalName);
+    const allowed = ALLOWED_EXTENSIONS[fileType] ?? [];
+    if (!extension || !allowed.includes(extension)) {
+      throw new BadRequestException(`File extension not allowed for ${fileType}`);
+    }
+  }
+
+  private normalizeContentType(contentType?: string | null): string | null {
+    const value = String(contentType ?? '')
+      .split(';')[0]
+      .trim()
+      .toLowerCase();
+    return value || null;
+  }
+
+  private inferContentType(fileName: string): string | null {
+    return EXTENSION_MIME_HINTS[this.getFileExtension(fileName)] ?? null;
+  }
+
+  private assertAllowedMimeType(
+    mimeType: string | null,
+    fileType: FileType,
+  ): asserts mimeType is string {
+    if (!mimeType || !ALLOWED_MIME_TYPES[fileType]?.includes(mimeType)) {
+      throw new BadRequestException(`File type not allowed for ${fileType}`);
+    }
+  }
+
+  private async getMaxFileSize(fileType: FileType): Promise<number> {
+    const configKey = UploadService.FILE_TYPE_CONFIG_KEYS[fileType];
+    return configKey
+      ? this.systemConfigService.getMaxFileSize(configKey)
+      : Promise.resolve(2 * 1024 * 1024);
   }
 
   private isTruthyConfig(value?: string | null): boolean {
@@ -488,22 +583,24 @@ export class UploadService {
     options?: { collectionId?: string; orderIndex?: number },
   ) {
     // create presigned post and persist a pending PresignedUpload record
+    this.assertAllowedExtension(originalName, fileType);
+    const trustedContentType =
+      this.normalizeContentType(contentType) ?? this.inferContentType(originalName);
+    this.assertAllowedMimeType(trustedContentType, fileType);
+    const maxSize = await this.getMaxFileSize(fileType);
+
     const fileId = uuidv4();
     const key = this.generateS3Key(fileType, userId, fileId, originalName);
 
     // Build fields and conditions for AWS v3 createPresignedPost
-    const baseConditions: any[] = [];
-    let fields: Record<string, string> = { key };
-
-    if (contentType) {
-      fields = {
-        ...fields,
-        'Content-Type': contentType,
-      };
-      baseConditions.push(['eq', '$Content-Type', contentType]);
-    } else {
-      baseConditions.push(['starts-with', '$Content-Type', '']);
-    }
+    const baseConditions: any[] = [
+      ['eq', '$Content-Type', trustedContentType],
+      ['content-length-range', 1, maxSize],
+    ];
+    const fields: Record<string, string> = {
+      key,
+      'Content-Type': trustedContentType,
+    };
 
     // create DB presign record
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
@@ -514,7 +611,7 @@ export class UploadService {
         collectionId: options?.collectionId,
         orderIndex: typeof options?.orderIndex === 'number' ? options.orderIndex : null,
         originalName,
-        contentType: '',
+        contentType: trustedContentType,
         fileType,
         s3Key: key,
         expiresAt,
@@ -930,15 +1027,19 @@ export class UploadService {
     }
   }
 
-  // Verify S3 object exists by key
-  async verifyObjectExists(key: string): Promise<boolean> {
+  private async headObjectMetadata(key: string): Promise<S3ObjectMetadata> {
     try {
       const command = new HeadObjectCommand({
         Bucket: this.bucketName,
         Key: key,
       });
-      await this.s3.send(command);
-      return true;
+      const result = await this.s3.send(command);
+      return {
+        exists: true,
+        contentLength:
+          typeof result.ContentLength === 'number' ? result.ContentLength : 0,
+        contentType: this.normalizeContentType(result.ContentType),
+      };
     } catch (err) {
       const details = this.summarizeAwsError(err);
       const errorCode = String(details.code ?? '').toUpperCase();
@@ -957,7 +1058,7 @@ export class UploadService {
 
       if (isNotFound) {
         this.logger.warn('S3 object was not found for key:', key);
-        return false;
+        return { exists: false, contentLength: 0, contentType: null };
       }
 
       this.logger.error('S3 headObject failed for key:', key, details as any);
@@ -965,6 +1066,11 @@ export class UploadService {
         'Storage is temporarily unavailable. Please retry in a moment.',
       );
     }
+  }
+
+  // Verify S3 object exists by key
+  async verifyObjectExists(key: string): Promise<boolean> {
+    return (await this.headObjectMetadata(key)).exists;
   }
 
   // Create a FileUpload DB record after presigned upload
@@ -1017,6 +1123,50 @@ export class UploadService {
       throw new BadRequestException('Presign is not ready for use');
     }
 
+    const expectedPrefix = `${presign.fileType}/${userId}/`;
+    if (!key.startsWith(expectedPrefix)) {
+      throw new BadRequestException('S3 key does not match expected user prefix');
+    }
+
+    const sourceName = presign.originalName || originalId || key;
+    this.assertAllowedExtension(sourceName, presign.fileType as FileType);
+    const expectedMimeType =
+      this.normalizeContentType(presign.contentType) ??
+      this.inferContentType(sourceName);
+    this.assertAllowedMimeType(expectedMimeType, presign.fileType as FileType);
+
+    const maxSize = await this.getMaxFileSize(presign.fileType as FileType);
+    const actualMetadata = await this.headObjectMetadata(key);
+    if (!actualMetadata.exists) {
+      throw new BadRequestException('Uploaded object was not found in storage');
+    }
+    if (
+      !Number.isFinite(actualMetadata.contentLength) ||
+      actualMetadata.contentLength <= 0
+    ) {
+      throw new BadRequestException('Uploaded object is empty or invalid');
+    }
+    if (actualMetadata.contentLength > maxSize) {
+      throw new BadRequestException('Uploaded object exceeds size limit');
+    }
+
+    const actualContentType = actualMetadata.contentType;
+    if (actualContentType !== expectedMimeType) {
+      throw new BadRequestException('Uploaded object content type mismatch');
+    }
+
+    const reportedMimeType = this.normalizeContentType(mimeType);
+    if (reportedMimeType && reportedMimeType !== actualContentType) {
+      throw new BadRequestException('Reported file type does not match storage metadata');
+    }
+    if (
+      Number.isFinite(Number(size)) &&
+      Number(size) > 0 &&
+      Number(size) !== actualMetadata.contentLength
+    ) {
+      throw new BadRequestException('Reported file size does not match storage metadata');
+    }
+
     // Mark presign as USED
     await (this.prisma as any)['presignedUpload'].update({
       where: { id },
@@ -1035,8 +1185,8 @@ export class UploadService {
         s3Key: key,
         s3Url: url,
         fileType: presign.fileType as any,
-        mimeType,
-        size: size || 0,
+        mimeType: actualContentType,
+        size: actualMetadata.contentLength,
         processingStatus: 'READY',
       } as any,
     });
@@ -1256,55 +1406,14 @@ export class UploadService {
   };
 
   private async validateFile(file: Express.Multer.File, fileType: FileType): Promise<void> {
-    const configKey = UploadService.FILE_TYPE_CONFIG_KEYS[fileType];
-    const maxSize = configKey
-      ? await this.systemConfigService.getMaxFileSize(configKey)
-      : 2 * 1024 * 1024; // 2MB fallback
-
-    const allowedMimeTypes = {
-      [FileType.PROFILE_IMAGE]: ['image/jpeg', 'image/png', 'image/webp'],
-      [FileType.BANNER_IMAGE]: [
-        'image/jpeg',
-        'image/png',
-        'image/webp',
-        'image/gif',
-      ],
-      [FileType.POST_IMAGE]: [
-        'image/jpeg',
-        'image/png',
-        'image/webp',
-        'image/gif',
-      ],
-      [FileType.POST_VIDEO]: ['video/mp4', 'video/webm', 'video/quicktime'],
-      [FileType.REVIEW_IMAGE]: [
-        'image/jpeg',
-        'image/png',
-        'image/webp',
-        'image/gif',
-      ],
-      [FileType.REVIEW_VIDEO]: ['video/mp4', 'video/webm', 'video/quicktime'],
-      [FileType.DOCUMENT]: [
-        'application/pdf',
-        'application/msword',
-        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-      ],
-      [FileType.BRAND_VERIFICATION]: [
-        'image/jpeg',
-        'image/png',
-        'image/webp',
-        'application/pdf',
-      ],
-      [FileType.MESSAGE_IMAGE]: ['image/jpeg', 'image/png', 'image/webp'],
-      [FileType.MESSAGE_DOCUMENT]: ['application/pdf'],
-    };
+    const maxSize = await this.getMaxFileSize(fileType);
+    this.assertAllowedExtension(file.originalname, fileType);
+    const trustedMimeType = this.normalizeContentType(file.mimetype);
+    this.assertAllowedMimeType(trustedMimeType, fileType);
 
     if (file.size > maxSize) {
       const limitMB = (maxSize / (1024 * 1024)).toFixed(1);
       throw new BadRequestException(`File size exceeds the ${limitMB}MB limit for ${fileType}`);
-    }
-
-    if (!allowedMimeTypes[fileType].includes(file.mimetype)) {
-      throw new BadRequestException(`File type not allowed for ${fileType}`);
     }
   }
 

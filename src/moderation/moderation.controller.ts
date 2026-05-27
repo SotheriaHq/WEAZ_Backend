@@ -5,16 +5,20 @@ import { ContentTarget, Role } from '@prisma/client';
 import { JwtAuthGuard } from 'src/auth/guard/jwt-auth.guard';
 import { RolesGuard } from 'src/auth/guard/role.guard';
 import { Roles } from 'src/auth/decorator/roles.decorator';
+import { ADMIN_PERMISSIONS } from 'src/admin/constants/permissions';
+import { RequirePermissions } from 'src/admin/decorators/require-permissions.decorator';
+import { AdminPermissionGuard } from 'src/admin/guards/admin-permission.guard';
 
 @ApiTags('moderation')
 @ApiBearerAuth()
 @Controller('moderation')
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard, RolesGuard, AdminPermissionGuard)
 @Roles(Role.SuperAdmin, Role.Admin)
 export class ModerationController {
   constructor(private prisma: PrismaService) {}
 
   @Post('threads/quarantine')
+  @RequirePermissions(ADMIN_PERMISSIONS.MODERATION_WRITE)
   async quarantineThreads(
     @Body()
     body: {
@@ -36,6 +40,7 @@ export class ModerationController {
   }
 
   @Post('threads/bulk-remove')
+  @RequirePermissions(ADMIN_PERMISSIONS.MODERATION_WRITE)
   async bulkRemoveThreads(
     @Body()
     body: {

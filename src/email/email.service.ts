@@ -12,6 +12,7 @@ import {
 import { createHash } from 'crypto';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { resolveEmailConfig, type ResolvedEmailConfig } from './email.config';
+import { maskEmailForLog } from 'src/common/utils/sensitive-log';
 
 const MAILJET_API_HOST = 'api.mailjet.com';
 const MAILJET_API_PORT = 443;
@@ -175,7 +176,7 @@ export class EmailService {
       outboxRowId = outboxRow.id;
 
       this.logger.debug(
-        `Email enqueued to outboxId=${outboxRowId} scenario=${options?.scenarioKey ?? 'legacy.direct'} immediate=${options?.dispatchImmediately ? 'true' : 'false'} to=${to}`,
+        `Email enqueued to outboxId=${outboxRowId} scenario=${options?.scenarioKey ?? 'legacy.direct'} immediate=${options?.dispatchImmediately ? 'true' : 'false'} to=${maskEmailForLog(to)}`,
       );
     } catch (error: any) {
       if (error?.code === 'P2002' && options?.idempotencyKey) {
@@ -190,7 +191,9 @@ export class EmailService {
         };
       }
 
-      this.logger.error(`Failed to enqueue email for ${to}: ${error.message}`);
+      this.logger.error(
+        `Failed to enqueue email for ${maskEmailForLog(to)}: ${error.message}`,
+      );
       return {
         outboxId: null,
         dispatchStatus: 'FAILED',
@@ -224,8 +227,8 @@ export class EmailService {
     }
 
     if (!this.transporter) {
-      this.logger.log(`[EMAIL-DEV] To: ${to} | Subject: ${subject}`);
-      this.logger.debug(`[EMAIL-DEV] Body:\n${text || '(html only)'}`);
+      this.logger.log(`[EMAIL-DEV] To: ${maskEmailForLog(to)} | Subject: ${subject}`);
+      this.logger.debug('[EMAIL-DEV] Body omitted from logs');
       return { providerMessageId: 'dev-local-transport' };
     }
 
@@ -241,11 +244,13 @@ export class EmailService {
 
       const providerMessageId = (info?.messageId as string | undefined) ?? null;
       this.logger.log(
-        `Email sent to ${to}: "${subject}" providerMessageId=${providerMessageId ?? 'n/a'}`,
+        `Email sent to ${maskEmailForLog(to)}: "${subject}" providerMessageId=${providerMessageId ?? 'n/a'}`,
       );
       return { providerMessageId };
     } catch (error: any) {
-      this.logger.error(`Failed to send email to ${to}: ${error.message}`);
+      this.logger.error(
+        `Failed to send email to ${maskEmailForLog(to)}: ${error.message}`,
+      );
       throw error;
     }
   }
@@ -353,7 +358,7 @@ export class EmailService {
     );
 
     this.logger.log(
-      `Email sent via Mailjet API to ${to}: "${subject}" providerMessageId=${providerMessageId ?? 'n/a'}`,
+      `Email sent via Mailjet API to ${maskEmailForLog(to)}: "${subject}" providerMessageId=${providerMessageId ?? 'n/a'}`,
     );
 
     return { providerMessageId };
@@ -523,7 +528,7 @@ export class EmailService {
         }),
       ]);
       this.logger.warn(
-        `Email suppressed by policy outboxId=${outboxRowId} reason=${suppression.reason} to=${normalizedEmail}`,
+        `Email suppressed by policy outboxId=${outboxRowId} reason=${suppression.reason} to=${maskEmailForLog(normalizedEmail)}`,
       );
       return {
         outboxId: outboxRowId,
@@ -560,7 +565,7 @@ export class EmailService {
         }),
       ]);
       this.logger.log(
-        `Email dispatched in real time outboxId=${outboxRowId} to=${normalizedEmail} providerMessageId=${providerResult.providerMessageId ?? 'n/a'}`,
+        `Email dispatched in real time outboxId=${outboxRowId} to=${maskEmailForLog(normalizedEmail)} providerMessageId=${providerResult.providerMessageId ?? 'n/a'}`,
       );
       return {
         outboxId: outboxRowId,
@@ -592,7 +597,7 @@ export class EmailService {
         }),
       ]);
       this.logger.error(
-        `Real-time email dispatch failed outboxId=${outboxRowId} to=${normalizedEmail} error=${message}`,
+        `Real-time email dispatch failed outboxId=${outboxRowId} to=${maskEmailForLog(normalizedEmail)} error=${message}`,
       );
       return {
         outboxId: outboxRowId,
@@ -634,7 +639,7 @@ export class EmailService {
 
       if (this.mailjetEnforceActiveSender) {
         this.logger.error(
-          `Blocking email send to ${to} subject="${subject}" because ${message}`,
+          `Blocking email send to ${maskEmailForLog(to)} subject="${subject}" because ${message}`,
         );
         throw new Error(`MAILJET_SENDER_INACTIVE: ${message}`);
       }

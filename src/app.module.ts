@@ -37,6 +37,7 @@ import { MessagingModule } from './messaging/messaging.module';
 import { WebhooksModule } from './webhooks/webhooks.module';
 import { SizingModule } from './sizing/sizing.module';
 import { MarketModule } from './market/market.module';
+import { validateProductionSecurityEnv } from './common/config/production-env.validation';
 
 const isProductionEnvironment =
   String(process.env.NODE_ENV ?? '')
@@ -48,6 +49,10 @@ const isProductionEnvironment =
     ConfigModule.forRoot({
       isGlobal: true,
       envFilePath: '.env',
+      validate: (config) => {
+        validateProductionSecurityEnv(config);
+        return config;
+      },
     }),
     ScheduleModule.forRoot(),
     EmailModule,

@@ -1269,6 +1269,7 @@ export class PaymentService implements OnModuleInit {
     dto: ReconcileStalePaymentsDto,
     _actorUserId: string,
   ): Promise<ReconcileStalePaymentsResult> {
+    void _actorUserId;
     const olderThanMinutes = dto.olderThanMinutes ?? 30;
     const limit = dto.limit ?? 60;
     const cutoff = new Date(Date.now() - olderThanMinutes * 60 * 1000);
@@ -4690,6 +4691,7 @@ export class PaymentService implements OnModuleInit {
   }
 
   private isValidationGateEnabledForUser(_userId: string) {
+    void _userId;
     if (!this.parseBooleanEnv(PAYMENT_VALIDATION_GATE_FLAG, true)) {
       return false;
     }
@@ -5297,6 +5299,7 @@ export class PaymentService implements OnModuleInit {
   }
 
   private resolveCallbackBaseUrl(_callbackUrl?: string): string {
+    void _callbackUrl;
     // SECURITY: The caller-supplied callbackUrl parameter is intentionally ignored.
     // Accepting arbitrary redirect URLs from clients is an open-redirect vulnerability —
     // an attacker could redirect buyers to a phishing page after Paystack checkout.
@@ -5819,18 +5822,27 @@ export class PaymentService implements OnModuleInit {
     payloadAmount: number | null,
     payloadCurrency: string | null,
   ) {
-    if (
-      payloadCurrency &&
-      payloadCurrency !==
-        String(attemptCurrency || '')
-          .trim()
-          .toUpperCase()
-    ) {
+    if (!Number.isFinite(attemptAmount) || attemptAmount <= 0) {
       return false;
     }
 
-    if (payloadAmount == null) {
-      return true;
+    const expectedCurrency = String(attemptCurrency || '')
+      .trim()
+      .toUpperCase();
+    const actualCurrency = String(payloadCurrency ?? '')
+      .trim()
+      .toUpperCase();
+
+    if (!expectedCurrency || !actualCurrency || actualCurrency !== expectedCurrency) {
+      return false;
+    }
+
+    if (
+      payloadAmount == null ||
+      !Number.isFinite(payloadAmount) ||
+      payloadAmount <= 0
+    ) {
+      return false;
     }
 
     return (

@@ -4,6 +4,7 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import {
   BrandVerificationStatus,
@@ -71,8 +72,12 @@ const DEFAULT_LETTER_TEMPLATE = {
   body: `LETTER OF CONFIRMATION\n\nI confirm that the information and documents submitted for store verification are accurate and belong to me or to the business I am authorized to represent. I understand that Threadly may reject, suspend, or revoke verification if the submitted information is false, misleading, incomplete, or becomes stale. I consent to the processing of the submitted verification materials for trust, safety, fraud review, legal compliance, and audit purposes.`,
 };
 
+const LEGACY_VERIFICATION_DRAFT_SECRET = 'threadly-verification-draft-secret';
+
 @Injectable()
 export class BrandVerificationService {
+  private readonly developmentDraftSecret = randomBytes(32).toString('hex');
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly uploadService: UploadService,
@@ -1356,8 +1361,31 @@ export class BrandVerificationService {
   }
 
   private getDraftKey() {
-    const secret = this.configService.get<string>('VERIFICATION_DRAFT_SECRET') || 'threadly-verification-draft-secret';
-    return createHash('sha256').update(secret).digest();
+    const secret = this.configService
+      .get<string>('VERIFICATION_DRAFT_SECRET')
+      ?.trim();
+    const isProduction =
+      String(
+        this.configService.get<string>('NODE_ENV') ?? process.env.NODE_ENV ?? '',
+      )
+        .trim()
+        .toLowerCase() === 'production';
+
+    if (isProduction && !secret) {
+      throw new ServiceUnavailableException(
+        'Verification draft encryption is not configured',
+      );
+    }
+
+    if (isProduction && secret === LEGACY_VERIFICATION_DRAFT_SECRET) {
+      throw new ServiceUnavailableException(
+        'Verification draft encryption secret is unsafe',
+      );
+    }
+
+    return createHash('sha256')
+      .update(secret || this.developmentDraftSecret)
+      .digest();
   }
 
   private encryptDraft(value: Record<string, unknown>) {

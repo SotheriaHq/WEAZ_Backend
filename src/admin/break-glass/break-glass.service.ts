@@ -1,11 +1,20 @@
 import {
   BadRequestException,
+  ForbiddenException,
   Injectable,
   Logger,
+  ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
-import { AdminAuditAction, Role, UserStatus, UserType } from '@prisma/client';
+import {
+  AdminAuditAction,
+  EmailPriority,
+  NotificationType,
+  Role,
+  UserStatus,
+  UserType,
+} from '@prisma/client';
 import { v4 as uuidv4 } from 'uuid';
 import { createHash, randomBytes } from 'crypto';
 import * as bcrypt from 'bcrypt';
@@ -14,6 +23,12 @@ import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { PasswordService } from 'src/auth/helper/password.service';
 import { UserHelperService } from 'src/auth/helper/user-helper.service';
+import { EmailService } from 'src/email/email.service';
+import { breakGlassSuperAdminRecoveryEmail } from 'src/email/email.templates';
+import {
+  maskEmailForLog,
+  sanitizeErrorForLog,
+} from 'src/common/utils/sensitive-log';
 
 const MAX_FAILURES_PER_DAY = 2;
 const BACKOFF_AFTER_FAILURE_MS = 30_000;
@@ -29,6 +44,7 @@ export class BreakGlassService {
     private readonly configService: ConfigService,
     private readonly passwordService: PasswordService,
     private readonly userHelper: UserHelperService,
+    private readonly emailService: EmailService,
   ) {}
 
   private get recoveryTokenSecret(): string {
@@ -43,6 +59,47 @@ export class BreakGlassService {
       );
     }
     return secret;
+  }
+
+  private readFlag(name: string, fallback = false): boolean {
+    const value = this.configService.get<string>(name);
+    if (value == null || String(value).trim() === '') return fallback;
+    return ['1', 'true', 'yes', 'on'].includes(
+      String(value).trim().toLowerCase(),
+    );
+  }
+
+  private isProduction(): boolean {
+    return (
+      String(
+        this.configService.get<string>('NODE_ENV') ?? process.env.NODE_ENV ?? '',
+      )
+        .trim()
+        .toLowerCase() === 'production'
+    );
+  }
+
+  isBreakGlassEnabled(): boolean {
+    const enabled = this.readFlag('BREAK_GLASS_ENABLED', !this.isProduction());
+    if (!enabled) return false;
+    return this.isProduction()
+      ? this.readFlag('BREAK_GLASS_PRODUCTION_ENABLED', false)
+      : true;
+  }
+
+  private async assertBreakGlassEnabled(
+    req: Request,
+    stage: string,
+  ): Promise<void> {
+    if (this.isBreakGlassEnabled()) return;
+    await this.logAttempt(
+      this.extractRawSocketIp(req),
+      this.getUserAgent(req),
+      req,
+      false,
+      { stage, reason: 'break_glass_disabled' },
+    );
+    throw new ForbiddenException('Break-glass recovery is disabled');
   }
 
   private extractRawSocketIp(req: Request): string {
@@ -102,8 +159,13 @@ export class BreakGlassService {
     const rawIp = this.extractRawSocketIp(req);
     const userAgent = this.getUserAgent(req);
     const now = new Date();
+    await this.assertBreakGlassEnabled(req, 'code_attempt');
 
     if (!code || typeof code !== 'string' || code.trim().length < 8) {
+      await this.logAttempt(rawIp, userAgent, req, false, {
+        stage: 'code_attempt',
+        reason: 'invalid_code_format',
+      });
       throw new BadRequestException('A valid break-glass code is required');
     }
 
@@ -123,6 +185,10 @@ export class BreakGlassService {
     });
 
     if (failureCount >= MAX_FAILURES_PER_DAY) {
+      await this.logAttempt(rawIp, userAgent, req, false, {
+        stage: 'code_attempt',
+        reason: 'daily_failure_limit_reached',
+      });
       throw new UnauthorizedException(
         'Break-glass endpoint locked for today due to failed attempts',
       );
@@ -140,6 +206,11 @@ export class BreakGlassService {
           const retryAfterSeconds = Math.ceil(
             (BACKOFF_AFTER_FAILURE_MS - elapsed) / 1000,
           );
+          await this.logAttempt(rawIp, userAgent, req, false, {
+            stage: 'code_attempt',
+            reason: 'backoff_active',
+            retryAfterSeconds,
+          });
           throw new UnauthorizedException(
             `Retry break-glass after ${retryAfterSeconds} seconds`,
           );
@@ -158,13 +229,19 @@ export class BreakGlassService {
     });
 
     if (!validCode) {
-      await this.logAttempt(rawIp, userAgent, req, false);
+      await this.logAttempt(rawIp, userAgent, req, false, {
+        stage: 'code_attempt',
+        reason: 'no_valid_code',
+      });
       throw new UnauthorizedException('Invalid or expired break-glass code');
     }
 
     const isValid = await bcrypt.compare(code, validCode.codeHash);
     if (!isValid) {
-      await this.logAttempt(rawIp, userAgent, req, false);
+      await this.logAttempt(rawIp, userAgent, req, false, {
+        stage: 'code_attempt',
+        reason: 'code_mismatch',
+      });
       throw new UnauthorizedException('Invalid break-glass code');
     }
 
@@ -201,7 +278,15 @@ export class BreakGlassService {
     dto: { email: string; firstName: string; lastName: string },
     req: Request,
   ) {
+    const requestIp = this.extractRawSocketIp(req);
+    const requestUserAgent = this.getUserAgent(req);
+    await this.assertBreakGlassEnabled(req, 'superadmin_recovery');
+
     if (!recoveryToken || typeof recoveryToken !== 'string') {
+      await this.logAttempt(requestIp, requestUserAgent, req, false, {
+        stage: 'superadmin_recovery',
+        reason: 'missing_recovery_token',
+      });
       throw new BadRequestException('Recovery token is required');
     }
 
@@ -210,6 +295,11 @@ export class BreakGlassService {
     const lastName = dto.lastName?.trim();
 
     if (!normalizedEmail || !firstName || !lastName) {
+      await this.logAttempt(requestIp, requestUserAgent, req, false, {
+        stage: 'superadmin_recovery',
+        reason: 'missing_profile_fields',
+        email: maskEmailForLog(normalizedEmail),
+      });
       throw new BadRequestException(
         'email, firstName, and lastName are required',
       );
@@ -221,20 +311,34 @@ export class BreakGlassService {
         secret: this.recoveryTokenSecret,
       });
     } catch {
+      await this.logAttempt(requestIp, requestUserAgent, req, false, {
+        stage: 'superadmin_recovery',
+        reason: 'invalid_or_expired_recovery_token',
+        email: maskEmailForLog(normalizedEmail),
+      });
       throw new UnauthorizedException('Invalid or expired recovery token');
     }
 
-    const requestIp = this.extractRawSocketIp(req);
     const requestUaHash = this.hashUserAgent(this.getUserAgent(req));
     if (
       payload.purpose !== 'breakglass_superadmin_recovery' ||
       payload.ip !== requestIp ||
       payload.uaHash !== requestUaHash
     ) {
+      await this.logAttempt(requestIp, requestUserAgent, req, false, {
+        stage: 'superadmin_recovery',
+        reason: 'token_context_mismatch',
+        email: maskEmailForLog(normalizedEmail),
+      });
       throw new UnauthorizedException('Recovery token context mismatch');
     }
 
     if (!payload.jti) {
+      await this.logAttempt(requestIp, requestUserAgent, req, false, {
+        stage: 'superadmin_recovery',
+        reason: 'missing_token_jti',
+        email: maskEmailForLog(normalizedEmail),
+      });
       throw new UnauthorizedException('Invalid recovery token');
     }
 
@@ -247,12 +351,22 @@ export class BreakGlassService {
       tokenRecord.usedAt !== null ||
       tokenRecord.expiresAt <= new Date()
     ) {
+      await this.logAttempt(requestIp, requestUserAgent, req, false, {
+        stage: 'superadmin_recovery',
+        reason: 'token_used_or_expired',
+        email: maskEmailForLog(normalizedEmail),
+      });
       throw new UnauthorizedException('Recovery token already used or expired');
     }
     if (
       tokenRecord.ipAddress !== requestIp ||
       tokenRecord.userAgentHash !== requestUaHash
     ) {
+      await this.logAttempt(requestIp, requestUserAgent, req, false, {
+        stage: 'superadmin_recovery',
+        reason: 'stored_token_context_mismatch',
+        email: maskEmailForLog(normalizedEmail),
+      });
       throw new UnauthorizedException('Recovery token context mismatch');
     }
 
@@ -261,6 +375,11 @@ export class BreakGlassService {
       data: { usedAt: new Date() },
     });
     if (consumed.count !== 1) {
+      await this.logAttempt(requestIp, requestUserAgent, req, false, {
+        stage: 'superadmin_recovery',
+        reason: 'token_race_lost',
+        email: maskEmailForLog(normalizedEmail),
+      });
       throw new UnauthorizedException('Recovery token already used');
     }
 
@@ -363,7 +482,7 @@ export class BreakGlassService {
           userAgent: this.getUserAgent(req),
           metadata: {
             stage: 'superadmin_recovered',
-            email: normalizedEmail,
+            email: maskEmailForLog(normalizedEmail),
           },
           newState: {
             role: recoveredUser.role,
@@ -376,12 +495,45 @@ export class BreakGlassService {
       return recoveredUser;
     });
 
+    const emailContent = breakGlassSuperAdminRecoveryEmail({
+      email: normalizedEmail,
+      temporaryPassword,
+      appName: this.emailService.getAppName(),
+    });
+    const emailResult = await this.emailService.send(
+      normalizedEmail,
+      emailContent.subject,
+      emailContent.html,
+      emailContent.text,
+      {
+        scenarioKey: 'admin.break_glass.superadmin_recovery',
+        notificationType: NotificationType.ADMIN_ACTION,
+        priority: EmailPriority.P0_SECURITY,
+        dispatchImmediately: true,
+        idempotencyKey: `break-glass-superadmin-recovery:${result.id}`,
+      },
+    );
+
+    if (
+      emailResult.dispatchStatus === 'FAILED' ||
+      emailResult.outboxId == null
+    ) {
+      await this.logAttempt(requestIp, requestUserAgent, req, false, {
+        stage: 'superadmin_recovery',
+        reason: 'credential_email_delivery_failed',
+        email: maskEmailForLog(normalizedEmail),
+        error: sanitizeErrorForLog(emailResult.errorMessage),
+      });
+      throw new ServiceUnavailableException(
+        'SuperAdmin recovery completed but credential delivery failed. Retry after email delivery is restored.',
+      );
+    }
+
     return {
       success: true,
       user: result,
-      temporaryPassword,
       message:
-        'SuperAdmin recovery completed. Sign in with the temporary password and reset it immediately.',
+        'SuperAdmin recovery completed. Temporary credentials were delivered through the configured recovery email channel.',
     };
   }
 
@@ -389,6 +541,10 @@ export class BreakGlassService {
    * Generate a new daily break-glass code (called by scheduled job).
    */
   async generateDailyCode(): Promise<string> {
+    if (!this.isBreakGlassEnabled()) {
+      throw new ForbiddenException('Break-glass recovery is disabled');
+    }
+
     const code = randomBytes(16).toString('base64url');
     const codeHash = await bcrypt.hash(code, 10);
 

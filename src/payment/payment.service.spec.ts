@@ -753,6 +753,104 @@ describe('PaymentService', () => {
     });
   });
 
+  it('fails closed for missing, null, zero, wrong amount, or wrong currency webhook settlements', () => {
+    expect((service as any).webhookAmountsMatch(145, 'NGN', 145, 'NGN')).toBe(
+      true,
+    );
+    expect((service as any).webhookAmountsMatch(145, 'NGN', null, 'NGN')).toBe(
+      false,
+    );
+    expect((service as any).webhookAmountsMatch(145, 'NGN', 0, 'NGN')).toBe(
+      false,
+    );
+    expect((service as any).webhookAmountsMatch(145, 'NGN', 140, 'NGN')).toBe(
+      false,
+    );
+    expect((service as any).webhookAmountsMatch(145, 'NGN', 145, null)).toBe(
+      false,
+    );
+    expect((service as any).webhookAmountsMatch(145, 'NGN', 145, 'USD')).toBe(
+      false,
+    );
+  });
+
+  it('rejects invalid webhook signatures before processing', async () => {
+    const prisma = {
+      webhookIngressAudit: { create: jest.fn().mockResolvedValue({}) },
+    };
+    const target = new PaymentService(
+      prisma as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+    );
+
+    await expect(
+      (target as any).recordWebhookReceipt(
+        'PAYSTACK',
+        {
+          event: 'charge.success',
+          data: { reference: 'TH-UC-invalid-sig', amount: 14500, currency: 'NGN' },
+        },
+        {
+          headers: { 'x-paystack-signature': 'bad' },
+          rawBody: '{}',
+          remoteAddress: '203.0.113.99',
+          correlationId: 'corr-invalid-sig',
+        },
+      ),
+    ).resolves.toBeNull();
+
+    expect(prisma.webhookIngressAudit.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ rejectionReason: 'INVALID_SIGNATURE' }),
+      }),
+    );
+  });
+
+  it('does not treat frontend success hints as live Paystack confirmation', async () => {
+    const target = new PaymentService(
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+    );
+    jest.spyOn(target as any, 'verifyPaystackAttempt').mockResolvedValue({
+      status: 'PENDING',
+      rawStatus: 'pending',
+      message: 'awaiting provider',
+      paidAt: null,
+      channel: null,
+      reference: 'TH-UC-front-only',
+      transactionId: null,
+      amount: null,
+      currency: null,
+      authorization: null,
+    });
+
+    await expect(
+      target.resolveAttemptVerification(
+        {
+          provider: 'PAYSTACK',
+          providerMode: 'live',
+          responseSnapshot: {},
+        } as any,
+        {
+          reference: 'TH-UC-front-only',
+          gateway: 'PAYSTACK',
+          statusHint: 'success',
+        },
+      ),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        nextStatus: 'PENDING',
+        awaitingProviderConfirmation: true,
+      }),
+    );
+  });
+
   it('releases unified checkout reservations and abandons custom bag lines after a failed attempt', async () => {
     const tx = {
       $queryRaw: jest.fn().mockResolvedValue(undefined),

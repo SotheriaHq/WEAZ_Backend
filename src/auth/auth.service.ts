@@ -177,7 +177,7 @@ export class AuthService {
   }): void {
     const summary =
       `scenario=${args.scenarioKey} userId=${args.userId} ` +
-      `recipient=${args.recipientEmail} outboxId=${args.result.outboxId ?? 'n/a'} ` +
+      `recipient=${maskEmailForLog(args.recipientEmail)} outboxId=${args.result.outboxId ?? 'n/a'} ` +
       `dispatchStatus=${args.result.dispatchStatus}`;
 
     if (args.result.dispatchStatus === 'FAILED') {

@@ -17,8 +17,13 @@ export class BreakGlassCronService {
 
   @Cron(CronExpression.EVERY_DAY_AT_MIDNIGHT)
   async rotateDailyBreakGlassCode() {
-    const rawCode = await this.breakGlassService.generateDailyCode();
     await this.breakGlassService.pruneExpiredRecoveryTokens();
+    if (!this.breakGlassService.isBreakGlassEnabled()) {
+      this.logger.log('Break-glass code rotation skipped because break-glass is disabled.');
+      return;
+    }
+
+    const rawCode = await this.breakGlassService.generateDailyCode();
 
     const recoveryEmail = this.config.get<string>('BREAK_GLASS_RECOVERY_EMAIL');
     if (recoveryEmail) {

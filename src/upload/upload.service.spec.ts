@@ -5,9 +5,18 @@ import { ConfigService } from '@nestjs/config';
 import { SystemConfigService } from 'src/admin/system-config/system-config.service';
 import { ImageProcessingQueueService } from 'src/queue/image-processing.queue.service';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import { createPresignedPost } from '@aws-sdk/s3-presigned-post';
+import { FileType } from './upload.enums';
 
 jest.mock('@aws-sdk/s3-request-presigner', () => ({
   getSignedUrl: jest.fn().mockResolvedValue('signed-url'),
+}));
+
+jest.mock('@aws-sdk/s3-presigned-post', () => ({
+  createPresignedPost: jest.fn().mockResolvedValue({
+    url: 'https://s3-upload.example',
+    fields: {},
+  }),
 }));
 
 describe('ImageService', () => {
@@ -15,6 +24,7 @@ describe('ImageService', () => {
 
   beforeEach(async () => {
     (getSignedUrl as jest.Mock).mockClear();
+    (createPresignedPost as jest.Mock).mockClear();
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -41,7 +51,13 @@ describe('ImageService', () => {
             }),
           },
         },
-        { provide: SystemConfigService, useValue: { get: jest.fn() } },
+        {
+          provide: SystemConfigService,
+          useValue: {
+            get: jest.fn(),
+            getMaxFileSize: jest.fn().mockResolvedValue(2 * 1024 * 1024),
+          },
+        },
         { provide: ImageProcessingQueueService, useValue: { enqueueSingle: jest.fn() } },
       ],
     }).compile();
@@ -279,6 +295,12 @@ describe('ImageService', () => {
       }),
     };
     (service as any).imageQueue = { enqueueSingle };
+    (service as any).s3 = {
+      send: jest.fn().mockResolvedValue({
+        ContentLength: 1234,
+        ContentType: 'image/jpeg',
+      }),
+    };
     (service as any).prisma = {
       presignedUpload: {
         findUnique: jest.fn().mockResolvedValue({
@@ -315,5 +337,108 @@ describe('ImageService', () => {
       }),
     );
     expect(enqueueSingle).toHaveBeenCalledWith('file_1', true);
+  });
+
+  it('adds content-length-range and exact content type to presigned POST policies', async () => {
+    (service as any).prisma = {
+      presignedUpload: { create: jest.fn().mockResolvedValue({}) },
+    };
+
+    await service.createPresignedPost(
+      'user_1',
+      'look.jpg',
+      FileType.POST_IMAGE,
+      'image/jpeg',
+    );
+
+    expect(createPresignedPost).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        Fields: expect.objectContaining({ 'Content-Type': 'image/jpeg' }),
+        Conditions: expect.arrayContaining([
+          ['eq', '$Content-Type', 'image/jpeg'],
+          ['content-length-range', 1, 2 * 1024 * 1024],
+        ]),
+      }),
+    );
+  });
+
+  it('rejects oversized, spoofed, expired, and missing presigned uploads using trusted S3 metadata', async () => {
+    const presign = {
+      id: 'file_1',
+      userId: 'user_1',
+      s3Key: 'POST_IMAGE/user_1/file_1.jpg',
+      originalName: 'look.jpg',
+      contentType: 'image/jpeg',
+      fileType: 'POST_IMAGE',
+      status: 'PENDING',
+      expiresAt: new Date(Date.now() + 60_000),
+    };
+    (service as any).prisma = {
+      presignedUpload: {
+        findUnique: jest.fn().mockResolvedValue(presign),
+        update: jest.fn(),
+      },
+      fileUpload: { findUnique: jest.fn(), create: jest.fn() },
+    };
+
+    (service as any).s3 = {
+      send: jest.fn().mockResolvedValue({
+        ContentLength: 3 * 1024 * 1024,
+        ContentType: 'image/jpeg',
+      }),
+    };
+    await expect(
+      service.createFileRecordFromPresign(
+        'file_1',
+        'user_1',
+        presign.s3Key,
+        'image/jpeg',
+        3 * 1024 * 1024,
+      ),
+    ).rejects.toThrow('Uploaded object exceeds size limit');
+
+    (service as any).s3.send.mockResolvedValue({
+      ContentLength: 1234,
+      ContentType: 'text/plain',
+    });
+    await expect(
+      service.createFileRecordFromPresign(
+        'file_1',
+        'user_1',
+        presign.s3Key,
+        'image/jpeg',
+        1234,
+      ),
+    ).rejects.toThrow('Uploaded object content type mismatch');
+
+    (service as any).prisma.presignedUpload.findUnique.mockResolvedValue({
+      ...presign,
+      expiresAt: new Date(Date.now() - 60_000),
+    });
+    await expect(
+      service.createFileRecordFromPresign(
+        'file_1',
+        'user_1',
+        presign.s3Key,
+        'image/jpeg',
+        1234,
+      ),
+    ).rejects.toThrow('Presign has expired');
+
+    (service as any).prisma.presignedUpload.findUnique.mockResolvedValue(presign);
+    (service as any).s3.send.mockRejectedValue({
+      name: 'NoSuchKey',
+      $metadata: { httpStatusCode: 404 },
+    });
+    await expect(
+      service.createFileRecordFromPresign(
+        'file_1',
+        'user_1',
+        presign.s3Key,
+        'image/jpeg',
+        1234,
+      ),
+    ).rejects.toThrow('Uploaded object was not found');
   });
 });

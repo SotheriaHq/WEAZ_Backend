@@ -32,6 +32,9 @@ import {
 } from './payment.types';
 import { Request } from 'express';
 import { PaymentRuntimeHealthService } from './payment-runtime-health.service';
+import { ADMIN_PERMISSIONS } from 'src/admin/constants/permissions';
+import { RequirePermissions } from 'src/admin/decorators/require-permissions.decorator';
+import { AdminPermissionGuard } from 'src/admin/guards/admin-permission.guard';
 
 @Controller('payment')
 export class PaymentController {
@@ -226,8 +229,9 @@ export class PaymentController {
   }
 
   @Post('mock/:reference/simulate')
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, AdminPermissionGuard)
   @Roles(Role.SuperAdmin, Role.Admin)
+  @RequirePermissions(ADMIN_PERMISSIONS.PAYMENTS_SIMULATE)
   async simulate(
     @Param('reference') reference: string,
     @Body() dto: SimulatePaymentAttemptDto,
@@ -238,8 +242,9 @@ export class PaymentController {
   }
 
   @Get('ops/runtime-health')
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, AdminPermissionGuard)
   @Roles(Role.SuperAdmin, Role.Admin)
+  @RequirePermissions(ADMIN_PERMISSIONS.PAYMENTS_RUNTIME_READ)
   async runtimeHealth() {
     return this.paymentRuntimeHealthService.getRuntimeHealth();
   }

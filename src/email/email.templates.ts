@@ -135,6 +135,32 @@ export function breakGlassCodeEmail(
   };
 }
 
+export function breakGlassSuperAdminRecoveryEmail(args: {
+  email: string;
+  temporaryPassword: string;
+  appName: string;
+}): EmailContent {
+  const companyName = normalizeCompanyName(args.appName);
+  const safeEmail = escapeHtml(args.email);
+  const safePassword = escapeHtml(args.temporaryPassword);
+
+  return {
+    subject: `[URGENT] ${companyName} SuperAdmin Recovery Credentials`,
+    html: wrap(
+      'SuperAdmin Recovery Completed',
+      `${p(`Break-glass recovery created or reactivated a <strong>SuperAdmin</strong> account for <strong>${safeEmail}</strong>.`)}
+      ${warningBox('<p style="margin:0;color:#9a3412;font-size:13px;font-weight:600">Use this temporary password only once. The account is flagged for mandatory password rotation on first sign-in.</p>')}
+      <table style="width:100%;margin:16px 0;border-collapse:collapse;border-radius:12px;overflow:hidden">
+        <tr style="background:#f9fafb"><td style="padding:12px 16px;color:#6b7280;font-size:14px;border-bottom:1px solid #e5e7eb">Email</td><td style="padding:12px 16px;font-weight:600;font-size:14px;border-bottom:1px solid #e5e7eb">${safeEmail}</td></tr>
+        <tr><td style="padding:12px 16px;color:#6b7280;font-size:14px">Temporary Password</td><td style="padding:12px 16px;font-weight:600;font-family:monospace;font-size:15px;letter-spacing:1px">${safePassword}</td></tr>
+      </table>
+      ${p('This event has been written to the admin audit log. If you did not initiate this recovery, rotate platform secrets and investigate admin access immediately.')}`,
+      companyName,
+    ),
+    text: `SuperAdmin recovery completed\n\nEmail: ${args.email}\nTemporary password: ${args.temporaryPassword}\n\nUse this password only once. The account must rotate the password on first sign-in. If you did not initiate this recovery, rotate platform secrets and investigate admin access immediately.`,
+  };
+}
+
 export function adminAccountCreatedEmail(
   email: string,
   tempPassword: string,

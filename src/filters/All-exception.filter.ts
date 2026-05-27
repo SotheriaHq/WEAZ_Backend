@@ -7,6 +7,10 @@ import {
   Logger,
 } from '@nestjs/common';
 import { Request, Response } from 'express';
+import {
+  redactSensitiveLogValue,
+  sanitizeErrorForLog,
+} from 'src/common/utils/sensitive-log';
 
 @Catch()
 export class AllExceptionsFilter implements ExceptionFilter {
@@ -16,6 +20,9 @@ export class AllExceptionsFilter implements ExceptionFilter {
     const ctx = host.switchToHttp();
     const response = ctx.getResponse<Response>();
     const request = ctx.getRequest<Request>();
+    const safePath = request.path || String(request.url ?? '').split('?')[0];
+    const isProduction =
+      String(process.env.NODE_ENV ?? '').trim().toLowerCase() === 'production';
 
     let status: number;
     let message: string | object;
@@ -28,30 +35,41 @@ export class AllExceptionsFilter implements ExceptionFilter {
       if (typeof exceptionResponse === 'object' && exceptionResponse !== null) {
         // Handle validation errors specifically
         const responseObj = exceptionResponse as any;
-        message = responseObj.message || 'An error occurred';
-        errors = responseObj.errors || undefined;
+        if (isProduction && status >= 500) {
+          message = 'Internal server error';
+          errors = undefined;
+        } else {
+          message = redactSensitiveLogValue(
+            responseObj.message || 'An error occurred',
+          ) as string | object;
+          errors = responseObj.errors
+            ? redactSensitiveLogValue(responseObj.errors)
+            : undefined;
+        }
       } else {
-        message = exceptionResponse;
+        message =
+          isProduction && status >= 500
+            ? 'Internal server error'
+            : exceptionResponse;
       }
     } else {
       status = HttpStatus.INTERNAL_SERVER_ERROR;
       message = 'Internal server error';
     }
 
-    // Log the full error details
     this.logger.error(
-      `HTTP ${status} - ${request.method} ${request.url}: ${JSON.stringify({
+      `HTTP ${status} - ${request.method} ${safePath}: ${JSON.stringify({
         message,
         ...(errors && { errors }),
       })}`,
-      exception instanceof Error ? exception.stack : undefined,
+      isProduction ? undefined : JSON.stringify(sanitizeErrorForLog(exception)),
     );
 
     // Response format
     const errorResponse = {
       statusCode: status,
       timestamp: new Date().toISOString(),
-      path: request.url,
+      path: safePath,
       message,
       ...(errors && { errors }),
     };

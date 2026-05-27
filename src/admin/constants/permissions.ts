@@ -3,6 +3,9 @@
  * Each permission grants exactly one capability.
  */
 export const ADMIN_PERMISSIONS = {
+  // Dashboard
+  DASHBOARD_READ: 'dashboard.read',
+
   // Users
   USERS_READ: 'users.read',
   USERS_UPDATE: 'users.update',
@@ -43,6 +46,8 @@ export const ADMIN_PERMISSIONS = {
   // Payouts
   PAYOUTS_READ: 'payouts.read',
   PAYOUTS_PROCESS: 'payouts.process',
+  PAYMENTS_SIMULATE: 'payments.simulate',
+  PAYMENTS_RUNTIME_READ: 'payments.runtime_read',
 
   // Disputes
   DISPUTES_READ: 'disputes.read',
@@ -72,6 +77,7 @@ export const ADMIN_PERMISSIONS = {
   SYSTEM_SLA_WRITE: 'system.sla.write',
   SYSTEM_DATA_RETENTION_WRITE: 'system.data_retention.write',
   SYSTEM_FEATURE_FLAGS_WRITE: 'system.feature_flags.write',
+  ADMIN_EMAIL_CHANGE: 'admin.email_change',
   PERMISSIONS_MANAGE: 'permissions.manage',
 } as const;
 
