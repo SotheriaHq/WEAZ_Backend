@@ -66,10 +66,20 @@ type S3ObjectMetadata = {
 
 const ALLOWED_MIME_TYPES: Record<FileType, readonly string[]> = {
   [FileType.PROFILE_IMAGE]: ['image/jpeg', 'image/png', 'image/webp'],
-  [FileType.BANNER_IMAGE]: ['image/jpeg', 'image/png', 'image/webp', 'image/gif'],
+  [FileType.BANNER_IMAGE]: [
+    'image/jpeg',
+    'image/png',
+    'image/webp',
+    'image/gif',
+  ],
   [FileType.POST_IMAGE]: ['image/jpeg', 'image/png', 'image/webp', 'image/gif'],
   [FileType.POST_VIDEO]: ['video/mp4', 'video/webm', 'video/quicktime'],
-  [FileType.REVIEW_IMAGE]: ['image/jpeg', 'image/png', 'image/webp', 'image/gif'],
+  [FileType.REVIEW_IMAGE]: [
+    'image/jpeg',
+    'image/png',
+    'image/webp',
+    'image/gif',
+  ],
   [FileType.REVIEW_VIDEO]: ['video/mp4', 'video/webm', 'video/quicktime'],
   [FileType.DOCUMENT]: [
     'application/pdf',
@@ -130,8 +140,7 @@ export class UploadService {
     const anyErr = error as any;
     return {
       name: typeof anyErr?.name === 'string' ? anyErr.name : undefined,
-      message:
-        typeof anyErr?.message === 'string' ? anyErr.message : undefined,
+      message: typeof anyErr?.message === 'string' ? anyErr.message : undefined,
       code:
         typeof anyErr?.code === 'string'
           ? anyErr.code
@@ -207,14 +216,22 @@ export class UploadService {
   }
 
   private getFileExtension(fileName: string): string {
-    return path.extname(String(fileName ?? '')).replace('.', '').toLowerCase();
+    return path
+      .extname(String(fileName ?? ''))
+      .replace('.', '')
+      .toLowerCase();
   }
 
-  private assertAllowedExtension(originalName: string, fileType: FileType): void {
+  private assertAllowedExtension(
+    originalName: string,
+    fileType: FileType,
+  ): void {
     const extension = this.getFileExtension(originalName);
     const allowed = ALLOWED_EXTENSIONS[fileType] ?? [];
     if (!extension || !allowed.includes(extension)) {
-      throw new BadRequestException(`File extension not allowed for ${fileType}`);
+      throw new BadRequestException(
+        `File extension not allowed for ${fileType}`,
+      );
     }
   }
 
@@ -248,7 +265,9 @@ export class UploadService {
 
   private isTruthyConfig(value?: string | null): boolean {
     return ['1', 'true', 'yes', 'on', 'public'].includes(
-      String(value ?? '').trim().toLowerCase(),
+      String(value ?? '')
+        .trim()
+        .toLowerCase(),
     );
   }
 
@@ -263,11 +282,17 @@ export class UploadService {
 
   private isBucketPublicForDisplay(): boolean {
     return (
-      this.isTruthyConfig(this.configService.get<string>('MEDIA_BUCKET_PUBLIC')) ||
+      this.isTruthyConfig(
+        this.configService.get<string>('MEDIA_BUCKET_PUBLIC'),
+      ) ||
       this.isTruthyConfig(this.configService.get<string>('S3_BUCKET_PUBLIC')) ||
-      this.isTruthyConfig(this.configService.get<string>('AWS_S3_BUCKET_PUBLIC')) ||
+      this.isTruthyConfig(
+        this.configService.get<string>('AWS_S3_BUCKET_PUBLIC'),
+      ) ||
       this.isTruthyConfig(this.configService.get<string>('S3_PUBLIC_READ')) ||
-      this.isTruthyConfig(this.configService.get<string>('MEDIA_OBJECTS_PUBLIC'))
+      this.isTruthyConfig(
+        this.configService.get<string>('MEDIA_OBJECTS_PUBLIC'),
+      )
     );
   }
 
@@ -280,7 +305,10 @@ export class UploadService {
     return configuredBase?.trim().replace(/\/+$/, '') || null;
   }
 
-  private getStablePublicDisplayUrl(file: { s3Url?: string | null; s3Key?: string | null }): string | null {
+  private getStablePublicDisplayUrl(file: {
+    s3Url?: string | null;
+    s3Key?: string | null;
+  }): string | null {
     const key = typeof file.s3Key === 'string' ? file.s3Key.trim() : '';
     const publicBase = this.getConfiguredPublicBaseUrl();
 
@@ -296,7 +324,11 @@ export class UploadService {
     return null;
   }
 
-  getPublicDisplayUrl(file: { s3Url?: string | null; s3Key?: string | null; isPublic?: boolean | null }): string | null {
+  getPublicDisplayUrl(file: {
+    s3Url?: string | null;
+    s3Key?: string | null;
+    isPublic?: boolean | null;
+  }): string | null {
     const key = typeof file.s3Key === 'string' ? file.s3Key.trim() : '';
     const publicBase = this.getConfiguredPublicBaseUrl();
 
@@ -325,7 +357,9 @@ export class UploadService {
     const key = typeof file.s3Key === 'string' ? file.s3Key.trim() : '';
     if (!key) return null;
 
-    const nodeEnv = String(this.configService.get<string>('NODE_ENV') ?? '').toLowerCase();
+    const nodeEnv = String(
+      this.configService.get<string>('NODE_ENV') ?? '',
+    ).toLowerCase();
     if (nodeEnv !== 'production') {
       this.logger.warn(
         `[media] temporary signed display URL fallback used fileId=${file.id ?? 'unknown'} expiresIn=${expiresIn}; configure MEDIA_PUBLIC_BASE_URL/CDN_PUBLIC_BASE_URL/CLOUDFRONT_URL for production public feed media.`,
@@ -381,8 +415,8 @@ export class UploadService {
     if (!this.isReadyStoredFile(file)) return false;
     return Boolean(
       file.isPublic ||
-      this.isPublicCollectionFile(file) ||
-      this.isPublicIdentityFile(file),
+        this.isPublicCollectionFile(file) ||
+        this.isPublicIdentityFile(file),
     );
   }
 
@@ -457,9 +491,7 @@ export class UploadService {
       // Dev fallback: if S3 isn't configured/available locally, still allow uploads
       // by writing to disk under the API's /uploads static route.
       if (!isProduction) {
-        this.logger.warn(
-          'Falling back to local disk upload (non-production).',
-        );
+        this.logger.warn('Falling back to local disk upload (non-production).');
         return this.uploadFileToLocalDisk(file, userId, fileType, fileId, key);
       }
 
@@ -508,7 +540,9 @@ export class UploadService {
     return secondOctet >= 16 && secondOctet <= 31;
   }
 
-  private getLocalDevSignedDisplayUrl(file: { s3Url?: string | null }): string | null {
+  private getLocalDevSignedDisplayUrl(file: {
+    s3Url?: string | null;
+  }): string | null {
     if (this.isProductionRuntime()) return null;
 
     const directUrl = typeof file.s3Url === 'string' ? file.s3Url.trim() : '';
@@ -585,7 +619,8 @@ export class UploadService {
     // create presigned post and persist a pending PresignedUpload record
     this.assertAllowedExtension(originalName, fileType);
     const trustedContentType =
-      this.normalizeContentType(contentType) ?? this.inferContentType(originalName);
+      this.normalizeContentType(contentType) ??
+      this.inferContentType(originalName);
     this.assertAllowedMimeType(trustedContentType, fileType);
     const maxSize = await this.getMaxFileSize(fileType);
 
@@ -609,7 +644,8 @@ export class UploadService {
         id: fileId,
         userId,
         collectionId: options?.collectionId,
-        orderIndex: typeof options?.orderIndex === 'number' ? options.orderIndex : null,
+        orderIndex:
+          typeof options?.orderIndex === 'number' ? options.orderIndex : null,
         originalName,
         contentType: trustedContentType,
         fileType,
@@ -765,7 +801,9 @@ export class UploadService {
       throw new BadRequestException('File not found');
     }
     if (!this.isReadyStoredFile(file)) {
-      this.logger.warn(`[media] signed-url denied for unavailable file fileId=${fileId}`);
+      this.logger.warn(
+        `[media] signed-url denied for unavailable file fileId=${fileId}`,
+      );
       throw new BadRequestException('File not available');
     }
 
@@ -1125,7 +1163,9 @@ export class UploadService {
 
     const expectedPrefix = `${presign.fileType}/${userId}/`;
     if (!key.startsWith(expectedPrefix)) {
-      throw new BadRequestException('S3 key does not match expected user prefix');
+      throw new BadRequestException(
+        'S3 key does not match expected user prefix',
+      );
     }
 
     const sourceName = presign.originalName || originalId || key;
@@ -1157,14 +1197,18 @@ export class UploadService {
 
     const reportedMimeType = this.normalizeContentType(mimeType);
     if (reportedMimeType && reportedMimeType !== actualContentType) {
-      throw new BadRequestException('Reported file type does not match storage metadata');
+      throw new BadRequestException(
+        'Reported file type does not match storage metadata',
+      );
     }
     if (
       Number.isFinite(Number(size)) &&
       Number(size) > 0 &&
       Number(size) !== actualMetadata.contentLength
     ) {
-      throw new BadRequestException('Reported file size does not match storage metadata');
+      throw new BadRequestException(
+        'Reported file size does not match storage metadata',
+      );
     }
 
     // Mark presign as USED
@@ -1246,13 +1290,16 @@ export class UploadService {
     }
 
     const variantRows = await (this.prisma as any).fileVariant.findMany({
-      where: { fileUploadId: fileId, assetVersion: (file as any).assetVersion ?? 1 },
+      where: {
+        fileUploadId: fileId,
+        assetVersion: (file as any).assetVersion ?? 1,
+      },
       orderBy: [{ variantKind: 'asc' }, { format: 'asc' }],
     });
 
     const variants: VariantsMap = {};
     for (const row of variantRows ?? []) {
-      const key = String((row.variantKind || '')).toLowerCase();
+      const key = String(row.variantKind || '').toLowerCase();
       const mapped =
         key === 'thumb' ||
         key === 'card' ||
@@ -1310,7 +1357,9 @@ export class UploadService {
     try {
       await this.imageQueue.enqueueSingle(fileId, force);
     } catch (error) {
-      this.logger.warn(`Failed to enqueue image processing for ${fileId}: ${String(error)}`);
+      this.logger.warn(
+        `Failed to enqueue image processing for ${fileId}: ${String(error)}`,
+      );
     }
   }
 
@@ -1364,7 +1413,9 @@ export class UploadService {
     }
 
     const chunks: Buffer[] = [];
-    for await (const chunk of body as AsyncIterable<Buffer | Uint8Array | string>) {
+    for await (const chunk of body as AsyncIterable<
+      Buffer | Uint8Array | string
+    >) {
       chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
     }
     return Buffer.concat(chunks);
@@ -1380,7 +1431,9 @@ export class UploadService {
     ) {
       return false;
     }
-    return String(mimeType || '').toLowerCase().startsWith('image/');
+    return String(mimeType || '')
+      .toLowerCase()
+      .startsWith('image/');
   }
 
   private isImageOptimizationEnabled(): boolean {
@@ -1405,7 +1458,10 @@ export class UploadService {
     [FileType.MESSAGE_DOCUMENT]: 'upload.maxSize.messageDocument',
   };
 
-  private async validateFile(file: Express.Multer.File, fileType: FileType): Promise<void> {
+  private async validateFile(
+    file: Express.Multer.File,
+    fileType: FileType,
+  ): Promise<void> {
     const maxSize = await this.getMaxFileSize(fileType);
     this.assertAllowedExtension(file.originalname, fileType);
     const trustedMimeType = this.normalizeContentType(file.mimetype);
@@ -1413,7 +1469,9 @@ export class UploadService {
 
     if (file.size > maxSize) {
       const limitMB = (maxSize / (1024 * 1024)).toFixed(1);
-      throw new BadRequestException(`File size exceeds the ${limitMB}MB limit for ${fileType}`);
+      throw new BadRequestException(
+        `File size exceeds the ${limitMB}MB limit for ${fileType}`,
+      );
     }
   }
 

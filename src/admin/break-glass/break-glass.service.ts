@@ -72,7 +72,9 @@ export class BreakGlassService {
   private isProduction(): boolean {
     return (
       String(
-        this.configService.get<string>('NODE_ENV') ?? process.env.NODE_ENV ?? '',
+        this.configService.get<string>('NODE_ENV') ??
+          process.env.NODE_ENV ??
+          '',
       )
         .trim()
         .toLowerCase() === 'production'
@@ -305,7 +307,12 @@ export class BreakGlassService {
       );
     }
 
-    let payload: { purpose?: string; ip?: string; uaHash?: string; jti?: string };
+    let payload: {
+      purpose?: string;
+      ip?: string;
+      uaHash?: string;
+      jti?: string;
+    };
     try {
       payload = await this.jwtService.verifyAsync(recoveryToken, {
         secret: this.recoveryTokenSecret,
@@ -384,9 +391,8 @@ export class BreakGlassService {
     }
 
     const temporaryPassword = randomBytes(16).toString('base64url');
-    const hashedPassword = await this.passwordService.hashPassword(
-      temporaryPassword,
-    );
+    const hashedPassword =
+      await this.passwordService.hashPassword(temporaryPassword);
 
     const result = await this.prisma.$transaction(async (tx) => {
       const existingUser = await tx.user.findUnique({

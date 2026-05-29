@@ -13,8 +13,15 @@ describe('BreakGlassService', () => {
     .digest('hex')
     .slice(0, 24);
 
-  const buildService = (overrides?: { config?: Record<string, string>; prisma?: any; jwt?: any }) => {
-    const config = overrides?.config ?? { NODE_ENV: 'test', JWT_ACCESS_SECRET: 'test-secret' };
+  const buildService = (overrides?: {
+    config?: Record<string, string>;
+    prisma?: any;
+    jwt?: any;
+  }) => {
+    const config = overrides?.config ?? {
+      NODE_ENV: 'test',
+      JWT_ACCESS_SECRET: 'test-secret',
+    };
     const prisma =
       overrides?.prisma ??
       ({
@@ -33,10 +40,13 @@ describe('BreakGlassService', () => {
       } as any);
     const service = new BreakGlassService(
       prisma,
-      overrides?.jwt ?? ({ verifyAsync: jest.fn(), signAsync: jest.fn() } as any),
+      overrides?.jwt ??
+        ({ verifyAsync: jest.fn(), signAsync: jest.fn() } as any),
       { get: jest.fn((key: string) => config[key]) } as any,
       { hashPassword: jest.fn().mockResolvedValue('hashed-password') } as any,
-      { generateUniqueUsername: jest.fn().mockResolvedValue('ada-okafor') } as any,
+      {
+        generateUniqueUsername: jest.fn().mockResolvedValue('ada-okafor'),
+      } as any,
       {
         getAppName: jest.fn(() => 'Threadly'),
         send: jest.fn().mockResolvedValue({
@@ -81,7 +91,9 @@ describe('BreakGlassService', () => {
     expect(prisma.adminAuditLog.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
-          metadata: expect.objectContaining({ reason: 'missing_recovery_token' }),
+          metadata: expect.objectContaining({
+            reason: 'missing_recovery_token',
+          }),
         }),
       }),
     );
@@ -97,7 +109,9 @@ describe('BreakGlassService', () => {
     expect(prisma.adminAuditLog.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
-          metadata: expect.objectContaining({ reason: 'daily_failure_limit_reached' }),
+          metadata: expect.objectContaining({
+            reason: 'daily_failure_limit_reached',
+          }),
         }),
       }),
     );

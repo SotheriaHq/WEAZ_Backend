@@ -49,7 +49,8 @@ describe('PaymentService', () => {
     if (originalPaymentsMode === undefined) delete process.env.PAYMENTS_MODE;
     else process.env.PAYMENTS_MODE = originalPaymentsMode;
 
-    if (originalPaystackSecretKey === undefined) delete process.env.PAYSTACK_SECRET_KEY;
+    if (originalPaystackSecretKey === undefined)
+      delete process.env.PAYSTACK_SECRET_KEY;
     else process.env.PAYSTACK_SECRET_KEY = originalPaystackSecretKey;
 
     if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
@@ -74,7 +75,8 @@ describe('PaymentService', () => {
     if (originalWebAppUrl === undefined) delete process.env.WEB_APP_URL;
     else process.env.WEB_APP_URL = originalWebAppUrl;
 
-    if (originalWebAppUseHttps === undefined) delete process.env.WEB_APP_USE_HTTPS;
+    if (originalWebAppUseHttps === undefined)
+      delete process.env.WEB_APP_USE_HTTPS;
     else process.env.WEB_APP_USE_HTTPS = originalWebAppUseHttps;
 
     if (originalPaystackCustomCardEntryEnabled === undefined) {
@@ -127,7 +129,9 @@ describe('PaymentService', () => {
       },
     });
 
-    expect(service.preparePaymentRequest(PaymentMethod.PAYSTACK, paymentData)).toEqual(
+    expect(
+      service.preparePaymentRequest(PaymentMethod.PAYSTACK, paymentData),
+    ).toEqual(
       expect.objectContaining({
         email: 'buyer@example.com',
         phone: '08030000000',
@@ -284,7 +288,9 @@ describe('PaymentService', () => {
           cvv: '408',
         },
       }),
-    ).toThrow('Card holder name must closely match the billing name for this order');
+    ).toThrow(
+      'Card holder name must closely match the billing name for this order',
+    );
   });
 
   it('fails closed before provider initialization when validation session is not VALIDATED', async () => {
@@ -347,7 +353,10 @@ describe('PaymentService', () => {
       'Card validation session is no longer usable. Validate your payment details again.',
     );
 
-    expect(getStoredSessionSpy).toHaveBeenCalledWith('session-used-1', 'buyer_1');
+    expect(getStoredSessionSpy).toHaveBeenCalledWith(
+      'session-used-1',
+      'buyer_1',
+    );
   });
 
   it('does not require a validation session before initializing hosted new-card checkout', async () => {
@@ -378,20 +387,18 @@ describe('PaymentService', () => {
     delete process.env.WEB_APP_URL;
     process.env.WEB_APP_USE_HTTPS = 'true';
 
-    const fetchSpy = jest
-      .spyOn(globalThis, 'fetch')
-      .mockResolvedValue({
-        ok: true,
-        json: async () => ({
-          status: true,
-          message: 'Authorization URL created',
-          data: {
-            reference: 'TH-REF-1',
-            access_code: 'ACCESS-CODE-1',
-            authorization_url: 'https://checkout.paystack.com/example',
-          },
-        }),
-      } as Response);
+    const fetchSpy = jest.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        status: true,
+        message: 'Authorization URL created',
+        data: {
+          reference: 'TH-REF-1',
+          access_code: 'ACCESS-CODE-1',
+          authorization_url: 'https://checkout.paystack.com/example',
+        },
+      }),
+    } as Response);
 
     const callbackBaseUrl = service['resolveCallbackBaseUrl']();
     const result = await service['initPaystack'](
@@ -654,7 +661,9 @@ describe('PaymentService', () => {
       {} as any,
       {} as any,
       {
-        enqueuePaymentWebhook: jest.fn().mockRejectedValue(new Error('queue unavailable')),
+        enqueuePaymentWebhook: jest
+          .fn()
+          .mockRejectedValue(new Error('queue unavailable')),
       } as any,
     );
 
@@ -673,7 +682,10 @@ describe('PaymentService', () => {
     await expect(
       target.enqueueWebhook(
         'PAYSTACK',
-        { event: 'charge.success', data: { reference: 'TH-UC-queue-fallback' } },
+        {
+          event: 'charge.success',
+          data: { reference: 'TH-UC-queue-fallback' },
+        },
         {
           headers: {},
           rawBody: '{}',
@@ -707,9 +719,13 @@ describe('PaymentService', () => {
           updateMany: jest.fn().mockResolvedValue({ count: 0 }),
         },
         paymentEvent: {
-          create: jest.fn().mockRejectedValue(
-            new Error('Unique constraint failed on the fields: (`providerEventKey`)'),
-          ),
+          create: jest
+            .fn()
+            .mockRejectedValue(
+              new Error(
+                'Unique constraint failed on the fields: (`providerEventKey`)',
+              ),
+            ),
           findFirst: jest.fn().mockResolvedValue({
             processedAt,
             correlationId: 'corr-dup-existing',
@@ -791,7 +807,11 @@ describe('PaymentService', () => {
         'PAYSTACK',
         {
           event: 'charge.success',
-          data: { reference: 'TH-UC-invalid-sig', amount: 14500, currency: 'NGN' },
+          data: {
+            reference: 'TH-UC-invalid-sig',
+            amount: 14500,
+            currency: 'NGN',
+          },
         },
         {
           headers: { 'x-paystack-signature': 'bad' },
@@ -848,6 +868,57 @@ describe('PaymentService', () => {
         nextStatus: 'PENDING',
         awaitingProviderConfirmation: true,
       }),
+    );
+  });
+
+  it('rejects Paystack provider verification when the reference does not match the payment attempt', async () => {
+    process.env.PAYSTACK_SECRET_KEY = 'sk_test_phase0';
+    jest.spyOn(global, 'fetch').mockResolvedValue({
+      ok: true,
+      json: jest.fn().mockResolvedValue({
+        status: true,
+        data: {
+          reference: 'TH-UC-other',
+          amount: 14500,
+          currency: 'NGN',
+          status: 'success',
+        },
+      }),
+    } as any);
+
+    await expect(
+      (service as any).verifyPaystackAttempt({
+        reference: 'TH-UC-expected',
+        amount: 145,
+        currency: 'NGN',
+      }),
+    ).rejects.toThrow(
+      'Provider verification reference does not match the payment attempt',
+    );
+  });
+
+  it('rejects Paystack provider verification when the amount is missing', async () => {
+    process.env.PAYSTACK_SECRET_KEY = 'sk_test_phase0';
+    jest.spyOn(global, 'fetch').mockResolvedValue({
+      ok: true,
+      json: jest.fn().mockResolvedValue({
+        status: true,
+        data: {
+          reference: 'TH-UC-expected',
+          currency: 'NGN',
+          status: 'success',
+        },
+      }),
+    } as any);
+
+    await expect(
+      (service as any).verifyPaystackAttempt({
+        reference: 'TH-UC-expected',
+        amount: 145,
+        currency: 'NGN',
+      }),
+    ).rejects.toThrow(
+      'Provider verification payload is missing the amount field',
     );
   });
 
@@ -920,9 +991,12 @@ describe('PaymentService', () => {
 
     const target = new PaymentService(
       {
-        $transaction: jest.fn().mockImplementation(async (callback: (client: typeof tx) => Promise<void>) =>
-          callback(tx),
-        ),
+        $transaction: jest
+          .fn()
+          .mockImplementation(
+            async (callback: (client: typeof tx) => Promise<void>) =>
+              callback(tx),
+          ),
       } as any,
       {} as any,
       {} as any,
@@ -931,9 +1005,13 @@ describe('PaymentService', () => {
     );
 
     await expect(
-      (target as any).releaseUnifiedCheckoutAttempt('TH-UC-release-1', 'buyer_1', {
-        reason: 'ATTEMPT_FAILED',
-      }),
+      (target as any).releaseUnifiedCheckoutAttempt(
+        'TH-UC-release-1',
+        'buyer_1',
+        {
+          reason: 'ATTEMPT_FAILED',
+        },
+      ),
     ).resolves.toBeUndefined();
 
     expect(tx.inventoryReservation.update).toHaveBeenCalledWith({
@@ -982,9 +1060,15 @@ describe('PaymentService', () => {
     };
     const target = new PaymentService(
       {
-        $transaction: jest.fn().mockImplementation(async (callback: (client: typeof tx) => Promise<readonly [number, number, number]>) =>
-          callback(tx),
-        ),
+        $transaction: jest
+          .fn()
+          .mockImplementation(
+            async (
+              callback: (
+                client: typeof tx,
+              ) => Promise<readonly [number, number, number]>,
+            ) => callback(tx),
+          ),
       } as any,
       {} as any,
       {} as any,

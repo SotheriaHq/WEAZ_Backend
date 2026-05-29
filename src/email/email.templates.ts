@@ -13,7 +13,12 @@ const BRAND_ACCENT = EMAIL_COLORS.brandAccent;
 const TEXT_SECONDARY = EMAIL_COLORS.textSecondary;
 const TEXT_MUTED = EMAIL_COLORS.textMuted;
 
-function wrap(title: string, body: string, appName: string, footerContext?: string): string {
+function wrap(
+  title: string,
+  body: string,
+  appName: string,
+  footerContext?: string,
+): string {
   return renderEmailShell({
     appName: normalizeCompanyName(appName),
     title,
@@ -199,7 +204,9 @@ export function brandStaffInviteEmail(args: {
   const brandName = args.brandName || 'a brand';
   const roleLabel = args.role.replace(/_/g, ' ').toLowerCase();
   const inviterLabel =
-    args.inviterDisplayName || args.inviterEmail || `A ${companyName} brand owner`;
+    args.inviterDisplayName ||
+    args.inviterEmail ||
+    `A ${companyName} brand owner`;
   const expiresAt =
     args.expiresAt instanceof Date ? args.expiresAt : new Date(args.expiresAt);
   const expiryLabel = Number.isNaN(expiresAt.getTime())
@@ -235,7 +242,7 @@ export function brandVerificationApprovedEmail(
   return {
     subject: `🎉 "${brandName}" is now a verified brand on ${appName}!`,
     html: wrap(
-      'You\'re Verified!',
+      "You're Verified!",
       `${successBox(`<p style="margin:0;color:#166534;font-size:15px;font-weight:600">🎉 Congratulations — <strong>${brandName}</strong> is now verified on ${appName}!</p>`)}
       ${p(`Your verified badge is now live on your public brand profile. Buyers notice it — it signals trust, authenticity, and that you mean business.`)}
       ${p(`Here is what unlocks for verified brands:`)}
@@ -422,7 +429,7 @@ export function accountReactivatedEmail(
   return {
     subject: `Welcome back, ${firstName} — your ${appName} account is active again`,
     html: wrap(
-      'You\'re Back!',
+      "You're Back!",
       `${successBox(`<p style="margin:0;color:#166534;font-size:15px;font-weight:600">✅ Your ${appName} account has been fully reactivated, ${firstName}.</p>`)}
       ${p(`Everything is exactly as you left it — your designs, products, orders, and followers are all still there.`)}
       ${p(`We're glad to have you back. If you have any questions or need help getting back up to speed, reply to this email and our team will assist you right away.`)}
@@ -550,7 +557,8 @@ export function payoutProcessedEmail(
   status: string,
   appName: string,
 ): EmailContent {
-  const isSuccess = status.toLowerCase() === 'processed' || status.toLowerCase() === 'success';
+  const isSuccess =
+    status.toLowerCase() === 'processed' || status.toLowerCase() === 'success';
 
   return {
     subject: isSuccess

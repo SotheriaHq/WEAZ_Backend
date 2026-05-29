@@ -1,4 +1,7 @@
-import { BadRequestException, InternalServerErrorException } from '@nestjs/common';
+import {
+  BadRequestException,
+  InternalServerErrorException,
+} from '@nestjs/common';
 import { AllExceptionsFilter } from './All-exception.filter';
 
 describe('AllExceptionsFilter', () => {
@@ -52,7 +55,10 @@ describe('AllExceptionsFilter', () => {
     const loggerSpy = jest.spyOn((filter as any).logger, 'error');
     const { host, response } = createHost();
 
-    filter.catch(new InternalServerErrorException('database stack secret'), host);
+    filter.catch(
+      new InternalServerErrorException('database stack secret'),
+      host,
+    );
 
     const payload = response.json.mock.calls[0][0];
     expect(JSON.stringify(payload)).not.toContain('database stack secret');

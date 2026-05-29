@@ -162,14 +162,19 @@ export class PaymentController {
 
   @Get('attempts/by-order/:orderId')
   @UseGuards(JwtAuthGuard)
-  async getAttemptByOrderId(@Param('orderId') orderId: string, @Req() req: Request) {
+  async getAttemptByOrderId(
+    @Param('orderId') orderId: string,
+    @Req() req: Request,
+  ) {
     const userId = (req as any).user?.id ?? (req as any).user?.sub;
     return this.paymentService.getPaymentAttemptByOrderId(orderId, userId);
   }
 
   @Get('saved-cards')
   @UseGuards(JwtAuthGuard)
-  async listSavedCards(@Req() req: Request): Promise<SavedPaymentCardSummary[]> {
+  async listSavedCards(
+    @Req() req: Request,
+  ): Promise<SavedPaymentCardSummary[]> {
     const userId = (req as any).user?.id ?? (req as any).user?.sub;
     return this.paymentService.listSavedPaymentCards(userId);
   }
@@ -209,7 +214,10 @@ export class PaymentController {
     @Req() req: Request,
   ) {
     const userId = (req as any).user?.id ?? (req as any).user?.sub;
-    return this.paymentService.getPaymentCardValidationSession(sessionId, userId);
+    return this.paymentService.getPaymentCardValidationSession(
+      sessionId,
+      userId,
+    );
   }
 
   @Get('policy')

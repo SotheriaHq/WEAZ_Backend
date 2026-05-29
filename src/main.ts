@@ -98,11 +98,15 @@ const resolveOptionalHttpsOptions = (
   const resolvedKeyPath = resolve(process.cwd(), keyPath);
 
   if (!existsSync(resolvedCertPath)) {
-    throw new Error(`APP_HTTPS_CERT_PATH file was not found at ${resolvedCertPath}.`);
+    throw new Error(
+      `APP_HTTPS_CERT_PATH file was not found at ${resolvedCertPath}.`,
+    );
   }
 
   if (!existsSync(resolvedKeyPath)) {
-    throw new Error(`APP_HTTPS_KEY_PATH file was not found at ${resolvedKeyPath}.`);
+    throw new Error(
+      `APP_HTTPS_KEY_PATH file was not found at ${resolvedKeyPath}.`,
+    );
   }
 
   return {
@@ -183,17 +187,25 @@ const isPrivateNetworkHostname = (hostname: string) => {
   return false;
 };
 
-const isSameLoopbackOrigin = (incomingOrigin: string, allowedOrigin: string) => {
+const isSameLoopbackOrigin = (
+  incomingOrigin: string,
+  allowedOrigin: string,
+) => {
   const incoming = parseOrigin(incomingOrigin);
   const allowed = parseOrigin(allowedOrigin);
   if (!incoming || !allowed) return false;
 
-  if (!isLoopbackHostname(incoming.hostname) || !isLoopbackHostname(allowed.hostname)) {
+  if (
+    !isLoopbackHostname(incoming.hostname) ||
+    !isLoopbackHostname(allowed.hostname)
+  ) {
     return false;
   }
 
-  const incomingPort = incoming.port || (incoming.protocol === 'https:' ? '443' : '80');
-  const allowedPort = allowed.port || (allowed.protocol === 'https:' ? '443' : '80');
+  const incomingPort =
+    incoming.port || (incoming.protocol === 'https:' ? '443' : '80');
+  const allowedPort =
+    allowed.port || (allowed.protocol === 'https:' ? '443' : '80');
 
   return incoming.protocol === allowed.protocol && incomingPort === allowedPort;
 };
@@ -352,7 +364,8 @@ async function bootstrap() {
 
         const incoming = parseOrigin(origin);
         const incomingHost = incoming?.hostname ?? '';
-        const isPrivateHost = incomingHost && isPrivateNetworkHostname(incomingHost);
+        const isPrivateHost =
+          incomingHost && isPrivateNetworkHostname(incomingHost);
 
         // Allow private/loopback origins by default so local preview builds
         // (which often set NODE_ENV=production) keep working.

@@ -83,6 +83,21 @@ export class MessagingQueryService {
             },
           },
         },
+        replyTo: {
+          select: {
+            id: true,
+            bodyText: true,
+            senderRole: true,
+            senderUserId: true,
+            sender: {
+              select: {
+                id: true,
+                username: true,
+                userProfile: { select: canonicalUserProfileSelect },
+              },
+            },
+          },
+        },
         deliveryReceipts: {
           select: {
             recipientId: true,
@@ -154,6 +169,14 @@ export class MessagingQueryService {
         }
       }
 
+      const replyToRaw = (message as any).replyTo as {
+        id: string;
+        bodyText: string | null;
+        senderRole: string;
+        senderUserId: string | null;
+        sender: { id: string; username: string | null; userProfile: any } | null;
+      } | null;
+
       return {
         ...message,
         sender: message.sender
@@ -163,6 +186,18 @@ export class MessagingQueryService {
               firstName: resolveRequiredProfileField(message.sender, 'firstName'),
               lastName: resolveRequiredProfileField(message.sender, 'lastName'),
               profileImage: resolveProfileImage(message.sender).url,
+            }
+          : null,
+        quotedMessage: replyToRaw
+          ? {
+              id: replyToRaw.id,
+              bodyText: replyToRaw.bodyText,
+              senderRole: replyToRaw.senderRole,
+              senderName: replyToRaw.sender
+                ? resolveRequiredProfileField(replyToRaw.sender, 'firstName') ||
+                  replyToRaw.sender.username ||
+                  replyToRaw.senderRole
+                : replyToRaw.senderRole,
             }
           : null,
         deliveryReceipts: [],

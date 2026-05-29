@@ -416,13 +416,22 @@ export class MessagingService {
     }
 
     const designContextMeta =
-      dto.contextDesignId || dto.contextDesignTitle || dto.contextDesignCoverFileId
+      dto.contextDesignId || dto.contextDesignTitle || dto.contextDesignCoverFileId || dto.contextDesignCoverUrl
         ? {
             ...(dto.contextDesignId ? { contextDesignId: dto.contextDesignId } : {}),
             ...(dto.contextDesignTitle ? { contextDesignTitle: dto.contextDesignTitle } : {}),
             ...(dto.contextDesignCoverFileId ? { contextDesignCoverFileId: dto.contextDesignCoverFileId } : {}),
+            ...(dto.contextDesignCoverUrl ? { contextDesignCoverUrl: dto.contextDesignCoverUrl } : {}),
           }
         : undefined;
+
+    // Validate that replyToMessageId belongs to the same thread (if provided)
+    const safeReplyToMessageId =
+      dto.replyToMessageId
+        ? await this.prisma.message
+            .findFirst({ where: { id: dto.replyToMessageId, threadId: thread.id } })
+            .then((m) => m?.id ?? null)
+        : null;
 
     const message = await this.prisma.message.create({
       data: {
@@ -436,6 +445,7 @@ export class MessagingService {
         clientMessageId: dto.clientMessageId,
         bodyText: bodyText || null,
         ...(designContextMeta ? { metadataJson: designContextMeta } : {}),
+        ...(safeReplyToMessageId ? { replyToMessageId: safeReplyToMessageId } : {}),
         attachments: {
           create: attachments,
         },

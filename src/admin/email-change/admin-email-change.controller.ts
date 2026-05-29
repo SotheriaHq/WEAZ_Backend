@@ -10,7 +10,13 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
-import { IsEmail, IsOptional, IsString, Length, MinLength } from 'class-validator';
+import {
+  IsEmail,
+  IsOptional,
+  IsString,
+  Length,
+  MinLength,
+} from 'class-validator';
 import { AdminEmailChangeService } from './admin-email-change.service';
 import { JwtAuthGuard } from 'src/auth/guard/jwt-auth.guard';
 import { Roles } from 'src/auth/decorator/roles.decorator';
@@ -51,7 +57,11 @@ export class AdminEmailChangeController {
   @RequirePermissions(ADMIN_PERMISSIONS.ADMIN_EMAIL_CHANGE)
   @Throttle({ default: { limit: 3, ttl: 900000 } })
   requestChange(@Request() req: any, @Body() body: RequestEmailChangeDto) {
-    return this.service.requestEmailChange(req.user.id, body.newEmail, body.currentPassword);
+    return this.service.requestEmailChange(
+      req.user.id,
+      body.newEmail,
+      body.currentPassword,
+    );
   }
 
   @Post('verify-otp')
@@ -80,7 +90,10 @@ export class AdminEmailChangeController {
   @Roles(Role.SuperAdmin)
   @RequirePermissions(ADMIN_PERMISSIONS.PERMISSIONS_MANAGE)
   listRequests(@Query('page') page?: string, @Query('limit') limit?: string) {
-    return this.service.listPendingRequests(Number(page) || 1, Number(limit) || 20);
+    return this.service.listPendingRequests(
+      Number(page) || 1,
+      Number(limit) || 20,
+    );
   }
 
   @Post('requests/:id/approve')

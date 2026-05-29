@@ -96,6 +96,15 @@ export class SendMessageDto {
   @IsOptional()
   @IsUUID('4')
   contextDesignCoverFileId?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(2000)
+  contextDesignCoverUrl?: string;
+
+  @IsOptional()
+  @IsUUID('4')
+  replyToMessageId?: string;
 }
 
 export class QueryThreadOrdersDto {

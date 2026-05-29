@@ -71,8 +71,11 @@ export class EmailService {
   private readonly mailjetSenderValidationEnabled: boolean;
   private readonly mailjetEnforceActiveSender: boolean;
   private mailjetSenderValidationPromise: Promise<void> | null = null;
-  private mailjetSenderState: 'unknown' | 'active' | 'inactive' | 'check_failed' =
-    'unknown';
+  private mailjetSenderState:
+    | 'unknown'
+    | 'active'
+    | 'inactive'
+    | 'check_failed' = 'unknown';
   private mailjetSenderStateDetail: string | null = null;
 
   constructor(
@@ -135,7 +138,8 @@ export class EmailService {
         );
 
         if (this.mailjetSenderValidationEnabled) {
-          this.mailjetSenderValidationPromise = this.validateMailjetSenderStatus();
+          this.mailjetSenderValidationPromise =
+            this.validateMailjetSenderStatus();
         }
       } else {
         this.logger.warn(
@@ -227,7 +231,9 @@ export class EmailService {
     }
 
     if (!this.transporter) {
-      this.logger.log(`[EMAIL-DEV] To: ${maskEmailForLog(to)} | Subject: ${subject}`);
+      this.logger.log(
+        `[EMAIL-DEV] To: ${maskEmailForLog(to)} | Subject: ${subject}`,
+      );
       this.logger.debug('[EMAIL-DEV] Body omitted from logs');
       return { providerMessageId: 'dev-local-transport' };
     }
@@ -329,7 +335,11 @@ export class EmailService {
 
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw new Error(
-        this.formatMailjetSendError(response.statusCode, parsedBody, response.body),
+        this.formatMailjetSendError(
+          response.statusCode,
+          parsedBody,
+          response.body,
+        ),
       );
     }
 
@@ -341,9 +351,17 @@ export class EmailService {
       throw new Error('Mailjet API send returned no message entries');
     }
 
-    if (String(firstMessage.Status ?? '').trim().toLowerCase() !== 'success') {
+    if (
+      String(firstMessage.Status ?? '')
+        .trim()
+        .toLowerCase() !== 'success'
+    ) {
       throw new Error(
-        this.formatMailjetSendError(response.statusCode, parsedBody, response.body),
+        this.formatMailjetSendError(
+          response.statusCode,
+          parsedBody,
+          response.body,
+        ),
       );
     }
 
@@ -496,7 +514,9 @@ export class EmailService {
     }
 
     const normalizedEmail = to.trim().toLowerCase();
-    const emailHash = createHash('sha256').update(normalizedEmail).digest('hex');
+    const emailHash = createHash('sha256')
+      .update(normalizedEmail)
+      .digest('hex');
     const suppression = await this.prisma.emailSuppression.findFirst({
       where: {
         recipientEmailHash: emailHash,
@@ -539,7 +559,12 @@ export class EmailService {
     }
 
     try {
-      const providerResult = await this.sendNow(normalizedEmail, subject, html, text);
+      const providerResult = await this.sendNow(
+        normalizedEmail,
+        subject,
+        html,
+        text,
+      );
 
       await this.prisma.$transaction([
         this.prisma.emailDeliveryAttempt.create({
@@ -738,6 +763,9 @@ export class EmailService {
   private async requestMailjetSender(
     emailAddress: string,
   ): Promise<{ statusCode: number; body: string }> {
-    return this.requestMailjet('GET', `/v3/REST/sender?Email=${encodeURIComponent(emailAddress)}`);
+    return this.requestMailjet(
+      'GET',
+      `/v3/REST/sender?Email=${encodeURIComponent(emailAddress)}`,
+    );
   }
 }

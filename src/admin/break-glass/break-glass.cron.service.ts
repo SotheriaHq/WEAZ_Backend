@@ -19,7 +19,9 @@ export class BreakGlassCronService {
   async rotateDailyBreakGlassCode() {
     await this.breakGlassService.pruneExpiredRecoveryTokens();
     if (!this.breakGlassService.isBreakGlassEnabled()) {
-      this.logger.log('Break-glass code rotation skipped because break-glass is disabled.');
+      this.logger.log(
+        'Break-glass code rotation skipped because break-glass is disabled.',
+      );
       return;
     }
 
@@ -27,9 +29,19 @@ export class BreakGlassCronService {
 
     const recoveryEmail = this.config.get<string>('BREAK_GLASS_RECOVERY_EMAIL');
     if (recoveryEmail) {
-      const email = breakGlassCodeEmail(rawCode, this.emailService.getAppName());
-      await this.emailService.send(recoveryEmail, email.subject, email.html, email.text);
-      this.logger.log('Daily break-glass code rotated and delivered via email.');
+      const email = breakGlassCodeEmail(
+        rawCode,
+        this.emailService.getAppName(),
+      );
+      await this.emailService.send(
+        recoveryEmail,
+        email.subject,
+        email.html,
+        email.text,
+      );
+      this.logger.log(
+        'Daily break-glass code rotated and delivered via email.',
+      );
     } else {
       this.logger.warn(
         'Daily break-glass code rotated but BREAK_GLASS_RECOVERY_EMAIL is not set. Code not delivered.',

@@ -9,7 +9,10 @@ import { AdminPermissionGuard } from './guards/admin-permission.guard';
 
 describe('Phase 0 admin permissions', () => {
   const getPermissions = (controller: any, methodName: string) =>
-    Reflect.getMetadata(ADMIN_PERMISSIONS_KEY, controller.prototype[methodName]);
+    Reflect.getMetadata(
+      ADMIN_PERMISSIONS_KEY,
+      controller.prototype[methodName],
+    );
 
   it('requires granular permissions for dashboard, payment simulation, runtime health, and email change', () => {
     expect(getPermissions(AdminDashboardController, 'getStats')).toEqual([
@@ -21,9 +24,9 @@ describe('Phase 0 admin permissions', () => {
     expect(getPermissions(PaymentController, 'runtimeHealth')).toEqual([
       ADMIN_PERMISSIONS.PAYMENTS_RUNTIME_READ,
     ]);
-    expect(getPermissions(AdminEmailChangeController, 'requestChange')).toEqual([
-      ADMIN_PERMISSIONS.ADMIN_EMAIL_CHANGE,
-    ]);
+    expect(getPermissions(AdminEmailChangeController, 'requestChange')).toEqual(
+      [ADMIN_PERMISSIONS.ADMIN_EMAIL_CHANGE],
+    );
   });
 
   it('denies admins without permission and allows admins with permission', () => {

@@ -3097,26 +3097,29 @@ model MessageThreadParticipant {
 }
 
 model Message {
-  id               String                 @id @default(uuid()) @db.Uuid
-  threadId         String                 @db.Uuid
-  contextType      MessageContextType     @default(DIRECT)
-  orderId          String?                @db.Uuid
-  customOrderId    String?                @db.Uuid
-  senderUserId     String?                @db.Uuid
-  senderRole       MessageParticipantRole
-  kind             MessageKind            @default(USER)
-  visibilityState  MessageVisibilityState @default(VISIBLE)
-  clientMessageId  String?
-  bodyText         String?                @db.Text
-  metadataJson     Json?
-  moderatedById    String?                @db.Uuid
-  moderatedAt      DateTime?
-  moderationReason String?
-  createdAt        DateTime               @default(now())
-  editedAt         DateTime?
+  id                String                 @id @default(uuid()) @db.Uuid
+  threadId          String                 @db.Uuid
+  contextType       MessageContextType     @default(DIRECT)
+  orderId           String?                @db.Uuid
+  customOrderId     String?                @db.Uuid
+  senderUserId      String?                @db.Uuid
+  senderRole        MessageParticipantRole
+  kind              MessageKind            @default(USER)
+  visibilityState   MessageVisibilityState @default(VISIBLE)
+  clientMessageId   String?
+  bodyText          String?                @db.Text
+  metadataJson      Json?
+  replyToMessageId  String?                @db.Uuid
+  moderatedById     String?                @db.Uuid
+  moderatedAt       DateTime?
+  moderationReason  String?
+  createdAt         DateTime               @default(now())
+  editedAt          DateTime?
 
   thread           MessageThread            @relation(fields: [threadId], references: [id], onDelete: Cascade)
   sender           User?                    @relation("MessageSender", fields: [senderUserId], references: [id], onDelete: SetNull)
+  replyTo          Message?                 @relation("MessageReply", fields: [replyToMessageId], references: [id], onDelete: SetNull)
+  replies          Message[]                @relation("MessageReply")
   attachments      MessageAttachment[]
   deliveryReceipts MessageDeliveryReceipt[]
 

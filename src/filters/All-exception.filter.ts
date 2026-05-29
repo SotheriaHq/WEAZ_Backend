@@ -22,7 +22,9 @@ export class AllExceptionsFilter implements ExceptionFilter {
     const request = ctx.getRequest<Request>();
     const safePath = request.path || String(request.url ?? '').split('?')[0];
     const isProduction =
-      String(process.env.NODE_ENV ?? '').trim().toLowerCase() === 'production';
+      String(process.env.NODE_ENV ?? '')
+        .trim()
+        .toLowerCase() === 'production';
 
     let status: number;
     let message: string | object;

@@ -132,7 +132,11 @@ describe('BrandVerificationService', () => {
       {} as any,
       notifications as any,
       emailService as any,
-      { get: jest.fn((key: string) => (key === 'NODE_ENV' ? 'production' : undefined)) } as any,
+      {
+        get: jest.fn((key: string) =>
+          key === 'NODE_ENV' ? 'production' : undefined,
+        ),
+      } as any,
     );
     expect(() => (missing as any).encryptDraft({ currentStep: 1 })).toThrow(
       'Verification draft encryption is not configured',
@@ -164,7 +168,11 @@ describe('BrandVerificationService', () => {
       {} as any,
       notifications as any,
       emailService as any,
-      { get: jest.fn((key: string) => (key === 'NODE_ENV' ? 'test' : undefined)) } as any,
+      {
+        get: jest.fn((key: string) =>
+          key === 'NODE_ENV' ? 'test' : undefined,
+        ),
+      } as any,
     );
 
     const encrypted = (target as any).encryptDraft({ currentStep: 2 });

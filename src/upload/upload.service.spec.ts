@@ -58,7 +58,10 @@ describe('ImageService', () => {
             getMaxFileSize: jest.fn().mockResolvedValue(2 * 1024 * 1024),
           },
         },
-        { provide: ImageProcessingQueueService, useValue: { enqueueSingle: jest.fn() } },
+        {
+          provide: ImageProcessingQueueService,
+          useValue: { enqueueSingle: jest.fn() },
+        },
       ],
     }).compile();
 
@@ -181,7 +184,9 @@ describe('ImageService', () => {
       },
     };
 
-    await expect(service.getPublicSignedUrl('file_1')).resolves.toBe('signed-url');
+    await expect(service.getPublicSignedUrl('file_1')).resolves.toBe(
+      'signed-url',
+    );
   });
 
   it('returns stable external public URLs without signing missing S3 fixture keys', async () => {
@@ -229,7 +234,9 @@ describe('ImageService', () => {
       },
     };
 
-    await expect(service.getPublicSignedUrl('avatar_1')).resolves.toBe('signed-url');
+    await expect(service.getPublicSignedUrl('avatar_1')).resolves.toBe(
+      'signed-url',
+    );
   });
 
   it('denies public URL fallback for unreferenced profile upload files', async () => {
@@ -248,7 +255,9 @@ describe('ImageService', () => {
       },
     };
 
-    await expect(service.getPublicSignedUrl('old_avatar_1')).resolves.toBeNull();
+    await expect(
+      service.getPublicSignedUrl('old_avatar_1'),
+    ).resolves.toBeNull();
   });
 
   it('batch public URL resolution prefers stable external URLs before signing', async () => {
@@ -263,7 +272,8 @@ describe('ImageService', () => {
           {
             id: 'file_2',
             s3Key: 'POST_IMAGE/user/file.jpg',
-            s3Url: 'https://test-bucket.s3.us-east-1.amazonaws.com/POST_IMAGE/user/file.jpg',
+            s3Url:
+              'https://test-bucket.s3.us-east-1.amazonaws.com/POST_IMAGE/user/file.jpg',
           },
         ]),
       },
@@ -282,7 +292,8 @@ describe('ImageService', () => {
       id: 'file_1',
       userId: 'user_1',
       s3Key: 'POST_IMAGE/user_1/file_1.jpg',
-      s3Url: 'https://test-bucket.s3.us-east-1.amazonaws.com/POST_IMAGE/user_1/file_1.jpg',
+      s3Url:
+        'https://test-bucket.s3.us-east-1.amazonaws.com/POST_IMAGE/user_1/file_1.jpg',
       fileType: 'POST_IMAGE',
       mimeType: 'image/jpeg',
       processingStatus: 'READY',
@@ -332,6 +343,8 @@ describe('ImageService', () => {
     expect((service as any).prisma.fileUpload.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
+          mimeType: 'image/jpeg',
+          size: 1234,
           processingStatus: 'READY',
         }),
       }),
@@ -426,7 +439,9 @@ describe('ImageService', () => {
       ),
     ).rejects.toThrow('Presign has expired');
 
-    (service as any).prisma.presignedUpload.findUnique.mockResolvedValue(presign);
+    (service as any).prisma.presignedUpload.findUnique.mockResolvedValue(
+      presign,
+    );
     (service as any).s3.send.mockRejectedValue({
       name: 'NoSuchKey',
       $metadata: { httpStatusCode: 404 },
@@ -440,5 +455,97 @@ describe('ImageService', () => {
         1234,
       ),
     ).rejects.toThrow('Uploaded object was not found');
+  });
+
+  it('rejects cross-user and wrong-prefix presigned upload finalization attempts', async () => {
+    const presign = {
+      id: 'file_1',
+      userId: 'user_2',
+      s3Key: 'POST_IMAGE/user_2/file_1.jpg',
+      originalName: 'look.jpg',
+      contentType: 'image/jpeg',
+      fileType: 'POST_IMAGE',
+      status: 'PENDING',
+      expiresAt: new Date(Date.now() + 60_000),
+    };
+    (service as any).prisma = {
+      presignedUpload: {
+        findUnique: jest.fn().mockResolvedValue(presign),
+        update: jest.fn(),
+      },
+      fileUpload: { findUnique: jest.fn(), create: jest.fn() },
+    };
+
+    await expect(
+      service.createFileRecordFromPresign(
+        'file_1',
+        'user_1',
+        presign.s3Key,
+        'image/jpeg',
+        1234,
+      ),
+    ).rejects.toThrow('Presign record does not belong to user');
+
+    (service as any).prisma.presignedUpload.findUnique.mockResolvedValue({
+      ...presign,
+      userId: 'user_1',
+      s3Key: 'POST_IMAGE/user_2/file_1.jpg',
+    });
+
+    await expect(
+      service.createFileRecordFromPresign(
+        'file_1',
+        'user_1',
+        'POST_IMAGE/user_2/file_1.jpg',
+        'image/jpeg',
+        1234,
+      ),
+    ).rejects.toThrow('S3 key does not match expected user prefix');
+  });
+
+  it('rejects client-reported MIME type and size that differ from trusted S3 metadata', async () => {
+    const presign = {
+      id: 'file_1',
+      userId: 'user_1',
+      s3Key: 'POST_IMAGE/user_1/file_1.jpg',
+      originalName: 'look.jpg',
+      contentType: 'image/jpeg',
+      fileType: 'POST_IMAGE',
+      status: 'PENDING',
+      expiresAt: new Date(Date.now() + 60_000),
+    };
+    (service as any).prisma = {
+      presignedUpload: {
+        findUnique: jest.fn().mockResolvedValue(presign),
+        update: jest.fn(),
+      },
+      fileUpload: { findUnique: jest.fn(), create: jest.fn() },
+    };
+    (service as any).s3 = {
+      send: jest.fn().mockResolvedValue({
+        ContentLength: 1234,
+        ContentType: 'image/jpeg',
+      }),
+    };
+
+    await expect(
+      service.createFileRecordFromPresign(
+        'file_1',
+        'user_1',
+        presign.s3Key,
+        'image/png',
+        1234,
+      ),
+    ).rejects.toThrow('Reported file type does not match storage metadata');
+
+    await expect(
+      service.createFileRecordFromPresign(
+        'file_1',
+        'user_1',
+        presign.s3Key,
+        'image/jpeg',
+        4321,
+      ),
+    ).rejects.toThrow('Reported file size does not match storage metadata');
   });
 });

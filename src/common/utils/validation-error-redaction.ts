@@ -16,10 +16,16 @@ export function formatValidationErrors(
     const propertyPath = parentPath
       ? `${parentPath}.${error.property}`
       : error.property || 'unknown';
-    const constraints = error.constraints ? Object.values(error.constraints) : [];
+    const constraints = error.constraints
+      ? Object.values(error.constraints)
+      : [];
 
     if (constraints.length > 0) {
-      result.push({ property: propertyPath, constraints, messages: constraints });
+      result.push({
+        property: propertyPath,
+        constraints,
+        messages: constraints,
+      });
     }
 
     if (Array.isArray(error.children) && error.children.length > 0) {

@@ -5833,7 +5833,11 @@ export class PaymentService implements OnModuleInit {
       .trim()
       .toUpperCase();
 
-    if (!expectedCurrency || !actualCurrency || actualCurrency !== expectedCurrency) {
+    if (
+      !expectedCurrency ||
+      !actualCurrency ||
+      actualCurrency !== expectedCurrency
+    ) {
       return false;
     }
 

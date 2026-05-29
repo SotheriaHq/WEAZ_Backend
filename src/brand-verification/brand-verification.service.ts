@@ -55,14 +55,54 @@ type RejectionReasonRecord = {
 };
 
 const DEFAULT_REJECTION_REASONS = [
-  { code: 'ID_BLURRY', label: 'ID document is blurry or unreadable', category: 'DOCUMENT_QUALITY', sortOrder: 1 },
-  { code: 'ID_EXPIRED', label: 'ID document appears expired', category: 'IDENTITY', sortOrder: 2 },
-  { code: 'ID_NAME_MISMATCH', label: 'Name on ID does not match submitted name', category: 'IDENTITY', sortOrder: 3 },
-  { code: 'PHOTO_UNCLEAR', label: 'Owner photo does not meet requirements', category: 'DOCUMENT_QUALITY', sortOrder: 4 },
-  { code: 'CAC_NUMBER_MISMATCH', label: 'CAC number does not match certificate', category: 'BUSINESS', sortOrder: 5 },
-  { code: 'CAC_INVALID', label: 'CAC certificate is invalid or unverifiable', category: 'BUSINESS', sortOrder: 6 },
-  { code: 'NIN_MISMATCH', label: 'NIN does not match other provided information', category: 'IDENTITY', sortOrder: 7 },
-  { code: 'UNDERAGE', label: 'Applicant appears to be under 18 years old', category: 'IDENTITY', sortOrder: 8 },
+  {
+    code: 'ID_BLURRY',
+    label: 'ID document is blurry or unreadable',
+    category: 'DOCUMENT_QUALITY',
+    sortOrder: 1,
+  },
+  {
+    code: 'ID_EXPIRED',
+    label: 'ID document appears expired',
+    category: 'IDENTITY',
+    sortOrder: 2,
+  },
+  {
+    code: 'ID_NAME_MISMATCH',
+    label: 'Name on ID does not match submitted name',
+    category: 'IDENTITY',
+    sortOrder: 3,
+  },
+  {
+    code: 'PHOTO_UNCLEAR',
+    label: 'Owner photo does not meet requirements',
+    category: 'DOCUMENT_QUALITY',
+    sortOrder: 4,
+  },
+  {
+    code: 'CAC_NUMBER_MISMATCH',
+    label: 'CAC number does not match certificate',
+    category: 'BUSINESS',
+    sortOrder: 5,
+  },
+  {
+    code: 'CAC_INVALID',
+    label: 'CAC certificate is invalid or unverifiable',
+    category: 'BUSINESS',
+    sortOrder: 6,
+  },
+  {
+    code: 'NIN_MISMATCH',
+    label: 'NIN does not match other provided information',
+    category: 'IDENTITY',
+    sortOrder: 7,
+  },
+  {
+    code: 'UNDERAGE',
+    label: 'Applicant appears to be under 18 years old',
+    category: 'IDENTITY',
+    sortOrder: 8,
+  },
   { code: 'CUSTOM', label: 'Other', category: 'OTHER', sortOrder: 99 },
 ];
 
@@ -162,17 +202,28 @@ export class BrandVerificationService {
       verificationAttemptNumber: brand.verificationAttemptNumber,
       verificationRejectionCount: brand.verificationRejectionCount,
       cooldownExpiresAt: brand.verificationCooldownExpiresAt,
-      cooldownRemainingDays: this.getCooldownRemainingDays(brand.verificationCooldownExpiresAt),
-      rejectionReasons: this.normalizeReasonList((brand.verificationRejectionReasons as RejectionReasonRecord[] | null) ?? []),
+      cooldownRemainingDays: this.getCooldownRemainingDays(
+        brand.verificationCooldownExpiresAt,
+      ),
+      rejectionReasons: this.normalizeReasonList(
+        (brand.verificationRejectionReasons as
+          | RejectionReasonRecord[]
+          | null) ?? [],
+      ),
       infoRequestedAt: brand.verificationInfoRequestedAt,
-      infoRequestedItems: (brand.verificationInfoRequestedItems as Record<string, unknown>[] | null) ?? [],
+      infoRequestedItems:
+        (brand.verificationInfoRequestedItems as
+          | Record<string, unknown>[]
+          | null) ?? [],
       infoRequestMessage: brand.verificationInfoRequestMessage ?? null,
       badgeState,
       canSubmit: this.canSubmit(brand),
       nudgeOptOut: brand.verificationNudgeOptOut,
       attemptHistory: attemptHistory.map((attempt) => ({
         ...attempt,
-        rejectionReasons: this.normalizeReasonList((attempt.rejectionReasons as RejectionReasonRecord[] | null) ?? []),
+        rejectionReasons: this.normalizeReasonList(
+          (attempt.rejectionReasons as RejectionReasonRecord[] | null) ?? [],
+        ),
       })),
       latestAttempt,
     };
@@ -188,7 +239,10 @@ export class BrandVerificationService {
 
   async saveDraft(ownerId: string, dto: SaveVerificationDraftDto) {
     const brand = await this.getBrandByOwnerOrThrow(ownerId);
-    const payload = JSON.stringify({ ...dto.draftData, currentStep: dto.currentStep ?? null });
+    const payload = JSON.stringify({
+      ...dto.draftData,
+      currentStep: dto.currentStep ?? null,
+    });
     if (Buffer.byteLength(payload, 'utf8') > 50_000) {
       throw new BadRequestException('Verification draft is too large');
     }
@@ -228,7 +282,11 @@ export class BrandVerificationService {
     };
   }
 
-  async signLetter(ownerId: string, dto: SignVerificationLetterDto, req?: Request) {
+  async signLetter(
+    ownerId: string,
+    dto: SignVerificationLetterDto,
+    req?: Request,
+  ) {
     const brand = await this.getBrandByOwnerOrThrow(ownerId);
     const template = await this.getLetterTemplate();
     if (dto.letterVersion !== template.version) {
@@ -327,7 +385,9 @@ export class BrandVerificationService {
           businessAddress: dto.businessAddress as any,
           idDocumentType: dto.idDocumentType,
           idDocumentNumber: dto.idDocumentNumber,
-          idDocumentExpiryDate: dto.idDocumentExpiryDate ? new Date(dto.idDocumentExpiryDate) : null,
+          idDocumentExpiryDate: dto.idDocumentExpiryDate
+            ? new Date(dto.idDocumentExpiryDate)
+            : null,
           legalEntityType: dto.legalEntityType,
           authorityType: dto.authorityType,
           authorityProofKey: dto.authorityProofKey ?? null,
@@ -360,7 +420,8 @@ export class BrandVerificationService {
           verificationInfoRequestedItems: null,
           verificationInfoRequestMessage: null,
           verificationPhoto1Key: dto.ownerPhotoKey,
-          verificationPhoto2Key: dto.idDocumentBackKey ?? dto.idDocumentFrontKey,
+          verificationPhoto2Key:
+            dto.idDocumentBackKey ?? dto.idDocumentFrontKey,
           verificationNinKey: dto.idDocumentFrontKey,
           verificationCacKey: dto.cacCertificateKey,
           verificationAddress: companyLocation,
@@ -383,24 +444,31 @@ export class BrandVerificationService {
       });
     });
 
-    await this.notifications.create(ownerUserId, NotificationType.VERIFICATION_SUBMITTED, {
-      payload: {
-        brandId: brand.id,
-        attemptNumber,
-        submittedAt: now.toISOString(),
-        targetUrl: '/studio/verification',
+    await this.notifications.create(
+      ownerUserId,
+      NotificationType.VERIFICATION_SUBMITTED,
+      {
+        payload: {
+          brandId: brand.id,
+          attemptNumber,
+          submittedAt: now.toISOString(),
+          targetUrl: '/studio/verification',
+        },
       },
-    });
+    );
 
     const appName = this.emailService.getAppName();
     const mail = emailTemplates.verificationSubmittedEmail(brand.name, appName);
-    void this.emailService.send(brand.email, mail.subject, mail.html, mail.text).catch(() => undefined);
+    void this.emailService
+      .send(brand.email, mail.subject, mail.html, mail.text)
+      .catch(() => undefined);
 
     return {
       verificationStatus: BrandVerificationStatus.PENDING,
       submittedAt: now.toISOString(),
       attemptNumber,
-      message: 'Verification submitted successfully. Review takes 2–5 business days.',
+      message:
+        'Verification submitted successfully. Review takes 2–5 business days.',
     };
   }
 
@@ -409,7 +477,8 @@ export class BrandVerificationService {
     const isActiveVerification =
       brand.verificationStatus === BrandVerificationStatus.PENDING ||
       brand.verificationStatus === BrandVerificationStatus.IN_REVIEW ||
-      brand.verificationStatus === BrandVerificationStatus.ADDITIONAL_INFO_REQUESTED;
+      brand.verificationStatus ===
+        BrandVerificationStatus.ADDITIONAL_INFO_REQUESTED;
     if (!isActiveVerification) {
       throw new BadRequestException('Verification request is not active');
     }
@@ -426,7 +495,9 @@ export class BrandVerificationService {
               BrandVerificationStatus.ADDITIONAL_INFO_REQUESTED,
             ],
           },
-          ...(expectedUpdatedAt ? { updatedAt: new Date(expectedUpdatedAt) } : {}),
+          ...(expectedUpdatedAt
+            ? { updatedAt: new Date(expectedUpdatedAt) }
+            : {}),
         },
         data: {
           verificationStatus: BrandVerificationStatus.CANCELLED,
@@ -436,11 +507,16 @@ export class BrandVerificationService {
         },
       });
       if (result.count !== 1) {
-        throw new ConflictException('Verification state changed before cancellation could be completed');
+        throw new ConflictException(
+          'Verification state changed before cancellation could be completed',
+        );
       }
 
       await tx.brandVerificationAttempt.updateMany({
-        where: { brandId: brand.id, attemptNumber: brand.verificationAttemptNumber },
+        where: {
+          brandId: brand.id,
+          attemptNumber: brand.verificationAttemptNumber,
+        },
         data: {
           status: BrandVerificationStatus.CANCELLED,
           cancelledAt: now,
@@ -448,38 +524,60 @@ export class BrandVerificationService {
       });
     });
 
-    await this.notifications.create(ownerId, NotificationType.VERIFICATION_CANCELLED, {
-      payload: {
-        brandId: brand.id,
-        cancelledAt: now.toISOString(),
-        targetUrl: '/studio/verification',
-      },
-    });
-
-    if (brand.verificationReviewedById) {
-      await this.notifications.create(brand.verificationReviewedById, NotificationType.VERIFICATION_CANCELLED_ADMIN, {
-        actorId: ownerId,
+    await this.notifications.create(
+      ownerId,
+      NotificationType.VERIFICATION_CANCELLED,
+      {
         payload: {
           brandId: brand.id,
-          brandName: brand.name,
           cancelledAt: now.toISOString(),
-          targetUrl: `/admin/brands/${brand.id}/verification-review`,
+          targetUrl: '/studio/verification',
         },
-      });
+      },
+    );
+
+    if (brand.verificationReviewedById) {
+      await this.notifications.create(
+        brand.verificationReviewedById,
+        NotificationType.VERIFICATION_CANCELLED_ADMIN,
+        {
+          actorId: ownerId,
+          payload: {
+            brandId: brand.id,
+            brandName: brand.name,
+            cancelledAt: now.toISOString(),
+            targetUrl: `/admin/brands/${brand.id}/verification-review`,
+          },
+        },
+      );
     }
 
-    return { verificationStatus: BrandVerificationStatus.CANCELLED, cancelledAt: now.toISOString() };
+    return {
+      verificationStatus: BrandVerificationStatus.CANCELLED,
+      cancelledAt: now.toISOString(),
+    };
   }
 
-  async resubmitInfo(ownerId: string, dto: ResubmitVerificationInfoDto, actorId?: string) {
+  async resubmitInfo(
+    ownerId: string,
+    dto: ResubmitVerificationInfoDto,
+    actorId?: string,
+  ) {
     const brand = await this.getBrandByOwnerOrThrow(ownerId);
-    if (brand.verificationStatus !== BrandVerificationStatus.ADDITIONAL_INFO_REQUESTED) {
-      throw new BadRequestException('Verification is not awaiting additional information');
+    if (
+      brand.verificationStatus !==
+      BrandVerificationStatus.ADDITIONAL_INFO_REQUESTED
+    ) {
+      throw new BadRequestException(
+        'Verification is not awaiting additional information',
+      );
     }
     const latestAttempt = await this.getLatestAttemptOrThrow(brand.id);
     const now = new Date();
     const patch: Record<string, unknown> = {};
-    const resolvedOwnerPhoneNumber = this.normalizePhoneNumber(dto.ownerPhoneNumber);
+    const resolvedOwnerPhoneNumber = this.normalizePhoneNumber(
+      dto.ownerPhoneNumber,
+    );
     const companyLocation = dto.businessAddress
       ? `${dto.businessAddress.street}, ${dto.businessAddress.city}, ${dto.businessAddress.state}, ${dto.businessAddress.country}`
       : null;
@@ -510,7 +608,10 @@ export class BrandVerificationService {
 
     for (const [key, value] of Object.entries(dto)) {
       if (value !== undefined) {
-        patch[key] = key.endsWith('DateOfBirth') || key.endsWith('ExpiryDate') ? new Date(String(value)) : value;
+        patch[key] =
+          key.endsWith('DateOfBirth') || key.endsWith('ExpiryDate')
+            ? new Date(String(value))
+            : value;
       }
     }
 
@@ -547,19 +648,24 @@ export class BrandVerificationService {
     });
 
     if (brand.verificationReviewedById) {
-      await this.notifications.create(brand.verificationReviewedById, NotificationType.VERIFICATION_INFO_RESUBMITTED, {
-        actorId: actorId ?? brand.ownerId,
-        payload: {
-          brandId: brand.id,
-          brandName: brand.name,
-          targetUrl: `/admin/brands/${brand.id}/verification-review`,
+      await this.notifications.create(
+        brand.verificationReviewedById,
+        NotificationType.VERIFICATION_INFO_RESUBMITTED,
+        {
+          actorId: actorId ?? brand.ownerId,
+          payload: {
+            brandId: brand.id,
+            brandName: brand.name,
+            targetUrl: `/admin/brands/${brand.id}/verification-review`,
+          },
         },
-      });
+      );
     }
 
     return {
       verificationStatus: BrandVerificationStatus.IN_REVIEW,
-      message: 'Corrections submitted. Your application has been returned to the assigned reviewer.',
+      message:
+        'Corrections submitted. Your application has been returned to the assigned reviewer.',
     };
   }
 
@@ -571,8 +677,14 @@ export class BrandVerificationService {
   }) {
     const take = Math.min(params.limit ?? 30, 100);
     const statuses = params.status
-      ? params.status.split(',').map((value) => value.trim() as BrandVerificationStatus)
-      : [BrandVerificationStatus.PENDING, BrandVerificationStatus.IN_REVIEW, BrandVerificationStatus.ADDITIONAL_INFO_REQUESTED];
+      ? params.status
+          .split(',')
+          .map((value) => value.trim() as BrandVerificationStatus)
+      : [
+          BrandVerificationStatus.PENDING,
+          BrandVerificationStatus.IN_REVIEW,
+          BrandVerificationStatus.ADDITIONAL_INFO_REQUESTED,
+        ];
 
     const items = await this.prisma.brand.findMany({
       where: {
@@ -581,9 +693,35 @@ export class BrandVerificationService {
           ? {
               OR: [
                 { name: { contains: params.search, mode: 'insensitive' } },
-                { owner: { email: { contains: params.search, mode: 'insensitive' } } },
-                { owner: { userProfile: { is: { firstName: { contains: params.search, mode: 'insensitive' } } } } },
-                { owner: { userProfile: { is: { lastName: { contains: params.search, mode: 'insensitive' } } } } },
+                {
+                  owner: {
+                    email: { contains: params.search, mode: 'insensitive' },
+                  },
+                },
+                {
+                  owner: {
+                    userProfile: {
+                      is: {
+                        firstName: {
+                          contains: params.search,
+                          mode: 'insensitive',
+                        },
+                      },
+                    },
+                  },
+                },
+                {
+                  owner: {
+                    userProfile: {
+                      is: {
+                        lastName: {
+                          contains: params.search,
+                          mode: 'insensitive',
+                        },
+                      },
+                    },
+                  },
+                },
               ],
             }
           : {}),
@@ -618,7 +756,9 @@ export class BrandVerificationService {
         owner: this.mapOwnerDisplay(item.owner),
       })),
       nextCursor: hasMore ? results[results.length - 1]?.id : undefined,
-      totalPending: await this.prisma.brand.count({ where: { verificationStatus: BrandVerificationStatus.PENDING } }),
+      totalPending: await this.prisma.brand.count({
+        where: { verificationStatus: BrandVerificationStatus.PENDING },
+      }),
     };
   }
 
@@ -653,14 +793,21 @@ export class BrandVerificationService {
       : [];
     return {
       ...brand,
-      maskedOwnerNin: latestAttempt?.ownerNin ? this.maskValue(latestAttempt.ownerNin, 4) : null,
+      maskedOwnerNin: latestAttempt?.ownerNin
+        ? this.maskValue(latestAttempt.ownerNin, 4)
+        : null,
       documents,
       badgeState: this.getBadgeState(brand as any),
       latestAttempt,
     };
   }
 
-  async claim(brandId: string, adminId: string, req: Request, expectedUpdatedAt?: string) {
+  async claim(
+    brandId: string,
+    adminId: string,
+    req: Request,
+    expectedUpdatedAt?: string,
+  ) {
     const brand = await this.prisma.brand.findUnique({
       where: { id: brandId },
       select: {
@@ -683,7 +830,9 @@ export class BrandVerificationService {
         where: {
           id: brandId,
           verificationStatus: BrandVerificationStatus.PENDING,
-          ...(expectedUpdatedAt ? { updatedAt: new Date(expectedUpdatedAt) } : {}),
+          ...(expectedUpdatedAt
+            ? { updatedAt: new Date(expectedUpdatedAt) }
+            : {}),
         },
         data: {
           verificationStatus: BrandVerificationStatus.IN_REVIEW,
@@ -692,7 +841,9 @@ export class BrandVerificationService {
         },
       });
       if (result.count !== 1) {
-        throw new ConflictException('Verification state changed before it could be claimed');
+        throw new ConflictException(
+          'Verification state changed before it could be claimed',
+        );
       }
       await tx.brandVerificationAttempt.updateMany({
         where: { brandId, attemptNumber: brand.verificationAttemptNumber },
@@ -717,34 +868,59 @@ export class BrandVerificationService {
       });
     });
 
-    await this.notifications.create(brand.ownerId, NotificationType.VERIFICATION_IN_REVIEW, {
-      actorId: adminId,
-      payload: {
-        brandId,
-        reviewStartedAt: now.toISOString(),
-        targetUrl: '/studio/verification',
+    await this.notifications.create(
+      brand.ownerId,
+      NotificationType.VERIFICATION_IN_REVIEW,
+      {
+        actorId: adminId,
+        payload: {
+          brandId,
+          reviewStartedAt: now.toISOString(),
+          targetUrl: '/studio/verification',
+        },
       },
-    });
+    );
 
-    const owner = await this.prisma.user.findUnique({ where: { id: brand.ownerId }, select: { email: true } });
+    const owner = await this.prisma.user.findUnique({
+      where: { id: brand.ownerId },
+      select: { email: true },
+    });
     if (owner?.email) {
       const appName = this.emailService.getAppName();
-      const mail = emailTemplates.verificationInReviewEmail(brand.name, appName);
-      void this.emailService.send(owner.email, mail.subject, mail.html, mail.text).catch(() => undefined);
+      const mail = emailTemplates.verificationInReviewEmail(
+        brand.name,
+        appName,
+      );
+      void this.emailService
+        .send(owner.email, mail.subject, mail.html, mail.text)
+        .catch(() => undefined);
     }
 
-    return { verificationStatus: BrandVerificationStatus.IN_REVIEW, assignedTo: adminId, reviewStartedAt: now.toISOString() };
+    return {
+      verificationStatus: BrandVerificationStatus.IN_REVIEW,
+      assignedTo: adminId,
+      reviewStartedAt: now.toISOString(),
+    };
   }
 
-  async release(brandId: string, adminId: string, req: Request, expectedUpdatedAt?: string) {
-    const brand = await this.mustBeAssignedToAdmin(brandId, adminId, [BrandVerificationStatus.IN_REVIEW]);
+  async release(
+    brandId: string,
+    adminId: string,
+    req: Request,
+    expectedUpdatedAt?: string,
+  ) {
+    const brand = await this.mustBeAssignedToAdmin(brandId, adminId, [
+      BrandVerificationStatus.IN_REVIEW,
+    ]);
     await this.prisma.$transaction(async (tx) => {
       const result = await tx.brand.updateMany({
         where: {
           id: brandId,
           verificationStatus: BrandVerificationStatus.IN_REVIEW,
           verificationReviewedById: adminId,
-          ...(expectedUpdatedAt ? { updatedAt: new Date(expectedUpdatedAt) } : {}),
+          ...(expectedUpdatedAt
+            ? { updatedAt: new Date(expectedUpdatedAt) }
+            : {}),
         },
         data: {
           verificationStatus: BrandVerificationStatus.PENDING,
@@ -753,7 +929,9 @@ export class BrandVerificationService {
         },
       });
       if (result.count !== 1) {
-        throw new ConflictException('Verification state changed before it could be released');
+        throw new ConflictException(
+          'Verification state changed before it could be released',
+        );
       }
       await tx.brandVerificationAttempt.updateMany({
         where: { brandId, attemptNumber: brand.verificationAttemptNumber },
@@ -780,8 +958,15 @@ export class BrandVerificationService {
     return { verificationStatus: BrandVerificationStatus.PENDING };
   }
 
-  async requestInfo(brandId: string, adminId: string, dto: RequestVerificationInfoDto, req: Request) {
-    const brand = await this.mustBeAssignedToAdmin(brandId, adminId, [BrandVerificationStatus.IN_REVIEW]);
+  async requestInfo(
+    brandId: string,
+    adminId: string,
+    dto: RequestVerificationInfoDto,
+    req: Request,
+  ) {
+    const brand = await this.mustBeAssignedToAdmin(brandId, adminId, [
+      BrandVerificationStatus.IN_REVIEW,
+    ]);
     if (!dto.items?.length) {
       throw new BadRequestException('At least one item is required');
     }
@@ -792,7 +977,9 @@ export class BrandVerificationService {
           id: brandId,
           verificationStatus: BrandVerificationStatus.IN_REVIEW,
           verificationReviewedById: adminId,
-          ...(dto.expectedUpdatedAt ? { updatedAt: new Date(dto.expectedUpdatedAt) } : {}),
+          ...(dto.expectedUpdatedAt
+            ? { updatedAt: new Date(dto.expectedUpdatedAt) }
+            : {}),
         },
         data: {
           verificationStatus: BrandVerificationStatus.ADDITIONAL_INFO_REQUESTED,
@@ -802,7 +989,9 @@ export class BrandVerificationService {
         },
       });
       if (result.count !== 1) {
-        throw new ConflictException('Verification state changed before the info request was saved');
+        throw new ConflictException(
+          'Verification state changed before the info request was saved',
+        );
       }
       await tx.brandVerificationAttempt.updateMany({
         where: { brandId, attemptNumber: brand.verificationAttemptNumber },
@@ -822,22 +1011,33 @@ export class BrandVerificationService {
           ipAddress: this.extractIp(req),
           userAgent: req.headers['user-agent'] ?? null,
           previousState: { verificationStatus: brand.verificationStatus },
-          newState: { verificationStatus: BrandVerificationStatus.ADDITIONAL_INFO_REQUESTED, items: dto.items },
+          newState: {
+            verificationStatus:
+              BrandVerificationStatus.ADDITIONAL_INFO_REQUESTED,
+            items: dto.items,
+          },
         },
       });
     });
 
-    await this.notifications.create(brand.ownerId, NotificationType.VERIFICATION_INFO_REQUESTED, {
-      actorId: adminId,
-      payload: {
-        brandId,
-        items: dto.items,
-        message: dto.generalMessage ?? null,
-        targetUrl: '/studio/verification',
+    await this.notifications.create(
+      brand.ownerId,
+      NotificationType.VERIFICATION_INFO_REQUESTED,
+      {
+        actorId: adminId,
+        payload: {
+          brandId,
+          items: dto.items,
+          message: dto.generalMessage ?? null,
+          targetUrl: '/studio/verification',
+        },
       },
-    });
+    );
 
-    const owner = await this.prisma.user.findUnique({ where: { id: brand.ownerId }, select: { email: true } });
+    const owner = await this.prisma.user.findUnique({
+      where: { id: brand.ownerId },
+      select: { email: true },
+    });
     if (owner?.email) {
       const appName = this.emailService.getAppName();
       const mail = emailTemplates.verificationInfoRequestedEmail(
@@ -845,18 +1045,33 @@ export class BrandVerificationService {
         dto.items.map((item) => item.label),
         appName,
       );
-      void this.emailService.send(owner.email, mail.subject, mail.html, mail.text).catch(() => undefined);
+      void this.emailService
+        .send(owner.email, mail.subject, mail.html, mail.text)
+        .catch(() => undefined);
     }
 
-    return { verificationStatus: BrandVerificationStatus.ADDITIONAL_INFO_REQUESTED, requestedAt: now.toISOString() };
+    return {
+      verificationStatus: BrandVerificationStatus.ADDITIONAL_INFO_REQUESTED,
+      requestedAt: now.toISOString(),
+    };
   }
 
-  async review(brandId: string, adminId: string, dto: ReviewBrandVerificationDto, req: Request) {
-    const brand = await this.mustBeAssignedToAdmin(brandId, adminId, [BrandVerificationStatus.IN_REVIEW]);
+  async review(
+    brandId: string,
+    adminId: string,
+    dto: ReviewBrandVerificationDto,
+    req: Request,
+  ) {
+    const brand = await this.mustBeAssignedToAdmin(brandId, adminId, [
+      BrandVerificationStatus.IN_REVIEW,
+    ]);
     const now = new Date();
     const decision = dto.decision;
     const latestAttempt = await this.getLatestAttemptOrThrow(brandId);
-    const owner = await this.prisma.user.findUnique({ where: { id: brand.ownerId }, select: { email: true, status: true } });
+    const owner = await this.prisma.user.findUnique({
+      where: { id: brand.ownerId },
+      select: { email: true, status: true },
+    });
 
     if (decision === 'APPROVED' && owner?.status !== 'ACTIVE') {
       throw new ForbiddenException('Cannot approve a non-active owner account');
@@ -865,14 +1080,25 @@ export class BrandVerificationService {
       await this.ensureNinNotApprovedElsewhere(latestAttempt.ownerNin, brandId);
     }
     if (decision === 'REJECTED' && !dto.rejectionReasons?.length) {
-      throw new BadRequestException('At least one rejection reason is required');
+      throw new BadRequestException(
+        'At least one rejection reason is required',
+      );
     }
 
-    const newStatus = decision === 'APPROVED' ? BrandVerificationStatus.APPROVED : BrandVerificationStatus.REJECTED;
-    const rejectionReasons = this.normalizeReasonList(dto.rejectionReasons ?? []);
-    const cooldownExpiresAt = decision === 'REJECTED'
-      ? this.calculateCooldownExpiry((brand.verificationRejectionCount ?? 0) + 1, now)
-      : null;
+    const newStatus =
+      decision === 'APPROVED'
+        ? BrandVerificationStatus.APPROVED
+        : BrandVerificationStatus.REJECTED;
+    const rejectionReasons = this.normalizeReasonList(
+      dto.rejectionReasons ?? [],
+    );
+    const cooldownExpiresAt =
+      decision === 'REJECTED'
+        ? this.calculateCooldownExpiry(
+            (brand.verificationRejectionCount ?? 0) + 1,
+            now,
+          )
+        : null;
 
     await this.prisma.$transaction(async (tx) => {
       const result = await tx.brand.updateMany({
@@ -880,21 +1106,33 @@ export class BrandVerificationService {
           id: brandId,
           verificationStatus: BrandVerificationStatus.IN_REVIEW,
           verificationReviewedById: adminId,
-          ...(dto.expectedUpdatedAt ? { updatedAt: new Date(dto.expectedUpdatedAt) } : {}),
+          ...(dto.expectedUpdatedAt
+            ? { updatedAt: new Date(dto.expectedUpdatedAt) }
+            : {}),
         },
         data: {
           verificationStatus: newStatus,
           verificationReviewedAt: now,
           verificationReviewStartedAt: brand.verificationReviewStartedAt ?? now,
-          verificationRejectionReason: decision === 'REJECTED' ? rejectionReasons.map((reason) => reason.label).join('; ') : null,
-          verificationRejectionReasons: decision === 'REJECTED' ? (rejectionReasons as any) : null,
-          verificationRejectionCount: decision === 'REJECTED' ? { increment: 1 } : undefined,
+          verificationRejectionReason:
+            decision === 'REJECTED'
+              ? rejectionReasons.map((reason) => reason.label).join('; ')
+              : null,
+          verificationRejectionReasons:
+            decision === 'REJECTED' ? (rejectionReasons as any) : null,
+          verificationRejectionCount:
+            decision === 'REJECTED' ? { increment: 1 } : undefined,
           verificationCooldownExpiresAt: cooldownExpiresAt,
-          verificationBrandNameAtApproval: decision === 'APPROVED' ? brand.name : brand.verificationBrandNameAtApproval,
+          verificationBrandNameAtApproval:
+            decision === 'APPROVED'
+              ? brand.name
+              : brand.verificationBrandNameAtApproval,
         },
       });
       if (result.count !== 1) {
-        throw new ConflictException('Verification state changed before the review decision was saved');
+        throw new ConflictException(
+          'Verification state changed before the review decision was saved',
+        );
       }
 
       await tx.brandVerificationAttempt.update({
@@ -903,7 +1141,8 @@ export class BrandVerificationService {
           status: newStatus,
           reviewedAt: now,
           reviewedById: adminId,
-          rejectionReasons: decision === 'REJECTED' ? (rejectionReasons as any) : null,
+          rejectionReasons:
+            decision === 'REJECTED' ? (rejectionReasons as any) : null,
         },
       });
 
@@ -928,36 +1167,51 @@ export class BrandVerificationService {
 
     const appName = this.emailService.getAppName();
     if (decision === 'APPROVED') {
-      await this.notifications.create(brand.ownerId, NotificationType.VERIFICATION_APPROVED, {
-        actorId: adminId,
-        payload: {
-          brandId,
-          approvedAt: now.toISOString(),
-          targetUrl: '/studio/verification',
+      await this.notifications.create(
+        brand.ownerId,
+        NotificationType.VERIFICATION_APPROVED,
+        {
+          actorId: adminId,
+          payload: {
+            brandId,
+            approvedAt: now.toISOString(),
+            targetUrl: '/studio/verification',
+          },
         },
-      });
+      );
       if (owner?.email) {
-        const mail = emailTemplates.brandVerificationApprovedEmail(brand.name, appName);
-        void this.emailService.send(owner.email, mail.subject, mail.html, mail.text).catch(() => undefined);
+        const mail = emailTemplates.brandVerificationApprovedEmail(
+          brand.name,
+          appName,
+        );
+        void this.emailService
+          .send(owner.email, mail.subject, mail.html, mail.text)
+          .catch(() => undefined);
       }
     } else {
-      await this.notifications.create(brand.ownerId, NotificationType.VERIFICATION_REJECTED, {
-        actorId: adminId,
-        payload: {
-          brandId,
-          rejectedAt: now.toISOString(),
-          reasons: rejectionReasons,
-          cooldownExpiresAt: cooldownExpiresAt?.toISOString() ?? null,
-          targetUrl: '/studio/verification',
+      await this.notifications.create(
+        brand.ownerId,
+        NotificationType.VERIFICATION_REJECTED,
+        {
+          actorId: adminId,
+          payload: {
+            brandId,
+            rejectedAt: now.toISOString(),
+            reasons: rejectionReasons,
+            cooldownExpiresAt: cooldownExpiresAt?.toISOString() ?? null,
+            targetUrl: '/studio/verification',
+          },
         },
-      });
+      );
       if (owner?.email) {
         const mail = emailTemplates.brandVerificationRejectedEmail(
           brand.name,
           rejectionReasons.map((reason) => reason.label).join('; '),
           appName,
         );
-        void this.emailService.send(owner.email, mail.subject, mail.html, mail.text).catch(() => undefined);
+        void this.emailService
+          .send(owner.email, mail.subject, mail.html, mail.text)
+          .catch(() => undefined);
       }
     }
 
@@ -968,7 +1222,12 @@ export class BrandVerificationService {
     };
   }
 
-  async reassignToSelf(brandId: string, adminId: string, req: Request, expectedUpdatedAt?: string) {
+  async reassignToSelf(
+    brandId: string,
+    adminId: string,
+    req: Request,
+    expectedUpdatedAt?: string,
+  ) {
     const brand = await this.prisma.brand.findUnique({
       where: { id: brandId },
       select: {
@@ -982,7 +1241,8 @@ export class BrandVerificationService {
     if (!brand) throw new NotFoundException('Brand not found');
     const reassignableStatus =
       brand.verificationStatus === BrandVerificationStatus.IN_REVIEW ||
-      brand.verificationStatus === BrandVerificationStatus.ADDITIONAL_INFO_REQUESTED;
+      brand.verificationStatus ===
+        BrandVerificationStatus.ADDITIONAL_INFO_REQUESTED;
     if (!reassignableStatus) {
       throw new BadRequestException('Verification is not assigned for review');
     }
@@ -991,13 +1251,22 @@ export class BrandVerificationService {
       const result = await tx.brand.updateMany({
         where: {
           id: brandId,
-          verificationStatus: { in: [BrandVerificationStatus.IN_REVIEW, BrandVerificationStatus.ADDITIONAL_INFO_REQUESTED] },
-          ...(expectedUpdatedAt ? { updatedAt: new Date(expectedUpdatedAt) } : {}),
+          verificationStatus: {
+            in: [
+              BrandVerificationStatus.IN_REVIEW,
+              BrandVerificationStatus.ADDITIONAL_INFO_REQUESTED,
+            ],
+          },
+          ...(expectedUpdatedAt
+            ? { updatedAt: new Date(expectedUpdatedAt) }
+            : {}),
         },
         data: { verificationReviewedById: adminId },
       });
       if (result.count !== 1) {
-        throw new ConflictException('Verification state changed before reassignment could be completed');
+        throw new ConflictException(
+          'Verification state changed before reassignment could be completed',
+        );
       }
       await tx.brandVerificationAttempt.updateMany({
         where: { brandId, attemptNumber: brand.verificationAttemptNumber },
@@ -1012,17 +1281,31 @@ export class BrandVerificationService {
           targetId: brandId,
           ipAddress: this.extractIp(req),
           userAgent: req.headers['user-agent'] ?? null,
-          previousState: { verificationReviewedById: brand.verificationReviewedById },
+          previousState: {
+            verificationReviewedById: brand.verificationReviewedById,
+          },
           newState: { verificationReviewedById: adminId },
         },
       });
     });
 
-    return { verificationStatus: brand.verificationStatus, assignedTo: adminId, reassignedAt: new Date().toISOString() };
+    return {
+      verificationStatus: brand.verificationStatus,
+      assignedTo: adminId,
+      reassignedAt: new Date().toISOString(),
+    };
   }
 
-  async addNote(brandId: string, adminId: string, dto: VerificationNoteDto, req: Request) {
-    const brand = await this.prisma.brand.findUnique({ where: { id: brandId }, select: { id: true } });
+  async addNote(
+    brandId: string,
+    adminId: string,
+    dto: VerificationNoteDto,
+    req: Request,
+  ) {
+    const brand = await this.prisma.brand.findUnique({
+      where: { id: brandId },
+      select: { id: true },
+    });
     if (!brand) throw new NotFoundException('Brand not found');
 
     const note = await this.prisma.$transaction(async (tx) => {
@@ -1121,10 +1404,7 @@ export class BrandVerificationService {
     };
   }
 
-  private mapOwnerDisplay(owner: {
-    userProfile?: any;
-    [key: string]: any;
-  }) {
+  private mapOwnerDisplay(owner: { userProfile?: any; [key: string]: any }) {
     const { userProfile, ...rest } = owner;
     const profileImage = resolveProfileImage({ userProfile });
     return {
@@ -1136,23 +1416,37 @@ export class BrandVerificationService {
     };
   }
 
-  private assertCanSubmit(brand: Awaited<ReturnType<BrandVerificationService['getBrandByOwnerOrThrow']>>) {
+  private assertCanSubmit(
+    brand: Awaited<
+      ReturnType<BrandVerificationService['getBrandByOwnerOrThrow']>
+    >,
+  ) {
     if (brand.owner.status !== 'ACTIVE' || brand.owner.deactivatedAt) {
       throw new ForbiddenException('Owner account is not active');
     }
     const hasActiveVerification =
       brand.verificationStatus === BrandVerificationStatus.PENDING ||
       brand.verificationStatus === BrandVerificationStatus.IN_REVIEW ||
-      brand.verificationStatus === BrandVerificationStatus.ADDITIONAL_INFO_REQUESTED;
+      brand.verificationStatus ===
+        BrandVerificationStatus.ADDITIONAL_INFO_REQUESTED;
     if (hasActiveVerification) {
-      throw new ConflictException('You already have an active verification request');
+      throw new ConflictException(
+        'You already have an active verification request',
+      );
     }
-    if (brand.verificationCooldownExpiresAt && brand.verificationCooldownExpiresAt > new Date()) {
+    if (
+      brand.verificationCooldownExpiresAt &&
+      brand.verificationCooldownExpiresAt > new Date()
+    ) {
       throw new ForbiddenException('Verification cooldown is active');
     }
   }
 
-  private canSubmit(brand: Awaited<ReturnType<BrandVerificationService['getBrandByOwnerOrThrow']>>) {
+  private canSubmit(
+    brand: Awaited<
+      ReturnType<BrandVerificationService['getBrandByOwnerOrThrow']>
+    >,
+  ) {
     try {
       this.assertCanSubmit(brand);
       return true;
@@ -1161,20 +1455,32 @@ export class BrandVerificationService {
     }
   }
 
-  private async validateVerificationDocuments(ownerId: string, dto: SubmitBrandVerificationDto) {
+  private async validateVerificationDocuments(
+    ownerId: string,
+    dto: SubmitBrandVerificationDto,
+  ) {
     const requiredKeys = [
       dto.ownerPhotoKey,
       dto.idDocumentFrontKey,
       dto.cacCertificateKey,
       dto.letterKey,
-      dto.authorityType === VerificationAuthorityType.AUTHORIZED_REPRESENTATIVE ? dto.authorityProofKey : undefined,
-      this.requiresBackImage(dto.idDocumentType) ? dto.idDocumentBackKey : undefined,
+      dto.authorityType === VerificationAuthorityType.AUTHORIZED_REPRESENTATIVE
+        ? dto.authorityProofKey
+        : undefined,
+      this.requiresBackImage(dto.idDocumentType)
+        ? dto.idDocumentBackKey
+        : undefined,
     ];
     await this.buildEvidenceManifest(ownerId, requiredKeys);
   }
 
-  private async buildEvidenceManifest(ownerId: string, keys: Array<string | undefined>) {
-    const filteredKeys = keys.filter((value): value is string => Boolean(value));
+  private async buildEvidenceManifest(
+    ownerId: string,
+    keys: Array<string | undefined>,
+  ) {
+    const filteredKeys = keys.filter((value): value is string =>
+      Boolean(value),
+    );
     const rows = await Promise.all(
       filteredKeys.map((key) => this.getOwnedVerificationFile(ownerId, key)),
     );
@@ -1199,7 +1505,9 @@ export class BrandVerificationService {
       },
     });
     if (!file) {
-      throw new BadRequestException(`Verification file does not belong to this brand owner: ${s3Key}`);
+      throw new BadRequestException(
+        `Verification file does not belong to this brand owner: ${s3Key}`,
+      );
     }
     return file;
   }
@@ -1213,7 +1521,10 @@ export class BrandVerificationService {
     return attempt;
   }
 
-  private async ensureNinNotApprovedElsewhere(ownerNin: string, brandId: string) {
+  private async ensureNinNotApprovedElsewhere(
+    ownerNin: string,
+    brandId: string,
+  ) {
     const conflict = await this.prisma.brandVerificationAttempt.findFirst({
       where: {
         ownerNin,
@@ -1227,20 +1538,48 @@ export class BrandVerificationService {
     });
 
     if (conflict) {
-      throw new ConflictException('This NIN is already associated with a verified brand');
+      throw new ConflictException(
+        'This NIN is already associated with a verified brand',
+      );
     }
   }
 
   private async buildReviewerDocuments(
-    attempt: Awaited<ReturnType<BrandVerificationService['getLatestAttemptOrThrow']>>,
+    attempt: Awaited<
+      ReturnType<BrandVerificationService['getLatestAttemptOrThrow']>
+    >,
   ) {
     const docConfig = [
-      { key: 'ownerPhotoKey', label: 'Owner photo', s3Key: attempt.ownerPhotoKey },
-      { key: 'idDocumentFrontKey', label: 'ID front', s3Key: attempt.idDocumentFrontKey },
-      { key: 'idDocumentBackKey', label: 'ID back', s3Key: attempt.idDocumentBackKey },
-      { key: 'cacCertificateKey', label: 'CAC certificate', s3Key: attempt.cacCertificateKey },
-      { key: 'authorityProofKey', label: 'Authority proof', s3Key: attempt.authorityProofKey },
-      { key: 'letterOfConfirmationKey', label: 'Signed verification letter', s3Key: attempt.letterOfConfirmationKey },
+      {
+        key: 'ownerPhotoKey',
+        label: 'Owner photo',
+        s3Key: attempt.ownerPhotoKey,
+      },
+      {
+        key: 'idDocumentFrontKey',
+        label: 'ID front',
+        s3Key: attempt.idDocumentFrontKey,
+      },
+      {
+        key: 'idDocumentBackKey',
+        label: 'ID back',
+        s3Key: attempt.idDocumentBackKey,
+      },
+      {
+        key: 'cacCertificateKey',
+        label: 'CAC certificate',
+        s3Key: attempt.cacCertificateKey,
+      },
+      {
+        key: 'authorityProofKey',
+        label: 'Authority proof',
+        s3Key: attempt.authorityProofKey,
+      },
+      {
+        key: 'letterOfConfirmationKey',
+        label: 'Signed verification letter',
+        s3Key: attempt.letterOfConfirmationKey,
+      },
     ].filter((item) => Boolean(item.s3Key));
 
     const files = await this.prisma.fileUpload.findMany({
@@ -1312,25 +1651,46 @@ export class BrandVerificationService {
     });
     if (!brand) throw new NotFoundException('Brand not found');
     if (!allowedStatuses.includes(brand.verificationStatus)) {
-      throw new BadRequestException('Verification is not in a reviewable state');
+      throw new BadRequestException(
+        'Verification is not in a reviewable state',
+      );
     }
-    if (brand.verificationReviewedById && brand.verificationReviewedById !== adminId) {
-      throw new ForbiddenException('Verification is assigned to another reviewer');
+    if (
+      brand.verificationReviewedById &&
+      brand.verificationReviewedById !== adminId
+    ) {
+      throw new ForbiddenException(
+        'Verification is assigned to another reviewer',
+      );
     }
     return brand;
   }
 
-  private normalizeReasonList(reasons: Array<RejectionReasonRecord | { code: string; label: string; customReason?: string }>) {
+  private normalizeReasonList(
+    reasons: Array<
+      | RejectionReasonRecord
+      | { code: string; label: string; customReason?: string }
+    >,
+  ) {
     return reasons.map((reason) => ({
       code: reason.code,
-      label: reason.customReason?.trim() ? `${reason.label}: ${reason.customReason.trim()}` : reason.label,
+      label: reason.customReason?.trim()
+        ? `${reason.label}: ${reason.customReason.trim()}`
+        : reason.label,
       category: 'category' in reason ? reason.category : 'OTHER',
       customReason: reason.customReason?.trim() || undefined,
     }));
   }
 
   private calculateCooldownExpiry(rejectionCount: number, from: Date) {
-    const days = rejectionCount <= 1 ? 14 : rejectionCount === 2 ? 30 : rejectionCount === 3 ? 60 : 90;
+    const days =
+      rejectionCount <= 1
+        ? 14
+        : rejectionCount === 2
+          ? 30
+          : rejectionCount === 3
+            ? 60
+            : 90;
     return new Date(from.getTime() + days * 24 * 60 * 60 * 1000);
   }
 
@@ -1366,7 +1726,9 @@ export class BrandVerificationService {
       ?.trim();
     const isProduction =
       String(
-        this.configService.get<string>('NODE_ENV') ?? process.env.NODE_ENV ?? '',
+        this.configService.get<string>('NODE_ENV') ??
+          process.env.NODE_ENV ??
+          '',
       )
         .trim()
         .toLowerCase() === 'production';
@@ -1426,7 +1788,10 @@ export class BrandVerificationService {
   }
 
   private escapePdfText(value: string) {
-    return value.replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
+    return value
+      .replace(/\\/g, '\\\\')
+      .replace(/\(/g, '\\(')
+      .replace(/\)/g, '\\)');
   }
 
   private buildSimplePdf(lines: string[]) {

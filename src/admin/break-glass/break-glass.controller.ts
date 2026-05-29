@@ -24,7 +24,8 @@ export class BreakGlassController {
   @Post('recover-superadmin')
   @Throttle({ default: { limit: 2, ttl: 900000 } })
   @ApiOperation({
-    summary: 'Recover/create SuperAdmin account using break-glass recovery token',
+    summary:
+      'Recover/create SuperAdmin account using break-glass recovery token',
   })
   async recoverSuperAdmin(
     @Body(ValidationPipe) body: RecoverSuperAdminDto,
