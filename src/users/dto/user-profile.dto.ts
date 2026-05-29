@@ -71,3 +71,47 @@ export class UserProfileResponseDto {
     Object.assign(this, partial);
   }
 }
+
+export class PublicUserProfileResponseDto {
+  @IsUUID()
+  id: string;
+
+  @IsString()
+  username: string;
+
+  @IsString()
+  firstName: string;
+
+  @IsString()
+  lastName: string;
+
+  @IsString()
+  @IsOptional()
+  profileImage?: string;
+
+  @IsString()
+  @IsOptional()
+  profileImageId?: string;
+
+  @IsString()
+  @IsOptional()
+  bannerImage?: string;
+
+  @IsString()
+  @IsOptional()
+  bannerImageId?: string;
+
+  @IsEnum(ProfileVisibility)
+  profileVisibility: ProfileVisibility;
+
+  @IsEnum(UserType)
+  type: UserType;
+
+  @IsString()
+  @IsOptional()
+  createdAt?: string;
+
+  constructor(partial: Partial<PublicUserProfileResponseDto>) {
+    Object.assign(this, partial);
+  }
+}

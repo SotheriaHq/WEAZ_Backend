@@ -97,6 +97,121 @@ describe('UserProfileService theme preferences', () => {
     expect(result.profileVisibility).toBe(ProfileVisibility.LOCKED);
   });
 
+  it('redacts private fields and internal media metadata from public profile by id', async () => {
+    (mockPrisma.user.findUnique as jest.Mock).mockResolvedValue({
+      id: 'user-1',
+      username: 'alex',
+      email: 'alex@example.test',
+      role: 'Admin',
+      type: UserType.REGULAR,
+      themePreference: 'dark',
+      createdAt: new Date('2026-05-05T00:00:00.000Z'),
+      authIdentities: [{ provider: 'GOOGLE' }],
+      trustedDevices: [{ id: 'device-1' }],
+      userProfile: {
+        firstName: 'Alex',
+        lastName: 'Doe',
+        phoneNumber: '+2348012345678',
+        address: '12 Private Street, Lagos',
+        profileImage:
+          'https://threadly-private.s3.eu-north-1.amazonaws.com/profile/avatar.jpg',
+        profileImageId: 'profile-avatar-id',
+        profileImageFile: {
+          id: 'profile-avatar-id',
+          s3Key: 'profile/private/avatar.jpg',
+          s3Url:
+            'https://threadly-private.s3.eu-north-1.amazonaws.com/profile/avatar.jpg',
+          fileName: 'avatar.jpg',
+          originalName: 'avatar.jpg',
+        },
+        bannerImage: 'https://cdn.threadly.test/banner.jpg',
+        bannerImageId: 'profile-banner-id',
+        bannerImageFile: {
+          id: 'profile-banner-id',
+          s3Key: 'profile/private/banner.jpg',
+          s3Url: 'https://cdn.threadly.test/banner.jpg',
+        },
+        profileVisibility: ProfileVisibility.UNLOCKED,
+      },
+    });
+
+    const result = await service.getPublicProfile('user-1');
+    const publicResult = result as unknown as Record<string, unknown>;
+
+    expect(result).toMatchObject({
+      id: 'user-1',
+      username: 'alex',
+      firstName: 'Alex',
+      lastName: 'Doe',
+      type: UserType.REGULAR,
+      profileImageId: 'profile-avatar-id',
+      bannerImage: 'https://cdn.threadly.test/banner.jpg',
+      bannerImageId: 'profile-banner-id',
+      profileVisibility: ProfileVisibility.UNLOCKED,
+      createdAt: '2026-05-05T00:00:00.000Z',
+    });
+    expect(publicResult.profileImage).toBeUndefined();
+    expect(publicResult.address).toBeUndefined();
+    expect(publicResult.location).toBeUndefined();
+    expect(publicResult.phoneNumber).toBeUndefined();
+    expect(publicResult.email).toBeUndefined();
+    expect(publicResult.role).toBeUndefined();
+    expect(publicResult.themePreference).toBeUndefined();
+    expect(publicResult.authIdentities).toBeUndefined();
+    expect(publicResult.trustedDevices).toBeUndefined();
+    expect(publicResult.profileImageFile).toBeUndefined();
+    expect(publicResult.bannerImageFile).toBeUndefined();
+    expect(JSON.stringify(result)).not.toContain('s3Key');
+    expect(JSON.stringify(result)).not.toContain('Private Street');
+    expect(JSON.stringify(result)).not.toContain('+2348012345678');
+  });
+
+  it('redacts private fields from public profile by username, including locked profiles', async () => {
+    (mockPrisma.user.findUnique as jest.Mock).mockResolvedValue({
+      id: 'user-2',
+      username: 'zara',
+      email: 'zara@example.test',
+      type: UserType.REGULAR,
+      themePreference: 'system',
+      createdAt: new Date('2026-05-06T00:00:00.000Z'),
+      userProfile: {
+        firstName: 'Zara',
+        lastName: 'Okafor',
+        phoneNumber: '+2348099999999',
+        address: 'Private Estate, Abuja',
+        profileImage: 'https://images.example.test/zara.jpg',
+        profileImageId: null,
+        profileImageFile: null,
+        bannerImage: null,
+        bannerImageId: null,
+        bannerImageFile: null,
+        profileVisibility: ProfileVisibility.LOCKED,
+      },
+    });
+
+    const result = await service.resolvePublicProfileByUsername(' zara ');
+    const publicResult = result as unknown as Record<string, unknown>;
+
+    expect(mockPrisma.user.findUnique).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { username: 'zara' },
+      }),
+    );
+    expect(result).toMatchObject({
+      id: 'user-2',
+      username: 'zara',
+      firstName: 'Zara',
+      lastName: 'Okafor',
+      profileImage: 'https://images.example.test/zara.jpg',
+      profileVisibility: ProfileVisibility.LOCKED,
+    });
+    expect(publicResult.address).toBeUndefined();
+    expect(publicResult.location).toBeUndefined();
+    expect(publicResult.phoneNumber).toBeUndefined();
+    expect(publicResult.email).toBeUndefined();
+    expect(publicResult.themePreference).toBeUndefined();
+  });
+
   it.each(['light', 'dark', 'system'] as const)(
     'updates themePreference to %s',
     async (themePreference) => {

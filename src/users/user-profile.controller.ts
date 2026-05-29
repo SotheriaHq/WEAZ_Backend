@@ -11,7 +11,6 @@ import {
 import { AuthGuard } from '@nestjs/passport';
 import { UserProfileService } from './user-profile.service';
 import { UpdateProfileVisibilityDto } from './dto/update-profile-visibility.dto';
-import { UserProfileResponseDto } from './dto/user-profile.dto';
 import { OptionalJwtAuthGuard } from '../auth/guard/optional-jwt-auth.guard';
 import { UpdateUserPreferencesDto } from './dto/update-user-preferences.dto';
 
@@ -35,16 +34,14 @@ export class UserProfileController {
 
   @Get(':id/profile')
   @UseGuards(AuthGuard('jwt'))
-  async getPublicProfile(@Param('id') userId: string, @Req() req) {
-    const viewerId = this.getAuthUserId(req);
-    return this.userProfileService.getPublicProfile(userId, viewerId);
+  async getPublicProfile(@Param('id') userId: string) {
+    return this.userProfileService.getPublicProfile(userId);
   }
 
   @Get(':id/profile/public')
   @UseGuards(OptionalJwtAuthGuard)
-  async getPublicProfileAnonymous(@Param('id') userId: string, @Req() req) {
-    const viewerId = req?.user?.id ?? req?.user?.sub;
-    return this.userProfileService.getPublicProfile(userId, viewerId);
+  async getPublicProfileAnonymous(@Param('id') userId: string) {
+    return this.userProfileService.getPublicProfile(userId);
   }
 
   @Get('lookup/username/:username/profile/public')
