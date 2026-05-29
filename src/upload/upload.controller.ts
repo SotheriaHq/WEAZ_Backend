@@ -12,13 +12,13 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
-import { memoryStorage } from 'multer';
 import { JwtAuthGuard } from 'src/auth/guard/jwt-auth.guard';
 import { UploadService } from './upload.service';
 import { FileType } from './upload.enums';
 import { GetFilesDto } from './dto/get-files.dto';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
+import { multerOptionsForFileType } from './upload-policy';
 
 @ApiTags('uploads')
 @ApiBearerAuth()
@@ -72,7 +72,7 @@ export class UploadController {
   @UseGuards(JwtAuthGuard)
   @Post('profile-image')
   @ApiOperation({ summary: 'Upload profile image' })
-  @UseInterceptors(FileInterceptor('file', { storage: memoryStorage() }))
+  @UseInterceptors(FileInterceptor('file', multerOptionsForFileType(FileType.PROFILE_IMAGE)))
   async uploadProfileImage(
     @UploadedFile() file: Express.Multer.File,
     @Req() req: any,
@@ -86,10 +86,6 @@ export class UploadController {
       req.user.id,
       FileType.PROFILE_IMAGE,
     );
-    console.log(
-      `Profile image uploaded for user ${req.user.id}: ${result.url}`,
-    );
-
     // Update user's profile image reference
     await this.uploadService.updateUserProfileImage(req.user.id, result);
 
@@ -107,7 +103,7 @@ export class UploadController {
   @UseGuards(JwtAuthGuard)
   @Post('banner-image')
   @ApiOperation({ summary: 'Upload banner image' })
-  @UseInterceptors(FileInterceptor('file', { storage: memoryStorage() }))
+  @UseInterceptors(FileInterceptor('file', multerOptionsForFileType(FileType.BANNER_IMAGE)))
   async uploadBannerImage(
     @UploadedFile() file: Express.Multer.File,
     @Req() req: any,
@@ -129,7 +125,7 @@ export class UploadController {
   @UseGuards(JwtAuthGuard)
   @Post('post-image')
   @ApiOperation({ summary: 'Upload post image' })
-  @UseInterceptors(FileInterceptor('file', { storage: memoryStorage() }))
+  @UseInterceptors(FileInterceptor('file', multerOptionsForFileType(FileType.POST_IMAGE)))
   async uploadPostImage(
     @UploadedFile() file: Express.Multer.File,
     @Req() req: any,
@@ -148,7 +144,7 @@ export class UploadController {
   @UseGuards(JwtAuthGuard)
   @Post('post-video')
   @ApiOperation({ summary: 'Upload post video' })
-  @UseInterceptors(FileInterceptor('file', { storage: memoryStorage() }))
+  @UseInterceptors(FileInterceptor('file', multerOptionsForFileType(FileType.POST_VIDEO)))
   async uploadPostVideo(
     @UploadedFile() file: Express.Multer.File,
     @Req() req: any,
@@ -167,7 +163,7 @@ export class UploadController {
   @UseGuards(JwtAuthGuard)
   @Post('review-image')
   @ApiOperation({ summary: 'Upload review image' })
-  @UseInterceptors(FileInterceptor('file', { storage: memoryStorage() }))
+  @UseInterceptors(FileInterceptor('file', multerOptionsForFileType(FileType.REVIEW_IMAGE)))
   async uploadReviewImage(
     @UploadedFile() file: Express.Multer.File,
     @Req() req: any,
@@ -186,7 +182,7 @@ export class UploadController {
   @UseGuards(JwtAuthGuard)
   @Post('review-video')
   @ApiOperation({ summary: 'Upload review video' })
-  @UseInterceptors(FileInterceptor('file', { storage: memoryStorage() }))
+  @UseInterceptors(FileInterceptor('file', multerOptionsForFileType(FileType.REVIEW_VIDEO)))
   async uploadReviewVideo(
     @UploadedFile() file: Express.Multer.File,
     @Req() req: any,
@@ -205,7 +201,7 @@ export class UploadController {
   @UseGuards(JwtAuthGuard)
   @Post('message-image')
   @ApiOperation({ summary: 'Upload message image attachment' })
-  @UseInterceptors(FileInterceptor('file', { storage: memoryStorage() }))
+  @UseInterceptors(FileInterceptor('file', multerOptionsForFileType(FileType.MESSAGE_IMAGE)))
   async uploadMessageImage(
     @UploadedFile() file: Express.Multer.File,
     @Req() req: any,
@@ -224,7 +220,7 @@ export class UploadController {
   @UseGuards(JwtAuthGuard)
   @Post('message-document')
   @ApiOperation({ summary: 'Upload message document attachment' })
-  @UseInterceptors(FileInterceptor('file', { storage: memoryStorage() }))
+  @UseInterceptors(FileInterceptor('file', multerOptionsForFileType(FileType.MESSAGE_DOCUMENT)))
   async uploadMessageDocument(
     @UploadedFile() file: Express.Multer.File,
     @Req() req: any,
