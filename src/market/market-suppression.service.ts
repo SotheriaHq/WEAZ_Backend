@@ -16,6 +16,9 @@ import {
 import { PrismaService } from 'src/prisma/prisma.service';
 import {
   CreateMarketSuppressionDto,
+  MARKET_SIGNAL_MAX_REASON_LENGTH,
+  MARKET_SIGNAL_MAX_SECTION_KEY_LENGTH,
+  MARKET_SIGNAL_MAX_TARGET_ID_LENGTH,
   MarketSuppressionQueryDto,
 } from './dto/market-signal.dto';
 import { MarketSignalAggregationService } from './market-signal-aggregation.service';
@@ -28,6 +31,16 @@ export interface MarketSuppressionScope {
   sectionKeys: Set<string>;
   suggestionBlockKeys: Set<string>;
 }
+
+type NormalizedMarketSuppression = {
+  targetId: string | null;
+  brandId: string | null;
+  categoryId: string | null;
+  sectionKey: string | null;
+  suggestionBlockKey: string | null;
+  reason: string | null;
+  expiresAt: Date | null;
+};
 
 @Injectable()
 export class MarketSuppressionService {
@@ -45,6 +58,16 @@ export class MarketSuppressionService {
   ) {
     const owner = this.resolveOwner(identity, dto.anonymousSessionId);
     const normalized = this.normalizeSuppression(dto);
+    const existing = await this.findExistingSuppression(
+      owner,
+      dto.targetType,
+      dto.suppressionType,
+      normalized,
+    );
+
+    if (existing) {
+      return existing;
+    }
 
     const suppression = await this.prisma.userContentSuppression.create({
       data: {
@@ -64,6 +87,38 @@ export class MarketSuppressionService {
 
     await this.aggregateSuppression(owner, suppression);
     return suppression;
+  }
+
+  private async findExistingSuppression(
+    owner: { userId: string | null; anonymousSessionId: string | null },
+    targetType: MarketSignalTargetType,
+    suppressionType: MarketSuppressionType,
+    normalized: NormalizedMarketSuppression,
+  ) {
+    const ownerWhere: Prisma.UserContentSuppressionWhereInput[] = [];
+    if (owner.userId) ownerWhere.push({ userId: owner.userId });
+    if (owner.anonymousSessionId) {
+      ownerWhere.push({ anonymousSessionId: owner.anonymousSessionId });
+    }
+    if (!ownerWhere.length) return null;
+
+    return this.prisma.userContentSuppression.findFirst({
+      where: {
+        AND: [
+          { OR: ownerWhere },
+          this.activeWhere(),
+          {
+            targetType,
+            targetId: normalized.targetId,
+            brandId: normalized.brandId,
+            categoryId: normalized.categoryId,
+            sectionKey: normalized.sectionKey,
+            suggestionBlockKey: normalized.suggestionBlockKey,
+            suppressionType,
+          },
+        ],
+      },
+    });
   }
 
   async listSuppressions(
@@ -208,18 +263,40 @@ export class MarketSuppressionService {
     return `${targetType}:${targetId}`;
   }
 
-  private normalizeSuppression(dto: CreateMarketSuppressionDto) {
-    const targetId = this.clean(dto.targetId);
+  private normalizeSuppression(
+    dto: CreateMarketSuppressionDto,
+  ): NormalizedMarketSuppression {
+    const targetId = this.cleanToken(
+      dto.targetId,
+      'targetId',
+      MARKET_SIGNAL_MAX_TARGET_ID_LENGTH,
+    );
     const sectionKey =
-      this.clean(dto.sectionKey) ??
+      this.cleanToken(
+        dto.sectionKey,
+        'sectionKey',
+        MARKET_SIGNAL_MAX_SECTION_KEY_LENGTH,
+      ) ??
       (dto.targetType === MarketSignalTargetType.SECTION ? targetId : null);
     const suggestionBlockKey =
-      this.clean(dto.suggestionBlockKey) ??
+      this.cleanToken(
+        dto.suggestionBlockKey,
+        'suggestionBlockKey',
+        MARKET_SIGNAL_MAX_SECTION_KEY_LENGTH,
+      ) ??
       (dto.targetType === MarketSignalTargetType.SUGGESTION_BLOCK
         ? targetId
         : null);
-    const brandId = this.clean(dto.brandId);
-    const categoryId = this.clean(dto.categoryId);
+    const brandId = this.cleanToken(
+      dto.brandId,
+      'brandId',
+      MARKET_SIGNAL_MAX_TARGET_ID_LENGTH,
+    );
+    const categoryId = this.cleanToken(
+      dto.categoryId,
+      'categoryId',
+      MARKET_SIGNAL_MAX_TARGET_ID_LENGTH,
+    );
 
     if (!targetId && !brandId && !categoryId && !sectionKey && !suggestionBlockKey) {
       throw new BadRequestException(
@@ -233,7 +310,11 @@ export class MarketSuppressionService {
       categoryId,
       sectionKey,
       suggestionBlockKey,
-      reason: this.clean(dto.reason),
+      reason: this.cleanToken(
+        dto.reason,
+        'reason',
+        MARKET_SIGNAL_MAX_REASON_LENGTH,
+      ),
       expiresAt: dto.expiresAt ? new Date(dto.expiresAt) : null,
     };
   }
@@ -279,13 +360,19 @@ export class MarketSuppressionService {
   }
 
   private resolveOwner(identity: MarketSignalIdentity, dtoAnonymous?: string) {
-    const userId = this.clean(identity.userId);
+    const userId = this.cleanToken(
+      identity.userId,
+      'userId',
+      MARKET_SIGNAL_MAX_TARGET_ID_LENGTH,
+    );
     if (userId) {
       return { userId, anonymousSessionId: null };
     }
 
-    const anonymousSessionId = this.clean(
+    const anonymousSessionId = this.cleanToken(
       identity.anonymousSessionId ?? dtoAnonymous,
+      'anonymousSessionId',
+      MARKET_SIGNAL_MAX_TARGET_ID_LENGTH,
     );
     if (!anonymousSessionId) {
       throw new BadRequestException(
@@ -299,9 +386,15 @@ export class MarketSuppressionService {
     identity: MarketSignalIdentity,
     queryAnonymous?: string | null,
   ): Prisma.UserContentSuppressionWhereInput[] {
-    const userId = this.clean(identity.userId);
-    const anonymousSessionId = this.clean(
+    const userId = this.cleanToken(
+      identity.userId,
+      'userId',
+      MARKET_SIGNAL_MAX_TARGET_ID_LENGTH,
+    );
+    const anonymousSessionId = this.cleanToken(
       queryAnonymous ?? identity.anonymousSessionId,
+      'anonymousSessionId',
+      MARKET_SIGNAL_MAX_TARGET_ID_LENGTH,
     );
     const where: Prisma.UserContentSuppressionWhereInput[] = [];
 
@@ -321,5 +414,17 @@ export class MarketSuppressionService {
     if (typeof value !== 'string') return null;
     const trimmed = value.trim();
     return trimmed.length > 0 ? trimmed : null;
+  }
+
+  private cleanToken(value: unknown, field: string, maxLength: number) {
+    const cleaned = this.clean(value);
+    if (!cleaned) return null;
+    if (cleaned.length > maxLength) {
+      throw new BadRequestException(`${field} cannot exceed ${maxLength} characters`);
+    }
+    if (/[\u0000-\u001F\u007F]/.test(cleaned)) {
+      throw new BadRequestException(`${field} contains unsupported characters`);
+    }
+    return cleaned;
   }
 }

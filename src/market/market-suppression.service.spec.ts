@@ -6,6 +6,7 @@ describe('MarketSuppressionService', () => {
   const createPrisma = (overrides: Record<string, any> = {}) => ({
     userContentSuppression: {
       create: jest.fn().mockResolvedValue({ id: 'suppression_1' }),
+      findFirst: jest.fn().mockResolvedValue(null),
       findMany: jest.fn().mockResolvedValue([]),
       deleteMany: jest.fn().mockResolvedValue({ count: 1 }),
     },
@@ -38,6 +39,80 @@ describe('MarketSuppressionService', () => {
     });
   });
 
+  it('returns an existing active suppression for duplicate requests', async () => {
+    const existing = {
+      id: 'suppression_existing',
+      targetType: MarketSignalTargetType.PRODUCT,
+      targetId: 'product_1',
+      brandId: null,
+      categoryId: null,
+      sectionKey: null,
+      suggestionBlockKey: null,
+      suppressionType: MarketSuppressionType.NOT_INTERESTED,
+    };
+    const prisma = createPrisma({
+      userContentSuppression: {
+        create: jest.fn(),
+        findFirst: jest.fn().mockResolvedValue(existing),
+        findMany: jest.fn().mockResolvedValue([]),
+        deleteMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+    });
+    const aggregation = { aggregateBatch: jest.fn() };
+    const service = new MarketSuppressionService(
+      prisma as any,
+      aggregation as any,
+    );
+
+    await expect(
+      service.createSuppression(
+        {
+          anonymousSessionId: 'anon_1',
+          targetType: MarketSignalTargetType.PRODUCT,
+          targetId: 'product_1',
+          suppressionType: MarketSuppressionType.NOT_INTERESTED,
+        },
+        {},
+      ),
+    ).resolves.toEqual(existing);
+
+    expect(prisma.userContentSuppression.findFirst).toHaveBeenCalledWith({
+      where: {
+        AND: [
+          { OR: [{ anonymousSessionId: 'anon_1' }] },
+          { OR: [{ expiresAt: null }, { expiresAt: { gt: expect.any(Date) } }] },
+          {
+            targetType: MarketSignalTargetType.PRODUCT,
+            targetId: 'product_1',
+            brandId: null,
+            categoryId: null,
+            sectionKey: null,
+            suggestionBlockKey: null,
+            suppressionType: MarketSuppressionType.NOT_INTERESTED,
+          },
+        ],
+      },
+    });
+    expect(prisma.userContentSuppression.create).not.toHaveBeenCalled();
+    expect(aggregation.aggregateBatch).not.toHaveBeenCalled();
+  });
+
+  it('rejects unsupported control characters in suppression identifiers', async () => {
+    const service = new MarketSuppressionService(createPrisma() as any);
+
+    await expect(
+      service.createSuppression(
+        {
+          anonymousSessionId: 'anon_1',
+          targetType: MarketSignalTargetType.PRODUCT,
+          targetId: 'product_1\nspoofed',
+          suppressionType: MarketSuppressionType.NOT_INTERESTED,
+        },
+        {},
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
   it('rejects guest suppressions without anonymousSessionId', async () => {
     const service = new MarketSuppressionService(createPrisma() as any);
 
@@ -57,6 +132,7 @@ describe('MarketSuppressionService', () => {
     const prisma = createPrisma({
       userContentSuppression: {
         create: jest.fn(),
+        findFirst: jest.fn(),
         deleteMany: jest.fn(),
         findMany: jest.fn().mockResolvedValue([
           {
@@ -167,6 +243,7 @@ describe('MarketSuppressionService', () => {
     const prisma = createPrisma({
       userContentSuppression: {
         create: jest.fn(),
+        findFirst: jest.fn(),
         findMany: jest.fn(),
         deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
       },
@@ -182,6 +259,7 @@ describe('MarketSuppressionService', () => {
     const prisma = createPrisma({
       userContentSuppression: {
         create: jest.fn(),
+        findFirst: jest.fn(),
         findMany: jest.fn(),
         deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
       },

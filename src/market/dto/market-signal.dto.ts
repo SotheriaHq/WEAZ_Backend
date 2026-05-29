@@ -30,10 +30,9 @@ export const MARKET_SIGNAL_MAX_SCREEN_CONTEXT_LENGTH = 120;
 export const MARKET_SIGNAL_MAX_REASON_LENGTH = 240;
 
 export class MarketSignalEventDto {
-  @IsOptional()
   @IsString()
   @MaxLength(MARKET_SIGNAL_MAX_TARGET_ID_LENGTH)
-  clientEventId?: string;
+  clientEventId!: string;
 
   @IsEnum(MarketSignalTargetType)
   targetType!: MarketSignalTargetType;

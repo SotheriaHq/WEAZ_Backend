@@ -124,32 +124,18 @@ describe('MarketSignalService', () => {
     );
   });
 
-  it('fingerprint-deduplicates repeated events without clientEventId in the same batch', async () => {
-    const prisma = createPrisma();
-    const aggregation = createAggregation();
-    const service = new MarketSignalService(prisma as any, aggregation as any);
+  it('rejects events without clientEventId so cross-batch replay is idempotent', async () => {
+    const service = new MarketSignalService(createPrisma() as any);
 
-    const result = await service.ingestBatch(
-      {
-        anonymousSessionId: 'anon_1',
-        events: [
-          event({ clientEventId: undefined, targetId: 'product_1' }),
-          event({ clientEventId: undefined, targetId: 'product_1' }),
-        ],
-      },
-      {},
-    );
-
-    expect(result.received).toBe(2);
-    expect(result.deduplicated).toBe(1);
-    expect(prisma.userFeedSignal.createMany).toHaveBeenCalledWith({
-      data: [expect.objectContaining({ clientEventId: null, targetId: 'product_1' })],
-    });
-    expect(aggregation.aggregateBatch).toHaveBeenCalledWith(
-      [expect.objectContaining({ targetId: 'product_1' })],
-      { userId: null, anonymousSessionId: 'anon_1' },
-      expect.any(Date),
-    );
+    await expect(
+      service.ingestBatch(
+        {
+          anonymousSessionId: 'anon_1',
+          events: [event({ clientEventId: undefined })],
+        },
+        {},
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
   });
 
   it('skips a duplicate batch replay when batchId already has a receipt', async () => {
@@ -270,6 +256,20 @@ describe('MarketSignalService', () => {
               },
             }),
           ],
+        },
+        {},
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('rejects unsupported control characters in signal identifiers', async () => {
+    const service = new MarketSignalService(createPrisma() as any);
+
+    await expect(
+      service.ingestBatch(
+        {
+          anonymousSessionId: 'anon_1',
+          events: [event({ clientEventId: 'event_1\nspoofed' })],
         },
         {},
       ),

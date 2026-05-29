@@ -14,6 +14,9 @@ import { PrismaService } from 'src/prisma/prisma.service';
 import {
   MARKET_SIGNAL_MAX_BATCH_EVENTS,
   MARKET_SIGNAL_MAX_METADATA_BYTES,
+  MARKET_SIGNAL_MAX_SCREEN_CONTEXT_LENGTH,
+  MARKET_SIGNAL_MAX_SECTION_KEY_LENGTH,
+  MARKET_SIGNAL_MAX_TARGET_ID_LENGTH,
   MarketSignalBatchDto,
   MarketSignalEventDto,
 } from './dto/market-signal.dto';
@@ -39,7 +42,7 @@ type NormalizedMarketSignalEvent = Omit<
   | 'position'
 > & {
   targetId: string;
-  clientEventId: string | null;
+  clientEventId: string;
   sectionKey: string | null;
   suggestionBlockKey: string | null;
   screenContext: string | null;
@@ -83,9 +86,15 @@ export class MarketSignalService {
   ) {}
 
   async ingestBatch(dto: MarketSignalBatchDto, identity: MarketSignalIdentity) {
-    const userId = this.clean(identity.userId);
-    const anonymousSessionId = this.clean(
+    const userId = this.cleanToken(
+      identity.userId,
+      'userId',
+      MARKET_SIGNAL_MAX_TARGET_ID_LENGTH,
+    );
+    const anonymousSessionId = this.cleanToken(
       userId ? undefined : identity.anonymousSessionId ?? dto.anonymousSessionId,
+      'anonymousSessionId',
+      MARKET_SIGNAL_MAX_TARGET_ID_LENGTH,
     );
 
     if (!userId && !anonymousSessionId) {
@@ -101,8 +110,16 @@ export class MarketSignalService {
       );
     }
 
-    const batchId = this.clean(dto.batchId);
-    const defaultSessionId = this.clean(dto.sessionId);
+    const batchId = this.cleanToken(
+      dto.batchId,
+      'batchId',
+      MARKET_SIGNAL_MAX_TARGET_ID_LENGTH,
+    );
+    const defaultSessionId = this.cleanToken(
+      dto.sessionId,
+      'sessionId',
+      MARKET_SIGNAL_MAX_TARGET_ID_LENGTH,
+    );
     const now = new Date();
 
     const existingBatchReceipt = batchId
@@ -138,8 +155,7 @@ export class MarketSignalService {
       now,
     );
     const acceptedEvents = normalizedEvents.filter(
-      (event) =>
-        !event.clientEventId || !existingClientEventIds.has(event.clientEventId),
+      (event) => !existingClientEventIds.has(event.clientEventId),
     );
 
     const userFeedSignals: Prisma.UserFeedSignalCreateManyInput[] = [];
@@ -337,7 +353,7 @@ export class MarketSignalService {
 
     for (const event of events) {
       const normalized = this.normalizeEvent(event, defaultSessionId);
-      const key = normalized.clientEventId ?? this.eventFingerprint(normalized);
+      const key = normalized.clientEventId;
       if (seenKeys.has(key)) continue;
       seenKeys.add(key);
       normalizedEvents.push(normalized);
@@ -360,38 +376,55 @@ export class MarketSignalService {
       throw new BadRequestException('Invalid signal surface');
     }
 
-    const targetId = this.clean(event.targetId);
+    const targetId = this.cleanToken(
+      event.targetId,
+      'targetId',
+      MARKET_SIGNAL_MAX_TARGET_ID_LENGTH,
+    );
     if (!targetId) {
       throw new BadRequestException('targetId is required for signal events');
+    }
+
+    const clientEventId = this.cleanToken(
+      event.clientEventId,
+      'clientEventId',
+      MARKET_SIGNAL_MAX_TARGET_ID_LENGTH,
+    );
+    if (!clientEventId) {
+      throw new BadRequestException(
+        'clientEventId is required for signal events',
+      );
     }
 
     return {
       ...event,
       targetId,
-      clientEventId: this.clean(event.clientEventId),
-      sectionKey: this.clean(event.sectionKey),
-      suggestionBlockKey: this.clean(event.suggestionBlockKey),
-      screenContext: this.clean(event.screenContext),
-      sessionId: this.clean(event.sessionId) ?? defaultSessionId ?? null,
+      clientEventId,
+      sectionKey: this.cleanToken(
+        event.sectionKey,
+        'sectionKey',
+        MARKET_SIGNAL_MAX_SECTION_KEY_LENGTH,
+      ),
+      suggestionBlockKey: this.cleanToken(
+        event.suggestionBlockKey,
+        'suggestionBlockKey',
+        MARKET_SIGNAL_MAX_SECTION_KEY_LENGTH,
+      ),
+      screenContext: this.cleanToken(
+        event.screenContext,
+        'screenContext',
+        MARKET_SIGNAL_MAX_SCREEN_CONTEXT_LENGTH,
+      ),
+      sessionId:
+        this.cleanToken(event.sessionId, 'sessionId', MARKET_SIGNAL_MAX_TARGET_ID_LENGTH) ??
+        defaultSessionId ??
+        null,
       value: Number.isFinite(event.value) ? event.value : null,
       position:
         typeof event.position === 'number' && Number.isFinite(event.position)
           ? Math.max(0, Math.floor(event.position))
           : null,
     };
-  }
-
-  private eventFingerprint(event: NormalizedMarketSignalEvent) {
-    return [
-      event.signalType,
-      event.targetType,
-      event.targetId,
-      event.surface,
-      event.sectionKey ?? '',
-      event.suggestionBlockKey ?? '',
-      event.sessionId ?? '',
-      event.position ?? '',
-    ].join(':');
   }
 
   private async getExistingClientEventIds(
@@ -525,6 +558,18 @@ export class MarketSignalService {
     if (typeof value !== 'string') return null;
     const trimmed = value.trim();
     return trimmed.length > 0 ? trimmed : null;
+  }
+
+  private cleanToken(value: unknown, field: string, maxLength: number) {
+    const cleaned = this.clean(value);
+    if (!cleaned) return null;
+    if (cleaned.length > maxLength) {
+      throw new BadRequestException(`${field} cannot exceed ${maxLength} characters`);
+    }
+    if (/[\u0000-\u001F\u007F]/.test(cleaned)) {
+      throw new BadRequestException(`${field} contains unsupported characters`);
+    }
+    return cleaned;
   }
 
   private enumIncludes<T extends Record<string, string>>(
