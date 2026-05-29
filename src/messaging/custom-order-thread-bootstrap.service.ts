@@ -65,7 +65,10 @@ export class CustomOrderThreadBootstrapService {
       if (existingPair) {
         await tx.messageThreadOrderLink.upsert({
           where: { customOrderId: params.customOrderId },
-          create: { threadId: existingPair.id, customOrderId: params.customOrderId },
+          create: {
+            threadId: existingPair.id,
+            customOrderId: params.customOrderId,
+          },
           update: { threadId: existingPair.id },
         });
         return existingPair;
@@ -102,28 +105,31 @@ export class CustomOrderThreadBootstrapService {
       }
 
       const created = await tx.messageThread.create({
-          data: {
-            contextType: MessageContextType.DIRECT,
-            conversationType: MessageConversationType.BUYER_BRAND,
-            brandId: params.brandId,
-            buyerId: params.buyerId,
-            buyerUserId: params.buyerId,
-            brandOwnerUserId: params.brandOwnerUserId,
-            pairKey,
-            status: this.policy.resolveThreadStatusForCustomOrder(params.status),
-            subjectSnapshotJson: {
-              title: params.sourceTitle,
-              type: 'BUYER_BRAND_CONVERSATION',
-            } as Prisma.InputJsonValue,
-            participants: {
-              create: [
-                { userId: params.buyerId, role: MessageParticipantRole.BUYER },
-                { userId: params.brandOwnerUserId, role: MessageParticipantRole.BRAND_OWNER },
-              ],
-            },
+        data: {
+          contextType: MessageContextType.DIRECT,
+          conversationType: MessageConversationType.BUYER_BRAND,
+          brandId: params.brandId,
+          buyerId: params.buyerId,
+          buyerUserId: params.buyerId,
+          brandOwnerUserId: params.brandOwnerUserId,
+          pairKey,
+          status: this.policy.resolveThreadStatusForCustomOrder(params.status),
+          subjectSnapshotJson: {
+            title: params.sourceTitle,
+            type: 'BUYER_BRAND_CONVERSATION',
+          } as Prisma.InputJsonValue,
+          participants: {
+            create: [
+              { userId: params.buyerId, role: MessageParticipantRole.BUYER },
+              {
+                userId: params.brandOwnerUserId,
+                role: MessageParticipantRole.BRAND_OWNER,
+              },
+            ],
           },
-          include: { participants: true },
-        });
+        },
+        include: { participants: true },
+      });
 
       await tx.messageThreadOrderLink.create({
         data: { threadId: created.id, customOrderId: params.customOrderId },
@@ -133,12 +139,16 @@ export class CustomOrderThreadBootstrapService {
 
     const missingParticipantRows = [
       { userId: params.buyerId, role: MessageParticipantRole.BUYER },
-      { userId: params.brandOwnerUserId, role: MessageParticipantRole.BRAND_OWNER },
+      {
+        userId: params.brandOwnerUserId,
+        role: MessageParticipantRole.BRAND_OWNER,
+      },
     ].filter(
       (candidate) =>
         !thread.participants.some(
           (participant) =>
-            participant.userId === candidate.userId && participant.role === candidate.role,
+            participant.userId === candidate.userId &&
+            participant.role === candidate.role,
         ),
     );
 
@@ -173,7 +183,9 @@ export class CustomOrderThreadBootstrapService {
           lastMessageId: existingPlacementMessage.id,
           lastMessageAt: existingPlacementMessage.createdAt,
           lastVisibleMessageAt: existingPlacementMessage.createdAt,
-          lastMessagePreview: String(existingPlacementMessage.bodyText ?? '').slice(0, 200),
+          lastMessagePreview: String(
+            existingPlacementMessage.bodyText ?? '',
+          ).slice(0, 200),
           lastSenderUserId: null,
         },
       });

@@ -163,7 +163,9 @@ export class CreateCustomOrderConfigurationDto {
   rules: CreateCustomFabricRuleDto[];
 }
 
-export class UpdateCustomOrderConfigurationDto extends PartialType(CreateCustomOrderConfigurationDto) {}
+export class UpdateCustomOrderConfigurationDto extends PartialType(
+  CreateCustomOrderConfigurationDto,
+) {}
 
 export class QueryVisibleCustomOrderConfigurationsDto {
   @IsOptional()

@@ -23,7 +23,13 @@ export enum ProductGender {
   EVERYBODY = 'EVERYBODY',
 }
 
-const normalizeSizingMode = ({ value, obj }: { value: unknown; obj?: Record<string, unknown> }) => {
+const normalizeSizingMode = ({
+  value,
+  obj,
+}: {
+  value: unknown;
+  obj?: Record<string, unknown>;
+}) => {
   if (value === 'RTW_PLUS_CUSTOM') {
     if (obj && typeof obj === 'object') {
       obj.sizingModeDeprecatedAliasUsed = true;

@@ -49,7 +49,9 @@ describe('CustomOrderRuleValidatorService', () => {
           conditionsJson: {},
         },
       ]),
-    ).toThrow(new BadRequestException('Exactly one fallback fabric rule is required'));
+    ).toThrow(
+      new BadRequestException('Exactly one fallback fabric rule is required'),
+    );
 
     expect(() =>
       service.normalizeRules([
@@ -66,7 +68,9 @@ describe('CustomOrderRuleValidatorService', () => {
           conditionsJson: {},
         },
       ]),
-    ).toThrow(new BadRequestException('Exactly one fallback fabric rule is required'));
+    ).toThrow(
+      new BadRequestException('Exactly one fallback fabric rule is required'),
+    );
   });
 
   it('rejects duplicate priorities and duplicate signatures', () => {
@@ -86,7 +90,9 @@ describe('CustomOrderRuleValidatorService', () => {
           },
         },
       ]),
-    ).toThrow(new BadRequestException('Custom fabric rules must use unique priorities'));
+    ).toThrow(
+      new BadRequestException('Custom fabric rules must use unique priorities'),
+    );
 
     expect(() =>
       service.normalizeRules([
@@ -111,6 +117,8 @@ describe('CustomOrderRuleValidatorService', () => {
           },
         },
       ]),
-    ).toThrow(new BadRequestException('Duplicate custom fabric rules are not allowed'));
+    ).toThrow(
+      new BadRequestException('Duplicate custom fabric rules are not allowed'),
+    );
   });
 });

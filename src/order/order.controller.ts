@@ -65,6 +65,11 @@ export class OrderController {
     @Req() req: any,
   ) {
     await this.orderAccessService.assertOrderBrandUpdate(req.user.id, orderId);
-    return this.orderService.updateStatus(brandId, orderId, body.status, req.user.id);
+    return this.orderService.updateStatus(
+      brandId,
+      orderId,
+      body.status,
+      req.user.id,
+    );
   }
 }

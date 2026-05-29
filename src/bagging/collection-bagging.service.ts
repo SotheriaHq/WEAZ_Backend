@@ -45,10 +45,21 @@ export class CollectionBaggingService {
   ): Promise<CollectionBagMutationResult> {
     const startedAt = Date.now();
     try {
-      const status = await this.eligibilityService.getCollectionBagStatus(collectionId, userId);
-      return this.mutateCollection(status, userId, status.products.map((product) => product.productId), dto);
+      const status = await this.eligibilityService.getCollectionBagStatus(
+        collectionId,
+        userId,
+      );
+      return this.mutateCollection(
+        status,
+        userId,
+        status.products.map((product) => product.productId),
+        dto,
+      );
     } finally {
-      this.debugTiming('collection_bag_all', startedAt, { collectionId, userId });
+      this.debugTiming('collection_bag_all', startedAt, {
+        collectionId,
+        userId,
+      });
     }
   }
 
@@ -61,13 +72,21 @@ export class CollectionBaggingService {
     try {
       const productIds = this.uniqueIds(dto?.productIds);
       if (productIds.length === 0) {
-        throw new BadRequestException('Select at least one collection product to bag.');
+        throw new BadRequestException(
+          'Select at least one collection product to bag.',
+        );
       }
 
-      const status = await this.eligibilityService.getCollectionBagStatus(collectionId, userId);
+      const status = await this.eligibilityService.getCollectionBagStatus(
+        collectionId,
+        userId,
+      );
       return this.mutateCollection(status, userId, productIds, dto);
     } finally {
-      this.debugTiming('collection_bag_selected', startedAt, { collectionId, userId });
+      this.debugTiming('collection_bag_selected', startedAt, {
+        collectionId,
+        userId,
+      });
     }
   }
 
@@ -78,20 +97,34 @@ export class CollectionBaggingService {
     dto: BagCollectionAllDto,
   ): Promise<CollectionBagMutationResult> {
     const requestedSet = new Set(this.uniqueIds(requestedProductIds));
-    const selectedStatuses = status.products.filter((product) => requestedSet.has(product.productId));
+    const selectedStatuses = status.products.filter((product) =>
+      requestedSet.has(product.productId),
+    );
     if (selectedStatuses.length === 0) {
-      throw new BadRequestException('No selected products belong to this collection.');
+      throw new BadRequestException(
+        'No selected products belong to this collection.',
+      );
     }
 
     const skipped = selectedStatuses
-      .filter((product) => product.inBag || product.defaultAction === 'ALREADY_IN_BAG')
-      .map((product) => ({ productId: product.productId, reason: 'ALREADY_IN_BAG' }));
+      .filter(
+        (product) =>
+          product.inBag || product.defaultAction === 'ALREADY_IN_BAG',
+      )
+      .map((product) => ({
+        productId: product.productId,
+        reason: 'ALREADY_IN_BAG',
+      }));
 
     const candidates = selectedStatuses.filter(
       (product) => !product.inBag && product.defaultAction !== 'ALREADY_IN_BAG',
     );
-    const productRows = await this.fetchProducts(candidates.map((product) => product.productId));
-    const productById = new Map(productRows.map((product) => [product.id, product] as const));
+    const productRows = await this.fetchProducts(
+      candidates.map((product) => product.productId),
+    );
+    const productById = new Map(
+      productRows.map((product) => [product.id, product] as const),
+    );
     const sizeFitProfile = await this.prisma.userSizeFitProfile.findUnique({
       where: { userId },
       select: {
@@ -108,7 +141,10 @@ export class CollectionBaggingService {
     for (const item of candidates) {
       const product = productById.get(item.productId);
       if (!product) {
-        blocked.push({ productId: item.productId, reason: 'PRODUCT_UNAVAILABLE' });
+        blocked.push({
+          productId: item.productId,
+          reason: 'PRODUCT_UNAVAILABLE',
+        });
         continue;
       }
 
@@ -117,7 +153,9 @@ export class CollectionBaggingService {
       const selectedSize = this.normalizeString(selection?.selectedSize);
       const selectedColor = this.normalizeString(selection?.selectedColor);
       const standardFittingRequired = this.isStandardFittingRequired(product);
-      const staleAcknowledged = Boolean(dto.acknowledgements?.staleFittingsAccepted);
+      const staleAcknowledged = Boolean(
+        dto.acknowledgements?.staleFittingsAccepted,
+      );
 
       if (!item.sourceStatus.modes.standard) {
         blocked.push(this.blockedItem(item, item.reason ?? item.defaultAction));
@@ -129,7 +167,10 @@ export class CollectionBaggingService {
         continue;
       }
 
-      if (item.defaultAction === 'CONFIRM_STALE_FITTINGS' && !staleAcknowledged) {
+      if (
+        item.defaultAction === 'CONFIRM_STALE_FITTINGS' &&
+        !staleAcknowledged
+      ) {
         blocked.push(this.blockedItem(item, 'STALE_FITTINGS_ACK_REQUIRED'));
         continue;
       }
@@ -152,7 +193,9 @@ export class CollectionBaggingService {
       }
 
       if (
-        !['ADD_STANDARD', 'OPEN_SELECTOR', 'CONFIRM_STALE_FITTINGS'].includes(item.defaultAction)
+        !['ADD_STANDARD', 'OPEN_SELECTOR', 'CONFIRM_STALE_FITTINGS'].includes(
+          item.defaultAction,
+        )
       ) {
         blocked.push(this.blockedItem(item, item.reason ?? item.defaultAction));
         continue;
@@ -188,7 +231,10 @@ export class CollectionBaggingService {
       } catch (error: any) {
         blocked.push({
           productId: item.productId,
-          reason: error?.response?.message ?? error?.message ?? 'PRODUCT_VALIDATION_FAILED',
+          reason:
+            error?.response?.message ??
+            error?.message ??
+            'PRODUCT_VALIDATION_FAILED',
           missingMeasurementKeys: item.missingMeasurementKeys,
           requiredMeasurementKeys: item.requiredMeasurementKeys,
         });
@@ -200,7 +246,9 @@ export class CollectionBaggingService {
         quantity,
         selectedSize,
         selectedColor,
-        sizingMode: standardFittingRequired ? SizingMode.RTW_PLUS_FITTINGS : SizingMode.NONE,
+        sizingMode: standardFittingRequired
+          ? SizingMode.RTW_PLUS_FITTINGS
+          : SizingMode.NONE,
         requiredMeasurementKeys,
         sizeFitData,
         existingItem,
@@ -209,11 +257,20 @@ export class CollectionBaggingService {
 
     if (blocked.length > 0) {
       const count = await this.countPresenter.getCount(userId);
-      return this.emptyResult(status.sourceId, skipped, blocked, count.combinedCount);
+      return this.emptyResult(
+        status.sourceId,
+        skipped,
+        blocked,
+        count.combinedCount,
+      );
     }
 
     const added = await this.prisma.$transaction(async (tx) => {
-      const rows: Array<{ productId: string; bagItemId: string; quantity: number }> = [];
+      const rows: Array<{
+        productId: string;
+        bagItemId: string;
+        quantity: number;
+      }> = [];
       for (const item of prepared) {
         if (item.existingItem) {
           const updated = await tx.cartItem.update({
@@ -226,7 +283,11 @@ export class CollectionBaggingService {
             },
             select: { id: true, quantity: true },
           });
-          rows.push({ productId: item.productId, bagItemId: updated.id, quantity: updated.quantity });
+          rows.push({
+            productId: item.productId,
+            bagItemId: updated.id,
+            quantity: updated.quantity,
+          });
           continue;
         }
 
@@ -244,7 +305,11 @@ export class CollectionBaggingService {
           },
           select: { id: true, quantity: true },
         });
-        rows.push({ productId: item.productId, bagItemId: created.id, quantity: created.quantity });
+        rows.push({
+          productId: item.productId,
+          bagItemId: created.id,
+          quantity: created.quantity,
+        });
       }
       return rows;
     });
@@ -287,12 +352,19 @@ export class CollectionBaggingService {
   private async fetchProducts(productIds: string[]) {
     if (productIds.length === 0) return [];
     return this.prisma.product.findMany({
-      where: { id: { in: this.uniqueIds(productIds) }, deletedAt: null, isActive: true },
+      where: {
+        id: { in: this.uniqueIds(productIds) },
+        deletedAt: null,
+        isActive: true,
+      },
       include: { variants: true },
     });
   }
 
-  private selectionFor(dto: BagCollectionAllDto, productId: string): CollectionBagSelectionDto | null {
+  private selectionFor(
+    dto: BagCollectionAllDto,
+    productId: string,
+  ): CollectionBagSelectionDto | null {
     const selections = dto.selections ?? {};
     const selection = selections[productId];
     return selection && typeof selection === 'object' ? selection : null;
@@ -346,7 +418,11 @@ export class CollectionBaggingService {
     );
   }
 
-  private debugTiming(label: string, startedAt: number, context: Record<string, unknown>): void {
+  private debugTiming(
+    label: string,
+    startedAt: number,
+    context: Record<string, unknown>,
+  ): void {
     if (!this.shouldLogTiming()) return;
     this.logger.debug({
       event: `bagging.${label}.duration`,
@@ -356,7 +432,13 @@ export class CollectionBaggingService {
   }
 
   private shouldLogTiming(): boolean {
-    const explicitFlag = String(process.env.BAGGING_OBSERVABILITY || '').toLowerCase();
-    return explicitFlag === 'true' || explicitFlag === '1' || process.env.NODE_ENV !== 'production';
+    const explicitFlag = String(
+      process.env.BAGGING_OBSERVABILITY || '',
+    ).toLowerCase();
+    return (
+      explicitFlag === 'true' ||
+      explicitFlag === '1' ||
+      process.env.NODE_ENV !== 'production'
+    );
   }
 }

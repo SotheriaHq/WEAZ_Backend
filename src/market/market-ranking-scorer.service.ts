@@ -1,6 +1,9 @@
 import { Injectable } from '@nestjs/common';
 import { MarketSignalTargetType } from '@prisma/client';
-import { MarketSectionItemDto, MarketSectionKey } from './dto/market-section.dto';
+import {
+  MarketSectionItemDto,
+  MarketSectionKey,
+} from './dto/market-section.dto';
 import { MarketRankingConfig } from './market-ranking-config.service';
 import { MarketRankingAggregateStats } from './market-ranking-aggregate-reader.service';
 
@@ -44,7 +47,9 @@ export class MarketRankingScorerService {
     });
 
     return {
-      items: this.applyBrandDiversity(scored, input.config).map(({ item }) => item),
+      items: this.applyBrandDiversity(scored, input.config).map(
+        ({ item }) => item,
+      ),
       scoredCount: scored.length,
     };
   }
@@ -67,13 +72,19 @@ export class MarketRankingScorerService {
     const freshness = this.freshnessScore(item.createdAt);
     const interaction = this.interactionScore(aggregate);
     const commerce = this.commerceScore(aggregate);
-    const section = this.sectionRelevanceScore(sectionKey, item, freshness, interaction);
+    const section = this.sectionRelevanceScore(
+      sectionKey,
+      item,
+      freshness,
+      interaction,
+    );
     const exploration = this.explorationScore(
       deterministicIndex,
       input.items.length,
       input.config.explorationPercent,
     );
-    const deterministic = (input.items.length - deterministicIndex) / input.items.length;
+    const deterministic =
+      (input.items.length - deterministicIndex) / input.items.length;
 
     return (
       section * 0.34 +

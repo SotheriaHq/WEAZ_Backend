@@ -11,16 +11,20 @@ describe('AdminPayoutsWebhookController', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    originalLegacyAlias = process.env.PAYMENT_LEGACY_PAYSTACK_WEBHOOK_ALIASES_ENABLED;
+    originalLegacyAlias =
+      process.env.PAYMENT_LEGACY_PAYSTACK_WEBHOOK_ALIASES_ENABLED;
     delete process.env.PAYMENT_LEGACY_PAYSTACK_WEBHOOK_ALIASES_ENABLED;
-    warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined as any);
+    warnSpy = jest
+      .spyOn(Logger.prototype, 'warn')
+      .mockImplementation(() => undefined as any);
   });
 
   afterEach(() => {
     if (originalLegacyAlias === undefined) {
       delete process.env.PAYMENT_LEGACY_PAYSTACK_WEBHOOK_ALIASES_ENABLED;
     } else {
-      process.env.PAYMENT_LEGACY_PAYSTACK_WEBHOOK_ALIASES_ENABLED = originalLegacyAlias;
+      process.env.PAYMENT_LEGACY_PAYSTACK_WEBHOOK_ALIASES_ENABLED =
+        originalLegacyAlias;
     }
     warnSpy.mockRestore();
   });
@@ -54,7 +58,9 @@ describe('AdminPayoutsWebhookController', () => {
     } as any;
     const payload = { event: 'transfer.success' };
 
-    await expect(controller.paystackWebhook(payload, req)).resolves.toEqual({ status: 'ok' });
+    await expect(controller.paystackWebhook(payload, req)).resolves.toEqual({
+      status: 'ok',
+    });
 
     expect(warnSpy).toHaveBeenCalledWith(
       expect.stringContaining('/admin/payouts/webhook/paystack'),

@@ -86,8 +86,7 @@ function resolveProfileMedia(
   const profile = user.userProfile ?? null;
   const urlField = kind === 'profile' ? 'profileImage' : 'bannerImage';
   const idField = kind === 'profile' ? 'profileImageId' : 'bannerImageId';
-  const fileField =
-    kind === 'profile' ? 'profileImageFile' : 'bannerImageFile';
+  const fileField = kind === 'profile' ? 'profileImageFile' : 'bannerImageFile';
 
   const canonicalId = profile?.[idField] ?? null;
   const canonicalFile = profile?.[fileField] ?? null;
@@ -115,8 +114,5 @@ export function resolveBannerImage(
 export function resolveProfileVisibility(
   user: UserProfileSource,
 ): ProfileVisibility {
-  return (
-    user.userProfile?.profileVisibility ??
-    ProfileVisibility.UNLOCKED
-  );
+  return user.userProfile?.profileVisibility ?? ProfileVisibility.UNLOCKED;
 }

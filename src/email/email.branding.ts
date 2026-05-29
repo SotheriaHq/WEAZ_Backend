@@ -61,7 +61,9 @@ export function resolveAppUrl(path: string): string {
 }
 
 function renderCompanyLogoMarkup(appName: string): string {
-  const companyInitial = normalizeCompanyName(appName).trim().charAt(0).toUpperCase() || DEFAULT_COMPANY_NAME.charAt(0);
+  const companyInitial =
+    normalizeCompanyName(appName).trim().charAt(0).toUpperCase() ||
+    DEFAULT_COMPANY_NAME.charAt(0);
   const safeInitial = escapeHtml(companyInitial);
 
   return `<table role="presentation" cellpadding="0" cellspacing="0" style="width:40px;height:40px;border-collapse:separate;border-spacing:0;background:${EMAIL_COLORS.brandPrimary};border-radius:12px;box-shadow:0 8px 18px rgba(107,33,168,0.28)"><tr><td align="center" valign="middle" style="width:40px;height:40px;border-radius:12px;color:#ffffff;font-family:'Segoe UI','Helvetica Neue',Arial,sans-serif;font-size:17px;font-weight:800;letter-spacing:0.6px;line-height:1">${safeInitial}</td></tr></table>`;

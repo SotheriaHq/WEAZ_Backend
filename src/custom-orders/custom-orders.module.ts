@@ -18,7 +18,16 @@ import { CustomOrderSideEffectsService } from './custom-order-side-effects.servi
 import { CustomOrdersService } from './custom-orders.service';
 
 @Module({
-  imports: [PrismaModule, PaymentModule, QueueModule, CustomOrderPricingModule, SystemConfigModule, FinanceModule, ReviewsModule, forwardRef(() => MessagingModule)],
+  imports: [
+    PrismaModule,
+    PaymentModule,
+    QueueModule,
+    CustomOrderPricingModule,
+    SystemConfigModule,
+    FinanceModule,
+    ReviewsModule,
+    forwardRef(() => MessagingModule),
+  ],
   controllers: [CustomOrdersBuyerController, CustomOrdersBrandController],
   providers: [
     CustomOrdersService,

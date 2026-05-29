@@ -1,4 +1,7 @@
-import { BadRequestException, ServiceUnavailableException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { OAuth2Client } from 'google-auth-library';
 
 import { GoogleTokenVerifierService } from './google-token-verifier.service';

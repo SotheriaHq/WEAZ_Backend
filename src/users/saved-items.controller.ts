@@ -28,13 +28,19 @@ export class SavedItemsController {
   @Post()
   @UseGuards(AuthGuard('jwt'))
   async saveItem(@Req() req, @Body() createSavedItemDto: CreateSavedItemDto) {
-    return this.savedItemsService.saveItem(this.getAuthUserId(req), createSavedItemDto);
+    return this.savedItemsService.saveItem(
+      this.getAuthUserId(req),
+      createSavedItemDto,
+    );
   }
 
   @Delete()
   @UseGuards(AuthGuard('jwt'))
   async unsaveItem(@Req() req, @Body() createSavedItemDto: CreateSavedItemDto) {
-    return this.savedItemsService.unsaveItem(this.getAuthUserId(req), createSavedItemDto);
+    return this.savedItemsService.unsaveItem(
+      this.getAuthUserId(req),
+      createSavedItemDto,
+    );
   }
 
   @Get('me')

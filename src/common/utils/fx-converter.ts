@@ -2,16 +2,16 @@
  * FX Conversion Scaffold
  * ======================
  * Item #15: Foreign Exchange conversion for multi-currency display
- * 
+ *
  * CURRENT STATUS: SCAFFOLD / PLACEHOLDER
  * This module provides infrastructure for future currency conversion.
  * Actual rates will be populated from an external FX provider.
- * 
+ *
  * PLANNED INTEGRATION:
  * - Connect to FX rate provider (e.g., Open Exchange Rates, CurrencyLayer)
  * - Cache rates with configurable TTL (suggested: 1 hour)
  * - Support for real-time rate updates via Redis pub/sub
- * 
+ *
  * SUPPORTED CURRENCIES (Phase 1):
  * - NGN (Nigerian Naira) - Base currency
  * - USD (US Dollar)
@@ -28,23 +28,13 @@ export interface FxRates {
 
 // Placeholder rates - will be replaced with live rates in production
 const PLACEHOLDER_RATES: Record<string, number> = {
-  NGN: 1,        // Base currency
-  USD: 0.00065,  // ~1540 NGN = 1 USD
-  GBP: 0.00051,  // ~1960 NGN = 1 GBP
-  EUR: 0.00060,  // ~1670 NGN = 1 EUR
-  GHS: 0.0081,   // ~123 NGN = 1 GHS (Ghana Cedis)
-  KES: 0.0884,   // ~11 NGN = 1 KES (Kenya Shillings)
-  ZAR: 0.0118,   // ~85 NGN = 1 ZAR (South African Rand)
-};
-
-// Inverse rates for quick conversion from USD to other currencies
-const USD_TO_LOCAL: Record<string, number> = {
-  NGN: 1540,
-  GBP: 0.79,
-  EUR: 0.93,
-  GHS: 12.5,
-  KES: 136,
-  ZAR: 18.2,
+  NGN: 1, // Base currency
+  USD: 0.00065, // ~1540 NGN = 1 USD
+  GBP: 0.00051, // ~1960 NGN = 1 GBP
+  EUR: 0.0006, // ~1670 NGN = 1 EUR
+  GHS: 0.0081, // ~123 NGN = 1 GHS (Ghana Cedis)
+  KES: 0.0884, // ~11 NGN = 1 KES (Kenya Shillings)
+  ZAR: 0.0118, // ~85 NGN = 1 ZAR (South African Rand)
 };
 
 export interface ConversionResult {
@@ -53,7 +43,7 @@ export interface ConversionResult {
   convertedAmount: number;
   targetCurrency: string;
   rate: number;
-  isEstimate: boolean;  // True when using placeholder rates
+  isEstimate: boolean; // True when using placeholder rates
   timestamp: Date;
 }
 
@@ -66,7 +56,7 @@ export interface PriceDisplay {
 
 /**
  * FX Converter Service (Scaffold)
- * 
+ *
  * Currently uses placeholder rates.
  * In production, this will:
  * 1. Fetch rates from external API on startup and periodically
@@ -222,7 +212,9 @@ export class FxConverter {
       formatted = formatSingle(minPrice || maxPrice || 0);
     }
 
-    const result: { formatted: string; localEquivalent?: string } = { formatted };
+    const result: { formatted: string; localEquivalent?: string } = {
+      formatted,
+    };
 
     // Add local equivalent
     if (userCurrency && userCurrency.toUpperCase() !== curr) {
@@ -281,8 +273,10 @@ export class FxConverter {
     // this.rates.rates = data.rates;
     // this.rates.timestamp = new Date();
     // this.rates.expiresAt = new Date(Date.now() + 3600000);
-    
-    console.log('[FxConverter] Rate refresh not yet implemented - using placeholder rates');
+
+    console.log(
+      '[FxConverter] Rate refresh not yet implemented - using placeholder rates',
+    );
     this.rates.timestamp = new Date();
     this.rates.expiresAt = new Date(Date.now() + 3600000);
   }

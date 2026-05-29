@@ -5,7 +5,12 @@ import {
   Logger,
   Optional,
 } from '@nestjs/common';
-import { AdminAuditAction, NotificationType, Role, UserStatus } from '@prisma/client';
+import {
+  AdminAuditAction,
+  NotificationType,
+  Role,
+  UserStatus,
+} from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { NotificationsService } from 'src/notifications/notifications.service';
 import { UpsertCategoryDto } from './dto/upsert-category.dto';
@@ -25,7 +30,11 @@ import {
   assertGarmentSubCategoryTermAllowed,
 } from './taxonomy-governance';
 
-type CatalogFilterEntityType = 'COLLECTION' | 'STORE_COLLECTION' | 'DESIGN' | 'PRODUCT';
+type CatalogFilterEntityType =
+  | 'COLLECTION'
+  | 'STORE_COLLECTION'
+  | 'DESIGN'
+  | 'PRODUCT';
 
 @Injectable()
 export class CategoriesService {
@@ -381,7 +390,12 @@ export class CategoriesService {
       where: { id },
     });
     if (!existing) throw new NotFoundException('Category not found');
-    const [legacyDesignReferencing, explicitDesignReferencing, storeReferencing, productReferencing] = await Promise.all([
+    const [
+      legacyDesignReferencing,
+      explicitDesignReferencing,
+      storeReferencing,
+      productReferencing,
+    ] = await Promise.all([
       this.prisma.collection.count({ where: { categoryId: id } }),
       this.prisma.design.count({ where: { categoryId: id } }),
       this.prisma.storeCollection.count({ where: { categoryId: id } }),
@@ -393,7 +407,9 @@ export class CategoriesService {
       storeReferencing > 0 ||
       productReferencing > 0
     )
-      throw new BadRequestException('Cannot delete category in use. Deactivate it instead to preserve existing item metadata.');
+      throw new BadRequestException(
+        'Cannot delete category in use. Deactivate it instead to preserve existing item metadata.',
+      );
     await this.prisma.collectionCategory.delete({ where: { id } });
 
     await this.notifyAdminsOfTaxonomyAction({
@@ -420,7 +436,10 @@ export class CategoriesService {
     return { success: true };
   }
 
-  private async generateUniqueSubCategorySlug(categoryId: string, base: string): Promise<string> {
+  private async generateUniqueSubCategorySlug(
+    categoryId: string,
+    base: string,
+  ): Promise<string> {
     const normalize = (s: string) =>
       s
         .toLowerCase()
@@ -439,18 +458,28 @@ export class CategoriesService {
       if (!exists) return slug;
       slug = `${baseSlug}-${attempt++}`;
       if (attempt > 50) {
-        throw new BadRequestException('Unable to generate unique sub-category slug');
+        throw new BadRequestException(
+          'Unable to generate unique sub-category slug',
+        );
       }
     }
   }
 
-  async createSubCategory(categoryId: string, dto: UpsertSubCategoryDto, actorUserId?: string) {
-    const category = await this.prisma.collectionCategory.findUnique({ where: { id: categoryId } });
+  async createSubCategory(
+    categoryId: string,
+    dto: UpsertSubCategoryDto,
+    actorUserId?: string,
+  ) {
+    const category = await this.prisma.collectionCategory.findUnique({
+      where: { id: categoryId },
+    });
     if (!category) {
       throw new NotFoundException('Category not found');
     }
     if (!category.isActive) {
-      throw new BadRequestException('Create garment types under an active garment category.');
+      throw new BadRequestException(
+        'Create garment types under an active garment category.',
+      );
     }
 
     const name = dto.name.trim();
@@ -486,7 +515,10 @@ export class CategoriesService {
       action: AdminAuditAction.ADMIN_TAXONOMY_WRITE,
       targetType: 'CollectionCategoryType',
       targetId: row.id,
-      metadata: { operation: 'subcategory_created', categoryId: row.categoryId },
+      metadata: {
+        operation: 'subcategory_created',
+        categoryId: row.categoryId,
+      },
       newState: {
         categoryId: row.categoryId,
         slug: row.slug,
@@ -510,8 +542,14 @@ export class CategoriesService {
     };
   }
 
-  async updateSubCategory(subCategoryId: string, dto: UpsertSubCategoryDto, actorUserId?: string) {
-    const existing = await this.prisma.collectionCategoryType.findUnique({ where: { id: subCategoryId } });
+  async updateSubCategory(
+    subCategoryId: string,
+    dto: UpsertSubCategoryDto,
+    actorUserId?: string,
+  ) {
+    const existing = await this.prisma.collectionCategoryType.findUnique({
+      where: { id: subCategoryId },
+    });
     if (!existing) {
       throw new NotFoundException('Sub-category not found');
     }
@@ -560,7 +598,10 @@ export class CategoriesService {
       action: AdminAuditAction.ADMIN_TAXONOMY_WRITE,
       targetType: 'CollectionCategoryType',
       targetId: updated.id,
-      metadata: { operation: 'subcategory_updated', categoryId: updated.categoryId },
+      metadata: {
+        operation: 'subcategory_updated',
+        categoryId: updated.categoryId,
+      },
       previousState: {
         name: existing.name,
         description: existing.description,
@@ -589,7 +630,9 @@ export class CategoriesService {
   }
 
   async activateSubCategory(subCategoryId: string, actorUserId?: string) {
-    const existing = await this.prisma.collectionCategoryType.findUnique({ where: { id: subCategoryId } });
+    const existing = await this.prisma.collectionCategoryType.findUnique({
+      where: { id: subCategoryId },
+    });
     if (!existing) {
       throw new NotFoundException('Sub-category not found');
     }
@@ -601,7 +644,9 @@ export class CategoriesService {
       select: { id: true, isActive: true },
     });
     if (!category?.isActive) {
-      throw new BadRequestException('Activate the parent garment category before activating this garment type.');
+      throw new BadRequestException(
+        'Activate the parent garment category before activating this garment type.',
+      );
     }
     assertGarmentSubCategoryTermAllowed(existing.name);
     this.normalizeRequiredDescription(existing.description, 'Garment type');
@@ -627,7 +672,10 @@ export class CategoriesService {
       action: AdminAuditAction.ADMIN_TAXONOMY_WRITE,
       targetType: 'CollectionCategoryType',
       targetId: updated.id,
-      metadata: { operation: 'subcategory_reactivated', categoryId: updated.categoryId },
+      metadata: {
+        operation: 'subcategory_reactivated',
+        categoryId: updated.categoryId,
+      },
       previousState: { isActive: existing.isActive },
       newState: { isActive: updated.isActive },
     });
@@ -636,7 +684,9 @@ export class CategoriesService {
   }
 
   async deactivateSubCategory(subCategoryId: string, actorUserId?: string) {
-    const existing = await this.prisma.collectionCategoryType.findUnique({ where: { id: subCategoryId } });
+    const existing = await this.prisma.collectionCategoryType.findUnique({
+      where: { id: subCategoryId },
+    });
     if (!existing) {
       throw new NotFoundException('Sub-category not found');
     }
@@ -660,7 +710,10 @@ export class CategoriesService {
       action: AdminAuditAction.ADMIN_TAXONOMY_WRITE,
       targetType: 'CollectionCategoryType',
       targetId: updated.id,
-      metadata: { operation: 'subcategory_deactivated', categoryId: updated.categoryId },
+      metadata: {
+        operation: 'subcategory_deactivated',
+        categoryId: updated.categoryId,
+      },
       previousState: { isActive: existing.isActive },
       newState: { isActive: updated.isActive },
     });
@@ -683,7 +736,13 @@ export class CategoriesService {
         types: {
           where: { isActive: true },
           orderBy: [{ order: 'asc' }],
-          select: { id: true, slug: true, name: true, description: true, order: true },
+          select: {
+            id: true,
+            slug: true,
+            name: true,
+            description: true,
+            order: true,
+          },
         },
       },
     });
@@ -700,11 +759,20 @@ export class CategoriesService {
   /**
    * Get sub-categories for a specific main category.
    */
-  async getSubCategoriesByCategoryId(categoryId: string, includeInactive = false) {
+  async getSubCategoriesByCategoryId(
+    categoryId: string,
+    includeInactive = false,
+  ) {
     const types = await this.prisma.collectionCategoryType.findMany({
       where: includeInactive ? { categoryId } : { categoryId, isActive: true },
       orderBy: [{ order: 'asc' }],
-      select: { id: true, slug: true, name: true, description: true, order: true },
+      select: {
+        id: true,
+        slug: true,
+        name: true,
+        description: true,
+        order: true,
+      },
     });
     return types;
   }
@@ -725,7 +793,13 @@ export class CategoriesService {
         values: {
           where: { isActive: true },
           orderBy: [{ order: 'asc' }],
-          select: { id: true, slug: true, name: true, description: true, order: true },
+          select: {
+            id: true,
+            slug: true,
+            name: true,
+            description: true,
+            order: true,
+          },
         },
       },
     });
@@ -803,7 +877,10 @@ export class CategoriesService {
       this.logger.warn(
         `Invalid discovery metadata for ${entityType}: missing=${missingIds.join(',') || 'none'} invalid=${
           invalidValues
-            .map((value) => `${value.id}:${value.dimension?.slug ?? 'no-dimension'}/${value.slug}`)
+            .map(
+              (value) =>
+                `${value.id}:${value.dimension?.slug ?? 'no-dimension'}/${value.slug}`,
+            )
             .join(',') || 'none'
         }`,
       );
@@ -918,7 +995,9 @@ export class CategoriesService {
     }
 
     // 2. Deactivate legacy categories (don't delete to preserve FK integrity)
-    const activeNewSlugs = new Set(DEFAULT_COLLECTION_CATEGORIES.map((c) => c.slug));
+    const activeNewSlugs = new Set(
+      DEFAULT_COLLECTION_CATEGORIES.map((c) => c.slug),
+    );
     for (const legacySlug of LEGACY_CATEGORY_SLUGS) {
       if (activeNewSlugs.has(legacySlug)) continue;
       const legacy = await this.prisma.collectionCategory.findUnique({
@@ -934,7 +1013,9 @@ export class CategoriesService {
     }
 
     // 3. Upsert sub-categories (scoped per main category)
-    for (const [parentSlug, subCategories] of Object.entries(DEFAULT_SUB_CATEGORIES)) {
+    for (const [parentSlug, subCategories] of Object.entries(
+      DEFAULT_SUB_CATEGORIES,
+    )) {
       const categoryId = categoryIdsBySlug.get(parentSlug);
       if (!categoryId) {
         this.logger.warn(`Parent category not found for slug: ${parentSlug}`);
@@ -942,10 +1023,12 @@ export class CategoriesService {
       }
 
       for (const sub of subCategories) {
-        const existingType = await this.prisma.collectionCategoryType.findFirst({
-          where: { categoryId, slug: sub.slug },
-          select: { id: true },
-        });
+        const existingType = await this.prisma.collectionCategoryType.findFirst(
+          {
+            where: { categoryId, slug: sub.slug },
+            select: { id: true },
+          },
+        );
 
         if (existingType) {
           await this.prisma.collectionCategoryType.update({
@@ -1024,8 +1107,8 @@ export class CategoriesService {
 
     this.logger.log(
       `Default taxonomy ensured: ${DEFAULT_COLLECTION_CATEGORIES.length} categories, ` +
-      `${Object.values(DEFAULT_SUB_CATEGORIES).reduce((a, s) => a + s.length, 0)} sub-categories, ` +
-      `${DEFAULT_FILTER_DIMENSIONS.length} filter dimensions.`,
+        `${Object.values(DEFAULT_SUB_CATEGORIES).reduce((a, s) => a + s.length, 0)} sub-categories, ` +
+        `${DEFAULT_FILTER_DIMENSIONS.length} filter dimensions.`,
     );
   }
 
@@ -1114,15 +1197,18 @@ export class CategoriesService {
       }
     }
 
-    const activeDimensionSlugs = DEFAULT_FILTER_DIMENSIONS.map((dim) => dim.slug);
+    const activeDimensionSlugs = DEFAULT_FILTER_DIMENSIONS.map(
+      (dim) => dim.slug,
+    );
     const legacyFilterSlugs = LEGACY_FILTER_DIMENSION_SLUGS.filter(
       (slug) => !activeDimensionSlugs.includes(slug),
     );
     if (legacyFilterSlugs.length > 0) {
-      const deactivatedDimensions = await this.prisma.filterDimension.updateMany({
-        where: { slug: { in: legacyFilterSlugs }, isActive: true },
-        data: { isActive: false },
-      });
+      const deactivatedDimensions =
+        await this.prisma.filterDimension.updateMany({
+          where: { slug: { in: legacyFilterSlugs }, isActive: true },
+          data: { isActive: false },
+        });
       if (deactivatedDimensions.count > 0) {
         this.logger.log(
           `Deactivated ${deactivatedDimensions.count} legacy filter dimensions: ${legacyFilterSlugs.join(', ')}`,

@@ -35,9 +35,14 @@ export class CustomOrderMessagingBuyerController {
   async listMessages(
     @Req() req: Request & { user: { id: string } },
     @Param('orderId') orderId: string,
-    @Query(new ValidationPipe({ transform: true, whitelist: true })) query: QueryMessagesDto,
+    @Query(new ValidationPipe({ transform: true, whitelist: true }))
+    query: QueryMessagesDto,
   ) {
-    return this.messaging.listCustomOrderMessagesForBuyer(req.user.id, orderId, query);
+    return this.messaging.listCustomOrderMessagesForBuyer(
+      req.user.id,
+      orderId,
+      query,
+    );
   }
 
   @Post()
@@ -47,7 +52,14 @@ export class CustomOrderMessagingBuyerController {
     @Param('orderId') orderId: string,
     @Headers('idempotency-key') idempotencyKey: string | undefined,
     @Headers('x-idempotency-key') legacyIdempotencyKey: string | undefined,
-    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true })) dto: SendMessageDto,
+    @Body(
+      new ValidationPipe({
+        transform: true,
+        whitelist: true,
+        forbidNonWhitelisted: true,
+      }),
+    )
+    dto: SendMessageDto,
   ) {
     return this.messaging.sendCustomOrderMessageForBuyer(
       req.user.id,
@@ -61,7 +73,14 @@ export class CustomOrderMessagingBuyerController {
   async markRead(
     @Req() req: Request & { user: { id: string } },
     @Param('orderId') orderId: string,
-    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true })) dto: MarkThreadReadDto,
+    @Body(
+      new ValidationPipe({
+        transform: true,
+        whitelist: true,
+        forbidNonWhitelisted: true,
+      }),
+    )
+    dto: MarkThreadReadDto,
   ) {
     return this.messaging.markThreadReadForContext(
       req.user.id,
@@ -76,7 +95,14 @@ export class CustomOrderMessagingBuyerController {
   async updatePreferences(
     @Req() req: Request & { user: { id: string } },
     @Param('orderId') orderId: string,
-    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true })) dto: UpdateThreadPreferencesDto,
+    @Body(
+      new ValidationPipe({
+        transform: true,
+        whitelist: true,
+        forbidNonWhitelisted: true,
+      }),
+    )
+    dto: UpdateThreadPreferencesDto,
   ) {
     return this.messaging.updateThreadPreferencesForContext(
       req.user.id,
@@ -91,7 +117,8 @@ export class CustomOrderMessagingBuyerController {
   async summary(
     @Req() req: Request & { user: { id: string } },
     @Param('orderId') orderId: string,
-    @Query(new ValidationPipe({ transform: true, whitelist: true })) query: QueryThreadSummaryDto,
+    @Query(new ValidationPipe({ transform: true, whitelist: true }))
+    query: QueryThreadSummaryDto,
   ) {
     return this.messaging.getSummaryForContext(
       req.user.id,
@@ -107,17 +134,40 @@ export class CustomOrderMessagingBuyerController {
     @Req() req: Request & { user: { id: string } },
     @Param('orderId') orderId: string,
     @Param('requestId') requestId: string,
-    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true })) dto: RespondCustomOrderExtensionDto,
+    @Body(
+      new ValidationPipe({
+        transform: true,
+        whitelist: true,
+        forbidNonWhitelisted: true,
+      }),
+    )
+    dto: RespondCustomOrderExtensionDto,
   ) {
-    return this.messaging.respondToCustomOrderExtensionForBuyer(req.user.id, orderId, requestId, dto);
+    return this.messaging.respondToCustomOrderExtensionForBuyer(
+      req.user.id,
+      orderId,
+      requestId,
+      dto,
+    );
   }
 
   @Post('disputes')
   async openDispute(
     @Req() req: Request & { user: { id: string } },
     @Param('orderId') orderId: string,
-    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true })) dto: OpenCustomOrderDisputeDto,
+    @Body(
+      new ValidationPipe({
+        transform: true,
+        whitelist: true,
+        forbidNonWhitelisted: true,
+      }),
+    )
+    dto: OpenCustomOrderDisputeDto,
   ) {
-    return this.messaging.openCustomOrderDisputeForBuyer(req.user.id, orderId, dto);
+    return this.messaging.openCustomOrderDisputeForBuyer(
+      req.user.id,
+      orderId,
+      dto,
+    );
   }
 }

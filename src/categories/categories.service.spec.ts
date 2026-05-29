@@ -155,7 +155,9 @@ describe('CategoriesService entity filters', () => {
 
     await expect(
       service.setEntityFilters('DESIGN', 'design-1', ['filter-product-only']),
-    ).rejects.toThrow('Some selected style details are invalid for this item type.');
+    ).rejects.toThrow(
+      'Some selected style details are invalid for this item type.',
+    );
 
     expect(prisma.entityFilter.deleteMany).not.toHaveBeenCalled();
   });

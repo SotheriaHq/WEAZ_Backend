@@ -1,13 +1,5 @@
-import {
-  BadRequestException,
-  Injectable,
-  Optional,
-} from '@nestjs/common';
-import {
-  CollectionStatus,
-  CollectionVisibility,
-  Prisma,
-} from '@prisma/client';
+import { BadRequestException, Injectable, Optional } from '@nestjs/common';
+import { CollectionStatus, CollectionVisibility, Prisma } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 import {
   MarketSectionItemDto,
@@ -65,7 +57,8 @@ export class MarketSuggestionService {
   ): Promise<MarketSuggestionResponseDto> {
     const limit = this.normalizeLimit(query.limit);
     const context = query.context;
-    const targetType = query.targetType ?? this.defaultTargetTypeForContext(context);
+    const targetType =
+      query.targetType ?? this.defaultTargetTypeForContext(context);
     const targetId = this.clean(query.targetId);
     const searchQuery = this.clean(query.query);
     const sectionKey = this.clean(query.sectionKey);
@@ -185,64 +178,73 @@ export class MarketSuggestionService {
     }
 
     const blocks = [
-      this.buildBlock({
-        blockKey: 'product-detail-more-like-this',
-        title: 'More Like This',
-        subtitle: 'Similar market-ready pieces',
-        reason: 'same-category-or-style',
-        sourceType: 'PRODUCT',
-        strategy: 'product.same-category-tags',
-        limit,
-        items: await this.getProductCandidates({
+      this.buildBlock(
+        {
+          blockKey: 'product-detail-more-like-this',
+          title: 'More Like This',
+          subtitle: 'Similar market-ready pieces',
+          reason: 'same-category-or-style',
+          sourceType: 'PRODUCT',
+          strategy: 'product.same-category-tags',
           limit,
-          excludeIds: [productId],
-          categoryId: target.categoryId,
-          tags: target.tags,
-          orderBy: [
-            { viewsCount: 'desc' },
-            { createdAt: 'desc' },
-            { id: 'desc' },
-          ],
-        }),
-      }, suppressionScope, usedItemKeys),
-      this.buildBlock({
-        blockKey: 'product-detail-more-from-brand',
-        title: 'More From This Brand',
-        subtitle: 'Other pieces from the same store',
-        reason: 'same-brand',
-        sourceType: 'PRODUCT',
-        strategy: 'product.same-brand',
-        limit,
-        items: await this.getProductCandidates({
+          items: await this.getProductCandidates({
+            limit,
+            excludeIds: [productId],
+            categoryId: target.categoryId,
+            tags: target.tags,
+            orderBy: [
+              { viewsCount: 'desc' },
+              { createdAt: 'desc' },
+              { id: 'desc' },
+            ],
+          }),
+        },
+        suppressionScope,
+        usedItemKeys,
+      ),
+      this.buildBlock(
+        {
+          blockKey: 'product-detail-more-from-brand',
+          title: 'More From This Brand',
+          subtitle: 'Other pieces from the same store',
+          reason: 'same-brand',
+          sourceType: 'PRODUCT',
+          strategy: 'product.same-brand',
           limit,
-          excludeIds: [productId],
-          brandId: target.brandId,
-          orderBy: [
-            { createdAt: 'desc' },
-            { id: 'desc' },
-          ],
-        }),
-      }, suppressionScope, usedItemKeys),
-      this.buildBlock({
-        blockKey: 'product-detail-fresh-alternatives',
-        title: 'Fresh Alternatives',
-        subtitle: 'New arrivals worth checking',
-        reason: 'fresh-fallback',
-        sourceType: 'PRODUCT',
-        strategy: 'product.fresh-alternatives',
-        limit,
-        items: await this.getProductCandidates({
+          items: await this.getProductCandidates({
+            limit,
+            excludeIds: [productId],
+            brandId: target.brandId,
+            orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+          }),
+        },
+        suppressionScope,
+        usedItemKeys,
+      ),
+      this.buildBlock(
+        {
+          blockKey: 'product-detail-fresh-alternatives',
+          title: 'Fresh Alternatives',
+          subtitle: 'New arrivals worth checking',
+          reason: 'fresh-fallback',
+          sourceType: 'PRODUCT',
+          strategy: 'product.fresh-alternatives',
           limit,
-          excludeIds: [productId],
-          orderBy: [
-            { createdAt: 'desc' },
-            { id: 'desc' },
-          ],
-        }),
-      }, suppressionScope, usedItemKeys),
+          items: await this.getProductCandidates({
+            limit,
+            excludeIds: [productId],
+            orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+          }),
+        },
+        suppressionScope,
+        usedItemKeys,
+      ),
     ].filter((block): block is MarketSuggestionBlockDto => Boolean(block));
 
-    return { blocks, fallbackReason: blocks.length ? null : 'no-eligible-candidates' };
+    return {
+      blocks,
+      fallbackReason: blocks.length ? null : 'no-eligible-candidates',
+    };
   }
 
   private async getCollectionDetailSuggestions(
@@ -289,48 +291,63 @@ export class MarketSuggestionService {
     };
 
     const blocks = [
-      this.buildBlock({
-        blockKey: 'collection-detail-pieces-from-edit',
-        title: 'Pieces From This Edit',
-        subtitle: 'Market-ready products in the collection',
-        reason: 'same-collection-products',
-        sourceType: 'PRODUCT',
-        strategy: 'collection.products',
-        limit,
-        items: await this.getCollectionProductCandidates(collectionId, limit),
-      }, suppressionScope, usedItemKeys),
-      this.buildBlock({
-        blockKey: 'collection-detail-more-from-brand',
-        title: 'More From This Brand',
-        subtitle: 'Other products from the same store',
-        reason: 'same-brand',
-        sourceType: 'PRODUCT',
-        strategy: 'collection.same-brand-products',
-        limit,
-        items: await this.getProductCandidates({
+      this.buildBlock(
+        {
+          blockKey: 'collection-detail-pieces-from-edit',
+          title: 'Pieces From This Edit',
+          subtitle: 'Market-ready products in the collection',
+          reason: 'same-collection-products',
+          sourceType: 'PRODUCT',
+          strategy: 'collection.products',
           limit,
-          brandId: targetSnapshot.brandId,
-          orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
-        }),
-      }, suppressionScope, usedItemKeys),
-      this.buildBlock({
-        blockKey: 'collection-detail-similar-collections',
-        title: 'Similar Collections',
-        subtitle: 'Related store edits and capsules',
-        reason: 'same-category-or-style',
-        sourceType: 'COLLECTION',
-        strategy: 'collection.similar-collections',
-        limit,
-        items: await this.getCollectionCandidates({
+          items: await this.getCollectionProductCandidates(collectionId, limit),
+        },
+        suppressionScope,
+        usedItemKeys,
+      ),
+      this.buildBlock(
+        {
+          blockKey: 'collection-detail-more-from-brand',
+          title: 'More From This Brand',
+          subtitle: 'Other products from the same store',
+          reason: 'same-brand',
+          sourceType: 'PRODUCT',
+          strategy: 'collection.same-brand-products',
           limit,
-          excludeIds: [collectionId],
-          categoryId: targetSnapshot.categoryId,
-          tags: targetSnapshot.tags,
-        }),
-      }, suppressionScope, usedItemKeys),
+          items: await this.getProductCandidates({
+            limit,
+            brandId: targetSnapshot.brandId,
+            orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+          }),
+        },
+        suppressionScope,
+        usedItemKeys,
+      ),
+      this.buildBlock(
+        {
+          blockKey: 'collection-detail-similar-collections',
+          title: 'Similar Collections',
+          subtitle: 'Related store edits and capsules',
+          reason: 'same-category-or-style',
+          sourceType: 'COLLECTION',
+          strategy: 'collection.similar-collections',
+          limit,
+          items: await this.getCollectionCandidates({
+            limit,
+            excludeIds: [collectionId],
+            categoryId: targetSnapshot.categoryId,
+            tags: targetSnapshot.tags,
+          }),
+        },
+        suppressionScope,
+        usedItemKeys,
+      ),
     ].filter((block): block is MarketSuggestionBlockDto => Boolean(block));
 
-    return { blocks, fallbackReason: blocks.length ? null : 'no-eligible-candidates' };
+    return {
+      blocks,
+      fallbackReason: blocks.length ? null : 'no-eligible-candidates',
+    };
   }
 
   private async getBrandDetailSuggestions(
@@ -355,53 +372,68 @@ export class MarketSuggestionService {
     }
 
     const blocks = [
-      this.buildBlock({
-        blockKey: 'brand-detail-best-from-brand',
-        title: 'Best From This Brand',
-        subtitle: 'Available products from this store',
-        reason: 'same-brand-products',
-        sourceType: 'PRODUCT',
-        strategy: 'brand.best-products',
-        limit,
-        items: await this.getProductCandidates({
+      this.buildBlock(
+        {
+          blockKey: 'brand-detail-best-from-brand',
+          title: 'Best From This Brand',
+          subtitle: 'Available products from this store',
+          reason: 'same-brand-products',
+          sourceType: 'PRODUCT',
+          strategy: 'brand.best-products',
           limit,
-          brandId: target.id,
-          orderBy: [
-            { viewsCount: 'desc' },
-            { createdAt: 'desc' },
-            { id: 'desc' },
-          ],
-        }),
-      }, suppressionScope, usedItemKeys),
-      this.buildBlock({
-        blockKey: 'brand-detail-latest-collections',
-        title: 'Latest Collections',
-        subtitle: 'Recent edits from this brand',
-        reason: 'same-brand-collections',
-        sourceType: 'COLLECTION',
-        strategy: 'brand.latest-collections',
-        limit,
-        items: await this.getCollectionCandidates({
+          items: await this.getProductCandidates({
+            limit,
+            brandId: target.id,
+            orderBy: [
+              { viewsCount: 'desc' },
+              { createdAt: 'desc' },
+              { id: 'desc' },
+            ],
+          }),
+        },
+        suppressionScope,
+        usedItemKeys,
+      ),
+      this.buildBlock(
+        {
+          blockKey: 'brand-detail-latest-collections',
+          title: 'Latest Collections',
+          subtitle: 'Recent edits from this brand',
+          reason: 'same-brand-collections',
+          sourceType: 'COLLECTION',
+          strategy: 'brand.latest-collections',
           limit,
-          ownerId: target.ownerId,
-        }),
-      }, suppressionScope, usedItemKeys),
-      this.buildBlock({
-        blockKey: 'brand-detail-designers-to-watch',
-        title: 'Designers to Watch',
-        subtitle: 'Other open stores with market-ready products',
-        reason: 'fallback-brands',
-        sourceType: 'BRAND',
-        strategy: 'brand.fallback-designers',
-        limit,
-        items: await this.getBrandCandidates({
+          items: await this.getCollectionCandidates({
+            limit,
+            ownerId: target.ownerId,
+          }),
+        },
+        suppressionScope,
+        usedItemKeys,
+      ),
+      this.buildBlock(
+        {
+          blockKey: 'brand-detail-designers-to-watch',
+          title: 'Designers to Watch',
+          subtitle: 'Other open stores with market-ready products',
+          reason: 'fallback-brands',
+          sourceType: 'BRAND',
+          strategy: 'brand.fallback-designers',
           limit,
-          excludeIds: [target.id],
-        }),
-      }, suppressionScope, usedItemKeys),
+          items: await this.getBrandCandidates({
+            limit,
+            excludeIds: [target.id],
+          }),
+        },
+        suppressionScope,
+        usedItemKeys,
+      ),
     ].filter((block): block is MarketSuggestionBlockDto => Boolean(block));
 
-    return { blocks, fallbackReason: blocks.length ? null : 'no-eligible-candidates' };
+    return {
+      blocks,
+      fallbackReason: blocks.length ? null : 'no-eligible-candidates',
+    };
   }
 
   private async getSearchEmptySuggestions(
@@ -411,50 +443,65 @@ export class MarketSuggestionService {
     usedItemKeys: Set<string>,
   ) {
     const blocks = [
-      this.buildBlock({
-        blockKey: 'search-empty-relaxed-products',
-        title: 'Try These Instead',
-        subtitle: 'Relaxed matches from the market',
-        reason: 'query-relaxed-products',
-        sourceType: 'PRODUCT',
-        strategy: 'search.relaxed-products',
-        limit,
-        items: await this.getProductCandidates({
+      this.buildBlock(
+        {
+          blockKey: 'search-empty-relaxed-products',
+          title: 'Try These Instead',
+          subtitle: 'Relaxed matches from the market',
+          reason: 'query-relaxed-products',
+          sourceType: 'PRODUCT',
+          strategy: 'search.relaxed-products',
           limit,
-          query,
-          orderBy: [
-            { viewsCount: 'desc' },
-            { createdAt: 'desc' },
-            { id: 'desc' },
-          ],
-        }),
-      }, suppressionScope, usedItemKeys),
-      this.buildBlock({
-        blockKey: 'search-empty-fresh-alternatives',
-        title: 'Fresh Market Picks',
-        subtitle: 'New arrivals while you keep looking',
-        reason: 'fresh-fallback',
-        sourceType: 'PRODUCT',
-        strategy: 'search.fresh-fallback',
-        limit,
-        items: await this.getProductCandidates({
+          items: await this.getProductCandidates({
+            limit,
+            query,
+            orderBy: [
+              { viewsCount: 'desc' },
+              { createdAt: 'desc' },
+              { id: 'desc' },
+            ],
+          }),
+        },
+        suppressionScope,
+        usedItemKeys,
+      ),
+      this.buildBlock(
+        {
+          blockKey: 'search-empty-fresh-alternatives',
+          title: 'Fresh Market Picks',
+          subtitle: 'New arrivals while you keep looking',
+          reason: 'fresh-fallback',
+          sourceType: 'PRODUCT',
+          strategy: 'search.fresh-fallback',
           limit,
-          orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
-        }),
-      }, suppressionScope, usedItemKeys),
-      this.buildBlock({
-        blockKey: 'search-empty-latest-collections',
-        title: 'Latest Collections',
-        subtitle: 'Recent store edits and capsules',
-        reason: 'collection-fallback',
-        sourceType: 'COLLECTION',
-        strategy: 'search.latest-collections',
-        limit,
-        items: await this.getCollectionCandidates({ limit }),
-      }, suppressionScope, usedItemKeys),
+          items: await this.getProductCandidates({
+            limit,
+            orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+          }),
+        },
+        suppressionScope,
+        usedItemKeys,
+      ),
+      this.buildBlock(
+        {
+          blockKey: 'search-empty-latest-collections',
+          title: 'Latest Collections',
+          subtitle: 'Recent store edits and capsules',
+          reason: 'collection-fallback',
+          sourceType: 'COLLECTION',
+          strategy: 'search.latest-collections',
+          limit,
+          items: await this.getCollectionCandidates({ limit }),
+        },
+        suppressionScope,
+        usedItemKeys,
+      ),
     ].filter((block): block is MarketSuggestionBlockDto => Boolean(block));
 
-    return { blocks, fallbackReason: blocks.length ? null : 'no-eligible-candidates' };
+    return {
+      blocks,
+      fallbackReason: blocks.length ? null : 'no-eligible-candidates',
+    };
   }
 
   private buildBlock(
@@ -636,7 +683,9 @@ export class MarketSuggestionService {
     const brands = await this.prisma.brand.findMany({
       where: {
         isStoreOpen: true,
-        ...(options.excludeIds?.length ? { id: { notIn: options.excludeIds } } : {}),
+        ...(options.excludeIds?.length
+          ? { id: { notIn: options.excludeIds } }
+          : {}),
         products: {
           some: productWhere,
         },
@@ -783,21 +832,22 @@ export class MarketSuggestionService {
     } satisfies Prisma.StoreCollectionSelect;
   }
 
-  private buildProductQueryFilter(query?: string | null): Prisma.ProductWhereInput | null {
+  private buildProductQueryFilter(
+    query?: string | null,
+  ): Prisma.ProductWhereInput | null {
     const tokens = this.searchTokens(query);
     if (!tokens.length) return null;
     const containsFilters = tokens.slice(0, 4).flatMap((token) => [
       { name: { contains: token, mode: 'insensitive' as const } },
       { description: { contains: token, mode: 'insensitive' as const } },
       { brand: { name: { contains: token, mode: 'insensitive' as const } } },
-      { category: { name: { contains: token, mode: 'insensitive' as const } } },
+      {
+        category: { name: { contains: token, mode: 'insensitive' as const } },
+      },
     ]);
 
     return {
-      OR: [
-        ...containsFilters,
-        { tags: { hasSome: tokens.slice(0, 8) } },
-      ],
+      OR: [...containsFilters, { tags: { hasSome: tokens.slice(0, 8) } }],
     };
   }
 
@@ -904,7 +954,9 @@ export class MarketSuggestionService {
     const coverProduct = visibleProducts.find((product: any) =>
       this.firstProductImage(product),
     );
-    const coverImage = coverProduct ? this.firstProductImage(coverProduct) : null;
+    const coverImage = coverProduct
+      ? this.firstProductImage(coverProduct)
+      : null;
     if (!coverImage) return null;
 
     const prices = visibleProducts
@@ -925,11 +977,13 @@ export class MarketSuggestionService {
       sourceType: 'COLLECTION',
       entityType: 'COLLECTION',
       title: collection.title ?? 'Untitled collection',
-      subtitle: collection.owner?.brand?.name ?? collection.owner?.username ?? null,
+      subtitle:
+        collection.owner?.brand?.name ?? collection.owner?.username ?? null,
       description: collection.description ?? null,
       brand: {
         id: collection.owner?.brand?.id ?? collection.owner?.id ?? null,
-        name: collection.owner?.brand?.name ?? collection.owner?.username ?? null,
+        name:
+          collection.owner?.brand?.name ?? collection.owner?.username ?? null,
         logoUrl: this.cleanString(collection.owner?.brand?.logo),
       },
       media: {
@@ -940,8 +994,12 @@ export class MarketSuggestionService {
       },
       price: null,
       priceRange: {
-        min: prices.length ? Math.min(...prices) : collection.minPrice ?? null,
-        max: prices.length ? Math.max(...prices) : collection.maxPrice ?? null,
+        min: prices.length
+          ? Math.min(...prices)
+          : (collection.minPrice ?? null),
+        max: prices.length
+          ? Math.max(...prices)
+          : (collection.maxPrice ?? null),
         currency,
       },
       availability: null,
@@ -1045,7 +1103,8 @@ export class MarketSuggestionService {
 
     if (targetKeys.some((key) => scope.targetKeys.has(key))) return true;
     if (item.brand?.id && scope.brandIds.has(item.brand.id)) return true;
-    if (item.category?.id && scope.categoryIds.has(item.category.id)) return true;
+    if (item.category?.id && scope.categoryIds.has(item.category.id))
+      return true;
     return false;
   }
 
@@ -1171,8 +1230,12 @@ export class MarketSuggestionService {
     if (!Number.isFinite(price) || !Number.isFinite(salePrice)) return false;
     if (salePrice <= 0 || salePrice >= price) return false;
     const now = Date.now();
-    const start = product.saleStartAt ? new Date(product.saleStartAt).getTime() : null;
-    const end = product.saleEndAt ? new Date(product.saleEndAt).getTime() : null;
+    const start = product.saleStartAt
+      ? new Date(product.saleStartAt).getTime()
+      : null;
+    const end = product.saleEndAt
+      ? new Date(product.saleEndAt).getTime()
+      : null;
     return (!start || start <= now) && (!end || end >= now);
   }
 

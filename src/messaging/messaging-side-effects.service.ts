@@ -39,7 +39,9 @@ export class MessagingSideEffectsService {
     const rows = await this.prisma.messageNotificationOutbox.findMany({
       where: {
         messageId,
-        status: { in: [MessageOutboxStatus.PENDING, MessageOutboxStatus.FAILED] },
+        status: {
+          in: [MessageOutboxStatus.PENDING, MessageOutboxStatus.FAILED],
+        },
         availableAt: { lte: new Date() },
         attempts: { lt: MAX_MESSAGE_OUTBOX_ATTEMPTS },
       },
@@ -48,7 +50,11 @@ export class MessagingSideEffectsService {
     for (const row of rows) {
       const claim = await this.prisma.messageNotificationOutbox.updateMany({
         where: { id: row.id, status: row.status },
-        data: { status: MessageOutboxStatus.PROCESSING, attempts: { increment: 1 }, lastError: null },
+        data: {
+          status: MessageOutboxStatus.PROCESSING,
+          attempts: { increment: 1 },
+          lastError: null,
+        },
       });
       if (claim.count === 0) continue;
 
@@ -57,13 +63,20 @@ export class MessagingSideEffectsService {
         await this.notificationsQueue.enqueueFanout({
           recipientIds: [row.recipientId],
           notificationType: row.notificationType,
-          actorId: typeof payload?.actorUserId === 'string' ? payload.actorUserId : undefined,
+          actorId:
+            typeof payload?.actorUserId === 'string'
+              ? payload.actorUserId
+              : undefined,
           payload,
         });
 
         await this.prisma.messageNotificationOutbox.update({
           where: { id: row.id },
-          data: { status: MessageOutboxStatus.COMPLETED, processedAt: new Date(), lastError: null },
+          data: {
+            status: MessageOutboxStatus.COMPLETED,
+            processedAt: new Date(),
+            lastError: null,
+          },
         });
       } catch (error) {
         const current = await this.prisma.messageNotificationOutbox.findUnique({
@@ -95,7 +108,9 @@ export class MessagingSideEffectsService {
   async dispatchPendingMessageOutbox(batchSize = 100): Promise<void> {
     const rows = await this.prisma.messageNotificationOutbox.findMany({
       where: {
-        status: { in: [MessageOutboxStatus.PENDING, MessageOutboxStatus.FAILED] },
+        status: {
+          in: [MessageOutboxStatus.PENDING, MessageOutboxStatus.FAILED],
+        },
         availableAt: { lte: new Date() },
         attempts: { lt: MAX_MESSAGE_OUTBOX_ATTEMPTS },
       },
@@ -103,7 +118,9 @@ export class MessagingSideEffectsService {
       take: batchSize,
     });
 
-    const uniqueMessageIds = Array.from(new Set(rows.map((row) => row.messageId)));
+    const uniqueMessageIds = Array.from(
+      new Set(rows.map((row) => row.messageId)),
+    );
     for (const messageId of uniqueMessageIds) {
       await this.dispatchMessageOutboxForMessage(messageId);
     }
@@ -116,7 +133,9 @@ export class MessagingSideEffectsService {
       where: {
         thread: {
           lastMessageAt: { not: null },
-          status: { in: [MessageThreadStatus.OPEN, MessageThreadStatus.READ_ONLY] },
+          status: {
+            in: [MessageThreadStatus.OPEN, MessageThreadStatus.READ_ONLY],
+          },
         },
       },
       select: {
@@ -152,7 +171,9 @@ export class MessagingSideEffectsService {
       ? await this.prisma.messageNotificationOutbox.findMany({
           where: {
             notificationType: NotificationType.MESSAGE_UNREAD_REMINDER,
-            createdAt: { gt: new Date(now.getTime() - UNREAD_REMINDER_COOLDOWN_MS) },
+            createdAt: {
+              gt: new Date(now.getTime() - UNREAD_REMINDER_COOLDOWN_MS),
+            },
             OR: participantKeys.map((key) => ({
               threadId: key.threadId,
               recipientId: key.recipientId,
@@ -173,7 +194,8 @@ export class MessagingSideEffectsService {
       const lastMessageAt = participant.thread.lastMessageAt;
       if (!lastMessageAt) continue;
       if (participant.thread.lastSenderUserId === participant.userId) continue;
-      if (participant.lastReadAt && participant.lastReadAt >= lastMessageAt) continue;
+      if (participant.lastReadAt && participant.lastReadAt >= lastMessageAt)
+        continue;
 
       const reminderKey = `${participant.threadId}:${participant.userId}`;
       if (recentlyReminded.has(reminderKey)) continue;
@@ -194,7 +216,8 @@ export class MessagingSideEffectsService {
             orderId: participant.thread.orderId,
             customOrderId: participant.thread.customOrderId,
             brandId: participant.thread.brandId,
-            customerId: participant.thread.buyerUserId ?? participant.thread.buyerId,
+            customerId:
+              participant.thread.buyerUserId ?? participant.thread.buyerId,
             targetUrl: this.resolveThreadTargetUrl(
               participant.thread.contextType,
               participant.thread.orderId,
@@ -266,13 +289,17 @@ export class MessagingSideEffectsService {
   }
 
   @Cron(CronExpression.EVERY_DAY_AT_5AM)
-  async cleanupExpiredClosedThreads(batchSize = MESSAGE_THREAD_RETENTION_BATCH_SIZE): Promise<void> {
+  async cleanupExpiredClosedThreads(
+    batchSize = MESSAGE_THREAD_RETENTION_BATCH_SIZE,
+  ): Promise<void> {
     const now = new Date();
 
     const eligibleThreads = await this.prisma.messageThread.findMany({
       where: {
         contextType: MessageContextType.CUSTOM_ORDER,
-        status: { in: [MessageThreadStatus.READ_ONLY, MessageThreadStatus.ARCHIVED] },
+        status: {
+          in: [MessageThreadStatus.READ_ONLY, MessageThreadStatus.ARCHIVED],
+        },
         archivedAt: null,
         customOrder: {
           is: {
@@ -320,11 +347,15 @@ export class MessagingSideEffectsService {
       });
     });
 
-    this.logger.log(`Archived and anonymized ${threadIds.length} expired messaging threads`);
+    this.logger.log(
+      `Archived and anonymized ${threadIds.length} expired messaging threads`,
+    );
   }
 
   emitThreadInvalidation(thread: MessageThread, recipientIds: string[]) {
-    const uniqueRecipientIds = Array.from(new Set(recipientIds.filter(Boolean)));
+    const uniqueRecipientIds = Array.from(
+      new Set(recipientIds.filter(Boolean)),
+    );
     for (const recipientId of uniqueRecipientIds) {
       this.events?.server?.to(`USER:${recipientId}`).emit('thread.updated', {
         threadId: thread.id,
@@ -339,9 +370,15 @@ export class MessagingSideEffectsService {
   emitMessageCreated(
     thread: MessageThread,
     recipientIds: string[],
-    message: { id: string; senderRole: MessageParticipantRole; createdAt: Date },
+    message: {
+      id: string;
+      senderRole: MessageParticipantRole;
+      createdAt: Date;
+    },
   ) {
-    const uniqueRecipientIds = Array.from(new Set(recipientIds.filter(Boolean)));
+    const uniqueRecipientIds = Array.from(
+      new Set(recipientIds.filter(Boolean)),
+    );
     for (const recipientId of uniqueRecipientIds) {
       this.events?.server?.to(`USER:${recipientId}`).emit('message.created', {
         threadId: thread.id,

@@ -24,7 +24,7 @@ import { multerOptionsForFileType } from './upload-policy';
 @ApiBearerAuth()
 @Controller('uploads')
 export class UploadController {
-  constructor(private uploadService: UploadService) { }
+  constructor(private uploadService: UploadService) {}
 
   // ============================================
   // PUBLIC ENDPOINTS (No Auth Required)
@@ -72,7 +72,9 @@ export class UploadController {
   @UseGuards(JwtAuthGuard)
   @Post('profile-image')
   @ApiOperation({ summary: 'Upload profile image' })
-  @UseInterceptors(FileInterceptor('file', multerOptionsForFileType(FileType.PROFILE_IMAGE)))
+  @UseInterceptors(
+    FileInterceptor('file', multerOptionsForFileType(FileType.PROFILE_IMAGE)),
+  )
   async uploadProfileImage(
     @UploadedFile() file: Express.Multer.File,
     @Req() req: any,
@@ -103,7 +105,9 @@ export class UploadController {
   @UseGuards(JwtAuthGuard)
   @Post('banner-image')
   @ApiOperation({ summary: 'Upload banner image' })
-  @UseInterceptors(FileInterceptor('file', multerOptionsForFileType(FileType.BANNER_IMAGE)))
+  @UseInterceptors(
+    FileInterceptor('file', multerOptionsForFileType(FileType.BANNER_IMAGE)),
+  )
   async uploadBannerImage(
     @UploadedFile() file: Express.Multer.File,
     @Req() req: any,
@@ -125,7 +129,9 @@ export class UploadController {
   @UseGuards(JwtAuthGuard)
   @Post('post-image')
   @ApiOperation({ summary: 'Upload post image' })
-  @UseInterceptors(FileInterceptor('file', multerOptionsForFileType(FileType.POST_IMAGE)))
+  @UseInterceptors(
+    FileInterceptor('file', multerOptionsForFileType(FileType.POST_IMAGE)),
+  )
   async uploadPostImage(
     @UploadedFile() file: Express.Multer.File,
     @Req() req: any,
@@ -144,7 +150,9 @@ export class UploadController {
   @UseGuards(JwtAuthGuard)
   @Post('post-video')
   @ApiOperation({ summary: 'Upload post video' })
-  @UseInterceptors(FileInterceptor('file', multerOptionsForFileType(FileType.POST_VIDEO)))
+  @UseInterceptors(
+    FileInterceptor('file', multerOptionsForFileType(FileType.POST_VIDEO)),
+  )
   async uploadPostVideo(
     @UploadedFile() file: Express.Multer.File,
     @Req() req: any,
@@ -163,7 +171,9 @@ export class UploadController {
   @UseGuards(JwtAuthGuard)
   @Post('review-image')
   @ApiOperation({ summary: 'Upload review image' })
-  @UseInterceptors(FileInterceptor('file', multerOptionsForFileType(FileType.REVIEW_IMAGE)))
+  @UseInterceptors(
+    FileInterceptor('file', multerOptionsForFileType(FileType.REVIEW_IMAGE)),
+  )
   async uploadReviewImage(
     @UploadedFile() file: Express.Multer.File,
     @Req() req: any,
@@ -182,7 +192,9 @@ export class UploadController {
   @UseGuards(JwtAuthGuard)
   @Post('review-video')
   @ApiOperation({ summary: 'Upload review video' })
-  @UseInterceptors(FileInterceptor('file', multerOptionsForFileType(FileType.REVIEW_VIDEO)))
+  @UseInterceptors(
+    FileInterceptor('file', multerOptionsForFileType(FileType.REVIEW_VIDEO)),
+  )
   async uploadReviewVideo(
     @UploadedFile() file: Express.Multer.File,
     @Req() req: any,
@@ -201,7 +213,9 @@ export class UploadController {
   @UseGuards(JwtAuthGuard)
   @Post('message-image')
   @ApiOperation({ summary: 'Upload message image attachment' })
-  @UseInterceptors(FileInterceptor('file', multerOptionsForFileType(FileType.MESSAGE_IMAGE)))
+  @UseInterceptors(
+    FileInterceptor('file', multerOptionsForFileType(FileType.MESSAGE_IMAGE)),
+  )
   async uploadMessageImage(
     @UploadedFile() file: Express.Multer.File,
     @Req() req: any,
@@ -220,7 +234,12 @@ export class UploadController {
   @UseGuards(JwtAuthGuard)
   @Post('message-document')
   @ApiOperation({ summary: 'Upload message document attachment' })
-  @UseInterceptors(FileInterceptor('file', multerOptionsForFileType(FileType.MESSAGE_DOCUMENT)))
+  @UseInterceptors(
+    FileInterceptor(
+      'file',
+      multerOptionsForFileType(FileType.MESSAGE_DOCUMENT),
+    ),
+  )
   async uploadMessageDocument(
     @UploadedFile() file: Express.Multer.File,
     @Req() req: any,

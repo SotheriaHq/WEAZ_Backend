@@ -21,17 +21,39 @@ export class MessagingSummaryBrandController {
   async customOrderSummaries(
     @Req() req: Request & { user: { id: string } },
     @Param('brandId') brandId: string,
-    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true })) dto: BulkQueryThreadSummaryDto,
+    @Body(
+      new ValidationPipe({
+        transform: true,
+        whitelist: true,
+        forbidNonWhitelisted: true,
+      }),
+    )
+    dto: BulkQueryThreadSummaryDto,
   ) {
-    return this.messaging.getBulkSummariesForCustomOrdersBrand(req.user.id, brandId, dto);
+    return this.messaging.getBulkSummariesForCustomOrdersBrand(
+      req.user.id,
+      brandId,
+      dto,
+    );
   }
 
   @Post('brands/:brandId/orders/messages/summaries')
   async orderSummaries(
     @Req() req: Request & { user: { id: string } },
     @Param('brandId') brandId: string,
-    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true })) dto: BulkQueryThreadSummaryDto,
+    @Body(
+      new ValidationPipe({
+        transform: true,
+        whitelist: true,
+        forbidNonWhitelisted: true,
+      }),
+    )
+    dto: BulkQueryThreadSummaryDto,
   ) {
-    return this.messaging.getBulkSummariesForOrdersBrand(req.user.id, brandId, dto);
+    return this.messaging.getBulkSummariesForOrdersBrand(
+      req.user.id,
+      brandId,
+      dto,
+    );
   }
 }

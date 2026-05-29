@@ -224,8 +224,12 @@ describe('PushNotificationsService', () => {
         }),
       }),
     ]);
-    expect(client.sendPushNotificationsAsync.mock.calls[0][0][0].data).not.toHaveProperty('message');
-    expect(client.sendPushNotificationsAsync.mock.calls[0][0][0].data).not.toHaveProperty('bodyText');
+    expect(
+      client.sendPushNotificationsAsync.mock.calls[0][0][0].data,
+    ).not.toHaveProperty('message');
+    expect(
+      client.sendPushNotificationsAsync.mock.calls[0][0][0].data,
+    ).not.toHaveProperty('bodyText');
   });
 
   it('deactivates invalid Expo tokens before sending', async () => {

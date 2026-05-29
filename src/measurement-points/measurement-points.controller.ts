@@ -19,7 +19,9 @@ import { MeasurementPointsService } from './measurement-points.service';
 
 @Controller('measurement-points')
 export class MeasurementPointsController {
-  constructor(private readonly measurementPointsService: MeasurementPointsService) {}
+  constructor(
+    private readonly measurementPointsService: MeasurementPointsService,
+  ) {}
 
   @UseGuards(OptionalJwtAuthGuard)
   @Get()
@@ -28,7 +30,11 @@ export class MeasurementPointsController {
     @Query(new ValidationPipe({ transform: true, whitelist: true }))
     query: QueryMeasurementPointsDto,
   ) {
-    return this.measurementPointsService.getAll(query, req.user?.id, req.user?.type);
+    return this.measurementPointsService.getAll(
+      query,
+      req.user?.id,
+      req.user?.type,
+    );
   }
 
   @Get('brand/:brandId')
@@ -41,7 +47,13 @@ export class MeasurementPointsController {
   @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
   async createFreeform(
     @Req() req: any,
-    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true }))
+    @Body(
+      new ValidationPipe({
+        transform: true,
+        whitelist: true,
+        forbidNonWhitelisted: true,
+      }),
+    )
     dto: CreateFreeformPointDto,
   ) {
     return this.measurementPointsService.submitFreeform(req.user.id, dto);

@@ -66,16 +66,23 @@ export class StudioHandoffService {
 
     try {
       const parsed = new URL(trimmed, 'https://threadly.local');
-      if (parsed.pathname !== '/studio' && !parsed.pathname.startsWith('/studio/')) {
+      if (
+        parsed.pathname !== '/studio' &&
+        !parsed.pathname.startsWith('/studio/')
+      ) {
         throw new BadRequestException('Studio handoff requires a Studio path');
       }
-      if (!ALLOWED_STUDIO_PATHS.some((pattern) => pattern.test(parsed.pathname))) {
+      if (
+        !ALLOWED_STUDIO_PATHS.some((pattern) => pattern.test(parsed.pathname))
+      ) {
         throw new BadRequestException('Studio handoff path is not allowed');
       }
       const tab = parsed.searchParams.get('tab');
       const queryKeys = Array.from(parsed.searchParams.keys());
       if (parsed.pathname !== '/studio' && queryKeys.length > 0) {
-        throw new BadRequestException('Studio handoff query is not allowed for this path');
+        throw new BadRequestException(
+          'Studio handoff query is not allowed for this path',
+        );
       }
       if (
         parsed.pathname === '/studio' &&
@@ -83,7 +90,11 @@ export class StudioHandoffService {
       ) {
         throw new BadRequestException('Studio handoff query is not allowed');
       }
-      if (parsed.pathname === '/studio' && tab && !ALLOWED_STUDIO_TABS.has(tab)) {
+      if (
+        parsed.pathname === '/studio' &&
+        tab &&
+        !ALLOWED_STUDIO_TABS.has(tab)
+      ) {
         throw new BadRequestException('Studio handoff tab is not allowed');
       }
       return `${parsed.pathname}${parsed.search}${parsed.hash}`;
@@ -105,7 +116,9 @@ export class StudioHandoffService {
       throw new UnauthorizedException('Authentication required');
     }
     if (user.type !== UserType.BRAND) {
-      throw new ForbiddenException('Studio handoff is only available for brand accounts');
+      throw new ForbiddenException(
+        'Studio handoff is only available for brand accounts',
+      );
     }
 
     const normalizedPath = this.normalizeStudioPath(intendedPath);
@@ -157,7 +170,9 @@ export class StudioHandoffService {
     });
 
     if (!handoff || handoff.usedAt || handoff.expiresAt <= new Date()) {
-      throw new UnauthorizedException('Studio handoff code is invalid or expired');
+      throw new UnauthorizedException(
+        'Studio handoff code is invalid or expired',
+      );
     }
 
     const valid = await bcrypt.compare(secret, handoff.codeHash);
@@ -166,7 +181,9 @@ export class StudioHandoffService {
     }
 
     if (handoff.user?.type !== UserType.BRAND) {
-      throw new ForbiddenException('Studio handoff is only available for brand accounts');
+      throw new ForbiddenException(
+        'Studio handoff is only available for brand accounts',
+      );
     }
     if (handoff.user?.status !== 'ACTIVE') {
       throw new UnauthorizedException('User account is not active');
@@ -182,7 +199,9 @@ export class StudioHandoffService {
     });
 
     if (claim.count !== 1) {
-      throw new UnauthorizedException('Studio handoff code has already been used');
+      throw new UnauthorizedException(
+        'Studio handoff code has already been used',
+      );
     }
 
     const tokens = await this.tokenService.generateWebSessionForUserId(

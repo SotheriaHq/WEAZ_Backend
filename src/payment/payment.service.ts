@@ -842,18 +842,24 @@ export class PaymentService implements OnModuleInit {
             { buyerId: userId },
           );
         } catch (error) {
-          await this.applyAttemptStatus(reference, userId, 'FAILED', 'initialize', {
-            correlationId,
-            eventPayload: {
-              reason: 'PROVIDER_INITIALIZATION_FAILED',
-              gateway: requestedGateway,
+          await this.applyAttemptStatus(
+            reference,
+            userId,
+            'FAILED',
+            'initialize',
+            {
+              correlationId,
+              eventPayload: {
+                reason: 'PROVIDER_INITIALIZATION_FAILED',
+                gateway: requestedGateway,
+              },
+              responseSnapshotPatch: {
+                gatewayInitializationStatus: 'FAILED',
+                gatewayInitializationFailedAt: new Date().toISOString(),
+                gatewayInitializationError: this.extractErrorMessage(error),
+              },
             },
-            responseSnapshotPatch: {
-              gatewayInitializationStatus: 'FAILED',
-              gatewayInitializationFailedAt: new Date().toISOString(),
-              gatewayInitializationError: this.extractErrorMessage(error),
-            },
-          });
+          );
           throw new BadRequestException(
             'Unable to initialize payment. Please retry checkout.',
           );
@@ -863,75 +869,77 @@ export class PaymentService implements OnModuleInit {
           ? new Date(gatewayResult.expiresAt)
           : initialAttemptExpiresAt;
 
-        const initializedAttempt = await this.prisma.$transaction(async (tx) => {
-          const updatedAttempt = await tx.paymentAttempt.update({
-            where: { id: created.attempt.id },
-            data: {
-              provider: gatewayResult.gateway,
-              providerReference: gatewayResult.providerReference,
-              providerTransactionId: gatewayResult.providerTransactionId,
-              providerAccessCode: gatewayResult.providerAccessCode,
-              providerChannel:
-                gatewayResult.providerChannel ?? gatewayResult.channel,
-              channel: gatewayResult.channel,
-              status: gatewayResult.status,
-              callbackUrl: gatewayResult.callbackUrl ?? callbackBaseUrl,
-              authorizationUrl: gatewayResult.authorizationUrl,
-              responseSnapshot: (gatewayResult.responseSnapshot ??
-                null) as unknown as Prisma.InputJsonValue,
-              nextAction: (gatewayResult.nextAction ??
-                null) as unknown as Prisma.InputJsonValue,
-              bankAccount: (gatewayResult.bankAccount ??
-                null) as unknown as Prisma.InputJsonValue,
-              expiresAt: gatewayAttemptExpiresAt,
-            },
-          });
-
-          await tx.checkoutSession.update({
-            where: { id: created.checkoutSession.id },
-            data: { expiresAt: gatewayAttemptExpiresAt },
-          });
-
-          if (customLineDrafts.length > 0) {
-            await tx.customOrderCheckoutSession.updateMany({
-              where: {
-                buyerId: userId,
-                customOrderId: null,
-                checkoutIntentId: {
-                  in: customLineDrafts.map((line) => line.checkoutIntentId),
-                },
-              },
+        const initializedAttempt = await this.prisma.$transaction(
+          async (tx) => {
+            const updatedAttempt = await tx.paymentAttempt.update({
+              where: { id: created.attempt.id },
               data: {
-                lastAttemptStatus: updatedAttempt.status,
-                resumePath: this.buildPaymentReturnPath(
-                  updatedAttempt.reference,
-                  gatewayResult.gateway,
-                ),
-              },
-            });
-          }
-
-          await tx.paymentEvent.create({
-            data: {
-              paymentAttemptId: updatedAttempt.id,
-              type: 'INITIALIZED',
-              source:
-                providerMode === 'mock' ? 'mock-initialize' : 'initialize',
-              correlationId,
-              payload: {
-                paymentMethod: dto.paymentMethod,
-                gateway: gatewayResult.gateway,
+                provider: gatewayResult.gateway,
+                providerReference: gatewayResult.providerReference,
+                providerTransactionId: gatewayResult.providerTransactionId,
+                providerAccessCode: gatewayResult.providerAccessCode,
+                providerChannel:
+                  gatewayResult.providerChannel ?? gatewayResult.channel,
                 channel: gatewayResult.channel,
                 status: gatewayResult.status,
-                subjectType: PaymentSubjectType.UNIFIED_CHECKOUT,
-                checkoutSessionId: created.checkoutSession.id,
-                correlationId,
+                callbackUrl: gatewayResult.callbackUrl ?? callbackBaseUrl,
+                authorizationUrl: gatewayResult.authorizationUrl,
+                responseSnapshot: (gatewayResult.responseSnapshot ??
+                  null) as unknown as Prisma.InputJsonValue,
+                nextAction: (gatewayResult.nextAction ??
+                  null) as unknown as Prisma.InputJsonValue,
+                bankAccount: (gatewayResult.bankAccount ??
+                  null) as unknown as Prisma.InputJsonValue,
+                expiresAt: gatewayAttemptExpiresAt,
               },
-            },
-          });
+            });
 
-          return updatedAttempt;
-        });
+            await tx.checkoutSession.update({
+              where: { id: created.checkoutSession.id },
+              data: { expiresAt: gatewayAttemptExpiresAt },
+            });
+
+            if (customLineDrafts.length > 0) {
+              await tx.customOrderCheckoutSession.updateMany({
+                where: {
+                  buyerId: userId,
+                  customOrderId: null,
+                  checkoutIntentId: {
+                    in: customLineDrafts.map((line) => line.checkoutIntentId),
+                  },
+                },
+                data: {
+                  lastAttemptStatus: updatedAttempt.status,
+                  resumePath: this.buildPaymentReturnPath(
+                    updatedAttempt.reference,
+                    gatewayResult.gateway,
+                  ),
+                },
+              });
+            }
+
+            await tx.paymentEvent.create({
+              data: {
+                paymentAttemptId: updatedAttempt.id,
+                type: 'INITIALIZED',
+                source:
+                  providerMode === 'mock' ? 'mock-initialize' : 'initialize',
+                correlationId,
+                payload: {
+                  paymentMethod: dto.paymentMethod,
+                  gateway: gatewayResult.gateway,
+                  channel: gatewayResult.channel,
+                  status: gatewayResult.status,
+                  subjectType: PaymentSubjectType.UNIFIED_CHECKOUT,
+                  checkoutSessionId: created.checkoutSession.id,
+                  correlationId,
+                },
+              },
+            });
+
+            return updatedAttempt;
+          },
+        );
 
         return {
           ...this.buildInitResultFromAttempt(initializedAttempt),
@@ -3660,7 +3668,7 @@ export class PaymentService implements OnModuleInit {
                 ? 'MOCK_FAILURE'
                 : source === 'initialize'
                   ? 'PAYMENT_INITIALIZATION_FAILED'
-                : 'PAYMENT_FAILED'
+                  : 'PAYMENT_FAILED'
               : nextStatus === 'CANCELLED'
                 ? 'PAYMENT_CANCELLED'
                 : nextStatus === 'EXPIRED'
@@ -3672,7 +3680,7 @@ export class PaymentService implements OnModuleInit {
                 ? 'Mock payment marked as failed.'
                 : source === 'initialize'
                   ? 'Payment provider initialization failed before checkout opened.'
-                : 'Payment provider reported the payment as failed.'
+                  : 'Payment provider reported the payment as failed.'
               : nextStatus === 'CANCELLED'
                 ? source === 'simulation'
                   ? 'Mock payment was cancelled.'
@@ -6301,7 +6309,9 @@ export class PaymentService implements OnModuleInit {
     }
 
     const sanitized: Record<string, unknown> = {};
-    for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    for (const [key, entry] of Object.entries(
+      value as Record<string, unknown>,
+    )) {
       if (this.isSensitiveWebhookPayloadKey(key)) {
         sanitized[key] = '[REDACTED]';
         continue;

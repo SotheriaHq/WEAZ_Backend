@@ -10,7 +10,13 @@ import { AdminAuditService } from 'src/admin/services/admin-audit.service';
 @Module({
   imports: [NotificationsModule],
   controllers: [TagsController],
-  providers: [TagsService, TagIndexService, SystemTagsService, PrismaService, AdminAuditService],
+  providers: [
+    TagsService,
+    TagIndexService,
+    SystemTagsService,
+    PrismaService,
+    AdminAuditService,
+  ],
   exports: [TagsService, TagIndexService, SystemTagsService],
 })
 export class TagsModule {}

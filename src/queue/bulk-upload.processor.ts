@@ -26,7 +26,9 @@ export class BulkUploadProcessor extends WorkerHost {
     super();
   }
 
-  async process(job: Job<BulkUploadProcessJob | BulkUploadRetryJob>): Promise<void> {
+  async process(
+    job: Job<BulkUploadProcessJob | BulkUploadRetryJob>,
+  ): Promise<void> {
     try {
       if (job.name === BULK_UPLOAD_PROCESS_JOB) {
         const data = job.data as BulkUploadProcessJob;

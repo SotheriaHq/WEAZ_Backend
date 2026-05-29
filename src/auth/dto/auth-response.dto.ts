@@ -5,7 +5,10 @@ import {
   BrandVerificationStatus,
   PasswordCredentialStatus,
 } from '@prisma/client';
-import { THEME_PREFERENCES, type ThemePreference } from 'src/common/theme.contract';
+import {
+  THEME_PREFERENCES,
+  type ThemePreference,
+} from 'src/common/theme.contract';
 
 export class AuthProfileImageFileDto {
   @ApiProperty()
@@ -177,7 +180,11 @@ export class AuthUserResponseDto {
   })
   activeBrandId?: string | null;
 
-  @ApiProperty({ required: false, nullable: true, enum: BrandVerificationStatus })
+  @ApiProperty({
+    required: false,
+    nullable: true,
+    enum: BrandVerificationStatus,
+  })
   verificationStatus?: BrandVerificationStatus | null;
 
   @ApiProperty({ required: false })

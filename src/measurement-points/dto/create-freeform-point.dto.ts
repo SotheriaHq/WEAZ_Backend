@@ -1,5 +1,14 @@
 import { Transform } from 'class-transformer';
-import { IsEnum, IsNumber, IsOptional, IsString, Matches, Max, Min, MaxLength } from 'class-validator';
+import {
+  IsEnum,
+  IsNumber,
+  IsOptional,
+  IsString,
+  Matches,
+  Max,
+  Min,
+  MaxLength,
+} from 'class-validator';
 import { Gender, MeasurementPointCategory } from '@prisma/client';
 
 export class CreateFreeformPointDto {
@@ -17,12 +26,16 @@ export class CreateFreeformPointDto {
   @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
   description?: string;
 
-  @Transform(({ value }) => (typeof value === 'string' ? value.toUpperCase() : value))
+  @Transform(({ value }) =>
+    typeof value === 'string' ? value.toUpperCase() : value,
+  )
   @IsEnum(MeasurementPointCategory)
   category: MeasurementPointCategory;
 
   @IsOptional()
-  @Transform(({ value }) => (typeof value === 'string' ? value.toUpperCase() : value))
+  @Transform(({ value }) =>
+    typeof value === 'string' ? value.toUpperCase() : value,
+  )
   @IsEnum(Gender)
   gender?: Gender;
 

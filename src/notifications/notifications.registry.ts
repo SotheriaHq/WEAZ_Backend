@@ -1387,7 +1387,8 @@ export class NotificationRegistry {
       },
     });
 
-    const NT_EMAIL_CHANGE_REQUESTED = 'ADMIN_EMAIL_CHANGE_REQUESTED' as NotificationType;
+    const NT_EMAIL_CHANGE_REQUESTED =
+      'ADMIN_EMAIL_CHANGE_REQUESTED' as NotificationType;
     registry.register({
       type: NT_EMAIL_CHANGE_REQUESTED,
       schema: Joi.object({
@@ -1398,7 +1399,8 @@ export class NotificationRegistry {
         `An admin has requested an email address change to ${n.payload?.newEmail ?? 'a new address'}`,
     });
 
-    const NT_EMAIL_CHANGE_APPROVED = 'ADMIN_EMAIL_CHANGE_APPROVED' as NotificationType;
+    const NT_EMAIL_CHANGE_APPROVED =
+      'ADMIN_EMAIL_CHANGE_APPROVED' as NotificationType;
     registry.register({
       type: NT_EMAIL_CHANGE_APPROVED,
       schema: Joi.object({
@@ -1408,7 +1410,8 @@ export class NotificationRegistry {
         `Your email change request has been approved. Your new email is ${n.payload?.newEmail ?? 'updated'}.`,
     });
 
-    const NT_EMAIL_CHANGE_REJECTED = 'ADMIN_EMAIL_CHANGE_REJECTED' as NotificationType;
+    const NT_EMAIL_CHANGE_REJECTED =
+      'ADMIN_EMAIL_CHANGE_REJECTED' as NotificationType;
     registry.register({
       type: NT_EMAIL_CHANGE_REJECTED,
       schema: Joi.object({

@@ -30,7 +30,9 @@ export class BrandPermissionService {
   validatePermissionCode(permission: string): BrandPermissionCode {
     const normalized = String(permission ?? '').trim();
     if (!KNOWN_BRAND_PERMISSION_CODES.has(normalized as BrandPermissionCode)) {
-      throw new BadRequestException(`Unknown brand permission code: ${normalized}`);
+      throw new BadRequestException(
+        `Unknown brand permission code: ${normalized}`,
+      );
     }
     return normalized as BrandPermissionCode;
   }
@@ -41,7 +43,11 @@ export class BrandPermissionService {
     }
 
     return Array.from(
-      new Set(permissions.map((permission) => this.validatePermissionCode(permission))),
+      new Set(
+        permissions.map((permission) =>
+          this.validatePermissionCode(permission),
+        ),
+      ),
     );
   }
 
@@ -146,7 +152,9 @@ export class BrandPermissionService {
       return;
     }
 
-    throw new ForbiddenException('Only a brand owner can manage staff permissions');
+    throw new ForbiddenException(
+      'Only a brand owner can manage staff permissions',
+    );
   }
 
   async getEffectivePermissions(
@@ -215,7 +223,9 @@ export class BrandPermissionService {
   ): Promise<void> {
     const hasPermission = await this.hasPermission(userId, brandId, permission);
     if (!hasPermission) {
-      throw new ForbiddenException('You do not have permission for this brand action');
+      throw new ForbiddenException(
+        'You do not have permission for this brand action',
+      );
     }
   }
 
@@ -246,7 +256,9 @@ export class BrandPermissionService {
       throw new BadRequestException('Owner permissions cannot be modified');
     }
     if (member.status !== BrandMemberStatus.ACTIVE) {
-      throw new BadRequestException('Inactive member permissions cannot be modified');
+      throw new BadRequestException(
+        'Inactive member permissions cannot be modified',
+      );
     }
 
     await this.prisma.$transaction(async (tx) => {
@@ -265,7 +277,10 @@ export class BrandPermissionService {
       }
     });
 
-    const updatedMember = await this.getTargetMemberOrThrow(brand.id, member.id);
+    const updatedMember = await this.getTargetMemberOrThrow(
+      brand.id,
+      member.id,
+    );
     return this.summarizeMember(updatedMember);
   }
 
@@ -273,6 +288,10 @@ export class BrandPermissionService {
     userId: string,
     brandId: string,
   ): Promise<void> {
-    await this.assertPermission(userId, brandId, BRAND_PERMISSIONS.BRAND_STAFF_MANAGE);
+    await this.assertPermission(
+      userId,
+      brandId,
+      BRAND_PERMISSIONS.BRAND_STAFF_MANAGE,
+    );
   }
 }

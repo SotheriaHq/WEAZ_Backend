@@ -3,7 +3,12 @@ import { InjectQueue } from '@nestjs/bullmq';
 import type { Queue } from 'bullmq';
 import { SEARCH_QUEUE, SEARCH_SYNC_JOB } from './queue.constants';
 
-export type SearchSyncTarget = 'product' | 'brand' | 'design' | 'collection' | 'tag';
+export type SearchSyncTarget =
+  | 'product'
+  | 'brand'
+  | 'design'
+  | 'collection'
+  | 'tag';
 
 export interface SearchSyncJob {
   target: SearchSyncTarget;

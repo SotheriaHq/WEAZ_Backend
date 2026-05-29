@@ -32,7 +32,10 @@ const COMMON_PASSWORD_BLOCKLIST = new Set<string>([
 const normalizeComparableValue = (value: string): string =>
   value.toLowerCase().replace(/[^a-z0-9]/g, '');
 
-const containsSequenceWindow = (candidate: string, sequence: string): boolean => {
+const containsSequenceWindow = (
+  candidate: string,
+  sequence: string,
+): boolean => {
   const minWindow = 6;
   if (candidate.length < minWindow) {
     return false;
@@ -97,16 +100,22 @@ export const validatePasswordPolicy = (
   }
 
   if (password.trim().length === 0) {
-    throw new BadRequestException('Password cannot be empty or whitespace only');
+    throw new BadRequestException(
+      'Password cannot be empty or whitespace only',
+    );
   }
 
   const passwordLower = password.toLowerCase();
   if (COMMON_PASSWORD_BLOCKLIST.has(passwordLower)) {
-    throw new BadRequestException('Password is too common. Choose a less predictable one');
+    throw new BadRequestException(
+      'Password is too common. Choose a less predictable one',
+    );
   }
 
   if (/(.)\1{5,}/.test(password)) {
-    throw new BadRequestException('Password has repeated patterns that are too easy to guess');
+    throw new BadRequestException(
+      'Password has repeated patterns that are too easy to guess',
+    );
   }
 
   const normalizedPassword = normalizeComparableValue(password);

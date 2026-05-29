@@ -48,7 +48,9 @@ describe('DesignsService', () => {
       archiveCollection: jest.fn().mockResolvedValue({ success: true }),
       unarchiveCollection: jest.fn().mockResolvedValue({ success: true }),
       restoreCollection: jest.fn().mockResolvedValue({ success: true }),
-      permanentlyDeleteCollection: jest.fn().mockResolvedValue({ success: true }),
+      permanentlyDeleteCollection: jest
+        .fn()
+        .mockResolvedValue({ success: true }),
       duplicateCollection: jest.fn().mockResolvedValue({ id: 'design-copy' }),
     };
     customOrderConfigurationsService = {
@@ -57,7 +59,9 @@ describe('DesignsService', () => {
     designResolver = {
       resolveExplicitDesign: jest.fn().mockResolvedValue(null),
       resolveLegacyCollectionId: jest.fn().mockResolvedValue(null),
-      trySyncFromLegacyCollection: jest.fn().mockResolvedValue({ id: 'design-1' }),
+      trySyncFromLegacyCollection: jest
+        .fn()
+        .mockResolvedValue({ id: 'design-1' }),
     };
     service = new DesignsService(
       collectionsService,

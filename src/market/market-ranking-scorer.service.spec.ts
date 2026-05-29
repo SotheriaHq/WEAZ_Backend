@@ -6,7 +6,9 @@ import { MarketRankingScorerService } from './market-ranking-scorer.service';
 describe('MarketRankingScorerService', () => {
   const service = new MarketRankingScorerService();
 
-  const item = (overrides: Partial<MarketSectionItemDto> = {}): MarketSectionItemDto => ({
+  const item = (
+    overrides: Partial<MarketSectionItemDto> = {},
+  ): MarketSectionItemDto => ({
     id: 'product_1',
     sourceId: 'product_1',
     sourceType: 'PRODUCT',
@@ -87,7 +89,10 @@ describe('MarketRankingScorerService', () => {
       },
     });
     const aggregates = new Map([
-      ['PRODUCT:product_2', aggregate('product_2', { productOpens: 12, clicks: 5 })],
+      [
+        'PRODUCT:product_2',
+        aggregate('product_2', { productOpens: 12, clicks: 5 }),
+      ],
     ]);
 
     const result = service.rankItems({
@@ -105,10 +110,26 @@ describe('MarketRankingScorerService', () => {
 
   it('keeps brand diversity capped when enough alternatives exist', () => {
     const items = [
-      item({ sourceId: 'product_1', id: 'product_1', brand: { id: 'brand_a', name: 'A', logoUrl: null } }),
-      item({ sourceId: 'product_2', id: 'product_2', brand: { id: 'brand_a', name: 'A', logoUrl: null } }),
-      item({ sourceId: 'product_3', id: 'product_3', brand: { id: 'brand_a', name: 'A', logoUrl: null } }),
-      item({ sourceId: 'product_4', id: 'product_4', brand: { id: 'brand_b', name: 'B', logoUrl: null } }),
+      item({
+        sourceId: 'product_1',
+        id: 'product_1',
+        brand: { id: 'brand_a', name: 'A', logoUrl: null },
+      }),
+      item({
+        sourceId: 'product_2',
+        id: 'product_2',
+        brand: { id: 'brand_a', name: 'A', logoUrl: null },
+      }),
+      item({
+        sourceId: 'product_3',
+        id: 'product_3',
+        brand: { id: 'brand_a', name: 'A', logoUrl: null },
+      }),
+      item({
+        sourceId: 'product_4',
+        id: 'product_4',
+        brand: { id: 'brand_b', name: 'B', logoUrl: null },
+      }),
     ];
     const aggregates = new Map([
       ['PRODUCT:product_1', aggregate('product_1', { productOpens: 50 })],
@@ -124,8 +145,8 @@ describe('MarketRankingScorerService', () => {
       config,
     });
 
-    expect(result.items.slice(0, 3).map((rankedItem) => rankedItem.brand?.id)).toContain(
-      'brand_b',
-    );
+    expect(
+      result.items.slice(0, 3).map((rankedItem) => rankedItem.brand?.id),
+    ).toContain('brand_b');
   });
 });

@@ -98,7 +98,10 @@ describe('AuthService', () => {
         { provide: NotificationsService, useValue: mockNotifications },
         { provide: EmailService, useValue: mockEmailService },
         { provide: TrustedDeviceService, useValue: mockTrustedDeviceService },
-        { provide: GoogleTokenVerifierService, useValue: mockGoogleTokenVerifier },
+        {
+          provide: GoogleTokenVerifierService,
+          useValue: mockGoogleTokenVerifier,
+        },
       ],
     }).compile();
 
@@ -136,7 +139,9 @@ describe('AuthService', () => {
     });
     (mockPasswordService.verifyPassword as jest.Mock).mockResolvedValue(false);
 
-    await expect(service.validateUser('user@example.com', 'wrong-password')).resolves.toBeNull();
+    await expect(
+      service.validateUser('user@example.com', 'wrong-password'),
+    ).resolves.toBeNull();
   });
 
   it('validateUser should throw when account is not active', async () => {
@@ -148,9 +153,9 @@ describe('AuthService', () => {
     });
     (mockPasswordService.verifyPassword as jest.Mock).mockResolvedValue(true);
 
-    await expect(service.validateUser('user@example.com', 'correct-password')).rejects.toBeInstanceOf(
-      UnauthorizedException,
-    );
+    await expect(
+      service.validateUser('user@example.com', 'correct-password'),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
   });
 
   it('validateUser should return user data when credentials are valid', async () => {
@@ -164,7 +169,10 @@ describe('AuthService', () => {
     });
     (mockPasswordService.verifyPassword as jest.Mock).mockResolvedValue(true);
 
-    const result = await service.validateUser('user@example.com', 'correct-password');
+    const result = await service.validateUser(
+      'user@example.com',
+      'correct-password',
+    );
 
     expect(result).not.toBeNull();
     expect(result).toEqual(
@@ -905,11 +913,17 @@ describe('AuthService', () => {
     mockPrisma.user.findUnique.mockResolvedValue(null);
     mockUserHelperService.generateUniqueUsername.mockResolvedValue('alex-doe');
     mockPasswordService.hashPassword.mockResolvedValue('hashed-password');
-    mockEmailVerificationHelper.generateVerificationCode.mockReturnValue('123456');
-    mockEmailVerificationHelper.generateVerificationLink.mockReturnValue('https://threadly.test/verify');
+    mockEmailVerificationHelper.generateVerificationCode.mockReturnValue(
+      '123456',
+    );
+    mockEmailVerificationHelper.generateVerificationLink.mockReturnValue(
+      'https://threadly.test/verify',
+    );
     mockEmailService.send.mockResolvedValue({ dispatchStatus: 'SENT' });
     mockNotifications.create.mockResolvedValue({});
-    mockTokenService.generateTokens.mockResolvedValue({ accessToken: 'access-token' });
+    mockTokenService.generateTokens.mockResolvedValue({
+      accessToken: 'access-token',
+    });
     mockPrisma.user.create.mockResolvedValue({
       id: 'user-1',
       username: 'alex-doe',
@@ -1004,7 +1018,12 @@ describe('AuthService', () => {
       lastName: 'Okafor',
       email: 'ada@example.com',
       status: UserStatus.ACTIVE,
-      brand: { id: 'brand-1', name: 'Ada Style', isStoreOpen: false, verificationStatus: 'NOT_SUBMITTED' },
+      brand: {
+        id: 'brand-1',
+        name: 'Ada Style',
+        isStoreOpen: false,
+        verificationStatus: 'NOT_SUBMITTED',
+      },
       brandMemberships: [
         {
           brandId: 'brand-1',
@@ -1061,14 +1080,22 @@ describe('AuthService', () => {
     mockPrisma.user.findUnique
       .mockResolvedValueOnce(null)
       .mockResolvedValueOnce(createdBrandUser);
-    mockUserHelperService.generateUsernameFromBrand.mockResolvedValue('ada-style');
+    mockUserHelperService.generateUsernameFromBrand.mockResolvedValue(
+      'ada-style',
+    );
     mockUserHelperService.generateIndustriNumber.mockResolvedValue('IND-123');
     mockPasswordService.hashPassword.mockResolvedValue('hashed-password');
-    mockEmailVerificationHelper.generateVerificationCode.mockReturnValue('123456');
-    mockEmailVerificationHelper.generateVerificationLink.mockReturnValue('https://threadly.test/verify');
+    mockEmailVerificationHelper.generateVerificationCode.mockReturnValue(
+      '123456',
+    );
+    mockEmailVerificationHelper.generateVerificationLink.mockReturnValue(
+      'https://threadly.test/verify',
+    );
     mockEmailService.send.mockResolvedValue({ dispatchStatus: 'SENT' });
     mockNotifications.create.mockResolvedValue({});
-    mockTokenService.generateTokens.mockResolvedValue({ accessToken: 'access-token' });
+    mockTokenService.generateTokens.mockResolvedValue({
+      accessToken: 'access-token',
+    });
     mockPrisma.user.create.mockResolvedValue(createdBrandUser);
 
     await service.CreateUser(

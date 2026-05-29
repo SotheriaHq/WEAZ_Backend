@@ -43,7 +43,9 @@ const MAX_TARGETS = 80;
 
 @Injectable()
 export class MarketRankingAggregateReaderService {
-  private readonly logger = new Logger(MarketRankingAggregateReaderService.name);
+  private readonly logger = new Logger(
+    MarketRankingAggregateReaderService.name,
+  );
 
   constructor(private readonly prisma: PrismaService) {}
 
@@ -64,8 +66,12 @@ export class MarketRankingAggregateReaderService {
         this.prisma.marketSignalAggregateDaily.findMany({
           where: {
             bucketDate: { gte: lookbackStart },
-            targetType: { in: [...new Set(targets.map((target) => target.targetType))] },
-            targetId: { in: [...new Set(targets.map((target) => target.targetId))] },
+            targetType: {
+              in: [...new Set(targets.map((target) => target.targetType))],
+            },
+            targetId: {
+              in: [...new Set(targets.map((target) => target.targetId))],
+            },
             OR: [{ sectionKey: options.sectionKey }, { sectionKey: null }],
           },
           select: {
@@ -98,7 +104,9 @@ export class MarketRankingAggregateReaderService {
       }
 
       const targetKeys = new Set(
-        targets.map((target) => this.aggregateKey(target.targetType, target.targetId)),
+        targets.map((target) =>
+          this.aggregateKey(target.targetType, target.targetId),
+        ),
       );
       const aggregates = new Map<string, MarketRankingAggregateStats>();
 
@@ -106,7 +114,8 @@ export class MarketRankingAggregateReaderService {
         if (!row.targetType || !row.targetId) continue;
         const key = this.aggregateKey(row.targetType, row.targetId);
         if (!targetKeys.has(key)) continue;
-        const current = aggregates.get(key) ?? this.emptyStats(row.targetType, row.targetId);
+        const current =
+          aggregates.get(key) ?? this.emptyStats(row.targetType, row.targetId);
         current.sectionImpressions += row.sectionImpressions ?? 0;
         current.itemImpressions += row.itemImpressions ?? 0;
         current.productOpens += row.productOpens ?? 0;
@@ -177,7 +186,10 @@ export class MarketRankingAggregateReaderService {
     return value;
   }
 
-  private withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T | 'timeout'> {
+  private withTimeout<T>(
+    promise: Promise<T>,
+    timeoutMs: number,
+  ): Promise<T | 'timeout'> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<'timeout'>((resolve) => {
       timer = setTimeout(() => resolve('timeout'), timeoutMs);

@@ -23,7 +23,13 @@ import { SystemConfigModule } from 'src/admin/system-config/system-config.module
 import { BrandPermissionService } from 'src/brands/permissions/brand-permission.service';
 
 @Module({
-  imports: [PrismaModule, QueueModule, UploadModule, forwardRef(() => CustomOrdersModule), SystemConfigModule],
+  imports: [
+    PrismaModule,
+    QueueModule,
+    UploadModule,
+    forwardRef(() => CustomOrdersModule),
+    SystemConfigModule,
+  ],
   controllers: [
     CustomOrderMessagingBuyerController,
     CustomOrderMessagingBrandController,
@@ -45,6 +51,10 @@ import { BrandPermissionService } from 'src/brands/permissions/brand-permission.
     AdminAuditService,
     BrandPermissionService,
   ],
-  exports: [MessagingService, CustomOrderThreadBootstrapService, MessagingAccessService],
+  exports: [
+    MessagingService,
+    CustomOrderThreadBootstrapService,
+    MessagingAccessService,
+  ],
 })
 export class MessagingModule {}

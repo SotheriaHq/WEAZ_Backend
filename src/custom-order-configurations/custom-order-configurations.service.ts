@@ -1,6 +1,5 @@
 import {
   BadRequestException,
-  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -36,13 +35,26 @@ export class CustomOrderConfigurationsService {
     private readonly pricingService: CustomOrderPricingService,
   ) {}
 
-  async createConfiguration(ownerUserId: string, dto: CreateCustomOrderConfigurationDto) {
+  async createConfiguration(
+    ownerUserId: string,
+    dto: CreateCustomOrderConfigurationDto,
+  ) {
     const brand = await this.resolveBrand(ownerUserId);
-    await this.assertSourceOwnership(brand.id, ownerUserId, dto.sourceType, dto.sourceId);
-    await this.assertFreeformPointsAccessible(brand.id, dto.requiredFreeformPointIds ?? []);
+    await this.assertSourceOwnership(
+      brand.id,
+      ownerUserId,
+      dto.sourceType,
+      dto.sourceId,
+    );
+    await this.assertFreeformPointsAccessible(
+      brand.id,
+      dto.requiredFreeformPointIds ?? [],
+    );
     const resolvedTitle = this.resolveConfigurationTitle(dto.title);
 
-    const normalizedRules = this.pricingService.validateConfigurationRules(dto.rules);
+    const normalizedRules = this.pricingService.validateConfigurationRules(
+      dto.rules,
+    );
     this.validateConfigurationGuardrails(dto, dto.rules);
 
     const created = await this.prisma.$transaction(async (tx) => {
@@ -103,7 +115,10 @@ export class CustomOrderConfigurationsService {
         },
       });
 
-      const snapshotJson = this.buildConfigurationSnapshot(configuration, normalizedRules);
+      const snapshotJson = this.buildConfigurationSnapshot(
+        configuration,
+        normalizedRules,
+      );
       await tx.customOrderConfigurationVersion.create({
         data: {
           configurationId: configuration.id,
@@ -128,7 +143,9 @@ export class CustomOrderConfigurationsService {
     });
 
     if (!hydrated) {
-      throw new NotFoundException('Custom order configuration not found after creation');
+      throw new NotFoundException(
+        'Custom order configuration not found after creation',
+      );
     }
 
     return {
@@ -138,7 +155,11 @@ export class CustomOrderConfigurationsService {
     };
   }
 
-  async updateConfiguration(ownerUserId: string, configurationId: string, dto: UpdateCustomOrderConfigurationDto) {
+  async updateConfiguration(
+    ownerUserId: string,
+    configurationId: string,
+    dto: UpdateCustomOrderConfigurationDto,
+  ) {
     const brand = await this.resolveBrand(ownerUserId);
     const existing = await this.prisma.customOrderConfiguration.findFirst({
       where: { id: configurationId, brandId: brand.id },
@@ -160,38 +181,55 @@ export class CustomOrderConfigurationsService {
       );
     }
 
-    const normalizedRequestedBasisId = this.normalizeBasisId(dto.fabricRuleBasisId);
+    const normalizedRequestedBasisId = this.normalizeBasisId(
+      dto.fabricRuleBasisId,
+    );
     if (normalizedRequestedBasisId) {
       await this.assertBasisAccessible(brand.id, normalizedRequestedBasisId);
     }
     if (dto.requiredFreeformPointIds) {
-      await this.assertFreeformPointsAccessible(brand.id, dto.requiredFreeformPointIds);
+      await this.assertFreeformPointsAccessible(
+        brand.id,
+        dto.requiredFreeformPointIds,
+      );
     }
 
-    const mergedRuleDtos = dto.rules ?? existing.rules.map((rule) => ({
-      priority: rule.priority,
-      conditionsJson: rule.conditionsJson as Record<string, unknown>,
-      outputYards: String(rule.outputYards),
-      isFallback: rule.isFallback,
-    }));
-    const normalizedRules = this.pricingService.validateConfigurationRules(mergedRuleDtos);
+    const mergedRuleDtos =
+      dto.rules ??
+      existing.rules.map((rule) => ({
+        priority: rule.priority,
+        conditionsJson: rule.conditionsJson as Record<string, unknown>,
+        outputYards: String(rule.outputYards),
+        isFallback: rule.isFallback,
+      }));
+    const normalizedRules =
+      this.pricingService.validateConfigurationRules(mergedRuleDtos);
     const mergedConfiguration = {
       ...existing,
       ...dto,
       sourceType: dto.sourceType ?? existing.sourceType,
       sourceId: dto.sourceId ?? existing.sourceId,
       title: dto.title ?? existing.title,
-      buyerInstructionText: dto.buyerInstructionText ?? existing.buyerInstructionText,
-      requiredMeasurementKeys: dto.requiredMeasurementKeys ?? existing.requiredMeasurementKeys,
+      buyerInstructionText:
+        dto.buyerInstructionText ?? existing.buyerInstructionText,
+      requiredMeasurementKeys:
+        dto.requiredMeasurementKeys ?? existing.requiredMeasurementKeys,
       requiredFreeformPointIds:
         dto.requiredFreeformPointIds ?? existing.requiredFreeformPointIds,
-      fabricRuleBasisId: normalizedRequestedBasisId ?? existing.fabricRuleBasisId,
-      baseProductionCharge: dto.baseProductionCharge ?? String(existing.baseProductionCharge),
-      fabricCostPerYard: dto.fabricCostPerYard ?? String(existing.fabricCostPerYard),
+      fabricRuleBasisId:
+        normalizedRequestedBasisId ?? existing.fabricRuleBasisId,
+      baseProductionCharge:
+        dto.baseProductionCharge ?? String(existing.baseProductionCharge),
+      fabricCostPerYard:
+        dto.fabricCostPerYard ?? String(existing.fabricCostPerYard),
       rushEnabled: dto.rushEnabled ?? existing.rushEnabled,
-      rushFee: dto.rushFee ?? (existing.rushFee ? String(existing.rushFee) : undefined),
+      rushFee:
+        dto.rushFee ??
+        (existing.rushFee ? String(existing.rushFee) : undefined),
       rushProductionLeadDays:
-        dto.rushProductionLeadDays ?? existing.rushProductionLeadDays ?? undefined,
+        dto.rushProductionLeadDays ??
+        existing.rushProductionLeadDays ??
+        undefined,
       productionLeadDays: dto.productionLeadDays ?? existing.productionLeadDays,
       deliveryMinDays: dto.deliveryMinDays ?? existing.deliveryMinDays,
       deliveryMaxDays: dto.deliveryMaxDays ?? existing.deliveryMaxDays,
@@ -209,7 +247,10 @@ export class CustomOrderConfigurationsService {
 
     const updated = await this.prisma.$transaction(async (tx) => {
       const nextVersion = existing.currentVersion + 1;
-      const resolvedTitle = this.resolveConfigurationTitle(mergedConfiguration.title, existing.title);
+      const resolvedTitle = this.resolveConfigurationTitle(
+        mergedConfiguration.title,
+        existing.title,
+      );
       await this.deactivateSiblingConfigurations(
         tx,
         mergedConfiguration.sourceType,
@@ -222,15 +263,24 @@ export class CustomOrderConfigurationsService {
           sourceType: mergedConfiguration.sourceType,
           sourceId: mergedConfiguration.sourceId,
           title: resolvedTitle,
-          buyerInstructionText: mergedConfiguration.buyerInstructionText?.trim() || null,
+          buyerInstructionText:
+            mergedConfiguration.buyerInstructionText?.trim() || null,
           requiredMeasurementKeys: mergedConfiguration.requiredMeasurementKeys,
-          requiredFreeformPointIds: mergedConfiguration.requiredFreeformPointIds,
+          requiredFreeformPointIds:
+            mergedConfiguration.requiredFreeformPointIds,
           fabricRuleBasisId: mergedConfiguration.fabricRuleBasisId,
-          baseProductionCharge: new Prisma.Decimal(mergedConfiguration.baseProductionCharge),
-          fabricCostPerYard: new Prisma.Decimal(mergedConfiguration.fabricCostPerYard),
+          baseProductionCharge: new Prisma.Decimal(
+            mergedConfiguration.baseProductionCharge,
+          ),
+          fabricCostPerYard: new Prisma.Decimal(
+            mergedConfiguration.fabricCostPerYard,
+          ),
           rushEnabled: Boolean(mergedConfiguration.rushEnabled),
-          rushFee: mergedConfiguration.rushFee ? new Prisma.Decimal(mergedConfiguration.rushFee) : null,
-          rushProductionLeadDays: mergedConfiguration.rushProductionLeadDays ?? null,
+          rushFee: mergedConfiguration.rushFee
+            ? new Prisma.Decimal(mergedConfiguration.rushFee)
+            : null,
+          rushProductionLeadDays:
+            mergedConfiguration.rushProductionLeadDays ?? null,
           productionLeadDays: mergedConfiguration.productionLeadDays,
           deliveryMinDays: mergedConfiguration.deliveryMinDays,
           deliveryMaxDays: mergedConfiguration.deliveryMaxDays,
@@ -265,7 +315,10 @@ export class CustomOrderConfigurationsService {
         data: {
           configurationId: configuration.id,
           version: nextVersion,
-          snapshotJson: this.buildConfigurationSnapshot(configuration, normalizedRules),
+          snapshotJson: this.buildConfigurationSnapshot(
+            configuration,
+            normalizedRules,
+          ),
           createdById: ownerUserId,
         },
       });
@@ -289,7 +342,9 @@ export class CustomOrderConfigurationsService {
     });
 
     if (!hydrated) {
-      throw new NotFoundException('Custom order configuration not found after update');
+      throw new NotFoundException(
+        'Custom order configuration not found after update',
+      );
     }
 
     return {
@@ -300,15 +355,17 @@ export class CustomOrderConfigurationsService {
   }
 
   async getConfiguration(configurationId: string, authUserId?: string) {
-    const configuration = await this.prisma.customOrderConfiguration.findUnique({
-      where: { id: configurationId },
-      include: {
-        brand: { select: { ownerId: true, name: true } },
-        fabricRuleBasis: true,
-        rules: { orderBy: { priority: 'asc' } },
-        versions: { orderBy: { version: 'desc' }, take: 1 },
+    const configuration = await this.prisma.customOrderConfiguration.findUnique(
+      {
+        where: { id: configurationId },
+        include: {
+          brand: { select: { ownerId: true, name: true } },
+          fabricRuleBasis: true,
+          rules: { orderBy: { priority: 'asc' } },
+          versions: { orderBy: { version: 'desc' }, take: 1 },
+        },
       },
-    });
+    );
 
     if (!configuration) {
       throw new NotFoundException('Custom order configuration not found');
@@ -319,9 +376,10 @@ export class CustomOrderConfigurationsService {
       throw new NotFoundException('Custom order configuration not found');
     }
 
-    const normalizedConfiguration = await this.withResolvedBuyerMeasurementContract(
-      await this.normalizeLegacyMeasurementContract(configuration),
-    );
+    const normalizedConfiguration =
+      await this.withResolvedBuyerMeasurementContract(
+        await this.normalizeLegacyMeasurementContract(configuration),
+      );
 
     return {
       statusCode: 200,
@@ -388,9 +446,10 @@ export class CustomOrderConfigurationsService {
       throw new NotFoundException('Custom order configuration not found');
     }
 
-    const normalizedConfiguration = await this.withResolvedBuyerMeasurementContract(
-      await this.normalizeLegacyMeasurementContract(configuration),
-    );
+    const normalizedConfiguration =
+      await this.withResolvedBuyerMeasurementContract(
+        await this.normalizeLegacyMeasurementContract(configuration),
+      );
 
     return {
       statusCode: 200,
@@ -399,7 +458,10 @@ export class CustomOrderConfigurationsService {
     };
   }
 
-  async listVisibleConfigurations(authUserId: string | undefined, query: QueryVisibleCustomOrderConfigurationsDto) {
+  async listVisibleConfigurations(
+    authUserId: string | undefined,
+    query: QueryVisibleCustomOrderConfigurationsDto,
+  ) {
     const page = query.page ?? 1;
     const take = query.limit ?? 20;
     const brand = authUserId
@@ -410,13 +472,12 @@ export class CustomOrderConfigurationsService {
       : null;
 
     const where: Prisma.CustomOrderConfigurationWhereInput = {
-      ...(query.isActive == null ? { isActive: true } : { isActive: query.isActive }),
+      ...(query.isActive == null
+        ? { isActive: true }
+        : { isActive: query.isActive }),
       ...(brand?.id
         ? {
-            OR: [
-              { isActive: true },
-              { brandId: brand.id },
-            ],
+            OR: [{ isActive: true }, { brandId: brand.id }],
           }
         : {}),
     };
@@ -462,9 +523,13 @@ export class CustomOrderConfigurationsService {
 
   async createBasis(ownerUserId: string, dto: CreateCustomFabricRuleBasisDto) {
     const brand = await this.resolveBrand(ownerUserId);
-    const measurementKeys = Array.from(new Set(dto.measurementKeys.map((key) => key.trim()).filter(Boolean)));
+    const measurementKeys = Array.from(
+      new Set(dto.measurementKeys.map((key) => key.trim()).filter(Boolean)),
+    );
     if (measurementKeys.length === 0) {
-      throw new BadRequestException('At least one measurement key is required for a fabric rule basis');
+      throw new BadRequestException(
+        'At least one measurement key is required for a fabric rule basis',
+      );
     }
 
     const created = await this.prisma.customFabricRuleBasis.create({
@@ -484,7 +549,10 @@ export class CustomOrderConfigurationsService {
     };
   }
 
-  async listBases(authUserId: string | undefined, query: QueryCustomFabricRuleBasesDto) {
+  async listBases(
+    authUserId: string | undefined,
+    query: QueryCustomFabricRuleBasesDto,
+  ) {
     let brandId: string | null = null;
     if (authUserId) {
       const brand = await this.prisma.brand.findUnique({
@@ -495,14 +563,15 @@ export class CustomOrderConfigurationsService {
     }
 
     const items = await this.prisma.customFabricRuleBasis.findMany({
-      where: brandId && query.includeBrandOnly
-        ? {
-            OR: [
-              { status: CustomFabricRuleBasisStatus.APPROVED_GLOBAL },
-              { brandId },
-            ],
-          }
-        : { status: CustomFabricRuleBasisStatus.APPROVED_GLOBAL },
+      where:
+        brandId && query.includeBrandOnly
+          ? {
+              OR: [
+                { status: CustomFabricRuleBasisStatus.APPROVED_GLOBAL },
+                { brandId },
+              ],
+            }
+          : { status: CustomFabricRuleBasisStatus.APPROVED_GLOBAL },
       orderBy: [{ status: 'asc' }, { updatedAt: 'desc' }],
     });
 
@@ -538,7 +607,9 @@ export class CustomOrderConfigurationsService {
         select: { id: true },
       });
       if (!product) {
-        throw new BadRequestException('Product source was not found for this brand');
+        throw new BadRequestException(
+          'Product source was not found for this brand',
+        );
       }
       return;
     }
@@ -565,7 +636,9 @@ export class CustomOrderConfigurationsService {
     });
 
     if (!design) {
-      throw new BadRequestException('Design source was not found for this brand');
+      throw new BadRequestException(
+        'Design source was not found for this brand',
+      );
     }
   }
 
@@ -580,7 +653,10 @@ export class CustomOrderConfigurationsService {
   ) {
     const fallbackLabel =
       sourceType === CustomOrderSourceType.PRODUCT ? 'Product' : 'Design';
-    const normalizedTitle = this.resolveConfigurationTitle(sourceTitle, fallbackLabel);
+    const normalizedTitle = this.resolveConfigurationTitle(
+      sourceTitle,
+      fallbackLabel,
+    );
     const label = `${normalizedTitle} fabric rules`.trim();
     return label.slice(0, 120);
   }
@@ -599,7 +675,9 @@ export class CustomOrderConfigurationsService {
       return normalizedBasisId;
     }
 
-    const measurementKeys = normalizeMeasurementKeyArray(requiredMeasurementKeys);
+    const measurementKeys = normalizeMeasurementKeyArray(
+      requiredMeasurementKeys,
+    );
     const createdBasis = await tx.customFabricRuleBasis.create({
       data: {
         label: this.buildHiddenBasisLabel(sourceType, sourceTitle),
@@ -627,11 +705,16 @@ export class CustomOrderConfigurationsService {
     });
 
     if (!basis) {
-      throw new BadRequestException('Custom fabric rule basis is not accessible to this brand');
+      throw new BadRequestException(
+        'Custom fabric rule basis is not accessible to this brand',
+      );
     }
   }
 
-  private async assertFreeformPointsAccessible(brandId: string, pointIds: string[]) {
+  private async assertFreeformPointsAccessible(
+    brandId: string,
+    pointIds: string[],
+  ) {
     if (!pointIds.length) {
       return;
     }
@@ -653,7 +736,9 @@ export class CustomOrderConfigurationsService {
     });
 
     if (points.length !== pointIds.length) {
-      throw new BadRequestException('One or more required freeform measurement points are not accessible');
+      throw new BadRequestException(
+        'One or more required freeform measurement points are not accessible',
+      );
     }
   }
 
@@ -674,33 +759,47 @@ export class CustomOrderConfigurationsService {
     rules: Array<{ outputYards: string }> = [],
   ) {
     if (dto.deliveryMinDays > dto.deliveryMaxDays) {
-      throw new BadRequestException('Delivery minimum days cannot exceed delivery maximum days');
+      throw new BadRequestException(
+        'Delivery minimum days cannot exceed delivery maximum days',
+      );
     }
 
     if (Number(dto.baseProductionCharge) <= 0) {
-      throw new BadRequestException('Base production charge must be greater than zero');
+      throw new BadRequestException(
+        'Base production charge must be greater than zero',
+      );
     }
     if (Number(dto.fabricCostPerYard) < 0) {
       throw new BadRequestException('Fabric cost per yard cannot be negative');
     }
 
     if (dto.averageBaseYards != null && Number(dto.averageBaseYards) <= 0) {
-      throw new BadRequestException('Average base yards must be greater than zero');
+      throw new BadRequestException(
+        'Average base yards must be greater than zero',
+      );
     }
 
     if (Array.isArray(dto.sizeExtraYards)) {
       const seen = new Set<string>();
       for (const row of dto.sizeExtraYards) {
-        const sizeLabel = String((row as any).sizeLabel ?? '').trim().toUpperCase();
+        const sizeLabel = String((row as any).sizeLabel ?? '')
+          .trim()
+          .toUpperCase();
         const extraYards = Number((row as any).extraYards);
         if (!sizeLabel) {
-          throw new BadRequestException('Each size extra-yard row requires a size label');
+          throw new BadRequestException(
+            'Each size extra-yard row requires a size label',
+          );
         }
         if (!Number.isFinite(extraYards) || extraYards < 0) {
-          throw new BadRequestException('Each size extra-yard value must be zero or greater');
+          throw new BadRequestException(
+            'Each size extra-yard value must be zero or greater',
+          );
         }
         if (seen.has(sizeLabel)) {
-          throw new BadRequestException(`Duplicate size extra-yard row for ${sizeLabel}`);
+          throw new BadRequestException(
+            `Duplicate size extra-yard row for ${sizeLabel}`,
+          );
         }
         seen.add(sizeLabel);
       }
@@ -711,7 +810,9 @@ export class CustomOrderConfigurationsService {
     }
 
     if (!dto.rushFee || Number(dto.rushFee) <= 0) {
-      throw new BadRequestException('Rush-enabled configurations must define a positive rush fee');
+      throw new BadRequestException(
+        'Rush-enabled configurations must define a positive rush fee',
+      );
     }
 
     const maxOutputYards = rules.reduce((currentMax, rule) => {
@@ -719,7 +820,8 @@ export class CustomOrderConfigurationsService {
       return Number.isFinite(yards) ? Math.max(currentMax, yards) : currentMax;
     }, 0);
     const estimatedPreDeliverySubtotal =
-      Number(dto.baseProductionCharge) + maxOutputYards * Number(dto.fabricCostPerYard);
+      Number(dto.baseProductionCharge) +
+      maxOutputYards * Number(dto.fabricCostPerYard);
     if (
       estimatedPreDeliverySubtotal > 0 &&
       Number(dto.rushFee) > estimatedPreDeliverySubtotal * 0.7
@@ -730,20 +832,29 @@ export class CustomOrderConfigurationsService {
     }
 
     if (!dto.rushProductionLeadDays || dto.rushProductionLeadDays < 5) {
-      throw new BadRequestException('Rush production lead days must be at least 5');
+      throw new BadRequestException(
+        'Rush production lead days must be at least 5',
+      );
     }
     if (dto.rushProductionLeadDays >= dto.productionLeadDays) {
-      throw new BadRequestException('Rush production lead time must be shorter than standard production lead time');
+      throw new BadRequestException(
+        'Rush production lead time must be shorter than standard production lead time',
+      );
     }
   }
 
-  private resolveConfigurationTitle(inputTitle?: string | null, fallbackTitle?: string | null): string {
-    const normalizedInput = typeof inputTitle === 'string' ? inputTitle.trim() : '';
+  private resolveConfigurationTitle(
+    inputTitle?: string | null,
+    fallbackTitle?: string | null,
+  ): string {
+    const normalizedInput =
+      typeof inputTitle === 'string' ? inputTitle.trim() : '';
     if (normalizedInput.length > 0) {
       return normalizedInput;
     }
 
-    const normalizedFallback = typeof fallbackTitle === 'string' ? fallbackTitle.trim() : '';
+    const normalizedFallback =
+      typeof fallbackTitle === 'string' ? fallbackTitle.trim() : '';
     if (normalizedFallback.length > 0) {
       return normalizedFallback;
     }
@@ -777,7 +888,9 @@ export class CustomOrderConfigurationsService {
       fabricSourcingMode: string;
       notes: string | null;
     },
-    normalizedRules: ReturnType<CustomOrderPricingService['validateConfigurationRules']>,
+    normalizedRules: ReturnType<
+      CustomOrderPricingService['validateConfigurationRules']
+    >,
   ): Prisma.InputJsonValue {
     return {
       id: configuration.id,
@@ -815,16 +928,25 @@ export class CustomOrderConfigurationsService {
   private composeConfigurationNotes(
     notes: string | null | undefined,
     averageBaseYards?: number,
-    sizeExtraYards?: CustomOrderConfigurationSizeExtraYardDto[] | Array<{ sizeLabel: string; extraYards: number }>,
+    sizeExtraYards?:
+      | CustomOrderConfigurationSizeExtraYardDto[]
+      | Array<{ sizeLabel: string; extraYards: number }>,
   ) {
-    const plainNotes = String(notes ?? '').replace(/^YARD_PROFILE:[^\n]*(\n\n)?/i, '').trim();
+    const plainNotes = String(notes ?? '')
+      .replace(/^YARD_PROFILE:[^\n]*(\n\n)?/i, '')
+      .trim();
     const normalizedExtraRows = Array.isArray(sizeExtraYards)
       ? sizeExtraYards
           .map((row) => ({
             sizeLabel: String((row as any).sizeLabel ?? '').trim(),
             extraYards: Number((row as any).extraYards),
           }))
-          .filter((row) => row.sizeLabel.length > 0 && Number.isFinite(row.extraYards) && row.extraYards >= 0)
+          .filter(
+            (row) =>
+              row.sizeLabel.length > 0 &&
+              Number.isFinite(row.extraYards) &&
+              row.extraYards >= 0,
+          )
       : [];
 
     if (averageBaseYards == null && normalizedExtraRows.length === 0) {
@@ -832,11 +954,14 @@ export class CustomOrderConfigurationsService {
     }
 
     const profileJson = JSON.stringify({
-      averageBaseYards: averageBaseYards == null ? null : Number(averageBaseYards),
+      averageBaseYards:
+        averageBaseYards == null ? null : Number(averageBaseYards),
       sizeExtraYards: normalizedExtraRows,
     });
 
-    return plainNotes ? `YARD_PROFILE:${profileJson}\n\n${plainNotes}` : `YARD_PROFILE:${profileJson}`;
+    return plainNotes
+      ? `YARD_PROFILE:${profileJson}\n\n${plainNotes}`
+      : `YARD_PROFILE:${profileJson}`;
   }
 
   private async enableSourceCustomOrdering(
@@ -858,7 +983,10 @@ export class CustomOrderConfigurationsService {
     });
     if (updatedDesign.count > 0) return;
 
-    await tx.collection.update({ where: { id: sourceId }, data: { customOrderEnabled: true } });
+    await tx.collection.update({
+      where: { id: sourceId },
+      data: { customOrderEnabled: true },
+    });
   }
 
   private normalizeMeasurementKeyList(keys: string[] | null | undefined) {
@@ -869,7 +997,9 @@ export class CustomOrderConfigurationsService {
     return normalizeIdArray(ids);
   }
 
-  private normalizeMeasurementDisplayLabel(rawLabel: string | null | undefined) {
+  private normalizeMeasurementDisplayLabel(
+    rawLabel: string | null | undefined,
+  ) {
     return String(rawLabel ?? '')
       .trim()
       .replace(/^BRAND[_\-\s]+[^_\-\s]+[_\-\s]+/i, '')
@@ -879,20 +1009,26 @@ export class CustomOrderConfigurationsService {
       .trim();
   }
 
-  private async withResolvedBuyerMeasurementContract<T extends {
-    requiredMeasurementKeys: string[];
-    requiredFreeformPointIds: string[];
-  }>(configuration: T): Promise<T & {
-    resolvedRequiredMeasurementKeys: string[];
-    requiredMeasurementPoints: Array<{
-      id: string;
-      key: string;
-      label: string;
-      description: string | null;
-      minValueCm: number | null;
-      maxValueCm: number | null;
-    }>;
-  }> {
+  private async withResolvedBuyerMeasurementContract<
+    T extends {
+      requiredMeasurementKeys: string[];
+      requiredFreeformPointIds: string[];
+    },
+  >(
+    configuration: T,
+  ): Promise<
+    T & {
+      resolvedRequiredMeasurementKeys: string[];
+      requiredMeasurementPoints: Array<{
+        id: string;
+        key: string;
+        label: string;
+        description: string | null;
+        minValueCm: number | null;
+        maxValueCm: number | null;
+      }>;
+    }
+  > {
     const requiredMeasurementKeys = this.normalizeMeasurementKeyList(
       configuration.requiredMeasurementKeys,
     );
@@ -941,15 +1077,21 @@ export class CustomOrderConfigurationsService {
     };
   }
 
-  private async normalizeLegacyMeasurementContract<T extends {
-    brandId: string;
-    sourceType: CustomOrderSourceType;
-    sourceId: string;
-    requiredMeasurementKeys: string[];
-    requiredFreeformPointIds: string[];
-  }>(configuration: T): Promise<T> {
-    const normalizedKeys = this.normalizeMeasurementKeyList(configuration.requiredMeasurementKeys);
-    const normalizedFreeformPointIds = this.normalizeIdList(configuration.requiredFreeformPointIds);
+  private async normalizeLegacyMeasurementContract<
+    T extends {
+      brandId: string;
+      sourceType: CustomOrderSourceType;
+      sourceId: string;
+      requiredMeasurementKeys: string[];
+      requiredFreeformPointIds: string[];
+    },
+  >(configuration: T): Promise<T> {
+    const normalizedKeys = this.normalizeMeasurementKeyList(
+      configuration.requiredMeasurementKeys,
+    );
+    const normalizedFreeformPointIds = this.normalizeIdList(
+      configuration.requiredFreeformPointIds,
+    );
 
     if (normalizedKeys.length === 0) {
       return {
@@ -1011,17 +1153,18 @@ export class CustomOrderConfigurationsService {
       measurementKeysContainOppositeGender(normalizedKeys, sourceGenderHint);
     const sourceContainsOppositeGenderKeys =
       sourceGenderHint != null &&
-      measurementKeysContainOppositeGender(sourceMeasurementKeys, sourceGenderHint);
+      measurementKeysContainOppositeGender(
+        sourceMeasurementKeys,
+        sourceGenderHint,
+      );
 
     if (
       templateMeasurementKeys.length > 0 &&
       templateMeasurementKeys.length < normalizedKeys.length &&
-      (
-        looksLikeRegistryWideLegacySelection ||
+      (looksLikeRegistryWideLegacySelection ||
         sourceLooksLikeRegistryWideLegacySelection ||
         configurationContainsOppositeGenderKeys ||
-        sourceContainsOppositeGenderKeys
-      )
+        sourceContainsOppositeGenderKeys)
     ) {
       return {
         ...configuration,
@@ -1056,7 +1199,9 @@ export class CustomOrderConfigurationsService {
       });
 
       if (!product) {
-        throw new NotFoundException('Product source was not found for this configuration');
+        throw new NotFoundException(
+          'Product source was not found for this configuration',
+        );
       }
 
       return {
@@ -1106,7 +1251,9 @@ export class CustomOrderConfigurationsService {
     });
 
     if (!design) {
-      throw new NotFoundException('Design source was not found for this configuration');
+      throw new NotFoundException(
+        'Design source was not found for this configuration',
+      );
     }
 
     return {
@@ -1118,7 +1265,10 @@ export class CustomOrderConfigurationsService {
     };
   }
 
-  private async loadMeasurementPoolKeys(brandId: string, gender: Gender | null) {
+  private async loadMeasurementPoolKeys(
+    brandId: string,
+    gender: Gender | null,
+  ) {
     const points = await this.prisma.measurementPoint.findMany({
       where: {
         isActive: true,
@@ -1158,9 +1308,7 @@ export class CustomOrderConfigurationsService {
       where: {
         sourceType,
         sourceId,
-        ...(keepConfigurationId
-          ? { id: { not: keepConfigurationId } }
-          : {}),
+        ...(keepConfigurationId ? { id: { not: keepConfigurationId } } : {}),
         isActive: true,
       },
       data: { isActive: false },

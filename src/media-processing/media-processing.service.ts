@@ -52,7 +52,8 @@ export class MediaProcessingService {
       height,
       hasAlpha: Boolean(metadata.hasAlpha),
       isAnimated: (metadata.pages ?? 1) > 1,
-      orientation: typeof metadata.orientation === 'number' ? metadata.orientation : null,
+      orientation:
+        typeof metadata.orientation === 'number' ? metadata.orientation : null,
       colorSpace: typeof metadata.space === 'string' ? metadata.space : null,
       format: typeof metadata.format === 'string' ? metadata.format : null,
     };
@@ -72,19 +73,26 @@ export class MediaProcessingService {
     }
 
     const variants: EncodedVariant[] = [];
-    const outputFormat = this.pickPrimaryFormat(options.mimeType, probe.hasAlpha);
+    const outputFormat = this.pickPrimaryFormat(
+      options.mimeType,
+      probe.hasAlpha,
+    );
 
     for (const profile of IMAGE_VARIANT_PROFILES) {
-      const resized = sharp(buffer, { animated: false }).rotate().resize({
-        width: Math.min(profile.maxWidth, probe.width),
-        withoutEnlargement: true,
-      });
+      const resized = sharp(buffer, { animated: false })
+        .rotate()
+        .resize({
+          width: Math.min(profile.maxWidth, probe.width),
+          withoutEnlargement: true,
+        });
 
       const qualityBump = options.textHeavy ? 4 : 0;
       const quality = Math.min(95, profile.quality + qualityBump);
 
       if (outputFormat === 'AVIF') {
-        const out = await resized.avif({ quality }).toBuffer({ resolveWithObject: true });
+        const out = await resized
+          .avif({ quality })
+          .toBuffer({ resolveWithObject: true });
         variants.push({
           kind: profile.kind,
           format: 'AVIF',
@@ -95,7 +103,9 @@ export class MediaProcessingService {
           ext: 'avif',
           mimeType: 'image/avif',
         });
-        const webp = await resized.webp({ quality: Math.max(68, quality - 4) }).toBuffer({ resolveWithObject: true });
+        const webp = await resized
+          .webp({ quality: Math.max(68, quality - 4) })
+          .toBuffer({ resolveWithObject: true });
         variants.push({
           kind: profile.kind,
           format: 'WEBP',
@@ -110,7 +120,9 @@ export class MediaProcessingService {
       }
 
       if (outputFormat === 'PNG') {
-        const png = await resized.png({ compressionLevel: 9 }).toBuffer({ resolveWithObject: true });
+        const png = await resized
+          .png({ compressionLevel: 9 })
+          .toBuffer({ resolveWithObject: true });
         variants.push({
           kind: profile.kind,
           format: 'PNG',
@@ -121,7 +133,9 @@ export class MediaProcessingService {
           ext: 'png',
           mimeType: 'image/png',
         });
-        const webp = await resized.webp({ quality: Math.max(80, quality) }).toBuffer({ resolveWithObject: true });
+        const webp = await resized
+          .webp({ quality: Math.max(80, quality) })
+          .toBuffer({ resolveWithObject: true });
         variants.push({
           kind: profile.kind,
           format: 'WEBP',
@@ -135,7 +149,9 @@ export class MediaProcessingService {
         continue;
       }
 
-      const webp = await resized.webp({ quality }).toBuffer({ resolveWithObject: true });
+      const webp = await resized
+        .webp({ quality })
+        .toBuffer({ resolveWithObject: true });
       variants.push({
         kind: profile.kind,
         format: 'WEBP',
@@ -147,8 +163,11 @@ export class MediaProcessingService {
         mimeType: 'image/webp',
       });
 
-      const jpegQuality = profile.jpegFallbackQuality ?? Math.min(90, quality + 2);
-      const jpeg = await resized.jpeg({ quality: jpegQuality, mozjpeg: true }).toBuffer({ resolveWithObject: true });
+      const jpegQuality =
+        profile.jpegFallbackQuality ?? Math.min(90, quality + 2);
+      const jpeg = await resized
+        .jpeg({ quality: jpegQuality, mozjpeg: true })
+        .toBuffer({ resolveWithObject: true });
       variants.push({
         kind: profile.kind,
         format: 'JPEG',

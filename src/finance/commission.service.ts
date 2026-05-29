@@ -31,7 +31,11 @@ export class CommissionService {
 
   async listRules() {
     return (this.prisma as any).commissionRule.findMany({
-      orderBy: [{ scope: 'asc' }, { isDefault: 'desc' }, { effectiveFrom: 'desc' }],
+      orderBy: [
+        { scope: 'asc' },
+        { isDefault: 'desc' },
+        { effectiveFrom: 'desc' },
+      ],
     });
   }
 
@@ -76,8 +80,12 @@ export class CommissionService {
         ruleId: brandRule.id as string,
         scope: brandRule.scope as CommissionRuleScope,
         ratePercent: Number(brandRule.ratePercent),
-        minFeeAmount: brandRule.minFeeAmount ? Number(brandRule.minFeeAmount) : null,
-        maxFeeAmount: brandRule.maxFeeAmount ? Number(brandRule.maxFeeAmount) : null,
+        minFeeAmount: brandRule.minFeeAmount
+          ? Number(brandRule.minFeeAmount)
+          : null,
+        maxFeeAmount: brandRule.maxFeeAmount
+          ? Number(brandRule.maxFeeAmount)
+          : null,
         source: 'RULE' as const,
       };
     }
@@ -96,8 +104,12 @@ export class CommissionService {
         ruleId: platformRule.id as string,
         scope: platformRule.scope as CommissionRuleScope,
         ratePercent: Number(platformRule.ratePercent),
-        minFeeAmount: platformRule.minFeeAmount ? Number(platformRule.minFeeAmount) : null,
-        maxFeeAmount: platformRule.maxFeeAmount ? Number(platformRule.maxFeeAmount) : null,
+        minFeeAmount: platformRule.minFeeAmount
+          ? Number(platformRule.minFeeAmount)
+          : null,
+        maxFeeAmount: platformRule.maxFeeAmount
+          ? Number(platformRule.maxFeeAmount)
+          : null,
         source: 'RULE' as const,
       };
     }
@@ -121,7 +133,9 @@ export class CommissionService {
     tx?: Prisma.TransactionClient,
   ) {
     const resolved = await this.resolveRule(params, tx);
-    let commissionAmount = this.roundMoney((amount * resolved.ratePercent) / 100);
+    let commissionAmount = this.roundMoney(
+      (amount * resolved.ratePercent) / 100,
+    );
 
     if (resolved.minFeeAmount !== null) {
       commissionAmount = Math.max(commissionAmount, resolved.minFeeAmount);
@@ -144,7 +158,8 @@ export class CommissionService {
     data: Record<string, unknown>,
   ) {
     const normalizedDefault = data.isDefault === true;
-    const normalizedScope = (data.scope as CommissionRuleScope | undefined) ?? undefined;
+    const normalizedScope =
+      (data.scope as CommissionRuleScope | undefined) ?? undefined;
     const normalizedBrandId =
       typeof data.brandId === 'string' ? data.brandId : null;
 
@@ -153,7 +168,9 @@ export class CommissionService {
         await (tx as any).commissionRule.updateMany({
           where: {
             ...(normalizedScope ? { scope: normalizedScope } : {}),
-            ...(normalizedBrandId ? { brandId: normalizedBrandId } : { brandId: null }),
+            ...(normalizedBrandId
+              ? { brandId: normalizedBrandId }
+              : { brandId: null }),
             ...(id ? { id: { not: id } } : {}),
           },
           data: { isDefault: false },

@@ -68,8 +68,6 @@ export function buildRedisConnectionFromEnv(
   };
 }
 
-export function buildRedisConnection(
-  config: ConfigService,
-): RedisOptions {
+export function buildRedisConnection(config: ConfigService): RedisOptions {
   return buildRedisConnectionFromEnv(getConfigEnv(config));
 }

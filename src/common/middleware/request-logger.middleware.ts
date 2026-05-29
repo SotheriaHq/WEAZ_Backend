@@ -4,9 +4,14 @@ import type { NextFunction, Request, Response } from 'express';
 
 const httpLogger = new Logger('HTTP');
 
-export function requestLoggerMiddleware(req: Request, res: Response, next: NextFunction) {
+export function requestLoggerMiddleware(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) {
   const existing = req.headers['x-request-id'];
-  const requestId = (typeof existing === 'string' && existing.trim()) || uuidv4();
+  const requestId =
+    (typeof existing === 'string' && existing.trim()) || uuidv4();
 
   (req as any).requestId = requestId;
   res.setHeader('x-request-id', requestId);

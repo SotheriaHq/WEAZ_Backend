@@ -60,7 +60,12 @@ export class QueryInboxDto {
 
   @IsOptional()
   @IsIn(['all', 'DIRECT', 'INQUIRY', 'STANDARD_ORDER', 'CUSTOM_ORDER'])
-  contextType?: 'all' | 'DIRECT' | 'INQUIRY' | 'STANDARD_ORDER' | 'CUSTOM_ORDER';
+  contextType?:
+    | 'all'
+    | 'DIRECT'
+    | 'INQUIRY'
+    | 'STANDARD_ORDER'
+    | 'CUSTOM_ORDER';
 
   @IsOptional()
   @IsString()

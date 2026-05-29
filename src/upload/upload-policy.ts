@@ -8,10 +8,20 @@ const MB = 1024 * 1024;
 
 export const UPLOAD_ALLOWED_MIME_TYPES: Record<FileType, readonly string[]> = {
   [FileType.PROFILE_IMAGE]: ['image/jpeg', 'image/png', 'image/webp'],
-  [FileType.BANNER_IMAGE]: ['image/jpeg', 'image/png', 'image/webp', 'image/gif'],
+  [FileType.BANNER_IMAGE]: [
+    'image/jpeg',
+    'image/png',
+    'image/webp',
+    'image/gif',
+  ],
   [FileType.POST_IMAGE]: ['image/jpeg', 'image/png', 'image/webp', 'image/gif'],
   [FileType.POST_VIDEO]: ['video/mp4', 'video/webm', 'video/quicktime'],
-  [FileType.REVIEW_IMAGE]: ['image/jpeg', 'image/png', 'image/webp', 'image/gif'],
+  [FileType.REVIEW_IMAGE]: [
+    'image/jpeg',
+    'image/png',
+    'image/webp',
+    'image/gif',
+  ],
   [FileType.REVIEW_VIDEO]: ['video/mp4', 'video/webm', 'video/quicktime'],
   [FileType.DOCUMENT]: [
     'application/pdf',
@@ -79,7 +89,9 @@ const COLLECTION_BULK_ALLOWED_MIME_TYPES = new Set([
 
 const COLLECTION_BULK_ALLOWED_EXTENSIONS = new Set(['csv']);
 
-export function normalizeUploadContentType(contentType?: string | null): string | null {
+export function normalizeUploadContentType(
+  contentType?: string | null,
+): string | null {
   const value = String(contentType ?? '')
     .split(';')[0]
     .trim()
@@ -98,7 +110,10 @@ export function inferUploadContentType(fileName: string): string | null {
   return UPLOAD_EXTENSION_MIME_HINTS[getUploadFileExtension(fileName)] ?? null;
 }
 
-export function assertAllowedUploadExtension(originalName: string, fileType: FileType): void {
+export function assertAllowedUploadExtension(
+  originalName: string,
+  fileType: FileType,
+): void {
   const extension = getUploadFileExtension(originalName);
   const allowed = UPLOAD_ALLOWED_EXTENSIONS[fileType] ?? [];
   if (!extension || !allowed.includes(extension)) {
@@ -164,7 +179,10 @@ export function collectionBulkUploadMulterOptions(): MulterOptions {
         COLLECTION_BULK_ALLOWED_MIME_TYPES.has(contentType);
 
       if (!validExtension || !validMime) {
-        callback(new BadRequestException('Bulk upload requires a CSV file'), false);
+        callback(
+          new BadRequestException('Bulk upload requires a CSV file'),
+          false,
+        );
         return;
       }
 

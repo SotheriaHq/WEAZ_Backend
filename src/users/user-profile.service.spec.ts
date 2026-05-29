@@ -63,7 +63,10 @@ describe('UserProfileService theme preferences', () => {
       type: UserType.REGULAR,
       profileImage: 'legacy-avatar.jpg',
       profileImageId: 'legacy-avatar-id',
-      profileImageFile: { id: 'legacy-avatar-id', s3Url: 'legacy-avatar-s3.jpg' },
+      profileImageFile: {
+        id: 'legacy-avatar-id',
+        s3Url: 'legacy-avatar-s3.jpg',
+      },
       bannerImage: 'legacy-banner.jpg',
       bannerImageId: null,
       bannerImageFile: null,
@@ -314,9 +317,9 @@ describe('UserProfileService theme preferences', () => {
   );
 
   it('rejects missing authenticated user id', async () => {
-    await expect(
-      service.updatePreferences('', 'dark'),
-    ).rejects.toBeInstanceOf(UnauthorizedException);
+    await expect(service.updatePreferences('', 'dark')).rejects.toBeInstanceOf(
+      UnauthorizedException,
+    );
     expect(mockPrisma.user.update).not.toHaveBeenCalled();
   });
 });

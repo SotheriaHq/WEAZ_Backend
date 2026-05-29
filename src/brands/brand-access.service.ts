@@ -158,7 +158,9 @@ export class BrandAccessService {
   async assertBrandOwner(userId: string, brandId: string): Promise<void> {
     const isOwner = await this.isBrandOwner(userId, brandId);
     if (!isOwner) {
-      throw new ForbiddenException('Only a brand owner can perform this action');
+      throw new ForbiddenException(
+        'Only a brand owner can perform this action',
+      );
     }
   }
 
@@ -208,7 +210,13 @@ export class BrandAccessService {
     const brand = await this.resolveBrand(brandId);
     const targetMember = await this.prisma.brandMember.findUnique({
       where: { id: targetMemberId },
-      select: { id: true, brandId: true, userId: true, role: true, status: true },
+      select: {
+        id: true,
+        brandId: true,
+        userId: true,
+        role: true,
+        status: true,
+      },
     });
 
     if (!targetMember || targetMember.brandId !== brand.id) {
@@ -227,7 +235,9 @@ export class BrandAccessService {
       brand.ownerId !== targetMember.userId;
 
     if (activeOwnersCount <= 1 && !legacyOwnerProvidesIndependentOwner) {
-      throw new ForbiddenException('A brand must have at least one active owner');
+      throw new ForbiddenException(
+        'A brand must have at least one active owner',
+      );
     }
   }
 
@@ -319,7 +329,11 @@ export class BrandAccessService {
     permission: BrandPermissionCode = BRAND_PERMISSIONS.CATALOG_WRITE,
   ): Promise<void> {
     if (this.brandPermissionService) {
-      await this.brandPermissionService.assertPermission(userId, brandId, permission);
+      await this.brandPermissionService.assertPermission(
+        userId,
+        brandId,
+        permission,
+      );
       return;
     }
 

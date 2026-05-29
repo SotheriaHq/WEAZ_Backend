@@ -21,16 +21,23 @@ export class SystemTagsService {
   }
 
   async upsertTags(tags: Array<string | null | undefined>): Promise<void> {
+    void tags;
     // Note: systemTag table not in schema, skipping operations
-    console.warn('SystemTagsService.upsertTags called but systemTag table not available');
+    console.warn(
+      'SystemTagsService.upsertTags called but systemTag table not available',
+    );
   }
 
   async syncTags(
     previousTags: Array<string | null | undefined>,
     nextTags: Array<string | null | undefined>,
   ): Promise<void> {
+    void previousTags;
+    void nextTags;
     // Note: systemTag table not in schema, skipping operations
-    console.warn('SystemTagsService.syncTags called but systemTag table not available');
+    console.warn(
+      'SystemTagsService.syncTags called but systemTag table not available',
+    );
   }
 
   private async isTagUsed(tag: string): Promise<boolean> {

@@ -14,10 +14,7 @@ import {
   ValidationPipe,
 } from '@nestjs/common';
 import { SkipThrottle } from '@nestjs/throttler';
-import {
-  BrandsService,
-  BrandProfileResponse,
-} from './brands.service';
+import { BrandsService, BrandProfileResponse } from './brands.service';
 import { UpdateBrandProfileDto } from './dto/update-brand-profile.dto';
 import { AuthUserResponseDto } from '../auth/dto/auth-response.dto';
 import { TransformInterceptor } from '../transform/transform.interceptor';
@@ -119,10 +116,7 @@ export class BrandsController {
 
   @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
   @Delete('brands/patches/:patchId')
-  async cancelBrandPatch(
-    @Param('patchId') patchId: string,
-    @Req() req: any,
-  ) {
+  async cancelBrandPatch(@Param('patchId') patchId: string, @Req() req: any) {
     return this.brandsService.cancelBrandPatch(req.user.id, patchId);
   }
 
@@ -383,10 +377,7 @@ export class BrandsController {
 
   @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
   @Get('brands/:id/verification/draft')
-  async getVerificationDraft(
-    @Param('id') brandId: string,
-    @Req() req: any,
-  ) {
+  async getVerificationDraft(@Param('id') brandId: string, @Req() req: any) {
     if (req.user.id !== brandId) {
       throw new BadRequestException('Not authorized for this brand');
     }
@@ -408,10 +399,7 @@ export class BrandsController {
 
   @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
   @Get('brands/:id/verification/letter')
-  async getVerificationLetter(
-    @Param('id') brandId: string,
-    @Req() req: any,
-  ) {
+  async getVerificationLetter(@Param('id') brandId: string, @Req() req: any) {
     if (req.user.id !== brandId) {
       throw new BadRequestException('Not authorized for this brand');
     }
@@ -438,16 +426,16 @@ export class BrandsController {
     @Body(ValidationPipe) dto: SubmitBrandVerificationDto,
     @Req() req: any,
   ) {
-    await this.brandAccessService.assertCanSubmitVerification(req.user.id, brandId);
+    await this.brandAccessService.assertCanSubmitVerification(
+      req.user.id,
+      brandId,
+    );
     return this.brandVerificationService.submit(brandId, dto);
   }
 
   @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
   @Get('brands/:id/verification')
-  async getVerificationStatus(
-    @Param('id') brandId: string,
-    @Req() req: any,
-  ) {
+  async getVerificationStatus(@Param('id') brandId: string, @Req() req: any) {
     if (req.user.id !== brandId) {
       throw new BadRequestException('Not authorized for this brand');
     }
@@ -486,8 +474,15 @@ export class BrandsController {
     @Body(ValidationPipe) dto: ResubmitVerificationInfoDto,
     @Req() req: any,
   ) {
-    await this.brandAccessService.assertCanSubmitVerification(req.user.id, brandId);
-    return this.brandVerificationService.resubmitInfo(brandId, dto, req.user.id);
+    await this.brandAccessService.assertCanSubmitVerification(
+      req.user.id,
+      brandId,
+    );
+    return this.brandVerificationService.resubmitInfo(
+      brandId,
+      dto,
+      req.user.id,
+    );
   }
 
   @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))

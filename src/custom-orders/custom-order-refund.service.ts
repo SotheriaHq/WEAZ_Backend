@@ -49,7 +49,9 @@ export class CustomOrderRefundService {
     if (provider === 'PAYSTACK') {
       const secret = process.env.PAYSTACK_SECRET_KEY;
       if (!secret) {
-        throw new BadRequestException('PAYSTACK_SECRET_KEY is required for live refunds');
+        throw new BadRequestException(
+          'PAYSTACK_SECRET_KEY is required for live refunds',
+        );
       }
 
       const response = await fetch('https://api.paystack.co/refund', {
@@ -74,7 +76,9 @@ export class CustomOrderRefundService {
     if (provider === 'FLUTTERWAVE') {
       const secret = process.env.FLUTTERWAVE_SECRET_KEY;
       if (!secret) {
-        throw new BadRequestException('FLUTTERWAVE_SECRET_KEY is required for live refunds');
+        throw new BadRequestException(
+          'FLUTTERWAVE_SECRET_KEY is required for live refunds',
+        );
       }
 
       const response = await fetch('https://api.flutterwave.com/v3/refunds', {
@@ -116,17 +120,24 @@ export class CustomOrderRefundService {
     }
 
     const attempt = order.paymentReference
-      ? await tx.paymentAttempt.findUnique({ where: { reference: order.paymentReference } })
+      ? await tx.paymentAttempt.findUnique({
+          where: { reference: order.paymentReference },
+        })
       : await tx.paymentAttempt.findFirst({
           where: { customOrderId: params.customOrderId },
           orderBy: { createdAt: 'desc' },
         });
 
     if (!attempt) {
-      throw new BadRequestException('Custom-order refund cannot be initiated without a payment attempt');
+      throw new BadRequestException(
+        'Custom-order refund cannot be initiated without a payment attempt',
+      );
     }
 
-    if (attempt.status === 'REFUNDED' && order.paymentStatus === PaymentStatus.REFUNDED) {
+    if (
+      attempt.status === 'REFUNDED' &&
+      order.paymentStatus === PaymentStatus.REFUNDED
+    ) {
       return {
         customOrderId: order.id,
         paymentAttemptId: attempt.id,
@@ -135,7 +146,9 @@ export class CustomOrderRefundService {
       };
     }
     if (attempt.status !== 'PAID') {
-      throw new BadRequestException('Custom-order refund can only be initiated for a paid attempt');
+      throw new BadRequestException(
+        'Custom-order refund can only be initiated for a paid attempt',
+      );
     }
 
     const claimed = await tx.paymentAttempt.updateMany({
@@ -243,7 +256,8 @@ export class CustomOrderRefundService {
 
     const releasedAllocations = allocations.filter(
       (allocation) =>
-        allocation.status === CustomOrderLedgerAllocationStatus.PAYOUT_ELIGIBLE ||
+        allocation.status ===
+          CustomOrderLedgerAllocationStatus.PAYOUT_ELIGIBLE ||
         allocation.status === CustomOrderLedgerAllocationStatus.PAID_OUT ||
         allocation.eligibleAt !== null ||
         allocation.paidOutAt !== null,
@@ -255,14 +269,23 @@ export class CustomOrderRefundService {
       ),
     );
     const releasedNet = this.roundMoney(
-      releasedAllocations.reduce((sum, allocation) => sum + Number(allocation.netBrandAmount), 0),
+      releasedAllocations.reduce(
+        (sum, allocation) => sum + Number(allocation.netBrandAmount),
+        0,
+      ),
     );
     const releasedGross = this.roundMoney(
-      releasedAllocations.reduce((sum, allocation) => sum + Number(allocation.amount), 0),
+      releasedAllocations.reduce(
+        (sum, allocation) => sum + Number(allocation.amount),
+        0,
+      ),
     );
     const totalAmount = this.roundMoney(Number(attempt.amount));
     const unreleasedGross = this.roundMoney(
-      Math.max(allocations.length > 0 ? totalAmount - releasedGross : totalAmount, 0),
+      Math.max(
+        allocations.length > 0 ? totalAmount - releasedGross : totalAmount,
+        0,
+      ),
     );
 
     await tx.paymentAttempt.update({

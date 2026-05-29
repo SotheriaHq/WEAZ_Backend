@@ -99,7 +99,9 @@ export class FeatureFlagsService {
   }
 
   async getStates(keys: string[]): Promise<Record<string, boolean>> {
-    const uniqueKeys = Array.from(new Set(keys.filter((key) => key.trim().length > 0)));
+    const uniqueKeys = Array.from(
+      new Set(keys.filter((key) => key.trim().length > 0)),
+    );
     if (uniqueKeys.length === 0) {
       return {};
     }

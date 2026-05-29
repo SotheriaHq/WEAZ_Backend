@@ -1,4 +1,8 @@
-import { Injectable, InternalServerErrorException, Logger } from '@nestjs/common';
+import {
+  Injectable,
+  InternalServerErrorException,
+  Logger,
+} from '@nestjs/common';
 import { CustomOrderSourceType } from '@prisma/client';
 
 import { CollectionsService } from 'src/collections/collections.service';
@@ -35,9 +39,8 @@ export class DesignsService {
 
   private async syncExplicitDesignIfDual(legacyCollectionId: string) {
     if (getDesignDomainWriteMode() !== 'dual') return;
-    const synced = await this.designResolver.trySyncFromLegacyCollection(
-      legacyCollectionId,
-    );
+    const synced =
+      await this.designResolver.trySyncFromLegacyCollection(legacyCollectionId);
     if (!synced) {
       this.logger.warn(
         `Continuing legacy design write after failed explicit Design sync for ${legacyCollectionId}`,
@@ -119,11 +122,19 @@ export class DesignsService {
   }
 
   async archiveDesign(designId: string, userId: string) {
-    return this.collectionsService.archiveCollection(designId, userId, 'design');
+    return this.collectionsService.archiveCollection(
+      designId,
+      userId,
+      'design',
+    );
   }
 
   async unarchiveDesign(designId: string, userId: string) {
-    return this.collectionsService.unarchiveCollection(designId, userId, 'design');
+    return this.collectionsService.unarchiveCollection(
+      designId,
+      userId,
+      'design',
+    );
   }
 
   async restoreDesign(designId: string, userId: string) {
@@ -168,12 +179,13 @@ export class DesignsService {
     dto: InitializeDesignMediaUploadDto,
   ) {
     this.assertDesignOnlyWriteModeNotEnabled();
-    const result = await this.collectionsService.initializeCollectionMediaUploads(
-      designId,
-      userId,
-      dto.files,
-      'design',
-    );
+    const result =
+      await this.collectionsService.initializeCollectionMediaUploads(
+        designId,
+        userId,
+        dto.files,
+        'design',
+      );
     return this.legacyAdapter.fromLegacyInitializeResponse(result);
   }
 
@@ -191,7 +203,11 @@ export class DesignsService {
   }
 
   async deleteDesignMedia(designId: string, mediaId: string, userId: string) {
-    return this.collectionsService.deleteCollectionMedia(designId, mediaId, userId);
+    return this.collectionsService.deleteCollectionMedia(
+      designId,
+      mediaId,
+      userId,
+    );
   }
 
   async getMyDraftDesigns(userId: string) {
@@ -228,10 +244,17 @@ export class DesignsService {
       preferredSize?: string;
     },
   ) {
-    return this.collectionsService.submitCustomFitInquiry(designId, userId, body);
+    return this.collectionsService.submitCustomFitInquiry(
+      designId,
+      userId,
+      body,
+    );
   }
 
-  async getDesignCustomOrderConfiguration(designId: string, requesterId?: string) {
+  async getDesignCustomOrderConfiguration(
+    designId: string,
+    requesterId?: string,
+  ) {
     try {
       return await this.customOrderConfigurationsService.getActiveConfigurationForSource(
         CustomOrderSourceType.DESIGN,

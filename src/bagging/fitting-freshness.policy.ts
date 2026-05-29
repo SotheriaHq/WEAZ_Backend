@@ -16,18 +16,32 @@ export class FittingFreshnessPolicy {
     profile?: SizeFitProfileForFreshness | null;
     now?: Date;
   }): FittingFreshnessResult {
-    const requiredMeasurementKeys = this.normalizeKeys(input.requiredMeasurementKeys);
+    const requiredMeasurementKeys = this.normalizeKeys(
+      input.requiredMeasurementKeys,
+    );
     const staleAfterDays = this.resolveFreshnessDays(input.profile);
 
     if (requiredMeasurementKeys.length === 0) {
-      return this.buildResult('NOT_REQUIRED', 'NOT_REQUIRED', [], null, staleAfterDays, null, false);
+      return this.buildResult(
+        'NOT_REQUIRED',
+        'NOT_REQUIRED',
+        [],
+        null,
+        staleAfterDays,
+        null,
+        false,
+      );
     }
 
-    const measurementRecord = this.extractMeasurementRecord(input.profile?.measurements);
+    const measurementRecord = this.extractMeasurementRecord(
+      input.profile?.measurements,
+    );
     const missingMeasurementKeys = requiredMeasurementKeys.filter((key) => {
       const raw = measurementRecord[key];
       const value =
-        raw && typeof raw === 'object' && 'value' in (raw as Record<string, unknown>)
+        raw &&
+        typeof raw === 'object' &&
+        'value' in (raw as Record<string, unknown>)
           ? (raw as Record<string, unknown>).value
           : raw;
       const numeric = Number(value);
@@ -35,21 +49,46 @@ export class FittingFreshnessPolicy {
     });
 
     if (missingMeasurementKeys.length === requiredMeasurementKeys.length) {
-      return this.buildResult('MISSING', 'MISSING', missingMeasurementKeys, null, staleAfterDays, null, false);
+      return this.buildResult(
+        'MISSING',
+        'MISSING',
+        missingMeasurementKeys,
+        null,
+        staleAfterDays,
+        null,
+        false,
+      );
     }
 
     if (missingMeasurementKeys.length > 0) {
-      return this.buildResult('PARTIAL', 'PARTIAL', missingMeasurementKeys, null, staleAfterDays, null, false);
+      return this.buildResult(
+        'PARTIAL',
+        'PARTIAL',
+        missingMeasurementKeys,
+        null,
+        staleAfterDays,
+        null,
+        false,
+      );
     }
 
     const updatedAt = this.resolveMeasurementUpdatedAt(input.profile);
     if (!updatedAt) {
-      return this.buildResult('COMPLETE', 'STALE', [], null, staleAfterDays, null, true);
+      return this.buildResult(
+        'COMPLETE',
+        'STALE',
+        [],
+        null,
+        staleAfterDays,
+        null,
+        true,
+      );
     }
 
     const staleAt = new Date(updatedAt.getTime() + staleAfterDays * MS_PER_DAY);
     const now = input.now ?? new Date();
-    const freshnessState: BagFreshnessState = staleAt.getTime() <= now.getTime() ? 'STALE' : 'FRESH';
+    const freshnessState: BagFreshnessState =
+      staleAt.getTime() <= now.getTime() ? 'STALE' : 'FRESH';
 
     return this.buildResult(
       'COMPLETE',
@@ -92,14 +131,18 @@ export class FittingFreshnessPolicy {
     );
   }
 
-  private resolveFreshnessDays(profile?: SizeFitProfileForFreshness | null): number {
+  private resolveFreshnessDays(
+    profile?: SizeFitProfileForFreshness | null,
+  ): number {
     const configured = Number(profile?.requireUpdateEveryDays);
     return Number.isFinite(configured) && configured > 0
       ? Math.trunc(configured)
       : DEFAULT_FRESHNESS_DAYS;
   }
 
-  private resolveMeasurementUpdatedAt(profile?: SizeFitProfileForFreshness | null): Date | null {
+  private resolveMeasurementUpdatedAt(
+    profile?: SizeFitProfileForFreshness | null,
+  ): Date | null {
     const value = profile?.lastUpdatedAt ?? profile?.updatedAt ?? null;
     if (!value) return null;
     const date = value instanceof Date ? value : new Date(value);

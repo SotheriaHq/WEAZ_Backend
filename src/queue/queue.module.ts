@@ -59,4 +59,4 @@ import { WebhookEventsQueueService } from './webhook-events.queue.service';
     WebhookEventsQueueService,
   ],
 })
-export class QueueModule { }
+export class QueueModule {}

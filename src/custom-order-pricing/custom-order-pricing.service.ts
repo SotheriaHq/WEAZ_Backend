@@ -60,15 +60,24 @@ export class CustomOrderPricingService {
   }
 
   buildPricePreview(input: PriceConfigurationInput) {
-    const rules = [...input.rules].sort((left, right) => left.priority - right.priority);
-    this.ensureRequiredMeasurements(input.requiredMeasurementKeys, input.measurementValues);
+    const rules = [...input.rules].sort(
+      (left, right) => left.priority - right.priority,
+    );
+    this.ensureRequiredMeasurements(
+      input.requiredMeasurementKeys,
+      input.measurementValues,
+    );
 
     const matchedRule =
-      rules.find((rule) => !rule.isFallback && this.ruleMatches(rule, input.measurementValues)) ??
-      rules.find((rule) => rule.isFallback);
+      rules.find(
+        (rule) =>
+          !rule.isFallback && this.ruleMatches(rule, input.measurementValues),
+      ) ?? rules.find((rule) => rule.isFallback);
 
     if (!matchedRule) {
-      throw new BadRequestException('No matching fabric rule found and no fallback rule is configured');
+      throw new BadRequestException(
+        'No matching fabric rule found and no fallback rule is configured',
+      );
     }
 
     const baseProductionCharge = this.toMoney(input.baseProductionCharge);
@@ -79,12 +88,15 @@ export class CustomOrderPricingService {
     }
 
     const baseYardsOverride = Number(input.baseYardsOverride);
-    const baseYards = Number.isFinite(baseYardsOverride) && baseYardsOverride > 0
-      ? this.roundMoney(baseYardsOverride)
-      : this.roundMoney(matchedRule.outputYards);
+    const baseYards =
+      Number.isFinite(baseYardsOverride) && baseYardsOverride > 0
+        ? this.roundMoney(baseYardsOverride)
+        : this.roundMoney(matchedRule.outputYards);
 
     const computedYards = this.roundMoney(baseYards + additionalYards);
-    const fabricComponentTotal = this.roundMoney(computedYards * fabricCostPerYard);
+    const fabricComponentTotal = this.roundMoney(
+      computedYards * fabricCostPerYard,
+    );
     const rushFeeValue = input.rushSelected
       ? this.resolveRushFee(input.rushEnabled, input.rushFee)
       : 0;
@@ -160,14 +172,21 @@ export class CustomOrderPricingService {
     });
   }
 
-  private resolveRushFee(rushEnabled: boolean, rushFee?: string | number | null) {
+  private resolveRushFee(
+    rushEnabled: boolean,
+    rushFee?: string | number | null,
+  ) {
     if (!rushEnabled) {
-      throw new BadRequestException('Rush ordering is not enabled for this custom configuration');
+      throw new BadRequestException(
+        'Rush ordering is not enabled for this custom configuration',
+      );
     }
 
     const numericRushFee = this.toMoney(rushFee ?? 0);
     if (numericRushFee <= 0) {
-      throw new BadRequestException('Rush ordering requires a positive rush fee');
+      throw new BadRequestException(
+        'Rush ordering requires a positive rush fee',
+      );
     }
 
     return numericRushFee;
@@ -184,7 +203,9 @@ export class CustomOrderPricingService {
   private toMoney(value: string | number | null | undefined) {
     const numericValue = Number(value ?? 0);
     if (!Number.isFinite(numericValue) || numericValue < 0) {
-      throw new BadRequestException('Invalid monetary value supplied to custom-order pricing');
+      throw new BadRequestException(
+        'Invalid monetary value supplied to custom-order pricing',
+      );
     }
     return this.roundMoney(numericValue);
   }

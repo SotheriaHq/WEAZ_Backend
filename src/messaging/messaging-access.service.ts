@@ -1,4 +1,8 @@
-import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { MessageThreadStatus } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { BrandPermissionService } from 'src/brands/permissions/brand-permission.service';
@@ -28,10 +32,18 @@ export class MessagingAccessService {
     if (!thread) {
       throw new NotFoundException('Message thread not found');
     }
-    return thread.brandId ?? thread.order?.brandId ?? thread.customOrder?.brandId ?? null;
+    return (
+      thread.brandId ??
+      thread.order?.brandId ??
+      thread.customOrder?.brandId ??
+      null
+    );
   }
 
-  async assertThreadParticipantRead(userId: string, threadId: string): Promise<void> {
+  async assertThreadParticipantRead(
+    userId: string,
+    threadId: string,
+  ): Promise<void> {
     const participant = await this.prisma.messageThreadParticipant.findUnique({
       where: { threadId_userId: { threadId, userId } },
       select: { id: true },
@@ -53,7 +65,10 @@ export class MessagingAccessService {
     );
   }
 
-  async assertThreadBrandReply(userId: string, threadId: string): Promise<void> {
+  async assertThreadBrandReply(
+    userId: string,
+    threadId: string,
+  ): Promise<void> {
     const brandId = await this.resolveThreadBrandId(threadId);
     if (!brandId) {
       throw new ForbiddenException('Thread access denied');
@@ -65,7 +80,10 @@ export class MessagingAccessService {
     );
   }
 
-  async assertBrandRead(userId: string, brandIdOrOwnerId: string): Promise<void> {
+  async assertBrandRead(
+    userId: string,
+    brandIdOrOwnerId: string,
+  ): Promise<void> {
     await this.brandPermissionService.assertPermission(
       userId,
       brandIdOrOwnerId,
@@ -73,7 +91,10 @@ export class MessagingAccessService {
     );
   }
 
-  async assertBrandReply(userId: string, brandIdOrOwnerId: string): Promise<void> {
+  async assertBrandReply(
+    userId: string,
+    brandIdOrOwnerId: string,
+  ): Promise<void> {
     await this.brandPermissionService.assertPermission(
       userId,
       brandIdOrOwnerId,
@@ -147,10 +168,16 @@ export class MessagingAccessService {
     const allowed = await Promise.all(
       brandIds.map(async (brandId) => ({
         brandId,
-        allowed: await this.brandPermissionService.hasPermission(userId, brandId, permission),
+        allowed: await this.brandPermissionService.hasPermission(
+          userId,
+          brandId,
+          permission,
+        ),
       })),
     );
-    return allowed.filter((entry) => entry.allowed).map((entry) => entry.brandId);
+    return allowed
+      .filter((entry) => entry.allowed)
+      .map((entry) => entry.brandId);
   }
 
   async resolveActorThreadRole(userId: string, threadId: string) {
@@ -167,7 +194,10 @@ export class MessagingAccessService {
     throw new ForbiddenException('Thread access denied');
   }
 
-  private async hasDirectParticipant(userId: string, threadId: string): Promise<boolean> {
+  private async hasDirectParticipant(
+    userId: string,
+    threadId: string,
+  ): Promise<boolean> {
     const participant = await this.prisma.messageThreadParticipant.findUnique({
       where: { threadId_userId: { threadId, userId } },
       select: { id: true },

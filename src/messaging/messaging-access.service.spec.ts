@@ -31,9 +31,13 @@ describe('MessagingAccessService', () => {
   });
 
   it('allows a direct participant to read a thread', async () => {
-    prisma.messageThreadParticipant.findUnique.mockResolvedValue({ id: 'participant_1' });
+    prisma.messageThreadParticipant.findUnique.mockResolvedValue({
+      id: 'participant_1',
+    });
 
-    await expect(service.assertCanReadThread('buyer_1', 'thread_1')).resolves.toBeUndefined();
+    await expect(
+      service.assertCanReadThread('buyer_1', 'thread_1'),
+    ).resolves.toBeUndefined();
   });
 
   it('requires messages.read for brand-scoped thread read when not a direct participant', async () => {
@@ -57,7 +61,11 @@ describe('MessagingAccessService', () => {
     prisma.messageThreadParticipant.findUnique.mockResolvedValue(null);
     prisma.messageThread.findUnique
       .mockResolvedValueOnce({ status: MessageThreadStatus.OPEN })
-      .mockResolvedValueOnce({ brandId: 'brand_1', order: null, customOrder: null });
+      .mockResolvedValueOnce({
+        brandId: 'brand_1',
+        order: null,
+        customOrder: null,
+      });
 
     await service.assertCanSendMessage('staff_1', 'thread_1');
 
@@ -69,11 +77,15 @@ describe('MessagingAccessService', () => {
   });
 
   it('blocks replies to read-only threads', async () => {
-    prisma.messageThreadParticipant.findUnique.mockResolvedValue({ id: 'participant_1' });
-    prisma.messageThread.findUnique.mockResolvedValue({ status: MessageThreadStatus.READ_ONLY });
+    prisma.messageThreadParticipant.findUnique.mockResolvedValue({
+      id: 'participant_1',
+    });
+    prisma.messageThread.findUnique.mockResolvedValue({
+      status: MessageThreadStatus.READ_ONLY,
+    });
 
-    await expect(service.assertCanSendMessage('staff_1', 'thread_1')).rejects.toBeInstanceOf(
-      ForbiddenException,
-    );
+    await expect(
+      service.assertCanSendMessage('staff_1', 'thread_1'),
+    ).rejects.toBeInstanceOf(ForbiddenException);
   });
 });

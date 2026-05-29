@@ -8,13 +8,30 @@ import type {
 
 export type BagSourceType = 'PRODUCT' | 'DESIGN' | 'COLLECTION';
 
-export type BagMode = 'STANDARD' | 'CUSTOM' | 'STANDARD_OR_CUSTOM' | 'UNAVAILABLE';
+export type BagMode =
+  | 'STANDARD'
+  | 'CUSTOM'
+  | 'STANDARD_OR_CUSTOM'
+  | 'UNAVAILABLE';
 
-export type BagFittingState = 'COMPLETE' | 'PARTIAL' | 'MISSING' | 'NOT_REQUIRED';
+export type BagFittingState =
+  | 'COMPLETE'
+  | 'PARTIAL'
+  | 'MISSING'
+  | 'NOT_REQUIRED';
 
-export type BagFreshnessState = 'FRESH' | 'STALE' | 'MISSING' | 'PARTIAL' | 'NOT_REQUIRED';
+export type BagFreshnessState =
+  | 'FRESH'
+  | 'STALE'
+  | 'MISSING'
+  | 'PARTIAL'
+  | 'NOT_REQUIRED';
 
-export type BagStockState = 'IN_STOCK' | 'OUT_OF_STOCK' | 'CUSTOM_ONLY' | 'UNAVAILABLE';
+export type BagStockState =
+  | 'IN_STOCK'
+  | 'OUT_OF_STOCK'
+  | 'CUSTOM_ONLY'
+  | 'UNAVAILABLE';
 
 export type BagHeartbeatState =
   | 'not_bagged'
@@ -39,7 +56,10 @@ export type CollectionBagDefaultAction =
   | 'AUTH_REQUIRED'
   | 'DISABLED';
 
-export type CompletedDuplicatePolicy = 'ALLOW_REPEAT' | 'BLOCK_REPEAT' | 'UNKNOWN';
+export type CompletedDuplicatePolicy =
+  | 'ALLOW_REPEAT'
+  | 'BLOCK_REPEAT'
+  | 'UNKNOWN';
 
 export type CustomDuplicateClass =
   | 'IN_BAG'
@@ -242,7 +262,11 @@ export interface StandardBagValidationInput {
     name?: string | null;
     sizes?: string[] | null;
     colors?: string[] | null;
-    variants?: Array<{ size?: string | null; color?: string | null; stock?: number | null }> | null;
+    variants?: Array<{
+      size?: string | null;
+      color?: string | null;
+      stock?: number | null;
+    }> | null;
     trackInventory?: boolean | null;
     allowBackorders?: boolean | null;
     totalStock?: number | null;

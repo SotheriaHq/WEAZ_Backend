@@ -2,7 +2,6 @@ import { Test, TestingModule } from '@nestjs/testing';
 import {
   PaymentMethod,
   PaymentStatus,
-  PaymentSubjectType,
   Prisma,
   SettlementFinalReleaseTrigger,
   SettlementOrderType,
@@ -87,7 +86,9 @@ function buildSettlementCalculation(
   };
 }
 
-function buildSnapshot(calculation: ReturnType<typeof buildSettlementCalculation>) {
+function buildSnapshot(
+  calculation: ReturnType<typeof buildSettlementCalculation>,
+) {
   return {
     id: `snapshot_${calculation.customOrderId}`,
     ...calculation,
@@ -830,10 +831,12 @@ describe('CustomOrdersPaymentsService', () => {
         create: jest.fn().mockResolvedValue(undefined),
       },
       customOrderLedgerAllocation: {
-        findMany: jest.fn().mockResolvedValue([
-          { allocationType: 'BRAND_ACCEPTANCE_PORTION' },
-          { allocationType: 'FINAL_COMPLETION_PORTION' },
-        ]),
+        findMany: jest
+          .fn()
+          .mockResolvedValue([
+            { allocationType: 'BRAND_ACCEPTANCE_PORTION' },
+            { allocationType: 'FINAL_COMPLETION_PORTION' },
+          ]),
         createMany: jest.fn().mockResolvedValue({ count: 0 }),
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       },
@@ -1010,8 +1013,8 @@ describe('CustomOrdersPaymentsService', () => {
       releaseEligibleAt: new Date('2026-03-12T10:00:00.000Z'),
     });
 
-    const allocations = tx.customOrderLedgerAllocation.createMany.mock.calls[0][0]
-      .data;
+    const allocations =
+      tx.customOrderLedgerAllocation.createMany.mock.calls[0][0].data;
     expect(String(allocations[0].amount)).toBe('600');
     expect(String(allocations[1].amount)).toBe('400');
     expect(ledgerService.postCustomOrderImmediateRelease).toHaveBeenCalledWith(
@@ -1057,11 +1060,13 @@ describe('CustomOrdersPaymentsService', () => {
       releaseEligibleAt: new Date('2026-03-12T10:00:00.000Z'),
     });
 
-    const allocations = tx.customOrderLedgerAllocation.createMany.mock.calls[0][0]
-      .data;
+    const allocations =
+      tx.customOrderLedgerAllocation.createMany.mock.calls[0][0].data;
     expect(String(allocations[0].amount)).toBe('0');
     expect(String(allocations[1].amount)).toBe('1000');
     expect(tx.customOrderLedgerAllocation.updateMany).not.toHaveBeenCalled();
-    expect(ledgerService.postCustomOrderImmediateRelease).not.toHaveBeenCalled();
+    expect(
+      ledgerService.postCustomOrderImmediateRelease,
+    ).not.toHaveBeenCalled();
   });
 });

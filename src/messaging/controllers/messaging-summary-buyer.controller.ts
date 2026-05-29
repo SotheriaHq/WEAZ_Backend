@@ -21,15 +21,32 @@ export class MessagingSummaryBuyerController {
   @Post('custom-orders/messages/summaries')
   async customOrderSummaries(
     @Req() req: Request & { user: { id: string } },
-    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true })) dto: BulkQueryThreadSummaryDto,
+    @Body(
+      new ValidationPipe({
+        transform: true,
+        whitelist: true,
+        forbidNonWhitelisted: true,
+      }),
+    )
+    dto: BulkQueryThreadSummaryDto,
   ) {
-    return this.messaging.getBulkSummariesForCustomOrdersBuyer(req.user.id, dto);
+    return this.messaging.getBulkSummariesForCustomOrdersBuyer(
+      req.user.id,
+      dto,
+    );
   }
 
   @Post(['orders/messages/summaries', 'store/orders/messages/summaries'])
   async orderSummaries(
     @Req() req: Request & { user: { id: string } },
-    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true })) dto: BulkQueryThreadSummaryDto,
+    @Body(
+      new ValidationPipe({
+        transform: true,
+        whitelist: true,
+        forbidNonWhitelisted: true,
+      }),
+    )
+    dto: BulkQueryThreadSummaryDto,
   ) {
     return this.messaging.getBulkSummariesForOrdersBuyer(req.user.id, dto);
   }

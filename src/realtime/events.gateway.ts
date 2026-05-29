@@ -36,9 +36,7 @@ const wsAllowedOrigins = [
     credentials: true,
   },
 })
-export class EventsGateway
-  implements OnGatewayConnection, OnGatewayDisconnect
-{
+export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @WebSocketServer() server!: Server;
   private readonly logger = new Logger(EventsGateway.name);
   private readonly joinWindowMs = 10_000;
@@ -75,7 +73,9 @@ export class EventsGateway
   private get accessTokenSecret(): string {
     const secret = this.configService.get<string>('JWT_ACCESS_SECRET');
     if (!secret) {
-      throw new Error('JWT_ACCESS_SECRET must be configured for websocket auth');
+      throw new Error(
+        'JWT_ACCESS_SECRET must be configured for websocket auth',
+      );
     }
     return secret;
   }
@@ -113,7 +113,10 @@ export class EventsGateway
       const rawToken = this.extractHandshakeToken(client);
       if (!rawToken) return null;
 
-      const claims = jwt.verify(rawToken, this.accessTokenSecret) as AuthJwtClaims;
+      const claims = jwt.verify(
+        rawToken,
+        this.accessTokenSecret,
+      ) as AuthJwtClaims;
       if (!claims?.sub) return null;
 
       const user = await this.prisma.user.findUnique({

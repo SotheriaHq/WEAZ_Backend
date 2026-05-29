@@ -43,7 +43,10 @@ export class PatchingController {
   @Get('patches/check')
   @UseGuards(AuthGuard('jwt'), new UserTypeGuard(UserType.REGULAR))
   async checkPatchStatus(@Param('brandId') brandId: string, @Req() req) {
-    return this.patchingService.checkPatchStatus(this.getAuthUserId(req), brandId);
+    return this.patchingService.checkPatchStatus(
+      this.getAuthUserId(req),
+      brandId,
+    );
   }
 }
 
@@ -67,7 +70,9 @@ export class UserPatchesController {
     if (viewerId !== userId) {
       // For now, only allow viewing own patches
       // In the future, this could be expanded based on privacy settings
-      throw new ForbiddenException('Permission denied: Can only view own patches');
+      throw new ForbiddenException(
+        'Permission denied: Can only view own patches',
+      );
     }
     return this.patchingService.getBrandPatches(userId);
   }
@@ -88,6 +93,9 @@ export class PatchStatusBatchController {
   @Post('patches/check/batch')
   @UseGuards(AuthGuard('jwt'), new UserTypeGuard(UserType.REGULAR))
   async checkPatchStatusBatch(@Req() req, @Body() dto: CheckPatchBatchDto) {
-    return this.patchingService.checkPatchBatch(this.getAuthUserId(req), dto.targetIds);
+    return this.patchingService.checkPatchBatch(
+      this.getAuthUserId(req),
+      dto.targetIds,
+    );
   }
 }

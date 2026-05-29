@@ -9,14 +9,16 @@ const LedgerAccountType = {
   EXPENSE: 'EXPENSE',
 } as const;
 
-type LedgerAccountType = (typeof LedgerAccountType)[keyof typeof LedgerAccountType];
+type LedgerAccountType =
+  (typeof LedgerAccountType)[keyof typeof LedgerAccountType];
 
 const LedgerEntryDirection = {
   DEBIT: 'DEBIT',
   CREDIT: 'CREDIT',
 } as const;
 
-type LedgerEntryDirection = (typeof LedgerEntryDirection)[keyof typeof LedgerEntryDirection];
+type LedgerEntryDirection =
+  (typeof LedgerEntryDirection)[keyof typeof LedgerEntryDirection];
 
 const LedgerTransactionType = {
   PAYMENT_RECEIVED: 'PAYMENT_RECEIVED',
@@ -26,7 +28,8 @@ const LedgerTransactionType = {
   REVERSAL: 'REVERSAL',
 } as const;
 
-type LedgerTransactionType = (typeof LedgerTransactionType)[keyof typeof LedgerTransactionType];
+type LedgerTransactionType =
+  (typeof LedgerTransactionType)[keyof typeof LedgerTransactionType];
 
 type LedgerLine = {
   code: string;
@@ -120,7 +123,9 @@ export class LedgerService {
       }
 
       const account = await this.ensureAccount(tx, line);
-      const [lockedAccount] = await tx.$queryRaw<Array<{ currentBalance: Prisma.Decimal }>>`
+      const [lockedAccount] = await tx.$queryRaw<
+        Array<{ currentBalance: Prisma.Decimal }>
+      >`
         SELECT "currentBalance"
         FROM "LedgerAccount"
         WHERE "id" = ${account.id}::uuid
@@ -564,13 +569,17 @@ export class LedgerService {
     );
     const releasedCommission = this.roundMoney(
       (hold.firstReleasedAt ? Number(hold.firstReleaseCommissionAmount) : 0) +
-        (hold.secondReleasedAt ? Number(hold.secondReleaseCommissionAmount) : 0),
+        (hold.secondReleasedAt
+          ? Number(hold.secondReleaseCommissionAmount)
+          : 0),
     );
     const releasedNet = this.roundMoney(
       (hold.firstReleasedAt ? Number(hold.firstReleaseNetAmount) : 0) +
         (hold.secondReleasedAt ? Number(hold.secondReleaseNetAmount) : 0),
     );
-    const unreleasedGross = this.roundMoney(Number(hold.totalAmount) - releasedGross);
+    const unreleasedGross = this.roundMoney(
+      Number(hold.totalAmount) - releasedGross,
+    );
 
     const lines: LedgerLine[] = [];
 
@@ -683,7 +692,9 @@ export class LedgerService {
     return (this.prisma as any).ledgerTransaction.findMany({
       where: {
         ...(params.type ? { type: params.type } : {}),
-        ...(params.referenceType ? { referenceType: params.referenceType } : {}),
+        ...(params.referenceType
+          ? { referenceType: params.referenceType }
+          : {}),
         ...(params.referenceId ? { referenceId: params.referenceId } : {}),
       },
       take: Math.min(params.take ?? 50, 200),
@@ -732,7 +743,8 @@ export class LedgerService {
     amount: number,
   ) {
     const isDebitIncrease =
-      accountType === LedgerAccountType.ASSET || accountType === LedgerAccountType.EXPENSE;
+      accountType === LedgerAccountType.ASSET ||
+      accountType === LedgerAccountType.EXPENSE;
 
     if (direction === LedgerEntryDirection.DEBIT) {
       return isDebitIncrease ? amount : -amount;

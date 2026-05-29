@@ -30,9 +30,7 @@ import {
   resolveProfileImage,
   resolveRequiredProfileField,
 } from 'src/common/user-profile-source.helper';
-import {
-  canonicalBrandProfileSelect,
-} from 'src/common/brand-profile-source.helper';
+import { canonicalBrandProfileSelect } from 'src/common/brand-profile-source.helper';
 
 function escapeHtml(input: string): string {
   return input
@@ -82,7 +80,11 @@ export class CommentsV2Service {
       ...comment,
       user: this.mapUserDisplay(comment.user),
       ...(Array.isArray(comment.children)
-        ? { children: comment.children.map((child) => this.mapCommentDisplay(child)) }
+        ? {
+            children: comment.children.map((child) =>
+              this.mapCommentDisplay(child),
+            ),
+          }
         : {}),
     };
   }
@@ -147,7 +149,8 @@ export class CommentsV2Service {
     });
     if (!product) return false;
     if (requesterId && requesterId === product.brand.ownerId) return true;
-    if (product.deletedAt || product.archivedAt || !product.isActive) return false;
+    if (product.deletedAt || product.archivedAt || !product.isActive)
+      return false;
     if (product.publishAt && product.publishAt > new Date()) return false;
     return true;
   }
@@ -327,9 +330,12 @@ export class CommentsV2Service {
     let targetUrl: string | null = null;
     let targetDescriptor: string = 'content';
     let targetTitle: string | null = null;
-    let ownerProfile:
-      | { id: string; type: UserType; brand: any | null; username: string }
-      | null = null;
+    let ownerProfile: {
+      id: string;
+      type: UserType;
+      brand: any | null;
+      username: string;
+    } | null = null;
     try {
       if (targetType === 'POST') {
         const post = await this.prisma.post.findUnique({
@@ -491,9 +497,9 @@ export class CommentsV2Service {
             ? 'a design'
             : targetType === 'PRODUCT'
               ? 'a product'
-          : targetType === 'COLLECTION'
-            ? 'a collection'
-            : 'a post';
+              : targetType === 'COLLECTION'
+                ? 'a collection'
+                : 'a post';
       const commentPreview = truncatePreview(contentRaw);
       const message = `commented on ${targetLabel}: "${commentPreview}"`;
 
@@ -703,7 +709,11 @@ export class CommentsV2Service {
     };
   }
 
-  async toggleThread(commentId: string, userId: string, clientEventId?: string) {
+  async toggleThread(
+    commentId: string,
+    userId: string,
+    clientEventId?: string,
+  ) {
     const comment = await this.prisma.commentV2.findUnique({
       where: { id: commentId },
     });

@@ -124,8 +124,7 @@ export class DesignsController {
       limit: limit ? parseInt(limit, 10) : 20,
       visibility,
       scope: 'design',
-      includeDeleted:
-        includeDeleted === 'true' || includeDeleted === '1',
+      includeDeleted: includeDeleted === 'true' || includeDeleted === '1',
       onlyDeleted: onlyDeleted === 'true' || onlyDeleted === '1',
     });
   }
@@ -133,7 +132,11 @@ export class DesignsController {
   @UseGuards(OptionalJwtAuthGuard)
   @Get(':id')
   async getDesign(@Param('id') designId: string, @Req() req: any) {
-    return this.collectionsService.getCollection(designId, req.user?.id, 'design');
+    return this.collectionsService.getCollection(
+      designId,
+      req.user?.id,
+      'design',
+    );
   }
 
   @UseGuards(JwtAuthGuard)
@@ -143,25 +146,42 @@ export class DesignsController {
     @Req() req: any,
     @Body() dto: UpdateCollectionDto,
   ) {
-    return this.collectionsService.updateCollection(designId, req.user.id, dto, 'design');
+    return this.collectionsService.updateCollection(
+      designId,
+      req.user.id,
+      dto,
+      'design',
+    );
   }
 
   @UseGuards(JwtAuthGuard)
   @Patch(':id/archive')
   async archiveDesign(@Param('id') designId: string, @Req() req: any) {
-    return this.collectionsService.archiveCollection(designId, req.user.id, 'design');
+    return this.collectionsService.archiveCollection(
+      designId,
+      req.user.id,
+      'design',
+    );
   }
 
   @UseGuards(JwtAuthGuard)
   @Patch(':id/unarchive')
   async unarchiveDesign(@Param('id') designId: string, @Req() req: any) {
-    return this.collectionsService.unarchiveCollection(designId, req.user.id, 'design');
+    return this.collectionsService.unarchiveCollection(
+      designId,
+      req.user.id,
+      'design',
+    );
   }
 
   @UseGuards(JwtAuthGuard)
   @Delete(':id')
   async deleteDesign(@Param('id') designId: string, @Req() req: any) {
-    return this.collectionsService.deleteCollection(designId, req.user.id, 'design');
+    return this.collectionsService.deleteCollection(
+      designId,
+      req.user.id,
+      'design',
+    );
   }
 
   @UseGuards(JwtAuthGuard)
@@ -172,7 +192,10 @@ export class DesignsController {
 
   @UseGuards(JwtAuthGuard)
   @Delete(':id/permanent')
-  async permanentlyDeleteDesign(@Param('id') designId: string, @Req() req: any) {
+  async permanentlyDeleteDesign(
+    @Param('id') designId: string,
+    @Req() req: any,
+  ) {
     return this.collectionsService.permanentlyDeleteCollection(
       designId,
       req.user.id,
@@ -183,7 +206,11 @@ export class DesignsController {
   @UseGuards(JwtAuthGuard)
   @Post(':id/duplicate')
   async duplicateDesign(@Param('id') designId: string, @Req() req: any) {
-    return this.collectionsService.duplicateCollection(designId, req.user.id, 'design');
+    return this.collectionsService.duplicateCollection(
+      designId,
+      req.user.id,
+      'design',
+    );
   }
 
   @UseGuards(JwtAuthGuard)

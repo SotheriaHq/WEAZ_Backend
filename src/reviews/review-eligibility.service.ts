@@ -164,9 +164,13 @@ export class ReviewEligibilityService {
         customOrderId: order.id,
         brandId: order.brandId,
         productId:
-          order.sourceType === CustomOrderSourceType.PRODUCT ? order.sourceId : null,
+          order.sourceType === CustomOrderSourceType.PRODUCT
+            ? order.sourceId
+            : null,
         designId:
-          order.sourceType === CustomOrderSourceType.DESIGN ? order.sourceId : null,
+          order.sourceType === CustomOrderSourceType.DESIGN
+            ? order.sourceId
+            : null,
         targetType: sourceTargetType,
       }),
       await this.upsertBrandCustomOrderPrompt(this.prisma, {
@@ -312,9 +316,13 @@ export class ReviewEligibilityService {
       brandId: order.brandId,
       customOrderId: order.id,
       productId:
-        order.sourceType === CustomOrderSourceType.PRODUCT ? order.sourceId : null,
+        order.sourceType === CustomOrderSourceType.PRODUCT
+          ? order.sourceId
+          : null,
       designId:
-        order.sourceType === CustomOrderSourceType.DESIGN ? order.sourceId : null,
+        order.sourceType === CustomOrderSourceType.DESIGN
+          ? order.sourceId
+          : null,
       targetType,
     };
 
@@ -463,7 +471,8 @@ export class ReviewEligibilityService {
       target.orderId = item.order.id;
       target.productId = target.productId ?? item.productId;
       target.brandId = target.brandId ?? item.brandId;
-      target.collectionId = target.collectionId ?? item.product?.collectionId ?? null;
+      target.collectionId =
+        target.collectionId ?? item.product?.collectionId ?? null;
       return;
     }
 
@@ -534,7 +543,10 @@ export class ReviewEligibilityService {
     throw new BadRequestException(REVIEW_ERRORS.NOT_ELIGIBLE);
   }
 
-  private async assertNotOwnBrandReview(userId: string, brandId?: string | null) {
+  private async assertNotOwnBrandReview(
+    userId: string,
+    brandId?: string | null,
+  ) {
     if (!brandId) {
       return;
     }
@@ -598,7 +610,9 @@ export class ReviewEligibilityService {
         brandId: target.brandId ?? undefined,
         OR: [
           ...(target.orderId ? [{ orderId: target.orderId }] : []),
-          ...(target.customOrderId ? [{ customOrderId: target.customOrderId }] : []),
+          ...(target.customOrderId
+            ? [{ customOrderId: target.customOrderId }]
+            : []),
         ],
       };
     }
@@ -612,7 +626,9 @@ export class ReviewEligibilityService {
   }
 
   private async promptsEnabled() {
-    return this.featureFlags.isEnabled(REVIEW_FEATURE_FLAGS.PROMPT_AFTER_COMPLETION);
+    return this.featureFlags.isEnabled(
+      REVIEW_FEATURE_FLAGS.PROMPT_AFTER_COMPLETION,
+    );
   }
 
   private isCompletedPaidStandardOrder(order: {

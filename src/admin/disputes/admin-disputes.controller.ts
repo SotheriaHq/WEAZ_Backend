@@ -76,7 +76,13 @@ export class AdminDisputesController {
     },
     @Req() req: Request & { user: { id: string; role: Role } },
   ) {
-    return this.service.update(id, dto, req.user.id, req.user.role as Role, req);
+    return this.service.update(
+      id,
+      dto,
+      req.user.id,
+      req.user.role as Role,
+      req,
+    );
   }
 
   @Post(':id/claim')

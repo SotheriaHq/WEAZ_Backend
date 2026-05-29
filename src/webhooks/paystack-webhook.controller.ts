@@ -54,7 +54,9 @@ export class PaystackWebhookController {
 
     await this.paymentService.enqueueWebhook('PAYSTACK', payload, context);
     if (!event) {
-      this.logger.warn('Received Paystack webhook without an event field; defaulted to payment pipeline');
+      this.logger.warn(
+        'Received Paystack webhook without an event field; defaulted to payment pipeline',
+      );
     }
 
     return { status: 'ok' };

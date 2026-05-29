@@ -4,7 +4,12 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { LedgerAccountType, LedgerEntryDirection, Prisma, Role } from '@prisma/client';
+import {
+  LedgerAccountType,
+  LedgerEntryDirection,
+  Prisma,
+  Role,
+} from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 
 const RECONCILIATION_SCOPE = {
@@ -123,11 +128,7 @@ export class ReconciliationService {
     });
   }
 
-  async claimItem(
-    itemId: string,
-    actorId: string,
-    actorRole: Role,
-  ) {
+  async claimItem(itemId: string, actorId: string, actorRole: Role) {
     const item = await (this.prisma as any).reconciliationItem.findUnique({
       where: { id: itemId },
     });
@@ -140,7 +141,9 @@ export class ReconciliationService {
       item.assignedAdminId !== actorId &&
       actorRole !== Role.SuperAdmin
     ) {
-      throw new ConflictException('Reconciliation item is already assigned to another admin');
+      throw new ConflictException(
+        'Reconciliation item is already assigned to another admin',
+      );
     }
 
     return (this.prisma as any).reconciliationItem.update({
@@ -213,7 +216,9 @@ export class ReconciliationService {
 
     const createdStatuses: ReconciliationItemStatus[] = [];
     for (const attempt of attempts) {
-      const expectedAmount = Number(attempt.settlementAmount ?? attempt.amount ?? 0);
+      const expectedAmount = Number(
+        attempt.settlementAmount ?? attempt.amount ?? 0,
+      );
       const ledgerTransactions =
         attempt.subjectType === 'CUSTOM_ORDER' && attempt.customOrderId
           ? await this.prisma.ledgerTransaction.findMany({
@@ -357,7 +362,9 @@ export class ReconciliationService {
       const recalculatedBalance = this.roundMoney(
         account.entries.reduce((sum, entry) => {
           const amount = Number(entry.amount);
-          return sum + this.getBalanceDelta(account.type, entry.direction, amount);
+          return (
+            sum + this.getBalanceDelta(account.type, entry.direction, amount)
+          );
         }, 0),
       );
       const actualAmount = this.roundMoney(Number(account.currentBalance));
@@ -395,8 +402,9 @@ export class ReconciliationService {
   private buildSummary(statuses: ReconciliationItemStatus[]) {
     return {
       totalItems: statuses.length,
-      matchedCount: statuses.filter((status) => status === RECONCILIATION_ITEM_STATUS.MATCHED)
-        .length,
+      matchedCount: statuses.filter(
+        (status) => status === RECONCILIATION_ITEM_STATUS.MATCHED,
+      ).length,
       unresolvedCount: statuses.filter(
         (status) =>
           status !== RECONCILIATION_ITEM_STATUS.MATCHED &&
@@ -427,7 +435,9 @@ export class ReconciliationService {
     }
 
     if (assignedAdminId !== actorId) {
-      throw new ForbiddenException('Reconciliation item is assigned to another admin');
+      throw new ForbiddenException(
+        'Reconciliation item is assigned to another admin',
+      );
     }
   }
 
@@ -437,7 +447,8 @@ export class ReconciliationService {
     amount: number,
   ) {
     const isDebitIncrease =
-      accountType === LedgerAccountType.ASSET || accountType === LedgerAccountType.EXPENSE;
+      accountType === LedgerAccountType.ASSET ||
+      accountType === LedgerAccountType.EXPENSE;
 
     if (direction === LedgerEntryDirection.DEBIT) {
       return isDebitIncrease ? amount : -amount;

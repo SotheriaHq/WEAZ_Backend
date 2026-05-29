@@ -1,4 +1,14 @@
-import { Body, Controller, Get, Headers, Param, Post, Query, Req, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Headers,
+  Param,
+  Post,
+  Query,
+  Req,
+  UseGuards,
+} from '@nestjs/common';
 import { JwtAuthGuard } from 'src/auth/guard/jwt-auth.guard';
 import { MessagingService } from '../messaging.service';
 import {
@@ -43,7 +53,11 @@ export class MessagingInboxController {
     @Body() dto: StartConversationDto,
     @Headers('idempotency-key') idempotencyKey?: string,
   ) {
-    return this.messaging.startConversationForActor(req.user.id, dto, idempotencyKey);
+    return this.messaging.startConversationForActor(
+      req.user.id,
+      dto,
+      idempotencyKey,
+    );
   }
 
   @Get('threads/:threadId/resolve')
@@ -60,7 +74,11 @@ export class MessagingInboxController {
     @Param('threadId') threadId: string,
     @Query() query: QueryMessagesDto,
   ) {
-    return this.messaging.listThreadMessagesForActor(req.user.id, threadId, query);
+    return this.messaging.listThreadMessagesForActor(
+      req.user.id,
+      threadId,
+      query,
+    );
   }
 
   @Get('threads/:threadId/orders')
@@ -69,7 +87,11 @@ export class MessagingInboxController {
     @Param('threadId') threadId: string,
     @Query() query: QueryThreadOrdersDto,
   ) {
-    return this.messaging.listThreadOrdersForActor(req.user.id, threadId, query);
+    return this.messaging.listThreadOrdersForActor(
+      req.user.id,
+      threadId,
+      query,
+    );
   }
 
   @Post('brands/:brandId/messages')
@@ -79,7 +101,12 @@ export class MessagingInboxController {
     @Body() dto: SendMessageDto,
     @Headers('idempotency-key') idempotencyKey?: string,
   ) {
-    return this.messaging.sendBrandEntryMessage(req.user.id, brandId, dto, idempotencyKey);
+    return this.messaging.sendBrandEntryMessage(
+      req.user.id,
+      brandId,
+      dto,
+      idempotencyKey,
+    );
   }
 
   @Post('threads/:threadId/messages')
@@ -89,7 +116,12 @@ export class MessagingInboxController {
     @Body() dto: SendMessageDto,
     @Headers('idempotency-key') idempotencyKey?: string,
   ) {
-    return this.messaging.sendMessageToThread(req.user.id, threadId, dto, idempotencyKey);
+    return this.messaging.sendMessageToThread(
+      req.user.id,
+      threadId,
+      dto,
+      idempotencyKey,
+    );
   }
 
   @Post('threads/:threadId/read')

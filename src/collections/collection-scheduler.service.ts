@@ -15,7 +15,7 @@ import {
  * - Draft expiry warnings (configurable days before expiry)
  * - Draft auto-deletion (configurable TTL)
  * - Orphaned S3 object cleanup
- * 
+ *
  * Configuration via environment variables:
  * - DRAFT_TTL_DAYS: Days before draft expires (default: 30)
  * - DRAFT_WARNING_DAYS_FIRST: Days before expiry for first warning (default: 7)
@@ -46,27 +46,43 @@ export class CollectionSchedulerService {
     }
 
     this.logger.log('Starting draft cleanup job...');
-    this.logger.log(`Config: TTL=${this.config.DRAFT_TTL_DAYS}d, FirstWarning=${this.config.FIRST_WARNING_DAYS_BEFORE_EXPIRY}d, FinalWarning=${this.config.FINAL_WARNING_DAYS_BEFORE_EXPIRY}d`);
+    this.logger.log(
+      `Config: TTL=${this.config.DRAFT_TTL_DAYS}d, FirstWarning=${this.config.FIRST_WARNING_DAYS_BEFORE_EXPIRY}d, FinalWarning=${this.config.FINAL_WARNING_DAYS_BEFORE_EXPIRY}d`,
+    );
 
     const now = new Date();
     const msPerDay = 24 * 60 * 60 * 1000;
-    
+
     // Calculate dates based on config
-    const expiryThreshold = new Date(now.getTime() - this.config.DRAFT_TTL_DAYS * msPerDay);
+    const expiryThreshold = new Date(
+      now.getTime() - this.config.DRAFT_TTL_DAYS * msPerDay,
+    );
     const firstWarningDate = new Date(
-      now.getTime() - (this.config.DRAFT_TTL_DAYS - this.config.FIRST_WARNING_DAYS_BEFORE_EXPIRY) * msPerDay
+      now.getTime() -
+        (this.config.DRAFT_TTL_DAYS -
+          this.config.FIRST_WARNING_DAYS_BEFORE_EXPIRY) *
+          msPerDay,
     );
     const finalWarningDate = new Date(
-      now.getTime() - (this.config.DRAFT_TTL_DAYS - this.config.FINAL_WARNING_DAYS_BEFORE_EXPIRY) * msPerDay
+      now.getTime() -
+        (this.config.DRAFT_TTL_DAYS -
+          this.config.FINAL_WARNING_DAYS_BEFORE_EXPIRY) *
+          msPerDay,
     );
 
     try {
       if (this.config.WARNINGS_ENABLED) {
         // 1. Send first warning for drafts approaching expiry
-        await this.sendExpiryWarnings(firstWarningDate, this.config.FIRST_WARNING_DAYS_BEFORE_EXPIRY);
+        await this.sendExpiryWarnings(
+          firstWarningDate,
+          this.config.FIRST_WARNING_DAYS_BEFORE_EXPIRY,
+        );
 
         // 2. Send final warning for drafts about to expire
-        await this.sendExpiryWarnings(finalWarningDate, this.config.FINAL_WARNING_DAYS_BEFORE_EXPIRY);
+        await this.sendExpiryWarnings(
+          finalWarningDate,
+          this.config.FINAL_WARNING_DAYS_BEFORE_EXPIRY,
+        );
       }
 
       // 3. Delete drafts older than TTL
@@ -87,8 +103,13 @@ export class CollectionSchedulerService {
   /**
    * Send expiry warning notifications for drafts approaching expiry
    */
-  private async sendExpiryWarnings(activityBefore: Date, daysRemaining: number) {
-    const activityAfter = new Date(activityBefore.getTime() - 24 * 60 * 60 * 1000);
+  private async sendExpiryWarnings(
+    activityBefore: Date,
+    daysRemaining: number,
+  ) {
+    const activityAfter = new Date(
+      activityBefore.getTime() - 24 * 60 * 60 * 1000,
+    );
 
     const drafts = await (this.prisma as any).collection.findMany({
       where: {
@@ -140,11 +161,16 @@ export class CollectionSchedulerService {
           `Sent ${daysRemaining}-day expiry warning for draft ${draft.id} to user ${draft.ownerId}`,
         );
       } catch (error) {
-        this.logger.error(`Failed to send expiry warning for draft ${draft.id}:`, error);
+        this.logger.error(
+          `Failed to send expiry warning for draft ${draft.id}:`,
+          error,
+        );
       }
     }
 
-    this.logger.log(`Sent ${drafts.length} expiry warnings (${daysRemaining} days remaining)`);
+    this.logger.log(
+      `Sent ${drafts.length} expiry warnings (${daysRemaining} days remaining)`,
+    );
   }
 
   /**
@@ -194,7 +220,10 @@ export class CollectionSchedulerService {
           try {
             await this.uploadService.deleteS3ObjectsByKeys(keys);
           } catch (error) {
-            this.logger.error(`Failed to delete S3 objects for draft ${draft.id}:`, error);
+            this.logger.error(
+              `Failed to delete S3 objects for draft ${draft.id}:`,
+              error,
+            );
           }
         }
 
@@ -203,9 +232,13 @@ export class CollectionSchedulerService {
           .filter((id): id is string => !!id);
 
         await this.prisma.$transaction(async (tx) => {
-          await tx.collectionMedia.deleteMany({ where: { collectionId: draft.id } as any });
+          await tx.collectionMedia.deleteMany({
+            where: { collectionId: draft.id } as any,
+          });
           if (fileIds.length) {
-            await tx.fileUpload.deleteMany({ where: { id: { in: fileIds } } as any });
+            await tx.fileUpload.deleteMany({
+              where: { id: { in: fileIds } } as any,
+            });
           }
           await tx.collection.delete({ where: { id: draft.id } });
         });
@@ -263,7 +296,10 @@ export class CollectionSchedulerService {
           try {
             await this.uploadService.deleteS3ObjectsByKeys(keys);
           } catch (error) {
-            this.logger.error(`Failed to delete S3 objects for collection ${entry.id}:`, error);
+            this.logger.error(
+              `Failed to delete S3 objects for collection ${entry.id}:`,
+              error,
+            );
           }
         }
 
@@ -272,16 +308,25 @@ export class CollectionSchedulerService {
           .filter((id): id is string => !!id);
 
         await this.prisma.$transaction(async (tx) => {
-          await tx.collectionMedia.deleteMany({ where: { collectionId: entry.id } as any });
+          await tx.collectionMedia.deleteMany({
+            where: { collectionId: entry.id } as any,
+          });
           if (fileIds.length) {
-            await tx.fileUpload.deleteMany({ where: { id: { in: fileIds } } as any });
+            await tx.fileUpload.deleteMany({
+              where: { id: { in: fileIds } } as any,
+            });
           }
           await tx.collection.delete({ where: { id: entry.id } });
         });
 
-        this.logger.log(`Hard-deleted collection ${entry.id} after recovery window`);
+        this.logger.log(
+          `Hard-deleted collection ${entry.id} after recovery window`,
+        );
       } catch (error) {
-        this.logger.error(`Failed to hard-delete collection ${entry.id}:`, error);
+        this.logger.error(
+          `Failed to hard-delete collection ${entry.id}:`,
+          error,
+        );
       }
     }
   }
@@ -290,8 +335,6 @@ export class CollectionSchedulerService {
    * Get draft statistics for a user (used by frontend)
    */
   async getDraftStats(userId: string) {
-    const now = new Date();
-
     const drafts = await (this.prisma as any).collection.findMany({
       where: { ownerId: userId, status: 'DRAFT', deletedAt: null },
       include: { _count: { select: { medias: true, products: true } } },
@@ -314,8 +357,10 @@ export class CollectionSchedulerService {
           updatedAt: d.updatedAt,
           expiryDate,
           daysRemaining,
-          isExpiringSoon: daysRemaining <= this.config.FIRST_WARNING_DAYS_BEFORE_EXPIRY,
-          isCritical: daysRemaining <= this.config.FINAL_WARNING_DAYS_BEFORE_EXPIRY,
+          isExpiringSoon:
+            daysRemaining <= this.config.FIRST_WARNING_DAYS_BEFORE_EXPIRY,
+          isCritical:
+            daysRemaining <= this.config.FINAL_WARNING_DAYS_BEFORE_EXPIRY,
           mediaCount: d._count.medias,
           productCount: d._count.products,
         };

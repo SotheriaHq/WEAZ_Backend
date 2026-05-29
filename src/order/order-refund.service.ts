@@ -4,11 +4,7 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import {
-  PaymentStatus,
-  PaymentSubjectType,
-  Prisma,
-} from '@prisma/client';
+import { PaymentStatus, PaymentSubjectType, Prisma } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { StandardOrderEscrowService } from 'src/finance/standard-order-escrow.service';
 
@@ -46,7 +42,9 @@ export class OrderRefundService {
     if (provider === 'PAYSTACK') {
       const secret = process.env.PAYSTACK_SECRET_KEY;
       if (!secret) {
-        throw new BadRequestException('PAYSTACK_SECRET_KEY is required for live refunds');
+        throw new BadRequestException(
+          'PAYSTACK_SECRET_KEY is required for live refunds',
+        );
       }
 
       const response = await fetch('https://api.paystack.co/refund', {
@@ -71,7 +69,9 @@ export class OrderRefundService {
     if (provider === 'FLUTTERWAVE') {
       const secret = process.env.FLUTTERWAVE_SECRET_KEY;
       if (!secret) {
-        throw new BadRequestException('FLUTTERWAVE_SECRET_KEY is required for live refunds');
+        throw new BadRequestException(
+          'FLUTTERWAVE_SECRET_KEY is required for live refunds',
+        );
       }
 
       const response = await fetch('https://api.flutterwave.com/v3/refunds', {
@@ -114,18 +114,24 @@ export class OrderRefundService {
       order.paymentStatus !== PaymentStatus.PAID &&
       order.paymentStatus !== PaymentStatus.REFUNDED
     ) {
-      throw new BadRequestException('Order refund can only be initiated for a paid/refundable order');
+      throw new BadRequestException(
+        'Order refund can only be initiated for a paid/refundable order',
+      );
     }
 
     const attempt = order.paymentReference
-      ? await tx.paymentAttempt.findUnique({ where: { reference: order.paymentReference } })
+      ? await tx.paymentAttempt.findUnique({
+          where: { reference: order.paymentReference },
+        })
       : await tx.paymentAttempt.findFirst({
           where: { orderIds: { has: params.orderId } },
           orderBy: { createdAt: 'desc' },
         });
 
     if (!attempt) {
-      throw new BadRequestException('Order refund cannot be initiated without a payment attempt');
+      throw new BadRequestException(
+        'Order refund cannot be initiated without a payment attempt',
+      );
     }
 
     if (attempt.status === 'REFUNDED') {
@@ -144,7 +150,9 @@ export class OrderRefundService {
     }
 
     if (attempt.status !== 'PAID') {
-      throw new BadRequestException('Order refund can only be initiated for a paid payment attempt');
+      throw new BadRequestException(
+        'Order refund can only be initiated for a paid payment attempt',
+      );
     }
 
     const claimed = await tx.paymentAttempt.updateMany({
@@ -193,36 +201,40 @@ export class OrderRefundService {
       const failureMessage = err?.message || 'Refund execution failed';
       const failedAt = new Date().toISOString();
 
-      await this.prisma.paymentEvent.create({
-        data: {
-          paymentAttemptId: attempt.id,
-          type: 'REFUND_FAILED',
-          source: 'standard-order-refund',
-          payload: {
-            subjectType: PaymentSubjectType.STANDARD_ORDER,
-            orderId: params.orderId,
-            reason: params.reason,
-            actorId: params.actorId ?? null,
-            error: failureMessage,
-            failedAt,
+      await this.prisma.paymentEvent
+        .create({
+          data: {
+            paymentAttemptId: attempt.id,
+            type: 'REFUND_FAILED',
+            source: 'standard-order-refund',
+            payload: {
+              subjectType: PaymentSubjectType.STANDARD_ORDER,
+              orderId: params.orderId,
+              reason: params.reason,
+              actorId: params.actorId ?? null,
+              error: failureMessage,
+              failedAt,
+            },
           },
-        },
-      }).catch(() => undefined);
+        })
+        .catch(() => undefined);
 
-      await this.prisma.paymentAttempt.update({
-        where: { reference: attempt.reference },
-        data: {
-          status: 'PAID',
-          failureMessage,
-          lastVerifiedAt: new Date(),
-          responseSnapshot: {
-            refundFailedAt: failedAt,
-            refundFailure: failureMessage,
-            refundReason: params.reason,
-            refundActorId: params.actorId ?? null,
+      await this.prisma.paymentAttempt
+        .update({
+          where: { reference: attempt.reference },
+          data: {
+            status: 'PAID',
+            failureMessage,
+            lastVerifiedAt: new Date(),
+            responseSnapshot: {
+              refundFailedAt: failedAt,
+              refundFailure: failureMessage,
+              refundReason: params.reason,
+              refundActorId: params.actorId ?? null,
+            },
           },
-        },
-      }).catch(() => undefined);
+        })
+        .catch(() => undefined);
 
       this.logger.error(
         `Refund gateway execution failed for order ${params.orderId} (${attempt.reference}): ${failureMessage}`,

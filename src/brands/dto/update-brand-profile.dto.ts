@@ -41,7 +41,8 @@ export class UpdateBrandProfileDto {
   @Transform(trimToUndefined)
   @IsString()
   @Matches(NAME_REGEX, {
-    message: 'Country can only contain letters, spaces, apostrophes, dots, or hyphens',
+    message:
+      'Country can only contain letters, spaces, apostrophes, dots, or hyphens',
   })
   brandCountry?: string;
 
@@ -50,7 +51,8 @@ export class UpdateBrandProfileDto {
   @Transform(trimToUndefined)
   @IsString()
   @Matches(NAME_REGEX, {
-    message: 'State can only contain letters, spaces, apostrophes, dots, or hyphens',
+    message:
+      'State can only contain letters, spaces, apostrophes, dots, or hyphens',
   })
   brandState?: string;
 
@@ -59,7 +61,8 @@ export class UpdateBrandProfileDto {
   @Transform(trimToUndefined)
   @IsString()
   @Matches(NAME_REGEX, {
-    message: 'City can only contain letters, spaces, apostrophes, dots, or hyphens',
+    message:
+      'City can only contain letters, spaces, apostrophes, dots, or hyphens',
   })
   brandCity?: string;
 

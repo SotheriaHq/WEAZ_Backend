@@ -34,9 +34,15 @@ export class OrderMessagingBrandController {
     @Req() req: Request & { user: { id: string } },
     @Param('brandId') brandId: string,
     @Param('orderId') orderId: string,
-    @Query(new ValidationPipe({ transform: true, whitelist: true })) query: QueryMessagesDto,
+    @Query(new ValidationPipe({ transform: true, whitelist: true }))
+    query: QueryMessagesDto,
   ) {
-    return this.messaging.listOrderMessagesForBrand(req.user.id, brandId, orderId, query);
+    return this.messaging.listOrderMessagesForBrand(
+      req.user.id,
+      brandId,
+      orderId,
+      query,
+    );
   }
 
   @Post()
@@ -47,7 +53,14 @@ export class OrderMessagingBrandController {
     @Param('orderId') orderId: string,
     @Headers('idempotency-key') idempotencyKey: string | undefined,
     @Headers('x-idempotency-key') legacyIdempotencyKey: string | undefined,
-    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true })) dto: SendMessageDto,
+    @Body(
+      new ValidationPipe({
+        transform: true,
+        whitelist: true,
+        forbidNonWhitelisted: true,
+      }),
+    )
+    dto: SendMessageDto,
   ) {
     return this.messaging.sendOrderMessageForBrand(
       req.user.id,
@@ -63,7 +76,14 @@ export class OrderMessagingBrandController {
     @Req() req: Request & { user: { id: string } },
     @Param('brandId') brandId: string,
     @Param('orderId') orderId: string,
-    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true })) dto: MarkThreadReadDto,
+    @Body(
+      new ValidationPipe({
+        transform: true,
+        whitelist: true,
+        forbidNonWhitelisted: true,
+      }),
+    )
+    dto: MarkThreadReadDto,
   ) {
     return this.messaging.markThreadReadForContext(
       req.user.id,
@@ -80,7 +100,14 @@ export class OrderMessagingBrandController {
     @Req() req: Request & { user: { id: string } },
     @Param('brandId') brandId: string,
     @Param('orderId') orderId: string,
-    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true })) dto: UpdateThreadPreferencesDto,
+    @Body(
+      new ValidationPipe({
+        transform: true,
+        whitelist: true,
+        forbidNonWhitelisted: true,
+      }),
+    )
+    dto: UpdateThreadPreferencesDto,
   ) {
     return this.messaging.updateThreadPreferencesForContext(
       req.user.id,
@@ -97,7 +124,8 @@ export class OrderMessagingBrandController {
     @Req() req: Request & { user: { id: string } },
     @Param('brandId') brandId: string,
     @Param('orderId') orderId: string,
-    @Query(new ValidationPipe({ transform: true, whitelist: true })) query: QueryThreadSummaryDto,
+    @Query(new ValidationPipe({ transform: true, whitelist: true }))
+    query: QueryThreadSummaryDto,
   ) {
     return this.messaging.getSummaryForContext(
       req.user.id,
@@ -114,9 +142,21 @@ export class OrderMessagingBrandController {
     @Req() req: Request & { user: { id: string } },
     @Param('brandId') brandId: string,
     @Param('orderId') orderId: string,
-    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true })) dto: RequestOrderExtensionDto,
+    @Body(
+      new ValidationPipe({
+        transform: true,
+        whitelist: true,
+        forbidNonWhitelisted: true,
+      }),
+    )
+    dto: RequestOrderExtensionDto,
   ) {
-    return this.messaging.requestOrderExtensionForBrand(req.user.id, brandId, orderId, dto);
+    return this.messaging.requestOrderExtensionForBrand(
+      req.user.id,
+      brandId,
+      orderId,
+      dto,
+    );
   }
 
   @Post('disputes')
@@ -124,8 +164,20 @@ export class OrderMessagingBrandController {
     @Req() req: Request & { user: { id: string } },
     @Param('brandId') brandId: string,
     @Param('orderId') orderId: string,
-    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true })) dto: OpenOrderDisputeDto,
+    @Body(
+      new ValidationPipe({
+        transform: true,
+        whitelist: true,
+        forbidNonWhitelisted: true,
+      }),
+    )
+    dto: OpenOrderDisputeDto,
   ) {
-    return this.messaging.openOrderDisputeForBrand(req.user.id, brandId, orderId, dto);
+    return this.messaging.openOrderDisputeForBrand(
+      req.user.id,
+      brandId,
+      orderId,
+      dto,
+    );
   }
 }

@@ -27,7 +27,9 @@ export class MessagingPolicyService {
     OrderStatus.SHIPPED,
   ]);
 
-  resolveThreadStatusForCustomOrder(status: CustomOrderStatus): MessageThreadStatus {
+  resolveThreadStatusForCustomOrder(
+    status: CustomOrderStatus,
+  ): MessageThreadStatus {
     return this.customOrderWritable.has(status)
       ? MessageThreadStatus.OPEN
       : MessageThreadStatus.READ_ONLY;
@@ -45,7 +47,10 @@ export class MessagingPolicyService {
     }
   }
 
-  buildContextFilter(contextType: MessageContextType, contextId: string): Prisma.MessageThreadWhereInput {
+  buildContextFilter(
+    contextType: MessageContextType,
+    contextId: string,
+  ): Prisma.MessageThreadWhereInput {
     return contextType === MessageContextType.CUSTOM_ORDER
       ? { contextType, customOrderId: contextId }
       : { contextType, orderId: contextId };

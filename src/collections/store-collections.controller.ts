@@ -91,8 +91,7 @@ export class StoreCollectionsController {
       limit: limit ? parseInt(limit, 10) : 20,
       visibility,
       scope: 'store',
-      includeDeleted:
-        includeDeleted === 'true' || includeDeleted === '1',
+      includeDeleted: includeDeleted === 'true' || includeDeleted === '1',
       onlyDeleted: onlyDeleted === 'true' || onlyDeleted === '1',
     });
   }
@@ -100,7 +99,11 @@ export class StoreCollectionsController {
   @UseGuards(OptionalJwtAuthGuard)
   @Get(':id')
   async getStoreCollection(@Param('id') collectionId: string, @Req() req: any) {
-    return this.collectionsService.getCollection(collectionId, req.user?.id, 'store');
+    return this.collectionsService.getCollection(
+      collectionId,
+      req.user?.id,
+      'store',
+    );
   }
 
   @UseGuards(JwtAuthGuard)
@@ -120,25 +123,49 @@ export class StoreCollectionsController {
 
   @UseGuards(JwtAuthGuard)
   @Patch(':id/archive')
-  async archiveStoreCollection(@Param('id') collectionId: string, @Req() req: any) {
-    return this.collectionsService.archiveCollection(collectionId, req.user.id, 'store');
+  async archiveStoreCollection(
+    @Param('id') collectionId: string,
+    @Req() req: any,
+  ) {
+    return this.collectionsService.archiveCollection(
+      collectionId,
+      req.user.id,
+      'store',
+    );
   }
 
   @UseGuards(JwtAuthGuard)
   @Patch(':id/unarchive')
-  async unarchiveStoreCollection(@Param('id') collectionId: string, @Req() req: any) {
-    return this.collectionsService.unarchiveCollection(collectionId, req.user.id, 'store');
+  async unarchiveStoreCollection(
+    @Param('id') collectionId: string,
+    @Req() req: any,
+  ) {
+    return this.collectionsService.unarchiveCollection(
+      collectionId,
+      req.user.id,
+      'store',
+    );
   }
 
   @UseGuards(JwtAuthGuard)
   @Delete(':id')
-  async deleteStoreCollection(@Param('id') collectionId: string, @Req() req: any) {
-    return this.collectionsService.deleteCollection(collectionId, req.user.id, 'store');
+  async deleteStoreCollection(
+    @Param('id') collectionId: string,
+    @Req() req: any,
+  ) {
+    return this.collectionsService.deleteCollection(
+      collectionId,
+      req.user.id,
+      'store',
+    );
   }
 
   @UseGuards(JwtAuthGuard)
   @Post(':id/restore')
-  async restoreStoreCollection(@Param('id') collectionId: string, @Req() req: any) {
+  async restoreStoreCollection(
+    @Param('id') collectionId: string,
+    @Req() req: any,
+  ) {
     return this.collectionsService.restoreCollection(collectionId, req.user.id);
   }
 
@@ -157,8 +184,15 @@ export class StoreCollectionsController {
 
   @UseGuards(JwtAuthGuard)
   @Post(':id/duplicate')
-  async duplicateStoreCollection(@Param('id') collectionId: string, @Req() req: any) {
-    return this.collectionsService.duplicateCollection(collectionId, req.user.id, 'store');
+  async duplicateStoreCollection(
+    @Param('id') collectionId: string,
+    @Req() req: any,
+  ) {
+    return this.collectionsService.duplicateCollection(
+      collectionId,
+      req.user.id,
+      'store',
+    );
   }
 
   @UseGuards(JwtAuthGuard)

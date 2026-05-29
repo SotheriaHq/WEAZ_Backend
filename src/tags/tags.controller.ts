@@ -115,15 +115,21 @@ export class TagsController {
     @Query('includeBanned') includeBanned?: string,
   ) {
     const lim = limit ? parseInt(limit, 10) : 50;
-    const normalizedSort = String(sort ?? '').trim().toLowerCase();
-    const isAdminSort = ['recent', 'popular', 'last-used', 'name-asc'].includes(normalizedSort);
+    const normalizedSort = String(sort ?? '')
+      .trim()
+      .toLowerCase();
+    const isAdminSort = ['recent', 'popular', 'last-used', 'name-asc'].includes(
+      normalizedSort,
+    );
 
     return this.tags.getAdminTagQueue({
       cursor,
       limit: lim,
       sort: isAdminSort ? (normalizedSort as any) : 'recent',
       state: state ? (String(state).trim().toLowerCase() as any) : undefined,
-      includeBanned: ['1', 'true', 'yes', 'on'].includes((includeBanned || '').toLowerCase()),
+      includeBanned: ['1', 'true', 'yes', 'on'].includes(
+        (includeBanned || '').toLowerCase(),
+      ),
     });
   }
 
@@ -143,8 +149,12 @@ export class TagsController {
     @Query('includeBanned') includeBanned?: string,
   ) {
     const lim = limit ? parseInt(limit, 10) : 50;
-    const normalizedSort = String(sort ?? '').trim().toLowerCase();
-    const isAdminSort = ['recent', 'popular', 'last-used', 'name-asc'].includes(normalizedSort);
+    const normalizedSort = String(sort ?? '')
+      .trim()
+      .toLowerCase();
+    const isAdminSort = ['recent', 'popular', 'last-used', 'name-asc'].includes(
+      normalizedSort,
+    );
 
     const items = await this.tags.searchAdminTags(
       q,
@@ -222,7 +232,11 @@ export class TagsController {
     @Req() req?: any,
   ) {
     const nextStatus = body?.status ?? 'APPROVED';
-    return this.tags.setTagStatus(normalizedName, nextStatus, req?.user?.id ?? req?.user?.sub);
+    return this.tags.setTagStatus(
+      normalizedName,
+      nextStatus,
+      req?.user?.id ?? req?.user?.sub,
+    );
   }
 
   @Post('admin/ban/:normalizedName')
@@ -239,14 +253,21 @@ export class TagsController {
     @Req() req?: any,
   ) {
     const shouldBan =
-      banned === undefined ? true : ['1', 'true', 'yes', 'on'].includes(banned.toLowerCase());
+      banned === undefined
+        ? true
+        : ['1', 'true', 'yes', 'on'].includes(banned.toLowerCase());
     const status = shouldBan ? 'REJECTED' : 'APPROVED';
     const updated = await this.tags.setTagStatus(
       normalizedName,
       status,
       req?.user?.id ?? req?.user?.sub,
     );
-    return { success: true, normalizedName, banned: shouldBan, status: updated.status };
+    return {
+      success: true,
+      normalizedName,
+      banned: shouldBan,
+      status: updated.status,
+    };
   }
 
   @Post('admin/merge')
@@ -261,7 +282,11 @@ export class TagsController {
     @Body() body: { sourceTag: string; targetTag: string },
     @Req() req?: any,
   ) {
-    await this.tags.mergeTags(body?.sourceTag, body?.targetTag, req?.user?.id ?? req?.user?.sub);
+    await this.tags.mergeTags(
+      body?.sourceTag,
+      body?.targetTag,
+      req?.user?.id ?? req?.user?.sub,
+    );
     return { success: true };
   }
 
@@ -290,8 +315,12 @@ export class TagsController {
     @Body() body: { displayName?: string },
     @Req() req?: any,
   ) {
-    return this.tags.updateTagMetadata(normalizedName, {
-      displayName: body?.displayName,
-    }, req?.user?.id ?? req?.user?.sub);
+    return this.tags.updateTagMetadata(
+      normalizedName,
+      {
+        displayName: body?.displayName,
+      },
+      req?.user?.id ?? req?.user?.sub,
+    );
   }
 }

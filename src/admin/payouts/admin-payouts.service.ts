@@ -207,7 +207,9 @@ export class AdminPayoutsService {
       throw new NotFoundException('Payout not found');
     }
 
-    const paymentAccount = await (this.prisma as any).storePaymentAccount.findUnique({
+    const paymentAccount = await (
+      this.prisma as any
+    ).storePaymentAccount.findUnique({
       where: { brandId: payout.brandId },
     });
 
@@ -336,7 +338,11 @@ export class AdminPayoutsService {
           targetType: 'Payout',
           targetId: payoutId,
           previousState: { assignedAdminId: payout.assignedAdminId },
-          newState: { assignedAdminId: null, releasedAt: now.toISOString(), reason: reason ?? null },
+          newState: {
+            assignedAdminId: null,
+            releasedAt: now.toISOString(),
+            reason: reason ?? null,
+          },
           ipAddress: req.socket?.remoteAddress ?? null,
           userAgent: req.headers['user-agent'] ?? null,
         },
@@ -394,17 +400,17 @@ export class AdminPayoutsService {
       data.statusReason = null;
     }
     if (params.status === PayoutStatus.FAILED) {
-      data.failureReason =
-        params.reason?.trim() || 'Payout processing failed';
+      data.failureReason = params.reason?.trim() || 'Payout processing failed';
     }
     if (params.status === PayoutStatus.RECONCILIATION_REVIEW) {
       data.providerTransferReversedAt =
         payout.providerTransferReversedAt ?? now;
     }
     if (params.status !== PayoutStatus.FAILED) {
-      data.failureReason = params.status === PayoutStatus.RECONCILIATION_REVIEW
-        ? payout.failureReason ?? null
-        : null;
+      data.failureReason =
+        params.status === PayoutStatus.RECONCILIATION_REVIEW
+          ? (payout.failureReason ?? null)
+          : null;
     }
 
     const updated = await this.prisma.$transaction(async (tx) => {
@@ -494,7 +500,11 @@ export class AdminPayoutsService {
         );
       }
 
-      if (String(current.currency || '').trim().toUpperCase() !== 'NGN') {
+      if (
+        String(current.currency || '')
+          .trim()
+          .toUpperCase() !== 'NGN'
+      ) {
         throw new BadRequestException(
           'Paystack payouts are only enabled for NGN in this phase',
         );
@@ -526,13 +536,16 @@ export class AdminPayoutsService {
       );
 
       const transferReference =
-        current.providerTransferReference ?? this.buildTransferReference(current.id);
+        current.providerTransferReference ??
+        this.buildTransferReference(current.id);
 
       const providerPayload = await this.callPaystack('/transfer', {
         method: 'POST',
         bodyJson: {
           source: 'balance',
-          amount: Math.round(this.roundMoney(Number(current.amount ?? 0)) * 100),
+          amount: Math.round(
+            this.roundMoney(Number(current.amount ?? 0)) * 100,
+          ),
           recipient: paymentAccount.transferRecipientCode,
           reference: transferReference,
           reason: `Threadly payout ${current.id.slice(0, 8).toUpperCase()}`,
@@ -573,7 +586,8 @@ export class AdminPayoutsService {
           newState: {
             status: updated.status,
             providerTransferCode: updated.providerTransferCode ?? null,
-            providerTransferReference: updated.providerTransferReference ?? null,
+            providerTransferReference:
+              updated.providerTransferReference ?? null,
             providerTransferStatus: updated.providerTransferStatus ?? null,
           },
           ipAddress: req.socket?.remoteAddress ?? null,
@@ -594,7 +608,9 @@ export class AdminPayoutsService {
   ) {
     const cleanOtp = String(otp || '').trim();
     if (!cleanOtp) {
-      throw new BadRequestException('OTP is required to finalize this transfer');
+      throw new BadRequestException(
+        'OTP is required to finalize this transfer',
+      );
     }
 
     return this.prisma.$transaction(async (tx) => {
@@ -668,11 +684,7 @@ export class AdminPayoutsService {
     });
   }
 
-  async getProviderStatus(
-    payoutId: string,
-    actorId: string,
-    actorRole: Role,
-  ) {
+  async getProviderStatus(payoutId: string, actorId: string, actorRole: Role) {
     const payout = await this.prisma.payout.findUnique({
       where: { id: payoutId },
       include: this.payoutInclude(),
@@ -682,7 +694,9 @@ export class AdminPayoutsService {
     this.assertOwnership(payout.assignedAdminId, actorId, actorRole);
 
     if (!payout.providerTransferCode) {
-      throw new BadRequestException('This payout does not have a Paystack transfer code yet');
+      throw new BadRequestException(
+        'This payout does not have a Paystack transfer code yet',
+      );
     }
 
     const providerPayload = await this.callPaystack(
@@ -763,7 +777,9 @@ export class AdminPayoutsService {
           providerEventType: job.providerEventType,
           correlationId: job.correlationId ?? null,
           queueError:
-            queueError instanceof Error ? queueError.message : String(queueError),
+            queueError instanceof Error
+              ? queueError.message
+              : String(queueError),
           fallbackError:
             fallbackError instanceof Error
               ? fallbackError.message
@@ -824,7 +840,9 @@ export class AdminPayoutsService {
         payloadSnapshot: payload,
         providerEventType: String(payload?.event || '').trim() || null,
       });
-      this.logger.warn('Rejected payout webhook due to origin verification failure');
+      this.logger.warn(
+        'Rejected payout webhook due to origin verification failure',
+      );
       return null;
     }
 
@@ -852,7 +870,9 @@ export class AdminPayoutsService {
         payloadSnapshot: payload,
         providerEventType: eventType,
       });
-      this.logger.warn(`Rejected payout webhook ${eventType}: missing transfer reference`);
+      this.logger.warn(
+        `Rejected payout webhook ${eventType}: missing transfer reference`,
+      );
       return null;
     }
 
@@ -860,8 +880,12 @@ export class AdminPayoutsService {
       where: {
         OR: [
           ...(transferCode ? [{ providerTransferCode: transferCode }] : []),
-          ...(transferReference ? [{ providerTransferReference: transferReference }] : []),
-          ...(transferReference ? [{ gatewayReference: transferReference }] : []),
+          ...(transferReference
+            ? [{ providerTransferReference: transferReference }]
+            : []),
+          ...(transferReference
+            ? [{ gatewayReference: transferReference }]
+            : []),
         ],
       },
       include: this.payoutInclude(),
@@ -897,7 +921,9 @@ export class AdminPayoutsService {
         reference: payout.id,
         providerEventType: eventType,
       });
-      this.logger.warn(`Payout webhook ${eventType}: unable to compute event key`);
+      this.logger.warn(
+        `Payout webhook ${eventType}: unable to compute event key`,
+      );
       return null;
     }
 
@@ -917,7 +943,10 @@ export class AdminPayoutsService {
       });
     } catch (error: any) {
       const message = String(error?.message || '');
-      if (message.includes('providerEventKey') || message.includes('Unique constraint')) {
+      if (
+        message.includes('providerEventKey') ||
+        message.includes('Unique constraint')
+      ) {
         const existing = await (this.prisma as any).payoutEvent.findFirst({
           where: { providerEventKey },
           select: { processedAt: true, correlationId: true },
@@ -996,13 +1025,21 @@ export class AdminPayoutsService {
     const nextData: Record<string, unknown> = {
       provider: 'PAYSTACK',
       providerRecipientCode:
-        this.extractRecipientCode(providerPayload) ?? payout.providerRecipientCode ?? null,
+        this.extractRecipientCode(providerPayload) ??
+        payout.providerRecipientCode ??
+        null,
       providerRecipientId:
-        this.extractRecipientId(providerPayload) ?? payout.providerRecipientId ?? null,
+        this.extractRecipientId(providerPayload) ??
+        payout.providerRecipientId ??
+        null,
       providerTransferCode:
-        this.extractTransferCode(providerPayload) ?? payout.providerTransferCode ?? null,
+        this.extractTransferCode(providerPayload) ??
+        payout.providerTransferCode ??
+        null,
       providerTransferId:
-        this.extractTransferId(providerPayload) ?? payout.providerTransferId ?? null,
+        this.extractTransferId(providerPayload) ??
+        payout.providerTransferId ??
+        null,
       providerTransferReference:
         this.extractTransferReference(providerPayload) ??
         payout.providerTransferReference ??
@@ -1018,7 +1055,9 @@ export class AdminPayoutsService {
       providerTransferFailureMessage: failureMessage ?? null,
       providerTransferPayload: providerPayload,
       gatewayReference:
-        this.extractTransferReference(providerPayload) ?? payout.gatewayReference ?? null,
+        this.extractTransferReference(providerPayload) ??
+        payout.gatewayReference ??
+        null,
     };
 
     if (!payout.providerTransferInitiatedAt) {
@@ -1041,7 +1080,8 @@ export class AdminPayoutsService {
 
     if (nextStatus === PayoutStatus.FAILED) {
       nextData.status = PayoutStatus.FAILED;
-      nextData.failureReason = failureMessage || 'Paystack reported that the payout failed';
+      nextData.failureReason =
+        failureMessage || 'Paystack reported that the payout failed';
       nextData.statusReason = nextData.failureReason;
     }
 
@@ -1049,7 +1089,8 @@ export class AdminPayoutsService {
       nextData.status = PayoutStatus.RECONCILIATION_REVIEW;
       nextData.providerTransferReversedAt = now;
       nextData.statusReason =
-        failureMessage || 'Paystack reported that the payout transfer was reversed';
+        failureMessage ||
+        'Paystack reported that the payout transfer was reversed';
     }
 
     const updated = await tx.payout.update({
@@ -1072,7 +1113,8 @@ export class AdminPayoutsService {
       source,
       correlationId: correlationId ?? null,
       providerEventType:
-        providerEventType ?? this.normalizeProviderStatus(providerPayload?.status),
+        providerEventType ??
+        this.normalizeProviderStatus(providerPayload?.status),
       providerEventReceivedAt: source === 'provider-webhook' ? now : null,
       processedAt: now,
       payload: providerPayload,
@@ -1088,23 +1130,27 @@ export class AdminPayoutsService {
     now: Date,
     nextStatus: PayoutStatus,
   ) {
-    if (nextStatus === PayoutStatus.PAID && previous.status !== PayoutStatus.PAID) {
-      const [linkedAllocationSummary, linkedLedgerSourceSummary] = await Promise.all([
-        tx.customOrderLedgerAllocation.aggregate({
-          where: {
-            payoutId: current.id,
-            status: CustomOrderLedgerAllocationStatus.PAYOUT_ELIGIBLE,
-            paidOutAt: null,
-          },
-          _sum: { netBrandAmount: true },
-          _count: { id: true },
-        }),
-        (tx as any).payoutLedgerSourceAllocation.aggregate({
-          where: { payoutId: current.id },
-          _sum: { amount: true },
-          _count: { id: true },
-        }),
-      ]);
+    if (
+      nextStatus === PayoutStatus.PAID &&
+      previous.status !== PayoutStatus.PAID
+    ) {
+      const [linkedAllocationSummary, linkedLedgerSourceSummary] =
+        await Promise.all([
+          tx.customOrderLedgerAllocation.aggregate({
+            where: {
+              payoutId: current.id,
+              status: CustomOrderLedgerAllocationStatus.PAYOUT_ELIGIBLE,
+              paidOutAt: null,
+            },
+            _sum: { netBrandAmount: true },
+            _count: { id: true },
+          }),
+          (tx as any).payoutLedgerSourceAllocation.aggregate({
+            where: { payoutId: current.id },
+            _sum: { amount: true },
+            _count: { id: true },
+          }),
+        ]);
 
       const expectedNetAmount = this.roundMoney(
         Number(linkedAllocationSummary._sum.netBrandAmount ?? 0) +
@@ -1151,7 +1197,10 @@ export class AdminPayoutsService {
       });
     }
 
-    if (nextStatus === PayoutStatus.REJECTED && previous.status !== PayoutStatus.REJECTED) {
+    if (
+      nextStatus === PayoutStatus.REJECTED &&
+      previous.status !== PayoutStatus.REJECTED
+    ) {
       await tx.customOrderLedgerAllocation.updateMany({
         where: {
           payoutId: current.id,
@@ -1233,22 +1282,23 @@ export class AdminPayoutsService {
     payoutId: string,
     payoutAmount: number,
   ) {
-    const [customOrderAllocations, standardOrderAllocations] = await Promise.all([
-      tx.customOrderLedgerAllocation.aggregate({
-        where: {
-          payoutId,
-          status: CustomOrderLedgerAllocationStatus.PAYOUT_ELIGIBLE,
-          paidOutAt: null,
-        },
-        _sum: { netBrandAmount: true },
-        _count: { id: true },
-      }),
-      (tx as any).payoutLedgerSourceAllocation.aggregate({
-        where: { payoutId },
-        _sum: { amount: true },
-        _count: { id: true },
-      }),
-    ]);
+    const [customOrderAllocations, standardOrderAllocations] =
+      await Promise.all([
+        tx.customOrderLedgerAllocation.aggregate({
+          where: {
+            payoutId,
+            status: CustomOrderLedgerAllocationStatus.PAYOUT_ELIGIBLE,
+            paidOutAt: null,
+          },
+          _sum: { netBrandAmount: true },
+          _count: { id: true },
+        }),
+        (tx as any).payoutLedgerSourceAllocation.aggregate({
+          where: { payoutId },
+          _sum: { amount: true },
+          _count: { id: true },
+        }),
+      ]);
 
     const linkedSourcesCount =
       Number(customOrderAllocations?._count?.id ?? 0) +
@@ -1338,7 +1388,10 @@ export class AdminPayoutsService {
   }
 
   private async recordWebhookIngressRejection(params: {
-    rejectionReason: 'INVALID_SIGNATURE' | 'UNKNOWN_REFERENCE' | 'MALFORMED_PAYLOAD';
+    rejectionReason:
+      | 'INVALID_SIGNATURE'
+      | 'UNKNOWN_REFERENCE'
+      | 'MALFORMED_PAYLOAD';
     correlationId: string;
     context: WebhookContext;
     payloadSnapshot: unknown;
@@ -1367,7 +1420,9 @@ export class AdminPayoutsService {
           reference: params.reference ?? null,
           providerEventType: params.providerEventType ?? null,
           remoteAddress: params.context.remoteAddress ?? null,
-          headersSnapshot: this.buildWebhookHeadersSnapshot(params.context.headers),
+          headersSnapshot: this.buildWebhookHeadersSnapshot(
+            params.context.headers,
+          ),
           payloadSnapshot: params.payloadSnapshot as Prisma.InputJsonValue,
           receivedAt: new Date(),
         },
@@ -1386,10 +1441,11 @@ export class AdminPayoutsService {
     }
   }
 
-  private emitReliabilityAlert(code: string, details: Record<string, unknown>): void {
-    this.logger.error(
-      `ALERT ${code} ${JSON.stringify(details)}`,
-    );
+  private emitReliabilityAlert(
+    code: string,
+    details: Record<string, unknown>,
+  ): void {
+    this.logger.error(`ALERT ${code} ${JSON.stringify(details)}`);
   }
 
   private buildWebhookHeadersSnapshot(
@@ -1445,7 +1501,9 @@ export class AdminPayoutsService {
       return true;
     }
 
-    const configuredIps = String(process.env.PAYSTACK_WEBHOOK_IP_ALLOWLIST ?? '')
+    const configuredIps = String(
+      process.env.PAYSTACK_WEBHOOK_IP_ALLOWLIST ?? '',
+    )
       .split(',')
       .map((value) => this.normalizeIp(value))
       .filter((value): value is string => Boolean(value));
@@ -1480,7 +1538,9 @@ export class AdminPayoutsService {
     const target = name.toLowerCase();
     for (const [headerName, value] of Object.entries(headers ?? {})) {
       if (headerName.toLowerCase() === target) {
-        return Array.isArray(value) ? String(value[0] ?? '').trim() : String(value ?? '').trim();
+        return Array.isArray(value)
+          ? String(value[0] ?? '').trim()
+          : String(value ?? '').trim();
       }
     }
     return null;
@@ -1510,7 +1570,10 @@ export class AdminPayoutsService {
       this.extractTransferCode(payload),
       this.extractTransferReference(payload),
       this.normalizeProviderStatus(payload?.status),
-      payload?.updatedAt ?? payload?.createdAt ?? payload?.transferred_at ?? null,
+      payload?.updatedAt ??
+        payload?.createdAt ??
+        payload?.transferred_at ??
+        null,
     ]
       .map((value) => String(value ?? '').trim())
       .filter(Boolean);
@@ -1522,7 +1585,9 @@ export class AdminPayoutsService {
     providerEventType: string | null | undefined,
     rawStatus: string | null | undefined,
   ): PayoutStatus {
-    const event = String(providerEventType || '').trim().toLowerCase();
+    const event = String(providerEventType || '')
+      .trim()
+      .toLowerCase();
     if (event === 'transfer.success') {
       return PayoutStatus.PAID;
     }
@@ -1533,7 +1598,11 @@ export class AdminPayoutsService {
       return PayoutStatus.RECONCILIATION_REVIEW;
     }
 
-    switch (String(rawStatus || '').trim().toLowerCase()) {
+    switch (
+      String(rawStatus || '')
+        .trim()
+        .toLowerCase()
+    ) {
       case 'success':
         return PayoutStatus.PAID;
       case 'failed':
@@ -1592,7 +1661,9 @@ export class AdminPayoutsService {
   private extractTransferFailureMessage(payload: Record<string, any>) {
     if (Array.isArray(payload?.failures) && payload.failures.length > 0) {
       return payload.failures
-        .map((entry: any) => String(entry?.message ?? entry?.reason ?? entry ?? '').trim())
+        .map((entry: any) =>
+          String(entry?.message ?? entry?.reason ?? entry ?? '').trim(),
+        )
         .filter(Boolean)
         .join('; ');
     }
@@ -1625,7 +1696,9 @@ export class AdminPayoutsService {
     }
 
     if (!assignedAdminId) {
-      throw new ForbiddenException('Payout must be claimed before it can be updated');
+      throw new ForbiddenException(
+        'Payout must be claimed before it can be updated',
+      );
     }
 
     if (assignedAdminId !== actorId) {

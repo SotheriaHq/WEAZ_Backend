@@ -41,7 +41,13 @@ export class CustomOrdersBuyerController {
   @Post('price-preview')
   async pricePreview(
     @Req() req: Request & { user: { id: string } },
-    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true }))
+    @Body(
+      new ValidationPipe({
+        transform: true,
+        whitelist: true,
+        forbidNonWhitelisted: true,
+      }),
+    )
     dto: CustomOrderPricePreviewDto,
   ) {
     return this.ordersService.createPricePreview(req.user.id, dto);
@@ -51,7 +57,13 @@ export class CustomOrdersBuyerController {
   @UseInterceptors(IdempotencyInterceptor)
   async createOrder(
     @Req() req: Request & { user: { id: string } },
-    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true }))
+    @Body(
+      new ValidationPipe({
+        transform: true,
+        whitelist: true,
+        forbidNonWhitelisted: true,
+      }),
+    )
     dto: CreateCustomOrderDto,
   ) {
     return this.ordersService.createOrder(req.user.id, dto);
@@ -68,7 +80,13 @@ export class CustomOrdersBuyerController {
   @Post('payment/verify')
   async verifyPaymentByReference(
     @Req() req: Request & { user: { id: string } },
-    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true }))
+    @Body(
+      new ValidationPipe({
+        transform: true,
+        whitelist: true,
+        forbidNonWhitelisted: true,
+      }),
+    )
     dto: VerifyCustomOrderPaymentDto,
   ) {
     return this.paymentsService.verifyPaymentByReference(req.user.id, dto);
@@ -78,7 +96,13 @@ export class CustomOrdersBuyerController {
   async verifyPayment(
     @Param('id') id: string,
     @Req() req: Request & { user: { id: string } },
-    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true }))
+    @Body(
+      new ValidationPipe({
+        transform: true,
+        whitelist: true,
+        forbidNonWhitelisted: true,
+      }),
+    )
     dto: VerifyCustomOrderPaymentDto,
   ) {
     return this.paymentsService.verifyPayment(req.user.id, id, dto);
@@ -87,7 +111,8 @@ export class CustomOrdersBuyerController {
   @Get()
   async listOrders(
     @Req() req: Request & { user: { id: string } },
-    @Query(new ValidationPipe({ transform: true, whitelist: true })) query: QueryCustomOrdersDto,
+    @Query(new ValidationPipe({ transform: true, whitelist: true }))
+    query: QueryCustomOrdersDto,
   ) {
     return this.ordersService.listBuyerOrders(req.user.id, query);
   }
@@ -102,7 +127,13 @@ export class CustomOrdersBuyerController {
   @Post('preferences/display-chart')
   async updateDisplayChartPreference(
     @Req() req: Request & { user: { id: string } },
-    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true }))
+    @Body(
+      new ValidationPipe({
+        transform: true,
+        whitelist: true,
+        forbidNonWhitelisted: true,
+      }),
+    )
     dto: UpdateDisplayChartPreferenceDto,
   ) {
     return this.ordersService.updateDisplayChartPreference(req.user.id, dto);
@@ -117,9 +148,7 @@ export class CustomOrdersBuyerController {
   }
 
   @Get('checkout-bag')
-  async listCheckoutBagLines(
-    @Req() req: Request & { user: { id: string } },
-  ) {
+  async listCheckoutBagLines(@Req() req: Request & { user: { id: string } }) {
     return this.ordersService.listCheckoutBagLines(req.user.id);
   }
 
@@ -167,7 +196,13 @@ export class CustomOrdersBuyerController {
   async confirmDelivery(
     @Param('id') id: string,
     @Req() req: Request & { user: { id: string } },
-    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true }))
+    @Body(
+      new ValidationPipe({
+        transform: true,
+        whitelist: true,
+        forbidNonWhitelisted: true,
+      }),
+    )
     dto: ConfirmCustomOrderDeliveryDto,
   ) {
     return this.ordersService.confirmDelivery(req.user.id, id, dto);
@@ -177,7 +212,13 @@ export class CustomOrdersBuyerController {
   async reportIssue(
     @Param('id') id: string,
     @Req() req: Request & { user: { id: string } },
-    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true }))
+    @Body(
+      new ValidationPipe({
+        transform: true,
+        whitelist: true,
+        forbidNonWhitelisted: true,
+      }),
+    )
     dto: ReportCustomOrderIssueDto,
   ) {
     return this.ordersService.reportIssue(req.user.id, id, dto);
@@ -187,10 +228,20 @@ export class CustomOrdersBuyerController {
   async updateMeasurements(
     @Param('id') id: string,
     @Req() req: Request & { user: { id: string } },
-    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true }))
+    @Body(
+      new ValidationPipe({
+        transform: true,
+        whitelist: true,
+        forbidNonWhitelisted: true,
+      }),
+    )
     dto: UpdateCustomOrderMeasurementsDto,
   ) {
-    return this.ordersService.updateBuyerMeasurementsBeforeAcceptance(req.user.id, id, dto);
+    return this.ordersService.updateBuyerMeasurementsBeforeAcceptance(
+      req.user.id,
+      id,
+      dto,
+    );
   }
 
   @Post(':id/extension-requests/:requestId/respond')
@@ -198,9 +249,20 @@ export class CustomOrdersBuyerController {
     @Param('id') id: string,
     @Param('requestId') requestId: string,
     @Req() req: Request & { user: { id: string } },
-    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true }))
+    @Body(
+      new ValidationPipe({
+        transform: true,
+        whitelist: true,
+        forbidNonWhitelisted: true,
+      }),
+    )
     dto: RespondToCustomOrderExtensionDto,
   ) {
-    return this.ordersService.respondToExtension(req.user.id, id, requestId, dto);
+    return this.ordersService.respondToExtension(
+      req.user.id,
+      id,
+      requestId,
+      dto,
+    );
   }
 }

@@ -9,7 +9,10 @@ import {
   ValidateNested,
 } from 'class-validator';
 
-import { CompleteDesignUploadDto, DesignMetadataDto } from './design-metadata.dto';
+import {
+  CompleteDesignUploadDto,
+  DesignMetadataDto,
+} from './design-metadata.dto';
 
 export class FinalizeDesignUploadDto {
   @IsOptional()

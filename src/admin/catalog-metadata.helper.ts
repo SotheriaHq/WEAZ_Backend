@@ -14,10 +14,11 @@ export type AdminCatalogFilterMetadata = {
   filters: AdminCatalogFilter[];
 };
 
-export const emptyAdminCatalogFilterMetadata = (): AdminCatalogFilterMetadata => ({
-  filterValueIds: [],
-  filters: [],
-});
+export const emptyAdminCatalogFilterMetadata =
+  (): AdminCatalogFilterMetadata => ({
+    filterValueIds: [],
+    filters: [],
+  });
 
 export async function loadAdminCatalogFilters(
   prisma: PrismaService,
@@ -28,7 +29,9 @@ export async function loadAdminCatalogFilters(
     new Set(entityIds.filter((id) => typeof id === 'string' && id.trim())),
   );
   const metadataByEntityId = new Map<string, AdminCatalogFilterMetadata>();
-  uniqueEntityIds.forEach((id) => metadataByEntityId.set(id, emptyAdminCatalogFilterMetadata()));
+  uniqueEntityIds.forEach((id) =>
+    metadataByEntityId.set(id, emptyAdminCatalogFilterMetadata()),
+  );
   if (uniqueEntityIds.length === 0) return metadataByEntityId;
 
   const rows = await prisma.entityFilter.findMany({
@@ -69,7 +72,8 @@ export async function loadAdminCatalogFilters(
     })
     .forEach((row) => {
       const current =
-        metadataByEntityId.get(row.entityId) ?? emptyAdminCatalogFilterMetadata();
+        metadataByEntityId.get(row.entityId) ??
+        emptyAdminCatalogFilterMetadata();
       current.filterValueIds.push(row.filterValueId);
       current.filters.push({
         dimensionId: row.filterValue.dimension.id,

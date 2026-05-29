@@ -1,4 +1,12 @@
-import { Body, Controller, Get, Param, Post, Req, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  Post,
+  Req,
+  UseGuards,
+} from '@nestjs/common';
 import { OptionalJwtAuthGuard } from 'src/auth/guard/optional-jwt-auth.guard';
 import { JwtAuthGuard } from 'src/auth/guard/jwt-auth.guard';
 import { BagCountPresenter } from './bag-count.presenter';
@@ -30,7 +38,11 @@ export class BaggingController {
     @Param('sourceId') sourceId: string,
     @Req() req: any,
   ) {
-    return this.eligibilityService.getSourceBagStatus(sourceType, sourceId, req.user?.id);
+    return this.eligibilityService.getSourceBagStatus(
+      sourceType,
+      sourceId,
+      req.user?.id,
+    );
   }
 
   @UseGuards(JwtAuthGuard)
@@ -40,7 +52,11 @@ export class BaggingController {
     @Req() req: any,
     @Body() body: BagCollectionAllDto,
   ) {
-    return this.collectionBaggingService.bagAll(collectionId, req.user.id, body ?? {});
+    return this.collectionBaggingService.bagAll(
+      collectionId,
+      req.user.id,
+      body ?? {},
+    );
   }
 
   @UseGuards(JwtAuthGuard)
@@ -50,6 +66,10 @@ export class BaggingController {
     @Req() req: any,
     @Body() body: BagCollectionSelectedDto,
   ) {
-    return this.collectionBaggingService.bagSelected(collectionId, req.user.id, body);
+    return this.collectionBaggingService.bagSelected(
+      collectionId,
+      req.user.id,
+      body,
+    );
   }
 }

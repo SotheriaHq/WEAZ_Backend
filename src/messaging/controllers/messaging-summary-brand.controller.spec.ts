@@ -13,10 +13,15 @@ describe('MessagingSummaryBrandController', () => {
   });
 
   it('forwards brand custom-order bulk summary requests to service', async () => {
-    messaging.getBulkSummariesForCustomOrdersBrand.mockResolvedValue({ items: [] });
+    messaging.getBulkSummariesForCustomOrdersBrand.mockResolvedValue({
+      items: [],
+    });
 
     const req = { user: { id: 'brand_user_1' } } as any;
-    const dto = { contextIds: ['co_1', 'co_2'], includeUnreadCount: 'true' } as any;
+    const dto = {
+      contextIds: ['co_1', 'co_2'],
+      includeUnreadCount: 'true',
+    } as any;
 
     const result = await controller.customOrderSummaries(req, 'brand_1', dto);
 

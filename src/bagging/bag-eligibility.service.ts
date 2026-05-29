@@ -29,7 +29,10 @@ export class BagEligibilityService {
     private readonly readinessPresenter: BagReadinessPresenter,
   ) {}
 
-  async getProductBagStatus(productId: string, userId?: string): Promise<BagReadinessContract> {
+  async getProductBagStatus(
+    productId: string,
+    userId?: string,
+  ): Promise<BagReadinessContract> {
     const startedAt = Date.now();
     try {
       const product = await this.prisma.product.findFirst({
@@ -199,17 +202,31 @@ export class BagEligibilityService {
       const visibleLinks = (collection.products || []).filter((link: any) => {
         const product = link?.product;
         if (!product) return false;
-        if (product.deletedAt || product.archivedAt || product.isActive === false) return false;
-        if (!isOwner && product.publishAt && product.publishAt > new Date()) return false;
+        if (
+          product.deletedAt ||
+          product.archivedAt ||
+          product.isActive === false
+        )
+          return false;
+        if (!isOwner && product.publishAt && product.publishAt > new Date())
+          return false;
         return true;
       });
 
       const products: CollectionBagProductStatus[] = [];
       for (const link of visibleLinks) {
         const product = link.product;
-        const sourceStatus = await this.resolveProductReadiness(product, product.id, userId);
+        const sourceStatus = await this.resolveProductReadiness(
+          product,
+          product.id,
+          userId,
+        );
         products.push(
-          this.presentCollectionProductStatus(product, sourceStatus, sizeFitProfile),
+          this.presentCollectionProductStatus(
+            product,
+            sourceStatus,
+            sizeFitProfile,
+          ),
         );
       }
 
@@ -217,9 +234,13 @@ export class BagEligibilityService {
         products.find((product) => product.currency)?.currency ??
         collection.owner?.brand?.currency ??
         'NGN';
-      const prices = products.map((product) => product.price).filter((price) => Number.isFinite(price));
+      const prices = products
+        .map((product) => product.price)
+        .filter((price) => Number.isFinite(price));
       const directEligible = products.filter((product) => product.canBag);
-      const alreadyInBagCount = products.filter((product) => product.inBag).length;
+      const alreadyInBagCount = products.filter(
+        (product) => product.inBag,
+      ).length;
       const blockedProducts = products.filter(
         (product) => !product.canBag && !product.inBag,
       );
@@ -235,23 +256,23 @@ export class BagEligibilityService {
       const outOfStockCount = products.filter(
         (product) => product.stockState === 'OUT_OF_STOCK',
       ).length;
-      const canBagSelected = Boolean(userId) && directEligible.length > 0 && !isOwner;
+      const canBagSelected =
+        Boolean(userId) && directEligible.length > 0 && !isOwner;
       const canBagAll =
         Boolean(userId) &&
         products.length > 0 &&
         !isOwner &&
         blockedProducts.length === 0 &&
         directEligible.length > 0;
-      const disabledReason =
-        isOwner
-          ? 'Brands cannot bag their own collection.'
-          : !userId
-            ? 'Sign in to bag this collection.'
-            : products.length === 0
-              ? 'This collection has no available products to bag.'
-              : directEligible.length === 0
-                ? 'Resolve product blockers before bagging this collection.'
-                : null;
+      const disabledReason = isOwner
+        ? 'Brands cannot bag their own collection.'
+        : !userId
+          ? 'Sign in to bag this collection.'
+          : products.length === 0
+            ? 'This collection has no available products to bag.'
+            : directEligible.length === 0
+              ? 'Resolve product blockers before bagging this collection.'
+              : null;
 
       return {
         sourceType: 'COLLECTION',
@@ -266,8 +287,12 @@ export class BagEligibilityService {
           coverImageId: this.resolveCollectionCoverId(products),
           productCount: products.length,
           priceRange: {
-            min: prices.length ? Math.min(...prices) : collection.minPrice ?? null,
-            max: prices.length ? Math.max(...prices) : collection.maxPrice ?? null,
+            min: prices.length
+              ? Math.min(...prices)
+              : (collection.minPrice ?? null),
+            max: prices.length
+              ? Math.max(...prices)
+              : (collection.maxPrice ?? null),
             currency,
           },
         },
@@ -281,7 +306,10 @@ export class BagEligibilityService {
           requiresFittingsCount,
           staleFittingsCount,
           outOfStockCount,
-          totalPrice: directEligible.reduce((sum, product) => sum + product.price, 0),
+          totalPrice: directEligible.reduce(
+            (sum, product) => sum + product.price,
+            0,
+          ),
           currency,
         },
         products,
@@ -299,7 +327,9 @@ export class BagEligibilityService {
         },
         featureFlags: {
           collectionReviewsEnabled:
-            String(process.env.REVIEWS_PUBLIC_COLLECTION_ENABLED || '').toLowerCase() === 'true',
+            String(
+              process.env.REVIEWS_PUBLIC_COLLECTION_ENABLED || '',
+            ).toLowerCase() === 'true',
         },
       };
     } finally {
@@ -327,89 +357,118 @@ export class BagEligibilityService {
       !product.trackInventory ||
       product.allowBackorders ||
       Number(product.totalStock || 0) > 0 ||
-      variants.some((variant: { stock?: number | null }) => Number(variant.stock || 0) > 0);
-    const variantSource = variants.filter((variant: { stock?: number | null }) => Number(variant.stock || 0) > 0);
+      variants.some(
+        (variant: { stock?: number | null }) => Number(variant.stock || 0) > 0,
+      );
+    const variantSource = variants.filter(
+      (variant: { stock?: number | null }) => Number(variant.stock || 0) > 0,
+    );
     const optionSource = variantSource.length > 0 ? variantSource : variants;
     const requiresSize =
-      optionSource.some((variant: { size?: string | null }) => Boolean(variant.size)) ||
-      product.sizes.length > 0;
+      optionSource.some((variant: { size?: string | null }) =>
+        Boolean(variant.size),
+      ) || product.sizes.length > 0;
     const requiresColor =
-      optionSource.some((variant: { color?: string | null }) => Boolean(variant.color)) ||
-      product.colors.length > 0;
+      optionSource.some((variant: { color?: string | null }) =>
+        Boolean(variant.color),
+      ) || product.colors.length > 0;
     const sizes = Array.from(
       new Set([
-        ...optionSource.map((variant: { size?: string | null }) => String(variant.size || '').trim()).filter(Boolean),
+        ...optionSource
+          .map((variant: { size?: string | null }) =>
+            String(variant.size || '').trim(),
+          )
+          .filter(Boolean),
         ...product.sizes,
       ]),
     );
     const colors = Array.from(
       new Set([
-        ...optionSource.map((variant: { color?: string | null }) => String(variant.color || '').trim()).filter(Boolean),
+        ...optionSource
+          .map((variant: { color?: string | null }) =>
+            String(variant.color || '').trim(),
+          )
+          .filter(Boolean),
         ...product.colors,
       ]),
     );
 
-    const customConfigurationPromise = this.prisma.customOrderConfiguration.findFirst({
-      where: {
+    const customConfigurationPromise =
+      this.prisma.customOrderConfiguration.findFirst({
+        where: {
+          sourceType: CustomOrderSourceType.PRODUCT,
+          sourceId: productId,
+          isActive: true,
+        },
+        select: {
+          id: true,
+          sourceType: true,
+          sourceId: true,
+          requiredMeasurementKeys: true,
+          requiredFreeformPointIds: true,
+        },
+      });
+
+    const [
+      cartItem,
+      customConfiguration,
+      sizeFitProfile,
+      previousStandardOrder,
+      previousCustomOrder,
+    ] = userId
+      ? await Promise.all([
+          this.prisma.cartItem.findFirst({
+            where: { userId, productId },
+            select: {
+              id: true,
+              selectedSize: true,
+              selectedColor: true,
+              quantity: true,
+            },
+            orderBy: { createdAt: 'desc' },
+          }),
+          customConfigurationPromise,
+          this.prisma.userSizeFitProfile.findUnique({
+            where: { userId },
+            select: {
+              measurements: true,
+              lastUpdatedAt: true,
+              updatedAt: true,
+              requireUpdateEveryDays: true,
+            },
+          }),
+          this.prisma.orderItem.findFirst({
+            where: { buyerId: userId, productId },
+            select: { id: true },
+          }),
+          this.prisma.customOrder.findFirst({
+            where: {
+              buyerId: userId,
+              sourceType: CustomOrderSourceType.PRODUCT,
+              sourceId: productId,
+            },
+            select: { id: true },
+          }),
+        ])
+      : await Promise.all([
+          Promise.resolve(null),
+          customConfigurationPromise,
+          Promise.resolve(null),
+          Promise.resolve(null),
+          Promise.resolve(null),
+        ]);
+
+    const { customBagLine, duplicateState } =
+      await this.resolveDuplicateContext({
+        userId,
         sourceType: CustomOrderSourceType.PRODUCT,
         sourceId: productId,
-        isActive: true,
-      },
-      select: {
-        id: true,
-        sourceType: true,
-        sourceId: true,
-        requiredMeasurementKeys: true,
-        requiredFreeformPointIds: true,
-      },
-    });
-
-    const [cartItem, customConfiguration, sizeFitProfile, previousStandardOrder, previousCustomOrder] =
-      userId
-        ? await Promise.all([
-            this.prisma.cartItem.findFirst({
-              where: { userId, productId },
-              select: { id: true, selectedSize: true, selectedColor: true, quantity: true },
-              orderBy: { createdAt: 'desc' },
-            }),
-            customConfigurationPromise,
-            this.prisma.userSizeFitProfile.findUnique({
-              where: { userId },
-              select: {
-                measurements: true,
-                lastUpdatedAt: true,
-                updatedAt: true,
-                requireUpdateEveryDays: true,
-              },
-            }),
-            this.prisma.orderItem.findFirst({
-              where: { buyerId: userId, productId },
-              select: { id: true },
-            }),
-            this.prisma.customOrder.findFirst({
-              where: {
-                buyerId: userId,
-                sourceType: CustomOrderSourceType.PRODUCT,
-                sourceId: productId,
-              },
-              select: { id: true },
-            }),
-          ])
-        : await Promise.all([
-            Promise.resolve(null),
-            customConfigurationPromise,
-            Promise.resolve(null),
-            Promise.resolve(null),
-            Promise.resolve(null),
-          ]);
-
-    const { customBagLine, duplicateState } = await this.resolveDuplicateContext({
-      userId,
-      sourceType: CustomOrderSourceType.PRODUCT,
-      sourceId: productId,
-      activeConfigurationId: customConfiguration?.id ?? null,
-    });
-    const fittingFreshness = this.resolveFittingFreshness(customConfiguration, sizeFitProfile);
+        activeConfigurationId: customConfiguration?.id ?? null,
+      });
+    const fittingFreshness = this.resolveFittingFreshness(
+      customConfiguration,
+      sizeFitProfile,
+    );
     const standardEnabled =
       product.standardCheckoutEnabled !== false &&
       publicProduct &&
@@ -444,7 +503,10 @@ export class BagEligibilityService {
       previousStandardOrder,
       previousCustomOrder,
       disabledReason:
-        !standardEnabled && !customEnabled && product.customOrderEnabled === true && !customConfiguration
+        !standardEnabled &&
+        !customEnabled &&
+        product.customOrderEnabled === true &&
+        !customConfiguration
           ? 'This product needs an active custom-order configuration before it can be bagged.'
           : null,
     });
@@ -478,60 +540,65 @@ export class BagEligibilityService {
       });
     }
 
-    const [customConfiguration, brand, sizeFitProfile, previousCustomOrder] = await Promise.all([
-      this.prisma.customOrderConfiguration.findFirst({
-        where: {
-          sourceType: CustomOrderSourceType.DESIGN,
-          sourceId,
-          isActive: true,
-        },
-        select: {
-          id: true,
-          sourceType: true,
-          sourceId: true,
-          requiredMeasurementKeys: true,
-          requiredFreeformPointIds: true,
-        },
-      }),
-      this.prisma.brand.findUnique({
-        where: { ownerId: design.ownerId },
-        select: { isStoreOpen: true },
-      }),
-      userId
-        ? this.prisma.userSizeFitProfile.findUnique({
-            where: { userId },
-            select: {
-              measurements: true,
-              lastUpdatedAt: true,
-              updatedAt: true,
-              requireUpdateEveryDays: true,
-            },
-          })
-        : Promise.resolve(null),
-      userId
-        ? this.prisma.customOrder.findFirst({
-            where: {
-              buyerId: userId,
-              sourceType: CustomOrderSourceType.DESIGN,
-              sourceId,
-            },
-            select: { id: true },
-          })
-        : Promise.resolve(null),
-    ]);
+    const [customConfiguration, brand, sizeFitProfile, previousCustomOrder] =
+      await Promise.all([
+        this.prisma.customOrderConfiguration.findFirst({
+          where: {
+            sourceType: CustomOrderSourceType.DESIGN,
+            sourceId,
+            isActive: true,
+          },
+          select: {
+            id: true,
+            sourceType: true,
+            sourceId: true,
+            requiredMeasurementKeys: true,
+            requiredFreeformPointIds: true,
+          },
+        }),
+        this.prisma.brand.findUnique({
+          where: { ownerId: design.ownerId },
+          select: { isStoreOpen: true },
+        }),
+        userId
+          ? this.prisma.userSizeFitProfile.findUnique({
+              where: { userId },
+              select: {
+                measurements: true,
+                lastUpdatedAt: true,
+                updatedAt: true,
+                requireUpdateEveryDays: true,
+              },
+            })
+          : Promise.resolve(null),
+        userId
+          ? this.prisma.customOrder.findFirst({
+              where: {
+                buyerId: userId,
+                sourceType: CustomOrderSourceType.DESIGN,
+                sourceId,
+              },
+              select: { id: true },
+            })
+          : Promise.resolve(null),
+      ]);
 
     const publicDesign =
       design.status === CollectionStatus.PUBLISHED &&
       design.visibility === CollectionVisibility.PUBLIC &&
       Boolean(brand?.isStoreOpen);
     const isOwner = Boolean(userId && userId === design.ownerId);
-    const { customBagLine, duplicateState } = await this.resolveDuplicateContext({
-      userId,
-      sourceType: CustomOrderSourceType.DESIGN,
-      sourceId,
-      activeConfigurationId: customConfiguration?.id ?? null,
-    });
-    const fittingFreshness = this.resolveFittingFreshness(customConfiguration, sizeFitProfile);
+    const { customBagLine, duplicateState } =
+      await this.resolveDuplicateContext({
+        userId,
+        sourceType: CustomOrderSourceType.DESIGN,
+        sourceId,
+        activeConfigurationId: customConfiguration?.id ?? null,
+      });
+    const fittingFreshness = this.resolveFittingFreshness(
+      customConfiguration,
+      sizeFitProfile,
+    );
     const customEnabled =
       design.customOrderEnabled === true &&
       Boolean(customConfiguration) &&
@@ -568,13 +635,17 @@ export class BagEligibilityService {
 
   private resolveFittingFreshness(
     customConfiguration:
-      | { requiredMeasurementKeys: string[]; requiredFreeformPointIds: string[] }
+      | {
+          requiredMeasurementKeys: string[];
+          requiredFreeformPointIds: string[];
+        }
       | null
       | undefined,
     sizeFitProfile: any,
   ): FittingFreshnessResult {
     return this.freshnessPolicy.evaluate({
-      requiredMeasurementKeys: customConfiguration?.requiredMeasurementKeys ?? [],
+      requiredMeasurementKeys:
+        customConfiguration?.requiredMeasurementKeys ?? [],
       profile: sizeFitProfile,
     });
   }
@@ -593,7 +664,9 @@ export class BagEligibilityService {
       try {
         return {
           customBagLine: null,
-          duplicateState: this.validationService.classifyDuplicateState({ completedPolicy: 'ALLOW_REPEAT' }),
+          duplicateState: this.validationService.classifyDuplicateState({
+            completedPolicy: 'ALLOW_REPEAT',
+          }),
         };
       } finally {
         this.debugTiming('duplicate_classification', startedAt, {
@@ -622,7 +695,9 @@ export class BagEligibilityService {
       if (activeConfigIds.length === 0) {
         return {
           customBagLine: null,
-          duplicateState: this.validationService.classifyDuplicateState({ completedPolicy: 'ALLOW_REPEAT' }),
+          duplicateState: this.validationService.classifyDuplicateState({
+            completedPolicy: 'ALLOW_REPEAT',
+          }),
         };
       }
 
@@ -659,11 +734,15 @@ export class BagEligibilityService {
       ]);
 
       const customBagLine =
-        checkoutSessions.find((session) => session.customOrderId === null) ?? null;
+        checkoutSessions.find((session) => session.customOrderId === null) ??
+        null;
 
       return {
         customBagLine: customBagLine
-          ? { id: customBagLine.id, checkoutIntentId: customBagLine.checkoutIntentId }
+          ? {
+              id: customBagLine.id,
+              checkoutIntentId: customBagLine.checkoutIntentId,
+            }
           : null,
         duplicateState: this.validationService.classifyDuplicateState({
           checkoutSessions,
@@ -687,7 +766,10 @@ export class BagEligibilityService {
   ): CollectionBagProductStatus {
     const price = this.effectiveProductPrice(product);
     const media = this.resolveProductMedia(product);
-    const standardFittings = this.resolveStandardFittings(product, sizeFitProfile);
+    const standardFittings = this.resolveStandardFittings(
+      product,
+      sizeFitProfile,
+    );
     let defaultAction = sourceStatus.ui.defaultAction;
     let canBag =
       sourceStatus.modes.standard &&
@@ -713,7 +795,10 @@ export class BagEligibilityService {
       requiredMeasurementKeys = standardFittings.requiredMeasurementKeys;
       missingMeasurementKeys = standardFittings.missingMeasurementKeys;
       freshnessState = standardFittings.freshnessState;
-      if (standardFittings.fittingState === 'MISSING' || standardFittings.fittingState === 'PARTIAL') {
+      if (
+        standardFittings.fittingState === 'MISSING' ||
+        standardFittings.fittingState === 'PARTIAL'
+      ) {
         defaultAction = 'OPEN_FITTINGS';
         canBag = false;
         reason = 'MISSING_FITTINGS';
@@ -762,7 +847,10 @@ export class BagEligibilityService {
     };
   }
 
-  private resolveStandardFittings(product: any, sizeFitProfile: any): {
+  private resolveStandardFittings(
+    product: any,
+    sizeFitProfile: any,
+  ): {
     requiredMeasurementKeys: string[];
     missingMeasurementKeys: string[];
     fittingState: string;
@@ -797,7 +885,9 @@ export class BagEligibilityService {
     return Number(salePrice ?? product.price ?? 0);
   }
 
-  private resolveProductMedia(product: any): Array<{ url: string | null; fileId: string | null }> {
+  private resolveProductMedia(
+    product: any,
+  ): Array<{ url: string | null; fileId: string | null }> {
     const media: Array<{ url: string | null; fileId: string | null }> = [];
     if (typeof product.thumbnail === 'string' && product.thumbnail.trim()) {
       media.push({ url: product.thumbnail.trim(), fileId: null });
@@ -815,12 +905,18 @@ export class BagEligibilityService {
     return media;
   }
 
-  private resolveCollectionCover(products: CollectionBagProductStatus[]): string | null {
+  private resolveCollectionCover(
+    products: CollectionBagProductStatus[],
+  ): string | null {
     return products.find((product) => product.coverImage)?.coverImage ?? null;
   }
 
-  private resolveCollectionCoverId(products: CollectionBagProductStatus[]): string | null {
-    return products.find((product) => product.coverImageId)?.coverImageId ?? null;
+  private resolveCollectionCoverId(
+    products: CollectionBagProductStatus[],
+  ): string | null {
+    return (
+      products.find((product) => product.coverImageId)?.coverImageId ?? null
+    );
   }
 
   private normalizeKeys(raw?: unknown): string[] {
@@ -859,7 +955,9 @@ export class BagEligibilityService {
       cartItem: null,
       customBagLine: null,
       customConfiguration: null,
-      fittingFreshness: this.freshnessPolicy.evaluate({ requiredMeasurementKeys: [] }),
+      fittingFreshness: this.freshnessPolicy.evaluate({
+        requiredMeasurementKeys: [],
+      }),
       duplicateState: this.validationService.classifyDuplicateState({
         completedPolicy: 'UNKNOWN',
       }),
@@ -868,15 +966,25 @@ export class BagEligibilityService {
   }
 
   private normalizeSourceType(raw: string): BagSourceType {
-    const normalized = String(raw ?? '').trim().toUpperCase();
-    if (normalized === 'PRODUCT' || normalized === 'DESIGN' || normalized === 'COLLECTION') {
+    const normalized = String(raw ?? '')
+      .trim()
+      .toUpperCase();
+    if (
+      normalized === 'PRODUCT' ||
+      normalized === 'DESIGN' ||
+      normalized === 'COLLECTION'
+    ) {
       return normalized;
     }
     return 'COLLECTION';
   }
 
-  private hasPublicStoreAccess(product: { collections?: Array<any> } | null | undefined): boolean {
-    const links = Array.isArray(product?.collections) ? product.collections : [];
+  private hasPublicStoreAccess(
+    product: { collections?: Array<any> } | null | undefined,
+  ): boolean {
+    const links = Array.isArray(product?.collections)
+      ? product.collections
+      : [];
     if (links.length === 0) return true;
 
     return links.some((link: any) => {
@@ -887,7 +995,11 @@ export class BagEligibilityService {
     });
   }
 
-  private debugTiming(label: string, startedAt: number, context: Record<string, unknown>): void {
+  private debugTiming(
+    label: string,
+    startedAt: number,
+    context: Record<string, unknown>,
+  ): void {
     if (!this.shouldLogTiming()) return;
     this.logger.debug({
       event: `bagging.${label}.duration`,
@@ -897,7 +1009,13 @@ export class BagEligibilityService {
   }
 
   private shouldLogTiming(): boolean {
-    const explicitFlag = String(process.env.BAGGING_OBSERVABILITY || '').toLowerCase();
-    return explicitFlag === 'true' || explicitFlag === '1' || process.env.NODE_ENV !== 'production';
+    const explicitFlag = String(
+      process.env.BAGGING_OBSERVABILITY || '',
+    ).toLowerCase();
+    return (
+      explicitFlag === 'true' ||
+      explicitFlag === '1' ||
+      process.env.NODE_ENV !== 'production'
+    );
   }
 }

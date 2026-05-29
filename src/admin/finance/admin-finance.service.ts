@@ -14,10 +14,8 @@ import {
   PayoutStatus,
   Prisma,
   Role,
-  SettlementFinalReleaseTrigger,
   SettlementOrderType,
   SettlementPolicyScope,
-  SettlementReleaseMode,
 } from '@prisma/client';
 import { Request } from 'express';
 import { v4 as uuidv4 } from 'uuid';
@@ -47,23 +45,9 @@ const COMMISSION_RULE_SCOPE = {
 type CommissionRuleScope =
   (typeof COMMISSION_RULE_SCOPE)[keyof typeof COMMISSION_RULE_SCOPE];
 
-const RECONCILIATION_SCOPE = {
-  PAYMENTS: 'PAYMENTS',
-  PAYOUTS: 'PAYOUTS',
-  LEDGER_INTEGRITY: 'LEDGER_INTEGRITY',
-} as const;
+type ReconciliationScope = 'PAYMENTS' | 'PAYOUTS' | 'LEDGER_INTEGRITY';
 
-type ReconciliationScope =
-  (typeof RECONCILIATION_SCOPE)[keyof typeof RECONCILIATION_SCOPE];
-
-const RECONCILIATION_RUN_STATUS = {
-  RUNNING: 'RUNNING',
-  COMPLETED: 'COMPLETED',
-  FAILED: 'FAILED',
-} as const;
-
-type ReconciliationRunStatus =
-  (typeof RECONCILIATION_RUN_STATUS)[keyof typeof RECONCILIATION_RUN_STATUS];
+type ReconciliationRunStatus = 'RUNNING' | 'COMPLETED' | 'FAILED';
 
 const RECONCILIATION_ITEM_STATUS = {
   MATCHED: 'MATCHED',
@@ -75,15 +59,11 @@ const RECONCILIATION_ITEM_STATUS = {
 type ReconciliationItemStatus =
   (typeof RECONCILIATION_ITEM_STATUS)[keyof typeof RECONCILIATION_ITEM_STATUS];
 
-const FINANCIAL_DOCUMENT_TYPE = {
-  BUYER_RECEIPT: 'BUYER_RECEIPT',
-  BRAND_SETTLEMENT_STATEMENT: 'BRAND_SETTLEMENT_STATEMENT',
-  PLATFORM_COMMISSION_INVOICE: 'PLATFORM_COMMISSION_INVOICE',
-  CREDIT_NOTE: 'CREDIT_NOTE',
-} as const;
-
 type FinancialDocumentType =
-  (typeof FINANCIAL_DOCUMENT_TYPE)[keyof typeof FINANCIAL_DOCUMENT_TYPE];
+  | 'BUYER_RECEIPT'
+  | 'BRAND_SETTLEMENT_STATEMENT'
+  | 'PLATFORM_COMMISSION_INVOICE'
+  | 'CREDIT_NOTE';
 
 type FinanceBuyerSummary = {
   id: string;
@@ -154,13 +134,25 @@ export class AdminFinanceService {
       this.prisma.payout.count({
         where: {
           status: {
-            in: ['PENDING_APPROVAL', 'APPROVED', 'PROCESSING', 'ON_HOLD', 'RECONCILIATION_REVIEW'] as any,
+            in: [
+              'PENDING_APPROVAL',
+              'APPROVED',
+              'PROCESSING',
+              'ON_HOLD',
+              'RECONCILIATION_REVIEW',
+            ] as any,
           },
         },
       }),
       this.prisma.escrowHold.count({
         where: {
-          status: { in: [EscrowHoldStatus.HELD, EscrowHoldStatus.PARTIALLY_RELEASED, EscrowHoldStatus.FROZEN] },
+          status: {
+            in: [
+              EscrowHoldStatus.HELD,
+              EscrowHoldStatus.PARTIALLY_RELEASED,
+              EscrowHoldStatus.FROZEN,
+            ],
+          },
         },
       }),
       this.getSettlementStateSummary(),
@@ -174,7 +166,9 @@ export class AdminFinanceService {
     );
 
     const gmv = this.roundMoney(
-      Number(paidAttempts._sum.settlementAmount ?? paidAttempts._sum.amount ?? 0),
+      Number(
+        paidAttempts._sum.settlementAmount ?? paidAttempts._sum.amount ?? 0,
+      ),
     );
 
     return {
@@ -182,7 +176,9 @@ export class AdminFinanceService {
       gmv,
       totalCommissions,
       totalPayouts: this.roundMoney(Number(paidPayouts._sum.amount ?? 0)),
-      totalRefunds: this.roundMoney(Number(refundTransactions._sum.totalAmount ?? 0)),
+      totalRefunds: this.roundMoney(
+        Number(refundTransactions._sum.totalAmount ?? 0),
+      ),
       activeCommissionRules: activeRules,
       unresolvedReconciliationItems: unresolvedItems,
       pendingPayouts,
@@ -218,11 +214,16 @@ export class AdminFinanceService {
       this.normalizeSettlementPolicyDto(dto),
     );
 
-    await this.recordAudit(req, actorId, AdminAuditAction.ADMIN_SYSTEM_SETTINGS_UPDATE, {
-      targetType: 'SettlementPolicy',
-      targetId: created.id,
-      newState: created,
-    });
+    await this.recordAudit(
+      req,
+      actorId,
+      AdminAuditAction.ADMIN_SYSTEM_SETTINGS_UPDATE,
+      {
+        targetType: 'SettlementPolicy',
+        targetId: created.id,
+        newState: created,
+      },
+    );
 
     return created;
   }
@@ -243,12 +244,17 @@ export class AdminFinanceService {
       }),
     );
 
-    await this.recordAudit(req, actorId, AdminAuditAction.ADMIN_SYSTEM_SETTINGS_UPDATE, {
-      targetType: 'SettlementPolicy',
-      targetId: updated.id,
-      previousState: existing,
-      newState: updated,
-    });
+    await this.recordAudit(
+      req,
+      actorId,
+      AdminAuditAction.ADMIN_SYSTEM_SETTINGS_UPDATE,
+      {
+        targetType: 'SettlementPolicy',
+        targetId: updated.id,
+        previousState: existing,
+        newState: updated,
+      },
+    );
 
     return updated;
   }
@@ -260,12 +266,17 @@ export class AdminFinanceService {
       actorId,
     );
 
-    await this.recordAudit(req, actorId, AdminAuditAction.ADMIN_SYSTEM_SETTINGS_UPDATE, {
-      targetType: 'SettlementPolicy',
-      targetId: updated.id,
-      previousState: existing,
-      newState: updated,
-    });
+    await this.recordAudit(
+      req,
+      actorId,
+      AdminAuditAction.ADMIN_SYSTEM_SETTINGS_UPDATE,
+      {
+        targetType: 'SettlementPolicy',
+        targetId: updated.id,
+        previousState: existing,
+        newState: updated,
+      },
+    );
 
     return updated;
   }
@@ -277,12 +288,17 @@ export class AdminFinanceService {
       actorId,
     );
 
-    await this.recordAudit(req, actorId, AdminAuditAction.ADMIN_SYSTEM_SETTINGS_UPDATE, {
-      targetType: 'SettlementPolicy',
-      targetId: updated.id,
-      previousState: existing,
-      newState: updated,
-    });
+    await this.recordAudit(
+      req,
+      actorId,
+      AdminAuditAction.ADMIN_SYSTEM_SETTINGS_UPDATE,
+      {
+        targetType: 'SettlementPolicy',
+        targetId: updated.id,
+        previousState: existing,
+        newState: updated,
+      },
+    );
 
     return updated;
   }
@@ -296,9 +312,13 @@ export class AdminFinanceService {
   }) {
     const orderType = dto.orderType;
     const brandId = String(dto.brandId ?? '').trim();
-    const currency = String(dto.currency ?? '').trim().toUpperCase();
+    const currency = String(dto.currency ?? '')
+      .trim()
+      .toUpperCase();
     const grossAmount = Number(dto.amount);
-    const effectiveAt = dto.effectiveAt ? new Date(dto.effectiveAt) : new Date();
+    const effectiveAt = dto.effectiveAt
+      ? new Date(dto.effectiveAt)
+      : new Date();
 
     if (!Object.values(SettlementOrderType).includes(orderType)) {
       throw new BadRequestException('orderType is invalid');
@@ -355,8 +375,12 @@ export class AdminFinanceService {
 
     const [defaultRate, standardRate, customRate] = await Promise.all([
       this.systemConfigService.getNumber('finance.commission.defaultPercent'),
-      this.systemConfigService.getNumber('finance.commission.standardOrderPercent'),
-      this.systemConfigService.getNumber('finance.commission.customOrderPercent'),
+      this.systemConfigService.getNumber(
+        'finance.commission.standardOrderPercent',
+      ),
+      this.systemConfigService.getNumber(
+        'finance.commission.customOrderPercent',
+      ),
     ]);
 
     const nowIso = new Date().toISOString();
@@ -418,16 +442,23 @@ export class AdminFinanceService {
           : null,
       isDefault: Boolean(dto.isDefault),
       isActive: dto.isActive !== false,
-      effectiveFrom: dto.effectiveFrom ? new Date(dto.effectiveFrom) : new Date(),
+      effectiveFrom: dto.effectiveFrom
+        ? new Date(dto.effectiveFrom)
+        : new Date(),
       effectiveTo: dto.effectiveTo ? new Date(dto.effectiveTo) : null,
       createdById: actorId,
       updatedById: actorId,
     });
 
-    await this.recordAudit(req, actorId, AdminAuditAction.ADMIN_FINANCE_COMMISSION_RULE_CREATE, {
-      targetId: created.id,
-      newState: created,
-    });
+    await this.recordAudit(
+      req,
+      actorId,
+      AdminAuditAction.ADMIN_FINANCE_COMMISSION_RULE_CREATE,
+      {
+        targetId: created.id,
+        newState: created,
+      },
+    );
 
     return created;
   }
@@ -457,7 +488,9 @@ export class AdminFinanceService {
 
     const updated = await this.commissionService.updateRule(ruleId, {
       ...(dto.name ? { name: dto.name.trim() } : {}),
-      ...(dto.currency !== undefined ? { currency: dto.currency?.trim() || null } : {}),
+      ...(dto.currency !== undefined
+        ? { currency: dto.currency?.trim() || null }
+        : {}),
       ...(dto.ratePercent !== undefined
         ? { ratePercent: new Prisma.Decimal(dto.ratePercent.toFixed(2)) }
         : {}),
@@ -488,11 +521,16 @@ export class AdminFinanceService {
       updatedById: actorId,
     });
 
-    await this.recordAudit(req, actorId, AdminAuditAction.ADMIN_FINANCE_COMMISSION_RULE_UPDATE, {
-      targetId: updated.id,
-      previousState: existing,
-      newState: updated,
-    });
+    await this.recordAudit(
+      req,
+      actorId,
+      AdminAuditAction.ADMIN_FINANCE_COMMISSION_RULE_UPDATE,
+      {
+        targetId: updated.id,
+        previousState: existing,
+        newState: updated,
+      },
+    );
 
     return updated;
   }
@@ -507,10 +545,15 @@ export class AdminFinanceService {
       actorId,
     });
 
-    await this.recordAudit(req, actorId, AdminAuditAction.ADMIN_FINANCE_RECONCILIATION_RUN, {
-      targetId: run.id,
-      newState: { scope: dto.scope, status: run.status },
-    });
+    await this.recordAudit(
+      req,
+      actorId,
+      AdminAuditAction.ADMIN_FINANCE_RECONCILIATION_RUN,
+      {
+        targetId: run.id,
+        newState: { scope: dto.scope, status: run.status },
+      },
+    );
 
     return run;
   }
@@ -537,11 +580,20 @@ export class AdminFinanceService {
     actorRole: Role,
     req: Request,
   ) {
-    const item = await this.reconciliationService.claimItem(itemId, actorId, actorRole);
-    await this.recordAudit(req, actorId, AdminAuditAction.ADMIN_FINANCE_RECONCILIATION_CLAIM, {
-      targetId: item.id,
-      newState: { assignedAdminId: actorId },
-    });
+    const item = await this.reconciliationService.claimItem(
+      itemId,
+      actorId,
+      actorRole,
+    );
+    await this.recordAudit(
+      req,
+      actorId,
+      AdminAuditAction.ADMIN_FINANCE_RECONCILIATION_CLAIM,
+      {
+        targetId: item.id,
+        newState: { assignedAdminId: actorId },
+      },
+    );
     return item;
   }
 
@@ -558,10 +610,15 @@ export class AdminFinanceService {
       actorRole,
       reason,
     );
-    await this.recordAudit(req, actorId, AdminAuditAction.ADMIN_FINANCE_RECONCILIATION_RELEASE, {
-      targetId: item.id,
-      newState: { assignedAdminId: null, reason: reason ?? null },
-    });
+    await this.recordAudit(
+      req,
+      actorId,
+      AdminAuditAction.ADMIN_FINANCE_RECONCILIATION_RELEASE,
+      {
+        targetId: item.id,
+        newState: { assignedAdminId: null, reason: reason ?? null },
+      },
+    );
     return item;
   }
 
@@ -578,10 +635,15 @@ export class AdminFinanceService {
       actorRole,
       note,
     );
-    await this.recordAudit(req, actorId, AdminAuditAction.ADMIN_FINANCE_RECONCILIATION_RESOLVE, {
-      targetId: item.id,
-      newState: { status: item.status, resolutionNote: item.resolutionNote },
-    });
+    await this.recordAudit(
+      req,
+      actorId,
+      AdminAuditAction.ADMIN_FINANCE_RECONCILIATION_RESOLVE,
+      {
+        targetId: item.id,
+        newState: { status: item.status, resolutionNote: item.resolutionNote },
+      },
+    );
     return item;
   }
 
@@ -615,7 +677,9 @@ export class AdminFinanceService {
       where: {
         ...(params?.status ? { status: params.status } : {}),
         ...(params?.gateway ? { provider: params.gateway } : {}),
-        ...(params?.subjectType ? { subjectType: params.subjectType as any } : {}),
+        ...(params?.subjectType
+          ? { subjectType: params.subjectType as any }
+          : {}),
         ...(params?.q
           ? {
               OR: [
@@ -650,7 +714,9 @@ export class AdminFinanceService {
     });
 
     const orderIds = Array.from(
-      new Set(attempts.flatMap((attempt) => attempt.orderIds ?? []).filter(Boolean)),
+      new Set(
+        attempts.flatMap((attempt) => attempt.orderIds ?? []).filter(Boolean),
+      ),
     );
     const customOrderIds = Array.from(
       new Set(
@@ -701,14 +767,16 @@ export class AdminFinanceService {
       ]),
     );
     const buyers = buyerIds.length
-        ? await this.prisma.user.findMany({
+      ? await this.prisma.user.findMany({
           where: { id: { in: buyerIds } },
           select: adminUserDisplaySelect,
         })
       : [];
 
     const ordersById = new Map(orders.map((order) => [order.id, order]));
-    const customOrdersById = new Map(customOrders.map((order) => [String(order.id), order]));
+    const customOrdersById = new Map(
+      customOrders.map((order) => [String(order.id), order]),
+    );
     const buyersById = new Map(
       buyers.map((buyer) => {
         const display = mapAdminUserDisplay(buyer);
@@ -720,7 +788,9 @@ export class AdminFinanceService {
       .map((attempt) => {
         const linkedOrders = (attempt.orderIds ?? [])
           .map((orderId) => ordersById.get(orderId))
-          .filter((order): order is NonNullable<typeof order> => Boolean(order));
+          .filter((order): order is NonNullable<typeof order> =>
+            Boolean(order),
+          );
         const linkedCustomOrder = attempt.customOrderId
           ? customOrdersById.get(attempt.customOrderId)
           : null;
@@ -752,7 +822,9 @@ export class AdminFinanceService {
           status: attempt.status,
           amount: Number(attempt.amount ?? 0),
           currency: attempt.currency,
-          settlementAmount: Number(attempt.settlementAmount ?? attempt.amount ?? 0),
+          settlementAmount: Number(
+            attempt.settlementAmount ?? attempt.amount ?? 0,
+          ),
           settlementCurrency: attempt.settlementCurrency,
           subjectType: attempt.subjectType,
           createdAt: attempt.createdAt,
@@ -760,14 +832,16 @@ export class AdminFinanceService {
           lastVerifiedAt: attempt.lastVerifiedAt,
           buyer: this.toBuyerSummary(buyer),
           brands: brands
-            .filter((brand): brand is { id: string; name: string | null } => Boolean(brand?.id))
+            .filter((brand): brand is { id: string; name: string | null } =>
+              Boolean(brand?.id),
+            )
             .map((brand) => ({
               id: brand.id,
               name: brand.name,
             })),
           orderCount: linkedOrders.length + (linkedCustomOrder ? 1 : 0),
           orders: linkedCustomOrder
-              ? [
+            ? [
                 {
                   id: linkedCustomOrder.id,
                   type: 'CUSTOM_ORDER',
@@ -851,7 +925,7 @@ export class AdminFinanceService {
       ),
     );
     const buyers = buyerIds.length
-        ? await this.prisma.user.findMany({
+      ? await this.prisma.user.findMany({
           where: { id: { in: buyerIds } },
           select: adminUserDisplaySelect,
         })
@@ -890,7 +964,7 @@ export class AdminFinanceService {
       bankAccount: attempt.bankAccount,
       failureCode: attempt.failureCode,
       failureMessage: attempt.failureMessage,
-      buyer: attempt.buyerId ? buyersById.get(attempt.buyerId) ?? null : null,
+      buyer: attempt.buyerId ? (buyersById.get(attempt.buyerId) ?? null) : null,
       orders,
       customOrder: customOrder
         ? {
@@ -1016,7 +1090,9 @@ export class AdminFinanceService {
     const transactions = await this.prisma.ledgerTransaction.findMany({
       where: {
         ...(params?.type ? { type: params.type as any } : {}),
-        ...(params?.referenceType ? { referenceType: params.referenceType } : {}),
+        ...(params?.referenceType
+          ? { referenceType: params.referenceType }
+          : {}),
         ...(params?.dateFrom || params?.dateTo
           ? {
               createdAt: {
@@ -1040,7 +1116,10 @@ export class AdminFinanceService {
     const orderIds = Array.from(
       new Set(
         transactions
-          .filter((transaction) => transaction.referenceType === 'Order' && transaction.referenceId)
+          .filter(
+            (transaction) =>
+              transaction.referenceType === 'Order' && transaction.referenceId,
+          )
           .map((transaction) => String(transaction.referenceId)),
       ),
     );
@@ -1049,7 +1128,8 @@ export class AdminFinanceService {
         transactions
           .filter(
             (transaction) =>
-              transaction.referenceType === 'CustomOrder' && transaction.referenceId,
+              transaction.referenceType === 'CustomOrder' &&
+              transaction.referenceId,
           )
           .map((transaction) => String(transaction.referenceId)),
       ),
@@ -1057,7 +1137,10 @@ export class AdminFinanceService {
     const payoutIds = Array.from(
       new Set(
         transactions
-          .filter((transaction) => transaction.referenceType === 'Payout' && transaction.referenceId)
+          .filter(
+            (transaction) =>
+              transaction.referenceType === 'Payout' && transaction.referenceId,
+          )
           .map((transaction) => String(transaction.referenceId)),
       ),
     );
@@ -1102,14 +1185,16 @@ export class AdminFinanceService {
       ),
     );
     const buyers = buyerIds.length
-        ? await this.prisma.user.findMany({
+      ? await this.prisma.user.findMany({
           where: { id: { in: buyerIds } },
           select: adminUserDisplaySelect,
         })
       : [];
 
     const orderById = new Map(orders.map((order) => [order.id, order]));
-    const customOrderById = new Map(customOrders.map((order) => [String(order.id), order]));
+    const customOrderById = new Map(
+      customOrders.map((order) => [String(order.id), order]),
+    );
     const payoutById = new Map(payouts.map((payout) => [payout.id, payout]));
     const buyersById = new Map(
       buyers.map((buyer) => {
@@ -1132,20 +1217,17 @@ export class AdminFinanceService {
           transaction.referenceType === 'Payout' && transaction.referenceId
             ? payoutById.get(String(transaction.referenceId))
             : null;
-        const buyer =
-          customOrder?.buyerId ? buyersById.get(customOrder.buyerId) ?? null : null;
+        const buyer = customOrder?.buyerId
+          ? (buyersById.get(customOrder.buyerId) ?? null)
+          : null;
 
         const buyerName = customOrder
           ? this.formatBuyerName(buyer)
-          : order?.customerName ?? null;
+          : (order?.customerName ?? null);
 
         return {
           ...transaction,
-          brand:
-            customOrder?.brand ??
-            order?.brand ??
-            payout?.brand ??
-            null,
+          brand: customOrder?.brand ?? order?.brand ?? payout?.brand ?? null,
           buyerName,
           referenceTitle:
             customOrder?.sourceTitleSnapshot ||
@@ -1252,7 +1334,10 @@ export class AdminFinanceService {
       ) {
         standardHeld += firstUnreleased + secondUnreleased;
         if (secondUnreleased > 0) {
-          if (hold.secondReleaseEligibleAt && hold.secondReleaseEligibleAt <= now) {
+          if (
+            hold.secondReleaseEligibleAt &&
+            hold.secondReleaseEligibleAt <= now
+          ) {
             standardFinalEligible += secondUnreleased;
           } else {
             standardFinalPending += secondUnreleased;
@@ -1279,7 +1364,8 @@ export class AdminFinanceService {
         }
       }
       if (
-        allocation.status === CustomOrderLedgerAllocationStatus.PAYOUT_ELIGIBLE ||
+        allocation.status ===
+          CustomOrderLedgerAllocationStatus.PAYOUT_ELIGIBLE ||
         allocation.status === CustomOrderLedgerAllocationStatus.PAID_OUT
       ) {
         if (
@@ -1289,7 +1375,8 @@ export class AdminFinanceService {
           customUpfrontReleased += amount;
         } else {
           customFinalEligible +=
-            allocation.status === CustomOrderLedgerAllocationStatus.PAYOUT_ELIGIBLE
+            allocation.status ===
+            CustomOrderLedgerAllocationStatus.PAYOUT_ELIGIBLE
               ? amount
               : 0;
         }
@@ -1340,10 +1427,18 @@ export class AdminFinanceService {
       this.prisma.escrowHold.findMany({
         where: {
           ...(params?.brandId ? { brandId: params.brandId } : {}),
-          ...(params?.status ? { status: params.status as EscrowHoldStatus } : {}),
+          ...(params?.status
+            ? { status: params.status as EscrowHoldStatus }
+            : {}),
           status: params?.status
             ? (params.status as EscrowHoldStatus)
-            : { in: [EscrowHoldStatus.HELD, EscrowHoldStatus.PARTIALLY_RELEASED, EscrowHoldStatus.FROZEN] },
+            : {
+                in: [
+                  EscrowHoldStatus.HELD,
+                  EscrowHoldStatus.PARTIALLY_RELEASED,
+                  EscrowHoldStatus.FROZEN,
+                ],
+              },
         },
         orderBy: { createdAt: 'desc' },
         take,
@@ -1371,9 +1466,12 @@ export class AdminFinanceService {
       }),
       this.prisma.customOrderLedgerAllocation.findMany({
         where: {
-          allocationType: CustomOrderLedgerAllocationType.FINAL_COMPLETION_PORTION,
+          allocationType:
+            CustomOrderLedgerAllocationType.FINAL_COMPLETION_PORTION,
           status: CustomOrderLedgerAllocationStatus.HELD,
-          ...(params?.brandId ? { customOrder: { brandId: params.brandId } } : {}),
+          ...(params?.brandId
+            ? { customOrder: { brandId: params.brandId } }
+            : {}),
         },
         orderBy: { createdAt: 'desc' },
         take,
@@ -1393,7 +1491,8 @@ export class AdminFinanceService {
               brand: { select: { id: true, name: true } },
               ledgerAllocations: {
                 where: {
-                  allocationType: CustomOrderLedgerAllocationType.BRAND_ACCEPTANCE_PORTION,
+                  allocationType:
+                    CustomOrderLedgerAllocationType.BRAND_ACCEPTANCE_PORTION,
                 },
                 orderBy: { createdAt: 'asc' },
                 take: 1,
@@ -1417,7 +1516,7 @@ export class AdminFinanceService {
       ),
     );
     const buyers = buyerIds.length
-        ? await this.prisma.user.findMany({
+      ? await this.prisma.user.findMany({
           where: { id: { in: buyerIds } },
           select: adminUserDisplaySelect,
         })
@@ -1443,8 +1542,12 @@ export class AdminFinanceService {
         grossAmount: Number(hold.totalAmount ?? 0),
         commissionAmount: Number(hold.commissionAmount ?? 0),
         netBrandAmount: Number(hold.netBrandAmount ?? 0),
-        releasedGrossAmount: hold.firstReleasedAt ? Number(hold.firstReleaseAmount ?? 0) : 0,
-        releasedNetAmount: hold.firstReleasedAt ? Number(hold.firstReleaseNetAmount ?? 0) : 0,
+        releasedGrossAmount: hold.firstReleasedAt
+          ? Number(hold.firstReleaseAmount ?? 0)
+          : 0,
+        releasedNetAmount: hold.firstReleasedAt
+          ? Number(hold.firstReleaseNetAmount ?? 0)
+          : 0,
         heldGrossAmount: Number(hold.secondReleaseAmount ?? 0),
         heldNetAmount: Number(hold.secondReleaseNetAmount ?? 0),
         status: hold.status,
@@ -1458,31 +1561,44 @@ export class AdminFinanceService {
         createdAt: hold.createdAt,
       })),
       ...customHeldAllocations.map((allocation) => {
-        const buyer =
-          allocation.customOrder?.buyerId
-            ? buyersById.get(allocation.customOrder.buyerId) ?? null
-            : null;
-        const acceptanceAllocation = allocation.customOrder?.ledgerAllocations?.[0] ?? null;
+        const buyer = allocation.customOrder?.buyerId
+          ? (buyersById.get(allocation.customOrder.buyerId) ?? null)
+          : null;
+        const acceptanceAllocation =
+          allocation.customOrder?.ledgerAllocations?.[0] ?? null;
         const acceptanceStatus = acceptanceAllocation?.status ?? null;
         const acceptanceGrossAmount = Number(acceptanceAllocation?.amount ?? 0);
         const acceptanceCommissionAmount = Number(
           acceptanceAllocation?.commissionAmount ?? 0,
         );
-        const acceptanceNetAmount = Number(acceptanceAllocation?.netBrandAmount ?? 0);
+        const acceptanceNetAmount = Number(
+          acceptanceAllocation?.netBrandAmount ?? 0,
+        );
         const acceptanceIsReleased =
-          acceptanceStatus === CustomOrderLedgerAllocationStatus.PAYOUT_ELIGIBLE ||
+          acceptanceStatus ===
+            CustomOrderLedgerAllocationStatus.PAYOUT_ELIGIBLE ||
           acceptanceStatus === CustomOrderLedgerAllocationStatus.PAID_OUT;
-        const acceptanceIsHeld = acceptanceStatus === CustomOrderLedgerAllocationStatus.HELD;
+        const acceptanceIsHeld =
+          acceptanceStatus === CustomOrderLedgerAllocationStatus.HELD;
         const finalGrossAmount = Number(allocation.amount ?? 0);
         const finalCommissionAmount = Number(allocation.commissionAmount ?? 0);
         const finalNetAmount = Number(allocation.netBrandAmount ?? 0);
-        const releasedGrossAmount = acceptanceIsReleased ? acceptanceGrossAmount : 0;
-        const releasedNetAmount = acceptanceIsReleased ? acceptanceNetAmount : 0;
-        const heldGrossAmount = finalGrossAmount + (acceptanceIsHeld ? acceptanceGrossAmount : 0);
-        const heldNetAmount = finalNetAmount + (acceptanceIsHeld ? acceptanceNetAmount : 0);
+        const releasedGrossAmount = acceptanceIsReleased
+          ? acceptanceGrossAmount
+          : 0;
+        const releasedNetAmount = acceptanceIsReleased
+          ? acceptanceNetAmount
+          : 0;
+        const heldGrossAmount =
+          finalGrossAmount + (acceptanceIsHeld ? acceptanceGrossAmount : 0);
+        const heldNetAmount =
+          finalNetAmount + (acceptanceIsHeld ? acceptanceNetAmount : 0);
         const grossAmount = acceptanceGrossAmount + finalGrossAmount;
-        const commissionAmount = acceptanceCommissionAmount + finalCommissionAmount;
-        const netBrandAmount = this.roundMoney(releasedNetAmount + heldNetAmount);
+        const commissionAmount =
+          acceptanceCommissionAmount + finalCommissionAmount;
+        const netBrandAmount = this.roundMoney(
+          releasedNetAmount + heldNetAmount,
+        );
 
         return {
           id: allocation.id,
@@ -1492,7 +1608,8 @@ export class AdminFinanceService {
             allocation.customOrder
               ? {
                   id: allocation.customOrder.id,
-                  sourceTitleSnapshot: allocation.customOrder.sourceTitleSnapshot,
+                  sourceTitleSnapshot:
+                    allocation.customOrder.sourceTitleSnapshot,
                 }
               : {
                   id: allocation.customOrderId,
@@ -1517,7 +1634,10 @@ export class AdminFinanceService {
           createdAt: allocation.createdAt,
         };
       }),
-    ].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    ].sort(
+      (a, b) =>
+        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+    );
 
     return {
       items,
@@ -1543,51 +1663,60 @@ export class AdminFinanceService {
       }
 
       const updated = await this.prisma.$transaction(async (tx) => {
-        const released = await this.standardOrderEscrowService.releaseFinalPortionNow(
-          tx,
-          hold.orderId!,
-          EscrowReleaseCondition.MANUAL_ADMIN,
-        );
+        const released =
+          await this.standardOrderEscrowService.releaseFinalPortionNow(
+            tx,
+            hold.orderId!,
+            EscrowReleaseCondition.MANUAL_ADMIN,
+          );
         if (!released) {
           throw new BadRequestException('Escrow hold could not be released');
         }
         return released;
       });
 
-      await this.recordAudit(req, actorId, AdminAuditAction.ADMIN_FINANCE_RECONCILIATION_RESOLVE, {
-        targetId: id,
-        newState: {
-          holdType: params.holdType,
-          releasedAt: now.toISOString(),
-          note: params.note ?? null,
+      await this.recordAudit(
+        req,
+        actorId,
+        AdminAuditAction.ADMIN_FINANCE_RECONCILIATION_RESOLVE,
+        {
+          targetId: id,
+          newState: {
+            holdType: params.holdType,
+            releasedAt: now.toISOString(),
+            note: params.note ?? null,
+          },
         },
-      });
+      );
 
       return updated;
     }
 
-    const allocation = await this.prisma.customOrderLedgerAllocation.findUnique({
-      where: { id },
-      select: {
-        id: true,
-        customOrderId: true,
-        allocationType: true,
-        amount: true,
-        commissionAmount: true,
-        netBrandAmount: true,
-        currency: true,
-        status: true,
-        customOrder: {
-          select: {
-            brandId: true,
+    const allocation = await this.prisma.customOrderLedgerAllocation.findUnique(
+      {
+        where: { id },
+        select: {
+          id: true,
+          customOrderId: true,
+          allocationType: true,
+          amount: true,
+          commissionAmount: true,
+          netBrandAmount: true,
+          currency: true,
+          status: true,
+          customOrder: {
+            select: {
+              brandId: true,
+            },
           },
         },
       },
-    });
+    );
 
     if (
       !allocation ||
-      allocation.allocationType !== CustomOrderLedgerAllocationType.FINAL_COMPLETION_PORTION ||
+      allocation.allocationType !==
+        CustomOrderLedgerAllocationType.FINAL_COMPLETION_PORTION ||
       allocation.status !== CustomOrderLedgerAllocationStatus.HELD
     ) {
       throw new NotFoundException('Custom-order held allocation not found');
@@ -1627,14 +1756,19 @@ export class AdminFinanceService {
       return released;
     });
 
-    await this.recordAudit(req, actorId, AdminAuditAction.ADMIN_FINANCE_RECONCILIATION_RESOLVE, {
-      targetId: id,
-      newState: {
-        holdType: params.holdType,
-        releasedAt: now.toISOString(),
-        note: params.note ?? null,
+    await this.recordAudit(
+      req,
+      actorId,
+      AdminAuditAction.ADMIN_FINANCE_RECONCILIATION_RESOLVE,
+      {
+        targetId: id,
+        newState: {
+          holdType: params.holdType,
+          releasedAt: now.toISOString(),
+          note: params.note ?? null,
+        },
       },
-    });
+    );
 
     return updated;
   }
@@ -1657,16 +1791,26 @@ export class AdminFinanceService {
     }
 
     const updated = await this.prisma.$transaction((tx) =>
-      this.standardOrderEscrowService.freezeHold(tx, hold.orderId!, actorId, reason),
+      this.standardOrderEscrowService.freezeHold(
+        tx,
+        hold.orderId!,
+        actorId,
+        reason,
+      ),
     );
 
-    await this.recordAudit(req, actorId, AdminAuditAction.ADMIN_FINANCE_RECONCILIATION_CLAIM, {
-      targetId: id,
-      newState: {
-        status: EscrowHoldStatus.FROZEN,
-        reason,
+    await this.recordAudit(
+      req,
+      actorId,
+      AdminAuditAction.ADMIN_FINANCE_RECONCILIATION_CLAIM,
+      {
+        targetId: id,
+        newState: {
+          status: EscrowHoldStatus.FROZEN,
+          reason,
+        },
       },
-    });
+    );
 
     return updated;
   }
@@ -1684,12 +1828,17 @@ export class AdminFinanceService {
       this.standardOrderEscrowService.unfreezeHold(tx, hold.orderId!),
     );
 
-    await this.recordAudit(req, actorId, AdminAuditAction.ADMIN_FINANCE_RECONCILIATION_RELEASE, {
-      targetId: id,
-      newState: {
-        status: updated?.status ?? null,
+    await this.recordAudit(
+      req,
+      actorId,
+      AdminAuditAction.ADMIN_FINANCE_RECONCILIATION_RELEASE,
+      {
+        targetId: id,
+        newState: {
+          status: updated?.status ?? null,
+        },
       },
-    });
+    );
 
     return updated;
   }
@@ -1750,7 +1899,9 @@ export class AdminFinanceService {
     isDefault: boolean;
     createdAt: string;
   }) {
-    const ratePercent = this.roundMoney(Number(params.ratePercent) || 0).toFixed(2);
+    const ratePercent = this.roundMoney(
+      Number(params.ratePercent) || 0,
+    ).toFixed(2);
     return {
       id: `system-config-${params.idSuffix}`,
       name: params.name,
@@ -1804,30 +1955,34 @@ export class AdminFinanceService {
     const orderIds = attempt.orderIds ?? [];
     const customOrderId = attempt.customOrderId;
 
-    const [standardSnapshots, standardHolds, customSnapshot, customAllocations] =
-      await Promise.all([
-        orderIds.length
-          ? this.prisma.settlementSnapshot.findMany({
-              where: { orderId: { in: orderIds } },
-            })
-          : Promise.resolve([]),
-        orderIds.length
-          ? this.prisma.escrowHold.findMany({
-              where: { orderId: { in: orderIds } },
-            })
-          : Promise.resolve([]),
-        customOrderId
-          ? this.prisma.settlementSnapshot.findFirst({
-              where: { customOrderId },
-            })
-          : Promise.resolve(null),
-        customOrderId
-          ? this.prisma.customOrderLedgerAllocation.findMany({
-              where: { customOrderId },
-              orderBy: { createdAt: 'asc' },
-            })
-          : Promise.resolve([]),
-      ]);
+    const [
+      standardSnapshots,
+      standardHolds,
+      customSnapshot,
+      customAllocations,
+    ] = await Promise.all([
+      orderIds.length
+        ? this.prisma.settlementSnapshot.findMany({
+            where: { orderId: { in: orderIds } },
+          })
+        : Promise.resolve([]),
+      orderIds.length
+        ? this.prisma.escrowHold.findMany({
+            where: { orderId: { in: orderIds } },
+          })
+        : Promise.resolve([]),
+      customOrderId
+        ? this.prisma.settlementSnapshot.findFirst({
+            where: { customOrderId },
+          })
+        : Promise.resolve(null),
+      customOrderId
+        ? this.prisma.customOrderLedgerAllocation.findMany({
+            where: { customOrderId },
+            orderBy: { createdAt: 'asc' },
+          })
+        : Promise.resolve([]),
+    ]);
 
     const snapshotsByOrderId = new Map(
       standardSnapshots
@@ -1848,16 +2003,24 @@ export class AdminFinanceService {
         : 0;
       const finalHeldAmount = hold?.secondReleasedAt
         ? 0
-        : Number(hold?.secondReleaseAmount ?? snapshot?.finalReleaseGrossAmount ?? 0);
+        : Number(
+            hold?.secondReleaseAmount ?? snapshot?.finalReleaseGrossAmount ?? 0,
+          );
 
       return {
         orderType: SettlementOrderType.STANDARD_ORDER,
         orderId: order.id,
         customOrderId: null,
         brand: order.brand,
-        grossAmount: Number(snapshot?.grossAmount ?? hold?.totalAmount ?? order.totalAmount ?? 0),
-        commissionAmount: Number(snapshot?.commissionAmount ?? hold?.commissionAmount ?? 0),
-        brandNetAmount: Number(snapshot?.brandNetAmount ?? hold?.netBrandAmount ?? 0),
+        grossAmount: Number(
+          snapshot?.grossAmount ?? hold?.totalAmount ?? order.totalAmount ?? 0,
+        ),
+        commissionAmount: Number(
+          snapshot?.commissionAmount ?? hold?.commissionAmount ?? 0,
+        ),
+        brandNetAmount: Number(
+          snapshot?.brandNetAmount ?? hold?.netBrandAmount ?? 0,
+        ),
         releaseMode: snapshot?.releaseMode ?? null,
         upfrontReleasePercent: Number(snapshot?.upfrontReleasePercent ?? 0),
         upfrontReleasedAmount,
@@ -1903,7 +2066,8 @@ export class AdminFinanceService {
         commissionAmount: Number(
           customSnapshot?.commissionAmount ??
             customAllocations.reduce(
-              (sum, allocation) => sum + Number(allocation.commissionAmount ?? 0),
+              (sum, allocation) =>
+                sum + Number(allocation.commissionAmount ?? 0),
               0,
             ),
         ),
@@ -1915,12 +2079,15 @@ export class AdminFinanceService {
             ),
         ),
         releaseMode: customSnapshot?.releaseMode ?? null,
-        upfrontReleasePercent: Number(customSnapshot?.upfrontReleasePercent ?? 0),
+        upfrontReleasePercent: Number(
+          customSnapshot?.upfrontReleasePercent ?? 0,
+        ),
         upfrontReleasedAmount:
           acceptanceAllocation &&
           (acceptanceAllocation.status ===
             CustomOrderLedgerAllocationStatus.PAYOUT_ELIGIBLE ||
-            acceptanceAllocation.status === CustomOrderLedgerAllocationStatus.PAID_OUT)
+            acceptanceAllocation.status ===
+              CustomOrderLedgerAllocationStatus.PAID_OUT)
             ? Number(acceptanceAllocation.amount ?? 0)
             : 0,
         finalHeldAmount:

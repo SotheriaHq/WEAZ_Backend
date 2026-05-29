@@ -10,7 +10,6 @@ import { AdminAuditService } from '../services/admin-audit.service';
 import { MarketRankingConfigService } from 'src/market/market-ranking-config.service';
 import {
   ALLOWED_FORMULA_WEIGHT_KEYS,
-  MARKET_GOVERNANCE_LIMITS,
   MarketGovernanceConfigService,
   MARKET_SECTION_CODE_DEFAULTS,
   SUPPORTED_FORMULA_STATUSES,
@@ -77,7 +76,12 @@ export class AdminMarketGovernanceService {
       where: { sectionKey: normalizedKey },
     });
     const defaultConfig = this.getSectionDefault(normalizedKey);
-    const nowData = this.buildSectionCreateData(normalizedKey, defaultConfig, dto, actorId);
+    const nowData = this.buildSectionCreateData(
+      normalizedKey,
+      defaultConfig,
+      dto,
+      actorId,
+    );
     const updateData = this.buildSectionUpdateData(dto, actorId);
 
     return this.prisma.$transaction(async (tx) => {
@@ -368,9 +372,13 @@ export class AdminMarketGovernanceService {
 
     if (
       query.action &&
-      !(MARKET_GOVERNANCE_AUDIT_ACTIONS as AdminAuditAction[]).includes(query.action)
+      !(MARKET_GOVERNANCE_AUDIT_ACTIONS as AdminAuditAction[]).includes(
+        query.action,
+      )
     ) {
-      throw new BadRequestException('Unsupported market governance audit action');
+      throw new BadRequestException(
+        'Unsupported market governance audit action',
+      );
     }
     if (query.targetType) where.targetType = query.targetType;
     if (query.targetId) where.targetId = query.targetId;
@@ -393,23 +401,27 @@ export class AdminMarketGovernanceService {
 
   async getReleaseStatus() {
     const rankingConfig = this.rankingConfigService.getConfig();
-    const [activeRankingProfile, activeFormulaVersion, lastRollback, sectionStatus] =
-      await Promise.all([
-        this.prisma.marketRankingProfile.findFirst({
-          where: { enabled: true },
-          orderBy: [{ updatedAt: 'desc' }],
-          include: { formulaVersion: true },
-        }),
-        this.prisma.marketRankingFormulaVersion.findFirst({
-          where: { status: 'ACTIVE' },
-          orderBy: [{ activatedAt: 'desc' }, { createdAt: 'desc' }],
-        }),
-        this.prisma.adminAuditLog.findFirst({
-          where: { action: AdminAuditAction.ADMIN_MARKET_RANKING_ROLLBACK },
-          orderBy: { createdAt: 'desc' },
-        }),
-        this.marketGovernanceConfig.getSectionConfigsWithFallback(),
-      ]);
+    const [
+      activeRankingProfile,
+      activeFormulaVersion,
+      lastRollback,
+      sectionStatus,
+    ] = await Promise.all([
+      this.prisma.marketRankingProfile.findFirst({
+        where: { enabled: true },
+        orderBy: [{ updatedAt: 'desc' }],
+        include: { formulaVersion: true },
+      }),
+      this.prisma.marketRankingFormulaVersion.findFirst({
+        where: { status: 'ACTIVE' },
+        orderBy: [{ activatedAt: 'desc' }, { createdAt: 'desc' }],
+      }),
+      this.prisma.adminAuditLog.findFirst({
+        where: { action: AdminAuditAction.ADMIN_MARKET_RANKING_ROLLBACK },
+        orderBy: { createdAt: 'desc' },
+      }),
+      this.marketGovernanceConfig.getSectionConfigsWithFallback(),
+    ]);
 
     return {
       rankingEnabled: rankingConfig.enabled,
@@ -506,7 +518,9 @@ export class AdminMarketGovernanceService {
       rehearsalOnly: true,
       mutatesConfig: false,
       deterministicFallbackAvailable: true,
-      canRollbackFormula: Boolean(active && previous && active.id !== previous.id),
+      canRollbackFormula: Boolean(
+        active && previous && active.id !== previous.id,
+      ),
       activeFormulaVersion: active,
       candidatePriorFormulaVersion:
         active && previous && active.id !== previous.id ? previous : null,
@@ -538,12 +552,15 @@ export class AdminMarketGovernanceService {
     dto: PatchMarketSectionConfigDto,
   ) {
     if (dto.enabled !== false) return;
-    const current = await this.marketGovernanceConfig.getSectionConfigsWithFallback();
+    const current =
+      await this.marketGovernanceConfig.getSectionConfigsWithFallback();
     const next = current.items.map((config) =>
       config.sectionKey === sectionKey ? { ...config, enabled: false } : config,
     );
     if (!next.some((config) => config.enabled)) {
-      throw new BadRequestException('At least one market section must remain enabled');
+      throw new BadRequestException(
+        'At least one market section must remain enabled',
+      );
     }
   }
 
@@ -551,10 +568,14 @@ export class AdminMarketGovernanceService {
     dto: CreateMarketRankingProfileDto | PatchMarketRankingProfileDto,
   ) {
     if (dto.fallbackDeterministic === false) {
-      throw new BadRequestException('Deterministic fallback cannot be disabled');
+      throw new BadRequestException(
+        'Deterministic fallback cannot be disabled',
+      );
     }
     if ((dto.rolloutPercent ?? 0) > 0) {
-      throw new BadRequestException('Ranking rollout percent must remain 0 before Phase 14');
+      throw new BadRequestException(
+        'Ranking rollout percent must remain 0 before Phase 14',
+      );
     }
     this.normalizeSectionKeys(dto.sectionKeys);
     if (dto.formulaVersionId) {
@@ -578,7 +599,9 @@ export class AdminMarketGovernanceService {
   }
 
   private assertSuggestionInput(
-    dto: Partial<CreateMarketSuggestionBlockConfigDto & PatchMarketSuggestionBlockConfigDto>,
+    dto: Partial<
+      CreateMarketSuggestionBlockConfigDto & PatchMarketSuggestionBlockConfigDto
+    >,
   ) {
     if (
       dto.context !== undefined &&
@@ -603,7 +626,9 @@ export class AdminMarketGovernanceService {
       dto.fallbackSourceType !== null &&
       !SUPPORTED_SUGGESTION_SOURCE_TYPES.includes(dto.fallbackSourceType as any)
     ) {
-      throw new BadRequestException('Unsupported suggestion fallback source type');
+      throw new BadRequestException(
+        'Unsupported suggestion fallback source type',
+      );
     }
   }
 
@@ -619,7 +644,9 @@ export class AdminMarketGovernanceService {
       }
       const numeric = Number(value);
       if (!Number.isFinite(numeric) || numeric < 0 || numeric > 1) {
-        throw new BadRequestException(`Formula weight ${key} must be between 0 and 1`);
+        throw new BadRequestException(
+          `Formula weight ${key} must be between 0 and 1`,
+        );
       }
       normalized[key] = numeric;
     }
@@ -669,17 +696,27 @@ export class AdminMarketGovernanceService {
     dto: PatchMarketSectionConfigDto,
     actorId: string,
   ): Prisma.MarketSectionConfigUpdateInput {
-    const data: Prisma.MarketSectionConfigUpdateInput = { updatedById: actorId };
-    if (dto.title !== undefined) data.title = this.cleanRequiredText(dto.title, 'title');
-    if (dto.subtitle !== undefined) data.subtitle = this.cleanOptionalText(dto.subtitle);
+    const data: Prisma.MarketSectionConfigUpdateInput = {
+      updatedById: actorId,
+    };
+    if (dto.title !== undefined)
+      data.title = this.cleanRequiredText(dto.title, 'title');
+    if (dto.subtitle !== undefined)
+      data.subtitle = this.cleanOptionalText(dto.subtitle);
     if (dto.enabled !== undefined) data.enabled = dto.enabled;
     if (dto.displayOrder !== undefined) data.displayOrder = dto.displayOrder;
-    if (dto.previewItemLimit !== undefined) data.previewItemLimit = dto.previewItemLimit;
-    if (dto.detailPageLimit !== undefined) data.detailPageLimit = dto.detailPageLimit;
+    if (dto.previewItemLimit !== undefined)
+      data.previewItemLimit = dto.previewItemLimit;
+    if (dto.detailPageLimit !== undefined)
+      data.detailPageLimit = dto.detailPageLimit;
     if (dto.minimumItems !== undefined) data.minimumItems = dto.minimumItems;
-    if (dto.viewAllEnabled !== undefined) data.viewAllEnabled = dto.viewAllEnabled;
+    if (dto.viewAllEnabled !== undefined)
+      data.viewAllEnabled = dto.viewAllEnabled;
     if (dto.fallbackMode !== undefined) {
-      data.fallbackMode = this.cleanRequiredText(dto.fallbackMode, 'fallbackMode');
+      data.fallbackMode = this.cleanRequiredText(
+        dto.fallbackMode,
+        'fallbackMode',
+      );
     }
     if (dto.metadata !== undefined) data.metadata = jsonOrNull(dto.metadata);
     return data;
@@ -689,15 +726,20 @@ export class AdminMarketGovernanceService {
     dto: PatchMarketRankingProfileDto,
     actorId: string,
   ): Prisma.MarketRankingProfileUpdateInput {
-    const data: Prisma.MarketRankingProfileUpdateInput = { updatedById: actorId };
-    if (dto.name !== undefined) data.name = this.cleanRequiredText(dto.name, 'name');
+    const data: Prisma.MarketRankingProfileUpdateInput = {
+      updatedById: actorId,
+    };
+    if (dto.name !== undefined)
+      data.name = this.cleanRequiredText(dto.name, 'name');
     if (dto.description !== undefined) {
       data.description = this.cleanOptionalText(dto.description);
     }
     if (dto.enabled !== undefined) data.enabled = dto.enabled;
     if (dto.shadowMode !== undefined) data.shadowMode = dto.shadowMode;
     if (dto.sectionKeys !== undefined) {
-      data.sectionKeys = this.normalizeSectionKeys(dto.sectionKeys) as Prisma.InputJsonValue;
+      data.sectionKeys = this.normalizeSectionKeys(
+        dto.sectionKeys,
+      ) as Prisma.InputJsonValue;
     }
     if ('formulaVersionId' in dto) {
       data.formulaVersion = dto.formulaVersionId
@@ -711,7 +753,8 @@ export class AdminMarketGovernanceService {
     if (dto.aggregateTimeoutMs !== undefined) {
       data.aggregateTimeoutMs = dto.aggregateTimeoutMs;
     }
-    if (dto.rolloutPercent !== undefined) data.rolloutPercent = dto.rolloutPercent;
+    if (dto.rolloutPercent !== undefined)
+      data.rolloutPercent = dto.rolloutPercent;
     if (dto.fallbackDeterministic !== undefined) {
       data.fallbackDeterministic = dto.fallbackDeterministic;
     }
@@ -728,8 +771,10 @@ export class AdminMarketGovernanceService {
     };
     if (dto.context !== undefined) data.context = dto.context;
     if (dto.targetType !== undefined) data.targetType = dto.targetType;
-    if (dto.title !== undefined) data.title = this.cleanRequiredText(dto.title, 'title');
-    if (dto.subtitle !== undefined) data.subtitle = this.cleanOptionalText(dto.subtitle);
+    if (dto.title !== undefined)
+      data.title = this.cleanRequiredText(dto.title, 'title');
+    if (dto.subtitle !== undefined)
+      data.subtitle = this.cleanOptionalText(dto.subtitle);
     if (dto.enabled !== undefined) data.enabled = dto.enabled;
     if (dto.displayOrder !== undefined) data.displayOrder = dto.displayOrder;
     if (dto.sourceType !== undefined) data.sourceType = dto.sourceType;
@@ -742,7 +787,9 @@ export class AdminMarketGovernanceService {
   }
 
   private normalizeSlug(value: string, field: string) {
-    const normalized = String(value ?? '').trim().toLowerCase();
+    const normalized = String(value ?? '')
+      .trim()
+      .toLowerCase();
     if (!/^[a-z0-9][a-z0-9-]{0,119}$/.test(normalized)) {
       throw new BadRequestException(`Invalid ${field}`);
     }

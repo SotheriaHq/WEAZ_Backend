@@ -5,7 +5,10 @@ import { v4 as uuidv4 } from 'uuid';
 import { Request } from 'express';
 import { EmailService } from 'src/email/email.service';
 
-const NOTIFICATION_TEMPLATES: Record<string, { subject: string; body: string }> = {
+const NOTIFICATION_TEMPLATES: Record<
+  string,
+  { subject: string; body: string }
+> = {
   'account.suspended': {
     subject: 'Your account has been suspended',
     body: 'Your Threadly account has been suspended by an administrator. If you believe this was in error, please contact support.',
@@ -69,7 +72,7 @@ export class AdminNotificationsService {
     const subject = template?.subject ?? dto.messageTemplate;
     const body = dto.customMessage
       ? `${template?.body ?? ''}\n\nAdmin note: ${dto.customMessage}`
-      : template?.body ?? '';
+      : (template?.body ?? '');
 
     const notification = await this.prisma.$transaction(async (tx) => {
       const notif = await (tx as any).adminNotificationLog.create({

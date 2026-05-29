@@ -54,7 +54,12 @@ export interface FilterDimensionSeed {
   values: FilterValueSeed[];
 }
 
-const CATALOG_FILTER_APPLIES_TO = ['COLLECTION', 'STORE_COLLECTION', 'DESIGN', 'PRODUCT'];
+const CATALOG_FILTER_APPLIES_TO = [
+  'COLLECTION',
+  'STORE_COLLECTION',
+  'DESIGN',
+  'PRODUCT',
+];
 
 // =====================
 // Garment Categories
@@ -64,79 +69,92 @@ export const DEFAULT_COLLECTION_CATEGORIES: CategorySeed[] = [
   {
     slug: 'dresses-gowns',
     name: 'Dresses & Gowns',
-    description: 'One-piece dresses and gown silhouettes across short, midi, maxi, fitted, and formal forms.',
+    description:
+      'One-piece dresses and gown silhouettes across short, midi, maxi, fitted, and formal forms.',
     order: 1,
   },
   {
     slug: 'tops-shirts',
     name: 'Tops & Shirts',
-    description: 'Upper-body garments including tees, blouses, shirts, buba tops, crop tops, and peplum tops.',
+    description:
+      'Upper-body garments including tees, blouses, shirts, buba tops, crop tops, and peplum tops.',
     order: 2,
   },
   {
     slug: 'trousers-shorts',
     name: 'Trousers & Shorts',
-    description: 'Lower-body garments with divided legs, including trousers, pants, chinos, joggers, culottes, and shorts.',
+    description:
+      'Lower-body garments with divided legs, including trousers, pants, chinos, joggers, culottes, and shorts.',
     order: 3,
   },
   {
     slug: 'skirts',
     name: 'Skirts',
-    description: 'Waist-worn garments with skirt silhouettes including pencil, A-line, maxi, wrap, and pleated styles.',
+    description:
+      'Waist-worn garments with skirt silhouettes including pencil, A-line, maxi, wrap, and pleated styles.',
     order: 4,
   },
   {
     slug: 'suits-blazers',
     name: 'Suits & Blazers',
-    description: 'Tailored jackets, suit sets, tuxedos, waistcoats, and structured formal separates.',
+    description:
+      'Tailored jackets, suit sets, tuxedos, waistcoats, and structured formal separates.',
     order: 5,
   },
   {
     slug: 'co-ord-sets',
     name: 'Co-ord Sets',
-    description: 'Matching outfit sets designed as coordinated tops with trousers, skirts, or relaxed separates.',
+    description:
+      'Matching outfit sets designed as coordinated tops with trousers, skirts, or relaxed separates.',
     order: 6,
   },
   {
     slug: 'outerwear',
     name: 'Outerwear',
-    description: 'Layering garments worn over an outfit, including jackets, kimonos, capes, coats, and shawls.',
+    description:
+      'Layering garments worn over an outfit, including jackets, kimonos, capes, coats, and shawls.',
     order: 7,
   },
   {
     slug: 'agbada',
     name: 'Agbada',
-    description: 'Flowing robe-based traditional outfits with inner garments and tailored embroidery variations.',
+    description:
+      'Flowing robe-based traditional outfits with inner garments and tailored embroidery variations.',
     order: 8,
   },
   {
     slug: 'senator-wear',
     name: 'Senator Wear',
-    description: 'Tailored senator-style tops and trouser sets with short, long-sleeve, and embroidered variations.',
+    description:
+      'Tailored senator-style tops and trouser sets with short, long-sleeve, and embroidered variations.',
     order: 9,
   },
   {
     slug: 'kaftans',
     name: 'Kaftans',
-    description: 'Loose robe or tunic garments in long, short, embroidered, and everyday kaftan forms.',
+    description:
+      'Loose robe or tunic garments in long, short, embroidered, and everyday kaftan forms.',
     order: 10,
   },
   {
     slug: 'buba-wrapper',
     name: 'Buba & Wrapper',
-    description: 'Traditional buba top and wrapper combinations, including iro and buba sets.',
+    description:
+      'Traditional buba top and wrapper combinations, including iro and buba sets.',
     order: 11,
   },
   {
     slug: 'native-sets',
     name: 'Native Sets',
-    description: 'Traditional matching outfit sets such as dashiki, aso oke, adire, isi agu, and related native ensembles.',
+    description:
+      'Traditional matching outfit sets such as dashiki, aso oke, adire, isi agu, and related native ensembles.',
     order: 12,
   },
   {
     slug: 'bridal-wear',
     name: 'Bridal Wear',
-    description: 'Garments made for bridal parties, including bridal gowns, reception dresses, robes, and groom traditional sets.',
+    description:
+      'Garments made for bridal parties, including bridal gowns, reception dresses, robes, and groom traditional sets.',
     order: 13,
   },
 ];
@@ -147,97 +165,437 @@ export const DEFAULT_COLLECTION_CATEGORIES: CategorySeed[] = [
 
 export const DEFAULT_SUB_CATEGORIES: Record<string, SubCategorySeed[]> = {
   'dresses-gowns': [
-    { slug: 'mini-dress', name: 'Mini dress', order: 1, description: 'Short dress silhouette that sits above the knee.' },
-    { slug: 'midi-dress', name: 'Midi dress', order: 2, description: 'Mid-length dress silhouette that falls around the calf.' },
-    { slug: 'maxi-dress', name: 'Maxi dress', order: 3, description: 'Full-length dress silhouette that reaches the ankle or floor.' },
-    { slug: 'bodycon-dress', name: 'Bodycon dress', order: 4, description: 'Close-fitting dress designed to follow the body shape.' },
-    { slug: 'mermaid-gown', name: 'Mermaid gown', order: 5, description: 'Fitted gown that flares around the lower leg.' },
-    { slug: 'ball-gown', name: 'Ball gown', order: 6, description: 'Formal gown with a structured bodice and full skirt.' },
-    { slug: 'shirt-dress', name: 'Shirt dress', order: 7, description: 'Dress cut with shirt-like collar, placket, or button-down details.' },
-    { slug: 'evening-gown', name: 'Evening gown', order: 8, description: 'Formal full-length gown designed for dressy events.' },
+    {
+      slug: 'mini-dress',
+      name: 'Mini dress',
+      order: 1,
+      description: 'Short dress silhouette that sits above the knee.',
+    },
+    {
+      slug: 'midi-dress',
+      name: 'Midi dress',
+      order: 2,
+      description: 'Mid-length dress silhouette that falls around the calf.',
+    },
+    {
+      slug: 'maxi-dress',
+      name: 'Maxi dress',
+      order: 3,
+      description:
+        'Full-length dress silhouette that reaches the ankle or floor.',
+    },
+    {
+      slug: 'bodycon-dress',
+      name: 'Bodycon dress',
+      order: 4,
+      description: 'Close-fitting dress designed to follow the body shape.',
+    },
+    {
+      slug: 'mermaid-gown',
+      name: 'Mermaid gown',
+      order: 5,
+      description: 'Fitted gown that flares around the lower leg.',
+    },
+    {
+      slug: 'ball-gown',
+      name: 'Ball gown',
+      order: 6,
+      description: 'Formal gown with a structured bodice and full skirt.',
+    },
+    {
+      slug: 'shirt-dress',
+      name: 'Shirt dress',
+      order: 7,
+      description:
+        'Dress cut with shirt-like collar, placket, or button-down details.',
+    },
+    {
+      slug: 'evening-gown',
+      name: 'Evening gown',
+      order: 8,
+      description: 'Formal full-length gown designed for dressy events.',
+    },
   ],
   'tops-shirts': [
-    { slug: 't-shirt', name: 'T-shirt', order: 1, description: 'Casual knit top with short or long sleeves.' },
-    { slug: 'blouse', name: 'Blouse', order: 2, description: 'Soft tailored top often worn as a dressy separate.' },
-    { slug: 'crop-top', name: 'Crop top', order: 3, description: 'Short top designed to sit above the waistline.' },
-    { slug: 'peplum-top', name: 'Peplum top', order: 4, description: 'Top with a flared waist extension.' },
-    { slug: 'button-down-shirt', name: 'Button-down shirt', order: 5, description: 'Shirt with a front button placket and collar.' },
-    { slug: 'dashiki-top', name: 'Dashiki top', order: 6, description: 'Loose dashiki-inspired upper garment.' },
-    { slug: 'buba-top', name: 'Buba top', order: 7, description: 'Traditional buba upper garment worn alone or with wrappers and sets.' },
+    {
+      slug: 't-shirt',
+      name: 'T-shirt',
+      order: 1,
+      description: 'Casual knit top with short or long sleeves.',
+    },
+    {
+      slug: 'blouse',
+      name: 'Blouse',
+      order: 2,
+      description: 'Soft tailored top often worn as a dressy separate.',
+    },
+    {
+      slug: 'crop-top',
+      name: 'Crop top',
+      order: 3,
+      description: 'Short top designed to sit above the waistline.',
+    },
+    {
+      slug: 'peplum-top',
+      name: 'Peplum top',
+      order: 4,
+      description: 'Top with a flared waist extension.',
+    },
+    {
+      slug: 'button-down-shirt',
+      name: 'Button-down shirt',
+      order: 5,
+      description: 'Shirt with a front button placket and collar.',
+    },
+    {
+      slug: 'dashiki-top',
+      name: 'Dashiki top',
+      order: 6,
+      description: 'Loose dashiki-inspired upper garment.',
+    },
+    {
+      slug: 'buba-top',
+      name: 'Buba top',
+      order: 7,
+      description:
+        'Traditional buba upper garment worn alone or with wrappers and sets.',
+    },
   ],
   'trousers-shorts': [
-    { slug: 'tailored-trousers', name: 'Tailored trousers', order: 1, description: 'Structured trousers with clean tailoring.' },
-    { slug: 'wide-leg-trousers', name: 'Wide-leg trousers', order: 2, description: 'Trousers with a wide leg silhouette.' },
-    { slug: 'palazzo-pants', name: 'Palazzo pants', order: 3, description: 'Loose, flowing wide-leg pants.' },
-    { slug: 'chinos', name: 'Chinos', order: 4, description: 'Twill trousers with a clean casual finish.' },
-    { slug: 'joggers', name: 'Joggers', order: 5, description: 'Relaxed trousers with elasticated or cuffed hems.' },
-    { slug: 'shorts', name: 'Shorts', order: 6, description: 'Short divided-leg garment ending above the knee or mid-thigh.' },
-    { slug: 'culottes', name: 'Culottes', order: 7, description: 'Wide-leg cropped trousers with skirt-like movement.' },
+    {
+      slug: 'tailored-trousers',
+      name: 'Tailored trousers',
+      order: 1,
+      description: 'Structured trousers with clean tailoring.',
+    },
+    {
+      slug: 'wide-leg-trousers',
+      name: 'Wide-leg trousers',
+      order: 2,
+      description: 'Trousers with a wide leg silhouette.',
+    },
+    {
+      slug: 'palazzo-pants',
+      name: 'Palazzo pants',
+      order: 3,
+      description: 'Loose, flowing wide-leg pants.',
+    },
+    {
+      slug: 'chinos',
+      name: 'Chinos',
+      order: 4,
+      description: 'Twill trousers with a clean casual finish.',
+    },
+    {
+      slug: 'joggers',
+      name: 'Joggers',
+      order: 5,
+      description: 'Relaxed trousers with elasticated or cuffed hems.',
+    },
+    {
+      slug: 'shorts',
+      name: 'Shorts',
+      order: 6,
+      description:
+        'Short divided-leg garment ending above the knee or mid-thigh.',
+    },
+    {
+      slug: 'culottes',
+      name: 'Culottes',
+      order: 7,
+      description: 'Wide-leg cropped trousers with skirt-like movement.',
+    },
   ],
   skirts: [
-    { slug: 'pencil-skirt', name: 'Pencil skirt', order: 1, description: 'Straight, narrow skirt with a tailored fit.' },
-    { slug: 'a-line-skirt', name: 'A-line skirt', order: 2, description: 'Skirt fitted at the waist and wider toward the hem.' },
-    { slug: 'maxi-skirt', name: 'Maxi skirt', order: 3, description: 'Full-length skirt that reaches the ankle or floor.' },
-    { slug: 'wrap-skirt', name: 'Wrap skirt', order: 4, description: 'Skirt formed by wrapping one panel over another.' },
-    { slug: 'pleated-skirt', name: 'Pleated skirt', order: 5, description: 'Skirt with repeated folds for shape and movement.' },
+    {
+      slug: 'pencil-skirt',
+      name: 'Pencil skirt',
+      order: 1,
+      description: 'Straight, narrow skirt with a tailored fit.',
+    },
+    {
+      slug: 'a-line-skirt',
+      name: 'A-line skirt',
+      order: 2,
+      description: 'Skirt fitted at the waist and wider toward the hem.',
+    },
+    {
+      slug: 'maxi-skirt',
+      name: 'Maxi skirt',
+      order: 3,
+      description: 'Full-length skirt that reaches the ankle or floor.',
+    },
+    {
+      slug: 'wrap-skirt',
+      name: 'Wrap skirt',
+      order: 4,
+      description: 'Skirt formed by wrapping one panel over another.',
+    },
+    {
+      slug: 'pleated-skirt',
+      name: 'Pleated skirt',
+      order: 5,
+      description: 'Skirt with repeated folds for shape and movement.',
+    },
   ],
   'suits-blazers': [
-    { slug: 'blazer', name: 'Blazer', order: 1, description: 'Tailored jacket worn as a separate or part of a set.' },
-    { slug: 'two-piece-suit', name: 'Two-piece suit', order: 2, description: 'Matching jacket and trousers or skirt.' },
-    { slug: 'three-piece-suit', name: 'Three-piece suit', order: 3, description: 'Matching jacket, waistcoat, and trousers or skirt.' },
-    { slug: 'tuxedo', name: 'Tuxedo', order: 4, description: 'Formal suit with dresswear finishing.' },
-    { slug: 'waistcoat', name: 'Waistcoat', order: 5, description: 'Sleeveless tailored vest worn over a shirt or under a jacket.' },
+    {
+      slug: 'blazer',
+      name: 'Blazer',
+      order: 1,
+      description: 'Tailored jacket worn as a separate or part of a set.',
+    },
+    {
+      slug: 'two-piece-suit',
+      name: 'Two-piece suit',
+      order: 2,
+      description: 'Matching jacket and trousers or skirt.',
+    },
+    {
+      slug: 'three-piece-suit',
+      name: 'Three-piece suit',
+      order: 3,
+      description: 'Matching jacket, waistcoat, and trousers or skirt.',
+    },
+    {
+      slug: 'tuxedo',
+      name: 'Tuxedo',
+      order: 4,
+      description: 'Formal suit with dresswear finishing.',
+    },
+    {
+      slug: 'waistcoat',
+      name: 'Waistcoat',
+      order: 5,
+      description:
+        'Sleeveless tailored vest worn over a shirt or under a jacket.',
+    },
   ],
   'co-ord-sets': [
-    { slug: 'two-piece-set', name: 'Two-piece set', order: 1, description: 'Matching two-piece outfit designed to be worn together.' },
-    { slug: 'matching-top-trousers', name: 'Matching top and trousers', order: 2, description: 'Coordinated top and trouser set.' },
-    { slug: 'matching-top-skirt', name: 'Matching top and skirt', order: 3, description: 'Coordinated top and skirt set.' },
-    { slug: 'loungewear-set', name: 'Loungewear set', order: 4, description: 'Coordinated relaxed outfit set for comfort wear.' },
+    {
+      slug: 'two-piece-set',
+      name: 'Two-piece set',
+      order: 1,
+      description: 'Matching two-piece outfit designed to be worn together.',
+    },
+    {
+      slug: 'matching-top-trousers',
+      name: 'Matching top and trousers',
+      order: 2,
+      description: 'Coordinated top and trouser set.',
+    },
+    {
+      slug: 'matching-top-skirt',
+      name: 'Matching top and skirt',
+      order: 3,
+      description: 'Coordinated top and skirt set.',
+    },
+    {
+      slug: 'loungewear-set',
+      name: 'Loungewear set',
+      order: 4,
+      description: 'Coordinated relaxed outfit set for comfort wear.',
+    },
   ],
   outerwear: [
-    { slug: 'jacket', name: 'Jacket', order: 1, description: 'Layering garment worn over an outfit.' },
-    { slug: 'kimono', name: 'Kimono', order: 2, description: 'Open-front robe-like outer layer.' },
-    { slug: 'cape', name: 'Cape', order: 3, description: 'Sleeveless outer garment draped over the shoulders.' },
-    { slug: 'coat', name: 'Coat', order: 4, description: 'Longer outerwear garment for layering and coverage.' },
-    { slug: 'shawl', name: 'Shawl', order: 5, description: 'Draped outer wrap worn around the shoulders.' },
+    {
+      slug: 'jacket',
+      name: 'Jacket',
+      order: 1,
+      description: 'Layering garment worn over an outfit.',
+    },
+    {
+      slug: 'kimono',
+      name: 'Kimono',
+      order: 2,
+      description: 'Open-front robe-like outer layer.',
+    },
+    {
+      slug: 'cape',
+      name: 'Cape',
+      order: 3,
+      description: 'Sleeveless outer garment draped over the shoulders.',
+    },
+    {
+      slug: 'coat',
+      name: 'Coat',
+      order: 4,
+      description: 'Longer outerwear garment for layering and coverage.',
+    },
+    {
+      slug: 'shawl',
+      name: 'Shawl',
+      order: 5,
+      description: 'Draped outer wrap worn around the shoulders.',
+    },
   ],
   agbada: [
-    { slug: 'grand-agbada', name: 'Grand agbada', order: 1, description: 'Full formal agbada with expansive robe proportions.' },
-    { slug: 'casual-agbada', name: 'Casual agbada', order: 2, description: 'Simplified agbada garment for lighter wear.' },
-    { slug: 'embroidered-agbada', name: 'Embroidered agbada', order: 3, description: 'Agbada featuring visible embroidery work.' },
-    { slug: 'wedding-agbada', name: 'Wedding agbada', order: 4, description: 'Ceremonial agbada outfit designed as wedding attire.' },
+    {
+      slug: 'grand-agbada',
+      name: 'Grand agbada',
+      order: 1,
+      description: 'Full formal agbada with expansive robe proportions.',
+    },
+    {
+      slug: 'casual-agbada',
+      name: 'Casual agbada',
+      order: 2,
+      description: 'Simplified agbada garment for lighter wear.',
+    },
+    {
+      slug: 'embroidered-agbada',
+      name: 'Embroidered agbada',
+      order: 3,
+      description: 'Agbada featuring visible embroidery work.',
+    },
+    {
+      slug: 'wedding-agbada',
+      name: 'Wedding agbada',
+      order: 4,
+      description: 'Ceremonial agbada outfit designed as wedding attire.',
+    },
   ],
   'senator-wear': [
-    { slug: 'two-piece-senator', name: 'Two-piece senator', order: 1, description: 'Senator top and trouser set.' },
-    { slug: 'long-sleeve-senator', name: 'Long-sleeve senator', order: 2, description: 'Senator outfit with a long-sleeve top.' },
-    { slug: 'short-sleeve-senator', name: 'Short-sleeve senator', order: 3, description: 'Senator outfit with a short-sleeve top.' },
-    { slug: 'embroidered-senator', name: 'Embroidered senator', order: 4, description: 'Senator outfit with embroidery detail.' },
+    {
+      slug: 'two-piece-senator',
+      name: 'Two-piece senator',
+      order: 1,
+      description: 'Senator top and trouser set.',
+    },
+    {
+      slug: 'long-sleeve-senator',
+      name: 'Long-sleeve senator',
+      order: 2,
+      description: 'Senator outfit with a long-sleeve top.',
+    },
+    {
+      slug: 'short-sleeve-senator',
+      name: 'Short-sleeve senator',
+      order: 3,
+      description: 'Senator outfit with a short-sleeve top.',
+    },
+    {
+      slug: 'embroidered-senator',
+      name: 'Embroidered senator',
+      order: 4,
+      description: 'Senator outfit with embroidery detail.',
+    },
   ],
   kaftans: [
-    { slug: 'long-kaftan', name: 'Long kaftan', order: 1, description: 'Full-length kaftan garment.' },
-    { slug: 'short-kaftan', name: 'Short kaftan', order: 2, description: 'Shorter kaftan garment.' },
-    { slug: 'embroidered-kaftan', name: 'Embroidered kaftan', order: 3, description: 'Kaftan with embroidery detail.' },
-    { slug: 'casual-kaftan', name: 'Casual kaftan', order: 4, description: 'Relaxed kaftan designed for lighter everyday wear.' },
+    {
+      slug: 'long-kaftan',
+      name: 'Long kaftan',
+      order: 1,
+      description: 'Full-length kaftan garment.',
+    },
+    {
+      slug: 'short-kaftan',
+      name: 'Short kaftan',
+      order: 2,
+      description: 'Shorter kaftan garment.',
+    },
+    {
+      slug: 'embroidered-kaftan',
+      name: 'Embroidered kaftan',
+      order: 3,
+      description: 'Kaftan with embroidery detail.',
+    },
+    {
+      slug: 'casual-kaftan',
+      name: 'Casual kaftan',
+      order: 4,
+      description: 'Relaxed kaftan designed for lighter everyday wear.',
+    },
   ],
   'buba-wrapper': [
-    { slug: 'lace-buba-wrapper', name: 'Lace buba and wrapper', order: 1, description: 'Buba and wrapper set made with lace fabric.' },
-    { slug: 'ankara-buba-wrapper', name: 'Ankara buba and wrapper', order: 2, description: 'Buba and wrapper set made with ankara fabric.' },
-    { slug: 'aso-oke-buba-wrapper', name: 'Aso oke buba and wrapper', order: 3, description: 'Buba and wrapper set made with aso oke fabric.' },
-    { slug: 'iro-and-buba', name: 'Iro and buba', order: 4, description: 'Traditional wrapper and buba outfit.' },
+    {
+      slug: 'lace-buba-wrapper',
+      name: 'Lace buba and wrapper',
+      order: 1,
+      description: 'Buba and wrapper set made with lace fabric.',
+    },
+    {
+      slug: 'ankara-buba-wrapper',
+      name: 'Ankara buba and wrapper',
+      order: 2,
+      description: 'Buba and wrapper set made with ankara fabric.',
+    },
+    {
+      slug: 'aso-oke-buba-wrapper',
+      name: 'Aso oke buba and wrapper',
+      order: 3,
+      description: 'Buba and wrapper set made with aso oke fabric.',
+    },
+    {
+      slug: 'iro-and-buba',
+      name: 'Iro and buba',
+      order: 4,
+      description: 'Traditional wrapper and buba outfit.',
+    },
   ],
   'native-sets': [
-    { slug: 'traditional-set', name: 'Traditional set', order: 1, description: 'Matching traditional outfit set.' },
-    { slug: 'dashiki-set', name: 'Dashiki set', order: 2, description: 'Matching outfit set built around a dashiki garment.' },
-    { slug: 'aso-oke-set', name: 'Aso oke set', order: 3, description: 'Matching outfit set made with aso oke fabric.' },
-    { slug: 'adire-set', name: 'Adire set', order: 4, description: 'Matching outfit set made with adire fabric.' },
-    { slug: 'isi-agu-set', name: 'Isi agu set', order: 5, description: 'Matching outfit set using isi agu textile or motif.' },
+    {
+      slug: 'traditional-set',
+      name: 'Traditional set',
+      order: 1,
+      description: 'Matching traditional outfit set.',
+    },
+    {
+      slug: 'dashiki-set',
+      name: 'Dashiki set',
+      order: 2,
+      description: 'Matching outfit set built around a dashiki garment.',
+    },
+    {
+      slug: 'aso-oke-set',
+      name: 'Aso oke set',
+      order: 3,
+      description: 'Matching outfit set made with aso oke fabric.',
+    },
+    {
+      slug: 'adire-set',
+      name: 'Adire set',
+      order: 4,
+      description: 'Matching outfit set made with adire fabric.',
+    },
+    {
+      slug: 'isi-agu-set',
+      name: 'Isi agu set',
+      order: 5,
+      description: 'Matching outfit set using isi agu textile or motif.',
+    },
   ],
   'bridal-wear': [
-    { slug: 'bridal-gown', name: 'Bridal gown', order: 1, description: 'Gown made for a bride.' },
-    { slug: 'reception-dress', name: 'Reception dress', order: 2, description: 'Dress made for a wedding reception look.' },
-    { slug: 'bridesmaid-dress', name: 'Bridesmaid dress', order: 3, description: 'Dress made for bridal party attendants.' },
-    { slug: 'bridal-robe', name: 'Bridal robe', order: 4, description: 'Robe made for bridal preparation or ceremony styling.' },
-    { slug: 'groom-traditional-set', name: 'Groom traditional set', order: 5, description: 'Traditional outfit set made for a groom.' },
+    {
+      slug: 'bridal-gown',
+      name: 'Bridal gown',
+      order: 1,
+      description: 'Gown made for a bride.',
+    },
+    {
+      slug: 'reception-dress',
+      name: 'Reception dress',
+      order: 2,
+      description: 'Dress made for a wedding reception look.',
+    },
+    {
+      slug: 'bridesmaid-dress',
+      name: 'Bridesmaid dress',
+      order: 3,
+      description: 'Dress made for bridal party attendants.',
+    },
+    {
+      slug: 'bridal-robe',
+      name: 'Bridal robe',
+      order: 4,
+      description: 'Robe made for bridal preparation or ceremony styling.',
+    },
+    {
+      slug: 'groom-traditional-set',
+      name: 'Groom traditional set',
+      order: 5,
+      description: 'Traditional outfit set made for a groom.',
+    },
   ],
 };
 
@@ -269,7 +627,8 @@ export const DEFAULT_FILTER_DIMENSIONS: FilterDimensionSeed[] = [
   {
     slug: 'heritage',
     name: 'Heritage',
-    description: 'Cultural influence, textile tradition, or heritage styling signal.',
+    description:
+      'Cultural influence, textile tradition, or heritage styling signal.',
     order: 2,
     isMulti: true,
     appliesTo: CATALOG_FILTER_APPLIES_TO,
@@ -285,9 +644,17 @@ export const DEFAULT_FILTER_DIMENSIONS: FilterDimensionSeed[] = [
       { slug: 'dashiki', name: 'Dashiki', order: 9 },
       { slug: 'yoruba-traditional', name: 'Yoruba Traditional', order: 10 },
       { slug: 'igbo-traditional', name: 'Igbo Traditional', order: 11 },
-      { slug: 'hausa-arewa-traditional', name: 'Hausa / Arewa Traditional', order: 12 },
+      {
+        slug: 'hausa-arewa-traditional',
+        name: 'Hausa / Arewa Traditional',
+        order: 12,
+      },
       { slug: 'isi-agu', name: 'Isi Agu', order: 13 },
-      { slug: 'coral-beads-royal-traditional', name: 'Coral Beads / Royal Traditional', order: 14 },
+      {
+        slug: 'coral-beads-royal-traditional',
+        name: 'Coral Beads / Royal Traditional',
+        order: 14,
+      },
       { slug: 'afro-modern', name: 'Afro-Modern', order: 15 },
     ],
   },
@@ -305,7 +672,11 @@ export const DEFAULT_FILTER_DIMENSIONS: FilterDimensionSeed[] = [
       { slug: 'owambe-party', name: 'Owambe / Party', order: 4 },
       { slug: 'date-night', name: 'Date Night', order: 5 },
       { slug: 'religious-event', name: 'Religious Event', order: 6 },
-      { slug: 'festival-cultural-event', name: 'Festival / Cultural Event', order: 7 },
+      {
+        slug: 'festival-cultural-event',
+        name: 'Festival / Cultural Event',
+        order: 7,
+      },
       { slug: 'graduation', name: 'Graduation', order: 8 },
       { slug: 'birthday', name: 'Birthday', order: 9 },
       { slug: 'red-carpet', name: 'Red Carpet', order: 10 },
@@ -400,7 +771,11 @@ export const FILTER_TAG_SUGGESTIONS: Record<string, string[]> = {
   contemporary: ['modern-fashion', 'contemporary-style'],
 
   // Heritage and fabric
-  'african-cultural': ['african-fashion', 'cultural-fashion', 'traditional-wear'],
+  'african-cultural': [
+    'african-fashion',
+    'cultural-fashion',
+    'traditional-wear',
+  ],
   ankara: ['ankara-fashion', 'african-prints', 'modern-african'],
   'aso-ebi': ['aso-ebi', 'owambe', 'wedding-guest'],
   adire: ['adire', 'indigenous-craft', 'hand-dyed'],
@@ -411,9 +786,17 @@ export const FILTER_TAG_SUGGESTIONS: Record<string, string[]> = {
   dashiki: ['dashiki', 'afro-modern', 'modern-african'],
   'yoruba-traditional': ['yoruba-fashion', 'traditional-wear', 'owambe'],
   'igbo-traditional': ['igbo-fashion', 'isi-agu', 'traditional-wear'],
-  'hausa-arewa-traditional': ['arewa-fashion', 'hausa-fashion', 'modest-fashion'],
+  'hausa-arewa-traditional': [
+    'arewa-fashion',
+    'hausa-fashion',
+    'modest-fashion',
+  ],
   'isi-agu': ['isi-agu', 'igbo-fashion', 'traditional-wear'],
-  'coral-beads-royal-traditional': ['coral-beads', 'royal-traditional', 'traditional-wear'],
+  'coral-beads-royal-traditional': [
+    'coral-beads',
+    'royal-traditional',
+    'traditional-wear',
+  ],
   'afro-modern': ['afro-modern', 'modern-african', 'afro-fusion'],
   silk: ['silk-style', 'premium-fabric'],
   cotton: ['cotton-wear', 'comfortable-style'],

@@ -56,7 +56,9 @@ export class BrandVerificationCronService {
     }
 
     if (stale.length > 0) {
-      this.logger.log(`Auto-released ${stale.length} stale verification review(s)`);
+      this.logger.log(
+        `Auto-released ${stale.length} stale verification review(s)`,
+      );
     }
   }
 
@@ -91,7 +93,9 @@ export class BrandVerificationCronService {
       }),
       this.prisma.brand.updateMany({
         where: {
-          verificationDraftUpdatedAt: { lt: new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000) },
+          verificationDraftUpdatedAt: {
+            lt: new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000),
+          },
           verificationDraftData: { not: null },
         },
         data: {
@@ -163,12 +167,16 @@ export class BrandVerificationCronService {
 
     const appName = this.emailService.getAppName();
     for (const brand of brands) {
-      await this.notifications.create(brand.ownerId, NotificationType.VERIFICATION_NUDGE, {
-        payload: {
-          brandId: brand.id,
-          targetUrl: '/studio/verification',
+      await this.notifications.create(
+        brand.ownerId,
+        NotificationType.VERIFICATION_NUDGE,
+        {
+          payload: {
+            brandId: brand.id,
+            targetUrl: '/studio/verification',
+          },
         },
-      });
+      );
 
       if (brand.owner.email) {
         const mail = emailTemplates.verificationNudgeEmail(brand.name, appName);

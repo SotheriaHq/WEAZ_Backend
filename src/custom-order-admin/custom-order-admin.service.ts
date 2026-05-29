@@ -61,8 +61,14 @@ export class CustomOrderAdminService {
     };
   }
 
-  async reviewBasis(id: string, dto: ReviewCustomFabricRuleBasisDto, adminUserId: string) {
-    const basis = await this.prisma.customFabricRuleBasis.findUnique({ where: { id } });
+  async reviewBasis(
+    id: string,
+    dto: ReviewCustomFabricRuleBasisDto,
+    adminUserId: string,
+  ) {
+    const basis = await this.prisma.customFabricRuleBasis.findUnique({
+      where: { id },
+    });
     if (!basis) {
       throw new NotFoundException('Custom fabric rule basis not found');
     }
@@ -85,6 +91,7 @@ export class CustomOrderAdminService {
   }
 
   async listBases(query: QueryAdminCustomFabricRuleBasesDto) {
+    void query;
     const where: Prisma.CustomFabricRuleBasisWhereInput = {
       status: CustomFabricRuleBasisStatus.APPROVED_GLOBAL,
     };
@@ -101,12 +108,22 @@ export class CustomOrderAdminService {
     };
   }
 
-  async createBasis(dto: CreateAdminCustomFabricRuleBasisDto, _adminUserId: string) {
+  async createBasis(
+    dto: CreateAdminCustomFabricRuleBasisDto,
+    _adminUserId: string,
+  ) {
+    void _adminUserId;
     const measurementKeys = Array.from(
-      new Set((dto.measurementKeys ?? []).map((key) => String(key).trim()).filter(Boolean)),
+      new Set(
+        (dto.measurementKeys ?? [])
+          .map((key) => String(key).trim())
+          .filter(Boolean),
+      ),
     );
     if (measurementKeys.length === 0) {
-      throw new BadRequestException('At least one measurement key is required for a fabric rule basis');
+      throw new BadRequestException(
+        'At least one measurement key is required for a fabric rule basis',
+      );
     }
 
     const created = await this.prisma.customFabricRuleBasis.create({
@@ -126,16 +143,32 @@ export class CustomOrderAdminService {
   }
 
   async updateBasis(id: string, dto: UpdateAdminCustomFabricRuleBasisDto) {
-    const existing = await this.prisma.customFabricRuleBasis.findUnique({ where: { id } });
-    if (!existing || existing.status !== CustomFabricRuleBasisStatus.APPROVED_GLOBAL) {
+    const existing = await this.prisma.customFabricRuleBasis.findUnique({
+      where: { id },
+    });
+    if (
+      !existing ||
+      existing.status !== CustomFabricRuleBasisStatus.APPROVED_GLOBAL
+    ) {
       throw new NotFoundException('Global custom fabric rule basis not found');
     }
 
     const measurementKeys = dto.measurementKeys
-      ? Array.from(new Set(dto.measurementKeys.map((key) => String(key).trim()).filter(Boolean)))
+      ? Array.from(
+          new Set(
+            dto.measurementKeys
+              .map((key) => String(key).trim())
+              .filter(Boolean),
+          ),
+        )
       : undefined;
-    if (dto.measurementKeys && (!measurementKeys || measurementKeys.length === 0)) {
-      throw new BadRequestException('At least one measurement key is required for a fabric rule basis');
+    if (
+      dto.measurementKeys &&
+      (!measurementKeys || measurementKeys.length === 0)
+    ) {
+      throw new BadRequestException(
+        'At least one measurement key is required for a fabric rule basis',
+      );
     }
 
     const updated = await this.prisma.customFabricRuleBasis.update({
@@ -164,12 +197,17 @@ export class CustomOrderAdminService {
       },
     });
 
-    if (!existing || existing.status !== CustomFabricRuleBasisStatus.APPROVED_GLOBAL) {
+    if (
+      !existing ||
+      existing.status !== CustomFabricRuleBasisStatus.APPROVED_GLOBAL
+    ) {
       throw new NotFoundException('Global custom fabric rule basis not found');
     }
 
     if (existing.configurations.length > 0) {
-      throw new BadRequestException('Cannot delete this basis because it is already used by active configurations');
+      throw new BadRequestException(
+        'Cannot delete this basis because it is already used by active configurations',
+      );
     }
 
     await this.prisma.customFabricRuleBasis.delete({ where: { id } });
@@ -190,8 +228,15 @@ export class CustomOrderAdminService {
       ...(query.q
         ? {
             OR: [
-              { sourceTitleSnapshot: { contains: query.q, mode: 'insensitive' } },
-              { sourceBrandNameSnapshot: { contains: query.q, mode: 'insensitive' } },
+              {
+                sourceTitleSnapshot: { contains: query.q, mode: 'insensitive' },
+              },
+              {
+                sourceBrandNameSnapshot: {
+                  contains: query.q,
+                  mode: 'insensitive',
+                },
+              },
             ],
           }
         : {}),
@@ -323,12 +368,17 @@ export class CustomOrderAdminService {
         },
       });
 
-      const order = await tx.customOrder.findUnique({ where: { id: customOrderId } });
+      const order = await tx.customOrder.findUnique({
+        where: { id: customOrderId },
+      });
       if (!order) {
         throw new NotFoundException('Custom order not found');
       }
 
-      const breakdown = (order.internalPriceBreakdownJson ?? {}) as Record<string, unknown>;
+      const breakdown = (order.internalPriceBreakdownJson ?? {}) as Record<
+        string,
+        unknown
+      >;
       const nextBreakdown = isRequestMoreInfo
         ? {
             ...breakdown,
@@ -367,7 +417,9 @@ export class CustomOrderAdminService {
                 decision: nextStatus,
                 rationale: dto.rationale.trim(),
                 approvedQuoteTotal:
-                  nextStatus === 'APPROVED' ? dto.approvedQuoteTotal ?? null : null,
+                  nextStatus === 'APPROVED'
+                    ? (dto.approvedQuoteTotal ?? null)
+                    : null,
               },
             },
           },
@@ -384,8 +436,12 @@ export class CustomOrderAdminService {
 
   async getSummary() {
     const now = new Date();
-    const acceptanceSlaThreshold = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-    const acceptanceTimeoutThreshold = new Date(now.getTime() - 48 * 60 * 60 * 1000);
+    const acceptanceSlaThreshold = new Date(
+      now.getTime() - 24 * 60 * 60 * 1000,
+    );
+    const acceptanceTimeoutThreshold = new Date(
+      now.getTime() - 48 * 60 * 60 * 1000,
+    );
 
     const [
       activeOrders,
@@ -418,7 +474,9 @@ export class CustomOrderAdminService {
         where: { status: CustomOrderStatus.REFUND_IN_PROGRESS },
       }),
       this.prisma.customOrder.count({
-        where: { status: CustomOrderStatus.DELIVERED_PENDING_BUYER_CONFIRMATION },
+        where: {
+          status: CustomOrderStatus.DELIVERED_PENDING_BUYER_CONFIRMATION,
+        },
       }),
       this.prisma.customOrderDispute.count({
         where: {
@@ -487,13 +545,17 @@ export class CustomOrderAdminService {
     const staleBrandIds = staleOrderIds.length
       ? (
           await this.prisma.customOrder.findMany({
-            where: { id: { in: staleOrderIds.map((entry) => entry.customOrderId) } },
+            where: {
+              id: { in: staleOrderIds.map((entry) => entry.customOrderId) },
+            },
             select: { brandId: true },
           })
         ).map((entry) => entry.brandId)
       : [];
 
-    const disputeOrderIds = [...new Set(disputeOrders.map((entry) => entry.customOrderId))];
+    const disputeOrderIds = [
+      ...new Set(disputeOrders.map((entry) => entry.customOrderId)),
+    ];
     const disputeBrands = disputeOrderIds.length
       ? await this.prisma.customOrder.findMany({
           where: { id: { in: disputeOrderIds } },
@@ -501,20 +563,35 @@ export class CustomOrderAdminService {
         })
       : [];
 
-    const riskByBrand = new Map<string, { stale: number; disputes: number; rejections: number }>();
+    const riskByBrand = new Map<
+      string,
+      { stale: number; disputes: number; rejections: number }
+    >();
 
     for (const brandId of staleBrandIds) {
-      const current = riskByBrand.get(brandId) ?? { stale: 0, disputes: 0, rejections: 0 };
+      const current = riskByBrand.get(brandId) ?? {
+        stale: 0,
+        disputes: 0,
+        rejections: 0,
+      };
       current.stale += 1;
       riskByBrand.set(brandId, current);
     }
     for (const entry of disputeBrands) {
-      const current = riskByBrand.get(entry.brandId) ?? { stale: 0, disputes: 0, rejections: 0 };
+      const current = riskByBrand.get(entry.brandId) ?? {
+        stale: 0,
+        disputes: 0,
+        rejections: 0,
+      };
       current.disputes += 1;
       riskByBrand.set(entry.brandId, current);
     }
     for (const entry of rejectedOrders) {
-      const current = riskByBrand.get(entry.brandId) ?? { stale: 0, disputes: 0, rejections: 0 };
+      const current = riskByBrand.get(entry.brandId) ?? {
+        stale: 0,
+        disputes: 0,
+        rejections: 0,
+      };
       current.rejections += 1;
       riskByBrand.set(entry.brandId, current);
     }
@@ -522,7 +599,9 @@ export class CustomOrderAdminService {
     const topRiskBrandIds = [...riskByBrand.entries()]
       .sort(
         (left, right) =>
-          right[1].stale + right[1].disputes + right[1].rejections -
+          right[1].stale +
+          right[1].disputes +
+          right[1].rejections -
           (left[1].stale + left[1].disputes + left[1].rejections),
       )
       .slice(0, 10)
@@ -572,92 +651,110 @@ export class CustomOrderAdminService {
       occurredAt: { gte: since },
       customOrder: orderWhere,
       eventType: {
-        in: ['BRAND_REJECTED', 'DISPUTE_CREATED', 'REFUND_INITIATED', 'ADMIN_ESCALATED'],
+        in: [
+          'BRAND_REJECTED',
+          'DISPUTE_CREATED',
+          'REFUND_INITIATED',
+          'ADMIN_ESCALATED',
+        ],
       },
     };
 
-    const [periodOrders, periodAnalytics, staleEvents, acceptanceSlaRiskOrders, acceptanceTimeoutOrders] =
-      await Promise.all([
-        this.prisma.customOrder.findMany({
-          where: {
+    const [
+      periodOrders,
+      periodAnalytics,
+      staleEvents,
+      acceptanceSlaRiskOrders,
+      acceptanceTimeoutOrders,
+    ] = await Promise.all([
+      this.prisma.customOrder.findMany({
+        where: {
+          ...orderWhere,
+          createdAt: { gte: since },
+        },
+        select: {
+          id: true,
+          brandId: true,
+          rushSelected: true,
+          status: true,
+        },
+      }),
+      this.prisma.customOrderAnalyticsEvent.findMany({
+        where: analyticsWhere,
+        select: {
+          eventType: true,
+          customOrder: {
+            select: {
+              brandId: true,
+              rushSelected: true,
+            },
+          },
+        },
+      }),
+      this.prisma.customOrderProgressEvent.findMany({
+        where: {
+          staleThresholdAt: { lte: now },
+          customOrder: {
             ...orderWhere,
-            createdAt: { gte: since },
-          },
-          select: {
-            id: true,
-            brandId: true,
-            rushSelected: true,
-            status: true,
-          },
-        }),
-        this.prisma.customOrderAnalyticsEvent.findMany({
-          where: analyticsWhere,
-          select: {
-            eventType: true,
-            customOrder: {
-              select: {
-                brandId: true,
-                rushSelected: true,
-              },
+            status: {
+              in: [
+                CustomOrderStatus.ACCEPTED,
+                CustomOrderStatus.IN_PRODUCTION,
+                CustomOrderStatus.READY_FOR_DISPATCH,
+                CustomOrderStatus.IN_TRANSIT,
+              ],
             },
           },
-        }),
-        this.prisma.customOrderProgressEvent.findMany({
-          where: {
-            staleThresholdAt: { lte: now },
-            customOrder: {
-              ...orderWhere,
-              status: {
-                in: [
-                  CustomOrderStatus.ACCEPTED,
-                  CustomOrderStatus.IN_PRODUCTION,
-                  CustomOrderStatus.READY_FOR_DISPATCH,
-                  CustomOrderStatus.IN_TRANSIT,
-                ],
-              },
+        },
+        select: {
+          customOrderId: true,
+          customOrder: {
+            select: {
+              brandId: true,
             },
           },
-          select: {
-            customOrderId: true,
-            customOrder: {
-              select: {
-                brandId: true,
-              },
-            },
+        },
+        distinct: ['customOrderId'],
+      }),
+      this.prisma.customOrder.findMany({
+        where: {
+          ...orderWhere,
+          status: CustomOrderStatus.PENDING_BRAND_ACCEPTANCE,
+          paymentStatus: 'PAID',
+          createdAt: {
+            lte: new Date(now.getTime() - 24 * 60 * 60 * 1000),
+            gt: new Date(now.getTime() - 48 * 60 * 60 * 1000),
           },
-          distinct: ['customOrderId'],
-        }),
-        this.prisma.customOrder.findMany({
-          where: {
-            ...orderWhere,
-            status: CustomOrderStatus.PENDING_BRAND_ACCEPTANCE,
-            paymentStatus: 'PAID',
-            createdAt: {
-              lte: new Date(now.getTime() - 24 * 60 * 60 * 1000),
-              gt: new Date(now.getTime() - 48 * 60 * 60 * 1000),
-            },
-          },
-          select: { brandId: true },
-        }),
-        this.prisma.customOrder.findMany({
-          where: {
-            ...orderWhere,
-            status: CustomOrderStatus.PENDING_BRAND_ACCEPTANCE,
-            paymentStatus: 'PAID',
-            createdAt: { lte: new Date(now.getTime() - 48 * 60 * 60 * 1000) },
-          },
-          select: { brandId: true },
-        }),
-      ]);
+        },
+        select: { brandId: true },
+      }),
+      this.prisma.customOrder.findMany({
+        where: {
+          ...orderWhere,
+          status: CustomOrderStatus.PENDING_BRAND_ACCEPTANCE,
+          paymentStatus: 'PAID',
+          createdAt: { lte: new Date(now.getTime() - 48 * 60 * 60 * 1000) },
+        },
+        select: { brandId: true },
+      }),
+    ]);
 
     const overview = {
       periodDays: days,
       ordersPlaced: periodOrders.length,
       rushOrders: periodOrders.filter((order) => order.rushSelected).length,
-      brandRejections: periodAnalytics.filter((event) => event.eventType === 'BRAND_REJECTED').length,
-      disputesOpened: periodAnalytics.filter((event) => event.eventType === 'DISPUTE_CREATED').length,
-      refundsInitiated: periodAnalytics.filter((event) => event.eventType === 'REFUND_INITIATED').length,
-      adminEscalations: periodAnalytics.filter((event) => event.eventType === 'ADMIN_ESCALATED').length,
+      brandRejections: periodAnalytics.filter(
+        (event) => event.eventType === 'BRAND_REJECTED',
+      ).length,
+      disputesOpened: periodAnalytics.filter(
+        (event) => event.eventType === 'DISPUTE_CREATED',
+      ).length,
+      refundsInitiated: periodAnalytics.filter(
+        (event) => event.eventType === 'REFUND_INITIATED',
+      ).length,
+      adminEscalations: periodAnalytics.filter(
+        (event) => event.eventType === 'ADMIN_ESCALATED',
+      ).length,
       currentStaleOrders: staleEvents.length,
       currentAcceptanceSlaRisk: acceptanceSlaRiskOrders.length,
       currentAcceptanceTimeouts: acceptanceTimeoutOrders.length,
@@ -720,7 +817,10 @@ export class CustomOrderAdminService {
       }
     }
 
-    const eventKeyMap: Record<string, keyof ReturnType<typeof ensureBrandRisk>> = {
+    const eventKeyMap: Record<
+      string,
+      keyof ReturnType<typeof ensureBrandRisk>
+    > = {
       BRAND_REJECTED: 'brandRejections',
       DISPUTE_CREATED: 'disputesOpened',
       REFUND_INITIATED: 'refundsInitiated',
@@ -792,8 +892,15 @@ export class CustomOrderAdminService {
       ...(query.q
         ? {
             OR: [
-              { sourceTitleSnapshot: { contains: query.q, mode: 'insensitive' } },
-              { sourceBrandNameSnapshot: { contains: query.q, mode: 'insensitive' } },
+              {
+                sourceTitleSnapshot: { contains: query.q, mode: 'insensitive' },
+              },
+              {
+                sourceBrandNameSnapshot: {
+                  contains: query.q,
+                  mode: 'insensitive',
+                },
+              },
               { paymentReference: { contains: query.q, mode: 'insensitive' } },
             ],
           }
@@ -883,7 +990,9 @@ export class CustomOrderAdminService {
       data: {
         items: orders.map((order) => {
           const attempt = latestAttempts.get(order.id);
-          const refundEvent = attempt ? latestRefundEvents.get(attempt.id) : undefined;
+          const refundEvent = attempt
+            ? latestRefundEvents.get(attempt.id)
+            : undefined;
 
           return {
             id: order.id,
@@ -959,7 +1068,9 @@ export class CustomOrderAdminService {
     const paymentEvents = paymentAttempts.length
       ? await this.prisma.paymentEvent.findMany({
           where: {
-            paymentAttemptId: { in: paymentAttempts.map((attempt) => attempt.id) },
+            paymentAttemptId: {
+              in: paymentAttempts.map((attempt) => attempt.id),
+            },
           },
           orderBy: { createdAt: 'desc' },
           select: {
@@ -1169,7 +1280,11 @@ export class CustomOrderAdminService {
       customOrder: {
         ...(dto.brandId ? { brandId: dto.brandId } : {}),
         status: {
-          in: [CustomOrderStatus.ACCEPTED, CustomOrderStatus.COMPLETED, CustomOrderStatus.CLOSED],
+          in: [
+            CustomOrderStatus.ACCEPTED,
+            CustomOrderStatus.COMPLETED,
+            CustomOrderStatus.CLOSED,
+          ],
         },
         disputes: {
           none: {
@@ -1201,7 +1316,8 @@ export class CustomOrderAdminService {
     if (allocations.length === 0) {
       return {
         statusCode: 200,
-        message: 'No payout-eligible custom-order allocations found for release',
+        message:
+          'No payout-eligible custom-order allocations found for release',
         data: {
           dryRun: Boolean(dto.dryRun),
           releasedBatches: 0,
@@ -1285,7 +1401,9 @@ export class CustomOrderAdminService {
         });
 
         if (reserved.count !== group.allocationIds.length) {
-          throw new BadRequestException('CUSTOM_ORDER_PAYOUT_BATCH_RESERVATION_FAILED');
+          throw new BadRequestException(
+            'CUSTOM_ORDER_PAYOUT_BATCH_RESERVATION_FAILED',
+          );
         }
 
         const uniqueOrderIds = Array.from(new Set(group.customOrderIds));
@@ -1310,7 +1428,8 @@ export class CustomOrderAdminService {
 
     return {
       statusCode: 200,
-      message: 'Custom-order payout-eligible allocations released to payout queue',
+      message:
+        'Custom-order payout-eligible allocations released to payout queue',
       data: {
         dryRun: false,
         releasedBatches,
@@ -1323,8 +1442,14 @@ export class CustomOrderAdminService {
     };
   }
 
-  async updateDispute(id: string, dto: UpdateCustomOrderDisputeDto, adminUserId: string) {
-    const dispute = await this.prisma.customOrderDispute.findUnique({ where: { id } });
+  async updateDispute(
+    id: string,
+    dto: UpdateCustomOrderDisputeDto,
+    adminUserId: string,
+  ) {
+    const dispute = await this.prisma.customOrderDispute.findUnique({
+      where: { id },
+    });
     if (!dispute) {
       throw new NotFoundException('Custom-order dispute not found');
     }
@@ -1336,7 +1461,10 @@ export class CustomOrderAdminService {
         resolution: dto.resolution ?? dispute.resolution,
         adminNotes: dto.adminNotes ?? dispute.adminNotes,
         assignedAdminId: dto.assignedAdminId ?? adminUserId,
-        resolvedAt: dto.status === 'RESOLVED' || dto.status === 'CLOSED' ? new Date() : dispute.resolvedAt,
+        resolvedAt:
+          dto.status === 'RESOLVED' || dto.status === 'CLOSED'
+            ? new Date()
+            : dispute.resolvedAt,
       },
     });
 
@@ -1347,7 +1475,11 @@ export class CustomOrderAdminService {
     };
   }
 
-  async updateRetentionHold(id: string, dto: UpdateCustomOrderRetentionHoldDto, adminUserId: string) {
+  async updateRetentionHold(
+    id: string,
+    dto: UpdateCustomOrderRetentionHoldDto,
+    adminUserId: string,
+  ) {
     const order = await this.prisma.customOrder.findUnique({
       where: { id },
       select: {
@@ -1415,12 +1547,18 @@ export class CustomOrderAdminService {
 
     return {
       statusCode: 200,
-      message: dto.clear ? 'Custom-order retention hold cleared' : 'Custom-order retention hold updated',
+      message: dto.clear
+        ? 'Custom-order retention hold cleared'
+        : 'Custom-order retention hold updated',
       data: updated,
     };
   }
 
-  async remindBrand(id: string, dto: AdminCustomOrderReminderDto, adminUserId: string) {
+  async remindBrand(
+    id: string,
+    dto: AdminCustomOrderReminderDto,
+    adminUserId: string,
+  ) {
     const order = await this.prisma.customOrder.findUnique({
       where: { id },
       include: {
@@ -1431,7 +1569,9 @@ export class CustomOrderAdminService {
       throw new NotFoundException('Custom order not found');
     }
     if (!order.brand.ownerId) {
-      throw new BadRequestException('Brand owner could not be resolved for this order');
+      throw new BadRequestException(
+        'Brand owner could not be resolved for this order',
+      );
     }
 
     await this.prisma.customOrderTimelineEvent.create({
@@ -1505,7 +1645,11 @@ export class CustomOrderAdminService {
     return {
       statusCode: 200,
       message: 'Custom-order risk flag recorded',
-      data: { customOrderId: id, brandId: order.brandId, reason: dto.reason.trim() },
+      data: {
+        customOrderId: id,
+        brandId: order.brandId,
+        reason: dto.reason.trim(),
+      },
     };
   }
 
@@ -1535,7 +1679,9 @@ export class CustomOrderAdminService {
       CustomOrderStatus.REFUND_IN_PROGRESS,
     ]);
     if (!eligibleStatuses.has(order.status)) {
-      throw new BadRequestException('Custom order cannot be moved to refund review from its current state');
+      throw new BadRequestException(
+        'Custom order cannot be moved to refund review from its current state',
+      );
     }
 
     const updated = await this.prisma.customOrder.update({
@@ -1609,7 +1755,9 @@ export class CustomOrderAdminService {
       throw new NotFoundException('Custom order not found');
     }
     if (order.paymentStatus !== PaymentStatus.PAID) {
-      throw new BadRequestException('Only fully paid custom orders can be cancelled from admin');
+      throw new BadRequestException(
+        'Only fully paid custom orders can be cancelled from admin',
+      );
     }
 
     const cancellableStatuses = new Set<CustomOrderStatus>([
@@ -1624,7 +1772,9 @@ export class CustomOrderAdminService {
       CustomOrderStatus.COMPLETED,
     ]);
     if (!cancellableStatuses.has(order.status)) {
-      throw new BadRequestException('Custom order cannot be cancelled from its current state');
+      throw new BadRequestException(
+        'Custom order cannot be cancelled from its current state',
+      );
     }
 
     const normalizedReason = dto.reason.trim();

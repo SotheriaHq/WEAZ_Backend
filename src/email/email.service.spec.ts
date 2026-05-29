@@ -43,42 +43,45 @@ describe('EmailService', () => {
     const requestMock = https.request as unknown as jest.Mock;
     let capturedRequest: any;
 
-    requestMock.mockImplementation((_options: any, callback: (response: any) => void) => {
-      capturedRequest = new EventEmitter() as any;
-      capturedRequest.body = '';
-      capturedRequest.write = jest.fn((chunk: string | Buffer) => {
-        capturedRequest.body += chunk.toString();
-      });
-      capturedRequest.destroy = jest.fn();
-      capturedRequest.end = jest.fn(() => {
-        const response = new EventEmitter() as any;
-        response.statusCode = 200;
-        callback(response);
-        response.emit(
-          'data',
-          Buffer.from(
-            JSON.stringify({
-              Messages: [
-                {
-                  Status: 'success',
-                  To: [
-                    {
-                      Email: 'recipient@example.com',
-                      MessageUUID: 'uuid-123',
-                      MessageID: 123456,
-                      MessageHref: 'https://api.mailjet.com/v3/message/123456',
-                    },
-                  ],
-                },
-              ],
-            }),
-          ),
-        );
-        response.emit('end');
-      });
+    requestMock.mockImplementation(
+      (_options: any, callback: (response: any) => void) => {
+        capturedRequest = new EventEmitter() as any;
+        capturedRequest.body = '';
+        capturedRequest.write = jest.fn((chunk: string | Buffer) => {
+          capturedRequest.body += chunk.toString();
+        });
+        capturedRequest.destroy = jest.fn();
+        capturedRequest.end = jest.fn(() => {
+          const response = new EventEmitter() as any;
+          response.statusCode = 200;
+          callback(response);
+          response.emit(
+            'data',
+            Buffer.from(
+              JSON.stringify({
+                Messages: [
+                  {
+                    Status: 'success',
+                    To: [
+                      {
+                        Email: 'recipient@example.com',
+                        MessageUUID: 'uuid-123',
+                        MessageID: 123456,
+                        MessageHref:
+                          'https://api.mailjet.com/v3/message/123456',
+                      },
+                    ],
+                  },
+                ],
+              }),
+            ),
+          );
+          response.emit('end');
+        });
 
-      return capturedRequest;
-    });
+        return capturedRequest;
+      },
+    );
 
     const service = createService();
 

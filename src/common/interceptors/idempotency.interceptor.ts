@@ -88,7 +88,9 @@ export class IdempotencyInterceptor implements NestInterceptor {
 
     return from(
       idempotencyKeyModel
-        .findUnique({ where: { userId_key_method_path: { userId, key, method, path } } })
+        .findUnique({
+          where: { userId_key_method_path: { userId, key, method, path } },
+        })
         .then(async (existing: any) => {
           if (existing) {
             if (existing.requestHash !== requestHash) {
@@ -110,7 +112,9 @@ export class IdempotencyInterceptor implements NestInterceptor {
             this.logger.warn(
               `Idempotency conflict: in-flight request for user=${userId} method=${method} path=${path}`,
             );
-            throw new ConflictException('Request with this Idempotency-Key is in progress');
+            throw new ConflictException(
+              'Request with this Idempotency-Key is in progress',
+            );
           }
 
           try {
@@ -138,12 +142,16 @@ export class IdempotencyInterceptor implements NestInterceptor {
             this.logger.warn(
               `Idempotency conflict: race detected for user=${userId} method=${method} path=${path}`,
             );
-            throw new ConflictException('Request with this Idempotency-Key is in progress');
+            throw new ConflictException(
+              'Request with this Idempotency-Key is in progress',
+            );
           }
 
           // Opportunistic cleanup (1% of calls)
           if (Math.random() < 0.01) {
-            void idempotencyKeyModel.deleteMany({ where: { expiresAt: { lt: new Date() } } });
+            void idempotencyKeyModel.deleteMany({
+              where: { expiresAt: { lt: new Date() } },
+            });
           }
 
           return { replay: false };
@@ -160,7 +168,9 @@ export class IdempotencyInterceptor implements NestInterceptor {
             return from(
               idempotencyKeyModel
                 .update({
-                  where: { userId_key_method_path: { userId, key, method, path } },
+                  where: {
+                    userId_key_method_path: { userId, key, method, path },
+                  },
                   data: { responseBody: body, statusCode },
                 })
                 .catch(async (persistErr: unknown) => {
@@ -171,13 +181,17 @@ export class IdempotencyInterceptor implements NestInterceptor {
                     .catch((cleanupErr: unknown) => {
                       this.logger.error(
                         `Failed to clean up idempotency key after persist error for user=${userId} method=${method} path=${path}: ${
-                          cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)
+                          cleanupErr instanceof Error
+                            ? cleanupErr.message
+                            : String(cleanupErr)
                         }`,
                       );
                     });
                   this.logger.error(
                     `Failed to persist idempotent response for user=${userId} method=${method} path=${path}: ${
-                      persistErr instanceof Error ? persistErr.message : String(persistErr)
+                      persistErr instanceof Error
+                        ? persistErr.message
+                        : String(persistErr)
                     }`,
                   );
                 }),
@@ -199,7 +213,9 @@ export class IdempotencyInterceptor implements NestInterceptor {
               .catch((deleteErr: unknown) => {
                 this.logger.error(
                   `Failed to clean up idempotency key after request error for user=${userId} method=${method} path=${path}: ${
-                    deleteErr instanceof Error ? deleteErr.message : String(deleteErr)
+                    deleteErr instanceof Error
+                      ? deleteErr.message
+                      : String(deleteErr)
                   }`,
                 );
               });

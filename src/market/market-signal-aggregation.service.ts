@@ -99,7 +99,9 @@ export class MarketSignalAggregationService {
         aggregateKey,
         bucketDate,
         userId: identity.userId ?? null,
-        anonymousSessionId: identity.userId ? null : identity.anonymousSessionId ?? null,
+        anonymousSessionId: identity.userId
+          ? null
+          : (identity.anonymousSessionId ?? null),
         surface: event.surface,
         sectionKey: event.sectionKey ?? null,
         suggestionBlockKey: event.suggestionBlockKey ?? null,
@@ -160,7 +162,8 @@ export class MarketSignalAggregationService {
     if (counters.suppressions) {
       update.suppressions = { increment: counters.suppressions };
     }
-    if (counters.seenItems) update.seenItems = { increment: counters.seenItems };
+    if (counters.seenItems)
+      update.seenItems = { increment: counters.seenItems };
     if (counters.latestSeenAt) update.latestSeenAt = counters.latestSeenAt;
     return update;
   }

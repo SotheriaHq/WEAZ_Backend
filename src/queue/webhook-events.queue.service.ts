@@ -25,7 +25,9 @@ export interface PayoutWebhookProcessJob {
 
 @Injectable()
 export class WebhookEventsQueueService {
-  constructor(@InjectQueue(WEBHOOK_EVENTS_QUEUE) private readonly queue: Queue) {}
+  constructor(
+    @InjectQueue(WEBHOOK_EVENTS_QUEUE) private readonly queue: Queue,
+  ) {}
 
   async getRedisClient(): Promise<any> {
     return (this.queue as any).client;

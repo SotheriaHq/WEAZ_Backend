@@ -32,8 +32,14 @@ export class TrustedDeviceService {
   }
 
   private buildFingerprint(req: Request): string {
-    const userAgent = String(req.headers['user-agent'] ?? 'unknown').toLowerCase().trim();
-    const platform = String(req.headers['sec-ch-ua-platform'] ?? req.headers['x-client-platform'] ?? 'unknown')
+    const userAgent = String(req.headers['user-agent'] ?? 'unknown')
+      .toLowerCase()
+      .trim();
+    const platform = String(
+      req.headers['sec-ch-ua-platform'] ??
+        req.headers['x-client-platform'] ??
+        'unknown',
+    )
       .toLowerCase()
       .trim();
     const acceptLanguage = String(req.headers['accept-language'] ?? 'unknown')
@@ -44,7 +50,10 @@ export class TrustedDeviceService {
     return this.hash(`${userAgent}|${platform}|${acceptLanguage}`);
   }
 
-  async recordLoginDevice(userId: string, req: Request): Promise<{ isNewDevice: boolean }> {
+  async recordLoginDevice(
+    userId: string,
+    req: Request,
+  ): Promise<{ isNewDevice: boolean }> {
     const fingerprintHash = this.buildFingerprint(req);
     const normalizedIp = this.normalizeIp(this.extractClientIp(req));
     const lastIpHash = this.hash(normalizedIp);

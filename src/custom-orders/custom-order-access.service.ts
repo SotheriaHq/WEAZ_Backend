@@ -1,4 +1,8 @@
-import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { BrandPermissionService } from 'src/brands/permissions/brand-permission.service';
 import { BRAND_PERMISSIONS } from 'src/brands/permissions/brand-permissions';
@@ -34,7 +38,10 @@ export class CustomOrderAccessService {
     return order.brandId;
   }
 
-  async assertBrandOrdersRead(userId: string, brandIdOrOwnerId: string): Promise<string> {
+  async assertBrandOrdersRead(
+    userId: string,
+    brandIdOrOwnerId: string,
+  ): Promise<string> {
     const brandId = await this.resolveBrandId(brandIdOrOwnerId);
     await this.brandPermissionService.assertPermission(
       userId,
@@ -44,7 +51,10 @@ export class CustomOrderAccessService {
     return brandId;
   }
 
-  async assertBrandOrdersUpdate(userId: string, brandIdOrOwnerId: string): Promise<string> {
+  async assertBrandOrdersUpdate(
+    userId: string,
+    brandIdOrOwnerId: string,
+  ): Promise<string> {
     const brandId = await this.resolveBrandId(brandIdOrOwnerId);
     await this.brandPermissionService.assertPermission(
       userId,
@@ -54,7 +64,10 @@ export class CustomOrderAccessService {
     return brandId;
   }
 
-  async assertCustomOrderBuyerAccess(userId: string, customOrderId: string): Promise<void> {
+  async assertCustomOrderBuyerAccess(
+    userId: string,
+    customOrderId: string,
+  ): Promise<void> {
     const order = await this.prisma.customOrder.findUnique({
       where: { id: customOrderId },
       select: { buyerId: true },
@@ -67,7 +80,10 @@ export class CustomOrderAccessService {
     }
   }
 
-  async assertCustomOrderBrandRead(userId: string, customOrderId: string): Promise<void> {
+  async assertCustomOrderBrandRead(
+    userId: string,
+    customOrderId: string,
+  ): Promise<void> {
     const brandId = await this.resolveCustomOrderBrandId(customOrderId);
     await this.brandPermissionService.assertPermission(
       userId,
@@ -76,7 +92,10 @@ export class CustomOrderAccessService {
     );
   }
 
-  async assertCustomOrderBrandUpdate(userId: string, customOrderId: string): Promise<void> {
+  async assertCustomOrderBrandUpdate(
+    userId: string,
+    customOrderId: string,
+  ): Promise<void> {
     const brandId = await this.resolveCustomOrderBrandId(customOrderId);
     await this.brandPermissionService.assertPermission(
       userId,
@@ -85,7 +104,10 @@ export class CustomOrderAccessService {
     );
   }
 
-  async assertCustomOrderParticipantRead(userId: string, customOrderId: string): Promise<void> {
+  async assertCustomOrderParticipantRead(
+    userId: string,
+    customOrderId: string,
+  ): Promise<void> {
     const order = await this.prisma.customOrder.findUnique({
       where: { id: customOrderId },
       select: { buyerId: true, brandId: true },
@@ -103,7 +125,10 @@ export class CustomOrderAccessService {
     );
   }
 
-  async canReadCustomOrder(userId: string, customOrderId: string): Promise<boolean> {
+  async canReadCustomOrder(
+    userId: string,
+    customOrderId: string,
+  ): Promise<boolean> {
     try {
       await this.assertCustomOrderParticipantRead(userId, customOrderId);
       return true;
@@ -112,7 +137,10 @@ export class CustomOrderAccessService {
     }
   }
 
-  async canUpdateCustomOrderAsBrand(userId: string, customOrderId: string): Promise<boolean> {
+  async canUpdateCustomOrderAsBrand(
+    userId: string,
+    customOrderId: string,
+  ): Promise<boolean> {
     try {
       await this.assertCustomOrderBrandUpdate(userId, customOrderId);
       return true;

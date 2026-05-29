@@ -1,5 +1,14 @@
-import { BadRequestException, Injectable, NotFoundException, Optional } from '@nestjs/common';
-import { AdminAuditAction, CollectionVisibility, TagStatus } from '@prisma/client';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+  Optional,
+} from '@nestjs/common';
+import {
+  AdminAuditAction,
+  CollectionVisibility,
+  TagStatus,
+} from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { TagIndexService } from './tag-index.service';
 import * as crypto from 'crypto';
@@ -208,7 +217,9 @@ export class TagsService {
   }
 
   private parseLifecycleStage(state?: string): TagLifecycleStage {
-    const normalized = String(state ?? 'all').trim().toLowerCase();
+    const normalized = String(state ?? 'all')
+      .trim()
+      .toLowerCase();
     if (normalized === 'pending') return 'pending';
     if (normalized === 'approved') return 'approved';
     if (normalized === 'rejected') return 'rejected';
@@ -216,14 +227,18 @@ export class TagsService {
   }
 
   private parseTagStatus(input?: string | TagStatus | null): TagStatusValue {
-    const normalized = String(input ?? '').trim().toUpperCase();
+    const normalized = String(input ?? '')
+      .trim()
+      .toUpperCase();
     if (normalized === 'PENDING') return 'PENDING';
     if (normalized === 'REJECTED') return 'REJECTED';
     return 'APPROVED';
   }
 
   private parseModerationStatus(input?: string): TagStatusValue {
-    const normalized = String(input ?? '').trim().toUpperCase();
+    const normalized = String(input ?? '')
+      .trim()
+      .toUpperCase();
     if (normalized === 'PENDING') return 'PENDING';
     if (normalized === 'REJECTED') return 'REJECTED';
     return 'APPROVED';
@@ -244,23 +259,35 @@ export class TagsService {
   }
 
   private parseAdminSort(sort?: string): TagAdminSortMode {
-    const normalized = String(sort ?? 'recent').trim().toLowerCase();
+    const normalized = String(sort ?? 'recent')
+      .trim()
+      .toLowerCase();
     if (normalized === 'popular') return 'popular';
     if (normalized === 'last-used') return 'last-used';
     if (normalized === 'name-asc') return 'name-asc';
     return 'recent';
   }
 
-  private isTagVisibleToViewer(tag: {
-    status?: TagStatus | null;
-    isBanned?: boolean;
-    createdById?: string | null;
-  }, viewerId?: string | null, isSuperAdmin = false): boolean {
+  private isTagVisibleToViewer(
+    tag: {
+      status?: TagStatus | null;
+      isBanned?: boolean;
+      createdById?: string | null;
+    },
+    viewerId?: string | null,
+    isSuperAdmin = false,
+  ): boolean {
     if (isSuperAdmin) return true;
 
-    const status = (tag.status ?? (tag.isBanned ? TagStatus.REJECTED : TagStatus.APPROVED)) as TagStatus;
+    const status = (tag.status ??
+      (tag.isBanned ? TagStatus.REJECTED : TagStatus.APPROVED)) as TagStatus;
     if (status === TagStatus.APPROVED && !tag.isBanned) return true;
-    if (status === TagStatus.PENDING && viewerId && tag.createdById === viewerId) return true;
+    if (
+      status === TagStatus.PENDING &&
+      viewerId &&
+      tag.createdById === viewerId
+    )
+      return true;
     return false;
   }
 
@@ -297,9 +324,17 @@ export class TagsService {
     const sort = this.parseAdminSort(params.sort);
     const orderBy =
       sort === 'popular'
-        ? [{ usageCount: 'desc' }, { lastUsedAt: 'desc' }, { normalizedName: 'asc' }]
+        ? [
+            { usageCount: 'desc' },
+            { lastUsedAt: 'desc' },
+            { normalizedName: 'asc' },
+          ]
         : sort === 'last-used'
-          ? [{ lastUsedAt: 'desc' }, { usageCount: 'desc' }, { normalizedName: 'asc' }]
+          ? [
+              { lastUsedAt: 'desc' },
+              { usageCount: 'desc' },
+              { normalizedName: 'asc' },
+            ]
           : sort === 'name-asc'
             ? [{ normalizedName: 'asc' }]
             : [{ createdAt: 'desc' }, { normalizedName: 'asc' }];
@@ -348,13 +383,11 @@ export class TagsService {
         isBanned: row.isBanned,
         aliasOfTagName: row.aliasOfTag?.normalizedName ?? null,
         createdById: row.createdById ?? null,
-        createdBy: row.createdBy
-          ? this.mapOwnerDisplay(row.createdBy)
-          : null,
+        createdBy: row.createdBy ? this.mapOwnerDisplay(row.createdBy) : null,
         createdAt: row.createdAt.toISOString(),
         lastUsedAt: row.lastUsedAt ? row.lastUsedAt.toISOString() : null,
       })),
-      nextCursor: hasMore ? pageRows[pageRows.length - 1]?.id ?? null : null,
+      nextCursor: hasMore ? (pageRows[pageRows.length - 1]?.id ?? null) : null,
     };
   }
 
@@ -468,7 +501,13 @@ export class TagsService {
           OR: [
             { status: TagStatus.APPROVED, isBanned: false },
             ...(viewerId
-              ? [{ status: TagStatus.PENDING, createdById: viewerId, isBanned: false }]
+              ? [
+                  {
+                    status: TagStatus.PENDING,
+                    createdById: viewerId,
+                    isBanned: false,
+                  },
+                ]
               : []),
           ],
         }
@@ -585,7 +624,13 @@ export class TagsService {
           OR: [
             { status: TagStatus.APPROVED, isBanned: false },
             ...(viewerId
-              ? [{ status: TagStatus.PENDING, createdById: viewerId, isBanned: false }]
+              ? [
+                  {
+                    status: TagStatus.PENDING,
+                    createdById: viewerId,
+                    isBanned: false,
+                  },
+                ]
               : []),
           ],
         }
@@ -617,7 +662,9 @@ export class TagsService {
     });
 
     return rows
-      .filter((row: any) => this.isTagVisibleToViewer(row, viewerId, isSuperAdmin))
+      .filter((row: any) =>
+        this.isTagVisibleToViewer(row, viewerId, isSuperAdmin),
+      )
       .map((row: any) => ({
         tag: row.normalizedName,
         count: row.usageCount,
@@ -750,11 +797,14 @@ export class TagsService {
 
     const typedGroupedBindings = groupedBindings as TagGroupedBindingRow[];
 
-    const countRows = typedGroupedBindings.reduce((acc: Record<string, number>, row) => {
-      const key = row.entityType;
-      acc[key] = (acc[key] ?? 0) + Number(row._count?._all ?? 0);
-      return acc;
-    }, {});
+    const countRows = typedGroupedBindings.reduce(
+      (acc: Record<string, number>, row) => {
+        const key = row.entityType;
+        acc[key] = (acc[key] ?? 0) + Number(row._count?._all ?? 0);
+        return acc;
+      },
+      {},
+    );
 
     const collectionIds = typedGroupedBindings
       .filter((row) => row.entityType === TAG_ENTITY_TYPE.COLLECTION)
@@ -805,10 +855,10 @@ export class TagsService {
         ? this.prisma.user.findMany({
             where: { id: { in: userBrandIds } },
             select: {
-          id: true,
-          username: true,
-          brand: { select: canonicalBrandProfileSelect },
-        },
+              id: true,
+              username: true,
+              brand: { select: canonicalBrandProfileSelect },
+            },
           })
         : Promise.resolve([]),
     ]);
@@ -826,7 +876,10 @@ export class TagsService {
 
     products.forEach((row) => {
       if (row.brand?.ownerId) {
-        ownerByEntity.set(`${TAG_ENTITY_TYPE.PRODUCT}:${row.id}`, row.brand.ownerId);
+        ownerByEntity.set(
+          `${TAG_ENTITY_TYPE.PRODUCT}:${row.id}`,
+          row.brand.ownerId,
+        );
       }
       labelByEntity.set(
         `${TAG_ENTITY_TYPE.PRODUCT}:${row.id}`,
@@ -836,7 +889,10 @@ export class TagsService {
 
     brands.forEach((row) => {
       ownerByEntity.set(`${TAG_ENTITY_TYPE.BRAND}:${row.id}`, row.ownerId);
-      labelByEntity.set(`${TAG_ENTITY_TYPE.BRAND}:${row.id}`, row.name?.trim() || 'Brand');
+      labelByEntity.set(
+        `${TAG_ENTITY_TYPE.BRAND}:${row.id}`,
+        row.name?.trim() || 'Brand',
+      );
     });
 
     userBrands.forEach((row) => {
@@ -872,7 +928,7 @@ export class TagsService {
           ? previous.latestTaggedAt > rowLatest
             ? previous.latestTaggedAt
             : rowLatest
-          : previous.latestTaggedAt ?? rowLatest;
+          : (previous.latestTaggedAt ?? rowLatest);
 
       usageByUser.set(ownerId, {
         usageCount: previous.usageCount + rowCount,
@@ -902,7 +958,8 @@ export class TagsService {
         return {
           userId,
           username: user.username,
-          brandFullName: resolveRequiredBrandField(user, 'brandFullName') || null,
+          brandFullName:
+            resolveRequiredBrandField(user, 'brandFullName') || null,
           profileImage: user.brand?.logo ?? resolveProfileImage(user).url,
           usageCount: stats.usageCount,
           latestTaggedAt: stats.latestTaggedAt
@@ -913,8 +970,12 @@ export class TagsService {
       .filter((entry): entry is TagLifecycleActor => Boolean(entry))
       .sort((a, b) => {
         if (b.usageCount !== a.usageCount) return b.usageCount - a.usageCount;
-        const aDate = a.latestTaggedAt ? new Date(a.latestTaggedAt).getTime() : 0;
-        const bDate = b.latestTaggedAt ? new Date(b.latestTaggedAt).getTime() : 0;
+        const aDate = a.latestTaggedAt
+          ? new Date(a.latestTaggedAt).getTime()
+          : 0;
+        const bDate = b.latestTaggedAt
+          ? new Date(b.latestTaggedAt).getTime()
+          : 0;
         return bDate - aDate;
       })
       .slice(0, 50);
@@ -1005,13 +1066,19 @@ export class TagsService {
       })
       .sort((a, b) => {
         if (b.usageCount !== a.usageCount) return b.usageCount - a.usageCount;
-        const aDate = a.latestTaggedAt ? new Date(a.latestTaggedAt).getTime() : 0;
-        const bDate = b.latestTaggedAt ? new Date(b.latestTaggedAt).getTime() : 0;
+        const aDate = a.latestTaggedAt
+          ? new Date(a.latestTaggedAt).getTime()
+          : 0;
+        const bDate = b.latestTaggedAt
+          ? new Date(b.latestTaggedAt).getTime()
+          : 0;
         return bDate - aDate;
       })
       .slice(0, 100);
 
-    const resolvedUsageCount = Number(bindingStats?._count?._all ?? tag.usageCount ?? 0);
+    const resolvedUsageCount = Number(
+      bindingStats?._count?._all ?? tag.usageCount ?? 0,
+    );
 
     const entityCounts = countRows;
 
@@ -1028,9 +1095,7 @@ export class TagsService {
         usageCount: resolvedUsageCount,
       }),
       createdById: tag.createdById ?? null,
-      createdBy: tag.createdBy
-        ? this.mapOwnerDisplay(tag.createdBy)
-        : null,
+      createdBy: tag.createdBy ? this.mapOwnerDisplay(tag.createdBy) : null,
       lastUsedAt: tag.lastUsedAt ? tag.lastUsedAt.toISOString() : null,
       aliasOf: tag.aliasOfTag
         ? {
@@ -1251,7 +1316,10 @@ export class TagsService {
             tags: p.tags ?? [],
             thumbnail: p.thumbnail,
             price: Number(p.price),
-            salePrice: p.salePrice !== null && p.salePrice !== undefined ? Number(p.salePrice) : null,
+            salePrice:
+              p.salePrice !== null && p.salePrice !== undefined
+                ? Number(p.salePrice)
+                : null,
             currency: p.currency,
             createdAt: p.createdAt.toISOString(),
             brand: {
@@ -1351,7 +1419,9 @@ export class TagsService {
     });
     await this.recordTagAudit({
       actorUserId,
-      operation: shouldBan ? 'hashtag_rejected_or_banned' : 'hashtag_status_updated',
+      operation: shouldBan
+        ? 'hashtag_rejected_or_banned'
+        : 'hashtag_status_updated',
       targetId: updated.normalizedName,
       previousState: previous ?? undefined,
       newState: {
@@ -1385,8 +1455,10 @@ export class TagsService {
   ): Promise<void> {
     const source = this.normalizeLookup(sourceInput);
     const target = this.normalizeLookup(targetInput);
-    if (!source || !target) throw new BadRequestException('Invalid tag merge input');
-    if (source === target) throw new BadRequestException('Source and target tags must differ');
+    if (!source || !target)
+      throw new BadRequestException('Invalid tag merge input');
+    if (source === target)
+      throw new BadRequestException('Source and target tags must differ');
 
     await this.prisma.$transaction(async (tx) => {
       const sourceTag = await (tx as any).tag.upsert({

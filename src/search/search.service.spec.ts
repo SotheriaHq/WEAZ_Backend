@@ -12,7 +12,10 @@ describe('SearchController', () => {
     const controller = new SearchController(service);
 
     await expect(
-      controller.search({ q: 'jacket', type: 'product,nope' } as any, {} as any),
+      controller.search(
+        { q: 'jacket', type: 'product,nope' } as any,
+        {} as any,
+      ),
     ).rejects.toBeInstanceOf(BadRequestException);
     expect(service.search).not.toHaveBeenCalled();
   });
@@ -40,7 +43,9 @@ describe('SearchService', () => {
 
     const service = new SearchService(prisma, tags);
     jest.spyOn(service as any, 'getCachedSearchResult').mockResolvedValue(null);
-    jest.spyOn(service as any, 'setCachedSearchResult').mockResolvedValue(undefined);
+    jest
+      .spyOn(service as any, 'setCachedSearchResult')
+      .mockResolvedValue(undefined);
     jest.spyOn(service as any, 'recordSearch').mockResolvedValue(undefined);
 
     return { service, prisma };
@@ -72,7 +77,13 @@ describe('SearchService', () => {
       limit: 20,
     });
 
-    expect(searchProductsPage).toHaveBeenCalledWith('jacket', ['jacket'], 20, 20, undefined);
+    expect(searchProductsPage).toHaveBeenCalledWith(
+      'jacket',
+      ['jacket'],
+      20,
+      20,
+      undefined,
+    );
     expect(response.items).toHaveLength(1);
     expect(response.counts.product).toBe(41);
     expect(response.meta.hasNextPage).toBe(true);
@@ -96,9 +107,15 @@ describe('SearchService', () => {
         total: 1,
       });
     const searchProductsPage = jest.spyOn(service as any, 'searchProductsPage');
-    jest.spyOn(service as any, 'getSearchCacheVersionToken').mockResolvedValue('0.0');
+    jest
+      .spyOn(service as any, 'getSearchCacheVersionToken')
+      .mockResolvedValue('0.0');
 
-    const response = await service.search({ query: '@nike', page: 1, limit: 20 });
+    const response = await service.search({
+      query: '@nike',
+      page: 1,
+      limit: 20,
+    });
 
     expect(searchBrandsPage).toHaveBeenCalledWith('nike', ['nike'], 20, 0);
     expect(searchProductsPage).not.toHaveBeenCalled();
@@ -112,7 +129,9 @@ describe('SearchService', () => {
       .spyOn(service as any, 'fetchSuggestionItems')
       .mockResolvedValue([]);
     const searchProductsPage = jest.spyOn(service as any, 'searchProductsPage');
-    jest.spyOn(service as any, 'resolveBrandOwnerId').mockResolvedValue(undefined);
+    jest
+      .spyOn(service as any, 'resolveBrandOwnerId')
+      .mockResolvedValue(undefined);
 
     await service.suggest('r');
 
@@ -123,18 +142,34 @@ describe('SearchService', () => {
   it('falls back to database search when redis suggestions miss', async () => {
     const { service } = createService();
     jest.spyOn(service as any, 'fetchSuggestionItems').mockResolvedValue([]);
-    jest.spyOn(service as any, 'resolveBrandOwnerId').mockResolvedValue(undefined);
+    jest
+      .spyOn(service as any, 'resolveBrandOwnerId')
+      .mockResolvedValue(undefined);
     const searchProductsPage = jest
       .spyOn(service as any, 'searchProductsPage')
       .mockResolvedValue({ items: [buildItem()], total: 1 });
-    jest.spyOn(service as any, 'searchBrandsPage').mockResolvedValue({ items: [], total: 0 });
-    jest.spyOn(service as any, 'searchDesignsPage').mockResolvedValue({ items: [], total: 0 });
-    jest.spyOn(service as any, 'searchCollectionsPage').mockResolvedValue({ items: [], total: 0 });
-    jest.spyOn(service as any, 'searchTagsPage').mockResolvedValue({ items: [], total: 0 });
+    jest
+      .spyOn(service as any, 'searchBrandsPage')
+      .mockResolvedValue({ items: [], total: 0 });
+    jest
+      .spyOn(service as any, 'searchDesignsPage')
+      .mockResolvedValue({ items: [], total: 0 });
+    jest
+      .spyOn(service as any, 'searchCollectionsPage')
+      .mockResolvedValue({ items: [], total: 0 });
+    jest
+      .spyOn(service as any, 'searchTagsPage')
+      .mockResolvedValue({ items: [], total: 0 });
 
     const response = await service.suggest('ada');
 
-    expect(searchProductsPage).toHaveBeenCalledWith('ada', ['ada'], 3, 0, undefined);
+    expect(searchProductsPage).toHaveBeenCalledWith(
+      'ada',
+      ['ada'],
+      3,
+      0,
+      undefined,
+    );
     expect(response.products.items).toHaveLength(1);
     expect(response.products.total).toBe(1);
   });
@@ -144,7 +179,9 @@ describe('SearchService', () => {
     const fetchSuggestionItems = jest
       .spyOn(service as any, 'fetchSuggestionItems')
       .mockResolvedValue([]);
-    jest.spyOn(service as any, 'resolveBrandOwnerId').mockResolvedValue(undefined);
+    jest
+      .spyOn(service as any, 'resolveBrandOwnerId')
+      .mockResolvedValue(undefined);
     const searchTagsPage = jest
       .spyOn(service as any, 'searchTagsPage')
       .mockResolvedValue({ items: [], total: 0 });

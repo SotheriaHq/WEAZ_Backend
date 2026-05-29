@@ -5,7 +5,6 @@ import {
   CustomOrderLedgerAllocationType,
   EscrowHoldStatus,
   LedgerEntryDirection,
-  PayoutStatus,
   SettlementFinalReleaseTrigger,
   SettlementOrderType,
   SettlementPolicyScope,
@@ -290,12 +289,14 @@ describe('AdminFinanceService settlement policy management', () => {
     ]);
     prisma.customOrderLedgerAllocation.findMany.mockResolvedValue([
       {
-        allocationType: CustomOrderLedgerAllocationType.BRAND_ACCEPTANCE_PORTION,
+        allocationType:
+          CustomOrderLedgerAllocationType.BRAND_ACCEPTANCE_PORTION,
         amount: 600,
         status: CustomOrderLedgerAllocationStatus.PAYOUT_ELIGIBLE,
       },
       {
-        allocationType: CustomOrderLedgerAllocationType.FINAL_COMPLETION_PORTION,
+        allocationType:
+          CustomOrderLedgerAllocationType.FINAL_COMPLETION_PORTION,
         amount: 400,
         status: CustomOrderLedgerAllocationStatus.HELD,
       },

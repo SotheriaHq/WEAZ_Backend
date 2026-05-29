@@ -15,15 +15,6 @@ type PaidOrderSnapshot = {
   currency: string;
 };
 
-type PaidAttemptSnapshot = {
-  id: string;
-  reference: string;
-  amount: Prisma.Decimal;
-  currency: string;
-  settlementAmount: Prisma.Decimal | null;
-  settlementCurrency: string | null;
-};
-
 @Injectable()
 export class StandardOrderFinanceSyncService {
   constructor(
@@ -131,15 +122,24 @@ export class StandardOrderFinanceSyncService {
       }
 
       await this.prisma.$transaction(async (tx) => {
-        const paymentCurrency = attempt.currency || linkedOrders[0]?.currency || 'NGN';
-        const settlementCurrency = attempt.settlementCurrency || paymentCurrency;
+        const paymentCurrency =
+          attempt.currency || linkedOrders[0]?.currency || 'NGN';
+        const settlementCurrency =
+          attempt.settlementCurrency || paymentCurrency;
         const grossAmount = this.roundMoney(
-          linkedOrders.reduce((sum, order) => sum + Number(order.totalAmount ?? 0), 0),
+          linkedOrders.reduce(
+            (sum, order) => sum + Number(order.totalAmount ?? 0),
+            0,
+          ),
         );
         const settlementAmount =
           settlementCurrency === paymentCurrency
             ? grossAmount
-            : this.roundMoney(Number(attempt.settlementAmount ?? attempt.amount ?? grossAmount));
+            : this.roundMoney(
+                Number(
+                  attempt.settlementAmount ?? attempt.amount ?? grossAmount,
+                ),
+              );
 
         await this.standardOrderEscrowService.ensureHoldsForPaidOrders(
           tx,

@@ -116,7 +116,8 @@ export class TokenService {
       }
       return typeof value === 'string' ? value.trim() : '';
     };
-    const city = readHeaderValue('x-vercel-ip-city') || readHeaderValue('cf-ipcity');
+    const city =
+      readHeaderValue('x-vercel-ip-city') || readHeaderValue('cf-ipcity');
     const country =
       readHeaderValue('x-vercel-ip-country') ||
       readHeaderValue('cf-ipcountry') ||
@@ -159,11 +160,17 @@ export class TokenService {
     return role === 'SuperAdmin' || role === 'Admin';
   }
 
-  private async issueRefreshToken(userId: string, req: Request, ttlMs?: number) {
+  private async issueRefreshToken(
+    userId: string,
+    req: Request,
+    ttlMs?: number,
+  ) {
     const sessionId = uuidv4();
     const secret = randomBytes(32).toString('hex');
     const tokenHash = await bcrypt.hash(secret, this.bcryptRounds);
-    const expiresAt = new Date(Date.now() + (ttlMs ?? this.refreshTokenTtlMilliseconds));
+    const expiresAt = new Date(
+      Date.now() + (ttlMs ?? this.refreshTokenTtlMilliseconds),
+    );
 
     await this.prisma.refreshToken.create({
       data: {
@@ -222,7 +229,11 @@ export class TokenService {
         expiresIn: this.accessTokenTtlSeconds,
       });
 
-      const refreshToken = await this.issueRefreshToken(user.id, req, refreshTtl);
+      const refreshToken = await this.issueRefreshToken(
+        user.id,
+        req,
+        refreshTtl,
+      );
 
       this.attachAuthCookies(res, accessToken, refreshToken, refreshTtl);
 
@@ -236,7 +247,11 @@ export class TokenService {
     }
   }
 
-  async generateWebSessionForUserId(userId: string, req: Request, res: Response) {
+  async generateWebSessionForUserId(
+    userId: string,
+    req: Request,
+    res: Response,
+  ) {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
       select: authUserSelect,
@@ -246,7 +261,9 @@ export class TokenService {
       throw new UnauthorizedException('User not found');
     }
     if (user.status !== 'ACTIVE') {
-      throw new UnauthorizedException('User account is suspended or deactivated');
+      throw new UnauthorizedException(
+        'User account is suspended or deactivated',
+      );
     }
 
     const payload = buildAuthTokenPayload(user);
@@ -289,15 +306,21 @@ export class TokenService {
       }
 
       if (user.status !== 'ACTIVE') {
-        await this.prisma.refreshToken.delete({ where: { id: storedToken.id } });
-        throw new UnauthorizedException('User account is suspended or deactivated');
+        await this.prisma.refreshToken.delete({
+          where: { id: storedToken.id },
+        });
+        throw new UnauthorizedException(
+          'User account is suspended or deactivated',
+        );
       }
 
       if (
         user.mustResetPassword &&
         (user.role === 'Admin' || user.role === 'SuperAdmin')
       ) {
-        await this.prisma.refreshToken.delete({ where: { id: storedToken.id } });
+        await this.prisma.refreshToken.delete({
+          where: { id: storedToken.id },
+        });
         throw new UnauthorizedException(
           'Password reset required for this admin account',
         );
@@ -305,10 +328,15 @@ export class TokenService {
 
       if (
         this.isAdminRole(user.role) &&
-        Date.now() - storedToken.createdAt.getTime() > ADMIN_ABSOLUTE_SESSION_TTL_MS
+        Date.now() - storedToken.createdAt.getTime() >
+          ADMIN_ABSOLUTE_SESSION_TTL_MS
       ) {
-        await this.prisma.refreshToken.delete({ where: { id: storedToken.id } });
-        throw new UnauthorizedException('Admin session expired. Please log in again');
+        await this.prisma.refreshToken.delete({
+          where: { id: storedToken.id },
+        });
+        throw new UnauthorizedException(
+          'Admin session expired. Please log in again',
+        );
       }
 
       const payload = buildAuthTokenPayload(user);
@@ -324,16 +352,13 @@ export class TokenService {
         refreshTtl,
       );
 
-      this.attachAuthCookies(
-        res,
-        accessToken,
-        rotatedRefreshToken,
-        refreshTtl,
-      );
+      this.attachAuthCookies(res, accessToken, rotatedRefreshToken, refreshTtl);
 
       return {
         accessToken,
-        refreshToken: this.isMobileClient(req) ? rotatedRefreshToken : undefined,
+        refreshToken: this.isMobileClient(req)
+          ? rotatedRefreshToken
+          : undefined,
       };
     } catch (error: any) {
       this.logger.error('Refresh token error:', error.message, error.stack);
@@ -374,7 +399,9 @@ export class TokenService {
     let currentSessionId: string | null = null;
     if (currentRawRefreshToken) {
       try {
-        currentSessionId = this.parseRefreshToken(currentRawRefreshToken).sessionId;
+        currentSessionId = this.parseRefreshToken(
+          currentRawRefreshToken,
+        ).sessionId;
       } catch {
         currentSessionId = null;
       }

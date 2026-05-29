@@ -115,12 +115,7 @@ export class AdminBrandsController {
     @Body('reason') reason?: string,
     @Req() req?: Request & { user: { id: string } },
   ) {
-    return this.adminBrandsService.suspendBrand(
-      id,
-      reason,
-      req!.user.id,
-      req!,
-    );
+    return this.adminBrandsService.suspendBrand(id, reason, req!.user.id, req!);
   }
 
   @Get(':id/verification')
@@ -135,7 +130,8 @@ export class AdminBrandsController {
   @ApiOperation({ summary: 'Claim a verification review' })
   async claimVerification(
     @Param('id') id: string,
-    @Body(new ValidationPipe({ whitelist: true, transform: true })) dto: VerificationVersionDto,
+    @Body(new ValidationPipe({ whitelist: true, transform: true }))
+    dto: VerificationVersionDto,
     @Req() req: Request & { user: { id: string } },
   ) {
     return this.brandVerificationService.claim(
@@ -151,7 +147,8 @@ export class AdminBrandsController {
   @ApiOperation({ summary: 'Release a claimed verification review' })
   async releaseVerification(
     @Param('id') id: string,
-    @Body(new ValidationPipe({ whitelist: true, transform: true })) dto: VerificationVersionDto,
+    @Body(new ValidationPipe({ whitelist: true, transform: true }))
+    dto: VerificationVersionDto,
     @Req() req: Request & { user: { id: string } },
   ) {
     return this.brandVerificationService.release(
@@ -164,10 +161,13 @@ export class AdminBrandsController {
 
   @Patch(':id/verification/reassign-to-self')
   @RequirePermissions(ADMIN_PERMISSIONS.BRANDS_VERIFY)
-  @ApiOperation({ summary: 'Reassign an active verification review to yourself' })
+  @ApiOperation({
+    summary: 'Reassign an active verification review to yourself',
+  })
   async reassignVerificationToSelf(
     @Param('id') id: string,
-    @Body(new ValidationPipe({ whitelist: true, transform: true })) dto: VerificationVersionDto,
+    @Body(new ValidationPipe({ whitelist: true, transform: true }))
+    dto: VerificationVersionDto,
     @Req() req: Request & { user: { id: string } },
   ) {
     return this.brandVerificationService.reassignToSelf(
@@ -180,10 +180,13 @@ export class AdminBrandsController {
 
   @Patch(':id/verification/request-info')
   @RequirePermissions(ADMIN_PERMISSIONS.BRANDS_VERIFY)
-  @ApiOperation({ summary: 'Request more verification information from a brand' })
+  @ApiOperation({
+    summary: 'Request more verification information from a brand',
+  })
   async requestVerificationInfo(
     @Param('id') id: string,
-    @Body(new ValidationPipe({ whitelist: true })) dto: RequestVerificationInfoDto,
+    @Body(new ValidationPipe({ whitelist: true }))
+    dto: RequestVerificationInfoDto,
     @Req() req: Request & { user: { id: string } },
   ) {
     return this.brandVerificationService.requestInfo(id, req.user.id, dto, req);
@@ -194,7 +197,8 @@ export class AdminBrandsController {
   @ApiOperation({ summary: 'Approve or reject brand verification' })
   async reviewVerification(
     @Param('id') id: string,
-    @Body(new ValidationPipe({ whitelist: true })) dto: ReviewBrandVerificationDto,
+    @Body(new ValidationPipe({ whitelist: true }))
+    dto: ReviewBrandVerificationDto,
     @Req() req: Request & { user: { id: string } },
   ) {
     return this.brandVerificationService.review(id, req.user.id, dto, req);

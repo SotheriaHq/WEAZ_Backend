@@ -36,7 +36,10 @@ describe('ImageController', () => {
           },
         },
         { provide: SystemConfigService, useValue: { get: jest.fn() } },
-        { provide: ImageProcessingQueueService, useValue: { enqueueSingle: jest.fn() } },
+        {
+          provide: ImageProcessingQueueService,
+          useValue: { enqueueSingle: jest.fn() },
+        },
       ],
     }).compile();
 

@@ -92,7 +92,9 @@ export class MarketSignalService {
       MARKET_SIGNAL_MAX_TARGET_ID_LENGTH,
     );
     const anonymousSessionId = this.cleanToken(
-      userId ? undefined : identity.anonymousSessionId ?? dto.anonymousSessionId,
+      userId
+        ? undefined
+        : (identity.anonymousSessionId ?? dto.anonymousSessionId),
       'anonymousSessionId',
       MARKET_SIGNAL_MAX_TARGET_ID_LENGTH,
     );
@@ -160,7 +162,8 @@ export class MarketSignalService {
 
     const userFeedSignals: Prisma.UserFeedSignalCreateManyInput[] = [];
     const seenItems: Prisma.UserSeenItemCreateManyInput[] = [];
-    const marketSectionSignals: Prisma.MarketSectionSignalCreateManyInput[] = [];
+    const marketSectionSignals: Prisma.MarketSectionSignalCreateManyInput[] =
+      [];
     const suggestionSignals: Prisma.SuggestionSignalCreateManyInput[] = [];
 
     for (const normalized of acceptedEvents) {
@@ -416,7 +419,11 @@ export class MarketSignalService {
         MARKET_SIGNAL_MAX_SCREEN_CONTEXT_LENGTH,
       ),
       sessionId:
-        this.cleanToken(event.sessionId, 'sessionId', MARKET_SIGNAL_MAX_TARGET_ID_LENGTH) ??
+        this.cleanToken(
+          event.sessionId,
+          'sessionId',
+          MARKET_SIGNAL_MAX_TARGET_ID_LENGTH,
+        ) ??
         defaultSessionId ??
         null,
       value: Number.isFinite(event.value) ? event.value : null,
@@ -522,8 +529,11 @@ export class MarketSignalService {
 
   private getSectionSignalKey(event: NormalizedMarketSignalEvent) {
     if (event.sectionKey) return event.sectionKey;
-    if (event.targetType === MarketSignalTargetType.SECTION) return event.targetId;
-    return event.signalType.startsWith('MARKET_SECTION_') ? event.targetId : null;
+    if (event.targetType === MarketSignalTargetType.SECTION)
+      return event.targetId;
+    return event.signalType.startsWith('MARKET_SECTION_')
+      ? event.targetId
+      : null;
   }
 
   private getSuggestionBlockKey(event: NormalizedMarketSignalEvent) {
@@ -564,7 +574,9 @@ export class MarketSignalService {
     const cleaned = this.clean(value);
     if (!cleaned) return null;
     if (cleaned.length > maxLength) {
-      throw new BadRequestException(`${field} cannot exceed ${maxLength} characters`);
+      throw new BadRequestException(
+        `${field} cannot exceed ${maxLength} characters`,
+      );
     }
     if (/[\u0000-\u001F\u007F]/.test(cleaned)) {
       throw new BadRequestException(`${field} contains unsupported characters`);

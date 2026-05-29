@@ -109,12 +109,16 @@ describe('MarketSuggestionService', () => {
     },
     storeCollection: {
       findFirst: jest.fn().mockResolvedValue(storeCollection()),
-      findMany: jest.fn().mockResolvedValue([storeCollection({ id: 'collection_2' })]),
+      findMany: jest
+        .fn()
+        .mockResolvedValue([storeCollection({ id: 'collection_2' })]),
     },
     storeCollectionProduct: {
-      findMany: jest.fn().mockResolvedValue([
-        { product: product({ id: 'product_in_collection' }) },
-      ]),
+      findMany: jest
+        .fn()
+        .mockResolvedValue([
+          { product: product({ id: 'product_in_collection' }) },
+        ]),
     },
     brand: {
       findFirst: jest.fn().mockResolvedValue(brand({ id: 'brand_1' })),
@@ -131,7 +135,9 @@ describe('MarketSuggestionService', () => {
       sectionKeys: scope.sectionKeys ?? new Set(),
       suggestionBlockKeys: scope.suggestionBlockKeys ?? new Set(),
     }),
-    targetKey: jest.fn((targetType: string, targetId: string) => `${targetType}:${targetId}`),
+    targetKey: jest.fn(
+      (targetType: string, targetId: string) => `${targetType}:${targetId}`,
+    ),
   });
 
   it('returns product detail blocks and excludes the current product', async () => {
@@ -151,7 +157,10 @@ describe('MarketSuggestionService', () => {
           .mockResolvedValueOnce([product({ id: 'product_fresh' })]),
       },
     });
-    const service = new MarketSuggestionService(prisma as any, suppressionService() as any);
+    const service = new MarketSuggestionService(
+      prisma as any,
+      suppressionService() as any,
+    );
 
     const result = await service.getSuggestions(
       {
@@ -168,14 +177,19 @@ describe('MarketSuggestionService', () => {
       'product-detail-fresh-alternatives',
     ]);
     expect(
-      result.blocks.flatMap((block) => block.items.map((item) => item.sourceId)),
+      result.blocks.flatMap((block) =>
+        block.items.map((item) => item.sourceId),
+      ),
     ).not.toContain('product_target');
     expect(result.metadata.personalization).toBe('disabled');
   });
 
   it('clamps limit to the max suggestion size', async () => {
     const prisma = createPrisma();
-    const service = new MarketSuggestionService(prisma as any, suppressionService() as any);
+    const service = new MarketSuggestionService(
+      prisma as any,
+      suppressionService() as any,
+    );
 
     await service.getSuggestions(
       {
@@ -216,7 +230,11 @@ describe('MarketSuggestionService', () => {
     const prisma = createPrisma({
       product: {
         findFirst: jest.fn().mockResolvedValue(
-          product({ id: 'product_target', brandId: 'brand_1', categoryId: 'category_1' }),
+          product({
+            id: 'product_target',
+            brandId: 'brand_1',
+            categoryId: 'category_1',
+          }),
         ),
         findMany: jest
           .fn()
@@ -244,7 +262,9 @@ describe('MarketSuggestionService', () => {
     );
 
     expect(
-      result.blocks.flatMap((block) => block.items.map((item) => item.sourceId)),
+      result.blocks.flatMap((block) =>
+        block.items.map((item) => item.sourceId),
+      ),
     ).not.toContain('suppressed_product');
   });
 
@@ -252,7 +272,11 @@ describe('MarketSuggestionService', () => {
     const prisma = createPrisma({
       product: {
         findFirst: jest.fn().mockResolvedValue(
-          product({ id: 'product_target', brandId: 'brand_1', categoryId: 'category_1' }),
+          product({
+            id: 'product_target',
+            brandId: 'brand_1',
+            categoryId: 'category_1',
+          }),
         ),
         findMany: jest
           .fn()
@@ -264,7 +288,10 @@ describe('MarketSuggestionService', () => {
           .mockResolvedValueOnce([product({ id: 'product_fresh' })]),
       },
     });
-    const service = new MarketSuggestionService(prisma as any, suppressionService() as any);
+    const service = new MarketSuggestionService(
+      prisma as any,
+      suppressionService() as any,
+    );
 
     const result = await service.getSuggestions(
       {
@@ -387,7 +414,10 @@ describe('MarketSuggestionService', () => {
 
   it('queries only published public collections with available products', async () => {
     const prisma = createPrisma();
-    const service = new MarketSuggestionService(prisma as any, suppressionService() as any);
+    const service = new MarketSuggestionService(
+      prisma as any,
+      suppressionService() as any,
+    );
 
     await service.getSuggestions(
       {

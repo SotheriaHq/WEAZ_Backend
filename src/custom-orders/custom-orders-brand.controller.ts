@@ -32,7 +32,8 @@ export class CustomOrdersBrandController {
   async listOrders(
     @Param('brandId') brandId: string,
     @Req() req: Request & { user: { id: string } },
-    @Query(new ValidationPipe({ transform: true, whitelist: true })) query: QueryCustomOrdersDto,
+    @Query(new ValidationPipe({ transform: true, whitelist: true }))
+    query: QueryCustomOrdersDto,
   ) {
     return this.service.listBrandOrders(req.user.id, brandId, query);
   }
@@ -51,7 +52,13 @@ export class CustomOrdersBrandController {
     @Param('brandId') brandId: string,
     @Param('id') id: string,
     @Req() req: Request & { user: { id: string } },
-    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true }))
+    @Body(
+      new ValidationPipe({
+        transform: true,
+        whitelist: true,
+        forbidNonWhitelisted: true,
+      }),
+    )
     dto: AcceptCustomOrderDto,
   ) {
     return this.service.acceptBrandOrder(req.user.id, brandId, id, dto);
@@ -62,7 +69,13 @@ export class CustomOrdersBrandController {
     @Param('brandId') brandId: string,
     @Param('id') id: string,
     @Req() req: Request & { user: { id: string } },
-    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true }))
+    @Body(
+      new ValidationPipe({
+        transform: true,
+        whitelist: true,
+        forbidNonWhitelisted: true,
+      }),
+    )
     dto: UpdateCustomOrderProgressStageDto,
   ) {
     return this.service.updateBrandProgressStage(req.user.id, brandId, id, dto);
@@ -73,7 +86,13 @@ export class CustomOrdersBrandController {
     @Param('brandId') brandId: string,
     @Param('id') id: string,
     @Req() req: Request & { user: { id: string } },
-    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true }))
+    @Body(
+      new ValidationPipe({
+        transform: true,
+        whitelist: true,
+        forbidNonWhitelisted: true,
+      }),
+    )
     dto: CreateCustomOrderExtensionRequestDto,
   ) {
     return this.service.createExtensionRequest(req.user.id, brandId, id, dto);
@@ -85,10 +104,22 @@ export class CustomOrdersBrandController {
     @Param('id') id: string,
     @Param('requestId') requestId: string,
     @Req() req: Request & { user: { id: string } },
-    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true }))
+    @Body(
+      new ValidationPipe({
+        transform: true,
+        whitelist: true,
+        forbidNonWhitelisted: true,
+      }),
+    )
     dto: BrandRespondToCustomOrderExtensionCounterDto,
   ) {
-    return this.service.respondToBuyerCounter(req.user.id, brandId, id, requestId, dto);
+    return this.service.respondToBuyerCounter(
+      req.user.id,
+      brandId,
+      id,
+      requestId,
+      dto,
+    );
   }
 
   @Patch(':id/status')
@@ -96,7 +127,13 @@ export class CustomOrdersBrandController {
     @Param('brandId') brandId: string,
     @Param('id') id: string,
     @Req() req: Request & { user: { id: string } },
-    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true }))
+    @Body(
+      new ValidationPipe({
+        transform: true,
+        whitelist: true,
+        forbidNonWhitelisted: true,
+      }),
+    )
     dto: UpdateCustomOrderLifecycleStatusDto,
   ) {
     return this.service.updateLifecycleStatus(req.user.id, brandId, id, dto);
@@ -107,9 +144,20 @@ export class CustomOrdersBrandController {
     @Param('brandId') brandId: string,
     @Param('id') id: string,
     @Req() req: Request & { user: { id: string } },
-    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true }))
+    @Body(
+      new ValidationPipe({
+        transform: true,
+        whitelist: true,
+        forbidNonWhitelisted: true,
+      }),
+    )
     dto: CreateExceptionReviewRequestDto,
   ) {
-    return this.service.createExceptionReviewRequest(req.user.id, brandId, id, dto);
+    return this.service.createExceptionReviewRequest(
+      req.user.id,
+      brandId,
+      id,
+      dto,
+    );
   }
 }

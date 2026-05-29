@@ -85,7 +85,11 @@ export class CommentsController {
   @ApiOperation({ summary: 'Toggle thread on a comment' })
   @ApiResponse({ status: 200, description: 'Reaction toggled' })
   toggleThread(@Param('id') id: string, @Req() req: any) {
-    return this.commentsService.toggleReaction(id, req.user.id, 'THREAD' as any);
+    return this.commentsService.toggleReaction(
+      id,
+      req.user.id,
+      'THREAD' as any,
+    );
   }
 
   // Get users who threaded a comment

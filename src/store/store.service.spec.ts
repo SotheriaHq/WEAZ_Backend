@@ -4,7 +4,8 @@ import { createCipheriv, createHash, randomBytes } from 'crypto';
 import { StoreService } from './store.service';
 
 describe('StoreService', () => {
-  const originalStorePaymentAccountSecret = process.env.STORE_PAYMENT_ACCOUNT_SECRET;
+  const originalStorePaymentAccountSecret =
+    process.env.STORE_PAYMENT_ACCOUNT_SECRET;
   const originalVerificationDraftSecret = process.env.VERIFICATION_DRAFT_SECRET;
 
   const prisma = {
@@ -17,12 +18,7 @@ describe('StoreService', () => {
     },
   } as any;
 
-  const service = new StoreService(
-    prisma,
-    {} as any,
-    {} as any,
-    {} as any,
-  );
+  const service = new StoreService(prisma, {} as any, {} as any, {} as any);
 
   const createProductValidationService = (
     validationPrisma: any,
@@ -46,7 +42,8 @@ describe('StoreService', () => {
   });
 
   afterEach(() => {
-    process.env.STORE_PAYMENT_ACCOUNT_SECRET = originalStorePaymentAccountSecret;
+    process.env.STORE_PAYMENT_ACCOUNT_SECRET =
+      originalStorePaymentAccountSecret;
     process.env.VERIFICATION_DRAFT_SECRET = originalVerificationDraftSecret;
   });
 
@@ -62,8 +59,22 @@ describe('StoreService', () => {
     const first = service.listSupportedPaymentBanks();
     const second = service.listSupportedPaymentBanks();
     resolveBanks([
-      { id: 1, code: '058', name: 'Bank A', active: true, currency: 'NGN', type: 'nuban' },
-      { id: 2, code: '011', name: 'Bank B', active: true, currency: 'NGN', type: 'nuban' },
+      {
+        id: 1,
+        code: '058',
+        name: 'Bank A',
+        active: true,
+        currency: 'NGN',
+        type: 'nuban',
+      },
+      {
+        id: 2,
+        code: '011',
+        name: 'Bank B',
+        active: true,
+        currency: 'NGN',
+        type: 'nuban',
+      },
     ]);
 
     const [firstBanks, secondBanks] = await Promise.all([first, second]);
@@ -76,9 +87,9 @@ describe('StoreService', () => {
   it('requires STORE_PAYMENT_ACCOUNT_SECRET for new payout-account encryption', () => {
     delete process.env.STORE_PAYMENT_ACCOUNT_SECRET;
 
-    expect(() => (service as any).encryptStorePaymentValue('1234567890')).toThrow(
-      BadRequestException,
-    );
+    expect(() =>
+      (service as any).encryptStorePaymentValue('1234567890'),
+    ).toThrow(BadRequestException);
   });
 
   it('decrypts legacy payout-account values created with the fallback secret', () => {
@@ -94,7 +105,9 @@ describe('StoreService', () => {
     const tag = cipher.getAuthTag();
     const payload = `${iv.toString('base64')}.${tag.toString('base64')}.${encrypted.toString('base64')}`;
 
-    expect((service as any).decryptStorePaymentValue(payload)).toBe('1234567890');
+    expect((service as any).decryptStorePaymentValue(payload)).toBe(
+      '1234567890',
+    );
   });
 
   it('rejects active product publish validation without structured filters', async () => {
@@ -121,9 +134,7 @@ describe('StoreService', () => {
   it('accepts valid structured filters for active product publish validation', async () => {
     const validationPrisma = {};
     const categoriesService = {
-      validateEntityFilterValues: jest
-        .fn()
-        .mockResolvedValue(['filter-style']),
+      validateEntityFilterValues: jest.fn().mockResolvedValue(['filter-style']),
     };
     const validationService = createProductValidationService(
       validationPrisma,
@@ -148,75 +159,78 @@ describe('StoreService', () => {
       isStoreOpen: true,
       ownerId: 'owner_1',
     });
-    jest.spyOn(service as any, 'listSupportedPaymentBanks').mockResolvedValue([
-      { id: 1, code: '058', name: 'Bank A', currency: 'NGN' },
-    ]);
+    jest
+      .spyOn(service as any, 'listSupportedPaymentBanks')
+      .mockResolvedValue([
+        { id: 1, code: '058', name: 'Bank A', currency: 'NGN' },
+      ]);
     const callPaystackSpy = jest.spyOn(service as any, 'callPaystack');
-    callPaystackSpy.mockImplementation((path: string, options?: { method?: string }) => {
-      if (path.startsWith('/bank/resolve')) {
-        return Promise.resolve({
-          account_number: '1234567890',
-          account_name: 'Ada Lovelace',
-          bank_id: 1,
-        });
-      }
+    callPaystackSpy.mockImplementation(
+      (path: string, options?: { method?: string }) => {
+        if (path.startsWith('/bank/resolve')) {
+          return Promise.resolve({
+            account_number: '1234567890',
+            account_name: 'Ada Lovelace',
+            bank_id: 1,
+          });
+        }
 
-      if (path === '/subaccount' && options?.method === 'POST') {
-        return Promise.resolve({
-          id: 'sub_new',
-          subaccount_code: 'SUB_NEW',
-          active: true,
-          is_verified: true,
-        });
-      }
+        if (path === '/subaccount' && options?.method === 'POST') {
+          return Promise.resolve({
+            id: 'sub_new',
+            subaccount_code: 'SUB_NEW',
+            active: true,
+            is_verified: true,
+          });
+        }
 
-      if (
-        path === '/subaccount/SUB_OLD' &&
-        options?.method === 'PUT'
-      ) {
-        return Promise.resolve({
-          id: 'sub_old',
-          subaccount_code: 'SUB_OLD',
-          active: true,
-          is_verified: true,
-        });
-      }
+        if (path === '/subaccount/SUB_OLD' && options?.method === 'PUT') {
+          return Promise.resolve({
+            id: 'sub_old',
+            subaccount_code: 'SUB_OLD',
+            active: true,
+            is_verified: true,
+          });
+        }
 
-      if (
-        path === '/transferrecipient/TRF_OLD' &&
-        options?.method === 'GET'
-      ) {
-        return Promise.resolve({
-          id: 'recipient_old_remote',
-          recipient_code: 'TRF_OLD',
-          active: true,
-          details: { bank_code: '058', account_number: '1234567890' },
-        });
-      }
+        if (
+          path === '/transferrecipient/TRF_OLD' &&
+          options?.method === 'GET'
+        ) {
+          return Promise.resolve({
+            id: 'recipient_old_remote',
+            recipient_code: 'TRF_OLD',
+            active: true,
+            details: { bank_code: '058', account_number: '1234567890' },
+          });
+        }
 
-      if (
-        path === '/transferrecipient/TRF_OLD' &&
-        options?.method === 'PUT'
-      ) {
-        return Promise.reject(new Error('Transfer recipient update failed'));
-      }
+        if (
+          path === '/transferrecipient/TRF_OLD' &&
+          options?.method === 'PUT'
+        ) {
+          return Promise.reject(new Error('Transfer recipient update failed'));
+        }
 
-      if (
-        path === '/transferrecipient' &&
-        options?.method === 'POST'
-      ) {
-        return Promise.resolve({
-          id: 'recipient_new',
-          recipient_code: 'TRF_NEW',
-          active: true,
-        });
-      }
+        if (path === '/transferrecipient' && options?.method === 'POST') {
+          return Promise.resolve({
+            id: 'recipient_new',
+            recipient_code: 'TRF_NEW',
+            active: true,
+          });
+        }
 
-      return Promise.reject(new Error(`Unexpected Paystack call: ${path}`));
+        return Promise.reject(new Error(`Unexpected Paystack call: ${path}`));
+      },
+    );
+
+    const encryptedAccountNumber = (service as any).encryptStorePaymentValue(
+      '1234567890',
+    );
+    prisma.brand.findUnique.mockResolvedValue({
+      id: 'brand_1',
+      name: 'Brand One',
     });
-
-    const encryptedAccountNumber = (service as any).encryptStorePaymentValue('1234567890');
-    prisma.brand.findUnique.mockResolvedValue({ id: 'brand_1', name: 'Brand One' });
     prisma.user.findUnique.mockResolvedValue({
       id: 'owner_1',
       email: 'owner@example.com',
@@ -270,8 +284,12 @@ describe('StoreService', () => {
     expect(upsertArgs.update.subaccountCode).toBe('SUB_OLD');
     expect(upsertArgs.create.transferRecipientCode).toBe('TRF_OLD');
     expect(upsertArgs.update.transferRecipientCode).toBe('TRF_OLD');
-    expect(upsertArgs.create.lastSyncError).toBe('Transfer recipient update failed');
-    expect(upsertArgs.update.lastSyncError).toBe('Transfer recipient update failed');
+    expect(upsertArgs.create.lastSyncError).toBe(
+      'Transfer recipient update failed',
+    );
+    expect(upsertArgs.update.lastSyncError).toBe(
+      'Transfer recipient update failed',
+    );
   });
 
   it('reports brand profile completeness separately from store setup completeness', async () => {
@@ -361,7 +379,9 @@ describe('StoreService', () => {
           brandState: 'Lagos',
         }),
       },
-      storePolicy: { findUnique: jest.fn().mockResolvedValue({ responseTimeSla: '24h' }) },
+      storePolicy: {
+        findUnique: jest.fn().mockResolvedValue({ responseTimeSla: '24h' }),
+      },
       storePaymentAccount: { findUnique: jest.fn().mockResolvedValue(null) },
     } as any;
     const statusService = new StoreService(
@@ -407,11 +427,13 @@ describe('StoreService', () => {
       undefined,
       brandPermissionService as any,
     );
-    jest.spyOn(payoutReadService as any, 'resolveBrandByIdOrOwner').mockResolvedValue({
-      id: 'brand_1',
-      isStoreOpen: true,
-      ownerId: 'owner_1',
-    });
+    jest
+      .spyOn(payoutReadService as any, 'resolveBrandByIdOrOwner')
+      .mockResolvedValue({
+        id: 'brand_1',
+        isStoreOpen: true,
+        ownerId: 'owner_1',
+      });
 
     await expect(
       (payoutReadService as any).resolveBrandForPayoutRead('staff_1'),

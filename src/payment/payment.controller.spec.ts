@@ -20,19 +20,23 @@ describe('PaymentController', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    originalLegacyAlias = process.env.PAYMENT_LEGACY_PAYSTACK_WEBHOOK_ALIASES_ENABLED;
+    originalLegacyAlias =
+      process.env.PAYMENT_LEGACY_PAYSTACK_WEBHOOK_ALIASES_ENABLED;
     originalLegacyFlutterwaveAlias =
       process.env.PAYMENT_LEGACY_FLUTTERWAVE_WEBHOOK_ALIAS_ENABLED;
     delete process.env.PAYMENT_LEGACY_PAYSTACK_WEBHOOK_ALIASES_ENABLED;
     delete process.env.PAYMENT_LEGACY_FLUTTERWAVE_WEBHOOK_ALIAS_ENABLED;
-    warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined as any);
+    warnSpy = jest
+      .spyOn(Logger.prototype, 'warn')
+      .mockImplementation(() => undefined as any);
   });
 
   afterEach(() => {
     if (originalLegacyAlias === undefined) {
       delete process.env.PAYMENT_LEGACY_PAYSTACK_WEBHOOK_ALIASES_ENABLED;
     } else {
-      process.env.PAYMENT_LEGACY_PAYSTACK_WEBHOOK_ALIASES_ENABLED = originalLegacyAlias;
+      process.env.PAYMENT_LEGACY_PAYSTACK_WEBHOOK_ALIASES_ENABLED =
+        originalLegacyAlias;
     }
 
     if (originalLegacyFlutterwaveAlias === undefined) {
@@ -82,7 +86,9 @@ describe('PaymentController', () => {
     } as any;
     const payload = { event: 'charge.success' };
 
-    await expect(controller.paystackWebhook(payload, req)).resolves.toEqual({ status: 'ok' });
+    await expect(controller.paystackWebhook(payload, req)).resolves.toEqual({
+      status: 'ok',
+    });
 
     expect(warnSpy).toHaveBeenCalledWith(
       expect.stringContaining('/payment/webhook/paystack'),
@@ -154,7 +160,9 @@ describe('PaymentController', () => {
   });
 
   it('returns runtime health for admin operations view', async () => {
-    paymentRuntimeHealthService.getRuntimeHealth.mockResolvedValue({ ok: true });
+    paymentRuntimeHealthService.getRuntimeHealth.mockResolvedValue({
+      ok: true,
+    });
     const controller = new PaymentController(
       paymentService,
       fxRateService,
@@ -162,7 +170,9 @@ describe('PaymentController', () => {
     );
 
     await expect(controller.runtimeHealth()).resolves.toEqual({ ok: true });
-    expect(paymentRuntimeHealthService.getRuntimeHealth).toHaveBeenCalledTimes(1);
+    expect(paymentRuntimeHealthService.getRuntimeHealth).toHaveBeenCalledTimes(
+      1,
+    );
   });
 
   it('passes sanitized FX quote query values to the FX service', async () => {
@@ -229,7 +239,9 @@ describe('PaymentController', () => {
   });
 
   it('initializes unified checkout when idempotency header/body keys match', async () => {
-    paymentService.initializeUnifiedCheckout.mockResolvedValue({ reference: 'TH-UC-1' });
+    paymentService.initializeUnifiedCheckout.mockResolvedValue({
+      reference: 'TH-UC-1',
+    });
 
     const controller = new PaymentController(
       paymentService,

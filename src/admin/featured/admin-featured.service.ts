@@ -31,21 +31,28 @@ export class AdminFeaturedService {
   ) {}
 
   // ── Feature an item ──
-  async featureItem(
-    dto: CreateFeaturedDto,
-    actorId: string,
-    req: Request,
-  ) {
-    const { entityType, entityId, startsAt: rawStartsAt, displayImages, useCoverOnly } = dto;
+  async featureItem(dto: CreateFeaturedDto, actorId: string, req: Request) {
+    const {
+      entityType,
+      entityId,
+      startsAt: rawStartsAt,
+      displayImages,
+      useCoverOnly,
+    } = dto;
 
     // Resolve entity + brand
-    const { brandId, entityName } = await this.resolveEntity(entityType, entityId);
+    const { brandId, entityName } = await this.resolveEntity(
+      entityType,
+      entityId,
+    );
 
     const startsAt = rawStartsAt ? new Date(rawStartsAt) : new Date();
     if (startsAt < new Date(Date.now() - 60_000)) {
       throw new BadRequestException('startsAt cannot be in the past');
     }
-    const expiresAt = new Date(startsAt.getTime() + FEATURED_DURATION_DAYS * 24 * 60 * 60 * 1000);
+    const expiresAt = new Date(
+      startsAt.getTime() + FEATURED_DURATION_DAYS * 24 * 60 * 60 * 1000,
+    );
 
     // Eligibility checks
     await this.checkEligibility(entityType, entityId, brandId);
@@ -114,8 +121,15 @@ export class AdminFeaturedService {
       entityId,
       entityName,
       expiresAt: expiresAt.toISOString(),
-      targetUrl: entityType === 'PRODUCT' ? `/products/${entityId}` : `/designs/${entityId}`,
-    }).catch((err) => this.logger.warn(`Failed to send ITEM_FEATURED notification: ${err?.message}`));
+      targetUrl:
+        entityType === 'PRODUCT'
+          ? `/products/${entityId}`
+          : `/designs/${entityId}`,
+    }).catch((err) =>
+      this.logger.warn(
+        `Failed to send ITEM_FEATURED notification: ${err?.message}`,
+      ),
+    );
 
     return {
       ...featured,
@@ -169,8 +183,14 @@ export class AdminFeaturedService {
     // Enrich with entity names
     const enriched = await Promise.all(
       results.map(async (item) => {
-        const entityName = await this.getEntityName(item.entityType, item.entityId);
-        const entityThumbnail = await this.getEntityThumbnail(item.entityType, item.entityId);
+        const entityName = await this.getEntityName(
+          item.entityType,
+          item.entityId,
+        );
+        const entityThumbnail = await this.getEntityThumbnail(
+          item.entityType,
+          item.entityId,
+        );
         return {
           ...item,
           featuredBy: mapAdminUserDisplay(item.featuredBy),
@@ -201,8 +221,14 @@ export class AdminFeaturedService {
 
     return Promise.all(
       items.map(async (item) => {
-        const entityName = await this.getEntityName(item.entityType, item.entityId);
-        const entityThumbnail = await this.getEntityThumbnail(item.entityType, item.entityId);
+        const entityName = await this.getEntityName(
+          item.entityType,
+          item.entityId,
+        );
+        const entityThumbnail = await this.getEntityThumbnail(
+          item.entityType,
+          item.entityId,
+        );
         return { ...item, entityName, entityThumbnail };
       }),
     );
@@ -214,7 +240,8 @@ export class AdminFeaturedService {
       where: { id: featuredItemId },
     });
     if (!existing) throw new NotFoundException('Featured item not found');
-    if (!existing.isActive) throw new BadRequestException('Item is already inactive');
+    if (!existing.isActive)
+      throw new BadRequestException('Item is already inactive');
 
     const updated = await this.prisma.$transaction(async (tx) => {
       const item = await tx.featuredItem.update({
@@ -256,11 +283,19 @@ export class AdminFeaturedService {
     });
 
     // Notify brand owner of manual removal
-    this.notifyBrandOwner(existing.brandId, NotificationType.FEATURED_AUTO_REMOVED, {
-      entityType: existing.entityType,
-      entityId: existing.entityId,
-      reason: 'MANUAL',
-    }).catch((err) => this.logger.warn(`Failed to send FEATURED_AUTO_REMOVED notification: ${err?.message}`));
+    this.notifyBrandOwner(
+      existing.brandId,
+      NotificationType.FEATURED_AUTO_REMOVED,
+      {
+        entityType: existing.entityType,
+        entityId: existing.entityId,
+        reason: 'MANUAL',
+      },
+    ).catch((err) =>
+      this.logger.warn(
+        `Failed to send FEATURED_AUTO_REMOVED notification: ${err?.message}`,
+      ),
+    );
 
     return updated;
   }
@@ -298,7 +333,10 @@ export class AdminFeaturedService {
 
     const enriched = await Promise.all(
       results.map(async (item) => {
-        const entityName = await this.getEntityName(item.entityType, item.entityId);
+        const entityName = await this.getEntityName(
+          item.entityType,
+          item.entityId,
+        );
         return {
           ...item,
           featuredBy: mapAdminUserDisplay(item.featuredBy),
@@ -346,7 +384,13 @@ export class AdminFeaturedService {
 
       // If blocking and currently featured, auto-remove (no penalty)
       if (newBlocked) {
-        await this.autoRemoveByEntity(tx, 'PRODUCT', productId, 'ITEM_BLOCKED', false);
+        await this.autoRemoveByEntity(
+          tx,
+          'PRODUCT',
+          productId,
+          'ITEM_BLOCKED',
+          false,
+        );
       }
 
       await (tx as any).adminAuditLog.create({
@@ -367,7 +411,11 @@ export class AdminFeaturedService {
     return { id: productId, isFeaturedBlocked: newBlocked };
   }
 
-  async toggleBlockCollection(collectionId: string, actorId: string, req: Request) {
+  async toggleBlockCollection(
+    collectionId: string,
+    actorId: string,
+    req: Request,
+  ) {
     const collection = await this.prisma.collection.findUnique({
       where: { id: collectionId },
       select: { id: true, isFeaturedBlocked: true },
@@ -383,7 +431,13 @@ export class AdminFeaturedService {
       });
 
       if (newBlocked) {
-        await this.autoRemoveByEntity(tx, 'DESIGN', collectionId, 'ITEM_BLOCKED', false);
+        await this.autoRemoveByEntity(
+          tx,
+          'DESIGN',
+          collectionId,
+          'ITEM_BLOCKED',
+          false,
+        );
       }
 
       await (tx as any).adminAuditLog.create({
@@ -479,7 +533,9 @@ export class AdminFeaturedService {
           deletedAt: null,
           isActive: true,
           ...(params.search
-            ? { name: { contains: params.search, mode: 'insensitive' as const } }
+            ? {
+                name: { contains: params.search, mode: 'insensitive' as const },
+              }
             : {}),
         },
         select: {
@@ -489,14 +545,26 @@ export class AdminFeaturedService {
           thumbnail: true,
           images: true,
           isFeaturedBlocked: true,
-          brand: { select: { id: true, name: true, isFeaturedBlocked: true, featuredPenaltyUntil: true } },
+          brand: {
+            select: {
+              id: true,
+              name: true,
+              isFeaturedBlocked: true,
+              featuredPenaltyUntil: true,
+            },
+          },
         },
         take,
         orderBy: { name: 'asc' },
       });
 
       for (const p of products) {
-        const { eligible, reason } = await this.checkEligibilityQuick('PRODUCT', p.id, p.brandId, p);
+        const { eligible, reason } = await this.checkEligibilityQuick(
+          'PRODUCT',
+          p.id,
+          p.brandId,
+          p,
+        );
         results.push({
           entityType: 'PRODUCT',
           entityId: p.id,
@@ -518,7 +586,12 @@ export class AdminFeaturedService {
           status: 'PUBLISHED',
           isAvailableInStore: false,
           ...(params.search
-            ? { title: { contains: params.search, mode: 'insensitive' as const } }
+            ? {
+                title: {
+                  contains: params.search,
+                  mode: 'insensitive' as const,
+                },
+              }
             : {}),
         },
         select: {
@@ -529,7 +602,14 @@ export class AdminFeaturedService {
           coverMedia: { select: { file: { select: { s3Url: true } } } },
           owner: {
             select: {
-              brand: { select: { id: true, name: true, isFeaturedBlocked: true, featuredPenaltyUntil: true } },
+              brand: {
+                select: {
+                  id: true,
+                  name: true,
+                  isFeaturedBlocked: true,
+                  featuredPenaltyUntil: true,
+                },
+              },
             },
           },
         },
@@ -540,10 +620,15 @@ export class AdminFeaturedService {
       for (const d of designs) {
         const brandId = d.owner?.brand?.id;
         if (!brandId) continue;
-        const { eligible, reason } = await this.checkEligibilityQuick('DESIGN', d.id, brandId, {
-          isFeaturedBlocked: d.isFeaturedBlocked,
-          brand: d.owner.brand,
-        });
+        const { eligible, reason } = await this.checkEligibilityQuick(
+          'DESIGN',
+          d.id,
+          brandId,
+          {
+            isFeaturedBlocked: d.isFeaturedBlocked,
+            brand: d.owner.brand,
+          },
+        );
         results.push({
           entityType: 'DESIGN',
           entityId: d.id,
@@ -612,11 +697,18 @@ export class AdminFeaturedService {
 
     return Promise.all(
       items.map(async (item) => {
-        const entityName = await this.getEntityName(item.entityType, item.entityId);
-        const entityThumbnail = await this.getEntityThumbnail(item.entityType, item.entityId);
-        const entityPrice = item.entityType === 'PRODUCT'
-          ? await this.getProductPrice(item.entityId)
-          : null;
+        const entityName = await this.getEntityName(
+          item.entityType,
+          item.entityId,
+        );
+        const entityThumbnail = await this.getEntityThumbnail(
+          item.entityType,
+          item.entityId,
+        );
+        const entityPrice =
+          item.entityType === 'PRODUCT'
+            ? await this.getProductPrice(item.entityId)
+            : null;
 
         return {
           ...item,
@@ -645,10 +737,14 @@ export class AdminFeaturedService {
       },
     });
 
-    if (!item || !item.isActive) throw new NotFoundException('Featured item not found');
+    if (!item || !item.isActive)
+      throw new NotFoundException('Featured item not found');
 
     const entityName = await this.getEntityName(item.entityType, item.entityId);
-    const entityThumbnail = await this.getEntityThumbnail(item.entityType, item.entityId);
+    const entityThumbnail = await this.getEntityThumbnail(
+      item.entityType,
+      item.entityId,
+    );
 
     return { ...item, entityName, entityThumbnail };
   }
@@ -666,11 +762,21 @@ export class AdminFeaturedService {
     if (!active) return;
 
     await this.prisma.$transaction(async (tx) => {
-      await this.autoRemoveByEntity(tx, entityType, entityId, reason, applyPenalty);
+      await this.autoRemoveByEntity(
+        tx,
+        entityType,
+        entityId,
+        reason,
+        applyPenalty,
+      );
     });
   }
 
-  async autoRemoveForBrand(brandId: string, reason: string, applyPenalty: boolean) {
+  async autoRemoveForBrand(
+    brandId: string,
+    reason: string,
+    applyPenalty: boolean,
+  ) {
     const activeItems = await this.prisma.featuredItem.findMany({
       where: { brandId, isActive: true },
     });
@@ -721,7 +827,6 @@ export class AdminFeaturedService {
         const metrics = await this.snapshotPerformance(
           item.entityType,
           item.entityId,
-          item.startsAt,
         );
 
         await this.prisma.featuredItem.update({
@@ -735,13 +840,23 @@ export class AdminFeaturedService {
         });
 
         // Notify brand owner of expiry
-        this.notifyBrandOwner(item.brandId, NotificationType.FEATURED_AUTO_REMOVED, {
-          entityType: item.entityType,
-          entityId: item.entityId,
-          reason: 'EXPIRED',
-        }).catch((err) => this.logger.warn(`Failed to send expiry notification: ${err?.message}`));
+        this.notifyBrandOwner(
+          item.brandId,
+          NotificationType.FEATURED_AUTO_REMOVED,
+          {
+            entityType: item.entityType,
+            entityId: item.entityId,
+            reason: 'EXPIRED',
+          },
+        ).catch((err) =>
+          this.logger.warn(
+            `Failed to send expiry notification: ${err?.message}`,
+          ),
+        );
       } catch (err: any) {
-        this.logger.warn(`Failed to expire featured item ${item.id}: ${err?.message}`);
+        this.logger.warn(
+          `Failed to expire featured item ${item.id}: ${err?.message}`,
+        );
       }
     }
 
@@ -755,11 +870,21 @@ export class AdminFeaturedService {
     if (entityType === 'PRODUCT') {
       const product = await this.prisma.product.findUnique({
         where: { id: entityId },
-        select: { id: true, name: true, brandId: true, isActive: true, deletedAt: true, isFeaturedBlocked: true },
+        select: {
+          id: true,
+          name: true,
+          brandId: true,
+          isActive: true,
+          deletedAt: true,
+          isFeaturedBlocked: true,
+        },
       });
-      if (!product || product.deletedAt) throw new NotFoundException('Product not found');
-      if (!product.isActive) throw new BadRequestException('Product is inactive');
-      if (product.isFeaturedBlocked) throw new ForbiddenException('Product is blocked from featuring');
+      if (!product || product.deletedAt)
+        throw new NotFoundException('Product not found');
+      if (!product.isActive)
+        throw new BadRequestException('Product is inactive');
+      if (product.isFeaturedBlocked)
+        throw new ForbiddenException('Product is blocked from featuring');
       return { brandId: product.brandId, entityName: product.name };
     }
 
@@ -776,10 +901,14 @@ export class AdminFeaturedService {
           owner: { select: { brand: { select: { id: true } } } },
         },
       });
-      if (!design || design.deletedAt) throw new NotFoundException('Design not found');
-      if (design.isAvailableInStore) throw new BadRequestException('Store collections cannot be featured');
-      if (design.status !== 'PUBLISHED') throw new BadRequestException('Design must be published');
-      if (design.isFeaturedBlocked) throw new ForbiddenException('Design is blocked from featuring');
+      if (!design || design.deletedAt)
+        throw new NotFoundException('Design not found');
+      if (design.isAvailableInStore)
+        throw new BadRequestException('Store collections cannot be featured');
+      if (design.status !== 'PUBLISHED')
+        throw new BadRequestException('Design must be published');
+      if (design.isFeaturedBlocked)
+        throw new ForbiddenException('Design is blocked from featuring');
       const brandId = design.owner?.brand?.id;
       if (!brandId) throw new BadRequestException('Design owner has no brand');
       return { brandId, entityName: design.title ?? 'Untitled' };
@@ -788,7 +917,11 @@ export class AdminFeaturedService {
     throw new BadRequestException(`Invalid entityType: ${entityType}`);
   }
 
-  private async checkEligibility(entityType: string, entityId: string, brandId: string) {
+  private async checkEligibility(
+    entityType: string,
+    entityId: string,
+    brandId: string,
+  ) {
     const now = new Date();
 
     // Brand-level checks
@@ -818,7 +951,9 @@ export class AdminFeaturedService {
       where: { brandId, isActive: true },
     });
     if (brandActiveCount >= MAX_PER_BRAND) {
-      throw new BadRequestException(`Brand already has ${brandActiveCount} active/scheduled featured item(s). Max is ${MAX_PER_BRAND}.`);
+      throw new BadRequestException(
+        `Brand already has ${brandActiveCount} active/scheduled featured item(s). Max is ${MAX_PER_BRAND}.`,
+      );
     }
 
     // Global active count (currently live items only, not scheduled)
@@ -830,7 +965,9 @@ export class AdminFeaturedService {
       },
     });
     if (globalActiveCount >= MAX_GLOBAL_FEATURED) {
-      throw new BadRequestException(`Global featured slots full (${globalActiveCount}/${MAX_GLOBAL_FEATURED})`);
+      throw new BadRequestException(
+        `Global featured slots full (${globalActiveCount}/${MAX_GLOBAL_FEATURED})`,
+      );
     }
 
     // Duplicate check — item already featured
@@ -838,7 +975,9 @@ export class AdminFeaturedService {
       where: { entityType, entityId, isActive: true },
     });
     if (existingActive) {
-      throw new BadRequestException('This item is already featured or scheduled');
+      throw new BadRequestException(
+        'This item is already featured or scheduled',
+      );
     }
   }
 
@@ -850,16 +989,22 @@ export class AdminFeaturedService {
   ): Promise<{ eligible: boolean; reason?: string }> {
     const now = new Date();
 
-    if (entityData.isFeaturedBlocked) return { eligible: false, reason: 'Item blocked' };
-    if (entityData.brand?.isFeaturedBlocked) return { eligible: false, reason: 'Brand blocked' };
-    if (entityData.brand?.featuredPenaltyUntil && new Date(entityData.brand.featuredPenaltyUntil) > now) {
+    if (entityData.isFeaturedBlocked)
+      return { eligible: false, reason: 'Item blocked' };
+    if (entityData.brand?.isFeaturedBlocked)
+      return { eligible: false, reason: 'Brand blocked' };
+    if (
+      entityData.brand?.featuredPenaltyUntil &&
+      new Date(entityData.brand.featuredPenaltyUntil) > now
+    ) {
       return { eligible: false, reason: 'Brand under penalty' };
     }
 
     const brandActive = await this.prisma.featuredItem.count({
       where: { brandId, isActive: true },
     });
-    if (brandActive >= MAX_PER_BRAND) return { eligible: false, reason: 'Brand already featured' };
+    if (brandActive >= MAX_PER_BRAND)
+      return { eligible: false, reason: 'Brand already featured' };
 
     const existing = await this.prisma.featuredItem.findFirst({
       where: { entityType, entityId, isActive: true },
@@ -869,7 +1014,10 @@ export class AdminFeaturedService {
     return { eligible: true };
   }
 
-  private async getEntityName(entityType: string, entityId: string): Promise<string> {
+  private async getEntityName(
+    entityType: string,
+    entityId: string,
+  ): Promise<string> {
     if (entityType === 'PRODUCT') {
       const p = await this.prisma.product.findUnique({
         where: { id: entityId },
@@ -887,7 +1035,10 @@ export class AdminFeaturedService {
     return 'Unknown';
   }
 
-  private async getEntityThumbnail(entityType: string, entityId: string): Promise<string | null> {
+  private async getEntityThumbnail(
+    entityType: string,
+    entityId: string,
+  ): Promise<string | null> {
     if (entityType === 'PRODUCT') {
       const p = await this.prisma.product.findUnique({
         where: { id: entityId },
@@ -898,14 +1049,20 @@ export class AdminFeaturedService {
     if (entityType === 'DESIGN') {
       const c = await this.prisma.collection.findUnique({
         where: { id: entityId },
-        select: { coverMedia: { select: { file: { select: { s3Url: true } } } } },
+        select: {
+          coverMedia: { select: { file: { select: { s3Url: true } } } },
+        },
       });
       return c?.coverMedia?.file?.s3Url ?? null;
     }
     return null;
   }
 
-  private async getProductPrice(entityId: string): Promise<{ price: string; salePrice: string | null; currency: string } | null> {
+  private async getProductPrice(entityId: string): Promise<{
+    price: string;
+    salePrice: string | null;
+    currency: string;
+  } | null> {
     const p = await this.prisma.product.findUnique({
       where: { id: entityId },
       select: { price: true, salePrice: true, currency: true },
@@ -941,10 +1098,14 @@ export class AdminFeaturedService {
 
     // Sync legacy isFeatured flag on Product
     if (entityType === 'PRODUCT') {
-      await tx.product.update({
-        where: { id: entityId },
-        data: { isFeatured: false },
-      }).catch(() => {/* product might already be deleted */});
+      await tx.product
+        .update({
+          where: { id: entityId },
+          data: { isFeatured: false },
+        })
+        .catch(() => {
+          /* product might already be deleted */
+        });
     }
 
     if (applyPenalty) {
@@ -960,7 +1121,6 @@ export class AdminFeaturedService {
   private async snapshotPerformance(
     entityType: string,
     entityId: string,
-    startsAt: Date,
   ): Promise<{ viewsDelta?: number; threadsDelta?: number }> {
     // Best-effort metric snapshot
     if (entityType === 'PRODUCT') {

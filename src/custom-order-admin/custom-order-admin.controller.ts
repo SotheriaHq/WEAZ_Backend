@@ -59,7 +59,13 @@ export class CustomOrderAdminController {
   async reviewBasis(
     @Param('id') id: string,
     @Req() req: Request & { user: { id: string } },
-    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true }))
+    @Body(
+      new ValidationPipe({
+        transform: true,
+        whitelist: true,
+        forbidNonWhitelisted: true,
+      }),
+    )
     dto: ReviewCustomFabricRuleBasisDto,
   ) {
     return this.service.reviewBasis(id, dto, req.user.id);
@@ -68,7 +74,8 @@ export class CustomOrderAdminController {
   @Get('custom-fabric-rule-bases')
   @RequirePermissions(ADMIN_PERMISSIONS.TAXONOMY_READ)
   async listBases(
-    @Query(new ValidationPipe({ transform: true, whitelist: true })) query: QueryAdminCustomFabricRuleBasesDto,
+    @Query(new ValidationPipe({ transform: true, whitelist: true }))
+    query: QueryAdminCustomFabricRuleBasesDto,
   ) {
     return this.service.listBases(query);
   }
@@ -77,7 +84,13 @@ export class CustomOrderAdminController {
   @RequirePermissions(ADMIN_PERMISSIONS.TAXONOMY_WRITE)
   async createBasis(
     @Req() req: Request & { user: { id: string } },
-    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true }))
+    @Body(
+      new ValidationPipe({
+        transform: true,
+        whitelist: true,
+        forbidNonWhitelisted: true,
+      }),
+    )
     dto: CreateAdminCustomFabricRuleBasisDto,
   ) {
     return this.service.createBasis(dto, req.user.id);
@@ -87,7 +100,13 @@ export class CustomOrderAdminController {
   @RequirePermissions(ADMIN_PERMISSIONS.TAXONOMY_WRITE)
   async updateBasis(
     @Param('id') id: string,
-    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true }))
+    @Body(
+      new ValidationPipe({
+        transform: true,
+        whitelist: true,
+        forbidNonWhitelisted: true,
+      }),
+    )
     dto: UpdateAdminCustomFabricRuleBasisDto,
   ) {
     return this.service.updateBasis(id, dto);
@@ -108,7 +127,8 @@ export class CustomOrderAdminController {
   @Get('custom-orders/risk-dashboard')
   @RequirePermissions(ADMIN_PERMISSIONS.MODERATION_READ)
   async getRiskDashboard(
-    @Query(new ValidationPipe({ transform: true, whitelist: true })) query: QueryCustomOrderRiskDashboardDto,
+    @Query(new ValidationPipe({ transform: true, whitelist: true }))
+    query: QueryCustomOrderRiskDashboardDto,
   ) {
     return this.service.getRiskDashboard(query);
   }
@@ -116,7 +136,8 @@ export class CustomOrderAdminController {
   @Get('custom-orders/refund-reviews')
   @RequirePermissions(ADMIN_PERMISSIONS.DISPUTES_READ)
   async listRefundReviews(
-    @Query(new ValidationPipe({ transform: true, whitelist: true })) query: QueryCustomOrderRefundReviewsDto,
+    @Query(new ValidationPipe({ transform: true, whitelist: true }))
+    query: QueryCustomOrderRefundReviewsDto,
   ) {
     return this.service.listRefundReviews(query);
   }
@@ -130,7 +151,8 @@ export class CustomOrderAdminController {
   @Get('custom-orders/stale')
   @RequirePermissions(ADMIN_PERMISSIONS.MODERATION_READ)
   async getStaleOrders(
-    @Query(new ValidationPipe({ transform: true, whitelist: true })) query: QueryStaleCustomOrdersDto,
+    @Query(new ValidationPipe({ transform: true, whitelist: true }))
+    query: QueryStaleCustomOrdersDto,
   ) {
     return this.service.getStaleOrders(query);
   }
@@ -138,7 +160,8 @@ export class CustomOrderAdminController {
   @Get('custom-orders')
   @RequirePermissions(ADMIN_PERMISSIONS.MODERATION_READ)
   async listOrders(
-    @Query(new ValidationPipe({ transform: true, whitelist: true })) query: QueryAdminCustomOrdersDto,
+    @Query(new ValidationPipe({ transform: true, whitelist: true }))
+    query: QueryAdminCustomOrdersDto,
   ) {
     return this.service.listOrders(query);
   }
@@ -146,7 +169,8 @@ export class CustomOrderAdminController {
   @Get('custom-orders/exception-reviews')
   @RequirePermissions(ADMIN_PERMISSIONS.MODERATION_READ)
   async listExceptionReviews(
-    @Query(new ValidationPipe({ transform: true, whitelist: true })) query: QueryCustomOrderExceptionReviewsDto,
+    @Query(new ValidationPipe({ transform: true, whitelist: true }))
+    query: QueryCustomOrderExceptionReviewsDto,
   ) {
     return this.service.listExceptionReviews(query);
   }
@@ -157,7 +181,13 @@ export class CustomOrderAdminController {
     @Param('id') id: string,
     @Param('eventId') eventId: string,
     @Req() req: Request & { user: { id: string } },
-    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true }))
+    @Body(
+      new ValidationPipe({
+        transform: true,
+        whitelist: true,
+        forbidNonWhitelisted: true,
+      }),
+    )
     dto: DecideCustomOrderExceptionReviewDto,
   ) {
     return this.service.decideExceptionReview(id, eventId, dto, req.user.id);
@@ -170,11 +200,20 @@ export class CustomOrderAdminController {
   }
 
   @Post('custom-orders/:id/remind-brand')
-  @RequirePermissions(ADMIN_PERMISSIONS.MODERATION_WRITE, ADMIN_PERMISSIONS.NOTIFICATIONS_SEND)
+  @RequirePermissions(
+    ADMIN_PERMISSIONS.MODERATION_WRITE,
+    ADMIN_PERMISSIONS.NOTIFICATIONS_SEND,
+  )
   async remindBrand(
     @Param('id') id: string,
     @Req() req: Request & { user: { id: string } },
-    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true }))
+    @Body(
+      new ValidationPipe({
+        transform: true,
+        whitelist: true,
+        forbidNonWhitelisted: true,
+      }),
+    )
     dto: AdminCustomOrderReminderDto,
   ) {
     return this.service.remindBrand(id, dto, req.user.id);
@@ -185,7 +224,13 @@ export class CustomOrderAdminController {
   async flagRisk(
     @Param('id') id: string,
     @Req() req: Request & { user: { id: string } },
-    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true }))
+    @Body(
+      new ValidationPipe({
+        transform: true,
+        whitelist: true,
+        forbidNonWhitelisted: true,
+      }),
+    )
     dto: FlagCustomOrderRiskDto,
   ) {
     return this.service.flagRisk(id, dto, req.user.id);
@@ -196,7 +241,13 @@ export class CustomOrderAdminController {
   async escalateRefundReview(
     @Param('id') id: string,
     @Req() req: Request & { user: { id: string } },
-    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true }))
+    @Body(
+      new ValidationPipe({
+        transform: true,
+        whitelist: true,
+        forbidNonWhitelisted: true,
+      }),
+    )
     dto: EscalateCustomOrderRefundReviewDto,
   ) {
     return this.service.escalateRefundReview(id, dto, req.user.id);
@@ -208,7 +259,13 @@ export class CustomOrderAdminController {
   async cancelPaidOrder(
     @Param('id') id: string,
     @Req() req: Request & { user: { id: string } },
-    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true }))
+    @Body(
+      new ValidationPipe({
+        transform: true,
+        whitelist: true,
+        forbidNonWhitelisted: true,
+      }),
+    )
     dto: CancelPaidCustomOrderDto,
   ) {
     return this.service.cancelPaidOrder(id, dto, req.user.id);
@@ -217,7 +274,8 @@ export class CustomOrderAdminController {
   @Get('custom-order-disputes')
   @RequirePermissions(ADMIN_PERMISSIONS.DISPUTES_READ)
   async listDisputes(
-    @Query(new ValidationPipe({ transform: true, whitelist: true })) query: QueryCustomOrderDisputesDto,
+    @Query(new ValidationPipe({ transform: true, whitelist: true }))
+    query: QueryCustomOrderDisputesDto,
   ) {
     return this.service.listDisputes(query);
   }
@@ -225,7 +283,8 @@ export class CustomOrderAdminController {
   @Get('custom-order-ledger-allocations')
   @RequirePermissions(ADMIN_PERMISSIONS.PAYOUTS_READ)
   async listLedgerAllocations(
-    @Query(new ValidationPipe({ transform: true, whitelist: true })) query: QueryCustomOrderLedgerAllocationsDto,
+    @Query(new ValidationPipe({ transform: true, whitelist: true }))
+    query: QueryCustomOrderLedgerAllocationsDto,
   ) {
     return this.service.listLedgerAllocations(query);
   }
@@ -234,7 +293,13 @@ export class CustomOrderAdminController {
   @RequirePermissions(ADMIN_PERMISSIONS.PAYOUTS_PROCESS)
   async releaseLedgerAllocations(
     @Req() req: Request & { user: { id: string } },
-    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true }))
+    @Body(
+      new ValidationPipe({
+        transform: true,
+        whitelist: true,
+        forbidNonWhitelisted: true,
+      }),
+    )
     dto: ReleaseCustomOrderLedgerAllocationsDto,
   ) {
     return this.service.releaseEligibleLedgerAllocations(dto, req.user.id);
@@ -245,7 +310,13 @@ export class CustomOrderAdminController {
   async updateDispute(
     @Param('id') id: string,
     @Req() req: Request & { user: { id: string } },
-    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true }))
+    @Body(
+      new ValidationPipe({
+        transform: true,
+        whitelist: true,
+        forbidNonWhitelisted: true,
+      }),
+    )
     dto: UpdateCustomOrderDisputeDto,
   ) {
     return this.service.updateDispute(id, dto, req.user.id);
@@ -256,7 +327,13 @@ export class CustomOrderAdminController {
   async updateRetentionHold(
     @Param('id') id: string,
     @Req() req: Request & { user: { id: string } },
-    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true }))
+    @Body(
+      new ValidationPipe({
+        transform: true,
+        whitelist: true,
+        forbidNonWhitelisted: true,
+      }),
+    )
     dto: UpdateCustomOrderRetentionHoldDto,
   ) {
     return this.service.updateRetentionHold(id, dto, req.user.id);

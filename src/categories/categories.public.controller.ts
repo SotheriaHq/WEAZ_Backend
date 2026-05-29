@@ -1,8 +1,4 @@
-import {
-    Controller,
-    Get,
-    Param,
-} from '@nestjs/common';
+import { Controller, Get, Param } from '@nestjs/common';
 import { CategoriesService } from './categories.service';
 import { ApiTags, ApiOperation } from '@nestjs/swagger';
 
@@ -13,23 +9,23 @@ import { ApiTags, ApiOperation } from '@nestjs/swagger';
 @ApiTags('categories')
 @Controller('categories')
 export class CategoriesPublicController {
-    constructor(private readonly categories: CategoriesService) { }
+  constructor(private readonly categories: CategoriesService) {}
 
-    @Get()
-    @ApiOperation({ summary: 'List active categories with sub-categories' })
-    async list() {
-        return this.categories.listCategoriesWithSubCategories();
-    }
+  @Get()
+  @ApiOperation({ summary: 'List active categories with sub-categories' })
+  async list() {
+    return this.categories.listCategoriesWithSubCategories();
+  }
 
-    @Get('filters')
-    @ApiOperation({ summary: 'List active filter dimensions with values' })
-    async filters() {
-        return this.categories.getFilterDimensions();
-    }
+  @Get('filters')
+  @ApiOperation({ summary: 'List active filter dimensions with values' })
+  async filters() {
+    return this.categories.getFilterDimensions();
+  }
 
-    @Get(':id/sub-categories')
-    @ApiOperation({ summary: 'Get sub-categories for a main category' })
-    async subCategories(@Param('id') id: string) {
-        return this.categories.getSubCategoriesByCategoryId(id);
-    }
+  @Get(':id/sub-categories')
+  @ApiOperation({ summary: 'Get sub-categories for a main category' })
+  async subCategories(@Param('id') id: string) {
+    return this.categories.getSubCategoriesByCategoryId(id);
+  }
 }

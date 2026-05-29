@@ -12,7 +12,10 @@ describe('BagCountPresenter', () => {
   });
 
   it('returns standard quantity only', async () => {
-    prisma.cartItem.findMany.mockResolvedValue([{ quantity: 2 }, { quantity: 3 }]);
+    prisma.cartItem.findMany.mockResolvedValue([
+      { quantity: 2 },
+      { quantity: 3 },
+    ]);
     prisma.customOrderCheckoutSession.count.mockResolvedValue(0);
 
     await expect(presenter.getCount('buyer_1')).resolves.toEqual({
@@ -34,7 +37,10 @@ describe('BagCountPresenter', () => {
   });
 
   it('returns combined count', async () => {
-    prisma.cartItem.findMany.mockResolvedValue([{ quantity: 1 }, { quantity: 4 }]);
+    prisma.cartItem.findMany.mockResolvedValue([
+      { quantity: 1 },
+      { quantity: 4 },
+    ]);
     prisma.customOrderCheckoutSession.count.mockResolvedValue(3);
 
     await expect(presenter.getCount('buyer_1')).resolves.toEqual({

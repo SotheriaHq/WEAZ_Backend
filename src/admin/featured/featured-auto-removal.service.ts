@@ -73,14 +73,26 @@ export class FeaturedAutoRemovalService {
 
     // Notify brand owner
     for (const item of activeItems) {
-      this.notifyBrandOwner(brandId, item.entityType, item.entityId, 'BRAND_SUSPENDED')
-        .catch((err) => this.logger.warn(`Failed to send auto-removal notification: ${err?.message}`));
+      this.notifyBrandOwner(
+        brandId,
+        item.entityType,
+        item.entityId,
+        'BRAND_SUSPENDED',
+      ).catch((err) =>
+        this.logger.warn(
+          `Failed to send auto-removal notification: ${err?.message}`,
+        ),
+      );
     }
   }
 
   // ── Private ──
 
-  private async removeAndPenalize(entityType: string, entityId: string, reason: string) {
+  private async removeAndPenalize(
+    entityType: string,
+    entityId: string,
+    reason: string,
+  ) {
     const active = await this.prisma.featuredItem.findFirst({
       where: { entityType, entityId, isActive: true },
     });
@@ -110,8 +122,12 @@ export class FeaturedAutoRemovalService {
     );
 
     // Notify brand owner
-    this.notifyBrandOwner(active.brandId, entityType, entityId, reason)
-      .catch((err) => this.logger.warn(`Failed to send auto-removal notification: ${err?.message}`));
+    this.notifyBrandOwner(active.brandId, entityType, entityId, reason).catch(
+      (err) =>
+        this.logger.warn(
+          `Failed to send auto-removal notification: ${err?.message}`,
+        ),
+    );
   }
 
   private async notifyBrandOwner(
@@ -126,9 +142,16 @@ export class FeaturedAutoRemovalService {
     });
     if (!brand?.ownerId) return;
 
-    await this.notifications.create(brand.ownerId, NotificationType.FEATURED_AUTO_REMOVED, {
-      payload: { entityType, entityId, reason },
-      target: { type: entityType === 'DESIGN' ? 'COLLECTION' : 'PRODUCT', id: entityId },
-    });
+    await this.notifications.create(
+      brand.ownerId,
+      NotificationType.FEATURED_AUTO_REMOVED,
+      {
+        payload: { entityType, entityId, reason },
+        target: {
+          type: entityType === 'DESIGN' ? 'COLLECTION' : 'PRODUCT',
+          id: entityId,
+        },
+      },
+    );
   }
 }

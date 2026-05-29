@@ -10,7 +10,12 @@ import { AdminAuditService } from 'src/admin/services/admin-audit.service';
 @Module({
   imports: [NotificationsModule],
   controllers: [CategoriesAdminController, CategoriesPublicController],
-  providers: [CategoriesService, PrismaService, CategoriesBootstrapService, AdminAuditService],
+  providers: [
+    CategoriesService,
+    PrismaService,
+    CategoriesBootstrapService,
+    AdminAuditService,
+  ],
   exports: [CategoriesService],
 })
-export class CategoriesModule { }
+export class CategoriesModule {}

@@ -99,9 +99,9 @@ export class PatchingService {
         await this.notifications.create(brandId, NotificationType.PATCH, {
           actorId: requesterId,
           target: { type: 'USER', id: brandId },
-          payload: { 
+          payload: {
             target: { type: 'USER', id: brandId },
-            action: 'PROFILE_PATCHED' // Specify that this is a profile patch, not collection patch
+            action: 'PROFILE_PATCHED', // Specify that this is a profile patch, not collection patch
           },
           dedupeMs: 5 * 60 * 1000,
         });
@@ -174,18 +174,18 @@ export class PatchingService {
                 state: true,
                 city: true,
                 companyLocation: true,
-              }
-            }
-          }
-        }
+              },
+            },
+          },
+        },
       },
       orderBy: {
         createdAt: 'desc',
-      }
+      },
     });
 
     // Format the response
-    return patchConnections.map(connection => {
+    return patchConnections.map((connection) => {
       const target = connection.target;
       const profileImage = resolveProfileImage(target);
       const bannerImage = resolveBannerImage(target);
@@ -224,7 +224,10 @@ export class PatchingService {
       },
     });
 
-    return { isPatched: !!patchConnection && patchConnection.status === PatchStatus.ACCEPTED };
+    return {
+      isPatched:
+        !!patchConnection && patchConnection.status === PatchStatus.ACCEPTED,
+    };
   }
 
   async checkPatchBatch(requesterId: string, targetIds: string[]) {

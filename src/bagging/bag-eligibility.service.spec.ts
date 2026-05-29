@@ -120,7 +120,9 @@ describe('BagEligibilityService', () => {
       customOrderEnabled: true,
     });
     prisma.customOrderConfiguration.findFirst.mockResolvedValue(activeConfig);
-    prisma.customOrderConfiguration.findMany.mockResolvedValue([{ id: 'config_1' }]);
+    prisma.customOrderConfiguration.findMany.mockResolvedValue([
+      { id: 'config_1' },
+    ]);
     prisma.userSizeFitProfile.findUnique.mockResolvedValue({
       measurements: { WAIST: 32 },
       lastUpdatedAt: new Date(),
@@ -142,7 +144,9 @@ describe('BagEligibilityService', () => {
       customOrderEnabled: true,
     });
     prisma.customOrderConfiguration.findFirst.mockResolvedValue(activeConfig);
-    prisma.customOrderConfiguration.findMany.mockResolvedValue([{ id: 'config_1' }]);
+    prisma.customOrderConfiguration.findMany.mockResolvedValue([
+      { id: 'config_1' },
+    ]);
 
     const result = await service.getProductBagStatus('product_1', 'buyer_1');
 
@@ -157,7 +161,9 @@ describe('BagEligibilityService', () => {
       customOrderEnabled: true,
     });
     prisma.customOrderConfiguration.findFirst.mockResolvedValue(activeConfig);
-    prisma.customOrderConfiguration.findMany.mockResolvedValue([{ id: 'config_1' }]);
+    prisma.customOrderConfiguration.findMany.mockResolvedValue([
+      { id: 'config_1' },
+    ]);
     prisma.userSizeFitProfile.findUnique.mockResolvedValue({
       measurements: { WAIST: 32 },
       lastUpdatedAt: new Date('2026-01-01T00:00:00.000Z'),
@@ -173,7 +179,10 @@ describe('BagEligibilityService', () => {
   });
 
   it('prevents owner from bagging own product', async () => {
-    const result = await service.getProductBagStatus('product_1', 'brand_owner');
+    const result = await service.getProductBagStatus(
+      'product_1',
+      'brand_owner',
+    );
 
     expect(result.canBag).toBe(false);
     expect(result.userState.isOwner).toBe(true);
@@ -209,7 +218,9 @@ describe('BagEligibilityService', () => {
       customOrderEnabled: true,
     });
     prisma.customOrderConfiguration.findFirst.mockResolvedValue(activeConfig);
-    prisma.customOrderConfiguration.findMany.mockResolvedValue([{ id: 'config_1' }]);
+    prisma.customOrderConfiguration.findMany.mockResolvedValue([
+      { id: 'config_1' },
+    ]);
     prisma.customOrderCheckoutSession.findMany.mockResolvedValue([
       {
         id: 'session_1',
@@ -235,7 +246,9 @@ describe('BagEligibilityService', () => {
       customOrderEnabled: true,
     });
     prisma.customOrderConfiguration.findFirst.mockResolvedValue(activeConfig);
-    prisma.customOrderConfiguration.findMany.mockResolvedValue([{ id: 'config_1' }]);
+    prisma.customOrderConfiguration.findMany.mockResolvedValue([
+      { id: 'config_1' },
+    ]);
     prisma.customOrder.findMany.mockResolvedValue([
       {
         id: 'order_1',
@@ -247,7 +260,9 @@ describe('BagEligibilityService', () => {
     const result = await service.getProductBagStatus('product_1', 'buyer_1');
 
     expect(result.duplicateState.paidActive).toBe(true);
-    expect(result.duplicateState.reason).toBe('CUSTOM_ORDER_PAID_ACTIVE_DUPLICATE');
+    expect(result.duplicateState.reason).toBe(
+      'CUSTOM_ORDER_PAID_ACTIVE_DUPLICATE',
+    );
   });
 
   it('supports source-aware design custom readiness with duplicate classification parity', async () => {
@@ -265,7 +280,9 @@ describe('BagEligibilityService', () => {
       sourceType: CustomOrderSourceType.DESIGN,
       sourceId: 'design_1',
     });
-    prisma.customOrderConfiguration.findMany.mockResolvedValue([{ id: 'design_config_1' }]);
+    prisma.customOrderConfiguration.findMany.mockResolvedValue([
+      { id: 'design_config_1' },
+    ]);
     prisma.customOrder.findMany.mockResolvedValue([
       {
         id: 'order_1',
@@ -280,13 +297,19 @@ describe('BagEligibilityService', () => {
       requireUpdateEveryDays: 14,
     });
 
-    const result = (await service.getSourceBagStatus('DESIGN', 'design_1', 'buyer_1')) as any;
+    const result = (await service.getSourceBagStatus(
+      'DESIGN',
+      'design_1',
+      'buyer_1',
+    )) as any;
 
     expect(result.sourceType).toBe('DESIGN');
     expect(result.bagMode).toBe('CUSTOM');
     expect(result.custom.configurationId).toBe('design_config_1');
     expect(result.duplicateState.classifications).toContain('PAID_ACTIVE');
-    expect(result.duplicateState.reason).toBe('CUSTOM_ORDER_PAID_ACTIVE_DUPLICATE');
+    expect(result.duplicateState.reason).toBe(
+      'CUSTOM_ORDER_PAID_ACTIVE_DUPLICATE',
+    );
   });
 
   it('returns collection readiness with product-level statuses', async () => {
@@ -331,7 +354,11 @@ describe('BagEligibilityService', () => {
       ],
     });
 
-    const result = await service.getSourceBagStatus('COLLECTION', 'collection_1', 'buyer_1');
+    const result = await service.getSourceBagStatus(
+      'COLLECTION',
+      'collection_1',
+      'buyer_1',
+    );
 
     expect(result.sourceType).toBe('COLLECTION');
     expect((result as any).summary.canBagAll).toBe(true);

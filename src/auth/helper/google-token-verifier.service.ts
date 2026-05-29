@@ -43,9 +43,7 @@ export class GoogleTokenVerifierService {
 
     const allowedClientIds = this.getAllowedClientIds();
     if (allowedClientIds.length === 0) {
-      throw new ServiceUnavailableException(
-        'Google sign-in is not configured',
-      );
+      throw new ServiceUnavailableException('Google sign-in is not configured');
     }
 
     let payload: TokenPayload | undefined;
@@ -70,7 +68,10 @@ export class GoogleTokenVerifierService {
     }
 
     const issuer = payload.iss;
-    if (issuer !== 'accounts.google.com' && issuer !== 'https://accounts.google.com') {
+    if (
+      issuer !== 'accounts.google.com' &&
+      issuer !== 'https://accounts.google.com'
+    ) {
       throw new BadRequestException('Invalid Google ID token issuer');
     }
 

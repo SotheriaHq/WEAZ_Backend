@@ -1,4 +1,8 @@
-import { BadRequestException, ForbiddenException, UnauthorizedException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  UnauthorizedException,
+} from '@nestjs/common';
 import * as bcrypt from 'bcrypt';
 
 import { StudioHandoffService } from './studio-handoff.service';
@@ -35,7 +39,9 @@ describe('StudioHandoffService', () => {
     (bcrypt.hash as jest.Mock).mockResolvedValue('hashed-secret');
     (bcrypt.compare as jest.Mock).mockResolvedValue(true);
     prisma.studioHandoffCode.deleteMany.mockResolvedValue({ count: 0 });
-    tokenService.generateWebSessionForUserId.mockResolvedValue({ accessToken: 'access' });
+    tokenService.generateWebSessionForUserId.mockResolvedValue({
+      accessToken: 'access',
+    });
     service = new StudioHandoffService(prisma as any, tokenService as any);
   });
 
@@ -59,13 +65,21 @@ describe('StudioHandoffService', () => {
 
   it('rejects studio paths that are not part of the mobile handoff allowlist', async () => {
     await expect(
-      service.create({ id: 'user-1', type: 'BRAND' }, '/studio/admin/unsafe', req),
+      service.create(
+        { id: 'user-1', type: 'BRAND' },
+        '/studio/admin/unsafe',
+        req,
+      ),
     ).rejects.toBeInstanceOf(BadRequestException);
   });
 
   it('rejects unsupported studio tabs', async () => {
     await expect(
-      service.create({ id: 'user-1', type: 'BRAND' }, '/studio?tab=unsafe', req),
+      service.create(
+        { id: 'user-1', type: 'BRAND' },
+        '/studio?tab=unsafe',
+        req,
+      ),
     ).rejects.toBeInstanceOf(BadRequestException);
   });
 
@@ -81,12 +95,20 @@ describe('StudioHandoffService', () => {
 
   it('rejects arbitrary handoff query params on studio tab routes', async () => {
     await expect(
-      service.create({ id: 'user-1', type: 'BRAND' }, '/studio?tab=orders&next=/profile', req),
+      service.create(
+        { id: 'user-1', type: 'BRAND' },
+        '/studio?tab=orders&next=/profile',
+        req,
+      ),
     ).rejects.toBeInstanceOf(BadRequestException);
   });
 
   it('creates one-time handoff codes with hashed secret only', async () => {
-    const result = await service.create({ id: 'user-1', type: 'BRAND' }, '/studio/store', req);
+    const result = await service.create(
+      { id: 'user-1', type: 'BRAND' },
+      '/studio/store',
+      req,
+    );
 
     expect(result.code).toContain('.');
     expect(prisma.studioHandoffCode.create).toHaveBeenCalledWith(
@@ -98,13 +120,17 @@ describe('StudioHandoffService', () => {
         }),
       }),
     );
-    expect(prisma.studioHandoffCode.create.mock.calls[0][0].data.codeHash).not.toContain(
-      result.code.split('.')[1],
-    );
+    expect(
+      prisma.studioHandoffCode.create.mock.calls[0][0].data.codeHash,
+    ).not.toContain(result.code.split('.')[1]);
   });
 
   it('creates a valid brand handoff for the Studio overview', async () => {
-    const result = await service.create({ id: 'user-1', type: 'BRAND' }, '/studio', req);
+    const result = await service.create(
+      { id: 'user-1', type: 'BRAND' },
+      '/studio',
+      req,
+    );
 
     expect(result.intendedPath).toBe('/studio');
     expect(result.expiresAt).toEqual(expect.any(String));
@@ -130,8 +156,12 @@ describe('StudioHandoffService', () => {
   });
 
   it('rejects missing or malformed exchange codes', async () => {
-    await expect(service.exchange('', req, res)).rejects.toBeInstanceOf(BadRequestException);
-    await expect(service.exchange('too.many.parts', req, res)).rejects.toBeInstanceOf(BadRequestException);
+    await expect(service.exchange('', req, res)).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    await expect(
+      service.exchange('too.many.parts', req, res),
+    ).rejects.toBeInstanceOf(BadRequestException);
   });
 
   it('rejects expired codes', async () => {
@@ -142,9 +172,9 @@ describe('StudioHandoffService', () => {
       user: { type: 'BRAND', status: 'ACTIVE' },
     });
 
-    await expect(service.exchange('code-id.secret', req, res)).rejects.toBeInstanceOf(
-      UnauthorizedException,
-    );
+    await expect(
+      service.exchange('code-id.secret', req, res),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
   });
 
   it('rejects reused codes', async () => {
@@ -155,9 +185,9 @@ describe('StudioHandoffService', () => {
       user: { type: 'BRAND', status: 'ACTIVE' },
     });
 
-    await expect(service.exchange('code-id.secret', req, res)).rejects.toBeInstanceOf(
-      UnauthorizedException,
-    );
+    await expect(
+      service.exchange('code-id.secret', req, res),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
   });
 
   it('exchanges a valid code once and creates a web session', async () => {
@@ -175,8 +205,15 @@ describe('StudioHandoffService', () => {
     const result = await service.exchange('code-id.secret', req, res);
 
     expect(bcrypt.compare).toHaveBeenCalledWith('secret', 'hashed-secret');
-    expect(tokenService.generateWebSessionForUserId).toHaveBeenCalledWith('user-1', req, res);
-    expect(result).toEqual({ accessToken: 'access', intendedPath: '/studio/store' });
+    expect(tokenService.generateWebSessionForUserId).toHaveBeenCalledWith(
+      'user-1',
+      req,
+      res,
+    );
+    expect(result).toEqual({
+      accessToken: 'access',
+      intendedPath: '/studio/store',
+    });
   });
 
   it('rejects race-lost exchanges', async () => {
@@ -191,8 +228,8 @@ describe('StudioHandoffService', () => {
     });
     prisma.studioHandoffCode.updateMany.mockResolvedValue({ count: 0 });
 
-    await expect(service.exchange('code-id.secret', req, res)).rejects.toBeInstanceOf(
-      UnauthorizedException,
-    );
+    await expect(
+      service.exchange('code-id.secret', req, res),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
   });
 });

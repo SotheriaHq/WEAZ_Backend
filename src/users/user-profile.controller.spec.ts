@@ -66,15 +66,12 @@ describe('UserProfileController theme preferences', () => {
       username: 'alex',
       address: 'Lagos',
     });
-    expect(userProfileService.updateOwnProfile).toHaveBeenCalledWith(
-      'user-1',
-      {
-        firstName: 'Alex',
-        lastName: 'Doe',
-        username: 'alex',
-        address: 'Lagos',
-      },
-    );
+    expect(userProfileService.updateOwnProfile).toHaveBeenCalledWith('user-1', {
+      firstName: 'Alex',
+      lastName: 'Doe',
+      username: 'alex',
+      address: 'Lagos',
+    });
   });
 
   it('rejects unauthenticated own profile updates before service access', async () => {
@@ -97,16 +94,18 @@ describe('UserProfileController theme preferences', () => {
   });
 
   it('routes public profile by username through the public username mapper', async () => {
-    (userProfileService.resolvePublicProfileByUsername as jest.Mock)
-      .mockResolvedValue({
-        id: 'user-1',
-        username: 'alex',
-      });
+    (
+      userProfileService.resolvePublicProfileByUsername as jest.Mock
+    ).mockResolvedValue({
+      id: 'user-1',
+      username: 'alex',
+    });
 
     const result = await controller.getPublicProfileByUsername('alex');
 
     expect(result).toEqual({ id: 'user-1', username: 'alex' });
-    expect(userProfileService.resolvePublicProfileByUsername)
-      .toHaveBeenCalledWith('alex');
+    expect(
+      userProfileService.resolvePublicProfileByUsername,
+    ).toHaveBeenCalledWith('alex');
   });
 });

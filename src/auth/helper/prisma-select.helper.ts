@@ -12,7 +12,6 @@ import {
 import { getBrandVerificationTruth } from 'src/brand-verification/verification-truth.util';
 import { normalizeThemePreference } from 'src/common/theme.contract';
 import {
-  canonicalUserProfileFileSelect,
   canonicalUserProfileSelect,
   resolveBannerImage,
   resolveNullableProfileField,

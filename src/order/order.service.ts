@@ -6,7 +6,12 @@ import {
 } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from '../prisma/prisma.service';
-import { OrderStatus, PaymentStatus, Prisma, NotificationType } from '@prisma/client';
+import {
+  OrderStatus,
+  PaymentStatus,
+  Prisma,
+  NotificationType,
+} from '@prisma/client';
 import { NotificationsService } from 'src/notifications/notifications.service';
 import { reconcileStandardOrderPaymentStatuses } from 'src/common/payments/order-payment-reconciliation.util';
 import { OrderRefundService } from './order-refund.service';
@@ -19,7 +24,10 @@ export class OrderService {
   private readonly logger = new Logger(OrderService.name);
 
   /** Brand-side transitions: brands stop at SHIPPED. DELIVERED is buyer-initiated. */
-  private readonly validTransitions: Record<OrderStatus, ReadonlyArray<OrderStatus>> = {
+  private readonly validTransitions: Record<
+    OrderStatus,
+    ReadonlyArray<OrderStatus>
+  > = {
     [OrderStatus.PENDING]: [OrderStatus.PROCESSING],
     [OrderStatus.PROCESSING]: [OrderStatus.SHIPPED],
     [OrderStatus.SHIPPED]: [],
@@ -61,10 +69,14 @@ export class OrderService {
         pendingOrders,
       );
       const paidOrderIds = pendingOrders
-        .filter((order) => resolvedByOrderId.get(order.id) === PaymentStatus.PAID)
+        .filter(
+          (order) => resolvedByOrderId.get(order.id) === PaymentStatus.PAID,
+        )
         .map((order) => order.id);
       if (paidOrderIds.length > 0) {
-        await this.standardOrderFinanceSyncService.syncPaidOrdersByOrderIds(paidOrderIds);
+        await this.standardOrderFinanceSyncService.syncPaidOrdersByOrderIds(
+          paidOrderIds,
+        );
       }
     } catch (error) {
       this.logger.error(
@@ -112,54 +124,65 @@ export class OrderService {
       }),
     };
 
-    const [total, orders, summaryAggregate, statusBreakdown] = await Promise.all([
-      this.prisma.order.count({ where }),
-      this.prisma.order.findMany({
-        where,
-        skip,
-        take: limit,
-        orderBy: { createdAt: 'desc' },
-        include: {
-          orderItems: {
-            select: {
-              id: true,
-              quantity: true,
-              unitPrice: true,
-              totalPrice: true,
-              selectedSize: true,
-              selectedColor: true,
-              sizingMode: true,
-              requiredMeasurementKeys: true,
-              sizeFitSnapshot: true,
-              thumbnailAtPurchase: true,
-              nameAtPurchase: true,
+    const [total, orders, summaryAggregate, statusBreakdown] =
+      await Promise.all([
+        this.prisma.order.count({ where }),
+        this.prisma.order.findMany({
+          where,
+          skip,
+          take: limit,
+          orderBy: { createdAt: 'desc' },
+          include: {
+            orderItems: {
+              select: {
+                id: true,
+                quantity: true,
+                unitPrice: true,
+                totalPrice: true,
+                selectedSize: true,
+                selectedColor: true,
+                sizingMode: true,
+                requiredMeasurementKeys: true,
+                sizeFitSnapshot: true,
+                thumbnailAtPurchase: true,
+                nameAtPurchase: true,
+              },
             },
           },
-        },
-      }),
-      this.prisma.order.aggregate({
-        where,
-        _count: { id: true },
-        _sum: { totalAmount: true },
-      }),
-      this.prisma.order.groupBy({
-        by: ['status'],
-        where,
-        _count: { _all: true },
-      }),
-    ]);
-    const paymentStatusByOrderId = await reconcileStandardOrderPaymentStatuses(this.prisma, orders);
+        }),
+        this.prisma.order.aggregate({
+          where,
+          _count: { id: true },
+          _sum: { totalAmount: true },
+        }),
+        this.prisma.order.groupBy({
+          by: ['status'],
+          where,
+          _count: { _all: true },
+        }),
+      ]);
+    const paymentStatusByOrderId = await reconcileStandardOrderPaymentStatuses(
+      this.prisma,
+      orders,
+    );
     const paidOrderIds = orders
-      .filter((order) => paymentStatusByOrderId.get(order.id) === PaymentStatus.PAID)
+      .filter(
+        (order) => paymentStatusByOrderId.get(order.id) === PaymentStatus.PAID,
+      )
       .map((order) => order.id);
     if (paidOrderIds.length > 0) {
-      await this.standardOrderFinanceSyncService.syncPaidOrdersByOrderIds(paidOrderIds);
+      await this.standardOrderFinanceSyncService.syncPaidOrdersByOrderIds(
+        paidOrderIds,
+      );
     }
 
-    const countsByStatus = statusBreakdown.reduce<Record<string, number>>((acc, entry) => {
-      acc[entry.status] = entry._count._all;
-      return acc;
-    }, {});
+    const countsByStatus = statusBreakdown.reduce<Record<string, number>>(
+      (acc, entry) => {
+        acc[entry.status] = entry._count._all;
+        return acc;
+      },
+      {},
+    );
 
     const normalizedOrders = orders.map((order) => ({
       ...order,
@@ -197,7 +220,8 @@ export class OrderService {
       totalPages: Math.ceil(total / limit),
       summary: {
         totalOrders: summaryAggregate._count.id ?? 0,
-        totalRevenue: summaryAggregate._sum.totalAmount ?? new Prisma.Decimal(0),
+        totalRevenue:
+          summaryAggregate._sum.totalAmount ?? new Prisma.Decimal(0),
         pendingCount: countsByStatus.PENDING ?? 0,
         processingCount: countsByStatus.PROCESSING ?? 0,
         shippedCount: countsByStatus.SHIPPED ?? 0,
@@ -311,44 +335,45 @@ export class OrderService {
         : {}),
     };
 
-    const [total, orders, summaryAggregate, statusBreakdown] = await Promise.all([
-      this.prisma.order.count({ where }),
-      this.prisma.order.findMany({
-        where,
-        skip,
-        take: normalizedLimit,
-        orderBy: { createdAt: 'desc' },
-        include: {
-          orderItems: {
-            select: {
-              id: true,
-              quantity: true,
-              unitPrice: true,
-              totalPrice: true,
-              nameAtPurchase: true,
-              thumbnailAtPurchase: true,
+    const [total, orders, summaryAggregate, statusBreakdown] =
+      await Promise.all([
+        this.prisma.order.count({ where }),
+        this.prisma.order.findMany({
+          where,
+          skip,
+          take: normalizedLimit,
+          orderBy: { createdAt: 'desc' },
+          include: {
+            orderItems: {
+              select: {
+                id: true,
+                quantity: true,
+                unitPrice: true,
+                totalPrice: true,
+                nameAtPurchase: true,
+                thumbnailAtPurchase: true,
+              },
+            },
+            brand: {
+              select: {
+                id: true,
+                ownerId: true,
+                name: true,
+              },
             },
           },
-          brand: {
-            select: {
-              id: true,
-              ownerId: true,
-              name: true,
-            },
-          },
-        },
-      }),
-      this.prisma.order.aggregate({
-        where,
-        _count: { id: true },
-        _sum: { totalAmount: true },
-      }),
-      this.prisma.order.groupBy({
-        by: ['status'],
-        where,
-        _count: { _all: true },
-      }),
-    ]);
+        }),
+        this.prisma.order.aggregate({
+          where,
+          _count: { id: true },
+          _sum: { totalAmount: true },
+        }),
+        this.prisma.order.groupBy({
+          by: ['status'],
+          where,
+          _count: { _all: true },
+        }),
+      ]);
 
     const paymentStatusByOrderId = await reconcileStandardOrderPaymentStatuses(
       this.prisma,
@@ -414,7 +439,8 @@ export class OrderService {
       totalPages: Math.ceil(total / normalizedLimit),
       summary: {
         totalOrders: summaryAggregate._count.id ?? 0,
-        totalRevenue: summaryAggregate._sum.totalAmount ?? new Prisma.Decimal(0),
+        totalRevenue:
+          summaryAggregate._sum.totalAmount ?? new Prisma.Decimal(0),
         pendingCount: countsByStatus.PENDING ?? 0,
         processingCount: countsByStatus.PROCESSING ?? 0,
         shippedCount: countsByStatus.SHIPPED ?? 0,
@@ -477,10 +503,16 @@ export class OrderService {
       });
 
       if (status === OrderStatus.SHIPPED) {
-        await this.standardOrderEscrowService.releaseShipmentPortion(tx, orderId);
+        await this.standardOrderEscrowService.releaseShipmentPortion(
+          tx,
+          orderId,
+        );
       }
 
-      if (status === OrderStatus.RETURNED && order.paymentStatus === PaymentStatus.PAID) {
+      if (
+        status === OrderStatus.RETURNED &&
+        order.paymentStatus === PaymentStatus.PAID
+      ) {
         await this.orderRefundService.initiateRefund(tx, {
           orderId,
           reason: 'ORDER_RETURNED',
@@ -494,11 +526,15 @@ export class OrderService {
     // Notify buyer about status change
     if (order.buyerId) {
       const firstItem = Array.isArray(order.items)
-        ? order.items.find((item) => Boolean((item as Record<string, unknown>)?.name))
+        ? order.items.find((item) =>
+            Boolean((item as Record<string, unknown>)?.name),
+          )
         : null;
       const orderTitle =
-        firstItem && typeof (firstItem as Record<string, unknown>).name === 'string'
-          ? ((firstItem as Record<string, unknown>).name as string).trim() || null
+        firstItem &&
+        typeof (firstItem as Record<string, unknown>).name === 'string'
+          ? ((firstItem as Record<string, unknown>).name as string).trim() ||
+            null
           : null;
 
       await this.notifications.create(
@@ -556,7 +592,8 @@ export class OrderService {
 
     return {
       ...order,
-      paymentStatus: paymentStatusByOrderId.get(order.id) ?? order.paymentStatus,
+      paymentStatus:
+        paymentStatusByOrderId.get(order.id) ?? order.paymentStatus,
       financeBreakdown: financeSnapshot.breakdown,
       buyerReceipt: financeSnapshot.receipt,
       customerEmail: contactInfo.email || null,
@@ -636,7 +673,9 @@ export class OrderService {
         where: {
           type: 'BUYER_RECEIPT',
           OR: [
-            ...(paymentAttempt?.id ? [{ paymentAttemptId: paymentAttempt.id }] : []),
+            ...(paymentAttempt?.id
+              ? [{ paymentAttemptId: paymentAttempt.id }]
+              : []),
             { orderId: order.id },
           ],
         },
@@ -673,47 +712,66 @@ export class OrderService {
             if (item.totalPrice != null) {
               return sum + Number(item.totalPrice);
             }
-            return sum + Number(item.unitPrice ?? 0) * Number(item.quantity ?? 0);
+            return (
+              sum + Number(item.unitPrice ?? 0) * Number(item.quantity ?? 0)
+            );
           }, 0)
         : 0,
     );
     const shippingAmount = this.roundCurrency(Number(order.shippingCost ?? 0));
-    const discountAmount = this.roundCurrency(Number(order.discountAmount ?? 0));
+    const discountAmount = this.roundCurrency(
+      Number(order.discountAmount ?? 0),
+    );
     const grossAmount = this.roundCurrency(Number(order.totalAmount ?? 0));
     const receiptMetadata = this.asJsonObject(receipt?.metadataJson);
 
     return {
       breakdown: {
-        currency: String(order.currency || paymentAttempt?.currency || hold?.currency || 'NGN'),
+        currency: String(
+          order.currency || paymentAttempt?.currency || hold?.currency || 'NGN',
+        ),
         itemSubtotal,
         shippingAmount,
         discountAmount,
         grossAmount,
-        paymentReference: order.paymentReference ?? paymentAttempt?.reference ?? null,
+        paymentReference:
+          order.paymentReference ?? paymentAttempt?.reference ?? null,
         paymentStatus: order.paymentStatus ?? null,
         paidAt: order.paidAt ?? paymentAttempt?.confirmedAt ?? null,
         escrowStatus: hold?.status ?? null,
         commissionRate: hold ? Number(hold.commissionRate ?? 0) : null,
-        commissionAmount: hold ? this.roundCurrency(Number(hold.commissionAmount ?? 0)) : null,
-        netBrandAmount: hold ? this.roundCurrency(Number(hold.netBrandAmount ?? 0)) : null,
+        commissionAmount: hold
+          ? this.roundCurrency(Number(hold.commissionAmount ?? 0))
+          : null,
+        netBrandAmount: hold
+          ? this.roundCurrency(Number(hold.netBrandAmount ?? 0))
+          : null,
         releaseSchedule: hold
           ? [
               {
                 stage: 'SHIPPED_RELEASE',
-                grossAmount: this.roundCurrency(Number(hold.firstReleaseAmount ?? 0)),
+                grossAmount: this.roundCurrency(
+                  Number(hold.firstReleaseAmount ?? 0),
+                ),
                 commissionAmount: this.roundCurrency(
                   Number(hold.firstReleaseCommissionAmount ?? 0),
                 ),
-                netAmount: this.roundCurrency(Number(hold.firstReleaseNetAmount ?? 0)),
+                netAmount: this.roundCurrency(
+                  Number(hold.firstReleaseNetAmount ?? 0),
+                ),
                 releasedAt: hold.firstReleasedAt ?? null,
               },
               {
                 stage: 'DELIVERED_RELEASE',
-                grossAmount: this.roundCurrency(Number(hold.secondReleaseAmount ?? 0)),
+                grossAmount: this.roundCurrency(
+                  Number(hold.secondReleaseAmount ?? 0),
+                ),
                 commissionAmount: this.roundCurrency(
                   Number(hold.secondReleaseCommissionAmount ?? 0),
                 ),
-                netAmount: this.roundCurrency(Number(hold.secondReleaseNetAmount ?? 0)),
+                netAmount: this.roundCurrency(
+                  Number(hold.secondReleaseNetAmount ?? 0),
+                ),
                 eligibleAt: hold.secondReleaseEligibleAt ?? null,
                 condition: hold.secondReleaseCondition ?? null,
                 releasedAt: hold.secondReleasedAt ?? null,
@@ -725,7 +783,9 @@ export class OrderService {
               id: transaction.id,
               type: transaction.type,
               description: transaction.description,
-              totalAmount: this.roundCurrency(Number(transaction.totalAmount ?? 0)),
+              totalAmount: this.roundCurrency(
+                Number(transaction.totalAmount ?? 0),
+              ),
               currency: transaction.currency,
               createdAt: transaction.createdAt,
               entries: Array.isArray(transaction.entries)
@@ -758,12 +818,14 @@ export class OrderService {
               receipt.netAmount != null
                 ? this.roundCurrency(Number(receipt.netAmount))
                 : null,
-            paymentAttemptId: receipt.paymentAttemptId ?? paymentAttempt?.id ?? null,
-            paymentReference: paymentAttempt?.reference ?? order.paymentReference ?? null,
+            paymentAttemptId:
+              receipt.paymentAttemptId ?? paymentAttempt?.id ?? null,
+            paymentReference:
+              paymentAttempt?.reference ?? order.paymentReference ?? null,
             settlementCurrency:
               typeof receiptMetadata?.settlementCurrency === 'string'
                 ? receiptMetadata.settlementCurrency
-                : paymentAttempt?.settlementCurrency ?? null,
+                : (paymentAttempt?.settlementCurrency ?? null),
             settlementAmount:
               receiptMetadata?.settlementAmount != null
                 ? this.roundCurrency(Number(receiptMetadata.settlementAmount))

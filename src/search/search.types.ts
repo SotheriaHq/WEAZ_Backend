@@ -63,7 +63,13 @@ export interface SearchSuggestionResponse {
   brands: SearchSuggestionSection;
   designs: SearchSuggestionSection;
   storeCollections: SearchSuggestionSection;
-  tags: Array<{ id: string; type: 'tag'; title: string; href: string; score: number }>;
+  tags: Array<{
+    id: string;
+    type: 'tag';
+    title: string;
+    href: string;
+    score: number;
+  }>;
 }
 
 export interface SearchHealthResponse {

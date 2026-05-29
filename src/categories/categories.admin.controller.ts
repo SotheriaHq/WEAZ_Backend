@@ -23,8 +23,9 @@ import { AdminPermissionGuard } from '../admin/guards/admin-permission.guard';
 import { RequirePermissions } from '../admin/decorators/require-permissions.decorator';
 import { ADMIN_PERMISSIONS } from '../admin/constants/permissions';
 
-const actorIdFromRequest = (req: Request & { user?: { id?: string; sub?: string } }) =>
-  req.user?.id ?? req.user?.sub;
+const actorIdFromRequest = (
+  req: Request & { user?: { id?: string; sub?: string } },
+) => req.user?.id ?? req.user?.sub;
 
 @ApiTags('admin-categories')
 @ApiBearerAuth()
@@ -32,7 +33,7 @@ const actorIdFromRequest = (req: Request & { user?: { id?: string; sub?: string 
 @Roles(Role.SuperAdmin, Role.Admin)
 @Controller('admin/categories')
 export class CategoriesAdminController {
-  constructor(private readonly categories: CategoriesService) { }
+  constructor(private readonly categories: CategoriesService) {}
 
   @Get()
   @RequirePermissions(ADMIN_PERMISSIONS.TAXONOMY_READ)
@@ -124,7 +125,11 @@ export class CategoriesAdminController {
     @Body() dto: UpsertSubCategoryDto,
     @Req() req: Request & { user: { id?: string; sub?: string } },
   ) {
-    return this.categories.updateSubCategory(subCategoryId, dto, actorIdFromRequest(req));
+    return this.categories.updateSubCategory(
+      subCategoryId,
+      dto,
+      actorIdFromRequest(req),
+    );
   }
 
   @Patch('sub-categories/:subCategoryId/activate')
@@ -134,7 +139,10 @@ export class CategoriesAdminController {
     @Param('subCategoryId') subCategoryId: string,
     @Req() req: Request & { user: { id?: string; sub?: string } },
   ) {
-    return this.categories.activateSubCategory(subCategoryId, actorIdFromRequest(req));
+    return this.categories.activateSubCategory(
+      subCategoryId,
+      actorIdFromRequest(req),
+    );
   }
 
   @Patch('sub-categories/:subCategoryId/deactivate')
@@ -144,7 +152,10 @@ export class CategoriesAdminController {
     @Param('subCategoryId') subCategoryId: string,
     @Req() req: Request & { user: { id?: string; sub?: string } },
   ) {
-    return this.categories.deactivateSubCategory(subCategoryId, actorIdFromRequest(req));
+    return this.categories.deactivateSubCategory(
+      subCategoryId,
+      actorIdFromRequest(req),
+    );
   }
 
   @Get('filters/dimensions')

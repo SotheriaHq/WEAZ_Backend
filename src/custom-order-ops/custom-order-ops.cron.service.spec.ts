@@ -178,7 +178,9 @@ describe('CustomOrderOpsCronService', () => {
       }),
     );
 
-    expect(customOrdersPaymentsService.verifyPaymentByReference).toHaveBeenNthCalledWith(
+    expect(
+      customOrdersPaymentsService.verifyPaymentByReference,
+    ).toHaveBeenNthCalledWith(
       1,
       'buyer_1',
       expect.objectContaining({
@@ -186,7 +188,9 @@ describe('CustomOrderOpsCronService', () => {
         gateway: 'PAYSTACK',
       }),
     );
-    expect(customOrdersPaymentsService.verifyPaymentByReference).toHaveBeenNthCalledWith(
+    expect(
+      customOrdersPaymentsService.verifyPaymentByReference,
+    ).toHaveBeenNthCalledWith(
       2,
       'buyer_2',
       expect.objectContaining({
@@ -201,17 +205,17 @@ describe('CustomOrderOpsCronService', () => {
 
     await service.reconcilePendingCustomOrderPayments();
 
-    expect(customOrdersPaymentsService.verifyPaymentByReference).not.toHaveBeenCalled();
-    expect(paymentRuntimeHealthService.recordCronHeartbeat).toHaveBeenCalledWith(
-      'custom-order-payment-reconcile',
-      'ok',
-      {
-        scanned: 0,
-        paid: 0,
-        unresolved: 0,
-        failed: 0,
-      },
-    );
+    expect(
+      customOrdersPaymentsService.verifyPaymentByReference,
+    ).not.toHaveBeenCalled();
+    expect(
+      paymentRuntimeHealthService.recordCronHeartbeat,
+    ).toHaveBeenCalledWith('custom-order-payment-reconcile', 'ok', {
+      scanned: 0,
+      paid: 0,
+      unresolved: 0,
+      failed: 0,
+    });
   });
 
   it('auto-completes expired acceptance windows and releases the completion allocation', async () => {
@@ -242,8 +246,9 @@ describe('CustomOrderOpsCronService', () => {
         update: jest.fn().mockResolvedValue(undefined),
       },
     };
-    prisma.$transaction.mockImplementation(async (callback: (innerTx: typeof tx) => Promise<unknown>) =>
-      callback(tx),
+    prisma.$transaction.mockImplementation(
+      async (callback: (innerTx: typeof tx) => Promise<unknown>) =>
+        callback(tx),
     );
 
     await service.autoCompleteExpiredAcceptanceWindows();
@@ -262,7 +267,8 @@ describe('CustomOrderOpsCronService', () => {
     expect(tx.customOrderLedgerAllocation.findFirst).toHaveBeenCalledWith({
       where: {
         customOrderId: 'co_1',
-        allocationType: CustomOrderLedgerAllocationType.FINAL_COMPLETION_PORTION,
+        allocationType:
+          CustomOrderLedgerAllocationType.FINAL_COMPLETION_PORTION,
         status: CustomOrderLedgerAllocationStatus.HELD,
       },
       select: {
@@ -301,8 +307,12 @@ describe('CustomOrderOpsCronService', () => {
   });
 
   it('deletes only expired unconsumed checkout intents', async () => {
-    prisma.customOrderCheckoutSession.updateMany.mockResolvedValue({ count: 1 });
-    prisma.customOrderCheckoutSession.deleteMany.mockResolvedValue({ count: 0 });
+    prisma.customOrderCheckoutSession.updateMany.mockResolvedValue({
+      count: 1,
+    });
+    prisma.customOrderCheckoutSession.deleteMany.mockResolvedValue({
+      count: 0,
+    });
     prisma.customOrderCheckoutIntent.deleteMany.mockResolvedValue({ count: 2 });
 
     await service.cleanupExpiredCheckoutIntents();
@@ -323,7 +333,9 @@ describe('CustomOrderOpsCronService', () => {
     expect(prisma.customOrderCheckoutSession.deleteMany).toHaveBeenCalledWith({
       where: {
         status: 'ABANDONED',
-        abandonedAt: { lt: new Date(fixedNow.getTime() - 14 * 24 * 60 * 60 * 1000) },
+        abandonedAt: {
+          lt: new Date(fixedNow.getTime() - 14 * 24 * 60 * 60 * 1000),
+        },
         customOrderId: null,
       },
     });
@@ -393,7 +405,11 @@ describe('CustomOrderOpsCronService', () => {
         payoutId: null,
         customOrder: {
           status: {
-            in: [CustomOrderStatus.ACCEPTED, CustomOrderStatus.COMPLETED, CustomOrderStatus.CLOSED],
+            in: [
+              CustomOrderStatus.ACCEPTED,
+              CustomOrderStatus.COMPLETED,
+              CustomOrderStatus.CLOSED,
+            ],
           },
           disputes: {
             none: {

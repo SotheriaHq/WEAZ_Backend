@@ -32,16 +32,13 @@ export class WebhookEventsProcessor extends WorkerHost {
     try {
       if (job.name === WEBHOOK_PAYMENT_PROCESS_JOB) {
         const paymentJob = job.data as PaymentWebhookProcessJob;
-        await this.paymentService.processQueuedWebhook(
-          paymentJob,
-          {
-            queueAttempt:
-              Number.isFinite(job.attemptsMade) && job.attemptsMade >= 0
-                ? job.attemptsMade + 1
-                : null,
-            queueJobId: job.id != null ? String(job.id) : null,
-          },
-        );
+        await this.paymentService.processQueuedWebhook(paymentJob, {
+          queueAttempt:
+            Number.isFinite(job.attemptsMade) && job.attemptsMade >= 0
+              ? job.attemptsMade + 1
+              : null,
+          queueJobId: job.id != null ? String(job.id) : null,
+        });
         await this.customOrdersPaymentsService.reconcilePaidAttemptByReference(
           paymentJob.reference,
         );
@@ -90,8 +87,11 @@ export class WebhookEventsProcessor extends WorkerHost {
       return 'unknown-job';
     }
 
-    const data = job.data as Partial<PaymentWebhookProcessJob & PayoutWebhookProcessJob>;
-    const providerEventKey = String(data.providerEventKey ?? '').trim() || 'n/a';
+    const data = job.data as Partial<
+      PaymentWebhookProcessJob & PayoutWebhookProcessJob
+    >;
+    const providerEventKey =
+      String(data.providerEventKey ?? '').trim() || 'n/a';
     const reference =
       String(data.reference ?? data.payoutId ?? '').trim() || 'n/a';
     return `${job.name} id=${job.id ?? 'n/a'} eventKey=${providerEventKey} ref=${reference}`;

@@ -44,7 +44,11 @@ export class AdminDashboardService {
         where: { verificationStatus: BrandVerificationStatus.PENDING },
       }),
       (this.prisma as any).payout
-        .count({ where: { status: { in: [PayoutStatus.PENDING_APPROVAL, 'PENDING' as any] } } })
+        .count({
+          where: {
+            status: { in: [PayoutStatus.PENDING_APPROVAL, 'PENDING' as any] },
+          },
+        })
         .catch(() => 0) as Promise<number>,
       this.prisma.dispute.count({
         where: { status: { in: ['OPEN', 'ASSIGNED', 'IN_PROGRESS'] } },
@@ -68,7 +72,9 @@ export class AdminDashboardService {
           createdAt: { gte: startOfToday },
         },
       }),
-      this.systemConfigService.getBoolean('admin.dashboard.showDailySignupCount'),
+      this.systemConfigService.getBoolean(
+        'admin.dashboard.showDailySignupCount',
+      ),
     ]);
 
     const recentLogs = [
@@ -197,7 +203,10 @@ export class AdminDashboardService {
     return logs.map((log) => {
       const actor = actorMap.get(log.actorUserId);
       const actorName = actor
-        ? `${actor.firstName} ${actor.lastName}`.trim() || actor.username || actor.email || 'User'
+        ? `${actor.firstName} ${actor.lastName}`.trim() ||
+          actor.username ||
+          actor.email ||
+          'User'
         : null;
       const actorImage = actor?.profileImageFile?.s3Url ?? null;
 
@@ -210,7 +219,9 @@ export class AdminDashboardService {
         const t = (log.targetType || '').toLowerCase();
         if (t === 'user') {
           const u = userMap.get(log.targetId);
-          targetName = u ? `${u.firstName} ${u.lastName}`.trim() || u.username || 'User' : null;
+          targetName = u
+            ? `${u.firstName} ${u.lastName}`.trim() || u.username || 'User'
+            : null;
           targetImage = u?.profileImageFile?.s3Url ?? null;
           targetStatus = u?.status ?? null;
           targetRoute = `/admin/users`;

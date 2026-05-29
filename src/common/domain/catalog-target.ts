@@ -51,14 +51,17 @@ const normalizeType = (value: unknown): CatalogTargetType | null => {
   return isCatalogEntityType(normalized) ? normalized : null;
 };
 
-export function isCatalogTargetType(value: unknown): value is CatalogTargetType {
+export function isCatalogTargetType(
+  value: unknown,
+): value is CatalogTargetType {
   return isCatalogEntityType(value);
 }
 
 export function normalizeCatalogTarget(
   input: CatalogTargetInput,
 ): NormalizedCatalogTarget | null {
-  const targetType = normalizeType(input.targetType) ?? normalizeType(input.entityType);
+  const targetType =
+    normalizeType(input.targetType) ?? normalizeType(input.entityType);
 
   if (targetType === 'DESIGN') {
     const designId =
@@ -81,13 +84,15 @@ export function normalizeCatalogTarget(
   }
 
   if (targetType === 'PRODUCT') {
-    const productId = normalizeId(input.productId) ?? normalizeId(input.targetId);
+    const productId =
+      normalizeId(input.productId) ?? normalizeId(input.targetId);
     if (!productId) return null;
     return { targetType, targetId: productId, productId };
   }
 
   if (targetType === 'COLLECTION') {
-    const collectionId = normalizeId(input.collectionId) ?? normalizeId(input.targetId);
+    const collectionId =
+      normalizeId(input.collectionId) ?? normalizeId(input.targetId);
     if (!collectionId) return null;
     return { targetType, targetId: collectionId, collectionId };
   }
@@ -95,7 +100,9 @@ export function normalizeCatalogTarget(
   const designId = normalizeId(input.designId);
   if (designId) {
     const legacyCollectionId =
-      normalizeId(input.legacyCollectionId) ?? normalizeId(input.collectionId) ?? designId;
+      normalizeId(input.legacyCollectionId) ??
+      normalizeId(input.collectionId) ??
+      designId;
     return {
       targetType: 'DESIGN',
       targetId: designId,
@@ -130,10 +137,16 @@ export function mapCatalogTargetToLegacyTarget(
   }
 
   if (target.targetType === 'PRODUCT') {
-    return { targetType: 'PRODUCT', targetId: target.productId ?? target.targetId };
+    return {
+      targetType: 'PRODUCT',
+      targetId: target.productId ?? target.targetId,
+    };
   }
 
-  return { targetType: 'COLLECTION', targetId: target.collectionId ?? target.targetId };
+  return {
+    targetType: 'COLLECTION',
+    targetId: target.collectionId ?? target.targetId,
+  };
 }
 
 export function resolveCatalogTargetFromLegacy(input: {
@@ -153,9 +166,10 @@ export function resolveCatalogTargetFromLegacy(input: {
     });
   }
 
-  const legacyType = typeof input.targetType === 'string'
-    ? input.targetType.trim().toUpperCase()
-    : null;
+  const legacyType =
+    typeof input.targetType === 'string'
+      ? input.targetType.trim().toUpperCase()
+      : null;
   const targetId = normalizeId(input.targetId);
   if (!targetId) return null;
 

@@ -61,4 +61,4 @@ import { WebhookEventsProcessor } from './webhook-events.processor';
     ReviewReminderProcessor,
   ],
 })
-export class QueueWorkerModule { }
+export class QueueWorkerModule {}

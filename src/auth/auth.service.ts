@@ -81,7 +81,7 @@ export class AuthService {
     private readonly emailService: EmailService,
     private readonly trustedDeviceService: TrustedDeviceService,
     private readonly googleTokenVerifier: GoogleTokenVerifierService,
-  ) { }
+  ) {}
 
   private buildPasswordPolicyContext(
     context: PasswordPolicyContext,
@@ -162,7 +162,10 @@ export class AuthService {
     }
 
     const emailLocalPart =
-      identity.email.split('@')[0]?.replace(/[._-]+/g, ' ').trim() || 'Threadly';
+      identity.email
+        .split('@')[0]
+        ?.replace(/[._-]+/g, ' ')
+        .trim() || 'Threadly';
     return {
       firstName: givenName || nameParts[0] || emailLocalPart,
       lastName: familyName || 'Member',
@@ -244,7 +247,9 @@ export class AuthService {
     return `${parts[0]}.${parts[1]}.xxx.xxx`;
   }
 
-  private extractRefreshSessionId(rawRefreshToken?: string | null): string | null {
+  private extractRefreshSessionId(
+    rawRefreshToken?: string | null,
+  ): string | null {
     if (!rawRefreshToken) {
       return null;
     }
@@ -314,31 +319,29 @@ export class AuthService {
   private describeSignupDevice(req: Request): string {
     const userAgent = this.readHeaderValue(req, 'user-agent').toLowerCase();
 
-    const browser =
-      userAgent.includes('edg/')
-        ? 'Edge'
-        : userAgent.includes('chrome/')
-          ? 'Chrome'
-          : userAgent.includes('safari/') && !userAgent.includes('chrome/')
-            ? 'Safari'
-            : userAgent.includes('firefox/')
-              ? 'Firefox'
-              : userAgent.includes('opr/')
-                ? 'Opera'
-                : 'Web browser';
+    const browser = userAgent.includes('edg/')
+      ? 'Edge'
+      : userAgent.includes('chrome/')
+        ? 'Chrome'
+        : userAgent.includes('safari/') && !userAgent.includes('chrome/')
+          ? 'Safari'
+          : userAgent.includes('firefox/')
+            ? 'Firefox'
+            : userAgent.includes('opr/')
+              ? 'Opera'
+              : 'Web browser';
 
-    const os =
-      userAgent.includes('windows')
-        ? 'Windows'
-        : userAgent.includes('mac os')
-          ? 'macOS'
-          : userAgent.includes('android')
-            ? 'Android'
-            : userAgent.includes('iphone') || userAgent.includes('ipad')
-              ? 'iOS'
-              : userAgent.includes('linux')
-                ? 'Linux'
-                : '';
+    const os = userAgent.includes('windows')
+      ? 'Windows'
+      : userAgent.includes('mac os')
+        ? 'macOS'
+        : userAgent.includes('android')
+          ? 'Android'
+          : userAgent.includes('iphone') || userAgent.includes('ipad')
+            ? 'iOS'
+            : userAgent.includes('linux')
+              ? 'Linux'
+              : '';
 
     const deviceType =
       userAgent.includes('mobile') || userAgent.includes('android')
@@ -502,8 +505,7 @@ export class AuthService {
       const dbLastName = signupDto.lastName ?? '';
 
       const createdAt = new Date();
-      const brandId =
-        signupDto.type === UserType.BRAND ? uuidv4() : null;
+      const brandId = signupDto.type === UserType.BRAND ? uuidv4() : null;
 
       const user = await this.prisma
         .$transaction(async (tx) => {
@@ -528,16 +530,16 @@ export class AuthService {
               },
               ...(signupDto.type === UserType.BRAND && brandId
                 ? {
-                  brand: {
-                    create: {
-                      id: brandId,
-                      name: signupDto.brandFullName!,
-                      industriNumber,
-                      storeNameLastChangedAt: createdAt,
-                      currency: 'NGN',
+                    brand: {
+                      create: {
+                        id: brandId,
+                        name: signupDto.brandFullName!,
+                        industriNumber,
+                        storeNameLastChangedAt: createdAt,
+                        currency: 'NGN',
+                      },
                     },
-                  },
-                }
+                  }
                 : {}),
             },
             select: authUserSelect,
@@ -577,36 +579,37 @@ export class AuthService {
       }
 
       const postVerificationNextPath = this.resolvePostVerificationNextPath(
-      user.type,
-    );
+        user.type,
+      );
 
-    // Send verification email
-    const verificationLink = this.emailVerificationHelper.generateVerificationLink(
-      verificationToken,
-      postVerificationNextPath,
-    );
-    const verificationEmail = emailTemplates.emailVerificationEmail(
-      verificationLink,
-      this.emailService.getAppName(),
-    );
-    const verificationDispatchResult = await this.emailService.send(
-      user.email,
-      verificationEmail.subject,
-      verificationEmail.html,
-      verificationEmail.text,
-      {
-        recipientUserId: user.id,
+      // Send verification email
+      const verificationLink =
+        this.emailVerificationHelper.generateVerificationLink(
+          verificationToken,
+          postVerificationNextPath,
+        );
+      const verificationEmail = emailTemplates.emailVerificationEmail(
+        verificationLink,
+        this.emailService.getAppName(),
+      );
+      const verificationDispatchResult = await this.emailService.send(
+        user.email,
+        verificationEmail.subject,
+        verificationEmail.html,
+        verificationEmail.text,
+        {
+          recipientUserId: user.id,
+          scenarioKey: 'auth.email_verification',
+          priority: EmailPriority.P1_TRANSACTIONAL,
+          idempotencyKey: `auth:email-verification:${user.id}:${verificationToken}`,
+        },
+      );
+      this.logEmailDispatchOutcome({
         scenarioKey: 'auth.email_verification',
-        priority: EmailPriority.P1_TRANSACTIONAL,
-        idempotencyKey: `auth:email-verification:${user.id}:${verificationToken}`,
-      },
-    );
-    this.logEmailDispatchOutcome({
-      scenarioKey: 'auth.email_verification',
-      userId: user.id,
-      recipientEmail: user.email,
-      result: verificationDispatchResult,
-    });
+        userId: user.id,
+        recipientEmail: user.email,
+        result: verificationDispatchResult,
+      });
 
       let accessToken: string;
       let refreshToken: string | undefined;
@@ -1287,7 +1290,9 @@ export class AuthService {
       setupToken.user.status !== UserStatus.ACTIVE ||
       !this.isGoogleOnlyPasswordSetupCandidate(setupToken.user)
     ) {
-      throw new UnauthorizedException('Invalid or expired password setup token');
+      throw new UnauthorizedException(
+        'Invalid or expired password setup token',
+      );
     }
 
     validatePasswordPolicy(
@@ -1322,7 +1327,9 @@ export class AuthService {
           );
         }
 
-        await tx.refreshToken.deleteMany({ where: { userId: setupToken.userId } });
+        await tx.refreshToken.deleteMany({
+          where: { userId: setupToken.userId },
+        });
         await tx.user.update({
           where: { id: setupToken.userId },
           data: {
@@ -1338,9 +1345,10 @@ export class AuthService {
       },
     );
 
-    const passwordChangedEmail = emailTemplates.passwordChangedSecurityAlertEmail(
-      this.emailService.getAppName(),
-    );
+    const passwordChangedEmail =
+      emailTemplates.passwordChangedSecurityAlertEmail(
+        this.emailService.getAppName(),
+      );
     await this.sendScenarioEmailIfAllowed({
       userId: setupToken.userId,
       to: setupToken.user.email,
@@ -1352,7 +1360,9 @@ export class AuthService {
       idempotencyKey: `auth:password-setup:${setupToken.userId}:${setupToken.id}`,
     });
 
-    return { message: 'Password set successfully. Sign in with your new password.' };
+    return {
+      message: 'Password set successfully. Sign in with your new password.',
+    };
   }
 
   async linkGoogle(userId: string, idToken: string) {
@@ -1369,7 +1379,9 @@ export class AuthService {
       throw new UnauthorizedException('User not found');
     }
     if (user.status !== UserStatus.ACTIVE) {
-      throw new UnauthorizedException('User account is suspended or deactivated');
+      throw new UnauthorizedException(
+        'User account is suspended or deactivated',
+      );
     }
     if (user.email.trim().toLowerCase() !== identity.email) {
       throw new BadRequestException(
@@ -1415,8 +1427,13 @@ export class AuthService {
     return this.trustedDeviceService.revokeDevice(userId, deviceId);
   }
 
-  async listSecuritySessions(userId: string, currentRawRefreshToken?: string | null) {
-    const currentSessionId = this.extractRefreshSessionId(currentRawRefreshToken);
+  async listSecuritySessions(
+    userId: string,
+    currentRawRefreshToken?: string | null,
+  ) {
+    const currentSessionId = this.extractRefreshSessionId(
+      currentRawRefreshToken,
+    );
     const sessions = await this.prisma.refreshToken.findMany({
       where: { userId },
       orderBy: { lastUsedAt: 'desc' },
@@ -1440,7 +1457,8 @@ export class AuthService {
       createdAt: session.createdAt,
       lastUsedAt: session.lastUsedAt,
       expiresAt: session.expiresAt,
-      isCurrentSession: currentSessionId != null && session.id === currentSessionId,
+      isCurrentSession:
+        currentSessionId != null && session.id === currentSessionId,
     }));
   }
 
@@ -1449,7 +1467,9 @@ export class AuthService {
     sessionId: string,
     currentRawRefreshToken?: string | null,
   ) {
-    const currentSessionId = this.extractRefreshSessionId(currentRawRefreshToken);
+    const currentSessionId = this.extractRefreshSessionId(
+      currentRawRefreshToken,
+    );
     if (currentSessionId && sessionId === currentSessionId) {
       throw new BadRequestException('Use logout to end the current session');
     }
@@ -1461,8 +1481,14 @@ export class AuthService {
     return { success: result.count > 0 };
   }
 
-  async logoutOtherSessions(userId: string, currentRawRefreshToken?: string | null) {
-    return this.tokenService.revokeOtherRefreshTokens(userId, currentRawRefreshToken);
+  async logoutOtherSessions(
+    userId: string,
+    currentRawRefreshToken?: string | null,
+  ) {
+    return this.tokenService.revokeOtherRefreshTokens(
+      userId,
+      currentRawRefreshToken,
+    );
   }
 
   // Validates user credentials for login
@@ -1600,10 +1626,7 @@ export class AuthService {
     }
   }
 
-  async updateProfile(
-    userId: string,
-    dto: UpdateProfileDto,
-  ) {
+  async updateProfile(userId: string, dto: UpdateProfileDto) {
     const forbiddenFields = [
       'password',
       'email',
@@ -1666,8 +1689,7 @@ export class AuthService {
     ) => {
       const value = dto[field];
       if (value !== undefined) {
-        profileData[field] =
-          typeof value === 'string' ? value.trim() : value;
+        profileData[field] = typeof value === 'string' ? value.trim() : value;
       }
     };
 
@@ -1724,20 +1746,16 @@ export class AuthService {
                 existingUser.userProfile?.lastName ??
                 '',
               phoneNumber:
-                (profileData.phoneNumber as string | null | undefined) ??
-                null,
+                (profileData.phoneNumber as string | null | undefined) ?? null,
               address:
-                (profileData.address as string | null | undefined) ??
-                null,
+                (profileData.address as string | null | undefined) ?? null,
               profileImage:
-                (profileData.profileImage as string | null | undefined) ??
-                null,
+                (profileData.profileImage as string | null | undefined) ?? null,
               profileImageId:
                 (profileData.profileImageId as string | null | undefined) ??
                 null,
               bannerImage:
-                (profileData.bannerImage as string | null | undefined) ??
-                null,
+                (profileData.bannerImage as string | null | undefined) ?? null,
               bannerImageId:
                 (profileData.bannerImageId as string | null | undefined) ??
                 null,
@@ -1758,7 +1776,10 @@ export class AuthService {
       }
       return toAuthUserResponse(updatedUser);
     } catch (error) {
-      if (error instanceof BadRequestException || error instanceof UnauthorizedException) {
+      if (
+        error instanceof BadRequestException ||
+        error instanceof UnauthorizedException
+      ) {
         throw error;
       }
       this.logger.error('Profile update error:', error);
@@ -1831,10 +1852,11 @@ export class AuthService {
       });
     }
 
-    const verificationLink = this.emailVerificationHelper.generateVerificationLink(
-      verificationToken,
-      this.resolvePostVerificationNextPath(user.type),
-    );
+    const verificationLink =
+      this.emailVerificationHelper.generateVerificationLink(
+        verificationToken,
+        this.resolvePostVerificationNextPath(user.type),
+      );
     const verificationEmail = emailTemplates.emailVerificationEmail(
       verificationLink,
       this.emailService.getAppName(),
@@ -1872,7 +1894,8 @@ export class AuthService {
     }
 
     return {
-      message: 'Verification email sent. Please check your inbox and spam folder.',
+      message:
+        'Verification email sent. Please check your inbox and spam folder.',
     };
   }
 
@@ -1891,7 +1914,7 @@ export class AuthService {
       await this.notifications.create(userId, NotificationType.SIGNUP, {
         payload: { action: 'EMAIL_VERIFIED', targetUrl: '/' },
       });
-    } catch { }
+    } catch {}
     return { message: 'Email verified successfully' };
   }
 
@@ -1910,7 +1933,7 @@ export class AuthService {
       await this.notifications.create(user.id, NotificationType.SIGNUP, {
         payload: { action: 'EMAIL_VERIFIED', targetUrl: '/' },
       });
-    } catch { }
+    } catch {}
     return { message: 'Email verified successfully' };
   }
 
@@ -1968,7 +1991,9 @@ export class AuthService {
     }
 
     if (user.email === normalizedEmail) {
-      throw new BadRequestException('New email must be different from your current email');
+      throw new BadRequestException(
+        'New email must be different from your current email',
+      );
     }
 
     if (!this.hasLocalPassword(user)) {
@@ -2428,7 +2453,10 @@ export class AuthService {
       this.buildPasswordPolicyContext({
         email: resetToken.user.email,
         username: resetToken.user.username,
-        brandFullName: resolveRequiredBrandField(resetToken.user, 'brandFullName'),
+        brandFullName: resolveRequiredBrandField(
+          resetToken.user,
+          'brandFullName',
+        ),
         firstName: resolveRequiredProfileField(resetToken.user, 'firstName'),
         lastName: resolveRequiredProfileField(resetToken.user, 'lastName'),
       }),
@@ -2462,7 +2490,9 @@ export class AuthService {
           throw new UnauthorizedException('Invalid or expired reset token');
         }
 
-        await tx.refreshToken.deleteMany({ where: { userId: resetToken.userId } });
+        await tx.refreshToken.deleteMany({
+          where: { userId: resetToken.userId },
+        });
 
         await tx.user.update({
           where: { id: resetToken.userId },
@@ -2479,9 +2509,10 @@ export class AuthService {
       },
     );
 
-    const passwordChangedEmail = emailTemplates.passwordChangedSecurityAlertEmail(
-      this.emailService.getAppName(),
-    );
+    const passwordChangedEmail =
+      emailTemplates.passwordChangedSecurityAlertEmail(
+        this.emailService.getAppName(),
+      );
     await this.sendScenarioEmailIfAllowed({
       userId: resetToken.userId,
       to: resetToken.user.email,
@@ -2681,7 +2712,10 @@ export class AuthService {
       this.buildPasswordPolicyContext({
         email: resetToken.user.email,
         username: resetToken.user.username,
-        brandFullName: resolveRequiredBrandField(resetToken.user, 'brandFullName'),
+        brandFullName: resolveRequiredBrandField(
+          resetToken.user,
+          'brandFullName',
+        ),
         firstName: resolveRequiredProfileField(resetToken.user, 'firstName'),
         lastName: resolveRequiredProfileField(resetToken.user, 'lastName'),
       }),
@@ -2715,7 +2749,9 @@ export class AuthService {
           throw new UnauthorizedException('Invalid or expired reset token');
         }
 
-        await tx.refreshToken.deleteMany({ where: { userId: resetToken.userId } });
+        await tx.refreshToken.deleteMany({
+          where: { userId: resetToken.userId },
+        });
 
         await tx.user.update({
           where: { id: resetToken.userId },
@@ -2731,9 +2767,10 @@ export class AuthService {
       },
     );
 
-    const passwordChangedEmail = emailTemplates.passwordChangedSecurityAlertEmail(
-      this.emailService.getAppName(),
-    );
+    const passwordChangedEmail =
+      emailTemplates.passwordChangedSecurityAlertEmail(
+        this.emailService.getAppName(),
+      );
     await this.sendScenarioEmailIfAllowed({
       userId: resetToken.userId,
       to: resetToken.user.email,
@@ -2828,11 +2865,15 @@ export class AuthService {
         authVersion: { increment: 1 },
       },
     });
-    await this.tokenService.revokeOtherRefreshTokens(userId, currentRawRefreshToken);
-
-    const passwordChangedEmail = emailTemplates.passwordChangedSecurityAlertEmail(
-      this.emailService.getAppName(),
+    await this.tokenService.revokeOtherRefreshTokens(
+      userId,
+      currentRawRefreshToken,
     );
+
+    const passwordChangedEmail =
+      emailTemplates.passwordChangedSecurityAlertEmail(
+        this.emailService.getAppName(),
+      );
     await this.sendScenarioEmailIfAllowed({
       userId,
       to: user.email,
@@ -2854,10 +2895,14 @@ export class AuthService {
   ) {
     const normalizedEmail = email?.trim().toLowerCase();
     if (!normalizedEmail || !currentPassword || !newPassword) {
-      throw new BadRequestException('Email, current password, and new password are required');
+      throw new BadRequestException(
+        'Email, current password, and new password are required',
+      );
     }
     if (currentPassword === newPassword) {
-      throw new BadRequestException('New password must be different from temporary password');
+      throw new BadRequestException(
+        'New password must be different from temporary password',
+      );
     }
 
     const user = await this.prisma.user.findUnique({
@@ -2879,7 +2924,9 @@ export class AuthService {
       throw new UnauthorizedException('Invalid account or credentials');
     }
     if (!user.mustResetPassword) {
-      throw new BadRequestException('This account does not require a password reset');
+      throw new BadRequestException(
+        'This account does not require a password reset',
+      );
     }
 
     if (!this.hasLocalPassword(user)) {

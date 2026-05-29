@@ -806,6 +806,7 @@ export class SettlementBackfillService {
       const { snapshotData: _snapshotData, ...publicRecord } = record as T & {
         snapshotData?: BackfillSnapshotData;
       };
+      void _snapshotData;
       return publicRecord as T;
     });
   }

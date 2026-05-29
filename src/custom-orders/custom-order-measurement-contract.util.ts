@@ -1,8 +1,4 @@
-import {
-  CollectionType,
-  CustomOrderSourceType,
-  Gender,
-} from '@prisma/client';
+import { CollectionType, CustomOrderSourceType, Gender } from '@prisma/client';
 
 export type SourceMeasurementContractProfile = {
   sourceType: CustomOrderSourceType;
@@ -120,22 +116,24 @@ const CATEGORY_TEMPLATE_BY_SLUG = new Map<string, string[]>([
   ['pants-trousers-w', WOMEN_LOWER_BODY_TEMPLATE],
 ]);
 
-export const normalizeMeasurementKeyList = (keys: string[] | null | undefined) =>
+export const normalizeMeasurementKeyList = (
+  keys: string[] | null | undefined,
+) =>
   Array.from(
     new Set(
       (keys ?? [])
-        .map((key) => String(key ?? '').trim().toUpperCase())
+        .map((key) =>
+          String(key ?? '')
+            .trim()
+            .toUpperCase(),
+        )
         .filter(Boolean),
     ),
   );
 
 export const normalizeIdList = (ids: string[] | null | undefined) =>
   Array.from(
-    new Set(
-      (ids ?? [])
-        .map((id) => String(id ?? '').trim())
-        .filter(Boolean),
-    ),
+    new Set((ids ?? []).map((id) => String(id ?? '').trim()).filter(Boolean)),
   );
 
 export const resolveSourceMeasurementGender = (
@@ -161,9 +159,7 @@ export const measurementKeysContainOppositeGender = (
   sourceGender: 'MEN' | 'WOMEN',
 ) =>
   keys.some((key) =>
-    sourceGender === 'MEN'
-      ? key.startsWith('WOMEN_')
-      : key.startsWith('MEN_'),
+    sourceGender === 'MEN' ? key.startsWith('WOMEN_') : key.startsWith('MEN_'),
   );
 
 export const resolveGarmentMeasurementTemplate = (

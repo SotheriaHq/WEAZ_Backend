@@ -104,7 +104,9 @@ describe('CustomOrderAdminService', () => {
       .mockResolvedValueOnce([{ brandId: 'brand_1' }])
       .mockResolvedValueOnce([{ brandId: 'brand_1' }])
       .mockResolvedValueOnce([{ brandId: 'brand_1' }]);
-    prisma.brand.findMany.mockResolvedValue([{ id: 'brand_1', name: 'Threadly Atelier' }]);
+    prisma.brand.findMany.mockResolvedValue([
+      { id: 'brand_1', name: 'Threadly Atelier' },
+    ]);
 
     const result = await service.getSummary();
 
@@ -135,7 +137,11 @@ describe('CustomOrderAdminService', () => {
       brand: { id: 'brand_1', name: 'Threadly Atelier', ownerId: 'owner_1' },
     });
 
-    const result = await service.remindBrand('co_1', { note: 'Please review within the hour.' }, 'admin_1');
+    const result = await service.remindBrand(
+      'co_1',
+      { note: 'Please review within the hour.' },
+      'admin_1',
+    );
 
     expect(prisma.customOrderTimelineEvent.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
@@ -171,21 +177,28 @@ describe('CustomOrderAdminService', () => {
           status: CustomOrderStatus.ACCEPTED,
         },
       ])
-      .mockResolvedValueOnce([
-        { brandId: 'brand_1' },
-      ])
-      .mockResolvedValueOnce([
-        { brandId: 'brand_1' },
-      ]);
+      .mockResolvedValueOnce([{ brandId: 'brand_1' }])
+      .mockResolvedValueOnce([{ brandId: 'brand_1' }]);
     prisma.customOrderAnalyticsEvent.findMany.mockResolvedValue([
-      { eventType: 'BRAND_REJECTED', customOrder: { brandId: 'brand_1', rushSelected: true } },
-      { eventType: 'REFUND_INITIATED', customOrder: { brandId: 'brand_1', rushSelected: true } },
-      { eventType: 'ADMIN_ESCALATED', customOrder: { brandId: 'brand_1', rushSelected: false } },
+      {
+        eventType: 'BRAND_REJECTED',
+        customOrder: { brandId: 'brand_1', rushSelected: true },
+      },
+      {
+        eventType: 'REFUND_INITIATED',
+        customOrder: { brandId: 'brand_1', rushSelected: true },
+      },
+      {
+        eventType: 'ADMIN_ESCALATED',
+        customOrder: { brandId: 'brand_1', rushSelected: false },
+      },
     ]);
     prisma.customOrderProgressEvent.findMany.mockResolvedValue([
       { customOrderId: 'co_2', customOrder: { brandId: 'brand_1' } },
     ]);
-    prisma.brand.findMany.mockResolvedValue([{ id: 'brand_1', name: 'Threadly Atelier' }]);
+    prisma.brand.findMany.mockResolvedValue([
+      { id: 'brand_1', name: 'Threadly Atelier' },
+    ]);
 
     const result = await service.getRiskDashboard({ days: 30, limit: 5 });
 
@@ -231,10 +244,19 @@ describe('CustomOrderAdminService', () => {
           sourceBrandNameSnapshot: 'Threadly Atelier',
           createdAt: new Date('2026-03-12T10:00:00.000Z'),
           updatedAt: new Date('2026-03-12T11:00:00.000Z'),
-          brand: { id: 'brand_1', name: 'Threadly Atelier', ownerId: 'owner_1' },
+          brand: {
+            id: 'brand_1',
+            name: 'Threadly Atelier',
+            ownerId: 'owner_1',
+          },
           disputes: [{ id: 'dispute_1' }],
           issues: [{ id: 'issue_1' }],
-          timelineEvents: [{ eventType: 'REFUND_INITIATED', createdAt: new Date('2026-03-12T11:00:00.000Z') }],
+          timelineEvents: [
+            {
+              eventType: 'REFUND_INITIATED',
+              createdAt: new Date('2026-03-12T11:00:00.000Z'),
+            },
+          ],
         },
       ],
       1,
@@ -296,7 +318,11 @@ describe('CustomOrderAdminService', () => {
     });
 
     await expect(
-      service.escalateRefundReview('co_1', { reason: 'Manual review' }, 'admin_1'),
+      service.escalateRefundReview(
+        'co_1',
+        { reason: 'Manual review' },
+        'admin_1',
+      ),
     ).rejects.toThrow(BadRequestException);
   });
 
@@ -323,13 +349,17 @@ describe('CustomOrderAdminService', () => {
         updateMany: jest.fn().mockResolvedValue({ count: 2 }),
       },
     };
-    prisma.$transaction.mockImplementation(async (callback: (innerTx: typeof tx) => Promise<unknown>) =>
-      callback(tx),
+    prisma.$transaction.mockImplementation(
+      async (callback: (innerTx: typeof tx) => Promise<unknown>) =>
+        callback(tx),
     );
 
     const result = await service.cancelPaidOrder(
       'co_1',
-      { reason: 'Operational exception', note: 'Cancel and refund immediately.' },
+      {
+        reason: 'Operational exception',
+        note: 'Cancel and refund immediately.',
+      },
       'admin_1',
     );
 
@@ -372,7 +402,9 @@ describe('CustomOrderAdminService', () => {
   it('throws when admin detail order does not exist', async () => {
     prisma.customOrder.findUnique.mockResolvedValue(null);
 
-    await expect(service.getOrder('missing')).rejects.toThrow(NotFoundException);
+    await expect(service.getOrder('missing')).rejects.toThrow(
+      NotFoundException,
+    );
   });
 
   it('lists ledger allocations with payout linkage for reconciliation', async () => {
@@ -406,7 +438,9 @@ describe('CustomOrderAdminService', () => {
       1,
     ]);
 
-    const result = await service.listLedgerAllocations({ customOrderId: 'co_1' });
+    const result = await service.listLedgerAllocations({
+      customOrderId: 'co_1',
+    });
 
     expect(result.statusCode).toBe(200);
     expect(result.data.total).toBe(1);
@@ -447,11 +481,15 @@ describe('CustomOrderAdminService', () => {
         createMany: jest.fn().mockResolvedValue({ count: 1 }),
       },
     };
-    prisma.$transaction.mockImplementation(async (callback: (innerTx: typeof tx) => Promise<unknown>) =>
-      callback(tx),
+    prisma.$transaction.mockImplementation(
+      async (callback: (innerTx: typeof tx) => Promise<unknown>) =>
+        callback(tx),
     );
 
-    const result = await service.releaseEligibleLedgerAllocations({ customOrderId: 'co_1' }, 'admin_1');
+    const result = await service.releaseEligibleLedgerAllocations(
+      { customOrderId: 'co_1' },
+      'admin_1',
+    );
 
     expect(tx.payout.create).toHaveBeenCalledTimes(1);
     expect(tx.customOrderLedgerAllocation.updateMany).toHaveBeenCalledWith(

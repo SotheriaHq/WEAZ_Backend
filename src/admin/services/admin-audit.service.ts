@@ -146,9 +146,7 @@ export class AdminAuditService {
       where,
       orderBy: { createdAt: 'desc' },
       take: take + 1,
-      ...(params.cursor
-        ? { cursor: { id: params.cursor }, skip: 1 }
-        : {}),
+      ...(params.cursor ? { cursor: { id: params.cursor }, skip: 1 } : {}),
     });
 
     const hasMore = items.length > take;

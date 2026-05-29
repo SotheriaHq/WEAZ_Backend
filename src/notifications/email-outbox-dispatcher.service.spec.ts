@@ -60,16 +60,30 @@ describe('EmailOutboxDispatcherService', () => {
         recipientUserId: 'user-1',
       },
     ]);
-    (mockPrisma.emailOutbox.updateMany as jest.Mock).mockResolvedValue({ count: 1 });
+    (mockPrisma.emailOutbox.updateMany as jest.Mock).mockResolvedValue({
+      count: 1,
+    });
     (mockPrisma.emailDeliveryAttempt.create as jest.Mock).mockResolvedValue({});
     (mockPrisma.emailOutbox.update as jest.Mock).mockResolvedValue({});
-    (mockPrisma.emailSuppression.findFirst as jest.Mock).mockResolvedValue(null);
-    (mockPrisma.$transaction as jest.Mock).mockImplementation(async (operations: Array<Promise<unknown>>) => Promise.all(operations));
-    (mockEmailService.sendNow as jest.Mock).mockResolvedValue({ providerMessageId: 'msg-1' });
-    (mockEmailService.getDeliveryAttemptProvider as jest.Mock).mockReturnValue('MAILJET_API');
-    (mockEmailService.getTransportHost as jest.Mock).mockReturnValue('api.mailjet.com');
+    (mockPrisma.emailSuppression.findFirst as jest.Mock).mockResolvedValue(
+      null,
+    );
+    (mockPrisma.$transaction as jest.Mock).mockImplementation(
+      async (operations: Array<Promise<unknown>>) => Promise.all(operations),
+    );
+    (mockEmailService.sendNow as jest.Mock).mockResolvedValue({
+      providerMessageId: 'msg-1',
+    });
+    (mockEmailService.getDeliveryAttemptProvider as jest.Mock).mockReturnValue(
+      'MAILJET_API',
+    );
+    (mockEmailService.getTransportHost as jest.Mock).mockReturnValue(
+      'api.mailjet.com',
+    );
 
-    const logSpy = jest.spyOn((service as any).logger, 'log').mockImplementation(() => undefined);
+    const logSpy = jest
+      .spyOn((service as any).logger, 'log')
+      .mockImplementation(() => undefined);
 
     await service.dispatchPendingEmails();
 
@@ -81,7 +95,9 @@ describe('EmailOutboxDispatcherService', () => {
     );
     expect(
       logSpy.mock.calls.some(([message]) =>
-        String(message).includes('Password reset email delivered outboxId=outbox-1'),
+        String(message).includes(
+          'Password reset email delivered outboxId=outbox-1',
+        ),
       ),
     ).toBe(true);
     expect(mockPrisma.emailOutbox.findMany).toHaveBeenCalledWith(
@@ -117,14 +133,26 @@ describe('EmailOutboxDispatcherService', () => {
         recipientUserId: 'user-3',
       },
     ]);
-    (mockPrisma.emailOutbox.updateMany as jest.Mock).mockResolvedValue({ count: 1 });
+    (mockPrisma.emailOutbox.updateMany as jest.Mock).mockResolvedValue({
+      count: 1,
+    });
     (mockPrisma.emailDeliveryAttempt.create as jest.Mock).mockResolvedValue({});
     (mockPrisma.emailOutbox.update as jest.Mock).mockResolvedValue({});
-    (mockPrisma.emailSuppression.findFirst as jest.Mock).mockResolvedValue(null);
-    (mockPrisma.$transaction as jest.Mock).mockImplementation(async (operations: Array<Promise<unknown>>) => Promise.all(operations));
-    (mockEmailService.sendNow as jest.Mock).mockResolvedValue({ providerMessageId: 'msg-2' });
-    (mockEmailService.getDeliveryAttemptProvider as jest.Mock).mockReturnValue('MAILJET_API');
-    (mockEmailService.getTransportHost as jest.Mock).mockReturnValue('api.mailjet.com');
+    (mockPrisma.emailSuppression.findFirst as jest.Mock).mockResolvedValue(
+      null,
+    );
+    (mockPrisma.$transaction as jest.Mock).mockImplementation(
+      async (operations: Array<Promise<unknown>>) => Promise.all(operations),
+    );
+    (mockEmailService.sendNow as jest.Mock).mockResolvedValue({
+      providerMessageId: 'msg-2',
+    });
+    (mockEmailService.getDeliveryAttemptProvider as jest.Mock).mockReturnValue(
+      'MAILJET_API',
+    );
+    (mockEmailService.getTransportHost as jest.Mock).mockReturnValue(
+      'api.mailjet.com',
+    );
 
     await service.dispatchPendingEmails();
 
@@ -171,16 +199,30 @@ describe('EmailOutboxDispatcherService', () => {
         recipientUserId: 'user-timeout',
       },
     ]);
-    (mockPrisma.emailOutbox.updateMany as jest.Mock).mockResolvedValue({ count: 1 });
+    (mockPrisma.emailOutbox.updateMany as jest.Mock).mockResolvedValue({
+      count: 1,
+    });
     (mockPrisma.emailDeliveryAttempt.create as jest.Mock).mockResolvedValue({});
     (mockPrisma.emailOutbox.update as jest.Mock).mockResolvedValue({});
-    (mockPrisma.emailSuppression.findFirst as jest.Mock).mockResolvedValue(null);
-    (mockPrisma.$transaction as jest.Mock).mockImplementation(async (operations: Array<Promise<unknown>>) => Promise.all(operations));
-    (mockEmailService.sendNow as jest.Mock).mockResolvedValue({ providerMessageId: 'msg-timeout' });
-    (mockEmailService.getDeliveryAttemptProvider as jest.Mock).mockReturnValue('MAILJET_API');
-    (mockEmailService.getTransportHost as jest.Mock).mockReturnValue('api.mailjet.com');
+    (mockPrisma.emailSuppression.findFirst as jest.Mock).mockResolvedValue(
+      null,
+    );
+    (mockPrisma.$transaction as jest.Mock).mockImplementation(
+      async (operations: Array<Promise<unknown>>) => Promise.all(operations),
+    );
+    (mockEmailService.sendNow as jest.Mock).mockResolvedValue({
+      providerMessageId: 'msg-timeout',
+    });
+    (mockEmailService.getDeliveryAttemptProvider as jest.Mock).mockReturnValue(
+      'MAILJET_API',
+    );
+    (mockEmailService.getTransportHost as jest.Mock).mockReturnValue(
+      'api.mailjet.com',
+    );
 
-    const warnSpy = jest.spyOn((service as any).logger, 'warn').mockImplementation(() => undefined);
+    const warnSpy = jest
+      .spyOn((service as any).logger, 'warn')
+      .mockImplementation(() => undefined);
 
     await service.dispatchPendingEmails();
 
@@ -210,7 +252,9 @@ describe('EmailOutboxDispatcherService', () => {
     );
     expect(
       warnSpy.mock.calls.some(([message]) =>
-        String(message).includes('Password reset email delivered outboxId=outbox-timeout'),
+        String(message).includes(
+          'Password reset email delivered outboxId=outbox-timeout',
+        ),
       ),
     ).toBe(true);
   });
@@ -234,8 +278,12 @@ describe('EmailOutboxDispatcherService', () => {
       },
     ]);
 
-    const warnSpy = jest.spyOn((service as any).logger, 'warn').mockImplementation(() => undefined);
-    const errorSpy = jest.spyOn((service as any).logger, 'error').mockImplementation(() => undefined);
+    const warnSpy = jest
+      .spyOn((service as any).logger, 'warn')
+      .mockImplementation(() => undefined);
+    const errorSpy = jest
+      .spyOn((service as any).logger, 'error')
+      .mockImplementation(() => undefined);
 
     await service.reportPasswordResetEmailDelays();
 

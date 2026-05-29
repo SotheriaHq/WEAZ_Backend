@@ -28,8 +28,13 @@ export class ImageProcessingProcessor extends WorkerHost {
     super();
   }
 
-  async process(job: Job<ImageProcessSingleJob | ImageProcessBatchJob>): Promise<void> {
-    if (job.name === IMAGE_PROCESS_SINGLE_JOB || job.name === IMAGE_REPROCESS_JOB) {
+  async process(
+    job: Job<ImageProcessSingleJob | ImageProcessBatchJob>,
+  ): Promise<void> {
+    if (
+      job.name === IMAGE_PROCESS_SINGLE_JOB ||
+      job.name === IMAGE_REPROCESS_JOB
+    ) {
       const data = job.data as ImageProcessSingleJob;
       await this.processOne(data.fileId, Boolean(data.force));
       return;
@@ -44,7 +49,9 @@ export class ImageProcessingProcessor extends WorkerHost {
   }
 
   private async processOne(fileId: string, force: boolean): Promise<void> {
-    const file = await this.prisma.fileUpload.findUnique({ where: { id: fileId } });
+    const file = await this.prisma.fileUpload.findUnique({
+      where: { id: fileId },
+    });
     if (!file) return;
 
     const isImage = this.mediaProcessing.isSupportedImageMime(file.mimeType);
@@ -66,11 +73,16 @@ export class ImageProcessingProcessor extends WorkerHost {
         data: { processingError: null } as any,
       } as any);
 
-      const originalBuffer = await this.uploadService.getObjectBufferByKey(file.s3Key);
+      const originalBuffer = await this.uploadService.getObjectBufferByKey(
+        file.s3Key,
+      );
       const probe = await this.mediaProcessing.probeImage(originalBuffer);
-      const variants = await this.mediaProcessing.generateVariants(originalBuffer, {
-        mimeType: file.mimeType,
-      });
+      const variants = await this.mediaProcessing.generateVariants(
+        originalBuffer,
+        {
+          mimeType: file.mimeType,
+        },
+      );
 
       const nextVersion = Number((file as any).assetVersion || 1);
       for (const variant of variants) {
@@ -136,7 +148,9 @@ export class ImageProcessingProcessor extends WorkerHost {
         } as any,
       } as any);
     } catch (error) {
-      this.logger.error(`Image processing failed for ${fileId}: ${String(error)}`);
+      this.logger.error(
+        `Image processing failed for ${fileId}: ${String(error)}`,
+      );
       await this.prisma.fileUpload.update({
         where: { id: fileId },
         data: {

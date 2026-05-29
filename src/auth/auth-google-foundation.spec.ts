@@ -275,8 +275,9 @@ describe('AuthService Google auth foundation', () => {
         }),
       }),
     );
-    expect(mockPrisma.emailLoginCode.create.mock.calls[0][0].data.codeHash).not
-      .toEqual(expect.stringMatching(/^\d{8}$/));
+    expect(
+      mockPrisma.emailLoginCode.create.mock.calls[0][0].data.codeHash,
+    ).not.toEqual(expect.stringMatching(/^\d{8}$/));
     expect(mockEmailService.send).toHaveBeenCalledWith(
       'ada@example.com',
       expect.any(String),
@@ -311,7 +312,9 @@ describe('AuthService Google auth foundation', () => {
       '12345678',
     );
 
-    expect(result.passwordSetupToken).toEqual(expect.stringMatching(/^[a-f0-9]{64}$/));
+    expect(result.passwordSetupToken).toEqual(
+      expect.stringMatching(/^[a-f0-9]{64}$/),
+    );
     expect(mockPrisma.passwordSetupToken.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({

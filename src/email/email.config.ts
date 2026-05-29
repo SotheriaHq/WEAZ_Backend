@@ -118,13 +118,13 @@ export const resolveEmailConfig = (
   const provider = inferEmailProvider(config);
   const warnings: string[] = [];
 
-  const appName = cleanString(config.get<string>('APP_NAME')) ?? DEFAULT_APP_NAME;
+  const appName =
+    cleanString(config.get<string>('APP_NAME')) ?? DEFAULT_APP_NAME;
   const fromAddress =
     cleanString(config.get<string>('MAIL_FROM_ADDRESS')) ??
     cleanString(config.get<string>('DEFAULT_MAILER')) ??
     DEFAULT_FROM_ADDRESS;
-  const fromName =
-    cleanString(config.get<string>('MAIL_FROM_NAME')) ?? appName;
+  const fromName = cleanString(config.get<string>('MAIL_FROM_NAME')) ?? appName;
   const replyTo = cleanString(config.get<string>('MAIL_REPLY_TO'));
 
   let smtpHost: string | null = null;
@@ -203,7 +203,9 @@ export const resolveEmailConfig = (
     smtpUser = cleanString(config.get<string>('SMTP_USER'));
     smtpPass = cleanString(config.get<string>('SMTP_PASS'));
     deliveryProviderName = 'SMTP';
-    webhookSharedSecret = cleanString(config.get<string>('EMAIL_WEBHOOK_SECRET'));
+    webhookSharedSecret = cleanString(
+      config.get<string>('EMAIL_WEBHOOK_SECRET'),
+    );
     webhookBasicUser = cleanString(
       config.get<string>('EMAIL_WEBHOOK_BASIC_USER'),
     );
@@ -211,7 +213,9 @@ export const resolveEmailConfig = (
       config.get<string>('EMAIL_WEBHOOK_BASIC_PASS'),
     );
   } else {
-    webhookSharedSecret = cleanString(config.get<string>('EMAIL_WEBHOOK_SECRET'));
+    webhookSharedSecret = cleanString(
+      config.get<string>('EMAIL_WEBHOOK_SECRET'),
+    );
     webhookBasicUser = cleanString(
       config.get<string>('EMAIL_WEBHOOK_BASIC_USER'),
     );
@@ -270,7 +274,10 @@ export const resolveEmailWebhookAuth = (
     };
   }
 
-  const providerKey = provider.trim().toUpperCase().replace(/[^A-Z0-9]/g, '_');
+  const providerKey = provider
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '_');
   return {
     sharedSecret:
       cleanString(config.get<string>(`EMAIL_WEBHOOK_SECRET_${providerKey}`)) ??

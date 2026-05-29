@@ -26,7 +26,9 @@ export class ReactivationCleanupService {
       });
 
       if (result.count > 0) {
-        this.logger.log(`Pruned ${result.count} old reviewed reactivation requests`);
+        this.logger.log(
+          `Pruned ${result.count} old reviewed reactivation requests`,
+        );
       }
     } catch (error: any) {
       this.logger.warn(

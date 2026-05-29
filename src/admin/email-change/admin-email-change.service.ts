@@ -30,7 +30,11 @@ export class AdminEmailChangeService {
     return String(randomInt(100000, 999999));
   }
 
-  async requestEmailChange(adminId: string, newEmail: string, currentPassword: string) {
+  async requestEmailChange(
+    adminId: string,
+    newEmail: string,
+    currentPassword: string,
+  ) {
     const normalized = newEmail.trim().toLowerCase();
     if (!normalized) throw new BadRequestException('New email is required');
 
@@ -43,20 +47,28 @@ export class AdminEmailChangeService {
       throw new ForbiddenException('Only admin accounts use this workflow');
     }
     if (admin.email === normalized) {
-      throw new BadRequestException('New email must differ from your current email');
+      throw new BadRequestException(
+        'New email must differ from your current email',
+      );
     }
     if (!admin.password) {
-      throw new BadRequestException('Set a password before changing your email address');
+      throw new BadRequestException(
+        'Set a password before changing your email address',
+      );
     }
 
     const passwordValid = await argon2.verify(admin.password, currentPassword);
     if (!passwordValid) throw new UnauthorizedException('Incorrect password');
 
     const taken = await (this.prisma as any).user.findFirst({
-      where: { OR: [{ email: normalized }, { pendingEmail: normalized }], id: { not: adminId } },
+      where: {
+        OR: [{ email: normalized }, { pendingEmail: normalized }],
+        id: { not: adminId },
+      },
       select: { id: true },
     });
-    if (taken) throw new BadRequestException('That email address is already in use');
+    if (taken)
+      throw new BadRequestException('That email address is already in use');
 
     // Cancel any prior pending request for this admin
     await (this.prisma as any).adminEmailChangeRequest.updateMany({
@@ -83,7 +95,11 @@ export class AdminEmailChangeService {
       },
     });
 
-    const emailContent = emailTemplates.adminEmailChangeOtpEmail(otp, normalized, this.emailService.getAppName());
+    const emailContent = emailTemplates.adminEmailChangeOtpEmail(
+      otp,
+      normalized,
+      this.emailService.getAppName(),
+    );
     await this.emailService.send(
       normalized,
       emailContent.subject,
@@ -106,7 +122,9 @@ export class AdminEmailChangeService {
   async verifyOtp(adminId: string, otp: string) {
     const otpHash = this.hashOtp(otp.trim());
 
-    const request = await (this.prisma as any).adminEmailChangeRequest.findFirst({
+    const request = await (
+      this.prisma as any
+    ).adminEmailChangeRequest.findFirst({
       where: {
         adminId,
         otpHash,
@@ -115,7 +133,8 @@ export class AdminEmailChangeService {
       },
     });
 
-    if (!request) throw new BadRequestException('Invalid or expired verification code');
+    if (!request)
+      throw new BadRequestException('Invalid or expired verification code');
 
     await (this.prisma as any).adminEmailChangeRequest.update({
       where: { id: request.id },
@@ -133,22 +152,30 @@ export class AdminEmailChangeService {
       select: { id: true },
     });
 
-    const NT_ADMIN_EMAIL_CHANGE_REQUESTED = 'ADMIN_EMAIL_CHANGE_REQUESTED' as NotificationType;
+    const NT_ADMIN_EMAIL_CHANGE_REQUESTED =
+      'ADMIN_EMAIL_CHANGE_REQUESTED' as NotificationType;
     for (const sa of superAdmins) {
-      await this.notificationsService.create(sa.id, NT_ADMIN_EMAIL_CHANGE_REQUESTED, {
-        actorId: adminId,
-        payload: { requestId: request.id, newEmail: request.newEmail },
-      });
+      await this.notificationsService.create(
+        sa.id,
+        NT_ADMIN_EMAIL_CHANGE_REQUESTED,
+        {
+          actorId: adminId,
+          payload: { requestId: request.id, newEmail: request.newEmail },
+        },
+      );
     }
 
     return {
-      message: 'Email verified. Your request is now pending Super Admin approval.',
+      message:
+        'Email verified. Your request is now pending Super Admin approval.',
       status: 'PENDING_APPROVAL',
     };
   }
 
   async getMyRequest(adminId: string) {
-    const request = await (this.prisma as any).adminEmailChangeRequest.findFirst({
+    const request = await (
+      this.prisma as any
+    ).adminEmailChangeRequest.findFirst({
       where: {
         adminId,
         status: { in: ['PENDING_VERIFICATION', 'PENDING_APPROVAL'] },
@@ -167,7 +194,9 @@ export class AdminEmailChangeService {
   }
 
   async cancelMyRequest(adminId: string) {
-    const request = await (this.prisma as any).adminEmailChangeRequest.findFirst({
+    const request = await (
+      this.prisma as any
+    ).adminEmailChangeRequest.findFirst({
       where: {
         adminId,
         status: { in: ['PENDING_VERIFICATION', 'PENDING_APPROVAL'] },
@@ -203,14 +232,18 @@ export class AdminEmailChangeService {
           },
         },
       }),
-      (this.prisma as any).adminEmailChangeRequest.count({ where: { status: 'PENDING_APPROVAL' } }),
+      (this.prisma as any).adminEmailChangeRequest.count({
+        where: { status: 'PENDING_APPROVAL' },
+      }),
     ]);
 
     return { items, total, page, limit };
   }
 
   async approveRequest(requestId: string, superAdminId: string) {
-    const request = await (this.prisma as any).adminEmailChangeRequest.findUnique({
+    const request = await (
+      this.prisma as any
+    ).adminEmailChangeRequest.findUnique({
       where: { id: requestId },
     });
 
@@ -221,7 +254,10 @@ export class AdminEmailChangeService {
 
     // Check new email still available
     const taken = await (this.prisma as any).user.findFirst({
-      where: { OR: [{ email: request.newEmail }, { pendingEmail: request.newEmail }], id: { not: request.adminId } },
+      where: {
+        OR: [{ email: request.newEmail }, { pendingEmail: request.newEmail }],
+        id: { not: request.adminId },
+      },
       select: { id: true },
     });
     if (taken) {
@@ -252,11 +288,16 @@ export class AdminEmailChangeService {
       }),
     ]);
 
-    const NT_ADMIN_EMAIL_CHANGE_APPROVED = 'ADMIN_EMAIL_CHANGE_APPROVED' as NotificationType;
-    await this.notificationsService.create(request.adminId, NT_ADMIN_EMAIL_CHANGE_APPROVED, {
-      actorId: superAdminId,
-      payload: { newEmail: request.newEmail },
-    });
+    const NT_ADMIN_EMAIL_CHANGE_APPROVED =
+      'ADMIN_EMAIL_CHANGE_APPROVED' as NotificationType;
+    await this.notificationsService.create(
+      request.adminId,
+      NT_ADMIN_EMAIL_CHANGE_APPROVED,
+      {
+        actorId: superAdminId,
+        payload: { newEmail: request.newEmail },
+      },
+    );
 
     const emailContent = emailTemplates.adminEmailChangeApprovedEmail(
       request.newEmail,
@@ -280,7 +321,9 @@ export class AdminEmailChangeService {
   }
 
   async rejectRequest(requestId: string, superAdminId: string, reason: string) {
-    const request = await (this.prisma as any).adminEmailChangeRequest.findUnique({
+    const request = await (
+      this.prisma as any
+    ).adminEmailChangeRequest.findUnique({
       where: { id: requestId },
     });
 
@@ -299,11 +342,16 @@ export class AdminEmailChangeService {
       },
     });
 
-    const NT_ADMIN_EMAIL_CHANGE_REJECTED = 'ADMIN_EMAIL_CHANGE_REJECTED' as NotificationType;
-    await this.notificationsService.create(request.adminId, NT_ADMIN_EMAIL_CHANGE_REJECTED, {
-      actorId: superAdminId,
-      payload: { newEmail: request.newEmail, reason },
-    });
+    const NT_ADMIN_EMAIL_CHANGE_REJECTED =
+      'ADMIN_EMAIL_CHANGE_REJECTED' as NotificationType;
+    await this.notificationsService.create(
+      request.adminId,
+      NT_ADMIN_EMAIL_CHANGE_REJECTED,
+      {
+        actorId: superAdminId,
+        payload: { newEmail: request.newEmail, reason },
+      },
+    );
 
     const emailContent = emailTemplates.adminEmailChangeRejectedEmail(
       request.newEmail,

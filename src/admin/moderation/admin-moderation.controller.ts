@@ -90,7 +90,12 @@ export class AdminModerationController {
     @Body(ValidationPipe) body: UpdateMeasurementPointLifecycleDto,
     @Req() req: Request & { user: { id: string } },
   ) {
-    return this.service.updateMeasurementPointLifecycle(id, body, req.user.id, req);
+    return this.service.updateMeasurementPointLifecycle(
+      id,
+      body,
+      req.user.id,
+      req,
+    );
   }
 
   @Patch('items/:id')
@@ -106,7 +111,9 @@ export class AdminModerationController {
 
   @Post('threads/quarantine')
   @RequirePermissions(ADMIN_PERMISSIONS.MODERATION_WRITE)
-  @ApiOperation({ summary: 'Quarantine a thread/content reaction from moderation tools' })
+  @ApiOperation({
+    summary: 'Quarantine a thread/content reaction from moderation tools',
+  })
   async quarantineThreads(
     @Body(ValidationPipe) body: QuarantineThreadsDto,
     @Req() req: Request & { user: { id: string } },

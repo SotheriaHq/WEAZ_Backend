@@ -1,7 +1,4 @@
-import {
-  isNonLocalEnvironment,
-  resolveWebAppBaseUrl,
-} from './web-app-url';
+import { isNonLocalEnvironment, resolveWebAppBaseUrl } from './web-app-url';
 
 const ORIGINAL_ENV = process.env;
 

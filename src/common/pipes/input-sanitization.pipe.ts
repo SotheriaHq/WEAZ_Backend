@@ -15,4 +15,3 @@ export class InputSanitizationPipe implements PipeTransform {
     return sanitizeRequestInput(value);
   }
 }
-

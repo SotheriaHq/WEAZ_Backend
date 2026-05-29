@@ -8,7 +8,7 @@ import { JwtModule } from '@nestjs/jwt';
 import { UserHelperService } from './helper/user-helper.service';
 import { PassportModule } from '@nestjs/passport';
 import { JwtStrategy } from './strategy/jwt.strategy';
-import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
+import { ThrottlerModule } from '@nestjs/throttler';
 import { APP_GUARD } from '@nestjs/core';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { EmailVerificationHelperService } from './helper/email-verification-helper.service';

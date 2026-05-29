@@ -85,9 +85,16 @@ describe('OrderService', () => {
       brand: { name: 'Brand' },
       deliveredAt: null,
     });
-    prisma.order.update.mockResolvedValue({ id: 'order_1', status: OrderStatus.SHIPPED });
+    prisma.order.update.mockResolvedValue({
+      id: 'order_1',
+      status: OrderStatus.SHIPPED,
+    });
 
-    const result = await service.updateStatus('owner_1', 'order_1', OrderStatus.SHIPPED);
+    const result = await service.updateStatus(
+      'owner_1',
+      'order_1',
+      OrderStatus.SHIPPED,
+    );
 
     expect(prisma.order.update).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -110,11 +117,17 @@ describe('OrderService', () => {
       brand: { name: 'Brand' },
       deliveredAt: null,
     });
-    prisma.order.update.mockResolvedValue({ id: 'order_1', status: OrderStatus.SHIPPED });
+    prisma.order.update.mockResolvedValue({
+      id: 'order_1',
+      status: OrderStatus.SHIPPED,
+    });
 
     await service.updateStatus('owner_1', 'order_1', OrderStatus.SHIPPED);
 
-    expect(escrowService.releaseShipmentPortion).toHaveBeenCalledWith(prisma, 'order_1');
+    expect(escrowService.releaseShipmentPortion).toHaveBeenCalledWith(
+      prisma,
+      'order_1',
+    );
   });
 
   it('initiates refund when transitioning a paid delivered order to returned', async () => {
@@ -128,7 +141,10 @@ describe('OrderService', () => {
       brand: { name: 'Brand' },
       deliveredAt: new Date('2026-03-01T10:00:00.000Z'),
     });
-    prisma.order.update.mockResolvedValue({ id: 'order_1', status: OrderStatus.RETURNED });
+    prisma.order.update.mockResolvedValue({
+      id: 'order_1',
+      status: OrderStatus.RETURNED,
+    });
 
     await service.updateStatus('owner_1', 'order_1', OrderStatus.RETURNED);
 

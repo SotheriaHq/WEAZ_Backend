@@ -236,7 +236,10 @@ describe('AdminPayoutsService', () => {
         status: 'success',
       },
     });
-    const signature = createHmac('sha512', process.env.PAYSTACK_SECRET_KEY as string)
+    const signature = createHmac(
+      'sha512',
+      process.env.PAYSTACK_SECRET_KEY as string,
+    )
       .update(rawBody)
       .digest('hex');
 
@@ -308,7 +311,9 @@ describe('AdminPayoutsService', () => {
       .spyOn(service, 'processQueuedPaystackWebhook')
       .mockResolvedValue(undefined);
 
-    await expect(service.enqueuePaystackWebhook(payload, context)).resolves.toBeUndefined();
+    await expect(
+      service.enqueuePaystackWebhook(payload, context),
+    ).resolves.toBeUndefined();
 
     expect(webhookEventsQueue.enqueuePayoutWebhook).toHaveBeenCalledWith({
       payload,

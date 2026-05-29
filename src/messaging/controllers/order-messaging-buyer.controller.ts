@@ -35,9 +35,14 @@ export class OrderMessagingBuyerController {
   async listMessages(
     @Req() req: Request & { user: { id: string } },
     @Param('orderId') orderId: string,
-    @Query(new ValidationPipe({ transform: true, whitelist: true })) query: QueryMessagesDto,
+    @Query(new ValidationPipe({ transform: true, whitelist: true }))
+    query: QueryMessagesDto,
   ) {
-    return this.messaging.listOrderMessagesForBuyer(req.user.id, orderId, query);
+    return this.messaging.listOrderMessagesForBuyer(
+      req.user.id,
+      orderId,
+      query,
+    );
   }
 
   @Post(['orders/:orderId/messages', 'store/orders/:orderId/messages'])
@@ -47,7 +52,14 @@ export class OrderMessagingBuyerController {
     @Param('orderId') orderId: string,
     @Headers('idempotency-key') idempotencyKey: string | undefined,
     @Headers('x-idempotency-key') legacyIdempotencyKey: string | undefined,
-    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true })) dto: SendMessageDto,
+    @Body(
+      new ValidationPipe({
+        transform: true,
+        whitelist: true,
+        forbidNonWhitelisted: true,
+      }),
+    )
+    dto: SendMessageDto,
   ) {
     return this.messaging.sendOrderMessageForBuyer(
       req.user.id,
@@ -57,11 +69,21 @@ export class OrderMessagingBuyerController {
     );
   }
 
-  @Post(['orders/:orderId/messages/read', 'store/orders/:orderId/messages/read'])
+  @Post([
+    'orders/:orderId/messages/read',
+    'store/orders/:orderId/messages/read',
+  ])
   async markRead(
     @Req() req: Request & { user: { id: string } },
     @Param('orderId') orderId: string,
-    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true })) dto: MarkThreadReadDto,
+    @Body(
+      new ValidationPipe({
+        transform: true,
+        whitelist: true,
+        forbidNonWhitelisted: true,
+      }),
+    )
+    dto: MarkThreadReadDto,
   ) {
     return this.messaging.markThreadReadForContext(
       req.user.id,
@@ -72,11 +94,21 @@ export class OrderMessagingBuyerController {
     );
   }
 
-  @Post(['orders/:orderId/messages/preferences', 'store/orders/:orderId/messages/preferences'])
+  @Post([
+    'orders/:orderId/messages/preferences',
+    'store/orders/:orderId/messages/preferences',
+  ])
   async updatePreferences(
     @Req() req: Request & { user: { id: string } },
     @Param('orderId') orderId: string,
-    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true })) dto: UpdateThreadPreferencesDto,
+    @Body(
+      new ValidationPipe({
+        transform: true,
+        whitelist: true,
+        forbidNonWhitelisted: true,
+      }),
+    )
+    dto: UpdateThreadPreferencesDto,
   ) {
     return this.messaging.updateThreadPreferencesForContext(
       req.user.id,
@@ -87,11 +119,15 @@ export class OrderMessagingBuyerController {
     );
   }
 
-  @Get(['orders/:orderId/messages/summary', 'store/orders/:orderId/messages/summary'])
+  @Get([
+    'orders/:orderId/messages/summary',
+    'store/orders/:orderId/messages/summary',
+  ])
   async summary(
     @Req() req: Request & { user: { id: string } },
     @Param('orderId') orderId: string,
-    @Query(new ValidationPipe({ transform: true, whitelist: true })) query: QueryThreadSummaryDto,
+    @Query(new ValidationPipe({ transform: true, whitelist: true }))
+    query: QueryThreadSummaryDto,
   ) {
     return this.messaging.getSummaryForContext(
       req.user.id,
@@ -102,21 +138,46 @@ export class OrderMessagingBuyerController {
     );
   }
 
-  @Post(['orders/:orderId/messages/extension-requests/:requestMessageId/respond', 'store/orders/:orderId/messages/extension-requests/:requestMessageId/respond'])
+  @Post([
+    'orders/:orderId/messages/extension-requests/:requestMessageId/respond',
+    'store/orders/:orderId/messages/extension-requests/:requestMessageId/respond',
+  ])
   async respondToExtension(
     @Req() req: Request & { user: { id: string } },
     @Param('orderId') orderId: string,
     @Param('requestMessageId') requestMessageId: string,
-    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true })) dto: RespondOrderExtensionDto,
+    @Body(
+      new ValidationPipe({
+        transform: true,
+        whitelist: true,
+        forbidNonWhitelisted: true,
+      }),
+    )
+    dto: RespondOrderExtensionDto,
   ) {
-    return this.messaging.respondToOrderExtensionForBuyer(req.user.id, orderId, requestMessageId, dto);
+    return this.messaging.respondToOrderExtensionForBuyer(
+      req.user.id,
+      orderId,
+      requestMessageId,
+      dto,
+    );
   }
 
-  @Post(['orders/:orderId/messages/disputes', 'store/orders/:orderId/messages/disputes'])
+  @Post([
+    'orders/:orderId/messages/disputes',
+    'store/orders/:orderId/messages/disputes',
+  ])
   async openDispute(
     @Req() req: Request & { user: { id: string } },
     @Param('orderId') orderId: string,
-    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true })) dto: OpenOrderDisputeDto,
+    @Body(
+      new ValidationPipe({
+        transform: true,
+        whitelist: true,
+        forbidNonWhitelisted: true,
+      }),
+    )
+    dto: OpenOrderDisputeDto,
   ) {
     return this.messaging.openOrderDisputeForBuyer(req.user.id, orderId, dto);
   }

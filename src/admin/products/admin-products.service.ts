@@ -1,7 +1,4 @@
-import {
-  Injectable,
-  NotFoundException,
-} from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { AdminAuditAction, NotificationType } from '@prisma/client';
 import { v4 as uuidv4 } from 'uuid';
@@ -105,7 +102,8 @@ export class AdminProductsService {
       items: results.map((item) => ({
         ...item,
         orderCount: item._count?.orderItems ?? 0,
-        primaryMediaUrl: item.thumbnail || (item.images?.length ? item.images[0] : null),
+        primaryMediaUrl:
+          item.thumbnail || (item.images?.length ? item.images[0] : null),
         taxonomy: {
           garmentCategory: item.category ?? null,
           garmentSubcategory: item.categoryType ?? null,
@@ -144,11 +142,18 @@ export class AdminProductsService {
     });
     if (!existing) throw new NotFoundException('Product not found');
 
-    const action = dto.action ?? (dto.isActive === false ? 'UNPUBLISH' : dto.isActive === true ? 'REPUBLISH' : undefined);
+    const action =
+      dto.action ??
+      (dto.isActive === false
+        ? 'UNPUBLISH'
+        : dto.isActive === true
+          ? 'REPUBLISH'
+          : undefined);
     const updateData: Record<string, unknown> = {};
     if (action === 'UNPUBLISH') updateData.isActive = false;
     if (action === 'REPUBLISH') updateData.isActive = true;
-    if (!action && dto.isActive !== undefined) updateData.isActive = dto.isActive;
+    if (!action && dto.isActive !== undefined)
+      updateData.isActive = dto.isActive;
 
     const updated = await this.prisma.$transaction(async (tx) => {
       if (action === 'HARD_DELETE') {

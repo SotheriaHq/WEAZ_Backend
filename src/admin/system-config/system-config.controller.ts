@@ -1,11 +1,4 @@
-import {
-  Controller,
-  Get,
-  Patch,
-  Body,
-  Req,
-  UseGuards,
-} from '@nestjs/common';
+import { Controller, Get, Patch, Body, Req, UseGuards } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
 import { Role } from '@prisma/client';
 import { JwtAuthGuard } from 'src/auth/guard/jwt-auth.guard';

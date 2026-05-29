@@ -37,7 +37,9 @@ export class EmailOutboxDispatcherService {
         attempts: { lt: EMAIL_OUTBOX_MAX_ATTEMPTS },
         OR: [
           {
-            status: { in: [EmailOutboxStatus.PENDING, EmailOutboxStatus.FAILED] },
+            status: {
+              in: [EmailOutboxStatus.PENDING, EmailOutboxStatus.FAILED],
+            },
             availableAt: { lte: now },
           },
           {
@@ -72,7 +74,9 @@ export class EmailOutboxDispatcherService {
 
     for (let i = 0; i < rows.length; i += EMAIL_OUTBOX_CONCURRENCY) {
       const chunk = rows.slice(i, i + EMAIL_OUTBOX_CONCURRENCY);
-      const results = await Promise.all(chunk.map((row) => this.dispatchRow(row)));
+      const results = await Promise.all(
+        chunk.map((row) => this.dispatchRow(row)),
+      );
       results.forEach((result) => {
         if (result === 'SENT') {
           sent += 1;
@@ -184,7 +188,9 @@ export class EmailOutboxDispatcherService {
     const attemptNo = row.attempts + 1;
     const queueAgeMs = Math.max(0, Date.now() - row.createdAt.getTime());
     const normalizedEmail = row.recipientEmailSnapshot.trim().toLowerCase();
-    const emailHash = createHash('sha256').update(normalizedEmail).digest('hex');
+    const emailHash = createHash('sha256')
+      .update(normalizedEmail)
+      .digest('hex');
     let providerResult: { providerMessageId: string | null } | null = null;
 
     try {
@@ -223,8 +229,7 @@ export class EmailOutboxDispatcherService {
             },
           }),
         ]);
-        const suppressionMessage =
-          `Outbox row suppressed outboxId=${row.id} reason=${suppression.reason}`;
+        const suppressionMessage = `Outbox row suppressed outboxId=${row.id} reason=${suppression.reason}`;
         if (this.isPasswordResetScenario(row.scenarioKey)) {
           this.logger.warn(
             `${suppressionMessage} recipientUserId=${row.recipientUserId ?? 'n/a'} scenario=${row.scenarioKey} delayMs=${queueAgeMs}`,
@@ -365,7 +370,10 @@ export class EmailOutboxDispatcherService {
     );
   }
 
-  private truncateEmailError(errorMessage: string | null, maxLength = 120): string {
+  private truncateEmailError(
+    errorMessage: string | null,
+    maxLength = 120,
+  ): string {
     if (!errorMessage) {
       return 'n/a';
     }

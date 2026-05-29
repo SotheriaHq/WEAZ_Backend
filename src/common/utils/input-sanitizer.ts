@@ -1,7 +1,8 @@
 const SENSITIVE_KEY_PATTERN =
   /password|passcode|token|secret|otp|pin|signature|api[-_]?key|authorization|cookie/i;
 
-const CONTROL_CHARS_PATTERN = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g;
+const CONTROL_CHARS_PATTERN =
+  /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g;
 const BIDI_OVERRIDE_PATTERN = /[\u202a-\u202e\u2066-\u2069]/g;
 
 const isPlainObject = (value: unknown): value is Record<string, unknown> => {
@@ -57,4 +58,3 @@ const sanitizeInternal = (
 
 export const sanitizeRequestInput = <T = unknown>(value: T): T =>
   sanitizeInternal(value, [], new WeakSet<object>()) as T;
-

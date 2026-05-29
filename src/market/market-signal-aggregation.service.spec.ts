@@ -160,7 +160,10 @@ describe('MarketSignalAggregationService', () => {
     };
 
     await service.aggregateBatch([event], { anonymousSessionId: 'anon_1' });
-    await service.aggregateBatch([event], { userId: 'user_1', anonymousSessionId: 'anon_1' });
+    await service.aggregateBatch([event], {
+      userId: 'user_1',
+      anonymousSessionId: 'anon_1',
+    });
 
     const calls = prisma.marketSignalAggregateDaily.upsert.mock.calls;
     expect(calls[0][0].create).toEqual(
@@ -199,7 +202,8 @@ describe('MarketSignalAggregationService', () => {
     );
 
     const aggregateKey =
-      prisma.marketSignalAggregateDaily.upsert.mock.calls[0][0].where.aggregateKey;
+      prisma.marketSignalAggregateDaily.upsert.mock.calls[0][0].where
+        .aggregateKey;
     expect(aggregateKey.length).toBeLessThanOrEqual(512);
   });
 });

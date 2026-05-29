@@ -1,4 +1,9 @@
-import { BadRequestException, Injectable, NotFoundException, UnauthorizedException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { Prisma, ProfileVisibility } from '@prisma/client';
 import {
@@ -37,7 +42,7 @@ type UserProfileResponseSource = Prisma.UserGetPayload<{
 
 @Injectable()
 export class UserProfileService {
-  constructor(private prisma: PrismaService) { }
+  constructor(private prisma: PrismaService) {}
 
   private toUserProfileResponse(
     user: UserProfileResponseSource,
@@ -196,8 +201,7 @@ export class UserProfileService {
     ) => {
       const value = dto[field];
       if (value !== undefined) {
-        profileData[field] =
-          typeof value === 'string' ? value.trim() : value;
+        profileData[field] = typeof value === 'string' ? value.trim() : value;
       }
     };
 
@@ -253,13 +257,11 @@ export class UserProfileService {
               '',
             phoneNumber:
               (profileData.phoneNumber as string | null | undefined) ?? null,
-            address:
-              (profileData.address as string | null | undefined) ?? null,
+            address: (profileData.address as string | null | undefined) ?? null,
             profileImage:
               (profileData.profileImage as string | null | undefined) ?? null,
             profileImageId:
-              (profileData.profileImageId as string | null | undefined) ??
-              null,
+              (profileData.profileImageId as string | null | undefined) ?? null,
             bannerImage:
               (profileData.bannerImage as string | null | undefined) ?? null,
             bannerImageId:
@@ -284,7 +286,9 @@ export class UserProfileService {
     return this.toUserProfileResponse(user, { includeThemePreference: true });
   }
 
-  async getPublicProfile(userId: string): Promise<PublicUserProfileResponseDto> {
+  async getPublicProfile(
+    userId: string,
+  ): Promise<PublicUserProfileResponseDto> {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
       select: userProfileResponseSelect,
@@ -297,7 +301,9 @@ export class UserProfileService {
     return this.toPublicUserProfileResponse(user);
   }
 
-  async resolvePublicProfileByUsername(username: string): Promise<PublicUserProfileResponseDto> {
+  async resolvePublicProfileByUsername(
+    username: string,
+  ): Promise<PublicUserProfileResponseDto> {
     const normalizedUsername = username.trim();
     if (!normalizedUsername) {
       throw new NotFoundException('User not found');
@@ -315,7 +321,10 @@ export class UserProfileService {
     return this.toPublicUserProfileResponse(user);
   }
 
-  async updateProfileVisibility(userId: string, profileVisibility: ProfileVisibility) {
+  async updateProfileVisibility(
+    userId: string,
+    profileVisibility: ProfileVisibility,
+  ) {
     const user = await this.prisma.$transaction(async (tx) => {
       const existingUser = await tx.user.findUnique({
         where: { id: userId },
@@ -416,22 +425,22 @@ export class UserProfileService {
                 state: true,
                 city: true,
                 companyLocation: true,
-              }
+              },
             },
             _count: {
               select: {
                 patchConnectionsReceived: {
-                  where: { status: 'ACCEPTED' }
-                }
-              }
-            }
-          }
-        }
-      }
+                  where: { status: 'ACCEPTED' },
+                },
+              },
+            },
+          },
+        },
+      },
     });
 
     // Format the response to match what the frontend expects
-    return patchConnections.map(connection => {
+    return patchConnections.map((connection) => {
       const target = connection.target;
       const profileImage = resolveProfileImage(target);
       const bannerImage = resolveBannerImage(target);

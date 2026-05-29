@@ -24,7 +24,9 @@ describe('MVP API route contract', () => {
     const storeController = readSource('store/store.controller.ts');
     const paymentController = readSource('payment/payment.controller.ts');
     const uploadController = readSource('upload/upload.controller.ts');
-    const marketSignalController = readSource('market/market-signal.controller.ts');
+    const marketSignalController = readSource(
+      'market/market-signal.controller.ts',
+    );
     const messagingController = readSource(
       'messaging/controllers/messaging-inbox.controller.ts',
     );
@@ -45,6 +47,8 @@ describe('MVP API route contract', () => {
     expect(messagingController).toContain("@Get('threads/:threadId/messages')");
     expect(notificationsController).toContain("@Get('unread-count')");
     expect(notificationsController).toContain("@Post('push-tokens')");
-    expect(storeCollectionsController).toContain("@Controller('store-collections')");
+    expect(storeCollectionsController).toContain(
+      "@Controller('store-collections')",
+    );
   });
 });

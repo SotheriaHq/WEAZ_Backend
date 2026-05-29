@@ -58,7 +58,8 @@ export class PaymentOpsCronService {
   @Cron(CronExpression.EVERY_MINUTE)
   async reprocessPendingWebhookReceipts(): Promise<void> {
     try {
-      const result = await this.paymentService.reprocessPendingWebhookReceipts(80);
+      const result =
+        await this.paymentService.reprocessPendingWebhookReceipts(80);
       if (result.scanned > 0 || result.failed > 0) {
         this.logger.log(
           `Webhook receipt reprocess scanned=${result.scanned} processed=${result.processed} skipped=${result.skipped} failed=${result.failed}`,

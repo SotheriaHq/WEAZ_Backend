@@ -1,11 +1,4 @@
-import {
-  Controller,
-  Get,
-  Post,
-  Body,
-  UseGuards,
-  Req,
-} from '@nestjs/common';
+import { Controller, Get, Post, Body, UseGuards, Req } from '@nestjs/common';
 import { JwtAuthGuard } from 'src/auth/guard/jwt-auth.guard';
 import { RolesGuard } from 'src/auth/guard/role.guard';
 import { Roles } from 'src/auth/decorator/roles.decorator';
@@ -20,7 +13,9 @@ import { ADMIN_PERMISSIONS } from '../constants/permissions';
 @UseGuards(JwtAuthGuard, RolesGuard, AdminPermissionGuard)
 @Roles(Role.SuperAdmin, Role.Admin)
 export class AdminNotificationsController {
-  constructor(private readonly notificationsService: AdminNotificationsService) {}
+  constructor(
+    private readonly notificationsService: AdminNotificationsService,
+  ) {}
 
   @Get('templates')
   @RequirePermissions(ADMIN_PERMISSIONS.NOTIFICATIONS_SEND)

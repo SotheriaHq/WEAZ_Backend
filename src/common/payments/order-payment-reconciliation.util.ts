@@ -38,10 +38,10 @@ const TERMINAL_ATTEMPT_STATUSES = new Set([
   'EXPIRED',
 ]);
 
-const normalizeMockStatusHint = (
-  value: unknown,
-): string | null => {
-  const normalized = String(value ?? '').trim().toLowerCase();
+const normalizeMockStatusHint = (value: unknown): string | null => {
+  const normalized = String(value ?? '')
+    .trim()
+    .toLowerCase();
   switch (normalized) {
     case 'success':
     case 'paid':
@@ -76,12 +76,19 @@ const extractMockReturnStatus = (snapshot: unknown): string | null => {
 const resolveEffectiveAttemptStatus = (
   attempt: PaymentAttemptSnapshot,
 ): string => {
-  const storedStatus = String(attempt.status ?? '').trim().toUpperCase() || 'PENDING';
+  const storedStatus =
+    String(attempt.status ?? '')
+      .trim()
+      .toUpperCase() || 'PENDING';
   if (TERMINAL_ATTEMPT_STATUSES.has(storedStatus)) {
     return storedStatus;
   }
 
-  if (String(attempt.providerMode ?? '').trim().toLowerCase() === 'mock') {
+  if (
+    String(attempt.providerMode ?? '')
+      .trim()
+      .toLowerCase() === 'mock'
+  ) {
     return extractMockReturnStatus(attempt.responseSnapshot) ?? storedStatus;
   }
 
@@ -132,7 +139,9 @@ export const reconcileStandardOrderPaymentStatuses = async (
       if (!attempt) return null;
 
       const effectiveAttemptStatus = resolveEffectiveAttemptStatus(attempt);
-      const resolvedStatus = mapAttemptStatusToPaymentStatus(effectiveAttemptStatus);
+      const resolvedStatus = mapAttemptStatusToPaymentStatus(
+        effectiveAttemptStatus,
+      );
       resolvedByOrderId.set(order.id, resolvedStatus);
 
       if (
@@ -148,7 +157,7 @@ export const reconcileStandardOrderPaymentStatuses = async (
 
       const settledAt =
         resolvedStatus === PaymentStatus.PAID
-          ? attempt.confirmedAt ?? new Date()
+          ? (attempt.confirmedAt ?? new Date())
           : null;
 
       if (

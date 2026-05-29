@@ -22,7 +22,6 @@ import type {
 } from './dto/bag-status.dto';
 import { AddToWishlistDto } from './dto/wishlist.dto';
 import { CheckoutDto } from './dto/checkout.dto';
-import { calculateShipping } from '../payment/payment.types';
 import {
   BulkArchiveProductsDto,
   BulkDeleteProductsDto,
@@ -4006,6 +4005,7 @@ export class StoreService {
 
     // Remove wishlistItems from response (internal use only)
     const { wishlistItems, ...productData } = product;
+    void wishlistItems;
     const withMedia = await this.attachProductMedia(productData);
     return { ...withMedia, isWishlisted };
   }
@@ -6274,6 +6274,8 @@ export class StoreService {
   // ==================== CHECKOUT ====================
 
   async checkout(_userId: string, _dto: CheckoutDto) {
+    void _userId;
+    void _dto;
     throw new BadRequestException(
       'Legacy /store/checkout has been permanently removed. Use /payment/initialize-unified from bag checkout.',
     );
@@ -6784,6 +6786,7 @@ export class StoreService {
   }
 
   async cancelMyOrder(userId: string, orderId: string, _reason?: string) {
+    void _reason;
     const order = await this.prisma.order.findFirst({
       where: { id: orderId, buyerId: userId },
       select: {

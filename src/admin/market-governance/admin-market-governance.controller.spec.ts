@@ -2,9 +2,7 @@ import 'reflect-metadata';
 import { Role } from '@prisma/client';
 import { AdminPermissionGuard } from '../guards/admin-permission.guard';
 import { ADMIN_PERMISSIONS } from '../constants/permissions';
-import {
-  ADMIN_PERMISSIONS_KEY,
-} from '../decorators/require-permissions.decorator';
+import { ADMIN_PERMISSIONS_KEY } from '../decorators/require-permissions.decorator';
 import { AdminMarketGovernanceController } from './admin-market-governance.controller';
 
 describe('AdminMarketGovernanceController', () => {
@@ -15,10 +13,9 @@ describe('AdminMarketGovernanceController', () => {
     );
 
   it('is limited to Admin and SuperAdmin roles', () => {
-    expect(Reflect.getMetadata('roles', AdminMarketGovernanceController)).toEqual([
-      Role.SuperAdmin,
-      Role.Admin,
-    ]);
+    expect(
+      Reflect.getMetadata('roles', AdminMarketGovernanceController),
+    ).toEqual([Role.SuperAdmin, Role.Admin]);
   });
 
   it('requires read permission for read-only governance endpoints', () => {

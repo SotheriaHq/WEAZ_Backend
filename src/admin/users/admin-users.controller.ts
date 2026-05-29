@@ -84,7 +84,9 @@ export class AdminUsersController {
   @SkipThrottle(SKIP_ALL_THROTTLERS)
   @Roles(Role.SuperAdmin, Role.Admin)
   @RequirePermissions(ADMIN_PERMISSIONS.USERS_READ)
-  @ApiOperation({ summary: 'List suspended/deactivated account reactivation requests' })
+  @ApiOperation({
+    summary: 'List suspended/deactivated account reactivation requests',
+  })
   async listReactivationRequests(
     @Query('cursor') cursor?: string,
     @Query('limit') limit?: string,
@@ -191,7 +193,9 @@ export class AdminUsersController {
   @Post(':id/reissue-temp-password')
   @Roles(Role.SuperAdmin)
   @RequirePermissions(ADMIN_PERMISSIONS.USERS_UPDATE)
-  @ApiOperation({ summary: 'Reissue temporary password for admin (SuperAdmin only)' })
+  @ApiOperation({
+    summary: 'Reissue temporary password for admin (SuperAdmin only)',
+  })
   async reissueTempPassword(
     @Param('id') id: string,
     @Body(ValidationPipe) body: ReissueTempPasswordDto,
@@ -220,7 +224,9 @@ export class AdminUsersController {
   @Delete(':id/data-wipe')
   @Roles(Role.SuperAdmin)
   @RequirePermissions(ADMIN_PERMISSIONS.USERS_DATA_WIPE)
-  @ApiOperation({ summary: 'Permanently erase user data (GDPR, SuperAdmin only)' })
+  @ApiOperation({
+    summary: 'Permanently erase user data (GDPR, SuperAdmin only)',
+  })
   async dataWipe(
     @Param('id') id: string,
     @Headers('x-confirm-wipe') confirmHeader: string,
@@ -248,11 +254,17 @@ export class AdminUsersController {
   @Delete(':id/permanent-delete')
   @Roles(Role.SuperAdmin)
   @RequirePermissions(ADMIN_PERMISSIONS.USERS_DATA_WIPE)
-  @ApiOperation({ summary: 'Permanently delete a deactivated admin user (SuperAdmin only)' })
+  @ApiOperation({
+    summary: 'Permanently delete a deactivated admin user (SuperAdmin only)',
+  })
   async permanentlyDeleteAdminUser(
     @Param('id') id: string,
     @Req() req: Request & { user: { id: string } },
   ) {
-    return this.adminUsersService.permanentlyDeleteDeactivatedAdminUser(id, req.user.id, req);
+    return this.adminUsersService.permanentlyDeleteDeactivatedAdminUser(
+      id,
+      req.user.id,
+      req,
+    );
   }
 }

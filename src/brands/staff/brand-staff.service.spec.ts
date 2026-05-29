@@ -1,7 +1,4 @@
-import {
-  BadRequestException,
-  ForbiddenException,
-} from '@nestjs/common';
+import { BadRequestException, ForbiddenException } from '@nestjs/common';
 import {
   BrandMemberRole,
   BrandMemberStatus,
@@ -66,7 +63,9 @@ describe('BrandStaffService', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    brandAccessService.resolveBrandIdFromBrandOrOwnerId.mockResolvedValue('brand-1');
+    brandAccessService.resolveBrandIdFromBrandOrOwnerId.mockResolvedValue(
+      'brand-1',
+    );
     brandAccessService.assertCanManageStaff.mockResolvedValue(undefined);
     brandAccessService.assertNotLastOwner.mockResolvedValue(undefined);
     brandPermissionService.getMemberPermissions.mockResolvedValue({
@@ -293,9 +292,9 @@ describe('BrandStaffService', () => {
       new ForbiddenException('Only a brand owner can manage staff'),
     );
 
-    await expect(service.listStaff('manager-1', 'brand-1')).rejects.toBeInstanceOf(
-      ForbiddenException,
-    );
+    await expect(
+      service.listStaff('manager-1', 'brand-1'),
+    ).rejects.toBeInstanceOf(ForbiddenException);
   });
 
   it('valid token accepts invite', async () => {
@@ -501,7 +500,9 @@ describe('BrandStaffService', () => {
         'member-1',
         BrandMemberStatus.SUSPENDED,
       ),
-    ).resolves.toEqual(expect.objectContaining({ status: BrandMemberStatus.SUSPENDED }));
+    ).resolves.toEqual(
+      expect.objectContaining({ status: BrandMemberStatus.SUSPENDED }),
+    );
     await expect(
       service.updateStaffStatus(
         'owner-1',
@@ -509,7 +510,9 @@ describe('BrandStaffService', () => {
         'member-1',
         BrandMemberStatus.ACTIVE,
       ),
-    ).resolves.toEqual(expect.objectContaining({ status: BrandMemberStatus.ACTIVE }));
+    ).resolves.toEqual(
+      expect.objectContaining({ status: BrandMemberStatus.ACTIVE }),
+    );
   });
 
   it('owner can remove staff', async () => {
@@ -530,7 +533,9 @@ describe('BrandStaffService', () => {
 
     await expect(
       service.removeStaff('owner-1', 'brand-1', 'member-1'),
-    ).resolves.toEqual(expect.objectContaining({ status: BrandMemberStatus.REMOVED }));
+    ).resolves.toEqual(
+      expect.objectContaining({ status: BrandMemberStatus.REMOVED }),
+    );
   });
 
   it('owner cannot remove last OWNER', async () => {

@@ -27,7 +27,9 @@ export class AdminModerationService {
       .trim();
   }
 
-  private normalizeMeasurementPointRow<T extends { label?: string | null }>(point: T): T {
+  private normalizeMeasurementPointRow<T extends { label?: string | null }>(
+    point: T,
+  ): T {
     if (typeof point.label !== 'string') {
       return point;
     }
@@ -61,29 +63,39 @@ export class AdminModerationService {
       ];
     }
 
-    const normalizedStatus = String(params.status ?? '').trim().toUpperCase();
+    const normalizedStatus = String(params.status ?? '')
+      .trim()
+      .toUpperCase();
     if (normalizedStatus && normalizedStatus !== 'ALL') {
       where.status = normalizedStatus;
     }
 
-    const normalizedSource = String(params.source ?? '').trim().toUpperCase();
+    const normalizedSource = String(params.source ?? '')
+      .trim()
+      .toUpperCase();
     if (normalizedSource && normalizedSource !== 'ALL') {
       where.source = normalizedSource;
     }
 
-    const normalizedCategory = String(params.category ?? '').trim().toUpperCase();
+    const normalizedCategory = String(params.category ?? '')
+      .trim()
+      .toUpperCase();
     if (normalizedCategory && normalizedCategory !== 'ALL') {
       where.category = normalizedCategory;
     }
 
-    const normalizedActive = String(params.isActive ?? 'all').trim().toLowerCase();
+    const normalizedActive = String(params.isActive ?? 'all')
+      .trim()
+      .toLowerCase();
     if (normalizedActive === 'active') {
       where.isActive = true;
     } else if (normalizedActive === 'inactive') {
       where.isActive = false;
     }
 
-    const sort = String(params.sort ?? 'recent').trim().toLowerCase();
+    const sort = String(params.sort ?? 'recent')
+      .trim()
+      .toLowerCase();
     const orderBy =
       sort === 'oldest'
         ? [{ createdAt: 'asc' as const }, { id: 'asc' as const }]
@@ -117,7 +129,9 @@ export class AdminModerationService {
     const pageRows = hasMore ? rows.slice(0, take) : rows;
 
     const reviewerIds = Array.from(
-      new Set(pageRows.map((row) => row.reviewedById).filter(Boolean) as string[]),
+      new Set(
+        pageRows.map((row) => row.reviewedById).filter(Boolean) as string[],
+      ),
     );
     const reviewers = reviewerIds.length
       ? await this.prisma.user.findMany({
@@ -128,7 +142,9 @@ export class AdminModerationService {
     const reviewerMap = new Map(reviewers.map((row) => [row.id, row]));
 
     const items = pageRows.map((row) => {
-      const reviewer = row.reviewedById ? reviewerMap.get(row.reviewedById) : null;
+      const reviewer = row.reviewedById
+        ? reviewerMap.get(row.reviewedById)
+        : null;
       return {
         id: row.id,
         key: row.key,
@@ -170,7 +186,7 @@ export class AdminModerationService {
 
     return {
       items,
-      nextCursor: hasMore ? pageRows[pageRows.length - 1]?.id ?? null : null,
+      nextCursor: hasMore ? (pageRows[pageRows.length - 1]?.id ?? null) : null,
     };
   }
 
@@ -321,7 +337,10 @@ export class AdminModerationService {
         : Promise.resolve(null),
     ]);
 
-    const collectionMap = new Map<string, (typeof collectionsUsingId)[number]>();
+    const collectionMap = new Map<
+      string,
+      (typeof collectionsUsingId)[number]
+    >();
     for (const row of [...collectionsUsingId, ...collectionsUsingKey]) {
       if (!collectionMap.has(row.id)) {
         collectionMap.set(row.id, row);
@@ -343,32 +362,34 @@ export class AdminModerationService {
       }
     >();
 
-    const referencesCollections = Array.from(collectionMap.values()).map((row) => {
-      const prev = usageByUser.get(row.ownerId) ?? {
-        usageCount: 0,
-        latestUsedAt: null,
-      };
-      const latestUsedAt =
-        prev.latestUsedAt && row.updatedAt
-          ? prev.latestUsedAt > row.updatedAt
-            ? prev.latestUsedAt
-            : row.updatedAt
-          : prev.latestUsedAt ?? row.updatedAt;
-      usageByUser.set(row.ownerId, {
-        usageCount: prev.usageCount + 1,
-        latestUsedAt,
-      });
+    const referencesCollections = Array.from(collectionMap.values()).map(
+      (row) => {
+        const prev = usageByUser.get(row.ownerId) ?? {
+          usageCount: 0,
+          latestUsedAt: null,
+        };
+        const latestUsedAt =
+          prev.latestUsedAt && row.updatedAt
+            ? prev.latestUsedAt > row.updatedAt
+              ? prev.latestUsedAt
+              : row.updatedAt
+            : (prev.latestUsedAt ?? row.updatedAt);
+        usageByUser.set(row.ownerId, {
+          usageCount: prev.usageCount + 1,
+          latestUsedAt,
+        });
 
-      return {
-        id: row.id,
-        title: row.title,
-        ownerId: row.ownerId,
-        status: row.status,
-        visibility: row.visibility,
-        createdAt: row.createdAt.toISOString(),
-        updatedAt: row.updatedAt.toISOString(),
-      };
-    });
+        return {
+          id: row.id,
+          title: row.title,
+          ownerId: row.ownerId,
+          status: row.status,
+          visibility: row.visibility,
+          createdAt: row.createdAt.toISOString(),
+          updatedAt: row.updatedAt.toISOString(),
+        };
+      },
+    );
 
     const referencesProducts = Array.from(productMap.values()).map((row) => {
       const ownerId = row.brand.ownerId;
@@ -381,7 +402,7 @@ export class AdminModerationService {
           ? prev.latestUsedAt > row.updatedAt
             ? prev.latestUsedAt
             : row.updatedAt
-          : prev.latestUsedAt ?? row.updatedAt;
+          : (prev.latestUsedAt ?? row.updatedAt);
       usageByUser.set(ownerId, {
         usageCount: prev.usageCount + 1,
         latestUsedAt,
@@ -462,7 +483,10 @@ export class AdminModerationService {
         ? [
             {
               id: `reviewed:${point.id}`,
-              type: point.status === 'REJECTED' ? 'POINT_REJECTED' : 'POINT_APPROVED',
+              type:
+                point.status === 'REJECTED'
+                  ? 'POINT_REJECTED'
+                  : 'POINT_APPROVED',
               at: point.reviewedAt.toISOString(),
               summary:
                 point.status === 'REJECTED'
@@ -565,7 +589,9 @@ export class AdminModerationService {
     actorId: string,
     req: Request,
   ) {
-    const action = String(decision?.action ?? '').trim().toLowerCase();
+    const action = String(decision?.action ?? '')
+      .trim()
+      .toLowerCase();
     if (!['approve', 'reject', 'activate', 'deactivate'].includes(action)) {
       throw new BadRequestException(
         'Invalid action. Supported actions: approve, reject, activate, deactivate',
@@ -573,7 +599,9 @@ export class AdminModerationService {
     }
 
     if (action === 'reject' && !String(decision.reason ?? '').trim()) {
-      throw new BadRequestException('Rejection reason is required when rejecting a point');
+      throw new BadRequestException(
+        'Rejection reason is required when rejecting a point',
+      );
     }
 
     const point = await this.prisma.measurementPoint.findUnique({
@@ -628,7 +656,8 @@ export class AdminModerationService {
             status: (updateData.status as string | undefined) ?? point.status,
             isActive:
               (updateData.isActive as boolean | undefined) ?? point.isActive,
-            reason: action === 'reject' ? String(decision.reason ?? '').trim() : null,
+            reason:
+              action === 'reject' ? String(decision.reason ?? '').trim() : null,
           },
           metadata: {
             action,
@@ -697,7 +726,9 @@ export class AdminModerationService {
       return { success: true, removed: 0 };
     }
     if (entries.length > 1000) {
-      throw new BadRequestException('Bulk removal limit exceeded (max 1000 entries)');
+      throw new BadRequestException(
+        'Bulk removal limit exceeded (max 1000 entries)',
+      );
     }
 
     const chunk = <T>(input: T[], size: number): T[][] => {
@@ -708,7 +739,10 @@ export class AdminModerationService {
       return result;
     };
 
-    const dedupeMap = new Map<string, { userId: string; contentId: string; contentType: ContentTarget }>();
+    const dedupeMap = new Map<
+      string,
+      { userId: string; contentId: string; contentType: ContentTarget }
+    >();
     for (const entry of entries) {
       const key = `${entry.contentType}:${entry.userId}:${entry.contentId}`;
       if (!dedupeMap.has(key)) {
@@ -716,7 +750,9 @@ export class AdminModerationService {
       }
     }
     const dedupedEntries = Array.from(dedupeMap.values());
-    const collectionEntries = dedupedEntries.filter((e) => e.contentType === 'COLLECTION');
+    const collectionEntries = dedupedEntries.filter(
+      (e) => e.contentType === 'COLLECTION',
+    );
     const postEntries = dedupedEntries.filter((e) => e.contentType === 'POST');
 
     let removedCount = 0;
@@ -815,7 +851,9 @@ export class AdminModerationService {
     });
 
     return {
-      freeformPoints: points.map((point) => this.normalizeMeasurementPointRow(point)),
+      freeformPoints: points.map((point) =>
+        this.normalizeMeasurementPointRow(point),
+      ),
       sizeCharts: charts,
     };
   }
@@ -895,8 +933,7 @@ export class AdminModerationService {
     actorId: string,
     req: Request,
   ) {
-    const newStatus =
-      decision.action === 'approve' ? 'PUBLISHED' : 'SENT_BACK';
+    const newStatus = decision.action === 'approve' ? 'PUBLISHED' : 'SENT_BACK';
 
     const updated = await this.prisma.$transaction(async (tx) => {
       const result = await tx.brandSizeChart.update({

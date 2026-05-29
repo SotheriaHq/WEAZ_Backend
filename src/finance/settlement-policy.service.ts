@@ -98,8 +98,12 @@ export class SettlementPolicyService {
         ...(params?.orderType ? { orderType: params.orderType } : {}),
         ...(params?.scope ? { scope: params.scope } : {}),
         ...(params?.brandId !== undefined ? { brandId: params.brandId } : {}),
-        ...(params?.currency !== undefined ? { currency: params.currency } : {}),
-        ...(params?.isActive !== undefined ? { isActive: params.isActive } : {}),
+        ...(params?.currency !== undefined
+          ? { currency: params.currency }
+          : {}),
+        ...(params?.isActive !== undefined
+          ? { isActive: params.isActive }
+          : {}),
       },
       orderBy: [
         { orderType: 'asc' },
@@ -385,8 +389,13 @@ export class SettlementPolicyService {
         brandId: input.brandId,
         currency: input.currency,
         isActive: true,
-        effectiveFrom: input.effectiveTo ? { lte: input.effectiveTo } : undefined,
-        OR: [{ effectiveTo: null }, { effectiveTo: { gte: input.effectiveFrom } }],
+        effectiveFrom: input.effectiveTo
+          ? { lte: input.effectiveTo }
+          : undefined,
+        OR: [
+          { effectiveTo: null },
+          { effectiveTo: { gte: input.effectiveFrom } },
+        ],
       },
       select: { id: true },
     });
@@ -407,17 +416,26 @@ export class SettlementPolicyService {
       throw new BadRequestException('orderType is required');
     }
 
-    const scope = input.scope ?? existing?.scope ?? SettlementPolicyScope.PLATFORM;
+    const scope =
+      input.scope ?? existing?.scope ?? SettlementPolicyScope.PLATFORM;
     const brandId =
-      input.brandId !== undefined ? this.normalizeOptionalId(input.brandId) : existing?.brandId ?? null;
+      input.brandId !== undefined
+        ? this.normalizeOptionalId(input.brandId)
+        : (existing?.brandId ?? null);
     const currency =
-      input.currency !== undefined ? this.normalizeCurrency(input.currency) : this.normalizeCurrency(existing?.currency ?? null);
+      input.currency !== undefined
+        ? this.normalizeCurrency(input.currency)
+        : this.normalizeCurrency(existing?.currency ?? null);
 
     if (scope === SettlementPolicyScope.BRAND && !brandId) {
-      throw new BadRequestException('brandId is required for brand-scoped settlement policies');
+      throw new BadRequestException(
+        'brandId is required for brand-scoped settlement policies',
+      );
     }
     if (scope === SettlementPolicyScope.PLATFORM && brandId) {
-      throw new BadRequestException('brandId must be null for platform-scoped settlement policies');
+      throw new BadRequestException(
+        'brandId must be null for platform-scoped settlement policies',
+      );
     }
 
     const releaseMode =
@@ -428,21 +446,34 @@ export class SettlementPolicyService {
         : SettlementReleaseMode.HOLD_UNTIL_DELIVERY);
 
     const upfrontReleaseEnabled =
-      input.upfrontReleaseEnabled ?? existing?.upfrontReleaseEnabled ?? releaseMode === SettlementReleaseMode.SPLIT_RELEASE;
+      input.upfrontReleaseEnabled ??
+      existing?.upfrontReleaseEnabled ??
+      releaseMode === SettlementReleaseMode.SPLIT_RELEASE;
 
     const upfrontReleasePercentRaw =
-      input.upfrontReleasePercent ?? Number(existing?.upfrontReleasePercent ?? 0);
+      input.upfrontReleasePercent ??
+      Number(existing?.upfrontReleasePercent ?? 0);
     const settlementDelayHours =
-      input.settlementDelayHours ?? existing?.settlementDelayHours ?? DEFAULT_SEED_SETTLEMENT_DELAY_HOURS;
+      input.settlementDelayHours ??
+      existing?.settlementDelayHours ??
+      DEFAULT_SEED_SETTLEMENT_DELAY_HOURS;
     const autoReleaseDays =
-      input.autoReleaseDays ?? existing?.autoReleaseDays ?? DEFAULT_SEED_AUTO_RELEASE_DAYS;
+      input.autoReleaseDays ??
+      existing?.autoReleaseDays ??
+      DEFAULT_SEED_AUTO_RELEASE_DAYS;
     const finalReleaseTrigger =
-      input.finalReleaseTrigger ?? existing?.finalReleaseTrigger ?? SettlementFinalReleaseTrigger.BUYER_CONFIRMATION;
+      input.finalReleaseTrigger ??
+      existing?.finalReleaseTrigger ??
+      SettlementFinalReleaseTrigger.BUYER_CONFIRMATION;
     const isDefault = input.isDefault ?? existing?.isDefault ?? false;
     const isActive = input.isActive ?? existing?.isActive ?? true;
 
-    const effectiveFrom = this.normalizeDate(input.effectiveFrom ?? existing?.effectiveFrom ?? new Date());
-    const effectiveTo = this.normalizeNullableDate(input.effectiveTo ?? existing?.effectiveTo ?? null);
+    const effectiveFrom = this.normalizeDate(
+      input.effectiveFrom ?? existing?.effectiveFrom ?? new Date(),
+    );
+    const effectiveTo = this.normalizeNullableDate(
+      input.effectiveTo ?? existing?.effectiveTo ?? null,
+    );
 
     return {
       orderType,
@@ -468,7 +499,9 @@ export class SettlementPolicyService {
     }
 
     if (input.upfrontReleasePercent < 0 || input.upfrontReleasePercent > 100) {
-      throw new BadRequestException('upfrontReleasePercent must be between 0 and 100');
+      throw new BadRequestException(
+        'upfrontReleasePercent must be between 0 and 100',
+      );
     }
 
     if (input.releaseMode === SettlementReleaseMode.HOLD_UNTIL_DELIVERY) {
@@ -505,7 +538,9 @@ export class SettlementPolicyService {
       currency: null,
       releaseMode: params.releaseMode,
       upfrontReleaseEnabled: params.upfrontReleaseEnabled,
-      upfrontReleasePercent: new Prisma.Decimal(params.upfrontReleasePercent.toFixed(2)),
+      upfrontReleasePercent: new Prisma.Decimal(
+        params.upfrontReleasePercent.toFixed(2),
+      ),
       settlementDelayHours: DEFAULT_SEED_SETTLEMENT_DELAY_HOURS,
       autoReleaseDays: DEFAULT_SEED_AUTO_RELEASE_DAYS,
       finalReleaseTrigger: SettlementFinalReleaseTrigger.BUYER_CONFIRMATION,
@@ -536,8 +571,12 @@ export class SettlementPolicyService {
     at: Date;
   }): Promise<SettlementPolicyResolution> {
     const [settlementDelayHours, autoReleaseDays] = await Promise.all([
-      this.systemConfigService.getNumber('finance.standardEscrow.settlementHours'),
-      this.systemConfigService.getNumber('finance.standardEscrow.autoReleaseDays'),
+      this.systemConfigService.getNumber(
+        'finance.standardEscrow.settlementHours',
+      ),
+      this.systemConfigService.getNumber(
+        'finance.standardEscrow.autoReleaseDays',
+      ),
     ]);
 
     const releaseMode =
@@ -552,7 +591,8 @@ export class SettlementPolicyService {
       brandId: null,
       currency: params.currency,
       releaseMode,
-      upfrontReleaseEnabled: params.orderType === SettlementOrderType.CUSTOM_ORDER,
+      upfrontReleaseEnabled:
+        params.orderType === SettlementOrderType.CUSTOM_ORDER,
       upfrontReleasePercent:
         params.orderType === SettlementOrderType.CUSTOM_ORDER
           ? DEFAULT_CUSTOM_UPFRONT_PERCENT
@@ -567,7 +607,9 @@ export class SettlementPolicyService {
     };
   }
 
-  private toResolution(policy: SettlementPolicyRecord): SettlementPolicyResolution {
+  private toResolution(
+    policy: SettlementPolicyRecord,
+  ): SettlementPolicyResolution {
     return {
       id: policy.id,
       orderType: policy.orderType,
@@ -588,7 +630,9 @@ export class SettlementPolicyService {
   }
 
   private normalizeCurrency(value?: string | null) {
-    const normalized = String(value ?? '').trim().toUpperCase();
+    const normalized = String(value ?? '')
+      .trim()
+      .toUpperCase();
     return normalized || null;
   }
 

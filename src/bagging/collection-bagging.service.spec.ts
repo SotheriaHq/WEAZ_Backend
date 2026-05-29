@@ -42,7 +42,9 @@ describe('CollectionBaggingService', () => {
     reason: null,
   } as any;
 
-  const status = (products: CollectionBagStatusContract['products']): CollectionBagStatusContract => ({
+  const status = (
+    products: CollectionBagStatusContract['products'],
+  ): CollectionBagStatusContract => ({
     sourceType: 'COLLECTION',
     sourceId: 'collection_1',
     collection: {
@@ -60,13 +62,26 @@ describe('CollectionBaggingService', () => {
       canBagAll: true,
       canBagSelected: true,
       eligibleCount: products.filter((product) => product.canBag).length,
-      blockedCount: products.filter((product) => !product.canBag && !product.inBag).length,
+      blockedCount: products.filter(
+        (product) => !product.canBag && !product.inBag,
+      ).length,
       alreadyInBagCount: products.filter((product) => product.inBag).length,
-      requiresSelectionCount: products.filter((product) => product.defaultAction === 'OPEN_SELECTOR').length,
-      requiresFittingsCount: products.filter((product) => product.defaultAction === 'OPEN_FITTINGS').length,
-      staleFittingsCount: products.filter((product) => product.defaultAction === 'CONFIRM_STALE_FITTINGS').length,
-      outOfStockCount: products.filter((product) => product.stockState === 'OUT_OF_STOCK').length,
-      totalPrice: products.reduce((sum, product) => sum + (product.canBag ? product.price : 0), 0),
+      requiresSelectionCount: products.filter(
+        (product) => product.defaultAction === 'OPEN_SELECTOR',
+      ).length,
+      requiresFittingsCount: products.filter(
+        (product) => product.defaultAction === 'OPEN_FITTINGS',
+      ).length,
+      staleFittingsCount: products.filter(
+        (product) => product.defaultAction === 'CONFIRM_STALE_FITTINGS',
+      ).length,
+      outOfStockCount: products.filter(
+        (product) => product.stockState === 'OUT_OF_STOCK',
+      ).length,
+      totalPrice: products.reduce(
+        (sum, product) => sum + (product.canBag ? product.price : 0),
+        0,
+      ),
       currency: 'NGN',
     },
     products,
@@ -128,7 +143,10 @@ describe('CollectionBaggingService', () => {
     prisma.$transaction.mockImplementation(async (callback: any) =>
       callback({
         cartItem: {
-          create: jest.fn(async ({ data }: any) => ({ id: `cart_${data.productId}`, quantity: data.quantity })),
+          create: jest.fn(async ({ data }: any) => ({
+            id: `cart_${data.productId}`,
+            quantity: data.quantity,
+          })),
           update: jest.fn(async ({ where, data }: any) => ({
             id: where.id,
             quantity: data.quantity,
@@ -142,7 +160,10 @@ describe('CollectionBaggingService', () => {
     eligibilityService.getCollectionBagStatus.mockResolvedValue(
       status([productStatus('product_1'), productStatus('product_2')]),
     );
-    prisma.product.findMany.mockResolvedValue([productRow('product_1'), productRow('product_2')]);
+    prisma.product.findMany.mockResolvedValue([
+      productRow('product_1'),
+      productRow('product_2'),
+    ]);
 
     const result = await service.bagAll('collection_1', 'buyer_1');
 
@@ -164,7 +185,10 @@ describe('CollectionBaggingService', () => {
         }),
       ]),
     );
-    prisma.product.findMany.mockResolvedValue([productRow('product_1'), productRow('product_2')]);
+    prisma.product.findMany.mockResolvedValue([
+      productRow('product_1'),
+      productRow('product_2'),
+    ]);
 
     const result = await service.bagSelected('collection_1', 'buyer_1', {
       productIds: ['product_1', 'product_2'],
@@ -186,7 +210,10 @@ describe('CollectionBaggingService', () => {
     eligibilityService.getCollectionBagStatus.mockResolvedValue(
       status([
         productStatus('product_1'),
-        productStatus('product_2', { canBag: false, defaultAction: 'OPEN_FITTINGS' }),
+        productStatus('product_2', {
+          canBag: false,
+          defaultAction: 'OPEN_FITTINGS',
+        }),
       ]),
     );
     prisma.product.findMany.mockResolvedValue([productRow('product_1')]);
@@ -215,7 +242,9 @@ describe('CollectionBaggingService', () => {
 
     const result = await service.bagAll('collection_1', 'buyer_1');
 
-    expect(result.skipped).toEqual([{ productId: 'product_1', reason: 'ALREADY_IN_BAG' }]);
+    expect(result.skipped).toEqual([
+      { productId: 'product_1', reason: 'ALREADY_IN_BAG' },
+    ]);
     expect(result.added).toHaveLength(1);
   });
 

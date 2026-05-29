@@ -145,7 +145,9 @@ export class AuthController {
 
   @Post('login-options')
   @HttpCode(200)
-  @ApiOperation({ summary: 'Resolve safe sign-in method options after email Continue' })
+  @ApiOperation({
+    summary: 'Resolve safe sign-in method options after email Continue',
+  })
   @Throttle({ default: { limit: 8, ttl: 60000 } })
   async loginOptions(@Body(ValidationPipe) body: LoginOptionsDto) {
     return this.authService.getLoginOptions(body.email);
@@ -153,7 +155,9 @@ export class AuthController {
 
   @Post('email-login-code/request')
   @HttpCode(200)
-  @ApiOperation({ summary: 'Request an email code for Google-only password setup' })
+  @ApiOperation({
+    summary: 'Request an email code for Google-only password setup',
+  })
   @Throttle({ default: { limit: 3, ttl: 900000 } })
   async requestEmailLoginCode(
     @Body(ValidationPipe) body: RequestEmailLoginCodeDto,
@@ -163,7 +167,9 @@ export class AuthController {
 
   @Post('email-login-code/confirm')
   @HttpCode(200)
-  @ApiOperation({ summary: 'Confirm an email code for Google-only password setup' })
+  @ApiOperation({
+    summary: 'Confirm an email code for Google-only password setup',
+  })
   @Throttle({ default: { limit: 5, ttl: 900000 } })
   async confirmEmailLoginCode(
     @Body(ValidationPipe) body: ConfirmEmailLoginCodeDto,
@@ -181,7 +187,9 @@ export class AuthController {
 
   @Post('password/setup')
   @HttpCode(200)
-  @ApiOperation({ summary: 'Set the first local password after email-code verification' })
+  @ApiOperation({
+    summary: 'Set the first local password after email-code verification',
+  })
   @Throttle({ default: { limit: 5, ttl: 900000 } })
   async setupPassword(@Body(ValidationPipe) body: PasswordSetupDto) {
     return this.authService.setupPassword(
@@ -204,7 +212,8 @@ export class AuthController {
 
   @Post('account-reactivation/request')
   @ApiOperation({
-    summary: 'Submit account reactivation/leniency request for suspended or deactivated users',
+    summary:
+      'Submit account reactivation/leniency request for suspended or deactivated users',
   })
   @Throttle({ default: { limit: 3, ttl: 300000 } })
   async requestAccountReactivation(
@@ -232,7 +241,9 @@ export class AuthController {
   }
 
   @Post('admin/reset-password/first-login')
-  @ApiOperation({ summary: 'Complete first-login required admin password reset' })
+  @ApiOperation({
+    summary: 'Complete first-login required admin password reset',
+  })
   @Throttle({ default: { limit: 6, ttl: 900000 } })
   async completeAdminFirstLoginReset(
     @Body(ValidationPipe) body: CompleteAdminFirstLoginResetDto,
@@ -254,7 +265,9 @@ export class AuthController {
   }
 
   @Post('password-reset/confirm')
-  @ApiOperation({ summary: 'Confirm password reset with token for regular users' })
+  @ApiOperation({
+    summary: 'Confirm password reset with token for regular users',
+  })
   @Throttle({ default: { limit: 5, ttl: 900000 } })
   async confirmPasswordReset(
     @Body(ValidationPipe) body: ConfirmPasswordResetDto,
@@ -314,9 +327,7 @@ export class AuthController {
   @Post('change-email/confirm')
   @Throttle({ default: { limit: 8, ttl: 900000 } })
   @ApiOperation({ summary: 'Confirm pending authenticated email change' })
-  async confirmEmailChange(
-    @Body(ValidationPipe) body: ConfirmEmailChangeDto,
-  ) {
+  async confirmEmailChange(@Body(ValidationPipe) body: ConfirmEmailChangeDto) {
     return this.authService.confirmEmailChange(body.token);
   }
 
@@ -358,7 +369,9 @@ export class AuthController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(201)
   @Throttle({ default: { limit: 8, ttl: 60000 } })
-  @ApiOperation({ summary: 'Create a short-lived mobile-to-web Studio handoff code' })
+  @ApiOperation({
+    summary: 'Create a short-lived mobile-to-web Studio handoff code',
+  })
   @UseInterceptors(TransformInterceptor)
   async createStudioHandoff(
     @Req() req: Request & { user: { id: string; type?: string | null } },
@@ -370,7 +383,9 @@ export class AuthController {
   @Post('studio-handoff/exchange')
   @HttpCode(200)
   @Throttle({ default: { limit: 12, ttl: 60000 } })
-  @ApiOperation({ summary: 'Exchange a Studio handoff code for a normal web session' })
+  @ApiOperation({
+    summary: 'Exchange a Studio handoff code for a normal web session',
+  })
   @UseInterceptors(TransformInterceptor)
   async exchangeStudioHandoff(
     @Req() req: Request,
@@ -512,7 +527,9 @@ export class AuthController {
   @UseGuards(JwtAuthGuard)
   @Throttle({ default: { limit: 3, ttl: 300000 } })
   @Post('verify-email/resend')
-  @ApiOperation({ summary: 'Resend email verification link for authenticated user' })
+  @ApiOperation({
+    summary: 'Resend email verification link for authenticated user',
+  })
   async resendEmailVerification(
     @Req() req: Request & { user: { id: string } },
   ) {
@@ -521,14 +538,18 @@ export class AuthController {
 
   @Get('security/devices')
   @UseGuards(JwtAuthGuard)
-  @ApiOperation({ summary: 'List recognized and trusted devices for the authenticated user' })
+  @ApiOperation({
+    summary: 'List recognized and trusted devices for the authenticated user',
+  })
   async listSecurityDevices(@Req() req: Request & { user: { id: string } }) {
     return this.authService.getTrustedDevices(req.user.id);
   }
 
   @Patch('security/devices/:id/revoke')
   @UseGuards(JwtAuthGuard)
-  @ApiOperation({ summary: 'Revoke a recognized device for the authenticated user' })
+  @ApiOperation({
+    summary: 'Revoke a recognized device for the authenticated user',
+  })
   async revokeSecurityDevice(
     @Req() req: Request & { user: { id: string } },
     @Param('id') id: string,
@@ -538,31 +559,38 @@ export class AuthController {
 
   @Get('security/sessions')
   @UseGuards(JwtAuthGuard)
-  @ApiOperation({ summary: 'List recent login sessions for the authenticated user' })
-  async listSecuritySessions(
-    @Req() req: Request & { user: { id: string } },
-  ) {
+  @ApiOperation({
+    summary: 'List recent login sessions for the authenticated user',
+  })
+  async listSecuritySessions(@Req() req: Request & { user: { id: string } }) {
     const refreshToken = req.cookies[this.refreshTokenCookieName];
     return this.authService.listSecuritySessions(req.user.id, refreshToken);
   }
 
   @Patch('security/sessions/:id/revoke')
   @UseGuards(JwtAuthGuard)
-  @ApiOperation({ summary: 'Revoke a login session for the authenticated user' })
+  @ApiOperation({
+    summary: 'Revoke a login session for the authenticated user',
+  })
   async revokeSecuritySession(
     @Req() req: Request & { user: { id: string } },
     @Param('id') id: string,
   ) {
     const refreshToken = req.cookies[this.refreshTokenCookieName];
-    return this.authService.revokeSecuritySession(req.user.id, id, refreshToken);
+    return this.authService.revokeSecuritySession(
+      req.user.id,
+      id,
+      refreshToken,
+    );
   }
 
   @Post('security/sessions/logout-others')
   @UseGuards(JwtAuthGuard)
-  @ApiOperation({ summary: 'Revoke all other login sessions while preserving the current session' })
-  async logoutOtherSessions(
-    @Req() req: Request & { user: { id: string } },
-  ) {
+  @ApiOperation({
+    summary:
+      'Revoke all other login sessions while preserving the current session',
+  })
+  async logoutOtherSessions(@Req() req: Request & { user: { id: string } }) {
     const refreshToken = req.cookies[this.refreshTokenCookieName];
     return this.authService.logoutOtherSessions(req.user.id, refreshToken);
   }
@@ -589,5 +617,4 @@ export class AuthController {
     res.clearCookie(this.accessTokenCookieName, cookieOptions);
     return result;
   }
-
 }

@@ -118,7 +118,9 @@ describe('Entity separation routes (e2e)', () => {
 
     expect(Array.isArray(items)).toBe(true);
     expect(items.some((item: any) => item.id === designId)).toBe(true);
-    expect(items.some((item: any) => item.id === storeCollectionId)).toBe(false);
+    expect(items.some((item: any) => item.id === storeCollectionId)).toBe(
+      false,
+    );
   });
 
   it('lists only store-collection entities via /store-collections/user/:userId', async () => {
@@ -140,7 +142,9 @@ describe('Entity separation routes (e2e)', () => {
       .send({ title: 'Design Updated' })
       .expect(200);
 
-    const design = await prisma.collection.findUnique({ where: { id: designId } });
+    const design = await prisma.collection.findUnique({
+      where: { id: designId },
+    });
     const storeCollection = await prisma.storeCollection.findUnique({
       where: { id: storeCollectionId },
     });
@@ -155,7 +159,9 @@ describe('Entity separation routes (e2e)', () => {
       .send({ title: 'Store Collection Updated' })
       .expect(200);
 
-    const design = await prisma.collection.findUnique({ where: { id: designId } });
+    const design = await prisma.collection.findUnique({
+      where: { id: designId },
+    });
     const storeCollection = await prisma.storeCollection.findUnique({
       where: { id: storeCollectionId },
     });
@@ -165,9 +171,13 @@ describe('Entity separation routes (e2e)', () => {
   });
 
   it('soft deletes design without deleting store collection', async () => {
-    await request(app.getHttpServer()).delete(`/designs/${designId}`).expect(200);
+    await request(app.getHttpServer())
+      .delete(`/designs/${designId}`)
+      .expect(200);
 
-    const design = await prisma.collection.findUnique({ where: { id: designId } });
+    const design = await prisma.collection.findUnique({
+      where: { id: designId },
+    });
     const storeCollection = await prisma.storeCollection.findUnique({
       where: { id: storeCollectionId },
     });
@@ -209,7 +219,9 @@ describe('Entity separation routes (e2e)', () => {
       })
       .expect(201);
 
-    const stored = await prisma.storeCollection.findUnique({ where: { id: sessionId } });
+    const stored = await prisma.storeCollection.findUnique({
+      where: { id: sessionId },
+    });
     expect(stored).toBeTruthy();
     expect(stored?.ownerId).toBe(ownerId);
   });

@@ -1,6 +1,6 @@
 /**
  * Collection Scheduler Configuration
- * 
+ *
  * Configurable constants for draft lifecycle management.
  * These can be overridden via environment variables.
  */
@@ -69,7 +69,8 @@ export const DRAFT_EXPIRY_CONFIG = {
 // Derived values (computed from config)
 export const getDraftExpiryDate = (lastActivityAt: Date): Date => {
   return new Date(
-    lastActivityAt.getTime() + DRAFT_EXPIRY_CONFIG.DRAFT_TTL_DAYS * 24 * 60 * 60 * 1000,
+    lastActivityAt.getTime() +
+      DRAFT_EXPIRY_CONFIG.DRAFT_TTL_DAYS * 24 * 60 * 60 * 1000,
   );
 };
 

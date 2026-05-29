@@ -22,18 +22,28 @@ describe('BrandAccessService', () => {
   });
 
   it('owner can access own brand', async () => {
-    prisma.brand.findFirst.mockResolvedValue({ id: 'brand-1', ownerId: 'owner-1' });
+    prisma.brand.findFirst.mockResolvedValue({
+      id: 'brand-1',
+      ownerId: 'owner-1',
+    });
 
-    await expect(service.canAccessBrand('owner-1', 'brand-1')).resolves.toBe(true);
+    await expect(service.canAccessBrand('owner-1', 'brand-1')).resolves.toBe(
+      true,
+    );
   });
 
   it('active member can access brand', async () => {
-    prisma.brand.findFirst.mockResolvedValue({ id: 'brand-1', ownerId: 'owner-1' });
+    prisma.brand.findFirst.mockResolvedValue({
+      id: 'brand-1',
+      ownerId: 'owner-1',
+    });
     prisma.brandMember.findUnique.mockResolvedValue({
       status: BrandMemberStatus.ACTIVE,
     });
 
-    await expect(service.canAccessBrand('staff-1', 'brand-1')).resolves.toBe(true);
+    await expect(service.canAccessBrand('staff-1', 'brand-1')).resolves.toBe(
+      true,
+    );
   });
 
   it.each([
@@ -41,38 +51,53 @@ describe('BrandAccessService', () => {
     BrandMemberStatus.SUSPENDED,
     BrandMemberStatus.REMOVED,
   ])('%s member cannot access protected operations', async (status) => {
-    prisma.brand.findFirst.mockResolvedValue({ id: 'brand-1', ownerId: 'owner-1' });
+    prisma.brand.findFirst.mockResolvedValue({
+      id: 'brand-1',
+      ownerId: 'owner-1',
+    });
     prisma.brandMember.findUnique.mockResolvedValue({ status });
 
-    await expect(service.canAccessBrand('staff-1', 'brand-1')).resolves.toBe(false);
-    await expect(service.assertBrandAccess('staff-1', 'brand-1')).rejects.toBeInstanceOf(
-      ForbiddenException,
+    await expect(service.canAccessBrand('staff-1', 'brand-1')).resolves.toBe(
+      false,
     );
+    await expect(
+      service.assertBrandAccess('staff-1', 'brand-1'),
+    ).rejects.toBeInstanceOf(ForbiddenException);
   });
 
   it('unrelated user cannot access brand', async () => {
-    prisma.brand.findFirst.mockResolvedValue({ id: 'brand-1', ownerId: 'owner-1' });
+    prisma.brand.findFirst.mockResolvedValue({
+      id: 'brand-1',
+      ownerId: 'owner-1',
+    });
     prisma.brandMember.findUnique.mockResolvedValue(null);
 
-    await expect(service.canAccessBrand('user-1', 'brand-1')).resolves.toBe(false);
+    await expect(service.canAccessBrand('user-1', 'brand-1')).resolves.toBe(
+      false,
+    );
   });
 
   it('missing brand throws clean error', async () => {
     prisma.brand.findFirst.mockResolvedValue(null);
 
-    await expect(service.canAccessBrand('user-1', 'missing-brand')).rejects.toBeInstanceOf(
-      NotFoundException,
-    );
+    await expect(
+      service.canAccessBrand('user-1', 'missing-brand'),
+    ).rejects.toBeInstanceOf(NotFoundException);
   });
 
   it('BrandMember OWNER is treated as brand owner', async () => {
-    prisma.brand.findFirst.mockResolvedValue({ id: 'brand-1', ownerId: 'legacy-owner' });
+    prisma.brand.findFirst.mockResolvedValue({
+      id: 'brand-1',
+      ownerId: 'legacy-owner',
+    });
     prisma.brandMember.findUnique.mockResolvedValue({
       role: BrandMemberRole.OWNER,
       status: BrandMemberStatus.ACTIVE,
     });
 
-    await expect(service.isBrandOwner('owner-1', 'brand-1')).resolves.toBe(true);
+    await expect(service.isBrandOwner('owner-1', 'brand-1')).resolves.toBe(
+      true,
+    );
   });
 
   it.each([
@@ -80,7 +105,10 @@ describe('BrandAccessService', () => {
     BrandMemberRole.MANAGER,
     BrandMemberRole.CATALOG_MANAGER,
   ])('%s can manage catalog when active', async (role) => {
-    prisma.brand.findFirst.mockResolvedValue({ id: 'brand-1', ownerId: 'owner-1' });
+    prisma.brand.findFirst.mockResolvedValue({
+      id: 'brand-1',
+      ownerId: 'owner-1',
+    });
     prisma.brandMember.findUnique.mockResolvedValue({
       role,
       status: BrandMemberStatus.ACTIVE,
@@ -92,7 +120,10 @@ describe('BrandAccessService', () => {
   });
 
   it('legacy owner can manage catalog', async () => {
-    prisma.brand.findFirst.mockResolvedValue({ id: 'brand-1', ownerId: 'owner-1' });
+    prisma.brand.findFirst.mockResolvedValue({
+      id: 'brand-1',
+      ownerId: 'owner-1',
+    });
 
     await expect(
       service.assertCanManageCatalog('owner-1', 'brand-1'),
@@ -105,7 +136,10 @@ describe('BrandAccessService', () => {
     BrandMemberRole.ORDER_MANAGER,
     BrandMemberRole.SUPPORT_AGENT,
   ])('%s cannot manage catalog', async (role) => {
-    prisma.brand.findFirst.mockResolvedValue({ id: 'brand-1', ownerId: 'owner-1' });
+    prisma.brand.findFirst.mockResolvedValue({
+      id: 'brand-1',
+      ownerId: 'owner-1',
+    });
     prisma.brandMember.findUnique.mockResolvedValue({
       role,
       status: BrandMemberStatus.ACTIVE,
@@ -121,7 +155,10 @@ describe('BrandAccessService', () => {
     BrandMemberStatus.SUSPENDED,
     BrandMemberStatus.REMOVED,
   ])('%s member cannot manage catalog', async (status) => {
-    prisma.brand.findFirst.mockResolvedValue({ id: 'brand-1', ownerId: 'owner-1' });
+    prisma.brand.findFirst.mockResolvedValue({
+      id: 'brand-1',
+      ownerId: 'owner-1',
+    });
     prisma.brandMember.findUnique.mockResolvedValue({
       role: BrandMemberRole.CATALOG_MANAGER,
       status,
@@ -133,7 +170,10 @@ describe('BrandAccessService', () => {
   });
 
   it('unrelated user cannot manage another brand catalog', async () => {
-    prisma.brand.findFirst.mockResolvedValue({ id: 'brand-1', ownerId: 'owner-1' });
+    prisma.brand.findFirst.mockResolvedValue({
+      id: 'brand-1',
+      ownerId: 'owner-1',
+    });
     prisma.brandMember.findUnique.mockResolvedValue(null);
 
     await expect(
@@ -142,7 +182,10 @@ describe('BrandAccessService', () => {
   });
 
   it('legacy Brand.ownerId can manage staff', async () => {
-    prisma.brand.findFirst.mockResolvedValue({ id: 'brand-1', ownerId: 'owner-1' });
+    prisma.brand.findFirst.mockResolvedValue({
+      id: 'brand-1',
+      ownerId: 'owner-1',
+    });
 
     await expect(
       service.assertCanManageStaff('owner-1', 'brand-1'),
@@ -156,7 +199,10 @@ describe('BrandAccessService', () => {
     BrandMemberRole.SUPPORT_AGENT,
     BrandMemberRole.VIEWER,
   ])('%s cannot manage staff', async (role) => {
-    prisma.brand.findFirst.mockResolvedValue({ id: 'brand-1', ownerId: 'owner-1' });
+    prisma.brand.findFirst.mockResolvedValue({
+      id: 'brand-1',
+      ownerId: 'owner-1',
+    });
     prisma.brandMember.findUnique.mockResolvedValue({
       role,
       status: BrandMemberStatus.ACTIVE,
@@ -168,7 +214,10 @@ describe('BrandAccessService', () => {
   });
 
   it('inactive OWNER cannot manage staff', async () => {
-    prisma.brand.findFirst.mockResolvedValue({ id: 'brand-1', ownerId: 'owner-1' });
+    prisma.brand.findFirst.mockResolvedValue({
+      id: 'brand-1',
+      ownerId: 'owner-1',
+    });
     prisma.brandMember.findUnique.mockResolvedValue({
       role: BrandMemberRole.OWNER,
       status: BrandMemberStatus.SUSPENDED,
@@ -180,7 +229,10 @@ describe('BrandAccessService', () => {
   });
 
   it('active OWNER BrandMember can manage staff', async () => {
-    prisma.brand.findFirst.mockResolvedValue({ id: 'brand-1', ownerId: 'owner-1' });
+    prisma.brand.findFirst.mockResolvedValue({
+      id: 'brand-1',
+      ownerId: 'owner-1',
+    });
     prisma.brandMember.findUnique.mockResolvedValue({
       role: BrandMemberRole.OWNER,
       status: BrandMemberStatus.ACTIVE,
@@ -192,7 +244,10 @@ describe('BrandAccessService', () => {
   });
 
   it('protects the last active owner from removal or demotion', async () => {
-    prisma.brand.findFirst.mockResolvedValue({ id: 'brand-1', ownerId: 'owner-1' });
+    prisma.brand.findFirst.mockResolvedValue({
+      id: 'brand-1',
+      ownerId: 'owner-1',
+    });
     prisma.brandMember.findUnique.mockResolvedValue({
       id: 'member-1',
       brandId: 'brand-1',
@@ -228,9 +283,9 @@ describe('BrandAccessService', () => {
 
   it('can require catalog.delete for destructive catalog actions', async () => {
     const permissionService = {
-      assertPermission: jest.fn().mockRejectedValue(
-        new ForbiddenException('missing permission'),
-      ),
+      assertPermission: jest
+        .fn()
+        .mockRejectedValue(new ForbiddenException('missing permission')),
     };
     const permissionAwareService = new BrandAccessService(
       prisma,

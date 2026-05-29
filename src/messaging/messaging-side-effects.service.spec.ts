@@ -1,4 +1,12 @@
-import { MessageContextType, MessageKind, MessageOutboxStatus, MessageParticipantRole, MessageThreadStatus, MessageVisibilityState, NotificationType } from '@prisma/client';
+import {
+  MessageContextType,
+  MessageKind,
+  MessageOutboxStatus,
+  MessageParticipantRole,
+  MessageThreadStatus,
+  MessageVisibilityState,
+  NotificationType,
+} from '@prisma/client';
 import { MessagingSideEffectsService } from './messaging-side-effects.service';
 
 describe('MessagingSideEffectsService', () => {
@@ -130,7 +138,9 @@ describe('MessagingSideEffectsService', () => {
     prisma.messageNotificationOutbox.findMany.mockResolvedValue([
       { threadId: 'thread_1', recipientId: 'user_1' },
     ]);
-    prisma.messageNotificationOutbox.create.mockResolvedValue({ id: 'new_row' });
+    prisma.messageNotificationOutbox.create.mockResolvedValue({
+      id: 'new_row',
+    });
 
     await service.enqueueUnreadMessageReminders();
 
@@ -186,7 +196,9 @@ describe('MessagingSideEffectsService', () => {
     ]);
 
     prisma.messageNotificationOutbox.findMany.mockResolvedValue([]);
-    prisma.messageNotificationOutbox.create.mockResolvedValue({ id: 'new_row' });
+    prisma.messageNotificationOutbox.create.mockResolvedValue({
+      id: 'new_row',
+    });
 
     await service.enqueueUnreadMessageReminders();
 
@@ -227,7 +239,9 @@ describe('MessagingSideEffectsService', () => {
       },
     } as any;
 
-    prisma.$transaction.mockImplementation(async (callback: (tx: any) => Promise<unknown>) => callback(tx));
+    prisma.$transaction.mockImplementation(
+      async (callback: (tx: any) => Promise<unknown>) => callback(tx),
+    );
 
     await service.cleanupExpiredClosedThreads();
 

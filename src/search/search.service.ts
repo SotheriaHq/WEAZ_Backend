@@ -284,7 +284,9 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
       return ['product', 'brand', 'design', 'collection', 'tag'];
     }
     const unique = Array.from(new Set(rawTypes));
-    const invalid = unique.filter((item) => !SEARCH_ENTITY_TYPES.includes(item));
+    const invalid = unique.filter(
+      (item) => !SEARCH_ENTITY_TYPES.includes(item),
+    );
     if (invalid.length > 0) {
       throw new BadRequestException(
         `Unsupported search type(s): ${invalid.join(', ')}`,
@@ -293,7 +295,9 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     return unique;
   }
 
-  private decimalToNumber(value: Prisma.Decimal | number | string | null | undefined) {
+  private decimalToNumber(
+    value: Prisma.Decimal | number | string | null | undefined,
+  ) {
     if (value == null) {
       return null;
     }
@@ -328,7 +332,9 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     if (this.redisFailureCount >= SEARCH_REDIS_CIRCUIT_FAILURE_THRESHOLD) {
       this.redisCircuitOpenUntil = Date.now() + SEARCH_REDIS_CIRCUIT_OPEN_MS;
     }
-    this.logger.warn(`Search Redis degraded: ${String((error as any)?.message || error)}`);
+    this.logger.warn(
+      `Search Redis degraded: ${String((error as any)?.message || error)}`,
+    );
   }
 
   private async withRedisBudget<T>(
@@ -346,7 +352,11 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
         operation(),
         new Promise<T>((_, reject) => {
           timeoutHandle = setTimeout(() => {
-            reject(new Error(`${label} timed out after ${SEARCH_REDIS_TIMEOUT_MS}ms`));
+            reject(
+              new Error(
+                `${label} timed out after ${SEARCH_REDIS_TIMEOUT_MS}ms`,
+              ),
+            );
           }, SEARCH_REDIS_TIMEOUT_MS);
         }),
       ]);
@@ -381,7 +391,9 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     ].join(':');
   }
 
-  private suggestionWords(...values: Array<string | string[] | null | undefined>) {
+  private suggestionWords(
+    ...values: Array<string | string[] | null | undefined>
+  ) {
     const tokens: string[] = [];
 
     for (const value of values) {
@@ -423,7 +435,9 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     return `${word}\u0000${ref}`;
   }
 
-  private decodeSuggestionMember(member: string): { word: string; ref: string } | null {
+  private decodeSuggestionMember(
+    member: string,
+  ): { word: string; ref: string } | null {
     const separatorIndex = member.indexOf('\u0000');
     if (separatorIndex < 0) {
       return null;
@@ -447,7 +461,11 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private itemFromSuggestionPayload(payload: SuggestionPayload, query: string, tokens: string[]): SearchItem {
+  private itemFromSuggestionPayload(
+    payload: SuggestionPayload,
+    query: string,
+    tokens: string[],
+  ): SearchItem {
     return {
       id: payload.id,
       type: payload.type as SearchEntityType,
@@ -552,7 +570,9 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
       metadata: {
         ownerId: row.ownerId,
       },
-      matchText: this.normalizeQuery(`${title} ${(row.tags || []).join(' ')} ${row.description || ''}`),
+      matchText: this.normalizeQuery(
+        `${title} ${(row.tags || []).join(' ')} ${row.description || ''}`,
+      ),
     };
   }
 
@@ -574,11 +594,17 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
       metadata: {
         ownerId: row.ownerId,
       },
-      matchText: this.normalizeQuery(`${title} ${(row.tags || []).join(' ')} ${row.description || ''}`),
+      matchText: this.normalizeQuery(
+        `${title} ${(row.tags || []).join(' ')} ${row.description || ''}`,
+      ),
     };
   }
 
-  private createTagSuggestionPayload(tag: { id: string; normalizedName: string; usageCount: number }) {
+  private createTagSuggestionPayload(tag: {
+    id: string;
+    normalizedName: string;
+    usageCount: number;
+  }) {
     return {
       id: tag.id,
       type: 'tag' as const,
@@ -601,7 +627,10 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     return brand?.ownerId;
   }
 
-  private buildHighlightOffsets(value: string | null | undefined, tokens: string[]) {
+  private buildHighlightOffsets(
+    value: string | null | undefined,
+    tokens: string[],
+  ) {
     if (!value) {
       return undefined;
     }
@@ -659,7 +688,11 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     return score;
   }
 
-  private scoreTagArray(tags: string[] | null | undefined, tokens: string[], weight: number): number {
+  private scoreTagArray(
+    tags: string[] | null | undefined,
+    tokens: string[],
+    weight: number,
+  ): number {
     if (!Array.isArray(tags) || tags.length === 0) {
       return 0;
     }
@@ -676,7 +709,11 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     return score;
   }
 
-  private productWhere(query: string, tokens: string[], brandId?: string): Prisma.ProductWhereInput {
+  private productWhere(
+    query: string,
+    tokens: string[],
+    brandId?: string,
+  ): Prisma.ProductWhereInput {
     const orClauses: Prisma.ProductWhereInput[] = [
       { name: { contains: query, mode: 'insensitive' } },
       { description: { contains: query, mode: 'insensitive' } },
@@ -714,7 +751,10 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
-  private designWhere(query: string, tokens: string[]): Prisma.CollectionWhereInput {
+  private designWhere(
+    query: string,
+    tokens: string[],
+  ): Prisma.CollectionWhereInput {
     const orClauses: Prisma.CollectionWhereInput[] = [
       { title: { contains: query, mode: 'insensitive' } },
       { description: { contains: query, mode: 'insensitive' } },
@@ -733,7 +773,11 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
-  private collectionWhere(query: string, tokens: string[], ownerId?: string): Prisma.StoreCollectionWhereInput {
+  private collectionWhere(
+    query: string,
+    tokens: string[],
+    ownerId?: string,
+  ): Prisma.StoreCollectionWhereInput {
     const orClauses: Prisma.StoreCollectionWhereInput[] = [
       { title: { contains: query, mode: 'insensitive' } },
       { description: { contains: query, mode: 'insensitive' } },
@@ -752,7 +796,11 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
-  private productToItem(product: any, query: string, tokens: string[]): SearchItem {
+  private productToItem(
+    product: any,
+    query: string,
+    tokens: string[],
+  ): SearchItem {
     const score =
       this.scoreField(product.name, query, tokens, 10) +
       this.scoreField(product.brand?.name, query, tokens, 5) +
@@ -811,7 +859,11 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
-  private designToItem(collection: any, query: string, tokens: string[]): SearchItem {
+  private designToItem(
+    collection: any,
+    query: string,
+    tokens: string[],
+  ): SearchItem {
     const score =
       this.scoreField(collection.title, query, tokens, 10) +
       this.scoreField(collection.description, query, tokens, 4) +
@@ -838,7 +890,11 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
-  private collectionToItem(collection: any, query: string, tokens: string[]): SearchItem {
+  private collectionToItem(
+    collection: any,
+    query: string,
+    tokens: string[],
+  ): SearchItem {
     const score =
       this.scoreField(collection.title, query, tokens, 10) +
       this.scoreField(collection.description, query, tokens, 4) +
@@ -865,8 +921,14 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
-  private tagToItem(tag: { tag: string; count: number }, query: string, tokens: string[]): SearchItem {
-    const score = this.scoreField(tag.tag, query, tokens, 8) + Math.min(6, Math.log10((tag.count || 0) + 1));
+  private tagToItem(
+    tag: { tag: string; count: number },
+    query: string,
+    tokens: string[],
+  ): SearchItem {
+    const score =
+      this.scoreField(tag.tag, query, tokens, 8) +
+      Math.min(6, Math.log10((tag.count || 0) + 1));
     return {
       id: tag.tag,
       type: 'tag',
@@ -927,7 +989,9 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     }
 
     return Array.from(counts.entries())
-      .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+      .sort(
+        (left, right) => right[1] - left[1] || left[0].localeCompare(right[0]),
+      )
       .slice(0, TRENDING_LIMIT)
       .map(([query, score]) => ({
         query,
@@ -1010,7 +1074,9 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
   private async getSearchCacheVersionToken(types: SearchEntityType[]) {
     const versionKeys = [
       SEARCH_RESULT_CACHE_ALL_VERSION_KEY,
-      ...Array.from(new Set(types)).map((type) => SEARCH_RESULT_CACHE_VERSION_KEYS[type]),
+      ...Array.from(new Set(types)).map(
+        (type) => SEARCH_RESULT_CACHE_VERSION_KEYS[type],
+      ),
     ];
 
     const versions = await this.withRedisBudget(
@@ -1053,7 +1119,12 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     );
   }
 
-  private async zRangeByPrefix(key: string, prefix: string, offset: number, count: number) {
+  private async zRangeByPrefix(
+    key: string,
+    prefix: string,
+    offset: number,
+    count: number,
+  ) {
     return this.withRedisBudget(
       `ZRANGEBYLEX ${key}`,
       () =>
@@ -1077,7 +1148,10 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
 
     const documentKeys = refs.map((ref) => {
       const [type, ...idParts] = ref.split(':');
-      return this.suggestionDocumentKey(type as SearchEntityType, idParts.join(':'));
+      return this.suggestionDocumentKey(
+        type as SearchEntityType,
+        idParts.join(':'),
+      );
     });
 
     const documents = await this.withRedisBudget(
@@ -1124,7 +1198,9 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
 
       const refs = batch
         .map((member) => this.decodeSuggestionMember(member))
-        .filter((entry): entry is { word: string; ref: string } => Boolean(entry))
+        .filter((entry): entry is { word: string; ref: string } =>
+          Boolean(entry),
+        )
         .map((entry) => entry.ref)
         .filter((ref) => {
           if (seenRefs.has(ref)) {
@@ -1141,14 +1217,18 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
         if (!payload) {
           continue;
         }
-        if (!requiredTokens.every((token) => payload.matchText.includes(token))) {
+        if (
+          !requiredTokens.every((token) => payload.matchText.includes(token))
+        ) {
           continue;
         }
         if (filter && !filter(payload)) {
           continue;
         }
 
-        items.push(this.itemFromSuggestionPayload(payload, normalizedQuery, tokens));
+        items.push(
+          this.itemFromSuggestionPayload(payload, normalizedQuery, tokens),
+        );
         if (items.length >= limit) {
           break;
         }
@@ -1170,8 +1250,16 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     fallback: () => Promise<SearchPageResult>,
     filter?: (payload: SuggestionPayload) => boolean,
   ): Promise<SearchPageResult> {
-    const redisItems = await this.fetchSuggestionItems(key, normalizedQuery, limit, filter);
-    if (redisItems.length > 0 || normalizedQuery.length < SEARCH_SUGGEST_DB_FALLBACK_MIN_LENGTH) {
+    const redisItems = await this.fetchSuggestionItems(
+      key,
+      normalizedQuery,
+      limit,
+      filter,
+    );
+    if (
+      redisItems.length > 0 ||
+      normalizedQuery.length < SEARCH_SUGGEST_DB_FALLBACK_MIN_LENGTH
+    ) {
       return {
         items: redisItems,
         total: redisItems.length,
@@ -1196,7 +1284,8 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async getSearchResultCount(sql: Prisma.Sql) {
-    const rows = await this.prisma.$queryRaw<Array<{ total: bigint | number }>>(sql);
+    const rows =
+      await this.prisma.$queryRaw<Array<{ total: bigint | number }>>(sql);
     return Number(rows?.[0]?.total ?? 0);
   }
 
@@ -1412,7 +1501,12 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
-  private async searchBrandsPage(query: string, tokens: string[], limit: number, offset: number): Promise<SearchPageResult> {
+  private async searchBrandsPage(
+    query: string,
+    tokens: string[],
+    limit: number,
+    offset: number,
+  ): Promise<SearchPageResult> {
     const rows = await this.prisma.$queryRaw<BrandSearchRow[]>(Prisma.sql`
       WITH search_params AS (
         SELECT
@@ -1497,7 +1591,12 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
-  private async searchDesignsPage(query: string, tokens: string[], limit: number, offset: number): Promise<SearchPageResult> {
+  private async searchDesignsPage(
+    query: string,
+    tokens: string[],
+    limit: number,
+    offset: number,
+  ): Promise<SearchPageResult> {
     const ilikePat = `%${query}%`;
     const rows = await this.prisma.$queryRaw<CollectionSearchRow[]>(Prisma.sql`
       WITH search_params AS (
@@ -1737,7 +1836,12 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
-  private async searchTagsPage(query: string, tokens: string[], limit: number, offset: number): Promise<SearchPageResult> {
+  private async searchTagsPage(
+    query: string,
+    tokens: string[],
+    limit: number,
+    offset: number,
+  ): Promise<SearchPageResult> {
     const total = await this.prisma.tag.count({
       where: {
         normalizedName: { startsWith: query },
@@ -1766,7 +1870,13 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     });
 
     return {
-      items: rows.map((row) => this.tagToItem({ tag: row.normalizedName, count: row.usageCount }, query, tokens)),
+      items: rows.map((row) =>
+        this.tagToItem(
+          { tag: row.normalizedName, count: row.usageCount },
+          query,
+          tokens,
+        ),
+      ),
       total,
     };
   }
@@ -1849,7 +1959,10 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private logSearchEvent(event: 'search' | 'suggest', payload: Record<string, unknown>) {
+  private logSearchEvent(
+    event: 'search' | 'suggest',
+    payload: Record<string, unknown>,
+  ) {
     this.logger.log(
       JSON.stringify({
         event: `search.${event}`,
@@ -1864,19 +1977,28 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     }
 
     const prismaWithMiddleware = this.prisma as PrismaService & {
-      $use?: (middleware: (params: any, next: (params: any) => Promise<any>) => Promise<any>) => void;
+      $use?: (
+        middleware: (
+          params: any,
+          next: (params: any) => Promise<any>,
+        ) => Promise<any>,
+      ) => void;
     };
 
     if (typeof prismaWithMiddleware.$use !== 'function') {
-      this.logger.warn('Prisma middleware is unavailable; search cache invalidation falls back to recovery rebuilds.');
+      this.logger.warn(
+        'Prisma middleware is unavailable; search cache invalidation falls back to recovery rebuilds.',
+      );
       return;
     }
 
-    prismaWithMiddleware.$use(async (params: any, next: (args: any) => Promise<any>) => {
-      const result = await next(params);
-      this.handlePrismaMutation(params, result);
-      return result;
-    });
+    prismaWithMiddleware.$use(
+      async (params: any, next: (args: any) => Promise<any>) => {
+        const result = await next(params);
+        this.handlePrismaMutation(params, result);
+        return result;
+      },
+    );
 
     this.prismaSearchHooksRegistered = true;
   }
@@ -1896,13 +2018,20 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
 
   private handlePrismaMutation(params: any, result: unknown) {
     const action = params.action;
-    const isSingleMutation = ['create', 'update', 'upsert', 'delete'].includes(action);
-    const isBulkMutation = ['createMany', 'updateMany', 'deleteMany'].includes(action);
+    const isSingleMutation = ['create', 'update', 'upsert', 'delete'].includes(
+      action,
+    );
+    const isBulkMutation = ['createMany', 'updateMany', 'deleteMany'].includes(
+      action,
+    );
     if (!isSingleMutation && !isBulkMutation) {
       return;
     }
 
-    const entity = result && typeof result === 'object' ? (result as Record<string, unknown>) : null;
+    const entity =
+      result && typeof result === 'object'
+        ? (result as Record<string, unknown>)
+        : null;
     const id = this.extractMutationId(params, entity);
 
     switch (params.model) {
@@ -1957,7 +2086,10 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     }
 
     const keys: string[] = [];
-    for await (const key of this.redis.scanIterator({ MATCH: 'search:suggest:*', COUNT: 200 })) {
+    for await (const key of this.redis.scanIterator({
+      MATCH: 'search:suggest:*',
+      COUNT: 200,
+    })) {
       keys.push(String(key));
     }
 
@@ -1965,7 +2097,11 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    await this.withRedisBudget('DEL suggestion namespace', () => this.redis!.del(keys), 0);
+    await this.withRedisBudget(
+      'DEL suggestion namespace',
+      () => this.redis!.del(keys),
+      0,
+    );
   }
 
   private async upsertSuggestion(
@@ -1991,10 +2127,18 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
       async () => {
         const pipeline = this.redis!.multi();
         if (existingTokens.length > 0) {
-          pipeline.zRem(indexKey, existingTokens.map((token) => this.encodeSuggestionMember(token, ref)));
+          pipeline.zRem(
+            indexKey,
+            existingTokens.map((token) =>
+              this.encodeSuggestionMember(token, ref),
+            ),
+          );
         }
         pipeline.del(reverseKey);
-        pipeline.set(this.suggestionDocumentKey(type, payload.id), JSON.stringify(payload));
+        pipeline.set(
+          this.suggestionDocumentKey(type, payload.id),
+          JSON.stringify(payload),
+        );
         if (searchTerms.length > 0) {
           pipeline.sAdd(reverseKey, searchTerms);
           pipeline.zAdd(
@@ -2012,7 +2156,11 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     );
   }
 
-  private async removeSuggestion(type: SearchEntityType, indexKey: string, id: string) {
+  private async removeSuggestion(
+    type: SearchEntityType,
+    indexKey: string,
+    id: string,
+  ) {
     if (!this.redis) {
       return;
     }
@@ -2030,7 +2178,12 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
       async () => {
         const pipeline = this.redis!.multi();
         if (existingTokens.length > 0) {
-          pipeline.zRem(indexKey, existingTokens.map((token) => this.encodeSuggestionMember(token, ref)));
+          pipeline.zRem(
+            indexKey,
+            existingTokens.map((token) =>
+              this.encodeSuggestionMember(token, ref),
+            ),
+          );
         }
         pipeline.del(reverseKey);
         pipeline.del(this.suggestionDocumentKey(type, id));
@@ -2047,8 +2200,16 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     }
 
     const [productCount, brandCount] = await Promise.all([
-      this.withRedisBudget('ZCARD products', () => this.redis!.zCard(SEARCH_SUGGEST_KEYS.products), 0),
-      this.withRedisBudget('ZCARD brands', () => this.redis!.zCard(SEARCH_SUGGEST_KEYS.brands), 0),
+      this.withRedisBudget(
+        'ZCARD products',
+        () => this.redis!.zCard(SEARCH_SUGGEST_KEYS.products),
+        0,
+      ),
+      this.withRedisBudget(
+        'ZCARD brands',
+        () => this.redis!.zCard(SEARCH_SUGGEST_KEYS.brands),
+        0,
+      ),
     ]);
 
     if (productCount === 0 && brandCount === 0) {
@@ -2062,6 +2223,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async rebuildSuggestionIndexes(reason: string) {
+    void reason;
     if (!this.redis || this.isRebuildingSuggestions) {
       return;
     }
@@ -2137,7 +2299,12 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
       if (members.length > 0) {
         await Promise.all(
           members.map(({ payload, searchTerms }) =>
-            this.upsertSuggestion('product', SEARCH_SUGGEST_KEYS.products, payload, searchTerms),
+            this.upsertSuggestion(
+              'product',
+              SEARCH_SUGGEST_KEYS.products,
+              payload,
+              searchTerms,
+            ),
           ),
         );
       }
@@ -2185,7 +2352,12 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
       if (members.length > 0) {
         await Promise.all(
           members.map(({ payload, searchTerms }) =>
-            this.upsertSuggestion('brand', SEARCH_SUGGEST_KEYS.brands, payload, searchTerms),
+            this.upsertSuggestion(
+              'brand',
+              SEARCH_SUGGEST_KEYS.brands,
+              payload,
+              searchTerms,
+            ),
           ),
         );
       }
@@ -2234,7 +2406,12 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
       if (members.length > 0) {
         await Promise.all(
           members.map(({ payload, searchTerms }) =>
-            this.upsertSuggestion('design', SEARCH_SUGGEST_KEYS.designs, payload, searchTerms),
+            this.upsertSuggestion(
+              'design',
+              SEARCH_SUGGEST_KEYS.designs,
+              payload,
+              searchTerms,
+            ),
           ),
         );
       }
@@ -2282,7 +2459,12 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
       if (members.length > 0) {
         await Promise.all(
           members.map(({ payload, searchTerms }) =>
-            this.upsertSuggestion('collection', SEARCH_SUGGEST_KEYS.collections, payload, searchTerms),
+            this.upsertSuggestion(
+              'collection',
+              SEARCH_SUGGEST_KEYS.collections,
+              payload,
+              searchTerms,
+            ),
           ),
         );
       }
@@ -2318,7 +2500,10 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
       const members = rows.flatMap((row) => {
         const normalized = this.normalizeQuery(row.normalizedName);
         if (!normalized) {
-          return [] as Array<{ payload: SuggestionPayload; searchTerms: string[] }>;
+          return [] as Array<{
+            payload: SuggestionPayload;
+            searchTerms: string[];
+          }>;
         }
         return [
           {
@@ -2337,7 +2522,12 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
       if (members.length > 0) {
         await Promise.all(
           members.map(({ payload, searchTerms }) =>
-            this.upsertSuggestion('tag', SEARCH_SUGGEST_KEYS.tags, payload, searchTerms),
+            this.upsertSuggestion(
+              'tag',
+              SEARCH_SUGGEST_KEYS.tags,
+              payload,
+              searchTerms,
+            ),
           ),
         );
       }
@@ -2374,7 +2564,13 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
       },
     });
 
-    if (!row || !row.isActive || row.deletedAt || row.archivedAt || !row.brand?.isStoreOpen) {
+    if (
+      !row ||
+      !row.isActive ||
+      row.deletedAt ||
+      row.archivedAt ||
+      !row.brand?.isStoreOpen
+    ) {
       await this.removeSuggestion('product', SEARCH_SUGGEST_KEYS.products, id);
       return;
     }
@@ -2386,7 +2582,12 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
       row.tags,
       this.buildDescriptionTerms(row.description),
     );
-    await this.upsertSuggestion('product', SEARCH_SUGGEST_KEYS.products, payload, searchTerms);
+    await this.upsertSuggestion(
+      'product',
+      SEARCH_SUGGEST_KEYS.products,
+      payload,
+      searchTerms,
+    );
   }
 
   private async syncProductsForBrand(brandId: string) {
@@ -2395,7 +2596,9 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
       select: { id: true },
     });
 
-    await Promise.all(rows.map((row) => this.syncProductSuggestionById(row.id)));
+    await Promise.all(
+      rows.map((row) => this.syncProductSuggestionById(row.id)),
+    );
   }
 
   private async syncBrandSuggestionById(id: string) {
@@ -2425,7 +2628,12 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
       row.tags,
       this.buildDescriptionTerms(row.description),
     );
-    await this.upsertSuggestion('brand', SEARCH_SUGGEST_KEYS.brands, payload, searchTerms);
+    await this.upsertSuggestion(
+      'brand',
+      SEARCH_SUGGEST_KEYS.brands,
+      payload,
+      searchTerms,
+    );
   }
 
   private async syncDesignSuggestionById(id: string) {
@@ -2461,7 +2669,12 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
       row.tags,
       this.buildDescriptionTerms(row.description),
     );
-    await this.upsertSuggestion('design', SEARCH_SUGGEST_KEYS.designs, payload, searchTerms);
+    await this.upsertSuggestion(
+      'design',
+      SEARCH_SUGGEST_KEYS.designs,
+      payload,
+      searchTerms,
+    );
   }
 
   private async syncStoreCollectionSuggestionById(id: string) {
@@ -2485,7 +2698,11 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
       row.visibility !== CollectionVisibility.PUBLIC ||
       row.deletedAt
     ) {
-      await this.removeSuggestion('collection', SEARCH_SUGGEST_KEYS.collections, id);
+      await this.removeSuggestion(
+        'collection',
+        SEARCH_SUGGEST_KEYS.collections,
+        id,
+      );
       return;
     }
 
@@ -2495,7 +2712,12 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
       row.tags,
       this.buildDescriptionTerms(row.description),
     );
-    await this.upsertSuggestion('collection', SEARCH_SUGGEST_KEYS.collections, payload, searchTerms);
+    await this.upsertSuggestion(
+      'collection',
+      SEARCH_SUGGEST_KEYS.collections,
+      payload,
+      searchTerms,
+    );
   }
 
   private async syncTagSuggestionById(id: string) {
@@ -2530,12 +2752,19 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     );
   }
 
-  async suggest(queryInput?: string, userId?: string, brandId?: string): Promise<SearchSuggestionResponse> {
+  async suggest(
+    queryInput?: string,
+    userId?: string,
+    brandId?: string,
+  ): Promise<SearchSuggestionResponse> {
     const startedAt = Date.now();
     const parsedQuery = this.parseSearchQuery(queryInput);
     const normalizedQuery = parsedQuery.normalizedQuery;
     const tokens = parsedQuery.tokens;
-    const recent = await this.getRecentSearches(userId, normalizedQuery || undefined);
+    const recent = await this.getRecentSearches(
+      userId,
+      normalizedQuery || undefined,
+    );
     const trending = normalizedQuery ? [] : await this.getTrendingSearches();
     const brandOwnerId = await this.resolveBrandOwnerId(brandId);
 
@@ -2584,70 +2813,90 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     const brandMode = parsedQuery.mode === 'brand';
     const tagMode = parsedQuery.mode === 'tag';
 
-    const [products, brands, designs, storeCollections, tagItems] = await Promise.all([
-      brandMode || tagMode
-        ? Promise.resolve({ items: [], total: 0 })
-        : this.fetchSuggestionItemsWithFallback(
-            SEARCH_SUGGEST_KEYS.products,
-            normalizedQuery,
-            PRODUCT_SUGGEST_LIMIT,
-            () => this.searchProductsPage(normalizedQuery, tokens, PRODUCT_SUGGEST_LIMIT, 0, brandId),
-          ),
-      tagMode
-        ? Promise.resolve({ items: [], total: 0 })
-        : this.fetchSuggestionItemsWithFallback(
-            SEARCH_SUGGEST_KEYS.brands,
-            normalizedQuery,
-            brandMode ? Math.max(BRAND_SUGGEST_LIMIT + 2, 4) : BRAND_SUGGEST_LIMIT,
-            () =>
-              this.searchBrandsPage(
-                normalizedQuery,
-                tokens,
-                brandMode ? Math.max(BRAND_SUGGEST_LIMIT + 2, 4) : BRAND_SUGGEST_LIMIT,
-                0,
-              ),
-          ),
-      brandMode || tagMode
-        ? Promise.resolve({ items: [], total: 0 })
-        : this.fetchSuggestionItemsWithFallback(
-            SEARCH_SUGGEST_KEYS.designs,
-            normalizedQuery,
-            DESIGN_SUGGEST_LIMIT,
-            () => this.searchDesignsPage(normalizedQuery, tokens, DESIGN_SUGGEST_LIMIT, 0),
-          ),
-      brandMode || tagMode
-        ? Promise.resolve({ items: [], total: 0 })
-        : this.fetchSuggestionItemsWithFallback(
-            SEARCH_SUGGEST_KEYS.collections,
-            normalizedQuery,
-            COLLECTION_SUGGEST_LIMIT,
-            () =>
-              this.searchCollectionsPage(
-                normalizedQuery,
-                tokens,
-                COLLECTION_SUGGEST_LIMIT,
-                0,
-                brandOwnerId,
-              ),
-            brandOwnerId
-              ? (payload) => payload.metadata?.ownerId === brandOwnerId
-              : undefined,
-          ),
-      brandMode
-        ? Promise.resolve({ items: [], total: 0 })
-        : this.fetchSuggestionItemsWithFallback(
-            SEARCH_SUGGEST_KEYS.tags,
-            normalizedQuery,
-            tagMode ? Math.max(TAG_SUGGEST_LIMIT + 3, 4) : TAG_SUGGEST_LIMIT,
-            () =>
-              this.searchTagsPage(
-                normalizedQuery,
-                tokens,
-                tagMode ? Math.max(TAG_SUGGEST_LIMIT + 3, 4) : TAG_SUGGEST_LIMIT,
-                0,
-              ),
-          ),
-    ]);
+    const [products, brands, designs, storeCollections, tagItems] =
+      await Promise.all([
+        brandMode || tagMode
+          ? Promise.resolve({ items: [], total: 0 })
+          : this.fetchSuggestionItemsWithFallback(
+              SEARCH_SUGGEST_KEYS.products,
+              normalizedQuery,
+              PRODUCT_SUGGEST_LIMIT,
+              () =>
+                this.searchProductsPage(
+                  normalizedQuery,
+                  tokens,
+                  PRODUCT_SUGGEST_LIMIT,
+                  0,
+                  brandId,
+                ),
+            ),
+        tagMode
+          ? Promise.resolve({ items: [], total: 0 })
+          : this.fetchSuggestionItemsWithFallback(
+              SEARCH_SUGGEST_KEYS.brands,
+              normalizedQuery,
+              brandMode
+                ? Math.max(BRAND_SUGGEST_LIMIT + 2, 4)
+                : BRAND_SUGGEST_LIMIT,
+              () =>
+                this.searchBrandsPage(
+                  normalizedQuery,
+                  tokens,
+                  brandMode
+                    ? Math.max(BRAND_SUGGEST_LIMIT + 2, 4)
+                    : BRAND_SUGGEST_LIMIT,
+                  0,
+                ),
+            ),
+        brandMode || tagMode
+          ? Promise.resolve({ items: [], total: 0 })
+          : this.fetchSuggestionItemsWithFallback(
+              SEARCH_SUGGEST_KEYS.designs,
+              normalizedQuery,
+              DESIGN_SUGGEST_LIMIT,
+              () =>
+                this.searchDesignsPage(
+                  normalizedQuery,
+                  tokens,
+                  DESIGN_SUGGEST_LIMIT,
+                  0,
+                ),
+            ),
+        brandMode || tagMode
+          ? Promise.resolve({ items: [], total: 0 })
+          : this.fetchSuggestionItemsWithFallback(
+              SEARCH_SUGGEST_KEYS.collections,
+              normalizedQuery,
+              COLLECTION_SUGGEST_LIMIT,
+              () =>
+                this.searchCollectionsPage(
+                  normalizedQuery,
+                  tokens,
+                  COLLECTION_SUGGEST_LIMIT,
+                  0,
+                  brandOwnerId,
+                ),
+              brandOwnerId
+                ? (payload) => payload.metadata?.ownerId === brandOwnerId
+                : undefined,
+            ),
+        brandMode
+          ? Promise.resolve({ items: [], total: 0 })
+          : this.fetchSuggestionItemsWithFallback(
+              SEARCH_SUGGEST_KEYS.tags,
+              normalizedQuery,
+              tagMode ? Math.max(TAG_SUGGEST_LIMIT + 3, 4) : TAG_SUGGEST_LIMIT,
+              () =>
+                this.searchTagsPage(
+                  normalizedQuery,
+                  tokens,
+                  tagMode
+                    ? Math.max(TAG_SUGGEST_LIMIT + 3, 4)
+                    : TAG_SUGGEST_LIMIT,
+                  0,
+                ),
+            ),
+      ]);
 
     const response = {
       query: queryInput || '',
@@ -2657,7 +2906,10 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
       products: { items: products.items, total: products.total },
       brands: { items: brands.items, total: brands.total },
       designs: { items: designs.items, total: designs.total },
-      storeCollections: { items: storeCollections.items, total: storeCollections.total },
+      storeCollections: {
+        items: storeCollections.items,
+        total: storeCollections.total,
+      },
       tags: tagItems.items.map((item) => ({
         id: item.id,
         type: 'tag' as const,
@@ -2748,10 +3000,20 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
           );
           break;
         case 'brand':
-          result = await this.searchBrandsPage(normalizedQuery, tokens, limit, offset);
+          result = await this.searchBrandsPage(
+            normalizedQuery,
+            tokens,
+            limit,
+            offset,
+          );
           break;
         case 'design':
-          result = await this.searchDesignsPage(normalizedQuery, tokens, limit, offset);
+          result = await this.searchDesignsPage(
+            normalizedQuery,
+            tokens,
+            limit,
+            offset,
+          );
           break;
         case 'collection':
           result = await this.searchCollectionsPage(
@@ -2763,7 +3025,12 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
           );
           break;
         case 'tag':
-          result = await this.searchTagsPage(normalizedQuery, tokens, limit, offset);
+          result = await this.searchTagsPage(
+            normalizedQuery,
+            tokens,
+            limit,
+            offset,
+          );
           break;
         default:
           result = { items: [], total: 0 };
@@ -2776,7 +3043,13 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
       const mixedLimit = Math.min(limit, SEARCH_MIXED_PREVIEW_LIMIT);
       const [products, brands, designs, collections, tags] = await Promise.all([
         types.includes('product')
-          ? this.searchProductsPage(normalizedQuery, tokens, mixedLimit, 0, params.brandId)
+          ? this.searchProductsPage(
+              normalizedQuery,
+              tokens,
+              mixedLimit,
+              0,
+              params.brandId,
+            )
           : Promise.resolve({ items: [], total: 0 }),
         types.includes('brand')
           ? this.searchBrandsPage(normalizedQuery, tokens, mixedLimit, 0)
@@ -2785,7 +3058,13 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
           ? this.searchDesignsPage(normalizedQuery, tokens, mixedLimit, 0)
           : Promise.resolve({ items: [], total: 0 }),
         types.includes('collection')
-          ? this.searchCollectionsPage(normalizedQuery, tokens, mixedLimit, 0, brandOwnerId)
+          ? this.searchCollectionsPage(
+              normalizedQuery,
+              tokens,
+              mixedLimit,
+              0,
+              brandOwnerId,
+            )
           : Promise.resolve({ items: [], total: 0 }),
         types.includes('tag')
           ? this.searchTagsPage(normalizedQuery, tokens, mixedLimit, 0)
@@ -2805,7 +3084,10 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
         ...collections.items,
         ...tags.items,
       ]
-        .sort((left, right) => right.score - left.score || left.title.localeCompare(right.title))
+        .sort(
+          (left, right) =>
+            right.score - left.score || left.title.localeCompare(right.title),
+        )
         .slice(0, limit);
       hasNextPage = false;
     }
@@ -2856,16 +3138,41 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
 
     if (this.redis) {
       try {
-        const pong = await this.withRedisBudget('PING', () => this.redis!.ping(), '');
+        const pong = await this.withRedisBudget(
+          'PING',
+          () => this.redis!.ping(),
+          '',
+        );
         redisReady = pong === 'PONG';
         if (redisReady) {
-          const [products, brands, designs, collections, tags] = await Promise.all([
-            this.withRedisBudget('ZCARD products', () => this.redis!.zCard(SEARCH_SUGGEST_KEYS.products), 0),
-            this.withRedisBudget('ZCARD brands', () => this.redis!.zCard(SEARCH_SUGGEST_KEYS.brands), 0),
-            this.withRedisBudget('ZCARD designs', () => this.redis!.zCard(SEARCH_SUGGEST_KEYS.designs), 0),
-            this.withRedisBudget('ZCARD collections', () => this.redis!.zCard(SEARCH_SUGGEST_KEYS.collections), 0),
-            this.withRedisBudget('ZCARD tags', () => this.redis!.zCard(SEARCH_SUGGEST_KEYS.tags), 0),
-          ]);
+          const [products, brands, designs, collections, tags] =
+            await Promise.all([
+              this.withRedisBudget(
+                'ZCARD products',
+                () => this.redis!.zCard(SEARCH_SUGGEST_KEYS.products),
+                0,
+              ),
+              this.withRedisBudget(
+                'ZCARD brands',
+                () => this.redis!.zCard(SEARCH_SUGGEST_KEYS.brands),
+                0,
+              ),
+              this.withRedisBudget(
+                'ZCARD designs',
+                () => this.redis!.zCard(SEARCH_SUGGEST_KEYS.designs),
+                0,
+              ),
+              this.withRedisBudget(
+                'ZCARD collections',
+                () => this.redis!.zCard(SEARCH_SUGGEST_KEYS.collections),
+                0,
+              ),
+              this.withRedisBudget(
+                'ZCARD tags',
+                () => this.redis!.zCard(SEARCH_SUGGEST_KEYS.tags),
+                0,
+              ),
+            ]);
           suggestionIndexCounts.products = products;
           suggestionIndexCounts.brands = brands;
           suggestionIndexCounts.designs = designs;

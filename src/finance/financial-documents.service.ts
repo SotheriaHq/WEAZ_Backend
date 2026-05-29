@@ -86,7 +86,11 @@ export class FinancialDocumentsService {
       return existing;
     }
 
-    const coverage = await this.buildPayoutCoverage(tx, params.brandId, params.amount);
+    const coverage = await this.buildPayoutCoverage(
+      tx,
+      params.brandId,
+      params.amount,
+    );
     const documentNumber = this.buildDocumentNumber('STMT');
 
     return documents.create({
@@ -97,13 +101,19 @@ export class FinancialDocumentsService {
         currency: params.currency,
         grossAmount: new Prisma.Decimal(params.amount.toFixed(2)),
         netAmount: new Prisma.Decimal(params.amount.toFixed(2)),
-        commissionAmount: new Prisma.Decimal(coverage.commissionAmount.toFixed(2)),
+        commissionAmount: new Prisma.Decimal(
+          coverage.commissionAmount.toFixed(2),
+        ),
         metadataJson: {
           brandId: params.brandId,
           brandName: params.brandName ?? null,
           sourceItems: coverage.items,
         },
-        contentHtml: this.renderSettlementStatementHtml(documentNumber, params, coverage.items),
+        contentHtml: this.renderSettlementStatementHtml(
+          documentNumber,
+          params,
+          coverage.items,
+        ),
       },
     });
   }
@@ -129,7 +139,11 @@ export class FinancialDocumentsService {
       return existing;
     }
 
-    const coverage = await this.buildPayoutCoverage(tx, params.brandId, params.amount);
+    const coverage = await this.buildPayoutCoverage(
+      tx,
+      params.brandId,
+      params.amount,
+    );
     const documentNumber = this.buildDocumentNumber('COMM');
 
     return documents.create({
@@ -139,14 +153,20 @@ export class FinancialDocumentsService {
         payoutId: params.payoutId,
         currency: params.currency,
         grossAmount: new Prisma.Decimal(coverage.grossAmount.toFixed(2)),
-        commissionAmount: new Prisma.Decimal(coverage.commissionAmount.toFixed(2)),
+        commissionAmount: new Prisma.Decimal(
+          coverage.commissionAmount.toFixed(2),
+        ),
         netAmount: new Prisma.Decimal(coverage.netAmount.toFixed(2)),
         metadataJson: {
           brandId: params.brandId,
           brandName: params.brandName ?? null,
           sourceItems: coverage.items,
         },
-        contentHtml: this.renderCommissionInvoiceHtml(documentNumber, params, coverage.items),
+        contentHtml: this.renderCommissionInvoiceHtml(
+          documentNumber,
+          params,
+          coverage.items,
+        ),
       },
     });
   }
@@ -161,7 +181,9 @@ export class FinancialDocumentsService {
       where: {
         ...(params?.type ? { type: params.type } : {}),
         ...(params?.payoutId ? { payoutId: params.payoutId } : {}),
-        ...(params?.paymentAttemptId ? { paymentAttemptId: params.paymentAttemptId } : {}),
+        ...(params?.paymentAttemptId
+          ? { paymentAttemptId: params.paymentAttemptId }
+          : {}),
       },
       orderBy: { issuedAt: 'desc' },
       take: Math.min(params?.take ?? 50, 200),
@@ -193,16 +215,22 @@ export class FinancialDocumentsService {
     const usedReferenceKeys = new Set<string>();
     for (const statement of priorStatements) {
       const metadata = this.asObject(statement.metadataJson);
-      const sourceItems = Array.isArray(metadata?.sourceItems) ? metadata.sourceItems : [];
+      const sourceItems = Array.isArray(metadata?.sourceItems)
+        ? metadata.sourceItems
+        : [];
       for (const item of sourceItems) {
-        const referenceKey = String((item as Record<string, unknown>).referenceKey ?? '');
+        const referenceKey = String(
+          (item as Record<string, unknown>).referenceKey ?? '',
+        );
         if (referenceKey) {
           usedReferenceKeys.add(referenceKey);
         }
       }
     }
 
-    const releaseTransactions = await (client as any).ledgerTransaction.findMany({
+    const releaseTransactions = await (
+      client as any
+    ).ledgerTransaction.findMany({
       where: {
         type: 'ESCROW_RELEASE',
         entries: {
@@ -270,14 +298,22 @@ export class FinancialDocumentsService {
           )
           .reduce((sum: number, entry: any) => sum + Number(entry.amount), 0),
       );
-      const transactionGross = this.roundMoney(transactionNet + transactionCommission);
-      const allocationNet = this.roundMoney(Math.min(transactionNet, remaining));
+      const transactionGross = this.roundMoney(
+        transactionNet + transactionCommission,
+      );
+      const allocationNet = this.roundMoney(
+        Math.min(transactionNet, remaining),
+      );
       const ratio = transactionNet > 0 ? allocationNet / transactionNet : 0;
-      const allocationCommission = this.roundMoney(transactionCommission * ratio);
+      const allocationCommission = this.roundMoney(
+        transactionCommission * ratio,
+      );
       const allocationGross = this.roundMoney(transactionGross * ratio);
 
       grossAmount = this.roundMoney(grossAmount + allocationGross);
-      commissionAmount = this.roundMoney(commissionAmount + allocationCommission);
+      commissionAmount = this.roundMoney(
+        commissionAmount + allocationCommission,
+      );
       netAmount = this.roundMoney(netAmount + allocationNet);
       remaining = this.roundMoney(remaining - allocationNet);
 
@@ -331,7 +367,7 @@ export class FinancialDocumentsService {
       <h1>Buyer Receipt ${documentNumber}</h1>
       <p>Issued to: ${this.escapeHtml(params.issuedToName ?? 'Customer')}</p>
       <p>Total: ${params.currency} ${params.grossAmount.toFixed(2)}</p>
-      <p>Settlement: ${(params.settlementCurrency ?? params.currency)} ${(params.settlementAmount ?? params.grossAmount).toFixed(2)}</p>
+      <p>Settlement: ${params.settlementCurrency ?? params.currency} ${(params.settlementAmount ?? params.grossAmount).toFixed(2)}</p>
       <ul>
         ${params.lineItems
           .map(
@@ -394,7 +430,10 @@ export class FinancialDocumentsService {
   }
 
   private buildDocumentNumber(prefix: string) {
-    const stamp = new Date().toISOString().replace(/[-:TZ.]/g, '').slice(0, 14);
+    const stamp = new Date()
+      .toISOString()
+      .replace(/[-:TZ.]/g, '')
+      .slice(0, 14);
     const suffix = Math.random().toString(36).slice(2, 8).toUpperCase();
     return `${prefix}-${stamp}-${suffix}`;
   }

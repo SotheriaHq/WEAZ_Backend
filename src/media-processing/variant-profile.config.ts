@@ -1,4 +1,10 @@
-export type VariantKind = 'AVATAR' | 'BANNER' | 'THUMB' | 'CARD' | 'DETAIL' | 'ZOOM';
+export type VariantKind =
+  | 'AVATAR'
+  | 'BANNER'
+  | 'THUMB'
+  | 'CARD'
+  | 'DETAIL'
+  | 'ZOOM';
 
 export type VariantProfile = {
   kind: VariantKind;

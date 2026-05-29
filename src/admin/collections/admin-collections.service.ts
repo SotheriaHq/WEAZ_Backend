@@ -1,9 +1,10 @@
-import {
-  Injectable,
-  NotFoundException,
-} from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
-import { AdminAuditAction, CollectionStatus, NotificationType } from '@prisma/client';
+import {
+  AdminAuditAction,
+  CollectionStatus,
+  NotificationType,
+} from '@prisma/client';
 import { v4 as uuidv4 } from 'uuid';
 import { Request } from 'express';
 import { NotificationsService } from 'src/notifications/notifications.service';
@@ -143,9 +144,9 @@ export class AdminCollectionsService {
         const coverImage =
           firstProduct?.thumbnail ??
           (Array.isArray(firstProduct?.images)
-            ? firstProduct.images.find(
+            ? (firstProduct.images.find(
                 (image) => typeof image === 'string' && image.trim().length > 0,
-              ) ?? null
+              ) ?? null)
             : null);
         return {
           ...item,
@@ -291,15 +292,19 @@ export class AdminCollectionsService {
         const reasonText = dto.reason?.trim();
         const verb = action === 'HARD_DELETE' ? 'deleted' : 'unpublished';
         const reasonSuffix = reasonText ? ` Reason: ${reasonText}` : '';
-        await this.notifications.create(existing.ownerId, NotificationType.ADMIN_ACTION, {
-          actorId,
-          payload: {
-            targetType: 'STORE_COLLECTION',
-            targetId: collectionId,
-            message: `Admin ${verb} your collection "${existing.title ?? 'Untitled'}".${reasonSuffix}`,
-            reason: reasonText,
+        await this.notifications.create(
+          existing.ownerId,
+          NotificationType.ADMIN_ACTION,
+          {
+            actorId,
+            payload: {
+              targetType: 'STORE_COLLECTION',
+              targetId: collectionId,
+              message: `Admin ${verb} your collection "${existing.title ?? 'Untitled'}".${reasonSuffix}`,
+              reason: reasonText,
+            },
           },
-        });
+        );
       } catch {}
     }
 

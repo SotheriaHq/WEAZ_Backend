@@ -306,7 +306,10 @@ export class AdminBrandsService {
     const appName = this.emailService.getAppName();
     if (brand.owner?.email) {
       if (dto.decision === 'APPROVED') {
-        const mail = emailTemplates.brandVerificationApprovedEmail(brand.name, appName);
+        const mail = emailTemplates.brandVerificationApprovedEmail(
+          brand.name,
+          appName,
+        );
         void this.emailService
           .send(brand.owner.email, mail.subject, mail.html, mail.text)
           .catch(() => undefined);

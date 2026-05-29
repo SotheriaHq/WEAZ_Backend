@@ -6,7 +6,10 @@ import {
 } from '@nestjs/common';
 import { v4 as uuidv4 } from 'uuid';
 import { PrismaService } from '../prisma/prisma.service';
-import { CreateSavedItemDto, SavedItemTypeDto } from './dto/create-saved-item.dto';
+import {
+  CreateSavedItemDto,
+  SavedItemTypeDto,
+} from './dto/create-saved-item.dto';
 import {
   canonicalUserProfileSelect,
   resolveProfileImage,
@@ -63,7 +66,9 @@ export class SavedItemsService {
       if (collection?.ownerId === userId) {
         throw new ForbiddenException('You cannot save your own collection');
       }
-    } else if (createSavedItemDto.targetType === SavedItemTypeDto.COLLECTION_MEDIA) {
+    } else if (
+      createSavedItemDto.targetType === SavedItemTypeDto.COLLECTION_MEDIA
+    ) {
       const media = await this.prisma.collectionMedia.findUnique({
         where: { id: createSavedItemDto.targetId },
         select: { id: true, collection: { select: { ownerId: true } } },
@@ -272,13 +277,17 @@ export class SavedItemsService {
           ...item,
           ...additionalData,
         };
-      })
+      }),
     );
 
     return enhancedSavedItems;
   }
 
-  async checkSavedStatus(userId: string, targetType: SavedItemTypeDto, targetId: string) {
+  async checkSavedStatus(
+    userId: string,
+    targetType: SavedItemTypeDto,
+    targetId: string,
+  ) {
     const savedItem = await this.prisma.savedItem.findUnique({
       where: {
         userId_targetType_targetId: {
@@ -292,7 +301,11 @@ export class SavedItemsService {
     return { isSaved: !!savedItem };
   }
 
-  async checkSavedBatch(userId: string, targetType: SavedItemTypeDto, targetIds: string[]) {
+  async checkSavedBatch(
+    userId: string,
+    targetType: SavedItemTypeDto,
+    targetIds: string[],
+  ) {
     if (!targetIds?.length) {
       throw new BadRequestException('targetIds is required');
     }

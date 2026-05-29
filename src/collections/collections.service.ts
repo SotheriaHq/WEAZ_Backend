@@ -77,7 +77,11 @@ import {
 
 type CollectionScope = 'design' | 'store' | 'all';
 type CollectionDomainValue = 'DESIGN' | 'STORE';
-type CatalogFilterEntityType = 'COLLECTION' | 'STORE_COLLECTION' | 'DESIGN' | 'PRODUCT';
+type CatalogFilterEntityType =
+  | 'COLLECTION'
+  | 'STORE_COLLECTION'
+  | 'DESIGN'
+  | 'PRODUCT';
 type FeedMediaAssetDto = {
   id: string;
   fileId: string | null;
@@ -115,7 +119,7 @@ export class CollectionsService {
     private readonly systemConfigService?: SystemConfigService,
     @Optional()
     private readonly brandAccessService?: BrandAccessService,
-  ) { }
+  ) {}
 
   private mapCollectionOwner(owner: any) {
     if (!owner) return null;
@@ -164,11 +168,14 @@ export class CollectionsService {
     }
 
     if (!user.isEmailVerified) {
-      throw new ForbiddenException('Verify your email before creating designs.');
+      throw new ForbiddenException(
+        'Verify your email before creating designs.',
+      );
     }
 
     if (this.brandAccessService) {
-      const context = await this.brandAccessService.getPrimaryBrandContext(userId);
+      const context =
+        await this.brandAccessService.getPrimaryBrandContext(userId);
       if (context.activeBrandId) {
         await this.brandAccessService.assertCanManageCatalog(
           userId,
@@ -201,11 +208,14 @@ export class CollectionsService {
     }
 
     if (!user.isEmailVerified) {
-      throw new ForbiddenException('Verify your email before creating designs.');
+      throw new ForbiddenException(
+        'Verify your email before creating designs.',
+      );
     }
 
     if (this.brandAccessService) {
-      const context = await this.brandAccessService.getPrimaryBrandContext(actorUserId);
+      const context =
+        await this.brandAccessService.getPrimaryBrandContext(actorUserId);
       if (context.activeBrandId) {
         await this.brandAccessService.assertCanManageCatalog(
           actorUserId,
@@ -298,15 +308,16 @@ export class CollectionsService {
     if (!customOrderEnabled) return;
 
     const prismaClient = tx ?? this.prisma;
-    const activeConfiguration = await prismaClient.customOrderConfiguration.findFirst({
-      where: {
-        sourceType: CustomOrderSourceType.DESIGN,
-        sourceId,
-        isActive: true,
-        brand: { ownerId },
-      },
-      select: { id: true },
-    });
+    const activeConfiguration =
+      await prismaClient.customOrderConfiguration.findFirst({
+        where: {
+          sourceType: CustomOrderSourceType.DESIGN,
+          sourceId,
+          isActive: true,
+          brand: { ownerId },
+        },
+        select: { id: true },
+      });
 
     if (!activeConfiguration) {
       throw new BadRequestException(
@@ -315,7 +326,9 @@ export class CollectionsService {
     }
   }
 
-  private async collectStoreCollectionFilterValueIds(collectionId: string): Promise<string[]> {
+  private async collectStoreCollectionFilterValueIds(
+    collectionId: string,
+  ): Promise<string[]> {
     const links = await this.prisma.storeCollectionProduct.findMany({
       where: { collectionId },
       select: { productId: true },
@@ -358,10 +371,11 @@ export class CollectionsService {
     const filterValueIds = Array.isArray(providedFilterValueIds)
       ? this.normalizeFilterValueIds(providedFilterValueIds)
       : await this.getEntityFilterValueIds(entityType, entityId);
-    const validFilterValueIds = await this.categoriesService.validateEntityFilterValues(
-      entityType,
-      filterValueIds,
-    );
+    const validFilterValueIds =
+      await this.categoriesService.validateEntityFilterValues(
+        entityType,
+        filterValueIds,
+      );
     if (validFilterValueIds.length === 0) {
       throw new BadRequestException('Add at least one style detail.');
     }
@@ -377,9 +391,8 @@ export class CollectionsService {
 
   private async syncStoreCollectionFiltersFromProducts(collectionId: string) {
     if (!this.categoriesService) return;
-    const productFilterValueIds = await this.collectStoreCollectionFilterValueIds(
-      collectionId,
-    );
+    const productFilterValueIds =
+      await this.collectStoreCollectionFilterValueIds(collectionId);
     await this.categoriesService.setEntityFilters(
       'STORE_COLLECTION',
       collectionId,
@@ -421,7 +434,8 @@ export class CollectionsService {
     if (!draftSessionToken) {
       throw new ConflictException({
         code: 'DRAFT_SESSION_REQUIRED',
-        message: 'An active draft editing session exists. Provide draftSessionToken to continue.',
+        message:
+          'An active draft editing session exists. Provide draftSessionToken to continue.',
         conflictDetails: {
           deviceName: activeSession.deviceName ?? 'Unknown device',
           deviceType: (activeSession.deviceType as any) ?? 'desktop',
@@ -496,12 +510,15 @@ export class CollectionsService {
   private isReadyFeedFile(file: any): boolean {
     if (!file) return false;
     if (file.originalDeletedAt) return false;
-    if (file.processingStatus && file.processingStatus !== 'READY') return false;
+    if (file.processingStatus && file.processingStatus !== 'READY')
+      return false;
     return typeof file.s3Url === 'string' && file.s3Url.trim().length > 0;
   }
 
   private isVideoFileType(fileType?: string | null): boolean {
-    return String(fileType ?? '').toUpperCase().includes('VIDEO');
+    return String(fileType ?? '')
+      .toUpperCase()
+      .includes('VIDEO');
   }
 
   private summarizeDisplayUrl(value?: string | null) {
@@ -526,7 +543,9 @@ export class CollectionsService {
       return {
         displayHost: parsed.hostname,
         pathPrefix: parsed.pathname.split('/').slice(0, 3).join('/'),
-        isS3: parsed.hostname.includes('amazonaws.com') || parsed.hostname.includes('.s3.'),
+        isS3:
+          parsed.hostname.includes('amazonaws.com') ||
+          parsed.hostname.includes('.s3.'),
         isSigned,
         hasDisplayUrl: true,
       };
@@ -564,8 +583,11 @@ export class CollectionsService {
       ) {
         return (
           this.uploadService.getPublicDisplayUrl(match) ??
-          (typeof (this.uploadService as any).getTemporarySignedDisplayUrl === 'function'
-            ? await (this.uploadService as any).getTemporarySignedDisplayUrl(match)
+          (typeof (this.uploadService as any).getTemporarySignedDisplayUrl ===
+          'function'
+            ? await (this.uploadService as any).getTemporarySignedDisplayUrl(
+                match,
+              )
             : null)
         );
       }
@@ -573,14 +595,12 @@ export class CollectionsService {
     return null;
   }
 
-  private async buildFeedMediaAsset(
-    args: {
-      id: string | null | undefined;
-      file: any;
-      mediaType?: string | null;
-      orderIndex?: number | null;
-    },
-  ): Promise<FeedMediaAssetDto | null> {
+  private async buildFeedMediaAsset(args: {
+    id: string | null | undefined;
+    file: any;
+    mediaType?: string | null;
+    orderIndex?: number | null;
+  }): Promise<FeedMediaAssetDto | null> {
     const file = args.file;
     if (!this.isReadyFeedFile(file)) {
       this.logger.debug(
@@ -592,11 +612,14 @@ export class CollectionsService {
     const displayUrl =
       (await this.getPreferredVariantUrl(file, ['DETAIL', 'CARD', 'ZOOM'])) ??
       this.uploadService.getPublicDisplayUrl(file) ??
-      (typeof (this.uploadService as any).getTemporarySignedDisplayUrl === 'function'
+      (typeof (this.uploadService as any).getTemporarySignedDisplayUrl ===
+      'function'
         ? await (this.uploadService as any).getTemporarySignedDisplayUrl(file)
         : null);
     if (!displayUrl) {
-      this.logger.debug(`[feed-contract] media excluded missing-display-url fileId=${file?.id ?? 'unknown'}`);
+      this.logger.debug(
+        `[feed-contract] media excluded missing-display-url fileId=${file?.id ?? 'unknown'}`,
+      );
       return null;
     }
 
@@ -608,8 +631,7 @@ export class CollectionsService {
       typeof file.height === 'number' && Number.isFinite(file.height)
         ? file.height
         : null;
-    const aspectRatio =
-      width && height && height > 0 ? width / height : 1;
+    const aspectRatio = width && height && height > 0 ? width / height : 1;
 
     return {
       id: String(args.id ?? file.id),
@@ -633,10 +655,13 @@ export class CollectionsService {
     };
   }
 
-  private async buildFeedBrandAvatar(owner: any): Promise<FeedMediaAssetDto | null> {
+  private async buildFeedBrandAvatar(
+    owner: any,
+  ): Promise<FeedMediaAssetDto | null> {
     const profileImageFile = owner?.userProfile?.profileImageFile ?? null;
     const brandLogoUrl =
-      typeof owner?.brand?.logo === 'string' && owner.brand.logo.trim().length > 0
+      typeof owner?.brand?.logo === 'string' &&
+      owner.brand.logo.trim().length > 0
         ? owner.brand.logo.trim()
         : null;
     const file =
@@ -668,7 +693,9 @@ export class CollectionsService {
       throw new BadRequestException('Sub-category format is invalid');
     }
     if (!categoryId) {
-      throw new BadRequestException('Sub-category requires a selected category');
+      throw new BadRequestException(
+        'Sub-category requires a selected category',
+      );
     }
 
     const categoryType = await this.prisma.collectionCategoryType.findUnique({
@@ -705,11 +732,6 @@ export class CollectionsService {
     domain: CollectionDomainValue = 'DESIGN',
   ) {
     const now = new Date();
-    const ttlMinutes = Math.max(
-      5,
-      parseInt(process.env.DRAFT_SESSION_TTL_MINUTES || '30', 10),
-    );
-    const nextExpiresAt = new Date(now.getTime() + ttlMinutes * 60 * 1000);
     if (domain === 'STORE') {
       await (tx as any).storeCollection.updateMany({
         where: { id: collectionId, status: 'DRAFT', deletedAt: null },
@@ -743,7 +765,9 @@ export class CollectionsService {
         deletedAt: null,
         title: normalizedTitle,
         ...(domain ? { domain } : {}),
-        ...(typeof isAvailableInStore === 'boolean' ? { isAvailableInStore } : {}),
+        ...(typeof isAvailableInStore === 'boolean'
+          ? { isAvailableInStore }
+          : {}),
       },
       data: {
         deletedAt,
@@ -811,7 +835,13 @@ export class CollectionsService {
     const activeOrders = await this.prisma.order.findMany({
       where: {
         brandId: brand.id,
-        status: { in: [OrderStatus.PENDING, OrderStatus.PROCESSING, OrderStatus.SHIPPED] },
+        status: {
+          in: [
+            OrderStatus.PENDING,
+            OrderStatus.PROCESSING,
+            OrderStatus.SHIPPED,
+          ],
+        },
       },
       select: { items: true },
     });
@@ -820,7 +850,11 @@ export class CollectionsService {
     for (const order of activeOrders) {
       const items = order.items as { productId?: string }[] | null;
       if (!Array.isArray(items)) continue;
-      if (items.some((item) => item.productId && productIds.includes(item.productId))) {
+      if (
+        items.some(
+          (item) => item.productId && productIds.includes(item.productId),
+        )
+      ) {
         activeCount += 1;
       }
     }
@@ -834,7 +868,10 @@ export class CollectionsService {
   }): boolean {
     if (collection.deletedAt) return false;
     if (collection.status !== 'PUBLISHED') return false;
-    return (collection.visibility ?? CollectionVisibility.PUBLIC) === CollectionVisibility.PUBLIC;
+    return (
+      (collection.visibility ?? CollectionVisibility.PUBLIC) ===
+      CollectionVisibility.PUBLIC
+    );
   }
 
   private getIndexedCollectionTags(
@@ -847,8 +884,12 @@ export class CollectionsService {
     fallbackTags?: Array<string | null | undefined>,
   ): string[] {
     if (!this.isCollectionTagIndexed(collection)) return [];
-    const source = fallbackTags ?? (Array.isArray(collection.tags) ? collection.tags : []);
-    return sanitizeTags(source.map((tag) => String(tag ?? '')), 30);
+    const source =
+      fallbackTags ?? (Array.isArray(collection.tags) ? collection.tags : []);
+    return sanitizeTags(
+      source.map((tag) => String(tag ?? '')),
+      30,
+    );
   }
 
   private areTagsEqual(a: string[], b: string[]): boolean {
@@ -883,8 +924,12 @@ export class CollectionsService {
     fallbackTags?: Array<string | null | undefined>,
   ): string[] {
     if (!this.isProductTagIndexed(product)) return [];
-    const source = fallbackTags ?? (Array.isArray(product.tags) ? product.tags : []);
-    return sanitizeTags(source.map((tag) => String(tag ?? '')), 30);
+    const source =
+      fallbackTags ?? (Array.isArray(product.tags) ? product.tags : []);
+    return sanitizeTags(
+      source.map((tag) => String(tag ?? '')),
+      30,
+    );
   }
 
   private parseBulkCsv(file: Express.Multer.File) {
@@ -936,13 +981,9 @@ export class CollectionsService {
 
     return {
       name:
-        row.product_name ||
-        row.name ||
-        row.productName ||
-        'Untitled Product',
+        row.product_name || row.name || row.productName || 'Untitled Product',
       description: row.description || row.product_description || undefined,
-      price:
-        this.normalizeCsvNumber(row.price || row.unit_price) ?? 0,
+      price: this.normalizeCsvNumber(row.price || row.unit_price) ?? 0,
       salePrice: this.normalizeCsvNumber(row.sale_price || row.salePrice),
       sku: row.sku || row.product_sku || undefined,
       tags,
@@ -1110,14 +1151,17 @@ export class CollectionsService {
       createdAt?: Date;
     }>,
   ) {
-    return rows
-      .filter((row) => row.state === 'REVOKED' && row.notes === 'REJECTED')
-      .sort((left, right) => {
-        const leftTime = left.updatedAt?.getTime?.() ?? left.createdAt?.getTime?.() ?? 0;
-        const rightTime =
-          right.updatedAt?.getTime?.() ?? right.createdAt?.getTime?.() ?? 0;
-        return rightTime - leftTime;
-      })[0] ?? null;
+    return (
+      rows
+        .filter((row) => row.state === 'REVOKED' && row.notes === 'REJECTED')
+        .sort((left, right) => {
+          const leftTime =
+            left.updatedAt?.getTime?.() ?? left.createdAt?.getTime?.() ?? 0;
+          const rightTime =
+            right.updatedAt?.getTime?.() ?? right.createdAt?.getTime?.() ?? 0;
+          return rightTime - leftTime;
+        })[0] ?? null
+    );
   }
 
   private async applyBrandAccessState(
@@ -1133,7 +1177,11 @@ export class CollectionsService {
     },
   ) {
     const uniqueViewerIds = Array.from(
-      new Set(viewerIds.map((viewerId) => String(viewerId ?? '').trim()).filter(Boolean)),
+      new Set(
+        viewerIds
+          .map((viewerId) => String(viewerId ?? '').trim())
+          .filter(Boolean),
+      ),
     );
 
     if (uniqueViewerIds.length === 0) {
@@ -1247,7 +1295,7 @@ export class CollectionsService {
     const cooldownMs = Math.max(
       0,
       parseInt(process.env.PRIVATE_ACCESS_COOLDOWN_MS || '') ||
-      72 * 60 * 60 * 1000,
+        72 * 60 * 60 * 1000,
     );
     const rejectedAccess = this.getLatestRejectedBrandAccess(existingRows);
     if (brandState === 'APPROVED') {
@@ -1258,7 +1306,8 @@ export class CollectionsService {
       return { state: 'PENDING' };
     }
     if (rejectedAccess) {
-      const elapsed = now.getTime() - new Date(rejectedAccess.updatedAt).getTime();
+      const elapsed =
+        now.getTime() - new Date(rejectedAccess.updatedAt).getTime();
       if (elapsed < cooldownMs) {
         const nextAllowedAt = new Date(
           rejectedAccess.updatedAt.getTime() + cooldownMs,
@@ -1296,7 +1345,7 @@ export class CollectionsService {
           },
         },
       );
-    } catch (e) {
+    } catch {
       // non-blocking
     }
     console.log('metrics.access_request', { collectionId, requesterId });
@@ -1358,9 +1407,15 @@ export class CollectionsService {
       permission,
     );
     if (expectedDomain && c.domain !== expectedDomain) {
-      throw new BadRequestException('Design action attempted on a store collection.');
+      throw new BadRequestException(
+        'Design action attempted on a store collection.',
+      );
     }
-    return c as { ownerId: string; deletedAt: Date | null; domain?: CollectionDomainValue };
+    return c as {
+      ownerId: string;
+      deletedAt: Date | null;
+      domain?: CollectionDomainValue;
+    };
   }
 
   async listAccessRequests(
@@ -1433,15 +1488,15 @@ export class CollectionsService {
       },
       ...(q
         ? {
-          OR: [
-            {
-              viewer: { username: { contains: q, mode: 'insensitive' } },
-            } as any,
-            {
-              collection: { title: { contains: q, mode: 'insensitive' } },
-            } as any,
-          ],
-        }
+            OR: [
+              {
+                viewer: { username: { contains: q, mode: 'insensitive' } },
+              } as any,
+              {
+                collection: { title: { contains: q, mode: 'insensitive' } },
+              } as any,
+            ],
+          }
         : {}),
     } as any;
 
@@ -1525,7 +1580,8 @@ export class CollectionsService {
                   privateCollectionCount > 1
                     ? `${privateCollectionCount} private designs`
                     : latest.collection.title,
-                coverMediaId: latest.collection.coverMediaId ?? cover?.id ?? null,
+                coverMediaId:
+                  latest.collection.coverMediaId ?? cover?.id ?? null,
                 medias: cover ? [cover] : [],
               }
             : latest?.collection,
@@ -1621,11 +1677,7 @@ export class CollectionsService {
           coverFileId: cover?.file?.id ?? null,
           coverUrl: cover?.file?.s3Url ?? null,
           itemCount: c._count.medias,
-          state: brandState as
-            | 'APPROVED'
-            | 'PENDING'
-            | 'REVOKED'
-            | 'NONE',
+          state: brandState as 'APPROVED' | 'PENDING' | 'REVOKED' | 'NONE',
         };
       }),
     };
@@ -1678,13 +1730,14 @@ export class CollectionsService {
             actorId: ownerId,
             payload: {
               collectionId,
-              brandName: ownerDisplay?.brandFullName || ownerDisplay?.username || null,
+              brandName:
+                ownerDisplay?.brandFullName || ownerDisplay?.username || null,
               username: viewerNameById.get(uid) ?? null,
               targetUrl: `/profile/${ownerId}?tab=Content&visibility=Private`,
             },
           },
         );
-      } catch { }
+      } catch {}
     }
     console.log('metrics.access_approve_bulk', {
       collectionId,
@@ -1711,18 +1764,12 @@ export class CollectionsService {
     });
     const ownerDisplay = this.mapCollectionOwner(owner);
     const viewerDisplay = this.mapCollectionOwner(viewer);
-    await this.applyBrandAccessState(
-      collectionId,
-      ownerId,
-      [userId],
-      state,
-      {
-        notes: state === 'REVOKED' ? 'REVOKED' : null,
-        grantedBy: ownerId,
-        createdAt: now,
-        updatedAt: now,
-      },
-    );
+    await this.applyBrandAccessState(collectionId, ownerId, [userId], state, {
+      notes: state === 'REVOKED' ? 'REVOKED' : null,
+      grantedBy: ownerId,
+      createdAt: now,
+      updatedAt: now,
+    });
     // Notify viewer on decision
     try {
       await this.notifications?.create(
@@ -1734,8 +1781,10 @@ export class CollectionsService {
           actorId: ownerId,
           payload: {
             collectionId,
-            brandName: ownerDisplay?.brandFullName || ownerDisplay?.username || null,
-            username: viewerDisplay?.username || viewerDisplay?.firstName || null,
+            brandName:
+              ownerDisplay?.brandFullName || ownerDisplay?.username || null,
+            username:
+              viewerDisplay?.username || viewerDisplay?.firstName || null,
             targetUrl:
               state === 'APPROVED'
                 ? `/profile/${ownerId}?tab=Content&visibility=Private`
@@ -1743,7 +1792,7 @@ export class CollectionsService {
           },
         },
       );
-    } catch { }
+    } catch {}
     console.log('metrics.access_update_state', { collectionId, userId, state });
     return { success: true };
   }
@@ -1795,13 +1844,15 @@ export class CollectionsService {
           actorId: ownerId,
           payload: {
             collectionId,
-            brandName: ownerDisplay?.brandFullName || ownerDisplay?.username || null,
-            username: viewerDisplay?.username || viewerDisplay?.firstName || null,
+            brandName:
+              ownerDisplay?.brandFullName || ownerDisplay?.username || null,
+            username:
+              viewerDisplay?.username || viewerDisplay?.firstName || null,
             targetUrl: `/profile/${ownerId}?tab=private`,
           },
         },
       );
-    } catch { }
+    } catch {}
     console.log('metrics.access_reject', { collectionId, userId });
     return { success: true };
   }
@@ -1869,17 +1920,19 @@ export class CollectionsService {
     const ownerIds = Array.from(groupedByBrand.keys());
     const privateCollectionCounts = new Map<string, number>(
       await Promise.all(
-        ownerIds.map(async (ownerId): Promise<[string, number]> => [
-          ownerId,
-          await this.prisma.collection.count({
-            where: {
-              ownerId,
-              visibility: CollectionVisibility.PRIVATE,
-              status: 'PUBLISHED',
-              deletedAt: null,
-            } as any,
-          }),
-        ]),
+        ownerIds.map(
+          async (ownerId): Promise<[string, number]> => [
+            ownerId,
+            await this.prisma.collection.count({
+              where: {
+                ownerId,
+                visibility: CollectionVisibility.PRIVATE,
+                status: 'PUBLISHED',
+                deletedAt: null,
+              } as any,
+            }),
+          ],
+        ),
       ),
     );
 
@@ -1898,7 +1951,8 @@ export class CollectionsService {
         const earliest = [...groupRows].sort(
           (left, right) => left.createdAt.getTime() - right.createdAt.getTime(),
         )[0];
-        const privateCollectionCount = privateCollectionCounts.get(ownerId) ?? 0;
+        const privateCollectionCount =
+          privateCollectionCounts.get(ownerId) ?? 0;
         const cover = this.resolveCoverMedia(
           latest.collection?.medias,
           latest.collection?.coverMediaId ?? null,
@@ -1913,9 +1967,7 @@ export class CollectionsService {
               : latest.collection?.title || 'Untitled',
           brand: {
             id: ownerDisplay?.id,
-            name:
-              ownerDisplay?.brandFullName ||
-              ownerDisplay?.username,
+            name: ownerDisplay?.brandFullName || ownerDisplay?.username,
             profileImage: ownerDisplay?.profileImage,
             profileImageId: ownerDisplay?.profileImageId,
             profileImageFile: ownerDisplay?.profileImageFile,
@@ -1998,17 +2050,19 @@ export class CollectionsService {
     const ownerIds = Array.from(groupedByBrand.keys());
     const privateCollectionCounts = new Map<string, number>(
       await Promise.all(
-        ownerIds.map(async (ownerId): Promise<[string, number]> => [
-          ownerId,
-          await this.prisma.collection.count({
-            where: {
-              ownerId,
-              visibility: CollectionVisibility.PRIVATE,
-              status: 'PUBLISHED',
-              deletedAt: null,
-            } as any,
-          }),
-        ]),
+        ownerIds.map(
+          async (ownerId): Promise<[string, number]> => [
+            ownerId,
+            await this.prisma.collection.count({
+              where: {
+                ownerId,
+                visibility: CollectionVisibility.PRIVATE,
+                status: 'PUBLISHED',
+                deletedAt: null,
+              } as any,
+            }),
+          ],
+        ),
       ),
     );
 
@@ -2024,7 +2078,8 @@ export class CollectionsService {
             right.createdAt.getTime() - left.createdAt.getTime(),
         );
         const latest = orderedRows[0];
-        const privateCollectionCount = privateCollectionCounts.get(ownerId) ?? 0;
+        const privateCollectionCount =
+          privateCollectionCounts.get(ownerId) ?? 0;
         const cover = this.resolveCoverMedia(
           latest.collection?.medias,
           latest.collection?.coverMediaId ?? null,
@@ -2039,9 +2094,7 @@ export class CollectionsService {
               : latest.collection?.title || 'Untitled',
           brand: {
             id: ownerDisplay?.id,
-            name:
-              ownerDisplay?.brandFullName ||
-              ownerDisplay?.username,
+            name: ownerDisplay?.brandFullName || ownerDisplay?.username,
             profileImage: ownerDisplay?.profileImage,
             profileImageId: ownerDisplay?.profileImageId,
             profileImageFile: ownerDisplay?.profileImageFile,
@@ -2174,7 +2227,9 @@ export class CollectionsService {
 
     const hasFiles = Array.isArray(dto.files) && dto.files.length > 0;
     if (hasFiles && dto.files!.length > DESIGN_MAX_MEDIA_COUNT) {
-      throw new BadRequestException(`Maximum ${DESIGN_MAX_MEDIA_COUNT} files per design`);
+      throw new BadRequestException(
+        `Maximum ${DESIGN_MAX_MEDIA_COUNT} files per design`,
+      );
     }
 
     // Store-collection session initialization (no media required)
@@ -2199,7 +2254,6 @@ export class CollectionsService {
       }
 
       const collectionId = uuidv4();
-      const now = new Date();
       const collection = await (this.prisma.storeCollection as any).create({
         data: {
           id: collectionId,
@@ -2387,7 +2441,9 @@ export class CollectionsService {
     }
 
     if (dto.files.length > DESIGN_MAX_MEDIA_COUNT) {
-      throw new BadRequestException(`Maximum ${DESIGN_MAX_MEDIA_COUNT} files per design`);
+      throw new BadRequestException(
+        `Maximum ${DESIGN_MAX_MEDIA_COUNT} files per design`,
+      );
     }
 
     // PHASE 2: Use shared tag normalization utility
@@ -2540,7 +2596,9 @@ export class CollectionsService {
       throw new BadRequestException('At least one file is required');
     }
     if (files.length > DESIGN_MAX_MEDIA_COUNT) {
-      throw new BadRequestException(`Maximum ${DESIGN_MAX_MEDIA_COUNT} files per design`);
+      throw new BadRequestException(
+        `Maximum ${DESIGN_MAX_MEDIA_COUNT} files per design`,
+      );
     }
 
     const existingMediaCount = await this.prisma.collectionMedia.count({
@@ -2666,51 +2724,60 @@ export class CollectionsService {
     this.logger.debug(
       `[feed] market query result fetched=${collections.length} page=${data.length} hasNextPage=${hasNextPage}`,
     );
-    if (collections.length === 0 && typeof (this.prisma.collection as any).count === 'function') {
+    if (
+      collections.length === 0 &&
+      typeof (this.prisma.collection as any).count === 'function'
+    ) {
       try {
-        const [publishedPublic, withAnyMedia, readyOriginals, blockedByProcessing] =
-          await Promise.all([
-            this.prisma.collection.count({
-              where: {
-                domain: 'DESIGN',
-                status: 'PUBLISHED',
-                visibility: CollectionVisibility.PUBLIC,
-                deletedAt: null,
-              } as any,
-            }),
-            this.prisma.collection.count({
-              where: {
-                domain: 'DESIGN',
-                status: 'PUBLISHED',
-                visibility: CollectionVisibility.PUBLIC,
-                deletedAt: null,
-                medias: { some: {} },
-              } as any,
-            }),
-            this.prisma.collection.count({ where } as any),
-            this.prisma.collection.count({
-              where: {
-                domain: 'DESIGN',
-                status: 'PUBLISHED',
-                visibility: CollectionVisibility.PUBLIC,
-                deletedAt: null,
-                medias: {
-                  some: {
-                    file: {
-                      processingStatus: { not: 'READY' },
-                      originalDeletedAt: null,
-                      s3Url: { not: '' },
-                    },
+        const [
+          publishedPublic,
+          withAnyMedia,
+          readyOriginals,
+          blockedByProcessing,
+        ] = await Promise.all([
+          this.prisma.collection.count({
+            where: {
+              domain: 'DESIGN',
+              status: 'PUBLISHED',
+              visibility: CollectionVisibility.PUBLIC,
+              deletedAt: null,
+            } as any,
+          }),
+          this.prisma.collection.count({
+            where: {
+              domain: 'DESIGN',
+              status: 'PUBLISHED',
+              visibility: CollectionVisibility.PUBLIC,
+              deletedAt: null,
+              medias: { some: {} },
+            } as any,
+          }),
+          this.prisma.collection.count({ where } as any),
+          this.prisma.collection.count({
+            where: {
+              domain: 'DESIGN',
+              status: 'PUBLISHED',
+              visibility: CollectionVisibility.PUBLIC,
+              deletedAt: null,
+              medias: {
+                some: {
+                  file: {
+                    processingStatus: { not: 'READY' },
+                    originalDeletedAt: null,
+                    s3Url: { not: '' },
                   },
                 },
-              } as any,
-            }),
-          ]);
+              },
+            } as any,
+          }),
+        ]);
         this.logger.debug(
           `[feed-contract] market exclusion summary publishedPublic=${publishedPublic} withAnyMedia=${withAnyMedia} readyOriginals=${readyOriginals} blockedByProcessing=${blockedByProcessing}`,
         );
       } catch (error) {
-        this.logger.warn(`[feed-contract] market exclusion summary failed: ${String(error)}`);
+        this.logger.warn(
+          `[feed-contract] market exclusion summary failed: ${String(error)}`,
+        );
       }
     }
 
@@ -2720,9 +2787,13 @@ export class CollectionsService {
         const coverMedia =
           (coverMediaId
             ? collection.medias.find((media) => media.id === coverMediaId)
-            : null) ?? collection.medias[0] ?? null;
+            : null) ??
+          collection.medias[0] ??
+          null;
         if (!coverMedia) {
-          this.logger.debug(`[feed-contract] collection excluded missing-ready-cover collectionId=${collection.id}`);
+          this.logger.debug(
+            `[feed-contract] collection excluded missing-ready-cover collectionId=${collection.id}`,
+          );
           return null;
         }
 
@@ -2754,120 +2825,140 @@ export class CollectionsService {
           select: { collectionMediaId: true },
         });
         const set = new Set(threaded.map((r) => r.collectionMediaId));
-        isThreadedMap = mediaIds.reduce((acc, id) => {
-          acc[id] = set.has(id);
-          return acc;
-        }, {} as Record<string, boolean>);
+        isThreadedMap = mediaIds.reduce(
+          (acc, id) => {
+            acc[id] = set.has(id);
+            return acc;
+          },
+          {} as Record<string, boolean>,
+        );
       }
     }
 
-    const items = (await Promise.all(feedRows.map(async ({ collection, media }) => {
-      const owner = this.mapCollectionOwner(collection.owner)!;
-      const primaryMedia = await this.buildFeedMediaAsset({
-        id: media.id,
-        file: media.file,
-        mediaType: media.mediaType,
-        orderIndex: media.orderIndex,
-      });
-      if (!primaryMedia) {
-        this.logger.debug(`[feed-contract] media excluded unavailable-primary collectionId=${collection.id} mediaId=${media.id}`);
-        return null;
-      }
+    const items = (
+      await Promise.all(
+        feedRows.map(async ({ collection, media }) => {
+          const owner = this.mapCollectionOwner(collection.owner)!;
+          const primaryMedia = await this.buildFeedMediaAsset({
+            id: media.id,
+            file: media.file,
+            mediaType: media.mediaType,
+            orderIndex: media.orderIndex,
+          });
+          if (!primaryMedia) {
+            this.logger.debug(
+              `[feed-contract] media excluded unavailable-primary collectionId=${collection.id} mediaId=${media.id}`,
+            );
+            return null;
+          }
 
-      const mediaItems = (await Promise.all(
-        collection.medias.map((entry) =>
-          this.buildFeedMediaAsset({
-            id: entry.id,
-            file: entry.file,
-            mediaType: entry.mediaType,
-            orderIndex: entry.orderIndex,
-          }),
-        ),
-      )).filter((asset): asset is FeedMediaAssetDto => Boolean(asset));
-      if (mediaItems.length === 0) {
-        this.logger.debug(`[feed-contract] collection excluded no-valid-media collectionId=${collection.id}`);
-        return null;
-      }
+          const mediaItems = (
+            await Promise.all(
+              collection.medias.map((entry) =>
+                this.buildFeedMediaAsset({
+                  id: entry.id,
+                  file: entry.file,
+                  mediaType: entry.mediaType,
+                  orderIndex: entry.orderIndex,
+                }),
+              ),
+            )
+          ).filter((asset): asset is FeedMediaAssetDto => Boolean(asset));
+          if (mediaItems.length === 0) {
+            this.logger.debug(
+              `[feed-contract] collection excluded no-valid-media collectionId=${collection.id}`,
+            );
+            return null;
+          }
 
-      const avatar = await this.buildFeedBrandAvatar(collection.owner);
-      const logoFileId = avatar?.fileId ?? owner.profileImageId ?? owner.profileImageFile?.id ?? null;
-      const combinedCommentsCount =
-        (collection.commentsCount ?? 0) + (media.commentsCount ?? 0);
-      const commentsCount =
-        options?.countsPolicy === 'combined'
-          ? combinedCommentsCount
-          : media.commentsCount ?? collection.commentsCount ?? 0;
+          const avatar = await this.buildFeedBrandAvatar(collection.owner);
+          const logoFileId =
+            avatar?.fileId ??
+            owner.profileImageId ??
+            owner.profileImageFile?.id ??
+            null;
+          const combinedCommentsCount =
+            (collection.commentsCount ?? 0) + (media.commentsCount ?? 0);
+          const commentsCount =
+            options?.countsPolicy === 'combined'
+              ? combinedCommentsCount
+              : (media.commentsCount ?? collection.commentsCount ?? 0);
 
-      const base = {
-        id: media.id,
-        collectionId: collection.id,
-        designId: collection.id,
-        legacyCollectionId: collection.id,
-        entityType: 'DESIGN',
-        sourceType: 'DESIGN',
-        title: collection.title ?? '',
-        description: collection.description ?? null,
-        brand: {
-          id: owner.brand?.id ?? owner.id,
-          name: owner.brandFullName ?? owner.username ?? '',
-          username: owner.username ?? null,
-          avatar,
-        },
-        primaryMedia,
-        mediaItems,
-        stats: {
-          likes: collection._count?.reactions ?? collection.threadsCount ?? 0,
-          comments: commentsCount,
-          threads: media.threadsCount ?? 0,
-          patches: collection.collectionCollabsCount ?? 0,
-        },
-        viewerState: {
-          isLiked: false,
-          isThreaded: requesterId ? !!isThreadedMap[media.id] : false,
-          isPatched: false,
-          canBag: Boolean(collection.customOrderEnabled),
-          isBagged: false,
-        },
-        tags: collection.tags ?? [],
-        createdAt: collection.createdAt.toISOString(),
-        updatedAt: collection.updatedAt.toISOString(),
-        // Temporary legacy compatibility for current web and older mobile builds.
-        coverMediaId: (collection as any).coverMediaId ?? media.id,
-        mediaType: media.mediaType,
-        mediaFileId: media.fileUploadId,
-        mediaUrl: primaryMedia.displayUrl,
-        collectionTitle: collection.title ?? '',
-        collectionDescription: collection.description ?? '',
-        minPrice: collection.minPrice,
-        maxPrice: collection.maxPrice,
-        saleMinPrice: collection.saleMinPrice,
-        saleMaxPrice: collection.saleMaxPrice,
-        saleStartAt: collection.saleStartAt,
-        saleEndAt: collection.saleEndAt,
-        sizingMode: collection.sizingMode,
-        customMeasurementKeys: collection.customMeasurementKeys ?? [],
-        customAvailable: collection.customOrderEnabled === true,
-        threadsCount: media.threadsCount,
-        commentsCount: media.commentsCount,
-        collectionCollabCount: collection.collectionCollabsCount,
-        brandId: owner.brand?.id ?? owner.id,
-        brandName: owner.brandFullName ?? owner.username ?? '',
-        username: owner.username ?? '',
-        brandLogo: avatar?.displayUrl ?? owner.profileImage ?? null,
-        brandLogoFileId: logoFileId ?? null,
-        isThreaded: requesterId ? !!isThreadedMap[media.id] : false,
-      };
+          const base = {
+            id: media.id,
+            collectionId: collection.id,
+            designId: collection.id,
+            legacyCollectionId: collection.id,
+            entityType: 'DESIGN',
+            sourceType: 'DESIGN',
+            title: collection.title ?? '',
+            description: collection.description ?? null,
+            brand: {
+              id: owner.brand?.id ?? owner.id,
+              name: owner.brandFullName ?? owner.username ?? '',
+              username: owner.username ?? null,
+              avatar,
+            },
+            primaryMedia,
+            mediaItems,
+            stats: {
+              likes:
+                collection._count?.reactions ?? collection.threadsCount ?? 0,
+              comments: commentsCount,
+              threads: media.threadsCount ?? 0,
+              patches: collection.collectionCollabsCount ?? 0,
+            },
+            viewerState: {
+              isLiked: false,
+              isThreaded: requesterId ? !!isThreadedMap[media.id] : false,
+              isPatched: false,
+              canBag: Boolean(collection.customOrderEnabled),
+              isBagged: false,
+            },
+            tags: collection.tags ?? [],
+            createdAt: collection.createdAt.toISOString(),
+            updatedAt: collection.updatedAt.toISOString(),
+            // Temporary legacy compatibility for current web and older mobile builds.
+            coverMediaId: (collection as any).coverMediaId ?? media.id,
+            mediaType: media.mediaType,
+            mediaFileId: media.fileUploadId,
+            mediaUrl: primaryMedia.displayUrl,
+            collectionTitle: collection.title ?? '',
+            collectionDescription: collection.description ?? '',
+            minPrice: collection.minPrice,
+            maxPrice: collection.maxPrice,
+            saleMinPrice: collection.saleMinPrice,
+            saleMaxPrice: collection.saleMaxPrice,
+            saleStartAt: collection.saleStartAt,
+            saleEndAt: collection.saleEndAt,
+            sizingMode: collection.sizingMode,
+            customMeasurementKeys: collection.customMeasurementKeys ?? [],
+            customAvailable: collection.customOrderEnabled === true,
+            threadsCount: media.threadsCount,
+            commentsCount: media.commentsCount,
+            collectionCollabCount: collection.collectionCollabsCount,
+            brandId: owner.brand?.id ?? owner.id,
+            brandName: owner.brandFullName ?? owner.username ?? '',
+            username: owner.username ?? '',
+            brandLogo: avatar?.displayUrl ?? owner.profileImage ?? null,
+            brandLogoFileId: logoFileId ?? null,
+            isThreaded: requesterId ? !!isThreadedMap[media.id] : false,
+          };
 
-      if (options?.countsPolicy === 'combined') {
-        (base as any).combinedCommentsCount = combinedCommentsCount;
-      }
+          if (options?.countsPolicy === 'combined') {
+            (base as any).combinedCommentsCount = combinedCommentsCount;
+          }
 
-      return base;
-    }))).filter((item): item is NonNullable<typeof item> => Boolean(item));
+          return base;
+        }),
+      )
+    ).filter((item): item is NonNullable<typeof item> => Boolean(item));
 
     if (items.length > 0) {
       for (const item of items.slice(0, 5)) {
-        const primarySummary = this.summarizeDisplayUrl(item.primaryMedia?.displayUrl);
+        const primarySummary = this.summarizeDisplayUrl(
+          item.primaryMedia?.displayUrl,
+        );
         const mediaSummaries = item.mediaItems.map((mediaItem) => {
           const summary = this.summarizeDisplayUrl(mediaItem.displayUrl);
           return {
@@ -2901,9 +2992,15 @@ export class CollectionsService {
             mediaItemsLength: item.mediaItems.length,
             mediaItemIds: item.mediaItems.map((mediaItem) => mediaItem.id),
             mediaItems: mediaSummaries,
-            displayUrlsUnique: uniqueDisplayKeys.size === mediaDisplayKeys.length,
-            allReady: item.mediaItems.every((mediaItem) => mediaItem.status === 'READY'),
-            allTyped: item.mediaItems.every((mediaItem) => mediaItem.type === 'IMAGE' || mediaItem.type === 'VIDEO'),
+            displayUrlsUnique:
+              uniqueDisplayKeys.size === mediaDisplayKeys.length,
+            allReady: item.mediaItems.every(
+              (mediaItem) => mediaItem.status === 'READY',
+            ),
+            allTyped: item.mediaItems.every(
+              (mediaItem) =>
+                mediaItem.type === 'IMAGE' || mediaItem.type === 'VIDEO',
+            ),
           })}`,
         );
       }
@@ -2934,7 +3031,8 @@ export class CollectionsService {
   ) {
     const resolvedScope = this.normalizeCollectionScope(scope);
     const expectedDomain = this.scopeToDomain(resolvedScope);
-    const hasCompletions = Array.isArray(dto.completions) && dto.completions.length > 0;
+    const hasCompletions =
+      Array.isArray(dto.completions) && dto.completions.length > 0;
     if (expectedDomain === 'STORE') {
       return this.finalizeStoreCollection(collectionId, userId, dto);
     }
@@ -2954,7 +3052,8 @@ export class CollectionsService {
       );
     }
 
-    const requestedAction = dto.action ?? (dto.shouldPublish === false ? 'draft' : 'publish');
+    const requestedAction =
+      dto.action ?? (dto.shouldPublish === false ? 'draft' : 'publish');
 
     if (collection.status !== 'DRAFT') {
       if (collection.status === 'PUBLISHED' && requestedAction === 'draft') {
@@ -2979,7 +3078,10 @@ export class CollectionsService {
           },
         });
         if (published) {
-          return { ...published, owner: this.mapCollectionOwner(published.owner) };
+          return {
+            ...published,
+            owner: this.mapCollectionOwner(published.owner),
+          };
         }
       }
       if (collection.status !== 'PUBLISHED' || !hasCompletions) {
@@ -3005,11 +3107,16 @@ export class CollectionsService {
 
     if (!hasCompletions) {
       const previousVisibility = collection.visibility;
-      if (!dto.collectionMetadata && !dto.action && dto.shouldPublish === undefined) {
+      if (
+        !dto.collectionMetadata &&
+        !dto.action &&
+        dto.shouldPublish === undefined
+      ) {
         throw new BadRequestException('Missing upload completions');
       }
       const metadata = dto.collectionMetadata ?? {};
-      const action = dto.action ?? (dto.shouldPublish === false ? 'draft' : 'publish');
+      const action =
+        dto.action ?? (dto.shouldPublish === false ? 'draft' : 'publish');
       const normalizedFilterValueIds = this.normalizeFilterValueIds(
         metadata.filterValueIds,
       );
@@ -3017,7 +3124,7 @@ export class CollectionsService {
       const shouldUpdateFilters = Array.isArray(metadata.filterValueIds);
       const resolvedNextTags = Array.isArray(metadata.tags)
         ? sanitizeTags(metadata.tags, 30)
-        : collection.tags ?? [];
+        : (collection.tags ?? []);
       const nextCustomOrderEnabled =
         typeof (metadata as any).customOrderEnabled === 'boolean'
           ? Boolean((metadata as any).customOrderEnabled)
@@ -3121,10 +3228,13 @@ export class CollectionsService {
                 : (collection as any).rtwSizes,
               rtwSizeSystem:
                 metadata.rtwSizeSystem ?? (collection as any).rtwSizeSystem,
-              rtwSizeType: metadata.rtwSizeType ?? (collection as any).rtwSizeType,
+              rtwSizeType:
+                metadata.rtwSizeType ?? (collection as any).rtwSizeType,
               customGender:
                 metadata.customGender ?? (collection as any).customGender,
-              customMeasurementKeys: Array.isArray(metadata.customMeasurementKeys)
+              customMeasurementKeys: Array.isArray(
+                metadata.customMeasurementKeys,
+              )
                 ? this.normalizeMeasurementKeys(metadata.customMeasurementKeys)
                 : (collection as any).customMeasurementKeys,
               customOrderEnabled:
@@ -3220,11 +3330,15 @@ export class CollectionsService {
         if (action === 'publish') {
           const hasProductMedia = activeProducts.some((l) => {
             const p = l.product;
-            const images = Array.isArray(p.images) ? p.images.filter(Boolean) : [];
+            const images = Array.isArray(p.images)
+              ? p.images.filter(Boolean)
+              : [];
             return images.length > 0 || Boolean(p.thumbnail);
           });
           if (!hasProductMedia) {
-            throw new BadRequestException('At least one product image is required to publish');
+            throw new BadRequestException(
+              'At least one product image is required to publish',
+            );
           }
         }
 
@@ -3270,8 +3384,7 @@ export class CollectionsService {
             categoryId: metadata.categoryId ?? collection.categoryId,
             categoryTypeId:
               metadata.categoryTypeId ?? (collection as any).categoryTypeId,
-            domain:
-              (collection as any).domain === 'STORE' ? 'STORE' : 'DESIGN',
+            domain: (collection as any).domain === 'STORE' ? 'STORE' : 'DESIGN',
             isAvailableInStore: (collection as any).domain === 'STORE',
             tags: resolvedNextTags,
             minPrice: prices.length ? Math.min(...prices) : null,
@@ -3300,7 +3413,8 @@ export class CollectionsService {
 
       if (
         (metadata.visibility ?? collection.visibility) !== previousVisibility &&
-        (metadata.visibility ?? collection.visibility) === CollectionVisibility.PRIVATE
+        (metadata.visibility ?? collection.visibility) ===
+          CollectionVisibility.PRIVATE
       ) {
         await this.handleVisibilityChange(collectionId, 'PRIVATE', userId);
       }
@@ -3316,8 +3430,8 @@ export class CollectionsService {
       const nextIndexedTags = this.getIndexedCollectionTags(
         {
           status: action === 'publish' ? 'PUBLISHED' : 'DRAFT',
-          visibility:
-            (metadata.visibility ?? collection.visibility) as CollectionVisibility,
+          visibility: (metadata.visibility ??
+            collection.visibility) as CollectionVisibility,
           deletedAt: null,
           tags: resolvedNextTags,
         },
@@ -3375,10 +3489,14 @@ export class CollectionsService {
           throw new BadRequestException('Presign record not found');
         }
         if (presign.userId !== userId) {
-          throw new ForbiddenException('Presign record does not belong to user');
+          throw new ForbiddenException(
+            'Presign record does not belong to user',
+          );
         }
         if (presign.collectionId && presign.collectionId !== collectionId) {
-          throw new BadRequestException('Presign record not linked to collection');
+          throw new BadRequestException(
+            'Presign record not linked to collection',
+          );
         }
         if (presign.s3Key !== completion.s3Key) {
           throw new BadRequestException('S3 key mismatch for presign record');
@@ -3438,7 +3556,8 @@ export class CollectionsService {
     await this.prisma.$transaction(async (tx) => {
       for (const [index, entry] of verifiedFiles.entries()) {
         const file = entry.file;
-        const orderIndex = typeof entry.orderIndex === 'number' ? entry.orderIndex : index;
+        const orderIndex =
+          typeof entry.orderIndex === 'number' ? entry.orderIndex : index;
         const existingMedia = await tx.collectionMedia.findFirst({
           where: { collectionId: collection.id, fileUploadId: file.id },
         });
@@ -3473,7 +3592,9 @@ export class CollectionsService {
         select: { id: true },
       });
       if (!belongs) {
-        throw new BadRequestException('coverMediaId does not belong to collection');
+        throw new BadRequestException(
+          'coverMediaId does not belong to collection',
+        );
       }
     } else if (typeof dto.coverIndex === 'number') {
       const cover = await this.prisma.collectionMedia.findFirst({
@@ -3491,12 +3612,13 @@ export class CollectionsService {
     }
 
     // Mark collection as published (or keep as DRAFT if requested)
-    const completionAction = dto.action ?? (dto.shouldPublish === false ? 'draft' : 'publish');
+    const completionAction =
+      dto.action ?? (dto.shouldPublish === false ? 'draft' : 'publish');
     const newStatus = completionAction === 'publish' ? 'PUBLISHED' : 'DRAFT';
     const completionMetadata = dto.collectionMetadata ?? {};
     const completionResolvedTags = Array.isArray(completionMetadata.tags)
       ? sanitizeTags(completionMetadata.tags, 30)
-      : collection.tags ?? [];
+      : (collection.tags ?? []);
     const completionFilterValueIds = this.normalizeFilterValueIds(
       completionMetadata.filterValueIds,
     );
@@ -3513,7 +3635,8 @@ export class CollectionsService {
       if (completionResolvedTags.length === 0) {
         throw new BadRequestException('Add at least one hashtag.');
       }
-      const nextCategoryId = completionMetadata.categoryId ?? collection.categoryId;
+      const nextCategoryId =
+        completionMetadata.categoryId ?? collection.categoryId;
       if (!nextCategoryId) {
         throw new BadRequestException('Choose what this item is.');
       }
@@ -3528,13 +3651,14 @@ export class CollectionsService {
         nextCategoryTypeId,
       );
       this.assertAudienceForPublish(completionMetadata.type ?? collection.type);
-      validatedCompletionFilterValueIds = await this.assertStructuredFiltersForPublish(
-        'COLLECTION',
-        collectionId,
-        Array.isArray(completionMetadata.filterValueIds)
-          ? completionFilterValueIds
-          : undefined,
-      );
+      validatedCompletionFilterValueIds =
+        await this.assertStructuredFiltersForPublish(
+          'COLLECTION',
+          collectionId,
+          Array.isArray(completionMetadata.filterValueIds)
+            ? completionFilterValueIds
+            : undefined,
+        );
       const mediaCount = await this.prisma.collectionMedia.count({
         where: { collectionId },
       });
@@ -3567,9 +3691,11 @@ export class CollectionsService {
         type: completionMetadata.type ?? collection.type,
         categoryId: completionMetadata.categoryId ?? collection.categoryId,
         categoryTypeId:
-          completionMetadata.categoryTypeId ?? (collection as any).categoryTypeId,
+          completionMetadata.categoryTypeId ??
+          (collection as any).categoryTypeId,
         tags: completionResolvedTags,
-        sizingMode: completionMetadata.sizingMode ?? (collection as any).sizingMode,
+        sizingMode:
+          completionMetadata.sizingMode ?? (collection as any).sizingMode,
         rtwSizes: Array.isArray(completionMetadata.rtwSizes)
           ? completionMetadata.rtwSizes
           : (collection as any).rtwSizes,
@@ -3582,7 +3708,9 @@ export class CollectionsService {
         customMeasurementKeys: Array.isArray(
           completionMetadata.customMeasurementKeys,
         )
-          ? this.normalizeMeasurementKeys(completionMetadata.customMeasurementKeys)
+          ? this.normalizeMeasurementKeys(
+              completionMetadata.customMeasurementKeys,
+            )
           : (collection as any).customMeasurementKeys,
         customOrderEnabled: completionCustomOrderEnabled,
         customFreeformPointIds: Array.isArray(
@@ -3593,7 +3721,8 @@ export class CollectionsService {
         fitPreference:
           completionMetadata.fitPreference ?? (collection as any).fitPreference,
         targetAgeGroup:
-          completionMetadata.targetAgeGroup ?? (collection as any).targetAgeGroup,
+          completionMetadata.targetAgeGroup ??
+          (collection as any).targetAgeGroup,
         status: newStatus,
         coverMediaId,
         ...(newStatus === 'DRAFT'
@@ -3627,7 +3756,10 @@ export class CollectionsService {
       );
     }
 
-    if (Array.isArray(completionMetadata.filterValueIds) && this.categoriesService) {
+    if (
+      Array.isArray(completionMetadata.filterValueIds) &&
+      this.categoriesService
+    ) {
       await this.categoriesService.setEntityFilters(
         'COLLECTION',
         collectionId,
@@ -3732,15 +3864,19 @@ export class CollectionsService {
       }
 
       try {
-        await this.notifications.create(userId, NotificationType.COLLECTION_UPLOAD, {
-          actorId: userId,
-          payload: {
-            collectionId: publishedCollection.id,
-            collectionTitle: publishedCollection.title,
-            targetUrl: `/collections/${publishedCollection.id}`,
-            message: `Your design "${publishedCollection.title}" is now live`,
+        await this.notifications.create(
+          userId,
+          NotificationType.COLLECTION_UPLOAD,
+          {
+            actorId: userId,
+            payload: {
+              collectionId: publishedCollection.id,
+              collectionTitle: publishedCollection.title,
+              targetUrl: `/collections/${publishedCollection.id}`,
+              message: `Your design "${publishedCollection.title}" is now live`,
+            },
           },
-        });
+        );
       } catch (e) {
         console.warn('Failed to notify collection owner of publish', e);
       }
@@ -3781,7 +3917,10 @@ export class CollectionsService {
           },
         });
         if (existing) {
-          return { ...existing, owner: this.mapCollectionOwner(existing.owner) };
+          return {
+            ...existing,
+            owner: this.mapCollectionOwner(existing.owner),
+          };
         }
       }
       throw new BadRequestException('Collection is not in draft status');
@@ -3792,15 +3931,20 @@ export class CollectionsService {
         'Store collections cannot be finalized with media uploads.',
       );
     }
-    if (!dto.collectionMetadata && !dto.action && dto.shouldPublish === undefined) {
+    if (
+      !dto.collectionMetadata &&
+      !dto.action &&
+      dto.shouldPublish === undefined
+    ) {
       throw new BadRequestException('Missing collection metadata');
     }
 
     const metadata = dto.collectionMetadata ?? {};
-    const action = dto.action ?? (dto.shouldPublish === false ? 'draft' : 'publish');
+    const action =
+      dto.action ?? (dto.shouldPublish === false ? 'draft' : 'publish');
     const resolvedNextTags = Array.isArray(metadata.tags)
       ? sanitizeTags(metadata.tags, 30)
-      : collection.tags ?? [];
+      : (collection.tags ?? []);
     const normalizedManualFilterValueIds = this.normalizeFilterValueIds(
       metadata.filterValueIds,
     );
@@ -3832,14 +3976,18 @@ export class CollectionsService {
         nextCategoryTypeId,
       );
       this.assertAudienceForPublish(metadata.type ?? collection.type);
-      validatedResolvedFilterValueIds = await this.assertStructuredFiltersForPublish(
-        'STORE_COLLECTION',
-        collectionId,
-        resolvedFilterValueIds,
-      );
+      validatedResolvedFilterValueIds =
+        await this.assertStructuredFiltersForPublish(
+          'STORE_COLLECTION',
+          collectionId,
+          resolvedFilterValueIds,
+        );
     }
 
-    if (metadata.categoryId !== undefined || metadata.categoryTypeId !== undefined) {
+    if (
+      metadata.categoryId !== undefined ||
+      metadata.categoryTypeId !== undefined
+    ) {
       const nextCategoryId = metadata.categoryId ?? collection.categoryId;
       const nextCategoryTypeId =
         metadata.categoryTypeId ?? (collection as any).categoryTypeId;
@@ -3915,11 +4063,15 @@ export class CollectionsService {
       if (action === 'publish') {
         const hasProductMedia = activeProducts.some((l) => {
           const p = l.product;
-          const images = Array.isArray(p.images) ? p.images.filter(Boolean) : [];
+          const images = Array.isArray(p.images)
+            ? p.images.filter(Boolean)
+            : [];
           return images.length > 0 || Boolean(p.thumbnail);
         });
         if (!hasProductMedia) {
-          throw new BadRequestException('At least one product image is required to publish');
+          throw new BadRequestException(
+            'At least one product image is required to publish',
+          );
         }
       }
 
@@ -3990,8 +4142,8 @@ export class CollectionsService {
     const nextIndexedTags = this.getIndexedCollectionTags(
       {
         status: action === 'publish' ? 'PUBLISHED' : 'DRAFT',
-        visibility:
-          (metadata.visibility ?? collection.visibility) as CollectionVisibility,
+        visibility: (metadata.visibility ??
+          collection.visibility) as CollectionVisibility,
         deletedAt: null,
         tags: resolvedNextTags,
       },
@@ -4035,89 +4187,96 @@ export class CollectionsService {
     ownerId: string,
     productIds: string[],
   ) {
-    const collectionOwner = await this.assertOwner(collectionId, ownerId, 'STORE');
+    const collectionOwner = await this.assertOwner(
+      collectionId,
+      ownerId,
+      'STORE',
+    );
     if (!Array.isArray(productIds) || productIds.length === 0) {
       throw new BadRequestException('productIds is required');
     }
 
-    const result = await this.prisma.$transaction(async (tx) => {
-      await this.lockCollectionForUpdate(tx, collectionId, 'STORE');
-      const products = await tx.product.findMany({
-        where: { id: { in: productIds }, deletedAt: null },
-        include: { brand: true },
-      });
-
-      if (products.length !== productIds.length) {
-        throw new NotFoundException('One or more products not found');
-      }
-
-      for (const p of products) {
-        if (p.brand?.ownerId !== collectionOwner.ownerId) {
-          throw new ForbiddenException('Not owner of one or more products');
-        }
-      }
-
-      const existingLinks = await tx.storeCollectionProduct.findMany({
-        where: { collectionId, productId: { in: productIds } },
-        select: { productId: true },
-      });
-      const existingSet = new Set(existingLinks.map((l) => l.productId));
-
-      const existingCount = await tx.storeCollectionProduct.count({
-        where: { collectionId },
-      });
-      const newIds = productIds.filter((id) => !existingSet.has(id));
-      if (existingCount + newIds.length > this.maxProductsPerCollection) {
-        throw new BadRequestException(
-          `Collections can contain maximum ${this.maxProductsPerCollection} products.`,
-        );
-      }
-
-      let nextOrderIndex = existingCount;
-
-      for (const productId of productIds) {
-        if (existingSet.has(productId)) continue;
-
-        const memberships = await tx.storeCollectionProduct.findMany({
-          where: { productId },
-          select: { collectionId: true },
-        });
-        const memberCollectionIds = memberships.map((m) => m.collectionId);
-        if (memberCollectionIds.length >= 3) {
-          throw new ConflictException({
-            code: 'COLLECTION_MAX_MEMBERSHIP',
-            message: 'Product already belongs to maximum 3 collections.',
-            conflictingCollectionIds: memberCollectionIds,
-          } as any);
-        }
-
-        const orderIndex = nextOrderIndex;
-        nextOrderIndex += 1;
-
-        const existingPrimary = await tx.storeCollectionProduct.findFirst({
-          where: { productId, isPrimary: true },
-          select: { collectionId: true },
-        });
-        const shouldBePrimary = !existingPrimary;
-
-        await tx.storeCollectionProduct.create({
-          data: {
-            id: uuidv4(),
-            collectionId,
-            productId,
-            orderIndex,
-            isPrimary: shouldBePrimary,
-          },
+    const result = await this.prisma.$transaction(
+      async (tx) => {
+        await this.lockCollectionForUpdate(tx, collectionId, 'STORE');
+        const products = await tx.product.findMany({
+          where: { id: { in: productIds }, deletedAt: null },
+          include: { brand: true },
         });
 
-        if (shouldBePrimary) {
-          await this.enforcePrimaryMembership(tx, productId);
+        if (products.length !== productIds.length) {
+          throw new NotFoundException('One or more products not found');
         }
-      }
 
-      await this.touchDraftActivity(tx, collectionId, 'STORE');
-      return { success: true };
-    }, { timeout: 15000 });
+        for (const p of products) {
+          if (p.brand?.ownerId !== collectionOwner.ownerId) {
+            throw new ForbiddenException('Not owner of one or more products');
+          }
+        }
+
+        const existingLinks = await tx.storeCollectionProduct.findMany({
+          where: { collectionId, productId: { in: productIds } },
+          select: { productId: true },
+        });
+        const existingSet = new Set(existingLinks.map((l) => l.productId));
+
+        const existingCount = await tx.storeCollectionProduct.count({
+          where: { collectionId },
+        });
+        const newIds = productIds.filter((id) => !existingSet.has(id));
+        if (existingCount + newIds.length > this.maxProductsPerCollection) {
+          throw new BadRequestException(
+            `Collections can contain maximum ${this.maxProductsPerCollection} products.`,
+          );
+        }
+
+        let nextOrderIndex = existingCount;
+
+        for (const productId of productIds) {
+          if (existingSet.has(productId)) continue;
+
+          const memberships = await tx.storeCollectionProduct.findMany({
+            where: { productId },
+            select: { collectionId: true },
+          });
+          const memberCollectionIds = memberships.map((m) => m.collectionId);
+          if (memberCollectionIds.length >= 3) {
+            throw new ConflictException({
+              code: 'COLLECTION_MAX_MEMBERSHIP',
+              message: 'Product already belongs to maximum 3 collections.',
+              conflictingCollectionIds: memberCollectionIds,
+            } as any);
+          }
+
+          const orderIndex = nextOrderIndex;
+          nextOrderIndex += 1;
+
+          const existingPrimary = await tx.storeCollectionProduct.findFirst({
+            where: { productId, isPrimary: true },
+            select: { collectionId: true },
+          });
+          const shouldBePrimary = !existingPrimary;
+
+          await tx.storeCollectionProduct.create({
+            data: {
+              id: uuidv4(),
+              collectionId,
+              productId,
+              orderIndex,
+              isPrimary: shouldBePrimary,
+            },
+          });
+
+          if (shouldBePrimary) {
+            await this.enforcePrimaryMembership(tx, productId);
+          }
+        }
+
+        await this.touchDraftActivity(tx, collectionId, 'STORE');
+        return { success: true };
+      },
+      { timeout: 15000 },
+    );
 
     // Do non-critical recompute work asynchronously to keep add-to-collection fast.
     void Promise.allSettled([
@@ -4137,31 +4296,34 @@ export class CollectionsService {
       throw new BadRequestException('productIds is required');
     }
 
-    const result = await this.prisma.$transaction(async (tx) => {
-      await this.lockCollectionForUpdate(tx, collectionId, 'STORE');
-      const existingLinks = await tx.storeCollectionProduct.findMany({
-        where: { collectionId, productId: { in: productIds } },
-        select: { productId: true, isPrimary: true },
-      });
+    const result = await this.prisma.$transaction(
+      async (tx) => {
+        await this.lockCollectionForUpdate(tx, collectionId, 'STORE');
+        const existingLinks = await tx.storeCollectionProduct.findMany({
+          where: { collectionId, productId: { in: productIds } },
+          select: { productId: true, isPrimary: true },
+        });
 
-      await tx.storeCollectionProduct.deleteMany({
-        where: { collectionId, productId: { in: productIds } },
-      });
+        await tx.storeCollectionProduct.deleteMany({
+          where: { collectionId, productId: { in: productIds } },
+        });
 
-      for (const productId of productIds) {
-        const removedPrimary = existingLinks.find(
-          (l) => l.productId === productId && l.isPrimary,
-        );
-        if (removedPrimary) {
-          await this.enforcePrimaryMembership(tx, productId);
-        } else {
-          await this.enforcePrimaryMembership(tx, productId);
+        for (const productId of productIds) {
+          const removedPrimary = existingLinks.find(
+            (l) => l.productId === productId && l.isPrimary,
+          );
+          if (removedPrimary) {
+            await this.enforcePrimaryMembership(tx, productId);
+          } else {
+            await this.enforcePrimaryMembership(tx, productId);
+          }
         }
-      }
 
-      await this.touchDraftActivity(tx, collectionId, 'STORE');
-      return { success: true };
-    }, { timeout: 15000 });
+        await this.touchDraftActivity(tx, collectionId, 'STORE');
+        return { success: true };
+      },
+      { timeout: 15000 },
+    );
 
     // Do non-critical recompute work asynchronously to keep remove flow fast.
     void Promise.allSettled([
@@ -4199,7 +4361,9 @@ export class CollectionsService {
     });
     const existingIds = new Set(existing.map((e) => e.productId));
     if (existingIds.size !== items.length) {
-      throw new BadRequestException('items must include all products in collection');
+      throw new BadRequestException(
+        'items must include all products in collection',
+      );
     }
     for (const item of items) {
       if (!existingIds.has(item.productId)) {
@@ -4516,10 +4680,16 @@ export class CollectionsService {
         },
         collection.tags ?? [],
       );
-      if (this.systemTags && !this.areTagsEqual(previousIndexedTags, nextIndexedTags)) {
+      if (
+        this.systemTags &&
+        !this.areTagsEqual(previousIndexedTags, nextIndexedTags)
+      ) {
         await this.systemTags.syncTags(previousIndexedTags, nextIndexedTags);
       }
-      if (this.tagIndex && !this.areTagsEqual(previousIndexedTags, nextIndexedTags)) {
+      if (
+        this.tagIndex &&
+        !this.areTagsEqual(previousIndexedTags, nextIndexedTags)
+      ) {
         await this.tagIndex.syncEntityTags(
           TAG_ENTITY_TYPE.COLLECTION,
           collectionId,
@@ -4578,10 +4748,16 @@ export class CollectionsService {
       },
       collection.tags ?? [],
     );
-    if (this.systemTags && !this.areTagsEqual(previousIndexedTags, nextIndexedTags)) {
+    if (
+      this.systemTags &&
+      !this.areTagsEqual(previousIndexedTags, nextIndexedTags)
+    ) {
       await this.systemTags.syncTags(previousIndexedTags, nextIndexedTags);
     }
-    if (this.tagIndex && !this.areTagsEqual(previousIndexedTags, nextIndexedTags)) {
+    if (
+      this.tagIndex &&
+      !this.areTagsEqual(previousIndexedTags, nextIndexedTags)
+    ) {
       await this.tagIndex.syncEntityTags(
         TAG_ENTITY_TYPE.COLLECTION,
         collectionId,
@@ -4616,7 +4792,10 @@ export class CollectionsService {
 
       let isAdminLocked = false;
       try {
-        await this.ensureAdminRepublishUnlocked('StoreCollection', collectionId);
+        await this.ensureAdminRepublishUnlocked(
+          'StoreCollection',
+          collectionId,
+        );
       } catch (error) {
         if (error instanceof ForbiddenException) {
           isAdminLocked = true;
@@ -4625,7 +4804,9 @@ export class CollectionsService {
         }
       }
       if (!isAdminLocked) {
-        throw new BadRequestException('This collection is not currently blocked by admin moderation');
+        throw new BadRequestException(
+          'This collection is not currently blocked by admin moderation',
+        );
       }
 
       await this.notifyAdminsForRepublishRequest(
@@ -4662,7 +4843,9 @@ export class CollectionsService {
       }
     }
     if (!isAdminLocked) {
-      throw new BadRequestException('This collection is not currently blocked by admin moderation');
+      throw new BadRequestException(
+        'This collection is not currently blocked by admin moderation',
+      );
     }
 
     await this.notifyAdminsForRepublishRequest(
@@ -4697,7 +4880,9 @@ export class CollectionsService {
 
     for (const log of logs) {
       const state =
-        log?.newState && typeof log.newState === 'object' && !Array.isArray(log.newState)
+        log?.newState &&
+        typeof log.newState === 'object' &&
+        !Array.isArray(log.newState)
           ? (log.newState as Record<string, unknown>)
           : {};
       const action = String(state.action ?? '').toUpperCase();
@@ -4776,16 +4961,16 @@ export class CollectionsService {
     const previousProducts =
       nextTags && (this.systemTags || this.tagIndex)
         ? await this.prisma.product.findMany({
-          where: { id: { in: productIds } },
-          select: {
-            id: true,
-            tags: true,
-            isActive: true,
-            publishAt: true,
-            deletedAt: true,
-            archivedAt: true,
-          },
-        })
+            where: { id: { in: productIds } },
+            select: {
+              id: true,
+              tags: true,
+              isActive: true,
+              publishAt: true,
+              deletedAt: true,
+              archivedAt: true,
+            },
+          })
         : [];
     if (typeof template.description === 'string') {
       data.description = template.description;
@@ -4938,7 +5123,8 @@ export class CollectionsService {
         const p = link?.product;
         if (!p) return false;
         if (p.deletedAt || p.archivedAt || !p.isActive) return false;
-        if (p.publishAt && new Date(p.publishAt).getTime() > now.getTime()) return false;
+        if (p.publishAt && new Date(p.publishAt).getTime() > now.getTime())
+          return false;
         return true;
       });
     }
@@ -4954,7 +5140,8 @@ export class CollectionsService {
     const filterValueIds = Array.from(
       new Set(appliedFilters.map((filter) => filter.valueId)),
     );
-    const totalThreads = collection.threadsCount + (mediaAgg._sum.threadsCount ?? 0);
+    const totalThreads =
+      collection.threadsCount + (mediaAgg._sum.threadsCount ?? 0);
 
     let products = collection.products;
     if (!isOwner) {
@@ -4990,12 +5177,13 @@ export class CollectionsService {
         ? firstProductWithCover.product.images[0]
         : null);
 
-    const { threadsCount, collectionCollabsCount, medias, ...rest } = collection as any;
+    const { threadsCount, collectionCollabsCount, medias, ...rest } =
+      collection as any;
     const mappedMedias = Array.isArray(medias)
       ? medias.map((m: any) => {
-        const { threadsCount: mediaThreadsCount, ...mediaRest } = m;
-        return { ...mediaRest, threadsCount: mediaThreadsCount };
-      })
+          const { threadsCount: mediaThreadsCount, ...mediaRest } = m;
+          return { ...mediaRest, threadsCount: mediaThreadsCount };
+        })
       : medias;
     return {
       ...rest,
@@ -5027,7 +5215,12 @@ export class CollectionsService {
   ): Promise<boolean> {
     const c = await this.prisma.storeCollection.findUnique({
       where: { id: collectionId },
-      select: { ownerId: true, status: true, visibility: true, deletedAt: true },
+      select: {
+        ownerId: true,
+        status: true,
+        visibility: true,
+        deletedAt: true,
+      },
     });
     if (!c) return false;
     if (c.deletedAt) return false;
@@ -5094,13 +5287,16 @@ export class CollectionsService {
     const filterValueIds = Array.from(
       new Set(appliedFilters.map((filter) => filter.valueId)),
     );
-    const filterSelection = appliedFilters.reduce((acc, filter) => {
-      const current = acc[filter.dimensionId] ?? [];
-      if (!current.includes(filter.valueId)) {
-        acc[filter.dimensionId] = [...current, filter.valueId];
-      }
-      return acc;
-    }, {} as Record<string, string[]>);
+    const filterSelection = appliedFilters.reduce(
+      (acc, filter) => {
+        const current = acc[filter.dimensionId] ?? [];
+        if (!current.includes(filter.valueId)) {
+          acc[filter.dimensionId] = [...current, filter.valueId];
+        }
+        return acc;
+      },
+      {} as Record<string, string[]>,
+    );
 
     return {
       ...collection,
@@ -5166,8 +5362,10 @@ export class CollectionsService {
 
     // Generate signed URLs for cover images
     const fileIds = items
-      .map((c) =>
-        this.resolveCoverMedia(c.medias, c.coverMediaId ?? null)?.fileUploadId,
+      .map(
+        (c) =>
+          this.resolveCoverMedia(c.medias, c.coverMediaId ?? null)
+            ?.fileUploadId,
       )
       .filter((id): id is string => !!id);
 
@@ -5248,11 +5446,11 @@ export class CollectionsService {
       requesterId === userId
         ? undefined
         : {
-          deletedAt: null,
-          archivedAt: null,
-          isActive: true,
-          OR: [{ publishAt: null }, { publishAt: { lte: now } }],
-        };
+            deletedAt: null,
+            archivedAt: null,
+            isActive: true,
+            OR: [{ publishAt: null }, { publishAt: { lte: now } }],
+          };
     try {
       console.log(
         '[collections.service.getUserCollections] userId=%s requesterId=%s visibility=%s scope=%s featurePrivate=%s',
@@ -5262,7 +5460,7 @@ export class CollectionsService {
         resolvedScope,
         privateFeature,
       );
-    } catch { }
+    } catch {}
 
     // Default: published only for non-owner
     if (requesterId !== userId) {
@@ -5361,10 +5559,7 @@ export class CollectionsService {
           ...(productVisibilityWhere
             ? { where: { product: productVisibilityWhere } }
             : {}),
-          orderBy: [
-            { isPrimary: 'desc' },
-            { orderIndex: 'asc' },
-          ],
+          orderBy: [{ isPrimary: 'desc' }, { orderIndex: 'asc' }],
           include: {
             product: {
               select: {
@@ -5400,7 +5595,7 @@ export class CollectionsService {
         items.length,
         where,
       );
-    } catch { }
+    } catch {}
 
     const hasNext = items.length > limit;
     const data = hasNext ? items.slice(0, -1) : items;
@@ -5475,9 +5670,9 @@ export class CollectionsService {
             profileImage: signedUrlMap.get(logoId)!, // Update profileImage string too
             profileImageFile: owner.profileImageFile
               ? {
-                ...owner.profileImageFile,
-                s3Url: signedUrlMap.get(logoId)!,
-              }
+                  ...owner.profileImageFile,
+                  s3Url: signedUrlMap.get(logoId)!,
+                }
               : null,
           };
         }
@@ -5577,7 +5772,12 @@ export class CollectionsService {
         const visibleLinks = (collection.products || []).filter((link: any) => {
           const product = link?.product;
           if (!product) return false;
-          if (product.deletedAt || product.archivedAt || product.isActive === false) return false;
+          if (
+            product.deletedAt ||
+            product.archivedAt ||
+            product.isActive === false
+          )
+            return false;
           if (product.publishAt && product.publishAt > now) return false;
           return true;
         });
@@ -5585,11 +5785,17 @@ export class CollectionsService {
         const coverImage =
           products.find((product: any) => product.thumbnail)?.thumbnail ??
           products
-            .flatMap((product: any) => (Array.isArray(product.images) ? product.images : []))
-            .find((image: unknown) => typeof image === 'string' && image.trim()) ??
+            .flatMap((product: any) =>
+              Array.isArray(product.images) ? product.images : [],
+            )
+            .find(
+              (image: unknown) => typeof image === 'string' && image.trim(),
+            ) ??
           null;
         const prices = products
-          .map((product: any) => Number(product.salePrice ?? product.price ?? 0))
+          .map((product: any) =>
+            Number(product.salePrice ?? product.price ?? 0),
+          )
           .filter((price: number) => Number.isFinite(price) && price > 0);
         const owner = this.mapCollectionOwner(collection.owner);
 
@@ -5609,8 +5815,12 @@ export class CollectionsService {
           productCount: collection._count?.products ?? products.length,
           itemCount: products.length,
           priceRange: {
-            min: prices.length ? Math.min(...prices) : collection.minPrice ?? null,
-            max: prices.length ? Math.max(...prices) : collection.maxPrice ?? null,
+            min: prices.length
+              ? Math.min(...prices)
+              : (collection.minPrice ?? null),
+            max: prices.length
+              ? Math.max(...prices)
+              : (collection.maxPrice ?? null),
             currency: products[0]?.currency ?? owner?.brand?.currency ?? 'NGN',
           },
           products: visibleLinks,
@@ -5828,11 +6038,8 @@ export class CollectionsService {
           }
           return null;
         })
-        .filter(
-          (
-            item,
-          ): item is { url: string | null; fileId: string | null } =>
-            Boolean(item),
+        .filter((item): item is { url: string | null; fileId: string | null } =>
+          Boolean(item),
         );
 
       collectionPreviewById.set(c.id, {
@@ -5850,12 +6057,13 @@ export class CollectionsService {
     return {
       items: data.map((c: any) => {
         const logoOwner = this.mapCollectionOwner(c.owner);
-        const logoId = logoOwner?.profileImageFile?.id || logoOwner?.profileImageId;
+        const logoId =
+          logoOwner?.profileImageFile?.id || logoOwner?.profileImageId;
         const previewMeta = collectionPreviewById.get(c.id);
         const visibleCount = previewMeta?.visibleCount ?? 0;
         const coverFromFileId =
           previewMeta?.coverFileId && signedUrlMap.has(previewMeta.coverFileId)
-            ? signedUrlMap.get(previewMeta.coverFileId) ?? null
+            ? (signedUrlMap.get(previewMeta.coverFileId) ?? null)
             : null;
         const coverImage = previewMeta?.coverUrl ?? coverFromFileId ?? null;
         const previewImages = (previewMeta?.preview ?? [])
@@ -5961,7 +6169,9 @@ export class CollectionsService {
       });
       const productIds = productLinks.map((l) => l.productId);
       if (productIds.length) {
-        await this.prisma.cartItem.deleteMany({ where: { productId: { in: productIds } } });
+        await this.prisma.cartItem.deleteMany({
+          where: { productId: { in: productIds } },
+        });
       }
 
       if (previousIndexedTags.length > 0 && this.systemTags) {
@@ -6016,7 +6226,9 @@ export class CollectionsService {
     );
 
     const now = new Date();
-    const deleteExpiresAt = new Date(now.getTime() + this.collectionDeleteWindowMs);
+    const deleteExpiresAt = new Date(
+      now.getTime() + this.collectionDeleteWindowMs,
+    );
 
     await this.prisma.collection.update({
       where: { id: collectionId },
@@ -6032,7 +6244,9 @@ export class CollectionsService {
     });
     const productIds = productLinks.map((l) => l.productId);
     if (productIds.length) {
-      await this.prisma.cartItem.deleteMany({ where: { productId: { in: productIds } } });
+      await this.prisma.cartItem.deleteMany({
+        where: { productId: { in: productIds } },
+      });
     }
 
     // Create notification for successful deletion (informational, no action link)
@@ -6068,7 +6282,11 @@ export class CollectionsService {
       );
     }
 
-    return { success: true, deletedAt: now.toISOString(), restoreBy: deleteExpiresAt.toISOString() };
+    return {
+      success: true,
+      deletedAt: now.toISOString(),
+      restoreBy: deleteExpiresAt.toISOString(),
+    };
   }
 
   async duplicateCollection(
@@ -6109,7 +6327,8 @@ export class CollectionsService {
       if (maxMembershipConflicts.length > 0) {
         throw new ConflictException({
           code: 'COLLECTION_MAX_MEMBERSHIP',
-          message: 'One or more products already belong to maximum 3 collections.',
+          message:
+            'One or more products already belong to maximum 3 collections.',
           productIds: maxMembershipConflicts,
         } as any);
       }
@@ -6200,7 +6419,10 @@ export class CollectionsService {
         },
       });
       if (!duplicated) throw new NotFoundException('Collection not found');
-      return { ...duplicated, owner: this.mapCollectionOwner(duplicated.owner) };
+      return {
+        ...duplicated,
+        owner: this.mapCollectionOwner(duplicated.owner),
+      };
     }
 
     const source = (await this.prisma.collection.findUnique({
@@ -6229,7 +6451,10 @@ export class CollectionsService {
     } as any)) as any;
 
     if (!source) throw new NotFoundException('Collection not found');
-    await this.assertActorCanManageLegacyOwnerCatalog(requesterId, source.ownerId);
+    await this.assertActorCanManageLegacyOwnerCatalog(
+      requesterId,
+      source.ownerId,
+    );
     if (expectedDomain && source.domain !== expectedDomain) {
       throw new BadRequestException(
         'Duplicate requested with design scope for a store collection.',
@@ -6257,18 +6482,25 @@ export class CollectionsService {
     if (maxMembershipConflicts.length > 0) {
       throw new ConflictException({
         code: 'COLLECTION_MAX_MEMBERSHIP',
-        message: 'One or more products already belong to maximum 3 collections.',
+        message:
+          'One or more products already belong to maximum 3 collections.',
         productIds: maxMembershipConflicts,
       } as any);
     }
 
     const baseTitle = String(source.title || 'Untitled collection').trim();
-    const copiedTags = Array.isArray(source.tags) ? sanitizeTags(source.tags, 30) : [];
+    const copiedTags = Array.isArray(source.tags)
+      ? sanitizeTags(source.tags, 30)
+      : [];
     const duplicateId = uuidv4();
     const now = new Date();
-    const duplicateTitle = baseTitle ? `Copy of ${baseTitle}` : 'Copy of collection';
+    const duplicateTitle = baseTitle
+      ? `Copy of ${baseTitle}`
+      : 'Copy of collection';
     const duplicateDomain: CollectionDomainValue =
-      source.domain === 'STORE' || source.isAvailableInStore ? 'STORE' : 'DESIGN';
+      source.domain === 'STORE' || source.isAvailableInStore
+        ? 'STORE'
+        : 'DESIGN';
 
     await this.prisma.$transaction(async (tx) => {
       await tx.collection.create({
@@ -6302,7 +6534,8 @@ export class CollectionsService {
             id: uuidv4(),
             collectionId: duplicateId,
             productId: link.productId,
-            orderIndex: typeof link.orderIndex === 'number' ? link.orderIndex : index,
+            orderIndex:
+              typeof link.orderIndex === 'number' ? link.orderIndex : index,
             isPrimary: false,
           })),
           skipDuplicates: true,
@@ -6370,7 +6603,10 @@ export class CollectionsService {
         throw new BadRequestException('Collection is not deleted');
       }
       const now = new Date();
-      if (storeCollection.deleteExpiresAt && storeCollection.deleteExpiresAt < now) {
+      if (
+        storeCollection.deleteExpiresAt &&
+        storeCollection.deleteExpiresAt < now
+      ) {
         throw new GoneException('Collection recovery window has expired');
       }
 
@@ -6397,10 +6633,16 @@ export class CollectionsService {
         },
         storeCollection.tags ?? [],
       );
-      if (this.systemTags && !this.areTagsEqual(previousIndexedTags, nextIndexedTags)) {
+      if (
+        this.systemTags &&
+        !this.areTagsEqual(previousIndexedTags, nextIndexedTags)
+      ) {
         await this.systemTags.syncTags(previousIndexedTags, nextIndexedTags);
       }
-      if (this.tagIndex && !this.areTagsEqual(previousIndexedTags, nextIndexedTags)) {
+      if (
+        this.tagIndex &&
+        !this.areTagsEqual(previousIndexedTags, nextIndexedTags)
+      ) {
         await this.tagIndex.syncEntityTags(
           TAG_ENTITY_TYPE.COLLECTION,
           collectionId,
@@ -6462,10 +6704,16 @@ export class CollectionsService {
       },
       collection.tags ?? [],
     );
-    if (this.systemTags && !this.areTagsEqual(previousIndexedTags, nextIndexedTags)) {
+    if (
+      this.systemTags &&
+      !this.areTagsEqual(previousIndexedTags, nextIndexedTags)
+    ) {
       await this.systemTags.syncTags(previousIndexedTags, nextIndexedTags);
     }
-    if (this.tagIndex && !this.areTagsEqual(previousIndexedTags, nextIndexedTags)) {
+    if (
+      this.tagIndex &&
+      !this.areTagsEqual(previousIndexedTags, nextIndexedTags)
+    ) {
       await this.tagIndex.syncEntityTags(
         TAG_ENTITY_TYPE.COLLECTION,
         collectionId,
@@ -6905,7 +7153,7 @@ export class CollectionsService {
             dedupeMs: 5 * 60 * 1000,
           },
         );
-      } catch { }
+      } catch {}
     }
 
     // Notify patchers about engagement on brand content
@@ -7103,7 +7351,7 @@ export class CollectionsService {
             },
           },
         );
-      } catch { }
+      } catch {}
     }
 
     return { status: 'PENDING', message: 'Contribution request sent' };
@@ -7151,7 +7399,7 @@ export class CollectionsService {
             targetUrl: `/collections/${request.collectionId}`,
           },
         });
-      } catch { }
+      } catch {}
     }
 
     return { status, message: `Contribution request ${status.toLowerCase()}` };
@@ -7210,7 +7458,9 @@ export class CollectionsService {
     });
 
     if (existingCollab) {
-      throw new BadRequestException('You have already collabed this collection');
+      throw new BadRequestException(
+        'You have already collabed this collection',
+      );
     }
 
     // Create collab record
@@ -7255,7 +7505,7 @@ export class CollectionsService {
             },
           },
         );
-      } catch { }
+      } catch {}
     }
 
     return collab;
@@ -7350,7 +7600,8 @@ export class CollectionsService {
         ...row,
         collection: {
           ...row.collection,
-          coverMediaId: row.collection.coverMediaId ?? coverMedias[0]?.id ?? null,
+          coverMediaId:
+            row.collection.coverMediaId ?? coverMedias[0]?.id ?? null,
           medias: coverMedias,
         },
       };
@@ -7970,7 +8221,7 @@ export class CollectionsService {
   ) {
     await this.assertOwner(collectionId, ownerId, 'DESIGN');
     const c = await this.prisma.collection.findUnique({
-        where: { id: collectionId, deletedAt: null },
+      where: { id: collectionId, deletedAt: null },
       select: { visibility: true },
     });
     if (!c) throw new NotFoundException('Collection not found');
@@ -8084,7 +8335,8 @@ export class CollectionsService {
         },
       });
       if (!existing) throw new NotFoundException('Collection not found');
-      if (existing.deletedAt) throw new GoneException('Collection has been deleted');
+      if (existing.deletedAt)
+        throw new GoneException('Collection has been deleted');
 
       const titleRequested = typeof body.title === 'string';
       const descriptionRequested = typeof body.description === 'string';
@@ -8121,19 +8373,25 @@ export class CollectionsService {
           ? body.categoryTypeId || null
           : (existing.categoryTypeId ?? null);
 
-      if (typeof body.title === 'string' || body.title === null) data.title = body.title || null;
+      if (typeof body.title === 'string' || body.title === null)
+        data.title = body.title || null;
       if (typeof body.description === 'string' || body.description === null) {
         data.description = body.description || null;
       }
       if (titleChanged || descriptionChanged) {
         data.metadataEditedAt = new Date();
       }
-      if (typeof body.visibility === 'string') data.visibility = body.visibility;
+      if (typeof body.visibility === 'string')
+        data.visibility = body.visibility;
       if (typeof body.type === 'string') data.type = body.type;
-      if (typeof body.minPrice === 'number' || body.minPrice === null) data.minPrice = body.minPrice as any;
-      if (typeof body.maxPrice === 'number' || body.maxPrice === null) data.maxPrice = body.maxPrice as any;
-      if (typeof body.saleMinPrice === 'number' || body.saleMinPrice === null) data.saleMinPrice = body.saleMinPrice as any;
-      if (typeof body.saleMaxPrice === 'number' || body.saleMaxPrice === null) data.saleMaxPrice = body.saleMaxPrice as any;
+      if (typeof body.minPrice === 'number' || body.minPrice === null)
+        data.minPrice = body.minPrice as any;
+      if (typeof body.maxPrice === 'number' || body.maxPrice === null)
+        data.maxPrice = body.maxPrice as any;
+      if (typeof body.saleMinPrice === 'number' || body.saleMinPrice === null)
+        data.saleMinPrice = body.saleMinPrice as any;
+      if (typeof body.saleMaxPrice === 'number' || body.saleMaxPrice === null)
+        data.saleMaxPrice = body.saleMaxPrice as any;
       if (typeof body.saleStartAt === 'string' || body.saleStartAt === null) {
         data.saleStartAt = body.saleStartAt ? new Date(body.saleStartAt) : null;
       }
@@ -8216,7 +8474,8 @@ export class CollectionsService {
         },
         previousTags,
       );
-      const resolvedNextTags = nextTags ?? (Array.isArray(updated.tags) ? updated.tags : previousTags);
+      const resolvedNextTags =
+        nextTags ?? (Array.isArray(updated.tags) ? updated.tags : previousTags);
       const nextIndexedTags = this.getIndexedCollectionTags(
         {
           status: updated.status,
@@ -8273,7 +8532,8 @@ export class CollectionsService {
       } as any,
     } as any)) as any;
     if (!existing) throw new NotFoundException('Collection not found');
-    if (existing.deletedAt) throw new GoneException('Collection has been deleted');
+    if (existing.deletedAt)
+      throw new GoneException('Collection has been deleted');
 
     const titleRequested = typeof body.title === 'string';
     const descriptionRequested = typeof body.description === 'string';
@@ -8300,7 +8560,10 @@ export class CollectionsService {
 
     const now = new Date();
     if (existing.status === 'DRAFT') {
-      if (typeof body.draftVersion === 'number' && body.draftVersion !== existing.draftVersion) {
+      if (
+        typeof body.draftVersion === 'number' &&
+        body.draftVersion !== existing.draftVersion
+      ) {
         throw new ConflictException({
           code: 'DRAFT_VERSION_CONFLICT',
           message: 'Draft was modified by another session.',
@@ -8386,7 +8649,9 @@ export class CollectionsService {
           select: { id: true },
         });
         if (!belongs) {
-          throw new BadRequestException('coverMediaId does not belong to collection');
+          throw new BadRequestException(
+            'coverMediaId does not belong to collection',
+          );
         }
       }
       data.coverMediaId = body.coverMediaId || null;
@@ -8499,7 +8764,8 @@ export class CollectionsService {
       },
       previousTags,
     );
-    const resolvedNextTags = nextTags ?? (Array.isArray(updated.tags) ? updated.tags : previousTags);
+    const resolvedNextTags =
+      nextTags ?? (Array.isArray(updated.tags) ? updated.tags : previousTags);
     const nextIndexedTags = this.getIndexedCollectionTags(
       {
         status: updated.status,
@@ -8545,7 +8811,10 @@ export class CollectionsService {
    * Used before "Add Entire Collection to Cart"
    */
   async getCollectionCartPreview(collectionId: string, requesterId?: string) {
-    const canView = await this.canViewStoreCollection(collectionId, requesterId);
+    const canView = await this.canViewStoreCollection(
+      collectionId,
+      requesterId,
+    );
     if (!canView) throw new NotFoundException('Collection not found');
 
     const collection = await this.prisma.storeCollection.findUnique({
@@ -8582,11 +8851,12 @@ export class CollectionsService {
         continue;
       }
 
-      const effectivePrice = p.salePrice &&
+      const effectivePrice =
+        p.salePrice &&
         (!p.saleStartAt || p.saleStartAt <= now) &&
         (!p.saleEndAt || p.saleEndAt >= now)
-        ? Number(p.salePrice)
-        : Number(p.price);
+          ? Number(p.salePrice)
+          : Number(p.price);
 
       const variants = (p.variants || []).map((v) => ({
         size: v.size,
@@ -8596,9 +8866,10 @@ export class CollectionsService {
         price: v.price ? Number(v.price) : undefined,
       }));
 
-      const hasAnyInStock = variants.length > 0
-        ? variants.some(v => v.inStock)
-        : p.totalStock > 0;
+      const hasAnyInStock =
+        variants.length > 0
+          ? variants.some((v) => v.inStock)
+          : p.totalStock > 0;
       const canBackorder = !!p.allowBackorders;
 
       const item = {
@@ -8629,7 +8900,8 @@ export class CollectionsService {
       } else {
         available.push({
           ...item,
-          availabilityNote: !hasAnyInStock && canBackorder ? 'backorder' : undefined,
+          availabilityNote:
+            !hasAnyInStock && canBackorder ? 'backorder' : undefined,
         });
       }
     }
@@ -8669,7 +8941,10 @@ export class CollectionsService {
     });
 
     if (!product) throw new NotFoundException('Product not found');
-    await this.assertActorCanManageLegacyOwnerCatalog(ownerId, product.brand.ownerId);
+    await this.assertActorCanManageLegacyOwnerCatalog(
+      ownerId,
+      product.brand.ownerId,
+    );
 
     const memberships = await this.prisma.storeCollectionProduct.findMany({
       where: { productId },
@@ -8683,10 +8958,13 @@ export class CollectionsService {
     const affectedCollections: any[] = [];
 
     const collectionIds = memberships.map((m) => m.collectionId);
-    const linksByCollection = new Map<string, Array<{
-      productId: string;
-      product: { id: string; price: any } | null;
-    }>>();
+    const linksByCollection = new Map<
+      string,
+      Array<{
+        productId: string;
+        product: { id: string; price: any } | null;
+      }>
+    >();
 
     if (collectionIds.length > 0) {
       const links = await this.prisma.storeCollectionProduct.findMany({
@@ -8707,9 +8985,11 @@ export class CollectionsService {
     for (const m of memberships) {
       const links = linksByCollection.get(m.collectionId) ?? [];
 
-      const prices = links.map((l) =>
-        l.productId === productId ? newPrice : Number(l.product?.price || 0),
-      ).filter((p) => p > 0);
+      const prices = links
+        .map((l) =>
+          l.productId === productId ? newPrice : Number(l.product?.price || 0),
+        )
+        .filter((p) => p > 0);
 
       const newMinPrice = prices.length > 0 ? Math.min(...prices) : null;
       const newMaxPrice = prices.length > 0 ? Math.max(...prices) : null;
@@ -8729,9 +9009,8 @@ export class CollectionsService {
 
     const currentPrice = Number(product.price);
     const priceChange = newPrice - currentPrice;
-    const percentageChange = currentPrice > 0
-      ? ((priceChange / currentPrice) * 100)
-      : 0;
+    const percentageChange =
+      currentPrice > 0 ? (priceChange / currentPrice) * 100 : 0;
 
     return {
       productId,
@@ -8761,11 +9040,15 @@ export class CollectionsService {
       throw new BadRequestException('CSV file is required for bulk upload');
     }
     const maxFileSize = this.systemConfigService
-      ? await this.systemConfigService.getMaxFileSize('upload.maxSize.collectionBulk')
+      ? await this.systemConfigService.getMaxFileSize(
+          'upload.maxSize.collectionBulk',
+        )
       : 2 * 1024 * 1024;
     if (file.size > maxFileSize) {
       const limitMB = (maxFileSize / (1024 * 1024)).toFixed(1);
-      throw new BadRequestException(`Bulk upload file exceeds the ${limitMB}MB limit`);
+      throw new BadRequestException(
+        `Bulk upload file exceeds the ${limitMB}MB limit`,
+      );
     }
 
     const jobId = uuidv4();
@@ -8812,9 +9095,16 @@ export class CollectionsService {
         if (process.env.NODE_ENV === 'production') {
           await this.prisma.collectionBulkUploadJob.update({
             where: { id: jobId },
-            data: { status: 'FAILED', errorSummary: [{ message: 'Queue unavailable in production' }] as any },
+            data: {
+              status: 'FAILED',
+              errorSummary: [
+                { message: 'Queue unavailable in production' },
+              ] as any,
+            },
           });
-          throw new InternalServerErrorException('Bulk upload queue is not configured');
+          throw new InternalServerErrorException(
+            'Bulk upload queue is not configured',
+          );
         }
 
         this.logger.warn(
@@ -8822,7 +9112,9 @@ export class CollectionsService {
         );
         void setImmediate(() => {
           this.processBulkUploadJob(jobId).catch((err) =>
-            this.logger.error(`Inline bulk upload failed for ${jobId}: ${String(err)}`),
+            this.logger.error(
+              `Inline bulk upload failed for ${jobId}: ${String(err)}`,
+            ),
           );
         });
       }
@@ -8830,9 +9122,16 @@ export class CollectionsService {
       if (process.env.NODE_ENV === 'production') {
         await this.prisma.collectionBulkUploadJob.update({
           where: { id: jobId },
-          data: { status: 'FAILED', errorSummary: [{ message: 'Queue unavailable in production' }] as any },
+          data: {
+            status: 'FAILED',
+            errorSummary: [
+              { message: 'Queue unavailable in production' },
+            ] as any,
+          },
         });
-        throw new InternalServerErrorException('Bulk upload queue is not configured');
+        throw new InternalServerErrorException(
+          'Bulk upload queue is not configured',
+        );
       }
 
       this.logger.warn(
@@ -8840,7 +9139,9 @@ export class CollectionsService {
       );
       void setImmediate(() => {
         this.processBulkUploadJob(jobId).catch((err) =>
-          this.logger.error(`Inline bulk upload failed for ${jobId}: ${String(err)}`),
+          this.logger.error(
+            `Inline bulk upload failed for ${jobId}: ${String(err)}`,
+          ),
         );
       });
     }
@@ -8896,7 +9197,9 @@ export class CollectionsService {
         processedRows: existing.processedRows,
         successRows: existing.successRows,
         failedRows: existing.failedRows,
-        errors: Array.isArray(existing.errorSummary) ? existing.errorSummary : [],
+        errors: Array.isArray(existing.errorSummary)
+          ? existing.errorSummary
+          : [],
       };
     }
 
@@ -8925,7 +9228,8 @@ export class CollectionsService {
         successRows += 1;
       } catch (error: any) {
         failedRows += 1;
-        const message = error?.response?.message || error?.message || 'Row failed';
+        const message =
+          error?.response?.message || error?.message || 'Row failed';
         errors.push({ row: rowRecord.rowIndex, field: 'row', message });
         await this.prisma.collectionBulkUploadRow.update({
           where: { id: rowRecord.id },
@@ -8938,14 +9242,17 @@ export class CollectionsService {
       where: { jobId },
       select: { status: true },
     });
-    successRows = refreshedRows.filter((row) => row.status === 'SUCCESS').length;
+    successRows = refreshedRows.filter(
+      (row) => row.status === 'SUCCESS',
+    ).length;
     failedRows = refreshedRows.filter((row) => row.status === 'FAILED').length;
     processedRows = refreshedRows.length;
-    const status = failedRows > 0 && successRows > 0
-      ? 'PARTIAL'
-      : failedRows > 0
-        ? 'FAILED'
-        : 'COMPLETED';
+    const status =
+      failedRows > 0 && successRows > 0
+        ? 'PARTIAL'
+        : failedRows > 0
+          ? 'FAILED'
+          : 'COMPLETED';
 
     await this.prisma.collectionBulkUploadJob.update({
       where: { id: jobId },
@@ -9014,10 +9321,13 @@ export class CollectionsService {
     });
     if (!job) throw new NotFoundException('Bulk upload job not found');
 
-    const targetRows = Array.isArray(rowIndices) && rowIndices.length > 0
-      ? job.rows.filter((row) => rowIndices.includes(row.rowIndex))
-      : job.rows.filter((row) => row.status === 'FAILED');
-    const retriedCount = targetRows.filter((row) => row.status !== 'SUCCESS').length;
+    const targetRows =
+      Array.isArray(rowIndices) && rowIndices.length > 0
+        ? job.rows.filter((row) => rowIndices.includes(row.rowIndex))
+        : job.rows.filter((row) => row.status === 'FAILED');
+    const retriedCount = targetRows.filter(
+      (row) => row.status !== 'SUCCESS',
+    ).length;
 
     await this.prisma.collectionBulkUploadJob.update({
       where: { id: jobId },
@@ -9032,17 +9342,24 @@ export class CollectionsService {
           { jobId: `bulk-upload-retry:${jobId}:${Date.now()}` },
         );
       } catch (error) {
-        console.warn('Failed to enqueue bulk upload retry; running inline', error);
+        console.warn(
+          'Failed to enqueue bulk upload retry; running inline',
+          error,
+        );
         void setImmediate(() => {
           this.processBulkUploadRetry(jobId, ownerId, rowIndices).catch((err) =>
-            console.warn(`Inline bulk upload retry failed for ${jobId}: ${String(err)}`),
+            console.warn(
+              `Inline bulk upload retry failed for ${jobId}: ${String(err)}`,
+            ),
           );
         });
       }
     } else {
       void setImmediate(() => {
         this.processBulkUploadRetry(jobId, ownerId, rowIndices).catch((err) =>
-          console.warn(`Inline bulk upload retry failed for ${jobId}: ${String(err)}`),
+          console.warn(
+            `Inline bulk upload retry failed for ${jobId}: ${String(err)}`,
+          ),
         );
       });
     }
@@ -9065,9 +9382,10 @@ export class CollectionsService {
     });
     if (!job) throw new NotFoundException('Bulk upload job not found');
 
-    const targetRows = Array.isArray(rowIndices) && rowIndices.length > 0
-      ? job.rows.filter((row) => rowIndices.includes(row.rowIndex))
-      : job.rows.filter((row) => row.status === 'FAILED');
+    const targetRows =
+      Array.isArray(rowIndices) && rowIndices.length > 0
+        ? job.rows.filter((row) => rowIndices.includes(row.rowIndex))
+        : job.rows.filter((row) => row.status === 'FAILED');
 
     let retriedCount = 0;
     let successRows = job.successRows;
@@ -9093,7 +9411,8 @@ export class CollectionsService {
         });
         successRows += 1;
       } catch (error: any) {
-        const message = error?.response?.message || error?.message || 'Row failed';
+        const message =
+          error?.response?.message || error?.message || 'Row failed';
         errors.push({ row: row.rowIndex, field: 'row', message });
         await this.prisma.collectionBulkUploadRow.update({
           where: { id: row.id },
@@ -9106,14 +9425,17 @@ export class CollectionsService {
       where: { jobId },
       select: { status: true },
     });
-    successRows = refreshedRows.filter((row) => row.status === 'SUCCESS').length;
+    successRows = refreshedRows.filter(
+      (row) => row.status === 'SUCCESS',
+    ).length;
     failedRows = refreshedRows.filter((row) => row.status === 'FAILED').length;
     const processedRows = refreshedRows.length;
-    const status = failedRows > 0 && successRows > 0
-      ? 'PARTIAL'
-      : failedRows > 0
-        ? 'FAILED'
-        : 'COMPLETED';
+    const status =
+      failedRows > 0 && successRows > 0
+        ? 'PARTIAL'
+        : failedRows > 0
+          ? 'FAILED'
+          : 'COMPLETED';
 
     await this.prisma.collectionBulkUploadJob.update({
       where: { id: jobId },
@@ -9292,7 +9614,8 @@ export class CollectionsService {
       success: true,
       inquiryId,
       threadId: createdThread.id,
-      message: 'Your inquiry has been sent to the brand. They will respond soon.',
+      message:
+        'Your inquiry has been sent to the brand. They will respond soon.',
       estimatedResponseTime: '24-48 hours',
     };
   }
@@ -9355,20 +9678,26 @@ export class CollectionsService {
     const normalizeDeviceType = (name?: string) => {
       const value = (name || '').toLowerCase();
       if (value.includes('ipad') || value.includes('tablet')) return 'tablet';
-      if (value.includes('iphone') || value.includes('android') || value.includes('mobile')) return 'mobile';
+      if (
+        value.includes('iphone') ||
+        value.includes('android') ||
+        value.includes('mobile')
+      )
+        return 'mobile';
       return 'desktop';
     };
 
     if (existingToken) {
-      const existingSession = await this.prisma.collectionDraftSession.findFirst({
-        where: {
-          collectionId: draftId,
-          ownerId,
-          sessionToken: existingToken,
-          isActive: true,
-          expiresAt: { gt: now },
-        },
-      });
+      const existingSession =
+        await this.prisma.collectionDraftSession.findFirst({
+          where: {
+            collectionId: draftId,
+            ownerId,
+            sessionToken: existingToken,
+            isActive: true,
+            expiresAt: { gt: now },
+          },
+        });
       if (existingSession) {
         await this.prisma.collectionDraftSession.update({
           where: { id: existingSession.id },
@@ -9545,7 +9874,10 @@ export class CollectionsService {
       data: { lastActivityAt: new Date(), draftVersion: { increment: 1 } },
     });
 
-    return { success: true, coverReassigned: collection?.coverMediaId === mediaId };
+    return {
+      success: true,
+      coverReassigned: collection?.coverMediaId === mediaId,
+    };
   }
 
   // ===================== Visibility Change Cart Cleanup =====================

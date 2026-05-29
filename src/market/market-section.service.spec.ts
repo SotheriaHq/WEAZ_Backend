@@ -125,7 +125,10 @@ describe('MarketSectionService', () => {
     }),
   });
 
-  const aggregateStats = (targetId: string, overrides: Record<string, any> = {}) => ({
+  const aggregateStats = (
+    targetId: string,
+    overrides: Record<string, any> = {},
+  ) => ({
     targetType: MarketSignalTargetType.PRODUCT,
     targetId,
     sectionImpressions: 0,
@@ -281,22 +284,26 @@ describe('MarketSectionService', () => {
       personalization: 'disabled',
       cachePolicy: 'private-no-store',
     });
-    expect(result.sections.every((section) => {
-      return (
-        section.metadata.ranking === 'deterministic-v1' &&
-        section.metadata.personalization === 'disabled'
-      );
-    })).toBe(true);
+    expect(
+      result.sections.every((section) => {
+        return (
+          section.metadata.ranking === 'deterministic-v1' &&
+          section.metadata.personalization === 'disabled'
+        );
+      }),
+    ).toBe(true);
     expect(aggregateFindMany).not.toHaveBeenCalled();
   });
 
   it('uses aggregate order when ranking is enabled, allowlisted, and not in shadow mode', async () => {
     const prisma = createPrisma({
       product: {
-        findMany: jest.fn().mockResolvedValue([
-          product({ id: 'product_1', name: 'Aso oke jacket' }),
-          product({ id: 'product_2', name: 'Buba set' }),
-        ]),
+        findMany: jest
+          .fn()
+          .mockResolvedValue([
+            product({ id: 'product_1', name: 'Aso oke jacket' }),
+            product({ id: 'product_2', name: 'Buba set' }),
+          ]),
       },
     });
     const rankingConfig = rankingConfigService({
@@ -357,10 +364,12 @@ describe('MarketSectionService', () => {
   it('keeps deterministic order when ranking is enabled for a non-allowlisted section', async () => {
     const prisma = createPrisma({
       product: {
-        findMany: jest.fn().mockResolvedValue([
-          product({ id: 'product_1' }),
-          product({ id: 'product_2' }),
-        ]),
+        findMany: jest
+          .fn()
+          .mockResolvedValue([
+            product({ id: 'product_1' }),
+            product({ id: 'product_2' }),
+          ]),
       },
     });
     const rankingConfig = rankingConfigService({
@@ -402,10 +411,12 @@ describe('MarketSectionService', () => {
   it('falls back deterministically when aggregate reading fails', async () => {
     const prisma = createPrisma({
       product: {
-        findMany: jest.fn().mockResolvedValue([
-          product({ id: 'product_1' }),
-          product({ id: 'product_2' }),
-        ]),
+        findMany: jest
+          .fn()
+          .mockResolvedValue([
+            product({ id: 'product_1' }),
+            product({ id: 'product_2' }),
+          ]),
       },
     });
     const rankingConfig = rankingConfigService({
@@ -447,10 +458,12 @@ describe('MarketSectionService', () => {
   it('falls back deterministically when aggregate reading times out', async () => {
     const prisma = createPrisma({
       product: {
-        findMany: jest.fn().mockResolvedValue([
-          product({ id: 'product_1' }),
-          product({ id: 'product_2' }),
-        ]),
+        findMany: jest
+          .fn()
+          .mockResolvedValue([
+            product({ id: 'product_1' }),
+            product({ id: 'product_2' }),
+          ]),
       },
     });
     const rankingConfig = rankingConfigService({
@@ -490,10 +503,12 @@ describe('MarketSectionService', () => {
   it('falls back deterministically when aggregate tables are empty', async () => {
     const prisma = createPrisma({
       product: {
-        findMany: jest.fn().mockResolvedValue([
-          product({ id: 'product_1' }),
-          product({ id: 'product_2' }),
-        ]),
+        findMany: jest
+          .fn()
+          .mockResolvedValue([
+            product({ id: 'product_1' }),
+            product({ id: 'product_2' }),
+          ]),
       },
     });
     const rankingConfig = rankingConfigService({
@@ -533,10 +548,12 @@ describe('MarketSectionService', () => {
   it('computes in shadow mode without changing served deterministic order', async () => {
     const prisma = createPrisma({
       product: {
-        findMany: jest.fn().mockResolvedValue([
-          product({ id: 'product_1' }),
-          product({ id: 'product_2' }),
-        ]),
+        findMany: jest
+          .fn()
+          .mockResolvedValue([
+            product({ id: 'product_1' }),
+            product({ id: 'product_2' }),
+          ]),
       },
     });
     const rankingConfig = rankingConfigService({
@@ -550,7 +567,10 @@ describe('MarketSectionService', () => {
       fallbackReason: null,
       durationMs: 1,
       aggregates: new Map([
-        ['PRODUCT:product_2', aggregateStats('product_2', { productOpens: 20 })],
+        [
+          'PRODUCT:product_2',
+          aggregateStats('product_2', { productOpens: 20 }),
+        ],
       ]),
     });
     const service = new MarketSectionService(
@@ -594,10 +614,12 @@ describe('MarketSectionService', () => {
     };
     const prisma = createPrisma({
       product: {
-        findMany: jest.fn().mockResolvedValue([
-          product({ id: 'product_1' }),
-          product({ id: 'product_2' }),
-        ]),
+        findMany: jest
+          .fn()
+          .mockResolvedValue([
+            product({ id: 'product_1' }),
+            product({ id: 'product_2' }),
+          ]),
       },
     });
     const rankingConfig = rankingConfigService({
@@ -648,10 +670,12 @@ describe('MarketSectionService', () => {
   it('dedupes duplicate item IDs inside one section response', async () => {
     const prisma = createPrisma({
       product: {
-        findMany: jest.fn().mockResolvedValue([
-          product({ id: 'product_1' }),
-          product({ id: 'product_1' }),
-        ]),
+        findMany: jest
+          .fn()
+          .mockResolvedValue([
+            product({ id: 'product_1' }),
+            product({ id: 'product_1' }),
+          ]),
       },
       storeCollection: { findMany: jest.fn().mockResolvedValue([]) },
       collectionCategory: { findMany: jest.fn().mockResolvedValue([]) },
@@ -680,10 +704,12 @@ describe('MarketSectionService', () => {
   it('bounds detail pagination and returns a cursor', async () => {
     const prisma = createPrisma({
       product: {
-        findMany: jest.fn().mockResolvedValue([
-          product({ id: 'product_1' }),
-          product({ id: 'product_2' }),
-        ]),
+        findMany: jest
+          .fn()
+          .mockResolvedValue([
+            product({ id: 'product_1' }),
+            product({ id: 'product_2' }),
+          ]),
       },
     });
     const service = new MarketSectionService(prisma as any);
@@ -789,9 +815,9 @@ describe('MarketSectionService', () => {
   it('returns a controlled error for unsupported section keys', async () => {
     const service = new MarketSectionService(createPrisma() as any);
 
-    await expect(service.getSectionDetail('unknown-section')).rejects.toBeInstanceOf(
-      NotFoundException,
-    );
+    await expect(
+      service.getSectionDetail('unknown-section'),
+    ).rejects.toBeInstanceOf(NotFoundException);
   });
 
   it('excludes suppressed items from market section output', async () => {

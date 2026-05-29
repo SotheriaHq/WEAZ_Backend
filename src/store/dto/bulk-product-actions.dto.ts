@@ -16,7 +16,6 @@ export class BulkProductIdsDto {
 }
 
 export class BulkDeleteProductsDto extends BulkProductIdsDto {
-
   @IsOptional()
   @IsBoolean()
   cancelPendingOrders?: boolean;

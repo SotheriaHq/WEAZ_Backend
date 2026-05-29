@@ -18,7 +18,12 @@ import { ADMIN_PERMISSIONS } from 'src/admin/constants/permissions';
 import { RequirePermissions } from 'src/admin/decorators/require-permissions.decorator';
 import { AdminPermissionGuard } from 'src/admin/guards/admin-permission.guard';
 import { MessagingService } from '../messaging.service';
-import { AdminSystemMessageDto, ModerateMessageDto, QueryInboxDto, QueryMessagesDto } from '../dto/messaging.dto';
+import {
+  AdminSystemMessageDto,
+  ModerateMessageDto,
+  QueryInboxDto,
+  QueryMessagesDto,
+} from '../dto/messaging.dto';
 
 @Controller('admin/messaging')
 @UseGuards(JwtAuthGuard, RolesGuard, AdminPermissionGuard)
@@ -29,7 +34,8 @@ export class AdminMessagingController {
   @Get('inbox')
   @RequirePermissions(ADMIN_PERMISSIONS.MESSAGING_READ)
   async inbox(
-    @Query(new ValidationPipe({ transform: true, whitelist: true })) query: QueryInboxDto,
+    @Query(new ValidationPipe({ transform: true, whitelist: true }))
+    query: QueryInboxDto,
   ) {
     return this.messaging.getAdminInbox(query);
   }
@@ -48,7 +54,8 @@ export class AdminMessagingController {
   async getThreadMessages(
     @Req() req: Request & { user: { id: string } },
     @Param('threadId') threadId: string,
-    @Query(new ValidationPipe({ transform: true, whitelist: true })) query: QueryMessagesDto,
+    @Query(new ValidationPipe({ transform: true, whitelist: true }))
+    query: QueryMessagesDto,
   ) {
     return this.messaging.getAdminThreadMessages(req.user.id, threadId, query);
   }
@@ -57,18 +64,28 @@ export class AdminMessagingController {
   @RequirePermissions(ADMIN_PERMISSIONS.MESSAGING_READ)
   async getCustomOrderMessages(
     @Param('orderId') orderId: string,
-    @Query(new ValidationPipe({ transform: true, whitelist: true })) query: QueryMessagesDto,
+    @Query(new ValidationPipe({ transform: true, whitelist: true }))
+    query: QueryMessagesDto,
   ) {
-    return this.messaging.getAdminMessagesForContext('CUSTOM_ORDER', orderId, query);
+    return this.messaging.getAdminMessagesForContext(
+      'CUSTOM_ORDER',
+      orderId,
+      query,
+    );
   }
 
   @Get('orders/:orderId/messages')
   @RequirePermissions(ADMIN_PERMISSIONS.MESSAGING_READ)
   async getOrderMessages(
     @Param('orderId') orderId: string,
-    @Query(new ValidationPipe({ transform: true, whitelist: true })) query: QueryMessagesDto,
+    @Query(new ValidationPipe({ transform: true, whitelist: true }))
+    query: QueryMessagesDto,
   ) {
-    return this.messaging.getAdminMessagesForContext('STANDARD_ORDER', orderId, query);
+    return this.messaging.getAdminMessagesForContext(
+      'STANDARD_ORDER',
+      orderId,
+      query,
+    );
   }
 
   @Post('messages/:messageId/hide')
@@ -76,7 +93,14 @@ export class AdminMessagingController {
   async hideMessage(
     @Req() req: Request & { user: { id: string } },
     @Param('messageId') messageId: string,
-    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true })) dto: ModerateMessageDto,
+    @Body(
+      new ValidationPipe({
+        transform: true,
+        whitelist: true,
+        forbidNonWhitelisted: true,
+      }),
+    )
+    dto: ModerateMessageDto,
   ) {
     return this.messaging.hideMessage(req.user.id, messageId, dto.reason, req);
   }
@@ -86,9 +110,21 @@ export class AdminMessagingController {
   async redactMessage(
     @Req() req: Request & { user: { id: string } },
     @Param('messageId') messageId: string,
-    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true })) dto: ModerateMessageDto,
+    @Body(
+      new ValidationPipe({
+        transform: true,
+        whitelist: true,
+        forbidNonWhitelisted: true,
+      }),
+    )
+    dto: ModerateMessageDto,
   ) {
-    return this.messaging.redactMessage(req.user.id, messageId, dto.reason, req);
+    return this.messaging.redactMessage(
+      req.user.id,
+      messageId,
+      dto.reason,
+      req,
+    );
   }
 
   @Post('threads/:threadId/reopen')
@@ -105,7 +141,14 @@ export class AdminMessagingController {
   async addSystemMessage(
     @Req() req: Request & { user: { id: string } },
     @Param('threadId') threadId: string,
-    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true })) dto: AdminSystemMessageDto,
+    @Body(
+      new ValidationPipe({
+        transform: true,
+        whitelist: true,
+        forbidNonWhitelisted: true,
+      }),
+    )
+    dto: AdminSystemMessageDto,
   ) {
     return this.messaging.addSystemMessage(req.user.id, threadId, dto, req);
   }

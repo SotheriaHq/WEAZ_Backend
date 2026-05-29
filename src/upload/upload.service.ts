@@ -168,7 +168,10 @@ export class UploadService {
     return getUploadFileExtension(fileName);
   }
 
-  private assertAllowedExtension(originalName: string, fileType: FileType): void {
+  private assertAllowedExtension(
+    originalName: string,
+    fileType: FileType,
+  ): void {
     assertAllowedUploadExtension(originalName, fileType);
   }
 
@@ -1400,7 +1403,9 @@ export class UploadService {
 
     if (file.size > maxSize) {
       const limitMB = formatUploadLimitMB(maxSize);
-      throw new BadRequestException(`File size exceeds the ${limitMB}MB limit for ${fileType}`);
+      throw new BadRequestException(
+        `File size exceeds the ${limitMB}MB limit for ${fileType}`,
+      );
     }
   }
 

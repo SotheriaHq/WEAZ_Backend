@@ -6,11 +6,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
-import {
-  AdminAuditAction,
-  AdminDisputeStatus,
-  Role,
-} from '@prisma/client';
+import { AdminAuditAction, AdminDisputeStatus, Role } from '@prisma/client';
 import { v4 as uuidv4 } from 'uuid';
 import { Request } from 'express';
 import {
@@ -120,7 +116,9 @@ export class AdminDisputesService {
       dispute.assignedToId !== actorId &&
       actorRole !== Role.SuperAdmin
     ) {
-      throw new ConflictException('Dispute is already assigned to another admin');
+      throw new ConflictException(
+        'Dispute is already assigned to another admin',
+      );
     }
 
     const now = new Date();
@@ -158,8 +156,15 @@ export class AdminDisputesService {
               : AdminAuditAction.ADMIN_DISPUTE_CLAIM,
           targetType: 'Dispute',
           targetId: disputeId,
-          previousState: { assignedToId: dispute.assignedToId, status: dispute.status },
-          newState: { assignedToId: actorId, status: nextStatus, assignedAt: now.toISOString() },
+          previousState: {
+            assignedToId: dispute.assignedToId,
+            status: dispute.status,
+          },
+          newState: {
+            assignedToId: actorId,
+            status: nextStatus,
+            assignedAt: now.toISOString(),
+          },
           ipAddress: req.socket?.remoteAddress ?? null,
           userAgent: req.headers['user-agent'] ?? null,
         },
@@ -213,7 +218,10 @@ export class AdminDisputesService {
           action: AdminAuditAction.ADMIN_DISPUTE_RELEASE,
           targetType: 'Dispute',
           targetId: disputeId,
-          previousState: { assignedToId: dispute.assignedToId, status: dispute.status },
+          previousState: {
+            assignedToId: dispute.assignedToId,
+            status: dispute.status,
+          },
           newState: { assignedToId: null, reason: reason ?? null },
           ipAddress: req.socket?.remoteAddress ?? null,
           userAgent: req.headers['user-agent'] ?? null,
@@ -244,10 +252,17 @@ export class AdminDisputesService {
     if (!dispute) throw new NotFoundException('Dispute not found');
 
     if (dto.assignedToId && actorRole !== Role.SuperAdmin) {
-      throw new ForbiddenException('Only SuperAdmin can reassign disputes directly');
+      throw new ForbiddenException(
+        'Only SuperAdmin can reassign disputes directly',
+      );
     }
 
-    this.assertOwnership(dispute.assignedToId, actorId, actorRole, dto.assignedToId);
+    this.assertOwnership(
+      dispute.assignedToId,
+      actorId,
+      actorRole,
+      dto.assignedToId,
+    );
 
     const previousState = {
       status: dispute.status,
@@ -374,11 +389,15 @@ export class AdminDisputesService {
     }
 
     if (nextAssignedToId && nextAssignedToId !== actorId) {
-      throw new ForbiddenException('Only SuperAdmin can assign this dispute to another admin');
+      throw new ForbiddenException(
+        'Only SuperAdmin can assign this dispute to another admin',
+      );
     }
 
     if (!assignedToId) {
-      throw new ForbiddenException('Dispute must be claimed before it can be updated');
+      throw new ForbiddenException(
+        'Dispute must be claimed before it can be updated',
+      );
     }
 
     if (assignedToId !== actorId) {

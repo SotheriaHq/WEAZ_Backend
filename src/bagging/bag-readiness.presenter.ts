@@ -57,14 +57,13 @@ export class BagReadinessPresenter {
           : input.customEnabled
             ? 'CUSTOM'
             : 'UNAVAILABLE';
-    const stockState: BagStockState =
-      !input.publicSource
-        ? 'UNAVAILABLE'
-        : input.inStock
-          ? 'IN_STOCK'
-          : input.customEnabled
-            ? 'CUSTOM_ONLY'
-            : 'OUT_OF_STOCK';
+    const stockState: BagStockState = !input.publicSource
+      ? 'UNAVAILABLE'
+      : input.inStock
+        ? 'IN_STOCK'
+        : input.customEnabled
+          ? 'CUSTOM_ONLY'
+          : 'OUT_OF_STOCK';
 
     const hasPreviouslyBaggedOrOrdered = Boolean(
       input.cartItem ||
@@ -72,15 +71,15 @@ export class BagReadinessPresenter {
         input.previousStandardOrder ||
         input.previousCustomOrder,
     );
-    const disabledReason = input.disabledReason ?? this.resolveDisabledReason(input);
-    const heartbeatState: BagHeartbeatState =
-      !canBag
-        ? 'disabled'
-        : input.cartItem || input.customBagLine
-          ? 'currently_bagged'
-          : hasPreviouslyBaggedOrOrdered
-            ? 'previously_bagged'
-            : 'not_bagged';
+    const disabledReason =
+      input.disabledReason ?? this.resolveDisabledReason(input);
+    const heartbeatState: BagHeartbeatState = !canBag
+      ? 'disabled'
+      : input.cartItem || input.customBagLine
+        ? 'currently_bagged'
+        : hasPreviouslyBaggedOrOrdered
+          ? 'previously_bagged'
+          : 'not_bagged';
     const defaultAction = this.resolveDefaultAction({
       canBag,
       standardEnabled: input.standardEnabled,
@@ -91,8 +90,10 @@ export class BagReadinessPresenter {
       fittingState: input.fittingFreshness.fittingState,
     });
 
-    const requiredMeasurementKeys = input.customConfiguration?.requiredMeasurementKeys ?? [];
-    const requiredFreeformPointIds = input.customConfiguration?.requiredFreeformPointIds ?? [];
+    const requiredMeasurementKeys =
+      input.customConfiguration?.requiredMeasurementKeys ?? [];
+    const requiredFreeformPointIds =
+      input.customConfiguration?.requiredFreeformPointIds ?? [];
 
     return {
       productId: input.productId,
@@ -134,7 +135,8 @@ export class BagReadinessPresenter {
         measurementUpdatedAt: input.fittingFreshness.measurementUpdatedAt,
         staleAfterDays: input.fittingFreshness.staleAfterDays,
         staleAt: input.fittingFreshness.staleAt,
-        requiresStaleConfirmation: input.fittingFreshness.requiresStaleConfirmation,
+        requiresStaleConfirmation:
+          input.fittingFreshness.requiresStaleConfirmation,
       },
       customOrder: {
         enabled: input.customEnabled,
@@ -152,7 +154,8 @@ export class BagReadinessPresenter {
         measurementUpdatedAt: input.fittingFreshness.measurementUpdatedAt,
         staleAfterDays: input.fittingFreshness.staleAfterDays,
         staleAt: input.fittingFreshness.staleAt,
-        requiresStaleConfirmation: input.fittingFreshness.requiresStaleConfirmation,
+        requiresStaleConfirmation:
+          input.fittingFreshness.requiresStaleConfirmation,
       },
       duplicateState: input.duplicateState,
       stockState,
@@ -181,9 +184,11 @@ export class BagReadinessPresenter {
   }): BagDefaultAction {
     if (!input.canBag) return 'DISABLED';
     if (input.standardEnabled && input.customEnabled) return 'OPEN_SELECTOR';
-    if (input.standardEnabled && (input.requiresSize || input.requiresColor)) return 'OPEN_SELECTOR';
+    if (input.standardEnabled && (input.requiresSize || input.requiresColor))
+      return 'OPEN_SELECTOR';
     if (input.standardEnabled) return 'ADD_STANDARD';
-    if (input.fittingState === 'MISSING' || input.fittingState === 'PARTIAL') return 'OPEN_FITTINGS';
+    if (input.fittingState === 'MISSING' || input.fittingState === 'PARTIAL')
+      return 'OPEN_FITTINGS';
     if (input.freshnessState === 'STALE') return 'CONFIRM_STALE_FITTINGS';
     if (input.customEnabled) return 'OPEN_CUSTOM_FLOW';
     return 'DISABLED';
@@ -202,7 +207,11 @@ export class BagReadinessPresenter {
     if (!input.standardEnabled && !input.customEnabled && !input.inStock) {
       return 'This product is out of stock.';
     }
-    if (!input.standardEnabled && !input.customEnabled && !input.customConfiguration) {
+    if (
+      !input.standardEnabled &&
+      !input.customEnabled &&
+      !input.customConfiguration
+    ) {
       return 'This source needs an active custom-order configuration before it can be bagged.';
     }
     if (!input.standardEnabled && !input.customEnabled) {

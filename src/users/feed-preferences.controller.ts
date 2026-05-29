@@ -9,7 +9,9 @@ import { FeedPreferencesService } from './feed-preferences.service';
 @UseGuards(JwtAuthGuard)
 @Controller('user/preferences/feed')
 export class FeedPreferencesController {
-  constructor(private readonly feedPreferencesService: FeedPreferencesService) {}
+  constructor(
+    private readonly feedPreferencesService: FeedPreferencesService,
+  ) {}
 
   @Post('reset')
   @Header('Cache-Control', 'private, no-store')

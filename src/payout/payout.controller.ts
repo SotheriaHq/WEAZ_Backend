@@ -42,10 +42,7 @@ export class PayoutController {
   }
 
   @Get('overview')
-  async getOverview(
-    @Param('brandId') brandId: string,
-    @Req() req: any,
-  ) {
+  async getOverview(@Param('brandId') brandId: string, @Req() req: any) {
     await this.brandPermissionService.assertPermission(
       req.user.id,
       brandId,

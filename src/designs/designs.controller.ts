@@ -158,7 +158,10 @@ export class DesignsController {
 
   @UseGuards(JwtAuthGuard)
   @Delete(':id/permanent')
-  async permanentlyDeleteDesign(@Param('id') designId: string, @Req() req: any) {
+  async permanentlyDeleteDesign(
+    @Param('id') designId: string,
+    @Req() req: any,
+  ) {
     return this.designsService.permanentlyDeleteDesign(designId, req.user.id);
   }
 

@@ -12,6 +12,11 @@ import { BrandPermissionService } from 'src/brands/permissions/brand-permission.
 @Module({
   imports: [PrismaModule, NotificationsModule, FinanceModule],
   controllers: [OrderController, AdminOrderController],
-  providers: [OrderService, OrderRefundService, OrderAccessService, BrandPermissionService],
+  providers: [
+    OrderService,
+    OrderRefundService,
+    OrderAccessService,
+    BrandPermissionService,
+  ],
 })
 export class OrderModule {}

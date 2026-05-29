@@ -22,7 +22,10 @@ describe('BrandPermissionService', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    prisma.brand.findFirst.mockResolvedValue({ id: 'brand-1', ownerId: 'owner-1' });
+    prisma.brand.findFirst.mockResolvedValue({
+      id: 'brand-1',
+      ownerId: 'owner-1',
+    });
   });
 
   const mockMember = (
@@ -61,7 +64,11 @@ describe('BrandPermissionService', () => {
     mockMember(BrandMemberRole.MANAGER);
 
     await expect(
-      service.hasPermission('staff-1', 'brand-1', BRAND_PERMISSIONS.CATALOG_WRITE),
+      service.hasPermission(
+        'staff-1',
+        'brand-1',
+        BRAND_PERMISSIONS.CATALOG_WRITE,
+      ),
     ).resolves.toBe(true);
   });
 
@@ -81,7 +88,11 @@ describe('BrandPermissionService', () => {
     mockMember(BrandMemberRole.VIEWER);
 
     await expect(
-      service.hasPermission('staff-1', 'brand-1', BRAND_PERMISSIONS.CATALOG_WRITE),
+      service.hasPermission(
+        'staff-1',
+        'brand-1',
+        BRAND_PERMISSIONS.CATALOG_WRITE,
+      ),
     ).resolves.toBe(false);
   });
 
@@ -99,7 +110,11 @@ describe('BrandPermissionService', () => {
     ]);
 
     await expect(
-      service.hasPermission('staff-1', 'brand-1', BRAND_PERMISSIONS.CATALOG_WRITE),
+      service.hasPermission(
+        'staff-1',
+        'brand-1',
+        BRAND_PERMISSIONS.CATALOG_WRITE,
+      ),
     ).resolves.toBe(true);
   });
 

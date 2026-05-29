@@ -17,6 +17,10 @@ import { DesignsService } from './designs.service';
     DesignResolverService,
     PrismaService,
   ],
-  exports: [DesignsService, LegacyCollectionDesignAdapter, DesignResolverService],
+  exports: [
+    DesignsService,
+    LegacyCollectionDesignAdapter,
+    DesignResolverService,
+  ],
 })
 export class DesignsModule {}

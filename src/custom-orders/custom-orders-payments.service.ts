@@ -11,7 +11,6 @@ import {
   CustomOrderStatus,
   CustomOrderTimelineEventType,
   NotificationType,
-  PaymentMethod,
   PaymentStatus,
   PaymentSubjectType,
   Prisma,
@@ -349,8 +348,14 @@ export class CustomOrdersPaymentsService {
 
     if (transitionResult.transitionedToPaid) {
       const buyerDisplayName = this.buyerDisplayName(order.buyer);
-      const buyerFirstName = resolveRequiredProfileField(order.buyer ?? {}, 'firstName');
-      const buyerLastName = resolveRequiredProfileField(order.buyer ?? {}, 'lastName');
+      const buyerFirstName = resolveRequiredProfileField(
+        order.buyer ?? {},
+        'firstName',
+      );
+      const buyerLastName = resolveRequiredProfileField(
+        order.buyer ?? {},
+        'lastName',
+      );
       const buyerName =
         buyerDisplayName || String(order.buyer?.username || 'Buyer');
 
@@ -1004,8 +1009,14 @@ export class CustomOrdersPaymentsService {
     }
 
     const buyerDisplayName = this.buyerDisplayName(reconciliation.buyer);
-    const buyerFirstName = resolveRequiredProfileField(reconciliation.buyer ?? {}, 'firstName');
-    const buyerLastName = resolveRequiredProfileField(reconciliation.buyer ?? {}, 'lastName');
+    const buyerFirstName = resolveRequiredProfileField(
+      reconciliation.buyer ?? {},
+      'firstName',
+    );
+    const buyerLastName = resolveRequiredProfileField(
+      reconciliation.buyer ?? {},
+      'lastName',
+    );
 
     await this.sideEffects.enqueueNotification({
       customOrderId: reconciliation.customOrderId,

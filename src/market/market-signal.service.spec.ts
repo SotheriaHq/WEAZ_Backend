@@ -173,7 +173,10 @@ describe('MarketSignalService', () => {
     prisma.userFeedSignal.findMany.mockResolvedValue([
       { clientEventId: 'event_1' },
     ]);
-    const service = new MarketSignalService(prisma as any, createAggregation() as any);
+    const service = new MarketSignalService(
+      prisma as any,
+      createAggregation() as any,
+    );
 
     const result = await service.ingestBatch(
       {
@@ -190,7 +193,10 @@ describe('MarketSignalService', () => {
 
   it('supports anonymousSessionId for guest batches', async () => {
     const prisma = createPrisma();
-    const service = new MarketSignalService(prisma as any, createAggregation() as any);
+    const service = new MarketSignalService(
+      prisma as any,
+      createAggregation() as any,
+    );
 
     await service.ingestBatch(
       {
@@ -219,8 +225,9 @@ describe('MarketSignalService', () => {
       service.ingestBatch(
         {
           anonymousSessionId: 'anon_1',
-          events: Array.from({ length: MARKET_SIGNAL_MAX_BATCH_EVENTS + 1 }, () =>
-            event(),
+          events: Array.from(
+            { length: MARKET_SIGNAL_MAX_BATCH_EVENTS + 1 },
+            () => event(),
           ),
         },
         {},
@@ -278,13 +285,19 @@ describe('MarketSignalService', () => {
 
   it('creates seen records for impression and view-like events only', async () => {
     const prisma = createPrisma();
-    const service = new MarketSignalService(prisma as any, createAggregation() as any);
+    const service = new MarketSignalService(
+      prisma as any,
+      createAggregation() as any,
+    );
 
     await service.ingestBatch(
       {
         anonymousSessionId: 'anon_1',
         events: [
-          event({ clientEventId: 'event_view', signalType: MarketSignalType.VIEW }),
+          event({
+            clientEventId: 'event_view',
+            signalType: MarketSignalType.VIEW,
+          }),
           event({
             clientEventId: 'event_click',
             signalType: MarketSignalType.CLICK,
@@ -306,7 +319,10 @@ describe('MarketSignalService', () => {
 
   it('queries recent clientEventId duplicates using the authenticated server user only', async () => {
     const prisma = createPrisma();
-    const service = new MarketSignalService(prisma as any, createAggregation() as any);
+    const service = new MarketSignalService(
+      prisma as any,
+      createAggregation() as any,
+    );
 
     await service.ingestBatch(
       {

@@ -34,4 +34,3 @@ describe('sanitizeRequestInput', () => {
     expect(output.nested.accessToken).toBe('tok\u0007en-value');
   });
 });
-

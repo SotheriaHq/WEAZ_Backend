@@ -9,8 +9,6 @@ import { PrismaService } from 'src/prisma/prisma.service';
 import { NotificationTarget } from 'src/notifications/notifications.types';
 import { NotificationsQueueService } from 'src/queue/notifications.queue.service';
 
-type PrismaLike = PrismaService | Prisma.TransactionClient;
-
 type EnqueueCustomOrderNotificationParams = {
   customOrderId: string;
   recipientIds: string[];
@@ -47,7 +45,9 @@ export class CustomOrderSideEffectsService {
     params: EnqueueCustomOrderNotificationParams,
     tx?: Prisma.TransactionClient,
   ): Promise<void> {
-    const recipientIds = Array.from(new Set(params.recipientIds.filter(Boolean)));
+    const recipientIds = Array.from(
+      new Set(params.recipientIds.filter(Boolean)),
+    );
     if (recipientIds.length === 0) {
       return;
     }
@@ -135,8 +135,15 @@ export class CustomOrderSideEffectsService {
 
     let processedCount = 0;
 
-    for (let index = 0; index < events.length; index += NOTIFICATION_DISPATCH_CONCURRENCY) {
-      const chunk = events.slice(index, index + NOTIFICATION_DISPATCH_CONCURRENCY);
+    for (
+      let index = 0;
+      index < events.length;
+      index += NOTIFICATION_DISPATCH_CONCURRENCY
+    ) {
+      const chunk = events.slice(
+        index,
+        index + NOTIFICATION_DISPATCH_CONCURRENCY,
+      );
       const results = await Promise.all(
         chunk.map((event) => this.dispatchNotificationEvent(event)),
       );
@@ -194,10 +201,11 @@ export class CustomOrderSideEffectsService {
       this.logger.warn(
         `Failed to dispatch custom-order notification ${event.id}: ${this.formatError(error)}`,
       );
-      const current = await this.prisma.customOrderNotificationOutbox.findUnique({
-        where: { id: event.id },
-        select: { attempts: true, customOrderId: true },
-      });
+      const current =
+        await this.prisma.customOrderNotificationOutbox.findUnique({
+          where: { id: event.id },
+          select: { attempts: true, customOrderId: true },
+        });
       const exhausted =
         (current?.attempts ?? 0) >= MAX_NOTIFICATION_DISPATCH_ATTEMPTS;
 
@@ -219,7 +227,9 @@ export class CustomOrderSideEffectsService {
     }
   }
 
-  private asRecord(value: Prisma.JsonValue | null): Record<string, unknown> | undefined {
+  private asRecord(
+    value: Prisma.JsonValue | null,
+  ): Record<string, unknown> | undefined {
     if (!value || typeof value !== 'object' || Array.isArray(value)) {
       return undefined;
     }
@@ -227,7 +237,9 @@ export class CustomOrderSideEffectsService {
     return value as Record<string, unknown>;
   }
 
-  private asTarget(value: Prisma.JsonValue | null): NotificationTarget | undefined {
+  private asTarget(
+    value: Prisma.JsonValue | null,
+  ): NotificationTarget | undefined {
     if (!value || typeof value !== 'object' || Array.isArray(value)) {
       return undefined;
     }

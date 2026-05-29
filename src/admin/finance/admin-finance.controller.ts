@@ -25,51 +25,23 @@ import { RequirePermissions } from '../decorators/require-permissions.decorator'
 import { AdminPermissionGuard } from '../guards/admin-permission.guard';
 import { AdminFinanceService } from './admin-finance.service';
 
-const COMMISSION_RULE_SCOPE = {
-  PLATFORM: 'PLATFORM',
-  BRAND: 'BRAND',
-} as const;
+type CommissionRuleScope = 'PLATFORM' | 'BRAND';
 
-type CommissionRuleScope =
-  (typeof COMMISSION_RULE_SCOPE)[keyof typeof COMMISSION_RULE_SCOPE];
+type ReconciliationScope = 'PAYMENTS' | 'PAYOUTS' | 'LEDGER_INTEGRITY';
 
-const RECONCILIATION_SCOPE = {
-  PAYMENTS: 'PAYMENTS',
-  PAYOUTS: 'PAYOUTS',
-  LEDGER_INTEGRITY: 'LEDGER_INTEGRITY',
-} as const;
-
-type ReconciliationScope =
-  (typeof RECONCILIATION_SCOPE)[keyof typeof RECONCILIATION_SCOPE];
-
-const RECONCILIATION_RUN_STATUS = {
-  RUNNING: 'RUNNING',
-  COMPLETED: 'COMPLETED',
-  FAILED: 'FAILED',
-} as const;
-
-type ReconciliationRunStatus =
-  (typeof RECONCILIATION_RUN_STATUS)[keyof typeof RECONCILIATION_RUN_STATUS];
-
-const RECONCILIATION_ITEM_STATUS = {
-  MATCHED: 'MATCHED',
-  DISCREPANCY: 'DISCREPANCY',
-  UNMATCHED_INTERNAL: 'UNMATCHED_INTERNAL',
-  RESOLVED: 'RESOLVED',
-} as const;
+type ReconciliationRunStatus = 'RUNNING' | 'COMPLETED' | 'FAILED';
 
 type ReconciliationItemStatus =
-  (typeof RECONCILIATION_ITEM_STATUS)[keyof typeof RECONCILIATION_ITEM_STATUS];
-
-const FINANCIAL_DOCUMENT_TYPE = {
-  BUYER_RECEIPT: 'BUYER_RECEIPT',
-  BRAND_SETTLEMENT_STATEMENT: 'BRAND_SETTLEMENT_STATEMENT',
-  PLATFORM_COMMISSION_INVOICE: 'PLATFORM_COMMISSION_INVOICE',
-  CREDIT_NOTE: 'CREDIT_NOTE',
-} as const;
+  | 'MATCHED'
+  | 'DISCREPANCY'
+  | 'UNMATCHED_INTERNAL'
+  | 'RESOLVED';
 
 type FinancialDocumentType =
-  (typeof FINANCIAL_DOCUMENT_TYPE)[keyof typeof FINANCIAL_DOCUMENT_TYPE];
+  | 'BUYER_RECEIPT'
+  | 'BRAND_SETTLEMENT_STATEMENT'
+  | 'PLATFORM_COMMISSION_INVOICE'
+  | 'CREDIT_NOTE';
 
 type SettlementPolicyDto = {
   orderType: SettlementOrderType;
@@ -209,7 +181,9 @@ export class AdminFinanceController {
       brandId: brandId === '' ? null : brandId,
       currency: currency === '' ? null : currency,
       isActive:
-        isActive === undefined ? undefined : String(isActive).toLowerCase() === 'true',
+        isActive === undefined
+          ? undefined
+          : String(isActive).toLowerCase() === 'true',
       take: take ? parseInt(take, 10) : undefined,
     });
   }
@@ -364,7 +338,12 @@ export class AdminFinanceController {
   claimReconciliationItem(@Param('id') id: string, @Req() req: Request) {
     const actorId = (req as any).user.id ?? (req as any).user.sub;
     const actorRole = (req as any).user.role as Role;
-    return this.financeService.claimReconciliationItem(id, actorId, actorRole, req);
+    return this.financeService.claimReconciliationItem(
+      id,
+      actorId,
+      actorRole,
+      req,
+    );
   }
 
   @Post('reconciliation-items/:id/release')

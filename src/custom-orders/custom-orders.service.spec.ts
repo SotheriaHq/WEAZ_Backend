@@ -132,8 +132,14 @@ describe('CustomOrdersService', () => {
     customOrderAccessService = {
       assertCustomOrderBrandRead: jest.fn().mockResolvedValue(undefined),
       assertCustomOrderBrandUpdate: jest.fn().mockResolvedValue(undefined),
-      assertBrandOrdersRead: jest.fn().mockImplementation(async (_userId: string, brandId: string) => brandId),
-      resolveBrandId: jest.fn().mockImplementation(async (brandId: string) => brandId),
+      assertBrandOrdersRead: jest
+        .fn()
+        .mockImplementation(
+          async (_userId: string, brandId: string) => brandId,
+        ),
+      resolveBrandId: jest
+        .fn()
+        .mockImplementation(async (brandId: string) => brandId),
     };
 
     prisma.product.findUnique.mockResolvedValue({
@@ -223,8 +229,9 @@ describe('CustomOrdersService', () => {
       },
     };
 
-    prisma.$transaction.mockImplementation(async (callback: (innerTx: typeof tx) => Promise<unknown>) =>
-      callback(tx),
+    prisma.$transaction.mockImplementation(
+      async (callback: (innerTx: typeof tx) => Promise<unknown>) =>
+        callback(tx),
     );
 
     const result = await service.confirmDelivery('buyer_1', 'co_1', {
@@ -249,7 +256,8 @@ describe('CustomOrdersService', () => {
     expect(tx.customOrderLedgerAllocation.updateMany).toHaveBeenCalledWith({
       where: {
         customOrderId: 'co_1',
-        allocationType: CustomOrderLedgerAllocationType.FINAL_COMPLETION_PORTION,
+        allocationType:
+          CustomOrderLedgerAllocationType.FINAL_COMPLETION_PORTION,
         status: CustomOrderLedgerAllocationStatus.HELD,
       },
       data: {
@@ -260,7 +268,8 @@ describe('CustomOrdersService', () => {
     expect(tx.customOrderLedgerAllocation.findFirst).toHaveBeenCalledWith({
       where: {
         customOrderId: 'co_1',
-        allocationType: CustomOrderLedgerAllocationType.FINAL_COMPLETION_PORTION,
+        allocationType:
+          CustomOrderLedgerAllocationType.FINAL_COMPLETION_PORTION,
       },
       select: {
         amount: true,
@@ -342,13 +351,19 @@ describe('CustomOrdersService', () => {
       },
     };
 
-    prisma.$transaction.mockImplementation(async (callback: (innerTx: typeof tx) => Promise<unknown>) =>
-      callback(tx),
+    prisma.$transaction.mockImplementation(
+      async (callback: (innerTx: typeof tx) => Promise<unknown>) =>
+        callback(tx),
     );
 
-    const result = await service.respondToExtension('buyer_1', 'co_1', 'extension_1', {
-      response: CustomOrderExtensionResponseStatus.REJECTED,
-    });
+    const result = await service.respondToExtension(
+      'buyer_1',
+      'co_1',
+      'extension_1',
+      {
+        response: CustomOrderExtensionResponseStatus.REJECTED,
+      },
+    );
 
     expect(tx.customOrderExtensionRequest.update).toHaveBeenCalledWith({
       where: { id: 'extension_1' },
@@ -435,8 +450,9 @@ describe('CustomOrdersService', () => {
       },
     };
 
-    prisma.$transaction.mockImplementation(async (callback: (innerTx: typeof tx) => Promise<unknown>) =>
-      callback(tx),
+    prisma.$transaction.mockImplementation(
+      async (callback: (innerTx: typeof tx) => Promise<unknown>) =>
+        callback(tx),
     );
 
     const result = await service.reportIssue('buyer_1', 'co_1', {
@@ -468,8 +484,14 @@ describe('CustomOrdersService', () => {
     expect(tx.customOrderLedgerAllocation.updateMany).toHaveBeenCalledWith({
       where: {
         customOrderId: 'co_1',
-        allocationType: CustomOrderLedgerAllocationType.FINAL_COMPLETION_PORTION,
-        status: { in: [CustomOrderLedgerAllocationStatus.HELD, CustomOrderLedgerAllocationStatus.PAYOUT_ELIGIBLE] },
+        allocationType:
+          CustomOrderLedgerAllocationType.FINAL_COMPLETION_PORTION,
+        status: {
+          in: [
+            CustomOrderLedgerAllocationStatus.HELD,
+            CustomOrderLedgerAllocationStatus.PAYOUT_ELIGIBLE,
+          ],
+        },
       },
       data: {
         status: CustomOrderLedgerAllocationStatus.FORFEITED,
@@ -582,10 +604,14 @@ describe('CustomOrdersService', () => {
     prisma.customOrder.update.mockResolvedValue(updatedOrder);
     prisma.brand.findUnique.mockResolvedValue({ ownerId: 'owner_1' });
 
-    const result = await service.updateBuyerMeasurementsBeforeAcceptance('buyer_1', 'co_1', {
-      measurementValues: { WOMEN_WAIST: 75 },
-      reason: 'Updated fit preference before acceptance.',
-    });
+    const result = await service.updateBuyerMeasurementsBeforeAcceptance(
+      'buyer_1',
+      'co_1',
+      {
+        measurementValues: { WOMEN_WAIST: 75 },
+        reason: 'Updated fit preference before acceptance.',
+      },
+    );
 
     expect(prisma.customOrder.update).toHaveBeenCalled();
     expect(result.statusCode).toBe(200);
@@ -622,13 +648,19 @@ describe('CustomOrdersService', () => {
       },
     };
 
-    prisma.$transaction.mockImplementation(async (callback: (innerTx: typeof tx) => Promise<unknown>) =>
-      callback(tx),
+    prisma.$transaction.mockImplementation(
+      async (callback: (innerTx: typeof tx) => Promise<unknown>) =>
+        callback(tx),
     );
 
-    const result = await service.acceptBrandOrder('owner_1', 'brand_1', 'co_1', {
-      note: 'We can start production immediately.',
-    });
+    const result = await service.acceptBrandOrder(
+      'owner_1',
+      'brand_1',
+      'co_1',
+      {
+        note: 'We can start production immediately.',
+      },
+    );
 
     expect(tx.customOrder.update).toHaveBeenCalledWith({
       where: { id: 'co_1' },
@@ -648,7 +680,8 @@ describe('CustomOrdersService', () => {
     expect(tx.customOrderLedgerAllocation.updateMany).toHaveBeenCalledWith({
       where: {
         customOrderId: 'co_1',
-        allocationType: CustomOrderLedgerAllocationType.BRAND_ACCEPTANCE_PORTION,
+        allocationType:
+          CustomOrderLedgerAllocationType.BRAND_ACCEPTANCE_PORTION,
         status: CustomOrderLedgerAllocationStatus.HELD,
       },
       data: {
@@ -755,7 +788,11 @@ describe('CustomOrdersService', () => {
       fabricCostPerYard: 6000,
       rushEnabled: false,
       rushFee: null,
-      requiredMeasurementKeys: ['WOMEN_CHEST_FULL_BUST', 'WOMEN_WAIST', 'WOMEN_HIP'],
+      requiredMeasurementKeys: [
+        'WOMEN_CHEST_FULL_BUST',
+        'WOMEN_WAIST',
+        'WOMEN_HIP',
+      ],
       requiredFreeformPointIds: [],
       notes: null,
       rules: [],
@@ -900,7 +937,9 @@ describe('CustomOrdersService', () => {
       brand: { currency: 'NGN' },
       versions: [{ id: 'configuration_version_1' }],
     });
-    prisma.customOrderConfiguration.findMany.mockResolvedValue([{ id: 'configuration_1' }]);
+    prisma.customOrderConfiguration.findMany.mockResolvedValue([
+      { id: 'configuration_1' },
+    ]);
     prisma.customOrder.findMany.mockResolvedValue([
       {
         id: 'order_1',
@@ -936,7 +975,9 @@ describe('CustomOrdersService', () => {
       brand: { currency: 'NGN' },
       versions: [{ id: 'configuration_version_1' }],
     });
-    prisma.customOrderConfiguration.findMany.mockResolvedValue([{ id: 'configuration_1' }]);
+    prisma.customOrderConfiguration.findMany.mockResolvedValue([
+      { id: 'configuration_1' },
+    ]);
     prisma.customOrder.findMany.mockResolvedValue([
       {
         id: 'order_1',

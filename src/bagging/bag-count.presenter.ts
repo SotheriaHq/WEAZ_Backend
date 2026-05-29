@@ -46,7 +46,13 @@ export class BagCountPresenter {
   }
 
   private shouldLogTiming(): boolean {
-    const explicitFlag = String(process.env.BAGGING_OBSERVABILITY || '').toLowerCase();
-    return explicitFlag === 'true' || explicitFlag === '1' || process.env.NODE_ENV !== 'production';
+    const explicitFlag = String(
+      process.env.BAGGING_OBSERVABILITY || '',
+    ).toLowerCase();
+    return (
+      explicitFlag === 'true' ||
+      explicitFlag === '1' ||
+      process.env.NODE_ENV !== 'production'
+    );
   }
 }

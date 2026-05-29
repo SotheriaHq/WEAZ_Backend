@@ -72,11 +72,13 @@ export class AdminUsersService {
       throw new BadRequestException('Email already exists');
     }
 
-    const targetRole = dto.role === Role.SuperAdmin ? Role.SuperAdmin : Role.Admin;
+    const targetRole =
+      dto.role === Role.SuperAdmin ? Role.SuperAdmin : Role.Admin;
 
     // Generate temporary password
     const tempPassword = randomBytes(16).toString('base64url');
-    const hashedPassword = await this.passwordService.hashPassword(tempPassword);
+    const hashedPassword =
+      await this.passwordService.hashPassword(tempPassword);
 
     const username = await this.userHelper.generateUniqueUsername(
       dto.firstName.trim(),
@@ -141,13 +143,19 @@ export class AdminUsersService {
       this.emailService.getAppName(),
     );
     void this.emailService
-      .send(dto.email, creationEmail.subject, creationEmail.html, creationEmail.text)
+      .send(
+        dto.email,
+        creationEmail.subject,
+        creationEmail.html,
+        creationEmail.text,
+      )
       .catch(() => undefined);
 
     return {
       user,
       temporaryPassword: tempPassword,
-      message: 'Admin account created. User must reset password on first login.',
+      message:
+        'Admin account created. User must reset password on first login.',
     };
   }
 
@@ -315,7 +323,10 @@ export class AdminUsersService {
     // Revoke refresh tokens to force re-auth with new permissions
     await this.tokenService.revokeAllRefreshTokens(targetUserId);
 
-    return { message: 'Permissions updated', permissions: normalizedPermissions };
+    return {
+      message: 'Permissions updated',
+      permissions: normalizedPermissions,
+    };
   }
 
   /**
@@ -343,7 +354,9 @@ export class AdminUsersService {
       actorRole !== Role.SuperAdmin &&
       (target.role === Role.Admin || target.role === Role.SuperAdmin)
     ) {
-      throw new ForbiddenException('Only SuperAdmin can change admin account status');
+      throw new ForbiddenException(
+        'Only SuperAdmin can change admin account status',
+      );
     }
 
     // Prevent self-deactivation of last SuperAdmin
@@ -352,7 +365,9 @@ export class AdminUsersService {
         where: { role: Role.SuperAdmin, status: UserStatus.ACTIVE },
       });
       if (count <= 1) {
-        throw new ForbiddenException('Cannot deactivate the last active SuperAdmin');
+        throw new ForbiddenException(
+          'Cannot deactivate the last active SuperAdmin',
+        );
       }
     }
 
@@ -412,12 +427,26 @@ export class AdminUsersService {
       const appName = this.emailService.getAppName();
       if (newStatus === UserStatus.SUSPENDED) {
         const display = mapAdminUserDisplay(updated);
-        const mail = emailTemplates.accountSuspendedEmail(display.firstName || 'User', reason || '', appName);
-        void this.emailService.send(updated.email, mail.subject, mail.html, mail.text).catch(() => undefined);
-      } else if (newStatus === UserStatus.ACTIVE && previousStatus !== UserStatus.ACTIVE) {
+        const mail = emailTemplates.accountSuspendedEmail(
+          display.firstName || 'User',
+          reason || '',
+          appName,
+        );
+        void this.emailService
+          .send(updated.email, mail.subject, mail.html, mail.text)
+          .catch(() => undefined);
+      } else if (
+        newStatus === UserStatus.ACTIVE &&
+        previousStatus !== UserStatus.ACTIVE
+      ) {
         const display = mapAdminUserDisplay(updated);
-        const mail = emailTemplates.accountReactivatedEmail(display.firstName || 'User', appName);
-        void this.emailService.send(updated.email, mail.subject, mail.html, mail.text).catch(() => undefined);
+        const mail = emailTemplates.accountReactivatedEmail(
+          display.firstName || 'User',
+          appName,
+        );
+        void this.emailService
+          .send(updated.email, mail.subject, mail.html, mail.text)
+          .catch(() => undefined);
       }
     }
 
@@ -438,11 +467,14 @@ export class AdminUsersService {
     });
     if (!target) throw new NotFoundException('User not found');
     if (target.role !== Role.Admin) {
-      throw new BadRequestException('Force password reset with temporary password is limited to Admin users');
+      throw new BadRequestException(
+        'Force password reset with temporary password is limited to Admin users',
+      );
     }
 
     const tempPassword = randomBytes(16).toString('base64url');
-    const hashedPassword = await this.passwordService.hashPassword(tempPassword);
+    const hashedPassword =
+      await this.passwordService.hashPassword(tempPassword);
 
     await this.prisma.$transaction(async (tx) => {
       await tx.user.update({
@@ -472,7 +504,8 @@ export class AdminUsersService {
     return {
       email: target.email,
       temporaryPassword: tempPassword,
-      message: 'Temporary password generated. User must reset password on next login.',
+      message:
+        'Temporary password generated. User must reset password on next login.',
     };
   }
 
@@ -493,7 +526,10 @@ export class AdminUsersService {
     if (verification.targetUserIdConfirm !== targetUserId) {
       throw new ForbiddenException('Target user confirmation mismatch');
     }
-    if (verification.actorEmail.trim().toLowerCase() !== actorEmailFromToken.trim().toLowerCase()) {
+    if (
+      verification.actorEmail.trim().toLowerCase() !==
+      actorEmailFromToken.trim().toLowerCase()
+    ) {
       throw new ForbiddenException('Actor email verification failed');
     }
 
@@ -503,11 +539,14 @@ export class AdminUsersService {
     });
     if (!target) throw new NotFoundException('User not found');
     if (target.role !== Role.Admin) {
-      throw new BadRequestException('Temporary password reissue is limited to Admin users');
+      throw new BadRequestException(
+        'Temporary password reissue is limited to Admin users',
+      );
     }
 
     const tempPassword = randomBytes(16).toString('base64url');
-    const hashedPassword = await this.passwordService.hashPassword(tempPassword);
+    const hashedPassword =
+      await this.passwordService.hashPassword(tempPassword);
 
     await this.prisma.$transaction(async (tx) => {
       await tx.user.update({
@@ -546,7 +585,8 @@ export class AdminUsersService {
     return {
       email: target.email,
       temporaryPassword: tempPassword,
-      message: 'Temporary password reissued. Share securely and rotate after first login.',
+      message:
+        'Temporary password reissued. Share securely and rotate after first login.',
     };
   }
 
@@ -574,8 +614,16 @@ export class AdminUsersService {
     if (params.search) {
       where.OR = [
         { email: { contains: params.search, mode: 'insensitive' } },
-        { userProfile: { is: { firstName: { contains: params.search, mode: 'insensitive' } } } },
-        { userProfile: { is: { lastName: { contains: params.search, mode: 'insensitive' } } } },
+        {
+          userProfile: {
+            is: { firstName: { contains: params.search, mode: 'insensitive' } },
+          },
+        },
+        {
+          userProfile: {
+            is: { lastName: { contains: params.search, mode: 'insensitive' } },
+          },
+        },
         { username: { contains: params.search, mode: 'insensitive' } },
       ];
     }
@@ -591,9 +639,7 @@ export class AdminUsersService {
       },
       orderBy: [{ createdAt: orderDir }, { id: orderDir }],
       take: take + 1,
-      ...(params.cursor
-        ? { cursor: { id: params.cursor }, skip: 1 }
-        : {}),
+      ...(params.cursor ? { cursor: { id: params.cursor }, skip: 1 } : {}),
     });
 
     const hasMore = items.length > take;
@@ -717,7 +763,9 @@ export class AdminUsersService {
     }
 
     if (request.status !== ReactivationRequestStatus.PENDING) {
-      throw new BadRequestException('Reactivation request has already been reviewed');
+      throw new BadRequestException(
+        'Reactivation request has already been reviewed',
+      );
     }
 
     const adminNote = decision.adminNote?.trim() || null;
@@ -761,10 +809,7 @@ export class AdminUsersService {
     }
 
     // APPROVE path
-    if (
-      request.user.role !== Role.User &&
-      actorRole !== Role.SuperAdmin
-    ) {
+    if (request.user.role !== Role.User && actorRole !== Role.SuperAdmin) {
       throw new ForbiddenException(
         'Only SuperAdmin can reactivate admin/superadmin accounts',
       );
@@ -1109,7 +1154,9 @@ export class AdminUsersService {
         })
       : [];
 
-    const attachmentsByMessageId = sentMessageAttachments.reduce<Record<string, typeof sentMessageAttachments>>((acc, attachment) => {
+    const attachmentsByMessageId = sentMessageAttachments.reduce<
+      Record<string, typeof sentMessageAttachments>
+    >((acc, attachment) => {
       if (!acc[attachment.messageId]) {
         acc[attachment.messageId] = [];
       }
@@ -1138,6 +1185,9 @@ export class AdminUsersService {
 
     // Strip sensitive fields
     const { password, refreshTokens, authVersion, ...safeUser } = user as any;
+    void password;
+    void refreshTokens;
+    void authVersion;
 
     return {
       exportedAt: new Date().toISOString(),
@@ -1192,10 +1242,14 @@ export class AdminUsersService {
       const orders = await tx.order.deleteMany({ where: { buyerId: userId } });
       counts.orders = orders.count;
 
-      const collections = await tx.collection.deleteMany({ where: { ownerId: userId } });
+      const collections = await tx.collection.deleteMany({
+        where: { ownerId: userId },
+      });
       counts.collections = collections.count;
 
-      const notifications = await tx.notification.deleteMany({ where: { recipientId: userId } });
+      const notifications = await tx.notification.deleteMany({
+        where: { recipientId: userId },
+      });
       counts.notifications = notifications.count;
 
       const disputes = await tx.dispute.deleteMany({
@@ -1203,14 +1257,17 @@ export class AdminUsersService {
       });
       counts.disputes = disputes.count;
 
-      const messageThreadParticipants = await tx.messageThreadParticipant.deleteMany({
-        where: { userId },
-      });
+      const messageThreadParticipants =
+        await tx.messageThreadParticipant.deleteMany({
+          where: { userId },
+        });
       counts.messageThreadParticipants = messageThreadParticipants.count;
 
-      const messageOutboxEvents = await tx.messageNotificationOutbox.deleteMany({
-        where: { recipientId: userId },
-      });
+      const messageOutboxEvents = await tx.messageNotificationOutbox.deleteMany(
+        {
+          where: { recipientId: userId },
+        },
+      );
       counts.messageOutboxEvents = messageOutboxEvents.count;
 
       const userMessages = await tx.message.findMany({
@@ -1243,9 +1300,10 @@ export class AdminUsersService {
         );
 
         if (attachmentIds.length > 0) {
-          const messageAttachmentsDeleted = await tx.messageAttachment.deleteMany({
-            where: { id: { in: attachmentIds } },
-          });
+          const messageAttachmentsDeleted =
+            await tx.messageAttachment.deleteMany({
+              where: { id: { in: attachmentIds } },
+            });
           counts.messageAttachmentsDeleted = messageAttachmentsDeleted.count;
         }
 
@@ -1253,7 +1311,8 @@ export class AdminUsersService {
           const messageAttachmentFilesDeleted = await tx.fileUpload.deleteMany({
             where: { id: { in: ownedAttachmentFileIds }, userId },
           });
-          counts.messageAttachmentFilesDeleted = messageAttachmentFilesDeleted.count;
+          counts.messageAttachmentFilesDeleted =
+            messageAttachmentFilesDeleted.count;
         }
       }
 
@@ -1313,7 +1372,9 @@ export class AdminUsersService {
     req: Request,
   ) {
     if (targetUserId === actorId) {
-      throw new BadRequestException('You cannot permanently delete your own account');
+      throw new BadRequestException(
+        'You cannot permanently delete your own account',
+      );
     }
 
     const target = await this.prisma.user.findUnique({
@@ -1329,24 +1390,40 @@ export class AdminUsersService {
 
     if (!target) throw new NotFoundException('User not found');
     if (target.role !== Role.Admin) {
-      throw new BadRequestException('Permanent delete is limited to Admin users');
+      throw new BadRequestException(
+        'Permanent delete is limited to Admin users',
+      );
     }
     if (target.status !== UserStatus.DEACTIVATED) {
-      throw new BadRequestException('Admin must be deactivated before permanent delete');
+      throw new BadRequestException(
+        'Admin must be deactivated before permanent delete',
+      );
     }
     if (target.brand?.id) {
-      throw new BadRequestException('Cannot permanently delete admin user linked to a brand');
+      throw new BadRequestException(
+        'Cannot permanently delete admin user linked to a brand',
+      );
     }
 
     const nowIso = new Date().toISOString();
 
     await this.prisma.$transaction(async (tx) => {
-      await tx.adminPermissionGrant.deleteMany({ where: { userId: targetUserId } });
-      await tx.accountReactivationRequest.deleteMany({ where: { userId: targetUserId } });
+      await tx.adminPermissionGrant.deleteMany({
+        where: { userId: targetUserId },
+      });
+      await tx.accountReactivationRequest.deleteMany({
+        where: { userId: targetUserId },
+      });
       await tx.refreshToken.deleteMany({ where: { userId: targetUserId } });
-      await tx.notification.deleteMany({ where: { recipientId: targetUserId } });
-      await tx.messageNotificationOutbox.deleteMany({ where: { recipientId: targetUserId } });
-      await tx.messageThreadParticipant.deleteMany({ where: { userId: targetUserId } });
+      await tx.notification.deleteMany({
+        where: { recipientId: targetUserId },
+      });
+      await tx.messageNotificationOutbox.deleteMany({
+        where: { recipientId: targetUserId },
+      });
+      await tx.messageThreadParticipant.deleteMany({
+        where: { userId: targetUserId },
+      });
 
       await tx.message.updateMany({
         where: { senderUserId: targetUserId },
@@ -1391,4 +1468,3 @@ export class AdminUsersService {
     return { message: 'Admin user permanently deleted' };
   }
 }
-

@@ -15,11 +15,13 @@ export class RefreshTokenCleanupService {
         where: { expiresAt: { lt: new Date() } },
       });
       if (refreshResult.count > 0) {
-        this.logger.log(`Pruned ${refreshResult.count} expired refresh sessions`);
+        this.logger.log(
+          `Pruned ${refreshResult.count} expired refresh sessions`,
+        );
       }
 
-      const passwordResetResult = await this.prisma.passwordResetToken.deleteMany(
-        {
+      const passwordResetResult =
+        await this.prisma.passwordResetToken.deleteMany({
           where: {
             OR: [
               { expiresAt: { lt: new Date() } },
@@ -30,8 +32,7 @@ export class RefreshTokenCleanupService {
               },
             ],
           },
-        },
-      );
+        });
       if (passwordResetResult.count > 0) {
         this.logger.log(
           `Pruned ${passwordResetResult.count} expired/used password reset tokens`,

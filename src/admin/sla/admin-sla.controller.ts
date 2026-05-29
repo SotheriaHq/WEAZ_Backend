@@ -34,7 +34,13 @@ export class AdminSlaController {
   @Post()
   @RequirePermissions(ADMIN_PERMISSIONS.SYSTEM_SLA_WRITE)
   create(
-    @Body() dto: { area: string; targetHours: number; startDate?: string; endDate?: string },
+    @Body()
+    dto: {
+      area: string;
+      targetHours: number;
+      startDate?: string;
+      endDate?: string;
+    },
     @Req() req: Request,
   ) {
     const actorId = (req as any).user.sub;

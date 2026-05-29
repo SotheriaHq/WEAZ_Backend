@@ -32,16 +32,26 @@ describe('OrderController', () => {
 
   it('propagates ForbiddenException for list access without orders.read', async () => {
     brandPermissionService.assertPermission.mockRejectedValue(
-      new ForbiddenException('You do not have permission for this brand action'),
+      new ForbiddenException(
+        'You do not have permission for this brand action',
+      ),
     );
 
     await expect(
-      controller.findAll('brand_owner_1', { user: { id: 'other_owner' } }, '1', '20'),
+      controller.findAll(
+        'brand_owner_1',
+        { user: { id: 'other_owner' } },
+        '1',
+        '20',
+      ),
     ).rejects.toBeInstanceOf(ForbiddenException);
   });
 
   it('delegates status update when actor has orders.update', async () => {
-    orderService.updateStatus.mockResolvedValue({ id: 'order_1', status: 'PROCESSING' } as any);
+    orderService.updateStatus.mockResolvedValue({
+      id: 'order_1',
+      status: 'PROCESSING',
+    } as any);
 
     const result = await controller.updateStatus(
       'brand_owner_1',
@@ -50,7 +60,10 @@ describe('OrderController', () => {
       { user: { id: 'staff_1' } },
     );
 
-    expect(orderAccessService.assertOrderBrandUpdate).toHaveBeenCalledWith('staff_1', 'order_1');
+    expect(orderAccessService.assertOrderBrandUpdate).toHaveBeenCalledWith(
+      'staff_1',
+      'order_1',
+    );
     expect(orderService.updateStatus).toHaveBeenCalledWith(
       'brand_owner_1',
       'order_1',

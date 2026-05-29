@@ -40,7 +40,9 @@ export class DesignResponseMapper {
           return {
             ...safeMedia,
             collectionMediaId:
-              safeMedia.collectionMediaId ?? safeMedia.legacyCollectionMediaId ?? null,
+              safeMedia.collectionMediaId ??
+              safeMedia.legacyCollectionMediaId ??
+              null,
             fileUploadId: safeMedia.fileUploadId ?? safeMedia.file?.id ?? null,
           };
         })
@@ -77,7 +79,10 @@ export class DesignResponseMapper {
             new Set(
               appliedFilters
                 .map((filter: any) => filter?.valueId ?? filter?.filterValueId)
-                .filter((value: unknown): value is string => typeof value === 'string'),
+                .filter(
+                  (value: unknown): value is string =>
+                    typeof value === 'string',
+                ),
             ),
           ),
       customMeasurementKeys: Array.isArray(source.customMeasurementKeys)
@@ -124,7 +129,10 @@ export class DesignResponseMapper {
               new Set(
                 source.filters
                   .map((filter: any) => filter?.valueId)
-                  .filter((value: unknown): value is string => typeof value === 'string'),
+                  .filter(
+                    (value: unknown): value is string =>
+                      typeof value === 'string',
+                  ),
               ),
             )
           : [],

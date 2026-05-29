@@ -80,7 +80,8 @@ const SECTION_CONFIGS: SectionConfig[] = [
   {
     key: 'shop-by-style',
     title: 'Shop by Style',
-    subtitle: 'Browse active market categories without making Market category-only.',
+    subtitle:
+      'Browse active market categories without making Market category-only.',
     emotionalLabel: 'Choose a lane',
     layout: 'CATEGORY_GRID',
     sourceType: 'MIXED',
@@ -135,7 +136,9 @@ export class MarketSectionService {
     private readonly marketRankingScorer?: MarketRankingScorerService,
   ) {}
 
-  async getSections(options?: { limit?: number } & MarketSectionIdentityOptions) {
+  async getSections(
+    options?: { limit?: number } & MarketSectionIdentityOptions,
+  ) {
     const limitOverride =
       typeof options?.limit === 'number' && Number.isFinite(options.limit)
         ? Math.min(this.maxPreviewLimit, Math.max(1, Math.floor(options.limit)))
@@ -145,15 +148,15 @@ export class MarketSectionService {
     const sectionConfigs = this.getServedSectionConfigs(rankingConfig);
 
     const sections = await Promise.all(
-      sectionConfigs.filter(
-        (config) => !suppressionScope.sectionKeys.has(config.key),
-      ).map((config) =>
-        this.buildSection(config.key, {
-          limit: limitOverride ?? config.previewItemLimit,
-          suppressionScope,
-          rankingConfig,
-        }),
-      ),
+      sectionConfigs
+        .filter((config) => !suppressionScope.sectionKeys.has(config.key))
+        .map((config) =>
+          this.buildSection(config.key, {
+            limit: limitOverride ?? config.previewItemLimit,
+            suppressionScope,
+            rankingConfig,
+          }),
+        ),
     );
 
     return {
@@ -171,10 +174,16 @@ export class MarketSectionService {
 
   async getSectionDetail(
     key: string,
-    options?: { cursor?: string; limit?: number } & MarketSectionIdentityOptions,
+    options?: {
+      cursor?: string;
+      limit?: number;
+    } & MarketSectionIdentityOptions,
   ) {
     const sectionKey = this.normalizeSectionKey(key);
-    const safeLimit = this.normalizeLimit(options?.limit, this.defaultDetailLimit);
+    const safeLimit = this.normalizeLimit(
+      options?.limit,
+      this.defaultDetailLimit,
+    );
     const safeCursor = this.normalizeCursor(options?.cursor);
     const suppressionScope = await this.getSuppressionScope(options);
     const rankingConfig = this.marketRankingConfigService?.getConfig();
@@ -192,7 +201,9 @@ export class MarketSectionService {
   }
 
   private normalizeSectionKey(key: string): MarketSectionKey {
-    const normalized = String(key ?? '').trim().toLowerCase() as MarketSectionKey;
+    const normalized = String(key ?? '')
+      .trim()
+      .toLowerCase() as MarketSectionKey;
     if (!SECTION_CONFIG_BY_KEY.has(normalized)) {
       throw new NotFoundException(`Unsupported market section: ${key}`);
     }
@@ -241,9 +252,10 @@ export class MarketSectionService {
 
   private isInvalidCursorError(error: unknown) {
     return (
-      error instanceof Prisma.PrismaClientKnownRequestError ||
-      typeof error === 'object'
-    ) && (error as { code?: string } | null)?.code === 'P2025';
+      (error instanceof Prisma.PrismaClientKnownRequestError ||
+        typeof error === 'object') &&
+      (error as { code?: string } | null)?.code === 'P2025'
+    );
   }
 
   private async buildSection(
@@ -261,7 +273,11 @@ export class MarketSectionService {
     }
 
     if (options.suppressionScope?.sectionKeys.has(key)) {
-      return this.buildEmptySection(config, options.limit, options.rankingConfig);
+      return this.buildEmptySection(
+        config,
+        options.limit,
+        options.rankingConfig,
+      );
     }
 
     let items: MarketSectionItemDto[] = [];
@@ -423,7 +439,10 @@ export class MarketSectionService {
     rankingConfig?: MarketRankingConfig,
   ): Promise<{
     items: MarketSectionItemDto[];
-    metadata: Omit<MarketSectionMetadataDto, 'minimumItems' | 'previewItemLimit'>;
+    metadata: Omit<
+      MarketSectionMetadataDto,
+      'minimumItems' | 'previewItemLimit'
+    >;
   }> {
     if (!rankingConfig?.enabled) {
       this.logRankingEvent('ranking-skipped-disabled', {
@@ -578,7 +597,10 @@ export class MarketSectionService {
     });
     return {
       items: deterministicItems,
-      metadata: this.resolveDeterministicMetadata(rankingConfig, fallbackReason),
+      metadata: this.resolveDeterministicMetadata(
+        rankingConfig,
+        fallbackReason,
+      ),
     };
   }
 
@@ -591,8 +613,8 @@ export class MarketSectionService {
 
   private getRankingEnabledSectionKeys(rankingConfig: MarketRankingConfig) {
     const configured = new Set(rankingConfig.sectionKeys);
-    const ordered = SECTION_CONFIGS.map((config) => config.key).filter((sectionKey) =>
-      configured.has(sectionKey),
+    const ordered = SECTION_CONFIGS.map((config) => config.key).filter(
+      (sectionKey) => configured.has(sectionKey),
     );
     return new Set(ordered.slice(0, rankingConfig.maxPersonalizedSections));
   }
@@ -625,8 +647,10 @@ export class MarketSectionService {
   ) {
     if (
       scope.targetKeys.has(
-        this.marketSuppressionService?.targetKey(item.entityType, item.sourceId) ??
-          `${item.entityType}:${item.sourceId}`,
+        this.marketSuppressionService?.targetKey(
+          item.entityType,
+          item.sourceId,
+        ) ?? `${item.entityType}:${item.sourceId}`,
       )
     ) {
       return true;
@@ -635,8 +659,10 @@ export class MarketSectionService {
     if (
       item.target?.id &&
       scope.targetKeys.has(
-        this.marketSuppressionService?.targetKey(item.target.type, item.target.id) ??
-          `${item.target.type}:${item.target.id}`,
+        this.marketSuppressionService?.targetKey(
+          item.target.type,
+          item.target.id,
+        ) ?? `${item.target.type}:${item.target.id}`,
       )
     ) {
       return true;
@@ -710,50 +736,52 @@ export class MarketSectionService {
     orderBy: Prisma.ProductOrderByWithRelationInput[];
   }) {
     const take = this.normalizeLimit(options.limit, this.defaultDetailLimit);
-    const products = await this.runCursorQuery(() => this.prisma.product.findMany({
-      where: this.buildMarketableProductWhere(options.extraAnd),
-      orderBy: options.orderBy,
-      ...(options.cursor ? { cursor: { id: options.cursor }, skip: 1 } : {}),
-      take: take + 1,
-      select: {
-        id: true,
-        name: true,
-        description: true,
-        slug: true,
-        price: true,
-        salePrice: true,
-        saleStartAt: true,
-        saleEndAt: true,
-        currency: true,
-        thumbnail: true,
-        images: true,
-        totalStock: true,
-        customOrderEnabled: true,
-        standardCheckoutEnabled: true,
-        tags: true,
-        gender: true,
-        viewsCount: true,
-        threadsCount: true,
-        createdAt: true,
-        updatedAt: true,
-        brandId: true,
-        brand: {
-          select: {
-            id: true,
-            name: true,
-            logo: true,
-            currency: true,
+    const products = await this.runCursorQuery(() =>
+      this.prisma.product.findMany({
+        where: this.buildMarketableProductWhere(options.extraAnd),
+        orderBy: options.orderBy,
+        ...(options.cursor ? { cursor: { id: options.cursor }, skip: 1 } : {}),
+        take: take + 1,
+        select: {
+          id: true,
+          name: true,
+          description: true,
+          slug: true,
+          price: true,
+          salePrice: true,
+          saleStartAt: true,
+          saleEndAt: true,
+          currency: true,
+          thumbnail: true,
+          images: true,
+          totalStock: true,
+          customOrderEnabled: true,
+          standardCheckoutEnabled: true,
+          tags: true,
+          gender: true,
+          viewsCount: true,
+          threadsCount: true,
+          createdAt: true,
+          updatedAt: true,
+          brandId: true,
+          brand: {
+            select: {
+              id: true,
+              name: true,
+              logo: true,
+              currency: true,
+            },
+          },
+          category: {
+            select: {
+              id: true,
+              slug: true,
+              name: true,
+            },
           },
         },
-        category: {
-          select: {
-            id: true,
-            slug: true,
-            name: true,
-          },
-        },
-      },
-    }));
+      }),
+    );
 
     const hasNextPage = products.length > take;
     const page = hasNextPage ? products.slice(0, take) : products;
@@ -762,7 +790,7 @@ export class MarketSectionService {
         .map((product) => this.mapProductItem(product))
         .filter((item): item is MarketSectionItemDto => Boolean(item)),
       hasNextPage,
-      nextCursor: hasNextPage ? page[page.length - 1]?.id ?? null : null,
+      nextCursor: hasNextPage ? (page[page.length - 1]?.id ?? null) : null,
     };
   }
 
@@ -771,86 +799,88 @@ export class MarketSectionService {
     limit: number;
   }) {
     const take = this.normalizeLimit(options.limit, this.defaultDetailLimit);
-    const collections = await this.runCursorQuery(() => this.prisma.storeCollection.findMany({
-      where: {
-        status: CollectionStatus.PUBLISHED,
-        visibility: CollectionVisibility.PUBLIC,
-        isAvailableInStore: true,
-        deletedAt: null,
-        owner: { brand: { isStoreOpen: true } },
-        products: {
-          some: {
-            product: this.buildMarketableProductWhere([], {
-              includeBrandOpen: false,
-            }),
-          },
-        },
-      },
-      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
-      ...(options.cursor ? { cursor: { id: options.cursor }, skip: 1 } : {}),
-      take: take + 1,
-      select: {
-        id: true,
-        title: true,
-        description: true,
-        minPrice: true,
-        maxPrice: true,
-        saleMinPrice: true,
-        saleMaxPrice: true,
-        tags: true,
-        createdAt: true,
-        updatedAt: true,
-        category: {
-          select: {
-            id: true,
-            slug: true,
-            name: true,
-          },
-        },
-        owner: {
-          select: {
-            id: true,
-            username: true,
-            brand: {
-              select: {
-                id: true,
-                name: true,
-                logo: true,
-                currency: true,
-              },
+    const collections = await this.runCursorQuery(() =>
+      this.prisma.storeCollection.findMany({
+        where: {
+          status: CollectionStatus.PUBLISHED,
+          visibility: CollectionVisibility.PUBLIC,
+          isAvailableInStore: true,
+          deletedAt: null,
+          owner: { brand: { isStoreOpen: true } },
+          products: {
+            some: {
+              product: this.buildMarketableProductWhere([], {
+                includeBrandOpen: false,
+              }),
             },
           },
         },
-        products: {
-          orderBy: [{ orderIndex: 'asc' }],
-          take: 5,
-          select: {
-            product: {
-              select: {
-                id: true,
-                name: true,
-                price: true,
-                salePrice: true,
-                currency: true,
-                thumbnail: true,
-                images: true,
-                totalStock: true,
-                customOrderEnabled: true,
-                isActive: true,
-                deletedAt: true,
-                archivedAt: true,
-                publishAt: true,
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        ...(options.cursor ? { cursor: { id: options.cursor }, skip: 1 } : {}),
+        take: take + 1,
+        select: {
+          id: true,
+          title: true,
+          description: true,
+          minPrice: true,
+          maxPrice: true,
+          saleMinPrice: true,
+          saleMaxPrice: true,
+          tags: true,
+          createdAt: true,
+          updatedAt: true,
+          category: {
+            select: {
+              id: true,
+              slug: true,
+              name: true,
+            },
+          },
+          owner: {
+            select: {
+              id: true,
+              username: true,
+              brand: {
+                select: {
+                  id: true,
+                  name: true,
+                  logo: true,
+                  currency: true,
+                },
               },
             },
           },
-        },
-        _count: {
-          select: {
-            products: true,
+          products: {
+            orderBy: [{ orderIndex: 'asc' }],
+            take: 5,
+            select: {
+              product: {
+                select: {
+                  id: true,
+                  name: true,
+                  price: true,
+                  salePrice: true,
+                  currency: true,
+                  thumbnail: true,
+                  images: true,
+                  totalStock: true,
+                  customOrderEnabled: true,
+                  isActive: true,
+                  deletedAt: true,
+                  archivedAt: true,
+                  publishAt: true,
+                },
+              },
+            },
+          },
+          _count: {
+            select: {
+              products: true,
+            },
           },
         },
-      },
-    }));
+      }),
+    );
 
     const hasNextPage = collections.length > take;
     const page = hasNextPage ? collections.slice(0, take) : collections;
@@ -859,27 +889,31 @@ export class MarketSectionService {
         .map((collection) => this.mapStoreCollectionItem(collection))
         .filter((item): item is MarketSectionItemDto => Boolean(item)),
       hasNextPage,
-      nextCursor: hasNextPage ? page[page.length - 1]?.id ?? null : null,
+      nextCursor: hasNextPage ? (page[page.length - 1]?.id ?? null) : null,
     };
   }
 
   private async getCategoryItems(options: { cursor?: string; limit: number }) {
     const take = this.normalizeLimit(options.limit, this.defaultDetailLimit);
-    const categories = await this.runCursorQuery(() => this.prisma.collectionCategory.findMany({
-      where: {
-        isActive: true,
-      },
-      orderBy: [{ order: 'asc' }, { slug: 'asc' }],
-      ...(options.cursor ? { cursor: { slug: options.cursor }, skip: 1 } : {}),
-      take: take + 1,
-      select: {
-        id: true,
-        slug: true,
-        name: true,
-        description: true,
-        updatedAt: true,
-      },
-    }));
+    const categories = await this.runCursorQuery(() =>
+      this.prisma.collectionCategory.findMany({
+        where: {
+          isActive: true,
+        },
+        orderBy: [{ order: 'asc' }, { slug: 'asc' }],
+        ...(options.cursor
+          ? { cursor: { slug: options.cursor }, skip: 1 }
+          : {}),
+        take: take + 1,
+        select: {
+          id: true,
+          slug: true,
+          name: true,
+          description: true,
+          updatedAt: true,
+        },
+      }),
+    );
 
     const hasNextPage = categories.length > take;
     const page = hasNextPage ? categories.slice(0, take) : categories;
@@ -918,7 +952,7 @@ export class MarketSectionService {
         updatedAt: category.updatedAt.toISOString(),
       })) as MarketSectionItemDto[],
       hasNextPage,
-      nextCursor: hasNextPage ? page[page.length - 1]?.slug ?? null : null,
+      nextCursor: hasNextPage ? (page[page.length - 1]?.slug ?? null) : null,
     };
   }
 
@@ -927,42 +961,44 @@ export class MarketSectionService {
     const productWhere = this.buildMarketableProductWhere([], {
       includeBrandOpen: false,
     });
-    const brands = await this.runCursorQuery(() => this.prisma.brand.findMany({
-      where: {
-        isStoreOpen: true,
-        products: {
-          some: productWhere,
-        },
-      },
-      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
-      ...(options.cursor ? { cursor: { id: options.cursor }, skip: 1 } : {}),
-      take: take + 1,
-      select: {
-        id: true,
-        name: true,
-        description: true,
-        logo: true,
-        tags: true,
-        createdAt: true,
-        updatedAt: true,
-        products: {
-          where: productWhere,
-          orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
-          take: 1,
-          select: {
-            id: true,
-            name: true,
-            thumbnail: true,
-            images: true,
+    const brands = await this.runCursorQuery(() =>
+      this.prisma.brand.findMany({
+        where: {
+          isStoreOpen: true,
+          products: {
+            some: productWhere,
           },
         },
-        _count: {
-          select: {
-            products: true,
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        ...(options.cursor ? { cursor: { id: options.cursor }, skip: 1 } : {}),
+        take: take + 1,
+        select: {
+          id: true,
+          name: true,
+          description: true,
+          logo: true,
+          tags: true,
+          createdAt: true,
+          updatedAt: true,
+          products: {
+            where: productWhere,
+            orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+            take: 1,
+            select: {
+              id: true,
+              name: true,
+              thumbnail: true,
+              images: true,
+            },
+          },
+          _count: {
+            select: {
+              products: true,
+            },
           },
         },
-      },
-    }));
+      }),
+    );
 
     const hasNextPage = brands.length > take;
     const page = hasNextPage ? brands.slice(0, take) : brands;
@@ -971,7 +1007,7 @@ export class MarketSectionService {
         .map((brand) => this.mapBrandItem(brand))
         .filter((item): item is MarketSectionItemDto => Boolean(item)),
       hasNextPage,
-      nextCursor: hasNextPage ? page[page.length - 1]?.id ?? null : null,
+      nextCursor: hasNextPage ? (page[page.length - 1]?.id ?? null) : null,
     };
   }
 
@@ -1049,7 +1085,9 @@ export class MarketSectionService {
     const coverProduct = visibleProducts.find((product: any) =>
       this.firstProductImage(product),
     );
-    const coverImage = coverProduct ? this.firstProductImage(coverProduct) : null;
+    const coverImage = coverProduct
+      ? this.firstProductImage(coverProduct)
+      : null;
     if (!coverImage) return null;
 
     const prices = visibleProducts
@@ -1070,11 +1108,13 @@ export class MarketSectionService {
       sourceType: 'COLLECTION',
       entityType: 'COLLECTION',
       title: collection.title ?? 'Untitled collection',
-      subtitle: collection.owner?.brand?.name ?? collection.owner?.username ?? null,
+      subtitle:
+        collection.owner?.brand?.name ?? collection.owner?.username ?? null,
       description: collection.description ?? null,
       brand: {
         id: collection.owner?.brand?.id ?? collection.owner?.id ?? null,
-        name: collection.owner?.brand?.name ?? collection.owner?.username ?? null,
+        name:
+          collection.owner?.brand?.name ?? collection.owner?.username ?? null,
         logoUrl: this.cleanString(collection.owner?.brand?.logo),
       },
       media: {
@@ -1085,8 +1125,12 @@ export class MarketSectionService {
       },
       price: null,
       priceRange: {
-        min: prices.length ? Math.min(...prices) : collection.minPrice ?? null,
-        max: prices.length ? Math.max(...prices) : collection.maxPrice ?? null,
+        min: prices.length
+          ? Math.min(...prices)
+          : (collection.minPrice ?? null),
+        max: prices.length
+          ? Math.max(...prices)
+          : (collection.maxPrice ?? null),
         currency,
       },
       availability: null,
@@ -1193,8 +1237,12 @@ export class MarketSectionService {
     if (!Number.isFinite(price) || !Number.isFinite(salePrice)) return false;
     if (salePrice <= 0 || salePrice >= price) return false;
     const now = Date.now();
-    const start = product.saleStartAt ? new Date(product.saleStartAt).getTime() : null;
-    const end = product.saleEndAt ? new Date(product.saleEndAt).getTime() : null;
+    const start = product.saleStartAt
+      ? new Date(product.saleStartAt).getTime()
+      : null;
+    const end = product.saleEndAt
+      ? new Date(product.saleEndAt).getTime()
+      : null;
     return (!start || start <= now) && (!end || end >= now);
   }
 
@@ -1203,5 +1251,4 @@ export class MarketSectionService {
     const trimmed = value.trim();
     return trimmed.length > 0 ? trimmed : null;
   }
-
 }

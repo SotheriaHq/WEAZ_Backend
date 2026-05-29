@@ -5,4 +5,3 @@ export class UpdatePermissionsDto {
   @IsString({ each: true })
   permissions: string[];
 }
-

@@ -1,4 +1,8 @@
-import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { BrandPermissionService } from 'src/brands/permissions/brand-permission.service';
 import { BRAND_PERMISSIONS } from 'src/brands/permissions/brand-permissions';
@@ -52,7 +56,10 @@ export class OrderAccessService {
     );
   }
 
-  async assertOrderParticipantRead(userId: string, orderId: string): Promise<void> {
+  async assertOrderParticipantRead(
+    userId: string,
+    orderId: string,
+  ): Promise<void> {
     const order = await this.prisma.order.findUnique({
       where: { id: orderId },
       select: { buyerId: true, brandId: true },

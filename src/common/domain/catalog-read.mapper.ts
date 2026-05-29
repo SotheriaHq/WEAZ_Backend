@@ -75,7 +75,8 @@ export function resolveCatalogEntityType(
   if (domain === 'DESIGN') return 'DESIGN';
   if (domain === 'STORE') return 'COLLECTION';
 
-  const lowerType = typeof record.type === 'string' ? record.type.trim().toLowerCase() : '';
+  const lowerType =
+    typeof record.type === 'string' ? record.type.trim().toLowerCase() : '';
   if (lowerType === 'design') return 'DESIGN';
   if (lowerType === 'product') return 'PRODUCT';
   if (lowerType === 'collection') return 'COLLECTION';

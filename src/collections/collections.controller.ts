@@ -295,7 +295,11 @@ export class CollectionsController {
     @Req() req: any,
     @Query('scope') scope?: 'design' | 'store' | 'all',
   ) {
-    return this.collectionsService.archiveCollection(collectionId, req.user.id, scope);
+    return this.collectionsService.archiveCollection(
+      collectionId,
+      req.user.id,
+      scope,
+    );
   }
 
   @UseGuards(JwtAuthGuard)
@@ -358,7 +362,9 @@ export class CollectionsController {
 
   @IsPublic()
   @Get('category-types')
-  @ApiOperation({ summary: 'Get active sub-categories (optionally filtered by categoryId)' })
+  @ApiOperation({
+    summary: 'Get active sub-categories (optionally filtered by categoryId)',
+  })
   @ApiResponse({ status: 200, description: 'List of active sub-categories' })
   async getCategoryTypes(@Query('categoryId') categoryId?: string) {
     return this.collectionsService.listCategoryTypes(categoryId);
@@ -427,7 +433,10 @@ export class CollectionsController {
   @UseGuards(JwtAuthGuard)
   @Get('collabs/my')
   @ApiOperation({ summary: 'Get collections I collabed with' })
-  @ApiResponse({ status: 200, description: 'List of collections I collabed with' })
+  @ApiResponse({
+    status: 200,
+    description: 'List of collections I collabed with',
+  })
   async getMyCollabs(
     @Req() req: any,
     @Query('cursor') cursor?: string,
@@ -470,8 +479,7 @@ export class CollectionsController {
       limit: limit ? parseInt(limit, 10) : 20,
       visibility,
       scope,
-      includeDeleted:
-        includeDeleted === 'true' || includeDeleted === '1',
+      includeDeleted: includeDeleted === 'true' || includeDeleted === '1',
       onlyDeleted: onlyDeleted === 'true' || onlyDeleted === '1',
     });
   }
@@ -507,11 +515,13 @@ export class CollectionsController {
     );
 
     // Record view asynchronously only after collection is confirmed readable.
-    this.collectionsService.recordView(id, userId, ipAddress).catch((err: any) => {
-      const status = err?.status ?? err?.response?.statusCode;
-      if (status === 404 || status === 410) return;
-      console.warn('Failed to record view:', err);
-    });
+    this.collectionsService
+      .recordView(id, userId, ipAddress)
+      .catch((err: any) => {
+        const status = err?.status ?? err?.response?.statusCode;
+        if (status === 404 || status === 410) return;
+        console.warn('Failed to record view:', err);
+      });
 
     return collection;
   }
@@ -564,11 +574,12 @@ export class CollectionsController {
       this.events.emitThread(
         result.threaded ? 'thread.created' : 'thread.removed',
         {
-        contentType: 'COLLECTION',
-        contentId: collectionId,
-        userId: req.user.id,
-        threadCount: result.threads,
-      });
+          contentType: 'COLLECTION',
+          contentId: collectionId,
+          userId: req.user.id,
+          threadCount: result.threads,
+        },
+      );
     }
     return result;
   }
@@ -629,8 +640,14 @@ export class CollectionsController {
     summary: 'Remove collection collab',
     description: 'Remove your collab from a collection',
   })
-  async removeCollectionCollab(@Param('id') collectionId: string, @Req() req: any) {
-    return this.collectionsService.removeCollectionCollab(collectionId, req.user.id);
+  async removeCollectionCollab(
+    @Param('id') collectionId: string,
+    @Req() req: any,
+  ) {
+    return this.collectionsService.removeCollectionCollab(
+      collectionId,
+      req.user.id,
+    );
   }
 
   @IsPublic()
@@ -681,14 +698,14 @@ export class CollectionsController {
     const reactionsCount = collection._count?.reactions ?? 0;
     const commentsCount = collection._count?.comments ?? 0;
     const collabsCount =
-      collection.collectionCollabCount ?? collection._count?.collectionCollabs ?? 0;
+      collection.collectionCollabCount ??
+      collection._count?.collectionCollabs ??
+      0;
     const viewsCount = collection._count?.views ?? 0;
     const totalInteractions = reactionsCount + commentsCount + collabsCount;
 
     const engagementRate =
-      viewsCount > 0
-        ? (totalInteractions / viewsCount) * 100
-        : 0;
+      viewsCount > 0 ? (totalInteractions / viewsCount) * 100 : 0;
 
     return {
       views: viewsCount,
@@ -711,7 +728,11 @@ export class CollectionsController {
     @Req() req: any,
     @Query('scope') scope?: 'design' | 'store' | 'all',
   ) {
-    return this.collectionsService.deleteCollection(collectionId, req.user.id, scope);
+    return this.collectionsService.deleteCollection(
+      collectionId,
+      req.user.id,
+      scope,
+    );
   }
 
   @UseGuards(JwtAuthGuard)
@@ -784,7 +805,10 @@ export class CollectionsController {
   @IsPublic()
   @UseGuards(OptionalJwtAuthGuard)
   @Get(':id/is-threaded')
-  async isCollectionThreaded(@Param('id') collectionId: string, @Req() req: any) {
+  async isCollectionThreaded(
+    @Param('id') collectionId: string,
+    @Req() req: any,
+  ) {
     return this.collectionsService.isCollectionThreadedByUser(
       collectionId,
       req.user?.id,
@@ -988,7 +1012,8 @@ export class CollectionsController {
   @Get(':id/cart-preview')
   @ApiOperation({
     summary: 'Preview collection products for add-to-cart',
-    description: 'Returns available and unavailable products with variant-level stock info',
+    description:
+      'Returns available and unavailable products with variant-level stock info',
   })
   async getCollectionCartPreview(
     @Param('id') collectionId: string,
@@ -1006,7 +1031,8 @@ export class CollectionsController {
   @UseInterceptors(FileInterceptor('file', collectionBulkUploadMulterOptions()))
   @ApiOperation({
     summary: 'Initiate bulk product upload',
-    description: 'Creates a bulk upload job for CSV/images. Returns upload URL and job ID.',
+    description:
+      'Creates a bulk upload job for CSV/images. Returns upload URL and job ID.',
   })
   async initiateBulkUpload(
     @Param('id') collectionId: string,
@@ -1025,10 +1051,7 @@ export class CollectionsController {
   @UseGuards(JwtAuthGuard)
   @Get('bulk-upload/:jobId')
   @ApiOperation({ summary: 'Get bulk upload job status' })
-  async getBulkUploadStatus(
-    @Param('jobId') jobId: string,
-    @Req() req: any,
-  ) {
+  async getBulkUploadStatus(@Param('jobId') jobId: string, @Req() req: any) {
     return this.collectionsService.getBulkUploadStatus(jobId, req.user.id);
   }
 
@@ -1061,7 +1084,8 @@ export class CollectionsController {
   })
   async submitCustomFitInquiry(
     @Param('id') collectionId: string,
-    @Body() body: {
+    @Body()
+    body: {
       productId?: string;
       message: string;
       measurements?: string;

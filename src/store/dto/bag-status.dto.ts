@@ -1,8 +1,20 @@
-export type BagMode = 'STANDARD' | 'CUSTOM' | 'STANDARD_OR_CUSTOM' | 'UNAVAILABLE';
+export type BagMode =
+  | 'STANDARD'
+  | 'CUSTOM'
+  | 'STANDARD_OR_CUSTOM'
+  | 'UNAVAILABLE';
 
-export type BagFittingState = 'COMPLETE' | 'PARTIAL' | 'MISSING' | 'NOT_REQUIRED';
+export type BagFittingState =
+  | 'COMPLETE'
+  | 'PARTIAL'
+  | 'MISSING'
+  | 'NOT_REQUIRED';
 
-export type BagStockState = 'IN_STOCK' | 'OUT_OF_STOCK' | 'CUSTOM_ONLY' | 'UNAVAILABLE';
+export type BagStockState =
+  | 'IN_STOCK'
+  | 'OUT_OF_STOCK'
+  | 'CUSTOM_ONLY'
+  | 'UNAVAILABLE';
 
 export type BagHeartbeatState =
   | 'not_bagged'
@@ -20,11 +32,19 @@ export type BagDefaultAction =
   | 'ALREADY_IN_BAG'
   | 'DISABLED';
 
-export type BagFreshnessState = 'FRESH' | 'STALE' | 'MISSING' | 'PARTIAL' | 'NOT_REQUIRED';
+export type BagFreshnessState =
+  | 'FRESH'
+  | 'STALE'
+  | 'MISSING'
+  | 'PARTIAL'
+  | 'NOT_REQUIRED';
 
 export type BagSourceType = 'PRODUCT' | 'DESIGN' | 'COLLECTION';
 
-export type BagCompletedDuplicatePolicy = 'ALLOW_REPEAT' | 'BLOCK_REPEAT' | 'UNKNOWN';
+export type BagCompletedDuplicatePolicy =
+  | 'ALLOW_REPEAT'
+  | 'BLOCK_REPEAT'
+  | 'UNKNOWN';
 
 export interface BagStatusDto {
   productId: string;

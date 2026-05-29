@@ -84,10 +84,7 @@ const shortCode = (value?: string | null) => {
 };
 
 const buildBuyerName = (buyer?: BuyerLike) => {
-  const fullName = [
-    buyer?.userProfile?.firstName,
-    buyer?.userProfile?.lastName,
-  ]
+  const fullName = [buyer?.userProfile?.firstName, buyer?.userProfile?.lastName]
     .map((value) => String(value || '').trim())
     .filter(Boolean)
     .join(' ');
@@ -102,7 +99,9 @@ const describeStandardStage = (
   releaseStage?: string | null,
   description?: string | null,
 ) => {
-  const normalized = String(releaseStage || '').trim().toUpperCase();
+  const normalized = String(releaseStage || '')
+    .trim()
+    .toUpperCase();
   if (normalized === 'SHIPMENT_PORTION') {
     return 'Shipment release';
   }
@@ -110,7 +109,9 @@ const describeStandardStage = (
     return 'Final release';
   }
 
-  const descriptionText = String(description || '').trim().toLowerCase();
+  const descriptionText = String(description || '')
+    .trim()
+    .toLowerCase();
   if (descriptionText.includes('shipment')) {
     return 'Shipment release';
   }
@@ -121,7 +122,9 @@ const describeStandardStage = (
 };
 
 const describeCustomStage = (allocationType?: string | null) => {
-  const normalized = String(allocationType || '').trim().toUpperCase();
+  const normalized = String(allocationType || '')
+    .trim()
+    .toUpperCase();
   if (normalized === 'BRAND_ACCEPTANCE_PORTION') {
     return 'Accepted release';
   }
@@ -141,9 +144,10 @@ export const buildPayoutSourceBreakdown = (
     const order = row.escrowHold?.order;
     const creditedAmount = toMoney(row.ledgerEntry?.amount);
     const reservedAmount = toMoney(row.amount);
-    const grossAmount = transaction?.totalAmount != null
-      ? toMoney(transaction.totalAmount)
-      : null;
+    const grossAmount =
+      transaction?.totalAmount != null
+        ? toMoney(transaction.totalAmount)
+        : null;
     const commissionAmount =
       grossAmount != null && grossAmount >= creditedAmount
         ? roundMoney(grossAmount - creditedAmount)
@@ -167,9 +171,10 @@ export const buildPayoutSourceBreakdown = (
       creditedAmount,
       grossAmount,
       commissionAmount,
-      currency: String(
-        row.currency || transaction?.currency || payoutCurrency,
-      ).trim() || payoutCurrency,
+      currency:
+        String(
+          row.currency || transaction?.currency || payoutCurrency,
+        ).trim() || payoutCurrency,
       sourceCreatedAt:
         transaction?.createdAt ?? row.ledgerEntry?.createdAt ?? null,
       linkedAt: row.createdAt ?? null,
@@ -192,8 +197,7 @@ export const buildPayoutSourceBreakdown = (
       label:
         String(
           row.customOrder?.title || row.customOrder?.sourceTitleSnapshot || '',
-        ).trim() ||
-        `Custom order ${shortCode(orderId) || ''}`.trim(),
+        ).trim() || `Custom order ${shortCode(orderId) || ''}`.trim(),
       counterparty: buildBuyerName(row.customOrder?.buyer),
       referenceId: orderId,
       referenceCode: shortCode(orderId),

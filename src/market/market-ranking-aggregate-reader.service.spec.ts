@@ -69,7 +69,9 @@ describe('MarketRankingAggregateReaderService', () => {
   });
 
   it('falls back safely when aggregate reads fail', async () => {
-    const service = createService(jest.fn().mockRejectedValue(new Error('db down')));
+    const service = createService(
+      jest.fn().mockRejectedValue(new Error('db down')),
+    );
 
     const result = await service.readItemAggregates({
       sectionKey: 'fresh-drops',
@@ -88,7 +90,9 @@ describe('MarketRankingAggregateReaderService', () => {
   });
 
   it('falls back safely when aggregate reads exceed the timeout guard', async () => {
-    const service = createService(jest.fn().mockReturnValue(new Promise(() => undefined)));
+    const service = createService(
+      jest.fn().mockReturnValue(new Promise(() => undefined)),
+    );
 
     const result = await service.readItemAggregates({
       sectionKey: 'fresh-drops',

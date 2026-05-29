@@ -156,7 +156,8 @@ export const MARKET_SECTION_CODE_DEFAULTS: MarketSectionConfigView[] = [
   {
     sectionKey: 'shop-by-style',
     title: 'Shop by Style',
-    subtitle: 'Browse active market categories without making Market category-only.',
+    subtitle:
+      'Browse active market categories without making Market category-only.',
     enabled: true,
     displayOrder: 40,
     previewItemLimit: 10,
@@ -197,78 +198,79 @@ export const MARKET_SECTION_CODE_DEFAULTS: MarketSectionConfigView[] = [
   },
 ];
 
-export const MARKET_SUGGESTION_BLOCK_CODE_DEFAULTS: MarketSuggestionBlockConfigView[] = [
-  {
-    blockKey: 'product-detail-more-like-this',
-    context: MarketSuggestionContext.PRODUCT_DETAIL,
-    targetType: MarketSuggestionTargetType.PRODUCT,
-    title: 'More Like This',
-    subtitle: 'Similar market-ready pieces',
-    enabled: true,
-    displayOrder: 10,
-    sourceType: 'PRODUCT',
-    fallbackSourceType: 'PRODUCT',
-    itemLimit: 8,
-    metadata: null,
-    source: 'code-default',
-  },
-  {
-    blockKey: 'product-detail-more-from-brand',
-    context: MarketSuggestionContext.PRODUCT_DETAIL,
-    targetType: MarketSuggestionTargetType.PRODUCT,
-    title: 'More From This Brand',
-    subtitle: 'Other pieces from the same store',
-    enabled: true,
-    displayOrder: 20,
-    sourceType: 'PRODUCT',
-    fallbackSourceType: 'PRODUCT',
-    itemLimit: 8,
-    metadata: null,
-    source: 'code-default',
-  },
-  {
-    blockKey: 'collection-detail-pieces-from-edit',
-    context: MarketSuggestionContext.COLLECTION_DETAIL,
-    targetType: MarketSuggestionTargetType.COLLECTION,
-    title: 'Pieces From This Edit',
-    subtitle: 'Market-ready products in the collection',
-    enabled: true,
-    displayOrder: 10,
-    sourceType: 'PRODUCT',
-    fallbackSourceType: 'PRODUCT',
-    itemLimit: 8,
-    metadata: null,
-    source: 'code-default',
-  },
-  {
-    blockKey: 'brand-detail-best-from-brand',
-    context: MarketSuggestionContext.BRAND_DETAIL,
-    targetType: MarketSuggestionTargetType.BRAND,
-    title: 'Best From This Brand',
-    subtitle: 'Available products from this store',
-    enabled: true,
-    displayOrder: 10,
-    sourceType: 'PRODUCT',
-    fallbackSourceType: 'PRODUCT',
-    itemLimit: 8,
-    metadata: null,
-    source: 'code-default',
-  },
-  {
-    blockKey: 'search-empty-relaxed-products',
-    context: MarketSuggestionContext.SEARCH_EMPTY,
-    targetType: MarketSuggestionTargetType.QUERY,
-    title: 'Try These Instead',
-    subtitle: 'Relaxed matches from the market',
-    enabled: true,
-    displayOrder: 10,
-    sourceType: 'PRODUCT',
-    fallbackSourceType: 'PRODUCT',
-    itemLimit: 8,
-    metadata: null,
-    source: 'code-default',
-  },
-];
+export const MARKET_SUGGESTION_BLOCK_CODE_DEFAULTS: MarketSuggestionBlockConfigView[] =
+  [
+    {
+      blockKey: 'product-detail-more-like-this',
+      context: MarketSuggestionContext.PRODUCT_DETAIL,
+      targetType: MarketSuggestionTargetType.PRODUCT,
+      title: 'More Like This',
+      subtitle: 'Similar market-ready pieces',
+      enabled: true,
+      displayOrder: 10,
+      sourceType: 'PRODUCT',
+      fallbackSourceType: 'PRODUCT',
+      itemLimit: 8,
+      metadata: null,
+      source: 'code-default',
+    },
+    {
+      blockKey: 'product-detail-more-from-brand',
+      context: MarketSuggestionContext.PRODUCT_DETAIL,
+      targetType: MarketSuggestionTargetType.PRODUCT,
+      title: 'More From This Brand',
+      subtitle: 'Other pieces from the same store',
+      enabled: true,
+      displayOrder: 20,
+      sourceType: 'PRODUCT',
+      fallbackSourceType: 'PRODUCT',
+      itemLimit: 8,
+      metadata: null,
+      source: 'code-default',
+    },
+    {
+      blockKey: 'collection-detail-pieces-from-edit',
+      context: MarketSuggestionContext.COLLECTION_DETAIL,
+      targetType: MarketSuggestionTargetType.COLLECTION,
+      title: 'Pieces From This Edit',
+      subtitle: 'Market-ready products in the collection',
+      enabled: true,
+      displayOrder: 10,
+      sourceType: 'PRODUCT',
+      fallbackSourceType: 'PRODUCT',
+      itemLimit: 8,
+      metadata: null,
+      source: 'code-default',
+    },
+    {
+      blockKey: 'brand-detail-best-from-brand',
+      context: MarketSuggestionContext.BRAND_DETAIL,
+      targetType: MarketSuggestionTargetType.BRAND,
+      title: 'Best From This Brand',
+      subtitle: 'Available products from this store',
+      enabled: true,
+      displayOrder: 10,
+      sourceType: 'PRODUCT',
+      fallbackSourceType: 'PRODUCT',
+      itemLimit: 8,
+      metadata: null,
+      source: 'code-default',
+    },
+    {
+      blockKey: 'search-empty-relaxed-products',
+      context: MarketSuggestionContext.SEARCH_EMPTY,
+      targetType: MarketSuggestionTargetType.QUERY,
+      title: 'Try These Instead',
+      subtitle: 'Relaxed matches from the market',
+      enabled: true,
+      displayOrder: 10,
+      sourceType: 'PRODUCT',
+      fallbackSourceType: 'PRODUCT',
+      itemLimit: 8,
+      metadata: null,
+      source: 'code-default',
+    },
+  ];
 
 @Injectable()
 export class MarketGovernanceConfigService {
@@ -287,7 +289,9 @@ export class MarketGovernanceConfigService {
   }
 
   getCodeDefaultSuggestionBlockConfigs(): MarketSuggestionBlockConfigView[] {
-    return MARKET_SUGGESTION_BLOCK_CODE_DEFAULTS.map((config) => ({ ...config }));
+    return MARKET_SUGGESTION_BLOCK_CODE_DEFAULTS.map((config) => ({
+      ...config,
+    }));
   }
 
   async getSectionConfigsWithFallback(): Promise<{
@@ -306,24 +310,26 @@ export class MarketGovernanceConfigService {
       }
 
       const rowByKey = new Map(rows.map((row) => [row.sectionKey, row]));
-      const merged = this.getCodeDefaultSectionConfigs().map((defaultConfig) => {
-        const row = rowByKey.get(defaultConfig.sectionKey);
-        if (!row) return defaultConfig;
-        return {
-          sectionKey: defaultConfig.sectionKey,
-          title: row.title,
-          subtitle: row.subtitle,
-          enabled: row.enabled,
-          displayOrder: row.displayOrder,
-          previewItemLimit: row.previewItemLimit,
-          detailPageLimit: row.detailPageLimit,
-          minimumItems: row.minimumItems,
-          viewAllEnabled: row.viewAllEnabled,
-          fallbackMode: row.fallbackMode,
-          metadata: this.asRecord(row.metadata),
-          source: 'db' as const,
-        };
-      });
+      const merged = this.getCodeDefaultSectionConfigs().map(
+        (defaultConfig) => {
+          const row = rowByKey.get(defaultConfig.sectionKey);
+          if (!row) return defaultConfig;
+          return {
+            sectionKey: defaultConfig.sectionKey,
+            title: row.title,
+            subtitle: row.subtitle,
+            enabled: row.enabled,
+            displayOrder: row.displayOrder,
+            previewItemLimit: row.previewItemLimit,
+            detailPageLimit: row.detailPageLimit,
+            minimumItems: row.minimumItems,
+            viewAllEnabled: row.viewAllEnabled,
+            fallbackMode: row.fallbackMode,
+            metadata: this.asRecord(row.metadata),
+            source: 'db' as const,
+          };
+        },
+      );
 
       return {
         items: merged.sort((left, right) => {

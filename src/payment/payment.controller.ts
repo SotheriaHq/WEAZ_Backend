@@ -128,9 +128,7 @@ export class PaymentController {
   @Get('fx/quote')
   @UseGuards(ThrottlerGuard)
   @Throttle({ default: { limit: 30, ttl: 60000 } })
-  async getFxQuote(
-    @Query() query: FxQuoteQueryDto,
-  ) {
+  async getFxQuote(@Query() query: FxQuoteQueryDto) {
     const result = await this.fxRateService.getQuotePreview({
       from: query.from,
       to: query.to,

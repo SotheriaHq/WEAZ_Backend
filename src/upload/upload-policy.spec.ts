@@ -7,9 +7,7 @@ import {
   multerOptionsForFileType,
 } from './upload-policy';
 
-const makeFile = (
-  partial: Partial<Express.Multer.File>,
-): Express.Multer.File =>
+const makeFile = (partial: Partial<Express.Multer.File>): Express.Multer.File =>
   ({
     fieldname: 'file',
     originalname: 'avatar.jpg',
@@ -78,29 +76,33 @@ describe('upload multer policy', () => {
     const options = collectionBulkUploadMulterOptions();
 
     expect(options.limits?.files).toBe(1);
-    expect(options.limits?.fileSize).toBe(COLLECTION_BULK_UPLOAD_HARD_LIMIT_BYTES);
-
-    const valid = await new Promise<{ error: unknown; accepted: boolean | undefined }>(
-      (resolve) => {
-        options.fileFilter?.(
-          {} as any,
-          makeFile({ originalname: 'products.csv', mimetype: 'text/csv' }),
-          (error, accepted) => resolve({ error, accepted }),
-        );
-      },
+    expect(options.limits?.fileSize).toBe(
+      COLLECTION_BULK_UPLOAD_HARD_LIMIT_BYTES,
     );
+
+    const valid = await new Promise<{
+      error: unknown;
+      accepted: boolean | undefined;
+    }>((resolve) => {
+      options.fileFilter?.(
+        {} as any,
+        makeFile({ originalname: 'products.csv', mimetype: 'text/csv' }),
+        (error, accepted) => resolve({ error, accepted }),
+      );
+    });
     expect(valid.error).toBeNull();
     expect(valid.accepted).toBe(true);
 
-    const invalid = await new Promise<{ error: unknown; accepted: boolean | undefined }>(
-      (resolve) => {
-        options.fileFilter?.(
-          {} as any,
-          makeFile({ originalname: 'products.pdf', mimetype: 'application/pdf' }),
-          (error, accepted) => resolve({ error, accepted }),
-        );
-      },
-    );
+    const invalid = await new Promise<{
+      error: unknown;
+      accepted: boolean | undefined;
+    }>((resolve) => {
+      options.fileFilter?.(
+        {} as any,
+        makeFile({ originalname: 'products.pdf', mimetype: 'application/pdf' }),
+        (error, accepted) => resolve({ error, accepted }),
+      );
+    });
     expect(invalid.error).toBeInstanceOf(BadRequestException);
     expect(invalid.accepted).toBe(false);
   });

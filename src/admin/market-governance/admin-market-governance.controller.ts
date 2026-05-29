@@ -57,7 +57,12 @@ export class AdminMarketGovernanceController {
     @Body() dto: PatchMarketSectionConfigDto,
     @Req() req: AdminRequest,
   ) {
-    return this.service.patchSection(sectionKey, dto, this.getActorId(req), req);
+    return this.service.patchSection(
+      sectionKey,
+      dto,
+      this.getActorId(req),
+      req,
+    );
   }
 
   @Get('ranking/profiles')

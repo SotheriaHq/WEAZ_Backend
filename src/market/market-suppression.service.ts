@@ -169,7 +169,10 @@ export class MarketSuppressionService {
 
   async getSuppressionScope(identity: MarketSignalIdentity) {
     const where = this.buildOwnerWhere(
-      { userId: identity.userId, anonymousSessionId: identity.anonymousSessionId },
+      {
+        userId: identity.userId,
+        anonymousSessionId: identity.anonymousSessionId,
+      },
       identity.anonymousSessionId ?? undefined,
     );
 
@@ -298,7 +301,13 @@ export class MarketSuppressionService {
       MARKET_SIGNAL_MAX_TARGET_ID_LENGTH,
     );
 
-    if (!targetId && !brandId && !categoryId && !sectionKey && !suggestionBlockKey) {
+    if (
+      !targetId &&
+      !brandId &&
+      !categoryId &&
+      !sectionKey &&
+      !suggestionBlockKey
+    ) {
       throw new BadRequestException(
         'At least one suppression target is required',
       );
@@ -340,7 +349,8 @@ export class MarketSuppressionService {
             targetType: suppression.targetType,
             targetId,
             signalType:
-              suppression.suppressionType === MarketSuppressionType.NOT_INTERESTED
+              suppression.suppressionType ===
+              MarketSuppressionType.NOT_INTERESTED
                 ? MarketSignalType.NOT_INTERESTED
                 : MarketSignalType.HIDE,
             surface: MarketSignalSurface.MARKET_HOME,
@@ -420,7 +430,9 @@ export class MarketSuppressionService {
     const cleaned = this.clean(value);
     if (!cleaned) return null;
     if (cleaned.length > maxLength) {
-      throw new BadRequestException(`${field} cannot exceed ${maxLength} characters`);
+      throw new BadRequestException(
+        `${field} cannot exceed ${maxLength} characters`,
+      );
     }
     if (/[\u0000-\u001F\u007F]/.test(cleaned)) {
       throw new BadRequestException(`${field} contains unsupported characters`);

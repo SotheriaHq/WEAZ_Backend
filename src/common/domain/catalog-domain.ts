@@ -1,4 +1,8 @@
-export const CATALOG_ENTITY_TYPES = ['DESIGN', 'PRODUCT', 'COLLECTION'] as const;
+export const CATALOG_ENTITY_TYPES = [
+  'DESIGN',
+  'PRODUCT',
+  'COLLECTION',
+] as const;
 
 export type CatalogEntityType = (typeof CATALOG_ENTITY_TYPES)[number];
 
@@ -26,6 +30,11 @@ export const DOMAIN_OWNERSHIP_SUMMARY: Record<CatalogEntityType, string[]> = {
   ],
 };
 
-export function isCatalogEntityType(value: unknown): value is CatalogEntityType {
-  return typeof value === 'string' && CATALOG_ENTITY_TYPES.includes(value as CatalogEntityType);
+export function isCatalogEntityType(
+  value: unknown,
+): value is CatalogEntityType {
+  return (
+    typeof value === 'string' &&
+    CATALOG_ENTITY_TYPES.includes(value as CatalogEntityType)
+  );
 }

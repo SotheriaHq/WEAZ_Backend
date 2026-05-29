@@ -27,8 +27,8 @@ export class SearchController {
     const parts = Array.from(
       new Set(
         input
-      .split(',')
-      .map((item) => item.trim().toLowerCase())
+          .split(',')
+          .map((item) => item.trim().toLowerCase())
           .filter(Boolean),
       ),
     );
@@ -72,7 +72,9 @@ export class SearchController {
   }
 
   @Get('suggest')
-  @ApiOperation({ summary: 'Return public search suggestions and recent/trending queries' })
+  @ApiOperation({
+    summary: 'Return public search suggestions and recent/trending queries',
+  })
   @UseGuards(OptionalJwtAuthGuard)
   @Throttle({ default: { limit: 300, ttl: 60000 } })
   async suggest(@Query() query: SearchSuggestQueryDto, @Req() req: any) {

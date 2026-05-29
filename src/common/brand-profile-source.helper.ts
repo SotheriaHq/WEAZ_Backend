@@ -158,7 +158,9 @@ export function resolveBrandSocialLinks(user: LegacyBrandProfileSource): {
   };
 }
 
-export function resolveBrandVerificationFields(user: LegacyBrandProfileSource): {
+export function resolveBrandVerificationFields(
+  user: LegacyBrandProfileSource,
+): {
   cacNumber: string | null;
   tin: string | null;
   ceoNin: string | null;

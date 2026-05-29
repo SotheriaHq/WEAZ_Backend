@@ -16,7 +16,6 @@ import {
   CustomOrderProgressStage,
   CustomOrderSourceType,
   CustomOrderStatus,
-  CustomOrderTimelineEventType,
   FileType,
   Gender,
   MeasurementPointSource,
@@ -69,7 +68,8 @@ import { ReviewEligibilityService } from 'src/reviews/review-eligibility.service
 const BUYER_ACCEPTANCE_WINDOW_HOURS = 72;
 const EXCEPTION_REVIEW_MONTHLY_QUOTA = 2;
 const EXCEPTION_REVIEW_SLA_HOURS = 24;
-const DEFAULT_PRICING_CHART_FAMILY: CustomOrderChartFamily = 'HYBRID_UK_NIGERIA';
+const DEFAULT_PRICING_CHART_FAMILY: CustomOrderChartFamily =
+  'HYBRID_UK_NIGERIA';
 const DEFAULT_DISPLAY_CHART_FAMILY: CustomOrderChartFamily = 'UK';
 const DEFAULT_RESOLVER_POLICY: CustomOrderResolverPolicy = 'MAX_OF_BOTH';
 
@@ -96,36 +96,228 @@ const CHART_BANDS: Record<
   ChartBand[]
 > = {
   UK: [
-    { label: 'UK 8', bustMin: 80, bustMax: 84, waistMin: 62, waistMax: 66, hipsMin: 88, hipsMax: 92 },
-    { label: 'UK 10', bustMin: 84, bustMax: 88, waistMin: 66, waistMax: 70, hipsMin: 92, hipsMax: 96 },
-    { label: 'UK 12', bustMin: 88, bustMax: 92, waistMin: 70, waistMax: 74, hipsMin: 96, hipsMax: 100 },
-    { label: 'UK 14', bustMin: 92, bustMax: 98, waistMin: 74, waistMax: 80, hipsMin: 100, hipsMax: 106 },
-    { label: 'UK 16', bustMin: 98, bustMax: 104, waistMin: 80, waistMax: 86, hipsMin: 106, hipsMax: 112 },
-    { label: 'UK 18', bustMin: 104, bustMax: 112, waistMin: 86, waistMax: 94, hipsMin: 112, hipsMax: 120 },
+    {
+      label: 'UK 8',
+      bustMin: 80,
+      bustMax: 84,
+      waistMin: 62,
+      waistMax: 66,
+      hipsMin: 88,
+      hipsMax: 92,
+    },
+    {
+      label: 'UK 10',
+      bustMin: 84,
+      bustMax: 88,
+      waistMin: 66,
+      waistMax: 70,
+      hipsMin: 92,
+      hipsMax: 96,
+    },
+    {
+      label: 'UK 12',
+      bustMin: 88,
+      bustMax: 92,
+      waistMin: 70,
+      waistMax: 74,
+      hipsMin: 96,
+      hipsMax: 100,
+    },
+    {
+      label: 'UK 14',
+      bustMin: 92,
+      bustMax: 98,
+      waistMin: 74,
+      waistMax: 80,
+      hipsMin: 100,
+      hipsMax: 106,
+    },
+    {
+      label: 'UK 16',
+      bustMin: 98,
+      bustMax: 104,
+      waistMin: 80,
+      waistMax: 86,
+      hipsMin: 106,
+      hipsMax: 112,
+    },
+    {
+      label: 'UK 18',
+      bustMin: 104,
+      bustMax: 112,
+      waistMin: 86,
+      waistMax: 94,
+      hipsMin: 112,
+      hipsMax: 120,
+    },
   ],
   US: [
-    { label: 'US 4', bustMin: 80, bustMax: 84, waistMin: 62, waistMax: 66, hipsMin: 88, hipsMax: 92 },
-    { label: 'US 6', bustMin: 84, bustMax: 88, waistMin: 66, waistMax: 70, hipsMin: 92, hipsMax: 96 },
-    { label: 'US 8', bustMin: 88, bustMax: 92, waistMin: 70, waistMax: 74, hipsMin: 96, hipsMax: 100 },
-    { label: 'US 10', bustMin: 92, bustMax: 98, waistMin: 74, waistMax: 80, hipsMin: 100, hipsMax: 106 },
-    { label: 'US 12', bustMin: 98, bustMax: 104, waistMin: 80, waistMax: 86, hipsMin: 106, hipsMax: 112 },
-    { label: 'US 14', bustMin: 104, bustMax: 112, waistMin: 86, waistMax: 94, hipsMin: 112, hipsMax: 120 },
+    {
+      label: 'US 4',
+      bustMin: 80,
+      bustMax: 84,
+      waistMin: 62,
+      waistMax: 66,
+      hipsMin: 88,
+      hipsMax: 92,
+    },
+    {
+      label: 'US 6',
+      bustMin: 84,
+      bustMax: 88,
+      waistMin: 66,
+      waistMax: 70,
+      hipsMin: 92,
+      hipsMax: 96,
+    },
+    {
+      label: 'US 8',
+      bustMin: 88,
+      bustMax: 92,
+      waistMin: 70,
+      waistMax: 74,
+      hipsMin: 96,
+      hipsMax: 100,
+    },
+    {
+      label: 'US 10',
+      bustMin: 92,
+      bustMax: 98,
+      waistMin: 74,
+      waistMax: 80,
+      hipsMin: 100,
+      hipsMax: 106,
+    },
+    {
+      label: 'US 12',
+      bustMin: 98,
+      bustMax: 104,
+      waistMin: 80,
+      waistMax: 86,
+      hipsMin: 106,
+      hipsMax: 112,
+    },
+    {
+      label: 'US 14',
+      bustMin: 104,
+      bustMax: 112,
+      waistMin: 86,
+      waistMax: 94,
+      hipsMin: 112,
+      hipsMax: 120,
+    },
   ],
   NIGERIA: [
-    { label: 'NG 8', bustMin: 80, bustMax: 85, waistMin: 62, waistMax: 67, hipsMin: 88, hipsMax: 93 },
-    { label: 'NG 10', bustMin: 85, bustMax: 90, waistMin: 67, waistMax: 72, hipsMin: 93, hipsMax: 98 },
-    { label: 'NG 12', bustMin: 90, bustMax: 96, waistMin: 72, waistMax: 78, hipsMin: 98, hipsMax: 104 },
-    { label: 'NG 14', bustMin: 96, bustMax: 102, waistMin: 78, waistMax: 84, hipsMin: 104, hipsMax: 110 },
-    { label: 'NG 16', bustMin: 102, bustMax: 110, waistMin: 84, waistMax: 92, hipsMin: 110, hipsMax: 118 },
-    { label: 'NG 18', bustMin: 110, bustMax: 120, waistMin: 92, waistMax: 102, hipsMin: 118, hipsMax: 128 },
+    {
+      label: 'NG 8',
+      bustMin: 80,
+      bustMax: 85,
+      waistMin: 62,
+      waistMax: 67,
+      hipsMin: 88,
+      hipsMax: 93,
+    },
+    {
+      label: 'NG 10',
+      bustMin: 85,
+      bustMax: 90,
+      waistMin: 67,
+      waistMax: 72,
+      hipsMin: 93,
+      hipsMax: 98,
+    },
+    {
+      label: 'NG 12',
+      bustMin: 90,
+      bustMax: 96,
+      waistMin: 72,
+      waistMax: 78,
+      hipsMin: 98,
+      hipsMax: 104,
+    },
+    {
+      label: 'NG 14',
+      bustMin: 96,
+      bustMax: 102,
+      waistMin: 78,
+      waistMax: 84,
+      hipsMin: 104,
+      hipsMax: 110,
+    },
+    {
+      label: 'NG 16',
+      bustMin: 102,
+      bustMax: 110,
+      waistMin: 84,
+      waistMax: 92,
+      hipsMin: 110,
+      hipsMax: 118,
+    },
+    {
+      label: 'NG 18',
+      bustMin: 110,
+      bustMax: 120,
+      waistMin: 92,
+      waistMax: 102,
+      hipsMin: 118,
+      hipsMax: 128,
+    },
   ],
   ASIA: [
-    { label: 'ASIA M', bustMin: 78, bustMax: 84, waistMin: 60, waistMax: 66, hipsMin: 84, hipsMax: 92 },
-    { label: 'ASIA L', bustMin: 84, bustMax: 90, waistMin: 66, waistMax: 72, hipsMin: 92, hipsMax: 98 },
-    { label: 'ASIA XL', bustMin: 90, bustMax: 96, waistMin: 72, waistMax: 78, hipsMin: 98, hipsMax: 104 },
-    { label: 'ASIA XXL', bustMin: 96, bustMax: 102, waistMin: 78, waistMax: 84, hipsMin: 104, hipsMax: 110 },
-    { label: 'ASIA 3XL', bustMin: 102, bustMax: 110, waistMin: 84, waistMax: 92, hipsMin: 110, hipsMax: 118 },
-    { label: 'ASIA 4XL', bustMin: 110, bustMax: 120, waistMin: 92, waistMax: 102, hipsMin: 118, hipsMax: 128 },
+    {
+      label: 'ASIA M',
+      bustMin: 78,
+      bustMax: 84,
+      waistMin: 60,
+      waistMax: 66,
+      hipsMin: 84,
+      hipsMax: 92,
+    },
+    {
+      label: 'ASIA L',
+      bustMin: 84,
+      bustMax: 90,
+      waistMin: 66,
+      waistMax: 72,
+      hipsMin: 92,
+      hipsMax: 98,
+    },
+    {
+      label: 'ASIA XL',
+      bustMin: 90,
+      bustMax: 96,
+      waistMin: 72,
+      waistMax: 78,
+      hipsMin: 98,
+      hipsMax: 104,
+    },
+    {
+      label: 'ASIA XXL',
+      bustMin: 96,
+      bustMax: 102,
+      waistMin: 78,
+      waistMax: 84,
+      hipsMin: 104,
+      hipsMax: 110,
+    },
+    {
+      label: 'ASIA 3XL',
+      bustMin: 102,
+      bustMax: 110,
+      waistMin: 84,
+      waistMax: 92,
+      hipsMin: 110,
+      hipsMax: 118,
+    },
+    {
+      label: 'ASIA 4XL',
+      bustMin: 110,
+      bustMax: 120,
+      waistMin: 92,
+      waistMax: 102,
+      hipsMin: 118,
+      hipsMax: 128,
+    },
   ],
 };
 const BASELINE_KEY_CANDIDATES: Record<'MEN' | 'WOMEN', string[]> = {
@@ -297,28 +489,42 @@ export class CustomOrdersService {
   ) {}
 
   async createPricePreview(userId: string, dto: CustomOrderPricePreviewDto) {
-    const submittedMeasurementValues = this.normalizeMeasurementValues(dto.measurementValues);
-    const configuration = await this.getActiveConfiguration(dto.configurationId, dto.configurationVersionId);
-    const duplicateContext = await this.resolveCustomOrderDuplicateContext(userId, {
-      sourceType: configuration.sourceType,
-      sourceId: configuration.sourceId,
-    });
+    const submittedMeasurementValues = this.normalizeMeasurementValues(
+      dto.measurementValues,
+    );
+    const configuration = await this.getActiveConfiguration(
+      dto.configurationId,
+      dto.configurationVersionId,
+    );
+    const duplicateContext = await this.resolveCustomOrderDuplicateContext(
+      userId,
+      {
+        sourceType: configuration.sourceType,
+        sourceId: configuration.sourceId,
+      },
+    );
     this.assertCustomOrderDuplicateAllowsNewCustomFlow(duplicateContext);
 
     const requiredMeasurementKeys = await this.resolveRequiredMeasurementKeys(
       configuration.requiredMeasurementKeys,
       configuration.requiredFreeformPointIds,
     );
-    await this.validateMeasurementRanges(requiredMeasurementKeys, submittedMeasurementValues);
-    const buyerSavedMeasurements = await this.getBuyerSavedMeasurementValues(userId);
+    await this.validateMeasurementRanges(
+      requiredMeasurementKeys,
+      submittedMeasurementValues,
+    );
+    const buyerSavedMeasurements =
+      await this.getBuyerSavedMeasurementValues(userId);
 
     const chartEvaluation = this.resolveChartEvaluation({
       measurementValues: {
         ...buyerSavedMeasurements,
         ...submittedMeasurementValues,
       },
-      pricingChartFamily: dto.pricingChartFamily ?? DEFAULT_PRICING_CHART_FAMILY,
-      displayChartFamily: dto.displayChartFamily ?? DEFAULT_DISPLAY_CHART_FAMILY,
+      pricingChartFamily:
+        dto.pricingChartFamily ?? DEFAULT_PRICING_CHART_FAMILY,
+      displayChartFamily:
+        dto.displayChartFamily ?? DEFAULT_DISPLAY_CHART_FAMILY,
       resolverPolicy: dto.resolverPolicy ?? DEFAULT_RESOLVER_POLICY,
     });
     const yardProfile = this.parseConfigurationYardProfile(configuration.notes);
@@ -334,7 +540,7 @@ export class CustomOrdersService {
           currency: configuration.brand.currency,
           buyerPriceSummary: null,
           priceLockExpiresAt: null,
-            quoteStatus: 'MANUAL_QUOTE_REQUIRED' as const,
+          quoteStatus: 'MANUAL_QUOTE_REQUIRED' as const,
           pricingChartFamily: chartEvaluation.pricingChartFamily,
           displayChartFamily: chartEvaluation.displayChartFamily,
           resolverPolicy: chartEvaluation.resolverPolicy,
@@ -350,9 +556,14 @@ export class CustomOrdersService {
       baseProductionCharge: String(configuration.baseProductionCharge),
       fabricCostPerYard: String(configuration.fabricCostPerYard),
       rushEnabled: configuration.rushEnabled,
-      rushFee: configuration.rushFee ? String(configuration.rushFee) : undefined,
+      rushFee: configuration.rushFee
+        ? String(configuration.rushFee)
+        : undefined,
       baseYardsOverride: yardProfile?.averageBaseYards,
-      additionalYards: this.resolveAdditionalYardsFromProfile(yardProfile, chartEvaluation.computedSize),
+      additionalYards: this.resolveAdditionalYardsFromProfile(
+        yardProfile,
+        chartEvaluation.computedSize,
+      ),
       rules: this.pricingService.validateConfigurationRules(
         configuration.rules.map((rule) => ({
           priority: rule.priority,
@@ -381,7 +592,14 @@ export class CustomOrdersService {
       chartEvaluation,
     );
     const previewHash = createHash('sha256')
-      .update(stableStringify({ userId, configurationId: configuration.id, configurationVersionId: configuration.version.id, requestSnapshot }))
+      .update(
+        stableStringify({
+          userId,
+          configurationId: configuration.id,
+          configurationVersionId: configuration.version.id,
+          requestSnapshot,
+        }),
+      )
       .digest('hex');
 
     const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
@@ -389,26 +607,29 @@ export class CustomOrdersService {
       where: { previewHash },
     });
 
-    const checkoutIntent = existing && existing.expiresAt > new Date() && !existing.consumedAt
-      ? existing
-      : await this.prisma.customOrderCheckoutIntent.upsert({
-          where: { previewHash },
-          update: {
-            requestSnapshotJson: requestSnapshot as Prisma.InputJsonValue,
-            buyerPriceSummaryJson: preview.buyerPriceSummary as unknown as Prisma.InputJsonValue,
-            expiresAt,
-            consumedAt: null,
-          },
-          create: {
-            buyerId: userId,
-            configurationId: configuration.id,
-            configurationVersionId: configuration.version.id,
-            previewHash,
-            requestSnapshotJson: requestSnapshot as Prisma.InputJsonValue,
-            buyerPriceSummaryJson: preview.buyerPriceSummary as unknown as Prisma.InputJsonValue,
-            expiresAt,
-          },
-        });
+    const checkoutIntent =
+      existing && existing.expiresAt > new Date() && !existing.consumedAt
+        ? existing
+        : await this.prisma.customOrderCheckoutIntent.upsert({
+            where: { previewHash },
+            update: {
+              requestSnapshotJson: requestSnapshot as Prisma.InputJsonValue,
+              buyerPriceSummaryJson:
+                preview.buyerPriceSummary as unknown as Prisma.InputJsonValue,
+              expiresAt,
+              consumedAt: null,
+            },
+            create: {
+              buyerId: userId,
+              configurationId: configuration.id,
+              configurationVersionId: configuration.version.id,
+              previewHash,
+              requestSnapshotJson: requestSnapshot as Prisma.InputJsonValue,
+              buyerPriceSummaryJson:
+                preview.buyerPriceSummary as unknown as Prisma.InputJsonValue,
+              expiresAt,
+            },
+          });
 
     return {
       statusCode: 200,
@@ -427,7 +648,7 @@ export class CustomOrdersService {
           currency: preview.buyerPriceSummary.currency,
         },
         priceLockExpiresAt: checkoutIntent.expiresAt.toISOString(),
-          quoteStatus: 'AUTO_PRICED' as const,
+        quoteStatus: 'AUTO_PRICED' as const,
         pricingChartFamily: chartEvaluation.pricingChartFamily,
         displayChartFamily: chartEvaluation.displayChartFamily,
         resolverPolicy: chartEvaluation.resolverPolicy,
@@ -440,7 +661,9 @@ export class CustomOrdersService {
   }
 
   async createOrder(userId: string, dto: CreateCustomOrderDto) {
-    const submittedMeasurementValues = this.normalizeMeasurementValues(dto.measurementValues);
+    const submittedMeasurementValues = this.normalizeMeasurementValues(
+      dto.measurementValues,
+    );
     const existingOrder = await this.prisma.customOrder.findFirst({
       where: {
         buyerId: userId,
@@ -460,7 +683,8 @@ export class CustomOrdersService {
         message: 'Custom order already placed for this checkout intent',
         data: {
           status: 'ALREADY_PLACED' as const,
-          checkoutIntentId: existingOrder.checkoutIntentId ?? dto.checkoutIntentId,
+          checkoutIntentId:
+            existingOrder.checkoutIntentId ?? dto.checkoutIntentId,
           customOrderId: existingOrder.id,
         },
       };
@@ -476,16 +700,27 @@ export class CustomOrdersService {
       throw new BadRequestException('CUSTOM_ORDER_CHECKOUT_INTENT_EXPIRED');
     }
     if (intent.consumedAt) {
-      throw new BadRequestException('Checkout intent has already been consumed');
+      throw new BadRequestException(
+        'Checkout intent has already been consumed',
+      );
     }
     if (intent.configurationId !== dto.configurationId) {
-      throw new BadRequestException('CUSTOM_ORDER_CONFIGURATION_VERSION_MISMATCH');
+      throw new BadRequestException(
+        'CUSTOM_ORDER_CONFIGURATION_VERSION_MISMATCH',
+      );
     }
-    if (dto.configurationVersionId && intent.configurationVersionId !== dto.configurationVersionId) {
-      throw new BadRequestException('CUSTOM_ORDER_CONFIGURATION_VERSION_MISMATCH');
+    if (
+      dto.configurationVersionId &&
+      intent.configurationVersionId !== dto.configurationVersionId
+    ) {
+      throw new BadRequestException(
+        'CUSTOM_ORDER_CONFIGURATION_VERSION_MISMATCH',
+      );
     }
 
-    const intentSnapshot = this.normalizeCheckoutIntentRequestSnapshot(intent.requestSnapshotJson);
+    const intentSnapshot = this.normalizeCheckoutIntentRequestSnapshot(
+      intent.requestSnapshotJson,
+    );
     const submittedSnapshot = this.buildCheckoutIntentRequestSnapshot(
       submittedMeasurementValues,
       dto.rushSelected,
@@ -493,20 +728,33 @@ export class CustomOrdersService {
       intentSnapshot.matchedFabricRuleId,
       intentSnapshot.chartLock,
     );
-    if (stableStringify(intentSnapshot) !== stableStringify(submittedSnapshot)) {
-      throw new BadRequestException('Checkout intent payload does not match current order request');
+    if (
+      stableStringify(intentSnapshot) !== stableStringify(submittedSnapshot)
+    ) {
+      throw new BadRequestException(
+        'Checkout intent payload does not match current order request',
+      );
     }
     if (intentSnapshot.chartLock.quoteStatus === 'MANUAL_QUOTE_REQUIRED') {
       throw new BadRequestException('MANUAL_QUOTE_REQUIRED');
     }
-    if (intentSnapshot.chartLock.noDirectMatch && !dto.noDirectMatchAcknowledged) {
+    if (
+      intentSnapshot.chartLock.noDirectMatch &&
+      !dto.noDirectMatchAcknowledged
+    ) {
       throw new BadRequestException('NO_DIRECT_MATCH_ACK_REQUIRED');
     }
 
-    const submissionMeta = this.extractCheckoutIntentSubmissionMeta(intent.requestSnapshotJson);
-    const alreadySubmitted = submissionMeta.submissionIdempotencyKey === dto.idempotencyKey;
+    const submissionMeta = this.extractCheckoutIntentSubmissionMeta(
+      intent.requestSnapshotJson,
+    );
+    const alreadySubmitted =
+      submissionMeta.submissionIdempotencyKey === dto.idempotencyKey;
 
-    const configuration = await this.getConfigurationVersion(intent.configurationId, intent.configurationVersionId);
+    const configuration = await this.getConfigurationVersion(
+      intent.configurationId,
+      intent.configurationVersionId,
+    );
     if (!alreadySubmitted) {
       const sourceConfigIds = (
         await this.prisma.customOrderConfiguration.findMany({
@@ -534,10 +782,14 @@ export class CustomOrdersService {
             message: 'Custom order checkout already exists in your bag',
             data: {
               status: 'READY_FOR_PAYMENT' as const,
-              checkoutIntentId: duplicateContext.existingBagLine.checkoutIntentId,
-              priceLockExpiresAt: duplicateContext.existingBagLine.checkoutIntent.expiresAt.toISOString(),
+              checkoutIntentId:
+                duplicateContext.existingBagLine.checkoutIntentId,
+              priceLockExpiresAt:
+                duplicateContext.existingBagLine.checkoutIntent.expiresAt.toISOString(),
               checkoutSessionId: duplicateContext.existingBagLine.id,
-              resumeUrl: this.buildCheckoutResumeUrl(duplicateContext.existingBagLine.resumeToken),
+              resumeUrl: this.buildCheckoutResumeUrl(
+                duplicateContext.existingBagLine.resumeToken,
+              ),
             },
           };
         }
@@ -550,18 +802,24 @@ export class CustomOrdersService {
       configuration.snapshot.requiredMeasurementKeys ?? [],
       configuration.snapshot.requiredFreeformPointIds ?? [],
     );
-    await this.validateMeasurementRanges(requiredMeasurementKeys, submittedMeasurementValues);
+    await this.validateMeasurementRanges(
+      requiredMeasurementKeys,
+      submittedMeasurementValues,
+    );
 
     if (!alreadySubmitted) {
       await this.prisma.customOrderCheckoutIntent.update({
         where: { id: intent.id },
         data: {
-          requestSnapshotJson: this.buildCheckoutIntentSubmissionSnapshot(intentSnapshot, {
-            contactInfo: dto.contactInfo,
-            customerName: dto.customerName,
-            idempotencyKey: dto.idempotencyKey,
-            noDirectMatchAcknowledged: dto.noDirectMatchAcknowledged,
-          }) as Prisma.InputJsonValue,
+          requestSnapshotJson: this.buildCheckoutIntentSubmissionSnapshot(
+            intentSnapshot,
+            {
+              contactInfo: dto.contactInfo,
+              customerName: dto.customerName,
+              idempotencyKey: dto.idempotencyKey,
+              noDirectMatchAcknowledged: dto.noDirectMatchAcknowledged,
+            },
+          ) as Prisma.InputJsonValue,
         },
       });
     }
@@ -582,7 +840,9 @@ export class CustomOrdersService {
           rushSelected: intentSnapshot.rushSelected,
           pricingChartFamily: intentSnapshot.chartLock.pricingChartFamily,
           displayChartFamily: intentSnapshot.chartLock.displayChartFamily,
-          shippingCity: String((dto.shippingAddress as Record<string, unknown>)?.city ?? ''),
+          shippingCity: String(
+            (dto.shippingAddress as Record<string, unknown>)?.city ?? '',
+          ),
         } as Prisma.InputJsonValue,
       },
       create: {
@@ -597,7 +857,9 @@ export class CustomOrdersService {
           rushSelected: intentSnapshot.rushSelected,
           pricingChartFamily: intentSnapshot.chartLock.pricingChartFamily,
           displayChartFamily: intentSnapshot.chartLock.displayChartFamily,
-          shippingCity: String((dto.shippingAddress as Record<string, unknown>)?.city ?? ''),
+          shippingCity: String(
+            (dto.shippingAddress as Record<string, unknown>)?.city ?? '',
+          ),
         } as Prisma.InputJsonValue,
       },
       select: {
@@ -622,7 +884,8 @@ export class CustomOrdersService {
 
     return {
       statusCode: 201,
-      message: 'Custom order checkout submitted. Complete payment to place the order.',
+      message:
+        'Custom order checkout submitted. Complete payment to place the order.',
       data: {
         status: 'READY_FOR_PAYMENT' as const,
         checkoutIntentId: intent.id,
@@ -744,19 +1007,24 @@ export class CustomOrdersService {
           },
         });
 
-    const relocked = await this.relockCheckoutBagLine(userId, preparedSession.id);
-    const refreshedSession = await this.prisma.customOrderCheckoutSession.findUnique({
-      where: { id: preparedSession.id },
-      select: {
-        id: true,
-        checkoutIntentId: true,
-        resumeToken: true,
-      },
-    });
+    const relocked = await this.relockCheckoutBagLine(
+      userId,
+      preparedSession.id,
+    );
+    const refreshedSession =
+      await this.prisma.customOrderCheckoutSession.findUnique({
+        where: { id: preparedSession.id },
+        select: {
+          id: true,
+          checkoutIntentId: true,
+          resumeToken: true,
+        },
+      });
 
     return {
       statusCode: 200,
-      message: 'Custom order moved to bag checkout. Continue through unified checkout.',
+      message:
+        'Custom order moved to bag checkout. Continue through unified checkout.',
       data: {
         customOrderId,
         checkoutSessionId: refreshedSession?.id ?? preparedSession.id,
@@ -770,26 +1038,35 @@ export class CustomOrdersService {
   }
 
   async buildPaidOrderCreateInput(params: {
-    intent: Prisma.CustomOrderCheckoutIntentGetPayload<{}>;
+    intent: Prisma.CustomOrderCheckoutIntentGetPayload<Prisma.CustomOrderCheckoutIntentDefaultArgs>;
     buyerId: string;
     paymentReference: string;
     paymentMethod: PaymentMethod;
     confirmedAt?: Date | null;
   }) {
-    const intentSnapshot = this.normalizeCheckoutIntentRequestSnapshot(params.intent.requestSnapshotJson);
-    const submissionMeta = this.extractCheckoutIntentSubmissionMeta(params.intent.requestSnapshotJson);
+    const intentSnapshot = this.normalizeCheckoutIntentRequestSnapshot(
+      params.intent.requestSnapshotJson,
+    );
+    const submissionMeta = this.extractCheckoutIntentSubmissionMeta(
+      params.intent.requestSnapshotJson,
+    );
 
     if (intentSnapshot.chartLock.quoteStatus === 'MANUAL_QUOTE_REQUIRED') {
       throw new BadRequestException('MANUAL_QUOTE_REQUIRED');
     }
-    if (intentSnapshot.chartLock.noDirectMatch && !submissionMeta.noDirectMatchAcknowledged) {
+    if (
+      intentSnapshot.chartLock.noDirectMatch &&
+      !submissionMeta.noDirectMatchAcknowledged
+    ) {
       throw new BadRequestException('NO_DIRECT_MATCH_ACK_REQUIRED');
     }
     if (!submissionMeta.contactInfo || !submissionMeta.customerName) {
       throw new BadRequestException('CUSTOM_ORDER_CHECKOUT_INCOMPLETE');
     }
 
-    const submittedMeasurementValues = this.normalizeMeasurementValues(intentSnapshot.measurementValues);
+    const submittedMeasurementValues = this.normalizeMeasurementValues(
+      intentSnapshot.measurementValues,
+    );
     const configuration = await this.getConfigurationVersion(
       params.intent.configurationId,
       params.intent.configurationVersionId,
@@ -798,9 +1075,14 @@ export class CustomOrdersService {
       configuration.snapshot.requiredMeasurementKeys ?? [],
       configuration.snapshot.requiredFreeformPointIds ?? [],
     );
-    await this.validateMeasurementRanges(requiredMeasurementKeys, submittedMeasurementValues);
+    await this.validateMeasurementRanges(
+      requiredMeasurementKeys,
+      submittedMeasurementValues,
+    );
     const snapshotYardProfile = this.parseConfigurationYardProfile(
-      typeof configuration.snapshot.notes === 'string' ? configuration.snapshot.notes : null,
+      typeof configuration.snapshot.notes === 'string'
+        ? configuration.snapshot.notes
+        : null,
     );
     const pricePreview = this.pricingService.buildPricePreview({
       baseProductionCharge: configuration.snapshot.baseProductionCharge,
@@ -813,12 +1095,14 @@ export class CustomOrdersService {
         intentSnapshot.chartLock.computedSize,
       ),
       rules: this.pricingService.validateConfigurationRules(
-        (configuration.snapshot.rules ?? []).map((rule: Record<string, unknown>) => ({
-          priority: Number(rule.priority),
-          outputYards: String(rule.outputYards),
-          isFallback: Boolean(rule.isFallback),
-          conditionsJson: this.conditionsFromSnapshot(rule.conditions),
-        })),
+        (configuration.snapshot.rules ?? []).map(
+          (rule: Record<string, unknown>) => ({
+            priority: Number(rule.priority),
+            outputYards: String(rule.outputYards),
+            isFallback: Boolean(rule.isFallback),
+            conditionsJson: this.conditionsFromSnapshot(rule.conditions),
+          }),
+        ),
       ),
       requiredMeasurementKeys,
       measurementValues: submittedMeasurementValues,
@@ -826,16 +1110,15 @@ export class CustomOrdersService {
       shippingAddress: intentSnapshot.shippingAddress ?? undefined,
       currency: configuration.configuration.brand.currency,
     });
-    const requiredMeasurementSnapshot = requiredMeasurementKeys.reduce<Record<string, number>>(
-      (accumulator, key) => {
-        const value = Number(submittedMeasurementValues[key]);
-        if (Number.isFinite(value)) {
-          accumulator[key] = value;
-        }
-        return accumulator;
-      },
-      {},
-    );
+    const requiredMeasurementSnapshot = requiredMeasurementKeys.reduce<
+      Record<string, number>
+    >((accumulator, key) => {
+      const value = Number(submittedMeasurementValues[key]);
+      if (Number.isFinite(value)) {
+        accumulator[key] = value;
+      }
+      return accumulator;
+    }, {});
     const sourceSnapshot = await this.resolveSourceSnapshot(
       configuration.configuration.sourceType,
       configuration.configuration.sourceId,
@@ -843,11 +1126,13 @@ export class CustomOrdersService {
     const retainedUntil = new Date(Date.now() + 180 * 24 * 60 * 60 * 1000);
     const acceptedAt = params.confirmedAt ?? new Date();
     const promisedProductionAt = new Date(
-      acceptedAt.getTime() + configuration.snapshot.productionLeadDays * 24 * 60 * 60 * 1000,
+      acceptedAt.getTime() +
+        configuration.snapshot.productionLeadDays * 24 * 60 * 60 * 1000,
     );
     const promisedDispatchAt = promisedProductionAt;
     const promisedDeliveryAt = new Date(
-      promisedDispatchAt.getTime() + configuration.snapshot.deliveryMaxDays * 24 * 60 * 60 * 1000,
+      promisedDispatchAt.getTime() +
+        configuration.snapshot.deliveryMaxDays * 24 * 60 * 60 * 1000,
     );
 
     return {
@@ -867,8 +1152,12 @@ export class CustomOrdersService {
       paymentReference: params.paymentReference,
       currency: configuration.configuration.brand.currency,
       checkoutIntentId: params.intent.id,
-      baseProductionChargeSnapshot: new Prisma.Decimal(configuration.snapshot.baseProductionCharge),
-      fabricCostPerYardSnapshot: new Prisma.Decimal(configuration.snapshot.fabricCostPerYard),
+      baseProductionChargeSnapshot: new Prisma.Decimal(
+        configuration.snapshot.baseProductionCharge,
+      ),
+      fabricCostPerYardSnapshot: new Prisma.Decimal(
+        configuration.snapshot.fabricCostPerYard,
+      ),
       computedYards: new Prisma.Decimal(pricePreview.computedYards),
       matchedFabricRuleId:
         typeof intentSnapshot.matchedFabricRuleId === 'string'
@@ -882,11 +1171,13 @@ export class CustomOrdersService {
         measurementAttachmentMeta: {
           attachedAt: new Date().toISOString(),
           requiredMeasurementKeys,
-          requiredMeasurementCount: Object.keys(requiredMeasurementSnapshot).length,
+          requiredMeasurementCount: Object.keys(requiredMeasurementSnapshot)
+            .length,
         },
       } as Prisma.InputJsonValue,
       buyerPriceSummaryJson: params.intent.buyerPriceSummaryJson,
-      measurementSnapshotJson: submittedMeasurementValues as Prisma.InputJsonValue,
+      measurementSnapshotJson:
+        submittedMeasurementValues as Prisma.InputJsonValue,
       measurementConfirmedAt: submissionMeta.submittedAt
         ? new Date(submissionMeta.submittedAt)
         : acceptedAt,
@@ -897,7 +1188,8 @@ export class CustomOrdersService {
       productionLeadDaysSnapshot: configuration.snapshot.productionLeadDays,
       deliveryMinDaysSnapshot: configuration.snapshot.deliveryMinDays,
       deliveryMaxDaysSnapshot: configuration.snapshot.deliveryMaxDays,
-      shippingAddressJson: intentSnapshot.shippingAddress as Prisma.InputJsonValue,
+      shippingAddressJson:
+        intentSnapshot.shippingAddress as Prisma.InputJsonValue,
       contactInfoJson: {
         ...submissionMeta.contactInfo,
         customerName: submissionMeta.customerName,
@@ -936,7 +1228,8 @@ export class CustomOrdersService {
               checkoutIntentId: params.intent.id,
               customerName: submissionMeta.customerName,
               requiredMeasurementKeys,
-              requiredMeasurementCount: Object.keys(requiredMeasurementSnapshot).length,
+              requiredMeasurementCount: Object.keys(requiredMeasurementSnapshot)
+                .length,
             },
           },
         ],
@@ -949,10 +1242,7 @@ export class CustomOrdersService {
     // payment-first refactor remain visible and retriable by buyers.  In the
     // current flow CustomOrder rows are only materialised after payment (ACCEPTED
     // status), so PENDING_PAYMENT records are exclusively legacy rows.
-    return this.listOrders(
-      { buyerId: userId },
-      query,
-    );
+    return this.listOrders({ buyerId: userId }, query);
   }
 
   async getBuyerOrder(userId: string, customOrderId: string) {
@@ -1071,7 +1361,9 @@ export class CustomOrdersService {
     }
 
     const configurationIds = Array.from(
-      new Set(sessions.map((session) => session.checkoutIntent.configurationId)),
+      new Set(
+        sessions.map((session) => session.checkoutIntent.configurationId),
+      ),
     );
     const configurations = await this.prisma.customOrderConfiguration.findMany({
       where: { id: { in: configurationIds } },
@@ -1082,7 +1374,9 @@ export class CustomOrdersService {
         title: true,
       },
     });
-    const configurationById = new Map(configurations.map((entry) => [entry.id, entry]));
+    const configurationById = new Map(
+      configurations.map((entry) => [entry.id, entry]),
+    );
 
     const items: CheckoutBagLine[] = [];
     for (const session of sessions) {
@@ -1119,48 +1413,51 @@ export class CustomOrdersService {
       throw new NotFoundException('Custom order checkout session not found');
     }
     if (session.customOrderId) {
-      throw new BadRequestException('This checkout session is already linked to a placed order');
+      throw new BadRequestException(
+        'This checkout session is already linked to a placed order',
+      );
     }
 
     await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT "id" FROM "CustomOrderCheckoutIntent" WHERE "id" = ${session.checkoutIntentId}::uuid FOR UPDATE`;
 
-      const [linkedAttemptUsage, legacyAttemptUsage, checkoutLineUsage] = await Promise.all([
-        tx.paymentAttemptCheckoutIntentLink.findFirst({
-          where: {
-            checkoutIntentId: session.checkoutIntentId,
-          },
-          select: {
-            id: true,
-            paymentAttemptId: true,
-            status: true,
-          },
-        }),
-        tx.paymentAttempt.findFirst({
-          where: {
-            checkoutIntentId: session.checkoutIntentId,
-          },
-          select: {
-            id: true,
-            status: true,
-            subjectType: true,
-          },
-        }),
-        tx.checkoutSessionLine.findFirst({
-          where: {
-            checkoutIntentId: session.checkoutIntentId,
-          },
-          select: {
-            id: true,
-            checkoutSession: {
-              select: {
-                id: true,
-                status: true,
+      const [linkedAttemptUsage, legacyAttemptUsage, checkoutLineUsage] =
+        await Promise.all([
+          tx.paymentAttemptCheckoutIntentLink.findFirst({
+            where: {
+              checkoutIntentId: session.checkoutIntentId,
+            },
+            select: {
+              id: true,
+              paymentAttemptId: true,
+              status: true,
+            },
+          }),
+          tx.paymentAttempt.findFirst({
+            where: {
+              checkoutIntentId: session.checkoutIntentId,
+            },
+            select: {
+              id: true,
+              status: true,
+              subjectType: true,
+            },
+          }),
+          tx.checkoutSessionLine.findFirst({
+            where: {
+              checkoutIntentId: session.checkoutIntentId,
+            },
+            select: {
+              id: true,
+              checkoutSession: {
+                select: {
+                  id: true,
+                  status: true,
+                },
               },
             },
-          },
-        }),
-      ]);
+          }),
+        ]);
 
       if (linkedAttemptUsage || legacyAttemptUsage || checkoutLineUsage) {
         throw new BadRequestException(
@@ -1172,8 +1469,12 @@ export class CustomOrdersService {
         where: { id: session.id },
       });
 
-      const [orderUsage, paymentUsage, linkedUsageAfterDelete, checkoutLineUsageAfterDelete] =
-        await Promise.all([
+      const [
+        orderUsage,
+        paymentUsage,
+        linkedUsageAfterDelete,
+        checkoutLineUsageAfterDelete,
+      ] = await Promise.all([
         tx.customOrder.findFirst({
           where: { checkoutIntentId: session.checkoutIntentId },
           select: { id: true },
@@ -1192,7 +1493,12 @@ export class CustomOrdersService {
         }),
       ]);
 
-      if (!orderUsage && !paymentUsage && !linkedUsageAfterDelete && !checkoutLineUsageAfterDelete) {
+      if (
+        !orderUsage &&
+        !paymentUsage &&
+        !linkedUsageAfterDelete &&
+        !checkoutLineUsageAfterDelete
+      ) {
         await tx.customOrderCheckoutIntent.deleteMany({
           where: {
             id: session.checkoutIntentId,
@@ -1224,20 +1530,28 @@ export class CustomOrdersService {
       throw new NotFoundException('Custom order checkout session not found');
     }
     if (session.customOrderId) {
-      throw new BadRequestException('This checkout session is already linked to a placed order');
+      throw new BadRequestException(
+        'This checkout session is already linked to a placed order',
+      );
     }
 
     const existingIntent = session.checkoutIntent;
     if (existingIntent.consumedAt) {
-      throw new BadRequestException('Checkout intent has already been consumed');
+      throw new BadRequestException(
+        'Checkout intent has already been consumed',
+      );
     }
 
-    const intentSnapshot = this.normalizeCheckoutIntentRequestSnapshot(existingIntent.requestSnapshotJson);
+    const intentSnapshot = this.normalizeCheckoutIntentRequestSnapshot(
+      existingIntent.requestSnapshotJson,
+    );
     if (intentSnapshot.chartLock.quoteStatus === 'MANUAL_QUOTE_REQUIRED') {
       throw new BadRequestException('MANUAL_QUOTE_REQUIRED');
     }
 
-    const submissionMeta = this.extractCheckoutIntentSubmissionMeta(existingIntent.requestSnapshotJson);
+    const submissionMeta = this.extractCheckoutIntentSubmissionMeta(
+      existingIntent.requestSnapshotJson,
+    );
     const configuration = await this.getConfigurationVersion(
       existingIntent.configurationId,
       existingIntent.configurationVersionId,
@@ -1273,10 +1587,15 @@ export class CustomOrdersService {
       configuration.snapshot.requiredMeasurementKeys ?? [],
       configuration.snapshot.requiredFreeformPointIds ?? [],
     );
-    await this.validateMeasurementRanges(requiredMeasurementKeys, intentSnapshot.measurementValues);
+    await this.validateMeasurementRanges(
+      requiredMeasurementKeys,
+      intentSnapshot.measurementValues,
+    );
 
     const snapshotYardProfile = this.parseConfigurationYardProfile(
-      typeof configuration.snapshot.notes === 'string' ? configuration.snapshot.notes : null,
+      typeof configuration.snapshot.notes === 'string'
+        ? configuration.snapshot.notes
+        : null,
     );
     const preview = this.pricingService.buildPricePreview({
       baseProductionCharge: configuration.snapshot.baseProductionCharge,
@@ -1289,12 +1608,14 @@ export class CustomOrdersService {
         intentSnapshot.chartLock.computedSize,
       ),
       rules: this.pricingService.validateConfigurationRules(
-        (configuration.snapshot.rules ?? []).map((rule: Record<string, unknown>) => ({
-          priority: Number(rule.priority),
-          outputYards: String(rule.outputYards),
-          isFallback: Boolean(rule.isFallback),
-          conditionsJson: this.conditionsFromSnapshot(rule.conditions),
-        })),
+        (configuration.snapshot.rules ?? []).map(
+          (rule: Record<string, unknown>) => ({
+            priority: Number(rule.priority),
+            outputYards: String(rule.outputYards),
+            isFallback: Boolean(rule.isFallback),
+            conditionsJson: this.conditionsFromSnapshot(rule.conditions),
+          }),
+        ),
       ),
       requiredMeasurementKeys,
       measurementValues: intentSnapshot.measurementValues,
@@ -1327,14 +1648,15 @@ export class CustomOrdersService {
       },
     );
 
-    const finalSnapshot = submissionMeta.contactInfo || submissionMeta.customerName
-      ? this.buildCheckoutIntentSubmissionSnapshot(requestSnapshot, {
-          contactInfo: submissionMeta.contactInfo,
-          customerName: submissionMeta.customerName,
-          idempotencyKey: submissionMeta.submissionIdempotencyKey,
-          noDirectMatchAcknowledged: submissionMeta.noDirectMatchAcknowledged,
-        })
-      : requestSnapshot;
+    const finalSnapshot =
+      submissionMeta.contactInfo || submissionMeta.customerName
+        ? this.buildCheckoutIntentSubmissionSnapshot(requestSnapshot, {
+            contactInfo: submissionMeta.contactInfo,
+            customerName: submissionMeta.customerName,
+            idempotencyKey: submissionMeta.submissionIdempotencyKey,
+            noDirectMatchAcknowledged: submissionMeta.noDirectMatchAcknowledged,
+          })
+        : requestSnapshot;
 
     const previewHash = createHash('sha256')
       .update(
@@ -1347,17 +1669,18 @@ export class CustomOrdersService {
       )
       .digest('hex');
 
-    const reusableIntent = await this.prisma.customOrderCheckoutIntent.findUnique({
-      where: { previewHash },
-      select: {
-        id: true,
-        expiresAt: true,
-        consumedAt: true,
-        checkoutSession: {
-          select: { id: true },
+    const reusableIntent =
+      await this.prisma.customOrderCheckoutIntent.findUnique({
+        where: { previewHash },
+        select: {
+          id: true,
+          expiresAt: true,
+          consumedAt: true,
+          checkoutSession: {
+            select: { id: true },
+          },
         },
-      },
-    });
+      });
 
     if (
       reusableIntent?.checkoutSession?.id &&
@@ -1369,7 +1692,9 @@ export class CustomOrdersService {
     }
 
     const nextIntent =
-      reusableIntent && reusableIntent.expiresAt > now && !reusableIntent.consumedAt
+      reusableIntent &&
+      reusableIntent.expiresAt > now &&
+      !reusableIntent.consumedAt
         ? await this.prisma.customOrderCheckoutIntent.findUniqueOrThrow({
             where: { id: reusableIntent.id },
           })
@@ -1451,7 +1776,9 @@ export class CustomOrdersService {
 
     const mapped = await this.mapCheckoutBagLine(updatedSession, configMap);
     if (!mapped) {
-      throw new BadRequestException('Unable to re-lock this custom checkout line');
+      throw new BadRequestException(
+        'Unable to re-lock this custom checkout line',
+      );
     }
 
     return {
@@ -1467,7 +1794,9 @@ export class CustomOrdersService {
     dto: ConfirmCustomOrderDeliveryDto,
   ) {
     const order = await this.requireBuyerOrder(userId, customOrderId);
-    if (order.status !== CustomOrderStatus.DELIVERED_PENDING_BUYER_CONFIRMATION) {
+    if (
+      order.status !== CustomOrderStatus.DELIVERED_PENDING_BUYER_CONFIRMATION
+    ) {
       throw new BadRequestException('CUSTOM_ORDER_INVALID_STATE');
     }
 
@@ -1494,7 +1823,8 @@ export class CustomOrdersService {
       await tx.customOrderLedgerAllocation.updateMany({
         where: {
           customOrderId,
-          allocationType: CustomOrderLedgerAllocationType.FINAL_COMPLETION_PORTION,
+          allocationType:
+            CustomOrderLedgerAllocationType.FINAL_COMPLETION_PORTION,
           status: CustomOrderLedgerAllocationStatus.HELD,
         },
         data: {
@@ -1506,7 +1836,8 @@ export class CustomOrdersService {
       const finalAllocation = await tx.customOrderLedgerAllocation.findFirst({
         where: {
           customOrderId,
-          allocationType: CustomOrderLedgerAllocationType.FINAL_COMPLETION_PORTION,
+          allocationType:
+            CustomOrderLedgerAllocationType.FINAL_COMPLETION_PORTION,
         },
         select: {
           amount: true,
@@ -1548,7 +1879,11 @@ export class CustomOrdersService {
     };
   }
 
-  async reportIssue(userId: string, customOrderId: string, dto: ReportCustomOrderIssueDto) {
+  async reportIssue(
+    userId: string,
+    customOrderId: string,
+    dto: ReportCustomOrderIssueDto,
+  ) {
     const order = await this.requireBuyerOrder(userId, customOrderId);
     const now = new Date();
     const disputeEligibleStates = new Set<CustomOrderStatus>([
@@ -1564,8 +1899,12 @@ export class CustomOrdersService {
       throw new BadRequestException('CUSTOM_ORDER_DISPUTE_WINDOW_CLOSED');
     }
 
-    const normalizedEvidence = this.validateAndNormalizeIssueEvidence(dto.evidenceJson);
-    const disputeIntakeQuestions = this.buildDisputeIntakeQuestions(dto.issueType);
+    const normalizedEvidence = this.validateAndNormalizeIssueEvidence(
+      dto.evidenceJson,
+    );
+    const disputeIntakeQuestions = this.buildDisputeIntakeQuestions(
+      dto.issueType,
+    );
 
     const updated = await this.prisma.$transaction(async (tx) => {
       await tx.customOrderIssue.create({
@@ -1619,7 +1958,9 @@ export class CustomOrdersService {
                   intakeEvidenceProvided: {
                     hasText: true,
                     photoCount: (normalizedEvidence.photos as unknown[]).length,
-                    optionalFileCount: ((normalizedEvidence.files as unknown[]) ?? []).length,
+                    optionalFileCount: (
+                      (normalizedEvidence.files as unknown[]) ?? []
+                    ).length,
                   },
                 },
               },
@@ -1632,8 +1973,14 @@ export class CustomOrdersService {
       await tx.customOrderLedgerAllocation.updateMany({
         where: {
           customOrderId,
-          allocationType: CustomOrderLedgerAllocationType.FINAL_COMPLETION_PORTION,
-          status: { in: [CustomOrderLedgerAllocationStatus.HELD, CustomOrderLedgerAllocationStatus.PAYOUT_ELIGIBLE] },
+          allocationType:
+            CustomOrderLedgerAllocationType.FINAL_COMPLETION_PORTION,
+          status: {
+            in: [
+              CustomOrderLedgerAllocationStatus.HELD,
+              CustomOrderLedgerAllocationStatus.PAYOUT_ELIGIBLE,
+            ],
+          },
         },
         data: {
           status: CustomOrderLedgerAllocationStatus.FORFEITED,
@@ -1671,28 +2018,41 @@ export class CustomOrdersService {
     dto: RespondToCustomOrderExtensionDto,
   ) {
     const order = await this.requireBuyerOrder(userId, customOrderId);
-    const extensionRequest = order.extensionRequests.find((entry) => entry.id === requestId);
+    const extensionRequest = order.extensionRequests.find(
+      (entry) => entry.id === requestId,
+    );
     if (!extensionRequest) {
       throw new NotFoundException('Custom order extension request not found');
     }
-    if (extensionRequest.buyerResponseStatus !== CustomOrderExtensionResponseStatus.OPEN) {
+    if (
+      extensionRequest.buyerResponseStatus !==
+      CustomOrderExtensionResponseStatus.OPEN
+    ) {
       throw new BadRequestException('Extension request is no longer open');
     }
 
     const response = dto.response;
     const counterDays = dto.counterDays;
-    if (response === CustomOrderExtensionResponseStatus.COUNTERED && !counterDays) {
-      throw new BadRequestException('Counter response requires a counter day value');
+    if (
+      response === CustomOrderExtensionResponseStatus.COUNTERED &&
+      !counterDays
+    ) {
+      throw new BadRequestException(
+        'Counter response requires a counter day value',
+      );
     }
     if (response === CustomOrderExtensionResponseStatus.COUNTERED) {
       const existingCounter = order.extensionRequests.some(
         (entry) =>
           entry.id !== requestId &&
           (entry.buyerCounterDays != null ||
-            entry.buyerResponseStatus === CustomOrderExtensionResponseStatus.COUNTERED),
+            entry.buyerResponseStatus ===
+              CustomOrderExtensionResponseStatus.COUNTERED),
       );
       if (existingCounter) {
-        throw new BadRequestException('Only one extension counter is allowed per order');
+        throw new BadRequestException(
+          'Only one extension counter is allowed per order',
+        );
       }
     }
 
@@ -1702,7 +2062,9 @@ export class CustomOrdersService {
         data: {
           buyerResponseStatus: response,
           buyerCounterDays:
-            response === CustomOrderExtensionResponseStatus.COUNTERED ? counterDays : null,
+            response === CustomOrderExtensionResponseStatus.COUNTERED
+              ? counterDays
+              : null,
           resolvedAt:
             response === CustomOrderExtensionResponseStatus.ACCEPTED ||
             response === CustomOrderExtensionResponseStatus.REJECTED
@@ -1712,7 +2074,12 @@ export class CustomOrdersService {
       });
 
       if (response === CustomOrderExtensionResponseStatus.ACCEPTED) {
-        await this.applyExtensionDays(tx, order.id, extensionRequest.requestedExtraDays, extensionRequest.targetType);
+        await this.applyExtensionDays(
+          tx,
+          order.id,
+          extensionRequest.requestedExtraDays,
+          extensionRequest.targetType,
+        );
       }
 
       if (response === CustomOrderExtensionResponseStatus.REJECTED) {
@@ -1767,8 +2134,12 @@ export class CustomOrdersService {
     requestId: string,
     dto: BrandRespondToCustomOrderExtensionCounterDto,
   ) {
-    await this.customOrderAccessService.assertCustomOrderBrandUpdate(ownerUserId, customOrderId);
-    const resolvedBrandId = await this.customOrderAccessService.resolveBrandId(brandId);
+    await this.customOrderAccessService.assertCustomOrderBrandUpdate(
+      ownerUserId,
+      customOrderId,
+    );
+    const resolvedBrandId =
+      await this.customOrderAccessService.resolveBrandId(brandId);
     const order = await this.prisma.customOrder.findFirst({
       where: { id: customOrderId, brandId: resolvedBrandId },
       include: this.detailIncludes,
@@ -1777,21 +2148,32 @@ export class CustomOrdersService {
       throw new NotFoundException('Custom order not found');
     }
 
-    const extensionRequest = order.extensionRequests.find((entry) => entry.id === requestId);
+    const extensionRequest = order.extensionRequests.find(
+      (entry) => entry.id === requestId,
+    );
     if (!extensionRequest) {
       throw new NotFoundException('Custom order extension request not found');
     }
-    if (extensionRequest.buyerResponseStatus !== CustomOrderExtensionResponseStatus.COUNTERED) {
-      throw new BadRequestException('Extension request is not awaiting brand response');
+    if (
+      extensionRequest.buyerResponseStatus !==
+      CustomOrderExtensionResponseStatus.COUNTERED
+    ) {
+      throw new BadRequestException(
+        'Extension request is not awaiting brand response',
+      );
     }
     if (!extensionRequest.buyerCounterDays) {
-      throw new BadRequestException('Countered extension request is missing buyer counter days');
+      throw new BadRequestException(
+        'Countered extension request is missing buyer counter days',
+      );
     }
     if (
       dto.response !== CustomOrderExtensionResponseStatus.ACCEPTED &&
       dto.response !== CustomOrderExtensionResponseStatus.REJECTED
     ) {
-      throw new BadRequestException('Brand response must accept or reject the buyer counter');
+      throw new BadRequestException(
+        'Brand response must accept or reject the buyer counter',
+      );
     }
 
     const updated = await this.prisma.$transaction(async (tx) => {
@@ -1856,9 +2238,16 @@ export class CustomOrdersService {
       where: { id: userId },
       select: { notificationSettings: true },
     });
-    const settings = user?.notificationSettings as Record<string, unknown> | null;
-    const customOrders = settings?.customOrders as Record<string, unknown> | undefined;
-    const displayChartFamily = this.normalizeChartFamily(customOrders?.displayChartFamily);
+    const settings = user?.notificationSettings as Record<
+      string,
+      unknown
+    > | null;
+    const customOrders = settings?.customOrders as
+      | Record<string, unknown>
+      | undefined;
+    const displayChartFamily = this.normalizeChartFamily(
+      customOrders?.displayChartFamily,
+    );
     const updatedAtMs = Number(customOrders?.displayChartUpdatedAtMs ?? 0);
 
     return {
@@ -1871,15 +2260,21 @@ export class CustomOrdersService {
     };
   }
 
-  async updateDisplayChartPreference(userId: string, dto: UpdateDisplayChartPreferenceDto) {
-    const displayChartFamily = this.normalizeChartFamily(dto.displayChartFamily);
+  async updateDisplayChartPreference(
+    userId: string,
+    dto: UpdateDisplayChartPreferenceDto,
+  ) {
+    const displayChartFamily = this.normalizeChartFamily(
+      dto.displayChartFamily,
+    );
     const updatedAtMs = dto.updatedAtMs ?? Date.now();
 
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
       select: { notificationSettings: true },
     });
-    const existing = (user?.notificationSettings as Record<string, unknown> | null) ?? {};
+    const existing =
+      (user?.notificationSettings as Record<string, unknown> | null) ?? {};
     const next = {
       ...existing,
       customOrders: {
@@ -1907,8 +2302,12 @@ export class CustomOrdersService {
     customOrderId: string,
     dto: CreateExceptionReviewRequestDto,
   ) {
-    await this.customOrderAccessService.assertCustomOrderBrandUpdate(ownerUserId, customOrderId);
-    const resolvedBrandId = await this.customOrderAccessService.resolveBrandId(brandId);
+    await this.customOrderAccessService.assertCustomOrderBrandUpdate(
+      ownerUserId,
+      customOrderId,
+    );
+    const resolvedBrandId =
+      await this.customOrderAccessService.resolveBrandId(brandId);
     const order = await this.prisma.customOrder.findFirst({
       where: { id: customOrderId, brandId: resolvedBrandId },
       include: this.detailIncludes,
@@ -1943,7 +2342,9 @@ export class CustomOrdersService {
       throw new BadRequestException('EXCEPTION_REVIEW_MONTHLY_QUOTA_EXCEEDED');
     }
 
-    const dueAt = new Date(Date.now() + EXCEPTION_REVIEW_SLA_HOURS * 60 * 60 * 1000);
+    const dueAt = new Date(
+      Date.now() + EXCEPTION_REVIEW_SLA_HOURS * 60 * 60 * 1000,
+    );
     const updated = await this.prisma.customOrder.update({
       where: { id: customOrderId },
       data: {
@@ -1958,9 +2359,10 @@ export class CustomOrdersService {
               requestedQuoteTotal: dto.requestedQuoteTotal ?? null,
               reason: dto.reason.trim(),
               dueAt: dueAt.toISOString(),
-                chartLock: this.normalizeChartLock(
-                  (order.internalPriceBreakdownJson as Record<string, unknown>)?.chartLock,
-                ) as Prisma.InputJsonValue,
+              chartLock: this.normalizeChartLock(
+                (order.internalPriceBreakdownJson as Record<string, unknown>)
+                  ?.chartLock,
+              ) as Prisma.InputJsonValue,
             },
           },
         },
@@ -1975,23 +2377,33 @@ export class CustomOrdersService {
     };
   }
 
-  async listBrandOrders(ownerUserId: string, brandId: string, query: QueryCustomOrdersDto) {
-    const resolvedBrandId = await this.customOrderAccessService.assertBrandOrdersRead(
-      ownerUserId,
-      brandId,
-    );
+  async listBrandOrders(
+    ownerUserId: string,
+    brandId: string,
+    query: QueryCustomOrdersDto,
+  ) {
+    const resolvedBrandId =
+      await this.customOrderAccessService.assertBrandOrdersRead(
+        ownerUserId,
+        brandId,
+      );
     // Include PENDING_PAYMENT orders so that legacy pre-refactor orders remain
     // visible to brands.  New orders skip PENDING_PAYMENT entirely (created
     // directly in ACCEPTED after payment confirmation).
-    return this.listOrders(
-      { brandId: resolvedBrandId },
-      query,
-    );
+    return this.listOrders({ brandId: resolvedBrandId }, query);
   }
 
-  async getBrandOrder(ownerUserId: string, brandId: string, customOrderId: string) {
-    await this.customOrderAccessService.assertCustomOrderBrandRead(ownerUserId, customOrderId);
-    const resolvedBrandId = await this.customOrderAccessService.resolveBrandId(brandId);
+  async getBrandOrder(
+    ownerUserId: string,
+    brandId: string,
+    customOrderId: string,
+  ) {
+    await this.customOrderAccessService.assertCustomOrderBrandRead(
+      ownerUserId,
+      customOrderId,
+    );
+    const resolvedBrandId =
+      await this.customOrderAccessService.resolveBrandId(brandId);
     const order = await this.prisma.customOrder.findFirst({
       where: { id: customOrderId, brandId: resolvedBrandId },
       include: this.detailIncludes,
@@ -2008,9 +2420,18 @@ export class CustomOrdersService {
     };
   }
 
-  async acceptBrandOrder(ownerUserId: string, brandId: string, customOrderId: string, dto: AcceptCustomOrderDto) {
-    await this.customOrderAccessService.assertCustomOrderBrandUpdate(ownerUserId, customOrderId);
-    const resolvedBrandId = await this.customOrderAccessService.resolveBrandId(brandId);
+  async acceptBrandOrder(
+    ownerUserId: string,
+    brandId: string,
+    customOrderId: string,
+    dto: AcceptCustomOrderDto,
+  ) {
+    await this.customOrderAccessService.assertCustomOrderBrandUpdate(
+      ownerUserId,
+      customOrderId,
+    );
+    const resolvedBrandId =
+      await this.customOrderAccessService.resolveBrandId(brandId);
     const order = await this.prisma.customOrder.findFirst({
       where: { id: customOrderId, brandId: resolvedBrandId },
       include: this.detailIncludes,
@@ -2018,22 +2439,31 @@ export class CustomOrdersService {
     if (!order) {
       throw new NotFoundException('Custom order not found');
     }
-    if (order.status === CustomOrderStatus.ACCEPTED || order.status === CustomOrderStatus.IN_PRODUCTION) {
+    if (
+      order.status === CustomOrderStatus.ACCEPTED ||
+      order.status === CustomOrderStatus.IN_PRODUCTION
+    ) {
       return {
         statusCode: 200,
         message: 'Custom order already accepted',
         data: this.mapDetail(order),
       };
     }
-    if (order.status !== CustomOrderStatus.PENDING_BRAND_ACCEPTANCE || order.paymentStatus !== 'PAID') {
+    if (
+      order.status !== CustomOrderStatus.PENDING_BRAND_ACCEPTANCE ||
+      order.paymentStatus !== 'PAID'
+    ) {
       throw new BadRequestException('CUSTOM_ORDER_INVALID_STATE');
     }
 
     const now = new Date();
-    const promisedProductionAt = new Date(now.getTime() + order.productionLeadDaysSnapshot * 24 * 60 * 60 * 1000);
+    const promisedProductionAt = new Date(
+      now.getTime() + order.productionLeadDaysSnapshot * 24 * 60 * 60 * 1000,
+    );
     const promisedDispatchAt = promisedProductionAt;
     const promisedDeliveryAt = new Date(
-      promisedDispatchAt.getTime() + order.deliveryMaxDaysSnapshot * 24 * 60 * 60 * 1000,
+      promisedDispatchAt.getTime() +
+        order.deliveryMaxDaysSnapshot * 24 * 60 * 60 * 1000,
     );
 
     const updated = await this.prisma.$transaction(async (tx) => {
@@ -2071,7 +2501,8 @@ export class CustomOrdersService {
       await tx.customOrderLedgerAllocation.updateMany({
         where: {
           customOrderId,
-          allocationType: CustomOrderLedgerAllocationType.BRAND_ACCEPTANCE_PORTION,
+          allocationType:
+            CustomOrderLedgerAllocationType.BRAND_ACCEPTANCE_PORTION,
           status: CustomOrderLedgerAllocationStatus.HELD,
         },
         data: {
@@ -2104,8 +2535,12 @@ export class CustomOrdersService {
     customOrderId: string,
     dto: UpdateCustomOrderProgressStageDto,
   ) {
-    await this.customOrderAccessService.assertCustomOrderBrandUpdate(ownerUserId, customOrderId);
-    const resolvedBrandId = await this.customOrderAccessService.resolveBrandId(brandId);
+    await this.customOrderAccessService.assertCustomOrderBrandUpdate(
+      ownerUserId,
+      customOrderId,
+    );
+    const resolvedBrandId =
+      await this.customOrderAccessService.resolveBrandId(brandId);
     const order = await this.prisma.customOrder.findFirst({
       where: { id: customOrderId, brandId: resolvedBrandId },
       include: this.detailIncludes,
@@ -2130,7 +2565,10 @@ export class CustomOrdersService {
       CustomOrderProgressStage.READY_FOR_DELIVERY,
     ]);
 
-    if (!preAcceptanceStatuses.has(order.status) && !productionStatuses.has(order.status)) {
+    if (
+      !preAcceptanceStatuses.has(order.status) &&
+      !productionStatuses.has(order.status)
+    ) {
       throw new BadRequestException('CUSTOM_ORDER_INVALID_STATE');
     }
     if (!brandManagedStages.has(dto.stage)) {
@@ -2196,8 +2634,12 @@ export class CustomOrdersService {
     customOrderId: string,
     dto: CreateCustomOrderExtensionRequestDto,
   ) {
-    await this.customOrderAccessService.assertCustomOrderBrandUpdate(ownerUserId, customOrderId);
-    const resolvedBrandId = await this.customOrderAccessService.resolveBrandId(brandId);
+    await this.customOrderAccessService.assertCustomOrderBrandUpdate(
+      ownerUserId,
+      customOrderId,
+    );
+    const resolvedBrandId =
+      await this.customOrderAccessService.resolveBrandId(brandId);
     const order = await this.prisma.customOrder.findFirst({
       where: { id: customOrderId, brandId: resolvedBrandId },
       include: this.detailIncludes,
@@ -2207,10 +2649,14 @@ export class CustomOrdersService {
     }
 
     if (order.extensionRequests.length > 0) {
-      throw new BadRequestException('Only one extension request is allowed per order');
+      throw new BadRequestException(
+        'Only one extension request is allowed per order',
+      );
     }
     if (!this.isExtensionRequestAllowed(order.status, dto.targetType)) {
-      throw new BadRequestException('CUSTOM_ORDER_EXTENSION_NOT_ALLOWED_FOR_STATE');
+      throw new BadRequestException(
+        'CUSTOM_ORDER_EXTENSION_NOT_ALLOWED_FOR_STATE',
+      );
     }
 
     const updated = await this.prisma.customOrder.update({
@@ -2264,8 +2710,12 @@ export class CustomOrdersService {
     customOrderId: string,
     dto: UpdateCustomOrderLifecycleStatusDto,
   ) {
-    await this.customOrderAccessService.assertCustomOrderBrandUpdate(ownerUserId, customOrderId);
-    const resolvedBrandId = await this.customOrderAccessService.resolveBrandId(brandId);
+    await this.customOrderAccessService.assertCustomOrderBrandUpdate(
+      ownerUserId,
+      customOrderId,
+    );
+    const resolvedBrandId =
+      await this.customOrderAccessService.resolveBrandId(brandId);
     const order = await this.prisma.customOrder.findFirst({
       where: { id: customOrderId, brandId: resolvedBrandId },
       include: this.detailIncludes,
@@ -2281,7 +2731,9 @@ export class CustomOrdersService {
       CustomOrderStatus.CLOSED,
     ]);
     if (!allowedStatuses.has(dto.status)) {
-      throw new BadRequestException('Unsupported custom-order lifecycle transition');
+      throw new BadRequestException(
+        'Unsupported custom-order lifecycle transition',
+      );
     }
     if (!this.isLifecycleTransitionAllowed(order.status, dto.status)) {
       throw new BadRequestException('CUSTOM_ORDER_INVALID_STATE_TRANSITION');
@@ -2294,17 +2746,22 @@ export class CustomOrdersService {
         status: dto.status,
         lastBrandProgressUpdateAt: now,
         deliveredAt:
-          dto.status === CustomOrderStatus.DELIVERED_PENDING_BUYER_CONFIRMATION ? now : order.deliveredAt,
+          dto.status === CustomOrderStatus.DELIVERED_PENDING_BUYER_CONFIRMATION
+            ? now
+            : order.deliveredAt,
         buyerAcceptanceWindowEndsAt:
           dto.status === CustomOrderStatus.DELIVERED_PENDING_BUYER_CONFIRMATION
-            ? new Date(now.getTime() + BUYER_ACCEPTANCE_WINDOW_HOURS * 60 * 60 * 1000)
+            ? new Date(
+                now.getTime() + BUYER_ACCEPTANCE_WINDOW_HOURS * 60 * 60 * 1000,
+              )
             : order.buyerAcceptanceWindowEndsAt,
         timelineEvents: {
           create: {
             actorType: CustomOrderActorType.BRAND,
             actorId: ownerUserId,
             eventType:
-              dto.status === CustomOrderStatus.DELIVERED_PENDING_BUYER_CONFIRMATION
+              dto.status ===
+              CustomOrderStatus.DELIVERED_PENDING_BUYER_CONFIRMATION
                 ? 'DELIVERED'
                 : 'PROGRESS_STAGE_CHANGED',
             payloadJson: {
@@ -2339,31 +2796,40 @@ export class CustomOrdersService {
     customOrderId: string,
     dto: UpdateCustomOrderMeasurementsDto,
   ) {
-    const submittedMeasurementValues = this.normalizeMeasurementValues(dto.measurementValues);
+    const submittedMeasurementValues = this.normalizeMeasurementValues(
+      dto.measurementValues,
+    );
     const order = await this.requireBuyerOrder(userId, customOrderId);
     const measurementUpdateWindowOpen =
       order.paymentStatus === PaymentStatus.PAID &&
-      (
-        order.status === CustomOrderStatus.PENDING_BRAND_ACCEPTANCE ||
-        (
-          order.status === CustomOrderStatus.ACCEPTED &&
-          order.currentProgressStage === CustomOrderProgressStage.ORDER_RECEIVED
-        )
-      );
+      (order.status === CustomOrderStatus.PENDING_BRAND_ACCEPTANCE ||
+        (order.status === CustomOrderStatus.ACCEPTED &&
+          order.currentProgressStage ===
+            CustomOrderProgressStage.ORDER_RECEIVED));
 
     if (!measurementUpdateWindowOpen) {
-      throw new BadRequestException('CUSTOM_ORDER_MEASUREMENT_UPDATE_WINDOW_CLOSED');
+      throw new BadRequestException(
+        'CUSTOM_ORDER_MEASUREMENT_UPDATE_WINDOW_CLOSED',
+      );
     }
 
-    const configuration = await this.getConfigurationVersion(order.configurationId, order.configurationVersionId);
+    const configuration = await this.getConfigurationVersion(
+      order.configurationId,
+      order.configurationVersionId,
+    );
     const requiredMeasurementKeys = await this.resolveRequiredMeasurementKeys(
       configuration.snapshot.requiredMeasurementKeys ?? [],
       configuration.snapshot.requiredFreeformPointIds ?? [],
     );
-    await this.validateMeasurementRanges(requiredMeasurementKeys, submittedMeasurementValues);
+    await this.validateMeasurementRanges(
+      requiredMeasurementKeys,
+      submittedMeasurementValues,
+    );
 
     const yardProfile = this.parseConfigurationYardProfile(
-      typeof configuration.snapshot.notes === 'string' ? configuration.snapshot.notes : null,
+      typeof configuration.snapshot.notes === 'string'
+        ? configuration.snapshot.notes
+        : null,
     );
     const chartLock = this.normalizeChartLock(
       (order.internalPriceBreakdownJson as Record<string, unknown>)?.chartLock,
@@ -2375,47 +2841,56 @@ export class CustomOrdersService {
       rushEnabled: configuration.snapshot.rushEnabled,
       rushFee: configuration.snapshot.rushFee,
       baseYardsOverride: yardProfile?.averageBaseYards,
-      additionalYards: this.resolveAdditionalYardsFromProfile(yardProfile, chartLock.computedSize),
+      additionalYards: this.resolveAdditionalYardsFromProfile(
+        yardProfile,
+        chartLock.computedSize,
+      ),
       rules: this.pricingService.validateConfigurationRules(
-        (configuration.snapshot.rules ?? []).map((rule: Record<string, unknown>) => ({
-          priority: Number(rule.priority),
-          outputYards: String(rule.outputYards),
-          isFallback: Boolean(rule.isFallback),
-          conditionsJson: this.conditionsFromSnapshot(rule.conditions),
-        })),
+        (configuration.snapshot.rules ?? []).map(
+          (rule: Record<string, unknown>) => ({
+            priority: Number(rule.priority),
+            outputYards: String(rule.outputYards),
+            isFallback: Boolean(rule.isFallback),
+            conditionsJson: this.conditionsFromSnapshot(rule.conditions),
+          }),
+        ),
       ),
       requiredMeasurementKeys,
       measurementValues: submittedMeasurementValues,
       rushSelected: order.rushSelected,
-      shippingAddress: (order.shippingAddressJson as Record<string, unknown> | null) ?? undefined,
+      shippingAddress:
+        (order.shippingAddressJson as Record<string, unknown> | null) ??
+        undefined,
       currency: order.currency,
     });
 
     const existingGrandTotal = Number(
       (order.buyerPriceSummaryJson as Record<string, unknown>)?.grandTotal ?? 0,
     );
-    const revalidatedGrandTotal = Number(revalidatedPreview.buyerPriceSummary.grandTotal ?? 0);
+    const revalidatedGrandTotal = Number(
+      revalidatedPreview.buyerPriceSummary.grandTotal ?? 0,
+    );
     if (existingGrandTotal !== revalidatedGrandTotal) {
       throw new BadRequestException(
         'Measurement update changes the locked payable total. Please create a new preview and contact support/admin for settlement revalidation.',
       );
     }
 
-    const requiredMeasurementSnapshot = requiredMeasurementKeys.reduce<Record<string, number>>(
-      (accumulator, key) => {
-        const value = Number(submittedMeasurementValues[key]);
-        if (Number.isFinite(value)) {
-          accumulator[key] = value;
-        }
-        return accumulator;
-      },
-      {},
-    );
+    const requiredMeasurementSnapshot = requiredMeasurementKeys.reduce<
+      Record<string, number>
+    >((accumulator, key) => {
+      const value = Number(submittedMeasurementValues[key]);
+      if (Number.isFinite(value)) {
+        accumulator[key] = value;
+      }
+      return accumulator;
+    }, {});
 
     const updated = await this.prisma.customOrder.update({
       where: { id: customOrderId },
       data: {
-        measurementSnapshotJson: submittedMeasurementValues as Prisma.InputJsonValue,
+        measurementSnapshotJson:
+          submittedMeasurementValues as Prisma.InputJsonValue,
         measurementConfirmedAt: new Date(),
         internalPriceBreakdownJson: {
           ...(order.internalPriceBreakdownJson as Record<string, unknown>),
@@ -2423,7 +2898,8 @@ export class CustomOrdersService {
           measurementAttachmentMeta: {
             attachedAt: new Date().toISOString(),
             requiredMeasurementKeys,
-            requiredMeasurementCount: Object.keys(requiredMeasurementSnapshot).length,
+            requiredMeasurementCount: Object.keys(requiredMeasurementSnapshot)
+              .length,
             updatedBeforeAcceptance: true,
             updateReason: dto.reason ?? null,
           },
@@ -2438,7 +2914,8 @@ export class CustomOrdersService {
               phase: 'PRE_PRODUCTION',
               reason: dto.reason ?? null,
               requiredMeasurementKeys,
-              requiredMeasurementCount: Object.keys(requiredMeasurementSnapshot).length,
+              requiredMeasurementCount: Object.keys(requiredMeasurementSnapshot)
+                .length,
             },
           },
         },
@@ -2513,7 +2990,10 @@ export class CustomOrdersService {
     });
   }
 
-  private async resolveUserDisplayName(userId: string, fallback?: string | null) {
+  private async resolveUserDisplayName(
+    userId: string,
+    fallback?: string | null,
+  ) {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
       select: {
@@ -2526,16 +3006,14 @@ export class CustomOrdersService {
       resolveRequiredProfileField(user ?? {}, 'firstName'),
       resolveRequiredProfileField(user ?? {}, 'lastName'),
     ]
-      .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+      .filter(
+        (value): value is string =>
+          typeof value === 'string' && value.trim().length > 0,
+      )
       .join(' ')
       .trim();
 
-    return (
-      user?.username?.trim() ||
-      fullName ||
-      fallback?.trim() ||
-      'there'
-    );
+    return user?.username?.trim() || fullName || fallback?.trim() || 'there';
   }
 
   private async listOrders(
@@ -2553,8 +3031,18 @@ export class CustomOrdersService {
         ? {
             OR: [
               ...(isUuid(searchQuery) ? [{ id: { equals: searchQuery } }] : []),
-              { sourceTitleSnapshot: { contains: searchQuery, mode: 'insensitive' } },
-              { sourceBrandNameSnapshot: { contains: searchQuery, mode: 'insensitive' } },
+              {
+                sourceTitleSnapshot: {
+                  contains: searchQuery,
+                  mode: 'insensitive',
+                },
+              },
+              {
+                sourceBrandNameSnapshot: {
+                  contains: searchQuery,
+                  mode: 'insensitive',
+                },
+              },
             ],
           }
         : {}),
@@ -2586,30 +3074,30 @@ export class CustomOrdersService {
   }
 
   private async hydrateListOrderSnapshots(
-    items: Prisma.CustomOrderGetPayload<{}>[],
-  ): Promise<Prisma.CustomOrderGetPayload<{}>[]> {
+    items: Prisma.CustomOrderGetPayload<Prisma.CustomOrderDefaultArgs>[],
+  ): Promise<Prisma.CustomOrderGetPayload<Prisma.CustomOrderDefaultArgs>[]> {
     const productIdsNeedingMedia = Array.from(
       new Set(
         items
           .filter(
-              (item) =>
-                item.sourceType === CustomOrderSourceType.PRODUCT &&
-                hasEphemeralMediaSignature(item.sourcePrimaryMediaUrlSnapshot),
-            )
-            .map((item) => item.sourceId),
-        ),
-      );
+            (item) =>
+              item.sourceType === CustomOrderSourceType.PRODUCT &&
+              hasEphemeralMediaSignature(item.sourcePrimaryMediaUrlSnapshot),
+          )
+          .map((item) => item.sourceId),
+      ),
+    );
     const designIdsNeedingMedia = Array.from(
       new Set(
         items
           .filter(
-              (item) =>
-                item.sourceType === CustomOrderSourceType.DESIGN &&
-                hasEphemeralMediaSignature(item.sourcePrimaryMediaUrlSnapshot),
-            )
-            .map((item) => item.sourceId),
-        ),
-      );
+            (item) =>
+              item.sourceType === CustomOrderSourceType.DESIGN &&
+              hasEphemeralMediaSignature(item.sourcePrimaryMediaUrlSnapshot),
+          )
+          .map((item) => item.sourceId),
+      ),
+    );
 
     const [products, designs] = await Promise.all([
       productIdsNeedingMedia.length
@@ -2668,7 +3156,9 @@ export class CustomOrdersService {
           title: design.title ?? 'Untitled design',
           brandName: design.owner.brand?.name ?? null,
           mediaUrl: pickFirstRenderableMediaUrl([
-            design.coverMedia?.mediaType === FileType.POST_IMAGE ? design.coverMedia?.file?.s3Url : null,
+            design.coverMedia?.mediaType === FileType.POST_IMAGE
+              ? design.coverMedia?.file?.s3Url
+              : null,
             ...design.medias.map((media) => media.file?.s3Url),
           ]),
         },
@@ -2676,7 +3166,9 @@ export class CustomOrdersService {
     );
 
     return items.map((item) => {
-      const needsFreshMedia = hasEphemeralMediaSignature(item.sourcePrimaryMediaUrlSnapshot);
+      const needsFreshMedia = hasEphemeralMediaSignature(
+        item.sourcePrimaryMediaUrlSnapshot,
+      );
       const hasStableIdentitySnapshot =
         Boolean(item.sourceBrandNameSnapshot) &&
         Boolean(item.sourceTitleSnapshot) &&
@@ -2696,17 +3188,21 @@ export class CustomOrdersService {
       return {
         ...item,
         sourceTitleSnapshot: item.sourceTitleSnapshot || source.title,
-        sourceBrandNameSnapshot: item.sourceBrandNameSnapshot || source.brandName,
-        sourcePrimaryMediaUrlSnapshot:
-          needsFreshMedia ? source.mediaUrl : item.sourcePrimaryMediaUrlSnapshot || source.mediaUrl,
+        sourceBrandNameSnapshot:
+          item.sourceBrandNameSnapshot || source.brandName,
+        sourcePrimaryMediaUrlSnapshot: needsFreshMedia
+          ? source.mediaUrl
+          : item.sourcePrimaryMediaUrlSnapshot || source.mediaUrl,
       };
     });
   }
 
   private async hydrateSingleOrderSourceSnapshot(
-    order: Prisma.CustomOrderGetPayload<{}>,
-  ): Promise<Prisma.CustomOrderGetPayload<{}>> {
-    const needsFreshMedia = hasEphemeralMediaSignature(order.sourcePrimaryMediaUrlSnapshot);
+    order: Prisma.CustomOrderGetPayload<Prisma.CustomOrderDefaultArgs>,
+  ): Promise<Prisma.CustomOrderGetPayload<Prisma.CustomOrderDefaultArgs>> {
+    const needsFreshMedia = hasEphemeralMediaSignature(
+      order.sourcePrimaryMediaUrlSnapshot,
+    );
     const hasStableIdentitySnapshot =
       Boolean(order.sourceBrandNameSnapshot) &&
       Boolean(order.sourceTitleSnapshot) &&
@@ -2715,11 +3211,15 @@ export class CustomOrdersService {
       return order;
     }
 
-    const source = await this.resolveSourceSnapshot(order.sourceType, order.sourceId);
+    const source = await this.resolveSourceSnapshot(
+      order.sourceType,
+      order.sourceId,
+    );
     return {
       ...order,
       sourceTitleSnapshot: order.sourceTitleSnapshot || source.title,
-      sourceBrandNameSnapshot: order.sourceBrandNameSnapshot || source.brandName,
+      sourceBrandNameSnapshot:
+        order.sourceBrandNameSnapshot || source.brandName,
       sourcePrimaryMediaUrlSnapshot: needsFreshMedia
         ? source.primaryMediaUrl
         : order.sourcePrimaryMediaUrlSnapshot || source.primaryMediaUrl,
@@ -2727,14 +3227,17 @@ export class CustomOrdersService {
   }
 
   private collapseVisibleDuplicateOrders(
-    items: Prisma.CustomOrderGetPayload<{}>[],
-  ): Prisma.CustomOrderGetPayload<{}>[] {
+    items: Prisma.CustomOrderGetPayload<Prisma.CustomOrderDefaultArgs>[],
+  ): Prisma.CustomOrderGetPayload<Prisma.CustomOrderDefaultArgs>[] {
     const preAcceptanceStatuses = new Set<CustomOrderStatus>([
       CustomOrderStatus.DRAFT,
       CustomOrderStatus.PENDING_PAYMENT,
       CustomOrderStatus.PENDING_BRAND_ACCEPTANCE,
     ]);
-    const grouped = new Map<string, Prisma.CustomOrderGetPayload<{}>>();
+    const grouped = new Map<
+      string,
+      Prisma.CustomOrderGetPayload<Prisma.CustomOrderDefaultArgs>
+    >();
 
     for (const item of items) {
       const shouldCollapse = preAcceptanceStatuses.has(item.status);
@@ -2807,35 +3310,43 @@ export class CustomOrdersService {
     }
   }
 
-  private async getActiveConfiguration(configurationId: string, requestedVersionId?: string) {
-    const configuration = await this.prisma.customOrderConfiguration.findUnique({
-      where: { id: configurationId },
-      include: {
-        brand: { select: { currency: true } },
-        rules: { orderBy: { priority: 'asc' } },
-        versions: {
-          where: requestedVersionId ? { id: requestedVersionId } : undefined,
-          orderBy: { version: 'desc' },
-          take: 1,
+  private async getActiveConfiguration(
+    configurationId: string,
+    requestedVersionId?: string,
+  ) {
+    const configuration = await this.prisma.customOrderConfiguration.findUnique(
+      {
+        where: { id: configurationId },
+        include: {
+          brand: { select: { currency: true } },
+          rules: { orderBy: { priority: 'asc' } },
+          versions: {
+            where: requestedVersionId ? { id: requestedVersionId } : undefined,
+            orderBy: { version: 'desc' },
+            take: 1,
+          },
         },
       },
-    });
+    );
 
     if (!configuration || !configuration.isActive) {
       throw new NotFoundException('Custom order configuration not found');
     }
     const version = configuration.versions[0];
     if (!version) {
-      throw new NotFoundException('Custom order configuration version not found');
+      throw new NotFoundException(
+        'Custom order configuration version not found',
+      );
     }
 
-    const normalizedMeasurementContract = await this.normalizeLegacyMeasurementContract({
-      brandId: configuration.brandId,
-      sourceType: configuration.sourceType,
-      sourceId: configuration.sourceId,
-      requiredMeasurementKeys: configuration.requiredMeasurementKeys,
-      requiredFreeformPointIds: configuration.requiredFreeformPointIds,
-    });
+    const normalizedMeasurementContract =
+      await this.normalizeLegacyMeasurementContract({
+        brandId: configuration.brandId,
+        sourceType: configuration.sourceType,
+        sourceId: configuration.sourceId,
+        requiredMeasurementKeys: configuration.requiredMeasurementKeys,
+        requiredFreeformPointIds: configuration.requiredFreeformPointIds,
+      });
 
     return {
       ...configuration,
@@ -2844,32 +3355,42 @@ export class CustomOrdersService {
     };
   }
 
-  private async getConfigurationVersion(configurationId: string, versionId: string) {
-    const configuration = await this.prisma.customOrderConfiguration.findUnique({
-      where: { id: configurationId },
-      include: {
-        brand: { select: { currency: true } },
-        rules: { orderBy: { priority: 'asc' } },
-        versions: { where: { id: versionId }, take: 1 },
+  private async getConfigurationVersion(
+    configurationId: string,
+    versionId: string,
+  ) {
+    const configuration = await this.prisma.customOrderConfiguration.findUnique(
+      {
+        where: { id: configurationId },
+        include: {
+          brand: { select: { currency: true } },
+          rules: { orderBy: { priority: 'asc' } },
+          versions: { where: { id: versionId }, take: 1 },
+        },
       },
-    });
+    );
     if (!configuration || configuration.versions.length === 0) {
-      throw new NotFoundException('Custom order configuration version not found');
+      throw new NotFoundException(
+        'Custom order configuration version not found',
+      );
     }
 
     const version = configuration.versions[0];
     const snapshot = version.snapshotJson as Record<string, any>;
-    const normalizedMeasurementContract = await this.normalizeLegacyMeasurementContract({
-      brandId: configuration.brandId,
-      sourceType: configuration.sourceType,
-      sourceId: configuration.sourceId,
-      requiredMeasurementKeys: Array.isArray(snapshot.requiredMeasurementKeys)
-        ? snapshot.requiredMeasurementKeys
-        : [],
-      requiredFreeformPointIds: Array.isArray(snapshot.requiredFreeformPointIds)
-        ? snapshot.requiredFreeformPointIds
-        : [],
-    });
+    const normalizedMeasurementContract =
+      await this.normalizeLegacyMeasurementContract({
+        brandId: configuration.brandId,
+        sourceType: configuration.sourceType,
+        sourceId: configuration.sourceId,
+        requiredMeasurementKeys: Array.isArray(snapshot.requiredMeasurementKeys)
+          ? snapshot.requiredMeasurementKeys
+          : [],
+        requiredFreeformPointIds: Array.isArray(
+          snapshot.requiredFreeformPointIds,
+        )
+          ? snapshot.requiredFreeformPointIds
+          : [],
+      });
     const normalizedSnapshot: Record<string, any> = {
       ...snapshot,
       ...normalizedMeasurementContract,
@@ -2927,19 +3448,27 @@ export class CustomOrdersService {
       : {};
   }
 
-  private extractCheckoutIntentSubmissionMeta(snapshot: Prisma.JsonValue): CustomOrderSubmissionMeta {
+  private extractCheckoutIntentSubmissionMeta(
+    snapshot: Prisma.JsonValue,
+  ): CustomOrderSubmissionMeta {
     const value = this.asSnapshotObject(snapshot);
     const contactInfo =
-      value.contactInfo && typeof value.contactInfo === 'object' && !Array.isArray(value.contactInfo)
+      value.contactInfo &&
+      typeof value.contactInfo === 'object' &&
+      !Array.isArray(value.contactInfo)
         ? (value.contactInfo as Record<string, unknown>)
         : null;
 
     return {
       contactInfo,
-      customerName: typeof value.customerName === 'string' ? value.customerName : null,
+      customerName:
+        typeof value.customerName === 'string' ? value.customerName : null,
       submissionIdempotencyKey:
-        typeof value.submissionIdempotencyKey === 'string' ? value.submissionIdempotencyKey : null,
-      submittedAt: typeof value.submittedAt === 'string' ? value.submittedAt : null,
+        typeof value.submissionIdempotencyKey === 'string'
+          ? value.submissionIdempotencyKey
+          : null,
+      submittedAt:
+        typeof value.submittedAt === 'string' ? value.submittedAt : null,
       noDirectMatchAcknowledged: Boolean(value.noDirectMatchAcknowledged),
     };
   }
@@ -2963,26 +3492,39 @@ export class CustomOrdersService {
     };
   }
 
-  private normalizeCheckoutIntentRequestSnapshot(snapshot: Prisma.JsonValue): CustomOrderRequestSnapshot {
-    const value = snapshot && typeof snapshot === 'object' && !Array.isArray(snapshot)
-      ? (snapshot as Record<string, unknown>)
-      : {};
+  private normalizeCheckoutIntentRequestSnapshot(
+    snapshot: Prisma.JsonValue,
+  ): CustomOrderRequestSnapshot {
+    const value =
+      snapshot && typeof snapshot === 'object' && !Array.isArray(snapshot)
+        ? (snapshot as Record<string, unknown>)
+        : {};
 
     return this.buildCheckoutIntentRequestSnapshot(
       (value.measurementValues as Record<string, number>) ?? {},
       Boolean(value.rushSelected),
-      (value.shippingAddress as Record<string, unknown> | null | undefined) ?? null,
-      typeof value.matchedFabricRuleId === 'string' ? value.matchedFabricRuleId : null,
+      (value.shippingAddress as Record<string, unknown> | null | undefined) ??
+        null,
+      typeof value.matchedFabricRuleId === 'string'
+        ? value.matchedFabricRuleId
+        : null,
       this.normalizeChartLock(value.chartLock),
     );
   }
 
-  private normalizeChartLock(raw: unknown): CustomOrderRequestSnapshot['chartLock'] {
-    const lock = raw && typeof raw === 'object' && !Array.isArray(raw)
-      ? (raw as Record<string, unknown>)
-      : {};
-    const pricingChartFamily = this.normalizeChartFamily(lock.pricingChartFamily);
-    const displayChartFamily = this.normalizeChartFamily(lock.displayChartFamily);
+  private normalizeChartLock(
+    raw: unknown,
+  ): CustomOrderRequestSnapshot['chartLock'] {
+    const lock =
+      raw && typeof raw === 'object' && !Array.isArray(raw)
+        ? (raw as Record<string, unknown>)
+        : {};
+    const pricingChartFamily = this.normalizeChartFamily(
+      lock.pricingChartFamily,
+    );
+    const displayChartFamily = this.normalizeChartFamily(
+      lock.displayChartFamily,
+    );
     const resolverPolicy = this.normalizeResolverPolicy(lock.resolverPolicy);
 
     return {
@@ -2990,13 +3532,21 @@ export class CustomOrdersService {
       displayChartFamily,
       resolverPolicy,
       chartVersionId:
-        typeof lock.chartVersionId === 'string' && lock.chartVersionId.trim().length > 0
+        typeof lock.chartVersionId === 'string' &&
+        lock.chartVersionId.trim().length > 0
           ? lock.chartVersionId
           : this.currentChartVersionId(),
-      computedSize: typeof lock.computedSize === 'string' ? lock.computedSize : null,
+      computedSize:
+        typeof lock.computedSize === 'string' ? lock.computedSize : null,
       noDirectMatch: Boolean(lock.noDirectMatch),
-      conversionGuidance: typeof lock.conversionGuidance === 'string' ? lock.conversionGuidance : null,
-      quoteStatus: lock.quoteStatus === 'MANUAL_QUOTE_REQUIRED' ? 'MANUAL_QUOTE_REQUIRED' : 'AUTO_PRICED',
+      conversionGuidance:
+        typeof lock.conversionGuidance === 'string'
+          ? lock.conversionGuidance
+          : null,
+      quoteStatus:
+        lock.quoteStatus === 'MANUAL_QUOTE_REQUIRED'
+          ? 'MANUAL_QUOTE_REQUIRED'
+          : 'AUTO_PRICED',
     };
   }
 
@@ -3068,10 +3618,17 @@ export class CustomOrdersService {
     },
     configurationById: Map<
       string,
-      { id: string; sourceType: CustomOrderSourceType; sourceId: string; title: string }
+      {
+        id: string;
+        sourceType: CustomOrderSourceType;
+        sourceId: string;
+        title: string;
+      }
     >,
   ): Promise<CheckoutBagLine | null> {
-    const configuration = configurationById.get(session.checkoutIntent.configurationId);
+    const configuration = configurationById.get(
+      session.checkoutIntent.configurationId,
+    );
     if (!configuration) {
       return null;
     }
@@ -3098,14 +3655,19 @@ export class CustomOrdersService {
       session.checkoutIntent.buyerPriceSummaryJson &&
       typeof session.checkoutIntent.buyerPriceSummaryJson === 'object' &&
       !Array.isArray(session.checkoutIntent.buyerPriceSummaryJson)
-        ? (session.checkoutIntent.buyerPriceSummaryJson as Record<string, unknown>)
+        ? (session.checkoutIntent.buyerPriceSummaryJson as Record<
+            string,
+            unknown
+          >)
         : {};
     const nowMs = Date.now();
     const expiresAtMs = session.checkoutIntent.expiresAt.getTime();
     const isPriceLockExpired = expiresAtMs <= nowMs;
 
     const subtotal = Number(rawSummary.subtotal ?? rawSummary.outfitTotal ?? 0);
-    const shippingFee = Number(rawSummary.shippingFee ?? rawSummary.delivery ?? 0);
+    const shippingFee = Number(
+      rawSummary.shippingFee ?? rawSummary.delivery ?? 0,
+    );
     const rushFee = Number(rawSummary.rushFee ?? rawSummary.rush ?? 0);
     const grandTotal = Number(rawSummary.grandTotal ?? 0);
     const fabricCharge = Number(rawSummary.fabricCharge ?? 0);
@@ -3168,7 +3730,11 @@ export class CustomOrdersService {
 
   private normalizeResolverPolicy(value: unknown): CustomOrderResolverPolicy {
     const v = typeof value === 'string' ? value.toUpperCase() : '';
-    if (v === 'PRIMARY_ONLY' || v === 'MAX_OF_BOTH' || v === 'WEIGHTED_AVERAGE_TO_NEAREST_BAND') {
+    if (
+      v === 'PRIMARY_ONLY' ||
+      v === 'MAX_OF_BOTH' ||
+      v === 'WEIGHTED_AVERAGE_TO_NEAREST_BAND'
+    ) {
       return v;
     }
     return DEFAULT_RESOLVER_POLICY;
@@ -3182,15 +3748,21 @@ export class CustomOrdersService {
     evidenceJson: Record<string, unknown> | undefined,
   ): Record<string, unknown> {
     const normalized =
-      evidenceJson && typeof evidenceJson === 'object' && !Array.isArray(evidenceJson)
+      evidenceJson &&
+      typeof evidenceJson === 'object' &&
+      !Array.isArray(evidenceJson)
         ? { ...evidenceJson }
         : {};
 
     const photos = Array.isArray(normalized.photos)
-      ? normalized.photos.filter((entry) => typeof entry === 'string' && entry.trim().length > 0)
+      ? normalized.photos.filter(
+          (entry) => typeof entry === 'string' && entry.trim().length > 0,
+        )
       : [];
     if (photos.length === 0) {
-      throw new BadRequestException('Dispute evidence must include at least one photo');
+      throw new BadRequestException(
+        'Dispute evidence must include at least one photo',
+      );
     }
 
     const files = Array.isArray(normalized.files)
@@ -3222,32 +3794,64 @@ export class CustomOrdersService {
       },
       {
         key: 'preferred_resolution',
-        question: 'What outcome are you requesting (refund, remake, adjustment, or other)?',
+        question:
+          'What outcome are you requesting (refund, remake, adjustment, or other)?',
         required: true,
       },
     ];
 
-    const issueSpecific: Record<CustomOrderIssueType, Array<{ key: string; question: string; required: boolean }>> = {
+    const issueSpecific: Record<
+      CustomOrderIssueType,
+      Array<{ key: string; question: string; required: boolean }>
+    > = {
       WRONG_ITEM: [
-        { key: 'received_item_description', question: 'What item did you receive instead?', required: true },
+        {
+          key: 'received_item_description',
+          question: 'What item did you receive instead?',
+          required: true,
+        },
       ],
       MATERIAL_DEFECT: [
-        { key: 'defect_location', question: 'Where is the material defect located?', required: true },
+        {
+          key: 'defect_location',
+          question: 'Where is the material defect located?',
+          required: true,
+        },
       ],
       MEASUREMENT_NON_COMPLIANCE: [
-        { key: 'fit_problem_area', question: 'Which fit areas are incorrect?', required: true },
+        {
+          key: 'fit_problem_area',
+          question: 'Which fit areas are incorrect?',
+          required: true,
+        },
       ],
       UNFINISHED_WORK: [
-        { key: 'unfinished_parts', question: 'Which parts of the outfit are unfinished?', required: true },
+        {
+          key: 'unfinished_parts',
+          question: 'Which parts of the outfit are unfinished?',
+          required: true,
+        },
       ],
       NON_DELIVERY: [
-        { key: 'last_delivery_update', question: 'What was the last delivery update you received?', required: true },
+        {
+          key: 'last_delivery_update',
+          question: 'What was the last delivery update you received?',
+          required: true,
+        },
       ],
       UNREASONABLE_DELAY: [
-        { key: 'delay_duration', question: 'How long has the delay lasted so far?', required: true },
+        {
+          key: 'delay_duration',
+          question: 'How long has the delay lasted so far?',
+          required: true,
+        },
       ],
       OTHER: [
-        { key: 'other_details', question: 'Provide details for this issue type.', required: true },
+        {
+          key: 'other_details',
+          question: 'Provide details for this issue type.',
+          required: true,
+        },
       ],
     };
 
@@ -3255,25 +3859,30 @@ export class CustomOrdersService {
   }
 
   private resolveAdditionalYardsFromProfile(
-    profile:
-      | {
-          averageBaseYards?: number;
-          sizeExtraYards: Array<{ sizeLabel: string; extraYards: number }>;
-        }
-      | null,
+    profile: {
+      averageBaseYards?: number;
+      sizeExtraYards: Array<{ sizeLabel: string; extraYards: number }>;
+    } | null,
     computedSize?: string | null,
   ) {
     if (!computedSize) {
       return 0;
     }
 
-    if (!profile || !Array.isArray(profile.sizeExtraYards) || profile.sizeExtraYards.length === 0) {
+    if (
+      !profile ||
+      !Array.isArray(profile.sizeExtraYards) ||
+      profile.sizeExtraYards.length === 0
+    ) {
       return 0;
     }
 
-    const normalize = (value: string) => value.toUpperCase().replace(/[^A-Z0-9]/g, '');
+    const normalize = (value: string) =>
+      value.toUpperCase().replace(/[^A-Z0-9]/g, '');
     const target = normalize(computedSize);
-    const compactTarget = normalize(computedSize.replace(/^(UK|US|NG|NIGERIA|ASIA)\s*/i, ''));
+    const compactTarget = normalize(
+      computedSize.replace(/^(UK|US|NG|NIGERIA|ASIA)\s*/i, ''),
+    );
 
     const matched = profile.sizeExtraYards.find((row) => {
       const normalizedLabel = normalize(String(row?.sizeLabel ?? ''));
@@ -3305,7 +3914,8 @@ export class CustomOrdersService {
       };
       return {
         averageBaseYards:
-          typeof parsed.averageBaseYards === 'number' && Number.isFinite(parsed.averageBaseYards)
+          typeof parsed.averageBaseYards === 'number' &&
+          Number.isFinite(parsed.averageBaseYards)
             ? parsed.averageBaseYards
             : undefined,
         sizeExtraYards: Array.isArray(parsed.sizeExtraYards)
@@ -3314,7 +3924,12 @@ export class CustomOrdersService {
                 sizeLabel: String(row?.sizeLabel ?? '').trim(),
                 extraYards: Number(row?.extraYards),
               }))
-              .filter((row) => row.sizeLabel.length > 0 && Number.isFinite(row.extraYards) && row.extraYards >= 0)
+              .filter(
+                (row) =>
+                  row.sizeLabel.length > 0 &&
+                  Number.isFinite(row.extraYards) &&
+                  row.extraYards >= 0,
+              )
           : [],
       };
     } catch {
@@ -3329,7 +3944,9 @@ export class CustomOrdersService {
     resolverPolicy: CustomOrderResolverPolicy;
   }) {
     const required = ['BUST', 'WAIST', 'HIPS'];
-    const indexed = Object.entries(input.measurementValues).reduce<Record<string, number>>((acc, [k, v]) => {
+    const indexed = Object.entries(input.measurementValues).reduce<
+      Record<string, number>
+    >((acc, [k, v]) => {
       acc[k.toUpperCase()] = Number(v);
       return acc;
     }, {});
@@ -3343,7 +3960,11 @@ export class CustomOrdersService {
           : key === 'HIPS'
             ? indexed.MEN_HIP
             : indexed[`MEN_${key}`];
-      const value = Number.isFinite(direct) ? direct : Number.isFinite(women) ? women : men;
+      const value = Number.isFinite(direct)
+        ? direct
+        : Number.isFinite(women)
+          ? women
+          : men;
       if (!Number.isFinite(value) || value <= 0) {
         return {
           manualQuoteRequired: false,
@@ -3362,24 +3983,53 @@ export class CustomOrdersService {
     }
 
     const computeFromFamily = (
-      family: Exclude<CustomOrderChartFamily, 'HYBRID_UK_NIGERIA' | 'HYBRID_US_NIGERIA'>,
+      family: Exclude<
+        CustomOrderChartFamily,
+        'HYBRID_UK_NIGERIA' | 'HYBRID_US_NIGERIA'
+      >,
     ): ComputedChartCandidate => {
       const bands = CHART_BANDS[family];
       const exact = bands.findIndex((band, idx) => {
-        const inBust = indexed.BUST >= band.bustMin && (idx === bands.length - 1 ? indexed.BUST <= band.bustMax : indexed.BUST < band.bustMax);
-        const inWaist = indexed.WAIST >= band.waistMin && (idx === bands.length - 1 ? indexed.WAIST <= band.waistMax : indexed.WAIST < band.waistMax);
-        const inHips = indexed.HIPS >= band.hipsMin && (idx === bands.length - 1 ? indexed.HIPS <= band.hipsMax : indexed.HIPS < band.hipsMax);
+        const inBust =
+          indexed.BUST >= band.bustMin &&
+          (idx === bands.length - 1
+            ? indexed.BUST <= band.bustMax
+            : indexed.BUST < band.bustMax);
+        const inWaist =
+          indexed.WAIST >= band.waistMin &&
+          (idx === bands.length - 1
+            ? indexed.WAIST <= band.waistMax
+            : indexed.WAIST < band.waistMax);
+        const inHips =
+          indexed.HIPS >= band.hipsMin &&
+          (idx === bands.length - 1
+            ? indexed.HIPS <= band.hipsMax
+            : indexed.HIPS < band.hipsMax);
         return inBust && inWaist && inHips;
       });
 
       if (exact >= 0) {
-        return { family, label: bands[exact].label, bandIndex: exact, noDirectMatch: false };
+        return {
+          family,
+          label: bands[exact].label,
+          bandIndex: exact,
+          noDirectMatch: false,
+        };
       }
 
       const nearest = bands.reduce(
         (best, band, idx) => {
-          const midpoint = (band.bustMin + band.bustMax + band.waistMin + band.waistMax + band.hipsMin + band.hipsMax) / 6;
-          const delta = Math.abs(midpoint - (indexed.BUST + indexed.WAIST + indexed.HIPS) / 3);
+          const midpoint =
+            (band.bustMin +
+              band.bustMax +
+              band.waistMin +
+              band.waistMax +
+              band.hipsMin +
+              band.hipsMax) /
+            6;
+          const delta = Math.abs(
+            midpoint - (indexed.BUST + indexed.WAIST + indexed.HIPS) / 3,
+          );
           if (delta < best.delta) {
             return { delta, idx, label: band.label };
           }
@@ -3400,7 +4050,10 @@ export class CustomOrdersService {
     const uk = computeFromFamily('UK');
     const ng = computeFromFamily('NIGERIA');
     const byFamily: Record<
-      Exclude<CustomOrderChartFamily, 'HYBRID_UK_NIGERIA' | 'HYBRID_US_NIGERIA'>,
+      Exclude<
+        CustomOrderChartFamily,
+        'HYBRID_UK_NIGERIA' | 'HYBRID_US_NIGERIA'
+      >,
       ComputedChartCandidate
     > = {
       UK: uk,
@@ -3414,10 +4067,11 @@ export class CustomOrdersService {
       if (input.resolverPolicy === 'PRIMARY_ONLY') {
         chosen = uk;
       } else if (input.resolverPolicy === 'WEIGHTED_AVERAGE_TO_NEAREST_BAND') {
-        const weighted = Math.round((uk.bandIndex * 0.6 + ng.bandIndex * 0.4));
-        chosen = uk.bandIndex >= ng.bandIndex
-          ? { ...uk, bandIndex: Math.max(weighted, uk.bandIndex) }
-          : { ...ng, bandIndex: Math.max(weighted, ng.bandIndex) };
+        const weighted = Math.round(uk.bandIndex * 0.6 + ng.bandIndex * 0.4);
+        chosen =
+          uk.bandIndex >= ng.bandIndex
+            ? { ...uk, bandIndex: Math.max(weighted, uk.bandIndex) }
+            : { ...ng, bandIndex: Math.max(weighted, ng.bandIndex) };
       } else {
         chosen = uk.bandIndex >= ng.bandIndex ? uk : ng;
       }
@@ -3426,20 +4080,22 @@ export class CustomOrdersService {
       if (input.resolverPolicy === 'PRIMARY_ONLY') {
         chosen = us;
       } else if (input.resolverPolicy === 'WEIGHTED_AVERAGE_TO_NEAREST_BAND') {
-        const weighted = Math.round((us.bandIndex * 0.6 + ng.bandIndex * 0.4));
-        chosen = us.bandIndex >= ng.bandIndex
-          ? { ...us, bandIndex: Math.max(weighted, us.bandIndex) }
-          : { ...ng, bandIndex: Math.max(weighted, ng.bandIndex) };
+        const weighted = Math.round(us.bandIndex * 0.6 + ng.bandIndex * 0.4);
+        chosen =
+          us.bandIndex >= ng.bandIndex
+            ? { ...us, bandIndex: Math.max(weighted, us.bandIndex) }
+            : { ...ng, bandIndex: Math.max(weighted, ng.bandIndex) };
       } else {
         chosen = us.bandIndex >= ng.bandIndex ? us : ng;
       }
     } else {
-      chosen = byFamily[
-        input.pricingChartFamily as Exclude<
-          CustomOrderChartFamily,
-          'HYBRID_UK_NIGERIA' | 'HYBRID_US_NIGERIA'
-        >
-      ];
+      chosen =
+        byFamily[
+          input.pricingChartFamily as Exclude<
+            CustomOrderChartFamily,
+            'HYBRID_UK_NIGERIA' | 'HYBRID_US_NIGERIA'
+          >
+        ];
     }
 
     const displayCandidate =
@@ -3469,7 +4125,9 @@ export class CustomOrdersService {
     };
   }
 
-  private inferMeasurementGenderFromKeys(keys: string[]): 'MEN' | 'WOMEN' | null {
+  private inferMeasurementGenderFromKeys(
+    keys: string[],
+  ): 'MEN' | 'WOMEN' | null {
     for (const key of keys) {
       if (typeof key !== 'string') continue;
       if (key.startsWith('MEN_')) return 'MEN';
@@ -3488,7 +4146,11 @@ export class CustomOrdersService {
         source: 'SYSTEM',
         status: 'APPROVED_GLOBAL',
         isActive: true,
-        OR: [{ gender: effectiveGender as Gender }, { gender: 'UNISEX' }, { gender: null }],
+        OR: [
+          { gender: effectiveGender as Gender },
+          { gender: 'UNISEX' },
+          { gender: null },
+        ],
       },
       select: { key: true },
     });
@@ -3512,7 +4174,10 @@ export class CustomOrdersService {
     });
 
     return Array.from(
-      new Set([...requiredMeasurementKeys, ...points.map((point) => point.key)]),
+      new Set([
+        ...requiredMeasurementKeys,
+        ...points.map((point) => point.key),
+      ]),
     );
   }
 
@@ -3531,8 +4196,12 @@ export class CustomOrdersService {
     requiredMeasurementKeys: string[];
     requiredFreeformPointIds: string[];
   }) {
-    const normalizedKeys = this.normalizeMeasurementKeyList(input.requiredMeasurementKeys);
-    const normalizedFreeformPointIds = this.normalizeIdList(input.requiredFreeformPointIds);
+    const normalizedKeys = this.normalizeMeasurementKeyList(
+      input.requiredMeasurementKeys,
+    );
+    const normalizedFreeformPointIds = this.normalizeIdList(
+      input.requiredFreeformPointIds,
+    );
 
     if (normalizedKeys.length === 0) {
       return {
@@ -3592,17 +4261,18 @@ export class CustomOrdersService {
       measurementKeysContainOppositeGender(normalizedKeys, sourceGenderHint);
     const sourceContainsOppositeGenderKeys =
       sourceGenderHint != null &&
-      measurementKeysContainOppositeGender(sourceMeasurementKeys, sourceGenderHint);
+      measurementKeysContainOppositeGender(
+        sourceMeasurementKeys,
+        sourceGenderHint,
+      );
 
     if (
       templateMeasurementKeys.length > 0 &&
       templateMeasurementKeys.length < normalizedKeys.length &&
-      (
-        looksLikeRegistryWideLegacySelection ||
+      (looksLikeRegistryWideLegacySelection ||
         sourceLooksLikeRegistryWideLegacySelection ||
         configurationContainsOppositeGenderKeys ||
-        sourceContainsOppositeGenderKeys
-      )
+        sourceContainsOppositeGenderKeys)
     ) {
       return {
         requiredMeasurementKeys: templateMeasurementKeys,
@@ -3659,8 +4329,12 @@ export class CustomOrdersService {
       this.prisma.customOrderCheckoutSession.findMany({
         where: {
           buyerId,
-          ...(currentCheckoutSessionId ? { id: { not: currentCheckoutSessionId } } : {}),
-          ...(currentCheckoutIntentId ? { checkoutIntentId: { not: currentCheckoutIntentId } } : {}),
+          ...(currentCheckoutSessionId
+            ? { id: { not: currentCheckoutSessionId } }
+            : {}),
+          ...(currentCheckoutIntentId
+            ? { checkoutIntentId: { not: currentCheckoutIntentId } }
+            : {}),
           checkoutIntent: {
             configurationId: { in: sourceConfigIds },
           },
@@ -3695,11 +4369,13 @@ export class CustomOrdersService {
     ]);
 
     const existingBagLine =
-      checkoutSessions.find((session) => session.customOrderId === null) ?? null;
+      checkoutSessions.find((session) => session.customOrderId === null) ??
+      null;
 
     return {
       existingBagLine,
-      hasDuplicateEvidence: checkoutSessions.length > 0 || customOrders.length > 0,
+      hasDuplicateEvidence:
+        checkoutSessions.length > 0 || customOrders.length > 0,
       duplicateState: this.bagValidationService.classifyDuplicateState({
         checkoutSessions,
         customOrders,
@@ -3723,7 +4399,9 @@ export class CustomOrdersService {
       throw new BadRequestException('CUSTOM_ORDER_SUBMITTED_UNPAID_DUPLICATE');
     }
     if (classifications.includes('COMPLETED_BLOCKED')) {
-      throw new BadRequestException(input.duplicateState.reason || 'CUSTOM_ORDER_COMPLETED_DUPLICATE');
+      throw new BadRequestException(
+        input.duplicateState.reason || 'CUSTOM_ORDER_COMPLETED_DUPLICATE',
+      );
     }
     if (input.hasDuplicateEvidence && classifications.includes('UNKNOWN')) {
       throw new BadRequestException('CUSTOM_ORDER_DUPLICATE_STATE_UNKNOWN');
@@ -3811,7 +4489,10 @@ export class CustomOrdersService {
     };
   }
 
-  private async loadMeasurementPoolKeys(brandId: string, gender: Gender | null) {
+  private async loadMeasurementPoolKeys(
+    brandId: string,
+    gender: Gender | null,
+  ) {
     const points = await this.prisma.measurementPoint.findMany({
       where: {
         isActive: true,
@@ -3844,16 +4525,15 @@ export class CustomOrdersService {
   private normalizeMeasurementValues(
     measurementValues: Record<string, number> = {},
   ): Record<string, number> {
-    return Object.entries(measurementValues ?? {}).reduce<Record<string, number>>(
-      (accumulator, [key, value]) => {
-        const normalized = Number(value);
-        if (Number.isFinite(normalized) && normalized > 0) {
-          accumulator[key] = normalized;
-        }
-        return accumulator;
-      },
-      {},
-    );
+    return Object.entries(measurementValues ?? {}).reduce<
+      Record<string, number>
+    >((accumulator, [key, value]) => {
+      const normalized = Number(value);
+      if (Number.isFinite(normalized) && normalized > 0) {
+        accumulator[key] = normalized;
+      }
+      return accumulator;
+    }, {});
   }
 
   private async getBuyerSavedMeasurementValues(userId: string) {
@@ -3861,24 +4541,27 @@ export class CustomOrdersService {
       where: { userId },
       select: { measurements: true },
     });
-    if (!profile?.measurements || typeof profile.measurements !== 'object' || Array.isArray(profile.measurements)) {
+    if (
+      !profile?.measurements ||
+      typeof profile.measurements !== 'object' ||
+      Array.isArray(profile.measurements)
+    ) {
       return {};
     }
 
-    return Object.entries(profile.measurements as Record<string, unknown>).reduce<Record<string, number>>(
-      (accumulator, [key, value]) => {
-        const normalized = Number(
-          value && typeof value === 'object' && !Array.isArray(value)
-            ? (value as Record<string, unknown>).value
-            : value,
-        );
-        if (Number.isFinite(normalized) && normalized > 0) {
-          accumulator[key] = normalized;
-        }
-        return accumulator;
-      },
-      {},
-    );
+    return Object.entries(
+      profile.measurements as Record<string, unknown>,
+    ).reduce<Record<string, number>>((accumulator, [key, value]) => {
+      const normalized = Number(
+        value && typeof value === 'object' && !Array.isArray(value)
+          ? (value as Record<string, unknown>).value
+          : value,
+      );
+      if (Number.isFinite(normalized) && normalized > 0) {
+        accumulator[key] = normalized;
+      }
+      return accumulator;
+    }, {});
   }
 
   private async validateMeasurementRanges(
@@ -3907,15 +4590,22 @@ export class CustomOrdersService {
     for (const point of points) {
       const value = Number(measurementValues[point.key]);
       if (point.minValueCm != null && value < Number(point.minValueCm)) {
-        throw new BadRequestException(`Measurement value for ${point.key} is below the allowed minimum`);
+        throw new BadRequestException(
+          `Measurement value for ${point.key} is below the allowed minimum`,
+        );
       }
       if (point.maxValueCm != null && value > Number(point.maxValueCm)) {
-        throw new BadRequestException(`Measurement value for ${point.key} exceeds the allowed maximum`);
+        throw new BadRequestException(
+          `Measurement value for ${point.key} exceeds the allowed maximum`,
+        );
       }
     }
   }
 
-  private async resolveSourceSnapshot(sourceType: CustomOrderSourceType, sourceId: string) {
+  private async resolveSourceSnapshot(
+    sourceType: CustomOrderSourceType,
+    sourceId: string,
+  ) {
     if (sourceType === CustomOrderSourceType.PRODUCT) {
       const product = await this.prisma.product.findUnique({
         where: { id: sourceId },
@@ -3965,7 +4655,9 @@ export class CustomOrdersService {
         title: explicitDesign.title ?? 'Untitled design',
         slug: null,
         primaryMediaUrl: pickFirstRenderableMediaUrl([
-          explicitDesign.coverMedia?.mediaType === FileType.POST_IMAGE ? explicitDesign.coverMedia?.file?.s3Url : null,
+          explicitDesign.coverMedia?.mediaType === FileType.POST_IMAGE
+            ? explicitDesign.coverMedia?.file?.s3Url
+            : null,
           ...explicitDesign.medias.map((media) => media.file?.s3Url),
         ]),
         brandName: explicitDesign.owner.brand?.name ?? null,
@@ -4004,7 +4696,9 @@ export class CustomOrdersService {
       title: design.title ?? 'Untitled design',
       slug: null,
       primaryMediaUrl: pickFirstRenderableMediaUrl([
-        design.coverMedia?.mediaType === FileType.POST_IMAGE ? design.coverMedia?.file?.s3Url : null,
+        design.coverMedia?.mediaType === FileType.POST_IMAGE
+          ? design.coverMedia?.file?.s3Url
+          : null,
         ...design.medias.map((media) => media.file?.s3Url),
       ]),
       brandName: design.owner.brand?.name ?? null,
@@ -4016,7 +4710,10 @@ export class CustomOrdersService {
     return new Date(from.getTime() + hours * 60 * 60 * 1000);
   }
 
-  private isExtensionRequestAllowed(status: CustomOrderStatus, targetType: string) {
+  private isExtensionRequestAllowed(
+    status: CustomOrderStatus,
+    targetType: string,
+  ) {
     const productionEligible = new Set<CustomOrderStatus>([
       CustomOrderStatus.ACCEPTED,
       CustomOrderStatus.IN_PRODUCTION,
@@ -4037,14 +4734,25 @@ export class CustomOrdersService {
     return productionEligible.has(status);
   }
 
-  private isLifecycleTransitionAllowed(currentStatus: CustomOrderStatus, nextStatus: CustomOrderStatus) {
-    const transitions: Partial<Record<CustomOrderStatus, CustomOrderStatus[]>> = {
-      [CustomOrderStatus.ACCEPTED]: [CustomOrderStatus.READY_FOR_DISPATCH],
-      [CustomOrderStatus.IN_PRODUCTION]: [CustomOrderStatus.READY_FOR_DISPATCH],
-      [CustomOrderStatus.READY_FOR_DISPATCH]: [CustomOrderStatus.IN_TRANSIT, CustomOrderStatus.DELIVERED_PENDING_BUYER_CONFIRMATION],
-      [CustomOrderStatus.IN_TRANSIT]: [CustomOrderStatus.DELIVERED_PENDING_BUYER_CONFIRMATION],
-      [CustomOrderStatus.COMPLETED]: [CustomOrderStatus.CLOSED],
-    };
+  private isLifecycleTransitionAllowed(
+    currentStatus: CustomOrderStatus,
+    nextStatus: CustomOrderStatus,
+  ) {
+    const transitions: Partial<Record<CustomOrderStatus, CustomOrderStatus[]>> =
+      {
+        [CustomOrderStatus.ACCEPTED]: [CustomOrderStatus.READY_FOR_DISPATCH],
+        [CustomOrderStatus.IN_PRODUCTION]: [
+          CustomOrderStatus.READY_FOR_DISPATCH,
+        ],
+        [CustomOrderStatus.READY_FOR_DISPATCH]: [
+          CustomOrderStatus.IN_TRANSIT,
+          CustomOrderStatus.DELIVERED_PENDING_BUYER_CONFIRMATION,
+        ],
+        [CustomOrderStatus.IN_TRANSIT]: [
+          CustomOrderStatus.DELIVERED_PENDING_BUYER_CONFIRMATION,
+        ],
+        [CustomOrderStatus.COMPLETED]: [CustomOrderStatus.CLOSED],
+      };
 
     return transitions[currentStatus]?.includes(nextStatus) ?? false;
   }
@@ -4055,7 +4763,9 @@ export class CustomOrdersService {
     requestedExtraDays: number,
     targetType: string,
   ) {
-    const order = await tx.customOrder.findUnique({ where: { id: customOrderId } });
+    const order = await tx.customOrder.findUnique({
+      where: { id: customOrderId },
+    });
     if (!order) {
       throw new NotFoundException('Custom order not found');
     }
@@ -4083,7 +4793,9 @@ export class CustomOrdersService {
     });
   }
 
-  private mapListItem(order: Prisma.CustomOrderGetPayload<{}>) {
+  private mapListItem(
+    order: Prisma.CustomOrderGetPayload<Prisma.CustomOrderDefaultArgs>,
+  ) {
     const summary = order.buyerPriceSummaryJson as Record<string, unknown>;
     const measurementSnapshot =
       order.measurementSnapshotJson &&
@@ -4116,14 +4828,26 @@ export class CustomOrdersService {
         name: order.sourceBrandNameSnapshot || 'Brand',
       },
       buyer: {
-        name: typeof contactInfo.customerName === 'string' ? contactInfo.customerName : null,
+        name:
+          typeof contactInfo.customerName === 'string'
+            ? contactInfo.customerName
+            : null,
         email: typeof contactInfo.email === 'string' ? contactInfo.email : null,
         phone: typeof contactInfo.phone === 'string' ? contactInfo.phone : null,
       },
       delivery: {
-        city: typeof shippingAddress.city === 'string' ? shippingAddress.city : null,
-        state: typeof shippingAddress.state === 'string' ? shippingAddress.state : null,
-        country: typeof shippingAddress.country === 'string' ? shippingAddress.country : null,
+        city:
+          typeof shippingAddress.city === 'string'
+            ? shippingAddress.city
+            : null,
+        state:
+          typeof shippingAddress.state === 'string'
+            ? shippingAddress.state
+            : null,
+        country:
+          typeof shippingAddress.country === 'string'
+            ? shippingAddress.country
+            : null,
       },
       buyerPriceSummary: {
         grandTotal: summary?.grandTotal,
@@ -4138,8 +4862,14 @@ export class CustomOrdersService {
   }
 
   private mapDetail(order: any) {
-    const breakdown = (order.internalPriceBreakdownJson ?? {}) as Record<string, unknown>;
-    const chartLock = (breakdown.chartLock ?? null) as Record<string, unknown> | null;
+    const breakdown = (order.internalPriceBreakdownJson ?? {}) as Record<
+      string,
+      unknown
+    >;
+    const chartLock = (breakdown.chartLock ?? null) as Record<
+      string,
+      unknown
+    > | null;
     return {
       id: order.id,
       status: order.status,
@@ -4155,7 +4885,10 @@ export class CustomOrdersService {
       },
       configurationVersionId: order.configurationVersionId,
       buyerPriceSummary: (() => {
-        const raw = (order.buyerPriceSummaryJson ?? {}) as Record<string, unknown>;
+        const raw = (order.buyerPriceSummaryJson ?? {}) as Record<
+          string,
+          unknown
+        >;
         return {
           fabricCharge: Number(raw.fabricCharge ?? 0),
           subtotal: Number(raw.subtotal ?? raw.outfitTotal ?? 0),
@@ -4166,9 +4899,13 @@ export class CustomOrdersService {
         };
       })(),
       internalPriceBreakdown: order.internalPriceBreakdownJson,
-      quoteStatus: (chartLock?.quoteStatus as string | undefined) ?? 'AUTO_PRICED',
+      quoteStatus:
+        (chartLock?.quoteStatus as string | undefined) ?? 'AUTO_PRICED',
       chartLock,
-      exceptionDecision: (breakdown.exceptionDecision ?? null) as Record<string, unknown> | null,
+      exceptionDecision: (breakdown.exceptionDecision ?? null) as Record<
+        string,
+        unknown
+      > | null,
       measurementSnapshot: order.measurementSnapshotJson,
       measurementConfirmedAt: order.measurementConfirmedAt,
       shippingAddress: order.shippingAddressJson,

@@ -22,7 +22,13 @@ type MeasurementPointRow = {
   key: string;
   label: string;
   description: string | null;
-  category: 'UPPER_BODY' | 'ARMS' | 'LOWER_BODY' | 'LENGTH' | 'GENERAL' | 'ACCESSORIES';
+  category:
+    | 'UPPER_BODY'
+    | 'ARMS'
+    | 'LOWER_BODY'
+    | 'LENGTH'
+    | 'GENERAL'
+    | 'ACCESSORIES';
   gender: 'MEN' | 'WOMEN' | 'UNISEX' | null;
   source: 'SYSTEM' | 'BRAND_FREEFORM';
   status: 'BRAND_ONLY' | 'APPROVED_GLOBAL' | 'REJECTED';
@@ -109,7 +115,9 @@ export class MeasurementPointsService implements OnModuleInit, OnModuleDestroy {
     });
 
     client.on('error', (error) => {
-      this.logger.warn(`Measurement points Redis error: ${error?.message || error}`);
+      this.logger.warn(
+        `Measurement points Redis error: ${error?.message || error}`,
+      );
     });
 
     void client
@@ -118,7 +126,9 @@ export class MeasurementPointsService implements OnModuleInit, OnModuleDestroy {
         this.redis = client as RedisClientType;
       })
       .catch((error) => {
-        this.logger.warn(`Measurement points Redis error: ${error?.message || error}`);
+        this.logger.warn(
+          `Measurement points Redis error: ${error?.message || error}`,
+        );
         this.logger.warn(
           `Measurement points Redis unavailable, continuing without Redis cache: ${
             error instanceof Error ? error.message : 'unknown error'
@@ -142,7 +152,10 @@ export class MeasurementPointsService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private toCacheKey(filter?: QueryMeasurementPointsDto, brandId?: string | null) {
+  private toCacheKey(
+    filter?: QueryMeasurementPointsDto,
+    brandId?: string | null,
+  ) {
     const gender = filter?.gender ?? 'ALL';
     const category = filter?.category ?? 'ALL';
     const scope = brandId ? `BRAND:${brandId}` : 'SYSTEM';
@@ -156,7 +169,11 @@ export class MeasurementPointsService implements OnModuleInit, OnModuleDestroy {
       isActive: true,
       ...(filter?.gender
         ? {
-            OR: [{ gender: filter.gender }, { gender: 'UNISEX' }, { gender: null }],
+            OR: [
+              { gender: filter.gender },
+              { gender: 'UNISEX' },
+              { gender: null },
+            ],
           }
         : {}),
       ...(filter?.category ? { category: filter.category } : {}),
@@ -164,7 +181,8 @@ export class MeasurementPointsService implements OnModuleInit, OnModuleDestroy {
   }
 
   private mapPoint(point: MeasurementPointRow) {
-    const toNumber = (value: Prisma.Decimal | null) => (value == null ? null : Number(value));
+    const toNumber = (value: Prisma.Decimal | null) =>
+      value == null ? null : Number(value);
 
     return {
       id: point.id,
@@ -211,7 +229,11 @@ export class MeasurementPointsService implements OnModuleInit, OnModuleDestroy {
     const systemWhere = this.buildFilterWhere(filter);
     const genderScope = filter?.gender
       ? {
-          OR: [{ gender: filter.gender }, { gender: 'UNISEX' }, { gender: null }],
+          OR: [
+            { gender: filter.gender },
+            { gender: 'UNISEX' },
+            { gender: null },
+          ],
         }
       : {};
     const categoryScope = filter?.category ? { category: filter.category } : {};
@@ -235,10 +257,14 @@ export class MeasurementPointsService implements OnModuleInit, OnModuleDestroy {
       orderBy: [{ category: 'asc' }, { sortOrder: 'asc' }, { label: 'asc' }],
     });
 
-    const mapped = points.map((point: MeasurementPointRow) => this.mapPoint(point));
+    const mapped = points.map((point: MeasurementPointRow) =>
+      this.mapPoint(point),
+    );
 
     if (this.redis) {
-      await this.redis.set(cacheKey, JSON.stringify(mapped), { EX: 60 * 60 * 24 });
+      await this.redis.set(cacheKey, JSON.stringify(mapped), {
+        EX: 60 * 60 * 24,
+      });
     }
 
     return mapped;
@@ -260,7 +286,9 @@ export class MeasurementPointsService implements OnModuleInit, OnModuleDestroy {
   async getForBrand(authUserId: string, brandId: string) {
     const ownerBrandId = await this.resolveBrandForOwner(authUserId);
     if (ownerBrandId !== brandId) {
-      throw new ForbiddenException('You can only access measurement points for your own brand');
+      throw new ForbiddenException(
+        'You can only access measurement points for your own brand',
+      );
     }
 
     const points = await (this.prisma as any).measurementPoint.findMany({
@@ -277,7 +305,12 @@ export class MeasurementPointsService implements OnModuleInit, OnModuleDestroy {
           },
         ],
       },
-      orderBy: [{ source: 'asc' }, { category: 'asc' }, { sortOrder: 'asc' }, { label: 'asc' }],
+      orderBy: [
+        { source: 'asc' },
+        { category: 'asc' },
+        { sortOrder: 'asc' },
+        { label: 'asc' },
+      ],
     });
 
     return points.map((point: MeasurementPointRow) => this.mapPoint(point));
@@ -349,7 +382,9 @@ export class MeasurementPointsService implements OnModuleInit, OnModuleDestroy {
     });
 
     if (exact) {
-      throw new BadRequestException(`Measurement point already exists: ${exact.label}`);
+      throw new BadRequestException(
+        `Measurement point already exists: ${exact.label}`,
+      );
     }
 
     const fuzzyMatches = await this.findFuzzyMatches(dto.label.trim());

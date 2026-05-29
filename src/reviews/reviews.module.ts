@@ -17,22 +17,28 @@ import { ReviewEligibilityService } from './review-eligibility.service';
 import { ReviewAggregateService } from './review-aggregate.service';
 
 @Module({
-    imports: [PrismaModule, QueueModule, AdminModule, NotificationsModule, SystemConfigModule],
-    controllers: [
-        ReviewsController,
-        ReviewLifecycleController,
-        BrandReviewsController,
-        AdminReviewsController,
-    ],
-    providers: [
-        IdempotencyInterceptor,
-        ReviewsService,
-        ReviewEligibilityService,
-        ReviewAggregateService,
-        ReviewsObservabilityService,
-        ReviewsFeatureFlagsBootstrapService,
-        ReviewReminderCronService,
-    ],
-    exports: [ReviewsService, ReviewEligibilityService],
+  imports: [
+    PrismaModule,
+    QueueModule,
+    AdminModule,
+    NotificationsModule,
+    SystemConfigModule,
+  ],
+  controllers: [
+    ReviewsController,
+    ReviewLifecycleController,
+    BrandReviewsController,
+    AdminReviewsController,
+  ],
+  providers: [
+    IdempotencyInterceptor,
+    ReviewsService,
+    ReviewEligibilityService,
+    ReviewAggregateService,
+    ReviewsObservabilityService,
+    ReviewsFeatureFlagsBootstrapService,
+    ReviewReminderCronService,
+  ],
+  exports: [ReviewsService, ReviewEligibilityService],
 })
-export class ReviewsModule { }
+export class ReviewsModule {}

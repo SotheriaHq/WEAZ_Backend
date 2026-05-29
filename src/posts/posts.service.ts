@@ -51,25 +51,27 @@ export class PostsService {
     private readonly notificationsQueue?: NotificationsQueueService,
   ) {}
 
-  private mapPost<T extends Post & { _count?: { threads?: number; comments?: number } }>(
-    post: T,
-  ) {
+  private mapPost<
+    T extends Post & { _count?: { threads?: number; comments?: number } },
+  >(post: T) {
     const { _count, ...rest } = post as any;
     const threadsCount =
       typeof post.threadsCount === 'number'
         ? post.threadsCount
-        : _count?.threads ?? 0;
+        : (_count?.threads ?? 0);
     const commentsCount =
       typeof post.commentsCount === 'number'
         ? post.commentsCount
-        : _count?.comments ?? 0;
+        : (_count?.comments ?? 0);
     return {
       ...rest,
       user: rest.user ? this.mapUserDisplay(rest.user) : rest.user,
       comments: Array.isArray(rest.comments)
         ? rest.comments.map((comment: any) => ({
             ...comment,
-            user: comment.user ? this.mapUserDisplay(comment.user) : comment.user,
+            user: comment.user
+              ? this.mapUserDisplay(comment.user)
+              : comment.user,
           }))
         : rest.comments,
       threadsCount,

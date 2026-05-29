@@ -57,7 +57,9 @@ export class MarketRankingConfigService {
   }
 
   private readBoolean(value: string | undefined, fallback: boolean): boolean {
-    const normalized = String(value ?? '').trim().toLowerCase();
+    const normalized = String(value ?? '')
+      .trim()
+      .toLowerCase();
     if (BOOLEAN_TRUE.has(normalized)) return true;
     if (BOOLEAN_FALSE.has(normalized)) return false;
     return fallback;

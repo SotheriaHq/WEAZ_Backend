@@ -76,7 +76,9 @@ describe('BrandsController brand access endpoints', () => {
 
   it('owner can submit and resubmit brand verification', async () => {
     brandAccessService.assertCanSubmitVerification.mockResolvedValue(undefined);
-    brandVerificationService.submit.mockResolvedValue({ verificationStatus: 'PENDING' });
+    brandVerificationService.submit.mockResolvedValue({
+      verificationStatus: 'PENDING',
+    });
     brandVerificationService.resubmitInfo.mockResolvedValue({
       verificationStatus: 'IN_REVIEW',
     });

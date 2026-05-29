@@ -1,13 +1,4 @@
-import {
-  IsArray,
-  IsBoolean,
-  IsNumber,
-  IsOptional,
-  IsString,
-  ValidateNested,
-  Min,
-} from 'class-validator';
-import { Type } from 'class-transformer';
+import { IsArray, IsNumber, IsOptional, IsString, Min } from 'class-validator';
 
 // ============================================
 // Cart Preview DTOs

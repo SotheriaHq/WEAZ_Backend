@@ -68,7 +68,9 @@ export class BrandStaffService {
   ) {}
 
   private normalizeEmail(email: string): string {
-    const normalized = String(email ?? '').trim().toLowerCase();
+    const normalized = String(email ?? '')
+      .trim()
+      .toLowerCase();
     if (!normalized) {
       throw new BadRequestException('Email is required');
     }
@@ -131,11 +133,16 @@ export class BrandStaffService {
     };
   }
 
-  private getDisplayName(user?: {
-    userProfile?: { firstName?: string | null; lastName?: string | null } | null;
-    username?: string | null;
-    email?: string | null;
-  } | null): string | null {
+  private getDisplayName(
+    user?: {
+      userProfile?: {
+        firstName?: string | null;
+        lastName?: string | null;
+      } | null;
+      username?: string | null;
+      email?: string | null;
+    } | null,
+  ): string | null {
     if (!user) return null;
     const name = [user.userProfile?.firstName, user.userProfile?.lastName]
       .map((value) => String(value ?? '').trim())
@@ -288,7 +295,9 @@ export class BrandStaffService {
       invitedUser &&
       (invitedUser.role === Role.Admin || invitedUser.role === Role.SuperAdmin)
     ) {
-      throw new BadRequestException('Platform admin accounts cannot be invited as brand staff');
+      throw new BadRequestException(
+        'Platform admin accounts cannot be invited as brand staff',
+      );
     }
 
     if (invitedUser) {
@@ -297,7 +306,9 @@ export class BrandStaffService {
         select: { id: true, status: true },
       });
       if (existingMember?.status === BrandMemberStatus.ACTIVE) {
-        throw new BadRequestException('This user is already an active brand member');
+        throw new BadRequestException(
+          'This user is already an active brand member',
+        );
       }
     }
 
@@ -311,7 +322,9 @@ export class BrandStaffService {
       select: { id: true },
     });
     if (duplicatePending) {
-      throw new BadRequestException('A pending invite already exists for this email');
+      throw new BadRequestException(
+        'A pending invite already exists for this email',
+      );
     }
 
     const token = randomBytes(32).toString('hex');
@@ -362,7 +375,11 @@ export class BrandStaffService {
     };
   }
 
-  async cancelInvite(actorUserId: string, brandIdOrOwnerId: string, inviteId: string) {
+  async cancelInvite(
+    actorUserId: string,
+    brandIdOrOwnerId: string,
+    inviteId: string,
+  ) {
     const brandId =
       await this.brandAccessService.resolveBrandIdFromBrandOrOwnerId(
         brandIdOrOwnerId,
@@ -428,13 +445,17 @@ export class BrandStaffService {
       throw new NotFoundException('User not found');
     }
     if (user.email.trim().toLowerCase() !== invite.email) {
-      throw new ForbiddenException('This invite belongs to another email address');
+      throw new ForbiddenException(
+        'This invite belongs to another email address',
+      );
     }
     if (invite.invitedUserId && invite.invitedUserId !== user.id) {
       throw new ForbiddenException('This invite belongs to another user');
     }
     if (user.role === Role.Admin || user.role === Role.SuperAdmin) {
-      throw new BadRequestException('Platform admin accounts cannot accept brand staff invites');
+      throw new BadRequestException(
+        'Platform admin accounts cannot accept brand staff invites',
+      );
     }
 
     return this.prisma.$transaction(async (tx) => {
@@ -522,7 +543,9 @@ export class BrandStaffService {
       throw new NotFoundException('User not found');
     }
     if (user.email.trim().toLowerCase() !== invite.email) {
-      throw new ForbiddenException('This invite belongs to another email address');
+      throw new ForbiddenException(
+        'This invite belongs to another email address',
+      );
     }
 
     const updated = await this.prisma.brandStaffInvite.update({
@@ -635,7 +658,11 @@ export class BrandStaffService {
     return this.mapMember(updated);
   }
 
-  async removeStaff(actorUserId: string, brandIdOrOwnerId: string, memberId: string) {
+  async removeStaff(
+    actorUserId: string,
+    brandIdOrOwnerId: string,
+    memberId: string,
+  ) {
     return this.updateStaffStatus(
       actorUserId,
       brandIdOrOwnerId,

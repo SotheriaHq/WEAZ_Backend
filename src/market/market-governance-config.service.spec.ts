@@ -1,5 +1,8 @@
 import 'reflect-metadata';
-import { MarketSuggestionContext, MarketSuggestionTargetType } from './dto/market-suggestion.dto';
+import {
+  MarketSuggestionContext,
+  MarketSuggestionTargetType,
+} from './dto/market-suggestion.dto';
 import {
   MARKET_SECTION_CODE_DEFAULTS,
   MARKET_SUGGESTION_BLOCK_CODE_DEFAULTS,
@@ -66,12 +69,16 @@ describe('MarketGovernanceConfigService', () => {
     const result = await service.getSectionConfigsWithFallback();
 
     expect(result.configReadStatus).toBe('db');
-    expect(result.items.find((item) => item.sectionKey === 'fresh-drops')).toMatchObject({
+    expect(
+      result.items.find((item) => item.sectionKey === 'fresh-drops'),
+    ).toMatchObject({
       title: 'Fresh Picks',
       enabled: false,
       source: 'db',
     });
-    expect(result.items.find((item) => item.sectionKey === 'hot-right-now')).toMatchObject({
+    expect(
+      result.items.find((item) => item.sectionKey === 'hot-right-now'),
+    ).toMatchObject({
       source: 'code-default',
     });
   });
@@ -80,7 +87,9 @@ describe('MarketGovernanceConfigService', () => {
     const prisma = createPrisma();
     const service = new MarketGovernanceConfigService(prisma as any);
 
-    await expect(service.getSuggestionBlockConfigsWithFallback()).resolves.toEqual({
+    await expect(
+      service.getSuggestionBlockConfigsWithFallback(),
+    ).resolves.toEqual({
       items: MARKET_SUGGESTION_BLOCK_CODE_DEFAULTS,
       configReadStatus: 'code-defaults',
     });
@@ -94,7 +103,9 @@ describe('MarketGovernanceConfigService', () => {
     });
     const service = new MarketGovernanceConfigService(prisma as any);
 
-    await expect(service.getSuggestionBlockConfigsWithFallback()).resolves.toEqual({
+    await expect(
+      service.getSuggestionBlockConfigsWithFallback(),
+    ).resolves.toEqual({
       items: MARKET_SUGGESTION_BLOCK_CODE_DEFAULTS,
       configReadStatus: 'fallback-code-defaults',
     });
@@ -122,7 +133,9 @@ describe('MarketGovernanceConfigService', () => {
     });
     const service = new MarketGovernanceConfigService(prisma as any);
 
-    await expect(service.getSuggestionBlockConfigsWithFallback()).resolves.toEqual({
+    await expect(
+      service.getSuggestionBlockConfigsWithFallback(),
+    ).resolves.toEqual({
       items: [
         {
           blockKey: 'brand-detail-best-from-brand',

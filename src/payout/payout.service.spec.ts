@@ -13,7 +13,10 @@ describe('PayoutService', () => {
       providers: [
         PayoutService,
         { provide: PrismaService, useValue: {} },
-        { provide: StandardOrderEscrowService, useValue: { getReleasedBalance: jest.fn() } },
+        {
+          provide: StandardOrderEscrowService,
+          useValue: { getReleasedBalance: jest.fn() },
+        },
         { provide: CommissionService, useValue: { resolveRule: jest.fn() } },
         {
           provide: StandardOrderFinanceSyncService,

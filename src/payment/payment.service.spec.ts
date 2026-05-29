@@ -640,35 +640,37 @@ describe('PaymentService', () => {
       .mockImplementation((_userId, _correlationId, callback: any) =>
         callback(),
       );
-    jest.spyOn(target as any, 'loadUnifiedStandardLineDrafts').mockResolvedValue([
-      {
-        cartItemId: 'cart-line-1',
-        brandId: 'brand-1',
-        productId: 'product-1',
-        productName: 'Threadly Tee',
-        thumbnail: null,
-        quantity: 1,
-        selectedSize: null,
-        selectedColor: null,
-        currency: 'NGN',
-        unitPrice: 12000,
-        lineTotal: 12000,
-        sizingMode: 'STANDARD',
-        requiredMeasurementKeys: [],
-        sizeFitData: null,
-        sizeRecommendationSnapshot: null,
-        variantId: null,
-        reserveInventory: false,
-        sourceProduct: {
-          id: 'product-1',
-          trackInventory: false,
-          allowBackorders: true,
-          totalStock: 0,
-          sizeStock: null,
-          sizes: [],
+    jest
+      .spyOn(target as any, 'loadUnifiedStandardLineDrafts')
+      .mockResolvedValue([
+        {
+          cartItemId: 'cart-line-1',
+          brandId: 'brand-1',
+          productId: 'product-1',
+          productName: 'Threadly Tee',
+          thumbnail: null,
+          quantity: 1,
+          selectedSize: null,
+          selectedColor: null,
+          currency: 'NGN',
+          unitPrice: 12000,
+          lineTotal: 12000,
+          sizingMode: 'STANDARD',
+          requiredMeasurementKeys: [],
+          sizeFitData: null,
+          sizeRecommendationSnapshot: null,
+          variantId: null,
+          reserveInventory: false,
+          sourceProduct: {
+            id: 'product-1',
+            trackInventory: false,
+            allowBackorders: true,
+            totalStock: 0,
+            sizeStock: null,
+            sizes: [],
+          },
         },
-      },
-    ]);
+      ]);
     jest
       .spyOn(target as any, 'loadUnifiedCustomLineDrafts')
       .mockResolvedValue({ lines: [], blocked: [] });
@@ -740,9 +742,9 @@ describe('PaymentService', () => {
         }),
       }),
     );
-    expect(
-      tx.paymentAttempt.create.mock.invocationCallOrder[0],
-    ).toBeLessThan(initializeGatewaySpy.mock.invocationCallOrder[0]);
+    expect(tx.paymentAttempt.create.mock.invocationCallOrder[0]).toBeLessThan(
+      initializeGatewaySpy.mock.invocationCallOrder[0],
+    );
     const attemptedReference = initializeGatewaySpy.mock.calls[0][1];
     expect(applyAttemptStatusSpy).toHaveBeenCalledWith(
       attemptedReference,
@@ -1017,7 +1019,10 @@ describe('PaymentService', () => {
       {} as any,
       {} as any,
     );
-    const applyAttemptStatusSpy = jest.spyOn(target as any, 'applyAttemptStatus');
+    const applyAttemptStatusSpy = jest.spyOn(
+      target as any,
+      'applyAttemptStatus',
+    );
     const alertSpy = jest
       .spyOn(target as any, 'emitReliabilityAlert')
       .mockImplementation(() => undefined);

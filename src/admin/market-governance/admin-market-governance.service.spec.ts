@@ -113,7 +113,12 @@ describe('AdminMarketGovernanceService', () => {
     const { service } = createHarness();
 
     await expect(
-      service.patchSection('unsupported-section', { enabled: true }, actorId, req),
+      service.patchSection(
+        'unsupported-section',
+        { enabled: true },
+        actorId,
+        req,
+      ),
     ).rejects.toBeInstanceOf(BadRequestException);
   });
 
@@ -149,7 +154,12 @@ describe('AdminMarketGovernanceService', () => {
   it('writes section config and audit in one transaction', async () => {
     const { audit, prisma, service, tx } = createHarness();
 
-    await service.patchSection('fresh-drops', { title: 'Fresh Picks' }, actorId, req);
+    await service.patchSection(
+      'fresh-drops',
+      { title: 'Fresh Picks' },
+      actorId,
+      req,
+    );
 
     expect(prisma.$transaction).toHaveBeenCalledTimes(1);
     expect(tx.marketSectionConfig.upsert).toHaveBeenCalledWith(
@@ -172,12 +182,19 @@ describe('AdminMarketGovernanceService', () => {
   it('fails mutation when audit logging fails', async () => {
     const { service } = createHarness({
       audit: {
-        logInTransaction: jest.fn().mockRejectedValue(new Error('audit failed')),
+        logInTransaction: jest
+          .fn()
+          .mockRejectedValue(new Error('audit failed')),
       },
     });
 
     await expect(
-      service.patchSection('fresh-drops', { title: 'Fresh Picks' }, actorId, req),
+      service.patchSection(
+        'fresh-drops',
+        { title: 'Fresh Picks' },
+        actorId,
+        req,
+      ),
     ).rejects.toThrow('audit failed');
   });
 

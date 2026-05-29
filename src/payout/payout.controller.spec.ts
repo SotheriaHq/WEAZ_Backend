@@ -53,9 +53,16 @@ describe('PayoutController', () => {
   it('keeps payout requests owner-only', async () => {
     payoutService.requestPayout.mockResolvedValue({ id: 'payout_1' });
 
-    await controller.requestPayout('brand_1', { amount: 5000 }, { user: { id: 'owner_1' } });
+    await controller.requestPayout(
+      'brand_1',
+      { amount: 5000 },
+      { user: { id: 'owner_1' } },
+    );
 
-    expect(payoutService.assertBrandOwnership).toHaveBeenCalledWith('brand_1', 'owner_1');
+    expect(payoutService.assertBrandOwnership).toHaveBeenCalledWith(
+      'brand_1',
+      'owner_1',
+    );
     expect(payoutService.requestPayout).toHaveBeenCalledWith(
       'brand_1',
       5000,

@@ -6,7 +6,10 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { Role } from '@prisma/client';
-import { canonicalBrandProfileSelect, normalizeBrandProfileForAuthResponse } from 'src/common/brand-profile-source.helper';
+import {
+  canonicalBrandProfileSelect,
+  normalizeBrandProfileForAuthResponse,
+} from 'src/common/brand-profile-source.helper';
 import {
   canonicalUserProfileSelect,
   resolveNullableProfileField,

@@ -1,9 +1,16 @@
-import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  OnModuleDestroy,
+  OnModuleInit,
+} from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { createClient, type RedisClientType } from 'redis';
 
 @Injectable()
-export class ProductViewCounterService implements OnModuleInit, OnModuleDestroy {
+export class ProductViewCounterService
+  implements OnModuleInit, OnModuleDestroy
+{
   private readonly logger = new Logger(ProductViewCounterService.name);
   private readonly buffer = new Map<string, number>();
   private flushTimer: NodeJS.Timeout | null = null;
@@ -35,7 +42,9 @@ export class ProductViewCounterService implements OnModuleInit, OnModuleDestroy 
         })
         .catch((err: any) => {
           this.logger.warn(`Redis error: ${err?.message || err}`);
-          this.logger.warn(`Failed to connect Redis; falling back to in-process buffering: ${err?.message || err}`);
+          this.logger.warn(
+            `Failed to connect Redis; falling back to in-process buffering: ${err?.message || err}`,
+          );
           this.redis = null;
           try {
             client.disconnect();
@@ -89,7 +98,9 @@ export class ProductViewCounterService implements OnModuleInit, OnModuleDestroy 
         .hIncrBy(this.redisHashKey, productId, 1)
         .catch((err: any) => {
           // Best-effort: fall back to local buffer if Redis is unhealthy
-          this.logger.warn(`Redis increment failed; buffering locally: ${err?.message || err}`);
+          this.logger.warn(
+            `Redis increment failed; buffering locally: ${err?.message || err}`,
+          );
           const failedClient = this.redis;
           this.redis = null;
           void this.closeRedisClient(failedClient);
@@ -157,7 +168,9 @@ export class ProductViewCounterService implements OnModuleInit, OnModuleDestroy 
         }
         return;
       } catch (err: any) {
-        this.logger.warn(`Redis flush failed; falling back to local buffer: ${err?.message || err}`);
+        this.logger.warn(
+          `Redis flush failed; falling back to local buffer: ${err?.message || err}`,
+        );
         const failedClient = this.redis;
         this.redis = null;
         await this.closeRedisClient(failedClient);

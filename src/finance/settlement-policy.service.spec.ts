@@ -49,7 +49,8 @@ function makePolicy(overrides: Partial<PolicyRow> = {}): PolicyRow {
     settlementDelayHours: overrides.settlementDelayHours ?? 48,
     autoReleaseDays: overrides.autoReleaseDays ?? 7,
     finalReleaseTrigger:
-      overrides.finalReleaseTrigger ?? SettlementFinalReleaseTrigger.BUYER_CONFIRMATION,
+      overrides.finalReleaseTrigger ??
+      SettlementFinalReleaseTrigger.BUYER_CONFIRMATION,
     isDefault: overrides.isDefault ?? true,
     isActive: overrides.isActive ?? true,
     effectiveFrom: overrides.effectiveFrom ?? baseTime,
@@ -115,7 +116,9 @@ function buildPrismaMock(policies: PolicyRow[]) {
   const client: any = {
     settlementPolicy: {
       findFirst: jest.fn().mockImplementation(async ({ where }: any) => {
-        const match = sortPolicies(state).find((policy) => matchesPolicyQuery(where, policy));
+        const match = sortPolicies(state).find((policy) =>
+          matchesPolicyQuery(where, policy),
+        );
         return match ?? null;
       }),
       findMany: jest.fn().mockResolvedValue(state),
@@ -167,7 +170,9 @@ function buildPrismaMock(policies: PolicyRow[]) {
     },
   };
 
-  client.$transaction = jest.fn(async (callback: (tx: any) => Promise<unknown>) => callback(client));
+  client.$transaction = jest.fn(
+    async (callback: (tx: any) => Promise<unknown>) => callback(client),
+  );
 
   return client as any;
 }
@@ -204,17 +209,19 @@ describe('SettlementPolicyService', () => {
   });
 
   it('resolves the custom default policy', async () => {
-    prisma.settlementPolicy.findFirst.mockImplementation(async ({ where }: any) => {
-      const customDefault = makePolicy({
-        id: 'custom_default',
-        orderType: SettlementOrderType.CUSTOM_ORDER,
-        releaseMode: SettlementReleaseMode.SPLIT_RELEASE,
-        upfrontReleaseEnabled: true,
-        upfrontReleasePercent: new Prisma.Decimal('60.00'),
-      });
+    prisma.settlementPolicy.findFirst.mockImplementation(
+      async ({ where }: any) => {
+        const customDefault = makePolicy({
+          id: 'custom_default',
+          orderType: SettlementOrderType.CUSTOM_ORDER,
+          releaseMode: SettlementReleaseMode.SPLIT_RELEASE,
+          upfrontReleaseEnabled: true,
+          upfrontReleasePercent: new Prisma.Decimal('60.00'),
+        });
 
-      return matchesPolicyQuery(where, customDefault) ? customDefault : null;
-    });
+        return matchesPolicyQuery(where, customDefault) ? customDefault : null;
+      },
+    );
 
     const resolved = await service.resolveActivePolicy({
       orderType: SettlementOrderType.CUSTOM_ORDER,
@@ -235,17 +242,21 @@ describe('SettlementPolicyService', () => {
   });
 
   it('resolves the standard default policy', async () => {
-    prisma.settlementPolicy.findFirst.mockImplementation(async ({ where }: any) => {
-      const standardDefault = makePolicy({
-        id: 'standard_default',
-        orderType: SettlementOrderType.STANDARD_ORDER,
-        releaseMode: SettlementReleaseMode.HOLD_UNTIL_DELIVERY,
-        upfrontReleaseEnabled: false,
-        upfrontReleasePercent: new Prisma.Decimal('0.00'),
-      });
+    prisma.settlementPolicy.findFirst.mockImplementation(
+      async ({ where }: any) => {
+        const standardDefault = makePolicy({
+          id: 'standard_default',
+          orderType: SettlementOrderType.STANDARD_ORDER,
+          releaseMode: SettlementReleaseMode.HOLD_UNTIL_DELIVERY,
+          upfrontReleaseEnabled: false,
+          upfrontReleasePercent: new Prisma.Decimal('0.00'),
+        });
 
-      return matchesPolicyQuery(where, standardDefault) ? standardDefault : null;
-    });
+        return matchesPolicyQuery(where, standardDefault)
+          ? standardDefault
+          : null;
+      },
+    );
 
     const resolved = await service.resolveActivePolicy({
       orderType: SettlementOrderType.STANDARD_ORDER,
@@ -280,10 +291,16 @@ describe('SettlementPolicyService', () => {
       scope: SettlementPolicyScope.PLATFORM,
       upfrontReleasePercent: new Prisma.Decimal('60.00'),
     });
-    prisma.settlementPolicy.findFirst.mockImplementation(async ({ where }: any) => {
-      const dataset = [brandPolicy, platformPolicy];
-      return sortPolicies(dataset).find((policy) => matchesPolicyQuery(where, policy)) ?? null;
-    });
+    prisma.settlementPolicy.findFirst.mockImplementation(
+      async ({ where }: any) => {
+        const dataset = [brandPolicy, platformPolicy];
+        return (
+          sortPolicies(dataset).find((policy) =>
+            matchesPolicyQuery(where, policy),
+          ) ?? null
+        );
+      },
+    );
 
     const resolved = await service.resolveActivePolicy({
       orderType: SettlementOrderType.CUSTOM_ORDER,
@@ -309,10 +326,16 @@ describe('SettlementPolicyService', () => {
       currency: null,
       upfrontReleasePercent: new Prisma.Decimal('60.00'),
     });
-    prisma.settlementPolicy.findFirst.mockImplementation(async ({ where }: any) => {
-      const dataset = [currencyPolicy, genericPolicy];
-      return sortPolicies(dataset).find((policy) => matchesPolicyQuery(where, policy)) ?? null;
-    });
+    prisma.settlementPolicy.findFirst.mockImplementation(
+      async ({ where }: any) => {
+        const dataset = [currencyPolicy, genericPolicy];
+        return (
+          sortPolicies(dataset).find((policy) =>
+            matchesPolicyQuery(where, policy),
+          ) ?? null
+        );
+      },
+    );
 
     const resolved = await service.resolveActivePolicy({
       orderType: SettlementOrderType.CUSTOM_ORDER,
@@ -338,10 +361,16 @@ describe('SettlementPolicyService', () => {
       currency: null,
       upfrontReleasePercent: new Prisma.Decimal('60.00'),
     });
-    prisma.settlementPolicy.findFirst.mockImplementation(async ({ where }: any) => {
-      const dataset = [inactiveExact, activeGeneric];
-      return sortPolicies(dataset).find((policy) => matchesPolicyQuery(where, policy)) ?? null;
-    });
+    prisma.settlementPolicy.findFirst.mockImplementation(
+      async ({ where }: any) => {
+        const dataset = [inactiveExact, activeGeneric];
+        return (
+          sortPolicies(dataset).find((policy) =>
+            matchesPolicyQuery(where, policy),
+          ) ?? null
+        );
+      },
+    );
 
     const resolved = await service.resolveActivePolicy({
       orderType: SettlementOrderType.CUSTOM_ORDER,
@@ -374,10 +403,16 @@ describe('SettlementPolicyService', () => {
       currency: null,
       upfrontReleasePercent: new Prisma.Decimal('60.00'),
     });
-    prisma.settlementPolicy.findFirst.mockImplementation(async ({ where }: any) => {
-      const dataset = [futureExact, expiredExact, activeGeneric];
-      return sortPolicies(dataset).find((policy) => matchesPolicyQuery(where, policy)) ?? null;
-    });
+    prisma.settlementPolicy.findFirst.mockImplementation(
+      async ({ where }: any) => {
+        const dataset = [futureExact, expiredExact, activeGeneric];
+        return (
+          sortPolicies(dataset).find((policy) =>
+            matchesPolicyQuery(where, policy),
+          ) ?? null
+        );
+      },
+    );
 
     const resolved = await service.resolveActivePolicy({
       orderType: SettlementOrderType.CUSTOM_ORDER,

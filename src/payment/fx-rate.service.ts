@@ -199,7 +199,10 @@ export class FxRateService {
     };
   }
 
-  private async fetchFrankfurterRate(from: string, to: string): Promise<{
+  private async fetchFrankfurterRate(
+    from: string,
+    to: string,
+  ): Promise<{
     source: ExchangeRateSource;
     rate: number;
     rawPayload: Record<string, unknown>;
@@ -241,7 +244,9 @@ export class FxRateService {
     gateway: string,
     payload?: Record<string, any>,
   ): GatewayRateResolution {
-    const normalizedGateway = String(gateway || '').trim().toUpperCase();
+    const normalizedGateway = String(gateway || '')
+      .trim()
+      .toUpperCase();
     const rateCandidate = this.extractNumericRate(payload);
     if (!rateCandidate || rateCandidate <= 0) return null;
 
@@ -310,7 +315,9 @@ export class FxRateService {
     currency: string,
     options?: { supportedCurrencies?: Set<string> },
   ): string {
-    const normalized = String(currency || '').trim().toUpperCase();
+    const normalized = String(currency || '')
+      .trim()
+      .toUpperCase();
     if (!normalized || normalized.length !== 3) {
       throw new BadRequestException('Invalid currency code');
     }

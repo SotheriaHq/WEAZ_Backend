@@ -20,17 +20,25 @@ describe('OrderAccessService', () => {
   });
 
   it('allows a buyer to read their own order', async () => {
-    prisma.order.findUnique.mockResolvedValue({ buyerId: 'buyer_1', brandId: 'brand_1' });
+    prisma.order.findUnique.mockResolvedValue({
+      buyerId: 'buyer_1',
+      brandId: 'brand_1',
+    });
 
-    await expect(service.assertOrderBuyerAccess('buyer_1', 'order_1')).resolves.toBeUndefined();
+    await expect(
+      service.assertOrderBuyerAccess('buyer_1', 'order_1'),
+    ).resolves.toBeUndefined();
   });
 
   it('blocks another buyer from reading an order', async () => {
-    prisma.order.findUnique.mockResolvedValue({ buyerId: 'buyer_1', brandId: 'brand_1' });
+    prisma.order.findUnique.mockResolvedValue({
+      buyerId: 'buyer_1',
+      brandId: 'brand_1',
+    });
 
-    await expect(service.assertOrderBuyerAccess('buyer_2', 'order_1')).rejects.toBeInstanceOf(
-      ForbiddenException,
-    );
+    await expect(
+      service.assertOrderBuyerAccess('buyer_2', 'order_1'),
+    ).rejects.toBeInstanceOf(ForbiddenException);
   });
 
   it('requires orders.read for brand order reads', async () => {
@@ -60,8 +68,8 @@ describe('OrderAccessService', () => {
   it('returns not found for a missing order', async () => {
     prisma.order.findUnique.mockResolvedValue(null);
 
-    await expect(service.assertOrderBrandRead('staff_1', 'missing')).rejects.toBeInstanceOf(
-      NotFoundException,
-    );
+    await expect(
+      service.assertOrderBrandRead('staff_1', 'missing'),
+    ).rejects.toBeInstanceOf(NotFoundException);
   });
 });

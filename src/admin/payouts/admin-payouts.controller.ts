@@ -76,7 +76,13 @@ export class AdminPayoutsController {
   ) {
     const actorId = (req as any).user.id ?? (req as any).user.sub;
     const actorRole = (req as any).user.role as Role;
-    return this.payoutsService.release(id, actorId, actorRole, req, dto?.reason);
+    return this.payoutsService.release(
+      id,
+      actorId,
+      actorRole,
+      req,
+      dto?.reason,
+    );
   }
 
   @Post(':id/initiate-transfer')

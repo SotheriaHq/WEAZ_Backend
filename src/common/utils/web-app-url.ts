@@ -15,7 +15,11 @@ function normalizeBaseUrl(value: string): string {
 }
 
 function isEnabled(value: string | undefined): boolean {
-  return String(value ?? '').trim().toLowerCase() === 'true';
+  return (
+    String(value ?? '')
+      .trim()
+      .toLowerCase() === 'true'
+  );
 }
 
 function resolveEnvironmentMarker(): string {
@@ -30,10 +34,16 @@ export function isNonLocalEnvironment(): boolean {
   return NON_LOCAL_ENV_MARKERS.has(resolveEnvironmentMarker());
 }
 
-function resolveLocalWebAppBaseUrl(env: NodeJS.ProcessEnv = process.env): string {
+function resolveLocalWebAppBaseUrl(
+  env: NodeJS.ProcessEnv = process.env,
+): string {
   const protocol = isEnabled(env.WEB_APP_USE_HTTPS) ? 'https' : 'http';
-  const host = String(env.WEB_APP_HOST ?? DEFAULT_LOCAL_WEB_APP_HOST).trim() || DEFAULT_LOCAL_WEB_APP_HOST;
-  const port = String(env.WEB_APP_PORT ?? DEFAULT_LOCAL_WEB_APP_PORT).trim() || DEFAULT_LOCAL_WEB_APP_PORT;
+  const host =
+    String(env.WEB_APP_HOST ?? DEFAULT_LOCAL_WEB_APP_HOST).trim() ||
+    DEFAULT_LOCAL_WEB_APP_HOST;
+  const port =
+    String(env.WEB_APP_PORT ?? DEFAULT_LOCAL_WEB_APP_PORT).trim() ||
+    DEFAULT_LOCAL_WEB_APP_PORT;
   return `${protocol}://${host}:${port}`;
 }
 

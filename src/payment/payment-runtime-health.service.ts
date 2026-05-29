@@ -68,7 +68,9 @@ export class PaymentRuntimeHealthService {
     status: CronHeartbeatStatus,
     details?: Record<string, unknown>,
   ): Promise<void> {
-    const normalizedName = String(name ?? '').trim().toLowerCase();
+    const normalizedName = String(name ?? '')
+      .trim()
+      .toLowerCase();
     if (!normalizedName) {
       return;
     }
@@ -206,10 +208,7 @@ export class PaymentRuntimeHealthService {
           type: 'WEBHOOK_RECEIVED',
           processedAt: null,
         },
-        orderBy: [
-          { providerEventReceivedAt: 'asc' },
-          { createdAt: 'asc' },
-        ],
+        orderBy: [{ providerEventReceivedAt: 'asc' }, { createdAt: 'asc' }],
         select: {
           providerEventReceivedAt: true,
           createdAt: true,
@@ -252,7 +251,9 @@ export class PaymentRuntimeHealthService {
     const oldestPendingWebhookAgeSeconds = oldestPendingWebhookAt
       ? Math.max(
           0,
-          Math.floor((checkedAt.getTime() - oldestPendingWebhookAt.getTime()) / 1000),
+          Math.floor(
+            (checkedAt.getTime() - oldestPendingWebhookAt.getTime()) / 1000,
+          ),
         )
       : null;
 
@@ -308,19 +309,26 @@ export class PaymentRuntimeHealthService {
 
     if (redisClient) {
       try {
-        const rawHeartbeat = await redisClient.get(PAYMENT_QUEUE_WORKER_HEARTBEAT_KEY);
+        const rawHeartbeat = await redisClient.get(
+          PAYMENT_QUEUE_WORKER_HEARTBEAT_KEY,
+        );
         if (rawHeartbeat) {
           const parsed = this.safeParseObject(rawHeartbeat);
           const runAtCandidate = String(parsed?.runAt ?? '').trim();
           const runAt = runAtCandidate ? new Date(runAtCandidate) : null;
           const ageSeconds =
             runAt && Number.isFinite(runAt.getTime())
-              ? Math.max(0, Math.floor((checkedAt.getTime() - runAt.getTime()) / 1000))
+              ? Math.max(
+                  0,
+                  Math.floor((checkedAt.getTime() - runAt.getTime()) / 1000),
+                )
               : null;
 
           workerResult.seen = true;
           workerResult.lastHeartbeatAt =
-            runAt && Number.isFinite(runAt.getTime()) ? runAt.toISOString() : null;
+            runAt && Number.isFinite(runAt.getTime())
+              ? runAt.toISOString()
+              : null;
           workerResult.ageSeconds = ageSeconds;
           workerResult.stale =
             ageSeconds === null || ageSeconds > workerResult.maxAgeSeconds;
@@ -356,10 +364,15 @@ export class PaymentRuntimeHealthService {
           const runAt = runAtCandidate ? new Date(runAtCandidate) : null;
           const ageSeconds =
             runAt && Number.isFinite(runAt.getTime())
-              ? Math.max(0, Math.floor((checkedAt.getTime() - runAt.getTime()) / 1000))
+              ? Math.max(
+                  0,
+                  Math.floor((checkedAt.getTime() - runAt.getTime()) / 1000),
+                )
               : null;
           const statusCandidate =
-            String(parsed?.status ?? '').trim().toLowerCase() === 'error'
+            String(parsed?.status ?? '')
+              .trim()
+              .toLowerCase() === 'error'
               ? 'error'
               : 'ok';
 
@@ -369,10 +382,13 @@ export class PaymentRuntimeHealthService {
             stale: ageSeconds === null || ageSeconds > cronCheck.maxAgeSeconds,
             status: statusCandidate,
             lastRunAt:
-              runAt && Number.isFinite(runAt.getTime()) ? runAt.toISOString() : null,
+              runAt && Number.isFinite(runAt.getTime())
+                ? runAt.toISOString()
+                : null,
             ageSeconds,
             maxAgeSeconds: cronCheck.maxAgeSeconds,
-            details: (parsed?.details as Record<string, unknown> | undefined) ?? null,
+            details:
+              (parsed?.details as Record<string, unknown> | undefined) ?? null,
           });
         } catch (error) {
           cronResults.push({
@@ -387,7 +403,9 @@ export class PaymentRuntimeHealthService {
               error: this.extractErrorMessage(error),
             },
           });
-          degradedReasons.push(`payment_cron_heartbeat_read_failed:${cronCheck.name}`);
+          degradedReasons.push(
+            `payment_cron_heartbeat_read_failed:${cronCheck.name}`,
+          );
         }
       }
     }
@@ -511,21 +529,26 @@ export class PaymentRuntimeHealthService {
           maxAgeSeconds: workerResult.maxAgeSeconds,
         },
         cronHeartbeats: {
-          state: staleOrMissingCrons.length === 0 ? ('ok' as const) : ('alert' as const),
+          state:
+            staleOrMissingCrons.length === 0
+              ? ('ok' as const)
+              : ('alert' as const),
           reason: staleOrMissingCrons.length === 0 ? null : 'stale_or_missing',
           staleOrMissing: staleOrMissingCrons,
         },
         webhookQueueBacklog: {
           state:
             queueBacklog != null &&
-            queueBacklog <= PAYMENT_RUNTIME_ALERT_THRESHOLDS.webhookQueueBacklogHigh &&
+            queueBacklog <=
+              PAYMENT_RUNTIME_ALERT_THRESHOLDS.webhookQueueBacklogHigh &&
             !queueError
               ? ('ok' as const)
               : ('alert' as const),
           reason:
             queueError ??
             (queueBacklog != null &&
-            queueBacklog > PAYMENT_RUNTIME_ALERT_THRESHOLDS.webhookQueueBacklogHigh
+            queueBacklog >
+              PAYMENT_RUNTIME_ALERT_THRESHOLDS.webhookQueueBacklogHigh
               ? 'backlog_high'
               : null),
           backlog: queueBacklog,
@@ -543,7 +566,8 @@ export class PaymentRuntimeHealthService {
               ? null
               : 'failure_spike',
           failures: recentWebhookProcessingFailures24h,
-          threshold: PAYMENT_RUNTIME_ALERT_THRESHOLDS.webhookProcessingFailures24hHigh,
+          threshold:
+            PAYMENT_RUNTIME_ALERT_THRESHOLDS.webhookProcessingFailures24hHigh,
         },
         finalizationCompensation: {
           state:
@@ -592,7 +616,9 @@ export class PaymentRuntimeHealthService {
   private safeParseObject(value: string): Record<string, unknown> | null {
     try {
       const parsed = JSON.parse(value);
-      return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null;
+      return parsed && typeof parsed === 'object'
+        ? (parsed as Record<string, unknown>)
+        : null;
     } catch {
       return null;
     }

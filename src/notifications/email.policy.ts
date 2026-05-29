@@ -250,7 +250,10 @@ function buildCustomOrderEmailDetails(
     ]
       .filter(Boolean)
       .join(' ');
-  const buyerUsername = asTrimmedString(payload.buyerUsername).replace(/^@+/, '');
+  const buyerUsername = asTrimmedString(payload.buyerUsername).replace(
+    /^@+/,
+    '',
+  );
   const buyerEmail = asTrimmedString(payload.buyerEmail);
   const amount = Number(payload.orderAmount);
   const currency = asTrimmedString(payload.currency) || 'NGN';
@@ -283,7 +286,9 @@ function buildCustomOrderEmailDetails(
   return details;
 }
 
-function renderNotificationDetailsTable(details: NotificationEmailDetail[]): string {
+function renderNotificationDetailsTable(
+  details: NotificationEmailDetail[],
+): string {
   if (!details.length) return '';
 
   const rows = details
@@ -340,9 +345,21 @@ export function renderNotificationEmail(args: {
       asTrimmedString(args.payload?.collectionTitle) ||
       asTrimmedString(args.payload?.collectionName) ||
       'Your design';
-    const designUrl = asTrimmedString(args.targetUrl) || asTrimmedString(args.payload?.targetUrl as string) || '/';
-    const result = collectionPublishedEmail(brandName, designTitle, designUrl, companyName);
-    return { subject: result.subject, html: result.html, text: result.text ?? '' };
+    const designUrl =
+      asTrimmedString(args.targetUrl) ||
+      asTrimmedString(args.payload?.targetUrl as string) ||
+      '/';
+    const result = collectionPublishedEmail(
+      brandName,
+      designTitle,
+      designUrl,
+      companyName,
+    );
+    return {
+      subject: result.subject,
+      html: result.html,
+      text: result.text ?? '',
+    };
   }
 
   const cta = args.targetUrl
@@ -353,7 +370,9 @@ export function renderNotificationEmail(args: {
     NotificationType.CUSTOM_ORDER_PAYMENT_RECEIVED,
     NotificationType.CUSTOM_ORDER_REVIEW_REQUIRED,
   ]);
-  const detailRows = customOrderDetailTypes.has(args.notificationType as NotificationType)
+  const detailRows = customOrderDetailTypes.has(
+    args.notificationType as NotificationType,
+  )
     ? buildCustomOrderEmailDetails(args.payload)
     : [];
   const detailTable = renderNotificationDetailsTable(detailRows);

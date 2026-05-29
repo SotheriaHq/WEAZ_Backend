@@ -60,7 +60,8 @@ export class CustomOrderConfigurationsController {
   @UseGuards(OptionalJwtAuthGuard)
   async listVisibleConfigurations(
     @Req() req: Request & { user?: { id?: string } },
-    @Query(new ValidationPipe({ transform: true, whitelist: true })) query: QueryVisibleCustomOrderConfigurationsDto,
+    @Query(new ValidationPipe({ transform: true, whitelist: true }))
+    query: QueryVisibleCustomOrderConfigurationsDto,
   ) {
     return this.service.listVisibleConfigurations(req.user?.id, query);
   }
@@ -69,7 +70,13 @@ export class CustomOrderConfigurationsController {
   @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
   async createConfiguration(
     @Req() req: Request & { user: { id: string } },
-    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true }))
+    @Body(
+      new ValidationPipe({
+        transform: true,
+        whitelist: true,
+        forbidNonWhitelisted: true,
+      }),
+    )
     dto: CreateCustomOrderConfigurationDto,
   ) {
     return this.service.createConfiguration(req.user.id, dto);
@@ -80,7 +87,13 @@ export class CustomOrderConfigurationsController {
   async updateConfiguration(
     @Param('id') id: string,
     @Req() req: Request & { user: { id: string } },
-    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true }))
+    @Body(
+      new ValidationPipe({
+        transform: true,
+        whitelist: true,
+        forbidNonWhitelisted: true,
+      }),
+    )
     dto: UpdateCustomOrderConfigurationDto,
   ) {
     return this.service.updateConfiguration(req.user.id, id, dto);
@@ -99,7 +112,13 @@ export class CustomOrderConfigurationsController {
   @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
   async createBasis(
     @Req() req: Request & { user: { id: string } },
-    @Body(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true }))
+    @Body(
+      new ValidationPipe({
+        transform: true,
+        whitelist: true,
+        forbidNonWhitelisted: true,
+      }),
+    )
     dto: CreateCustomFabricRuleBasisDto,
   ) {
     return this.service.createBasis(req.user.id, dto);
@@ -109,7 +128,8 @@ export class CustomOrderConfigurationsController {
   @UseGuards(OptionalJwtAuthGuard)
   async listBases(
     @Req() req: Request & { user?: { id?: string } },
-    @Query(new ValidationPipe({ transform: true, whitelist: true })) query: QueryCustomFabricRuleBasesDto,
+    @Query(new ValidationPipe({ transform: true, whitelist: true }))
+    query: QueryCustomFabricRuleBasesDto,
   ) {
     return this.service.listBases(req.user?.id, query);
   }

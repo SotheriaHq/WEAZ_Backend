@@ -8,7 +8,6 @@ import {
   IsNotEmpty,
   IsNumber,
   IsEnum,
-  ArrayMinSize,
   ArrayMaxSize,
   IsBoolean,
   Min,

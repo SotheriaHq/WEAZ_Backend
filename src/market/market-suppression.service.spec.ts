@@ -80,7 +80,9 @@ describe('MarketSuppressionService', () => {
       where: {
         AND: [
           { OR: [{ anonymousSessionId: 'anon_1' }] },
-          { OR: [{ expiresAt: null }, { expiresAt: { gt: expect.any(Date) } }] },
+          {
+            OR: [{ expiresAt: null }, { expiresAt: { gt: expect.any(Date) } }],
+          },
           {
             targetType: MarketSignalTargetType.PRODUCT,
             targetId: 'product_1',
@@ -187,7 +189,9 @@ describe('MarketSuppressionService', () => {
       where: {
         AND: [
           { OR: [{ userId: 'user_1' }] },
-          { OR: [{ expiresAt: null }, { expiresAt: { gt: expect.any(Date) } }] },
+          {
+            OR: [{ expiresAt: null }, { expiresAt: { gt: expect.any(Date) } }],
+          },
         ],
       },
       orderBy: [{ createdAt: 'desc' }],
@@ -199,16 +203,15 @@ describe('MarketSuppressionService', () => {
     const prisma = createPrisma();
     const service = new MarketSuppressionService(prisma as any);
 
-    await service.listSuppressions(
-      {},
-      { anonymousSessionId: 'anon_1' },
-    );
+    await service.listSuppressions({}, { anonymousSessionId: 'anon_1' });
 
     expect(prisma.userContentSuppression.findMany).toHaveBeenCalledWith({
       where: {
         AND: [
           { OR: [{ anonymousSessionId: 'anon_1' }] },
-          { OR: [{ expiresAt: null }, { expiresAt: { gt: expect.any(Date) } }] },
+          {
+            OR: [{ expiresAt: null }, { expiresAt: { gt: expect.any(Date) } }],
+          },
         ],
       },
       orderBy: [{ createdAt: 'desc' }],
@@ -267,7 +270,9 @@ describe('MarketSuppressionService', () => {
     const service = new MarketSuppressionService(prisma as any);
 
     await expect(
-      service.deleteSuppression('suppression_from_user_2', { userId: 'user_1' }),
+      service.deleteSuppression('suppression_from_user_2', {
+        userId: 'user_1',
+      }),
     ).rejects.toBeInstanceOf(NotFoundException);
     expect(prisma.userContentSuppression.deleteMany).toHaveBeenCalledWith({
       where: {

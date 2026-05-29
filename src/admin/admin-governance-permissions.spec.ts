@@ -19,9 +19,9 @@ describe('Admin governance permission metadata', () => {
     expect(getPermissions(AdminUsersController, 'forcePasswordReset')).toEqual([
       ADMIN_PERMISSIONS.USERS_UPDATE,
     ]);
-    expect(getPermissions(AdminUsersController, 'reissueTempPassword')).toEqual([
-      ADMIN_PERMISSIONS.USERS_UPDATE,
-    ]);
+    expect(getPermissions(AdminUsersController, 'reissueTempPassword')).toEqual(
+      [ADMIN_PERMISSIONS.USERS_UPDATE],
+    );
     expect(getPermissions(AdminUsersController, 'dataExport')).toEqual([
       ADMIN_PERMISSIONS.USERS_DATA_EXPORT,
     ]);
@@ -37,14 +37,14 @@ describe('Admin governance permission metadata', () => {
     expect(getPermissions(AdminFeaturedController, 'history')).toEqual([
       ADMIN_PERMISSIONS.FEATURED_MANAGE,
     ]);
-    expect(getPermissions(AdminFeaturedController, 'toggleBlockProduct')).toEqual([
-      ADMIN_PERMISSIONS.FEATURED_MANAGE,
-    ]);
+    expect(
+      getPermissions(AdminFeaturedController, 'toggleBlockProduct'),
+    ).toEqual([ADMIN_PERMISSIONS.FEATURED_MANAGE]);
     expect(
       getPermissions(AdminFeaturedController, 'toggleBlockCollection'),
     ).toEqual([ADMIN_PERMISSIONS.FEATURED_MANAGE]);
-    expect(getPermissions(AdminFeaturedController, 'toggleBlockBrand')).toEqual([
-      ADMIN_PERMISSIONS.FEATURED_MANAGE,
-    ]);
+    expect(getPermissions(AdminFeaturedController, 'toggleBlockBrand')).toEqual(
+      [ADMIN_PERMISSIONS.FEATURED_MANAGE],
+    );
   });
 });

@@ -166,7 +166,9 @@ export class AdminDesignsService {
         coverImage:
           item.coverMedia?.file?.s3Url ?? item.medias?.[0]?.file?.s3Url ?? null,
         coverImageFileId:
-          item.coverMedia?.fileUploadId ?? item.medias?.[0]?.fileUploadId ?? null,
+          item.coverMedia?.fileUploadId ??
+          item.medias?.[0]?.fileUploadId ??
+          null,
         orderCount: orderCountByDesignId.get(item.id) ?? 0,
         viewCount: item.viewsCount ?? 0,
       })),
@@ -302,15 +304,19 @@ export class AdminDesignsService {
         const reasonText = dto.reason?.trim();
         const verb = action === 'HARD_DELETE' ? 'deleted' : 'unpublished';
         const reasonSuffix = reasonText ? ` Reason: ${reasonText}` : '';
-        await this.notifications.create(existing.ownerId, NotificationType.ADMIN_ACTION, {
-          actorId,
-          payload: {
-            targetType: 'DESIGN',
-            targetId: designId,
-            message: `Admin ${verb} your design "${existing.title ?? 'Untitled'}".${reasonSuffix}`,
-            reason: reasonText,
+        await this.notifications.create(
+          existing.ownerId,
+          NotificationType.ADMIN_ACTION,
+          {
+            actorId,
+            payload: {
+              targetType: 'DESIGN',
+              targetId: designId,
+              message: `Admin ${verb} your design "${existing.title ?? 'Untitled'}".${reasonSuffix}`,
+              reason: reasonText,
+            },
           },
-        });
+        );
       } catch {}
     }
 

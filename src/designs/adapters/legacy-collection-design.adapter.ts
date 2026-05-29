@@ -13,7 +13,9 @@ import { DesignResponseMapper } from '../mappers/design-response.mapper';
 
 @Injectable()
 export class LegacyCollectionDesignAdapter {
-  toLegacyInitializePayload(dto: InitializeDesignUploadDto): CreateCollectionDto {
+  toLegacyInitializePayload(
+    dto: InitializeDesignUploadDto,
+  ): CreateCollectionDto {
     const categoryTypeId = this.resolveCategoryTypeId(dto);
     return {
       ...dto,
@@ -59,7 +61,8 @@ export class LegacyCollectionDesignAdapter {
 
   fromLegacyInitializeResponse(response: any): any {
     if (!response) return response;
-    const legacyCollectionId = response.legacyCollectionId ?? response.collectionId;
+    const legacyCollectionId =
+      response.legacyCollectionId ?? response.collectionId;
     return {
       ...response,
       designId: response.designId ?? legacyCollectionId,
@@ -71,7 +74,8 @@ export class LegacyCollectionDesignAdapter {
 
   fromLegacyDraftSessionResponse(response: any): any {
     if (!response) return response;
-    const legacyCollectionId = response.legacyCollectionId ?? response.collectionId;
+    const legacyCollectionId =
+      response.legacyCollectionId ?? response.collectionId;
     return {
       ...response,
       designId: response.designId ?? legacyCollectionId,

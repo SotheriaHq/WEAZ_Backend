@@ -5,16 +5,20 @@ describe('FittingFreshnessPolicy', () => {
   const now = new Date('2026-05-08T12:00:00.000Z');
 
   it('returns NOT_REQUIRED when no required keys exist', () => {
-    expect(policy.evaluate({ requiredMeasurementKeys: [], now })).toMatchObject({
-      fittingState: 'NOT_REQUIRED',
-      freshnessState: 'NOT_REQUIRED',
-      missingMeasurementKeys: [],
-      requiresStaleConfirmation: false,
-    });
+    expect(policy.evaluate({ requiredMeasurementKeys: [], now })).toMatchObject(
+      {
+        fittingState: 'NOT_REQUIRED',
+        freshnessState: 'NOT_REQUIRED',
+        missingMeasurementKeys: [],
+        requiresStaleConfirmation: false,
+      },
+    );
   });
 
   it('returns MISSING when all required values are absent', () => {
-    expect(policy.evaluate({ requiredMeasurementKeys: ['WAIST', 'CHEST'], now })).toMatchObject({
+    expect(
+      policy.evaluate({ requiredMeasurementKeys: ['WAIST', 'CHEST'], now }),
+    ).toMatchObject({
       fittingState: 'MISSING',
       freshnessState: 'MISSING',
       missingMeasurementKeys: ['WAIST', 'CHEST'],

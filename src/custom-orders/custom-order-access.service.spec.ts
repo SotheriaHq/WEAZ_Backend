@@ -65,7 +65,9 @@ describe('CustomOrderAccessService', () => {
   it('resolves brand id from brand id or owner id before list checks', async () => {
     prisma.brand.findFirst.mockResolvedValue({ id: 'brand_1' });
 
-    await expect(service.assertBrandOrdersRead('staff_1', 'owner_1')).resolves.toBe('brand_1');
+    await expect(
+      service.assertBrandOrdersRead('staff_1', 'owner_1'),
+    ).resolves.toBe('brand_1');
     expect(permissions.assertPermission).toHaveBeenCalledWith(
       'staff_1',
       'brand_1',

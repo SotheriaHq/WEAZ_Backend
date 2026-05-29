@@ -39,7 +39,11 @@ describe('CollectionsService brand catalog access', () => {
     const service = createService(prisma, brandAccessService);
 
     await expect(
-      (service as any).assertOwner('collection_1', 'catalog_manager_1', 'STORE'),
+      (service as any).assertOwner(
+        'collection_1',
+        'catalog_manager_1',
+        'STORE',
+      ),
     ).resolves.toEqual({
       ownerId: 'owner_1',
       deletedAt: null,
@@ -475,12 +479,20 @@ describe('CollectionsService brand catalog access', () => {
     it('uses stable cursor ordering', async () => {
       const prisma = {
         collection: {
-          findMany: jest.fn().mockResolvedValue([createCollection(), createCollection({ id: 'collection_2' })]),
+          findMany: jest
+            .fn()
+            .mockResolvedValue([
+              createCollection(),
+              createCollection({ id: 'collection_2' }),
+            ]),
         },
       };
       const service = createService(prisma);
 
-      const result = await service.getMarketFeed({ cursor: 'collection_0', limit: 1 });
+      const result = await service.getMarketFeed({
+        cursor: 'collection_0',
+        limit: 1,
+      });
 
       expect(prisma.collection.findMany).toHaveBeenCalledWith(
         expect.objectContaining({

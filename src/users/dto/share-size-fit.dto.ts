@@ -21,4 +21,3 @@ export class ShareSizeFitDto {
   @IsString()
   note?: string;
 }
-

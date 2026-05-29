@@ -11,7 +11,10 @@ import { PrismaService } from 'src/prisma/prisma.service';
 import { v4 as uuidv4 } from 'uuid';
 import { sanitizeTags, normalizeTag } from 'src/common/utils/tag-validator';
 import { TAG_ENTITY_TYPE, TagEntityTypeValue } from './tag-entity-type';
-import { canonicalBrandProfileSelect, resolveBrandTags, resolveRequiredBrandField } from 'src/common/brand-profile-source.helper';
+import {
+  canonicalBrandProfileSelect,
+  resolveRequiredBrandField,
+} from 'src/common/brand-profile-source.helper';
 
 const NT_TAG_MENTION = 'TAG_MENTION' as NotificationType;
 
@@ -63,7 +66,9 @@ export class TagIndexService {
     if (!error || typeof error !== 'object') return false;
     if (error.code !== 'P2021') return false;
     const message = String(error.message ?? '');
-    return message.includes('public.Tag') || message.includes('public.TagBinding');
+    return (
+      message.includes('public.Tag') || message.includes('public.TagBinding')
+    );
   }
 
   private warnMissingTagTables(context: string): void {
@@ -127,7 +132,8 @@ export class TagIndexService {
             where: { normalizedName: { in: affected } },
             select: { id: true, normalizedName: true },
           });
-          for (const row of existing) tagIdByName.set(row.normalizedName, row.id);
+          for (const row of existing)
+            tagIdByName.set(row.normalizedName, row.id);
         }
 
         for (const name of added) {
@@ -243,19 +249,16 @@ export class TagIndexService {
   private async resolveMentionContext(
     entityType: TagEntityTypeValue,
     entityId: string,
-  ): Promise<
-    | {
-        actorId: string | null;
-        entityTitle: string;
-        target:
-          | { type: 'COLLECTION'; id: string; preview?: string }
-          | { type: 'PRODUCT'; id: string; preview?: string }
-          | { type: 'USER'; id: string; preview?: string }
-          | { type: 'SYSTEM'; id: string; preview?: string };
-        targetUrl?: string;
-      }
-    | null
-  > {
+  ): Promise<{
+    actorId: string | null;
+    entityTitle: string;
+    target:
+      | { type: 'COLLECTION'; id: string; preview?: string }
+      | { type: 'PRODUCT'; id: string; preview?: string }
+      | { type: 'USER'; id: string; preview?: string }
+      | { type: 'SYSTEM'; id: string; preview?: string };
+    targetUrl?: string;
+  } | null> {
     if (entityType === TAG_ENTITY_TYPE.COLLECTION) {
       const collection = await this.prisma.collection.findUnique({
         where: { id: entityId },
@@ -411,10 +414,7 @@ export class TagIndexService {
     };
 
     for (const brand of brands) {
-      if (
-        entityType === TAG_ENTITY_TYPE.BRAND &&
-        brand.id === entityId
-      ) {
+      if (entityType === TAG_ENTITY_TYPE.BRAND && brand.id === entityId) {
         continue;
       }
 
@@ -430,7 +430,10 @@ export class TagIndexService {
     const notificationPromises = Array.from(recipientTags.entries()).map(
       async ([recipientId, tagsSet]) => {
         const tags = Array.from(tagsSet);
-        const previewTags = tags.slice(0, 3).map((tag) => `#${tag}`).join(', ');
+        const previewTags = tags
+          .slice(0, 3)
+          .map((tag) => `#${tag}`)
+          .join(', ');
         const remainder = tags.length > 3 ? ` +${tags.length - 3} more` : '';
         const message = `${entityTitle} matched your tags (${previewTags}${remainder})`;
 
@@ -464,39 +467,42 @@ export class TagIndexService {
     }
 
     const now = new Date();
-    const [collections, products, brands, userBrandOwners, bannedRows] = await Promise.all([
-      this.prisma.collection.findMany({
-        where: {
-          status: 'PUBLISHED',
-          visibility: 'PUBLIC',
-          deletedAt: null,
-        },
-        select: { id: true, tags: true },
-      }),
-      this.prisma.product.findMany({
-        where: {
-          isActive: true,
-          deletedAt: null,
-          archivedAt: null,
-          OR: [{ publishAt: null }, { publishAt: { lte: now } }],
-        },
-        select: { id: true, tags: true },
-      }),
-      this.prisma.brand.findMany({
-        where: { isStoreOpen: true },
-        select: { id: true, tags: true },
-      }),
-      this.prisma.brand.findMany({
-        where: { owner: { type: 'BRAND' } },
-        select: { ownerId: true, tags: true },
-      }),
-      prismaClient.tag.findMany({
-        where: { isBanned: true },
-        select: { normalizedName: true },
-      }),
-    ]);
+    const [collections, products, brands, userBrandOwners, bannedRows] =
+      await Promise.all([
+        this.prisma.collection.findMany({
+          where: {
+            status: 'PUBLISHED',
+            visibility: 'PUBLIC',
+            deletedAt: null,
+          },
+          select: { id: true, tags: true },
+        }),
+        this.prisma.product.findMany({
+          where: {
+            isActive: true,
+            deletedAt: null,
+            archivedAt: null,
+            OR: [{ publishAt: null }, { publishAt: { lte: now } }],
+          },
+          select: { id: true, tags: true },
+        }),
+        this.prisma.brand.findMany({
+          where: { isStoreOpen: true },
+          select: { id: true, tags: true },
+        }),
+        this.prisma.brand.findMany({
+          where: { owner: { type: 'BRAND' } },
+          select: { ownerId: true, tags: true },
+        }),
+        prismaClient.tag.findMany({
+          where: { isBanned: true },
+          select: { normalizedName: true },
+        }),
+      ]);
     const banned = new Set<string>(
-      (bannedRows as Array<{ normalizedName: string }>).map((row) => row.normalizedName),
+      (bannedRows as Array<{ normalizedName: string }>).map(
+        (row) => row.normalizedName,
+      ),
     );
 
     await this.prisma.$transaction(async (tx) => {
@@ -547,10 +553,16 @@ export class TagIndexService {
       );
       if (tags.length === 0) continue;
       bindingsCreated += tags.length;
-      await this.syncEntityTags(TAG_ENTITY_TYPE.USER_BRAND, u.ownerId, [], tags, {
-        maxCount: 10,
-        notifyMentions: false,
-      });
+      await this.syncEntityTags(
+        TAG_ENTITY_TYPE.USER_BRAND,
+        u.ownerId,
+        [],
+        tags,
+        {
+          maxCount: 10,
+          notifyMentions: false,
+        },
+      );
     }
 
     const tagsIndexed = await prismaClient.tag.count();
