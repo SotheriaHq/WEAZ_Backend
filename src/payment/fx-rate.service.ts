@@ -13,6 +13,9 @@ type GatewayRateResolution = {
   rawPayload?: Record<string, unknown>;
 } | null;
 
+const DEFAULT_FX_QUOTE_SUPPORTED_CURRENCIES = ['NGN', 'USD', 'EUR', 'GBP'];
+const DEFAULT_FX_QUOTE_MAX_AMOUNT = 10_000_000;
+
 @Injectable()
 export class FxRateService {
   private readonly logger = new Logger(FxRateService.name);
@@ -84,9 +87,14 @@ export class FxRateService {
     amount: number;
     convertedAmount: number;
   }> {
-    const from = this.normalizeCurrency(params.from);
-    const to = this.normalizeCurrency(params.to || this.baseCurrency);
-    const amount = this.normalizeAmount(params.amount);
+    const supportedCurrencies = this.getQuotePreviewSupportedCurrencies();
+    const from = this.normalizeCurrency(params.from, { supportedCurrencies });
+    const to = this.normalizeCurrency(params.to || this.baseCurrency, {
+      supportedCurrencies,
+    });
+    const amount = this.normalizeAmount(params.amount, {
+      max: this.getQuotePreviewMaxAmount(),
+    });
 
     if (from === to) {
       return {
@@ -278,18 +286,50 @@ export class FxRateService {
     return null;
   }
 
-  private normalizeCurrency(currency: string): string {
+  private getQuotePreviewSupportedCurrencies(): Set<string> {
+    const configured = String(process.env.FX_QUOTE_SUPPORTED_CURRENCIES ?? '')
+      .split(',')
+      .map((currency) => currency.trim().toUpperCase())
+      .filter((currency) => /^[A-Z]{3}$/.test(currency));
+
+    return new Set(
+      configured.length > 0
+        ? configured
+        : DEFAULT_FX_QUOTE_SUPPORTED_CURRENCIES,
+    );
+  }
+
+  private getQuotePreviewMaxAmount(): number {
+    const configured = Number(process.env.FX_QUOTE_MAX_AMOUNT ?? '');
+    return Number.isFinite(configured) && configured > 0
+      ? configured
+      : DEFAULT_FX_QUOTE_MAX_AMOUNT;
+  }
+
+  private normalizeCurrency(
+    currency: string,
+    options?: { supportedCurrencies?: Set<string> },
+  ): string {
     const normalized = String(currency || '').trim().toUpperCase();
     if (!normalized || normalized.length !== 3) {
       throw new BadRequestException('Invalid currency code');
     }
+    if (
+      options?.supportedCurrencies &&
+      !options.supportedCurrencies.has(normalized)
+    ) {
+      throw new BadRequestException('Unsupported currency code');
+    }
     return normalized;
   }
 
-  private normalizeAmount(amount: number): number {
+  private normalizeAmount(amount: number, options?: { max?: number }): number {
     const normalized = Number(amount);
     if (!Number.isFinite(normalized) || normalized <= 0) {
       throw new BadRequestException('Amount must be greater than zero');
+    }
+    if (options?.max && normalized > options.max) {
+      throw new BadRequestException('Amount exceeds FX quote limit');
     }
     return normalized;
   }

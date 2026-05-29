@@ -7,7 +7,9 @@ describe('PaymentController', () => {
     initializeUnifiedCheckout: jest.fn(),
   } as any;
 
-  const fxRateService = {} as any;
+  const fxRateService = {
+    getQuotePreview: jest.fn(),
+  } as any;
   const paymentRuntimeHealthService = {
     getRuntimeHealth: jest.fn(),
   } as any;
@@ -161,6 +163,31 @@ describe('PaymentController', () => {
 
     await expect(controller.runtimeHealth()).resolves.toEqual({ ok: true });
     expect(paymentRuntimeHealthService.getRuntimeHealth).toHaveBeenCalledTimes(1);
+  });
+
+  it('passes sanitized FX quote query values to the FX service', async () => {
+    fxRateService.getQuotePreview.mockResolvedValue({
+      provider: 'INTERNAL_PARITY',
+      from: 'NGN',
+      to: 'NGN',
+      amount: 5000,
+      convertedAmount: 5000,
+    });
+    const controller = new PaymentController(
+      paymentService,
+      fxRateService,
+      paymentRuntimeHealthService,
+    );
+
+    await expect(
+      controller.getFxQuote({ from: 'NGN', to: 'NGN', amount: '5000' }),
+    ).resolves.toMatchObject({ provider: 'INTERNAL_PARITY' });
+
+    expect(fxRateService.getQuotePreview).toHaveBeenCalledWith({
+      from: 'NGN',
+      to: 'NGN',
+      amount: 5000,
+    });
   });
 
   it('rejects unified initialize when the idempotency header is missing', async () => {

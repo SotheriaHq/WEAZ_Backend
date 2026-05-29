@@ -1,12 +1,19 @@
 import { PaymentMethod } from '@prisma/client';
+import { Type } from 'class-transformer';
 import {
+  IsBoolean,
+  IsEmail,
   IsEnum,
   IsInt,
+  IsNotEmpty,
+  IsNumberString,
   IsObject,
   IsOptional,
   IsString,
   Max,
+  MaxLength,
   Min,
+  ValidateNested,
 } from 'class-validator';
 
 export interface ShippingAddress {
@@ -21,24 +28,118 @@ export interface ShippingAddress {
   phone: string;
 }
 
+export class ShippingAddressDto implements ShippingAddress {
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(80)
+  firstName: string;
+
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(80)
+  lastName: string;
+
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(160)
+  street: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  apartment?: string;
+
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(80)
+  city: string;
+
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(80)
+  state: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(32)
+  postalCode?: string;
+
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(80)
+  country: string;
+
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(40)
+  phone: string;
+}
+
+export class CheckoutContactInfoDto {
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(40)
+  phone: string;
+
+  @IsOptional()
+  @IsEmail()
+  @MaxLength(254)
+  email?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  billingSameAsShipping?: boolean;
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => ShippingAddressDto)
+  billingAddress?: ShippingAddressDto;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(32)
+  channel?: string;
+}
+
+export class FxQuoteQueryDto {
+  @IsString()
+  @MaxLength(3)
+  from: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(3)
+  to?: string;
+
+  @IsOptional()
+  @IsNumberString()
+  amount?: string;
+}
+
 export class InitializeUnifiedCheckoutDto {
   @IsString()
+  @IsNotEmpty()
+  @MaxLength(160)
   customerName: string;
 
-  @IsObject()
-  shippingAddress: ShippingAddress;
+  @ValidateNested()
+  @Type(() => ShippingAddressDto)
+  shippingAddress: ShippingAddressDto;
 
-  @IsObject()
-  contactInfo: Record<string, any>;
+  @ValidateNested()
+  @Type(() => CheckoutContactInfoDto)
+  contactInfo: CheckoutContactInfoDto;
 
   @IsEnum(PaymentMethod)
   paymentMethod: PaymentMethod;
 
-  @IsString()
+  @IsEmail()
+  @MaxLength(254)
   email: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(512)
   callbackUrl?: string;
 
   @IsOptional()
@@ -47,18 +148,22 @@ export class InitializeUnifiedCheckoutDto {
 
   @IsOptional()
   @IsString()
+  @MaxLength(80)
   promoCode?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(128)
   idempotencyKey?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(80)
   validationSessionId?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(128)
   correlationId?: string;
 }
 

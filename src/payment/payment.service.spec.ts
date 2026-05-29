@@ -561,6 +561,203 @@ describe('PaymentService', () => {
     );
   });
 
+  it('persists a local unified attempt before provider initialization and releases it on provider failure', async () => {
+    const checkoutSession = {
+      id: 'checkout-session-pending-1',
+      summaryJson: {
+        items: [{ name: 'Threadly Tee', quantity: 1, price: 12000 }],
+        subtotal: 12000,
+        shippingCost: 2500,
+        discount: 0,
+        grandTotal: 14500,
+        shippingName: 'Ada Okafor',
+        shippingCity: 'Lagos',
+        shippingState: 'Lagos',
+      },
+      blockedLinesJson: { items: [] },
+    };
+    const createdAttempt = {
+      id: 'attempt-pending-1',
+      reference: 'TH-UC-pending-1',
+      buyerId: 'buyer_1',
+      provider: 'PAYSTACK',
+      providerMode: 'live',
+      status: 'PROCESSING',
+      currency: 'NGN',
+      settlementCurrency: 'NGN',
+      settlementAmount: 14500,
+      amount: 14500,
+      exchangeRateSnapshotId: 'fx-1',
+      checkoutSessionId: checkoutSession.id,
+      callbackUrl: 'https://threadly.test/bag/payment-return',
+      bankAccount: null,
+      nextAction: null,
+      expiresAt: new Date(Date.now() + 30 * 60 * 1000),
+    };
+    const tx = {
+      checkoutSession: {
+        create: jest.fn().mockResolvedValue(checkoutSession),
+      },
+      checkoutSessionLine: {
+        create: jest.fn().mockResolvedValue({ id: 'checkout-line-1' }),
+      },
+      paymentAttempt: {
+        create: jest.fn().mockResolvedValue(createdAttempt),
+      },
+      paymentAttemptCheckoutIntentLink: {
+        createMany: jest.fn(),
+      },
+      customOrderCheckoutSession: {
+        updateMany: jest.fn(),
+      },
+      paymentEvent: {
+        create: jest.fn().mockResolvedValue({}),
+      },
+    };
+    const prisma = {
+      checkoutSession: {
+        findFirst: jest.fn().mockResolvedValue(null),
+      },
+      $transaction: jest.fn((callback) => callback(tx)),
+    } as any;
+    const fxRateService = {
+      quoteAndPersist: jest.fn().mockResolvedValue({
+        snapshot: { id: 'fx-1' },
+        convertedAmount: 14500,
+      }),
+      getBaseCurrency: jest.fn().mockReturnValue('NGN'),
+    };
+    const target = new PaymentService(
+      prisma,
+      fxRateService as any,
+      {} as any,
+      {} as any,
+      {} as any,
+    );
+
+    jest
+      .spyOn(target as any, 'withUnifiedCheckoutInitializationLock')
+      .mockImplementation((_userId, _correlationId, callback: any) =>
+        callback(),
+      );
+    jest.spyOn(target as any, 'loadUnifiedStandardLineDrafts').mockResolvedValue([
+      {
+        cartItemId: 'cart-line-1',
+        brandId: 'brand-1',
+        productId: 'product-1',
+        productName: 'Threadly Tee',
+        thumbnail: null,
+        quantity: 1,
+        selectedSize: null,
+        selectedColor: null,
+        currency: 'NGN',
+        unitPrice: 12000,
+        lineTotal: 12000,
+        sizingMode: 'STANDARD',
+        requiredMeasurementKeys: [],
+        sizeFitData: null,
+        sizeRecommendationSnapshot: null,
+        variantId: null,
+        reserveInventory: false,
+        sourceProduct: {
+          id: 'product-1',
+          trackInventory: false,
+          allowBackorders: true,
+          totalStock: 0,
+          sizeStock: null,
+          sizes: [],
+        },
+      },
+    ]);
+    jest
+      .spyOn(target as any, 'loadUnifiedCustomLineDrafts')
+      .mockResolvedValue({ lines: [], blocked: [] });
+    jest
+      .spyOn(target as any, 'resolveCardValidationSessionForInitialize')
+      .mockResolvedValue(null);
+    jest
+      .spyOn(target as any, 'consumeCardValidationSessionForInitialize')
+      .mockResolvedValue(undefined);
+    jest
+      .spyOn(target as any, 'reserveUnifiedStandardLineInventory')
+      .mockResolvedValue(undefined);
+    jest
+      .spyOn(target as any, 'resolveShippingCostForState')
+      .mockReturnValue(2500);
+    jest
+      .spyOn(target as any, 'resolveCallbackBaseUrl')
+      .mockReturnValue('https://threadly.test/bag/payment-return');
+    jest.spyOn(target as any, 'preparePaymentGatewayRequest').mockReturnValue({
+      email: 'ada@example.com',
+      phone: '08030000000',
+      channel: 'CARD',
+    });
+    jest.spyOn(target as any, 'preparePaymentRequest').mockReturnValue({
+      email: 'ada@example.com',
+      phone: '08030000000',
+      channel: 'CARD',
+    });
+    const initializeGatewaySpy = jest
+      .spyOn(target as any, 'initializeGateway')
+      .mockRejectedValue(new Error('provider timeout'));
+    const applyAttemptStatusSpy = jest
+      .spyOn(target as any, 'applyAttemptStatus')
+      .mockResolvedValue({ ...createdAttempt, status: 'FAILED' });
+
+    await expect(
+      target.initializeUnifiedCheckout(
+        {
+          customerName: 'Ada Okafor',
+          shippingAddress: {
+            firstName: 'Ada',
+            lastName: 'Okafor',
+            street: '1 Allen Avenue',
+            city: 'Lagos',
+            state: 'Lagos',
+            country: 'Nigeria',
+            phone: '08030000000',
+          },
+          contactInfo: { phone: '08030000000' },
+          paymentMethod: PaymentMethod.PAYSTACK,
+          email: 'ada@example.com',
+          idempotencyKey: 'idem-provider-fail',
+          paymentData: {
+            phone: '08030000000',
+            channel: 'CARD',
+          },
+        },
+        'buyer_1',
+        'corr-provider-fail',
+      ),
+    ).rejects.toThrow('Unable to initialize payment. Please retry checkout.');
+
+    expect(tx.paymentAttempt.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          reference: expect.stringMatching(/^TH-UC-/),
+          status: 'PROCESSING',
+          provider: 'PAYSTACK',
+        }),
+      }),
+    );
+    expect(
+      tx.paymentAttempt.create.mock.invocationCallOrder[0],
+    ).toBeLessThan(initializeGatewaySpy.mock.invocationCallOrder[0]);
+    const attemptedReference = initializeGatewaySpy.mock.calls[0][1];
+    expect(applyAttemptStatusSpy).toHaveBeenCalledWith(
+      attemptedReference,
+      'buyer_1',
+      'FAILED',
+      'initialize',
+      expect.objectContaining({
+        correlationId: 'corr-provider-fail',
+        responseSnapshotPatch: expect.objectContaining({
+          gatewayInitializationStatus: 'FAILED',
+        }),
+      }),
+    );
+  });
+
   it('rejects concurrent unified checkout initialization while the buyer lock is held', async () => {
     const target = new PaymentService(
       {} as any,
@@ -788,6 +985,130 @@ describe('PaymentService', () => {
     expect((service as any).webhookAmountsMatch(145, 'NGN', 145, 'USD')).toBe(
       false,
     );
+  });
+
+  it('audits and marks paid webhook amount mismatches without applying paid status', async () => {
+    const prisma = {
+      paymentAttempt: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'attempt-mismatch-1',
+          provider: 'PAYSTACK',
+          buyerId: 'buyer_1',
+          reference: 'TH-UC-mismatch-1',
+          status: 'PROCESSING',
+          amount: 145,
+          currency: 'NGN',
+          correlationId: 'corr-mismatch',
+          subjectType: 'UNIFIED_CHECKOUT',
+          responseSnapshot: {},
+        }),
+      },
+      webhookIngressAudit: {
+        create: jest.fn().mockResolvedValue({}),
+      },
+      paymentEvent: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+    };
+    const target = new PaymentService(
+      prisma as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+    );
+    const applyAttemptStatusSpy = jest.spyOn(target as any, 'applyAttemptStatus');
+    const alertSpy = jest
+      .spyOn(target as any, 'emitReliabilityAlert')
+      .mockImplementation(() => undefined);
+
+    await (target as any).processWebhookPayload(
+      'PAYSTACK',
+      {
+        event: 'charge.success',
+        data: {
+          reference: 'TH-UC-mismatch-1',
+          status: 'success',
+          amount: 14000,
+          currency: 'NGN',
+          id: 'provider-tx-mismatch',
+          paid_at: '2026-04-17T08:00:00.000Z',
+        },
+      },
+      'TH-UC-mismatch-1',
+      'PAYSTACK:charge.success:TH-UC-mismatch-1:provider-tx-mismatch:2026-04-17T08:00:00.000Z',
+      { source: 'INLINE_DIRECT', correlationId: 'corr-mismatch' },
+    );
+
+    expect(prisma.webhookIngressAudit.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          rejectionReason: 'AMOUNT_CURRENCY_MISMATCH',
+          reference: 'TH-UC-mismatch-1',
+          paymentAttemptId: 'attempt-mismatch-1',
+        }),
+      }),
+    );
+    expect(alertSpy).toHaveBeenCalledWith(
+      'PAYMENT_WEBHOOK_AMOUNT_CURRENCY_MISMATCH',
+      expect.objectContaining({
+        reference: 'TH-UC-mismatch-1',
+        expectedAmount: 145,
+        receivedAmount: 140,
+      }),
+    );
+    expect(applyAttemptStatusSpy).not.toHaveBeenCalled();
+    expect(prisma.paymentEvent.updateMany).toHaveBeenCalled();
+  });
+
+  it('redacts sensitive webhook headers and provider payload snapshots', () => {
+    const target = new PaymentService(
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+    );
+
+    expect(
+      (target as any).buildWebhookHeadersSnapshot({
+        'x-paystack-signature': 'provider-signature',
+        authorization: 'Bearer provider-token',
+        cookie: 'session=private',
+        'x-correlation-id': 'corr-safe',
+      }),
+    ).toEqual({
+      'x-paystack-signature': '[REDACTED]',
+      authorization: '[REDACTED]',
+      cookie: '[REDACTED]',
+      'x-correlation-id': 'corr-safe',
+    });
+
+    expect(
+      (target as any).sanitizeWebhookPayloadSnapshot({
+        event: 'charge.success',
+        data: {
+          reference: 'TH-UC-safe-1',
+          amount: 14500,
+          currency: 'NGN',
+          authorization: {
+            authorization_code: 'AUTH_sensitive',
+            signature: 'SIG_sensitive',
+            last4: '4242',
+          },
+          customer: { email: 'buyer@example.com', phone: '08030000000' },
+        },
+      }),
+    ).toEqual({
+      event: 'charge.success',
+      data: {
+        reference: 'TH-UC-safe-1',
+        amount: 14500,
+        currency: 'NGN',
+        authorization: '[REDACTED]',
+        customer: '[REDACTED]',
+      },
+    });
   });
 
   it('rejects invalid webhook signatures before processing', async () => {

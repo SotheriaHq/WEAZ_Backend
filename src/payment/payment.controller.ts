@@ -14,6 +14,7 @@ import {
   UseInterceptors,
   Logger,
 } from '@nestjs/common';
+import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
 import { JwtAuthGuard } from 'src/auth/guard/jwt-auth.guard';
 import { RolesGuard } from 'src/auth/guard/role.guard';
 import { Roles } from 'src/auth/decorator/roles.decorator';
@@ -22,6 +23,7 @@ import { IdempotencyInterceptor } from 'src/common/interceptors/idempotency.inte
 import { PaymentService } from './payment.service';
 import { FxRateService } from './fx-rate.service';
 import {
+  FxQuoteQueryDto,
   PaymentClientCheckoutPolicy,
   InitializeUnifiedCheckoutDto,
   ValidatePaymentCardDto,
@@ -124,15 +126,15 @@ export class PaymentController {
   }
 
   @Get('fx/quote')
+  @UseGuards(ThrottlerGuard)
+  @Throttle({ default: { limit: 30, ttl: 60000 } })
   async getFxQuote(
-    @Query('from') from: string,
-    @Query('to') to?: string,
-    @Query('amount') amount = '1',
+    @Query() query: FxQuoteQueryDto,
   ) {
     const result = await this.fxRateService.getQuotePreview({
-      from,
-      to,
-      amount: Number(amount),
+      from: query.from,
+      to: query.to,
+      amount: Number(query.amount ?? '1'),
     });
     return result;
   }

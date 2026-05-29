@@ -561,18 +561,8 @@ export class PaymentService implements OnModuleInit {
           actorId: userId,
         });
         const reference = `TH-UC-${Date.now()}-${uuidv4().slice(0, 8)}`;
-        const gatewayResult = await this.initializeGateway(
-          dto.paymentMethod,
-          reference,
-          gatewayPaymentData,
-          grandTotal,
-          currency,
-          callbackBaseUrl,
-          { buyerId: userId },
-        );
-        const attemptExpiresAt = gatewayResult.expiresAt
-          ? new Date(gatewayResult.expiresAt)
-          : new Date(Date.now() + 30 * 60 * 1000);
+        const initialAttemptExpiresAt = new Date(Date.now() + 30 * 60 * 1000);
+        const requestedGateway = String(dto.paymentMethod);
 
         const created = await this.prisma.$transaction(async (tx) => {
           await this.consumeCardValidationSessionForInitialize(
@@ -619,7 +609,7 @@ export class PaymentService implements OnModuleInit {
               blockedLinesJson: {
                 items: blockedCustomLines,
               } as Prisma.InputJsonValue,
-              expiresAt: attemptExpiresAt,
+              expiresAt: initialAttemptExpiresAt,
             },
           });
 
@@ -663,7 +653,7 @@ export class PaymentService implements OnModuleInit {
               checkoutSession.id,
               createdLine.id,
               line,
-              attemptExpiresAt,
+              initialAttemptExpiresAt,
             );
           }
 
@@ -720,20 +710,25 @@ export class PaymentService implements OnModuleInit {
                 validatedCardSession?.savedPaymentMethodId ?? null,
               cardValidationSessionId:
                 validatedCardSession?.canonicalSessionId ?? null,
-              provider: gatewayResult.gateway,
+              provider: requestedGateway,
               providerMode,
-              providerReference: gatewayResult.providerReference,
-              providerTransactionId: gatewayResult.providerTransactionId,
-              providerAccessCode: gatewayResult.providerAccessCode,
+              providerReference: null,
+              providerTransactionId: null,
+              providerAccessCode: null,
               providerChannel:
-                gatewayResult.providerChannel ?? gatewayResult.channel,
+                typeof gatewayPaymentData.channel === 'string'
+                  ? gatewayPaymentData.channel
+                  : null,
               paymentMethod: dto.paymentMethod,
-              channel: gatewayResult.channel,
-              status: gatewayResult.status,
+              channel:
+                typeof gatewayPaymentData.channel === 'string'
+                  ? gatewayPaymentData.channel
+                  : null,
+              status: 'PROCESSING',
               reference,
               idempotencyKey,
-              callbackUrl: gatewayResult.callbackUrl ?? callbackBaseUrl,
-              authorizationUrl: gatewayResult.authorizationUrl,
+              callbackUrl: callbackBaseUrl,
+              authorizationUrl: null,
               amount: grandTotal,
               currency,
               settlementCurrency: this.fxRateService.getBaseCurrency(),
@@ -746,15 +741,13 @@ export class PaymentService implements OnModuleInit {
                 blockedLines: blockedCustomLines,
               } as Prisma.InputJsonValue,
               requestSnapshot: paymentData as Prisma.InputJsonValue,
-              responseSnapshot: (gatewayResult.responseSnapshot ??
-                null) as unknown as Prisma.InputJsonValue,
-              nextAction: (gatewayResult.nextAction ??
-                null) as unknown as Prisma.InputJsonValue,
-              bankAccount: (gatewayResult.bankAccount ??
-                null) as unknown as Prisma.InputJsonValue,
-              expiresAt: gatewayResult.expiresAt
-                ? new Date(gatewayResult.expiresAt)
-                : null,
+              responseSnapshot: {
+                gatewayInitializationStatus: 'PENDING',
+                gatewayInitializationQueuedAt: new Date().toISOString(),
+              } as Prisma.InputJsonValue,
+              nextAction: null,
+              bankAccount: null,
+              expiresAt: initialAttemptExpiresAt,
             },
           });
 
@@ -802,7 +795,7 @@ export class PaymentService implements OnModuleInit {
                 attemptsCount: { increment: 1 },
                 resumePath: this.buildPaymentReturnPath(
                   createdAttempt.reference,
-                  gatewayResult.gateway,
+                  requestedGateway,
                 ),
                 abandonedAt: null,
               },
@@ -812,18 +805,21 @@ export class PaymentService implements OnModuleInit {
           await tx.paymentEvent.create({
             data: {
               paymentAttemptId: createdAttempt.id,
-              type: 'INITIALIZED',
-              source:
-                providerMode === 'mock' ? 'mock-initialize' : 'initialize',
+              type: 'INITIALIZATION_PENDING',
+              source: 'initialize',
               correlationId,
               payload: {
                 paymentMethod: dto.paymentMethod,
-                gateway: gatewayResult.gateway,
-                channel: gatewayResult.channel,
-                status: gatewayResult.status,
+                gateway: requestedGateway,
+                channel:
+                  typeof gatewayPaymentData.channel === 'string'
+                    ? gatewayPaymentData.channel
+                    : null,
+                status: 'PROCESSING',
                 subjectType: PaymentSubjectType.UNIFIED_CHECKOUT,
                 checkoutSessionId: checkoutSession.id,
                 correlationId,
+                providerMode,
               },
             },
           });
@@ -834,8 +830,111 @@ export class PaymentService implements OnModuleInit {
           };
         });
 
+        let gatewayResult: GatewayInitializationResult;
+        try {
+          gatewayResult = await this.initializeGateway(
+            dto.paymentMethod,
+            reference,
+            gatewayPaymentData,
+            grandTotal,
+            currency,
+            callbackBaseUrl,
+            { buyerId: userId },
+          );
+        } catch (error) {
+          await this.applyAttemptStatus(reference, userId, 'FAILED', 'initialize', {
+            correlationId,
+            eventPayload: {
+              reason: 'PROVIDER_INITIALIZATION_FAILED',
+              gateway: requestedGateway,
+            },
+            responseSnapshotPatch: {
+              gatewayInitializationStatus: 'FAILED',
+              gatewayInitializationFailedAt: new Date().toISOString(),
+              gatewayInitializationError: this.extractErrorMessage(error),
+            },
+          });
+          throw new BadRequestException(
+            'Unable to initialize payment. Please retry checkout.',
+          );
+        }
+
+        const gatewayAttemptExpiresAt = gatewayResult.expiresAt
+          ? new Date(gatewayResult.expiresAt)
+          : initialAttemptExpiresAt;
+
+        const initializedAttempt = await this.prisma.$transaction(async (tx) => {
+          const updatedAttempt = await tx.paymentAttempt.update({
+            where: { id: created.attempt.id },
+            data: {
+              provider: gatewayResult.gateway,
+              providerReference: gatewayResult.providerReference,
+              providerTransactionId: gatewayResult.providerTransactionId,
+              providerAccessCode: gatewayResult.providerAccessCode,
+              providerChannel:
+                gatewayResult.providerChannel ?? gatewayResult.channel,
+              channel: gatewayResult.channel,
+              status: gatewayResult.status,
+              callbackUrl: gatewayResult.callbackUrl ?? callbackBaseUrl,
+              authorizationUrl: gatewayResult.authorizationUrl,
+              responseSnapshot: (gatewayResult.responseSnapshot ??
+                null) as unknown as Prisma.InputJsonValue,
+              nextAction: (gatewayResult.nextAction ??
+                null) as unknown as Prisma.InputJsonValue,
+              bankAccount: (gatewayResult.bankAccount ??
+                null) as unknown as Prisma.InputJsonValue,
+              expiresAt: gatewayAttemptExpiresAt,
+            },
+          });
+
+          await tx.checkoutSession.update({
+            where: { id: created.checkoutSession.id },
+            data: { expiresAt: gatewayAttemptExpiresAt },
+          });
+
+          if (customLineDrafts.length > 0) {
+            await tx.customOrderCheckoutSession.updateMany({
+              where: {
+                buyerId: userId,
+                customOrderId: null,
+                checkoutIntentId: {
+                  in: customLineDrafts.map((line) => line.checkoutIntentId),
+                },
+              },
+              data: {
+                lastAttemptStatus: updatedAttempt.status,
+                resumePath: this.buildPaymentReturnPath(
+                  updatedAttempt.reference,
+                  gatewayResult.gateway,
+                ),
+              },
+            });
+          }
+
+          await tx.paymentEvent.create({
+            data: {
+              paymentAttemptId: updatedAttempt.id,
+              type: 'INITIALIZED',
+              source:
+                providerMode === 'mock' ? 'mock-initialize' : 'initialize',
+              correlationId,
+              payload: {
+                paymentMethod: dto.paymentMethod,
+                gateway: gatewayResult.gateway,
+                channel: gatewayResult.channel,
+                status: gatewayResult.status,
+                subjectType: PaymentSubjectType.UNIFIED_CHECKOUT,
+                checkoutSessionId: created.checkoutSession.id,
+                correlationId,
+              },
+            },
+          });
+
+          return updatedAttempt;
+        });
+
         return {
-          ...this.buildInitResultFromAttempt(created.attempt),
+          ...this.buildInitResultFromAttempt(initializedAttempt),
           checkoutSessionId: created.checkoutSession.id,
           summary: this.asObject(
             created.checkoutSession.summaryJson,
@@ -2185,7 +2284,9 @@ export class PaymentService implements OnModuleInit {
           providerEventKey,
           providerEventType,
           providerEventReceivedAt: new Date(),
-          payload,
+          payload: this.sanitizeWebhookPayloadSnapshot(
+            payload,
+          ) as Prisma.InputJsonValue,
         },
       });
     } catch (error: any) {
@@ -2232,6 +2333,8 @@ export class PaymentService implements OnModuleInit {
     providerEventKey: string,
     context: WebhookProcessContext,
   ) {
+    const storedPayload =
+      this.asObject(this.sanitizeWebhookPayloadSnapshot(payload)) ?? {};
     const attempt = await this.prisma.paymentAttempt.findUnique({
       where: { reference },
     });
@@ -2304,6 +2407,31 @@ export class PaymentService implements OnModuleInit {
         this.logger.warn(
           `Webhook from ${normalizedGateway}: amount or currency mismatch for ${reference}`,
         );
+        await this.recordWebhookIngressRejection({
+          provider: normalizedGateway,
+          rejectionReason: 'AMOUNT_CURRENCY_MISMATCH',
+          payloadSnapshot: storedPayload,
+          context: { headers: {}, correlationId },
+          correlationId,
+          reference,
+          paymentAttemptId: attempt.id,
+          providerEventType: this.extractWebhookEvent(
+            normalizedGateway,
+            payload,
+          ),
+          providerEventKey,
+        });
+        this.emitReliabilityAlert('PAYMENT_WEBHOOK_AMOUNT_CURRENCY_MISMATCH', {
+          gateway: normalizedGateway,
+          reference,
+          paymentAttemptId: attempt.id,
+          expectedAmount: Number(attempt.amount ?? 0),
+          expectedCurrency: attempt.currency,
+          receivedAmount: payloadAmount,
+          receivedCurrency: payloadCurrency,
+          providerEventKey,
+          correlationId,
+        });
         await this.markProviderEventProcessed(providerEventKey);
         return;
       }
@@ -2318,7 +2446,7 @@ export class PaymentService implements OnModuleInit {
         nextStatus,
         'webhook',
         {
-          eventPayload: payload,
+          eventPayload: storedPayload,
           correlationId,
           responseSnapshotPatch: {
             ...(this.asObject(attempt.responseSnapshot) ?? {}),
@@ -3462,7 +3590,7 @@ export class PaymentService implements OnModuleInit {
     reference: string,
     userId: string,
     nextStatus: PaymentAttemptStatus,
-    source: 'verify' | 'simulation' | 'webhook' | 'reconcile',
+    source: 'verify' | 'simulation' | 'webhook' | 'reconcile' | 'initialize',
     payload?: AttemptStatusUpdatePayload,
   ) {
     const now = new Date();
@@ -3530,6 +3658,8 @@ export class PaymentService implements OnModuleInit {
             nextStatus === 'FAILED'
               ? source === 'simulation'
                 ? 'MOCK_FAILURE'
+                : source === 'initialize'
+                  ? 'PAYMENT_INITIALIZATION_FAILED'
                 : 'PAYMENT_FAILED'
               : nextStatus === 'CANCELLED'
                 ? 'PAYMENT_CANCELLED'
@@ -3540,6 +3670,8 @@ export class PaymentService implements OnModuleInit {
             nextStatus === 'FAILED'
               ? source === 'simulation'
                 ? 'Mock payment marked as failed.'
+                : source === 'initialize'
+                  ? 'Payment provider initialization failed before checkout opened.'
                 : 'Payment provider reported the payment as failed.'
               : nextStatus === 'CANCELLED'
                 ? source === 'simulation'
@@ -5907,7 +6039,8 @@ export class PaymentService implements OnModuleInit {
     rejectionReason:
       | 'INVALID_SIGNATURE'
       | 'UNKNOWN_REFERENCE'
-      | 'MALFORMED_PAYLOAD';
+      | 'MALFORMED_PAYLOAD'
+      | 'AMOUNT_CURRENCY_MISMATCH';
     payloadSnapshot: unknown;
     context: WebhookContext;
     correlationId: string;
@@ -5944,7 +6077,9 @@ export class PaymentService implements OnModuleInit {
           headersSnapshot: this.buildWebhookHeadersSnapshot(
             params.context.headers,
           ),
-          payloadSnapshot: params.payloadSnapshot as Prisma.InputJsonValue,
+          payloadSnapshot: this.sanitizeWebhookPayloadSnapshot(
+            params.payloadSnapshot,
+          ) as Prisma.InputJsonValue,
           receivedAt: new Date(),
         },
       });
@@ -6092,8 +6227,10 @@ export class PaymentService implements OnModuleInit {
             correlationId: params.correlationId,
             failedAt: now.toISOString(),
             error: errorMessage,
-            providerPayload: params.payload,
-          },
+            providerPayload: this.sanitizeWebhookPayloadSnapshot(
+              params.payload,
+            ) as Prisma.InputJsonValue,
+          } as Prisma.InputJsonValue,
         },
       });
     } catch (persistError) {
@@ -6122,8 +6259,14 @@ export class PaymentService implements OnModuleInit {
         continue;
       }
 
+      const normalizedKey = key.toLowerCase();
+      if (this.isSensitiveWebhookHeaderKey(normalizedKey)) {
+        snapshot[normalizedKey] = '[REDACTED]';
+        continue;
+      }
+
       if (Array.isArray(value)) {
-        snapshot[key.toLowerCase()] = value
+        snapshot[normalizedKey] = value
           .map((entry) => String(entry ?? '').trim())
           .filter(Boolean);
         continue;
@@ -6131,11 +6274,47 @@ export class PaymentService implements OnModuleInit {
 
       const normalized = String(value).trim();
       if (normalized) {
-        snapshot[key.toLowerCase()] = normalized;
+        snapshot[normalizedKey] = normalized;
       }
     }
 
     return snapshot;
+  }
+
+  private isSensitiveWebhookHeaderKey(key: string): boolean {
+    return /(authorization|cookie|signature|secret|token|verif-hash|api-key|apikey|key)$/i.test(
+      key,
+    );
+  }
+
+  private sanitizeWebhookPayloadSnapshot(value: unknown): unknown {
+    if (value == null) {
+      return null;
+    }
+
+    if (Array.isArray(value)) {
+      return value.map((entry) => this.sanitizeWebhookPayloadSnapshot(entry));
+    }
+
+    if (typeof value !== 'object') {
+      return value;
+    }
+
+    const sanitized: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+      if (this.isSensitiveWebhookPayloadKey(key)) {
+        sanitized[key] = '[REDACTED]';
+        continue;
+      }
+      sanitized[key] = this.sanitizeWebhookPayloadSnapshot(entry);
+    }
+    return sanitized;
+  }
+
+  private isSensitiveWebhookPayloadKey(key: string): boolean {
+    return /^(authorization|authorization_code|authorizationcode|signature|secret|token|access_code|accesscode|card|customer|metadata|account_number|accountnumber|bank_account|bankaccount|email|phone|mobile)$/i.test(
+      key,
+    );
   }
 
   private async parseJsonResponse(response: Response) {
