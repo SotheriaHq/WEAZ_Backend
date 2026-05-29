@@ -5,6 +5,7 @@ import { UserProfileService } from './user-profile.service';
 
 describe('UserProfileController theme preferences', () => {
   const userProfileService = {
+    updateOwnProfile: jest.fn(),
     getPublicProfile: jest.fn(),
     resolvePublicProfileByUsername: jest.fn(),
     updatePreferences: jest.fn(),
@@ -39,6 +40,48 @@ describe('UserProfileController theme preferences', () => {
       controller.updatePreferences({}, { themePreference: 'dark' }),
     ).rejects.toBeInstanceOf(UnauthorizedException);
     expect(userProfileService.updatePreferences).not.toHaveBeenCalled();
+  });
+
+  it('updates own profile through the authenticated users route without a user id param', async () => {
+    (userProfileService.updateOwnProfile as jest.Mock).mockResolvedValue({
+      id: 'user-1',
+      username: 'alex',
+      firstName: 'Alex',
+      lastName: 'Doe',
+      address: 'Lagos',
+    });
+
+    const result = await controller.updateOwnProfile(
+      { user: { id: 'user-1' } },
+      {
+        firstName: 'Alex',
+        lastName: 'Doe',
+        username: 'alex',
+        address: 'Lagos',
+      },
+    );
+
+    expect(result).toMatchObject({
+      id: 'user-1',
+      username: 'alex',
+      address: 'Lagos',
+    });
+    expect(userProfileService.updateOwnProfile).toHaveBeenCalledWith(
+      'user-1',
+      {
+        firstName: 'Alex',
+        lastName: 'Doe',
+        username: 'alex',
+        address: 'Lagos',
+      },
+    );
+  });
+
+  it('rejects unauthenticated own profile updates before service access', async () => {
+    await expect(
+      controller.updateOwnProfile({}, { firstName: 'Alex' }),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+    expect(userProfileService.updateOwnProfile).not.toHaveBeenCalled();
   });
 
   it('routes public profile by id through the public profile mapper without viewer context', async () => {

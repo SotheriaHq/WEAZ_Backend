@@ -5,6 +5,7 @@ import {
   PublicUserProfileResponseDto,
   UserProfileResponseDto,
 } from './dto/user-profile.dto';
+import { UpdateProfileDto } from '../auth/dto/update-profile.dto';
 import {
   isThemePreference,
   normalizeThemePreference,
@@ -115,6 +116,165 @@ export class UserProfileService {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
       select: userProfileResponseSelect,
+    });
+
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    return this.toUserProfileResponse(user, { includeThemePreference: true });
+  }
+
+  async updateOwnProfile(
+    userId: string,
+    dto: UpdateProfileDto,
+  ): Promise<UserProfileResponseDto> {
+    if (!userId) {
+      throw new UnauthorizedException('Unauthorized');
+    }
+
+    const forbiddenFields = [
+      'password',
+      'email',
+      'role',
+      'type',
+      'status',
+      'isActive',
+      'isEmailVerified',
+      'authVersion',
+      'mustResetPassword',
+      'brandFullName',
+      'brandDescription',
+      'brandCountry',
+      'brandState',
+      'brandCity',
+      'brandTags',
+      'brandBusinessType',
+      'socialInstagram',
+      'socialFacebook',
+      'socialTwitter',
+      'socialWebsite',
+      'cacNumber',
+      'tin',
+      'ceoNin',
+      'ceoFirstName',
+      'ceoLastName',
+      'companyLocation',
+      'industriNumber',
+    ] as const;
+    type ForbiddenProfileUpdateField = (typeof forbiddenFields)[number];
+    type AllowedProfileUpdateField =
+      | 'firstName'
+      | 'lastName'
+      | 'phoneNumber'
+      | 'address'
+      | 'profileImage'
+      | 'profileImageId'
+      | 'bannerImage'
+      | 'bannerImageId';
+    type AllowedProfileUpdateData = Partial<
+      Record<AllowedProfileUpdateField, string | null>
+    >;
+
+    const dtoRecord = dto as UpdateProfileDto &
+      Partial<Record<ForbiddenProfileUpdateField, unknown>>;
+    const attemptedForbiddenField = forbiddenFields.find(
+      (field) => dtoRecord[field] !== undefined,
+    );
+    if (attemptedForbiddenField) {
+      throw new BadRequestException(
+        `${attemptedForbiddenField} cannot be updated here`,
+      );
+    }
+
+    const profileData: AllowedProfileUpdateData = {};
+    const assignString = (
+      field: Extract<
+        AllowedProfileUpdateField,
+        'firstName' | 'lastName' | 'phoneNumber' | 'address'
+      >,
+    ) => {
+      const value = dto[field];
+      if (value !== undefined) {
+        profileData[field] =
+          typeof value === 'string' ? value.trim() : value;
+      }
+    };
+
+    assignString('firstName');
+    assignString('lastName');
+    assignString('phoneNumber');
+    assignString('address');
+
+    if (dto.profileImage !== undefined) {
+      profileData.profileImage = dto.profileImage;
+    }
+    if (dto.profileImageId !== undefined) {
+      profileData.profileImageId = dto.profileImageId;
+    }
+    if (dto.bannerImage !== undefined) {
+      profileData.bannerImage = dto.bannerImage;
+    }
+    if (dto.bannerImageId !== undefined) {
+      profileData.bannerImageId = dto.bannerImageId;
+    }
+
+    const user = await this.prisma.$transaction(async (tx) => {
+      const existingUser = await tx.user.findUnique({
+        where: { id: userId },
+        select: {
+          id: true,
+          userProfile: {
+            select: {
+              firstName: true,
+              lastName: true,
+              profileVisibility: true,
+            },
+          },
+        },
+      });
+
+      if (!existingUser) {
+        throw new NotFoundException('User not found');
+      }
+
+      if (Object.keys(profileData).length > 0) {
+        await tx.userProfile.upsert({
+          where: { userId },
+          create: {
+            userId,
+            firstName:
+              (profileData.firstName as string | undefined) ??
+              existingUser.userProfile?.firstName ??
+              '',
+            lastName:
+              (profileData.lastName as string | undefined) ??
+              existingUser.userProfile?.lastName ??
+              '',
+            phoneNumber:
+              (profileData.phoneNumber as string | null | undefined) ?? null,
+            address:
+              (profileData.address as string | null | undefined) ?? null,
+            profileImage:
+              (profileData.profileImage as string | null | undefined) ?? null,
+            profileImageId:
+              (profileData.profileImageId as string | null | undefined) ??
+              null,
+            bannerImage:
+              (profileData.bannerImage as string | null | undefined) ?? null,
+            bannerImageId:
+              (profileData.bannerImageId as string | null | undefined) ?? null,
+            profileVisibility:
+              existingUser.userProfile?.profileVisibility ?? 'UNLOCKED',
+          },
+          update: profileData,
+        });
+      }
+
+      return tx.user.findUnique({
+        where: { id: userId },
+        select: userProfileResponseSelect,
+      });
     });
 
     if (!user) {

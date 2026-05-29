@@ -7,12 +7,14 @@ import {
   UseGuards,
   Req,
   UnauthorizedException,
+  ValidationPipe,
 } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { UserProfileService } from './user-profile.service';
 import { UpdateProfileVisibilityDto } from './dto/update-profile-visibility.dto';
 import { OptionalJwtAuthGuard } from '../auth/guard/optional-jwt-auth.guard';
 import { UpdateUserPreferencesDto } from './dto/update-user-preferences.dto';
+import { UpdateProfileDto } from '../auth/dto/update-profile.dto';
 
 @Controller('users')
 export class UserProfileController {
@@ -30,6 +32,18 @@ export class UserProfileController {
   @UseGuards(AuthGuard('jwt'))
   async getOwnProfile(@Req() req) {
     return this.userProfileService.getOwnProfile(this.getAuthUserId(req));
+  }
+
+  @Patch('me/profile')
+  @UseGuards(AuthGuard('jwt'))
+  async updateOwnProfile(
+    @Req() req,
+    @Body(ValidationPipe) updateProfileDto: UpdateProfileDto,
+  ) {
+    return this.userProfileService.updateOwnProfile(
+      this.getAuthUserId(req),
+      updateProfileDto,
+    );
   }
 
   @Get(':id/profile')

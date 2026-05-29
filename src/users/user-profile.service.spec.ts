@@ -97,6 +97,79 @@ describe('UserProfileService theme preferences', () => {
     expect(result.profileVisibility).toBe(ProfileVisibility.LOCKED);
   });
 
+  it('updates own profile through the canonical users route and returns private editable fields', async () => {
+    (mockPrisma.user.findUnique as jest.Mock)
+      .mockResolvedValueOnce({
+        id: 'user-1',
+        userProfile: {
+          firstName: 'Old',
+          lastName: 'Name',
+          profileVisibility: ProfileVisibility.UNLOCKED,
+        },
+      })
+      .mockResolvedValueOnce({
+        id: 'user-1',
+        username: 'alex',
+        type: UserType.REGULAR,
+        themePreference: 'system',
+        createdAt: new Date('2026-05-05T00:00:00.000Z'),
+        userProfile: {
+          firstName: 'Alex',
+          lastName: 'Doe',
+          phoneNumber: null,
+          address: 'Lagos',
+          profileImage: null,
+          profileImageId: null,
+          profileImageFile: null,
+          bannerImage: null,
+          bannerImageId: null,
+          bannerImageFile: null,
+          profileVisibility: ProfileVisibility.UNLOCKED,
+        },
+      });
+
+    const result = await service.updateOwnProfile('user-1', {
+      firstName: ' Alex ',
+      lastName: ' Doe ',
+      username: 'ignored-legacy-user-name',
+      address: ' Lagos ',
+    });
+
+    expect(mockPrisma.userProfile.upsert).toHaveBeenCalledWith({
+      where: { userId: 'user-1' },
+      create: expect.objectContaining({
+        userId: 'user-1',
+        firstName: 'Alex',
+        lastName: 'Doe',
+        address: 'Lagos',
+      }),
+      update: expect.objectContaining({
+        firstName: 'Alex',
+        lastName: 'Doe',
+        address: 'Lagos',
+      }),
+    });
+    expect(result).toMatchObject({
+      id: 'user-1',
+      username: 'alex',
+      firstName: 'Alex',
+      lastName: 'Doe',
+      address: 'Lagos',
+      location: 'Lagos',
+      themePreference: 'system',
+    });
+  });
+
+  it('rejects forbidden account fields on the canonical own profile update route', async () => {
+    await expect(
+      service.updateOwnProfile('user-1', {
+        firstName: 'Alex',
+        email: 'new@example.test',
+      } as any),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(mockPrisma.userProfile.upsert).not.toHaveBeenCalled();
+  });
+
   it('redacts private fields and internal media metadata from public profile by id', async () => {
     (mockPrisma.user.findUnique as jest.Mock).mockResolvedValue({
       id: 'user-1',
