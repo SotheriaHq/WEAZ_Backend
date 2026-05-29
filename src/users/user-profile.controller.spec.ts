@@ -5,6 +5,8 @@ import { UserProfileService } from './user-profile.service';
 
 describe('UserProfileController theme preferences', () => {
   const userProfileService = {
+    getPublicProfile: jest.fn(),
+    resolvePublicProfileByUsername: jest.fn(),
     updatePreferences: jest.fn(),
   } as unknown as UserProfileService;
 
@@ -37,5 +39,31 @@ describe('UserProfileController theme preferences', () => {
       controller.updatePreferences({}, { themePreference: 'dark' }),
     ).rejects.toBeInstanceOf(UnauthorizedException);
     expect(userProfileService.updatePreferences).not.toHaveBeenCalled();
+  });
+
+  it('routes public profile by id through the public profile mapper without viewer context', async () => {
+    (userProfileService.getPublicProfile as jest.Mock).mockResolvedValue({
+      id: 'user-1',
+      username: 'alex',
+    });
+
+    const result = await controller.getPublicProfileAnonymous('user-1');
+
+    expect(result).toEqual({ id: 'user-1', username: 'alex' });
+    expect(userProfileService.getPublicProfile).toHaveBeenCalledWith('user-1');
+  });
+
+  it('routes public profile by username through the public username mapper', async () => {
+    (userProfileService.resolvePublicProfileByUsername as jest.Mock)
+      .mockResolvedValue({
+        id: 'user-1',
+        username: 'alex',
+      });
+
+    const result = await controller.getPublicProfileByUsername('alex');
+
+    expect(result).toEqual({ id: 'user-1', username: 'alex' });
+    expect(userProfileService.resolvePublicProfileByUsername)
+      .toHaveBeenCalledWith('alex');
   });
 });

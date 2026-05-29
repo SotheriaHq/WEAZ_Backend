@@ -1,7 +1,10 @@
 import { BadRequestException, Injectable, NotFoundException, UnauthorizedException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { Prisma, ProfileVisibility } from '@prisma/client';
-import { UserProfileResponseDto } from './dto/user-profile.dto';
+import {
+  PublicUserProfileResponseDto,
+  UserProfileResponseDto,
+} from './dto/user-profile.dto';
 import {
   isThemePreference,
   normalizeThemePreference,
@@ -65,6 +68,45 @@ export class UserProfileService {
     });
   }
 
+  private toPublicUserProfileResponse(
+    user: UserProfileResponseSource,
+  ): PublicUserProfileResponseDto {
+    const profileImage = resolveProfileImage(user);
+    const bannerImage = resolveBannerImage(user);
+
+    return new PublicUserProfileResponseDto({
+      id: user.id,
+      username: user.username,
+      firstName: resolveRequiredProfileField(user, 'firstName'),
+      lastName: resolveRequiredProfileField(user, 'lastName'),
+      type: user.type,
+      profileImage: this.safePublicProfileUrl(profileImage.url) ?? undefined,
+      profileImageId: profileImage.fileId ?? undefined,
+      bannerImage: this.safePublicProfileUrl(bannerImage.url) ?? undefined,
+      bannerImageId: bannerImage.fileId ?? undefined,
+      profileVisibility: resolveProfileVisibility(user),
+      createdAt: user.createdAt.toISOString(),
+    });
+  }
+
+  private safePublicProfileUrl(value?: string | null): string | undefined {
+    const url = String(value ?? '').trim();
+    if (!url) {
+      return undefined;
+    }
+
+    try {
+      const parsed = new URL(url);
+      const hostname = parsed.hostname.toLowerCase();
+      if (hostname.includes('amazonaws.com')) {
+        return undefined;
+      }
+      return url;
+    } catch {
+      return url;
+    }
+  }
+
   async getOwnProfile(userId: string): Promise<UserProfileResponseDto> {
     if (!userId) {
       throw new UnauthorizedException('Unauthorized');
@@ -82,7 +124,7 @@ export class UserProfileService {
     return this.toUserProfileResponse(user, { includeThemePreference: true });
   }
 
-  async getPublicProfile(userId: string, viewerId?: string): Promise<UserProfileResponseDto> {
+  async getPublicProfile(userId: string): Promise<PublicUserProfileResponseDto> {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
       select: userProfileResponseSelect,
@@ -92,15 +134,10 @@ export class UserProfileService {
       throw new NotFoundException('User not found');
     }
 
-    // Check if viewer is the owner
-    const isOwner = viewerId === userId;
-
-    // If it's not the owner and the profile is locked, we might need to restrict certain data
-    // For now, we return the same data but in the future we could restrict based on visibility
-    return this.toUserProfileResponse(user);
+    return this.toPublicUserProfileResponse(user);
   }
 
-  async resolvePublicProfileByUsername(username: string): Promise<UserProfileResponseDto> {
+  async resolvePublicProfileByUsername(username: string): Promise<PublicUserProfileResponseDto> {
     const normalizedUsername = username.trim();
     if (!normalizedUsername) {
       throw new NotFoundException('User not found');
@@ -115,7 +152,7 @@ export class UserProfileService {
       throw new NotFoundException('User not found');
     }
 
-    return this.toUserProfileResponse(user);
+    return this.toPublicUserProfileResponse(user);
   }
 
   async updateProfileVisibility(userId: string, profileVisibility: ProfileVisibility) {
