@@ -14,7 +14,6 @@ import {
   UseInterceptors,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
-import { memoryStorage } from 'multer';
 import { StoreService } from './store.service';
 import { CreateProductDto, UpdateProductDto } from './dto/create-product.dto';
 import { AddToCartDto, UpdateCartItemDto } from './dto/cart.dto';
@@ -38,6 +37,8 @@ import { IdempotencyInterceptor } from '../common/interceptors/idempotency.inter
 import { resolveSearchQuery } from '../common/utils/search-query';
 import { SizeComputationService } from 'src/sizing/size-computation.service';
 import { ProductSizeRecommendationQueryDto } from 'src/sizing/dto/size-recommendation.dto';
+import { multerOptionsForFileType } from 'src/upload/upload-policy';
+import { FileType } from 'src/upload/upload.enums';
 
 @Controller()
 export class StoreController {
@@ -91,11 +92,8 @@ export class StoreController {
   @Post('products/:id/media')
   @Throttle({ default: { limit: 20, ttl: 60000 } })
   @UseInterceptors(
-    FileInterceptor('file', {
-      storage: memoryStorage(),
-      limits: { fileSize: 50 * 1024 * 1024 },
-    }),
-  ) // Hard cap; dynamic limit enforced in service
+    FileInterceptor('file', multerOptionsForFileType(FileType.POST_IMAGE)),
+  )
   async uploadProductMedia(
     @Param('id') productId: string,
     @UploadedFile() file: Express.Multer.File,

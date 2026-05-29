@@ -43,6 +43,7 @@ import {
 import { CreateProductDto } from 'src/store/dto/create-product.dto';
 import { IdempotencyInterceptor } from 'src/common/interceptors/idempotency.interceptor';
 import { FileInterceptor } from '@nestjs/platform-express';
+import { collectionBulkUploadMulterOptions } from 'src/upload/upload-policy';
 
 @ApiTags('collections')
 @ApiBearerAuth()
@@ -1002,7 +1003,7 @@ export class CollectionsController {
   // ===================== Bulk Upload (Scaffold) =====================
   @UseGuards(JwtAuthGuard)
   @Post(':id/bulk-upload')
-  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 100 * 1024 * 1024 } })) // Hard cap; dynamic limit enforced in service
+  @UseInterceptors(FileInterceptor('file', collectionBulkUploadMulterOptions()))
   @ApiOperation({
     summary: 'Initiate bulk product upload',
     description: 'Creates a bulk upload job for CSV/images. Returns upload URL and job ID.',

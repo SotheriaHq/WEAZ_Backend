@@ -27,6 +27,14 @@ import * as path from 'path';
 import { mkdir, writeFile } from 'fs/promises';
 import { ImageProcessingQueueService } from 'src/queue/image-processing.queue.service';
 import { SystemConfigService } from 'src/admin/system-config/system-config.service';
+import {
+  assertAllowedUploadExtension,
+  assertAllowedUploadMimeType,
+  formatUploadLimitMB,
+  getUploadFileExtension,
+  inferUploadContentType,
+  normalizeUploadContentType,
+} from './upload-policy';
 
 type VariantView = {
   url: string;
@@ -62,55 +70,6 @@ type S3ObjectMetadata = {
   exists: boolean;
   contentLength: number;
   contentType: string | null;
-};
-
-const ALLOWED_MIME_TYPES: Record<FileType, readonly string[]> = {
-  [FileType.PROFILE_IMAGE]: ['image/jpeg', 'image/png', 'image/webp'],
-  [FileType.BANNER_IMAGE]: ['image/jpeg', 'image/png', 'image/webp', 'image/gif'],
-  [FileType.POST_IMAGE]: ['image/jpeg', 'image/png', 'image/webp', 'image/gif'],
-  [FileType.POST_VIDEO]: ['video/mp4', 'video/webm', 'video/quicktime'],
-  [FileType.REVIEW_IMAGE]: ['image/jpeg', 'image/png', 'image/webp', 'image/gif'],
-  [FileType.REVIEW_VIDEO]: ['video/mp4', 'video/webm', 'video/quicktime'],
-  [FileType.DOCUMENT]: [
-    'application/pdf',
-    'application/msword',
-    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  ],
-  [FileType.BRAND_VERIFICATION]: [
-    'image/jpeg',
-    'image/png',
-    'image/webp',
-    'application/pdf',
-  ],
-  [FileType.MESSAGE_IMAGE]: ['image/jpeg', 'image/png', 'image/webp'],
-  [FileType.MESSAGE_DOCUMENT]: ['application/pdf'],
-};
-
-const ALLOWED_EXTENSIONS: Record<FileType, readonly string[]> = {
-  [FileType.PROFILE_IMAGE]: ['jpg', 'jpeg', 'png', 'webp'],
-  [FileType.BANNER_IMAGE]: ['jpg', 'jpeg', 'png', 'webp', 'gif'],
-  [FileType.POST_IMAGE]: ['jpg', 'jpeg', 'png', 'webp', 'gif'],
-  [FileType.POST_VIDEO]: ['mp4', 'webm', 'mov'],
-  [FileType.REVIEW_IMAGE]: ['jpg', 'jpeg', 'png', 'webp', 'gif'],
-  [FileType.REVIEW_VIDEO]: ['mp4', 'webm', 'mov'],
-  [FileType.DOCUMENT]: ['pdf', 'doc', 'docx'],
-  [FileType.BRAND_VERIFICATION]: ['jpg', 'jpeg', 'png', 'webp', 'pdf'],
-  [FileType.MESSAGE_IMAGE]: ['jpg', 'jpeg', 'png', 'webp'],
-  [FileType.MESSAGE_DOCUMENT]: ['pdf'],
-};
-
-const EXTENSION_MIME_HINTS: Record<string, string> = {
-  jpg: 'image/jpeg',
-  jpeg: 'image/jpeg',
-  png: 'image/png',
-  webp: 'image/webp',
-  gif: 'image/gif',
-  mp4: 'video/mp4',
-  webm: 'video/webm',
-  mov: 'video/quicktime',
-  pdf: 'application/pdf',
-  doc: 'application/msword',
-  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
 };
 
 @Injectable()
@@ -207,36 +166,26 @@ export class UploadService {
   }
 
   private getFileExtension(fileName: string): string {
-    return path.extname(String(fileName ?? '')).replace('.', '').toLowerCase();
+    return getUploadFileExtension(fileName);
   }
 
   private assertAllowedExtension(originalName: string, fileType: FileType): void {
-    const extension = this.getFileExtension(originalName);
-    const allowed = ALLOWED_EXTENSIONS[fileType] ?? [];
-    if (!extension || !allowed.includes(extension)) {
-      throw new BadRequestException(`File extension not allowed for ${fileType}`);
-    }
+    assertAllowedUploadExtension(originalName, fileType);
   }
 
   private normalizeContentType(contentType?: string | null): string | null {
-    const value = String(contentType ?? '')
-      .split(';')[0]
-      .trim()
-      .toLowerCase();
-    return value || null;
+    return normalizeUploadContentType(contentType);
   }
 
   private inferContentType(fileName: string): string | null {
-    return EXTENSION_MIME_HINTS[this.getFileExtension(fileName)] ?? null;
+    return inferUploadContentType(fileName);
   }
 
   private assertAllowedMimeType(
     mimeType: string | null,
     fileType: FileType,
   ): asserts mimeType is string {
-    if (!mimeType || !ALLOWED_MIME_TYPES[fileType]?.includes(mimeType)) {
-      throw new BadRequestException(`File type not allowed for ${fileType}`);
-    }
+    assertAllowedUploadMimeType(mimeType, fileType);
   }
 
   private async getMaxFileSize(fileType: FileType): Promise<number> {
@@ -1412,7 +1361,7 @@ export class UploadService {
     this.assertAllowedMimeType(trustedMimeType, fileType);
 
     if (file.size > maxSize) {
-      const limitMB = (maxSize / (1024 * 1024)).toFixed(1);
+      const limitMB = formatUploadLimitMB(maxSize);
       throw new BadRequestException(`File size exceeds the ${limitMB}MB limit for ${fileType}`);
     }
   }
