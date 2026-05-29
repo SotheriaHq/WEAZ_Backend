@@ -86,6 +86,7 @@ export class AdminFeaturedController {
 
   @Get('history')
   @Roles(Role.SuperAdmin)
+  @RequirePermissions(ADMIN_PERMISSIONS.FEATURED_MANAGE)
   async history(
     @Query('cursor') cursor?: string,
     @Query('limit') limit?: string,
@@ -119,6 +120,7 @@ export class AdminFeaturedController {
 
   @Patch('block/product/:id')
   @Roles(Role.SuperAdmin)
+  @RequirePermissions(ADMIN_PERMISSIONS.FEATURED_MANAGE)
   async toggleBlockProduct(@Param('id') id: string, @Req() req: Request) {
     const actorId = (req as any).user.sub;
     return this.featuredService.toggleBlockProduct(id, actorId, req);
@@ -126,6 +128,7 @@ export class AdminFeaturedController {
 
   @Patch('block/collection/:id')
   @Roles(Role.SuperAdmin)
+  @RequirePermissions(ADMIN_PERMISSIONS.FEATURED_MANAGE)
   async toggleBlockCollection(@Param('id') id: string, @Req() req: Request) {
     const actorId = (req as any).user.sub;
     return this.featuredService.toggleBlockCollection(id, actorId, req);
@@ -133,6 +136,7 @@ export class AdminFeaturedController {
 
   @Patch('block/brand/:id')
   @Roles(Role.SuperAdmin)
+  @RequirePermissions(ADMIN_PERMISSIONS.FEATURED_MANAGE)
   async toggleBlockBrand(@Param('id') id: string, @Req() req: Request) {
     const actorId = (req as any).user.sub;
     return this.featuredService.toggleBlockBrand(id, actorId, req);

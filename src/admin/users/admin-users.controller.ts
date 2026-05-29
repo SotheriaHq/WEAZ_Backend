@@ -48,6 +48,7 @@ export class AdminUsersController {
 
   @Post()
   @Roles(Role.SuperAdmin)
+  @RequirePermissions(ADMIN_PERMISSIONS.USERS_ROLE_ASSIGN_ADMIN)
   @ApiOperation({ summary: 'Create admin account (SuperAdmin only)' })
   async createAdmin(
     @Body(ValidationPipe) dto: CreateAdminDto,
@@ -127,6 +128,10 @@ export class AdminUsersController {
 
   @Patch(':id/role')
   @Roles(Role.SuperAdmin)
+  @RequirePermissions(
+    ADMIN_PERMISSIONS.USERS_ROLE_ASSIGN_ADMIN,
+    ADMIN_PERMISSIONS.USERS_ROLE_ASSIGN_USER,
+  )
   @ApiOperation({ summary: 'Update user role (SuperAdmin only)' })
   async updateRole(
     @Param('id') id: string,
@@ -174,6 +179,7 @@ export class AdminUsersController {
 
   @Post(':id/force-password-reset')
   @Roles(Role.SuperAdmin)
+  @RequirePermissions(ADMIN_PERMISSIONS.USERS_UPDATE)
   @ApiOperation({ summary: 'Force password reset (SuperAdmin only)' })
   async forcePasswordReset(
     @Param('id') id: string,
@@ -184,6 +190,7 @@ export class AdminUsersController {
 
   @Post(':id/reissue-temp-password')
   @Roles(Role.SuperAdmin)
+  @RequirePermissions(ADMIN_PERMISSIONS.USERS_UPDATE)
   @ApiOperation({ summary: 'Reissue temporary password for admin (SuperAdmin only)' })
   async reissueTempPassword(
     @Param('id') id: string,
@@ -201,7 +208,7 @@ export class AdminUsersController {
 
   @Get(':id/data-export')
   @Roles(Role.SuperAdmin, Role.Admin)
-  @RequirePermissions(ADMIN_PERMISSIONS.USERS_READ)
+  @RequirePermissions(ADMIN_PERMISSIONS.USERS_DATA_EXPORT)
   @ApiOperation({ summary: 'Export user data (GDPR)' })
   async dataExport(
     @Param('id') id: string,
@@ -212,6 +219,7 @@ export class AdminUsersController {
 
   @Delete(':id/data-wipe')
   @Roles(Role.SuperAdmin)
+  @RequirePermissions(ADMIN_PERMISSIONS.USERS_DATA_WIPE)
   @ApiOperation({ summary: 'Permanently erase user data (GDPR, SuperAdmin only)' })
   async dataWipe(
     @Param('id') id: string,
