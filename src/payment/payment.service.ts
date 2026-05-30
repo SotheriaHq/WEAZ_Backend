@@ -503,6 +503,9 @@ export class PaymentService implements OnModuleInit {
           this.loadUnifiedStandardLineDrafts(userId),
           this.loadUnifiedCustomLineDrafts(userId),
         ]);
+        this.assertUnifiedStandardLineMeasurementSnapshots(
+          standardLineDrafts,
+        );
 
         const customLineDrafts = customLineResult.lines;
         const blockedCustomLines = customLineResult.blocked;
@@ -6998,6 +7001,44 @@ export class PaymentService implements OnModuleInit {
   private buildPaymentReturnPath(reference: string, gateway: string) {
     const safeGateway = String(gateway || 'PAYSTACK').trim() || 'PAYSTACK';
     return `/bag/payment-return?reference=${encodeURIComponent(reference)}&gateway=${encodeURIComponent(safeGateway)}`;
+  }
+
+  private assertUnifiedStandardLineMeasurementSnapshots(
+    lines: UnifiedCheckoutStandardLineDraft[],
+  ): void {
+    for (const line of lines) {
+      const requiredMeasurementKeys = this.normalizeRequiredMeasurementKeys(
+        line.requiredMeasurementKeys,
+      );
+      if (requiredMeasurementKeys.length === 0) {
+        continue;
+      }
+
+      const sizeFitData = this.asObject(line.sizeFitData);
+      const measurements = this.asObject(sizeFitData.measurements);
+      const snapshot = this.asObject(sizeFitData.measurementSnapshot);
+      const snapshotKeys = this.normalizeRequiredMeasurementKeys(
+        snapshot.requiredMeasurementKeys,
+      );
+      const missingMeasurementKeys = requiredMeasurementKeys.filter((key) => {
+        const raw = measurements[key];
+        const rawRecord = this.asObject(raw);
+        const value =
+          Object.keys(rawRecord).length > 0 ? rawRecord.value : raw;
+        const numeric = Number(value);
+        return (
+          !snapshotKeys.includes(key) ||
+          !Number.isFinite(numeric) ||
+          numeric <= 0
+        );
+      });
+
+      if (missingMeasurementKeys.length > 0) {
+        throw new BadRequestException(
+          `Required measurement snapshot is missing for ${line.productName}: ${missingMeasurementKeys.join(', ')}`,
+        );
+      }
+    }
   }
 
   private async loadUnifiedStandardLineDrafts(

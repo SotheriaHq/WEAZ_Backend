@@ -760,6 +760,103 @@ describe('PaymentService', () => {
     );
   });
 
+  it('rejects unified checkout when a required measurement snapshot is missing', async () => {
+    const prisma = {
+      checkoutSession: {
+        findFirst: jest.fn().mockResolvedValue(null),
+      },
+      $transaction: jest.fn(),
+    } as any;
+    const target = new PaymentService(
+      prisma,
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+    );
+
+    jest
+      .spyOn(target as any, 'withUnifiedCheckoutInitializationLock')
+      .mockImplementation((_userId, _correlationId, callback: any) =>
+        callback(),
+      );
+    jest
+      .spyOn(target as any, 'loadUnifiedStandardLineDrafts')
+      .mockResolvedValue([
+        {
+          cartItemId: 'cart-line-1',
+          brandId: 'brand-1',
+          productId: 'product-1',
+          productName: 'Tailored Agbada',
+          thumbnail: null,
+          quantity: 1,
+          selectedSize: null,
+          selectedColor: null,
+          currency: 'NGN',
+          unitPrice: 32000,
+          lineTotal: 32000,
+          sizingMode: 'RTW_PLUS_FITTINGS',
+          requiredMeasurementKeys: ['chest', 'sleeve'],
+          sizeFitData: {
+            measurements: {
+              chest: { value: 104, unit: 'CM', source: 'saved_profile' },
+            },
+            measurementSnapshot: {
+              requiredMeasurementKeys: ['chest', 'sleeve'],
+              capturedAt: new Date().toISOString(),
+            },
+          },
+          sizeRecommendationSnapshot: null,
+          variantId: null,
+          reserveInventory: false,
+          sourceProduct: {
+            id: 'product-1',
+            trackInventory: false,
+            allowBackorders: true,
+            totalStock: 0,
+            sizeStock: null,
+            sizes: [],
+          },
+        },
+      ]);
+    jest
+      .spyOn(target as any, 'loadUnifiedCustomLineDrafts')
+      .mockResolvedValue({ lines: [], blocked: [] });
+
+    await expect(
+      target.initializeUnifiedCheckout(
+        {
+          customerName: 'Ada Okafor',
+          shippingAddress: {
+            firstName: 'Ada',
+            lastName: 'Okafor',
+            street: '1 Allen Avenue',
+            city: 'Lagos',
+            state: 'Lagos',
+            country: 'Nigeria',
+            phone: '08030000000',
+          },
+          contactInfo: { phone: '08030000000' },
+          paymentMethod: PaymentMethod.PAYSTACK,
+          email: 'ada@example.com',
+          idempotencyKey: 'idem-missing-measurement',
+          paymentData: {
+            phone: '08030000000',
+            consentAccepted: true,
+            billingSameAsShipping: true,
+            channel: 'CARD',
+          },
+        },
+        'buyer_1',
+        'corr-missing-measurement',
+      ),
+    ).rejects.toThrow(
+      'Required measurement snapshot is missing for Tailored Agbada: sleeve',
+    );
+
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
   it('rejects concurrent unified checkout initialization while the buyer lock is held', async () => {
     const target = new PaymentService(
       {} as any,
