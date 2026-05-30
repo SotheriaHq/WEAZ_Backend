@@ -110,6 +110,95 @@ describe('StoreService', () => {
     );
   });
 
+  it('requires server-resolved product measurements for RTW-plus cart items', () => {
+    expect(() =>
+      (service as any).resolveCartItemSizing(
+        {
+          name: 'Custom dress',
+          sizingMode: 'RTW_PLUS_FITTINGS',
+          customMeasurementKeys: ['WAIST', 'CHEST'],
+        },
+        {
+          requiredMeasurementKeys: ['WAIST'],
+          sizeFitProfile: {
+            measurements: { WAIST: 32 },
+            lastUpdatedAt: new Date(),
+            updatedAt: new Date(),
+            requireUpdateEveryDays: 14,
+          },
+        },
+        'Custom dress',
+      ),
+    ).toThrow(BadRequestException);
+  });
+
+  it('stores only required measurement snapshot values on RTW-plus cart items', () => {
+    const result = (service as any).resolveCartItemSizing(
+      {
+        name: 'Custom dress',
+        sizingMode: 'RTW_PLUS_FITTINGS',
+        customMeasurementKeys: ['WAIST'],
+      },
+      {
+        sizeFitData: { measurements: { WAIST: 1, CHEST: 2 } },
+        sizeFitProfile: {
+          measurements: { WAIST: 32, CHEST: 40 },
+          lastUpdatedAt: new Date(),
+          updatedAt: new Date(),
+          requireUpdateEveryDays: 14,
+        },
+      },
+      'Custom dress',
+    );
+
+    expect(result.requiredMeasurementKeys).toEqual(['WAIST']);
+    expect(Object.keys(result.sizeFitData.measurements)).toEqual(['WAIST']);
+    expect(result.sizeFitData.measurementSnapshot).toMatchObject({
+      requiredMeasurementKeys: ['WAIST'],
+      freshnessState: 'FRESH',
+      measurementOverrideAccepted: false,
+    });
+  });
+
+  it('requires and records stale measurement override for RTW-plus cart items', () => {
+    const product = {
+      name: 'Custom dress',
+      sizingMode: 'RTW_PLUS_FITTINGS',
+      customMeasurementKeys: ['WAIST'],
+    };
+    const staleProfile = {
+      measurements: { WAIST: 32 },
+      lastUpdatedAt: new Date('2026-04-01T00:00:00.000Z'),
+      updatedAt: new Date('2026-04-01T00:00:00.000Z'),
+      requireUpdateEveryDays: 14,
+    };
+
+    expect(() =>
+      (service as any).resolveCartItemSizing(
+        product,
+        { sizeFitProfile: staleProfile },
+        'Custom dress',
+      ),
+    ).toThrow(BadRequestException);
+
+    const result = (service as any).resolveCartItemSizing(
+      product,
+      {
+        sizeFitProfile: staleProfile,
+        measurementOverrideAccepted: true,
+      },
+      'Custom dress',
+    );
+
+    expect(result.sizeFitData.measurementSnapshot).toMatchObject({
+      freshnessState: 'VERY_STALE',
+      measurementOverrideAccepted: true,
+    });
+    expect(result.sizeFitData.measurementSnapshot.overrideAcceptedAt).toEqual(
+      expect.any(String),
+    );
+  });
+
   it('rejects active product publish validation without structured filters', async () => {
     const validationPrisma = {
       entityFilter: {

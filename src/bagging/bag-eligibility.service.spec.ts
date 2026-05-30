@@ -89,6 +89,46 @@ describe('BagEligibilityService', () => {
     expect(result.custom.freshnessState).toBe('NOT_REQUIRED');
   });
 
+  it('opens fittings for standard RTW-plus products with only the missing required points', async () => {
+    prisma.product.findFirst.mockResolvedValue({
+      ...baseProduct,
+      sizingMode: 'RTW_PLUS_FITTINGS',
+      customMeasurementKeys: ['WAIST', 'CHEST'],
+    });
+    prisma.userSizeFitProfile.findUnique.mockResolvedValue({
+      measurements: { WAIST: 32 },
+      lastUpdatedAt: new Date(),
+      updatedAt: new Date(),
+      requireUpdateEveryDays: 14,
+    });
+
+    const result = await service.getProductBagStatus('product_1', 'buyer_1');
+
+    expect(result.ui.defaultAction).toBe('OPEN_FITTINGS');
+    expect(result.custom.requiredMeasurementKeys).toEqual(['WAIST', 'CHEST']);
+    expect(result.custom.missingMeasurementKeys).toEqual(['CHEST']);
+  });
+
+  it('auto-bags standard RTW-plus products when required measurements are fresh', async () => {
+    prisma.product.findFirst.mockResolvedValue({
+      ...baseProduct,
+      sizingMode: 'RTW_PLUS_FITTINGS',
+      customMeasurementKeys: ['WAIST'],
+    });
+    prisma.userSizeFitProfile.findUnique.mockResolvedValue({
+      measurements: { WAIST: 32 },
+      lastUpdatedAt: new Date(),
+      updatedAt: new Date(),
+      requireUpdateEveryDays: 14,
+    });
+
+    const result = await service.getProductBagStatus('product_1', 'buyer_1');
+
+    expect(result.ui.defaultAction).toBe('ADD_STANDARD');
+    expect(result.custom.freshnessState).toBe('FRESH');
+    expect(result.custom.missingMeasurementKeys).toEqual([]);
+  });
+
   it('returns OPEN_SELECTOR when product requires size', async () => {
     prisma.product.findFirst.mockResolvedValue({
       ...baseProduct,
@@ -155,6 +195,7 @@ describe('BagEligibilityService', () => {
   });
 
   it('returns CONFIRM_STALE_FITTINGS for custom product with stale fittings', async () => {
+    const updatedAt = new Date(Date.now() - 20 * 24 * 60 * 60 * 1000);
     prisma.product.findFirst.mockResolvedValue({
       ...baseProduct,
       totalStock: 0,
@@ -166,8 +207,8 @@ describe('BagEligibilityService', () => {
     ]);
     prisma.userSizeFitProfile.findUnique.mockResolvedValue({
       measurements: { WAIST: 32 },
-      lastUpdatedAt: new Date('2026-01-01T00:00:00.000Z'),
-      updatedAt: new Date('2026-01-01T00:00:00.000Z'),
+      lastUpdatedAt: updatedAt,
+      updatedAt,
       requireUpdateEveryDays: 14,
     });
 

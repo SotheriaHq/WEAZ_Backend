@@ -38,7 +38,7 @@ export class BagReadinessPresenter {
       checkoutIntentId: string;
     } | null;
     customConfiguration?: {
-      id: string;
+      id: string | null;
       requiredMeasurementKeys: string[];
       requiredFreeformPointIds: string[];
     } | null;
@@ -132,9 +132,14 @@ export class BagReadinessPresenter {
         fittingState: input.fittingFreshness.fittingState,
         freshnessState: input.fittingFreshness.freshnessState,
         missingMeasurementKeys: input.fittingFreshness.missingMeasurementKeys,
+        staleMeasurementKeys: input.fittingFreshness.staleMeasurementKeys,
+        veryStaleMeasurementKeys:
+          input.fittingFreshness.veryStaleMeasurementKeys,
         measurementUpdatedAt: input.fittingFreshness.measurementUpdatedAt,
         staleAfterDays: input.fittingFreshness.staleAfterDays,
         staleAt: input.fittingFreshness.staleAt,
+        veryStaleAfterDays: input.fittingFreshness.veryStaleAfterDays,
+        veryStaleAt: input.fittingFreshness.veryStaleAt,
         requiresStaleConfirmation:
           input.fittingFreshness.requiresStaleConfirmation,
       },
@@ -151,9 +156,14 @@ export class BagReadinessPresenter {
           input.fittingFreshness.fittingState === 'NOT_REQUIRED',
         freshnessState: input.fittingFreshness.freshnessState,
         missingMeasurementKeys: input.fittingFreshness.missingMeasurementKeys,
+        staleMeasurementKeys: input.fittingFreshness.staleMeasurementKeys,
+        veryStaleMeasurementKeys:
+          input.fittingFreshness.veryStaleMeasurementKeys,
         measurementUpdatedAt: input.fittingFreshness.measurementUpdatedAt,
         staleAfterDays: input.fittingFreshness.staleAfterDays,
         staleAt: input.fittingFreshness.staleAt,
+        veryStaleAfterDays: input.fittingFreshness.veryStaleAfterDays,
+        veryStaleAt: input.fittingFreshness.veryStaleAt,
         requiresStaleConfirmation:
           input.fittingFreshness.requiresStaleConfirmation,
       },
@@ -186,10 +196,11 @@ export class BagReadinessPresenter {
     if (input.standardEnabled && input.customEnabled) return 'OPEN_SELECTOR';
     if (input.standardEnabled && (input.requiresSize || input.requiresColor))
       return 'OPEN_SELECTOR';
-    if (input.standardEnabled) return 'ADD_STANDARD';
     if (input.fittingState === 'MISSING' || input.fittingState === 'PARTIAL')
       return 'OPEN_FITTINGS';
-    if (input.freshnessState === 'STALE') return 'CONFIRM_STALE_FITTINGS';
+    if (input.freshnessState === 'STALE' || input.freshnessState === 'VERY_STALE')
+      return 'CONFIRM_STALE_FITTINGS';
+    if (input.standardEnabled) return 'ADD_STANDARD';
     if (input.customEnabled) return 'OPEN_CUSTOM_FLOW';
     return 'DISABLED';
   }

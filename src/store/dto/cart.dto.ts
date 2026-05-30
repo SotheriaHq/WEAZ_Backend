@@ -7,6 +7,7 @@ import {
   IsArray,
   IsObject,
   IsIn,
+  IsBoolean,
 } from 'class-validator';
 import { Type, Transform } from 'class-transformer';
 
@@ -53,6 +54,10 @@ export class AddToCartDto {
   @IsArray()
   @IsString({ each: true })
   requiredMeasurementKeys?: string[];
+
+  @IsOptional()
+  @IsBoolean()
+  measurementOverrideAccepted?: boolean;
 }
 
 export class UpdateCartItemDto {

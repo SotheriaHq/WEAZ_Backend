@@ -35,6 +35,7 @@ export type BagDefaultAction =
 export type BagFreshnessState =
   | 'FRESH'
   | 'STALE'
+  | 'VERY_STALE'
   | 'MISSING'
   | 'PARTIAL'
   | 'NOT_REQUIRED';
@@ -83,9 +84,13 @@ export interface BagStatusDto {
     fittingState: BagFittingState;
     freshnessState?: BagFreshnessState;
     missingMeasurementKeys: string[];
+    staleMeasurementKeys?: string[];
+    veryStaleMeasurementKeys?: string[];
     measurementUpdatedAt?: string | null;
     staleAfterDays?: number;
     staleAt?: string | null;
+    veryStaleAfterDays?: number;
+    veryStaleAt?: string | null;
     requiresStaleConfirmation?: boolean;
   };
   customOrder?: {
@@ -99,9 +104,13 @@ export interface BagStatusDto {
     fittingsComplete: boolean;
     freshnessState?: BagFreshnessState;
     missingMeasurementKeys: string[];
+    staleMeasurementKeys?: string[];
+    veryStaleMeasurementKeys?: string[];
     measurementUpdatedAt?: string | null;
     staleAfterDays?: number;
     staleAt?: string | null;
+    veryStaleAfterDays?: number;
+    veryStaleAt?: string | null;
     requiresStaleConfirmation?: boolean;
   };
   duplicateState?: {

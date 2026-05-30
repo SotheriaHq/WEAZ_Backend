@@ -7,6 +7,7 @@ import type {
 } from './bagging.types';
 
 const DEFAULT_FRESHNESS_DAYS = 14;
+const DEFAULT_VERY_STALE_DAYS = 30;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 @Injectable()
@@ -20,14 +21,19 @@ export class FittingFreshnessPolicy {
       input.requiredMeasurementKeys,
     );
     const staleAfterDays = this.resolveFreshnessDays(input.profile);
+    const veryStaleAfterDays = this.resolveVeryStaleDays(staleAfterDays);
 
     if (requiredMeasurementKeys.length === 0) {
       return this.buildResult(
         'NOT_REQUIRED',
         'NOT_REQUIRED',
         [],
+        [],
+        [],
         null,
         staleAfterDays,
+        null,
+        veryStaleAfterDays,
         null,
         false,
       );
@@ -53,8 +59,12 @@ export class FittingFreshnessPolicy {
         'MISSING',
         'MISSING',
         missingMeasurementKeys,
+        [],
+        [],
         null,
         staleAfterDays,
+        null,
+        veryStaleAfterDays,
         null,
         false,
       );
@@ -65,8 +75,12 @@ export class FittingFreshnessPolicy {
         'PARTIAL',
         'PARTIAL',
         missingMeasurementKeys,
+        [],
+        [],
         null,
         staleAfterDays,
+        null,
+        veryStaleAfterDays,
         null,
         false,
       );
@@ -78,26 +92,47 @@ export class FittingFreshnessPolicy {
         'COMPLETE',
         'STALE',
         [],
+        requiredMeasurementKeys,
+        [],
         null,
         staleAfterDays,
+        null,
+        veryStaleAfterDays,
         null,
         true,
       );
     }
 
     const staleAt = new Date(updatedAt.getTime() + staleAfterDays * MS_PER_DAY);
+    const veryStaleAt = new Date(
+      updatedAt.getTime() + veryStaleAfterDays * MS_PER_DAY,
+    );
     const now = input.now ?? new Date();
     const freshnessState: BagFreshnessState =
-      staleAt.getTime() <= now.getTime() ? 'STALE' : 'FRESH';
+      veryStaleAt.getTime() <= now.getTime()
+        ? 'VERY_STALE'
+        : staleAt.getTime() <= now.getTime()
+          ? 'STALE'
+          : 'FRESH';
+    const staleMeasurementKeys =
+      freshnessState === 'STALE' || freshnessState === 'VERY_STALE'
+        ? requiredMeasurementKeys
+        : [];
+    const veryStaleMeasurementKeys =
+      freshnessState === 'VERY_STALE' ? requiredMeasurementKeys : [];
 
     return this.buildResult(
       'COMPLETE',
       freshnessState,
       [],
+      staleMeasurementKeys,
+      veryStaleMeasurementKeys,
       updatedAt.toISOString(),
       staleAfterDays,
       staleAt.toISOString(),
-      freshnessState === 'STALE',
+      veryStaleAfterDays,
+      veryStaleAt.toISOString(),
+      freshnessState === 'STALE' || freshnessState === 'VERY_STALE',
     );
   }
 
@@ -105,18 +140,26 @@ export class FittingFreshnessPolicy {
     fittingState: BagFittingState,
     freshnessState: BagFreshnessState,
     missingMeasurementKeys: string[],
+    staleMeasurementKeys: string[],
+    veryStaleMeasurementKeys: string[],
     measurementUpdatedAt: string | null,
     staleAfterDays: number,
     staleAt: string | null,
+    veryStaleAfterDays: number,
+    veryStaleAt: string | null,
     requiresStaleConfirmation: boolean,
   ): FittingFreshnessResult {
     return {
       fittingState,
       freshnessState,
       missingMeasurementKeys,
+      staleMeasurementKeys,
+      veryStaleMeasurementKeys,
       measurementUpdatedAt,
       staleAfterDays,
       staleAt,
+      veryStaleAfterDays,
+      veryStaleAt,
       requiresStaleConfirmation,
     };
   }
@@ -138,6 +181,10 @@ export class FittingFreshnessPolicy {
     return Number.isFinite(configured) && configured > 0
       ? Math.trunc(configured)
       : DEFAULT_FRESHNESS_DAYS;
+  }
+
+  private resolveVeryStaleDays(staleAfterDays: number): number {
+    return Math.max(staleAfterDays, DEFAULT_VERY_STALE_DAYS);
   }
 
   private resolveMeasurementUpdatedAt(

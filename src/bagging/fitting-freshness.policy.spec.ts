@@ -65,7 +65,7 @@ describe('FittingFreshnessPolicy', () => {
         requiredMeasurementKeys: ['WAIST'],
         profile: {
           measurements: { WAIST: 32 },
-          lastUpdatedAt: new Date('2026-04-01T12:00:00.000Z'),
+          lastUpdatedAt: new Date('2026-04-20T12:00:00.000Z'),
         },
         now,
       }),
@@ -73,7 +73,30 @@ describe('FittingFreshnessPolicy', () => {
       fittingState: 'COMPLETE',
       freshnessState: 'STALE',
       staleAfterDays: 14,
-      staleAt: '2026-04-15T12:00:00.000Z',
+      staleAt: '2026-05-04T12:00:00.000Z',
+      staleMeasurementKeys: ['WAIST'],
+      veryStaleMeasurementKeys: [],
+      requiresStaleConfirmation: true,
+    });
+  });
+
+  it('returns VERY_STALE when complete values are older than 30 days', () => {
+    expect(
+      policy.evaluate({
+        requiredMeasurementKeys: ['WAIST'],
+        profile: {
+          measurements: { WAIST: 32 },
+          lastUpdatedAt: new Date('2026-04-01T12:00:00.000Z'),
+        },
+        now,
+      }),
+    ).toMatchObject({
+      fittingState: 'COMPLETE',
+      freshnessState: 'VERY_STALE',
+      staleMeasurementKeys: ['WAIST'],
+      veryStaleMeasurementKeys: ['WAIST'],
+      veryStaleAfterDays: 30,
+      veryStaleAt: '2026-05-01T12:00:00.000Z',
       requiresStaleConfirmation: true,
     });
   });

@@ -458,17 +458,6 @@ export class BagEligibilityService {
           Promise.resolve(null),
         ]);
 
-    const { customBagLine, duplicateState } =
-      await this.resolveDuplicateContext({
-        userId,
-        sourceType: CustomOrderSourceType.PRODUCT,
-        sourceId: productId,
-        activeConfigurationId: customConfiguration?.id ?? null,
-      });
-    const fittingFreshness = this.resolveFittingFreshness(
-      customConfiguration,
-      sizeFitProfile,
-    );
     const standardEnabled =
       product.standardCheckoutEnabled !== false &&
       publicProduct &&
@@ -479,6 +468,30 @@ export class BagEligibilityService {
       Boolean(customConfiguration) &&
       publicProduct &&
       !isOwner;
+    const standardMeasurementKeys =
+      standardEnabled && this.isStandardFittingRequired(product)
+        ? this.normalizeKeys(product.customMeasurementKeys)
+        : [];
+    const fittingConfiguration =
+      customConfiguration ??
+      (standardMeasurementKeys.length > 0
+        ? {
+            id: null,
+            requiredMeasurementKeys: standardMeasurementKeys,
+            requiredFreeformPointIds: [],
+          }
+        : null);
+    const { customBagLine, duplicateState } =
+      await this.resolveDuplicateContext({
+        userId,
+        sourceType: CustomOrderSourceType.PRODUCT,
+        sourceId: productId,
+        activeConfigurationId: customConfiguration?.id ?? null,
+      });
+    const fittingFreshness = this.resolveFittingFreshness(
+      fittingConfiguration,
+      sizeFitProfile,
+    );
 
     return this.readinessPresenter.present({
       productId,
@@ -497,7 +510,7 @@ export class BagEligibilityService {
       colors,
       cartItem,
       customBagLine,
-      customConfiguration,
+      customConfiguration: fittingConfiguration,
       fittingFreshness,
       duplicateState,
       previousStandardOrder,
@@ -802,7 +815,10 @@ export class BagEligibilityService {
         defaultAction = 'OPEN_FITTINGS';
         canBag = false;
         reason = 'MISSING_FITTINGS';
-      } else if (standardFittings.freshnessState === 'STALE') {
+      } else if (
+        standardFittings.freshnessState === 'STALE' ||
+        standardFittings.freshnessState === 'VERY_STALE'
+      ) {
         defaultAction = 'CONFIRM_STALE_FITTINGS';
         canBag = false;
         reason = 'STALE_FITTINGS';
@@ -872,6 +888,13 @@ export class BagEligibilityService {
       fittingState: freshness.fittingState,
       freshnessState: freshness.freshnessState,
     };
+  }
+
+  private isStandardFittingRequired(product: any): boolean {
+    return (
+      String(product?.sizingMode ?? 'NONE') === 'RTW_PLUS_FITTINGS' &&
+      this.normalizeKeys(product?.customMeasurementKeys).length > 0
+    );
   }
 
   private effectiveProductPrice(product: any): number {

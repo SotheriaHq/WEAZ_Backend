@@ -23,6 +23,7 @@ export type BagFittingState =
 export type BagFreshnessState =
   | 'FRESH'
   | 'STALE'
+  | 'VERY_STALE'
   | 'MISSING'
   | 'PARTIAL'
   | 'NOT_REQUIRED';
@@ -73,9 +74,13 @@ export interface FittingFreshnessResult {
   fittingState: BagFittingState;
   freshnessState: BagFreshnessState;
   missingMeasurementKeys: string[];
+  staleMeasurementKeys: string[];
+  veryStaleMeasurementKeys: string[];
   measurementUpdatedAt: string | null;
   staleAfterDays: number;
   staleAt: string | null;
+  veryStaleAfterDays: number;
+  veryStaleAt: string | null;
   requiresStaleConfirmation: boolean;
 }
 
@@ -125,9 +130,13 @@ export interface BagReadinessContract {
     fittingState: BagFittingState;
     freshnessState: BagFreshnessState;
     missingMeasurementKeys: string[];
+    staleMeasurementKeys: string[];
+    veryStaleMeasurementKeys: string[];
     measurementUpdatedAt: string | null;
     staleAfterDays: number;
     staleAt: string | null;
+    veryStaleAfterDays: number;
+    veryStaleAt: string | null;
     requiresStaleConfirmation: boolean;
   };
   customOrder: {
@@ -141,9 +150,13 @@ export interface BagReadinessContract {
     fittingsComplete: boolean;
     freshnessState: BagFreshnessState;
     missingMeasurementKeys: string[];
+    staleMeasurementKeys: string[];
+    veryStaleMeasurementKeys: string[];
     measurementUpdatedAt: string | null;
     staleAfterDays: number;
     staleAt: string | null;
+    veryStaleAfterDays: number;
+    veryStaleAt: string | null;
     requiresStaleConfirmation: boolean;
   };
   duplicateState: BagDuplicateState;

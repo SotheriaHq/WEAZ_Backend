@@ -81,6 +81,7 @@ import {
 } from 'src/brands/permissions/brand-permissions';
 import { canonicalUserProfileSelect } from 'src/common/user-profile-source.helper';
 import { BagEligibilityService } from 'src/bagging/bag-eligibility.service';
+import { FittingFreshnessPolicy } from 'src/bagging/fitting-freshness.policy';
 import { SizeComputationService } from 'src/sizing/size-computation.service';
 import { ReviewEligibilityService } from 'src/reviews/review-eligibility.service';
 
@@ -131,6 +132,7 @@ export class StoreService {
   } | null = null;
   private supportedPaymentBanksRefresh: Promise<SupportedPaymentBank[]> | null =
     null;
+  private readonly fittingFreshnessPolicy = new FittingFreshnessPolicy();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -5215,13 +5217,21 @@ export class StoreService {
       typeof dto.sizeRecommendationSnapshot === 'object'
         ? dto.sizeRecommendationSnapshot
         : null;
+    const sizeFitProfile = await (
+      this.prisma as any
+    ).userSizeFitProfile.findUnique({
+      where: { userId },
+      select: {
+        autoSizeRecommendation: true,
+        measurements: true,
+        lastUpdatedAt: true,
+        updatedAt: true,
+        requireUpdateEveryDays: true,
+      },
+    });
 
     if (!resolvedSelectedSize && this.sizeComputationService) {
-      const profile = await (this.prisma as any).userSizeFitProfile.findUnique({
-        where: { userId },
-        select: { autoSizeRecommendation: true },
-      });
-      if (profile?.autoSizeRecommendation === 'ON') {
+      if (sizeFitProfile?.autoSizeRecommendation === 'ON') {
         const recommendation = await this.sizeComputationService
           .computeProductRecommendation(userId, product.id)
           .catch(() => null);
@@ -5268,6 +5278,8 @@ export class StoreService {
         sizingMode: dto.sizingMode,
         requiredMeasurementKeys: dto.requiredMeasurementKeys,
         sizeFitData: dto.sizeFitData ?? null,
+        measurementOverrideAccepted: dto.measurementOverrideAccepted,
+        sizeFitProfile,
       },
       product.name,
     );
@@ -6133,45 +6145,14 @@ export class StoreService {
     return raw as Record<string, any>;
   }
 
-  private extractProvidedMeasurementKeys(
-    sizeFitData: Record<string, any> | null,
-  ): string[] {
-    if (!sizeFitData) return [];
-
-    const measurements =
-      sizeFitData.measurements &&
-      typeof sizeFitData.measurements === 'object' &&
-      !Array.isArray(sizeFitData.measurements)
-        ? (sizeFitData.measurements as Record<string, any>)
-        : null;
-
-    if (measurements) {
-      return Object.keys(measurements).filter((key) => {
-        const value = measurements[key];
-        if (value == null) return false;
-        if (typeof value === 'number') return Number.isFinite(value);
-        if (typeof value === 'object' && value !== null) {
-          const numericValue = (value as any).value;
-          return (
-            typeof numericValue === 'number' && Number.isFinite(numericValue)
-          );
-        }
-        return false;
-      });
-    }
-
-    return Object.keys(sizeFitData).filter((key) => {
-      const value = sizeFitData[key];
-      return typeof value === 'number' && Number.isFinite(value);
-    });
-  }
-
   private resolveCartItemSizing(
     product: any,
     payload: {
       sizingMode?: string | null;
       requiredMeasurementKeys?: string[] | null;
       sizeFitData?: Record<string, any> | null;
+      measurementOverrideAccepted?: boolean | null;
+      sizeFitProfile?: any;
     },
     productNameForError?: string,
   ): {
@@ -6190,36 +6171,101 @@ export class StoreService {
     const productRequiredKeys = this.normalizeRequiredMeasurementKeys(
       product?.customMeasurementKeys,
     );
-    const requestedKeys = this.normalizeRequiredMeasurementKeys(
-      payload?.requiredMeasurementKeys,
-    );
-
     const requiredMeasurementKeys =
-      requestedKeys.length > 0
-        ? requestedKeys.filter((key) => productRequiredKeys.includes(key))
-        : productRequiredKeys;
-
-    const sizeFitData = this.normalizeSizeFitData(payload?.sizeFitData);
+      sizingMode === SizingMode.RTW_PLUS_FITTINGS ? productRequiredKeys : [];
 
     if (
       sizingMode === SizingMode.RTW_PLUS_FITTINGS &&
       requiredMeasurementKeys.length > 0
     ) {
-      const providedKeys = this.extractProvidedMeasurementKeys(sizeFitData);
-      const missingKeys = requiredMeasurementKeys.filter(
-        (key) => !providedKeys.includes(key),
-      );
-      if (missingKeys.length > 0) {
+      const freshness = this.fittingFreshnessPolicy.evaluate({
+        requiredMeasurementKeys,
+        profile: payload?.sizeFitProfile ?? null,
+      });
+      if (
+        freshness.fittingState === 'MISSING' ||
+        freshness.fittingState === 'PARTIAL'
+      ) {
         throw new BadRequestException(
-          `Missing required measurements for ${productName}: ${missingKeys.join(', ')}`,
+          `Missing required measurements for ${productName}: ${freshness.missingMeasurementKeys.join(', ')}`,
         );
       }
+      if (
+        freshness.requiresStaleConfirmation &&
+        payload?.measurementOverrideAccepted !== true
+      ) {
+        throw new BadRequestException(
+          `Review saved measurements for ${productName} before bagging.`,
+        );
+      }
+
+      return {
+        sizingMode,
+        requiredMeasurementKeys,
+        sizeFitData: this.buildRequiredMeasurementSnapshot({
+          requiredMeasurementKeys,
+          profile: payload?.sizeFitProfile ?? null,
+          freshnessState: freshness.freshnessState,
+          measurementOverrideAccepted:
+            payload?.measurementOverrideAccepted === true,
+        }),
+      };
     }
 
     return {
       sizingMode,
       requiredMeasurementKeys,
-      sizeFitData,
+      sizeFitData: null,
+    };
+  }
+
+  private buildRequiredMeasurementSnapshot(input: {
+    requiredMeasurementKeys: string[];
+    profile: any;
+    freshnessState: string;
+    measurementOverrideAccepted: boolean;
+  }): Record<string, any> {
+    const measurementRecord = this.normalizeSizeFitData(
+      input.profile?.measurements,
+    );
+    const measurements = input.requiredMeasurementKeys.reduce<
+      Record<string, { value: number; unit: string; source: string }>
+    >((acc, key) => {
+      const raw = measurementRecord?.[key];
+      const value =
+        raw && typeof raw === 'object' && !Array.isArray(raw)
+          ? (raw as Record<string, any>).value
+          : raw;
+      const numeric = Number(value);
+      if (Number.isFinite(numeric) && numeric > 0) {
+        acc[key] = {
+          value: numeric,
+          unit:
+            raw && typeof raw === 'object' && !Array.isArray(raw)
+              ? String((raw as Record<string, any>).unit ?? 'CM')
+              : 'CM',
+          source: input.measurementOverrideAccepted ? 'override' : 'saved_profile',
+        };
+      }
+      return acc;
+    }, {});
+    const now = new Date().toISOString();
+
+    return {
+      measurements,
+      measurementSnapshot: {
+        requiredMeasurementKeys: input.requiredMeasurementKeys,
+        profileUpdatedAt:
+          input.profile?.lastUpdatedAt?.toISOString?.() ??
+          input.profile?.lastUpdatedAt ??
+          input.profile?.updatedAt?.toISOString?.() ??
+          input.profile?.updatedAt ??
+          null,
+        freshnessState: input.freshnessState,
+        capturedAt: now,
+        measurementOverrideAccepted: input.measurementOverrideAccepted,
+        overrideAcceptedAt: input.measurementOverrideAccepted ? now : null,
+      },
     };
   }
 
