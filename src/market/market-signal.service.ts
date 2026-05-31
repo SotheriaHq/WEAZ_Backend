@@ -30,6 +30,11 @@ export interface MarketSignalIdentity {
   anonymousSessionId?: string | null;
 }
 
+type ResolvedMarketSignalIdentity = {
+  userId: string | null;
+  anonymousSessionId: string | null;
+};
+
 type NormalizedMarketSignalEvent = Omit<
   MarketSignalEventDto,
   | 'targetId'
@@ -72,6 +77,10 @@ type PersistedCounts = {
   seenItems: number;
   marketSectionSignals: number;
   suggestionSignals: number;
+};
+
+type MarketSignalCreateManyResult = {
+  count?: number;
 };
 
 @Injectable()
@@ -160,116 +169,27 @@ export class MarketSignalService {
       (event) => !existingClientEventIds.has(event.clientEventId),
     );
 
-    const userFeedSignals: Prisma.UserFeedSignalCreateManyInput[] = [];
-    const seenItems: Prisma.UserSeenItemCreateManyInput[] = [];
-    const marketSectionSignals: Prisma.MarketSectionSignalCreateManyInput[] =
-      [];
-    const suggestionSignals: Prisma.SuggestionSignalCreateManyInput[] = [];
-
-    for (const normalized of acceptedEvents) {
-      const common = {
-        userId,
-        anonymousSessionId,
-        clientEventId: normalized.clientEventId,
-        batchId,
-        signalType: normalized.signalType,
-        value: normalized.value,
-        surface: normalized.surface,
-        screenContext: normalized.screenContext,
-        sessionId: normalized.sessionId,
-        metadata: this.sanitizeMetadata(normalized.metadata),
-        createdAt: now,
-      };
-
-      userFeedSignals.push({
-        ...common,
-        targetType: normalized.targetType,
-        targetId: normalized.targetId,
-        sectionKey: normalized.sectionKey,
-        suggestionBlockKey: normalized.suggestionBlockKey,
-        position: normalized.position,
-      });
-
-      if (
-        SEEN_SIGNAL_TYPES.has(normalized.signalType) &&
-        ITEM_TARGET_TYPES.has(normalized.targetType)
-      ) {
-        seenItems.push({
-          userId,
-          anonymousSessionId,
-          clientEventId: normalized.clientEventId,
-          targetType: normalized.targetType,
-          targetId: normalized.targetId,
-          surface: normalized.surface,
-          sectionKey: normalized.sectionKey,
-          suggestionBlockKey: normalized.suggestionBlockKey,
-          sessionId: normalized.sessionId,
-          batchId,
-          seenAt: now,
-          createdAt: now,
-        });
-      }
-
-      const sectionKey = this.getSectionSignalKey(normalized);
-      if (sectionKey) {
-        marketSectionSignals.push({
-          ...common,
-          sectionKey,
-        });
-      }
-
-      const blockKey = this.getSuggestionBlockKey(normalized);
-      if (blockKey) {
-        suggestionSignals.push({
-          ...common,
-          blockKey,
-          targetType:
-            normalized.targetType === MarketSignalTargetType.SUGGESTION_BLOCK
-              ? null
-              : normalized.targetType,
-          targetId:
-            normalized.targetType === MarketSignalTargetType.SUGGESTION_BLOCK
-              ? null
-              : normalized.targetId,
-        });
-      }
-    }
-
-    const writes: Prisma.PrismaPromise<unknown>[] = [];
-    if (userFeedSignals.length) {
-      writes.push(
-        this.prisma.userFeedSignal.createMany({ data: userFeedSignals }),
-      );
-    }
-    if (seenItems.length) {
-      writes.push(this.prisma.userSeenItem.createMany({ data: seenItems }));
-    }
-    if (marketSectionSignals.length) {
-      writes.push(
-        this.prisma.marketSectionSignal.createMany({
-          data: marketSectionSignals,
-        }),
-      );
-    }
-    if (suggestionSignals.length) {
-      writes.push(
-        this.prisma.suggestionSignal.createMany({ data: suggestionSignals }),
-      );
-    }
-
-    if (writes.length) {
-      await this.prisma.$transaction(writes);
-    }
+    const canonical = await this.persistCanonicalEvents(
+      acceptedEvents,
+      { userId, anonymousSessionId },
+      batchId,
+      now,
+    );
+    const projectionRows = this.buildProjectionRows(
+      canonical.insertedEvents,
+      { userId, anonymousSessionId },
+      batchId,
+      now,
+    );
+    const projectionCounts = await this.persistProjectionRows(projectionRows);
 
     const persisted: PersistedCounts = {
-      userFeedSignals: userFeedSignals.length,
-      seenItems: seenItems.length,
-      marketSectionSignals: marketSectionSignals.length,
-      suggestionSignals: suggestionSignals.length,
+      userFeedSignals: canonical.persistedCount,
+      ...projectionCounts,
     };
 
     const aggregation = await this.aggregateAcceptedEvents(
-      acceptedEvents,
+      canonical.insertedEvents,
       { userId, anonymousSessionId },
       now,
     );
@@ -286,8 +206,192 @@ export class MarketSignalService {
       batchId,
       received: events.length,
       persisted,
-      deduplicated: events.length - acceptedEvents.length,
+      deduplicated: events.length - canonical.insertedEvents.length,
       aggregation,
+    };
+  }
+
+  private async persistCanonicalEvents(
+    events: NormalizedMarketSignalEvent[],
+    identity: ResolvedMarketSignalIdentity,
+    batchId: string | null,
+    now: Date,
+  ) {
+    if (events.length === 0) {
+      return { insertedEvents: [], persistedCount: 0 };
+    }
+
+    const data = events.map((event) => ({
+      ...this.buildCommonSignalInput(event, identity, batchId, now),
+      targetType: event.targetType,
+      targetId: event.targetId,
+      sectionKey: event.sectionKey,
+      suggestionBlockKey: event.suggestionBlockKey,
+      position: event.position,
+    }));
+
+    const result = (await this.prisma.userFeedSignal.createMany({
+      data,
+      skipDuplicates: true,
+    })) as MarketSignalCreateManyResult;
+    const persistedCount = this.toCount(result?.count);
+    if (persistedCount === events.length) {
+      return { insertedEvents: events, persistedCount };
+    }
+
+    const insertedClientEventIds = await this.getClientEventIdsCreatedAt(
+      events.map((event) => event.clientEventId),
+      identity.userId,
+      identity.anonymousSessionId,
+      now,
+    );
+    return {
+      insertedEvents: events.filter((event) =>
+        insertedClientEventIds.has(event.clientEventId),
+      ),
+      persistedCount,
+    };
+  }
+
+  private buildProjectionRows(
+    events: NormalizedMarketSignalEvent[],
+    identity: ResolvedMarketSignalIdentity,
+    batchId: string | null,
+    now: Date,
+  ) {
+    const seenItems: Prisma.UserSeenItemCreateManyInput[] = [];
+    const marketSectionSignals: Prisma.MarketSectionSignalCreateManyInput[] =
+      [];
+    const suggestionSignals: Prisma.SuggestionSignalCreateManyInput[] = [];
+
+    for (const event of events) {
+      const common = this.buildCommonSignalInput(event, identity, batchId, now);
+      if (
+        SEEN_SIGNAL_TYPES.has(event.signalType) &&
+        ITEM_TARGET_TYPES.has(event.targetType)
+      ) {
+        seenItems.push({
+          userId: identity.userId,
+          anonymousSessionId: identity.anonymousSessionId,
+          clientEventId: event.clientEventId,
+          targetType: event.targetType,
+          targetId: event.targetId,
+          surface: event.surface,
+          sectionKey: event.sectionKey,
+          suggestionBlockKey: event.suggestionBlockKey,
+          sessionId: event.sessionId,
+          batchId,
+          seenAt: now,
+          createdAt: now,
+        });
+      }
+
+      const sectionKey = this.getSectionSignalKey(event);
+      if (sectionKey) {
+        marketSectionSignals.push({
+          ...common,
+          sectionKey,
+        });
+      }
+
+      const blockKey = this.getSuggestionBlockKey(event);
+      if (blockKey) {
+        suggestionSignals.push({
+          ...common,
+          blockKey,
+          targetType:
+            event.targetType === MarketSignalTargetType.SUGGESTION_BLOCK
+              ? null
+              : event.targetType,
+          targetId:
+            event.targetType === MarketSignalTargetType.SUGGESTION_BLOCK
+              ? null
+              : event.targetId,
+        });
+      }
+    }
+
+    return { seenItems, marketSectionSignals, suggestionSignals };
+  }
+
+  private async persistProjectionRows(input: {
+    seenItems: Prisma.UserSeenItemCreateManyInput[];
+    marketSectionSignals: Prisma.MarketSectionSignalCreateManyInput[];
+    suggestionSignals: Prisma.SuggestionSignalCreateManyInput[];
+  }): Promise<Omit<PersistedCounts, 'userFeedSignals'>> {
+    const persisted = {
+      seenItems: 0,
+      marketSectionSignals: 0,
+      suggestionSignals: 0,
+    };
+    const writes: Array<Prisma.PrismaPromise<MarketSignalCreateManyResult>> =
+      [];
+    const keys: Array<keyof typeof persisted> = [];
+    if (input.seenItems.length) {
+      writes.push(
+        this.prisma.userSeenItem.createMany({
+          data: input.seenItems,
+          skipDuplicates: true,
+        }) as Prisma.PrismaPromise<MarketSignalCreateManyResult>,
+      );
+      keys.push('seenItems');
+    }
+    if (input.marketSectionSignals.length) {
+      writes.push(
+        this.prisma.marketSectionSignal.createMany({
+          data: input.marketSectionSignals,
+          skipDuplicates: true,
+        }) as Prisma.PrismaPromise<MarketSignalCreateManyResult>,
+      );
+      keys.push('marketSectionSignals');
+    }
+    if (input.suggestionSignals.length) {
+      writes.push(
+        this.prisma.suggestionSignal.createMany({
+          data: input.suggestionSignals,
+          skipDuplicates: true,
+        }) as Prisma.PrismaPromise<MarketSignalCreateManyResult>,
+      );
+      keys.push('suggestionSignals');
+    }
+
+    if (!writes.length) return persisted;
+
+    try {
+      const results = (await this.prisma.$transaction(writes)) as
+        | MarketSignalCreateManyResult[]
+        | undefined;
+      for (const [index, key] of keys.entries()) {
+        persisted[key] = this.toCount(results?.[index]?.count);
+      }
+    } catch (error) {
+      this.logger.warn(
+        `Signal projection persistence failed; canonical signals were retained: ${
+          (error as any)?.message || error
+        }`,
+      );
+    }
+    return persisted;
+  }
+
+  private buildCommonSignalInput(
+    event: NormalizedMarketSignalEvent,
+    identity: ResolvedMarketSignalIdentity,
+    batchId: string | null,
+    now: Date,
+  ) {
+    return {
+      userId: identity.userId,
+      anonymousSessionId: identity.anonymousSessionId,
+      clientEventId: event.clientEventId,
+      batchId,
+      signalType: event.signalType,
+      value: event.value,
+      surface: event.surface,
+      screenContext: event.screenContext,
+      sessionId: event.sessionId,
+      metadata: this.sanitizeMetadata(event.metadata),
+      createdAt: now,
     };
   }
 
@@ -450,6 +554,30 @@ export class MarketSignalService {
 
     const rows = await this.prisma.userFeedSignal.findMany({
       where,
+      select: { clientEventId: true },
+      take: clientEventIds.length,
+    });
+
+    return new Set(
+      rows
+        .map((row) => row.clientEventId)
+        .filter((value): value is string => Boolean(value)),
+    );
+  }
+
+  private async getClientEventIdsCreatedAt(
+    clientEventIds: string[],
+    userId: string | null,
+    anonymousSessionId: string | null,
+    createdAt: Date,
+  ) {
+    if (clientEventIds.length === 0) return new Set<string>();
+    const rows = await this.prisma.userFeedSignal.findMany({
+      where: {
+        clientEventId: { in: Array.from(new Set(clientEventIds)) },
+        createdAt,
+        ...(userId ? { userId } : { anonymousSessionId }),
+      },
       select: { clientEventId: true },
       take: clientEventIds.length,
     });

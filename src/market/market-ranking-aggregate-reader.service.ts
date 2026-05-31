@@ -63,8 +63,11 @@ export class MarketRankingAggregateReaderService {
 
     try {
       const rows = await this.withTimeout(
-        this.prisma.marketSignalAggregateDaily.findMany({
+        this.prisma.marketSignalAggregateDaily.groupBy({
+          by: ['targetType', 'targetId'],
           where: {
+            userId: null,
+            anonymousSessionId: null,
             bucketDate: { gte: lookbackStart },
             targetType: {
               in: [...new Set(targets.map((target) => target.targetType))],
@@ -74,9 +77,7 @@ export class MarketRankingAggregateReaderService {
             },
             OR: [{ sectionKey: options.sectionKey }, { sectionKey: null }],
           },
-          select: {
-            targetType: true,
-            targetId: true,
+          _sum: {
             sectionImpressions: true,
             itemImpressions: true,
             productOpens: true,
@@ -86,6 +87,8 @@ export class MarketRankingAggregateReaderService {
             suppressions: true,
             seenItems: true,
             eventCount: true,
+          },
+          _max: {
             latestSeenAt: true,
           },
         }),
@@ -116,20 +119,21 @@ export class MarketRankingAggregateReaderService {
         if (!targetKeys.has(key)) continue;
         const current =
           aggregates.get(key) ?? this.emptyStats(row.targetType, row.targetId);
-        current.sectionImpressions += row.sectionImpressions ?? 0;
-        current.itemImpressions += row.itemImpressions ?? 0;
-        current.productOpens += row.productOpens ?? 0;
-        current.itemOpens += row.itemOpens ?? 0;
-        current.clicks += row.clicks ?? 0;
-        current.viewAllClicks += row.viewAllClicks ?? 0;
-        current.suppressions += row.suppressions ?? 0;
-        current.seenItems += row.seenItems ?? 0;
-        current.eventCount += row.eventCount ?? 0;
+        current.sectionImpressions += row._sum.sectionImpressions ?? 0;
+        current.itemImpressions += row._sum.itemImpressions ?? 0;
+        current.productOpens += row._sum.productOpens ?? 0;
+        current.itemOpens += row._sum.itemOpens ?? 0;
+        current.clicks += row._sum.clicks ?? 0;
+        current.viewAllClicks += row._sum.viewAllClicks ?? 0;
+        current.suppressions += row._sum.suppressions ?? 0;
+        current.seenItems += row._sum.seenItems ?? 0;
+        current.eventCount += row._sum.eventCount ?? 0;
         if (
-          row.latestSeenAt &&
-          (!current.latestSeenAt || row.latestSeenAt > current.latestSeenAt)
+          row._max.latestSeenAt &&
+          (!current.latestSeenAt ||
+            row._max.latestSeenAt > current.latestSeenAt)
         ) {
-          current.latestSeenAt = row.latestSeenAt;
+          current.latestSeenAt = row._max.latestSeenAt;
         }
         aggregates.set(key, current);
       }

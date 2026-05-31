@@ -27,6 +27,18 @@ export type MarketSignalAggregationResult = {
   mode: 'synchronous-db';
 };
 
+export type MarketSignalAggregateRebuildOptions = {
+  bucketDate: Date;
+  batchSize?: number;
+};
+
+export type MarketSignalAggregateRebuildResult = {
+  bucketsUpserted: number;
+  eventsRead: number;
+  batchesRead: number;
+  mode: 'date-scoped-rebuild';
+};
+
 type AggregateCounters = {
   sectionImpressions: number;
   itemImpressions: number;
@@ -69,6 +81,9 @@ const ITEM_TARGET_TYPES = new Set<MarketSignalTargetType>([
   MarketSignalTargetType.CATEGORY,
 ]);
 
+const DEFAULT_REBUILD_BATCH_SIZE = 500;
+const MAX_REBUILD_BATCH_SIZE = 1000;
+
 @Injectable()
 export class MarketSignalAggregationService {
   constructor(private readonly prisma: PrismaService) {}
@@ -86,29 +101,15 @@ export class MarketSignalAggregationService {
     const buckets = new Map<string, AggregateBucket>();
 
     for (const event of events) {
-      const aggregateKey = this.buildAggregateKey(event, identity, bucketDate);
-      const existing = buckets.get(aggregateKey);
-      if (existing) {
-        this.addCounters(existing.counters, event, observedAt);
-        continue;
-      }
-
-      const counters = this.emptyCounters();
-      this.addCounters(counters, event, observedAt);
-      buckets.set(aggregateKey, {
-        aggregateKey,
+      this.addEventToBuckets(buckets, event, identity, bucketDate, observedAt);
+      this.addEventToBuckets(
+        buckets,
+        event,
+        { userId: null, anonymousSessionId: null },
         bucketDate,
-        userId: identity.userId ?? null,
-        anonymousSessionId: identity.userId
-          ? null
-          : (identity.anonymousSessionId ?? null),
-        surface: event.surface,
-        sectionKey: event.sectionKey ?? null,
-        suggestionBlockKey: event.suggestionBlockKey ?? null,
-        targetType: event.targetType,
-        targetId: event.targetId,
-        counters,
-      });
+        observedAt,
+        'global',
+      );
     }
 
     for (const bucket of buckets.values()) {
@@ -134,6 +135,106 @@ export class MarketSignalAggregationService {
       bucketsUpdated: buckets.size,
       eventsAggregated: events.length,
       mode: 'synchronous-db',
+    };
+  }
+
+  async rebuildDailyAggregatesFromStoredSignals(
+    options: MarketSignalAggregateRebuildOptions,
+  ): Promise<MarketSignalAggregateRebuildResult> {
+    const bucketDate = this.toUtcBucketDate(options.bucketDate);
+    const nextBucketDate = new Date(bucketDate.getTime() + 24 * 60 * 60 * 1000);
+    const batchSize = this.normalizeRebuildBatchSize(options.batchSize);
+    const buckets = new Map<string, AggregateBucket>();
+    let cursorId: string | undefined;
+    let eventsRead = 0;
+    let batchesRead = 0;
+
+    for (;;) {
+      const rows = await this.prisma.userFeedSignal.findMany({
+        where: {
+          createdAt: {
+            gte: bucketDate,
+            lt: nextBucketDate,
+          },
+        },
+        orderBy: { id: 'asc' },
+        take: batchSize,
+        ...(cursorId ? { cursor: { id: cursorId }, skip: 1 } : {}),
+        select: {
+          id: true,
+          userId: true,
+          anonymousSessionId: true,
+          targetType: true,
+          targetId: true,
+          signalType: true,
+          surface: true,
+          sectionKey: true,
+          suggestionBlockKey: true,
+          createdAt: true,
+        },
+      });
+
+      if (rows.length === 0) break;
+      batchesRead += 1;
+      eventsRead += rows.length;
+
+      for (const row of rows) {
+        const event = {
+          targetType: row.targetType,
+          targetId: row.targetId,
+          signalType: row.signalType,
+          surface: row.surface ?? MarketSignalSurface.MARKET_HOME,
+          sectionKey: row.sectionKey,
+          suggestionBlockKey: row.suggestionBlockKey,
+        };
+        const identity = row.userId
+          ? { userId: row.userId, anonymousSessionId: null }
+          : { userId: null, anonymousSessionId: row.anonymousSessionId };
+        this.addEventToBuckets(
+          buckets,
+          event,
+          identity,
+          bucketDate,
+          row.createdAt,
+        );
+        this.addEventToBuckets(
+          buckets,
+          event,
+          { userId: null, anonymousSessionId: null },
+          bucketDate,
+          row.createdAt,
+          'global',
+        );
+      }
+
+      cursorId = rows[rows.length - 1]?.id;
+      if (rows.length < batchSize) break;
+    }
+
+    for (const bucket of buckets.values()) {
+      await this.prisma.marketSignalAggregateDaily.upsert({
+        where: { aggregateKey: bucket.aggregateKey },
+        create: {
+          aggregateKey: bucket.aggregateKey,
+          bucketDate: bucket.bucketDate,
+          userId: bucket.userId,
+          anonymousSessionId: bucket.anonymousSessionId,
+          surface: bucket.surface,
+          sectionKey: bucket.sectionKey,
+          suggestionBlockKey: bucket.suggestionBlockKey,
+          targetType: bucket.targetType,
+          targetId: bucket.targetId,
+          ...bucket.counters,
+        },
+        update: this.buildCounterSet(bucket.counters),
+      });
+    }
+
+    return {
+      bucketsUpserted: buckets.size,
+      eventsRead,
+      batchesRead,
+      mode: 'date-scoped-rebuild',
     };
   }
 
@@ -166,6 +267,62 @@ export class MarketSignalAggregationService {
       update.seenItems = { increment: counters.seenItems };
     if (counters.latestSeenAt) update.latestSeenAt = counters.latestSeenAt;
     return update;
+  }
+
+  private buildCounterSet(
+    counters: AggregateCounters,
+  ): Prisma.MarketSignalAggregateDailyUpdateInput {
+    return {
+      sectionImpressions: counters.sectionImpressions,
+      itemImpressions: counters.itemImpressions,
+      productOpens: counters.productOpens,
+      itemOpens: counters.itemOpens,
+      clicks: counters.clicks,
+      viewAllClicks: counters.viewAllClicks,
+      suppressions: counters.suppressions,
+      seenItems: counters.seenItems,
+      eventCount: counters.eventCount,
+      latestSeenAt: counters.latestSeenAt,
+    };
+  }
+
+  private addEventToBuckets(
+    buckets: Map<string, AggregateBucket>,
+    event: MarketSignalAggregationEvent,
+    identity: MarketSignalAggregationIdentity,
+    bucketDate: Date,
+    observedAt: Date,
+    ownerOverride?: 'global',
+  ) {
+    const aggregateKey = this.buildAggregateKey(
+      event,
+      identity,
+      bucketDate,
+      ownerOverride,
+    );
+    const existing = buckets.get(aggregateKey);
+    if (existing) {
+      this.addCounters(existing.counters, event, observedAt);
+      return;
+    }
+
+    const counters = this.emptyCounters();
+    this.addCounters(counters, event, observedAt);
+    buckets.set(aggregateKey, {
+      aggregateKey,
+      bucketDate,
+      userId: ownerOverride === 'global' ? null : (identity.userId ?? null),
+      anonymousSessionId:
+        ownerOverride === 'global' || identity.userId
+          ? null
+          : (identity.anonymousSessionId ?? null),
+      surface: event.surface,
+      sectionKey: event.sectionKey ?? null,
+      suggestionBlockKey: event.suggestionBlockKey ?? null,
+      targetType: event.targetType,
+      targetId: event.targetId,
+      counters,
+    });
   }
 
   private addCounters(
@@ -255,10 +412,14 @@ export class MarketSignalAggregationService {
     event: MarketSignalAggregationEvent,
     identity: MarketSignalAggregationIdentity,
     bucketDate: Date,
+    ownerOverride?: 'global',
   ) {
-    const owner = identity.userId
-      ? `user:${identity.userId}`
-      : `anon:${identity.anonymousSessionId ?? 'none'}`;
+    const owner =
+      ownerOverride === 'global'
+        ? 'global'
+        : identity.userId
+          ? `user:${identity.userId}`
+          : `anon:${identity.anonymousSessionId ?? 'none'}`;
     return [
       bucketDate.toISOString().slice(0, 10),
       owner,
@@ -268,6 +429,14 @@ export class MarketSignalAggregationService {
       event.targetType,
       event.targetId,
     ].join('|');
+  }
+
+  private normalizeRebuildBatchSize(value?: number) {
+    if (!Number.isFinite(value)) return DEFAULT_REBUILD_BATCH_SIZE;
+    return Math.min(
+      MAX_REBUILD_BATCH_SIZE,
+      Math.max(1, Math.floor(value as number)),
+    );
   }
 
   private toUtcBucketDate(value: Date) {

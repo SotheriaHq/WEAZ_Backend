@@ -2,9 +2,9 @@ import { MarketSignalTargetType } from '@prisma/client';
 import { MarketRankingAggregateReaderService } from './market-ranking-aggregate-reader.service';
 
 describe('MarketRankingAggregateReaderService', () => {
-  const createService = (findMany: jest.Mock) => {
+  const createService = (groupBy: jest.Mock) => {
     return new MarketRankingAggregateReaderService({
-      marketSignalAggregateDaily: { findMany },
+      marketSignalAggregateDaily: { groupBy },
     } as any);
   };
 
@@ -14,16 +14,20 @@ describe('MarketRankingAggregateReaderService', () => {
         {
           targetType: MarketSignalTargetType.PRODUCT,
           targetId: 'product_1',
-          sectionImpressions: 1,
-          itemImpressions: 3,
-          productOpens: 2,
-          itemOpens: 2,
-          clicks: 1,
-          viewAllClicks: 0,
-          suppressions: 0,
-          seenItems: 3,
-          eventCount: 5,
-          latestSeenAt: new Date('2026-05-24T10:00:00.000Z'),
+          _sum: {
+            sectionImpressions: 1,
+            itemImpressions: 3,
+            productOpens: 2,
+            itemOpens: 2,
+            clicks: 1,
+            viewAllClicks: 0,
+            suppressions: 0,
+            seenItems: 3,
+            eventCount: 5,
+          },
+          _max: {
+            latestSeenAt: new Date('2026-05-24T10:00:00.000Z'),
+          },
         },
       ]),
     );
@@ -46,6 +50,18 @@ describe('MarketRankingAggregateReaderService', () => {
         productOpens: 2,
         itemImpressions: 3,
         eventCount: 5,
+      }),
+    );
+    expect(
+      (service as any).prisma.marketSignalAggregateDaily.groupBy,
+    ).toHaveBeenCalledWith(
+      expect.objectContaining({
+        by: ['targetType', 'targetId'],
+        where: expect.objectContaining({
+          userId: null,
+          anonymousSessionId: null,
+          targetId: { in: ['product_1'] },
+        }),
       }),
     );
   });

@@ -27,22 +27,40 @@ describe('MarketSignalService', () => {
   const createPrisma = () => ({
     userFeedSignal: {
       findMany: jest.fn().mockResolvedValue([]),
-      createMany: jest.fn().mockResolvedValue({ count: 1 }),
+      createMany: jest
+        .fn()
+        .mockImplementation(({ data }) =>
+          Promise.resolve({ count: data.length }),
+        ),
     },
     userSeenItem: {
-      createMany: jest.fn().mockResolvedValue({ count: 1 }),
+      createMany: jest
+        .fn()
+        .mockImplementation(({ data }) =>
+          Promise.resolve({ count: data.length }),
+        ),
     },
     marketSectionSignal: {
-      createMany: jest.fn().mockResolvedValue({ count: 1 }),
+      createMany: jest
+        .fn()
+        .mockImplementation(({ data }) =>
+          Promise.resolve({ count: data.length }),
+        ),
     },
     suggestionSignal: {
-      createMany: jest.fn().mockResolvedValue({ count: 1 }),
+      createMany: jest
+        .fn()
+        .mockImplementation(({ data }) =>
+          Promise.resolve({ count: data.length }),
+        ),
     },
     marketSignalBatchReceipt: {
       findFirst: jest.fn().mockResolvedValue(null),
       create: jest.fn().mockResolvedValue({ id: 'receipt_1' }),
     },
-    $transaction: jest.fn().mockResolvedValue([]),
+    $transaction: jest.fn((writes: Array<Promise<unknown>>) =>
+      Promise.all(writes),
+    ),
   });
 
   const createAggregation = () => ({
@@ -84,6 +102,7 @@ describe('MarketSignalService', () => {
           signalType: MarketSignalType.IMPRESSION,
         }),
       ],
+      skipDuplicates: true,
     });
     expect(aggregation.aggregateBatch).toHaveBeenCalledTimes(1);
     expect(prisma.marketSignalBatchReceipt.create).toHaveBeenCalledWith({
@@ -116,6 +135,7 @@ describe('MarketSignalService', () => {
     expect(result.deduplicated).toBe(1);
     expect(prisma.userFeedSignal.createMany).toHaveBeenCalledWith({
       data: [expect.objectContaining({ clientEventId: 'event_same' })],
+      skipDuplicates: true,
     });
     expect(aggregation.aggregateBatch).toHaveBeenCalledWith(
       [expect.objectContaining({ targetId: 'product_1' })],
@@ -214,6 +234,7 @@ describe('MarketSignalService', () => {
           signalType: MarketSignalType.CLICK,
         }),
       ],
+      skipDuplicates: true,
     });
     expect(prisma.userSeenItem.createMany).not.toHaveBeenCalled();
   });
@@ -314,6 +335,7 @@ describe('MarketSignalService', () => {
           targetId: 'product_1',
         }),
       ],
+      skipDuplicates: true,
     });
   });
 
@@ -335,5 +357,68 @@ describe('MarketSignalService', () => {
     const query = prisma.userFeedSignal.findMany.mock.calls[0][0];
     expect(query.where.userId).toBe('user_1');
     expect(query.where).not.toHaveProperty('anonymousSessionId');
+  });
+
+  it('only aggregates events actually inserted by the DB idempotency gate', async () => {
+    const prisma = createPrisma();
+    prisma.userFeedSignal.createMany.mockResolvedValue({ count: 1 });
+    prisma.userFeedSignal.findMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ clientEventId: 'event_inserted' }]);
+    const aggregation = createAggregation();
+    const service = new MarketSignalService(prisma as any, aggregation as any);
+
+    const result = await service.ingestBatch(
+      {
+        anonymousSessionId: 'anon_1',
+        events: [
+          event({ clientEventId: 'event_inserted', targetId: 'product_1' }),
+          event({
+            clientEventId: 'event_race_duplicate',
+            targetId: 'product_2',
+          }),
+        ],
+      },
+      {},
+    );
+
+    expect(result.persisted.userFeedSignals).toBe(1);
+    expect(result.deduplicated).toBe(1);
+    expect(aggregation.aggregateBatch).toHaveBeenCalledWith(
+      [expect.objectContaining({ targetId: 'product_1' })],
+      { userId: null, anonymousSessionId: 'anon_1' },
+      expect.any(Date),
+    );
+  });
+
+  it('allows the same clientEventId in different actor scopes', async () => {
+    const prisma = createPrisma();
+    const service = new MarketSignalService(
+      prisma as any,
+      createAggregation() as any,
+    );
+
+    await service.ingestBatch(
+      {
+        anonymousSessionId: 'anon_1',
+        events: [event({ clientEventId: 'event_shared' })],
+      },
+      { userId: 'user_1' },
+    );
+
+    await service.ingestBatch(
+      {
+        anonymousSessionId: 'anon_2',
+        events: [event({ clientEventId: 'event_shared' })],
+      },
+      { userId: 'user_2' },
+    );
+
+    expect(prisma.userFeedSignal.findMany.mock.calls[0][0].where).toEqual(
+      expect.objectContaining({ userId: 'user_1' }),
+    );
+    expect(prisma.userFeedSignal.findMany.mock.calls[1][0].where).toEqual(
+      expect.objectContaining({ userId: 'user_2' }),
+    );
   });
 });

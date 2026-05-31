@@ -46,11 +46,11 @@ describe('MarketSignalAggregationService', () => {
     );
 
     expect(result).toEqual({
-      bucketsUpdated: 2,
+      bucketsUpdated: 4,
       eventsAggregated: 3,
       mode: 'synchronous-db',
     });
-    expect(prisma.marketSignalAggregateDaily.upsert).toHaveBeenCalledTimes(2);
+    expect(prisma.marketSignalAggregateDaily.upsert).toHaveBeenCalledTimes(4);
     expect(prisma.marketSignalAggregateDaily.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
@@ -136,6 +136,16 @@ describe('MarketSignalAggregationService', () => {
     expect(prisma.marketSignalAggregateDaily.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         create: expect.objectContaining({
+          userId: null,
+          anonymousSessionId: null,
+          suppressions: 1,
+          eventCount: 1,
+        }),
+      }),
+    );
+    expect(prisma.marketSignalAggregateDaily.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
           anonymousSessionId: 'anon_1',
           suppressions: 1,
           eventCount: 1,
@@ -166,20 +176,28 @@ describe('MarketSignalAggregationService', () => {
     });
 
     const calls = prisma.marketSignalAggregateDaily.upsert.mock.calls;
-    expect(calls[0][0].create).toEqual(
+    const anonymousBucket = calls.find((call) =>
+      call[0].where.aggregateKey.includes('anon:anon_1'),
+    );
+    const userBucket = calls.find((call) =>
+      call[0].where.aggregateKey.includes('user:user_1'),
+    );
+    const globalBuckets = calls.filter((call) =>
+      call[0].where.aggregateKey.includes('|global|'),
+    );
+    expect(anonymousBucket?.[0].create).toEqual(
       expect.objectContaining({
         userId: null,
         anonymousSessionId: 'anon_1',
       }),
     );
-    expect(calls[1][0].create).toEqual(
+    expect(userBucket?.[0].create).toEqual(
       expect.objectContaining({
         userId: 'user_1',
         anonymousSessionId: null,
       }),
     );
-    expect(calls[0][0].where.aggregateKey).toContain('anon:anon_1');
-    expect(calls[1][0].where.aggregateKey).toContain('user:user_1');
+    expect(globalBuckets).toHaveLength(2);
   });
 
   it('keeps max-length aggregate keys within the schema budget', async () => {
@@ -205,5 +223,72 @@ describe('MarketSignalAggregationService', () => {
       prisma.marketSignalAggregateDaily.upsert.mock.calls[0][0].where
         .aggregateKey;
     expect(aggregateKey.length).toBeLessThanOrEqual(512);
+  });
+
+  it('rebuilds date-scoped aggregate buckets in bounded pages using set updates', async () => {
+    const prisma = {
+      userFeedSignal: {
+        findMany: jest
+          .fn()
+          .mockResolvedValueOnce([
+            {
+              id: 'signal_1',
+              userId: 'user_1',
+              anonymousSessionId: null,
+              targetType: MarketSignalTargetType.PRODUCT,
+              targetId: 'product_1',
+              signalType: MarketSignalType.IMPRESSION,
+              surface: MarketSignalSurface.MARKET_HOME,
+              sectionKey: 'fresh-drops',
+              suggestionBlockKey: null,
+              createdAt: new Date('2026-05-24T10:00:00.000Z'),
+            },
+            {
+              id: 'signal_2',
+              userId: 'user_1',
+              anonymousSessionId: null,
+              targetType: MarketSignalTargetType.PRODUCT,
+              targetId: 'product_1',
+              signalType: MarketSignalType.OPEN,
+              surface: MarketSignalSurface.MARKET_HOME,
+              sectionKey: 'fresh-drops',
+              suggestionBlockKey: null,
+              createdAt: new Date('2026-05-24T10:01:00.000Z'),
+            },
+          ])
+          .mockResolvedValueOnce([]),
+      },
+      marketSignalAggregateDaily: {
+        upsert: jest.fn().mockResolvedValue({ id: 'agg_1' }),
+      },
+    };
+    const service = new MarketSignalAggregationService(prisma as any);
+
+    const result = await service.rebuildDailyAggregatesFromStoredSignals({
+      bucketDate: new Date('2026-05-24T20:00:00.000Z'),
+      batchSize: 2,
+    });
+
+    expect(result).toEqual({
+      bucketsUpserted: 2,
+      eventsRead: 2,
+      batchesRead: 1,
+      mode: 'date-scoped-rebuild',
+    });
+    expect(prisma.userFeedSignal.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        orderBy: { id: 'asc' },
+        take: 2,
+      }),
+    );
+    expect(prisma.marketSignalAggregateDaily.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({
+          itemImpressions: 1,
+          productOpens: 1,
+          eventCount: 2,
+        }),
+      }),
+    );
   });
 });

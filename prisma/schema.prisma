@@ -5244,6 +5244,8 @@ model UserFeedSignal {
   @@index([userId, clientEventId])
   @@index([anonymousSessionId, clientEventId])
   @@index([clientEventId, createdAt])
+  @@index([signalType, createdAt])
+  @@index([createdAt, id])
   @@index([targetType, targetId, createdAt])
   @@index([sectionKey, createdAt])
   @@index([suggestionBlockKey, createdAt])
