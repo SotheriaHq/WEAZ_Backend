@@ -147,6 +147,8 @@ export class NotificationsService {
       '/admin/custom-orders',
       '/admin/finance',
       '/admin/messaging',
+      '/admin/monitoring',
+      '/admin/alerts',
       '/patches',
       '/settings',
       '/settings/collections',
@@ -1604,31 +1606,35 @@ export class NotificationsService {
       const targetUrl = this.sanitizeTargetUrl(emailPayload?.targetUrl);
       const message = this.formatMessage(created);
 
-      void this.enqueueEmailForNotification({
-        recipientId,
-        notificationId: created.id,
-        type,
-        message,
-        payload: emailPayload,
-        targetUrl,
-      }).catch((error) => {
-        this.logger.warn(
-          `Failed to enqueue notification email for notification=${created.id}: ${String(error)}`,
-        );
-      });
-
-      void this.pushNotifications
-        .deliverAfterNotificationCreated({
+      if (!opts?.suppressEmail) {
+        void this.enqueueEmailForNotification({
           recipientId,
-          notification: created,
-          settings,
-          notificationTypeEnabled: this.isNotificationEnabled(type, settings),
-        })
-        .catch((error) => {
+          notificationId: created.id,
+          type,
+          message,
+          payload: emailPayload,
+          targetUrl,
+        }).catch((error) => {
           this.logger.warn(
-            `Failed to deliver push notification=${created.id}: ${String(error)}`,
+            `Failed to enqueue notification email for notification=${created.id}: ${String(error)}`,
           );
         });
+      }
+
+      if (!opts?.suppressPush) {
+        void this.pushNotifications
+          .deliverAfterNotificationCreated({
+            recipientId,
+            notification: created,
+            settings,
+            notificationTypeEnabled: this.isNotificationEnabled(type, settings),
+          })
+          .catch((error) => {
+            this.logger.warn(
+              `Failed to deliver push notification=${created.id}: ${String(error)}`,
+            );
+          });
+      }
 
       return created;
     } catch (error) {

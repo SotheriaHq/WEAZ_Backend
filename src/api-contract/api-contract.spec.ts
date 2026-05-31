@@ -33,6 +33,9 @@ describe('MVP API route contract', () => {
     const notificationsController = readSource(
       'notifications/notifications.controller.ts',
     );
+    const adminAlertsController = readSource(
+      'admin/alerts/admin-alerts.controller.ts',
+    );
     const storeCollectionsController = readSource(
       'collections/store-collections.controller.ts',
     );
@@ -47,6 +50,9 @@ describe('MVP API route contract', () => {
     expect(messagingController).toContain("@Get('threads/:threadId/messages')");
     expect(notificationsController).toContain("@Get('unread-count')");
     expect(notificationsController).toContain("@Post('push-tokens')");
+    expect(adminAlertsController).toContain("@Controller('admin/alerts')");
+    expect(adminAlertsController).toContain("@Get('summary')");
+    expect(adminAlertsController).toContain("@Patch(':id/acknowledge')");
     expect(storeCollectionsController).toContain(
       "@Controller('store-collections')",
     );

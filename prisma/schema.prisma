@@ -4704,6 +4704,44 @@ model AdminAuditLog {
   @@index([action, ipAddress, userAgent, createdAt])
 }
 
+model OperationalAlert {
+  id                   String   @id @default(uuid()) @map("_id") @db.Uuid
+  category             String   @db.VarChar(40)
+  severity             String   @db.VarChar(20)
+  event                String   @db.VarChar(160)
+  title                String?  @db.VarChar(240)
+  message              String
+  status               String   @default("OPEN") @db.VarChar(32)
+  actorId              String?  @db.Uuid
+  userId               String?  @db.Uuid
+  entityType           String?  @db.VarChar(80)
+  entityId             String?  @db.VarChar(120)
+  correlationId        String?  @db.VarChar(120)
+  metadata             Json?
+  dedupeKey            String?  @unique @db.VarChar(220)
+  occurrenceCount      Int      @default(1)
+  firstSeenAt          DateTime @default(now())
+  lastSeenAt           DateTime @default(now())
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+  acknowledgedAt       DateTime?
+  acknowledgedBy       String?  @db.Uuid
+  resolvedAt           DateTime?
+  resolvedBy           String?  @db.Uuid
+  ignoredAt            DateTime?
+  ignoredBy            String?  @db.Uuid
+  notificationQueuedAt DateTime?
+  emailQueuedAt        DateTime?
+
+  @@index([status, severity, lastSeenAt])
+  @@index([category, status, lastSeenAt])
+  @@index([event, lastSeenAt])
+  @@index([correlationId])
+  @@index([entityType, entityId])
+  @@index([actorId, lastSeenAt])
+  @@index([userId, lastSeenAt])
+}
+
 model MarketSectionConfig {
   id               String   @id @default(uuid()) @map("_id") @db.Uuid
   sectionKey       String   @unique @db.VarChar(80)

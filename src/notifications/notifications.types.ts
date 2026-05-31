@@ -21,6 +21,8 @@ export interface CreateNotificationOptions {
   // notification if one with the same (recipientId, type, actorId, target)
   // exists within the given timeframe.
   dedupeMs?: number;
+  suppressEmail?: boolean;
+  suppressPush?: boolean;
 }
 
 export interface NotificationSettings {

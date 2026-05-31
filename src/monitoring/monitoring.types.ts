@@ -17,11 +17,13 @@ export interface OperationalAlert {
   severity: AlertSeverity;
   event: string;
   message: string;
+  title?: string | null;
   correlationId?: string | null;
   userId?: string | null;
   actorId?: string | null;
   entityType?: string | null;
   entityId?: string | null;
+  dedupeKey?: string | null;
   metadata?: Record<string, unknown>;
 }
 

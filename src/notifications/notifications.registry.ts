@@ -1368,6 +1368,14 @@ export class NotificationRegistry {
         subCategoryId: Joi.string().optional(),
         pointId: Joi.string().optional(),
         submittedByUserId: Joi.string().optional(),
+        operationalAlertId: Joi.string().optional(),
+        alertSeverity: Joi.string().optional(),
+        alertCategory: Joi.string().optional(),
+        alertEvent: Joi.string().optional(),
+        alertStatus: Joi.string().optional(),
+        correlationId: Joi.string().optional(),
+        entityType: Joi.string().optional(),
+        entityId: Joi.string().optional(),
       }),
       formatter: (n: any) => {
         const message = n.payload?.message;

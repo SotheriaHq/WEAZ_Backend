@@ -61,6 +61,8 @@ export const ADMIN_PERMISSIONS = {
 
   // Audit & Notifications
   AUDIT_READ: 'audit.read',
+  ALERTS_READ: 'alerts.read',
+  ALERTS_MANAGE: 'alerts.manage',
   NOTIFICATIONS_SEND: 'notifications.send',
 
   // Market governance

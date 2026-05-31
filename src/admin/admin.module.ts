@@ -18,6 +18,7 @@ import { FeatureFlagsBootstrapService } from './feature-flags/feature-flags.boot
 import { AdminSlaService } from './sla/admin-sla.service';
 import { AdminPayoutsService } from './payouts/admin-payouts.service';
 import { AdminNotificationsService } from './notifications/admin-notifications.service';
+import { AdminAlertsService } from './alerts/admin-alerts.service';
 import { AdminProductsService } from './products/admin-products.service';
 import { AdminCollectionsService } from './collections/admin-collections.service';
 import { AdminDesignsService } from './designs/admin-designs.service';
@@ -36,6 +37,7 @@ import { AdminSlaController } from './sla/admin-sla.controller';
 import { AdminPayoutsController } from './payouts/admin-payouts.controller';
 import { AdminPayoutsWebhookController } from './payouts/admin-payouts-webhook.controller';
 import { AdminNotificationsController } from './notifications/admin-notifications.controller';
+import { AdminAlertsController } from './alerts/admin-alerts.controller';
 import { AdminAuditController } from './audit/admin-audit.controller';
 import { AdminProductsController } from './products/admin-products.controller';
 import { AdminCollectionsController } from './collections/admin-collections.controller';
@@ -79,6 +81,7 @@ import { EmailModule } from 'src/email/email.module';
     AdminPayoutsController,
     AdminPayoutsWebhookController,
     AdminNotificationsController,
+    AdminAlertsController,
     AdminAuditController,
     AdminProductsController,
     AdminCollectionsController,
@@ -104,6 +107,7 @@ import { EmailModule } from 'src/email/email.module';
     AdminSlaService,
     AdminPayoutsService,
     AdminNotificationsService,
+    AdminAlertsService,
     AdminProductsService,
     AdminCollectionsService,
     AdminDesignsService,
