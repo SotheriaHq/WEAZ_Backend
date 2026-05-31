@@ -198,7 +198,10 @@ export class BagReadinessPresenter {
       return 'OPEN_SELECTOR';
     if (input.fittingState === 'MISSING' || input.fittingState === 'PARTIAL')
       return 'OPEN_FITTINGS';
-    if (input.freshnessState === 'STALE' || input.freshnessState === 'VERY_STALE')
+    if (
+      input.freshnessState === 'STALE' ||
+      input.freshnessState === 'VERY_STALE'
+    )
       return 'CONFIRM_STALE_FITTINGS';
     if (input.standardEnabled) return 'ADD_STANDARD';
     if (input.customEnabled) return 'OPEN_CUSTOM_FLOW';

@@ -1180,13 +1180,17 @@ export class UploadService {
 
     const reportedMimeType = this.normalizeContentType(mimeType);
     if (reportedMimeType && reportedMimeType !== actualContentType) {
-      this.emitUploadAlert('upload_finalize_reported_type_mismatch', 'warning', {
-        presignId: id,
-        actorId: userId,
-        fileType: presign.fileType,
-        reportedMimeType,
-        actualContentType,
-      });
+      this.emitUploadAlert(
+        'upload_finalize_reported_type_mismatch',
+        'warning',
+        {
+          presignId: id,
+          actorId: userId,
+          fileType: presign.fileType,
+          reportedMimeType,
+          actualContentType,
+        },
+      );
       throw new BadRequestException(
         'Reported file type does not match storage metadata',
       );
@@ -1196,13 +1200,17 @@ export class UploadService {
       Number(size) > 0 &&
       Number(size) !== actualMetadata.contentLength
     ) {
-      this.emitUploadAlert('upload_finalize_reported_size_mismatch', 'warning', {
-        presignId: id,
-        actorId: userId,
-        fileType: presign.fileType,
-        reportedSize: Number(size),
-        actualSize: actualMetadata.contentLength,
-      });
+      this.emitUploadAlert(
+        'upload_finalize_reported_size_mismatch',
+        'warning',
+        {
+          presignId: id,
+          actorId: userId,
+          fileType: presign.fileType,
+          reportedSize: Number(size),
+          actualSize: actualMetadata.contentLength,
+        },
+      );
       throw new BadRequestException(
         'Reported file size does not match storage metadata',
       );
@@ -1251,9 +1259,7 @@ export class UploadService {
         typeof metadata.actorId === 'string' ? metadata.actorId : undefined,
       entityType: 'FileUpload',
       entityId:
-        typeof metadata.presignId === 'string'
-          ? metadata.presignId
-          : undefined,
+        typeof metadata.presignId === 'string' ? metadata.presignId : undefined,
       metadata,
     });
   }

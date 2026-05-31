@@ -101,7 +101,11 @@ describe('MonitoringService', () => {
   it('buffers metric-like events for local tests without external delivery', () => {
     const service = new MonitoringService();
 
-    service.emitMetric('market_signal_duplicate_replay', { count: 2 }, 'RANKING');
+    service.emitMetric(
+      'market_signal_duplicate_replay',
+      { count: 2 },
+      'RANKING',
+    );
 
     expect(service.getBufferedAlerts()).toEqual([
       expect.objectContaining({
@@ -168,9 +172,10 @@ describe('MonitoringService', () => {
   });
 
   it('dedupes repeated alert delivery using occurrence count', async () => {
-    const { service, emailService, notificationsService } = buildPersistingService({
-      upsertResult: { occurrenceCount: 3 },
-    });
+    const { service, emailService, notificationsService } =
+      buildPersistingService({
+        upsertResult: { occurrenceCount: 3 },
+      });
 
     service.emitAlert({
       category: 'WEBHOOK',
@@ -185,14 +190,15 @@ describe('MonitoringService', () => {
   });
 
   it('creates in-app admin notifications for configured warning events without email', async () => {
-    const { service, emailService, notificationsService } = buildPersistingService({
-      upsertResult: {
-        category: 'UPLOAD',
-        severity: 'WARNING',
-        event: 'upload_finalize_owner_mismatch',
-        occurrenceCount: 1,
-      },
-    });
+    const { service, emailService, notificationsService } =
+      buildPersistingService({
+        upsertResult: {
+          category: 'UPLOAD',
+          severity: 'WARNING',
+          event: 'upload_finalize_owner_mismatch',
+          occurrenceCount: 1,
+        },
+      });
 
     service.emitAlert({
       category: 'UPLOAD',

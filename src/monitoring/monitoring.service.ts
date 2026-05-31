@@ -136,8 +136,7 @@ export class MonitoringService {
   private persistAlertInBackground(alert: SanitizedOperationalAlert): void {
     if (!this.prisma) return;
 
-    let persistence: Promise<void>;
-    persistence = this.persistAlert(alert)
+    const persistence = this.persistAlert(alert)
       .then(() => undefined)
       .catch((error) => {
         this.logger.warn(

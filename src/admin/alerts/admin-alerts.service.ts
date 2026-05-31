@@ -1,4 +1,8 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { redactSensitiveLogValue } from 'src/common/utils/sensitive-log';
 import { PrismaService } from 'src/prisma/prisma.service';
@@ -57,26 +61,37 @@ export class AdminAlertsService {
   }
 
   async summary() {
-    const [open, acknowledged, resolved, ignored, critical, paymentWebhook, ranking, uploadSecurity] =
-      await Promise.all([
-        this.count({ status: 'OPEN' }),
-        this.count({ status: 'ACKNOWLEDGED' }),
-        this.count({ status: 'RESOLVED' }),
-        this.count({ status: 'IGNORED' }),
-        this.count({ severity: 'CRITICAL', status: { in: ['OPEN', 'ACKNOWLEDGED'] } }),
-        this.count({
-          category: { in: ['PAYMENT', 'WEBHOOK'] },
-          status: { in: ['OPEN', 'ACKNOWLEDGED'] },
-        }),
-        this.count({
-          category: 'RANKING',
-          status: { in: ['OPEN', 'ACKNOWLEDGED'] },
-        }),
-        this.count({
-          category: { in: ['UPLOAD', 'SECURITY'] },
-          status: { in: ['OPEN', 'ACKNOWLEDGED'] },
-        }),
-      ]);
+    const [
+      open,
+      acknowledged,
+      resolved,
+      ignored,
+      critical,
+      paymentWebhook,
+      ranking,
+      uploadSecurity,
+    ] = await Promise.all([
+      this.count({ status: 'OPEN' }),
+      this.count({ status: 'ACKNOWLEDGED' }),
+      this.count({ status: 'RESOLVED' }),
+      this.count({ status: 'IGNORED' }),
+      this.count({
+        severity: 'CRITICAL',
+        status: { in: ['OPEN', 'ACKNOWLEDGED'] },
+      }),
+      this.count({
+        category: { in: ['PAYMENT', 'WEBHOOK'] },
+        status: { in: ['OPEN', 'ACKNOWLEDGED'] },
+      }),
+      this.count({
+        category: 'RANKING',
+        status: { in: ['OPEN', 'ACKNOWLEDGED'] },
+      }),
+      this.count({
+        category: { in: ['UPLOAD', 'SECURITY'] },
+        status: { in: ['OPEN', 'ACKNOWLEDGED'] },
+      }),
+    ]);
 
     return {
       open,
@@ -149,8 +164,16 @@ export class AdminAlertsService {
 
   private buildWhere(query: AdminAlertListQuery): Record<string, unknown> {
     const where: Record<string, unknown> = {};
-    const category = this.normalizeEnum(query.category, ALERT_CATEGORIES, 'category');
-    const severity = this.normalizeEnum(query.severity, ALERT_SEVERITIES, 'severity');
+    const category = this.normalizeEnum(
+      query.category,
+      ALERT_CATEGORIES,
+      'category',
+    );
+    const severity = this.normalizeEnum(
+      query.severity,
+      ALERT_SEVERITIES,
+      'severity',
+    );
     const status = this.normalizeEnum(query.status, ALERT_STATUSES, 'status');
 
     if (category) where.category = category;
@@ -158,7 +181,8 @@ export class AdminAlertsService {
     if (status) where.status = status;
     if (query.entityType) where.entityType = String(query.entityType).trim();
     if (query.entityId) where.entityId = String(query.entityId).trim();
-    if (query.correlationId) where.correlationId = String(query.correlationId).trim();
+    if (query.correlationId)
+      where.correlationId = String(query.correlationId).trim();
 
     const from = this.parseDate(query.from, 'from');
     const to = this.parseDate(query.to, 'to');
@@ -194,7 +218,9 @@ export class AdminAlertsService {
     allowed: Set<string>,
     label: string,
   ): string | undefined {
-    const normalized = String(value ?? '').trim().toUpperCase();
+    const normalized = String(value ?? '')
+      .trim()
+      .toUpperCase();
     if (!normalized || normalized === 'ALL') return undefined;
     if (!allowed.has(normalized)) {
       throw new BadRequestException(`Unsupported alert ${label}`);
@@ -202,7 +228,10 @@ export class AdminAlertsService {
     return normalized;
   }
 
-  private parseDate(value: string | undefined, label: string): Date | undefined {
+  private parseDate(
+    value: string | undefined,
+    label: string,
+  ): Date | undefined {
     if (!value) return undefined;
     const parsed = new Date(value);
     if (Number.isNaN(parsed.getTime())) {

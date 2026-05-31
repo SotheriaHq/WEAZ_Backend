@@ -4,7 +4,10 @@ import { ADMIN_PERMISSIONS_KEY } from '../decorators/require-permissions.decorat
 import { AdminAlertsController } from './admin-alerts.controller';
 
 const permissionsFor = (methodName: keyof AdminAlertsController) =>
-  Reflect.getMetadata(ADMIN_PERMISSIONS_KEY, AdminAlertsController.prototype[methodName]);
+  Reflect.getMetadata(
+    ADMIN_PERMISSIONS_KEY,
+    AdminAlertsController.prototype[methodName],
+  );
 
 describe('AdminAlertsController', () => {
   it('requires read permission for list, summary, and detail endpoints', () => {
@@ -17,7 +20,9 @@ describe('AdminAlertsController', () => {
     expect(permissionsFor('acknowledge')).toEqual([
       ADMIN_PERMISSIONS.ALERTS_MANAGE,
     ]);
-    expect(permissionsFor('resolve')).toEqual([ADMIN_PERMISSIONS.ALERTS_MANAGE]);
+    expect(permissionsFor('resolve')).toEqual([
+      ADMIN_PERMISSIONS.ALERTS_MANAGE,
+    ]);
     expect(permissionsFor('ignore')).toEqual([ADMIN_PERMISSIONS.ALERTS_MANAGE]);
   });
 

@@ -27,10 +27,7 @@ export interface OperationalAlert {
   metadata?: Record<string, unknown>;
 }
 
-export type SanitizedOperationalAlert = Omit<
-  OperationalAlert,
-  'metadata'
-> & {
+export type SanitizedOperationalAlert = Omit<OperationalAlert, 'metadata'> & {
   emittedAt: string;
   metadata?: Record<string, unknown>;
 };

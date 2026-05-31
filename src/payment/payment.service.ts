@@ -509,9 +509,7 @@ export class PaymentService implements OnModuleInit {
           this.loadUnifiedStandardLineDrafts(userId),
           this.loadUnifiedCustomLineDrafts(userId),
         ]);
-        this.assertUnifiedStandardLineMeasurementSnapshots(
-          standardLineDrafts,
-        );
+        this.assertUnifiedStandardLineMeasurementSnapshots(standardLineDrafts);
 
         const customLineDrafts = customLineResult.lines;
         const blockedCustomLines = customLineResult.blocked;
@@ -6135,19 +6133,16 @@ export class PaymentService implements OnModuleInit {
     providerEventType?: string | null;
     providerEventKey?: string | null;
   }): Promise<void> {
-    this.emitReliabilityAlert(
-      `PAYMENT_WEBHOOK_${params.rejectionReason}`,
-      {
-        provider: params.provider,
-        rejectionReason: params.rejectionReason,
-        reference: params.reference ?? null,
-        paymentAttemptId: params.paymentAttemptId ?? null,
-        providerEventType: params.providerEventType ?? null,
-        providerEventKey: params.providerEventKey ?? null,
-        correlationId: params.correlationId,
-        remoteAddress: params.context.remoteAddress ?? null,
-      },
-    );
+    this.emitReliabilityAlert(`PAYMENT_WEBHOOK_${params.rejectionReason}`, {
+      provider: params.provider,
+      rejectionReason: params.rejectionReason,
+      reference: params.reference ?? null,
+      paymentAttemptId: params.paymentAttemptId ?? null,
+      providerEventType: params.providerEventType ?? null,
+      providerEventKey: params.providerEventKey ?? null,
+      correlationId: params.correlationId,
+      remoteAddress: params.context.remoteAddress ?? null,
+    });
 
     const auditModel = (this.prisma as any).webhookIngressAudit;
     if (!auditModel?.create) {
@@ -7124,8 +7119,7 @@ export class PaymentService implements OnModuleInit {
       const missingMeasurementKeys = requiredMeasurementKeys.filter((key) => {
         const raw = measurements[key];
         const rawRecord = this.asObject(raw);
-        const value =
-          Object.keys(rawRecord).length > 0 ? rawRecord.value : raw;
+        const value = Object.keys(rawRecord).length > 0 ? rawRecord.value : raw;
         const numeric = Number(value);
         return (
           !snapshotKeys.includes(key) ||

@@ -6244,7 +6244,9 @@ export class StoreService {
             raw && typeof raw === 'object' && !Array.isArray(raw)
               ? String((raw as Record<string, any>).unit ?? 'CM')
               : 'CM',
-          source: input.measurementOverrideAccepted ? 'override' : 'saved_profile',
+          source: input.measurementOverrideAccepted
+            ? 'override'
+            : 'saved_profile',
         };
       }
       return acc;
