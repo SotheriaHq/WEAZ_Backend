@@ -74,7 +74,12 @@ describe('MarketSignalService', () => {
   it('accepts a valid batch and writes authenticated userId from context', async () => {
     const prisma = createPrisma();
     const aggregation = createAggregation();
-    const service = new MarketSignalService(prisma as any, aggregation as any);
+    const monitoring = { emitAlert: jest.fn() };
+    const service = new MarketSignalService(
+      prisma as any,
+      aggregation as any,
+      monitoring as any,
+    );
 
     const result = await service.ingestBatch(
       {
@@ -171,7 +176,12 @@ describe('MarketSignalService', () => {
       },
     });
     const aggregation = createAggregation();
-    const service = new MarketSignalService(prisma as any, aggregation as any);
+    const monitoring = { emitAlert: jest.fn() };
+    const service = new MarketSignalService(
+      prisma as any,
+      aggregation as any,
+      monitoring as any,
+    );
 
     const result = await service.ingestBatch(
       {
@@ -186,6 +196,47 @@ describe('MarketSignalService', () => {
     expect(result.persisted.userFeedSignals).toBe(1);
     expect(prisma.userFeedSignal.createMany).not.toHaveBeenCalled();
     expect(aggregation.aggregateBatch).not.toHaveBeenCalled();
+    expect(monitoring.emitAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        category: 'RANKING',
+        severity: 'info',
+        event: 'market_signal_duplicate_batch_replay',
+      }),
+    );
+  });
+
+  it('emits a safe monitoring alert for oversized signal batches', async () => {
+    const monitoring = { emitAlert: jest.fn() };
+    const service = new MarketSignalService(
+      createPrisma() as any,
+      createAggregation() as any,
+      monitoring as any,
+    );
+
+    await expect(
+      service.ingestBatch(
+        {
+          anonymousSessionId: 'anon_1',
+          events: Array.from(
+            { length: MARKET_SIGNAL_MAX_BATCH_EVENTS + 1 },
+            (_, index) => event({ clientEventId: `event_${index}` }),
+          ),
+        },
+        {},
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
+
+    expect(monitoring.emitAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        category: 'RANKING',
+        severity: 'warning',
+        event: 'market_signal_batch_oversized',
+        metadata: expect.objectContaining({
+          received: MARKET_SIGNAL_MAX_BATCH_EVENTS + 1,
+          max: MARKET_SIGNAL_MAX_BATCH_EVENTS,
+        }),
+      }),
+    );
   });
 
   it('skips recently persisted clientEventId values for the same guest', async () => {

@@ -3,11 +3,13 @@ import {
   CanActivate,
   ExecutionContext,
   ForbiddenException,
+  Optional,
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { Role } from '@prisma/client';
 import { AdminPermissionCode } from '../constants/permissions';
 import { ADMIN_PERMISSIONS_KEY } from '../decorators/require-permissions.decorator';
+import { MonitoringService } from 'src/monitoring/monitoring.service';
 
 /**
  * Guard that checks admin permissions embedded in the JWT payload.
@@ -16,7 +18,11 @@ import { ADMIN_PERMISSIONS_KEY } from '../decorators/require-permissions.decorat
  */
 @Injectable()
 export class AdminPermissionGuard implements CanActivate {
-  constructor(private reflector: Reflector) {}
+  constructor(
+    private reflector: Reflector,
+    @Optional()
+    private readonly monitoring?: MonitoringService,
+  ) {}
 
   canActivate(context: ExecutionContext): boolean {
     const requiredPermissions = this.reflector.getAllAndOverride<
@@ -30,6 +36,7 @@ export class AdminPermissionGuard implements CanActivate {
 
     const { user } = context.switchToHttp().getRequest();
     if (!user) {
+      this.emitDeniedAlert(context, null, requiredPermissions, 'NO_USER');
       throw new ForbiddenException('Authentication required');
     }
 
@@ -46,11 +53,40 @@ export class AdminPermissionGuard implements CanActivate {
     );
 
     if (!hasRequired) {
+      this.emitDeniedAlert(
+        context,
+        user,
+        requiredPermissions,
+        'MISSING_PERMISSION',
+      );
       throw new ForbiddenException(
         'Insufficient admin permissions for this action',
       );
     }
 
     return true;
+  }
+
+  private emitDeniedAlert(
+    context: ExecutionContext,
+    user: any,
+    requiredPermissions: AdminPermissionCode[],
+    reason: 'NO_USER' | 'MISSING_PERMISSION',
+  ): void {
+    const request = context.switchToHttp().getRequest();
+    this.monitoring?.emitAlert({
+      category: 'SECURITY',
+      severity: 'warning',
+      event: 'admin_permission_denied',
+      message: 'Admin permission denied',
+      actorId: typeof user?.sub === 'string' ? user.sub : user?.id,
+      metadata: {
+        reason,
+        role: user?.role ?? null,
+        requiredPermissions,
+        method: request?.method,
+        path: request?.route?.path ?? request?.url,
+      },
+    });
   }
 }

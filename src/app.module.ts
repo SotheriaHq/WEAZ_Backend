@@ -38,6 +38,7 @@ import { WebhooksModule } from './webhooks/webhooks.module';
 import { SizingModule } from './sizing/sizing.module';
 import { MarketModule } from './market/market.module';
 import { validateProductionSecurityEnv } from './common/config/production-env.validation';
+import { MonitoringModule } from './monitoring/monitoring.module';
 
 const isProductionEnvironment =
   String(process.env.NODE_ENV ?? '')
@@ -57,6 +58,7 @@ const isProductionEnvironment =
     ScheduleModule.forRoot(),
     EmailModule,
     PrismaModule,
+    MonitoringModule,
     AuthModule,
     ThrottlerModule.forRoot([{ ttl: 60000, limit: 120 }]),
     UploadModule,

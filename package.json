@@ -45,6 +45,7 @@
     "seed:e2e:reviews": "ts-node -r tsconfig-paths/register scripts/seed-reviews-e2e.ts",
     "seed:phase5c:private-media": "ts-node -r tsconfig-paths/register scripts/seed-phase5c-private-media.ts",
     "smoke:fresh-db-api": "ts-node -r tsconfig-paths/register scripts/smoke-fresh-db-api.ts",
+    "check:market-signal-duplicates": "ts-node -r tsconfig-paths/register scripts/check-market-signal-duplicates.ts",
     "seed": "prisma db seed",
     "reset:all": "node scripts/reset-all-data.cjs",
     "check:perf-regressions": "node scripts/check-perf-regressions.cjs",

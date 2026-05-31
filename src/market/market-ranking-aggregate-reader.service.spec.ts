@@ -7,6 +7,18 @@ describe('MarketRankingAggregateReaderService', () => {
       marketSignalAggregateDaily: { groupBy },
     } as any);
   };
+  const createServiceWithMonitoring = (groupBy: jest.Mock) => {
+    const monitoring = { emitAlert: jest.fn() };
+    return {
+      monitoring,
+      service: new MarketRankingAggregateReaderService(
+        {
+          marketSignalAggregateDaily: { groupBy },
+        } as any,
+        monitoring as any,
+      ),
+    };
+  };
 
   it('reads bounded aggregate rows into a candidate aggregate map', async () => {
     const service = createService(
@@ -85,7 +97,7 @@ describe('MarketRankingAggregateReaderService', () => {
   });
 
   it('falls back safely when aggregate reads fail', async () => {
-    const service = createService(
+    const { monitoring, service } = createServiceWithMonitoring(
       jest.fn().mockRejectedValue(new Error('db down')),
     );
 
@@ -103,6 +115,13 @@ describe('MarketRankingAggregateReaderService', () => {
     expect(result.ok).toBe(false);
     expect(result.fallbackReason).toBe('aggregate-read-failed');
     expect(result.aggregates.size).toBe(0);
+    expect(monitoring.emitAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        category: 'RANKING',
+        severity: 'error',
+        event: 'market_ranking_aggregate_read_failed',
+      }),
+    );
   });
 
   it('falls back safely when aggregate reads exceed the timeout guard', async () => {

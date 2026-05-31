@@ -6,6 +6,7 @@ import {
   Logger,
   NotFoundException,
   OnModuleInit,
+  Optional,
 } from '@nestjs/common';
 import {
   createCipheriv,
@@ -72,6 +73,9 @@ import {
   PAYMENT_UNIFIED_INIT_LOCK_TTL_MS,
   paymentUnifiedInitLockKey,
 } from 'src/common/runtime/payment-runtime.keys';
+import { MonitoringService } from 'src/monitoring/monitoring.service';
+import { AlertCategory, AlertSeverity } from 'src/monitoring/monitoring.types';
+import { redactSensitiveLogValue } from 'src/common/utils/sensitive-log';
 
 type PaymentAttemptRecord = Awaited<
   ReturnType<PrismaService['paymentAttempt']['findUnique']>
@@ -296,6 +300,8 @@ export class PaymentService implements OnModuleInit {
     private readonly standardOrderFinanceSyncService: StandardOrderFinanceSyncService,
     private readonly notificationsService: NotificationsService,
     private readonly webhookEventsQueue: WebhookEventsQueueService,
+    @Optional()
+    private readonly monitoring?: MonitoringService,
   ) {}
 
   onModuleInit(): void {
@@ -845,6 +851,14 @@ export class PaymentService implements OnModuleInit {
             { buyerId: userId },
           );
         } catch (error) {
+          this.emitReliabilityAlert('PAYMENT_PROVIDER_INITIALIZATION_FAILED', {
+            gateway: requestedGateway,
+            reference,
+            paymentAttemptId: created.attempt.id,
+            checkoutSessionId: created.checkoutSession.id,
+            correlationId,
+            error: this.extractErrorMessage(error),
+          });
           await this.applyAttemptStatus(
             reference,
             userId,
@@ -5250,7 +5264,68 @@ export class PaymentService implements OnModuleInit {
     code: string,
     details: Record<string, unknown>,
   ): void {
-    this.logger.error(`ALERT ${code} ${JSON.stringify(details)}`);
+    const safeDetails = redactSensitiveLogValue(details) as Record<
+      string,
+      unknown
+    >;
+    const category = this.resolveMonitoringCategory(code);
+    const severity = this.resolveMonitoringSeverity(code);
+    this.monitoring?.emitAlert({
+      category,
+      severity,
+      event: code,
+      message: code,
+      correlationId:
+        typeof details.correlationId === 'string'
+          ? details.correlationId
+          : undefined,
+      userId: typeof details.userId === 'string' ? details.userId : undefined,
+      entityType:
+        typeof details.entityType === 'string' ? details.entityType : undefined,
+      entityId:
+        typeof details.paymentAttemptId === 'string'
+          ? details.paymentAttemptId
+          : typeof details.entityId === 'string'
+            ? details.entityId
+            : undefined,
+      metadata: safeDetails,
+    });
+    this.logger.error(`ALERT ${code} ${JSON.stringify(safeDetails)}`);
+  }
+
+  private resolveMonitoringCategory(code: string): AlertCategory {
+    if (code.includes('WEBHOOK')) return 'WEBHOOK';
+    if (code.includes('PAYMENT') || code.includes('FINALIZATION')) {
+      return 'PAYMENT';
+    }
+    if (code.includes('RANKING') || code.includes('MARKET')) return 'RANKING';
+    if (code.includes('MIGRATION')) return 'MIGRATION';
+    return 'SYSTEM';
+  }
+
+  private resolveMonitoringSeverity(code: string): AlertSeverity {
+    if (
+      code.includes('AMOUNT_CURRENCY_MISMATCH') ||
+      code.includes('FINALIZATION') ||
+      code.includes('COMPENSATION_REQUIRED')
+    ) {
+      return 'critical';
+    }
+    if (
+      code.includes('FAILED') ||
+      code.includes('FAILURE') ||
+      code.includes('UNAVAILABLE')
+    ) {
+      return 'error';
+    }
+    if (
+      code.includes('INVALID_SIGNATURE') ||
+      code.includes('UNKNOWN_REFERENCE') ||
+      code.includes('MISMATCH')
+    ) {
+      return 'warning';
+    }
+    return 'info';
   }
 
   private validatePaymentRequest(
@@ -6060,6 +6135,20 @@ export class PaymentService implements OnModuleInit {
     providerEventType?: string | null;
     providerEventKey?: string | null;
   }): Promise<void> {
+    this.emitReliabilityAlert(
+      `PAYMENT_WEBHOOK_${params.rejectionReason}`,
+      {
+        provider: params.provider,
+        rejectionReason: params.rejectionReason,
+        reference: params.reference ?? null,
+        paymentAttemptId: params.paymentAttemptId ?? null,
+        providerEventType: params.providerEventType ?? null,
+        providerEventKey: params.providerEventKey ?? null,
+        correlationId: params.correlationId,
+        remoteAddress: params.context.remoteAddress ?? null,
+      },
+    );
+
     const auditModel = (this.prisma as any).webhookIngressAudit;
     if (!auditModel?.create) {
       this.emitReliabilityAlert('PAYMENT_WEBHOOK_AUDIT_MODEL_UNAVAILABLE', {
@@ -6218,6 +6307,18 @@ export class PaymentService implements OnModuleInit {
     this.logger.error(
       `Webhook processing failure for ${params.gateway} ${params.reference}: ${errorMessage}`,
     );
+    this.emitReliabilityAlert('PAYMENT_WEBHOOK_PROCESSING_FAILED', {
+      gateway: params.gateway,
+      reference: params.reference,
+      paymentAttemptId: params.paymentAttemptId,
+      providerEventKey: params.providerEventKey,
+      providerEventType: params.providerEventType,
+      correlationId: params.correlationId,
+      source: params.source,
+      queueAttempt: params.queueAttempt,
+      queueJobId: params.queueJobId,
+      error: errorMessage,
+    });
 
     try {
       await this.prisma.paymentEvent.create({

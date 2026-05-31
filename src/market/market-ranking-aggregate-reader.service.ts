@@ -1,6 +1,7 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { MarketSignalTargetType } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
+import { MonitoringService } from 'src/monitoring/monitoring.service';
 
 export type MarketRankingAggregateTarget = {
   targetType: MarketSignalTargetType;
@@ -47,7 +48,11 @@ export class MarketRankingAggregateReaderService {
     MarketRankingAggregateReaderService.name,
   );
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    @Optional()
+    private readonly monitoring?: MonitoringService,
+  ) {}
 
   async readItemAggregates(
     options: MarketRankingAggregateReadOptions,
@@ -103,6 +108,13 @@ export class MarketRankingAggregateReaderService {
           candidateCount: targets.length,
           durationMs,
         });
+        this.emitAggregateAlert('market_ranking_aggregate_timeout', 'warning', {
+          sectionKey: options.sectionKey,
+          requestId: options.requestId,
+          candidateCount: targets.length,
+          durationMs,
+          timeoutMs,
+        });
         return this.fallback('aggregate-timeout', true, startedAt);
       }
 
@@ -150,6 +162,13 @@ export class MarketRankingAggregateReaderService {
     } catch (error) {
       const durationMs = Date.now() - startedAt;
       this.log('aggregate-read-failed', {
+        sectionKey: options.sectionKey,
+        requestId: options.requestId,
+        candidateCount: targets.length,
+        durationMs,
+        errorName: error instanceof Error ? error.name : 'UnknownError',
+      });
+      this.emitAggregateAlert('market_ranking_aggregate_read_failed', 'error', {
         sectionKey: options.sectionKey,
         requestId: options.requestId,
         candidateCount: targets.length,
@@ -255,5 +274,19 @@ export class MarketRankingAggregateReaderService {
 
   private log(event: string, payload: Record<string, unknown>) {
     this.logger.debug(JSON.stringify({ event, ...payload }));
+  }
+
+  private emitAggregateAlert(
+    event: string,
+    severity: 'info' | 'warning' | 'error' | 'critical',
+    metadata: Record<string, unknown>,
+  ): void {
+    this.monitoring?.emitAlert({
+      category: 'RANKING',
+      severity,
+      event,
+      message: event,
+      metadata,
+    });
   }
 }

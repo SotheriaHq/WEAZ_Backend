@@ -3,6 +3,7 @@ import {
   ForbiddenException,
   Injectable,
   Logger,
+  Optional,
   ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
@@ -29,6 +30,7 @@ import {
   maskEmailForLog,
   sanitizeErrorForLog,
 } from 'src/common/utils/sensitive-log';
+import { MonitoringService } from 'src/monitoring/monitoring.service';
 
 const MAX_FAILURES_PER_DAY = 2;
 const BACKOFF_AFTER_FAILURE_MS = 30_000;
@@ -45,6 +47,8 @@ export class BreakGlassService {
     private readonly passwordService: PasswordService,
     private readonly userHelper: UserHelperService,
     private readonly emailService: EmailService,
+    @Optional()
+    private readonly monitoring?: MonitoringService,
   ) {}
 
   private get recoveryTokenSecret(): string {
@@ -121,6 +125,13 @@ export class BreakGlassService {
       return 'none';
     }
     return createHash('sha256').update(userAgent).digest('hex').slice(0, 24);
+  }
+
+  private hashIp(ip: string | null): string {
+    if (!ip) {
+      return 'none';
+    }
+    return createHash('sha256').update(ip).digest('hex').slice(0, 24);
   }
 
   private async issueRecoveryToken(req: Request): Promise<string> {
@@ -594,6 +605,7 @@ export class BreakGlassService {
     success: boolean,
     metadata?: Record<string, unknown>,
   ) {
+    const userAgentHash = this.hashUserAgent(userAgent);
     await this.prisma.adminAuditLog.create({
       data: {
         id: uuidv4(),
@@ -605,9 +617,25 @@ export class BreakGlassService {
         userAgent,
         metadata: {
           rawSocketIp: ip,
-          userAgentHash: this.hashUserAgent(userAgent),
+          userAgentHash,
           ...(metadata ?? {}),
         },
+      },
+    });
+    this.monitoring?.emitAuditAlert({
+      category: 'SECURITY',
+      severity: success ? 'critical' : 'warning',
+      event: success ? 'break_glass_success' : 'break_glass_failure',
+      message: success
+        ? 'Break-glass recovery succeeded'
+        : 'Break-glass recovery failed',
+      actorId: '00000000-0000-0000-0000-000000000000',
+      metadata: {
+        success,
+        ipHash: this.hashIp(ip),
+        userAgentHash,
+        requestPath: req?.path ?? req?.url,
+        ...(metadata ?? {}),
       },
     });
   }

@@ -24,6 +24,7 @@ import { PaginatedResult } from './dto/pagination.dto';
 import { ConfigService } from '@nestjs/config';
 import { FileType } from './upload.enums';
 import * as path from 'path';
+import { createHash } from 'crypto';
 import { mkdir, writeFile } from 'fs/promises';
 import { ImageProcessingQueueService } from 'src/queue/image-processing.queue.service';
 import { SystemConfigService } from 'src/admin/system-config/system-config.service';
@@ -35,6 +36,7 @@ import {
   inferUploadContentType,
   normalizeUploadContentType,
 } from './upload-policy';
+import { MonitoringService } from 'src/monitoring/monitoring.service';
 
 type VariantView = {
   url: string;
@@ -111,6 +113,8 @@ export class UploadService {
     private readonly prisma: PrismaService,
     private readonly configService: ConfigService,
     private readonly systemConfigService: SystemConfigService,
+    @Optional()
+    private readonly monitoring?: MonitoringService,
     @Optional()
     private readonly imageQueue?: ImageProcessingQueueService,
   ) {
@@ -369,7 +373,7 @@ export class UploadService {
 
     try {
       this.logger.debug(
-        `Uploading file to S3 bucket ${this.bucketName} with key ${key}`,
+        `Uploading file to S3 bucket ${this.bucketName} with keyHash ${this.hashStorageKey(key)}`,
       );
       const command = new PutObjectCommand({
         Bucket: this.bucketName,
@@ -969,7 +973,10 @@ export class UploadService {
       });
       await this.s3.send(command);
     } catch (err) {
-      this.logger.error('S3 deleteObject failed for key:', key, err);
+      this.logger.error('S3 deleteObject failed', {
+        keyHash: this.hashStorageKey(key),
+        error: this.summarizeAwsError(err),
+      });
       throw err;
     }
   }
@@ -1029,11 +1036,20 @@ export class UploadService {
         message.includes('NO SUCH KEY');
 
       if (isNotFound) {
-        this.logger.warn('S3 object was not found for key:', key);
+        this.logger.warn('S3 object was not found', {
+          keyHash: this.hashStorageKey(key),
+        });
         return { exists: false, contentLength: 0, contentType: null };
       }
 
-      this.logger.error('S3 headObject failed for key:', key, details as any);
+      this.logger.error('S3 headObject failed', {
+        keyHash: this.hashStorageKey(key),
+        ...details,
+      });
+      this.emitUploadAlert('upload_storage_head_failed', 'error', {
+        keyHash: this.hashStorageKey(key),
+        ...details,
+      });
       throw new ServiceUnavailableException(
         'Storage is temporarily unavailable. Please retry in a moment.',
       );
@@ -1063,10 +1079,23 @@ export class UploadService {
     }
 
     if (presign.userId !== userId) {
+      this.emitUploadAlert('upload_finalize_owner_mismatch', 'warning', {
+        presignId: id,
+        actorId: userId,
+        ownerId: presign.userId,
+        fileType: presign.fileType,
+      });
       throw new ForbiddenException('Presign record does not belong to user');
     }
 
     if (presign.s3Key !== key) {
+      this.emitUploadAlert('upload_finalize_key_mismatch', 'warning', {
+        presignId: id,
+        actorId: userId,
+        fileType: presign.fileType,
+        expectedKeyHash: this.hashStorageKey(presign.s3Key),
+        receivedKeyHash: this.hashStorageKey(key),
+      });
       throw new BadRequestException('S3 key mismatch for presign record');
     }
 
@@ -1097,6 +1126,12 @@ export class UploadService {
 
     const expectedPrefix = `${presign.fileType}/${userId}/`;
     if (!key.startsWith(expectedPrefix)) {
+      this.emitUploadAlert('upload_finalize_prefix_mismatch', 'warning', {
+        presignId: id,
+        actorId: userId,
+        fileType: presign.fileType,
+        keyHash: this.hashStorageKey(key),
+      });
       throw new BadRequestException(
         'S3 key does not match expected user prefix',
       );
@@ -1121,16 +1156,37 @@ export class UploadService {
       throw new BadRequestException('Uploaded object is empty or invalid');
     }
     if (actualMetadata.contentLength > maxSize) {
+      this.emitUploadAlert('upload_finalize_size_limit_exceeded', 'warning', {
+        presignId: id,
+        actorId: userId,
+        fileType: presign.fileType,
+        contentLength: actualMetadata.contentLength,
+        maxSize,
+      });
       throw new BadRequestException('Uploaded object exceeds size limit');
     }
 
     const actualContentType = actualMetadata.contentType;
     if (actualContentType !== expectedMimeType) {
+      this.emitUploadAlert('upload_finalize_content_type_mismatch', 'warning', {
+        presignId: id,
+        actorId: userId,
+        fileType: presign.fileType,
+        expectedMimeType,
+        actualContentType,
+      });
       throw new BadRequestException('Uploaded object content type mismatch');
     }
 
     const reportedMimeType = this.normalizeContentType(mimeType);
     if (reportedMimeType && reportedMimeType !== actualContentType) {
+      this.emitUploadAlert('upload_finalize_reported_type_mismatch', 'warning', {
+        presignId: id,
+        actorId: userId,
+        fileType: presign.fileType,
+        reportedMimeType,
+        actualContentType,
+      });
       throw new BadRequestException(
         'Reported file type does not match storage metadata',
       );
@@ -1140,6 +1196,13 @@ export class UploadService {
       Number(size) > 0 &&
       Number(size) !== actualMetadata.contentLength
     ) {
+      this.emitUploadAlert('upload_finalize_reported_size_mismatch', 'warning', {
+        presignId: id,
+        actorId: userId,
+        fileType: presign.fileType,
+        reportedSize: Number(size),
+        actualSize: actualMetadata.contentLength,
+      });
       throw new BadRequestException(
         'Reported file size does not match storage metadata',
       );
@@ -1172,6 +1235,34 @@ export class UploadService {
     await this.enqueueImageProcessing(record.id, true);
 
     return record;
+  }
+
+  private emitUploadAlert(
+    event: string,
+    severity: 'info' | 'warning' | 'error' | 'critical',
+    metadata: Record<string, unknown>,
+  ): void {
+    this.monitoring?.emitAlert({
+      category: 'UPLOAD',
+      severity,
+      event,
+      message: event,
+      actorId:
+        typeof metadata.actorId === 'string' ? metadata.actorId : undefined,
+      entityType: 'FileUpload',
+      entityId:
+        typeof metadata.presignId === 'string'
+          ? metadata.presignId
+          : undefined,
+      metadata,
+    });
+  }
+
+  private hashStorageKey(key: string | null | undefined): string {
+    return createHash('sha256')
+      .update(String(key ?? ''))
+      .digest('hex')
+      .slice(0, 16);
   }
 
   // Helper for server-side tests: upload a buffer directly to S3 and create FileUpload record

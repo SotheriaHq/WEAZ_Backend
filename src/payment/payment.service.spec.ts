@@ -1521,4 +1521,44 @@ describe('PaymentService', () => {
     expect(tx.paymentAttemptRetryHistory.deleteMany).toHaveBeenCalled();
     expect(tx.webhookIngressAudit.deleteMany).toHaveBeenCalled();
   });
+
+  it('emits redacted monitoring alerts for critical payment mismatches', () => {
+    const monitoring = { emitAlert: jest.fn() };
+    const target = new PaymentService(
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      monitoring as any,
+    );
+
+    (target as any).emitReliabilityAlert(
+      'PAYMENT_WEBHOOK_AMOUNT_CURRENCY_MISMATCH',
+      {
+        paymentAttemptId: 'attempt_1',
+        correlationId: 'corr_1',
+        expectedAmount: 1000,
+        expectedCurrency: 'NGN',
+        receivedAmount: 1,
+        receivedCurrency: 'USD',
+        paystackSecret: 'sk_live_sensitive',
+        webhookSignature: 'raw-signature',
+      },
+    );
+
+    expect(monitoring.emitAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        category: 'WEBHOOK',
+        severity: 'critical',
+        event: 'PAYMENT_WEBHOOK_AMOUNT_CURRENCY_MISMATCH',
+        entityId: 'attempt_1',
+        correlationId: 'corr_1',
+        metadata: expect.objectContaining({
+          paystackSecret: '[REDACTED]',
+          webhookSignature: '[REDACTED]',
+        }),
+      }),
+    );
+  });
 });

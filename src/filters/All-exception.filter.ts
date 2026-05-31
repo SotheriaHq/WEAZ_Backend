@@ -11,10 +11,13 @@ import {
   redactSensitiveLogValue,
   sanitizeErrorForLog,
 } from 'src/common/utils/sensitive-log';
+import { MonitoringService } from 'src/monitoring/monitoring.service';
 
 @Catch()
 export class AllExceptionsFilter implements ExceptionFilter {
   private readonly logger = new Logger(AllExceptionsFilter.name);
+
+  constructor(private readonly monitoring?: MonitoringService) {}
 
   catch(exception: unknown, host: ArgumentsHost): void {
     const ctx = host.switchToHttp();
@@ -66,6 +69,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
       })}`,
       isProduction ? undefined : JSON.stringify(sanitizeErrorForLog(exception)),
     );
+    this.emitExceptionAlert(status, request, safePath, exception);
 
     // Response format
     const errorResponse = {
@@ -77,5 +81,43 @@ export class AllExceptionsFilter implements ExceptionFilter {
     };
 
     response.status(status).json(errorResponse);
+  }
+
+  private emitExceptionAlert(
+    status: number,
+    request: Request,
+    path: string,
+    exception: unknown,
+  ): void {
+    if (!this.monitoring) return;
+    if (
+      status < 500 &&
+      status !== HttpStatus.UNAUTHORIZED &&
+      status !== HttpStatus.FORBIDDEN
+    ) {
+      return;
+    }
+
+    this.monitoring.emitAlert({
+      category:
+        status === HttpStatus.UNAUTHORIZED || status === HttpStatus.FORBIDDEN
+          ? 'SECURITY'
+          : 'SYSTEM',
+      severity: status >= 500 ? 'error' : 'warning',
+      event:
+        status === HttpStatus.UNAUTHORIZED || status === HttpStatus.FORBIDDEN
+          ? 'http_auth_or_permission_failure'
+          : 'http_unhandled_failure',
+      message:
+        status === HttpStatus.UNAUTHORIZED || status === HttpStatus.FORBIDDEN
+          ? 'HTTP auth or permission failure'
+          : 'HTTP unhandled failure',
+      metadata: {
+        status,
+        method: request.method,
+        path,
+        errorName: exception instanceof Error ? exception.name : 'UnknownError',
+      },
+    });
   }
 }

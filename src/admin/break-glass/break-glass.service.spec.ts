@@ -17,6 +17,7 @@ describe('BreakGlassService', () => {
     config?: Record<string, string>;
     prisma?: any;
     jwt?: any;
+    monitoring?: any;
   }) => {
     const config = overrides?.config ?? {
       NODE_ENV: 'test',
@@ -56,6 +57,7 @@ describe('BreakGlassService', () => {
           errorMessage: null,
         }),
       } as any,
+      overrides?.monitoring,
     );
     return { service, prisma };
   };
@@ -96,6 +98,35 @@ describe('BreakGlassService', () => {
           }),
         }),
       }),
+    );
+  });
+
+  it('emits a safe monitoring event for break-glass failures', async () => {
+    const monitoring = { emitAuditAlert: jest.fn() };
+    const { service } = buildService({ monitoring });
+
+    await expect(
+      service.recoverSuperAdmin(
+        '',
+        { email: 'admin@example.com', firstName: 'Ada', lastName: 'Okafor' },
+        req,
+      ),
+    ).rejects.toThrow('Recovery token is required');
+
+    expect(monitoring.emitAuditAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        category: 'SECURITY',
+        severity: 'warning',
+        event: 'break_glass_failure',
+        metadata: expect.objectContaining({
+          reason: 'missing_recovery_token',
+          ipHash: expect.any(String),
+          userAgentHash: uaHash,
+        }),
+      }),
+    );
+    expect(JSON.stringify(monitoring.emitAuditAlert.mock.calls)).not.toContain(
+      '203.0.113.10',
     );
   });
 

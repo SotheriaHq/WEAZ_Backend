@@ -24,6 +24,7 @@ import {
   MarketSignalAggregationResult,
   MarketSignalAggregationService,
 } from './market-signal-aggregation.service';
+import { MonitoringService } from 'src/monitoring/monitoring.service';
 
 export interface MarketSignalIdentity {
   userId?: string | null;
@@ -92,6 +93,8 @@ export class MarketSignalService {
     private readonly prisma: PrismaService,
     @Optional()
     private readonly aggregationService?: MarketSignalAggregationService,
+    @Optional()
+    private readonly monitoring?: MonitoringService,
   ) {}
 
   async ingestBatch(dto: MarketSignalBatchDto, identity: MarketSignalIdentity) {
@@ -116,6 +119,11 @@ export class MarketSignalService {
 
     const events = Array.isArray(dto.events) ? dto.events : [];
     if (events.length > MARKET_SIGNAL_MAX_BATCH_EVENTS) {
+      this.emitRankingAlert('market_signal_batch_oversized', 'warning', {
+        received: events.length,
+        max: MARKET_SIGNAL_MAX_BATCH_EVENTS,
+        actorType: userId ? 'USER' : 'ANONYMOUS',
+      });
       throw new BadRequestException(
         `Signal batch cannot exceed ${MARKET_SIGNAL_MAX_BATCH_EVENTS} events`,
       );
@@ -137,6 +145,11 @@ export class MarketSignalService {
       ? await this.findBatchReceipt(userId, anonymousSessionId, batchId)
       : null;
     if (existingBatchReceipt) {
+      this.emitRankingAlert('market_signal_duplicate_batch_replay', 'info', {
+        batchId,
+        received: events.length,
+        actorType: userId ? 'USER' : 'ANONYMOUS',
+      });
       return {
         accepted: true,
         duplicate: true,
@@ -442,6 +455,11 @@ export class MarketSignalService {
           (error as any)?.message || error
         }`,
       );
+      this.emitRankingAlert('market_signal_aggregation_failed', 'error', {
+        eventCount: events.length,
+        actorType: identity.userId ? 'USER' : 'ANONYMOUS',
+        errorName: error instanceof Error ? error.name : 'UnknownError',
+      });
       return {
         mode: 'synchronous-db' as const,
         status: 'failed' as const,
@@ -717,5 +735,19 @@ export class MarketSignalService {
     value: unknown,
   ): value is T[keyof T] {
     return Object.values(enumType).includes(value as string);
+  }
+
+  private emitRankingAlert(
+    event: string,
+    severity: 'info' | 'warning' | 'error' | 'critical',
+    metadata: Record<string, unknown>,
+  ): void {
+    this.monitoring?.emitAlert({
+      category: 'RANKING',
+      severity,
+      event,
+      message: event,
+      metadata,
+    });
   }
 }

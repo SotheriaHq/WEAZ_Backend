@@ -35,17 +35,34 @@ describe('Phase 0 admin permissions', () => {
         .fn()
         .mockReturnValue([ADMIN_PERMISSIONS.PAYMENTS_SIMULATE]),
     };
-    const guard = new AdminPermissionGuard(reflector as any);
+    const monitoring = { emitAlert: jest.fn() };
+    const guard = new AdminPermissionGuard(reflector as any, monitoring as any);
     const context = (user: unknown) =>
       ({
         getHandler: jest.fn(),
         getClass: jest.fn(),
-        switchToHttp: () => ({ getRequest: () => ({ user }) }),
+        switchToHttp: () => ({
+          getRequest: () => ({
+            user,
+            method: 'POST',
+            url: '/payment/simulate',
+          }),
+        }),
       }) as any;
 
     expect(() =>
       guard.canActivate(context({ role: Role.Admin, permissions: [] })),
     ).toThrow('Insufficient admin permissions');
+    expect(monitoring.emitAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        category: 'SECURITY',
+        severity: 'warning',
+        event: 'admin_permission_denied',
+        metadata: expect.objectContaining({
+          requiredPermissions: [ADMIN_PERMISSIONS.PAYMENTS_SIMULATE],
+        }),
+      }),
+    );
     expect(
       guard.canActivate(
         context({

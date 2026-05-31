@@ -7,6 +7,7 @@ import { ImageProcessingQueueService } from 'src/queue/image-processing.queue.se
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { createPresignedPost } from '@aws-sdk/s3-presigned-post';
 import { FileType } from './upload.enums';
+import { MonitoringService } from 'src/monitoring/monitoring.service';
 
 jest.mock('@aws-sdk/s3-request-presigner', () => ({
   getSignedUrl: jest.fn().mockResolvedValue('signed-url'),
@@ -21,10 +22,12 @@ jest.mock('@aws-sdk/s3-presigned-post', () => ({
 
 describe('ImageService', () => {
   let service: UploadService;
+  let monitoring: { emitAlert: jest.Mock };
 
   beforeEach(async () => {
     (getSignedUrl as jest.Mock).mockClear();
     (createPresignedPost as jest.Mock).mockClear();
+    monitoring = { emitAlert: jest.fn() };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -61,6 +64,10 @@ describe('ImageService', () => {
         {
           provide: ImageProcessingQueueService,
           useValue: { enqueueSingle: jest.fn() },
+        },
+        {
+          provide: MonitoringService,
+          useValue: monitoring,
         },
       ],
     }).compile();
@@ -112,6 +119,45 @@ describe('ImageService', () => {
 
     await expect(service.getSignedUrl('file_1', 'user_1')).rejects.toThrow(
       'File not available',
+    );
+  });
+
+  it('emits a safe alert when presigned upload finalization is attempted by the wrong owner', async () => {
+    (service as any).prisma = {
+      presignedUpload: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'presign_1',
+          userId: 'owner_1',
+          s3Key: 'POST_IMAGE/owner_1/file.png',
+          fileType: FileType.POST_IMAGE,
+        }),
+      },
+    };
+
+    await expect(
+      service.createFileRecordFromPresign(
+        'presign_1',
+        'attacker_1',
+        'POST_IMAGE/owner_1/file.png',
+        'image/png',
+        100,
+      ),
+    ).rejects.toThrow('Presign record does not belong to user');
+
+    expect(monitoring.emitAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        category: 'UPLOAD',
+        severity: 'warning',
+        event: 'upload_finalize_owner_mismatch',
+        actorId: 'attacker_1',
+        metadata: expect.objectContaining({
+          presignId: 'presign_1',
+          ownerId: 'owner_1',
+        }),
+      }),
+    );
+    expect(JSON.stringify(monitoring.emitAlert.mock.calls)).not.toContain(
+      'POST_IMAGE/owner_1/file.png',
     );
   });
 

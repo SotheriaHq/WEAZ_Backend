@@ -27,6 +27,7 @@ import { requestLoggerMiddleware } from './common/middleware/request-logger.midd
 import { InputSanitizationPipe } from './common/pipes/input-sanitization.pipe';
 import { formatValidationErrors } from './common/utils/validation-error-redaction';
 import { sanitizeErrorForLog } from './common/utils/sensitive-log';
+import { MonitoringService } from './monitoring/monitoring.service';
 import * as express from 'express';
 import { existsSync, readFileSync } from 'fs';
 import { join, resolve } from 'path';
@@ -297,7 +298,9 @@ async function bootstrap() {
       SwaggerModule.setup('api', app, document);
     }
 
-    app.useGlobalFilters(new AllExceptionsFilter());
+    app.useGlobalFilters(
+      new AllExceptionsFilter(app.get(MonitoringService, { strict: false })),
+    );
     app.useGlobalInterceptors(new TransformInterceptor());
 
     const corsOriginsRaw = configService.get<string>(

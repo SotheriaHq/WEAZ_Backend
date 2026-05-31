@@ -33,12 +33,23 @@ describe('sensitive log utilities', () => {
       redactSensitiveLogValue({
         username: 'threadly',
         password: 'secret',
-        nested: { email: 'buyer@example.com', token: 'jwt' },
+        nested: {
+          email: 'buyer@example.com',
+          token: 'jwt',
+          signedUrl:
+            'https://bucket.s3.eu-north-1.amazonaws.com/key?X-Amz-Signature=raw',
+          paystackSecret: 'sk_live_raw',
+        },
       }),
     ).toEqual({
       username: 'threadly',
       password: '[REDACTED]',
-      nested: { email: '[REDACTED]', token: '[REDACTED]' },
+      nested: {
+        email: '[REDACTED]',
+        token: '[REDACTED]',
+        signedUrl: '[REDACTED]',
+        paystackSecret: '[REDACTED]',
+      },
     });
   });
 

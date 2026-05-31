@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ForbiddenException,
   InternalServerErrorException,
 } from '@nestjs/common';
 import { AllExceptionsFilter } from './All-exception.filter';
@@ -64,5 +65,29 @@ describe('AllExceptionsFilter', () => {
     expect(JSON.stringify(payload)).not.toContain('database stack secret');
     expect(JSON.stringify(payload)).not.toContain('stack');
     expect(loggerSpy.mock.calls[0][1]).toBeUndefined();
+  });
+
+  it('emits safe security monitoring for forbidden responses', () => {
+    const monitoring = { emitAlert: jest.fn() };
+    const filter = new AllExceptionsFilter(monitoring as any);
+    const { host } = createHost();
+
+    filter.catch(new ForbiddenException('missing permission'), host);
+
+    expect(monitoring.emitAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        category: 'SECURITY',
+        severity: 'warning',
+        event: 'http_auth_or_permission_failure',
+        metadata: expect.objectContaining({
+          status: 403,
+          method: 'POST',
+          path: '/auth/login',
+        }),
+      }),
+    );
+    expect(JSON.stringify(monitoring.emitAlert.mock.calls)).not.toContain(
+      'raw-token',
+    );
   });
 });
