@@ -125,7 +125,7 @@ export class EmailService {
         },
       });
       this.logger.log(
-        `Email transport configured: provider=${this.emailConfig.deliveryProviderName} relay=${this.emailConfig.smtpHost}:${this.emailConfig.smtpPort} from=${this.fromAddress}`,
+        `Email transport configured: provider=${this.emailConfig.deliveryProviderName} relay=${this.emailConfig.smtpHost}:${this.emailConfig.smtpPort} from=${maskEmailForLog(this.fromAddress)}`,
       );
       void this.verifyTransport(
         this.emailConfig.smtpHost,
@@ -134,7 +134,7 @@ export class EmailService {
     } else if (this.emailConfig.provider === 'mailjet') {
       if (hasMailjetCredentials) {
         this.logger.log(
-          `Email transport configured: provider=${this.emailConfig.deliveryProviderName} endpoint=${MAILJET_API_HOST} from=${this.fromAddress}`,
+          `Email transport configured: provider=${this.emailConfig.deliveryProviderName} endpoint=${MAILJET_API_HOST} from=${maskEmailForLog(this.fromAddress)}`,
         );
 
         if (this.mailjetSenderValidationEnabled) {
@@ -651,8 +651,9 @@ export class EmailService {
     await this.mailjetSenderValidationPromise;
 
     if (this.mailjetSenderState === 'check_failed') {
+      const maskedFromAddress = maskEmailForLog(this.fromAddress);
       this.logger.warn(
-        `Retrying Mailjet sender validation before send for ${this.fromAddress}`,
+        `Retrying Mailjet sender validation before send for ${maskedFromAddress}`,
       );
       this.mailjetSenderValidationPromise = this.validateMailjetSenderStatus();
       await this.mailjetSenderValidationPromise;
@@ -660,7 +661,7 @@ export class EmailService {
 
     if (this.mailjetSenderState === 'inactive') {
       const detail = this.mailjetSenderStateDetail ?? 'unknown sender status';
-      const message = `Mailjet sender ${this.fromAddress} is not active (${detail})`;
+      const message = `Mailjet sender ${maskEmailForLog(this.fromAddress)} is not active (${detail})`;
 
       if (this.mailjetEnforceActiveSender) {
         this.logger.error(
@@ -676,7 +677,7 @@ export class EmailService {
 
     if (this.mailjetSenderState === 'check_failed') {
       this.logger.warn(
-        `Mailjet sender validation could not be confirmed for ${this.fromAddress}; continuing send to avoid hard outage. detail=${this.mailjetSenderStateDetail ?? 'n/a'}`,
+        `Mailjet sender validation could not be confirmed for ${maskEmailForLog(this.fromAddress)}; continuing send to avoid hard outage. detail=${this.mailjetSenderStateDetail ?? 'n/a'}`,
       );
     }
   }
@@ -693,7 +694,7 @@ export class EmailService {
         this.mailjetSenderState = 'inactive';
         this.mailjetSenderStateDetail = 'sender identity not found in Mailjet';
         this.logger.error(
-          `Mailjet sender validation failed for ${this.fromAddress}: ${this.mailjetSenderStateDetail}`,
+          `Mailjet sender validation failed for ${maskEmailForLog(this.fromAddress)}: ${this.mailjetSenderStateDetail}`,
         );
         return;
       }
@@ -703,7 +704,7 @@ export class EmailService {
         this.mailjetSenderState = 'active';
         this.mailjetSenderStateDetail = `senderId=${sender.id ?? 'n/a'} status=${sender.status}`;
         this.logger.log(
-          `Mailjet sender validation passed for ${this.fromAddress}: ${this.mailjetSenderStateDetail}`,
+          `Mailjet sender validation passed for ${maskEmailForLog(this.fromAddress)}: ${this.mailjetSenderStateDetail}`,
         );
         return;
       }
@@ -711,13 +712,13 @@ export class EmailService {
       this.mailjetSenderState = 'inactive';
       this.mailjetSenderStateDetail = `senderId=${sender.id ?? 'n/a'} status=${sender.status || 'unknown'}`;
       this.logger.error(
-        `Mailjet sender validation failed for ${this.fromAddress}: ${this.mailjetSenderStateDetail}`,
+        `Mailjet sender validation failed for ${maskEmailForLog(this.fromAddress)}: ${this.mailjetSenderStateDetail}`,
       );
     } catch (error: any) {
       this.mailjetSenderState = 'check_failed';
       this.mailjetSenderStateDetail = error?.message ?? String(error);
       this.logger.warn(
-        `Mailjet sender validation check failed for ${this.fromAddress}: ${this.mailjetSenderStateDetail}`,
+        `Mailjet sender validation check failed for ${maskEmailForLog(this.fromAddress)}: ${this.mailjetSenderStateDetail}`,
       );
     }
   }

@@ -1,6 +1,7 @@
 import { EventEmitter } from 'events';
 import * as https from 'https';
 
+import { Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
 import { EmailService } from './email.service';
@@ -37,6 +38,26 @@ describe('EmailService', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+  });
+
+  it('redacts configured sender address in operational logs', () => {
+    const logSpy = jest
+      .spyOn(Logger.prototype, 'log')
+      .mockImplementation(() => undefined);
+
+    createService({
+      MAIL_FROM_ADDRESS: 'private.sender@example.com',
+      MAILJET_VALIDATE_SENDER_STATUS: 'false',
+    });
+
+    const emittedLogs = logSpy.mock.calls
+      .map((entry) => String(entry[0] ?? ''))
+      .join('\n');
+
+    expect(emittedLogs).not.toContain('private.sender@example.com');
+    expect(emittedLogs).toContain('email_fingerprint=');
+
+    logSpy.mockRestore();
   });
 
   it('sends Mailjet delivery through the HTTP API', async () => {
