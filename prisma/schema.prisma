@@ -1498,6 +1498,31 @@ enum ContentReviewReasonCode {
   OTHER
 }
 
+enum ContentReportTargetType {
+  PRODUCT
+  DESIGN
+  COLLECTION
+  MEDIA
+  BRAND
+}
+
+enum ContentReportReasonCode {
+  WRONG_OR_UNRELATED_IMAGE
+  MISLEADING_MEDIA
+  STOLEN_OR_COPYRIGHTED_IMAGE
+  OFFENSIVE_OR_UNSAFE_MEDIA
+  FAKE_OR_SCAM_LISTING
+  DETAILS_DO_NOT_MATCH_MEDIA
+  OTHER
+}
+
+enum ContentReportStatus {
+  OPEN
+  REVIEWED
+  RESOLVED
+  DISMISSED
+}
+
 enum BrandTrustTier {
   NEW
   LOW_TRUST
@@ -4492,6 +4517,28 @@ model ContentSubmission {
   @@index([designId, status])
   @@index([legacyCollectionId, status])
   @@index([brandId, status, submittedAt])
+}
+
+model ContentReport {
+  id           String                  @id @default(uuid()) @map("_id") @db.Uuid
+  reporterId   String                  @db.Uuid
+  targetType   ContentReportTargetType
+  targetId     String                  @db.Uuid
+  mediaId      String?                 @db.Uuid
+  reasonCode   ContentReportReasonCode
+  note         String?
+  status       ContentReportStatus     @default(OPEN)
+  reviewedById String?                 @db.Uuid
+  reviewedAt   DateTime?
+  resolution   String?
+  createdAt    DateTime                @default(now())
+  updatedAt    DateTime                @updatedAt
+
+  @@index([targetType, targetId, status, createdAt])
+  @@index([reporterId, createdAt])
+  @@index([status, createdAt])
+  @@index([reasonCode, createdAt])
+  @@index([mediaId])
 }
 
 model BrandTrustEvent {

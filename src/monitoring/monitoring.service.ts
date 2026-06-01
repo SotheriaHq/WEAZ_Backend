@@ -30,6 +30,7 @@ const ADMIN_NOTIFICATION_EVENTS = new Set([
   'market_signal_batch_oversized',
   'market_ranking_aggregation_failed',
   'market_ranking_aggregate_read_failed',
+  'content_report_high_severity',
 ]);
 
 type PersistedAlertRow = {

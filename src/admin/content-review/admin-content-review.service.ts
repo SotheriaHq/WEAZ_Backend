@@ -2,6 +2,8 @@ import { Injectable } from '@nestjs/common';
 import { ContentIntegrityService } from 'src/content-integrity/content-integrity.service';
 import {
   BrandTrustOverrideDto,
+  ContentReportQueryDto,
+  ContentReportResolutionDto,
   ContentReviewDecisionDto,
   ContentReviewQueryDto,
 } from './dto/content-review.dto';
@@ -14,6 +16,14 @@ export class AdminContentReviewService {
     return this.contentIntegrity.listSubmissions({
       status: query.status,
       entityType: query.entityType,
+      brandId: query.brandId,
+      trustTier: query.trustTier,
+      reviewMode: query.reviewMode,
+      from: query.from,
+      to: query.to,
+      q: query.q,
+      cursor: query.cursor,
+      take: query.take,
     });
   }
 
@@ -23,6 +33,34 @@ export class AdminContentReviewService {
 
   getReasonCodes() {
     return this.contentIntegrity.getReasonCodes();
+  }
+
+  getReportReasonCodes() {
+    return this.contentIntegrity.getReportReasonCodes();
+  }
+
+  listReports(query: ContentReportQueryDto) {
+    return this.contentIntegrity.listReports(query);
+  }
+
+  getReport(id: string) {
+    return this.contentIntegrity.getReport(id);
+  }
+
+  resolveReport(
+    reportId: string,
+    adminUserId: string,
+    dto: ContentReportResolutionDto,
+    req: any,
+  ) {
+    return this.contentIntegrity.resolveReport({
+      reportId,
+      adminUserId,
+      status: dto.status,
+      resolution: dto.resolution,
+      ipAddress: req?.ip,
+      userAgent: req?.headers?.['user-agent'],
+    });
   }
 
   approveSubmission(

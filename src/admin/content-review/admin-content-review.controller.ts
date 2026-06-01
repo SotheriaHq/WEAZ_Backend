@@ -19,6 +19,8 @@ import { AdminPermissionGuard } from '../guards/admin-permission.guard';
 import { AdminContentReviewService } from './admin-content-review.service';
 import {
   BrandTrustOverrideDto,
+  ContentReportQueryDto,
+  ContentReportResolutionDto,
   ContentReviewDecisionDto,
   ContentReviewQueryDto,
 } from './dto/content-review.dto';
@@ -35,10 +37,39 @@ export class AdminContentReviewController {
     return this.reviewService.getReasonCodes();
   }
 
+  @Get('report-reason-codes')
+  @RequirePermissions(ADMIN_PERMISSIONS.CONTENT_REVIEW_READ)
+  reportReasonCodes() {
+    return this.reviewService.getReportReasonCodes();
+  }
+
   @Get('submissions')
   @RequirePermissions(ADMIN_PERMISSIONS.CONTENT_REVIEW_READ)
   listSubmissions(@Query() query: ContentReviewQueryDto) {
     return this.reviewService.listSubmissions(query);
+  }
+
+  @Get('reports')
+  @RequirePermissions(ADMIN_PERMISSIONS.CONTENT_REVIEW_READ)
+  listReports(@Query() query: ContentReportQueryDto) {
+    return this.reviewService.listReports(query);
+  }
+
+  @Get('reports/:id')
+  @RequirePermissions(ADMIN_PERMISSIONS.CONTENT_REVIEW_READ)
+  getReport(@Param('id') id: string) {
+    return this.reviewService.getReport(id);
+  }
+
+  @Patch('reports/:id/resolve')
+  @RequirePermissions(ADMIN_PERMISSIONS.CONTENT_REVIEW_MANAGE)
+  resolveReport(
+    @Param('id') id: string,
+    @Body() dto: ContentReportResolutionDto,
+    @Req() req: Request,
+  ) {
+    const actorId = (req as any).user.sub;
+    return this.reviewService.resolveReport(id, actorId, dto, req);
   }
 
   @Get('submissions/:id')

@@ -3,7 +3,11 @@ import {
   BrandContentReviewMode,
   BrandTrustTier,
   BrandVerificationStatus,
+  CollectionStatus,
+  ContentReportReasonCode,
+  ContentReportTargetType,
   ContentMediaViewSlot,
+  ContentReviewReasonCode,
   ContentSubmissionStatus,
   FileType,
 } from '@prisma/client';
@@ -30,12 +34,21 @@ describe('ContentIntegrityService', () => {
       },
       product: {
         count: jest.fn(),
+        findFirst: jest.fn(),
+        findUnique: jest.fn(),
+      },
+      user: {
+        findUnique: jest.fn(),
       },
       collection: {
         count: jest.fn(),
       },
       contentSubmission: {
         findUnique: jest.fn(),
+      },
+      contentReport: {
+        findFirst: jest.fn(),
+        create: jest.fn(),
       },
       brandTrustEvent: {
         create: jest.fn().mockResolvedValue({ id: 'event-1' }),
@@ -157,5 +170,118 @@ describe('ContentIntegrityService', () => {
         action: 'reject',
       }),
     ).rejects.toThrow(BadRequestException);
+  });
+
+  it('requires an admin note when Other is selected for reject/request changes', async () => {
+    const { prisma, service } = createService();
+    prisma.contentSubmission.findUnique.mockResolvedValue({
+      id: 'submission-1',
+      entityType: 'PRODUCT',
+      productId: 'product-1',
+      submittedById: 'owner-1',
+      status: ContentSubmissionStatus.IN_REVIEW,
+    });
+
+    await expect(
+      service.reviewSubmission({
+        submissionId: 'submission-1',
+        adminUserId: 'admin-1',
+        action: 'request_changes',
+        reasonCode: ContentReviewReasonCode.OTHER,
+      }),
+    ).rejects.toThrow(BadRequestException);
+  });
+
+  it('creates a content report without returning raw media URLs', async () => {
+    const { prisma, service } = createService();
+    prisma.product.findFirst.mockResolvedValue({
+      id: 'product-1',
+      brandId: 'brand-1',
+      name: 'Boubou',
+    });
+    prisma.product.findUnique.mockResolvedValue({
+      id: 'product-1',
+      brandId: 'brand-1',
+      name: 'Boubou',
+      publicationStatus: CollectionStatus.PUBLISHED,
+    });
+    prisma.contentReport.findFirst.mockResolvedValue(null);
+    prisma.contentReport.create.mockResolvedValue({
+      id: 'report-1',
+      reporterId: 'user-1',
+      targetType: ContentReportTargetType.PRODUCT,
+      targetId: 'product-1',
+      mediaId: null,
+      reasonCode: ContentReportReasonCode.WRONG_OR_UNRELATED_IMAGE,
+      note: 'Wrong item',
+      status: 'OPEN',
+      reviewedById: null,
+      reviewedAt: null,
+      resolution: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    prisma.user.findUnique.mockResolvedValue({
+      id: 'user-1',
+      username: 'reporter',
+    });
+
+    const report = await service.reportContent({
+      reporterId: 'user-1',
+      targetType: ContentReportTargetType.PRODUCT,
+      targetId: 'product-1',
+      reasonCode: ContentReportReasonCode.WRONG_OR_UNRELATED_IMAGE,
+      note: 'Wrong item',
+    });
+
+    expect(report.duplicate).toBe(false);
+    expect(report.reasonLabel).toBe('Wrong or unrelated image');
+    expect(JSON.stringify(report)).not.toContain('s3Url');
+  });
+
+  it('returns an existing open content report for duplicate reports', async () => {
+    const createdAt = new Date();
+    const { prisma, service } = createService();
+    prisma.product.findFirst.mockResolvedValue({
+      id: 'product-1',
+      brandId: 'brand-1',
+      name: 'Boubou',
+    });
+    prisma.product.findUnique.mockResolvedValue({
+      id: 'product-1',
+      brandId: 'brand-1',
+      name: 'Boubou',
+      publicationStatus: CollectionStatus.PUBLISHED,
+    });
+    prisma.contentReport.findFirst.mockResolvedValue({
+      id: 'report-1',
+      reporterId: 'user-1',
+      targetType: ContentReportTargetType.PRODUCT,
+      targetId: 'product-1',
+      mediaId: null,
+      reasonCode: ContentReportReasonCode.WRONG_OR_UNRELATED_IMAGE,
+      note: 'Wrong item',
+      status: 'OPEN',
+      reviewedById: null,
+      reviewedAt: null,
+      resolution: null,
+      createdAt,
+      updatedAt: createdAt,
+    });
+    prisma.user.findUnique.mockResolvedValue({
+      id: 'user-1',
+      username: 'reporter',
+    });
+
+    const report = await service.reportContent({
+      reporterId: 'user-1',
+      targetType: ContentReportTargetType.PRODUCT,
+      targetId: 'product-1',
+      reasonCode: ContentReportReasonCode.WRONG_OR_UNRELATED_IMAGE,
+      note: 'Wrong item',
+    });
+
+    expect(report.duplicate).toBe(true);
+    expect(prisma.contentReport.create).not.toHaveBeenCalled();
   });
 });

@@ -39,6 +39,12 @@ describe('MVP API route contract', () => {
     const storeCollectionsController = readSource(
       'collections/store-collections.controller.ts',
     );
+    const adminContentReviewController = readSource(
+      'admin/content-review/admin-content-review.controller.ts',
+    );
+    const contentIntegrityController = readSource(
+      'content-integrity/content-integrity.controller.ts',
+    );
 
     expect(storeController).toContain("@Get(['orders', 'store/orders'])");
     expect(storeController).toContain("@Get('public/storefronts/:slug')");
@@ -56,5 +62,27 @@ describe('MVP API route contract', () => {
     expect(storeCollectionsController).toContain(
       "@Controller('store-collections')",
     );
+    expect(adminContentReviewController).toContain(
+      "@Controller('admin/content-review')",
+    );
+    expect(adminContentReviewController).toContain("@Get('submissions')");
+    expect(adminContentReviewController).toContain(
+      "@Patch('submissions/:id/approve')",
+    );
+    expect(adminContentReviewController).toContain(
+      "@Patch('submissions/:id/reject')",
+    );
+    expect(adminContentReviewController).toContain(
+      "@Patch('submissions/:id/request-changes')",
+    );
+    expect(adminContentReviewController).toContain("@Get('reports')");
+    expect(adminContentReviewController).toContain(
+      "@Patch('reports/:id/resolve')",
+    );
+    expect(contentIntegrityController).toContain(
+      "@Controller('content-integrity')",
+    );
+    expect(contentIntegrityController).toContain("@Post('reports')");
+    expect(contentIntegrityController).toContain("@Get('submissions/:id')");
   });
 });
