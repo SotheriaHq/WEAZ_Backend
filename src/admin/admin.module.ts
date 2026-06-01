@@ -25,6 +25,7 @@ import { AdminDesignsService } from './designs/admin-designs.service';
 import { AdminFeaturedService } from './featured/admin-featured.service';
 import { FeaturedExpiryCronService } from './featured/featured-expiry.cron.service';
 import { FeaturedAutoRemovalService } from './featured/featured-auto-removal.service';
+import { AdminContentReviewService } from './content-review/admin-content-review.service';
 
 // Controllers
 import { AdminUsersController } from './users/admin-users.controller';
@@ -45,6 +46,7 @@ import { AdminDesignsController } from './designs/admin-designs.controller';
 import { AdminDashboardController } from './dashboard/admin-dashboard.controller';
 import { AdminDashboardService } from './dashboard/admin-dashboard.service';
 import { AdminFeaturedController } from './featured/admin-featured.controller';
+import { AdminContentReviewController } from './content-review/admin-content-review.controller';
 import { SystemConfigModule } from './system-config/system-config.module';
 import { SystemConfigController } from './system-config/system-config.controller';
 import { FinanceModule } from 'src/finance/finance.module';
@@ -57,6 +59,7 @@ import { AdminMarketGovernanceModule } from './market-governance/admin-market-go
 import { AdminEmailChangeService } from './email-change/admin-email-change.service';
 import { AdminEmailChangeController } from './email-change/admin-email-change.controller';
 import { EmailModule } from 'src/email/email.module';
+import { ContentIntegrityModule } from 'src/content-integrity/content-integrity.module';
 
 @Module({
   imports: [
@@ -69,6 +72,7 @@ import { EmailModule } from 'src/email/email.module';
     QueueModule,
     AdminMarketGovernanceModule,
     EmailModule,
+    ContentIntegrityModule,
   ],
   controllers: [
     AdminUsersController,
@@ -88,6 +92,7 @@ import { EmailModule } from 'src/email/email.module';
     AdminDesignsController,
     AdminDashboardController,
     AdminFeaturedController,
+    AdminContentReviewController,
     AdminLedgerController,
     AdminFinanceController,
     SystemConfigController,
@@ -113,6 +118,7 @@ import { EmailModule } from 'src/email/email.module';
     AdminDesignsService,
     AdminDashboardService,
     AdminFeaturedService,
+    AdminContentReviewService,
     AdminLedgerService,
     AdminFinanceService,
     FeaturedExpiryCronService,

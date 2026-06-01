@@ -1,4 +1,9 @@
-import { FileType, CollectionType, CollectionVisibility } from '@prisma/client';
+import {
+  FileType,
+  CollectionType,
+  CollectionVisibility,
+  ContentMediaViewSlot,
+} from '@prisma/client';
 import { Transform, Type } from 'class-transformer';
 import {
   ArrayMaxSize,
@@ -33,6 +38,10 @@ export class DesignFileSpecDto {
   @IsOptional()
   @IsEnum(FileType)
   fileType?: FileType;
+
+  @IsOptional()
+  @IsEnum(ContentMediaViewSlot)
+  viewSlot?: ContentMediaViewSlot;
 }
 
 export class CompleteDesignUploadDto {
@@ -50,6 +59,10 @@ export class CompleteDesignUploadDto {
   @IsString()
   @IsNotEmpty()
   actualMimeType: string;
+
+  @IsOptional()
+  @IsEnum(ContentMediaViewSlot)
+  viewSlot?: ContentMediaViewSlot;
 }
 
 export class DesignMetadataDto {

@@ -210,6 +210,11 @@ export class DesignsService {
     );
   }
 
+  async submitDesignForReview(designId: string, userId: string) {
+    this.assertDesignOnlyWriteModeNotEnabled();
+    return this.collectionsService.submitDesignForReview(designId, userId);
+  }
+
   async getMyDraftDesigns(userId: string) {
     const result = await this.collectionsService.getMyDraftCollections(userId);
     return DesignResponseMapper.fromLegacyCollectionList(result);

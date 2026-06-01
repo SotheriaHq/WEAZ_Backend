@@ -552,7 +552,11 @@ export class UploadService {
     originalName: string,
     fileType: FileType,
     contentType?: string,
-    options?: { collectionId?: string; orderIndex?: number },
+    options?: {
+      collectionId?: string;
+      orderIndex?: number;
+      viewSlot?: string | null;
+    },
   ) {
     // create presigned post and persist a pending PresignedUpload record
     this.assertAllowedExtension(originalName, fileType);
@@ -584,6 +588,7 @@ export class UploadService {
         collectionId: options?.collectionId,
         orderIndex:
           typeof options?.orderIndex === 'number' ? options.orderIndex : null,
+        viewSlot: options?.viewSlot ?? null,
         originalName,
         contentType: trustedContentType,
         fileType,

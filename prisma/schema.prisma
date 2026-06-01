@@ -189,6 +189,7 @@ model FileUpload {
   // Relation to collection media
   collectionMedias   CollectionMedia[]   @relation("FileUpload_to_CollectionMedia")
   designMedias       DesignMedia[]       @relation("FileUpload_to_DesignMedia")
+  productMedias      ProductMedia[]      @relation("FileUpload_to_ProductMedia")
   userProfileBanners UserProfile[]       @relation("UserProfileBannerImage")
   variants           FileVariant[]
   messageAttachments MessageAttachment[]
@@ -900,6 +901,15 @@ enum NotificationType {
   REVIEW_REPLY_RECEIVED
   REVIEW_HIDDEN_BY_ADMIN
 
+  // Content integrity review workflow
+  CONTENT_SUBMITTED_FOR_REVIEW
+  CONTENT_REVIEW_APPROVED
+  CONTENT_REVIEW_REJECTED
+  CONTENT_CHANGES_REQUESTED
+  CONTENT_RESUBMITTED
+  CONTENT_PUBLISHED
+  CONTENT_REVIEW_FAILED
+
   // Custom orders
   CUSTOM_ORDER_PAYMENT_RECEIVED
   CUSTOM_ORDER_REVIEW_REQUIRED
@@ -1426,8 +1436,92 @@ model StoreCollectionProduct {
 
 enum CollectionStatus {
   DRAFT // Created but files not uploaded
+  PROCESSING // Upload or media processing is still in progress
+  IN_REVIEW // Submitted for content review and hidden from public surfaces
+  CHANGES_REQUESTED // Reviewer requested creator changes
+  REJECTED // Reviewer rejected the current publish attempt
+  FAILED // Publish attempt failed due to validation or processing
   PUBLISHED // Fully published and visible
   ARCHIVED // Hidden from public view
+  REMOVED // Removed by moderation or policy enforcement
+}
+
+enum ContentEntityType {
+  PRODUCT
+  DESIGN
+}
+
+enum ContentMediaViewSlot {
+  FRONT
+  BACK
+  LEFT_SIDE
+  RIGHT_SIDE
+  DETAIL
+  ON_MODEL
+  FABRIC_DETAIL
+  OTHER
+}
+
+enum ContentMediaPurpose {
+  REQUIRED_VIEW
+  OPTIONAL_VIEW
+  COVER
+}
+
+enum ContentMediaReviewStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CHANGES_REQUESTED
+  REMOVED
+}
+
+enum ContentSubmissionStatus {
+  IN_REVIEW
+  APPROVED
+  REJECTED
+  CHANGES_REQUESTED
+  CANCELLED
+}
+
+enum ContentReviewReasonCode {
+  POOR_IMAGE_QUALITY
+  MISSING_REQUIRED_VIEW
+  DUPLICATE_ANGLE
+  MODEL_FABRIC_MISMATCH
+  PROHIBITED_CONTENT
+  AI_OR_MANIPULATED_IMAGE_SUSPECTED
+  WRONG_CATEGORY_OR_METADATA_MISMATCH
+  UNSAFE_OR_FALSE_CLAIM
+  INTELLECTUAL_PROPERTY_OR_BRAND_MISUSE
+  NOT_A_PRODUCT_OR_DESIGN_LISTING
+  OTHER
+}
+
+enum BrandTrustTier {
+  NEW
+  LOW_TRUST
+  NORMAL
+  HIGH_TRUST
+  RESTRICTED
+}
+
+enum BrandContentReviewMode {
+  PRE_REVIEW_REQUIRED
+  POST_REVIEW_ALLOWED
+  AUTO_PUBLISH_ALLOWED
+  PUBLISH_DISABLED
+}
+
+enum BrandTrustEventType {
+  TRUST_EVALUATED
+  TRUST_OVERRIDE_SET
+  TRUST_OVERRIDE_CLEARED
+  CONTENT_SUBMITTED
+  CONTENT_APPROVED
+  CONTENT_REJECTED
+  CONTENT_CHANGES_REQUESTED
+  PUBLISH_DISABLED_ATTEMPT
 }
 
 enum CollectionVisibility {
@@ -1544,31 +1638,52 @@ model CollectionMedia {
   file                    FileUpload                @relation("FileUpload_to_CollectionMedia", fields: [fileUploadId], references: [id])
   orderIndex              Int                       @default(0)
   mediaType               FileType
+  viewSlot                ContentMediaViewSlot?
+  mediaPurpose            ContentMediaPurpose       @default(OPTIONAL_VIEW)
+  reviewStatus            ContentMediaReviewStatus  @default(APPROVED)
+  reviewReasonCode        ContentReviewReasonCode?
+  reviewReason            String?
+  createdById             String?                   @db.Uuid
+  brandId                 String?                   @db.Uuid
   threadsCount            Int                       @default(0) @map("likesCount")
   CollectionMediaReaction CollectionMediaReaction[]
   commentsCount           Int                       @default(0)
   // inverse relation for cover usage
   coverOf                 Collection[]              @relation("CollectionCoverMedia")
   designMediaMirror       DesignMedia?              @relation("LegacyCollectionMediaDesign")
+
+  @@unique([collectionId, viewSlot])
+  @@index([collectionId, viewSlot])
+  @@index([reviewStatus])
 }
 
 model DesignMedia {
-  id                      String           @id @default(uuid()) @map("_id") @db.Uuid
-  designId                String           @db.Uuid
-  design                  Design           @relation("Design_to_Media", fields: [designId], references: [id], onDelete: Cascade)
-  fileUploadId            String           @db.Uuid
-  file                    FileUpload       @relation("FileUpload_to_DesignMedia", fields: [fileUploadId], references: [id])
-  orderIndex              Int              @default(0)
+  id                      String                   @id @default(uuid()) @map("_id") @db.Uuid
+  designId                String                   @db.Uuid
+  design                  Design                   @relation("Design_to_Media", fields: [designId], references: [id], onDelete: Cascade)
+  fileUploadId            String                   @db.Uuid
+  file                    FileUpload               @relation("FileUpload_to_DesignMedia", fields: [fileUploadId], references: [id])
+  orderIndex              Int                      @default(0)
   mediaType               FileType
-  threadsCount            Int              @default(0)
-  commentsCount           Int              @default(0)
-  legacyCollectionMediaId String?          @unique @db.Uuid
-  legacyCollectionMedia   CollectionMedia? @relation("LegacyCollectionMediaDesign", fields: [legacyCollectionMediaId], references: [id], onDelete: SetNull)
-  coverOf                 Design[]         @relation("DesignCoverMedia")
-  createdAt               DateTime         @default(now())
-  updatedAt               DateTime         @updatedAt
+  viewSlot                ContentMediaViewSlot?
+  mediaPurpose            ContentMediaPurpose      @default(OPTIONAL_VIEW)
+  reviewStatus            ContentMediaReviewStatus @default(APPROVED)
+  reviewReasonCode        ContentReviewReasonCode?
+  reviewReason            String?
+  createdById             String?                  @db.Uuid
+  brandId                 String?                  @db.Uuid
+  threadsCount            Int                      @default(0)
+  commentsCount           Int                      @default(0)
+  legacyCollectionMediaId String?                  @unique @db.Uuid
+  legacyCollectionMedia   CollectionMedia?         @relation("LegacyCollectionMediaDesign", fields: [legacyCollectionMediaId], references: [id], onDelete: SetNull)
+  coverOf                 Design[]                 @relation("DesignCoverMedia")
+  createdAt               DateTime                 @default(now())
+  updatedAt               DateTime                 @updatedAt
 
+  @@unique([designId, viewSlot])
   @@index([designId, orderIndex])
+  @@index([designId, viewSlot])
+  @@index([reviewStatus])
   @@index([legacyCollectionMediaId])
 }
 
@@ -2199,22 +2314,23 @@ model SizingTemplate {
 }
 
 model PresignedUpload {
-  id                   String        @id @map("_id") @db.Uuid
-  userId               String        @db.Uuid
-  user                 User          @relation(fields: [userId], references: [id], onDelete: Cascade)
-  collectionId         String?       @db.Uuid
+  id                   String                @id @map("_id") @db.Uuid
+  userId               String                @db.Uuid
+  user                 User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  collectionId         String?               @db.Uuid
   orderIndex           Int?
+  viewSlot             ContentMediaViewSlot?
   originalName         String
   contentType          String
   fileType             FileType
-  s3Key                String        @unique
+  s3Key                String                @unique
   size                 Int?
-  status               PresignStatus @default(PENDING)
+  status               PresignStatus         @default(PENDING)
   finalizedAt          DateTime?
   processingEnqueuedAt DateTime?
   expiresAt            DateTime
-  createdAt            DateTime      @default(now())
-  updatedAt            DateTime      @updatedAt
+  createdAt            DateTime              @default(now())
+  updatedAt            DateTime              @updatedAt
 }
 
 // ===== Threads Analytics & Moderation =====
@@ -2409,6 +2525,11 @@ model Brand {
   featuredCount        Int       @default(0)
   featuredPenaltyUntil DateTime?
 
+  // Content integrity trust policy
+  contentMediaPolicyAcknowledgedAt DateTime?
+  contentTrustTierOverride         BrandTrustTier?
+  contentReviewModeOverride        BrandContentReviewMode?
+
   policy         StorePolicy?
   paymentAccount StorePaymentAccount?
 
@@ -2430,6 +2551,7 @@ model Brand {
   payouts                   Payout[]
   products                  Product[]                  @relation("Brand_to_Products")
   designs                   Design[]                   @relation("BrandDesigns")
+  productMedias             ProductMedia[]             @relation("BrandProductMedias")
   featuredItems             FeaturedItem[]
   verificationAttempts      BrandVerificationAttempt[]
   verificationNotes         BrandVerificationNote[]
@@ -3097,24 +3219,24 @@ model MessageThreadParticipant {
 }
 
 model Message {
-  id                String                 @id @default(uuid()) @db.Uuid
-  threadId          String                 @db.Uuid
-  contextType       MessageContextType     @default(DIRECT)
-  orderId           String?                @db.Uuid
-  customOrderId     String?                @db.Uuid
-  senderUserId      String?                @db.Uuid
-  senderRole        MessageParticipantRole
-  kind              MessageKind            @default(USER)
-  visibilityState   MessageVisibilityState @default(VISIBLE)
-  clientMessageId   String?
-  bodyText          String?                @db.Text
-  metadataJson      Json?
-  replyToMessageId  String?                @db.Uuid
-  moderatedById     String?                @db.Uuid
-  moderatedAt       DateTime?
-  moderationReason  String?
-  createdAt         DateTime               @default(now())
-  editedAt          DateTime?
+  id               String                 @id @default(uuid()) @db.Uuid
+  threadId         String                 @db.Uuid
+  contextType      MessageContextType     @default(DIRECT)
+  orderId          String?                @db.Uuid
+  customOrderId    String?                @db.Uuid
+  senderUserId     String?                @db.Uuid
+  senderRole       MessageParticipantRole
+  kind             MessageKind            @default(USER)
+  visibilityState  MessageVisibilityState @default(VISIBLE)
+  clientMessageId  String?
+  bodyText         String?                @db.Text
+  metadataJson     Json?
+  replyToMessageId String?                @db.Uuid
+  moderatedById    String?                @db.Uuid
+  moderatedAt      DateTime?
+  moderationReason String?
+  createdAt        DateTime               @default(now())
+  editedAt         DateTime?
 
   thread           MessageThread            @relation(fields: [threadId], references: [id], onDelete: Cascade)
   sender           User?                    @relation("MessageSender", fields: [senderUserId], references: [id], onDelete: SetNull)
@@ -4234,8 +4356,9 @@ model Product {
   colorHexCodes          Json? // {"Navy": "#1E3A5F", "Indigo": "#4F46E5"}
 
   // Media
-  images    String[] @default([]) // Array of image URLs
+  images    String[]       @default([]) // Array of image URLs
   thumbnail String?
+  media     ProductMedia[] @relation("Product_to_Media")
 
   // Inventory
   totalStock                          Int       @default(0)
@@ -4247,12 +4370,13 @@ model Product {
   customOrderOutOfStockDiscontinueAt  DateTime?
 
   // Metadata
-  tags              String[]       @default([])
-  gender            CollectionType @default(EVERYBODY)
-  isActive          Boolean        @default(true)
-  isFeatured        Boolean        @default(false) // @deprecated — use FeaturedItem table
-  isFeaturedBlocked Boolean        @default(false)
-  isPhysicalProduct Boolean        @default(true)
+  tags              String[]         @default([])
+  gender            CollectionType   @default(EVERYBODY)
+  isActive          Boolean          @default(true)
+  publicationStatus CollectionStatus @default(DRAFT)
+  isFeatured        Boolean          @default(false) // @deprecated — use FeaturedItem table
+  isFeaturedBlocked Boolean          @default(false)
+  isPhysicalProduct Boolean          @default(true)
   customsRegion     String?
 
   // Policies
@@ -4302,6 +4426,8 @@ model Product {
   // Performance indexes
   @@index([brandId])
   @@index([brandId, isActive])
+  @@index([brandId, publicationStatus, createdAt])
+  @@index([publicationStatus, createdAt])
   @@index([collectionId])
   @@index([brandId, isFeatured])
   @@index([createdAt])
@@ -4314,6 +4440,73 @@ model Product {
   @@index([categoryTypeId])
   @@index([categoryId])
   @@index([customOrderOutOfStockDiscontinueAt])
+}
+
+model ProductMedia {
+  id               String                   @id @default(uuid()) @map("_id") @db.Uuid
+  productId        String                   @db.Uuid
+  product          Product                  @relation("Product_to_Media", fields: [productId], references: [id], onDelete: Cascade)
+  fileUploadId     String                   @db.Uuid
+  file             FileUpload               @relation("FileUpload_to_ProductMedia", fields: [fileUploadId], references: [id])
+  brandId          String                   @db.Uuid
+  brand            Brand                    @relation("BrandProductMedias", fields: [brandId], references: [id], onDelete: Cascade)
+  createdById      String                   @db.Uuid
+  viewSlot         ContentMediaViewSlot
+  mediaPurpose     ContentMediaPurpose      @default(OPTIONAL_VIEW)
+  reviewStatus     ContentMediaReviewStatus @default(APPROVED)
+  reviewReasonCode ContentReviewReasonCode?
+  reviewReason     String?
+  orderIndex       Int                      @default(0)
+  createdAt        DateTime                 @default(now())
+  updatedAt        DateTime                 @updatedAt
+
+  @@unique([productId, viewSlot])
+  @@unique([productId, fileUploadId])
+  @@index([productId, orderIndex])
+  @@index([brandId, reviewStatus])
+  @@index([fileUploadId])
+}
+
+model ContentSubmission {
+  id                 String                   @id @default(uuid()) @map("_id") @db.Uuid
+  entityType         ContentEntityType
+  productId          String?                  @db.Uuid
+  designId           String?                  @db.Uuid
+  legacyCollectionId String?                  @db.Uuid
+  brandId            String?                  @db.Uuid
+  submittedById      String                   @db.Uuid
+  reviewedById       String?                  @db.Uuid
+  status             ContentSubmissionStatus  @default(IN_REVIEW)
+  previousStatus     CollectionStatus?
+  targetStatus       CollectionStatus         @default(PUBLISHED)
+  reasonCode         ContentReviewReasonCode?
+  reasonNote         String?
+  submittedAt        DateTime                 @default(now())
+  reviewedAt         DateTime?
+  createdAt          DateTime                 @default(now())
+  updatedAt          DateTime                 @updatedAt
+
+  @@index([status, submittedAt])
+  @@index([entityType, status, submittedAt])
+  @@index([productId, status])
+  @@index([designId, status])
+  @@index([legacyCollectionId, status])
+  @@index([brandId, status, submittedAt])
+}
+
+model BrandTrustEvent {
+  id          String                  @id @default(uuid()) @map("_id") @db.Uuid
+  brandId     String                  @db.Uuid
+  actorUserId String?                 @db.Uuid
+  eventType   BrandTrustEventType
+  tier        BrandTrustTier?
+  reviewMode  BrandContentReviewMode?
+  reason      String?
+  metadata    Json?
+  createdAt   DateTime                @default(now())
+
+  @@index([brandId, createdAt])
+  @@index([eventType, createdAt])
 }
 
 model ProductVariant {
@@ -4583,6 +4776,8 @@ enum AdminAuditAction {
   ADMIN_BRAND_STORE_OVERRIDE
   ADMIN_PRODUCT_MODERATE
   ADMIN_COLLECTION_MODERATE
+  ADMIN_CONTENT_REVIEW_ACTION
+  ADMIN_BRAND_TRUST_OVERRIDE
   ADMIN_MODERATION_QUARANTINE
   ADMIN_MODERATION_BULK_REMOVE
   ADMIN_MODERATION_ITEM_UPDATE
@@ -4705,31 +4900,31 @@ model AdminAuditLog {
 }
 
 model OperationalAlert {
-  id                   String   @id @default(uuid()) @map("_id") @db.Uuid
-  category             String   @db.VarChar(40)
-  severity             String   @db.VarChar(20)
-  event                String   @db.VarChar(160)
-  title                String?  @db.VarChar(240)
+  id                   String    @id @default(uuid()) @map("_id") @db.Uuid
+  category             String    @db.VarChar(40)
+  severity             String    @db.VarChar(20)
+  event                String    @db.VarChar(160)
+  title                String?   @db.VarChar(240)
   message              String
-  status               String   @default("OPEN") @db.VarChar(32)
-  actorId              String?  @db.Uuid
-  userId               String?  @db.Uuid
-  entityType           String?  @db.VarChar(80)
-  entityId             String?  @db.VarChar(120)
-  correlationId        String?  @db.VarChar(120)
+  status               String    @default("OPEN") @db.VarChar(32)
+  actorId              String?   @db.Uuid
+  userId               String?   @db.Uuid
+  entityType           String?   @db.VarChar(80)
+  entityId             String?   @db.VarChar(120)
+  correlationId        String?   @db.VarChar(120)
   metadata             Json?
-  dedupeKey            String?  @unique @db.VarChar(220)
-  occurrenceCount      Int      @default(1)
-  firstSeenAt          DateTime @default(now())
-  lastSeenAt           DateTime @default(now())
-  createdAt            DateTime @default(now())
-  updatedAt            DateTime @updatedAt
+  dedupeKey            String?   @unique @db.VarChar(220)
+  occurrenceCount      Int       @default(1)
+  firstSeenAt          DateTime  @default(now())
+  lastSeenAt           DateTime  @default(now())
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
   acknowledgedAt       DateTime?
-  acknowledgedBy       String?  @db.Uuid
+  acknowledgedBy       String?   @db.Uuid
   resolvedAt           DateTime?
-  resolvedBy           String?  @db.Uuid
+  resolvedBy           String?   @db.Uuid
   ignoredAt            DateTime?
-  ignoredBy            String?  @db.Uuid
+  ignoredBy            String?   @db.Uuid
   notificationQueuedAt DateTime?
   emailQueuedAt        DateTime?
 
@@ -5480,21 +5675,21 @@ enum AdminEmailChangeStatus {
 }
 
 model AdminEmailChangeRequest {
-  id              String                  @id @map("_id") @db.Uuid
-  adminId         String                  @db.Uuid
-  admin           User                    @relation("AdminEmailChangeRequests", fields: [adminId], references: [id], onDelete: Cascade)
+  id              String                 @id @map("_id") @db.Uuid
+  adminId         String                 @db.Uuid
+  admin           User                   @relation("AdminEmailChangeRequests", fields: [adminId], references: [id], onDelete: Cascade)
   currentEmail    String
   newEmail        String
   otpHash         String?
   otpExpiresAt    DateTime?
   otpVerifiedAt   DateTime?
-  status          AdminEmailChangeStatus  @default(PENDING_VERIFICATION)
+  status          AdminEmailChangeStatus @default(PENDING_VERIFICATION)
   rejectionReason String?
-  reviewedById    String?                 @db.Uuid
-  reviewedBy      User?                   @relation("AdminEmailChangeReviewedBy", fields: [reviewedById], references: [id], onDelete: SetNull)
+  reviewedById    String?                @db.Uuid
+  reviewedBy      User?                  @relation("AdminEmailChangeReviewedBy", fields: [reviewedById], references: [id], onDelete: SetNull)
   reviewedAt      DateTime?
-  createdAt       DateTime                @default(now())
-  updatedAt       DateTime                @updatedAt
+  createdAt       DateTime               @default(now())
+  updatedAt       DateTime               @updatedAt
 
   @@index([adminId, status])
   @@index([status, createdAt])

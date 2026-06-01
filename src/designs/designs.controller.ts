@@ -91,6 +91,12 @@ export class DesignsController {
   }
 
   @UseGuards(JwtAuthGuard)
+  @Post(':id/submit')
+  async submitDesignForReview(@Param('id') designId: string, @Req() req: any) {
+    return this.designsService.submitDesignForReview(designId, req.user.id);
+  }
+
+  @UseGuards(JwtAuthGuard)
   @Get('my/drafts')
   async getMyDraftDesigns(@Req() req: any) {
     return this.designsService.getMyDraftDesigns(req.user.id);

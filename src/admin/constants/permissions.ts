@@ -28,6 +28,8 @@ export const ADMIN_PERMISSIONS = {
   PRODUCTS_MODERATE: 'products.moderate',
   COLLECTIONS_READ: 'collections.read',
   COLLECTIONS_MODERATE: 'collections.moderate',
+  CONTENT_REVIEW_READ: 'contentReview.read',
+  CONTENT_REVIEW_MANAGE: 'contentReview.manage',
 
   // Featured
   FEATURED_MANAGE: 'featured.manage',

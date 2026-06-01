@@ -16,6 +16,7 @@ import { BrandPermissionService } from 'src/brands/permissions/brand-permission.
 import { BaggingModule } from 'src/bagging/bagging.module';
 import { SizingModule } from 'src/sizing/sizing.module';
 import { ReviewsModule } from 'src/reviews/reviews.module';
+import { ContentIntegrityModule } from 'src/content-integrity/content-integrity.module';
 
 @Module({
   imports: [
@@ -30,6 +31,7 @@ import { ReviewsModule } from 'src/reviews/reviews.module';
     BaggingModule,
     SizingModule,
     ReviewsModule,
+    ContentIntegrityModule,
   ],
   controllers: [StoreController],
   providers: [

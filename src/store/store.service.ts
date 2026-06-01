@@ -36,6 +36,8 @@ import {
 } from 'crypto';
 import {
   CollectionType,
+  CollectionStatus,
+  ContentEntityType,
   CustomOrderSourceType,
   Prisma,
   NotificationType,
@@ -84,6 +86,7 @@ import { BagEligibilityService } from 'src/bagging/bag-eligibility.service';
 import { FittingFreshnessPolicy } from 'src/bagging/fitting-freshness.policy';
 import { SizeComputationService } from 'src/sizing/size-computation.service';
 import { ReviewEligibilityService } from 'src/reviews/review-eligibility.service';
+import { ContentIntegrityService } from 'src/content-integrity/content-integrity.service';
 
 type SupportedPaymentBank = {
   id: number;
@@ -156,6 +159,8 @@ export class StoreService {
     private readonly sizeComputationService?: SizeComputationService,
     @Optional()
     private readonly reviewEligibilityService?: ReviewEligibilityService,
+    @Optional()
+    private readonly contentIntegrity?: ContentIntegrityService,
   ) {}
 
   private readonly maxProductsPerCollection = Math.max(
@@ -562,6 +567,33 @@ export class StoreService {
       base,
       product.id,
     );
+
+    const structuredMedia = await (this.prisma as any).productMedia.findMany({
+      where: { productId: product.id },
+      include: { file: true },
+      orderBy: [{ orderIndex: 'asc' }, { createdAt: 'asc' }],
+    });
+    if (Array.isArray(structuredMedia) && structuredMedia.length > 0) {
+      const media = structuredMedia
+        .filter((entry) => entry.file?.s3Url)
+        .map((entry, index) => ({
+          id: entry.id,
+          fileUploadId: entry.fileUploadId,
+          url: entry.file.s3Url,
+          type: entry.file.fileType === FileType.POST_VIDEO ? 'video' : 'image',
+          viewSlot: entry.viewSlot,
+          reviewStatus: entry.reviewStatus,
+          isPrimary:
+            (!!product?.thumbnail && entry.file.s3Url === product.thumbnail) ||
+            index === 0,
+        }));
+      return {
+        ...baseWithFilters,
+        media,
+        mediaIds: media.map((m) => m.fileUploadId),
+      };
+    }
+
     const images: string[] = Array.isArray(product?.images)
       ? product.images.filter(Boolean)
       : [];
@@ -810,6 +842,7 @@ export class StoreService {
     productId: string,
     file: Express.Multer.File,
     isPrimary: boolean,
+    viewSlotRaw?: string,
   ) {
     if (!file) throw new BadRequestException('No file uploaded');
 
@@ -834,8 +867,10 @@ export class StoreService {
         where: { id: productId },
         select: {
           id: true,
+          brandId: true,
           images: true,
           thumbnail: true,
+          publicationStatus: true,
         },
       });
 
@@ -855,6 +890,35 @@ export class StoreService {
       nextImages.push(uploaded.url);
       const nextThumbnail =
         isPrimary || !product.thumbnail ? uploaded.url : product.thumbnail;
+      if (this.contentIntegrity) {
+        const orderIndex = nextImages.length - 1;
+        const viewSlot = this.contentIntegrity.normalizeViewSlot(
+          viewSlotRaw,
+          orderIndex,
+        );
+        const existingSlot = await (tx as any).productMedia.findFirst({
+          where: { productId, viewSlot },
+          select: { id: true },
+        });
+        if (existingSlot) {
+          throw new BadRequestException(
+            `Product media already has a ${viewSlot} view. Replace or delete that media before uploading another.`,
+          );
+        }
+        await (tx as any).productMedia.create({
+          data: {
+            id: uuidv4(),
+            productId,
+            fileUploadId: uploaded.id,
+            brandId: product.brandId,
+            createdById: brandOwnerId,
+            viewSlot,
+            mediaPurpose: this.contentIntegrity.mediaPurposeForSlot(viewSlot),
+            reviewStatus: 'APPROVED',
+            orderIndex,
+          },
+        });
+      }
 
       await tx.product.update({
         where: { id: productId },
@@ -897,10 +961,46 @@ export class StoreService {
       nextThumbnail = nextImages[0] ?? null;
     }
 
-    await this.prisma.product.update({
-      where: { id: productId },
-      data: { images: nextImages, thumbnail: nextThumbnail },
-    });
+    const productMediaDelegate = (this.prisma as any).productMedia;
+    const structuredMedia = productMediaDelegate?.findFirst
+      ? await productMediaDelegate.findFirst({
+          where: { productId, fileUploadId: mediaId },
+          select: { id: true, viewSlot: true },
+        })
+      : null;
+    if (
+      product.publicationStatus === CollectionStatus.PUBLISHED &&
+      structuredMedia?.viewSlot &&
+      this.contentIntegrity
+        ?.getRequiredViewSlots()
+        .includes(structuredMedia.viewSlot)
+    ) {
+      throw new BadRequestException(
+        'Published products cannot remove required front, back, left side, or right side media until replacement media is reviewed.',
+      );
+    }
+
+    if (typeof (this.prisma as any).$transaction === 'function') {
+      await this.prisma.$transaction(async (tx) => {
+        if ((tx as any).productMedia?.deleteMany) {
+          await (tx as any).productMedia.deleteMany({
+            where: { productId, fileUploadId: mediaId },
+          });
+        }
+        await tx.product.update({
+          where: { id: productId },
+          data: { images: nextImages, thumbnail: nextThumbnail },
+        });
+      });
+    } else {
+      await productMediaDelegate?.deleteMany?.({
+        where: { productId, fileUploadId: mediaId },
+      });
+      await this.prisma.product.update({
+        where: { id: productId },
+        data: { images: nextImages, thumbnail: nextThumbnail },
+      });
+    }
 
     if (upload.userId === brandOwnerId) {
       await this.uploadService.deleteFile(mediaId, brandOwnerId);
@@ -923,9 +1023,17 @@ export class StoreService {
       );
     }
     if (ids.length === 0) {
-      await this.prisma.product.update({
-        where: { id: productId },
-        data: { images: [], thumbnail: null },
+      if (product.publicationStatus === CollectionStatus.PUBLISHED) {
+        throw new BadRequestException(
+          'Published products cannot remove all media. Upload replacement media first.',
+        );
+      }
+      await this.prisma.$transaction(async (tx) => {
+        await (tx as any).productMedia.deleteMany({ where: { productId } });
+        await tx.product.update({
+          where: { id: productId },
+          data: { images: [], thumbnail: null },
+        });
       });
       return { success: true };
     }
@@ -954,9 +1062,19 @@ export class StoreService {
         ? thumbUrl
         : (nextImages[0] ?? null);
 
-    await this.prisma.product.update({
-      where: { id: productId },
-      data: { images: nextImages, thumbnail: nextThumbnail },
+    await this.prisma.$transaction(async (tx) => {
+      await tx.product.update({
+        where: { id: productId },
+        data: { images: nextImages, thumbnail: nextThumbnail },
+      });
+      await Promise.all(
+        ids.map((id, orderIndex) =>
+          (tx as any).productMedia.updateMany({
+            where: { productId, fileUploadId: id },
+            data: { orderIndex },
+          }),
+        ),
+      );
     });
 
     return { success: true };
@@ -1529,11 +1647,18 @@ export class StoreService {
 
   private isProductPublished(product: {
     isActive?: boolean | null;
+    publicationStatus?: CollectionStatus | string | null;
     publishAt?: Date | null;
     archivedAt?: Date | null;
     deletedAt?: Date | null;
   }) {
     if (!product?.isActive) return false;
+    if (
+      product.publicationStatus &&
+      product.publicationStatus !== CollectionStatus.PUBLISHED
+    ) {
+      return false;
+    }
     if (product.deletedAt || product.archivedAt) return false;
     const now = new Date();
     if (product.publishAt && product.publishAt > now) return false;
@@ -1680,6 +1805,7 @@ export class StoreService {
     await this.prisma.product.updateMany({
       where: {
         isActive: false,
+        publicationStatus: CollectionStatus.PUBLISHED,
         deletedAt: null,
         archivedAt: null,
         publishAt: { lte: now },
@@ -1692,6 +1818,7 @@ export class StoreService {
     const candidates = await this.prisma.product.findMany({
       where: {
         isActive: true,
+        publicationStatus: CollectionStatus.PUBLISHED,
         deletedAt: null,
         archivedAt: null,
         publishAt: { lte: now },
@@ -1889,7 +2016,38 @@ export class StoreService {
 
     const currency = (dto.currency || brand.currency || 'NGN').trim();
 
-    const normalizedImages = Array.isArray(dto.images)
+    const structuredProductMedia =
+      this.contentIntegrity &&
+      (Array.isArray((dto as any).media) || nextIsActive)
+        ? await this.contentIntegrity.validateProductMediaInputs({
+            actorUserId: brandOwnerId,
+            ownerUserId: brandOwnerUserId,
+            entries: (dto as any).media,
+            requireComplete: nextIsActive,
+          })
+        : [];
+    if (
+      nextIsActive &&
+      structuredProductMedia.length === 0 &&
+      Array.isArray(dto.images) &&
+      dto.images.length > 0
+    ) {
+      this.contentIntegrity?.emitIntegrityAlert(
+        'product_publish_raw_url_media_attempt',
+        {
+          actorId: brandOwnerId,
+          brandId: brand.id,
+          entityType: 'Product',
+        },
+      );
+      throw new BadRequestException(
+        'Publishing requires structured product media slots. Raw image URLs can only be kept on drafts for compatibility.',
+      );
+    }
+
+    const normalizedImages = structuredProductMedia.length
+      ? structuredProductMedia.map((media) => media.url)
+      : Array.isArray(dto.images)
       ? dto.images.filter(Boolean)
       : [];
     if (normalizedImages.length > this.maxProductMediaCount) {
@@ -1903,6 +2061,22 @@ export class StoreService {
     } else {
       resolvedThumbnail = null;
     }
+
+    const publicationDecision = nextIsActive
+      ? await (this.contentIntegrity?.resolvePublicationDecision(brand.id) ??
+          Promise.resolve({
+            publicationStatus: CollectionStatus.PUBLISHED,
+            isActive: true,
+            reviewMode: null,
+            requiresPreReview: false,
+          }))
+      : {
+          publicationStatus: CollectionStatus.DRAFT,
+          isActive: false,
+          reviewMode: null,
+          requiresPreReview: false,
+        };
+    const createIsActive = nextIsActive && publicationDecision.isActive;
 
     // Resolve product name and slug
     const resolvedName = (dto.name || 'Untitled Product').trim();
@@ -1919,7 +2093,7 @@ export class StoreService {
     const initialTotalStock =
       derivedFromVariants?.totalStock ?? (dto.totalStock || 0);
     const initialOutOfStockTriggeredAt =
-      nextIsActive && nextCustomOrderEnabled && initialTotalStock <= 0
+      createIsActive && nextCustomOrderEnabled && initialTotalStock <= 0
         ? new Date()
         : null;
     const initialOutOfStockDiscontinueAt = initialOutOfStockTriggeredAt
@@ -1927,6 +2101,7 @@ export class StoreService {
           initialOutOfStockTriggeredAt,
         )
       : null;
+    let contentSubmissionId: string | null = null;
 
     const product = await this.prisma.$transaction(async (tx) => {
       let slug = await this.ensureUniqueProductSlug(tx, resolvedName);
@@ -2047,7 +2222,8 @@ export class StoreService {
               // Metadata
               tags: resolvedTags,
               gender: dto.gender || 'EVERYBODY',
-              isActive: nextIsActive,
+              isActive: createIsActive,
+              publicationStatus: publicationDecision.publicationStatus,
               isPhysicalProduct: dto.isPhysicalProduct ?? true,
               customsRegion: dto.customsRegion || null,
               // Policies
@@ -2077,6 +2253,15 @@ export class StoreService {
         throw new InternalServerErrorException('Unable to create product');
       }
 
+      if (this.contentIntegrity && structuredProductMedia.length > 0) {
+        await this.contentIntegrity.replaceProductMedia(tx, {
+          productId: created.id,
+          brandId: brand.id,
+          actorUserId: brandOwnerId,
+          media: structuredProductMedia,
+        });
+      }
+
       await tx.storeCollectionProduct.create({
         data: {
           id: uuidv4(),
@@ -2100,6 +2285,21 @@ export class StoreService {
             colorHex: v.colorHex,
           })),
         });
+      }
+
+      if (
+        nextIsActive &&
+        publicationDecision.requiresPreReview &&
+        this.contentIntegrity
+      ) {
+        const submission = await this.contentIntegrity.createSubmission(tx, {
+          entityType: ContentEntityType.PRODUCT,
+          productId: created.id,
+          brandId: brand.id,
+          submittedById: brandOwnerId,
+          previousStatus: CollectionStatus.DRAFT,
+        });
+        contentSubmissionId = submission.id;
       }
 
       return tx.product.findUnique({
@@ -2155,7 +2355,138 @@ export class StoreService {
       await this.notifyPatchersOfProduct(brandOwnerUserId, product);
     }
 
-    return this.attachProductMedia(product);
+    if (contentSubmissionId && this.contentIntegrity) {
+      await this.contentIntegrity.notifyContentSubmitted(brandOwnerUserId, {
+        submissionId: contentSubmissionId,
+        entityType: ContentEntityType.PRODUCT,
+        productId: product.id,
+        message: 'Your product was submitted for review.',
+      });
+    }
+
+    const response = await this.attachProductMedia(product);
+    return {
+      ...response,
+      publicationStatus: product.publicationStatus,
+      reviewMode: publicationDecision.reviewMode,
+      submissionId: contentSubmissionId,
+    };
+  }
+
+  async acknowledgeContentMediaPolicy(actorUserId: string) {
+    if (!this.contentIntegrity) {
+      throw new InternalServerErrorException(
+        'Content integrity service is unavailable',
+      );
+    }
+    return this.contentIntegrity.acknowledgeBrandContentPolicy(actorUserId);
+  }
+
+  async submitProductForReview(actorUserId: string, productId: string) {
+    await this.assertBrandOwnsProduct(
+      actorUserId,
+      productId,
+      BRAND_PERMISSIONS.CATALOG_WRITE,
+    );
+    const product = await this.prisma.product.findFirst({
+      where: { id: productId, deletedAt: null },
+      include: { brand: true, variants: true },
+    });
+    if (!product) {
+      throw new NotFoundException('Product not found');
+    }
+
+    const decision = await (this.contentIntegrity?.resolvePublicationDecision(
+      product.brandId,
+    ) ??
+      Promise.resolve({
+        publicationStatus: CollectionStatus.PUBLISHED,
+        isActive: true,
+        reviewMode: null,
+        requiresPreReview: false,
+      }));
+
+    let submissionId: string | null = null;
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const mediaValidation = this.contentIntegrity
+        ? await this.contentIntegrity.assertProductHasPublishableMedia(
+            tx,
+            productId,
+          )
+        : {
+            urls: Array.isArray(product.images) ? product.images : [],
+            thumbnail: product.thumbnail ?? null,
+          };
+
+      await this.assertProductPublishReady(tx, {
+        name: product.name,
+        description: product.description,
+        categoryId: product.categoryId,
+        categoryTypeId: product.categoryTypeId,
+        gender: product.gender ?? 'EVERYBODY',
+        tags: Array.isArray(product.tags) ? product.tags : [],
+        price: Number(product.price || 0),
+        images: mediaValidation.urls,
+        thumbnail: mediaValidation.thumbnail,
+        variants: Array.isArray((product as any).variants)
+          ? (product as any).variants
+          : [],
+        totalStock: product.totalStock,
+        trackInventory: product.trackInventory,
+        customOrderEnabled: product.customOrderEnabled,
+      });
+
+      const updatedProduct = await tx.product.update({
+        where: { id: productId },
+        data: {
+          isActive: decision.isActive,
+          publicationStatus: decision.publicationStatus,
+          images: mediaValidation.urls,
+          thumbnail: mediaValidation.thumbnail,
+        } as any,
+        include: {
+          collections: { select: { collectionId: true, orderIndex: true } },
+          brand: {
+            select: { id: true, name: true, logo: true, currency: true },
+          },
+          variants: true,
+        },
+      });
+
+      if (decision.requiresPreReview && this.contentIntegrity) {
+        const submission = await this.contentIntegrity.createSubmission(tx, {
+          entityType: ContentEntityType.PRODUCT,
+          productId,
+          brandId: product.brandId,
+          submittedById: actorUserId,
+          previousStatus:
+            ((product as any).publicationStatus as CollectionStatus) ??
+            (product.isActive
+              ? CollectionStatus.PUBLISHED
+              : CollectionStatus.DRAFT),
+        });
+        submissionId = submission.id;
+      }
+
+      return updatedProduct;
+    });
+
+    if (submissionId && this.contentIntegrity) {
+      await this.contentIntegrity.notifyContentSubmitted(product.brand.ownerId, {
+        submissionId,
+        entityType: ContentEntityType.PRODUCT,
+        productId,
+        message: 'Your product was submitted for review.',
+      });
+    }
+
+    const response = await this.attachProductMedia(updated);
+    return {
+      ...response,
+      publicationStatus: updated.publicationStatus,
+      reviewMode: decision.reviewMode,
+      submissionId,
+    };
   }
 
   async updateProduct(
@@ -2262,6 +2593,53 @@ export class StoreService {
 
     const finalIsActive =
       dto.isActive !== undefined ? dto.isActive : product.isActive;
+    const wantsPublish = dto.isActive === true;
+    const structuredUpdateMedia = Array.isArray((dto as any).media)
+      ? await this.contentIntegrity?.validateProductMediaInputs({
+          actorUserId: brandOwnerId,
+          ownerUserId: product.brand.ownerId,
+          entries: (dto as any).media,
+          requireComplete: finalIsActive || wantsPublish,
+        })
+      : null;
+    if (finalIsActive && dto.images !== undefined && !structuredUpdateMedia) {
+      this.contentIntegrity?.emitIntegrityAlert(
+        'product_update_publish_raw_url_media_attempt',
+        {
+          actorId: brandOwnerId,
+          brandId: product.brandId,
+          entityType: 'Product',
+          entityId: productId,
+        },
+      );
+      throw new BadRequestException(
+        'Publishing requires structured product media slots. Raw image URL updates can only be saved while the product is a draft.',
+      );
+    }
+    const updatePublicationDecision = wantsPublish
+      ? await (this.contentIntegrity?.resolvePublicationDecision(
+          product.brandId,
+        ) ??
+          Promise.resolve({
+            publicationStatus: CollectionStatus.PUBLISHED,
+            isActive: true,
+            reviewMode: null,
+            requiresPreReview: false,
+          }))
+      : null;
+    const nextPublicationStatus =
+      wantsPublish && updatePublicationDecision
+        ? updatePublicationDecision.publicationStatus
+        : dto.isActive === false
+          ? CollectionStatus.DRAFT
+          : ((product as any).publicationStatus ??
+            (product.isActive
+              ? CollectionStatus.PUBLISHED
+              : CollectionStatus.DRAFT));
+    const nextActiveState =
+      wantsPublish && updatePublicationDecision
+        ? updatePublicationDecision.isActive
+        : finalIsActive;
     const requestedUpdateFilterValueIds =
       dto.filterValueIds !== undefined
         ? this.normalizeFilterValueIds(dto.filterValueIds)
@@ -2391,7 +2769,14 @@ export class StoreService {
       updateData.targetAgeGroup = dto.targetAgeGroup;
 
     // Media
-    if (dto.images !== undefined) {
+    if (structuredUpdateMedia) {
+      const nextImages = structuredUpdateMedia.map((media) => media.url);
+      updateData.images = nextImages;
+      updateData.thumbnail =
+        dto.thumbnail && nextImages.includes(dto.thumbnail)
+          ? dto.thumbnail
+          : (nextImages[0] ?? null);
+    } else if (dto.images !== undefined) {
       const normalizedImages = Array.isArray(dto.images)
         ? dto.images.filter(Boolean)
         : [];
@@ -2450,7 +2835,10 @@ export class StoreService {
         ? { connect: { id: resolvedCategoryTypeId } }
         : { disconnect: true };
     }
-    if (dto.isActive !== undefined) updateData.isActive = dto.isActive;
+    if (dto.isActive !== undefined) {
+      updateData.isActive = nextActiveState;
+      (updateData as any).publicationStatus = nextPublicationStatus;
+    }
     if (dto.isPhysicalProduct !== undefined)
       updateData.isPhysicalProduct = dto.isPhysicalProduct;
     if (dto.customsRegion !== undefined)
@@ -2471,6 +2859,7 @@ export class StoreService {
       updateData.publishAt = dto.publishAt ? new Date(dto.publishAt) : null;
 
     let membershipChanged = false;
+    let updateSubmissionId: string | null = null;
     const updated = await this.prisma.$transaction(async (tx) => {
       if (resolvedCollectionId !== undefined) {
         let finalCollectionId = resolvedCollectionId;
@@ -2581,6 +2970,14 @@ export class StoreService {
         finalCategoryId,
         finalCategoryTypeId,
       );
+      if (structuredUpdateMedia && this.contentIntegrity) {
+        await this.contentIntegrity.replaceProductMedia(tx, {
+          productId,
+          brandId: product.brandId,
+          actorUserId: brandOwnerId,
+          media: structuredUpdateMedia,
+        });
+      }
 
       const finalTotalStock =
         derivedFromVariants?.totalStock ??
@@ -2594,17 +2991,34 @@ export class StoreService {
         currentDiscontinueAt: product.customOrderOutOfStockDiscontinueAt,
         explicitIsActive: dto.isActive,
       });
-      if (finalIsActive) {
-        const nextImages =
-          dto.images !== undefined
+      if (finalIsActive || wantsPublish) {
+        const structuredMediaValidation = this.contentIntegrity
+          ? structuredUpdateMedia
+            ? this.contentIntegrity.validatePublishableMediaRows(
+                structuredUpdateMedia.map((media) => ({
+                  ...media,
+                  file: { s3Url: media.url, fileType: FileType.POST_IMAGE, processingStatus: 'READY' },
+                  reviewStatus: 'APPROVED',
+                })),
+                'A product',
+              )
+            : await this.contentIntegrity.assertProductHasPublishableMedia(
+                tx,
+                productId,
+              )
+          : null;
+        const nextImages = structuredMediaValidation
+          ? structuredMediaValidation.urls
+          : dto.images !== undefined
             ? Array.isArray(dto.images)
               ? dto.images.filter(Boolean)
               : []
             : Array.isArray(product.images)
               ? product.images
               : [];
-        const nextThumbnail =
-          dto.images !== undefined
+        const nextThumbnail = structuredMediaValidation
+          ? structuredMediaValidation.thumbnail
+          : dto.images !== undefined
             ? (updateData.thumbnail as string | null | undefined)
             : dto.thumbnail !== undefined
               ? dto.thumbnail || null
@@ -2640,6 +3054,10 @@ export class StoreService {
       }
 
       Object.assign(updateData, stockLifecyclePatch);
+      if (dto.isActive !== undefined) {
+        updateData.isActive = nextActiveState;
+        (updateData as any).publicationStatus = nextPublicationStatus;
+      }
 
       await tx.product.update({
         where: { id: productId },
@@ -2673,6 +3091,25 @@ export class StoreService {
             })),
           });
         }
+      }
+
+      if (
+        wantsPublish &&
+        updatePublicationDecision?.requiresPreReview &&
+        this.contentIntegrity
+      ) {
+        const submission = await this.contentIntegrity.createSubmission(tx, {
+          entityType: ContentEntityType.PRODUCT,
+          productId,
+          brandId: product.brandId,
+          submittedById: brandOwnerId,
+          previousStatus:
+            ((product as any).publicationStatus as CollectionStatus) ??
+            (product.isActive
+              ? CollectionStatus.PUBLISHED
+              : CollectionStatus.DRAFT),
+        });
+        updateSubmissionId = submission.id;
       }
 
       return tx.product.findUnique({
@@ -2762,7 +3199,22 @@ export class StoreService {
       );
     }
 
-    return this.attachProductMedia(updated);
+    if (updateSubmissionId && this.contentIntegrity) {
+      await this.contentIntegrity.notifyContentSubmitted(product.brand.ownerId, {
+        submissionId: updateSubmissionId,
+        entityType: ContentEntityType.PRODUCT,
+        productId,
+        message: 'Your product was submitted for review.',
+      });
+    }
+
+    const response = await this.attachProductMedia(updated);
+    return {
+      ...response,
+      publicationStatus: (updated as any)?.publicationStatus,
+      reviewMode: updatePublicationDecision?.reviewMode ?? null,
+      submissionId: updateSubmissionId,
+    };
   }
 
   private async assertProductRepublishUnlocked(productId: string) {
@@ -4077,6 +4529,8 @@ export class StoreService {
       !product.deletedAt &&
       !product.archivedAt &&
       product.isActive !== false &&
+      (product.publicationStatus ?? CollectionStatus.PUBLISHED) ===
+        CollectionStatus.PUBLISHED &&
       Boolean(product.brand?.isStoreOpen) &&
       this.hasPublicStoreAccess(product);
     const inStock =
@@ -4377,6 +4831,7 @@ export class StoreService {
         slug: true,
         name: true,
         isActive: true,
+        publicationStatus: true,
         publishAt: true,
         archivedAt: true,
         deletedAt: true,
@@ -4544,6 +4999,7 @@ export class StoreService {
         where: {
           brandId: brand.id,
           isActive: false,
+          publicationStatus: CollectionStatus.DRAFT,
           archivedAt: null,
           deletedAt: null,
           createdAt: { lt: ninetyDaysAgo },
@@ -4577,6 +5033,7 @@ export class StoreService {
     } else {
       // Public: only active products available in storefront.
       where.isActive = true;
+      where.publicationStatus = CollectionStatus.PUBLISHED;
       where.deletedAt = null;
       andFilters.push({
         OR: [
@@ -4853,6 +5310,7 @@ export class StoreService {
 
     const where: Prisma.ProductWhereInput = {
       isActive: true,
+      publicationStatus: CollectionStatus.PUBLISHED,
       deletedAt: null,
       brand: { isStoreOpen: true },
     };
@@ -5159,6 +5617,7 @@ export class StoreService {
         id: dto.productId,
         deletedAt: null,
         isActive: true,
+        publicationStatus: CollectionStatus.PUBLISHED,
         brand: { isStoreOpen: true },
         OR: [
           { collections: { none: {} } },
@@ -5437,6 +5896,8 @@ export class StoreService {
       const isProductAvailable =
         !product.deletedAt &&
         product.isActive &&
+        (product.publicationStatus ?? CollectionStatus.PUBLISHED) ===
+          CollectionStatus.PUBLISHED &&
         Boolean(product.brand?.isStoreOpen) &&
         product.brand?.ownerId !== userId &&
         this.hasPublicStoreAccess(product) &&
@@ -5737,6 +6198,7 @@ export class StoreService {
         id: dto.productId,
         deletedAt: null,
         isActive: true,
+        publicationStatus: CollectionStatus.PUBLISHED,
         brand: { isStoreOpen: true },
         OR: [
           { collections: { none: {} } },
@@ -5924,6 +6386,7 @@ export class StoreService {
     deletedAt?: Date | null;
     archivedAt?: Date | null;
     isActive?: boolean | null;
+    publicationStatus?: CollectionStatus | string | null;
     brand?: { isStoreOpen?: boolean | null } | null;
     collections?: Array<any> | null;
     totalStock?: number | null;
@@ -5931,6 +6394,12 @@ export class StoreService {
     variants?: Array<{ size?: string | null } | null> | null;
   }): boolean {
     if (product.deletedAt || product.archivedAt || product.isActive === false) {
+      return false;
+    }
+    if (
+      product.publicationStatus &&
+      product.publicationStatus !== CollectionStatus.PUBLISHED
+    ) {
       return false;
     }
 
@@ -6086,6 +6555,9 @@ export class StoreService {
           }
         : null,
       isActive: product.isActive,
+      publicationStatus:
+        product.publicationStatus ??
+        (product.isActive ? CollectionStatus.PUBLISHED : CollectionStatus.DRAFT),
       isFeatured: product.isFeatured,
       isPhysicalProduct: product.isPhysicalProduct,
       customsRegion: product.customsRegion,

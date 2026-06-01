@@ -89,6 +89,12 @@ export class StoreController {
   }
 
   @UseGuards(JwtAuthGuard)
+  @Post('store/content-policy/acknowledge')
+  async acknowledgeContentPolicy(@Req() req: any) {
+    return this.storeService.acknowledgeContentMediaPolicy(req.user.id);
+  }
+
+  @UseGuards(JwtAuthGuard)
   @Post('products/:id/media')
   @Throttle({ default: { limit: 20, ttl: 60000 } })
   @UseInterceptors(
@@ -98,6 +104,7 @@ export class StoreController {
     @Param('id') productId: string,
     @UploadedFile() file: Express.Multer.File,
     @Body('isPrimary') isPrimaryRaw: string | boolean | undefined,
+    @Body('viewSlot') viewSlot: string | undefined,
     @Req() req: any,
   ) {
     const isPrimary =
@@ -110,6 +117,7 @@ export class StoreController {
       productId,
       file,
       isPrimary,
+      viewSlot,
     );
   }
 
@@ -163,6 +171,15 @@ export class StoreController {
     @Req() req: any,
   ) {
     return this.storeService.updateProduct(req.user.id, productId, dto);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Post('products/:id/submit')
+  async submitProductForReview(
+    @Param('id') productId: string,
+    @Req() req: any,
+  ) {
+    return this.storeService.submitProductForReview(req.user.id, productId);
   }
 
   @UseGuards(JwtAuthGuard)

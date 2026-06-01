@@ -1,4 +1,9 @@
-import { FileType, CollectionVisibility, CollectionType } from '@prisma/client';
+import {
+  FileType,
+  CollectionVisibility,
+  CollectionType,
+  ContentMediaViewSlot,
+} from '@prisma/client';
 import { Type, Transform } from 'class-transformer';
 import {
   IsString,
@@ -40,6 +45,10 @@ export class FileSpecDto {
   @IsOptional()
   @IsEnum(FileType)
   fileType?: FileType; // POST_IMAGE, POST_VIDEO, etc.
+
+  @IsOptional()
+  @IsEnum(ContentMediaViewSlot)
+  viewSlot?: ContentMediaViewSlot;
 }
 
 export class CreateCollectionDto {
@@ -191,6 +200,10 @@ export class CompleteUploadDto {
   @IsString()
   @IsNotEmpty()
   actualMimeType: string;
+
+  @IsOptional()
+  @IsEnum(ContentMediaViewSlot)
+  viewSlot?: ContentMediaViewSlot;
 }
 
 export class CollectionMetadataDto {

@@ -1,4 +1,7 @@
 import {
+  ContentMediaViewSlot,
+} from '@prisma/client';
+import {
   IsString,
   IsOptional,
   IsNumber,
@@ -71,6 +74,21 @@ export class ProductVariantDto {
   @IsString()
   @MaxLength(16)
   colorHex?: string;
+}
+
+export class ProductMediaInputDto {
+  @IsString()
+  @IsNotEmpty()
+  fileUploadId: string;
+
+  @IsEnum(ContentMediaViewSlot)
+  viewSlot: ContentMediaViewSlot;
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Type(() => Number)
+  orderIndex?: number;
 }
 
 export class CreateProductDto {
@@ -246,6 +264,13 @@ export class CreateProductDto {
   @IsOptional()
   @IsString()
   thumbnail?: string;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(6)
+  @ValidateNested({ each: true })
+  @Type(() => ProductMediaInputDto)
+  media?: ProductMediaInputDto[];
 
   // Inventory
   @IsOptional()

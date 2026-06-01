@@ -18,6 +18,7 @@ import { CategoriesModule } from 'src/categories/categories.module';
 import { SystemConfigModule } from 'src/admin/system-config/system-config.module';
 import { BrandAccessService } from 'src/brands/brand-access.service';
 import { BrandPermissionService } from 'src/brands/permissions/brand-permission.service';
+import { ContentIntegrityModule } from 'src/content-integrity/content-integrity.module';
 
 @Module({
   imports: [
@@ -30,6 +31,7 @@ import { BrandPermissionService } from 'src/brands/permissions/brand-permission.
     TagsModule,
     QueueModule,
     CategoriesModule,
+    ContentIntegrityModule,
   ],
   providers: [
     CollectionsService,

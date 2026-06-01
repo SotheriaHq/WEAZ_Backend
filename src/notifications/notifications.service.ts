@@ -1180,6 +1180,13 @@ export class NotificationsService {
       case NotificationType.COLLECTION_UPLOAD:
       case NotificationType.PRODUCT_UPLOAD:
       case NotificationType.COLLECTION_DELETED:
+      case NotificationType.CONTENT_SUBMITTED_FOR_REVIEW:
+      case NotificationType.CONTENT_REVIEW_APPROVED:
+      case NotificationType.CONTENT_REVIEW_REJECTED:
+      case NotificationType.CONTENT_CHANGES_REQUESTED:
+      case NotificationType.CONTENT_RESUBMITTED:
+      case NotificationType.CONTENT_PUBLISHED:
+      case NotificationType.CONTENT_REVIEW_FAILED:
       case NotificationType.ITEM_FEATURED:
       case NotificationType.FEATURED_AUTO_REMOVED:
       case NotificationType.WISHLIST_PRODUCT_UNAVAILABLE:

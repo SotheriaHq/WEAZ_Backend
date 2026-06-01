@@ -25,6 +25,7 @@ import {
   CollectionStatus,
   CollectionVisibility,
   CollectionType,
+  ContentEntityType,
   MessageConversationType,
   MessageContextType,
   MessageKind,
@@ -74,6 +75,7 @@ import {
   canonicalBrandProfileSelect,
   resolveRequiredBrandField,
 } from 'src/common/brand-profile-source.helper';
+import { ContentIntegrityService } from 'src/content-integrity/content-integrity.service';
 
 type CollectionScope = 'design' | 'store' | 'all';
 type CollectionDomainValue = 'DESIGN' | 'STORE';
@@ -119,6 +121,8 @@ export class CollectionsService {
     private readonly systemConfigService?: SystemConfigService,
     @Optional()
     private readonly brandAccessService?: BrandAccessService,
+    @Optional()
+    private readonly contentIntegrity?: ContentIntegrityService,
   ) {}
 
   private mapCollectionOwner(owner: any) {
@@ -2386,6 +2390,10 @@ export class CollectionsService {
 
       const uploadData = await Promise.all(
         dto.files.map(async (fileSpec, index) => {
+          const viewSlot = this.contentIntegrity?.normalizeViewSlot(
+            (fileSpec as any).viewSlot,
+            index,
+          );
           // Validate and determine file type
           const fileType = this.helperservice.determineFileType(
             fileSpec.type,
@@ -2398,12 +2406,13 @@ export class CollectionsService {
             fileSpec.name,
             fileType as any,
             fileSpec.type,
-            { collectionId, orderIndex: index },
+            { collectionId, orderIndex: index, viewSlot },
           );
 
           return {
             fileId: (presign as any).fileId,
             orderIndex: index,
+            viewSlot,
             expectedKey: (presign as any).key,
             uploadUrl: (presign as any).url,
             uploadFields: (presign as any).fields,
@@ -2537,6 +2546,10 @@ export class CollectionsService {
     // Generate presigned URLs for each file using UploadService (creates presign DB entries)
     const uploadData = await Promise.all(
       dto.files.map(async (fileSpec, index) => {
+        const viewSlot = this.contentIntegrity?.normalizeViewSlot(
+          (fileSpec as any).viewSlot,
+          index,
+        );
         // Validate and determine file type
         const fileType = this.helperservice.determineFileType(
           fileSpec.type,
@@ -2550,12 +2563,13 @@ export class CollectionsService {
           fileSpec.name,
           fileType as any,
           fileSpec.type,
-          { collectionId, orderIndex: index },
+          { collectionId, orderIndex: index, viewSlot },
         );
 
         return {
           fileId: (presign as any).fileId,
           orderIndex: index,
+          viewSlot,
           expectedKey: (presign as any).key,
           uploadUrl: (presign as any).url,
           uploadFields: (presign as any).fields,
@@ -2612,6 +2626,11 @@ export class CollectionsService {
 
     const uploads = await Promise.all(
       files.map(async (fileSpec, index) => {
+        const orderIndex = existingMediaCount + index;
+        const viewSlot = this.contentIntegrity?.normalizeViewSlot(
+          (fileSpec as any).viewSlot,
+          orderIndex,
+        );
         const fileType = this.helperservice.determineFileType(
           fileSpec.type,
           fileSpec.fileType,
@@ -2623,12 +2642,13 @@ export class CollectionsService {
           fileSpec.name,
           fileType as any,
           fileSpec.type,
-          { collectionId, orderIndex: existingMediaCount + index },
+          { collectionId, orderIndex, viewSlot },
         );
 
         return {
           fileId: (presign as any).fileId,
-          orderIndex: existingMediaCount + index,
+          orderIndex,
+          viewSlot,
           expectedKey: (presign as any).key,
           uploadUrl: (presign as any).url,
           uploadFields: (presign as any).fields,
@@ -3188,19 +3208,49 @@ export class CollectionsService {
         const isStoreDomain = (collection as any).domain === 'STORE';
 
         if (!isStoreDomain) {
+          const brand =
+            action === 'publish'
+              ? await tx.brand.findUnique({
+                  where: { ownerId: collection.ownerId },
+                  select: { id: true },
+                })
+              : null;
+          const publicationDecision =
+            action === 'publish' && this.contentIntegrity
+              ? await this.contentIntegrity.resolvePublicationDecision(
+                  brand?.id,
+                )
+              : null;
+          const nextStatus =
+            action === 'publish'
+              ? (publicationDecision?.publicationStatus ??
+                CollectionStatus.PUBLISHED)
+              : CollectionStatus.DRAFT;
           if (action === 'publish') {
-            const mediaCount = await tx.collectionMedia.count({
-              where: { collectionId },
-            });
-            if (mediaCount < DESIGN_REQUIRED_MEDIA_COUNT) {
-              throw new BadRequestException(
-                `Front, Back, Left, and Right media are required to publish (${DESIGN_REQUIRED_MEDIA_COUNT} media minimum).`,
+            if (this.contentIntegrity) {
+              await this.contentIntegrity.assertCollectionHasPublishableMedia(
+                tx,
+                collectionId,
+                {
+                  ownerUserId: collection.ownerId,
+                  brandId: brand?.id,
+                  backfillMissingSlots: true,
+                },
               );
-            }
-            if (mediaCount > DESIGN_MAX_MEDIA_COUNT) {
-              throw new BadRequestException(
-                `Maximum ${DESIGN_MAX_MEDIA_COUNT} design media assets can be published.`,
-              );
+            } else {
+              const mediaCount = await tx.collectionMedia.count({
+                where: { collectionId },
+              });
+              if (mediaCount < DESIGN_REQUIRED_MEDIA_COUNT) {
+                throw new BadRequestException(
+                  `Front, Back, Left, and Right media are required to publish (${DESIGN_REQUIRED_MEDIA_COUNT} media minimum).`,
+                );
+              }
+              if (mediaCount > DESIGN_MAX_MEDIA_COUNT) {
+                throw new BadRequestException(
+                  `Maximum ${DESIGN_MAX_MEDIA_COUNT} design media assets can be published.`,
+                );
+              }
             }
           }
 
@@ -3250,13 +3300,38 @@ export class CollectionsService {
                 metadata.fitPreference ?? (collection as any).fitPreference,
               targetAgeGroup:
                 metadata.targetAgeGroup ?? (collection as any).targetAgeGroup,
-              status: action === 'publish' ? 'PUBLISHED' : 'DRAFT',
+              status: nextStatus,
               ...(action === 'draft'
                 ? { lastActivityAt: now, draftVersion: { increment: 1 } }
                 : {}),
             },
           });
-          if (action === 'publish') {
+          if (
+            action === 'publish' &&
+            publicationDecision?.requiresPreReview &&
+            this.contentIntegrity
+          ) {
+            const submission = await this.contentIntegrity.createSubmission(
+              tx,
+              {
+                entityType: ContentEntityType.DESIGN,
+                legacyCollectionId: collectionId,
+                brandId: brand?.id,
+                submittedById: userId,
+                previousStatus: collection.status as CollectionStatus,
+              },
+            );
+            await this.contentIntegrity.notifyContentSubmitted(
+              collection.ownerId,
+              {
+                submissionId: submission.id,
+                entityType: ContentEntityType.DESIGN,
+                collectionId,
+                message: 'Your design was submitted for review.',
+              },
+            );
+          }
+          if (action === 'publish' && nextStatus === CollectionStatus.PUBLISHED) {
             await this.cleanupSupersededDraftCollections(
               tx,
               collection.ownerId,
@@ -3429,7 +3504,8 @@ export class CollectionsService {
       );
       const nextIndexedTags = this.getIndexedCollectionTags(
         {
-          status: action === 'publish' ? 'PUBLISHED' : 'DRAFT',
+          status: (updated as any).status ??
+            (action === 'publish' ? 'PUBLISHED' : 'DRAFT'),
           visibility: (metadata.visibility ??
             collection.visibility) as CollectionVisibility,
           deletedAt: null,
@@ -3514,7 +3590,14 @@ export class CollectionsService {
             where: { id: completion.fileId },
           });
           if (existing) {
-            return { file: existing, orderIndex: presign.orderIndex ?? null };
+            return {
+              file: existing,
+              orderIndex: presign.orderIndex ?? null,
+              viewSlot:
+                (completion as any).viewSlot ??
+                (presign as any).viewSlot ??
+                null,
+            };
           }
           throw new BadRequestException('Presign already used');
         }
@@ -3538,7 +3621,14 @@ export class CollectionsService {
           where: { id: completion.fileId },
         });
         if (existing) {
-          return { file: existing, orderIndex: presign.orderIndex ?? null };
+          return {
+            file: existing,
+            orderIndex: presign.orderIndex ?? null,
+            viewSlot:
+              (completion as any).viewSlot ??
+              (presign as any).viewSlot ??
+              null,
+          };
         }
 
         const fileUpload = await this.uploadService.createFileRecordFromPresign(
@@ -3549,7 +3639,12 @@ export class CollectionsService {
           completion.actualSize,
         );
 
-        return { file: fileUpload, orderIndex: presign.orderIndex ?? null };
+        return {
+          file: fileUpload,
+          orderIndex: presign.orderIndex ?? null,
+          viewSlot:
+            (completion as any).viewSlot ?? (presign as any).viewSlot ?? null,
+        };
       }),
     );
 
@@ -3558,6 +3653,10 @@ export class CollectionsService {
         const file = entry.file;
         const orderIndex =
           typeof entry.orderIndex === 'number' ? entry.orderIndex : index;
+        const viewSlot = this.contentIntegrity?.normalizeViewSlot(
+          entry.viewSlot,
+          orderIndex,
+        );
         const existingMedia = await tx.collectionMedia.findFirst({
           where: { collectionId: collection.id, fileUploadId: file.id },
         });
@@ -3569,6 +3668,16 @@ export class CollectionsService {
             fileUploadId: file.id,
             orderIndex,
             mediaType: file.fileType,
+            viewSlot,
+            mediaPurpose: viewSlot
+              ? this.contentIntegrity?.mediaPurposeForSlot(viewSlot)
+              : undefined,
+            reviewStatus: 'APPROVED',
+            createdById: userId,
+            brandId: (await tx.brand.findUnique({
+              where: { ownerId: collection.ownerId },
+              select: { id: true },
+            }))?.id,
           },
         });
       }
@@ -3614,7 +3723,24 @@ export class CollectionsService {
     // Mark collection as published (or keep as DRAFT if requested)
     const completionAction =
       dto.action ?? (dto.shouldPublish === false ? 'draft' : 'publish');
-    const newStatus = completionAction === 'publish' ? 'PUBLISHED' : 'DRAFT';
+    const completionBrand =
+      completionAction === 'publish'
+        ? await this.prisma.brand.findUnique({
+            where: { ownerId: collection.ownerId },
+            select: { id: true },
+          })
+        : null;
+    const completionPublicationDecision =
+      completionAction === 'publish' && this.contentIntegrity
+        ? await this.contentIntegrity.resolvePublicationDecision(
+            completionBrand?.id,
+          )
+        : null;
+    const newStatus =
+      completionAction === 'publish'
+        ? (completionPublicationDecision?.publicationStatus ??
+          CollectionStatus.PUBLISHED)
+        : CollectionStatus.DRAFT;
     const completionMetadata = dto.collectionMetadata ?? {};
     const completionResolvedTags = Array.isArray(completionMetadata.tags)
       ? sanitizeTags(completionMetadata.tags, 30)
@@ -3627,7 +3753,7 @@ export class CollectionsService {
       typeof completionMetadata.customOrderEnabled === 'boolean'
         ? Boolean(completionMetadata.customOrderEnabled)
         : Boolean((collection as any).customOrderEnabled);
-    if (newStatus === 'PUBLISHED') {
+    if (completionAction === 'publish') {
       const nextTitle = completionMetadata.title ?? collection.title;
       if (!nextTitle || !nextTitle.trim()) {
         throw new BadRequestException('Title is required to publish');
@@ -3659,18 +3785,30 @@ export class CollectionsService {
             ? completionFilterValueIds
             : undefined,
         );
-      const mediaCount = await this.prisma.collectionMedia.count({
-        where: { collectionId },
-      });
-      if (mediaCount < DESIGN_REQUIRED_MEDIA_COUNT) {
-        throw new BadRequestException(
-          `Front, Back, Left, and Right media are required to publish (${DESIGN_REQUIRED_MEDIA_COUNT} media minimum).`,
+      if (this.contentIntegrity) {
+        await this.contentIntegrity.assertCollectionHasPublishableMedia(
+          this.prisma as any,
+          collectionId,
+          {
+            ownerUserId: collection.ownerId,
+            brandId: completionBrand?.id,
+            backfillMissingSlots: true,
+          },
         );
-      }
-      if (mediaCount > DESIGN_MAX_MEDIA_COUNT) {
-        throw new BadRequestException(
-          `Maximum ${DESIGN_MAX_MEDIA_COUNT} design media assets can be published.`,
-        );
+      } else {
+        const mediaCount = await this.prisma.collectionMedia.count({
+          where: { collectionId },
+        });
+        if (mediaCount < DESIGN_REQUIRED_MEDIA_COUNT) {
+          throw new BadRequestException(
+            `Front, Back, Left, and Right media are required to publish (${DESIGN_REQUIRED_MEDIA_COUNT} media minimum).`,
+          );
+        }
+        if (mediaCount > DESIGN_MAX_MEDIA_COUNT) {
+          throw new BadRequestException(
+            `Maximum ${DESIGN_MAX_MEDIA_COUNT} design media assets can be published.`,
+          );
+        }
       }
       await this.assertDesignCustomOrderPublishReady(
         collectionId,
@@ -3680,71 +3818,91 @@ export class CollectionsService {
     }
 
     const finalizeAt = new Date();
-    const publishedCollection = await this.prisma.collection.update({
-      where: { id: collectionId },
-      data: {
-        domain: 'DESIGN',
-        isAvailableInStore: false,
-        title: completionMetadata.title ?? collection.title,
-        description: completionMetadata.description ?? collection.description,
-        visibility: completionMetadata.visibility ?? collection.visibility,
-        type: completionMetadata.type ?? collection.type,
-        categoryId: completionMetadata.categoryId ?? collection.categoryId,
-        categoryTypeId:
-          completionMetadata.categoryTypeId ??
-          (collection as any).categoryTypeId,
-        tags: completionResolvedTags,
-        sizingMode:
-          completionMetadata.sizingMode ?? (collection as any).sizingMode,
-        rtwSizes: Array.isArray(completionMetadata.rtwSizes)
-          ? completionMetadata.rtwSizes
-          : (collection as any).rtwSizes,
-        rtwSizeSystem:
-          completionMetadata.rtwSizeSystem ?? (collection as any).rtwSizeSystem,
-        rtwSizeType:
-          completionMetadata.rtwSizeType ?? (collection as any).rtwSizeType,
-        customGender:
-          completionMetadata.customGender ?? (collection as any).customGender,
-        customMeasurementKeys: Array.isArray(
-          completionMetadata.customMeasurementKeys,
-        )
-          ? this.normalizeMeasurementKeys(
-              completionMetadata.customMeasurementKeys,
-            )
-          : (collection as any).customMeasurementKeys,
-        customOrderEnabled: completionCustomOrderEnabled,
-        customFreeformPointIds: Array.isArray(
-          completionMetadata.customFreeformPointIds,
-        )
-          ? completionMetadata.customFreeformPointIds
-          : (collection as any).customFreeformPointIds,
-        fitPreference:
-          completionMetadata.fitPreference ?? (collection as any).fitPreference,
-        targetAgeGroup:
-          completionMetadata.targetAgeGroup ??
-          (collection as any).targetAgeGroup,
-        status: newStatus,
-        coverMediaId,
-        ...(newStatus === 'DRAFT'
-          ? { lastActivityAt: finalizeAt, draftVersion: { increment: 1 } }
-          : {}),
-      },
-      include: {
-        owner: { select: this.selectCollectionOwnerDisplay() },
-        medias: { include: { file: true }, orderBy: { orderIndex: 'asc' } },
-        _count: {
-          select: {
-            reactions: true,
-            comments: true,
-            collectionCollabs: true,
-            views: true,
+    const publishedCollection = await this.prisma.$transaction(async (tx) => {
+      const updatedCollection = await tx.collection.update({
+        where: { id: collectionId },
+        data: {
+          domain: 'DESIGN',
+          isAvailableInStore: false,
+          title: completionMetadata.title ?? collection.title,
+          description:
+            completionMetadata.description ?? collection.description,
+          visibility: completionMetadata.visibility ?? collection.visibility,
+          type: completionMetadata.type ?? collection.type,
+          categoryId: completionMetadata.categoryId ?? collection.categoryId,
+          categoryTypeId:
+            completionMetadata.categoryTypeId ??
+            (collection as any).categoryTypeId,
+          tags: completionResolvedTags,
+          sizingMode:
+            completionMetadata.sizingMode ?? (collection as any).sizingMode,
+          rtwSizes: Array.isArray(completionMetadata.rtwSizes)
+            ? completionMetadata.rtwSizes
+            : (collection as any).rtwSizes,
+          rtwSizeSystem:
+            completionMetadata.rtwSizeSystem ??
+            (collection as any).rtwSizeSystem,
+          rtwSizeType:
+            completionMetadata.rtwSizeType ?? (collection as any).rtwSizeType,
+          customGender:
+            completionMetadata.customGender ?? (collection as any).customGender,
+          customMeasurementKeys: Array.isArray(
+            completionMetadata.customMeasurementKeys,
+          )
+            ? this.normalizeMeasurementKeys(
+                completionMetadata.customMeasurementKeys,
+              )
+            : (collection as any).customMeasurementKeys,
+          customOrderEnabled: completionCustomOrderEnabled,
+          customFreeformPointIds: Array.isArray(
+            completionMetadata.customFreeformPointIds,
+          )
+            ? completionMetadata.customFreeformPointIds
+            : (collection as any).customFreeformPointIds,
+          fitPreference:
+            completionMetadata.fitPreference ??
+            (collection as any).fitPreference,
+          targetAgeGroup:
+            completionMetadata.targetAgeGroup ??
+            (collection as any).targetAgeGroup,
+          status: newStatus,
+          coverMediaId,
+          ...(newStatus === CollectionStatus.DRAFT
+            ? { lastActivityAt: finalizeAt, draftVersion: { increment: 1 } }
+            : {}),
+        },
+        include: {
+          owner: { select: this.selectCollectionOwnerDisplay() },
+          medias: { include: { file: true }, orderBy: { orderIndex: 'asc' } },
+          _count: {
+            select: {
+              reactions: true,
+              comments: true,
+              collectionCollabs: true,
+              views: true,
+            },
           },
         },
-      },
+      });
+
+      if (
+        completionPublicationDecision?.requiresPreReview &&
+        this.contentIntegrity
+      ) {
+        await this.contentIntegrity.createSubmission(tx, {
+          entityType: ContentEntityType.DESIGN,
+          legacyCollectionId: collectionId,
+          brandId: completionBrand?.id,
+          submittedById: userId,
+          previousStatus: collection.status as CollectionStatus,
+        });
+      }
+
+      return updatedCollection;
     });
 
     const publishedOwner = this.mapCollectionOwner(publishedCollection.owner);
-    if (newStatus === 'PUBLISHED') {
+    if (newStatus === CollectionStatus.PUBLISHED) {
       await this.cleanupSupersededDraftCollections(
         this.prisma as any,
         collection.ownerId,
@@ -9778,6 +9936,10 @@ export class CollectionsService {
     });
 
     if (!media) throw new NotFoundException('Media not found in collection');
+    await this.contentIntegrity?.blockRequiredDesignMediaDeletion(
+      collectionId,
+      mediaId,
+    );
 
     const key = media.file?.s3Key;
     if (key) {
@@ -9858,6 +10020,105 @@ export class CollectionsService {
     return {
       success: true,
       coverReassigned: collection?.coverMediaId === mediaId,
+    };
+  }
+
+  async submitDesignForReview(collectionId: string, ownerId: string) {
+    await this.assertOwner(
+      collectionId,
+      ownerId,
+      'DESIGN',
+      BRAND_PERMISSIONS.CATALOG_WRITE,
+    );
+
+    const collection = await this.prisma.collection.findUnique({
+      where: { id: collectionId },
+      select: {
+        id: true,
+        ownerId: true,
+        title: true,
+        categoryId: true,
+        categoryTypeId: true,
+        type: true,
+        tags: true,
+        status: true,
+        deletedAt: true,
+      },
+    });
+    if (!collection || collection.deletedAt) {
+      throw new NotFoundException('Design not found');
+    }
+    if (!collection.title?.trim()) {
+      throw new BadRequestException('Title is required to publish');
+    }
+    if (!collection.categoryId) {
+      throw new BadRequestException('Choose what this item is.');
+    }
+    if (!collection.categoryTypeId) {
+      throw new BadRequestException('Choose a garment type.');
+    }
+    if (!Array.isArray(collection.tags) || collection.tags.length === 0) {
+      throw new BadRequestException('Add at least one hashtag.');
+    }
+    this.assertAudienceForPublish(collection.type);
+
+    const brand = await this.prisma.brand.findUnique({
+      where: { ownerId: collection.ownerId },
+      select: { id: true },
+    });
+    const publicationDecision =
+      this.contentIntegrity?.resolvePublicationDecision(brand?.id) ??
+      Promise.resolve({
+        publicationStatus: CollectionStatus.PUBLISHED,
+        reviewMode: null,
+        requiresPreReview: false,
+      });
+    const decision = await publicationDecision;
+
+    let submissionId: string | null = null;
+    await this.prisma.$transaction(async (tx) => {
+      await this.contentIntegrity?.assertCollectionHasPublishableMedia(
+        tx,
+        collectionId,
+        {
+          ownerUserId: collection.ownerId,
+          brandId: brand?.id,
+          backfillMissingSlots: true,
+        },
+      );
+
+      await tx.collection.update({
+        where: { id: collectionId },
+        data: { status: decision.publicationStatus } as any,
+      });
+
+      if (decision.requiresPreReview && this.contentIntegrity) {
+        const submission = await this.contentIntegrity.createSubmission(tx, {
+          entityType: ContentEntityType.DESIGN,
+          legacyCollectionId: collectionId,
+          brandId: brand?.id,
+          submittedById: ownerId,
+          previousStatus: collection.status as CollectionStatus,
+        });
+        submissionId = submission.id;
+      }
+    });
+
+    if (submissionId && this.contentIntegrity) {
+      await this.contentIntegrity.notifyContentSubmitted(ownerId, {
+        submissionId,
+        entityType: ContentEntityType.DESIGN,
+        collectionId,
+        message: 'Your design was submitted for review.',
+      });
+    }
+
+    return {
+      collectionId,
+      designId: collectionId,
+      publicationStatus: decision.publicationStatus,
+      reviewMode: decision.reviewMode,
+      submissionId,
     };
   }
 

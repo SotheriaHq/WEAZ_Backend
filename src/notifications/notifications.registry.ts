@@ -1356,6 +1356,32 @@ export class NotificationRegistry {
         n.payload?.message || 'A message in your order thread was moderated',
     });
 
+    [
+      NotificationType.CONTENT_SUBMITTED_FOR_REVIEW,
+      NotificationType.CONTENT_REVIEW_APPROVED,
+      NotificationType.CONTENT_REVIEW_REJECTED,
+      NotificationType.CONTENT_CHANGES_REQUESTED,
+      NotificationType.CONTENT_RESUBMITTED,
+      NotificationType.CONTENT_PUBLISHED,
+      NotificationType.CONTENT_REVIEW_FAILED,
+    ].forEach((type) => {
+      registry.register({
+        type,
+        schema: Joi.object({
+          submissionId: Joi.string().optional(),
+          entityType: Joi.string().optional(),
+          productId: Joi.string().optional(),
+          collectionId: Joi.string().optional(),
+          designId: Joi.string().optional(),
+          reasonCode: Joi.string().optional().allow(null),
+          message: Joi.string().optional(),
+          targetUrl: Joi.string().optional(),
+        }),
+        formatter: (n: any) =>
+          n.payload?.message || 'Content review status updated',
+      });
+    });
+
     registry.register({
       type: NotificationType.ADMIN_ACTION,
       schema: Joi.object({
