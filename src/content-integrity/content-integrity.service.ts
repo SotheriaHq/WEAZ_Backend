@@ -214,7 +214,9 @@ export class ContentIntegrityService {
       .map((entry) => String(entry.fileUploadId ?? entry.fileId ?? '').trim())
       .filter(Boolean);
     if (ids.length !== entries.length) {
-      throw new BadRequestException('Every media item must include fileUploadId.');
+      throw new BadRequestException(
+        'Every media item must include fileUploadId.',
+      );
     }
 
     const files = await this.prisma.fileUpload.findMany({
@@ -234,7 +236,9 @@ export class ContentIntegrityService {
       const fileUploadId = String(entry.fileUploadId ?? entry.fileId).trim();
       const file = fileById.get(fileUploadId);
       if (!file) {
-        throw new BadRequestException('One or more media files were not found.');
+        throw new BadRequestException(
+          'One or more media files were not found.',
+        );
       }
       if (![args.actorUserId, args.ownerUserId].includes(file.userId)) {
         throw new ForbiddenException(
@@ -311,7 +315,9 @@ export class ContentIntegrityService {
       );
     }
     if (rows.length > 6) {
-      throw new BadRequestException(`${entityLabel} can publish up to 6 media.`);
+      throw new BadRequestException(
+        `${entityLabel} can publish up to 6 media.`,
+      );
     }
 
     const slots = rows.map((row) =>
@@ -324,7 +330,11 @@ export class ContentIntegrityService {
     for (const row of rows) {
       const slot = this.normalizeViewSlot(row.viewSlot, row.orderIndex);
       const file = row.file;
-      if (!file || file.originalDeletedAt || file.processingStatus !== 'READY') {
+      if (
+        !file ||
+        file.originalDeletedAt ||
+        file.processingStatus !== 'READY'
+      ) {
         throw new BadRequestException(
           `${entityLabel} media must be fully processed before publishing.`,
         );
@@ -388,7 +398,8 @@ export class ContentIntegrityService {
             data: {
               viewSlot,
               mediaPurpose: this.mediaPurposeForSlot(viewSlot),
-              reviewStatus: row.reviewStatus ?? ContentMediaReviewStatus.APPROVED,
+              reviewStatus:
+                row.reviewStatus ?? ContentMediaReviewStatus.APPROVED,
               createdById: row.createdById ?? options.ownerUserId ?? undefined,
               brandId: row.brandId ?? options.brandId ?? undefined,
             },
@@ -655,9 +666,7 @@ export class ContentIntegrityService {
       (this.prisma as any).contentSubmission.findMany({
         where,
         orderBy: [{ submittedAt: 'asc' }, { id: 'asc' }],
-        ...(filters.cursor
-          ? { cursor: { id: filters.cursor }, skip: 1 }
-          : {}),
+        ...(filters.cursor ? { cursor: { id: filters.cursor }, skip: 1 } : {}),
         take: take + 1,
       }),
       this.buildSubmissionSummary(where),
@@ -667,7 +676,9 @@ export class ContentIntegrityService {
     const enriched = await Promise.all(
       pageRows.map((row) => this.mapSubmissionDetail(row)),
     );
-    const q = String(filters.q ?? '').trim().toLowerCase();
+    const q = String(filters.q ?? '')
+      .trim()
+      .toLowerCase();
     const items = enriched.filter((item) => {
       const matchesTrust =
         !filters.trustTier || item.brand?.trustTier === filters.trustTier;
@@ -786,7 +797,9 @@ export class ContentIntegrityService {
         targetId: target.targetId,
         mediaId: target.mediaId ?? null,
         reasonCode: args.reasonCode,
-        status: { in: [ContentReportStatus.OPEN, ContentReportStatus.REVIEWED] },
+        status: {
+          in: [ContentReportStatus.OPEN, ContentReportStatus.REVIEWED],
+        },
       },
       orderBy: { createdAt: 'desc' },
     });
@@ -826,7 +839,9 @@ export class ContentIntegrityService {
     userAgent?: string | null;
   }) {
     if (args.status === ContentReportStatus.OPEN) {
-      throw new BadRequestException('Report resolution cannot reopen a report.');
+      throw new BadRequestException(
+        'Report resolution cannot reopen a report.',
+      );
     }
     const current = await (this.prisma as any).contentReport.findUnique({
       where: { id: args.reportId },
@@ -883,7 +898,8 @@ export class ContentIntegrityService {
   }
 
   private async buildSubmissionSummary(where: Record<string, unknown>) {
-    const { status: _status, ...baseWhere } = where;
+    const baseWhere = { ...where };
+    delete baseWhere.status;
     const [pending, changesRequested, rejected, approved] = await Promise.all([
       (this.prisma as any).contentSubmission.count({
         where: { ...baseWhere, status: ContentSubmissionStatus.IN_REVIEW },
@@ -910,7 +926,8 @@ export class ContentIntegrityService {
   }
 
   private async buildReportSummary(where: Record<string, unknown>) {
-    const { status: _status, ...baseWhere } = where;
+    const baseWhere = { ...where };
+    delete baseWhere.status;
     const [open, reviewed, resolved, dismissed] = await Promise.all([
       (this.prisma as any).contentReport.count({
         where: { ...baseWhere, status: ContentReportStatus.OPEN },
@@ -972,7 +989,9 @@ export class ContentIntegrityService {
       slotCompleteness: {
         required: checklist.length,
         present: checklist.filter((slot) => slot.present).length,
-        missing: checklist.filter((slot) => !slot.present).map((slot) => slot.slot),
+        missing: checklist
+          .filter((slot) => !slot.present)
+          .map((slot) => slot.slot),
       },
       reviewHistory: history,
       reports,
@@ -1183,7 +1202,9 @@ export class ContentIntegrityService {
   }
 
   private async getSubmissionHistory(submission: any) {
-    const where: Record<string, unknown> = { entityType: submission.entityType };
+    const where: Record<string, unknown> = {
+      entityType: submission.entityType,
+    };
     if (submission.productId) where.productId = submission.productId;
     if (submission.designId) where.designId = submission.designId;
     if (submission.legacyCollectionId) {
@@ -1248,7 +1269,9 @@ export class ContentIntegrityService {
       target,
       reasonCode: report.reasonCode,
       reasonLabel:
-        CONTENT_REPORT_REASON_LABELS[report.reasonCode as ContentReportReasonCode],
+        CONTENT_REPORT_REASON_LABELS[
+          report.reasonCode as ContentReportReasonCode
+        ],
       note: report.note,
       status: report.status,
       reviewedBy: reviewer,
@@ -1266,7 +1289,12 @@ export class ContentIntegrityService {
     if (targetType === ContentReportTargetType.PRODUCT) {
       const product = await this.prisma.product.findUnique({
         where: { id: targetId },
-        select: { id: true, name: true, brandId: true, publicationStatus: true },
+        select: {
+          id: true,
+          name: true,
+          brandId: true,
+          publicationStatus: true,
+        },
       });
       return product
         ? {
@@ -1314,7 +1342,12 @@ export class ContentIntegrityService {
         select: { id: true, name: true },
       });
       return brand
-        ? { id: brand.id, type: targetType, title: brand.name, brandId: brand.id }
+        ? {
+            id: brand.id,
+            type: targetType,
+            title: brand.name,
+            brandId: brand.id,
+          }
         : { id: targetId, type: targetType, title: 'Deleted brand' };
     }
     return { id: targetId, type: targetType, title: 'Media item' };
@@ -1439,7 +1472,9 @@ export class ContentIntegrityService {
       select: { id: true },
     });
     if (!media) {
-      throw new BadRequestException('Reported media does not belong to target.');
+      throw new BadRequestException(
+        'Reported media does not belong to target.',
+      );
     }
   }
 
@@ -1538,7 +1573,9 @@ export class ContentIntegrityService {
       args.reasonCode === ContentReviewReasonCode.OTHER &&
       !String(args.reasonNote ?? '').trim()
     ) {
-      throw new BadRequestException('Admin note is required when reason is Other.');
+      throw new BadRequestException(
+        'Admin note is required when reason is Other.',
+      );
     }
     if (submission.submittedById === args.adminUserId) {
       throw new ForbiddenException('Admins cannot review their own content.');
@@ -1571,7 +1608,11 @@ export class ContentIntegrityService {
             publicationStatus: nextEntityStatus,
             isActive: args.action === 'approve',
           } as any,
-          select: { id: true, name: true, brand: { select: { ownerId: true } } },
+          select: {
+            id: true,
+            name: true,
+            brand: { select: { ownerId: true } },
+          },
         });
         ownerId = product.brand?.ownerId ?? null;
         targetType = 'Product';
@@ -1763,7 +1804,10 @@ export class ContentIntegrityService {
     }
   }
 
-  async notifyContentSubmitted(ownerId: string, payload: Record<string, unknown>) {
+  async notifyContentSubmitted(
+    ownerId: string,
+    payload: Record<string, unknown>,
+  ) {
     await this.notifyContentReviewOutcome(ownerId, {
       type: NotificationType.CONTENT_SUBMITTED_FOR_REVIEW,
       message: 'Your content was submitted for review.',

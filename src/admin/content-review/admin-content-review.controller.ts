@@ -115,11 +115,6 @@ export class AdminContentReviewController {
     @Req() req: Request,
   ) {
     const actorId = (req as any).user.sub;
-    return this.reviewService.setBrandTrustOverride(
-      brandId,
-      actorId,
-      dto,
-      req,
-    );
+    return this.reviewService.setBrandTrustOverride(brandId, actorId, dto, req);
   }
 }

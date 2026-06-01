@@ -1,6 +1,4 @@
-import {
-  ContentMediaViewSlot,
-} from '@prisma/client';
+import { ContentMediaViewSlot } from '@prisma/client';
 import {
   IsString,
   IsOptional,

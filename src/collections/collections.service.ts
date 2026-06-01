@@ -3331,7 +3331,10 @@ export class CollectionsService {
               },
             );
           }
-          if (action === 'publish' && nextStatus === CollectionStatus.PUBLISHED) {
+          if (
+            action === 'publish' &&
+            nextStatus === CollectionStatus.PUBLISHED
+          ) {
             await this.cleanupSupersededDraftCollections(
               tx,
               collection.ownerId,
@@ -3504,7 +3507,8 @@ export class CollectionsService {
       );
       const nextIndexedTags = this.getIndexedCollectionTags(
         {
-          status: (updated as any).status ??
+          status:
+            (updated as any).status ??
             (action === 'publish' ? 'PUBLISHED' : 'DRAFT'),
           visibility: (metadata.visibility ??
             collection.visibility) as CollectionVisibility,
@@ -3625,9 +3629,7 @@ export class CollectionsService {
             file: existing,
             orderIndex: presign.orderIndex ?? null,
             viewSlot:
-              (completion as any).viewSlot ??
-              (presign as any).viewSlot ??
-              null,
+              (completion as any).viewSlot ?? (presign as any).viewSlot ?? null,
           };
         }
 
@@ -3674,10 +3676,12 @@ export class CollectionsService {
               : undefined,
             reviewStatus: 'APPROVED',
             createdById: userId,
-            brandId: (await tx.brand.findUnique({
-              where: { ownerId: collection.ownerId },
-              select: { id: true },
-            }))?.id,
+            brandId: (
+              await tx.brand.findUnique({
+                where: { ownerId: collection.ownerId },
+                select: { id: true },
+              })
+            )?.id,
           },
         });
       }
@@ -3825,8 +3829,7 @@ export class CollectionsService {
           domain: 'DESIGN',
           isAvailableInStore: false,
           title: completionMetadata.title ?? collection.title,
-          description:
-            completionMetadata.description ?? collection.description,
+          description: completionMetadata.description ?? collection.description,
           visibility: completionMetadata.visibility ?? collection.visibility,
           type: completionMetadata.type ?? collection.type,
           categoryId: completionMetadata.categoryId ?? collection.categoryId,

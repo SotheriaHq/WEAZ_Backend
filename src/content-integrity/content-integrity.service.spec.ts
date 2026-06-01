@@ -148,9 +148,7 @@ describe('ContentIntegrityService', () => {
     const gate = await service.evaluateBrandGate('brand-1');
 
     expect(gate.tier).toBe(BrandTrustTier.NEW);
-    expect(gate.reviewMode).toBe(
-      BrandContentReviewMode.PRE_REVIEW_REQUIRED,
-    );
+    expect(gate.reviewMode).toBe(BrandContentReviewMode.PRE_REVIEW_REQUIRED);
     expect(gate.requiresPreReview).toBe(true);
   });
 

@@ -63,11 +63,7 @@ export class AdminContentReviewService {
     });
   }
 
-  approveSubmission(
-    submissionId: string,
-    adminUserId: string,
-    req: any,
-  ) {
+  approveSubmission(submissionId: string, adminUserId: string, req: any) {
     return this.contentIntegrity.reviewSubmission({
       submissionId,
       adminUserId,

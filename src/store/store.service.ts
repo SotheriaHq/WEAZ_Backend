@@ -2048,8 +2048,8 @@ export class StoreService {
     const normalizedImages = structuredProductMedia.length
       ? structuredProductMedia.map((media) => media.url)
       : Array.isArray(dto.images)
-      ? dto.images.filter(Boolean)
-      : [];
+        ? dto.images.filter(Boolean)
+        : [];
     if (normalizedImages.length > this.maxProductMediaCount) {
       throw new BadRequestException(
         `You can upload up to ${this.maxProductMediaCount} images`,
@@ -2472,12 +2472,15 @@ export class StoreService {
     });
 
     if (submissionId && this.contentIntegrity) {
-      await this.contentIntegrity.notifyContentSubmitted(product.brand.ownerId, {
-        submissionId,
-        entityType: ContentEntityType.PRODUCT,
-        productId,
-        message: 'Your product was submitted for review.',
-      });
+      await this.contentIntegrity.notifyContentSubmitted(
+        product.brand.ownerId,
+        {
+          submissionId,
+          entityType: ContentEntityType.PRODUCT,
+          productId,
+          message: 'Your product was submitted for review.',
+        },
+      );
     }
 
     const response = await this.attachProductMedia(updated);
@@ -2997,7 +3000,11 @@ export class StoreService {
             ? this.contentIntegrity.validatePublishableMediaRows(
                 structuredUpdateMedia.map((media) => ({
                   ...media,
-                  file: { s3Url: media.url, fileType: FileType.POST_IMAGE, processingStatus: 'READY' },
+                  file: {
+                    s3Url: media.url,
+                    fileType: FileType.POST_IMAGE,
+                    processingStatus: 'READY',
+                  },
                   reviewStatus: 'APPROVED',
                 })),
                 'A product',
@@ -3200,12 +3207,15 @@ export class StoreService {
     }
 
     if (updateSubmissionId && this.contentIntegrity) {
-      await this.contentIntegrity.notifyContentSubmitted(product.brand.ownerId, {
-        submissionId: updateSubmissionId,
-        entityType: ContentEntityType.PRODUCT,
-        productId,
-        message: 'Your product was submitted for review.',
-      });
+      await this.contentIntegrity.notifyContentSubmitted(
+        product.brand.ownerId,
+        {
+          submissionId: updateSubmissionId,
+          entityType: ContentEntityType.PRODUCT,
+          productId,
+          message: 'Your product was submitted for review.',
+        },
+      );
     }
 
     const response = await this.attachProductMedia(updated);
@@ -6557,7 +6567,9 @@ export class StoreService {
       isActive: product.isActive,
       publicationStatus:
         product.publicationStatus ??
-        (product.isActive ? CollectionStatus.PUBLISHED : CollectionStatus.DRAFT),
+        (product.isActive
+          ? CollectionStatus.PUBLISHED
+          : CollectionStatus.DRAFT),
       isFeatured: product.isFeatured,
       isPhysicalProduct: product.isPhysicalProduct,
       customsRegion: product.customsRegion,

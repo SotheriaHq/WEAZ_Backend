@@ -49,8 +49,7 @@ export const CONTENT_REPORT_REASON_LABELS: Record<
 > = {
   [ContentReportReasonCode.WRONG_OR_UNRELATED_IMAGE]:
     'Wrong or unrelated image',
-  [ContentReportReasonCode.MISLEADING_MEDIA]:
-    'Misleading product/design media',
+  [ContentReportReasonCode.MISLEADING_MEDIA]: 'Misleading product/design media',
   [ContentReportReasonCode.STOLEN_OR_COPYRIGHTED_IMAGE]:
     'Stolen or copyrighted image',
   [ContentReportReasonCode.OFFENSIVE_OR_UNSAFE_MEDIA]:
