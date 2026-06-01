@@ -13,6 +13,7 @@ import {
   HttpCode,
   HttpStatus,
 } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { JwtAuthGuard } from '../auth/guard/jwt-auth.guard';
 import { UserTypeGuard } from '../auth/guard/user-type.guard';
 import { UserType } from '@prisma/client';
@@ -69,6 +70,7 @@ export class BrandReviewsController {
    */
   @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
   @UseInterceptors(IdempotencyInterceptor)
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
   @Post('reviews/lifecycle/:reviewId/report')
   async reportLifecycleReview(
     @Param('reviewId') reviewId: string,
@@ -118,6 +120,7 @@ export class BrandReviewsController {
    */
   @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
   @UseInterceptors(IdempotencyInterceptor)
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
   @Post('reviews/:reviewId/report')
   @HttpCode(HttpStatus.NO_CONTENT)
   async reportReview(

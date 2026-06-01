@@ -8,6 +8,8 @@ import {
   CustomOrderStatus,
   OrderStatus,
   PaymentStatus,
+  ProductReviewReportReason,
+  ProductReviewStatus,
   ReviewPromptStatus,
   ReviewSatisfaction,
   ReviewStatus,
@@ -817,6 +819,35 @@ describe('completed-order review lifecycle', () => {
       targetId: 'product_1',
       name: 'Reviewed Product',
       reviewCount: 1,
+    });
+  });
+
+  it('records product review reports and increments the moderation counter', async () => {
+    prisma.productReview.findUnique.mockResolvedValue({
+      id: 'product_review_1',
+      userId: 'buyer_1',
+      productId: 'product_1',
+      brandId: 'brand_1',
+      status: ProductReviewStatus.PUBLISHED,
+    });
+
+    await service.reportReview('buyer_2', 'product_review_1', {
+      reason: ProductReviewReportReason.SPAM,
+      details: '  suspicious repeated review  ',
+    });
+
+    expect(prisma.productReviewReport.create).toHaveBeenCalledWith({
+      data: {
+        reviewId: 'product_review_1',
+        reporterId: 'buyer_2',
+        brandId: null,
+        reason: ProductReviewReportReason.SPAM,
+        details: 'suspicious repeated review',
+      },
+    });
+    expect(prisma.productReview.update).toHaveBeenCalledWith({
+      where: { id: 'product_review_1' },
+      data: { reportCount: { increment: 1 } },
     });
   });
 

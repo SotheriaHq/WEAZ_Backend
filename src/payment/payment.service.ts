@@ -7693,7 +7693,7 @@ export class PaymentService implements OnModuleInit {
       return;
     }
 
-    await tx.$queryRaw`SELECT "id" FROM "Product" WHERE "id" = ${line.productId}::uuid FOR UPDATE`;
+    await tx.$queryRaw`SELECT "_id" FROM "Product" WHERE "_id" = ${line.productId}::uuid FOR UPDATE`;
     const lockedProduct = await tx.product.findUnique({
       where: { id: line.productId },
       select: {
@@ -7719,7 +7719,7 @@ export class PaymentService implements OnModuleInit {
     const nextSizeStock = this.parseSizeStock(lockedProduct.sizeStock);
 
     if (line.variantId) {
-      await tx.$queryRaw`SELECT "id" FROM "ProductVariant" WHERE "id" = ${line.variantId}::uuid FOR UPDATE`;
+      await tx.$queryRaw`SELECT "_id" FROM "ProductVariant" WHERE "_id" = ${line.variantId}::uuid FOR UPDATE`;
       const updatedVariant = await tx.productVariant.updateMany({
         where: {
           id: line.variantId,
@@ -7891,7 +7891,7 @@ export class PaymentService implements OnModuleInit {
       }
 
       for (const reservation of checkoutSession.inventoryReservations) {
-        await tx.$queryRaw`SELECT "id" FROM "Product" WHERE "id" = ${reservation.productId}::uuid FOR UPDATE`;
+        await tx.$queryRaw`SELECT "_id" FROM "Product" WHERE "_id" = ${reservation.productId}::uuid FOR UPDATE`;
 
         const product = await tx.product.findUnique({
           where: { id: reservation.productId },

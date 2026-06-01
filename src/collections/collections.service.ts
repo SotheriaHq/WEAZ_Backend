@@ -5451,17 +5451,6 @@ export class CollectionsService {
             isActive: true,
             OR: [{ publishAt: null }, { publishAt: { lte: now } }],
           };
-    try {
-      console.log(
-        '[collections.service.getUserCollections] userId=%s requesterId=%s visibility=%s scope=%s featurePrivate=%s',
-        userId,
-        requesterId ?? 'anon',
-        visibility ?? 'public',
-        resolvedScope,
-        privateFeature,
-      );
-    } catch {}
-
     // Default: published only for non-owner
     if (requesterId !== userId) {
       where.deletedAt = null;
@@ -5589,14 +5578,6 @@ export class CollectionsService {
         },
       },
     });
-    try {
-      console.log(
-        '[collections.service.getUserCollections] rows=%d where=%j',
-        items.length,
-        where,
-      );
-    } catch {}
-
     const hasNext = items.length > limit;
     const data = hasNext ? items.slice(0, -1) : items;
 

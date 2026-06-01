@@ -1466,6 +1466,91 @@ describe('PaymentService', () => {
     });
   });
 
+  it('locks mapped product inventory columns when reserving unified checkout stock', async () => {
+    const tx = {
+      $queryRaw: jest.fn().mockResolvedValue(undefined),
+      product: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'product-1',
+          name: 'Threadly Tee',
+          totalStock: 5,
+          sizeStock: null,
+          trackInventory: true,
+          allowBackorders: false,
+        }),
+        update: jest.fn().mockResolvedValue(undefined),
+      },
+      productVariant: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      inventoryReservation: {
+        create: jest.fn().mockResolvedValue({ id: 'reservation-1' }),
+      },
+    };
+    const target = new PaymentService(
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+    );
+
+    await expect(
+      (target as any).reserveUnifiedStandardLineInventory(
+        tx,
+        'checkout-session-1',
+        'checkout-line-1',
+        {
+          cartItemId: 'cart-line-1',
+          brandId: 'brand-1',
+          productId: 'product-1',
+          productName: 'Threadly Tee',
+          thumbnail: null,
+          quantity: 1,
+          selectedSize: 'M',
+          selectedColor: 'Black',
+          currency: 'NGN',
+          unitPrice: 12000,
+          lineTotal: 12000,
+          sizingMode: 'STANDARD',
+          requiredMeasurementKeys: [],
+          sizeFitData: null,
+          sizeRecommendationSnapshot: null,
+          variantId: 'variant-1',
+          reserveInventory: true,
+          sourceProduct: {
+            id: 'product-1',
+            trackInventory: true,
+            allowBackorders: false,
+            totalStock: 5,
+            sizeStock: null,
+            sizes: ['M'],
+            colors: ['Black'],
+          },
+        },
+        new Date(Date.now() + 30 * 60 * 1000),
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(tx.$queryRaw).toHaveBeenCalledTimes(2);
+    expect(String(tx.$queryRaw.mock.calls[0][0][0])).toContain(
+      'SELECT "_id" FROM "Product" WHERE "_id"',
+    );
+    expect(String(tx.$queryRaw.mock.calls[1][0][0])).toContain(
+      'SELECT "_id" FROM "ProductVariant" WHERE "_id"',
+    );
+    expect(tx.inventoryReservation.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        checkoutSessionId: 'checkout-session-1',
+        checkoutSessionLineId: 'checkout-line-1',
+        productId: 'product-1',
+        productVariantId: 'variant-1',
+        quantity: 1,
+        status: 'RESERVED',
+      }),
+    });
+  });
+
   it('purges old payment telemetry only for closed attempts', async () => {
     const tx = {
       paymentAttempt: {

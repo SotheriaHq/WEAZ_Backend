@@ -14,6 +14,7 @@ import {
   HttpCode,
   HttpStatus,
 } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { JwtAuthGuard } from '../auth/guard/jwt-auth.guard';
 import { IdempotencyInterceptor } from '../common/interceptors/idempotency.interceptor';
 import { ReviewsService } from './reviews.service';
@@ -127,6 +128,7 @@ export class ReviewsController {
    */
   @UseGuards(JwtAuthGuard)
   @UseInterceptors(IdempotencyInterceptor)
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
   @Post('reviews/:reviewId/report')
   @HttpCode(HttpStatus.NO_CONTENT)
   async reportReview(
