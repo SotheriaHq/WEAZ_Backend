@@ -26,6 +26,14 @@ const notification = {
   actor: null,
 };
 
+const pushEnabledSettings = {
+  ...DEFAULT_NOTIFICATION_SETTINGS,
+  push: {
+    ...DEFAULT_NOTIFICATION_SETTINGS.push,
+    enabled: true,
+  },
+};
+
 class TestPushNotificationsService extends PushNotificationsService {
   constructor(
     prisma: PrismaService,
@@ -87,7 +95,7 @@ describe('PushNotificationsService', () => {
     const result = await service.deliverAfterNotificationCreated({
       recipientId: 'user-1',
       notification,
-      settings: DEFAULT_NOTIFICATION_SETTINGS,
+      settings: pushEnabledSettings,
       notificationTypeEnabled: true,
       date: now,
     });
@@ -122,9 +130,10 @@ describe('PushNotificationsService', () => {
       recipientId: 'user-1',
       notification,
       settings: {
-        ...DEFAULT_NOTIFICATION_SETTINGS,
+        ...pushEnabledSettings,
         push: {
           ...DEFAULT_NOTIFICATION_SETTINGS.push,
+          enabled: true,
           quietHoursEnabled: true,
           quietHoursStart: '22:00',
           quietHoursEnd: '06:00',
@@ -145,9 +154,10 @@ describe('PushNotificationsService', () => {
       recipientId: 'user-1',
       notification,
       settings: {
-        ...DEFAULT_NOTIFICATION_SETTINGS,
+        ...pushEnabledSettings,
         push: {
           ...DEFAULT_NOTIFICATION_SETTINGS.push,
+          enabled: true,
           showPreview: false,
         },
       },
@@ -199,7 +209,7 @@ describe('PushNotificationsService', () => {
     const result = await service.deliverAfterNotificationCreated({
       recipientId: 'user-1',
       notification: messageNotification,
-      settings: DEFAULT_NOTIFICATION_SETTINGS,
+      settings: pushEnabledSettings,
       notificationTypeEnabled: true,
       date: now,
     });
@@ -246,7 +256,7 @@ describe('PushNotificationsService', () => {
     const result = await service.deliverAfterNotificationCreated({
       recipientId: 'user-1',
       notification,
-      settings: DEFAULT_NOTIFICATION_SETTINGS,
+      settings: pushEnabledSettings,
       notificationTypeEnabled: true,
       date: now,
     });
@@ -277,7 +287,7 @@ describe('PushNotificationsService', () => {
     const result = await service.deliverAfterNotificationCreated({
       recipientId: 'user-1',
       notification,
-      settings: DEFAULT_NOTIFICATION_SETTINGS,
+      settings: pushEnabledSettings,
       notificationTypeEnabled: true,
       date: now,
     });
@@ -305,7 +315,7 @@ describe('PushNotificationsService', () => {
       service.deliverAfterNotificationCreated({
         recipientId: 'user-1',
         notification,
-        settings: DEFAULT_NOTIFICATION_SETTINGS,
+        settings: pushEnabledSettings,
         notificationTypeEnabled: true,
         date: now,
       }),

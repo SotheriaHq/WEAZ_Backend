@@ -16,6 +16,58 @@ const CRITICAL_SCENARIOS = new Set<string>([
   'notification.LOGOUT_ALL',
 ]);
 
+const MVP_DEFAULT_EMAIL_NOTIFICATION_TYPES = new Set<NotificationType>([
+  NotificationType.SIGNUP,
+  NotificationType.LOGOUT,
+  NotificationType.ORDER_PLACED,
+  NotificationType.ORDER_STATUS_UPDATED,
+  NotificationType.COLLECTION_UPLOAD,
+  NotificationType.PRODUCT_UPLOAD,
+  NotificationType.CONTENT_SUBMITTED_FOR_REVIEW,
+  NotificationType.CONTENT_REVIEW_APPROVED,
+  NotificationType.CONTENT_REVIEW_REJECTED,
+  NotificationType.CONTENT_CHANGES_REQUESTED,
+  NotificationType.CONTENT_RESUBMITTED,
+  NotificationType.CONTENT_PUBLISHED,
+  NotificationType.CONTENT_REVIEW_FAILED,
+  NotificationType.VERIFICATION_SUBMITTED,
+  NotificationType.VERIFICATION_IN_REVIEW,
+  NotificationType.VERIFICATION_INFO_REQUESTED,
+  NotificationType.VERIFICATION_INFO_RESUBMITTED,
+  NotificationType.VERIFICATION_APPROVED,
+  NotificationType.VERIFICATION_REJECTED,
+  NotificationType.VERIFICATION_CANCELLED,
+  NotificationType.VERIFICATION_CANCELLED_ADMIN,
+  NotificationType.VERIFICATION_COOLDOWN_EXPIRED,
+  NotificationType.VERIFICATION_NUDGE,
+  NotificationType.VERIFICATION_SLA_WARNING,
+  NotificationType.VERIFICATION_SLA_BREACH,
+  NotificationType.VERIFICATION_REVIEW_DELAYED,
+  NotificationType.REVIEW_HIDDEN_BY_ADMIN,
+  NotificationType.ADMIN_ACTION,
+  NotificationType.CUSTOM_ORDER_ADMIN_REVIEW_TRIGGERED,
+  NotificationType.MESSAGE_MODERATED,
+  NotificationType.MESSAGE_THREAD_REOPENED,
+  NotificationType.CUSTOM_ORDER_PAYMENT_RECEIVED,
+  NotificationType.CUSTOM_ORDER_REVIEW_REQUIRED,
+  NotificationType.CUSTOM_ORDER_BRAND_ACCEPTED,
+  NotificationType.CUSTOM_ORDER_BRAND_REJECTED,
+  NotificationType.CUSTOM_ORDER_PROGRESS_UPDATED,
+  NotificationType.CUSTOM_ORDER_EXTENSION_REQUESTED,
+  NotificationType.CUSTOM_ORDER_EXTENSION_RESOLVED,
+  NotificationType.CUSTOM_ORDER_BUYER_COUNTERED,
+  NotificationType.CUSTOM_ORDER_BUYER_REJECTED_EXTENSION,
+  NotificationType.CUSTOM_ORDER_DELIVERED,
+  NotificationType.CUSTOM_ORDER_ACCEPTANCE_WINDOW_REMINDER,
+  NotificationType.CUSTOM_ORDER_ISSUE_REPORTED,
+  NotificationType.CUSTOM_ORDER_DISPUTE_CREATED,
+  NotificationType.CUSTOM_ORDER_STALE_STAGE_WARNING,
+  NotificationType.CUSTOM_ORDER_ACCEPTANCE_SLA_RISK,
+  NotificationType.ADMIN_EMAIL_CHANGE_REQUESTED,
+  NotificationType.ADMIN_EMAIL_CHANGE_APPROVED,
+  NotificationType.ADMIN_EMAIL_CHANGE_REJECTED,
+]);
+
 export function getEmailScenarioKey(
   notificationType: NotificationType,
   payload: Record<string, unknown> | null | undefined,
@@ -38,6 +90,19 @@ export function isEmailScenarioCritical(scenarioKey: string): boolean {
 
 export function getCriticalEmailScenarios(): string[] {
   return Array.from(CRITICAL_SCENARIOS.values());
+}
+
+export function isEmailScenarioEnabledByDefault(scenarioKey: string): boolean {
+  if (isEmailScenarioCritical(scenarioKey)) {
+    return true;
+  }
+
+  const match = scenarioKey.match(/^notification\.(.+)$/);
+  if (!match) {
+    return true;
+  }
+
+  return MVP_DEFAULT_EMAIL_NOTIFICATION_TYPES.has(match[1] as NotificationType);
 }
 
 export function getEmailPriorityForScenario(

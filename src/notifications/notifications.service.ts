@@ -34,6 +34,7 @@ import {
   getCriticalEmailScenarios,
   getEmailPriorityForScenario,
   getEmailScenarioKey,
+  isEmailScenarioEnabledByDefault,
   isEmailScenarioCritical,
   renderNotificationEmail,
 } from './email.policy';
@@ -876,7 +877,8 @@ export class NotificationsService {
       }),
     ]);
 
-    const scenarioEnabled = override?.enabled ?? true;
+    const scenarioEnabled =
+      override?.enabled ?? isEmailScenarioEnabledByDefault(scenarioKey);
     if (!scenarioEnabled) {
       return false;
     }
@@ -905,7 +907,7 @@ export class NotificationsService {
 
     const scenarios: Record<string, boolean> = {};
     for (const key of this.getAllEmailScenarioKeys()) {
-      scenarios[key] = true;
+      scenarios[key] = isEmailScenarioEnabledByDefault(key);
     }
     for (const override of overrides) {
       scenarios[override.scenarioKey] = override.enabled;

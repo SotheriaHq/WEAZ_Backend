@@ -36,6 +36,7 @@ describe('NotificationsService', () => {
       },
       userEmailScenarioPreference: {
         findUnique: jest.fn().mockResolvedValue(null),
+        findMany: jest.fn().mockResolvedValue([]),
       },
       emailSuppression: {
         findFirst: jest.fn().mockResolvedValue(null),
@@ -54,6 +55,7 @@ describe('NotificationsService', () => {
     };
 
     const mockRegistry: Partial<NotificationRegistry> = {
+      getAllTypes: jest.fn(() => Object.values(NotificationType)),
       getConfig: jest.fn((type: NotificationType) => {
         if (type === NotificationType.LOGIN) {
           return {
@@ -435,7 +437,7 @@ describe('NotificationsService', () => {
       const result = await service.getSettings('user-id');
 
       expect(result.push).toEqual({
-        enabled: true,
+        enabled: false,
         sound: true,
         vibration: true,
         showPreview: true,
@@ -551,7 +553,7 @@ describe('NotificationsService', () => {
       expect(result.push.sound).toBe(false);
       expect(result.push.vibration).toBe(false);
       expect(result.push.showPreview).toBe(false);
-      expect(result.push.enabled).toBe(true);
+      expect(result.push.enabled).toBe(false);
     });
 
     it('should accept valid push quiet hours and null values', async () => {
@@ -641,11 +643,18 @@ describe('NotificationsService', () => {
           quietHoursEnd: '06:00',
         },
       };
+      const pushEnabled = {
+        ...DEFAULT_NOTIFICATION_SETTINGS,
+        push: {
+          ...DEFAULT_NOTIFICATION_SETTINGS.push,
+          enabled: true,
+        },
+      };
 
       expect(
         service.isPushAllowedForType(
           NotificationType.ORDER_PLACED,
-          DEFAULT_NOTIFICATION_SETTINGS,
+          pushEnabled,
           new Date(Date.UTC(2026, 0, 1, 12, 0)),
         ),
       ).toBe(true);
@@ -670,6 +679,47 @@ describe('NotificationsService', () => {
           new Date(Date.UTC(2026, 0, 1, 23, 0)),
         ),
       ).toBe(false);
+    });
+  });
+
+  describe('email settings defaults', () => {
+    it('defaults non-MVP social email scenarios off while keeping required MVP scenarios on', async () => {
+      mockPrisma.userEmailPreference.findUnique.mockResolvedValue(null);
+      mockPrisma.userEmailScenarioPreference.findMany.mockResolvedValue([]);
+
+      const result = await service.getEmailSettings('user-id');
+
+      expect(result.scenarios['notification.COMMENT']).toBe(false);
+      expect(result.scenarios['notification.THREAD']).toBe(false);
+      expect(result.scenarios['notification.WISHLIST_PRODUCT_AVAILABLE']).toBe(
+        false,
+      );
+      expect(result.scenarios['notification.ORDER_PLACED']).toBe(true);
+      expect(result.scenarios['notification.CONTENT_REVIEW_REJECTED']).toBe(
+        true,
+      );
+      expect(result.scenarios['notification.VERIFICATION_APPROVED']).toBe(true);
+      expect(result.scenarios['auth.signin.new_device']).toBe(true);
+    });
+
+    it('respects explicit opt-in for a non-MVP email scenario', async () => {
+      mockPrisma.userEmailPreference.findUnique.mockResolvedValue(null);
+      mockPrisma.userEmailScenarioPreference.findUnique.mockResolvedValue({
+        enabled: true,
+      });
+
+      await expect(
+        service.canSendScenarioEmail('user-id', 'notification.COMMENT'),
+      ).resolves.toBe(true);
+    });
+
+    it('does not block direct auth email scenarios that are outside notification enum scenarios', async () => {
+      mockPrisma.userEmailPreference.findUnique.mockResolvedValue(null);
+      mockPrisma.userEmailScenarioPreference.findUnique.mockResolvedValue(null);
+
+      await expect(
+        service.canSendScenarioEmail('user-id', 'auth.password_reset'),
+      ).resolves.toBe(true);
     });
   });
 });
