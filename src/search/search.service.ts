@@ -12,6 +12,7 @@ import {
   CollectionStatus,
   CollectionVisibility,
   Prisma,
+  TagStatus,
 } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { TagsService } from 'src/tags/tags.service';
@@ -727,10 +728,12 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     return {
       brandId,
       isActive: true,
+      publicationStatus: CollectionStatus.PUBLISHED,
       deletedAt: null,
       archivedAt: null,
-      brand: { isStoreOpen: true },
       OR: orClauses,
+      brand: { isStoreOpen: true },
+      AND: [{ OR: [{ publishAt: null }, { publishAt: { lte: new Date() } }] }],
     };
   }
 
@@ -1328,8 +1331,10 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
         INNER JOIN "Brand" b ON b."_id" = p."brandId"
         CROSS JOIN search_params sp
         WHERE p."isActive" = true
+          AND p."publicationStatus" = ${CollectionStatus.PUBLISHED}
           AND p."deletedAt" IS NULL
           AND p."archivedAt" IS NULL
+          AND (p."publishAt" IS NULL OR p."publishAt" <= NOW())
           AND b."isStoreOpen" = true
           ${brandFilter}
           AND COALESCE(p.search_vector, ''::tsvector) @@ sp.tsq
@@ -1358,8 +1363,10 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
         INNER JOIN "Brand" b ON b."_id" = p."brandId"
         CROSS JOIN search_params sp
         WHERE p."isActive" = true
+          AND p."publicationStatus" = ${CollectionStatus.PUBLISHED}
           AND p."deletedAt" IS NULL
           AND p."archivedAt" IS NULL
+          AND (p."publishAt" IS NULL OR p."publishAt" <= NOW())
           AND b."isStoreOpen" = true
           ${brandFilter}
           AND NOT EXISTS (SELECT 1 FROM fts WHERE fts.id = p."_id")
@@ -1387,8 +1394,10 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
         FROM "Product" p
         INNER JOIN "Brand" b ON b."_id" = p."brandId"
         WHERE p."isActive" = true
+          AND p."publicationStatus" = ${CollectionStatus.PUBLISHED}
           AND p."deletedAt" IS NULL
           AND p."archivedAt" IS NULL
+          AND (p."publishAt" IS NULL OR p."publishAt" <= NOW())
           AND b."isStoreOpen" = true
           ${brandFilter}
           AND NOT EXISTS (SELECT 1 FROM fts WHERE fts.id = p."_id")
@@ -1423,8 +1432,10 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
         INNER JOIN "Brand" b ON b."_id" = p."brandId"
         CROSS JOIN search_params sp
         WHERE p."isActive" = true
+          AND p."publicationStatus" = ${CollectionStatus.PUBLISHED}
           AND p."deletedAt" IS NULL
           AND p."archivedAt" IS NULL
+          AND (p."publishAt" IS NULL OR p."publishAt" <= NOW())
           AND b."isStoreOpen" = true
           ${brandFilter}
           AND COALESCE(p.search_vector, ''::tsvector) @@ sp.tsq
@@ -1435,8 +1446,10 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
         INNER JOIN "Brand" b ON b."_id" = p."brandId"
         CROSS JOIN search_params sp
         WHERE p."isActive" = true
+          AND p."publicationStatus" = ${CollectionStatus.PUBLISHED}
           AND p."deletedAt" IS NULL
           AND p."archivedAt" IS NULL
+          AND (p."publishAt" IS NULL OR p."publishAt" <= NOW())
           AND b."isStoreOpen" = true
           ${brandFilter}
           AND NOT EXISTS (SELECT 1 FROM fts WHERE fts.id = p."_id")
@@ -1450,8 +1463,10 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
         FROM "Product" p
         INNER JOIN "Brand" b ON b."_id" = p."brandId"
         WHERE p."isActive" = true
+          AND p."publicationStatus" = ${CollectionStatus.PUBLISHED}
           AND p."deletedAt" IS NULL
           AND p."archivedAt" IS NULL
+          AND (p."publishAt" IS NULL OR p."publishAt" <= NOW())
           AND b."isStoreOpen" = true
           ${brandFilter}
           AND NOT EXISTS (SELECT 1 FROM fts WHERE fts.id = p."_id")
@@ -1845,6 +1860,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     const total = await this.prisma.tag.count({
       where: {
         normalizedName: { startsWith: query },
+        status: TagStatus.APPROVED,
         isBanned: false,
         aliasOfTagId: null,
       },
@@ -1853,6 +1869,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     const rows = await this.prisma.tag.findMany({
       where: {
         normalizedName: { startsWith: query },
+        status: TagStatus.APPROVED,
         isBanned: false,
         aliasOfTagId: null,
       },
@@ -2253,9 +2270,11 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
       const rows = await this.prisma.product.findMany({
         where: {
           isActive: true,
+          publicationStatus: CollectionStatus.PUBLISHED,
           deletedAt: null,
           archivedAt: null,
           brand: { isStoreOpen: true },
+          OR: [{ publishAt: null }, { publishAt: { lte: new Date() } }],
         },
         select: {
           id: true,
@@ -2269,6 +2288,8 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
           currency: true,
           slug: true,
           brandId: true,
+          publicationStatus: true,
+          publishAt: true,
           brand: {
             select: {
               ownerId: true,
@@ -2479,6 +2500,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     for (;;) {
       const rows = await this.prisma.tag.findMany({
         where: {
+          status: TagStatus.APPROVED,
           isBanned: false,
           aliasOfTagId: null,
           usageCount: { gt: 0 },
@@ -2552,6 +2574,8 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
         slug: true,
         brandId: true,
         isActive: true,
+        publicationStatus: true,
+        publishAt: true,
         deletedAt: true,
         archivedAt: true,
         brand: {
@@ -2567,8 +2591,10 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     if (
       !row ||
       !row.isActive ||
+      row.publicationStatus !== CollectionStatus.PUBLISHED ||
       row.deletedAt ||
       row.archivedAt ||
+      (row.publishAt && row.publishAt > new Date()) ||
       !row.brand?.isStoreOpen
     ) {
       await this.removeSuggestion('product', SEARCH_SUGGEST_KEYS.products, id);
@@ -2727,12 +2753,19 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
         id: true,
         normalizedName: true,
         usageCount: true,
+        status: true,
         isBanned: true,
         aliasOfTagId: true,
       },
     });
 
-    if (!row || row.isBanned || row.aliasOfTagId || row.usageCount <= 0) {
+    if (
+      !row ||
+      row.status !== TagStatus.APPROVED ||
+      row.isBanned ||
+      row.aliasOfTagId ||
+      row.usageCount <= 0
+    ) {
       await this.removeSuggestion('tag', SEARCH_SUGGEST_KEYS.tags, id);
       return;
     }

@@ -5045,6 +5045,10 @@ export class StoreService {
       where.isActive = true;
       where.publicationStatus = CollectionStatus.PUBLISHED;
       where.deletedAt = null;
+      where.archivedAt = null;
+      andFilters.push({
+        OR: [{ publishAt: null }, { publishAt: { lte: new Date() } }],
+      });
       andFilters.push({
         OR: [
           { collections: { none: {} } },
@@ -5322,10 +5326,14 @@ export class StoreService {
       isActive: true,
       publicationStatus: CollectionStatus.PUBLISHED,
       deletedAt: null,
+      archivedAt: null,
       brand: { isStoreOpen: true },
     };
 
     const andFilters: Prisma.ProductWhereInput[] = [
+      {
+        OR: [{ publishAt: null }, { publishAt: { lte: new Date() } }],
+      },
       {
         OR: [
           { collections: { none: {} } },

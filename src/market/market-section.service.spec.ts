@@ -1,5 +1,5 @@
 import { BadRequestException, NotFoundException } from '@nestjs/common';
-import { MarketSignalTargetType } from '@prisma/client';
+import { CollectionStatus, MarketSignalTargetType } from '@prisma/client';
 import { MarketSectionService } from './market-section.service';
 import { MarketRankingScorerService } from './market-ranking-scorer.service';
 
@@ -724,6 +724,29 @@ describe('MarketSectionService', () => {
       hasNextPage: true,
       nextCursor: 'product_1',
     });
+  });
+
+  it('restricts public product sections to published products', async () => {
+    const prisma = createPrisma({
+      product: {
+        findMany: jest.fn().mockResolvedValue([product({ id: 'product_1' })]),
+      },
+    });
+    const service = new MarketSectionService(prisma as any);
+
+    await service.getSectionDetail('fresh-drops', { limit: 5 });
+
+    expect(prisma.product.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          isActive: true,
+          publicationStatus: CollectionStatus.PUBLISHED,
+          deletedAt: null,
+          archivedAt: null,
+          brand: { isStoreOpen: true },
+        }),
+      }),
+    );
   });
 
   it('clamps oversized section detail limits to the safe maximum', async () => {

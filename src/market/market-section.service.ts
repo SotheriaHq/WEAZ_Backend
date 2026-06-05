@@ -720,6 +720,7 @@ export class MarketSectionService {
 
     return {
       isActive: true,
+      publicationStatus: CollectionStatus.PUBLISHED,
       deletedAt: null,
       archivedAt: null,
       ...(options?.includeBrandOpen === false

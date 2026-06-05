@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import {
   AdminAuditAction,
+  CollectionStatus,
   CollectionVisibility,
   TagStatus,
 } from '@prisma/client';
@@ -1227,7 +1228,9 @@ export class TagsService {
               deletedAt: null,
               archivedAt: null,
               isActive: true,
+              publicationStatus: CollectionStatus.PUBLISHED,
               OR: [{ publishAt: null }, { publishAt: { lte: new Date() } }],
+              brand: { isStoreOpen: true },
             },
             select: {
               id: true,

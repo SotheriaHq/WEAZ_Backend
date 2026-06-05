@@ -1,4 +1,5 @@
 import { BadRequestException } from '@nestjs/common';
+import { CollectionStatus } from '@prisma/client';
 import { BRAND_PERMISSIONS } from 'src/brands/permissions/brand-permissions';
 import { createCipheriv, createHash, randomBytes } from 'crypto';
 import { StoreService } from './store.service';
@@ -710,5 +711,101 @@ describe('StoreService', () => {
     await expect(
       (catalogService as any).resolveCatalogBrandForActor('regular_1'),
     ).rejects.toThrow('active brand membership');
+  });
+
+  it('restricts marketplace products to public published products', async () => {
+    const productFindMany = jest.fn().mockResolvedValue([]);
+    const productCount = jest.fn().mockResolvedValue(0);
+    const marketplaceService = new StoreService(
+      {
+        product: {
+          findMany: productFindMany,
+          count: productCount,
+        },
+      } as any,
+      {} as any,
+      {} as any,
+      {} as any,
+    );
+
+    await marketplaceService.getMarketplaceProducts();
+
+    expect(productFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          isActive: true,
+          publicationStatus: CollectionStatus.PUBLISHED,
+          deletedAt: null,
+          archivedAt: null,
+          brand: { isStoreOpen: true },
+          AND: expect.arrayContaining([
+            {
+              OR: [
+                { publishAt: null },
+                { publishAt: { lte: expect.any(Date) } },
+              ],
+            },
+          ]),
+        }),
+      }),
+    );
+    expect(productCount).toHaveBeenCalledWith({
+      where: expect.objectContaining({
+        publicationStatus: CollectionStatus.PUBLISHED,
+        archivedAt: null,
+      }),
+    });
+  });
+
+  it('restricts public storefront products to public published products', async () => {
+    const productFindMany = jest.fn().mockResolvedValue([]);
+    const productCount = jest.fn().mockResolvedValue(0);
+    const storefrontService = new StoreService(
+      {
+        brand: {
+          findUnique: jest.fn().mockResolvedValue({
+            id: 'brand-1',
+            ownerId: 'owner-1',
+            isStoreOpen: true,
+          }),
+        },
+        product: {
+          findMany: productFindMany,
+          count: productCount,
+        },
+      } as any,
+      {} as any,
+      {} as any,
+      {} as any,
+    );
+
+    await storefrontService.getBrandProducts('brand-1');
+
+    expect(productFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          brandId: 'brand-1',
+          isActive: true,
+          publicationStatus: CollectionStatus.PUBLISHED,
+          deletedAt: null,
+          archivedAt: null,
+          AND: expect.arrayContaining([
+            {
+              OR: [
+                { publishAt: null },
+                { publishAt: { lte: expect.any(Date) } },
+              ],
+            },
+          ]),
+        }),
+      }),
+    );
+    expect(productCount).toHaveBeenCalledWith({
+      where: expect.objectContaining({
+        brandId: 'brand-1',
+        publicationStatus: CollectionStatus.PUBLISHED,
+        archivedAt: null,
+      }),
+    });
   });
 });

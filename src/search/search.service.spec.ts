@@ -1,4 +1,5 @@
 import { BadRequestException } from '@nestjs/common';
+import { CollectionStatus, TagStatus } from '@prisma/client';
 import { SearchController } from './search.controller';
 import { SearchService } from './search.service';
 
@@ -33,7 +34,8 @@ describe('SearchService', () => {
   const createService = () => {
     const prisma = {
       brand: { findUnique: jest.fn() },
-      tag: { count: jest.fn(), findMany: jest.fn() },
+      product: { findMany: jest.fn() },
+      tag: { count: jest.fn(), findMany: jest.fn(), findUnique: jest.fn() },
       $queryRaw: jest.fn(),
     } as any;
 
@@ -196,5 +198,155 @@ describe('SearchService', () => {
       undefined,
     );
     expect(searchTagsPage).toHaveBeenCalledWith('summer', ['summer'], 6, 0);
+  });
+
+  it('keeps product search restricted to public published products', async () => {
+    const { service, prisma } = createService();
+    prisma.$queryRaw
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ total: 0 }]);
+
+    await (service as any).searchProductsPage('jacket', ['jacket'], 10, 0);
+
+    const sqlText = prisma.$queryRaw.mock.calls
+      .map(([sql]: any[]) => sql.strings.join(' '))
+      .join('\n');
+    const sqlValues = prisma.$queryRaw.mock.calls.flatMap(
+      ([sql]: any[]) => sql.values,
+    );
+
+    expect(sqlText).toContain('p."publicationStatus"');
+    expect(sqlText).toContain('p."publishAt"');
+    expect(sqlText).toContain('p."archivedAt" IS NULL');
+    expect(sqlText).toContain('b."isStoreOpen" = true');
+    expect(sqlValues).toContain(CollectionStatus.PUBLISHED);
+  });
+
+  it('keeps product suggestion rebuilds restricted to public published products', async () => {
+    const { service, prisma } = createService();
+    prisma.product.findMany.mockResolvedValueOnce([]);
+
+    await (service as any).rebuildProductSuggestions();
+
+    expect(prisma.product.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          isActive: true,
+          publicationStatus: CollectionStatus.PUBLISHED,
+          deletedAt: null,
+          archivedAt: null,
+          brand: { isStoreOpen: true },
+          OR: [{ publishAt: null }, { publishAt: { lte: expect.any(Date) } }],
+        }),
+      }),
+    );
+  });
+
+  it('removes product suggestions when a product leaves public published state', async () => {
+    const { service, prisma } = createService();
+    prisma.product.findUnique = jest.fn().mockResolvedValue({
+      id: 'product-1',
+      name: 'Draft jacket',
+      description: null,
+      tags: [],
+      thumbnail: null,
+      images: [],
+      price: 100,
+      salePrice: null,
+      currency: 'NGN',
+      slug: 'draft-jacket',
+      brandId: 'brand-1',
+      isActive: true,
+      publicationStatus: CollectionStatus.IN_REVIEW,
+      publishAt: null,
+      deletedAt: null,
+      archivedAt: null,
+      brand: {
+        ownerId: 'brand-owner-1',
+        name: 'Draft Store',
+        isStoreOpen: true,
+      },
+    });
+    const removeSuggestion = jest
+      .spyOn(service as any, 'removeSuggestion')
+      .mockResolvedValue(undefined);
+    const upsertSuggestion = jest.spyOn(service as any, 'upsertSuggestion');
+
+    await (service as any).syncProductSuggestionById('product-1');
+
+    expect(removeSuggestion).toHaveBeenCalledWith(
+      'product',
+      'search:suggest:index:products',
+      'product-1',
+    );
+    expect(upsertSuggestion).not.toHaveBeenCalled();
+  });
+
+  it('keeps tag search and suggestions restricted to approved public tags', async () => {
+    const { service, prisma } = createService();
+    prisma.tag.count.mockResolvedValueOnce(0);
+    prisma.tag.findMany.mockResolvedValueOnce([]);
+
+    await (service as any).searchTagsPage('ankara', ['ankara'], 10, 0);
+
+    expect(prisma.tag.count).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          normalizedName: { startsWith: 'ankara' },
+          status: TagStatus.APPROVED,
+          isBanned: false,
+          aliasOfTagId: null,
+        }),
+      }),
+    );
+    expect(prisma.tag.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          status: TagStatus.APPROVED,
+          isBanned: false,
+          aliasOfTagId: null,
+        }),
+      }),
+    );
+
+    prisma.tag.findMany.mockClear();
+    prisma.tag.findMany.mockResolvedValueOnce([]);
+    await (service as any).rebuildTagSuggestions();
+
+    expect(prisma.tag.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          status: TagStatus.APPROVED,
+          isBanned: false,
+          aliasOfTagId: null,
+          usageCount: { gt: 0 },
+        }),
+      }),
+    );
+  });
+
+  it('removes tag suggestions when a tag is not approved', async () => {
+    const { service, prisma } = createService();
+    prisma.tag.findUnique.mockResolvedValue({
+      id: 'tag-1',
+      normalizedName: 'pending-tag',
+      usageCount: 10,
+      status: TagStatus.PENDING,
+      isBanned: false,
+      aliasOfTagId: null,
+    });
+    const removeSuggestion = jest
+      .spyOn(service as any, 'removeSuggestion')
+      .mockResolvedValue(undefined);
+    const upsertSuggestion = jest.spyOn(service as any, 'upsertSuggestion');
+
+    await (service as any).syncTagSuggestionById('tag-1');
+
+    expect(removeSuggestion).toHaveBeenCalledWith(
+      'tag',
+      'search:suggest:index:tags',
+      'tag-1',
+    );
+    expect(upsertSuggestion).not.toHaveBeenCalled();
   });
 });
