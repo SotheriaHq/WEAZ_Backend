@@ -19,6 +19,7 @@ import { EmailService } from 'src/email/email.service';
 import { TrustedDeviceService } from './helper/trusted-device.service';
 import { toAuthUserResponse } from './helper/prisma-select.helper';
 import { GoogleTokenVerifierService } from './helper/google-token-verifier.service';
+import { LegalService } from 'src/legal/legal.service';
 
 describe('AuthService', () => {
   let service: AuthService;
@@ -62,6 +63,12 @@ describe('AuthService', () => {
     verifyIdToken: jest.fn(),
   };
 
+  const mockLegalService = {
+    getRequiredSignupDocuments: jest.fn(() => []),
+    assertRequiredCurrentAcceptances: jest.fn(),
+    recordAcceptedDocuments: jest.fn(),
+  };
+
   const mockPrisma: any = {
     user: {
       findFirst: jest.fn(),
@@ -102,6 +109,7 @@ describe('AuthService', () => {
           provide: GoogleTokenVerifierService,
           useValue: mockGoogleTokenVerifier,
         },
+        { provide: LegalService, useValue: mockLegalService },
       ],
     }).compile();
 
