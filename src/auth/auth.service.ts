@@ -22,6 +22,7 @@ import {
   AuthProvider,
   PasswordCredentialStatus,
   LoginCodePurpose,
+  LegalAcceptanceSource,
 } from '@prisma/client';
 import {
   authUserSelect,
@@ -58,6 +59,9 @@ import {
   GoogleTokenVerifierService,
   VerifiedGoogleIdentity,
 } from './helper/google-token-verifier.service';
+import { LegalService } from 'src/legal/legal.service';
+import { LegalAcceptanceInputDto } from 'src/legal/dto/legal-acceptance.dto';
+import { PRODUCT_NAME } from 'src/common/branding/product-identity.constants';
 
 const PASSWORD_RESET_TOKEN_TTL_MS = 60 * 60 * 1000;
 const RESET_REQUEST_SUPPRESSION_MS = 2 * 60 * 1000;
@@ -81,6 +85,7 @@ export class AuthService {
     private readonly emailService: EmailService,
     private readonly trustedDeviceService: TrustedDeviceService,
     private readonly googleTokenVerifier: GoogleTokenVerifierService,
+    private readonly legalService: LegalService,
   ) {}
 
   private buildPasswordPolicyContext(
@@ -165,7 +170,7 @@ export class AuthService {
       identity.email
         .split('@')[0]
         ?.replace(/[._-]+/g, ' ')
-        .trim() || 'Threadly';
+        .trim() || PRODUCT_NAME;
     return {
       firstName: givenName || nameParts[0] || emailLocalPart,
       lastName: familyName || 'Member',
@@ -445,6 +450,11 @@ export class AuthService {
         }
       }
 
+      this.legalService.assertRequiredCurrentAcceptances(
+        signupDto.legalAcceptances,
+        this.legalService.getRequiredSignupDocuments(),
+      );
+
       let username: string;
       try {
         if (signupDto.type === UserType.BRAND && signupDto.brandFullName) {
@@ -543,6 +553,17 @@ export class AuthService {
                 : {}),
             },
             select: authUserSelect,
+          });
+
+          await this.legalService.recordAcceptedDocuments({
+            tx,
+            userId: createdUser.id,
+            acceptances: signupDto.legalAcceptances,
+            requiredKeys: this.legalService.getRequiredSignupDocuments(),
+            source: LegalAcceptanceSource.SIGNUP,
+            surface: 'signup',
+            accountType: signupDto.type ?? UserType.REGULAR,
+            req,
           });
 
           if (signupDto.type === UserType.BRAND && brandId) {
@@ -655,7 +676,7 @@ export class AuthService {
         user: toAuthUserResponse(user),
         accessToken,
         ...(refreshToken ? { refreshToken } : {}),
-        message: 'Welcome TO THE INDUSTRY!',
+        message: `Welcome to ${PRODUCT_NAME}!`,
       };
     } catch (error) {
       this.logger.error('Signup error:', error.message, error.stack);
@@ -735,6 +756,7 @@ export class AuthService {
       idToken: string;
       type?: UserType;
       brandFullName?: string;
+      legalAcceptances?: LegalAcceptanceInputDto[];
     },
     req: Request,
     res: Response,
@@ -828,6 +850,11 @@ export class AuthService {
             ? await this.userHelperService.generateIndustriNumber()
             : null;
 
+        this.legalService.assertRequiredCurrentAcceptances(
+          dto.legalAcceptances,
+          this.legalService.getRequiredSignupDocuments(),
+        );
+
         const createdUser = await tx.user.create({
           data: {
             id: uuidv4(),
@@ -869,6 +896,17 @@ export class AuthService {
               : {}),
           },
           select: authUserSelect,
+        });
+
+        await this.legalService.recordAcceptedDocuments({
+          tx,
+          userId: createdUser.id,
+          acceptances: dto.legalAcceptances,
+          requiredKeys: this.legalService.getRequiredSignupDocuments(),
+          source: LegalAcceptanceSource.GOOGLE_SIGNUP,
+          surface: 'google-signup',
+          accountType: requestedType,
+          req,
         });
 
         if (requestedType === UserType.BRAND && brandId) {
@@ -1385,7 +1423,7 @@ export class AuthService {
     }
     if (user.email.trim().toLowerCase() !== identity.email) {
       throw new BadRequestException(
-        'Google account email must match your Threadly email',
+        `Google account email must match your ${PRODUCT_NAME} email`,
       );
     }
 

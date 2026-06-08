@@ -1,5 +1,5 @@
 /**
- * Default taxonomy for Threadly catalog metadata.
+ * Default taxonomy for WEAZ catalog metadata.
  *
  * Contract:
  * - Category = garment/item family.

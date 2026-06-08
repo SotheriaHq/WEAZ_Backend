@@ -1,4 +1,5 @@
 import type { ConfigService } from '@nestjs/config';
+import { PRODUCT_NAME } from '../common/branding/product-identity.constants';
 
 export type EmailProvider = 'mailjet' | 'smtp' | 'console';
 
@@ -26,7 +27,7 @@ type WebhookAuthConfig = {
   basicPass: string | null;
 };
 
-const DEFAULT_APP_NAME = 'Threadly';
+const DEFAULT_APP_NAME = PRODUCT_NAME;
 const DEFAULT_FROM_ADDRESS = 'noreply@threadly.app';
 const DEFAULT_MAILJET_SMTP_HOST = 'in-v3.mailjet.com';
 const DEFAULT_MAILJET_SMTP_PORT = 587;

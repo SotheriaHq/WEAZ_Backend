@@ -114,7 +114,7 @@ export const MARKET_SECTION_CODE_DEFAULTS: MarketSectionConfigView[] = [
   {
     sectionKey: 'fresh-drops',
     title: 'Fresh Drops',
-    subtitle: 'New products from open Threadly stores.',
+    subtitle: 'New products from open WEAZ stores.',
     enabled: true,
     displayOrder: 10,
     previewItemLimit: 8,

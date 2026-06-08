@@ -18,10 +18,12 @@ import { TrustedDeviceService } from './helper/trusted-device.service';
 import { AppThrottlerGuard } from './guard/app-throttler.guard';
 import { StudioHandoffService } from './studio-handoff.service';
 import { GoogleTokenVerifierService } from './helper/google-token-verifier.service';
+import { LegalModule } from 'src/legal/legal.module';
 
 @Module({
   imports: [
     ConfigModule,
+    LegalModule,
     NotificationsModule,
     PassportModule.register({ defaultStrategy: 'jwt' }),
     JwtModule.registerAsync({

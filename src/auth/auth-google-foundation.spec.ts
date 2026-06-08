@@ -19,6 +19,7 @@ describe('AuthService Google auth foundation', () => {
   let mockNotifications: any;
   let mockGoogleTokenVerifier: any;
   let mockTrustedDeviceService: any;
+  let mockLegalService: any;
 
   const baseAuthUser = {
     id: 'user-1',
@@ -121,6 +122,14 @@ describe('AuthService Google auth foundation', () => {
       revokeDevice: jest.fn(),
       recordLoginDevice: jest.fn().mockResolvedValue({ isNewDevice: false }),
     };
+    mockLegalService = {
+      getRequiredSignupDocuments: jest.fn(() => [
+        'TERMS_OF_SERVICE',
+        'PRIVACY_POLICY',
+      ]),
+      assertRequiredCurrentAcceptances: jest.fn(),
+      recordAcceptedDocuments: jest.fn().mockResolvedValue(undefined),
+    };
 
     service = new AuthService(
       mockPrisma,
@@ -136,6 +145,7 @@ describe('AuthService Google auth foundation', () => {
       mockEmailService,
       mockTrustedDeviceService,
       mockGoogleTokenVerifier,
+      mockLegalService,
     );
   };
 

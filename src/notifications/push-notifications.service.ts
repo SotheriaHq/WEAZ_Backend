@@ -304,7 +304,7 @@ export class PushNotificationsService {
     );
     const message: ExpoPushMessage = {
       to: args.token,
-      title: 'Threadly',
+      title: 'WEAZ',
       body,
       data: {
         notificationId: args.notification.id,

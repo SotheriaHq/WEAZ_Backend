@@ -11,27 +11,27 @@ const NOTIFICATION_TEMPLATES: Record<
 > = {
   'account.suspended': {
     subject: 'Your account has been suspended',
-    body: 'Your Threadly account has been suspended by an administrator. If you believe this was in error, please contact support.',
+    body: 'Your WEAZ account has been suspended by an administrator. If you believe this was in error, please contact support.',
   },
   'account.reactivated': {
     subject: 'Your account has been reactivated',
-    body: 'Your Threadly account has been reactivated. You can now log in and use all features.',
+    body: 'Your WEAZ account has been reactivated. You can now log in and use all features.',
   },
   'brand.verified': {
     subject: 'Your brand has been verified',
-    body: 'Congratulations! Your brand on Threadly has been verified by our team.',
+    body: 'Congratulations! Your brand on WEAZ has been verified by our team.',
   },
   'brand.suspended': {
     subject: 'Your brand has been suspended',
-    body: 'Your brand on Threadly has been suspended. Products and store are temporarily hidden.',
+    body: 'Your brand on WEAZ has been suspended. Products and store are temporarily hidden.',
   },
   'payout.processed': {
     subject: 'Your payout has been processed',
-    body: 'Your payout on Threadly has been processed and funds are on their way.',
+    body: 'Your payout on WEAZ has been processed and funds are on their way.',
   },
   'dispute.opened': {
     subject: 'A dispute has been opened',
-    body: 'A dispute has been opened regarding your transaction on Threadly.',
+    body: 'A dispute has been opened regarding your transaction on WEAZ.',
   },
   'dispute.resolved': {
     subject: 'Your dispute has been resolved',

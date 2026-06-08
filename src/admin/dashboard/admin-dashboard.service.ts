@@ -46,7 +46,15 @@ export class AdminDashboardService {
       (this.prisma as any).payout
         .count({
           where: {
-            status: { in: [PayoutStatus.PENDING_APPROVAL, 'PENDING' as any] },
+            status: {
+              in: [
+                PayoutStatus.PENDING_APPROVAL,
+                PayoutStatus.APPROVED,
+                PayoutStatus.PROCESSING,
+                PayoutStatus.ON_HOLD,
+                PayoutStatus.RECONCILIATION_REVIEW,
+              ],
+            },
           },
         })
         .catch(() => 0) as Promise<number>,

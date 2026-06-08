@@ -251,7 +251,7 @@ export class MonitoringService {
           .map((recipient) =>
             this.emailService!.send(
               recipient.email!,
-              `[Threadly] ${alert.severity} ${alert.category} alert`,
+              `[WEAZ] ${alert.severity} ${alert.category} alert`,
               this.renderAlertEmailHtml(alert),
               this.renderAlertEmailText(alert),
               {
@@ -346,7 +346,7 @@ export class MonitoringService {
     ];
 
     return [
-      '<h1>Threadly operational alert</h1>',
+      '<h1>WEAZ operational alert</h1>',
       '<table>',
       ...lines.map(
         ([label, value]) =>
@@ -358,7 +358,7 @@ export class MonitoringService {
 
   private renderAlertEmailText(alert: PersistedAlertRow): string {
     return [
-      'Threadly operational alert',
+      'WEAZ operational alert',
       `Severity: ${alert.severity}`,
       `Category: ${alert.category}`,
       `Event: ${alert.event}`,

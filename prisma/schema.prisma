@@ -48,6 +48,7 @@ model User {
   authIdentities           AuthIdentity[]
   emailLoginCodes          EmailLoginCode[]
   passwordSetupTokens      PasswordSetupToken[]
+  legalAcceptances         LegalAcceptance[]
 
   // Admin Console fields
   status               UserStatus @default(ACTIVE)
@@ -344,6 +345,28 @@ model PasswordSetupToken {
   @@index([userId, expiresAt])
 }
 
+model LegalAcceptance {
+  id          String                @id @default(uuid()) @map("_id") @db.Uuid
+  userId      String                @db.Uuid
+  user        User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  documentKey LegalDocumentKey
+  version     String
+  source      LegalAcceptanceSource
+  surface     String
+  accountType UserType?
+  ipAddress   String?
+  userAgent   String?
+  locale      String?
+  appVersion  String?
+  metadata    Json?
+  acceptedAt  DateTime              @default(now())
+  createdAt   DateTime              @default(now())
+
+  @@unique([userId, documentKey, version, source])
+  @@index([userId, documentKey, acceptedAt])
+  @@index([documentKey, version])
+}
+
 enum Role {
   SuperAdmin
   Admin
@@ -368,6 +391,30 @@ enum PasswordCredentialStatus {
 enum LoginCodePurpose {
   PASSWORD_SETUP
   DIRECT_LOGIN
+}
+
+enum LegalDocumentKey {
+  TERMS_OF_SERVICE
+  PRIVACY_POLICY
+  COOKIE_POLICY
+  COMMUNITY_GUIDELINES
+  SELLER_TERMS
+  STORE_GUIDELINES
+  BUYER_POLICY
+  PAYMENT_POLICY
+  COPYRIGHT_POLICY
+  ACCOUNT_DELETION_POLICY
+  CONTENT_POLICY
+}
+
+enum LegalAcceptanceSource {
+  SIGNUP
+  GOOGLE_SIGNUP
+  CHECKOUT
+  STORE_PUBLISH
+  CONTENT_PUBLISH
+  SETTINGS
+  MANUAL
 }
 
 enum BrandMemberRole {

@@ -77,6 +77,7 @@ describe('AuthService password reset hardening', () => {
       mockEmailService,
       {} as any,
       {} as any,
+      {} as any,
     );
     loggerLogSpy = jest
       .spyOn((service as any).logger, 'log')

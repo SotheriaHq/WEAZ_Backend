@@ -39,6 +39,8 @@ import {
   CollectionStatus,
   ContentEntityType,
   CustomOrderSourceType,
+  LegalAcceptanceSource,
+  LegalDocumentKey,
   Prisma,
   NotificationType,
   OrderStatus,
@@ -87,6 +89,9 @@ import { FittingFreshnessPolicy } from 'src/bagging/fitting-freshness.policy';
 import { SizeComputationService } from 'src/sizing/size-computation.service';
 import { ReviewEligibilityService } from 'src/reviews/review-eligibility.service';
 import { ContentIntegrityService } from 'src/content-integrity/content-integrity.service';
+import { LegalService } from 'src/legal/legal.service';
+import { LegalActionDto } from 'src/legal/dto/legal-acceptance.dto';
+import { Request } from 'express';
 
 type SupportedPaymentBank = {
   id: number;
@@ -161,6 +166,8 @@ export class StoreService {
     private readonly reviewEligibilityService?: ReviewEligibilityService,
     @Optional()
     private readonly contentIntegrity?: ContentIntegrityService,
+    @Optional()
+    private readonly legalService?: LegalService,
   ) {}
 
   private readonly maxProductsPerCollection = Math.max(
@@ -2373,13 +2380,25 @@ export class StoreService {
     };
   }
 
-  async acknowledgeContentMediaPolicy(actorUserId: string) {
+  async acknowledgeContentMediaPolicy(
+    actorUserId: string,
+    dto?: LegalActionDto | null,
+    req?: Request | null,
+  ) {
     if (!this.contentIntegrity) {
       throw new InternalServerErrorException(
         'Content integrity service is unavailable',
       );
     }
-    return this.contentIntegrity.acknowledgeBrandContentPolicy(actorUserId);
+    return this.contentIntegrity.acknowledgeBrandContentPolicy(
+      actorUserId,
+      dto?.legalAcceptances,
+      req,
+      {
+        locale: dto?.locale,
+        appVersion: dto?.appVersion,
+      },
+    );
   }
 
   async submitProductForReview(actorUserId: string, productId: string) {
@@ -8615,7 +8634,7 @@ export class StoreService {
           primary_contact_email: primaryContactEmail || undefined,
           primary_contact_phone: primaryContactPhone || undefined,
           settlement_schedule: 'manual',
-          description: `Threadly brand settlement account for ${brand.name}`,
+          description: `WEAZ brand settlement account for ${brand.name}`,
           metadata: {
             threadlyBrandId: brand.id,
             threadlyOwnerId: ownerId,
@@ -9633,8 +9652,26 @@ export class StoreService {
     };
   }
 
-  async openStore(ownerId: string) {
+  async openStore(
+    ownerId: string,
+    dto?: LegalActionDto | null,
+    req?: Request | null,
+  ) {
     await this.assertEmailVerifiedForStoreSetup(ownerId, 'complete');
+    await this.legalService?.ensureCurrentAcceptancesForUser({
+      userId: ownerId,
+      requiredKeys: [
+        LegalDocumentKey.SELLER_TERMS,
+        LegalDocumentKey.STORE_GUIDELINES,
+      ],
+      acceptances: dto?.legalAcceptances,
+      source: LegalAcceptanceSource.STORE_PUBLISH,
+      surface: 'store-open',
+      req,
+      accountType: UserType.BRAND,
+      locale: dto?.locale,
+      appVersion: dto?.appVersion,
+    });
 
     const brand = await this.prisma.brand.findUnique({
       where: { ownerId },

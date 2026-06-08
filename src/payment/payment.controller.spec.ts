@@ -262,6 +262,12 @@ describe('PaymentController', () => {
       dto,
       'buyer_1',
       null,
+      {
+        appVersion: '',
+        ipAddress: null,
+        locale: '',
+        userAgent: '',
+      },
     );
   });
 });

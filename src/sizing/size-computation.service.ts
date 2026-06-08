@@ -518,7 +518,7 @@ export class SizeComputationService {
         confidenceLabel: RecommendationConfidenceLabel.LOW,
         reasons: [],
         warnings: [
-          'Important measurements are missing, so Threadly cannot compute a reliable size estimate.',
+          'Important measurements are missing, so WEAZ cannot compute a reliable size estimate.',
         ],
         chartSource: input.chartSelection.source,
         chartVersion: version.version ?? null,

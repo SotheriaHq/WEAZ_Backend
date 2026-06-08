@@ -17,6 +17,7 @@ import { BaggingModule } from 'src/bagging/bagging.module';
 import { SizingModule } from 'src/sizing/sizing.module';
 import { ReviewsModule } from 'src/reviews/reviews.module';
 import { ContentIntegrityModule } from 'src/content-integrity/content-integrity.module';
+import { LegalModule } from 'src/legal/legal.module';
 
 @Module({
   imports: [
@@ -31,6 +32,7 @@ import { ContentIntegrityModule } from 'src/content-integrity/content-integrity.
     BaggingModule,
     SizingModule,
     ReviewsModule,
+    LegalModule,
     ContentIntegrityModule,
   ],
   controllers: [StoreController],

@@ -47,7 +47,7 @@ const SECTION_CONFIGS: SectionConfig[] = [
   {
     key: 'fresh-drops',
     title: 'Fresh Drops',
-    subtitle: 'New products from open Threadly stores.',
+    subtitle: 'New products from open WEAZ stores.',
     emotionalLabel: 'New this week',
     layout: 'HORIZONTAL_RAIL',
     sourceType: 'PRODUCT',

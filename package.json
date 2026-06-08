@@ -29,6 +29,7 @@
     "prisma:migrate": "prisma migrate dev",
     "prisma:generate": "prisma generate",
     "prisma:seed": "ts-node prisma/seed.ts",
+    "prisma:seed:admin": "ts-node prisma/seed_admin.ts",
     "finance:settlement-backfill:audit": "ts-node -r tsconfig-paths/register scripts/audit-settlement-backfill.ts",
     "users:profile-backfill": "ts-node -r tsconfig-paths/register scripts/backfill-user-profiles.ts",
     "brands:profile-backfill": "ts-node -r tsconfig-paths/register scripts/backfill-brand-profiles.ts",
@@ -47,7 +48,9 @@
     "smoke:fresh-db-api": "ts-node -r tsconfig-paths/register scripts/smoke-fresh-db-api.ts",
     "check:market-signal-duplicates": "ts-node -r tsconfig-paths/register scripts/check-market-signal-duplicates.ts",
     "seed": "prisma db seed",
+    "seed:admin": "npm run prisma:seed:admin",
     "reset:all": "node scripts/reset-all-data.cjs",
+    "reset:admin": "node scripts/reset-all-data.cjs --admin-only-seed --skip-bucket --skip-local-uploads",
     "check:perf-regressions": "node scripts/check-perf-regressions.cjs",
     "ci:phase8": "npm test -- src/upload/upload.service.spec.ts src/designs/mappers/design-response.mapper.spec.ts --runInBand && npm run build && npm run check:perf-regressions"
   },

@@ -18,6 +18,7 @@ function parseArgs(argv) {
     skipBucket: flags.has('--skip-bucket'),
     skipLocalUploads: flags.has('--skip-local-uploads'),
     skipSeed: flags.has('--skip-seed'),
+    adminOnlySeed: flags.has('--admin-only-seed'),
   };
 }
 
@@ -118,12 +119,16 @@ function runCommand(command, args, label) {
 }
 
 function resetDatabase() {
-  const args = ['prisma', 'migrate', 'reset', '--force'];
+  const args = ['prisma', 'migrate', 'reset', '--force', '--skip-seed'];
   runCommand('npx', args, 'Prisma reset');
 }
 
 function runSeed() {
   runCommand('npm', ['run', 'prisma:seed'], 'Database seed');
+}
+
+function runAdminSeed() {
+  runCommand('npm', ['run', 'prisma:seed:admin'], 'Admin database seed');
 }
 
 function verifySeededAdmin() {
@@ -206,6 +211,9 @@ async function main() {
     console.error(
       'Example: npm run dev:reset -- --confirm',
     );
+    console.error(
+      'Admin-only DB reset example: npm run reset:admin -- --confirm',
+    );
     process.exit(1);
   }
 
@@ -217,6 +225,11 @@ async function main() {
   console.log(`- database: ${options.skipDb ? 'skip' : databaseUrl}`);
   console.log(`- bucket: ${options.skipBucket ? 'skip' : bucketName || '(missing)'}`);
   console.log(`- local uploads: ${options.skipLocalUploads ? 'skip' : path.join(process.cwd(), 'uploads')}`);
+  console.log(
+    `- seed: ${
+      options.skipSeed ? 'skip' : options.adminOnlySeed ? 'admin-only' : 'full'
+    }`,
+  );
 
   if (!options.skipBucket) {
     const deletedCount = await emptyBucket(bucketName, region);
@@ -236,9 +249,14 @@ async function main() {
     resetDatabase();
     console.log('Database reset completed.');
     if (!options.skipSeed) {
-      runSeed();
-      verifySeededAdmin();
-      console.log('Database seed completed and SuperAdmin verified.');
+      if (options.adminOnlySeed) {
+        runAdminSeed();
+        verifySeededAdmin();
+        console.log('Database admin-only seed completed and SuperAdmin verified.');
+      } else {
+        runSeed();
+        console.log('Database full seed completed.');
+      }
     } else {
       console.log('Database seed skipped.');
     }

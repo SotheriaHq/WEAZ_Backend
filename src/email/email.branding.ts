@@ -1,18 +1,23 @@
 import { resolveWebAppBaseUrl } from '../common/utils/web-app-url';
+import {
+  PRODUCT_BRAND_PALETTE,
+  PRODUCT_CATEGORY,
+  PRODUCT_NAME,
+} from '../common/branding/product-identity.constants';
 
 export const EMAIL_COLORS = {
-  brandPrimary: '#6b21a8',
-  brandPrimaryLight: '#9333ea',
-  brandAccent: '#d4af37',
+  brandPrimary: PRODUCT_BRAND_PALETTE.deepNavy,
+  brandPrimaryLight: PRODUCT_BRAND_PALETTE.softNavy,
+  brandAccent: PRODUCT_BRAND_PALETTE.metallicGold,
   textPrimary: '#111827',
   textSecondary: '#374151',
   textMuted: '#6b7280',
-  surfaceSoft: '#f5f3ff',
+  surfaceSoft: '#f6f4ef',
 } as const;
 
-const DEFAULT_COMPANY_NAME = 'Threadly';
-const DEFAULT_HEADER_SUBTITLE = "Africa's fashion social commerce community";
-const DEFAULT_COMPANY_LOGO_PATH = '/threadly-logo-mark.png';
+const DEFAULT_COMPANY_NAME = PRODUCT_NAME;
+const DEFAULT_HEADER_SUBTITLE = PRODUCT_CATEGORY;
+const DEFAULT_COMPANY_LOGO_PATH = '/brand/weaz-logo-mark.svg';
 
 export function normalizeCompanyName(value: string): string {
   const trimmed = String(value ?? '').trim();
