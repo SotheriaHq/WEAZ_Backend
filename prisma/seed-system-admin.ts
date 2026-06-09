@@ -2,13 +2,23 @@ import type { PrismaClient } from '@prisma/client';
 import { randomUUID } from 'crypto';
 import * as argon2 from 'argon2';
 
-export const SYSTEM_ADMIN_EMAIL = 'adminoversee@test.com';
+export const DEFAULT_SYSTEM_ADMIN_EMAIL = 'adminoversee@test.com';
+export const SYSTEM_ADMIN_EMAIL_ENV_KEY = 'SYSTEM_ADMIN_EMAIL';
 export const SYSTEM_ADMIN_PASSWORD = 'Password@123';
 export const SYSTEM_ADMIN_USERNAME = 'systemadmin';
 
+export function resolveSystemAdminEmail(env: NodeJS.ProcessEnv = process.env) {
+  return (
+    String(env[SYSTEM_ADMIN_EMAIL_ENV_KEY] ?? DEFAULT_SYSTEM_ADMIN_EMAIL)
+      .trim()
+      .toLowerCase() || DEFAULT_SYSTEM_ADMIN_EMAIL
+  );
+}
+
 export async function ensureSystemAdmin(prisma: PrismaClient) {
+  const systemAdminEmail = resolveSystemAdminEmail();
   const existing = await prisma.user.findUnique({
-    where: { email: SYSTEM_ADMIN_EMAIL },
+    where: { email: systemAdminEmail },
     select: { id: true },
   });
 
@@ -32,7 +42,7 @@ export async function ensureSystemAdmin(prisma: PrismaClient) {
     const created = await prisma.user.create({
       data: {
         id: randomUUID(),
-        email: SYSTEM_ADMIN_EMAIL,
+        email: systemAdminEmail,
         username: SYSTEM_ADMIN_USERNAME,
         password: hashedPassword,
         role: 'SuperAdmin',
@@ -62,9 +72,9 @@ export async function ensureSystemAdmin(prisma: PrismaClient) {
 
   console.log(
     existing
-      ? `System SuperAdmin updated: ${SYSTEM_ADMIN_EMAIL}`
-      : `System SuperAdmin created: ${SYSTEM_ADMIN_EMAIL}`,
+      ? `System SuperAdmin updated: ${systemAdminEmail}`
+      : `System SuperAdmin created: ${systemAdminEmail}`,
   );
 
-  return { id: userId, email: SYSTEM_ADMIN_EMAIL, created: !existing };
+  return { id: userId, email: systemAdminEmail, created: !existing };
 }
