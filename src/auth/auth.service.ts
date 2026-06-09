@@ -33,6 +33,8 @@ import {
 } from 'src/auth/helper/prisma-select.helper';
 import {
   canonicalUserProfileSelect,
+  getRejectedProfileMediaUrlReason,
+  normalizeProfileMediaUrlForPersistence,
   resolveRequiredProfileField,
 } from 'src/common/user-profile-source.helper';
 import { resolveRequiredBrandField } from 'src/common/brand-profile-source.helper';
@@ -1824,15 +1826,31 @@ export class AuthService {
     assignString('phoneNumber');
     assignString('address');
 
-    if (dto.profileImage !== undefined) {
-      profileData.profileImage = dto.profileImage;
-    }
+    const assignMediaUrl = (
+      field: Extract<
+        AllowedProfileUpdateField,
+        'profileImage' | 'bannerImage'
+      >,
+    ) => {
+      const value = dto[field];
+      if (value === undefined) return;
+
+      const rejectedReason = getRejectedProfileMediaUrlReason(value);
+      if (rejectedReason) {
+        throw new BadRequestException(
+          `${field} must reference a persisted uploaded file, not a temporary display URL`,
+        );
+      }
+
+      profileData[field] =
+        normalizeProfileMediaUrlForPersistence(value) ?? null;
+    };
+
+    assignMediaUrl('profileImage');
     if (dto.profileImageId !== undefined) {
       profileData.profileImageId = dto.profileImageId;
     }
-    if (dto.bannerImage !== undefined) {
-      profileData.bannerImage = dto.bannerImage;
-    }
+    assignMediaUrl('bannerImage');
     if (dto.bannerImageId !== undefined) {
       profileData.bannerImageId = dto.bannerImageId;
     }

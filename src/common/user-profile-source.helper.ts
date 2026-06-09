@@ -58,6 +58,9 @@ export type UserProfileSource = {
 type RequiredProfileField = 'firstName' | 'lastName';
 type NullableProfileField = 'phoneNumber' | 'address';
 type MediaKind = 'profile' | 'banner';
+export type RejectedProfileMediaUrlReason =
+  | 'temporary-client-url'
+  | 'signed-display-url';
 
 export type ResolvedProfileMedia = {
   url: string | null;
@@ -79,6 +82,43 @@ export function resolveNullableProfileField(
   return user.userProfile?.[field] ?? null;
 }
 
+function filledString(value?: string | null): string | null {
+  const normalized = typeof value === 'string' ? value.trim() : '';
+  return normalized.length > 0 ? normalized : null;
+}
+
+export function getRejectedProfileMediaUrlReason(
+  value?: string | null,
+): RejectedProfileMediaUrlReason | null {
+  const normalized = filledString(value);
+  if (!normalized) return null;
+
+  if (/^(blob|data):/i.test(normalized)) {
+    return 'temporary-client-url';
+  }
+
+  try {
+    const parsed = new URL(normalized);
+    const hasSignedParams = Boolean(
+      parsed.searchParams.get('X-Amz-Signature') ||
+        parsed.searchParams.get('Signature') ||
+        parsed.searchParams.get('Expires') ||
+        parsed.searchParams.get('expires') ||
+        parsed.searchParams.get('token'),
+    );
+    return hasSignedParams ? 'signed-display-url' : null;
+  } catch {
+    return null;
+  }
+}
+
+export function normalizeProfileMediaUrlForPersistence(
+  value?: string | null,
+): string | null | undefined {
+  if (value === undefined) return undefined;
+  return filledString(value);
+}
+
 function resolveProfileMedia(
   user: UserProfileSource,
   kind: MediaKind,
@@ -93,7 +133,7 @@ function resolveProfileMedia(
   const file = canonicalFile ?? null;
 
   return {
-    url: profile?.[urlField] ?? file?.s3Url ?? null,
+    url: filledString(profile?.[urlField]) ?? filledString(file?.s3Url),
     fileId: canonicalId ?? file?.id ?? null,
     file,
   };

@@ -207,6 +207,39 @@ export class BrandsService {
     };
   }
 
+  private async resolveBrandBannerDisplayUrl(
+    banner: ReturnType<typeof resolveBannerImage>,
+    legacyBanner?: string | null,
+  ): Promise<string | null> {
+    if (banner.file) {
+      const publicDisplayUrl =
+        typeof this.uploadService.getPublicDisplayUrl === 'function'
+          ? this.uploadService.getPublicDisplayUrl(banner.file)
+          : null;
+      if (publicDisplayUrl) {
+        return publicDisplayUrl;
+      }
+
+      if (
+        typeof (this.uploadService as any).getTemporarySignedDisplayUrl ===
+        'function'
+      ) {
+        try {
+          const temporaryDisplayUrl = await (
+            this.uploadService as any
+          ).getTemporarySignedDisplayUrl(banner.file);
+          if (temporaryDisplayUrl) {
+            return temporaryDisplayUrl;
+          }
+        } catch {
+          // Keep the durable file id/meta available; clients can retry URL resolution.
+        }
+      }
+    }
+
+    return banner.url ?? legacyBanner ?? null;
+  }
+
   private mapNotificationsToRecentActivity(
     recentNotifications: Array<{
       id: string;
@@ -600,7 +633,10 @@ export class BrandsService {
     const logoAsset = this.mapBrandMediaAsset(profileImage.file);
     const bannerAsset = this.mapBrandMediaAsset(bannerAssetSource.file);
     const logoImage = brand.brand?.logo ?? profileImage.url ?? null;
-    const bannerImage = brand.brand?.banner ?? bannerAssetSource.url ?? null;
+    const bannerImage = await this.resolveBrandBannerDisplayUrl(
+      bannerAssetSource,
+      brand.brand?.banner,
+    );
     const profileLinks = this.brandProfileLinks.getBrandProfileLinks({
       ownerId: brand.id,
       username: brand.username,

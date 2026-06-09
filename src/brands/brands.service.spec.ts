@@ -289,7 +289,7 @@ describe('BrandsService', () => {
   });
 
   describe('getBrandProfile', () => {
-    it('returns canonical media metadata and public-safe aggregate metrics', async () => {
+    it('returns canonical profile banner media over stale legacy brand banner', async () => {
       const createdAt = new Date('2026-05-01T00:00:00.000Z');
       const updatedAt = new Date('2026-05-02T00:00:00.000Z');
       mockPrisma.user.findUnique.mockResolvedValue({
@@ -389,10 +389,14 @@ describe('BrandsService', () => {
       });
       expect(response.logoImage).toBe('https://cdn.example.com/brand-logo.jpg');
       expect(response.logoImageId).toBe('logo-file-id');
-      expect(response.bannerImage).toBe(
-        'https://cdn.example.com/brand-banner.jpg',
-      );
+      expect(response.bannerImage).toBe('https://cdn.example.com/banner.jpg');
       expect(response.bannerImageId).toBe('banner-file-id');
+      expect(response.bannerImageMeta).toEqual(
+        expect.objectContaining({
+          fileId: 'banner-file-id',
+          url: 's3://banner.jpg',
+        }),
+      );
       expect(response.followersCount).toBe(42);
       expect(response.totalThreads).toBe(25);
       expect(response.totalLikes).toBe(25);

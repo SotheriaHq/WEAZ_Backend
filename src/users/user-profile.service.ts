@@ -18,6 +18,8 @@ import {
 } from 'src/common/theme.contract';
 import {
   canonicalUserProfileSelect,
+  getRejectedProfileMediaUrlReason,
+  normalizeProfileMediaUrlForPersistence,
   resolveBannerImage,
   resolveNullableProfileField,
   resolveProfileImage,
@@ -210,15 +212,25 @@ export class UserProfileService {
     assignString('phoneNumber');
     assignString('address');
 
-    if (dto.profileImage !== undefined) {
-      profileData.profileImage = dto.profileImage;
-    }
+    const assignMediaUrl = (field: Extract<AllowedProfileUpdateField, 'profileImage' | 'bannerImage'>) => {
+      const value = dto[field];
+      if (value === undefined) return;
+
+      const rejectedReason = getRejectedProfileMediaUrlReason(value);
+      if (rejectedReason) {
+        throw new BadRequestException(
+          `${field} must reference a persisted uploaded file, not a temporary display URL`,
+        );
+      }
+
+      profileData[field] = normalizeProfileMediaUrlForPersistence(value) ?? null;
+    };
+
+    assignMediaUrl('profileImage');
     if (dto.profileImageId !== undefined) {
       profileData.profileImageId = dto.profileImageId;
     }
-    if (dto.bannerImage !== undefined) {
-      profileData.bannerImage = dto.bannerImage;
-    }
+    assignMediaUrl('bannerImage');
     if (dto.bannerImageId !== undefined) {
       profileData.bannerImageId = dto.bannerImageId;
     }
@@ -465,7 +477,7 @@ export class UserProfileService {
         brandTitle: target.brand?.tagline || target.brand?.name || null,
         location,
         description: target.brand?.description || null,
-        bannerImage: target.brand?.banner || bannerImage.url,
+        bannerImage: bannerImage.url ?? target.brand?.banner ?? null,
         patchedAt: connection.createdAt,
         patchCount: target._count?.patchConnectionsReceived || 0,
       };
