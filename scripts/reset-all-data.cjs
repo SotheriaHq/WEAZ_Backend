@@ -105,12 +105,15 @@ function removeLocalUploads() {
   return { removed: true, path: uploadsPath };
 }
 
-function runCommand(command, args, label) {
+function runCommand(command, args, label, envOverrides = {}) {
   const result = spawnSync(command, args, {
     cwd: process.cwd(),
     stdio: 'inherit',
     shell: true,
-    env: process.env,
+    env: {
+      ...process.env,
+      ...envOverrides,
+    },
   });
 
   if (result.status !== 0) {
@@ -119,8 +122,10 @@ function runCommand(command, args, label) {
 }
 
 function resetDatabase() {
-  const args = ['prisma', 'migrate', 'reset', '--force', '--skip-seed'];
-  runCommand('npx', args, 'Prisma reset');
+  const args = ['prisma', 'migrate', 'reset', '--force'];
+  runCommand('npx', args, 'Prisma reset', {
+    THREADLY_PRISMA_SKIP_SEED: 'true',
+  });
 }
 
 function runSeed() {
@@ -144,7 +149,7 @@ function verifySeededAdmin() {
         "const pool = new Pool({ connectionString: process.env.DATABASE_URL });",
         "const prisma = new PrismaClient({ adapter: new PrismaPg(pool) });",
         "(async () => {",
-        "  const superAdminEmail = 'adminoversee@test.com';",
+        "  const superAdminEmail = String(process.env.SYSTEM_ADMIN_EMAIL || 'adminoversee@test.com').trim().toLowerCase();",
         "  const disallowedSeedEmails = ['brand@example.com'];",
         "  const disallowedSeedUsernames = ['brand_demo'];",
         "  const superAdmin = await prisma.user.findUnique({",
@@ -187,7 +192,6 @@ function verifySeededAdmin() {
     {
       cwd: process.cwd(),
       stdio: 'inherit',
-      shell: true,
       env: process.env,
     },
   );
