@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Injectable,
   Logger,
+  Optional,
   ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
@@ -62,6 +63,7 @@ import {
 import { LegalService } from 'src/legal/legal.service';
 import { LegalAcceptanceInputDto } from 'src/legal/dto/legal-acceptance.dto';
 import { PRODUCT_NAME } from 'src/common/branding/product-identity.constants';
+import { MonitoringService } from 'src/monitoring/monitoring.service';
 
 const PASSWORD_RESET_TOKEN_TTL_MS = 60 * 60 * 1000;
 const RESET_REQUEST_SUPPRESSION_MS = 2 * 60 * 1000;
@@ -86,6 +88,7 @@ export class AuthService {
     private readonly trustedDeviceService: TrustedDeviceService,
     private readonly googleTokenVerifier: GoogleTokenVerifierService,
     private readonly legalService: LegalService,
+    @Optional() private readonly monitoring?: MonitoringService,
   ) {}
 
   private buildPasswordPolicyContext(
@@ -205,6 +208,75 @@ export class AuthService {
     this.logger.log(
       `Auth email dispatch outcome: ${summary} providerMessageId=${args.result.providerMessageId ?? 'n/a'}`,
     );
+  }
+
+  private sanitizeEmailDispatchError(errorMessage?: string | null): string | null {
+    const value = String(errorMessage ?? '').trim();
+    if (!value) return null;
+
+    return value
+      .replace(/[^\s@]+@[^\s@]+\.[^\s@]+/g, '[email]')
+      .replace(/(sk_(?:live|test)_[a-z0-9_]+)/gi, '[secret]')
+      .replace(/(bearer\s+)[a-z0-9._-]+/gi, '$1[redacted]')
+      .slice(0, 300);
+  }
+
+  private emitVerificationEmailDeliveryAlert(args: {
+    scenarioKey: string;
+    phase: 'signup' | 'resend';
+    userId: string;
+    recipientEmail: string;
+    result: EnqueueEmailResult;
+  }): void {
+    if (
+      args.result.dispatchStatus !== 'FAILED' &&
+      args.result.dispatchStatus !== 'SUPPRESSED'
+    ) {
+      return;
+    }
+
+    this.monitoring?.emitAlert({
+      category: 'AUTH',
+      severity:
+        args.result.dispatchStatus === 'FAILED' ? 'error' : 'warning',
+      event: 'auth_email_verification_delivery_failed',
+      title: 'Email verification delivery failed',
+      message:
+        args.result.dispatchStatus === 'FAILED'
+          ? 'Auth verification email dispatch failed.'
+          : 'Auth verification email dispatch was suppressed.',
+      userId: args.userId,
+      entityType: 'User',
+      entityId: args.userId,
+      dedupeKey: `auth_email_verification_delivery_failed:${args.userId}:${args.scenarioKey}:${args.result.dispatchStatus}`,
+      metadata: {
+        phase: args.phase,
+        scenarioKey: args.scenarioKey,
+        dispatchStatus: args.result.dispatchStatus,
+        outboxId: args.result.outboxId ?? null,
+        providerMessageId: args.result.providerMessageId ?? null,
+        recipient: maskEmailForLog(args.recipientEmail),
+        errorMessage: this.sanitizeEmailDispatchError(
+          args.result.errorMessage,
+        ),
+      },
+    });
+  }
+
+  private buildVerificationEmailMessage(result: EnqueueEmailResult): string {
+    if (result.dispatchStatus === 'SENT') {
+      return `Welcome to ${PRODUCT_NAME}! Verification email sent. Please check your inbox and spam folder.`;
+    }
+
+    if (result.dispatchStatus === 'FAILED') {
+      return `Welcome to ${PRODUCT_NAME}, but we could not send your verification email right now. Use resend from your profile and try again shortly.`;
+    }
+
+    if (result.dispatchStatus === 'SUPPRESSED') {
+      return `Welcome to ${PRODUCT_NAME}, but verification email delivery is temporarily suppressed for this address. Contact support if this persists.`;
+    }
+
+    return `Welcome to ${PRODUCT_NAME}! Verification email queued for delivery.`;
   }
 
   private extractClientIp(req: Request): string | null {
@@ -623,10 +695,18 @@ export class AuthService {
           scenarioKey: 'auth.email_verification',
           priority: EmailPriority.P1_TRANSACTIONAL,
           idempotencyKey: `auth:email-verification:${user.id}:${verificationToken}`,
+          dispatchImmediately: true,
         },
       );
       this.logEmailDispatchOutcome({
         scenarioKey: 'auth.email_verification',
+        userId: user.id,
+        recipientEmail: user.email,
+        result: verificationDispatchResult,
+      });
+      this.emitVerificationEmailDeliveryAlert({
+        scenarioKey: 'auth.email_verification',
+        phase: 'signup',
         userId: user.id,
         recipientEmail: user.email,
         result: verificationDispatchResult,
@@ -676,7 +756,15 @@ export class AuthService {
         user: toAuthUserResponse(user),
         accessToken,
         ...(refreshToken ? { refreshToken } : {}),
-        message: `Welcome to ${PRODUCT_NAME}!`,
+        message: this.buildVerificationEmailMessage(
+          verificationDispatchResult,
+        ),
+        verificationEmail: {
+          status: verificationDispatchResult.dispatchStatus,
+          message: this.buildVerificationEmailMessage(
+            verificationDispatchResult,
+          ),
+        },
       };
     } catch (error) {
       this.logger.error('Signup error:', error.message, error.stack);
@@ -1909,11 +1997,19 @@ export class AuthService {
         recipientUserId: user.id,
         scenarioKey: 'auth.email_verification.resend',
         priority: EmailPriority.P1_TRANSACTIONAL,
+        dispatchImmediately: true,
       },
     );
 
     this.logEmailDispatchOutcome({
       scenarioKey: 'auth.email_verification.resend',
+      userId: user.id,
+      recipientEmail: user.email,
+      result: dispatchResult,
+    });
+    this.emitVerificationEmailDeliveryAlert({
+      scenarioKey: 'auth.email_verification.resend',
+      phase: 'resend',
       userId: user.id,
       recipientEmail: user.email,
       result: dispatchResult,
