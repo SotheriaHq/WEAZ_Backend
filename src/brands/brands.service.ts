@@ -19,7 +19,10 @@ import {
   AdminAuditAction,
 } from '@prisma/client';
 import { NotificationsService } from '../notifications/notifications.service';
-import { UpdateBrandProfileDto } from './dto/update-brand-profile.dto';
+import {
+  BRAND_PROFILE_TAG_LIMIT,
+  UpdateBrandProfileDto,
+} from './dto/update-brand-profile.dto';
 import { v4 as uuidv4 } from 'uuid';
 import {
   profileUserSelect,
@@ -673,7 +676,7 @@ export class BrandsService {
     };
 
     const sanitizedTags = Array.isArray(dto.brandTags)
-      ? sanitizeTags(dto.brandTags, 5)
+      ? sanitizeTags(dto.brandTags, BRAND_PROFILE_TAG_LIMIT)
       : undefined;
 
     const brandCountry = trimOrNull(dto.brandCountry);

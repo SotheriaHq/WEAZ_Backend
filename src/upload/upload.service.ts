@@ -447,7 +447,10 @@ export class UploadService {
       return explicit.trim().replace(/\/+$/, '');
     }
 
-    const port = this.configService.get<string>('APP_PORT') ?? '3040';
+    const port =
+      this.configService.get<string>('APP_PORT') ??
+      this.configService.get<string>('PORT') ??
+      '3040';
     return `http://localhost:${port}`;
   }
 

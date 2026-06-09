@@ -12,6 +12,7 @@ import {
 
 // Allow unicode letters (incl. accents), spaces, apostrophes, dots, and hyphens for locations.
 const NAME_REGEX = /^[\p{L}\p{M}\s'.-]+$/u;
+export const BRAND_PROFILE_TAG_LIMIT = 7;
 const trimToUndefined = ({ value }: { value: unknown }) => {
   if (typeof value !== 'string') return value;
   const trimmed = value.trim();
@@ -69,11 +70,11 @@ export class UpdateBrandProfileDto {
   @ApiPropertyOptional({
     isArray: true,
     type: String,
-    description: 'Selected brand tags (up to 5)',
+    description: `Selected brand tags (up to ${BRAND_PROFILE_TAG_LIMIT})`,
   })
   @IsOptional()
   @IsArray()
-  @ArrayMaxSize(5)
+  @ArrayMaxSize(BRAND_PROFILE_TAG_LIMIT)
   @IsString({ each: true })
   brandTags?: string[];
 

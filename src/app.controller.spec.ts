@@ -19,4 +19,14 @@ describe('AppController', () => {
       expect(appController.getHello()).toBe('Hello World!');
     });
   });
+
+  describe('healthz', () => {
+    it('should return a render-compatible health payload', () => {
+      expect(appController.getHealth()).toEqual({
+        status: 'ok',
+        service: 'weaz-backend',
+        timestamp: expect.any(String),
+      });
+    });
+  });
 });
