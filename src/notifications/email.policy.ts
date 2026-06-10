@@ -6,6 +6,7 @@ import {
   renderBrandedAppName,
   renderEmailButton,
   renderEmailShell,
+  resolveAppUrl,
 } from '../email/email.branding';
 import { collectionPublishedEmail } from '../email/email.templates';
 
@@ -181,7 +182,7 @@ function renderSignupWelcomeEmail(args: {
   const device = asTrimmedString(payload.device) || 'Unknown device';
   const location = asTrimmedString(payload.location) || 'Unknown location';
   const { dateLabel, timeLabel } = formatSignupDateTime(createdAtIso);
-  const ctaUrl = asTrimmedString(args.targetUrl) || 'https://threadly.com';
+  const ctaUrl = asTrimmedString(args.targetUrl) || resolveAppUrl('/');
 
   const safeUsername = escapeHtml(username);
   const safeDate = escapeHtml(dateLabel);
@@ -209,13 +210,13 @@ function renderSignupWelcomeEmail(args: {
   });
 
   const text = [
-    `Welcome to ${args.appName}, ${username}!`,
+    `Welcome to ${companyName}, ${username}!`,
     '',
     "We're thrilled to have you join Africa's most vibrant fashion social commerce community.",
     '',
     `Your account was successfully created on ${dateLabel} at ${timeLabel} from ${device} in ${location}.`,
     '',
-    `Start now on ${args.appName}:`,
+    `Start now on ${companyName}:`,
     '- Update your profile as a brand and complete your account setup.',
     '- Verify your identity and build trust with your audience.',
     '- Explore collections from verified brands and tailors.',

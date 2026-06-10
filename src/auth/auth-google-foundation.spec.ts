@@ -108,7 +108,7 @@ describe('AuthService Google auth foundation', () => {
     };
     mockEmailService = {
       send: jest.fn().mockResolvedValue({ dispatchStatus: 'SENT' }),
-      getAppName: jest.fn(() => 'Threadly'),
+      getAppName: jest.fn(() => 'WEAZ'),
     };
     mockNotifications = {
       create: jest.fn().mockResolvedValue({}),

@@ -49,7 +49,7 @@ describe('BreakGlassService', () => {
         generateUniqueUsername: jest.fn().mockResolvedValue('ada-okafor'),
       } as any,
       {
-        getAppName: jest.fn(() => 'Threadly'),
+        getAppName: jest.fn(() => 'WEAZ'),
         send: jest.fn().mockResolvedValue({
           outboxId: 'outbox_1',
           dispatchStatus: 'SENT',

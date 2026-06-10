@@ -75,10 +75,10 @@ describe('EmailOutboxDispatcherService', () => {
       providerMessageId: 'msg-1',
     });
     (mockEmailService.getDeliveryAttemptProvider as jest.Mock).mockReturnValue(
-      'MAILJET_API',
+      'RESEND',
     );
     (mockEmailService.getTransportHost as jest.Mock).mockReturnValue(
-      'api.mailjet.com',
+      'api.resend.com',
     );
 
     const logSpy = jest
@@ -92,6 +92,7 @@ describe('EmailOutboxDispatcherService', () => {
       'Reset your password',
       '<p>Reset</p>',
       'Reset',
+      { idempotencyKey: 'outbox:outbox-1' },
     );
     expect(
       logSpy.mock.calls.some(([message]) =>
@@ -148,10 +149,10 @@ describe('EmailOutboxDispatcherService', () => {
       providerMessageId: 'msg-2',
     });
     (mockEmailService.getDeliveryAttemptProvider as jest.Mock).mockReturnValue(
-      'MAILJET_API',
+      'RESEND',
     );
     (mockEmailService.getTransportHost as jest.Mock).mockReturnValue(
-      'api.mailjet.com',
+      'api.resend.com',
     );
 
     await service.dispatchPendingEmails();
@@ -177,6 +178,7 @@ describe('EmailOutboxDispatcherService', () => {
       'Reset your password',
       '<p>Reset</p>',
       'Reset',
+      { idempotencyKey: 'outbox:outbox-3' },
     );
   });
 
@@ -214,10 +216,10 @@ describe('EmailOutboxDispatcherService', () => {
       providerMessageId: 'msg-timeout',
     });
     (mockEmailService.getDeliveryAttemptProvider as jest.Mock).mockReturnValue(
-      'MAILJET_API',
+      'RESEND',
     );
     (mockEmailService.getTransportHost as jest.Mock).mockReturnValue(
-      'api.mailjet.com',
+      'api.resend.com',
     );
 
     const warnSpy = jest
@@ -249,6 +251,7 @@ describe('EmailOutboxDispatcherService', () => {
       'Reset your password',
       '<p>Reset</p>',
       'Reset',
+      { idempotencyKey: 'outbox:outbox-timeout' },
     );
     expect(
       warnSpy.mock.calls.some(([message]) =>
@@ -270,7 +273,7 @@ describe('EmailOutboxDispatcherService', () => {
         status: EmailOutboxStatus.FAILED,
         attempts: 3,
         availableAt: new Date(Date.now() + 60_000),
-        lastError: 'SMTP timeout while sending password reset email',
+        lastError: 'Resend timeout while sending password reset email',
         createdAt: staleCreatedAt,
         updatedAt: staleCreatedAt,
         lockOwner: 'api-123',

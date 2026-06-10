@@ -2001,7 +2001,7 @@ model EmailDeliveryAttempt {
   emailOutbox          EmailOutbox @relation(fields: [emailOutboxId], references: [id], onDelete: Cascade)
   attemptNo            Int
   provider             String?
-  smtpHost             String?
+  transportHost        String?
   result               String
   errorCode            String?
   errorMessage         String?

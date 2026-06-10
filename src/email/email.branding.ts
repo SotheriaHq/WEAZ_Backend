@@ -19,9 +19,8 @@ const DEFAULT_COMPANY_NAME = PRODUCT_NAME;
 const DEFAULT_HEADER_SUBTITLE = PRODUCT_CATEGORY;
 const DEFAULT_COMPANY_LOGO_PATH = '/brand/weaz-logo-mark.svg';
 
-export function normalizeCompanyName(value: string): string {
-  const trimmed = String(value ?? '').trim();
-  return trimmed || DEFAULT_COMPANY_NAME;
+export function normalizeCompanyName(_value: string): string {
+  return DEFAULT_COMPANY_NAME;
 }
 
 export function escapeHtml(value: string): string {

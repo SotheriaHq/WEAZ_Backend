@@ -51,7 +51,7 @@ describe('AuthService', () => {
 
   const mockEmailService = {
     send: jest.fn(),
-    getAppName: jest.fn(() => 'Threadly'),
+    getAppName: jest.fn(() => 'WEAZ'),
   };
 
   const mockTrustedDeviceService = {
@@ -925,7 +925,7 @@ describe('AuthService', () => {
       '123456',
     );
     mockEmailVerificationHelper.generateVerificationLink.mockReturnValue(
-      'https://threadly.test/verify',
+      'https://weaz.test/verify',
     );
     mockEmailService.send.mockResolvedValue({ dispatchStatus: 'SENT' });
     mockNotifications.create.mockResolvedValue({});
@@ -1097,7 +1097,7 @@ describe('AuthService', () => {
       '123456',
     );
     mockEmailVerificationHelper.generateVerificationLink.mockReturnValue(
-      'https://threadly.test/verify',
+      'https://weaz.test/verify',
     );
     mockEmailService.send.mockResolvedValue({ dispatchStatus: 'SENT' });
     mockNotifications.create.mockResolvedValue({});

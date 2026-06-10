@@ -76,7 +76,7 @@ describe('NotificationsService', () => {
     };
 
     const mockEmailService: Partial<EmailService> = {
-      getAppName: jest.fn().mockReturnValue('Threadly'),
+      getAppName: jest.fn().mockReturnValue('WEAZ'),
       send: jest.fn().mockResolvedValue(undefined),
     };
 
@@ -405,7 +405,7 @@ describe('NotificationsService', () => {
           payload: {
             productId: 'product-123',
             productName: 'Linen Wrap Dress',
-            brandName: 'Threadly Studio',
+            brandName: 'Aso Studio',
           },
         });
 

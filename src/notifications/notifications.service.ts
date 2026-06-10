@@ -1058,17 +1058,32 @@ export class NotificationsService {
       parsedBasicAuth?.username === expectedAuth.basicUser &&
       parsedBasicAuth?.password === expectedAuth.basicPass;
     const authValid = signatureValid || basicAuthValid;
-    const eventType = String(payload?.eventType ?? payload?.event ?? 'unknown');
+    const payloadData =
+      payload?.data && typeof payload.data === 'object'
+        ? (payload.data as Record<string, unknown>)
+        : null;
+    const eventType = String(
+      payload?.eventType ?? payload?.event ?? payload?.type ?? 'unknown',
+    );
     const providerEventIdRaw = String(
       payload?.eventId ??
         payload?.id ??
         payload?.messageId ??
+        payloadData?.id ??
+        payloadData?.email_id ??
         this.hashValue(JSON.stringify(payload ?? {})),
     );
 
     this.logger.log(
       `Email webhook received provider=${provider} event=${eventType} eventId=${providerEventIdRaw} signatureAuth=${signatureValid ? 'pass' : 'fail'} basicAuth=${basicAuthValid ? 'pass' : 'fail'}`,
     );
+
+    if (!authValid) {
+      this.logger.warn(
+        `Email webhook rejected due to invalid authentication provider=${provider} event=${eventType} eventId=${providerEventIdRaw}`,
+      );
+      throw new ForbiddenException('Invalid email webhook authentication');
+    }
 
     try {
       await this.prisma.emailWebhookEvent.create({
@@ -1090,13 +1105,6 @@ export class NotificationsService {
       throw error;
     }
 
-    if (!authValid) {
-      this.logger.warn(
-        `Email webhook rejected due to invalid authentication provider=${provider} event=${eventType} eventId=${providerEventIdRaw}`,
-      );
-      throw new ForbiddenException('Invalid email webhook authentication');
-    }
-
     const recipientEmail =
       typeof payload?.recipientEmail === 'string'
         ? payload.recipientEmail
@@ -1104,7 +1112,18 @@ export class NotificationsService {
           ? payload.recipient
           : typeof payload?.email === 'string'
             ? payload.email
-            : null;
+            : typeof payloadData?.recipientEmail === 'string'
+              ? payloadData.recipientEmail
+              : typeof payloadData?.recipient === 'string'
+                ? payloadData.recipient
+                : typeof payloadData?.email === 'string'
+                  ? payloadData.email
+                  : typeof payloadData?.to === 'string'
+                    ? payloadData.to
+                    : Array.isArray(payloadData?.to) &&
+                        typeof payloadData.to[0] === 'string'
+                      ? payloadData.to[0]
+                      : null;
 
     const normalizedEventType = eventType.toLowerCase();
     if (

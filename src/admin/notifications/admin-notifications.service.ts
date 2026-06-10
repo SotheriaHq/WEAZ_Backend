@@ -43,6 +43,15 @@ const NOTIFICATION_TEMPLATES: Record<
   },
 };
 
+const escapeEmailHtml = (value: string): string =>
+  value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+    .replace(/\r?\n/g, '<br />');
+
 @Injectable()
 export class AdminNotificationsService {
   constructor(
@@ -128,7 +137,12 @@ export class AdminNotificationsService {
       });
       if (targetUser?.email) {
         void this.emailService
-          .send(targetUser.email, subject, `<p>${body}</p>`, body)
+          .send(
+            targetUser.email,
+            subject,
+            `<p>${escapeEmailHtml(body)}</p>`,
+            body,
+          )
           .catch(() => undefined);
       }
     }

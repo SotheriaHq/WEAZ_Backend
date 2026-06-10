@@ -84,7 +84,7 @@ describe('BrandStaffService', () => {
       explicitPermissions: ['catalog.write'],
       effectivePermissions: ['catalog.read', 'catalog.write'],
     });
-    emailService.getAppName.mockReturnValue('Threadly');
+    emailService.getAppName.mockReturnValue('WEAZ');
     emailService.send.mockResolvedValue({
       outboxId: 'email-outbox-1',
       dispatchStatus: 'QUEUED',
