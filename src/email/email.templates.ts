@@ -62,9 +62,9 @@ export function passwordResetEmail(
   const companyName = normalizeCompanyName(appName);
 
   return {
-    subject: `Reset your ${companyName} password`,
+    subject: `🔐 Reset your ${companyName} password`,
     html: wrap(
-      'Reset Your Password',
+      '🔐 Reset your password',
       `${p(`No worries — it happens to the best of us. We received a request to reset the password on your <strong>${companyName}</strong> account.`)}
       ${p('Click the button below to create a new password. The link is valid for <strong>1 hour</strong> and can only be used once.')}
       <div style="text-align:center;margin:24px 0">${btn(resetLink, 'Reset My Password')}</div>
@@ -82,9 +82,9 @@ export function emailVerificationEmail(
   const companyName = normalizeCompanyName(appName);
 
   return {
-    subject: `You're almost in — confirm your ${companyName} email`,
+    subject: `✨ You're almost in — confirm your ${companyName} email`,
     html: wrap(
-      'One Quick Step',
+      `✨ Confirm your ${companyName} email`,
       `${p(`Welcome to <strong>${companyName}</strong> — Africa's fashion social commerce community. You're just one click away from unlocking your full workspace.`)}
       ${p('Verifying your email lets you create designs, connect with buyers, build your brand, and do so much more. It keeps your account secure too.')}
       <div style="text-align:center;margin:24px 0">${btn(verifyLink, 'Confirm My Email')}</div>
@@ -104,9 +104,9 @@ export function emailLoginCodeEmail(
   const safeCode = escapeHtml(code);
 
   return {
-    subject: `Your ${companyName} password setup code`,
+    subject: `🔐 Your ${companyName} password setup code`,
     html: wrap(
-      'Create Your Password',
+      '🔐 Create your password',
       `${p(`Use this verification code to create a password for your <strong>${companyName}</strong> account.`)}
       <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:12px;padding:18px;text-align:center;margin:20px 0">
         <span style="font-size:28px;font-weight:700;letter-spacing:6px;color:${BRAND_PRIMARY};font-family:monospace">${safeCode}</span>
@@ -126,9 +126,9 @@ export function breakGlassCodeEmail(
   const companyName = normalizeCompanyName(appName);
 
   return {
-    subject: `[URGENT] ${companyName} Break-Glass Recovery Code`,
+    subject: `URGENT: ${companyName} break-glass recovery code`,
     html: wrap(
-      '🔑 Break-Glass Recovery Code',
+      'Break-glass recovery code',
       `<p style="color:#374151;line-height:1.6">A new daily break-glass code has been generated for ${companyName}. Store this securely — do not share it.</p>
       <div style="background:#fef2f2;border:2px solid ${BRAND_ACCENT};padding:16px;border-radius:8px;text-align:center;margin:16px 0">
         <span style="font-size:24px;font-weight:700;letter-spacing:4px;color:${BRAND_PRIMARY}">${code}</span>
@@ -150,9 +150,9 @@ export function breakGlassSuperAdminRecoveryEmail(args: {
   const safePassword = escapeHtml(args.temporaryPassword);
 
   return {
-    subject: `[URGENT] ${companyName} SuperAdmin Recovery Credentials`,
+    subject: `URGENT: ${companyName} SuperAdmin recovery credentials`,
     html: wrap(
-      'SuperAdmin Recovery Completed',
+      'SuperAdmin recovery completed',
       `${p(`Break-glass recovery created or reactivated a <strong>SuperAdmin</strong> account for <strong>${safeEmail}</strong>.`)}
       ${warningBox('<p style="margin:0;color:#9a3412;font-size:13px;font-weight:600">Use this temporary password only once. The account is flagged for mandatory password rotation on first sign-in.</p>')}
       <table style="width:100%;margin:16px 0;border-collapse:collapse;border-radius:12px;overflow:hidden">
@@ -177,7 +177,7 @@ export function adminAccountCreatedEmail(
   return {
     subject: `Your ${companyName} admin account is ready`,
     html: wrap(
-      'Admin Account Created',
+      'Admin account ready',
       `${p(`An administrator account has been set up for you on <strong>${companyName}</strong>. Here are your login credentials:`)}
       <table style="width:100%;margin:16px 0;border-collapse:collapse;border-radius:12px;overflow:hidden">
         <tr style="background:#f9fafb"><td style="padding:12px 16px;color:#6b7280;font-size:14px;border-bottom:1px solid #e5e7eb">Email</td><td style="padding:12px 16px;font-weight:600;font-size:14px;border-bottom:1px solid #e5e7eb">${email}</td></tr>
@@ -217,9 +217,9 @@ export function brandStaffInviteEmail(args: {
       });
 
   return {
-    subject: `${brandName} invited you to join their ${companyName} workspace`,
+    subject: `🏷️ You've been invited to join ${brandName} on ${companyName}`,
     html: wrap(
-      'Brand Staff Invitation',
+      '🏷️ Brand staff invitation',
       `${p(`${escapeHtml(inviterLabel)} invited you to join <strong>${escapeHtml(brandName)}</strong> on <strong>${companyName}</strong> as <strong>${escapeHtml(roleLabel)}</strong>.`)}
       ${p(`Use the button below to review and accept or reject this invitation. It expires on <strong>${escapeHtml(expiryLabel)}</strong>.`)}
       <div style="text-align:center;margin:24px 0">${btn(args.inviteLink, 'Review Invitation')}</div>
@@ -241,9 +241,9 @@ export function brandVerificationApprovedEmail(
 ): EmailContent {
   const companyName = normalizeCompanyName(appName);
   return {
-    subject: `🎉 "${brandName}" is now a verified brand on ${companyName}!`,
+    subject: `✅ "${brandName}" is now verified on ${companyName}`,
     html: wrap(
-      "You're Verified!",
+      "✅ You're verified",
       `${successBox(`<p style="margin:0;color:#166534;font-size:15px;font-weight:600">🎉 Congratulations — <strong>${brandName}</strong> is now verified on ${companyName}!</p>`)}
       ${p(`Your verified badge is now live on your public brand profile. Buyers notice it — it signals trust, authenticity, and that you mean business.`)}
       ${p(`Here is what unlocks for verified brands:`)}
@@ -266,9 +266,9 @@ export function verificationSubmittedEmail(
 ): EmailContent {
   const companyName = normalizeCompanyName(appName);
   return {
-    subject: `We've received your verification request for "${brandName}"`,
+    subject: `📥 Verification request received for "${brandName}"`,
     html: wrap(
-      'Verification Submitted',
+      '📥 Verification submitted',
       `${infoBox(`<p style="margin:0;color:${BRAND_PRIMARY};font-size:14px">📥 Your verification request for <strong>${brandName}</strong> is in our review queue.</p>`)}
       ${p(`Our team reviews each brand manually to maintain the trust and quality that ${companyName} buyers expect. Here's what happens next:`)}
       <ul style="color:${TEXT_SECONDARY};line-height:1.9;padding-left:22px;margin:0 0 16px;font-size:14px">
@@ -291,9 +291,9 @@ export function verificationInReviewEmail(
 ): EmailContent {
   const companyName = normalizeCompanyName(appName);
   return {
-    subject: `Your "${brandName}" verification is actively being reviewed`,
+    subject: `👀 "${brandName}" verification is under review`,
     html: wrap(
-      'Under Review',
+      '👀 Under review',
       `${infoBox(`<p style="margin:0;color:${BRAND_PRIMARY};font-size:14px">👀 A reviewer has picked up the verification request for <strong>${brandName}</strong>.</p>`)}
       ${p(`No action is needed from your side right now. Our team is reviewing your brand profile, documents, and contact information.`)}
       ${p(`If we need anything else, we'll reach out directly. Otherwise, you'll hear from us soon with a decision.`)}
@@ -320,9 +320,9 @@ export function verificationInfoRequestedEmail(
     : 'Please review your submitted verification details.';
 
   return {
-    subject: `Action needed: Additional info required for "${brandName}"`,
+    subject: `📎 Action needed: "${brandName}" verification needs info`,
     html: wrap(
-      'A Little More Info Needed',
+      '📎 A little more info needed',
       `${warningBox(`<p style="margin:0;color:#9a3412;font-size:14px">📋 We need a bit more information to complete the review for <strong>${brandName}</strong>.</p>`)}
       ${p(`Here's exactly what we need from you:`)}
       ${itemsMarkup}
@@ -342,9 +342,9 @@ export function brandVerificationRejectedEmail(
 ): EmailContent {
   const companyName = normalizeCompanyName(appName);
   return {
-    subject: `Verification update for "${brandName}" — next steps inside`,
+    subject: `Verification update for "${brandName}" — next steps`,
     html: wrap(
-      'Verification Not Approved',
+      'Verification not approved',
       `${p(`Thank you for applying for brand verification on ${companyName}. After reviewing <strong>${brandName}</strong>, we were unable to approve the request at this time.`)}
       ${errorBox(`<p style="color:#991b1b;margin:0;font-size:14px;line-height:1.6"><strong>Reason:</strong> ${reason}</p>`)}
       ${p(`This isn't the end of the road. Here's how to move forward:`)}
@@ -367,9 +367,9 @@ export function verificationCooldownExpiredEmail(
 ): EmailContent {
   const companyName = normalizeCompanyName(appName);
   return {
-    subject: `You can re-apply for verification — "${brandName}" is ready`,
+    subject: `✅ "${brandName}" can re-apply for ${companyName} verification`,
     html: wrap(
-      'Ready to Reapply',
+      '✅ Ready to reapply',
       `${successBox(`<p style="margin:0;color:#166534;font-size:14px">✅ The verification cooldown for <strong>${brandName}</strong> has expired — you can submit a new request.</p>`)}
       ${p(`Take a moment to review your brand profile before reapplying. Make sure your brand name, logo, category, and any documents are complete and accurate.`)}
       ${p(`Strong applications are specific: clear photos, a consistent brand story, and a real contact presence. The more we can verify, the faster we can approve.`)}
@@ -386,9 +386,9 @@ export function verificationNudgeEmail(
 ): EmailContent {
   const companyName = normalizeCompanyName(appName);
   return {
-    subject: `Build more trust — get "${brandName}" verified on ${companyName}`,
+    subject: `🏅 Build more trust — verify "${brandName}" on ${companyName}`,
     html: wrap(
-      'Your Brand is Live. Make It Shine.',
+      '🏅 Make your brand stand out',
       `${p(`<strong>${brandName}</strong> is live on ${companyName}. That's a great start — but verified brands consistently sell more, get more followers, and stand out in the market.`)}
       ${infoBox(`<p style="margin:0;color:${BRAND_PRIMARY};font-size:14px;font-weight:600">Verified brands see up to 3× more buyer engagement than unverified ones.</p>`)}
       ${p(`What you unlock with verification:`)}
@@ -419,7 +419,7 @@ export function accountSuspendedEmail(
   return {
     subject: `Important: Your ${companyName} account has been suspended`,
     html: wrap(
-      'Account Suspended',
+      'Account suspended',
       `${p(`Hi ${firstName}, we're reaching out regarding your ${companyName} account.`)}
       ${errorBox(`<p style="color:#991b1b;margin:0;font-size:14px;line-height:1.6"><strong>Reason for suspension:</strong> ${reason || 'Policy violation'}</p>`)}
       ${p(`We take community safety seriously. If you believe this decision was made in error, you can submit a reactivation request — our team will review it within 48 hours.`)}
@@ -436,9 +436,9 @@ export function accountReactivatedEmail(
 ): EmailContent {
   const companyName = normalizeCompanyName(appName);
   return {
-    subject: `Welcome back, ${firstName} — your ${companyName} account is active again`,
+    subject: `✅ Your ${companyName} account is active again`,
     html: wrap(
-      "You're Back!",
+      `✅ Welcome back, ${firstName}`,
       `${successBox(`<p style="margin:0;color:#166534;font-size:15px;font-weight:600">✅ Your ${companyName} account has been fully reactivated, ${firstName}.</p>`)}
       ${p(`Everything is exactly as you left it — your designs, products, orders, and followers are all still there.`)}
       ${p(`We're glad to have you back. If you have any questions or need help getting back up to speed, reply to this email and our team will assist you right away.`)}
@@ -458,7 +458,7 @@ export function confirmEmailChangeEmail(
   return {
     subject: `Confirm your new ${companyName} email address`,
     html: wrap(
-      'Confirm Email Change',
+      'Confirm email change',
       `${p(`We received a request to change the email address on your <strong>${companyName}</strong> account to <strong>${newEmail}</strong>.`)}
       ${p('Click the button below to confirm the new email address. Your current email stays active until you complete this confirmation.')}
       <div style="text-align:center;margin:24px 0">${btn(confirmLink, 'Confirm New Email')}</div>
@@ -474,7 +474,7 @@ export function passwordChangedSecurityAlertEmail(
 ): EmailContent {
   const companyName = normalizeCompanyName(appName);
   return {
-    subject: `${companyName} security alert: your password was changed`,
+    subject: `${companyName} security alert: password changed`,
     html: wrap(
       'Password Changed',
       `${successBox('<p style="margin:0;color:#166534;font-size:14px;font-weight:600">Your password was updated successfully.</p>')}
@@ -493,9 +493,9 @@ export function emailChangedSecurityAlertEmail(
 ): EmailContent {
   const companyName = normalizeCompanyName(appName);
   return {
-    subject: `${companyName} security alert: your email address was changed`,
+    subject: `${companyName} security alert: email address changed`,
     html: wrap(
-      'Email Address Changed',
+      'Email address changed',
       `${infoBox(`<p style="margin:0;color:${BRAND_PRIMARY};font-size:14px">Your account email was changed from <strong>${previousEmail}</strong> to <strong>${newEmail}</strong>.</p>`)}
       ${p("If this was you, you're all set. If this wasn't you, secure your account immediately and contact support.")}`,
       companyName,
@@ -519,7 +519,7 @@ export function collectionPublishedEmail(
   return {
     subject: `🎨 "${designTitle}" is live on ${companyName}!`,
     html: wrap(
-      'Your Design is Live!',
+      '🎨 Your design is live',
       `${successBox(`<p style="margin:0;color:#166534;font-size:15px;font-weight:600">🎨 <strong>${designTitle}</strong> is now published and visible to the ${companyName} community!</p>`)}
       ${p(`<strong>${brandName}</strong>, your design is out in the world. Buyers, followers, and fashion lovers can now discover it, save it, comment, and place custom orders.`)}
       ${p(`Here's how to maximise its reach:`)}
@@ -549,9 +549,9 @@ export function disputeResolvedEmail(
 ): EmailContent {
   const companyName = normalizeCompanyName(appName);
   return {
-    subject: `Dispute #${disputeId.slice(0, 8)} has been resolved`,
+    subject: `✅ Dispute #${disputeId.slice(0, 8)} has been resolved`,
     html: wrap(
-      'Dispute Resolved',
+      '✅ Dispute resolved',
       `${p(`A dispute you were involved in on ${companyName} has been closed and a resolution has been reached.`)}
       ${successBox(`<p style="color:#166534;margin:0;font-size:14px;line-height:1.6"><strong>Resolution:</strong> ${resolution}</p>`)}
       ${p(`If you have questions about this outcome or believe the decision needs review, please reply to this email — our team is here to help.`)}`,
@@ -573,10 +573,10 @@ export function payoutProcessedEmail(
 
   return {
     subject: isSuccess
-      ? `💸 Your ${companyName} payout of ${currency} ${amount} is on the way!`
+      ? `💸 Your ${companyName} payout of ${currency} ${amount} is on the way`
       : `Payout update: ${currency} ${amount} — ${status}`,
     html: wrap(
-      isSuccess ? 'Payout Sent!' : 'Payout Update',
+      isSuccess ? '💸 Payout sent' : 'Payout update',
       isSuccess
         ? `${successBox(`<p style="margin:0;color:#166534;font-size:15px;font-weight:600">💸 ${currency} ${amount} is on its way to your account!</p>`)}
           ${p(`Your payout has been processed and is headed to your registered payout account. Depending on your bank, funds typically arrive within <strong>1–3 business days</strong>.`)}
@@ -602,9 +602,9 @@ export function adminEmailChangeOtpEmail(
 ): EmailContent {
   const companyName = normalizeCompanyName(appName);
   return {
-    subject: `Your ${companyName} admin email verification code`,
+    subject: `${companyName} admin email verification code`,
     html: wrap(
-      'Admin Email Verification',
+      'Admin email verification',
       `${p(`You requested an email address change on your <strong>${companyName}</strong> admin account. Use the code below to verify ownership of <strong>${escapeHtml(newEmail)}</strong>.`)}
       <div style="text-align:center;margin:28px 0">
         <div style="display:inline-block;background:#f5f3ff;border:2px dashed ${BRAND_PRIMARY};border-radius:12px;padding:18px 36px">
@@ -626,9 +626,9 @@ export function adminEmailChangeApprovedEmail(
 ): EmailContent {
   const companyName = normalizeCompanyName(appName);
   return {
-    subject: `Your ${companyName} admin email has been updated`,
+    subject: `${companyName} admin email updated`,
     html: wrap(
-      'Email Address Updated',
+      'Email address updated',
       `${p(`Your admin account email address has been successfully updated.`)}
       ${infoBox(`<p style="margin:0;color:${BRAND_PRIMARY};font-size:14px">
         <strong>Previous email:</strong> ${escapeHtml(oldEmail)}<br>
@@ -649,9 +649,9 @@ export function adminEmailChangeRejectedEmail(
 ): EmailContent {
   const companyName = normalizeCompanyName(appName);
   return {
-    subject: `Your ${companyName} email change request was not approved`,
+    subject: `${companyName} admin email change not approved`,
     html: wrap(
-      'Email Change Request Rejected',
+      'Email change request rejected',
       `${p(`Your request to update your admin account email to <strong>${escapeHtml(requestedEmail)}</strong> was reviewed and not approved.`)}
       ${reason ? errorBox(`<p style="margin:0;color:#991b1b;font-size:14px"><strong>Reason:</strong> ${escapeHtml(reason)}</p>`) : ''}
       ${p(`If you believe this is an error or need further assistance, please contact your Super Admin.`)}`,

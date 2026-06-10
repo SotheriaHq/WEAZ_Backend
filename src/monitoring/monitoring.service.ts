@@ -3,6 +3,12 @@ import { ConfigService } from '@nestjs/config';
 import { EmailPriority, NotificationType } from '@prisma/client';
 import { createHash } from 'crypto';
 import { EmailService } from 'src/email/email.service';
+import {
+  EMAIL_COLORS,
+  renderEmailButton,
+  renderEmailShell,
+  resolveAppUrl,
+} from 'src/email/email.branding';
 import { redactSensitiveLogValue } from 'src/common/utils/sensitive-log';
 import { NotificationsService } from 'src/notifications/notifications.service';
 import { PrismaService } from 'src/prisma/prisma.service';
@@ -251,7 +257,7 @@ export class MonitoringService {
           .map((recipient) =>
             this.emailService!.send(
               recipient.email!,
-              `[WEAZ] ${alert.severity} ${alert.category} alert`,
+              `WEAZ ${alert.severity} ${alert.category} alert`,
               this.renderAlertEmailHtml(alert),
               this.renderAlertEmailText(alert),
               {
@@ -334,6 +340,8 @@ export class MonitoringService {
   }
 
   private renderAlertEmailHtml(alert: PersistedAlertRow): string {
+    const adminPath = `/admin/monitoring?alertId=${alert.id}`;
+    const adminUrl = resolveAppUrl(adminPath);
     const lines = [
       ['Severity', alert.severity],
       ['Category', alert.category],
@@ -342,18 +350,26 @@ export class MonitoringService {
       ['Timestamp', alert.firstSeenAt.toISOString()],
       ['Correlation ID', alert.correlationId ?? 'n/a'],
       ['Entity', this.formatEntity(alert)],
-      ['Admin Path', `/admin/monitoring?alertId=${alert.id}`],
+      ['Admin Path', adminPath],
     ];
 
-    return [
-      '<h1>WEAZ operational alert</h1>',
-      '<table>',
-      ...lines.map(
-        ([label, value]) =>
-          `<tr><th align="left">${this.escapeHtml(label)}</th><td>${this.escapeHtml(value)}</td></tr>`,
-      ),
-      '</table>',
-    ].join('');
+    const rows = lines
+      .map(
+        ([label, value], index) =>
+          `<tr style="background:${index % 2 === 0 ? '#ffffff' : '#f9fafb'}"><th align="left" style="padding:10px 12px;color:${EMAIL_COLORS.textMuted};font-size:12px;border-bottom:1px solid #e5e7eb">${this.escapeHtml(label)}</th><td style="padding:10px 12px;color:${EMAIL_COLORS.textPrimary};font-size:13px;font-weight:600;border-bottom:1px solid #e5e7eb">${this.escapeHtml(value)}</td></tr>`,
+      )
+      .join('');
+
+    return renderEmailShell({
+      appName: 'WEAZ',
+      headerSubtitle: 'Operational alert',
+      title: `WEAZ ${alert.severity} ${alert.category} alert`,
+      bodyHtml: `<p style="margin:0 0 14px;color:${EMAIL_COLORS.textSecondary};font-size:15px;line-height:1.7">A critical operational alert needs admin review. Sensitive metadata has already been redacted before this email was queued.</p>
+        <table cellpadding="0" cellspacing="0" style="width:100%;border:1px solid #e5e7eb;border-radius:12px;overflow:hidden;border-collapse:separate;border-spacing:0">${rows}</table>
+        <p style="margin:22px 0 0">${renderEmailButton(adminUrl, 'Review Alert', { padding: '12px 22px' })}</p>`,
+      footerContextText:
+        'This email was sent because a critical WEAZ operational alert was recorded.',
+    });
   }
 
   private renderAlertEmailText(alert: PersistedAlertRow): string {

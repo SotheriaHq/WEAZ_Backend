@@ -188,7 +188,7 @@ describe('EmailService', () => {
 
     const result = await service.sendNow(
       'recipient@example.com',
-      'Verify your WEAZ account',
+      "✨ You're almost in — confirm your WEAZ email",
       '<p>Verify</p>',
       'Verify',
       { idempotencyKey: 'outbox:1' },
@@ -200,7 +200,7 @@ describe('EmailService', () => {
       expect.objectContaining({
         from: 'WEAZ <noreply@weaz.me>',
         to: 'sit-inbox@example.com',
-        subject: 'Verify your WEAZ account',
+        subject: "✨ You're almost in — confirm your WEAZ email",
         html: '<p>Verify</p>',
         text: 'Verify',
         replyTo: 'support@weaz.me',
@@ -225,7 +225,7 @@ describe('EmailService', () => {
 
     const result = await service.sendNow(
       'recipient@example.com',
-      'Verify your WEAZ account',
+      "✨ You're almost in — confirm your WEAZ email",
       '<p>Verify</p>',
       'Verify',
       { idempotencyKey: 'outbox:2' },
@@ -238,7 +238,7 @@ describe('EmailService', () => {
     expect(mockResendSend).toHaveBeenCalledWith(
       expect.objectContaining({
         to: 'recipient@example.com',
-        subject: 'Verify your WEAZ account',
+        subject: "✨ You're almost in — confirm your WEAZ email",
       }),
       { idempotencyKey: 'outbox:2' },
     );
