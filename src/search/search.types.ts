@@ -1,6 +1,7 @@
 import type { CatalogEntityType } from '../common/domain/catalog-domain';
 
 export const SEARCH_ENTITY_TYPES = [
+  'profile',
   'product',
   'brand',
   'design',
@@ -60,6 +61,7 @@ export interface SearchSuggestionResponse {
   recent: Array<{ query: string; href: string }>;
   trending: Array<{ query: string; score: number; href: string }>;
   products: SearchSuggestionSection;
+  profiles: SearchSuggestionSection;
   brands: SearchSuggestionSection;
   designs: SearchSuggestionSection;
   storeCollections: SearchSuggestionSection;

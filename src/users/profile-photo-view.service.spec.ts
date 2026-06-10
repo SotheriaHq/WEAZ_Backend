@@ -48,13 +48,25 @@ describe('ProfilePhotoViewService', () => {
     expect(prisma.profilePhotoView.upsert).not.toHaveBeenCalled();
   });
 
-  it('returns viewed state for the owner so self views do not show an unviewed ring', async () => {
+  it('returns unviewed state for the owner when no self-view row exists', async () => {
+    prisma.profilePhotoView.findUnique.mockResolvedValue(null);
+
     const state = await service.getViewStateForOwner(makeOwner(), 'owner-user-id');
 
-    expect(state.viewed).toBe(true);
-    expect(state.hasUnviewedUpdate).toBe(false);
-    expect(state.canMarkViewed).toBe(false);
-    expect(prisma.profilePhotoView.findUnique).not.toHaveBeenCalled();
+    expect(prisma.profilePhotoView.findUnique).toHaveBeenCalledWith({
+      where: {
+        ownerId_viewerId_photoUpdatedAt: {
+          ownerId: 'owner-user-id',
+          viewerId: 'owner-user-id',
+          photoUpdatedAt: VERSION_ONE,
+        },
+      },
+      select: { id: true },
+    });
+    expect(state.viewed).toBe(false);
+    expect(state.hasUnviewedUpdate).toBe(true);
+    expect(state.canMarkViewed).toBe(true);
+    expect(prisma.profilePhotoView.upsert).not.toHaveBeenCalled();
   });
 
   it('returns unviewed state per viewer when no view row exists', async () => {
@@ -85,6 +97,24 @@ describe('ProfilePhotoViewService', () => {
     expect(state.viewed).toBe(true);
     expect(state.hasUnviewedUpdate).toBe(false);
     expect(state.canMarkViewed).toBe(true);
+  });
+
+  it('does not mark viewed while repeatedly fetching the same unviewed photo', async () => {
+    prisma.profilePhotoView.findUnique.mockResolvedValue(null);
+
+    const firstState = await service.getViewStateForOwner(
+      makeOwner(),
+      'viewer-user-id',
+    );
+    const secondState = await service.getViewStateForOwner(
+      makeOwner(),
+      'viewer-user-id',
+    );
+
+    expect(firstState.hasUnviewedUpdate).toBe(true);
+    expect(secondState.hasUnviewedUpdate).toBe(true);
+    expect(prisma.profilePhotoView.findUnique).toHaveBeenCalledTimes(2);
+    expect(prisma.profilePhotoView.upsert).not.toHaveBeenCalled();
   });
 
   it('resets to unviewed for a newer profile photo version', async () => {
@@ -136,6 +166,35 @@ describe('ProfilePhotoViewService', () => {
     });
     expect(state.viewed).toBe(true);
     expect(state.hasUnviewedUpdate).toBe(false);
+  });
+
+  it('uses an upsert when the owner explicitly opens their own current photo', async () => {
+    const owner = makeOwner();
+    prisma.user.findUnique.mockResolvedValue(owner);
+    prisma.profilePhotoView.upsert.mockResolvedValue({ id: 'self-view-row-id' });
+
+    const state = await service.markViewed('owner-user-id', 'owner-user-id');
+
+    expect(prisma.profilePhotoView.upsert).toHaveBeenCalledWith({
+      where: {
+        ownerId_viewerId_photoUpdatedAt: {
+          ownerId: 'owner-user-id',
+          viewerId: 'owner-user-id',
+          photoUpdatedAt: VERSION_ONE,
+        },
+      },
+      create: {
+        ownerId: 'owner-user-id',
+        viewerId: 'owner-user-id',
+        photoUpdatedAt: VERSION_ONE,
+      },
+      update: {
+        viewedAt: expect.any(Date),
+      },
+    });
+    expect(state.viewed).toBe(true);
+    expect(state.hasUnviewedUpdate).toBe(false);
+    expect(state.canMarkViewed).toBe(true);
   });
 
   it('does not write a view row when a profile has no current photo', async () => {

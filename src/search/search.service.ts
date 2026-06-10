@@ -11,8 +11,10 @@ import {
   CollectionDomain,
   CollectionStatus,
   CollectionVisibility,
+  ProfileVisibility,
   Prisma,
   TagStatus,
+  UserStatus,
 } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { TagsService } from 'src/tags/tags.service';
@@ -37,7 +39,7 @@ interface SearchParams {
   userId?: string;
 }
 
-type SearchQueryMode = 'default' | 'brand' | 'tag';
+type SearchQueryMode = 'default' | 'profile' | 'tag';
 
 interface ParsedSearchQuery {
   rawQuery: string;
@@ -89,6 +91,22 @@ interface BrandSearchRow {
   score: number;
 }
 
+interface ProfileSearchRow {
+  id: string;
+  username: string;
+  firstName: string;
+  lastName: string;
+  profileImage: string | null;
+  brandId: string | null;
+  brandName: string | null;
+  brandDescription: string | null;
+  brandTagline: string | null;
+  brandLogo: string | null;
+  brandTags: string[] | null;
+  isStoreOpen: boolean | null;
+  score: number;
+}
+
 interface CollectionSearchRow {
   id: string;
   ownerId: string;
@@ -105,6 +123,7 @@ interface SearchPageResult {
 
 const RECENT_LIMIT = 10;
 const TRENDING_LIMIT = 6;
+const PROFILE_SUGGEST_LIMIT = 3;
 const PRODUCT_SUGGEST_LIMIT = 3;
 const BRAND_SUGGEST_LIMIT = 2;
 const DESIGN_SUGGEST_LIMIT = 2;
@@ -123,6 +142,7 @@ const SEARCH_MIXED_PREVIEW_LIMIT = 5;
 
 const SEARCH_RESULT_CACHE_ALL_VERSION_KEY = 'search:results:version:all';
 const SEARCH_RESULT_CACHE_VERSION_KEYS: Record<SearchEntityType, string> = {
+  profile: 'search:results:version:profile',
   product: 'search:results:version:product',
   brand: 'search:results:version:brand',
   design: 'search:results:version:design',
@@ -225,6 +245,10 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
       .filter(Boolean);
   }
 
+  private compactHandleQuery(query: string): string {
+    return this.normalizeQuery(query).replace(/[^\p{L}\p{N}]+/gu, '');
+  }
+
   private parseSearchQuery(queryInput?: string | null): ParsedSearchQuery {
     const rawQuery = String(queryInput || '').trim();
     if (!rawQuery) {
@@ -240,7 +264,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     let workingQuery = rawQuery;
 
     if (workingQuery.startsWith('@')) {
-      mode = 'brand';
+      mode = 'profile';
       workingQuery = workingQuery.slice(1).trim();
     } else if (workingQuery.startsWith('/') || workingQuery.startsWith('#')) {
       mode = 'tag';
@@ -249,8 +273,8 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
 
     const normalizedQuery = this.normalizeQuery(workingQuery);
     const forcedTypes =
-      mode === 'brand'
-        ? (['brand'] as SearchEntityType[])
+      mode === 'profile'
+        ? (['profile'] as SearchEntityType[])
         : mode === 'tag'
           ? (['tag'] as SearchEntityType[])
           : undefined;
@@ -282,7 +306,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
 
   private resolveTypes(rawTypes?: SearchEntityType[]): SearchEntityType[] {
     if (!rawTypes || rawTypes.length === 0) {
-      return ['product', 'brand', 'design', 'collection', 'tag'];
+      return ['profile', 'product', 'brand', 'design', 'collection', 'tag'];
     }
     const unique = Array.from(new Set(rawTypes));
     const invalid = unique.filter(
@@ -862,6 +886,51 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
+  private profileToItem(
+    profile: ProfileSearchRow,
+    query: string,
+    tokens: string[],
+  ): SearchItem {
+    const fullName = [profile.firstName, profile.lastName]
+      .map((part) => String(part || '').trim())
+      .filter(Boolean)
+      .join(' ');
+    const title = profile.brandName || fullName || `@${profile.username}`;
+    const subtitle = profile.username ? `@${profile.username}` : null;
+    const description =
+      profile.brandTagline || profile.brandDescription || fullName || null;
+    const computedScore =
+      Number(profile.score || 0) +
+      this.scoreField(profile.username, this.compactHandleQuery(query), tokens, 14) +
+      this.scoreField(title, query, tokens, 10) +
+      this.scoreField(fullName, query, tokens, 8) +
+      this.scoreTagArray(profile.brandTags, tokens, 2);
+
+    return {
+      id: profile.id,
+      type: 'profile',
+      title,
+      subtitle,
+      description,
+      imageUrl: profile.brandLogo || profile.profileImage || null,
+      href: `/profile/${profile.id}`,
+      score: computedScore,
+      metadata: {
+        ownerId: profile.id,
+        profileUserId: profile.id,
+        username: profile.username,
+        brandId: profile.brandId,
+        brandName: profile.brandName,
+        isStoreOpen: Boolean(profile.isStoreOpen),
+        resultKind: 'identity',
+      },
+      highlights: {
+        title: this.buildHighlightOffsets(title, tokens),
+        description: this.buildHighlightOffsets(description, tokens),
+      },
+    };
+  }
+
   private designToItem(
     collection: any,
     query: string,
@@ -1290,6 +1359,132 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     const rows =
       await this.prisma.$queryRaw<Array<{ total: bigint | number }>>(sql);
     return Number(rows?.[0]?.total ?? 0);
+  }
+
+  private async searchProfilesPage(
+    query: string,
+    tokens: string[],
+    limit: number,
+    offset: number,
+  ): Promise<SearchPageResult> {
+    const compactQuery = this.compactHandleQuery(query);
+    const ilikePat = `%${query}%`;
+    const prefixPat = `${query}%`;
+    const compactIlikePat = `%${compactQuery}%`;
+    const compactPrefixPat = `${compactQuery}%`;
+
+    const rows = await this.prisma.$queryRaw<ProfileSearchRow[]>(Prisma.sql`
+      WITH public_profiles AS (
+        SELECT
+          u."_id" AS id,
+          u.username,
+          up."firstName" AS "firstName",
+          up."lastName" AS "lastName",
+          up."profileImage" AS "profileImage",
+          b."_id" AS "brandId",
+          b.name AS "brandName",
+          b.description AS "brandDescription",
+          b.tagline AS "brandTagline",
+          b.logo AS "brandLogo",
+          b.tags AS "brandTags",
+          b."isStoreOpen" AS "isStoreOpen",
+          lower(regexp_replace(immutable_unaccent(COALESCE(u.username, '')), '[^[:alnum:]]+', '', 'g')) AS compact_username,
+          immutable_unaccent(COALESCE(b.name, '')) AS normalized_brand_name,
+          immutable_unaccent(CONCAT_WS(' ', up."firstName", up."lastName")) AS normalized_full_name
+        FROM "User" u
+        INNER JOIN "UserProfile" up ON up."userId" = u."_id"
+        LEFT JOIN "Brand" b ON b."ownerId" = u."_id"
+        WHERE u.status = ${UserStatus.ACTIVE}
+          AND u."isActive" = 'Active'
+          AND up."profileVisibility" = ${ProfileVisibility.UNLOCKED}
+      )
+      SELECT
+        id,
+        username,
+        "firstName",
+        "lastName",
+        "profileImage",
+        "brandId",
+        "brandName",
+        "brandDescription",
+        "brandTagline",
+        "brandLogo",
+        "brandTags",
+        "isStoreOpen",
+        CASE
+          WHEN compact_username = ${compactQuery} THEN 1000
+          WHEN normalized_brand_name ILIKE immutable_unaccent(${query})
+            OR normalized_full_name ILIKE immutable_unaccent(${query}) THEN 900
+          WHEN compact_username LIKE ${compactPrefixPat} THEN 800
+          WHEN normalized_brand_name ILIKE immutable_unaccent(${prefixPat}) THEN 760
+          WHEN normalized_full_name ILIKE immutable_unaccent(${prefixPat}) THEN 740
+          WHEN compact_username LIKE ${compactIlikePat} THEN 650
+          WHEN normalized_brand_name ILIKE immutable_unaccent(${ilikePat}) THEN 620
+          WHEN normalized_full_name ILIKE immutable_unaccent(${ilikePat}) THEN 600
+          WHEN EXISTS (
+            SELECT 1 FROM unnest(COALESCE("brandTags", ARRAY[]::text[])) tag
+            WHERE immutable_unaccent(tag) ILIKE immutable_unaccent(${ilikePat})
+          ) THEN 320
+          ELSE GREATEST(
+            similarity(normalized_brand_name, immutable_unaccent(${query})),
+            similarity(normalized_full_name, immutable_unaccent(${query})),
+            similarity(compact_username, ${compactQuery})
+          ) * 100
+        END + CASE WHEN "isStoreOpen" = true THEN 5 ELSE 0 END AS score
+      FROM public_profiles
+      WHERE
+        compact_username LIKE ${compactIlikePat}
+        OR normalized_brand_name ILIKE immutable_unaccent(${ilikePat})
+        OR normalized_full_name ILIKE immutable_unaccent(${ilikePat})
+        OR EXISTS (
+          SELECT 1 FROM unnest(COALESCE("brandTags", ARRAY[]::text[])) tag
+          WHERE immutable_unaccent(tag) ILIKE immutable_unaccent(${ilikePat})
+        )
+        OR GREATEST(
+          similarity(normalized_brand_name, immutable_unaccent(${query})),
+          similarity(normalized_full_name, immutable_unaccent(${query})),
+          similarity(compact_username, ${compactQuery})
+        ) >= ${SEARCH_SIMILARITY_THRESHOLD}
+      ORDER BY score DESC, username ASC, id ASC
+      LIMIT ${limit} OFFSET ${offset}
+    `);
+
+    const total = await this.getSearchResultCount(Prisma.sql`
+      WITH public_profiles AS (
+        SELECT
+          u."_id" AS id,
+          lower(regexp_replace(immutable_unaccent(COALESCE(u.username, '')), '[^[:alnum:]]+', '', 'g')) AS compact_username,
+          immutable_unaccent(COALESCE(b.name, '')) AS normalized_brand_name,
+          immutable_unaccent(CONCAT_WS(' ', up."firstName", up."lastName")) AS normalized_full_name,
+          b.tags AS "brandTags"
+        FROM "User" u
+        INNER JOIN "UserProfile" up ON up."userId" = u."_id"
+        LEFT JOIN "Brand" b ON b."ownerId" = u."_id"
+        WHERE u.status = ${UserStatus.ACTIVE}
+          AND u."isActive" = 'Active'
+          AND up."profileVisibility" = ${ProfileVisibility.UNLOCKED}
+      )
+      SELECT COUNT(*)::bigint AS total
+      FROM public_profiles
+      WHERE
+        compact_username LIKE ${compactIlikePat}
+        OR normalized_brand_name ILIKE immutable_unaccent(${ilikePat})
+        OR normalized_full_name ILIKE immutable_unaccent(${ilikePat})
+        OR EXISTS (
+          SELECT 1 FROM unnest(COALESCE("brandTags", ARRAY[]::text[])) tag
+          WHERE immutable_unaccent(tag) ILIKE immutable_unaccent(${ilikePat})
+        )
+        OR GREATEST(
+          similarity(normalized_brand_name, immutable_unaccent(${query})),
+          similarity(normalized_full_name, immutable_unaccent(${query})),
+          similarity(compact_username, ${compactQuery})
+        ) >= ${SEARCH_SIMILARITY_THRESHOLD}
+    `);
+
+    return {
+      items: rows.map((row) => this.profileToItem(row, query, tokens)),
+      total,
+    };
   }
 
   private async searchProductsPage(
@@ -1900,6 +2095,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
 
   private emptyCounts(): Record<SearchEntityType, number> {
     return {
+      profile: 0,
       product: 0,
       brand: 0,
       design: 0,
@@ -1925,6 +2121,9 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
 
   async processSearchSyncJob(job: SearchSyncJob) {
     switch (job.target) {
+      case 'profile':
+        await this.invalidateSearchCaches(['profile']);
+        return;
       case 'product':
         await this.invalidateSearchCaches(['product']);
         if (job.mode === 'entity' && job.id) {
@@ -1934,7 +2133,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
         }
         return;
       case 'brand':
-        await this.invalidateSearchCaches(['brand', 'product']);
+        await this.invalidateSearchCaches(['profile', 'brand', 'product']);
         if (job.mode === 'entity' && job.id) {
           await Promise.all([
             this.syncBrandSuggestionById(job.id),
@@ -2052,6 +2251,14 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     const id = this.extractMutationId(params, entity);
 
     switch (params.model) {
+      case 'User':
+      case 'UserProfile':
+        void this.dispatchSearchSyncJob({
+          target: 'profile',
+          mode: 'rebuild',
+          reason: `${params.model}.${action}`,
+        });
+        break;
       case 'Product':
         void this.dispatchSearchSyncJob({
           target: 'product',
@@ -2807,6 +3014,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
         normalizedQuery,
         recent,
         trending,
+        profiles: { items: [], total: 0 },
         products: { items: [], total: 0 },
         brands: { items: [], total: 0 },
         designs: { items: [], total: 0 },
@@ -2828,6 +3036,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
         normalizedQuery,
         recent,
         trending: [],
+        profiles: { items: [], total: 0 },
         products: { items: [], total: 0 },
         brands: { items: [], total: 0 },
         designs: { items: [], total: 0 },
@@ -2843,12 +3052,22 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
       return response;
     }
 
-    const brandMode = parsedQuery.mode === 'brand';
+    const profileMode = parsedQuery.mode === 'profile';
     const tagMode = parsedQuery.mode === 'tag';
 
-    const [products, brands, designs, storeCollections, tagItems] =
+    const [profiles, products, brands, designs, storeCollections, tagItems] =
       await Promise.all([
-        brandMode || tagMode
+        tagMode
+          ? Promise.resolve({ items: [], total: 0 })
+          : this.searchProfilesPage(
+              normalizedQuery,
+              tokens,
+              profileMode
+                ? Math.max(PROFILE_SUGGEST_LIMIT + 2, 5)
+                : PROFILE_SUGGEST_LIMIT,
+              0,
+            ),
+        profileMode || tagMode
           ? Promise.resolve({ items: [], total: 0 })
           : this.fetchSuggestionItemsWithFallback(
               SEARCH_SUGGEST_KEYS.products,
@@ -2863,25 +3082,21 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
                   brandId,
                 ),
             ),
-        tagMode
+        profileMode || tagMode
           ? Promise.resolve({ items: [], total: 0 })
           : this.fetchSuggestionItemsWithFallback(
               SEARCH_SUGGEST_KEYS.brands,
               normalizedQuery,
-              brandMode
-                ? Math.max(BRAND_SUGGEST_LIMIT + 2, 4)
-                : BRAND_SUGGEST_LIMIT,
+              BRAND_SUGGEST_LIMIT,
               () =>
                 this.searchBrandsPage(
                   normalizedQuery,
                   tokens,
-                  brandMode
-                    ? Math.max(BRAND_SUGGEST_LIMIT + 2, 4)
-                    : BRAND_SUGGEST_LIMIT,
+                  BRAND_SUGGEST_LIMIT,
                   0,
                 ),
             ),
-        brandMode || tagMode
+        profileMode || tagMode
           ? Promise.resolve({ items: [], total: 0 })
           : this.fetchSuggestionItemsWithFallback(
               SEARCH_SUGGEST_KEYS.designs,
@@ -2895,7 +3110,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
                   0,
                 ),
             ),
-        brandMode || tagMode
+        profileMode || tagMode
           ? Promise.resolve({ items: [], total: 0 })
           : this.fetchSuggestionItemsWithFallback(
               SEARCH_SUGGEST_KEYS.collections,
@@ -2913,7 +3128,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
                 ? (payload) => payload.metadata?.ownerId === brandOwnerId
                 : undefined,
             ),
-        brandMode
+        profileMode
           ? Promise.resolve({ items: [], total: 0 })
           : this.fetchSuggestionItemsWithFallback(
               SEARCH_SUGGEST_KEYS.tags,
@@ -2936,6 +3151,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
       normalizedQuery,
       recent,
       trending: [],
+      profiles: { items: profiles.items, total: profiles.total },
       products: { items: products.items, total: products.total },
       brands: { items: brands.items, total: brands.total },
       designs: { items: designs.items, total: designs.total },
@@ -2957,6 +3173,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
       durationMs: Date.now() - startedAt,
       resultCount:
         response.products.total +
+        response.profiles.total +
         response.brands.total +
         response.designs.total +
         response.storeCollections.total +
@@ -3023,6 +3240,14 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
       let result: SearchPageResult;
 
       switch (activeType) {
+        case 'profile':
+          result = await this.searchProfilesPage(
+            normalizedQuery,
+            tokens,
+            limit,
+            offset,
+          );
+          break;
         case 'product':
           result = await this.searchProductsPage(
             normalizedQuery,
@@ -3074,36 +3299,41 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
       hasNextPage = offset + result.items.length < result.total;
     } else {
       const mixedLimit = Math.min(limit, SEARCH_MIXED_PREVIEW_LIMIT);
-      const [products, brands, designs, collections, tags] = await Promise.all([
-        types.includes('product')
-          ? this.searchProductsPage(
-              normalizedQuery,
-              tokens,
-              mixedLimit,
-              0,
-              params.brandId,
-            )
-          : Promise.resolve({ items: [], total: 0 }),
-        types.includes('brand')
-          ? this.searchBrandsPage(normalizedQuery, tokens, mixedLimit, 0)
-          : Promise.resolve({ items: [], total: 0 }),
-        types.includes('design')
-          ? this.searchDesignsPage(normalizedQuery, tokens, mixedLimit, 0)
-          : Promise.resolve({ items: [], total: 0 }),
-        types.includes('collection')
-          ? this.searchCollectionsPage(
-              normalizedQuery,
-              tokens,
-              mixedLimit,
-              0,
-              brandOwnerId,
-            )
-          : Promise.resolve({ items: [], total: 0 }),
-        types.includes('tag')
-          ? this.searchTagsPage(normalizedQuery, tokens, mixedLimit, 0)
-          : Promise.resolve({ items: [], total: 0 }),
-      ]);
+      const [profiles, products, brands, designs, collections, tags] =
+        await Promise.all([
+          types.includes('profile')
+            ? this.searchProfilesPage(normalizedQuery, tokens, mixedLimit, 0)
+            : Promise.resolve({ items: [], total: 0 }),
+          types.includes('product')
+            ? this.searchProductsPage(
+                normalizedQuery,
+                tokens,
+                mixedLimit,
+                0,
+                params.brandId,
+              )
+            : Promise.resolve({ items: [], total: 0 }),
+          types.includes('brand')
+            ? this.searchBrandsPage(normalizedQuery, tokens, mixedLimit, 0)
+            : Promise.resolve({ items: [], total: 0 }),
+          types.includes('design')
+            ? this.searchDesignsPage(normalizedQuery, tokens, mixedLimit, 0)
+            : Promise.resolve({ items: [], total: 0 }),
+          types.includes('collection')
+            ? this.searchCollectionsPage(
+                normalizedQuery,
+                tokens,
+                mixedLimit,
+                0,
+                brandOwnerId,
+              )
+            : Promise.resolve({ items: [], total: 0 }),
+          types.includes('tag')
+            ? this.searchTagsPage(normalizedQuery, tokens, mixedLimit, 0)
+            : Promise.resolve({ items: [], total: 0 }),
+        ]);
 
+      counts.profile = profiles.total;
       counts.product = products.total;
       counts.brand = brands.total;
       counts.design = designs.total;
@@ -3111,6 +3341,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
       counts.tag = tags.total;
 
       items = [
+        ...profiles.items,
         ...products.items,
         ...brands.items,
         ...designs.items,

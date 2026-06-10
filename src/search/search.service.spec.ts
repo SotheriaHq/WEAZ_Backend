@@ -92,17 +92,17 @@ describe('SearchService', () => {
     expect(response.meta.paginationMode).toBe('single');
   });
 
-  it('treats @-prefixed searches as brand-only queries', async () => {
+  it('treats @-prefixed searches as profile-only queries', async () => {
     const { service } = createService();
-    const searchBrandsPage = jest
-      .spyOn(service as any, 'searchBrandsPage')
+    const searchProfilesPage = jest
+      .spyOn(service as any, 'searchProfilesPage')
       .mockResolvedValue({
         items: [
           {
-            id: 'brand-1',
-            type: 'brand',
-            title: 'Nike',
-            href: '/profile/brand-1',
+            id: 'profile-1',
+            type: 'profile',
+            title: 'Avery Cotour',
+            href: '/profile/profile-1',
             score: 80,
           },
         ],
@@ -114,15 +114,84 @@ describe('SearchService', () => {
       .mockResolvedValue('0.0');
 
     const response = await service.search({
-      query: '@nike',
+      query: '@averycotour',
       page: 1,
       limit: 20,
     });
 
-    expect(searchBrandsPage).toHaveBeenCalledWith('nike', ['nike'], 20, 0);
+    expect(searchProfilesPage).toHaveBeenCalledWith(
+      'averycotour',
+      ['averycotour'],
+      20,
+      0,
+    );
     expect(searchProductsPage).not.toHaveBeenCalled();
-    expect(response.types).toEqual(['brand']);
-    expect(response.counts.brand).toBe(1);
+    expect(response.types).toEqual(['profile']);
+    expect(response.counts.profile).toBe(1);
+  });
+
+  it('returns unlocked profile matches without requiring an open store', async () => {
+    const { service, prisma } = createService();
+    prisma.$queryRaw
+      .mockResolvedValueOnce([
+        {
+          id: 'user-avery',
+          username: 'averycotour',
+          firstName: 'Avery',
+          lastName: 'Agunji',
+          profileImage: 'https://cdn.example/avatar.jpg',
+          brandId: 'brand-avery',
+          brandName: 'Avery Cotour',
+          brandDescription: 'Closed-store profile',
+          brandTagline: null,
+          brandLogo: null,
+          brandTags: ['couture'],
+          isStoreOpen: false,
+          score: 650,
+        },
+      ])
+      .mockResolvedValueOnce([{ total: 1 }]);
+
+    const response = await service.search({
+      query: 'cotour',
+      types: ['profile'],
+      limit: 20,
+    });
+
+    expect(response.items).toEqual([
+      expect.objectContaining({
+        id: 'user-avery',
+        type: 'profile',
+        title: 'Avery Cotour',
+        subtitle: '@averycotour',
+        href: '/profile/user-avery',
+        metadata: expect.objectContaining({
+          username: 'averycotour',
+          brandId: 'brand-avery',
+          isStoreOpen: false,
+          resultKind: 'identity',
+        }),
+      }),
+    ]);
+    expect(response.counts.profile).toBe(1);
+
+    const sqlText = prisma.$queryRaw.mock.calls
+      .map(([sql]: any[]) => sql.strings.join(' '))
+      .join('\n');
+    expect(sqlText).toContain('up."profileVisibility"');
+    expect(sqlText).toContain('u.status');
+    expect(sqlText).not.toContain('b."isStoreOpen" = true');
+  });
+
+  it('keeps empty suggestion behavior unchanged while exposing a profiles section', async () => {
+    const { service } = createService();
+
+    const response = await service.suggest('');
+
+    expect(response.profiles).toEqual({ items: [], total: 0 });
+    expect(response.products).toEqual({ items: [], total: 0 });
+    expect(response.brands).toEqual({ items: [], total: 0 });
+    expect(response.tags).toEqual([]);
   });
 
   it('returns suggestions for one-character queries', async () => {
@@ -131,6 +200,9 @@ describe('SearchService', () => {
       .spyOn(service as any, 'fetchSuggestionItems')
       .mockResolvedValue([]);
     const searchProductsPage = jest.spyOn(service as any, 'searchProductsPage');
+    jest
+      .spyOn(service as any, 'searchProfilesPage')
+      .mockResolvedValue({ items: [], total: 0 });
     jest
       .spyOn(service as any, 'resolveBrandOwnerId')
       .mockResolvedValue(undefined);
@@ -150,6 +222,9 @@ describe('SearchService', () => {
     const searchProductsPage = jest
       .spyOn(service as any, 'searchProductsPage')
       .mockResolvedValue({ items: [buildItem()], total: 1 });
+    jest
+      .spyOn(service as any, 'searchProfilesPage')
+      .mockResolvedValue({ items: [], total: 0 });
     jest
       .spyOn(service as any, 'searchBrandsPage')
       .mockResolvedValue({ items: [], total: 0 });

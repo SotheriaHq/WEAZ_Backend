@@ -4,6 +4,7 @@ import type { Queue } from 'bullmq';
 import { SEARCH_QUEUE, SEARCH_SYNC_JOB } from './queue.constants';
 
 export type SearchSyncTarget =
+  | 'profile'
   | 'product'
   | 'brand'
   | 'design'

@@ -82,9 +82,7 @@ export class ProfilePhotoViewService {
     viewed = false,
   ): ProfilePhotoViewState {
     const photoVersion = this.resolvePhotoVersion(owner.userProfile ?? null);
-    const canMarkViewed = Boolean(
-      photoVersion && viewerId && viewerId !== owner.id,
-    );
+    const canMarkViewed = Boolean(photoVersion && viewerId);
     const isViewed = canMarkViewed ? viewed : true;
 
     return {
@@ -117,7 +115,7 @@ export class ProfilePhotoViewService {
     viewerId?: string | null,
   ): Promise<ProfilePhotoViewState> {
     const photoVersion = this.resolvePhotoVersion(owner.userProfile ?? null);
-    if (!photoVersion || !viewerId || viewerId === owner.id) {
+    if (!photoVersion || !viewerId) {
       return this.buildState(owner, viewerId, true);
     }
 
@@ -149,7 +147,7 @@ export class ProfilePhotoViewService {
     }
 
     const photoVersion = this.resolvePhotoVersion(owner.userProfile ?? null);
-    if (!photoVersion || viewerId === owner.id) {
+    if (!photoVersion) {
       return this.buildState(owner, viewerId, true);
     }
 
