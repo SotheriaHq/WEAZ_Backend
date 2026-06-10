@@ -49,6 +49,8 @@ model User {
   emailLoginCodes          EmailLoginCode[]
   passwordSetupTokens      PasswordSetupToken[]
   legalAcceptances         LegalAcceptance[]
+  profilePhotoViewsOwned   ProfilePhotoView[]            @relation("ProfilePhotoViewOwner")
+  profilePhotoViewsMade    ProfilePhotoView[]            @relation("ProfilePhotoViewViewer")
 
   // Admin Console fields
   status               UserStatus @default(ACTIVE)
@@ -199,24 +201,42 @@ model FileUpload {
 }
 
 model UserProfile {
-  id                String            @id @default(uuid()) @map("_id") @db.Uuid
-  userId            String            @unique @db.Uuid
-  user              User              @relation(fields: [userId], references: [id], onDelete: Cascade)
-  firstName         String
-  lastName          String
-  phoneNumber       String?
-  address           String?
-  profileImage      String?
-  profileImageId    String?           @db.Uuid
-  profileImageFile  FileUpload?       @relation("UserProfileProfileImage", fields: [profileImageId], references: [id])
-  bannerImage       String?
-  bannerImageId     String?           @db.Uuid
-  bannerImageFile   FileUpload?       @relation("UserProfileBannerImage", fields: [bannerImageId], references: [id])
-  profileVisibility ProfileVisibility @default(UNLOCKED)
-  createdAt         DateTime          @default(now())
-  updatedAt         DateTime          @updatedAt
+  id                    String            @id @default(uuid()) @map("_id") @db.Uuid
+  userId                String            @unique @db.Uuid
+  user                  User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  firstName             String
+  lastName              String
+  phoneNumber           String?
+  address               String?
+  profileImage          String?
+  profileImageId        String?           @db.Uuid
+  profileImageFile      FileUpload?       @relation("UserProfileProfileImage", fields: [profileImageId], references: [id])
+  profilePhotoUpdatedAt DateTime?
+  bannerImage           String?
+  bannerImageId         String?           @db.Uuid
+  bannerImageFile       FileUpload?       @relation("UserProfileBannerImage", fields: [bannerImageId], references: [id])
+  profileVisibility     ProfileVisibility @default(UNLOCKED)
+  createdAt             DateTime          @default(now())
+  updatedAt             DateTime          @updatedAt
 
   @@index([profileVisibility])
+}
+
+model ProfilePhotoView {
+  id             String   @id @default(uuid()) @map("_id") @db.Uuid
+  ownerId        String   @db.Uuid
+  viewerId       String   @db.Uuid
+  photoUpdatedAt DateTime
+  viewedAt       DateTime @default(now())
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  owner  User @relation("ProfilePhotoViewOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  viewer User @relation("ProfilePhotoViewViewer", fields: [viewerId], references: [id], onDelete: Cascade)
+
+  @@unique([ownerId, viewerId, photoUpdatedAt])
+  @@index([ownerId, photoUpdatedAt])
+  @@index([viewerId, viewedAt])
 }
 
 model FileVariant {

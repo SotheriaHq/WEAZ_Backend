@@ -138,6 +138,11 @@ export const toAuthUserResponse = (
 ): AuthUserResponseDto => {
   const profileImage = resolveProfileImage(user);
   const bannerImage = resolveBannerImage(user);
+  const profilePhotoUpdatedAt =
+    user.userProfile?.profilePhotoUpdatedAt ??
+    (profileImage.url || profileImage.fileId
+      ? user.userProfile?.updatedAt
+      : null);
   const brandProfile = normalizeBrandProfileForAuthResponse(user);
   const verificationTruth = getBrandVerificationTruth({
     verificationStatus: user.brand?.verificationStatus,
@@ -177,6 +182,7 @@ export const toAuthUserResponse = (
     profileImage: profileImage.url,
     profileImageId: profileImage.fileId,
     profileImageFile: mapFileUploadToDto(profileImage.file),
+    profilePhotoUpdatedAt: profilePhotoUpdatedAt?.toISOString() ?? null,
     bannerImage: bannerImage.url,
     bannerImageId: bannerImage.fileId,
     bannerImageFile: mapFileUploadToDto(bannerImage.file),

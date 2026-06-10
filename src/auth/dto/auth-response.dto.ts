@@ -137,6 +137,9 @@ export class AuthUserResponseDto {
   profileImageFile: AuthProfileImageFileDto | null;
 
   @ApiProperty({ required: false, nullable: true })
+  profilePhotoUpdatedAt: string | null;
+
+  @ApiProperty({ required: false, nullable: true })
   bannerImage: string | null;
 
   @ApiProperty({ required: false, nullable: true })

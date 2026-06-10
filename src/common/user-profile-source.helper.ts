@@ -21,6 +21,8 @@ export const canonicalUserProfileSelect =
     address: true,
     profileImage: true,
     profileImageId: true,
+    profilePhotoUpdatedAt: true,
+    updatedAt: true,
     profileImageFile: {
       select: canonicalUserProfileFileSelect,
     },
@@ -47,6 +49,8 @@ export type UserProfileSource = {
   address?: string | null;
   profileImage?: string | null;
   profileImageId?: string | null;
+  profilePhotoUpdatedAt?: Date | string | null;
+  updatedAt?: Date | string | null;
   profileImageFile?: SelectedProfileFile;
   bannerImage?: string | null;
   bannerImageId?: string | null;

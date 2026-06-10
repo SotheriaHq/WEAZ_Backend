@@ -610,6 +610,9 @@ export class AuthService {
                   firstName: dbFirstName,
                   lastName: dbLastName,
                   profileImage: signupDto.profileImage,
+                  ...(signupDto.profileImage
+                    ? { profilePhotoUpdatedAt: createdAt }
+                    : {}),
                 },
               },
               ...(signupDto.type === UserType.BRAND && brandId
@@ -961,6 +964,9 @@ export class AuthService {
                 firstName: displayNames.firstName,
                 lastName: displayNames.lastName,
                 profileImage: identity.picture,
+                ...(identity.picture
+                  ? { profilePhotoUpdatedAt: createdAt }
+                  : {}),
               },
             },
             authIdentities: {
@@ -1850,6 +1856,11 @@ export class AuthService {
     if (dto.profileImageId !== undefined) {
       profileData.profileImageId = dto.profileImageId;
     }
+    const profilePhotoWasProvided =
+      dto.profileImage !== undefined || dto.profileImageId !== undefined;
+    const profilePhotoUpdatedAt = profilePhotoWasProvided
+      ? new Date()
+      : undefined;
     assignMediaUrl('bannerImage');
     if (dto.bannerImageId !== undefined) {
       profileData.bannerImageId = dto.bannerImageId;
@@ -1898,6 +1909,7 @@ export class AuthService {
               profileImageId:
                 (profileData.profileImageId as string | null | undefined) ??
                 null,
+              ...(profilePhotoUpdatedAt ? { profilePhotoUpdatedAt } : {}),
               bannerImage:
                 (profileData.bannerImage as string | null | undefined) ?? null,
               bannerImageId:
@@ -1906,7 +1918,10 @@ export class AuthService {
               profileVisibility:
                 existingUser.userProfile?.profileVisibility ?? 'UNLOCKED',
             },
-            update: profileData,
+            update: {
+              ...profileData,
+              ...(profilePhotoUpdatedAt ? { profilePhotoUpdatedAt } : {}),
+            },
           });
         }
 

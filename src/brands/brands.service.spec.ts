@@ -9,6 +9,7 @@ import { BadRequestException } from '@nestjs/common';
 import { PatchStatus, UserType } from '@prisma/client';
 import { SystemTagsService } from '../tags/system-tags.service';
 import { TagIndexService } from '../tags/tag-index.service';
+import { ProfilePhotoViewService } from '../users/profile-photo-view.service';
 
 describe('BrandsService', () => {
   let service: BrandsService;
@@ -17,6 +18,15 @@ describe('BrandsService', () => {
       publicProfileUrl: 'https://threadly.test/u/maison',
       qrTargetUrl: 'https://threadly.test/u/maison',
       shareUrl: 'https://threadly.test/u/maison',
+    })),
+  };
+  const mockProfilePhotoViewService = {
+    getViewStateForOwner: jest.fn((owner) => ({
+      ownerId: owner.id,
+      profilePhotoUpdatedAt: null,
+      viewed: true,
+      hasUnviewedUpdate: false,
+      canMarkViewed: false,
     })),
   };
 
@@ -67,6 +77,7 @@ describe('BrandsService', () => {
         { provide: NotificationsService, useValue: { create: jest.fn() } },
         { provide: SystemTagsService, useValue: { syncTags: jest.fn() } },
         { provide: TagIndexService, useValue: { syncEntityTags: jest.fn() } },
+        { provide: ProfilePhotoViewService, useValue: mockProfilePhotoViewService },
       ],
     }).compile();
 

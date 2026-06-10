@@ -2,6 +2,7 @@ import {
   Controller,
   Get,
   Patch,
+  Post,
   Body,
   Param,
   UseGuards,
@@ -48,20 +49,44 @@ export class UserProfileController {
 
   @Get(':id/profile')
   @UseGuards(AuthGuard('jwt'))
-  async getPublicProfile(@Param('id') userId: string) {
-    return this.userProfileService.getPublicProfile(userId);
+  async getPublicProfile(@Param('id') userId: string, @Req() req) {
+    return this.userProfileService.getPublicProfile(
+      userId,
+      this.getAuthUserId(req),
+    );
   }
 
   @Get(':id/profile/public')
   @UseGuards(OptionalJwtAuthGuard)
-  async getPublicProfileAnonymous(@Param('id') userId: string) {
-    return this.userProfileService.getPublicProfile(userId);
+  async getPublicProfileAnonymous(@Param('id') userId: string, @Req() req) {
+    const viewerId = req?.user?.id ?? req?.user?.sub;
+    return this.userProfileService.getPublicProfile(userId, viewerId);
   }
 
   @Get('lookup/username/:username/profile/public')
   @UseGuards(OptionalJwtAuthGuard)
-  async getPublicProfileByUsername(@Param('username') username: string) {
-    return this.userProfileService.resolvePublicProfileByUsername(username);
+  async getPublicProfileByUsername(@Param('username') username: string, @Req() req) {
+    const viewerId = req?.user?.id ?? req?.user?.sub;
+    return this.userProfileService.resolvePublicProfileByUsername(
+      username,
+      viewerId,
+    );
+  }
+
+  @Get(':id/profile-photo-view')
+  @UseGuards(OptionalJwtAuthGuard)
+  async getProfilePhotoViewState(@Param('id') userId: string, @Req() req) {
+    const viewerId = req?.user?.id ?? req?.user?.sub;
+    return this.userProfileService.getProfilePhotoViewState(userId, viewerId);
+  }
+
+  @Post(':id/profile-photo-view')
+  @UseGuards(AuthGuard('jwt'))
+  async markProfilePhotoViewed(@Param('id') userId: string, @Req() req) {
+    return this.userProfileService.markProfilePhotoViewed(
+      userId,
+      this.getAuthUserId(req),
+    );
   }
 
   @Patch('me/profile-visibility')

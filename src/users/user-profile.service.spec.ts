@@ -15,12 +15,38 @@ describe('UserProfileService theme preferences', () => {
     },
     $transaction: jest.fn((callback) => callback(mockPrisma)),
   } as unknown as PrismaService;
+  const mockProfilePhotoViewService = {
+    getViewStateForOwner: jest.fn((user: { id: string }) =>
+      Promise.resolve({
+        ownerId: user.id,
+        profilePhotoUpdatedAt: null,
+        viewed: true,
+        hasUnviewedUpdate: false,
+        canMarkViewed: false,
+      }),
+    ),
+    getViewState: jest.fn(),
+    markViewed: jest.fn(),
+  };
 
   let service: UserProfileService;
 
   beforeEach(() => {
     jest.clearAllMocks();
-    service = new UserProfileService(mockPrisma);
+    mockProfilePhotoViewService.getViewStateForOwner.mockImplementation(
+      (user: { id: string }) =>
+        Promise.resolve({
+          ownerId: user.id,
+          profilePhotoUpdatedAt: null,
+          viewed: true,
+          hasUnviewedUpdate: false,
+          canMarkViewed: false,
+        }),
+    );
+    service = new UserProfileService(
+      mockPrisma,
+      mockProfilePhotoViewService as any,
+    );
   });
 
   it('returns the default system themePreference on own profile', async () => {

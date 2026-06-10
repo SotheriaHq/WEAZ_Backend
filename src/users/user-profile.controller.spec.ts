@@ -87,10 +87,13 @@ describe('UserProfileController theme preferences', () => {
       username: 'alex',
     });
 
-    const result = await controller.getPublicProfileAnonymous('user-1');
+    const result = await controller.getPublicProfileAnonymous('user-1', {});
 
     expect(result).toEqual({ id: 'user-1', username: 'alex' });
-    expect(userProfileService.getPublicProfile).toHaveBeenCalledWith('user-1');
+    expect(userProfileService.getPublicProfile).toHaveBeenCalledWith(
+      'user-1',
+      undefined,
+    );
   });
 
   it('routes public profile by username through the public username mapper', async () => {
@@ -101,11 +104,11 @@ describe('UserProfileController theme preferences', () => {
       username: 'alex',
     });
 
-    const result = await controller.getPublicProfileByUsername('alex');
+    const result = await controller.getPublicProfileByUsername('alex', {});
 
     expect(result).toEqual({ id: 'user-1', username: 'alex' });
     expect(
       userProfileService.resolvePublicProfileByUsername,
-    ).toHaveBeenCalledWith('alex');
+    ).toHaveBeenCalledWith('alex', undefined);
   });
 });

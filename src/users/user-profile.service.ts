@@ -10,6 +10,7 @@ import {
   PublicUserProfileResponseDto,
   UserProfileResponseDto,
 } from './dto/user-profile.dto';
+import { ProfilePhotoViewService } from './profile-photo-view.service';
 import { UpdateProfileDto } from '../auth/dto/update-profile.dto';
 import {
   isThemePreference,
@@ -44,15 +45,20 @@ type UserProfileResponseSource = Prisma.UserGetPayload<{
 
 @Injectable()
 export class UserProfileService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private readonly profilePhotoViewService: ProfilePhotoViewService,
+  ) {}
 
-  private toUserProfileResponse(
+  private async toUserProfileResponse(
     user: UserProfileResponseSource,
     options: { includeThemePreference?: boolean } = {},
-  ): UserProfileResponseDto {
+  ): Promise<UserProfileResponseDto> {
     const address = resolveNullableProfileField(user, 'address') ?? undefined;
     const profileImage = resolveProfileImage(user);
     const bannerImage = resolveBannerImage(user);
+    const profilePhotoViewState =
+      await this.profilePhotoViewService.getViewStateForOwner(user, user.id);
 
     return new UserProfileResponseDto({
       id: user.id,
@@ -63,6 +69,8 @@ export class UserProfileService {
       profileImage: profileImage.url ?? undefined,
       profileImageId: profileImage.fileId ?? undefined,
       profileImageFile: profileImage.file,
+      profilePhotoUpdatedAt: profilePhotoViewState.profilePhotoUpdatedAt,
+      profilePhotoViewState,
       bannerImage: bannerImage.url ?? undefined,
       bannerImageId: bannerImage.fileId ?? undefined,
       bannerImageFile: bannerImage.file,
@@ -76,11 +84,14 @@ export class UserProfileService {
     });
   }
 
-  private toPublicUserProfileResponse(
+  private async toPublicUserProfileResponse(
     user: UserProfileResponseSource,
-  ): PublicUserProfileResponseDto {
+    viewerId?: string | null,
+  ): Promise<PublicUserProfileResponseDto> {
     const profileImage = resolveProfileImage(user);
     const bannerImage = resolveBannerImage(user);
+    const profilePhotoViewState =
+      await this.profilePhotoViewService.getViewStateForOwner(user, viewerId);
 
     return new PublicUserProfileResponseDto({
       id: user.id,
@@ -90,6 +101,8 @@ export class UserProfileService {
       type: user.type,
       profileImage: this.safePublicProfileUrl(profileImage.url) ?? undefined,
       profileImageId: profileImage.fileId ?? undefined,
+      profilePhotoUpdatedAt: profilePhotoViewState.profilePhotoUpdatedAt,
+      profilePhotoViewState,
       bannerImage: this.safePublicProfileUrl(bannerImage.url) ?? undefined,
       bannerImageId: bannerImage.fileId ?? undefined,
       profileVisibility: resolveProfileVisibility(user),
@@ -230,6 +243,11 @@ export class UserProfileService {
     if (dto.profileImageId !== undefined) {
       profileData.profileImageId = dto.profileImageId;
     }
+    const profilePhotoWasProvided =
+      dto.profileImage !== undefined || dto.profileImageId !== undefined;
+    const profilePhotoUpdatedAt = profilePhotoWasProvided
+      ? new Date()
+      : undefined;
     assignMediaUrl('bannerImage');
     if (dto.bannerImageId !== undefined) {
       profileData.bannerImageId = dto.bannerImageId;
@@ -274,6 +292,7 @@ export class UserProfileService {
               (profileData.profileImage as string | null | undefined) ?? null,
             profileImageId:
               (profileData.profileImageId as string | null | undefined) ?? null,
+            ...(profilePhotoUpdatedAt ? { profilePhotoUpdatedAt } : {}),
             bannerImage:
               (profileData.bannerImage as string | null | undefined) ?? null,
             bannerImageId:
@@ -281,7 +300,10 @@ export class UserProfileService {
             profileVisibility:
               existingUser.userProfile?.profileVisibility ?? 'UNLOCKED',
           },
-          update: profileData,
+          update: {
+            ...profileData,
+            ...(profilePhotoUpdatedAt ? { profilePhotoUpdatedAt } : {}),
+          },
         });
       }
 
@@ -300,6 +322,7 @@ export class UserProfileService {
 
   async getPublicProfile(
     userId: string,
+    viewerId?: string | null,
   ): Promise<PublicUserProfileResponseDto> {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
@@ -310,11 +333,12 @@ export class UserProfileService {
       throw new NotFoundException('User not found');
     }
 
-    return this.toPublicUserProfileResponse(user);
+    return this.toPublicUserProfileResponse(user, viewerId);
   }
 
   async resolvePublicProfileByUsername(
     username: string,
+    viewerId?: string | null,
   ): Promise<PublicUserProfileResponseDto> {
     const normalizedUsername = username.trim();
     if (!normalizedUsername) {
@@ -330,7 +354,15 @@ export class UserProfileService {
       throw new NotFoundException('User not found');
     }
 
-    return this.toPublicUserProfileResponse(user);
+    return this.toPublicUserProfileResponse(user, viewerId);
+  }
+
+  async getProfilePhotoViewState(userId: string, viewerId?: string | null) {
+    return this.profilePhotoViewService.getViewState(userId, viewerId);
+  }
+
+  async markProfilePhotoViewed(userId: string, viewerId: string) {
+    return this.profilePhotoViewService.markViewed(userId, viewerId);
   }
 
   async updateProfileVisibility(

@@ -16,6 +16,7 @@ describe('user profile media source helper', () => {
         profileImage: null,
         profileImageId: null,
         profileImageFile: null,
+        profilePhotoUpdatedAt: null,
         bannerImage: '',
         bannerImageId: 'banner-file-id',
         bannerImageFile: {
@@ -30,6 +31,7 @@ describe('user profile media source helper', () => {
           updatedAt: createdAt,
         },
         profileVisibility: 'UNLOCKED',
+        updatedAt: createdAt,
       },
     });
 
