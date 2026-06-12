@@ -1,5 +1,5 @@
 import 'reflect-metadata';
-import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { NotFoundException } from '@nestjs/common';
 import { AdminAuditAction } from '@prisma/client';
 import { AdminAuditService } from '../services/admin-audit.service';
 import { AdminMarketGovernanceService } from './admin-market-governance.service';
@@ -41,7 +41,9 @@ describe('AdminMarketGovernanceService', () => {
     const tx = {
       marketSectionConfig: {
         upsert: jest.fn().mockResolvedValue(sectionRow()),
-        create: jest.fn().mockResolvedValue(sectionRow({ sectionKey: 'runway-edit' })),
+        create: jest
+          .fn()
+          .mockResolvedValue(sectionRow({ sectionKey: 'runway-edit' })),
       },
       marketRankingProfile: {
         create: jest.fn().mockResolvedValue({
@@ -184,6 +186,57 @@ describe('AdminMarketGovernanceService', () => {
         metadata: expect.objectContaining({ mode: 'create' }),
       }),
       req,
+    );
+  });
+
+  it('updates existing custom market sections with partial patch data', async () => {
+    const customRow = sectionRow({
+      sectionKey: 'runway-edit',
+      title: 'Runway Edit',
+      subtitle: 'Original subtitle',
+      status: 'ACTIVE',
+      sourceType: 'DESIGN',
+      rankingProfileKey: 'deterministic-v1',
+      viewAllLabel: 'View all runway',
+      fallbackSectionKey: 'fresh-drops',
+      guestEnabled: true,
+      requiresAuth: false,
+      newBrandReservedRatio: 0,
+    });
+    const { service, tx } = createHarness({
+      prisma: {
+        marketSectionConfig: {
+          findUnique: jest.fn().mockResolvedValue(customRow),
+          findMany: jest.fn().mockResolvedValue([customRow]),
+        },
+      },
+    });
+    tx.marketSectionConfig.upsert.mockResolvedValue({
+      ...customRow,
+      subtitle: 'Updated subtitle',
+    });
+
+    await expect(
+      service.patchSection(
+        'runway-edit',
+        { subtitle: 'Updated subtitle' },
+        actorId,
+        req,
+      ),
+    ).resolves.toEqual(expect.objectContaining({ sectionKey: 'runway-edit' }));
+
+    expect(tx.marketSectionConfig.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { sectionKey: 'runway-edit' },
+        create: expect.objectContaining({
+          sectionKey: 'runway-edit',
+          title: 'Runway Edit',
+          sourceType: 'DESIGN',
+        }),
+        update: expect.objectContaining({
+          subtitle: 'Updated subtitle',
+        }),
+      }),
     );
   });
 

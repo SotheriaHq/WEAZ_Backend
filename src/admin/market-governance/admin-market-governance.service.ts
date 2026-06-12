@@ -115,7 +115,12 @@ export class AdminMarketGovernanceService {
     const defaultConfig = this.getSectionDefaultOrNull(normalizedKey);
     const nowData = defaultConfig
       ? this.buildSectionCreateData(normalizedKey, defaultConfig, dto, actorId)
-      : this.buildExistingCustomSectionCreateData(normalizedKey, dto, actorId);
+      : this.buildExistingCustomSectionCreateData(
+          normalizedKey,
+          existing,
+          dto,
+          actorId,
+        );
     const updateData = this.buildSectionUpdateData(dto, actorId);
 
     return this.prisma.$transaction(async (tx) => {
@@ -620,9 +625,7 @@ export class AdminMarketGovernanceService {
           }
         : config,
     );
-    if (
-      !next.some((config) => config.enabled && config.status === 'ACTIVE')
-    ) {
+    if (!next.some((config) => config.enabled && config.status === 'ACTIVE')) {
       throw new BadRequestException(
         'At least one active market section must remain enabled',
       );
@@ -811,37 +814,78 @@ export class AdminMarketGovernanceService {
 
   private buildExistingCustomSectionCreateData(
     sectionKey: string,
+    existing: {
+      title: string;
+      subtitle: string | null;
+      enabled: boolean;
+      status: string;
+      sourceType: string;
+      rankingProfileKey: string | null;
+      displayOrder: number;
+      previewItemLimit: number;
+      detailPageLimit: number;
+      minimumItems: number;
+      viewAllEnabled: boolean;
+      viewAllLabel: string | null;
+      fallbackMode: string;
+      fallbackSectionKey: string | null;
+      guestEnabled: boolean;
+      requiresAuth: boolean;
+      newBrandReservedRatio: number;
+      metadata: Prisma.JsonValue | null;
+      createdById: string | null;
+    } | null,
     dto: PatchMarketSectionConfigDto,
     actorId: string,
   ): Prisma.MarketSectionConfigCreateInput {
-    if (!dto.title || !dto.sourceType) {
+    const title = dto.title ?? existing?.title;
+    const sourceType = dto.sourceType ?? existing?.sourceType;
+    if (!title || !sourceType) {
       throw new NotFoundException('Market section config not found');
     }
-    return this.buildCustomSectionCreateData(
+
+    return {
       sectionKey,
-      {
-        sectionKey,
-        title: dto.title,
-        subtitle: dto.subtitle ?? undefined,
-        enabled: dto.enabled,
-        status: dto.status,
-        sourceType: dto.sourceType,
-        rankingProfileKey: dto.rankingProfileKey,
-        displayOrder: dto.displayOrder,
-        previewItemLimit: dto.previewItemLimit,
-        detailPageLimit: dto.detailPageLimit,
-        minimumItems: dto.minimumItems,
-        viewAllEnabled: dto.viewAllEnabled,
-        viewAllLabel: dto.viewAllLabel,
-        fallbackSectionKey: dto.fallbackSectionKey,
-        guestEnabled: dto.guestEnabled,
-        requiresAuth: dto.requiresAuth,
-        newBrandReservedRatio: dto.newBrandReservedRatio,
-        metadata: dto.metadata,
-        reason: dto.reason,
-      },
-      actorId,
-    );
+      title: this.cleanRequiredText(title, 'title'),
+      subtitle:
+        dto.subtitle !== undefined
+          ? this.cleanOptionalText(dto.subtitle)
+          : existing?.subtitle,
+      enabled: dto.enabled ?? existing?.enabled ?? true,
+      status: (dto.status ?? existing?.status ?? 'ACTIVE') as any,
+      sourceType: sourceType as any,
+      rankingProfileKey:
+        dto.rankingProfileKey !== undefined
+          ? this.cleanOptionalText(dto.rankingProfileKey)
+          : (existing?.rankingProfileKey ?? 'deterministic-v1'),
+      displayOrder: dto.displayOrder ?? existing?.displayOrder ?? 100,
+      previewItemLimit: dto.previewItemLimit ?? existing?.previewItemLimit ?? 8,
+      detailPageLimit: dto.detailPageLimit ?? existing?.detailPageLimit ?? 24,
+      minimumItems: dto.minimumItems ?? existing?.minimumItems ?? 1,
+      viewAllEnabled: dto.viewAllEnabled ?? existing?.viewAllEnabled ?? true,
+      viewAllLabel:
+        dto.viewAllLabel !== undefined
+          ? this.cleanOptionalText(dto.viewAllLabel)
+          : existing?.viewAllLabel,
+      fallbackMode:
+        dto.fallbackMode !== undefined
+          ? (this.cleanOptionalText(dto.fallbackMode) ?? 'SOURCE_TEMPLATE')
+          : (existing?.fallbackMode ?? 'SOURCE_TEMPLATE'),
+      fallbackSectionKey:
+        dto.fallbackSectionKey !== undefined
+          ? this.cleanOptionalText(dto.fallbackSectionKey)
+          : existing?.fallbackSectionKey,
+      guestEnabled: dto.guestEnabled ?? existing?.guestEnabled ?? true,
+      requiresAuth: dto.requiresAuth ?? existing?.requiresAuth ?? false,
+      newBrandReservedRatio:
+        dto.newBrandReservedRatio ?? existing?.newBrandReservedRatio ?? 0,
+      metadata:
+        dto.metadata !== undefined
+          ? jsonOrNull(dto.metadata)
+          : jsonOrNull(existing?.metadata as Record<string, unknown> | null),
+      createdById: existing?.createdById ?? actorId,
+      updatedById: actorId,
+    };
   }
 
   private buildSectionUpdateData(
