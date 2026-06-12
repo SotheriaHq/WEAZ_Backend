@@ -304,7 +304,8 @@ export const MARKET_SECTION_CODE_DEFAULTS: MarketSectionConfigView[] = [
   {
     sectionKey: 'still-thinking-about-these',
     title: 'Still Thinking About These',
-    subtitle: 'Non-personalized revisit candidates until history ranking ships.',
+    subtitle:
+      'Non-personalized revisit candidates until history ranking ships.',
     enabled: true,
     status: 'ACTIVE',
     sourceType: 'PRODUCT',
@@ -326,7 +327,8 @@ export const MARKET_SECTION_CODE_DEFAULTS: MarketSectionConfigView[] = [
   {
     sectionKey: 'more-from-brands-you-like',
     title: 'More From Brands You Like',
-    subtitle: 'Brand-affinity ranking is deferred; using fresh products for now.',
+    subtitle:
+      'Brand-affinity ranking is deferred; using fresh products for now.',
     enabled: true,
     status: 'ACTIVE',
     sourceType: 'PRODUCT',
@@ -506,12 +508,16 @@ export class MarketGovernanceConfigService {
             detailPageLimit: row.detailPageLimit,
             minimumItems: row.minimumItems,
             viewAllEnabled: row.viewAllEnabled,
-            viewAllLabel: (row as any).viewAllLabel ?? defaultConfig.viewAllLabel,
+            viewAllLabel:
+              (row as any).viewAllLabel ?? defaultConfig.viewAllLabel,
             fallbackMode: row.fallbackMode,
             fallbackSectionKey:
-              (row as any).fallbackSectionKey ?? defaultConfig.fallbackSectionKey,
-            guestEnabled: (row as any).guestEnabled ?? defaultConfig.guestEnabled,
-            requiresAuth: (row as any).requiresAuth ?? defaultConfig.requiresAuth,
+              (row as any).fallbackSectionKey ??
+              defaultConfig.fallbackSectionKey,
+            guestEnabled:
+              (row as any).guestEnabled ?? defaultConfig.guestEnabled,
+            requiresAuth:
+              (row as any).requiresAuth ?? defaultConfig.requiresAuth,
             newBrandReservedRatio:
               (row as any).newBrandReservedRatio ??
               defaultConfig.newBrandReservedRatio,

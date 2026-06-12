@@ -653,10 +653,7 @@ export class BrandsService {
       username: brand.username,
     });
     const profilePhotoViewState = this.profilePhotoViewService
-      ? await this.profilePhotoViewService.getViewStateForOwner(
-          brand,
-          viewerId,
-        )
+      ? await this.profilePhotoViewService.getViewStateForOwner(brand, viewerId)
       : {
           ownerId: brand.id,
           profilePhotoUpdatedAt: null,

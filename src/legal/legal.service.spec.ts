@@ -29,10 +29,7 @@ describe('LegalService', () => {
             version: LEGAL_DOCUMENTS.TERMS_OF_SERVICE.version,
           },
         ],
-        [
-          LegalDocumentKey.TERMS_OF_SERVICE,
-          LegalDocumentKey.PRIVACY_POLICY,
-        ],
+        [LegalDocumentKey.TERMS_OF_SERVICE, LegalDocumentKey.PRIVACY_POLICY],
       ),
     ).toThrow(BadRequestException);
   });

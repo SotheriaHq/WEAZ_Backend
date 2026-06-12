@@ -51,7 +51,10 @@ describe('ProfilePhotoViewService', () => {
   it('returns unviewed state for the owner when no self-view row exists', async () => {
     prisma.profilePhotoView.findUnique.mockResolvedValue(null);
 
-    const state = await service.getViewStateForOwner(makeOwner(), 'owner-user-id');
+    const state = await service.getViewStateForOwner(
+      makeOwner(),
+      'owner-user-id',
+    );
 
     expect(prisma.profilePhotoView.findUnique).toHaveBeenCalledWith({
       where: {
@@ -72,7 +75,10 @@ describe('ProfilePhotoViewService', () => {
   it('returns unviewed state per viewer when no view row exists', async () => {
     prisma.profilePhotoView.findUnique.mockResolvedValue(null);
 
-    const state = await service.getViewStateForOwner(makeOwner(), 'viewer-user-id');
+    const state = await service.getViewStateForOwner(
+      makeOwner(),
+      'viewer-user-id',
+    );
 
     expect(prisma.profilePhotoView.findUnique).toHaveBeenCalledWith({
       where: {
@@ -92,7 +98,10 @@ describe('ProfilePhotoViewService', () => {
   it('returns viewed state for that viewer when a matching view row exists', async () => {
     prisma.profilePhotoView.findUnique.mockResolvedValue({ id: 'view-row-id' });
 
-    const state = await service.getViewStateForOwner(makeOwner(), 'viewer-user-id');
+    const state = await service.getViewStateForOwner(
+      makeOwner(),
+      'viewer-user-id',
+    );
 
     expect(state.viewed).toBe(true);
     expect(state.hasUnviewedUpdate).toBe(false);
@@ -171,7 +180,9 @@ describe('ProfilePhotoViewService', () => {
   it('uses an upsert when the owner explicitly opens their own current photo', async () => {
     const owner = makeOwner();
     prisma.user.findUnique.mockResolvedValue(owner);
-    prisma.profilePhotoView.upsert.mockResolvedValue({ id: 'self-view-row-id' });
+    prisma.profilePhotoView.upsert.mockResolvedValue({
+      id: 'self-view-row-id',
+    });
 
     const state = await service.markViewed('owner-user-id', 'owner-user-id');
 

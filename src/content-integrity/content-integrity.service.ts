@@ -30,10 +30,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { MonitoringService } from 'src/monitoring/monitoring.service';
 import { NotificationsService } from 'src/notifications/notifications.service';
 import { PrismaService } from 'src/prisma/prisma.service';
-import {
-  LegalAcceptancePayload,
-  LegalService,
-} from 'src/legal/legal.service';
+import { LegalAcceptancePayload, LegalService } from 'src/legal/legal.service';
 import { Request } from 'express';
 import {
   CONTENT_MEDIA_ORDER_SLOTS,

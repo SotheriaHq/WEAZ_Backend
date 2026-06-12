@@ -184,7 +184,10 @@ export class MarketSectionService {
     const sectionConfig = await this.resolveServedSectionConfig(key, {
       userId: options?.userId,
     });
-    const safeLimit = this.normalizeLimit(options?.limit, sectionConfig.detailPageLimit);
+    const safeLimit = this.normalizeLimit(
+      options?.limit,
+      sectionConfig.detailPageLimit,
+    );
     const safeCursor = this.normalizeCursor(options?.cursor);
     const suppressionScope = await this.getSuppressionScope(options);
     const rankingConfig = this.marketRankingConfigService?.getConfig();
@@ -232,7 +235,9 @@ export class MarketSectionService {
     return config;
   }
 
-  private async getConfiguredSectionViews(): Promise<MarketSectionConfigView[]> {
+  private async getConfiguredSectionViews(): Promise<
+    MarketSectionConfigView[]
+  > {
     if (!this.marketGovernanceConfigService) {
       return MARKET_SECTION_CODE_DEFAULTS.map((config) => ({
         ...config,
@@ -401,7 +406,11 @@ export class MarketSectionService {
           cursor: options.cursor,
           limit: options.limit,
           extraAnd: [{ totalStock: { gt: 0, lte: 5 } }],
-          orderBy: [{ totalStock: 'asc' }, { createdAt: 'desc' }, { id: 'desc' }],
+          orderBy: [
+            { totalStock: 'asc' },
+            { createdAt: 'desc' },
+            { id: 'desc' },
+          ],
         });
         items = page.items;
         hasNextPage = page.hasNextPage;

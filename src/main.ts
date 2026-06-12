@@ -429,7 +429,8 @@ async function bootstrap() {
     }
 
     const port = parsePort(
-      configService.get<string>('APP_PORT') ?? configService.get<string>('PORT'),
+      configService.get<string>('APP_PORT') ??
+        configService.get<string>('PORT'),
     );
     const host = configService.get<string>('APP_HOST', DEFAULT_HOST);
     const protocol = httpsOptions ? 'https' : 'http';

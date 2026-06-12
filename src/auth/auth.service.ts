@@ -212,7 +212,9 @@ export class AuthService {
     );
   }
 
-  private sanitizeEmailDispatchError(errorMessage?: string | null): string | null {
+  private sanitizeEmailDispatchError(
+    errorMessage?: string | null,
+  ): string | null {
     const value = String(errorMessage ?? '').trim();
     if (!value) return null;
 
@@ -239,8 +241,7 @@ export class AuthService {
 
     this.monitoring?.emitAlert({
       category: 'AUTH',
-      severity:
-        args.result.dispatchStatus === 'FAILED' ? 'error' : 'warning',
+      severity: args.result.dispatchStatus === 'FAILED' ? 'error' : 'warning',
       event: 'auth_email_verification_delivery_failed',
       title: 'Email verification delivery failed',
       message:
@@ -258,9 +259,7 @@ export class AuthService {
         outboxId: args.result.outboxId ?? null,
         providerMessageId: args.result.providerMessageId ?? null,
         recipient: maskEmailForLog(args.recipientEmail),
-        errorMessage: this.sanitizeEmailDispatchError(
-          args.result.errorMessage,
-        ),
+        errorMessage: this.sanitizeEmailDispatchError(args.result.errorMessage),
       },
     });
   }
@@ -761,9 +760,7 @@ export class AuthService {
         user: toAuthUserResponse(user),
         accessToken,
         ...(refreshToken ? { refreshToken } : {}),
-        message: this.buildVerificationEmailMessage(
-          verificationDispatchResult,
-        ),
+        message: this.buildVerificationEmailMessage(verificationDispatchResult),
         verificationEmail: {
           status: verificationDispatchResult.dispatchStatus,
           message: this.buildVerificationEmailMessage(
@@ -1833,10 +1830,7 @@ export class AuthService {
     assignString('address');
 
     const assignMediaUrl = (
-      field: Extract<
-        AllowedProfileUpdateField,
-        'profileImage' | 'bannerImage'
-      >,
+      field: Extract<AllowedProfileUpdateField, 'profileImage' | 'bannerImage'>,
     ) => {
       const value = dto[field];
       if (value === undefined) return;

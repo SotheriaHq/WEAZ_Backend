@@ -132,10 +132,7 @@ export const LEGAL_DOCUMENTS: Record<
 };
 
 export const LEGAL_REQUIRED_DOCUMENTS = {
-  signup: [
-    LegalDocumentKey.TERMS_OF_SERVICE,
-    LegalDocumentKey.PRIVACY_POLICY,
-  ],
+  signup: [LegalDocumentKey.TERMS_OF_SERVICE, LegalDocumentKey.PRIVACY_POLICY],
   checkout: [LegalDocumentKey.PAYMENT_POLICY],
   storePublish: [
     LegalDocumentKey.SELLER_TERMS,

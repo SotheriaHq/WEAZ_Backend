@@ -1,4 +1,12 @@
-import { Body, Controller, Get, Post, Req, UseGuards, ValidationPipe } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Post,
+  Req,
+  UseGuards,
+  ValidationPipe,
+} from '@nestjs/common';
 import { LegalAcceptanceSource } from '@prisma/client';
 import { Request } from 'express';
 import { JwtAuthGuard } from 'src/auth/guard/jwt-auth.guard';
@@ -19,7 +27,8 @@ export class LegalController {
   async accept(
     @Body(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
     dto: LegalAcceptDto,
-    @Req() req: Request & { user?: { id?: string; sub?: string; type?: string } },
+    @Req()
+    req: Request & { user?: { id?: string; sub?: string; type?: string } },
   ) {
     const userId = req.user?.id ?? req.user?.sub;
     await this.legalService.recordAcceptedDocuments({

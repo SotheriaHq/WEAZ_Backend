@@ -11,7 +11,13 @@ import { PaymentRuntimeHealthService } from './payment-runtime-health.service';
 import { LegalModule } from 'src/legal/legal.module';
 
 @Module({
-  imports: [PrismaModule, FinanceModule, NotificationsModule, QueueModule, LegalModule],
+  imports: [
+    PrismaModule,
+    FinanceModule,
+    NotificationsModule,
+    QueueModule,
+    LegalModule,
+  ],
   controllers: [PaymentController],
   providers: [
     PaymentService,

@@ -154,7 +154,9 @@ export class PaymentController {
         ipAddress: req.ip ?? req.socket?.remoteAddress ?? null,
         userAgent: String(req.headers['user-agent'] ?? ''),
         locale: String(req.headers['accept-language'] ?? ''),
-        appVersion: String(req.headers['x-client-version'] ?? req.headers['x-app-version'] ?? ''),
+        appVersion: String(
+          req.headers['x-client-version'] ?? req.headers['x-app-version'] ?? '',
+        ),
       },
     );
   }

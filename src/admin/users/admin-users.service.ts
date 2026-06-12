@@ -927,7 +927,11 @@ export class AdminUsersService {
       process.env.SYSTEM_ADMIN_EMAIL,
       ...String(process.env.SEEDED_USER_EMAILS || '').split(','),
     ]
-      .map((email) => String(email ?? '').trim().toLowerCase())
+      .map((email) =>
+        String(email ?? '')
+          .trim()
+          .toLowerCase(),
+      )
       .filter(Boolean);
     return new Set([
       ...Array.from(this.defaultSeededDeletableEmails),

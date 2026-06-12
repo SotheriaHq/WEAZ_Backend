@@ -1872,7 +1872,9 @@ export class PaymentService implements OnModuleInit {
         documentKey: entry?.documentKey as LegalDocumentKey,
         version: String(entry?.version ?? '').trim(),
       }))
-      .filter((entry) => Boolean(entry.documentKey) && entry.version.length > 0);
+      .filter(
+        (entry) => Boolean(entry.documentKey) && entry.version.length > 0,
+      );
   }
 
   resolvePaymentCallbackUrl(callbackUrl?: string) {
@@ -9191,7 +9193,12 @@ export class PaymentService implements OnModuleInit {
       const source = value as Record<string, unknown>;
       const output: Record<string, unknown> = {};
       const keys = Object.keys(source)
-        .filter((key) => !['consentAccepted', 'legalAcceptances', 'mockScenario'].includes(key))
+        .filter(
+          (key) =>
+            !['consentAccepted', 'legalAcceptances', 'mockScenario'].includes(
+              key,
+            ),
+        )
         .sort();
 
       for (const key of keys) {

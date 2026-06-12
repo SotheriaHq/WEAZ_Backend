@@ -675,7 +675,11 @@ export class UploadService {
           profileImage: null,
           profilePhotoUpdatedAt,
         },
-        update: { profileImageId: null, profileImage: null, profilePhotoUpdatedAt },
+        update: {
+          profileImageId: null,
+          profileImage: null,
+          profilePhotoUpdatedAt,
+        },
       });
       // Strict sync: store logo mirrors brand profile image.
       await tx.brand.updateMany({

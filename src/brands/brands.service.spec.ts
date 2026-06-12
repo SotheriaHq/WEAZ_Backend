@@ -77,7 +77,10 @@ describe('BrandsService', () => {
         { provide: NotificationsService, useValue: { create: jest.fn() } },
         { provide: SystemTagsService, useValue: { syncTags: jest.fn() } },
         { provide: TagIndexService, useValue: { syncEntityTags: jest.fn() } },
-        { provide: ProfilePhotoViewService, useValue: mockProfilePhotoViewService },
+        {
+          provide: ProfilePhotoViewService,
+          useValue: mockProfilePhotoViewService,
+        },
       ],
     }).compile();
 

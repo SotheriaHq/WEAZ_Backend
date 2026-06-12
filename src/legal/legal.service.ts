@@ -81,7 +81,10 @@ export class LegalService {
 
     if (missing.length > 0) {
       const labels = missing
-        .map((key) => `${LEGAL_DOCUMENTS[key].title} ${LEGAL_DOCUMENTS[key].version}`)
+        .map(
+          (key) =>
+            `${LEGAL_DOCUMENTS[key].title} ${LEGAL_DOCUMENTS[key].version}`,
+        )
         .join(', ');
       throw new BadRequestException(
         `Accept the current legal terms before continuing: ${labels}.`,
@@ -104,7 +107,10 @@ export class LegalService {
     evidence?: RequestEvidence;
   }): Promise<void> {
     const requiredKeys =
-      args.requiredKeys ?? this.normalizeAcceptances(args.acceptances).map((entry) => entry.documentKey);
+      args.requiredKeys ??
+      this.normalizeAcceptances(args.acceptances).map(
+        (entry) => entry.documentKey,
+      );
     this.assertRequiredCurrentAcceptances(args.acceptances, requiredKeys);
 
     const evidence = this.extractEvidence(args.req, {
@@ -167,7 +173,9 @@ export class LegalService {
       });
     }
 
-    const currentDocuments = args.requiredKeys.map((key) => LEGAL_DOCUMENTS[key]);
+    const currentDocuments = args.requiredKeys.map(
+      (key) => LEGAL_DOCUMENTS[key],
+    );
     const rows = await (this.prisma as any).legalAcceptance.findMany({
       where: {
         userId: args.userId,
@@ -229,7 +237,9 @@ export class LegalService {
         documentKey: entry?.documentKey,
         version: String(entry?.version ?? '').trim(),
       }))
-      .filter((entry) => Boolean(entry.documentKey) && entry.version.length > 0);
+      .filter(
+        (entry) => Boolean(entry.documentKey) && entry.version.length > 0,
+      );
   }
 
   private extractEvidence(

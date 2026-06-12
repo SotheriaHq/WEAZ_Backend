@@ -901,7 +901,12 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
       profile.brandTagline || profile.brandDescription || fullName || null;
     const computedScore =
       Number(profile.score || 0) +
-      this.scoreField(profile.username, this.compactHandleQuery(query), tokens, 14) +
+      this.scoreField(
+        profile.username,
+        this.compactHandleQuery(query),
+        tokens,
+        14,
+      ) +
       this.scoreField(title, query, tokens, 10) +
       this.scoreField(fullName, query, tokens, 8) +
       this.scoreTagArray(profile.brandTags, tokens, 2);

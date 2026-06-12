@@ -65,7 +65,10 @@ export class UserProfileController {
 
   @Get('lookup/username/:username/profile/public')
   @UseGuards(OptionalJwtAuthGuard)
-  async getPublicProfileByUsername(@Param('username') username: string, @Req() req) {
+  async getPublicProfileByUsername(
+    @Param('username') username: string,
+    @Req() req,
+  ) {
     const viewerId = req?.user?.id ?? req?.user?.sub;
     return this.userProfileService.resolvePublicProfileByUsername(
       username,

@@ -225,7 +225,9 @@ export class UserProfileService {
     assignString('phoneNumber');
     assignString('address');
 
-    const assignMediaUrl = (field: Extract<AllowedProfileUpdateField, 'profileImage' | 'bannerImage'>) => {
+    const assignMediaUrl = (
+      field: Extract<AllowedProfileUpdateField, 'profileImage' | 'bannerImage'>,
+    ) => {
       const value = dto[field];
       if (value === undefined) return;
 
@@ -236,7 +238,8 @@ export class UserProfileService {
         );
       }
 
-      profileData[field] = normalizeProfileMediaUrlForPersistence(value) ?? null;
+      profileData[field] =
+        normalizeProfileMediaUrlForPersistence(value) ?? null;
     };
 
     assignMediaUrl('profileImage');

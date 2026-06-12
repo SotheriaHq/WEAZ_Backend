@@ -153,12 +153,8 @@ describe('AuthService password reset hardening', () => {
     expect(mockEmailService.send).toHaveBeenCalledWith(
       'user@example.com',
       expect.any(String),
-      expect.stringContaining(
-        'https://web.weaz.test/reset-password?token=',
-      ),
-      expect.stringContaining(
-        'https://web.weaz.test/reset-password?token=',
-      ),
+      expect.stringContaining('https://web.weaz.test/reset-password?token='),
+      expect.stringContaining('https://web.weaz.test/reset-password?token='),
       expect.objectContaining({
         recipientUserId: 'user-1',
         scenarioKey: 'auth.password_reset',
