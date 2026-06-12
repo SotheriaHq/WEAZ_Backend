@@ -105,6 +105,18 @@ export class MarketSignalBatchDto {
   events!: MarketSignalEventDto[];
 }
 
+export class MarketSignalSingleDto extends MarketSignalEventDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(MARKET_SIGNAL_MAX_TARGET_ID_LENGTH)
+  batchId?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(MARKET_SIGNAL_MAX_TARGET_ID_LENGTH)
+  anonymousSessionId?: string;
+}
+
 export class CreateMarketSuppressionDto {
   @IsOptional()
   @IsString()

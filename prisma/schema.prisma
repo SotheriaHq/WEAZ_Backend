@@ -5051,25 +5051,84 @@ model OperationalAlert {
   @@index([userId, lastSeenAt])
 }
 
+enum FeedCategorySurface {
+  DESIGN_FEED
+  MARKET_HOME
+}
+
+enum FeedCategoryStatus {
+  DRAFT
+  ACTIVE
+  PAUSED
+  ARCHIVED
+}
+
+enum MarketSectionConfigStatus {
+  DRAFT
+  ACTIVE
+  PAUSED
+  ARCHIVED
+}
+
+enum MarketSectionConfigSourceType {
+  PRODUCT
+  COLLECTION
+  DESIGN
+  BRAND
+  MIXED
+}
+
+model FeedCategory {
+  id                         String              @id @default(uuid()) @map("_id") @db.Uuid
+  key                        String              @unique @db.VarChar(80)
+  label                      String              @db.VarChar(120)
+  description                String?             @db.VarChar(240)
+  surface                    FeedCategorySurface @default(DESIGN_FEED)
+  rankingProfileKey          String?             @db.VarChar(80)
+  displayOrder               Int                 @default(0)
+  fallbackCategoryKey        String?             @db.VarChar(80)
+  requiresAuth               Boolean             @default(false)
+  requiresPersonalization    Boolean             @default(false)
+  isDefaultForGuest          Boolean             @default(false)
+  isDefaultForNewUser        Boolean             @default(false)
+  isDefaultForReturningUser  Boolean             @default(false)
+  status                     FeedCategoryStatus  @default(ACTIVE)
+  metadata                   Json?
+  createdAt                  DateTime            @default(now())
+  updatedAt                  DateTime            @updatedAt
+
+  @@index([surface, status, displayOrder])
+  @@index([status, displayOrder])
+}
+
 model MarketSectionConfig {
-  id               String   @id @default(uuid()) @map("_id") @db.Uuid
-  sectionKey       String   @unique @db.VarChar(80)
-  title            String   @db.VarChar(120)
-  subtitle         String?  @db.VarChar(240)
-  enabled          Boolean  @default(true)
-  displayOrder     Int      @default(0)
-  previewItemLimit Int      @default(8)
-  detailPageLimit  Int      @default(24)
-  minimumItems     Int      @default(1)
-  viewAllEnabled   Boolean  @default(true)
-  fallbackMode     String   @default("CODE_DEFAULTS") @db.VarChar(40)
-  metadata         Json?
-  createdById      String?  @db.Uuid
-  updatedById      String?  @db.Uuid
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+  id                    String                        @id @default(uuid()) @map("_id") @db.Uuid
+  sectionKey            String                        @unique @db.VarChar(80)
+  title                 String                        @db.VarChar(120)
+  subtitle              String?                       @db.VarChar(240)
+  enabled               Boolean                       @default(true)
+  status                MarketSectionConfigStatus     @default(ACTIVE)
+  sourceType            MarketSectionConfigSourceType @default(PRODUCT)
+  rankingProfileKey     String?                       @db.VarChar(80)
+  displayOrder          Int                           @default(0)
+  previewItemLimit      Int                           @default(8)
+  detailPageLimit       Int                           @default(24)
+  minimumItems          Int                           @default(1)
+  viewAllEnabled        Boolean                       @default(true)
+  viewAllLabel          String?                       @db.VarChar(80)
+  fallbackMode          String                        @default("CODE_DEFAULTS") @db.VarChar(40)
+  fallbackSectionKey    String?                       @db.VarChar(80)
+  guestEnabled          Boolean                       @default(true)
+  requiresAuth          Boolean                       @default(false)
+  newBrandReservedRatio Int                           @default(0)
+  metadata              Json?
+  createdById           String?                       @db.Uuid
+  updatedById           String?                       @db.Uuid
+  createdAt             DateTime                      @default(now())
+  updatedAt             DateTime                      @updatedAt
 
   @@index([enabled, displayOrder])
+  @@index([status, displayOrder])
   @@index([createdById])
   @@index([updatedById])
 }
@@ -5501,6 +5560,11 @@ enum MarketSignalTargetType {
 }
 
 enum MarketSignalType {
+  SECTION_VIEW
+  SECTION_VIEW_ALL_CLICK
+  ITEM_IMPRESSION
+  ITEM_VIEW
+  ITEM_CLICK
   IMPRESSION
   VIEW
   CLICK

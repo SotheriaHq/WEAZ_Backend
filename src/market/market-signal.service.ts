@@ -58,6 +58,8 @@ type NormalizedMarketSignalEvent = Omit<
 };
 
 const SEEN_SIGNAL_TYPES = new Set<MarketSignalType>([
+  MarketSignalType.ITEM_IMPRESSION,
+  MarketSignalType.ITEM_VIEW,
   MarketSignalType.IMPRESSION,
   MarketSignalType.VIEW,
   MarketSignalType.OPEN,
@@ -677,7 +679,8 @@ export class MarketSignalService {
     if (event.sectionKey) return event.sectionKey;
     if (event.targetType === MarketSignalTargetType.SECTION)
       return event.targetId;
-    return event.signalType.startsWith('MARKET_SECTION_')
+    return event.signalType.startsWith('MARKET_SECTION_') ||
+      event.signalType.startsWith('SECTION_')
       ? event.targetId
       : null;
   }

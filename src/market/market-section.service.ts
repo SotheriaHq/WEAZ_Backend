@@ -16,6 +16,11 @@ import {
   MarketSectionSourceType,
 } from './dto/market-section.dto';
 import {
+  MARKET_SECTION_CODE_DEFAULTS,
+  MarketGovernanceConfigService,
+  MarketSectionConfigView,
+} from './market-governance-config.service';
+import {
   MarketSuppressionScope,
   MarketSuppressionService,
 } from './market-suppression.service';
@@ -34,88 +39,81 @@ type MarketSectionIdentityOptions = {
 type SectionConfig = {
   key: MarketSectionKey;
   title: string;
-  subtitle: string;
+  subtitle: string | null;
   emotionalLabel: string;
   layout: MarketSectionLayout;
   sourceType: MarketSectionSourceType;
-  viewAllLabel: string;
   previewItemLimit: number;
+  detailPageLimit: number;
   minimumItems: number;
+  viewAllEnabled: boolean;
+  viewAllLabel: string | null;
 };
 
-const SECTION_CONFIGS: SectionConfig[] = [
+const SECTION_PRESENTATION: Record<
+  MarketSectionKey,
   {
-    key: 'fresh-drops',
-    title: 'Fresh Drops',
-    subtitle: 'New products from open WEAZ stores.',
-    emotionalLabel: 'New this week',
-    layout: 'HORIZONTAL_RAIL',
-    sourceType: 'PRODUCT',
-    viewAllLabel: 'View All Drops',
-    previewItemLimit: 8,
-    minimumItems: 1,
-  },
-  {
-    key: 'hot-right-now',
-    title: 'Hot Right Now',
-    subtitle: 'Deterministic V1 heat from product views and thread activity.',
+    emotionalLabel: string;
+    layout: MarketSectionLayout;
+    fallbackSourceType: MarketSectionSourceType;
+  }
+> = {
+  'hot-right-now': {
     emotionalLabel: 'People are checking these out',
     layout: 'HORIZONTAL_RAIL',
-    sourceType: 'PRODUCT',
-    viewAllLabel: "See What's Hot",
-    previewItemLimit: 8,
-    minimumItems: 1,
+    fallbackSourceType: 'PRODUCT',
   },
-  {
-    key: 'latest-collections',
-    title: 'Latest Collections',
-    subtitle: 'Recently published store collections with visible products.',
-    emotionalLabel: 'Capsules and edits',
-    layout: 'COLLECTION_RAIL',
-    sourceType: 'COLLECTION',
-    viewAllLabel: 'View All Collections',
-    previewItemLimit: 6,
-    minimumItems: 1,
+  'fresh-drops': {
+    emotionalLabel: 'New this week',
+    layout: 'HORIZONTAL_RAIL',
+    fallbackSourceType: 'PRODUCT',
   },
-  {
-    key: 'shop-by-style',
-    title: 'Shop by Style',
-    subtitle:
-      'Browse active market categories without making Market category-only.',
-    emotionalLabel: 'Choose a lane',
-    layout: 'CATEGORY_GRID',
-    sourceType: 'MIXED',
-    viewAllLabel: 'Explore Styles',
-    previewItemLimit: 10,
-    minimumItems: 1,
+  'picked-for-you': {
+    emotionalLabel: 'Starter picks',
+    layout: 'HORIZONTAL_RAIL',
+    fallbackSourceType: 'PRODUCT',
   },
-  {
-    key: 'custom-ready',
-    title: 'Custom Ready',
-    subtitle: 'Products available for custom-order bags.',
-    emotionalLabel: 'Made for you',
-    layout: 'PRODUCT_GRID',
-    sourceType: 'PRODUCT',
-    viewAllLabel: 'View Custom Ready',
-    previewItemLimit: 8,
-    minimumItems: 1,
-  },
-  {
-    key: 'new-designers-to-watch',
-    title: 'New Designers to Watch',
-    subtitle: 'Newer open stores with market-ready products.',
+  'new-designers-to-watch': {
     emotionalLabel: 'Fresh brand energy',
     layout: 'BRAND_RAIL',
-    sourceType: 'BRAND',
-    viewAllLabel: 'Meet More Designers',
-    previewItemLimit: 6,
-    minimumItems: 1,
+    fallbackSourceType: 'BRAND',
   },
-];
-
-const SECTION_CONFIG_BY_KEY = new Map(
-  SECTION_CONFIGS.map((config) => [config.key, config]),
-);
+  'shop-by-style': {
+    emotionalLabel: 'Choose a lane',
+    layout: 'CATEGORY_GRID',
+    fallbackSourceType: 'MIXED',
+  },
+  'loved-near-you': {
+    emotionalLabel: 'Popular right now',
+    layout: 'HORIZONTAL_RAIL',
+    fallbackSourceType: 'PRODUCT',
+  },
+  'shop-the-look': {
+    emotionalLabel: 'Capsules and edits',
+    layout: 'COLLECTION_RAIL',
+    fallbackSourceType: 'COLLECTION',
+  },
+  'almost-gone': {
+    emotionalLabel: 'Low stock',
+    layout: 'PRODUCT_GRID',
+    fallbackSourceType: 'PRODUCT',
+  },
+  'still-thinking-about-these': {
+    emotionalLabel: 'Worth another look',
+    layout: 'HORIZONTAL_RAIL',
+    fallbackSourceType: 'PRODUCT',
+  },
+  'more-from-brands-you-like': {
+    emotionalLabel: 'Brand-led picks',
+    layout: 'HORIZONTAL_RAIL',
+    fallbackSourceType: 'PRODUCT',
+  },
+  'style-picks-of-the-week': {
+    emotionalLabel: 'Weekly edit',
+    layout: 'HORIZONTAL_RAIL',
+    fallbackSourceType: 'PRODUCT',
+  },
+};
 
 @Injectable()
 export class MarketSectionService {
@@ -134,6 +132,8 @@ export class MarketSectionService {
     private readonly marketRankingAggregateReader?: MarketRankingAggregateReaderService,
     @Optional()
     private readonly marketRankingScorer?: MarketRankingScorerService,
+    @Optional()
+    private readonly marketGovernanceConfigService?: MarketGovernanceConfigService,
   ) {}
 
   async getSections(
@@ -145,13 +145,15 @@ export class MarketSectionService {
         : undefined;
     const suppressionScope = await this.getSuppressionScope(options);
     const rankingConfig = this.marketRankingConfigService?.getConfig();
-    const sectionConfigs = this.getServedSectionConfigs(rankingConfig);
+    const sectionConfigs = await this.getServedSectionConfigs({
+      userId: options?.userId,
+    });
 
     const sections = await Promise.all(
       sectionConfigs
         .filter((config) => !suppressionScope.sectionKeys.has(config.key))
         .map((config) =>
-          this.buildSection(config.key, {
+          this.buildSection(config, {
             limit: limitOverride ?? config.previewItemLimit,
             suppressionScope,
             rankingConfig,
@@ -179,15 +181,14 @@ export class MarketSectionService {
       limit?: number;
     } & MarketSectionIdentityOptions,
   ) {
-    const sectionKey = this.normalizeSectionKey(key);
-    const safeLimit = this.normalizeLimit(
-      options?.limit,
-      this.defaultDetailLimit,
-    );
+    const sectionConfig = await this.resolveServedSectionConfig(key, {
+      userId: options?.userId,
+    });
+    const safeLimit = this.normalizeLimit(options?.limit, sectionConfig.detailPageLimit);
     const safeCursor = this.normalizeCursor(options?.cursor);
     const suppressionScope = await this.getSuppressionScope(options);
     const rankingConfig = this.marketRankingConfigService?.getConfig();
-    const section = await this.buildSection(sectionKey, {
+    const section = await this.buildSection(sectionConfig, {
       cursor: safeCursor,
       limit: safeLimit,
       suppressionScope,
@@ -200,26 +201,82 @@ export class MarketSectionService {
     };
   }
 
-  private normalizeSectionKey(key: string): MarketSectionKey {
+  private normalizeSectionKey(key: string): string {
     const normalized = String(key ?? '')
       .trim()
-      .toLowerCase() as MarketSectionKey;
-    if (!SECTION_CONFIG_BY_KEY.has(normalized)) {
-      throw new NotFoundException(`Unsupported market section: ${key}`);
-    }
+      .toLowerCase();
+    if (!normalized) throw new NotFoundException('Unsupported market section');
     return normalized;
   }
 
-  private getServedSectionConfigs(
-    rankingConfig?: MarketRankingConfig,
-  ): SectionConfig[] {
-    if (!rankingConfig?.enabled) {
-      return SECTION_CONFIGS;
-    }
+  private async getServedSectionConfigs(options?: {
+    userId?: string | null;
+  }): Promise<SectionConfig[]> {
+    const configs = await this.getConfiguredSectionViews();
+    return configs
+      .filter((config) => this.canServeConfig(config, options))
+      .map((config) => this.toSectionConfig(config));
+  }
 
-    // Ranking is a per-section overlay. Section availability remains controlled
-    // by deterministic source queries so fallback always has the same surface.
-    return SECTION_CONFIGS;
+  private async resolveServedSectionConfig(
+    key: string,
+    options?: { userId?: string | null },
+  ): Promise<SectionConfig> {
+    const normalized = this.normalizeSectionKey(key);
+    const config = (await this.getServedSectionConfigs(options)).find(
+      (item) => item.key === normalized,
+    );
+    if (!config) {
+      throw new NotFoundException(`Unsupported market section: ${key}`);
+    }
+    return config;
+  }
+
+  private async getConfiguredSectionViews(): Promise<MarketSectionConfigView[]> {
+    if (!this.marketGovernanceConfigService) {
+      return MARKET_SECTION_CODE_DEFAULTS.map((config) => ({
+        ...config,
+      })).sort((left, right) => {
+        if (left.displayOrder !== right.displayOrder) {
+          return left.displayOrder - right.displayOrder;
+        }
+        return left.sectionKey.localeCompare(right.sectionKey);
+      });
+    }
+    const result =
+      await this.marketGovernanceConfigService.getSectionConfigsWithFallback();
+    return result.items;
+  }
+
+  private canServeConfig(
+    config: MarketSectionConfigView,
+    options?: { userId?: string | null },
+  ) {
+    if (!config.enabled || config.status !== 'ACTIVE') return false;
+    if (config.requiresAuth && !options?.userId) return false;
+    if (!options?.userId && config.guestEnabled === false) return false;
+    return true;
+  }
+
+  private toSectionConfig(config: MarketSectionConfigView): SectionConfig {
+    const key = config.sectionKey as MarketSectionKey;
+    const presentation = SECTION_PRESENTATION[key];
+    if (!presentation) {
+      throw new NotFoundException(`Unsupported market section: ${key}`);
+    }
+    return {
+      key,
+      title: config.title,
+      subtitle: config.subtitle,
+      emotionalLabel: presentation.emotionalLabel,
+      layout: presentation.layout,
+      sourceType: config.sourceType ?? presentation.fallbackSourceType,
+      previewItemLimit: config.previewItemLimit,
+      detailPageLimit: config.detailPageLimit,
+      minimumItems: config.minimumItems,
+      viewAllEnabled: config.viewAllEnabled,
+      viewAllLabel: config.viewAllLabel,
+    };
   }
 
   private normalizeLimit(limit: number | undefined, fallback: number) {
@@ -259,7 +316,7 @@ export class MarketSectionService {
   }
 
   private async buildSection(
-    key: MarketSectionKey,
+    config: SectionConfig,
     options: {
       cursor?: string;
       limit: number;
@@ -267,10 +324,7 @@ export class MarketSectionService {
       rankingConfig?: MarketRankingConfig;
     },
   ): Promise<MarketSectionDto> {
-    const config = SECTION_CONFIG_BY_KEY.get(key);
-    if (!config) {
-      throw new NotFoundException(`Unsupported market section: ${key}`);
-    }
+    const key = config.key;
 
     if (options.suppressionScope?.sectionKeys.has(key)) {
       return this.buildEmptySection(
@@ -312,11 +366,12 @@ export class MarketSectionService {
         nextCursor = page.nextCursor;
         break;
       }
-      case 'custom-ready': {
+      case 'picked-for-you':
+      case 'more-from-brands-you-like':
+      case 'style-picks-of-the-week': {
         const page = await this.getProductItems({
           cursor: options.cursor,
           limit: options.limit,
-          extraAnd: [{ customOrderEnabled: true }],
           orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
         });
         items = page.items;
@@ -324,7 +379,36 @@ export class MarketSectionService {
         nextCursor = page.nextCursor;
         break;
       }
-      case 'latest-collections': {
+      case 'loved-near-you':
+      case 'still-thinking-about-these': {
+        const page = await this.getProductItems({
+          cursor: options.cursor,
+          limit: options.limit,
+          orderBy: [
+            { viewsCount: 'desc' },
+            { threadsCount: 'desc' },
+            { createdAt: 'desc' },
+            { id: 'desc' },
+          ],
+        });
+        items = page.items;
+        hasNextPage = page.hasNextPage;
+        nextCursor = page.nextCursor;
+        break;
+      }
+      case 'almost-gone': {
+        const page = await this.getProductItems({
+          cursor: options.cursor,
+          limit: options.limit,
+          extraAnd: [{ totalStock: { gt: 0, lte: 5 } }],
+          orderBy: [{ totalStock: 'asc' }, { createdAt: 'desc' }, { id: 'desc' }],
+        });
+        items = page.items;
+        hasNextPage = page.hasNextPage;
+        nextCursor = page.nextCursor;
+        break;
+      }
+      case 'shop-the-look': {
         const page = await this.getStoreCollectionItems(options);
         items = page.items;
         hasNextPage = page.hasNextPage;
@@ -366,11 +450,13 @@ export class MarketSectionService {
       layout: config.layout,
       sourceType: config.sourceType,
       items: rankingResult.items,
+      supportsViewAll: config.viewAllEnabled,
+      viewAllLabel: config.viewAllLabel,
       viewAll: {
-        enabled: true,
+        enabled: config.viewAllEnabled,
         key,
         route: `/market/sections/${key}`,
-        label: config.viewAllLabel,
+        label: config.viewAllLabel ?? 'View All',
       },
       pagination: {
         limit: options.limit,
@@ -398,11 +484,13 @@ export class MarketSectionService {
       layout: config.layout,
       sourceType: config.sourceType,
       items: [],
+      supportsViewAll: config.viewAllEnabled,
+      viewAllLabel: config.viewAllLabel,
       viewAll: {
-        enabled: true,
+        enabled: config.viewAllEnabled,
         key: config.key,
         route: `/market/sections/${config.key}`,
-        label: config.viewAllLabel,
+        label: config.viewAllLabel ?? 'View All',
       },
       pagination: {
         limit,
@@ -613,9 +701,9 @@ export class MarketSectionService {
 
   private getRankingEnabledSectionKeys(rankingConfig: MarketRankingConfig) {
     const configured = new Set(rankingConfig.sectionKeys);
-    const ordered = SECTION_CONFIGS.map((config) => config.key).filter(
-      (sectionKey) => configured.has(sectionKey),
-    );
+    const ordered = MARKET_SECTION_CODE_DEFAULTS.map(
+      (config) => config.sectionKey,
+    ).filter((sectionKey) => configured.has(sectionKey));
     return new Set(ordered.slice(0, rankingConfig.maxPersonalizedSections));
   }
 

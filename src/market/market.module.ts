@@ -1,5 +1,7 @@
 import { Module } from '@nestjs/common';
 import { PrismaModule } from 'src/prisma/prisma.module';
+import { FeedCategoryController } from './feed-category.controller';
+import { FeedCategoryService } from './feed-category.service';
 import { MarketSectionController } from './market-section.controller';
 import { MarketSectionService } from './market-section.service';
 import { MarketSignalAggregationService } from './market-signal-aggregation.service';
@@ -17,12 +19,14 @@ import { MarketGovernanceConfigService } from './market-governance-config.servic
 @Module({
   imports: [PrismaModule],
   controllers: [
+    FeedCategoryController,
     MarketSectionController,
     MarketSignalController,
     MarketSuggestionController,
     MarketSuppressionController,
   ],
   providers: [
+    FeedCategoryService,
     MarketSectionService,
     MarketRankingConfigService,
     MarketRankingAggregateReaderService,
@@ -34,6 +38,7 @@ import { MarketGovernanceConfigService } from './market-governance-config.servic
     MarketSuppressionService,
   ],
   exports: [
+    FeedCategoryService,
     MarketSectionService,
     MarketRankingConfigService,
     MarketRankingAggregateReaderService,

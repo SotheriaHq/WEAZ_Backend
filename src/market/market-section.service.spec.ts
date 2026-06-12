@@ -162,12 +162,17 @@ describe('MarketSectionService', () => {
       cachePolicy: 'private-no-store',
     });
     expect(result.sections.map((section) => section.key)).toEqual([
-      'fresh-drops',
       'hot-right-now',
-      'latest-collections',
-      'shop-by-style',
-      'custom-ready',
+      'fresh-drops',
+      'picked-for-you',
       'new-designers-to-watch',
+      'shop-by-style',
+      'loved-near-you',
+      'shop-the-look',
+      'almost-gone',
+      'still-thinking-about-these',
+      'more-from-brands-you-like',
+      'style-picks-of-the-week',
     ]);
     expect(result.sections[0].items[0]).toEqual(
       expect.objectContaining({

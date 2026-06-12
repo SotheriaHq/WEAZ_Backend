@@ -1,10 +1,15 @@
 export type MarketSectionKey =
-  | 'fresh-drops'
   | 'hot-right-now'
-  | 'latest-collections'
+  | 'fresh-drops'
+  | 'picked-for-you'
+  | 'new-designers-to-watch'
   | 'shop-by-style'
-  | 'custom-ready'
-  | 'new-designers-to-watch';
+  | 'loved-near-you'
+  | 'shop-the-look'
+  | 'almost-gone'
+  | 'still-thinking-about-these'
+  | 'more-from-brands-you-like'
+  | 'style-picks-of-the-week';
 
 export type MarketSectionSourceType =
   | 'PRODUCT'
@@ -124,6 +129,8 @@ export interface MarketSectionDto {
   layout: MarketSectionLayout;
   sourceType: MarketSectionSourceType;
   items: MarketSectionItemDto[];
+  supportsViewAll: boolean;
+  viewAllLabel: string | null;
   viewAll: MarketSectionViewAllDto;
   pagination: MarketSectionPaginationDto;
   metadata: MarketSectionMetadataDto;
