@@ -17,7 +17,6 @@ import { AdminAuditAction } from '@prisma/client';
 import {
   MARKET_GOVERNANCE_LIMITS,
   SUPPORTED_FORMULA_STATUSES,
-  SUPPORTED_MARKET_SECTION_KEYS,
   SUPPORTED_SUGGESTION_CONTEXTS,
   SUPPORTED_SUGGESTION_SOURCE_TYPES,
   SUPPORTED_SUGGESTION_TARGET_TYPES,
@@ -46,6 +45,19 @@ export class PatchMarketSectionConfigDto extends AdminMarketGovernanceReasonDto 
   @IsOptional()
   @IsBoolean()
   enabled?: boolean;
+
+  @IsOptional()
+  @IsIn(['DRAFT', 'ACTIVE', 'PAUSED', 'ARCHIVED'])
+  status?: string;
+
+  @IsOptional()
+  @IsIn(['PRODUCT', 'COLLECTION', 'DESIGN', 'BRAND', 'MIXED'])
+  sourceType?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(MARKET_GOVERNANCE_LIMITS.profileKeyMax)
+  rankingProfileKey?: string | null;
 
   @IsOptional()
   @Type(() => Number)
@@ -81,8 +93,126 @@ export class PatchMarketSectionConfigDto extends AdminMarketGovernanceReasonDto 
 
   @IsOptional()
   @IsString()
+  @MaxLength(80)
+  viewAllLabel?: string | null;
+
+  @IsOptional()
+  @IsString()
   @MaxLength(40)
   fallbackMode?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  fallbackSectionKey?: string | null;
+
+  @IsOptional()
+  @IsBoolean()
+  guestEnabled?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  requiresAuth?: boolean;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  @Max(50)
+  newBrandReservedRatio?: number;
+
+  @IsOptional()
+  @IsObject()
+  metadata?: Record<string, unknown>;
+}
+
+export class CreateMarketSectionConfigDto extends AdminMarketGovernanceReasonDto {
+  @IsString()
+  @MaxLength(80)
+  @Matches(/^[a-z0-9][a-z0-9-]{0,79}$/)
+  sectionKey!: string;
+
+  @IsString()
+  @MaxLength(MARKET_GOVERNANCE_LIMITS.sectionTitleMax)
+  title!: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(MARKET_GOVERNANCE_LIMITS.sectionSubtitleMax)
+  subtitle?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  enabled?: boolean;
+
+  @IsOptional()
+  @IsIn(['DRAFT', 'ACTIVE', 'PAUSED', 'ARCHIVED'])
+  status?: string;
+
+  @IsIn(['PRODUCT', 'COLLECTION', 'DESIGN', 'BRAND', 'MIXED'])
+  sourceType!: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(MARKET_GOVERNANCE_LIMITS.profileKeyMax)
+  rankingProfileKey?: string | null;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(MARKET_GOVERNANCE_LIMITS.displayOrderMin)
+  @Max(MARKET_GOVERNANCE_LIMITS.displayOrderMax)
+  displayOrder?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(MARKET_GOVERNANCE_LIMITS.previewItemLimitMin)
+  @Max(MARKET_GOVERNANCE_LIMITS.previewItemLimitMax)
+  previewItemLimit?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(MARKET_GOVERNANCE_LIMITS.detailPageLimitMin)
+  @Max(MARKET_GOVERNANCE_LIMITS.detailPageLimitMax)
+  detailPageLimit?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(MARKET_GOVERNANCE_LIMITS.minimumItemsMin)
+  @Max(MARKET_GOVERNANCE_LIMITS.minimumItemsMax)
+  minimumItems?: number;
+
+  @IsOptional()
+  @IsBoolean()
+  viewAllEnabled?: boolean;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  viewAllLabel?: string | null;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  fallbackSectionKey?: string | null;
+
+  @IsOptional()
+  @IsBoolean()
+  guestEnabled?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  requiresAuth?: boolean;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  @Max(50)
+  newBrandReservedRatio?: number;
 
   @IsOptional()
   @IsObject()
@@ -115,7 +245,7 @@ export class CreateMarketRankingProfileDto extends AdminMarketGovernanceReasonDt
   @IsOptional()
   @IsArray()
   @ArrayMaxSize(20)
-  @IsIn(SUPPORTED_MARKET_SECTION_KEYS as unknown as string[], { each: true })
+  @Matches(SLUG_PATTERN, { each: true })
   sectionKeys?: string[];
 
   @IsOptional()
@@ -181,7 +311,7 @@ export class PatchMarketRankingProfileDto extends AdminMarketGovernanceReasonDto
   @IsOptional()
   @IsArray()
   @ArrayMaxSize(20)
-  @IsIn(SUPPORTED_MARKET_SECTION_KEYS as unknown as string[], { each: true })
+  @Matches(SLUG_PATTERN, { each: true })
   sectionKeys?: string[];
 
   @IsOptional()

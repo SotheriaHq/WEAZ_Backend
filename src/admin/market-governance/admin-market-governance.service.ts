@@ -21,6 +21,7 @@ import {
 } from 'src/market/market-governance-config.service';
 import {
   AdminMarketGovernanceAuditQueryDto,
+  CreateMarketSectionConfigDto,
   CreateMarketRankingFormulaDto,
   CreateMarketRankingProfileDto,
   CreateMarketSuggestionBlockConfigDto,
@@ -63,25 +64,58 @@ export class AdminMarketGovernanceService {
     return this.marketGovernanceConfig.getSectionConfigsWithFallback();
   }
 
+  async createSection(
+    dto: CreateMarketSectionConfigDto,
+    actorId: string,
+    req: Request,
+  ) {
+    const sectionKey = this.normalizeSlug(dto.sectionKey, 'sectionKey');
+    const existing = await this.prisma.marketSectionConfig.findUnique({
+      where: { sectionKey },
+    });
+    if (existing || this.getSectionDefaultOrNull(sectionKey)) {
+      throw new BadRequestException('Market section key already exists');
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      const created = await tx.marketSectionConfig.create({
+        data: this.buildCustomSectionCreateData(sectionKey, dto, actorId),
+      });
+
+      await this.auditService.logInTransaction(
+        tx,
+        {
+          actorUserId: actorId,
+          action: AdminAuditAction.ADMIN_MARKET_SECTION_CONFIG_UPDATE,
+          targetType: 'MarketSectionConfig',
+          targetId: sectionKey,
+          previousState: undefined,
+          newState: this.toPlain(created),
+          metadata: { reason: this.cleanReason(dto.reason), mode: 'create' },
+        },
+        req,
+      );
+
+      return created;
+    });
+  }
+
   async patchSection(
     sectionKey: string,
     dto: PatchMarketSectionConfigDto,
     actorId: string,
     req: Request,
   ) {
-    const normalizedKey = this.requireSupportedSectionKey(sectionKey);
+    const normalizedKey = await this.requireKnownSectionKey(sectionKey);
     await this.assertPrimarySectionRemainsEnabled(normalizedKey, dto);
 
     const existing = await this.prisma.marketSectionConfig.findUnique({
       where: { sectionKey: normalizedKey },
     });
-    const defaultConfig = this.getSectionDefault(normalizedKey);
-    const nowData = this.buildSectionCreateData(
-      normalizedKey,
-      defaultConfig,
-      dto,
-      actorId,
-    );
+    const defaultConfig = this.getSectionDefaultOrNull(normalizedKey);
+    const nowData = defaultConfig
+      ? this.buildSectionCreateData(normalizedKey, defaultConfig, dto, actorId)
+      : this.buildExistingCustomSectionCreateData(normalizedKey, dto, actorId);
     const updateData = this.buildSectionUpdateData(dto, actorId);
 
     return this.prisma.$transaction(async (tx) => {
@@ -537,29 +571,60 @@ export class AdminMarketGovernanceService {
     return normalized as SupportedMarketSectionKey;
   }
 
+  private async requireKnownSectionKey(key: string): Promise<string> {
+    const normalized = this.normalizeSlug(key, 'sectionKey');
+    if (SUPPORTED_MARKET_SECTION_KEYS.includes(normalized as any)) {
+      return normalized;
+    }
+    const existing = await this.prisma.marketSectionConfig.findUnique({
+      where: { sectionKey: normalized },
+      select: { sectionKey: true },
+    });
+    if (!existing) {
+      throw new NotFoundException('Market section config not found');
+    }
+    return normalized;
+  }
+
   private getSectionDefault(key: SupportedMarketSectionKey) {
-    const defaultConfig = MARKET_SECTION_CODE_DEFAULTS.find(
-      (config) => config.sectionKey === key,
-    );
+    const defaultConfig = this.getSectionDefaultOrNull(key);
     if (!defaultConfig) {
       throw new BadRequestException('Unsupported market section key');
     }
     return defaultConfig;
   }
 
+  private getSectionDefaultOrNull(key: string) {
+    return MARKET_SECTION_CODE_DEFAULTS.find(
+      (config) => config.sectionKey === key,
+    );
+  }
+
   private async assertPrimarySectionRemainsEnabled(
-    sectionKey: SupportedMarketSectionKey,
+    sectionKey: string,
     dto: PatchMarketSectionConfigDto,
   ) {
-    if (dto.enabled !== false) return;
+    const wouldDisable =
+      dto.enabled === false ||
+      dto.status === 'PAUSED' ||
+      dto.status === 'ARCHIVED';
+    if (!wouldDisable) return;
     const current =
       await this.marketGovernanceConfig.getSectionConfigsWithFallback();
     const next = current.items.map((config) =>
-      config.sectionKey === sectionKey ? { ...config, enabled: false } : config,
+      config.sectionKey === sectionKey
+        ? {
+            ...config,
+            enabled: dto.enabled ?? config.enabled,
+            status: (dto.status ?? config.status) as typeof config.status,
+          }
+        : config,
     );
-    if (!next.some((config) => config.enabled)) {
+    if (
+      !next.some((config) => config.enabled && config.status === 'ACTIVE')
+    ) {
       throw new BadRequestException(
-        'At least one market section must remain enabled',
+        'At least one active market section must remain enabled',
       );
     }
   }
@@ -666,7 +731,7 @@ export class AdminMarketGovernanceService {
   }
 
   private buildSectionCreateData(
-    sectionKey: SupportedMarketSectionKey,
+    sectionKey: string,
     defaultConfig: (typeof MARKET_SECTION_CODE_DEFAULTS)[number],
     dto: PatchMarketSectionConfigDto,
     actorId: string,
@@ -679,17 +744,104 @@ export class AdminMarketGovernanceService {
           ? this.cleanOptionalText(dto.subtitle)
           : defaultConfig.subtitle,
       enabled: dto.enabled ?? defaultConfig.enabled,
+      status: (dto.status ?? defaultConfig.status) as any,
+      sourceType: (dto.sourceType ?? defaultConfig.sourceType) as any,
+      rankingProfileKey:
+        dto.rankingProfileKey !== undefined
+          ? this.cleanOptionalText(dto.rankingProfileKey)
+          : defaultConfig.rankingProfileKey,
       displayOrder: dto.displayOrder ?? defaultConfig.displayOrder,
       previewItemLimit: dto.previewItemLimit ?? defaultConfig.previewItemLimit,
       detailPageLimit: dto.detailPageLimit ?? defaultConfig.detailPageLimit,
       minimumItems: dto.minimumItems ?? defaultConfig.minimumItems,
       viewAllEnabled: dto.viewAllEnabled ?? defaultConfig.viewAllEnabled,
+      viewAllLabel:
+        dto.viewAllLabel !== undefined
+          ? this.cleanOptionalText(dto.viewAllLabel)
+          : defaultConfig.viewAllLabel,
       fallbackMode:
         this.cleanOptionalText(dto.fallbackMode) ?? defaultConfig.fallbackMode,
+      fallbackSectionKey:
+        dto.fallbackSectionKey !== undefined
+          ? this.cleanOptionalText(dto.fallbackSectionKey)
+          : defaultConfig.fallbackSectionKey,
+      guestEnabled: dto.guestEnabled ?? defaultConfig.guestEnabled,
+      requiresAuth: dto.requiresAuth ?? defaultConfig.requiresAuth,
+      newBrandReservedRatio:
+        dto.newBrandReservedRatio ?? defaultConfig.newBrandReservedRatio,
       metadata: jsonOrNull(dto.metadata),
       createdById: actorId,
       updatedById: actorId,
     };
+  }
+
+  private buildCustomSectionCreateData(
+    sectionKey: string,
+    dto: CreateMarketSectionConfigDto,
+    actorId: string,
+  ): Prisma.MarketSectionConfigCreateInput {
+    const sourceType = dto.sourceType as any;
+    return {
+      sectionKey,
+      title: this.cleanRequiredText(dto.title, 'title'),
+      subtitle: this.cleanOptionalText(dto.subtitle),
+      enabled: dto.enabled ?? true,
+      status: (dto.status ?? 'ACTIVE') as any,
+      sourceType,
+      rankingProfileKey:
+        dto.rankingProfileKey !== undefined
+          ? this.cleanOptionalText(dto.rankingProfileKey)
+          : 'deterministic-v1',
+      displayOrder: dto.displayOrder ?? 100,
+      previewItemLimit: dto.previewItemLimit ?? 8,
+      detailPageLimit: dto.detailPageLimit ?? 24,
+      minimumItems: dto.minimumItems ?? 1,
+      viewAllEnabled: dto.viewAllEnabled ?? true,
+      viewAllLabel: this.cleanOptionalText(dto.viewAllLabel),
+      fallbackMode: 'SOURCE_TEMPLATE',
+      fallbackSectionKey: this.cleanOptionalText(dto.fallbackSectionKey),
+      guestEnabled: dto.guestEnabled ?? true,
+      requiresAuth: dto.requiresAuth ?? false,
+      newBrandReservedRatio: dto.newBrandReservedRatio ?? 0,
+      metadata: jsonOrNull(dto.metadata),
+      createdById: actorId,
+      updatedById: actorId,
+    };
+  }
+
+  private buildExistingCustomSectionCreateData(
+    sectionKey: string,
+    dto: PatchMarketSectionConfigDto,
+    actorId: string,
+  ): Prisma.MarketSectionConfigCreateInput {
+    if (!dto.title || !dto.sourceType) {
+      throw new NotFoundException('Market section config not found');
+    }
+    return this.buildCustomSectionCreateData(
+      sectionKey,
+      {
+        sectionKey,
+        title: dto.title,
+        subtitle: dto.subtitle ?? undefined,
+        enabled: dto.enabled,
+        status: dto.status,
+        sourceType: dto.sourceType,
+        rankingProfileKey: dto.rankingProfileKey,
+        displayOrder: dto.displayOrder,
+        previewItemLimit: dto.previewItemLimit,
+        detailPageLimit: dto.detailPageLimit,
+        minimumItems: dto.minimumItems,
+        viewAllEnabled: dto.viewAllEnabled,
+        viewAllLabel: dto.viewAllLabel,
+        fallbackSectionKey: dto.fallbackSectionKey,
+        guestEnabled: dto.guestEnabled,
+        requiresAuth: dto.requiresAuth,
+        newBrandReservedRatio: dto.newBrandReservedRatio,
+        metadata: dto.metadata,
+        reason: dto.reason,
+      },
+      actorId,
+    );
   }
 
   private buildSectionUpdateData(
@@ -704,6 +856,11 @@ export class AdminMarketGovernanceService {
     if (dto.subtitle !== undefined)
       data.subtitle = this.cleanOptionalText(dto.subtitle);
     if (dto.enabled !== undefined) data.enabled = dto.enabled;
+    if (dto.status !== undefined) data.status = dto.status as any;
+    if (dto.sourceType !== undefined) data.sourceType = dto.sourceType as any;
+    if (dto.rankingProfileKey !== undefined) {
+      data.rankingProfileKey = this.cleanOptionalText(dto.rankingProfileKey);
+    }
     if (dto.displayOrder !== undefined) data.displayOrder = dto.displayOrder;
     if (dto.previewItemLimit !== undefined)
       data.previewItemLimit = dto.previewItemLimit;
@@ -712,11 +869,21 @@ export class AdminMarketGovernanceService {
     if (dto.minimumItems !== undefined) data.minimumItems = dto.minimumItems;
     if (dto.viewAllEnabled !== undefined)
       data.viewAllEnabled = dto.viewAllEnabled;
+    if (dto.viewAllLabel !== undefined)
+      data.viewAllLabel = this.cleanOptionalText(dto.viewAllLabel);
     if (dto.fallbackMode !== undefined) {
       data.fallbackMode = this.cleanRequiredText(
         dto.fallbackMode,
         'fallbackMode',
       );
+    }
+    if (dto.fallbackSectionKey !== undefined) {
+      data.fallbackSectionKey = this.cleanOptionalText(dto.fallbackSectionKey);
+    }
+    if (dto.guestEnabled !== undefined) data.guestEnabled = dto.guestEnabled;
+    if (dto.requiresAuth !== undefined) data.requiresAuth = dto.requiresAuth;
+    if (dto.newBrandReservedRatio !== undefined) {
+      data.newBrandReservedRatio = dto.newBrandReservedRatio;
     }
     if (dto.metadata !== undefined) data.metadata = jsonOrNull(dto.metadata);
     return data;

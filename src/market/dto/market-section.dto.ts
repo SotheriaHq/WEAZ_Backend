@@ -1,4 +1,4 @@
-export type MarketSectionKey =
+export type BuiltInMarketSectionKey =
   | 'hot-right-now'
   | 'fresh-drops'
   | 'picked-for-you'
@@ -10,6 +10,8 @@ export type MarketSectionKey =
   | 'still-thinking-about-these'
   | 'more-from-brands-you-like'
   | 'style-picks-of-the-week';
+
+export type MarketSectionKey = BuiltInMarketSectionKey | string;
 
 export type MarketSectionSourceType =
   | 'PRODUCT'
@@ -36,6 +38,8 @@ export interface MarketSectionBrandDto {
   id: string | null;
   name: string | null;
   logoUrl: string | null;
+  createdAt?: string | null;
+  isNew?: boolean;
 }
 
 export interface MarketSectionPriceDto {
@@ -119,6 +123,8 @@ export interface MarketSectionMetadataDto {
   rankingEnabled: boolean;
   minimumItems: number;
   previewItemLimit: number;
+  newBrandReservedRatio?: number;
+  newBrandFairnessApplied?: boolean;
 }
 
 export interface MarketSectionDto {

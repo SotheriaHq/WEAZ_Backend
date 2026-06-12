@@ -1,5 +1,5 @@
 import 'reflect-metadata';
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { AdminAuditAction } from '@prisma/client';
 import { AdminAuditService } from '../services/admin-audit.service';
 import { AdminMarketGovernanceService } from './admin-market-governance.service';
@@ -41,6 +41,7 @@ describe('AdminMarketGovernanceService', () => {
     const tx = {
       marketSectionConfig: {
         upsert: jest.fn().mockResolvedValue(sectionRow()),
+        create: jest.fn().mockResolvedValue(sectionRow({ sectionKey: 'runway-edit' })),
       },
       marketRankingProfile: {
         create: jest.fn().mockResolvedValue({
@@ -109,7 +110,7 @@ describe('AdminMarketGovernanceService', () => {
     return { audit, prisma, service, tx };
   };
 
-  it('rejects unsupported section keys with a controlled error', async () => {
+  it('rejects unknown section keys with a controlled error', async () => {
     const { service } = createHarness();
 
     await expect(
@@ -119,7 +120,7 @@ describe('AdminMarketGovernanceService', () => {
         actorId,
         req,
       ),
-    ).rejects.toBeInstanceOf(BadRequestException);
+    ).rejects.toBeInstanceOf(NotFoundException);
   });
 
   it('prevents disabling every primary market section', async () => {
@@ -148,7 +149,42 @@ describe('AdminMarketGovernanceService', () => {
 
     await expect(
       service.patchSection('fresh-drops', { enabled: false }, actorId, req),
-    ).rejects.toThrow('At least one market section must remain enabled');
+    ).rejects.toThrow('At least one active market section must remain enabled');
+  });
+
+  it('creates custom market sections without behavior-specific wiring', async () => {
+    const { audit, prisma, service, tx } = createHarness();
+
+    await service.createSection(
+      {
+        sectionKey: 'runway-edit',
+        title: 'Runway Edit',
+        sourceType: 'DESIGN',
+      },
+      actorId,
+      req,
+    );
+
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    expect(tx.marketSectionConfig.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          sectionKey: 'runway-edit',
+          sourceType: 'DESIGN',
+          fallbackMode: 'SOURCE_TEMPLATE',
+          viewAllEnabled: true,
+        }),
+      }),
+    );
+    expect(audit.logInTransaction).toHaveBeenCalledWith(
+      tx,
+      expect.objectContaining({
+        action: AdminAuditAction.ADMIN_MARKET_SECTION_CONFIG_UPDATE,
+        targetId: 'runway-edit',
+        metadata: expect.objectContaining({ mode: 'create' }),
+      }),
+      req,
+    );
   });
 
   it('writes section config and audit in one transaction', async () => {

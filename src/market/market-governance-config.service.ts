@@ -22,6 +22,8 @@ export const SUPPORTED_MARKET_SECTION_KEYS = [
 export type SupportedMarketSectionKey =
   (typeof SUPPORTED_MARKET_SECTION_KEYS)[number];
 
+export type MarketSectionConfigKey = SupportedMarketSectionKey | string;
+
 export const SUPPORTED_SUGGESTION_CONTEXTS = Object.values(
   MarketSuggestionContext,
 );
@@ -86,7 +88,7 @@ export const MARKET_GOVERNANCE_LIMITS = {
 };
 
 export type MarketSectionConfigView = {
-  sectionKey: SupportedMarketSectionKey;
+  sectionKey: MarketSectionConfigKey;
   title: string;
   subtitle: string | null;
   enabled: boolean;
@@ -388,11 +390,11 @@ export const MARKET_SUGGESTION_BLOCK_CODE_DEFAULTS: MarketSuggestionBlockConfigV
       source: 'code-default',
     },
     {
-      blockKey: 'product-detail-more-from-brand',
+      blockKey: 'product-detail-complete-the-look',
       context: MarketSuggestionContext.PRODUCT_DETAIL,
       targetType: MarketSuggestionTargetType.PRODUCT,
-      title: 'More From This Brand',
-      subtitle: 'Other pieces from the same store',
+      title: 'Complete the Look',
+      subtitle: 'Pieces from the same edit or store',
       enabled: true,
       displayOrder: 20,
       sourceType: 'PRODUCT',
@@ -402,11 +404,25 @@ export const MARKET_SUGGESTION_BLOCK_CODE_DEFAULTS: MarketSuggestionBlockConfigV
       source: 'code-default',
     },
     {
-      blockKey: 'collection-detail-pieces-from-edit',
+      blockKey: 'product-detail-new-designers-to-watch',
+      context: MarketSuggestionContext.PRODUCT_DETAIL,
+      targetType: MarketSuggestionTargetType.PRODUCT,
+      title: 'New Designers to Watch',
+      subtitle: 'Fresh stores with market-ready pieces',
+      enabled: true,
+      displayOrder: 30,
+      sourceType: 'BRAND',
+      fallbackSourceType: 'BRAND',
+      itemLimit: 8,
+      metadata: null,
+      source: 'code-default',
+    },
+    {
+      blockKey: 'collection-detail-pieces-that-match-this-edit',
       context: MarketSuggestionContext.COLLECTION_DETAIL,
       targetType: MarketSuggestionTargetType.COLLECTION,
-      title: 'Pieces From This Edit',
-      subtitle: 'Market-ready products in the collection',
+      title: 'Pieces That Match This Edit',
+      subtitle: 'Market-ready products in this collection',
       enabled: true,
       displayOrder: 10,
       sourceType: 'PRODUCT',
@@ -416,10 +432,24 @@ export const MARKET_SUGGESTION_BLOCK_CODE_DEFAULTS: MarketSuggestionBlockConfigV
       source: 'code-default',
     },
     {
-      blockKey: 'brand-detail-best-from-brand',
+      blockKey: 'collection-detail-more-from-this-style',
+      context: MarketSuggestionContext.COLLECTION_DETAIL,
+      targetType: MarketSuggestionTargetType.COLLECTION,
+      title: 'More From This Style',
+      subtitle: 'Related pieces with similar category or tags',
+      enabled: true,
+      displayOrder: 20,
+      sourceType: 'PRODUCT',
+      fallbackSourceType: 'PRODUCT',
+      itemLimit: 8,
+      metadata: null,
+      source: 'code-default',
+    },
+    {
+      blockKey: 'brand-store-more-from-this-brand',
       context: MarketSuggestionContext.BRAND_DETAIL,
       targetType: MarketSuggestionTargetType.BRAND,
-      title: 'Best From This Brand',
+      title: 'More From This Brand',
       subtitle: 'Available products from this store',
       enabled: true,
       displayOrder: 10,
@@ -430,11 +460,81 @@ export const MARKET_SUGGESTION_BLOCK_CODE_DEFAULTS: MarketSuggestionBlockConfigV
       source: 'code-default',
     },
     {
+      blockKey: 'brand-store-similar-brands-to-explore',
+      context: MarketSuggestionContext.BRAND_STORE,
+      targetType: MarketSuggestionTargetType.BRAND,
+      title: 'Similar Brands to Explore',
+      subtitle: 'Other open stores with market-ready products',
+      enabled: true,
+      displayOrder: 20,
+      sourceType: 'BRAND',
+      fallbackSourceType: 'BRAND',
+      itemLimit: 8,
+      metadata: null,
+      source: 'code-default',
+    },
+    {
       blockKey: 'search-empty-relaxed-products',
       context: MarketSuggestionContext.SEARCH_EMPTY,
       targetType: MarketSuggestionTargetType.QUERY,
       title: 'Try These Instead',
       subtitle: 'Relaxed matches from the market',
+      enabled: true,
+      displayOrder: 10,
+      sourceType: 'PRODUCT',
+      fallbackSourceType: 'PRODUCT',
+      itemLimit: 8,
+      metadata: null,
+      source: 'code-default',
+    },
+    {
+      blockKey: 'search-empty-hot-right-now',
+      context: MarketSuggestionContext.SEARCH_EMPTY,
+      targetType: MarketSuggestionTargetType.QUERY,
+      title: 'Hot Right Now',
+      subtitle: 'Popular market pieces while you keep looking',
+      enabled: true,
+      displayOrder: 20,
+      sourceType: 'PRODUCT',
+      fallbackSourceType: 'PRODUCT',
+      itemLimit: 8,
+      metadata: null,
+      source: 'code-default',
+    },
+    {
+      blockKey: 'search-empty-fresh-drops',
+      context: MarketSuggestionContext.SEARCH_EMPTY,
+      targetType: MarketSuggestionTargetType.QUERY,
+      title: 'Fresh Drops',
+      subtitle: 'New arrivals from open WEAZ stores',
+      enabled: true,
+      displayOrder: 30,
+      sourceType: 'PRODUCT',
+      fallbackSourceType: 'PRODUCT',
+      itemLimit: 8,
+      metadata: null,
+      source: 'code-default',
+    },
+    {
+      blockKey: 'market-section-detail-related',
+      context: MarketSuggestionContext.MARKET_SECTION_DETAIL,
+      targetType: MarketSuggestionTargetType.SECTION,
+      title: 'Keep Exploring',
+      subtitle: 'Related market rails and fallbacks',
+      enabled: true,
+      displayOrder: 10,
+      sourceType: 'MIXED',
+      fallbackSourceType: 'PRODUCT',
+      itemLimit: 8,
+      metadata: null,
+      source: 'code-default',
+    },
+    {
+      blockKey: 'wishlist-more-like-this',
+      context: MarketSuggestionContext.WISHLIST,
+      targetType: MarketSuggestionTargetType.QUERY,
+      title: 'More Like This',
+      subtitle: 'Popular pieces to compare with saved items',
       enabled: true,
       displayOrder: 10,
       sourceType: 'PRODUCT',
@@ -490,6 +590,9 @@ export class MarketGovernanceConfigService {
       }
 
       const rowByKey = new Map(rows.map((row) => [row.sectionKey, row]));
+      const defaultKeys = new Set(
+        MARKET_SECTION_CODE_DEFAULTS.map((config) => config.sectionKey),
+      );
       const merged = this.getCodeDefaultSectionConfigs().map(
         (defaultConfig) => {
           const row = rowByKey.get(defaultConfig.sectionKey);
@@ -526,6 +629,33 @@ export class MarketGovernanceConfigService {
           };
         },
       );
+      for (const row of rows) {
+        if (defaultKeys.has(row.sectionKey as SupportedMarketSectionKey)) {
+          continue;
+        }
+        merged.push({
+          sectionKey: row.sectionKey,
+          title: row.title,
+          subtitle: row.subtitle,
+          enabled: row.enabled,
+          status: (row as any).status ?? 'ACTIVE',
+          sourceType: (row as any).sourceType ?? 'PRODUCT',
+          rankingProfileKey: (row as any).rankingProfileKey ?? null,
+          displayOrder: row.displayOrder,
+          previewItemLimit: row.previewItemLimit,
+          detailPageLimit: row.detailPageLimit,
+          minimumItems: row.minimumItems,
+          viewAllEnabled: row.viewAllEnabled,
+          viewAllLabel: (row as any).viewAllLabel ?? null,
+          fallbackMode: row.fallbackMode,
+          fallbackSectionKey: (row as any).fallbackSectionKey ?? null,
+          guestEnabled: (row as any).guestEnabled ?? true,
+          requiresAuth: (row as any).requiresAuth ?? false,
+          newBrandReservedRatio: (row as any).newBrandReservedRatio ?? 0,
+          metadata: this.asRecord(row.metadata),
+          source: 'db' as const,
+        });
+      }
 
       return {
         items: merged.sort((left, right) => {

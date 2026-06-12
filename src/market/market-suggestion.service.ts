@@ -36,6 +36,7 @@ type TargetSnapshot = {
   id: string;
   brandId?: string | null;
   ownerId?: string | null;
+  collectionId?: string | null;
   categoryId?: string | null;
   tags: string[];
 };
@@ -62,6 +63,7 @@ export class MarketSuggestionService {
     const targetId = this.clean(query.targetId);
     const searchQuery = this.clean(query.query);
     const sectionKey = this.clean(query.sectionKey);
+    const excludedIds = this.parseExcludedIds(query.excludeIds);
     const suppressionScope = await this.getSuppressionScope(identity);
     const usedItemKeys = new Set<string>();
 
@@ -98,11 +100,12 @@ export class MarketSuggestionService {
         ));
         break;
       case MarketSuggestionContext.BRAND_DETAIL:
+      case MarketSuggestionContext.BRAND_STORE:
         this.assertTarget(
           targetType,
           targetId,
           MarketSuggestionTargetType.BRAND,
-          'Brand detail suggestions require a brand target',
+          'Brand suggestions require a brand target',
         );
         ({ blocks, fallbackReason } = await this.getBrandDetailSuggestions(
           targetId,
@@ -125,14 +128,38 @@ export class MarketSuggestionService {
         ));
         break;
       case MarketSuggestionContext.MARKET_SECTION_DETAIL:
-        fallbackReason = 'deferred-context';
-        blocks = [];
+        if (!sectionKey) {
+          throw new BadRequestException(
+            'Market section suggestions require a sectionKey',
+          );
+        }
+        ({ blocks, fallbackReason } =
+          await this.getMarketSectionDetailSuggestions(
+            sectionKey,
+            limit,
+            suppressionScope,
+            usedItemKeys,
+          ));
+        break;
+      case MarketSuggestionContext.WISHLIST:
+        ({ blocks, fallbackReason } = await this.getWishlistSuggestions(
+          limit,
+          suppressionScope,
+          usedItemKeys,
+        ));
         break;
       default:
         throw new BadRequestException('Unsupported suggestion context');
     }
 
-    const safeBlocks = blocks.filter((block) => block.items.length > 0);
+    const safeBlocks = blocks
+      .map((block) => ({
+        ...block,
+        items: block.items.filter(
+          (item) => !this.isExcludedItem(item, excludedIds),
+        ),
+      }))
+      .filter((block) => block.items.length > 0);
     const noCandidatesReason =
       safeBlocks.length === 0 && !fallbackReason
         ? 'no-eligible-candidates'
@@ -147,12 +174,12 @@ export class MarketSuggestionService {
       query: searchQuery,
       blocks: safeBlocks,
       metadata: {
-        version: 'phase11b.v1',
+        version: 'phase3.foundation.v1',
         personalization: 'disabled',
         cachePolicy: 'private-no-store',
         fallbackUsed: Boolean(noCandidatesReason),
         fallbackReason: noCandidatesReason,
-        contextsDeferred: [MarketSuggestionContext.MARKET_SECTION_DETAIL],
+        contextsDeferred: [],
       },
     };
   }
@@ -168,6 +195,7 @@ export class MarketSuggestionService {
       select: {
         id: true,
         brandId: true,
+        collectionId: true,
         categoryId: true,
         tags: true,
       },
@@ -204,36 +232,45 @@ export class MarketSuggestionService {
       ),
       this.buildBlock(
         {
-          blockKey: 'product-detail-more-from-brand',
-          title: 'More From This Brand',
-          subtitle: 'Other pieces from the same store',
-          reason: 'same-brand',
+          blockKey: 'product-detail-complete-the-look',
+          title: 'Complete the Look',
+          subtitle: 'Pieces from the same edit or store',
+          reason: target.collectionId
+            ? 'same-collection-products'
+            : 'same-brand-fallback',
           sourceType: 'PRODUCT',
-          strategy: 'product.same-brand',
+          strategy: target.collectionId
+            ? 'product.same-collection'
+            : 'product.same-brand-fallback',
           limit,
-          items: await this.getProductCandidates({
-            limit,
-            excludeIds: [productId],
-            brandId: target.brandId,
-            orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
-          }),
+          items: target.collectionId
+            ? await this.getCollectionProductCandidates(
+                target.collectionId,
+                limit,
+                [productId],
+              )
+            : await this.getProductCandidates({
+                limit,
+                excludeIds: [productId],
+                brandId: target.brandId,
+                orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+              }),
         },
         suppressionScope,
         usedItemKeys,
       ),
       this.buildBlock(
         {
-          blockKey: 'product-detail-fresh-alternatives',
-          title: 'Fresh Alternatives',
-          subtitle: 'New arrivals worth checking',
-          reason: 'fresh-fallback',
-          sourceType: 'PRODUCT',
-          strategy: 'product.fresh-alternatives',
+          blockKey: 'product-detail-new-designers-to-watch',
+          title: 'New Designers to Watch',
+          subtitle: 'Fresh stores with market-ready pieces',
+          reason: 'new-brand-fallback',
+          sourceType: 'BRAND',
+          strategy: 'product.new-designers',
           limit,
-          items: await this.getProductCandidates({
+          items: await this.getBrandCandidates({
             limit,
-            excludeIds: [productId],
-            orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+            excludeIds: target.brandId ? [target.brandId] : undefined,
           }),
         },
         suppressionScope,
@@ -293,9 +330,9 @@ export class MarketSuggestionService {
     const blocks = [
       this.buildBlock(
         {
-          blockKey: 'collection-detail-pieces-from-edit',
-          title: 'Pieces From This Edit',
-          subtitle: 'Market-ready products in the collection',
+          blockKey: 'collection-detail-pieces-that-match-this-edit',
+          title: 'Pieces That Match This Edit',
+          subtitle: 'Market-ready products in this collection',
           reason: 'same-collection-products',
           sourceType: 'PRODUCT',
           strategy: 'collection.products',
@@ -307,17 +344,22 @@ export class MarketSuggestionService {
       ),
       this.buildBlock(
         {
-          blockKey: 'collection-detail-more-from-brand',
-          title: 'More From This Brand',
-          subtitle: 'Other products from the same store',
-          reason: 'same-brand',
+          blockKey: 'collection-detail-more-from-this-style',
+          title: 'More From This Style',
+          subtitle: 'Related pieces with similar category or tags',
+          reason: 'same-category-or-style',
           sourceType: 'PRODUCT',
-          strategy: 'collection.same-brand-products',
+          strategy: 'collection.same-style-products',
           limit,
           items: await this.getProductCandidates({
             limit,
-            brandId: targetSnapshot.brandId,
-            orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+            categoryId: targetSnapshot.categoryId,
+            tags: targetSnapshot.tags,
+            orderBy: [
+              { viewsCount: 'desc' },
+              { createdAt: 'desc' },
+              { id: 'desc' },
+            ],
           }),
         },
         suppressionScope,
@@ -374,12 +416,12 @@ export class MarketSuggestionService {
     const blocks = [
       this.buildBlock(
         {
-          blockKey: 'brand-detail-best-from-brand',
-          title: 'Best From This Brand',
+          blockKey: 'brand-store-more-from-this-brand',
+          title: 'More From This Brand',
           subtitle: 'Available products from this store',
           reason: 'same-brand-products',
           sourceType: 'PRODUCT',
-          strategy: 'brand.best-products',
+          strategy: 'brand.more-from-this-brand',
           limit,
           items: await this.getProductCandidates({
             limit,
@@ -413,12 +455,12 @@ export class MarketSuggestionService {
       ),
       this.buildBlock(
         {
-          blockKey: 'brand-detail-designers-to-watch',
-          title: 'Designers to Watch',
+          blockKey: 'brand-store-similar-brands-to-explore',
+          title: 'Similar Brands to Explore',
           subtitle: 'Other open stores with market-ready products',
           reason: 'fallback-brands',
           sourceType: 'BRAND',
-          strategy: 'brand.fallback-designers',
+          strategy: 'brand.similar-brands',
           limit,
           items: await this.getBrandCandidates({
             limit,
@@ -467,12 +509,181 @@ export class MarketSuggestionService {
       ),
       this.buildBlock(
         {
-          blockKey: 'search-empty-fresh-alternatives',
-          title: 'Fresh Market Picks',
-          subtitle: 'New arrivals while you keep looking',
+          blockKey: 'search-empty-hot-right-now',
+          title: 'Hot Right Now',
+          subtitle: 'Popular market pieces while you keep looking',
+          reason: 'hot-right-now-fallback',
+          sourceType: 'PRODUCT',
+          strategy: 'search.hot-right-now',
+          limit,
+          items: await this.getProductCandidates({
+            limit,
+            orderBy: [
+              { viewsCount: 'desc' },
+              { threadsCount: 'desc' },
+              { createdAt: 'desc' },
+              { id: 'desc' },
+            ],
+          }),
+        },
+        suppressionScope,
+        usedItemKeys,
+      ),
+      this.buildBlock(
+        {
+          blockKey: 'search-empty-fresh-drops',
+          title: 'Fresh Drops',
+          subtitle: 'New arrivals from open WEAZ stores',
           reason: 'fresh-fallback',
           sourceType: 'PRODUCT',
-          strategy: 'search.fresh-fallback',
+          strategy: 'search.fresh-drops',
+          limit,
+          items: await this.getProductCandidates({
+            limit,
+            orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+          }),
+        },
+        suppressionScope,
+        usedItemKeys,
+      ),
+    ].filter((block): block is MarketSuggestionBlockDto => Boolean(block));
+
+    return {
+      blocks,
+      fallbackReason: blocks.length ? null : 'no-eligible-candidates',
+    };
+  }
+
+  private async getMarketSectionDetailSuggestions(
+    sectionKey: string,
+    limit: number,
+    suppressionScope: MarketSuppressionScope,
+    usedItemKeys: Set<string>,
+  ) {
+    const normalizedSection = sectionKey.trim().toLowerCase();
+    const isBrandSection = normalizedSection === 'new-designers-to-watch';
+    const isCollectionSection = normalizedSection === 'shop-the-look';
+    const isHotSection =
+      normalizedSection === 'hot-right-now' ||
+      normalizedSection === 'loved-near-you' ||
+      normalizedSection === 'still-thinking-about-these';
+
+    const blocks = [
+      this.buildBlock(
+        {
+          blockKey: `${normalizedSection}-section-fresh-drops`,
+          title: isHotSection ? 'Fresh Drops' : 'Hot Right Now',
+          subtitle: isHotSection
+            ? 'New arrivals related to this section'
+            : 'Popular market pieces related to this section',
+          reason: isHotSection ? 'fresh-fallback' : 'hot-right-now-fallback',
+          sourceType: 'PRODUCT',
+          strategy: isHotSection
+            ? 'section-detail.fresh-drops'
+            : 'section-detail.hot-right-now',
+          limit,
+          items: await this.getProductCandidates({
+            limit,
+            orderBy: isHotSection
+              ? [{ createdAt: 'desc' }, { id: 'desc' }]
+              : [
+                  { viewsCount: 'desc' },
+                  { threadsCount: 'desc' },
+                  { createdAt: 'desc' },
+                  { id: 'desc' },
+                ],
+          }),
+        },
+        suppressionScope,
+        usedItemKeys,
+      ),
+      this.buildBlock(
+        {
+          blockKey: `${normalizedSection}-section-${
+            isBrandSection ? 'fresh-designers' : 'new-designers-to-watch'
+          }`,
+          title: 'New Designers to Watch',
+          subtitle: 'Open stores with market-ready pieces',
+          reason: 'new-brand-fallback',
+          sourceType: 'BRAND',
+          strategy: 'section-detail.new-designers',
+          limit,
+          items: await this.getBrandCandidates({ limit }),
+        },
+        suppressionScope,
+        usedItemKeys,
+      ),
+      this.buildBlock(
+        {
+          blockKey: `${normalizedSection}-section-${
+            isCollectionSection ? 'fresh-products' : 'shop-the-look'
+          }`,
+          title: isCollectionSection ? 'Fresh Drops' : 'Shop the Look',
+          subtitle: isCollectionSection
+            ? 'New products from open WEAZ stores'
+            : 'Recent store edits and capsules',
+          reason: isCollectionSection
+            ? 'fresh-products-fallback'
+            : 'collection-fallback',
+          sourceType: isCollectionSection ? 'PRODUCT' : 'COLLECTION',
+          strategy: isCollectionSection
+            ? 'section-detail.fresh-products'
+            : 'section-detail.collections',
+          limit,
+          items: isCollectionSection
+            ? await this.getProductCandidates({
+                limit,
+                orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+              })
+            : await this.getCollectionCandidates({ limit }),
+        },
+        suppressionScope,
+        usedItemKeys,
+      ),
+    ].filter((block): block is MarketSuggestionBlockDto => Boolean(block));
+
+    return {
+      blocks,
+      fallbackReason: blocks.length ? null : 'no-eligible-candidates',
+    };
+  }
+
+  private async getWishlistSuggestions(
+    limit: number,
+    suppressionScope: MarketSuppressionScope,
+    usedItemKeys: Set<string>,
+  ) {
+    const blocks = [
+      this.buildBlock(
+        {
+          blockKey: 'wishlist-more-like-this',
+          title: 'More Like This',
+          subtitle: 'Popular pieces to compare with your saved items',
+          reason: 'wishlist-generic-fallback',
+          sourceType: 'PRODUCT',
+          strategy: 'wishlist.hot-right-now',
+          limit,
+          items: await this.getProductCandidates({
+            limit,
+            orderBy: [
+              { viewsCount: 'desc' },
+              { threadsCount: 'desc' },
+              { createdAt: 'desc' },
+              { id: 'desc' },
+            ],
+          }),
+        },
+        suppressionScope,
+        usedItemKeys,
+      ),
+      this.buildBlock(
+        {
+          blockKey: 'wishlist-fresh-drops',
+          title: 'Fresh Drops',
+          subtitle: 'New arrivals from open WEAZ stores',
+          reason: 'fresh-fallback',
+          sourceType: 'PRODUCT',
+          strategy: 'wishlist.fresh-drops',
           limit,
           items: await this.getProductCandidates({
             limit,
@@ -484,14 +695,14 @@ export class MarketSuggestionService {
       ),
       this.buildBlock(
         {
-          blockKey: 'search-empty-latest-collections',
-          title: 'Latest Collections',
-          subtitle: 'Recent store edits and capsules',
-          reason: 'collection-fallback',
-          sourceType: 'COLLECTION',
-          strategy: 'search.latest-collections',
+          blockKey: 'wishlist-new-designers-to-watch',
+          title: 'New Designers to Watch',
+          subtitle: 'Fresh stores with market-ready pieces',
+          reason: 'new-brand-fallback',
+          sourceType: 'BRAND',
+          strategy: 'wishlist.new-designers',
           limit,
-          items: await this.getCollectionCandidates({ limit }),
+          items: await this.getBrandCandidates({ limit }),
         },
         suppressionScope,
         usedItemKeys,
@@ -600,6 +811,7 @@ export class MarketSuggestionService {
   private async getCollectionProductCandidates(
     collectionId: string,
     limit: number,
+    excludeIds: string[] = [],
   ) {
     const productWhere = this.buildMarketableProductWhere([], {
       includeBrandOpen: false,
@@ -607,7 +819,10 @@ export class MarketSuggestionService {
     const links = await this.prisma.storeCollectionProduct.findMany({
       where: {
         collectionId,
-        product: productWhere,
+        product: {
+          ...productWhere,
+          ...(excludeIds.length ? { id: { notIn: excludeIds } } : {}),
+        },
       },
       orderBy: [{ orderIndex: 'asc' }, { productId: 'asc' }],
       take: this.queryTake(limit),
@@ -1154,11 +1369,14 @@ export class MarketSuggestionService {
       case MarketSuggestionContext.COLLECTION_DETAIL:
         return MarketSuggestionTargetType.COLLECTION;
       case MarketSuggestionContext.BRAND_DETAIL:
+      case MarketSuggestionContext.BRAND_STORE:
         return MarketSuggestionTargetType.BRAND;
       case MarketSuggestionContext.SEARCH_EMPTY:
         return MarketSuggestionTargetType.QUERY;
       case MarketSuggestionContext.MARKET_SECTION_DETAIL:
         return MarketSuggestionTargetType.SECTION;
+      case MarketSuggestionContext.WISHLIST:
+        return MarketSuggestionTargetType.QUERY;
     }
   }
 
@@ -1198,6 +1416,32 @@ export class MarketSuggestionService {
           .slice(0, 8),
       ),
     );
+  }
+
+  private parseExcludedIds(value?: string | null) {
+    const cleaned = this.clean(value);
+    if (!cleaned) return new Set<string>();
+    return new Set(
+      cleaned
+        .split(',')
+        .map((entry) => entry.trim())
+        .filter((entry) => entry.length > 0 && entry.length <= 128)
+        .slice(0, 100),
+    );
+  }
+
+  private isExcludedItem(
+    item: MarketSectionItemDto,
+    excludedIds: Set<string>,
+  ) {
+    if (excludedIds.size === 0) return false;
+    const candidates = [
+      item.id,
+      item.sourceId,
+      item.target?.id,
+      item.target?.key,
+    ].filter((entry): entry is string => Boolean(entry));
+    return candidates.some((entry) => excludedIds.has(entry));
   }
 
   private firstProductImage(product: any): string | null {

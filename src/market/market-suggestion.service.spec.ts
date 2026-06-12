@@ -173,8 +173,8 @@ describe('MarketSuggestionService', () => {
 
     expect(result.blocks.map((block) => block.blockKey)).toEqual([
       'product-detail-more-like-this',
-      'product-detail-more-from-brand',
-      'product-detail-fresh-alternatives',
+      'product-detail-complete-the-look',
+      'product-detail-new-designers-to-watch',
     ]);
     expect(
       result.blocks.flatMap((block) =>
@@ -326,13 +326,13 @@ describe('MarketSuggestionService', () => {
     );
 
     expect(result.blocks.map((block) => block.blockKey)).toEqual([
-      'collection-detail-pieces-from-edit',
-      'collection-detail-more-from-brand',
+      'collection-detail-pieces-that-match-this-edit',
+      'collection-detail-more-from-this-style',
       'collection-detail-similar-collections',
     ]);
   });
 
-  it('returns safe empty response for deferred market section detail context', async () => {
+  it('returns deterministic market section detail suggestions', async () => {
     const service = new MarketSuggestionService(
       createPrisma() as any,
       suppressionService() as any,
@@ -347,14 +347,13 @@ describe('MarketSuggestionService', () => {
       {},
     );
 
-    expect(result.blocks).toEqual([]);
-    expect(result.metadata).toEqual(
-      expect.objectContaining({
-        fallbackUsed: true,
-        fallbackReason: 'deferred-context',
-        personalization: 'disabled',
-      }),
-    );
+    expect(result.blocks.map((block) => block.blockKey)).toEqual([
+      'fresh-drops-section-fresh-drops',
+      'fresh-drops-section-new-designers-to-watch',
+      'fresh-drops-section-shop-the-look',
+    ]);
+    expect(result.metadata.fallbackUsed).toBe(false);
+    expect(result.metadata.personalization).toBe('disabled');
   });
 
   it('returns brand detail blocks when brand inventory exists', async () => {
@@ -373,10 +372,10 @@ describe('MarketSuggestionService', () => {
     );
 
     expect(result.blocks.map((block) => block.blockKey)).toContain(
-      'brand-detail-best-from-brand',
+      'brand-store-more-from-this-brand',
     );
     const fallbackBrand = result.blocks
-      .find((block) => block.blockKey === 'brand-detail-designers-to-watch')
+      .find((block) => block.blockKey === 'brand-store-similar-brands-to-explore')
       ?.items.find((item) => item.entityType === 'BRAND');
     expect(fallbackBrand?.target).toEqual(
       expect.objectContaining({
@@ -403,7 +402,7 @@ describe('MarketSuggestionService', () => {
 
     expect(result.metadata).toEqual(
       expect.objectContaining({
-        version: 'phase11b.v1',
+        version: 'phase3.foundation.v1',
         personalization: 'disabled',
         cachePolicy: 'private-no-store',
       }),
