@@ -5645,10 +5645,18 @@ export class CollectionsService {
         }
       }
     } else {
-      // Owner view: show by requested visibility or all
-      // Filter out DRAFT collections from the main list to avoid showing failed/incomplete collections.
+      // Owner view: show published and moderation-review states in the main
+      // content list. Drafts and deleted rows are loaded through dedicated tabs.
       if (!shouldOnlyDeleted) {
-        where.status = 'PUBLISHED';
+        where.status = {
+          in: [
+            CollectionStatus.PUBLISHED,
+            CollectionStatus.IN_REVIEW,
+            CollectionStatus.CHANGES_REQUESTED,
+            CollectionStatus.REJECTED,
+            CollectionStatus.FAILED,
+          ],
+        };
       }
 
       if (visibility === 'public') {

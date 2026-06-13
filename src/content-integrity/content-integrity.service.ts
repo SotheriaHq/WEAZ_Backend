@@ -31,6 +31,7 @@ import { MonitoringService } from 'src/monitoring/monitoring.service';
 import { NotificationsService } from 'src/notifications/notifications.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { LegalAcceptancePayload, LegalService } from 'src/legal/legal.service';
+import { UploadService } from 'src/upload/upload.service';
 import { Request } from 'express';
 import {
   CONTENT_MEDIA_ORDER_SLOTS,
@@ -105,6 +106,7 @@ export class ContentIntegrityService {
     @Optional() private readonly notifications?: NotificationsService,
     @Optional() private readonly monitoring?: MonitoringService,
     @Optional() private readonly legalService?: LegalService,
+    @Optional() private readonly uploadService?: UploadService,
   ) {}
 
   getRequiredViewSlots(): ContentMediaViewSlot[] {
@@ -1129,12 +1131,13 @@ export class ContentIntegrityService {
             })
           : [];
 
-    return rows.map((row) => this.mapMediaRow(row));
+    return Promise.all(rows.map((row) => this.mapMediaRow(row)));
   }
 
-  private mapMediaRow(row: any) {
+  private async mapMediaRow(row: any) {
     const slot = this.normalizeViewSlot(row.viewSlot, row.orderIndex);
     const reasonCode = row.reviewReasonCode as ContentReviewReasonCode | null;
+    const previewUrl = await this.getReviewMediaPreviewUrl(row.file);
     return {
       id: row.id,
       fileId: row.fileUploadId,
@@ -1150,9 +1153,29 @@ export class ContentIntegrityService {
         : null,
       reviewReason: row.reviewReason ?? null,
       orderIndex: row.orderIndex,
-      canPreview: Boolean(row.fileUploadId),
-      previewUrl: null,
+      canPreview: Boolean(previewUrl),
+      previewUrl,
+      url: previewUrl,
+      thumbnailUrl: previewUrl,
     };
+  }
+
+  private async getReviewMediaPreviewUrl(file?: any): Promise<string | null> {
+    if (
+      !file ||
+      file.originalDeletedAt ||
+      file.processingStatus !== 'READY'
+    ) {
+      return null;
+    }
+
+    const stableUrl = this.uploadService?.getPublicDisplayUrl(file) ?? null;
+    if (stableUrl) return stableUrl;
+
+    return (
+      (await this.uploadService?.getTemporarySignedDisplayUrl(file, 15 * 60)) ??
+      null
+    );
   }
 
   private buildRequiredSlotChecklist(media: any[]) {
