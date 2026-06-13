@@ -44,6 +44,6 @@ import { ContentIntegrityModule } from 'src/content-integrity/content-integrity.
     BrandPermissionService,
   ],
   controllers: [CollectionsController, StoreCollectionsController],
-  exports: [CollectionsService],
+  exports: [CollectionsService, CollectionSchedulerService],
 })
 export class CollectionsModule {}

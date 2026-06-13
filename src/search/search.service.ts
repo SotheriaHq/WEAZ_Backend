@@ -138,6 +138,21 @@ const SEARCH_SUGGEST_SCAN_BATCH = 24;
 const SEARCH_SUGGEST_SCAN_CAP = 240;
 const SEARCH_SUGGEST_DB_FALLBACK_MIN_LENGTH = 2;
 const SEARCH_SIMILARITY_THRESHOLD = 0.3;
+// Per-token coverage floor for fuzzy commerce/content matches. A multi-word query
+// (e.g. "avery cotour") may not match a product/brand/design/collection just because
+// it shares one common word ("cotour"); every significant query token must have a
+// word-level match. word_similarity('avery', <jaff text>) ≈ 0.17 < 0.5 → excluded,
+// while a genuine token ("cotour") scores ~1.0. Keeps typo tolerance (~0.5).
+const SEARCH_TOKEN_COVERAGE_THRESHOLD = 0.5;
+const SEARCH_TOKEN_MIN_LENGTH = 2;
+// Identity-first ranking tiers (lower = ranked higher). Identity (profile/brand)
+// matches sit above commerce/content; tags last.
+const SEARCH_TIER_EXACT_IDENTITY = 0;
+const SEARCH_TIER_IDENTITY_PREFIX = 1;
+const SEARCH_TIER_IDENTITY_CONTAINS = 2;
+const SEARCH_TIER_IDENTITY_FUZZY = 3;
+const SEARCH_TIER_COMMERCE = 4;
+const SEARCH_TIER_TAG = 5;
 const SEARCH_MIXED_PREVIEW_LIMIT = 5;
 
 const SEARCH_RESULT_CACHE_ALL_VERSION_KEY = 'search:results:version:all';
@@ -491,9 +506,15 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     query: string,
     tokens: string[],
   ): SearchItem {
+    const isBrandIdentity = payload.type === 'brand';
+    const identity = isBrandIdentity
+      ? this.identityTier(payload.title, query)
+      : { tier: SEARCH_TIER_COMMERCE, reason: 'commerce-match' };
     return {
       id: payload.id,
       type: payload.type as SearchEntityType,
+      matchTier: identity.tier,
+      matchReason: identity.reason,
       title: payload.title,
       subtitle: payload.subtitle ?? null,
       description: payload.description ?? null,
@@ -734,6 +755,86 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     return score;
   }
 
+  private significantTokens(tokens: string[]): string[] {
+    return Array.from(
+      new Set(tokens.filter((token) => token.length >= SEARCH_TOKEN_MIN_LENGTH)),
+    );
+  }
+
+  private buildTokenArraySql(tokens: string[]): Prisma.Sql {
+    const significant = this.significantTokens(tokens);
+    return significant.length > 0
+      ? Prisma.sql`ARRAY[${Prisma.join(significant)}]::text[]`
+      : Prisma.sql`ARRAY[]::text[]`;
+  }
+
+  /**
+   * Distinctive-token gate. Produces a SQL predicate requiring that EVERY significant
+   * query token has a word-level match in `combined`. Prevents a multi-word query from
+   * matching a row that only shares one common word with it. No-op when there are no
+   * significant tokens (single-char queries), preserving prior fuzzy behaviour.
+   */
+  private tokenCoverageGate(
+    tokens: string[],
+    combined: Prisma.Sql,
+  ): Prisma.Sql {
+    if (this.significantTokens(tokens).length === 0) {
+      return Prisma.empty;
+    }
+    return Prisma.sql`
+          AND NOT EXISTS (
+            SELECT 1 FROM unnest(sp.query_tokens) AS qt
+            WHERE word_similarity(qt, ${combined}) < ${SEARCH_TOKEN_COVERAGE_THRESHOLD}
+          )`;
+  }
+
+  private identityTier(
+    value: string | null | undefined,
+    query: string,
+  ): { tier: number; reason: string } {
+    const normalized = this.normalizeQuery(value);
+    if (!normalized || !query) {
+      return { tier: SEARCH_TIER_IDENTITY_FUZZY, reason: 'identity-fuzzy' };
+    }
+    if (normalized === query) {
+      return { tier: SEARCH_TIER_EXACT_IDENTITY, reason: 'exact-identity-name' };
+    }
+    if (normalized.startsWith(query)) {
+      return { tier: SEARCH_TIER_IDENTITY_PREFIX, reason: 'identity-prefix' };
+    }
+    if (normalized.includes(query)) {
+      return { tier: SEARCH_TIER_IDENTITY_CONTAINS, reason: 'identity-contains' };
+    }
+    return { tier: SEARCH_TIER_IDENTITY_FUZZY, reason: 'identity-fuzzy' };
+  }
+
+  private tierOf(item: SearchItem): number {
+    return typeof item.matchTier === 'number'
+      ? item.matchTier
+      : SEARCH_TIER_COMMERCE;
+  }
+
+  /**
+   * Collapse duplicate identity clutter: when the same owner surfaces as both a
+   * profile and a brand, keep the richer profile identity and drop the brand row.
+   * An open-store brand whose owner profile is absent (e.g. private/locked) is kept,
+   * so private-profile owners are never hidden from commerce discovery.
+   */
+  private dedupeIdentity(items: SearchItem[]): SearchItem[] {
+    const profileOwnerIds = new Set(
+      items
+        .filter((item) => item.type === 'profile')
+        .map((item) => String(item.metadata?.ownerId ?? item.id)),
+    );
+    return items.filter((item) => {
+      if (item.type !== 'brand') {
+        return true;
+      }
+      const ownerId = item.metadata?.ownerId;
+      return !(ownerId && profileOwnerIds.has(String(ownerId)));
+    });
+  }
+
   private productWhere(
     query: string,
     tokens: string[],
@@ -839,6 +940,8 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
       id: product.id,
       type: 'product',
       entityType: 'PRODUCT',
+      matchTier: SEARCH_TIER_COMMERCE,
+      matchReason: 'commerce-match',
       title: product.name,
       subtitle: product.brand?.name || null,
       description: product.description || null,
@@ -866,9 +969,13 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
       this.scoreField(brand.description, query, tokens, 3) +
       this.scoreTagArray(brand.tags, tokens, 3);
 
+    const identity = this.identityTier(brand.name, query);
+
     return {
       id: brand.id,
       type: 'brand',
+      matchTier: identity.tier,
+      matchReason: identity.reason,
       title: brand.name,
       subtitle: brand.tagline || null,
       description: brand.description || null,
@@ -911,9 +1018,26 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
       this.scoreField(fullName, query, tokens, 8) +
       this.scoreTagArray(profile.brandTags, tokens, 2);
 
+    const compactQuery = this.compactHandleQuery(query);
+    let identity = { tier: SEARCH_TIER_IDENTITY_FUZZY, reason: 'identity-fuzzy' };
+    if (
+      compactQuery &&
+      this.compactHandleQuery(profile.username) === compactQuery
+    ) {
+      identity = { tier: SEARCH_TIER_EXACT_IDENTITY, reason: 'exact-handle' };
+    }
+    for (const candidate of [profile.brandName, fullName, profile.username]) {
+      const candidateTier = this.identityTier(candidate, query);
+      if (candidateTier.tier < identity.tier) {
+        identity = candidateTier;
+      }
+    }
+
     return {
       id: profile.id,
       type: 'profile',
+      matchTier: identity.tier,
+      matchReason: identity.reason,
       title,
       subtitle,
       description,
@@ -951,6 +1075,8 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
       id: collection.id,
       type: 'design',
       entityType: 'DESIGN',
+      matchTier: SEARCH_TIER_COMMERCE,
+      matchReason: 'content-match',
       title: collection.title || 'Untitled design',
       subtitle: 'Design',
       description: collection.description || null,
@@ -982,6 +1108,8 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
       id: collection.id,
       type: 'collection',
       entityType: 'COLLECTION',
+      matchTier: SEARCH_TIER_COMMERCE,
+      matchReason: 'content-match',
       title: collection.title || 'Untitled collection',
       subtitle: 'Store Collection',
       description: collection.description || null,
@@ -1009,6 +1137,8 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     return {
       id: tag.tag,
       type: 'tag',
+      matchTier: SEARCH_TIER_TAG,
+      matchReason: 'tag-match',
       title: tag.tag,
       subtitle: `${tag.count} uses`,
       description: null,
@@ -1503,12 +1633,18 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
       ? Prisma.sql`AND p."brandId" = ${brandId}`
       : Prisma.empty;
     const prodIlikePat = `%${query}%`;
+    const tokenArray = this.buildTokenArraySql(tokens);
+    const productCoverage = this.tokenCoverageGate(
+      tokens,
+      Prisma.sql`immutable_unaccent(COALESCE(p.name, '') || ' ' || COALESCE(p."brandNameCache", '') || ' ' || COALESCE(p.description, ''))`,
+    );
 
     const rows = await this.prisma.$queryRaw<ProductSearchRow[]>(Prisma.sql`
       WITH search_params AS (
         SELECT
           websearch_to_tsquery('english', immutable_unaccent(${query})) AS tsq,
-          immutable_unaccent(${query}) AS normalized_query
+          immutable_unaccent(${query}) AS normalized_query,
+          ${tokenArray} AS query_tokens
       ),
       fts AS (
         SELECT
@@ -1573,7 +1709,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
           AND GREATEST(
             similarity(immutable_unaccent(COALESCE(p.name, '')), sp.normalized_query),
             similarity(immutable_unaccent(COALESCE(p."brandNameCache", '')), sp.normalized_query)
-          ) >= ${SEARCH_SIMILARITY_THRESHOLD}
+          ) >= ${SEARCH_SIMILARITY_THRESHOLD}${productCoverage}
       ),
       ilike_fallback AS (
         SELECT
@@ -1624,7 +1760,8 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
       WITH search_params AS (
         SELECT
           websearch_to_tsquery('english', immutable_unaccent(${query})) AS tsq,
-          immutable_unaccent(${query}) AS normalized_query
+          immutable_unaccent(${query}) AS normalized_query,
+          ${tokenArray} AS query_tokens
       ),
       fts AS (
         SELECT p."_id" AS id
@@ -1656,7 +1793,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
           AND GREATEST(
             similarity(immutable_unaccent(COALESCE(p.name, '')), sp.normalized_query),
             similarity(immutable_unaccent(COALESCE(p."brandNameCache", '')), sp.normalized_query)
-          ) >= ${SEARCH_SIMILARITY_THRESHOLD}
+          ) >= ${SEARCH_SIMILARITY_THRESHOLD}${productCoverage}
       ),
       ilike_fallback AS (
         SELECT p."_id" AS id
@@ -1722,11 +1859,17 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     limit: number,
     offset: number,
   ): Promise<SearchPageResult> {
+    const tokenArray = this.buildTokenArraySql(tokens);
+    const brandCoverage = this.tokenCoverageGate(
+      tokens,
+      Prisma.sql`immutable_unaccent(COALESCE(b.name, '') || ' ' || COALESCE(b.tagline, '') || ' ' || COALESCE(b.description, ''))`,
+    );
     const rows = await this.prisma.$queryRaw<BrandSearchRow[]>(Prisma.sql`
       WITH search_params AS (
         SELECT
           websearch_to_tsquery('english', immutable_unaccent(${query})) AS tsq,
-          immutable_unaccent(${query}) AS normalized_query
+          immutable_unaccent(${query}) AS normalized_query,
+          ${tokenArray} AS query_tokens
       ),
       fts AS (
         SELECT
@@ -1759,7 +1902,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
         CROSS JOIN search_params sp
         WHERE b."isStoreOpen" = true
           AND NOT EXISTS (SELECT 1 FROM fts WHERE fts.id = b."_id")
-          AND similarity(immutable_unaccent(COALESCE(b.name, '')), sp.normalized_query) >= ${SEARCH_SIMILARITY_THRESHOLD}
+          AND similarity(immutable_unaccent(COALESCE(b.name, '')), sp.normalized_query) >= ${SEARCH_SIMILARITY_THRESHOLD}${brandCoverage}
       )
       SELECT id, "ownerId", name, description, tagline, logo, "isStoreOpen", score
       FROM (
@@ -1775,7 +1918,8 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
       WITH search_params AS (
         SELECT
           websearch_to_tsquery('english', immutable_unaccent(${query})) AS tsq,
-          immutable_unaccent(${query}) AS normalized_query
+          immutable_unaccent(${query}) AS normalized_query,
+          ${tokenArray} AS query_tokens
       ),
       fts AS (
         SELECT b."_id" AS id
@@ -1790,7 +1934,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
         CROSS JOIN search_params sp
         WHERE b."isStoreOpen" = true
           AND NOT EXISTS (SELECT 1 FROM fts WHERE fts.id = b."_id")
-          AND similarity(immutable_unaccent(COALESCE(b.name, '')), sp.normalized_query) >= ${SEARCH_SIMILARITY_THRESHOLD}
+          AND similarity(immutable_unaccent(COALESCE(b.name, '')), sp.normalized_query) >= ${SEARCH_SIMILARITY_THRESHOLD}${brandCoverage}
       )
       SELECT COUNT(*)::bigint AS total
       FROM (
@@ -1813,11 +1957,17 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     offset: number,
   ): Promise<SearchPageResult> {
     const ilikePat = `%${query}%`;
+    const tokenArray = this.buildTokenArraySql(tokens);
+    const designCoverage = this.tokenCoverageGate(
+      tokens,
+      Prisma.sql`immutable_unaccent(COALESCE(c.title, '') || ' ' || COALESCE(c.description, ''))`,
+    );
     const rows = await this.prisma.$queryRaw<CollectionSearchRow[]>(Prisma.sql`
       WITH search_params AS (
         SELECT
           websearch_to_tsquery('english', immutable_unaccent(${query})) AS tsq,
-          immutable_unaccent(${query}) AS normalized_query
+          immutable_unaccent(${query}) AS normalized_query,
+          ${tokenArray} AS query_tokens
       ),
       fts AS (
         SELECT
@@ -1854,7 +2004,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
           AND c.visibility = ${CollectionVisibility.PUBLIC}
           AND c."deletedAt" IS NULL
           AND NOT EXISTS (SELECT 1 FROM fts WHERE fts.id = c."_id")
-          AND similarity(immutable_unaccent(COALESCE(c.title, '')), sp.normalized_query) >= ${SEARCH_SIMILARITY_THRESHOLD}
+          AND similarity(immutable_unaccent(COALESCE(c.title, '')), sp.normalized_query) >= ${SEARCH_SIMILARITY_THRESHOLD}${designCoverage}
       ),
       ilike_fallback AS (
         SELECT
@@ -1893,7 +2043,8 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
       WITH search_params AS (
         SELECT
           websearch_to_tsquery('english', immutable_unaccent(${query})) AS tsq,
-          immutable_unaccent(${query}) AS normalized_query
+          immutable_unaccent(${query}) AS normalized_query,
+          ${tokenArray} AS query_tokens
       ),
       fts AS (
         SELECT c."_id" AS id
@@ -1914,7 +2065,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
           AND c.visibility = ${CollectionVisibility.PUBLIC}
           AND c."deletedAt" IS NULL
           AND NOT EXISTS (SELECT 1 FROM fts WHERE fts.id = c."_id")
-          AND similarity(immutable_unaccent(COALESCE(c.title, '')), sp.normalized_query) >= ${SEARCH_SIMILARITY_THRESHOLD}
+          AND similarity(immutable_unaccent(COALESCE(c.title, '')), sp.normalized_query) >= ${SEARCH_SIMILARITY_THRESHOLD}${designCoverage}
       ),
       ilike_fallback AS (
         SELECT c."_id" AS id
@@ -1956,12 +2107,18 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     const ownerFilter = ownerId
       ? Prisma.sql`AND sc."ownerId" = ${ownerId}`
       : Prisma.empty;
+    const tokenArray = this.buildTokenArraySql(tokens);
+    const collectionCoverage = this.tokenCoverageGate(
+      tokens,
+      Prisma.sql`immutable_unaccent(COALESCE(sc.title, '') || ' ' || COALESCE(sc.description, ''))`,
+    );
 
     const rows = await this.prisma.$queryRaw<CollectionSearchRow[]>(Prisma.sql`
       WITH search_params AS (
         SELECT
           websearch_to_tsquery('english', immutable_unaccent(${query})) AS tsq,
-          immutable_unaccent(${query}) AS normalized_query
+          immutable_unaccent(${query}) AS normalized_query,
+          ${tokenArray} AS query_tokens
       ),
       fts AS (
         SELECT
@@ -1998,7 +2155,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
           AND sc."deletedAt" IS NULL
           ${ownerFilter}
           AND NOT EXISTS (SELECT 1 FROM fts WHERE fts.id = sc."_id")
-          AND similarity(immutable_unaccent(COALESCE(sc.title, '')), sp.normalized_query) >= ${SEARCH_SIMILARITY_THRESHOLD}
+          AND similarity(immutable_unaccent(COALESCE(sc.title, '')), sp.normalized_query) >= ${SEARCH_SIMILARITY_THRESHOLD}${collectionCoverage}
       )
       SELECT id, "ownerId", title, description, "viewsCount", score
       FROM (
@@ -2014,7 +2171,8 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
       WITH search_params AS (
         SELECT
           websearch_to_tsquery('english', immutable_unaccent(${query})) AS tsq,
-          immutable_unaccent(${query}) AS normalized_query
+          immutable_unaccent(${query}) AS normalized_query,
+          ${tokenArray} AS query_tokens
       ),
       fts AS (
         SELECT sc."_id" AS id
@@ -2035,7 +2193,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
           AND sc."deletedAt" IS NULL
           ${ownerFilter}
           AND NOT EXISTS (SELECT 1 FROM fts WHERE fts.id = sc."_id")
-          AND similarity(immutable_unaccent(COALESCE(sc.title, '')), sp.normalized_query) >= ${SEARCH_SIMILARITY_THRESHOLD}
+          AND similarity(immutable_unaccent(COALESCE(sc.title, '')), sp.normalized_query) >= ${SEARCH_SIMILARITY_THRESHOLD}${collectionCoverage}
       )
       SELECT COUNT(*)::bigint AS total
       FROM (
@@ -3151,6 +3309,16 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
             ),
       ]);
 
+    // Collapse a brand suggestion when its owner already appears as a profile
+    // identity row, so the dropdown does not show the same owner twice.
+    const suggestProfileOwnerIds = new Set(
+      profiles.items.map((item) => String(item.metadata?.ownerId ?? item.id)),
+    );
+    const dedupedBrandItems = brands.items.filter((item) => {
+      const ownerId = item.metadata?.ownerId;
+      return !(ownerId && suggestProfileOwnerIds.has(String(ownerId)));
+    });
+
     const response = {
       query: queryInput || '',
       normalizedQuery,
@@ -3158,7 +3326,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
       trending: [],
       profiles: { items: profiles.items, total: profiles.total },
       products: { items: products.items, total: products.total },
-      brands: { items: brands.items, total: brands.total },
+      brands: { items: dedupedBrandItems, total: dedupedBrandItems.length },
       designs: { items: designs.items, total: designs.total },
       storeCollections: {
         items: storeCollections.items,
@@ -3345,17 +3513,21 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
       counts.collection = collections.total;
       counts.tag = tags.total;
 
-      items = [
+      const combined = [
         ...profiles.items,
         ...products.items,
         ...brands.items,
         ...designs.items,
         ...collections.items,
         ...tags.items,
-      ]
+      ];
+
+      items = this.dedupeIdentity(combined)
         .sort(
           (left, right) =>
-            right.score - left.score || left.title.localeCompare(right.title),
+            this.tierOf(left) - this.tierOf(right) ||
+            right.score - left.score ||
+            left.title.localeCompare(right.title),
         )
         .slice(0, limit);
       hasNextPage = false;

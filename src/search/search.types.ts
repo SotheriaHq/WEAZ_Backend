@@ -30,6 +30,13 @@ export interface SearchItem {
   salePrice?: number | null;
   currency?: string | null;
   metadata?: Record<string, unknown>;
+  /**
+   * Additive ranking debug/ordering fields. Identity results occupy lower tiers
+   * (0 = strongest identity) and rank above commerce/content matches. Optional so
+   * existing web/mobile clients that ignore them are unaffected.
+   */
+  matchTier?: number;
+  matchReason?: string;
   highlights?: {
     title?: SearchHighlightOffset[];
     description?: SearchHighlightOffset[];
