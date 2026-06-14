@@ -2265,7 +2265,7 @@ export class CollectionsService {
           title: dto.title?.trim() || null,
           description: dto.description?.trim() || null,
           status: 'DRAFT',
-          visibility: dto.visibility ?? CollectionVisibility.PUBLIC,
+          visibility: CollectionVisibility.PRIVATE,
           type: dto.type ?? CollectionType.EVERYBODY,
           tags: Array.isArray(dto.tags) ? sanitizeTags(dto.tags) : [],
           categoryId: dto.categoryId || null,
@@ -2337,7 +2337,7 @@ export class CollectionsService {
           targetAgeGroup: dto.targetAgeGroup ?? 'ADULT',
           tags: sanitizedTags,
           status: 'DRAFT',
-          visibility: dto.visibility ?? CollectionVisibility.PUBLIC,
+          visibility: CollectionVisibility.PRIVATE,
           type: dto.type ?? CollectionType.EVERYBODY,
           ...(dto.categoryId
             ? { category: { connect: { id: dto.categoryId } } }
@@ -2501,7 +2501,7 @@ export class CollectionsService {
         targetAgeGroup: dto.targetAgeGroup ?? 'ADULT',
         tags: sanitizedTags,
         status: collectionStatus,
-        visibility: dto.visibility ?? CollectionVisibility.PUBLIC,
+        visibility: CollectionVisibility.PRIVATE,
         type: dto.type ?? CollectionType.EVERYBODY,
         // Set required category
         category: { connect: { id: finalCategoryId } },
