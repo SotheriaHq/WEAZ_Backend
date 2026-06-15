@@ -1,4 +1,4 @@
-﻿import {
+import {
   Controller,
   Post,
   Get,
@@ -460,18 +460,20 @@ export class CollectionsController {
     @Query('scope') scope?: 'design' | 'store' | 'all',
     @Query('includeDeleted') includeDeleted?: string,
     @Query('onlyDeleted') onlyDeleted?: string,
+    @Query('status') status?: string,
     @Req() req?: any,
   ) {
     // If the requester is the same as the userId, include drafts; otherwise only published
     const requesterId = req?.user?.id;
     try {
       console.log(
-        '[collections:getUserCollections] userId=%s requesterId=%s visibility=%s cursor=%s limit=%s',
+        '[collections:getUserCollections] userId=%s requesterId=%s visibility=%s cursor=%s limit=%s status=%s',
         userId,
         requesterId ?? 'anon',
         visibility ?? 'public',
         cursor ?? '-',
         limit ?? '-',
+        status ?? '-',
       );
     } catch {}
     return this.collectionsService.getUserCollections(userId, requesterId, {
@@ -481,6 +483,7 @@ export class CollectionsController {
       scope,
       includeDeleted: includeDeleted === 'true' || includeDeleted === '1',
       onlyDeleted: onlyDeleted === 'true' || onlyDeleted === '1',
+      status: status as any,
     });
   }
 

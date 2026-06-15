@@ -5567,6 +5567,7 @@ export class CollectionsService {
       scope?: CollectionScope;
       includeDeleted?: boolean;
       onlyDeleted?: boolean;
+      status?: string;
     },
   ) {
     const {
@@ -5576,6 +5577,7 @@ export class CollectionsService {
       scope = this.defaultCollectionScope,
       includeDeleted = false,
       onlyDeleted = false,
+      status,
     } = options || {};
     const resolvedScope = this.normalizeCollectionScope(scope);
     if (resolvedScope === 'store') {
@@ -5598,6 +5600,10 @@ export class CollectionsService {
       where.deletedAt = { not: null };
     } else if (!shouldIncludeDeleted) {
       where.deletedAt = null;
+    }
+    
+    if (status && requesterId === userId) {
+      where.status = status;
     }
     if (domainFilter) {
       where.domain = domainFilter;
@@ -5647,7 +5653,7 @@ export class CollectionsService {
     } else {
       // Owner view: show published and moderation-review states in the main
       // content list. Drafts and deleted rows are loaded through dedicated tabs.
-      if (!shouldOnlyDeleted) {
+      if (!shouldOnlyDeleted && !where.status) {
         where.status = {
           in: [
             CollectionStatus.PUBLISHED,

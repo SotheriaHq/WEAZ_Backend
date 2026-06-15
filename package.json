@@ -30,6 +30,7 @@
     "prisma:migrate": "prisma migrate dev",
     "prisma:generate": "prisma generate",
     "prisma:seed": "ts-node prisma/seed.ts",
+    "prisma:seed:tags": "ts-node prisma/seed_tags.ts",
     "prisma:seed:admin": "ts-node prisma/seed_admin.ts",
     "prisma:seed:measurement-points": "ts-node prisma/seed_measurement_points_only.ts",
     "finance:settlement-backfill:audit": "ts-node -r tsconfig-paths/register scripts/audit-settlement-backfill.ts",
