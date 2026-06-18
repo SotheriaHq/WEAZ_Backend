@@ -384,8 +384,23 @@ export class CollectionsController {
     @Query('tag') tag?: string,
     @Query('category') category?: string,
     @Query('counts') countsPolicy?: string,
+    @Query('feedMode') feedMode?: string,
+    @Query('query') query?: string,
+    @Query('anchorDesignId') anchorDesignId?: string,
     @Req() req?: any,
   ) {
+    // SEARCH-CORE-4: search-pinned Runway feed. Default behaviour is fully
+    // preserved when feedMode is missing or 'default'.
+    if (feedMode === 'searchPinned') {
+      return this.collectionsService.getRunwayPinnedFeed({
+        query,
+        anchorDesignId,
+        cursor,
+        limit: limit ? parseInt(limit, 10) : undefined,
+        requesterId: req?.user?.id,
+      });
+    }
+
     return this.collectionsService.getMarketFeed({
       cursor,
       limit: limit ? parseInt(limit, 10) : undefined,

@@ -22,6 +22,7 @@
     "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix",
     "test": "jest",
     "test:auth-verification-email-contract": "node scripts/test-auth-verification-email-contract.cjs",
+    "test:search-runway-regression": "node scripts/search-runway-regression.cjs",
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
     "test:perf:messaging": "k6 run ./test/perf/messaging-soak.k6.js",
