@@ -125,7 +125,7 @@ type FeedMediaAssetDto = {
   dominantColor: string | null;
   width: number | null;
   height: number | null;
-  aspectRatio: number;
+  aspectRatio: number | null;
   status: 'READY';
   orderIndex: number;
 };
@@ -673,7 +673,7 @@ export class CollectionsService {
       typeof file.height === 'number' && Number.isFinite(file.height)
         ? file.height
         : null;
-    const aspectRatio = width && height && height > 0 ? width / height : 1;
+    const aspectRatio = width && height && width > 0 && height > 0 ? width / height : null;
 
     return {
       id: String(args.id ?? file.id),
@@ -2990,19 +2990,6 @@ export class CollectionsService {
       await Promise.all(
         feedRows.map(async ({ collection, media }) => {
           const owner = this.mapCollectionOwner(collection.owner)!;
-          const primaryMedia = await this.buildFeedMediaAsset({
-            id: media.id,
-            file: media.file,
-            mediaType: media.mediaType,
-            orderIndex: media.orderIndex,
-          });
-          if (!primaryMedia) {
-            this.logger.debug(
-              `[feed-contract] media excluded unavailable-primary collectionId=${collection.id} mediaId=${media.id}`,
-            );
-            return null;
-          }
-
           const mediaItems = (
             await Promise.all(
               collection.medias.map((entry: any) =>
@@ -3018,6 +3005,14 @@ export class CollectionsService {
           if (mediaItems.length === 0) {
             this.logger.debug(
               `[feed-contract] collection excluded no-valid-media collectionId=${collection.id}`,
+            );
+            return null;
+          }
+          const primaryMedia =
+            mediaItems.find((asset) => asset.id === media.id) ?? null;
+          if (!primaryMedia) {
+            this.logger.debug(
+              `[feed-contract] media excluded unavailable-primary collectionId=${collection.id} mediaId=${media.id}`,
             );
             return null;
           }

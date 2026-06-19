@@ -453,6 +453,39 @@ describe('CollectionsService brand catalog access', () => {
       );
     });
 
+    it('keeps unknown dimensions nullable instead of reporting a square aspect', async () => {
+      const prisma = {
+        collection: {
+          findMany: jest.fn().mockResolvedValue([
+            createCollection({
+              medias: [
+                {
+                  id: 'media_1',
+                  fileUploadId: 'file_1',
+                  mediaType: 'POST_IMAGE',
+                  orderIndex: 0,
+                  threadsCount: 0,
+                  commentsCount: 0,
+                  file: { ...readyFile, width: null, height: null },
+                },
+              ],
+            }),
+          ]),
+        },
+      };
+      const service = createService(prisma);
+
+      const result = await service.getMarketFeed();
+
+      expect(result.items[0].primaryMedia).toEqual(
+        expect.objectContaining({
+          width: null,
+          height: null,
+          aspectRatio: null,
+        }),
+      );
+    });
+
     it('drops media with empty display URL', async () => {
       const prisma = {
         collection: {
