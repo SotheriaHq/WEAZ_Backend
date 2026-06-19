@@ -29,6 +29,10 @@ import { Role, NotificationType } from '@prisma/client';
 import { Throttle, ThrottlerGuard, SkipThrottle } from '@nestjs/throttler';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import {
+  buildAppLinkBridgeHtml,
+  resolveMobileAppBridgeBaseUrl,
+} from 'src/common/utils/auth-links';
+import {
   ApiTags,
   ApiOperation,
   ApiResponse,
@@ -261,8 +265,27 @@ export class AuthController {
   @Throttle({ default: { limit: 3, ttl: 900000 } })
   async requestPasswordReset(
     @Body(ValidationPipe) body: RequestPasswordResetDto,
+    @Req() req: Request,
   ) {
-    return this.authService.requestPasswordReset(body.email);
+    const isMobileClient = String(req.headers['x-client-platform'] ?? '')
+      .toLowerCase()
+      .includes('mobile');
+    return this.authService.requestPasswordReset(body.email, {
+      mobile: isMobileClient,
+      bridgeBaseUrl: isMobileClient ? this.resolveBridgeBaseUrl(req) : null,
+    });
+  }
+
+  /**
+   * Resolve the reachable backend base URL for "open in app" bridge links from
+   * the originating request (or the configured APP_PUBLIC_URL).
+   */
+  private resolveBridgeBaseUrl(req: Request): string {
+    return resolveMobileAppBridgeBaseUrl({
+      host: req.get('host'),
+      protocol: req.protocol,
+      forwardedProto: req.headers['x-forwarded-proto'] as string | undefined,
+    });
   }
 
   @Post('password-reset/confirm')
@@ -537,7 +560,40 @@ export class AuthController {
   async resendEmailVerification(
     @Req() req: Request & { user: { id: string } },
   ) {
-    return this.authService.resendVerificationEmail(req.user.id);
+    const isMobileClient = String(req.headers['x-client-platform'] ?? '')
+      .toLowerCase()
+      .includes('mobile');
+    return this.authService.resendVerificationEmail(req.user.id, {
+      mobile: isMobileClient,
+      bridgeBaseUrl: isMobileClient ? this.resolveBridgeBaseUrl(req) : null,
+    });
+  }
+
+  // "Open in app" bridge pages. Auth emails link here over https (Gmail strips
+  // raw weazmobile:// links); this page redirects into the app's custom scheme.
+  @Get('app-link/verify-email')
+  @ApiOperation({ summary: 'Open the verify-email deep link in the native app' })
+  @SkipThrottle()
+  async openVerifyEmailInApp(
+    @Query('token') token: string,
+    @Query('next') next: string,
+    @Res() res: Response,
+  ) {
+    res
+      .type('html')
+      .send(buildAppLinkBridgeHtml('verify-email', { token, next }));
+  }
+
+  @Get('app-link/reset-password')
+  @ApiOperation({ summary: 'Open the reset-password deep link in the native app' })
+  @SkipThrottle()
+  async openResetPasswordInApp(
+    @Query('token') token: string,
+    @Res() res: Response,
+  ) {
+    res
+      .type('html')
+      .send(buildAppLinkBridgeHtml('reset-password', { token }));
   }
 
   @Get('security/devices')

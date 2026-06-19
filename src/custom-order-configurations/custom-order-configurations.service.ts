@@ -772,6 +772,11 @@ export class CustomOrderConfigurationsService {
     if (Number(dto.fabricCostPerYard) < 0) {
       throw new BadRequestException('Fabric cost per yard cannot be negative');
     }
+    if (dto.productionLeadDays < 1 || dto.productionLeadDays > 7) {
+      throw new BadRequestException(
+        'Production lead days must be between 1 and 7',
+      );
+    }
 
     if (dto.averageBaseYards != null && Number(dto.averageBaseYards) <= 0) {
       throw new BadRequestException(
@@ -831,9 +836,13 @@ export class CustomOrderConfigurationsService {
       );
     }
 
-    if (!dto.rushProductionLeadDays || dto.rushProductionLeadDays < 5) {
+    if (
+      !dto.rushProductionLeadDays ||
+      dto.rushProductionLeadDays < 1 ||
+      dto.rushProductionLeadDays > 3
+    ) {
       throw new BadRequestException(
-        'Rush production lead days must be at least 5',
+        'Rush production lead days must be between 1 and 3',
       );
     }
     if (dto.rushProductionLeadDays >= dto.productionLeadDays) {

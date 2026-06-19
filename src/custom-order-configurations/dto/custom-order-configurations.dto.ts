@@ -103,13 +103,13 @@ export class CreateCustomOrderConfigurationDto {
 
   @IsOptional()
   @IsInt()
-  @Min(5)
-  @Max(13)
+  @Min(1)
+  @Max(3)
   rushProductionLeadDays?: number;
 
   @IsInt()
-  @Min(3)
-  @Max(14)
+  @Min(1)
+  @Max(7)
   productionLeadDays: number;
 
   @IsInt()

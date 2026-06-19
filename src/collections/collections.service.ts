@@ -648,8 +648,11 @@ export class CollectionsService {
       return null;
     }
 
+    // Full-screen runway view: prefer the high-res DETAIL (1440px) variant, then
+    // fall back to ZOOM (2048px) before the small CARD (640px) — CARD would
+    // visibly upscale-blur on a full-screen phone.
     const displayUrl =
-      (await this.getPreferredVariantUrl(file, ['DETAIL', 'CARD', 'ZOOM'])) ??
+      (await this.getPreferredVariantUrl(file, ['DETAIL', 'ZOOM', 'CARD'])) ??
       this.uploadService.getPublicDisplayUrl(file) ??
       (typeof (this.uploadService as any).getTemporarySignedDisplayUrl ===
       'function'
