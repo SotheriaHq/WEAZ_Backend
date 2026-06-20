@@ -546,6 +546,30 @@ export class CollectionsService {
     return category;
   }
 
+  /**
+   * Phase 2B: enforce minPrice <= maxPrice whenever both are provided in the
+   * same request. Throws a structured, field-mapped error so web/native can
+   * surface it inline on the price-range section.
+   */
+  private assertValidPriceRange(
+    min: number | null | undefined,
+    max: number | null | undefined,
+  ): void {
+    if (
+      typeof min === 'number' &&
+      Number.isFinite(min) &&
+      typeof max === 'number' &&
+      Number.isFinite(max) &&
+      min > max
+    ) {
+      throw new BadRequestException({
+        message: 'Minimum price cannot exceed maximum price',
+        field: 'maxPrice',
+        code: 'PRICE_RANGE_INVALID',
+      });
+    }
+  }
+
   private isReadyFeedFile(file: any): boolean {
     if (!file) return false;
     if (file.originalDeletedAt) return false;
@@ -2355,6 +2379,7 @@ export class CollectionsService {
           30,
         );
       }
+      this.assertValidPriceRange(dto.minPrice, dto.maxPrice);
       const collectionId = uuidv4();
       const now = new Date();
       const collection = await (this.prisma.collection as any).create({
@@ -2522,6 +2547,7 @@ export class CollectionsService {
     const collectionStatus: 'DRAFT' | 'PUBLISHED' = 'DRAFT';
 
     // Create collection in DRAFT status
+    this.assertValidPriceRange(dto.minPrice, dto.maxPrice);
     const collectionId = uuidv4();
     const now = new Date();
     const collection = await (this.prisma.collection as any).create({
@@ -8900,6 +8926,7 @@ export class CollectionsService {
         data.minPrice = body.minPrice as any;
       if (typeof body.maxPrice === 'number' || body.maxPrice === null)
         data.maxPrice = body.maxPrice as any;
+      this.assertValidPriceRange(data.minPrice, data.maxPrice);
       if (typeof body.saleMinPrice === 'number' || body.saleMinPrice === null)
         data.saleMinPrice = body.saleMinPrice as any;
       if (typeof body.saleMaxPrice === 'number' || body.saleMaxPrice === null)
@@ -9118,6 +9145,10 @@ export class CollectionsService {
       data.minPrice = body.minPrice as any;
     if (typeof body.maxPrice === 'number' || body.maxPrice === null)
       data.maxPrice = body.maxPrice as any;
+    this.assertValidPriceRange(
+      data.minPrice !== undefined ? data.minPrice : (existing as any).minPrice,
+      data.maxPrice !== undefined ? data.maxPrice : (existing as any).maxPrice,
+    );
     if (typeof body.saleMinPrice === 'number' || body.saleMinPrice === null)
       data.saleMinPrice = body.saleMinPrice as any;
     if (typeof body.saleMaxPrice === 'number' || body.saleMaxPrice === null)

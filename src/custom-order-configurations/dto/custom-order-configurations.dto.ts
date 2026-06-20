@@ -112,14 +112,16 @@ export class CreateCustomOrderConfigurationDto {
   @Max(7)
   productionLeadDays: number;
 
+  // Phase 2B: delivery/production range is locked to 1-7 days (was 2-14).
+  // 1 day is valid; anything above 7 is rejected.
   @IsInt()
-  @Min(2)
-  @Max(14)
+  @Min(1)
+  @Max(7)
   deliveryMinDays: number;
 
   @IsInt()
-  @Min(2)
-  @Max(14)
+  @Min(1)
+  @Max(7)
   deliveryMaxDays: number;
 
   @IsString()
