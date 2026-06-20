@@ -2326,7 +2326,7 @@ export class CollectionsService {
           collection.id,
           [],
           indexedCollectionTags,
-          { maxCount: 30 },
+          { maxCount: 30, actorId: userId },
         );
       }
 
@@ -2348,6 +2348,13 @@ export class CollectionsService {
       }
 
       const sanitizedTags = sanitizeTags(dto.tags ?? []);
+      if (this.tagIndex && sanitizedTags.length > 0) {
+        await this.tagIndex.registerPendingCreatorTags(
+          sanitizedTags,
+          userId,
+          30,
+        );
+      }
       const collectionId = uuidv4();
       const now = new Date();
       const collection = await (this.prisma.collection as any).create({
@@ -2414,7 +2421,7 @@ export class CollectionsService {
           collection.id,
           [],
           indexedCollectionTags,
-          { maxCount: 30 },
+          { maxCount: 30, actorId: userId },
         );
       }
 
@@ -2498,6 +2505,9 @@ export class CollectionsService {
 
     if (sanitizedTags.length === 0) {
       throw new BadRequestException('At least one descriptive tag is required');
+    }
+    if (this.tagIndex) {
+      await this.tagIndex.registerPendingCreatorTags(sanitizedTags, userId, 30);
     }
 
     // Require a valid, active category
@@ -3469,6 +3479,17 @@ export class CollectionsService {
       const resolvedNextTags = Array.isArray(metadata.tags)
         ? sanitizeTags(metadata.tags, 30)
         : (collection.tags ?? []);
+      if (
+        this.tagIndex &&
+        Array.isArray(metadata.tags) &&
+        resolvedNextTags.length > 0
+      ) {
+        await this.tagIndex.registerPendingCreatorTags(
+          resolvedNextTags,
+          userId,
+          30,
+        );
+      }
       const nextCustomOrderEnabled =
         typeof (metadata as any).customOrderEnabled === 'boolean'
           ? Boolean((metadata as any).customOrderEnabled)
@@ -3854,7 +3875,7 @@ export class CollectionsService {
           collectionId,
           previousIndexedTags,
           nextIndexedTags,
-          { maxCount: 30 },
+          { maxCount: 30, actorId: userId },
         );
       }
 
@@ -4073,6 +4094,17 @@ export class CollectionsService {
     const completionResolvedTags = Array.isArray(completionMetadata.tags)
       ? sanitizeTags(completionMetadata.tags, 30)
       : (collection.tags ?? []);
+    if (
+      this.tagIndex &&
+      Array.isArray(completionMetadata.tags) &&
+      completionResolvedTags.length > 0
+    ) {
+      await this.tagIndex.registerPendingCreatorTags(
+        completionResolvedTags,
+        userId,
+        30,
+      );
+    }
     const completionFilterValueIds = this.normalizeFilterValueIds(
       completionMetadata.filterValueIds,
     );
@@ -4289,7 +4321,7 @@ export class CollectionsService {
           collectionId,
           completionPreviousIndexedTags,
           completionNextIndexedTags,
-          { maxCount: 30 },
+          { maxCount: 30, actorId: userId },
         );
       }
     }
@@ -5925,7 +5957,7 @@ export class CollectionsService {
     } else if (!shouldIncludeDeleted) {
       where.deletedAt = null;
     }
-    
+
     if (status && requesterId === userId) {
       where.status = status;
     }
@@ -9121,6 +9153,9 @@ export class CollectionsService {
     if (Array.isArray(body.tags)) {
       nextTags = sanitizeTags(body.tags, 30);
       data.tags = nextTags;
+      if (this.tagIndex && nextTags.length > 0) {
+        await this.tagIndex.registerPendingCreatorTags(nextTags, ownerId, 30);
+      }
     }
     if (typeof body.coverMediaId === 'string' || body.coverMediaId === null) {
       if (body.coverMediaId) {
@@ -9269,7 +9304,7 @@ export class CollectionsService {
           collectionId,
           previousIndexedTags,
           nextIndexedTags,
-          { maxCount: 30 },
+          { maxCount: 30, actorId: ownerId },
         );
       }
     }

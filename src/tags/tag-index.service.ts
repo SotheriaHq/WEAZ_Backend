@@ -51,6 +51,92 @@ export class TagIndexService {
     return sanitizeTags(safe, maxCount);
   }
 
+  async registerPendingCreatorTags(
+    tags: Array<string | null | undefined>,
+    actorId: string,
+    maxCount = 10,
+  ): Promise<string[]> {
+    const normalizedTags = this.normalizeTagList(tags, maxCount);
+    if (normalizedTags.length === 0) return [];
+
+    const prismaClient = this.prisma as any;
+    if (
+      !this.ensureTagDelegatesAvailable(prismaClient, 'pending registration')
+    ) {
+      return normalizedTags;
+    }
+
+    try {
+      const existing = await prismaClient.tag.findMany({
+        where: { normalizedName: { in: normalizedTags } },
+        select: {
+          normalizedName: true,
+          status: true,
+          isBanned: true,
+          createdById: true,
+        },
+      });
+      const blocked = existing.filter(
+        (tag: any) => tag.isBanned || tag.status === TagStatus.REJECTED,
+      );
+      if (blocked.length > 0) {
+        throw new BadRequestException(
+          `One or more tags are blocked: ${blocked.map((tag: any) => `#${tag.normalizedName}`).join(', ')}`,
+        );
+      }
+
+      const existingNames = new Set(
+        existing.map((tag: any) => String(tag.normalizedName)),
+      );
+      const missingNames = normalizedTags.filter(
+        (name) => !existingNames.has(name),
+      );
+      const needsAttribution = existing.some(
+        (tag: any) =>
+          tag.status === TagStatus.PENDING && tag.createdById == null,
+      );
+
+      if (missingNames.length === 0 && !needsAttribution) {
+        return normalizedTags;
+      }
+
+      await this.prisma.$transaction(async (tx) => {
+        for (const name of missingNames) {
+          await (tx as any).tag.upsert({
+            where: { normalizedName: name },
+            create: {
+              id: uuidv4(),
+              normalizedName: name,
+              displayName: name,
+              status: TagStatus.PENDING,
+              createdById: actorId,
+              usageCount: 0,
+              isBanned: false,
+            },
+            update: { displayName: name },
+          });
+        }
+
+        await (tx as any).tag.updateMany({
+          where: {
+            normalizedName: { in: normalizedTags },
+            status: TagStatus.PENDING,
+            createdById: null,
+          },
+          data: { createdById: actorId },
+        });
+      });
+
+      return normalizedTags;
+    } catch (error: any) {
+      if (this.isMissingTagTableError(error)) {
+        this.warnMissingTagTables('pending registration');
+        return normalizedTags;
+      }
+      throw error;
+    }
+  }
+
   private ensureTagDelegatesAvailable(client: any, context: string): boolean {
     if (client?.tag && client?.tagBinding) return true;
     if (!this.warnedMissingTagDelegates) {
