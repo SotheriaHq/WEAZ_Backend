@@ -14,7 +14,7 @@ describe('NotificationsService', () => {
   let service: NotificationsService;
   let mockPrisma: any;
   let cacheManager: any;
-  let mockPushNotifications: { deliverAfterNotificationCreated: jest.Mock };
+  let mockPushNotifications: { enqueue: jest.Mock };
 
   beforeEach(async () => {
     mockPrisma = {
@@ -84,11 +84,9 @@ describe('NotificationsService', () => {
       get: jest.fn(),
     };
     mockPushNotifications = {
-      deliverAfterNotificationCreated: jest.fn().mockResolvedValue({
-        sent: 0,
-        failed: 0,
-        deactivated: 0,
-        skippedReason: 'no-active-tokens',
+      enqueue: jest.fn().mockResolvedValue({
+        status: 'skipped',
+        reason: 'no-active-tokens',
       }),
     };
 
@@ -218,9 +216,7 @@ describe('NotificationsService', () => {
       expect(cacheManager.del).toHaveBeenCalledWith(
         'unread_count:recipient-id',
       );
-      expect(
-        mockPushNotifications.deliverAfterNotificationCreated,
-      ).toHaveBeenCalledWith(
+      expect(mockPushNotifications.enqueue).toHaveBeenCalledWith(
         expect.objectContaining({
           recipientId: 'recipient-id',
           notification: mockCreated,
@@ -287,7 +283,7 @@ describe('NotificationsService', () => {
         actor: null,
       };
       mockPrisma.notification.create.mockResolvedValue(mockCreated);
-      mockPushNotifications.deliverAfterNotificationCreated.mockRejectedValue(
+      mockPushNotifications.enqueue.mockRejectedValue(
         new Error('Expo is unavailable'),
       );
 
@@ -297,9 +293,7 @@ describe('NotificationsService', () => {
         }),
       ).resolves.toEqual(mockCreated);
 
-      expect(
-        mockPushNotifications.deliverAfterNotificationCreated,
-      ).toHaveBeenCalled();
+      expect(mockPushNotifications.enqueue).toHaveBeenCalled();
     });
 
     it('should throw error for invalid payload', async () => {
