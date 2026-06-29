@@ -7,6 +7,7 @@
   "license": "UNLICENSED",
   "scripts": {
     "build": "prisma generate && node -e \"require('fs').rmSync('dist', { recursive: true, force: true })\" && nest build",
+    "postinstall": "prisma generate",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
     "start": "nest start",
     "dev": "concurrently -k -n BUILD,API \"npm run dev:build\" \"npm run dev:serve\"",
