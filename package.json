@@ -9,7 +9,7 @@
     "build": "prisma generate && node -e \"require('fs').rmSync('dist', { recursive: true, force: true })\" && nest build",
     "postinstall": "prisma generate",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
-    "start": "nest start",
+    "start": "prisma generate && node -r module-alias/register dist/main.js",
     "dev": "concurrently -k -n BUILD,API \"npm run dev:build\" \"npm run dev:serve\"",
     "dev:build": "nest build --watch",
     "dev:serve": "node scripts/dev-server.cjs",
