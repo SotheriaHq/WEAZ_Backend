@@ -92,15 +92,15 @@ export const getFinalWarningDate = (lastActivityAt: Date): Date => {
   );
 };
 
-export const isExpired = (lastActivityAt: Date): boolean => {
-  const now = new Date();
-  return now >= getDraftExpiryDate(lastActivityAt);
+export const isExpired = (lastActivityAt: Date, now?: Date): boolean => {
+  const effective = now ?? new Date();
+  return effective >= getDraftExpiryDate(lastActivityAt);
 };
 
-export const getDaysUntilExpiry = (lastActivityAt: Date): number => {
-  const now = new Date();
+export const getDaysUntilExpiry = (lastActivityAt: Date, now?: Date): number => {
+  const effective = now ?? new Date();
   const expiry = getDraftExpiryDate(lastActivityAt);
-  const diffMs = expiry.getTime() - now.getTime();
+  const diffMs = expiry.getTime() - effective.getTime();
   return Math.max(0, Math.ceil(diffMs / (24 * 60 * 60 * 1000)));
 };
 

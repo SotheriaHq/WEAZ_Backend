@@ -21,6 +21,8 @@ import {
   ContentReviewReasonCode,
   ContentSubmissionStatus,
   FileType,
+  LegalAcceptanceSource,
+  LegalDocumentKey,
   NotificationType,
   Prisma,
 } from '@prisma/client';
@@ -28,6 +30,9 @@ import { v4 as uuidv4 } from 'uuid';
 import { MonitoringService } from 'src/monitoring/monitoring.service';
 import { NotificationsService } from 'src/notifications/notifications.service';
 import { PrismaService } from 'src/prisma/prisma.service';
+import { LegalAcceptancePayload, LegalService } from 'src/legal/legal.service';
+import { UploadService } from 'src/upload/upload.service';
+import { Request } from 'express';
 import {
   CONTENT_MEDIA_ORDER_SLOTS,
   CONTENT_REPORT_REASON_LABELS,
@@ -100,6 +105,8 @@ export class ContentIntegrityService {
     private readonly prisma: PrismaService,
     @Optional() private readonly notifications?: NotificationsService,
     @Optional() private readonly monitoring?: MonitoringService,
+    @Optional() private readonly legalService?: LegalService,
+    @Optional() private readonly uploadService?: UploadService,
   ) {}
 
   getRequiredViewSlots(): ContentMediaViewSlot[] {
@@ -629,7 +636,27 @@ export class ContentIntegrityService {
     return submission;
   }
 
-  async acknowledgeBrandContentPolicy(actorUserId: string) {
+  async acknowledgeBrandContentPolicy(
+    actorUserId: string,
+    legalAcceptances?: LegalAcceptancePayload[] | null,
+    req?: Request | null,
+    evidence?: { locale?: string | null; appVersion?: string | null },
+  ) {
+    await this.legalService?.ensureCurrentAcceptancesForUser({
+      userId: actorUserId,
+      requiredKeys: [
+        LegalDocumentKey.CONTENT_POLICY,
+        LegalDocumentKey.COMMUNITY_GUIDELINES,
+        LegalDocumentKey.COPYRIGHT_POLICY,
+      ],
+      acceptances: legalAcceptances,
+      source: LegalAcceptanceSource.CONTENT_PUBLISH,
+      surface: 'content-policy-acknowledgement',
+      req,
+      locale: evidence?.locale,
+      appVersion: evidence?.appVersion,
+    });
+
     const brand = await this.prisma.brand.findFirst({
       where: { ownerId: actorUserId },
       select: { id: true },
@@ -1104,12 +1131,13 @@ export class ContentIntegrityService {
             })
           : [];
 
-    return rows.map((row) => this.mapMediaRow(row));
+    return Promise.all(rows.map((row) => this.mapMediaRow(row)));
   }
 
-  private mapMediaRow(row: any) {
+  private async mapMediaRow(row: any) {
     const slot = this.normalizeViewSlot(row.viewSlot, row.orderIndex);
     const reasonCode = row.reviewReasonCode as ContentReviewReasonCode | null;
+    const previewUrl = await this.getReviewMediaPreviewUrl(row.file);
     return {
       id: row.id,
       fileId: row.fileUploadId,
@@ -1125,9 +1153,29 @@ export class ContentIntegrityService {
         : null,
       reviewReason: row.reviewReason ?? null,
       orderIndex: row.orderIndex,
-      canPreview: Boolean(row.fileUploadId),
-      previewUrl: null,
+      canPreview: Boolean(previewUrl),
+      previewUrl,
+      url: previewUrl,
+      thumbnailUrl: previewUrl,
     };
+  }
+
+  private async getReviewMediaPreviewUrl(file?: any): Promise<string | null> {
+    if (
+      !file ||
+      file.originalDeletedAt ||
+      file.processingStatus !== 'READY'
+    ) {
+      return null;
+    }
+
+    const stableUrl = this.uploadService?.getPublicDisplayUrl(file) ?? null;
+    if (stableUrl) return stableUrl;
+
+    return (
+      (await this.uploadService?.getTemporarySignedDisplayUrl(file, 15 * 60)) ??
+      null
+    );
   }
 
   private buildRequiredSlotChecklist(media: any[]) {

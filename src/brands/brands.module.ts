@@ -10,6 +10,7 @@ import { UploadModule } from '../upload/upload.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { TagsModule } from '../tags/tags.module';
 import { BrandVerificationModule } from '../brand-verification/brand-verification.module';
+import { UsersModule } from '../users/users.module';
 import { BrandStaffController } from './staff/brand-staff.controller';
 import { BrandStaffService } from './staff/brand-staff.service';
 import { BrandPermissionService } from './permissions/brand-permission.service';
@@ -22,6 +23,7 @@ import { AdminAuditService } from 'src/admin/services/admin-audit.service';
     NotificationsModule,
     TagsModule,
     BrandVerificationModule,
+    UsersModule,
   ],
   providers: [
     BrandsService,

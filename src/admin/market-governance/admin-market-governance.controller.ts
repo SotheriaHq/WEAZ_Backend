@@ -20,6 +20,7 @@ import { AdminPermissionGuard } from '../guards/admin-permission.guard';
 import { AdminMarketGovernanceService } from './admin-market-governance.service';
 import {
   AdminMarketGovernanceAuditQueryDto,
+  CreateMarketSectionConfigDto,
   CreateMarketRankingFormulaDto,
   CreateMarketRankingProfileDto,
   CreateMarketSuggestionBlockConfigDto,
@@ -48,6 +49,15 @@ export class AdminMarketGovernanceController {
   @RequirePermissions(ADMIN_PERMISSIONS.MARKET_GOVERNANCE_READ)
   listSections() {
     return this.service.listSections();
+  }
+
+  @Post('sections')
+  @RequirePermissions(ADMIN_PERMISSIONS.MARKET_GOVERNANCE_WRITE)
+  createSection(
+    @Body() dto: CreateMarketSectionConfigDto,
+    @Req() req: AdminRequest,
+  ) {
+    return this.service.createSection(dto, this.getActorId(req), req);
   }
 
   @Patch('sections/:sectionKey')

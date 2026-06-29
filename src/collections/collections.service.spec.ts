@@ -1,4 +1,5 @@
 import { BadRequestException, ForbiddenException } from '@nestjs/common';
+import { CollectionStatus } from '@prisma/client';
 import { CollectionsService } from './collections.service';
 
 describe('CollectionsService brand catalog access', () => {
@@ -10,7 +11,10 @@ describe('CollectionsService brand catalog access', () => {
     new CollectionsService(
       prisma,
       {} as any,
-      { getPublicDisplayUrl: (file: any) => file?.s3Url ?? null } as any,
+      {
+        getPublicDisplayUrl: (file: any) => file?.s3Url ?? null,
+        getBatchPublicSignedUrls: jest.fn().mockResolvedValue(new Map()),
+      } as any,
       {} as any,
       undefined,
       undefined,
@@ -164,6 +168,67 @@ describe('CollectionsService brand catalog access', () => {
     await expect(
       (service as any).assertOwner('collection_1', 'regular_1', 'STORE'),
     ).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it('includes owner-visible review statuses in the brand content list', async () => {
+    const prisma = {
+      collection: {
+        findMany: jest.fn().mockResolvedValue([]),
+      },
+      collectionReaction: {
+        findMany: jest.fn().mockResolvedValue([]),
+      },
+    };
+    const service = createService(prisma);
+
+    await service.getUserCollections('owner_1', 'owner_1', {
+      visibility: 'all',
+      scope: 'design',
+    });
+
+    expect(prisma.collection.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          ownerId: 'owner_1',
+          domain: 'DESIGN',
+          deletedAt: null,
+          status: {
+            in: [
+              CollectionStatus.PUBLISHED,
+              CollectionStatus.IN_REVIEW,
+              CollectionStatus.CHANGES_REQUESTED,
+              CollectionStatus.REJECTED,
+              CollectionStatus.FAILED,
+            ],
+          },
+        }),
+      }),
+    );
+  });
+
+  it('keeps visitor brand content reads published-only', async () => {
+    const prisma = {
+      collection: {
+        findMany: jest.fn().mockResolvedValue([]),
+      },
+    };
+    const service = createService(prisma);
+
+    await service.getUserCollections('owner_1', 'viewer_1', {
+      visibility: 'all',
+      scope: 'design',
+    });
+
+    expect(prisma.collection.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          ownerId: 'owner_1',
+          domain: 'DESIGN',
+          deletedAt: null,
+          status: 'PUBLISHED',
+        }),
+      }),
+    );
   });
 
   describe('taxonomy metadata validation', () => {

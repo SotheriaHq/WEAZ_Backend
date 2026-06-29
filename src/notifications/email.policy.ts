@@ -6,6 +6,7 @@ import {
   renderBrandedAppName,
   renderEmailButton,
   renderEmailShell,
+  resolveAppUrl,
 } from '../email/email.branding';
 import { collectionPublishedEmail } from '../email/email.templates';
 
@@ -181,7 +182,7 @@ function renderSignupWelcomeEmail(args: {
   const device = asTrimmedString(payload.device) || 'Unknown device';
   const location = asTrimmedString(payload.location) || 'Unknown location';
   const { dateLabel, timeLabel } = formatSignupDateTime(createdAtIso);
-  const ctaUrl = asTrimmedString(args.targetUrl) || 'https://threadly.com';
+  const ctaUrl = asTrimmedString(args.targetUrl) || resolveAppUrl('/');
 
   const safeUsername = escapeHtml(username);
   const safeDate = escapeHtml(dateLabel);
@@ -192,7 +193,8 @@ function renderSignupWelcomeEmail(args: {
 
   const html = renderEmailShell({
     appName: companyName,
-    bodyHtml: `<h1 style="margin:0 0 14px;font-size:26px;line-height:1.25;color:${EMAIL_COLORS.textPrimary}">Welcome to ${brandedName}, <span style="font-style:italic;color:${EMAIL_COLORS.brandPrimaryLight};font-family:Georgia,'Times New Roman',serif;font-weight:700">${safeUsername}</span>! 👋</h1>
+    title: `🎉 Welcome to ${companyName}`,
+    bodyHtml: `<p style="margin:0 0 12px;color:${EMAIL_COLORS.textSecondary};line-height:1.7">Hi <strong>${safeUsername}</strong>, welcome to ${brandedName}.</p>
       <p style="margin:0 0 12px;color:${EMAIL_COLORS.textSecondary};line-height:1.7">We're thrilled to have you join Africa's most vibrant fashion social commerce community.</p>
       <p style="margin:0 0 16px;color:${EMAIL_COLORS.textSecondary};line-height:1.7">Your account was successfully created on <strong>${safeDate}</strong> at <strong>${safeTime}</strong> from <strong>${safeDevice}</strong> in <strong>${safeLocation}</strong>.</p>
       <p style="margin:0 0 12px;color:${EMAIL_COLORS.textSecondary};line-height:1.7">Here is what you can start doing right away on ${escapeHtml(companyName)}:</p>
@@ -209,13 +211,13 @@ function renderSignupWelcomeEmail(args: {
   });
 
   const text = [
-    `Welcome to ${args.appName}, ${username}!`,
+    `Welcome to ${companyName}, ${username}!`,
     '',
     "We're thrilled to have you join Africa's most vibrant fashion social commerce community.",
     '',
     `Your account was successfully created on ${dateLabel} at ${timeLabel} from ${device} in ${location}.`,
     '',
-    `Start now on ${args.appName}:`,
+    `Start now on ${companyName}:`,
     '- Update your profile as a brand and complete your account setup.',
     '- Verify your identity and build trust with your audience.',
     '- Explore collections from verified brands and tailors.',
@@ -228,7 +230,7 @@ function renderSignupWelcomeEmail(args: {
   ].join('\n');
 
   return {
-    subject: `Welcome to ${companyName}, ${username}!`,
+    subject: `🎉 Welcome to ${companyName}, ${username}!`,
     html,
     text,
   };
@@ -245,15 +247,15 @@ function renderEmailVerifiedConfirmationEmail(args: {
   const html = renderEmailShell({
     appName: companyName,
     headerSubtitle: 'Email verification complete',
-    bodyHtml: `<h1 style="margin:0 0 12px;font-size:24px;line-height:1.25;color:${EMAIL_COLORS.textPrimary}">Your email is now verified ✅</h1>
-      <p style="margin:0 0 12px;color:${EMAIL_COLORS.textSecondary};line-height:1.7">Great news, your ${safeCompanyName} account email has been confirmed successfully.</p>
+    title: `✅ Your ${companyName} email is verified`,
+    bodyHtml: `<p style="margin:0 0 12px;color:${EMAIL_COLORS.textSecondary};line-height:1.7">Great news, your ${safeCompanyName} account email has been confirmed successfully.</p>
       <p style="margin:0 0 12px;color:${EMAIL_COLORS.textSecondary};line-height:1.7">You can now continue with profile setup, account personalization, and secure account actions without interruption.</p>
       <ul style="margin:0 0 18px;padding-left:20px;color:${EMAIL_COLORS.textSecondary};line-height:1.8">
         <li>Complete your profile details</li>
         <li>Set up your store (for brand accounts)</li>
         <li>Start discovering and engaging with the community</li>
       </ul>
-      <p style="margin:24px 0 16px">${renderEmailButton(ctaUrl, 'Continue in Threadly', { padding: '14px 28px' })}</p>
+      <p style="margin:24px 0 16px">${renderEmailButton(ctaUrl, 'Continue in WEAZ', { padding: '14px 28px' })}</p>
       <p style="margin:0;color:${EMAIL_COLORS.textSecondary};line-height:1.7">If this was not you, please reset your password and review your account security settings immediately.</p>`,
     footerContextText: `This confirmation was sent because your ${companyName} email verification completed successfully.`,
   });
@@ -274,7 +276,7 @@ function renderEmailVerifiedConfirmationEmail(args: {
   ].join('\n');
 
   return {
-    subject: `${companyName}: Email verified successfully`,
+    subject: `✅ Your ${companyName} email is verified`,
     html,
     text,
   };
@@ -369,6 +371,62 @@ function renderNotificationDetailsTable(
   return `<div style="margin:14px 0 8px;border:1px solid #e5e7eb;border-radius:12px;overflow:hidden">${rows}</div>`;
 }
 
+function getNotificationSubjectPrefix(
+  notificationType?: NotificationType,
+): string {
+  switch (notificationType) {
+    case NotificationType.ORDER_PLACED:
+    case NotificationType.ORDER_STATUS_UPDATED:
+      return '🛍️';
+    case NotificationType.CUSTOM_ORDER_PAYMENT_RECEIVED:
+    case NotificationType.CUSTOM_ORDER_REVIEW_REQUIRED:
+    case NotificationType.CUSTOM_ORDER_BRAND_ACCEPTED:
+    case NotificationType.CUSTOM_ORDER_BRAND_REJECTED:
+    case NotificationType.CUSTOM_ORDER_PROGRESS_UPDATED:
+    case NotificationType.CUSTOM_ORDER_EXTENSION_REQUESTED:
+    case NotificationType.CUSTOM_ORDER_EXTENSION_RESOLVED:
+    case NotificationType.CUSTOM_ORDER_BUYER_COUNTERED:
+    case NotificationType.CUSTOM_ORDER_BUYER_REJECTED_EXTENSION:
+    case NotificationType.CUSTOM_ORDER_DELIVERED:
+    case NotificationType.CUSTOM_ORDER_ACCEPTANCE_WINDOW_REMINDER:
+    case NotificationType.CUSTOM_ORDER_ISSUE_REPORTED:
+    case NotificationType.CUSTOM_ORDER_DISPUTE_CREATED:
+    case NotificationType.CUSTOM_ORDER_STALE_STAGE_WARNING:
+    case NotificationType.CUSTOM_ORDER_ACCEPTANCE_SLA_RISK:
+      return '🧵';
+    case NotificationType.MESSAGE_RECEIVED:
+    case NotificationType.MESSAGE_UNREAD_REMINDER:
+    case NotificationType.THREAD:
+      return '💬';
+    case NotificationType.VERIFICATION_APPROVED:
+    case NotificationType.VERIFICATION_COOLDOWN_EXPIRED:
+      return '✅';
+    case NotificationType.VERIFICATION_SUBMITTED:
+    case NotificationType.VERIFICATION_IN_REVIEW:
+    case NotificationType.VERIFICATION_INFO_REQUESTED:
+    case NotificationType.VERIFICATION_INFO_RESUBMITTED:
+    case NotificationType.VERIFICATION_REJECTED:
+    case NotificationType.VERIFICATION_CANCELLED:
+    case NotificationType.VERIFICATION_CANCELLED_ADMIN:
+    case NotificationType.VERIFICATION_NUDGE:
+    case NotificationType.VERIFICATION_SLA_WARNING:
+    case NotificationType.VERIFICATION_SLA_BREACH:
+    case NotificationType.VERIFICATION_REVIEW_DELAYED:
+      return '🏷️';
+    case NotificationType.COLLECTION_UPLOAD:
+    case NotificationType.PRODUCT_UPLOAD:
+    case NotificationType.CONTENT_SUBMITTED_FOR_REVIEW:
+    case NotificationType.CONTENT_REVIEW_APPROVED:
+    case NotificationType.CONTENT_REVIEW_REJECTED:
+    case NotificationType.CONTENT_CHANGES_REQUESTED:
+    case NotificationType.CONTENT_RESUBMITTED:
+    case NotificationType.CONTENT_PUBLISHED:
+      return '🎨';
+    default:
+      return '';
+  }
+}
+
 export function renderNotificationEmail(args: {
   appName: string;
   heading: string;
@@ -441,12 +499,16 @@ export function renderNotificationEmail(args: {
     ? buildCustomOrderEmailDetails(args.payload)
     : [];
   const detailTable = renderNotificationDetailsTable(detailRows);
+  const subjectPrefix = getNotificationSubjectPrefix(args.notificationType);
+  const displayHeading = subjectPrefix
+    ? `${subjectPrefix} ${args.heading}`
+    : args.heading;
 
   const html = renderEmailShell({
     appName: companyName,
     headerSubtitle: 'Account activity update',
-    bodyHtml: `<h1 style="margin:0 0 12px;font-size:22px;color:${EMAIL_COLORS.textPrimary}">${escapeHtml(args.heading)}</h1>
-      <p style="margin:0 0 10px;line-height:1.7;color:${EMAIL_COLORS.textSecondary}">${escapeHtml(args.message)}</p>
+    title: displayHeading,
+    bodyHtml: `<p style="margin:0 0 10px;line-height:1.7;color:${EMAIL_COLORS.textSecondary}">${escapeHtml(args.message)}</p>
       ${detailTable}
       ${cta}`,
     footerContextText: `You are receiving this email because your ${companyName} account has email notifications enabled.`,
@@ -464,7 +526,7 @@ export function renderNotificationEmail(args: {
   }
 
   return {
-    subject: `${companyName}: ${args.heading}`,
+    subject: `${subjectPrefix ? `${subjectPrefix} ` : ''}${companyName}: ${args.heading}`,
     html,
     text: textParts.join('\n'),
   };

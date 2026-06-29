@@ -25,7 +25,9 @@ export class NotificationsEmailWebhookController {
     @Headers('authorization') authorizationHeader: string | undefined,
     @Body() payload: Record<string, unknown> | null,
   ) {
-    const eventType = String(payload?.eventType ?? payload?.event ?? 'unknown');
+    const eventType = String(
+      payload?.eventType ?? payload?.event ?? payload?.type ?? 'unknown',
+    );
     this.logger.log(
       `Email webhook ingress provider=${provider} event=${eventType} hasSignature=${signature ? 'true' : 'false'} hasBasicAuth=${authorizationHeader ? 'true' : 'false'}`,
     );

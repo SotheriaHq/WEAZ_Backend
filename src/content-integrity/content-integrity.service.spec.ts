@@ -23,7 +23,10 @@ describe('ContentIntegrityService', () => {
     originalDeletedAt: null,
   });
 
-  function createService(prismaOverrides: Record<string, any> = {}) {
+  function createService(
+    prismaOverrides: Record<string, any> = {},
+    deps: { uploadService?: any } = {},
+  ) {
     const prisma: any = {
       fileUpload: {
         findMany: jest.fn(),
@@ -55,7 +58,16 @@ describe('ContentIntegrityService', () => {
       },
       ...prismaOverrides,
     };
-    return { prisma, service: new ContentIntegrityService(prisma) };
+    return {
+      prisma,
+      service: new ContentIntegrityService(
+        prisma,
+        undefined,
+        undefined,
+        undefined,
+        deps.uploadService,
+      ),
+    };
   }
 
   it('requires all four required slots for product publish media', async () => {
@@ -235,6 +247,105 @@ describe('ContentIntegrityService', () => {
     expect(report.duplicate).toBe(false);
     expect(report.reasonLabel).toBe('Wrong or unrelated image');
     expect(JSON.stringify(report)).not.toContain('s3Url');
+  });
+
+  it('returns admin review media preview URLs without exposing raw storage URLs', async () => {
+    const createdAt = new Date('2026-06-12T21:08:48.000Z');
+    const rawStorageUrl =
+      'https://threadly-private.s3.amazonaws.com/POST_IMAGE/owner-1/front.jpg';
+    const uploadService = {
+      getPublicDisplayUrl: jest.fn().mockReturnValue(null),
+      getTemporarySignedDisplayUrl: jest
+        .fn()
+        .mockResolvedValue('https://signed.example/review-front.jpg?token=ok'),
+    };
+    const { prisma, service } = createService(
+      {
+        contentSubmission: {
+          findUnique: jest.fn().mockResolvedValue({
+            id: 'submission-1',
+            entityType: 'DESIGN',
+            legacyCollectionId: 'collection-1',
+            brandId: 'brand-1',
+            submittedById: 'owner-1',
+            status: ContentSubmissionStatus.IN_REVIEW,
+            previousStatus: CollectionStatus.DRAFT,
+            targetStatus: CollectionStatus.PUBLISHED,
+            submittedAt: createdAt,
+            reviewedAt: null,
+            reasonCode: null,
+            reasonNote: null,
+          }),
+          findMany: jest.fn().mockResolvedValue([]),
+        },
+        collection: {
+          findUnique: jest.fn().mockResolvedValue({
+            id: 'collection-1',
+            title: 'Ada Nne',
+            description: 'Lookbook',
+            status: CollectionStatus.IN_REVIEW,
+            ownerId: 'owner-1',
+            createdAt,
+            updatedAt: createdAt,
+          }),
+        },
+        collectionMedia: {
+          findMany: jest.fn().mockResolvedValue([
+            {
+              id: 'media-front',
+              fileUploadId: 'file-front',
+              mediaType: FileType.POST_IMAGE,
+              viewSlot: ContentMediaViewSlot.FRONT,
+              mediaPurpose: 'REQUIRED_VIEW',
+              reviewStatus: 'PENDING',
+              orderIndex: 0,
+              file: {
+                ...readyFile('file-front'),
+                s3Url: rawStorageUrl,
+                s3Key: 'POST_IMAGE/owner-1/front.jpg',
+              },
+            },
+          ]),
+        },
+        brand: {
+          findUnique: jest.fn().mockResolvedValue({
+            id: 'brand-1',
+            name: 'Avery Cotour',
+            contentTrustTierOverride: null,
+            contentReviewModeOverride: null,
+          }),
+        },
+        brandTrustEvent: {
+          findFirst: jest.fn().mockResolvedValue(null),
+          create: jest.fn(),
+        },
+        user: {
+          findUnique: jest.fn().mockResolvedValue(null),
+        },
+        contentReport: {
+          findMany: jest.fn().mockResolvedValue([]),
+        },
+      },
+      { uploadService },
+    );
+
+    const detail = await service.getSubmission('submission-1');
+
+    expect(detail.media[0]).toEqual(
+      expect.objectContaining({
+        fileId: 'file-front',
+        slot: ContentMediaViewSlot.FRONT,
+        canPreview: true,
+        previewUrl: 'https://signed.example/review-front.jpg?token=ok',
+        url: 'https://signed.example/review-front.jpg?token=ok',
+        thumbnailUrl: 'https://signed.example/review-front.jpg?token=ok',
+      }),
+    );
+    expect(JSON.stringify(detail)).not.toContain(rawStorageUrl);
+    expect(uploadService.getTemporarySignedDisplayUrl).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'file-front' }),
+      15 * 60,
+    );
   });
 
   it('returns an existing open content report for duplicate reports', async () => {

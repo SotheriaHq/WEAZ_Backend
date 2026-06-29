@@ -138,15 +138,23 @@ export class MarketRankingScorerService {
       case 'fresh-drops':
         return freshness;
       case 'hot-right-now':
+      case 'loved-near-you':
+      case 'still-thinking-about-these':
         return interaction;
-      case 'custom-ready':
-        return item.availability?.customOrderEnabled ? 1 : 0.25;
-      case 'latest-collections':
+      case 'shop-the-look':
         return item.entityType === 'COLLECTION' ? freshness : 0.25;
       case 'new-designers-to-watch':
         return item.entityType === 'BRAND' ? freshness : 0.25;
       case 'shop-by-style':
         return item.entityType === 'CATEGORY' ? 0.8 : 0.35;
+      case 'almost-gone':
+        return item.availability?.totalStock
+          ? Math.max(0.2, 1 - item.availability.totalStock / 10)
+          : 0.25;
+      case 'picked-for-you':
+      case 'more-from-brands-you-like':
+      case 'style-picks-of-the-week':
+        return Math.max(freshness, interaction * 0.75);
     }
   }
 

@@ -17,6 +17,7 @@ import { SizeFitReminderService } from './size-fit-reminder.service';
 import { SizingModule } from 'src/sizing/sizing.module';
 import { FeedPreferencesController } from './feed-preferences.controller';
 import { FeedPreferencesService } from './feed-preferences.service';
+import { ProfilePhotoViewService } from './profile-photo-view.service';
 
 @Module({
   imports: [PrismaModule, NotificationsModule, SizingModule],
@@ -36,12 +37,14 @@ import { FeedPreferencesService } from './feed-preferences.service';
     SizeFitService,
     SizeFitReminderService,
     FeedPreferencesService,
+    ProfilePhotoViewService,
   ],
   exports: [
     UserProfileService,
     SavedItemsService,
     PatchingService,
     SizeFitService,
+    ProfilePhotoViewService,
   ],
 })
 export class UsersModule {}

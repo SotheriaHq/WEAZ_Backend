@@ -167,6 +167,7 @@ export class EmailOutboxDispatcherService {
     html: string;
     text: string | null;
     scenarioKey: string;
+    idempotencyKey?: string | null;
     createdAt: Date;
     recipientUserId?: string | null;
   }): Promise<'SENT' | 'FAILED' | 'SUPPRESSED' | 'SKIPPED'> {
@@ -245,6 +246,9 @@ export class EmailOutboxDispatcherService {
         row.subject,
         row.html,
         row.text ?? undefined,
+        {
+          idempotencyKey: row.idempotencyKey ?? `outbox:${row.id}`,
+        },
       );
 
       await this.prisma.$transaction([
@@ -253,10 +257,13 @@ export class EmailOutboxDispatcherService {
             emailOutboxId: row.id,
             attemptNo,
             provider: this.emailService.getDeliveryAttemptProvider(),
-            smtpHost: this.emailService.getTransportHost(),
+            transportHost: this.emailService.getTransportHost(),
             result: 'SENT',
             providerResponseJson: {
               providerMessageId: providerResult.providerMessageId,
+              emailMode: (providerResult as any).emailMode,
+              transportRecipient: (providerResult as any).transportRecipient,
+              intendedRecipient: (providerResult as any).intendedRecipientLabel,
               queuedAtIso: row.createdAt.toISOString(),
               queueAgeMs,
               scenarioKey: row.scenarioKey,
@@ -289,7 +296,7 @@ export class EmailOutboxDispatcherService {
             emailOutboxId: row.id,
             attemptNo,
             provider: this.emailService.getDeliveryAttemptProvider(),
-            smtpHost: this.emailService.getTransportHost(),
+            transportHost: this.emailService.getTransportHost(),
             result: 'FAILED',
             errorMessage: message,
           },
@@ -413,10 +420,17 @@ export class EmailOutboxDispatcherService {
   }
 
   private formatError(error: unknown): string {
-    if (error instanceof Error) {
-      return error.message;
-    }
-
-    return String(error);
+    const raw = error instanceof Error ? error.message : String(error);
+    return this.truncateEmailError(
+      raw
+        .replace(/https?:\/\/\S+/gi, '[url-redacted]')
+        .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[email-redacted]')
+        .replace(
+          /\b(api[_-]?key|secret|token|otp|code|password)=?[^\s&]*/gi,
+          '$1=[redacted]',
+        )
+        .replace(/\b[A-Za-z0-9_-]{32,}\b/g, '[token-redacted]'),
+      240,
+    );
   }
 }

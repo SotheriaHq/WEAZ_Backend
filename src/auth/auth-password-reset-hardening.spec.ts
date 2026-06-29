@@ -60,7 +60,7 @@ describe('AuthService password reset hardening', () => {
     };
     mockEmailService = {
       send: jest.fn().mockResolvedValue({ dispatchStatus: 'SENT' }),
-      getAppName: jest.fn(() => 'Threadly'),
+      getAppName: jest.fn(() => 'WEAZ'),
     };
     mockNotifications = {
       create: jest.fn(),
@@ -77,6 +77,7 @@ describe('AuthService password reset hardening', () => {
       mockEmailService,
       {} as any,
       {} as any,
+      {} as any,
     );
     loggerLogSpy = jest
       .spyOn((service as any).logger, 'log')
@@ -90,7 +91,7 @@ describe('AuthService password reset hardening', () => {
       APP_ENV: undefined,
       DEPLOY_ENV: undefined,
       NODE_ENV: 'test',
-      WEB_APP_URL: 'https://web.threadly.test/',
+      WEB_APP_URL: 'https://web.weaz.test/',
       FRONTEND_URL: undefined,
     };
     createService();
@@ -152,12 +153,8 @@ describe('AuthService password reset hardening', () => {
     expect(mockEmailService.send).toHaveBeenCalledWith(
       'user@example.com',
       expect.any(String),
-      expect.stringContaining(
-        'https://web.threadly.test/reset-password?token=',
-      ),
-      expect.stringContaining(
-        'https://web.threadly.test/reset-password?token=',
-      ),
+      expect.stringContaining('https://web.weaz.test/reset-password?token='),
+      expect.stringContaining('https://web.weaz.test/reset-password?token='),
       expect.objectContaining({
         recipientUserId: 'user-1',
         scenarioKey: 'auth.password_reset',

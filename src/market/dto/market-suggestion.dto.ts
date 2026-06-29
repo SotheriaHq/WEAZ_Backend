@@ -16,8 +16,10 @@ export enum MarketSuggestionContext {
   PRODUCT_DETAIL = 'PRODUCT_DETAIL',
   COLLECTION_DETAIL = 'COLLECTION_DETAIL',
   BRAND_DETAIL = 'BRAND_DETAIL',
+  BRAND_STORE = 'BRAND_STORE',
   SEARCH_EMPTY = 'SEARCH_EMPTY',
   MARKET_SECTION_DETAIL = 'MARKET_SECTION_DETAIL',
+  WISHLIST = 'WISHLIST',
 }
 
 export enum MarketSuggestionTargetType {
@@ -80,6 +82,11 @@ export class MarketSuggestionQueryDto {
   @IsString()
   @MaxLength(MARKET_SUGGESTION_MAX_TARGET_ID_LENGTH)
   anonymousSessionId?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(2000)
+  excludeIds?: string;
 }
 
 export interface MarketSuggestionPaginationDto {
@@ -97,7 +104,7 @@ export interface MarketSuggestionBlockMetadataDto {
 }
 
 export interface MarketSuggestionResponseMetadataDto {
-  version: 'phase11b.v1';
+  version: 'phase11b.v1' | 'phase3.foundation.v1';
   personalization: 'disabled';
   cachePolicy: 'private-no-store';
   fallbackUsed: boolean;

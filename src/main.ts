@@ -74,7 +74,9 @@ const parsePort = (value: string | undefined) => {
   }
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed <= 0) {
-    throw new Error(`APP_PORT must be a positive number. Received "${value}".`);
+    throw new Error(
+      `APP_PORT/PORT must be a positive number. Received "${value}".`,
+    );
   }
   return parsed;
 };
@@ -426,7 +428,10 @@ async function bootstrap() {
       app.use('/uploads', express.static(join(process.cwd(), 'uploads')));
     }
 
-    const port = parsePort(configService.get<string>('APP_PORT'));
+    const port = parsePort(
+      configService.get<string>('APP_PORT') ??
+        configService.get<string>('PORT'),
+    );
     const host = configService.get<string>('APP_HOST', DEFAULT_HOST);
     const protocol = httpsOptions ? 'https' : 'http';
 

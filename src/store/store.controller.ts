@@ -39,6 +39,8 @@ import { SizeComputationService } from 'src/sizing/size-computation.service';
 import { ProductSizeRecommendationQueryDto } from 'src/sizing/dto/size-recommendation.dto';
 import { multerOptionsForFileType } from 'src/upload/upload-policy';
 import { FileType } from 'src/upload/upload.enums';
+import { Request } from 'express';
+import { LegalActionDto } from 'src/legal/dto/legal-acceptance.dto';
 
 @Controller()
 export class StoreController {
@@ -90,8 +92,16 @@ export class StoreController {
 
   @UseGuards(JwtAuthGuard)
   @Post('store/content-policy/acknowledge')
-  async acknowledgeContentPolicy(@Req() req: any) {
-    return this.storeService.acknowledgeContentMediaPolicy(req.user.id);
+  async acknowledgeContentPolicy(
+    @Body(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
+    dto: LegalActionDto,
+    @Req() req: Request & { user?: { id?: string } },
+  ) {
+    return this.storeService.acknowledgeContentMediaPolicy(
+      String(req.user?.id),
+      dto,
+      req,
+    );
   }
 
   @UseGuards(JwtAuthGuard)
@@ -633,8 +643,12 @@ export class StoreController {
 
   @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
   @Post('store/open')
-  async openStore(@Req() req: any) {
-    return this.storeService.openStore(req.user.id);
+  async openStore(
+    @Body(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
+    dto: LegalActionDto,
+    @Req() req: Request & { user?: { id?: string } },
+  ) {
+    return this.storeService.openStore(String(req.user?.id), dto, req);
   }
 
   @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))

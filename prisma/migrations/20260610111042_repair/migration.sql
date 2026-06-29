@@ -1,0 +1,3 @@
+-- AlterTable
+ALTER TABLE "ProfilePhotoView" ALTER COLUMN "_id" DROP DEFAULT,
+ALTER COLUMN "updatedAt" DROP DEFAULT;

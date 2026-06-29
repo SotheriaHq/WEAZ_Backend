@@ -6,9 +6,13 @@ import {
   MinLength,
   Matches,
   IsNotEmpty,
+  IsArray,
+  ValidateNested,
 } from 'class-validator';
+import { Type } from 'class-transformer';
 import { UserType } from '@prisma/client';
 import { PASSWORD_POLICY_MIN_LENGTH } from '../helper/password-policy.helper';
+import { LegalAcceptanceInputDto } from 'src/legal/dto/legal-acceptance.dto';
 
 export class CreateUserDto {
   // Owner names are required during signup for both regular and brand users.
@@ -52,4 +56,10 @@ export class CreateUserDto {
   @IsOptional()
   @IsEnum(UserType, { message: 'User type must be either BRAND or REGULAR' })
   type?: UserType;
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => LegalAcceptanceInputDto)
+  legalAcceptances?: LegalAcceptanceInputDto[];
 }

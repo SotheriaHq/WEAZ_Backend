@@ -6,6 +6,7 @@
   Body,
   Patch,
   Param,
+  Header,
   UseInterceptors,
   ValidationPipe,
   Req,
@@ -461,6 +462,9 @@ export class AuthController {
   @Get('profile')
   @UseGuards(JwtAuthGuard)
   @SkipThrottle()
+  @Header('Cache-Control', 'no-store')
+  @Header('Pragma', 'no-cache')
+  @Header('Expires', '0')
   @UseInterceptors(TransformInterceptor)
   async getProfile(@Req() req: Request & { user: { id: string } }) {
     return this.authService.getProfileWithImage(req.user.id);

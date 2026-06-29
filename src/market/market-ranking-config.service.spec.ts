@@ -47,7 +47,7 @@ describe('MarketRankingConfigService', () => {
       MARKET_RANKING_FALLBACK_DETERMINISTIC: 'maybe',
       MARKET_RANKING_MAX_PERSONALIZED_SECTIONS: '99',
       MARKET_RANKING_SECTION_KEYS:
-        'fresh-drops, INVALID KEY, ,latest-collections, bad/key',
+        'fresh-drops, INVALID KEY, ,shop-the-look, bad/key',
       MARKET_RANKING_EXPLORATION_PERCENT: '-5',
       MARKET_RANKING_BRAND_MAX_SHARE: '100',
       MARKET_RANKING_AGGREGATE_TIMEOUT_MS: '99999',
@@ -58,7 +58,7 @@ describe('MarketRankingConfigService', () => {
       shadowMode: true,
       fallbackDeterministic: true,
       maxPersonalizedSections: 3,
-      sectionKeys: ['fresh-drops', 'latest-collections'],
+      sectionKeys: ['fresh-drops', 'shop-the-look'],
       explorationPercent: 0,
       brandMaxShare: 50,
       aggregateTimeoutMs: 500,

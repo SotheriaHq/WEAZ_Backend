@@ -39,9 +39,17 @@ import { SizingModule } from './sizing/sizing.module';
 import { MarketModule } from './market/market.module';
 import { validateProductionSecurityEnv } from './common/config/production-env.validation';
 import { MonitoringModule } from './monitoring/monitoring.module';
+import { LegalModule } from './legal/legal.module';
+import { ClockModule } from './common/clock/clock.module';
+import { AdminJobsModule } from './admin/jobs/admin-jobs.module';
 
 const isProductionEnvironment =
   String(process.env.NODE_ENV ?? '')
+    .trim()
+    .toLowerCase() === 'production';
+
+const isHardProduction =
+  String(process.env.APP_ENV ?? '')
     .trim()
     .toLowerCase() === 'production';
 
@@ -55,9 +63,11 @@ const isProductionEnvironment =
         return config;
       },
     }),
+    ClockModule,
     ScheduleModule.forRoot(),
     EmailModule,
     PrismaModule,
+    LegalModule,
     MonitoringModule,
     AuthModule,
     ThrottlerModule.forRoot([{ ttl: 60000, limit: 120 }]),
@@ -70,6 +80,7 @@ const isProductionEnvironment =
     CommentsV2Module,
     AnalyticsModule,
     ...(isProductionEnvironment ? [] : [DevToolsModule]),
+    ...(isHardProduction ? [] : [AdminJobsModule]),
     NotificationsModule,
     TagsModule,
     CategoriesModule,

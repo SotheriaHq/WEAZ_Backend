@@ -1,5 +1,5 @@
 import 'reflect-metadata';
-import { BadRequestException } from '@nestjs/common';
+import { NotFoundException } from '@nestjs/common';
 import { AdminAuditAction } from '@prisma/client';
 import { AdminAuditService } from '../services/admin-audit.service';
 import { AdminMarketGovernanceService } from './admin-market-governance.service';
@@ -21,7 +21,7 @@ describe('AdminMarketGovernanceService', () => {
     id: 'section_config_1',
     sectionKey: 'fresh-drops',
     title: 'Fresh Drops',
-    subtitle: 'New products from open Threadly stores.',
+    subtitle: 'New products from open WEAZ stores.',
     enabled: true,
     displayOrder: 10,
     previewItemLimit: 8,
@@ -41,6 +41,9 @@ describe('AdminMarketGovernanceService', () => {
     const tx = {
       marketSectionConfig: {
         upsert: jest.fn().mockResolvedValue(sectionRow()),
+        create: jest
+          .fn()
+          .mockResolvedValue(sectionRow({ sectionKey: 'runway-edit' })),
       },
       marketRankingProfile: {
         create: jest.fn().mockResolvedValue({
@@ -109,7 +112,7 @@ describe('AdminMarketGovernanceService', () => {
     return { audit, prisma, service, tx };
   };
 
-  it('rejects unsupported section keys with a controlled error', async () => {
+  it('rejects unknown section keys with a controlled error', async () => {
     const { service } = createHarness();
 
     await expect(
@@ -119,7 +122,7 @@ describe('AdminMarketGovernanceService', () => {
         actorId,
         req,
       ),
-    ).rejects.toBeInstanceOf(BadRequestException);
+    ).rejects.toBeInstanceOf(NotFoundException);
   });
 
   it('prevents disabling every primary market section', async () => {
@@ -148,7 +151,93 @@ describe('AdminMarketGovernanceService', () => {
 
     await expect(
       service.patchSection('fresh-drops', { enabled: false }, actorId, req),
-    ).rejects.toThrow('At least one market section must remain enabled');
+    ).rejects.toThrow('At least one active market section must remain enabled');
+  });
+
+  it('creates custom market sections without behavior-specific wiring', async () => {
+    const { audit, prisma, service, tx } = createHarness();
+
+    await service.createSection(
+      {
+        sectionKey: 'runway-edit',
+        title: 'Runway Edit',
+        sourceType: 'DESIGN',
+      },
+      actorId,
+      req,
+    );
+
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    expect(tx.marketSectionConfig.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          sectionKey: 'runway-edit',
+          sourceType: 'DESIGN',
+          fallbackMode: 'SOURCE_TEMPLATE',
+          viewAllEnabled: true,
+        }),
+      }),
+    );
+    expect(audit.logInTransaction).toHaveBeenCalledWith(
+      tx,
+      expect.objectContaining({
+        action: AdminAuditAction.ADMIN_MARKET_SECTION_CONFIG_UPDATE,
+        targetId: 'runway-edit',
+        metadata: expect.objectContaining({ mode: 'create' }),
+      }),
+      req,
+    );
+  });
+
+  it('updates existing custom market sections with partial patch data', async () => {
+    const customRow = sectionRow({
+      sectionKey: 'runway-edit',
+      title: 'Runway Edit',
+      subtitle: 'Original subtitle',
+      status: 'ACTIVE',
+      sourceType: 'DESIGN',
+      rankingProfileKey: 'deterministic-v1',
+      viewAllLabel: 'View all runway',
+      fallbackSectionKey: 'fresh-drops',
+      guestEnabled: true,
+      requiresAuth: false,
+      newBrandReservedRatio: 0,
+    });
+    const { service, tx } = createHarness({
+      prisma: {
+        marketSectionConfig: {
+          findUnique: jest.fn().mockResolvedValue(customRow),
+          findMany: jest.fn().mockResolvedValue([customRow]),
+        },
+      },
+    });
+    tx.marketSectionConfig.upsert.mockResolvedValue({
+      ...customRow,
+      subtitle: 'Updated subtitle',
+    });
+
+    await expect(
+      service.patchSection(
+        'runway-edit',
+        { subtitle: 'Updated subtitle' },
+        actorId,
+        req,
+      ),
+    ).resolves.toEqual(expect.objectContaining({ sectionKey: 'runway-edit' }));
+
+    expect(tx.marketSectionConfig.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { sectionKey: 'runway-edit' },
+        create: expect.objectContaining({
+          sectionKey: 'runway-edit',
+          title: 'Runway Edit',
+          sourceType: 'DESIGN',
+        }),
+        update: expect.objectContaining({
+          subtitle: 'Updated subtitle',
+        }),
+      }),
+    );
   });
 
   it('writes section config and audit in one transaction', async () => {

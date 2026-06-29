@@ -26,7 +26,7 @@ const COMMON_PASSWORD_BLOCKLIST = new Set<string>([
   'admin',
   'admin123',
   'iloveyou',
-  'threadly',
+  'weaz',
 ]);
 
 const normalizeComparableValue = (value: string): string =>

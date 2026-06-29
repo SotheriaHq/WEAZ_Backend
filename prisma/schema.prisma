@@ -48,6 +48,9 @@ model User {
   authIdentities           AuthIdentity[]
   emailLoginCodes          EmailLoginCode[]
   passwordSetupTokens      PasswordSetupToken[]
+  legalAcceptances         LegalAcceptance[]
+  profilePhotoViewsOwned   ProfilePhotoView[]            @relation("ProfilePhotoViewOwner")
+  profilePhotoViewsMade    ProfilePhotoView[]            @relation("ProfilePhotoViewViewer")
 
   // Admin Console fields
   status               UserStatus @default(ACTIVE)
@@ -198,24 +201,42 @@ model FileUpload {
 }
 
 model UserProfile {
-  id                String            @id @default(uuid()) @map("_id") @db.Uuid
-  userId            String            @unique @db.Uuid
-  user              User              @relation(fields: [userId], references: [id], onDelete: Cascade)
-  firstName         String
-  lastName          String
-  phoneNumber       String?
-  address           String?
-  profileImage      String?
-  profileImageId    String?           @db.Uuid
-  profileImageFile  FileUpload?       @relation("UserProfileProfileImage", fields: [profileImageId], references: [id])
-  bannerImage       String?
-  bannerImageId     String?           @db.Uuid
-  bannerImageFile   FileUpload?       @relation("UserProfileBannerImage", fields: [bannerImageId], references: [id])
-  profileVisibility ProfileVisibility @default(UNLOCKED)
-  createdAt         DateTime          @default(now())
-  updatedAt         DateTime          @updatedAt
+  id                    String            @id @default(uuid()) @map("_id") @db.Uuid
+  userId                String            @unique @db.Uuid
+  user                  User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  firstName             String
+  lastName              String
+  phoneNumber           String?
+  address               String?
+  profileImage          String?
+  profileImageId        String?           @db.Uuid
+  profileImageFile      FileUpload?       @relation("UserProfileProfileImage", fields: [profileImageId], references: [id])
+  profilePhotoUpdatedAt DateTime?
+  bannerImage           String?
+  bannerImageId         String?           @db.Uuid
+  bannerImageFile       FileUpload?       @relation("UserProfileBannerImage", fields: [bannerImageId], references: [id])
+  profileVisibility     ProfileVisibility @default(UNLOCKED)
+  createdAt             DateTime          @default(now())
+  updatedAt             DateTime          @updatedAt
 
   @@index([profileVisibility])
+}
+
+model ProfilePhotoView {
+  id             String   @id @default(uuid()) @map("_id") @db.Uuid
+  ownerId        String   @db.Uuid
+  viewerId       String   @db.Uuid
+  photoUpdatedAt DateTime
+  viewedAt       DateTime @default(now())
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  owner  User @relation("ProfilePhotoViewOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  viewer User @relation("ProfilePhotoViewViewer", fields: [viewerId], references: [id], onDelete: Cascade)
+
+  @@unique([ownerId, viewerId, photoUpdatedAt])
+  @@index([ownerId, photoUpdatedAt])
+  @@index([viewerId, viewedAt])
 }
 
 model FileVariant {
@@ -344,6 +365,28 @@ model PasswordSetupToken {
   @@index([userId, expiresAt])
 }
 
+model LegalAcceptance {
+  id          String                @id @default(uuid()) @map("_id") @db.Uuid
+  userId      String                @db.Uuid
+  user        User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  documentKey LegalDocumentKey
+  version     String
+  source      LegalAcceptanceSource
+  surface     String
+  accountType UserType?
+  ipAddress   String?
+  userAgent   String?
+  locale      String?
+  appVersion  String?
+  metadata    Json?
+  acceptedAt  DateTime              @default(now())
+  createdAt   DateTime              @default(now())
+
+  @@unique([userId, documentKey, version, source])
+  @@index([userId, documentKey, acceptedAt])
+  @@index([documentKey, version])
+}
+
 enum Role {
   SuperAdmin
   Admin
@@ -368,6 +411,30 @@ enum PasswordCredentialStatus {
 enum LoginCodePurpose {
   PASSWORD_SETUP
   DIRECT_LOGIN
+}
+
+enum LegalDocumentKey {
+  TERMS_OF_SERVICE
+  PRIVACY_POLICY
+  COOKIE_POLICY
+  COMMUNITY_GUIDELINES
+  SELLER_TERMS
+  STORE_GUIDELINES
+  BUYER_POLICY
+  PAYMENT_POLICY
+  COPYRIGHT_POLICY
+  ACCOUNT_DELETION_POLICY
+  CONTENT_POLICY
+}
+
+enum LegalAcceptanceSource {
+  SIGNUP
+  GOOGLE_SIGNUP
+  CHECKOUT
+  STORE_PUBLISH
+  CONTENT_PUBLISH
+  SETTINGS
+  MANUAL
 }
 
 enum BrandMemberRole {
@@ -1954,7 +2021,7 @@ model EmailDeliveryAttempt {
   emailOutbox          EmailOutbox @relation(fields: [emailOutboxId], references: [id], onDelete: Cascade)
   attemptNo            Int
   provider             String?
-  smtpHost             String?
+  transportHost        String?
   result               String
   errorCode            String?
   errorMessage         String?
@@ -4984,25 +5051,84 @@ model OperationalAlert {
   @@index([userId, lastSeenAt])
 }
 
+enum FeedCategorySurface {
+  DESIGN_FEED
+  MARKET_HOME
+}
+
+enum FeedCategoryStatus {
+  DRAFT
+  ACTIVE
+  PAUSED
+  ARCHIVED
+}
+
+enum MarketSectionConfigStatus {
+  DRAFT
+  ACTIVE
+  PAUSED
+  ARCHIVED
+}
+
+enum MarketSectionConfigSourceType {
+  PRODUCT
+  COLLECTION
+  DESIGN
+  BRAND
+  MIXED
+}
+
+model FeedCategory {
+  id                         String              @id @default(uuid()) @map("_id") @db.Uuid
+  key                        String              @unique @db.VarChar(80)
+  label                      String              @db.VarChar(120)
+  description                String?             @db.VarChar(240)
+  surface                    FeedCategorySurface @default(DESIGN_FEED)
+  rankingProfileKey          String?             @db.VarChar(80)
+  displayOrder               Int                 @default(0)
+  fallbackCategoryKey        String?             @db.VarChar(80)
+  requiresAuth               Boolean             @default(false)
+  requiresPersonalization    Boolean             @default(false)
+  isDefaultForGuest          Boolean             @default(false)
+  isDefaultForNewUser        Boolean             @default(false)
+  isDefaultForReturningUser  Boolean             @default(false)
+  status                     FeedCategoryStatus  @default(ACTIVE)
+  metadata                   Json?
+  createdAt                  DateTime            @default(now())
+  updatedAt                  DateTime            @updatedAt
+
+  @@index([surface, status, displayOrder])
+  @@index([status, displayOrder])
+}
+
 model MarketSectionConfig {
-  id               String   @id @default(uuid()) @map("_id") @db.Uuid
-  sectionKey       String   @unique @db.VarChar(80)
-  title            String   @db.VarChar(120)
-  subtitle         String?  @db.VarChar(240)
-  enabled          Boolean  @default(true)
-  displayOrder     Int      @default(0)
-  previewItemLimit Int      @default(8)
-  detailPageLimit  Int      @default(24)
-  minimumItems     Int      @default(1)
-  viewAllEnabled   Boolean  @default(true)
-  fallbackMode     String   @default("CODE_DEFAULTS") @db.VarChar(40)
-  metadata         Json?
-  createdById      String?  @db.Uuid
-  updatedById      String?  @db.Uuid
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+  id                    String                        @id @default(uuid()) @map("_id") @db.Uuid
+  sectionKey            String                        @unique @db.VarChar(80)
+  title                 String                        @db.VarChar(120)
+  subtitle              String?                       @db.VarChar(240)
+  enabled               Boolean                       @default(true)
+  status                MarketSectionConfigStatus     @default(ACTIVE)
+  sourceType            MarketSectionConfigSourceType @default(PRODUCT)
+  rankingProfileKey     String?                       @db.VarChar(80)
+  displayOrder          Int                           @default(0)
+  previewItemLimit      Int                           @default(8)
+  detailPageLimit       Int                           @default(24)
+  minimumItems          Int                           @default(1)
+  viewAllEnabled        Boolean                       @default(true)
+  viewAllLabel          String?                       @db.VarChar(80)
+  fallbackMode          String                        @default("CODE_DEFAULTS") @db.VarChar(40)
+  fallbackSectionKey    String?                       @db.VarChar(80)
+  guestEnabled          Boolean                       @default(true)
+  requiresAuth          Boolean                       @default(false)
+  newBrandReservedRatio Int                           @default(0)
+  metadata              Json?
+  createdById           String?                       @db.Uuid
+  updatedById           String?                       @db.Uuid
+  createdAt             DateTime                      @default(now())
+  updatedAt             DateTime                      @updatedAt
 
   @@index([enabled, displayOrder])
+  @@index([status, displayOrder])
   @@index([createdById])
   @@index([updatedById])
 }
@@ -5434,6 +5560,11 @@ enum MarketSignalTargetType {
 }
 
 enum MarketSignalType {
+  SECTION_VIEW
+  SECTION_VIEW_ALL_CLICK
+  ITEM_IMPRESSION
+  ITEM_VIEW
+  ITEM_CLICK
   IMPRESSION
   VIEW
   CLICK

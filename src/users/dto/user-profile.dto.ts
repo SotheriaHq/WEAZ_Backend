@@ -10,6 +10,14 @@ type UserProfileFileDto = {
   s3Url?: string | null;
 };
 
+export type ProfilePhotoViewStateDto = {
+  ownerId: string;
+  profilePhotoUpdatedAt: string | null;
+  viewed: boolean;
+  hasUnviewedUpdate: boolean;
+  canMarkViewed: boolean;
+};
+
 export class UserProfileResponseDto {
   @IsUUID()
   id: string;
@@ -33,6 +41,13 @@ export class UserProfileResponseDto {
 
   @IsOptional()
   profileImageFile?: UserProfileFileDto | null;
+
+  @IsString()
+  @IsOptional()
+  profilePhotoUpdatedAt?: string | null;
+
+  @IsOptional()
+  profilePhotoViewState?: ProfilePhotoViewStateDto;
 
   @IsString()
   @IsOptional()
@@ -92,6 +107,13 @@ export class PublicUserProfileResponseDto {
   @IsString()
   @IsOptional()
   profileImageId?: string;
+
+  @IsString()
+  @IsOptional()
+  profilePhotoUpdatedAt?: string | null;
+
+  @IsOptional()
+  profilePhotoViewState?: ProfilePhotoViewStateDto;
 
   @IsString()
   @IsOptional()

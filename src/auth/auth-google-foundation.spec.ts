@@ -19,6 +19,7 @@ describe('AuthService Google auth foundation', () => {
   let mockNotifications: any;
   let mockGoogleTokenVerifier: any;
   let mockTrustedDeviceService: any;
+  let mockLegalService: any;
 
   const baseAuthUser = {
     id: 'user-1',
@@ -107,7 +108,7 @@ describe('AuthService Google auth foundation', () => {
     };
     mockEmailService = {
       send: jest.fn().mockResolvedValue({ dispatchStatus: 'SENT' }),
-      getAppName: jest.fn(() => 'Threadly'),
+      getAppName: jest.fn(() => 'WEAZ'),
     };
     mockNotifications = {
       create: jest.fn().mockResolvedValue({}),
@@ -120,6 +121,14 @@ describe('AuthService Google auth foundation', () => {
       listDevices: jest.fn(),
       revokeDevice: jest.fn(),
       recordLoginDevice: jest.fn().mockResolvedValue({ isNewDevice: false }),
+    };
+    mockLegalService = {
+      getRequiredSignupDocuments: jest.fn(() => [
+        'TERMS_OF_SERVICE',
+        'PRIVACY_POLICY',
+      ]),
+      assertRequiredCurrentAcceptances: jest.fn(),
+      recordAcceptedDocuments: jest.fn().mockResolvedValue(undefined),
     };
 
     service = new AuthService(
@@ -136,6 +145,7 @@ describe('AuthService Google auth foundation', () => {
       mockEmailService,
       mockTrustedDeviceService,
       mockGoogleTokenVerifier,
+      mockLegalService,
     );
   };
 

@@ -9,6 +9,7 @@ import { BadRequestException } from '@nestjs/common';
 import { PatchStatus, UserType } from '@prisma/client';
 import { SystemTagsService } from '../tags/system-tags.service';
 import { TagIndexService } from '../tags/tag-index.service';
+import { ProfilePhotoViewService } from '../users/profile-photo-view.service';
 
 describe('BrandsService', () => {
   let service: BrandsService;
@@ -17,6 +18,15 @@ describe('BrandsService', () => {
       publicProfileUrl: 'https://threadly.test/u/maison',
       qrTargetUrl: 'https://threadly.test/u/maison',
       shareUrl: 'https://threadly.test/u/maison',
+    })),
+  };
+  const mockProfilePhotoViewService = {
+    getViewStateForOwner: jest.fn((owner) => ({
+      ownerId: owner.id,
+      profilePhotoUpdatedAt: null,
+      viewed: true,
+      hasUnviewedUpdate: false,
+      canMarkViewed: false,
     })),
   };
 
@@ -67,6 +77,10 @@ describe('BrandsService', () => {
         { provide: NotificationsService, useValue: { create: jest.fn() } },
         { provide: SystemTagsService, useValue: { syncTags: jest.fn() } },
         { provide: TagIndexService, useValue: { syncEntityTags: jest.fn() } },
+        {
+          provide: ProfilePhotoViewService,
+          useValue: mockProfilePhotoViewService,
+        },
       ],
     }).compile();
 
@@ -289,7 +303,7 @@ describe('BrandsService', () => {
   });
 
   describe('getBrandProfile', () => {
-    it('returns canonical media metadata and public-safe aggregate metrics', async () => {
+    it('returns canonical profile banner media over stale legacy brand banner', async () => {
       const createdAt = new Date('2026-05-01T00:00:00.000Z');
       const updatedAt = new Date('2026-05-02T00:00:00.000Z');
       mockPrisma.user.findUnique.mockResolvedValue({
@@ -389,10 +403,14 @@ describe('BrandsService', () => {
       });
       expect(response.logoImage).toBe('https://cdn.example.com/brand-logo.jpg');
       expect(response.logoImageId).toBe('logo-file-id');
-      expect(response.bannerImage).toBe(
-        'https://cdn.example.com/brand-banner.jpg',
-      );
+      expect(response.bannerImage).toBe('https://cdn.example.com/banner.jpg');
       expect(response.bannerImageId).toBe('banner-file-id');
+      expect(response.bannerImageMeta).toEqual(
+        expect.objectContaining({
+          fileId: 'banner-file-id',
+          url: 's3://banner.jpg',
+        }),
+      );
       expect(response.followersCount).toBe(42);
       expect(response.totalThreads).toBe(25);
       expect(response.totalLikes).toBe(25);

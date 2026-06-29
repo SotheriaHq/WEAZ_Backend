@@ -18,6 +18,7 @@ function parseArgs(argv) {
     skipBucket: flags.has('--skip-bucket'),
     skipLocalUploads: flags.has('--skip-local-uploads'),
     skipSeed: flags.has('--skip-seed'),
+    adminOnlySeed: flags.has('--admin-only-seed'),
   };
 }
 
@@ -104,12 +105,15 @@ function removeLocalUploads() {
   return { removed: true, path: uploadsPath };
 }
 
-function runCommand(command, args, label) {
+function runCommand(command, args, label, envOverrides = {}) {
   const result = spawnSync(command, args, {
     cwd: process.cwd(),
     stdio: 'inherit',
     shell: true,
-    env: process.env,
+    env: {
+      ...process.env,
+      ...envOverrides,
+    },
   });
 
   if (result.status !== 0) {
@@ -119,11 +123,17 @@ function runCommand(command, args, label) {
 
 function resetDatabase() {
   const args = ['prisma', 'migrate', 'reset', '--force'];
-  runCommand('npx', args, 'Prisma reset');
+  runCommand('npx', args, 'Prisma reset', {
+    THREADLY_PRISMA_SKIP_SEED: 'true',
+  });
 }
 
 function runSeed() {
   runCommand('npm', ['run', 'prisma:seed'], 'Database seed');
+}
+
+function runAdminSeed() {
+  runCommand('npm', ['run', 'prisma:seed:admin'], 'Admin database seed');
 }
 
 function verifySeededAdmin() {
@@ -139,7 +149,7 @@ function verifySeededAdmin() {
         "const pool = new Pool({ connectionString: process.env.DATABASE_URL });",
         "const prisma = new PrismaClient({ adapter: new PrismaPg(pool) });",
         "(async () => {",
-        "  const superAdminEmail = 'adminoversee@test.com';",
+        "  const superAdminEmail = String(process.env.SYSTEM_ADMIN_EMAIL || 'adminoversee@test.com').trim().toLowerCase();",
         "  const disallowedSeedEmails = ['brand@example.com'];",
         "  const disallowedSeedUsernames = ['brand_demo'];",
         "  const superAdmin = await prisma.user.findUnique({",
@@ -182,7 +192,6 @@ function verifySeededAdmin() {
     {
       cwd: process.cwd(),
       stdio: 'inherit',
-      shell: true,
       env: process.env,
     },
   );
@@ -206,6 +215,9 @@ async function main() {
     console.error(
       'Example: npm run dev:reset -- --confirm',
     );
+    console.error(
+      'Admin-only DB reset example: npm run reset:admin -- --confirm',
+    );
     process.exit(1);
   }
 
@@ -217,6 +229,11 @@ async function main() {
   console.log(`- database: ${options.skipDb ? 'skip' : databaseUrl}`);
   console.log(`- bucket: ${options.skipBucket ? 'skip' : bucketName || '(missing)'}`);
   console.log(`- local uploads: ${options.skipLocalUploads ? 'skip' : path.join(process.cwd(), 'uploads')}`);
+  console.log(
+    `- seed: ${
+      options.skipSeed ? 'skip' : options.adminOnlySeed ? 'admin-only' : 'full'
+    }`,
+  );
 
   if (!options.skipBucket) {
     const deletedCount = await emptyBucket(bucketName, region);
@@ -236,9 +253,14 @@ async function main() {
     resetDatabase();
     console.log('Database reset completed.');
     if (!options.skipSeed) {
-      runSeed();
-      verifySeededAdmin();
-      console.log('Database seed completed and SuperAdmin verified.');
+      if (options.adminOnlySeed) {
+        runAdminSeed();
+        verifySeededAdmin();
+        console.log('Database admin-only seed completed and SuperAdmin verified.');
+      } else {
+        runSeed();
+        console.log('Database full seed completed.');
+      }
     } else {
       console.log('Database seed skipped.');
     }

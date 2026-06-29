@@ -1,12 +1,16 @@
 import { Transform } from 'class-transformer';
 import {
+  IsArray,
   IsEmail,
   IsEnum,
   IsNotEmpty,
   IsOptional,
   IsString,
+  ValidateNested,
 } from 'class-validator';
 import { LoginCodePurpose, UserType } from '@prisma/client';
+import { Type } from 'class-transformer';
+import { LegalAcceptanceInputDto } from 'src/legal/dto/legal-acceptance.dto';
 
 const trimString = (value: unknown) =>
   typeof value === 'string' ? value.trim() : value;
@@ -25,6 +29,12 @@ export class GoogleAuthDto {
   @IsString()
   @Transform(({ value }) => trimString(value))
   brandFullName?: string;
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => LegalAcceptanceInputDto)
+  legalAcceptances?: LegalAcceptanceInputDto[];
 }
 
 export class LoginOptionsDto {

@@ -37,7 +37,7 @@ export type BrandProfileMetrics = {
    */
   collectionsCount: number;
   /**
-   * Preferred product-facing name for collectionsCount while Threadly aligns on "designs".
+   * Preferred product-facing name for collectionsCount while WEAZ aligns on "designs".
    */
   designsCount: number;
   /**
@@ -50,7 +50,7 @@ export type BrandProfileMetrics = {
   patchesCount: number;
   followersCount: number;
   /**
-   * Source of truth for Threadly engagement. Aggregates public collection and collection-media THREAD counts.
+   * Source of truth for WEAZ engagement. Aggregates public collection and collection-media THREAD counts.
    */
   totalThreads: number;
   /**

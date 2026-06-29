@@ -36,6 +36,8 @@ import {
   Prisma,
   Role,
   SizingMode,
+  LegalAcceptanceSource,
+  LegalDocumentKey,
 } from '@prisma/client';
 import { ADMIN_PERMISSIONS } from 'src/admin/constants/permissions';
 import { PrismaService } from 'src/prisma/prisma.service';
@@ -76,6 +78,7 @@ import {
 import { MonitoringService } from 'src/monitoring/monitoring.service';
 import { AlertCategory, AlertSeverity } from 'src/monitoring/monitoring.types';
 import { redactSensitiveLogValue } from 'src/common/utils/sensitive-log';
+import { LegalService } from 'src/legal/legal.service';
 
 type PaymentAttemptRecord = Awaited<
   ReturnType<PrismaService['paymentAttempt']['findUnique']>
@@ -135,6 +138,13 @@ type ExtractedPaystackCard = {
 
 type PaymentGatewayContext = {
   buyerId?: string | null;
+};
+
+type LegalRequestMetadata = {
+  ipAddress?: string | null;
+  userAgent?: string | null;
+  locale?: string | null;
+  appVersion?: string | null;
 };
 
 type PaystackCardholderNameMatchMode = 'strict' | 'soft' | 'off';
@@ -302,6 +312,8 @@ export class PaymentService implements OnModuleInit {
     private readonly webhookEventsQueue: WebhookEventsQueueService,
     @Optional()
     private readonly monitoring?: MonitoringService,
+    @Optional()
+    private readonly legalService?: LegalService,
   ) {}
 
   onModuleInit(): void {
@@ -349,6 +361,7 @@ export class PaymentService implements OnModuleInit {
     dto: InitializeUnifiedCheckoutDto,
     userId: string,
     requestCorrelationId?: string | null,
+    requestMetadata?: LegalRequestMetadata,
   ): Promise<PaymentInitResult> {
     // Unified checkout is intentionally bag-driven. Callers must stage standard
     // cart lines and custom-order checkout sessions before initialization.
@@ -388,6 +401,21 @@ export class PaymentService implements OnModuleInit {
       requestCorrelationId ?? dto.correlationId ?? idempotencyKey,
       'unified-checkout',
     );
+
+    await this.legalService?.recordAcceptedDocuments({
+      userId,
+      acceptances: this.extractLegalAcceptances(paymentData),
+      requiredKeys: [LegalDocumentKey.PAYMENT_POLICY],
+      source: LegalAcceptanceSource.CHECKOUT,
+      surface: 'checkout',
+      evidence: requestMetadata,
+      metadata: {
+        paymentMethod: dto.paymentMethod,
+        channel: String(paymentData.channel ?? ''),
+        idempotencyKey,
+        correlationId,
+      },
+    });
     const providerMode = this.getProviderMode();
 
     return this.withUnifiedCheckoutInitializationLock(
@@ -1836,6 +1864,19 @@ export class PaymentService implements OnModuleInit {
     return this.validatePaymentRequest(paymentMethod, paymentData);
   }
 
+  private extractLegalAcceptances(paymentData: Record<string, any>) {
+    const raw = paymentData?.legalAcceptances;
+    if (!Array.isArray(raw)) return [];
+    return raw
+      .map((entry) => ({
+        documentKey: entry?.documentKey as LegalDocumentKey,
+        version: String(entry?.version ?? '').trim(),
+      }))
+      .filter(
+        (entry) => Boolean(entry.documentKey) && entry.version.length > 0,
+      );
+  }
+
   resolvePaymentCallbackUrl(callbackUrl?: string) {
     return this.resolveCallbackBaseUrl(callbackUrl);
   }
@@ -2677,7 +2718,7 @@ export class PaymentService implements OnModuleInit {
       String(payload.data.access_code || '').trim() || undefined;
     if (!providerAccessCode) {
       throw new BadRequestException(
-        'Paystack did not return an inline access code. Threadly only supports in-app secure checkout and will not route buyers out of the product.',
+        'Paystack did not return an inline access code. WEAZ only supports in-app secure checkout and will not route buyers out of the product.',
       );
     }
 
@@ -2699,16 +2740,16 @@ export class PaymentService implements OnModuleInit {
             : 'Open secure card checkout',
         description:
           channel === 'BANK_TRANSFER'
-            ? "Paystack will show the transfer account details inside Threadly's secure checkout window."
-            : "Card details and any issuer verification steps stay inside Threadly's secure checkout window.",
+            ? "Paystack will show the transfer account details inside WEAZ's secure checkout window."
+            : "Card details and any issuer verification steps stay inside WEAZ's secure checkout window.",
         ctaLabel:
           channel === 'BANK_TRANSFER'
             ? 'Open transfer instructions'
             : 'Open secure checkout',
         instructions: [
           `Use ${paymentData.email} as the payer email if prompted by Paystack.`,
-          'Complete the authorization inside the secure payment window that opens over Threadly.',
-          'Threadly verifies the transaction by reference before the order is treated as paid.',
+          'Complete the authorization inside the secure payment window that opens over WEAZ.',
+          'WEAZ verifies the transaction by reference before the order is treated as paid.',
           'The order is not treated as paid until provider verification confirms success.',
         ],
       },
@@ -2759,7 +2800,7 @@ export class PaymentService implements OnModuleInit {
     const buyerId = String(context?.buyerId ?? '').trim();
     if (!buyerId) {
       throw new BadRequestException(
-        'A buyer context is required before Threadly can charge a saved Paystack card.',
+        'A buyer context is required before WEAZ can charge a saved Paystack card.',
       );
     }
 
@@ -2847,11 +2888,11 @@ export class PaymentService implements OnModuleInit {
           type: 'INLINE_POPUP',
           title: 'Complete secure card verification',
           description:
-            'Threadly validated the card details. Complete the remaining issuer verification in the secure payment window.',
+            'WEAZ validated the card details. Complete the remaining issuer verification in the secure payment window.',
           ctaLabel: 'Open secure verification',
           instructions: [
             `Use ${paymentData.email} as the payer email if prompted by Paystack.`,
-            'Complete the card challenge in the secure payment window and Threadly will resume automatically.',
+            'Complete the card challenge in the secure payment window and WEAZ will resume automatically.',
             'The order is not treated as paid until provider verification confirms success.',
           ],
         },
@@ -2885,9 +2926,9 @@ export class PaymentService implements OnModuleInit {
               type: 'PENDING_CONFIRMATION',
               title: 'Confirming payment',
               description:
-                'Threadly is waiting for Paystack to confirm the card charge.',
+                'WEAZ is waiting for Paystack to confirm the card charge.',
               instructions: [
-                'Keep this window open while Threadly verifies the payment reference.',
+                'Keep this window open while WEAZ verifies the payment reference.',
               ],
             },
       responseSnapshot: {
@@ -2931,7 +2972,7 @@ export class PaymentService implements OnModuleInit {
           type: 'REDIRECT',
           title: 'Continue to Flutterwave checkout',
           description:
-            'The hosted checkout will simulate card authorization and then return to Threadly.',
+            'The hosted checkout will simulate card authorization and then return to WEAZ.',
           ctaLabel: 'Continue to Flutterwave',
           instructions: [
             `Proceed with ${paymentData.email} as the payer email.`,
@@ -5391,7 +5432,7 @@ export class PaymentService implements OnModuleInit {
       if (this.hasRawPaystackCardDetails(paymentData)) {
         if (!this.isPaystackCustomCardEntryEnabled()) {
           throw new BadRequestException(
-            'Do not send raw card details to Threadly. Enter card number, CVV, PIN, and OTP on the hosted secure checkout screen.',
+            'Do not send raw card details to WEAZ. Enter card number, CVV, PIN, and OTP on the hosted secure checkout screen.',
           );
         }
 
@@ -9152,7 +9193,12 @@ export class PaymentService implements OnModuleInit {
       const source = value as Record<string, unknown>;
       const output: Record<string, unknown> = {};
       const keys = Object.keys(source)
-        .filter((key) => !['consentAccepted', 'mockScenario'].includes(key))
+        .filter(
+          (key) =>
+            !['consentAccepted', 'legalAcceptances', 'mockScenario'].includes(
+              key,
+            ),
+        )
         .sort();
 
       for (const key of keys) {

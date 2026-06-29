@@ -1,6 +1,7 @@
 import type { CatalogEntityType } from '../common/domain/catalog-domain';
 
 export const SEARCH_ENTITY_TYPES = [
+  'profile',
   'product',
   'brand',
   'design',
@@ -29,6 +30,13 @@ export interface SearchItem {
   salePrice?: number | null;
   currency?: string | null;
   metadata?: Record<string, unknown>;
+  /**
+   * Additive ranking debug/ordering fields. Identity results occupy lower tiers
+   * (0 = strongest identity) and rank above commerce/content matches. Optional so
+   * existing web/mobile clients that ignore them are unaffected.
+   */
+  matchTier?: number;
+  matchReason?: string;
   highlights?: {
     title?: SearchHighlightOffset[];
     description?: SearchHighlightOffset[];
@@ -60,6 +68,7 @@ export interface SearchSuggestionResponse {
   recent: Array<{ query: string; href: string }>;
   trending: Array<{ query: string; score: number; href: string }>;
   products: SearchSuggestionSection;
+  profiles: SearchSuggestionSection;
   brands: SearchSuggestionSection;
   designs: SearchSuggestionSection;
   storeCollections: SearchSuggestionSection;

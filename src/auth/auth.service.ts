@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Injectable,
   Logger,
+  Optional,
   ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
@@ -22,6 +23,7 @@ import {
   AuthProvider,
   PasswordCredentialStatus,
   LoginCodePurpose,
+  LegalAcceptanceSource,
 } from '@prisma/client';
 import {
   authUserSelect,
@@ -31,6 +33,8 @@ import {
 } from 'src/auth/helper/prisma-select.helper';
 import {
   canonicalUserProfileSelect,
+  getRejectedProfileMediaUrlReason,
+  normalizeProfileMediaUrlForPersistence,
   resolveRequiredProfileField,
 } from 'src/common/user-profile-source.helper';
 import { resolveRequiredBrandField } from 'src/common/brand-profile-source.helper';
@@ -58,6 +62,10 @@ import {
   GoogleTokenVerifierService,
   VerifiedGoogleIdentity,
 } from './helper/google-token-verifier.service';
+import { LegalService } from 'src/legal/legal.service';
+import { LegalAcceptanceInputDto } from 'src/legal/dto/legal-acceptance.dto';
+import { PRODUCT_NAME } from 'src/common/branding/product-identity.constants';
+import { MonitoringService } from 'src/monitoring/monitoring.service';
 
 const PASSWORD_RESET_TOKEN_TTL_MS = 60 * 60 * 1000;
 const RESET_REQUEST_SUPPRESSION_MS = 2 * 60 * 1000;
@@ -81,6 +89,8 @@ export class AuthService {
     private readonly emailService: EmailService,
     private readonly trustedDeviceService: TrustedDeviceService,
     private readonly googleTokenVerifier: GoogleTokenVerifierService,
+    private readonly legalService: LegalService,
+    @Optional() private readonly monitoring?: MonitoringService,
   ) {}
 
   private buildPasswordPolicyContext(
@@ -165,7 +175,7 @@ export class AuthService {
       identity.email
         .split('@')[0]
         ?.replace(/[._-]+/g, ' ')
-        .trim() || 'Threadly';
+        .trim() || PRODUCT_NAME;
     return {
       firstName: givenName || nameParts[0] || emailLocalPart,
       lastName: familyName || 'Member',
@@ -200,6 +210,74 @@ export class AuthService {
     this.logger.log(
       `Auth email dispatch outcome: ${summary} providerMessageId=${args.result.providerMessageId ?? 'n/a'}`,
     );
+  }
+
+  private sanitizeEmailDispatchError(
+    errorMessage?: string | null,
+  ): string | null {
+    const value = String(errorMessage ?? '').trim();
+    if (!value) return null;
+
+    return value
+      .replace(/[^\s@]+@[^\s@]+\.[^\s@]+/g, '[email]')
+      .replace(/(sk_(?:live|test)_[a-z0-9_]+)/gi, '[secret]')
+      .replace(/(bearer\s+)[a-z0-9._-]+/gi, '$1[redacted]')
+      .slice(0, 300);
+  }
+
+  private emitVerificationEmailDeliveryAlert(args: {
+    scenarioKey: string;
+    phase: 'signup' | 'resend';
+    userId: string;
+    recipientEmail: string;
+    result: EnqueueEmailResult;
+  }): void {
+    if (
+      args.result.dispatchStatus !== 'FAILED' &&
+      args.result.dispatchStatus !== 'SUPPRESSED'
+    ) {
+      return;
+    }
+
+    this.monitoring?.emitAlert({
+      category: 'AUTH',
+      severity: args.result.dispatchStatus === 'FAILED' ? 'error' : 'warning',
+      event: 'auth_email_verification_delivery_failed',
+      title: 'Email verification delivery failed',
+      message:
+        args.result.dispatchStatus === 'FAILED'
+          ? 'Auth verification email dispatch failed.'
+          : 'Auth verification email dispatch was suppressed.',
+      userId: args.userId,
+      entityType: 'User',
+      entityId: args.userId,
+      dedupeKey: `auth_email_verification_delivery_failed:${args.userId}:${args.scenarioKey}:${args.result.dispatchStatus}`,
+      metadata: {
+        phase: args.phase,
+        scenarioKey: args.scenarioKey,
+        dispatchStatus: args.result.dispatchStatus,
+        outboxId: args.result.outboxId ?? null,
+        providerMessageId: args.result.providerMessageId ?? null,
+        recipient: maskEmailForLog(args.recipientEmail),
+        errorMessage: this.sanitizeEmailDispatchError(args.result.errorMessage),
+      },
+    });
+  }
+
+  private buildVerificationEmailMessage(result: EnqueueEmailResult): string {
+    if (result.dispatchStatus === 'SENT') {
+      return `Welcome to ${PRODUCT_NAME}! Verification email sent. Please check your inbox and spam folder.`;
+    }
+
+    if (result.dispatchStatus === 'FAILED') {
+      return `Welcome to ${PRODUCT_NAME}, but we could not send your verification email right now. Use resend from your profile and try again shortly.`;
+    }
+
+    if (result.dispatchStatus === 'SUPPRESSED') {
+      return `Welcome to ${PRODUCT_NAME}, but verification email delivery is temporarily suppressed for this address. Contact support if this persists.`;
+    }
+
+    return `Welcome to ${PRODUCT_NAME}! Verification email queued for delivery.`;
   }
 
   private extractClientIp(req: Request): string | null {
@@ -445,6 +523,11 @@ export class AuthService {
         }
       }
 
+      this.legalService.assertRequiredCurrentAcceptances(
+        signupDto.legalAcceptances,
+        this.legalService.getRequiredSignupDocuments(),
+      );
+
       let username: string;
       try {
         if (signupDto.type === UserType.BRAND && signupDto.brandFullName) {
@@ -526,6 +609,9 @@ export class AuthService {
                   firstName: dbFirstName,
                   lastName: dbLastName,
                   profileImage: signupDto.profileImage,
+                  ...(signupDto.profileImage
+                    ? { profilePhotoUpdatedAt: createdAt }
+                    : {}),
                 },
               },
               ...(signupDto.type === UserType.BRAND && brandId
@@ -543,6 +629,17 @@ export class AuthService {
                 : {}),
             },
             select: authUserSelect,
+          });
+
+          await this.legalService.recordAcceptedDocuments({
+            tx,
+            userId: createdUser.id,
+            acceptances: signupDto.legalAcceptances,
+            requiredKeys: this.legalService.getRequiredSignupDocuments(),
+            source: LegalAcceptanceSource.SIGNUP,
+            surface: 'signup',
+            accountType: signupDto.type ?? UserType.REGULAR,
+            req,
           });
 
           if (signupDto.type === UserType.BRAND && brandId) {
@@ -602,10 +699,18 @@ export class AuthService {
           scenarioKey: 'auth.email_verification',
           priority: EmailPriority.P1_TRANSACTIONAL,
           idempotencyKey: `auth:email-verification:${user.id}:${verificationToken}`,
+          dispatchImmediately: true,
         },
       );
       this.logEmailDispatchOutcome({
         scenarioKey: 'auth.email_verification',
+        userId: user.id,
+        recipientEmail: user.email,
+        result: verificationDispatchResult,
+      });
+      this.emitVerificationEmailDeliveryAlert({
+        scenarioKey: 'auth.email_verification',
+        phase: 'signup',
         userId: user.id,
         recipientEmail: user.email,
         result: verificationDispatchResult,
@@ -655,7 +760,13 @@ export class AuthService {
         user: toAuthUserResponse(user),
         accessToken,
         ...(refreshToken ? { refreshToken } : {}),
-        message: 'Welcome TO THE INDUSTRY!',
+        message: this.buildVerificationEmailMessage(verificationDispatchResult),
+        verificationEmail: {
+          status: verificationDispatchResult.dispatchStatus,
+          message: this.buildVerificationEmailMessage(
+            verificationDispatchResult,
+          ),
+        },
       };
     } catch (error) {
       this.logger.error('Signup error:', error.message, error.stack);
@@ -735,6 +846,7 @@ export class AuthService {
       idToken: string;
       type?: UserType;
       brandFullName?: string;
+      legalAcceptances?: LegalAcceptanceInputDto[];
     },
     req: Request,
     res: Response,
@@ -828,6 +940,11 @@ export class AuthService {
             ? await this.userHelperService.generateIndustriNumber()
             : null;
 
+        this.legalService.assertRequiredCurrentAcceptances(
+          dto.legalAcceptances,
+          this.legalService.getRequiredSignupDocuments(),
+        );
+
         const createdUser = await tx.user.create({
           data: {
             id: uuidv4(),
@@ -844,6 +961,9 @@ export class AuthService {
                 firstName: displayNames.firstName,
                 lastName: displayNames.lastName,
                 profileImage: identity.picture,
+                ...(identity.picture
+                  ? { profilePhotoUpdatedAt: createdAt }
+                  : {}),
               },
             },
             authIdentities: {
@@ -869,6 +989,17 @@ export class AuthService {
               : {}),
           },
           select: authUserSelect,
+        });
+
+        await this.legalService.recordAcceptedDocuments({
+          tx,
+          userId: createdUser.id,
+          acceptances: dto.legalAcceptances,
+          requiredKeys: this.legalService.getRequiredSignupDocuments(),
+          source: LegalAcceptanceSource.GOOGLE_SIGNUP,
+          surface: 'google-signup',
+          accountType: requestedType,
+          req,
         });
 
         if (requestedType === UserType.BRAND && brandId) {
@@ -1385,7 +1516,7 @@ export class AuthService {
     }
     if (user.email.trim().toLowerCase() !== identity.email) {
       throw new BadRequestException(
-        'Google account email must match your Threadly email',
+        `Google account email must match your ${PRODUCT_NAME} email`,
       );
     }
 
@@ -1698,15 +1829,33 @@ export class AuthService {
     assignString('phoneNumber');
     assignString('address');
 
-    if (dto.profileImage !== undefined) {
-      profileData.profileImage = dto.profileImage;
-    }
+    const assignMediaUrl = (
+      field: Extract<AllowedProfileUpdateField, 'profileImage' | 'bannerImage'>,
+    ) => {
+      const value = dto[field];
+      if (value === undefined) return;
+
+      const rejectedReason = getRejectedProfileMediaUrlReason(value);
+      if (rejectedReason) {
+        throw new BadRequestException(
+          `${field} must reference a persisted uploaded file, not a temporary display URL`,
+        );
+      }
+
+      profileData[field] =
+        normalizeProfileMediaUrlForPersistence(value) ?? null;
+    };
+
+    assignMediaUrl('profileImage');
     if (dto.profileImageId !== undefined) {
       profileData.profileImageId = dto.profileImageId;
     }
-    if (dto.bannerImage !== undefined) {
-      profileData.bannerImage = dto.bannerImage;
-    }
+    const profilePhotoWasProvided =
+      dto.profileImage !== undefined || dto.profileImageId !== undefined;
+    const profilePhotoUpdatedAt = profilePhotoWasProvided
+      ? new Date()
+      : undefined;
+    assignMediaUrl('bannerImage');
     if (dto.bannerImageId !== undefined) {
       profileData.bannerImageId = dto.bannerImageId;
     }
@@ -1754,6 +1903,7 @@ export class AuthService {
               profileImageId:
                 (profileData.profileImageId as string | null | undefined) ??
                 null,
+              ...(profilePhotoUpdatedAt ? { profilePhotoUpdatedAt } : {}),
               bannerImage:
                 (profileData.bannerImage as string | null | undefined) ?? null,
               bannerImageId:
@@ -1762,7 +1912,10 @@ export class AuthService {
               profileVisibility:
                 existingUser.userProfile?.profileVisibility ?? 'UNLOCKED',
             },
-            update: profileData,
+            update: {
+              ...profileData,
+              ...(profilePhotoUpdatedAt ? { profilePhotoUpdatedAt } : {}),
+            },
           });
         }
 
@@ -1871,11 +2024,19 @@ export class AuthService {
         recipientUserId: user.id,
         scenarioKey: 'auth.email_verification.resend',
         priority: EmailPriority.P1_TRANSACTIONAL,
+        dispatchImmediately: true,
       },
     );
 
     this.logEmailDispatchOutcome({
       scenarioKey: 'auth.email_verification.resend',
+      userId: user.id,
+      recipientEmail: user.email,
+      result: dispatchResult,
+    });
+    this.emitVerificationEmailDeliveryAlert({
+      scenarioKey: 'auth.email_verification.resend',
+      phase: 'resend',
       userId: user.id,
       recipientEmail: user.email,
       result: dispatchResult,
@@ -2168,7 +2329,7 @@ export class AuthService {
 
     const deletedAt = new Date();
     const suffix = deletedAt.getTime().toString(36);
-    const deletedEmail = `deleted+${suffix}-${user.id}@threadly.local`;
+    const deletedEmail = `deleted+${suffix}-${user.id}@weaz.local`;
     const deletedUsername = `deleted_${suffix}`;
     const placeholderPassword = await this.passwordService.hashPassword(
       randomBytes(32).toString('hex'),

@@ -447,7 +447,10 @@ export class UploadService {
       return explicit.trim().replace(/\/+$/, '');
     }
 
-    const port = this.configService.get<string>('APP_PORT') ?? '3040';
+    const port =
+      this.configService.get<string>('APP_PORT') ??
+      this.configService.get<string>('PORT') ??
+      '3040';
     return `http://localhost:${port}`;
   }
 
@@ -621,6 +624,7 @@ export class UploadService {
     userId: string,
     file: Pick<FileUploadResult, 'id' | 'url'>,
   ): Promise<void> {
+    const profilePhotoUpdatedAt = new Date();
     await this.prisma.$transaction(async (tx) => {
       const user = await tx.user.findUnique({
         where: { id: userId },
@@ -636,8 +640,13 @@ export class UploadService {
           lastName: user?.userProfile?.lastName ?? '',
           profileImageId: file.id,
           profileImage: file.url,
+          profilePhotoUpdatedAt,
         },
-        update: { profileImageId: file.id, profileImage: file.url },
+        update: {
+          profileImageId: file.id,
+          profileImage: file.url,
+          profilePhotoUpdatedAt,
+        },
       });
       // Strict sync: store logo mirrors brand profile image.
       await tx.brand.updateMany({
@@ -648,6 +657,7 @@ export class UploadService {
   }
 
   async clearUserProfileImage(userId: string): Promise<void> {
+    const profilePhotoUpdatedAt = new Date();
     await this.prisma.$transaction(async (tx) => {
       const user = await tx.user.findUnique({
         where: { id: userId },
@@ -663,8 +673,13 @@ export class UploadService {
           lastName: user?.userProfile?.lastName ?? '',
           profileImageId: null,
           profileImage: null,
+          profilePhotoUpdatedAt,
         },
-        update: { profileImageId: null, profileImage: null },
+        update: {
+          profileImageId: null,
+          profileImage: null,
+          profilePhotoUpdatedAt,
+        },
       });
       // Strict sync: store logo mirrors brand profile image.
       await tx.brand.updateMany({

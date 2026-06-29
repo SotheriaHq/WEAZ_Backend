@@ -66,6 +66,8 @@ type AggregateBucket = {
 };
 
 const SEEN_SIGNAL_TYPES = new Set<MarketSignalType>([
+  MarketSignalType.ITEM_IMPRESSION,
+  MarketSignalType.ITEM_VIEW,
   MarketSignalType.IMPRESSION,
   MarketSignalType.VIEW,
   MarketSignalType.OPEN,
@@ -333,9 +335,11 @@ export class MarketSignalAggregationService {
     counters.eventCount += 1;
 
     if (
+      event.signalType === MarketSignalType.SECTION_VIEW ||
       event.signalType === MarketSignalType.MARKET_SECTION_VIEW ||
       (event.targetType === MarketSignalTargetType.SECTION &&
         (event.signalType === MarketSignalType.IMPRESSION ||
+          event.signalType === MarketSignalType.ITEM_IMPRESSION ||
           event.signalType === MarketSignalType.VIEW))
     ) {
       counters.sectionImpressions += 1;
@@ -343,6 +347,7 @@ export class MarketSignalAggregationService {
 
     if (
       (event.signalType === MarketSignalType.IMPRESSION ||
+        event.signalType === MarketSignalType.ITEM_IMPRESSION ||
         event.signalType === MarketSignalType.SUGGESTION_ITEM_VIEW) &&
       ITEM_TARGET_TYPES.has(event.targetType)
     ) {
@@ -351,6 +356,7 @@ export class MarketSignalAggregationService {
 
     if (
       event.signalType === MarketSignalType.OPEN ||
+      event.signalType === MarketSignalType.ITEM_VIEW ||
       event.signalType === MarketSignalType.PRODUCT_VIEW
     ) {
       counters.itemOpens += 1;
@@ -361,12 +367,14 @@ export class MarketSignalAggregationService {
 
     if (
       event.signalType === MarketSignalType.CLICK ||
+      event.signalType === MarketSignalType.ITEM_CLICK ||
       event.signalType === MarketSignalType.SUGGESTION_ITEM_CLICK
     ) {
       counters.clicks += 1;
     }
 
     if (
+      event.signalType === MarketSignalType.SECTION_VIEW_ALL_CLICK ||
       event.signalType === MarketSignalType.VIEW_ALL_CLICK ||
       event.signalType === MarketSignalType.MARKET_SECTION_VIEW_ALL_CLICK ||
       event.signalType === MarketSignalType.SUGGESTION_VIEW_ALL_CLICK

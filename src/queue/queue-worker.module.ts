@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { PrismaModule } from 'src/prisma/prisma.module';
+import { ClockModule } from 'src/common/clock/clock.module';
 import { EmailModule } from 'src/email/email.module';
 import { UploadModule } from 'src/upload/upload.module';
 import { StoreModule } from 'src/store/store.module';
@@ -32,6 +33,7 @@ import { WebhookEventsProcessor } from './webhook-events.processor';
       isGlobal: true,
       envFilePath: '.env',
     }),
+    ClockModule,
     PrismaModule,
     EmailModule,
     UploadModule,

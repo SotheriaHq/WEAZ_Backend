@@ -15,9 +15,8 @@ import {
 } from '../src/categories/default-taxonomy';
 import { seedMeasurementPoints } from './seed_measurement_points';
 import { seedSizeCharts } from './seed_size_charts';
+import { ensureSystemAdmin } from './seed-system-admin';
 
-const SYSTEM_ADMIN_EMAIL = 'adminoversee@test.com';
-const SYSTEM_ADMIN_PASSWORD = 'Password@123';
 const DEMO_BRAND_OWNER_EMAIL = 'brand.owner@test.com';
 const DEMO_BUYER_EMAIL = 'buyer@test.com';
 const DEMO_USER_PASSWORD = 'Password@123';
@@ -385,43 +384,6 @@ async function ensureDefaultTaxonomy() {
   }
 
   return idsBySlug;
-}
-
-async function ensureSystemAdmin() {
-  const existing = await prisma.user.findUnique({
-    where: { email: SYSTEM_ADMIN_EMAIL },
-    select: { id: true },
-  });
-
-  if (existing) {
-    console.log(`System admin already exists: ${SYSTEM_ADMIN_EMAIL}`);
-    return;
-  }
-
-  const hashedPassword = await argon2.hash(SYSTEM_ADMIN_PASSWORD);
-
-  await prisma.user.create({
-    data: {
-      id: randomUUID(),
-      email: SYSTEM_ADMIN_EMAIL,
-      username: 'systemadmin',
-      password: hashedPassword,
-      role: 'SuperAdmin',
-      type: 'REGULAR',
-      status: 'ACTIVE',
-      isActive: 'Active',
-      isEmailVerified: true,
-      mustResetPassword: false,
-      userProfile: {
-        create: {
-          firstName: 'System',
-          lastName: 'Admin',
-        },
-      },
-    },
-  });
-
-  console.log(`System SuperAdmin created: ${SYSTEM_ADMIN_EMAIL}`);
 }
 
 async function upsertUserWithProfile(args: {
@@ -1003,7 +965,7 @@ async function ensureDemoCatalogSeed(idsBySlug: Map<string, string>) {
 async function main() {
   console.log('Starting database seed...');
 
-  await ensureSystemAdmin();
+  await ensureSystemAdmin(prisma);
 
   await seedMeasurementPoints(prisma);
   await seedSizeCharts(prisma);

@@ -1,19 +1,23 @@
 import type { ConfigService } from '@nestjs/config';
+import { PRODUCT_NAME } from '../common/branding/product-identity.constants';
 
-export type EmailProvider = 'mailjet' | 'smtp' | 'console';
+export type EmailProvider = 'resend';
+export type EmailMode = 'log_only' | 'redirect' | 'live';
 
 export type ResolvedEmailConfig = {
   provider: EmailProvider;
+  mode: EmailMode;
   appName: string;
-  fromAddress: string;
+  resendApiKey: string | null;
+  from: string | null;
+  fromAddress: string | null;
   fromName: string;
   replyTo: string | null;
-  smtpHost: string | null;
-  smtpPort: number | null;
-  smtpUser: string | null;
-  smtpPass: string | null;
-  transportEnabled: boolean;
+  redirectTo: string | null;
+  dailyLimit: number | null;
+  logIntendedRecipient: boolean;
   deliveryProviderName: string;
+  transportHost: string | null;
   webhookSharedSecret: string | null;
   webhookBasicUser: string | null;
   webhookBasicPass: string | null;
@@ -26,14 +30,8 @@ type WebhookAuthConfig = {
   basicPass: string | null;
 };
 
-const DEFAULT_APP_NAME = 'Threadly';
-const DEFAULT_FROM_ADDRESS = 'noreply@threadly.app';
-const DEFAULT_MAILJET_SMTP_HOST = 'in-v3.mailjet.com';
-const DEFAULT_MAILJET_SMTP_PORT = 587;
-const MAILJET_SMTP_HOST_ALIASES = new Set([
-  'in-v3.mailjet.com',
-  'smtp.mailjet.com',
-]);
+const DEFAULT_APP_NAME = PRODUCT_NAME;
+const RESEND_API_HOST = 'api.resend.com';
 
 const cleanString = (value: string | undefined | null): string | null => {
   if (typeof value !== 'string') {
@@ -44,215 +42,179 @@ const cleanString = (value: string | undefined | null): string | null => {
   return trimmed.length > 0 ? trimmed : null;
 };
 
-const parsePort = (value: string | undefined | null): number | null => {
+const parseBooleanEnvFlag = (
+  value: string | undefined | null,
+  fallback: boolean,
+): boolean => {
+  const cleaned = cleanString(value);
+  if (!cleaned) {
+    return fallback;
+  }
+
+  const normalized = cleaned.toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) {
+    return true;
+  }
+
+  if (['0', 'false', 'no', 'off'].includes(normalized)) {
+    return false;
+  }
+
+  return fallback;
+};
+
+const parseDailyLimit = (
+  value: string | undefined | null,
+  warnings: string[],
+): number | null => {
   const cleaned = cleanString(value);
   if (!cleaned) {
     return null;
   }
 
   const parsed = Number(cleaned);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    warnings.push(
+      'EMAIL_DAILY_LIMIT must be a positive integer. Daily send limiting is disabled until this is corrected.',
+    );
     return null;
   }
 
   return parsed;
 };
 
-const normalizeProvider = (value: string | null): EmailProvider | null => {
-  if (!value) {
-    return null;
-  }
-
-  const normalized = value.trim().toLowerCase();
+const normalizeMode = (
+  value: string | undefined | null,
+  warnings: string[],
+): EmailMode => {
+  const normalized = cleanString(value)?.toLowerCase();
   if (
-    normalized === 'mailjet' ||
-    normalized === 'smtp' ||
-    normalized === 'console'
+    normalized === 'log_only' ||
+    normalized === 'redirect' ||
+    normalized === 'live'
   ) {
     return normalized;
   }
 
-  return null;
+  if (normalized) {
+    warnings.push(
+      `Invalid EMAIL_MODE="${normalized}". Falling back to safe log_only mode.`,
+    );
+  }
+
+  return 'log_only';
 };
 
-const inferEmailProvider = (config: ConfigService): EmailProvider => {
-  const explicitProvider = normalizeProvider(
-    cleanString(
-      config.get<string>('EMAIL_PROVIDER') ??
-        config.get<string>('MAILER_PROVIDER'),
-    ),
-  );
-  if (explicitProvider) {
-    return explicitProvider;
+const parseFromAddress = (from: string | null): string | null => {
+  if (!from) {
+    return null;
   }
 
-  const mailjetSignals = [
-    cleanString(config.get<string>('MAILJET_API_KEY')),
-    cleanString(config.get<string>('MAILJET_SECRET_KEY')),
-    cleanString(config.get<string>('MAILJET_SMTP_HOST')),
-  ];
-  if (mailjetSignals.some(Boolean)) {
-    return 'mailjet';
+  const displayNameMatch = from.match(/<([^<>@\s]+@[^<>@\s]+)>/);
+  if (displayNameMatch) {
+    return displayNameMatch[1].trim().toLowerCase();
   }
 
-  const legacyHost = cleanString(config.get<string>('SMTP_HOST'));
-  if (legacyHost && MAILJET_SMTP_HOST_ALIASES.has(legacyHost.toLowerCase())) {
-    return 'mailjet';
+  const bareAddressMatch = from.match(/^[^@\s<>]+@[^@\s<>]+$/);
+  return bareAddressMatch ? from.trim().toLowerCase() : null;
+};
+
+const parseFromName = (from: string | null, fallback: string): string => {
+  if (!from) {
+    return fallback;
   }
 
-  const smtpSignals = [
-    legacyHost,
-    cleanString(config.get<string>('SMTP_USER')),
-    cleanString(config.get<string>('SMTP_PASS')),
-  ];
-  if (smtpSignals.some(Boolean)) {
-    return 'smtp';
-  }
-
-  return 'console';
+  const displayNameMatch = from.match(/^"?([^"<]+?)"?\s*<[^<>]+>$/);
+  const parsed = cleanString(displayNameMatch?.[1]);
+  return parsed ?? fallback;
 };
 
 export const resolveEmailConfig = (
   config: ConfigService,
 ): ResolvedEmailConfig => {
-  const provider = inferEmailProvider(config);
   const warnings: string[] = [];
-
-  const appName =
-    cleanString(config.get<string>('APP_NAME')) ?? DEFAULT_APP_NAME;
-  const fromAddress =
-    cleanString(config.get<string>('MAIL_FROM_ADDRESS')) ??
-    cleanString(config.get<string>('DEFAULT_MAILER')) ??
-    DEFAULT_FROM_ADDRESS;
-  const fromName = cleanString(config.get<string>('MAIL_FROM_NAME')) ?? appName;
-  const replyTo = cleanString(config.get<string>('MAIL_REPLY_TO'));
-
-  let smtpHost: string | null = null;
-  let smtpPort: number | null = null;
-  let smtpUser: string | null = null;
-  let smtpPass: string | null = null;
-  let deliveryProviderName = 'CONSOLE';
-  let webhookSharedSecret: string | null = null;
-  let webhookBasicUser: string | null = null;
-  let webhookBasicPass: string | null = null;
-
-  if (provider === 'mailjet') {
-    smtpHost =
-      cleanString(config.get<string>('MAILJET_SMTP_HOST')) ??
-      cleanString(config.get<string>('SMTP_HOST')) ??
-      DEFAULT_MAILJET_SMTP_HOST;
-    smtpPort =
-      parsePort(config.get<string>('MAILJET_SMTP_PORT')) ??
-      parsePort(config.get<string>('SMTP_PORT')) ??
-      DEFAULT_MAILJET_SMTP_PORT;
-    smtpUser =
-      cleanString(config.get<string>('MAILJET_API_KEY')) ??
-      cleanString(config.get<string>('SMTP_USER'));
-    smtpPass =
-      cleanString(config.get<string>('MAILJET_SECRET_KEY')) ??
-      cleanString(config.get<string>('SMTP_PASS'));
-    deliveryProviderName = 'MAILJET_API';
-    webhookSharedSecret =
-      cleanString(config.get<string>('MAILJET_WEBHOOK_SECRET')) ??
-      cleanString(config.get<string>('EMAIL_WEBHOOK_SECRET_MAILJET')) ??
-      cleanString(config.get<string>('EMAIL_WEBHOOK_SECRET'));
-    webhookBasicUser =
-      cleanString(config.get<string>('MAILJET_WEBHOOK_BASIC_USER')) ??
-      cleanString(config.get<string>('EMAIL_WEBHOOK_BASIC_USER_MAILJET')) ??
-      cleanString(config.get<string>('EMAIL_WEBHOOK_BASIC_USER'));
-    webhookBasicPass =
-      cleanString(config.get<string>('MAILJET_WEBHOOK_BASIC_PASS')) ??
-      cleanString(config.get<string>('EMAIL_WEBHOOK_BASIC_PASS_MAILJET')) ??
-      cleanString(config.get<string>('EMAIL_WEBHOOK_BASIC_PASS'));
-
-    if (
-      smtpHost &&
-      !MAILJET_SMTP_HOST_ALIASES.has(smtpHost.trim().toLowerCase())
-    ) {
-      warnings.push(
-        `Mailjet SMTP host is "${smtpHost}". Official Mailjet SMTP relay is "${DEFAULT_MAILJET_SMTP_HOST}".`,
-      );
-    }
-
-    if (cleanString(config.get<string>('DEFAULT_MAILER'))) {
-      warnings.push(
-        'DEFAULT_MAILER is deprecated for Mailjet config. Use MAIL_FROM_ADDRESS instead.',
-      );
-    }
-
-    if (
-      cleanString(config.get<string>('SMTP_HOST')) ||
-      cleanString(config.get<string>('SMTP_PORT')) ||
-      cleanString(config.get<string>('SMTP_USER')) ||
-      cleanString(config.get<string>('SMTP_PASS'))
-    ) {
-      warnings.push(
-        'Legacy SMTP_* keys are deprecated for Mailjet config. Use MAILJET_SMTP_HOST, MAILJET_SMTP_PORT, MAILJET_API_KEY, and MAILJET_SECRET_KEY.',
-      );
-    }
-
-    const senderDomain = fromAddress.split('@')[1]?.trim().toLowerCase() ?? '';
-    if (senderDomain.startsWith('mg.')) {
-      warnings.push(
-        `MAIL_FROM_ADDRESS uses "${senderDomain}". If that subdomain is still authenticated for Mailgun instead of Mailjet, inbox delivery can fail even when Mailjet accepts the message.`,
-      );
-    }
-  } else if (provider === 'smtp') {
-    smtpHost = cleanString(config.get<string>('SMTP_HOST'));
-    smtpPort = parsePort(config.get<string>('SMTP_PORT')) ?? 587;
-    smtpUser = cleanString(config.get<string>('SMTP_USER'));
-    smtpPass = cleanString(config.get<string>('SMTP_PASS'));
-    deliveryProviderName = 'SMTP';
-    webhookSharedSecret = cleanString(
-      config.get<string>('EMAIL_WEBHOOK_SECRET'),
-    );
-    webhookBasicUser = cleanString(
-      config.get<string>('EMAIL_WEBHOOK_BASIC_USER'),
-    );
-    webhookBasicPass = cleanString(
-      config.get<string>('EMAIL_WEBHOOK_BASIC_PASS'),
-    );
-  } else {
-    webhookSharedSecret = cleanString(
-      config.get<string>('EMAIL_WEBHOOK_SECRET'),
-    );
-    webhookBasicUser = cleanString(
-      config.get<string>('EMAIL_WEBHOOK_BASIC_USER'),
-    );
-    webhookBasicPass = cleanString(
-      config.get<string>('EMAIL_WEBHOOK_BASIC_PASS'),
+  const providerRaw = cleanString(config.get<string>('EMAIL_PROVIDER'));
+  if (providerRaw && providerRaw.toLowerCase() !== 'resend') {
+    warnings.push(
+      `EMAIL_PROVIDER="${providerRaw}" is no longer supported. Active email delivery is Resend-only.`,
     );
   }
+
+  const mode = normalizeMode(config.get<string>('EMAIL_MODE'), warnings);
+  const appName =
+    cleanString(config.get<string>('APP_NAME')) ?? DEFAULT_APP_NAME;
+  const from = cleanString(config.get<string>('RESEND_FROM'));
+  const fromAddress = parseFromAddress(from);
+  const fromName = parseFromName(from, appName);
+  const replyTo = cleanString(config.get<string>('RESEND_REPLY_TO'));
+  const redirectTo = cleanString(config.get<string>('SIT_EMAIL_REDIRECT_TO'));
+  const dailyLimit = parseDailyLimit(
+    config.get<string>('EMAIL_DAILY_LIMIT'),
+    warnings,
+  );
+  const logIntendedRecipient = parseBooleanEnvFlag(
+    config.get<string>('EMAIL_LOG_INTENDED_RECIPIENT'),
+    false,
+  );
+  const resendApiKey = cleanString(config.get<string>('RESEND_API_KEY'));
+
+  if (from && !fromAddress) {
+    warnings.push(
+      'RESEND_FROM is configured but does not look like a valid email sender address.',
+    );
+  }
+
+  if (mode === 'redirect' && !redirectTo) {
+    warnings.push(
+      'EMAIL_MODE=redirect requires SIT_EMAIL_REDIRECT_TO before email can be sent.',
+    );
+  }
+
+  if ((mode === 'redirect' || mode === 'live') && !resendApiKey) {
+    warnings.push(
+      `EMAIL_MODE=${mode} requires RESEND_API_KEY before email can be sent.`,
+    );
+  }
+
+  if ((mode === 'redirect' || mode === 'live') && !from) {
+    warnings.push(
+      `EMAIL_MODE=${mode} requires RESEND_FROM before email can be sent.`,
+    );
+  }
+
+  const webhookSharedSecret =
+    cleanString(config.get<string>('RESEND_WEBHOOK_SECRET')) ??
+    cleanString(config.get<string>('EMAIL_WEBHOOK_SECRET_RESEND')) ??
+    cleanString(config.get<string>('EMAIL_WEBHOOK_SECRET'));
+  const webhookBasicUser =
+    cleanString(config.get<string>('RESEND_WEBHOOK_BASIC_USER')) ??
+    cleanString(config.get<string>('EMAIL_WEBHOOK_BASIC_USER_RESEND')) ??
+    cleanString(config.get<string>('EMAIL_WEBHOOK_BASIC_USER'));
+  const webhookBasicPass =
+    cleanString(config.get<string>('RESEND_WEBHOOK_BASIC_PASS')) ??
+    cleanString(config.get<string>('EMAIL_WEBHOOK_BASIC_PASS_RESEND')) ??
+    cleanString(config.get<string>('EMAIL_WEBHOOK_BASIC_PASS'));
 
   if (!!webhookBasicUser !== !!webhookBasicPass) {
     warnings.push(
-      'Email webhook basic auth requires both username and password. Configure both values or remove both.',
-    );
-  }
-
-  if (
-    provider === 'mailjet' &&
-    !webhookSharedSecret &&
-    !webhookBasicUser &&
-    !webhookBasicPass
-  ) {
-    warnings.push(
-      'Mailjet webhook authentication is not configured. Delivery outcomes (delivered, bounce, complaint) will not be tracked in real time.',
+      'Resend email webhook basic auth requires both username and password. Configure both values or remove both.',
     );
   }
 
   return {
-    provider,
+    provider: 'resend',
+    mode,
     appName,
+    resendApiKey,
+    from,
     fromAddress,
     fromName,
     replyTo,
-    smtpHost,
-    smtpPort,
-    smtpUser,
-    smtpPass,
-    transportEnabled: !!smtpHost && !!smtpPort && !!smtpUser && !!smtpPass,
-    deliveryProviderName,
+    redirectTo,
+    dailyLimit,
+    logIntendedRecipient,
+    deliveryProviderName: mode === 'log_only' ? 'RESEND_LOG_ONLY' : 'RESEND',
+    transportHost: mode === 'log_only' ? null : RESEND_API_HOST,
     webhookSharedSecret,
     webhookBasicUser,
     webhookBasicPass,
@@ -265,31 +227,19 @@ export const resolveEmailWebhookAuth = (
   provider: string,
 ): WebhookAuthConfig => {
   const normalized = provider.trim().toLowerCase();
-  if (normalized === 'mailjet') {
-    const mailjetConfig = resolveEmailConfig(config);
+  if (normalized !== 'resend') {
     return {
-      sharedSecret: mailjetConfig.webhookSharedSecret,
-      basicUser: mailjetConfig.webhookBasicUser,
-      basicPass: mailjetConfig.webhookBasicPass,
+      sharedSecret: null,
+      basicUser: null,
+      basicPass: null,
     };
   }
 
-  const providerKey = provider
-    .trim()
-    .toUpperCase()
-    .replace(/[^A-Z0-9]/g, '_');
+  const emailConfig = resolveEmailConfig(config);
   return {
-    sharedSecret:
-      cleanString(config.get<string>(`EMAIL_WEBHOOK_SECRET_${providerKey}`)) ??
-      cleanString(config.get<string>('EMAIL_WEBHOOK_SECRET')),
-    basicUser:
-      cleanString(
-        config.get<string>(`EMAIL_WEBHOOK_BASIC_USER_${providerKey}`),
-      ) ?? cleanString(config.get<string>('EMAIL_WEBHOOK_BASIC_USER')),
-    basicPass:
-      cleanString(
-        config.get<string>(`EMAIL_WEBHOOK_BASIC_PASS_${providerKey}`),
-      ) ?? cleanString(config.get<string>('EMAIL_WEBHOOK_BASIC_PASS')),
+    sharedSecret: emailConfig.webhookSharedSecret,
+    basicUser: emailConfig.webhookBasicUser,
+    basicPass: emailConfig.webhookBasicPass,
   };
 };
 

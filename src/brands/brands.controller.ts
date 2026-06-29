@@ -23,6 +23,7 @@ import { CollectionsService } from '../collections/collections.service';
 import { UserTypeGuard } from '../auth/guard/user-type.guard';
 import { UserType, PatchStatus } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/guard/jwt-auth.guard';
+import { OptionalJwtAuthGuard } from '../auth/guard/optional-jwt-auth.guard';
 import { BrandVerificationService } from '../brand-verification/brand-verification.service';
 import { BrandAccessService } from './brand-access.service';
 import {
@@ -128,13 +129,18 @@ export class BrandsController {
 
   @Get('brands/:id')
   @SkipThrottle()
+  @UseGuards(OptionalJwtAuthGuard)
   async getBrandProfile(
     @Param('id') id: string,
+    @Req() req?: Request & { user?: { id?: string; sub?: string } },
   ): Promise<BrandProfileResponse> {
     if (!id) {
       throw new BadRequestException('Brand id is required');
     }
-    return this.brandsService.getBrandProfile(id);
+    return this.brandsService.getBrandProfile(
+      id,
+      req?.user?.id ?? req?.user?.sub,
+    );
   }
 
   @Patch('brands/:id')

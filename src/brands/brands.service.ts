@@ -19,7 +19,10 @@ import {
   AdminAuditAction,
 } from '@prisma/client';
 import { NotificationsService } from '../notifications/notifications.service';
-import { UpdateBrandProfileDto } from './dto/update-brand-profile.dto';
+import {
+  BRAND_PROFILE_TAG_LIMIT,
+  UpdateBrandProfileDto,
+} from './dto/update-brand-profile.dto';
 import { v4 as uuidv4 } from 'uuid';
 import {
   profileUserSelect,
@@ -47,6 +50,10 @@ import {
   type BrandStoreStatus,
 } from './brand-metrics.service';
 import { BrandProfileLinkService } from './brand-profile-link.service';
+import {
+  ProfilePhotoViewService,
+  type ProfilePhotoViewState,
+} from 'src/users/profile-photo-view.service';
 
 export interface BrandMediaAsset {
   fileId: string;
@@ -71,6 +78,8 @@ export interface BrandProfileResponse {
   logoImage: string | null;
   logoImageId: string | null;
   logoImageMeta: BrandMediaAsset | null;
+  profilePhotoUpdatedAt: string | null;
+  profilePhotoViewState: ProfilePhotoViewState;
   socialLinks: {
     instagram?: string | null;
     facebook?: string | null;
@@ -140,6 +149,8 @@ export class BrandsService {
     private readonly tagIndex?: TagIndexService,
     @Optional()
     private readonly adminAuditService?: AdminAuditService,
+    @Optional()
+    private readonly profilePhotoViewService?: ProfilePhotoViewService,
   ) {}
 
   private async getBrandOrThrow(brandId: string) {
@@ -202,6 +213,39 @@ export class BrandsService {
       createdAt: file.createdAt.toISOString(),
       updatedAt: file.updatedAt.toISOString(),
     };
+  }
+
+  private async resolveBrandBannerDisplayUrl(
+    banner: ReturnType<typeof resolveBannerImage>,
+    legacyBanner?: string | null,
+  ): Promise<string | null> {
+    if (banner.file) {
+      const publicDisplayUrl =
+        typeof this.uploadService.getPublicDisplayUrl === 'function'
+          ? this.uploadService.getPublicDisplayUrl(banner.file)
+          : null;
+      if (publicDisplayUrl) {
+        return publicDisplayUrl;
+      }
+
+      if (
+        typeof (this.uploadService as any).getTemporarySignedDisplayUrl ===
+        'function'
+      ) {
+        try {
+          const temporaryDisplayUrl = await (
+            this.uploadService as any
+          ).getTemporarySignedDisplayUrl(banner.file);
+          if (temporaryDisplayUrl) {
+            return temporaryDisplayUrl;
+          }
+        } catch {
+          // Keep the durable file id/meta available; clients can retry URL resolution.
+        }
+      }
+    }
+
+    return banner.url ?? legacyBanner ?? null;
   }
 
   private mapNotificationsToRecentActivity(
@@ -580,7 +624,10 @@ export class BrandsService {
     };
   }
 
-  async getBrandProfile(brandId: string): Promise<BrandProfileResponse> {
+  async getBrandProfile(
+    brandId: string,
+    viewerId?: string | null,
+  ): Promise<BrandProfileResponse> {
     const brand = await this.getBrandOrThrow(brandId);
 
     const canonicalProfile = normalizeBrandProfileForBrandResponse(brand);
@@ -597,11 +644,23 @@ export class BrandsService {
     const logoAsset = this.mapBrandMediaAsset(profileImage.file);
     const bannerAsset = this.mapBrandMediaAsset(bannerAssetSource.file);
     const logoImage = brand.brand?.logo ?? profileImage.url ?? null;
-    const bannerImage = brand.brand?.banner ?? bannerAssetSource.url ?? null;
+    const bannerImage = await this.resolveBrandBannerDisplayUrl(
+      bannerAssetSource,
+      brand.brand?.banner,
+    );
     const profileLinks = this.brandProfileLinks.getBrandProfileLinks({
       ownerId: brand.id,
       username: brand.username,
     });
+    const profilePhotoViewState = this.profilePhotoViewService
+      ? await this.profilePhotoViewService.getViewStateForOwner(brand, viewerId)
+      : {
+          ownerId: brand.id,
+          profilePhotoUpdatedAt: null,
+          viewed: true,
+          hasUnviewedUpdate: false,
+          canMarkViewed: false,
+        };
 
     return {
       id: brand.id,
@@ -617,6 +676,8 @@ export class BrandsService {
       logoImage,
       logoImageId: profileImage.fileId,
       logoImageMeta: logoAsset,
+      profilePhotoUpdatedAt: profilePhotoViewState.profilePhotoUpdatedAt,
+      profilePhotoViewState,
       socialLinks: {
         instagram: canonicalProfile.socialLinks.instagram,
         facebook: canonicalProfile.socialLinks.facebook,
@@ -673,7 +734,7 @@ export class BrandsService {
     };
 
     const sanitizedTags = Array.isArray(dto.brandTags)
-      ? sanitizeTags(dto.brandTags, 5)
+      ? sanitizeTags(dto.brandTags, BRAND_PROFILE_TAG_LIMIT)
       : undefined;
 
     const brandCountry = trimOrNull(dto.brandCountry);

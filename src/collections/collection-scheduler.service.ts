@@ -4,11 +4,23 @@ import { PrismaService } from 'src/prisma/prisma.service';
 import { NotificationsService } from 'src/notifications/notifications.service';
 import { NotificationType } from '@prisma/client';
 import { UploadService } from 'src/upload/upload.service';
+import { ClockService } from 'src/common/clock/clock.service';
 import {
   DRAFT_EXPIRY_CONFIG,
   getDraftExpiryDate,
   getDaysUntilExpiry,
 } from './config/draft-expiry.config';
+import { ClockEffectiveState } from 'src/common/clock/clock.types';
+
+export interface DraftCleanupSummary {
+  clockState: ClockEffectiveState;
+  skipped: boolean;
+  reason?: string;
+  firstWarningsSent?: number;
+  finalWarningsSent?: number;
+  draftsDeleted?: number;
+  softDeletedCollectionsDeleted?: number;
+}
 
 /**
  * Scheduled jobs for collection management:
@@ -33,24 +45,36 @@ export class CollectionSchedulerService {
     private readonly prisma: PrismaService,
     private readonly notifications: NotificationsService,
     private readonly uploadService: UploadService,
+    private readonly clock: ClockService,
   ) {}
 
   /**
    * Run daily at midnight to clean up expired drafts and send warnings
    */
   @Cron(CronExpression.EVERY_DAY_AT_MIDNIGHT)
-  async handleDraftCleanup() {
+  async handleDraftCleanup(): Promise<void> {
+    await this.runDraftCleanup();
+  }
+
+  /**
+   * Core draft cleanup logic shared by the scheduled cron and the non-production
+   * manual trigger. Returns a summary of what was processed.
+   */
+  async runDraftCleanup(): Promise<DraftCleanupSummary> {
+    const clockState = this.clock.getEffectiveState();
+
     if (!this.config.CLEANUP_ENABLED) {
       this.logger.log('Draft cleanup job is disabled');
-      return;
+      return { clockState, skipped: true, reason: 'CLEANUP_ENABLED=false' };
     }
 
     this.logger.log('Starting draft cleanup job...');
     this.logger.log(
       `Config: TTL=${this.config.DRAFT_TTL_DAYS}d, FirstWarning=${this.config.FIRST_WARNING_DAYS_BEFORE_EXPIRY}d, FinalWarning=${this.config.FINAL_WARNING_DAYS_BEFORE_EXPIRY}d`,
     );
+    this.logger.log(`Clock: mode=${clockState.mode}, effectiveNow=${clockState.effectiveNow}`);
 
-    const now = new Date();
+    const now = this.clock.now();
     const msPerDay = 24 * 60 * 60 * 1000;
 
     // Calculate dates based on config
@@ -70,34 +94,47 @@ export class CollectionSchedulerService {
           msPerDay,
     );
 
+    const summary: DraftCleanupSummary = {
+      clockState,
+      skipped: false,
+      firstWarningsSent: 0,
+      finalWarningsSent: 0,
+      draftsDeleted: 0,
+      softDeletedCollectionsDeleted: 0,
+    };
+
     try {
       if (this.config.WARNINGS_ENABLED) {
         // 1. Send first warning for drafts approaching expiry
-        await this.sendExpiryWarnings(
+        summary.firstWarningsSent = await this.sendExpiryWarnings(
           firstWarningDate,
           this.config.FIRST_WARNING_DAYS_BEFORE_EXPIRY,
         );
 
         // 2. Send final warning for drafts about to expire
-        await this.sendExpiryWarnings(
+        summary.finalWarningsSent = await this.sendExpiryWarnings(
           finalWarningDate,
           this.config.FINAL_WARNING_DAYS_BEFORE_EXPIRY,
         );
       }
 
       // 3. Delete drafts older than TTL
-      await this.deleteExpiredDrafts(expiryThreshold);
+      summary.draftsDeleted = await this.deleteExpiredDrafts(expiryThreshold);
 
-      // 4. Clean up orphaned presigned uploads
+      // 4. Clean up orphaned presigned uploads (always real time — security boundary)
       await this.cleanupOrphanedPresigns();
 
       // 5. Permanently delete collections past soft-delete window
-      await this.deleteExpiredSoftDeletedCollections();
+      summary.softDeletedCollectionsDeleted =
+        await this.deleteExpiredSoftDeletedCollections(now);
 
       this.logger.log('Draft cleanup job completed successfully');
     } catch (error) {
       this.logger.error('Draft cleanup job failed:', error);
+      throw error;
     }
+
+    return summary;
   }
 
   /**
@@ -106,7 +143,7 @@ export class CollectionSchedulerService {
   private async sendExpiryWarnings(
     activityBefore: Date,
     daysRemaining: number,
-  ) {
+  ): Promise<number> {
     const activityAfter = new Date(
       activityBefore.getTime() - 24 * 60 * 60 * 1000,
     );
@@ -171,12 +208,13 @@ export class CollectionSchedulerService {
     this.logger.log(
       `Sent ${drafts.length} expiry warnings (${daysRemaining} days remaining)`,
     );
+    return drafts.length;
   }
 
   /**
    * Delete drafts older than TTL and notify owners
    */
-  private async deleteExpiredDrafts(activityBefore: Date) {
+  private async deleteExpiredDrafts(activityBefore: Date): Promise<number> {
     const expiredDrafts = await (this.prisma as any).collection.findMany({
       where: {
         status: 'DRAFT',
@@ -250,10 +288,12 @@ export class CollectionSchedulerService {
     }
 
     this.logger.log(`Deleted ${expiredDrafts.length} expired drafts`);
+    return expiredDrafts.length;
   }
 
   /**
-   * Clean up orphaned presigned uploads (expired but never finalized)
+   * Clean up orphaned presigned uploads (expired but never finalized).
+   * Intentionally uses real wall-clock time — this is a security/provider boundary.
    */
   private async cleanupOrphanedPresigns() {
     const ttlMs = this.config.PRESIGN_TTL_HOURS * 60 * 60 * 1000;
@@ -270,10 +310,10 @@ export class CollectionSchedulerService {
   }
 
   /**
-   * Permanently delete collections past soft-delete recovery window
+   * Permanently delete collections past soft-delete recovery window.
+   * Uses effective clock time so fake clock tests can advance past the window.
    */
-  private async deleteExpiredSoftDeletedCollections() {
-    const now = new Date();
+  private async deleteExpiredSoftDeletedCollections(now: Date): Promise<number> {
     const candidates = await (this.prisma as any).collection.findMany({
       where: {
         deletedAt: { not: null },
@@ -329,12 +369,14 @@ export class CollectionSchedulerService {
         );
       }
     }
+    return candidates.length;
   }
 
   /**
    * Get draft statistics for a user (used by frontend)
    */
   async getDraftStats(userId: string) {
+    const now = this.clock.now();
     const drafts = await (this.prisma as any).collection.findMany({
       where: { ownerId: userId, status: 'DRAFT', deletedAt: null },
       include: { _count: { select: { medias: true, products: true } } },
@@ -348,7 +390,7 @@ export class CollectionSchedulerService {
       drafts: drafts.map((d) => {
         const anchor = d.lastActivityAt ?? d.createdAt;
         const expiryDate = getDraftExpiryDate(anchor);
-        const daysRemaining = getDaysUntilExpiry(anchor);
+        const daysRemaining = getDaysUntilExpiry(anchor, now);
 
         return {
           id: d.id,

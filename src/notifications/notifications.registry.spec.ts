@@ -35,7 +35,7 @@ describe('NotificationRegistry', () => {
     const payload = {
       productId: 'product-123',
       productName: 'Linen Wrap Dress',
-      brandName: 'Threadly Studio',
+      brandName: 'Aso Studio',
     };
 
     expect(unavailableConfig?.schema.validate(payload).error).toBeUndefined();
@@ -61,15 +61,15 @@ describe('NotificationRegistry', () => {
       payload: {
         productId: 'product-123',
         productName: 'Linen Wrap Dress',
-        brandName: 'Threadly Studio',
+        brandName: 'Aso Studio',
       },
     };
 
     expect(unavailableConfig?.formatter(notification)).toBe(
-      'Linen Wrap Dress from Threadly Studio is no longer available from your wishlist',
+      'Linen Wrap Dress from Aso Studio is no longer available from your wishlist',
     );
     expect(availableConfig?.formatter(notification)).toBe(
-      'Linen Wrap Dress from Threadly Studio is available again from your wishlist',
+      'Linen Wrap Dress from Aso Studio is available again from your wishlist',
     );
   });
 
