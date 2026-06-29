@@ -87,7 +87,7 @@ export function emailVerificationEmail(
       `✨ Confirm your ${companyName} email`,
       `${p(`Welcome to <strong>${companyName}</strong> — Africa's fashion social commerce community. You're just one click away from unlocking your full workspace.`)}
       ${p('Verifying your email lets you create designs, connect with buyers, build your brand, and do so much more. It keeps your account secure too.')}
-      <div style="text-align:center;margin:24px 0">${btn(verifyLink, 'Confirm My Email')}</div>
+      <div style="text-align:center;margin:24px 0">${btn(verifyLink, 'WEAZ up my email')}</div>
       ${infoBox(`<p style="margin:0;color:${BRAND_PRIMARY};font-size:13px">This link is single-use and stops working once your email is confirmed — so click it when you're ready to dive in.</p>`)}`,
       companyName,
       `This email was sent because someone signed up for a ${companyName} account with this address.`,
@@ -96,22 +96,53 @@ export function emailVerificationEmail(
   };
 }
 
+/**
+ * Which one-time email code is being sent. A `DIRECT_LOGIN` code signs the user
+ * straight in; a `PASSWORD_SETUP` code starts the flow to create a first
+ * password for a Google-created (passwordless) account. They are deliberately
+ * worded differently so a plain sign-in is never mistaken for a password reset.
+ */
+export type EmailLoginCodeVariant = 'PASSWORD_SETUP' | 'DIRECT_LOGIN';
+
+const renderCodeBox = (safeCode: string) =>
+  `<div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:12px;padding:18px;text-align:center;margin:20px 0">
+        <span style="font-size:28px;font-weight:700;letter-spacing:6px;color:${BRAND_PRIMARY};font-family:monospace">${safeCode}</span>
+      </div>`;
+
+const CODE_EXPIRY_WARNING = warningBox(
+  `<p style="margin:0;color:#9a3412;font-size:13px">This code expires in <strong>10 minutes</strong> and can only be used once. If you didn't request it, ignore this email.</p>`,
+);
+
 export function emailLoginCodeEmail(
   code: string,
   appName: string,
+  variant: EmailLoginCodeVariant = 'PASSWORD_SETUP',
 ): EmailContent {
   const companyName = normalizeCompanyName(appName);
   const safeCode = escapeHtml(code);
+
+  if (variant === 'DIRECT_LOGIN') {
+    return {
+      subject: `🔐 Your ${companyName} sign-in code`,
+      html: wrap(
+        '🔐 Your sign-in code',
+        `${p(`Use this one-time code to sign in to your <strong>${companyName}</strong> account.`)}
+      ${renderCodeBox(safeCode)}
+      ${CODE_EXPIRY_WARNING}`,
+        companyName,
+        `This email was sent because someone requested a sign-in code for this ${companyName} account. This is not a password reset.`,
+      ),
+      text: `Your ${companyName} sign-in code\n\nUse this one-time code to sign in: ${code}\n\nThis code expires in 10 minutes and can only be used once. If you didn't request it, ignore this email.`,
+    };
+  }
 
   return {
     subject: `🔐 Your ${companyName} password setup code`,
     html: wrap(
       '🔐 Create your password',
       `${p(`Use this verification code to create a password for your <strong>${companyName}</strong> account.`)}
-      <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:12px;padding:18px;text-align:center;margin:20px 0">
-        <span style="font-size:28px;font-weight:700;letter-spacing:6px;color:${BRAND_PRIMARY};font-family:monospace">${safeCode}</span>
-      </div>
-      ${warningBox(`<p style="margin:0;color:#9a3412;font-size:13px">This code expires in <strong>10 minutes</strong> and can only be used once. If you didn't request it, ignore this email.</p>`)}`,
+      ${renderCodeBox(safeCode)}
+      ${CODE_EXPIRY_WARNING}`,
       companyName,
       `This email was sent because someone requested password setup for a Google-created ${companyName} account.`,
     ),

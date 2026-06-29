@@ -453,6 +453,39 @@ describe('CollectionsService brand catalog access', () => {
       );
     });
 
+    it('keeps unknown dimensions nullable instead of reporting a square aspect', async () => {
+      const prisma = {
+        collection: {
+          findMany: jest.fn().mockResolvedValue([
+            createCollection({
+              medias: [
+                {
+                  id: 'media_1',
+                  fileUploadId: 'file_1',
+                  mediaType: 'POST_IMAGE',
+                  orderIndex: 0,
+                  threadsCount: 0,
+                  commentsCount: 0,
+                  file: { ...readyFile, width: null, height: null },
+                },
+              ],
+            }),
+          ]),
+        },
+      };
+      const service = createService(prisma);
+
+      const result = await service.getMarketFeed();
+
+      expect(result.items[0].primaryMedia).toEqual(
+        expect.objectContaining({
+          width: null,
+          height: null,
+          aspectRatio: null,
+        }),
+      );
+    });
+
     it('drops media with empty display URL', async () => {
       const prisma = {
         collection: {
@@ -569,5 +602,183 @@ describe('CollectionsService brand catalog access', () => {
       expect(result.hasNextPage).toBe(true);
       expect(result.nextCursor).toBe('collection_1');
     });
+
+  describe('runway pinned search feed', () => {
+    const buildPrisma = (rows: any[], anchorRow: any = null) => ({
+      collection: {
+        findFirst: jest.fn().mockResolvedValue(anchorRow),
+        findMany: jest.fn().mockResolvedValue(rows),
+      },
+    });
+
+    it('requires a non-empty query and returns a clean EMPTY_QUERY state', async () => {
+      const prisma = buildPrisma([]);
+      const service = createService(prisma);
+
+      const result = await service.getRunwayPinnedFeed({ query: '   ' });
+
+      expect(result.feedMode).toBe('searchPinned');
+      expect(result.items).toEqual([]);
+      expect(result.hasMore).toBe(false);
+      expect(result.exhaustedReason).toBe('EMPTY_QUERY');
+      expect(prisma.collection.findMany).not.toHaveBeenCalled();
+    });
+
+    it('returns only public published non-deleted design content with ready media', async () => {
+      const prisma = buildPrisma([createCollection({ id: 'm_col' })]);
+      const service = createService(prisma);
+
+      const result = await service.getRunwayPinnedFeed({
+        query: 'aso oke',
+        limit: 10,
+      });
+
+      expect(result.items).toHaveLength(1);
+      expect(result.items[0].collectionId).toBe('m_col');
+      expect(result.hasMore).toBe(false);
+      expect(result.exhaustedReason).toBe('NO_MORE_MATCHES');
+      expect(prisma.collection.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            AND: expect.arrayContaining([
+              expect.objectContaining({
+                domain: 'DESIGN',
+                status: 'PUBLISHED',
+                visibility: 'PUBLIC',
+                deletedAt: null,
+              }),
+            ]),
+          }),
+          orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
+        }),
+      );
+    });
+
+    it('places a visible anchor first and excludes it from the matched query', async () => {
+      const anchorRow = createCollection({ id: 'anchor_col' });
+      const prisma = buildPrisma(
+        [createCollection({ id: 'm_col' })],
+        anchorRow,
+      );
+      const service = createService(prisma);
+      const anchorId = '11111111-1111-4111-8111-111111111111';
+
+      const result = await service.getRunwayPinnedFeed({
+        query: 'aso oke',
+        anchorDesignId: anchorId,
+        limit: 10,
+      });
+
+      expect(result.anchorIncluded).toBe(true);
+      expect(result.items[0].collectionId).toBe('anchor_col');
+      expect(result.items[1].collectionId).toBe('m_col');
+      // Anchor must never be re-queried in the matched set.
+      const matchedWhere = prisma.collection.findMany.mock.calls[0][0].where;
+      expect(matchedWhere.AND).toEqual(
+        expect.arrayContaining([{ id: { not: anchorId } }]),
+      );
+    });
+
+    it('does not leak an anchor that is not visible', async () => {
+      const prisma = buildPrisma([], null);
+      const service = createService(prisma);
+      const anchorId = '22222222-2222-4222-8222-222222222222';
+
+      const result = await service.getRunwayPinnedFeed({
+        query: 'aso oke',
+        anchorDesignId: anchorId,
+        limit: 10,
+      });
+
+      expect(result.anchorIncluded).toBe(false);
+      expect(result.items).toEqual([]);
+      expect(result.exhaustedReason).toBe('ANCHOR_NOT_VISIBLE');
+    });
+
+    it('never adds a non-uuid anchor to the matched filter (avoids uuid cast errors)', async () => {
+      const prisma = buildPrisma([createCollection({ id: 'm_col' })]);
+      const service = createService(prisma);
+
+      const result = await service.getRunwayPinnedFeed({
+        query: 'aso oke',
+        anchorDesignId: 'not-a-uuid',
+        limit: 10,
+      });
+
+      expect(result.anchorIncluded).toBe(false);
+      // findFirst must not be called for a malformed anchor id.
+      expect(prisma.collection.findFirst).not.toHaveBeenCalled();
+      const matchedWhere = prisma.collection.findMany.mock.calls[0][0].where;
+      const hasIdExclusion = matchedWhere.AND.some(
+        (clause: any) => clause?.id?.not !== undefined,
+      );
+      expect(hasIdExclusion).toBe(false);
+    });
+
+    it('emits a keyset nextCursor and hasMore when more rows exist', async () => {
+      const rows = Array.from({ length: 3 }, (_, index) =>
+        createCollection({ id: `m_col_${index}` }),
+      );
+      const prisma = buildPrisma(rows);
+      const service = createService(prisma);
+
+      const result = await service.getRunwayPinnedFeed({
+        query: 'aso oke',
+        limit: 2,
+      });
+
+      expect(result.items).toHaveLength(2);
+      expect(result.hasMore).toBe(true);
+      expect(typeof result.nextCursor).toBe('string');
+      expect(result.exhaustedReason).toBe('NONE');
+    });
+
+    it('rejects a malformed cursor safely', async () => {
+      const prisma = buildPrisma([]);
+      const service = createService(prisma);
+
+      const result = await service.getRunwayPinnedFeed({
+        query: 'aso oke',
+        cursor: 'not-a-valid-cursor',
+        limit: 10,
+      });
+
+      expect(result.items).toEqual([]);
+      expect(result.hasMore).toBe(false);
+      expect(result.exhaustedReason).toBe('INVALID_CURSOR');
+      expect(prisma.collection.findMany).not.toHaveBeenCalled();
+    });
+
+    it('round-trips a keyset cursor into a forward keyset filter', async () => {
+      const rows = Array.from({ length: 3 }, (_, index) =>
+        createCollection({ id: `m_col_${index}` }),
+      );
+      const prisma = buildPrisma(rows);
+      const service = createService(prisma);
+
+      const first = await service.getRunwayPinnedFeed({
+        query: 'aso oke',
+        limit: 2,
+      });
+      expect(first.nextCursor).toBeTruthy();
+
+      const second = await service.getRunwayPinnedFeed({
+        query: 'aso oke',
+        cursor: first.nextCursor as string,
+        limit: 2,
+      });
+
+      // Second page must use a keyset OR(updatedAt<,id<) filter, never OFFSET.
+      const secondWhere = prisma.collection.findMany.mock.calls[1][0].where;
+      const hasKeyset = secondWhere.AND.some(
+        (clause: any) => Array.isArray(clause.OR) && clause.OR.length === 2,
+      );
+      expect(hasKeyset).toBe(true);
+      expect(prisma.collection.findMany.mock.calls[1][0]).not.toHaveProperty(
+        'skip',
+      );
+      expect(second).toBeDefined();
+    });
+  });
   });
 });

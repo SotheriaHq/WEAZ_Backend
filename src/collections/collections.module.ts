@@ -19,6 +19,7 @@ import { SystemConfigModule } from 'src/admin/system-config/system-config.module
 import { BrandAccessService } from 'src/brands/brand-access.service';
 import { BrandPermissionService } from 'src/brands/permissions/brand-permission.service';
 import { ContentIntegrityModule } from 'src/content-integrity/content-integrity.module';
+import { SearchModule } from 'src/search/search.module';
 
 @Module({
   imports: [
@@ -32,6 +33,7 @@ import { ContentIntegrityModule } from 'src/content-integrity/content-integrity.
     QueueModule,
     CategoriesModule,
     ContentIntegrityModule,
+    SearchModule,
   ],
   providers: [
     CollectionsService,

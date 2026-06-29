@@ -2,6 +2,7 @@ import { PushPlatform, PushProvider } from '@prisma/client';
 import { NotificationsController } from './notifications.controller';
 import { NotificationsService } from './notifications.service';
 import { PushDeviceTokensService } from './push-device-tokens.service';
+import { PushNotificationsService } from './push-notifications.service';
 
 describe('NotificationsController push token endpoints', () => {
   const notificationsService = {} as NotificationsService;
@@ -11,6 +12,9 @@ describe('NotificationsController push token endpoints', () => {
     deactivateCurrent: jest.fn(),
     deactivateById: jest.fn(),
   };
+  const pushNotificationsService = {
+    getPushDeliveryMetrics: jest.fn(),
+  };
 
   let controller: NotificationsController;
 
@@ -19,6 +23,7 @@ describe('NotificationsController push token endpoints', () => {
     controller = new NotificationsController(
       notificationsService,
       pushTokensService as unknown as PushDeviceTokensService,
+      pushNotificationsService as unknown as PushNotificationsService,
     );
   });
 

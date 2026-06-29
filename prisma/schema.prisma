@@ -87,6 +87,7 @@ model User {
   notificationsReceived    Notification[]                 @relation("UserNotificationsReceived")
   notificationsActed       Notification[]                 @relation("UserNotificationsActed")
   pushDeviceTokens         PushDeviceToken[]
+  pushOutboxEvents         PushOutbox[]                   @relation("PushOutboxRecipient")
   presignedUploads         PresignedUpload[]
   CollectionMediaReaction  CollectionMediaReaction[]
   // Access to private collections (viewer side)
@@ -1027,6 +1028,20 @@ enum EmailOutboxStatus {
   FAILED
 }
 
+enum PushOutboxStatus {
+  PENDING
+  PROCESSING
+  SENT
+  COMPLETED
+  FAILED
+}
+
+enum PushReceiptStatus {
+  PENDING
+  OK
+  ERROR
+}
+
 enum EmailPriority {
   P0_SECURITY
   P1_TRANSACTIONAL
@@ -1904,6 +1919,59 @@ model PushDeviceToken {
 
   @@index([userId, isActive])
   @@index([token])
+}
+
+/// Durable transactional outbox for native push notifications. One row per
+/// recipient notification; the dispatcher cron sends it to all of the
+/// recipient's active Expo tokens with retry/backoff, mirroring EmailOutbox.
+model PushOutbox {
+  id             String           @id @default(uuid()) @db.Uuid
+  notificationId String?          @db.Uuid
+  recipientId    String           @db.Uuid
+  recipient      User             @relation("PushOutboxRecipient", fields: [recipientId], references: [id], onDelete: Cascade)
+  type           NotificationType
+  title          String
+  body           String
+  dataJson       Json?
+  channelId      String?
+  collapseId     String?
+  sound          Boolean          @default(true)
+  status         PushOutboxStatus @default(PENDING)
+  attempts       Int              @default(0)
+  availableAt    DateTime         @default(now())
+  lockedAt       DateTime?
+  lockOwner      String?
+  lockExpiresAt  DateTime?
+  lastError      String?
+  sentAt         DateTime?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  receipts PushDeliveryReceipt[]
+
+  @@index([status, availableAt, createdAt])
+  @@index([lockExpiresAt])
+  @@index([recipientId, createdAt])
+}
+
+/// Per-ticket Expo push receipt tracking. Enables the two-phase Expo delivery
+/// contract: send -> ticket (sync) -> receipt (polled later) so delayed
+/// DeviceNotRegistered / provider errors deactivate dead tokens.
+model PushDeliveryReceipt {
+  id           String            @id @default(uuid()) @db.Uuid
+  pushOutboxId String            @db.Uuid
+  pushOutbox   PushOutbox        @relation(fields: [pushOutboxId], references: [id], onDelete: Cascade)
+  tokenId      String?           @db.Uuid
+  ticketId     String?           @unique
+  status       PushReceiptStatus @default(PENDING)
+  errorCode    String?
+  errorMessage String?
+  checkedAt    DateTime?
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+
+  @@index([status, createdAt])
+  @@index([pushOutboxId])
 }
 
 model UserEmailPreference {
@@ -5079,23 +5147,23 @@ enum MarketSectionConfigSourceType {
 }
 
 model FeedCategory {
-  id                         String              @id @default(uuid()) @map("_id") @db.Uuid
-  key                        String              @unique @db.VarChar(80)
-  label                      String              @db.VarChar(120)
-  description                String?             @db.VarChar(240)
-  surface                    FeedCategorySurface @default(DESIGN_FEED)
-  rankingProfileKey          String?             @db.VarChar(80)
-  displayOrder               Int                 @default(0)
-  fallbackCategoryKey        String?             @db.VarChar(80)
-  requiresAuth               Boolean             @default(false)
-  requiresPersonalization    Boolean             @default(false)
-  isDefaultForGuest          Boolean             @default(false)
-  isDefaultForNewUser        Boolean             @default(false)
-  isDefaultForReturningUser  Boolean             @default(false)
-  status                     FeedCategoryStatus  @default(ACTIVE)
-  metadata                   Json?
-  createdAt                  DateTime            @default(now())
-  updatedAt                  DateTime            @updatedAt
+  id                        String              @id @default(uuid()) @map("_id") @db.Uuid
+  key                       String              @unique @db.VarChar(80)
+  label                     String              @db.VarChar(120)
+  description               String?             @db.VarChar(240)
+  surface                   FeedCategorySurface @default(DESIGN_FEED)
+  rankingProfileKey         String?             @db.VarChar(80)
+  displayOrder              Int                 @default(0)
+  fallbackCategoryKey       String?             @db.VarChar(80)
+  requiresAuth              Boolean             @default(false)
+  requiresPersonalization   Boolean             @default(false)
+  isDefaultForGuest         Boolean             @default(false)
+  isDefaultForNewUser       Boolean             @default(false)
+  isDefaultForReturningUser Boolean             @default(false)
+  status                    FeedCategoryStatus  @default(ACTIVE)
+  metadata                  Json?
+  createdAt                 DateTime            @default(now())
+  updatedAt                 DateTime            @updatedAt
 
   @@index([surface, status, displayOrder])
   @@index([status, displayOrder])

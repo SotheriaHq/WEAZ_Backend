@@ -34,6 +34,9 @@ describe('email template branding polish', () => {
     expect(emailLoginCodeEmail('123456', legacyBrandInput).subject).toBe(
       '🔐 Your WEAZ password setup code',
     );
+    expect(
+      emailLoginCodeEmail('123456', legacyBrandInput, 'DIRECT_LOGIN').subject,
+    ).toBe('🔐 Your WEAZ sign-in code');
     expect(breakGlassCodeEmail('CODE-123', legacyBrandInput).subject).toBe(
       'URGENT: WEAZ break-glass recovery code',
     );

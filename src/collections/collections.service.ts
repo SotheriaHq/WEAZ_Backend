@@ -76,8 +76,38 @@ import {
   resolveRequiredBrandField,
 } from 'src/common/brand-profile-source.helper';
 import { ContentIntegrityService } from 'src/content-integrity/content-integrity.service';
+import { SearchCoreService } from 'src/search/core/search-core.service';
 
 type CollectionScope = 'design' | 'store' | 'all';
+
+export type RunwayExhaustedReason =
+  | 'NONE'
+  | 'NO_MORE_MATCHES'
+  | 'EMPTY_QUERY'
+  | 'ANCHOR_NOT_VISIBLE'
+  | 'INVALID_CURSOR';
+
+type RunwayAnchorStatus = 'NONE' | 'INCLUDED' | 'NOT_VISIBLE';
+
+export interface RunwayPinnedFeedResult {
+  feedMode: 'searchPinned';
+  query: string;
+  items: any[];
+  nextCursor: string | null;
+  hasMore: boolean;
+  anchorIncluded: boolean;
+  exhaustedReason: RunwayExhaustedReason;
+  searchContext: {
+    normalizedQuery: string;
+    matchedTokens: string[];
+    anchorDesignId: string | null;
+    anchorStatus: RunwayAnchorStatus;
+  };
+  routeHints: {
+    defaultFeedAvailable: boolean;
+    broadenAvailable: boolean;
+  };
+}
 type CollectionDomainValue = 'DESIGN' | 'STORE';
 type CatalogFilterEntityType =
   | 'COLLECTION'
@@ -95,7 +125,7 @@ type FeedMediaAssetDto = {
   dominantColor: string | null;
   width: number | null;
   height: number | null;
-  aspectRatio: number;
+  aspectRatio: number | null;
   status: 'READY';
   orderIndex: number;
 };
@@ -123,7 +153,12 @@ export class CollectionsService {
     private readonly brandAccessService?: BrandAccessService,
     @Optional()
     private readonly contentIntegrity?: ContentIntegrityService,
-  ) {}
+    @Optional() searchCore?: SearchCoreService,
+  ) {
+    this.searchCore = searchCore ?? new SearchCoreService();
+  }
+
+  private readonly searchCore: SearchCoreService;
 
   private mapCollectionOwner(owner: any) {
     if (!owner) return null;
@@ -511,6 +546,30 @@ export class CollectionsService {
     return category;
   }
 
+  /**
+   * Phase 2B: enforce minPrice <= maxPrice whenever both are provided in the
+   * same request. Throws a structured, field-mapped error so web/native can
+   * surface it inline on the price-range section.
+   */
+  private assertValidPriceRange(
+    min: number | null | undefined,
+    max: number | null | undefined,
+  ): void {
+    if (
+      typeof min === 'number' &&
+      Number.isFinite(min) &&
+      typeof max === 'number' &&
+      Number.isFinite(max) &&
+      min > max
+    ) {
+      throw new BadRequestException({
+        message: 'Minimum price cannot exceed maximum price',
+        field: 'maxPrice',
+        code: 'PRICE_RANGE_INVALID',
+      });
+    }
+  }
+
   private isReadyFeedFile(file: any): boolean {
     if (!file) return false;
     if (file.originalDeletedAt) return false;
@@ -613,8 +672,11 @@ export class CollectionsService {
       return null;
     }
 
+    // Full-screen runway view: prefer the high-res DETAIL (1440px) variant, then
+    // fall back to ZOOM (2048px) before the small CARD (640px) — CARD would
+    // visibly upscale-blur on a full-screen phone.
     const displayUrl =
-      (await this.getPreferredVariantUrl(file, ['DETAIL', 'CARD', 'ZOOM'])) ??
+      (await this.getPreferredVariantUrl(file, ['DETAIL', 'ZOOM', 'CARD'])) ??
       this.uploadService.getPublicDisplayUrl(file) ??
       (typeof (this.uploadService as any).getTemporarySignedDisplayUrl ===
       'function'
@@ -635,7 +697,7 @@ export class CollectionsService {
       typeof file.height === 'number' && Number.isFinite(file.height)
         ? file.height
         : null;
-    const aspectRatio = width && height && height > 0 ? width / height : 1;
+    const aspectRatio = width && height && width > 0 && height > 0 ? width / height : null;
 
     return {
       id: String(args.id ?? file.id),
@@ -2265,7 +2327,7 @@ export class CollectionsService {
           title: dto.title?.trim() || null,
           description: dto.description?.trim() || null,
           status: 'DRAFT',
-          visibility: dto.visibility ?? CollectionVisibility.PUBLIC,
+          visibility: CollectionVisibility.PRIVATE,
           type: dto.type ?? CollectionType.EVERYBODY,
           tags: Array.isArray(dto.tags) ? sanitizeTags(dto.tags) : [],
           categoryId: dto.categoryId || null,
@@ -2288,7 +2350,7 @@ export class CollectionsService {
           collection.id,
           [],
           indexedCollectionTags,
-          { maxCount: 30 },
+          { maxCount: 30, actorId: userId },
         );
       }
 
@@ -2310,6 +2372,14 @@ export class CollectionsService {
       }
 
       const sanitizedTags = sanitizeTags(dto.tags ?? []);
+      if (this.tagIndex && sanitizedTags.length > 0) {
+        await this.tagIndex.registerPendingCreatorTags(
+          sanitizedTags,
+          userId,
+          30,
+        );
+      }
+      this.assertValidPriceRange(dto.minPrice, dto.maxPrice);
       const collectionId = uuidv4();
       const now = new Date();
       const collection = await (this.prisma.collection as any).create({
@@ -2337,7 +2407,7 @@ export class CollectionsService {
           targetAgeGroup: dto.targetAgeGroup ?? 'ADULT',
           tags: sanitizedTags,
           status: 'DRAFT',
-          visibility: dto.visibility ?? CollectionVisibility.PUBLIC,
+          visibility: CollectionVisibility.PRIVATE,
           type: dto.type ?? CollectionType.EVERYBODY,
           ...(dto.categoryId
             ? { category: { connect: { id: dto.categoryId } } }
@@ -2376,7 +2446,7 @@ export class CollectionsService {
           collection.id,
           [],
           indexedCollectionTags,
-          { maxCount: 30 },
+          { maxCount: 30, actorId: userId },
         );
       }
 
@@ -2461,6 +2531,9 @@ export class CollectionsService {
     if (sanitizedTags.length === 0) {
       throw new BadRequestException('At least one descriptive tag is required');
     }
+    if (this.tagIndex) {
+      await this.tagIndex.registerPendingCreatorTags(sanitizedTags, userId, 30);
+    }
 
     // Require a valid, active category
     await this.assertActiveCategory(dto.categoryId);
@@ -2474,6 +2547,7 @@ export class CollectionsService {
     const collectionStatus: 'DRAFT' | 'PUBLISHED' = 'DRAFT';
 
     // Create collection in DRAFT status
+    this.assertValidPriceRange(dto.minPrice, dto.maxPrice);
     const collectionId = uuidv4();
     const now = new Date();
     const collection = await (this.prisma.collection as any).create({
@@ -2501,7 +2575,7 @@ export class CollectionsService {
         targetAgeGroup: dto.targetAgeGroup ?? 'ADULT',
         tags: sanitizedTags,
         status: collectionStatus,
-        visibility: dto.visibility ?? CollectionVisibility.PUBLIC,
+        visibility: CollectionVisibility.PRIVATE,
         type: dto.type ?? CollectionType.EVERYBODY,
         // Set required category
         category: { connect: { id: finalCategoryId } },
@@ -2714,29 +2788,7 @@ export class CollectionsService {
       take: take + 1,
       ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
       orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
-      include: {
-        owner: {
-          select: this.selectCollectionOwnerDisplay(),
-        },
-        medias: {
-          where: readyMediaWhere,
-          include: {
-            file: {
-              include: {
-                variants: true,
-              },
-            },
-          },
-          orderBy: [{ orderIndex: 'asc' }],
-        },
-        _count: {
-          select: {
-            reactions: true,
-            comments: true,
-            collectionCollabs: true,
-          },
-        },
-      },
+      include: this.marketFeedInclude(),
     });
 
     const hasNextPage = collections.length > take;
@@ -2801,12 +2853,134 @@ export class CollectionsService {
       }
     }
 
+    const items = await this.buildMarketFeedItems(
+      data,
+      requesterId,
+      options?.countsPolicy,
+    );
+
+    if (items.length > 0) {
+      for (const item of items.slice(0, 5)) {
+        const primarySummary = this.summarizeDisplayUrl(
+          item.primaryMedia?.displayUrl,
+        );
+        const mediaSummaries = item.mediaItems.map((mediaItem) => {
+          const summary = this.summarizeDisplayUrl(mediaItem.displayUrl);
+          return {
+            id: mediaItem.id,
+            fileId: mediaItem.fileId,
+            type: mediaItem.type,
+            status: mediaItem.status,
+            orderIndex: mediaItem.orderIndex,
+            displayHost: summary.displayHost,
+            pathPrefix: summary.pathPrefix,
+            hasDisplayUrl: summary.hasDisplayUrl,
+          };
+        });
+        const mediaDisplayKeys = item.mediaItems.map((mediaItem) => {
+          const summary = this.summarizeDisplayUrl(mediaItem.displayUrl);
+          return `${summary.displayHost ?? 'none'}:${summary.pathPrefix ?? 'none'}:${mediaItem.fileId ?? mediaItem.id}`;
+        });
+        const uniqueDisplayKeys = new Set(mediaDisplayKeys);
+        this.logger.debug(
+          `[feed-contract] first-media-summary ${JSON.stringify({
+            collectionId: item.collectionId,
+            title: item.title,
+            mediaId: item.primaryMedia?.id ?? item.id,
+            fileId: item.primaryMedia?.fileId ?? null,
+            status: item.primaryMedia?.status ?? null,
+            displayHost: primarySummary.displayHost,
+            pathPrefix: primarySummary.pathPrefix,
+            isS3: primarySummary.isS3,
+            isSigned: primarySummary.isSigned,
+            hasDisplayUrl: primarySummary.hasDisplayUrl,
+            mediaItemsLength: item.mediaItems.length,
+            mediaItemIds: item.mediaItems.map((mediaItem) => mediaItem.id),
+            mediaItems: mediaSummaries,
+            displayUrlsUnique:
+              uniqueDisplayKeys.size === mediaDisplayKeys.length,
+            allReady: item.mediaItems.every(
+              (mediaItem) => mediaItem.status === 'READY',
+            ),
+            allTyped: item.mediaItems.every(
+              (mediaItem) =>
+                mediaItem.type === 'IMAGE' || mediaItem.type === 'VIDEO',
+            ),
+          })}`,
+        );
+      }
+    }
+    this.logger.debug(
+      `[feed] market response items=${items.length} nextCursor=${hasNextPage ? (data[data.length - 1]?.id ?? 'none') : 'none'}`,
+    );
+
+    return {
+      items,
+      hasNextPage,
+      nextCursor: hasNextPage ? (data[data.length - 1]?.id ?? null) : null,
+    };
+  }
+
+  /**
+   * READY-media predicate shared by the default Runway feed and the
+   * search-pinned Runway feed so both apply identical media-availability rules.
+   */
+  private marketReadyMediaWhere() {
+    return {
+      file: {
+        processingStatus: 'READY',
+        originalDeletedAt: null,
+        s3Url: { not: '' },
+      },
+    } as any;
+  }
+
+  /**
+   * Prisma include shared by the default and search-pinned Runway feeds so the
+   * emitted item DTO is byte-for-byte identical between the two feed modes.
+   */
+  private marketFeedInclude() {
+    return {
+      owner: {
+        select: this.selectCollectionOwnerDisplay(),
+      },
+      medias: {
+        where: this.marketReadyMediaWhere(),
+        include: {
+          file: {
+            include: {
+              variants: true,
+            },
+          },
+        },
+        orderBy: [{ orderIndex: 'asc' }],
+      },
+      _count: {
+        select: {
+          reactions: true,
+          comments: true,
+          collectionCollabs: true,
+        },
+      },
+    } as any;
+  }
+
+  /**
+   * Shared Runway feed item builder. Extracted from getMarketFeed so the
+   * search-pinned feed reuses the exact same DTO mapping (media assets, brand
+   * avatar, stats, viewer state, legacy compat fields).
+   */
+  private async buildMarketFeedItems(
+    data: any[],
+    requesterId?: string,
+    countsPolicy?: 'combined',
+  ): Promise<any[]> {
     const feedRows = data
-      .map((collection) => {
+      .map((collection: any) => {
         const coverMediaId = (collection as any).coverMediaId as string | null;
         const coverMedia =
           (coverMediaId
-            ? collection.medias.find((media) => media.id === coverMediaId)
+            ? collection.medias.find((media: any) => media.id === coverMediaId)
             : null) ??
           collection.medias[0] ??
           null;
@@ -2822,14 +2996,7 @@ export class CollectionsService {
           media: coverMedia,
         };
       })
-      .filter(
-        (
-          row,
-        ): row is {
-          collection: (typeof data)[number];
-          media: (typeof data)[number]['medias'][number];
-        } => Boolean(row),
-      );
+      .filter((row): row is { collection: any; media: any } => Boolean(row));
 
     // Hydrate isThreaded for requester when available
     let isThreadedMap: Record<string, boolean> = {};
@@ -2859,22 +3026,9 @@ export class CollectionsService {
       await Promise.all(
         feedRows.map(async ({ collection, media }) => {
           const owner = this.mapCollectionOwner(collection.owner)!;
-          const primaryMedia = await this.buildFeedMediaAsset({
-            id: media.id,
-            file: media.file,
-            mediaType: media.mediaType,
-            orderIndex: media.orderIndex,
-          });
-          if (!primaryMedia) {
-            this.logger.debug(
-              `[feed-contract] media excluded unavailable-primary collectionId=${collection.id} mediaId=${media.id}`,
-            );
-            return null;
-          }
-
           const mediaItems = (
             await Promise.all(
-              collection.medias.map((entry) =>
+              collection.medias.map((entry: any) =>
                 this.buildFeedMediaAsset({
                   id: entry.id,
                   file: entry.file,
@@ -2890,6 +3044,14 @@ export class CollectionsService {
             );
             return null;
           }
+          const primaryMedia =
+            mediaItems.find((asset) => asset.id === media.id) ?? null;
+          if (!primaryMedia) {
+            this.logger.debug(
+              `[feed-contract] media excluded unavailable-primary collectionId=${collection.id} mediaId=${media.id}`,
+            );
+            return null;
+          }
 
           const avatar = await this.buildFeedBrandAvatar(collection.owner);
           const logoFileId =
@@ -2900,7 +3062,7 @@ export class CollectionsService {
           const combinedCommentsCount =
             (collection.commentsCount ?? 0) + (media.commentsCount ?? 0);
           const commentsCount =
-            options?.countsPolicy === 'combined'
+            countsPolicy === 'combined'
               ? combinedCommentsCount
               : (media.commentsCount ?? collection.commentsCount ?? 0);
 
@@ -2965,7 +3127,7 @@ export class CollectionsService {
             isThreaded: requesterId ? !!isThreadedMap[media.id] : false,
           };
 
-          if (options?.countsPolicy === 'combined') {
+          if (countsPolicy === 'combined') {
             (base as any).combinedCommentsCount = combinedCommentsCount;
           }
 
@@ -2974,66 +3136,264 @@ export class CollectionsService {
       )
     ).filter((item): item is NonNullable<typeof item> => Boolean(item));
 
-    if (items.length > 0) {
-      for (const item of items.slice(0, 5)) {
-        const primarySummary = this.summarizeDisplayUrl(
-          item.primaryMedia?.displayUrl,
-        );
-        const mediaSummaries = item.mediaItems.map((mediaItem) => {
-          const summary = this.summarizeDisplayUrl(mediaItem.displayUrl);
-          return {
-            id: mediaItem.id,
-            fileId: mediaItem.fileId,
-            type: mediaItem.type,
-            status: mediaItem.status,
-            orderIndex: mediaItem.orderIndex,
-            displayHost: summary.displayHost,
-            pathPrefix: summary.pathPrefix,
-            hasDisplayUrl: summary.hasDisplayUrl,
-          };
+    return items;
+  }
+
+  /**
+   * SEARCH-CORE-4: Runway search-pinned feed.
+   *
+   * Returns Runway-eligible DESIGN content matching a search query, optionally
+   * anchored to a user-selected design that appears first. Reuses Search Core
+   * for query analysis/tokenization and the shared Runway item DTO builder, and
+   * applies the exact same visibility rules as the default Runway feed
+   * (DESIGN + PUBLISHED + PUBLIC + not deleted + READY media). Product-only and
+   * non-public/draft/in-review/rejected/deleted content can never appear.
+   *
+   * Pagination is keyset/cursor based (updatedAt,id descending) — no OFFSET and
+   * no COUNT — so scrolling cannot duplicate or skip rows. The anchor is always
+   * excluded from the matched query so it is never returned twice.
+   */
+  async getRunwayPinnedFeed(options: {
+    query?: string;
+    anchorDesignId?: string;
+    cursor?: string;
+    limit?: number;
+    requesterId?: string;
+  }): Promise<RunwayPinnedFeedResult> {
+    const rawQuery = String(options.query ?? '').trim();
+    const take = Math.min(Math.max(options.limit ?? 20, 1), 40);
+    const analysis = this.searchCore.analyzeQuery(rawQuery);
+    const normalizedQuery = analysis.normalizedQuery;
+    const matchTokens = this.searchCore.significantTokens(analysis.tokens);
+
+    const buildResponse = (params: {
+      items: any[];
+      nextCursor: string | null;
+      hasMore: boolean;
+      anchorIncluded: boolean;
+      anchorStatus: RunwayAnchorStatus;
+      exhaustedReason: RunwayExhaustedReason;
+    }): RunwayPinnedFeedResult => ({
+      feedMode: 'searchPinned',
+      query: rawQuery,
+      items: params.items,
+      nextCursor: params.nextCursor,
+      hasMore: params.hasMore,
+      anchorIncluded: params.anchorIncluded,
+      exhaustedReason: params.exhaustedReason,
+      searchContext: {
+        normalizedQuery,
+        matchedTokens: matchTokens,
+        anchorDesignId: options.anchorDesignId ?? null,
+        anchorStatus: params.anchorStatus,
+      },
+      routeHints: {
+        defaultFeedAvailable: true,
+        broadenAvailable: true,
+      },
+    });
+
+    if (!normalizedQuery) {
+      return buildResponse({
+        items: [],
+        nextCursor: null,
+        hasMore: false,
+        anchorIncluded: false,
+        anchorStatus: 'NONE',
+        exhaustedReason: 'EMPTY_QUERY',
+      });
+    }
+
+    // Decode keyset cursor (first page has no cursor).
+    let keyset: { u: string; i: string } | null = null;
+    if (options.cursor) {
+      keyset = this.decodeRunwayCursor(options.cursor);
+      if (!keyset) {
+        return buildResponse({
+          items: [],
+          nextCursor: null,
+          hasMore: false,
+          anchorIncluded: false,
+          anchorStatus: 'NONE',
+          exhaustedReason: 'INVALID_CURSOR',
         });
-        const mediaDisplayKeys = item.mediaItems.map((mediaItem) => {
-          const summary = this.summarizeDisplayUrl(mediaItem.displayUrl);
-          return `${summary.displayHost ?? 'none'}:${summary.pathPrefix ?? 'none'}:${mediaItem.fileId ?? mediaItem.id}`;
-        });
-        const uniqueDisplayKeys = new Set(mediaDisplayKeys);
-        this.logger.debug(
-          `[feed-contract] first-media-summary ${JSON.stringify({
-            collectionId: item.collectionId,
-            title: item.title,
-            mediaId: item.primaryMedia?.id ?? item.id,
-            fileId: item.primaryMedia?.fileId ?? null,
-            status: item.primaryMedia?.status ?? null,
-            displayHost: primarySummary.displayHost,
-            pathPrefix: primarySummary.pathPrefix,
-            isS3: primarySummary.isS3,
-            isSigned: primarySummary.isSigned,
-            hasDisplayUrl: primarySummary.hasDisplayUrl,
-            mediaItemsLength: item.mediaItems.length,
-            mediaItemIds: item.mediaItems.map((mediaItem) => mediaItem.id),
-            mediaItems: mediaSummaries,
-            displayUrlsUnique:
-              uniqueDisplayKeys.size === mediaDisplayKeys.length,
-            allReady: item.mediaItems.every(
-              (mediaItem) => mediaItem.status === 'READY',
-            ),
-            allTyped: item.mediaItems.every(
-              (mediaItem) =>
-                mediaItem.type === 'IMAGE' || mediaItem.type === 'VIDEO',
-            ),
-          })}`,
-        );
       }
     }
-    this.logger.debug(
-      `[feed] market response items=${items.length} nextCursor=${hasNextPage ? (data[data.length - 1]?.id ?? 'none') : 'none'}`,
+
+    const baseWhere: Prisma.CollectionWhereInput = {
+      domain: 'DESIGN',
+      status: 'PUBLISHED',
+      visibility: CollectionVisibility.PUBLIC,
+      deletedAt: null,
+      medias: { some: this.marketReadyMediaWhere() },
+    } as Prisma.CollectionWhereInput;
+
+    // Anchor is resolved only on the first page and only if it passes the same
+    // visibility gate; an invalid/private/deleted anchor is never leaked.
+    let anchorItem: any = null;
+    let anchorStatus: RunwayAnchorStatus = 'NONE';
+    const anchorId = options.anchorDesignId?.trim();
+    if (!keyset && anchorId) {
+      if (!isUuid(anchorId)) {
+        anchorStatus = 'NOT_VISIBLE';
+      } else {
+        const anchorRow = await this.prisma.collection.findFirst({
+          where: { AND: [baseWhere, { id: anchorId }] },
+          include: this.marketFeedInclude(),
+        });
+        if (anchorRow) {
+          const built = await this.buildMarketFeedItems(
+            [anchorRow],
+            options.requesterId,
+          );
+          if (built.length > 0) {
+            anchorItem = built[0];
+            anchorStatus = 'INCLUDED';
+          } else {
+            // Visible row but no renderable READY media — treat as not visible.
+            anchorStatus = 'NOT_VISIBLE';
+          }
+        } else {
+          anchorStatus = 'NOT_VISIBLE';
+        }
+      }
+    }
+
+    const anchorIncluded = anchorStatus === 'INCLUDED';
+    // Reserve one slot for the anchor on the first page so page size stays ~take.
+    const matchedLimit = Math.max(anchorIncluded ? take - 1 : take, 1);
+
+    const matchWhere = this.buildDesignMatchWhere(normalizedQuery, matchTokens);
+    const keysetWhere: Prisma.CollectionWhereInput | null = keyset
+      ? {
+          OR: [
+            { updatedAt: { lt: new Date(keyset.u) } },
+            {
+              AND: [
+                { updatedAt: new Date(keyset.u) },
+                { id: { lt: keyset.i } },
+              ],
+            },
+          ],
+        }
+      : null;
+
+    // Only exclude the anchor by id when it is a real UUID; the Collection id
+    // column is a uuid, so passing a malformed value would fail to cast. A
+    // malformed anchor can never match a row anyway, so skipping is safe.
+    const excludeAnchorId = anchorId && isUuid(anchorId) ? anchorId : null;
+    const where: Prisma.CollectionWhereInput = {
+      AND: [
+        baseWhere,
+        matchWhere,
+        ...(excludeAnchorId ? [{ id: { not: excludeAnchorId } }] : []),
+        ...(keysetWhere ? [keysetWhere] : []),
+      ],
+    };
+
+    const matchedRows = await this.prisma.collection.findMany({
+      where,
+      take: matchedLimit + 1,
+      orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
+      include: this.marketFeedInclude(),
+    });
+
+    const hasMore = matchedRows.length > matchedLimit;
+    const pageRows = hasMore ? matchedRows.slice(0, matchedLimit) : matchedRows;
+    const matchedItems = await this.buildMarketFeedItems(
+      pageRows,
+      options.requesterId,
     );
 
-    return {
+    const items = anchorItem ? [anchorItem, ...matchedItems] : matchedItems;
+
+    const lastRow = pageRows[pageRows.length - 1];
+    const nextCursor =
+      hasMore && lastRow
+        ? this.encodeRunwayCursor(lastRow.updatedAt, lastRow.id)
+        : null;
+
+    let exhaustedReason: RunwayExhaustedReason = 'NONE';
+    if (!hasMore) {
+      if (matchedItems.length === 0 && anchorStatus === 'NOT_VISIBLE') {
+        exhaustedReason = 'ANCHOR_NOT_VISIBLE';
+      } else {
+        exhaustedReason = 'NO_MORE_MATCHES';
+      }
+    }
+
+    this.logger.debug(
+      `[feed] runway-pinned query='${normalizedQuery}' tokens=${matchTokens.length} anchor=${anchorStatus} items=${items.length} hasMore=${hasMore} reason=${exhaustedReason}`,
+    );
+
+    return buildResponse({
       items,
-      hasNextPage,
-      nextCursor: hasNextPage ? (data[data.length - 1]?.id ?? null) : null,
-    };
+      nextCursor,
+      hasMore,
+      anchorIncluded,
+      anchorStatus,
+      exhaustedReason,
+    });
+  }
+
+  /**
+   * Token-based match predicate for the search-pinned Runway feed. Matches on
+   * title, description, tags (indexed array via hasSome), and category
+   * name/slug. Uses Search Core significant tokens rather than a single broad
+   * `%query%` phrase so multi-word queries match per-token.
+   */
+  private buildDesignMatchWhere(
+    normalizedQuery: string,
+    tokens: string[],
+  ): Prisma.CollectionWhereInput {
+    const or: Prisma.CollectionWhereInput[] = [
+      { title: { contains: normalizedQuery, mode: 'insensitive' } },
+      { description: { contains: normalizedQuery, mode: 'insensitive' } },
+      {
+        category: {
+          is: {
+            OR: [
+              { name: { contains: normalizedQuery, mode: 'insensitive' } },
+              { slug: { contains: normalizedQuery, mode: 'insensitive' } },
+            ],
+          },
+        },
+      },
+    ];
+
+    if (tokens.length > 0) {
+      or.push({ tags: { hasSome: tokens } });
+      for (const token of tokens) {
+        or.push({ title: { contains: token, mode: 'insensitive' } });
+        or.push({ description: { contains: token, mode: 'insensitive' } });
+      }
+    }
+
+    return { OR: or };
+  }
+
+  private encodeRunwayCursor(updatedAt: Date, id: string): string {
+    const payload = JSON.stringify({ u: updatedAt.toISOString(), i: id });
+    return Buffer.from(payload, 'utf8').toString('base64url');
+  }
+
+  private decodeRunwayCursor(
+    cursor: string,
+  ): { u: string; i: string } | null {
+    try {
+      const decoded = Buffer.from(cursor, 'base64url').toString('utf8');
+      const parsed = JSON.parse(decoded) as { u?: unknown; i?: unknown };
+      if (
+        typeof parsed?.u !== 'string' ||
+        typeof parsed?.i !== 'string' ||
+        Number.isNaN(new Date(parsed.u).getTime())
+      ) {
+        return null;
+      }
+      return { u: parsed.u, i: parsed.i };
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -3145,6 +3505,17 @@ export class CollectionsService {
       const resolvedNextTags = Array.isArray(metadata.tags)
         ? sanitizeTags(metadata.tags, 30)
         : (collection.tags ?? []);
+      if (
+        this.tagIndex &&
+        Array.isArray(metadata.tags) &&
+        resolvedNextTags.length > 0
+      ) {
+        await this.tagIndex.registerPendingCreatorTags(
+          resolvedNextTags,
+          userId,
+          30,
+        );
+      }
       const nextCustomOrderEnabled =
         typeof (metadata as any).customOrderEnabled === 'boolean'
           ? Boolean((metadata as any).customOrderEnabled)
@@ -3530,7 +3901,7 @@ export class CollectionsService {
           collectionId,
           previousIndexedTags,
           nextIndexedTags,
-          { maxCount: 30 },
+          { maxCount: 30, actorId: userId },
         );
       }
 
@@ -3749,6 +4120,17 @@ export class CollectionsService {
     const completionResolvedTags = Array.isArray(completionMetadata.tags)
       ? sanitizeTags(completionMetadata.tags, 30)
       : (collection.tags ?? []);
+    if (
+      this.tagIndex &&
+      Array.isArray(completionMetadata.tags) &&
+      completionResolvedTags.length > 0
+    ) {
+      await this.tagIndex.registerPendingCreatorTags(
+        completionResolvedTags,
+        userId,
+        30,
+      );
+    }
     const completionFilterValueIds = this.normalizeFilterValueIds(
       completionMetadata.filterValueIds,
     );
@@ -3965,7 +4347,7 @@ export class CollectionsService {
           collectionId,
           completionPreviousIndexedTags,
           completionNextIndexedTags,
-          { maxCount: 30 },
+          { maxCount: 30, actorId: userId },
         );
       }
     }
@@ -5567,6 +5949,7 @@ export class CollectionsService {
       scope?: CollectionScope;
       includeDeleted?: boolean;
       onlyDeleted?: boolean;
+      status?: string;
     },
   ) {
     const {
@@ -5576,6 +5959,7 @@ export class CollectionsService {
       scope = this.defaultCollectionScope,
       includeDeleted = false,
       onlyDeleted = false,
+      status,
     } = options || {};
     const resolvedScope = this.normalizeCollectionScope(scope);
     if (resolvedScope === 'store') {
@@ -5598,6 +5982,10 @@ export class CollectionsService {
       where.deletedAt = { not: null };
     } else if (!shouldIncludeDeleted) {
       where.deletedAt = null;
+    }
+
+    if (status && requesterId === userId) {
+      where.status = status;
     }
     if (domainFilter) {
       where.domain = domainFilter;
@@ -5647,7 +6035,7 @@ export class CollectionsService {
     } else {
       // Owner view: show published and moderation-review states in the main
       // content list. Drafts and deleted rows are loaded through dedicated tabs.
-      if (!shouldOnlyDeleted) {
+      if (!shouldOnlyDeleted && !where.status) {
         where.status = {
           in: [
             CollectionStatus.PUBLISHED,
@@ -8538,6 +8926,7 @@ export class CollectionsService {
         data.minPrice = body.minPrice as any;
       if (typeof body.maxPrice === 'number' || body.maxPrice === null)
         data.maxPrice = body.maxPrice as any;
+      this.assertValidPriceRange(data.minPrice, data.maxPrice);
       if (typeof body.saleMinPrice === 'number' || body.saleMinPrice === null)
         data.saleMinPrice = body.saleMinPrice as any;
       if (typeof body.saleMaxPrice === 'number' || body.saleMaxPrice === null)
@@ -8756,6 +9145,10 @@ export class CollectionsService {
       data.minPrice = body.minPrice as any;
     if (typeof body.maxPrice === 'number' || body.maxPrice === null)
       data.maxPrice = body.maxPrice as any;
+    this.assertValidPriceRange(
+      data.minPrice !== undefined ? data.minPrice : (existing as any).minPrice,
+      data.maxPrice !== undefined ? data.maxPrice : (existing as any).maxPrice,
+    );
     if (typeof body.saleMinPrice === 'number' || body.saleMinPrice === null)
       data.saleMinPrice = body.saleMinPrice as any;
     if (typeof body.saleMaxPrice === 'number' || body.saleMaxPrice === null)
@@ -8791,6 +9184,9 @@ export class CollectionsService {
     if (Array.isArray(body.tags)) {
       nextTags = sanitizeTags(body.tags, 30);
       data.tags = nextTags;
+      if (this.tagIndex && nextTags.length > 0) {
+        await this.tagIndex.registerPendingCreatorTags(nextTags, ownerId, 30);
+      }
     }
     if (typeof body.coverMediaId === 'string' || body.coverMediaId === null) {
       if (body.coverMediaId) {
@@ -8939,7 +9335,7 @@ export class CollectionsService {
           collectionId,
           previousIndexedTags,
           nextIndexedTags,
-          { maxCount: 30 },
+          { maxCount: 30, actorId: ownerId },
         );
       }
     }

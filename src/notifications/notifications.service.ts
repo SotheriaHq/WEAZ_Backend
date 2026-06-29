@@ -1651,7 +1651,7 @@ export class NotificationsService {
 
       if (!opts?.suppressPush) {
         void this.pushNotifications
-          .deliverAfterNotificationCreated({
+          .enqueue({
             recipientId,
             notification: created,
             settings,
@@ -1659,7 +1659,7 @@ export class NotificationsService {
           })
           .catch((error) => {
             this.logger.warn(
-              `Failed to deliver push notification=${created.id}: ${String(error)}`,
+              `Failed to enqueue push notification=${created.id}: ${String(error)}`,
             );
           });
       }

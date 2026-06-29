@@ -56,6 +56,7 @@ import {
   buildAdminPasswordResetLink,
   buildEmailChangeConfirmationLink,
   buildPasswordResetLink,
+  resolveMobileAppBridgeBaseUrl,
 } from 'src/common/utils/auth-links';
 import { maskEmailForLog } from 'src/common/utils/sensitive-log';
 import {
@@ -679,11 +680,24 @@ export class AuthService {
         user.type,
       );
 
-      // Send verification email
+      // Send verification email. Native-app signups (identified by the
+      // x-client-platform header) get a deep link that opens the app directly
+      // on the verify-email screen instead of the web app.
+      const isMobileSignup = String(req.headers['x-client-platform'] ?? '')
+        .toLowerCase()
+        .includes('mobile');
+      const bridgeBaseUrl = isMobileSignup
+        ? resolveMobileAppBridgeBaseUrl({
+            host: req.get?.('host') ?? (req.headers['host'] as string | undefined),
+            protocol: req.protocol,
+            forwardedProto: req.headers['x-forwarded-proto'] as string | undefined,
+          })
+        : undefined;
       const verificationLink =
         this.emailVerificationHelper.generateVerificationLink(
           verificationToken,
           postVerificationNextPath,
+          { mobile: isMobileSignup, bridgeBaseUrl },
         );
       const verificationEmail = emailTemplates.emailVerificationEmail(
         verificationLink,
@@ -1196,6 +1210,9 @@ export class AuthService {
     const emailContent = emailTemplates.emailLoginCodeEmail(
       code,
       this.emailService.getAppName(),
+      purpose === LoginCodePurpose.DIRECT_LOGIN
+        ? 'DIRECT_LOGIN'
+        : 'PASSWORD_SETUP',
     );
     const scenarioKey =
       purpose === LoginCodePurpose.DIRECT_LOGIN
@@ -1974,7 +1991,10 @@ export class AuthService {
     return { message: 'Email verified successfully' };
   }
 
-  async resendVerificationEmail(userId: string) {
+  async resendVerificationEmail(
+    userId: string,
+    options?: { mobile?: boolean; bridgeBaseUrl?: string | null },
+  ) {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
       select: {
@@ -2009,6 +2029,10 @@ export class AuthService {
       this.emailVerificationHelper.generateVerificationLink(
         verificationToken,
         this.resolvePostVerificationNextPath(user.type),
+        {
+          mobile: options?.mobile ?? false,
+          bridgeBaseUrl: options?.bridgeBaseUrl ?? null,
+        },
       );
     const verificationEmail = emailTemplates.emailVerificationEmail(
       verificationLink,
@@ -2688,7 +2712,10 @@ export class AuthService {
     return { message: 'Password reset successful' };
   }
 
-  async requestPasswordReset(email: string) {
+  async requestPasswordReset(
+    email: string,
+    options?: { mobile?: boolean; bridgeBaseUrl?: string | null },
+  ) {
     const genericResponse = {
       message:
         'If an account with that email exists, a password reset link has been sent.',
@@ -2800,7 +2827,10 @@ export class AuthService {
     }
 
     // Send reset email
-    const resetLink = buildPasswordResetLink(rawTokenToSend);
+    const resetLink = buildPasswordResetLink(rawTokenToSend, {
+      mobile: options?.mobile ?? false,
+      bridgeBaseUrl: options?.bridgeBaseUrl ?? null,
+    });
     const resetEmail = emailTemplates.passwordResetEmail(
       resetLink,
       this.emailService.getAppName(),

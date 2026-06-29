@@ -21,6 +21,11 @@ import { TagsService } from 'src/tags/tags.service';
 import { createClient, type RedisClientType } from 'redis';
 import type { SearchSyncJob } from 'src/queue/search.queue.service';
 import { SearchQueueService } from 'src/queue/search.queue.service';
+import { SearchCoreService } from './core/search-core.service';
+import {
+  SEARCH_RANKING_TIERS,
+  type SearchQueryAnalysis,
+} from './core/search-match.types';
 import {
   SEARCH_ENTITY_TYPES,
   type SearchEntityType,
@@ -39,15 +44,7 @@ interface SearchParams {
   userId?: string;
 }
 
-type SearchQueryMode = 'default' | 'profile' | 'tag';
-
-interface ParsedSearchQuery {
-  rawQuery: string;
-  mode: SearchQueryMode;
-  normalizedQuery: string;
-  tokens: string[];
-  forcedTypes?: SearchEntityType[];
-}
+type ParsedSearchQuery = SearchQueryAnalysis;
 
 interface SuggestionPayload {
   id: string;
@@ -141,18 +138,18 @@ const SEARCH_SIMILARITY_THRESHOLD = 0.3;
 // Per-token coverage floor for fuzzy commerce/content matches. A multi-word query
 // (e.g. "avery cotour") may not match a product/brand/design/collection just because
 // it shares one common word ("cotour"); every significant query token must have a
-// word-level match. word_similarity('avery', <jaff text>) ≈ 0.17 < 0.5 → excluded,
-// while a genuine token ("cotour") scores ~1.0. Keeps typo tolerance (~0.5).
-const SEARCH_TOKEN_COVERAGE_THRESHOLD = 0.5;
-const SEARCH_TOKEN_MIN_LENGTH = 2;
+// word-level match. The 0.6 floor excludes unrelated near-neighbors like "avery"
+// versus "every" while still allowing close misspellings such as "averry".
+const SEARCH_TOKEN_COVERAGE_THRESHOLD = 0.6;
 // Identity-first ranking tiers (lower = ranked higher). Identity (profile/brand)
 // matches sit above commerce/content; tags last.
-const SEARCH_TIER_EXACT_IDENTITY = 0;
-const SEARCH_TIER_IDENTITY_PREFIX = 1;
-const SEARCH_TIER_IDENTITY_CONTAINS = 2;
-const SEARCH_TIER_IDENTITY_FUZZY = 3;
-const SEARCH_TIER_COMMERCE = 4;
-const SEARCH_TIER_TAG = 5;
+const SEARCH_TIER_EXACT_IDENTITY = SEARCH_RANKING_TIERS.EXACT_IDENTITY;
+const SEARCH_TIER_IDENTITY_PREFIX = SEARCH_RANKING_TIERS.IDENTITY_PREFIX;
+const SEARCH_TIER_IDENTITY_CONTAINS = SEARCH_RANKING_TIERS.IDENTITY_CONTAINS;
+const SEARCH_TIER_IDENTITY_FUZZY = SEARCH_RANKING_TIERS.IDENTITY_FUZZY;
+const SEARCH_TIER_CONTENT = SEARCH_RANKING_TIERS.CONTENT;
+const SEARCH_TIER_COMMERCE = SEARCH_RANKING_TIERS.COMMERCE;
+const SEARCH_TIER_TAG = SEARCH_RANKING_TIERS.TAG;
 const SEARCH_MIXED_PREVIEW_LIMIT = 5;
 
 const SEARCH_RESULT_CACHE_ALL_VERSION_KEY = 'search:results:version:all';
@@ -181,12 +178,16 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
   private redisFailureCount = 0;
   private isRebuildingSuggestions = false;
   private prismaSearchHooksRegistered = false;
+  private readonly searchCore: SearchCoreService;
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly tagsService: TagsService,
     @Optional() private readonly searchQueue?: SearchQueueService,
-  ) {}
+    @Optional() searchCore?: SearchCoreService,
+  ) {
+    this.searchCore = searchCore ?? new SearchCoreService();
+  }
 
   async onModuleInit() {
     const redisUrl = String(process.env.REDIS_URL || '').trim();
@@ -243,64 +244,19 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
   }
 
   normalizeQuery(raw?: string | null): string {
-    return String(raw || '')
-      .normalize('NFKD')
-      .replace(/[\u0300-\u036f]/g, '')
-      .replace(/\u0000/g, '')
-      .replace(/[^\p{L}\p{N}\s]+/gu, ' ')
-      .trim()
-      .replace(/\s+/g, ' ')
-      .toLowerCase();
+    return this.searchCore.normalizeQuery(raw);
   }
 
   private tokenize(query: string): string[] {
-    return query
-      .split(/[^\p{L}\p{N}]+/u)
-      .map((token) => token.trim())
-      .filter(Boolean);
+    return this.searchCore.tokenize(query);
   }
 
   private compactHandleQuery(query: string): string {
-    return this.normalizeQuery(query).replace(/[^\p{L}\p{N}]+/gu, '');
+    return this.searchCore.compactHandleQuery(query);
   }
 
   private parseSearchQuery(queryInput?: string | null): ParsedSearchQuery {
-    const rawQuery = String(queryInput || '').trim();
-    if (!rawQuery) {
-      return {
-        rawQuery,
-        mode: 'default',
-        normalizedQuery: '',
-        tokens: [],
-      };
-    }
-
-    let mode: SearchQueryMode = 'default';
-    let workingQuery = rawQuery;
-
-    if (workingQuery.startsWith('@')) {
-      mode = 'profile';
-      workingQuery = workingQuery.slice(1).trim();
-    } else if (workingQuery.startsWith('/') || workingQuery.startsWith('#')) {
-      mode = 'tag';
-      workingQuery = workingQuery.slice(1).trim();
-    }
-
-    const normalizedQuery = this.normalizeQuery(workingQuery);
-    const forcedTypes =
-      mode === 'profile'
-        ? (['profile'] as SearchEntityType[])
-        : mode === 'tag'
-          ? (['tag'] as SearchEntityType[])
-          : undefined;
-
-    return {
-      rawQuery,
-      mode,
-      normalizedQuery,
-      tokens: this.tokenize(normalizedQuery),
-      forcedTypes,
-    };
+    return this.searchCore.analyzeQuery(queryInput);
   }
 
   private clampLimit(input?: number, fallback = 20, max = 50): number {
@@ -421,7 +377,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     versionToken: string;
   }) {
     return [
-      'search:results:v3',
+      'search:results:v4',
       params.query,
       params.types.join(','),
       params.page,
@@ -507,14 +463,31 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     tokens: string[],
   ): SearchItem {
     const isBrandIdentity = payload.type === 'brand';
+    const resultKind =
+      payload.type === 'design' || payload.type === 'collection'
+        ? 'content'
+        : 'commerce';
     const identity = isBrandIdentity
       ? this.identityTier(payload.title, query)
-      : { tier: SEARCH_TIER_COMMERCE, reason: 'commerce-match' };
+      : {
+          tier:
+            resultKind === 'content'
+              ? SEARCH_TIER_CONTENT
+              : SEARCH_TIER_COMMERCE,
+          reason: resultKind === 'content' ? 'content-match' : 'commerce-match',
+        };
     return {
       id: payload.id,
       type: payload.type as SearchEntityType,
       matchTier: identity.tier,
       matchReason: identity.reason,
+      matchedTokens: this.searchCore.matchedTokens(
+        tokens,
+        payload.title,
+        payload.subtitle,
+        payload.description,
+      ),
+      resultKind,
       title: payload.title,
       subtitle: payload.subtitle ?? null,
       description: payload.description ?? null,
@@ -756,9 +729,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
   }
 
   private significantTokens(tokens: string[]): string[] {
-    return Array.from(
-      new Set(tokens.filter((token) => token.length >= SEARCH_TOKEN_MIN_LENGTH)),
-    );
+    return this.searchCore.significantTokens(tokens);
   }
 
   private buildTokenArraySql(tokens: string[]): Prisma.Sql {
@@ -778,7 +749,8 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     tokens: string[],
     combined: Prisma.Sql,
   ): Prisma.Sql {
-    if (this.significantTokens(tokens).length === 0) {
+    const coverageTokens = this.searchCore.commerceGateTokens(tokens);
+    if (this.significantTokens(coverageTokens).length === 0) {
       return Prisma.empty;
     }
     return Prisma.sql`
@@ -792,26 +764,11 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     value: string | null | undefined,
     query: string,
   ): { tier: number; reason: string } {
-    const normalized = this.normalizeQuery(value);
-    if (!normalized || !query) {
-      return { tier: SEARCH_TIER_IDENTITY_FUZZY, reason: 'identity-fuzzy' };
-    }
-    if (normalized === query) {
-      return { tier: SEARCH_TIER_EXACT_IDENTITY, reason: 'exact-identity-name' };
-    }
-    if (normalized.startsWith(query)) {
-      return { tier: SEARCH_TIER_IDENTITY_PREFIX, reason: 'identity-prefix' };
-    }
-    if (normalized.includes(query)) {
-      return { tier: SEARCH_TIER_IDENTITY_CONTAINS, reason: 'identity-contains' };
-    }
-    return { tier: SEARCH_TIER_IDENTITY_FUZZY, reason: 'identity-fuzzy' };
+    return this.searchCore.identityTier(value, query);
   }
 
   private tierOf(item: SearchItem): number {
-    return typeof item.matchTier === 'number'
-      ? item.matchTier
-      : SEARCH_TIER_COMMERCE;
+    return this.searchCore.tierOf(item);
   }
 
   /**
@@ -851,14 +808,8 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     }
 
     return {
-      brandId,
-      isActive: true,
-      publicationStatus: CollectionStatus.PUBLISHED,
-      deletedAt: null,
-      archivedAt: null,
+      ...this.searchCore.visibility.publicProductWhere(brandId),
       OR: orClauses,
-      brand: { isStoreOpen: true },
-      AND: [{ OR: [{ publishAt: null }, { publishAt: { lte: new Date() } }] }],
     };
   }
 
@@ -874,7 +825,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     }
 
     return {
-      isStoreOpen: true,
+      ...this.searchCore.visibility.publicBrandCommerceWhere(),
       OR: orClauses,
     };
   }
@@ -893,10 +844,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     }
 
     return {
-      domain: CollectionDomain.DESIGN,
-      status: CollectionStatus.PUBLISHED,
-      visibility: CollectionVisibility.PUBLIC,
-      deletedAt: null,
+      ...this.searchCore.visibility.publicDesignWhere(),
       OR: orClauses,
     };
   }
@@ -916,10 +864,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     }
 
     return {
-      ownerId,
-      status: CollectionStatus.PUBLISHED,
-      visibility: CollectionVisibility.PUBLIC,
-      deletedAt: null,
+      ...this.searchCore.visibility.publicStoreCollectionWhere(ownerId),
       OR: orClauses,
     };
   }
@@ -942,6 +887,14 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
       entityType: 'PRODUCT',
       matchTier: SEARCH_TIER_COMMERCE,
       matchReason: 'commerce-match',
+      matchedTokens: this.searchCore.matchedTokens(
+        tokens,
+        product.name,
+        product.brand?.name,
+        product.description,
+        product.tags,
+      ),
+      resultKind: 'commerce',
       title: product.name,
       subtitle: product.brand?.name || null,
       description: product.description || null,
@@ -976,6 +929,14 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
       type: 'brand',
       matchTier: identity.tier,
       matchReason: identity.reason,
+      matchedTokens: this.searchCore.matchedTokens(
+        tokens,
+        brand.name,
+        brand.tagline,
+        brand.description,
+        brand.tags,
+      ),
+      resultKind: 'commerce',
       title: brand.name,
       subtitle: brand.tagline || null,
       description: brand.description || null,
@@ -1018,13 +979,16 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
       this.scoreField(fullName, query, tokens, 8) +
       this.scoreTagArray(profile.brandTags, tokens, 2);
 
-    const compactQuery = this.compactHandleQuery(query);
-    let identity = { tier: SEARCH_TIER_IDENTITY_FUZZY, reason: 'identity-fuzzy' };
-    if (
-      compactQuery &&
-      this.compactHandleQuery(profile.username) === compactQuery
-    ) {
-      identity = { tier: SEARCH_TIER_EXACT_IDENTITY, reason: 'exact-handle' };
+    let identity: { tier: number; reason: string } = {
+      tier: SEARCH_TIER_IDENTITY_FUZZY,
+      reason: 'identity-fuzzy',
+    };
+    const exactHandle = this.searchCore.exactHandleTier(
+      profile.username,
+      query,
+    );
+    if (exactHandle) {
+      identity = exactHandle;
     }
     for (const candidate of [profile.brandName, fullName, profile.username]) {
       const candidateTier = this.identityTier(candidate, query);
@@ -1038,6 +1002,14 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
       type: 'profile',
       matchTier: identity.tier,
       matchReason: identity.reason,
+      matchedTokens: this.searchCore.matchedTokens(
+        tokens,
+        title,
+        fullName,
+        profile.username,
+        profile.brandTags,
+      ),
+      resultKind: 'identity',
       title,
       subtitle,
       description,
@@ -1075,8 +1047,15 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
       id: collection.id,
       type: 'design',
       entityType: 'DESIGN',
-      matchTier: SEARCH_TIER_COMMERCE,
+      matchTier: SEARCH_TIER_CONTENT,
       matchReason: 'content-match',
+      matchedTokens: this.searchCore.matchedTokens(
+        tokens,
+        collection.title,
+        collection.description,
+        collection.tags,
+      ),
+      resultKind: 'content',
       title: collection.title || 'Untitled design',
       subtitle: 'Design',
       description: collection.description || null,
@@ -1108,8 +1087,15 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
       id: collection.id,
       type: 'collection',
       entityType: 'COLLECTION',
-      matchTier: SEARCH_TIER_COMMERCE,
+      matchTier: SEARCH_TIER_CONTENT,
       matchReason: 'content-match',
+      matchedTokens: this.searchCore.matchedTokens(
+        tokens,
+        collection.title,
+        collection.description,
+        collection.tags,
+      ),
+      resultKind: 'content',
       title: collection.title || 'Untitled collection',
       subtitle: 'Store Collection',
       description: collection.description || null,
@@ -1139,6 +1125,8 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
       type: 'tag',
       matchTier: SEARCH_TIER_TAG,
       matchReason: 'tag-match',
+      matchedTokens: this.searchCore.matchedTokens(tokens, tag.tag),
+      resultKind: 'tag',
       title: tag.tag,
       subtitle: `${tag.count} uses`,
       description: null,
@@ -1633,9 +1621,10 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
       ? Prisma.sql`AND p."brandId" = ${brandId}`
       : Prisma.empty;
     const prodIlikePat = `%${query}%`;
-    const tokenArray = this.buildTokenArraySql(tokens);
+    const coverageTokens = this.searchCore.commerceGateTokens(tokens);
+    const tokenArray = this.buildTokenArraySql(coverageTokens);
     const productCoverage = this.tokenCoverageGate(
-      tokens,
+      coverageTokens,
       Prisma.sql`immutable_unaccent(COALESCE(p.name, '') || ' ' || COALESCE(p."brandNameCache", '') || ' ' || COALESCE(p.description, ''))`,
     );
 
@@ -1673,7 +1662,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
           AND (p."publishAt" IS NULL OR p."publishAt" <= NOW())
           AND b."isStoreOpen" = true
           ${brandFilter}
-          AND COALESCE(p.search_vector, ''::tsvector) @@ sp.tsq
+          AND COALESCE(p.search_vector, ''::tsvector) @@ sp.tsq${productCoverage}
       ),
       trgm AS (
         SELECT
@@ -1729,6 +1718,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
           2 AS source_rank
         FROM "Product" p
         INNER JOIN "Brand" b ON b."_id" = p."brandId"
+        CROSS JOIN search_params sp
         WHERE p."isActive" = true
           AND p."publicationStatus" = ${CollectionStatus.PUBLISHED}
           AND p."deletedAt" IS NULL
@@ -1742,7 +1732,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
             immutable_unaccent(COALESCE(p.name, '')) ILIKE immutable_unaccent(${prodIlikePat})
             OR immutable_unaccent(COALESCE(p.description, '')) ILIKE immutable_unaccent(${prodIlikePat})
             OR immutable_unaccent(COALESCE(p."brandNameCache", '')) ILIKE immutable_unaccent(${prodIlikePat})
-          )
+          )${productCoverage}
       )
       SELECT id, name, description, thumbnail, images, price, "salePrice", currency, slug, "brandId", "brandName", "brandOwnerId", score
       FROM (
@@ -1775,7 +1765,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
           AND (p."publishAt" IS NULL OR p."publishAt" <= NOW())
           AND b."isStoreOpen" = true
           ${brandFilter}
-          AND COALESCE(p.search_vector, ''::tsvector) @@ sp.tsq
+          AND COALESCE(p.search_vector, ''::tsvector) @@ sp.tsq${productCoverage}
       ),
       trgm AS (
         SELECT p."_id" AS id
@@ -1799,6 +1789,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
         SELECT p."_id" AS id
         FROM "Product" p
         INNER JOIN "Brand" b ON b."_id" = p."brandId"
+        CROSS JOIN search_params sp
         WHERE p."isActive" = true
           AND p."publicationStatus" = ${CollectionStatus.PUBLISHED}
           AND p."deletedAt" IS NULL
@@ -1812,7 +1803,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
             immutable_unaccent(COALESCE(p.name, '')) ILIKE immutable_unaccent(${prodIlikePat})
             OR immutable_unaccent(COALESCE(p.description, '')) ILIKE immutable_unaccent(${prodIlikePat})
             OR immutable_unaccent(COALESCE(p."brandNameCache", '')) ILIKE immutable_unaccent(${prodIlikePat})
-          )
+          )${productCoverage}
       )
       SELECT COUNT(*)::bigint AS total
       FROM (
@@ -1859,9 +1850,10 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     limit: number,
     offset: number,
   ): Promise<SearchPageResult> {
-    const tokenArray = this.buildTokenArraySql(tokens);
+    const coverageTokens = this.searchCore.commerceGateTokens(tokens);
+    const tokenArray = this.buildTokenArraySql(coverageTokens);
     const brandCoverage = this.tokenCoverageGate(
-      tokens,
+      coverageTokens,
       Prisma.sql`immutable_unaccent(COALESCE(b.name, '') || ' ' || COALESCE(b.tagline, '') || ' ' || COALESCE(b.description, ''))`,
     );
     const rows = await this.prisma.$queryRaw<BrandSearchRow[]>(Prisma.sql`
@@ -1885,7 +1877,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
         FROM "Brand" b
         CROSS JOIN search_params sp
         WHERE b."isStoreOpen" = true
-          AND COALESCE(b.search_vector, ''::tsvector) @@ sp.tsq
+          AND COALESCE(b.search_vector, ''::tsvector) @@ sp.tsq${brandCoverage}
       ),
       trgm AS (
         SELECT
@@ -1926,7 +1918,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
         FROM "Brand" b
         CROSS JOIN search_params sp
         WHERE b."isStoreOpen" = true
-          AND COALESCE(b.search_vector, ''::tsvector) @@ sp.tsq
+          AND COALESCE(b.search_vector, ''::tsvector) @@ sp.tsq${brandCoverage}
       ),
       trgm AS (
         SELECT b."_id" AS id
@@ -1957,9 +1949,10 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     offset: number,
   ): Promise<SearchPageResult> {
     const ilikePat = `%${query}%`;
-    const tokenArray = this.buildTokenArraySql(tokens);
+    const coverageTokens = this.searchCore.commerceGateTokens(tokens);
+    const tokenArray = this.buildTokenArraySql(coverageTokens);
     const designCoverage = this.tokenCoverageGate(
-      tokens,
+      coverageTokens,
       Prisma.sql`immutable_unaccent(COALESCE(c.title, '') || ' ' || COALESCE(c.description, ''))`,
     );
     const rows = await this.prisma.$queryRaw<CollectionSearchRow[]>(Prisma.sql`
@@ -1985,7 +1978,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
           AND c.status = ${CollectionStatus.PUBLISHED}
           AND c.visibility = ${CollectionVisibility.PUBLIC}
           AND c."deletedAt" IS NULL
-          AND COALESCE(c.search_vector, ''::tsvector) @@ sp.tsq
+          AND COALESCE(c.search_vector, ''::tsvector) @@ sp.tsq${designCoverage}
       ),
       trgm AS (
         SELECT
@@ -2016,6 +2009,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
           LEAST(8, LN(GREATEST(c."viewsCount", 0) + 1)) + 1 AS score,
           2 AS source_rank
         FROM "Collection" c
+        CROSS JOIN search_params sp
         WHERE c.domain = ${CollectionDomain.DESIGN}
           AND c.status = ${CollectionStatus.PUBLISHED}
           AND c.visibility = ${CollectionVisibility.PUBLIC}
@@ -2025,7 +2019,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
           AND (
             immutable_unaccent(COALESCE(c.title, '')) ILIKE immutable_unaccent(${ilikePat})
             OR immutable_unaccent(COALESCE(c.description, '')) ILIKE immutable_unaccent(${ilikePat})
-          )
+          )${designCoverage}
       )
       SELECT id, "ownerId", title, description, "viewsCount", score
       FROM (
@@ -2054,7 +2048,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
           AND c.status = ${CollectionStatus.PUBLISHED}
           AND c.visibility = ${CollectionVisibility.PUBLIC}
           AND c."deletedAt" IS NULL
-          AND COALESCE(c.search_vector, ''::tsvector) @@ sp.tsq
+          AND COALESCE(c.search_vector, ''::tsvector) @@ sp.tsq${designCoverage}
       ),
       trgm AS (
         SELECT c."_id" AS id
@@ -2070,6 +2064,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
       ilike_fallback AS (
         SELECT c."_id" AS id
         FROM "Collection" c
+        CROSS JOIN search_params sp
         WHERE c.domain = ${CollectionDomain.DESIGN}
           AND c.status = ${CollectionStatus.PUBLISHED}
           AND c.visibility = ${CollectionVisibility.PUBLIC}
@@ -2079,7 +2074,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
           AND (
             immutable_unaccent(COALESCE(c.title, '')) ILIKE immutable_unaccent(${ilikePat})
             OR immutable_unaccent(COALESCE(c.description, '')) ILIKE immutable_unaccent(${ilikePat})
-          )
+          )${designCoverage}
       )
       SELECT COUNT(*)::bigint AS total
       FROM (
@@ -2107,9 +2102,10 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     const ownerFilter = ownerId
       ? Prisma.sql`AND sc."ownerId" = ${ownerId}`
       : Prisma.empty;
-    const tokenArray = this.buildTokenArraySql(tokens);
+    const coverageTokens = this.searchCore.commerceGateTokens(tokens);
+    const tokenArray = this.buildTokenArraySql(coverageTokens);
     const collectionCoverage = this.tokenCoverageGate(
-      tokens,
+      coverageTokens,
       Prisma.sql`immutable_unaccent(COALESCE(sc.title, '') || ' ' || COALESCE(sc.description, ''))`,
     );
 
@@ -2136,7 +2132,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
           AND sc.visibility = ${CollectionVisibility.PUBLIC}
           AND sc."deletedAt" IS NULL
           ${ownerFilter}
-          AND COALESCE(sc.search_vector, ''::tsvector) @@ sp.tsq
+          AND COALESCE(sc.search_vector, ''::tsvector) @@ sp.tsq${collectionCoverage}
       ),
       trgm AS (
         SELECT
@@ -2182,7 +2178,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
           AND sc.visibility = ${CollectionVisibility.PUBLIC}
           AND sc."deletedAt" IS NULL
           ${ownerFilter}
-          AND COALESCE(sc.search_vector, ''::tsvector) @@ sp.tsq
+          AND COALESCE(sc.search_vector, ''::tsvector) @@ sp.tsq${collectionCoverage}
       ),
       trgm AS (
         SELECT sc."_id" AS id
@@ -2217,19 +2213,15 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
   ): Promise<SearchPageResult> {
     const total = await this.prisma.tag.count({
       where: {
+        ...this.searchCore.visibility.publicTagWhere(),
         normalizedName: { startsWith: query },
-        status: TagStatus.APPROVED,
-        isBanned: false,
-        aliasOfTagId: null,
       },
     });
 
     const rows = await this.prisma.tag.findMany({
       where: {
+        ...this.searchCore.visibility.publicTagWhere(),
         normalizedName: { startsWith: query },
-        status: TagStatus.APPROVED,
-        isBanned: false,
-        aliasOfTagId: null,
       },
       orderBy: [
         { usageCount: 'desc' },
@@ -2638,14 +2630,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
 
     for (;;) {
       const rows = await this.prisma.product.findMany({
-        where: {
-          isActive: true,
-          publicationStatus: CollectionStatus.PUBLISHED,
-          deletedAt: null,
-          archivedAt: null,
-          brand: { isStoreOpen: true },
-          OR: [{ publishAt: null }, { publishAt: { lte: new Date() } }],
-        },
+        where: this.searchCore.visibility.publicProductWhere(),
         select: {
           id: true,
           name: true,
@@ -2709,7 +2694,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
 
     for (;;) {
       const rows = await this.prisma.brand.findMany({
-        where: { isStoreOpen: true },
+        where: this.searchCore.visibility.publicBrandCommerceWhere(),
         select: {
           id: true,
           ownerId: true,
@@ -2762,12 +2747,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
 
     for (;;) {
       const rows = await this.prisma.collection.findMany({
-        where: {
-          domain: CollectionDomain.DESIGN,
-          status: CollectionStatus.PUBLISHED,
-          visibility: CollectionVisibility.PUBLIC,
-          deletedAt: null,
-        },
+        where: this.searchCore.visibility.publicDesignWhere(),
         select: {
           id: true,
           ownerId: true,
@@ -2816,11 +2796,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
 
     for (;;) {
       const rows = await this.prisma.storeCollection.findMany({
-        where: {
-          status: CollectionStatus.PUBLISHED,
-          visibility: CollectionVisibility.PUBLIC,
-          deletedAt: null,
-        },
+        where: this.searchCore.visibility.publicStoreCollectionWhere(),
         select: {
           id: true,
           ownerId: true,
@@ -2869,12 +2845,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
 
     for (;;) {
       const rows = await this.prisma.tag.findMany({
-        where: {
-          status: TagStatus.APPROVED,
-          isBanned: false,
-          aliasOfTagId: null,
-          usageCount: { gt: 0 },
-        },
+        where: this.searchCore.visibility.publicSuggestionTagWhere(),
         select: {
           id: true,
           normalizedName: true,

@@ -13,14 +13,18 @@ import {
   ValidationPipe,
 } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
+import { Role } from '@prisma/client';
 import { NotificationsService } from './notifications.service';
 import { JwtAuthGuard } from 'src/auth/guard/jwt-auth.guard';
+import { RolesGuard } from 'src/auth/guard/role.guard';
+import { Roles } from 'src/auth/decorator/roles.decorator';
 import { ListNotificationsQueryDto } from './dto';
 import {
   DeactivateCurrentPushTokenDto,
   RegisterPushTokenDto,
 } from './push-token.dto';
 import { PushDeviceTokensService } from './push-device-tokens.service';
+import { PushNotificationsService } from './push-notifications.service';
 
 @UseGuards(JwtAuthGuard)
 @Controller('notifications')
@@ -28,7 +32,23 @@ export class NotificationsController {
   constructor(
     private readonly service: NotificationsService,
     private readonly pushTokens: PushDeviceTokensService,
+    private readonly pushNotifications: PushNotificationsService,
   ) {}
+
+  /**
+   * Ops/admin read-only view of native push delivery health: outbox status
+   * breakdown, pending backlog, exhausted (DLQ) count, active tokens, and the
+   * receipt-error histogram for the window. Powers Phase 3 observability.
+   */
+  @Get('push/metrics')
+  @UseGuards(RolesGuard)
+  @Roles(Role.SuperAdmin, Role.Admin)
+  async pushMetrics(@Query('windowHours') windowHours?: string) {
+    const parsed = Number(windowHours);
+    const hours =
+      Number.isFinite(parsed) && parsed > 0 ? Math.min(parsed, 168) : 24;
+    return this.pushNotifications.getPushDeliveryMetrics(hours);
+  }
 
   @Get()
   async list(@Req() req: any, @Query() q: ListNotificationsQueryDto) {
