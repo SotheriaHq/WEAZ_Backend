@@ -758,10 +758,28 @@ export class CustomOrderConfigurationsService {
     >,
     rules: Array<{ outputYards: string }> = [],
   ) {
+    // Phase 2B: delivery/production range is locked to 1-7 days.
+    if (
+      dto.deliveryMinDays < 1 ||
+      dto.deliveryMinDays > 7 ||
+      dto.deliveryMaxDays < 1 ||
+      dto.deliveryMaxDays > 7
+    ) {
+      throw new BadRequestException({
+        message: 'Delivery days must be between 1 and 7',
+        field:
+          dto.deliveryMaxDays < 1 || dto.deliveryMaxDays > 7
+            ? 'deliveryMaxDays'
+            : 'deliveryMinDays',
+        code: 'DELIVERY_RANGE_INVALID',
+      });
+    }
     if (dto.deliveryMinDays > dto.deliveryMaxDays) {
-      throw new BadRequestException(
-        'Delivery minimum days cannot exceed delivery maximum days',
-      );
+      throw new BadRequestException({
+        message: 'Delivery minimum days cannot exceed delivery maximum days',
+        field: 'deliveryMaxDays',
+        code: 'DELIVERY_RANGE_INVALID',
+      });
     }
 
     if (Number(dto.baseProductionCharge) <= 0) {
@@ -771,6 +789,13 @@ export class CustomOrderConfigurationsService {
     }
     if (Number(dto.fabricCostPerYard) < 0) {
       throw new BadRequestException('Fabric cost per yard cannot be negative');
+    }
+    if (dto.productionLeadDays < 1 || dto.productionLeadDays > 7) {
+      throw new BadRequestException({
+        message: 'Production lead days must be between 1 and 7',
+        field: 'productionLeadDays',
+        code: 'PRODUCTION_LEAD_INVALID',
+      });
     }
 
     if (dto.averageBaseYards != null && Number(dto.averageBaseYards) <= 0) {
@@ -810,9 +835,11 @@ export class CustomOrderConfigurationsService {
     }
 
     if (!dto.rushFee || Number(dto.rushFee) <= 0) {
-      throw new BadRequestException(
-        'Rush-enabled configurations must define a positive rush fee',
-      );
+      throw new BadRequestException({
+        message: 'Rush-enabled configurations must define a positive rush fee',
+        field: 'rushFee',
+        code: 'RUSH_FEE_REQUIRED',
+      });
     }
 
     const maxOutputYards = rules.reduce((currentMax, rule) => {
@@ -822,24 +849,39 @@ export class CustomOrderConfigurationsService {
     const estimatedPreDeliverySubtotal =
       Number(dto.baseProductionCharge) +
       maxOutputYards * Number(dto.fabricCostPerYard);
+    // Phase 2B decision: keep the 70% guardrail (buyer-abuse protection) but
+    // surface it as a structured, field-mapped error so clients can show it inline.
     if (
       estimatedPreDeliverySubtotal > 0 &&
       Number(dto.rushFee) > estimatedPreDeliverySubtotal * 0.7
     ) {
-      throw new BadRequestException(
-        'Rush fee cannot exceed 70% of the estimated outfit subtotal before delivery',
-      );
+      throw new BadRequestException({
+        message:
+          'Rush fee cannot exceed 70% of the estimated outfit subtotal before delivery',
+        field: 'rushFee',
+        code: 'RUSH_FEE_CAP_EXCEEDED',
+      });
     }
 
-    if (!dto.rushProductionLeadDays || dto.rushProductionLeadDays < 5) {
-      throw new BadRequestException(
-        'Rush production lead days must be at least 5',
-      );
+    // Phase 2B: rush turnaround is modeled in DAYS. Max 3 days == 72h.
+    if (
+      !dto.rushProductionLeadDays ||
+      dto.rushProductionLeadDays < 1 ||
+      dto.rushProductionLeadDays > 3
+    ) {
+      throw new BadRequestException({
+        message: 'Rush production lead days must be between 1 and 3 (max 72h)',
+        field: 'rushProductionLeadDays',
+        code: 'RUSH_LEAD_INVALID',
+      });
     }
     if (dto.rushProductionLeadDays >= dto.productionLeadDays) {
-      throw new BadRequestException(
-        'Rush production lead time must be shorter than standard production lead time',
-      );
+      throw new BadRequestException({
+        message:
+          'Rush production lead time must be shorter than standard production lead time',
+        field: 'rushProductionLeadDays',
+        code: 'RUSH_LEAD_NOT_SHORTER',
+      });
     }
   }
 

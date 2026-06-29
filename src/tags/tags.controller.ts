@@ -46,7 +46,11 @@ export class TagsController {
       viewerId,
       isSuperAdmin,
     });
-    return popular.map((p) => ({ name: p.tag, usageCount: p.count }));
+    return popular.map((p) => ({
+      name: p.tag,
+      usageCount: p.count,
+      status: p.status,
+    }));
   }
 
   @UseGuards(OptionalJwtAuthGuard)
@@ -72,7 +76,11 @@ export class TagsController {
     });
     return {
       query: q,
-      items: rows.map((p) => ({ name: p.tag, usageCount: p.count })),
+      items: rows.map((p) => ({
+        name: p.tag,
+        usageCount: p.count,
+        status: p.status,
+      })),
     };
   }
 

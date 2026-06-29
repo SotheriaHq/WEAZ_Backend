@@ -492,7 +492,7 @@ export class TagsService {
   async getPopularTags(
     limit = 50,
     options?: TagVisibilityOptions,
-  ): Promise<{ tag: string; count: number }[]> {
+  ): Promise<{ tag: string; count: number; status: TagStatusValue }[]> {
     const take = this.clampLimit(limit, 1, 200);
     const viewerId = options?.viewerId ?? null;
     const isSuperAdmin = Boolean(options?.isSuperAdmin);
@@ -529,13 +529,14 @@ export class TagsService {
         { normalizedName: 'asc' },
       ],
       take,
-      select: { normalizedName: true, usageCount: true },
+      select: { normalizedName: true, usageCount: true, status: true },
     });
 
     if (indexed.length > 0) {
       return indexed.map((row: any) => ({
         tag: row.normalizedName,
         count: row.usageCount,
+        status: this.parseTagStatus(row.status),
       }));
     }
 
@@ -594,9 +595,15 @@ export class TagsService {
         createdById: true,
       },
     });
-    const tagMetaByName = new Map(
-      tagRows.map((row: any) => [row.normalizedName, row] as const),
-    );
+    const tagMetaByName = new Map<
+      string,
+      {
+        normalizedName: string;
+        status: TagStatus | null;
+        isBanned: boolean;
+        createdById: string | null;
+      }
+    >(tagRows.map((row: any) => [row.normalizedName, row] as const));
 
     return ranked
       .filter((entry) => {
@@ -604,14 +611,18 @@ export class TagsService {
         if (!meta) return isSuperAdmin;
         return this.isTagVisibleToViewer(meta, viewerId, isSuperAdmin);
       })
-      .slice(0, take);
+      .slice(0, take)
+      .map((entry) => ({
+        ...entry,
+        status: this.parseTagStatus(tagMetaByName.get(entry.tag)?.status),
+      }));
   }
 
   async searchTags(
     query: string,
     limit = 10,
     options?: TagVisibilityOptions,
-  ): Promise<{ tag: string; count: number }[]> {
+  ): Promise<{ tag: string; count: number; status: TagStatusValue }[]> {
     const take = this.clampLimit(limit, 1, 100);
     const normalized = this.normalizeLookup(query);
     const viewerId = options?.viewerId ?? null;
@@ -669,6 +680,7 @@ export class TagsService {
       .map((row: any) => ({
         tag: row.normalizedName,
         count: row.usageCount,
+        status: this.parseTagStatus(row.status),
       }));
   }
 

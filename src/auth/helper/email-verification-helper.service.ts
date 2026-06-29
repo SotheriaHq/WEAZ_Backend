@@ -12,7 +12,8 @@ export class EmailVerificationHelperService {
   generateVerificationLink(
     verificationToken: string,
     nextPath?: string,
+    options?: { mobile?: boolean; bridgeBaseUrl?: string | null },
   ): string {
-    return buildEmailVerificationLink(verificationToken, nextPath);
+    return buildEmailVerificationLink(verificationToken, nextPath, options);
   }
 }

@@ -311,7 +311,14 @@ describe('SearchService', () => {
           deletedAt: null,
           archivedAt: null,
           brand: { isStoreOpen: true },
-          OR: [{ publishAt: null }, { publishAt: { lte: expect.any(Date) } }],
+          AND: [
+            {
+              OR: [
+                { publishAt: null },
+                { publishAt: { lte: expect.any(Date) } },
+              ],
+            },
+          ],
         }),
       }),
     );
@@ -423,9 +430,15 @@ describe('SearchService', () => {
 
     expect(sqlText).toContain('word_similarity');
     expect(sqlText).toContain('query_tokens');
+    expect(sqlText.slice(sqlText.indexOf('@@ sp.tsq'))).toContain(
+      'word_similarity',
+    );
+    expect(sqlText.slice(sqlText.indexOf('ilike_fallback'))).toContain(
+      'word_similarity',
+    );
     expect(sqlValues).toContain('avery');
     expect(sqlValues).toContain('cotour');
-    expect(sqlValues).toContain(0.5);
+    expect(sqlValues).toContain(0.6);
   });
 
   it('omits the token gate for single-character queries to preserve typo tolerance', async () => {
@@ -525,7 +538,9 @@ describe('SearchService', () => {
     expect(response.items[0].id).toBe('user-avery');
     expect(response.items[0].type).toBe('profile');
     // Owner brand collapsed into the profile identity.
-    expect(response.items.some((item) => item.id === 'brand-avery')).toBe(false);
+    expect(response.items.some((item) => item.id === 'brand-avery')).toBe(
+      false,
+    );
     // The commerce row still appears, just below identity.
     expect(response.items.map((item) => item.id)).toEqual([
       'user-avery',

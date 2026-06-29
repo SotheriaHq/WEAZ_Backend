@@ -30,6 +30,8 @@ export interface SearchItem {
   salePrice?: number | null;
   currency?: string | null;
   metadata?: Record<string, unknown>;
+  matchedTokens?: string[];
+  resultKind?: 'identity' | 'commerce' | 'content' | 'tag';
   /**
    * Additive ranking debug/ordering fields. Identity results occupy lower tiers
    * (0 = strongest identity) and rank above commerce/content matches. Optional so

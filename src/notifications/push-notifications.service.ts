@@ -1,11 +1,19 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { Cron, CronExpression } from '@nestjs/schedule';
 import {
   NotificationType,
   Prisma,
   PushDeviceToken,
+  PushOutboxStatus,
   PushProvider,
+  PushReceiptStatus,
 } from '@prisma/client';
-import type { ExpoPushMessage, ExpoPushTicket } from 'expo-server-sdk';
+import type {
+  ExpoPushMessage,
+  ExpoPushReceipt,
+  ExpoPushReceiptId,
+  ExpoPushTicket,
+} from 'expo-server-sdk';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { NotificationRegistry } from './notifications.registry';
 import {
@@ -13,6 +21,7 @@ import {
   NotificationTarget,
 } from './notifications.types';
 import { normalizeCatalogTarget } from 'src/common/domain/catalog-target';
+import { getPushCollapseId, getPushPresentation } from './push-presentation';
 
 const INVALID_EXPO_TOKEN_DISABLED_REASON = 'INVALID_EXPO_TOKEN';
 const DEVICE_NOT_REGISTERED_DISABLED_REASON = 'DEVICE_NOT_REGISTERED';
@@ -43,6 +52,12 @@ type ExpoClientLike = {
   sendPushNotificationsAsync(
     messages: ExpoPushMessage[],
   ): Promise<ExpoPushTicket[]>;
+  chunkPushNotificationReceiptIds?(
+    receiptIds: ExpoPushReceiptId[],
+  ): ExpoPushReceiptId[][];
+  getPushNotificationReceiptsAsync?(
+    receiptIds: ExpoPushReceiptId[],
+  ): Promise<Record<string, ExpoPushReceipt>>;
 };
 
 type ExpoStaticLike = {
@@ -78,9 +93,30 @@ export type PushDeliveryResult = {
   skippedReason?: string;
 };
 
+type PushOutboxPayload = {
+  title: string;
+  body: string;
+  data: Record<string, unknown>;
+  channelId?: string;
+  collapseId?: string;
+  sound: boolean;
+};
+
+const PUSH_OUTBOX_MAX_ATTEMPTS = 6;
+const PUSH_OUTBOX_BATCH_SIZE = 100;
+const PUSH_OUTBOX_CONCURRENCY = 10;
+const PUSH_OUTBOX_DISPATCH_CRON = '*/10 * * * * *';
+// Wait briefly before polling a ticket's receipt (Expo needs time to attempt
+// delivery); receipts are retained by Expo for roughly a day.
+const PUSH_RECEIPT_MIN_AGE_MS = 60_000;
+const PUSH_RECEIPT_MAX_AGE_MS = 23 * 60 * 60 * 1000;
+const PUSH_OUTBOX_COMPLETED_RETENTION_DAYS = 14;
+const PUSH_OUTBOX_EXHAUSTED_RETENTION_DAYS = 60;
+
 @Injectable()
 export class PushNotificationsService {
   private readonly logger = new Logger(PushNotificationsService.name);
+  private readonly lockOwner = `push-${process.pid}`;
   private expoClientPromise: Promise<ExpoClientLike> | null = null;
   private expoModulePromise: Promise<ExpoModuleLike> | null = null;
 
@@ -294,33 +330,107 @@ export class PushNotificationsService {
     notification: PushDeliveryNotification;
     settings: NotificationSettings;
   }): ExpoPushMessage {
+    const payload = this.buildPushPayload({
+      notification: args.notification,
+      settings: args.settings,
+    });
+    return this.composeExpoMessage(args.token, payload);
+  }
+
+  /**
+   * Build the device-agnostic push payload (everything except the per-device
+   * `to` token and the freshly-resolved badge). Shared by the inline sender, the
+   * durable outbox enqueue snapshot, and the dispatcher.
+   */
+  buildPushPayload(args: {
+    notification: PushDeliveryNotification;
+    settings: NotificationSettings;
+  }): PushOutboxPayload {
     const payload = this.toRecord(args.notification.payload);
-    const body = args.settings.push.showPreview
+    const showPreview = args.settings.push.showPreview;
+    const body = showPreview
       ? this.formatPushBody(args.notification)
       : GENERIC_PUSH_BODY;
     const messageRoutingData = this.extractMessageRoutingData(
       args.notification.type,
       payload,
     );
-    const message: ExpoPushMessage = {
-      to: args.token,
-      title: 'WEAZ',
-      body,
-      data: {
-        notificationId: args.notification.id,
-        type: args.notification.type,
-        targetUrl: this.sanitizeTargetUrl(payload?.targetUrl),
-        target: this.extractTarget(payload),
-        subTargetId: payload?.subTargetId ?? payload?.commentId ?? null,
-        ...messageRoutingData,
-      },
+    const target = this.extractTarget(payload);
+    const data: Record<string, unknown> = {
+      notificationId: args.notification.id,
+      type: args.notification.type,
+      targetUrl: this.sanitizeTargetUrl(payload?.targetUrl),
+      target,
+      subTargetId: payload?.subTargetId ?? payload?.commentId ?? null,
+      ...this.extractRoutingFields(args.notification, payload),
+      ...messageRoutingData,
     };
+    const presentation = getPushPresentation(args.notification.type);
+    return {
+      title: showPreview ? presentation.title : 'WEAZ',
+      body,
+      data,
+      channelId: presentation.channelId,
+      collapseId: getPushCollapseId(args.notification.type, payload, target),
+      sound: Boolean(args.settings.push.sound),
+    };
+  }
 
-    if (args.settings.push.sound) {
-      message.sound = 'default';
+  private composeExpoMessage(
+    token: string,
+    payload: PushOutboxPayload,
+    options: { badge?: number | null } = {},
+  ): ExpoPushMessage {
+    const message: ExpoPushMessage = {
+      to: token,
+      title: payload.title,
+      body: payload.body,
+      data: payload.data,
+    };
+    if (payload.channelId) message.channelId = payload.channelId;
+    if (payload.collapseId) message.collapseId = payload.collapseId;
+    if (payload.sound) message.sound = 'default';
+    if (typeof options.badge === 'number' && options.badge >= 0) {
+      message.badge = options.badge;
     }
-
     return message;
+  }
+
+  /**
+   * Surface generic per-type routing ids in the push `data` so the client can
+   * route ANY notification type (not just messages) to the exact content. For
+   * message types these are also set (with possible nulls) by
+   * `extractMessageRoutingData`, which is spread last and therefore wins.
+   */
+  private extractRoutingFields(
+    notification: PushDeliveryNotification,
+    payload: Record<string, any> | null,
+  ): Record<string, string> {
+    const actorId =
+      (notification.actor && typeof notification.actor === 'object'
+        ? (notification.actor as Record<string, unknown>).id
+        : null) ??
+      payload?.actorId ??
+      payload?.actorUserId;
+    const candidates: Record<string, unknown> = {
+      actorId,
+      collectionId: payload?.collectionId,
+      legacyCollectionId: payload?.legacyCollectionId,
+      designId: payload?.designId,
+      productId: payload?.productId,
+      postId: payload?.postId,
+      brandId: payload?.brandId,
+      orderId: payload?.orderId,
+      customOrderId: payload?.customOrderId,
+      commentId: payload?.commentId,
+    };
+    const fields: Record<string, string> = {};
+    for (const [key, value] of Object.entries(candidates)) {
+      if (typeof value === 'string' && value.trim().length > 0) {
+        fields[key] = value;
+      }
+    }
+    return fields;
   }
 
   private extractMessageRoutingData(
@@ -510,6 +620,542 @@ export class PushNotificationsService {
         failureCount: { increment: 1 },
       },
     });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Durable delivery: transactional outbox + retry + two-phase receipts.
+  // Mirrors the email outbox pattern so push survives process restarts, retries
+  // transient Expo failures with backoff, and reaps dead tokens via receipts.
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Enqueue a push for durable delivery. Applies the same gating as the inline
+   * sender (push enabled / type enabled / quiet hours) and snapshots the fully
+   * built payload so the dispatcher needs no settings at send time.
+   */
+  async enqueue(args: {
+    recipientId: string;
+    notification: PushDeliveryNotification;
+    settings: NotificationSettings;
+    notificationTypeEnabled: boolean;
+    date?: Date;
+  }): Promise<{ status: 'enqueued' | 'skipped'; reason?: string }> {
+    const now = args.date ?? new Date();
+    const pushAllowed = this.isPushAllowed({
+      type: args.notification.type,
+      settings: args.settings,
+      notificationTypeEnabled: args.notificationTypeEnabled,
+      date: now,
+    });
+    if (pushAllowed.allowed === false) {
+      return { status: 'skipped', reason: pushAllowed.reason };
+    }
+
+    const payload = this.buildPushPayload({
+      notification: args.notification,
+      settings: args.settings,
+    });
+
+    await this.prisma.pushOutbox.create({
+      data: {
+        notificationId: args.notification.id,
+        recipientId: args.recipientId,
+        type: args.notification.type,
+        title: payload.title,
+        body: payload.body,
+        dataJson: (payload.data ?? {}) as Prisma.InputJsonValue,
+        channelId: payload.channelId ?? null,
+        collapseId: payload.collapseId ?? null,
+        sound: payload.sound,
+        status: PushOutboxStatus.PENDING,
+      },
+    });
+
+    return { status: 'enqueued' };
+  }
+
+  @Cron(PUSH_OUTBOX_DISPATCH_CRON)
+  async dispatchPendingPush(batchSize = PUSH_OUTBOX_BATCH_SIZE): Promise<void> {
+    const now = new Date();
+    const rows = await this.prisma.pushOutbox.findMany({
+      where: {
+        attempts: { lt: PUSH_OUTBOX_MAX_ATTEMPTS },
+        OR: [
+          {
+            status: { in: [PushOutboxStatus.PENDING, PushOutboxStatus.FAILED] },
+            availableAt: { lte: now },
+          },
+          {
+            status: PushOutboxStatus.PROCESSING,
+            lockExpiresAt: { lte: now },
+          },
+        ],
+      },
+      orderBy: [{ createdAt: 'asc' }],
+      take: batchSize,
+    });
+
+    if (rows.length === 0) {
+      return;
+    }
+
+    let sent = 0;
+    let failed = 0;
+    let skipped = 0;
+    for (let i = 0; i < rows.length; i += PUSH_OUTBOX_CONCURRENCY) {
+      const chunk = rows.slice(i, i + PUSH_OUTBOX_CONCURRENCY);
+      const results = await Promise.all(
+        chunk.map((row) => this.dispatchOutboxRow(row)),
+      );
+      for (const result of results) {
+        if (result === 'SENT') sent += 1;
+        else if (result === 'FAILED') failed += 1;
+        else skipped += 1;
+      }
+    }
+
+    this.logger.log(
+      `Push outbox sweep sent=${sent} failed=${failed} skipped=${skipped} total=${rows.length}`,
+    );
+  }
+
+  private async dispatchOutboxRow(row: {
+    id: string;
+    status: PushOutboxStatus;
+    attempts: number;
+    recipientId: string;
+    title: string;
+    body: string;
+    dataJson: Prisma.JsonValue | null;
+    channelId: string | null;
+    collapseId: string | null;
+    sound: boolean;
+  }): Promise<'SENT' | 'FAILED' | 'SKIPPED'> {
+    const claim = await this.prisma.pushOutbox.updateMany({
+      where: { id: row.id, status: row.status },
+      data: {
+        status: PushOutboxStatus.PROCESSING,
+        attempts: { increment: 1 },
+        lockedAt: new Date(),
+        lockOwner: this.lockOwner,
+        lockExpiresAt: new Date(Date.now() + 60_000),
+        lastError: null,
+      },
+    });
+    if (claim.count === 0) {
+      return 'SKIPPED';
+    }
+
+    const attemptNo = row.attempts + 1;
+    const now = new Date();
+
+    try {
+      const tokens = await this.prisma.pushDeviceToken.findMany({
+        where: {
+          userId: row.recipientId,
+          isActive: true,
+          provider: PushProvider.EXPO,
+        },
+        select: {
+          id: true,
+          token: true,
+          userId: true,
+          provider: true,
+          isActive: true,
+        },
+      });
+
+      if (tokens.length === 0) {
+        await this.markOutboxSent(row.id, now, 'no-active-tokens');
+        return 'SENT';
+      }
+
+      const badge = await this.resolveBadgeCount(row.recipientId);
+      const payload: PushOutboxPayload = {
+        title: row.title,
+        body: row.body,
+        data: this.toRecord(row.dataJson) ?? {},
+        channelId: row.channelId ?? undefined,
+        collapseId: row.collapseId ?? undefined,
+        sound: row.sound,
+      };
+
+      const validEntries: PushDeliveryEntry[] = [];
+      for (const token of tokens) {
+        if (!(await this.isExpoPushToken(token.token))) {
+          await this.markTokenInactive(
+            token.id,
+            INVALID_EXPO_TOKEN_DISABLED_REASON,
+            now,
+          );
+          continue;
+        }
+        validEntries.push({
+          token,
+          message: this.composeExpoMessage(token.token, payload, { badge }),
+        });
+      }
+
+      if (validEntries.length === 0) {
+        await this.markOutboxSent(row.id, now, 'no-valid-expo-tokens');
+        return 'SENT';
+      }
+
+      const expo = await this.getExpoClient();
+      const messages = validEntries.map((entry) => entry.message);
+      const chunks = expo.chunkPushNotifications(messages);
+      const receiptRows: Prisma.PushDeliveryReceiptCreateManyInput[] = [];
+      let cursor = 0;
+
+      for (const chunk of chunks) {
+        const chunkEntries = validEntries.slice(cursor, cursor + chunk.length);
+        cursor += chunk.length;
+        const tickets = await expo.sendPushNotificationsAsync(chunk);
+
+        for (let index = 0; index < chunkEntries.length; index += 1) {
+          const ticket = tickets[index];
+          const entry = chunkEntries[index];
+
+          if (ticket?.status === 'ok' && ticket.id) {
+            await this.markTokenSuccess(entry.token.id, now);
+            receiptRows.push({
+              pushOutboxId: row.id,
+              tokenId: entry.token.id,
+              ticketId: ticket.id,
+              status: PushReceiptStatus.PENDING,
+            });
+            continue;
+          }
+
+          if (ticket?.status === 'error') {
+            const errorCode = ticket.details?.error;
+            if (errorCode === 'DeviceNotRegistered') {
+              await this.markTokenInactive(
+                entry.token.id,
+                DEVICE_NOT_REGISTERED_DISABLED_REASON,
+                now,
+              );
+            } else {
+              await this.markTokenTransientFailure(entry.token.id, now);
+            }
+            receiptRows.push({
+              pushOutboxId: row.id,
+              tokenId: entry.token.id,
+              status: PushReceiptStatus.ERROR,
+              errorCode: errorCode ?? 'UnknownTicketError',
+              errorMessage: this.truncate(ticket.message),
+              checkedAt: now,
+            });
+            continue;
+          }
+
+          // Defensive: an `ok` ticket without an id leaves nothing to poll.
+          await this.markTokenSuccess(entry.token.id, now);
+        }
+      }
+
+      if (receiptRows.length > 0) {
+        await this.prisma.pushDeliveryReceipt.createMany({ data: receiptRows });
+      }
+
+      await this.markOutboxSent(row.id, now, null);
+      return 'SENT';
+    } catch (error) {
+      const message = this.formatError(error);
+      const exhausted = attemptNo >= PUSH_OUTBOX_MAX_ATTEMPTS;
+      const backoffSeconds = Math.min(3600, Math.pow(2, attemptNo) * 10);
+
+      await this.prisma.pushOutbox.update({
+        where: { id: row.id },
+        data: {
+          status: PushOutboxStatus.FAILED,
+          lastError: exhausted ? `DLQ_EXHAUSTED:${message}` : message,
+          availableAt: exhausted
+            ? new Date(Date.now() + 24 * 60 * 60 * 1000)
+            : new Date(Date.now() + backoffSeconds * 1000),
+          lockExpiresAt: null,
+        },
+      });
+
+      if (exhausted) {
+        this.logger.error(`Push outbox exhausted retries id=${row.id}`);
+      } else {
+        this.logger.warn(
+          `Push outbox dispatch failed id=${row.id} attempt=${attemptNo}: ${message}`,
+        );
+      }
+      return 'FAILED';
+    }
+  }
+
+  private async markOutboxSent(
+    id: string,
+    sentAt: Date,
+    note: string | null,
+  ): Promise<void> {
+    await this.prisma.pushOutbox.update({
+      where: { id },
+      data: {
+        status: PushOutboxStatus.SENT,
+        sentAt,
+        lastError: note,
+        lockExpiresAt: null,
+      },
+    });
+  }
+
+  private async resolveBadgeCount(recipientId: string): Promise<number | null> {
+    try {
+      return await this.prisma.notification.count({
+        where: { recipientId, isRead: false },
+      });
+    } catch {
+      return null;
+    }
+  }
+
+  @Cron(CronExpression.EVERY_MINUTE)
+  async pollPushReceipts(batchSize = 500): Promise<void> {
+    const nowMs = Date.now();
+    const pending = await this.prisma.pushDeliveryReceipt.findMany({
+      where: {
+        status: PushReceiptStatus.PENDING,
+        ticketId: { not: null },
+        createdAt: {
+          gte: new Date(nowMs - PUSH_RECEIPT_MAX_AGE_MS),
+          lte: new Date(nowMs - PUSH_RECEIPT_MIN_AGE_MS),
+        },
+      },
+      select: { id: true, ticketId: true, tokenId: true },
+      take: batchSize,
+    });
+
+    if (pending.length === 0) {
+      await this.completeFullyResolvedOutbox();
+      return;
+    }
+
+    const expo = await this.getExpoClient();
+    if (!expo.getPushNotificationReceiptsAsync) {
+      return;
+    }
+
+    const byTicketId = new Map<string, { id: string; tokenId: string | null }>();
+    for (const receipt of pending) {
+      if (receipt.ticketId) {
+        byTicketId.set(receipt.ticketId, {
+          id: receipt.id,
+          tokenId: receipt.tokenId,
+        });
+      }
+    }
+
+    const ticketIds = [...byTicketId.keys()];
+    const chunks = expo.chunkPushNotificationReceiptIds
+      ? expo.chunkPushNotificationReceiptIds(ticketIds)
+      : [ticketIds];
+    const checkedAt = new Date();
+
+    for (const chunk of chunks) {
+      let receipts: Record<string, ExpoPushReceipt>;
+      try {
+        receipts = await expo.getPushNotificationReceiptsAsync(chunk);
+      } catch (error) {
+        this.logger.warn(
+          `Push receipts poll failed: ${this.formatError(error)}`,
+        );
+        continue;
+      }
+
+      for (const [ticketId, receipt] of Object.entries(receipts)) {
+        const entry = byTicketId.get(ticketId);
+        if (!entry) continue;
+
+        if (receipt.status === 'ok') {
+          await this.prisma.pushDeliveryReceipt.update({
+            where: { id: entry.id },
+            data: { status: PushReceiptStatus.OK, checkedAt },
+          });
+          continue;
+        }
+
+        const errorCode = receipt.details?.error ?? 'ExpoError';
+        await this.prisma.pushDeliveryReceipt.update({
+          where: { id: entry.id },
+          data: {
+            status: PushReceiptStatus.ERROR,
+            errorCode,
+            errorMessage: this.truncate(receipt.message),
+            checkedAt,
+          },
+        });
+
+        if (errorCode === 'DeviceNotRegistered' && entry.tokenId) {
+          await this.markTokenInactive(
+            entry.tokenId,
+            DEVICE_NOT_REGISTERED_DISABLED_REASON,
+            checkedAt,
+          );
+        }
+      }
+    }
+
+    await this.completeFullyResolvedOutbox();
+  }
+
+  private async completeFullyResolvedOutbox(): Promise<void> {
+    const resolved = await this.prisma.pushOutbox.findMany({
+      where: {
+        status: PushOutboxStatus.SENT,
+        receipts: { none: { status: PushReceiptStatus.PENDING } },
+      },
+      select: { id: true },
+      take: 500,
+    });
+    if (resolved.length === 0) return;
+
+    await this.prisma.pushOutbox.updateMany({
+      where: { id: { in: resolved.map((row) => row.id) } },
+      data: { status: PushOutboxStatus.COMPLETED },
+    });
+  }
+
+  @Cron(CronExpression.EVERY_DAY_AT_3AM)
+  async cleanupPushOutbox(): Promise<void> {
+    const now = Date.now();
+    const completedBefore = new Date(
+      now - PUSH_OUTBOX_COMPLETED_RETENTION_DAYS * 24 * 60 * 60 * 1000,
+    );
+    const exhaustedBefore = new Date(
+      now - PUSH_OUTBOX_EXHAUSTED_RETENTION_DAYS * 24 * 60 * 60 * 1000,
+    );
+
+    await this.prisma.pushOutbox.deleteMany({
+      where: {
+        status: { in: [PushOutboxStatus.COMPLETED, PushOutboxStatus.SENT] },
+        sentAt: { lt: completedBefore },
+      },
+    });
+
+    await this.prisma.pushOutbox.deleteMany({
+      where: {
+        status: PushOutboxStatus.FAILED,
+        lastError: { startsWith: 'DLQ_EXHAUSTED:' },
+        updatedAt: { lt: exhaustedBefore },
+      },
+    });
+  }
+
+  /**
+   * Aggregate push delivery health for ops dashboards / alerting.
+   * `windowHours` scopes the receipt-error breakdown and recent throughput.
+   */
+  async getPushDeliveryMetrics(windowHours = 24): Promise<{
+    windowHours: number;
+    outboxByStatus: Record<string, number>;
+    pendingBacklog: number;
+    exhausted: number;
+    activeTokens: number;
+    receiptErrorsByCode: Record<string, number>;
+    sentInWindow: number;
+  }> {
+    const since = new Date(Date.now() - windowHours * 60 * 60 * 1000);
+
+    const [statusGroups, exhausted, activeTokens, receiptErrors, sentInWindow] =
+      await Promise.all([
+        this.prisma.pushOutbox.groupBy({
+          by: ['status'],
+          _count: { _all: true },
+        }),
+        this.prisma.pushOutbox.count({
+          where: {
+            status: PushOutboxStatus.FAILED,
+            lastError: { startsWith: 'DLQ_EXHAUSTED:' },
+          },
+        }),
+        this.prisma.pushDeviceToken.count({ where: { isActive: true } }),
+        this.prisma.pushDeliveryReceipt.groupBy({
+          by: ['errorCode'],
+          where: { status: PushReceiptStatus.ERROR, createdAt: { gte: since } },
+          _count: { _all: true },
+        }),
+        this.prisma.pushOutbox.count({
+          where: {
+            status: {
+              in: [PushOutboxStatus.SENT, PushOutboxStatus.COMPLETED],
+            },
+            sentAt: { gte: since },
+          },
+        }),
+      ]);
+
+    const outboxByStatus: Record<string, number> = {};
+    let pendingBacklog = 0;
+    for (const group of statusGroups) {
+      const count = group._count._all;
+      outboxByStatus[group.status] = count;
+      if (
+        group.status === PushOutboxStatus.PENDING ||
+        group.status === PushOutboxStatus.PROCESSING ||
+        group.status === PushOutboxStatus.FAILED
+      ) {
+        pendingBacklog += count;
+      }
+    }
+
+    const receiptErrorsByCode: Record<string, number> = {};
+    for (const group of receiptErrors) {
+      receiptErrorsByCode[group.errorCode ?? 'unknown'] = group._count._all;
+    }
+
+    return {
+      windowHours,
+      outboxByStatus,
+      pendingBacklog,
+      exhausted,
+      activeTokens,
+      receiptErrorsByCode,
+      sentInWindow,
+    };
+  }
+
+  @Cron(CronExpression.EVERY_30_MINUTES)
+  async reportPushDeliveryHealth(): Promise<void> {
+    try {
+      const metrics = await this.getPushDeliveryMetrics(1);
+      const summary =
+        `Push delivery health pendingBacklog=${metrics.pendingBacklog} ` +
+        `exhausted=${metrics.exhausted} activeTokens=${metrics.activeTokens} ` +
+        `sentLastHour=${metrics.sentInWindow} ` +
+        `receiptErrors=${JSON.stringify(metrics.receiptErrorsByCode)}`;
+      if (metrics.exhausted > 0 || metrics.pendingBacklog > 500) {
+        this.logger.error(summary);
+      } else {
+        this.logger.log(summary);
+      }
+    } catch (error) {
+      this.logger.warn(
+        `Failed to report push delivery health: ${this.formatError(error)}`,
+      );
+    }
+  }
+
+  private truncate(value: string | null | undefined, maxLength = 240): string | null {
+    if (!value) return null;
+    const trimmed = value.trim();
+    if (trimmed.length <= maxLength) return trimmed;
+    return `${trimmed.slice(0, maxLength - 3)}...`;
+  }
+
+  private formatError(error: unknown): string {
+    const raw = error instanceof Error ? error.message : String(error);
+    return (
+      this.truncate(
+        raw
+          .replace(/https?:\/\/\S+/gi, '[url-redacted]')
+          .replace(/\b[A-Za-z0-9_-]{32,}\b/g, '[token-redacted]'),
+      ) ?? 'unknown-error'
+    );
   }
 
   private toRecord(
