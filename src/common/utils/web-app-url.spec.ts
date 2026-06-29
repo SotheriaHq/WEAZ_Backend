@@ -73,7 +73,24 @@ describe('web app URL resolution', () => {
 
     expect(isNonLocalEnvironment()).toBe(true);
     expect(() => resolveWebAppBaseUrl()).toThrow(
-      'WEB_APP_URL (or FRONTEND_URL) must be configured for non-local environments.',
+      'WEB_APP_URL (or FRONTEND_URL) must be configured for non-local environments',
     );
+  });
+
+  it('treats sit as local-friendly and defaults to localhost when no web url is set', () => {
+    resetEnv({ APP_ENV: 'sit', NODE_ENV: 'production' });
+
+    expect(isNonLocalEnvironment()).toBe(false);
+    expect(resolveWebAppBaseUrl()).toBe('http://localhost:3000');
+  });
+
+  it('ignores placeholder web urls from env templates', () => {
+    resetEnv({
+      APP_ENV: 'sit',
+      WEB_APP_URL: 'https://<sit-frontend-domain>',
+      FRONTEND_URL: 'REPLACE_ME_SIT_WEB_URL',
+    });
+
+    expect(resolveWebAppBaseUrl()).toBe('http://localhost:3000');
   });
 });

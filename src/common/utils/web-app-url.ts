@@ -6,6 +6,9 @@ const NON_LOCAL_ENV_MARKERS = new Set([
   'prod',
 ]);
 
+/** SIT and other pre-prod markers intentionally use local web URL fallbacks. */
+const LOCAL_WEB_APP_ENV_MARKERS = new Set(['development', 'dev', 'local', 'sit']);
+
 const DEFAULT_LOCAL_WEB_APP_HOST = 'localhost';
 const DEFAULT_LOCAL_WEB_APP_PORT = '3000';
 
@@ -31,7 +34,26 @@ function resolveEnvironmentMarker(): string {
 }
 
 export function isNonLocalEnvironment(): boolean {
-  return NON_LOCAL_ENV_MARKERS.has(resolveEnvironmentMarker());
+  const marker = resolveEnvironmentMarker();
+  if (LOCAL_WEB_APP_ENV_MARKERS.has(marker)) {
+    return false;
+  }
+  return NON_LOCAL_ENV_MARKERS.has(marker);
+}
+
+function isConfiguredWebAppUrl(value: string | undefined): boolean {
+  const trimmed = String(value ?? '').trim();
+  if (!trimmed) {
+    return false;
+  }
+
+  const lower = trimmed.toLowerCase();
+  // Treat template placeholders from env files as "not configured".
+  if (lower.includes('<') || lower.includes('replace_me')) {
+    return false;
+  }
+
+  return true;
 }
 
 function resolveLocalWebAppBaseUrl(
@@ -48,9 +70,10 @@ function resolveLocalWebAppBaseUrl(
 }
 
 export function resolveWebAppBaseUrl(): string {
-  const configuredBaseUrl =
-    String(process.env.WEB_APP_URL ?? '').trim() ||
-    String(process.env.FRONTEND_URL ?? '').trim();
+  const configuredBaseUrl = [
+    process.env.WEB_APP_URL,
+    process.env.FRONTEND_URL,
+  ].find(isConfiguredWebAppUrl);
 
   if (configuredBaseUrl) {
     return normalizeBaseUrl(configuredBaseUrl);
@@ -60,7 +83,9 @@ export function resolveWebAppBaseUrl(): string {
     return resolveLocalWebAppBaseUrl();
   }
 
+  const marker = resolveEnvironmentMarker() || 'unknown';
   throw new Error(
-    'WEB_APP_URL (or FRONTEND_URL) must be configured for non-local environments.',
+    `WEB_APP_URL (or FRONTEND_URL) must be configured for non-local environments (detected: ${marker}). ` +
+      'For SIT with a local frontend, set APP_ENV=sit and WEB_APP_URL=http://localhost:3000 (or your dev port).',
   );
 }
