@@ -1210,6 +1210,9 @@ export class AuthService {
     const emailContent = emailTemplates.emailLoginCodeEmail(
       code,
       this.emailService.getAppName(),
+      purpose === LoginCodePurpose.DIRECT_LOGIN
+        ? 'DIRECT_LOGIN'
+        : 'PASSWORD_SETUP',
     );
     const scenarioKey =
       purpose === LoginCodePurpose.DIRECT_LOGIN
