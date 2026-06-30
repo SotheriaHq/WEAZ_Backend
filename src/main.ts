@@ -314,18 +314,26 @@ async function bootstrap() {
       .map((origin) => origin.trim())
       .filter((origin) => origin.length > 0);
 
-    const defaultDevOrigins = [
-      'http://localhost:3000',
-      'http://localhost:5173',
-      'http://localhost:4173', // Vite preview default
-      'http://localhost:4174', // Vite alt preview
-    ];
+    const nodeEnv = String(configService.get<string>('NODE_ENV', ''))
+      .trim()
+      .toLowerCase();
+    const isProductionRuntime = nodeEnv === 'production';
 
-    defaultDevOrigins.forEach((origin) => {
-      if (!allowedOrigins.includes(origin)) {
-        allowedOrigins.push(origin);
-      }
-    });
+    // Only widen CORS to local dev origins during non-production runtime.
+    if (!isProductionRuntime) {
+      const defaultDevOrigins = [
+        'http://localhost:3000',
+        'http://localhost:5173',
+        'http://localhost:4173', // Vite preview default
+        'http://localhost:4174', // Vite alt preview
+      ];
+
+      defaultDevOrigins.forEach((origin) => {
+        if (!allowedOrigins.includes(origin)) {
+          allowedOrigins.push(origin);
+        }
+      });
+    }
 
     const exposedHeaders = configService
       .get<string>('CORS_EXPOSED_HEADERS', '')

@@ -77,11 +77,13 @@ describe('web app URL resolution', () => {
     );
   });
 
-  it('treats sit as local-friendly and defaults to localhost when no web url is set', () => {
+  it('treats sit as non-local and requires a configured web url', () => {
     resetEnv({ APP_ENV: 'sit', NODE_ENV: 'production' });
 
-    expect(isNonLocalEnvironment()).toBe(false);
-    expect(resolveWebAppBaseUrl()).toBe('http://localhost:3000');
+    expect(isNonLocalEnvironment()).toBe(true);
+    expect(() => resolveWebAppBaseUrl()).toThrow(
+      'WEB_APP_URL (or FRONTEND_URL) must be configured for non-local environments',
+    );
   });
 
   it('ignores placeholder web urls from env templates', () => {
@@ -91,6 +93,18 @@ describe('web app URL resolution', () => {
       FRONTEND_URL: 'REPLACE_ME_SIT_WEB_URL',
     });
 
-    expect(resolveWebAppBaseUrl()).toBe('http://localhost:3000');
+    expect(() => resolveWebAppBaseUrl()).toThrow(
+      'WEB_APP_URL (or FRONTEND_URL) must be configured for non-local environments',
+    );
+  });
+
+  it('accepts a real hosted web url for sit', () => {
+    resetEnv({
+      APP_ENV: 'sit',
+      NODE_ENV: 'production',
+      WEB_APP_URL: 'https://wiez.pages.dev/',
+    });
+
+    expect(resolveWebAppBaseUrl()).toBe('https://wiez.pages.dev');
   });
 });

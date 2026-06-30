@@ -1,13 +1,11 @@
 const NON_LOCAL_ENV_MARKERS = new Set([
   'qa',
+  'sit',
   'uat',
   'staging',
   'production',
   'prod',
 ]);
-
-/** SIT and other pre-prod markers intentionally use local web URL fallbacks. */
-const LOCAL_WEB_APP_ENV_MARKERS = new Set(['development', 'dev', 'local', 'sit']);
 
 const DEFAULT_LOCAL_WEB_APP_HOST = 'localhost';
 const DEFAULT_LOCAL_WEB_APP_PORT = '3000';
@@ -34,11 +32,7 @@ function resolveEnvironmentMarker(): string {
 }
 
 export function isNonLocalEnvironment(): boolean {
-  const marker = resolveEnvironmentMarker();
-  if (LOCAL_WEB_APP_ENV_MARKERS.has(marker)) {
-    return false;
-  }
-  return NON_LOCAL_ENV_MARKERS.has(marker);
+  return NON_LOCAL_ENV_MARKERS.has(resolveEnvironmentMarker());
 }
 
 function isConfiguredWebAppUrl(value: string | undefined): boolean {
@@ -85,7 +79,6 @@ export function resolveWebAppBaseUrl(): string {
 
   const marker = resolveEnvironmentMarker() || 'unknown';
   throw new Error(
-    `WEB_APP_URL (or FRONTEND_URL) must be configured for non-local environments (detected: ${marker}). ` +
-      'For SIT with a local frontend, set APP_ENV=sit and WEB_APP_URL=http://localhost:3000 (or your dev port).',
+    `WEB_APP_URL (or FRONTEND_URL) must be configured for non-local environments (detected: ${marker}).`,
   );
 }
