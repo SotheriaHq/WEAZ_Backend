@@ -76,7 +76,7 @@ describe('NotificationsService', () => {
     };
 
     const mockEmailService: Partial<EmailService> = {
-      getAppName: jest.fn().mockReturnValue('WEAZ'),
+      getAppName: jest.fn().mockReturnValue('WIEZ'),
       send: jest.fn().mockResolvedValue(undefined),
     };
 

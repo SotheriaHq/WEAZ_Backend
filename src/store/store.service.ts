@@ -8634,7 +8634,7 @@ export class StoreService {
           primary_contact_email: primaryContactEmail || undefined,
           primary_contact_phone: primaryContactPhone || undefined,
           settlement_schedule: 'manual',
-          description: `WEAZ brand settlement account for ${brand.name}`,
+          description: `WIEZ brand settlement account for ${brand.name}`,
           metadata: {
             threadlyBrandId: brand.id,
             threadlyOwnerId: ownerId,

@@ -257,7 +257,7 @@ export class MonitoringService {
           .map((recipient) =>
             this.emailService!.send(
               recipient.email!,
-              `WEAZ ${alert.severity} ${alert.category} alert`,
+              `WIEZ ${alert.severity} ${alert.category} alert`,
               this.renderAlertEmailHtml(alert),
               this.renderAlertEmailText(alert),
               {
@@ -361,20 +361,20 @@ export class MonitoringService {
       .join('');
 
     return renderEmailShell({
-      appName: 'WEAZ',
+      appName: 'WIEZ',
       headerSubtitle: 'Operational alert',
-      title: `WEAZ ${alert.severity} ${alert.category} alert`,
+      title: `WIEZ ${alert.severity} ${alert.category} alert`,
       bodyHtml: `<p style="margin:0 0 14px;color:${EMAIL_COLORS.textSecondary};font-size:15px;line-height:1.7">A critical operational alert needs admin review. Sensitive metadata has already been redacted before this email was queued.</p>
         <table cellpadding="0" cellspacing="0" style="width:100%;border:1px solid #e5e7eb;border-radius:12px;overflow:hidden;border-collapse:separate;border-spacing:0">${rows}</table>
         <p style="margin:22px 0 0">${renderEmailButton(adminUrl, 'Review Alert', { padding: '12px 22px' })}</p>`,
       footerContextText:
-        'This email was sent because a critical WEAZ operational alert was recorded.',
+        'This email was sent because a critical WIEZ operational alert was recorded.',
     });
   }
 
   private renderAlertEmailText(alert: PersistedAlertRow): string {
     return [
-      'WEAZ operational alert',
+      'WIEZ operational alert',
       `Severity: ${alert.severity}`,
       `Category: ${alert.category}`,
       `Event: ${alert.event}`,

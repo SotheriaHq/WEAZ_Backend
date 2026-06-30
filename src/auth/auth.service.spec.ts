@@ -51,7 +51,7 @@ describe('AuthService', () => {
 
   const mockEmailService = {
     send: jest.fn(),
-    getAppName: jest.fn(() => 'WEAZ'),
+    getAppName: jest.fn(() => 'WIEZ'),
   };
 
   const mockTrustedDeviceService = {
@@ -925,7 +925,7 @@ describe('AuthService', () => {
       '123456',
     );
     mockEmailVerificationHelper.generateVerificationLink.mockReturnValue(
-      'https://weaz.test/verify',
+      'https://wiez.test/verify',
     );
     mockEmailService.send.mockResolvedValue({ dispatchStatus: 'SENT' });
     mockNotifications.create.mockResolvedValue({});
@@ -1097,7 +1097,7 @@ describe('AuthService', () => {
       '123456',
     );
     mockEmailVerificationHelper.generateVerificationLink.mockReturnValue(
-      'https://weaz.test/verify',
+      'https://wiez.test/verify',
     );
     mockEmailService.send.mockResolvedValue({ dispatchStatus: 'SENT' });
     mockNotifications.create.mockResolvedValue({});

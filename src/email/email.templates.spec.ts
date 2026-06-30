@@ -23,60 +23,60 @@ const legacyBrandPattern = new RegExp(
 );
 
 describe('email template branding polish', () => {
-  it('uses polished WEAZ subjects for representative active email flows', () => {
+  it('uses polished WIEZ subjects for representative active email flows', () => {
     expect(
-      passwordResetEmail('https://weaz.test/reset', legacyBrandInput).subject,
-    ).toBe('🔐 Reset your WEAZ password');
+      passwordResetEmail('https://wiez.test/reset', legacyBrandInput).subject,
+    ).toBe('🔐 Reset your WIEZ password');
     expect(
-      emailVerificationEmail('https://weaz.test/verify', legacyBrandInput)
+      emailVerificationEmail('https://wiez.test/verify', legacyBrandInput)
         .subject,
-    ).toBe("✨ You're almost in — confirm your WEAZ email");
+    ).toBe("✨ You're almost in — confirm your WIEZ email");
     expect(emailLoginCodeEmail('123456', legacyBrandInput).subject).toBe(
-      '🔐 Your WEAZ password setup code',
+      '🔐 Your WIEZ password setup code',
     );
     expect(
       emailLoginCodeEmail('123456', legacyBrandInput, 'DIRECT_LOGIN').subject,
-    ).toBe('🔐 Your WEAZ sign-in code');
+    ).toBe('🔐 Your WIEZ sign-in code');
     expect(breakGlassCodeEmail('CODE-123', legacyBrandInput).subject).toBe(
-      'URGENT: WEAZ break-glass recovery code',
+      'URGENT: WIEZ break-glass recovery code',
     );
     expect(
       brandStaffInviteEmail({
         brandName: 'Aso Studio',
         role: 'CATALOG_MANAGER',
         expiresAt: new Date('2026-06-10T12:00:00.000Z'),
-        inviteLink: 'https://weaz.test/brand/staff/invite?token=token',
+        inviteLink: 'https://wiez.test/brand/staff/invite?token=token',
         appName: legacyBrandInput,
       }).subject,
-    ).toBe("🏷️ You've been invited to join Aso Studio on WEAZ");
+    ).toBe("🏷️ You've been invited to join Aso Studio on WIEZ");
     expect(
       brandVerificationApprovedEmail('Aso Studio', legacyBrandInput).subject,
-    ).toBe('✅ "Aso Studio" is now verified on WEAZ');
+    ).toBe('✅ "Aso Studio" is now verified on WIEZ');
     expect(accountReactivatedEmail('Ada', legacyBrandInput).subject).toBe(
-      '✅ Your WEAZ account is active again',
+      '✅ Your WIEZ account is active again',
     );
     expect(
-      adminEmailChangeOtpEmail('123456', 'admin@weaz.test', legacyBrandInput)
+      adminEmailChangeOtpEmail('123456', 'admin@wiez.test', legacyBrandInput)
         .subject,
-    ).toBe('WEAZ admin email verification code');
+    ).toBe('WIEZ admin email verification code');
   });
 
   it('keeps old brand names and redirect metadata out of active email output', () => {
     const outputs = [
-      passwordResetEmail('https://weaz.test/reset', legacyBrandInput),
-      emailVerificationEmail('https://weaz.test/verify', legacyBrandInput),
+      passwordResetEmail('https://wiez.test/reset', legacyBrandInput),
+      emailVerificationEmail('https://wiez.test/verify', legacyBrandInput),
       brandVerificationApprovedEmail('Aso Studio', legacyBrandInput),
       renderNotificationEmail({
         appName: legacyBrandInput,
         heading: 'Order placed',
         message: 'Your order was placed successfully.',
-        targetUrl: 'https://weaz.test/orders/order-1',
+        targetUrl: 'https://wiez.test/orders/order-1',
         notificationType: NotificationType.ORDER_PLACED,
       }),
     ].map(joinedOutput);
 
     for (const output of outputs) {
-      expect(output).toContain('WEAZ');
+      expect(output).toContain('WIEZ');
       expect(output).not.toMatch(legacyBrandPattern);
       expect(output).not.toContain('[SIT');
       expect(output).not.toContain('REDIRECT');

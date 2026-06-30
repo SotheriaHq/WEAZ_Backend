@@ -570,7 +570,7 @@ export class AuthController {
   }
 
   // "Open in app" bridge pages. Auth emails link here over https (Gmail strips
-  // raw weazmobile:// links); this page redirects into the app's custom scheme.
+  // raw wiezmobile:// links); this page redirects into the app's custom scheme.
   @Get('app-link/verify-email')
   @ApiOperation({ summary: 'Open the verify-email deep link in the native app' })
   @SkipThrottle()

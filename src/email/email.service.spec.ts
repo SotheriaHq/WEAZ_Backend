@@ -19,12 +19,12 @@ describe('EmailService', () => {
     overrides: Record<string, string | undefined> = {},
   ): ConfigService => {
     const values: Record<string, string | undefined> = {
-      APP_NAME: 'WEAZ',
+      APP_NAME: 'WIEZ',
       EMAIL_PROVIDER: 'resend',
       EMAIL_MODE: 'live',
       RESEND_API_KEY: 're_test_key',
-      RESEND_FROM: 'WEAZ <noreply@weaz.me>',
-      RESEND_REPLY_TO: 'support@weaz.me',
+      RESEND_FROM: 'WIEZ <noreply@wiez.me>',
+      RESEND_REPLY_TO: 'support@wiez.me',
       EMAIL_DAILY_LIMIT: undefined,
       EMAIL_LOG_INTENDED_RECIPIENT: 'false',
       ...overrides,
@@ -138,7 +138,7 @@ describe('EmailService', () => {
     await service.sendNow(
       'recipient@example.com',
       'Reset your password',
-      '<p>https://app.weaz.me/reset-password?token=secret-token-value</p>',
+      '<p>https://app.wiez.me/reset-password?token=secret-token-value</p>',
       'Use OTP 123456',
     );
 
@@ -162,7 +162,7 @@ describe('EmailService', () => {
     const result = await service.send(
       'recipient@example.com',
       'Reset your password',
-      '<p>https://app.weaz.me/reset-password?token=secret-token-value</p>',
+      '<p>https://app.wiez.me/reset-password?token=secret-token-value</p>',
       'Use OTP 123456',
     );
 
@@ -188,7 +188,7 @@ describe('EmailService', () => {
 
     const result = await service.sendNow(
       'recipient@example.com',
-      "✨ You're almost in — confirm your WEAZ email",
+      "✨ You're almost in — confirm your WIEZ email",
       '<p>Verify</p>',
       'Verify',
       { idempotencyKey: 'outbox:1' },
@@ -198,12 +198,12 @@ describe('EmailService', () => {
     expect(result.emailMode).toBe('redirect');
     expect(mockResendSend).toHaveBeenCalledWith(
       expect.objectContaining({
-        from: 'WEAZ <noreply@weaz.me>',
+        from: 'WIEZ <noreply@wiez.me>',
         to: 'sit-inbox@example.com',
-        subject: "✨ You're almost in — confirm your WEAZ email",
+        subject: "✨ You're almost in — confirm your WIEZ email",
         html: '<p>Verify</p>',
         text: 'Verify',
-        replyTo: 'support@weaz.me',
+        replyTo: 'support@wiez.me',
       }),
       { idempotencyKey: 'outbox:1' },
     );
@@ -225,7 +225,7 @@ describe('EmailService', () => {
 
     const result = await service.sendNow(
       'recipient@example.com',
-      "✨ You're almost in — confirm your WEAZ email",
+      "✨ You're almost in — confirm your WIEZ email",
       '<p>Verify</p>',
       'Verify',
       { idempotencyKey: 'outbox:2' },
@@ -238,7 +238,7 @@ describe('EmailService', () => {
     expect(mockResendSend).toHaveBeenCalledWith(
       expect.objectContaining({
         to: 'recipient@example.com',
-        subject: "✨ You're almost in — confirm your WEAZ email",
+        subject: "✨ You're almost in — confirm your WIEZ email",
       }),
       { idempotencyKey: 'outbox:2' },
     );
@@ -260,7 +260,7 @@ describe('EmailService', () => {
         name: 'validation_error',
         statusCode: 400,
         message:
-          'Invalid reset URL https://app.weaz.me/reset-password?token=secret-token-value for recipient@example.com',
+          'Invalid reset URL https://app.wiez.me/reset-password?token=secret-token-value for recipient@example.com',
       },
       headers: null,
     });

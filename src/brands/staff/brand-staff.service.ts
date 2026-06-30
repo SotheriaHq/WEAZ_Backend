@@ -185,7 +185,7 @@ export class BrandStaffService {
       ]);
       const inviteLink = this.buildInviteLink(params.token);
       const email = emailTemplates.brandStaffInviteEmail({
-        brandName: brand?.name ?? 'WEAZ brand',
+        brandName: brand?.name ?? 'WIEZ brand',
         inviterDisplayName: this.getDisplayName(actor),
         inviterEmail: actor?.email ?? null,
         role: params.invite.role,

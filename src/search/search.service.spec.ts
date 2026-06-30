@@ -611,7 +611,7 @@ describe('SearchService', () => {
     }
 
     const response = await service.search({
-      query: 'zzzznomatchweaz',
+      query: 'zzzznomatchwiez',
       limit: 20,
     });
 

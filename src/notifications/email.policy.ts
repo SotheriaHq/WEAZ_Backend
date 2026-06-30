@@ -255,7 +255,7 @@ function renderEmailVerifiedConfirmationEmail(args: {
         <li>Set up your store (for brand accounts)</li>
         <li>Start discovering and engaging with the community</li>
       </ul>
-      <p style="margin:24px 0 16px">${renderEmailButton(ctaUrl, 'Continue in WEAZ', { padding: '14px 28px' })}</p>
+      <p style="margin:24px 0 16px">${renderEmailButton(ctaUrl, 'Continue in WIEZ', { padding: '14px 28px' })}</p>
       <p style="margin:0;color:${EMAIL_COLORS.textSecondary};line-height:1.7">If this was not you, please reset your password and review your account security settings immediately.</p>`,
     footerContextText: `This confirmation was sent because your ${companyName} email verification completed successfully.`,
   });

@@ -533,7 +533,7 @@ export class MarketSuggestionService {
         {
           blockKey: 'search-empty-fresh-drops',
           title: 'Fresh Drops',
-          subtitle: 'New arrivals from open WEAZ stores',
+          subtitle: 'New arrivals from open WIEZ stores',
           reason: 'fresh-fallback',
           sourceType: 'PRODUCT',
           strategy: 'search.fresh-drops',
@@ -620,7 +620,7 @@ export class MarketSuggestionService {
           }`,
           title: isCollectionSection ? 'Fresh Drops' : 'Shop the Look',
           subtitle: isCollectionSection
-            ? 'New products from open WEAZ stores'
+            ? 'New products from open WIEZ stores'
             : 'Recent store edits and capsules',
           reason: isCollectionSection
             ? 'fresh-products-fallback'
@@ -680,7 +680,7 @@ export class MarketSuggestionService {
         {
           blockKey: 'wishlist-fresh-drops',
           title: 'Fresh Drops',
-          subtitle: 'New arrivals from open WEAZ stores',
+          subtitle: 'New arrivals from open WIEZ stores',
           reason: 'fresh-fallback',
           sourceType: 'PRODUCT',
           strategy: 'wishlist.fresh-drops',

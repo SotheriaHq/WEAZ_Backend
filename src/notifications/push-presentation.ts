@@ -92,7 +92,7 @@ export function getPushPresentation(type: NotificationType): PushPresentation {
     return { channelId: PUSH_CHANNEL_IDS.social, title: 'Collection update' };
   }
 
-  return { channelId: PUSH_CHANNEL_IDS.default, title: 'WEAZ' };
+  return { channelId: PUSH_CHANNEL_IDS.default, title: 'WIEZ' };
 }
 
 function readString(value: unknown): string | null {

@@ -1,5 +1,5 @@
 /**
- * Default taxonomy for WEAZ catalog metadata.
+ * Default taxonomy for WIEZ catalog metadata.
  *
  * Contract:
  * - Category = garment/item family.

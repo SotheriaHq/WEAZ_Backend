@@ -11,7 +11,7 @@ export type LegalDocumentDefinition = {
   requiresCounselReview: boolean;
 };
 
-export const LEGAL_VERSION = '2026.06.08-weaz-draft.1';
+export const LEGAL_VERSION = '2026.06.08-wiez-draft.1';
 export const LEGAL_EFFECTIVE_DATE =
   '[LAWYER REVIEW] effective date pending counsel approval';
 

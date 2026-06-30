@@ -367,7 +367,7 @@ export class PushNotificationsService {
     };
     const presentation = getPushPresentation(args.notification.type);
     return {
-      title: showPreview ? presentation.title : 'WEAZ',
+      title: showPreview ? presentation.title : 'WIEZ',
       body,
       data,
       channelId: presentation.channelId,

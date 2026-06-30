@@ -24,7 +24,7 @@ describe('AppController', () => {
     it('should return a render-compatible health payload', () => {
       expect(appController.getHealth()).toEqual({
         status: 'ok',
-        service: 'weaz-backend',
+        service: 'wiez-backend',
         timestamp: expect.any(String),
       });
     });

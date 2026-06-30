@@ -65,7 +65,7 @@ export class StudioHandoffService {
     }
 
     try {
-      const parsed = new URL(trimmed, 'https://weaz.local');
+      const parsed = new URL(trimmed, 'https://wiez.local');
       if (
         parsed.pathname !== '/studio' &&
         !parsed.pathname.startsWith('/studio/')

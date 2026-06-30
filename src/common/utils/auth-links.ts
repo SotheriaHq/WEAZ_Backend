@@ -6,7 +6,7 @@ function resolveAuthLinkBaseUrl(): string {
 
 /**
  * Base for deep links that should open the native app instead of the web app.
- * Defaults to the Expo custom scheme (`weazmobile://`) so a verification link
+ * Defaults to the Expo custom scheme (`wiezmobile://`) so a verification link
  * tapped on a phone launches the installed app and lands on `/verify-email`.
  * Override with `MOBILE_APP_URL` for a universal/https link once a verified
  * associated domain is hosted. Always returned with a trailing slash so a path
@@ -14,14 +14,14 @@ function resolveAuthLinkBaseUrl(): string {
  */
 function resolveMobileAuthLinkBaseUrl(): string {
   const configured = String(process.env.MOBILE_APP_URL ?? '').trim();
-  const base = configured || 'weazmobile://';
+  const base = configured || 'wiezmobile://';
   return base.endsWith('/') ? base : `${base}/`;
 }
 
 /**
  * Public, reachable base URL of THIS backend, used for the HTTPS "open in app"
  * bridge links in auth emails. Gmail (and most clients) strip raw custom-scheme
- * (`weazmobile://`) links, so the email must contain an https/http link the
+ * (`wiezmobile://`) links, so the email must contain an https/http link the
  * client keeps; that link hits the backend bridge page which then redirects
  * into the app scheme.
  *
@@ -54,7 +54,7 @@ function encodeToken(token: string): string {
 }
 
 /**
- * Raw custom-scheme deep link (e.g. `weazmobile://verify-email?token=...`). Used
+ * Raw custom-scheme deep link (e.g. `wiezmobile://verify-email?token=...`). Used
  * by the bridge page's redirect — NOT placed directly in emails.
  */
 export function buildMobileSchemeAuthLink(
@@ -180,7 +180,7 @@ export function buildAppLinkBridgeHtml(
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <meta name="robots" content="noindex" />
-<title>WEAZ — ${title}</title>
+<title>WIEZ — ${title}</title>
 <style>
   :root { color-scheme: dark; }
   body { margin:0; background:#0f0a14; color:#fff; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; display:flex; min-height:100vh; align-items:center; justify-content:center; padding:24px; }
@@ -194,10 +194,10 @@ export function buildAppLinkBridgeHtml(
 </head>
 <body>
   <div class="card">
-    <div class="logo">WEAZ</div>
-    <h1>Opening the WEAZ app…</h1>
+    <div class="logo">WIEZ</div>
+    <h1>Opening the WIEZ app…</h1>
     <p>If the app doesn’t open automatically, tap the button below.</p>
-    <a class="btn" href="${schemeAttr}">Open in WEAZ</a>
+    <a class="btn" href="${schemeAttr}">Open in WIEZ</a>
     <a class="alt" href="${webAttr}">Continue on the web instead</a>
   </div>
   <script>

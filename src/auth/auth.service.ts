@@ -2353,7 +2353,7 @@ export class AuthService {
 
     const deletedAt = new Date();
     const suffix = deletedAt.getTime().toString(36);
-    const deletedEmail = `deleted+${suffix}-${user.id}@weaz.local`;
+    const deletedEmail = `deleted+${suffix}-${user.id}@wiez.local`;
     const deletedUsername = `deleted_${suffix}`;
     const placeholderPassword = await this.passwordService.hashPassword(
       randomBytes(32).toString('hex'),

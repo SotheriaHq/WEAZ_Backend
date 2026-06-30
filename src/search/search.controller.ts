@@ -56,7 +56,7 @@ export class SearchController {
   }
 
   @Get()
-  @ApiOperation({ summary: 'Search across public WEAZ entities' })
+  @ApiOperation({ summary: 'Search across public WIEZ entities' })
   @UseGuards(OptionalJwtAuthGuard)
   @Throttle({ default: { limit: 120, ttl: 60000 } })
   async search(@Query() query: SearchQueryDto, @Req() req: any) {

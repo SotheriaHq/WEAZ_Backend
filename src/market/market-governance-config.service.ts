@@ -151,7 +151,7 @@ export const MARKET_SECTION_CODE_DEFAULTS: MarketSectionConfigView[] = [
   {
     sectionKey: 'fresh-drops',
     title: 'Fresh Drops',
-    subtitle: 'New products from open WEAZ stores.',
+    subtitle: 'New products from open WIEZ stores.',
     enabled: true,
     status: 'ACTIVE',
     sourceType: 'PRODUCT',
@@ -284,7 +284,7 @@ export const MARKET_SECTION_CODE_DEFAULTS: MarketSectionConfigView[] = [
   {
     sectionKey: 'almost-gone',
     title: 'Almost Gone',
-    subtitle: 'Low-stock products from open WEAZ stores.',
+    subtitle: 'Low-stock products from open WIEZ stores.',
     enabled: true,
     status: 'ACTIVE',
     sourceType: 'PRODUCT',
@@ -506,7 +506,7 @@ export const MARKET_SUGGESTION_BLOCK_CODE_DEFAULTS: MarketSuggestionBlockConfigV
       context: MarketSuggestionContext.SEARCH_EMPTY,
       targetType: MarketSuggestionTargetType.QUERY,
       title: 'Fresh Drops',
-      subtitle: 'New arrivals from open WEAZ stores',
+      subtitle: 'New arrivals from open WIEZ stores',
       enabled: true,
       displayOrder: 30,
       sourceType: 'PRODUCT',

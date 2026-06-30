@@ -24,7 +24,7 @@ export const EMAIL_COLORS = {
 
 const DEFAULT_COMPANY_NAME = PRODUCT_NAME;
 const DEFAULT_HEADER_SUBTITLE = PRODUCT_CATEGORY;
-const DEFAULT_COMPANY_LOGO_PATH = '/brand/weaz-logo-mark.svg';
+const DEFAULT_COMPANY_LOGO_PATH = '/brand/wiez-logo-mark.svg';
 
 export function normalizeCompanyName(_value: string): string {
   return DEFAULT_COMPANY_NAME;

@@ -14,35 +14,35 @@ const NOTIFICATION_TEMPLATES: Record<
   { subject: string; body: string }
 > = {
   'account.suspended': {
-    subject: 'Important: Your WEAZ account status has changed',
-    body: 'Your WEAZ account has been suspended by an administrator. If you believe this was in error, please contact support.',
+    subject: 'Important: Your WIEZ account status has changed',
+    body: 'Your WIEZ account has been suspended by an administrator. If you believe this was in error, please contact support.',
   },
   'account.reactivated': {
-    subject: '✅ Your WEAZ account is active again',
-    body: 'Your WEAZ account has been reactivated. You can now log in and use all features.',
+    subject: '✅ Your WIEZ account is active again',
+    body: 'Your WIEZ account has been reactivated. You can now log in and use all features.',
   },
   'brand.verified': {
-    subject: '✅ Your brand is verified on WEAZ',
-    body: 'Congratulations! Your brand on WEAZ has been verified by our team.',
+    subject: '✅ Your brand is verified on WIEZ',
+    body: 'Congratulations! Your brand on WIEZ has been verified by our team.',
   },
   'brand.suspended': {
-    subject: 'Important: Your WEAZ brand status has changed',
-    body: 'Your brand on WEAZ has been suspended. Products and store are temporarily hidden.',
+    subject: 'Important: Your WIEZ brand status has changed',
+    body: 'Your brand on WIEZ has been suspended. Products and store are temporarily hidden.',
   },
   'payout.processed': {
-    subject: '💸 Your WEAZ payout has been processed',
-    body: 'Your payout on WEAZ has been processed and funds are on their way.',
+    subject: '💸 Your WIEZ payout has been processed',
+    body: 'Your payout on WIEZ has been processed and funds are on their way.',
   },
   'dispute.opened': {
-    subject: 'WEAZ dispute update: a dispute has been opened',
-    body: 'A dispute has been opened regarding your transaction on WEAZ.',
+    subject: 'WIEZ dispute update: a dispute has been opened',
+    body: 'A dispute has been opened regarding your transaction on WIEZ.',
   },
   'dispute.resolved': {
-    subject: '✅ Your WEAZ dispute has been resolved',
+    subject: '✅ Your WIEZ dispute has been resolved',
     body: 'A dispute you were involved in has been resolved by our team.',
   },
   'password.reset.required': {
-    subject: 'WEAZ security alert: password reset required',
+    subject: 'WIEZ security alert: password reset required',
     body: 'An administrator has required you to reset your password on your next login.',
   },
 };
@@ -82,7 +82,7 @@ export class AdminNotificationsService {
     req: Request,
   ) {
     const template = NOTIFICATION_TEMPLATES[dto.messageTemplate];
-    const subject = template?.subject ?? `WEAZ update: ${dto.messageTemplate}`;
+    const subject = template?.subject ?? `WIEZ update: ${dto.messageTemplate}`;
     const body = dto.customMessage
       ? `${template?.body ?? ''}\n\nAdmin note: ${dto.customMessage}`
       : (template?.body ?? '');

@@ -456,7 +456,7 @@ describe('PaymentService', () => {
         service['resolveCallbackBaseUrl'](),
       ),
     ).rejects.toThrow(
-      'Paystack did not return an inline access code. WEAZ only supports in-app secure checkout and will not route buyers out of the product.',
+      'Paystack did not return an inline access code. WIEZ only supports in-app secure checkout and will not route buyers out of the product.',
     );
   });
 

@@ -2718,7 +2718,7 @@ export class PaymentService implements OnModuleInit {
       String(payload.data.access_code || '').trim() || undefined;
     if (!providerAccessCode) {
       throw new BadRequestException(
-        'Paystack did not return an inline access code. WEAZ only supports in-app secure checkout and will not route buyers out of the product.',
+        'Paystack did not return an inline access code. WIEZ only supports in-app secure checkout and will not route buyers out of the product.',
       );
     }
 
@@ -2740,16 +2740,16 @@ export class PaymentService implements OnModuleInit {
             : 'Open secure card checkout',
         description:
           channel === 'BANK_TRANSFER'
-            ? "Paystack will show the transfer account details inside WEAZ's secure checkout window."
-            : "Card details and any issuer verification steps stay inside WEAZ's secure checkout window.",
+            ? "Paystack will show the transfer account details inside WIEZ's secure checkout window."
+            : "Card details and any issuer verification steps stay inside WIEZ's secure checkout window.",
         ctaLabel:
           channel === 'BANK_TRANSFER'
             ? 'Open transfer instructions'
             : 'Open secure checkout',
         instructions: [
           `Use ${paymentData.email} as the payer email if prompted by Paystack.`,
-          'Complete the authorization inside the secure payment window that opens over WEAZ.',
-          'WEAZ verifies the transaction by reference before the order is treated as paid.',
+          'Complete the authorization inside the secure payment window that opens over WIEZ.',
+          'WIEZ verifies the transaction by reference before the order is treated as paid.',
           'The order is not treated as paid until provider verification confirms success.',
         ],
       },
@@ -2800,7 +2800,7 @@ export class PaymentService implements OnModuleInit {
     const buyerId = String(context?.buyerId ?? '').trim();
     if (!buyerId) {
       throw new BadRequestException(
-        'A buyer context is required before WEAZ can charge a saved Paystack card.',
+        'A buyer context is required before WIEZ can charge a saved Paystack card.',
       );
     }
 
@@ -2888,11 +2888,11 @@ export class PaymentService implements OnModuleInit {
           type: 'INLINE_POPUP',
           title: 'Complete secure card verification',
           description:
-            'WEAZ validated the card details. Complete the remaining issuer verification in the secure payment window.',
+            'WIEZ validated the card details. Complete the remaining issuer verification in the secure payment window.',
           ctaLabel: 'Open secure verification',
           instructions: [
             `Use ${paymentData.email} as the payer email if prompted by Paystack.`,
-            'Complete the card challenge in the secure payment window and WEAZ will resume automatically.',
+            'Complete the card challenge in the secure payment window and WIEZ will resume automatically.',
             'The order is not treated as paid until provider verification confirms success.',
           ],
         },
@@ -2926,9 +2926,9 @@ export class PaymentService implements OnModuleInit {
               type: 'PENDING_CONFIRMATION',
               title: 'Confirming payment',
               description:
-                'WEAZ is waiting for Paystack to confirm the card charge.',
+                'WIEZ is waiting for Paystack to confirm the card charge.',
               instructions: [
-                'Keep this window open while WEAZ verifies the payment reference.',
+                'Keep this window open while WIEZ verifies the payment reference.',
               ],
             },
       responseSnapshot: {
@@ -2972,7 +2972,7 @@ export class PaymentService implements OnModuleInit {
           type: 'REDIRECT',
           title: 'Continue to Flutterwave checkout',
           description:
-            'The hosted checkout will simulate card authorization and then return to WEAZ.',
+            'The hosted checkout will simulate card authorization and then return to WIEZ.',
           ctaLabel: 'Continue to Flutterwave',
           instructions: [
             `Proceed with ${paymentData.email} as the payer email.`,
@@ -5432,7 +5432,7 @@ export class PaymentService implements OnModuleInit {
       if (this.hasRawPaystackCardDetails(paymentData)) {
         if (!this.isPaystackCustomCardEntryEnabled()) {
           throw new BadRequestException(
-            'Do not send raw card details to WEAZ. Enter card number, CVV, PIN, and OTP on the hosted secure checkout screen.',
+            'Do not send raw card details to WIEZ. Enter card number, CVV, PIN, and OTP on the hosted secure checkout screen.',
           );
         }
 

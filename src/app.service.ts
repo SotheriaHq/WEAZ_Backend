@@ -9,7 +9,7 @@ export class AppService {
   getHealth() {
     return {
       status: 'ok',
-      service: 'weaz-backend',
+      service: 'wiez-backend',
       timestamp: new Date().toISOString(),
     };
   }

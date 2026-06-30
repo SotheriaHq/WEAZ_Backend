@@ -108,8 +108,8 @@ const DEFAULT_REJECTION_REASONS = [
 
 const DEFAULT_LETTER_TEMPLATE = {
   version: 1,
-  title: 'WEAZ Seller Verification Agreement',
-  body: `LETTER OF CONFIRMATION\n\nI confirm that the information and documents submitted for store verification are accurate and belong to me or to the business I am authorized to represent. I understand that WEAZ may reject, suspend, or revoke verification if the submitted information is false, misleading, incomplete, or becomes stale. I consent to the processing of the submitted verification materials for trust, safety, fraud review, legal compliance, and audit purposes.`,
+  title: 'WIEZ Seller Verification Agreement',
+  body: `LETTER OF CONFIRMATION\n\nI confirm that the information and documents submitted for store verification are accurate and belong to me or to the business I am authorized to represent. I understand that WIEZ may reject, suspend, or revoke verification if the submitted information is false, misleading, incomplete, or becomes stale. I consent to the processing of the submitted verification materials for trust, safety, fraud review, legal compliance, and audit purposes.`,
 };
 
 const LEGACY_VERIFICATION_DRAFT_SECRET = 'threadly-verification-draft-secret';
