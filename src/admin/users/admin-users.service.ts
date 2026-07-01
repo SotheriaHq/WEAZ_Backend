@@ -39,6 +39,7 @@ export class AdminUsersService {
   private readonly defaultSeededDeletableEmails = new Set<string>([
     'brand@example.com',
     'adminoversee@test.com',
+    'adminoversee@wiez.com',
   ]);
 
   constructor(

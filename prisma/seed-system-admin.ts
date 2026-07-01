@@ -2,17 +2,40 @@ import type { PrismaClient } from '@prisma/client';
 import { randomUUID } from 'crypto';
 import * as argon2 from 'argon2';
 
-export const DEFAULT_SYSTEM_ADMIN_EMAIL = 'adminoversee@test.com';
+// Only the `test` environment uses the @test.com system admin; every other
+// environment (local, sit, uat, staging, production, ...) defaults to @wiez.com.
+// An explicit SYSTEM_ADMIN_EMAIL env var always overrides these defaults.
+export const DEFAULT_SYSTEM_ADMIN_EMAIL_TEST = 'adminoversee@test.com';
+export const DEFAULT_SYSTEM_ADMIN_EMAIL_NON_TEST = 'adminoversee@wiez.com';
+// Backwards-compatible alias for existing imports.
+export const DEFAULT_SYSTEM_ADMIN_EMAIL = DEFAULT_SYSTEM_ADMIN_EMAIL_TEST;
 export const SYSTEM_ADMIN_EMAIL_ENV_KEY = 'SYSTEM_ADMIN_EMAIL';
 export const SYSTEM_ADMIN_PASSWORD = 'Password@123';
 export const SYSTEM_ADMIN_USERNAME = 'systemadmin';
 
+function resolveEnvironmentMarker(env: NodeJS.ProcessEnv = process.env): string {
+  return String(env.APP_ENV ?? env.DEPLOY_ENV ?? env.NODE_ENV ?? '')
+    .trim()
+    .toLowerCase();
+}
+
+/**
+ * Default system admin email for the current environment.
+ * `test` → @test.com; every other environment → @wiez.com.
+ */
+export function resolveDefaultSystemAdminEmail(
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  return resolveEnvironmentMarker(env) === 'test'
+    ? DEFAULT_SYSTEM_ADMIN_EMAIL_TEST
+    : DEFAULT_SYSTEM_ADMIN_EMAIL_NON_TEST;
+}
+
 export function resolveSystemAdminEmail(env: NodeJS.ProcessEnv = process.env) {
-  return (
-    String(env[SYSTEM_ADMIN_EMAIL_ENV_KEY] ?? DEFAULT_SYSTEM_ADMIN_EMAIL)
-      .trim()
-      .toLowerCase() || DEFAULT_SYSTEM_ADMIN_EMAIL
-  );
+  const configured = String(env[SYSTEM_ADMIN_EMAIL_ENV_KEY] ?? '')
+    .trim()
+    .toLowerCase();
+  return configured || resolveDefaultSystemAdminEmail(env);
 }
 
 export async function ensureSystemAdmin(prisma: PrismaClient) {
