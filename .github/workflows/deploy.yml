@@ -1,0 +1,58 @@
+name: Backend Deploy (EC2)
+
+# CD only. The existing "Phase 8 Backend Quality Gate" workflow provides CI.
+# On push to a deploy branch this builds once (fail fast), then SSHes into EC2 and
+# runs scripts/deploy.sh (pull -> migrate -> seed tags+measurement points -> build
+# -> pm2 restart -> health check).
+#
+# Required repo secrets (Settings > Secrets and variables > Actions):
+#   EC2_HOST     = 54.147.103.16
+#   EC2_USER     = ec2-user
+#   EC2_SSH_KEY  = full contents of WIEZ_KEY.pem (private key, incl. BEGIN/END lines)
+
+on:
+  push:
+    branches: [main, SIT]
+
+concurrency:
+  group: backend-deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build-check:
+    name: Build (fail fast before deploy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.12.0
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      - run: npx prisma generate
+      - run: npm run build
+
+  deploy:
+    name: Deploy to EC2 (PM2)
+    needs: build-check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          command_timeout: 20m
+          script_stop: true
+          script: |
+            set -e
+            cd ~/WEAZ_Backend
+            git fetch --all --prune
+            git checkout "${{ github.ref_name }}"
+            git reset --hard "origin/${{ github.ref_name }}"
+            DEPLOY_BRANCH="${{ github.ref_name }}" bash scripts/deploy.sh
