@@ -45,7 +45,11 @@ TS_NODE_TRANSPILE_ONLY=1 npx ts-node prisma/seed_admin.ts
 echo "==> [7/8] Building"
 npm run build
 
-echo "==> [8/8] Restarting PM2 (API + worker) and saving process list"
+echo "==> [8/8] Ensuring worker exists, restarting PM2, saving process list"
+# The background worker (dist/worker.js) processes notifications/email retries,
+# image-variant generation, search indexing, and payment webhooks. It is a
+# SEPARATE process from the API — ensure it is registered under PM2.
+pm2 describe weaz-worker >/dev/null 2>&1 || pm2 start npm --name weaz-worker -- run start:worker
 pm2 restart all --update-env
 pm2 save
 
