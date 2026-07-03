@@ -140,7 +140,25 @@ export const resolveEmailConfig = (
     );
   }
 
-  const mode = normalizeMode(config.get<string>('EMAIL_MODE'), warnings);
+  let mode = normalizeMode(config.get<string>('EMAIL_MODE'), warnings);
+  const appEnv = cleanString(config.get<string>('APP_ENV'))?.toLowerCase();
+  const nodeEnv = cleanString(config.get<string>('NODE_ENV'))?.toLowerCase();
+  const isLocalDev =
+    appEnv === 'development' ||
+    appEnv === 'local' ||
+    nodeEnv === 'development' ||
+    nodeEnv === 'test';
+  const forceLive = parseBooleanEnvFlag(
+    config.get<string>('EMAIL_FORCE_LIVE'),
+    false,
+  );
+
+  if (isLocalDev && mode === 'live' && !forceLive) {
+    warnings.push(
+      'EMAIL_MODE=live is not used in local development. Falling back to log_only. Set EMAIL_FORCE_LIVE=true to send through Resend locally.',
+    );
+    mode = 'log_only';
+  }
   const appName =
     cleanString(config.get<string>('APP_NAME')) ?? DEFAULT_APP_NAME;
   const from = cleanString(config.get<string>('RESEND_FROM'));

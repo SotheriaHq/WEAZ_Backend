@@ -170,8 +170,9 @@ export class EmailService {
     const normalizedEmail = to.trim().toLowerCase();
 
     if (this.emailConfig.mode === 'log_only') {
+      const actionLink = this.extractFirstActionLink(html);
       this.logger.log(
-        `[EMAIL-LOG-ONLY] to=${maskEmailForLog(normalizedEmail)} subject="${this.truncateForLog(subject)}"`,
+        `[EMAIL-LOG-ONLY] to=${maskEmailForLog(normalizedEmail)} subject="${this.truncateForLog(subject)}"${actionLink ? ` action_link=${actionLink}` : ''}`,
       );
       this.logger.debug('[EMAIL-LOG-ONLY] Body omitted from logs');
       return {
@@ -523,6 +524,12 @@ export class EmailService {
         '$1=[redacted]',
       )
       .replace(/\b[A-Za-z0-9_-]{32,}\b/g, '[token-redacted]');
+  }
+
+  private extractFirstActionLink(html: string): string | null {
+    const match = String(html ?? '').match(/href=["']([^"']+)["']/i);
+    const candidate = match?.[1]?.trim();
+    return candidate && /^https?:\/\//i.test(candidate) ? candidate : null;
   }
 
   private truncateForLog(value: string, maxLength = 160): string {
