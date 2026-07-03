@@ -29,6 +29,14 @@ import {
 } from './dto/bulk-product-actions.dto';
 import { v4 as uuidv4 } from 'uuid';
 import {
+  assertStorePolicyConstraints,
+  normalizeCustomOrderSettings,
+  sanitizeCustomOrderLeadTime,
+  sanitizeResponseTimeSla,
+  sanitizeReturnWindow,
+  sanitizeShippingRegions,
+} from './store-policy-constraints';
+import {
   createCipheriv,
   createDecipheriv,
   createHash,
@@ -7870,6 +7878,13 @@ export class StoreService {
       orderProcessingMode: 'auto-confirm',
     };
 
+    const normalizedCustomOrderSettings = normalizeCustomOrderSettings(
+      nextRules.customOrderSettings as Record<string, unknown> | undefined,
+    );
+    if (normalizedCustomOrderSettings) {
+      nextRules.customOrderSettings = normalizedCustomOrderSettings;
+    }
+
     return nextRules as Prisma.JsonObject;
   }
 
@@ -9950,6 +9965,19 @@ export class StoreService {
       throw new NotFoundException('Brand not found');
     }
 
+    try {
+      assertStorePolicyConstraints({
+        shippingRegions: dto.shippingRegions,
+        returnWindow: dto.returnWindow,
+        responseTimeSla: dto.responseTimeSla,
+        shippingRules: dto.shippingRules as Record<string, any> | null,
+      });
+    } catch (error) {
+      throw new BadRequestException(
+        error instanceof Error ? error.message : 'Invalid store policy values.',
+      );
+    }
+
     const updateData: Prisma.StorePolicyUpdateInput = {};
     const createData: Prisma.StorePolicyCreateInput = {
       id: uuidv4(),
@@ -9957,8 +9985,9 @@ export class StoreService {
     };
 
     if (dto.shippingRegions !== undefined) {
-      updateData.shippingRegions = { set: dto.shippingRegions };
-      createData.shippingRegions = dto.shippingRegions;
+      const sanitizedRegions = sanitizeShippingRegions(dto.shippingRegions);
+      updateData.shippingRegions = { set: sanitizedRegions };
+      createData.shippingRegions = sanitizedRegions;
     }
     if (dto.processingTime !== undefined) {
       updateData.processingTime = dto.processingTime;
@@ -9977,8 +10006,9 @@ export class StoreService {
       createData.returnsAccepted = dto.returnsAccepted;
     }
     if (dto.returnWindow !== undefined) {
-      updateData.returnWindow = dto.returnWindow;
-      createData.returnWindow = dto.returnWindow;
+      const sanitizedReturnWindow = sanitizeReturnWindow(dto.returnWindow);
+      updateData.returnWindow = sanitizedReturnWindow;
+      createData.returnWindow = sanitizedReturnWindow;
     }
     if (dto.returnConditions !== undefined) {
       updateData.returnConditions = { set: dto.returnConditions };
@@ -9989,8 +10019,9 @@ export class StoreService {
       createData.refundMethod = dto.refundMethod;
     }
     if (dto.responseTimeSla !== undefined) {
-      updateData.responseTimeSla = dto.responseTimeSla;
-      createData.responseTimeSla = dto.responseTimeSla;
+      const sanitizedResponseTimeSla = sanitizeResponseTimeSla(dto.responseTimeSla);
+      updateData.responseTimeSla = sanitizedResponseTimeSla;
+      createData.responseTimeSla = sanitizedResponseTimeSla;
     }
     if (dto.sizeChart !== undefined) {
       updateData.sizeChart = dto.sizeChart;
