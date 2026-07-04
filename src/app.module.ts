@@ -42,6 +42,7 @@ import { MonitoringModule } from './monitoring/monitoring.module';
 import { LegalModule } from './legal/legal.module';
 import { ClockModule } from './common/clock/clock.module';
 import { AdminJobsModule } from './admin/jobs/admin-jobs.module';
+import { SeoModule } from './seo/seo.module';
 
 const isProductionEnvironment =
   String(process.env.NODE_ENV ?? '')
@@ -102,6 +103,7 @@ const isHardProduction =
     WebhooksModule,
     SizingModule,
     MarketModule,
+    SeoModule,
   ],
   controllers: [AppController],
   providers: [AppService, EventsGateway],

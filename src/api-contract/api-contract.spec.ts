@@ -45,9 +45,15 @@ describe('MVP API route contract', () => {
     const contentIntegrityController = readSource(
       'content-integrity/content-integrity.controller.ts',
     );
+    const seoController = readSource('seo/seo.controller.ts');
 
     expect(storeController).toContain("@Get(['orders', 'store/orders'])");
     expect(storeController).toContain("@Get('public/storefronts/:slug')");
+    expect(seoController).toContain("@Controller('public/seo')");
+    expect(seoController).toContain("@Get('resolve')");
+    expect(seoController).toContain("@Get('robots.txt')");
+    expect(seoController).toContain("@Get('sitemap.xml')");
+    expect(seoController).toContain("@Get('bot-html')");
     expect(paymentController).toContain("@Post('initialize-unified')");
     expect(paymentController).toContain("@Post('verify')");
     expect(uploadController).toContain("@Controller('uploads')");
