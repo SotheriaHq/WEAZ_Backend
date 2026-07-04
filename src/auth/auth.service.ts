@@ -904,7 +904,7 @@ export class AuthService {
         throw new ConflictException({
           code: 'GOOGLE_ACCOUNT_TYPE_CONFLICT',
           message:
-            'This email is already registered as a shopper account. Brand account upgrade is coming soon.',
+            "This email already has a personal (shopper) account, so it can't be used to open a brand account. Please sign in with it instead, or use a different email to create your brand. (Switching a shopper account to a brand account is coming soon.)",
         });
       }
     };
@@ -985,7 +985,7 @@ export class AuthService {
           throw new NotFoundException({
             code: 'GOOGLE_NO_ACCOUNT',
             message:
-              'No account found for this Google sign-in. Please sign up to create your account.',
+              "We couldn't find an account for this Google email yet. Let's create one — please continue on the sign-up page.",
           });
         }
 
