@@ -3,6 +3,7 @@ import {
   IsArray,
   IsEmail,
   IsEnum,
+  IsIn,
   IsNotEmpty,
   IsOptional,
   IsString,
@@ -20,6 +21,13 @@ export class GoogleAuthDto {
   @IsString()
   @Transform(({ value }) => trimString(value))
   idToken: string;
+
+  // Which screen initiated this: the login page ('LOGIN') must never create a
+  // new account for an unknown Google user; the signup page ('SIGNUP') may.
+  // Omitted for backward compatibility — inferred from `type` when absent.
+  @IsOptional()
+  @IsIn(['LOGIN', 'SIGNUP'])
+  intent?: 'LOGIN' | 'SIGNUP';
 
   @IsOptional()
   @IsEnum(UserType)

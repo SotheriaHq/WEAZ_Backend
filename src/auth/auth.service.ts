@@ -1,7 +1,10 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   Logger,
+  NotFoundException,
+  NotImplementedException,
   Optional,
   ServiceUnavailableException,
   UnauthorizedException,
@@ -858,6 +861,7 @@ export class AuthService {
   async googleAuth(
     dto: {
       idToken: string;
+      intent?: 'LOGIN' | 'SIGNUP';
       type?: UserType;
       brandFullName?: string;
       legalAcceptances?: LegalAcceptanceInputDto[];
@@ -867,11 +871,43 @@ export class AuthService {
   ) {
     const identity = await this.googleTokenVerifier.verifyIdToken(dto.idToken);
     const requestedType = dto.type ?? UserType.REGULAR;
+    // The login screen must not silently provision a shopper account for an
+    // unknown Google user. When intent is absent (older clients), infer it:
+    // a request carrying an explicit account type came from the signup screen.
+    const intent: 'LOGIN' | 'SIGNUP' =
+      dto.intent ?? (dto.type ? 'SIGNUP' : 'LOGIN');
     const createdAt = new Date();
 
     if (requestedType === UserType.BRAND && !dto.brandFullName?.trim()) {
       throw new BadRequestException('Brand full name is required');
     }
+
+    // Guard for an already-registered account whose type does not match a brand
+    // signup attempt. Upgrading a shopper account to a brand is a V2 concern
+    // (data migration + verification + billing), so it is scaffolded but gated
+    // off behind GOOGLE_BRAND_UPGRADE_ENABLED and fails closed until then.
+    const assertGoogleAccountTypeAllowed = (existing: {
+      type: UserType;
+    }): void => {
+      if (
+        intent === 'SIGNUP' &&
+        requestedType === UserType.BRAND &&
+        existing.type !== UserType.BRAND
+      ) {
+        if (process.env.GOOGLE_BRAND_UPGRADE_ENABLED === 'true') {
+          // TODO(V2): perform an in-place shopper -> brand upgrade here
+          // (create Brand + owner BrandMember, record brand legal acceptances).
+          throw new NotImplementedException(
+            'Brand account upgrade is not yet available.',
+          );
+        }
+        throw new ConflictException({
+          code: 'GOOGLE_ACCOUNT_TYPE_CONFLICT',
+          message:
+            'This email is already registered as a shopper account. Brand account upgrade is coming soon.',
+        });
+      }
+    };
 
     const user = await this.prisma
       .$transaction(async (tx) => {
@@ -896,6 +932,8 @@ export class AuthService {
               'User account is suspended or deactivated',
             );
           }
+
+          assertGoogleAccountTypeAllowed(existingIdentity.user);
 
           if (
             existingIdentity.email !== identity.email ||
@@ -925,6 +963,8 @@ export class AuthService {
             );
           }
 
+          assertGoogleAccountTypeAllowed(existingUser);
+
           await tx.authIdentity.create({
             data: {
               userId: existingUser.id,
@@ -936,6 +976,17 @@ export class AuthService {
           });
 
           return existingUser;
+        }
+
+        // No account exists for this Google identity. The login screen must not
+        // create one silently — send the user to signup to pick an account type
+        // and accept the current legal terms.
+        if (intent === 'LOGIN') {
+          throw new NotFoundException({
+            code: 'GOOGLE_NO_ACCOUNT',
+            message:
+              'No account found for this Google sign-in. Please sign up to create your account.',
+          });
         }
 
         const displayNames = this.resolveGoogleDisplayNames(identity);
