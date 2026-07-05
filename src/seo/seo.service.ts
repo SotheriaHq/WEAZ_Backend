@@ -187,6 +187,8 @@ export class SeoService {
 <title>${title}</title>
 <meta name="description" content="${description}" />
 <link rel="canonical" href="${canonical}" />
+<meta property="og:site_name" content="${this.escapeHtml(getDefaultSiteTitle())}" />
+<meta property="og:locale" content="en_US" />
 <meta property="og:title" content="${ogTitle}" />
 <meta property="og:description" content="${ogDescription}" />
 <meta property="og:url" content="${ogUrl}" />
@@ -382,6 +384,11 @@ ${jsonLd}
         metaTitle: true,
         metaDescription: true,
         thumbnail: true,
+        price: true,
+        salePrice: true,
+        saleStartAt: true,
+        saleEndAt: true,
+        currency: true,
         publicationStatus: true,
         isActive: true,
         archivedAt: true,
@@ -408,19 +415,40 @@ ${jsonLd}
         `Shop ${product.name} on WIEZ.`,
     );
 
+    // Active sale price only counts while inside the sale window.
+    const now = new Date();
+    const saleActive =
+      product.salePrice !== null &&
+      (!product.saleStartAt || product.saleStartAt <= now) &&
+      (!product.saleEndAt || product.saleEndAt >= now);
+    const effectivePrice = saleActive ? product.salePrice : product.price;
+    const imageUrl = product.thumbnail || getDefaultSeoImageUrl();
+
     return this.buildMeta({
       canonicalPath: buildProductPath(product),
       title,
       description,
       robots,
-      imageUrl: product.thumbnail || getDefaultSeoImageUrl(),
+      imageUrl,
       ogType: 'product',
       jsonLd: {
         '@context': 'https://schema.org',
         '@type': 'Product',
         name: product.name,
         description,
+        image: imageUrl,
         url: buildAbsoluteWebPath(buildProductPath(product)),
+        ...(product.brand?.name
+          ? { brand: { '@type': 'Brand', name: product.brand.name } }
+          : {}),
+        // Offers block is required for Google product rich results.
+        offers: {
+          '@type': 'Offer',
+          price: Number(effectivePrice),
+          priceCurrency: product.currency || 'NGN',
+          availability: 'https://schema.org/InStock',
+          url: buildAbsoluteWebPath(buildProductPath(product)),
+        },
       },
     });
   }
