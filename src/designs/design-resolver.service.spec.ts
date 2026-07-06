@@ -2,6 +2,9 @@ import { CollectionVisibility } from '@prisma/client';
 
 import { DesignResolverService } from './design-resolver.service';
 
+const DESIGN_ID = '11111111-1111-4111-8111-111111111111';
+const LEGACY_COLLECTION_ID = '33333333-3333-4333-8333-333333333333';
+
 describe('DesignResolverService', () => {
   let prisma: any;
   let service: DesignResolverService;
@@ -35,11 +38,11 @@ describe('DesignResolverService', () => {
 
   it('returns explicit Design records before legacy fallback is needed', async () => {
     prisma.design.findFirst.mockResolvedValueOnce({
-      id: 'design-1',
+      id: DESIGN_ID,
       ownerId: 'owner-1',
       status: 'PUBLISHED',
       visibility: CollectionVisibility.PUBLIC,
-      legacyCollectionId: 'legacy-1',
+      legacyCollectionId: LEGACY_COLLECTION_ID,
       title: 'Explicit design',
       owner: {
         id: 'owner-1',
@@ -51,12 +54,12 @@ describe('DesignResolverService', () => {
       entityFilters: [],
     });
 
-    const result = await service.resolveExplicitDesign('design-1');
+    const result = await service.resolveExplicitDesign(DESIGN_ID);
 
     expect(result).toEqual(
       expect.objectContaining({
-        designId: 'design-1',
-        legacyCollectionId: 'legacy-1',
+        designId: DESIGN_ID,
+        legacyCollectionId: LEGACY_COLLECTION_ID,
         entityType: 'DESIGN',
       }),
     );
@@ -64,25 +67,25 @@ describe('DesignResolverService', () => {
 
   it('hides private explicit Design records without owner or legacy access', async () => {
     prisma.design.findFirst.mockResolvedValueOnce({
-      id: 'design-1',
+      id: DESIGN_ID,
       ownerId: 'owner-1',
       status: 'PUBLISHED',
       visibility: CollectionVisibility.PRIVATE,
-      legacyCollectionId: 'legacy-1',
+      legacyCollectionId: LEGACY_COLLECTION_ID,
     });
     prisma.collectionAccess.findUnique.mockResolvedValueOnce(null);
 
     await expect(
-      service.resolveExplicitDesign('design-1', 'viewer-1'),
+      service.resolveExplicitDesign(DESIGN_ID, 'viewer-1'),
     ).resolves.toBeNull();
   });
 
   it('syncs a legacy collection into an explicit Design record', async () => {
     prisma.brand.findUnique.mockResolvedValueOnce({ id: 'brand-1' });
-    prisma.design.upsert.mockResolvedValueOnce({ id: 'design-1' });
+    prisma.design.upsert.mockResolvedValueOnce({ id: DESIGN_ID });
 
     const result = await service.syncFromLegacyCollection({
-      id: 'legacy-1',
+      id: LEGACY_COLLECTION_ID,
       ownerId: 'owner-1',
       title: 'Legacy design',
       status: 'DRAFT',
@@ -93,11 +96,18 @@ describe('DesignResolverService', () => {
       draftSessions: [],
     });
 
-    expect(result).toEqual({ id: 'design-1' });
+    expect(result).toEqual({ id: DESIGN_ID });
     expect(prisma.design.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { legacyCollectionId: 'legacy-1' },
+        where: { legacyCollectionId: LEGACY_COLLECTION_ID },
       }),
     );
+  });
+
+  it('rejects local publish task ids before querying UUID columns', async () => {
+    await expect(
+      service.resolveExplicitDesign('publish_1783327468928_r1mee6'),
+    ).rejects.toThrow('Invalid design id');
+    expect(prisma.design.findFirst).not.toHaveBeenCalled();
   });
 });

@@ -1,9 +1,11 @@
 import {
+  BadRequestException,
   Injectable,
   InternalServerErrorException,
   Logger,
 } from '@nestjs/common';
 import { CustomOrderSourceType } from '@prisma/client';
+import { validate as isUuid } from 'uuid';
 
 import { CollectionsService } from 'src/collections/collections.service';
 import { CustomOrderConfigurationsService } from 'src/custom-order-configurations/custom-order-configurations.service';
@@ -34,6 +36,12 @@ export class DesignsService {
       throw new InternalServerErrorException(
         'DESIGN_DOMAIN_WRITE_MODE=design is guarded until design backfill verification passes.',
       );
+    }
+  }
+
+  private assertPersistedDesignId(designId: string) {
+    if (!isUuid(designId)) {
+      throw new BadRequestException('Invalid design id');
     }
   }
 
@@ -69,6 +77,7 @@ export class DesignsService {
     userId: string,
     dto: FinalizeDesignUploadDto,
   ) {
+    this.assertPersistedDesignId(designId);
     this.assertDesignOnlyWriteModeNotEnabled();
     const result = await this.collectionsService.finalizeCollection(
       designId,
@@ -86,6 +95,7 @@ export class DesignsService {
   }
 
   async getDesignDetail(designId: string, requesterId?: string) {
+    this.assertPersistedDesignId(designId);
     const explicit = await this.designResolver.resolveExplicitDesign(
       designId,
       requesterId,
@@ -101,6 +111,7 @@ export class DesignsService {
   }
 
   async updateDesign(designId: string, userId: string, dto: UpdateDesignDto) {
+    this.assertPersistedDesignId(designId);
     this.assertDesignOnlyWriteModeNotEnabled();
     const result = await this.collectionsService.updateCollection(
       designId,
@@ -118,10 +129,12 @@ export class DesignsService {
   }
 
   async deleteDesign(designId: string, userId: string) {
+    this.assertPersistedDesignId(designId);
     return this.collectionsService.deleteCollection(designId, userId, 'design');
   }
 
   async archiveDesign(designId: string, userId: string) {
+    this.assertPersistedDesignId(designId);
     return this.collectionsService.archiveCollection(
       designId,
       userId,
@@ -130,6 +143,7 @@ export class DesignsService {
   }
 
   async unarchiveDesign(designId: string, userId: string) {
+    this.assertPersistedDesignId(designId);
     return this.collectionsService.unarchiveCollection(
       designId,
       userId,
@@ -138,10 +152,12 @@ export class DesignsService {
   }
 
   async restoreDesign(designId: string, userId: string) {
+    this.assertPersistedDesignId(designId);
     return this.collectionsService.restoreCollection(designId, userId);
   }
 
   async permanentlyDeleteDesign(designId: string, userId: string) {
+    this.assertPersistedDesignId(designId);
     return this.collectionsService.permanentlyDeleteCollection(
       designId,
       userId,
@@ -150,6 +166,7 @@ export class DesignsService {
   }
 
   async duplicateDesign(designId: string, userId: string) {
+    this.assertPersistedDesignId(designId);
     const result = await this.collectionsService.duplicateCollection(
       designId,
       userId,
@@ -163,6 +180,7 @@ export class DesignsService {
     userId: string,
     body: { deviceName?: string; forceNew?: boolean; existingToken?: string },
   ) {
+    this.assertPersistedDesignId(designId);
     const result = await this.collectionsService.checkDraftConflict(
       designId,
       userId,
@@ -178,6 +196,7 @@ export class DesignsService {
     userId: string,
     dto: InitializeDesignMediaUploadDto,
   ) {
+    this.assertPersistedDesignId(designId);
     this.assertDesignOnlyWriteModeNotEnabled();
     const result =
       await this.collectionsService.initializeCollectionMediaUploads(
@@ -194,6 +213,7 @@ export class DesignsService {
     userId: string,
     items: Array<{ mediaId: string; orderIndex: number }>,
   ) {
+    this.assertPersistedDesignId(designId);
     return this.collectionsService.reorderCollectionMedia(
       designId,
       userId,
@@ -203,6 +223,7 @@ export class DesignsService {
   }
 
   async deleteDesignMedia(designId: string, mediaId: string, userId: string) {
+    this.assertPersistedDesignId(designId);
     return this.collectionsService.deleteCollectionMedia(
       designId,
       mediaId,
@@ -211,6 +232,7 @@ export class DesignsService {
   }
 
   async submitDesignForReview(designId: string, userId: string) {
+    this.assertPersistedDesignId(designId);
     this.assertDesignOnlyWriteModeNotEnabled();
     return this.collectionsService.submitDesignForReview(designId, userId);
   }
@@ -249,6 +271,7 @@ export class DesignsService {
       preferredSize?: string;
     },
   ) {
+    this.assertPersistedDesignId(designId);
     return this.collectionsService.submitCustomFitInquiry(
       designId,
       userId,
@@ -260,6 +283,7 @@ export class DesignsService {
     designId: string,
     requesterId?: string,
   ) {
+    this.assertPersistedDesignId(designId);
     try {
       return await this.customOrderConfigurationsService.getActiveConfigurationForSource(
         CustomOrderSourceType.DESIGN,

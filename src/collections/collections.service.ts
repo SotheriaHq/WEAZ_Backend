@@ -6665,6 +6665,9 @@ export class CollectionsService {
     requesterId: string,
     scope?: CollectionScope,
   ) {
+    if (!isUuid(collectionId)) {
+      throw new BadRequestException('Invalid collection id');
+    }
     const resolvedScope = this.normalizeCollectionScope(scope);
     const expectedDomain = this.scopeToDomain(resolvedScope);
     if (expectedDomain === 'STORE') {

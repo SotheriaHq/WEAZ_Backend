@@ -3,6 +3,10 @@ import { CustomOrderSourceType } from '@prisma/client';
 import { LegacyCollectionDesignAdapter } from './adapters/legacy-collection-design.adapter';
 import { DesignsService } from './designs.service';
 
+const DESIGN_ID = '11111111-1111-4111-8111-111111111111';
+const EXPLICIT_DESIGN_ID = '22222222-2222-4222-8222-222222222222';
+const LEGACY_COLLECTION_ID = '33333333-3333-4333-8333-333333333333';
+
 describe('DesignsService', () => {
   let collectionsService: any;
   let customOrderConfigurationsService: any;
@@ -14,30 +18,30 @@ describe('DesignsService', () => {
     collectionsService = {
       assertDesignCreationAllowed: jest.fn().mockResolvedValue(undefined),
       initializeCollection: jest.fn().mockResolvedValue({
-        collectionId: 'design-1',
+        collectionId: DESIGN_ID,
         uploads: [],
       }),
       finalizeCollection: jest.fn().mockResolvedValue({
-        id: 'design-1',
+        id: DESIGN_ID,
         fitPreference: 'REGULAR',
         targetAgeGroup: 'ADULT',
       }),
       getCollection: jest.fn().mockResolvedValue({
-        id: 'design-1',
+        id: DESIGN_ID,
         title: 'Design detail',
       }),
       updateCollection: jest.fn().mockResolvedValue({
-        id: 'design-1',
+        id: DESIGN_ID,
         categoryTypeId: 'sub-1',
       }),
       deleteCollection: jest.fn().mockResolvedValue({ success: true }),
       checkDraftConflict: jest.fn().mockResolvedValue({
-        collectionId: 'design-1',
+        collectionId: DESIGN_ID,
         sessionToken: 'session-1',
         hasConflict: false,
       }),
       initializeCollectionMediaUploads: jest.fn().mockResolvedValue({
-        collectionId: 'design-1',
+        collectionId: DESIGN_ID,
         uploads: [],
       }),
       reorderCollectionMedia: jest.fn().mockResolvedValue({ success: true }),
@@ -61,7 +65,7 @@ describe('DesignsService', () => {
       resolveLegacyCollectionId: jest.fn().mockResolvedValue(null),
       trySyncFromLegacyCollection: jest
         .fn()
-        .mockResolvedValue({ id: 'design-1' }),
+        .mockResolvedValue({ id: DESIGN_ID }),
     };
     service = new DesignsService(
       collectionsService,
@@ -91,17 +95,17 @@ describe('DesignsService', () => {
         isAvailableInStore: false,
       }),
     );
-    expect(result.designId).toBe('design-1');
+    expect(result.designId).toBe(DESIGN_ID);
   });
 
   it('finalizeDesignUpload preserves design scope and media validation in CollectionsService', async () => {
-    const result = await service.finalizeDesignUpload('design-1', 'user-1', {
+    const result = await service.finalizeDesignUpload(DESIGN_ID, 'user-1', {
       action: 'publish',
       designMetadata: { title: 'Publish me' },
     } as any);
 
     expect(collectionsService.finalizeCollection).toHaveBeenCalledWith(
-      'design-1',
+      DESIGN_ID,
       'user-1',
       expect.objectContaining({
         action: 'publish',
@@ -109,19 +113,19 @@ describe('DesignsService', () => {
       }),
       'design',
     );
-    expect(result.designId).toBe('design-1');
+    expect(result.designId).toBe(DESIGN_ID);
   });
 
   it('dual write mode syncs explicit Design after the legacy finalize succeeds', async () => {
     process.env.DESIGN_DOMAIN_WRITE_MODE = 'dual';
 
-    await service.finalizeDesignUpload('design-1', 'user-1', {
+    await service.finalizeDesignUpload(DESIGN_ID, 'user-1', {
       action: 'draft',
       designMetadata: { title: 'Sync me' },
     } as any);
 
     expect(designResolver.trySyncFromLegacyCollection).toHaveBeenCalledWith(
-      'design-1',
+      DESIGN_ID,
     );
   });
 
@@ -134,46 +138,54 @@ describe('DesignsService', () => {
   });
 
   it('getDesignDetail returns design-language response', async () => {
-    const result = await service.getDesignDetail('design-1', 'viewer-1');
+    const result = await service.getDesignDetail(DESIGN_ID, 'viewer-1');
 
     expect(designResolver.resolveExplicitDesign).toHaveBeenCalledWith(
-      'design-1',
+      DESIGN_ID,
       'viewer-1',
     );
     expect(collectionsService.getCollection).toHaveBeenCalledWith(
-      'design-1',
+      DESIGN_ID,
       'viewer-1',
       'design',
     );
     expect(result).toEqual(
       expect.objectContaining({
-        id: 'design-1',
-        designId: 'design-1',
-        legacyCollectionId: 'design-1',
+        id: DESIGN_ID,
+        designId: DESIGN_ID,
+        legacyCollectionId: DESIGN_ID,
       }),
     );
   });
 
+  it('rejects local publish task ids before delegating to Prisma-backed services', async () => {
+    await expect(
+      service.getDesignDetail('publish_1783327468928_r1mee6', 'viewer-1'),
+    ).rejects.toThrow('Invalid design id');
+    expect(designResolver.resolveExplicitDesign).not.toHaveBeenCalled();
+    expect(collectionsService.getCollection).not.toHaveBeenCalled();
+  });
+
   it('getDesignDetail prefers an explicit Design record when available', async () => {
     designResolver.resolveExplicitDesign.mockResolvedValueOnce({
-      id: 'explicit-1',
-      designId: 'explicit-1',
-      legacyCollectionId: 'legacy-1',
+      id: EXPLICIT_DESIGN_ID,
+      designId: EXPLICIT_DESIGN_ID,
+      legacyCollectionId: LEGACY_COLLECTION_ID,
     });
 
-    const result = await service.getDesignDetail('explicit-1', 'viewer-1');
+    const result = await service.getDesignDetail(EXPLICIT_DESIGN_ID, 'viewer-1');
 
-    expect(result.designId).toBe('explicit-1');
+    expect(result.designId).toBe(EXPLICIT_DESIGN_ID);
     expect(collectionsService.getCollection).not.toHaveBeenCalled();
   });
 
   it('updateDesign accepts subCategoryId and delegates as categoryTypeId', async () => {
-    await service.updateDesign('design-1', 'user-1', {
+    await service.updateDesign(DESIGN_ID, 'user-1', {
       subCategoryId: 'sub-1',
     } as any);
 
     expect(collectionsService.updateCollection).toHaveBeenCalledWith(
-      'design-1',
+      DESIGN_ID,
       'user-1',
       expect.objectContaining({ categoryTypeId: 'sub-1' }),
       'design',
@@ -181,13 +193,13 @@ describe('DesignsService', () => {
   });
 
   it('getDesignCustomOrderConfiguration uses DESIGN source type', async () => {
-    await service.getDesignCustomOrderConfiguration('design-1', 'viewer-1');
+    await service.getDesignCustomOrderConfiguration(DESIGN_ID, 'viewer-1');
 
     expect(
       customOrderConfigurationsService.getActiveConfigurationForSource,
     ).toHaveBeenCalledWith(
       CustomOrderSourceType.DESIGN,
-      'design-1',
+      DESIGN_ID,
       'viewer-1',
     );
   });
@@ -197,15 +209,17 @@ describe('DesignsService', () => {
     customOrderConfigurationsService.getActiveConfigurationForSource
       .mockRejectedValueOnce(firstError)
       .mockResolvedValueOnce({ data: { id: 'config-1' } });
-    designResolver.resolveLegacyCollectionId.mockResolvedValueOnce('legacy-1');
+    designResolver.resolveLegacyCollectionId.mockResolvedValueOnce(
+      LEGACY_COLLECTION_ID,
+    );
 
-    await service.getDesignCustomOrderConfiguration('design-1', 'viewer-1');
+    await service.getDesignCustomOrderConfiguration(DESIGN_ID, 'viewer-1');
 
     expect(
       customOrderConfigurationsService.getActiveConfigurationForSource,
     ).toHaveBeenLastCalledWith(
       CustomOrderSourceType.DESIGN,
-      'legacy-1',
+      LEGACY_COLLECTION_ID,
       'viewer-1',
     );
   });

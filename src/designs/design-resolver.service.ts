@@ -1,6 +1,6 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { Prisma, CollectionVisibility } from '@prisma/client';
-import { v4 as uuidv4 } from 'uuid';
+import { v4 as uuidv4, validate as isUuid } from 'uuid';
 
 import { PrismaService } from 'src/prisma/prisma.service';
 import {
@@ -79,6 +79,9 @@ export class DesignResolverService {
   }
 
   async resolveExplicitDesign(designId: string, requesterId?: string) {
+    if (!isUuid(designId)) {
+      throw new BadRequestException('Invalid design id');
+    }
     const design = await this.prisma.design.findFirst({
       where: {
         OR: [{ id: designId }, { legacyCollectionId: designId }],
@@ -95,6 +98,9 @@ export class DesignResolverService {
   }
 
   async resolveLegacyCollectionId(designId: string): Promise<string | null> {
+    if (!isUuid(designId)) {
+      throw new BadRequestException('Invalid design id');
+    }
     const design = await this.prisma.design.findFirst({
       where: { OR: [{ id: designId }, { legacyCollectionId: designId }] },
       select: { legacyCollectionId: true },

@@ -221,7 +221,7 @@ ${jsonLd}
       this.prisma.user.findMany({
         where: {
           type: UserType.BRAND,
-          username: { not: null },
+          username: { not: '' },
           brand: { is: { isStoreOpen: true } },
         },
         select: { username: true, updatedAt: true },

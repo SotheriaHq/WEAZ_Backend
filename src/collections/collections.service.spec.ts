@@ -125,7 +125,11 @@ describe('CollectionsService brand catalog access', () => {
     const service = createService(prisma, brandAccessService);
 
     await expect(
-      service.deleteCollection('collection_1', 'catalog_manager_1', 'store'),
+      service.deleteCollection(
+        '11111111-1111-4111-8111-111111111111',
+        'catalog_manager_1',
+        'store',
+      ),
     ).resolves.toEqual(expect.objectContaining({ success: true }));
     expect(brandAccessService.assertCanManageCatalog).toHaveBeenCalledWith(
       'catalog_manager_1',
