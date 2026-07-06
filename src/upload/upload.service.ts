@@ -81,6 +81,16 @@ export class UploadService {
   private readonly bucketName: string;
   private readonly region: string;
 
+  /**
+   * TTL for signed URLs that back PUBLIC display media (feeds, collections,
+   * profiles). Must outlive every client-side cache of API responses (the web
+   * app persists queries to localStorage for up to 30 minutes and tabs stay
+   * open far longer) or images 403 mid-session. 7 days is the SigV4 maximum.
+   * Private, ownership-checked URLs (documents, verification) keep short TTLs.
+   */
+  private static readonly PUBLIC_DISPLAY_SIGNED_URL_TTL_SECONDS =
+    7 * 24 * 60 * 60;
+
   private summarizeAwsError(error: unknown): {
     name?: string;
     message?: string;
@@ -290,7 +300,7 @@ export class UploadService {
 
   async getTemporarySignedDisplayUrl(
     file: { id?: string | null; s3Key?: string | null },
-    expiresIn = 15 * 60,
+    expiresIn = UploadService.PUBLIC_DISPLAY_SIGNED_URL_TTL_SECONDS,
   ): Promise<string | null> {
     const key = typeof file.s3Key === 'string' ? file.s3Key.trim() : '';
     if (!key) return null;
@@ -822,7 +832,9 @@ export class UploadService {
       Key: file.s3Key,
     });
 
-    return await getSignedUrl(this.s3, command, { expiresIn: 3600 }); // 1 hour
+    return await getSignedUrl(this.s3, command, {
+      expiresIn: UploadService.PUBLIC_DISPLAY_SIGNED_URL_TTL_SECONDS,
+    });
   }
 
   /**
@@ -908,7 +920,9 @@ export class UploadService {
       Key: normalizedKey,
     });
 
-    return await getSignedUrl(this.s3, command, { expiresIn: 3600 }); // 1 hour
+    return await getSignedUrl(this.s3, command, {
+      expiresIn: UploadService.PUBLIC_DISPLAY_SIGNED_URL_TTL_SECONDS,
+    });
   }
 
   /**
@@ -942,8 +956,8 @@ export class UploadService {
             Key: file.s3Key,
           });
           const signedUrl = await getSignedUrl(this.s3, command, {
-            expiresIn: 3600,
-          }); // 1 hour
+            expiresIn: UploadService.PUBLIC_DISPLAY_SIGNED_URL_TTL_SECONDS,
+          });
           return [file.id, signedUrl] as const;
         }),
       );
