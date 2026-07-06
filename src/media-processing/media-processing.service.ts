@@ -1,5 +1,8 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
-import sharp from 'sharp';
+// import-equals form: sharp is a callable CJS export and this tsconfig has no
+// esModuleInterop — default-import syntax breaks under ts-jest while working
+// under the SWC production build. This form is identical under both.
+import sharp = require('sharp');
 import {
   IMAGE_VARIANT_PROFILES,
   IMAGE_MIME_TYPES,
@@ -34,12 +37,70 @@ export interface PreviewJpeg {
   mimeType: 'image/jpeg';
 }
 
+const HEIC_FTYP_BRANDS = new Set([
+  'heic',
+  'heix',
+  'hevc',
+  'hevx',
+  'heim',
+  'heis',
+  'hevm',
+  'hevs',
+  'mif1',
+  'msf1',
+]);
+
 @Injectable()
 export class MediaProcessingService {
   private readonly maxMegapixels = 50;
 
   isSupportedImageMime(mimeType: string): boolean {
     return IMAGE_MIME_TYPES.has(String(mimeType || '').toLowerCase());
+  }
+
+  /** ISO-BMFF container with an HEVC-coded image brand (phone camera HEIC/HEIF). */
+  isHeicLikeBuffer(buffer: Buffer): boolean {
+    if (!buffer || buffer.length < 12) return false;
+    if (buffer.toString('ascii', 4, 8) !== 'ftyp') return false;
+    return HEIC_FTYP_BRANDS.has(buffer.toString('ascii', 8, 12).toLowerCase());
+  }
+
+  /**
+   * Prebuilt sharp/libvips cannot decode HEIC/HEIF (HEVC patent licensing),
+   * but phone cameras produce them constantly — gallery apps often hand them
+   * over renamed to `.jpg`. Convert to JPEG via libheif (WASM) so the rest of
+   * the pipeline never sees an undecodable buffer.
+   */
+  async toDecodableImageBuffer(buffer: Buffer): Promise<Buffer> {
+    try {
+      await sharp(buffer, { animated: true }).metadata();
+      return buffer;
+    } catch (error) {
+      if (!this.isHeicLikeBuffer(buffer)) {
+        throw error;
+      }
+      const converted = await this.convertHeicToJpeg(buffer);
+      return Buffer.from(converted);
+    }
+  }
+
+  private async convertHeicToJpeg(buffer: Buffer): Promise<ArrayBuffer> {
+    type HeicConvert = (options: {
+      buffer: Buffer | Uint8Array;
+      format: 'JPEG' | 'PNG';
+      quality?: number;
+    }) => Promise<ArrayBuffer>;
+
+    // heic-convert is CJS; dynamic import resolves to the function itself
+    // under ts-jest/plain CJS but to `{ default: fn }` under the SWC build's
+    // interop helper. Accept both shapes.
+    const heicModule = (await import('heic-convert')) as unknown;
+    const convert: HeicConvert =
+      typeof heicModule === 'function'
+        ? (heicModule as HeicConvert)
+        : (heicModule as { default: HeicConvert }).default;
+
+    return convert({ buffer, format: 'JPEG', quality: 0.9 });
   }
 
   async probeImage(buffer: Buffer): Promise<ImageProbe> {
@@ -67,9 +128,10 @@ export class MediaProcessingService {
   }
 
   async generateVariants(
-    buffer: Buffer,
+    sourceBuffer: Buffer,
     options: { mimeType: string; textHeavy?: boolean },
   ): Promise<EncodedVariant[]> {
+    const buffer = await this.toDecodableImageBuffer(sourceBuffer);
     const probe = await this.probeImage(buffer);
     if (!probe.width || !probe.height) {
       throw new BadRequestException('Unable to detect image dimensions');
@@ -191,31 +253,61 @@ export class MediaProcessingService {
   }
 
   async generatePreviewJpeg(
-    buffer: Buffer,
-    options: { maxWidth?: number; quality?: number } = {},
+    sourceBuffer: Buffer,
+    options: { maxWidth?: number; quality?: number; maxBytes?: number } = {},
   ): Promise<PreviewJpeg> {
+    const buffer = await this.toDecodableImageBuffer(sourceBuffer);
     const probe = await this.probeImage(buffer);
     if (!probe.width || !probe.height) {
       throw new BadRequestException('Unable to detect image dimensions');
     }
 
-    const maxWidth = Math.max(320, Math.min(options.maxWidth ?? 1200, 1600));
-    const quality = Math.max(60, Math.min(options.quality ?? 82, 90));
-    const resized = await sharp(buffer, { animated: false })
-      .rotate()
-      .resize({
-        width: Math.min(maxWidth, probe.width),
-        withoutEnlargement: true,
-      })
-      .jpeg({ quality, mozjpeg: true })
-      .toBuffer({ resolveWithObject: true });
+    const maxWidth = Math.max(320, Math.min(options.maxWidth ?? 1200, 2048));
+    const maxBytes =
+      typeof options.maxBytes === 'number' && Number.isFinite(options.maxBytes)
+        ? Math.max(100 * 1024, Math.min(options.maxBytes, 8 * 1024 * 1024))
+        : undefined;
+    const minQuality = 55;
+    const minWidth = 720;
+    let quality = Math.max(minQuality, Math.min(options.quality ?? 82, 90));
+    let width = Math.min(maxWidth, probe.width);
 
-    return {
-      width: resized.info.width,
-      height: resized.info.height,
-      buffer: resized.data,
-      mimeType: 'image/jpeg',
-    };
+    // Step quality down first (cheapest fidelity loss), then dimensions, until
+    // the encoded JPEG fits under maxBytes. Mirrors the client-side
+    // imagePreprocess loop for devices that cannot decode the file locally.
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      const resized = await sharp(buffer, { animated: false })
+        .rotate()
+        .resize({ width, withoutEnlargement: true })
+        .jpeg({ quality, mozjpeg: true })
+        .toBuffer({ resolveWithObject: true });
+
+      if (!maxBytes || resized.data.length <= maxBytes || attempt === 7) {
+        return {
+          width: resized.info.width,
+          height: resized.info.height,
+          buffer: resized.data,
+          mimeType: 'image/jpeg',
+        };
+      }
+
+      if (quality > minQuality) {
+        quality = Math.max(minQuality, quality - 8);
+        continue;
+      }
+      const nextWidth = Math.round(width * 0.84);
+      if (nextWidth < minWidth) {
+        return {
+          width: resized.info.width,
+          height: resized.info.height,
+          buffer: resized.data,
+          mimeType: 'image/jpeg',
+        };
+      }
+      width = nextWidth;
+    }
+
+    throw new BadRequestException('Unable to encode image preview');
   }
 
   private pickPrimaryFormat(

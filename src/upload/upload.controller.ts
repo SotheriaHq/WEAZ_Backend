@@ -9,6 +9,7 @@ import {
   Req,
   Param,
   Query,
+  Body,
   BadRequestException,
   Res,
   StreamableFile,
@@ -81,7 +82,9 @@ export class UploadController {
 
   @Post('preview-image')
   @UseGuards(JwtAuthGuard, ThrottlerGuard)
-  @Throttle({ default: { limit: 30, ttl: 60000 } })
+  // Designs allow 20 media; a phone whose camera writes HEIC normalizes every
+  // pick through here, so the limit must comfortably cover one full design.
+  @Throttle({ default: { limit: 60, ttl: 60000 } })
   @ApiOperation({
     summary: 'Transcode a temporary image preview',
     description:
@@ -91,14 +94,25 @@ export class UploadController {
   async previewImage(
     @UploadedFile() file: Express.Multer.File,
     @Res({ passthrough: true }) response: Response,
+    @Body() body?: Record<string, unknown>,
   ) {
     if (!file?.buffer) {
       throw new BadRequestException('No file uploaded');
     }
 
+    // Multipart text fields arrive as strings; the service clamps all values.
+    const parseOption = (value: unknown): number | undefined => {
+      const parsed = Number(value);
+      return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+    };
+
     const preview = await this.mediaProcessingService.generatePreviewJpeg(
       file.buffer,
-      { maxWidth: 1200, quality: 82 },
+      {
+        maxWidth: parseOption(body?.maxWidth) ?? 1200,
+        quality: parseOption(body?.quality) ?? 82,
+        maxBytes: parseOption(body?.maxBytes),
+      },
     );
     response.setHeader('Content-Type', preview.mimeType);
     response.setHeader('Content-Length', String(preview.buffer.length));
