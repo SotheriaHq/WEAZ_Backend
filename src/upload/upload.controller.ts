@@ -10,6 +10,8 @@ import {
   Param,
   Query,
   BadRequestException,
+  Res,
+  StreamableFile,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { JwtAuthGuard } from 'src/auth/guard/jwt-auth.guard';
@@ -18,13 +20,21 @@ import { FileType } from './upload.enums';
 import { GetFilesDto } from './dto/get-files.dto';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
-import { multerOptionsForFileType } from './upload-policy';
+import {
+  multerOptionsForFileType,
+  previewImageMulterOptions,
+} from './upload-policy';
+import { MediaProcessingService } from 'src/media-processing/media-processing.service';
+import type { Response } from 'express';
 
 @ApiTags('uploads')
 @ApiBearerAuth()
 @Controller('uploads')
 export class UploadController {
-  constructor(private uploadService: UploadService) {}
+  constructor(
+    private uploadService: UploadService,
+    private mediaProcessingService: MediaProcessingService,
+  ) {}
 
   // ============================================
   // PUBLIC ENDPOINTS (No Auth Required)
@@ -68,6 +78,35 @@ export class UploadController {
   // ============================================
   // AUTHENTICATED ENDPOINTS
   // ============================================
+
+  @Post('preview-image')
+  @UseGuards(JwtAuthGuard, ThrottlerGuard)
+  @Throttle({ default: { limit: 30, ttl: 60000 } })
+  @ApiOperation({
+    summary: 'Transcode a temporary image preview',
+    description:
+      'Returns a small JPEG preview without persisting a file. Used when mobile browsers cannot locally preview a selected image.',
+  })
+  @UseInterceptors(FileInterceptor('file', previewImageMulterOptions()))
+  async previewImage(
+    @UploadedFile() file: Express.Multer.File,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    if (!file?.buffer) {
+      throw new BadRequestException('No file uploaded');
+    }
+
+    const preview = await this.mediaProcessingService.generatePreviewJpeg(
+      file.buffer,
+      { maxWidth: 1200, quality: 82 },
+    );
+    response.setHeader('Content-Type', preview.mimeType);
+    response.setHeader('Content-Length', String(preview.buffer.length));
+    response.setHeader('Cache-Control', 'no-store');
+    response.setHeader('X-Image-Width', String(preview.width));
+    response.setHeader('X-Image-Height', String(preview.height));
+    return new StreamableFile(preview.buffer);
+  }
 
   @UseGuards(JwtAuthGuard)
   @Post('profile-image')

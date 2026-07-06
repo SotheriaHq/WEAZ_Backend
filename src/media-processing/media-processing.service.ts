@@ -27,6 +27,13 @@ export interface EncodedVariant {
   mimeType: string;
 }
 
+export interface PreviewJpeg {
+  width: number;
+  height: number;
+  buffer: Buffer;
+  mimeType: 'image/jpeg';
+}
+
 @Injectable()
 export class MediaProcessingService {
   private readonly maxMegapixels = 50;
@@ -181,6 +188,34 @@ export class MediaProcessingService {
     }
 
     return variants;
+  }
+
+  async generatePreviewJpeg(
+    buffer: Buffer,
+    options: { maxWidth?: number; quality?: number } = {},
+  ): Promise<PreviewJpeg> {
+    const probe = await this.probeImage(buffer);
+    if (!probe.width || !probe.height) {
+      throw new BadRequestException('Unable to detect image dimensions');
+    }
+
+    const maxWidth = Math.max(320, Math.min(options.maxWidth ?? 1200, 1600));
+    const quality = Math.max(60, Math.min(options.quality ?? 82, 90));
+    const resized = await sharp(buffer, { animated: false })
+      .rotate()
+      .resize({
+        width: Math.min(maxWidth, probe.width),
+        withoutEnlargement: true,
+      })
+      .jpeg({ quality, mozjpeg: true })
+      .toBuffer({ resolveWithObject: true });
+
+    return {
+      width: resized.info.width,
+      height: resized.info.height,
+      buffer: resized.data,
+      mimeType: 'image/jpeg',
+    };
   }
 
   private pickPrimaryFormat(

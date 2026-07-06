@@ -79,6 +79,7 @@ export const DIRECT_UPLOAD_HARD_LIMIT_BYTES: Record<FileType, number> = {
 };
 
 export const COLLECTION_BULK_UPLOAD_HARD_LIMIT_BYTES = 10 * MB;
+export const PREVIEW_IMAGE_UPLOAD_HARD_LIMIT_BYTES = 12 * MB;
 
 const COLLECTION_BULK_ALLOWED_MIME_TYPES = new Set([
   'text/csv',
@@ -181,6 +182,47 @@ export function collectionBulkUploadMulterOptions(): MulterOptions {
       if (!validExtension || !validMime) {
         callback(
           new BadRequestException('Bulk upload requires a CSV file'),
+          false,
+        );
+        return;
+      }
+
+      callback(null, true);
+    },
+  };
+}
+
+export function previewImageMulterOptions(): MulterOptions {
+  const allowedExtensions = new Set([
+    'jpg',
+    'jpeg',
+    'png',
+    'webp',
+    'gif',
+    'heic',
+    'heif',
+    'avif',
+    'bmp',
+  ]);
+
+  return {
+    storage: memoryStorage(),
+    limits: {
+      fileSize: PREVIEW_IMAGE_UPLOAD_HARD_LIMIT_BYTES,
+      files: 1,
+    },
+    fileFilter: (_req, file, callback) => {
+      const extension = getUploadFileExtension(file.originalname);
+      const contentType = normalizeUploadContentType(file.mimetype);
+      const validExtension = allowedExtensions.has(extension);
+      const validMime =
+        !contentType ||
+        contentType === 'application/octet-stream' ||
+        contentType.startsWith('image/');
+
+      if (!validExtension || !validMime) {
+        callback(
+          new BadRequestException('Preview requires a supported image file'),
           false,
         );
         return;

@@ -6,6 +6,7 @@ import { ConfigService } from '@nestjs/config';
 import { SystemConfigService } from 'src/admin/system-config/system-config.service';
 import { ImageProcessingQueueService } from 'src/queue/image-processing.queue.service';
 import { ThrottlerModule } from '@nestjs/throttler';
+import { MediaProcessingService } from 'src/media-processing/media-processing.service';
 
 describe('ImageController', () => {
   let controller: UploadController;
@@ -39,6 +40,10 @@ describe('ImageController', () => {
         {
           provide: ImageProcessingQueueService,
           useValue: { enqueueSingle: jest.fn() },
+        },
+        {
+          provide: MediaProcessingService,
+          useValue: { generatePreviewJpeg: jest.fn() },
         },
       ],
     }).compile();
