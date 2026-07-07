@@ -445,6 +445,55 @@ export class CollectionsService {
     return 'design';
   }
 
+  private static readonly DRAFT_UPDATE_WINDOW_MS = 24 * 60 * 60 * 1000;
+  private static readonly DRAFT_UPDATES_PER_WINDOW = 2;
+
+  private assertDraftUpdateRateLimit(existing: {
+    draftUpdatesInWindow?: number | null;
+    draftUpdateWindowStart?: Date | null;
+  }) {
+    const now = Date.now();
+    const windowStart = existing.draftUpdateWindowStart
+      ? new Date(existing.draftUpdateWindowStart).getTime()
+      : 0;
+    const inWindow =
+      windowStart > 0 &&
+      now - windowStart < CollectionsService.DRAFT_UPDATE_WINDOW_MS;
+    const updatesUsed = inWindow ? (existing.draftUpdatesInWindow ?? 0) : 0;
+    if (updatesUsed >= CollectionsService.DRAFT_UPDATES_PER_WINDOW) {
+      const nextEditDate = new Date(
+        windowStart + CollectionsService.DRAFT_UPDATE_WINDOW_MS,
+      );
+      throw new BadRequestException(
+        `Draft can only be updated ${CollectionsService.DRAFT_UPDATES_PER_WINDOW} times every 24 hours. Next edit available on ${nextEditDate.toLocaleString('en-US', { year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}.`,
+      );
+    }
+  }
+
+  private nextDraftUpdateRateLimitFields(existing: {
+    draftUpdatesInWindow?: number | null;
+    draftUpdateWindowStart?: Date | null;
+  }) {
+    const now = new Date();
+    const windowStart = existing.draftUpdateWindowStart
+      ? new Date(existing.draftUpdateWindowStart)
+      : null;
+    const inWindow =
+      windowStart &&
+      now.getTime() - windowStart.getTime() <
+        CollectionsService.DRAFT_UPDATE_WINDOW_MS;
+    if (!inWindow) {
+      return {
+        draftUpdateWindowStart: now,
+        draftUpdatesInWindow: 1,
+      };
+    }
+    return {
+      draftUpdateWindowStart: windowStart,
+      draftUpdatesInWindow: (existing.draftUpdatesInWindow ?? 0) + 1,
+    };
+  }
+
   private async enforceDraftSessionLock(
     collectionId: string,
     ownerId: string,
@@ -8888,7 +8937,10 @@ export class CollectionsService {
         descriptionRequested &&
         body.description!.trim() !== String(existing.description ?? '').trim();
 
-      if (titleChanged || descriptionChanged) {
+      if (
+        existing.status !== 'DRAFT' &&
+        (titleChanged || descriptionChanged)
+      ) {
         const cooldownMs = 30 * 24 * 60 * 60 * 1000;
         const lastEdit = existing.metadataEditedAt
           ? new Date(existing.metadataEditedAt).getTime()
@@ -8919,7 +8971,10 @@ export class CollectionsService {
       if (typeof body.description === 'string' || body.description === null) {
         data.description = body.description || null;
       }
-      if (titleChanged || descriptionChanged) {
+      if (
+        existing.status !== 'DRAFT' &&
+        (titleChanged || descriptionChanged)
+      ) {
         data.metadataEditedAt = new Date();
       }
       if (typeof body.visibility === 'string')
@@ -9063,6 +9118,8 @@ export class CollectionsService {
         visibility: true,
         deletedAt: true,
         draftVersion: true,
+        draftUpdatesInWindow: true,
+        draftUpdateWindowStart: true,
         tags: true,
         title: true,
         description: true,
@@ -9086,7 +9143,10 @@ export class CollectionsService {
       descriptionRequested &&
       body.description!.trim() !== String(existing.description ?? '').trim();
 
-    if (titleChanged || descriptionChanged) {
+    if (
+      existing.status !== 'DRAFT' &&
+      (titleChanged || descriptionChanged)
+    ) {
       const cooldownMs = 30 * 24 * 60 * 60 * 1000; // 30 days
       const lastEdit = existing.metadataEditedAt
         ? new Date(existing.metadataEditedAt).getTime()
@@ -9102,6 +9162,7 @@ export class CollectionsService {
 
     const now = new Date();
     if (existing.status === 'DRAFT') {
+      this.assertDraftUpdateRateLimit(existing);
       if (
         typeof body.draftVersion === 'number' &&
         body.draftVersion !== existing.draftVersion
@@ -9134,8 +9195,11 @@ export class CollectionsService {
       data.title = body.title || null;
     if (typeof body.description === 'string' || body.description === null)
       data.description = body.description || null;
-    // Stamp metadataEditedAt when title or description actually changes
-    if (titleChanged || descriptionChanged) {
+    // Published designs keep the 30-day title/description cooldown.
+    if (
+      existing.status !== 'DRAFT' &&
+      (titleChanged || descriptionChanged)
+    ) {
       data.metadataEditedAt = new Date();
     }
     if (typeof body.visibility === 'string') data.visibility = body.visibility;
@@ -9257,6 +9321,7 @@ export class CollectionsService {
     }
 
     if (existing.status === 'DRAFT') {
+      Object.assign(data, this.nextDraftUpdateRateLimitFields(existing));
       data.lastActivityAt = now;
       data.draftVersion = { increment: 1 };
     }

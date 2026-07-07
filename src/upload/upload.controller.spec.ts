@@ -1,4 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { Logger } from '@nestjs/common';
 import { UploadController } from './upload.controller';
 import { UploadService } from './upload.service';
 import { PrismaService } from 'src/prisma/prisma.service';
@@ -10,8 +11,11 @@ import { MediaProcessingService } from 'src/media-processing/media-processing.se
 
 describe('ImageController', () => {
   let controller: UploadController;
+  let mediaProcessingService: { generatePreviewJpeg: jest.Mock };
 
   beforeEach(async () => {
+    mediaProcessingService = { generatePreviewJpeg: jest.fn() };
+
     const module: TestingModule = await Test.createTestingModule({
       imports: [ThrottlerModule.forRoot([{ ttl: 60000, limit: 120 }])],
       controllers: [UploadController],
@@ -43,7 +47,7 @@ describe('ImageController', () => {
         },
         {
           provide: MediaProcessingService,
-          useValue: { generatePreviewJpeg: jest.fn() },
+          useValue: mediaProcessingService,
         },
       ],
     }).compile();
@@ -53,5 +57,49 @@ describe('ImageController', () => {
 
   it('should be defined', () => {
     expect(controller).toBeDefined();
+  });
+
+  it('logs preview transcode compression metrics', async () => {
+    const logSpy = jest.spyOn(Logger.prototype, 'log').mockImplementation();
+    const inputBuffer = Buffer.alloc(1024);
+    const outputBuffer = Buffer.alloc(256);
+    mediaProcessingService.generatePreviewJpeg.mockResolvedValue({
+      width: 320,
+      height: 240,
+      buffer: outputBuffer,
+      mimeType: 'image/jpeg',
+    });
+    const response = { setHeader: jest.fn() } as any;
+
+    await controller.previewImage(
+      {
+        buffer: inputBuffer,
+        mimetype: 'image/heic',
+      } as Express.Multer.File,
+      response,
+      { requestId: 'req-123' },
+      { maxWidth: '2048', quality: '82', maxBytes: '2097152' },
+    );
+
+    const eventCall = logSpy.mock.calls.find(([message]) =>
+      String(message).includes('upload.preview_image.transcoded'),
+    );
+    expect(eventCall).toBeDefined();
+    const payload = JSON.parse(String(eventCall?.[0]));
+    expect(payload).toMatchObject({
+      event: 'upload.preview_image.transcoded',
+      requestId: 'req-123',
+      sourceMimeType: 'image/heic',
+      originalSizeBytes: 1024,
+      outputSizeBytes: 256,
+      savedBytes: 768,
+      reductionPercent: 75,
+      outputWidth: 320,
+      outputHeight: 240,
+      requestedMaxWidth: 2048,
+      requestedQuality: 82,
+      requestedMaxBytes: 2097152,
+    });
+    logSpy.mockRestore();
   });
 });

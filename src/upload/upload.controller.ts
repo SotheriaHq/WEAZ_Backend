@@ -14,6 +14,7 @@ import {
   Res,
   StreamableFile,
   HttpCode,
+  Logger,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { JwtAuthGuard } from 'src/auth/guard/jwt-auth.guard';
@@ -33,6 +34,8 @@ import type { Response } from 'express';
 @ApiBearerAuth()
 @Controller('uploads')
 export class UploadController {
+  private readonly logger = new Logger(UploadController.name);
+
   constructor(
     private uploadService: UploadService,
     private mediaProcessingService: MediaProcessingService,
@@ -96,6 +99,7 @@ export class UploadController {
   async previewImage(
     @UploadedFile() file: Express.Multer.File,
     @Res({ passthrough: true }) response: Response,
+    @Req() req: any,
     @Body() body?: Record<string, unknown>,
   ) {
     if (!file?.buffer) {
@@ -108,13 +112,46 @@ export class UploadController {
       return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
     };
 
+    const requestedMaxWidth = parseOption(body?.maxWidth) ?? 1200;
+    const requestedQuality = parseOption(body?.quality) ?? 82;
+    const requestedMaxBytes = parseOption(body?.maxBytes);
+    const originalSizeBytes = file.buffer.length;
+    const startedAt = Date.now();
+
     const preview = await this.mediaProcessingService.generatePreviewJpeg(
       file.buffer,
       {
-        maxWidth: parseOption(body?.maxWidth) ?? 1200,
-        quality: parseOption(body?.quality) ?? 82,
-        maxBytes: parseOption(body?.maxBytes),
+        maxWidth: requestedMaxWidth,
+        quality: requestedQuality,
+        maxBytes: requestedMaxBytes,
       },
+    );
+    const outputSizeBytes = preview.buffer.length;
+    const reductionPercent =
+      originalSizeBytes > 0
+        ? Number(
+            (
+              ((originalSizeBytes - outputSizeBytes) / originalSizeBytes) *
+              100
+            ).toFixed(2),
+          )
+        : null;
+    this.logger.log(
+      JSON.stringify({
+        event: 'upload.preview_image.transcoded',
+        requestId: req?.requestId,
+        sourceMimeType: file.mimetype,
+        originalSizeBytes,
+        outputSizeBytes,
+        savedBytes: originalSizeBytes - outputSizeBytes,
+        reductionPercent,
+        outputWidth: preview.width,
+        outputHeight: preview.height,
+        requestedMaxWidth,
+        requestedQuality,
+        requestedMaxBytes,
+        durationMs: Date.now() - startedAt,
+      }),
     );
     response.setHeader('Content-Type', preview.mimeType);
     response.setHeader('Content-Length', String(preview.buffer.length));

@@ -1189,6 +1189,8 @@ model Collection {
   deleteExpiresAt             DateTime?
   lastActivityAt              DateTime?
   draftVersion                Int                           @default(0)
+  draftUpdatesInWindow        Int                           @default(0)
+  draftUpdateWindowStart      DateTime?
   // PHASE 1: Pending category support for draft collections
   pendingCategorySuggestionId String?                       @db.Uuid
   pendingCategorySuggestion   CollectionCategorySuggestion? @relation(fields: [pendingCategorySuggestionId], references: [id], onDelete: SetNull)
@@ -1281,6 +1283,8 @@ model Design {
   deleteExpiresAt        DateTime?
   lastActivityAt         DateTime?
   draftVersion           Int                      @default(0)
+  draftUpdatesInWindow   Int                      @default(0)
+  draftUpdateWindowStart DateTime?
   minPrice               Float?
   maxPrice               Float?
   customOrderEnabled     Boolean                  @default(false)
