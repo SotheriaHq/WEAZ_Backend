@@ -48,11 +48,6 @@ import { buildPinoModuleParams } from './common/logging/pino.config';
 import { HealthModule } from './health/health.module';
 import { SentryModule } from '@sentry/nestjs/setup';
 
-const isProductionEnvironment =
-  String(process.env.NODE_ENV ?? '')
-    .trim()
-    .toLowerCase() === 'production';
-
 const isHardProduction =
   String(process.env.APP_ENV ?? '')
     .trim()
@@ -87,7 +82,9 @@ const isHardProduction =
     PostsModule,
     CommentsV2Module,
     AnalyticsModule,
-    ...(isProductionEnvironment ? [] : [DevToolsModule]),
+    // Dev tools (incl. Sentry debug probe) stay available on SIT/UAT where
+    // NODE_ENV may be production but APP_ENV is not.
+    ...(isHardProduction ? [] : [DevToolsModule]),
     ...(isHardProduction ? [] : [AdminJobsModule]),
     NotificationsModule,
     TagsModule,

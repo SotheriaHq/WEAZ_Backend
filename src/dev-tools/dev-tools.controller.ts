@@ -18,6 +18,23 @@ import { ApiTags, ApiOperation, ApiConsumes, ApiBody } from '@nestjs/swagger';
 export class DevToolsController {
   constructor(private readonly devToolsService: DevToolsService) {}
 
+  @Get('debug-sentry')
+  @ApiOperation({
+    summary: 'DEV ONLY: Throws a test error to verify Sentry wiring',
+  })
+  debugSentry() {
+    if (!isSentryEnabled()) {
+      throw new ForbiddenException(
+        'Sentry is not initialised. Set SENTRY_DSN before using this endpoint.',
+      );
+    }
+    Sentry.logger.info('User triggered test error', {
+      action: 'test_error_endpoint',
+    });
+    Sentry.metrics.count('test_counter', 1);
+    throw new Error('My first Sentry error!');
+  }
+
   @Post('extract-metadata')
   @UseInterceptors(FilesInterceptor('file', 20)) // Allow up to 20 files with the key 'file'
   @ApiOperation({
@@ -41,23 +58,6 @@ export class DevToolsController {
       },
     },
   })
-  @Get('debug-sentry')
-  @ApiOperation({
-    summary: 'DEV ONLY: Throws a test error to verify Sentry wiring',
-  })
-  debugSentry() {
-    if (!isSentryEnabled()) {
-      throw new ForbiddenException(
-        'Sentry is not initialised. Set SENTRY_DSN before using this endpoint.',
-      );
-    }
-    Sentry.logger.info('User triggered test error', {
-      action: 'test_error_endpoint',
-    });
-    Sentry.metrics.count('test_counter', 1);
-    throw new Error('My first Sentry error!');
-  }
-
   extractMetadata(@UploadedFiles() files: Array<Express.Multer.File>) {
     if (!files || files.length === 0) {
       throw new BadRequestException(
