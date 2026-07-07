@@ -58,11 +58,39 @@ export class MediaProcessingService {
     return IMAGE_MIME_TYPES.has(String(mimeType || '').toLowerCase());
   }
 
+  private hasHeicFtypBrand(buffer: Buffer, start: number, end: number): boolean {
+    if (start < 0 || end > buffer.length || end - start !== 4) return false;
+    return HEIC_FTYP_BRANDS.has(buffer.toString('ascii', start, end).toLowerCase());
+  }
+
   /** ISO-BMFF container with an HEVC-coded image brand (phone camera HEIC/HEIF). */
   isHeicLikeBuffer(buffer: Buffer): boolean {
     if (!buffer || buffer.length < 12) return false;
     if (buffer.toString('ascii', 4, 8) !== 'ftyp') return false;
-    return HEIC_FTYP_BRANDS.has(buffer.toString('ascii', 8, 12).toLowerCase());
+    if (this.hasHeicFtypBrand(buffer, 8, 12)) return true;
+
+    // Major brand can be a generic ISO-BMFF marker (e.g. mif1) with heic/hevc
+    // listed as compatible brands — scan the ftyp box and the first 64 bytes.
+    const declaredBoxSize = buffer.readUInt32BE(0);
+    const scanLimit = Math.min(
+      buffer.length,
+      declaredBoxSize >= 16 ? declaredBoxSize : 64,
+      64,
+    );
+    for (let offset = 16; offset + 4 <= scanLimit; offset += 4) {
+      if (this.hasHeicFtypBrand(buffer, offset, offset + 4)) return true;
+    }
+    return false;
+  }
+
+  private isSharpHeifPluginError(error: unknown): boolean {
+    const message =
+      error instanceof Error
+        ? error.message
+        : typeof error === 'string'
+          ? error
+          : '';
+    return /heif/i.test(message) || /compression format has not been built in/i.test(message);
   }
 
   /**
@@ -260,7 +288,27 @@ export class MediaProcessingService {
     sourceBuffer: Buffer,
     options: { maxWidth?: number; quality?: number; maxBytes?: number } = {},
   ): Promise<PreviewJpeg> {
-    const buffer = await this.toDecodableImageBuffer(sourceBuffer);
+    let buffer = await this.toDecodableImageBuffer(sourceBuffer);
+    try {
+      return await this.encodePreviewJpeg(buffer, options);
+    } catch (error) {
+      // Last-resort: sharp read container metadata but still cannot transcode
+      // HEIF on this host — convert the original bytes and retry once.
+      if (
+        buffer === sourceBuffer &&
+        (this.isHeicLikeBuffer(sourceBuffer) || this.isSharpHeifPluginError(error))
+      ) {
+        buffer = Buffer.from(await this.convertHeicToJpeg(sourceBuffer));
+        return this.encodePreviewJpeg(buffer, options);
+      }
+      throw error;
+    }
+  }
+
+  private async encodePreviewJpeg(
+    buffer: Buffer,
+    options: { maxWidth?: number; quality?: number; maxBytes?: number },
+  ): Promise<PreviewJpeg> {
     const probe = await this.probeImage(buffer);
     if (!probe.width || !probe.height) {
       throw new BadRequestException('Unable to detect image dimensions');

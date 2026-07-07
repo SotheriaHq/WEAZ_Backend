@@ -22,6 +22,17 @@ describe('MediaProcessingService', () => {
     return buffer;
   };
 
+  const makeCompatibleBrandHeicBuffer = () => {
+    const buffer = Buffer.alloc(32);
+    buffer.writeUInt32BE(32, 0);
+    buffer.write('ftyp', 4, 'ascii');
+    buffer.write('qt  ', 8, 'ascii');
+    buffer.writeUInt32BE(0, 12);
+    buffer.write('heic', 16, 'ascii');
+    buffer.write('mif1', 20, 'ascii');
+    return buffer;
+  };
+
   beforeEach(() => {
     service = new MediaProcessingService();
   });
@@ -29,6 +40,10 @@ describe('MediaProcessingService', () => {
   describe('isHeicLikeBuffer', () => {
     it('detects HEIC ftyp brands', () => {
       expect(service.isHeicLikeBuffer(makeFakeHeicBuffer())).toBe(true);
+    });
+
+    it('detects HEIC compatible brands when major brand is generic', () => {
+      expect(service.isHeicLikeBuffer(makeCompatibleBrandHeicBuffer())).toBe(true);
     });
 
     it('rejects JPEG and short buffers', async () => {
