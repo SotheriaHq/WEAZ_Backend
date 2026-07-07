@@ -72,6 +72,18 @@ const toBoolean = (value: string | undefined, fallback = true) => {
   return fallback;
 };
 
+type BootstrapLogger = {
+  log: (...args: unknown[]) => void;
+  warn: (...args: unknown[]) => void;
+  error: (...args: unknown[]) => void;
+};
+
+const bootstrapConsoleLogger = (): BootstrapLogger => ({
+  log: (...args: unknown[]) => console.log('[Bootstrap]', ...args),
+  warn: (...args: unknown[]) => console.warn('[Bootstrap]', ...args),
+  error: (...args: unknown[]) => console.error('[Bootstrap]', ...args),
+});
+
 const parsePort = (value: string | undefined) => {
   if (!value) {
     return DEFAULT_PORT;
@@ -218,7 +230,7 @@ const isSameLoopbackOrigin = (
 };
 
 async function bootstrap() {
-  const logger = new Logger('Bootstrap');
+  let logger: BootstrapLogger = bootstrapConsoleLogger();
 
   try {
     const httpsOptions = resolveOptionalHttpsOptions();
@@ -230,6 +242,7 @@ async function bootstrap() {
       },
     );
     app.useLogger(app.get(Logger));
+    logger = app.get(Logger);
     const configService = app.get(ConfigService);
     applyTrustProxy(app, configService.get<string>('TRUST_PROXY', 'false'));
 
@@ -519,7 +532,9 @@ async function bootstrap() {
 }
 
 bootstrap().catch((error) => {
-  const logger = new Logger('Bootstrap');
-  logger.error('Fatal error during bootstrap:', sanitizeErrorForLog(error));
+  console.error(
+    '[Bootstrap] Fatal error during bootstrap:',
+    sanitizeErrorForLog(error),
+  );
   process.exit(1);
 });

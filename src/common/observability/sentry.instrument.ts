@@ -7,12 +7,22 @@ const parseSampleRate = (value: string | undefined, fallback: number): number =>
   return Number.isFinite(parsed) ? parsed : fallback;
 };
 
+const normalizeSentryDsn = (raw: string): string => {
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return '';
+  }
+
+  // Defensive: env files sometimes duplicate the scheme (https://https://...).
+  return trimmed.replace(/^(https?:\/\/)+/i, 'https://');
+};
+
 export function initSentry(): void {
   if (sentryInitialised) {
     return;
   }
 
-  const dsn = String(process.env.SENTRY_DSN ?? '').trim();
+  const dsn = normalizeSentryDsn(String(process.env.SENTRY_DSN ?? ''));
   if (!dsn) {
     return;
   }
