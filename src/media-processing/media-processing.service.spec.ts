@@ -44,9 +44,35 @@ describe('MediaProcessingService', () => {
       await expect(service.toDecodableImageBuffer(jpeg)).resolves.toBe(jpeg);
     });
 
-    it('routes HEIC-branded buffers into the libheif decoder', async () => {
+    it('converts HEIC-branded buffers before sharp metadata can short-circuit', async () => {
+      // Real phone HEIC often passes sharp.metadata() (container read) but fails
+      // later at jpeg().toBuffer() — conversion must run on ftyp sniff, not on
+      // metadata() throwing.
+      const jpeg = await makeNoisyJpeg(32, 32);
+      const jpegArrayBuffer = jpeg.buffer.slice(
+        jpeg.byteOffset,
+        jpeg.byteOffset + jpeg.byteLength,
+      ) as ArrayBuffer;
+      const convertSpy = jest
+        .spyOn(
+          service as unknown as {
+            convertHeicToJpeg: (buf: Buffer) => Promise<ArrayBuffer>;
+          },
+          'convertHeicToJpeg',
+        )
+        .mockResolvedValue(jpegArrayBuffer);
+
+      await expect(
+        service.toDecodableImageBuffer(makeFakeHeicBuffer()),
+      ).resolves.toEqual(jpeg);
+
+      expect(convertSpy).toHaveBeenCalledTimes(1);
+      convertSpy.mockRestore();
+    });
+
+    it('routes undecodable HEIC-branded buffers into the libheif decoder', async () => {
       // A bare ftyp box is not a decodable HEIC, but the error must come from
-      // the HEIC decoder — proving sharp failures fall through to conversion.
+      // the HEIC decoder — proving conversion is attempted up front.
       await expect(
         service.toDecodableImageBuffer(makeFakeHeicBuffer()),
       ).rejects.toThrow(/heif/i);

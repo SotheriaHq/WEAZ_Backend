@@ -72,16 +72,20 @@ export class MediaProcessingService {
    * the pipeline never sees an undecodable buffer.
    */
   async toDecodableImageBuffer(buffer: Buffer): Promise<Buffer> {
-    try {
-      await sharp(buffer, { animated: true }).metadata();
-      return buffer;
-    } catch (error) {
-      if (!this.isHeicLikeBuffer(buffer)) {
-        throw error;
-      }
+    // Phone galleries hand over HEIC bytes renamed to .jpg. Prebuilt sharp can
+    // read HEIF container metadata without a decode plugin, so metadata() alone
+    // is not a reliable signal — sniff the ftyp brand and convert up front.
+    if (this.isHeicLikeBuffer(buffer)) {
       const converted = await this.convertHeicToJpeg(buffer);
       return Buffer.from(converted);
     }
+
+    const metadata = await sharp(buffer, { animated: true }).metadata();
+    if (metadata.format === 'heif') {
+      const converted = await this.convertHeicToJpeg(buffer);
+      return Buffer.from(converted);
+    }
+    return buffer;
   }
 
   private async convertHeicToJpeg(buffer: Buffer): Promise<ArrayBuffer> {
