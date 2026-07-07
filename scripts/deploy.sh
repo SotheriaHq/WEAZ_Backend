@@ -54,10 +54,21 @@ pm2 restart all --update-env
 pm2 save
 
 echo "==> Health check: $HEALTHCHECK_URL"
-sleep 4
-if curl -fsS "$HEALTHCHECK_URL" >/dev/null; then
+# NestJS cold-start on the small EC2 box often exceeds 4 s after pm2 restart;
+# a single early probe caused CI/CD to report failure even though the deploy
+# succeeded (502 → 200 a few seconds later).
+HEALTH_OK=0
+for attempt in 1 2 3 4 5 6 7 8 9 10; do
+  if curl -fsS "$HEALTHCHECK_URL" >/dev/null; then
+    HEALTH_OK=1
+    break
+  fi
+  echo "    health attempt ${attempt}/10 not ready yet, waiting 5s..."
+  sleep 5
+done
+if [ "$HEALTH_OK" -eq 1 ]; then
   echo "==> Health OK. Deploy complete."
 else
-  echo "!!! Health check FAILED — inspect logs: pm2 logs --lines 100 --nostream" >&2
+  echo "!!! Health check FAILED after 50s — inspect logs: pm2 logs --lines 100 --nostream" >&2
   exit 1
 fi
