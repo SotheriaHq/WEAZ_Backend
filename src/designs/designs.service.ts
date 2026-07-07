@@ -45,6 +45,11 @@ export class DesignsService {
     }
   }
 
+  private async resolveLegacyCollectionIdForApi(designId: string): Promise<string> {
+    const legacyId = await this.designResolver.resolveLegacyCollectionId(designId);
+    return legacyId ?? designId;
+  }
+
   private async syncExplicitDesignIfDual(legacyCollectionId: string) {
     if (getDesignDomainWriteMode() !== 'dual') return;
     const synced =
@@ -79,64 +84,96 @@ export class DesignsService {
   ) {
     this.assertPersistedDesignId(designId);
     this.assertDesignOnlyWriteModeNotEnabled();
+    const legacyCollectionId = await this.resolveLegacyCollectionIdForApi(designId);
     const result = await this.collectionsService.finalizeCollection(
-      designId,
+      legacyCollectionId,
       userId,
       this.legacyAdapter.toLegacyFinalizePayload(dto),
       'design',
     );
     const resultAny = result as any;
-    const legacyCollectionId =
-      resultAny?.legacyCollectionId ?? resultAny?.collectionId ?? resultAny?.id;
-    if (legacyCollectionId) {
-      await this.syncExplicitDesignIfDual(legacyCollectionId);
+    const syncedLegacyId =
+      resultAny?.legacyCollectionId ??
+      resultAny?.collectionId ??
+      resultAny?.id ??
+      legacyCollectionId;
+    if (syncedLegacyId) {
+      await this.syncExplicitDesignIfDual(syncedLegacyId);
     }
     return DesignResponseMapper.fromLegacyCollection(result);
   }
 
   async getDesignDetail(designId: string, requesterId?: string) {
     this.assertPersistedDesignId(designId);
-    const explicit = await this.designResolver.resolveExplicitDesign(
-      designId,
-      requesterId,
-    );
-    if (explicit) return explicit;
+    const legacyCollectionId = await this.resolveLegacyCollectionIdForApi(designId);
 
-    const result = await this.collectionsService.getCollection(
-      designId,
-      requesterId,
-      'design',
-    );
-    return DesignResponseMapper.fromLegacyCollection(result);
+    try {
+      const result = await this.collectionsService.getCollection(
+        legacyCollectionId,
+        requesterId,
+        'design',
+      );
+      const mapped = DesignResponseMapper.fromLegacyCollection(result) as unknown as Record<
+        string,
+        unknown
+      >;
+      const explicit = await this.designResolver.resolveExplicitDesign(
+        designId,
+        requesterId,
+      );
+      if (explicit?.id && explicit.id !== legacyCollectionId) {
+        mapped.id = explicit.id;
+        mapped.designId = explicit.id;
+        mapped.legacyCollectionId = legacyCollectionId;
+      }
+      return mapped;
+    } catch (error) {
+      const explicit = await this.designResolver.resolveExplicitDesign(
+        designId,
+        requesterId,
+      );
+      if (explicit) return explicit;
+      throw error;
+    }
   }
 
   async updateDesign(designId: string, userId: string, dto: UpdateDesignDto) {
     this.assertPersistedDesignId(designId);
     this.assertDesignOnlyWriteModeNotEnabled();
+    const legacyCollectionId = await this.resolveLegacyCollectionIdForApi(designId);
     const result = await this.collectionsService.updateCollection(
-      designId,
+      legacyCollectionId,
       userId,
       this.legacyAdapter.toLegacyUpdatePayload(dto),
       'design',
     );
     const resultAny = result as any;
-    const legacyCollectionId =
-      resultAny?.legacyCollectionId ?? resultAny?.collectionId ?? resultAny?.id;
-    if (legacyCollectionId) {
-      await this.syncExplicitDesignIfDual(legacyCollectionId);
+    const syncedLegacyId =
+      resultAny?.legacyCollectionId ??
+      resultAny?.collectionId ??
+      resultAny?.id ??
+      legacyCollectionId;
+    if (syncedLegacyId) {
+      await this.syncExplicitDesignIfDual(syncedLegacyId);
     }
     return DesignResponseMapper.fromLegacyCollection(result);
   }
 
   async deleteDesign(designId: string, userId: string) {
     this.assertPersistedDesignId(designId);
-    return this.collectionsService.deleteCollection(designId, userId, 'design');
+    const legacyCollectionId = await this.resolveLegacyCollectionIdForApi(designId);
+    return this.collectionsService.deleteCollection(
+      legacyCollectionId,
+      userId,
+      'design',
+    );
   }
 
   async archiveDesign(designId: string, userId: string) {
     this.assertPersistedDesignId(designId);
+    const legacyCollectionId = await this.resolveLegacyCollectionIdForApi(designId);
     return this.collectionsService.archiveCollection(
-      designId,
+      legacyCollectionId,
       userId,
       'design',
     );
@@ -144,8 +181,9 @@ export class DesignsService {
 
   async unarchiveDesign(designId: string, userId: string) {
     this.assertPersistedDesignId(designId);
+    const legacyCollectionId = await this.resolveLegacyCollectionIdForApi(designId);
     return this.collectionsService.unarchiveCollection(
-      designId,
+      legacyCollectionId,
       userId,
       'design',
     );
@@ -153,13 +191,15 @@ export class DesignsService {
 
   async restoreDesign(designId: string, userId: string) {
     this.assertPersistedDesignId(designId);
-    return this.collectionsService.restoreCollection(designId, userId);
+    const legacyCollectionId = await this.resolveLegacyCollectionIdForApi(designId);
+    return this.collectionsService.restoreCollection(legacyCollectionId, userId);
   }
 
   async permanentlyDeleteDesign(designId: string, userId: string) {
     this.assertPersistedDesignId(designId);
+    const legacyCollectionId = await this.resolveLegacyCollectionIdForApi(designId);
     return this.collectionsService.permanentlyDeleteCollection(
-      designId,
+      legacyCollectionId,
       userId,
       'design',
     );
@@ -167,8 +207,9 @@ export class DesignsService {
 
   async duplicateDesign(designId: string, userId: string) {
     this.assertPersistedDesignId(designId);
+    const legacyCollectionId = await this.resolveLegacyCollectionIdForApi(designId);
     const result = await this.collectionsService.duplicateCollection(
-      designId,
+      legacyCollectionId,
       userId,
       'design',
     );
@@ -181,8 +222,9 @@ export class DesignsService {
     body: { deviceName?: string; forceNew?: boolean; existingToken?: string },
   ) {
     this.assertPersistedDesignId(designId);
+    const legacyCollectionId = await this.resolveLegacyCollectionIdForApi(designId);
     const result = await this.collectionsService.checkDraftConflict(
-      designId,
+      legacyCollectionId,
       userId,
       body?.deviceName,
       body?.forceNew,
@@ -198,9 +240,10 @@ export class DesignsService {
   ) {
     this.assertPersistedDesignId(designId);
     this.assertDesignOnlyWriteModeNotEnabled();
+    const legacyCollectionId = await this.resolveLegacyCollectionIdForApi(designId);
     const result =
       await this.collectionsService.initializeCollectionMediaUploads(
-        designId,
+        legacyCollectionId,
         userId,
         dto.files,
         'design',
@@ -214,8 +257,9 @@ export class DesignsService {
     items: Array<{ mediaId: string; orderIndex: number }>,
   ) {
     this.assertPersistedDesignId(designId);
+    const legacyCollectionId = await this.resolveLegacyCollectionIdForApi(designId);
     return this.collectionsService.reorderCollectionMedia(
-      designId,
+      legacyCollectionId,
       userId,
       items,
       'design',
@@ -224,8 +268,9 @@ export class DesignsService {
 
   async deleteDesignMedia(designId: string, mediaId: string, userId: string) {
     this.assertPersistedDesignId(designId);
+    const legacyCollectionId = await this.resolveLegacyCollectionIdForApi(designId);
     return this.collectionsService.deleteCollectionMedia(
-      designId,
+      legacyCollectionId,
       mediaId,
       userId,
     );
@@ -234,7 +279,35 @@ export class DesignsService {
   async submitDesignForReview(designId: string, userId: string) {
     this.assertPersistedDesignId(designId);
     this.assertDesignOnlyWriteModeNotEnabled();
-    return this.collectionsService.submitDesignForReview(designId, userId);
+    const legacyCollectionId = await this.resolveLegacyCollectionIdForApi(designId);
+    const result = await this.collectionsService.submitDesignForReview(
+      legacyCollectionId,
+      userId,
+    );
+    await this.syncExplicitDesignIfDual(legacyCollectionId);
+    const explicit = await this.designResolver.resolveExplicitDesign(designId, userId);
+    return {
+      ...result,
+      designId: explicit?.id ?? result.designId ?? legacyCollectionId,
+      collectionId: legacyCollectionId,
+    };
+  }
+
+  async withdrawDesignFromReview(designId: string, userId: string) {
+    this.assertPersistedDesignId(designId);
+    this.assertDesignOnlyWriteModeNotEnabled();
+    const legacyCollectionId = await this.resolveLegacyCollectionIdForApi(designId);
+    const result = await this.collectionsService.withdrawDesignFromReview(
+      legacyCollectionId,
+      userId,
+    );
+    await this.syncExplicitDesignIfDual(legacyCollectionId);
+    const explicit = await this.designResolver.resolveExplicitDesign(designId, userId);
+    return {
+      ...result,
+      designId: explicit?.id ?? result.designId ?? legacyCollectionId,
+      collectionId: legacyCollectionId,
+    };
   }
 
   async getMyDraftDesigns(userId: string) {

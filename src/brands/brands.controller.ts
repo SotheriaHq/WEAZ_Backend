@@ -13,7 +13,7 @@ import {
   UseInterceptors,
   ValidationPipe,
 } from '@nestjs/common';
-import { SkipThrottle } from '@nestjs/throttler';
+import { Throttle } from '@nestjs/throttler';
 import { BrandsService, BrandProfileResponse } from './brands.service';
 import { UpdateBrandProfileDto } from './dto/update-brand-profile.dto';
 import { AuthUserResponseDto } from '../auth/dto/auth-response.dto';
@@ -128,7 +128,7 @@ export class BrandsController {
   }
 
   @Get('brands/:id')
-  @SkipThrottle()
+  @Throttle({ default: { limit: 60, ttl: 60000 } })
   @UseGuards(OptionalJwtAuthGuard)
   async getBrandProfile(
     @Param('id') id: string,

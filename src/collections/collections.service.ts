@@ -26,6 +26,7 @@ import {
   CollectionVisibility,
   CollectionType,
   ContentEntityType,
+  ContentSubmissionStatus,
   MessageConversationType,
   MessageContextType,
   MessageKind,
@@ -446,7 +447,7 @@ export class CollectionsService {
   }
 
   private static readonly DRAFT_UPDATE_WINDOW_MS = 24 * 60 * 60 * 1000;
-  private static readonly DRAFT_UPDATES_PER_WINDOW = 2;
+  private static readonly DRAFT_UPDATES_PER_WINDOW = 5;
 
   private assertDraftUpdateRateLimit(existing: {
     draftUpdatesInWindow?: number | null;
@@ -8938,7 +8939,7 @@ export class CollectionsService {
         body.description!.trim() !== String(existing.description ?? '').trim();
 
       if (
-        existing.status !== 'DRAFT' &&
+        existing.status === 'PUBLISHED' &&
         (titleChanged || descriptionChanged)
       ) {
         const cooldownMs = 30 * 24 * 60 * 60 * 1000;
@@ -8972,7 +8973,7 @@ export class CollectionsService {
         data.description = body.description || null;
       }
       if (
-        existing.status !== 'DRAFT' &&
+        existing.status === 'PUBLISHED' &&
         (titleChanged || descriptionChanged)
       ) {
         data.metadataEditedAt = new Date();
@@ -9134,6 +9135,15 @@ export class CollectionsService {
     if (existing.deletedAt)
       throw new GoneException('Collection has been deleted');
 
+    if (
+      existing.domain === 'DESIGN' &&
+      existing.status === CollectionStatus.IN_REVIEW
+    ) {
+      throw new BadRequestException(
+        'Design is in review. Call it back from review before editing.',
+      );
+    }
+
     const titleRequested = typeof body.title === 'string';
     const descriptionRequested = typeof body.description === 'string';
     const titleChanged =
@@ -9144,7 +9154,7 @@ export class CollectionsService {
       body.description!.trim() !== String(existing.description ?? '').trim();
 
     if (
-      existing.status !== 'DRAFT' &&
+      existing.status === 'PUBLISHED' &&
       (titleChanged || descriptionChanged)
     ) {
       const cooldownMs = 30 * 24 * 60 * 60 * 1000; // 30 days
@@ -9197,7 +9207,7 @@ export class CollectionsService {
       data.description = body.description || null;
     // Published designs keep the 30-day title/description cooldown.
     if (
-      existing.status !== 'DRAFT' &&
+      existing.status === 'PUBLISHED' &&
       (titleChanged || descriptionChanged)
     ) {
       data.metadataEditedAt = new Date();
@@ -10550,6 +10560,11 @@ export class CollectionsService {
       });
     const decision = await publicationDecision;
 
+    const explicitDesign = await this.prisma.design.findFirst({
+      where: { legacyCollectionId: collectionId },
+      select: { id: true },
+    });
+
     let submissionId: string | null = null;
     await this.prisma.$transaction(async (tx) => {
       await this.contentIntegrity?.assertCollectionHasPublishableMedia(
@@ -10567,10 +10582,18 @@ export class CollectionsService {
         data: { status: decision.publicationStatus } as any,
       });
 
+      if (explicitDesign?.id) {
+        await (tx as any).design.updateMany({
+          where: { legacyCollectionId: collectionId },
+          data: { status: decision.publicationStatus },
+        });
+      }
+
       if (decision.requiresPreReview && this.contentIntegrity) {
         const submission = await this.contentIntegrity.createSubmission(tx, {
           entityType: ContentEntityType.DESIGN,
           legacyCollectionId: collectionId,
+          designId: explicitDesign?.id ?? null,
           brandId: brand?.id,
           submittedById: ownerId,
           previousStatus: collection.status as CollectionStatus,
@@ -10590,10 +10613,57 @@ export class CollectionsService {
 
     return {
       collectionId,
-      designId: collectionId,
+      designId: explicitDesign?.id ?? collectionId,
       publicationStatus: decision.publicationStatus,
       reviewMode: decision.reviewMode,
       submissionId,
+    };
+  }
+
+  async withdrawDesignFromReview(collectionId: string, ownerId: string) {
+    await this.assertOwner(
+      collectionId,
+      ownerId,
+      'DESIGN',
+      BRAND_PERMISSIONS.CATALOG_WRITE,
+    );
+
+    const collection = await this.prisma.collection.findUnique({
+      where: { id: collectionId },
+      select: { id: true, status: true, deletedAt: true },
+    });
+    if (!collection || collection.deletedAt) {
+      throw new NotFoundException('Design not found');
+    }
+    if (collection.status !== CollectionStatus.IN_REVIEW) {
+      throw new BadRequestException('Design is not in review.');
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.collection.update({
+        where: { id: collectionId },
+        data: { status: CollectionStatus.DRAFT },
+      });
+
+      await (tx as any).contentSubmission.updateMany({
+        where: {
+          legacyCollectionId: collectionId,
+          entityType: ContentEntityType.DESIGN,
+          status: ContentSubmissionStatus.IN_REVIEW,
+        },
+        data: { status: ContentSubmissionStatus.CANCELLED },
+      });
+
+      await (tx as any).design.updateMany({
+        where: { legacyCollectionId: collectionId },
+        data: { status: CollectionStatus.DRAFT },
+      });
+    });
+
+    return {
+      collectionId,
+      designId: collectionId,
+      publicationStatus: CollectionStatus.DRAFT,
     };
   }
 

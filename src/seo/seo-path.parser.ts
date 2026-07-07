@@ -1,6 +1,7 @@
 export type SeoRouteKind =
   | 'home'
   | 'market'
+  | 'market_section'
   | 'legal'
   | 'brand'
   | 'product_slug'
@@ -39,6 +40,14 @@ export function parseSeoPath(pathname: string): ParsedSeoPath {
 
   if (pathname === '/market' || pathname === '/market-place') {
     return { kind: 'market' };
+  }
+
+  const marketSectionMatch = pathname.match(/^\/market\/sections\/([^/]+)$/);
+  if (marketSectionMatch?.[1]) {
+    return {
+      kind: 'market_section',
+      slug: decodeURIComponent(marketSectionMatch[1]),
+    };
   }
 
   if (LEGAL_PATHS.has(pathname)) {

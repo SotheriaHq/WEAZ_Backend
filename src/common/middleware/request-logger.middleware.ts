@@ -23,9 +23,17 @@ export function requestLoggerMiddleware(
     const method = req.method;
     const path = (req.originalUrl || req.url || '').split('?')[0];
     const status = res.statusCode;
+    const user = (req as any).user as
+      | { id?: string; sub?: string; brandId?: string }
+      | undefined;
+    const userId = user?.id ?? user?.sub;
+    const brandId = user?.brandId;
 
     const msg = JSON.stringify({
+      timestamp: new Date().toISOString(),
       requestId,
+      userId: userId ?? null,
+      brandId: brandId ?? null,
       method,
       path,
       status,

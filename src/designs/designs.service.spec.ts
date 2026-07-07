@@ -166,7 +166,10 @@ describe('DesignsService', () => {
     expect(collectionsService.getCollection).not.toHaveBeenCalled();
   });
 
-  it('getDesignDetail prefers an explicit Design record when available', async () => {
+  it('getDesignDetail resolves legacy collection id and overlays explicit Design id', async () => {
+    designResolver.resolveLegacyCollectionId.mockResolvedValueOnce(
+      LEGACY_COLLECTION_ID,
+    );
     designResolver.resolveExplicitDesign.mockResolvedValueOnce({
       id: EXPLICIT_DESIGN_ID,
       designId: EXPLICIT_DESIGN_ID,
@@ -175,8 +178,13 @@ describe('DesignsService', () => {
 
     const result = await service.getDesignDetail(EXPLICIT_DESIGN_ID, 'viewer-1');
 
+    expect(collectionsService.getCollection).toHaveBeenCalledWith(
+      LEGACY_COLLECTION_ID,
+      'viewer-1',
+      'design',
+    );
     expect(result.designId).toBe(EXPLICIT_DESIGN_ID);
-    expect(collectionsService.getCollection).not.toHaveBeenCalled();
+    expect(result.legacyCollectionId).toBe(LEGACY_COLLECTION_ID);
   });
 
   it('updateDesign accepts subCategoryId and delegates as categoryTypeId', async () => {

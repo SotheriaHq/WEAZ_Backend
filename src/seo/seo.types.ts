@@ -15,6 +15,12 @@ export interface SeoTwitterMeta {
   image?: string;
 }
 
+export interface SeoExtraMetaTag {
+  attribute: 'name' | 'property';
+  key: string;
+  content: string;
+}
+
 export interface SeoPageMeta {
   canonicalUrl: string;
   title: string;
@@ -23,6 +29,7 @@ export interface SeoPageMeta {
   og: SeoOpenGraphMeta;
   twitter: SeoTwitterMeta;
   jsonLd?: Record<string, unknown>;
+  extraMeta?: SeoExtraMetaTag[];
   httpStatus: 200 | 404;
 }
 

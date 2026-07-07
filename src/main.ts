@@ -14,10 +14,14 @@ try {
     req('module-alias/register');
   }
 } catch {}
+import './common/observability/sentry.instrument';
+import { initSentry } from './common/observability/sentry.instrument';
+initSentry();
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { TransformInterceptor } from './transform/transform.interceptor';
-import { BadRequestException, Logger, ValidationPipe } from '@nestjs/common';
+import { BadRequestException, ValidationPipe } from '@nestjs/common';
+import { Logger } from 'nestjs-pino';
 import { AllExceptionsFilter } from './filters/All-exception.filter';
 import cookieParser from 'cookie-parser';
 import bodyParser from 'body-parser';
@@ -220,8 +224,12 @@ async function bootstrap() {
     const httpsOptions = resolveOptionalHttpsOptions();
     const app = await NestFactory.create(
       AppModule,
-      httpsOptions ? { httpsOptions } : undefined,
+      {
+        ...(httpsOptions ? { httpsOptions } : {}),
+        bufferLogs: true,
+      },
     );
+    app.useLogger(app.get(Logger));
     const configService = app.get(ConfigService);
     applyTrustProxy(app, configService.get<string>('TRUST_PROXY', 'false'));
 

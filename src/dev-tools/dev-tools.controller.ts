@@ -1,10 +1,14 @@
 import {
   Controller,
+  Get,
   Post,
   UseInterceptors,
   UploadedFiles,
   BadRequestException,
+  ForbiddenException,
 } from '@nestjs/common';
+import * as Sentry from '@sentry/nestjs';
+import { isSentryEnabled } from 'src/common/observability/sentry.instrument';
 import { FilesInterceptor } from '@nestjs/platform-express';
 import { DevToolsService } from './dev-tools.service';
 import { ApiTags, ApiOperation, ApiConsumes, ApiBody } from '@nestjs/swagger';
@@ -37,6 +41,23 @@ export class DevToolsController {
       },
     },
   })
+  @Get('debug-sentry')
+  @ApiOperation({
+    summary: 'DEV ONLY: Throws a test error to verify Sentry wiring',
+  })
+  debugSentry() {
+    if (!isSentryEnabled()) {
+      throw new ForbiddenException(
+        'Sentry is not initialised. Set SENTRY_DSN before using this endpoint.',
+      );
+    }
+    Sentry.logger.info('User triggered test error', {
+      action: 'test_error_endpoint',
+    });
+    Sentry.metrics.count('test_counter', 1);
+    throw new Error('My first Sentry error!');
+  }
+
   extractMetadata(@UploadedFiles() files: Array<Express.Multer.File>) {
     if (!files || files.length === 0) {
       throw new BadRequestException(

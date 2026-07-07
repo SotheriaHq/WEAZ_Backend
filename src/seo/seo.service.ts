@@ -16,9 +16,16 @@ import {
   isSeoIndexingEnabled,
   isSeoNoindexPath,
   normalizeSeoPath,
+  SEO_DISALLOWED_PATH_PREFIXES,
   SEO_LEGAL_LABELS,
   SEO_STATIC_INDEXABLE_PATHS,
 } from './seo.config';
+import {
+  buildBreadcrumbJsonLd,
+  buildHomeJsonLd,
+  humanizeMarketSectionKey,
+  mergeJsonLdGraph,
+} from './seo-schema.helpers';
 import { parseSeoPath } from './seo-path.parser';
 import type { SeoPageMeta, SeoSitemapEntry } from './seo.types';
 import {
@@ -67,6 +74,7 @@ export class SeoService {
             description: getDefaultSiteDescription(),
             robots: defaultRobots,
             ogType: 'website',
+            jsonLd: buildHomeJsonLd(),
           });
         case 'market':
           return this.buildMeta({
@@ -77,6 +85,8 @@ export class SeoService {
             robots: defaultRobots,
             ogType: 'website',
           });
+        case 'market_section':
+          return this.buildMarketSectionMeta(parsed.slug ?? '', defaultRobots);
         case 'legal':
           return this.buildLegalMeta(parsed.legalKey ?? '/legal', defaultRobots);
         case 'brand':
@@ -124,21 +134,26 @@ export class SeoService {
     ];
 
     if (isSeoIndexingEnabled()) {
-      for (const prefix of [
-        '/studio/',
-        '/admin/',
-        '/checkout/',
-        '/bag/',
-        '/orders/',
-        '/messages/',
-        '/search',
-        '/login',
-        '/signup',
-        '/verify-email',
-        '/reset-password',
-      ]) {
+      const disallowPrefixes = new Set<string>();
+      for (const prefix of SEO_DISALLOWED_PATH_PREFIXES) {
+        const normalized =
+          prefix.endsWith('/') || prefix === '/search'
+            ? prefix
+            : `${prefix}/`;
+        disallowPrefixes.add(normalized);
+        if (!prefix.endsWith('/')) {
+          disallowPrefixes.add(prefix);
+        }
+      }
+
+      for (const prefix of Array.from(disallowPrefixes).sort()) {
         lines.push(`Disallow: ${prefix}`);
       }
+
+      lines.push('User-agent: GPTBot');
+      lines.push('Allow: /');
+      lines.push('User-agent: ClaudeBot');
+      lines.push('Allow: /');
     }
 
     lines.push('', `Sitemap: ${baseUrl}/sitemap.xml`);
@@ -198,6 +213,12 @@ ${ogImage ? `<meta property="og:image" content="${ogImage}" />` : ''}
 <meta name="twitter:title" content="${ogTitle}" />
 <meta name="twitter:description" content="${ogDescription}" />
 ${ogImage ? `<meta name="twitter:image" content="${ogImage}" />` : ''}
+${(meta.extraMeta ?? [])
+  .map(
+    (tag) =>
+      `<meta ${tag.attribute}="${this.escapeHtml(tag.key)}" content="${this.escapeHtml(tag.content)}" />`,
+  )
+  .join('\n')}
 ${jsonLd}
 </head>
 <body>
@@ -302,6 +323,21 @@ ${jsonLd}
     });
   }
 
+  private buildMarketSectionMeta(
+    sectionKey: string,
+    robots: SeoPageMeta['robots'],
+  ): SeoPageMeta {
+    const label = humanizeMarketSectionKey(sectionKey);
+    const canonicalPath = `/market/sections/${encodeURIComponent(sectionKey)}`;
+    return this.buildMeta({
+      canonicalPath,
+      title: `${label} on ${getDefaultSiteTitle()}`,
+      description: `Explore ${label.toLowerCase()} on WIEZ — African fashion social commerce.`,
+      robots,
+      ogType: 'website',
+    });
+  }
+
   private buildLegalMeta(path: string, robots: SeoPageMeta['robots']): SeoPageMeta {
     const label = SEO_LEGAL_LABELS[path] ?? 'Legal';
     return this.buildMeta({
@@ -326,6 +362,10 @@ ${jsonLd}
         description: true,
         logo: true,
         banner: true,
+        socialInstagram: true,
+        socialFacebook: true,
+        socialTwitter: true,
+        socialWebsite: true,
         owner: { select: { username: true } },
       },
     });
@@ -338,20 +378,35 @@ ${jsonLd}
         `Shop ${storefront.displayName || brand?.name || slug} on WIEZ.`,
     );
 
+    const brandPath = buildBrandPath(canonicalSlug);
+    const sameAs = [
+      brand?.socialInstagram,
+      brand?.socialFacebook,
+      brand?.socialTwitter,
+      brand?.socialWebsite,
+    ].filter((value): value is string => Boolean(value && value.trim()));
+
     return this.buildMeta({
-      canonicalPath: buildBrandPath(canonicalSlug),
+      canonicalPath: brandPath,
       title,
       description,
       robots,
       imageUrl: brand?.banner || brand?.logo || getDefaultSeoImageUrl(),
       ogType: 'website',
-      jsonLd: {
-        '@context': 'https://schema.org',
-        '@type': 'ClothingStore',
-        name: storefront.displayName || brand?.name || slug,
-        url: buildAbsoluteWebPath(buildBrandPath(canonicalSlug)),
-        description,
-      },
+      jsonLd: mergeJsonLdGraph(
+        {
+          '@type': 'ClothingStore',
+          name: storefront.displayName || brand?.name || slug,
+          url: buildAbsoluteWebPath(brandPath),
+          description,
+          ...(brand?.logo ? { logo: brand.logo } : {}),
+          ...(sameAs.length > 0 ? { sameAs } : {}),
+        },
+        buildBreadcrumbJsonLd([
+          { name: 'Market', path: '/market' },
+          { name: storefront.displayName || brand?.name || slug, path: brandPath },
+        ]),
+      ),
     });
   }
 
@@ -389,10 +444,19 @@ ${jsonLd}
         saleStartAt: true,
         saleEndAt: true,
         currency: true,
+        sku: true,
+        avgRating: true,
+        totalReviews: true,
         publicationStatus: true,
         isActive: true,
         archivedAt: true,
-        brand: { select: { isStoreOpen: true, name: true } },
+        brand: {
+          select: {
+            isStoreOpen: true,
+            name: true,
+            owner: { select: { username: true } },
+          },
+        },
       },
     });
 
@@ -424,32 +488,78 @@ ${jsonLd}
     const effectivePrice = saleActive ? product.salePrice : product.price;
     const imageUrl = product.thumbnail || getDefaultSeoImageUrl();
 
+    const productPath = buildProductPath(product);
+    const brandPath =
+      product.brand?.owner?.username?.trim()
+        ? buildBrandPath(product.brand.owner.username.trim())
+        : null;
+
+    const productNode: Record<string, unknown> = {
+      '@type': 'Product',
+      name: product.name,
+      description,
+      image: imageUrl,
+      url: buildAbsoluteWebPath(productPath),
+      itemCondition: 'https://schema.org/NewCondition',
+      ...(product.sku?.trim() ? { sku: product.sku.trim() } : {}),
+      ...(product.brand?.name
+        ? { brand: { '@type': 'Brand', name: product.brand.name } }
+        : {}),
+      offers: {
+        '@type': 'Offer',
+        price: Number(effectivePrice),
+        priceCurrency: product.currency || 'NGN',
+        availability: 'https://schema.org/InStock',
+        url: buildAbsoluteWebPath(productPath),
+        itemCondition: 'https://schema.org/NewCondition',
+        ...(product.brand?.name
+          ? {
+              seller: {
+                '@type': 'Organization',
+                name: product.brand.name,
+              },
+            }
+          : {}),
+      },
+    };
+
+    if (product.totalReviews > 0 && product.avgRating > 0) {
+      productNode.aggregateRating = {
+        '@type': 'AggregateRating',
+        ratingValue: product.avgRating,
+        reviewCount: product.totalReviews,
+      };
+    }
+
+    const breadcrumbItems = [{ name: 'Market', path: '/market' }];
+    if (brandPath && product.brand?.name) {
+      breadcrumbItems.push({ name: product.brand.name, path: brandPath });
+    }
+    breadcrumbItems.push({ name: product.name, path: productPath });
+
     return this.buildMeta({
-      canonicalPath: buildProductPath(product),
+      canonicalPath: productPath,
       title,
       description,
       robots,
       imageUrl,
       ogType: 'product',
-      jsonLd: {
-        '@context': 'https://schema.org',
-        '@type': 'Product',
-        name: product.name,
-        description,
-        image: imageUrl,
-        url: buildAbsoluteWebPath(buildProductPath(product)),
-        ...(product.brand?.name
-          ? { brand: { '@type': 'Brand', name: product.brand.name } }
-          : {}),
-        // Offers block is required for Google product rich results.
-        offers: {
-          '@type': 'Offer',
-          price: Number(effectivePrice),
-          priceCurrency: product.currency || 'NGN',
-          availability: 'https://schema.org/InStock',
-          url: buildAbsoluteWebPath(buildProductPath(product)),
+      extraMeta: [
+        {
+          attribute: 'property',
+          key: 'product:price:amount',
+          content: String(Number(effectivePrice)),
         },
-      },
+        {
+          attribute: 'property',
+          key: 'product:price:currency',
+          content: product.currency || 'NGN',
+        },
+      ],
+      jsonLd: mergeJsonLdGraph(
+        productNode,
+        buildBreadcrumbJsonLd(breadcrumbItems),
+      ),
     });
   }
 
@@ -482,21 +592,27 @@ ${jsonLd}
       design.description?.trim() || 'Explore this design on WIEZ.',
     );
 
+    const designPath = buildDesignPath(design.id);
     return this.buildMeta({
-      canonicalPath: buildDesignPath(design.id),
+      canonicalPath: designPath,
       title,
       description,
       robots,
       imageUrl:
         design.coverMedia?.file?.s3Url || getDefaultSeoImageUrl(),
       ogType: 'article',
-      jsonLd: {
-        '@context': 'https://schema.org',
-        '@type': 'CreativeWork',
-        name: design.title || 'Design',
-        description,
-        url: buildAbsoluteWebPath(buildDesignPath(design.id)),
-      },
+      jsonLd: mergeJsonLdGraph(
+        {
+          '@type': 'CreativeWork',
+          name: design.title || 'Design',
+          description,
+          url: buildAbsoluteWebPath(designPath),
+        },
+        buildBreadcrumbJsonLd([
+          { name: 'Market', path: '/market' },
+          { name: design.title || 'Design', path: designPath },
+        ]),
+      ),
     });
   }
 
@@ -621,6 +737,7 @@ ${jsonLd}
     imageUrl?: string;
     ogType?: string;
     jsonLd?: Record<string, unknown>;
+    extraMeta?: SeoPageMeta['extraMeta'];
     httpStatus?: 200 | 404;
   }): SeoPageMeta {
     const canonicalUrl = buildAbsoluteWebPath(input.canonicalPath);
@@ -648,6 +765,7 @@ ${jsonLd}
         image,
       },
       jsonLd: input.jsonLd,
+      extraMeta: input.extraMeta,
     };
   }
 

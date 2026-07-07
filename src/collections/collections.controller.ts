@@ -337,6 +337,7 @@ export class CollectionsController {
   // ============================================
 
   @IsPublic()
+  @Throttle({ default: { limit: 90, ttl: 60000 } })
   @Get()
   @ApiOperation({ summary: 'List collections (paginated, sorted by collabs)' })
   @ApiResponse({ status: 200, description: 'Paginated collections list' })
@@ -371,6 +372,7 @@ export class CollectionsController {
   }
 
   @IsPublic()
+  @Throttle({ default: { limit: 90, ttl: 60000 } })
   @UseGuards(OptionalJwtAuthGuard)
   @Get('market')
   @ApiOperation({
@@ -464,6 +466,7 @@ export class CollectionsController {
   }
 
   @IsPublic()
+  @Throttle({ default: { limit: 90, ttl: 60000 } })
   @Get('user/:userId')
   @ApiOperation({ summary: 'Get collections for a specific user (brand)' })
   @UseGuards(OptionalJwtAuthGuard)
@@ -507,6 +510,7 @@ export class CollectionsController {
   // ============================================
 
   @IsPublic()
+  @Throttle({ default: { limit: 90, ttl: 60000 } })
   @UseGuards(OptionalJwtAuthGuard)
   @Get(':id')
   @ApiOperation({ summary: 'Get collection by ID' })

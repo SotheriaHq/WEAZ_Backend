@@ -1692,6 +1692,27 @@ export class ContentIntegrityService {
             reviewReason: args.reasonNote?.trim() || null,
           },
         });
+
+        if (!submission.designId) {
+          await (tx as any).design.updateMany({
+            where: { legacyCollectionId: submission.legacyCollectionId },
+            data: { status: nextEntityStatus },
+          });
+          const linkedDesigns = await (tx as any).design.findMany({
+            where: { legacyCollectionId: submission.legacyCollectionId },
+            select: { id: true },
+          });
+          for (const linked of linkedDesigns) {
+            await (tx as any).designMedia.updateMany({
+              where: { designId: linked.id },
+              data: {
+                reviewStatus: nextMediaStatus,
+                reviewReasonCode: args.reasonCode ?? null,
+                reviewReason: args.reasonNote?.trim() || null,
+              },
+            });
+          }
+        }
       }
 
       if (submission.designId) {

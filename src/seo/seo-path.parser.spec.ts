@@ -21,5 +21,9 @@ describe('parseSeoPath', () => {
       kind: 'profile_username',
       slug: 'zara',
     });
+    expect(parseSeoPath('/market/sections/new-arrivals')).toEqual({
+      kind: 'market_section',
+      slug: 'new-arrivals',
+    });
   });
 });

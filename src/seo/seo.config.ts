@@ -71,7 +71,19 @@ export const SEO_LEGAL_LABELS: Record<string, string> = {
 };
 
 export function isSeoIndexingEnabled(): boolean {
-  return parseBoolean(process.env.SEO_INDEXING_ENABLED, true);
+  const explicit = process.env.SEO_INDEXING_ENABLED;
+  if (typeof explicit === 'string' && explicit.trim().length > 0) {
+    return parseBoolean(explicit, true);
+  }
+
+  const appEnv = String(process.env.APP_ENV ?? '')
+    .trim()
+    .toLowerCase();
+  if (appEnv === 'sit' || appEnv === 'uat') {
+    return false;
+  }
+
+  return true;
 }
 
 export function getSeoSiteBaseUrl(): string {

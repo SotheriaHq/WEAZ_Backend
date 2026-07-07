@@ -1,74 +1,115 @@
 #!/usr/bin/env bash
 #
 # WEAZ backend deploy — pull, install, migrate, seed (idempotent), build, restart.
-#
-# Runs ON the EC2 box, from the backend app dir (the one with package.json + .env).
-# Safe to run repeatedly. Used both by GitHub Actions (over SSH) and manually.
-#
-#   Manual:   cd ~/WEAZ_Backend && DEPLOY_BRANCH=main bash scripts/deploy.sh
-#   CI:       the Backend CI/CD workflow calls this after checking out the branch.
-#
-# One-time prerequisites on the box (see OPERATIONS.md):
-#   - Node 20 + npm, PM2 installed and running the API (+ worker) processes
-#   - A 2 GB swapfile (small instances OOM during `npm run build` / ts-node seeds)
-#   - `.env` present and correct (it is git-ignored, so deploys never overwrite it)
+# On readiness failure, auto-rolls back to LAST_GOOD_SHA when available.
 #
 set -euo pipefail
 
 APP_DIR="${APP_DIR:-$HOME/WEAZ_Backend}"
 DEPLOY_BRANCH="${DEPLOY_BRANCH:-main}"
-HEALTHCHECK_URL="${HEALTHCHECK_URL:-https://api.weaz.me/healthz}"
+LIVENESS_URL="${LIVENESS_URL:-https://api.weaz.me/healthz}"
+READINESS_URL="${READINESS_URL:-https://api.weaz.me/ready}"
+LAST_GOOD_SHA_FILE="${LAST_GOOD_SHA_FILE:-$APP_DIR/.deploy-last-good-sha}"
+RELEASE_TAG_FILE="${RELEASE_TAG_FILE:-$APP_DIR/.deploy-release-tag}"
 
-echo "==> [1/8] Deploying WEAZ backend  (dir=$APP_DIR  branch=$DEPLOY_BRANCH)"
+rollback_deploy() {
+  if [ ! -f "$LAST_GOOD_SHA_FILE" ]; then
+    echo "!!! No LAST_GOOD_SHA on disk — manual rollback required" >&2
+    return 1
+  fi
+
+  local previous_sha
+  previous_sha="$(cat "$LAST_GOOD_SHA_FILE")"
+  echo "==> Rolling back to $previous_sha"
+  git reset --hard "$previous_sha"
+  npm ci
+  npx prisma generate
+  npm run build
+  pm2 restart all --update-env
+  pm2 save
+}
+
+probe_url() {
+  local url="$1"
+  curl -fsS "$url" >/dev/null
+}
+
+echo "==> [1/10] Deploying WEAZ backend  (dir=$APP_DIR  branch=$DEPLOY_BRANCH)"
 cd "$APP_DIR"
 
-echo "==> [2/8] Fetching latest code"
+current_sha="$(git rev-parse HEAD)"
+if [ -f "$LAST_GOOD_SHA_FILE" ]; then
+  echo "==> Previous known-good SHA: $(cat "$LAST_GOOD_SHA_FILE")"
+else
+  echo "==> Previous known-good SHA: (none recorded yet)"
+fi
+echo "$current_sha" > "$LAST_GOOD_SHA_FILE"
+
+release_tag="v$(date -u +%Y.%m.%d-%H%M%S)-${current_sha:0:7}"
+echo "$release_tag" > "$RELEASE_TAG_FILE"
+export SENTRY_RELEASE="$release_tag"
+export GIT_SHA="$current_sha"
+echo "==> Release tag: $release_tag"
+
+echo "==> [2/10] Fetching latest code"
 git fetch --all --prune
 git checkout "$DEPLOY_BRANCH"
-git reset --hard "origin/$DEPLOY_BRANCH"   # discards stray edits on the box; .env is git-ignored so it is preserved
+git reset --hard "origin/$DEPLOY_BRANCH"
 
-echo "==> [3/8] Installing dependencies (npm ci)"
+echo "==> [3/10] Installing dependencies (npm ci)"
 npm ci
 
-echo "==> [4/8] Generating Prisma client"
+echo "==> [4/10] Generating Prisma client"
 npx prisma generate
 
-echo "==> [5/8] Applying database migrations"
+echo "==> [5/10] Applying database migrations"
 npx prisma migrate deploy
 
-echo "==> [6/8] Seeding platform data (idempotent; transpile-only avoids OOM on small boxes)"
-# Categories auto-seed on app boot via AUTO_SEED_CATEGORY_TAXONOMY=true — no command needed.
+echo "==> [6/10] Seeding platform data (idempotent)"
 TS_NODE_TRANSPILE_ONLY=1 npx ts-node prisma/seed_measurement_points_only.ts
 TS_NODE_TRANSPILE_ONLY=1 npx ts-node prisma/seed_tags.ts
 TS_NODE_TRANSPILE_ONLY=1 npx ts-node prisma/seed_admin.ts
 
-echo "==> [7/8] Building"
+echo "==> [7/10] Building"
 npm run build
 
-echo "==> [8/8] Ensuring worker exists, restarting PM2, saving process list"
-# The background worker (dist/worker.js) processes notifications/email retries,
-# image-variant generation, search indexing, and payment webhooks. It is a
-# SEPARATE process from the API — ensure it is registered under PM2.
+echo "==> [8/10] Ensuring worker exists, restarting PM2"
 pm2 describe weaz-worker >/dev/null 2>&1 || pm2 start npm --name weaz-worker -- run start:worker
 pm2 restart all --update-env
 pm2 save
 
-echo "==> Health check: $HEALTHCHECK_URL"
-# NestJS cold-start on the small EC2 box often exceeds 4 s after pm2 restart;
-# a single early probe caused CI/CD to report failure even though the deploy
-# succeeded (502 → 200 a few seconds later).
-HEALTH_OK=0
+echo "==> [9/10] Liveness probe: $LIVENESS_URL"
+LIVENESS_OK=0
 for attempt in 1 2 3 4 5 6 7 8 9 10; do
-  if curl -fsS "$HEALTHCHECK_URL" >/dev/null; then
-    HEALTH_OK=1
+  if probe_url "$LIVENESS_URL"; then
+    LIVENESS_OK=1
     break
   fi
-  echo "    health attempt ${attempt}/10 not ready yet, waiting 5s..."
+  echo "    liveness attempt ${attempt}/10 not ready yet, waiting 5s..."
   sleep 5
 done
-if [ "$HEALTH_OK" -eq 1 ]; then
-  echo "==> Health OK. Deploy complete."
-else
-  echo "!!! Health check FAILED after 50s — inspect logs: pm2 logs --lines 100 --nostream" >&2
+
+if [ "$LIVENESS_OK" -ne 1 ]; then
+  echo "!!! Liveness check FAILED — initiating rollback" >&2
+  rollback_deploy || true
   exit 1
 fi
+
+echo "==> [10/10] Readiness probe: $READINESS_URL"
+READINESS_OK=0
+for attempt in 1 2 3 4 5 6 7 8 9 10; do
+  if probe_url "$READINESS_URL"; then
+    READINESS_OK=1
+    break
+  fi
+  echo "    readiness attempt ${attempt}/10 not ready yet, waiting 5s..."
+  sleep 5
+done
+
+if [ "$READINESS_OK" -ne 1 ]; then
+  echo "!!! Readiness check FAILED — initiating rollback" >&2
+  rollback_deploy || true
+  exit 1
+fi
+
+echo "==> Deploy complete. Release=$release_tag SHA=$current_sha"

@@ -12,6 +12,8 @@ import {
   sanitizeErrorForLog,
 } from 'src/common/utils/sensitive-log';
 import { MonitoringService } from 'src/monitoring/monitoring.service';
+import * as Sentry from '@sentry/nestjs';
+import { isSentryEnabled } from 'src/common/observability/sentry.instrument';
 
 @Catch()
 export class AllExceptionsFilter implements ExceptionFilter {
@@ -70,6 +72,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
       isProduction ? undefined : JSON.stringify(sanitizeErrorForLog(exception)),
     );
     this.emitExceptionAlert(status, request, safePath, exception);
+    this.captureSentryException(status, request, exception);
 
     // Response format
     const errorResponse = {
@@ -81,6 +84,38 @@ export class AllExceptionsFilter implements ExceptionFilter {
     };
 
     response.status(status).json(errorResponse);
+  }
+
+  private captureSentryException(
+    status: number,
+    request: Request,
+    exception: unknown,
+  ): void {
+    if (!isSentryEnabled() || status < 500) {
+      return;
+    }
+
+    const requestId = String(
+      (request as Request & { requestId?: string }).requestId ??
+        request.headers['x-request-id'] ??
+        '',
+    ).trim();
+    const user = (request as Request & { user?: { id?: string; sub?: string } })
+      .user;
+    const userId = user?.id ?? user?.sub;
+
+    Sentry.withScope((scope) => {
+      if (requestId) {
+        scope.setTag('requestId', requestId);
+      }
+      if (userId) {
+        scope.setUser({ id: userId });
+      }
+      scope.setTag('http.status_code', String(status));
+      scope.setTag('http.method', request.method);
+      scope.setTag('http.path', request.path);
+      Sentry.captureException(exception);
+    });
   }
 
   private emitExceptionAlert(

@@ -97,6 +97,12 @@ export class DesignsController {
   }
 
   @UseGuards(JwtAuthGuard)
+  @Post(':id/withdraw-review')
+  async withdrawDesignFromReview(@Param('id') designId: string, @Req() req: any) {
+    return this.designsService.withdrawDesignFromReview(designId, req.user.id);
+  }
+
+  @UseGuards(JwtAuthGuard)
   @Get('my/drafts')
   async getMyDraftDesigns(@Req() req: any) {
     return this.designsService.getMyDraftDesigns(req.user.id);

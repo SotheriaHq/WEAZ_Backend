@@ -1,9 +1,11 @@
 import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
+import * as jwt from 'jsonwebtoken';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AuthJwtClaims } from '../dto/auth-response.dto';
 import { ConfigService } from '@nestjs/config';
+import { getJwtVerificationSecrets } from 'src/common/config/jwt-secrets';
 
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy) {
@@ -15,10 +17,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       'ACCESS_TOKEN_COOKIE',
       'accessToken',
     );
-    const jwtSecret = configService.get<string>('JWT_ACCESS_SECRET');
-    if (!jwtSecret) {
-      throw new Error('JWT_ACCESS_SECRET must be configured for JwtStrategy');
-    }
+    const verificationSecrets = getJwtVerificationSecrets(configService);
     super({
       // Try cookie first (useful for browser flows), then fall back to Authorization header
       jwtFromRequest: ExtractJwt.fromExtractors([
@@ -32,7 +31,22 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
         ExtractJwt.fromAuthHeaderAsBearerToken(),
       ]),
       ignoreExpiration: false,
-      secretOrKey: jwtSecret,
+      secretOrKeyProvider: (
+        _request: unknown,
+        rawJwtToken: string,
+        done: (error: Error | null, secret?: string) => void,
+      ) => {
+        for (const secret of verificationSecrets) {
+          try {
+            jwt.verify(rawJwtToken, secret);
+            done(null, secret);
+            return;
+          } catch {
+            // try next secret during rotation window
+          }
+        }
+        done(null, verificationSecrets[0]);
+      },
     });
   }
 

@@ -19,6 +19,7 @@ import { AppThrottlerGuard } from './guard/app-throttler.guard';
 import { StudioHandoffService } from './studio-handoff.service';
 import { GoogleTokenVerifierService } from './helper/google-token-verifier.service';
 import { LegalModule } from 'src/legal/legal.module';
+import { getJwtSigningSecret } from 'src/common/config/jwt-secrets';
 
 @Module({
   imports: [
@@ -30,10 +31,7 @@ import { LegalModule } from 'src/legal/legal.module';
       imports: [ConfigModule],
       inject: [ConfigService],
       useFactory: async (config: ConfigService) => {
-        const secret = config.get<string>('JWT_ACCESS_SECRET');
-        if (!secret) {
-          throw new Error('JWT_ACCESS_SECRET must be configured');
-        }
+        const secret = getJwtSigningSecret(config);
         const accessTtlSeconds = Number(
           config.get<string>('JWT_ACCESS_TTL_SECONDS', '900'),
         );

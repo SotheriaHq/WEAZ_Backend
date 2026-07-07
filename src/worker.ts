@@ -1,3 +1,6 @@
+import './common/observability/sentry.instrument';
+import { initSentry } from './common/observability/sentry.instrument';
+initSentry();
 import { NestFactory } from '@nestjs/core';
 import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';

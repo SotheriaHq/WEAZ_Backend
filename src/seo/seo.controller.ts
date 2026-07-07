@@ -3,16 +3,31 @@ import type { Response } from 'express';
 import { IsPublic } from '../auth/decorator/is-public.decorator';
 import { Throttle } from '@nestjs/throttler';
 import { SeoService } from './seo.service';
+import { PrismaService } from '../prisma/prisma.service';
+import { resolveCanonicalRedirect } from './seo-canonical-redirect';
 
 @IsPublic()
 @Controller('public/seo')
 export class SeoController {
-  constructor(private readonly seoService: SeoService) {}
+  constructor(
+    private readonly seoService: SeoService,
+    private readonly prisma: PrismaService,
+  ) {}
 
   @Get('resolve')
   @Throttle({ default: { limit: 180, ttl: 60000 } })
   async resolvePageMeta(@Query('path') path?: string) {
     return this.seoService.resolvePageMeta(path ?? '/');
+  }
+
+  @Get('canonical-redirect')
+  @Throttle({ default: { limit: 180, ttl: 60000 } })
+  async canonicalRedirect(@Query('path') path: string | undefined, @Res() res: Response) {
+    const redirect = await resolveCanonicalRedirect(this.prisma, path ?? '/');
+    if (!redirect) {
+      return res.status(204).send();
+    }
+    return res.redirect(redirect.statusCode, redirect.location);
   }
 
   @Get('bot-html')

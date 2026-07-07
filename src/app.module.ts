@@ -43,6 +43,10 @@ import { LegalModule } from './legal/legal.module';
 import { ClockModule } from './common/clock/clock.module';
 import { AdminJobsModule } from './admin/jobs/admin-jobs.module';
 import { SeoModule } from './seo/seo.module';
+import { LoggerModule } from 'nestjs-pino';
+import { buildPinoModuleParams } from './common/logging/pino.config';
+import { HealthModule } from './health/health.module';
+import { SentryModule } from '@sentry/nestjs/setup';
 
 const isProductionEnvironment =
   String(process.env.NODE_ENV ?? '')
@@ -56,6 +60,8 @@ const isHardProduction =
 
 @Module({
   imports: [
+    SentryModule.forRoot(),
+    LoggerModule.forRoot(buildPinoModuleParams()),
     ConfigModule.forRoot({
       isGlobal: true,
       envFilePath: '.env',
@@ -70,6 +76,7 @@ const isHardProduction =
     PrismaModule,
     LegalModule,
     MonitoringModule,
+    HealthModule,
     AuthModule,
     ThrottlerModule.forRoot([{ ttl: 60000, limit: 120 }]),
     UploadModule,
