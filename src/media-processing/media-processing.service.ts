@@ -58,9 +58,15 @@ export class MediaProcessingService {
     return IMAGE_MIME_TYPES.has(String(mimeType || '').toLowerCase());
   }
 
-  private hasHeicFtypBrand(buffer: Buffer, start: number, end: number): boolean {
+  private hasHeicFtypBrand(
+    buffer: Buffer,
+    start: number,
+    end: number,
+  ): boolean {
     if (start < 0 || end > buffer.length || end - start !== 4) return false;
-    return HEIC_FTYP_BRANDS.has(buffer.toString('ascii', start, end).toLowerCase());
+    return HEIC_FTYP_BRANDS.has(
+      buffer.toString('ascii', start, end).toLowerCase(),
+    );
   }
 
   /** ISO-BMFF container with an HEVC-coded image brand (phone camera HEIC/HEIF). */
@@ -90,7 +96,22 @@ export class MediaProcessingService {
         : typeof error === 'string'
           ? error
           : '';
-    return /heif/i.test(message) || /compression format has not been built in/i.test(message);
+    return (
+      /heif/i.test(message) ||
+      /compression format has not been built in/i.test(message)
+    );
+  }
+
+  private unsupportedImageFormatException(): BadRequestException {
+    return new BadRequestException('Unsupported or unreadable image format');
+  }
+
+  private async decodeHeicToJpegBuffer(buffer: Buffer): Promise<Buffer> {
+    try {
+      return Buffer.from(await this.convertHeicToJpeg(buffer));
+    } catch {
+      throw this.unsupportedImageFormatException();
+    }
   }
 
   /**
@@ -104,14 +125,17 @@ export class MediaProcessingService {
     // read HEIF container metadata without a decode plugin, so metadata() alone
     // is not a reliable signal — sniff the ftyp brand and convert up front.
     if (this.isHeicLikeBuffer(buffer)) {
-      const converted = await this.convertHeicToJpeg(buffer);
-      return Buffer.from(converted);
+      return this.decodeHeicToJpegBuffer(buffer);
     }
 
-    const metadata = await sharp(buffer, { animated: true }).metadata();
+    let metadata: sharp.Metadata;
+    try {
+      metadata = await sharp(buffer, { animated: true }).metadata();
+    } catch {
+      throw this.unsupportedImageFormatException();
+    }
     if (metadata.format === 'heif') {
-      const converted = await this.convertHeicToJpeg(buffer);
-      return Buffer.from(converted);
+      return this.decodeHeicToJpegBuffer(buffer);
     }
     return buffer;
   }
@@ -296,9 +320,10 @@ export class MediaProcessingService {
       // HEIF on this host — convert the original bytes and retry once.
       if (
         buffer === sourceBuffer &&
-        (this.isHeicLikeBuffer(sourceBuffer) || this.isSharpHeifPluginError(error))
+        (this.isHeicLikeBuffer(sourceBuffer) ||
+          this.isSharpHeifPluginError(error))
       ) {
-        buffer = Buffer.from(await this.convertHeicToJpeg(sourceBuffer));
+        buffer = await this.decodeHeicToJpegBuffer(sourceBuffer);
         return this.encodePreviewJpeg(buffer, options);
       }
       throw error;
@@ -319,22 +344,22 @@ export class MediaProcessingService {
       typeof options.maxBytes === 'number' && Number.isFinite(options.maxBytes)
         ? Math.max(100 * 1024, Math.min(options.maxBytes, 8 * 1024 * 1024))
         : undefined;
-    const minQuality = 55;
-    const minWidth = 720;
+    const minQuality = 45;
+    const minWidth = 360;
     let quality = Math.max(minQuality, Math.min(options.quality ?? 82, 90));
     let width = Math.min(maxWidth, probe.width);
 
     // Step quality down first (cheapest fidelity loss), then dimensions, until
     // the encoded JPEG fits under maxBytes. Mirrors the client-side
     // imagePreprocess loop for devices that cannot decode the file locally.
-    for (let attempt = 0; attempt < 8; attempt += 1) {
+    for (let attempt = 0; attempt < 14; attempt += 1) {
       const resized = await sharp(buffer, { animated: false })
         .rotate()
         .resize({ width, withoutEnlargement: true })
         .jpeg({ quality, mozjpeg: true })
         .toBuffer({ resolveWithObject: true });
 
-      if (!maxBytes || resized.data.length <= maxBytes || attempt === 7) {
+      if (!maxBytes || resized.data.length <= maxBytes) {
         return {
           width: resized.info.width,
           height: resized.info.height,
@@ -347,19 +372,12 @@ export class MediaProcessingService {
         quality = Math.max(minQuality, quality - 8);
         continue;
       }
-      const nextWidth = Math.round(width * 0.84);
-      if (nextWidth < minWidth) {
-        return {
-          width: resized.info.width,
-          height: resized.info.height,
-          buffer: resized.data,
-          mimeType: 'image/jpeg',
-        };
-      }
-      width = nextWidth;
+      width = Math.max(minWidth, Math.round(width * 0.82));
     }
 
-    throw new BadRequestException('Unable to encode image preview');
+    throw new BadRequestException(
+      'Unable to encode image preview under size limit',
+    );
   }
 
   private pickPrimaryFormat(

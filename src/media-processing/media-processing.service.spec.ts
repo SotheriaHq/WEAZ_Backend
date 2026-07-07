@@ -43,7 +43,9 @@ describe('MediaProcessingService', () => {
     });
 
     it('detects HEIC compatible brands when major brand is generic', () => {
-      expect(service.isHeicLikeBuffer(makeCompatibleBrandHeicBuffer())).toBe(true);
+      expect(service.isHeicLikeBuffer(makeCompatibleBrandHeicBuffer())).toBe(
+        true,
+      );
     });
 
     it('rejects JPEG and short buffers', async () => {
@@ -85,18 +87,18 @@ describe('MediaProcessingService', () => {
       convertSpy.mockRestore();
     });
 
-    it('routes undecodable HEIC-branded buffers into the libheif decoder', async () => {
+    it('rejects malformed HEIC-branded buffers as bad input', async () => {
       // A bare ftyp box is not a decodable HEIC, but the error must come from
       // the HEIC decoder — proving conversion is attempted up front.
       await expect(
         service.toDecodableImageBuffer(makeFakeHeicBuffer()),
-      ).rejects.toThrow(/heif/i);
+      ).rejects.toThrow(BadRequestException);
     });
 
-    it('rethrows sharp errors for non-HEIC garbage', async () => {
+    it('rejects non-HEIC garbage as bad input', async () => {
       await expect(
         service.toDecodableImageBuffer(Buffer.alloc(64, 0x41)),
-      ).rejects.toThrow(/unsupported image format/i);
+      ).rejects.toThrow(BadRequestException);
     });
   });
 
@@ -123,6 +125,17 @@ describe('MediaProcessingService', () => {
       expect(preview.buffer.length).toBeLessThanOrEqual(capBytes);
     }, 30_000);
 
+    it('keeps reducing dimensions until the output fits a strict maxBytes cap', async () => {
+      const jpeg = await makeNoisyJpeg(1600, 1200);
+      const capBytes = 100 * 1024;
+      const preview = await service.generatePreviewJpeg(jpeg, {
+        maxWidth: 1600,
+        quality: 82,
+        maxBytes: capBytes,
+      });
+      expect(preview.buffer.length).toBeLessThanOrEqual(capBytes);
+    }, 30_000);
+
     it('rejects undecodable input', async () => {
       await expect(
         service.generatePreviewJpeg(Buffer.alloc(64, 0x41)),
@@ -131,17 +144,15 @@ describe('MediaProcessingService', () => {
 
     it('rejects images with undetectable dimensions', async () => {
       const svc = new MediaProcessingService();
-      jest
-        .spyOn(svc, 'probeImage')
-        .mockResolvedValue({
-          width: null,
-          height: null,
-          hasAlpha: false,
-          isAnimated: false,
-          orientation: null,
-          colorSpace: null,
-          format: null,
-        });
+      jest.spyOn(svc, 'probeImage').mockResolvedValue({
+        width: null,
+        height: null,
+        hasAlpha: false,
+        isAnimated: false,
+        orientation: null,
+        colorSpace: null,
+        format: null,
+      });
       const jpeg = await makeNoisyJpeg(32, 32);
       await expect(svc.generatePreviewJpeg(jpeg)).rejects.toThrow(
         BadRequestException,

@@ -13,6 +13,7 @@ import {
   BadRequestException,
   Res,
   StreamableFile,
+  HttpCode,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { JwtAuthGuard } from 'src/auth/guard/jwt-auth.guard';
@@ -81,6 +82,7 @@ export class UploadController {
   // ============================================
 
   @Post('preview-image')
+  @HttpCode(200)
   @UseGuards(JwtAuthGuard, ThrottlerGuard)
   // Designs allow 20 media; a phone whose camera writes HEIC normalizes every
   // pick through here, so the limit must comfortably cover one full design.
@@ -119,7 +121,10 @@ export class UploadController {
     response.setHeader('Cache-Control', 'no-store');
     response.setHeader('X-Image-Width', String(preview.width));
     response.setHeader('X-Image-Height', String(preview.height));
-    return new StreamableFile(preview.buffer);
+    return new StreamableFile(preview.buffer, {
+      type: preview.mimeType,
+      length: preview.buffer.length,
+    });
   }
 
   @UseGuards(JwtAuthGuard)
