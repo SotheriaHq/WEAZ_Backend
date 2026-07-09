@@ -1375,10 +1375,26 @@ export class NotificationRegistry {
           designId: Joi.string().optional(),
           reasonCode: Joi.string().optional().allow(null),
           message: Joi.string().optional(),
+          title: Joi.string().optional().allow(null, ''),
+          contentTitle: Joi.string().optional().allow(null, ''),
           targetUrl: Joi.string().optional(),
-        }),
-        formatter: (n: any) =>
-          n.payload?.message || 'Content review status updated',
+        }).unknown(true),
+        formatter: (n: any) => {
+          const detailed =
+            typeof n.payload?.message === 'string' && n.payload.message.trim()
+              ? n.payload.message.trim()
+              : '';
+          if (detailed) return detailed;
+          const title =
+            (typeof n.payload?.title === 'string' && n.payload.title.trim()) ||
+            (typeof n.payload?.contentTitle === 'string' &&
+              n.payload.contentTitle.trim()) ||
+            '';
+          if (title) {
+            return `Content review update for "${title}"`;
+          }
+          return 'Content review status updated';
+        },
       });
     });
 

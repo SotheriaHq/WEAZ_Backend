@@ -1903,6 +1903,15 @@ export class ContentIntegrityService {
   private async resolveContentTitleForNotification(
     payload: Record<string, unknown>,
   ): Promise<string | null> {
+    const fromPayload =
+      (typeof payload.title === 'string' && payload.title.trim()) ||
+      (typeof payload.contentTitle === 'string' && payload.contentTitle.trim()) ||
+      (typeof payload.productName === 'string' && payload.productName.trim()) ||
+      (typeof payload.collectionTitle === 'string' &&
+        payload.collectionTitle.trim()) ||
+      null;
+    if (fromPayload) return fromPayload;
+
     try {
       const collectionId =
         (payload.collectionId as string | undefined) ??
@@ -1924,11 +1933,21 @@ export class ContentIntegrityService {
       }
       const designId = payload.designId as string | undefined;
       if (designId) {
-        const row = await (this.prisma as any).design.findUnique({
+        // Prefer explicit Design row, then legacy collection-backed design.
+        try {
+          const row = await (this.prisma as any).design.findUnique({
+            where: { id: designId },
+            select: { title: true },
+          });
+          if (row?.title?.trim()) return row.title.trim();
+        } catch {
+          /* design table may not be active in legacy mode */
+        }
+        const legacy = await this.prisma.collection.findUnique({
           where: { id: designId },
           select: { title: true },
         });
-        if (row?.title?.trim()) return row.title.trim();
+        if (legacy?.title?.trim()) return legacy.title.trim();
       }
     } catch {
       // Title is a nice-to-have; never block the notification on it.
@@ -1942,13 +1961,24 @@ export class ContentIntegrityService {
   ) {
     const title = await this.resolveContentTitleForNotification(payload);
     const when = this.formatUserFacingTime();
+    const entityLabel =
+      String(payload.entityType ?? payload.contentType ?? '')
+        .toUpperCase()
+        .includes('PRODUCT')
+        ? 'product'
+        : String(payload.entityType ?? '')
+              .toUpperCase()
+              .includes('COLLECTION')
+          ? 'collection'
+          : 'design';
     const message = title
-      ? `Your content "${title}" was submitted for review on ${when} and is pending approval. We'll notify you the moment it's reviewed.`
-      : `Your content was submitted for review on ${when} and is pending approval. We'll notify you the moment it's reviewed.`;
+      ? `Your ${entityLabel} "${title}" was submitted for review on ${when} and is pending approval. We'll notify you as soon as the review is complete.`
+      : `Your ${entityLabel} was submitted for review on ${when} and is pending approval. We'll notify you as soon as the review is complete.`;
     await this.notifyContentReviewOutcome(ownerId, {
       type: NotificationType.CONTENT_SUBMITTED_FOR_REVIEW,
       ...payload,
       title,
+      contentTitle: title,
       message,
     });
   }

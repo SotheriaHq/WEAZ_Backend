@@ -485,6 +485,64 @@ export function renderNotificationEmail(args: {
     };
   }
 
+  // Content review lifecycle — prefer the detailed server message (includes title + Lagos time).
+  const contentReviewEmailTypes = new Set<NotificationType>([
+    NotificationType.CONTENT_SUBMITTED_FOR_REVIEW,
+    NotificationType.CONTENT_REVIEW_APPROVED,
+    NotificationType.CONTENT_REVIEW_REJECTED,
+    NotificationType.CONTENT_CHANGES_REQUESTED,
+    NotificationType.CONTENT_RESUBMITTED,
+    NotificationType.CONTENT_PUBLISHED,
+    NotificationType.CONTENT_REVIEW_FAILED,
+  ]);
+  if (contentReviewEmailTypes.has(args.notificationType as NotificationType)) {
+    const contentTitle =
+      asTrimmedString(args.payload?.title) ||
+      asTrimmedString(args.payload?.contentTitle) ||
+      asTrimmedString(args.payload?.collectionTitle) ||
+      asTrimmedString(args.payload?.productName) ||
+      '';
+    const detailedMessage =
+      asTrimmedString(args.message) ||
+      (contentTitle
+        ? `Update for your content "${contentTitle}".`
+        : 'Your content review status was updated.');
+    const subjectTitle = contentTitle
+      ? `"${contentTitle}"`
+      : 'your content';
+    const subjectVerb =
+      args.notificationType === NotificationType.CONTENT_SUBMITTED_FOR_REVIEW
+        ? 'submitted for review'
+        : args.notificationType === NotificationType.CONTENT_REVIEW_APPROVED ||
+            args.notificationType === NotificationType.CONTENT_PUBLISHED
+          ? 'approved / live'
+          : args.notificationType === NotificationType.CONTENT_REVIEW_REJECTED
+            ? 'not approved'
+            : args.notificationType === NotificationType.CONTENT_CHANGES_REQUESTED
+              ? 'needs changes'
+              : 'review update';
+    const cta = args.targetUrl
+      ? `<p style="margin:20px 0">${renderEmailButton(args.targetUrl, `Open in ${companyName}`, { padding: '11px 18px' })}</p>`
+      : '';
+    const titleLine = contentTitle
+      ? `<p style="margin:0 0 8px;font-size:16px;font-weight:700;color:${EMAIL_COLORS.textPrimary}">${escapeHtml(contentTitle)}</p>`
+      : '';
+    const html = renderEmailShell({
+      appName: companyName,
+      headerSubtitle: 'Content review',
+      title: `Content ${subjectVerb}`,
+      bodyHtml: `${titleLine}<p style="margin:0 0 10px;line-height:1.7;color:${EMAIL_COLORS.textSecondary}">${escapeHtml(detailedMessage)}</p>${cta}`,
+      footerContextText: `You are receiving this email because your ${companyName} account has content review notifications enabled.`,
+    });
+    return {
+      subject: `${companyName}: ${subjectTitle} ${subjectVerb}`,
+      html,
+      text: [contentTitle, detailedMessage, args.targetUrl]
+        .filter(Boolean)
+        .join('\n\n'),
+    };
+  }
+
   const cta = args.targetUrl
     ? `<p style="margin:20px 0">${renderEmailButton(args.targetUrl, `Open in ${companyName}`, { padding: '11px 18px' })}</p>`
     : '';
