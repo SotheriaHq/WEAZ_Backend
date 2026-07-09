@@ -9,12 +9,14 @@ import { EmailService } from 'src/email/email.service';
 import { ConfigService } from '@nestjs/config';
 import { DEFAULT_NOTIFICATION_SETTINGS } from './notifications.types';
 import { PushNotificationsService } from './push-notifications.service';
+import { NotificationRealtimeBusService } from 'src/realtime/notification-realtime-bus.service';
 
 describe('NotificationsService', () => {
   let service: NotificationsService;
   let mockPrisma: any;
   let cacheManager: any;
   let mockPushNotifications: { enqueue: jest.Mock };
+  let mockNotificationRealtimeBus: { publishOrEmit: jest.Mock };
 
   beforeEach(async () => {
     mockPrisma = {
@@ -89,6 +91,9 @@ describe('NotificationsService', () => {
         reason: 'no-active-tokens',
       }),
     };
+    mockNotificationRealtimeBus = {
+      publishOrEmit: jest.fn().mockResolvedValue(true),
+    };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -100,6 +105,10 @@ describe('NotificationsService', () => {
         { provide: EmailService, useValue: mockEmailService },
         { provide: ConfigService, useValue: mockConfigService },
         { provide: PushNotificationsService, useValue: mockPushNotifications },
+        {
+          provide: NotificationRealtimeBusService,
+          useValue: mockNotificationRealtimeBus,
+        },
       ],
     }).compile();
 
@@ -216,6 +225,15 @@ describe('NotificationsService', () => {
       expect(cacheManager.del).toHaveBeenCalledWith(
         'unread_count:recipient-id',
       );
+      expect(mockNotificationRealtimeBus.publishOrEmit).toHaveBeenCalledWith({
+        event: 'notification.created',
+        room: 'USER:recipient-id',
+        payload: expect.objectContaining({
+          id: mockCreated.id,
+          type: NotificationType.THREAD,
+          isRead: false,
+        }),
+      });
       expect(mockPushNotifications.enqueue).toHaveBeenCalledWith(
         expect.objectContaining({
           recipientId: 'recipient-id',

@@ -31,11 +31,11 @@ export const CONTENT_REVIEW_REASON_LABELS: Record<
     'Media does not match product/design details',
   [ContentReviewReasonCode.PROHIBITED_CONTENT]: 'Offensive or unsafe content',
   [ContentReviewReasonCode.AI_OR_MANIPULATED_IMAGE_SUSPECTED]:
-    'Product or design is not clearly shown',
+    'Image looks AI-generated or heavily edited',
   [ContentReviewReasonCode.WRONG_CATEGORY_OR_METADATA_MISMATCH]:
     'Incomplete or misleading product/design information',
   [ContentReviewReasonCode.UNSAFE_OR_FALSE_CLAIM]:
-    'Product or design is not clearly shown',
+    'Listing makes an unsafe or false claim',
   [ContentReviewReasonCode.INTELLECTUAL_PROPERTY_OR_BRAND_MISUSE]:
     'Possible stolen or copyrighted image',
   [ContentReviewReasonCode.NOT_A_PRODUCT_OR_DESIGN_LISTING]:

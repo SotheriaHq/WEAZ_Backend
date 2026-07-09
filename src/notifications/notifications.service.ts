@@ -5,6 +5,7 @@ import {
   Inject,
   Logger,
   BadRequestException,
+  Optional,
 } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { EventsGateway } from 'src/realtime/events.gateway';
@@ -50,6 +51,7 @@ import {
 import { canonicalBrandProfileSelect } from 'src/common/brand-profile-source.helper';
 import { PushNotificationsService } from './push-notifications.service';
 import { normalizeCatalogTarget } from 'src/common/domain/catalog-target';
+import { NotificationRealtimeBusService } from 'src/realtime/notification-realtime-bus.service';
 
 type EmailSettingsResponse = {
   globalEnabled: boolean;
@@ -93,6 +95,8 @@ export class NotificationsService {
     private readonly emailService: EmailService,
     private readonly config: ConfigService,
     private readonly pushNotifications: PushNotificationsService,
+    @Optional()
+    private readonly notificationRealtimeBus?: NotificationRealtimeBusService,
   ) {}
 
   private mapActorDisplay(actor: any) {
@@ -417,14 +421,23 @@ export class NotificationsService {
     await this.prisma.notification.delete({ where: { id } });
     await this.cacheManager.del(`unread_count:${recipientId}`);
 
+    const payload = {
+      id,
+      unreadDelta: notification.isRead ? 0 : -1,
+      ts: Date.now(),
+    };
+
     try {
-      this.events.server
-        ?.to(`USER:${recipientId}`)
-        .emit('notification.deleted', {
-          id,
-          unreadDelta: notification.isRead ? 0 : -1,
-          ts: Date.now(),
-        });
+      const emitted = await this.notificationRealtimeBus?.publishOrEmit({
+        event: 'notification.deleted',
+        room: `USER:${recipientId}`,
+        payload,
+      });
+      if (!emitted) {
+        this.events.server
+          ?.to(`USER:${recipientId}`)
+          .emit('notification.deleted', payload);
+      }
     } catch {
       // Ignore realtime emit errors for deletion path.
     }
@@ -1607,21 +1620,30 @@ export class NotificationsService {
           (emittedPayload as any).targetUrl,
         );
 
-        this.events.server
-          ?.to(`USER:${recipientId}`)
-          .emit('notification.created', {
-            id: created.id,
-            type: created.type,
-            payload: emittedPayload,
-            actor: this.mapActorDisplay(created.actor),
-            createdAt: created.createdAt,
-            isRead: created.isRead,
-            message: this.formatMessage(created),
-            version: 2,
-            target,
-            targetUrl,
-            ts: Date.now(),
-          });
+        const realtimePayload = {
+          id: created.id,
+          type: created.type,
+          payload: emittedPayload,
+          actor: this.mapActorDisplay(created.actor),
+          createdAt: created.createdAt,
+          isRead: created.isRead,
+          message: this.formatMessage(created),
+          version: 2,
+          target,
+          targetUrl,
+          ts: Date.now(),
+        };
+
+        const emitted = await this.notificationRealtimeBus?.publishOrEmit({
+          event: 'notification.created',
+          room: `USER:${recipientId}`,
+          payload: realtimePayload,
+        });
+        if (!emitted) {
+          this.events.server
+            ?.to(`USER:${recipientId}`)
+            .emit('notification.created', realtimePayload);
+        }
         this.logger.debug('Notification event emitted successfully');
       } catch (error) {
         this.logger.warn(`Failed to emit notification event: ${error}`);

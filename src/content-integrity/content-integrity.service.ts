@@ -1629,7 +1629,7 @@ export class ContentIntegrityService {
       throw new ForbiddenException('Admins cannot review their own content.');
     }
 
-    const notificationOwner = await this.prisma.$transaction(async (tx) => {
+    const reviewTxResult = await this.prisma.$transaction(async (tx) => {
       await (tx as any).contentSubmission.update({
         where: { id: submission.id },
         data: {
@@ -1642,6 +1642,7 @@ export class ContentIntegrityService {
       });
 
       let ownerId: string | null = null;
+      let targetTitle: string | null = null;
       let targetType = String(submission.entityType);
       let targetId =
         submission.productId ??
@@ -1662,6 +1663,7 @@ export class ContentIntegrityService {
             brand: { select: { ownerId: true } },
           },
         });
+        targetTitle = product.name ?? null;
         ownerId = product.brand?.ownerId ?? null;
         targetType = 'Product';
         targetId = product.id;
@@ -1681,6 +1683,7 @@ export class ContentIntegrityService {
           data: { status: nextEntityStatus } as any,
           select: { id: true, ownerId: true, title: true },
         });
+        targetTitle = targetTitle ?? collection.title ?? null;
         ownerId = collection.ownerId;
         targetType = 'Collection';
         targetId = collection.id;
@@ -1716,10 +1719,12 @@ export class ContentIntegrityService {
       }
 
       if (submission.designId) {
-        await (tx as any).design.update({
+        const updatedDesign = await (tx as any).design.update({
           where: { id: submission.designId },
           data: { status: nextEntityStatus },
+          select: { title: true },
         });
+        targetTitle = targetTitle ?? updatedDesign?.title ?? null;
         await (tx as any).designMedia.updateMany({
           where: { designId: submission.designId },
           data: {
@@ -1756,8 +1761,10 @@ export class ContentIntegrityService {
         },
       });
 
-      return ownerId;
+      return { ownerId, targetTitle };
     });
+    const notificationOwner = reviewTxResult.ownerId;
+    const reviewedContentTitle = reviewTxResult.targetTitle;
 
     await this.recordBrandTrustEvent({
       brandId: submission.brandId,
@@ -1782,7 +1789,12 @@ export class ContentIntegrityService {
             : args.action === 'reject'
               ? NotificationType.CONTENT_REVIEW_REJECTED
               : NotificationType.CONTENT_CHANGES_REQUESTED,
-        message: this.reviewOutcomeMessage(args.action, args.reasonCode),
+        message: this.reviewOutcomeMessage(
+          args.action,
+          args.reasonCode,
+          reviewedContentTitle,
+        ),
+        title: reviewedContentTitle,
         submissionId: submission.id,
         reasonCode: args.reasonCode ?? null,
       });
@@ -1873,14 +1885,71 @@ export class ContentIntegrityService {
     }
   }
 
+  /** Lagos-local timestamp for user-facing copy (primary market is WAT). */
+  private formatUserFacingTime(date = new Date()): string {
+    try {
+      return new Intl.DateTimeFormat('en-NG', {
+        dateStyle: 'medium',
+        timeStyle: 'short',
+        timeZone: 'Africa/Lagos',
+      }).format(date);
+    } catch {
+      return date.toISOString();
+    }
+  }
+
+  /** Best-effort content title lookup so review notifications can speak
+   *  about "Ankara Two-Piece" instead of "your content". */
+  private async resolveContentTitleForNotification(
+    payload: Record<string, unknown>,
+  ): Promise<string | null> {
+    try {
+      const collectionId =
+        (payload.collectionId as string | undefined) ??
+        (payload.legacyCollectionId as string | undefined);
+      if (collectionId) {
+        const row = await this.prisma.collection.findUnique({
+          where: { id: collectionId },
+          select: { title: true },
+        });
+        if (row?.title?.trim()) return row.title.trim();
+      }
+      const productId = payload.productId as string | undefined;
+      if (productId) {
+        const row = await this.prisma.product.findUnique({
+          where: { id: productId },
+          select: { name: true },
+        });
+        if (row?.name?.trim()) return row.name.trim();
+      }
+      const designId = payload.designId as string | undefined;
+      if (designId) {
+        const row = await (this.prisma as any).design.findUnique({
+          where: { id: designId },
+          select: { title: true },
+        });
+        if (row?.title?.trim()) return row.title.trim();
+      }
+    } catch {
+      // Title is a nice-to-have; never block the notification on it.
+    }
+    return null;
+  }
+
   async notifyContentSubmitted(
     ownerId: string,
     payload: Record<string, unknown>,
   ) {
+    const title = await this.resolveContentTitleForNotification(payload);
+    const when = this.formatUserFacingTime();
+    const message = title
+      ? `Your content "${title}" was submitted for review on ${when} and is pending approval. We'll notify you the moment it's reviewed.`
+      : `Your content was submitted for review on ${when} and is pending approval. We'll notify you the moment it's reviewed.`;
     await this.notifyContentReviewOutcome(ownerId, {
       type: NotificationType.CONTENT_SUBMITTED_FOR_REVIEW,
-      message: 'Your content was submitted for review.',
       ...payload,
+      title,
+      message,
     });
   }
 
@@ -1912,19 +1981,24 @@ export class ContentIntegrityService {
   private reviewOutcomeMessage(
     action: 'approve' | 'reject' | 'request_changes',
     reasonCode?: ContentReviewReasonCode | string | null,
+    title?: string | null,
   ) {
-    if (action === 'approve') return 'Your content was approved and published.';
+    const contentRef = title?.trim() ? `"${title.trim()}"` : 'your content';
+    const when = this.formatUserFacingTime();
+    if (action === 'approve') {
+      return `Great news — ${contentRef} was approved on ${when} and is now live. Shoppers can discover it on the Runway and place orders right away. Share it with your customers and friends to get more eyes on it.`;
+    }
     const reason = reasonCode
       ? CONTENT_REVIEW_REASON_LABELS[reasonCode as ContentReviewReasonCode]
       : null;
     if (action === 'reject') {
       return reason
-        ? `Your content was rejected: ${reason}.`
-        : 'Your content was rejected.';
+        ? `Unfortunately ${contentRef} was not approved on ${when}: ${reason}. You can update it and submit again once it's ready.`
+        : `Unfortunately ${contentRef} was not approved on ${when}. You can update it and submit again once it's ready.`;
     }
     return reason
-      ? `Changes requested before publishing: ${reason}.`
-      : 'Changes requested before publishing.';
+      ? `Changes were requested on ${contentRef} (${when}): ${reason}. Review the feedback, make the updates, and resubmit — it only takes a moment.`
+      : `Changes were requested on ${contentRef} (${when}). Review the feedback, make the updates, and resubmit — it only takes a moment.`;
   }
 
   emitIntegrityAlert(event: string, metadata: Record<string, unknown>) {
