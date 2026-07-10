@@ -27,7 +27,7 @@ Manual runtime QA was not executed in this phase. Automated/static validation pa
 | Backend collection data model | Collection detail source identified. | PASS | `src/collections/collections.service.ts`: existing detail source plus new public list source for market sections. | NO | PASS |
 | Backend collection data model | Collection can include existing/new products. | PASS | Existing store collection product-link endpoints remain; deterministic seed links existing seeded products. | NO | PASS |
 | Backend collection data model | Collection product shape documented. | PASS | `docs/collection-bagging-backend-contract.md`; `src/bagging/bagging.types.ts`. | NO | PASS |
-| Backend collection data model | Store/design/legacy collection differences documented if applicable. | PASS | `docs/collection-bagging-backend-contract.md`; `rules/AGENT_RULES.md` entity rule. | NO | PASS |
+| Backend collection data model | Store/design/legacy collection differences documented if applicable. | PASS | `docs/collection-bagging-backend-contract.md`; Design/Product/StoreCollection entity distinction. | NO | PASS |
 | Backend collection data model | Collection ownership/brand relationship identified. | PASS | `StoreCollection.ownerId`; collection status derives brand context from owner/products and blocks own-brand bagging. | NO | PASS |
 
 ## Backend Collection Readiness

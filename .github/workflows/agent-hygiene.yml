@@ -1,0 +1,58 @@
+name: Agent Hygiene
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  agent-hygiene:
+    name: Block agent files and interaction traces
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fail if agent workspace files are tracked
+        run: |
+          PATTERNS='(^|/)(CLAUDE\.md|AGENTS\.md|CODEMAP\.md|LAST_SESSION\.md|GEMINI\.md|\.cursorrules|\.windsurfrules|\.clinerules[^/]*|\.mcp\.json|copilot-instructions\.md)$|(^|/)(\.claude|\.cursor|\.windsurf|\.gemini|\.kilo|\.ai|project-memory|memory-bank)/|(^|/)\.aider'
+          MATCHES=$(git ls-files | grep -E -i "$PATTERNS" | grep -v '^\.github/workflows/agent-hygiene\.yml$' || true)
+          if [ -n "$MATCHES" ]; then
+            echo "::error::Agent workspace files must never be committed. Remove with 'git rm --cached <file>' (they are gitignored):"
+            echo "$MATCHES"
+            exit 1
+          fi
+
+      - name: Fail if tracked content references agent workspace files
+        run: |
+          MATCHES=$(git grep -n -I -i -E "rules/AGENT_RULES|LAST_SESSION\.md|CODEMAP\.md|project-memory/INDEX" -- . ':(exclude).github/workflows/agent-hygiene.yml' ':(exclude).gitignore' ':(exclude)**/.gitignore' || true)
+          if [ -n "$MATCHES" ]; then
+            echo "::error::Tracked content references agent workspace files:"
+            echo "$MATCHES"
+            exit 1
+          fi
+
+      - name: Fail if tracked content contains AI attribution traces
+        run: |
+          MATCHES=$(git grep -n -I -i -E "co-authored-by: *(claude|chatgpt|github copilot|cursor|gemini|openai|aider)|generated with \[?(claude|chatgpt|copilot|cursor|aider)" -- . ':(exclude).github/workflows/agent-hygiene.yml' || true)
+          if [ -n "$MATCHES" ]; then
+            echo "::error::AI attribution traces found in tracked content:"
+            echo "$MATCHES"
+            exit 1
+          fi
+
+      - name: Fail if newly pushed commits carry AI co-author trailers
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            RANGE="${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}"
+          elif [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ] && git cat-file -e "${{ github.event.before }}" 2>/dev/null; then
+            RANGE="${{ github.event.before }}..${{ github.sha }}"
+          else
+            RANGE="${{ github.sha }} --max-count=1"
+          fi
+          MATCHES=$(git log $RANGE --format='commit %h%n%s%n%b' | grep -E -i "co-authored-by: *(claude|chatgpt|github copilot|cursor|gemini|openai|aider)" || true)
+          if [ -n "$MATCHES" ]; then
+            echo "::error::New commits must not carry AI co-author trailers. Amend/reword the commit message:"
+            echo "$MATCHES"
+            exit 1
+          fi

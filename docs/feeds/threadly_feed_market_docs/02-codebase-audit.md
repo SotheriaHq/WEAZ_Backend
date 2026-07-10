@@ -310,11 +310,6 @@ Remaining legacy terminology:
 
 ### Commands run
 
-- `Get-Content -Raw project-memory/INDEX.md`
-- `Get-Content -Raw rules/AGENT_RULES.md`
-- `Get-Content -Raw AGENTS.md`
-- `Get-Content -Raw CLAUDE.md`
-- `Get-Content -Raw LAST_SESSION.md`
 - `git remote -v; git branch --show-current; git status --short --branch`
 - `git fetch origin; git pull --ff-only; git status --short --branch`
 - `git -C threadly-mobile worktree prune`

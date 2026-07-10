@@ -1,6 +1,7 @@
 # Threadly Backend — Agent Context
 
 > You are in `bthreadly/` — the NestJS API. See root `CODEMAP.md` for task routing.
+> **Ground truth**: this folder is its OWN git repo (`SotheriaHq/WEAZ_Backend`); the parent workspace folder is NOT a repo. Sibling apps `../fthreadly` (web) and `../threadly-mobile` (Expo) are separate repos. "Threadly" = codename, WIEZ/WEAZ = public brand. Full facts: root `CLAUDE.md` → "Workspace Ground Truth". Typecheck: `npx tsc --noEmit`.
 
 ## Stack
 
