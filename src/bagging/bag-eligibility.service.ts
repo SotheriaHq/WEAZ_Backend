@@ -176,6 +176,7 @@ export class BagEligibilityService {
       }
 
       const isOwner = Boolean(userId && collection.ownerId === userId);
+      const isBrandAccount = await this.isBrandAccount(userId);
       const publicCollection =
         collection.isAvailableInStore !== false &&
         collection.status === CollectionStatus.PUBLISHED &&
@@ -257,22 +258,28 @@ export class BagEligibilityService {
         (product) => product.stockState === 'OUT_OF_STOCK',
       ).length;
       const canBagSelected =
-        Boolean(userId) && directEligible.length > 0 && !isOwner;
+        Boolean(userId) &&
+        directEligible.length > 0 &&
+        !isOwner &&
+        !isBrandAccount;
       const canBagAll =
         Boolean(userId) &&
         products.length > 0 &&
         !isOwner &&
+        !isBrandAccount &&
         blockedProducts.length === 0 &&
         directEligible.length > 0;
-      const disabledReason = isOwner
-        ? 'Brands cannot bag their own collection.'
-        : !userId
-          ? 'Sign in to bag this collection.'
-          : products.length === 0
-            ? 'This collection has no available products to bag.'
-            : directEligible.length === 0
-              ? 'Resolve product blockers before bagging this collection.'
-              : null;
+      const disabledReason = isBrandAccount
+        ? 'Brand accounts cannot bag items. Use a buyer account to shop.'
+        : isOwner
+          ? 'Brands cannot bag their own collection.'
+          : !userId
+            ? 'Sign in to bag this collection.'
+            : products.length === 0
+              ? 'This collection has no available products to bag.'
+              : directEligible.length === 0
+                ? 'Resolve product blockers before bagging this collection.'
+                : null;
 
       return {
         sourceType: 'COLLECTION',
@@ -340,12 +347,22 @@ export class BagEligibilityService {
     }
   }
 
+  private async isBrandAccount(userId?: string): Promise<boolean> {
+    if (!userId) return false;
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { type: true },
+    });
+    return user?.type === 'BRAND';
+  }
+
   private async resolveProductReadiness(
     product: any,
     productId: string,
     userId?: string,
   ): Promise<BagReadinessContract> {
     const isOwner = Boolean(userId && product.brand?.ownerId === userId);
+    const isBrandAccount = await this.isBrandAccount(userId);
     const publicProduct =
       !product.deletedAt &&
       !product.archivedAt &&
@@ -462,12 +479,14 @@ export class BagEligibilityService {
       product.standardCheckoutEnabled !== false &&
       publicProduct &&
       inStock &&
-      !isOwner;
+      !isOwner &&
+      !isBrandAccount;
     const customEnabled =
       product.customOrderEnabled === true &&
       Boolean(customConfiguration) &&
       publicProduct &&
-      !isOwner;
+      !isOwner &&
+      !isBrandAccount;
     const standardMeasurementKeys =
       standardEnabled && this.isStandardFittingRequired(product)
         ? this.normalizeKeys(product.customMeasurementKeys)
@@ -501,6 +520,7 @@ export class BagEligibilityService {
       customEnabled,
       publicSource: publicProduct,
       isOwner,
+      isBrandAccount,
       authenticated: Boolean(userId),
       inStock,
       stock: Number(product.totalStock || 0),
@@ -516,12 +536,14 @@ export class BagEligibilityService {
       previousStandardOrder,
       previousCustomOrder,
       disabledReason:
-        !standardEnabled &&
-        !customEnabled &&
-        product.customOrderEnabled === true &&
-        !customConfiguration
-          ? 'This product needs an active custom-order configuration before it can be bagged.'
-          : null,
+        isBrandAccount
+          ? 'Brand accounts cannot bag items. Use a buyer account to shop.'
+          : !standardEnabled &&
+              !customEnabled &&
+              product.customOrderEnabled === true &&
+              !customConfiguration
+            ? 'This product needs an active custom-order configuration before it can be bagged.'
+            : null,
     });
   }
 
@@ -529,7 +551,9 @@ export class BagEligibilityService {
     sourceId: string,
     userId?: string,
   ): Promise<BagReadinessContract> {
-    const design = await this.prisma.collection.findFirst({
+    // Resolve either a legacy collection id or an explicit Design domain id.
+    // Feed cards may pass designId when legacyCollectionId is absent.
+    let design = await this.prisma.collection.findFirst({
       where: {
         id: sourceId,
         deletedAt: null,
@@ -543,6 +567,57 @@ export class BagEligibilityService {
       },
     });
 
+    let explicitDesignId: string | null = null;
+    if (!design) {
+      const explicit = await this.prisma.design.findFirst({
+        where: {
+          deletedAt: null,
+          OR: [{ id: sourceId }, { legacyCollectionId: sourceId }],
+        },
+        select: {
+          id: true,
+          legacyCollectionId: true,
+          ownerId: true,
+          status: true,
+          visibility: true,
+          customOrderEnabled: true,
+        },
+      });
+      if (explicit) {
+        explicitDesignId = explicit.id;
+        if (explicit.legacyCollectionId) {
+          design = await this.prisma.collection.findFirst({
+            where: { id: explicit.legacyCollectionId, deletedAt: null },
+            select: {
+              id: true,
+              ownerId: true,
+              status: true,
+              visibility: true,
+              customOrderEnabled: true,
+            },
+          });
+        }
+        if (!design) {
+          design = {
+            id: explicit.legacyCollectionId ?? explicit.id,
+            ownerId: explicit.ownerId,
+            status: explicit.status as CollectionStatus,
+            visibility: explicit.visibility as CollectionVisibility,
+            customOrderEnabled: explicit.customOrderEnabled,
+          };
+        }
+      }
+    } else {
+      const linked = await this.prisma.design.findFirst({
+        where: {
+          deletedAt: null,
+          OR: [{ id: sourceId }, { legacyCollectionId: sourceId }],
+        },
+        select: { id: true },
+      });
+      explicitDesignId = linked?.id ?? null;
+    }
+
     if (!design) {
       return this.unavailableSourceStatus({
         sourceType: 'DESIGN',
@@ -553,48 +628,64 @@ export class BagEligibilityService {
       });
     }
 
-    const [customConfiguration, brand, sizeFitProfile, previousCustomOrder] =
-      await Promise.all([
-        this.prisma.customOrderConfiguration.findFirst({
-          where: {
-            sourceType: CustomOrderSourceType.DESIGN,
-            sourceId,
-            isActive: true,
-          },
-          select: {
-            id: true,
-            sourceType: true,
-            sourceId: true,
-            requiredMeasurementKeys: true,
-            requiredFreeformPointIds: true,
-          },
-        }),
-        this.prisma.brand.findUnique({
-          where: { ownerId: design.ownerId },
-          select: { isStoreOpen: true },
-        }),
-        userId
-          ? this.prisma.userSizeFitProfile.findUnique({
-              where: { userId },
-              select: {
-                measurements: true,
-                lastUpdatedAt: true,
-                updatedAt: true,
-                requireUpdateEveryDays: true,
-              },
-            })
-          : Promise.resolve(null),
-        userId
-          ? this.prisma.customOrder.findFirst({
-              where: {
-                buyerId: userId,
-                sourceType: CustomOrderSourceType.DESIGN,
-                sourceId,
-              },
-              select: { id: true },
-            })
-          : Promise.resolve(null),
-      ]);
+    // Custom configs may be keyed by design id or legacy collection id.
+    const configSourceIds = Array.from(
+      new Set(
+        [sourceId, design.id, explicitDesignId].filter(
+          (value): value is string => Boolean(value),
+        ),
+      ),
+    );
+    const bagSourceId = design.id;
+
+    const [
+      customConfiguration,
+      brand,
+      sizeFitProfile,
+      previousCustomOrder,
+      isBrandAccount,
+    ] = await Promise.all([
+      this.prisma.customOrderConfiguration.findFirst({
+        where: {
+          sourceType: CustomOrderSourceType.DESIGN,
+          sourceId: { in: configSourceIds },
+          isActive: true,
+        },
+        select: {
+          id: true,
+          sourceType: true,
+          sourceId: true,
+          requiredMeasurementKeys: true,
+          requiredFreeformPointIds: true,
+        },
+      }),
+      this.prisma.brand.findUnique({
+        where: { ownerId: design.ownerId },
+        select: { isStoreOpen: true },
+      }),
+      userId
+        ? this.prisma.userSizeFitProfile.findUnique({
+            where: { userId },
+            select: {
+              measurements: true,
+              lastUpdatedAt: true,
+              updatedAt: true,
+              requireUpdateEveryDays: true,
+            },
+          })
+        : Promise.resolve(null),
+      userId
+        ? this.prisma.customOrder.findFirst({
+            where: {
+              buyerId: userId,
+              sourceType: CustomOrderSourceType.DESIGN,
+              sourceId: { in: configSourceIds },
+            },
+            select: { id: true },
+          })
+        : Promise.resolve(null),
+      this.isBrandAccount(userId),
+    ]);
 
     const publicDesign =
       design.status === CollectionStatus.PUBLISHED &&
@@ -605,7 +696,7 @@ export class BagEligibilityService {
       await this.resolveDuplicateContext({
         userId,
         sourceType: CustomOrderSourceType.DESIGN,
-        sourceId,
+        sourceId: bagSourceId,
         activeConfigurationId: customConfiguration?.id ?? null,
       });
     const fittingFreshness = this.resolveFittingFreshness(
@@ -616,16 +707,18 @@ export class BagEligibilityService {
       design.customOrderEnabled === true &&
       Boolean(customConfiguration) &&
       publicDesign &&
-      !isOwner;
+      !isOwner &&
+      !isBrandAccount;
 
     return this.readinessPresenter.present({
-      productId: sourceId,
+      productId: bagSourceId,
       sourceType: 'DESIGN',
-      sourceId,
+      sourceId: bagSourceId,
       standardEnabled: false,
       customEnabled,
       publicSource: publicDesign,
       isOwner,
+      isBrandAccount,
       authenticated: Boolean(userId),
       inStock: false,
       stock: 0,
@@ -639,8 +732,9 @@ export class BagEligibilityService {
       fittingFreshness,
       duplicateState,
       previousCustomOrder,
-      disabledReason:
-        design.customOrderEnabled === true && !customConfiguration
+      disabledReason: isBrandAccount
+        ? 'Brand accounts cannot bag items. Use a buyer account to shop.'
+        : design.customOrderEnabled === true && !customConfiguration
           ? 'This design needs an active custom-order configuration before it can be bagged.'
           : null,
     });

@@ -30,6 +30,8 @@ export type MarketSectionLayout =
 export interface MarketSectionMediaDto {
   url: string | null;
   thumbnailUrl: string | null;
+  /** FileUpload id so clients can resolve signed URLs (raw s3Url often fails). */
+  fileId?: string | null;
   type: 'IMAGE' | 'VIDEO' | 'UNKNOWN';
   alt: string | null;
 }

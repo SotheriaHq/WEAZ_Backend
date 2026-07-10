@@ -5657,6 +5657,16 @@ export class StoreService {
   // ==================== CART ====================
 
   async addToCart(userId: string, dto: AddToCartDto) {
+    const actingUser = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { type: true },
+    });
+    if (actingUser?.type === 'BRAND') {
+      throw new ForbiddenException(
+        'Brand accounts cannot bag items. Use a buyer account to shop.',
+      );
+    }
+
     const product = await this.prisma.product.findFirst({
       where: {
         id: dto.productId,

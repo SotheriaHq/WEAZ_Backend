@@ -38,6 +38,18 @@ export class CollectionBaggingService {
     private readonly countPresenter: BagCountPresenter,
   ) {}
 
+  private async assertBuyerAccount(userId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { type: true },
+    });
+    if (user?.type === 'BRAND') {
+      throw new BadRequestException(
+        'Brand accounts cannot bag items. Use a buyer account to shop.',
+      );
+    }
+  }
+
   async bagAll(
     collectionId: string,
     userId: string,
@@ -45,6 +57,7 @@ export class CollectionBaggingService {
   ): Promise<CollectionBagMutationResult> {
     const startedAt = Date.now();
     try {
+      await this.assertBuyerAccount(userId);
       const status = await this.eligibilityService.getCollectionBagStatus(
         collectionId,
         userId,
@@ -70,6 +83,7 @@ export class CollectionBaggingService {
   ): Promise<CollectionBagMutationResult> {
     const startedAt = Date.now();
     try {
+      await this.assertBuyerAccount(userId);
       const productIds = this.uniqueIds(dto?.productIds);
       if (productIds.length === 0) {
         throw new BadRequestException(

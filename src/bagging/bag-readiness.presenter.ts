@@ -20,6 +20,8 @@ export class BagReadinessPresenter {
     customEnabled: boolean;
     publicSource: boolean;
     isOwner: boolean;
+    /** Brand accounts (UserType.BRAND) must never bag — buyer-only commerce. */
+    isBrandAccount?: boolean;
     authenticated: boolean;
     inStock: boolean;
     stock: number;
@@ -48,7 +50,9 @@ export class BagReadinessPresenter {
     previousCustomOrder?: unknown | null;
     disabledReason?: string | null;
   }): BagReadinessContract {
-    const canBag = input.standardEnabled || input.customEnabled;
+    const brandBlocked = input.isBrandAccount === true;
+    const canBag =
+      !brandBlocked && (input.standardEnabled || input.customEnabled);
     const bagMode: BagMode =
       input.standardEnabled && input.customEnabled
         ? 'STANDARD_OR_CUSTOM'
@@ -72,7 +76,11 @@ export class BagReadinessPresenter {
         input.previousCustomOrder,
     );
     const disabledReason =
-      input.disabledReason ?? this.resolveDisabledReason(input);
+      input.disabledReason ??
+      this.resolveDisabledReason({
+        ...input,
+        isBrandAccount: brandBlocked,
+      });
     const heartbeatState: BagHeartbeatState = !canBag
       ? 'disabled'
       : input.cartItem || input.customBagLine
@@ -82,8 +90,8 @@ export class BagReadinessPresenter {
           : 'not_bagged';
     const defaultAction = this.resolveDefaultAction({
       canBag,
-      standardEnabled: input.standardEnabled,
-      customEnabled: input.customEnabled,
+      standardEnabled: !brandBlocked && input.standardEnabled,
+      customEnabled: !brandBlocked && input.customEnabled,
       requiresSize: input.requiresSize,
       requiresColor: input.requiresColor,
       freshnessState: input.fittingFreshness.freshnessState,
@@ -210,12 +218,16 @@ export class BagReadinessPresenter {
 
   private resolveDisabledReason(input: {
     isOwner: boolean;
+    isBrandAccount?: boolean;
     publicSource: boolean;
     standardEnabled: boolean;
     customEnabled: boolean;
     inStock: boolean;
     customConfiguration?: { id: string } | null;
   }): string | null {
+    if (input.isBrandAccount) {
+      return 'Brand accounts cannot bag items. Use a buyer account to shop.';
+    }
     if (input.isOwner) return 'Brands cannot bag their own products.';
     if (!input.publicSource) return 'This source is unavailable.';
     if (!input.standardEnabled && !input.customEnabled && !input.inStock) {

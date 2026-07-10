@@ -5989,6 +5989,25 @@ export class CollectionsService {
   /**
    * Get collections for a specific user (optionally show drafts to owner)
    */
+  /**
+   * Resolve Brand table id → owner user id. Collection.ownerId is always a User id.
+   * Public catalog routes may pass either form (runway brandId often is Brand.id).
+   */
+  private async resolveCollectionOwnerUserId(userIdOrBrandId: string): Promise<string> {
+    const raw = String(userIdOrBrandId ?? '').trim();
+    if (!raw) return raw;
+    const user = await this.prisma.user.findUnique({
+      where: { id: raw },
+      select: { id: true },
+    });
+    if (user) return user.id;
+    const brand = await this.prisma.brand.findUnique({
+      where: { id: raw },
+      select: { ownerId: true },
+    });
+    return brand?.ownerId ?? raw;
+  }
+
   async getUserCollections(
     userId: string,
     requesterId?: string,
@@ -6011,9 +6030,10 @@ export class CollectionsService {
       onlyDeleted = false,
       status,
     } = options || {};
+    const resolvedOwnerId = await this.resolveCollectionOwnerUserId(userId);
     const resolvedScope = this.normalizeCollectionScope(scope);
     if (resolvedScope === 'store') {
-      return this.getUserStoreCollections(userId, requesterId, {
+      return this.getUserStoreCollections(resolvedOwnerId, requesterId, {
         cursor,
         limit,
         visibility,
@@ -6024,17 +6044,17 @@ export class CollectionsService {
     const domainFilter = this.scopeToDomain(resolvedScope);
     const privateFeature =
       (process.env.FEATURE_PRIVATE_COLLECTIONS ?? 'true') !== 'false';
-    const canAccessDeleted = requesterId === userId;
+    const canAccessDeleted = requesterId === resolvedOwnerId;
     const shouldIncludeDeleted = canAccessDeleted && includeDeleted;
     const shouldOnlyDeleted = canAccessDeleted && onlyDeleted;
-    const where: any = { ownerId: userId };
+    const where: any = { ownerId: resolvedOwnerId };
     if (shouldOnlyDeleted) {
       where.deletedAt = { not: null };
     } else if (!shouldIncludeDeleted) {
       where.deletedAt = null;
     }
 
-    if (status && requesterId === userId) {
+    if (status && requesterId === resolvedOwnerId) {
       where.status = status;
     }
     if (domainFilter) {
@@ -6042,7 +6062,7 @@ export class CollectionsService {
     }
     const now = new Date();
     const productVisibilityWhere =
-      requesterId === userId
+      requesterId === resolvedOwnerId
         ? undefined
         : {
             deletedAt: null,
@@ -6051,7 +6071,7 @@ export class CollectionsService {
             OR: [{ publishAt: null }, { publishAt: { lte: now } }],
           };
     // Default: published only for non-owner
-    if (requesterId !== userId) {
+    if (requesterId !== resolvedOwnerId) {
       where.deletedAt = null;
       where.status = 'PUBLISHED';
 

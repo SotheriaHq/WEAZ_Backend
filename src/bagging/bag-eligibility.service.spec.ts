@@ -27,6 +27,8 @@ describe('BagEligibilityService', () => {
     collection: { findFirst: jest.fn() },
     storeCollection: { findFirst: jest.fn() },
     brand: { findUnique: jest.fn() },
+    user: { findUnique: jest.fn() },
+    design: { findFirst: jest.fn() },
   } as any;
 
   const service = new BagEligibilityService(
@@ -77,6 +79,8 @@ describe('BagEligibilityService', () => {
     prisma.customOrder.findMany.mockResolvedValue([]);
     prisma.customOrderCheckoutSession.findMany.mockResolvedValue([]);
     prisma.storeCollection.findFirst.mockResolvedValue(null);
+    prisma.user.findUnique.mockResolvedValue({ type: 'REGULAR' });
+    prisma.design.findFirst.mockResolvedValue(null);
   });
 
   it('returns ADD_STANDARD for an in-stock product with no options', async () => {
@@ -228,6 +232,16 @@ describe('BagEligibilityService', () => {
     expect(result.canBag).toBe(false);
     expect(result.userState.isOwner).toBe(true);
     expect(result.ui.defaultAction).toBe('DISABLED');
+  });
+
+  it('prevents brand accounts from bagging any product', async () => {
+    prisma.user.findUnique.mockResolvedValue({ type: 'BRAND' });
+
+    const result = await service.getProductBagStatus('product_1', 'brand_buyer');
+
+    expect(result.canBag).toBe(false);
+    expect(result.ui.defaultAction).toBe('DISABLED');
+    expect(result.ui.disabledReason).toMatch(/Brand accounts cannot bag/i);
   });
 
   it('returns auth-aware state for unauthenticated users', async () => {

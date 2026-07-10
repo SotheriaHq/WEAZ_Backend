@@ -1019,9 +1019,26 @@ export class MarketSectionService {
 
     const hasNextPage = products.length > take;
     const page = hasNextPage ? products.slice(0, take) : products;
+    const imageUrls = Array.from(
+      new Set(
+        page
+          .map((product) => this.firstProductImage(product))
+          .filter((url): url is string => Boolean(url)),
+      ),
+    );
+    const fileIdByUrl = new Map<string, string>();
+    if (imageUrls.length > 0) {
+      const uploads = await this.prisma.fileUpload.findMany({
+        where: { s3Url: { in: imageUrls } },
+        select: { id: true, s3Url: true },
+      });
+      for (const upload of uploads) {
+        if (upload.s3Url) fileIdByUrl.set(upload.s3Url, upload.id);
+      }
+    }
     return {
       items: page
-        .map((product) => this.mapProductItem(product))
+        .map((product) => this.mapProductItem(product, fileIdByUrl))
         .filter((item): item is MarketSectionItemDto => Boolean(item)),
       hasNextPage,
       nextCursor: hasNextPage ? (page[page.length - 1]?.id ?? null) : null,
@@ -1300,6 +1317,7 @@ export class MarketSectionService {
             select: {
               file: {
                 select: {
+                  id: true,
                   s3Url: true,
                   fileType: true,
                 },
@@ -1312,6 +1330,7 @@ export class MarketSectionService {
             select: {
               file: {
                 select: {
+                  id: true,
                   s3Url: true,
                   fileType: true,
                 },
@@ -1334,10 +1353,10 @@ export class MarketSectionService {
   }
 
   private mapDesignItem(design: any): MarketSectionItemDto | null {
-    const media =
-      this.cleanString(design.coverMedia?.file?.s3Url) ??
-      this.cleanString(design.medias?.[0]?.file?.s3Url);
+    const coverFile = design.coverMedia?.file ?? design.medias?.[0]?.file ?? null;
+    const media = this.cleanString(coverFile?.s3Url);
     if (!media) return null;
+    const mediaFileId = this.cleanString(coverFile?.id);
     const min =
       this.isSaleActive(design) && typeof design.saleMinPrice === 'number'
         ? design.saleMinPrice
@@ -1366,9 +1385,8 @@ export class MarketSectionService {
       media: {
         url: media,
         thumbnailUrl: media,
-        type: String(
-          design.coverMedia?.file?.fileType ?? design.medias?.[0]?.file?.fileType ?? '',
-        )
+        fileId: mediaFileId,
+        type: String(coverFile?.fileType ?? '')
           .toUpperCase()
           .includes('VIDEO')
           ? 'VIDEO'
@@ -1411,7 +1429,10 @@ export class MarketSectionService {
     };
   }
 
-  private mapProductItem(product: any): MarketSectionItemDto | null {
+  private mapProductItem(
+    product: any,
+    fileIdByUrl?: Map<string, string>,
+  ): MarketSectionItemDto | null {
     const image = this.firstProductImage(product);
     if (!image) return null;
     const price = Number(product.price ?? 0);
@@ -1419,6 +1440,7 @@ export class MarketSectionService {
       ? Number(product.salePrice)
       : null;
     const effectiveAmount = saleAmount ?? price;
+    const mediaFileId = fileIdByUrl?.get(image) ?? null;
 
     return {
       id: product.id,
@@ -1437,6 +1459,7 @@ export class MarketSectionService {
       },
       media: {
         url: image,
+        fileId: mediaFileId,
         thumbnailUrl: this.cleanString(product.thumbnail) ?? image,
         type: 'IMAGE',
         alt: product.name,

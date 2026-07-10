@@ -327,10 +327,26 @@ export class UserProfileService {
     userId: string,
     viewerId?: string | null,
   ): Promise<PublicUserProfileResponseDto> {
-    const user = await this.prisma.user.findUnique({
+    // Accept either owner user id OR Brand table id. Runway/market cards often
+    // emit brandId as Brand.id (owner.brand?.id), while /profile/:id historically
+    // assumed User.id — that mismatch mounts EndUserProfile and empty catalogs.
+    let user = await this.prisma.user.findUnique({
       where: { id: userId },
       select: userProfileResponseSelect,
     });
+
+    if (!user) {
+      const brandRecord = await this.prisma.brand.findUnique({
+        where: { id: userId },
+        select: { ownerId: true },
+      });
+      if (brandRecord?.ownerId) {
+        user = await this.prisma.user.findUnique({
+          where: { id: brandRecord.ownerId },
+          select: userProfileResponseSelect,
+        });
+      }
+    }
 
     if (!user) {
       throw new NotFoundException('User not found');
