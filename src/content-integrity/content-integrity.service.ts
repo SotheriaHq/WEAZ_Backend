@@ -761,6 +761,112 @@ export class ContentIntegrityService {
     return this.mapSubmissionDetail(submission, { includeReports: false });
   }
 
+  /**
+   * Full review timeline for ONE piece of content, owner-facing. A content
+   * item can go through several review cycles (submit → changes requested →
+   * resubmit → ...); clients render this as the feedback history so no
+   * reviewer note is ever lost when a newer request supersedes it.
+   */
+  async getOwnerReviewHistory(
+    actorUserId: string,
+    target: {
+      productId?: string | null;
+      designId?: string | null;
+      legacyCollectionId?: string | null;
+    },
+  ) {
+    const productId = target.productId?.trim() || null;
+    const designId = target.designId?.trim() || null;
+    const legacyCollectionId = target.legacyCollectionId?.trim() || null;
+    if (!productId && !designId && !legacyCollectionId) {
+      throw new BadRequestException(
+        'Provide productId, designId, or collectionId.',
+      );
+    }
+
+    const rows = await (this.prisma as any).contentSubmission.findMany({
+      where: {
+        OR: [
+          ...(productId ? [{ productId }] : []),
+          ...(designId
+            ? [{ designId }, { legacyCollectionId: designId }]
+            : []),
+          ...(legacyCollectionId
+            ? [
+                { legacyCollectionId },
+                { designId: legacyCollectionId },
+              ]
+            : []),
+        ],
+      },
+      orderBy: [{ submittedAt: 'desc' }],
+      take: 25,
+      select: {
+        id: true,
+        entityType: true,
+        status: true,
+        reasonCode: true,
+        reasonNote: true,
+        submittedAt: true,
+        reviewedAt: true,
+        submittedById: true,
+        brandId: true,
+      },
+    });
+
+    if (rows.length === 0) return { items: [] };
+
+    // Ownership: submitter or the brand owner of any matching submission.
+    const isSubmitter = rows.some(
+      (row: { submittedById: string }) => row.submittedById === actorUserId,
+    );
+    if (!isSubmitter) {
+      const brandIds = Array.from(
+        new Set(
+          rows
+            .map((row: { brandId: string | null }) => row.brandId)
+            .filter((id: string | null): id is string => Boolean(id)),
+        ),
+      );
+      const ownedBrand = brandIds.length
+        ? await this.prisma.brand.findFirst({
+            where: { id: { in: brandIds as string[] }, ownerId: actorUserId },
+            select: { id: true },
+          })
+        : null;
+      if (!ownedBrand) {
+        throw new ForbiddenException('You cannot view this review history.');
+      }
+    }
+
+    return {
+      items: rows.map(
+        (row: {
+          id: string;
+          entityType: string;
+          status: string;
+          reasonCode: string | null;
+          reasonNote: string | null;
+          submittedAt: Date;
+          reviewedAt: Date | null;
+        }) => ({
+          id: row.id,
+          entityType: String(row.entityType),
+          status: String(row.status),
+          reasonCode: row.reasonCode,
+          reasonLabel: row.reasonCode
+            ? (CONTENT_REVIEW_REASON_LABELS[
+                row.reasonCode as ContentReviewReasonCode
+              ] ?? null)
+            : null,
+          reasonNote: row.reasonNote,
+          submittedAt: row.submittedAt,
+          reviewedAt: row.reviewedAt,
+        }),
+      ),
+    };
+  }
+
   getReportReasonCodes() {
     return Object.entries(CONTENT_REPORT_REASON_LABELS).map(
       ([code, label]) => ({ code, label }),
@@ -1782,6 +1888,19 @@ export class ContentIntegrityService {
     });
 
     if (notificationOwner) {
+      const recipient = await this.prisma.user
+        .findUnique({
+          where: { id: notificationOwner },
+          select: {
+            username: true,
+            userProfile: { select: { firstName: true } },
+          },
+        })
+        .catch(() => null);
+      const recipientName =
+        recipient?.userProfile?.firstName?.trim() ||
+        recipient?.username?.trim() ||
+        null;
       await this.notifyContentReviewOutcome(notificationOwner, {
         type:
           args.action === 'approve'
@@ -1793,10 +1912,21 @@ export class ContentIntegrityService {
           args.action,
           args.reasonCode,
           reviewedContentTitle,
+          args.reasonNote,
+          recipientName,
         ),
         title: reviewedContentTitle,
+        contentTitle: reviewedContentTitle,
         submissionId: submission.id,
         reasonCode: args.reasonCode ?? null,
+        // Full admin note + target identifiers so clients can route the
+        // notification to the exact content (edit screen / status tab) and
+        // render the reviewer feedback banner.
+        reasonNote: args.reasonNote?.trim() || null,
+        entityType: String(submission.entityType ?? ''),
+        productId: submission.productId ?? null,
+        designId: submission.designId ?? null,
+        legacyCollectionId: submission.legacyCollectionId ?? null,
       });
     }
 
@@ -2012,23 +2142,29 @@ export class ContentIntegrityService {
     action: 'approve' | 'reject' | 'request_changes',
     reasonCode?: ContentReviewReasonCode | string | null,
     title?: string | null,
+    reasonNote?: string | null,
+    recipientName?: string | null,
   ) {
     const contentRef = title?.trim() ? `"${title.trim()}"` : 'your content';
     const when = this.formatUserFacingTime();
+    const greeting = recipientName?.trim() ? `Hi ${recipientName.trim()} — ` : '';
     if (action === 'approve') {
-      return `Great news — ${contentRef} was approved on ${when} and is now live. Shoppers can discover it on the Runway and place orders right away. Share it with your customers and friends to get more eyes on it.`;
+      return `${greeting}great news! ${contentRef} was approved on ${when} and is now live. Shoppers can discover it on the Runway and place orders right away. Share it with your customers and friends to get more eyes on it.`;
     }
     const reason = reasonCode
       ? CONTENT_REVIEW_REASON_LABELS[reasonCode as ContentReviewReasonCode]
       : null;
+    const note = reasonNote?.trim() || null;
+    // Show the canned reason plus the admin's own note when both exist.
+    const feedback = [reason, note].filter(Boolean).join(' — ');
     if (action === 'reject') {
-      return reason
-        ? `Unfortunately ${contentRef} was not approved on ${when}: ${reason}. You can update it and submit again once it's ready.`
-        : `Unfortunately ${contentRef} was not approved on ${when}. You can update it and submit again once it's ready.`;
+      return feedback
+        ? `${greeting}unfortunately ${contentRef} was not approved on ${when}: ${feedback}. You can update it and submit again once it's ready.`
+        : `${greeting}unfortunately ${contentRef} was not approved on ${when}. You can update it and submit again once it's ready.`;
     }
-    return reason
-      ? `Changes were requested on ${contentRef} (${when}): ${reason}. Review the feedback, make the updates, and resubmit — it only takes a moment.`
-      : `Changes were requested on ${contentRef} (${when}). Review the feedback, make the updates, and resubmit — it only takes a moment.`;
+    return feedback
+      ? `${greeting}admin requested changes on ${contentRef} (${when}). Notes: ${feedback}. Tap to review and update.`
+      : `${greeting}admin requested changes on ${contentRef} (${when}). Tap to review and update.`;
   }
 
   emitIntegrityAlert(event: string, metadata: Record<string, unknown>) {

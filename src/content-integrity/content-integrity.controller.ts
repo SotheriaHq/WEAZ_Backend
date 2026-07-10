@@ -4,6 +4,7 @@ import {
   Get,
   Param,
   Post,
+  Query,
   Req,
   UseGuards,
   UseInterceptors,
@@ -33,6 +34,22 @@ export class ContentIntegrityController {
   @Get('submissions/:id')
   getMySubmission(@Param('id') id: string, @Req() req: any) {
     return this.contentIntegrity.getOwnerSubmission(id, req.user.id);
+  }
+
+  /** Owner-facing review timeline for one content item (all review cycles). */
+  @UseGuards(JwtAuthGuard)
+  @Get('my-review-history')
+  getMyReviewHistory(
+    @Query('productId') productId: string | undefined,
+    @Query('designId') designId: string | undefined,
+    @Query('collectionId') collectionId: string | undefined,
+    @Req() req: any,
+  ) {
+    return this.contentIntegrity.getOwnerReviewHistory(req.user.id, {
+      productId,
+      designId,
+      legacyCollectionId: collectionId,
+    });
   }
 
   @UseGuards(JwtAuthGuard)
