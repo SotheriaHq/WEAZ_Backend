@@ -661,6 +661,17 @@ export class CustomOrdersService {
   }
 
   async createOrder(userId: string, dto: CreateCustomOrderDto) {
+    // Brand accounts are sellers only — the bag/eligibility UI already blocks
+    // them, but the submission API must be the authority (project rule).
+    const actingUser = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { type: true },
+    });
+    if (actingUser?.type === 'BRAND') {
+      throw new ForbiddenException(
+        'Brand accounts cannot bag items. Use a buyer account to shop.',
+      );
+    }
     const submittedMeasurementValues = this.normalizeMeasurementValues(
       dto.measurementValues,
     );
