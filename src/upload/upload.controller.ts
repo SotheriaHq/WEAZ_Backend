@@ -61,6 +61,46 @@ export class UploadController {
     return { url };
   }
 
+  /**
+   * Batch variant of public-url/:fileId. A screen full of cards used to cost
+   * one API round trip PER image (~300-400ms each) before the browser could
+   * even start downloading it; clients batch the ids into one call instead.
+   */
+  @Post('public-urls')
+  @HttpCode(200)
+  @UseGuards(ThrottlerGuard)
+  @Throttle({ default: { limit: 60, ttl: 60000 } })
+  @ApiOperation({
+    summary: 'Get public signed URLs for many files at once (no auth required)',
+    description:
+      'Returns signed URLs for up to 50 publicly accessible files in one round trip.',
+  })
+  async getPublicSignedUrls(@Body() body: { fileIds?: unknown }) {
+    const ids = Array.isArray(body?.fileIds)
+      ? Array.from(
+          new Set(
+            body.fileIds
+              .map((id) => (typeof id === 'string' ? id.trim() : ''))
+              .filter(Boolean),
+          ),
+        ).slice(0, 50)
+      : [];
+    if (ids.length === 0) {
+      throw new BadRequestException('fileIds is required');
+    }
+    const items = await Promise.all(
+      ids.map(async (fileId) => {
+        try {
+          const url = await this.uploadService.getPublicSignedUrl(fileId);
+          return { fileId, url: url ?? null };
+        } catch {
+          return { fileId, url: null };
+        }
+      }),
+    );
+    return { items };
+  }
+
   @Get('public-url-by-key')
   @UseGuards(ThrottlerGuard)
   @Throttle({ default: { limit: 60, ttl: 60000 } })

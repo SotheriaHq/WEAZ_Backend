@@ -1254,9 +1254,32 @@ export class MarketSectionService {
 
     const hasNextPage = brands.length > take;
     const page = hasNextPage ? brands.slice(0, take) : brands;
+    // Brand cards render a product image or the brand logo — both are raw S3
+    // URLs, so clients need the fileId to resolve a signed URL (otherwise the
+    // card falls back to initials — client-reported on Trending Now).
+    const brandMediaUrls = Array.from(
+      new Set(
+        page
+          .flatMap((brand: any) => [
+            brand.products?.[0] ? this.firstProductImage(brand.products[0]) : null,
+            this.cleanString(brand.logo),
+          ])
+          .filter((url): url is string => Boolean(url)),
+      ),
+    );
+    const fileIdByUrl = new Map<string, string>();
+    if (brandMediaUrls.length > 0) {
+      const uploads = await this.prisma.fileUpload.findMany({
+        where: { s3Url: { in: brandMediaUrls } },
+        select: { id: true, s3Url: true },
+      });
+      for (const upload of uploads) {
+        if (upload.s3Url) fileIdByUrl.set(upload.s3Url, upload.id);
+      }
+    }
     return {
       items: page
-        .map((brand) => this.mapBrandItem(brand))
+        .map((brand) => this.mapBrandItem(brand, fileIdByUrl))
         .filter((item): item is MarketSectionItemDto => Boolean(item)),
       hasNextPage,
       nextCursor: hasNextPage ? (page[page.length - 1]?.id ?? null) : null,
@@ -1585,7 +1608,10 @@ export class MarketSectionService {
     };
   }
 
-  private mapBrandItem(brand: any): MarketSectionItemDto | null {
+  private mapBrandItem(
+    brand: any,
+    fileIdByUrl?: Map<string, string>,
+  ): MarketSectionItemDto | null {
     const representativeProduct = brand.products?.[0] ?? null;
     const productImage = representativeProduct
       ? this.firstProductImage(representativeProduct)
@@ -1593,6 +1619,7 @@ export class MarketSectionService {
     const logo = this.cleanString(brand.logo);
     const mediaUrl = productImage ?? logo;
     if (!mediaUrl) return null;
+    const mediaFileId = fileIdByUrl?.get(mediaUrl) ?? null;
 
     return {
       id: brand.id,
@@ -1612,6 +1639,7 @@ export class MarketSectionService {
       media: {
         url: mediaUrl,
         thumbnailUrl: mediaUrl,
+        fileId: mediaFileId,
         type: 'IMAGE',
         alt: brand.name,
       },
