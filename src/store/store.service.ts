@@ -7663,6 +7663,7 @@ export class StoreService {
           tags: true,
           storeNameLastChangedAt: true,
           isStoreOpen: true,
+          storePublishedAt: true,
           responseTimeSla: true,
         },
       }),
@@ -7708,7 +7709,13 @@ export class StoreService {
       contactEmail: brand?.contactEmail || user.email,
       isEmailVerified: user.isEmailVerified,
       isStoreOpen: Boolean(brand?.isStoreOpen),
-      isSetupComplete: completeness.isComplete,
+      // "Setup complete" = the owner PRESSED PUBLISH (and data is complete).
+      // Data completeness alone (e.g. bank verification syncing) must never
+      // unlock the studio; pausing must never re-lock it.
+      isSetupComplete:
+        completeness.isComplete && Boolean(brand?.storePublishedAt),
+      isReadyToPublish: completeness.isComplete,
+      isPublished: Boolean(brand?.storePublishedAt),
       missingFields: completeness.missingFields,
       storeNameLastChangedAt: lastChangedAt,
       storeNameNextAllowedAt: nextAllowedAt,
@@ -9591,6 +9598,7 @@ export class StoreService {
         socialWebsite: true,
         responseTimeSla: true,
         isStoreOpen: true,
+        storePublishedAt: true,
         ownerId: true,
       },
     });
@@ -9619,6 +9627,7 @@ export class StoreService {
             socialWebsite: true,
             responseTimeSla: true,
             isStoreOpen: true,
+            storePublishedAt: true,
             ownerId: true,
           },
         });
@@ -9656,7 +9665,11 @@ export class StoreService {
       isEmailVerified: owner?.isEmailVerified ?? true,
       isProfileComplete: profileCompleteness.isComplete,
       profileMissingFields: profileCompleteness.missingFields,
-      isSetupComplete: isComplete,
+      // Publish-gated: verified bank details alone must never unlock the
+      // studio; pausing (isStoreOpen=false) must not re-lock it.
+      isSetupComplete: isComplete && Boolean(brand.storePublishedAt),
+      isReadyToPublish: isComplete,
+      isPublished: Boolean(brand.storePublishedAt),
       missingFields,
       profile: {
         name: brand.name,
@@ -9708,6 +9721,7 @@ export class StoreService {
         logo: true,
         banner: true,
         isStoreOpen: true,
+        storePublishedAt: true,
       },
     });
 
@@ -9741,7 +9755,11 @@ export class StoreService {
 
     await this.prisma.brand.update({
       where: { id: brand.id },
-      data: { isStoreOpen: true },
+      data: {
+        isStoreOpen: true,
+        // Durable publish marker — the ONLY thing that unlocks the studio.
+        ...(brand.storePublishedAt ? {} : { storePublishedAt: new Date() }),
+      },
     });
 
     const nextIndexedTags = this.getIndexedBrandTags(

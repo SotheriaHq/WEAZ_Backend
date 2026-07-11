@@ -2649,6 +2649,10 @@ model Brand {
 
   // Store state
   isStoreOpen Boolean @default(false)
+  // Set ONCE when the owner presses Publish (openStore). Studio/setup gating
+  // keys on this, never on data-completeness: verified bank details alone must
+  // NEVER unlock the studio, and pausing (isStoreOpen=false) must not re-lock it.
+  storePublishedAt DateTime?
 
   currency String @default("NGN")
 
