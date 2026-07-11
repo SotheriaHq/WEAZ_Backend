@@ -31,6 +31,22 @@ export class AllExceptionsFilter implements ExceptionFilter {
         .trim()
         .toLowerCase() === 'production';
 
+    // Client disconnected mid-request (page reload/navigation tore down an
+    // in-flight body). Not a server fault — respond quietly as 400 and skip
+    // Sentry/alerting: these were surfacing as 500 noise (e.g. wizard
+    // autosaves aborted by navigation).
+    if (this.isClientAbortError(exception)) {
+      if (!response.headersSent && !response.writableEnded) {
+        response.status(HttpStatus.BAD_REQUEST).json({
+          statusCode: HttpStatus.BAD_REQUEST,
+          timestamp: new Date().toISOString(),
+          path: safePath,
+          message: 'Request aborted by client',
+        });
+      }
+      return;
+    }
+
     let status: number;
     let message: string | object;
     let errors: any = undefined;
@@ -84,6 +100,23 @@ export class AllExceptionsFilter implements ExceptionFilter {
     };
 
     response.status(status).json(errorResponse);
+  }
+
+  /** raw-body/express emit BadRequestError('request aborted') with code
+   *  ECONNABORTED / type 'request.aborted' when the CLIENT drops mid-body. */
+  private isClientAbortError(exception: unknown): boolean {
+    if (!exception || typeof exception !== 'object') return false;
+    const candidate = exception as {
+      code?: unknown;
+      type?: unknown;
+      message?: unknown;
+    };
+    return (
+      candidate.code === 'ECONNABORTED' ||
+      candidate.type === 'request.aborted' ||
+      (typeof candidate.message === 'string' &&
+        candidate.message.toLowerCase() === 'request aborted')
+    );
   }
 
   private captureSentryException(
