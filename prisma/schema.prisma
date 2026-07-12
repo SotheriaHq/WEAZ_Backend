@@ -977,6 +977,9 @@ enum NotificationType {
   CONTENT_RESUBMITTED
   CONTENT_PUBLISHED
   CONTENT_REVIEW_FAILED
+  // Client-side go-live/upload failure (media never finished uploading; a
+  // draft exists server-side). Recipient is routed to the draft to finish.
+  CONTENT_PUBLISH_FAILED
 
   // Custom orders
   CUSTOM_ORDER_PAYMENT_RECEIVED

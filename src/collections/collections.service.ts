@@ -1468,6 +1468,73 @@ export class CollectionsService {
     return { state: 'PENDING' };
   }
 
+  /**
+   * A client-side "Go Live" that fails after initialize leaves a media-less
+   * DRAFT server-side while the transient failure toast vanishes. This emits a
+   * durable, cross-device notification that routes the owner back to that draft
+   * so they are never stranded between an unopenable in-review card and an
+   * empty draft. Best-effort: never throws back into the client's failure path.
+   */
+  async reportDesignPublishFailure(
+    collectionId: string,
+    actorUserId: string,
+    dto: {
+      title?: string;
+      reason?: string;
+      stage?: 'initialize' | 'upload' | 'finalize';
+    },
+  ): Promise<{ ok: true; notified: boolean }> {
+    // Ownership + write permission are enforced here so a caller cannot spam
+    // notifications onto a brand they don't control.
+    const owner = await this.assertOwner(collectionId, actorUserId, 'DESIGN');
+
+    const record = await this.prisma.collection.findUnique({
+      where: { id: collectionId },
+      select: { title: true },
+    });
+    const title =
+      (typeof dto.title === 'string' && dto.title.trim()) ||
+      record?.title?.trim() ||
+      '';
+    const contentRef = title ? `"${title}"` : 'your design';
+    const message =
+      `${contentRef} couldn't finish going live — the media upload didn't ` +
+      `complete, so it's saved as a draft. Tap to open it and try again.`;
+
+    let notified = false;
+    try {
+      await this.notifications?.create(
+        owner.ownerId,
+        NotificationType.CONTENT_PUBLISH_FAILED,
+        {
+          target: { type: 'DESIGN', id: collectionId },
+          // De-dupe repeated retries of the same failed design within a short
+          // window so a flaky connection can't flood the bell.
+          dedupeMs: 10 * 60 * 1000,
+          suppressEmail: true,
+          payload: {
+            designId: collectionId,
+            legacyCollectionId: collectionId,
+            collectionId,
+            entityType: 'DESIGN',
+            title: title || null,
+            contentTitle: title || null,
+            message,
+            reasonCode: dto.stage ?? null,
+            targetUrl: '/profile?tab=Content&visibility=Drafts',
+          },
+        },
+      );
+      notified = true;
+    } catch (error) {
+      this.logger.warn(
+        `Failed to emit publish-failed notification for collection=${collectionId}: ${String(error)}`,
+      );
+    }
+
+    return { ok: true, notified };
+  }
+
   private async assertOwner(
     collectionId: string,
     ownerId: string,

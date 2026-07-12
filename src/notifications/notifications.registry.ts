@@ -1364,6 +1364,7 @@ export class NotificationRegistry {
       NotificationType.CONTENT_RESUBMITTED,
       NotificationType.CONTENT_PUBLISHED,
       NotificationType.CONTENT_REVIEW_FAILED,
+      NotificationType.CONTENT_PUBLISH_FAILED,
     ].forEach((type) => {
       registry.register({
         type,

@@ -310,6 +310,24 @@ export class DesignsService {
     };
   }
 
+  async reportDesignPublishFailure(
+    designId: string,
+    userId: string,
+    dto: {
+      title?: string;
+      reason?: string;
+      stage?: 'initialize' | 'upload' | 'finalize';
+    },
+  ) {
+    this.assertPersistedDesignId(designId);
+    const legacyCollectionId = await this.resolveLegacyCollectionIdForApi(designId);
+    return this.collectionsService.reportDesignPublishFailure(
+      legacyCollectionId,
+      userId,
+      dto,
+    );
+  }
+
   async getMyDraftDesigns(userId: string) {
     const result = await this.collectionsService.getMyDraftCollections(userId);
     return DesignResponseMapper.fromLegacyCollectionList(result);

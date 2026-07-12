@@ -1221,6 +1221,7 @@ export class NotificationsService {
       case NotificationType.CONTENT_RESUBMITTED:
       case NotificationType.CONTENT_PUBLISHED:
       case NotificationType.CONTENT_REVIEW_FAILED:
+      case NotificationType.CONTENT_PUBLISH_FAILED:
       case NotificationType.ITEM_FEATURED:
       case NotificationType.FEATURED_AUTO_REMOVED:
       case NotificationType.WISHLIST_PRODUCT_UNAVAILABLE:

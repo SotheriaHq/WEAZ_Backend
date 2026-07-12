@@ -21,6 +21,7 @@ import {
   InitializeDesignUploadDto,
   ReorderDesignMediaDto,
 } from './dto/initialize-design-upload.dto';
+import { ReportDesignPublishFailureDto } from './dto/report-design-publish-failure.dto';
 import { UpdateDesignDto } from './dto/update-design.dto';
 
 @ApiTags('designs')
@@ -100,6 +101,20 @@ export class DesignsController {
   @Post(':id/withdraw-review')
   async withdrawDesignFromReview(@Param('id') designId: string, @Req() req: any) {
     return this.designsService.withdrawDesignFromReview(designId, req.user.id);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Post(':id/report-publish-failure')
+  async reportDesignPublishFailure(
+    @Param('id') designId: string,
+    @Req() req: any,
+    @Body() dto: ReportDesignPublishFailureDto,
+  ) {
+    return this.designsService.reportDesignPublishFailure(
+      designId,
+      req.user.id,
+      dto,
+    );
   }
 
   @UseGuards(JwtAuthGuard)
