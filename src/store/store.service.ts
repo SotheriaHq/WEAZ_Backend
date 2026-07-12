@@ -8146,6 +8146,10 @@ export class StoreService {
     return Date.now() < expiresAtMs;
   }
 
+  private isPaystackTestModeKey() {
+    return resolvePaystackSecret().startsWith('sk_test_');
+  }
+
   private getPaystackTestBankOption(): SupportedPaymentBank {
     return {
       id: -1,
@@ -8158,7 +8162,13 @@ export class StoreService {
   private withTemporaryPaystackTestBank(
     banks: SupportedPaymentBank[],
   ): SupportedPaymentBank[] {
-    if (!this.isPaystackTestBankFallbackActive()) {
+    // Paystack test keys hard-limit /bank/resolve on real banks (3/day) and
+    // prescribe test bank code 001 instead, so the option must always exist
+    // in test mode — the env fallback remains for exceptional overrides.
+    if (
+      !this.isPaystackTestModeKey() &&
+      !this.isPaystackTestBankFallbackActive()
+    ) {
       return banks;
     }
 
@@ -8172,7 +8182,7 @@ export class StoreService {
   private throwUnsupportedBankCode(bankCode: string): never {
     if (bankCode === PAYSTACK_TEST_BANK_CODE) {
       throw new BadRequestException(
-        `Bank code 001 (Paystack test bank) is not available right now. Set ${PAYSTACK_TEST_BANK_FALLBACK_UNTIL_ENV} to a future ISO timestamp to enable it temporarily.`,
+        `Bank code 001 (Paystack test bank) is only available while the configured Paystack key is a test key. Set ${PAYSTACK_TEST_BANK_FALLBACK_UNTIL_ENV} to a future ISO timestamp to enable it temporarily on a live key.`,
       );
     }
 
@@ -8203,24 +8213,30 @@ export class StoreService {
     return ['1', 'true', 'yes', 'on'].includes(raw);
   }
 
+  // Bank 001 is Paystack's synthetic test bank. Whenever the configured key is
+  // a test key, 001 must be synthesized locally rather than sent to Paystack:
+  // real-bank /bank/resolve is capped at 3/day on test keys and Paystack itself
+  // tells you to "use test bank code 001". Keying this on the test SECRET (not
+  // the APP_ENV label) makes payout setup work on SIT too — where APP_ENV may be
+  // "production" — while a live key can never bypass.
+  private isTestAccountBypassEligible(bankCode: string) {
+    if (bankCode !== PAYSTACK_TEST_BANK_CODE) return false;
+    if (this.isPaystackTestModeKey()) return true;
+    return this.isLocalOrDevRuntime() && this.isStorePaymentTestBypassEnabled();
+  }
+
   private shouldAcceptTestAccountAsValidForSetup(params: {
     bankCode: string;
     syncError: string | null;
   }) {
     if (!params.syncError) return false;
-    if (params.bankCode !== PAYSTACK_TEST_BANK_CODE) return false;
-    if (!this.isLocalOrDevRuntime()) return false;
-    if (!this.isStorePaymentTestBypassEnabled()) return false;
+    if (!this.isTestAccountBypassEligible(params.bankCode)) return false;
 
     return /account details are invalid/i.test(params.syncError);
   }
 
   private shouldBypassPaystackSyncForDevTestAccount(bankCode: string) {
-    return (
-      bankCode === PAYSTACK_TEST_BANK_CODE &&
-      this.isLocalOrDevRuntime() &&
-      this.isStorePaymentTestBypassEnabled()
-    );
+    return this.isTestAccountBypassEligible(bankCode);
   }
 
   async listSupportedPaymentBanks() {

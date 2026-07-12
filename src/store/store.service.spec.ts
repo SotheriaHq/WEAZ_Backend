@@ -36,16 +36,40 @@ describe('StoreService', () => {
       categoriesService,
     );
 
+  const paystackSecretEnvKeys = [
+    'PAYSTACK_SECRET_KEY',
+    'PAYSTACK_SECRET',
+    'PAYSTACK_SECRET_API',
+    'PAYSTACK_TEST_SECRET_API',
+  ];
+  const originalPaystackSecrets = paystackSecretEnvKeys.map(
+    (key) => process.env[key],
+  );
+
   beforeEach(() => {
     jest.clearAllMocks();
     process.env.STORE_PAYMENT_ACCOUNT_SECRET = 'store-secret';
     process.env.VERIFICATION_DRAFT_SECRET = 'legacy-store-secret';
+    // Bank-list assertions below expect only provider-returned banks; clear any
+    // test key inherited from another spec so the synthetic 001 test bank
+    // (added for sk_test keys) does not leak into these expectations.
+    for (const key of paystackSecretEnvKeys) {
+      delete process.env[key];
+    }
   });
 
   afterEach(() => {
     process.env.STORE_PAYMENT_ACCOUNT_SECRET =
       originalStorePaymentAccountSecret;
     process.env.VERIFICATION_DRAFT_SECRET = originalVerificationDraftSecret;
+    paystackSecretEnvKeys.forEach((key, index) => {
+      const original = originalPaystackSecrets[index];
+      if (original === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = original;
+      }
+    });
   });
 
   it('coalesces supported bank list fetches while the first request is in flight', async () => {
@@ -83,6 +107,81 @@ describe('StoreService', () => {
     expect(callPaystackSpy).toHaveBeenCalledTimes(1);
     expect(firstBanks).toEqual(secondBanks);
     expect(firstBanks).toHaveLength(2);
+  });
+
+  it('offers the synthetic 001 test bank when a Paystack test key is configured', async () => {
+    process.env.PAYSTACK_SECRET_KEY = 'sk_test_example';
+    jest.spyOn(service as any, 'callPaystack').mockResolvedValue([
+      {
+        id: 1,
+        code: '058',
+        name: 'Bank A',
+        active: true,
+        currency: 'NGN',
+        type: 'nuban',
+      },
+    ]);
+
+    const banks = await service.listSupportedPaymentBanks();
+
+    expect(banks.some((bank: any) => bank.code === '001')).toBe(true);
+  });
+
+  it('does not offer the 001 test bank when a Paystack live key is configured', async () => {
+    process.env.PAYSTACK_SECRET_KEY = 'sk_live_example';
+    jest.spyOn(service as any, 'callPaystack').mockResolvedValue([
+      {
+        id: 1,
+        code: '058',
+        name: 'Bank A',
+        active: true,
+        currency: 'NGN',
+        type: 'nuban',
+      },
+    ]);
+
+    const banks = await service.listSupportedPaymentBanks();
+
+    expect(banks.some((bank: any) => bank.code === '001')).toBe(false);
+  });
+
+  it('bypasses provider sync for the 001 test bank under a test key regardless of runtime', () => {
+    process.env.PAYSTACK_SECRET_KEY = 'sk_test_example';
+    const originalAppEnv = process.env.APP_ENV;
+    process.env.APP_ENV = 'production';
+
+    try {
+      expect(
+        (service as any).shouldBypassPaystackSyncForDevTestAccount('001'),
+      ).toBe(true);
+      expect(
+        (service as any).shouldBypassPaystackSyncForDevTestAccount('058'),
+      ).toBe(false);
+    } finally {
+      if (originalAppEnv === undefined) {
+        delete process.env.APP_ENV;
+      } else {
+        process.env.APP_ENV = originalAppEnv;
+      }
+    }
+  });
+
+  it('never bypasses provider sync for the 001 bank under a live key in production', () => {
+    process.env.PAYSTACK_SECRET_KEY = 'sk_live_example';
+    const originalAppEnv = process.env.APP_ENV;
+    process.env.APP_ENV = 'production';
+
+    try {
+      expect(
+        (service as any).shouldBypassPaystackSyncForDevTestAccount('001'),
+      ).toBe(false);
+    } finally {
+      if (originalAppEnv === undefined) {
+        delete process.env.APP_ENV;
+      } else {
+        process.env.APP_ENV = originalAppEnv;
+      }
+    }
   });
 
   it('requires STORE_PAYMENT_ACCOUNT_SECRET for new payout-account encryption', () => {
