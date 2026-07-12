@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { CollectionStatus, CollectionVisibility, Prisma } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
+import { UploadService } from 'src/upload/upload.service';
 import {
   MarketSectionDto,
   MarketSectionItemDto,
@@ -135,7 +136,46 @@ export class MarketSectionService {
     private readonly marketRankingScorer?: MarketRankingScorerService,
     @Optional()
     private readonly marketGovernanceConfigService?: MarketGovernanceConfigService,
+    @Optional()
+    private readonly uploadService?: UploadService,
   ) {}
+
+  /**
+   * Market rails return raw S3 URLs that browsers cannot load. Prefer a
+   * temporary signed display URL so guest shoppers (and signed-out QR traffic)
+   * never hit 400s from /uploads/public-url for product images.
+   */
+  private async resolveDisplayMediaUrl(
+    rawUrl: string | null | undefined,
+    fileId: string | null | undefined,
+    s3Key?: string | null,
+  ): Promise<string | null> {
+    const clean = this.cleanString(rawUrl);
+    if (!this.uploadService) return clean;
+
+    const key =
+      (typeof s3Key === 'string' && s3Key.trim()) ||
+      (clean && clean.includes('amazonaws.com')
+        ? (() => {
+            try {
+              const path = new URL(clean).pathname.replace(/^\/+/, '');
+              // bucket-style path: bucket/key → drop first segment when host is s3
+              return path.includes('/') ? path.split('/').slice(1).join('/') || path : path;
+            } catch {
+              return null;
+            }
+          })()
+        : null);
+
+    if (key) {
+      const signed = await this.uploadService.getTemporarySignedDisplayUrl(
+        { id: fileId ?? null, s3Key: key },
+        3600,
+      );
+      if (signed) return signed;
+    }
+    return clean;
+  }
 
   async getSections(
     options?: { limit?: number } & MarketSectionIdentityOptions,
@@ -1027,19 +1067,41 @@ export class MarketSectionService {
       ),
     );
     const fileIdByUrl = new Map<string, string>();
+    const s3KeyByUrl = new Map<string, string>();
     if (imageUrls.length > 0) {
       const uploads = await this.prisma.fileUpload.findMany({
         where: { s3Url: { in: imageUrls } },
-        select: { id: true, s3Url: true },
+        select: { id: true, s3Url: true, s3Key: true },
       });
       for (const upload of uploads) {
-        if (upload.s3Url) fileIdByUrl.set(upload.s3Url, upload.id);
+        if (upload.s3Url) {
+          fileIdByUrl.set(upload.s3Url, upload.id);
+          if (upload.s3Key) s3KeyByUrl.set(upload.s3Url, upload.s3Key);
+        }
       }
     }
+    const items = (
+      await Promise.all(
+        page.map(async (product) => {
+          const mapped = this.mapProductItem(product, fileIdByUrl);
+          if (!mapped?.media) return mapped;
+          const raw = mapped.media.url ?? mapped.media.thumbnailUrl;
+          const fileId = mapped.media.fileId ?? null;
+          const signed = await this.resolveDisplayMediaUrl(
+            raw,
+            fileId,
+            raw ? s3KeyByUrl.get(raw) : null,
+          );
+          if (signed) {
+            mapped.media.url = signed;
+            mapped.media.thumbnailUrl = signed;
+          }
+          return mapped;
+        }),
+      )
+    ).filter((item): item is MarketSectionItemDto => Boolean(item));
     return {
-      items: page
-        .map((product) => this.mapProductItem(product, fileIdByUrl))
-        .filter((item): item is MarketSectionItemDto => Boolean(item)),
+      items,
       hasNextPage,
       nextCursor: hasNextPage ? (page[page.length - 1]?.id ?? null) : null,
     };
@@ -1268,19 +1330,40 @@ export class MarketSectionService {
       ),
     );
     const fileIdByUrl = new Map<string, string>();
+    const s3KeyByUrl = new Map<string, string>();
     if (brandMediaUrls.length > 0) {
       const uploads = await this.prisma.fileUpload.findMany({
         where: { s3Url: { in: brandMediaUrls } },
-        select: { id: true, s3Url: true },
+        select: { id: true, s3Url: true, s3Key: true },
       });
       for (const upload of uploads) {
-        if (upload.s3Url) fileIdByUrl.set(upload.s3Url, upload.id);
+        if (upload.s3Url) {
+          fileIdByUrl.set(upload.s3Url, upload.id);
+          if (upload.s3Key) s3KeyByUrl.set(upload.s3Url, upload.s3Key);
+        }
       }
     }
+    const items = (
+      await Promise.all(
+        page.map(async (brand) => {
+          const mapped = this.mapBrandItem(brand, fileIdByUrl);
+          if (!mapped?.media) return mapped;
+          const raw = mapped.media.url ?? mapped.media.thumbnailUrl;
+          const signed = await this.resolveDisplayMediaUrl(
+            raw,
+            mapped.media.fileId ?? null,
+            raw ? s3KeyByUrl.get(raw) : null,
+          );
+          if (signed) {
+            mapped.media.url = signed;
+            mapped.media.thumbnailUrl = signed;
+          }
+          return mapped;
+        }),
+      )
+    ).filter((item): item is MarketSectionItemDto => Boolean(item));
     return {
-      items: page
-        .map((brand) => this.mapBrandItem(brand, fileIdByUrl))
-        .filter((item): item is MarketSectionItemDto => Boolean(item)),
+      items,
       hasNextPage,
       nextCursor: hasNextPage ? (page[page.length - 1]?.id ?? null) : null,
     };

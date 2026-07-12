@@ -107,7 +107,7 @@ describe('ImageService', () => {
   it('denies signed URLs for deleted or failed owned media', async () => {
     (service as any).prisma = {
       fileUpload: {
-        findFirst: jest.fn().mockResolvedValue({
+        findUnique: jest.fn().mockResolvedValue({
           id: 'file_1',
           s3Key: 'media/file.jpg',
           processingStatus: 'FAILED',
@@ -164,7 +164,7 @@ describe('ImageService', () => {
   it('returns owner-gated local disk upload URLs for non-production signed media validation', async () => {
     (service as any).prisma = {
       fileUpload: {
-        findFirst: jest.fn().mockResolvedValue({
+        findUnique: jest.fn().mockResolvedValue({
           id: 'file_1',
           s3Key: 'POST_IMAGE/user_1/file_1.png',
           s3Url: 'http://localhost:3040/uploads/POST_IMAGE/user_1/file_1.png',
@@ -191,7 +191,7 @@ describe('ImageService', () => {
     };
     (service as any).prisma = {
       fileUpload: {
-        findFirst: jest.fn().mockResolvedValue({
+        findUnique: jest.fn().mockResolvedValue({
           id: 'file_1',
           s3Key: 'POST_IMAGE/user_1/file_1.png',
           s3Url: 'http://localhost:3040/uploads/POST_IMAGE/user_1/file_1.png',
@@ -206,6 +206,30 @@ describe('ImageService', () => {
       'signed-url',
     );
     expect(getSignedUrl).toHaveBeenCalledTimes(1);
+  });
+
+  it('allows admin to sign another users display media by file id', async () => {
+    (service as any).prisma = {
+      fileUpload: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'file_other',
+          s3Key: 'POST_IMAGE/owner_1/file.png',
+          processingStatus: 'READY',
+          originalDeletedAt: null,
+          userId: 'owner_1',
+          isPublic: false,
+          collectionMedias: [],
+          designMedias: [],
+          productMedias: [],
+          userProfileImages: [],
+          userProfileBanners: [],
+        }),
+      },
+    };
+
+    await expect(
+      service.getSignedUrl('file_other', 'admin_1', 'SuperAdmin'),
+    ).resolves.toBe('signed-url');
   });
 
   it('allows public URL fallback for public published ready collection media', async () => {
@@ -304,6 +328,36 @@ describe('ImageService', () => {
     await expect(
       service.getPublicSignedUrl('old_avatar_1'),
     ).resolves.toBeNull();
+  });
+
+  it('public-url-by-key signs READY POST_IMAGE keys used by market rails', async () => {
+    const key =
+      'POST_IMAGE/356db4ba-548b-465e-81f9-98d4df3fbd24/1783765982379-40efa895-603d-4ebd-b20f-a0c0db5398ff.jpg';
+    (service as any).prisma = {
+      fileUpload: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'file_post_1',
+          s3Key: key,
+          s3Url: `https://bucket.s3.amazonaws.com/${key}`,
+          processingStatus: 'READY',
+          originalDeletedAt: null,
+          isPublic: false,
+          collectionMedias: [],
+          designMedias: [],
+          productMedias: [],
+          userProfileImages: [],
+          userProfileBanners: [],
+        }),
+      },
+      fileVariant: {
+        findFirst: jest.fn().mockResolvedValue(null),
+      },
+    };
+
+    await expect(service.getPublicSignedUrlByKey(key)).resolves.toBe(
+      'signed-url',
+    );
+    expect(getSignedUrl).toHaveBeenCalled();
   });
 
   it('batch public URL resolution prefers stable external URLs before signing', async () => {

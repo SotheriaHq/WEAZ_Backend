@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { PrismaModule } from 'src/prisma/prisma.module';
+import { UploadModule } from 'src/upload/upload.module';
 import { FeedCategoryController } from './feed-category.controller';
 import { FeedCategoryService } from './feed-category.service';
 import { MarketSectionController } from './market-section.controller';
@@ -17,7 +18,7 @@ import { MarketRankingScorerService } from './market-ranking-scorer.service';
 import { MarketGovernanceConfigService } from './market-governance-config.service';
 
 @Module({
-  imports: [PrismaModule],
+  imports: [PrismaModule, UploadModule],
   controllers: [
     FeedCategoryController,
     MarketSectionController,

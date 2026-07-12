@@ -218,13 +218,7 @@ describe('MarketSectionService', () => {
       durationMs: 1,
       aggregates: new Map(),
     });
-    const service = new MarketSectionService(
-      prisma as any,
-      undefined,
-      rankingConfig as any,
-      reader as any,
-      scorer,
-    );
+    const service = new MarketSectionService(prisma as any, undefined, rankingConfig as any, reader as any, scorer);
 
     await service.getSectionDetail('fresh-drops');
 
@@ -334,13 +328,7 @@ describe('MarketSectionService', () => {
         ],
       ]),
     });
-    const service = new MarketSectionService(
-      prisma as any,
-      undefined,
-      rankingConfig as any,
-      reader as any,
-      scorer,
-    );
+    const service = new MarketSectionService(prisma as any, undefined, rankingConfig as any, reader as any, scorer);
 
     const result = await service.getSectionDetail('fresh-drops');
 
@@ -389,13 +377,7 @@ describe('MarketSectionService', () => {
       durationMs: 1,
       aggregates: new Map(),
     });
-    const service = new MarketSectionService(
-      prisma as any,
-      undefined,
-      rankingConfig as any,
-      reader as any,
-      scorer,
-    );
+    const service = new MarketSectionService(prisma as any, undefined, rankingConfig as any, reader as any, scorer);
 
     const result = await service.getSectionDetail('fresh-drops');
 
@@ -436,13 +418,7 @@ describe('MarketSectionService', () => {
       durationMs: 2,
       aggregates: new Map(),
     });
-    const service = new MarketSectionService(
-      prisma as any,
-      undefined,
-      rankingConfig as any,
-      reader as any,
-      scorer,
-    );
+    const service = new MarketSectionService(prisma as any, undefined, rankingConfig as any, reader as any, scorer);
 
     const result = await service.getSectionDetail('fresh-drops');
 
@@ -483,13 +459,7 @@ describe('MarketSectionService', () => {
       durationMs: 150,
       aggregates: new Map(),
     });
-    const service = new MarketSectionService(
-      prisma as any,
-      undefined,
-      rankingConfig as any,
-      reader as any,
-      scorer,
-    );
+    const service = new MarketSectionService(prisma as any, undefined, rankingConfig as any, reader as any, scorer);
 
     const result = await service.getSectionDetail('fresh-drops');
 
@@ -528,13 +498,7 @@ describe('MarketSectionService', () => {
       durationMs: 1,
       aggregates: new Map(),
     });
-    const service = new MarketSectionService(
-      prisma as any,
-      undefined,
-      rankingConfig as any,
-      reader as any,
-      scorer,
-    );
+    const service = new MarketSectionService(prisma as any, undefined, rankingConfig as any, reader as any, scorer);
 
     const result = await service.getSectionDetail('fresh-drops');
 
@@ -578,13 +542,7 @@ describe('MarketSectionService', () => {
         ],
       ]),
     });
-    const service = new MarketSectionService(
-      prisma as any,
-      undefined,
-      rankingConfig as any,
-      reader as any,
-      scorer,
-    );
+    const service = new MarketSectionService(prisma as any, undefined, rankingConfig as any, reader as any, scorer);
 
     const result = await service.getSectionDetail('fresh-drops');
 

@@ -11,6 +11,7 @@ import {
   Query,
   Body,
   BadRequestException,
+  NotFoundException,
   Res,
   StreamableFile,
   HttpCode,
@@ -107,7 +108,7 @@ export class UploadController {
   @ApiOperation({
     summary: 'Get public signed URL by S3 key (no auth required)',
     description:
-      'Returns signed URL for an S3 object by its key. Used for raw S3 URLs that lack a FileUpload record.',
+      'Returns signed URL for publicly displayable S3 objects by key (market rails, published designs/products).',
   })
   async getPublicSignedUrlByKey(@Query('key') key: string) {
     if (!key || typeof key !== 'string' || key.includes('..')) {
@@ -115,7 +116,27 @@ export class UploadController {
     }
     const url = await this.uploadService.getPublicSignedUrlByKey(key);
     if (!url) {
-      throw new BadRequestException('File not found');
+      // 404 (not 400) so clients can distinguish "missing/not public" from bad input.
+      throw new NotFoundException('File not found');
+    }
+    return { url };
+  }
+
+  @Get('signed-url-by-key')
+  @UseGuards(JwtAuthGuard, ThrottlerGuard)
+  @Throttle({ default: { limit: 240, ttl: 60000 } })
+  @ApiOperation({
+    summary: 'Get authenticated signed URL by S3 key',
+    description:
+      'Owner/admin signing for raw S3 keys (content review, private drafts). Falls back path when public-url-by-key is denied.',
+  })
+  async getSignedUrlByKey(@Query('key') key: string, @Req() req: any) {
+    if (!key || typeof key !== 'string' || key.includes('..')) {
+      throw new BadRequestException('Invalid S3 key');
+    }
+    const url = await this.uploadService.getSignedUrlByKeyForUser(key, req.user);
+    if (!url) {
+      throw new NotFoundException('File not found');
     }
     return { url };
   }
@@ -402,7 +423,11 @@ export class UploadController {
   @Get('signed-url/:fileId')
   @ApiOperation({ summary: 'Get signed URL for file access' })
   async getSignedUrl(@Param('fileId') fileId: string, @Req() req: any) {
-    const url = await this.uploadService.getSignedUrl(fileId, req.user.id);
+    const url = await this.uploadService.getSignedUrl(
+      fileId,
+      req.user.id,
+      req.user.role,
+    );
     return { url };
   }
 

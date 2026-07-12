@@ -332,6 +332,67 @@ export class UploadService {
     );
   }
 
+  /**
+   * Displayable on market/admin when the object exists in S3 even if the async
+   * image pipeline never flipped processingStatus to READY (common for older
+   * product/design uploads that still have a valid s3Key).
+   */
+  private isDisplayableStoredFile(file: any): boolean {
+    if (!file || file.originalDeletedAt) return false;
+    const key = typeof file.s3Key === 'string' ? file.s3Key.trim() : '';
+    if (!key) return false;
+    const status = String(file.processingStatus ?? 'READY').toUpperCase();
+    return status !== 'FAILED';
+  }
+
+  /** Shared Prisma include for public URL authorization checks. */
+  private publicFileAccessInclude() {
+    return {
+      collectionMedias: {
+        include: {
+          collection: {
+            select: {
+              id: true,
+              status: true,
+              visibility: true,
+              deletedAt: true,
+            },
+          },
+        },
+      },
+      designMedias: {
+        include: {
+          design: {
+            select: {
+              id: true,
+              status: true,
+              visibility: true,
+              deletedAt: true,
+            },
+          },
+        },
+      },
+      productMedias: {
+        include: {
+          product: {
+            select: {
+              id: true,
+              isActive: true,
+              publicationStatus: true,
+              deletedAt: true,
+            },
+          },
+        },
+      },
+      userProfileImages: {
+        select: { id: true },
+      },
+      userProfileBanners: {
+        select: { id: true },
+      },
+    } as const;
+  }
+
   private isPublicCollectionFile(file: any): boolean {
     const medias = Array.isArray(file?.collectionMedias)
       ? file.collectionMedias
@@ -348,6 +409,44 @@ export class UploadService {
     });
   }
 
+  private isPublicDesignFile(file: any): boolean {
+    const medias = Array.isArray(file?.designMedias) ? file.designMedias : [];
+    return medias.some((media: any) => {
+      const design = media?.design;
+      if (!design || design.deletedAt) return false;
+      // Published catalog designs.
+      if (design.status === 'PUBLISHED' && design.visibility === 'PUBLIC') {
+        return true;
+      }
+      // Content-review / admin previews need to resolve the same object keys
+      // that market rails use (POST_IMAGE/...). Keys are unguessable UUIDs.
+      const status = String(design.status ?? '').toUpperCase();
+      return (
+        status === 'IN_REVIEW' ||
+        status === 'CHANGES_REQUESTED' ||
+        status === 'PENDING_REVIEW'
+      );
+    });
+  }
+
+  private isPublicProductFile(file: any): boolean {
+    const medias = Array.isArray(file?.productMedias) ? file.productMedias : [];
+    return medias.some((media: any) => {
+      const product = media?.product;
+      if (!product || product.deletedAt) return false;
+      // Active listed products (or explicitly published) may be shown on Market.
+      if (product.isActive === false) return false;
+      const status = String(product.publicationStatus ?? '').toUpperCase();
+      if (status && status !== 'PUBLISHED' && status !== 'ACTIVE') {
+        // Some catalogs only use isActive; allow when status is empty/legacy.
+        if (status === 'DRAFT' || status === 'ARCHIVED' || status === 'REMOVED') {
+          return false;
+        }
+      }
+      return true;
+    });
+  }
+
   private isPublicIdentityFile(file: any): boolean {
     const profileImages = Array.isArray(file?.userProfileImages)
       ? file.userProfileImages
@@ -359,12 +458,27 @@ export class UploadService {
     return profileImages.length > 0 || profileBanners.length > 0;
   }
 
+  /**
+   * Product/design cards often store raw S3 URLs without a ProductMedia join.
+   * If the FileUpload row exists under a POST_IMAGE/POST_VIDEO prefix, allow
+   * short-lived public signing so market rails and content-review previews do
+   * not 400. Profile/banner still require an identity join (not this path).
+   */
+  private isDisplayMediaPrefixFile(file: any): boolean {
+    if (!this.isDisplayableStoredFile(file)) return false;
+    const key = String(file.s3Key ?? '');
+    return /^(POST_IMAGE|POST_VIDEO)\//i.test(key);
+  }
+
   private canReturnPublicFileUrl(file: any): boolean {
-    if (!this.isReadyStoredFile(file)) return false;
+    if (!this.isDisplayableStoredFile(file)) return false;
     return Boolean(
       file.isPublic ||
         this.isPublicCollectionFile(file) ||
-        this.isPublicIdentityFile(file),
+        this.isPublicDesignFile(file) ||
+        this.isPublicProductFile(file) ||
+        this.isPublicIdentityFile(file) ||
+        this.isDisplayMediaPrefixFile(file),
     );
   }
 
@@ -760,19 +874,34 @@ export class UploadService {
     };
   }
 
-  async getSignedUrl(fileId: string, userId: string): Promise<string> {
-    const file = await this.prisma.fileUpload.findFirst({
-      where: { id: fileId, userId },
+  async getSignedUrl(
+    fileId: string,
+    userId: string,
+    role?: string | null,
+  ): Promise<string> {
+    // Do NOT require ownership in the WHERE clause — admins and public market
+    // viewers need to resolve other brands' product/design media. Authorize after load.
+    const file = await this.prisma.fileUpload.findUnique({
+      where: { id: fileId },
+      include: this.publicFileAccessInclude() as any,
     });
 
     if (!file) {
       throw new BadRequestException('File not found');
     }
-    if (!this.isReadyStoredFile(file)) {
+    if (!this.isDisplayableStoredFile(file)) {
       this.logger.warn(
         `[media] signed-url denied for unavailable file fileId=${fileId}`,
       );
       throw new BadRequestException('File not available');
+    }
+
+    const isOwner = file.userId === userId;
+    const normalizedRole = String(role ?? '');
+    const isAdmin =
+      normalizedRole === 'Admin' || normalizedRole === 'SuperAdmin';
+    if (!isOwner && !isAdmin && !this.canReturnPublicFileUrl(file)) {
+      throw new BadRequestException('File not found');
     }
 
     const localDevUrl = this.getLocalDevSignedDisplayUrl(file);
@@ -795,26 +924,7 @@ export class UploadService {
   async getPublicSignedUrl(fileId: string): Promise<string | null> {
     const file = await this.prisma.fileUpload.findUnique({
       where: { id: fileId },
-      include: {
-        collectionMedias: {
-          include: {
-            collection: {
-              select: {
-                id: true,
-                status: true,
-                visibility: true,
-                deletedAt: true,
-              },
-            },
-          },
-        },
-        userProfileImages: {
-          select: { id: true },
-        },
-        userProfileBanners: {
-          select: { id: true },
-        },
-      } as any,
+      include: this.publicFileAccessInclude() as any,
     });
 
     if (!file || !this.canReturnPublicFileUrl(file)) {
@@ -838,8 +948,9 @@ export class UploadService {
   }
 
   /**
-   * Get signed URL by raw S3 key (no DB lookup required).
-   * Used when the frontend only has a raw S3 URL and needs a signed version.
+   * Get signed URL by raw S3 key.
+   * Used when the frontend only has a raw S3 URL / storage key and needs a
+   * signed version (market rails, content-review previews, catalog cards).
    */
   async getPublicSignedUrlByKey(s3Key: string): Promise<string | null> {
     const normalizedKey = typeof s3Key === 'string' ? s3Key.trim() : '';
@@ -847,29 +958,12 @@ export class UploadService {
       throw new BadRequestException('Invalid S3 key');
     }
 
+    const accessInclude = this.publicFileAccessInclude();
+
     const directFile = await this.prisma.fileUpload.findUnique({
       where: { s3Key: normalizedKey },
-      include: {
-        collectionMedias: {
-          include: {
-            collection: {
-              select: {
-                id: true,
-                status: true,
-                visibility: true,
-                deletedAt: true,
-              },
-            },
-          },
-        },
-        userProfileImages: {
-          select: { id: true },
-        },
-        userProfileBanners: {
-          select: { id: true },
-        },
-      } as any,
-    } as any);
+      include: accessInclude as any,
+    });
 
     const variant = directFile
       ? null
@@ -877,33 +971,16 @@ export class UploadService {
           where: { s3Key: normalizedKey },
           include: {
             file: {
-              include: {
-                collectionMedias: {
-                  include: {
-                    collection: {
-                      select: {
-                        id: true,
-                        status: true,
-                        visibility: true,
-                        deletedAt: true,
-                      },
-                    },
-                  },
-                },
-                userProfileImages: {
-                  select: { id: true },
-                },
-                userProfileBanners: {
-                  select: { id: true },
-                },
-              },
+              include: accessInclude,
             },
           },
         });
 
     const sourceFile = directFile ?? variant?.file ?? null;
     if (!sourceFile || !this.canReturnPublicFileUrl(sourceFile)) {
-      this.logger.warn('[media] public-url-by-key denied');
+      this.logger.warn(
+        `[media] public-url-by-key denied keyPrefix=${normalizedKey.split('/')[0] ?? 'unknown'}`,
+      );
       return null;
     }
 
@@ -915,14 +992,58 @@ export class UploadService {
       return stablePublicUrl;
     }
 
+    // Prefer the DB key when present (canonical), else the requested key.
+    const signKey =
+      (typeof sourceFile.s3Key === 'string' && sourceFile.s3Key.trim()) ||
+      normalizedKey;
+
     const command = new GetObjectCommand({
       Bucket: this.bucketName,
-      Key: normalizedKey,
+      Key: signKey,
     });
 
     return await getSignedUrl(this.s3, command, {
       expiresIn: UploadService.PUBLIC_DISPLAY_SIGNED_URL_TTL_SECONDS,
     });
+  }
+
+  /**
+   * Authenticated key-based signing for owners/admins. Used when public
+   * signing is denied (drafts, private, ownership-gated previews).
+   */
+  async getSignedUrlByKeyForUser(
+    s3Key: string,
+    user: { id?: string; role?: string } | null | undefined,
+  ): Promise<string | null> {
+    const normalizedKey = typeof s3Key === 'string' ? s3Key.trim() : '';
+    if (!normalizedKey || normalizedKey.includes('..')) {
+      throw new BadRequestException('Invalid S3 key');
+    }
+    if (!user?.id) return null;
+
+    const accessInclude = this.publicFileAccessInclude();
+    const file = await this.prisma.fileUpload.findUnique({
+      where: { s3Key: normalizedKey },
+      include: accessInclude as any,
+    });
+    if (!file || !this.isDisplayableStoredFile(file)) {
+      return null;
+    }
+
+    const role = String(user.role ?? '');
+    const isAdmin = role === 'Admin' || role === 'SuperAdmin';
+    const isOwner = file.userId === user.id;
+    if (!isAdmin && !isOwner && !this.canReturnPublicFileUrl(file)) {
+      return null;
+    }
+
+    const signKey =
+      (typeof file.s3Key === 'string' && file.s3Key.trim()) || normalizedKey;
+    const command = new GetObjectCommand({
+      Bucket: this.bucketName,
+      Key: signKey,
+    });
+    return await getSignedUrl(this.s3, command, { expiresIn: 3600 });
   }
 
   /**
