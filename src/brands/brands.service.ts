@@ -66,6 +66,8 @@ export interface BrandMediaAsset {
 
 export interface BrandProfileResponse {
   id: string;
+  /** Public brand handle used for `/u/:username` QR and share links. */
+  username: string | null;
   brandFullName: string;
   description: string | null;
   country: string | null;
@@ -87,12 +89,17 @@ export interface BrandProfileResponse {
     website?: string | null;
   };
   contactInfo: {
-    email: string;
+    /**
+     * Account email is private. Only returned when the authenticated viewer is
+     * the brand owner. Public/QR visitors always receive null.
+     */
+    email: string | null;
     phone?: string | null;
     businessType?: string | null;
   };
   tags: string[];
   hashtags: string[];
+  /** Verification registry fields — owner-only; redacted for public viewers. */
   cacNumber: string | null;
   tin: string | null;
   verified: boolean;
@@ -662,8 +669,13 @@ export class BrandsService {
           canMarkViewed: false,
         };
 
+    // Public brand catalog (including QR scans) must never leak account PII.
+    // Only the authenticated brand owner may see email / CAC / TIN here.
+    const isOwnerViewer = Boolean(viewerId && viewerId === brand.id);
+
     return {
       id: brand.id,
+      username: brand.username?.trim() || null,
       brandFullName: canonicalProfile.brandFullName,
       description: canonicalProfile.description,
       country: canonicalProfile.country,
@@ -685,14 +697,16 @@ export class BrandsService {
         website: canonicalProfile.socialLinks.website,
       },
       contactInfo: {
-        email: brand.email,
+        email: isOwnerViewer ? brand.email : null,
         phone: null,
         businessType: canonicalProfile.businessType || 'Fashion Brand',
       },
       tags: canonicalProfile.tags,
       hashtags: canonicalProfile.tags,
-      cacNumber: canonicalProfile.verificationFields.cacNumber,
-      tin: canonicalProfile.verificationFields.tin,
+      cacNumber: isOwnerViewer
+        ? canonicalProfile.verificationFields.cacNumber
+        : null,
+      tin: isOwnerViewer ? canonicalProfile.verificationFields.tin : null,
       verified: metrics.verified,
       verificationStatus: metrics.verificationStatus,
       verificationBadgeVisible: metrics.verificationBadgeVisible,

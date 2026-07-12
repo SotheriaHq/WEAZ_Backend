@@ -423,9 +423,99 @@ describe('BrandsService', () => {
         ownerId: 'owner-1',
         username: 'maison',
       });
+      expect(response.username).toBe('maison');
       expect(response.publicProfileUrl).toBe('https://threadly.test/u/maison');
       expect(response.qrTargetUrl).toBe('https://threadly.test/u/maison');
       expect(response.shareUrl).toBe('https://threadly.test/u/maison');
+      // Public/QR viewers must never receive account PII.
+      expect(response.contactInfo.email).toBeNull();
+      expect(response.cacNumber).toBeNull();
+      expect(response.tin).toBeNull();
+    });
+
+    it('returns owner email and verification ids only to the brand owner viewer', async () => {
+      const createdAt = new Date('2026-05-01T00:00:00.000Z');
+      const updatedAt = new Date('2026-05-02T00:00:00.000Z');
+      mockPrisma.user.findUnique.mockResolvedValue({
+        id: 'owner-1',
+        username: 'maison',
+        email: 'owner@example.com',
+        isEmailVerified: true,
+        status: 'ACTIVE',
+        deactivatedAt: null,
+        createdAt,
+        updatedAt,
+        type: UserType.BRAND,
+        userProfile: {
+          firstName: 'Maison',
+          lastName: 'Vant',
+          phoneNumber: null,
+          address: null,
+          profileImage: 'https://cdn.example.com/logo.jpg',
+          profileImageId: 'logo-file-id',
+          profileImageFile: {
+            id: 'logo-file-id',
+            s3Url: 's3://logo.jpg',
+            fileName: 'logo.jpg',
+            originalName: 'logo-original.jpg',
+            createdAt,
+            updatedAt,
+          },
+          bannerImage: 'https://cdn.example.com/banner.jpg',
+          bannerImageId: 'banner-file-id',
+          bannerImageFile: {
+            id: 'banner-file-id',
+            s3Url: 's3://banner.jpg',
+            fileName: 'banner.jpg',
+            originalName: 'banner-original.jpg',
+            createdAt,
+            updatedAt,
+          },
+        },
+        brand: {
+          id: 'brand-1',
+          name: 'Maison Vant',
+          description: 'Luxury menswear.',
+          logo: 'https://cdn.example.com/brand-logo.jpg',
+          banner: 'https://cdn.example.com/brand-banner.jpg',
+          tags: ['menswear'],
+          country: 'USA',
+          state: 'New York',
+          city: 'New York',
+          businessType: 'Atelier',
+          companyLocation: null,
+          socialInstagram: null,
+          socialFacebook: null,
+          socialTwitter: null,
+          socialWebsite: null,
+          cacNumber: 'RC-123',
+          tin: 'TIN-456',
+          ceoNin: null,
+          ceoFirstName: null,
+          ceoLastName: null,
+          industriNumber: null,
+          isStoreOpen: true,
+          verificationStatus: 'APPROVED',
+          avgRating: 4.8,
+          totalReviews: 12,
+        },
+      });
+      mockPrisma.collection.count.mockResolvedValue(0);
+      mockPrisma.product.count.mockResolvedValue(0);
+      mockPrisma.patchConnection.count.mockResolvedValue(0);
+      mockPrisma.collection.aggregate.mockResolvedValue({
+        _sum: { threadsCount: 0 },
+      });
+      mockPrisma.collectionMedia.aggregate.mockResolvedValue({
+        _sum: { threadsCount: 0 },
+      });
+
+      const response = await service.getBrandProfile('owner-1', 'owner-1');
+
+      expect(response.contactInfo.email).toBe('owner@example.com');
+      expect(response.cacNumber).toBe('RC-123');
+      expect(response.tin).toBe('TIN-456');
+      expect(response.username).toBe('maison');
     });
   });
 });
