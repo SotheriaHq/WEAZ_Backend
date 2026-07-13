@@ -313,23 +313,13 @@ export class TagIndexService {
       throw error;
     }
 
-    if (added.length > 0 && options?.notifyMentions !== false) {
-      try {
-        await this.notifyTagMentions(
-          entityType,
-          entityId,
-          added,
-          options?.actorId ?? null,
-          options?.entityTitle,
-        );
-      } catch (error) {
-        this.logger.warn(
-          `Failed TAG_MENTION notification fanout for ${entityType}:${entityId} - ${String(
-            error,
-          )}`,
-        );
-      }
-    }
+    // TAG_MENTION ("<title> matched your tags") fan-out is intentionally
+    // disabled: another account reusing a tag a brand also lists is NOT a
+    // reason to notify that brand. It produced constant unwanted noise for
+    // store owners. The notification type + renderers remain only so any
+    // historical rows still display; nothing creates new ones. `notifyTagMentions`
+    // is retained (unused) for reference/rollback but is no longer invoked.
+    void options?.notifyMentions;
   }
 
   private async resolveMentionContext(
