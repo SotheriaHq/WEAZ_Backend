@@ -45,6 +45,7 @@ export class PatchingService {
     // Check if target user is a brand
     const targetUser = await this.prisma.user.findUnique({
       where: { id: brandId },
+      include: { brand: { select: { name: true } } },
     });
 
     if (!targetUser) {
@@ -93,6 +94,8 @@ export class PatchingService {
       });
     }
 
+    const brandName = targetUser.brand?.name || targetUser.username || 'the brand';
+
     // Notify brand owner of the patch
     if (this.notifications && requesterId !== brandId) {
       try {
@@ -102,6 +105,22 @@ export class PatchingService {
           payload: {
             target: { type: 'USER', id: brandId },
             action: 'PROFILE_PATCHED', // Specify that this is a profile patch, not collection patch
+            brandName,
+          },
+          dedupeMs: 5 * 60 * 1000,
+        });
+      } catch {}
+
+      // Confirm the patch back to the requester (buyer) with a routeable
+      // notification that deep-links to the brand's catalog.
+      try {
+        await this.notifications.create(requesterId, NotificationType.PATCH, {
+          actorId: brandId,
+          target: { type: 'USER', id: brandId },
+          payload: {
+            target: { type: 'USER', id: brandId },
+            action: 'USER_PATCH_CONFIRMED',
+            brandName,
           },
           dedupeMs: 5 * 60 * 1000,
         });

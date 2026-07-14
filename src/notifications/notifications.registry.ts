@@ -553,11 +553,20 @@ export class NotificationRegistry {
           id: Joi.string().optional(),
         }).optional(),
         action: Joi.string().optional(),
+        brandName: Joi.string().optional(),
         targetUrl: Joi.string().optional(),
       }),
       formatter: (n: any) => {
         const actorName = formatActorDisplayName(n.actor, null);
         const action = n.payload?.action;
+        // Requester (buyer) confirmation of their own patch (user-to-brand)
+        if (action === 'USER_PATCH_CONFIRMED') {
+          const brandName =
+            (typeof n.payload?.brandName === 'string' && n.payload.brandName) ||
+            actorName ||
+            'this brand';
+          return `You have successfully patched on ${brandName}. Keep shopping and patching.`;
+        }
         // Profile patch (user-to-brand)
         if (action === 'PROFILE_PATCHED') {
           return actorName

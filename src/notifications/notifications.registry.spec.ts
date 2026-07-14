@@ -112,6 +112,39 @@ describe('NotificationRegistry', () => {
     expect(config?.formatter({ payload: value })).toBe(payload.message);
   });
 
+  it('validates and formats the requester patch confirmation notification', () => {
+    const config = registry.getConfig(NotificationType.PATCH);
+    const payload = {
+      target: { type: 'USER', id: 'brand-123' },
+      action: 'USER_PATCH_CONFIRMED',
+      brandName: 'Hover Covers',
+    };
+
+    const { error, value } = config!.schema.validate(payload);
+
+    expect(error).toBeUndefined();
+    expect(config?.formatter({ payload: value, actor: null })).toBe(
+      'You have successfully patched on Hover Covers. Keep shopping and patching.',
+    );
+  });
+
+  it('validates and formats the brand-facing profile patch notification', () => {
+    const config = registry.getConfig(NotificationType.PATCH);
+    const payload = {
+      target: { type: 'USER', id: 'brand-123' },
+      action: 'PROFILE_PATCHED',
+      brandName: 'Hover Covers',
+    };
+
+    const { error, value } = config!.schema.validate(payload);
+
+    expect(error).toBeUndefined();
+    // With no actor resolved, the brand-facing copy falls back to the generic form.
+    expect(config?.formatter({ payload: value, actor: null })).toBe(
+      'Your profile received a patch',
+    );
+  });
+
   it('preserves message routing fields while stripping private message body fields', () => {
     const config = registry.getConfig(NotificationType.MESSAGE_RECEIVED);
     const payload = {
