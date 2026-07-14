@@ -123,6 +123,11 @@ const PRODUCT_VARIANT_SIZE_VALUES = [
   'XXXL',
   'XXXXL',
 ] as const;
+
+const NT_BAG_ITEM_ADDED = 'BAG_ITEM_ADDED' as NotificationType;
+const NT_BAG_CHECKOUT_REMINDER = 'BAG_CHECKOUT_REMINDER' as NotificationType;
+const BAG_CHECKOUT_REMINDER_INTERVAL_MS = 2 * 60 * 60 * 1000;
+const BAG_NOTIFICATION_TARGET_ID = 'buyer-bag';
 const PRODUCT_VARIANT_SIZE_LABEL_SET = new Set<string>(
   PRODUCT_VARIANT_SIZE_VALUES,
 );
@@ -5656,6 +5661,169 @@ export class StoreService {
 
   // ==================== CART ====================
 
+  private toMoneyNumber(value: unknown): number | null {
+    if (value === null || value === undefined) return null;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  private buildBagVariantLabel(args: {
+    selectedSize?: string | null;
+    selectedColor?: string | null;
+  }): string {
+    return [args.selectedSize, args.selectedColor]
+      .map((value) => String(value ?? '').trim())
+      .filter(Boolean)
+      .join(', ');
+  }
+
+  private buildSingleItemBagMessage(args: {
+    productName: string;
+    brandName?: string | null;
+    selectedSize?: string | null;
+    selectedColor?: string | null;
+  }): string {
+    const variant = this.buildBagVariantLabel(args);
+    const variantText = variant ? ` (${variant})` : '';
+    const brandText = args.brandName ? ` from ${args.brandName}` : '';
+    return `${args.productName}${brandText}${variantText} is now in your bag. Check out soon before your size sells out or the price changes.`;
+  }
+
+  private async notifyBuyerBagItemAdded(args: {
+    userId: string;
+    productId: string;
+    productName: string;
+    brandName?: string | null;
+    currency?: string | null;
+    price?: number | null;
+    quantity: number;
+    selectedSize?: string | null;
+    selectedColor?: string | null;
+  }): Promise<void> {
+    if (!this.notifications) return;
+
+    const message = this.buildSingleItemBagMessage(args);
+
+    try {
+      await this.notifications.create(args.userId, NT_BAG_ITEM_ADDED, {
+        payload: {
+          action: 'BAG_ITEM_ADDED',
+          productId: args.productId,
+          productName: args.productName,
+          brandName: args.brandName ?? undefined,
+          quantity: args.quantity,
+          selectedSize: args.selectedSize ?? null,
+          selectedColor: args.selectedColor ?? null,
+          currency: args.currency ?? undefined,
+          price: args.price ?? undefined,
+          targetUrl: '/bag',
+          message,
+        },
+        target: {
+          type: 'SYSTEM',
+          id: BAG_NOTIFICATION_TARGET_ID,
+          preview: 'Bag',
+        },
+        dedupeMs: 60_000,
+      });
+    } catch (error) {
+      this.logger.warn(
+        `Failed to create bag confirmation notification for user=${args.userId} product=${args.productId}: ${String(error)}`,
+      );
+    }
+  }
+
+  @Cron(CronExpression.EVERY_30_MINUTES)
+  async handleBagCheckoutReminders() {
+    if (!this.notifications) return;
+
+    const cutoff = new Date(Date.now() - BAG_CHECKOUT_REMINDER_INTERVAL_MS);
+    const cartItems = await this.prisma.cartItem.findMany({
+      where: {
+        updatedAt: { lte: cutoff },
+        product: {
+          deletedAt: null,
+          archivedAt: null,
+          isActive: true,
+          publicationStatus: CollectionStatus.PUBLISHED,
+          brand: { isStoreOpen: true },
+        },
+      },
+      select: {
+        userId: true,
+        quantity: true,
+        updatedAt: true,
+        product: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+      },
+      orderBy: { updatedAt: 'asc' },
+      take: 500,
+    });
+
+    if (cartItems.length === 0) return;
+
+    const byUser = new Map<
+      string,
+      Array<{
+        quantity: number;
+        updatedAt: Date;
+        product: { id: string; name: string };
+      }>
+    >();
+
+    for (const item of cartItems) {
+      const bucket = byUser.get(item.userId) ?? [];
+      bucket.push({
+        quantity: item.quantity,
+        updatedAt: item.updatedAt,
+        product: item.product,
+      });
+      byUser.set(item.userId, bucket);
+    }
+
+    for (const [userId, items] of byUser) {
+      const sorted = [...items].sort(
+        (a, b) => a.updatedAt.getTime() - b.updatedAt.getTime(),
+      );
+      const itemCount = sorted.reduce(
+        (sum, item) => sum + Math.max(1, Number(item.quantity ?? 1)),
+        0,
+      );
+      const topItemTitle = sorted[0]?.product?.name || 'Your item';
+      const message =
+        itemCount > 1
+          ? `${topItemTitle} and ${itemCount - 1} more item${itemCount - 1 === 1 ? '' : 's'} are still in your bag. Check out soon before sizes sell out or prices change.`
+          : `${topItemTitle} is still in your bag. Check out soon before it sells out or the price changes.`;
+
+      try {
+        await this.notifications.create(userId, NT_BAG_CHECKOUT_REMINDER, {
+          payload: {
+            action: 'BAG_CHECKOUT_REMINDER',
+            itemCount,
+            topItemTitle,
+            otherItemCount: Math.max(0, itemCount - 1),
+            targetUrl: '/bag',
+            message,
+          },
+          target: {
+            type: 'SYSTEM',
+            id: BAG_NOTIFICATION_TARGET_ID,
+            preview: 'Bag',
+          },
+          dedupeMs: BAG_CHECKOUT_REMINDER_INTERVAL_MS,
+        });
+      } catch (error) {
+        this.logger.warn(
+          `Failed to create bag checkout reminder for user=${userId}: ${String(error)}`,
+        );
+      }
+    }
+  }
+
   async addToCart(userId: string, dto: AddToCartDto) {
     const actingUser = await this.prisma.user.findUnique({
       where: { id: userId },
@@ -5691,7 +5859,7 @@ export class StoreService {
       },
       include: {
         variants: true,
-        brand: { select: { ownerId: true } },
+        brand: { select: { ownerId: true, name: true, currency: true } },
       },
     });
 
@@ -5900,6 +6068,18 @@ export class StoreService {
           },
         });
       }
+    });
+
+    await this.notifyBuyerBagItemAdded({
+      userId,
+      productId: product.id,
+      productName: product.name,
+      brandName: product.brand?.name ?? null,
+      currency: product.currency ?? product.brand?.currency ?? null,
+      price: this.toMoneyNumber(product.salePrice ?? product.price),
+      quantity: resultingQuantity,
+      selectedSize: resolvedSelectedSize,
+      selectedColor: dto.selectedColor || null,
     });
 
     return this.getCart(userId);

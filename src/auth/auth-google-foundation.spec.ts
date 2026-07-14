@@ -2,6 +2,7 @@ import { BadRequestException, UnauthorizedException } from '@nestjs/common';
 import {
   AuthProvider,
   EmailPriority,
+  NotificationType,
   PasswordCredentialStatus,
   Role,
   UserStatus,
@@ -15,6 +16,7 @@ describe('AuthService Google auth foundation', () => {
   let mockPrisma: any;
   let mockPasswordService: any;
   let mockTokenService: any;
+  let mockEmailVerificationHelper: any;
   let mockEmailService: any;
   let mockNotifications: any;
   let mockGoogleTokenVerifier: any;
@@ -106,6 +108,10 @@ describe('AuthService Google auth foundation', () => {
       }),
       revokeOtherRefreshTokens: jest.fn(),
     };
+    mockEmailVerificationHelper = {
+      generateVerificationCode: jest.fn(() => 'verify-token'),
+      generateVerificationLink: jest.fn(() => 'https://weaz.me/verify-email?token=verify-token'),
+    };
     mockEmailService = {
       send: jest.fn().mockResolvedValue({ dispatchStatus: 'SENT' }),
       getAppName: jest.fn(() => 'WIEZ'),
@@ -140,7 +146,7 @@ describe('AuthService Google auth foundation', () => {
         generateUsernameFromBrand: jest.fn().mockResolvedValue('ada-brand'),
         generateIndustriNumber: jest.fn().mockResolvedValue('IND-001'),
       } as any,
-      {} as any,
+      mockEmailVerificationHelper,
       mockNotifications,
       mockEmailService,
       mockTrustedDeviceService,
@@ -160,15 +166,26 @@ describe('AuthService Google auth foundation', () => {
     mockPrisma.user.create.mockResolvedValue({
       ...baseAuthUser,
       passwordCredentialStatus: PasswordCredentialStatus.NOT_SET,
+      isEmailVerified: false,
     });
 
     await expect(
-      service.googleAuth({ idToken: 'id-token' }, {} as any, {} as any),
+      service.googleAuth(
+        {
+          idToken: 'id-token',
+          intent: 'SIGNUP',
+          type: UserType.REGULAR,
+          legalAcceptances: [],
+        },
+        { headers: {}, get: jest.fn(), protocol: 'https' } as any,
+        {} as any,
+      ),
     ).resolves.toEqual(
       expect.objectContaining({
         accessToken: 'access-token',
         refreshToken: 'refresh-token',
-        message: 'Welcome Back',
+        message: expect.stringContaining('Verification email sent'),
+        verificationEmail: expect.objectContaining({ status: 'SENT' }),
       }),
     );
 
@@ -178,7 +195,8 @@ describe('AuthService Google auth foundation', () => {
           email: 'ada@example.com',
           password: null,
           passwordCredentialStatus: PasswordCredentialStatus.NOT_SET,
-          isEmailVerified: true,
+          isEmailVerified: false,
+          emailVerificationCode: 'verify-token',
           authIdentities: {
             create: expect.objectContaining({
               provider: AuthProvider.GOOGLE,
@@ -186,6 +204,27 @@ describe('AuthService Google auth foundation', () => {
               emailVerified: true,
             }),
           },
+        }),
+      }),
+    );
+    expect(mockEmailService.send).toHaveBeenCalledWith(
+      'ada@example.com',
+      expect.any(String),
+      expect.any(String),
+      expect.any(String),
+      expect.objectContaining({
+        scenarioKey: 'auth.email_verification',
+        priority: EmailPriority.P1_TRANSACTIONAL,
+      }),
+    );
+    expect(mockNotifications.create).toHaveBeenCalledWith(
+      'user-1',
+      NotificationType.SIGNUP,
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          action: 'SIGNUP',
+          method: 'GOOGLE',
+          targetUrl: '/profile',
         }),
       }),
     );

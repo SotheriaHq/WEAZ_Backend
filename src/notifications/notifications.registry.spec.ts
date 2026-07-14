@@ -73,6 +73,45 @@ describe('NotificationRegistry', () => {
     );
   });
 
+  it('validates and formats bag item confirmation notifications', () => {
+    const config = registry.getConfig(NotificationType.BAG_ITEM_ADDED);
+    const payload = {
+      action: 'BAG_ITEM_ADDED',
+      productId: 'product-123',
+      productName: 'Linen Wrap Dress',
+      brandName: 'Aso Studio',
+      selectedSize: 'M',
+      selectedColor: 'Ivory',
+      quantity: 1,
+      targetUrl: '/bag',
+      message:
+        'Linen Wrap Dress from Aso Studio (M, Ivory) is now in your bag. Check out soon before your size sells out or the price changes.',
+    };
+
+    const { error, value } = config!.schema.validate(payload);
+
+    expect(error).toBeUndefined();
+    expect(config?.formatter({ payload: value })).toBe(payload.message);
+  });
+
+  it('validates and formats bag checkout reminder notifications', () => {
+    const config = registry.getConfig(NotificationType.BAG_CHECKOUT_REMINDER);
+    const payload = {
+      action: 'BAG_CHECKOUT_REMINDER',
+      itemCount: 2,
+      topItemTitle: 'Linen Wrap Dress',
+      otherItemCount: 1,
+      targetUrl: '/bag',
+      message:
+        'Linen Wrap Dress and 1 more item are still in your bag. Check out soon before sizes sell out or prices change.',
+    };
+
+    const { error, value } = config!.schema.validate(payload);
+
+    expect(error).toBeUndefined();
+    expect(config?.formatter({ payload: value })).toBe(payload.message);
+  });
+
   it('preserves message routing fields while stripping private message body fields', () => {
     const config = registry.getConfig(NotificationType.MESSAGE_RECEIVED);
     const payload = {

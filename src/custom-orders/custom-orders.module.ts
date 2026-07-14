@@ -9,6 +9,7 @@ import { MessagingModule } from 'src/messaging/messaging.module';
 import { BrandPermissionService } from 'src/brands/permissions/brand-permission.service';
 import { BagValidationService } from 'src/bagging/bag-validation.service';
 import { ReviewsModule } from 'src/reviews/reviews.module';
+import { NotificationsModule } from 'src/notifications/notifications.module';
 import { CustomOrderAccessService } from './custom-order-access.service';
 import { CustomOrdersBrandController } from './custom-orders-brand.controller';
 import { CustomOrdersBuyerController } from './custom-orders-buyer.controller';
@@ -26,6 +27,7 @@ import { CustomOrdersService } from './custom-orders.service';
     SystemConfigModule,
     FinanceModule,
     ReviewsModule,
+    NotificationsModule,
     forwardRef(() => MessagingModule),
   ],
   controllers: [CustomOrdersBuyerController, CustomOrdersBrandController],

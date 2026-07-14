@@ -877,6 +877,9 @@ export class AuthService {
     const intent: 'LOGIN' | 'SIGNUP' =
       dto.intent ?? (dto.type ? 'SIGNUP' : 'LOGIN');
     const createdAt = new Date();
+    const verificationToken =
+      this.emailVerificationHelper.generateVerificationCode();
+    let createdGoogleAccount = false;
 
     if (requestedType === UserType.BRAND && !dto.brandFullName?.trim()) {
       throw new BadRequestException('Brand full name is required');
@@ -1019,8 +1022,8 @@ export class AuthService {
             password: null,
             passwordCredentialStatus: PasswordCredentialStatus.NOT_SET,
             type: requestedType,
-            isEmailVerified: true,
-            emailVerificationCode: null,
+            isEmailVerified: false,
+            emailVerificationCode: verificationToken,
             userProfile: {
               create: {
                 firstName: displayNames.firstName,
@@ -1055,6 +1058,7 @@ export class AuthService {
           },
           select: authUserSelect,
         });
+        createdGoogleAccount = true;
 
         await this.legalService.recordAcceptedDocuments({
           tx,
@@ -1105,16 +1109,90 @@ export class AuthService {
       user.id,
       req,
     );
-    void this.notifications
-      .create(user.id, NotificationType.LOGIN, {
-        payload: {
-          ip: this.extractClientIp(req),
-          userAgent: req.headers?.['user-agent'] ?? null,
-          newDevice: deviceResult.isNewDevice,
-          method: 'GOOGLE',
+    let verificationDispatchResult: EnqueueEmailResult | null = null;
+
+    if (createdGoogleAccount) {
+      const postVerificationNextPath = this.resolvePostVerificationNextPath(
+        user.type,
+      );
+      const isMobileSignup = String(req.headers['x-client-platform'] ?? '')
+        .toLowerCase()
+        .includes('mobile');
+      const bridgeBaseUrl = isMobileSignup
+        ? resolveMobileAppBridgeBaseUrl({
+            host:
+              req.get?.('host') ?? (req.headers['host'] as string | undefined),
+            protocol: req.protocol,
+            forwardedProto: req.headers['x-forwarded-proto'] as
+              | string
+              | undefined,
+          })
+        : undefined;
+      const verificationLink =
+        this.emailVerificationHelper.generateVerificationLink(
+          verificationToken,
+          postVerificationNextPath,
+          { mobile: isMobileSignup, bridgeBaseUrl },
+        );
+      const verificationEmail = emailTemplates.emailVerificationEmail(
+        verificationLink,
+        this.emailService.getAppName(),
+      );
+
+      verificationDispatchResult = await this.emailService.send(
+        user.email,
+        verificationEmail.subject,
+        verificationEmail.html,
+        verificationEmail.text,
+        {
+          recipientUserId: user.id,
+          scenarioKey: 'auth.email_verification',
+          priority: EmailPriority.P1_TRANSACTIONAL,
+          idempotencyKey: `auth:email-verification:${user.id}:${verificationToken}`,
+          dispatchImmediately: true,
         },
-      })
-      .catch(() => undefined);
+      );
+      this.logEmailDispatchOutcome({
+        scenarioKey: 'auth.email_verification',
+        userId: user.id,
+        recipientEmail: user.email,
+        result: verificationDispatchResult,
+      });
+      this.emitVerificationEmailDeliveryAlert({
+        scenarioKey: 'auth.email_verification',
+        phase: 'signup',
+        userId: user.id,
+        recipientEmail: user.email,
+        result: verificationDispatchResult,
+      });
+
+      void this.notifications
+        .create(user.id, NotificationType.SIGNUP, {
+          payload: {
+            action: 'SIGNUP',
+            email: user.email,
+            displayName: this.resolveSignupDisplayName(user),
+            username: user.username,
+            createdAtIso: createdAt.toISOString(),
+            device: this.describeSignupDevice(req),
+            location: this.describeSignupLocation(req),
+            targetUrl: '/profile',
+            method: 'GOOGLE',
+          },
+        })
+        .catch(() => undefined);
+    } else {
+      void this.notifications
+        .create(user.id, NotificationType.LOGIN, {
+          payload: {
+            ip: this.extractClientIp(req),
+            userAgent: req.headers?.['user-agent'] ?? null,
+            newDevice: deviceResult.isNewDevice,
+            method: 'GOOGLE',
+          },
+        })
+        .catch(() => undefined);
+    }
 
     return {
       user: toAuthUserResponse(user),
@@ -1122,7 +1200,19 @@ export class AuthService {
       ...(tokenResult.refreshToken
         ? { refreshToken: tokenResult.refreshToken }
         : {}),
-      message: 'Welcome Back',
+      message: verificationDispatchResult
+        ? this.buildVerificationEmailMessage(verificationDispatchResult)
+        : 'Welcome Back',
+      ...(verificationDispatchResult
+        ? {
+            verificationEmail: {
+              status: verificationDispatchResult.dispatchStatus,
+              message: this.buildVerificationEmailMessage(
+                verificationDispatchResult,
+              ),
+            },
+          }
+        : {}),
     };
   }
 

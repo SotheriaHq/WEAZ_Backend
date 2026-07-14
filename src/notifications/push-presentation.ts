@@ -62,6 +62,12 @@ export function getPushPresentation(type: NotificationType): PushPresentation {
   if (value === 'WISHLIST_PRODUCT_UNAVAILABLE') {
     return { channelId: PUSH_CHANNEL_IDS.commerce, title: 'Wishlist update' };
   }
+  if (value === 'BAG_ITEM_ADDED') {
+    return { channelId: PUSH_CHANNEL_IDS.commerce, title: 'Added to bag' };
+  }
+  if (value === 'BAG_CHECKOUT_REMINDER') {
+    return { channelId: PUSH_CHANNEL_IDS.commerce, title: 'Bag reminder' };
+  }
   if (value === 'PRODUCT_UPLOAD') {
     return { channelId: PUSH_CHANNEL_IDS.commerce, title: 'New drop' };
   }

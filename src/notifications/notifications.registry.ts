@@ -77,6 +77,9 @@ const NT_MESSAGE_UNREAD_REMINDER =
 const NT_MESSAGE_THREAD_REOPENED =
   'MESSAGE_THREAD_REOPENED' as NotificationType;
 const NT_MESSAGE_MODERATED = 'MESSAGE_MODERATED' as NotificationType;
+const NT_BAG_ITEM_ADDED = 'BAG_ITEM_ADDED' as NotificationType;
+const NT_BAG_CHECKOUT_REMINDER =
+  'BAG_CHECKOUT_REMINDER' as NotificationType;
 
 const optionalMessageRoutingString = Joi.string().allow(null).optional();
 
@@ -256,6 +259,7 @@ export class NotificationRegistry {
         createdAtIso: Joi.string().isoDate().optional(),
         device: Joi.string().optional(),
         location: Joi.string().optional(),
+        method: Joi.string().optional(),
         targetUrl: Joi.string().optional(),
       }),
       formatter: (n: any) => {
@@ -355,6 +359,97 @@ export class NotificationRegistry {
         }
 
         return message;
+      },
+    });
+
+    // BAG_ITEM_ADDED
+    registry.register({
+      type: NT_BAG_ITEM_ADDED,
+      schema: Joi.object({
+        action: Joi.string().valid('BAG_ITEM_ADDED').optional(),
+        productId: Joi.string().optional(),
+        productIds: Joi.array().items(Joi.string()).optional(),
+        productName: Joi.string().optional(),
+        productNames: Joi.array().items(Joi.string()).optional(),
+        brandName: Joi.string().optional(),
+        collectionId: Joi.string().optional(),
+        collectionName: Joi.string().optional(),
+        checkoutSessionId: Joi.string().optional(),
+        checkoutIntentId: Joi.string().optional(),
+        configurationId: Joi.string().optional(),
+        sourceType: Joi.string().optional(),
+        sourceId: Joi.string().optional(),
+        itemCount: Joi.number().integer().min(1).optional(),
+        quantity: Joi.number().integer().min(1).optional(),
+        selectedSize: Joi.string().allow(null).optional(),
+        selectedColor: Joi.string().allow(null).optional(),
+        currency: Joi.string().optional(),
+        price: Joi.number().optional(),
+        targetUrl: Joi.string().optional(),
+        message: Joi.string().optional(),
+      }),
+      formatter: (n: any) => {
+        if (n.payload?.message) return n.payload.message;
+
+        const itemCount = Number(n.payload?.itemCount ?? 1);
+        const productName =
+          typeof n.payload?.productName === 'string' &&
+          n.payload.productName.trim()
+            ? n.payload.productName.trim()
+            : 'Your item';
+        const brandName =
+          typeof n.payload?.brandName === 'string' &&
+          n.payload.brandName.trim()
+            ? ` from ${n.payload.brandName.trim()}`
+            : '';
+        const variant = [n.payload?.selectedSize, n.payload?.selectedColor]
+          .filter((value) => typeof value === 'string' && value.trim())
+          .join(', ');
+        const variantText = variant ? ` (${variant})` : '';
+
+        if (itemCount > 1) {
+          const collectionName =
+            typeof n.payload?.collectionName === 'string' &&
+            n.payload.collectionName.trim()
+              ? ` from ${n.payload.collectionName.trim()}`
+              : '';
+          return `${itemCount} items${collectionName} are in your bag. Check out soon before sizes sell out or prices change.`;
+        }
+
+        return `${productName}${brandName}${variantText} is in your bag. Check out soon before it sells out or the price changes.`;
+      },
+    });
+
+    // BAG_CHECKOUT_REMINDER
+    registry.register({
+      type: NT_BAG_CHECKOUT_REMINDER,
+      schema: Joi.object({
+        action: Joi.string().valid('BAG_CHECKOUT_REMINDER').optional(),
+        itemCount: Joi.number().integer().min(1).required(),
+        topItemTitle: Joi.string().optional(),
+        otherItemCount: Joi.number().integer().min(0).optional(),
+        targetUrl: Joi.string().optional(),
+        message: Joi.string().optional(),
+      }),
+      formatter: (n: any) => {
+        if (n.payload?.message) return n.payload.message;
+
+        const itemCount = Number(n.payload?.itemCount ?? 1);
+        const topItemTitle =
+          typeof n.payload?.topItemTitle === 'string' &&
+          n.payload.topItemTitle.trim()
+            ? n.payload.topItemTitle.trim()
+            : '';
+
+        if (topItemTitle && itemCount > 1) {
+          return `${topItemTitle} and ${itemCount - 1} more item${itemCount - 1 === 1 ? '' : 's'} are still in your bag. Check out soon before sizes sell out or prices change.`;
+        }
+
+        if (topItemTitle) {
+          return `${topItemTitle} is still in your bag. Check out soon before it sells out or the price changes.`;
+        }
+
+        return `You still have ${itemCount} item${itemCount === 1 ? '' : 's'} in your bag. Check out soon before they sell out or prices change.`;
       },
     });
 

@@ -1,7 +1,13 @@
-import { BadRequestException, Injectable, Logger } from '@nestjs/common';
-import { SizingMode } from '@prisma/client';
+import {
+  BadRequestException,
+  Injectable,
+  Logger,
+  Optional,
+} from '@nestjs/common';
+import { NotificationType, SizingMode } from '@prisma/client';
 import { v4 as uuidv4 } from 'uuid';
 import { PrismaService } from 'src/prisma/prisma.service';
+import { NotificationsService } from 'src/notifications/notifications.service';
 import { BagCountPresenter } from './bag-count.presenter';
 import { BagEligibilityService } from './bag-eligibility.service';
 import { BagValidationService } from './bag-validation.service';
@@ -15,6 +21,9 @@ import type {
   BagCollectionSelectedDto,
   CollectionBagSelectionDto,
 } from './dto/collection-bagging.dto';
+
+const NT_BAG_ITEM_ADDED = 'BAG_ITEM_ADDED' as NotificationType;
+const BAG_NOTIFICATION_TARGET_ID = 'buyer-bag';
 
 type PreparedAdd = {
   productId: string;
@@ -36,6 +45,8 @@ export class CollectionBaggingService {
     private readonly eligibilityService: BagEligibilityService,
     private readonly validationService: BagValidationService,
     private readonly countPresenter: BagCountPresenter,
+    @Optional()
+    private readonly notifications?: NotificationsService,
   ) {}
 
   private async assertBuyerAccount(userId: string) {
@@ -329,6 +340,7 @@ export class CollectionBaggingService {
     });
 
     const count = await this.countPresenter.getCount(userId);
+    await this.notifyCollectionBagged(userId, status, added);
     return {
       collectionId: status.sourceId,
       added,
@@ -341,6 +353,59 @@ export class CollectionBaggingService {
         combinedBagCount: count.combinedCount,
       },
     };
+  }
+
+  private async notifyCollectionBagged(
+    userId: string,
+    status: CollectionBagStatusContract,
+    added: Array<{ productId: string; bagItemId: string; quantity: number }>,
+  ): Promise<void> {
+    if (!this.notifications || added.length === 0) return;
+
+    const addedIds = new Set(added.map((item) => item.productId));
+    const addedStatuses = status.products.filter((product) =>
+      addedIds.has(product.productId),
+    );
+    const productNames = addedStatuses
+      .map((product) => String(product.name ?? '').trim())
+      .filter(Boolean)
+      .slice(0, 5);
+    const itemCount = added.reduce(
+      (sum, item) => sum + Math.max(1, Number(item.quantity ?? 1)),
+      0,
+    );
+    const collectionName =
+      String(status.collection?.title ?? '').trim() || 'this collection';
+    const firstProduct = productNames[0] || 'Your item';
+    const message =
+      added.length > 1
+        ? `${added.length} items from ${collectionName} are now in your bag. Check out soon before sizes sell out or prices change.`
+        : `${firstProduct} from ${collectionName} is now in your bag. Check out soon before it sells out or the price changes.`;
+
+    try {
+      await this.notifications.create(userId, NT_BAG_ITEM_ADDED, {
+        payload: {
+          action: 'BAG_ITEM_ADDED',
+          collectionId: status.collection.id,
+          collectionName,
+          productIds: added.map((item) => item.productId),
+          productNames,
+          itemCount,
+          targetUrl: '/bag',
+          message,
+        },
+        target: {
+          type: 'SYSTEM',
+          id: BAG_NOTIFICATION_TARGET_ID,
+          preview: 'Bag',
+        },
+        dedupeMs: 60_000,
+      });
+    } catch (error) {
+      this.logger.warn(
+        `Failed to create collection bag notification for user=${userId} collection=${status.sourceId}: ${String(error)}`,
+      );
+    }
   }
 
   private emptyResult(

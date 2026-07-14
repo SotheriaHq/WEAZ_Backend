@@ -10,6 +10,9 @@ import {
 } from '../email/email.branding';
 import { collectionPublishedEmail } from '../email/email.templates';
 
+const NT_BAG_ITEM_ADDED = 'BAG_ITEM_ADDED' as NotificationType;
+const NT_BAG_CHECKOUT_REMINDER = 'BAG_CHECKOUT_REMINDER' as NotificationType;
+
 const CRITICAL_SCENARIOS = new Set<string>([
   'auth.signin.new_device',
   'auth.signin.high_risk',
@@ -22,6 +25,8 @@ const MVP_DEFAULT_EMAIL_NOTIFICATION_TYPES = new Set<NotificationType>([
   NotificationType.LOGOUT,
   NotificationType.ORDER_PLACED,
   NotificationType.ORDER_STATUS_UPDATED,
+  NT_BAG_ITEM_ADDED,
+  NT_BAG_CHECKOUT_REMINDER,
   NotificationType.COLLECTION_UPLOAD,
   NotificationType.PRODUCT_UPLOAD,
   NotificationType.CONTENT_SUBMITTED_FOR_REVIEW,
@@ -117,6 +122,7 @@ export function getEmailPriorityForScenario(
   switch (notificationType) {
     case NotificationType.ORDER_PLACED:
     case NotificationType.ORDER_STATUS_UPDATED:
+    case NT_BAG_ITEM_ADDED:
     case NotificationType.CUSTOM_ORDER_PAYMENT_RECEIVED:
     case NotificationType.CUSTOM_ORDER_REVIEW_REQUIRED:
     case NotificationType.CUSTOM_ORDER_BRAND_ACCEPTED:
@@ -130,6 +136,8 @@ export function getEmailPriorityForScenario(
     case NotificationType.CUSTOM_ORDER_ISSUE_REPORTED:
     case NotificationType.CUSTOM_ORDER_DISPUTE_CREATED:
       return EmailPriority.P1_TRANSACTIONAL;
+    case NT_BAG_CHECKOUT_REMINDER:
+      return EmailPriority.P2_OPERATIONAL;
     case NotificationType.MESSAGE_RECEIVED:
     case NotificationType.MESSAGE_UNREAD_REMINDER:
     case NotificationType.THREAD:
@@ -377,6 +385,8 @@ function getNotificationSubjectPrefix(
   switch (notificationType) {
     case NotificationType.ORDER_PLACED:
     case NotificationType.ORDER_STATUS_UPDATED:
+    case NT_BAG_ITEM_ADDED:
+    case NT_BAG_CHECKOUT_REMINDER:
       return '🛍️';
     case NotificationType.CUSTOM_ORDER_PAYMENT_RECEIVED:
     case NotificationType.CUSTOM_ORDER_REVIEW_REQUIRED:

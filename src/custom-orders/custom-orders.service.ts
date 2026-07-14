@@ -64,6 +64,7 @@ import {
 } from 'src/common/user-profile-source.helper';
 import { BagValidationService } from 'src/bagging/bag-validation.service';
 import { ReviewEligibilityService } from 'src/reviews/review-eligibility.service';
+import { NotificationsService } from 'src/notifications/notifications.service';
 
 const BUYER_ACCEPTANCE_WINDOW_HOURS = 72;
 const EXCEPTION_REVIEW_MONTHLY_QUOTA = 2;
@@ -72,6 +73,8 @@ const DEFAULT_PRICING_CHART_FAMILY: CustomOrderChartFamily =
   'HYBRID_UK_NIGERIA';
 const DEFAULT_DISPLAY_CHART_FAMILY: CustomOrderChartFamily = 'UK';
 const DEFAULT_RESOLVER_POLICY: CustomOrderResolverPolicy = 'MAX_OF_BOTH';
+const NT_BAG_ITEM_ADDED = 'BAG_ITEM_ADDED' as NotificationType;
+const BAG_NOTIFICATION_TARGET_ID = 'buyer-bag';
 
 type ChartBand = {
   label: string;
@@ -486,7 +489,51 @@ export class CustomOrdersService {
     private readonly bagValidationService: BagValidationService,
     @Optional()
     private readonly reviewEligibilityService?: ReviewEligibilityService,
+    @Optional()
+    private readonly notifications?: NotificationsService,
   ) {}
+
+  private async notifyBuyerCustomOrderBagged(args: {
+    userId: string;
+    checkoutSessionId: string;
+    checkoutIntentId: string;
+    configurationId: string;
+    configurationTitle: string;
+    sourceType: CustomOrderSourceType;
+    sourceId: string;
+  }): Promise<void> {
+    if (!this.notifications) return;
+
+    const title = args.configurationTitle?.trim() || 'your custom order';
+    const message = `${title} is now in your bag. Complete checkout soon so your price lock does not expire.`;
+
+    try {
+      await this.notifications.create(args.userId, NT_BAG_ITEM_ADDED, {
+        payload: {
+          action: 'BAG_ITEM_ADDED',
+          checkoutSessionId: args.checkoutSessionId,
+          checkoutIntentId: args.checkoutIntentId,
+          configurationId: args.configurationId,
+          sourceType: args.sourceType,
+          sourceId: args.sourceId,
+          productName: title,
+          itemCount: 1,
+          targetUrl: '/bag',
+          message,
+        },
+        target: {
+          type: 'SYSTEM',
+          id: BAG_NOTIFICATION_TARGET_ID,
+          preview: 'Bag',
+        },
+        dedupeMs: 60_000,
+      });
+    } catch (error) {
+      this.logger.warn(
+        `Failed to create custom-order bag notification for user=${args.userId} session=${args.checkoutSessionId}: ${String(error)}`,
+      );
+    }
+  }
 
   async createPricePreview(userId: string, dto: CustomOrderPricePreviewDto) {
     const submittedMeasurementValues = this.normalizeMeasurementValues(
@@ -892,6 +939,16 @@ export class CustomOrdersService {
         },
       };
     }
+
+    await this.notifyBuyerCustomOrderBagged({
+      userId,
+      checkoutSessionId: session.id,
+      checkoutIntentId: intent.id,
+      configurationId: configuration.configuration.id,
+      configurationTitle: configuration.configuration.title,
+      sourceType: configuration.configuration.sourceType,
+      sourceId: configuration.configuration.sourceId,
+    });
 
     return {
       statusCode: 201,

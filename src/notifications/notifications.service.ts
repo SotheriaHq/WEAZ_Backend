@@ -1258,6 +1258,10 @@ export class NotificationsService {
         return settings.orders.placed;
       case NotificationType.ORDER_STATUS_UPDATED:
         return settings.orders.statusChanges;
+      case 'BAG_ITEM_ADDED' as NotificationType:
+        return settings.orders.placed;
+      case 'BAG_CHECKOUT_REMINDER' as NotificationType:
+        return settings.orders.statusChanges;
       case NotificationType.REVIEW_REMINDER:
         return settings.reviews.reminders;
       case NotificationType.REVIEW_REPLY_RECEIVED:

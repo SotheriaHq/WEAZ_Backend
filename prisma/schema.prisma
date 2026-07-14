@@ -925,6 +925,10 @@ enum NotificationType {
   ORDER_PLACED
   ORDER_STATUS_UPDATED
 
+  // Bag / checkout nudges
+  BAG_ITEM_ADDED
+  BAG_CHECKOUT_REMINDER
+
   // Contributions
   CONTRIBUTION_REQUEST
   CONTRIBUTION_ACCEPTED
