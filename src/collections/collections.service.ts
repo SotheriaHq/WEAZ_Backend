@@ -45,6 +45,12 @@ import {
   FinalizeCollectionDto,
 } from './dto/create-collection.dto';
 import { HelperService } from './helper/Helper.service';
+import {
+  createFeedSeed,
+  encodeMixCursor,
+  parseMixCursor,
+  rankFeedRows,
+} from './feed-ranking.util';
 import { UploadService } from 'src/upload/upload.service';
 import { StoreService } from 'src/store/store.service';
 import { CreateProductDto } from 'src/store/dto/create-product.dto';
@@ -2900,6 +2906,93 @@ export class CollectionsService {
         : {}),
     } as Prisma.CollectionWhereInput;
 
+    // ── Ranked + rotated feed (default) ─────────────────────────────────
+    // Scoring/rotation rules live in feed-ranking.util.ts: quality score
+    // (recency + engagement + media richness) fed into a seeded weighted
+    // shuffle + brand-diversity pass, so every fresh load mixes the feed
+    // while pagination inside one session stays stable (seed rides inside
+    // the cursor). Legacy id-shaped cursors (in-flight clients) fall through
+    // to the old recency path below.
+    const mixCursor = parseMixCursor(cursor);
+    const isLegacyIdCursor = Boolean(cursor) && !mixCursor;
+
+    if (!isLegacyIdCursor) {
+      const seed = mixCursor?.seed ?? createFeedSeed();
+      const offset = mixCursor?.offset ?? 0;
+
+      // Phase 1 — light scoring pool (ids + counters only; no media payload).
+      const pool = await this.prisma.collection.findMany({
+        where,
+        take: CollectionsService.MARKET_FEED_RANKING_POOL_SIZE,
+        orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
+        select: {
+          id: true,
+          ownerId: true,
+          createdAt: true,
+          updatedAt: true,
+          threadsCount: true,
+          commentsCount: true,
+          viewsCount: true,
+          collectionCollabsCount: true,
+          _count: { select: { medias: true } },
+        } as any,
+      });
+
+      if (pool.length === 0) {
+        await this.logMarketFeedExclusionSummary(where);
+      }
+
+      const ranked = rankFeedRows(
+        pool.map((row: any) => ({
+          ...row,
+          mediaCount: row?._count?.medias ?? 0,
+        })),
+        seed,
+      );
+      const pageRows = ranked.slice(offset, offset + take);
+      const rankedHasNextPage = offset + take < ranked.length;
+      this.logger.debug(
+        `[feed] market ranked pool=${pool.length} seed=${seed} offset=${offset} page=${pageRows.length} hasNextPage=${rankedHasNextPage}`,
+      );
+
+      // Phase 2 — full payload fetch for ONLY the served page, in rank order.
+      let rankedData: any[] = [];
+      if (pageRows.length > 0) {
+        const pageIds = pageRows.map((row: any) => row.id);
+        const fullRows = await this.prisma.collection.findMany({
+          where: { id: { in: pageIds } } as any,
+          include: this.marketFeedInclude(),
+        });
+        const rowById = new Map(
+          (fullRows as any[]).map((row: any) => [row.id, row]),
+        );
+        rankedData = pageIds
+          .map((id: string) => rowById.get(id))
+          .filter(Boolean);
+      }
+
+      const rankedItems = await this.buildMarketFeedItems(
+        rankedData,
+        requesterId,
+        options?.countsPolicy,
+      );
+      this.logMarketFeedFirstMediaSummaries(rankedItems);
+      this.logger.debug(
+        `[feed] market response items=${rankedItems.length} nextCursor=${
+          rankedHasNextPage ? 'mix' : 'none'
+        }`,
+      );
+
+      return {
+        items: rankedItems,
+        hasNextPage: rankedHasNextPage,
+        nextCursor: rankedHasNextPage
+          ? encodeMixCursor(seed, offset + take)
+          : null,
+      };
+    }
+
+    // ── Legacy recency path (old id cursors from clients mid-pagination) ──
     const collections = await this.prisma.collection.findMany({
       where,
       take: take + 1,
@@ -2913,61 +3006,8 @@ export class CollectionsService {
     this.logger.debug(
       `[feed] market query result fetched=${collections.length} page=${data.length} hasNextPage=${hasNextPage}`,
     );
-    if (
-      collections.length === 0 &&
-      typeof (this.prisma.collection as any).count === 'function'
-    ) {
-      try {
-        const [
-          publishedPublic,
-          withAnyMedia,
-          readyOriginals,
-          blockedByProcessing,
-        ] = await Promise.all([
-          this.prisma.collection.count({
-            where: {
-              domain: 'DESIGN',
-              status: 'PUBLISHED',
-              visibility: CollectionVisibility.PUBLIC,
-              deletedAt: null,
-            } as any,
-          }),
-          this.prisma.collection.count({
-            where: {
-              domain: 'DESIGN',
-              status: 'PUBLISHED',
-              visibility: CollectionVisibility.PUBLIC,
-              deletedAt: null,
-              medias: { some: {} },
-            } as any,
-          }),
-          this.prisma.collection.count({ where } as any),
-          this.prisma.collection.count({
-            where: {
-              domain: 'DESIGN',
-              status: 'PUBLISHED',
-              visibility: CollectionVisibility.PUBLIC,
-              deletedAt: null,
-              medias: {
-                some: {
-                  file: {
-                    processingStatus: { not: 'READY' },
-                    originalDeletedAt: null,
-                    s3Url: { not: '' },
-                  },
-                },
-              },
-            } as any,
-          }),
-        ]);
-        this.logger.debug(
-          `[feed-contract] market exclusion summary publishedPublic=${publishedPublic} withAnyMedia=${withAnyMedia} readyOriginals=${readyOriginals} blockedByProcessing=${blockedByProcessing}`,
-        );
-      } catch (error) {
-        this.logger.warn(
-          `[feed-contract] market exclusion summary failed: ${String(error)}`,
-        );
-      }
+    if (collections.length === 0) {
+      await this.logMarketFeedExclusionSummary(where);
     }
 
     const items = await this.buildMarketFeedItems(
@@ -2976,57 +3016,7 @@ export class CollectionsService {
       options?.countsPolicy,
     );
 
-    if (items.length > 0) {
-      for (const item of items.slice(0, 5)) {
-        const primarySummary = this.summarizeDisplayUrl(
-          item.primaryMedia?.displayUrl,
-        );
-        const mediaSummaries = item.mediaItems.map((mediaItem) => {
-          const summary = this.summarizeDisplayUrl(mediaItem.displayUrl);
-          return {
-            id: mediaItem.id,
-            fileId: mediaItem.fileId,
-            type: mediaItem.type,
-            status: mediaItem.status,
-            orderIndex: mediaItem.orderIndex,
-            displayHost: summary.displayHost,
-            pathPrefix: summary.pathPrefix,
-            hasDisplayUrl: summary.hasDisplayUrl,
-          };
-        });
-        const mediaDisplayKeys = item.mediaItems.map((mediaItem) => {
-          const summary = this.summarizeDisplayUrl(mediaItem.displayUrl);
-          return `${summary.displayHost ?? 'none'}:${summary.pathPrefix ?? 'none'}:${mediaItem.fileId ?? mediaItem.id}`;
-        });
-        const uniqueDisplayKeys = new Set(mediaDisplayKeys);
-        this.logger.debug(
-          `[feed-contract] first-media-summary ${JSON.stringify({
-            collectionId: item.collectionId,
-            title: item.title,
-            mediaId: item.primaryMedia?.id ?? item.id,
-            fileId: item.primaryMedia?.fileId ?? null,
-            status: item.primaryMedia?.status ?? null,
-            displayHost: primarySummary.displayHost,
-            pathPrefix: primarySummary.pathPrefix,
-            isS3: primarySummary.isS3,
-            isSigned: primarySummary.isSigned,
-            hasDisplayUrl: primarySummary.hasDisplayUrl,
-            mediaItemsLength: item.mediaItems.length,
-            mediaItemIds: item.mediaItems.map((mediaItem) => mediaItem.id),
-            mediaItems: mediaSummaries,
-            displayUrlsUnique:
-              uniqueDisplayKeys.size === mediaDisplayKeys.length,
-            allReady: item.mediaItems.every(
-              (mediaItem) => mediaItem.status === 'READY',
-            ),
-            allTyped: item.mediaItems.every(
-              (mediaItem) =>
-                mediaItem.type === 'IMAGE' || mediaItem.type === 'VIDEO',
-            ),
-          })}`,
-        );
-      }
-    }
+    this.logMarketFeedFirstMediaSummaries(items);
     this.logger.debug(
       `[feed] market response items=${items.length} nextCursor=${hasNextPage ? (data[data.length - 1]?.id ?? 'none') : 'none'}`,
     );
@@ -3036,6 +3026,124 @@ export class CollectionsService {
       hasNextPage,
       nextCursor: hasNextPage ? (data[data.length - 1]?.id ?? null) : null,
     };
+  }
+
+  /**
+   * Candidate window for the ranked Runway feed. The freshest N designs are
+   * scored + rotated; older items surface through the recency decay as the
+   * catalog grows. Kept modest so the light phase-1 scoring query stays cheap.
+   */
+  private static readonly MARKET_FEED_RANKING_POOL_SIZE = 160;
+
+  /** Diagnostic counts logged when the Runway feed query matches nothing. */
+  private async logMarketFeedExclusionSummary(
+    where: Prisma.CollectionWhereInput,
+  ): Promise<void> {
+    if (typeof (this.prisma.collection as any).count !== 'function') return;
+    try {
+      const [
+        publishedPublic,
+        withAnyMedia,
+        readyOriginals,
+        blockedByProcessing,
+      ] = await Promise.all([
+        this.prisma.collection.count({
+          where: {
+            domain: 'DESIGN',
+            status: 'PUBLISHED',
+            visibility: CollectionVisibility.PUBLIC,
+            deletedAt: null,
+          } as any,
+        }),
+        this.prisma.collection.count({
+          where: {
+            domain: 'DESIGN',
+            status: 'PUBLISHED',
+            visibility: CollectionVisibility.PUBLIC,
+            deletedAt: null,
+            medias: { some: {} },
+          } as any,
+        }),
+        this.prisma.collection.count({ where } as any),
+        this.prisma.collection.count({
+          where: {
+            domain: 'DESIGN',
+            status: 'PUBLISHED',
+            visibility: CollectionVisibility.PUBLIC,
+            deletedAt: null,
+            medias: {
+              some: {
+                file: {
+                  processingStatus: { not: 'READY' },
+                  originalDeletedAt: null,
+                  s3Url: { not: '' },
+                },
+              },
+            },
+          } as any,
+        }),
+      ]);
+      this.logger.debug(
+        `[feed-contract] market exclusion summary publishedPublic=${publishedPublic} withAnyMedia=${withAnyMedia} readyOriginals=${readyOriginals} blockedByProcessing=${blockedByProcessing}`,
+      );
+    } catch (error) {
+      this.logger.warn(
+        `[feed-contract] market exclusion summary failed: ${String(error)}`,
+      );
+    }
+  }
+
+  /** feed-contract debug logging for the first few served feed items. */
+  private logMarketFeedFirstMediaSummaries(items: any[]): void {
+    if (items.length === 0) return;
+    for (const item of items.slice(0, 5)) {
+      const primarySummary = this.summarizeDisplayUrl(
+        item.primaryMedia?.displayUrl,
+      );
+      const mediaSummaries = item.mediaItems.map((mediaItem) => {
+        const summary = this.summarizeDisplayUrl(mediaItem.displayUrl);
+        return {
+          id: mediaItem.id,
+          fileId: mediaItem.fileId,
+          type: mediaItem.type,
+          status: mediaItem.status,
+          orderIndex: mediaItem.orderIndex,
+          displayHost: summary.displayHost,
+          pathPrefix: summary.pathPrefix,
+          hasDisplayUrl: summary.hasDisplayUrl,
+        };
+      });
+      const mediaDisplayKeys = item.mediaItems.map((mediaItem) => {
+        const summary = this.summarizeDisplayUrl(mediaItem.displayUrl);
+        return `${summary.displayHost ?? 'none'}:${summary.pathPrefix ?? 'none'}:${mediaItem.fileId ?? mediaItem.id}`;
+      });
+      const uniqueDisplayKeys = new Set(mediaDisplayKeys);
+      this.logger.debug(
+        `[feed-contract] first-media-summary ${JSON.stringify({
+          collectionId: item.collectionId,
+          title: item.title,
+          mediaId: item.primaryMedia?.id ?? item.id,
+          fileId: item.primaryMedia?.fileId ?? null,
+          status: item.primaryMedia?.status ?? null,
+          displayHost: primarySummary.displayHost,
+          pathPrefix: primarySummary.pathPrefix,
+          isS3: primarySummary.isS3,
+          isSigned: primarySummary.isSigned,
+          hasDisplayUrl: primarySummary.hasDisplayUrl,
+          mediaItemsLength: item.mediaItems.length,
+          mediaItemIds: item.mediaItems.map((mediaItem) => mediaItem.id),
+          mediaItems: mediaSummaries,
+          displayUrlsUnique: uniqueDisplayKeys.size === mediaDisplayKeys.length,
+          allReady: item.mediaItems.every(
+            (mediaItem) => mediaItem.status === 'READY',
+          ),
+          allTyped: item.mediaItems.every(
+            (mediaItem) =>
+              mediaItem.type === 'IMAGE' || mediaItem.type === 'VIDEO',
+          ),
+        })}`,
+      );
+    }
   }
 
   /**

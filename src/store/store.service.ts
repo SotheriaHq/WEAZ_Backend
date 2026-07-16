@@ -581,6 +581,33 @@ export class StoreService {
     }
   }
 
+  /**
+   * Product media rows store raw S3 URLs that browsers cannot load directly
+   * (private bucket). Prefer the configured public/CDN display URL; fall back
+   * to a temporary signed URL so galleries load with ZERO extra client
+   * round-trips per image (no /uploads/public-url call per swipe).
+   */
+  private async resolveProductDisplayUrl(file: {
+    id?: string | null;
+    s3Url?: string | null;
+    s3Key?: string | null;
+    isPublic?: boolean | null;
+  }): Promise<string | null> {
+    const raw = typeof file?.s3Url === 'string' ? file.s3Url.trim() : '';
+    try {
+      const publicUrl = this.uploadService.getPublicDisplayUrl(file);
+      if (publicUrl) return publicUrl;
+      const signed = await this.uploadService.getTemporarySignedDisplayUrl(
+        file,
+        3600,
+      );
+      if (signed) return signed;
+    } catch {
+      // Fall through to the raw URL — never break the payload over signing.
+    }
+    return raw || null;
+  }
+
   private async attachProductMedia(product: any) {
     const base = this.transformProduct(product);
     const baseWithFilters = await this.attachProductFiltersToView(
@@ -594,19 +621,25 @@ export class StoreService {
       orderBy: [{ orderIndex: 'asc' }, { createdAt: 'asc' }],
     });
     if (Array.isArray(structuredMedia) && structuredMedia.length > 0) {
-      const media = structuredMedia
-        .filter((entry) => entry.file?.s3Url)
-        .map((entry, index) => ({
-          id: entry.id,
-          fileUploadId: entry.fileUploadId,
-          url: entry.file.s3Url,
-          type: entry.file.fileType === FileType.POST_VIDEO ? 'video' : 'image',
-          viewSlot: entry.viewSlot,
-          reviewStatus: entry.reviewStatus,
-          isPrimary:
-            (!!product?.thumbnail && entry.file.s3Url === product.thumbnail) ||
-            index === 0,
-        }));
+      const media = await Promise.all(
+        structuredMedia
+          .filter((entry) => entry.file?.s3Url)
+          .map(async (entry, index) => ({
+            id: entry.id,
+            fileUploadId: entry.fileUploadId,
+            url:
+              (await this.resolveProductDisplayUrl(entry.file)) ??
+              entry.file.s3Url,
+            type:
+              entry.file.fileType === FileType.POST_VIDEO ? 'video' : 'image',
+            viewSlot: entry.viewSlot,
+            reviewStatus: entry.reviewStatus,
+            isPrimary:
+              (!!product?.thumbnail &&
+                entry.file.s3Url === product.thumbnail) ||
+              index === 0,
+          })),
+      );
       return {
         ...baseWithFilters,
         media,
@@ -624,18 +657,31 @@ export class StoreService {
 
     const uploads = await this.prisma.fileUpload.findMany({
       where: { s3Url: { in: images } },
-      select: { id: true, s3Url: true, mimeType: true },
+      select: {
+        id: true,
+        s3Url: true,
+        s3Key: true,
+        isPublic: true,
+        mimeType: true,
+      },
     });
 
-    const idByUrl = new Map<string, string>();
-    for (const u of uploads) idByUrl.set(u.s3Url, u.id);
+    const uploadByUrl = new Map<string, (typeof uploads)[number]>();
+    for (const u of uploads) uploadByUrl.set(u.s3Url, u);
 
-    const media = images.map((url) => ({
-      id: idByUrl.get(url) ?? url,
-      url,
-      type: 'image',
-      isPrimary: !!product?.thumbnail && url === product.thumbnail,
-    }));
+    const media = await Promise.all(
+      images.map(async (url) => {
+        const upload = uploadByUrl.get(url);
+        return {
+          id: upload?.id ?? url,
+          url: upload
+            ? ((await this.resolveProductDisplayUrl(upload)) ?? url)
+            : url,
+          type: 'image',
+          isPrimary: !!product?.thumbnail && url === product.thumbnail,
+        };
+      }),
+    );
 
     return {
       ...baseWithFilters,
@@ -5263,14 +5309,30 @@ export class StoreService {
       ),
     );
 
-    let idByUrl = new Map<string, string>();
+    const uploadByUrl = new Map<
+      string,
+      { id: string; s3Url: string; s3Key: string | null; isPublic: boolean }
+    >();
     if (urls.length > 0) {
       const uploads = await this.prisma.fileUpload.findMany({
         where: { s3Url: { in: urls } },
-        select: { id: true, s3Url: true },
+        select: { id: true, s3Url: true, s3Key: true, isPublic: true },
       });
-      idByUrl = new Map(uploads.map((u) => [u.s3Url, u.id]));
+      for (const u of uploads) uploadByUrl.set(u.s3Url, u);
     }
+
+    // Pre-resolve every image to a browser-loadable display URL (public/CDN
+    // base or temporary signed URL) so product cards and galleries never need
+    // per-image /uploads/public-url round-trips on the client.
+    const displayUrlByRawUrl = new Map<string, string>();
+    await Promise.all(
+      urls.map(async (url) => {
+        const upload = uploadByUrl.get(url);
+        if (!upload) return;
+        const resolved = await this.resolveProductDisplayUrl(upload);
+        if (resolved) displayUrlByRawUrl.set(url, resolved);
+      }),
+    );
 
     const itemsWithMedia = baseItems.map((base: any) => {
       const images: string[] = Array.isArray(base.images)
@@ -5290,8 +5352,8 @@ export class StoreService {
         };
       }
       const media = images.map((url: string) => ({
-        id: idByUrl.get(url) ?? url,
-        url,
+        id: uploadByUrl.get(url)?.id ?? url,
+        url: displayUrlByRawUrl.get(url) ?? url,
         type: 'image',
         isPrimary: !!base.thumbnail && url === base.thumbnail,
       }));
@@ -5300,6 +5362,9 @@ export class StoreService {
         ...filterPayload,
         media,
         mediaIds: media.map((m) => m.id),
+        thumbnail: base.thumbnail
+          ? (displayUrlByRawUrl.get(base.thumbnail) ?? base.thumbnail)
+          : base.thumbnail,
       };
     });
 
@@ -5544,14 +5609,30 @@ export class StoreService {
       ),
     );
 
-    let idByUrl = new Map<string, string>();
+    const uploadByUrl = new Map<
+      string,
+      { id: string; s3Url: string; s3Key: string | null; isPublic: boolean }
+    >();
     if (urls.length > 0) {
       const uploads = await this.prisma.fileUpload.findMany({
         where: { s3Url: { in: urls } },
-        select: { id: true, s3Url: true },
+        select: { id: true, s3Url: true, s3Key: true, isPublic: true },
       });
-      idByUrl = new Map(uploads.map((u) => [u.s3Url, u.id]));
+      for (const u of uploads) uploadByUrl.set(u.s3Url, u);
     }
+
+    // Pre-resolve every image to a browser-loadable display URL (public/CDN
+    // base or temporary signed URL) so product cards and galleries never need
+    // per-image /uploads/public-url round-trips on the client.
+    const displayUrlByRawUrl = new Map<string, string>();
+    await Promise.all(
+      urls.map(async (url) => {
+        const upload = uploadByUrl.get(url);
+        if (!upload) return;
+        const resolved = await this.resolveProductDisplayUrl(upload);
+        if (resolved) displayUrlByRawUrl.set(url, resolved);
+      }),
+    );
 
     const itemsWithMedia = baseItems.map((base: any) => {
       const images: string[] = Array.isArray(base.images)
@@ -5571,8 +5652,8 @@ export class StoreService {
         };
       }
       const media = images.map((url: string) => ({
-        id: idByUrl.get(url) ?? url,
-        url,
+        id: uploadByUrl.get(url)?.id ?? url,
+        url: displayUrlByRawUrl.get(url) ?? url,
         type: 'image',
         isPrimary: !!base.thumbnail && url === base.thumbnail,
       }));
@@ -5581,6 +5662,9 @@ export class StoreService {
         ...filterPayload,
         media,
         mediaIds: media.map((m) => m.id),
+        thumbnail: base.thumbnail
+          ? (displayUrlByRawUrl.get(base.thumbnail) ?? base.thumbnail)
+          : base.thumbnail,
       };
     });
 
