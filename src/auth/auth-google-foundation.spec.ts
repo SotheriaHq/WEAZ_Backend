@@ -150,6 +150,17 @@ describe('AuthService Google auth foundation', () => {
       mockNotifications,
       mockEmailService,
       mockTrustedDeviceService,
+      {
+        isEnabled: jest.fn(() => true),
+        isAutoLockoutSuspension: jest.fn(() => false),
+        assertLoginAllowed: jest.fn(),
+        registerSuccessfulLogin: jest.fn().mockResolvedValue(undefined),
+        getPasswordResetClearData: jest.fn(() => ({
+          failedLoginAttempts: 0,
+          lastFailedLoginAt: null,
+          loginLockedUntil: null,
+        })),
+      } as any,
       mockGoogleTokenVerifier,
       mockLegalService,
     );

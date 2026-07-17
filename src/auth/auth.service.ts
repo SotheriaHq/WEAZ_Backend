@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  HttpException,
   Injectable,
   Logger,
   NotFoundException,
@@ -51,6 +52,7 @@ import { EmailService, type EnqueueEmailResult } from 'src/email/email.service';
 import * as emailTemplates from 'src/email/email.templates';
 import { createHash, randomBytes, randomInt } from 'crypto';
 import { TrustedDeviceService } from './helper/trusted-device.service';
+import { LoginLockoutService } from './helper/login-lockout.service';
 import {
   PasswordPolicyContext,
   validatePasswordPolicy,
@@ -92,6 +94,7 @@ export class AuthService {
     private readonly notifications: NotificationsService,
     private readonly emailService: EmailService,
     private readonly trustedDeviceService: TrustedDeviceService,
+    private readonly loginLockout: LoginLockoutService,
     private readonly googleTokenVerifier: GoogleTokenVerifierService,
     private readonly legalService: LegalService,
     @Optional() private readonly monitoring?: MonitoringService,
@@ -851,7 +854,7 @@ export class AuthService {
     } catch (error) {
       this.logger.error('Login error:', error.message, error.stack);
 
-      if (error instanceof UnauthorizedException) {
+      if (error instanceof HttpException) {
         throw error;
       }
       throw new UnauthorizedException(`Login failed: ${error.message}`);
@@ -1823,6 +1826,10 @@ export class AuthService {
             ...authUserSelect,
             password: true,
             passwordCredentialStatus: true,
+            adminSuspendedReason: true,
+            failedLoginAttempts: true,
+            lastFailedLoginAt: true,
+            loginLockedUntil: true,
           },
         })
         .catch((dbError) => {
@@ -1837,6 +1844,10 @@ export class AuthService {
       const {
         password: hashedPassword,
         passwordCredentialStatus,
+        adminSuspendedReason,
+        failedLoginAttempts,
+        lastFailedLoginAt,
+        loginLockedUntil,
         ...publicUser
       } = user;
 
@@ -1849,6 +1860,19 @@ export class AuthService {
         return null;
       }
 
+      const lockoutState = {
+        id: user.id,
+        status: user.status,
+        adminSuspendedReason,
+        failedLoginAttempts,
+        lastFailedLoginAt,
+        loginLockedUntil,
+      };
+
+      // Lockout gates run BEFORE password verification: while locked (or
+      // suspended by the lockout policy) the password is never evaluated.
+      this.loginLockout.assertLoginAllowed(lockoutState);
+
       const isPasswordValid = await this.passwordService
         .verifyPassword(hashedPassword!, password)
         .catch((verifyError) => {
@@ -1857,7 +1881,23 @@ export class AuthService {
         });
 
       if (!isPasswordValid) {
-        return null;
+        if (!this.loginLockout.isEnabled()) {
+          return null;
+        }
+
+        const attemptResult =
+          await this.loginLockout.registerFailedPasswordAttempt(lockoutState);
+
+        if (attemptResult.suspended) {
+          this.notifyLoginLockoutSuspension(user.id);
+          throw this.loginLockout.buildSuspendedException();
+        }
+
+        if (attemptResult.lockSeconds) {
+          throw this.loginLockout.buildJustLockedException(attemptResult);
+        }
+
+        throw this.loginLockout.buildInvalidCredentialsException(attemptResult);
       }
 
       if (user.status !== UserStatus.ACTIVE) {
@@ -1875,14 +1915,54 @@ export class AuthService {
         );
       }
 
+      await this.loginLockout.registerSuccessfulLogin({
+        id: user.id,
+        failedLoginAttempts,
+        loginLockedUntil,
+      });
+
       return publicUser as AuthUser;
     } catch (error) {
-      if (error instanceof UnauthorizedException) {
+      if (error instanceof HttpException) {
         throw error;
       }
       this.logger.error('User validation error:', error);
       return null;
     }
+  }
+
+  /** Best-effort security email when the lockout policy suspends an account. */
+  private notifyLoginLockoutSuspension(userId: string): void {
+    void (async () => {
+      const target = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: {
+          email: true,
+          userProfile: { select: { firstName: true } },
+        },
+      });
+      if (!target?.email) {
+        return;
+      }
+
+      const mail = emailTemplates.accountSuspendedEmail(
+        target.userProfile?.firstName || 'there',
+        'Too many failed sign-in attempts. Reset your password to restore access immediately, or submit a reactivation request.',
+        this.emailService.getAppName(),
+      );
+      await this.sendScenarioEmailIfAllowed({
+        userId,
+        to: target.email,
+        scenarioKey: 'auth.account.locked',
+        subject: mail.subject,
+        html: mail.html,
+        text: mail.text,
+        priority: EmailPriority.P0_SECURITY,
+        idempotencyKey: `auth:login-lockout-suspended:${userId}:${new Date().toISOString().slice(0, 10)}`,
+      });
+    })().catch((error) => {
+      this.logger.error('Failed to send login lockout suspension email', error);
+    });
   }
 
   async getProfile(userId: string) {
@@ -2874,15 +2954,19 @@ export class AuthService {
         status: true,
         password: true,
         passwordCredentialStatus: true,
+        adminSuspendedReason: true,
       },
     });
 
-    // Always return generic response to prevent email enumeration
-    if (
-      !user ||
-      user.status !== UserStatus.ACTIVE ||
-      !this.hasLocalPassword(user)
-    ) {
+    // Always return generic response to prevent email enumeration.
+    // Accounts suspended by the login lockout policy MAY reset their
+    // password — that reset is the self-service unlock path.
+    const statusAllowsReset =
+      !!user &&
+      (user.status === UserStatus.ACTIVE ||
+        (user.status === UserStatus.SUSPENDED &&
+          this.loginLockout.isAutoLockoutSuspension(user.adminSuspendedReason)));
+    if (!user || !statusAllowsReset || !this.hasLocalPassword(user)) {
       this.logger.log(
         `Password reset requested for unknown, inactive, or passwordless account ${maskEmailForLog(normalizedEmail)}`,
       );
@@ -3020,6 +3104,7 @@ export class AuthService {
           select: {
             id: true,
             status: true,
+            adminSuspendedReason: true,
             password: true,
             passwordCredentialStatus: true,
             email: true,
@@ -3035,7 +3120,18 @@ export class AuthService {
       throw new UnauthorizedException('Invalid or expired reset token');
     }
 
-    if (resetToken.user.status !== UserStatus.ACTIVE) {
+    // A completed reset proves mailbox ownership, so it also unlocks accounts
+    // the login lockout policy suspended. Admin suspensions stay blocked.
+    const wasAutoLockoutSuspended =
+      resetToken.user.status === UserStatus.SUSPENDED &&
+      this.loginLockout.isAutoLockoutSuspension(
+        resetToken.user.adminSuspendedReason,
+      );
+
+    if (
+      resetToken.user.status !== UserStatus.ACTIVE &&
+      !wasAutoLockoutSuspended
+    ) {
       throw new UnauthorizedException('This account is not active');
     }
 
@@ -3091,6 +3187,9 @@ export class AuthService {
             password,
             passwordCredentialStatus: PasswordCredentialStatus.ENABLED,
             authVersion: { increment: 1 },
+            ...this.loginLockout.getPasswordResetClearData(
+              wasAutoLockoutSuspended,
+            ),
           },
         });
       },
@@ -3098,6 +3197,12 @@ export class AuthService {
         isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
       },
     );
+
+    if (wasAutoLockoutSuspended) {
+      this.logger.log(
+        `Login lockout suspension cleared via password reset for user ${resetToken.userId}`,
+      );
+    }
 
     const passwordChangedEmail =
       emailTemplates.passwordChangedSecurityAlertEmail(
@@ -3195,6 +3300,7 @@ export class AuthService {
         passwordCredentialStatus: PasswordCredentialStatus.ENABLED,
         mustResetPassword: false,
         authVersion: { increment: 1 },
+        ...this.loginLockout.getPasswordResetClearData(false),
       },
     });
     await this.tokenService.revokeOtherRefreshTokens(

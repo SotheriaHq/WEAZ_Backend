@@ -15,6 +15,7 @@ import { EmailVerificationHelperService } from './helper/email-verification-help
 import { NotificationsModule } from 'src/notifications/notifications.module';
 import { RefreshTokenCleanupService } from './helper/refresh-token-cleanup.service';
 import { TrustedDeviceService } from './helper/trusted-device.service';
+import { LoginLockoutService } from './helper/login-lockout.service';
 import { AppThrottlerGuard } from './guard/app-throttler.guard';
 import { StudioHandoffService } from './studio-handoff.service';
 import { GoogleTokenVerifierService } from './helper/google-token-verifier.service';
@@ -74,6 +75,7 @@ import { getJwtSigningSecret } from 'src/common/config/jwt-secrets';
     EmailVerificationHelperService,
     RefreshTokenCleanupService,
     TrustedDeviceService,
+    LoginLockoutService,
     StudioHandoffService,
     GoogleTokenVerifierService,
     JwtStrategy,

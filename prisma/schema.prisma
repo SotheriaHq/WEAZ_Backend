@@ -61,6 +61,11 @@ model User {
   mustResetPassword    Boolean    @default(false)
   authVersion          Int        @default(0)
 
+  // Progressive login lockout (failed password attempts)
+  failedLoginAttempts Int       @default(0)
+  lastFailedLoginAt   DateTime?
+  loginLockedUntil    DateTime?
+
   // Relations for new social models
   followerFollows  Follow[] @relation("followerFollows")
   followingFollows Follow[] @relation("followingFollows")

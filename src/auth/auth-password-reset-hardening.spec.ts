@@ -2,6 +2,7 @@ import { UnauthorizedException } from '@nestjs/common';
 import { EmailPriority, Role, UserStatus } from '@prisma/client';
 
 import { AuthService } from './auth.service';
+import { LoginLockoutService } from './helper/login-lockout.service';
 
 describe('AuthService password reset hardening', () => {
   const ORIGINAL_ENV = process.env;
@@ -76,6 +77,7 @@ describe('AuthService password reset hardening', () => {
       mockNotifications,
       mockEmailService,
       {} as any,
+      new LoginLockoutService(mockPrisma),
       {} as any,
       {} as any,
     );
@@ -231,6 +233,9 @@ describe('AuthService password reset hardening', () => {
         password: 'new-password-hash',
         passwordCredentialStatus: 'ENABLED',
         authVersion: { increment: 1 },
+        failedLoginAttempts: 0,
+        lastFailedLoginAt: null,
+        loginLockedUntil: null,
       },
     });
     expect(mockNotifications.canSendScenarioEmail).toHaveBeenCalledWith(
@@ -320,6 +325,9 @@ describe('AuthService password reset hardening', () => {
         passwordCredentialStatus: 'ENABLED',
         mustResetPassword: false,
         authVersion: { increment: 1 },
+        failedLoginAttempts: 0,
+        lastFailedLoginAt: null,
+        loginLockedUntil: null,
       },
     });
     expect(mockTokenService.revokeOtherRefreshTokens).toHaveBeenCalledWith(

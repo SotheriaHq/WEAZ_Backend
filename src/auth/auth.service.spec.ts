@@ -17,6 +17,7 @@ import { EmailVerificationHelperService } from './helper/email-verification-help
 import { NotificationsService } from 'src/notifications/notifications.service';
 import { EmailService } from 'src/email/email.service';
 import { TrustedDeviceService } from './helper/trusted-device.service';
+import { LoginLockoutService } from './helper/login-lockout.service';
 import { toAuthUserResponse } from './helper/prisma-select.helper';
 import { GoogleTokenVerifierService } from './helper/google-token-verifier.service';
 import { LegalService } from 'src/legal/legal.service';
@@ -75,6 +76,7 @@ describe('AuthService', () => {
       findUnique: jest.fn(),
       create: jest.fn(),
       update: jest.fn(),
+      updateMany: jest.fn(),
     },
     userProfile: {
       upsert: jest.fn(),
@@ -82,7 +84,12 @@ describe('AuthService', () => {
     brandMember: {
       create: jest.fn(),
     },
-    $transaction: jest.fn((callback) => callback(mockPrisma)),
+    refreshToken: {
+      deleteMany: jest.fn(),
+    },
+    $transaction: jest.fn((arg) =>
+      typeof arg === 'function' ? arg(mockPrisma) : Promise.all(arg),
+    ),
   };
 
   beforeEach(async () => {
@@ -105,6 +112,10 @@ describe('AuthService', () => {
         { provide: NotificationsService, useValue: mockNotifications },
         { provide: EmailService, useValue: mockEmailService },
         { provide: TrustedDeviceService, useValue: mockTrustedDeviceService },
+        {
+          provide: LoginLockoutService,
+          useValue: new LoginLockoutService(mockPrisma),
+        },
         {
           provide: GoogleTokenVerifierService,
           useValue: mockGoogleTokenVerifier,
@@ -138,18 +149,178 @@ describe('AuthService', () => {
     );
   });
 
-  it('validateUser should return null when password is invalid', async () => {
+  it('validateUser should reject with the generic error when password is invalid', async () => {
     (mockPrisma.user.findFirst as jest.Mock).mockResolvedValue({
       id: 'user-1',
       email: 'user@example.com',
       password: 'hashed-password',
       status: UserStatus.ACTIVE,
+      failedLoginAttempts: 0,
+      lastFailedLoginAt: null,
+      loginLockedUntil: null,
     });
     (mockPasswordService.verifyPassword as jest.Mock).mockResolvedValue(false);
+    (mockPrisma.user.update as jest.Mock).mockResolvedValue({
+      failedLoginAttempts: 1,
+    });
 
     await expect(
       service.validateUser('user@example.com', 'wrong-password'),
-    ).resolves.toBeNull();
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        message: 'Invalid email or password',
+        errors: expect.objectContaining({
+          code: 'INVALID_CREDENTIALS',
+          attemptsRemaining: 6,
+        }),
+      }),
+    });
+  });
+
+  it('validateUser applies a temporary lock on the third failed attempt', async () => {
+    (mockPrisma.user.findFirst as jest.Mock).mockResolvedValue({
+      id: 'user-1',
+      email: 'user@example.com',
+      password: 'hashed-password',
+      status: UserStatus.ACTIVE,
+      failedLoginAttempts: 2,
+      lastFailedLoginAt: new Date(),
+      loginLockedUntil: null,
+    });
+    (mockPasswordService.verifyPassword as jest.Mock).mockResolvedValue(false);
+    (mockPrisma.user.update as jest.Mock).mockResolvedValue({
+      failedLoginAttempts: 3,
+    });
+
+    await expect(
+      service.validateUser('user@example.com', 'wrong-password'),
+    ).rejects.toMatchObject({
+      status: 429,
+      response: expect.objectContaining({
+        errors: expect.objectContaining({
+          code: 'LOGIN_TEMPORARILY_LOCKED',
+          retryAfterSeconds: 60,
+        }),
+      }),
+    });
+  });
+
+  it('validateUser blocks a locked account without evaluating the password', async () => {
+    (mockPrisma.user.findFirst as jest.Mock).mockResolvedValue({
+      id: 'user-1',
+      email: 'user@example.com',
+      password: 'hashed-password',
+      status: UserStatus.ACTIVE,
+      failedLoginAttempts: 4,
+      lastFailedLoginAt: new Date(),
+      loginLockedUntil: new Date(Date.now() + 5 * 60 * 1000),
+    });
+
+    await expect(
+      service.validateUser('user@example.com', 'any-password'),
+    ).rejects.toMatchObject({
+      status: 429,
+      response: expect.objectContaining({
+        errors: expect.objectContaining({ code: 'LOGIN_TEMPORARILY_LOCKED' }),
+      }),
+    });
+    expect(mockPasswordService.verifyPassword).not.toHaveBeenCalled();
+  });
+
+  it('validateUser suspends the account on the seventh failed attempt', async () => {
+    (mockPrisma.user.findFirst as jest.Mock).mockResolvedValue({
+      id: 'user-1',
+      email: 'user@example.com',
+      password: 'hashed-password',
+      status: UserStatus.ACTIVE,
+      failedLoginAttempts: 6,
+      lastFailedLoginAt: new Date(),
+      loginLockedUntil: null,
+    });
+    (mockPasswordService.verifyPassword as jest.Mock).mockResolvedValue(false);
+    (mockPrisma.user.update as jest.Mock).mockResolvedValue({
+      failedLoginAttempts: 7,
+    });
+    (mockPrisma.user.findUnique as jest.Mock).mockResolvedValue({
+      email: 'user@example.com',
+      userProfile: { firstName: 'Ada' },
+    });
+
+    await expect(
+      service.validateUser('user@example.com', 'wrong-password'),
+    ).rejects.toMatchObject({
+      status: 403,
+      response: expect.objectContaining({
+        errors: expect.objectContaining({
+          code: 'ACCOUNT_SUSPENDED_LOGIN_LOCKOUT',
+        }),
+      }),
+    });
+    expect(mockPrisma.user.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'user-1', status: UserStatus.ACTIVE },
+        data: expect.objectContaining({ status: UserStatus.SUSPENDED }),
+      }),
+    );
+    expect(mockPrisma.refreshToken.deleteMany).toHaveBeenCalledWith({
+      where: { userId: 'user-1' },
+    });
+  });
+
+  it('validateUser blocks lockout-suspended accounts before password evaluation', async () => {
+    (mockPrisma.user.findFirst as jest.Mock).mockResolvedValue({
+      id: 'user-1',
+      email: 'user@example.com',
+      password: 'hashed-password',
+      status: UserStatus.SUSPENDED,
+      adminSuspendedReason:
+        'Automatic security suspension: too many failed login attempts',
+      failedLoginAttempts: 7,
+      lastFailedLoginAt: new Date(),
+      loginLockedUntil: null,
+    });
+
+    await expect(
+      service.validateUser('user@example.com', 'any-password'),
+    ).rejects.toMatchObject({
+      status: 403,
+      response: expect.objectContaining({
+        errors: expect.objectContaining({
+          code: 'ACCOUNT_SUSPENDED_LOGIN_LOCKOUT',
+        }),
+      }),
+    });
+    expect(mockPasswordService.verifyPassword).not.toHaveBeenCalled();
+  });
+
+  it('validateUser resets lockout counters after a successful login', async () => {
+    (mockPrisma.user.findFirst as jest.Mock).mockResolvedValue({
+      id: 'user-1',
+      email: 'user@example.com',
+      password: 'hashed-password',
+      status: UserStatus.ACTIVE,
+      failedLoginAttempts: 2,
+      lastFailedLoginAt: new Date(),
+      loginLockedUntil: null,
+    });
+    (mockPasswordService.verifyPassword as jest.Mock).mockResolvedValue(true);
+    (mockPrisma.user.update as jest.Mock).mockResolvedValue({});
+
+    const result = await service.validateUser(
+      'user@example.com',
+      'correct-password',
+    );
+
+    expect(result).not.toBeNull();
+    expect(mockPrisma.user.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'user-1' },
+        data: expect.objectContaining({
+          failedLoginAttempts: 0,
+          loginLockedUntil: null,
+        }),
+      }),
+    );
   });
 
   it('validateUser should throw when account is not active', async () => {
