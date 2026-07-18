@@ -136,6 +136,37 @@ export class SizeComputationService {
     private readonly measurementNormalizer: MeasurementNormalizationService,
   ) {}
 
+  /**
+   * Profile measurements are stored in the user's preferred unit and scalar
+   * values carry no unit marker — an IN profile read as CM skews every
+   * recommendation by 2.54x. Convert scalars to CM before normalization;
+   * object-shaped values with explicit units are converted by the normalizer.
+   */
+  private profileMeasurementsInCm(profile: any): Record<string, unknown> {
+    const raw =
+      profile?.measurements &&
+      typeof profile.measurements === 'object' &&
+      !Array.isArray(profile.measurements)
+        ? (profile.measurements as Record<string, unknown>)
+        : {};
+    const preferredUnit = String(profile?.preferredLengthUnit ?? 'CM')
+      .trim()
+      .toUpperCase();
+    if (preferredUnit !== 'IN') return raw;
+    return Object.fromEntries(
+      Object.entries(raw).map(([key, value]) => {
+        const scalar =
+          typeof value === 'number'
+            ? value
+            : typeof value === 'string'
+              ? Number(value.trim())
+              : NaN;
+        if (!Number.isFinite(scalar) || scalar <= 0) return [key, value];
+        return [key, Math.round(scalar * 2.54 * 10) / 10];
+      }),
+    );
+  }
+
   async getComputedUserSizing(userId: string, region?: SizingRegion) {
     const profile = await (this.prisma as any).userSizeFitProfile.findUnique({
       where: { userId },
@@ -145,9 +176,10 @@ export class SizeComputationService {
     );
     const preferredUnit = profile?.preferredLengthUnit ?? 'CM';
     const fitPreference = profile?.fitPreference ?? FitPreference.REGULAR;
-    const gender = this.resolveProfileGender(profile?.measurements);
+    const measurementsCm = this.profileMeasurementsInCm(profile);
+    const gender = this.resolveProfileGender(measurementsCm);
     const normalized = this.measurementNormalizer.normalizeRecord(
-      profile?.measurements ?? {},
+      measurementsCm,
       {
         gender,
       },
@@ -256,7 +288,7 @@ export class SizeComputationService {
     );
     const gender = this.resolveProductGender(product);
     const measurementSource =
-      options.measurementsOverride ?? profile?.measurements ?? {};
+      options.measurementsOverride ?? this.profileMeasurementsInCm(profile);
     const normalized = this.measurementNormalizer.normalizeRecord(
       measurementSource,
       { gender },
@@ -353,7 +385,7 @@ export class SizeComputationService {
       order.measurementSnapshotJson ?? {},
     );
     const current = this.measurementNormalizer.normalizeRecord(
-      profile?.measurements ?? {},
+      this.profileMeasurementsInCm(profile),
     );
     const preservedConflicts: Record<
       string,
