@@ -414,17 +414,10 @@ export class UploadService {
     return medias.some((media: any) => {
       const design = media?.design;
       if (!design || design.deletedAt) return false;
-      // Published catalog designs.
-      if (design.status === 'PUBLISHED' && design.visibility === 'PUBLIC') {
-        return true;
-      }
-      // Content-review / admin previews need to resolve the same object keys
-      // that market rails use (POST_IMAGE/...). Keys are unguessable UUIDs.
-      const status = String(design.status ?? '').toUpperCase();
+      // Only published + public designs are anonymously signable.
+      // In-review / draft previews use authenticated signed-url paths.
       return (
-        status === 'IN_REVIEW' ||
-        status === 'CHANGES_REQUESTED' ||
-        status === 'PENDING_REVIEW'
+        design.status === 'PUBLISHED' && design.visibility === 'PUBLIC'
       );
     });
   }
@@ -437,11 +430,9 @@ export class UploadService {
       // Active listed products (or explicitly published) may be shown on Market.
       if (product.isActive === false) return false;
       const status = String(product.publicationStatus ?? '').toUpperCase();
-      if (status && status !== 'PUBLISHED' && status !== 'ACTIVE') {
-        // Some catalogs only use isActive; allow when status is empty/legacy.
-        if (status === 'DRAFT' || status === 'ARCHIVED' || status === 'REMOVED') {
-          return false;
-        }
+      // Only fully published catalog products may be anonymously signed.
+      if (status && status !== 'PUBLISHED') {
+        return false;
       }
       return true;
     });
@@ -458,27 +449,16 @@ export class UploadService {
     return profileImages.length > 0 || profileBanners.length > 0;
   }
 
-  /**
-   * Product/design cards often store raw S3 URLs without a ProductMedia join.
-   * If the FileUpload row exists under a POST_IMAGE/POST_VIDEO prefix, allow
-   * short-lived public signing so market rails and content-review previews do
-   * not 400. Profile/banner still require an identity join (not this path).
-   */
-  private isDisplayMediaPrefixFile(file: any): boolean {
-    if (!this.isDisplayableStoredFile(file)) return false;
-    const key = String(file.s3Key ?? '');
-    return /^(POST_IMAGE|POST_VIDEO)\//i.test(key);
-  }
-
   private canReturnPublicFileUrl(file: any): boolean {
     if (!this.isDisplayableStoredFile(file)) return false;
+    // Intentionally no bare POST_IMAGE/POST_VIDEO prefix bypass: that allowed
+    // draft/in-review media to be signed anonymously when a key/fileId leaked.
     return Boolean(
       file.isPublic ||
         this.isPublicCollectionFile(file) ||
         this.isPublicDesignFile(file) ||
         this.isPublicProductFile(file) ||
-        this.isPublicIdentityFile(file) ||
-        this.isDisplayMediaPrefixFile(file),
+        this.isPublicIdentityFile(file),
     );
   }
 
@@ -1055,9 +1035,10 @@ export class UploadService {
     if (!fileIds || fileIds.length === 0) {
       return new Map<string, string>();
     }
+    const accessInclude = this.publicFileAccessInclude();
     const files = await this.prisma.fileUpload.findMany({
       where: { id: { in: fileIds } },
-      select: { id: true, s3Key: true, s3Url: true },
+      include: accessInclude as any,
     });
 
     const urlMap = new Map<string, string>();
@@ -1067,6 +1048,9 @@ export class UploadService {
       const chunk = files.slice(i, i + chunkSize);
       const results = await Promise.all(
         chunk.map(async (file) => {
+          if (!this.canReturnPublicFileUrl(file)) {
+            return null;
+          }
           const stablePublicUrl = this.getStablePublicDisplayUrl(file);
           if (stablePublicUrl) {
             return [file.id, stablePublicUrl] as const;
@@ -1082,7 +1066,9 @@ export class UploadService {
           return [file.id, signedUrl] as const;
         }),
       );
-      for (const [id, url] of results) {
+      for (const entry of results) {
+        if (!entry) continue;
+        const [id, url] = entry;
         urlMap.set(id, url);
       }
     }

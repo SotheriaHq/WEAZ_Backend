@@ -6648,12 +6648,11 @@ export class CollectionsService {
     }
 
     if (requesterId !== userId) {
+      // Store collections have no private-access grant table (unlike design
+      // CollectionAccess). Non-owners may only list PUBLISHED + PUBLIC rows.
+      // visibility=private|all must not leak private store catalogs.
       where.status = 'PUBLISHED';
-      if (!visibility || visibility === 'public') {
-        where.visibility = CollectionVisibility.PUBLIC;
-      } else if (visibility === 'private') {
-        where.visibility = CollectionVisibility.PRIVATE;
-      }
+      where.visibility = CollectionVisibility.PUBLIC;
     } else if (visibility === 'public') {
       where.visibility = CollectionVisibility.PUBLIC;
     } else if (visibility === 'private') {
@@ -8074,6 +8073,11 @@ export class CollectionsService {
     collectionId: string,
     message?: string,
   ) {
+    const canView = await this.canViewCollection(collectionId, requesterId);
+    if (!canView) {
+      throw new NotFoundException('Collection not found');
+    }
+
     const collection = await this.prisma.collection.findUnique({
       where: { id: collectionId },
       include: { owner: { select: this.selectCollectionOwnerDisplay() } },
@@ -8081,6 +8085,16 @@ export class CollectionsService {
 
     if (!collection) {
       throw new NotFoundException('Collection not found');
+    }
+
+    if (collection.status !== 'PUBLISHED') {
+      throw new NotFoundException('Collection not found');
+    }
+
+    if (collection.visibility !== CollectionVisibility.PUBLIC) {
+      throw new ForbiddenException(
+        'Contribution requests are only allowed on public collections',
+      );
     }
 
     if (collection.ownerId === requesterId) {
@@ -8217,13 +8231,32 @@ export class CollectionsService {
     collabBrandId: string,
     weight = 1,
   ) {
-    // Verify collection exists and is published
+    // Object-level view gate (public/approved private only — not drafts).
+    const canView = await this.canViewCollection(collectionId, collabBrandId);
+    if (!canView) {
+      throw new NotFoundException('Collection not found');
+    }
+
     const collection = await this.prisma.collection.findUnique({
       where: { id: collectionId, status: 'PUBLISHED' },
+      select: {
+        id: true,
+        title: true,
+        ownerId: true,
+        visibility: true,
+        status: true,
+      },
     });
 
     if (!collection) {
       throw new NotFoundException('Collection not found');
+    }
+
+    // Collabs amplify visibility; only allow on public published collections.
+    if (collection.visibility !== CollectionVisibility.PUBLIC) {
+      throw new ForbiddenException(
+        'Collabs are only allowed on public collections',
+      );
     }
 
     // Verify patching user is a brand
@@ -8303,7 +8336,13 @@ export class CollectionsService {
   async getCollectionCollabs(
     collectionId: string,
     { cursor, limit = 20 }: { cursor?: string; limit?: number },
+    requesterId?: string,
   ) {
+    const canView = await this.canViewCollection(collectionId, requesterId);
+    if (!canView) {
+      throw new NotFoundException('Collection not found');
+    }
+
     const collabs = await this.prisma.collectionCollab.findMany({
       where: { collectionId },
       include: {
@@ -10290,11 +10329,18 @@ export class CollectionsService {
       preferredSize?: string;
     },
   ) {
+    const canView = await this.canViewCollection(collectionId, requesterId);
+    if (!canView) {
+      throw new NotFoundException('Collection not found');
+    }
+
     const collection = await this.prisma.collection.findUnique({
       where: { id: collectionId },
       select: {
         ownerId: true,
         title: true,
+        status: true,
+        visibility: true,
         owner: {
           select: {
             brand: {
@@ -10306,6 +10352,9 @@ export class CollectionsService {
     });
 
     if (!collection) throw new NotFoundException('Collection not found');
+    if (collection.status !== 'PUBLISHED') {
+      throw new NotFoundException('Collection not found');
+    }
 
     const inquiryId = uuidv4();
 

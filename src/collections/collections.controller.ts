@@ -673,6 +673,7 @@ export class CollectionsController {
   }
 
   @IsPublic()
+  @UseGuards(OptionalJwtAuthGuard)
   @Get(':id/collabs')
   @ApiOperation({ summary: 'Get collabs for a collection (who collabed)' })
   @ApiResponse({
@@ -683,11 +684,16 @@ export class CollectionsController {
     @Param('id') collectionId: string,
     @Query('cursor') cursor?: string,
     @Query('limit') limit?: string,
+    @Req() req?: any,
   ) {
-    return this.collectionsService.getCollectionCollabs(collectionId, {
-      cursor,
-      limit: limit ? parseInt(limit, 10) : 20,
-    });
+    return this.collectionsService.getCollectionCollabs(
+      collectionId,
+      {
+        cursor,
+        limit: limit ? parseInt(limit, 10) : 20,
+      },
+      req?.user?.id,
+    );
   }
 
   // ============================================

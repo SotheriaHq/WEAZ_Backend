@@ -371,9 +371,20 @@ export class CustomOrderConfigurationsService {
       throw new NotFoundException('Custom order configuration not found');
     }
 
-    const isOwner = authUserId === configuration.brand.ownerId;
-    if (!configuration.isActive && !isOwner) {
-      throw new NotFoundException('Custom order configuration not found');
+    const isOwner = Boolean(
+      authUserId && authUserId === configuration.brand.ownerId,
+    );
+    if (!isOwner) {
+      if (!configuration.isActive) {
+        throw new NotFoundException('Custom order configuration not found');
+      }
+      const sourcePublic = await this.isSourcePubliclyReadable(
+        configuration.sourceType,
+        configuration.sourceId,
+      );
+      if (!sourcePublic) {
+        throw new NotFoundException('Custom order configuration not found');
+      }
     }
 
     const normalizedConfiguration =
@@ -446,6 +457,25 @@ export class CustomOrderConfigurationsService {
       throw new NotFoundException('Custom order configuration not found');
     }
 
+    // Non-owners must not pull commercial config for draft/private sources
+    // just because the configuration row is active (residual on source
+    // endpoints used by buyers and public product pages).
+    const isOwner = Boolean(
+      authUserId && configuration.brand.ownerId === authUserId,
+    );
+    if (!isOwner) {
+      if (!configuration.isActive) {
+        throw new NotFoundException('Custom order configuration not found');
+      }
+      const publicOk = await this.isSourcePubliclyReadable(
+        configuration.sourceType,
+        configuration.sourceId,
+      );
+      if (!publicOk) {
+        throw new NotFoundException('Custom order configuration not found');
+      }
+    }
+
     const normalizedConfiguration =
       await this.withResolvedBuyerMeasurementContract(
         await this.normalizeLegacyMeasurementContract(configuration),
@@ -464,23 +494,63 @@ export class CustomOrderConfigurationsService {
   ) {
     const page = query.page ?? 1;
     const take = query.limit ?? 20;
-    const brand = authUserId
+    const ownerBrand = authUserId
       ? await this.prisma.brand.findUnique({
           where: { ownerId: authUserId },
           select: { id: true },
         })
       : null;
 
+    const hasSourceScope = Boolean(query.sourceType && query.sourceId);
+    const hasPartialSourceScope = Boolean(
+      (query.sourceType && !query.sourceId) ||
+        (!query.sourceType && query.sourceId),
+    );
+    if (hasPartialSourceScope) {
+      throw new BadRequestException(
+        'sourceType and sourceId must be provided together',
+      );
+    }
+
+    // Never dump platform-wide commercial configs. Require one of:
+    // - sourceType+sourceId (single catalog source)
+    // - brandId (only the authenticated owner of that brand)
+    // - authenticated brand owner with no filters (own brand only)
+    if (!hasSourceScope && !query.brandId && !ownerBrand?.id) {
+      throw new BadRequestException(
+        'List requires sourceType+sourceId, brandId (as brand owner), or an authenticated brand session',
+      );
+    }
+
+    if (query.brandId) {
+      if (!ownerBrand?.id || ownerBrand.id !== query.brandId) {
+        throw new BadRequestException(
+          'Not authorized to list custom order configurations for this brand',
+        );
+      }
+    }
+
+    const scopedBrandId = query.brandId ?? (!hasSourceScope ? ownerBrand?.id : undefined);
+
     const where: Prisma.CustomOrderConfigurationWhereInput = {
-      ...(query.isActive == null
-        ? { isActive: true }
-        : { isActive: query.isActive }),
-      ...(brand?.id
+      ...(hasSourceScope
         ? {
-            OR: [{ isActive: true }, { brandId: brand.id }],
+            sourceType: query.sourceType,
+            sourceId: query.sourceId,
           }
         : {}),
+      ...(scopedBrandId ? { brandId: scopedBrandId } : {}),
     };
+
+    if (scopedBrandId && ownerBrand?.id === scopedBrandId) {
+      // Owner may include inactive rows when isActive is omitted or explicit.
+      if (query.isActive != null) {
+        where.isActive = query.isActive;
+      }
+    } else {
+      // Public/source-scoped reads only ever see active configs.
+      where.isActive = true;
+    }
 
     const [items, total] = await this.prisma.$transaction([
       this.prisma.customOrderConfiguration.findMany({
@@ -498,9 +568,27 @@ export class CustomOrderConfigurationsService {
       this.prisma.customOrderConfiguration.count({ where }),
     ]);
 
-    const visibleItems = brand?.id
-      ? items.filter((item) => item.isActive || item.brandId === brand.id)
-      : items.filter((item) => item.isActive);
+    // For source-scoped anonymous/public callers, drop configs whose source
+    // is not publicly readable (draft/private catalog).
+    const visibleItems: typeof items = [];
+    for (const item of items) {
+      const isOwner =
+        Boolean(authUserId) && item.brand.ownerId === authUserId;
+      if (isOwner) {
+        visibleItems.push(item);
+        continue;
+      }
+      if (!item.isActive) continue;
+      if (hasSourceScope || !scopedBrandId) {
+        const sourcePublic = await this.isSourcePubliclyReadable(
+          item.sourceType,
+          item.sourceId,
+        );
+        if (!sourcePublic) continue;
+      }
+      visibleItems.push(item);
+    }
+
     const normalizedItems = await Promise.all(
       visibleItems.map(async (item) =>
         this.withResolvedBuyerMeasurementContract(
@@ -516,7 +604,9 @@ export class CustomOrderConfigurationsService {
         items: normalizedItems,
         page,
         limit: take,
-        total,
+        total: scopedBrandId && ownerBrand?.id === scopedBrandId
+          ? total
+          : normalizedItems.length,
       },
     };
   }
@@ -593,6 +683,52 @@ export class CustomOrderConfigurationsService {
     }
 
     return brand;
+  }
+
+  /**
+   * Whether a catalog source may expose its custom-order commercial config
+   * to non-owners (buyers/public). Draft/private sources must not.
+   */
+  private async isSourcePubliclyReadable(
+    sourceType: CustomOrderSourceType,
+    sourceId: string,
+  ): Promise<boolean> {
+    if (sourceType === CustomOrderSourceType.PRODUCT) {
+      const product = await this.prisma.product.findFirst({
+        where: {
+          id: sourceId,
+          deletedAt: null,
+          archivedAt: null,
+          isActive: true,
+          publicationStatus: 'PUBLISHED',
+          OR: [{ publishAt: null }, { publishAt: { lte: new Date() } }],
+        },
+        select: { id: true },
+      });
+      return Boolean(product);
+    }
+
+    const design = await this.prisma.design.findFirst({
+      where: {
+        id: sourceId,
+        deletedAt: null,
+        status: 'PUBLISHED',
+        visibility: 'PUBLIC',
+      },
+      select: { id: true },
+    });
+    if (design) return true;
+
+    const collection = await this.prisma.collection.findFirst({
+      where: {
+        id: sourceId,
+        deletedAt: null,
+        status: 'PUBLISHED',
+        visibility: 'PUBLIC',
+      },
+      select: { id: true },
+    });
+    return Boolean(collection);
   }
 
   private async assertSourceOwnership(

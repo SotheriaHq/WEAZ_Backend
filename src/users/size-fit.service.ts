@@ -397,6 +397,35 @@ export class SizeFitService {
     return share?.status === SIZE_FIT_SHARE_STATUS.APPROVED;
   }
 
+  /**
+   * If the actor holds an approved share, canReshare must be true to introduce
+   * third parties. Actors who only see the profile via public visibility (no
+   * share row) are governed by sharePolicy alone.
+   */
+  private async assertActorMayReshare(
+    profileId: string,
+    actorId: string,
+    db: PrismaTx = this.prisma,
+  ): Promise<void> {
+    const share = await (db as any).userSizeFitShare.findUnique({
+      where: { profileId_viewerId: { profileId, viewerId: actorId } },
+      select: { status: true, canReshare: true },
+    });
+    if (!share) {
+      return;
+    }
+    if (share.status !== SIZE_FIT_SHARE_STATUS.APPROVED) {
+      throw new ForbiddenException(
+        'You do not have permission to re-share this size fitting profile',
+      );
+    }
+    if (!share.canReshare) {
+      throw new ForbiddenException(
+        'You do not have permission to re-share this size fitting profile',
+      );
+    }
+  }
+
   async getMySizeFit(userId: string) {
     const profile = await this.ensureProfile(userId);
     const now = new Date();
@@ -932,6 +961,9 @@ export class SizeFitService {
         'This size fitting profile does not allow re-sharing',
       );
     }
+
+    // Enforce canReshare when the actor's access comes from an approved share.
+    await this.assertActorMayReshare(profile.id, actorId);
 
     if (profile.sharePolicy === SIZE_FIT_SHARE_POLICY.REQUIRE_PERMISSION) {
       const pending = existing

@@ -27,6 +27,9 @@ export const SEO_DISALLOWED_PATH_PREFIXES = [
   '/verify-email',
   '/change-email',
   '/account',
+  '/settings',
+  '/notifications',
+  '/diagnostics',
   '/search',
   '/store/create',
   '/store/essentials',
@@ -37,6 +40,8 @@ export const SEO_DISALLOWED_PATH_PREFIXES = [
   '/products/create',
   '/designs/create',
   '/collections/create',
+  '/accept-invite',
+  '/trouble',
 ] as const;
 
 export const SEO_STATIC_INDEXABLE_PATHS = [

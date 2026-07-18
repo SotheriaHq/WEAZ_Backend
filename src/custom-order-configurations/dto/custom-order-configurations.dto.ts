@@ -187,6 +187,20 @@ export class QueryVisibleCustomOrderConfigurationsDto {
   @Type(() => Boolean)
   @IsBoolean()
   isActive?: boolean;
+
+  /** Scope list to one brand (owner/staff must own it; not a public dump). */
+  @IsOptional()
+  @IsUUID()
+  brandId?: string;
+
+  /** Scope list to one catalog source (with sourceId). */
+  @IsOptional()
+  @IsEnum(CustomOrderSourceType)
+  sourceType?: CustomOrderSourceType;
+
+  @IsOptional()
+  @IsUUID()
+  sourceId?: string;
 }
 
 export class CreateCustomFabricRuleBasisDto {

@@ -1,5 +1,9 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { BadRequestException, UnauthorizedException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  UnauthorizedException,
+} from '@nestjs/common';
 import {
   BrandMemberRole,
   BrandMemberStatus,
@@ -80,6 +84,9 @@ describe('AuthService', () => {
     },
     userProfile: {
       upsert: jest.fn(),
+    },
+    fileUpload: {
+      findFirst: jest.fn(),
     },
     brandMember: {
       create: jest.fn(),
@@ -1442,5 +1449,83 @@ describe('AuthService', () => {
     expect(mockPrisma.$transaction).not.toHaveBeenCalled();
     expect(mockPrisma.user.update).not.toHaveBeenCalled();
     expect(mockPrisma.userProfile.upsert).not.toHaveBeenCalled();
+  });
+
+  it('profile update rejects foreign profileImageId', async () => {
+    mockPrisma.fileUpload.findFirst.mockResolvedValue(null);
+
+    await expect(
+      service.updateProfile('user-1', {
+        profileImageId: 'other-users-file',
+      } as any),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+
+    expect(mockPrisma.fileUpload.findFirst).toHaveBeenCalledWith({
+      where: { id: 'other-users-file', userId: 'user-1' },
+      select: { id: true },
+    });
+    expect(mockPrisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('profile update accepts owned profileImageId', async () => {
+    mockPrisma.fileUpload.findFirst.mockResolvedValue({ id: 'owned-file' });
+    const profileUser = {
+      id: 'user-1',
+      username: 'alex',
+      email: 'alex@example.com',
+      type: UserType.REGULAR,
+      role: Role.User,
+      status: UserStatus.ACTIVE,
+      isEmailVerified: true,
+      isActive: 'Active',
+      themePreference: 'system',
+      mustResetPassword: false,
+      authVersion: 0,
+      createdAt: new Date('2026-05-05T00:00:00.000Z'),
+      updatedAt: new Date('2026-05-05T00:00:00.000Z'),
+      brand: null,
+      userProfile: {
+        firstName: 'Alex',
+        lastName: 'Doe',
+        phoneNumber: null,
+        address: null,
+        profileImage: null,
+        profileImageId: 'owned-file',
+        profileImageFile: null,
+        profilePhotoUpdatedAt: null,
+        updatedAt: new Date('2026-05-05T00:00:00.000Z'),
+        bannerImage: null,
+        bannerImageId: null,
+        bannerImageFile: null,
+        profileVisibility: 'UNLOCKED',
+      },
+    };
+    mockPrisma.user.findUnique
+      .mockResolvedValueOnce({
+        id: 'user-1',
+        userProfile: {
+          firstName: 'Alex',
+          lastName: 'Doe',
+          profileVisibility: 'UNLOCKED',
+        },
+      })
+      .mockResolvedValueOnce(profileUser);
+    mockPrisma.userProfile.upsert.mockResolvedValue({});
+
+    await service.updateProfile('user-1', {
+      profileImageId: 'owned-file',
+    } as any);
+
+    expect(mockPrisma.fileUpload.findFirst).toHaveBeenCalledWith({
+      where: { id: 'owned-file', userId: 'user-1' },
+      select: { id: true },
+    });
+    expect(mockPrisma.userProfile.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({
+          profileImageId: 'owned-file',
+        }),
+      }),
+    );
   });
 });

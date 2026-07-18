@@ -330,7 +330,7 @@ describe('ImageService', () => {
     ).resolves.toBeNull();
   });
 
-  it('public-url-by-key signs READY POST_IMAGE keys used by market rails', async () => {
+  it('public-url-by-key denies unattached POST_IMAGE keys (no public join)', async () => {
     const key =
       'POST_IMAGE/356db4ba-548b-465e-81f9-98d4df3fbd24/1783765982379-40efa895-603d-4ebd-b20f-a0c0db5398ff.jpg';
     (service as any).prisma = {
@@ -354,13 +354,86 @@ describe('ImageService', () => {
       },
     };
 
+    await expect(service.getPublicSignedUrlByKey(key)).resolves.toBeNull();
+    expect(getSignedUrl).not.toHaveBeenCalled();
+  });
+
+  it('public-url-by-key signs POST_IMAGE only when joined to a published public design', async () => {
+    const key =
+      'POST_IMAGE/356db4ba-548b-465e-81f9-98d4df3fbd24/1783765982379-40efa895-603d-4ebd-b20f-a0c0db5398ff.jpg';
+    (service as any).prisma = {
+      fileUpload: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'file_post_1',
+          s3Key: key,
+          s3Url: `https://bucket.s3.amazonaws.com/${key}`,
+          processingStatus: 'READY',
+          originalDeletedAt: null,
+          isPublic: false,
+          collectionMedias: [],
+          designMedias: [
+            {
+              design: {
+                id: 'design_1',
+                status: 'PUBLISHED',
+                visibility: 'PUBLIC',
+                deletedAt: null,
+              },
+            },
+          ],
+          productMedias: [],
+          userProfileImages: [],
+          userProfileBanners: [],
+        }),
+      },
+      fileVariant: {
+        findFirst: jest.fn().mockResolvedValue(null),
+      },
+    };
+
     await expect(service.getPublicSignedUrlByKey(key)).resolves.toBe(
       'signed-url',
     );
     expect(getSignedUrl).toHaveBeenCalled();
   });
 
-  it('batch public URL resolution prefers stable external URLs before signing', async () => {
+  it('public-url-by-key denies in-review design media', async () => {
+    const key = 'POST_IMAGE/user/in-review.jpg';
+    (service as any).prisma = {
+      fileUpload: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'file_review_1',
+          s3Key: key,
+          s3Url: `https://bucket.s3.amazonaws.com/${key}`,
+          processingStatus: 'READY',
+          originalDeletedAt: null,
+          isPublic: false,
+          collectionMedias: [],
+          designMedias: [
+            {
+              design: {
+                id: 'design_review',
+                status: 'IN_REVIEW',
+                visibility: 'PUBLIC',
+                deletedAt: null,
+              },
+            },
+          ],
+          productMedias: [],
+          userProfileImages: [],
+          userProfileBanners: [],
+        }),
+      },
+      fileVariant: {
+        findFirst: jest.fn().mockResolvedValue(null),
+      },
+    };
+
+    await expect(service.getPublicSignedUrlByKey(key)).resolves.toBeNull();
+    expect(getSignedUrl).not.toHaveBeenCalled();
+  });
+
+  it('batch public URL resolution skips non-public files and prefers stable external URLs', async () => {
     (service as any).prisma = {
       fileUpload: {
         findMany: jest.fn().mockResolvedValue([
@@ -368,12 +441,28 @@ describe('ImageService', () => {
             id: 'file_1',
             s3Key: 'e2e/bagging/custom-design.jpg',
             s3Url: 'https://images.example/look.jpg',
+            processingStatus: 'READY',
+            originalDeletedAt: null,
+            isPublic: true,
+            collectionMedias: [],
+            designMedias: [],
+            productMedias: [],
+            userProfileImages: [],
+            userProfileBanners: [],
           },
           {
             id: 'file_2',
-            s3Key: 'POST_IMAGE/user/file.jpg',
+            s3Key: 'POST_IMAGE/user/draft.jpg',
             s3Url:
-              'https://test-bucket.s3.us-east-1.amazonaws.com/POST_IMAGE/user/file.jpg',
+              'https://test-bucket.s3.us-east-1.amazonaws.com/POST_IMAGE/user/draft.jpg',
+            processingStatus: 'READY',
+            originalDeletedAt: null,
+            isPublic: false,
+            collectionMedias: [],
+            designMedias: [],
+            productMedias: [],
+            userProfileImages: [],
+            userProfileBanners: [],
           },
         ]),
       },
@@ -382,8 +471,8 @@ describe('ImageService', () => {
     const result = await service.getBatchPublicSignedUrls(['file_1', 'file_2']);
 
     expect(result.get('file_1')).toBe('https://images.example/look.jpg');
-    expect(result.get('file_2')).toBe('signed-url');
-    expect(getSignedUrl).toHaveBeenCalledTimes(1);
+    expect(result.has('file_2')).toBe(false);
+    expect(getSignedUrl).not.toHaveBeenCalled();
   });
 
   it('marks verified presigned uploads READY and enqueues variant generation without blocking display', async () => {

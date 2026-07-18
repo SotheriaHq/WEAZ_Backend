@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   HttpException,
   Injectable,
   Logger,
@@ -1995,6 +1996,34 @@ export class AuthService {
     }
   }
 
+  /**
+   * Profile media IDs must belong to the actor. Prevents attaching another
+   * user's FileUpload (and thus making it publicly signable via identity join).
+   */
+  private async assertOwnedProfileMediaId(
+    userId: string,
+    fileId: string | null,
+    fieldName: 'profileImageId' | 'bannerImageId',
+  ): Promise<string | null> {
+    if (fileId === null) {
+      return null;
+    }
+    const normalized = String(fileId).trim();
+    if (!normalized) {
+      return null;
+    }
+    const file = await this.prisma.fileUpload.findFirst({
+      where: { id: normalized, userId },
+      select: { id: true },
+    });
+    if (!file) {
+      throw new ForbiddenException(
+        `${fieldName} must reference a file you uploaded`,
+      );
+    }
+    return file.id;
+  }
+
   async updateProfile(userId: string, dto: UpdateProfileDto) {
     const forbiddenFields = [
       'password',
@@ -2086,7 +2115,11 @@ export class AuthService {
 
     assignMediaUrl('profileImage');
     if (dto.profileImageId !== undefined) {
-      profileData.profileImageId = dto.profileImageId;
+      profileData.profileImageId = await this.assertOwnedProfileMediaId(
+        userId,
+        dto.profileImageId,
+        'profileImageId',
+      );
     }
     const profilePhotoWasProvided =
       dto.profileImage !== undefined || dto.profileImageId !== undefined;
@@ -2095,7 +2128,11 @@ export class AuthService {
       : undefined;
     assignMediaUrl('bannerImage');
     if (dto.bannerImageId !== undefined) {
-      profileData.bannerImageId = dto.bannerImageId;
+      profileData.bannerImageId = await this.assertOwnedProfileMediaId(
+        userId,
+        dto.bannerImageId,
+        'bannerImageId',
+      );
     }
 
     try {
@@ -2169,7 +2206,8 @@ export class AuthService {
     } catch (error) {
       if (
         error instanceof BadRequestException ||
-        error instanceof UnauthorizedException
+        error instanceof UnauthorizedException ||
+        error instanceof ForbiddenException
       ) {
         throw error;
       }
