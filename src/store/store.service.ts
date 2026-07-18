@@ -6267,6 +6267,9 @@ export class StoreService {
     }
 
     await this.prisma.$transaction(async (tx) => {
+      if (dto.sizeFitData) {
+        await this.syncMeasurementsToProfile(userId, dto.sizeFitData, tx);
+      }
       if (existingItem) {
         await tx.cartItem.update({
           where: { id: existingItem.id },
@@ -7113,9 +7116,27 @@ export class StoreService {
       sizingMode === SizingMode.RTW_PLUS_FITTINGS &&
       requiredMeasurementKeys.length > 0
     ) {
+      const currentMeasurements = this.normalizeSizeFitData(
+        payload?.sizeFitProfile?.measurements,
+      ) ?? {};
+      const rawIncoming = (payload?.sizeFitData?.measurements && typeof payload.sizeFitData.measurements === 'object')
+        ? (payload.sizeFitData.measurements as Record<string, any>)
+        : (payload?.sizeFitData ?? {});
+
+      const mergedMeasurements = { ...currentMeasurements };
+      for (const [key, val] of Object.entries(rawIncoming)) {
+        if (val !== undefined && val !== null) {
+          mergedMeasurements[key] = val;
+        }
+      }
+
+      const mergedProfile = payload?.sizeFitProfile
+        ? { ...payload.sizeFitProfile, measurements: mergedMeasurements }
+        : { measurements: mergedMeasurements };
+
       const freshness = this.fittingFreshnessPolicy.evaluate({
         requiredMeasurementKeys,
-        profile: payload?.sizeFitProfile ?? null,
+        profile: mergedProfile,
       });
       if (
         freshness.fittingState === 'MISSING' ||
@@ -7139,7 +7160,7 @@ export class StoreService {
         requiredMeasurementKeys,
         sizeFitData: this.buildRequiredMeasurementSnapshot({
           requiredMeasurementKeys,
-          profile: payload?.sizeFitProfile ?? null,
+          profile: mergedProfile,
           freshnessState: freshness.freshnessState,
           measurementOverrideAccepted:
             payload?.measurementOverrideAccepted === true,
@@ -10496,5 +10517,147 @@ export class StoreService {
     });
 
     return this.getStorePolicies(ownerId);
+  }
+
+  private async syncMeasurementsToProfile(
+    userId: string,
+    measurementData: Record<string, any> | null | undefined,
+    tx: any,
+  ) {
+    if (!measurementData || typeof measurementData !== 'object') {
+      return;
+    }
+
+    const rawMeasurements = (measurementData.measurements && typeof measurementData.measurements === 'object')
+      ? (measurementData.measurements as Record<string, any>)
+      : measurementData;
+
+    const measurementValues: Record<string, number> = {};
+    for (const [key, value] of Object.entries(rawMeasurements)) {
+      if (!key || key.startsWith('_')) continue;
+      let numericValue: number | null = null;
+      if (typeof value === 'number') {
+        numericValue = value;
+      } else if (typeof value === 'string') {
+        const parsed = Number(value.trim());
+        if (Number.isFinite(parsed)) {
+          numericValue = parsed;
+        }
+      } else if (value && typeof value === 'object' && !Array.isArray(value)) {
+        const nestedValue = (value as any).value;
+        const parsed = typeof nestedValue === 'number' ? nestedValue : Number(String(nestedValue ?? '').trim());
+        if (Number.isFinite(parsed)) {
+          numericValue = parsed;
+        }
+      }
+
+      if (numericValue !== null && numericValue > 0) {
+        measurementValues[key] = numericValue;
+      }
+    }
+
+    if (Object.keys(measurementValues).length === 0) {
+      return;
+    }
+
+    try {
+      let profile = await tx.userSizeFitProfile.findUnique({
+        where: { userId },
+      });
+      if (!profile) {
+        const now = new Date();
+        profile = await tx.userSizeFitProfile.create({
+          data: {
+            id: uuidv4(),
+            userId,
+            visibility: 'PRIVATE',
+            sharePolicy: 'REQUIRE_PERMISSION',
+            notifyOnShare: true,
+            requireUpdateEveryDays: 14,
+            version: 0,
+            preferredLengthUnit: 'CM',
+            preferredWeightUnit: 'KG',
+            fitPreference: 'REGULAR',
+            label: 'My Measurements',
+            measurements: {},
+            lastUpdatedAt: null,
+            nextReminderAt: now,
+          },
+        });
+      }
+
+      const currentMeasurements = (profile.measurements && typeof profile.measurements === 'object' && !Array.isArray(profile.measurements))
+        ? (profile.measurements as Record<string, any>)
+        : {};
+
+      const updatedMeasurements = { ...currentMeasurements };
+      let changed = false;
+
+      for (const [key, val] of Object.entries(measurementValues)) {
+        const existing = currentMeasurements[key];
+        let existingVal: number | null = null;
+        let existingUnit = 'CM';
+
+        if (typeof existing === 'number') {
+          existingVal = existing;
+        } else if (existing && typeof existing === 'object' && !Array.isArray(existing)) {
+          existingVal = Number(existing.value);
+          existingUnit = String(existing.unit || 'CM');
+        }
+
+        if (existingVal !== val) {
+          if (existing && typeof existing === 'object' && !Array.isArray(existing)) {
+            updatedMeasurements[key] = { value: val, unit: existingUnit };
+          } else {
+            updatedMeasurements[key] = { value: val, unit: 'CM' };
+          }
+          changed = true;
+        }
+      }
+
+      if (changed) {
+        const now = new Date();
+        const nextReminderAt = new Date(now.getTime() + (profile.requireUpdateEveryDays || 14) * 24 * 60 * 60 * 1000);
+
+        await tx.userSizeFitProfile.update({
+          where: { id: profile.id },
+          data: {
+            measurements: updatedMeasurements as any,
+            version: profile.version + 1,
+            lastUpdatedAt: now,
+            nextReminderAt,
+          },
+        });
+
+        const latestRevision = await tx.userSizeFitRevision.findFirst({
+          where: { profileId: profile.id },
+          orderBy: { version: 'desc' },
+          select: { version: true },
+        });
+        const nextVersion = (latestRevision?.version ?? 0) + 1;
+
+        const changedKeys: string[] = [];
+        const allKeys = new Set([...Object.keys(currentMeasurements), ...Object.keys(updatedMeasurements)]);
+        for (const k of allKeys) {
+          if (JSON.stringify(currentMeasurements[k]) !== JSON.stringify(updatedMeasurements[k])) {
+            changedKeys.push(k);
+          }
+        }
+        changedKeys.sort();
+
+        await tx.userSizeFitRevision.create({
+          data: {
+            id: uuidv4(),
+            profileId: profile.id,
+            version: nextVersion,
+            measurements: updatedMeasurements as any,
+            changedKeys,
+            createdById: userId,
+          },
+        });
+      }
+    } catch (err) {
+      this.logger.warn(`Failed to sync measurements to profile for user ${userId}: ${err.message}`);
+    }
   }
 }

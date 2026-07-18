@@ -865,6 +865,9 @@ export class CustomOrdersService {
       submittedMeasurementValues,
     );
 
+    // Automatically update/sync measurements to profile (no IDOR - using authenticated userId)
+    await this.syncMeasurementsToProfile(userId, submittedMeasurementValues);
+
     if (!alreadySubmitted) {
       await this.prisma.customOrderCheckoutIntent.update({
         where: { id: intent.id },
@@ -2872,6 +2875,9 @@ export class CustomOrdersService {
       requiredMeasurementKeys,
       submittedMeasurementValues,
     );
+
+    // Automatically update/sync measurements to profile (no IDOR - using authenticated userId)
+    await this.syncMeasurementsToProfile(userId, submittedMeasurementValues);
 
     const yardProfile = this.parseConfigurationYardProfile(
       typeof configuration.snapshot.notes === 'string'
@@ -4990,5 +4996,116 @@ export class CustomOrdersService {
       issues: { orderBy: { createdAt: 'desc' as const } },
       disputes: { orderBy: { openedAt: 'desc' as const } },
     };
+  }
+
+  private async syncMeasurementsToProfile(
+    userId: string,
+    measurementValues: Record<string, number>,
+    tx?: any,
+  ) {
+    if (!measurementValues || Object.keys(measurementValues).length === 0) {
+      return;
+    }
+    const db = tx || this.prisma;
+
+    try {
+      let profile = await db.userSizeFitProfile.findUnique({
+        where: { userId },
+      });
+      if (!profile) {
+        const now = new Date();
+        profile = await db.userSizeFitProfile.create({
+          data: {
+            id: randomUUID(),
+            userId,
+            visibility: 'PRIVATE',
+            sharePolicy: 'REQUIRE_PERMISSION',
+            notifyOnShare: true,
+            requireUpdateEveryDays: 14,
+            version: 0,
+            preferredLengthUnit: 'CM',
+            preferredWeightUnit: 'KG',
+            fitPreference: 'REGULAR',
+            label: 'My Measurements',
+            measurements: {},
+            lastUpdatedAt: null,
+            nextReminderAt: now,
+          },
+        });
+      }
+
+      const currentMeasurements = (profile.measurements && typeof profile.measurements === 'object' && !Array.isArray(profile.measurements))
+        ? (profile.measurements as Record<string, any>)
+        : {};
+
+      const updatedMeasurements = { ...currentMeasurements };
+      let changed = false;
+
+      for (const [key, val] of Object.entries(measurementValues)) {
+        const existing = currentMeasurements[key];
+        let existingVal: number | null = null;
+        let existingUnit = 'CM';
+
+        if (typeof existing === 'number') {
+          existingVal = existing;
+        } else if (existing && typeof existing === 'object' && !Array.isArray(existing)) {
+          existingVal = Number(existing.value);
+          existingUnit = String(existing.unit || 'CM');
+        }
+
+        if (existingVal !== val) {
+          if (existing && typeof existing === 'object' && !Array.isArray(existing)) {
+            updatedMeasurements[key] = { value: val, unit: existingUnit };
+          } else {
+            updatedMeasurements[key] = { value: val, unit: 'CM' };
+          }
+          changed = true;
+        }
+      }
+
+      if (changed) {
+        const now = new Date();
+        const nextReminderAt = new Date(now.getTime() + (profile.requireUpdateEveryDays || 14) * 24 * 60 * 60 * 1000);
+
+        await db.userSizeFitProfile.update({
+          where: { id: profile.id },
+          data: {
+            measurements: updatedMeasurements as any,
+            version: profile.version + 1,
+            lastUpdatedAt: now,
+            nextReminderAt,
+          },
+        });
+
+        const latestRevision = await db.userSizeFitRevision.findFirst({
+          where: { profileId: profile.id },
+          orderBy: { version: 'desc' },
+          select: { version: true },
+        });
+        const nextVersion = (latestRevision?.version ?? 0) + 1;
+
+        const changedKeys: string[] = [];
+        const allKeys = new Set([...Object.keys(currentMeasurements), ...Object.keys(updatedMeasurements)]);
+        for (const k of allKeys) {
+          if (JSON.stringify(currentMeasurements[k]) !== JSON.stringify(updatedMeasurements[k])) {
+            changedKeys.push(k);
+          }
+        }
+        changedKeys.sort();
+
+        await db.userSizeFitRevision.create({
+          data: {
+            id: randomUUID(),
+            profileId: profile.id,
+            version: nextVersion,
+            measurements: updatedMeasurements as any,
+            changedKeys,
+            createdById: userId,
+          },
+        });
+      }
+    } catch (err) {
+      this.logger.warn(`Failed to sync measurements to profile for user ${userId}: ${err.message}`);
+    }
   }
 }
