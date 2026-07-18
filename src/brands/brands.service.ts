@@ -596,18 +596,11 @@ export class BrandsService {
   }
 
   async getDashboardActivityFeed(brandId: string, limit = 12) {
-    const brand = await this.prisma.brand.findUnique({
-      where: { ownerId: brandId },
-      select: { id: true },
-    });
-
-    if (!brand) {
-      throw new NotFoundException('Brand profile not found');
-    }
+    const brand = await this.resolveDashboardBrand(brandId);
 
     const take = Math.min(Math.max(limit, 1), 50);
     const recentNotifications = await this.prisma.notification.findMany({
-      where: { recipientId: brandId },
+      where: { recipientId: brand.ownerId },
       orderBy: { createdAt: 'desc' },
       take,
       include: {
@@ -1512,14 +1505,20 @@ export class BrandsService {
   // DASHBOARD & ANALYTICS
   // ============================================
 
-  async getDashboardOverview(brandId: string) {
-    const brand = await this.prisma.brand.findUnique({
-      where: { ownerId: brandId },
+  private async resolveDashboardBrand(brandIdOrOwnerId: string) {
+    const brand = await this.prisma.brand.findFirst({
+      where: {
+        OR: [{ id: brandIdOrOwnerId }, { ownerId: brandIdOrOwnerId }],
+      },
     });
-
     if (!brand) {
       throw new NotFoundException('Brand profile not found');
     }
+    return brand;
+  }
+
+  async getDashboardOverview(brandId: string) {
+    const brand = await this.resolveDashboardBrand(brandId);
 
     // KPIs
     const [
@@ -1542,7 +1541,7 @@ export class BrandsService {
       }),
       this.prisma.patchConnection.count({
         where: {
-          targetId: brandId,
+          targetId: brand.ownerId,
           status: PatchStatus.ACCEPTED,
           mode: PatchMode.USER_TO_BRAND,
         },
@@ -1551,7 +1550,7 @@ export class BrandsService {
         where: { brandId: brand.id, isActive: true, deletedAt: null },
       }),
       this.prisma.notification.findMany({
-        where: { recipientId: brandId },
+        where: { recipientId: brand.ownerId },
         orderBy: { createdAt: 'desc' },
         take: 12,
         include: {
@@ -1614,13 +1613,7 @@ export class BrandsService {
     brandId: string,
     range: '7d' | '30d' | 'ytd' = '30d',
   ) {
-    const brand = await this.prisma.brand.findUnique({
-      where: { ownerId: brandId },
-    });
-
-    if (!brand) {
-      throw new NotFoundException('Brand profile not found');
-    }
+    const brand = await this.resolveDashboardBrand(brandId);
 
     const now = new Date();
     let startDate = new Date();

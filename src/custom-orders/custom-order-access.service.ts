@@ -80,11 +80,30 @@ export class CustomOrderAccessService {
     }
   }
 
+  private async resolveAndMatchCustomOrderBrand(
+    customOrderId: string,
+    pathBrandIdOrOwnerId?: string,
+  ): Promise<string> {
+    const orderBrandId = await this.resolveCustomOrderBrandId(customOrderId);
+    if (!pathBrandIdOrOwnerId) {
+      return orderBrandId;
+    }
+    const pathBrandId = await this.resolveBrandId(pathBrandIdOrOwnerId);
+    if (pathBrandId !== orderBrandId) {
+      throw new NotFoundException('Custom order not found');
+    }
+    return orderBrandId;
+  }
+
   async assertCustomOrderBrandRead(
     userId: string,
     customOrderId: string,
+    pathBrandIdOrOwnerId?: string,
   ): Promise<void> {
-    const brandId = await this.resolveCustomOrderBrandId(customOrderId);
+    const brandId = await this.resolveAndMatchCustomOrderBrand(
+      customOrderId,
+      pathBrandIdOrOwnerId,
+    );
     await this.brandPermissionService.assertPermission(
       userId,
       brandId,
@@ -95,8 +114,12 @@ export class CustomOrderAccessService {
   async assertCustomOrderBrandUpdate(
     userId: string,
     customOrderId: string,
+    pathBrandIdOrOwnerId?: string,
   ): Promise<void> {
-    const brandId = await this.resolveCustomOrderBrandId(customOrderId);
+    const brandId = await this.resolveAndMatchCustomOrderBrand(
+      customOrderId,
+      pathBrandIdOrOwnerId,
+    );
     await this.brandPermissionService.assertPermission(
       userId,
       brandId,

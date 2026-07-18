@@ -3666,10 +3666,26 @@ export class PaymentService implements OnModuleInit {
         where: { reference },
       });
 
-      if (
-        !attempt ||
-        (attempt.buyerId && userId && attempt.buyerId !== userId)
-      ) {
+      // System sources may run without a buyer JWT. User-facing sources must
+      // always match attempt.buyerId (no soft "null buyerId" bypass).
+      const systemSources: Array<typeof source> = [
+        'webhook',
+        'reconcile',
+      ];
+      if (!attempt) {
+        throw new NotFoundException('Payment attempt not found');
+      }
+      if (systemSources.includes(source)) {
+        // Webhook/reconcile: do not require userId match; optional guard if both set.
+        if (
+          attempt.buyerId &&
+          userId &&
+          attempt.buyerId !== userId &&
+          source !== 'webhook'
+        ) {
+          throw new NotFoundException('Payment attempt not found');
+        }
+      } else if (!userId || !attempt.buyerId || attempt.buyerId !== userId) {
         throw new NotFoundException('Payment attempt not found');
       }
 

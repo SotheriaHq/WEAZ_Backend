@@ -53,7 +53,11 @@ export class OrderController {
     @Param('orderId') orderId: string,
     @Req() req: any,
   ) {
-    await this.orderAccessService.assertOrderBrandRead(req.user.id, orderId);
+    await this.orderAccessService.assertOrderBrandRead(
+      req.user.id,
+      orderId,
+      brandId,
+    );
     return this.orderService.findOne(brandId, orderId);
   }
 
@@ -64,7 +68,11 @@ export class OrderController {
     @Body() body: { status: OrderStatus },
     @Req() req: any,
   ) {
-    await this.orderAccessService.assertOrderBrandUpdate(req.user.id, orderId);
+    await this.orderAccessService.assertOrderBrandUpdate(
+      req.user.id,
+      orderId,
+      brandId,
+    );
     return this.orderService.updateStatus(
       brandId,
       orderId,

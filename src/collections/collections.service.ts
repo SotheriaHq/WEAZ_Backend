@@ -1659,7 +1659,6 @@ export class CollectionsService {
 
   // Brand-scoped: list access requests across all private collections of the brand
   async listBrandAccessRequests(
-    brandId: string,
     ownerId: string,
     state: 'PENDING' | 'APPROVED' = 'PENDING',
     limit = 20,
@@ -1667,10 +1666,11 @@ export class CollectionsService {
     q?: string,
     page?: number,
   ) {
-    if (brandId !== ownerId) throw new ForbiddenException('Not owner');
+    // ownerId is the brand owner User.id (resolved by BrandAccessService).
+    // Legacy dual brandId===ownerId check removed — callers must authorize first.
     const where: Prisma.CollectionAccessWhereInput = {
       collection: {
-        ownerId: brandId,
+        ownerId,
         visibility: CollectionVisibility.PRIVATE,
         status: 'PUBLISHED',
         deletedAt: null,
@@ -1693,7 +1693,7 @@ export class CollectionsService {
     const pageNum = page && page > 0 ? page : undefined;
     const privateCollectionCount = await this.prisma.collection.count({
       where: {
-        ownerId: brandId,
+        ownerId,
         visibility: CollectionVisibility.PRIVATE,
         status: 'PUBLISHED',
         deletedAt: null,
@@ -8706,6 +8706,10 @@ export class CollectionsService {
     collectionId: string,
     userId: string | undefined,
   ) {
+    const canView = await this.canViewCollection(collectionId, userId);
+    if (!canView) {
+      throw new NotFoundException('Collection not found');
+    }
     if (!userId) {
       return { threaded: false };
     }
@@ -8715,7 +8719,11 @@ export class CollectionsService {
     return { threaded: !!r };
   }
 
-  async getThreadsSummary(collectionId: string) {
+  async getThreadsSummary(collectionId: string, requesterId?: string) {
+    const canView = await this.canViewCollection(collectionId, requesterId);
+    if (!canView) {
+      throw new NotFoundException('Collection not found');
+    }
     const collection = await this.prisma.collection.findUnique({
       where: { id: collectionId },
     });

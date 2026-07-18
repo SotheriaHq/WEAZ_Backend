@@ -2202,10 +2202,7 @@ export class CustomOrdersService {
     requestId: string,
     dto: BrandRespondToCustomOrderExtensionCounterDto,
   ) {
-    await this.customOrderAccessService.assertCustomOrderBrandUpdate(
-      ownerUserId,
-      customOrderId,
-    );
+    await this.customOrderAccessService.assertCustomOrderBrandUpdate(ownerUserId, customOrderId, brandId);
     const resolvedBrandId =
       await this.customOrderAccessService.resolveBrandId(brandId);
     const order = await this.prisma.customOrder.findFirst({
@@ -2370,10 +2367,7 @@ export class CustomOrdersService {
     customOrderId: string,
     dto: CreateExceptionReviewRequestDto,
   ) {
-    await this.customOrderAccessService.assertCustomOrderBrandUpdate(
-      ownerUserId,
-      customOrderId,
-    );
+    await this.customOrderAccessService.assertCustomOrderBrandUpdate(ownerUserId, customOrderId, brandId);
     const resolvedBrandId =
       await this.customOrderAccessService.resolveBrandId(brandId);
     const order = await this.prisma.customOrder.findFirst({
@@ -2466,10 +2460,7 @@ export class CustomOrdersService {
     brandId: string,
     customOrderId: string,
   ) {
-    await this.customOrderAccessService.assertCustomOrderBrandRead(
-      ownerUserId,
-      customOrderId,
-    );
+    await this.customOrderAccessService.assertCustomOrderBrandRead(ownerUserId, customOrderId, brandId);
     const resolvedBrandId =
       await this.customOrderAccessService.resolveBrandId(brandId);
     const order = await this.prisma.customOrder.findFirst({
@@ -2494,10 +2485,7 @@ export class CustomOrdersService {
     customOrderId: string,
     dto: AcceptCustomOrderDto,
   ) {
-    await this.customOrderAccessService.assertCustomOrderBrandUpdate(
-      ownerUserId,
-      customOrderId,
-    );
+    await this.customOrderAccessService.assertCustomOrderBrandUpdate(ownerUserId, customOrderId, brandId);
     const resolvedBrandId =
       await this.customOrderAccessService.resolveBrandId(brandId);
     const order = await this.prisma.customOrder.findFirst({
@@ -2603,10 +2591,7 @@ export class CustomOrdersService {
     customOrderId: string,
     dto: UpdateCustomOrderProgressStageDto,
   ) {
-    await this.customOrderAccessService.assertCustomOrderBrandUpdate(
-      ownerUserId,
-      customOrderId,
-    );
+    await this.customOrderAccessService.assertCustomOrderBrandUpdate(ownerUserId, customOrderId, brandId);
     const resolvedBrandId =
       await this.customOrderAccessService.resolveBrandId(brandId);
     const order = await this.prisma.customOrder.findFirst({
@@ -2702,10 +2687,7 @@ export class CustomOrdersService {
     customOrderId: string,
     dto: CreateCustomOrderExtensionRequestDto,
   ) {
-    await this.customOrderAccessService.assertCustomOrderBrandUpdate(
-      ownerUserId,
-      customOrderId,
-    );
+    await this.customOrderAccessService.assertCustomOrderBrandUpdate(ownerUserId, customOrderId, brandId);
     const resolvedBrandId =
       await this.customOrderAccessService.resolveBrandId(brandId);
     const order = await this.prisma.customOrder.findFirst({
@@ -2778,10 +2760,7 @@ export class CustomOrdersService {
     customOrderId: string,
     dto: UpdateCustomOrderLifecycleStatusDto,
   ) {
-    await this.customOrderAccessService.assertCustomOrderBrandUpdate(
-      ownerUserId,
-      customOrderId,
-    );
+    await this.customOrderAccessService.assertCustomOrderBrandUpdate(ownerUserId, customOrderId, brandId);
     const resolvedBrandId =
       await this.customOrderAccessService.resolveBrandId(brandId);
     const order = await this.prisma.customOrder.findFirst({

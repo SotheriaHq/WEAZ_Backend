@@ -41,6 +41,14 @@ export class BrandAccessService {
     return (await this.resolveBrand(brandIdOrOwnerId)).id;
   }
 
+  /** Resolve Brand table id + owner user id from either identifier. */
+  async resolveBrandContext(
+    brandIdOrOwnerId: string,
+  ): Promise<{ brandId: string; ownerId: string }> {
+    const brand = await this.resolveBrand(brandIdOrOwnerId);
+    return { brandId: brand.id, ownerId: brand.ownerId };
+  }
+
   async getOwnedBrandIds(userId: string): Promise<string[]> {
     const [ownedBrands, ownerMemberships] = await Promise.all([
       this.prisma.brand.findMany({
@@ -162,6 +170,38 @@ export class BrandAccessService {
         'Only a brand owner can perform this action',
       );
     }
+  }
+
+  /**
+   * Owner-only gate that also returns resolved Brand.id + owner User.id.
+   * Use when legacy services still key off owner user id while path params
+   * may be either Brand UUID or owner user id.
+   */
+  async assertBrandOwnerAndResolve(
+    userId: string,
+    brandIdOrOwnerId: string,
+  ): Promise<{ brandId: string; ownerId: string }> {
+    const brand = await this.resolveBrand(brandIdOrOwnerId);
+    if (brand.ownerId !== userId) {
+      const membership = await this.prisma.brandMember.findUnique({
+        where: {
+          brandId_userId: {
+            brandId: brand.id,
+            userId,
+          },
+        },
+        select: { role: true, status: true },
+      });
+      const isOwnerMember =
+        membership?.role === BrandMemberRole.OWNER &&
+        membership.status === BrandMemberStatus.ACTIVE;
+      if (!isOwnerMember) {
+        throw new ForbiddenException(
+          'Only a brand owner can perform this action',
+        );
+      }
+    }
+    return { brandId: brand.id, ownerId: brand.ownerId };
   }
 
   async isActiveOwner(userId: string, brandId: string): Promise<boolean> {

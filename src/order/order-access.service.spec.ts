@@ -72,4 +72,31 @@ describe('OrderAccessService', () => {
       service.assertOrderBrandRead('staff_1', 'missing'),
     ).rejects.toBeInstanceOf(NotFoundException);
   });
+
+  it('rejects when path brand does not own the order', async () => {
+    prisma.order.findUnique.mockResolvedValue({ brandId: 'brand_1' });
+    prisma.brand = {
+      findFirst: jest.fn().mockResolvedValue({ id: 'brand_2' }),
+    };
+    service = new OrderAccessService(prisma, permissions);
+
+    await expect(
+      service.assertOrderBrandRead('staff_1', 'order_1', 'brand_2'),
+    ).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  it('allows brand path when it matches the order brand', async () => {
+    prisma.order.findUnique.mockResolvedValue({ brandId: 'brand_1' });
+    prisma.brand = {
+      findFirst: jest.fn().mockResolvedValue({ id: 'brand_1' }),
+    };
+    service = new OrderAccessService(prisma, permissions);
+
+    await service.assertOrderBrandRead('staff_1', 'order_1', 'brand_1');
+    expect(permissions.assertPermission).toHaveBeenCalledWith(
+      'staff_1',
+      'brand_1',
+      BRAND_PERMISSIONS.ORDERS_READ,
+    );
+  });
 });

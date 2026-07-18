@@ -81,11 +81,13 @@ export class BrandsController {
     @Query('limit') limit?: string,
     @Req() req?: any,
   ) {
-    if (req?.user?.id !== brandId) {
-      throw new BadRequestException('Not authorized for this brand');
-    }
-    return this.brandsService.getBrandPatches(
+    // Patches are brand-owner scoped; resolve Brand UUID or owner user id.
+    const { ownerId } = await this.brandAccessService.assertBrandOwnerAndResolve(
+      req.user.id,
       brandId,
+    );
+    return this.brandsService.getBrandPatches(
+      ownerId,
       status === 'PENDING'
         ? PatchStatus.PENDING
         : status === 'REJECTED'
@@ -104,12 +106,13 @@ export class BrandsController {
     @Query('limit') limit?: string,
     @Req() req?: any,
   ) {
-    if (req?.user?.id !== brandId) {
-      throw new BadRequestException('Not authorized for this brand');
-    }
+    const { ownerId } = await this.brandAccessService.assertBrandOwnerAndResolve(
+      req.user.id,
+      brandId,
+    );
 
     return this.brandsService.getBrandPatchHistory(
-      brandId,
+      ownerId,
       page ? parseInt(page, 10) : 1,
       limit ? parseInt(limit, 10) : 20,
     );
@@ -171,9 +174,11 @@ export class BrandsController {
     @Query('page') page?: string,
     @Query('pageSize') pageSize?: string,
   ) {
-    if (req.user?.id !== brandId) {
-      throw new BadRequestException('Not authorized for this brand');
-    }
+    const { ownerId } =
+      await this.brandAccessService.assertBrandOwnerAndResolve(
+        req.user.id,
+        brandId,
+      );
     const take = pageSize
       ? parseInt(pageSize, 10)
       : limit
@@ -181,8 +186,7 @@ export class BrandsController {
         : 20;
     const pageNum = page ? parseInt(page, 10) : undefined;
     return this.collectionsService.listBrandAccessRequests(
-      brandId,
-      req.user.id,
+      ownerId,
       status === 'approved' ? 'APPROVED' : 'PENDING',
       take,
       cursor,
@@ -210,12 +214,14 @@ export class BrandsController {
     @Body() body: { state: 'APPROVED' | 'REVOKED' },
     @Req() req: any,
   ) {
-    if (req.user?.id !== brandId) {
-      throw new BadRequestException('Not authorized for this brand');
-    }
+    const { ownerId } =
+      await this.brandAccessService.assertBrandOwnerAndResolve(
+        req.user.id,
+        brandId,
+      );
     return this.collectionsService.updateAccessState(
       collectionId,
-      req.user.id,
+      ownerId,
       userId,
       body?.state === 'APPROVED' ? 'APPROVED' : 'REVOKED',
     );
@@ -229,12 +235,14 @@ export class BrandsController {
     @Param('userId') userId: string,
     @Req() req: any,
   ) {
-    if (req.user?.id !== brandId) {
-      throw new BadRequestException('Not authorized for this brand');
-    }
+    const { ownerId } =
+      await this.brandAccessService.assertBrandOwnerAndResolve(
+        req.user.id,
+        brandId,
+      );
     return this.collectionsService.rejectAccess(
       collectionId,
-      req.user.id,
+      ownerId,
       userId,
     );
   }
@@ -247,12 +255,14 @@ export class BrandsController {
     @Body() body: { userIds: string[] },
     @Req() req: any,
   ) {
-    if (req.user?.id !== brandId) {
-      throw new BadRequestException('Not authorized for this brand');
-    }
+    const { ownerId } =
+      await this.brandAccessService.assertBrandOwnerAndResolve(
+        req.user.id,
+        brandId,
+      );
     return this.collectionsService.approveAccessBulk(
       collectionId,
-      req.user.id,
+      ownerId,
       Array.isArray(body?.userIds) ? body.userIds : [],
     );
   }
@@ -317,10 +327,12 @@ export class BrandsController {
   @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
   @Get('brands/:id/dashboard/overview')
   async getDashboardOverview(@Param('id') brandId: string, @Req() req: any) {
-    if (req.user.id !== brandId) {
-      throw new BadRequestException('Not authorized for this brand');
-    }
-    return this.brandsService.getDashboardOverview(brandId);
+    const resolved =
+      await this.brandAccessService.assertBrandOwnerAndResolve(
+        req.user.id,
+        brandId,
+      );
+    return this.brandsService.getDashboardOverview(resolved.ownerId);
   }
 
   @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
@@ -330,10 +342,12 @@ export class BrandsController {
     @Req() req: any,
     @Query('range') range: '7d' | '30d' | 'ytd' = '30d',
   ) {
-    if (req.user.id !== brandId) {
-      throw new BadRequestException('Not authorized for this brand');
-    }
-    return this.brandsService.getDashboardAnalytics(brandId, range);
+    const resolved =
+      await this.brandAccessService.assertBrandOwnerAndResolve(
+        req.user.id,
+        brandId,
+      );
+    return this.brandsService.getDashboardAnalytics(resolved.ownerId, range);
   }
 
   @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
@@ -343,12 +357,14 @@ export class BrandsController {
     @Req() req: any,
     @Query('limit') limit?: string,
   ) {
-    if (req.user.id !== brandId) {
-      throw new BadRequestException('Not authorized for this brand');
-    }
+    const resolved =
+      await this.brandAccessService.assertBrandOwnerAndResolve(
+        req.user.id,
+        brandId,
+      );
 
     return this.brandsService.getDashboardActivityFeed(
-      brandId,
+      resolved.ownerId,
       limit ? parseInt(limit, 10) : 12,
     );
   }
@@ -362,10 +378,12 @@ export class BrandsController {
     @Body(ValidationPipe) dto: PresignVerificationUploadDto,
     @Req() req: any,
   ) {
-    if (req.user.id !== brandId) {
-      throw new BadRequestException('Not authorized for this brand');
-    }
-    return this.brandVerificationService.presignUpload(brandId, dto);
+    const { ownerId } =
+      await this.brandAccessService.assertBrandOwnerAndResolve(
+        req.user.id,
+        brandId,
+      );
+    return this.brandVerificationService.presignUpload(ownerId, dto);
   }
 
   @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
@@ -375,19 +393,23 @@ export class BrandsController {
     @Body(ValidationPipe) dto: FinalizeVerificationUploadDto,
     @Req() req: any,
   ) {
-    if (req.user.id !== brandId) {
-      throw new BadRequestException('Not authorized for this brand');
-    }
-    return this.brandVerificationService.finalizeUpload(brandId, dto);
+    const { ownerId } =
+      await this.brandAccessService.assertBrandOwnerAndResolve(
+        req.user.id,
+        brandId,
+      );
+    return this.brandVerificationService.finalizeUpload(ownerId, dto);
   }
 
   @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
   @Get('brands/:id/verification/draft')
   async getVerificationDraft(@Param('id') brandId: string, @Req() req: any) {
-    if (req.user.id !== brandId) {
-      throw new BadRequestException('Not authorized for this brand');
-    }
-    return this.brandVerificationService.getDraft(brandId);
+    const { ownerId } =
+      await this.brandAccessService.assertBrandOwnerAndResolve(
+        req.user.id,
+        brandId,
+      );
+    return this.brandVerificationService.getDraft(ownerId);
   }
 
   @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
@@ -397,19 +419,23 @@ export class BrandsController {
     @Body(ValidationPipe) dto: SaveVerificationDraftDto,
     @Req() req: any,
   ) {
-    if (req.user.id !== brandId) {
-      throw new BadRequestException('Not authorized for this brand');
-    }
-    return this.brandVerificationService.saveDraft(brandId, dto);
+    const { ownerId } =
+      await this.brandAccessService.assertBrandOwnerAndResolve(
+        req.user.id,
+        brandId,
+      );
+    return this.brandVerificationService.saveDraft(ownerId, dto);
   }
 
   @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
   @Get('brands/:id/verification/letter')
   async getVerificationLetter(@Param('id') brandId: string, @Req() req: any) {
-    if (req.user.id !== brandId) {
-      throw new BadRequestException('Not authorized for this brand');
-    }
-    return this.brandVerificationService.getLetter(brandId);
+    const { ownerId } =
+      await this.brandAccessService.assertBrandOwnerAndResolve(
+        req.user.id,
+        brandId,
+      );
+    return this.brandVerificationService.getLetter(ownerId);
   }
 
   @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
@@ -419,10 +445,12 @@ export class BrandsController {
     @Body(ValidationPipe) dto: SignVerificationLetterDto,
     @Req() req: any,
   ) {
-    if (req.user.id !== brandId) {
-      throw new BadRequestException('Not authorized for this brand');
-    }
-    return this.brandVerificationService.signLetter(brandId, dto, req);
+    const { ownerId } =
+      await this.brandAccessService.assertBrandOwnerAndResolve(
+        req.user.id,
+        brandId,
+      );
+    return this.brandVerificationService.signLetter(ownerId, dto, req);
   }
 
   @UseGuards(JwtAuthGuard)
@@ -436,16 +464,20 @@ export class BrandsController {
       req.user.id,
       brandId,
     );
-    return this.brandVerificationService.submit(brandId, dto);
+    const { ownerId } =
+      await this.brandAccessService.resolveBrandContext(brandId);
+    return this.brandVerificationService.submit(ownerId, dto);
   }
 
   @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
   @Get('brands/:id/verification')
   async getVerificationStatus(@Param('id') brandId: string, @Req() req: any) {
-    if (req.user.id !== brandId) {
-      throw new BadRequestException('Not authorized for this brand');
-    }
-    return this.brandVerificationService.getStatus(brandId);
+    const { ownerId } =
+      await this.brandAccessService.assertBrandOwnerAndResolve(
+        req.user.id,
+        brandId,
+      );
+    return this.brandVerificationService.getStatus(ownerId);
   }
 
   @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
@@ -455,10 +487,12 @@ export class BrandsController {
     @Body(ValidationPipe) dto: VerificationVersionDto,
     @Req() req: any,
   ) {
-    if (req.user.id !== brandId) {
-      throw new BadRequestException('Not authorized for this brand');
-    }
-    return this.brandVerificationService.cancel(brandId, dto.expectedUpdatedAt);
+    const { ownerId } =
+      await this.brandAccessService.assertBrandOwnerAndResolve(
+        req.user.id,
+        brandId,
+      );
+    return this.brandVerificationService.cancel(ownerId, dto.expectedUpdatedAt);
   }
 
   @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
@@ -467,10 +501,12 @@ export class BrandsController {
     @Param('id') brandId: string,
     @Req() req: any,
   ) {
-    if (req.user.id !== brandId) {
-      throw new BadRequestException('Not authorized for this brand');
-    }
-    return this.brandVerificationService.cancel(brandId);
+    const { ownerId } =
+      await this.brandAccessService.assertBrandOwnerAndResolve(
+        req.user.id,
+        brandId,
+      );
+    return this.brandVerificationService.cancel(ownerId);
   }
 
   @UseGuards(JwtAuthGuard)
@@ -484,8 +520,10 @@ export class BrandsController {
       req.user.id,
       brandId,
     );
+    const { ownerId } =
+      await this.brandAccessService.resolveBrandContext(brandId);
     return this.brandVerificationService.resubmitInfo(
-      brandId,
+      ownerId,
       dto,
       req.user.id,
     );
@@ -498,11 +536,13 @@ export class BrandsController {
     @Body(ValidationPipe) dto: VerificationNudgePreferenceDto,
     @Req() req: any,
   ) {
-    if (req.user.id !== brandId) {
-      throw new BadRequestException('Not authorized for this brand');
-    }
+    const { ownerId } =
+      await this.brandAccessService.assertBrandOwnerAndResolve(
+        req.user.id,
+        brandId,
+      );
     return this.brandVerificationService.setNudgeOptOut(
-      brandId,
+      ownerId,
       dto.nudgeOptOut,
     );
   }

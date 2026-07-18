@@ -844,11 +844,18 @@ export class CollectionsController {
   }
 
   @IsPublic()
+  @UseGuards(OptionalJwtAuthGuard)
   // Threads summary for a collection (collection threads + media threads)
   @Get(':id/threads/summary')
   @ApiOperation({ summary: 'Get threads summary for a collection' })
-  async getThreadsSummary(@Param('id') collectionId: string) {
-    return this.collectionsService.getThreadsSummary(collectionId);
+  async getThreadsSummary(
+    @Param('id') collectionId: string,
+    @Req() req?: any,
+  ) {
+    return this.collectionsService.getThreadsSummary(
+      collectionId,
+      req?.user?.id,
+    );
   }
 
   // ===================== Access Management =====================

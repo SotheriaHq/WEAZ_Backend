@@ -38,8 +38,42 @@ export class OrderAccessService {
     }
   }
 
-  async assertOrderBrandRead(userId: string, orderId: string): Promise<void> {
-    const brandId = await this.resolveOrderBrandId(orderId);
+  /**
+   * When pathBrandIdOrOwnerId is provided, the order must belong to that brand
+   * (after resolving Brand UUID or owner user id). Prevents path/target drift.
+   */
+  private async resolveAndMatchOrderBrand(
+    orderId: string,
+    pathBrandIdOrOwnerId?: string,
+  ): Promise<string> {
+    const orderBrandId = await this.resolveOrderBrandId(orderId);
+    if (!pathBrandIdOrOwnerId) {
+      return orderBrandId;
+    }
+    const pathBrand = await this.prisma.brand.findFirst({
+      where: {
+        OR: [
+          { id: pathBrandIdOrOwnerId },
+          { ownerId: pathBrandIdOrOwnerId },
+        ],
+      },
+      select: { id: true },
+    });
+    if (!pathBrand || pathBrand.id !== orderBrandId) {
+      throw new NotFoundException('Order not found');
+    }
+    return orderBrandId;
+  }
+
+  async assertOrderBrandRead(
+    userId: string,
+    orderId: string,
+    pathBrandIdOrOwnerId?: string,
+  ): Promise<void> {
+    const brandId = await this.resolveAndMatchOrderBrand(
+      orderId,
+      pathBrandIdOrOwnerId,
+    );
     await this.brandPermissionService.assertPermission(
       userId,
       brandId,
@@ -47,8 +81,15 @@ export class OrderAccessService {
     );
   }
 
-  async assertOrderBrandUpdate(userId: string, orderId: string): Promise<void> {
-    const brandId = await this.resolveOrderBrandId(orderId);
+  async assertOrderBrandUpdate(
+    userId: string,
+    orderId: string,
+    pathBrandIdOrOwnerId?: string,
+  ): Promise<void> {
+    const brandId = await this.resolveAndMatchOrderBrand(
+      orderId,
+      pathBrandIdOrOwnerId,
+    );
     await this.brandPermissionService.assertPermission(
       userId,
       brandId,
