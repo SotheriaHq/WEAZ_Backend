@@ -3,6 +3,7 @@ import {
   Get,
   Patch,
   Post,
+  Put,
   Body,
   Param,
   UseGuards,
@@ -113,6 +114,21 @@ export class UserProfileController {
     return this.userProfileService.updatePreferences(
       this.getAuthUserId(req),
       updateUserPreferencesDto.themePreference,
+    );
+  }
+
+  @Get('me/delivery-addresses')
+  @UseGuards(AuthGuard('jwt'))
+  async getDeliveryAddresses(@Req() req) {
+    return this.userProfileService.getDeliveryAddresses(this.getAuthUserId(req));
+  }
+
+  @Put('me/delivery-addresses')
+  @UseGuards(AuthGuard('jwt'))
+  async replaceDeliveryAddresses(@Req() req, @Body() body: Record<string, unknown>) {
+    return this.userProfileService.replaceDeliveryAddresses(
+      this.getAuthUserId(req),
+      body?.items,
     );
   }
 

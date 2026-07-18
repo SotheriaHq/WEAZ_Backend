@@ -5,6 +5,7 @@ import {
   NotFoundException,
   UnauthorizedException,
 } from '@nestjs/common';
+import { randomUUID } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { Prisma, ProfileVisibility } from '@prisma/client';
 import {
@@ -476,6 +477,82 @@ export class UserProfileService {
     return {
       themePreference: normalizeThemePreference(user.themePreference),
     };
+  }
+
+  private static readonly MAX_DELIVERY_ADDRESSES = 10;
+
+  /**
+   * Server-side delivery address book (JSON on UserProfile) so web and mobile
+   * checkout share the same saved addresses. Entries are whitelisted field by
+   * field; invalid rows are dropped rather than rejected wholesale.
+   */
+  private sanitizeDeliveryAddresses(input: unknown): Array<Record<string, string>> {
+    const items = Array.isArray(input) ? input : [];
+    const clean = (value: unknown, max: number): string =>
+      String(value ?? '')
+        .trim()
+        .slice(0, max);
+
+    return items
+      .map((entry) => {
+        const record =
+          entry && typeof entry === 'object'
+            ? (entry as Record<string, unknown>)
+            : {};
+        const firstName = clean(record.firstName, 80);
+        const lastName = clean(record.lastName, 80);
+        const customerName =
+          clean(record.customerName, 160) ||
+          [firstName, lastName].filter(Boolean).join(' ');
+        const address = {
+          id: clean(record.id, 64) || randomUUID(),
+          firstName,
+          lastName,
+          customerName,
+          contactEmail: clean(record.contactEmail, 254),
+          phone: clean(record.phone, 40),
+          street: clean(record.street, 200),
+          apartment: clean(record.apartment, 120),
+          city: clean(record.city, 120),
+          state: clean(record.state, 120),
+          postalCode: clean(record.postalCode, 20),
+          country: clean(record.country, 80) || 'Nigeria',
+          updatedAt: clean(record.updatedAt, 40) || new Date().toISOString(),
+        };
+        const isValid = Boolean(
+          address.customerName &&
+            address.street &&
+            address.city &&
+            address.state &&
+            address.phone,
+        );
+        return isValid ? address : null;
+      })
+      .filter((entry): entry is NonNullable<typeof entry> => Boolean(entry))
+      .slice(0, UserProfileService.MAX_DELIVERY_ADDRESSES);
+  }
+
+  async getDeliveryAddresses(userId: string) {
+    if (!userId) {
+      throw new UnauthorizedException('Unauthorized');
+    }
+    const profile = await this.prisma.userProfile.findUnique({
+      where: { userId },
+      select: { deliveryAddresses: true },
+    });
+    return { items: this.sanitizeDeliveryAddresses(profile?.deliveryAddresses) };
+  }
+
+  async replaceDeliveryAddresses(userId: string, items: unknown) {
+    if (!userId) {
+      throw new UnauthorizedException('Unauthorized');
+    }
+    const sanitized = this.sanitizeDeliveryAddresses(items);
+    await this.prisma.userProfile.update({
+      where: { userId },
+      data: { deliveryAddresses: sanitized as any },
+    });
+    return { items: sanitized };
   }
 
   async getPatchedBrands(userId: string, viewerId?: string): Promise<any[]> {

@@ -222,6 +222,7 @@ model UserProfile {
   bannerImageId         String?           @db.Uuid
   bannerImageFile       FileUpload?       @relation("UserProfileBannerImage", fields: [bannerImageId], references: [id])
   profileVisibility     ProfileVisibility @default(UNLOCKED)
+  deliveryAddresses     Json?
   createdAt             DateTime          @default(now())
   updatedAt             DateTime          @updatedAt
 
