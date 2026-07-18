@@ -141,9 +141,56 @@ export class MarketSectionService {
   ) {}
 
   /**
-   * Market rails return raw S3 URLs that browsers cannot load. Prefer a
-   * temporary signed display URL so guest shoppers (and signed-out QR traffic)
-   * never hit 400s from /uploads/public-url for product images.
+   * Rail tiles are ~300px: serve the processed CARD variant (WEBP preferred —
+   * AVIF breaks as a plain <img> on iOS Safari < 16.4) instead of the original
+   * multi-MB upload. Falls back to null when the pipeline has not produced
+   * variants for this file yet.
+   */
+  private async resolveCardVariantUrl(
+    fileId: string | null | undefined,
+  ): Promise<string | null> {
+    if (!fileId || !this.uploadService) return null;
+    try {
+      const rows = await (this.prisma as any).fileVariant.findMany({
+        where: { fileUploadId: fileId, variantKind: 'CARD' },
+        select: { s3Key: true, s3Url: true, format: true },
+      });
+      if (!Array.isArray(rows) || rows.length === 0) return null;
+      const formatRank = (format: unknown): number => {
+        const value = String(format ?? '').toUpperCase();
+        if (value === 'WEBP') return 0;
+        if (value === 'AVIF') return 1;
+        return 2;
+      };
+      rows.sort((a: any, b: any) => formatRank(a.format) - formatRank(b.format));
+      const best = rows[0];
+      const bestKey =
+        typeof best?.s3Key === 'string' && best.s3Key.trim()
+          ? best.s3Key.trim()
+          : null;
+      if (!bestKey) return null;
+      return (
+        this.uploadService.getPublicDisplayUrl({
+          id: fileId,
+          s3Key: bestKey,
+          s3Url: best?.s3Url ?? null,
+          isPublic: true,
+        } as any) ??
+        (await this.uploadService.getTemporarySignedDisplayUrl(
+          { id: fileId, s3Key: bestKey },
+          3600,
+        ))
+      );
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Market rails return raw S3 URLs that browsers cannot load. Prefer the
+   * small CARD variant, then a temporary signed display URL of the original so
+   * guest shoppers (and signed-out QR traffic) never hit 400s from
+   * /uploads/public-url for product images.
    */
   private async resolveDisplayMediaUrl(
     rawUrl: string | null | undefined,
@@ -152,6 +199,9 @@ export class MarketSectionService {
   ): Promise<string | null> {
     const clean = this.cleanString(rawUrl);
     if (!this.uploadService) return clean;
+
+    const cardVariant = await this.resolveCardVariantUrl(fileId);
+    if (cardVariant) return cardVariant;
 
     const key =
       (typeof s3Key === 'string' && s3Key.trim()) ||

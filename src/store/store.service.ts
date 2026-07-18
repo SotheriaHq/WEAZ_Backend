@@ -608,6 +608,75 @@ export class StoreService {
     return raw || null;
   }
 
+  /**
+   * Prefer processed CARD variants (WEBP → AVIF → JPEG) for list/card UIs so
+   * clients do not download full DETAIL/ZOOM originals into ~300px tiles.
+   */
+  private async resolveCardVariantUrlsByFileId(
+    fileIds: string[],
+  ): Promise<Map<string, string>> {
+    const uniqueIds = Array.from(
+      new Set(fileIds.filter((id) => typeof id === 'string' && id.length > 0)),
+    );
+    const out = new Map<string, string>();
+    if (uniqueIds.length === 0) return out;
+
+    const rows = await (this.prisma as any).fileVariant.findMany({
+      where: {
+        fileUploadId: { in: uniqueIds },
+        variantKind: 'CARD',
+      },
+      select: {
+        fileUploadId: true,
+        s3Url: true,
+        s3Key: true,
+        format: true,
+      },
+    });
+
+    const formatRank = (format: unknown): number => {
+      const value = String(format ?? '').toUpperCase();
+      // WEBP first: these are single-URL payloads (no <picture> negotiation),
+      // and AVIF breaks as a plain <img> on iOS Safari < 16.4.
+      if (value === 'WEBP') return 0;
+      if (value === 'AVIF') return 1;
+      if (value === 'JPEG' || value === 'JPG') return 2;
+      return 3;
+    };
+
+    const byFile = new Map<string, any[]>();
+    for (const row of rows ?? []) {
+      const fileId = String(row.fileUploadId ?? '');
+      if (!fileId) continue;
+      const list = byFile.get(fileId) ?? [];
+      list.push(row);
+      byFile.set(fileId, list);
+    }
+
+    await Promise.all(
+      Array.from(byFile.entries()).map(async ([fileId, list]) => {
+        list.sort(
+          (a, b) => formatRank(a.format) - formatRank(b.format),
+        );
+        const best = list[0];
+        if (!best) return;
+        const url = await this.resolveProductDisplayUrl({
+          id: fileId,
+          s3Url: best.s3Url,
+          s3Key: best.s3Key,
+          isPublic: true,
+        });
+        if (url) {
+          out.set(fileId, url);
+        } else if (typeof best.s3Url === 'string' && best.s3Url.trim()) {
+          out.set(fileId, best.s3Url.trim());
+        }
+      }),
+    );
+
+    return out;
+  }
+
   private async attachProductMedia(product: any) {
     const base = this.transformProduct(product);
     const baseWithFilters = await this.attachProductFiltersToView(
@@ -621,24 +690,37 @@ export class StoreService {
       orderBy: [{ orderIndex: 'asc' }, { createdAt: 'asc' }],
     });
     if (Array.isArray(structuredMedia) && structuredMedia.length > 0) {
+      const fileIds = structuredMedia
+        .map((entry: any) => entry.fileUploadId || entry.file?.id)
+        .filter(Boolean);
+      const cardUrls = await this.resolveCardVariantUrlsByFileId(fileIds);
+
       const media = await Promise.all(
         structuredMedia
           .filter((entry) => entry.file?.s3Url)
-          .map(async (entry, index) => ({
-            id: entry.id,
-            fileUploadId: entry.fileUploadId,
-            url:
-              (await this.resolveProductDisplayUrl(entry.file)) ??
-              entry.file.s3Url,
-            type:
-              entry.file.fileType === FileType.POST_VIDEO ? 'video' : 'image',
-            viewSlot: entry.viewSlot,
-            reviewStatus: entry.reviewStatus,
-            isPrimary:
-              (!!product?.thumbnail &&
-                entry.file.s3Url === product.thumbnail) ||
-              index === 0,
-          })),
+          .map(async (entry, index) => {
+            const fileId = entry.fileUploadId || entry.file?.id;
+            const cardUrl =
+              typeof fileId === 'string' ? cardUrls.get(fileId) : undefined;
+            return {
+              id: entry.id,
+              fileUploadId: entry.fileUploadId,
+              url:
+                cardUrl ??
+                (await this.resolveProductDisplayUrl(entry.file)) ??
+                entry.file.s3Url,
+              type:
+                entry.file.fileType === FileType.POST_VIDEO
+                  ? 'video'
+                  : 'image',
+              viewSlot: entry.viewSlot,
+              reviewStatus: entry.reviewStatus,
+              isPrimary:
+                (!!product?.thumbnail &&
+                  entry.file.s3Url === product.thumbnail) ||
+                index === 0,
+            };
+          }),
       );
       return {
         ...baseWithFilters,
@@ -668,14 +750,20 @@ export class StoreService {
 
     const uploadByUrl = new Map<string, (typeof uploads)[number]>();
     for (const u of uploads) uploadByUrl.set(u.s3Url, u);
+    const cardUrls = await this.resolveCardVariantUrlsByFileId(
+      uploads.map((u) => u.id),
+    );
 
     const media = await Promise.all(
       images.map(async (url) => {
         const upload = uploadByUrl.get(url);
+        const cardUrl = upload?.id ? cardUrls.get(upload.id) : undefined;
         return {
           id: upload?.id ?? url,
           url: upload
-            ? ((await this.resolveProductDisplayUrl(upload)) ?? url)
+            ? (cardUrl ??
+              (await this.resolveProductDisplayUrl(upload)) ??
+              url)
             : url,
           type: 'image',
           isPrimary: !!product?.thumbnail && url === product.thumbnail,

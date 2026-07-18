@@ -34,6 +34,9 @@ export class AdminCollectionsService {
     const take = Math.min(params.limit ?? 50, 100);
     const where: Record<string, unknown> = {
       deletedAt: null,
+      // System buckets (auto-created per brand to hold standalone products)
+      // are internal plumbing, not admin-manageable content.
+      isSystemGenerated: false,
     };
 
     if (params.search) {
@@ -184,9 +187,14 @@ export class AdminCollectionsService {
         title: true,
         ownerId: true,
         status: true,
+        isSystemGenerated: true,
       },
     });
     if (!existing) throw new NotFoundException('Collection not found');
+    if (existing.isSystemGenerated) {
+      // Deleting/unpublishing the bucket would strand standalone products.
+      throw new NotFoundException('Collection not found');
+    }
 
     const action =
       dto.action ??
