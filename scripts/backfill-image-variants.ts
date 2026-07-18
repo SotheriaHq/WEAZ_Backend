@@ -58,7 +58,8 @@ async function main() {
       fileType: { notIn: EXCLUDED_FILE_TYPES },
       originalDeletedAt: null,
       s3Key: { not: '' },
-      processingStatus: { not: 'FAILED' },
+      // FAILED rows are retried too: variant-less FAILED files are usually
+      // infra casualties (e.g. bucket ACL rejection), not corrupt images.
       variants: { none: {} },
     },
     select: { id: true, fileType: true, mimeType: true },

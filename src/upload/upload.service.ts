@@ -1551,15 +1551,28 @@ export class UploadService {
     contentType: string;
     isPublic?: boolean;
   }): Promise<{ key: string; url: string }> {
-    const command = new PutObjectCommand({
-      Bucket: this.bucketName,
-      Key: params.key,
-      Body: params.body,
-      ContentType: params.contentType,
-      CacheControl: 'public, max-age=31536000, immutable',
-      ACL: params.isPublic ? 'public-read' : undefined,
-    } as any);
-    await this.s3.send(command);
+    const buildCommand = (withAcl: boolean) =>
+      new PutObjectCommand({
+        Bucket: this.bucketName,
+        Key: params.key,
+        Body: params.body,
+        ContentType: params.contentType,
+        CacheControl: 'public, max-age=31536000, immutable',
+        ...(withAcl && params.isPublic ? { ACL: 'public-read' } : {}),
+      } as any);
+    try {
+      await this.s3.send(buildCommand(true));
+    } catch (error: any) {
+      // Buckets with Object Ownership "bucket owner enforced" (modern S3
+      // default) reject any ACL. Public access there comes from bucket
+      // policy/CDN, so retry without the ACL instead of failing the upload.
+      const code = String(error?.name ?? error?.Code ?? '');
+      if (params.isPublic && code === 'AccessControlListNotSupported') {
+        await this.s3.send(buildCommand(false));
+      } else {
+        throw error;
+      }
+    }
     return {
       key: params.key,
       url: this.buildS3ObjectUrl(params.key),
