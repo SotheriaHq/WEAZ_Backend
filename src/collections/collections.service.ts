@@ -798,12 +798,34 @@ export class CollectionsService {
           }
         : null);
     if (!file) return null;
-    return this.buildFeedMediaAsset({
+    const asset = await this.buildFeedMediaAsset({
       id: file?.id,
       file,
       mediaType: file?.fileType,
       orderIndex: 0,
     });
+    if (!asset) return null;
+
+    // Feed cards render the avatar tiny; buildFeedMediaAsset picks the
+    // full-screen DETAIL/original URL. Prefer the 256px AVATAR variant — the
+    // profileImageFile is loaded without its variants relation, so resolve by
+    // file id. Falls back to the asset URL while variants are still missing.
+    const fileId =
+      typeof file?.id === 'string' && file.id.trim() ? file.id : null;
+    if (
+      fileId &&
+      typeof this.uploadService.getBatchVariantDisplayUrls === 'function'
+    ) {
+      const avatarUrls = await this.uploadService.getBatchVariantDisplayUrls(
+        [fileId],
+        'AVATAR',
+      );
+      const avatarUrl = avatarUrls.get(fileId);
+      if (avatarUrl) {
+        return { ...asset, displayUrl: avatarUrl };
+      }
+    }
+    return asset;
   }
 
   private async assertCategoryTypeMatchesCategory(
