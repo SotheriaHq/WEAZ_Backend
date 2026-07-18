@@ -34,6 +34,9 @@ export interface MarketSectionMediaDto {
   fileId?: string | null;
   type: 'IMAGE' | 'VIDEO' | 'UNKNOWN';
   alt: string | null;
+  width?: number | null;
+  height?: number | null;
+  aspectRatio?: number | null;
 }
 
 export interface MarketSectionBrandDto {

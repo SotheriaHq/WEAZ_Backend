@@ -52,6 +52,11 @@ type SectionConfig = {
   newBrandReservedRatio: number;
 };
 
+type MediaDimensions = {
+  width?: number | null;
+  height?: number | null;
+};
+
 const SECTION_PRESENTATION: Partial<Record<
   string,
   {
@@ -139,6 +144,18 @@ export class MarketSectionService {
     @Optional()
     private readonly uploadService?: UploadService,
   ) {}
+
+  private normalizedDimension(value: unknown): number | null {
+    return typeof value === 'number' && Number.isFinite(value) && value > 0
+      ? value
+      : null;
+  }
+
+  private resolveMediaAspectRatio(file?: MediaDimensions | null): number | null {
+    const width = this.normalizedDimension(file?.width);
+    const height = this.normalizedDimension(file?.height);
+    return width && height ? width / height : null;
+  }
 
   /**
    * Rail tiles are ~300px: serve the processed CARD variant (WEBP preferred —
@@ -1118,14 +1135,19 @@ export class MarketSectionService {
     );
     const fileIdByUrl = new Map<string, string>();
     const s3KeyByUrl = new Map<string, string>();
+    const dimensionsByUrl = new Map<string, MediaDimensions>();
     if (imageUrls.length > 0) {
       const uploads = await this.prisma.fileUpload.findMany({
         where: { s3Url: { in: imageUrls } },
-        select: { id: true, s3Url: true, s3Key: true },
+        select: { id: true, s3Url: true, s3Key: true, width: true, height: true },
       });
       for (const upload of uploads) {
         if (upload.s3Url) {
           fileIdByUrl.set(upload.s3Url, upload.id);
+          dimensionsByUrl.set(upload.s3Url, {
+            width: this.normalizedDimension(upload.width),
+            height: this.normalizedDimension(upload.height),
+          });
           if (upload.s3Key) s3KeyByUrl.set(upload.s3Url, upload.s3Key);
         }
       }
@@ -1133,7 +1155,7 @@ export class MarketSectionService {
     const items = (
       await Promise.all(
         page.map(async (product) => {
-          const mapped = this.mapProductItem(product, fileIdByUrl);
+          const mapped = this.mapProductItem(product, fileIdByUrl, dimensionsByUrl);
           if (!mapped?.media) return mapped;
           const raw = mapped.media.url ?? mapped.media.thumbnailUrl;
           const fileId = mapped.media.fileId ?? null;
@@ -1381,14 +1403,19 @@ export class MarketSectionService {
     );
     const fileIdByUrl = new Map<string, string>();
     const s3KeyByUrl = new Map<string, string>();
+    const dimensionsByUrl = new Map<string, MediaDimensions>();
     if (brandMediaUrls.length > 0) {
       const uploads = await this.prisma.fileUpload.findMany({
         where: { s3Url: { in: brandMediaUrls } },
-        select: { id: true, s3Url: true, s3Key: true },
+        select: { id: true, s3Url: true, s3Key: true, width: true, height: true },
       });
       for (const upload of uploads) {
         if (upload.s3Url) {
           fileIdByUrl.set(upload.s3Url, upload.id);
+          dimensionsByUrl.set(upload.s3Url, {
+            width: this.normalizedDimension(upload.width),
+            height: this.normalizedDimension(upload.height),
+          });
           if (upload.s3Key) s3KeyByUrl.set(upload.s3Url, upload.s3Key);
         }
       }
@@ -1396,7 +1423,7 @@ export class MarketSectionService {
     const items = (
       await Promise.all(
         page.map(async (brand) => {
-          const mapped = this.mapBrandItem(brand, fileIdByUrl);
+          const mapped = this.mapBrandItem(brand, fileIdByUrl, dimensionsByUrl);
           if (!mapped?.media) return mapped;
           const raw = mapped.media.url ?? mapped.media.thumbnailUrl;
           const signed = await this.resolveDisplayMediaUrl(
@@ -1476,6 +1503,8 @@ export class MarketSectionService {
                   id: true,
                   s3Url: true,
                   fileType: true,
+                  width: true,
+                  height: true,
                 },
               },
             },
@@ -1489,6 +1518,8 @@ export class MarketSectionService {
                   id: true,
                   s3Url: true,
                   fileType: true,
+                  width: true,
+                  height: true,
                 },
               },
             },
@@ -1513,6 +1544,8 @@ export class MarketSectionService {
     const media = this.cleanString(coverFile?.s3Url);
     if (!media) return null;
     const mediaFileId = this.cleanString(coverFile?.id);
+    const width = this.normalizedDimension(coverFile?.width);
+    const height = this.normalizedDimension(coverFile?.height);
     const min =
       this.isSaleActive(design) && typeof design.saleMinPrice === 'number'
         ? design.saleMinPrice
@@ -1548,6 +1581,9 @@ export class MarketSectionService {
           ? 'VIDEO'
           : 'IMAGE',
         alt: design.title ?? 'Design',
+        width,
+        height,
+        aspectRatio: this.resolveMediaAspectRatio(coverFile),
       },
       price: null,
       priceRange: {
@@ -1588,6 +1624,7 @@ export class MarketSectionService {
   private mapProductItem(
     product: any,
     fileIdByUrl?: Map<string, string>,
+    dimensionsByUrl?: Map<string, MediaDimensions>,
   ): MarketSectionItemDto | null {
     const image = this.firstProductImage(product);
     if (!image) return null;
@@ -1597,6 +1634,9 @@ export class MarketSectionService {
       : null;
     const effectiveAmount = saleAmount ?? price;
     const mediaFileId = fileIdByUrl?.get(image) ?? null;
+    const dimensions = dimensionsByUrl?.get(image) ?? null;
+    const width = this.normalizedDimension(dimensions?.width);
+    const height = this.normalizedDimension(dimensions?.height);
 
     return {
       id: product.id,
@@ -1619,6 +1659,9 @@ export class MarketSectionService {
         thumbnailUrl: this.cleanString(product.thumbnail) ?? image,
         type: 'IMAGE',
         alt: product.name,
+        width,
+        height,
+        aspectRatio: this.resolveMediaAspectRatio(dimensions),
       },
       price: {
         amount: price,
@@ -1744,6 +1787,7 @@ export class MarketSectionService {
   private mapBrandItem(
     brand: any,
     fileIdByUrl?: Map<string, string>,
+    dimensionsByUrl?: Map<string, MediaDimensions>,
   ): MarketSectionItemDto | null {
     const representativeProduct = brand.products?.[0] ?? null;
     const productImage = representativeProduct
@@ -1753,6 +1797,9 @@ export class MarketSectionService {
     const mediaUrl = productImage ?? logo;
     if (!mediaUrl) return null;
     const mediaFileId = fileIdByUrl?.get(mediaUrl) ?? null;
+    const dimensions = dimensionsByUrl?.get(mediaUrl) ?? null;
+    const width = this.normalizedDimension(dimensions?.width);
+    const height = this.normalizedDimension(dimensions?.height);
 
     return {
       id: brand.id,
@@ -1775,6 +1822,9 @@ export class MarketSectionService {
         fileId: mediaFileId,
         type: 'IMAGE',
         alt: brand.name,
+        width,
+        height,
+        aspectRatio: this.resolveMediaAspectRatio(dimensions),
       },
       price: null,
       priceRange: null,

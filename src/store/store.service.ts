@@ -608,6 +608,21 @@ export class StoreService {
     return raw || null;
   }
 
+  private normalizedMediaDimension(value: unknown): number | null {
+    return typeof value === 'number' && Number.isFinite(value) && value > 0
+      ? value
+      : null;
+  }
+
+  private resolveMediaAspectRatio(file?: {
+    width?: number | null;
+    height?: number | null;
+  } | null): number | null {
+    const width = this.normalizedMediaDimension(file?.width);
+    const height = this.normalizedMediaDimension(file?.height);
+    return width && height ? width / height : null;
+  }
+
   /**
    * Prefer processed CARD variants (WEBP → AVIF → JPEG) for list/card UIs so
    * clients do not download full DETAIL/ZOOM originals into ~300px tiles.
@@ -702,6 +717,8 @@ export class StoreService {
             const fileId = entry.fileUploadId || entry.file?.id;
             const cardUrl =
               typeof fileId === 'string' ? cardUrls.get(fileId) : undefined;
+            const width = this.normalizedMediaDimension(entry.file?.width);
+            const height = this.normalizedMediaDimension(entry.file?.height);
             return {
               id: entry.id,
               fileUploadId: entry.fileUploadId,
@@ -715,6 +732,9 @@ export class StoreService {
                   : 'image',
               viewSlot: entry.viewSlot,
               reviewStatus: entry.reviewStatus,
+              width,
+              height,
+              aspectRatio: this.resolveMediaAspectRatio(entry.file),
               isPrimary:
                 (!!product?.thumbnail &&
                   entry.file.s3Url === product.thumbnail) ||
@@ -745,6 +765,8 @@ export class StoreService {
         s3Key: true,
         isPublic: true,
         mimeType: true,
+        width: true,
+        height: true,
       },
     });
 
@@ -760,12 +782,16 @@ export class StoreService {
         const cardUrl = upload?.id ? cardUrls.get(upload.id) : undefined;
         return {
           id: upload?.id ?? url,
+          fileUploadId: upload?.id ?? null,
           url: upload
             ? (cardUrl ??
               (await this.resolveProductDisplayUrl(upload)) ??
               url)
             : url,
           type: 'image',
+          width: this.normalizedMediaDimension(upload?.width),
+          height: this.normalizedMediaDimension(upload?.height),
+          aspectRatio: this.resolveMediaAspectRatio(upload),
           isPrimary: !!product?.thumbnail && url === product.thumbnail,
         };
       }),
@@ -5399,12 +5425,19 @@ export class StoreService {
 
     const uploadByUrl = new Map<
       string,
-      { id: string; s3Url: string; s3Key: string | null; isPublic: boolean }
+      {
+        id: string;
+        s3Url: string;
+        s3Key: string | null;
+        isPublic: boolean;
+        width: number | null;
+        height: number | null;
+      }
     >();
     if (urls.length > 0) {
       const uploads = await this.prisma.fileUpload.findMany({
         where: { s3Url: { in: urls } },
-        select: { id: true, s3Url: true, s3Key: true, isPublic: true },
+        select: { id: true, s3Url: true, s3Key: true, isPublic: true, width: true, height: true },
       });
       for (const u of uploads) uploadByUrl.set(u.s3Url, u);
     }
@@ -5439,12 +5472,19 @@ export class StoreService {
           mediaIds: [],
         };
       }
-      const media = images.map((url: string) => ({
-        id: uploadByUrl.get(url)?.id ?? url,
-        url: displayUrlByRawUrl.get(url) ?? url,
-        type: 'image',
-        isPrimary: !!base.thumbnail && url === base.thumbnail,
-      }));
+      const media = images.map((url: string) => {
+        const upload = uploadByUrl.get(url);
+        return {
+          id: upload?.id ?? url,
+          fileUploadId: upload?.id ?? null,
+          url: displayUrlByRawUrl.get(url) ?? url,
+          type: 'image',
+          width: this.normalizedMediaDimension(upload?.width),
+          height: this.normalizedMediaDimension(upload?.height),
+          aspectRatio: this.resolveMediaAspectRatio(upload),
+          isPrimary: !!base.thumbnail && url === base.thumbnail,
+        };
+      });
       return {
         ...base,
         ...filterPayload,
@@ -5699,12 +5739,19 @@ export class StoreService {
 
     const uploadByUrl = new Map<
       string,
-      { id: string; s3Url: string; s3Key: string | null; isPublic: boolean }
+      {
+        id: string;
+        s3Url: string;
+        s3Key: string | null;
+        isPublic: boolean;
+        width: number | null;
+        height: number | null;
+      }
     >();
     if (urls.length > 0) {
       const uploads = await this.prisma.fileUpload.findMany({
         where: { s3Url: { in: urls } },
-        select: { id: true, s3Url: true, s3Key: true, isPublic: true },
+        select: { id: true, s3Url: true, s3Key: true, isPublic: true, width: true, height: true },
       });
       for (const u of uploads) uploadByUrl.set(u.s3Url, u);
     }
@@ -5739,12 +5786,19 @@ export class StoreService {
           mediaIds: [],
         };
       }
-      const media = images.map((url: string) => ({
-        id: uploadByUrl.get(url)?.id ?? url,
-        url: displayUrlByRawUrl.get(url) ?? url,
-        type: 'image',
-        isPrimary: !!base.thumbnail && url === base.thumbnail,
-      }));
+      const media = images.map((url: string) => {
+        const upload = uploadByUrl.get(url);
+        return {
+          id: upload?.id ?? url,
+          fileUploadId: upload?.id ?? null,
+          url: displayUrlByRawUrl.get(url) ?? url,
+          type: 'image',
+          width: this.normalizedMediaDimension(upload?.width),
+          height: this.normalizedMediaDimension(upload?.height),
+          aspectRatio: this.resolveMediaAspectRatio(upload),
+          isPrimary: !!base.thumbnail && url === base.thumbnail,
+        };
+      });
       return {
         ...base,
         ...filterPayload,

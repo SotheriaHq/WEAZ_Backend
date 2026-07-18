@@ -49,6 +49,9 @@ const HEIC_FTYP_BRANDS = new Set([
   'mif1',
   'msf1',
 ]);
+const AVIF_ENCODER_EFFORT = 6;
+const WEBP_ENCODER_EFFORT = 5;
+const PNG_ENCODER_EFFORT = 9;
 
 @Injectable()
 export class MediaProcessingService {
@@ -216,7 +219,7 @@ export class MediaProcessingService {
 
       if (outputFormat === 'AVIF') {
         const out = await resized
-          .avif({ quality })
+          .avif({ quality, effort: AVIF_ENCODER_EFFORT })
           .toBuffer({ resolveWithObject: true });
         variants.push({
           kind: profile.kind,
@@ -229,7 +232,11 @@ export class MediaProcessingService {
           mimeType: 'image/avif',
         });
         const webp = await resized
-          .webp({ quality: Math.max(68, quality - 4) })
+          .webp({
+            quality: Math.max(68, quality - 4),
+            effort: WEBP_ENCODER_EFFORT,
+            smartSubsample: true,
+          })
           .toBuffer({ resolveWithObject: true });
         variants.push({
           kind: profile.kind,
@@ -246,7 +253,11 @@ export class MediaProcessingService {
 
       if (outputFormat === 'PNG') {
         const png = await resized
-          .png({ compressionLevel: 9 })
+          .png({
+            compressionLevel: 9,
+            adaptiveFiltering: true,
+            effort: PNG_ENCODER_EFFORT,
+          })
           .toBuffer({ resolveWithObject: true });
         variants.push({
           kind: profile.kind,
@@ -259,7 +270,11 @@ export class MediaProcessingService {
           mimeType: 'image/png',
         });
         const webp = await resized
-          .webp({ quality: Math.max(80, quality) })
+          .webp({
+            quality: Math.max(80, quality),
+            effort: WEBP_ENCODER_EFFORT,
+            smartSubsample: true,
+          })
           .toBuffer({ resolveWithObject: true });
         variants.push({
           kind: profile.kind,
@@ -275,7 +290,11 @@ export class MediaProcessingService {
       }
 
       const webp = await resized
-        .webp({ quality })
+        .webp({
+          quality,
+          effort: WEBP_ENCODER_EFFORT,
+          smartSubsample: true,
+        })
         .toBuffer({ resolveWithObject: true });
       variants.push({
         kind: profile.kind,
