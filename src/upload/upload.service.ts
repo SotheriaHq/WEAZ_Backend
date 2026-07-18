@@ -1076,6 +1076,63 @@ export class UploadService {
     return urlMap;
   }
 
+  /**
+   * Batch-resolve a processed variant (e.g. AVATAR for brand logos on feed
+   * cards) so public surfaces stop serving multi-hundred-KB originals. WEBP
+   * outranks AVIF: these are single-URL payloads rendered as plain <img>, and
+   * AVIF breaks on iOS Safari < 16.4. Returns URLs only for files that already
+   * have the variant — callers keep the original display URL as fallback, so
+   * access checks stay with the original-file batch.
+   */
+  async getBatchVariantDisplayUrls(
+    fileIds: string[],
+    variantKind: string,
+  ): Promise<Map<string, string>> {
+    if (!fileIds || fileIds.length === 0) {
+      return new Map<string, string>();
+    }
+
+    const rows = await (this.prisma as any).fileVariant.findMany({
+      where: { fileUploadId: { in: fileIds }, variantKind },
+      select: { fileUploadId: true, s3Key: true, s3Url: true, format: true },
+    });
+
+    const formatRank = (format: unknown): number => {
+      const value = String(format ?? '').toUpperCase();
+      if (value === 'WEBP') return 0;
+      if (value === 'AVIF') return 1;
+      return 2;
+    };
+
+    const bestByFile = new Map<string, any>();
+    for (const row of rows ?? []) {
+      const id = typeof row?.fileUploadId === 'string' ? row.fileUploadId : '';
+      if (!id) continue;
+      const current = bestByFile.get(id);
+      if (!current || formatRank(row.format) < formatRank(current.format)) {
+        bestByFile.set(id, row);
+      }
+    }
+
+    const urlMap = new Map<string, string>();
+    for (const [id, row] of bestByFile) {
+      const key = typeof row?.s3Key === 'string' ? row.s3Key.trim() : '';
+      if (!key) continue;
+      const url =
+        this.getPublicDisplayUrl({
+          s3Key: key,
+          s3Url: row?.s3Url ?? null,
+          isPublic: true,
+        }) ??
+        (await this.getTemporarySignedDisplayUrl({ id, s3Key: key }, 3600));
+      if (url) {
+        urlMap.set(id, url);
+      }
+    }
+
+    return urlMap;
+  }
+
   async deleteFile(fileId: string, userId: string): Promise<void> {
     const file = await this.prisma.fileUpload.findFirst({
       where: { id: fileId, userId },

@@ -6409,6 +6409,7 @@ export class CollectionsService {
 
     // Collect file IDs for batch signing
     const fileIds = new Set<string>();
+    const logoFileIds = new Set<string>();
     data.forEach((c) => {
       // Cover image (prefer coverMediaId)
       const preferredCover = c.coverMediaId
@@ -6419,16 +6420,25 @@ export class CollectionsService {
       }
       // Brand logo
       const owner = this.mapCollectionOwner(c.owner);
-      if (owner?.profileImageFile?.id) {
-        fileIds.add(owner.profileImageFile.id);
-      } else if (owner?.profileImageId) {
-        fileIds.add(owner.profileImageId);
+      const logoFileId = owner?.profileImageFile?.id ?? owner?.profileImageId;
+      if (logoFileId) {
+        fileIds.add(logoFileId);
+        logoFileIds.add(logoFileId);
       }
     });
 
     const signedUrlMap = await this.uploadService.getBatchPublicSignedUrls(
       Array.from(fileIds),
     );
+    // Card avatars render tiny: prefer the 256px AVATAR variant over the
+    // original upload; the signed original stays as fallback.
+    const avatarUrlMap =
+      typeof this.uploadService.getBatchVariantDisplayUrls === 'function'
+        ? await this.uploadService.getBatchVariantDisplayUrls(
+            Array.from(logoFileIds),
+            'AVATAR',
+          )
+        : new Map<string, string>();
 
     return {
       items: data.map((c) => {
@@ -6448,13 +6458,14 @@ export class CollectionsService {
         let ownerWithSignedUrl = owner;
         const logoId = owner?.profileImageFile?.id || owner?.profileImageId;
         if (logoId && signedUrlMap.has(logoId)) {
+          const logoUrl = avatarUrlMap.get(logoId) ?? signedUrlMap.get(logoId)!;
           ownerWithSignedUrl = {
             ...owner,
-            profileImage: signedUrlMap.get(logoId)!, // Update profileImage string too
+            profileImage: logoUrl, // Update profileImage string too
             profileImageFile: owner.profileImageFile
               ? {
                   ...owner.profileImageFile,
-                  s3Url: signedUrlMap.get(logoId)!,
+                  s3Url: logoUrl,
                 }
               : null,
           };
@@ -6749,12 +6760,14 @@ export class CollectionsService {
     >();
 
     const fileIds = new Set<string>();
+    const logoFileIds = new Set<string>();
     data.forEach((c: any) => {
       const owner = this.mapCollectionOwner(c.owner);
-      if (owner?.profileImageFile?.id) {
-        fileIds.add(owner.profileImageFile.id);
-      } else if (owner?.profileImageId) {
-        fileIds.add(owner.profileImageId);
+      const ownerLogoFileId =
+        owner?.profileImageFile?.id ?? owner?.profileImageId;
+      if (ownerLogoFileId) {
+        fileIds.add(ownerLogoFileId);
+        logoFileIds.add(ownerLogoFileId);
       }
 
       const links = Array.isArray(c.products) ? c.products : [];
@@ -6835,6 +6848,15 @@ export class CollectionsService {
     const signedUrlMap = await this.uploadService.getBatchPublicSignedUrls(
       Array.from(fileIds),
     );
+    // Card avatars render tiny: prefer the 256px AVATAR variant over the
+    // original upload; the signed original stays as fallback.
+    const avatarUrlMap =
+      typeof this.uploadService.getBatchVariantDisplayUrls === 'function'
+        ? await this.uploadService.getBatchVariantDisplayUrls(
+            Array.from(logoFileIds),
+            'AVATAR',
+          )
+        : new Map<string, string>();
 
     return {
       items: data.map((c: any) => {
@@ -6870,11 +6892,12 @@ export class CollectionsService {
           );
         let owner = logoOwner;
         if (logoId && signedUrlMap.has(logoId)) {
+          const logoUrl = avatarUrlMap.get(logoId) ?? signedUrlMap.get(logoId)!;
           owner = {
             ...owner,
-            profileImage: signedUrlMap.get(logoId)!,
+            profileImage: logoUrl,
             profileImageFile: owner.profileImageFile
-              ? { ...owner.profileImageFile, s3Url: signedUrlMap.get(logoId)! }
+              ? { ...owner.profileImageFile, s3Url: logoUrl }
               : null,
           };
         }
