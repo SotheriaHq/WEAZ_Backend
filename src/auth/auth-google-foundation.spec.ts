@@ -1,4 +1,8 @@
-import { BadRequestException, UnauthorizedException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  UnauthorizedException,
+} from '@nestjs/common';
 import {
   AuthProvider,
   EmailPriority,
@@ -258,6 +262,53 @@ describe('AuthService Google auth foundation', () => {
       },
     });
     expect(mockPrisma.user.create).not.toHaveBeenCalled();
+  });
+
+  it('blocks a Google SIGNUP when the email already has a linked Google account', async () => {
+    mockPrisma.authIdentity.findUnique.mockResolvedValue({
+      id: 'identity-1',
+      email: 'ada@example.com',
+      emailVerified: true,
+      user: baseAuthUser,
+    });
+
+    await expect(
+      service.googleAuth(
+        {
+          idToken: 'id-token',
+          intent: 'SIGNUP',
+          type: UserType.REGULAR,
+          legalAcceptances: [],
+        },
+        { headers: {}, get: jest.fn(), protocol: 'https' } as any,
+        {} as any,
+      ),
+    ).rejects.toBeInstanceOf(ConflictException);
+
+    expect(mockPrisma.user.create).not.toHaveBeenCalled();
+    expect(mockTokenService.generateTokens).not.toHaveBeenCalled();
+  });
+
+  it('blocks a Google SIGNUP when the email already has a password account (no silent link/login)', async () => {
+    mockPrisma.authIdentity.findUnique.mockResolvedValue(null);
+    mockPrisma.user.findUnique.mockResolvedValue(baseAuthUser);
+
+    await expect(
+      service.googleAuth(
+        {
+          idToken: 'id-token',
+          intent: 'SIGNUP',
+          type: UserType.REGULAR,
+          legalAcceptances: [],
+        },
+        { headers: {}, get: jest.fn(), protocol: 'https' } as any,
+        {} as any,
+      ),
+    ).rejects.toBeInstanceOf(ConflictException);
+
+    expect(mockPrisma.authIdentity.create).not.toHaveBeenCalled();
+    expect(mockPrisma.user.create).not.toHaveBeenCalled();
+    expect(mockTokenService.generateTokens).not.toHaveBeenCalled();
   });
 
   it('does not duplicate or bypass suspended matching accounts', async () => {

@@ -506,7 +506,11 @@ export class AuthService {
         });
 
       if (existingUser) {
-        throw new BadRequestException('Email Already Exist');
+        throw new ConflictException({
+          code: 'EMAIL_ALREADY_EXISTS',
+          message:
+            'Email already exists. Log in with the same email to access your WIEZ.',
+        });
       }
 
       signupDto.firstName = signupDto.firstName?.trim();
@@ -792,9 +796,16 @@ export class AuthService {
     } catch (error) {
       this.logger.error('Signup error:', error.message, error.stack);
       if (error.code === 'P2002') {
-        throw new BadRequestException('Email or CAC number already exists');
+        // Unique-constraint race (email/CAC created between our pre-check and
+        // insert). Surface the same standard email-exists contract.
+        throw new ConflictException({
+          code: 'EMAIL_ALREADY_EXISTS',
+          message:
+            'Email already exists. Log in with the same email to access your WIEZ.',
+        });
       }
-      if (error instanceof BadRequestException) {
+      // Preserve any intentional HTTP error (Conflict/BadRequest/…) as-is.
+      if (error instanceof HttpException) {
         throw error;
       }
 
@@ -934,6 +945,18 @@ export class AuthService {
         });
 
         if (existingIdentity) {
+          // A signup attempt against an email/identity that already has a WIEZ
+          // account must never silently link + log into it. Block it with the
+          // standard "already exists" error so the user is sent to log in
+          // instead (this also stops a suspended account re-registering).
+          if (intent === 'SIGNUP') {
+            throw new ConflictException({
+              code: 'EMAIL_ALREADY_EXISTS',
+              message:
+                'Email already exists. Log in with the same email to access your WIEZ.',
+            });
+          }
+
           if (existingIdentity.user.status !== UserStatus.ACTIVE) {
             throw new UnauthorizedException(
               'User account is suspended or deactivated',
@@ -964,6 +987,19 @@ export class AuthService {
         });
 
         if (existingUser) {
+          // Same rule for a password-only account that shares this verified
+          // Google email: a SIGNUP must be refused (email already taken), while
+          // an explicit LOGIN is allowed to link Google to it (below). This is
+          // the safe direction — the Google email is verified, so linking on
+          // login proves the same person; only silent signup is the hole.
+          if (intent === 'SIGNUP') {
+            throw new ConflictException({
+              code: 'EMAIL_ALREADY_EXISTS',
+              message:
+                'Email already exists. Log in with the same email to access your WIEZ.',
+            });
+          }
+
           if (existingUser.status !== UserStatus.ACTIVE) {
             throw new UnauthorizedException(
               'User account is suspended or deactivated',
