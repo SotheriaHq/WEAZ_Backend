@@ -667,7 +667,7 @@ export class AuthController {
     const refreshToken = req.cookies[this.refreshTokenCookieName];
     const result = await this.authService.deleteOwnAccount(
       req.user.id,
-      body.confirmationWord,
+      body.email,
       body.currentPassword,
       refreshToken,
     );

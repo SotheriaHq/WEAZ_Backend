@@ -1,8 +1,8 @@
-import { IsString, MinLength } from 'class-validator';
+import { IsEmail, IsString, MinLength } from 'class-validator';
 
 export class DeleteAccountDto {
-  @IsString()
-  confirmationWord: string;
+  @IsEmail()
+  email: string;
 
   @IsString()
   @MinLength(8)

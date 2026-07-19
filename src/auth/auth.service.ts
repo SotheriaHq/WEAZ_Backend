@@ -2574,14 +2574,10 @@ export class AuthService {
 
   async deleteOwnAccount(
     userId: string,
-    confirmationWord: string,
+    confirmationEmail: string,
     currentPassword: string,
     currentRawRefreshToken?: string | null,
   ) {
-    if (String(confirmationWord).trim().toUpperCase() !== 'DELETE') {
-      throw new BadRequestException('Type DELETE to confirm account deletion');
-    }
-
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
       select: {
@@ -2590,10 +2586,35 @@ export class AuthService {
         username: true,
         password: true,
         passwordCredentialStatus: true,
+        role: true,
       },
     });
     if (!user) {
       throw new UnauthorizedException('User not found');
+    }
+
+    // Admin operator accounts are governed through the admin console lifecycle
+    // (deactivate → permanent delete by a SuperAdmin), never self-serve.
+    if (user.role === Role.Admin || user.role === Role.SuperAdmin) {
+      throw new ForbiddenException(
+        'Admin accounts cannot be deleted from account settings.',
+      );
+    }
+
+    // The confirmation email is compared against the AUTHENTICATED user's own
+    // email only — never used to look up another account. A mismatch reveals
+    // nothing about any other user, and the JWT subject is the only account
+    // this call can ever act on.
+    const normalizedConfirmationEmail = String(confirmationEmail ?? '')
+      .trim()
+      .toLowerCase();
+    if (
+      !normalizedConfirmationEmail ||
+      normalizedConfirmationEmail !== user.email.trim().toLowerCase()
+    ) {
+      throw new BadRequestException(
+        'The email you entered does not match this account.',
+      );
     }
 
     if (!this.hasLocalPassword(user)) {
