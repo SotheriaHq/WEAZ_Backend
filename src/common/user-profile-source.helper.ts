@@ -32,6 +32,8 @@ export const canonicalUserProfileSelect =
       select: canonicalUserProfileFileSelect,
     },
     profileVisibility: true,
+    showUsername: true,
+    showLocation: true,
   });
 
 export type CanonicalUserProfile = Prisma.UserProfileGetPayload<{
@@ -56,6 +58,8 @@ export type UserProfileSource = {
   bannerImageId?: string | null;
   bannerImageFile?: SelectedProfileFile;
   profileVisibility?: ProfileVisibility | null;
+  showUsername?: boolean | null;
+  showLocation?: boolean | null;
   userProfile?: CanonicalUserProfile | null;
 };
 
@@ -159,4 +163,16 @@ export function resolveProfileVisibility(
   user: UserProfileSource,
 ): ProfileVisibility {
   return user.userProfile?.profileVisibility ?? ProfileVisibility.UNLOCKED;
+}
+
+/**
+ * Public-display privacy toggles. Missing profile rows resolve to the
+ * schema defaults (visible), so pre-migration data keeps current behavior.
+ */
+export function resolveShowUsername(user: UserProfileSource): boolean {
+  return user.userProfile?.showUsername ?? true;
+}
+
+export function resolveShowLocation(user: UserProfileSource): boolean {
+  return user.userProfile?.showLocation ?? true;
 }

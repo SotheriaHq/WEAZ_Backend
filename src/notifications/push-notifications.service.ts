@@ -25,7 +25,7 @@ import { getPushCollapseId, getPushPresentation } from './push-presentation';
 
 const INVALID_EXPO_TOKEN_DISABLED_REASON = 'INVALID_EXPO_TOKEN';
 const DEVICE_NOT_REGISTERED_DISABLED_REASON = 'DEVICE_NOT_REGISTERED';
-const GENERIC_PUSH_BODY = 'You have a new notification.';
+const GENERIC_PUSH_BODY = 'Something new for you on WIEZ 👀';
 
 const MESSAGE_NOTIFICATION_TYPES = new Set<NotificationType>([
   NotificationType.MESSAGE_RECEIVED,
@@ -61,7 +61,7 @@ type ExpoClientLike = {
 };
 
 type ExpoStaticLike = {
-  new (): ExpoClientLike;
+  new (options?: { accessToken?: string }): ExpoClientLike;
   isExpoPushToken(token: unknown): boolean;
 };
 
@@ -1180,7 +1180,11 @@ export class PushNotificationsService {
   }
 
   protected createExpoClient(ExpoClient: ExpoStaticLike): ExpoClientLike {
-    return new ExpoClient();
+    // Expo "Enhanced push security": when enabled on the EAS project, every
+    // push API call must carry the account access token. Optional otherwise —
+    // without the env the client still works against unlocked projects.
+    const accessToken = process.env.EXPO_ACCESS_TOKEN?.trim();
+    return accessToken ? new ExpoClient({ accessToken }) : new ExpoClient();
   }
 
   protected async getExpoModule(): Promise<ExpoModuleLike> {

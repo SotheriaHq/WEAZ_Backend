@@ -170,7 +170,7 @@ describe('PushNotificationsService', () => {
       expect.objectContaining({
         to: 'ExponentPushToken[abcdef1234567890]',
         title: 'WIEZ',
-        body: 'You have a new notification.',
+        body: 'Something new for you on WIEZ 👀',
         sound: 'default',
         data: expect.objectContaining({
           notificationId: notification.id,

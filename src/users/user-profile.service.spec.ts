@@ -1,4 +1,8 @@
-import { BadRequestException, UnauthorizedException } from '@nestjs/common';
+import {
+  BadRequestException,
+  NotFoundException,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { ProfileVisibility, UserType } from '@prisma/client';
 
 import { UserProfileService } from './user-profile.service';
@@ -312,6 +316,102 @@ describe('UserProfileService theme preferences', () => {
     expect(publicResult.phoneNumber).toBeUndefined();
     expect(publicResult.email).toBeUndefined();
     expect(publicResult.themePreference).toBeUndefined();
+  });
+
+  const hiddenUsernameUser = {
+    id: 'user-3',
+    username: 'ghost',
+    type: UserType.REGULAR,
+    themePreference: 'system',
+    createdAt: new Date('2026-07-01T00:00:00.000Z'),
+    userProfile: {
+      firstName: 'Gia',
+      lastName: 'Nwosu',
+      phoneNumber: null,
+      address: null,
+      profileImage: null,
+      profileImageId: null,
+      profileImageFile: null,
+      bannerImage: null,
+      bannerImageId: null,
+      bannerImageFile: null,
+      profileVisibility: ProfileVisibility.UNLOCKED,
+      showUsername: false,
+      showLocation: true,
+    },
+  };
+
+  it('omits a hidden username from the public profile for other viewers but keeps it for the owner', async () => {
+    (mockPrisma.user.findUnique as jest.Mock).mockResolvedValue(
+      hiddenUsernameUser,
+    );
+
+    const strangerView = (await service.getPublicProfile(
+      'user-3',
+      'someone-else',
+    )) as unknown as Record<string, unknown>;
+    expect(strangerView.username).toBeUndefined();
+    expect(strangerView.firstName).toBe('Gia');
+
+    const anonymousView = (await service.getPublicProfile(
+      'user-3',
+    )) as unknown as Record<string, unknown>;
+    expect(anonymousView.username).toBeUndefined();
+
+    const ownerView = (await service.getPublicProfile(
+      'user-3',
+      'user-3',
+    )) as unknown as Record<string, unknown>;
+    expect(ownerView.username).toBe('ghost');
+  });
+
+  it('refuses to resolve a hidden username for non-owner viewers (no association leak)', async () => {
+    (mockPrisma.user.findUnique as jest.Mock).mockResolvedValue(
+      hiddenUsernameUser,
+    );
+
+    await expect(
+      service.resolvePublicProfileByUsername('ghost', 'someone-else'),
+    ).rejects.toBeInstanceOf(NotFoundException);
+    await expect(
+      service.resolvePublicProfileByUsername('ghost'),
+    ).rejects.toBeInstanceOf(NotFoundException);
+
+    const ownerResult = (await service.resolvePublicProfileByUsername(
+      'ghost',
+      'user-3',
+    )) as unknown as Record<string, unknown>;
+    expect(ownerResult.username).toBe('ghost');
+  });
+
+  it('persists privacy toggles only for the authenticated user and rejects empty patches', async () => {
+    (mockPrisma.user.findUnique as jest.Mock).mockResolvedValue({
+      id: 'user-1',
+      userProfile: { firstName: 'Alex', lastName: 'Doe' },
+    });
+    (mockPrisma.userProfile.upsert as jest.Mock).mockResolvedValue({
+      showUsername: false,
+      showLocation: true,
+    });
+
+    const result = await service.updateProfilePrivacy('user-1', {
+      showUsername: false,
+    });
+
+    expect(result).toEqual({ showUsername: false, showLocation: true });
+    expect(mockPrisma.userProfile.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { userId: 'user-1' },
+        update: { showUsername: false },
+      }),
+    );
+
+    await expect(
+      service.updateProfilePrivacy('user-1', {}),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    await expect(
+      service.updateProfilePrivacy('', { showUsername: true }),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
   });
 
   it.each(['light', 'dark', 'system'] as const)(

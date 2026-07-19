@@ -1,4 +1,11 @@
-import { IsEnum, IsIn, IsOptional, IsString, IsUUID } from 'class-validator';
+import {
+  IsBoolean,
+  IsEnum,
+  IsIn,
+  IsOptional,
+  IsString,
+  IsUUID,
+} from 'class-validator';
 import { ProfileVisibility, UserType } from '@prisma/client';
 import {
   THEME_PREFERENCES,
@@ -67,6 +74,14 @@ export class UserProfileResponseDto {
   @IsEnum(ProfileVisibility)
   profileVisibility: ProfileVisibility;
 
+  @IsBoolean()
+  @IsOptional()
+  showUsername?: boolean;
+
+  @IsBoolean()
+  @IsOptional()
+  showLocation?: boolean;
+
   @IsEnum(UserType)
   type: UserType;
 
@@ -91,8 +106,10 @@ export class PublicUserProfileResponseDto {
   @IsUUID()
   id: string;
 
+  // Omitted when the owner has hidden their username from public view.
   @IsString()
-  username: string;
+  @IsOptional()
+  username?: string;
 
   @IsString()
   firstName: string;

@@ -14,6 +14,7 @@ import {
 import { AuthGuard } from '@nestjs/passport';
 import { UserProfileService } from './user-profile.service';
 import { UpdateProfileVisibilityDto } from './dto/update-profile-visibility.dto';
+import { UpdateProfilePrivacyDto } from './dto/update-profile-privacy.dto';
 import { OptionalJwtAuthGuard } from '../auth/guard/optional-jwt-auth.guard';
 import { UpdateUserPreferencesDto } from './dto/update-user-preferences.dto';
 import { UpdateProfileDto } from '../auth/dto/update-profile.dto';
@@ -102,6 +103,18 @@ export class UserProfileController {
     return this.userProfileService.updateProfileVisibility(
       this.getAuthUserId(req),
       updateProfileVisibilityDto.profileVisibility,
+    );
+  }
+
+  @Patch('me/profile-privacy')
+  @UseGuards(AuthGuard('jwt'))
+  async updateProfilePrivacy(
+    @Req() req,
+    @Body(ValidationPipe) updateProfilePrivacyDto: UpdateProfilePrivacyDto,
+  ) {
+    return this.userProfileService.updateProfilePrivacy(
+      this.getAuthUserId(req),
+      updateProfilePrivacyDto,
     );
   }
 

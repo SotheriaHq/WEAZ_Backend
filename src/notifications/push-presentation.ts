@@ -36,66 +36,72 @@ export function getPushPresentation(type: NotificationType): PushPresentation {
   const value = String(type).toUpperCase();
 
   if (value.includes('MESSAGE')) {
-    return { channelId: PUSH_CHANNEL_IDS.messages, title: 'New message' };
+    return { channelId: PUSH_CHANNEL_IDS.messages, title: 'New message 💬' };
   }
 
   if (value.startsWith('ORDER_') || value.startsWith('CUSTOM_ORDER_')) {
-    return { channelId: PUSH_CHANNEL_IDS.orders, title: 'Order update' };
+    return { channelId: PUSH_CHANNEL_IDS.orders, title: 'Order update 📦' };
   }
 
   if (value.startsWith('VERIFICATION_')) {
-    return { channelId: PUSH_CHANNEL_IDS.system, title: 'Verification update' };
+    return {
+      channelId: PUSH_CHANNEL_IDS.system,
+      title: 'Verification update ✅',
+    };
   }
   if (value.startsWith('SIZE_FIT_')) {
-    return { channelId: PUSH_CHANNEL_IDS.system, title: 'Fit update' };
+    return { channelId: PUSH_CHANNEL_IDS.system, title: 'Fit update 📐' };
   }
   if (SECURITY_TYPES.has(value)) {
-    return { channelId: PUSH_CHANNEL_IDS.system, title: 'Security alert' };
+    return { channelId: PUSH_CHANNEL_IDS.system, title: 'Security alert 🔐' };
   }
   if (value === 'ADMIN_ACTION') {
     return { channelId: PUSH_CHANNEL_IDS.system, title: 'Account update' };
   }
 
   if (value === 'WISHLIST_PRODUCT_AVAILABLE') {
-    return { channelId: PUSH_CHANNEL_IDS.commerce, title: 'Back in stock' };
+    return { channelId: PUSH_CHANNEL_IDS.commerce, title: 'Back in stock 🎉' };
   }
   if (value === 'WISHLIST_PRODUCT_UNAVAILABLE') {
     return { channelId: PUSH_CHANNEL_IDS.commerce, title: 'Wishlist update' };
   }
   if (value === 'BAG_ITEM_ADDED') {
-    return { channelId: PUSH_CHANNEL_IDS.commerce, title: 'Added to bag' };
+    return { channelId: PUSH_CHANNEL_IDS.commerce, title: 'In your bag 🛍️' };
   }
   if (value === 'BAG_CHECKOUT_REMINDER') {
-    return { channelId: PUSH_CHANNEL_IDS.commerce, title: 'Bag reminder' };
+    return {
+      channelId: PUSH_CHANNEL_IDS.commerce,
+      title: 'Your bag misses you 🛍️',
+    };
   }
   if (value === 'PRODUCT_UPLOAD') {
-    return { channelId: PUSH_CHANNEL_IDS.commerce, title: 'New drop' };
+    return { channelId: PUSH_CHANNEL_IDS.commerce, title: 'New drop 🔥' };
   }
   if (value === 'ITEM_FEATURED' || value === 'FEATURED_AUTO_REMOVED') {
-    return { channelId: PUSH_CHANNEL_IDS.commerce, title: 'Featured' };
+    return { channelId: PUSH_CHANNEL_IDS.commerce, title: 'Featured ⭐' };
   }
 
   if (value === 'COMMENT' || value.includes('REPLY')) {
-    return { channelId: PUSH_CHANNEL_IDS.social, title: 'New comment' };
+    return { channelId: PUSH_CHANNEL_IDS.social, title: 'New comment 💬' };
   }
   if (value === 'FOLLOW') {
-    return { channelId: PUSH_CHANNEL_IDS.social, title: 'New follower' };
+    return { channelId: PUSH_CHANNEL_IDS.social, title: 'New follower 🎉' };
   }
   if (value === 'TAG_MENTION') {
-    return { channelId: PUSH_CHANNEL_IDS.social, title: 'New mention' };
+    return { channelId: PUSH_CHANNEL_IDS.social, title: 'You got a mention 👋' };
   }
   if (value === 'PATCH' || value.startsWith('BRAND_PATCH_')) {
-    return { channelId: PUSH_CHANNEL_IDS.social, title: 'Patch update' };
+    return { channelId: PUSH_CHANNEL_IDS.social, title: 'Patch update 🧵' };
   }
   if (value.startsWith('REVIEW_')) {
-    return { channelId: PUSH_CHANNEL_IDS.social, title: 'Review update' };
+    return { channelId: PUSH_CHANNEL_IDS.social, title: 'Review update ⭐' };
   }
   if (
     value.startsWith('COLLECTION') ||
     value.startsWith('PRIVATE_ACCESS_') ||
     value.startsWith('CONTRIBUTION')
   ) {
-    return { channelId: PUSH_CHANNEL_IDS.social, title: 'Collection update' };
+    return { channelId: PUSH_CHANNEL_IDS.social, title: 'Collection update 🧵' };
   }
 
   return { channelId: PUSH_CHANNEL_IDS.default, title: 'WIEZ' };

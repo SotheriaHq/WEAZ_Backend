@@ -42,6 +42,8 @@ import {
   canonicalUserProfileSelect,
   resolveBannerImage,
   resolveProfileImage,
+  resolveShowLocation,
+  resolveShowUsername,
   type SelectedProfileFile,
 } from 'src/common/user-profile-source.helper';
 import { AdminAuditService } from 'src/admin/services/admin-audit.service';
@@ -648,9 +650,18 @@ export class BrandsService {
       bannerAssetSource,
       brand.brand?.banner,
     );
+    // Public brand catalog (including QR scans) must never leak account PII.
+    // Only the authenticated brand owner may see email / CAC / TIN here.
+    const isOwnerViewer = Boolean(viewerId && viewerId === brand.id);
+    // Owner privacy toggles: hidden username/location never leave the API for
+    // non-owner viewers (server-enforced, clients cannot bypass). Share/QR
+    // links fall back to id-based URLs so the handle does not ride along.
+    const usernameVisible = isOwnerViewer || resolveShowUsername(brand);
+    const locationVisible = isOwnerViewer || resolveShowLocation(brand);
+
     const profileLinks = this.brandProfileLinks.getBrandProfileLinks({
       ownerId: brand.id,
-      username: brand.username,
+      username: usernameVisible ? brand.username : null,
     });
     const profilePhotoViewState = this.profilePhotoViewService
       ? await this.profilePhotoViewService.getViewStateForOwner(brand, viewerId)
@@ -662,19 +673,15 @@ export class BrandsService {
           canMarkViewed: false,
         };
 
-    // Public brand catalog (including QR scans) must never leak account PII.
-    // Only the authenticated brand owner may see email / CAC / TIN here.
-    const isOwnerViewer = Boolean(viewerId && viewerId === brand.id);
-
     return {
       id: brand.id,
-      username: brand.username?.trim() || null,
+      username: usernameVisible ? brand.username?.trim() || null : null,
       brandFullName: canonicalProfile.brandFullName,
       description: canonicalProfile.description,
-      country: canonicalProfile.country,
-      state: canonicalProfile.state,
-      city: canonicalProfile.city,
-      location: canonicalProfile.location,
+      country: locationVisible ? canonicalProfile.country : null,
+      state: locationVisible ? canonicalProfile.state : null,
+      city: locationVisible ? canonicalProfile.city : null,
+      location: locationVisible ? canonicalProfile.location : null,
       bannerImage,
       bannerImageId: bannerAssetSource.fileId,
       bannerImageMeta: bannerAsset,

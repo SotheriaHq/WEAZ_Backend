@@ -28,6 +28,8 @@ import {
   resolveProfileImage,
   resolveProfileVisibility,
   resolveRequiredProfileField,
+  resolveShowLocation,
+  resolveShowUsername,
 } from 'src/common/user-profile-source.helper';
 
 const userProfileResponseSelect = Prisma.validator<Prisma.UserSelect>()({
@@ -79,6 +81,8 @@ export class UserProfileService {
       address,
       location: address,
       profileVisibility: resolveProfileVisibility(user),
+      showUsername: resolveShowUsername(user),
+      showLocation: resolveShowLocation(user),
       ...(options.includeThemePreference
         ? { themePreference: normalizeThemePreference(user.themePreference) }
         : {}),
@@ -94,10 +98,14 @@ export class UserProfileService {
     const bannerImage = resolveBannerImage(user);
     const profilePhotoViewState =
       await this.profilePhotoViewService.getViewStateForOwner(user, viewerId);
+    // Privacy is enforced HERE, server-side: a hidden username never leaves the
+    // API for non-owner viewers, so no client can opt out of the setting.
+    const isOwnerViewer = Boolean(viewerId && viewerId === user.id);
+    const usernameVisible = isOwnerViewer || resolveShowUsername(user);
 
     return new PublicUserProfileResponseDto({
       id: user.id,
-      username: user.username,
+      username: usernameVisible ? user.username : undefined,
       firstName: resolveRequiredProfileField(user, 'firstName'),
       lastName: resolveRequiredProfileField(user, 'lastName'),
       type: user.type,
@@ -411,6 +419,14 @@ export class UserProfileService {
       throw new NotFoundException('User not found');
     }
 
+    // A hidden username must not resolve to a profile for other viewers —
+    // otherwise the username→account association leaks even though the
+    // profile page no longer displays the handle.
+    const isOwnerViewer = Boolean(viewerId && viewerId === user.id);
+    if (!isOwnerViewer && !resolveShowUsername(user)) {
+      throw new NotFoundException('User not found');
+    }
+
     return this.toPublicUserProfileResponse(user, viewerId);
   }
 
@@ -452,6 +468,63 @@ export class UserProfileService {
     });
 
     return user;
+  }
+
+  /**
+   * Self-scoped privacy toggles. userId always comes from the verified JWT, so
+   * one user can never flip another user's settings (no IDOR surface).
+   */
+  async updateProfilePrivacy(
+    userId: string,
+    input: { showUsername?: boolean; showLocation?: boolean },
+  ): Promise<{ showUsername: boolean; showLocation: boolean }> {
+    if (!userId) {
+      throw new UnauthorizedException('Unauthorized');
+    }
+
+    const data: { showUsername?: boolean; showLocation?: boolean } = {};
+    if (typeof input.showUsername === 'boolean') {
+      data.showUsername = input.showUsername;
+    }
+    if (typeof input.showLocation === 'boolean') {
+      data.showLocation = input.showLocation;
+    }
+    if (Object.keys(data).length === 0) {
+      throw new BadRequestException(
+        'Provide showUsername and/or showLocation as booleans',
+      );
+    }
+
+    const profile = await this.prisma.$transaction(async (tx) => {
+      const existingUser = await tx.user.findUnique({
+        where: { id: userId },
+        select: {
+          id: true,
+          userProfile: { select: { firstName: true, lastName: true } },
+        },
+      });
+
+      if (!existingUser) {
+        throw new NotFoundException('User not found');
+      }
+
+      return tx.userProfile.upsert({
+        where: { userId },
+        create: {
+          userId,
+          firstName: existingUser.userProfile?.firstName ?? '',
+          lastName: existingUser.userProfile?.lastName ?? '',
+          ...data,
+        },
+        update: data,
+        select: { showUsername: true, showLocation: true },
+      });
+    });
+
+    return {
+      showUsername: profile.showUsername,
+      showLocation: profile.showLocation,
+    };
   }
 
   async updatePreferences(
