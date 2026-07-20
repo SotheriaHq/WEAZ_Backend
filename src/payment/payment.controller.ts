@@ -139,6 +139,10 @@ export class PaymentController {
 
   @Post('initialize-unified')
   @UseGuards(JwtAuthGuard)
+  // Paid: initializes a Paystack transaction/charge. Per-user cap (Rule 32) so a
+  // buggy/malicious client can't spin up provider transactions; idempotency keys
+  // already dedupe legitimate retries of the same checkout.
+  @Throttle({ default: { limit: 8, ttl: 60000 } })
   @UseInterceptors(IdempotencyInterceptor)
   async initializeUnified(
     @Body() dto: InitializeUnifiedCheckoutDto,
@@ -209,6 +213,8 @@ export class PaymentController {
 
   @Post('cards/validate')
   @UseGuards(JwtAuthGuard)
+  // Paid: validates a card via Paystack. Per-user cap (Rule 32).
+  @Throttle({ default: { limit: 8, ttl: 60000 } })
   @UseInterceptors(IdempotencyInterceptor)
   async validateCard(@Body() dto: ValidatePaymentCardDto, @Req() req: Request) {
     const userId = (req as any).user?.id ?? (req as any).user?.sub;
@@ -239,6 +245,10 @@ export class PaymentController {
 
   @Post('verify')
   @UseGuards(JwtAuthGuard)
+  // Calls Paystack verify. Higher per-user cap than init because the return page
+  // auto-polls verification every 10s (~6/min) plus manual retries; 30/min keeps
+  // that working while still capping abuse (Rule 32).
+  @Throttle({ default: { limit: 30, ttl: 60000 } })
   async verify(@Body() dto: VerifyPaymentDto, @Req() req: Request) {
     const userId = (req as any).user?.id ?? (req as any).user?.sub;
     return this.paymentService.verifyPayment(dto, userId);

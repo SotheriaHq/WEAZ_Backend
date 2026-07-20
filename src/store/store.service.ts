@@ -7227,10 +7227,34 @@ export class StoreService {
     };
   }
 
+  // Deduped, renderable image list for an order item: the purchase-time cover
+  // plus the live product's images/thumbnail (present only when the query joins
+  // the product, e.g. the order-detail read). Powers the all-angles gallery.
+  private collectOrderItemImages(item: any): string[] {
+    const candidates = [
+      item?.thumbnailAtPurchase,
+      ...(Array.isArray(item?.product?.images) ? item.product.images : []),
+      item?.product?.thumbnail,
+    ];
+    const seen = new Set<string>();
+    const urls: string[] = [];
+    for (const candidate of candidates) {
+      if (typeof candidate === 'string') {
+        const trimmed = candidate.trim();
+        if (trimmed && !seen.has(trimmed)) {
+          seen.add(trimmed);
+          urls.push(trimmed);
+        }
+      }
+    }
+    return urls;
+  }
+
   private getOrderLineItems(order: any): Array<{
     productId?: string;
     name?: string;
     thumbnail?: string | null;
+    images?: string[];
     price?: number;
     quantity?: number;
     selectedSize?: string | null;
@@ -7247,6 +7271,7 @@ export class StoreService {
         productId: item.productId,
         name: item.nameAtPurchase ?? undefined,
         thumbnail: item.thumbnailAtPurchase ?? null,
+        images: this.collectOrderItemImages(item),
         price:
           typeof item.unitPrice === 'number'
             ? item.unitPrice
@@ -7397,6 +7422,9 @@ export class StoreService {
             sizeFitSnapshot: true,
             thumbnailAtPurchase: true,
             nameAtPurchase: true,
+            // Live product media so the order detail can show every angle the
+            // designer posted, not just the single purchase-time cover.
+            product: { select: { images: true, thumbnail: true } },
           },
         },
       },

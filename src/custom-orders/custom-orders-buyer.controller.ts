@@ -11,6 +11,7 @@ import {
   UseInterceptors,
   ValidationPipe,
 } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { UserType } from '@prisma/client';
 import { Request } from 'express';
 import { JwtAuthGuard } from 'src/auth/guard/jwt-auth.guard';
@@ -78,6 +79,9 @@ export class CustomOrdersBuyerController {
   }
 
   @Post('payment/verify')
+  // Calls Paystack verify; auto-polled by the payment-return page. 30/min per
+  // user keeps polling working while capping abuse (Rule 32).
+  @Throttle({ default: { limit: 30, ttl: 60000 } })
   async verifyPaymentByReference(
     @Req() req: Request & { user: { id: string } },
     @Body(
@@ -93,6 +97,8 @@ export class CustomOrdersBuyerController {
   }
 
   @Post(':id/payment/verify')
+  // Calls Paystack verify; auto-polled by the payment-return page (Rule 32).
+  @Throttle({ default: { limit: 30, ttl: 60000 } })
   async verifyPayment(
     @Param('id') id: string,
     @Req() req: Request & { user: { id: string } },

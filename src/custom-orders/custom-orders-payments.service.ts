@@ -1209,14 +1209,29 @@ export class CustomOrdersPaymentsService {
       throw new NotFoundException('Custom order not found');
     }
 
+    // Ownership stays scoped to the authenticated buyer (no IDOR). We match
+    // attempts tied to THIS custom order by any of:
+    //  - a direct CUSTOM_ORDER attempt (legacy single-order checkout),
+    //  - a shared checkoutIntentId (unified bag with exactly one custom line),
+    //  - the PaymentAttemptCheckoutIntentLink table (unified bag with multiple
+    //    custom lines — the attempt is subjectType UNIFIED_CHECKOUT and its own
+    //    checkoutIntentId is null, so the link table is the only join).
+    // The old query hard-filtered subjectType=CUSTOM_ORDER, which dropped the
+    // UNIFIED_CHECKOUT attempt that actually paid the order and showed "0 attempts".
     const attempts = await this.prisma.paymentAttempt.findMany({
       where: {
         buyerId: userId,
-        subjectType: PaymentSubjectType.CUSTOM_ORDER,
         OR: [
           { customOrderId: order.id },
           ...(order.checkoutIntentId
-            ? [{ checkoutIntentId: order.checkoutIntentId }]
+            ? [
+                { checkoutIntentId: order.checkoutIntentId },
+                {
+                  checkoutIntentLinks: {
+                    some: { checkoutIntentId: order.checkoutIntentId },
+                  },
+                },
+              ]
             : []),
         ],
       },

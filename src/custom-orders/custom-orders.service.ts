@@ -475,6 +475,22 @@ const pickFirstRenderableMediaUrl = (candidates: unknown[]): string | null => {
   return null;
 };
 
+// All renderable source angles (deduped, order preserved). Same normalization as
+// pickFirstRenderableMediaUrl so the buyer/brand order view can show every angle
+// the designer posted, not just the cover.
+const pickRenderableMediaUrls = (candidates: unknown[]): string[] => {
+  const seen = new Set<string>();
+  const urls: string[] = [];
+  for (const candidate of candidates) {
+    const normalized = normalizeCheckoutMediaUrlCandidate(candidate);
+    if (normalized && !seen.has(normalized)) {
+      seen.add(normalized);
+      urls.push(normalized);
+    }
+  }
+  return urls;
+};
+
 @Injectable()
 export class CustomOrdersService {
   private readonly logger = new Logger(CustomOrdersService.name);
@@ -1325,11 +1341,16 @@ export class CustomOrdersService {
       throw new NotFoundException('Custom order not found');
     }
     const hydratedOrder = await this.hydrateSingleOrderSourceSnapshot(order);
+    const sourceMediaUrls = await this.resolveSourceMediaUrlsSafe(
+      order.sourceType,
+      order.sourceId,
+      hydratedOrder.sourcePrimaryMediaUrlSnapshot,
+    );
 
     return {
       statusCode: 200,
       message: 'Custom order retrieved',
-      data: this.mapDetail(hydratedOrder),
+      data: this.mapDetail(hydratedOrder, { sourceMediaUrls }),
     };
   }
 
@@ -2474,11 +2495,16 @@ export class CustomOrdersService {
       throw new NotFoundException('Custom order not found');
     }
     const hydratedOrder = await this.hydrateSingleOrderSourceSnapshot(order);
+    const sourceMediaUrls = await this.resolveSourceMediaUrlsSafe(
+      order.sourceType,
+      order.sourceId,
+      hydratedOrder.sourcePrimaryMediaUrlSnapshot,
+    );
 
     return {
       statusCode: 200,
       message: 'Custom order retrieved',
-      data: this.mapDetail(hydratedOrder),
+      data: this.mapDetail(hydratedOrder, { sourceMediaUrls }),
     };
   }
 
@@ -4667,13 +4693,15 @@ export class CustomOrdersService {
       if (!product) {
         throw new NotFoundException('Product source not found');
       }
+      const productMediaCandidates = [
+        product.thumbnail,
+        ...(Array.isArray(product.images) ? product.images : []),
+      ];
       return {
         title: product.name,
         slug: product.slug,
-        primaryMediaUrl: pickFirstRenderableMediaUrl([
-          product.thumbnail,
-          ...(Array.isArray(product.images) ? product.images : []),
-        ]),
+        primaryMediaUrl: pickFirstRenderableMediaUrl(productMediaCandidates),
+        mediaUrls: pickRenderableMediaUrls(productMediaCandidates),
         brandName: product.brand.name,
       };
     }
@@ -4704,15 +4732,19 @@ export class CustomOrdersService {
     });
 
     if (explicitDesign) {
+      const explicitDesignMediaCandidates = [
+        explicitDesign.coverMedia?.mediaType === FileType.POST_IMAGE
+          ? explicitDesign.coverMedia?.file?.s3Url
+          : null,
+        ...explicitDesign.medias.map((media) => media.file?.s3Url),
+      ];
       return {
         title: explicitDesign.title ?? 'Untitled design',
         slug: null,
-        primaryMediaUrl: pickFirstRenderableMediaUrl([
-          explicitDesign.coverMedia?.mediaType === FileType.POST_IMAGE
-            ? explicitDesign.coverMedia?.file?.s3Url
-            : null,
-          ...explicitDesign.medias.map((media) => media.file?.s3Url),
-        ]),
+        primaryMediaUrl: pickFirstRenderableMediaUrl(
+          explicitDesignMediaCandidates,
+        ),
+        mediaUrls: pickRenderableMediaUrls(explicitDesignMediaCandidates),
         brandName: explicitDesign.owner.brand?.name ?? null,
       };
     }
@@ -4745,17 +4777,39 @@ export class CustomOrdersService {
       throw new NotFoundException('Design source not found');
     }
 
+    const designMediaCandidates = [
+      design.coverMedia?.mediaType === FileType.POST_IMAGE
+        ? design.coverMedia?.file?.s3Url
+        : null,
+      ...design.medias.map((media) => media.file?.s3Url),
+    ];
     return {
       title: design.title ?? 'Untitled design',
       slug: null,
-      primaryMediaUrl: pickFirstRenderableMediaUrl([
-        design.coverMedia?.mediaType === FileType.POST_IMAGE
-          ? design.coverMedia?.file?.s3Url
-          : null,
-        ...design.medias.map((media) => media.file?.s3Url),
-      ]),
+      primaryMediaUrl: pickFirstRenderableMediaUrl(designMediaCandidates),
+      mediaUrls: pickRenderableMediaUrls(designMediaCandidates),
       brandName: design.owner.brand?.name ?? null,
     };
+  }
+
+  // Resolve every renderable angle for a custom order's source design/product.
+  // Best-effort: if the source was deleted/unresolvable we fall back to the
+  // stored cover so the order view never breaks. Callers already enforce buyer/
+  // brand ownership, so this adds no new access surface (no IDOR).
+  private async resolveSourceMediaUrlsSafe(
+    sourceType: CustomOrderSourceType,
+    sourceId: string,
+    fallbackPrimary?: string | null,
+  ): Promise<string[]> {
+    try {
+      const source = await this.resolveSourceSnapshot(sourceType, sourceId);
+      if (source.mediaUrls.length > 0) {
+        return source.mediaUrls;
+      }
+    } catch {
+      // Source may have been removed; fall through to the stored cover.
+    }
+    return fallbackPrimary ? [fallbackPrimary] : [];
   }
 
   private resolveStageThreshold(stage: CustomOrderProgressStage, from: Date) {
@@ -4914,7 +4968,7 @@ export class CustomOrdersService {
     };
   }
 
-  private mapDetail(order: any) {
+  private mapDetail(order: any, options?: { sourceMediaUrls?: string[] }) {
     const breakdown = (order.internalPriceBreakdownJson ?? {}) as Record<
       string,
       unknown
@@ -4923,6 +4977,12 @@ export class CustomOrdersService {
       string,
       unknown
     > | null;
+    const sourceMediaUrls =
+      options?.sourceMediaUrls && options.sourceMediaUrls.length > 0
+        ? options.sourceMediaUrls
+        : order.sourcePrimaryMediaUrlSnapshot
+          ? [order.sourcePrimaryMediaUrlSnapshot]
+          : [];
     return {
       id: order.id,
       status: order.status,
@@ -4934,6 +4994,9 @@ export class CustomOrdersService {
         title: order.sourceTitleSnapshot,
         slug: order.sourceSlugSnapshot,
         primaryMediaUrl: order.sourcePrimaryMediaUrlSnapshot,
+        // All angles the designer posted (falls back to the single cover). Lets
+        // the order view render a gallery instead of just the cover photo.
+        mediaUrls: sourceMediaUrls,
         brandName: order.sourceBrandNameSnapshot,
       },
       configurationVersionId: order.configurationVersionId,

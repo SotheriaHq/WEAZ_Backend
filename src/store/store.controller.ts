@@ -708,6 +708,9 @@ export class StoreController {
 
   @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
   @Post('store/payment-account/verify')
+  // Paid: resolves a bank account via Paystack. A per-user daily business cap
+  // already applies; this per-minute throttle stops rapid abuse (Rule 32).
+  @Throttle({ default: { limit: 6, ttl: 60000 } })
   async verifyStorePaymentAccount(
     @Body(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
     dto: VerifyStorePaymentAccountDto,
