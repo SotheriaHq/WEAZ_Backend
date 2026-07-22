@@ -3310,6 +3310,10 @@ model CustomOrder {
   retentionHoldUntil            DateTime?
   retentionHoldSetById          String?                              @db.Uuid
   retentionHoldSetAt            DateTime?
+  adminAttentionRequiredAt      DateTime?
+  adminAttentionReason          String?
+  adminAttentionClearedAt       DateTime?
+  adminAttentionClearedById     String?                              @db.Uuid
   createdAt                     DateTime                             @default(now())
   updatedAt                     DateTime                             @updatedAt
   progressEvents                CustomOrderProgressEvent[]
@@ -3337,6 +3341,7 @@ model CustomOrder {
   @@index([sourceType, sourceId])
   @@index([currentProgressStage, lastBrandProgressUpdateAt])
   @@index([measurementRetentionUntil, retentionHoldUntil, anonymizedAt])
+  @@index([adminAttentionRequiredAt])
 }
 
 model MessageThread {

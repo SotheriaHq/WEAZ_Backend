@@ -253,6 +253,7 @@ export class CustomOrderOpsCronService {
             },
             dedupeMs: 18 * 60 * 60 * 1000,
           });
+          await this.markAdminAttention(order.id, 'STALE_OPERATIONAL_STATUS');
         }
       }
 
@@ -424,6 +425,7 @@ export class CustomOrderOpsCronService {
             },
             dedupeMs: 12 * 60 * 60 * 1000,
           });
+          await this.markAdminAttention(order.id, 'BRAND_ACCEPTANCE_TIMEOUT');
         }
       }
 
@@ -772,6 +774,7 @@ export class CustomOrderOpsCronService {
             },
             dedupeMs: 12 * 60 * 60 * 1000,
           });
+          await this.markAdminAttention(event.customOrder.id, 'STALE_STAGE');
         }
       }
 
@@ -971,6 +974,7 @@ export class CustomOrderOpsCronService {
           },
           dedupeMs: 4 * 60 * 60 * 1000,
         });
+        await this.markAdminAttention(customOrderId, 'PAYOUT_RELEASE_ELIGIBLE');
 
         await this.prisma.customOrderTimelineEvent.create({
           data: {
@@ -1011,6 +1015,31 @@ export class CustomOrderOpsCronService {
       id: `admin-custom-order:${customOrderId}`,
       preview: `/admin/custom-orders/${customOrderId}`,
     };
+  }
+
+  /**
+   * Persist a sticky "needs admin attention" flag on the order so the admin
+   * dashboard flag, the orders table danger badge, and the order screen all have
+   * a durable signal — even if the admin never opens their notifications. Set
+   * only when currently unset (idempotent under repeated cron runs); any admin
+   * action on the order clears it (see custom-order-admin.service clearAdminAttention).
+   */
+  private async markAdminAttention(customOrderId: string, reason: string) {
+    try {
+      await this.prisma.customOrder.updateMany({
+        where: { id: customOrderId, adminAttentionRequiredAt: null },
+        data: {
+          adminAttentionRequiredAt: new Date(),
+          adminAttentionReason: reason,
+          adminAttentionClearedAt: null,
+          adminAttentionClearedById: null,
+        },
+      });
+    } catch (error) {
+      this.logger.warn(
+        `Failed to set admin-attention flag for custom order ${customOrderId}: ${this.formatError(error)}`,
+      );
+    }
   }
 
   private studioCustomOrderTarget(customOrderId: string) {

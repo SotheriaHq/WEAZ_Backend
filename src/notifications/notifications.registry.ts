@@ -133,6 +133,25 @@ const formatCustomOrderCode = (customOrderId: unknown) => {
   return `#CO-${customOrderId.slice(0, 8).toUpperCase()}`;
 };
 
+/**
+ * Human-readable reason for an admin-review nudge. Returns null for unknown /
+ * free-text reasons so the copy falls back to a clean generic line.
+ */
+const describeAdminReviewReason = (reason: unknown): string | null => {
+  switch (String(reason || '').toUpperCase()) {
+    case 'STALE_OPERATIONAL_STATUS':
+      return "it's been sitting without an update";
+    case 'BRAND_ACCEPTANCE_TIMEOUT':
+      return "the brand hasn't accepted it in time";
+    case 'STALE_STAGE':
+      return "it's been stuck at the same stage for a while";
+    case 'PAYOUT_RELEASE_ELIGIBLE':
+      return "it's ready for a manual payout release";
+    default:
+      return null;
+  }
+};
+
 const formatActorDisplayName = (
   actor:
     | {
@@ -1398,7 +1417,7 @@ export class NotificationRegistry {
       }),
       formatter: (n: any) =>
         n.payload?.message ||
-        `Please confirm delivery or report an issue for ${formatCustomOrderCode(n.payload?.customOrderId)}`,
+        `Almost there — confirm delivery or report an issue for ${formatCustomOrderCode(n.payload?.customOrderId)}.`,
     });
 
     registry.register({
@@ -1411,7 +1430,7 @@ export class NotificationRegistry {
       }),
       formatter: (n: any) =>
         n.payload?.message ||
-        `An issue was reported for ${formatCustomOrderCode(n.payload?.customOrderId)}`,
+        `Heads up — an issue was reported on ${formatCustomOrderCode(n.payload?.customOrderId)}. Take a look when you can.`,
     });
 
     registry.register({
@@ -1424,7 +1443,7 @@ export class NotificationRegistry {
       }),
       formatter: (n: any) =>
         n.payload?.message ||
-        `A dispute was opened for ${formatCustomOrderCode(n.payload?.customOrderId)}`,
+        `A dispute was opened on ${formatCustomOrderCode(n.payload?.customOrderId)} — let's get it sorted.`,
     });
 
     registry.register({
@@ -1437,7 +1456,7 @@ export class NotificationRegistry {
       }),
       formatter: (n: any) =>
         n.payload?.message ||
-        `${formatCustomOrderCode(n.payload?.customOrderId)} has not been updated on time`,
+        `${formatCustomOrderCode(n.payload?.customOrderId)} hasn't moved in a while — a gentle nudge might help.`,
     });
 
     registry.register({
@@ -1447,9 +1466,14 @@ export class NotificationRegistry {
         targetUrl: Joi.string().optional(),
         message: Joi.string().optional(),
       }),
-      formatter: (n: any) =>
-        n.payload?.message ||
-        `${formatCustomOrderCode(n.payload?.customOrderId)} requires admin review`,
+      formatter: (n: any) => {
+        if (n.payload?.message) return n.payload.message;
+        const code = formatCustomOrderCode(n.payload?.customOrderId);
+        const detail = describeAdminReviewReason(n.payload?.reason);
+        return detail
+          ? `${code} needs a quick review — ${detail}. Tap to take a look and act.`
+          : `${code} needs a quick review. Tap to open it and take action.`;
+      },
     });
 
     registry.register({

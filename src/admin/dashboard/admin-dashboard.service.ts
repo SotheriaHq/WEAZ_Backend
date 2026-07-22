@@ -36,6 +36,7 @@ export class AdminDashboardService {
       pendingPayouts,
       openDisputes,
       ordersNeedingAttention,
+      customOrdersNeedingAttention,
       totalDesigns,
       totalProducts,
       totalCollections,
@@ -83,6 +84,11 @@ export class AdminDashboardService {
           paidAt: { lt: attentionThreshold },
         },
       }),
+      // Custom orders the ops cron has flagged for admin review and no admin has
+      // acted on yet (indexed on adminAttentionRequiredAt — cheap under polling).
+      this.prisma.customOrder
+        .count({ where: { adminAttentionRequiredAt: { not: null } } })
+        .catch(() => 0),
       // Content counts (non-deleted): designs, products, collections.
       this.prisma.design.count({ where: { deletedAt: null } }),
       this.prisma.product.count({ where: { deletedAt: null } }),
@@ -137,6 +143,7 @@ export class AdminDashboardService {
       pendingPayouts,
       openDisputes,
       ordersNeedingAttention,
+      customOrdersNeedingAttention,
       totalDesigns,
       totalProducts,
       totalCollections,

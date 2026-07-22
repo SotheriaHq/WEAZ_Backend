@@ -427,6 +427,8 @@ export class CustomOrderAdminService {
       });
     });
 
+    await this.clearAdminAttention(customOrderId, adminUserId);
+
     return {
       statusCode: 200,
       message: 'Exception review decision recorded',
@@ -1167,7 +1169,93 @@ export class CustomOrderAdminService {
     return {
       statusCode: 200,
       message: 'Custom-order admin detail retrieved',
-      data: order,
+      data: this.mapAdminOrderDetail(order),
+    };
+  }
+
+  /**
+   * Map the raw custom order into the structured detail the admin UI expects
+   * (nested `source`, parsed `buyerPriceSummary`, decoded JSON breakdowns) plus
+   * the sticky admin-attention signal. Previously the endpoint returned the raw
+   * Prisma row, so the detail screen showed "Source type: Unknown" / "No
+   * breakdown available" and a generic title.
+   */
+  private mapAdminOrderDetail(order: any) {
+    const asRecord = (value: unknown): Record<string, unknown> =>
+      value && typeof value === 'object' && !Array.isArray(value)
+        ? (value as Record<string, unknown>)
+        : {};
+    const breakdown = asRecord(order.internalPriceBreakdownJson);
+    const chartLock = (breakdown.chartLock ?? null) as Record<
+      string,
+      unknown
+    > | null;
+    const priceRaw = asRecord(order.buyerPriceSummaryJson);
+    const mediaUrls = order.sourcePrimaryMediaUrlSnapshot
+      ? [order.sourcePrimaryMediaUrlSnapshot]
+      : [];
+
+    return {
+      id: order.id,
+      status: order.status,
+      paymentStatus: order.paymentStatus,
+      paymentReference: order.paymentReference,
+      source: {
+        type: order.sourceType,
+        id: order.sourceId,
+        title: order.sourceTitleSnapshot,
+        slug: order.sourceSlugSnapshot,
+        primaryMediaUrl: order.sourcePrimaryMediaUrlSnapshot,
+        mediaUrls,
+        brandName: order.sourceBrandNameSnapshot,
+      },
+      configurationVersionId: order.configurationVersionId,
+      buyerPriceSummary: {
+        fabricCharge: Number(priceRaw.fabricCharge ?? 0),
+        subtotal: Number(priceRaw.subtotal ?? priceRaw.outfitTotal ?? 0),
+        shippingFee: Number(priceRaw.shippingFee ?? priceRaw.delivery ?? 0),
+        rushFee: Number(priceRaw.rushFee ?? priceRaw.rush ?? 0),
+        grandTotal: Number(priceRaw.grandTotal ?? 0),
+        currency: order.currency ?? (priceRaw.currency as string) ?? 'NGN',
+      },
+      internalPriceBreakdown: order.internalPriceBreakdownJson,
+      quoteStatus: (chartLock?.quoteStatus as string | undefined) ?? 'AUTO_PRICED',
+      chartLock,
+      exceptionDecision: (breakdown.exceptionDecision ?? null) as
+        | Record<string, unknown>
+        | null,
+      measurementSnapshot: order.measurementSnapshotJson,
+      measurementConfirmedAt: order.measurementConfirmedAt,
+      shippingAddress: order.shippingAddressJson,
+      contactInfo: order.contactInfoJson,
+      currentProgressStage: order.currentProgressStage,
+      acceptedAt: order.acceptedAt,
+      buyerAcceptedAt: order.buyerAcceptedAt,
+      completedAt: order.completedAt,
+      promisedProductionAt: order.promisedProductionAt,
+      promisedDispatchAt: order.promisedDispatchAt,
+      promisedDeliveryAt: order.promisedDeliveryAt,
+      buyerAcceptanceWindowEndsAt: order.buyerAcceptanceWindowEndsAt,
+      measurementRetentionUntil: order.measurementRetentionUntil,
+      anonymizedAt: order.anonymizedAt,
+      retentionHoldType: order.retentionHoldType,
+      retentionHoldReason: order.retentionHoldReason,
+      retentionHoldUntil: order.retentionHoldUntil,
+      retentionHoldSetById: order.retentionHoldSetById,
+      retentionHoldSetAt: order.retentionHoldSetAt,
+      // Sticky admin-attention signal (drives the detail-page danger banner).
+      adminAttentionRequiredAt: order.adminAttentionRequiredAt ?? null,
+      adminAttentionReason: order.adminAttentionReason ?? null,
+      brandId: order.brandId,
+      buyerId: order.buyerId,
+      progressEvents: order.progressEvents,
+      extensionRequests: order.extensionRequests,
+      issues: order.issues,
+      disputes: order.disputes,
+      ledgerAllocations: order.ledgerAllocations,
+      timelineEvents: order.timelineEvents,
+      createdAt: order.createdAt,
+      updatedAt: order.updatedAt,
     };
   }
 
@@ -1468,6 +1556,8 @@ export class CustomOrderAdminService {
       },
     });
 
+    await this.clearAdminAttention(dispute.customOrderId, adminUserId);
+
     return {
       statusCode: 200,
       message: 'Custom-order dispute updated',
@@ -1545,6 +1635,8 @@ export class CustomOrderAdminService {
       },
     });
 
+    await this.clearAdminAttention(id, adminUserId);
+
     return {
       statusCode: 200,
       message: dto.clear
@@ -1600,6 +1692,8 @@ export class CustomOrderAdminService {
       dedupeMs: 60 * 1000,
     });
 
+    await this.clearAdminAttention(order.id, adminUserId);
+
     return {
       statusCode: 200,
       message: 'Brand reminder queued',
@@ -1641,6 +1735,8 @@ export class CustomOrderAdminService {
       },
       dedupeMs: 60 * 1000,
     });
+
+    await this.clearAdminAttention(id, adminUserId);
 
     return {
       statusCode: 200,
@@ -1719,6 +1815,8 @@ export class CustomOrderAdminService {
       },
       dedupeMs: 60 * 1000,
     });
+
+    await this.clearAdminAttention(id, adminUserId);
 
     return {
       statusCode: 200,
@@ -1850,6 +1948,8 @@ export class CustomOrderAdminService {
       });
     }
 
+    await this.clearAdminAttention(id, adminUserId);
+
     return {
       statusCode: 200,
       message: 'Custom order cancelled and refund initiated',
@@ -1862,6 +1962,16 @@ export class CustomOrderAdminService {
   }
 
   private mapOrderListItem(order: any) {
+    const asRecord = (value: unknown): Record<string, unknown> =>
+      value && typeof value === 'object' && !Array.isArray(value)
+        ? (value as Record<string, unknown>)
+        : {};
+    const contactInfo = asRecord(order.contactInfoJson);
+    const priceSummary = asRecord(order.buyerPriceSummaryJson);
+    const parsedTotal = Number(priceSummary.grandTotal ?? 0);
+    const currency =
+      typeof order.currency === 'string' && order.currency ? order.currency : 'NGN';
+
     return {
       id: order.id,
       brandId: order.brandId,
@@ -1869,12 +1979,34 @@ export class CustomOrderAdminService {
       status: order.status,
       paymentStatus: order.paymentStatus,
       currentProgressStage: order.currentProgressStage,
+      sourceType: order.sourceType,
+      sourceId: order.sourceId,
       sourceTitle: order.sourceTitleSnapshot,
       sourceBrandName: order.sourceBrandNameSnapshot,
+      sourcePrimaryMediaUrl: order.sourcePrimaryMediaUrlSnapshot ?? null,
       lastBrandProgressUpdateAt: order.lastBrandProgressUpdateAt,
       buyerAcceptanceWindowEndsAt: order.buyerAcceptanceWindowEndsAt,
       createdAt: order.createdAt,
       updatedAt: order.updatedAt,
+      currency,
+      // Surface the buyer's paid total + who placed it so the admin table shows
+      // real money and a named buyer instead of "NGN 0 / No email".
+      buyerPriceSummary: {
+        grandTotal: Number.isFinite(parsedTotal) ? parsedTotal : 0,
+        currency,
+      },
+      buyer: {
+        name:
+          typeof contactInfo.customerName === 'string'
+            ? contactInfo.customerName
+            : null,
+        email: typeof contactInfo.email === 'string' ? contactInfo.email : null,
+        phone: typeof contactInfo.phone === 'string' ? contactInfo.phone : null,
+      },
+      // Sticky "needs attention" signal (set by the ops cron, cleared by any
+      // admin action) powering the dashboard flag + row danger badge.
+      adminAttentionRequiredAt: order.adminAttentionRequiredAt ?? null,
+      adminAttentionReason: order.adminAttentionReason ?? null,
       brand: order.brand
         ? {
             id: order.brand.id,
@@ -1883,6 +2015,26 @@ export class CustomOrderAdminService {
           }
         : undefined,
     };
+  }
+
+  /**
+   * Clear the sticky "needs admin attention" flag once an admin has taken a
+   * concrete action on the order. Idempotent (only touches flagged rows) and
+   * records who resolved it for audit.
+   */
+  private async clearAdminAttention(customOrderId: string, adminUserId?: string) {
+    try {
+      await this.prisma.customOrder.updateMany({
+        where: { id: customOrderId, adminAttentionRequiredAt: { not: null } },
+        data: {
+          adminAttentionRequiredAt: null,
+          adminAttentionClearedAt: new Date(),
+          adminAttentionClearedById: adminUserId ?? null,
+        },
+      });
+    } catch {
+      // Non-critical: clearing the attention flag must never fail the admin action.
+    }
   }
 
   private buyerTarget(customOrderId: string) {
