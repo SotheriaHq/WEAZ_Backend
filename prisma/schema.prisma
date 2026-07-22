@@ -933,6 +933,8 @@ enum NotificationType {
   // Orders
   ORDER_PLACED
   ORDER_STATUS_UPDATED
+  ORDER_FULFILLMENT_REMINDER
+  ORDER_FULFILLMENT_OVERDUE
 
   // Bag / checkout nudges
   BAG_ITEM_ADDED
@@ -2671,6 +2673,15 @@ model Brand {
   storePublishedAt DateTime?
 
   currency String @default("NGN")
+
+  // Brand working schedule — powers fulfilment SLAs (business-hours mode) and
+  // store-open presentation. `workingHours` is a per-weekday map
+  // { monday..sunday: { open: "HH:mm", close: "HH:mm", closed: boolean } }
+  // interpreted in `timezone` (IANA, e.g. "Africa/Lagos"). Required before a
+  // brand can operate once STORE_WORKING_HOURS_REQUIRED is enabled (hard gate).
+  workingHours              Json?
+  timezone                  String?
+  businessHoursConfiguredAt DateTime?
 
   // Verification (MVP — test phase)
   verificationStatus              BrandVerificationStatus @default(NOT_SUBMITTED)

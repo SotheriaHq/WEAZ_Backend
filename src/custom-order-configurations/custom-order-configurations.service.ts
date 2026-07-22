@@ -50,7 +50,11 @@ export class CustomOrderConfigurationsService {
       brand.id,
       dto.requiredFreeformPointIds ?? [],
     );
-    const resolvedTitle = this.resolveConfigurationTitle(dto.title);
+    const sourceTitle = await this.resolveSourceTitleSafe(
+      dto.sourceType,
+      dto.sourceId,
+    );
+    const resolvedTitle = this.resolveConfigurationTitle(dto.title, sourceTitle);
 
     const normalizedRules = this.pricingService.validateConfigurationRules(
       dto.rules,
@@ -1021,23 +1025,57 @@ export class CustomOrderConfigurationsService {
     }
   }
 
+  private async resolveSourceTitleSafe(
+    sourceType: CustomOrderSourceType,
+    sourceId: string,
+  ): Promise<string | null> {
+    try {
+      if (sourceType === CustomOrderSourceType.PRODUCT) {
+        const product = await this.prisma.product.findUnique({
+          where: { id: sourceId },
+          select: { name: true },
+        });
+        return product?.name ?? null;
+      }
+      const explicitDesign = await this.prisma.design.findUnique({
+        where: { id: sourceId },
+        select: { title: true },
+      });
+      if (explicitDesign?.title) {
+        return explicitDesign.title;
+      }
+      const collection = await this.prisma.collection.findUnique({
+        where: { id: sourceId },
+        select: { title: true },
+      });
+      return collection?.title ?? null;
+    } catch {
+      return null;
+    }
+  }
+
   private resolveConfigurationTitle(
     inputTitle?: string | null,
     fallbackTitle?: string | null,
   ): string {
+    const isGenericTitle = (val: string) =>
+      val === 'Custom order configuration' ||
+      val === 'costum order confirguration' ||
+      val === 'Custom order item';
+
     const normalizedInput =
       typeof inputTitle === 'string' ? inputTitle.trim() : '';
-    if (normalizedInput.length > 0) {
+    if (normalizedInput.length > 0 && !isGenericTitle(normalizedInput)) {
       return normalizedInput;
     }
 
     const normalizedFallback =
       typeof fallbackTitle === 'string' ? fallbackTitle.trim() : '';
-    if (normalizedFallback.length > 0) {
+    if (normalizedFallback.length > 0 && !isGenericTitle(normalizedFallback)) {
       return normalizedFallback;
     }
 
-    return 'Custom order configuration';
+    return 'Custom order';
   }
 
   private buildConfigurationSnapshot(

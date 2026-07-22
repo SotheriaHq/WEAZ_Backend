@@ -1,6 +1,12 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
-import { BrandVerificationStatus, PayoutStatus, Role } from '@prisma/client';
+import {
+  BrandVerificationStatus,
+  OrderStatus,
+  PaymentStatus,
+  PayoutStatus,
+  Role,
+} from '@prisma/client';
 import { SystemConfigService } from '../system-config/system-config.service';
 import {
   adminUserDisplaySelect,
@@ -19,6 +25,8 @@ export class AdminDashboardService {
     thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
     const startOfToday = new Date();
     startOfToday.setHours(0, 0, 0, 0);
+    const attentionThreshold = new Date();
+    attentionThreshold.setDate(attentionThreshold.getDate() - 7);
 
     const [
       totalUsers,
@@ -27,6 +35,10 @@ export class AdminDashboardService {
       pendingVerifications,
       pendingPayouts,
       openDisputes,
+      ordersNeedingAttention,
+      totalDesigns,
+      totalProducts,
+      totalCollections,
       recentAuditLogs,
       recentUsers,
       dailySignupCount,
@@ -61,6 +73,20 @@ export class AdminDashboardService {
       this.prisma.dispute.count({
         where: { status: { in: ['OPEN', 'ASSIGNED', 'IN_PROGRESS'] } },
       }),
+      // Cheap fulfilment-attention proxy: paid orders still unshipped after a
+      // wall-clock week (indexed count; no per-order business-hours math, so it
+      // stays cheap under dashboard polling).
+      this.prisma.order.count({
+        where: {
+          status: { in: [OrderStatus.PENDING, OrderStatus.PROCESSING] },
+          paymentStatus: PaymentStatus.PAID,
+          paidAt: { lt: attentionThreshold },
+        },
+      }),
+      // Content counts (non-deleted): designs, products, collections.
+      this.prisma.design.count({ where: { deletedAt: null } }),
+      this.prisma.product.count({ where: { deletedAt: null } }),
+      this.prisma.collection.count({ where: { deletedAt: null } }),
       this.prisma.adminAuditLog.findMany({
         take: 10,
         orderBy: { createdAt: 'desc' },
@@ -110,6 +136,10 @@ export class AdminDashboardService {
       pendingVerifications,
       pendingPayouts,
       openDisputes,
+      ordersNeedingAttention,
+      totalDesigns,
+      totalProducts,
+      totalCollections,
       recentLogs: enriched,
       recentAuditLogs: enriched,
     };

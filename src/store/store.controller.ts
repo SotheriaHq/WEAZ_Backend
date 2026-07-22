@@ -25,6 +25,7 @@ import {
 } from './dto/bulk-product-actions.dto';
 import { UpdateStoreNameDto } from './dto/update-store-name.dto';
 import { UpdateStoreProfileDto } from './dto/update-store-profile.dto';
+import { UpdateWorkingHoursDto } from './dto/update-working-hours.dto';
 import { UpdateStorePoliciesDto } from './dto/update-store-policies.dto';
 import { UpdateStorePaymentAccountDto } from './dto/update-store-payment-account.dto';
 import { VerifyStorePaymentAccountDto } from './dto/verify-store-payment-account.dto';
@@ -580,6 +581,12 @@ export class StoreController {
   }
 
   @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard)
+  @Get(['orders/version', 'store/orders/version'])
+  async getMyOrdersVersion(@Req() req: any) {
+    return this.storeService.getMyOrdersVersion(req.user.id);
+  }
+
   @Get(['orders/:orderId', 'store/orders/:orderId'])
   async getMyOrder(@Param('orderId') orderId: string, @Req() req: any) {
     return this.storeService.getMyOrder(req.user.id, orderId);
@@ -665,6 +672,16 @@ export class StoreController {
     @Req() req: any,
   ) {
     return this.storeService.updateStoreProfile(req.user.id, dto);
+  }
+
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @Patch('store/working-hours')
+  async updateWorkingHours(
+    @Body(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
+    dto: UpdateWorkingHoursDto,
+    @Req() req: any,
+  ) {
+    return this.storeService.updateWorkingHours(req.user.id, dto);
   }
 
   @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))

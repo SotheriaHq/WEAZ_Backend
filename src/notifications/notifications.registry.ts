@@ -362,6 +362,54 @@ export class NotificationRegistry {
       },
     });
 
+    // ORDER_FULFILLMENT_REMINDER — escalating brand nudge to move an unshipped
+    // paid order forward. In-app + push only (kept out of the email default set).
+    registry.register({
+      type: NotificationType.ORDER_FULFILLMENT_REMINDER,
+      schema: Joi.object({
+        orderId: Joi.string().required(),
+        tier: Joi.string().valid('GENTLE', 'FIRM', 'FINAL').optional(),
+        status: Joi.string().optional(),
+        hoursElapsed: Joi.number().optional(),
+        targetUrl: Joi.string().optional(),
+        message: Joi.string().optional(),
+      }),
+      formatter: (n: any) => {
+        if (n.payload?.message) return n.payload.message;
+        const orderCode = formatOrderCode(n.payload?.orderId);
+        switch (n.payload?.tier) {
+          case 'FIRM':
+            return `⏳ Your customer is still waiting on ${orderCode}. A quick status update keeps them excited — tap to move it forward.`;
+          case 'FINAL':
+            return `⏰ Last call on ${orderCode}! It's due to ship now. Dispatch it to delight your customer and stay ahead of escalation.`;
+          default:
+            return `🎉 You've got an order to make someone's day! ${orderCode} is ready for you to start — tap to kick it off.`;
+        }
+      },
+    });
+
+    // ORDER_FULFILLMENT_OVERDUE — SLA breach: escalation to admin/brand, or an
+    // auto-cancel+refund notice to the buyer. In-app + push only.
+    registry.register({
+      type: NotificationType.ORDER_FULFILLMENT_OVERDUE,
+      schema: Joi.object({
+        orderId: Joi.string().required(),
+        reason: Joi.string().optional(),
+        hoursElapsed: Joi.number().optional(),
+        autoCancelled: Joi.boolean().optional(),
+        targetUrl: Joi.string().optional(),
+        message: Joi.string().optional(),
+      }),
+      formatter: (n: any) => {
+        if (n.payload?.message) return n.payload.message;
+        const orderCode = formatOrderCode(n.payload?.orderId);
+        if (n.payload?.autoCancelled) {
+          return `Order ${orderCode} passed its fulfilment window and was cancelled and refunded. Tap for the details.`;
+        }
+        return `👀 Order ${orderCode} is overdue and needs a look — no dispatch within the fulfilment window yet. Tap to review.`;
+      },
+    });
+
     // BAG_ITEM_ADDED
     registry.register({
       type: NT_BAG_ITEM_ADDED,

@@ -467,6 +467,7 @@ export class OrderService {
         brand: {
           select: {
             name: true,
+            ownerId: true,
           },
         },
       },
@@ -554,7 +555,104 @@ export class OrderService {
       );
     }
 
+    // Immediate, cheap realtime sync (no DB row / email) so the buyer's Orders
+    // tab and the brand's order views re-fetch on status change without waiting
+    // on the notification pipeline. Best-effort.
+    await this.notifications.emitOrderUpdated(
+      [order.buyerId, order.brand?.ownerId],
+      { kind: 'STANDARD', orderId: order.id, status },
+    );
+
     return updated;
+  }
+
+  /**
+   * Admin approval action for an SLA-overdue standard order (Phase 3): cancel it
+   * and initiate the buyer refund. Guardrails: only unshipped + paid orders;
+   * idempotent (status-guarded `updateMany` — a concurrent/duplicate approval is
+   * a no-op); refund via the existing OrderRefundService. Notifies buyer + brand
+   * and pushes the realtime order update.
+   */
+  async cancelOverdueOrderByAdmin(orderId: string, actorUserId: string) {
+    const order = await this.prisma.order.findUnique({
+      where: { id: orderId },
+      select: {
+        id: true,
+        buyerId: true,
+        status: true,
+        paymentStatus: true,
+        brand: { select: { ownerId: true } },
+      },
+    });
+    if (!order) {
+      throw new NotFoundException('Order not found');
+    }
+    if (
+      order.status !== OrderStatus.PENDING &&
+      order.status !== OrderStatus.PROCESSING
+    ) {
+      throw new BadRequestException(
+        'Only an unshipped (pending/processing) order can be cancelled for an SLA breach.',
+      );
+    }
+    if (order.paymentStatus !== PaymentStatus.PAID) {
+      throw new BadRequestException('Only a paid order can be refunded.');
+    }
+
+    const cancelled = await this.prisma.$transaction(async (tx) => {
+      const updated = await tx.order.updateMany({
+        where: {
+          id: orderId,
+          status: {
+            in: [OrderStatus.PENDING, OrderStatus.PROCESSING],
+          },
+        },
+        data: { status: OrderStatus.CANCELLED },
+      });
+      if (updated.count === 0) {
+        return false;
+      }
+      await this.orderRefundService.initiateRefund(tx, {
+        orderId,
+        reason: 'SLA_FULFILLMENT_TIMEOUT_ADMIN',
+        actorId: actorUserId,
+      });
+      return true;
+    });
+
+    if (!cancelled) {
+      return {
+        statusCode: 200,
+        message: 'Order was already cancelled',
+        data: { orderId, cancelled: false },
+      };
+    }
+
+    if (order.buyerId) {
+      await this.notifications.create(
+        order.buyerId,
+        NotificationType.ORDER_FULFILLMENT_OVERDUE,
+        {
+          actorId: actorUserId,
+          payload: {
+            orderId,
+            autoCancelled: true,
+            reason: 'SLA_FULFILLMENT_TIMEOUT',
+            targetUrl: `/orders/${orderId}`,
+          },
+        },
+      );
+    }
+    await this.notifications.emitOrderUpdated(
+      [order.buyerId, order.brand?.ownerId],
+      { kind: 'STANDARD', orderId, status: OrderStatus.CANCELLED },
+    );
+
+    return {
+      statusCode: 200,
+      message: 'Order cancelled and refund initiated',
+      data: { orderId, cancelled: true },
+    };
   }
 
   private async getBrandId(ownerId: string): Promise<string> {

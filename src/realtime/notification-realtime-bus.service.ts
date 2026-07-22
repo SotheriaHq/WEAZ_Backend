@@ -10,7 +10,9 @@ import { EventsGateway } from './events.gateway';
 
 export type NotificationRealtimeEventName =
   | 'notification.created'
-  | 'notification.deleted';
+  | 'notification.deleted'
+  | 'order.updated'
+  | 'custom-order.updated';
 
 export type NotificationRealtimeBusEvent = {
   event: NotificationRealtimeEventName;
@@ -218,7 +220,9 @@ export class NotificationRealtimeBusService
 
     if (
       event !== 'notification.created' &&
-      event !== 'notification.deleted'
+      event !== 'notification.deleted' &&
+      event !== 'order.updated' &&
+      event !== 'custom-order.updated'
     ) {
       return null;
     }

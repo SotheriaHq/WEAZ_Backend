@@ -10,6 +10,11 @@ import {
 } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from '../prisma/prisma.service';
+import {
+  isValidIanaTimeZone,
+  validateWorkingHours,
+  type WorkingHoursSchedule,
+} from './working-hours.util';
 import { CreateProductDto, UpdateProductDto } from './dto/create-product.dto';
 import { AddToCartDto, UpdateCartItemDto } from './dto/cart.dto';
 import type {
@@ -7312,6 +7317,43 @@ export class StoreService {
 
   // ==================== BUYER ORDERS ====================
 
+  // Cheap change-detection signature for a buyer's orders (standard + custom):
+  // two indexed aggregates returning count + max(updatedAt). The Orders tab polls
+  // THIS (one light call) only while the realtime socket is down, and refetches
+  // the heavy list ONLY when the signature changes — so the fallback costs ~1
+  // aggregate/tick instead of the full multi-query payload.
+  async getMyOrdersVersion(userId: string) {
+    const [standard, custom] = await Promise.all([
+      this.prisma.order.aggregate({
+        where: { buyerId: userId },
+        _max: { updatedAt: true },
+        _count: { _all: true },
+      }),
+      this.prisma.customOrder.aggregate({
+        where: { buyerId: userId },
+        _max: { updatedAt: true },
+        _count: { _all: true },
+      }),
+    ]);
+
+    const maxStandard = standard._max.updatedAt?.getTime() ?? 0;
+    const maxCustom = custom._max.updatedAt?.getTime() ?? 0;
+    const count = (standard._count._all ?? 0) + (custom._count._all ?? 0);
+    const lastUpdatedMs = Math.max(maxStandard, maxCustom);
+
+    return {
+      statusCode: 200,
+      message: 'Orders version',
+      data: {
+        version: `${count}:${lastUpdatedMs}`,
+        count,
+        lastUpdated: lastUpdatedMs
+          ? new Date(lastUpdatedMs).toISOString()
+          : null,
+      },
+    };
+  }
+
   async getMyOrders(userId: string, page = 1, limit = 20) {
     const [orders, total] = await Promise.all([
       this.prisma.order.findMany({
@@ -10070,6 +10112,9 @@ export class StoreService {
         responseTimeSla: true,
         isStoreOpen: true,
         storePublishedAt: true,
+        workingHours: true,
+        timezone: true,
+        businessHoursConfiguredAt: true,
         ownerId: true,
       },
     });
@@ -10099,6 +10144,9 @@ export class StoreService {
             responseTimeSla: true,
             isStoreOpen: true,
             storePublishedAt: true,
+            workingHours: true,
+            timezone: true,
+            businessHoursConfiguredAt: true,
             ownerId: true,
           },
         });
@@ -10137,10 +10185,15 @@ export class StoreService {
       isProfileComplete: profileCompleteness.isComplete,
       profileMissingFields: profileCompleteness.missingFields,
       // Publish-gated: verified bank details alone must never unlock the
-      // studio; pausing (isStoreOpen=false) must not re-lock it.
+      // studio; pausing (isStoreOpen=false) must not re-lock it. The Business
+      // Hours hard gate (option B) is enforced SEPARATELY in the client route
+      // guard (redirects to the hours settings) rather than folded in here, so
+      // it doesn't send hours-less brands into the publish wizard.
       isSetupComplete: isComplete && Boolean(brand.storePublishedAt),
       isReadyToPublish: isComplete,
       isPublished: Boolean(brand.storePublishedAt),
+      businessHoursConfigured: Boolean(brand.businessHoursConfiguredAt),
+      workingHoursRequired: this.isWorkingHoursRequired(),
       missingFields,
       profile: {
         name: brand.name,
@@ -10156,8 +10209,70 @@ export class StoreService {
         socialTiktok: brand.socialTiktok,
         socialWebsite: brand.socialWebsite,
         responseTimeSla: policy?.responseTimeSla || brand.responseTimeSla,
+        workingHours: brand.workingHours ?? null,
+        timezone: brand.timezone ?? null,
       },
       paymentAccount: this.summarizePaymentAccount(paymentAccount),
+    };
+  }
+
+  private isWorkingHoursRequired(): boolean {
+    return (
+      String(process.env.STORE_WORKING_HOURS_REQUIRED ?? 'false')
+        .trim()
+        .toLowerCase() === 'true'
+    );
+  }
+
+  // Business Hours feature: validate + persist a brand's working schedule +
+  // timezone, and stamp `businessHoursConfiguredAt` (satisfies the hard gate).
+  async updateWorkingHours(
+    ownerId: string,
+    dto: { workingHours: unknown; timezone: string },
+  ) {
+    const brand = await this.prisma.brand.findUnique({
+      where: { ownerId },
+      select: { id: true },
+    });
+    if (!brand) {
+      throw new NotFoundException('Brand not found');
+    }
+    if (!isValidIanaTimeZone(dto.timezone)) {
+      throw new BadRequestException(
+        'A valid timezone is required (e.g. Africa/Lagos).',
+      );
+    }
+    let schedule: WorkingHoursSchedule;
+    try {
+      schedule = validateWorkingHours(dto.workingHours);
+    } catch (error) {
+      throw new BadRequestException(
+        error instanceof Error ? error.message : 'Invalid working hours.',
+      );
+    }
+
+    const updated = await this.prisma.brand.update({
+      where: { id: brand.id },
+      data: {
+        workingHours: schedule as unknown as Prisma.InputJsonValue,
+        timezone: dto.timezone.trim(),
+        businessHoursConfiguredAt: new Date(),
+      },
+      select: {
+        workingHours: true,
+        timezone: true,
+        businessHoursConfiguredAt: true,
+      },
+    });
+
+    return {
+      statusCode: 200,
+      message: 'Working hours saved',
+      data: {
+        workingHours: updated.workingHours,
+        timezone: updated.timezone,
+        businessHoursConfiguredAt: updated.businessHoursConfiguredAt,
+      },
     };
   }
 

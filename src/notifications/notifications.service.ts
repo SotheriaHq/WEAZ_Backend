@@ -99,6 +99,64 @@ export class NotificationsService {
     private readonly notificationRealtimeBus?: NotificationRealtimeBusService,
   ) {}
 
+  /**
+   * Broadcast a lightweight order status/progress change to recipients' realtime
+   * rooms so their Orders views re-sync immediately — independent of the
+   * notification/email pipeline (no DB row, no email). Reuses the notification
+   * realtime bus (Redis fan-out when available) with a direct socket fallback.
+   * Best-effort and swallow-all: never throws into the caller's mutation path.
+   * Emits `order.updated` (standard) or `custom-order.updated` (custom); web/
+   * mobile subscribe to these via the generic message-event channel.
+   */
+  async emitOrderUpdated(
+    recipientIds: Array<string | null | undefined>,
+    payload: {
+      kind: 'STANDARD' | 'CUSTOM';
+      orderId: string;
+      status?: string | null;
+      progressStage?: string | null;
+    },
+  ): Promise<void> {
+    const event =
+      payload.kind === 'CUSTOM' ? 'custom-order.updated' : 'order.updated';
+    const uniqueIds = Array.from(
+      new Set(
+        recipientIds
+          .map((id) => (typeof id === 'string' ? id.trim() : ''))
+          .filter((id) => id.length > 0),
+      ),
+    );
+    if (uniqueIds.length === 0) {
+      return;
+    }
+    const realtimePayload = {
+      type: event,
+      kind: payload.kind,
+      orderId: payload.orderId,
+      status: payload.status ?? null,
+      progressStage: payload.progressStage ?? null,
+      ts: Date.now(),
+    };
+    for (const recipientId of uniqueIds) {
+      try {
+        const emitted = await this.notificationRealtimeBus?.publishOrEmit({
+          event,
+          room: `USER:${recipientId}`,
+          payload: realtimePayload,
+        });
+        if (!emitted) {
+          this.events.server
+            ?.to(`USER:${recipientId}`)
+            .emit(event, realtimePayload);
+        }
+      } catch (error) {
+        this.logger.warn(
+          `Failed to emit ${event} for ${recipientId}: ${error}`,
+        );
+      }
+    }
+  }
+
   private mapActorDisplay(actor: any) {
     if (!actor) return null;
     return {

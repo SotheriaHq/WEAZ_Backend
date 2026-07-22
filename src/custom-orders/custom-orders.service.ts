@@ -3038,6 +3038,14 @@ export class CustomOrdersService {
       },
       dedupeMs: 5 * 60 * 1000,
     });
+
+    // Immediate realtime sync, emitted directly from the API process (NOT via
+    // the BullMQ notification worker), so the buyer's Orders tab re-fetches the
+    // moment the custom order changes — even if the worker is lagging or down.
+    void this.notifications?.emitOrderUpdated([recipientId], {
+      kind: 'CUSTOM',
+      orderId: customOrderId,
+    });
   }
 
   private async queueBrandNotification(
@@ -3244,13 +3252,23 @@ export class CustomOrdersService {
       ]),
     );
 
+    const isGenericTitle = (title?: string | null) => {
+      if (!title || !title.trim()) return true;
+      const normalized = title.trim();
+      return (
+        normalized === 'Custom order configuration' ||
+        normalized === 'costum order confirguration' ||
+        normalized === 'Custom order item'
+      );
+    };
+
     return items.map((item) => {
       const needsFreshMedia = hasEphemeralMediaSignature(
         item.sourcePrimaryMediaUrlSnapshot,
       );
       const hasStableIdentitySnapshot =
         Boolean(item.sourceBrandNameSnapshot) &&
-        Boolean(item.sourceTitleSnapshot) &&
+        !isGenericTitle(item.sourceTitleSnapshot) &&
         Boolean(item.sourcePrimaryMediaUrlSnapshot);
       if (!needsFreshMedia && hasStableIdentitySnapshot) {
         return item;
@@ -3266,7 +3284,9 @@ export class CustomOrdersService {
 
       return {
         ...item,
-        sourceTitleSnapshot: item.sourceTitleSnapshot || source.title,
+        sourceTitleSnapshot: !isGenericTitle(item.sourceTitleSnapshot)
+          ? item.sourceTitleSnapshot
+          : source.title || 'Custom order',
         sourceBrandNameSnapshot:
           item.sourceBrandNameSnapshot || source.brandName,
         sourcePrimaryMediaUrlSnapshot: needsFreshMedia
@@ -3279,12 +3299,21 @@ export class CustomOrdersService {
   private async hydrateSingleOrderSourceSnapshot(
     order: Prisma.CustomOrderGetPayload<Prisma.CustomOrderDefaultArgs>,
   ): Promise<Prisma.CustomOrderGetPayload<Prisma.CustomOrderDefaultArgs>> {
+    const isGenericTitle = (title?: string | null) => {
+      if (!title || !title.trim()) return true;
+      const normalized = title.trim();
+      return (
+        normalized === 'Custom order configuration' ||
+        normalized === 'costum order confirguration' ||
+        normalized === 'Custom order item'
+      );
+    };
     const needsFreshMedia = hasEphemeralMediaSignature(
       order.sourcePrimaryMediaUrlSnapshot,
     );
     const hasStableIdentitySnapshot =
       Boolean(order.sourceBrandNameSnapshot) &&
-      Boolean(order.sourceTitleSnapshot) &&
+      !isGenericTitle(order.sourceTitleSnapshot) &&
       Boolean(order.sourcePrimaryMediaUrlSnapshot);
     if (!needsFreshMedia && hasStableIdentitySnapshot) {
       return order;
@@ -3296,7 +3325,9 @@ export class CustomOrdersService {
     );
     return {
       ...order,
-      sourceTitleSnapshot: order.sourceTitleSnapshot || source.title,
+      sourceTitleSnapshot: !isGenericTitle(order.sourceTitleSnapshot)
+        ? order.sourceTitleSnapshot
+        : source.title || 'Custom order',
       sourceBrandNameSnapshot:
         order.sourceBrandNameSnapshot || source.brandName,
       sourcePrimaryMediaUrlSnapshot: needsFreshMedia
