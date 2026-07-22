@@ -19,4 +19,11 @@ export class AdminDashboardController {
   async getStats() {
     return this.dashboardService.getStats();
   }
+
+  /** Cheap live badges for 20s polling (attention, disputes, payouts, …). */
+  @Get('badges')
+  @RequirePermissions(ADMIN_PERMISSIONS.DASHBOARD_READ)
+  async getLiveBadges() {
+    return this.dashboardService.getLiveBadges();
+  }
 }

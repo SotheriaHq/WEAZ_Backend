@@ -18,6 +18,9 @@ describe('Phase 0 admin permissions', () => {
     expect(getPermissions(AdminDashboardController, 'getStats')).toEqual([
       ADMIN_PERMISSIONS.DASHBOARD_READ,
     ]);
+    expect(getPermissions(AdminDashboardController, 'getLiveBadges')).toEqual([
+      ADMIN_PERMISSIONS.DASHBOARD_READ,
+    ]);
     expect(getPermissions(PaymentController, 'simulate')).toEqual([
       ADMIN_PERMISSIONS.PAYMENTS_SIMULATE,
     ]);

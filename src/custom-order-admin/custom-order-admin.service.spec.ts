@@ -29,6 +29,7 @@ describe('CustomOrderAdminService', () => {
         findMany: jest.fn(),
         findUnique: jest.fn(),
         update: jest.fn(),
+        updateMany: jest.fn().mockResolvedValue({ count: 0 }),
       },
       customOrderAnalyticsEvent: {
         findMany: jest.fn(),
@@ -502,6 +503,113 @@ describe('CustomOrderAdminService', () => {
     expect(result.statusCode).toBe(200);
     expect(result.data.releasedBatches).toBe(1);
     expect(result.data.releasedAllocations).toBe(2);
+    // Releasing payouts clears the PAYOUT_RELEASE_ELIGIBLE attention flag.
+    expect(prisma.customOrder.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          id: { in: ['co_1'] },
+          adminAttentionRequiredAt: { not: null },
+        }),
+      }),
+    );
+  });
+
+  it('lists orders with server-side attention filter and attentionTotal', async () => {
+    prisma.customOrder.findMany.mockResolvedValue([
+      {
+        id: 'co_flagged',
+        brandId: 'brand_1',
+        buyerId: 'buyer_1',
+        status: CustomOrderStatus.IN_PRODUCTION,
+        paymentStatus: PaymentStatus.PAID,
+        currentProgressStage: null,
+        sourceType: 'PRODUCT',
+        sourceId: 'src_1',
+        sourceTitleSnapshot: 'Flagged order',
+        sourceBrandNameSnapshot: 'Brand',
+        sourcePrimaryMediaUrlSnapshot: null,
+        lastBrandProgressUpdateAt: null,
+        buyerAcceptanceWindowEndsAt: null,
+        createdAt: new Date('2026-01-01T00:00:00.000Z'),
+        updatedAt: new Date('2026-01-02T00:00:00.000Z'),
+        currency: 'NGN',
+        contactInfoJson: { customerName: 'Ada', email: 'ada@example.com' },
+        buyerPriceSummaryJson: { grandTotal: 15000 },
+        adminAttentionRequiredAt: new Date('2026-01-02T00:00:00.000Z'),
+        adminAttentionReason: 'DISPUTE_OPENED',
+        anonymizedAt: null,
+        brand: { id: 'brand_1', name: 'Brand', ownerId: 'owner_1' },
+      },
+    ]);
+    prisma.customOrder.count.mockResolvedValue(1);
+
+    const result = await service.listOrders({
+      attention: true,
+      sort: 'attention',
+      page: 1,
+      limit: 30,
+    });
+
+    expect(result.statusCode).toBe(200);
+    expect(result.data.total).toBe(1);
+    expect(result.data.attentionTotal).toBe(1);
+    expect(result.data.nextCursor).toBeNull();
+    expect(result.data.items[0]).toEqual(
+      expect.objectContaining({
+        id: 'co_flagged',
+        adminAttentionRequiredAt: expect.any(Date),
+        adminAttentionReason: 'DISPUTE_OPENED',
+        buyerPriceSummary: { grandTotal: 15000, currency: 'NGN' },
+        buyer: expect.objectContaining({
+          name: 'Ada',
+          email: 'ada@example.com',
+        }),
+      }),
+    );
+    // Narrow select + no interactive transaction for pure reads.
+    expect(prisma.customOrder.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        select: expect.objectContaining({ id: true, buyerPriceSummaryJson: true }),
+      }),
+    );
+  });
+
+  it('flagRisk keeps attention raised and sends buyer-friendly copy', async () => {
+    prisma.customOrder.findUnique.mockResolvedValue({
+      id: 'co_1',
+      buyerId: 'buyer_1',
+      brandId: 'brand_1',
+    });
+    prisma.customOrder.updateMany.mockResolvedValue({ count: 1 });
+
+    const result = await service.flagRisk(
+      'co_1',
+      { reason: 'Suspicious measurements' },
+      'admin_1',
+    );
+
+    expect(result.statusCode).toBe(200);
+    // Sets FLAG_RISK (does not clear).
+    expect(prisma.customOrder.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          id: 'co_1',
+          adminAttentionRequiredAt: null,
+        }),
+        data: expect.objectContaining({
+          adminAttentionReason: 'FLAG_RISK',
+        }),
+      }),
+    );
+    expect(sideEffects.enqueueNotification).toHaveBeenCalledWith(
+      expect.objectContaining({
+        recipientIds: ['buyer_1'],
+        payload: expect.objectContaining({
+          reason: 'FLAG_RISK',
+          message: expect.stringContaining("don't need to do anything"),
+        }),
+      }),
+    );
   });
 
   it('sets and clears retention holds for custom orders', async () => {

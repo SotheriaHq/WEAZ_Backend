@@ -34,6 +34,12 @@ import { CustomOrderRefundService } from './custom-order-refund.service';
 import { CustomOrderSideEffectsService } from './custom-order-side-effects.service';
 import { CustomOrderAccessService } from './custom-order-access.service';
 import {
+  clearAdminAttention,
+  getCachedActiveAdminIds,
+  markAdminAttention,
+  type AdminAttentionReason,
+} from './custom-order-admin-attention';
+import {
   measurementKeysContainOppositeGender,
   normalizeIdList as normalizeIdArray,
   normalizeMeasurementKeyList as normalizeMeasurementKeyArray,
@@ -1964,6 +1970,9 @@ export class CustomOrdersService {
         );
       });
 
+    // Terminal completion self-resolves any leftover attention flag.
+    await clearAdminAttention(this.prisma, customOrderId, userId);
+
     return {
       statusCode: 200,
       message: 'Custom order delivery confirmed',
@@ -2096,6 +2105,14 @@ export class CustomOrdersService {
       { reasonType: dto.issueType },
     );
 
+    // Sticky admin attention + admin fan-out so the dashboard flag lights up
+    // immediately (not only after the next ops cron cycle).
+    await this.flagOrderForAdminAttention(
+      customOrderId,
+      'ISSUE_REPORTED',
+      { issueType: dto.issueType },
+    );
+
     return {
       statusCode: 200,
       message: 'Custom order issue reported',
@@ -2211,6 +2228,13 @@ export class CustomOrdersService {
 
       return next;
     });
+
+    if (response === CustomOrderExtensionResponseStatus.REJECTED) {
+      await this.flagOrderForAdminAttention(customOrderId, 'DISPUTE_OPENED', {
+        reasonType: CustomOrderIssueType.UNREASONABLE_DELAY,
+        source: 'EXTENSION_REJECTED',
+      });
+    }
 
     return {
       statusCode: 200,
@@ -2606,6 +2630,9 @@ export class CustomOrdersService {
       { brandName: order.sourceBrandNameSnapshot },
       ownerUserId,
     );
+
+    // Brand acceptance self-resolves BRAND_ACCEPTANCE_TIMEOUT attention.
+    await clearAdminAttention(this.prisma, customOrderId, ownerUserId);
 
     return {
       statusCode: 200,
@@ -3075,6 +3102,60 @@ export class CustomOrdersService {
       },
       dedupeMs: 5 * 60 * 1000,
     });
+  }
+
+  /**
+   * Raise the sticky admin-attention flag and notify active admins. Fire-and-forget
+   * after the buyer mutation so issue/dispute latency is not blocked on fan-out.
+   */
+  private flagOrderForAdminAttention(
+    customOrderId: string,
+    reason: AdminAttentionReason,
+    payload: Record<string, unknown> = {},
+  ) {
+    void this.runAdminAttentionFanOut(customOrderId, reason, payload);
+  }
+
+  private async runAdminAttentionFanOut(
+    customOrderId: string,
+    reason: AdminAttentionReason,
+    payload: Record<string, unknown> = {},
+  ) {
+    try {
+      await markAdminAttention(this.prisma, customOrderId, reason, {
+        onError: (message) => this.logger.warn(message),
+      });
+
+      const adminIds = await getCachedActiveAdminIds(this.prisma);
+      if (adminIds.length === 0) {
+        return;
+      }
+
+      await this.sideEffects.enqueueNotification({
+        customOrderId,
+        recipientIds: adminIds,
+        notificationType:
+          NotificationType.CUSTOM_ORDER_ADMIN_REVIEW_TRIGGERED,
+        target: {
+          type: 'SYSTEM' as const,
+          id: `admin-custom-order:${customOrderId}`,
+          preview: `/admin/custom-orders/${customOrderId}`,
+        },
+        payload: {
+          customOrderId,
+          reason,
+          targetUrl: `/admin/custom-orders/${customOrderId}`,
+          ...payload,
+        },
+        dedupeMs: 5 * 60 * 1000,
+      });
+    } catch (error) {
+      this.logger.warn(
+        `Failed to notify admins for attention on ${customOrderId}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
   }
 
   private async resolveUserDisplayName(

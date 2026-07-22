@@ -16,6 +16,7 @@ import { CustomOrderSideEffectsService } from './custom-order-side-effects.servi
 import { CustomOrderAccessService } from './custom-order-access.service';
 import { CustomOrdersService } from './custom-orders.service';
 import { BagValidationService } from 'src/bagging/bag-validation.service';
+import { clearActiveAdminIdsCache } from './custom-order-admin-attention';
 
 describe('CustomOrdersService', () => {
   let service: CustomOrdersService;
@@ -64,10 +65,12 @@ describe('CustomOrdersService', () => {
 
   beforeEach(async () => {
     process.env.CUSTOM_ORDER_CANCEL_WINDOW_MS = String(60 * 60 * 1000);
+    clearActiveAdminIdsCache();
 
     prisma = {
       user: {
         findUnique: jest.fn(),
+        findMany: jest.fn().mockResolvedValue([]),
         update: jest.fn(),
       },
       brand: {
@@ -105,6 +108,7 @@ describe('CustomOrdersService', () => {
         findFirst: jest.fn(),
         findMany: jest.fn(),
         update: jest.fn(),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       },
       customOrderTimelineEvent: {
         count: jest.fn(),
@@ -497,9 +501,103 @@ describe('CustomOrdersService', () => {
         status: CustomOrderLedgerAllocationStatus.FORFEITED,
       },
     });
+    // Brand + buyer notifications; admin fan-out only when admins exist.
+    // Brand + buyer notifications; admin fan-out is async after return.
     expect(sideEffects.enqueueNotification).toHaveBeenCalledTimes(2);
     expect(result.statusCode).toBe(200);
     expect(result.data.status).toBe(CustomOrderStatus.DELIVERY_ISSUE_REPORTED);
+
+    // Fire-and-forget attention flag still runs (flush microtasks).
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(prisma.customOrder.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          id: 'co_1',
+          adminAttentionRequiredAt: null,
+        }),
+        data: expect.objectContaining({
+          adminAttentionReason: 'ISSUE_REPORTED',
+        }),
+      }),
+    );
+  });
+
+  it('sets admin attention and notifies admins when a dispute/issue is opened', async () => {
+    prisma.customOrder.findFirst.mockResolvedValue(
+      buildOrder({
+        status: CustomOrderStatus.IN_PRODUCTION,
+      }),
+    );
+    prisma.brand.findUnique.mockResolvedValue({ ownerId: 'owner_1' });
+    prisma.user.findMany.mockResolvedValue([
+      { id: 'admin_1' },
+      { id: 'admin_2' },
+    ]);
+
+    const tx = {
+      customOrderIssue: { create: jest.fn() },
+      customOrderDispute: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      customOrder: {
+        update: jest.fn().mockResolvedValue(
+          buildOrder({ status: CustomOrderStatus.DELIVERY_ISSUE_REPORTED }),
+        ),
+      },
+      customOrderLedgerAllocation: {
+        updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+      },
+    };
+    prisma.$transaction.mockImplementation(
+      async (callback: (innerTx: typeof tx) => Promise<unknown>) =>
+        callback(tx),
+    );
+
+    await service.reportIssue('buyer_1', 'co_1', {
+      issueType: CustomOrderIssueType.WRONG_ITEM,
+      description: 'Wrong item delivered.',
+      evidenceJson: { photos: ['https://example.com/p.jpg'] },
+    });
+
+    // Async fan-out: poll until admin notify lands (or timeout).
+    await new Promise<void>((resolve, reject) => {
+      const started = Date.now();
+      const tick = () => {
+        if (sideEffects.enqueueNotification.mock.calls.length >= 3) {
+          resolve();
+          return;
+        }
+        if (Date.now() - started > 2000) {
+          reject(
+            new Error(
+              `admin fan-out did not run; calls=${sideEffects.enqueueNotification.mock.calls.length}`,
+            ),
+          );
+          return;
+        }
+        setImmediate(tick);
+      };
+      tick();
+    });
+
+    expect(prisma.customOrder.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          adminAttentionReason: 'ISSUE_REPORTED',
+        }),
+      }),
+    );
+    // Brand + buyer + admin fan-out
+    expect(sideEffects.enqueueNotification).toHaveBeenCalledTimes(3);
+    expect(sideEffects.enqueueNotification).toHaveBeenCalledWith(
+      expect.objectContaining({
+        recipientIds: ['admin_1', 'admin_2'],
+        payload: expect.objectContaining({
+          reason: 'ISSUE_REPORTED',
+        }),
+      }),
+    );
   });
 
   it('rejects issue reporting when the buyer acceptance window is not open', async () => {

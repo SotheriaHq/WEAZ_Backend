@@ -147,6 +147,12 @@ const describeAdminReviewReason = (reason: unknown): string | null => {
       return "it's been stuck at the same stage for a while";
     case 'PAYOUT_RELEASE_ELIGIBLE':
       return "it's ready for a manual payout release";
+    case 'DISPUTE_OPENED':
+      return 'a dispute was opened';
+    case 'ISSUE_REPORTED':
+      return 'the buyer reported an issue';
+    case 'FLAG_RISK':
+      return 'a risk flag was raised';
     default:
       return null;
   }

@@ -1,4 +1,4 @@
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import {
   CustomOrderRetentionHoldType,
   CustomFabricRuleBasisStatus,
@@ -12,6 +12,7 @@ import {
   IsArray,
   IsBoolean,
   IsEnum,
+  IsIn,
   IsInt,
   IsOptional,
   IsString,
@@ -20,6 +21,18 @@ import {
   Min,
   MinLength,
 } from 'class-validator';
+
+/** Query-string truthy: true / "true" / "1" / 1. */
+const toQueryBoolean = ({ value }: { value: unknown }): boolean | undefined => {
+  if (value === undefined || value === null || value === '') return undefined;
+  if (value === true || value === 'true' || value === '1' || value === 1) {
+    return true;
+  }
+  if (value === false || value === 'false' || value === '0' || value === 0) {
+    return false;
+  }
+  return Boolean(value);
+};
 
 export class ReviewCustomFabricRuleBasisDto {
   @IsEnum(CustomFabricRuleBasisStatus)
@@ -99,6 +112,33 @@ export class QueryAdminCustomOrdersDto {
   @IsOptional()
   @IsString()
   q?: string;
+
+  /**
+   * When true, only return orders with an active admin-attention flag
+   * (non-terminal, non-anonymized). Powers the dashboard deep-link
+   * `?attention=1` and the "Needs review" toggle.
+   */
+  @IsOptional()
+  @Transform(toQueryBoolean)
+  @IsBoolean()
+  attention?: boolean;
+
+  /**
+   * Server-side sort. Default `attention` puts flagged rows first (then newest).
+   * `amount` falls back to newest — grand total lives in JSON, no scalar index.
+   */
+  @IsOptional()
+  @IsIn(['attention', 'newest', 'oldest', 'amount'])
+  sort?: 'attention' | 'newest' | 'oldest' | 'amount';
+
+  /**
+   * Keyset cursor (opaque) from a previous response's `nextCursor`.
+   * Prefer over deep `page` offsets for large queues.
+   */
+  @IsOptional()
+  @IsString()
+  @MaxLength(512)
+  cursor?: string;
 }
 
 export class QueryStaleCustomOrdersDto {

@@ -15,6 +15,13 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import { CustomOrdersPaymentsService } from 'src/custom-orders/custom-orders-payments.service';
 import { CustomOrderRefundService } from 'src/custom-orders/custom-order-refund.service';
 import { CustomOrderSideEffectsService } from 'src/custom-orders/custom-order-side-effects.service';
+import {
+  getCachedActiveAdminIds,
+  mapPool,
+  markAdminAttention as markAdminAttentionFlag,
+  markAdminAttentionMany,
+  type AdminAttentionReason,
+} from 'src/custom-orders/custom-order-admin-attention';
 import { LedgerService } from 'src/finance/ledger.service';
 import { PaymentRuntimeHealthService } from 'src/payment/payment-runtime-health.service';
 import { PrismaService } from 'src/prisma/prisma.service';
@@ -27,6 +34,8 @@ const STALE_OPERATIONAL_STATUS_WARNING_HOURS = 24;
 const PAYMENT_RECONCILIATION_LOOKBACK_HOURS = 24 * 14;
 const PAYMENT_RECONCILIATION_REVERIFY_MINUTES = 15;
 const PAYMENT_RECONCILIATION_BATCH_SIZE = 100;
+/** Bounded concurrency for per-order notification fan-out inside crons. */
+const CRON_NOTIFY_CONCURRENCY = 10;
 
 @Injectable()
 export class CustomOrderOpsCronService {
@@ -204,7 +213,15 @@ export class CustomOrderOpsCronService {
         take: 200,
       });
 
-      for (const order of orders) {
+      // Prefetch brand owners once (avoids N brand lookups in the notify loop).
+      const brandOwnerByBrandId = await this.loadBrandOwnerMap(
+        orders.map((order) => order.brandId),
+      );
+
+      await mapPool(orders, CRON_NOTIFY_CONCURRENCY, async (order) => {
+        if (!order.lastBrandProgressUpdateAt) {
+          return;
+        }
         const hoursWaiting = Math.max(
           STALE_OPERATIONAL_STATUS_WARNING_HOURS,
           Math.floor(
@@ -226,17 +243,22 @@ export class CustomOrderOpsCronService {
           dedupeMs: 18 * 60 * 60 * 1000,
         });
 
-        await this.notifyBrandOwner(order.brandId, order.id, {
-          notificationType: NotificationType.CUSTOM_ORDER_REVIEW_REQUIRED,
-          payload: {
+        const ownerId = brandOwnerByBrandId.get(order.brandId);
+        if (ownerId) {
+          await this.sideEffects.enqueueNotification({
             customOrderId: order.id,
-            status: order.status,
-            hoursWaiting,
-            reason: 'STALE_OPERATIONAL_STATUS',
-          },
-          target: this.studioCustomOrderTarget(order.id),
-          dedupeMs: 18 * 60 * 60 * 1000,
-        });
+            recipientIds: [ownerId],
+            notificationType: NotificationType.CUSTOM_ORDER_REVIEW_REQUIRED,
+            target: this.studioCustomOrderTarget(order.id),
+            payload: {
+              customOrderId: order.id,
+              status: order.status,
+              hoursWaiting,
+              reason: 'STALE_OPERATIONAL_STATUS',
+            },
+            dedupeMs: 18 * 60 * 60 * 1000,
+          });
+        }
 
         if (admins.length > 0) {
           await this.sideEffects.enqueueNotification({
@@ -253,8 +275,14 @@ export class CustomOrderOpsCronService {
             },
             dedupeMs: 18 * 60 * 60 * 1000,
           });
-          await this.markAdminAttention(order.id, 'STALE_OPERATIONAL_STATUS');
         }
+      });
+
+      if (admins.length > 0 && orders.length > 0) {
+        await this.markAdminAttentionMany(
+          orders.map((order) => order.id),
+          'STALE_OPERATIONAL_STATUS',
+        );
       }
 
       if (orders.length > 0) {
@@ -360,7 +388,9 @@ export class CustomOrderOpsCronService {
         take: 100,
       });
 
-      for (const order of orders) {
+      await mapPool(orders, CRON_NOTIFY_CONCURRENCY, async (order) => {
+        // Moves to REFUND_IN_PROGRESS (terminal for attention badge) — ops land
+        // on the refund-review queue; no sticky attention flag after escalate.
         const escalated = await this.prisma.$transaction(async (tx) => {
           const updated = await tx.customOrder.updateMany({
             where: {
@@ -397,7 +427,7 @@ export class CustomOrderOpsCronService {
           return true;
         });
         if (!escalated) {
-          continue;
+          return;
         }
 
         await this.sideEffects.enqueueNotification({
@@ -425,9 +455,8 @@ export class CustomOrderOpsCronService {
             },
             dedupeMs: 12 * 60 * 60 * 1000,
           });
-          await this.markAdminAttention(order.id, 'BRAND_ACCEPTANCE_TIMEOUT');
         }
-      }
+      });
 
       if (orders.length > 0) {
         this.logger.log(
@@ -726,7 +755,9 @@ export class CustomOrderOpsCronService {
         take: 200,
       });
 
-      for (const event of events) {
+      const attentionOrderIds: string[] = [];
+
+      await mapPool(events, CRON_NOTIFY_CONCURRENCY, async (event) => {
         await this.prisma.$transaction(async (tx) => {
           await tx.customOrderProgressEvent.update({
             where: { id: event.id },
@@ -774,8 +805,12 @@ export class CustomOrderOpsCronService {
             },
             dedupeMs: 12 * 60 * 60 * 1000,
           });
-          await this.markAdminAttention(event.customOrder.id, 'STALE_STAGE');
+          attentionOrderIds.push(event.customOrder.id);
         }
+      });
+
+      if (attentionOrderIds.length > 0) {
+        await this.markAdminAttentionMany(attentionOrderIds, 'STALE_STAGE');
       }
 
       if (events.length > 0) {
@@ -959,7 +994,8 @@ export class CustomOrderOpsCronService {
       const orderIds = Array.from(
         new Set(allocations.map((allocation) => allocation.customOrderId)),
       );
-      for (const customOrderId of orderIds) {
+
+      await mapPool(orderIds, CRON_NOTIFY_CONCURRENCY, async (customOrderId) => {
         await this.sideEffects.enqueueNotification({
           customOrderId,
           recipientIds: admins,
@@ -974,7 +1010,6 @@ export class CustomOrderOpsCronService {
           },
           dedupeMs: 4 * 60 * 60 * 1000,
         });
-        await this.markAdminAttention(customOrderId, 'PAYOUT_RELEASE_ELIGIBLE');
 
         await this.prisma.customOrderTimelineEvent.create({
           data: {
@@ -987,7 +1022,9 @@ export class CustomOrderOpsCronService {
             } as Prisma.InputJsonValue,
           },
         });
-      }
+      });
+
+      await this.markAdminAttentionMany(orderIds, 'PAYOUT_RELEASE_ELIGIBLE');
 
       if (orderIds.length > 0) {
         this.logger.log(
@@ -1020,26 +1057,45 @@ export class CustomOrderOpsCronService {
   /**
    * Persist a sticky "needs admin attention" flag on the order so the admin
    * dashboard flag, the orders table danger badge, and the order screen all have
-   * a durable signal — even if the admin never opens their notifications. Set
-   * only when currently unset (idempotent under repeated cron runs); any admin
-   * action on the order clears it (see custom-order-admin.service clearAdminAttention).
+   * a durable signal — even if the admin never opens their notifications.
+   * Shared helper: idempotent, cooldown-aware, skips terminal/anonymized rows.
    */
-  private async markAdminAttention(customOrderId: string, reason: string) {
-    try {
-      await this.prisma.customOrder.updateMany({
-        where: { id: customOrderId, adminAttentionRequiredAt: null },
-        data: {
-          adminAttentionRequiredAt: new Date(),
-          adminAttentionReason: reason,
-          adminAttentionClearedAt: null,
-          adminAttentionClearedById: null,
-        },
-      });
-    } catch (error) {
-      this.logger.warn(
-        `Failed to set admin-attention flag for custom order ${customOrderId}: ${this.formatError(error)}`,
-      );
+  private async markAdminAttention(
+    customOrderId: string,
+    reason: AdminAttentionReason,
+  ) {
+    await markAdminAttentionFlag(this.prisma, customOrderId, reason, {
+      onError: (message) => this.logger.warn(message),
+    });
+  }
+
+  private async markAdminAttentionMany(
+    customOrderIds: string[],
+    reason: AdminAttentionReason,
+  ) {
+    await markAdminAttentionMany(this.prisma, customOrderIds, reason, {
+      onError: (message) => this.logger.warn(message),
+    });
+  }
+
+  private async loadBrandOwnerMap(
+    brandIds: string[],
+  ): Promise<Map<string, string>> {
+    const unique = Array.from(new Set(brandIds.filter(Boolean)));
+    const map = new Map<string, string>();
+    if (unique.length === 0) {
+      return map;
     }
+    const brands = await this.prisma.brand.findMany({
+      where: { id: { in: unique } },
+      select: { id: true, ownerId: true },
+    });
+    for (const brand of brands) {
+      if (brand.ownerId) {
+        map.set(brand.id, brand.ownerId);
+      }
+    }
+    return map;
   }
 
   private studioCustomOrderTarget(customOrderId: string) {
@@ -1079,16 +1135,7 @@ export class CustomOrderOpsCronService {
   }
 
   private async getActiveAdminIds(): Promise<string[]> {
-    const admins = await this.prisma.user.findMany({
-      where: {
-        role: { in: [Role.Admin, Role.SuperAdmin] },
-        status: UserStatus.ACTIVE,
-      },
-      select: { id: true },
-      take: 50,
-    });
-
-    return admins.map((admin) => admin.id);
+    return getCachedActiveAdminIds(this.prisma);
   }
 
   private formatError(error: unknown): string {

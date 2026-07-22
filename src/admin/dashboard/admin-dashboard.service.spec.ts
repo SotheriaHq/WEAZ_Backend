@@ -17,14 +17,25 @@ describe('AdminDashboardService', () => {
       dispute: {
         count: jest.fn().mockResolvedValue(0),
       },
+      order: {
+        count: jest.fn().mockResolvedValue(0),
+      },
+      customOrder: {
+        count: jest.fn().mockResolvedValue(0),
+      },
+      design: {
+        count: jest.fn().mockResolvedValue(0),
+      },
       adminAuditLog: {
         findMany: jest.fn().mockResolvedValue([]),
       },
       collection: {
         findMany: jest.fn().mockResolvedValue([]),
+        count: jest.fn().mockResolvedValue(0),
       },
       product: {
         findMany: jest.fn().mockResolvedValue([]),
+        count: jest.fn().mockResolvedValue(0),
       },
     };
     const systemConfigService = {
@@ -58,5 +69,26 @@ describe('AdminDashboardService', () => {
         },
       },
     });
+  });
+
+  it('returns a cheap live-badges payload without full stats fan-out', async () => {
+    const { prisma, service } = createService();
+    prisma.customOrder.count.mockResolvedValue(3);
+    prisma.dispute.count.mockResolvedValue(2);
+    prisma.payout.count.mockResolvedValue(1);
+    prisma.brand.count.mockResolvedValue(4);
+    prisma.order.count.mockResolvedValue(5);
+
+    const badges = await service.getLiveBadges();
+
+    expect(badges).toEqual({
+      customOrdersNeedingAttention: 3,
+      openDisputes: 2,
+      pendingPayouts: 1,
+      pendingVerifications: 4,
+      ordersNeedingAttention: 5,
+    });
+    expect(prisma.user.count).not.toHaveBeenCalled();
+    expect(prisma.design.count).not.toHaveBeenCalled();
   });
 });

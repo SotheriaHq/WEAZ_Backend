@@ -19,6 +19,13 @@ import {
 import { CustomOrderRefundService } from 'src/custom-orders/custom-order-refund.service';
 import { CustomOrderSideEffectsService } from 'src/custom-orders/custom-order-side-effects.service';
 import {
+  adminAttentionActiveWhere,
+  clearAdminAttention as clearAdminAttentionFlag,
+  clearAdminAttentionMany,
+  markAdminAttention as markAdminAttentionFlag,
+  TERMINAL_CUSTOM_ORDER_STATUSES,
+} from 'src/custom-orders/custom-order-admin-attention';
+import {
   AdminCustomOrderReminderDto,
   CancelPaidCustomOrderDto,
   CreateAdminCustomFabricRuleBasisDto,
@@ -218,52 +225,267 @@ export class CustomOrderAdminService {
     };
   }
 
+  /** Columns the admin table needs — never pull measurement/price JSON blobs. */
+  private static readonly LIST_SELECT = {
+    id: true,
+    brandId: true,
+    buyerId: true,
+    status: true,
+    paymentStatus: true,
+    currentProgressStage: true,
+    sourceType: true,
+    sourceId: true,
+    sourceTitleSnapshot: true,
+    sourceBrandNameSnapshot: true,
+    sourcePrimaryMediaUrlSnapshot: true,
+    lastBrandProgressUpdateAt: true,
+    buyerAcceptanceWindowEndsAt: true,
+    createdAt: true,
+    updatedAt: true,
+    currency: true,
+    contactInfoJson: true,
+    buyerPriceSummaryJson: true,
+    adminAttentionRequiredAt: true,
+    adminAttentionReason: true,
+    anonymizedAt: true,
+    brand: { select: { id: true, name: true, ownerId: true } },
+  } satisfies Prisma.CustomOrderSelect;
+
   async listOrders(query: QueryAdminCustomOrdersDto) {
     const page = query.page ?? 1;
     const take = query.limit ?? 20;
-    const where: Prisma.CustomOrderWhereInput = {
+    const attentionOnly = Boolean(query.attention);
+    const sort = query.sort ?? 'attention';
+    const cursorPayload = this.decodeListCursor(query.cursor);
+
+    const baseWhere: Prisma.CustomOrderWhereInput = {
       ...(query.status ? { status: query.status } : {}),
       ...(query.stage ? { currentProgressStage: query.stage } : {}),
       ...(query.brandId ? { brandId: query.brandId } : {}),
-      ...(query.q
-        ? {
-            OR: [
-              {
-                sourceTitleSnapshot: { contains: query.q, mode: 'insensitive' },
-              },
-              {
-                sourceBrandNameSnapshot: {
-                  contains: query.q,
-                  mode: 'insensitive',
-                },
-              },
-            ],
-          }
-        : {}),
+      ...this.buildAdminListSearchWhere(query.q),
     };
 
-    const [items, total] = await this.prisma.$transaction([
+    // Attention filter is server-side so the dashboard deep-link never lands on
+    // an empty page-1 while older flagged orders sit on later pages.
+    let where: Prisma.CustomOrderWhereInput = attentionOnly
+      ? adminAttentionActiveWhere(baseWhere)
+      : baseWhere;
+
+    // Keyset pagination (preferred over deep OFFSET for large queues).
+    if (cursorPayload) {
+      where = {
+        AND: [where, this.buildListCursorWhere(cursorPayload, sort)],
+      };
+    }
+
+    const orderBy = this.buildAdminListOrderBy(sort);
+    const attentionWhere = adminAttentionActiveWhere(baseWhere);
+    // Counts ignore the cursor so the footer total stays stable across pages.
+    const fullFilterWhere = attentionOnly ? attentionWhere : baseWhere;
+
+    // Read-only: Promise.all (no interactive transaction). When attentionOnly,
+    // total === attentionTotal so we only count once.
+    const [rawItems, total, attentionTotalMaybe] = await Promise.all([
       this.prisma.customOrder.findMany({
         where,
-        include: {
-          brand: { select: { id: true, name: true, ownerId: true } },
-        },
-        orderBy: { createdAt: 'desc' },
-        skip: (page - 1) * take,
-        take,
+        select: CustomOrderAdminService.LIST_SELECT,
+        orderBy,
+        // Cursor mode: no skip. Page mode: OFFSET (fine for shallow pages).
+        ...(cursorPayload ? {} : { skip: (page - 1) * take }),
+        take: take + 1, // one extra row to detect next page
       }),
-      this.prisma.customOrder.count({ where }),
+      this.prisma.customOrder.count({ where: fullFilterWhere }),
+      attentionOnly
+        ? Promise.resolve(null as number | null)
+        : this.prisma.customOrder.count({ where: attentionWhere }),
     ]);
+    const attentionTotal = attentionOnly ? total : (attentionTotalMaybe as number);
+
+    const hasMore = rawItems.length > take;
+    const pageItems = hasMore ? rawItems.slice(0, take) : rawItems;
+    const last = pageItems[pageItems.length - 1];
+    const nextCursor =
+      hasMore && last
+        ? this.encodeListCursor({
+            id: last.id,
+            createdAt: last.createdAt.toISOString(),
+            attentionAt: last.adminAttentionRequiredAt
+              ? last.adminAttentionRequiredAt.toISOString()
+              : null,
+            sort,
+          })
+        : null;
 
     return {
       statusCode: 200,
       message: 'Admin custom-order queue retrieved',
       data: {
-        items: items.map((item) => this.mapOrderListItem(item)),
-        page,
+        items: pageItems.map((item) => this.mapOrderListItem(item)),
+        page: cursorPayload ? undefined : page,
         limit: take,
         total,
+        attentionTotal,
+        nextCursor,
       },
+    };
+  }
+
+  /**
+   * Restricted search: prefer indexed exact/prefix paths over ILIKE %term%.
+   * - Full UUID → exact id (PK lookup)
+   * - Else → prefix match on title/brand (startsWith), capped length
+   *   (UUID columns cannot use string startsWith filters in Prisma)
+   */
+  private buildAdminListSearchWhere(
+    rawQ?: string,
+  ): Prisma.CustomOrderWhereInput {
+    const q = String(rawQ ?? '').trim().slice(0, 80);
+    if (!q) {
+      return {};
+    }
+
+    const uuidRe =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+    if (uuidRe.test(q)) {
+      return { id: q };
+    }
+
+    // Prefix-only (not contains) — avoids leading-wildcard seq scans.
+    return {
+      OR: [
+        { sourceTitleSnapshot: { startsWith: q, mode: 'insensitive' } },
+        { sourceBrandNameSnapshot: { startsWith: q, mode: 'insensitive' } },
+      ],
+    };
+  }
+
+  private buildAdminListOrderBy(
+    sort: 'attention' | 'newest' | 'oldest' | 'amount',
+  ): Prisma.CustomOrderOrderByWithRelationInput[] {
+    switch (sort) {
+      case 'oldest':
+        return [{ createdAt: 'asc' }, { id: 'asc' }];
+      case 'newest':
+        return [{ createdAt: 'desc' }, { id: 'desc' }];
+      case 'amount':
+        // Grand total lives in buyerPriceSummaryJson — no scalar column.
+        return [{ createdAt: 'desc' }, { id: 'desc' }];
+      case 'attention':
+      default:
+        return [
+          { adminAttentionRequiredAt: { sort: 'desc', nulls: 'last' } },
+          { createdAt: 'desc' },
+          { id: 'desc' },
+        ];
+    }
+  }
+
+  private encodeListCursor(payload: {
+    id: string;
+    createdAt: string;
+    attentionAt: string | null;
+    sort: string;
+  }): string {
+    return Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
+  }
+
+  private decodeListCursor(
+    cursor?: string,
+  ): {
+    id: string;
+    createdAt: Date;
+    attentionAt: Date | null;
+    sort: string;
+  } | null {
+    if (!cursor?.trim()) {
+      return null;
+    }
+    try {
+      const raw = JSON.parse(
+        Buffer.from(cursor, 'base64url').toString('utf8'),
+      ) as {
+        id?: string;
+        createdAt?: string;
+        attentionAt?: string | null;
+        sort?: string;
+      };
+      if (!raw.id || !raw.createdAt) {
+        return null;
+      }
+      const createdAt = new Date(raw.createdAt);
+      if (Number.isNaN(createdAt.getTime())) {
+        return null;
+      }
+      const attentionAt =
+        raw.attentionAt != null ? new Date(raw.attentionAt) : null;
+      if (attentionAt && Number.isNaN(attentionAt.getTime())) {
+        return null;
+      }
+      return {
+        id: raw.id,
+        createdAt,
+        attentionAt,
+        sort: raw.sort ?? 'attention',
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private buildListCursorWhere(
+    cursor: {
+      id: string;
+      createdAt: Date;
+      attentionAt: Date | null;
+      sort: string;
+    },
+    sort: 'attention' | 'newest' | 'oldest' | 'amount',
+  ): Prisma.CustomOrderWhereInput {
+    if (sort === 'oldest') {
+      return {
+        OR: [
+          { createdAt: { gt: cursor.createdAt } },
+          { createdAt: cursor.createdAt, id: { gt: cursor.id } },
+        ],
+      };
+    }
+
+    if (sort === 'newest' || sort === 'amount') {
+      return {
+        OR: [
+          { createdAt: { lt: cursor.createdAt } },
+          { createdAt: cursor.createdAt, id: { lt: cursor.id } },
+        ],
+      };
+    }
+
+    // attention: flagged first (non-null desc), then nulls, then createdAt desc.
+    // After a flagged row: later flags by attentionAt, then unflagged.
+    // After an unflagged row: only older unflagged by createdAt.
+    if (cursor.attentionAt) {
+      return {
+        OR: [
+          { adminAttentionRequiredAt: { lt: cursor.attentionAt } },
+          {
+            adminAttentionRequiredAt: cursor.attentionAt,
+            createdAt: { lt: cursor.createdAt },
+          },
+          {
+            adminAttentionRequiredAt: cursor.attentionAt,
+            createdAt: cursor.createdAt,
+            id: { lt: cursor.id },
+          },
+          { adminAttentionRequiredAt: null },
+        ],
+      };
+    }
+
+    return {
+      adminAttentionRequiredAt: null,
+      OR: [
+        { createdAt: { lt: cursor.createdAt } },
+        { createdAt: cursor.createdAt, id: { lt: cursor.id } },
+      ],
     };
   }
 
@@ -1244,8 +1466,17 @@ export class CustomOrderAdminService {
       retentionHoldSetById: order.retentionHoldSetById,
       retentionHoldSetAt: order.retentionHoldSetAt,
       // Sticky admin-attention signal (drives the detail-page danger banner).
-      adminAttentionRequiredAt: order.adminAttentionRequiredAt ?? null,
-      adminAttentionReason: order.adminAttentionReason ?? null,
+      // Suppress on terminal/anonymized rows (same rule as list + dashboard).
+      adminAttentionRequiredAt:
+        order.anonymizedAt != null ||
+        TERMINAL_CUSTOM_ORDER_STATUSES.includes(order.status)
+          ? null
+          : (order.adminAttentionRequiredAt ?? null),
+      adminAttentionReason:
+        order.anonymizedAt != null ||
+        TERMINAL_CUSTOM_ORDER_STATUSES.includes(order.status)
+          ? null
+          : (order.adminAttentionReason ?? null),
       brandId: order.brandId,
       buyerId: order.buyerId,
       progressEvents: order.progressEvents,
@@ -1514,6 +1745,16 @@ export class CustomOrderAdminService {
       releasedBatches += 1;
     }
 
+    // Releasing payouts is the exact action that resolves PAYOUT_RELEASE_ELIGIBLE.
+    const releasedOrderIds = Array.from(
+      new Set(allocations.map((item) => item.customOrderId)),
+    );
+    await clearAdminAttentionMany(
+      this.prisma,
+      releasedOrderIds,
+      adminUserId,
+    );
+
     return {
       statusCode: 200,
       message:
@@ -1542,21 +1783,26 @@ export class CustomOrderAdminService {
       throw new NotFoundException('Custom-order dispute not found');
     }
 
+    const nextStatus = dto.status ?? dispute.status;
+    const isResolved =
+      nextStatus === 'RESOLVED' || nextStatus === 'CLOSED';
+
     const updated = await this.prisma.customOrderDispute.update({
       where: { id },
       data: {
-        status: dto.status ?? dispute.status,
+        status: nextStatus,
         resolution: dto.resolution ?? dispute.resolution,
         adminNotes: dto.adminNotes ?? dispute.adminNotes,
         assignedAdminId: dto.assignedAdminId ?? adminUserId,
-        resolvedAt:
-          dto.status === 'RESOLVED' || dto.status === 'CLOSED'
-            ? new Date()
-            : dispute.resolvedAt,
+        resolvedAt: isResolved ? new Date() : dispute.resolvedAt,
       },
     });
 
-    await this.clearAdminAttention(dispute.customOrderId, adminUserId);
+    // Only clear attention when the dispute is actually closed — assigning
+    // notes / changing assignee is not a resolution.
+    if (isResolved) {
+      await this.clearAdminAttention(dispute.customOrderId, adminUserId);
+    }
 
     return {
       statusCode: 200,
@@ -1724,6 +1970,12 @@ export class CustomOrderAdminService {
       },
     });
 
+    // flagRisk raises concern — it does NOT resolve admin attention. Keep (or
+    // set) the sticky flag so the order stays visible on the dashboard.
+    await markAdminAttentionFlag(this.prisma, id, 'FLAG_RISK');
+
+    // Buyer-facing copy: never reuse admin-review "take action" language.
+    const shortCode = id.slice(0, 8).toUpperCase();
     await this.sideEffects.enqueueNotification({
       customOrderId: id,
       recipientIds: [order.buyerId],
@@ -1731,12 +1983,12 @@ export class CustomOrderAdminService {
       target: this.buyerTarget(id),
       payload: {
         customOrderId: id,
-        reason: dto.reason.trim(),
+        reason: 'FLAG_RISK',
+        adminReason: dto.reason.trim(),
+        message: `We've noted a concern on #CO-${shortCode} and our team is looking into it. You don't need to do anything right now — we'll follow up if we need you.`,
       },
       dedupeMs: 60 * 1000,
     });
-
-    await this.clearAdminAttention(id, adminUserId);
 
     return {
       statusCode: 200,
@@ -1972,6 +2224,15 @@ export class CustomOrderAdminService {
     const currency =
       typeof order.currency === 'string' && order.currency ? order.currency : 'NGN';
 
+    // Hide stale flags on terminal/anonymized rows so the table badge cannot
+    // disagree with the dashboard count (which excludes them at query time).
+    const isTerminal =
+      order.anonymizedAt != null ||
+      TERMINAL_CUSTOM_ORDER_STATUSES.includes(order.status);
+    const attentionAt = isTerminal
+      ? null
+      : (order.adminAttentionRequiredAt ?? null);
+
     return {
       id: order.id,
       brandId: order.brandId,
@@ -2003,10 +2264,12 @@ export class CustomOrderAdminService {
         email: typeof contactInfo.email === 'string' ? contactInfo.email : null,
         phone: typeof contactInfo.phone === 'string' ? contactInfo.phone : null,
       },
-      // Sticky "needs attention" signal (set by the ops cron, cleared by any
-      // admin action) powering the dashboard flag + row danger badge.
-      adminAttentionRequiredAt: order.adminAttentionRequiredAt ?? null,
-      adminAttentionReason: order.adminAttentionReason ?? null,
+      // Sticky "needs attention" signal (set by cron/buyer events, cleared by
+      // resolving admin actions) powering the dashboard flag + row badge.
+      adminAttentionRequiredAt: attentionAt,
+      adminAttentionReason: attentionAt
+        ? (order.adminAttentionReason ?? null)
+        : null,
       brand: order.brand
         ? {
             id: order.brand.id,
@@ -2019,22 +2282,13 @@ export class CustomOrderAdminService {
 
   /**
    * Clear the sticky "needs admin attention" flag once an admin has taken a
-   * concrete action on the order. Idempotent (only touches flagged rows) and
-   * records who resolved it for audit.
+   * concrete resolving action. Idempotent; never fails the parent action.
    */
-  private async clearAdminAttention(customOrderId: string, adminUserId?: string) {
-    try {
-      await this.prisma.customOrder.updateMany({
-        where: { id: customOrderId, adminAttentionRequiredAt: { not: null } },
-        data: {
-          adminAttentionRequiredAt: null,
-          adminAttentionClearedAt: new Date(),
-          adminAttentionClearedById: adminUserId ?? null,
-        },
-      });
-    } catch {
-      // Non-critical: clearing the attention flag must never fail the admin action.
-    }
+  private async clearAdminAttention(
+    customOrderId: string,
+    adminUserId?: string,
+  ) {
+    await clearAdminAttentionFlag(this.prisma, customOrderId, adminUserId);
   }
 
   private buyerTarget(customOrderId: string) {
@@ -2054,13 +2308,30 @@ export class CustomOrderAdminService {
   }
 
   private get detailInclude() {
+    // Cap history relations so long-lived orders don't get slower forever.
+    // Frontend uses ledgerAllocations from this payload (no second fetch).
     return {
       brand: { select: { id: true, name: true, ownerId: true } },
-      progressEvents: { orderBy: { changedAt: 'asc' as const } },
-      extensionRequests: { orderBy: { createdAt: 'desc' as const } },
-      timelineEvents: { orderBy: { createdAt: 'asc' as const } },
-      issues: { orderBy: { createdAt: 'desc' as const } },
-      disputes: { orderBy: { openedAt: 'desc' as const } },
+      progressEvents: {
+        orderBy: { changedAt: 'desc' as const },
+        take: 50,
+      },
+      extensionRequests: {
+        orderBy: { createdAt: 'desc' as const },
+        take: 20,
+      },
+      timelineEvents: {
+        orderBy: { createdAt: 'desc' as const },
+        take: 50,
+      },
+      issues: {
+        orderBy: { createdAt: 'desc' as const },
+        take: 20,
+      },
+      disputes: {
+        orderBy: { openedAt: 'desc' as const },
+        take: 20,
+      },
       ledgerAllocations: {
         include: {
           payout: {
@@ -2074,7 +2345,8 @@ export class CustomOrderAdminService {
             },
           },
         },
-        orderBy: { createdAt: 'asc' as const },
+        orderBy: { createdAt: 'desc' as const },
+        take: 50,
       },
     };
   }

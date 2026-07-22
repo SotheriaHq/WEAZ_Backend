@@ -3342,6 +3342,9 @@ model CustomOrder {
   @@index([currentProgressStage, lastBrandProgressUpdateAt])
   @@index([measurementRetentionUntil, retentionHoldUntil, anonymizedAt])
   @@index([adminAttentionRequiredAt])
+  // Partial composite for the active attention queue is applied in migration
+  // 20260722140000_custom_order_attention_partial_index (Prisma cannot express
+  // partial WHERE clauses in schema indexes).
 }
 
 model MessageThread {

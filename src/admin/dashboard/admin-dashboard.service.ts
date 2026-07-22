@@ -7,6 +7,7 @@ import {
   PayoutStatus,
   Role,
 } from '@prisma/client';
+import { adminAttentionActiveWhere } from 'src/custom-orders/custom-order-admin-attention';
 import { SystemConfigService } from '../system-config/system-config.service';
 import {
   adminUserDisplaySelect,
@@ -19,6 +20,63 @@ export class AdminDashboardService {
     private readonly prisma: PrismaService,
     private readonly systemConfigService: SystemConfigService,
   ) {}
+
+  /**
+   * Lightweight live badges for the admin overview poll (20s). Avoids re-running
+   * the full stats fan-out (users/brands/designs/…) on every tick.
+   */
+  async getLiveBadges() {
+    const attentionThreshold = new Date();
+    attentionThreshold.setDate(attentionThreshold.getDate() - 7);
+
+    const [
+      customOrdersNeedingAttention,
+      openDisputes,
+      pendingPayouts,
+      pendingVerifications,
+      ordersNeedingAttention,
+    ] = await Promise.all([
+      this.prisma.customOrder
+        .count({ where: adminAttentionActiveWhere() })
+        .catch(() => 0),
+      this.prisma.dispute.count({
+        where: { status: { in: ['OPEN', 'ASSIGNED', 'IN_PROGRESS'] } },
+      }),
+      (this.prisma as any).payout
+        .count({
+          where: {
+            status: {
+              in: [
+                PayoutStatus.PENDING_APPROVAL,
+                PayoutStatus.APPROVED,
+                PayoutStatus.PROCESSING,
+                PayoutStatus.ON_HOLD,
+                PayoutStatus.RECONCILIATION_REVIEW,
+              ],
+            },
+          },
+        })
+        .catch(() => 0) as Promise<number>,
+      this.prisma.brand.count({
+        where: { verificationStatus: BrandVerificationStatus.PENDING },
+      }),
+      this.prisma.order.count({
+        where: {
+          status: { in: [OrderStatus.PENDING, OrderStatus.PROCESSING] },
+          paymentStatus: PaymentStatus.PAID,
+          paidAt: { lt: attentionThreshold },
+        },
+      }),
+    ]);
+
+    return {
+      customOrdersNeedingAttention,
+      openDisputes,
+      pendingPayouts,
+      pendingVerifications,
+      ordersNeedingAttention,
+    };
+  }
 
   async getStats() {
     const thirtyDaysAgo = new Date();
@@ -84,10 +142,10 @@ export class AdminDashboardService {
           paidAt: { lt: attentionThreshold },
         },
       }),
-      // Custom orders the ops cron has flagged for admin review and no admin has
-      // acted on yet (indexed on adminAttentionRequiredAt — cheap under polling).
+      // Custom orders flagged for admin review that are still actionable
+      // (excludes terminal/anonymized rows so the badge cannot drift).
       this.prisma.customOrder
-        .count({ where: { adminAttentionRequiredAt: { not: null } } })
+        .count({ where: adminAttentionActiveWhere() })
         .catch(() => 0),
       // Content counts (non-deleted): designs, products, collections.
       this.prisma.design.count({ where: { deletedAt: null } }),
