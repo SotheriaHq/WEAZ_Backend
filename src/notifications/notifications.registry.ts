@@ -149,6 +149,8 @@ const describeAdminReviewReason = (reason: unknown): string | null => {
       return "it's ready for a manual payout release";
     case 'DISPUTE_OPENED':
       return 'a dispute was opened';
+    case 'DISPUTE_BRAND_RESPONDED':
+      return 'the brand responded to a dispute';
     case 'ISSUE_REPORTED':
       return 'the buyer reported an issue';
     case 'FLAG_RISK':

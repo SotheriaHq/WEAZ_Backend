@@ -9,6 +9,7 @@ import {
 import {
   CustomOrderCheckoutStatus,
   CustomOrderActorType,
+  CustomOrderDisputeStatus,
   CustomOrderExtensionResponseStatus,
   CustomOrderIssueType,
   CustomOrderLedgerAllocationStatus,
@@ -58,6 +59,7 @@ import {
   CustomOrderResolverPolicy,
   QueryCustomOrdersDto,
   ReportCustomOrderIssueDto,
+  RespondToCustomOrderDisputeDto,
   RespondToCustomOrderExtensionDto,
   UpdateDisplayChartPreferenceDto,
   UpdateCustomOrderMeasurementsDto,
@@ -420,6 +422,21 @@ type CheckoutBagLine = {
   submittedAt: string;
   updatedAt: string;
   resumePath: string | null;
+};
+
+/**
+ * True when the brand has an admin notice (reminder / dispute) it hasn't
+ * acknowledged yet — drives the studio queue 📣 flag. A newer notice than the
+ * last acknowledgement re-raises the flag.
+ */
+const hasUnreadBrandAdminNotice = (order: {
+  brandAdminNoticeAt?: Date | string | null;
+  brandAdminNoticeAckAt?: Date | string | null;
+}): boolean => {
+  if (!order.brandAdminNoticeAt) return false;
+  const noticeAt = new Date(order.brandAdminNoticeAt).getTime();
+  if (!order.brandAdminNoticeAckAt) return true;
+  return new Date(order.brandAdminNoticeAckAt).getTime() < noticeAt;
 };
 
 const hasEphemeralMediaSignature = (value: unknown) => {
@@ -2040,6 +2057,8 @@ export class CustomOrdersService {
         data: {
           status: CustomOrderStatus.DELIVERY_ISSUE_REPORTED,
           issueReportedAt: now,
+          // Flag the brand's queue so they see (and can respond to) the dispute.
+          brandAdminNoticeAt: now,
           timelineEvents: {
             create: [
               {
@@ -2203,7 +2222,11 @@ export class CustomOrdersService {
 
         await tx.customOrder.update({
           where: { id: customOrderId },
-          data: { status: CustomOrderStatus.DISPUTED },
+          data: {
+            status: CustomOrderStatus.DISPUTED,
+            // Flag the brand's queue for the newly opened dispute.
+            brandAdminNoticeAt: new Date(),
+          },
         });
       }
 
@@ -2529,6 +2552,123 @@ export class CustomOrdersService {
       statusCode: 200,
       message: 'Custom order retrieved',
       data: this.mapDetail(hydratedOrder, { sourceMediaUrls }),
+    };
+  }
+
+  /**
+   * Brand marks the admin-notice queue flag as seen for this order. This is a
+   * read-only acknowledgement — brands never reply to admin here; it only
+   * clears the 📣 "unread admin notice" badge on the studio queue/detail.
+   */
+  async acknowledgeBrandAdminNotices(
+    ownerUserId: string,
+    brandId: string,
+    customOrderId: string,
+  ) {
+    await this.customOrderAccessService.assertCustomOrderBrandRead(
+      ownerUserId,
+      customOrderId,
+      brandId,
+    );
+    const resolvedBrandId =
+      await this.customOrderAccessService.resolveBrandId(brandId);
+    const result = await this.prisma.customOrder.updateMany({
+      where: { id: customOrderId, brandId: resolvedBrandId },
+      data: { brandAdminNoticeAckAt: new Date() },
+    });
+    if (result.count === 0) {
+      throw new NotFoundException('Custom order not found');
+    }
+    return {
+      statusCode: 200,
+      message: 'Admin notices marked as seen',
+      data: { customOrderId, acknowledged: true },
+    };
+  }
+
+  /**
+   * Brand submits its single, structured response to an admin-adjudicated
+   * dispute. One-time only: once `brandResponse` is set (or the dispute is
+   * resolved/closed) the brand can no longer edit it. Notifies admins so they
+   * can adjudicate with the brand's side on record. Brands never chat on
+   * disputes — this is the sole write path they get.
+   */
+  async respondToBrandDispute(
+    ownerUserId: string,
+    brandId: string,
+    customOrderId: string,
+    disputeId: string,
+    dto: RespondToCustomOrderDisputeDto,
+  ) {
+    await this.customOrderAccessService.assertCustomOrderBrandUpdate(
+      ownerUserId,
+      customOrderId,
+      brandId,
+    );
+    const resolvedBrandId =
+      await this.customOrderAccessService.resolveBrandId(brandId);
+    const dispute = await this.prisma.customOrderDispute.findFirst({
+      where: {
+        id: disputeId,
+        customOrderId,
+        customOrder: { brandId: resolvedBrandId },
+      },
+    });
+    if (!dispute) {
+      throw new NotFoundException('Dispute not found');
+    }
+    if (dispute.brandResponse) {
+      throw new BadRequestException(
+        'You have already submitted your response to this dispute.',
+      );
+    }
+    if (
+      dispute.status === CustomOrderDisputeStatus.RESOLVED ||
+      dispute.status === CustomOrderDisputeStatus.CLOSED
+    ) {
+      throw new BadRequestException(
+        'This dispute has been closed and can no longer receive a response.',
+      );
+    }
+
+    const response = dto.response.trim();
+    const updated = await this.prisma.customOrderDispute.update({
+      where: { id: disputeId },
+      data: {
+        brandResponse: response,
+        status: CustomOrderDisputeStatus.BRAND_RESPONDED,
+        customOrder: {
+          update: {
+            timelineEvents: {
+              create: {
+                actorType: CustomOrderActorType.BRAND,
+                actorId: ownerUserId,
+                eventType: 'DISPUTE_BRAND_RESPONDED',
+                payloadJson: {
+                  disputeId,
+                  responsePreview: response.slice(0, 280),
+                },
+              },
+            },
+          },
+        },
+      },
+    });
+
+    // Admin fan-out (fire-and-forget) so the dashboard attention flag lights up
+    // and admins can adjudicate with the brand's side now on record.
+    this.flagOrderForAdminAttention(customOrderId, 'DISPUTE_BRAND_RESPONDED', {
+      disputeId,
+    });
+
+    return {
+      statusCode: 200,
+      message: 'Response submitted',
+      data: {
+        disputeId,
+        status: updated.status,
+        brandResponse: updated.brandResponse,
+      },
     };
   }
 
@@ -3239,6 +3379,42 @@ export class CustomOrdersService {
         total,
       },
     };
+  }
+
+  /**
+   * Public reuse hook: resolve the real content title/brand/media for orders
+   * whose stored snapshot is the generic "Custom order configuration". Lets the
+   * admin console show the same real titles ("Yello", "Eyi") the buyer/brand
+   * surfaces already show, instead of the generic config name. Generic over the
+   * row shape so a narrow admin `select` keeps its own type; the underlying
+   * hydrator only reads/writes the source snapshot fields.
+   */
+  async hydrateAdminOrderSnapshots<
+    T extends {
+      sourceType: CustomOrderSourceType;
+      sourceId: string;
+      sourceTitleSnapshot: string | null;
+      sourceBrandNameSnapshot: string | null;
+      sourcePrimaryMediaUrlSnapshot: string | null;
+    },
+  >(items: T[]): Promise<T[]> {
+    return this.hydrateListOrderSnapshots(
+      items as unknown as Prisma.CustomOrderGetPayload<Prisma.CustomOrderDefaultArgs>[],
+    ) as unknown as Promise<T[]>;
+  }
+
+  async hydrateAdminOrderSnapshot<
+    T extends {
+      sourceType: CustomOrderSourceType;
+      sourceId: string;
+      sourceTitleSnapshot: string | null;
+      sourceBrandNameSnapshot: string | null;
+      sourcePrimaryMediaUrlSnapshot: string | null;
+    },
+  >(order: T): Promise<T> {
+    return this.hydrateSingleOrderSourceSnapshot(
+      order as unknown as Prisma.CustomOrderGetPayload<Prisma.CustomOrderDefaultArgs>,
+    ) as unknown as Promise<T>;
   }
 
   private async hydrateListOrderSnapshots(
@@ -5075,6 +5251,8 @@ export class CustomOrdersService {
       measurementCount: Object.keys(measurementSnapshot).length,
       currentProgressStage: order.currentProgressStage,
       promisedDeliveryAt: order.promisedDeliveryAt,
+      // Read-only admin-notice flag for the brand queue (📣 until acknowledged).
+      hasUnreadAdminNotice: hasUnreadBrandAdminNotice(order),
       createdAt: order.createdAt,
       updatedAt: order.updatedAt,
     };
@@ -5158,6 +5336,11 @@ export class CustomOrdersService {
       issues: order.issues,
       disputes: order.disputes,
       timelineEvents: order.timelineEvents,
+      // Read-only admin-notice state so the brand detail can render the notices
+      // panel + acknowledge control (brand never replies to admin).
+      brandAdminNoticeAt: order.brandAdminNoticeAt ?? null,
+      brandAdminNoticeAckAt: order.brandAdminNoticeAckAt ?? null,
+      hasUnreadAdminNotice: hasUnreadBrandAdminNotice(order),
       createdAt: order.createdAt,
       updatedAt: order.updatedAt,
     };

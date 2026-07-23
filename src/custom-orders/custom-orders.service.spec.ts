@@ -387,7 +387,11 @@ describe('CustomOrdersService', () => {
     });
     expect(tx.customOrder.update).toHaveBeenNthCalledWith(1, {
       where: { id: 'co_1' },
-      data: { status: CustomOrderStatus.DISPUTED },
+      data: {
+        status: CustomOrderStatus.DISPUTED,
+        // Flags the brand's queue so the dispute surfaces as an admin notice.
+        brandAdminNoticeAt: expect.any(Date),
+      },
     });
     expect(tx.customOrder.update).toHaveBeenNthCalledWith(2, {
       where: { id: 'co_1' },

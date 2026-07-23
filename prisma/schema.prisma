@@ -596,6 +596,7 @@ enum CustomOrderTimelineEventType {
   BUYER_CANCELLED
   REFUND_INITIATED
   DISPUTE_CREATED
+  DISPUTE_BRAND_RESPONDED
   ADMIN_ESCALATED
 }
 
@@ -3314,6 +3315,8 @@ model CustomOrder {
   adminAttentionReason          String?
   adminAttentionClearedAt       DateTime?
   adminAttentionClearedById     String?                              @db.Uuid
+  brandAdminNoticeAt            DateTime?
+  brandAdminNoticeAckAt         DateTime?
   createdAt                     DateTime                             @default(now())
   updatedAt                     DateTime                             @updatedAt
   progressEvents                CustomOrderProgressEvent[]

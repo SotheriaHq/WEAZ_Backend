@@ -166,6 +166,15 @@ export class ReportCustomOrderIssueDto {
   evidenceJson?: Record<string, unknown>;
 }
 
+export class RespondToCustomOrderDisputeDto {
+  // The brand's single, structured response to an admin-adjudicated dispute.
+  // Brands may submit this exactly once; it is read-only to them afterward.
+  @IsString()
+  @MinLength(5)
+  @MaxLength(2000)
+  response: string;
+}
+
 export class UpdateCustomOrderMeasurementsDto {
   @IsObject()
   measurementValues: Record<string, number>;

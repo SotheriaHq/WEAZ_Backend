@@ -9,6 +9,7 @@ import {
 import { CustomOrderRefundService } from 'src/custom-orders/custom-order-refund.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { CustomOrderSideEffectsService } from 'src/custom-orders/custom-order-side-effects.service';
+import { CustomOrdersService } from 'src/custom-orders/custom-orders.service';
 import { CustomOrderAdminService } from './custom-order-admin.service';
 
 describe('CustomOrderAdminService', () => {
@@ -16,6 +17,7 @@ describe('CustomOrderAdminService', () => {
   let prisma: any;
   let sideEffects: any;
   let refundService: any;
+  let customOrdersService: any;
 
   beforeEach(async () => {
     prisma = {
@@ -77,12 +79,19 @@ describe('CustomOrderAdminService', () => {
       initiateRefund: jest.fn(),
     };
 
+    // Title hydration is a passthrough in tests (returns rows unchanged).
+    customOrdersService = {
+      hydrateAdminOrderSnapshots: jest.fn(async (items: unknown[]) => items),
+      hydrateAdminOrderSnapshot: jest.fn(async (order: unknown) => order),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         CustomOrderAdminService,
         { provide: PrismaService, useValue: prisma },
         { provide: CustomOrderSideEffectsService, useValue: sideEffects },
         { provide: CustomOrderRefundService, useValue: refundService },
+        { provide: CustomOrdersService, useValue: customOrdersService },
       ],
     }).compile();
 

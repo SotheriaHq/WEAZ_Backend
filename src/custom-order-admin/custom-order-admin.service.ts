@@ -18,6 +18,7 @@ import {
 } from '@prisma/client';
 import { CustomOrderRefundService } from 'src/custom-orders/custom-order-refund.service';
 import { CustomOrderSideEffectsService } from 'src/custom-orders/custom-order-side-effects.service';
+import { CustomOrdersService } from 'src/custom-orders/custom-orders.service';
 import {
   adminAttentionActiveWhere,
   clearAdminAttention as clearAdminAttentionFlag,
@@ -53,6 +54,7 @@ export class CustomOrderAdminService {
     private readonly prisma: PrismaService,
     private readonly sideEffects: CustomOrderSideEffectsService,
     private readonly refundService: CustomOrderRefundService,
+    private readonly customOrdersService: CustomOrdersService,
   ) {}
 
   async getPendingBases() {
@@ -316,11 +318,16 @@ export class CustomOrderAdminService {
           })
         : null;
 
+    // Resolve real content titles (e.g. "Yello") for rows whose snapshot is the
+    // generic "Custom order configuration" — same hydration the buyer/brand use.
+    const hydratedItems =
+      await this.customOrdersService.hydrateAdminOrderSnapshots(pageItems);
+
     return {
       statusCode: 200,
       message: 'Admin custom-order queue retrieved',
       data: {
-        items: pageItems.map((item) => this.mapOrderListItem(item)),
+        items: hydratedItems.map((item) => this.mapOrderListItem(item)),
         page: cursorPayload ? undefined : page,
         limit: take,
         total,
@@ -1388,10 +1395,13 @@ export class CustomOrderAdminService {
       throw new NotFoundException('Custom order not found');
     }
 
+    // Resolve the real content title when the stored snapshot is generic.
+    const hydrated = await this.customOrdersService.hydrateAdminOrderSnapshot(order);
+
     return {
       statusCode: 200,
       message: 'Custom-order admin detail retrieved',
-      data: this.mapAdminOrderDetail(order),
+      data: this.mapAdminOrderDetail(hydrated),
     };
   }
 
@@ -1804,6 +1814,12 @@ export class CustomOrderAdminService {
       await this.clearAdminAttention(dispute.customOrderId, adminUserId);
     }
 
+    // Surface the admin's dispute decision on the brand's order queue.
+    await this.prisma.customOrder.update({
+      where: { id: dispute.customOrderId },
+      data: { brandAdminNoticeAt: new Date() },
+    });
+
     return {
       statusCode: 200,
       message: 'Custom-order dispute updated',
@@ -1939,6 +1955,11 @@ export class CustomOrderAdminService {
     });
 
     await this.clearAdminAttention(order.id, adminUserId);
+    // Surface the reminder on the brand's order queue (read-only for the brand).
+    await this.prisma.customOrder.update({
+      where: { id: order.id },
+      data: { brandAdminNoticeAt: new Date() },
+    });
 
     return {
       statusCode: 200,

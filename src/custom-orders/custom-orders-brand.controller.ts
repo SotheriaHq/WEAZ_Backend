@@ -19,6 +19,7 @@ import {
   CreateExceptionReviewRequestDto,
   CreateCustomOrderExtensionRequestDto,
   QueryCustomOrdersDto,
+  RespondToCustomOrderDisputeDto,
   UpdateCustomOrderLifecycleStatusDto,
   UpdateCustomOrderProgressStageDto,
 } from './dto/custom-orders.dto';
@@ -137,6 +138,39 @@ export class CustomOrdersBrandController {
     dto: UpdateCustomOrderLifecycleStatusDto,
   ) {
     return this.service.updateLifecycleStatus(req.user.id, brandId, id, dto);
+  }
+
+  @Post(':id/admin-notices/ack')
+  async acknowledgeAdminNotices(
+    @Param('brandId') brandId: string,
+    @Param('id') id: string,
+    @Req() req: Request & { user: { id: string } },
+  ) {
+    return this.service.acknowledgeBrandAdminNotices(req.user.id, brandId, id);
+  }
+
+  @Post(':id/disputes/:disputeId/respond')
+  async respondToDispute(
+    @Param('brandId') brandId: string,
+    @Param('id') id: string,
+    @Param('disputeId') disputeId: string,
+    @Req() req: Request & { user: { id: string } },
+    @Body(
+      new ValidationPipe({
+        transform: true,
+        whitelist: true,
+        forbidNonWhitelisted: true,
+      }),
+    )
+    dto: RespondToCustomOrderDisputeDto,
+  ) {
+    return this.service.respondToBrandDispute(
+      req.user.id,
+      brandId,
+      id,
+      disputeId,
+      dto,
+    );
   }
 
   @Post(':id/exception-review-requests')

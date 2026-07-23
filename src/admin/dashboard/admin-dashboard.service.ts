@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
 import {
   BrandVerificationStatus,
+  CollectionDomain,
   OrderStatus,
   PaymentStatus,
   PayoutStatus,
@@ -147,10 +148,28 @@ export class AdminDashboardService {
       this.prisma.customOrder
         .count({ where: adminAttentionActiveWhere() })
         .catch(() => 0),
-      // Content counts (non-deleted): designs, products, collections.
-      this.prisma.design.count({ where: { deletedAt: null } }),
+      // Content counts (non-deleted), counted by CANONICAL DOMAIN — not by
+      // table — because designs still live (in legacy/dual write mode) as
+      // Collection rows with domain=DESIGN, while true store collections are
+      // domain=STORE. Counting the tables directly conflated the two (designs
+      // showed 0; "collections" inflated by every legacy design-collection).
+      //   designs      = legacy DESIGN-domain collections + native Design rows
+      //                  that are NOT a legacy mirror (legacyCollectionId null)
+      //   collections  = STORE-domain collections only
+      Promise.all([
+        this.prisma.collection.count({
+          where: { domain: CollectionDomain.DESIGN, deletedAt: null },
+        }),
+        this.prisma.design.count({
+          where: { deletedAt: null, legacyCollectionId: null },
+        }),
+      ]).then(([legacyDesignCollections, nativeDesigns]) =>
+        legacyDesignCollections + nativeDesigns,
+      ),
       this.prisma.product.count({ where: { deletedAt: null } }),
-      this.prisma.collection.count({ where: { deletedAt: null } }),
+      this.prisma.collection.count({
+        where: { domain: CollectionDomain.STORE, deletedAt: null },
+      }),
       this.prisma.adminAuditLog.findMany({
         take: 10,
         orderBy: { createdAt: 'desc' },
