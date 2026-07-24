@@ -5230,11 +5230,24 @@ export class CustomOrdersService {
           string,
           unknown
         >;
+        const fabricCharge = Number(raw.fabricCharge ?? 0);
+        const rushFee = Number(raw.rushFee ?? raw.rush ?? 0);
+        const subtotal = Number(raw.subtotal ?? raw.outfitTotal ?? 0);
+        // Prefer explicit productionCharge when stored; otherwise derive labor
+        // as outfitTotal - fabric - rush (outfitTotal already includes rush).
+        const explicitProduction = Number(
+          raw.productionCharge ?? raw.baseProductionCharge ?? 0,
+        );
+        const productionCharge =
+          Number.isFinite(explicitProduction) && explicitProduction > 0
+            ? explicitProduction
+            : Math.max(0, subtotal - fabricCharge - rushFee);
         return {
-          fabricCharge: Number(raw.fabricCharge ?? 0),
-          subtotal: Number(raw.subtotal ?? raw.outfitTotal ?? 0),
+          fabricCharge,
+          subtotal,
           shippingFee: Number(raw.shippingFee ?? raw.delivery ?? 0),
-          rushFee: Number(raw.rushFee ?? raw.rush ?? 0),
+          rushFee,
+          productionCharge,
           grandTotal: Number(raw.grandTotal ?? 0),
           currency: order.currency ?? raw.currency ?? 'NGN',
         };
