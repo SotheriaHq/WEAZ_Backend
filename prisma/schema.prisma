@@ -79,7 +79,6 @@ model User {
   contributionRequests ContributionRequest[] @relation("UserContributionRequests")
 
   collections              Collection[]
-  designs                  Design[]                       @relation("UserDesigns")
   storeCollections         StoreCollection[]
   collectionReactions      CollectionReaction[]
   collectionComments       CollectionComment[]
@@ -126,7 +125,6 @@ model User {
   messagesAuthored          Message[]                  @relation("MessageSender")
   messageDeliveryReceipts   MessageDeliveryReceipt[]   @relation("MessageDeliveryReceipts")
   collectionDraftSessions   CollectionDraftSession[]
-  designDraftSessions       DesignDraftSession[]       @relation("UserDesignDraftSessions")
   collectionBulkUploadJobs  CollectionBulkUploadJob[]
 
   // Admin Console relations
@@ -197,7 +195,6 @@ model FileUpload {
 
   // Relation to collection media
   collectionMedias   CollectionMedia[]   @relation("FileUpload_to_CollectionMedia")
-  designMedias       DesignMedia[]       @relation("FileUpload_to_DesignMedia")
   productMedias      ProductMedia[]      @relation("FileUpload_to_ProductMedia")
   userProfileBanners UserProfile[]       @relation("UserProfileBannerImage")
   variants           FileVariant[]
@@ -1261,7 +1258,6 @@ model Collection {
   products         CollectionProduct[]
   draftSessions    CollectionDraftSession[]
   bulkUploadJobs   CollectionBulkUploadJob[]
-  designMirror     Design?                   @relation("LegacyCollectionDesign")
   lifecycleReviews Review[]                  @relation("ReviewLegacyCollection")
   reviewPrompts    ReviewPrompt[]            @relation("ReviewPromptLegacyCollection")
 
@@ -1277,74 +1273,6 @@ model Collection {
   @@index([lastActivityAt])
 }
 
-model Design {
-  id                     String                   @id @default(uuid()) @map("_id") @db.Uuid
-  ownerId                String                   @db.Uuid
-  owner                  User                     @relation("UserDesigns", fields: [ownerId], references: [id], onDelete: Cascade)
-  brandId                String?                  @db.Uuid
-  brand                  Brand?                   @relation("BrandDesigns", fields: [brandId], references: [id], onDelete: SetNull)
-  legacyCollectionId     String?                  @unique @db.Uuid
-  legacyCollection       Collection?              @relation("LegacyCollectionDesign", fields: [legacyCollectionId], references: [id], onDelete: SetNull)
-  title                  String?
-  description            String?
-  searchVector           Unsupported("tsvector")? @map("search_vector")
-  status                 CollectionStatus         @default(DRAFT)
-  archivedFromStatus     CollectionStatus?
-  visibility             CollectionVisibility     @default(PUBLIC)
-  type                   CollectionType           @default(EVERYBODY)
-  categoryId             String?                  @db.Uuid
-  category               CollectionCategory?      @relation(fields: [categoryId], references: [id], onDelete: SetNull)
-  categoryTypeId         String?                  @db.Uuid
-  categoryType           CollectionCategoryType?  @relation(fields: [categoryTypeId], references: [id], onDelete: SetNull)
-  coverMediaId           String?                  @db.Uuid
-  coverMedia             DesignMedia?             @relation("DesignCoverMedia", fields: [coverMediaId], references: [id], onDelete: SetNull)
-  deletedAt              DateTime?
-  deleteExpiresAt        DateTime?
-  lastActivityAt         DateTime?
-  draftVersion           Int                      @default(0)
-  draftUpdatesInWindow   Int                      @default(0)
-  draftUpdateWindowStart DateTime?
-  minPrice               Float?
-  maxPrice               Float?
-  customOrderEnabled     Boolean                  @default(false)
-  tags                   String[]                 @default([])
-  saleMinPrice           Float?
-  saleMaxPrice           Float?
-  saleStartAt            DateTime?
-  saleEndAt              DateTime?
-  sizingMode             SizingMode               @default(NONE)
-  rtwSizes               String[]                 @default([])
-  rtwSizeSystem          String?
-  rtwSizeType            RtwSizeType?
-  customGender           Gender?
-  customMeasurementKeys  String[]                 @default([])
-  customFreeformPointIds String[]                 @default([])
-  fitPreference          FitPreference?
-  targetAgeGroup         AgeGroup                 @default(ADULT)
-  createdAt              DateTime                 @default(now())
-  updatedAt              DateTime                 @updatedAt
-  metadataEditedAt       DateTime?
-  threadsCount           Int                      @default(0)
-  dislikesCount          Int                      @default(0)
-  commentsCount          Int                      @default(0)
-  collectionCollabsCount Int                      @default(0)
-  viewsCount             Int                      @default(0)
-  medias                 DesignMedia[]            @relation("Design_to_Media")
-  draftSessions          DesignDraftSession[]
-  entityFilters          EntityFilter[]           @relation("DesignEntityFilters")
-  lifecycleReviews       Review[]                 @relation("ReviewDesign")
-  reviewPrompts          ReviewPrompt[]           @relation("ReviewPromptDesign")
-
-  @@index([ownerId, status, createdAt])
-  @@index([brandId, status, createdAt])
-  @@index([legacyCollectionId])
-  @@index([status, visibility, createdAt])
-  @@index([categoryId])
-  @@index([categoryTypeId])
-  @@index([deletedAt])
-  @@index([deleteExpiresAt])
-  @@index([lastActivityAt])
-}
 
 model StoreCollection {
   id                     String                   @id @map("_id") @db.Uuid
@@ -1431,37 +1359,14 @@ model CollectionDraftSession {
   expiresAt       DateTime
   isActive        Boolean  @default(true)
 
-  collection               Collection          @relation(fields: [collectionId], references: [id], onDelete: Cascade)
-  owner                    User                @relation(fields: [ownerId], references: [id], onDelete: Cascade)
-  designDraftSessionMirror DesignDraftSession? @relation("LegacyCollectionDraftSessionDesign")
+  collection Collection @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+  owner      User       @relation(fields: [ownerId], references: [id], onDelete: Cascade)
 
   @@index([collectionId, isActive])
   @@index([ownerId])
   @@index([expiresAt])
 }
 
-model DesignDraftSession {
-  id                             String   @id @default(uuid()) @map("_id") @db.Uuid
-  designId                       String   @db.Uuid
-  ownerId                        String   @db.Uuid
-  sessionToken                   String   @unique
-  deviceName                     String?
-  deviceType                     String?
-  startedAt                      DateTime @default(now())
-  lastHeartbeatAt                DateTime @default(now())
-  expiresAt                      DateTime
-  isActive                       Boolean  @default(true)
-  legacyCollectionDraftSessionId String?  @unique @db.Uuid
-
-  design                       Design                  @relation(fields: [designId], references: [id], onDelete: Cascade)
-  owner                        User                    @relation("UserDesignDraftSessions", fields: [ownerId], references: [id], onDelete: Cascade)
-  legacyCollectionDraftSession CollectionDraftSession? @relation("LegacyCollectionDraftSessionDesign", fields: [legacyCollectionDraftSessionId], references: [id], onDelete: SetNull)
-
-  @@index([designId, isActive])
-  @@index([ownerId])
-  @@index([expiresAt])
-  @@index([legacyCollectionDraftSessionId])
-}
 
 model CollectionBulkUploadJob {
   id            String           @id @map("_id") @db.Uuid
@@ -1675,7 +1580,6 @@ model CollectionCategory {
   createdAt           DateTime                       @default(now())
   updatedAt           DateTime                       @updatedAt
   collections         Collection[]
-  designs             Design[]
   storeCollections    StoreCollection[]
   products            Product[]
   types               CollectionCategoryType[]
@@ -1697,7 +1601,6 @@ model CollectionCategoryType {
   createdAt        DateTime           @default(now())
   updatedAt        DateTime           @updatedAt
   collections      Collection[]
-  designs          Design[]
   storeCollections StoreCollection[]
   products         Product[]
 
@@ -1780,42 +1683,12 @@ model CollectionMedia {
   commentsCount           Int                       @default(0)
   // inverse relation for cover usage
   coverOf                 Collection[]              @relation("CollectionCoverMedia")
-  designMediaMirror       DesignMedia?              @relation("LegacyCollectionMediaDesign")
 
   @@unique([collectionId, viewSlot])
   @@index([collectionId, viewSlot])
   @@index([reviewStatus])
 }
 
-model DesignMedia {
-  id                      String                   @id @default(uuid()) @map("_id") @db.Uuid
-  designId                String                   @db.Uuid
-  design                  Design                   @relation("Design_to_Media", fields: [designId], references: [id], onDelete: Cascade)
-  fileUploadId            String                   @db.Uuid
-  file                    FileUpload               @relation("FileUpload_to_DesignMedia", fields: [fileUploadId], references: [id])
-  orderIndex              Int                      @default(0)
-  mediaType               FileType
-  viewSlot                ContentMediaViewSlot?
-  mediaPurpose            ContentMediaPurpose      @default(OPTIONAL_VIEW)
-  reviewStatus            ContentMediaReviewStatus @default(APPROVED)
-  reviewReasonCode        ContentReviewReasonCode?
-  reviewReason            String?
-  createdById             String?                  @db.Uuid
-  brandId                 String?                  @db.Uuid
-  threadsCount            Int                      @default(0)
-  commentsCount           Int                      @default(0)
-  legacyCollectionMediaId String?                  @unique @db.Uuid
-  legacyCollectionMedia   CollectionMedia?         @relation("LegacyCollectionMediaDesign", fields: [legacyCollectionMediaId], references: [id], onDelete: SetNull)
-  coverOf                 Design[]                 @relation("DesignCoverMedia")
-  createdAt               DateTime                 @default(now())
-  updatedAt               DateTime                 @updatedAt
-
-  @@unique([designId, viewSlot])
-  @@index([designId, orderIndex])
-  @@index([designId, viewSlot])
-  @@index([reviewStatus])
-  @@index([legacyCollectionMediaId])
-}
 
 model CollectionReaction {
   id            String       @id @map("_id") @db.Uuid
@@ -2746,7 +2619,6 @@ model Brand {
   sizingTemplates           SizingTemplate[]
   payouts                   Payout[]
   products                  Product[]                  @relation("Brand_to_Products")
-  designs                   Design[]                   @relation("BrandDesigns")
   productMedias             ProductMedia[]             @relation("BrandProductMedias")
   featuredItems             FeaturedItem[]
   verificationAttempts      BrandVerificationAttempt[]
@@ -4890,8 +4762,8 @@ model EntityFilter {
   // Optional back-reference for Product direct relation queries
   productId String?  @db.Uuid
   product   Product? @relation("ProductEntityFilters", fields: [productId], references: [id], onDelete: Cascade)
+  // designId retained as a scalar for historical rows; the Design table was dropped.
   designId  String?  @db.Uuid
-  design    Design?  @relation("DesignEntityFilters", fields: [designId], references: [id], onDelete: Cascade)
 
   @@unique([filterValueId, entityType, entityId])
   @@index([entityType, entityId])
@@ -5580,8 +5452,8 @@ model Review {
   collection          StoreCollection?   @relation("ReviewStoreCollection", fields: [collectionId], references: [id], onDelete: SetNull)
   legacyCollectionId  String?            @db.Uuid
   legacyCollection    Collection?        @relation("ReviewLegacyCollection", fields: [legacyCollectionId], references: [id], onDelete: SetNull)
+  // designId retained as a scalar for historical rows; the Design table was dropped.
   designId            String?            @db.Uuid
-  design              Design?            @relation("ReviewDesign", fields: [designId], references: [id], onDelete: SetNull)
   orderId             String?            @db.Uuid
   order               Order?             @relation("ReviewOrder", fields: [orderId], references: [id], onDelete: SetNull)
   orderItemId         String?            @db.Uuid
@@ -5635,8 +5507,8 @@ model ReviewPrompt {
   collection         StoreCollection?   @relation("ReviewPromptStoreCollection", fields: [collectionId], references: [id], onDelete: SetNull)
   legacyCollectionId String?            @db.Uuid
   legacyCollection   Collection?        @relation("ReviewPromptLegacyCollection", fields: [legacyCollectionId], references: [id], onDelete: SetNull)
+  // designId retained as a scalar for historical rows; the Design table was dropped.
   designId           String?            @db.Uuid
-  design             Design?            @relation("ReviewPromptDesign", fields: [designId], references: [id], onDelete: SetNull)
   targetType         ReviewTargetType
   status             ReviewPromptStatus @default(PENDING)
   shownAt            DateTime?

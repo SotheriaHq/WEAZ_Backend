@@ -153,7 +153,6 @@ describe('CustomOrdersService', () => {
       gender: 'WOMEN',
       categoryType: { slug: 'dresses' },
     });
-    prisma.design.findUnique.mockResolvedValue(null);
     prisma.collection.findUnique.mockResolvedValue({
       customMeasurementKeys: ['WOMEN_WAIST'],
       customFreeformPointIds: [],
@@ -901,12 +900,11 @@ describe('CustomOrdersService', () => {
       brand: { currency: 'NGN' },
       versions: [{ id: 'configuration_version_1' }],
     });
-    prisma.design.findUnique.mockResolvedValue({
+    prisma.collection.findUnique.mockResolvedValue({
       customMeasurementKeys: ['WOMEN_WAIST'],
       customFreeformPointIds: [],
       customGender: 'WOMEN',
       type: 'WOMEN',
-      legacyCollectionId: null,
       categoryType: { slug: 'eveningwear' },
     });
     prisma.measurementPoint.findMany.mockResolvedValue([]);
@@ -933,10 +931,9 @@ describe('CustomOrdersService', () => {
       shippingAddress: null,
     } as any);
 
-    expect(prisma.design.findUnique).toHaveBeenCalledWith(
+    expect(prisma.collection.findUnique).toHaveBeenCalledWith(
       expect.objectContaining({ where: { id: 'design_1' } }),
     );
-    expect(prisma.collection.findUnique).not.toHaveBeenCalled();
     expect(pricingService.buildPricePreview).toHaveBeenCalledWith(
       expect.objectContaining({
         requiredMeasurementKeys: ['WOMEN_WAIST'],

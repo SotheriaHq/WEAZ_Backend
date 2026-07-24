@@ -602,11 +602,11 @@ async function ensureDemoCatalogSeed(idsBySlug: Map<string, string>) {
     ),
   );
 
-  await prisma.design.upsert({
+  // Designs are persisted as Collection(domain = DESIGN); domain defaults to DESIGN.
+  await prisma.collection.upsert({
     where: { id: DEMO_DESIGN_ID },
     update: {
       ownerId: brandOwnerId,
-      brandId: brand.id,
       title: 'Ankara Evening Concept',
       description: 'Four-view sample design for fresh database validation.',
       status: 'PUBLISHED',
@@ -633,7 +633,6 @@ async function ensureDemoCatalogSeed(idsBySlug: Map<string, string>) {
     create: {
       id: DEMO_DESIGN_ID,
       ownerId: brandOwnerId,
-      brandId: brand.id,
       title: 'Ankara Evening Concept',
       description: 'Four-view sample design for fresh database validation.',
       status: 'PUBLISHED',
@@ -660,17 +659,17 @@ async function ensureDemoCatalogSeed(idsBySlug: Map<string, string>) {
   });
 
   for (const [index, file] of mediaFiles.entries()) {
-    await prisma.designMedia.upsert({
+    await prisma.collectionMedia.upsert({
       where: { id: DEMO_DESIGN_MEDIA_IDS[index] },
       update: {
-        designId: DEMO_DESIGN_ID,
+        collectionId: DEMO_DESIGN_ID,
         fileUploadId: file.id,
         orderIndex: index,
         mediaType: 'POST_IMAGE',
       },
       create: {
         id: DEMO_DESIGN_MEDIA_IDS[index],
-        designId: DEMO_DESIGN_ID,
+        collectionId: DEMO_DESIGN_ID,
         fileUploadId: file.id,
         orderIndex: index,
         mediaType: 'POST_IMAGE',
@@ -678,7 +677,7 @@ async function ensureDemoCatalogSeed(idsBySlug: Map<string, string>) {
     });
   }
 
-  await prisma.design.update({
+  await prisma.collection.update({
     where: { id: DEMO_DESIGN_ID },
     data: { coverMediaId: DEMO_DESIGN_MEDIA_IDS[0] },
   });

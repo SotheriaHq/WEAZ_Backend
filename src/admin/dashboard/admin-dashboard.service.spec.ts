@@ -89,6 +89,5 @@ describe('AdminDashboardService', () => {
       ordersNeedingAttention: 5,
     });
     expect(prisma.user.count).not.toHaveBeenCalled();
-    expect(prisma.design.count).not.toHaveBeenCalled();
   });
 });

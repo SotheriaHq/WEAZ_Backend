@@ -235,8 +235,8 @@ export class SavedItemsService {
               title: design.title,
               thumbnail: design.medias[0]?.file.s3Url,
               designId: design.id,
-              legacyCollectionId: design.legacyCollectionId,
-              collectionId: design.legacyCollectionId ?? design.id,
+              legacyCollectionId: null,
+              collectionId: design.id,
               entityType: 'DESIGN',
               brand: this.mapSavedBrand(design.owner),
             };

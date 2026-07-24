@@ -80,7 +80,6 @@ describe('BagEligibilityService', () => {
     prisma.customOrderCheckoutSession.findMany.mockResolvedValue([]);
     prisma.storeCollection.findFirst.mockResolvedValue(null);
     prisma.user.findUnique.mockResolvedValue({ type: 'REGULAR' });
-    prisma.design.findFirst.mockResolvedValue(null);
   });
 
   it('returns ADD_STANDARD for an in-stock product with no options', async () => {
