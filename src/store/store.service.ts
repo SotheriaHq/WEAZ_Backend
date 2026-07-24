@@ -9501,6 +9501,7 @@ export class StoreService {
       pendingPayouts,
       paidOut,
       heldHolds,
+      customHeldAllocations,
       recentPayouts,
     ] = await Promise.all([
       this.getStorePaymentAccountModel().findUnique({
@@ -9546,6 +9547,13 @@ export class StoreService {
           secondReleasedAt: true,
         },
       }),
+      this.prisma.customOrderLedgerAllocation.aggregate({
+        where: {
+          customOrder: { brandId },
+          status: 'HELD' as any,
+        },
+        _sum: { netBrandAmount: true },
+      }),
       this.prisma.payout.findMany({
         where: { brandId },
         orderBy: { createdAt: 'desc' },
@@ -9590,12 +9598,14 @@ export class StoreService {
     );
     const pendingPayoutTotal = this.toMoney(pendingPayouts?._sum?.amount ?? 0);
     const totalPaidOut = this.toMoney(paidOut?._sum?.amount ?? 0);
-    const heldInEscrow = this.toMoney(
-      heldHolds.reduce(
-        (sum, hold) => sum + this.getEscrowRemainingAmount(hold),
-        0,
-      ),
+    const standardHeldInEscrow = heldHolds.reduce(
+      (sum, hold) => sum + this.getEscrowRemainingAmount(hold),
+      0,
     );
+    const customHeldInEscrow = Number(
+      customHeldAllocations?._sum?.netBrandAmount ?? 0,
+    );
+    const heldInEscrow = this.toMoney(standardHeldInEscrow + customHeldInEscrow);
     const totalEarnings = this.toMoney(
       availableForPayout + pendingPayoutTotal + totalPaidOut + heldInEscrow,
     );

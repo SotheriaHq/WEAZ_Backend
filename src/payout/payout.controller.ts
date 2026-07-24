@@ -9,6 +9,7 @@ import {
   UseGuards,
   BadRequestException,
 } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { PayoutService } from './payout.service';
 import { JwtAuthGuard } from '../auth/guard/jwt-auth.guard';
 import { BrandPermissionService } from 'src/brands/permissions/brand-permission.service';
@@ -16,6 +17,7 @@ import { BRAND_PERMISSIONS } from 'src/brands/permissions/brand-permissions';
 
 @Controller('brands/:brandId/payouts')
 @UseGuards(JwtAuthGuard)
+@Throttle({ default: { limit: 40, ttl: 60000 } })
 export class PayoutController {
   constructor(
     private readonly payoutService: PayoutService,
@@ -42,6 +44,7 @@ export class PayoutController {
   }
 
   @Get('overview')
+  @Throttle({ default: { limit: 20, ttl: 60000 } })
   async getOverview(@Param('brandId') brandId: string, @Req() req: any) {
     await this.brandPermissionService.assertPermission(
       req.user.id,
@@ -52,6 +55,7 @@ export class PayoutController {
   }
 
   @Get('incoming')
+  @Throttle({ default: { limit: 30, ttl: 60000 } })
   async getIncomingTransactions(
     @Param('brandId') brandId: string,
     @Req() req: any,
@@ -71,6 +75,7 @@ export class PayoutController {
   }
 
   @Get('held-funds')
+  @Throttle({ default: { limit: 30, ttl: 60000 } })
   async getHeldFunds(
     @Param('brandId') brandId: string,
     @Req() req: any,
@@ -90,6 +95,7 @@ export class PayoutController {
   }
 
   @Post('request')
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
   async requestPayout(
     @Param('brandId') brandId: string,
     @Body() body: { amount: number },

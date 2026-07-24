@@ -15,6 +15,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { CommissionService } from 'src/finance/commission.service';
 import { StandardOrderEscrowService } from 'src/finance/standard-order-escrow.service';
 import { StandardOrderFinanceSyncService } from 'src/finance/standard-order-finance-sync.service';
+import { CustomOrderFinanceSyncService } from 'src/finance/custom-order-finance-sync.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { AdminAuditService } from 'src/admin/services/admin-audit.service';
 import {
@@ -29,6 +30,7 @@ export class PayoutService {
     private readonly standardOrderEscrowService: StandardOrderEscrowService,
     private readonly commissionService: CommissionService,
     private readonly standardOrderFinanceSyncService: StandardOrderFinanceSyncService,
+    private readonly customOrderFinanceSyncService: CustomOrderFinanceSyncService,
     @Optional()
     private readonly adminAuditService?: AdminAuditService,
   ) {}
@@ -75,7 +77,7 @@ export class PayoutService {
 
     await this.assertBrandExists(brandId);
     await this.assertPayoutAccountReadyForRequest(brandId);
-    await this.syncLegacyStandardOrderSources(brandId);
+    await this.syncFinanceSources(brandId);
     const balance = await this.calculateAvailableBalance(brandId);
 
     if (amount > balance) {
@@ -135,6 +137,7 @@ export class PayoutService {
 
   async getOverview(brandId: string) {
     await this.assertBrandExists(brandId);
+    await this.syncFinanceSources(brandId);
     const {
       availableBalance,
       releasedBalance,
@@ -189,21 +192,26 @@ export class PayoutService {
 
   async listIncomingTransactions(brandId: string, page = 1, limit = 20) {
     await this.assertBrandExists(brandId);
+    await this.syncFinanceSources(brandId);
     const safePage = Math.max(1, Number(page) || 1);
-    const safeLimit = Math.min(100, Math.max(1, Number(limit) || 20));
+    const safeLimit = Math.min(50, Math.max(1, Number(limit) || 20));
     const skip = (safePage - 1) * safeLimit;
+    // Over-fetch slightly so merge with bounded fallbacks stays correct without loading all history.
+    const ledgerFetchLimit = Math.min(100, skip + safeLimit);
 
-    const [entries, legacyOrders, fallbackCustomAllocations] =
+    const [entries, entryTotal, legacyOrders, fallbackCustomAllocations] =
       await Promise.all([
         (this.prisma as any).ledgerEntry.findMany({
           where: {
             account: {
               entityType: 'BRAND',
               entityId: brandId,
+              subType: 'BRAND_AVAILABLE',
             },
             direction: 'CREDIT',
           },
           orderBy: { createdAt: 'desc' },
+          take: ledgerFetchLimit,
           include: {
             account: {
               select: {
@@ -238,6 +246,16 @@ export class PayoutService {
             },
           },
         }),
+        (this.prisma as any).ledgerEntry.count({
+          where: {
+            account: {
+              entityType: 'BRAND',
+              entityId: brandId,
+              subType: 'BRAND_AVAILABLE',
+            },
+            direction: 'CREDIT',
+          },
+        }),
         this.prisma.order.findMany({
           where: {
             brandId,
@@ -245,6 +263,7 @@ export class PayoutService {
             escrowHold: { is: null },
           },
           orderBy: { createdAt: 'desc' },
+          take: 20,
           select: {
             id: true,
             totalAmount: true,
@@ -265,6 +284,7 @@ export class PayoutService {
             },
           },
           orderBy: [{ eligibleAt: 'desc' }, { createdAt: 'desc' }],
+          take: 40,
           select: {
             id: true,
             allocationType: true,
@@ -526,16 +546,23 @@ export class PayoutService {
         new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
     );
 
+    // total ≈ ledger count + fallback rows not already represented in ledger
+    const total = Math.max(
+      Number(entryTotal || 0) + legacyItems.length + customFallbackItems.length,
+      allItems.length,
+    );
+
     return {
       items: allItems.slice(skip, skip + safeLimit),
-      total: allItems.length,
+      total,
       page: safePage,
-      totalPages: Math.ceil(allItems.length / safeLimit),
+      totalPages: Math.ceil(total / safeLimit) || 1,
     };
   }
 
   async listHeldFunds(brandId: string, page = 1, limit = 20) {
     await this.assertBrandExists(brandId);
+    await this.syncFinanceSources(brandId);
     const safePage = Math.max(1, Number(page) || 1);
     const safeLimit = Math.min(100, Math.max(1, Number(limit) || 20));
     const skip = (safePage - 1) * safeLimit;
@@ -955,6 +982,13 @@ export class PayoutService {
     return new Map<string, number>(resolvedRules);
   }
 
+  private async syncFinanceSources(brandId: string) {
+    await Promise.all([
+      this.syncLegacyStandardOrderSources(brandId),
+      this.customOrderFinanceSyncService.ensureSettlementsForBrand(brandId, 25),
+    ]);
+  }
+
   private async syncLegacyStandardOrderSources(brandId: string) {
     const legacyOrderIds = await this.prisma.order.findMany({
       where: {
@@ -964,7 +998,7 @@ export class PayoutService {
         escrowHold: { is: null },
       },
       select: { id: true },
-      take: 200,
+      take: 50,
     });
 
     if (legacyOrderIds.length === 0) {

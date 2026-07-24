@@ -73,6 +73,7 @@ describe('AdminFinanceService settlement policy management', () => {
       deactivatePolicy: jest.fn(),
       activatePolicy: jest.fn(),
       resolveActivePolicy: jest.fn(),
+      seedDefaults: jest.fn().mockResolvedValue(undefined),
     };
 
     settlementCalculatorService = {
@@ -96,6 +97,11 @@ describe('AdminFinanceService settlement policy management', () => {
       ledgerService,
       settlementPolicyService,
       settlementCalculatorService,
+      {
+        ensureSettlementsPlatform: jest
+          .fn()
+          .mockResolvedValue({ scanned: 0, repaired: 0 }),
+      } as any,
     );
   });
 

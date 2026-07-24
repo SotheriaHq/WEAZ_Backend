@@ -5,8 +5,6 @@ import {
 } from '@nestjs/common';
 import {
   CustomOrderCheckoutStatus,
-  CustomOrderLedgerAllocationStatus,
-  CustomOrderLedgerAllocationType,
   CustomOrderProgressStage,
   CustomOrderStatus,
   CustomOrderTimelineEventType,
@@ -15,19 +13,15 @@ import {
   PaymentSubjectType,
   Prisma,
   Role,
-  SettlementOrderType,
-  SettlementReleaseMode,
 } from '@prisma/client';
 import { ADMIN_PERMISSIONS } from 'src/admin/constants/permissions';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { PaymentService } from 'src/payment/payment.service';
 import { CustomOrderSideEffectsService } from './custom-order-side-effects.service';
 import { CustomOrdersService } from './custom-orders.service';
-import { LedgerService } from 'src/finance/ledger.service';
 import { FinancialDocumentsService } from 'src/finance/financial-documents.service';
+import { CustomOrderFinanceSyncService } from 'src/finance/custom-order-finance-sync.service';
 import { CustomOrderThreadBootstrapService } from 'src/messaging/custom-order-thread-bootstrap.service';
-import { SettlementCalculatorService } from 'src/finance/settlement-calculator.service';
-import { SettlementSnapshotService } from 'src/finance/settlement-snapshot.service';
 import { VerifyCustomOrderPaymentDto } from './dto/custom-orders.dto';
 import {
   canonicalUserProfileSelect,
@@ -47,11 +41,9 @@ export class CustomOrdersPaymentsService {
     private readonly paymentService: PaymentService,
     private readonly sideEffects: CustomOrderSideEffectsService,
     private readonly ordersService: CustomOrdersService,
-    private readonly ledgerService: LedgerService,
     private readonly financialDocumentsService: FinancialDocumentsService,
     private readonly customOrderThreadBootstrap: CustomOrderThreadBootstrapService,
-    private readonly settlementCalculatorService: SettlementCalculatorService,
-    private readonly settlementSnapshotService: SettlementSnapshotService,
+    private readonly customOrderFinanceSyncService: CustomOrderFinanceSyncService,
   ) {}
 
   private buyerDisplayName(buyer: any): string {
@@ -1100,104 +1092,7 @@ export class CustomOrdersPaymentsService {
       releaseEligibleAt: Date;
     },
   ) {
-    const calculation = await this.settlementCalculatorService.calculate({
-      orderType: SettlementOrderType.CUSTOM_ORDER,
-      customOrderId: params.customOrderId,
-      brandId: params.brandId,
-      grossAmount: params.grossAmount,
-      currency: params.currency,
-      effectiveAt: params.effectiveAt,
-    });
-    const snapshot = await this.settlementSnapshotService.createFromCalculation(
-      calculation,
-      tx,
-    );
-
-    const existingAllocations = await tx.customOrderLedgerAllocation.findMany({
-      where: { customOrderId: params.customOrderId },
-      select: { allocationType: true },
-    });
-    const existingAllocationTypes = new Set(
-      existingAllocations.map((allocation) => allocation.allocationType),
-    );
-    const missingAllocations = [
-      {
-        customOrderId: params.customOrderId,
-        allocationType:
-          CustomOrderLedgerAllocationType.BRAND_ACCEPTANCE_PORTION,
-        amount: snapshot.upfrontReleaseGrossAmount,
-        commissionRate: snapshot.commissionRate,
-        commissionAmount: snapshot.upfrontReleaseCommissionAmount,
-        netBrandAmount: snapshot.upfrontReleaseNetBrandAmount,
-        currency: params.currency,
-        status: CustomOrderLedgerAllocationStatus.HELD,
-      },
-      {
-        customOrderId: params.customOrderId,
-        allocationType:
-          CustomOrderLedgerAllocationType.FINAL_COMPLETION_PORTION,
-        amount: snapshot.finalReleaseGrossAmount,
-        commissionRate: snapshot.commissionRate,
-        commissionAmount: snapshot.finalReleaseCommissionAmount,
-        netBrandAmount: snapshot.finalReleaseNetBrandAmount,
-        currency: params.currency,
-        status: CustomOrderLedgerAllocationStatus.HELD,
-      },
-    ].filter(
-      (allocation) => !existingAllocationTypes.has(allocation.allocationType),
-    );
-
-    if (missingAllocations.length > 0) {
-      await tx.customOrderLedgerAllocation.createMany({
-        data: missingAllocations,
-      });
-    }
-
-    await this.ledgerService.postCustomOrderPaymentReceived(tx, {
-      customOrderId: params.customOrderId,
-      totalAmount: Number(snapshot.grossAmount),
-      currency: params.currency,
-    });
-
-    if (this.shouldReleaseCustomOrderUpfront(snapshot)) {
-      await tx.customOrderLedgerAllocation.updateMany({
-        where: {
-          customOrderId: params.customOrderId,
-          allocationType:
-            CustomOrderLedgerAllocationType.BRAND_ACCEPTANCE_PORTION,
-          status: CustomOrderLedgerAllocationStatus.HELD,
-        },
-        data: {
-          status: CustomOrderLedgerAllocationStatus.PAYOUT_ELIGIBLE,
-          eligibleAt: params.releaseEligibleAt,
-        },
-      });
-
-      await this.ledgerService.postCustomOrderImmediateRelease(tx, {
-        customOrderId: params.customOrderId,
-        brandId: params.brandId,
-        currency: params.currency,
-        amount: Number(snapshot.upfrontReleaseGrossAmount),
-        commissionAmount: Number(snapshot.upfrontReleaseCommissionAmount),
-        netBrandAmount: Number(snapshot.upfrontReleaseNetBrandAmount),
-      });
-    }
-
-    return snapshot;
-  }
-
-  private shouldReleaseCustomOrderUpfront(snapshot: {
-    orderType: SettlementOrderType;
-    releaseMode: SettlementReleaseMode;
-    upfrontReleaseEnabled: boolean;
-    upfrontReleaseGrossAmount: Prisma.Decimal;
-  }) {
-    return (
-      snapshot.orderType === SettlementOrderType.CUSTOM_ORDER &&
-      snapshot.releaseMode === SettlementReleaseMode.SPLIT_RELEASE &&
-      snapshot.upfrontReleaseEnabled &&
-      Number(snapshot.upfrontReleaseGrossAmount) > 0
-    );
+    return this.customOrderFinanceSyncService.applyPaidSettlement(tx, params);
   }
 
   async listBuyerPaymentAttempts(userId: string, customOrderId: string) {

@@ -11,6 +11,7 @@ import { FinancialDocumentsService } from 'src/finance/financial-documents.servi
 import { LedgerService } from 'src/finance/ledger.service';
 import { SettlementCalculatorService } from 'src/finance/settlement-calculator.service';
 import { SettlementSnapshotService } from 'src/finance/settlement-snapshot.service';
+import { CustomOrderFinanceSyncService } from 'src/finance/custom-order-finance-sync.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { PaymentService } from 'src/payment/payment.service';
 import { CustomOrderSideEffectsService } from './custom-order-side-effects.service';
@@ -299,6 +300,7 @@ describe('CustomOrdersPaymentsService', () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         CustomOrdersPaymentsService,
+        CustomOrderFinanceSyncService,
         { provide: PrismaService, useValue: prisma },
         { provide: PaymentService, useValue: paymentService },
         {
@@ -888,7 +890,7 @@ describe('CustomOrdersPaymentsService', () => {
 
     expect(tx.customOrderLedgerAllocation.findMany).toHaveBeenCalledWith({
       where: { customOrderId: 'co_4' },
-      select: { allocationType: true },
+      select: { allocationType: true, status: true },
     });
     expect(tx.customOrderLedgerAllocation.createMany).not.toHaveBeenCalled();
     expect(ledgerService.postCustomOrderPaymentReceived).toHaveBeenCalledWith(

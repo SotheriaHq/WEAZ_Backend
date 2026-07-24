@@ -11,6 +11,7 @@ import { SettlementPolicyService } from './settlement-policy.service';
 import { SettlementCalculatorService } from './settlement-calculator.service';
 import { SettlementSnapshotService } from './settlement-snapshot.service';
 import { SettlementBackfillService } from './settlement-backfill.service';
+import { CustomOrderFinanceSyncService } from './custom-order-finance-sync.service';
 
 @Module({
   imports: [PrismaModule, SystemConfigModule],
@@ -21,6 +22,7 @@ import { SettlementBackfillService } from './settlement-backfill.service';
     ReconciliationService,
     FinancialDocumentsService,
     StandardOrderFinanceSyncService,
+    CustomOrderFinanceSyncService,
     SettlementPolicyService,
     SettlementCalculatorService,
     SettlementSnapshotService,
@@ -33,6 +35,7 @@ import { SettlementBackfillService } from './settlement-backfill.service';
     ReconciliationService,
     FinancialDocumentsService,
     StandardOrderFinanceSyncService,
+    CustomOrderFinanceSyncService,
     SettlementPolicyService,
     SettlementCalculatorService,
     SettlementSnapshotService,

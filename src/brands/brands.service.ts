@@ -1527,10 +1527,12 @@ export class BrandsService {
   async getDashboardOverview(brandId: string) {
     const brand = await this.resolveDashboardBrand(brandId);
 
-    // KPIs
+    // KPIs — standard Order + CustomOrder (paid) keep separate entity math but unified totals
     const [
-      totalOrders,
+      standardOrderCount,
+      customOrderCount,
       totalSalesResult,
+      customSalesAgg,
       pendingOrders,
       patchesCount,
       activeProducts,
@@ -1539,10 +1541,18 @@ export class BrandsService {
       actionRequired,
     ] = await Promise.all([
       this.prisma.order.count({ where: { brandId: brand.id } }),
+      this.prisma.customOrder.count({ where: { brandId: brand.id } }),
       this.prisma.order.aggregate({
         where: { brandId: brand.id, paymentStatus: 'PAID' },
         _sum: { totalAmount: true },
       }),
+      // Cost-efficient grandTotal sum via JSON path (no full row payload).
+      this.prisma.$queryRaw<Array<{ total: Prisma.Decimal | number | null }>>`
+        SELECT COALESCE(SUM(("buyerPriceSummaryJson"->>'grandTotal')::numeric), 0) AS total
+        FROM "CustomOrder"
+        WHERE "brandId" = ${brand.id}::uuid
+          AND "paymentStatus" = 'PAID'
+      `,
       this.prisma.order.count({
         where: { brandId: brand.id, status: 'PENDING' },
       }),
@@ -1586,9 +1596,11 @@ export class BrandsService {
       }),
     ]);
 
-    const totalSales = totalSalesResult._sum.totalAmount || 0;
-    const avgOrderValue =
-      totalOrders > 0 ? Number(totalSales) / totalOrders : 0;
+    const customSales = Number(customSalesAgg?.[0]?.total ?? 0);
+    const standardSales = Number(totalSalesResult._sum.totalAmount || 0);
+    const totalSales = standardSales + customSales;
+    const totalOrders = standardOrderCount + customOrderCount;
+    const avgOrderValue = totalOrders > 0 ? totalSales / totalOrders : 0;
 
     const recentActivity = this.mapNotificationsToRecentActivity(
       recentNotifications as any,
@@ -1596,9 +1608,13 @@ export class BrandsService {
 
     return {
       kpis: {
-        totalSales: Number(totalSales),
-        totalRevenue: Number(totalSales), // alias for frontend compatibility
+        totalSales,
+        totalRevenue: totalSales, // alias for frontend compatibility
         totalOrders,
+        standardOrders: standardOrderCount,
+        customOrders: customOrderCount,
+        standardSales,
+        customSales,
         avgOrderValue,
         pendingOrders,
         patches: patchesCount,
@@ -1629,24 +1645,50 @@ export class BrandsService {
     else if (range === '30d') startDate.setDate(now.getDate() - 30);
     else if (range === 'ytd') startDate = new Date(now.getFullYear(), 0, 1);
 
-    // Group orders by date
-    const orders = await this.prisma.order.findMany({
-      where: {
-        brandId: brand.id,
-        createdAt: { gte: startDate },
-        paymentStatus: 'PAID',
-      },
-      select: {
-        createdAt: true,
-        totalAmount: true,
-      },
-    });
+    // Group standard + custom paid orders by date (unified sales truth).
+    // Custom totals use a date-bucketed SQL aggregate to avoid loading every JSON row.
+    const [orders, customDailyRows] = await Promise.all([
+      this.prisma.order.findMany({
+        where: {
+          brandId: brand.id,
+          createdAt: { gte: startDate },
+          paymentStatus: 'PAID',
+        },
+        select: {
+          createdAt: true,
+          totalAmount: true,
+        },
+      }),
+      this.prisma.$queryRaw<
+        Array<{ day: Date; total: Prisma.Decimal | number | null }>
+      >`
+        SELECT date_trunc('day', "createdAt") AS day,
+               COALESCE(SUM(("buyerPriceSummaryJson"->>'grandTotal')::numeric), 0) AS total
+        FROM "CustomOrder"
+        WHERE "brandId" = ${brand.id}::uuid
+          AND "paymentStatus" = 'PAID'
+          AND "createdAt" >= ${startDate}
+        GROUP BY 1
+        ORDER BY 1 ASC
+      `,
+    ]);
 
     // Aggregate by day
     const dailySales = new Map<string, number>();
+    const dailyStandard = new Map<string, number>();
+    const dailyCustom = new Map<string, number>();
+
     orders.forEach((order) => {
       const date = order.createdAt.toISOString().split('T')[0];
       const amount = Number(order.totalAmount);
+      dailyStandard.set(date, (dailyStandard.get(date) || 0) + amount);
+      dailySales.set(date, (dailySales.get(date) || 0) + amount);
+    });
+
+    customDailyRows.forEach((row) => {
+      const date = new Date(row.day).toISOString().split('T')[0];
+      const amount = Number(row.total ?? 0);
+      dailyCustom.set(date, (dailyCustom.get(date) || 0) + amount);
       dailySales.set(date, (dailySales.get(date) || 0) + amount);
     });
 
@@ -1657,6 +1699,8 @@ export class BrandsService {
       chartData.push({
         date: dateStr,
         amount: dailySales.get(dateStr) || 0,
+        standardAmount: dailyStandard.get(dateStr) || 0,
+        customAmount: dailyCustom.get(dateStr) || 0,
       });
     }
 

@@ -29,6 +29,7 @@ import {
   SettlementPolicyService,
 } from 'src/finance/settlement-policy.service';
 import { StandardOrderEscrowService } from 'src/finance/standard-order-escrow.service';
+import { CustomOrderFinanceSyncService } from 'src/finance/custom-order-finance-sync.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { resolveWebAppBaseUrl } from 'src/common/utils/web-app-url';
 import { SystemConfigService } from '../system-config/system-config.service';
@@ -84,7 +85,45 @@ export class AdminFinanceService {
     private readonly ledgerService: LedgerService,
     private readonly settlementPolicyService: SettlementPolicyService,
     private readonly settlementCalculatorService: SettlementCalculatorService,
+    private readonly customOrderFinanceSyncService: CustomOrderFinanceSyncService,
   ) {}
+
+  /**
+   * Bounded repair of paid custom orders missing settlement artifacts.
+   * Idempotent; does not re-release already released allocations (ledger keys).
+   */
+  async repairCustomOrderSettlements(
+    actorId: string,
+    req: Request,
+    limit = 50,
+  ) {
+    const safeLimit = Math.min(100, Math.max(1, Number(limit) || 50));
+    await this.settlementPolicyService.seedDefaults();
+    const result =
+      await this.customOrderFinanceSyncService.ensureSettlementsPlatform(
+        safeLimit,
+      );
+
+    await this.recordAudit(
+      req,
+      actorId,
+      AdminAuditAction.ADMIN_FINANCE_RECONCILIATION_RUN,
+      {
+        targetId: 'custom-order-settlement-repair',
+        targetType: 'SettlementRepair',
+        newState: result,
+      },
+    );
+
+    return {
+      ...result,
+      limit: safeLimit,
+      message:
+        result.repaired > 0
+          ? `Repaired settlement for ${result.repaired} of ${result.scanned} paid custom orders.`
+          : `Scanned ${result.scanned} paid custom orders; none needed repair.`,
+    };
+  }
 
   async getOverview() {
     const [

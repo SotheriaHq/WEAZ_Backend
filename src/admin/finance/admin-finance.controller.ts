@@ -17,6 +17,7 @@ import {
   SettlementReleaseMode,
 } from '@prisma/client';
 import { Request } from 'express';
+import { Throttle } from '@nestjs/throttler';
 import { Roles } from 'src/auth/decorator/roles.decorator';
 import { JwtAuthGuard } from 'src/auth/guard/jwt-auth.guard';
 import { RolesGuard } from 'src/auth/guard/role.guard';
@@ -63,17 +64,35 @@ type SettlementPolicyDto = {
 @Controller('admin/finance')
 @UseGuards(JwtAuthGuard, RolesGuard, AdminPermissionGuard)
 @Roles(Role.SuperAdmin, Role.Admin)
+@Throttle({ default: { limit: 60, ttl: 60000 } })
 export class AdminFinanceController {
   constructor(private readonly financeService: AdminFinanceService) {}
 
   @Get('overview')
   @RequirePermissions(ADMIN_PERMISSIONS.PAYOUTS_READ)
+  @Throttle({ default: { limit: 30, ttl: 60000 } })
   getOverview() {
     return this.financeService.getOverview();
   }
 
+  @Post('settlement-repair/custom-orders')
+  @RequirePermissions(ADMIN_PERMISSIONS.PAYOUTS_PROCESS)
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
+  repairCustomOrderSettlements(
+    @Body() dto: { limit?: number },
+    @Req() req: Request,
+  ) {
+    const actorId = (req as any).user.id ?? (req as any).user.sub;
+    return this.financeService.repairCustomOrderSettlements(
+      actorId,
+      req,
+      dto?.limit,
+    );
+  }
+
   @Get('payments')
   @RequirePermissions(ADMIN_PERMISSIONS.PAYOUTS_READ)
+  @Throttle({ default: { limit: 40, ttl: 60000 } })
   listPayments(
     @Query('status') status?: string,
     @Query('gateway') gateway?: string,
@@ -106,6 +125,7 @@ export class AdminFinanceController {
 
   @Get('transactions')
   @RequirePermissions(ADMIN_PERMISSIONS.PAYOUTS_READ)
+  @Throttle({ default: { limit: 40, ttl: 60000 } })
   listTransactions(
     @Query('type') type?: string,
     @Query('referenceType') referenceType?: string,
@@ -124,6 +144,7 @@ export class AdminFinanceController {
 
   @Get('escrow-holds')
   @RequirePermissions(ADMIN_PERMISSIONS.PAYOUTS_READ)
+  @Throttle({ default: { limit: 40, ttl: 60000 } })
   listEscrowHolds(
     @Query('status') status?: string,
     @Query('brandId') brandId?: string,
