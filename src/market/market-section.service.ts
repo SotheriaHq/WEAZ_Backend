@@ -1449,12 +1449,13 @@ export class MarketSectionService {
   private async getDesignItems(options: { cursor?: string; limit: number }) {
     const take = this.normalizeLimit(options.limit, this.defaultDetailLimit);
     const designs = await this.runCursorQuery(() =>
-      this.prisma.design.findMany({
+      this.prisma.collection.findMany({
         where: {
+          domain: 'DESIGN',
           status: CollectionStatus.PUBLISHED,
           visibility: CollectionVisibility.PUBLIC,
           deletedAt: null,
-          brand: { isStoreOpen: true },
+          owner: { brand: { isStoreOpen: true } },
           OR: [
             { coverMedia: { file: { s3Url: { not: '' } } } },
             { medias: { some: { file: { s3Url: { not: '' } } } } },
@@ -1465,7 +1466,6 @@ export class MarketSectionService {
         take: take + 1,
         select: {
           id: true,
-          legacyCollectionId: true,
           title: true,
           description: true,
           minPrice: true,
@@ -1480,13 +1480,17 @@ export class MarketSectionService {
           threadsCount: true,
           createdAt: true,
           updatedAt: true,
-          brand: {
+          owner: {
             select: {
-              id: true,
-              name: true,
-              logo: true,
-              currency: true,
-              createdAt: true,
+              brand: {
+                select: {
+                  id: true,
+                  name: true,
+                  logo: true,
+                  currency: true,
+                  createdAt: true,
+                },
+              },
             },
           },
           category: {
@@ -1554,7 +1558,8 @@ export class MarketSectionService {
       this.isSaleActive(design) && typeof design.saleMaxPrice === 'number'
         ? design.saleMaxPrice
         : design.maxPrice;
-    const targetId = design.legacyCollectionId ?? design.id;
+    const brand = design.owner?.brand ?? null;
+    const targetId = design.id;
 
     return {
       id: design.id,
@@ -1562,14 +1567,14 @@ export class MarketSectionService {
       sourceType: 'DESIGN',
       entityType: 'DESIGN',
       title: design.title ?? 'Untitled design',
-      subtitle: design.brand?.name ?? null,
+      subtitle: brand?.name ?? null,
       description: design.description ?? null,
       brand: {
-        id: design.brand?.id ?? null,
-        name: design.brand?.name ?? null,
-        logoUrl: this.cleanString(design.brand?.logo),
-        createdAt: this.toIsoString(design.brand?.createdAt),
-        isNew: this.isNewBrandCreatedAt(design.brand?.createdAt),
+        id: brand?.id ?? null,
+        name: brand?.name ?? null,
+        logoUrl: this.cleanString(brand?.logo),
+        createdAt: this.toIsoString(brand?.createdAt),
+        isNew: this.isNewBrandCreatedAt(brand?.createdAt),
       },
       media: {
         url: media,
@@ -1589,7 +1594,7 @@ export class MarketSectionService {
       priceRange: {
         min: typeof min === 'number' ? min : null,
         max: typeof max === 'number' ? max : null,
-        currency: design.brand?.currency ?? 'NGN',
+        currency: brand?.currency ?? 'NGN',
       },
       availability: {
         totalStock: null,

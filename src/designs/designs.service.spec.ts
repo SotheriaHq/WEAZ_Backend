@@ -4,17 +4,13 @@ import { LegacyCollectionDesignAdapter } from './adapters/legacy-collection-desi
 import { DesignsService } from './designs.service';
 
 const DESIGN_ID = '11111111-1111-4111-8111-111111111111';
-const EXPLICIT_DESIGN_ID = '22222222-2222-4222-8222-222222222222';
-const LEGACY_COLLECTION_ID = '33333333-3333-4333-8333-333333333333';
 
 describe('DesignsService', () => {
   let collectionsService: any;
   let customOrderConfigurationsService: any;
-  let designResolver: any;
   let service: DesignsService;
 
   beforeEach(() => {
-    delete process.env.DESIGN_DOMAIN_WRITE_MODE;
     collectionsService = {
       assertDesignCreationAllowed: jest.fn().mockResolvedValue(undefined),
       initializeCollection: jest.fn().mockResolvedValue({
@@ -60,26 +56,14 @@ describe('DesignsService', () => {
     customOrderConfigurationsService = {
       getActiveConfigurationForSource: jest.fn().mockResolvedValue(null),
     };
-    designResolver = {
-      resolveExplicitDesign: jest.fn().mockResolvedValue(null),
-      resolveLegacyCollectionId: jest.fn().mockResolvedValue(null),
-      trySyncFromLegacyCollection: jest
-        .fn()
-        .mockResolvedValue({ id: DESIGN_ID }),
-    };
     service = new DesignsService(
       collectionsService,
       customOrderConfigurationsService,
       new LegacyCollectionDesignAdapter(),
-      designResolver,
     );
   });
 
-  afterEach(() => {
-    delete process.env.DESIGN_DOMAIN_WRITE_MODE;
-  });
-
-  it('initializeDesignUpload delegates through the legacy collection adapter', async () => {
+  it('initializeDesignUpload delegates through the collection adapter', async () => {
     const result = await service.initializeDesignUpload('user-1', {
       title: 'Draft',
       subCategoryId: 'sub-1',
@@ -116,34 +100,9 @@ describe('DesignsService', () => {
     expect(result.designId).toBe(DESIGN_ID);
   });
 
-  it('dual write mode syncs explicit Design after the legacy finalize succeeds', async () => {
-    process.env.DESIGN_DOMAIN_WRITE_MODE = 'dual';
-
-    await service.finalizeDesignUpload(DESIGN_ID, 'user-1', {
-      action: 'draft',
-      designMetadata: { title: 'Sync me' },
-    } as any);
-
-    expect(designResolver.trySyncFromLegacyCollection).toHaveBeenCalledWith(
-      DESIGN_ID,
-    );
-  });
-
-  it('design-only write mode is guarded until backfill verification passes', async () => {
-    process.env.DESIGN_DOMAIN_WRITE_MODE = 'design';
-
-    await expect(
-      service.initializeDesignUpload('user-1', { title: 'Blocked' } as any),
-    ).rejects.toThrow('DESIGN_DOMAIN_WRITE_MODE=design is guarded');
-  });
-
-  it('getDesignDetail returns design-language response', async () => {
+  it('getDesignDetail returns design-language response keyed on the collection id', async () => {
     const result = await service.getDesignDetail(DESIGN_ID, 'viewer-1');
 
-    expect(designResolver.resolveExplicitDesign).toHaveBeenCalledWith(
-      DESIGN_ID,
-      'viewer-1',
-    );
     expect(collectionsService.getCollection).toHaveBeenCalledWith(
       DESIGN_ID,
       'viewer-1',
@@ -162,29 +121,7 @@ describe('DesignsService', () => {
     await expect(
       service.getDesignDetail('publish_1783327468928_r1mee6', 'viewer-1'),
     ).rejects.toThrow('Invalid design id');
-    expect(designResolver.resolveExplicitDesign).not.toHaveBeenCalled();
     expect(collectionsService.getCollection).not.toHaveBeenCalled();
-  });
-
-  it('getDesignDetail resolves legacy collection id and overlays explicit Design id', async () => {
-    designResolver.resolveLegacyCollectionId.mockResolvedValueOnce(
-      LEGACY_COLLECTION_ID,
-    );
-    designResolver.resolveExplicitDesign.mockResolvedValueOnce({
-      id: EXPLICIT_DESIGN_ID,
-      designId: EXPLICIT_DESIGN_ID,
-      legacyCollectionId: LEGACY_COLLECTION_ID,
-    });
-
-    const result = await service.getDesignDetail(EXPLICIT_DESIGN_ID, 'viewer-1');
-
-    expect(collectionsService.getCollection).toHaveBeenCalledWith(
-      LEGACY_COLLECTION_ID,
-      'viewer-1',
-      'design',
-    );
-    expect(result.designId).toBe(EXPLICIT_DESIGN_ID);
-    expect(result.legacyCollectionId).toBe(LEGACY_COLLECTION_ID);
   });
 
   it('updateDesign accepts subCategoryId and delegates as categoryTypeId', async () => {
@@ -205,30 +142,6 @@ describe('DesignsService', () => {
 
     expect(
       customOrderConfigurationsService.getActiveConfigurationForSource,
-    ).toHaveBeenCalledWith(
-      CustomOrderSourceType.DESIGN,
-      DESIGN_ID,
-      'viewer-1',
-    );
-  });
-
-  it('falls back to legacy collection custom-order configuration for migrated designs', async () => {
-    const firstError = new Error('not found');
-    customOrderConfigurationsService.getActiveConfigurationForSource
-      .mockRejectedValueOnce(firstError)
-      .mockResolvedValueOnce({ data: { id: 'config-1' } });
-    designResolver.resolveLegacyCollectionId.mockResolvedValueOnce(
-      LEGACY_COLLECTION_ID,
-    );
-
-    await service.getDesignCustomOrderConfiguration(DESIGN_ID, 'viewer-1');
-
-    expect(
-      customOrderConfigurationsService.getActiveConfigurationForSource,
-    ).toHaveBeenLastCalledWith(
-      CustomOrderSourceType.DESIGN,
-      LEGACY_COLLECTION_ID,
-      'viewer-1',
-    );
+    ).toHaveBeenCalledWith(CustomOrderSourceType.DESIGN, DESIGN_ID, 'viewer-1');
   });
 });

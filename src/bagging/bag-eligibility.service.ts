@@ -567,57 +567,6 @@ export class BagEligibilityService {
       },
     });
 
-    let explicitDesignId: string | null = null;
-    if (!design) {
-      const explicit = await this.prisma.design.findFirst({
-        where: {
-          deletedAt: null,
-          OR: [{ id: sourceId }, { legacyCollectionId: sourceId }],
-        },
-        select: {
-          id: true,
-          legacyCollectionId: true,
-          ownerId: true,
-          status: true,
-          visibility: true,
-          customOrderEnabled: true,
-        },
-      });
-      if (explicit) {
-        explicitDesignId = explicit.id;
-        if (explicit.legacyCollectionId) {
-          design = await this.prisma.collection.findFirst({
-            where: { id: explicit.legacyCollectionId, deletedAt: null },
-            select: {
-              id: true,
-              ownerId: true,
-              status: true,
-              visibility: true,
-              customOrderEnabled: true,
-            },
-          });
-        }
-        if (!design) {
-          design = {
-            id: explicit.legacyCollectionId ?? explicit.id,
-            ownerId: explicit.ownerId,
-            status: explicit.status as CollectionStatus,
-            visibility: explicit.visibility as CollectionVisibility,
-            customOrderEnabled: explicit.customOrderEnabled,
-          };
-        }
-      }
-    } else {
-      const linked = await this.prisma.design.findFirst({
-        where: {
-          deletedAt: null,
-          OR: [{ id: sourceId }, { legacyCollectionId: sourceId }],
-        },
-        select: { id: true },
-      });
-      explicitDesignId = linked?.id ?? null;
-    }
-
     if (!design) {
       return this.unavailableSourceStatus({
         sourceType: 'DESIGN',
@@ -628,10 +577,10 @@ export class BagEligibilityService {
       });
     }
 
-    // Custom configs may be keyed by design id or legacy collection id.
+    // A design's id is its collection id; configs are keyed by that id.
     const configSourceIds = Array.from(
       new Set(
-        [sourceId, design.id, explicitDesignId].filter(
+        [sourceId, design.id].filter(
           (value): value is string => Boolean(value),
         ),
       ),

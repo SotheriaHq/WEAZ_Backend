@@ -4806,30 +4806,7 @@ export class CustomOrdersService {
       };
     }
 
-    const explicitDesign = await this.prisma.design.findUnique({
-      where: { id: sourceId },
-      select: {
-        customMeasurementKeys: true,
-        customFreeformPointIds: true,
-        customGender: true,
-        type: true,
-        legacyCollectionId: true,
-        categoryType: {
-          select: { slug: true },
-        },
-      },
-    });
-
-    if (explicitDesign) {
-      return {
-        customMeasurementKeys: explicitDesign.customMeasurementKeys,
-        customFreeformPointIds: explicitDesign.customFreeformPointIds,
-        customGender: explicitDesign.customGender,
-        categoryTypeSlug: explicitDesign.categoryType?.slug ?? null,
-        collectionType: explicitDesign.type,
-      };
-    }
-
+    // Designs are DESIGN-domain collections; a design's id is its collection id.
     const design = await this.prisma.collection.findUnique({
       where: { id: sourceId },
       select: {
@@ -4994,49 +4971,7 @@ export class CustomOrdersService {
       };
     }
 
-    const explicitDesign = await this.prisma.design.findUnique({
-      where: { id: sourceId },
-      include: {
-        owner: {
-          include: {
-            brand: { select: { name: true } },
-          },
-        },
-        coverMedia: {
-          select: {
-            mediaType: true,
-            file: { select: { s3Url: true } },
-          },
-        },
-        medias: {
-          where: { mediaType: FileType.POST_IMAGE },
-          take: 6,
-          orderBy: { orderIndex: 'asc' },
-          select: {
-            file: { select: { s3Url: true } },
-          },
-        },
-      },
-    });
-
-    if (explicitDesign) {
-      const explicitDesignMediaCandidates = [
-        explicitDesign.coverMedia?.mediaType === FileType.POST_IMAGE
-          ? explicitDesign.coverMedia?.file?.s3Url
-          : null,
-        ...explicitDesign.medias.map((media) => media.file?.s3Url),
-      ];
-      return {
-        title: explicitDesign.title ?? 'Untitled design',
-        slug: null,
-        primaryMediaUrl: pickFirstRenderableMediaUrl(
-          explicitDesignMediaCandidates,
-        ),
-        mediaUrls: pickRenderableMediaUrls(explicitDesignMediaCandidates),
-        brandName: explicitDesign.owner.brand?.name ?? null,
-      };
-    }
-
+    // Designs are DESIGN-domain collections; a design's id is its collection id.
     const design = await this.prisma.collection.findUnique({
       where: { id: sourceId },
       include: {

@@ -262,8 +262,10 @@ ${jsonLd}
         take: 10000,
         orderBy: { updatedAt: 'desc' },
       }),
-      this.prisma.design.findMany({
+      // Designs are DESIGN-domain collections (→ /designs/:id).
+      this.prisma.collection.findMany({
         where: {
+          domain: 'DESIGN',
           status: CollectionStatus.PUBLISHED,
           visibility: CollectionVisibility.PUBLIC,
           deletedAt: null,
@@ -272,8 +274,10 @@ ${jsonLd}
         take: 10000,
         orderBy: { updatedAt: 'desc' },
       }),
+      // Store collections are STORE-domain collections (→ /collections/:id).
       this.prisma.collection.findMany({
         where: {
+          domain: 'STORE',
           status: CollectionStatus.PUBLISHED,
           visibility: CollectionVisibility.PUBLIC,
           deletedAt: null,
@@ -567,9 +571,10 @@ ${jsonLd}
     designId: string,
     robots: SeoPageMeta['robots'],
   ): Promise<SeoPageMeta> {
-    const design = await this.prisma.design.findFirst({
+    const design = await this.prisma.collection.findFirst({
       where: {
-        OR: [{ id: designId }, { legacyCollectionId: designId }],
+        id: designId,
+        domain: 'DESIGN',
         status: CollectionStatus.PUBLISHED,
         visibility: CollectionVisibility.PUBLIC,
         deletedAt: null,

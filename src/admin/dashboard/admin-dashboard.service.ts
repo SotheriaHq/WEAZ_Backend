@@ -153,19 +153,11 @@ export class AdminDashboardService {
       // Collection rows with domain=DESIGN, while true store collections are
       // domain=STORE. Counting the tables directly conflated the two (designs
       // showed 0; "collections" inflated by every legacy design-collection).
-      //   designs      = legacy DESIGN-domain collections + native Design rows
-      //                  that are NOT a legacy mirror (legacyCollectionId null)
+      //   designs      = DESIGN-domain collections
       //   collections  = STORE-domain collections only
-      Promise.all([
-        this.prisma.collection.count({
-          where: { domain: CollectionDomain.DESIGN, deletedAt: null },
-        }),
-        this.prisma.design.count({
-          where: { deletedAt: null, legacyCollectionId: null },
-        }),
-      ]).then(([legacyDesignCollections, nativeDesigns]) =>
-        legacyDesignCollections + nativeDesigns,
-      ),
+      this.prisma.collection.count({
+        where: { domain: CollectionDomain.DESIGN, deletedAt: null },
+      }),
       this.prisma.product.count({ where: { deletedAt: null } }),
       this.prisma.collection.count({
         where: { domain: CollectionDomain.STORE, deletedAt: null },

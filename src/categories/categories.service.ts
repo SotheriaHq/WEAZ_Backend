@@ -390,20 +390,14 @@ export class CategoriesService {
       where: { id },
     });
     if (!existing) throw new NotFoundException('Category not found');
-    const [
-      legacyDesignReferencing,
-      explicitDesignReferencing,
-      storeReferencing,
-      productReferencing,
-    ] = await Promise.all([
-      this.prisma.collection.count({ where: { categoryId: id } }),
-      this.prisma.design.count({ where: { categoryId: id } }),
-      this.prisma.storeCollection.count({ where: { categoryId: id } }),
-      this.prisma.product.count({ where: { categoryId: id } }),
-    ]);
+    const [collectionReferencing, storeReferencing, productReferencing] =
+      await Promise.all([
+        this.prisma.collection.count({ where: { categoryId: id } }),
+        this.prisma.storeCollection.count({ where: { categoryId: id } }),
+        this.prisma.product.count({ where: { categoryId: id } }),
+      ]);
     if (
-      legacyDesignReferencing > 0 ||
-      explicitDesignReferencing > 0 ||
+      collectionReferencing > 0 ||
       storeReferencing > 0 ||
       productReferencing > 0
     )

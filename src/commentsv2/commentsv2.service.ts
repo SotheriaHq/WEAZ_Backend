@@ -119,21 +119,21 @@ export class CommentsV2Service {
   }
 
   private async canViewDesign(designId: string, requesterId?: string) {
-    const design = await this.prisma.design.findUnique({
+    // Designs are DESIGN-domain collections; a design's id is its collection id.
+    const design = await this.prisma.collection.findUnique({
       where: { id: designId },
       select: {
         ownerId: true,
         status: true,
         visibility: true,
-        legacyCollectionId: true,
       },
     });
     if (!design) return false;
     if (requesterId && requesterId === design.ownerId) return true;
     if (design.status !== 'PUBLISHED') return false;
     if (design.visibility === CollectionVisibility.PUBLIC) return true;
-    if (!requesterId || !design.legacyCollectionId) return false;
-    return this.canViewCollection(design.legacyCollectionId, requesterId);
+    if (!requesterId) return false;
+    return this.canViewCollection(designId, requesterId);
   }
 
   private async canViewProduct(productId: string, requesterId?: string) {
@@ -182,7 +182,7 @@ export class CommentsV2Service {
       return { ownerId: media.collection.ownerId };
     }
     if (targetType === 'DESIGN') {
-      const design = await this.prisma.design.findUnique({
+      const design = await this.prisma.collection.findUnique({
         where: { id: targetId },
       });
       if (!design) throw new NotFoundException('Design not found');
@@ -285,7 +285,7 @@ export class CommentsV2Service {
           data: { commentsCount: { increment: 1 } },
         });
       } else if (targetType === 'DESIGN') {
-        await tx.design.update({
+        await tx.collection.update({
           where: { id: targetId },
           data: { commentsCount: { increment: 1 } },
         });
@@ -359,7 +359,7 @@ export class CommentsV2Service {
         targetDescriptor = 'design';
         targetTitle = media?.collection?.title ?? null;
       } else if (targetType === 'DESIGN') {
-        const design = await this.prisma.design.findUnique({
+        const design = await this.prisma.collection.findUnique({
           where: { id: targetId },
           select: { ownerId: true, title: true },
         });
@@ -800,6 +800,11 @@ export class CommentsV2Service {
         });
       } else if (c.targetType === 'COLLECTION_MEDIA') {
         await tx.collectionMedia.update({
+          where: { id: c.targetId },
+          data: { commentsCount: { decrement: 1 } },
+        });
+      } else if (c.targetType === 'DESIGN') {
+        await tx.collection.update({
           where: { id: c.targetId },
           data: { commentsCount: { decrement: 1 } },
         });

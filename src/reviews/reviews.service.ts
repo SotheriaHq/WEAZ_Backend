@@ -113,12 +113,6 @@ const LIFECYCLE_REVIEW_CONTEXT_INCLUDE = {
       title: true,
     },
   },
-  design: {
-    select: {
-      id: true,
-      title: true,
-    },
-  },
   orderItem: {
     select: {
       id: true,
@@ -2164,7 +2158,6 @@ export class ReviewsService {
           product: { select: { id: true, name: true } },
           collection: { select: { id: true, title: true } },
           legacyCollection: { select: { id: true, title: true } },
-          design: { select: { id: true, title: true } },
           customOrder: {
             select: {
               id: true,
@@ -2279,7 +2272,6 @@ export class ReviewsService {
       review.product?.name ??
       review.collection?.title ??
       review.legacyCollection?.title ??
-      review.design?.title ??
       review.orderItem?.nameAtPurchase ??
       review.customOrder?.sourceTitleSnapshot ??
       review.brand?.name ??
@@ -2305,7 +2297,6 @@ export class ReviewsService {
       product: review.product,
       collection: review.collection,
       legacyCollection: review.legacyCollection,
-      design: review.design,
       orderItem: review.orderItem,
       customOrder: review.customOrder,
     };

@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import {
   BrandVerificationStatus,
+  CollectionDomain,
   CollectionStatus,
   CollectionVisibility,
   PatchMode,
@@ -124,14 +125,21 @@ export class BrandMetricsService {
     const publicCollectionWhere = this.getPublicCollectionWhere(input.ownerId);
 
     const [
+      designsCount,
       collectionsCount,
       productsCount,
       patchesCount,
       collectionThreads,
       mediaThreads,
     ] = await Promise.all([
+      // Designs are DESIGN-domain collections; true store collections are
+      // STORE-domain. Counting by domain keeps the two from conflating (the
+      // profile previously reported designsCount = every collection row).
       this.prisma.collection.count({
-        where: publicCollectionWhere,
+        where: { ...publicCollectionWhere, domain: CollectionDomain.DESIGN },
+      }),
+      this.prisma.collection.count({
+        where: { ...publicCollectionWhere, domain: CollectionDomain.STORE },
       }),
       brand?.id
         ? this.prisma.product.count({
@@ -169,7 +177,7 @@ export class BrandMetricsService {
 
     return {
       collectionsCount,
-      designsCount: collectionsCount,
+      designsCount,
       productsCount,
       patchesCount,
       followersCount: patchesCount,

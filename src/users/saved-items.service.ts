@@ -80,12 +80,10 @@ export class SavedItemsService {
         );
       }
     } else if (createSavedItemDto.targetType === SavedItemTypeDto.DESIGN) {
-      const design = await this.prisma.design.findFirst({
+      const design = await this.prisma.collection.findFirst({
         where: {
-          OR: [
-            { id: createSavedItemDto.targetId },
-            { legacyCollectionId: createSavedItemDto.targetId },
-          ],
+          id: createSavedItemDto.targetId,
+          domain: 'DESIGN',
         },
         select: { id: true, ownerId: true },
       });
@@ -213,8 +211,8 @@ export class SavedItemsService {
             };
           }
         } else if (item.targetType === SavedItemTypeDto.DESIGN) {
-          const design = await this.prisma.design.findUnique({
-            where: { id: item.targetId },
+          const design = await this.prisma.collection.findFirst({
+            where: { id: item.targetId, domain: 'DESIGN' },
             include: {
               owner: {
                 select: {

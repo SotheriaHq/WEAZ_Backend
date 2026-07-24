@@ -10857,11 +10857,6 @@ export class CollectionsService {
       });
     const decision = await publicationDecision;
 
-    const explicitDesign = await this.prisma.design.findFirst({
-      where: { legacyCollectionId: collectionId },
-      select: { id: true },
-    });
-
     let submissionId: string | null = null;
     await this.prisma.$transaction(async (tx) => {
       await this.contentIntegrity?.assertCollectionHasPublishableMedia(
@@ -10879,18 +10874,10 @@ export class CollectionsService {
         data: { status: decision.publicationStatus } as any,
       });
 
-      if (explicitDesign?.id) {
-        await (tx as any).design.updateMany({
-          where: { legacyCollectionId: collectionId },
-          data: { status: decision.publicationStatus },
-        });
-      }
-
       if (decision.requiresPreReview && this.contentIntegrity) {
         const submission = await this.contentIntegrity.createSubmission(tx, {
           entityType: ContentEntityType.DESIGN,
           legacyCollectionId: collectionId,
-          designId: explicitDesign?.id ?? null,
           brandId: brand?.id,
           submittedById: ownerId,
           previousStatus: collection.status as CollectionStatus,
@@ -10910,7 +10897,7 @@ export class CollectionsService {
 
     return {
       collectionId,
-      designId: explicitDesign?.id ?? collectionId,
+      designId: collectionId,
       publicationStatus: decision.publicationStatus,
       reviewMode: decision.reviewMode,
       submissionId,
@@ -10949,11 +10936,6 @@ export class CollectionsService {
           status: ContentSubmissionStatus.IN_REVIEW,
         },
         data: { status: ContentSubmissionStatus.CANCELLED },
-      });
-
-      await (tx as any).design.updateMany({
-        where: { legacyCollectionId: collectionId },
-        data: { status: CollectionStatus.DRAFT },
       });
     });
 

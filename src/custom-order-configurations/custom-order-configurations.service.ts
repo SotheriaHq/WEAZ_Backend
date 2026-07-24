@@ -432,31 +432,6 @@ export class CustomOrderConfigurationsService {
       orderBy: [{ isActive: 'desc' }, { updatedAt: 'desc' }],
     });
 
-    if (!configuration && sourceType === CustomOrderSourceType.DESIGN) {
-      const migratedDesign = await this.prisma.design.findUnique({
-        where: { id: sourceId },
-        select: { legacyCollectionId: true },
-      });
-      if (migratedDesign?.legacyCollectionId) {
-        configuration = await this.prisma.customOrderConfiguration.findFirst({
-          where: {
-            sourceType,
-            sourceId: migratedDesign.legacyCollectionId,
-            OR: brand?.id
-              ? [{ isActive: true }, { brandId: brand.id }]
-              : [{ isActive: true }],
-          },
-          include: {
-            brand: { select: { ownerId: true, name: true } },
-            fabricRuleBasis: true,
-            rules: { orderBy: { priority: 'asc' } },
-            versions: { orderBy: { version: 'desc' }, take: 1 },
-          },
-          orderBy: [{ isActive: 'desc' }, { updatedAt: 'desc' }],
-        });
-      }
-    }
-
     if (!configuration) {
       throw new NotFoundException('Custom order configuration not found');
     }
@@ -712,17 +687,7 @@ export class CustomOrderConfigurationsService {
       return Boolean(product);
     }
 
-    const design = await this.prisma.design.findFirst({
-      where: {
-        id: sourceId,
-        deletedAt: null,
-        status: 'PUBLISHED',
-        visibility: 'PUBLIC',
-      },
-      select: { id: true },
-    });
-    if (design) return true;
-
+    // Designs are DESIGN-domain collections; a design's id is its collection id.
     const collection = await this.prisma.collection.findFirst({
       where: {
         id: sourceId,
@@ -754,18 +719,7 @@ export class CustomOrderConfigurationsService {
       return;
     }
 
-    const explicitDesign = await this.prisma.design.findFirst({
-      where: {
-        id: sourceId,
-        OR: [{ brandId }, { ownerId: ownerUserId }],
-      },
-      select: { id: true },
-    });
-
-    if (explicitDesign) {
-      return;
-    }
-
+    // Designs are DESIGN-domain collections; a design's id is its collection id.
     const design = await this.prisma.collection.findFirst({
       where: {
         id: sourceId,
@@ -1037,13 +991,6 @@ export class CustomOrderConfigurationsService {
         });
         return product?.name ?? null;
       }
-      const explicitDesign = await this.prisma.design.findUnique({
-        where: { id: sourceId },
-        select: { title: true },
-      });
-      if (explicitDesign?.title) {
-        return explicitDesign.title;
-      }
       const collection = await this.prisma.collection.findUnique({
         where: { id: sourceId },
         select: { title: true },
@@ -1193,12 +1140,7 @@ export class CustomOrderConfigurationsService {
       return;
     }
 
-    const updatedDesign = await tx.design.updateMany({
-      where: { id: sourceId },
-      data: { customOrderEnabled: true },
-    });
-    if (updatedDesign.count > 0) return;
-
+    // Designs are DESIGN-domain collections; a design's id is its collection id.
     await tx.collection.update({
       where: { id: sourceId },
       data: { customOrderEnabled: true },
@@ -1429,30 +1371,7 @@ export class CustomOrderConfigurationsService {
       };
     }
 
-    const explicitDesign = await this.prisma.design.findUnique({
-      where: { id: sourceId },
-      select: {
-        customMeasurementKeys: true,
-        customFreeformPointIds: true,
-        customGender: true,
-        type: true,
-        legacyCollectionId: true,
-        categoryType: {
-          select: { slug: true },
-        },
-      },
-    });
-
-    if (explicitDesign) {
-      return {
-        customMeasurementKeys: explicitDesign.customMeasurementKeys,
-        customFreeformPointIds: explicitDesign.customFreeformPointIds,
-        customGender: explicitDesign.customGender,
-        categoryTypeSlug: explicitDesign.categoryType?.slug ?? null,
-        collectionType: explicitDesign.type,
-      };
-    }
-
+    // Designs are DESIGN-domain collections; a design's id is its collection id.
     const design = await this.prisma.collection.findUnique({
       where: { id: sourceId },
       select: {

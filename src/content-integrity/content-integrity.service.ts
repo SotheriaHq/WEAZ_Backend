@@ -1160,33 +1160,6 @@ export class ContentIntegrityService {
       };
     }
 
-    if (submission.designId) {
-      const design = await (this.prisma as any).design.findUnique({
-        where: { id: submission.designId },
-        select: {
-          id: true,
-          title: true,
-          description: true,
-          brandId: true,
-          status: true,
-          createdAt: true,
-          updatedAt: true,
-        },
-      });
-      return {
-        id: submission.designId,
-        type: ContentEntityType.DESIGN,
-        reportTargetType: ContentReportTargetType.DESIGN,
-        title: design?.title ?? 'Deleted design',
-        description: design?.description ?? null,
-        brandId: design?.brandId ?? submission.brandId ?? null,
-        status: design?.status ?? null,
-        isActive: design?.status === CollectionStatus.PUBLISHED,
-        createdAt: design?.createdAt ?? null,
-        updatedAt: design?.updatedAt ?? null,
-      };
-    }
-
     const collection = submission.legacyCollectionId
       ? await this.prisma.collection.findUnique({
           where: { id: submission.legacyCollectionId },
@@ -1223,19 +1196,13 @@ export class ContentIntegrityService {
           include: { file: true },
           orderBy: [{ orderIndex: 'asc' }, { createdAt: 'asc' }],
         })
-      : submission.designId
-        ? await (this.prisma as any).designMedia.findMany({
-            where: { designId: submission.designId },
+      : submission.legacyCollectionId
+        ? await (this.prisma as any).collectionMedia.findMany({
+            where: { collectionId: submission.legacyCollectionId },
             include: { file: true },
-            orderBy: [{ orderIndex: 'asc' }, { createdAt: 'asc' }],
+            orderBy: [{ orderIndex: 'asc' }],
           })
-        : submission.legacyCollectionId
-          ? await (this.prisma as any).collectionMedia.findMany({
-              where: { collectionId: submission.legacyCollectionId },
-              include: { file: true },
-              orderBy: [{ orderIndex: 'asc' }],
-            })
-          : [];
+        : [];
 
     return Promise.all(rows.map((row) => this.mapMediaRow(row)));
   }
@@ -1461,16 +1428,21 @@ export class ContentIntegrityService {
         : { id: targetId, type: targetType, title: 'Deleted product' };
     }
     if (targetType === ContentReportTargetType.DESIGN) {
-      const design = await (this.prisma as any).design.findUnique({
-        where: { id: targetId },
-        select: { id: true, title: true, brandId: true, status: true },
+      const design = await this.prisma.collection.findFirst({
+        where: { id: targetId, domain: 'DESIGN' },
+        select: {
+          id: true,
+          title: true,
+          status: true,
+          owner: { select: { brand: { select: { id: true } } } },
+        },
       });
       return design
         ? {
             id: design.id,
             type: targetType,
             title: design.title,
-            brandId: design.brandId,
+            brandId: design.owner?.brand?.id ?? null,
             status: design.status,
           }
         : { id: targetId, type: targetType, title: 'Deleted design' };
@@ -1538,18 +1510,23 @@ export class ContentIntegrityService {
     }
 
     if (args.targetType === ContentReportTargetType.DESIGN) {
-      const design = await (this.prisma as any).design.findFirst({
+      const design = await this.prisma.collection.findFirst({
         where: {
           id: args.targetId,
+          domain: 'DESIGN',
           deletedAt: null,
           status: CollectionStatus.PUBLISHED,
         },
-        select: { id: true, brandId: true, title: true },
+        select: {
+          id: true,
+          title: true,
+          owner: { select: { brand: { select: { id: true } } } },
+        },
       });
       if (!design) throw new NotFoundException('Report target not found');
       if (args.mediaId) {
-        await this.assertMediaBelongsToTarget('designMedia', args.mediaId, {
-          designId: design.id,
+        await this.assertMediaBelongsToTarget('collectionMedia', args.mediaId, {
+          collectionId: design.id,
         });
       }
       return {
@@ -1557,7 +1534,7 @@ export class ContentIntegrityService {
         targetId: design.id,
         mediaId: args.mediaId ?? null,
         title: design.title,
-        brandId: design.brandId,
+        brandId: design.owner?.brand?.id ?? null,
       };
     }
 
@@ -1801,44 +1778,6 @@ export class ContentIntegrityService {
             reviewReason: args.reasonNote?.trim() || null,
           },
         });
-
-        if (!submission.designId) {
-          await (tx as any).design.updateMany({
-            where: { legacyCollectionId: submission.legacyCollectionId },
-            data: { status: nextEntityStatus },
-          });
-          const linkedDesigns = await (tx as any).design.findMany({
-            where: { legacyCollectionId: submission.legacyCollectionId },
-            select: { id: true },
-          });
-          for (const linked of linkedDesigns) {
-            await (tx as any).designMedia.updateMany({
-              where: { designId: linked.id },
-              data: {
-                reviewStatus: nextMediaStatus,
-                reviewReasonCode: args.reasonCode ?? null,
-                reviewReason: args.reasonNote?.trim() || null,
-              },
-            });
-          }
-        }
-      }
-
-      if (submission.designId) {
-        const updatedDesign = await (tx as any).design.update({
-          where: { id: submission.designId },
-          data: { status: nextEntityStatus },
-          select: { title: true },
-        });
-        targetTitle = targetTitle ?? updatedDesign?.title ?? null;
-        await (tx as any).designMedia.updateMany({
-          where: { designId: submission.designId },
-          data: {
-            reviewStatus: nextMediaStatus,
-            reviewReasonCode: args.reasonCode ?? null,
-            reviewReason: args.reasonNote?.trim() || null,
-          },
-        });
       }
 
       await (tx as any).adminAuditLog.create({
@@ -2063,16 +2002,6 @@ export class ContentIntegrityService {
       }
       const designId = payload.designId as string | undefined;
       if (designId) {
-        // Prefer explicit Design row, then legacy collection-backed design.
-        try {
-          const row = await (this.prisma as any).design.findUnique({
-            where: { id: designId },
-            select: { title: true },
-          });
-          if (row?.title?.trim()) return row.title.trim();
-        } catch {
-          /* design table may not be active in legacy mode */
-        }
         const legacy = await this.prisma.collection.findUnique({
           where: { id: designId },
           select: { title: true },
