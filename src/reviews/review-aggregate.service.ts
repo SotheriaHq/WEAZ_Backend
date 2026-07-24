@@ -45,7 +45,9 @@ export class ReviewAggregateService {
         status: ReviewStatus.APPROVED,
       },
       orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
-      take: limit,
+      // Clamp: `limit` may arrive undefined/huge from the controller, and an
+      // undefined `take` would return every matching review.
+      take: Math.min(Math.max(Number(limit) || 20, 1), 100),
     });
 
     return items.map((review) => this.mapPublicReview(review));

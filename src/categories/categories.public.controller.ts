@@ -1,4 +1,5 @@
 import { Controller, Get, Param } from '@nestjs/common';
+import { IsPublic } from 'src/auth/decorator/is-public.decorator';
 import { CategoriesService } from './categories.service';
 import { ApiTags, ApiOperation } from '@nestjs/swagger';
 
@@ -7,6 +8,7 @@ import { ApiTags, ApiOperation } from '@nestjs/swagger';
  * Used by frontend creation forms to populate dropdowns and filters.
  */
 @ApiTags('categories')
+@IsPublic()
 @Controller('categories')
 export class CategoriesPublicController {
   constructor(private readonly categories: CategoriesService) {}

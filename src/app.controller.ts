@@ -2,7 +2,10 @@ import { Controller, Get, Res } from '@nestjs/common';
 import type { Response } from 'express';
 import { AppService } from './app.service';
 import { ReadinessService } from './health/readiness.service';
+import { IsPublic } from './auth/decorator/is-public.decorator';
 
+// Root + health/readiness probes must be reachable without auth.
+@IsPublic()
 @Controller()
 export class AppController {
   constructor(

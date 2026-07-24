@@ -95,7 +95,7 @@ export class CommentsService {
       orderBy: {
         createdAt: 'desc',
       },
-      take: limit + 1,
+      take: Math.min(Math.max(limit, 1), 100) + 1,
       include: {
         user: {
           select: {
@@ -254,7 +254,7 @@ export class CommentsService {
           },
         },
         orderBy: { createdAt: 'desc' },
-        take: limit,
+        take: Math.min(Math.max(limit, 1), 100),
       }),
       this.prisma.commentReaction.count({
         where: { commentId, type: ReactionType.THREAD },

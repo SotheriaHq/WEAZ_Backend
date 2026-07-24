@@ -5,8 +5,10 @@ import { BreakGlassService } from './break-glass.service';
 import { Request } from 'express';
 import { AttemptBreakGlassDto } from './dto/attempt-break-glass.dto';
 import { RecoverSuperAdminDto } from './dto/recover-superadmin.dto';
+import { IsPublic } from 'src/auth/decorator/is-public.decorator';
 
 @ApiTags('admin/break-glass')
+@IsPublic()
 @Controller('admin/break-glass')
 export class BreakGlassController {
   constructor(private readonly service: BreakGlassService) {}

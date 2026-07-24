@@ -12,8 +12,10 @@ import { isSentryEnabled } from 'src/common/observability/sentry.instrument';
 import { FilesInterceptor } from '@nestjs/platform-express';
 import { DevToolsService } from './dev-tools.service';
 import { ApiTags, ApiOperation, ApiConsumes, ApiBody } from '@nestjs/swagger';
+import { IsPublic } from 'src/auth/decorator/is-public.decorator';
 
-@ApiTags('Development Tools')
+// Dev-only module (not loaded in hard production); left open for local use.
+@IsPublic()
 @Controller('dev-tools')
 export class DevToolsController {
   constructor(private readonly devToolsService: DevToolsService) {}

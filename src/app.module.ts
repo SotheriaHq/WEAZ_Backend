@@ -47,6 +47,8 @@ import { LoggerModule } from 'nestjs-pino';
 import { buildPinoModuleParams } from './common/logging/pino.config';
 import { HealthModule } from './health/health.module';
 import { SentryModule } from '@sentry/nestjs/setup';
+import { APP_GUARD } from '@nestjs/core';
+import { AuthIntentGuard } from './auth/guard/auth-intent.guard';
 
 const isHardProduction =
   String(process.env.APP_ENV ?? '')
@@ -110,6 +112,13 @@ const isHardProduction =
     SeoModule,
   ],
   controllers: [AppController],
-  providers: [AppService, EventsGateway],
+  providers: [
+    AppService,
+    EventsGateway,
+    // Fail-closed default auth: any handler with no explicit `@UseGuards(...)`
+    // and no `@IsPublic()` is rejected. Endpoints that already declare a guard
+    // (incl. OptionalJwtAuthGuard) are unaffected. Kill-switch: AUTH_FAIL_CLOSED=false.
+    { provide: APP_GUARD, useClass: AuthIntentGuard },
+  ],
 })
 export class AppModule {}

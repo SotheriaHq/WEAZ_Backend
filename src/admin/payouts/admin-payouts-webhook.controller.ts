@@ -9,7 +9,10 @@ import {
 } from '@nestjs/common';
 import { Request } from 'express';
 import { AdminPayoutsService } from './admin-payouts.service';
+import { IsPublic } from 'src/auth/decorator/is-public.decorator';
 
+// Legacy external payout webhook alias (env-gated; no JWT).
+@IsPublic()
 @Controller('admin/payouts/webhook')
 export class AdminPayoutsWebhookController {
   private readonly logger = new Logger(AdminPayoutsWebhookController.name);

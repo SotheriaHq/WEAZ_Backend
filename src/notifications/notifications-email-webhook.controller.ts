@@ -8,7 +8,11 @@ import {
   Post,
 } from '@nestjs/common';
 import { NotificationsService } from './notifications.service';
+import { IsPublic } from 'src/auth/decorator/is-public.decorator';
 
+// External email-provider callback (no JWT); verified by signature/basic-auth
+// inside handleEmailWebhook, not by an auth guard.
+@IsPublic()
 @Controller('notifications')
 export class NotificationsEmailWebhookController {
   private readonly logger = new Logger(

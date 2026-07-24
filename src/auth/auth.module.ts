@@ -48,6 +48,14 @@ import { getJwtSigningSecret } from 'src/common/config/jwt-secrets';
       },
     }),
     ThrottlerModule.forRoot([
+      // 'default' must exist here too: every @Throttle() targets the 'default'
+      // throttler, and either this forRoot or app.module's may win depending on
+      // import order. Defining it in both makes rate limiting order-independent.
+      {
+        name: 'default',
+        ttl: 60000,
+        limit: 120,
+      },
       {
         name: 'short',
         ttl: 1000,

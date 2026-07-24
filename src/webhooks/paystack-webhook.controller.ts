@@ -2,7 +2,11 @@ import { Body, Controller, HttpCode, Logger, Post, Req } from '@nestjs/common';
 import { Request } from 'express';
 import { PaymentService } from 'src/payment/payment.service';
 import { AdminPayoutsService } from 'src/admin/payouts/admin-payouts.service';
+import { IsPublic } from 'src/auth/decorator/is-public.decorator';
 
+// External payment-provider callbacks (no JWT); authenticity is verified by
+// signature/rawBody inside the payment pipeline, not by an auth guard.
+@IsPublic()
 @Controller('webhooks')
 export class PaystackWebhookController {
   private readonly logger = new Logger(PaystackWebhookController.name);
