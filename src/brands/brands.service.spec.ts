@@ -15,9 +15,9 @@ describe('BrandsService', () => {
   let service: BrandsService;
   const mockBrandProfileLinks = {
     getBrandProfileLinks: jest.fn(() => ({
-      publicProfileUrl: 'https://threadly.test/u/maison',
-      qrTargetUrl: 'https://threadly.test/u/maison',
-      shareUrl: 'https://threadly.test/u/maison',
+      publicProfileUrl: 'https://wiez.test/u/maison',
+      qrTargetUrl: 'https://wiez.test/u/maison',
+      shareUrl: 'https://wiez.test/u/maison',
     })),
   };
   const mockProfilePhotoViewService = {
@@ -424,9 +424,9 @@ describe('BrandsService', () => {
         username: 'maison',
       });
       expect(response.username).toBe('maison');
-      expect(response.publicProfileUrl).toBe('https://threadly.test/u/maison');
-      expect(response.qrTargetUrl).toBe('https://threadly.test/u/maison');
-      expect(response.shareUrl).toBe('https://threadly.test/u/maison');
+      expect(response.publicProfileUrl).toBe('https://wiez.test/u/maison');
+      expect(response.qrTargetUrl).toBe('https://wiez.test/u/maison');
+      expect(response.shareUrl).toBe('https://wiez.test/u/maison');
       // Public/QR viewers must never receive account PII.
       expect(response.contactInfo.email).toBeNull();
       expect(response.cacNumber).toBeNull();

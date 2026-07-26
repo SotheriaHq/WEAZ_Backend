@@ -10,7 +10,7 @@ describe('PrismaService', () => {
     // Use a dummy value for unit tests (no connections are made here).
     process.env.DATABASE_URL =
       process.env.DATABASE_URL ??
-      'postgresql://user:pass@localhost:5432/threadly_test?schema=public';
+      'postgresql://user:pass@localhost:5432/wiez_test?schema=public';
   });
 
   afterAll(() => {

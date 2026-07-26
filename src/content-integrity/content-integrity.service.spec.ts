@@ -252,7 +252,7 @@ describe('ContentIntegrityService', () => {
   it('returns admin review media preview URLs without exposing raw storage URLs', async () => {
     const createdAt = new Date('2026-06-12T21:08:48.000Z');
     const rawStorageUrl =
-      'https://threadly-private.s3.amazonaws.com/POST_IMAGE/owner-1/front.jpg';
+      'https://wiez-private.s3.amazonaws.com/POST_IMAGE/owner-1/front.jpg';
     const uploadService = {
       getPublicDisplayUrl: jest.fn().mockReturnValue(null),
       getTemporarySignedDisplayUrl: jest

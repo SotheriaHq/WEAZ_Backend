@@ -28,19 +28,19 @@ describe('web app URL resolution', () => {
 
   it('prefers WEB_APP_URL and normalizes a trailing slash', () => {
     resetEnv({
-      WEB_APP_URL: 'https://app.threadly.test/',
-      FRONTEND_URL: 'https://fallback.threadly.test',
+      WEB_APP_URL: 'https://app.wiez.test/',
+      FRONTEND_URL: 'https://fallback.wiez.test',
     });
 
-    expect(resolveWebAppBaseUrl()).toBe('https://app.threadly.test');
+    expect(resolveWebAppBaseUrl()).toBe('https://app.wiez.test');
   });
 
   it('falls back to FRONTEND_URL when WEB_APP_URL is absent', () => {
     resetEnv({
-      FRONTEND_URL: 'https://frontend.threadly.test/',
+      FRONTEND_URL: 'https://frontend.wiez.test/',
     });
 
-    expect(resolveWebAppBaseUrl()).toBe('https://frontend.threadly.test');
+    expect(resolveWebAppBaseUrl()).toBe('https://frontend.wiez.test');
   });
 
   it('defaults local environments to localhost:3000', () => {

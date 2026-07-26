@@ -114,7 +114,7 @@ describe('AuthService Google auth foundation', () => {
     };
     mockEmailVerificationHelper = {
       generateVerificationCode: jest.fn(() => 'verify-token'),
-      generateVerificationLink: jest.fn(() => 'https://weaz.me/verify-email?token=verify-token'),
+      generateVerificationLink: jest.fn(() => 'https://§WIEZ_ME§/verify-email?token=verify-token'),
     };
     mockEmailService = {
       send: jest.fn().mockResolvedValue({ dispatchStatus: 'SENT' }),

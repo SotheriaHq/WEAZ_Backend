@@ -23,8 +23,8 @@ describe('MarketSuggestionService', () => {
     saleStartAt: null,
     saleEndAt: null,
     currency: 'NGN',
-    thumbnail: 'https://cdn.threadly.test/product.jpg',
-    images: ['https://cdn.threadly.test/product.jpg'],
+    thumbnail: 'https://cdn.wiez.test/product.jpg',
+    images: ['https://cdn.wiez.test/product.jpg'],
     totalStock: 4,
     customOrderEnabled: false,
     standardCheckoutEnabled: true,
@@ -38,7 +38,7 @@ describe('MarketSuggestionService', () => {
     brand: {
       id: 'brand_1',
       name: 'Ada Atelier',
-      logo: 'https://cdn.threadly.test/logo.jpg',
+      logo: 'https://cdn.wiez.test/logo.jpg',
       currency: 'NGN',
     },
     category: {
@@ -72,7 +72,7 @@ describe('MarketSuggestionService', () => {
       brand: {
         id: 'brand_1',
         name: 'Ada Atelier',
-        logo: 'https://cdn.threadly.test/logo.jpg',
+        logo: 'https://cdn.wiez.test/logo.jpg',
         currency: 'NGN',
         isStoreOpen: true,
       },
@@ -87,7 +87,7 @@ describe('MarketSuggestionService', () => {
     ownerId: 'owner_2',
     name: 'Bisi Studio',
     description: 'New designer',
-    logo: 'https://cdn.threadly.test/brand.jpg',
+    logo: 'https://cdn.wiez.test/brand.jpg',
     tags: ['tailoring'],
     createdAt: now,
     updatedAt: now,

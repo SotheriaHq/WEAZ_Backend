@@ -9268,8 +9268,8 @@ export class StoreService {
           settlement_schedule: 'manual',
           description: `WIEZ brand settlement account for ${brand.name}`,
           metadata: {
-            threadlyBrandId: brand.id,
-            threadlyOwnerId: ownerId,
+            wiezBrandId: brand.id,
+            wiezOwnerId: ownerId,
           },
         };
 
@@ -9294,8 +9294,8 @@ export class StoreService {
           currency: 'NGN',
           active: true,
           metadata: {
-            threadlyBrandId: brand.id,
-            threadlyOwnerId: ownerId,
+            wiezBrandId: brand.id,
+            wiezOwnerId: ownerId,
           },
         };
 

@@ -40,7 +40,7 @@ describe('CustomOrdersService', () => {
     sourceTitleSnapshot: 'Custom Jacket',
     sourceSlugSnapshot: 'custom-jacket',
     sourcePrimaryMediaUrlSnapshot: null,
-    sourceBrandNameSnapshot: 'Threadly Atelier',
+    sourceBrandNameSnapshot: 'WIEZ Atelier',
     configurationVersionId: 'configuration_version_1',
     currency: 'NGN',
     rushSelected: false,

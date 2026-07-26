@@ -33,7 +33,7 @@ describe('BrandsController brand access endpoints', () => {
     await expect(
       controller.updateBrandProfile(
         'brand-1',
-        { brandFullName: 'Threadly Atelier' } as any,
+        { brandFullName: 'WIEZ Atelier' } as any,
         { user: { id: 'owner-1' } } as any,
       ),
     ).resolves.toEqual({ id: 'owner-1' });
@@ -52,7 +52,7 @@ describe('BrandsController brand access endpoints', () => {
     await expect(
       controller.updateBrandProfile(
         'brand-1',
-        { brandFullName: 'Threadly Atelier' } as any,
+        { brandFullName: 'WIEZ Atelier' } as any,
         { user: { id: 'regular-1' } } as any,
       ),
     ).rejects.toBeInstanceOf(ForbiddenException);

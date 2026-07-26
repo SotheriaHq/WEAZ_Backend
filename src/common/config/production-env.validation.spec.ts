@@ -9,7 +9,7 @@ describe('validateProductionSecurityEnv', () => {
     expect(() =>
       validateProductionSecurityEnv({
         NODE_ENV: 'production',
-        VERIFICATION_DRAFT_SECRET: 'threadly-verification-draft-secret',
+        VERIFICATION_DRAFT_SECRET: 'wiez-verification-draft-secret',
       }),
     ).toThrow('unsafe legacy value');
   });

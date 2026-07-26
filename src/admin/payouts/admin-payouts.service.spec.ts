@@ -190,7 +190,7 @@ describe('AdminPayoutsService', () => {
             status: PayoutStatus.PROCESSING,
             assignedAdminId: 'admin_1',
             providerTransferCode: 'TRF_locked',
-            providerTransferReference: 'threadly-payout-locked',
+            providerTransferReference: 'wiez-payout-locked',
           }),
         },
       }),
@@ -232,7 +232,7 @@ describe('AdminPayoutsService', () => {
       event: 'transfer.success',
       data: {
         transfer_code: 'TRF_123',
-        reference: 'threadly-payout-ref',
+        reference: 'wiez-payout-ref',
         status: 'success',
       },
     });
@@ -251,8 +251,8 @@ describe('AdminPayoutsService', () => {
       status: PayoutStatus.PROCESSING,
       assignedAdminId: 'admin_1',
       providerTransferCode: 'TRF_123',
-      providerTransferReference: 'threadly-payout-ref',
-      gatewayReference: 'threadly-payout-ref',
+      providerTransferReference: 'wiez-payout-ref',
+      gatewayReference: 'wiez-payout-ref',
     });
     prisma.payoutEvent.create.mockRejectedValue(
       new Error('Unique constraint failed on the fields: (`providerEventKey`)'),
@@ -265,7 +265,7 @@ describe('AdminPayoutsService', () => {
           event: 'transfer.success',
           data: {
             transfer_code: 'TRF_123',
-            reference: 'threadly-payout-ref',
+            reference: 'wiez-payout-ref',
             status: 'success',
           },
         },
@@ -285,7 +285,7 @@ describe('AdminPayoutsService', () => {
       event: 'transfer.success',
       data: {
         transfer_code: 'TRF_123',
-        reference: 'threadly-payout-ref',
+        reference: 'wiez-payout-ref',
         status: 'success',
       },
     };

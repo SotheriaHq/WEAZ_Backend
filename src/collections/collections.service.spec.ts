@@ -305,7 +305,7 @@ describe('CollectionsService brand catalog access', () => {
   describe('market feed DTO', () => {
     const readyFile = {
       id: 'file_1',
-      s3Url: 'https://cdn.threadly.test/file-1.jpg',
+      s3Url: 'https://cdn.wiez.test/file-1.jpg',
       fileType: 'POST_IMAGE',
       mimeType: 'image/jpeg',
       processingStatus: 'READY',
@@ -316,12 +316,12 @@ describe('CollectionsService brand catalog access', () => {
         {
           variantKind: 'CARD',
           format: 'WEBP',
-          s3Url: 'https://cdn.threadly.test/file-1-card.webp',
+          s3Url: 'https://cdn.wiez.test/file-1-card.webp',
         },
         {
           variantKind: 'THUMB',
           format: 'WEBP',
-          s3Url: 'https://cdn.threadly.test/file-1-thumb.webp',
+          s3Url: 'https://cdn.wiez.test/file-1-thumb.webp',
         },
       ],
     };
@@ -405,11 +405,11 @@ describe('CollectionsService brand catalog access', () => {
             id: 'media_1',
             fileId: 'file_1',
             status: 'READY',
-            displayUrl: 'https://cdn.threadly.test/file-1-card.webp',
-            thumbnailUrl: 'https://cdn.threadly.test/file-1-thumb.webp',
+            displayUrl: 'https://cdn.wiez.test/file-1-card.webp',
+            thumbnailUrl: 'https://cdn.wiez.test/file-1-thumb.webp',
             aspectRatio: 0.75,
           }),
-          mediaUrl: 'https://cdn.threadly.test/file-1-card.webp',
+          mediaUrl: 'https://cdn.wiez.test/file-1-card.webp',
           stats: expect.objectContaining({
             likes: 5,
             comments: 5,

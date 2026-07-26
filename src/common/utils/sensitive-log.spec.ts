@@ -31,7 +31,7 @@ describe('sensitive log utilities', () => {
   it('redacts sensitive fields recursively', () => {
     expect(
       redactSensitiveLogValue({
-        username: 'threadly',
+        username: 'wiez',
         password: 'secret',
         nested: {
           email: 'buyer@example.com',
@@ -42,7 +42,7 @@ describe('sensitive log utilities', () => {
         },
       }),
     ).toEqual({
-      username: 'threadly',
+      username: 'wiez',
       password: '[REDACTED]',
       nested: {
         email: '[REDACTED]',

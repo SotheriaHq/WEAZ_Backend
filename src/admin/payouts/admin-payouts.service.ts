@@ -548,7 +548,7 @@ export class AdminPayoutsService {
           ),
           recipient: paymentAccount.transferRecipientCode,
           reference: transferReference,
-          reason: `Threadly payout ${current.id.slice(0, 8).toUpperCase()}`,
+          reason: `WIEZ payout ${current.id.slice(0, 8).toUpperCase()}`,
           currency: 'NGN',
         },
       });
@@ -1256,7 +1256,7 @@ export class AdminPayoutsService {
   }
 
   private buildTransferReference(payoutId: string) {
-    return `threadly-payout-${payoutId}`.toLowerCase();
+    return `wiez-payout-${payoutId}`.toLowerCase();
   }
 
   private isPayoutTransferExecutionEnabled() {

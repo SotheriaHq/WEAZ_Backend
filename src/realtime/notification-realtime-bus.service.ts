@@ -21,7 +21,7 @@ export type NotificationRealtimeBusEvent = {
 };
 
 const NOTIFICATION_REALTIME_CHANNEL =
-  'threadly:notifications:realtime:v1';
+  'wiez:notifications:realtime:v1';
 const DEFAULT_REDIS_CONNECT_TIMEOUT_MS = 1000;
 
 @Injectable()

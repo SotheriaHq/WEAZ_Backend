@@ -115,7 +115,7 @@ describe('CustomOrderAdminService', () => {
       .mockResolvedValueOnce([{ brandId: 'brand_1' }])
       .mockResolvedValueOnce([{ brandId: 'brand_1' }]);
     prisma.brand.findMany.mockResolvedValue([
-      { id: 'brand_1', name: 'Threadly Atelier' },
+      { id: 'brand_1', name: 'WIEZ Atelier' },
     ]);
 
     const result = await service.getSummary();
@@ -132,7 +132,7 @@ describe('CustomOrderAdminService', () => {
     expect(result.data.brandRisk).toEqual([
       {
         brandId: 'brand_1',
-        brandName: 'Threadly Atelier',
+        brandName: 'WIEZ Atelier',
         stale: 1,
         disputes: 1,
         rejections: 1,
@@ -144,7 +144,7 @@ describe('CustomOrderAdminService', () => {
     prisma.customOrder.findUnique.mockResolvedValue({
       id: 'co_1',
       brandId: 'brand_1',
-      brand: { id: 'brand_1', name: 'Threadly Atelier', ownerId: 'owner_1' },
+      brand: { id: 'brand_1', name: 'WIEZ Atelier', ownerId: 'owner_1' },
     });
 
     const result = await service.remindBrand(
@@ -207,7 +207,7 @@ describe('CustomOrderAdminService', () => {
       { customOrderId: 'co_2', customOrder: { brandId: 'brand_1' } },
     ]);
     prisma.brand.findMany.mockResolvedValue([
-      { id: 'brand_1', name: 'Threadly Atelier' },
+      { id: 'brand_1', name: 'WIEZ Atelier' },
     ]);
 
     const result = await service.getRiskDashboard({ days: 30, limit: 5 });
@@ -228,7 +228,7 @@ describe('CustomOrderAdminService', () => {
     expect(result.data.brandRisk).toEqual([
       expect.objectContaining({
         brandId: 'brand_1',
-        brandName: 'Threadly Atelier',
+        brandName: 'WIEZ Atelier',
         ordersPlaced: 2,
         rushOrders: 1,
         brandRejections: 1,
@@ -251,12 +251,12 @@ describe('CustomOrderAdminService', () => {
           paymentStatus: 'REFUNDED',
           paymentReference: 'ref_1',
           sourceTitleSnapshot: 'Custom Jacket',
-          sourceBrandNameSnapshot: 'Threadly Atelier',
+          sourceBrandNameSnapshot: 'WIEZ Atelier',
           createdAt: new Date('2026-03-12T10:00:00.000Z'),
           updatedAt: new Date('2026-03-12T11:00:00.000Z'),
           brand: {
             id: 'brand_1',
-            name: 'Threadly Atelier',
+            name: 'WIEZ Atelier',
             ownerId: 'owner_1',
           },
           disputes: [{ id: 'dispute_1' }],
@@ -343,7 +343,7 @@ describe('CustomOrderAdminService', () => {
       brandId: 'brand_1',
       status: CustomOrderStatus.ACCEPTED,
       paymentStatus: PaymentStatus.PAID,
-      sourceBrandNameSnapshot: 'Threadly Atelier',
+      sourceBrandNameSnapshot: 'WIEZ Atelier',
       brand: { ownerId: 'brand_owner_1' },
     });
 
@@ -432,7 +432,7 @@ describe('CustomOrderAdminService', () => {
             brandId: 'brand_1',
             buyerId: 'buyer_1',
             sourceTitleSnapshot: 'Custom Jacket',
-            sourceBrandNameSnapshot: 'Threadly Atelier',
+            sourceBrandNameSnapshot: 'WIEZ Atelier',
             status: CustomOrderStatus.COMPLETED,
           },
           payout: {

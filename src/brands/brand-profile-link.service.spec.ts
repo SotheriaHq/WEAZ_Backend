@@ -5,7 +5,7 @@ describe('BrandProfileLinkService', () => {
 
   beforeEach(() => {
     process.env = { ...originalEnv };
-    process.env.WEB_APP_URL = 'https://threadly.test';
+    process.env.WEB_APP_URL = 'https://wiez.test';
     delete process.env.FRONTEND_URL;
     delete process.env.APP_ENV;
     delete process.env.DEPLOY_ENV;
@@ -25,9 +25,9 @@ describe('BrandProfileLinkService', () => {
         username: 'maison-vant',
       }),
     ).toEqual({
-      publicProfileUrl: 'https://threadly.test/u/maison-vant',
-      qrTargetUrl: 'https://threadly.test/u/maison-vant',
-      shareUrl: 'https://threadly.test/u/maison-vant',
+      publicProfileUrl: 'https://wiez.test/u/maison-vant',
+      qrTargetUrl: 'https://wiez.test/u/maison-vant',
+      shareUrl: 'https://wiez.test/u/maison-vant',
     });
   });
 
@@ -40,9 +40,9 @@ describe('BrandProfileLinkService', () => {
         username: null,
       }),
     ).toEqual({
-      publicProfileUrl: 'https://threadly.test/profile/owner-1',
-      qrTargetUrl: 'https://threadly.test/profile/owner-1',
-      shareUrl: 'https://threadly.test/profile/owner-1',
+      publicProfileUrl: 'https://wiez.test/profile/owner-1',
+      qrTargetUrl: 'https://wiez.test/profile/owner-1',
+      shareUrl: 'https://wiez.test/profile/owner-1',
     });
   });
 

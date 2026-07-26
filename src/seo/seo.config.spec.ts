@@ -8,7 +8,7 @@ import {
 describe('seo.config', () => {
   it('normalizes absolute and relative paths', () => {
     expect(normalizeSeoPath('/brand/acme/')).toBe('/brand/acme');
-    expect(normalizeSeoPath('https://weaz.me/p/slug?x=1')).toBe('/p/slug');
+    expect(normalizeSeoPath('https://§WIEZ_ME§/p/slug?x=1')).toBe('/p/slug');
   });
 
   it('marks private app surfaces as noindex', () => {

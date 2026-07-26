@@ -1,6 +1,7 @@
 export const PRODUCT_NAME = 'WIEZ';
 export const PRODUCT_NAME_LEGAL = 'WIEZ';
-export const PRODUCT_NAME_FORMER = 'Threadly';
+/** @deprecated Product is WIEZ only — do not surface former codenames. */
+export const PRODUCT_NAME_FORMER = 'WIEZ';
 export const PRODUCT_TAGLINE = 'When you think WEARS, you think WIEZ.';
 export const PRODUCT_LOGO_TAGLINE = 'JUST WEAR';
 export const PRODUCT_CATEGORY = 'African fashion social commerce marketplace';

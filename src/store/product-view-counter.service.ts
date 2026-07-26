@@ -16,7 +16,7 @@ export class ProductViewCounterService
   private flushTimer: NodeJS.Timeout | null = null;
   private redis: RedisClientType | null = null;
 
-  private readonly redisHashKey = 'threadly:product:viewCounts';
+  private readonly redisHashKey = 'wiez:product:viewCounts';
 
   constructor(private readonly prisma: PrismaService) {}
 

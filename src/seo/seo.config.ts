@@ -47,7 +47,7 @@ export const SEO_DISALLOWED_PATH_PREFIXES = [
 export const SEO_STATIC_INDEXABLE_PATHS = [
   '/',
   '/market',
-  '/market-place',
+  '/market',
   '/legal',
   '/terms',
   '/privacy',

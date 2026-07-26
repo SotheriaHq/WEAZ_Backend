@@ -28,7 +28,7 @@ describe('BrandVerificationService', () => {
   };
   const notifications = { create: jest.fn() };
   const emailService = {
-    getAppName: jest.fn(() => 'Threadly'),
+    getAppName: jest.fn(() => 'WIEZ'),
     send: jest.fn(),
   };
 
@@ -151,7 +151,7 @@ describe('BrandVerificationService', () => {
         get: jest.fn((key: string) => {
           if (key === 'NODE_ENV') return 'production';
           if (key === 'VERIFICATION_DRAFT_SECRET') {
-            return 'threadly-verification-draft-secret';
+            return 'wiez-verification-draft-secret';
           }
           return undefined;
         }),
@@ -178,6 +178,6 @@ describe('BrandVerificationService', () => {
     const encrypted = (target as any).encryptDraft({ currentStep: 2 });
 
     expect((target as any).decryptDraft(encrypted)).toEqual({ currentStep: 2 });
-    expect(encrypted).not.toContain('threadly-verification-draft-secret');
+    expect(encrypted).not.toContain('wiez-verification-draft-secret');
   });
 });

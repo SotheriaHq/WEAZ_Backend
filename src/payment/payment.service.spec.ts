@@ -224,7 +224,7 @@ describe('PaymentService', () => {
     process.env.REDIS_URL = 'redis://127.0.0.1:6379/0';
     process.env.PAYSTACK_SECRET_KEY = 'sk_live_required';
     process.env.FRONTEND_PUBLIC_CHECKOUT_CALLBACK_URL =
-      'http://checkout.threadly.com/bag/payment-return';
+      'http://checkout.weaz.com/bag/payment-return';
 
     expect(() => service.onModuleInit()).toThrow(
       'Checkout callback URL must use HTTPS in production',
@@ -429,7 +429,7 @@ describe('PaymentService', () => {
   it('rejects Paystack initialize responses that do not return an inline access code', async () => {
     process.env.PAYSTACK_SECRET_KEY = 'sk_test_inline';
     process.env.FRONTEND_PUBLIC_CHECKOUT_CALLBACK_URL =
-      'https://checkout.threadly.test/bag/payment-return';
+      'https://checkout.wiez.test/bag/payment-return';
 
     jest.spyOn(globalThis, 'fetch').mockResolvedValue({
       ok: true,
@@ -470,7 +470,7 @@ describe('PaymentService', () => {
         findFirst: jest.fn().mockResolvedValue({
           id: 'checkout-session-1',
           summaryJson: {
-            items: [{ name: 'Threadly Tee', quantity: 1, price: 12000 }],
+            items: [{ name: 'WIEZ Tee', quantity: 1, price: 12000 }],
             subtotal: 12000,
             shippingCost: 2500,
             discount: 0,
@@ -491,7 +491,7 @@ describe('PaymentService', () => {
             settlementAmount: 14500,
             exchangeRateSnapshotId: 'fx-1',
             channel: 'CARD',
-            callbackUrl: 'https://threadly.test/bag/payment-return',
+            callbackUrl: 'https://wiez.test/bag/payment-return',
             providerAccessCode: 'access-1',
             authorizationUrl: 'https://checkout.paystack.com/example',
             bankAccount: null,
@@ -565,7 +565,7 @@ describe('PaymentService', () => {
     const checkoutSession = {
       id: 'checkout-session-pending-1',
       summaryJson: {
-        items: [{ name: 'Threadly Tee', quantity: 1, price: 12000 }],
+        items: [{ name: 'WIEZ Tee', quantity: 1, price: 12000 }],
         subtotal: 12000,
         shippingCost: 2500,
         discount: 0,
@@ -589,7 +589,7 @@ describe('PaymentService', () => {
       amount: 14500,
       exchangeRateSnapshotId: 'fx-1',
       checkoutSessionId: checkoutSession.id,
-      callbackUrl: 'https://threadly.test/bag/payment-return',
+      callbackUrl: 'https://wiez.test/bag/payment-return',
       bankAccount: null,
       nextAction: null,
       expiresAt: new Date(Date.now() + 30 * 60 * 1000),
@@ -647,7 +647,7 @@ describe('PaymentService', () => {
           cartItemId: 'cart-line-1',
           brandId: 'brand-1',
           productId: 'product-1',
-          productName: 'Threadly Tee',
+          productName: 'WIEZ Tee',
           thumbnail: null,
           quantity: 1,
           selectedSize: null,
@@ -688,7 +688,7 @@ describe('PaymentService', () => {
       .mockReturnValue(2500);
     jest
       .spyOn(target as any, 'resolveCallbackBaseUrl')
-      .mockReturnValue('https://threadly.test/bag/payment-return');
+      .mockReturnValue('https://wiez.test/bag/payment-return');
     jest.spyOn(target as any, 'preparePaymentGatewayRequest').mockReturnValue({
       email: 'ada@example.com',
       phone: '08030000000',
@@ -920,7 +920,7 @@ describe('PaymentService', () => {
         customOrderIds: ['custom-order-1'],
         summary: {
           currency: 'NGN',
-          items: [{ name: 'Threadly Tee', quantity: 1, price: 12000 }],
+          items: [{ name: 'WIEZ Tee', quantity: 1, price: 12000 }],
           subtotal: 12000,
           shippingCost: 2500,
           discount: 0,
@@ -1472,7 +1472,7 @@ describe('PaymentService', () => {
       product: {
         findUnique: jest.fn().mockResolvedValue({
           id: 'product-1',
-          name: 'Threadly Tee',
+          name: 'WIEZ Tee',
           totalStock: 5,
           sizeStock: null,
           trackInventory: true,
@@ -1504,7 +1504,7 @@ describe('PaymentService', () => {
           cartItemId: 'cart-line-1',
           brandId: 'brand-1',
           productId: 'product-1',
-          productName: 'Threadly Tee',
+          productName: 'WIEZ Tee',
           thumbnail: null,
           quantity: 1,
           selectedSize: 'M',

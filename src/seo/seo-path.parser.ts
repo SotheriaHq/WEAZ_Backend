@@ -38,7 +38,7 @@ export function parseSeoPath(pathname: string): ParsedSeoPath {
     return { kind: 'home' };
   }
 
-  if (pathname === '/market' || pathname === '/market-place') {
+  if (pathname === '/market' || pathname === '/market') {
     return { kind: 'market' };
   }
 

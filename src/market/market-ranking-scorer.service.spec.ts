@@ -18,8 +18,8 @@ describe('MarketRankingScorerService', () => {
     description: null,
     brand: { id: 'brand_1', name: 'Ada Atelier', logoUrl: null },
     media: {
-      url: 'https://cdn.threadly.test/product.jpg',
-      thumbnailUrl: 'https://cdn.threadly.test/product.jpg',
+      url: 'https://cdn.wiez.test/product.jpg',
+      thumbnailUrl: 'https://cdn.wiez.test/product.jpg',
       type: 'IMAGE',
       alt: null,
     },

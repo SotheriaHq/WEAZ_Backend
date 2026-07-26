@@ -407,7 +407,7 @@ describe('CustomOrdersPaymentsService', () => {
       buyerId: 'buyer_1',
       brandId: 'brand_1',
       currency: 'NGN',
-      sourceBrandNameSnapshot: 'Threadly Atelier',
+      sourceBrandNameSnapshot: 'WIEZ Atelier',
       productionLeadDaysSnapshot: 5,
       deliveryMaxDaysSnapshot: 4,
       buyerPriceSummaryJson: { grandTotal: 1000 },
@@ -546,7 +546,7 @@ describe('CustomOrdersPaymentsService', () => {
       buyerId: 'buyer_1',
       brandId: 'brand_2',
       currency: 'NGN',
-      sourceBrandNameSnapshot: 'Threadly Atelier',
+      sourceBrandNameSnapshot: 'WIEZ Atelier',
       buyerPriceSummaryJson: { grandTotal: 825 },
     });
     prisma.paymentAttempt.findUnique.mockResolvedValue({
@@ -593,7 +593,7 @@ describe('CustomOrdersPaymentsService', () => {
       buyerId: 'buyer_1',
       brandId: 'brand_2',
       currency: 'NGN',
-      sourceBrandNameSnapshot: 'Threadly Atelier',
+      sourceBrandNameSnapshot: 'WIEZ Atelier',
       buyerPriceSummaryJson: { grandTotal: 825 },
     });
     prisma.paymentAttempt.findUnique.mockResolvedValue({
@@ -627,7 +627,7 @@ describe('CustomOrdersPaymentsService', () => {
       buyerId: 'buyer_1',
       brandId: 'brand_2',
       currency: 'NGN',
-      sourceBrandNameSnapshot: 'Threadly Atelier',
+      sourceBrandNameSnapshot: 'WIEZ Atelier',
       buyerPriceSummaryJson: { grandTotal: 825 },
     });
     prisma.paymentAttempt.findUnique.mockResolvedValue({
@@ -729,7 +729,7 @@ describe('CustomOrdersPaymentsService', () => {
       buyerId: 'buyer_1',
       brandId: 'brand_2',
       currency: 'NGN',
-      sourceBrandNameSnapshot: 'Threadly Atelier',
+      sourceBrandNameSnapshot: 'WIEZ Atelier',
       productionLeadDaysSnapshot: 5,
       deliveryMaxDaysSnapshot: 4,
       buyerPriceSummaryJson: { grandTotal: 825 },
@@ -859,7 +859,7 @@ describe('CustomOrdersPaymentsService', () => {
       buyerId: 'buyer_1',
       brandId: 'brand_4',
       currency: 'NGN',
-      sourceBrandNameSnapshot: 'Threadly Atelier',
+      sourceBrandNameSnapshot: 'WIEZ Atelier',
       productionLeadDaysSnapshot: 5,
       deliveryMaxDaysSnapshot: 4,
       buyerPriceSummaryJson: { grandTotal: 2000 },

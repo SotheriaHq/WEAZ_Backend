@@ -1,4 +1,4 @@
-const LEGACY_VERIFICATION_DRAFT_SECRET = 'threadly-verification-draft-secret';
+const LEGACY_VERIFICATION_DRAFT_SECRET = 'wiez-verification-draft-secret';
 const MIN_SECRET_LENGTH = 32;
 
 function isProduction(config: Record<string, unknown>): boolean {
