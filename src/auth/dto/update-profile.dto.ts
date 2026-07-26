@@ -4,7 +4,13 @@ import {
   IsNotEmpty,
   Matches,
   IsUUID,
+  MaxLength,
 } from 'class-validator';
+import {
+  IsPhoneNumberField,
+  ToE164Phone,
+} from '../../common/decorators/is-phone-number.decorator';
+import { PHONE_E164_MAX_LENGTH } from '../../common/utils/phone-number';
 
 export class UpdateProfileDto {
   @IsOptional()
@@ -28,7 +34,10 @@ export class UpdateProfileDto {
   bannerImageId?: string;
 
   @IsOptional()
+  @ToE164Phone()
   @IsString({ message: 'Phone number must be a string' })
+  @IsPhoneNumberField()
+  @MaxLength(PHONE_E164_MAX_LENGTH)
   phoneNumber?: string;
 
   @IsOptional()

@@ -46,6 +46,11 @@ import {
   resolveProfileImage,
   resolveRequiredProfileField,
 } from 'src/common/user-profile-source.helper';
+import {
+  isEmptyPhone,
+  normalizePhoneToE164,
+  PHONE_INVALID_MESSAGE,
+} from 'src/common/utils/phone-number';
 
 type RejectionReasonRecord = {
   code: string;
@@ -127,7 +132,12 @@ export class BrandVerificationService {
   ) {}
 
   private normalizePhoneNumber(value: unknown): string {
-    return typeof value === 'string' ? value.trim() : '';
+    if (isEmptyPhone(value)) return '';
+    const e164 = normalizePhoneToE164(value);
+    if (!e164) {
+      throw new BadRequestException(PHONE_INVALID_MESSAGE);
+    }
+    return e164;
   }
 
   async presignUpload(ownerId: string, dto: PresignVerificationUploadDto) {

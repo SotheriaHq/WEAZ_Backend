@@ -9,6 +9,11 @@ import {
   Matches,
   MaxLength,
 } from 'class-validator';
+import {
+  IsPhoneNumberField,
+  ToE164Phone,
+} from '../../common/decorators/is-phone-number.decorator';
+import { PHONE_E164_MAX_LENGTH } from '../../common/utils/phone-number';
 
 // Allow unicode letters (incl. accents), spaces, apostrophes, dots, and hyphens for locations.
 const NAME_REGEX = /^[\p{L}\p{M}\s'.-]+$/u;
@@ -107,11 +112,13 @@ export class UpdateBrandProfileDto {
   socialWebsite?: string;
 
   @ApiPropertyOptional({
-    description: 'Primary contact phone number',
+    description: 'Primary contact phone number (E.164 after normalize)',
   })
   @IsOptional()
+  @ToE164Phone()
   @IsString()
-  @MaxLength(30)
+  @IsPhoneNumberField()
+  @MaxLength(PHONE_E164_MAX_LENGTH)
   phoneNumber?: string;
 
   @ApiPropertyOptional({

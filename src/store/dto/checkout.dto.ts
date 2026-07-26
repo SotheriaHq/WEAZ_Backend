@@ -6,10 +6,17 @@ import {
   ValidateNested,
   IsNumber,
   IsObject,
+  IsNotEmpty,
+  MaxLength,
   Min,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { PaymentMethod } from '@prisma/client';
+import {
+  IsPhoneNumberField,
+  ToE164Phone,
+} from '../../common/decorators/is-phone-number.decorator';
+import { PHONE_E164_MAX_LENGTH } from '../../common/utils/phone-number';
 
 export class CheckoutItemDto {
   @IsString()
@@ -56,7 +63,11 @@ export class ShippingAddressDto {
   @IsString()
   country: string;
 
+  @ToE164Phone()
   @IsString()
+  @IsNotEmpty()
+  @IsPhoneNumberField()
+  @MaxLength(PHONE_E164_MAX_LENGTH)
   phone: string;
 }
 

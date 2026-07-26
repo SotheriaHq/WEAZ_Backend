@@ -122,7 +122,7 @@ describe('BrandVerificationService', () => {
     );
     expect(prisma.userProfile.updateMany).toHaveBeenCalledWith({
       where: { userId: 'owner-1' },
-      data: { phoneNumber: '08030000000' },
+      data: { phoneNumber: '+2348030000000' },
     });
   });
 

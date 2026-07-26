@@ -21,6 +21,11 @@ import {
   VerificationOwnerGender,
   VerificationSignatureMethod,
 } from '@prisma/client';
+import {
+  IsPhoneNumberField,
+  ToE164Phone,
+} from '../../common/decorators/is-phone-number.decorator';
+import { PHONE_E164_MAX_LENGTH } from '../../common/utils/phone-number';
 
 export class VerificationBusinessAddressDto {
   @IsString()
@@ -74,7 +79,10 @@ export class SubmitBrandVerificationDto {
   ownerGender: VerificationOwnerGender;
 
   @IsOptional()
+  @ToE164Phone()
   @IsString()
+  @IsPhoneNumberField()
+  @MaxLength(PHONE_E164_MAX_LENGTH)
   ownerPhoneNumber?: string;
 
   @IsString()
@@ -178,7 +186,10 @@ export class ResubmitVerificationInfoDto {
   ownerGender?: VerificationOwnerGender;
 
   @IsOptional()
+  @ToE164Phone()
   @IsString()
+  @IsPhoneNumberField()
+  @MaxLength(PHONE_E164_MAX_LENGTH)
   ownerPhoneNumber?: string;
 
   @IsOptional()

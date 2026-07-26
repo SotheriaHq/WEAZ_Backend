@@ -98,6 +98,7 @@
     "google-auth-library": "^10.6.2",
     "heic-convert": "^2.1.0",
     "joi": "^18.0.1",
+    "libphonenumber-js": "^1.13.9",
     "mime-types": "^3.0.1",
     "module-alias": "^2.2.3",
     "nestjs-pino": "^4.6.1",

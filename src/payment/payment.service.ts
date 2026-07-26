@@ -82,6 +82,12 @@ import {
 import { MonitoringService } from 'src/monitoring/monitoring.service';
 import { AlertCategory, AlertSeverity } from 'src/monitoring/monitoring.types';
 import { redactSensitiveLogValue } from 'src/common/utils/sensitive-log';
+import {
+  isEmptyPhone,
+  normalizePhoneToE164,
+  PHONE_INVALID_MESSAGE,
+  PHONE_REQUIRED_MESSAGE,
+} from 'src/common/utils/phone-number';
 import { LegalService } from 'src/legal/legal.service';
 
 type PaymentAttemptRecord = Awaited<
@@ -5407,15 +5413,21 @@ export class PaymentService implements OnModuleInit {
     }
 
     const email = String(paymentData.email ?? '').trim();
-    const phone = String(paymentData.phone ?? '').trim();
+    const rawPhone = String(paymentData.phone ?? '').trim();
     const consentAccepted = Boolean(paymentData.consentAccepted);
 
     if (!email) {
       throw new BadRequestException('Customer email is required');
     }
-    if (!phone) {
-      throw new BadRequestException('Customer phone is required');
+    if (isEmptyPhone(rawPhone)) {
+      throw new BadRequestException(PHONE_REQUIRED_MESSAGE);
     }
+    const phone = normalizePhoneToE164(rawPhone);
+    if (!phone) {
+      throw new BadRequestException(PHONE_INVALID_MESSAGE);
+    }
+    // Normalize in-place so downstream attempt metadata / provider payloads use E.164.
+    (paymentData as { phone?: string }).phone = phone;
     if (!consentAccepted) {
       throw new BadRequestException('Payment consent must be accepted');
     }
@@ -5501,6 +5513,11 @@ export class PaymentService implements OnModuleInit {
             'Mobile money payments require country, network, and phone details',
           );
         }
+        const mmPhone = normalizePhoneToE164(paymentData.mobileMoney.phone);
+        if (!mmPhone) {
+          throw new BadRequestException(PHONE_INVALID_MESSAGE);
+        }
+        paymentData.mobileMoney.phone = mmPhone;
       }
 
       return paymentData;
@@ -5517,6 +5534,11 @@ export class PaymentService implements OnModuleInit {
           'Bank transfer requires sender name, phone, bank name, and payment purpose',
         );
       }
+      const senderPhone = normalizePhoneToE164(paymentData.senderPhone);
+      if (!senderPhone) {
+        throw new BadRequestException(PHONE_INVALID_MESSAGE);
+      }
+      paymentData.senderPhone = senderPhone;
       return paymentData;
     }
 

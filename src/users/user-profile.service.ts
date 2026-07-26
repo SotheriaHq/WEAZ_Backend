@@ -31,6 +31,12 @@ import {
   resolveShowLocation,
   resolveShowUsername,
 } from 'src/common/user-profile-source.helper';
+import {
+  isEmptyPhone,
+  normalizePhoneToE164,
+  PHONE_E164_MAX_LENGTH,
+  PHONE_INVALID_MESSAGE,
+} from 'src/common/utils/phone-number';
 
 const userProfileResponseSelect = Prisma.validator<Prisma.UserSelect>()({
   id: true,
@@ -260,8 +266,19 @@ export class UserProfileService {
 
     assignString('firstName');
     assignString('lastName');
-    assignString('phoneNumber');
     assignString('address');
+
+    if (dto.phoneNumber !== undefined) {
+      if (isEmptyPhone(dto.phoneNumber)) {
+        profileData.phoneNumber = null;
+      } else {
+        const e164 = normalizePhoneToE164(dto.phoneNumber);
+        if (!e164) {
+          throw new BadRequestException(PHONE_INVALID_MESSAGE);
+        }
+        profileData.phoneNumber = e164;
+      }
+    }
 
     const assignMediaUrl = (
       field: Extract<AllowedProfileUpdateField, 'profileImage' | 'bannerImage'>,
@@ -577,13 +594,15 @@ export class UserProfileService {
         const customerName =
           clean(record.customerName, 160) ||
           [firstName, lastName].filter(Boolean).join(' ');
+        const rawPhone = clean(record.phone, 40);
+        const phone = normalizePhoneToE164(rawPhone) ?? '';
         const address = {
           id: clean(record.id, 64) || randomUUID(),
           firstName,
           lastName,
           customerName,
           contactEmail: clean(record.contactEmail, 254),
-          phone: clean(record.phone, 40),
+          phone: phone.slice(0, PHONE_E164_MAX_LENGTH),
           street: clean(record.street, 200),
           apartment: clean(record.apartment, 120),
           city: clean(record.city, 120),

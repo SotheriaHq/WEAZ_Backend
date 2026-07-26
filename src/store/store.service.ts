@@ -73,6 +73,11 @@ import { UpdateStoreProfileDto } from './dto/update-store-profile.dto';
 import { UpdateStorePoliciesDto } from './dto/update-store-policies.dto';
 import { UpdateStorePaymentAccountDto } from './dto/update-store-payment-account.dto';
 import { VerifyStorePaymentAccountDto } from './dto/verify-store-payment-account.dto';
+import {
+  isEmptyPhone,
+  normalizePhoneToE164,
+  PHONE_INVALID_MESSAGE,
+} from 'src/common/utils/phone-number';
 import { PasswordService } from 'src/auth/helper/password.service';
 import { UploadService } from 'src/upload/upload.service';
 import { FileType } from 'src/upload/upload.enums';
@@ -8375,6 +8380,29 @@ export class StoreService {
     );
   }
 
+  /**
+   * Prefer DTO phone (validated E.164 when non-empty), then existing, then owner profile.
+   * Invalid non-empty DTO values throw; empty DTO falls through to fallbacks (normalized when possible).
+   */
+  private resolvePrimaryContactPhone(
+    dtoPhone: unknown,
+    existingPhone: string | null | undefined,
+    ownerPhone: string | null | undefined,
+  ): string | null {
+    const candidates = [dtoPhone, existingPhone, ownerPhone];
+    for (let i = 0; i < candidates.length; i += 1) {
+      const candidate = candidates[i];
+      if (isEmptyPhone(candidate)) continue;
+      const e164 = normalizePhoneToE164(candidate);
+      if (e164) return e164;
+      // Only the explicit DTO value is a hard validation error; fallbacks may be legacy freeform.
+      if (i === 0) {
+        throw new BadRequestException(PHONE_INVALID_MESSAGE);
+      }
+    }
+    return null;
+  }
+
   private encryptStorePaymentValue(value: string) {
     const iv = randomBytes(12);
     const cipher = createCipheriv(
@@ -9101,11 +9129,11 @@ export class StoreService {
           existingAccount?.primaryContactEmail ||
           owner?.email ||
           null;
-        const nextPrimaryContactPhone =
-          String(dto.primaryContactPhone || '').trim() ||
-          existingAccount?.primaryContactPhone ||
-          owner?.userProfile?.phoneNumber ||
-          null;
+        const nextPrimaryContactPhone = this.resolvePrimaryContactPhone(
+          dto.primaryContactPhone,
+          existingAccount?.primaryContactPhone,
+          owner?.userProfile?.phoneNumber,
+        );
         const accountNumberEncrypted =
           this.encryptStorePaymentValue(accountNumber);
         const lastSuccessfulSyncAt = syncTimestamp;
@@ -9216,11 +9244,11 @@ export class StoreService {
         existingAccount?.primaryContactEmail ||
         owner?.email ||
         null;
-      const primaryContactPhone =
-        String(dto.primaryContactPhone || '').trim() ||
-        existingAccount?.primaryContactPhone ||
-        owner?.userProfile?.phoneNumber ||
-        null;
+      const primaryContactPhone = this.resolvePrimaryContactPhone(
+        dto.primaryContactPhone,
+        existingAccount?.primaryContactPhone,
+        owner?.userProfile?.phoneNumber,
+      );
 
       let subaccountPayload: any = null;
       let transferRecipientPayload: any = null;

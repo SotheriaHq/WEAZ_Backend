@@ -15,6 +15,11 @@ import {
   Min,
   ValidateNested,
 } from 'class-validator';
+import {
+  IsPhoneNumberField,
+  ToE164Phone,
+} from '../common/decorators/is-phone-number.decorator';
+import { PHONE_E164_MAX_LENGTH } from '../common/utils/phone-number';
 
 export interface ShippingAddress {
   firstName: string;
@@ -69,16 +74,20 @@ export class ShippingAddressDto implements ShippingAddress {
   @MaxLength(80)
   country: string;
 
+  @ToE164Phone()
   @IsString()
   @IsNotEmpty()
-  @MaxLength(40)
+  @IsPhoneNumberField()
+  @MaxLength(PHONE_E164_MAX_LENGTH)
   phone: string;
 }
 
 export class CheckoutContactInfoDto {
+  @ToE164Phone()
   @IsString()
   @IsNotEmpty()
-  @MaxLength(40)
+  @IsPhoneNumberField()
+  @MaxLength(PHONE_E164_MAX_LENGTH)
   phone: string;
 
   @IsOptional()

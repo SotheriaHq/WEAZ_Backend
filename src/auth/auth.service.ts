@@ -43,6 +43,11 @@ import {
   resolveRequiredProfileField,
 } from 'src/common/user-profile-source.helper';
 import { resolveRequiredBrandField } from 'src/common/brand-profile-source.helper';
+import {
+  isEmptyPhone,
+  normalizePhoneToE164,
+  PHONE_INVALID_MESSAGE,
+} from 'src/common/utils/phone-number';
 import { TokenService } from './helper/general.helper';
 import { Request, Response } from 'express';
 import { UserHelperService } from './helper/user-helper.service';
@@ -2129,8 +2134,19 @@ export class AuthService {
 
     assignString('firstName');
     assignString('lastName');
-    assignString('phoneNumber');
     assignString('address');
+
+    if (dto.phoneNumber !== undefined) {
+      if (isEmptyPhone(dto.phoneNumber)) {
+        profileData.phoneNumber = null;
+      } else {
+        const e164 = normalizePhoneToE164(dto.phoneNumber);
+        if (!e164) {
+          throw new BadRequestException(PHONE_INVALID_MESSAGE);
+        }
+        profileData.phoneNumber = e164;
+      }
+    }
 
     const assignMediaUrl = (
       field: Extract<AllowedProfileUpdateField, 'profileImage' | 'bannerImage'>,

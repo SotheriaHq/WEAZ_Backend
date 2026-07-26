@@ -4,8 +4,14 @@ import {
   IsOptional,
   IsString,
   Matches,
+  MaxLength,
 } from 'class-validator';
 import { UserType } from '@prisma/client';
+import {
+  IsPhoneNumberField,
+  ToE164Phone,
+} from '../../common/decorators/is-phone-number.decorator';
+import { PHONE_E164_MAX_LENGTH } from '../../common/utils/phone-number';
 
 /**
  * Admin-safe user update DTO.
@@ -21,7 +27,10 @@ export class UpdateAuthDto {
   email?: string;
 
   @IsOptional()
+  @ToE164Phone()
   @IsString()
+  @IsPhoneNumberField()
+  @MaxLength(PHONE_E164_MAX_LENGTH)
   phoneNumber?: string;
 
   @IsOptional()
