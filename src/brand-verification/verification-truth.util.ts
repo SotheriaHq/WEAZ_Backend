@@ -2,6 +2,37 @@ import { BrandVerificationStatus, UserStatus } from '@prisma/client';
 
 export const VERIFIED_BADGE_EXPLANATION_PATH = '/help/verified-badge';
 
+/**
+ * Machine-readable code clients can key off to specialise the "brand not
+ * verified" state (e.g. a follow/notify CTA) instead of a generic block.
+ */
+export const BRAND_NOT_VERIFIED_CODE = 'BRAND_NOT_VERIFIED';
+
+/**
+ * Shopper-facing message shown when a buyer tries to bag/checkout an item from
+ * a brand that has NOT completed the store-verification process. Only brands
+ * with an APPROVED verification may receive orders (product rule).
+ */
+export const BRAND_ORDER_VERIFICATION_MESSAGE =
+  "Sorry, you can't bag this item or place an order yet — this brand hasn't completed store verification. Only verified brands can take orders.";
+
+/**
+ * Brand-facing nudge fired (deduped) when a shopper is turned away from a
+ * store because it isn't verified — the highest-intent moment to encourage the
+ * owner to finish verification.
+ */
+export const BRAND_ORDER_VERIFICATION_NUDGE_MESSAGE =
+  'A shopper just tried to order from your store, but orders are locked until you complete store verification. Verify now to start taking orders.';
+
+/**
+ * The single source of truth for "can this brand receive orders?". Gated purely
+ * on the store-verification outcome (APPROVED), independent of `isStoreOpen`
+ * which callers continue to check separately for the store-closed state.
+ */
+export const isBrandStoreVerified = (
+  verificationStatus?: BrandVerificationStatus | null,
+): boolean => verificationStatus === BrandVerificationStatus.APPROVED;
+
 type BrandVerificationTruthInput = {
   verificationStatus?: BrandVerificationStatus | null;
   isStoreOpen?: boolean | null;

@@ -41,6 +41,10 @@ import {
 } from '@prisma/client';
 import { ADMIN_PERMISSIONS } from 'src/admin/constants/permissions';
 import { PrismaService } from 'src/prisma/prisma.service';
+import {
+  BRAND_ORDER_VERIFICATION_MESSAGE,
+  isBrandStoreVerified,
+} from 'src/brand-verification/verification-truth.util';
 import { v4 as uuidv4 } from 'uuid';
 import { FxRateService } from './fx-rate.service';
 import { StandardOrderFinanceSyncService } from 'src/finance/standard-order-finance-sync.service';
@@ -7225,6 +7229,7 @@ export class PaymentService implements OnModuleInit {
               select: {
                 ownerId: true,
                 isStoreOpen: true,
+                verificationStatus: true,
               },
             },
             variants: {
@@ -7271,6 +7276,9 @@ export class PaymentService implements OnModuleInit {
         throw new BadRequestException(
           `Store is closed for product: ${product.name}`,
         );
+      }
+      if (!isBrandStoreVerified(product.brand?.verificationStatus)) {
+        throw new BadRequestException(BRAND_ORDER_VERIFICATION_MESSAGE);
       }
 
       const variants = Array.isArray(product.variants) ? product.variants : [];

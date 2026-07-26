@@ -1,5 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import {
+  BrandVerificationStatus,
   CustomOrderActorType,
   CustomOrderExtensionResponseStatus,
   CustomOrderIssueType,
@@ -672,7 +673,10 @@ describe('CustomOrdersService', () => {
       sourceType: 'PRODUCT',
       sourceId: 'product_1',
       notes: null,
-      brand: { currency: 'NGN' },
+      brand: {
+        currency: 'NGN',
+        verificationStatus: BrandVerificationStatus.APPROVED,
+      },
       rules: [],
       versions: [
         {
@@ -843,7 +847,10 @@ describe('CustomOrdersService', () => {
       requiredMeasurementKeys: ['WOMEN_WAIST'],
       requiredFreeformPointIds: [],
       rules: [],
-      brand: { currency: 'NGN' },
+      brand: {
+        currency: 'NGN',
+        verificationStatus: BrandVerificationStatus.APPROVED,
+      },
       versions: [{ id: 'configuration_version_1' }],
     });
     prisma.measurementPoint.findMany.mockResolvedValue([]);
@@ -897,7 +904,10 @@ describe('CustomOrdersService', () => {
       requiredFreeformPointIds: [],
       notes: null,
       rules: [],
-      brand: { currency: 'NGN' },
+      brand: {
+        currency: 'NGN',
+        verificationStatus: BrandVerificationStatus.APPROVED,
+      },
       versions: [{ id: 'configuration_version_1' }],
     });
     prisma.collection.findUnique.mockResolvedValue({
@@ -952,7 +962,10 @@ describe('CustomOrdersService', () => {
       requiredMeasurementKeys: ['WOMEN_WAIST'],
       requiredFreeformPointIds: [],
       rules: [],
-      brand: { currency: 'NGN' },
+      brand: {
+        currency: 'NGN',
+        verificationStatus: BrandVerificationStatus.APPROVED,
+      },
       versions: [{ id: 'configuration_version_1' }],
     });
     prisma.measurementPoint.findMany.mockResolvedValue([]);
@@ -998,7 +1011,10 @@ describe('CustomOrdersService', () => {
       requiredMeasurementKeys: ['WOMEN_WAIST'],
       requiredFreeformPointIds: [],
       rules: [],
-      brand: { currency: 'NGN' },
+      brand: {
+        currency: 'NGN',
+        verificationStatus: BrandVerificationStatus.APPROVED,
+      },
       versions: [{ id: 'configuration_version_1' }],
     });
     prisma.measurementPoint.findMany.mockResolvedValue([]);
@@ -1033,7 +1049,10 @@ describe('CustomOrdersService', () => {
       requiredMeasurementKeys: ['WOMEN_WAIST'],
       requiredFreeformPointIds: [],
       rules: [],
-      brand: { currency: 'NGN' },
+      brand: {
+        currency: 'NGN',
+        verificationStatus: BrandVerificationStatus.APPROVED,
+      },
       versions: [{ id: 'configuration_version_1' }],
     });
     prisma.customOrderConfiguration.findMany.mockResolvedValue([
@@ -1071,7 +1090,10 @@ describe('CustomOrdersService', () => {
       requiredMeasurementKeys: ['WOMEN_WAIST'],
       requiredFreeformPointIds: [],
       rules: [],
-      brand: { currency: 'NGN' },
+      brand: {
+        currency: 'NGN',
+        verificationStatus: BrandVerificationStatus.APPROVED,
+      },
       versions: [{ id: 'configuration_version_1' }],
     });
     prisma.customOrderConfiguration.findMany.mockResolvedValue([

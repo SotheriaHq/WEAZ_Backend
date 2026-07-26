@@ -11,6 +11,11 @@ import {
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from '../prisma/prisma.service';
 import {
+  BRAND_ORDER_VERIFICATION_MESSAGE,
+  BRAND_ORDER_VERIFICATION_NUDGE_MESSAGE,
+  isBrandStoreVerified,
+} from '../brand-verification/verification-truth.util';
+import {
   isValidIanaTimeZone,
   validateWorkingHours,
   type WorkingHoursSchedule,
@@ -6055,6 +6060,46 @@ export class StoreService {
     }
   }
 
+  /**
+   * Fire-and-forget nudge to the brand owner when a shopper is blocked from
+   * ordering because the store isn't verified. Deduped ~24h so a busy store
+   * gets at most one prompt per day. Never throws into the caller.
+   */
+  private nudgeBrandUnverifiedOrderAttempt(
+    brandId: string,
+    ownerId?: string | null,
+  ): void {
+    void (async () => {
+      try {
+        const recipientId =
+          ownerId ??
+          (
+            await this.prisma.brand.findUnique({
+              where: { id: brandId },
+              select: { ownerId: true },
+            })
+          )?.ownerId;
+        if (!recipientId) return;
+        await this.notifications?.create(
+          recipientId,
+          NotificationType.VERIFICATION_NUDGE,
+          {
+            payload: {
+              brandId,
+              targetUrl: '/studio/verification',
+              message: BRAND_ORDER_VERIFICATION_NUDGE_MESSAGE,
+            },
+            dedupeMs: 24 * 60 * 60 * 1000,
+          },
+        );
+      } catch (error) {
+        this.logger.warn(
+          `Failed to send unverified-order-attempt nudge for brand=${brandId}: ${String(error)}`,
+        );
+      }
+    })();
+  }
+
   async addToCart(userId: string, dto: AddToCartDto) {
     const actingUser = await this.prisma.user.findUnique({
       where: { id: userId },
@@ -6090,12 +6135,26 @@ export class StoreService {
       },
       include: {
         variants: true,
-        brand: { select: { ownerId: true, name: true, currency: true } },
+        brand: {
+          select: {
+            ownerId: true,
+            name: true,
+            currency: true,
+            verificationStatus: true,
+          },
+        },
       },
     });
 
     if (!product) {
       throw new NotFoundException('Product not found or unavailable');
+    }
+    if (!isBrandStoreVerified(product.brand?.verificationStatus)) {
+      this.nudgeBrandUnverifiedOrderAttempt(
+        product.brandId,
+        product.brand?.ownerId,
+      );
+      throw new ForbiddenException(BRAND_ORDER_VERIFICATION_MESSAGE);
     }
     const resolvedBrandOwnerId =
       product.brand?.ownerId ??

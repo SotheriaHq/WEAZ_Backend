@@ -28,6 +28,11 @@ import {
 import { createHash, randomUUID } from 'crypto';
 import { validate as isUuid } from 'uuid';
 import { PrismaService } from 'src/prisma/prisma.service';
+import {
+  BRAND_ORDER_VERIFICATION_MESSAGE,
+  BRAND_ORDER_VERIFICATION_NUDGE_MESSAGE,
+  isBrandStoreVerified,
+} from 'src/brand-verification/verification-truth.util';
 import { CustomOrderPricingService } from 'src/custom-order-pricing/custom-order-pricing.service';
 import { LedgerService } from 'src/finance/ledger.service';
 import { resolveWebAppBaseUrl } from 'src/common/utils/web-app-url';
@@ -574,6 +579,38 @@ export class CustomOrdersService {
     }
   }
 
+  /**
+   * Fire-and-forget nudge to the brand owner when a shopper is blocked from a
+   * custom order because the store isn't verified. Deduped ~24h. Never throws.
+   */
+  private nudgeBrandUnverifiedOrderAttempt(brandId: string): void {
+    void (async () => {
+      try {
+        const owner = await this.prisma.brand.findUnique({
+          where: { id: brandId },
+          select: { ownerId: true },
+        });
+        if (!owner?.ownerId) return;
+        await this.notifications?.create(
+          owner.ownerId,
+          NotificationType.VERIFICATION_NUDGE,
+          {
+            payload: {
+              brandId,
+              targetUrl: '/studio/verification',
+              message: BRAND_ORDER_VERIFICATION_NUDGE_MESSAGE,
+            },
+            dedupeMs: 24 * 60 * 60 * 1000,
+          },
+        );
+      } catch (error) {
+        this.logger.warn(
+          `Failed to send unverified-order-attempt nudge for brand=${brandId}: ${String(error)}`,
+        );
+      }
+    })();
+  }
+
   async createPricePreview(userId: string, dto: CustomOrderPricePreviewDto) {
     const submittedMeasurementValues = this.normalizeMeasurementValues(
       dto.measurementValues,
@@ -582,6 +619,10 @@ export class CustomOrdersService {
       dto.configurationId,
       dto.configurationVersionId,
     );
+    if (!isBrandStoreVerified(configuration.brand?.verificationStatus)) {
+      this.nudgeBrandUnverifiedOrderAttempt(configuration.brandId);
+      throw new ForbiddenException(BRAND_ORDER_VERIFICATION_MESSAGE);
+    }
     const duplicateContext = await this.resolveCustomOrderDuplicateContext(
       userId,
       {
@@ -852,6 +893,11 @@ export class CustomOrdersService {
       intent.configurationId,
       intent.configurationVersionId,
     );
+    if (
+      !isBrandStoreVerified(configuration.configuration.brand?.verificationStatus)
+    ) {
+      throw new ForbiddenException(BRAND_ORDER_VERIFICATION_MESSAGE);
+    }
     if (!alreadySubmitted) {
       const sourceConfigIds = (
         await this.prisma.customOrderConfiguration.findMany({
@@ -3685,7 +3731,7 @@ export class CustomOrdersService {
       {
         where: { id: configurationId },
         include: {
-          brand: { select: { currency: true } },
+          brand: { select: { currency: true, verificationStatus: true } },
           rules: { orderBy: { priority: 'asc' } },
           versions: {
             where: requestedVersionId ? { id: requestedVersionId } : undefined,
@@ -3730,7 +3776,7 @@ export class CustomOrdersService {
       {
         where: { id: configurationId },
         include: {
-          brand: { select: { currency: true } },
+          brand: { select: { currency: true, verificationStatus: true } },
           rules: { orderBy: { priority: 'asc' } },
           versions: { where: { id: versionId }, take: 1 },
         },

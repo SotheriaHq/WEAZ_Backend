@@ -1,9 +1,11 @@
 import {
+  BrandVerificationStatus,
   CustomOrderCheckoutStatus,
   CustomOrderSourceType,
   CustomOrderStatus,
   PaymentStatus,
 } from '@prisma/client';
+import { BRAND_ORDER_VERIFICATION_MESSAGE } from 'src/brand-verification/verification-truth.util';
 import { BagEligibilityService } from './bag-eligibility.service';
 import { BagReadinessPresenter } from './bag-readiness.presenter';
 import { BagValidationService } from './bag-validation.service';
@@ -56,6 +58,7 @@ describe('BagEligibilityService', () => {
     brand: {
       ownerId: 'brand_owner',
       isStoreOpen: true,
+      verificationStatus: BrandVerificationStatus.APPROVED,
     },
   };
 
@@ -90,6 +93,23 @@ describe('BagEligibilityService', () => {
     expect(result.ui.defaultAction).toBe('ADD_STANDARD');
     expect(result.standard.enabled).toBe(true);
     expect(result.custom.freshnessState).toBe('NOT_REQUIRED');
+  });
+
+  it('blocks bagging when the brand has not completed store verification', async () => {
+    prisma.product.findFirst.mockResolvedValue({
+      ...baseProduct,
+      brand: {
+        ...baseProduct.brand,
+        verificationStatus: BrandVerificationStatus.NOT_SUBMITTED,
+      },
+    });
+
+    const result = await service.getProductBagStatus('product_1', 'buyer_1');
+
+    expect(result.canBag).toBe(false);
+    expect(result.standard.enabled).toBe(false);
+    expect(result.ui.defaultAction).toBe('DISABLED');
+    expect(result.ui.disabledReason).toBe(BRAND_ORDER_VERIFICATION_MESSAGE);
   });
 
   it('opens fittings for standard RTW-plus products with only the missing required points', async () => {
@@ -327,7 +347,10 @@ describe('BagEligibilityService', () => {
       visibility: 'PUBLIC',
       customOrderEnabled: true,
     });
-    prisma.brand.findUnique.mockResolvedValue({ isStoreOpen: true });
+    prisma.brand.findUnique.mockResolvedValue({
+      isStoreOpen: true,
+      verificationStatus: BrandVerificationStatus.APPROVED,
+    });
     prisma.customOrderConfiguration.findFirst.mockResolvedValue({
       ...activeConfig,
       id: 'design_config_1',
@@ -385,6 +408,7 @@ describe('BagEligibilityService', () => {
           ownerId: 'brand_owner',
           currency: 'NGN',
           isStoreOpen: true,
+          verificationStatus: BrandVerificationStatus.APPROVED,
         },
       },
       products: [
@@ -402,6 +426,7 @@ describe('BagEligibilityService', () => {
               ownerId: 'brand_owner',
               currency: 'NGN',
               isStoreOpen: true,
+              verificationStatus: BrandVerificationStatus.APPROVED,
             },
           },
         },

@@ -5,6 +5,10 @@ import {
   CustomOrderSourceType,
 } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
+import {
+  BRAND_ORDER_VERIFICATION_MESSAGE,
+  isBrandStoreVerified,
+} from 'src/brand-verification/verification-truth.util';
 import { BagReadinessPresenter } from './bag-readiness.presenter';
 import { BagValidationService } from './bag-validation.service';
 import { FittingFreshnessPolicy } from './fitting-freshness.policy';
@@ -42,6 +46,7 @@ export class BagEligibilityService {
             select: {
               ownerId: true,
               isStoreOpen: true,
+              verificationStatus: true,
             },
           },
           collection: {
@@ -124,6 +129,7 @@ export class BagEligibilityService {
                   ownerId: true,
                   currency: true,
                   isStoreOpen: true,
+                  verificationStatus: true,
                 },
               },
             },
@@ -139,6 +145,7 @@ export class BagEligibilityService {
                       ownerId: true,
                       currency: true,
                       isStoreOpen: true,
+                      verificationStatus: true,
                     },
                   },
                   collection: {
@@ -177,6 +184,9 @@ export class BagEligibilityService {
 
       const isOwner = Boolean(userId && collection.ownerId === userId);
       const isBrandAccount = await this.isBrandAccount(userId);
+      const brandOrderVerified = isBrandStoreVerified(
+        collection.owner?.brand?.verificationStatus,
+      );
       const publicCollection =
         collection.isAvailableInStore !== false &&
         collection.status === CollectionStatus.PUBLISHED &&
@@ -261,25 +271,29 @@ export class BagEligibilityService {
         Boolean(userId) &&
         directEligible.length > 0 &&
         !isOwner &&
-        !isBrandAccount;
+        !isBrandAccount &&
+        brandOrderVerified;
       const canBagAll =
         Boolean(userId) &&
         products.length > 0 &&
         !isOwner &&
         !isBrandAccount &&
+        brandOrderVerified &&
         blockedProducts.length === 0 &&
         directEligible.length > 0;
       const disabledReason = isBrandAccount
         ? 'Brand accounts cannot bag items. Use a buyer account to shop.'
         : isOwner
           ? 'Brands cannot bag their own collection.'
-          : !userId
-            ? 'Sign in to bag this collection.'
-            : products.length === 0
-              ? 'This collection has no available products to bag.'
-              : directEligible.length === 0
-                ? 'Resolve product blockers before bagging this collection.'
-                : null;
+          : !brandOrderVerified
+            ? BRAND_ORDER_VERIFICATION_MESSAGE
+            : !userId
+              ? 'Sign in to bag this collection.'
+              : products.length === 0
+                ? 'This collection has no available products to bag.'
+                : directEligible.length === 0
+                  ? 'Resolve product blockers before bagging this collection.'
+                  : null;
 
       return {
         sourceType: 'COLLECTION',
@@ -363,6 +377,9 @@ export class BagEligibilityService {
   ): Promise<BagReadinessContract> {
     const isOwner = Boolean(userId && product.brand?.ownerId === userId);
     const isBrandAccount = await this.isBrandAccount(userId);
+    const brandOrderVerified = isBrandStoreVerified(
+      product.brand?.verificationStatus,
+    );
     const publicProduct =
       !product.deletedAt &&
       !product.archivedAt &&
@@ -480,13 +497,15 @@ export class BagEligibilityService {
       publicProduct &&
       inStock &&
       !isOwner &&
-      !isBrandAccount;
+      !isBrandAccount &&
+      brandOrderVerified;
     const customEnabled =
       product.customOrderEnabled === true &&
       Boolean(customConfiguration) &&
       publicProduct &&
       !isOwner &&
-      !isBrandAccount;
+      !isBrandAccount &&
+      brandOrderVerified;
     const standardMeasurementKeys =
       standardEnabled && this.isStandardFittingRequired(product)
         ? this.normalizeKeys(product.customMeasurementKeys)
@@ -538,12 +557,14 @@ export class BagEligibilityService {
       disabledReason:
         isBrandAccount
           ? 'Brand accounts cannot bag items. Use a buyer account to shop.'
-          : !standardEnabled &&
-              !customEnabled &&
-              product.customOrderEnabled === true &&
-              !customConfiguration
-            ? 'This product needs an active custom-order configuration before it can be bagged.'
-            : null,
+          : !isOwner && publicProduct && !brandOrderVerified
+            ? BRAND_ORDER_VERIFICATION_MESSAGE
+            : !standardEnabled &&
+                !customEnabled &&
+                product.customOrderEnabled === true &&
+                !customConfiguration
+              ? 'This product needs an active custom-order configuration before it can be bagged.'
+              : null,
     });
   }
 
@@ -610,7 +631,7 @@ export class BagEligibilityService {
       }),
       this.prisma.brand.findUnique({
         where: { ownerId: design.ownerId },
-        select: { isStoreOpen: true },
+        select: { isStoreOpen: true, verificationStatus: true },
       }),
       userId
         ? this.prisma.userSizeFitProfile.findUnique({
@@ -640,6 +661,7 @@ export class BagEligibilityService {
       design.status === CollectionStatus.PUBLISHED &&
       design.visibility === CollectionVisibility.PUBLIC &&
       Boolean(brand?.isStoreOpen);
+    const brandOrderVerified = isBrandStoreVerified(brand?.verificationStatus);
     const isOwner = Boolean(userId && userId === design.ownerId);
     const { customBagLine, duplicateState } =
       await this.resolveDuplicateContext({
@@ -657,7 +679,8 @@ export class BagEligibilityService {
       Boolean(customConfiguration) &&
       publicDesign &&
       !isOwner &&
-      !isBrandAccount;
+      !isBrandAccount &&
+      brandOrderVerified;
 
     return this.readinessPresenter.present({
       productId: bagSourceId,
@@ -683,9 +706,11 @@ export class BagEligibilityService {
       previousCustomOrder,
       disabledReason: isBrandAccount
         ? 'Brand accounts cannot bag items. Use a buyer account to shop.'
-        : design.customOrderEnabled === true && !customConfiguration
-          ? 'This design needs an active custom-order configuration before it can be bagged.'
-          : null,
+        : !isOwner && publicDesign && !brandOrderVerified
+          ? BRAND_ORDER_VERIFICATION_MESSAGE
+          : design.customOrderEnabled === true && !customConfiguration
+            ? 'This design needs an active custom-order configuration before it can be bagged.'
+            : null,
     });
   }
 
