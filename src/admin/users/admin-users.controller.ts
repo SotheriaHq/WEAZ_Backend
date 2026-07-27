@@ -15,7 +15,7 @@ import {
 } from '@nestjs/common';
 import { SkipThrottle } from '@nestjs/throttler';
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
-import { Role, UserStatus } from '@prisma/client';
+import { Role, UserStatus, UserType } from '@prisma/client';
 import { JwtAuthGuard } from 'src/auth/guard/jwt-auth.guard';
 import { RolesGuard } from 'src/auth/guard/role.guard';
 import { Roles } from 'src/auth/decorator/roles.decorator';
@@ -66,6 +66,7 @@ export class AdminUsersController {
     @Query('limit') limit?: string,
     @Query('role') role?: Role,
     @Query('status') status?: UserStatus,
+    @Query('type') type?: UserType,
     @Query('q') q?: string,
     @Query('search') search?: string,
     @Query('sort') sort?: 'created_asc' | 'created_desc',
@@ -75,6 +76,7 @@ export class AdminUsersController {
       limit: limit ? parseInt(limit, 10) : undefined,
       role,
       status,
+      type,
       search: resolveSearchQuery(q, search),
       sort,
     });
