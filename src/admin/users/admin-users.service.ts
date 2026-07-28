@@ -615,7 +615,12 @@ export class AdminUsersService {
     if (params.status) where.status = params.status;
     // Account type filter (REGULAR buyers vs BRAND accounts) — lets the unified
     // admin Users console separate the Shoppers tab from the Brands tab.
-    if (params.type) where.type = params.type;
+    if (params.type) {
+      const normalizedType = String(params.type).toUpperCase();
+      if (normalizedType === 'REGULAR' || normalizedType === 'BRAND') {
+        where.type = normalizedType as UserType;
+      }
+    }
     if (params.search) {
       where.OR = [
         { email: { contains: params.search, mode: 'insensitive' } },
