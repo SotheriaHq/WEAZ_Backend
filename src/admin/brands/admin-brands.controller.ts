@@ -91,6 +91,16 @@ export class AdminBrandsController {
     return this.adminBrandsService.getById(id);
   }
 
+  @Get(':id/overview')
+  @RequirePermissions(ADMIN_PERMISSIONS.BRANDS_READ)
+  @ApiOperation({
+    summary:
+      'Brand admin overview: storefront, verification reviewability, content counts, transactions, reminders and disputes',
+  })
+  async getOverview(@Param('id') id: string) {
+    return this.adminBrandsService.getOverview(id);
+  }
+
   @Patch(':id/open-close')
   @RequirePermissions(ADMIN_PERMISSIONS.BRANDS_STORE_OVERRIDE)
   @ApiOperation({ summary: 'Override brand store open/close status' })

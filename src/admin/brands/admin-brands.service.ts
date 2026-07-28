@@ -5,7 +5,16 @@ import {
   Logger,
 } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
-import { AdminAuditAction, BrandVerificationStatus } from '@prisma/client';
+import {
+  AdminAuditAction,
+  AdminDisputeStatus,
+  BrandVerificationStatus,
+  CollectionDomain,
+  CollectionStatus,
+  NotificationType,
+  PaymentStatus,
+  UserType,
+} from '@prisma/client';
 import { v4 as uuidv4 } from 'uuid';
 import { Request } from 'express';
 import { EmailService } from 'src/email/email.service';
@@ -14,6 +23,37 @@ import {
   adminUserDisplaySelect,
   mapAdminUserDisplay,
 } from '../admin-user-display.helper';
+
+/** Rows returned per overview section. Keeps the admin modal payload bounded. */
+const ADMIN_BRAND_OVERVIEW_SLICE = 25;
+
+/**
+ * Dispute lookup is a reverse scan over the brand's order ids because `Dispute`
+ * stores an untyped (targetType, targetId) pointer with no brand relation. The
+ * cap keeps the `IN (...)` list from growing without bound on busy brands.
+ */
+const ADMIN_BRAND_DISPUTE_SCAN_LIMIT = 2000;
+
+/**
+ * Nudges the platform sends a BRAND about an order it needs to move forward.
+ * Buyer-side reminders (e.g. CUSTOM_ORDER_ACCEPTANCE_WINDOW_REMINDER) are
+ * deliberately excluded — they are never delivered to the brand owner.
+ */
+const BRAND_ORDER_REMINDER_TYPES: NotificationType[] = [
+  NotificationType.ORDER_FULFILLMENT_REMINDER,
+  NotificationType.ORDER_FULFILLMENT_OVERDUE,
+  NotificationType.CUSTOM_ORDER_REVIEW_REQUIRED,
+  NotificationType.CUSTOM_ORDER_STALE_STAGE_WARNING,
+  NotificationType.CUSTOM_ORDER_ACCEPTANCE_SLA_RISK,
+  NotificationType.CUSTOM_ORDER_ADMIN_REVIEW_TRIGGERED,
+];
+
+const OPEN_DISPUTE_STATUSES: AdminDisputeStatus[] = [
+  AdminDisputeStatus.OPEN,
+  AdminDisputeStatus.ASSIGNED,
+  AdminDisputeStatus.IN_PROGRESS,
+  AdminDisputeStatus.REOPENED,
+];
 
 @Injectable()
 export class AdminBrandsService {
@@ -85,6 +125,356 @@ export class AdminBrandsService {
     });
     if (!brand) throw new NotFoundException('Brand not found');
     return { ...brand, owner: mapAdminUserDisplay(brand.owner) };
+  }
+
+  /**
+   * One read for everything the admin brand-manage surface shows: storefront
+   * reachability, verification reviewability, content counts, money movement,
+   * the order reminders the platform sent this brand, and its disputes.
+   *
+   * It exists as a single endpoint on purpose — the modal previously had to
+   * guess (e.g. it always offered "Open verification review", even for brands
+   * that never submitted anything) because no payload told it the truth.
+   */
+  async getOverview(brandId: string) {
+    const brand = await this.prisma.brand.findUnique({
+      where: { id: brandId },
+      select: {
+        id: true,
+        name: true,
+        ownerId: true,
+        currency: true,
+        isStoreOpen: true,
+        storePublishedAt: true,
+        createdAt: true,
+        verificationStatus: true,
+        verificationSubmittedAt: true,
+        verificationReviewedAt: true,
+        verificationAttemptNumber: true,
+        owner: { select: { id: true, username: true, type: true, status: true } },
+      },
+    });
+    if (!brand) throw new NotFoundException('Brand not found');
+
+    const ownerId = brand.ownerId;
+    const status = brand.verificationStatus;
+    // A review can only be OPENED while a submission is awaiting a decision.
+    const isReviewOpen =
+      status === BrandVerificationStatus.PENDING ||
+      status === BrandVerificationStatus.IN_REVIEW ||
+      status === BrandVerificationStatus.ADDITIONAL_INFO_REQUESTED;
+    // Anything other than NOT_SUBMITTED means a record exists to look at.
+    const hasSubmission = status !== BrandVerificationStatus.NOT_SUBMITTED;
+
+    const collectionBase = { ownerId, deletedAt: null } as const;
+    const productBase = { brandId, deletedAt: null } as const;
+
+    const [
+      designs,
+      designsPublished,
+      storeCollections,
+      products,
+      productsLive,
+      productsInReview,
+      productsDraft,
+      posts,
+    ] = await Promise.all([
+      this.prisma.collection.count({
+        where: { ...collectionBase, domain: CollectionDomain.DESIGN },
+      }),
+      this.prisma.collection.count({
+        where: {
+          ...collectionBase,
+          domain: CollectionDomain.DESIGN,
+          status: CollectionStatus.PUBLISHED,
+        },
+      }),
+      this.prisma.collection.count({
+        where: { ...collectionBase, domain: CollectionDomain.STORE },
+      }),
+      this.prisma.product.count({ where: productBase }),
+      this.prisma.product.count({
+        where: {
+          ...productBase,
+          isActive: true,
+          archivedAt: null,
+          publicationStatus: CollectionStatus.PUBLISHED,
+        },
+      }),
+      this.prisma.product.count({
+        where: { ...productBase, publicationStatus: CollectionStatus.IN_REVIEW },
+      }),
+      this.prisma.product.count({
+        where: { ...productBase, publicationStatus: CollectionStatus.DRAFT },
+      }),
+      this.prisma.post.count({ where: { userId: ownerId } }),
+    ]);
+
+    const [paidOrders, paidCustomOrders, payouts, reminderRows] =
+      await Promise.all([
+        this.prisma.order.findMany({
+          where: { brandId, paymentStatus: PaymentStatus.PAID },
+          select: {
+            id: true,
+            totalAmount: true,
+            currency: true,
+            status: true,
+            paymentStatus: true,
+            paymentReference: true,
+            customerName: true,
+            paidAt: true,
+            createdAt: true,
+          },
+          orderBy: { createdAt: 'desc' },
+          take: ADMIN_BRAND_OVERVIEW_SLICE,
+        }),
+        this.prisma.customOrder.findMany({
+          where: { brandId, paymentStatus: PaymentStatus.PAID },
+          select: {
+            id: true,
+            buyerPriceSummaryJson: true,
+            currency: true,
+            status: true,
+            paymentStatus: true,
+            paymentReference: true,
+            sourceTitleSnapshot: true,
+            createdAt: true,
+          },
+          orderBy: { createdAt: 'desc' },
+          take: ADMIN_BRAND_OVERVIEW_SLICE,
+        }),
+        this.prisma.payout.findMany({
+          where: { brandId },
+          select: {
+            id: true,
+            amount: true,
+            currency: true,
+            status: true,
+            reference: true,
+            paidAt: true,
+            createdAt: true,
+          },
+          orderBy: { createdAt: 'desc' },
+          take: ADMIN_BRAND_OVERVIEW_SLICE,
+        }),
+        this.prisma.notification.findMany({
+          where: {
+            recipientId: ownerId,
+            type: { in: BRAND_ORDER_REMINDER_TYPES },
+          },
+          select: {
+            id: true,
+            type: true,
+            payload: true,
+            isRead: true,
+            createdAt: true,
+          },
+          orderBy: { createdAt: 'desc' },
+          take: ADMIN_BRAND_OVERVIEW_SLICE,
+        }),
+      ]);
+
+    // Disputes carry a loose (targetType, targetId) pointer with no brand
+    // relation, so the brand's order ids are the only way back to them.
+    const [orderIdRows, customOrderIdRows] = await Promise.all([
+      this.prisma.order.findMany({
+        where: { brandId },
+        select: { id: true },
+        orderBy: { createdAt: 'desc' },
+        take: ADMIN_BRAND_DISPUTE_SCAN_LIMIT,
+      }),
+      this.prisma.customOrder.findMany({
+        where: { brandId },
+        select: { id: true },
+        orderBy: { createdAt: 'desc' },
+        take: ADMIN_BRAND_DISPUTE_SCAN_LIMIT,
+      }),
+    ]);
+    const orderIds = orderIdRows.map((row) => row.id);
+    const customOrderIds = customOrderIdRows.map((row) => row.id);
+
+    const disputeRows =
+      orderIds.length === 0 && customOrderIds.length === 0
+        ? []
+        : await this.prisma.dispute.findMany({
+            where: {
+              OR: [
+                ...(orderIds.length
+                  ? [{ targetType: 'ORDER', targetId: { in: orderIds } }]
+                  : []),
+                ...(customOrderIds.length
+                  ? [
+                      {
+                        targetType: 'CUSTOM_ORDER',
+                        targetId: { in: customOrderIds },
+                      },
+                    ]
+                  : []),
+              ],
+            },
+            select: {
+              id: true,
+              type: true,
+              status: true,
+              description: true,
+              targetType: true,
+              targetId: true,
+              resolution: true,
+              resolvedAt: true,
+              createdAt: true,
+            },
+            orderBy: { createdAt: 'desc' },
+            take: ADMIN_BRAND_OVERVIEW_SLICE,
+          });
+
+    const toNumber = (value: unknown): number => {
+      const parsed = Number(value ?? 0);
+      return Number.isFinite(parsed) ? parsed : 0;
+    };
+
+    const transactions = [
+      ...paidOrders.map((order) => ({
+        id: `order:${order.id}`,
+        kind: 'ORDER' as const,
+        direction: 'IN' as const,
+        title: order.customerName || 'Store order',
+        reference: order.paymentReference ?? null,
+        amount: toNumber(order.totalAmount),
+        currency: order.currency,
+        status: order.status,
+        occurredAt: (order.paidAt ?? order.createdAt).toISOString(),
+        orderId: order.id,
+        customOrderId: null,
+        payoutId: null,
+      })),
+      ...paidCustomOrders.map((order) => {
+        const summary =
+          order.buyerPriceSummaryJson &&
+          typeof order.buyerPriceSummaryJson === 'object' &&
+          !Array.isArray(order.buyerPriceSummaryJson)
+            ? (order.buyerPriceSummaryJson as Record<string, unknown>)
+            : {};
+        return {
+          id: `custom:${order.id}`,
+          kind: 'CUSTOM_ORDER' as const,
+          direction: 'IN' as const,
+          title: order.sourceTitleSnapshot || 'Custom order',
+          reference: order.paymentReference ?? null,
+          // Custom orders keep the grand total inside the buyer price summary;
+          // there is no scalar total column to sum.
+          amount: toNumber(summary.grandTotal),
+          currency: order.currency,
+          status: order.status,
+          occurredAt: order.createdAt.toISOString(),
+          orderId: null,
+          customOrderId: order.id,
+          payoutId: null,
+        };
+      }),
+      ...payouts.map((payout) => ({
+        id: `payout:${payout.id}`,
+        kind: 'PAYOUT' as const,
+        direction: 'OUT' as const,
+        title: 'Payout to brand',
+        reference: payout.reference ?? null,
+        amount: toNumber(payout.amount),
+        currency: payout.currency,
+        status: payout.status,
+        occurredAt: (payout.paidAt ?? payout.createdAt).toISOString(),
+        orderId: null,
+        customOrderId: null,
+        payoutId: payout.id,
+      })),
+    ].sort((a, b) => b.occurredAt.localeCompare(a.occurredAt));
+
+    const grossInflow = transactions
+      .filter((item) => item.direction === 'IN')
+      .reduce((sum, item) => sum + item.amount, 0);
+    const paidOut = transactions
+      .filter((item) => item.kind === 'PAYOUT' && item.status === 'PAID')
+      .reduce((sum, item) => sum + item.amount, 0);
+
+    const reminders = reminderRows.map((row) => {
+      const payload =
+        row.payload && typeof row.payload === 'object' && !Array.isArray(row.payload)
+          ? (row.payload as Record<string, unknown>)
+          : {};
+      const orderId =
+        typeof payload.orderId === 'string' ? payload.orderId : null;
+      const customOrderId =
+        typeof payload.customOrderId === 'string' ? payload.customOrderId : null;
+      return {
+        id: row.id,
+        type: row.type,
+        isRead: row.isRead,
+        createdAt: row.createdAt.toISOString(),
+        orderId,
+        customOrderId,
+        detail:
+          typeof payload.tier === 'string'
+            ? payload.tier
+            : typeof payload.reason === 'string'
+              ? payload.reason
+              : null,
+      };
+    });
+
+    return {
+      brand: {
+        id: brand.id,
+        name: brand.name,
+        ownerId,
+        currency: brand.currency,
+        isStoreOpen: brand.isStoreOpen,
+        storePublishedAt: brand.storePublishedAt,
+        createdAt: brand.createdAt,
+        // The public storefront resolves by the owner's username and 404s while
+        // the store is closed — mirror that so the client can't offer a dead link.
+        storefrontSlug:
+          brand.isStoreOpen &&
+          brand.owner?.type === UserType.BRAND &&
+          brand.owner?.username
+            ? brand.owner.username
+            : null,
+      },
+      verification: {
+        status,
+        isReviewOpen,
+        hasSubmission,
+        submittedAt: brand.verificationSubmittedAt,
+        reviewedAt: brand.verificationReviewedAt,
+        attemptNumber: brand.verificationAttemptNumber,
+      },
+      content: {
+        designs,
+        designsPublished,
+        storeCollections,
+        products,
+        productsLive,
+        productsInReview,
+        productsDraft,
+        posts,
+      },
+      transactions: {
+        currency: brand.currency,
+        grossInflow,
+        paidOut,
+        items: transactions.slice(0, ADMIN_BRAND_OVERVIEW_SLICE),
+      },
+      reminders,
+      disputes: disputeRows.map((row) => ({
+        id: row.id,
+        type: row.type,
+        status: row.status,
+        description: row.description,
+        targetType: row.targetType,
+        targetId: row.targetId,
+        resolution: row.resolution,
+        resolvedAt: row.resolvedAt,
+        createdAt: row.createdAt.toISOString(),
+        isOpen: OPEN_DISPUTE_STATUSES.includes(row.status),
+      })),
+    };
   }
 
   async overrideStoreOpen(
