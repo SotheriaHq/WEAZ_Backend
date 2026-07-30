@@ -1,3 +1,5 @@
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { Test, TestingModule } from '@nestjs/testing';
 import { UploadService } from './upload.service';
 import { PrismaService } from 'src/prisma/prisma.service';
@@ -77,6 +79,91 @@ describe('ImageService', () => {
 
   it('should be defined', () => {
     expect(service).toBeDefined();
+  });
+
+  /**
+   * The only guard that can catch a stale Prisma `include`.
+   *
+   * Prisma validates includes at CALL time, not compile time, so `tsc` is blind
+   * to a relation name that does not exist and every mocked test happily returns
+   * whatever key the mock invents. That combination let a `designMedias` include
+   * survive the 2026-07-24 removal of the Design models and return 500 from every
+   * media URL, the owner catalog and the drafts tab for two days
+   * (2026-07-28 17:52 → 2026-07-30), while this suite stayed green.
+   *
+   * So: read schema.prisma and assert the include only names fields that really
+   * exist. This is schema-driven, not a hardcoded denylist — when the physical
+   * DesignMedia table is modelled, adding `designMedias` back starts passing on
+   * its own, which is exactly the behaviour we want from a guard.
+   */
+  describe('publicFileAccessInclude schema agreement', () => {
+    const schemaPath = path.join(
+      __dirname,
+      '..',
+      '..',
+      'prisma',
+      'schema.prisma',
+    );
+
+    const fieldNamesOf = (model: string): string[] => {
+      const schema = fs.readFileSync(schemaPath, 'utf8');
+      const start = schema.indexOf(`model ${model} {`);
+      expect(start).toBeGreaterThan(-1);
+      // Model blocks close on a line that is exactly `}`.
+      const end = schema.indexOf('\n}', start);
+      const body = schema.slice(start, end).split('\n').slice(1);
+      const names: string[] = [];
+      for (const raw of body) {
+        const line = raw.trim();
+        // Skip blanks, comments and block attributes (@@index/@@unique/@@map).
+        if (!line || line.startsWith('//') || line.startsWith('@@')) continue;
+        const name = line.split(/\s+/)[0];
+        if (name) names.push(name);
+      }
+      expect(names.length).toBeGreaterThan(0);
+      return names;
+    };
+
+    it('names only relations that exist on FileUpload', () => {
+      const include = (service as any).publicFileAccessInclude();
+      const fileUploadFields = fieldNamesOf('FileUpload');
+      const keys = Object.keys(include);
+      expect(keys.length).toBeGreaterThan(0);
+      for (const key of keys) {
+        expect(fileUploadFields).toContain(key);
+      }
+    });
+
+    it('selects only columns that exist on the joined Collection and Product', () => {
+      const include = (service as any).publicFileAccessInclude();
+
+      const collectionSelect = Object.keys(
+        include.collectionMedias.include.collection.select,
+      );
+      const collectionFields = fieldNamesOf('Collection');
+      for (const key of collectionSelect) {
+        expect(collectionFields).toContain(key);
+      }
+
+      const productSelect = Object.keys(
+        include.productMedias.include.product.select,
+      );
+      const productFields = fieldNamesOf('Product');
+      for (const key of productSelect) {
+        expect(productFields).toContain(key);
+      }
+    });
+
+    it('loads the discriminator the design/store split depends on', () => {
+      // isPublicDesignFile / isPublicStoreCollectionFile filter on
+      // collection.domain and fail closed when it is absent, so dropping it from
+      // the select would silently deny every design and store media URL rather
+      // than erroring. Assert it is fetched.
+      const include = (service as any).publicFileAccessInclude();
+      expect(
+        include.collectionMedias.include.collection.select.domain,
+      ).toBe(true);
+    });
   });
 
   it('denies public URL fallback for private collection media', async () => {
