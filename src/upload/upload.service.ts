@@ -345,7 +345,33 @@ export class UploadService {
     return status !== 'FAILED';
   }
 
-  /** Shared Prisma include for public URL authorization checks. */
+  /**
+   * Shared Prisma include for public URL authorization checks.
+   *
+   * Every key here MUST be a real relation on `FileUpload` (schema.prisma
+   * ~L197). Prisma validates includes at call time, not compile time, so a name
+   * that does not exist throws `PrismaClientValidationError` and turns every
+   * consumer into a 500 — and because `findMany`/`findUnique` are mocked in the
+   * spec, the unit tests cannot catch it. This exact mistake took the owner
+   * catalog, the drafts tab and all media display URLs down for two days
+   * (2026-07-28 17:52 → 2026-07-30) via a stale `designMedias` key.
+   *
+   * There is no `designMedias` key, and that is a STORAGE fact, not a statement
+   * that designs and store collections are the same domain — they are not, and
+   * the authorization rules below keep them apart deliberately.
+   *
+   * The 2026-07-24 decoupling pivot separated designs from store collections at
+   * the API/service boundary but DEFERRED the physical table move, so a design is
+   * still persisted as `Collection(domain = DESIGN)` with `designId ===
+   * collectionId`, and its media are `CollectionMedia` rows. The standalone
+   * `DesignMedia` table is inert and `FileUpload` has no relation to it, so any
+   * design-scoped read has to come through `collectionMedias` filtered on
+   * `domain` — hence `domain` is selected here.
+   *
+   * When the physical DesignMedia table does land, the only change needed is to
+   * point `isPublicDesignFile` at the new relation; the design/store split in the
+   * predicates already reflects the intended end state.
+   */
   private publicFileAccessInclude() {
     return {
       collectionMedias: {
@@ -353,18 +379,7 @@ export class UploadService {
           collection: {
             select: {
               id: true,
-              status: true,
-              visibility: true,
-              deletedAt: true,
-            },
-          },
-        },
-      },
-      designMedias: {
-        include: {
-          design: {
-            select: {
-              id: true,
+              domain: true,
               status: true,
               visibility: true,
               deletedAt: true,
@@ -393,33 +408,57 @@ export class UploadService {
     } as const;
   }
 
-  private isPublicCollectionFile(file: any): boolean {
+  /**
+   * Shared publish gate for a `Collection`-backed row of either domain. Split out
+   * so the design and store predicates below stay one line each and cannot drift
+   * apart by accident — if the two domains ever need different rules, override in
+   * the caller rather than adding a flag here.
+   */
+  private isAnonymouslySignableCollectionRow(collection: any): boolean {
+    // Only published + public rows are anonymously signable. In-review, draft,
+    // rejected and private previews must go through the authenticated
+    // signed-url paths; that is what stops unapproved content from leaking when
+    // a fileId or S3 key escapes.
+    return Boolean(
+      collection &&
+        collection.status === 'PUBLISHED' &&
+        collection.visibility === 'PUBLIC' &&
+        !collection.deletedAt,
+    );
+  }
+
+  private collectionMediasForDomain(file: any, domain: 'DESIGN' | 'STORE') {
     const medias = Array.isArray(file?.collectionMedias)
       ? file.collectionMedias
       : [];
-
-    return medias.some((media: any) => {
-      const collection = media?.collection;
-      return Boolean(
-        collection &&
-          collection.status === 'PUBLISHED' &&
-          collection.visibility === 'PUBLIC' &&
-          !collection.deletedAt,
-      );
-    });
+    // `domain` is the design/store boundary. A CollectionMedia row with no
+    // domain loaded is NOT assumed to be either — failing closed here keeps a
+    // partial select from silently widening public access.
+    return medias.filter((media: any) => media?.collection?.domain === domain);
   }
 
+  /**
+   * Design media. Reads `collectionMedias` filtered to `domain = DESIGN` only
+   * because the physical DesignMedia table move is still deferred — designs are a
+   * separate domain with their own endpoints (`/designs/*`), and this predicate is
+   * the design rule, not the collection rule. Repoint the read here when the
+   * dedicated relation exists.
+   */
   private isPublicDesignFile(file: any): boolean {
-    const medias = Array.isArray(file?.designMedias) ? file.designMedias : [];
-    return medias.some((media: any) => {
-      const design = media?.design;
-      if (!design || design.deletedAt) return false;
-      // Only published + public designs are anonymously signable.
-      // In-review / draft previews use authenticated signed-url paths.
-      return (
-        design.status === 'PUBLISHED' && design.visibility === 'PUBLIC'
-      );
-    });
+    return this.collectionMediasForDomain(file, 'DESIGN').some((media: any) =>
+      this.isAnonymouslySignableCollectionRow(media?.collection),
+    );
+  }
+
+  /**
+   * Store-collection media — a curated group of products under `/collections/*`,
+   * a different thing from a design. Kept separate from `isPublicDesignFile` so
+   * the two can diverge without untangling them again.
+   */
+  private isPublicStoreCollectionFile(file: any): boolean {
+    return this.collectionMediasForDomain(file, 'STORE').some((media: any) =>
+      this.isAnonymouslySignableCollectionRow(media?.collection),
+    );
   }
 
   private isPublicProductFile(file: any): boolean {
@@ -455,8 +494,8 @@ export class UploadService {
     // draft/in-review media to be signed anonymously when a key/fileId leaked.
     return Boolean(
       file.isPublic ||
-        this.isPublicCollectionFile(file) ||
         this.isPublicDesignFile(file) ||
+        this.isPublicStoreCollectionFile(file) ||
         this.isPublicProductFile(file) ||
         this.isPublicIdentityFile(file),
     );

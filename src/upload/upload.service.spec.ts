@@ -91,6 +91,7 @@ describe('ImageService', () => {
           collectionMedias: [
             {
               collection: {
+                domain: 'STORE',
                 status: 'PUBLISHED',
                 visibility: 'PRIVATE',
                 deletedAt: null,
@@ -219,7 +220,6 @@ describe('ImageService', () => {
           userId: 'owner_1',
           isPublic: false,
           collectionMedias: [],
-          designMedias: [],
           productMedias: [],
           userProfileImages: [],
           userProfileBanners: [],
@@ -244,6 +244,7 @@ describe('ImageService', () => {
           collectionMedias: [
             {
               collection: {
+                domain: 'STORE',
                 status: 'PUBLISHED',
                 visibility: 'PUBLIC',
                 deletedAt: null,
@@ -272,6 +273,7 @@ describe('ImageService', () => {
           collectionMedias: [
             {
               collection: {
+                domain: 'STORE',
                 status: 'PUBLISHED',
                 visibility: 'PUBLIC',
                 deletedAt: null,
@@ -343,7 +345,6 @@ describe('ImageService', () => {
           originalDeletedAt: null,
           isPublic: false,
           collectionMedias: [],
-          designMedias: [],
           productMedias: [],
           userProfileImages: [],
           userProfileBanners: [],
@@ -358,6 +359,12 @@ describe('ImageService', () => {
     expect(getSignedUrl).not.toHaveBeenCalled();
   });
 
+  // A design is `Collection(domain = DESIGN)` and its media are CollectionMedia
+  // rows, so these two cases must be expressed through `collectionMedias`. They
+  // previously used a `designMedias` key, which is not a relation on FileUpload
+  // at all — the mock happily returned it, the assertions passed, and the real
+  // Prisma include that named the same key threw PrismaClientValidationError in
+  // production for two days. Do not reintroduce it here.
   it('public-url-by-key signs POST_IMAGE only when joined to a published public design', async () => {
     const key =
       'POST_IMAGE/356db4ba-548b-465e-81f9-98d4df3fbd24/1783765982379-40efa895-603d-4ebd-b20f-a0c0db5398ff.jpg';
@@ -370,11 +377,11 @@ describe('ImageService', () => {
           processingStatus: 'READY',
           originalDeletedAt: null,
           isPublic: false,
-          collectionMedias: [],
-          designMedias: [
+          collectionMedias: [
             {
-              design: {
+              collection: {
                 id: 'design_1',
+                domain: 'DESIGN',
                 status: 'PUBLISHED',
                 visibility: 'PUBLIC',
                 deletedAt: null,
@@ -408,11 +415,11 @@ describe('ImageService', () => {
           processingStatus: 'READY',
           originalDeletedAt: null,
           isPublic: false,
-          collectionMedias: [],
-          designMedias: [
+          collectionMedias: [
             {
-              design: {
+              collection: {
                 id: 'design_review',
+                domain: 'DESIGN',
                 status: 'IN_REVIEW',
                 visibility: 'PUBLIC',
                 deletedAt: null,
@@ -445,7 +452,6 @@ describe('ImageService', () => {
             originalDeletedAt: null,
             isPublic: true,
             collectionMedias: [],
-            designMedias: [],
             productMedias: [],
             userProfileImages: [],
             userProfileBanners: [],
@@ -459,7 +465,6 @@ describe('ImageService', () => {
             originalDeletedAt: null,
             isPublic: false,
             collectionMedias: [],
-            designMedias: [],
             productMedias: [],
             userProfileImages: [],
             userProfileBanners: [],
