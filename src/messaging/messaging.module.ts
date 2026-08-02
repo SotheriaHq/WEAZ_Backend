@@ -21,6 +21,7 @@ import { UploadModule } from 'src/upload/upload.module';
 import { CustomOrdersModule } from 'src/custom-orders/custom-orders.module';
 import { SystemConfigModule } from 'src/admin/system-config/system-config.module';
 import { BrandPermissionService } from 'src/brands/permissions/brand-permission.service';
+import { EventsGateway } from 'src/realtime/events.gateway';
 
 @Module({
   imports: [
@@ -50,6 +51,14 @@ import { BrandPermissionService } from 'src/brands/permissions/brand-permission.
     MessagingSideEffectsService,
     AdminAuditService,
     BrandPermissionService,
+    // MessagingSideEffectsService injects EventsGateway with @Optional(). Without
+    // this provider Nest resolved it to `undefined`, so EVERY messaging realtime
+    // emit — message.created / thread.updated / message.read — was a silent
+    // no-op: inboxes never refreshed, unread counts never moved, and read state
+    // never propagated to the sender. The web/mobile clients were listening the
+    // whole time; the server simply never spoke. Mirrors how collections,
+    // commentsv2, notifications and posts register the gateway.
+    EventsGateway,
   ],
   exports: [
     MessagingService,
