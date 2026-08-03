@@ -337,6 +337,11 @@ export class BrandVerificationService {
         verificationLetterKey: upload.s3Key,
         verificationLetterHash: hash,
         verificationLetterVersion: template.version,
+        // Previously discarded: `signedAt` only reached the PDF body and
+        // `signatureMethod` nowhere at all, so the attempt row (and therefore
+        // admin review) reported both as "Not recorded".
+        verificationLetterSignedAt: signedAt,
+        verificationLetterSignatureMethod: dto.signatureMethod,
       },
     });
 
@@ -409,6 +414,8 @@ export class BrandVerificationService {
           letterOfConfirmationKey: dto.letterKey,
           letterHash: brand.verificationLetterHash ?? null,
           letterVersion: brand.verificationLetterVersion ?? null,
+          letterSignedAt: brand.verificationLetterSignedAt ?? null,
+          signatureMethod: brand.verificationLetterSignatureMethod ?? null,
           rejectionReasons: rejectionReasons as any,
           evidenceManifest: evidenceManifest as any,
         },
@@ -1607,8 +1614,14 @@ export class BrandVerificationService {
     return Promise.all(
       docConfig.map(async (item) => {
         const meta = fileMap.get(item.s3Key!);
+        // Verification evidence is private, so the PUBLIC signer denies it and
+        // returns null for every document — which is why reviewers saw "No
+        // reviewer preview is available" on all evidence, including the signed
+        // letter. Sign through the verification-review path instead.
         const signedUrl = item.s3Key
-          ? await this.uploadService.getPublicSignedUrlByKey(item.s3Key)
+          ? await this.uploadService.getVerificationReviewSignedUrlByKey(
+              item.s3Key,
+            )
           : null;
 
         return {

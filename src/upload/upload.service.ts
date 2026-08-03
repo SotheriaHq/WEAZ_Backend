@@ -1027,6 +1027,49 @@ export class UploadService {
   }
 
   /**
+   * Sign a brand-verification evidence file for an admin reviewer.
+   *
+   * Verification evidence (NIN slips, ID scans, CAC certificates, the signed
+   * letter) is deliberately private: `isPublic` is false and the file has no
+   * profile/design/product relation, so `canReturnPublicFileUrl` denies it and
+   * `getPublicSignedUrlByKey` returns null. The admin review page was signing
+   * through that public path, which meant EVERY document came back with
+   * `signedUrl: null` — the reviewer saw "No reviewer preview is available"
+   * for all evidence including the signed verification letter, and had no way
+   * to approve or reject on anything but the typed form fields.
+   *
+   * Callers must already be authorized reviewers (the only route in is
+   * `GET /admin/brands/:id/verification`, behind `BRANDS_VERIFY`). The
+   * `fileType` check below is the hard stop that keeps this from becoming a
+   * general private-media signer: it can only ever sign BRAND_VERIFICATION
+   * objects, never drafts, DMs or anyone's private uploads.
+   */
+  async getVerificationReviewSignedUrlByKey(
+    s3Key: string,
+  ): Promise<string | null> {
+    const normalizedKey = typeof s3Key === 'string' ? s3Key.trim() : '';
+    if (!normalizedKey || normalizedKey.includes('..')) return null;
+
+    const file = await this.prisma.fileUpload.findUnique({
+      where: { s3Key: normalizedKey },
+      select: { s3Key: true, fileType: true, processingStatus: true, originalDeletedAt: true },
+    });
+    if (!file || !this.isDisplayableStoredFile(file)) return null;
+    if (String(file.fileType) !== String(FileType.BRAND_VERIFICATION)) {
+      this.logger.warn(
+        `[media] verification-review signing denied for non-verification file keyPrefix=${normalizedKey.split('/')[0] ?? 'unknown'}`,
+      );
+      return null;
+    }
+
+    const command = new GetObjectCommand({
+      Bucket: this.bucketName,
+      Key: file.s3Key || normalizedKey,
+    });
+    return await getSignedUrl(this.s3, command, { expiresIn: 900 });
+  }
+
+  /**
    * Authenticated key-based signing for owners/admins. Used when public
    * signing is denied (drafts, private, ownership-gated previews).
    */

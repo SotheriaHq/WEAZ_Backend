@@ -2588,6 +2588,12 @@ model Brand {
   verificationLetterKey           String?
   verificationLetterHash          String?
   verificationLetterVersion       Int?
+  // Staged at signing time so `submit` can copy them onto the attempt. Without
+  // these the attempt's letterSignedAt/signatureMethod were never written and
+  // admin review showed "Signature method: Not recorded / Signed at: Not
+  // recorded" for every brand.
+  verificationLetterSignedAt      DateTime?
+  verificationLetterSignatureMethod VerificationSignatureMethod?
 
   // Featured system
   isFeaturedBlocked    Boolean   @default(false)
