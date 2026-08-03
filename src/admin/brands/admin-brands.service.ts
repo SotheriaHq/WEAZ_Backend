@@ -91,6 +91,10 @@ export class AdminBrandsService {
         logo: true,
         createdAt: true,
         updatedAt: true,
+        // The brand directory had no verification signal at all, so an admin
+        // scanning the list could not tell a verified brand from an unverified
+        // one without opening each row.
+        verificationStatus: true,
         owner: {
           select: adminUserDisplaySelect,
         },

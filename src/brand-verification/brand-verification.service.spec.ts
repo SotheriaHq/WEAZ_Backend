@@ -24,7 +24,21 @@ describe('BrandVerificationService', () => {
     userProfile: {
       updateMany: jest.fn(),
     },
+    // Submission is gated on store readiness (`getStoreReadiness`), because an
+    // approved verification produces no badge while the store is unpublished.
+    storePaymentAccount: {
+      findUnique: jest.fn(),
+    },
     $transaction: jest.fn((callback) => callback(prisma)),
+  };
+
+  /** A brand whose store is finished, so store readiness does not block submit. */
+  const storeReadyBrand = {
+    name: 'Ada Style',
+    description: 'Ready-to-wear label',
+    tags: ['fashion'],
+    storePublishedAt: new Date('2026-05-01T00:00:00.000Z'),
+    businessHoursConfiguredAt: new Date('2026-05-01T00:00:00.000Z'),
   };
   const notifications = { create: jest.fn() };
   const emailService = {
@@ -66,6 +80,8 @@ describe('BrandVerificationService', () => {
       },
     });
     prisma.brandVerificationAttempt.findFirst.mockResolvedValue(null);
+    prisma.brand.findUnique.mockResolvedValue(storeReadyBrand);
+    prisma.storePaymentAccount.findUnique.mockResolvedValue({ status: 'ACTIVE' });
     prisma.fileUpload.findFirst.mockResolvedValue({
       id: 'file-1',
       s3Key: 'key',
@@ -124,6 +140,79 @@ describe('BrandVerificationService', () => {
       where: { userId: 'owner-1' },
       data: { phoneNumber: '+2348030000000' },
     });
+  });
+
+  // The verified badge needs an APPROVED verification AND an open store, so a
+  // brand that verifies before finishing setup earns an approval that shows no
+  // badge — the admin sees success, the brand sees nothing change, and no screen
+  // names the reason. Refuse the submission instead, naming what is left.
+  it('refuses submission while store setup is incomplete and names the pending steps', async () => {
+    prisma.brand.findFirst.mockResolvedValue({
+      id: 'brand-1',
+      name: 'Ada Style',
+      ownerId: 'owner-1',
+      verificationStatus: BrandVerificationStatus.NOT_SUBMITTED,
+      verificationAttemptNumber: 0,
+      verificationCooldownExpiresAt: null,
+      owner: {
+        id: 'owner-1',
+        email: 'ada@example.com',
+        firstName: 'Ada',
+        lastName: 'Okafor',
+        phoneNumber: '08030000000',
+        status: 'ACTIVE',
+        deactivatedAt: null,
+      },
+    });
+    // Unpublished store, no business hours, no verified payout account.
+    prisma.brand.findUnique.mockResolvedValue({
+      name: 'Ada Style',
+      description: 'Ready-to-wear label',
+      tags: ['fashion'],
+      storePublishedAt: null,
+      businessHoursConfiguredAt: null,
+    });
+    prisma.storePaymentAccount.findUnique.mockResolvedValue(null);
+
+    await expect(
+      service.submit('owner-1', {
+        ownerLegalFirstName: 'Ada',
+        ownerLegalLastName: 'Okafor',
+        ownerDateOfBirth: '1990-01-01',
+        ownerGender: VerificationOwnerGender.FEMALE,
+        ownerPhoneNumber: '08030000000',
+        ownerNin: '12345678901',
+        cacNumber: 'CAC12345',
+        businessAddress: {
+          street: '12 Market Road',
+          city: 'Ikeja',
+          state: 'Lagos',
+          country: 'Nigeria',
+        },
+        idDocumentType: VerificationIdDocumentType.NIN_SLIP,
+        idDocumentNumber: 'NIN-123',
+        legalEntityType: VerificationLegalEntityType.LIMITED_COMPANY,
+        authorityType: VerificationAuthorityType.LEGAL_OWNER,
+        ownerPhotoKey: 'owner-photo',
+        idDocumentFrontKey: 'id-front',
+        idDocumentBackKey: 'id-back',
+        cacCertificateKey: 'cac-cert',
+        letterKey: 'letter-key',
+      } as any),
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({ code: 'STORE_SETUP_INCOMPLETE' }),
+    });
+
+    // Nothing may be written when the gate refuses.
+    expect(prisma.brandVerificationAttempt.create).not.toHaveBeenCalled();
+
+    const readiness = await service.getStoreReadiness('brand-1');
+    expect(readiness.isReady).toBe(false);
+    expect(readiness.pending.map((step) => step.code)).toEqual(
+      expect.arrayContaining(['paymentAccount', 'businessHours', 'publish']),
+    );
+    // Every pending step must carry a route the client can link to.
+    expect(readiness.pending.every((step) => Boolean(step.href))).toBe(true);
   });
 
   it('fails production draft encryption when the secret is missing or legacy', () => {

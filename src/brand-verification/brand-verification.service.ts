@@ -179,6 +179,7 @@ export class BrandVerificationService {
 
   async getStatus(ownerId: string) {
     const brand = await this.getBrandByOwnerOrThrow(ownerId);
+    const storeReadiness = await this.getStoreReadiness(brand.id);
     const [latestAttempt, attemptHistory] = await Promise.all([
       this.prisma.brandVerificationAttempt.findFirst({
         where: { brandId: brand.id },
@@ -227,7 +228,10 @@ export class BrandVerificationService {
           | null) ?? [],
       infoRequestMessage: brand.verificationInfoRequestMessage ?? null,
       badgeState,
-      canSubmit: this.canSubmit(brand),
+      canSubmit: this.canSubmit(brand) && storeReadiness.isReady,
+      // Surfaced so the wizard can block entry and name what is outstanding,
+      // rather than letting the owner fill in the whole form and fail at submit.
+      storeReadiness,
       nudgeOptOut: brand.verificationNudgeOptOut,
       attemptHistory: attemptHistory.map((attempt) => ({
         ...attempt,
@@ -357,6 +361,21 @@ export class BrandVerificationService {
     const brand = await this.getBrandByOwnerOrThrow(ownerId);
     const ownerUserId = brand.ownerId;
     this.assertCanSubmit(brand);
+
+    // Hard gate: an approved verification is worthless while the store is
+    // unpublished, because the badge also requires `isStoreOpen`. Refuse with
+    // the exact outstanding steps so the client can point the owner straight at
+    // what is left instead of failing vaguely.
+    const readiness = await this.getStoreReadiness(brand.id);
+    if (!readiness.isReady) {
+      throw new BadRequestException({
+        message:
+          'Finish setting up your store before applying for verification.',
+        code: 'STORE_SETUP_INCOMPLETE',
+        pending: readiness.pending,
+      });
+    }
+
     await this.validateVerificationDocuments(ownerUserId, dto);
     await this.ensureNinNotApprovedElsewhere(dto.ownerNin, brand.id);
     const resolvedOwnerPhoneNumber =
@@ -1431,6 +1450,96 @@ export class BrandVerificationService {
       phoneNumber: resolveNullableProfileField({ userProfile }, 'phoneNumber'),
       profileImage: profileImage.url,
     };
+  }
+
+  /**
+   * Which store-setup steps are still outstanding for this brand.
+   *
+   * Verification and store setup used to be entirely independent, which
+   * produced a dead end nobody could see: a brand could verify with an
+   * unpublished store, get APPROVED, and still show no verified badge — because
+   * `getBrandVerificationTruth` also requires `isStoreOpen`, and
+   * `Brand.isStoreOpen` defaults to false. The admin saw a successful approval,
+   * the brand saw nothing change, and no screen anywhere named the reason.
+   *
+   * Gating submission on store readiness closes that loop: you cannot reach a
+   * state where approval is meaningless. Each entry carries the exact route to
+   * fix it so the client can link straight to the pending step.
+   */
+  async getStoreReadiness(brandId: string): Promise<{
+    isReady: boolean;
+    pending: Array<{ code: string; label: string; href: string }>;
+  }> {
+    const [brand, paymentAccount] = await Promise.all([
+      this.prisma.brand.findUnique({
+        where: { id: brandId },
+        select: {
+          name: true,
+          description: true,
+          tags: true,
+          storePublishedAt: true,
+          businessHoursConfiguredAt: true,
+        },
+      }),
+      (this.prisma as any).storePaymentAccount?.findUnique?.({
+        where: { brandId },
+        select: { status: true },
+      }) ?? Promise.resolve(null),
+    ]);
+
+    const pending: Array<{ code: string; label: string; href: string }> = [];
+    if (!brand) {
+      return { isReady: false, pending };
+    }
+
+    if (!brand.name?.trim()) {
+      pending.push({
+        code: 'name',
+        label: 'Add your store name',
+        href: '/studio/store/setup',
+      });
+    }
+    if (!brand.description?.trim()) {
+      pending.push({
+        code: 'description',
+        label: 'Write a store description',
+        href: '/studio/store/setup',
+      });
+    }
+    if (!brand.tags || brand.tags.length === 0) {
+      pending.push({
+        code: 'tags',
+        label: 'Pick at least one store category',
+        href: '/studio/store/setup',
+      });
+    }
+    if (
+      String((paymentAccount as { status?: string } | null)?.status || '')
+        .trim()
+        .toUpperCase() !== 'ACTIVE'
+    ) {
+      pending.push({
+        code: 'paymentAccount',
+        label: 'Add and verify your payout bank account',
+        href: '/studio/store/payments',
+      });
+    }
+    if (!brand.businessHoursConfiguredAt) {
+      pending.push({
+        code: 'businessHours',
+        label: 'Set your business hours',
+        href: '/studio/store/hours',
+      });
+    }
+    if (!brand.storePublishedAt) {
+      pending.push({
+        code: 'publish',
+        label: 'Publish your store',
+        href: '/studio/store/setup',
+      });
+    }
+
+    return { isReady: pending.length === 0, pending };
   }
 
   private assertCanSubmit(
