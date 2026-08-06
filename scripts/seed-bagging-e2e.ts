@@ -110,8 +110,8 @@ const staleUpdatedAt = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
 const futureExpiry = () => new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
 
 const staleMeasurements = {
-  WOMEN_WAIST: { value: 76, unit: 'CM' },
-  WOMEN_HIP: { value: 102, unit: 'CM' },
+  WAIST: { value: 76, unit: 'CM' },
+  HIP_SEAT: { value: 102, unit: 'CM' },
 };
 
 type ProductSeed = {
@@ -170,7 +170,7 @@ const productSeeds: ProductSeed[] = [
     standardCheckoutEnabled: false,
     customOrderEnabled: true,
     sizingMode: SizingMode.CUSTOM,
-    customMeasurementKeys: ['WOMEN_CHEST_FULL_BUST', 'WOMEN_SHOULDER_WIDTH'],
+    customMeasurementKeys: ['CHEST_BUST', 'SHOULDER_WIDTH'],
   },
   {
     id: ids.customProduct,
@@ -193,7 +193,7 @@ const productSeeds: ProductSeed[] = [
     standardCheckoutEnabled: false,
     customOrderEnabled: true,
     sizingMode: SizingMode.CUSTOM,
-    customMeasurementKeys: ['WOMEN_WAIST', 'WOMEN_HIP'],
+    customMeasurementKeys: ['WAIST', 'HIP_SEAT'],
   },
   {
     id: ids.duplicateInBagProduct,
@@ -268,7 +268,7 @@ const productSeeds: ProductSeed[] = [
     price: '61000',
     totalStock: 3,
     sizingMode: SizingMode.RTW_PLUS_FITTINGS,
-    customMeasurementKeys: ['WOMEN_CHEST_FULL_BUST'],
+    customMeasurementKeys: ['CHEST_BUST'],
   },
   {
     id: ids.collectionStaleFittingProduct,
@@ -278,7 +278,7 @@ const productSeeds: ProductSeed[] = [
     price: '33000',
     totalStock: 3,
     sizingMode: SizingMode.RTW_PLUS_FITTINGS,
-    customMeasurementKeys: ['WOMEN_WAIST', 'WOMEN_HIP'],
+    customMeasurementKeys: ['WAIST', 'HIP_SEAT'],
   },
   {
     id: ids.collectionGalleryProductA,
@@ -344,7 +344,7 @@ const customConfigurationSeeds: CustomConfigurationSeed[] = [
     sourceType: CustomOrderSourceType.PRODUCT,
     sourceId: ids.fittingProduct,
     title: 'E2E missing fittings configuration',
-    requiredMeasurementKeys: ['WOMEN_CHEST_FULL_BUST', 'WOMEN_SHOULDER_WIDTH'],
+    requiredMeasurementKeys: ['CHEST_BUST', 'SHOULDER_WIDTH'],
   },
   {
     configurationId: ids.customDesignConfig,
@@ -371,7 +371,7 @@ const customConfigurationSeeds: CustomConfigurationSeed[] = [
     sourceType: CustomOrderSourceType.PRODUCT,
     sourceId: ids.staleProduct,
     title: 'E2E stale fittings configuration',
-    requiredMeasurementKeys: ['WOMEN_WAIST', 'WOMEN_HIP'],
+    requiredMeasurementKeys: ['WAIST', 'HIP_SEAT'],
   },
   {
     configurationId: ids.duplicateInBagConfig,
@@ -876,10 +876,10 @@ async function seedFabricBasis(prisma: ReturnType<typeof createScriptPrismaClien
       brandId: ids.brand,
       label: 'E2E bagging measurements',
       measurementKeys: [
-        'WOMEN_CHEST_FULL_BUST',
-        'WOMEN_SHOULDER_WIDTH',
-        'WOMEN_WAIST',
-        'WOMEN_HIP',
+        'CHEST_BUST',
+        'SHOULDER_WIDTH',
+        'WAIST',
+        'HIP_SEAT',
       ],
     },
     create: {
@@ -887,10 +887,10 @@ async function seedFabricBasis(prisma: ReturnType<typeof createScriptPrismaClien
       brandId: ids.brand,
       label: 'E2E bagging measurements',
       measurementKeys: [
-        'WOMEN_CHEST_FULL_BUST',
-        'WOMEN_SHOULDER_WIDTH',
-        'WOMEN_WAIST',
-        'WOMEN_HIP',
+        'CHEST_BUST',
+        'SHOULDER_WIDTH',
+        'WAIST',
+        'HIP_SEAT',
       ],
     },
   });

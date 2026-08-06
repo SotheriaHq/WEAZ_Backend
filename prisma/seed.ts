@@ -623,9 +623,9 @@ async function ensureDemoCatalogSeed(idsBySlug: Map<string, string>) {
       customOrderEnabled: true,
       sizingMode: 'CUSTOM',
       customMeasurementKeys: [
-        'WOMEN_CHEST_FULL_BUST',
-        'WOMEN_WAIST',
-        'WOMEN_HIP',
+        'CHEST_BUST',
+        'WAIST',
+        'HIP_SEAT',
       ],
       fitPreference: 'REGULAR',
       targetAgeGroup: 'ADULT',
@@ -649,9 +649,9 @@ async function ensureDemoCatalogSeed(idsBySlug: Map<string, string>) {
       customOrderEnabled: true,
       sizingMode: 'CUSTOM',
       customMeasurementKeys: [
-        'WOMEN_CHEST_FULL_BUST',
-        'WOMEN_WAIST',
-        'WOMEN_HIP',
+        'CHEST_BUST',
+        'WAIST',
+        'HIP_SEAT',
       ],
       fitPreference: 'REGULAR',
       targetAgeGroup: 'ADULT',
@@ -696,14 +696,14 @@ async function ensureDemoCatalogSeed(idsBySlug: Map<string, string>) {
     where: { id: DEMO_FABRIC_BASIS_ID },
     update: {
       label: 'Demo gown measurement basis',
-      measurementKeys: ['WOMEN_CHEST_FULL_BUST', 'WOMEN_WAIST', 'WOMEN_HIP'],
+      measurementKeys: ['CHEST_BUST', 'WAIST', 'HIP_SEAT'],
       brandId: brand.id,
       status: 'BRAND_ONLY',
     },
     create: {
       id: DEMO_FABRIC_BASIS_ID,
       label: 'Demo gown measurement basis',
-      measurementKeys: ['WOMEN_CHEST_FULL_BUST', 'WOMEN_WAIST', 'WOMEN_HIP'],
+      measurementKeys: ['CHEST_BUST', 'WAIST', 'HIP_SEAT'],
       brandId: brand.id,
       status: 'BRAND_ONLY',
     },
@@ -724,9 +724,9 @@ async function ensureDemoCatalogSeed(idsBySlug: Map<string, string>) {
         buyerInstructionText:
           'Share event date, preferred sleeve style, and exact measurements.',
         requiredMeasurementKeys: [
-          'WOMEN_CHEST_FULL_BUST',
-          'WOMEN_WAIST',
-          'WOMEN_HIP',
+          'CHEST_BUST',
+          'WAIST',
+          'HIP_SEAT',
         ],
         fabricRuleBasisId: fabricBasis.id,
         baseProductionCharge: 15000,
@@ -750,9 +750,9 @@ async function ensureDemoCatalogSeed(idsBySlug: Map<string, string>) {
         buyerInstructionText:
           'Share event date, preferred sleeve style, and exact measurements.',
         requiredMeasurementKeys: [
-          'WOMEN_CHEST_FULL_BUST',
-          'WOMEN_WAIST',
-          'WOMEN_HIP',
+          'CHEST_BUST',
+          'WAIST',
+          'HIP_SEAT',
         ],
         requiredFreeformPointIds: [],
         fabricRuleBasisId: fabricBasis.id,
