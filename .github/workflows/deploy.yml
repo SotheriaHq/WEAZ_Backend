@@ -10,9 +10,20 @@ name: Backend Deploy (EC2)
 #   EC2_USER     = ec2-user
 #   EC2_SSH_KEY  = full contents of WIEZ_KEY.pem (private key, incl. BEGIN/END lines)
 
+# GitHub-hosted runners can sit in a queue for a long time before a pushed run is
+# created — a push at 18:49 once produced runs stamped 19:19. During that window
+# the run does not exist yet, so "no run for my SHA" looks identical to "CD is
+# broken" and invites a hand-rolled deploy on the box. `workflow_dispatch` gives
+# you a way to force the deploy instead of waiting or pushing an empty commit.
+#
+# Note: GitHub only offers workflow_dispatch for workflows present on the DEFAULT
+# branch, so this file must reach `main` before the SIT deploy can be dispatched.
 on:
   push:
     branches: [main, SIT]
+  # No inputs needed: the "Run workflow" branch picker sets `github.ref_name`,
+  # which is already what the deploy step checks out and passes to deploy.sh.
+  workflow_dispatch:
 
 concurrency:
   group: backend-deploy-${{ github.ref }}
