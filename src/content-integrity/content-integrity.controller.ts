@@ -11,6 +11,7 @@ import {
   ValidationPipe,
 } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
+import { IsPublic } from 'src/auth/decorator/is-public.decorator';
 import { JwtAuthGuard } from 'src/auth/guard/jwt-auth.guard';
 import { IdempotencyInterceptor } from 'src/common/interceptors/idempotency.interceptor';
 import { ContentIntegrityService } from './content-integrity.service';
@@ -20,11 +21,14 @@ import { ContentReportCreateDto } from './dto/content-report.dto';
 export class ContentIntegrityController {
   constructor(private readonly contentIntegrity: ContentIntegrityService) {}
 
+  // Static enum lookups rendered in report/appeal forms before sign-in.
+  @IsPublic()
   @Get('review-reason-codes')
   reviewReasonCodes() {
     return this.contentIntegrity.getReasonCodes();
   }
 
+  @IsPublic()
   @Get('report-reason-codes')
   reportReasonCodes() {
     return this.contentIntegrity.getReportReasonCodes();

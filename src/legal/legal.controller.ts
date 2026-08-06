@@ -9,6 +9,7 @@ import {
 } from '@nestjs/common';
 import { LegalAcceptanceSource } from '@prisma/client';
 import { Request } from 'express';
+import { IsPublic } from 'src/auth/decorator/is-public.decorator';
 import { JwtAuthGuard } from 'src/auth/guard/jwt-auth.guard';
 import { LegalAcceptDto } from './dto/legal-acceptance.dto';
 import { LegalService } from './legal.service';
@@ -17,6 +18,11 @@ import { LegalService } from './legal.service';
 export class LegalController {
   constructor(private readonly legalService: LegalService) {}
 
+  // Must stay public: signup reads the current document versions BEFORE the
+  // account exists (see the web/mobile `getRequiredLegalAcceptances` call that
+  // builds the `legalAcceptances` payload for POST /auth/signup). Requiring a
+  // token here makes registration impossible.
+  @IsPublic()
   @Get('versions')
   getVersions() {
     return this.legalService.getCurrentVersions();

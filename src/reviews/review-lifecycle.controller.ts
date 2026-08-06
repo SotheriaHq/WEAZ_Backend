@@ -14,6 +14,7 @@ import {
   UseInterceptors,
   ValidationPipe,
 } from '@nestjs/common';
+import { IsPublic } from '../auth/decorator/is-public.decorator';
 import { JwtAuthGuard } from '../auth/guard/jwt-auth.guard';
 import { IdempotencyInterceptor } from '../common/interceptors/idempotency.interceptor';
 import { CreateReviewDto, ReviewQueryDto, UpdateReviewDto } from './dto';
@@ -97,6 +98,8 @@ export class ReviewLifecycleController {
     });
   }
 
+  // Public read-only review feeds — anonymous shoppers must see social proof.
+  @IsPublic()
   @Get('product/:productId')
   async getProductReviews(
     @Param('productId') productId: string,
@@ -105,6 +108,7 @@ export class ReviewLifecycleController {
     return this.reviewsService.getLifecycleProductReviews(productId, query);
   }
 
+  @IsPublic()
   @Get('collection/:collectionId')
   async getCollectionReviews(
     @Param('collectionId') collectionId: string,
@@ -116,6 +120,7 @@ export class ReviewLifecycleController {
     );
   }
 
+  @IsPublic()
   @Get('design/:designId')
   async getDesignReviews(
     @Param('designId') designId: string,
@@ -124,11 +129,13 @@ export class ReviewLifecycleController {
     return this.reviewsService.getLifecycleDesignReviews(designId, query);
   }
 
+  @IsPublic()
   @Get('brand/:brandId/summary')
   async getBrandSummary(@Param('brandId') brandId: string) {
     return this.reviewsService.getLifecycleBrandSummary(brandId);
   }
 
+  @IsPublic()
   @Get('brand/:brandId')
   async getBrandReviews(
     @Param('brandId') brandId: string,

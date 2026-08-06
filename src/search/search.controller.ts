@@ -8,6 +8,7 @@ import {
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
+import { IsPublic } from 'src/auth/decorator/is-public.decorator';
 import { OptionalJwtAuthGuard } from 'src/auth/guard/optional-jwt-auth.guard';
 import { SearchQueryDto } from './dto/search-query.dto';
 import { SearchSuggestQueryDto } from './dto/search-suggest-query.dto';
@@ -86,6 +87,8 @@ export class SearchController {
     );
   }
 
+  // Readiness probe — must answer without credentials.
+  @IsPublic()
   @Get('health')
   @ApiOperation({ summary: 'Report search subsystem readiness' })
   async health() {

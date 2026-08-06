@@ -15,7 +15,9 @@ import {
   HttpStatus,
 } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
+import { IsPublic } from '../auth/decorator/is-public.decorator';
 import { JwtAuthGuard } from '../auth/guard/jwt-auth.guard';
+import { OptionalJwtAuthGuard } from '../auth/guard/optional-jwt-auth.guard';
 import { IdempotencyInterceptor } from '../common/interceptors/idempotency.interceptor';
 import { ReviewsService } from './reviews.service';
 import {
@@ -29,6 +31,7 @@ import {
 export class ReviewsController {
   constructor(private readonly reviewsService: ReviewsService) {}
 
+  @IsPublic()
   @Get('reviews/runtime-flags')
   async getRuntimeFlags() {
     return this.reviewsService.getRuntimeFlags();
@@ -38,6 +41,9 @@ export class ReviewsController {
    * GET /store/products/:productId/reviews
    * Public product review feed with cursor pagination.
    */
+  // Optional auth, not public: anonymous shoppers read the feed, while a signed-in
+  // viewer additionally gets their own helpful-vote/ownership state via `viewerId`.
+  @UseGuards(OptionalJwtAuthGuard)
   @Get('products/:productId/reviews')
   async getProductReviews(
     @Param('productId') productId: string,

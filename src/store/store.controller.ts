@@ -29,6 +29,7 @@ import { UpdateWorkingHoursDto } from './dto/update-working-hours.dto';
 import { UpdateStorePoliciesDto } from './dto/update-store-policies.dto';
 import { UpdateStorePaymentAccountDto } from './dto/update-store-payment-account.dto';
 import { VerifyStorePaymentAccountDto } from './dto/verify-store-payment-account.dto';
+import { IsPublic } from '../auth/decorator/is-public.decorator';
 import { JwtAuthGuard } from '../auth/guard/jwt-auth.guard';
 import { UserTypeGuard } from '../auth/guard/user-type.guard';
 import { OptionalJwtAuthGuard } from '../auth/guard/optional-jwt-auth.guard';
@@ -74,6 +75,8 @@ export class StoreController {
   // IMPORTANT: Static routes must come before `products/:id` to avoid capturing
   // `/products/categories` as `:id = categories`.
 
+  // Public taxonomy read — the category picker renders before sign-in.
+  @IsPublic()
   @Get('products/categories')
   async getProductCategories() {
     // Product creation reuses shared catalog category tables. This is taxonomy
@@ -581,12 +584,12 @@ export class StoreController {
   }
 
   @UseGuards(JwtAuthGuard)
-  @UseGuards(JwtAuthGuard)
   @Get(['orders/version', 'store/orders/version'])
   async getMyOrdersVersion(@Req() req: any) {
     return this.storeService.getMyOrdersVersion(req.user.id);
   }
 
+  @UseGuards(JwtAuthGuard)
   @Get(['orders/:orderId', 'store/orders/:orderId'])
   async getMyOrder(@Param('orderId') orderId: string, @Req() req: any) {
     return this.storeService.getMyOrder(req.user.id, orderId);

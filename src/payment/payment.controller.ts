@@ -15,6 +15,7 @@ import {
   Logger,
 } from '@nestjs/common';
 import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
+import { IsPublic } from 'src/auth/decorator/is-public.decorator';
 import { JwtAuthGuard } from 'src/auth/guard/jwt-auth.guard';
 import { RolesGuard } from 'src/auth/guard/role.guard';
 import { Roles } from 'src/auth/decorator/roles.decorator';
@@ -280,7 +281,11 @@ export class PaymentController {
    * These receive POST requests from the payment gateways
    * when a payment is completed. No auth guard — gateways
    * authenticate via signature headers (validated in service).
+   * `@IsPublic()` is required: without it the global `AuthIntentGuard` rejects
+   * these with 401, which would also swallow the "legacy alias" diagnostic a
+   * misconfigured gateway needs to see.
    */
+  @IsPublic()
   @Post('webhook/paystack')
   @HttpCode(200)
   async paystackWebhook(
@@ -308,6 +313,7 @@ export class PaymentController {
     return { status: 'ok' };
   }
 
+  @IsPublic()
   @Post('webhook/flutterwave')
   @HttpCode(200)
   async flutterwaveWebhook(

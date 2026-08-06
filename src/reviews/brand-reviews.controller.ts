@@ -15,6 +15,7 @@ import {
 } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import { JwtAuthGuard } from '../auth/guard/jwt-auth.guard';
+import { OptionalJwtAuthGuard } from '../auth/guard/optional-jwt-auth.guard';
 import { UserTypeGuard } from '../auth/guard/user-type.guard';
 import { UserType } from '@prisma/client';
 import { IdempotencyInterceptor } from '../common/interceptors/idempotency.interceptor';
@@ -88,6 +89,7 @@ export class BrandReviewsController {
    * GET /brands/:brandId/reviews
    * Public brand review feed.
    */
+  @UseGuards(OptionalJwtAuthGuard)
   @Get(':brandId/reviews')
   async getBrandReviews(
     @Param('brandId') brandId: string,

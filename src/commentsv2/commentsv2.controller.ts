@@ -9,7 +9,9 @@ import {
   Req,
   UseGuards,
 } from '@nestjs/common';
+import { IsPublic } from 'src/auth/decorator/is-public.decorator';
 import { JwtAuthGuard } from 'src/auth/guard/jwt-auth.guard';
+import { OptionalJwtAuthGuard } from 'src/auth/guard/optional-jwt-auth.guard';
 import { CommentsV2Service } from './commentsv2.service';
 import { CreateCommentV2Dto, ListQueryDto } from './dto';
 
@@ -81,7 +83,10 @@ export class CommentsV2Controller {
     );
   }
 
-  // List comments for a target (top-level only; preload latest 2 replies)
+  // List comments for a target (top-level only; preload latest 2 replies).
+  // Optional auth: anonymous visitors read threads; a signed-in viewer also gets
+  // their own like/ownership state through the `req.user?.id` passed below.
+  @UseGuards(OptionalJwtAuthGuard)
   @Get('posts/:postId/comments')
   listForPost(
     @Param('postId') postId: string,
@@ -91,6 +96,7 @@ export class CommentsV2Controller {
     return this.service.listForTarget('POST', postId, req.user?.id, q);
   }
 
+  @UseGuards(OptionalJwtAuthGuard)
   @Get('collections/:collectionId/comments')
   listForCollection(
     @Param('collectionId') id: string,
@@ -100,6 +106,7 @@ export class CommentsV2Controller {
     return this.service.listForTarget('COLLECTION', id, req.user?.id, q);
   }
 
+  @UseGuards(OptionalJwtAuthGuard)
   @Get('designs/:designId/comments')
   listForDesign(
     @Param('designId') id: string,
@@ -109,6 +116,7 @@ export class CommentsV2Controller {
     return this.service.listForTarget('DESIGN', id, req.user?.id, q);
   }
 
+  @UseGuards(OptionalJwtAuthGuard)
   @Get('products/:productId/comments')
   listForProduct(
     @Param('productId') id: string,
@@ -118,6 +126,7 @@ export class CommentsV2Controller {
     return this.service.listForTarget('PRODUCT', id, req.user?.id, q);
   }
 
+  @UseGuards(OptionalJwtAuthGuard)
   @Get('collections/media/:mediaId/comments')
   listForMedia(
     @Param('mediaId') id: string,
@@ -128,6 +137,7 @@ export class CommentsV2Controller {
   }
 
   // Replies
+  @UseGuards(OptionalJwtAuthGuard)
   @Get('comments/:id/replies')
   getReplies(
     @Param('id') id: string,
@@ -138,6 +148,7 @@ export class CommentsV2Controller {
   }
 
   // Unified comments for a collection: includes COLLECTION and all COLLECTION_MEDIA under it
+  @UseGuards(OptionalJwtAuthGuard)
   @Get('collections/:collectionId/comments-unified')
   listUnifiedForCollection(
     @Param('collectionId') collectionId: string,
@@ -171,7 +182,8 @@ export class CommentsV2Controller {
     return this.service.softDelete(id, req.user.id);
   }
 
-  // Stats
+  // Stats — aggregate counts only, no viewer-specific data.
+  @IsPublic()
   @Get('comments/:id/stats')
   stats(@Param('id') id: string) {
     return this.service.getStats(id);
