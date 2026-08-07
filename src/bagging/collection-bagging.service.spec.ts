@@ -10,6 +10,11 @@ describe('CollectionBaggingService', () => {
     product: { findMany: jest.fn() },
     cartItem: { findFirst: jest.fn() },
     userSizeFitProfile: { findUnique: jest.fn() },
+    // `assertBuyerAccount` reads this on every bag path. Without it the mock
+    // threw "Cannot read properties of undefined (reading 'findUnique')" before
+    // any assertion ran, so all five tests failed for a fixture gap rather than
+    // for anything they were written to check.
+    user: { findUnique: jest.fn() },
     $transaction: jest.fn(),
   } as any;
   const eligibilityService = {
@@ -135,6 +140,9 @@ describe('CollectionBaggingService', () => {
     jest.clearAllMocks();
     prisma.userSizeFitProfile.findUnique.mockResolvedValue(null);
     prisma.cartItem.findFirst.mockResolvedValue(null);
+    // A buyer, so `assertBuyerAccount` lets the bag paths through. Brand
+    // accounts are rejected — covered separately below.
+    prisma.user.findUnique.mockResolvedValue({ type: 'REGULAR' });
     countPresenter.getCount.mockResolvedValue({
       standardQuantity: 2,
       customLineCount: 0,
@@ -292,5 +300,22 @@ describe('CollectionBaggingService', () => {
       },
     });
     expect(added.added).toHaveLength(1);
+  });
+
+  it('refuses to bag for a brand account', async () => {
+    // The guard the missing `prisma.user` mock was silently hiding: every test
+    // above blew up inside `assertBuyerAccount` before reaching its assertion,
+    // so nothing actually exercised it in either direction.
+    prisma.user.findUnique.mockResolvedValue({ type: 'BRAND' });
+
+    await expect(service.bagAll('collection_1', 'brand_1')).rejects.toThrow(
+      'Brand accounts cannot bag items. Use a buyer account to shop.',
+    );
+    await expect(
+      service.bagSelected('collection_1', 'brand_1', {
+        productIds: ['product_1'],
+      }),
+    ).rejects.toThrow('Brand accounts cannot bag items.');
+    expect(prisma.$transaction).not.toHaveBeenCalled();
   });
 });
