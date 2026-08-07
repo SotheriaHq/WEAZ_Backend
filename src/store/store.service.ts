@@ -8226,6 +8226,7 @@ export class StoreService {
           isStoreOpen: true,
           storePublishedAt: true,
           responseTimeSla: true,
+          businessHoursConfiguredAt: true,
         },
       }),
       this.prisma.storePolicy.findFirst({
@@ -8255,7 +8256,13 @@ export class StoreService {
       ? this.computeStoreCompleteness(brand, paymentAccount)
       : {
           isComplete: false,
-          missingFields: ['name', 'description', 'tags', 'paymentAccount'],
+          missingFields: [
+            'name',
+            'description',
+            'tags',
+            'paymentAccount',
+            'businessHours',
+          ],
         };
 
     return {
@@ -10056,6 +10063,18 @@ export class StoreService {
    * NOTE: Store logo/banner are derived from the Brand's profile images (synced from User)
    * and should not block store opening.
    */
+  /**
+   * The SINGLE definition of "this store is set up".
+   *
+   * It used to omit business hours while `BrandVerificationService.getStoreReadiness`
+   * required them, so a brand could finish the wizard, publish, get full studio
+   * access — and then be told at the verification gate that its store was
+   * incomplete, naming a field no setup screen had ever asked for. Both gates
+   * now read this list, so "complete" means the same thing everywhere.
+   *
+   * Keep this in sync with `getStoreReadiness`; `store-setup-completeness.spec.ts`
+   * fails if the two drift apart again.
+   */
   private computeStoreCompleteness(
     brand: {
       name: string;
@@ -10063,6 +10082,7 @@ export class StoreService {
       tags?: string[];
       logo?: string | null;
       banner?: string | null;
+      businessHoursConfiguredAt?: Date | null;
     },
     paymentAccount?: { status?: string | null } | null,
   ): { isComplete: boolean; missingFields: string[] } {
@@ -10077,6 +10097,12 @@ export class StoreService {
         .toUpperCase() !== 'ACTIVE'
     ) {
       missingFields.push('paymentAccount');
+    }
+    // Gated by the same flag the client route guard reads, so the kill switch
+    // turns the requirement off in BOTH places at once rather than leaving the
+    // server refusing to publish while the client never asks for hours.
+    if (this.isWorkingHoursRequired() && !brand.businessHoursConfiguredAt) {
+      missingFields.push('businessHours');
     }
 
     return {
@@ -10313,11 +10339,19 @@ export class StoreService {
     };
   }
 
+  /**
+   * Business hours are required by DEFAULT. They were opt-in via env while the
+   * feature rolled out, which left every environment (including SIT) with the
+   * flag unset: the client hard gate never fired, nothing in the setup flow
+   * asked for hours, and the requirement only ever surfaced at the verification
+   * gate. Set `STORE_WORKING_HOURS_REQUIRED=false` to switch the requirement off
+   * everywhere at once.
+   */
   private isWorkingHoursRequired(): boolean {
     return (
-      String(process.env.STORE_WORKING_HOURS_REQUIRED ?? 'false')
+      String(process.env.STORE_WORKING_HOURS_REQUIRED ?? 'true')
         .trim()
-        .toLowerCase() === 'true'
+        .toLowerCase() !== 'false'
     );
   }
 
@@ -10405,6 +10439,7 @@ export class StoreService {
         banner: true,
         isStoreOpen: true,
         storePublishedAt: true,
+        businessHoursConfiguredAt: true,
       },
     });
 

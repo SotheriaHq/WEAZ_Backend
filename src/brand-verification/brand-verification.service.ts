@@ -1521,14 +1521,19 @@ export class BrandVerificationService {
       pending.push({
         code: 'paymentAccount',
         label: 'Add and verify your payout bank account',
-        href: '/studio/store/payments',
+        // These hrefs are rendered as real links by the verification banner, so
+        // they must be routes that EXIST. `/studio/store/payments` and
+        // `/studio/store/hours` were never registered in the web router and fell
+        // through to the catch-all 404 — the "Fix →" affordance next to the
+        // blocking step took the brand to a dead page.
+        href: '/settings?tab=billing',
       });
     }
     if (!brand.businessHoursConfiguredAt) {
       pending.push({
         code: 'businessHours',
         label: 'Set your business hours',
-        href: '/studio/store/hours',
+        href: '/settings?tab=store-hours',
       });
     }
     if (!brand.storePublishedAt) {
