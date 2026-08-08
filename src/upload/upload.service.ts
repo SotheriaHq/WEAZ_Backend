@@ -1109,10 +1109,31 @@ export class UploadService {
   }
 
   /**
-   * Batch generate signed URLs for multiple files (optimized for feeds)
+   * Batch generate display URLs for multiple files (optimized for feeds).
+   *
+   * `trustCallerAuthorization` picks between the two very different situations
+   * this batch serves, and getting it wrong is either a leak or a broken image:
+   *
+   *  - `false` (default) — the file IDs came from somewhere unvouched (a client
+   *    payload, a raw key, a cross-brand feed join). Every file must pass the
+   *    anonymous gate in `canReturnPublicFileUrl`: published + public rows only.
+   *
+   *  - `true` — the SERVER picked these IDs out of rows it had already
+   *    authorized for this requester (owner catalog, drafts, approved-private
+   *    collections). Re-deriving the anonymous rule here is simply wrong: a
+   *    draft is by definition neither PUBLISHED nor PUBLIC, so the gate rejected
+   *    every one of the owner's own draft covers and the batch returned an empty
+   *    map. That is why draft cards had a broken image 100% of the time — and
+   *    the same silent drop hit the owner's Private and In-review tabs, plus
+   *    private collections shared with an approved viewer.
+   *
+   * Non-public files are always given a SIGNED url even where a public CDN base
+   * is configured, so trusting the caller's row-level authorization never turns
+   * unpublished media into an anonymously fetchable object URL.
    */
-  async getBatchPublicSignedUrls(
+  private async resolveBatchDisplayUrls(
     fileIds: string[],
+    trustCallerAuthorization: boolean,
   ): Promise<Map<string, string>> {
     if (!fileIds || fileIds.length === 0) {
       return new Map<string, string>();
@@ -1130,12 +1151,23 @@ export class UploadService {
       const chunk = files.slice(i, i + chunkSize);
       const results = await Promise.all(
         chunk.map(async (file) => {
-          if (!this.canReturnPublicFileUrl(file)) {
-            return null;
+          const isAnonymouslyPublic = this.canReturnPublicFileUrl(file);
+          if (!isAnonymouslyPublic) {
+            // The caller's vouch covers authorization, never availability: a
+            // quarantined, key-less or FAILED upload stays unrenderable.
+            if (
+              !trustCallerAuthorization ||
+              !this.isDisplayableStoredFile(file)
+            ) {
+              return null;
+            }
           }
-          const stablePublicUrl = this.getStablePublicDisplayUrl(file);
-          if (stablePublicUrl) {
-            return [file.id, stablePublicUrl] as const;
+
+          if (isAnonymouslyPublic) {
+            const stablePublicUrl = this.getStablePublicDisplayUrl(file);
+            if (stablePublicUrl) {
+              return [file.id, stablePublicUrl] as const;
+            }
           }
 
           const command = new GetObjectCommand({
@@ -1156,6 +1188,31 @@ export class UploadService {
     }
 
     return urlMap;
+  }
+
+  /**
+   * Batch generate signed URLs for multiple files (optimized for feeds).
+   * Anonymous rules apply — see `resolveBatchDisplayUrls`.
+   */
+  async getBatchPublicSignedUrls(
+    fileIds: string[],
+  ): Promise<Map<string, string>> {
+    return this.resolveBatchDisplayUrls(fileIds, false);
+  }
+
+  /**
+   * Batch display URLs for file IDs the SERVER selected from rows it has
+   * already authorized for the current requester.
+   *
+   * ONLY call this with IDs read off rows returned by a query that applied the
+   * requester's visibility rules (ownership, `status`, `accesses.some(...)`).
+   * Never pass IDs that originated in the request body or a URL param — those
+   * belong to `getBatchPublicSignedUrls`.
+   */
+  async getBatchAuthorizedDisplayUrls(
+    fileIds: string[],
+  ): Promise<Map<string, string>> {
+    return this.resolveBatchDisplayUrls(fileIds, true);
   }
 
   /**

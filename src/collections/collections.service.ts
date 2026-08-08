@@ -6159,14 +6159,18 @@ export class CollectionsService {
       )
       .filter((id): id is string => !!id);
 
+    // Authorized batch: every row here is `ownerId: userId` + `status: DRAFT`,
+    // so the public signer rejected all of them and every draft card rendered a
+    // broken image. See UploadService.getBatchAuthorizedDisplayUrls.
     const signedUrlMap =
-      await this.uploadService.getBatchPublicSignedUrls(fileIds);
+      await this.uploadService.getBatchAuthorizedDisplayUrls(fileIds);
 
     return {
       items: items.map((c) => {
         const cover = this.resolveCoverMedia(c.medias, c.coverMediaId ?? null);
-        const coverImage = cover?.fileUploadId
-          ? (signedUrlMap.get(cover.fileUploadId) ?? null)
+        const coverFileId = cover?.fileUploadId ?? null;
+        const coverImage = coverFileId
+          ? (signedUrlMap.get(coverFileId) ?? null)
           : null;
 
         return {
@@ -6178,6 +6182,10 @@ export class CollectionsService {
           createdAt: c.createdAt,
           itemCount: c._count.medias,
           coverImage,
+          // Second line of defence for the same card: web/native both fall back
+          // to the owner-aware single-file endpoint when the cover URL is
+          // missing or has expired, but only if they are handed the file id.
+          coverFileId,
         };
       }),
     };
@@ -6449,7 +6457,13 @@ export class CollectionsService {
       }
     });
 
-    const signedUrlMap = await this.uploadService.getBatchPublicSignedUrls(
+    // Authorized batch: `where` above already applied this requester's
+    // visibility rules — owners see their own drafts/private/in-review rows,
+    // everyone else is restricted to PUBLISHED+PUBLIC or an APPROVED private
+    // access grant. The anonymous signer re-derived a stricter rule and dropped
+    // every non-published cover, so the owner's Private and In-review tabs (and
+    // any collection shared with an approved viewer) rendered broken images.
+    const signedUrlMap = await this.uploadService.getBatchAuthorizedDisplayUrls(
       Array.from(fileIds),
     );
     // Card avatars render tiny: prefer the 256px AVATAR variant over the
@@ -6867,7 +6881,10 @@ export class CollectionsService {
         visibleLinks,
       });
     });
-    const signedUrlMap = await this.uploadService.getBatchPublicSignedUrls(
+    // Authorized batch — same reasoning as getUserCollections above: the query
+    // has already scoped these store collections to what this requester may
+    // see, so unpublished covers must still resolve for their owner.
+    const signedUrlMap = await this.uploadService.getBatchAuthorizedDisplayUrls(
       Array.from(fileIds),
     );
     // Card avatars render tiny: prefer the 256px AVATAR variant over the

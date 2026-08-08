@@ -567,6 +567,91 @@ describe('ImageService', () => {
     expect(getSignedUrl).not.toHaveBeenCalled();
   });
 
+  describe('getBatchAuthorizedDisplayUrls', () => {
+    const draftCoverFile = {
+      id: 'file_draft',
+      s3Key: 'POST_IMAGE/owner_1/draft-cover.jpg',
+      s3Url:
+        'https://test-bucket.s3.us-east-1.amazonaws.com/POST_IMAGE/owner_1/draft-cover.jpg',
+      processingStatus: 'READY',
+      originalDeletedAt: null,
+      isPublic: false,
+      userId: 'owner_1',
+      collectionMedias: [
+        {
+          collection: {
+            id: 'design_draft',
+            domain: 'DESIGN',
+            status: 'DRAFT',
+            visibility: 'PRIVATE',
+            deletedAt: null,
+          },
+        },
+      ],
+      productMedias: [],
+      userProfileImages: [],
+      userProfileBanners: [],
+    };
+
+    const stubFiles = (files: any[]) => {
+      (service as any).prisma = {
+        fileUpload: { findMany: jest.fn().mockResolvedValue(files) },
+      };
+    };
+
+    it('resolves a DRAFT cover that the anonymous batch drops', async () => {
+      // The exact production bug: `getMyDraftCollections` / owner catalog rows
+      // are authorized by their own query, but the anonymous gate wants
+      // PUBLISHED + PUBLIC, so it returned an empty map and every draft card
+      // rendered a broken image.
+      stubFiles([draftCoverFile]);
+      await expect(
+        service.getBatchPublicSignedUrls(['file_draft']),
+      ).resolves.toEqual(new Map());
+
+      stubFiles([draftCoverFile]);
+      const authorized = await service.getBatchAuthorizedDisplayUrls([
+        'file_draft',
+      ]);
+
+      expect(authorized.get('file_draft')).toBe('signed-url');
+    });
+
+    it('signs non-public files even when a public CDN base is configured', async () => {
+      // Trusting the caller's row-level authorization must not turn draft or
+      // private media into an anonymously fetchable CDN object URL.
+      (service as any).configService = {
+        get: jest.fn((key: string) =>
+          key === 'MEDIA_PUBLIC_BASE_URL' ? 'https://cdn.example' : undefined,
+        ),
+      };
+      stubFiles([draftCoverFile]);
+
+      const authorized = await service.getBatchAuthorizedDisplayUrls([
+        'file_draft',
+      ]);
+
+      expect(authorized.get('file_draft')).toBe('signed-url');
+      expect(getSignedUrl).toHaveBeenCalledTimes(1);
+    });
+
+    it('still refuses a file that is not displayable', async () => {
+      // The caller vouches for authorization, never for availability.
+      stubFiles([
+        { ...draftCoverFile, processingStatus: 'FAILED' },
+        { ...draftCoverFile, id: 'file_no_key', s3Key: '' },
+      ]);
+
+      const authorized = await service.getBatchAuthorizedDisplayUrls([
+        'file_draft',
+        'file_no_key',
+      ]);
+
+      expect(authorized.size).toBe(0);
+      expect(getSignedUrl).not.toHaveBeenCalled();
+    });
+  });
+
   it('marks verified presigned uploads READY and enqueues variant generation without blocking display', async () => {
     const enqueueSingle = jest.fn().mockResolvedValue(undefined);
     const createdRecord = {

@@ -13,6 +13,7 @@ import {
   VerificationIdDocumentType,
   VerificationSignatureMethod,
 } from '@prisma/client';
+import type { BrandVerificationAttempt } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { UploadService } from 'src/upload/upload.service';
 import { FileType } from 'src/upload/upload.enums';
@@ -245,10 +246,102 @@ export class BrandVerificationService {
 
   async getDraft(ownerId: string) {
     const brand = await this.getBrandByOwnerOrThrow(ownerId);
+    const savedDraft = this.decryptDraft(brand.verificationDraftData);
+    if (savedDraft) {
+      return {
+        draftData: savedDraft,
+        lastSavedAt: brand.verificationDraftUpdatedAt,
+        source: 'DRAFT' as const,
+      };
+    }
+
+    // `submit` nulls the draft once an attempt is filed, so EVERY path that
+    // sends an owner back into the wizard — ADDITIONAL_INFO_REQUESTED above
+    // all — handed them a completely blank form. To answer one question an
+    // admin asked, the owner had to retype every legal detail and re-upload
+    // every document, and the submit DTO requires all of them, so there was no
+    // way to partially comply. Rehydrate from the last attempt instead: it
+    // stores exactly the fields the wizard collects.
+    const lastAttempt = await this.prisma.brandVerificationAttempt.findFirst({
+      where: { brandId: brand.id },
+      orderBy: [{ attemptNumber: 'desc' }],
+    });
+    if (!lastAttempt) {
+      return { draftData: null, lastSavedAt: null, source: 'EMPTY' as const };
+    }
+
     return {
-      draftData: this.decryptDraft(brand.verificationDraftData),
-      lastSavedAt: brand.verificationDraftUpdatedAt,
+      draftData: this.attemptToDraftData(lastAttempt),
+      lastSavedAt: lastAttempt.submittedAt ?? lastAttempt.updatedAt,
+      source: 'LAST_ATTEMPT' as const,
     };
+  }
+
+  /**
+   * Narrows a stored date to the `YYYY-MM-DD` the wizard's `<input type="date">`
+   * accepts. A full ISO string is rejected by the control and renders as an
+   * EMPTY field — the value would be present in state but invisible on screen,
+   * which is indistinguishable from the blank-form bug this rehydration fixes.
+   *
+   * Deliberately UTC: submit stores these from a `YYYY-MM-DD` string, which
+   * parses to UTC midnight, so reading them back in local time would shift the
+   * day backwards for any server west of Greenwich.
+   */
+  private toDateInputValue(value?: Date | null): string {
+    if (!value) return '';
+    const date = value instanceof Date ? value : new Date(value);
+    if (Number.isNaN(date.getTime())) return '';
+    return date.toISOString().slice(0, 10);
+  }
+
+  /**
+   * Projects a filed attempt back onto the shape the wizard binds to. Field
+   * names line up one-for-one except `letterOfConfirmationKey`, which the
+   * client calls `letterKey`.
+   */
+  private attemptToDraftData(attempt: BrandVerificationAttempt) {
+    const address =
+      (attempt.businessAddress as Record<string, unknown> | null) ?? {};
+    const addressPart = (key: string) => String(address[key] ?? '').trim();
+
+    const draft: Record<string, unknown> = {
+      ownerLegalFirstName: attempt.ownerLegalFirstName ?? '',
+      ownerLegalLastName: attempt.ownerLegalLastName ?? '',
+      ownerDateOfBirth: this.toDateInputValue(attempt.ownerDateOfBirth),
+      ownerPhoneNumber: attempt.ownerPhoneNumber ?? '',
+      ownerNin: attempt.ownerNin ?? '',
+      cacNumber: attempt.cacNumber ?? '',
+      businessAddress: {
+        street: addressPart('street'),
+        city: addressPart('city'),
+        state: addressPart('state'),
+        country: addressPart('country') || 'Nigeria',
+      },
+      idDocumentNumber: attempt.idDocumentNumber ?? '',
+      idDocumentExpiryDate: this.toDateInputValue(attempt.idDocumentExpiryDate),
+      authorityProofDescription: attempt.authorityProofDescription ?? '',
+      ownerPhotoKey: attempt.ownerPhotoKey ?? '',
+      idDocumentFrontKey: attempt.idDocumentFrontKey ?? '',
+      idDocumentBackKey: attempt.idDocumentBackKey ?? '',
+      cacCertificateKey: attempt.cacCertificateKey ?? '',
+      authorityProofKey: attempt.authorityProofKey ?? '',
+      letterKey: attempt.letterOfConfirmationKey ?? '',
+      // Start the owner at step 1 so they walk the whole package and see what
+      // the admin flagged in context, rather than landing mid-form.
+      currentStep: null,
+    };
+
+    // Enum-backed selects are assigned only when set. The client merges with
+    // `{ ...current, ...draft }`, so an explicit `undefined` here would erase
+    // its own sane defaults ('PREFER_NOT_TO_SAY', 'NIN_SLIP', …) and leave the
+    // dropdowns showing nothing.
+    if (attempt.ownerGender) draft.ownerGender = attempt.ownerGender;
+    if (attempt.idDocumentType) draft.idDocumentType = attempt.idDocumentType;
+    if (attempt.legalEntityType)
+      draft.legalEntityType = attempt.legalEntityType;
+    if (attempt.authorityType) draft.authorityType = attempt.authorityType;
+
+    return draft;
   }
 
   async saveDraft(ownerId: string, dto: SaveVerificationDraftDto) {
@@ -643,12 +736,31 @@ export class BrandVerificationService {
     };
 
     for (const [key, value] of Object.entries(dto)) {
-      if (value !== undefined) {
-        patch[key] =
-          key.endsWith('DateOfBirth') || key.endsWith('ExpiryDate')
-            ? new Date(String(value))
-            : value;
+      if (value === undefined) continue;
+
+      // The attempt column is `letterOfConfirmationKey`; the client field is
+      // `letterKey`, and the wizard sends it on EVERY submission. Passing the
+      // client name straight into `brandVerificationAttempt.update` made Prisma
+      // reject the whole call with `Unknown argument 'letterKey'`, so answering
+      // an admin's request for more information always failed. `submit` maps
+      // this name by hand, which is why the first-time path worked and only the
+      // correction path was broken.
+      if (key === 'letterKey') {
+        patch.letterOfConfirmationKey = value;
+        continue;
       }
+
+      // Store the same E.164 form the brand and profile records get, so the
+      // attempt an admin reviews does not disagree with the account.
+      if (key === 'ownerPhoneNumber') {
+        patch.ownerPhoneNumber = resolvedOwnerPhoneNumber ?? value;
+        continue;
+      }
+
+      patch[key] =
+        key.endsWith('DateOfBirth') || key.endsWith('ExpiryDate')
+          ? new Date(String(value))
+          : value;
     }
 
     await this.prisma.$transaction(async (tx) => {
