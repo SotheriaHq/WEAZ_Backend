@@ -5969,10 +5969,46 @@ export class CollectionsService {
 
     const { threadsCount, collectionCollabsCount, medias, ...rest } =
       collection as any;
+
+    // Sign this collection's media before returning it.
+    //
+    // This detail read handed back `file.s3Url` exactly as stored — a RAW S3
+    // object URL. Published content survives that (the bucket/CDN serves it),
+    // but draft, in-review, changes-requested and private media 403, so every
+    // image on the edit screen was broken. It went unnoticed while review-state
+    // cards opened the read-only viewer; routing them into the edit flow is
+    // what surfaced it.
+    //
+    // The authorized batch is correct here for the same reason as the list
+    // endpoints: the query above already applied this requester's visibility
+    // rules, so re-deriving the anonymous published+public gate would drop
+    // exactly the media the owner came to edit.
+    const mediaFileIds = Array.isArray(medias)
+      ? Array.from(
+          new Set(
+            medias
+              .map((m: any) => m?.file?.id)
+              .filter((id: unknown): id is string => typeof id === 'string'),
+          ),
+        )
+      : [];
+    const mediaSignedUrls = mediaFileIds.length
+      ? await this.uploadService.getBatchAuthorizedDisplayUrls(mediaFileIds)
+      : new Map<string, string>();
+
     const mappedMedias = Array.isArray(medias)
       ? medias.map((m: any) => {
           const { threadsCount: mediaThreadsCount, ...mediaRest } = m;
-          return { ...mediaRest, threadsCount: mediaThreadsCount };
+          const signed = m?.file?.id
+            ? mediaSignedUrls.get(m.file.id)
+            : undefined;
+          return {
+            ...mediaRest,
+            ...(signed
+              ? { file: { ...mediaRest.file, s3Url: signed } }
+              : {}),
+            threadsCount: mediaThreadsCount,
+          };
         })
       : medias;
     return {
@@ -5995,7 +6031,14 @@ export class CollectionsService {
       collectionCollabCount: collectionCollabsCount,
       products,
       totalThreads,
-      coverImageUrl: coverFromMedia || productCoverUrl,
+      // Prefer the signed URL for the cover too — `coverFromMedia` is the raw
+      // stored `s3Url`, which 403s for anything not published.
+      coverImageUrl:
+        (preferredCover?.file?.id
+          ? mediaSignedUrls.get(preferredCover.file.id)
+          : null) ||
+        coverFromMedia ||
+        productCoverUrl,
     };
   }
 
