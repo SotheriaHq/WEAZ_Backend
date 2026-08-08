@@ -57,7 +57,19 @@ git checkout "$DEPLOY_BRANCH"
 git reset --hard "origin/$DEPLOY_BRANCH"
 
 echo "==> [3/10] Installing dependencies (npm ci)"
-npm ci
+# SKIP_PRISMA_POSTINSTALL: the postinstall hook's `prisma generate` runs as a
+# CHILD of npm ci, stacking its peak on top of npm's own. On this box (1.9GB,
+# no headroom) that combination is what got the deploy OOM-killed:
+#
+#   scripts/deploy.sh: line 60: <pid> Killed   npm ci     (exit 137)
+#
+# It died at THIS step, so migrations, the build and the PM2 restart never ran
+# and the box quietly kept serving the previous release — a push that looked
+# like it had deployed but changed nothing.
+#
+# Step [4/10] below already generates the client, serially, so nothing is lost.
+# See scripts/postinstall.js for why `--ignore-scripts` is not the answer.
+SKIP_PRISMA_POSTINSTALL=1 npm ci
 
 echo "==> [4/10] Generating Prisma client"
 npx prisma generate
