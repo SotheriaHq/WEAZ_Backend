@@ -763,13 +763,42 @@ export class BrandVerificationService {
           : value;
     }
 
+    // A resubmission is a NEW attempt, not an edit of the old one.
+    //
+    // This used to `update` the same row in place, so `attemptNumber` never
+    // moved and the admin queue kept reporting "1st submission" for a brand
+    // that had already answered a change request. Worse, the update wiped
+    // `infoRequestedItems`/`infoRequestMessage` off the only row that held
+    // them — so the moment a brand responded, the record of what had been asked
+    // for was destroyed and there was nothing left to audit.
+    //
+    // Appending a row fixes both: the counter advances naturally, and every
+    // submission keeps its own snapshot of what was filed and what had been
+    // requested at the time.
+    const nextAttemptNumber = latestAttempt.attemptNumber + 1;
+    const {
+      id: _previousId,
+      createdAt: _previousCreatedAt,
+      updatedAt: _previousUpdatedAt,
+      ...carriedForward
+    } = latestAttempt;
+
     await this.prisma.$transaction(async (tx) => {
-      await tx.brandVerificationAttempt.update({
-        where: { id: latestAttempt.id },
+      await tx.brandVerificationAttempt.create({
         data: {
+          ...carriedForward,
           ...patch,
+          id: randomUUID(),
+          attemptNumber: nextAttemptNumber,
           status: BrandVerificationStatus.IN_REVIEW,
+          submittedAt: now,
           reviewStartedAt: now,
+          reviewedAt: null,
+          // Stays with the reviewer who asked, so the work does not fall back
+          // into the unassigned pool the moment the brand cooperates.
+          reviewedById: latestAttempt.reviewedById,
+          // The request is answered as of THIS attempt; the previous row keeps
+          // its copy of what was asked, which is what the history reads.
           infoRequestedItems: null,
           infoRequestMessage: null,
         },
@@ -780,9 +809,11 @@ export class BrandVerificationService {
         data: {
           verificationStatus: BrandVerificationStatus.IN_REVIEW,
           verificationReviewStartedAt: now,
+          verificationAttemptNumber: nextAttemptNumber,
           verificationInfoRequestedAt: null,
           verificationInfoRequestedItems: null,
           verificationInfoRequestMessage: null,
+          verificationInfoRespondedAt: now,
           ...brandIdentityData,
         },
       });
@@ -882,6 +913,10 @@ export class BrandVerificationService {
         verificationSubmittedAt: true,
         verificationAttemptNumber: true,
         verificationReviewedById: true,
+        // Lets the queue flag "this brand answered YOUR request" instead of
+        // dropping the row back into the undifferentiated IN_REVIEW pile.
+        verificationInfoRequestedAt: true,
+        verificationInfoRespondedAt: true,
         owner: {
           select: {
             id: true,
@@ -902,6 +937,12 @@ export class BrandVerificationService {
       items: results.map((item) => ({
         ...item,
         owner: this.mapOwnerDisplay(item.owner),
+        // Derived once here so every client (and any future one) draws the same
+        // conclusion. True == the brand has replied to an info request and
+        // nobody has acted on the reply yet.
+        hasUnreviewedInfoResponse:
+          Boolean(item.verificationInfoRespondedAt) &&
+          item.verificationStatus === BrandVerificationStatus.IN_REVIEW,
       })),
       nextCursor: hasMore ? results[results.length - 1]?.id : undefined,
       totalPending: await this.prisma.brand.count({
@@ -1134,6 +1175,9 @@ export class BrandVerificationService {
           verificationInfoRequestedAt: now,
           verificationInfoRequestedItems: dto.items as any,
           verificationInfoRequestMessage: dto.generalMessage ?? null,
+          // A new request supersedes the previous reply, so the queue marker
+          // goes back to "waiting on the brand".
+          verificationInfoRespondedAt: null,
         },
       });
       if (result.count !== 1) {
@@ -1163,6 +1207,10 @@ export class BrandVerificationService {
             verificationStatus:
               BrandVerificationStatus.ADDITIONAL_INFO_REQUESTED,
             items: dto.items,
+            // The admin's note was recorded ONLY on the brand/attempt columns,
+            // which the next request overwrites and a resubmission clears — so
+            // it never survived to be audited. This row is append-only.
+            message: dto.generalMessage ?? null,
           },
         },
       });
@@ -1262,6 +1310,8 @@ export class BrandVerificationService {
           verificationStatus: newStatus,
           verificationReviewedAt: now,
           verificationReviewStartedAt: brand.verificationReviewStartedAt ?? now,
+          // The reply has now been acted on, so the queue marker retires.
+          verificationInfoRespondedAt: null,
           verificationRejectionReason:
             decision === 'REJECTED'
               ? rejectionReasons.map((reason) => reason.label).join('; ')
@@ -1489,6 +1539,129 @@ export class BrandVerificationService {
         where: { brandId },
         orderBy: { createdAt: 'desc' },
       }),
+    };
+  }
+
+  /**
+   * Chronological audit trail of the back-and-forth on one brand's
+   * verification: every information request an admin sent, and every
+   * submission the brand filed in response.
+   *
+   * Reviewers had no way to see this. `requestInfo` OVERWRITES
+   * `infoRequestedItems`/`infoRequestMessage` on the brand and the attempt, and
+   * a resubmission cleared them — so the live record only ever showed the most
+   * recent open request, and showed nothing at all once the brand replied.
+   *
+   * Nothing was actually lost: `requestInfo` has always written an
+   * `AdminAuditLog` row carrying `newState.items`, indexed on
+   * `(targetType, targetId)`. The requests are read back from there, the
+   * responses from the attempt rows (one per submission since resubmission
+   * started appending), and the two are merged into a single timeline. No
+   * separate history table is needed, and the trail is retroactive — requests
+   * made before this endpoint existed still appear.
+   */
+  async getInfoRequestHistory(brandId: string) {
+    const brand = await this.prisma.brand.findUnique({
+      where: { id: brandId },
+      select: { id: true },
+    });
+    if (!brand) throw new NotFoundException('Brand not found');
+
+    const [requestLogs, attempts] = await Promise.all([
+      (this.prisma as any).adminAuditLog.findMany({
+        where: {
+          targetType: 'Brand',
+          targetId: brandId,
+          action: 'ADMIN_VERIFICATION_REQUEST_INFO',
+        },
+        orderBy: { createdAt: 'asc' },
+      }) as Promise<
+        Array<{
+          id: string;
+          actorUserId: string;
+          createdAt: Date;
+          newState: unknown;
+        }>
+      >,
+      this.prisma.brandVerificationAttempt.findMany({
+        where: { brandId },
+        orderBy: [{ attemptNumber: 'asc' }],
+        select: {
+          id: true,
+          attemptNumber: true,
+          submittedAt: true,
+          createdAt: true,
+          status: true,
+          infoRequestedItems: true,
+          infoRequestMessage: true,
+        },
+      }),
+    ]);
+
+    const actorIds = Array.from(
+      new Set(requestLogs.map((log) => log.actorUserId).filter(Boolean)),
+    );
+    const actors = actorIds.length
+      ? await this.prisma.user.findMany({
+          where: { id: { in: actorIds } },
+          select: {
+            id: true,
+            username: true,
+            email: true,
+            userProfile: { select: { firstName: true, lastName: true } },
+          },
+        })
+      : [];
+    const actorById = new Map(actors.map((actor) => [actor.id, actor]));
+
+    const requestEvents = requestLogs.map((log) => {
+      const state = (log.newState ?? {}) as Record<string, unknown>;
+      const actor = actorById.get(log.actorUserId);
+      const fullName = [
+        actor?.userProfile?.firstName,
+        actor?.userProfile?.lastName,
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .trim();
+      return {
+        id: log.id,
+        kind: 'INFO_REQUESTED' as const,
+        at: log.createdAt,
+        items: Array.isArray(state.items) ? state.items : [],
+        message: typeof state.message === 'string' ? state.message : null,
+        actor: actor
+          ? {
+              id: actor.id,
+              name: fullName || actor.username || actor.email,
+            }
+          : null,
+      };
+    });
+
+    const submissionEvents = attempts.map((attempt) => ({
+      id: attempt.id,
+      kind: 'BRAND_SUBMITTED' as const,
+      // Legacy rows predating the append-on-resubmit change can have a null
+      // `submittedAt`; fall back so they still sort into the timeline.
+      at: attempt.submittedAt ?? attempt.createdAt,
+      attemptNumber: attempt.attemptNumber,
+      status: attempt.status,
+      // What this particular submission was answering, if anything.
+      respondedToItems: Array.isArray(attempt.infoRequestedItems)
+        ? attempt.infoRequestedItems
+        : [],
+      respondedToMessage: attempt.infoRequestMessage ?? null,
+    }));
+
+    const events = [...requestEvents, ...submissionEvents].sort(
+      (a, b) => new Date(a.at).getTime() - new Date(b.at).getTime(),
+    );
+
+    return {
+      events,
+      totalInfoRequests: requestEvents.length,
+      totalSubmissions: submissionEvents.length,
     };
   }
 

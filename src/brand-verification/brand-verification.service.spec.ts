@@ -17,7 +17,17 @@ describe('BrandVerificationService', () => {
     brandVerificationAttempt: {
       create: jest.fn(),
       findFirst: jest.fn(),
+      findMany: jest.fn(),
       update: jest.fn(),
+    },
+    // The information-request audit trail. `requestInfo` has always written
+    // these rows; `getInfoRequestHistory` is what finally reads them back.
+    adminAuditLog: {
+      create: jest.fn(),
+      findMany: jest.fn(),
+    },
+    user: {
+      findMany: jest.fn(),
     },
     fileUpload: {
       findFirst: jest.fn(),
@@ -497,8 +507,10 @@ describe('BrandVerificationService', () => {
       });
       prisma.brandVerificationAttempt.findFirst.mockResolvedValue({
         id: 'attempt-1',
+        attemptNumber: 1,
+        reviewedById: 'admin-1',
       });
-      prisma.brandVerificationAttempt.update.mockResolvedValue({});
+      prisma.brandVerificationAttempt.create.mockResolvedValue({});
       prisma.brand.update.mockResolvedValue({});
 
       await service.resubmitInfo('owner-1', {
@@ -508,13 +520,171 @@ describe('BrandVerificationService', () => {
       });
 
       const data =
-        prisma.brandVerificationAttempt.update.mock.calls[0][0].data;
+        prisma.brandVerificationAttempt.create.mock.calls[0][0].data;
       expect(data).not.toHaveProperty('letterKey');
       expect(data.letterOfConfirmationKey).toBe('new-letter-key');
       // Same E.164 form the brand and profile records get.
       expect(data.ownerPhoneNumber).toBe('+2348030000000');
       expect(data.idDocumentExpiryDate).toEqual(new Date('2031-01-31'));
       expect(data.status).toBe(BrandVerificationStatus.IN_REVIEW);
+    });
+
+    it('files a resubmission as the NEXT attempt instead of editing the first', async () => {
+      // The admin queue reported "1st submission" for a brand that had already
+      // answered a change request, because this updated the same row in place
+      // and never advanced the counter on either the attempt or the brand.
+      prisma.brand.findFirst.mockResolvedValue({
+        id: 'brand-1',
+        name: 'Ada Style',
+        ownerId: 'owner-1',
+        verificationStatus: BrandVerificationStatus.ADDITIONAL_INFO_REQUESTED,
+        verificationReviewedById: 'admin-1',
+        owner: {
+          id: 'owner-1',
+          email: 'ada@example.com',
+          firstName: 'Ada',
+          lastName: 'Okafor',
+          status: 'ACTIVE',
+          deactivatedAt: null,
+        },
+      });
+      prisma.brandVerificationAttempt.findFirst.mockResolvedValue({
+        id: 'attempt-1',
+        attemptNumber: 1,
+        reviewedById: 'admin-1',
+        createdAt: new Date('2026-08-01T00:00:00.000Z'),
+        updatedAt: new Date('2026-08-02T00:00:00.000Z'),
+        ownerLegalFirstName: 'Ada',
+        infoRequestedItems: ['CAC_CERTIFICATE'],
+        infoRequestMessage: 'Please reupload a clearer CAC certificate.',
+      });
+      prisma.brandVerificationAttempt.create.mockResolvedValue({});
+      prisma.brand.update.mockResolvedValue({});
+
+      await service.resubmitInfo('owner-1', { cacNumber: 'RC-2222' });
+
+      const created =
+        prisma.brandVerificationAttempt.create.mock.calls[0][0].data;
+      expect(created.attemptNumber).toBe(2);
+      // Unchanged answers carry forward — a resubmission is not a blank filing.
+      expect(created.ownerLegalFirstName).toBe('Ada');
+      expect(created.cacNumber).toBe('RC-2222');
+      // Identity columns of the previous row must never be copied.
+      expect(created.id).not.toBe('attempt-1');
+      expect(created).not.toHaveProperty('createdAt');
+      expect(created).not.toHaveProperty('updatedAt');
+      // Stays with the reviewer who asked for the change.
+      expect(created.reviewedById).toBe('admin-1');
+      // The new attempt is not itself awaiting anything; the PREVIOUS row keeps
+      // its copy of what was asked, which is what the history reads back.
+      expect(created.infoRequestedItems).toBeNull();
+      expect(created.infoRequestMessage).toBeNull();
+
+      const brandPatch = prisma.brand.update.mock.calls[0][0].data;
+      expect(brandPatch.verificationAttemptNumber).toBe(2);
+      // The queue marker the reviewer needs.
+      expect(brandPatch.verificationInfoRespondedAt).toBeInstanceOf(Date);
+    });
+
+    it('notifies the reviewer who asked for the change', async () => {
+      // The notification itself was always wired; it was simply never reached,
+      // because the `letterKey` patch above threw first on every resubmission.
+      prisma.brand.findFirst.mockResolvedValue({
+        id: 'brand-1',
+        name: 'Ada Style',
+        ownerId: 'owner-1',
+        verificationStatus: BrandVerificationStatus.ADDITIONAL_INFO_REQUESTED,
+        verificationReviewedById: 'admin-1',
+        owner: {
+          id: 'owner-1',
+          email: 'ada@example.com',
+          firstName: 'Ada',
+          lastName: 'Okafor',
+          status: 'ACTIVE',
+          deactivatedAt: null,
+        },
+      });
+      prisma.brandVerificationAttempt.findFirst.mockResolvedValue({
+        id: 'attempt-1',
+        attemptNumber: 1,
+        reviewedById: 'admin-1',
+      });
+      prisma.brandVerificationAttempt.create.mockResolvedValue({});
+      prisma.brand.update.mockResolvedValue({});
+
+      await service.resubmitInfo('owner-1', { letterKey: 'k' });
+
+      expect(notifications.create).toHaveBeenCalledWith(
+        'admin-1',
+        'VERIFICATION_INFO_RESUBMITTED',
+        expect.objectContaining({
+          payload: expect.objectContaining({ brandId: 'brand-1' }),
+        }),
+      );
+    });
+  });
+
+  describe('getInfoRequestHistory', () => {
+    it('reconstructs the request/response timeline from the audit log and attempts', async () => {
+      // Reviewers saw no history at all: `requestInfo` OVERWRITES the
+      // infoRequested* columns and a resubmission cleared them, so the live
+      // record only ever held the most recent open request. The requests
+      // survive on AdminAuditLog rows, which is what this reads back.
+      prisma.brand.findUnique.mockResolvedValue({ id: 'brand-1' });
+      prisma.adminAuditLog.findMany.mockResolvedValue([
+        {
+          id: 'log-1',
+          actorUserId: 'admin-1',
+          createdAt: new Date('2026-08-02T10:00:00.000Z'),
+          newState: {
+            items: ['CAC_CERTIFICATE'],
+            message: 'Clearer scan please.',
+          },
+        },
+      ]);
+      prisma.brandVerificationAttempt.findMany.mockResolvedValue([
+        {
+          id: 'attempt-1',
+          attemptNumber: 1,
+          submittedAt: new Date('2026-08-01T09:00:00.000Z'),
+          createdAt: new Date('2026-08-01T09:00:00.000Z'),
+          status: BrandVerificationStatus.ADDITIONAL_INFO_REQUESTED,
+          infoRequestedItems: ['CAC_CERTIFICATE'],
+          infoRequestMessage: 'Clearer scan please.',
+        },
+        {
+          id: 'attempt-2',
+          attemptNumber: 2,
+          submittedAt: new Date('2026-08-03T08:00:00.000Z'),
+          createdAt: new Date('2026-08-03T08:00:00.000Z'),
+          status: BrandVerificationStatus.IN_REVIEW,
+          infoRequestedItems: null,
+          infoRequestMessage: null,
+        },
+      ]);
+      prisma.user.findMany.mockResolvedValue([
+        {
+          id: 'admin-1',
+          username: 'reviewer',
+          email: 'reviewer@example.com',
+          userProfile: { firstName: 'Tomi', lastName: 'A' },
+        },
+      ]);
+
+      const history = await service.getInfoRequestHistory('brand-1');
+
+      expect(history.totalInfoRequests).toBe(1);
+      expect(history.totalSubmissions).toBe(2);
+      // Strict chronology across BOTH sources — submit, request, resubmit.
+      expect(history.events.map((event) => event.kind)).toEqual([
+        'BRAND_SUBMITTED',
+        'INFO_REQUESTED',
+        'BRAND_SUBMITTED',
+      ]);
+      const request = history.events[1] as any;
+      expect(request.items).toEqual(['CAC_CERTIFICATE']);
+      expect(request.message).toBe('Clearer scan please.');
+      expect(request.actor.name).toBe('Tomi A');
     });
   });
 });

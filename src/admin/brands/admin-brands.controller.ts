@@ -221,6 +221,16 @@ export class AdminBrandsController {
     return this.brandVerificationService.getNotes(id);
   }
 
+  @Get(':id/verification/history')
+  @RequirePermissions(ADMIN_PERMISSIONS.BRANDS_VERIFY)
+  @ApiOperation({
+    summary:
+      'Audit trail of information requests and brand submissions for this verification',
+  })
+  async getVerificationHistory(@Param('id') id: string) {
+    return this.brandVerificationService.getInfoRequestHistory(id);
+  }
+
   @Post(':id/verification/notes')
   @RequirePermissions(ADMIN_PERMISSIONS.BRANDS_VERIFY)
   @ApiOperation({ summary: 'Add a verification review note' })

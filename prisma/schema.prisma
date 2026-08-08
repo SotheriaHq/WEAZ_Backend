@@ -2579,6 +2579,13 @@ model Brand {
   verificationInfoRequestedAt     DateTime?
   verificationInfoRequestedItems  Json?
   verificationInfoRequestMessage  String?
+  // Set when the brand answers an admin's info request, cleared when a new
+  // request goes out. The queue needs an UNAMBIGUOUS "this brand replied to
+  // you" marker: after a resubmission the row just returns to IN_REVIEW, which
+  // looks identical to every other in-review brand, and `attemptNumber >= 2`
+  // cannot stand in for it because a fresh application after a rejection also
+  // increments that counter.
+  verificationInfoRespondedAt     DateTime?
   verificationDraftData           String?
   verificationDraftUpdatedAt      DateTime?
   verificationNudgeOptOut         Boolean                 @default(false)
