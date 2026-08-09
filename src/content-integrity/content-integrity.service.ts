@@ -1345,8 +1345,30 @@ export class ContentIntegrityService {
         reviewedById: true,
       },
     });
+    // Resolve reviewers once per distinct id rather than per row — a ten-cycle
+    // history is usually the same one or two admins. The console rendered the
+    // raw `reviewedById` UUID, which makes the audit trail unreadable at the
+    // moment someone is trying to answer "who asked for this change?".
+    const reviewerIds: string[] = Array.from(
+      new Set<string>(
+        rows
+          .map((row: any) => row.reviewedById)
+          .filter((id: unknown): id is string => typeof id === 'string' && !!id),
+      ),
+    );
+    const reviewers = new Map<string, { id: string; username: string | null }>();
+    await Promise.all(
+      reviewerIds.map(async (id) => {
+        const snapshot = await this.getUserSnapshot(id);
+        if (snapshot) reviewers.set(id, snapshot);
+      }),
+    );
+
     return rows.map((row) => ({
       ...row,
+      reviewedBy: row.reviewedById
+        ? (reviewers.get(row.reviewedById) ?? null)
+        : null,
       reasonLabel: row.reasonCode
         ? CONTENT_REVIEW_REASON_LABELS[
             row.reasonCode as ContentReviewReasonCode

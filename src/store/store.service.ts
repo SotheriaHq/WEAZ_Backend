@@ -725,10 +725,27 @@ export class StoreService {
         .filter(Boolean);
       const cardUrls = await this.resolveCardVariantUrlsByFileId(fileIds);
 
+      const displayableMedia = structuredMedia.filter(
+        (entry: any) => entry.file?.s3Url,
+      );
+
+      // Exactly ONE row may carry `isPrimary`. This used to be
+      // `matchesThumbnail || index === 0`, which flagged the first row
+      // unconditionally — so a product whose cover sat at index 3 came back
+      // with TWO primaries, and every client that picks the first match
+      // (`normalizePrimary` in the web editor, for one) silently reset the
+      // cover to image #1 on load. Saving then persisted that reset, which is
+      // how a chosen cover "changed by itself" after a round trip through the
+      // editor. Index 0 is only the fallback when nothing matches.
+      const thumbnailIndex = product?.thumbnail
+        ? displayableMedia.findIndex(
+            (entry: any) => entry.file.s3Url === product.thumbnail,
+          )
+        : -1;
+      const primaryIndex = thumbnailIndex >= 0 ? thumbnailIndex : 0;
+
       const media = await Promise.all(
-        structuredMedia
-          .filter((entry) => entry.file?.s3Url)
-          .map(async (entry, index) => {
+        displayableMedia.map(async (entry, index) => {
             const fileId = entry.fileUploadId || entry.file?.id;
             const cardUrl =
               typeof fileId === 'string' ? cardUrls.get(fileId) : undefined;
@@ -750,10 +767,7 @@ export class StoreService {
               width,
               height,
               aspectRatio: this.resolveMediaAspectRatio(entry.file),
-              isPrimary:
-                (!!product?.thumbnail &&
-                  entry.file.s3Url === product.thumbnail) ||
-                index === 0,
+              isPrimary: index === primaryIndex,
             };
           }),
       );
