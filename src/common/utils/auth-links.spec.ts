@@ -67,6 +67,47 @@ describe('auth link builders', () => {
     );
   });
 
+  // A raw `wiezmobile://` href in an email is stripped by Gmail and most other
+  // clients: the anchor survives, the link does not, and the user sees a button
+  // that renders perfectly and does nothing when tapped. Emails must only ever
+  // carry http(s).
+  describe('mobile links must stay clickable in email clients', () => {
+    it('uses the https bridge when one is known', () => {
+      expect(
+        buildEmailVerificationLink('tok', null, {
+          mobile: true,
+          bridgeBaseUrl: 'https://api.wiez.test/',
+        }),
+      ).toBe('https://api.wiez.test/auth/app-link/verify-email?token=tok');
+    });
+
+    it('falls back to the WEB link, never the custom scheme, with no bridge', () => {
+      const verify = buildEmailVerificationLink('tok', null, { mobile: true });
+      const reset = buildPasswordResetLink('tok', { mobile: true });
+
+      expect(verify).toBe('https://app.wiez.test/verify-email?token=tok');
+      expect(reset).toBe('https://app.wiez.test/reset-password?token=tok');
+      for (const link of [verify, reset]) {
+        expect(link.startsWith('http')).toBe(true);
+        expect(link).not.toContain('wiezmobile://');
+      }
+    });
+
+    it('still honours MOBILE_APP_URL when it is a real https universal link', () => {
+      resetEnv({ MOBILE_APP_URL: 'https://links.wiez.test/' });
+      expect(buildEmailVerificationLink('tok', null, { mobile: true })).toBe(
+        'https://links.wiez.test/verify-email?token=tok',
+      );
+    });
+
+    it('ignores a custom-scheme MOBILE_APP_URL', () => {
+      resetEnv({ MOBILE_APP_URL: 'wiezmobile://' });
+      expect(buildEmailVerificationLink('tok', null, { mobile: true })).toBe(
+        'https://app.wiez.test/verify-email?token=tok',
+      );
+    });
+  });
+
   it('builds the public email change confirmation route', () => {
     expect(buildEmailChangeConfirmationLink('email token/+')).toBe(
       'https://app.wiez.test/change-email/confirm?token=email%20token%2F%2B',

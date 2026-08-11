@@ -103,7 +103,13 @@ export function buildPasswordResetLink(
     if (bridgeBase) {
       return `${bridgeBase}/auth/app-link/reset-password?${query}`;
     }
-    return `${resolveMobileAuthLinkBaseUrl()}reset-password?${query}`;
+    // See `buildEmailVerificationLink`: a raw custom-scheme href is stripped by
+    // email clients, leaving a button that renders and does nothing. Fall back
+    // to the web link unless a real https universal link is configured.
+    if (/^https?:\/\//i.test(String(process.env.MOBILE_APP_URL ?? '').trim())) {
+      return `${resolveMobileAuthLinkBaseUrl()}reset-password?${query}`;
+    }
+    return `${resolveAuthLinkBaseUrl()}/reset-password?${query}`;
   }
 
   return `${resolveAuthLinkBaseUrl()}/reset-password?${query}`;
@@ -134,7 +140,22 @@ export function buildEmailVerificationLink(
     if (bridgeBase) {
       return `${bridgeBase}/auth/app-link/verify-email?${query}`;
     }
-    return `${resolveMobileAuthLinkBaseUrl()}verify-email?${query}`;
+
+    // No bridge configured. This used to fall back to the raw custom scheme
+    // (`wiezmobile://verify-email?...`) — which is the one thing that can never
+    // work in an email: Gmail and most clients strip a non-http(s) href and
+    // leave the anchor behind, so the button renders perfectly and does nothing
+    // when tapped. That is the "verification button is just text" report.
+    //
+    // The web link is the only safe fallback. It survives every client, and the
+    // web verify-email page hands off to the app where it can. An explicitly
+    // configured `MOBILE_APP_URL` is still honoured, since that is set only when
+    // it is a real https universal link.
+    const configuredMobileBase = String(process.env.MOBILE_APP_URL ?? '').trim();
+    if (/^https?:\/\//i.test(configuredMobileBase)) {
+      return `${resolveMobileAuthLinkBaseUrl()}verify-email?${query}`;
+    }
+    return `${resolveAuthLinkBaseUrl()}/verify-email?${query}`;
   }
 
   return `${resolveAuthLinkBaseUrl()}/verify-email?${query}`;
