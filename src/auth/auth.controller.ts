@@ -52,6 +52,10 @@ import { RequestPasswordResetDto } from './dto/request-password-reset.dto';
 import { ConfirmPasswordResetDto } from './dto/confirm-password-reset.dto';
 import { RequestEmailChangeDto } from './dto/request-email-change.dto';
 import { ConfirmEmailChangeDto } from './dto/confirm-email-change.dto';
+import {
+  ConfirmPhoneChangeDto,
+  RequestPhoneChangeDto,
+} from './dto/change-phone.dto';
 import { DeleteAccountDto } from './dto/delete-account.dto';
 import {
   CreateStudioHandoffDto,
@@ -353,6 +357,31 @@ export class AuthController {
   @ApiOperation({ summary: 'Confirm pending authenticated email change' })
   async confirmEmailChange(@Body(ValidationPipe) body: ConfirmEmailChangeDto) {
     return this.authService.confirmEmailChange(body.token);
+  }
+
+  // Phone change is authorised by a 6-digit code sent to the VERIFIED email on
+  // the account — see `requestPhoneChange`. Throttled like the email change:
+  // each request sends mail, and each confirm is a guess at a 6-digit secret.
+  @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 4, ttl: 900000 } })
+  @Post('change-phone/request')
+  @ApiOperation({ summary: 'Email a 6-digit code to confirm a phone change' })
+  async requestPhoneChange(
+    @Req() req: Request & { user: { id: string } },
+    @Body(ValidationPipe) body: RequestPhoneChangeDto,
+  ) {
+    return this.authService.requestPhoneChange(req.user.id, body.phoneNumber);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 8, ttl: 900000 } })
+  @Post('change-phone/confirm')
+  @ApiOperation({ summary: 'Confirm a pending phone change with the code' })
+  async confirmPhoneChange(
+    @Req() req: Request & { user: { id: string } },
+    @Body(ValidationPipe) body: ConfirmPhoneChangeDto,
+  ) {
+    return this.authService.confirmPhoneChange(req.user.id, body.code);
   }
 
   @Post('refresh')

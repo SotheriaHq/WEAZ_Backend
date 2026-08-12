@@ -50,17 +50,18 @@ const muted = (text: string) =>
   `<p style="color:${TEXT_MUTED};font-size:13px;line-height:1.6;margin:6px 0 0">${text}</p>`;
 
 /**
- * A copyable, visible URL under an action button.
+ * A secondary, labelled way through when the button does not work.
  *
- * Every mail client mangles something eventually — a stripped href, a proxy
- * that drops the anchor, a corporate scanner that burns the single-use token by
- * prefetching it. When the button fails there has to be a second way through
- * that needs no rendering support at all, which is a URL the reader can see and
- * paste. `word-break` keeps a long token from blowing out narrow layouts.
+ * This printed the raw URL, on the reasoning that a visible URL survives a
+ * client that strips hrefs. In practice it showed the reader a 200-character
+ * token — ugly, alarming, and wrapped across three lines. The raw URL still
+ * exists where copy-paste actually belongs: the `text` part of every one of
+ * these emails already contains it on its own line, and any client that mangles
+ * the HTML part falls back to exactly that.
  */
-const linkFallback = (url: string, lead: string) =>
-  `<p style="color:${TEXT_MUTED};font-size:12px;line-height:1.6;margin:14px 0 0">${lead}<br />
-      <span style="color:${BRAND_PRIMARY};word-break:break-all;font-size:12px">${escapeHtml(url)}</span></p>`;
+const linkFallback = (url: string, label: string) =>
+  `<p style="color:${TEXT_MUTED};font-size:12px;line-height:1.6;margin:14px 0 0">Button not working?
+      <a href="${escapeHtml(url)}" style="color:${BRAND_PRIMARY};font-weight:700;text-decoration:underline">${escapeHtml(label)}</a></p>`;
 
 const VERIFICATION_WORKSPACE_URL = resolveAppUrl('/studio/verification');
 
@@ -81,7 +82,7 @@ export function passwordResetEmail(
       `${p(`No worries — it happens to the best of us. We received a request to reset the password on your <strong>${companyName}</strong> account.`)}
       ${p('Click the button below to create a new password. The link is valid for <strong>1 hour</strong> and can only be used once.')}
       <div style="text-align:center;margin:24px 0">${btn(resetLink, 'Reset My Password')}</div>
-      ${linkFallback(resetLink, "Button not working? Copy this link into your browser:")}
+      ${linkFallback(resetLink, 'Reset your password')}
       ${warningBox(`<p style="margin:0;color:#9a3412;font-size:13px">If you didn't request this, your account is safe — just ignore this email. Your current password remains unchanged.</p>`)}`,
       companyName,
     ),
@@ -102,7 +103,7 @@ export function emailVerificationEmail(
       `${p(`Welcome to <strong>${companyName}</strong> — Africa's fashion social commerce community. You're just one click away from unlocking your full workspace.`)}
       ${p('Verifying your email lets you create designs, connect with buyers, build your brand, and do so much more. It keeps your account secure too.')}
       <div style="text-align:center;margin:24px 0">${btn(verifyLink, 'WIEZ up my email')}</div>
-      ${linkFallback(verifyLink, "Button not working? Copy this link into your browser:")}
+      ${linkFallback(verifyLink, 'Verify your email')}
       ${infoBox(`<p style="margin:0;color:${BRAND_PRIMARY};font-size:13px">This link is single-use and stops working once your email is confirmed — so click it when you're ready to dive in.</p>`)}`,
       companyName,
       `This email was sent because someone signed up for a ${companyName} account with this address.`,
@@ -127,6 +128,36 @@ const renderCodeBox = (safeCode: string) =>
 const CODE_EXPIRY_WARNING = warningBox(
   `<p style="margin:0;color:#9a3412;font-size:13px">This code expires in <strong>10 minutes</strong> and can only be used once. If you didn't request it, ignore this email.</p>`,
 );
+
+/**
+ * Six-digit code authorising a phone-number change.
+ *
+ * Shows the number being added so the reader can tell a change they started
+ * apart from one they did not — the code alone gives them nothing to check.
+ */
+export function phoneChangeCodeEmail(
+  code: string,
+  newPhoneNumber: string,
+  appName: string,
+): EmailContent {
+  const companyName = normalizeCompanyName(appName);
+  const safeCode = escapeHtml(code);
+  const safePhone = escapeHtml(newPhoneNumber);
+
+  return {
+    subject: `📱 Your ${companyName} phone change code`,
+    html: wrap(
+      '📱 Confirm your new phone number',
+      `${p(`Enter this code in ${companyName} to set <strong>${safePhone}</strong> as the phone number on your account.`)}
+      ${renderCodeBox(safeCode)}
+      ${CODE_EXPIRY_WARNING}
+      ${p(`If you did not ask to change your phone number, ignore this email and consider changing your password — someone with access to your account started this.`)}`,
+      companyName,
+      `This email was sent because a phone-number change was requested on your ${companyName} account.`,
+    ),
+    text: `Confirm your new phone number\n\nEnter this code in ${companyName} to set ${newPhoneNumber} as your account phone number:\n\n${code}\n\nThis code expires in 10 minutes and can only be used once. If you did not request it, ignore this email.`,
+  };
+}
 
 export function emailLoginCodeEmail(
   code: string,

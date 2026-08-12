@@ -238,6 +238,17 @@ export function normalizeBrandProfileForBrandResponse(
       resolveNullableBrandField(user, 'companyLocation') ||
       filled(user.userProfile?.address) ||
       null,
+    /**
+     * The exact street address, kept separate from `location`.
+     *
+     * `location` is the city/state/country line shown under a brand name;
+     * `streetAddress` is where the brand actually is. Collapsing them was why
+     * there was nowhere to put a real address.
+     */
+    streetAddress:
+      resolveNullableBrandField(user, 'companyLocation') ||
+      filled(user.userProfile?.address) ||
+      null,
     businessType: resolveNullableBrandField(user, 'brandBusinessType'),
     tags: resolveBrandTags(user),
     socialLinks: resolveBrandSocialLinks(user),

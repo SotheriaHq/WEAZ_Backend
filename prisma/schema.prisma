@@ -351,6 +351,10 @@ model EmailLoginCode {
   user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
   purpose   LoginCodePurpose
   codeHash  String
+  /// The value this code authorises, when the purpose carries one (the new
+  /// phone number for PHONE_CHANGE). Held here rather than on User so an
+  /// unconfirmed value never sits on the account record.
+  pendingValue String?
   expiresAt DateTime
   usedAt    DateTime?
   attempts  Int              @default(0)
@@ -418,6 +422,10 @@ enum PasswordCredentialStatus {
 enum LoginCodePurpose {
   PASSWORD_SETUP
   DIRECT_LOGIN
+  // Confirming a new phone number. The code goes to the VERIFIED email on the
+  // account, so control of that inbox authorises the change — a new phone is
+  // unverified by definition and cannot authorise itself.
+  PHONE_CHANGE
 }
 
 enum LegalDocumentKey {

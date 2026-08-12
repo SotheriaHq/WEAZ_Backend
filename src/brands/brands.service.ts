@@ -76,6 +76,8 @@ export interface BrandProfileResponse {
   state: string | null;
   city: string | null;
   location: string | null;
+  /** Exact street address. Owner-only, and hidden by the showLocation toggle. */
+  streetAddress: string | null;
   bannerImage: string | null;
   bannerImageId: string | null;
   bannerImageMeta: BrandMediaAsset | null;
@@ -682,6 +684,10 @@ export class BrandsService {
       state: locationVisible ? canonicalProfile.state : null,
       city: locationVisible ? canonicalProfile.city : null,
       location: locationVisible ? canonicalProfile.location : null,
+      // An exact address is more sensitive than a city, so it follows the same
+      // privacy toggle and is additionally owner-only.
+      streetAddress:
+        isOwnerViewer && locationVisible ? canonicalProfile.streetAddress : null,
       bannerImage,
       bannerImageId: bannerAssetSource.fileId,
       bannerImageMeta: bannerAsset,
@@ -760,14 +766,18 @@ export class BrandsService {
     const brandState = trimOrNull(dto.brandState);
     const brandCity = trimOrNull(dto.brandCity);
 
-    const companyLocation = [brandCity, brandState, brandCountry]
-      .filter((segment) => Boolean(segment))
-      .join(', ');
-
-    const locationWasProvided =
-      dto.brandCountry !== undefined ||
-      dto.brandState !== undefined ||
-      dto.brandCity !== undefined;
+    /**
+     * `companyLocation` now holds the brand's EXACT address.
+     *
+     * It used to hold `city, state, country` joined — a stored duplicate of
+     * three columns sitting right beside it, which no reader used: the profile
+     * response derives `location` from city/state/country itself and only fell
+     * back to `companyLocation` when all three were empty. Repurposing the
+     * column for the street address the brands actually asked for costs no
+     * migration and makes the name true.
+     */
+    const brandStreetAddress = trimOrNull(dto.brandStreetAddress);
+    const streetAddressWasProvided = dto.brandStreetAddress !== undefined;
 
     const brandData: Prisma.BrandUpdateInput = {
       ...(dto.brandFullName !== undefined && {
@@ -796,11 +806,8 @@ export class BrandsService {
       ...(dto.businessType !== undefined && {
         businessType: trimOrNull(dto.businessType),
       }),
-      ...(locationWasProvided
-        ? {
-            companyLocation:
-              companyLocation.length > 0 ? companyLocation : null,
-          }
+      ...(streetAddressWasProvided
+        ? { companyLocation: brandStreetAddress }
         : {}),
     };
     const brandCreateData: Prisma.BrandUncheckedCreateInput = {
@@ -840,10 +847,8 @@ export class BrandsService {
         dto.socialWebsite !== undefined
           ? trimOrNull(dto.socialWebsite)
           : brand.brand?.socialWebsite,
-      companyLocation: locationWasProvided
-        ? companyLocation.length > 0
-          ? companyLocation
-          : null
+      companyLocation: streetAddressWasProvided
+        ? brandStreetAddress
         : brand.brand?.companyLocation,
       cacNumber: brand.brand?.cacNumber,
       tin: brand.brand?.tin,

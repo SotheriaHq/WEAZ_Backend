@@ -2523,6 +2523,162 @@ export class AuthService {
     }
   }
 
+  /**
+   * Start a phone-number change: email the owner a six-digit code.
+   *
+   * The code goes to the account's VERIFIED email, not to the new phone. A
+   * number nobody has proven control of cannot be the thing that authorises
+   * adding it, and we have no SMS provider — the verified inbox is the strongest
+   * factor available, and it is the same one that already guards email changes.
+   *
+   * The pending number lives on the code row, so an unconfirmed value never
+   * touches the user record.
+   */
+  async requestPhoneChange(userId: string, newPhoneNumber: string) {
+    const normalized = normalizePhoneToE164(newPhoneNumber);
+    if (!normalized) {
+      throw new BadRequestException('Enter a valid phone number');
+    }
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        email: true,
+        isEmailVerified: true,
+        status: true,
+        userProfile: { select: { phoneNumber: true } },
+      },
+    });
+
+    if (!user || user.status !== UserStatus.ACTIVE) {
+      throw new UnauthorizedException('User not found');
+    }
+    if (!user.isEmailVerified) {
+      throw new ForbiddenException(
+        'Verify your email address before changing your phone number.',
+      );
+    }
+    if (user.userProfile?.phoneNumber === normalized) {
+      throw new BadRequestException(
+        'That is already the phone number on this account.',
+      );
+    }
+
+    const code = this.generateEmailLoginCode();
+    const codeHash = await this.passwordService.hashPassword(code);
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + EMAIL_LOGIN_CODE_TTL_MS);
+
+    await this.prisma.$transaction(async (tx) => {
+      // Requesting again supersedes any code still in flight, so a user who
+      // mistypes the number cannot confirm the previous one by accident.
+      await tx.emailLoginCode.updateMany({
+        where: {
+          userId: user.id,
+          purpose: LoginCodePurpose.PHONE_CHANGE,
+          usedAt: null,
+          expiresAt: { gt: now },
+        },
+        data: { usedAt: now },
+      });
+
+      await tx.emailLoginCode.create({
+        data: {
+          id: uuidv4(),
+          userId: user.id,
+          purpose: LoginCodePurpose.PHONE_CHANGE,
+          codeHash,
+          pendingValue: normalized,
+          expiresAt,
+        },
+      });
+    });
+
+    const emailContent = emailTemplates.phoneChangeCodeEmail(
+      code,
+      normalized,
+      this.emailService.getAppName(),
+    );
+    await this.sendScenarioEmailIfAllowed({
+      userId: user.id,
+      to: user.email,
+      scenarioKey: 'auth.phone_change.code',
+      subject: emailContent.subject,
+      html: emailContent.html,
+      text: emailContent.text,
+      priority: EmailPriority.P0_SECURITY,
+    });
+
+    return {
+      message: 'We sent a 6-digit code to your email address.',
+      expiresInSeconds: Math.floor(EMAIL_LOGIN_CODE_TTL_MS / 1000),
+    };
+  }
+
+  /** Confirm a pending phone change with the six-digit code. */
+  async confirmPhoneChange(userId: string, submittedCode: string) {
+    const now = new Date();
+    const activeCode = await this.prisma.emailLoginCode.findFirst({
+      where: {
+        userId,
+        purpose: LoginCodePurpose.PHONE_CHANGE,
+        usedAt: null,
+        expiresAt: { gt: now },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    if (
+      !activeCode ||
+      !activeCode.pendingValue ||
+      activeCode.attempts >= EMAIL_LOGIN_CODE_MAX_ATTEMPTS
+    ) {
+      throw new BadRequestException('Invalid or expired verification code');
+    }
+
+    const valid = await this.verifyOptionalPassword(
+      activeCode.codeHash,
+      String(submittedCode ?? '').trim(),
+    ).catch(() => false);
+
+    if (!valid) {
+      await this.prisma.emailLoginCode.update({
+        where: { id: activeCode.id },
+        data: {
+          attempts: { increment: 1 },
+          // Burn the code once the attempt budget is spent, so a wrong guess
+          // cannot be retried indefinitely against a live code.
+          ...(activeCode.attempts + 1 >= EMAIL_LOGIN_CODE_MAX_ATTEMPTS
+            ? { usedAt: now }
+            : {}),
+        },
+      });
+      throw new BadRequestException('Invalid or expired verification code');
+    }
+
+    const phoneNumber = activeCode.pendingValue;
+
+    await this.prisma.$transaction(async (tx) => {
+      // Claim the code first: `updateMany` with the same predicate makes the
+      // write atomic, so two concurrent confirmations cannot both succeed.
+      const claimed = await tx.emailLoginCode.updateMany({
+        where: { id: activeCode.id, usedAt: null, expiresAt: { gt: now } },
+        data: { usedAt: now },
+      });
+      if (claimed.count !== 1) {
+        throw new BadRequestException('Invalid or expired verification code');
+      }
+
+      await tx.userProfile.update({
+        where: { userId },
+        data: { phoneNumber },
+      });
+    });
+
+    return { message: 'Phone number updated.', phoneNumber };
+  }
+
   async requestEmailChange(
     userId: string,
     newEmail: string,

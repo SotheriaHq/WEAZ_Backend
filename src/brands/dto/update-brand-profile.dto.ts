@@ -72,6 +72,21 @@ export class UpdateBrandProfileDto {
   })
   brandCity?: string;
 
+  /**
+   * Free-text street address. Deliberately NOT validated with `NAME_REGEX` like
+   * city/state/country: real addresses carry digits, commas, slashes and `#`,
+   * and rejecting them is how a validator becomes the thing standing between a
+   * brand and their own profile.
+   */
+  @ApiPropertyOptional({
+    description: 'Exact street address, e.g. "12 Adeola Odeku St, Victoria Island"',
+  })
+  @IsOptional()
+  @Transform(trimToUndefined)
+  @IsString()
+  @MaxLength(255, { message: 'Address must be 255 characters or fewer' })
+  brandStreetAddress?: string;
+
   @ApiPropertyOptional({
     isArray: true,
     type: String,
