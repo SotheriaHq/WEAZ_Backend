@@ -699,7 +699,12 @@ export class BrandsService {
       contactInfo: {
         email: isOwnerViewer ? brand.email : null,
         phone: null,
-        businessType: canonicalProfile.businessType || 'Fashion Brand',
+        // Report what the brand actually chose. This used to substitute
+        // 'Fashion Brand' for an unset value, and the editors treat whatever
+        // the API returns as the current selection — so an unset business type
+        // came back as a real-looking choice and appeared as a selectable
+        // option in the picker, one that is not on anybody's list.
+        businessType: canonicalProfile.businessType || null,
       },
       tags: canonicalProfile.tags,
       hashtags: canonicalProfile.tags,

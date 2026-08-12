@@ -1,4 +1,4 @@
-import { randomBytes } from 'crypto';
+import { createHmac, randomBytes, timingSafeEqual } from 'crypto';
 import { Injectable, UnauthorizedException, Logger } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { RefreshToken } from '@prisma/client';
@@ -8,6 +8,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { Request, Response } from 'express';
 import {
   AuthUser,
+  authTokenClaimsSelect,
   authUserSelect,
   buildAuthTokenPayload,
 } from './prisma-select.helper';
@@ -20,6 +21,28 @@ const DEFAULT_REFRESH_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 const ADMIN_REFRESH_TOKEN_TTL_MS = 5 * 60 * 60 * 1000; // 5 hours for admin roles
 const ADMIN_ABSOLUTE_SESSION_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours absolute cap
 const DEFAULT_BCRYPT_ROUNDS = 10;
+
+/**
+ * Prefix marking a refresh-token hash as HMAC-SHA256 rather than legacy bcrypt.
+ *
+ * Refresh secrets are `randomBytes(32)` — 256 bits from a CSPRNG. bcrypt's work
+ * factor exists to make GUESSING expensive for low-entropy human passwords; a
+ * 256-bit random secret is not guessable at any work factor, so the cost bought
+ * nothing and was paid on every single refresh: one `bcrypt.compare` to verify
+ * plus one `bcrypt.hash` to rotate, ~80-100ms each on a small box. That is the
+ * dominant cost of the most frequently called endpoint in the whole API.
+ *
+ * HMAC keyed with a server-side pepper gives the property that actually
+ * matters — someone who reads the `refresh_tokens` table still cannot derive a
+ * usable token — because the key lives in the environment, not the database. If
+ * that key also leaks, the attacker can mint access tokens directly, so bcrypt
+ * would not have saved the session either.
+ *
+ * Existing bcrypt rows keep verifying (see `verifyRefreshSecret`) and are
+ * rewritten in the new format the first time they rotate. No migration, no
+ * forced logout.
+ */
+const HMAC_REFRESH_HASH_PREFIX = 'hmac1:';
 
 @Injectable()
 export class TokenService {
@@ -96,6 +119,42 @@ export class TokenService {
     );
   }
 
+  /**
+   * HMAC key for refresh-token hashes. Defaults to the access-token secret:
+   * same trust boundary, already mandatory, so this needs no new deployment
+   * step. Set `REFRESH_TOKEN_HASH_SECRET` to separate them.
+   */
+  private get refreshTokenHashSecret(): string {
+    return (
+      this.configService.get<string>('REFRESH_TOKEN_HASH_SECRET') ||
+      this.accessTokenSecret
+    );
+  }
+
+  private hashRefreshSecret(secret: string): string {
+    const digest = createHmac('sha256', this.refreshTokenHashSecret)
+      .update(secret)
+      .digest('hex');
+    return `${HMAC_REFRESH_HASH_PREFIX}${digest}`;
+  }
+
+  private async verifyRefreshSecret(
+    secret: string,
+    storedHash: string,
+  ): Promise<boolean> {
+    if (storedHash?.startsWith(HMAC_REFRESH_HASH_PREFIX)) {
+      const expected = Buffer.from(this.hashRefreshSecret(secret));
+      const actual = Buffer.from(storedHash);
+      return (
+        expected.length === actual.length && timingSafeEqual(expected, actual)
+      );
+    }
+    // Session issued before the format change. Still valid; rotation below
+    // rewrites it as HMAC, so each session pays the bcrypt cost at most once
+    // more.
+    return bcrypt.compare(secret, storedHash);
+  }
+
   private isMobileClient(req: Request): boolean {
     const platformHeader = req.headers['x-client-platform'];
     const value = Array.isArray(platformHeader)
@@ -149,7 +208,7 @@ export class TokenService {
     });
   }
 
-  private getRefreshTtlForUser(user: AuthUser): number {
+  private getRefreshTtlForUser(user: Pick<AuthUser, 'role'>): number {
     if (user.role === 'SuperAdmin' || user.role === 'Admin') {
       return ADMIN_REFRESH_TOKEN_TTL_MS;
     }
@@ -167,7 +226,7 @@ export class TokenService {
   ) {
     const sessionId = uuidv4();
     const secret = randomBytes(32).toString('hex');
-    const tokenHash = await bcrypt.hash(secret, this.bcryptRounds);
+    const tokenHash = this.hashRefreshSecret(secret);
     const expiresAt = new Date(
       Date.now() + (ttlMs ?? this.refreshTokenTtlMilliseconds),
     );
@@ -194,7 +253,7 @@ export class TokenService {
     ttlMs: number,
   ) {
     const secret = randomBytes(32).toString('hex');
-    const tokenHash = await bcrypt.hash(secret, this.bcryptRounds);
+    const tokenHash = this.hashRefreshSecret(secret);
     const expiresAt = new Date(Date.now() + ttlMs);
 
     await this.prisma.refreshToken.update({
@@ -291,14 +350,22 @@ export class TokenService {
         throw new UnauthorizedException('Invalid or expired refresh token');
       }
 
-      const isValid = await bcrypt.compare(secret, storedToken.tokenHash);
+      const isValid = await this.verifyRefreshSecret(
+        secret,
+        storedToken.tokenHash,
+      );
       if (!isValid) {
         throw new UnauthorizedException('Invalid refresh token');
       }
 
+      // Claims-only projection. This used to load `authUserSelect` — the full
+      // brand profile, every brand membership with its brand join, and the user
+      // profile with both image-file joins — to build a JWT that carries eight
+      // scalar fields and then discard the rest. Refresh returns no user object,
+      // so none of it was ever read.
       const user = await this.prisma.user.findUnique({
         where: { id: storedToken.userId },
-        select: authUserSelect,
+        select: authTokenClaimsSelect,
       });
 
       if (!user) {

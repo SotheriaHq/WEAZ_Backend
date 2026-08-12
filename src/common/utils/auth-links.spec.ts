@@ -1,5 +1,6 @@
 import {
   buildAdminPasswordResetLink,
+  buildAppLinkBridgeHtml,
   buildEmailChangeConfirmationLink,
   buildEmailVerificationLink,
   buildPasswordResetLink,
@@ -105,6 +106,50 @@ describe('auth link builders', () => {
       expect(buildEmailVerificationLink('tok', null, { mobile: true })).toBe(
         'https://app.wiez.test/verify-email?token=tok',
       );
+    });
+  });
+
+  // The bridge page is the surface the email button now lands on, so it owns
+  // the same failure mode the email did: a `wiezmobile://` anchor is a no-op in
+  // Chrome and in the Gmail in-app browser. Every VISIBLE link here must be
+  // http(s); the app hand-off happens in script, not in the only button.
+  describe('open-in-app bridge page', () => {
+    it('renders no custom-scheme anchor at all', () => {
+      const html = buildAppLinkBridgeHtml('verify-email', {
+        token: 'tok',
+        next: '/catalog',
+      });
+
+      const hrefs = [...html.matchAll(/href="([^"]+)"/g)].map(
+        (match) => match[1],
+      );
+      expect(hrefs.length).toBeGreaterThan(0);
+      for (const href of hrefs) {
+        expect(href.startsWith('https://')).toBe(true);
+      }
+    });
+
+    it('makes the primary button complete the action on the web', () => {
+      const html = buildAppLinkBridgeHtml('verify-email', {
+        token: 'tok',
+        next: '/catalog',
+      });
+
+      expect(html).toContain(
+        'href="https://app.wiez.test/verify-email?token=tok&amp;next=%2Fcatalog"',
+      );
+      expect(html).toContain('Confirm my email');
+    });
+
+    it('hands off to the app through script, with an Android intent URL', () => {
+      const html = buildAppLinkBridgeHtml('reset-password', { token: 'tok' });
+
+      expect(html).toContain('wiezmobile://reset-password?token=tok');
+      expect(html).toContain('intent://reset-password?token=tok#Intent');
+      expect(html).toContain('scheme=wiezmobile');
+      expect(html).toContain('S.browser_fallback_url=');
+      // …and still leaves a working https button behind.
+      expect(html).toContain('href="https://app.wiez.test/reset-password?token=tok"');
     });
   });
 

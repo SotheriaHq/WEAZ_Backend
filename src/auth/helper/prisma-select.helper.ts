@@ -63,6 +63,37 @@ export const authUserSelect = Prisma.validator<Prisma.UserSelect>()({
     select: canonicalUserProfileSelect,
   },
 });
+/**
+ * The minimum a JWT needs. `buildAuthTokenPayload` reads eight scalars plus the
+ * admin permission codes; the session guards on refresh read `status`, `role`
+ * and `mustResetPassword`. Nothing else.
+ *
+ * `authUserSelect` — brand profile, brand memberships with their brand joins,
+ * user profile with both image-file joins — is the shape of a LOGIN RESPONSE.
+ * Using it to mint a token made every refresh (once per client per 15 minutes,
+ * the highest-volume authenticated call there is) pay for five joins whose
+ * result was thrown away.
+ */
+export const authTokenClaimsSelect = Prisma.validator<Prisma.UserSelect>()({
+  id: true,
+  username: true,
+  role: true,
+  type: true,
+  email: true,
+  status: true,
+  mustResetPassword: true,
+  authVersion: true,
+  adminPermissionGrants: {
+    select: { permissionCode: true },
+  },
+  userProfile: {
+    select: { firstName: true, lastName: true },
+  },
+});
+export type AuthTokenClaimsUser = Prisma.UserGetPayload<{
+  select: typeof authTokenClaimsSelect;
+}>;
+
 export const profileUserSelect = Prisma.validator<Prisma.UserSelect>()({
   ...authUserSelect,
   // profileImageFile: {
@@ -207,15 +238,21 @@ export const toAuthUserResponse = (
 export const toAuthUsersResponse = (
   users: Array<AuthUser | ProfileUser>,
 ): AuthUserResponseDto[] => users.map((user) => toAuthUserResponse(user));
-export const buildAuthTokenPayload = (user: AuthUser): AuthJwtClaims => {
+export const buildAuthTokenPayload = (
+  user: AuthUser | AuthTokenClaimsUser,
+): AuthJwtClaims => {
+  // Read the two name fields directly rather than through
+  // `resolveRequiredProfileField`, whose parameter type demands the full
+  // profile projection. The claims-only select carries just these two, which is
+  // the entire point of it.
   const base: AuthJwtClaims = {
     sub: user.id,
     username: user.username,
     role: user.role,
     type: user.type,
     email: user.email,
-    firstName: resolveRequiredProfileField(user, 'firstName'),
-    lastName: resolveRequiredProfileField(user, 'lastName'),
+    firstName: user.userProfile?.firstName ?? '',
+    lastName: user.userProfile?.lastName ?? '',
     authVersion: user.authVersion ?? 0,
   };
 

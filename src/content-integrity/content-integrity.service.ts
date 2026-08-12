@@ -41,6 +41,32 @@ import {
   REQUIRED_CONTENT_MEDIA_VIEW_SLOTS,
 } from './content-integrity.constants';
 
+type BrandReviewSnapshot = {
+  id: string;
+  name: string | null;
+  trustTier: BrandTrustTier | null;
+  reviewMode: BrandContentReviewMode | null;
+  latestTrustEvent: BrandTrustEventType | null;
+  latestTrustEventAt: Date | null;
+  verificationStatus: BrandVerificationStatus | null;
+  isVerified: boolean;
+  emailVerified: boolean;
+} | null;
+type UserSnapshot = { id: string; username: string | null } | null;
+
+/**
+ * Per-call memo caches. A review queue page is usually a handful of brands
+ * submitting several items each, and the same admin reviewing all of them, so
+ * without this the identical brand and user rows are re-read once per
+ * submission. Scoped to one request — never a process-lifetime cache.
+ */
+type SubmissionMapOptions = {
+  includeReports?: boolean;
+  mode?: 'list' | 'detail';
+  brandCache?: Map<string, Promise<BrandReviewSnapshot>>;
+  userCache?: Map<string, Promise<UserSnapshot>>;
+};
+
 type ProductMediaInput = {
   fileUploadId?: string;
   fileId?: string;
@@ -700,8 +726,14 @@ export class ContentIntegrityService {
     ]);
 
     const pageRows = rows.slice(0, take);
+    // One set of caches for the whole page: a queue is typically a few brands
+    // submitting several items each, reviewed by the same one or two admins.
+    const brandCache = new Map<string, Promise<BrandReviewSnapshot>>();
+    const userCache = new Map<string, Promise<UserSnapshot>>();
     const enriched = await Promise.all(
-      pageRows.map((row) => this.mapSubmissionDetail(row)),
+      pageRows.map((row) =>
+        this.mapSubmissionDetail(row, { mode: 'list', brandCache, userCache }),
+      ),
     );
     const q = String(filters.q ?? '')
       .trim()
@@ -1080,19 +1112,32 @@ export class ContentIntegrityService {
 
   private async mapSubmissionDetail(
     submission: any,
-    options: { includeReports?: boolean } = {},
+    options: SubmissionMapOptions = {},
   ) {
+    // The queue list renders a thumbnail, title, brand, status and slot count.
+    // It used to be built from the SAME full detail projection as the modal, so
+    // one page of 50 rows fanned out into hundreds of queries — review history
+    // and every content report, for rows nobody had opened yet. `list` mode
+    // fetches only what a row shows; the modal still gets everything.
+    const listMode = options.mode === 'list';
     const target = await this.getSubmissionTarget(submission);
-    const media = await this.getSubmissionMedia(submission);
+    const media = await this.getSubmissionMedia(submission, {
+      // A row shows one thumbnail. The rest of the media still loads (slot
+      // completeness is counted from it) but needs no display URL.
+      previewLimit: listMode ? 1 : undefined,
+    });
     const [brand, submittedBy, reviewedBy, history, reports] =
       await Promise.all([
-        this.getBrandReviewSnapshot(submission.brandId ?? target.brandId),
-        this.getUserSnapshot(submission.submittedById),
+        this.getBrandReviewSnapshot(
+          submission.brandId ?? target.brandId,
+          options.brandCache,
+        ),
+        this.getUserSnapshot(submission.submittedById, options.userCache),
         submission.reviewedById
-          ? this.getUserSnapshot(submission.reviewedById)
+          ? this.getUserSnapshot(submission.reviewedById, options.userCache)
           : Promise.resolve(null),
-        this.getSubmissionHistory(submission),
-        options.includeReports === false
+        listMode ? Promise.resolve([]) : this.getSubmissionHistory(submission),
+        listMode || options.includeReports === false
           ? Promise.resolve([])
           : this.getReportsForSubmission(target, media),
       ]);
@@ -1144,8 +1189,21 @@ export class ContentIntegrityService {
           isActive: true,
           createdAt: true,
           updatedAt: true,
+          // Commercial terms are part of what is being approved: a reviewer
+          // deciding whether a listing may go live needs the price it will go
+          // live at, and whether it accepts commissions. Neither was returned,
+          // so the console judged photos alone.
+          price: true,
+          salePrice: true,
+          currency: true,
+          customOrderEnabled: true,
+          standardCheckoutEnabled: true,
         },
       });
+      // Prisma Decimal does not survive JSON serialization as a number; send a
+      // plain number so the console can format it without a Decimal shim.
+      const toAmount = (value: Prisma.Decimal | null | undefined) =>
+        value === null || value === undefined ? null : Number(value);
       return {
         id: submission.productId,
         type: ContentEntityType.PRODUCT,
@@ -1157,6 +1215,11 @@ export class ContentIntegrityService {
         isActive: product?.isActive ?? false,
         createdAt: product?.createdAt ?? null,
         updatedAt: product?.updatedAt ?? null,
+        price: toAmount(product?.price),
+        salePrice: toAmount(product?.salePrice),
+        currency: product?.currency ?? null,
+        customOrderEnabled: product?.customOrderEnabled ?? null,
+        standardCheckoutEnabled: product?.standardCheckoutEnabled ?? null,
       };
     }
 
@@ -1186,10 +1249,20 @@ export class ContentIntegrityService {
       isActive: collection?.status === CollectionStatus.PUBLISHED,
       createdAt: collection?.createdAt ?? null,
       updatedAt: collection?.updatedAt ?? null,
+      // Designs are not priced or sold; the keys are present so both entity
+      // types share one shape and the console needs no branch to read them.
+      price: null,
+      salePrice: null,
+      currency: null,
+      customOrderEnabled: null,
+      standardCheckoutEnabled: null,
     };
   }
 
-  private async getSubmissionMedia(submission: any) {
+  private async getSubmissionMedia(
+    submission: any,
+    options: { previewLimit?: number } = {},
+  ) {
     const rows = submission.productId
       ? await (this.prisma as any).productMedia.findMany({
           where: { productId: submission.productId },
@@ -1204,13 +1277,62 @@ export class ContentIntegrityService {
           })
         : [];
 
-    return Promise.all(rows.map((row) => this.mapMediaRow(row)));
+    // Resolve the processed image variants for the whole submission in two
+    // queries instead of one signing round-trip per file.
+    //
+    // Every URL on a media row used to be the SAME value: the original upload.
+    // The review grid renders those originals into ~300px squares, so opening a
+    // submission pulled several multi-megabyte camera files down the wire and
+    // then asked the browser to downscale each one — which is why the modal
+    // crawls on a fast connection. THUMB/CARD variants are produced at upload
+    // time and were simply never used here.
+    const previewRows =
+      typeof options.previewLimit === 'number'
+        ? rows.slice(0, Math.max(0, options.previewLimit))
+        : rows;
+    const fileIds: string[] = Array.from(
+      new Set<string>(
+        previewRows
+          .map((row: any) => row?.fileUploadId)
+          .filter((id: unknown): id is string => typeof id === 'string' && !!id),
+      ),
+    );
+    const [thumbUrls, cardUrls] = await Promise.all([
+      this.uploadService?.getBatchVariantDisplayUrls(fileIds, 'THUMB') ??
+        Promise.resolve(new Map<string, string>()),
+      this.uploadService?.getBatchVariantDisplayUrls(fileIds, 'CARD') ??
+        Promise.resolve(new Map<string, string>()),
+    ]);
+
+    const previewRowIds = new Set(previewRows.map((row: any) => row?.id));
+    return Promise.all(
+      rows.map((row) =>
+        this.mapMediaRow(row, thumbUrls, cardUrls, previewRowIds.has(row?.id)),
+      ),
+    );
   }
 
-  private async mapMediaRow(row: any) {
+  private async mapMediaRow(
+    row: any,
+    thumbUrls?: Map<string, string>,
+    cardUrls?: Map<string, string>,
+    resolvePreview = true,
+  ) {
     const slot = this.normalizeViewSlot(row.viewSlot, row.orderIndex);
     const reasonCode = row.reviewReasonCode as ContentReviewReasonCode | null;
-    const previewUrl = await this.getReviewMediaPreviewUrl(row.file);
+    // Signing the original is the expensive part. Rows the caller will not
+    // display (everything past a list row's single thumbnail) skip it and keep
+    // their slot/status fields, which is all the slot counter reads.
+    const originalUrl = resolvePreview
+      ? await this.getReviewMediaPreviewUrl(row.file)
+      : null;
+    const fileId =
+      typeof row.fileUploadId === 'string' ? row.fileUploadId : null;
+    // Variants exist only for images that finished processing; fall back to the
+    // original so a still-processing or legacy upload stays reviewable.
+    const cardUrl = (fileId ? cardUrls?.get(fileId) : null) ?? null;
+    const thumbnailUrl =
+      (fileId ? thumbUrls?.get(fileId) : null) ?? cardUrl ?? originalUrl;
     return {
       id: row.id,
       fileId: row.fileUploadId,
@@ -1226,10 +1348,12 @@ export class ContentIntegrityService {
         : null,
       reviewReason: row.reviewReason ?? null,
       orderIndex: row.orderIndex,
-      canPreview: Boolean(previewUrl),
-      previewUrl,
-      url: previewUrl,
-      thumbnailUrl: previewUrl,
+      canPreview: Boolean(originalUrl ?? thumbnailUrl),
+      // Grid-sized image for the review tiles.
+      previewUrl: cardUrl ?? originalUrl,
+      // Full original, for opening a tile at full resolution.
+      url: originalUrl,
+      thumbnailUrl,
     };
   }
 
@@ -1278,8 +1402,24 @@ export class ContentIntegrityService {
     return labels[String(slot)] ?? 'Other';
   }
 
-  private async getBrandReviewSnapshot(brandId?: string | null) {
+  private async getBrandReviewSnapshot(
+    brandId?: string | null,
+    cache?: Map<string, Promise<BrandReviewSnapshot>>,
+  ): Promise<BrandReviewSnapshot> {
     if (!brandId) return null;
+    if (cache) {
+      const cached = cache.get(brandId);
+      if (cached) return cached;
+      const pending = this.loadBrandReviewSnapshot(brandId);
+      cache.set(brandId, pending);
+      return pending;
+    }
+    return this.loadBrandReviewSnapshot(brandId);
+  }
+
+  private async loadBrandReviewSnapshot(
+    brandId: string,
+  ): Promise<BrandReviewSnapshot> {
     const [brand, latestEvent] = await Promise.all([
       this.prisma.brand.findUnique({
         where: { id: brandId },
@@ -1288,6 +1428,13 @@ export class ContentIntegrityService {
           name: true,
           contentTrustTierOverride: true,
           contentReviewModeOverride: true,
+          // Reviewer context: an unverified brand, or one whose owner never
+          // confirmed their email, is a different risk profile from a verified
+          // one submitting its tenth product. The console showed trust tier and
+          // review mode but nothing about identity, so that judgement call had
+          // to be made from a separate page.
+          verificationStatus: true,
+          owner: { select: { isEmailVerified: true } },
         },
       }),
       (this.prisma as any).brandTrustEvent.findFirst({
@@ -1310,11 +1457,29 @@ export class ContentIntegrityService {
         brand.contentReviewModeOverride ?? latestEvent?.reviewMode ?? null,
       latestTrustEvent: latestEvent?.eventType ?? null,
       latestTrustEventAt: latestEvent?.createdAt ?? null,
+      verificationStatus: brand.verificationStatus ?? null,
+      isVerified:
+        brand.verificationStatus === BrandVerificationStatus.APPROVED,
+      emailVerified: Boolean(brand.owner?.isEmailVerified),
     };
   }
 
-  private async getUserSnapshot(userId?: string | null) {
+  private async getUserSnapshot(
+    userId?: string | null,
+    cache?: Map<string, Promise<UserSnapshot>>,
+  ): Promise<UserSnapshot> {
     if (!userId) return null;
+    if (cache) {
+      const cached = cache.get(userId);
+      if (cached) return cached;
+      const pending = this.loadUserSnapshot(userId);
+      cache.set(userId, pending);
+      return pending;
+    }
+    return this.loadUserSnapshot(userId);
+  }
+
+  private async loadUserSnapshot(userId: string): Promise<UserSnapshot> {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
       select: { id: true, username: true },

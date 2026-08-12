@@ -31,6 +31,7 @@ import { UpdateStorePaymentAccountDto } from './dto/update-store-payment-account
 import { VerifyStorePaymentAccountDto } from './dto/verify-store-payment-account.dto';
 import { IsPublic } from '../auth/decorator/is-public.decorator';
 import { JwtAuthGuard } from '../auth/guard/jwt-auth.guard';
+import { EmailVerifiedGuard } from '../auth/guard/email-verified.guard';
 import { UserTypeGuard } from '../auth/guard/user-type.guard';
 import { OptionalJwtAuthGuard } from '../auth/guard/optional-jwt-auth.guard';
 import { UserType } from '@prisma/client';
@@ -636,7 +637,7 @@ export class StoreController {
     return this.storeService.getStoreGeneralSettings(req.user.id);
   }
 
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND), EmailVerifiedGuard)
   @Patch('store/settings/name')
   async updateStoreName(
     @Body(ValidationPipe) dto: UpdateStoreNameDto,
@@ -651,7 +652,7 @@ export class StoreController {
     return this.storeService.getStoreStatus(req.user.id);
   }
 
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND), EmailVerifiedGuard)
   @Post('store/open')
   async openStore(
     @Body(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
@@ -661,13 +662,13 @@ export class StoreController {
     return this.storeService.openStore(String(req.user?.id), dto, req);
   }
 
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND), EmailVerifiedGuard)
   @Post('store/close')
   async closeStore(@Req() req: any) {
     return this.storeService.closeStore(req.user.id);
   }
 
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, EmailVerifiedGuard)
   @Patch('store/profile')
   async updateStoreProfile(
     @Body(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
@@ -677,7 +678,7 @@ export class StoreController {
     return this.storeService.updateStoreProfile(req.user.id, dto);
   }
 
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND), EmailVerifiedGuard)
   @Patch('store/working-hours')
   async updateWorkingHours(
     @Body(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
@@ -693,7 +694,7 @@ export class StoreController {
     return this.storeService.getStorePolicies(req.user.id);
   }
 
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND), EmailVerifiedGuard)
   @Patch('store/policies')
   async updateStorePolicies(
     @Body(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
@@ -715,7 +716,7 @@ export class StoreController {
     return this.storeService.listSupportedPaymentBanks();
   }
 
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND), EmailVerifiedGuard)
   @UseInterceptors(IdempotencyInterceptor)
   @Patch('store/payment-account')
   async updateStorePaymentAccount(
@@ -726,7 +727,7 @@ export class StoreController {
     return this.storeService.updateStorePaymentAccount(req.user.id, dto);
   }
 
-  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND))
+  @UseGuards(JwtAuthGuard, new UserTypeGuard(UserType.BRAND), EmailVerifiedGuard)
   @Post('store/payment-account/verify')
   // Paid: resolves a bank account via Paystack. A per-user daily business cap
   // already applies; this per-minute throttle stops rapid abuse (Rule 32).

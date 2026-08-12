@@ -3,9 +3,22 @@ import { Request } from 'express';
 import { createHash } from 'crypto';
 import { PrismaService } from 'src/prisma/prisma.service';
 
+export type DeviceSignals = {
+  ip: string;
+  userAgent: string;
+  platform: string;
+  acceptLanguage: string;
+};
+
 @Injectable()
 export class TrustedDeviceService {
   constructor(private readonly prisma: PrismaService) {}
+
+  private isDeviceSignals(
+    value: Request | DeviceSignals,
+  ): value is DeviceSignals {
+    return typeof (value as DeviceSignals).acceptLanguage === 'string';
+  }
 
   private extractClientIp(req: Request): string {
     return req.ip || req.socket?.remoteAddress || 'unknown';
@@ -31,18 +44,14 @@ export class TrustedDeviceService {
     return createHash('sha256').update(value).digest('hex');
   }
 
-  private buildFingerprint(req: Request): string {
-    const userAgent = String(req.headers['user-agent'] ?? 'unknown')
+  private buildFingerprint(signals: DeviceSignals): string {
+    const userAgent = String(signals.userAgent ?? 'unknown')
       .toLowerCase()
       .trim();
-    const platform = String(
-      req.headers['sec-ch-ua-platform'] ??
-        req.headers['x-client-platform'] ??
-        'unknown',
-    )
+    const platform = String(signals.platform ?? 'unknown')
       .toLowerCase()
       .trim();
-    const acceptLanguage = String(req.headers['accept-language'] ?? 'unknown')
+    const acceptLanguage = String(signals.acceptLanguage ?? 'unknown')
       .split(',')[0]
       .toLowerCase()
       .trim();
@@ -50,14 +59,38 @@ export class TrustedDeviceService {
     return this.hash(`${userAgent}|${platform}|${acceptLanguage}`);
   }
 
+  /**
+   * Snapshot the request fields this service needs.
+   *
+   * Callers that record a device AFTER responding (login defers it off the
+   * critical path) must capture these first: `req.socket` can be torn down once
+   * the response is sent, and reading `remoteAddress` from a destroyed socket
+   * yields nothing, which would silently poison the device's IP hash.
+   */
+  captureSignals(req: Request): DeviceSignals {
+    return {
+      ip: this.extractClientIp(req),
+      userAgent: String(req.headers['user-agent'] ?? ''),
+      platform: String(
+        req.headers['sec-ch-ua-platform'] ??
+          req.headers['x-client-platform'] ??
+          '',
+      ),
+      acceptLanguage: String(req.headers['accept-language'] ?? ''),
+    };
+  }
+
   async recordLoginDevice(
     userId: string,
-    req: Request,
+    source: Request | DeviceSignals,
   ): Promise<{ isNewDevice: boolean }> {
-    const fingerprintHash = this.buildFingerprint(req);
-    const normalizedIp = this.normalizeIp(this.extractClientIp(req));
+    const signals = this.isDeviceSignals(source)
+      ? source
+      : this.captureSignals(source);
+    const fingerprintHash = this.buildFingerprint(signals);
+    const normalizedIp = this.normalizeIp(signals.ip || 'unknown');
     const lastIpHash = this.hash(normalizedIp);
-    const lastUserAgent = String(req.headers['user-agent'] ?? '').slice(0, 250);
+    const lastUserAgent = String(signals.userAgent ?? '').slice(0, 250);
 
     const existing = await this.prisma.trustedDevice.findUnique({
       where: {

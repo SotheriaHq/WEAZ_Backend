@@ -49,6 +49,19 @@ const p = (text: string) =>
 const muted = (text: string) =>
   `<p style="color:${TEXT_MUTED};font-size:13px;line-height:1.6;margin:6px 0 0">${text}</p>`;
 
+/**
+ * A copyable, visible URL under an action button.
+ *
+ * Every mail client mangles something eventually — a stripped href, a proxy
+ * that drops the anchor, a corporate scanner that burns the single-use token by
+ * prefetching it. When the button fails there has to be a second way through
+ * that needs no rendering support at all, which is a URL the reader can see and
+ * paste. `word-break` keeps a long token from blowing out narrow layouts.
+ */
+const linkFallback = (url: string, lead: string) =>
+  `<p style="color:${TEXT_MUTED};font-size:12px;line-height:1.6;margin:14px 0 0">${lead}<br />
+      <span style="color:${BRAND_PRIMARY};word-break:break-all;font-size:12px">${escapeHtml(url)}</span></p>`;
+
 const VERIFICATION_WORKSPACE_URL = resolveAppUrl('/studio/verification');
 
 // ─────────────────────────────────────────────
@@ -68,6 +81,7 @@ export function passwordResetEmail(
       `${p(`No worries — it happens to the best of us. We received a request to reset the password on your <strong>${companyName}</strong> account.`)}
       ${p('Click the button below to create a new password. The link is valid for <strong>1 hour</strong> and can only be used once.')}
       <div style="text-align:center;margin:24px 0">${btn(resetLink, 'Reset My Password')}</div>
+      ${linkFallback(resetLink, "Button not working? Copy this link into your browser:")}
       ${warningBox(`<p style="margin:0;color:#9a3412;font-size:13px">If you didn't request this, your account is safe — just ignore this email. Your current password remains unchanged.</p>`)}`,
       companyName,
     ),
@@ -88,6 +102,7 @@ export function emailVerificationEmail(
       `${p(`Welcome to <strong>${companyName}</strong> — Africa's fashion social commerce community. You're just one click away from unlocking your full workspace.`)}
       ${p('Verifying your email lets you create designs, connect with buyers, build your brand, and do so much more. It keeps your account secure too.')}
       <div style="text-align:center;margin:24px 0">${btn(verifyLink, 'WIEZ up my email')}</div>
+      ${linkFallback(verifyLink, "Button not working? Copy this link into your browser:")}
       ${infoBox(`<p style="margin:0;color:${BRAND_PRIMARY};font-size:13px">This link is single-use and stops working once your email is confirmed — so click it when you're ready to dive in.</p>`)}`,
       companyName,
       `This email was sent because someone signed up for a ${companyName} account with this address.`,

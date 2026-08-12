@@ -175,10 +175,38 @@ function escapeHtmlAttr(value: string): string {
 }
 
 /**
+ * Android `intent://` form of a custom-scheme link. Chrome (and every Gmail /
+ * WebView surface built on it) refuses to navigate a bare `wiezmobile://` href
+ * — the tap is swallowed and nothing at all happens. An intent URL is the
+ * supported way to say the same thing, and it carries its own
+ * `browser_fallback_url` so a device without the app installed lands on the web
+ * page instead of a dead end.
+ */
+function buildAndroidIntentUrl(schemeUrl: string, fallbackUrl: string): string {
+  const withoutScheme = schemeUrl.replace(/^[a-z][a-z0-9+.-]*:\/\//i, '');
+  const scheme = (schemeUrl.match(/^([a-z][a-z0-9+.-]*):\/\//i)?.[1] ??
+    'wiezmobile') as string;
+  return `intent://${withoutScheme}#Intent;scheme=${scheme};S.browser_fallback_url=${encodeURIComponent(
+    fallbackUrl,
+  )};end`;
+}
+
+/**
  * HTML served by the backend "open in app" bridge. The auth email links here
- * over https (which Gmail keeps), and this page immediately redirects into the
- * app's custom scheme — with a manual button + a web fallback for desktop /
- * browsers that block the scheme redirect.
+ * over https (which Gmail keeps), and this page hands off to the native app.
+ *
+ * **The visible button is the web link, not the app scheme.** It used to be the
+ * other way round, and that is the "verification button is not clickable"
+ * report: a `<a href="wiezmobile://…">` is a no-op in Chrome and in the Gmail
+ * in-app browser, so the one button on the page did nothing when tapped. The
+ * app hand-off still happens — automatically, and via the secondary control —
+ * but it can no longer be the only way out of this page.
+ *
+ * Hand-off strategy, in order:
+ *   1. On load, try the app (intent URL on Android, custom scheme elsewhere).
+ *   2. If the page is still visible ~1.4s later the app did not take over, so
+ *      go to the web page, which completes the same action in the browser.
+ *   3. Whatever happens, a real https button is on screen the whole time.
  */
 export function buildAppLinkBridgeHtml(
   route: 'verify-email' | 'reset-password',
@@ -191,9 +219,13 @@ export function buildAppLinkBridgeHtml(
       : buildPasswordResetLink(params.token);
   const title =
     route === 'verify-email' ? 'Confirm your email' : 'Reset your password';
-  const schemeAttr = escapeHtmlAttr(schemeUrl);
+  const primaryLabel =
+    route === 'verify-email' ? 'Confirm my email' : 'Reset my password';
+  const intentUrl = buildAndroidIntentUrl(schemeUrl, webUrl);
   const webAttr = escapeHtmlAttr(webUrl);
   const schemeJson = JSON.stringify(schemeUrl);
+  const intentJson = JSON.stringify(intentUrl);
+  const webJson = JSON.stringify(webUrl);
 
   return `<!doctype html>
 <html lang="en">
@@ -209,23 +241,40 @@ export function buildAppLinkBridgeHtml(
   .logo { font-size:30px; font-weight:800; letter-spacing:3px; color:#a855f7; margin-bottom:8px; }
   h1 { font-size:20px; margin:8px 0; }
   p { color:#b8b0c2; font-size:14px; line-height:1.5; }
-  .btn { display:inline-block; margin-top:20px; padding:14px 28px; background:#a855f7; color:#fff; text-decoration:none; border-radius:14px; font-weight:700; letter-spacing:1px; }
-  .alt { display:block; margin-top:16px; color:#a855f7; font-size:13px; }
+  .btn { display:block; margin:20px auto 0; padding:15px 28px; background:#a855f7; color:#fff; text-decoration:none; border-radius:14px; font-weight:700; letter-spacing:0.5px; font-size:15px; }
+  .alt { display:inline-block; margin-top:16px; padding:10px 14px; color:#c4b5fd; font-size:13px; text-decoration:underline; background:none; border:0; font-family:inherit; cursor:pointer; }
 </style>
 </head>
 <body>
   <div class="card">
     <div class="logo">WIEZ</div>
-    <h1>Opening the WIEZ app…</h1>
-    <p>If the app doesn’t open automatically, tap the button below.</p>
-    <a class="btn" href="${schemeAttr}">Open in WIEZ</a>
-    <a class="alt" href="${webAttr}">Continue on the web instead</a>
+    <h1>${title}</h1>
+    <p>We are opening the WIEZ app. If it does not open, use the button below — it works right here in your browser.</p>
+    <a class="btn" href="${webAttr}">${primaryLabel}</a>
+    <button class="alt" type="button" id="open-app">Open in the WIEZ app instead</button>
   </div>
   <script>
     (function () {
-      var target = ${schemeJson};
-      window.location.replace(target);
-      setTimeout(function () { try { window.location.href = target; } catch (e) {} }, 350);
+      var scheme = ${schemeJson};
+      var intent = ${intentJson};
+      var web = ${webJson};
+      var isAndroid = /android/i.test(navigator.userAgent || '');
+      var appTarget = isAndroid ? intent : scheme;
+
+      function openApp() {
+        try { window.location.href = appTarget; } catch (e) {}
+      }
+
+      document.getElementById('open-app').addEventListener('click', openApp);
+
+      openApp();
+
+      // The app taking over backgrounds this page. If we are still visible, it
+      // did not — finish the job on the web rather than stranding the user.
+      setTimeout(function () {
+        if (document.hidden || document.visibilityState === 'hidden') return;
+        window.location.replace(web);
+      }, 1400);
     })();
   </script>
 </body>

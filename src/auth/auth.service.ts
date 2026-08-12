@@ -845,21 +845,27 @@ export class AuthService {
         );
       }
 
-      // Notify LOGIN event (login activity) without blocking login latency.
+      // Device fingerprinting and the login notification are both bookkeeping.
+      // The comment above this block already said "without blocking login
+      // latency", but `recordLoginDevice` was awaited — two sequential DB
+      // round-trips (lookup, then insert-or-update) that the caller waited on
+      // purely so a boolean could be attached to a notification that is itself
+      // fire-and-forget. Header reads happen here, synchronously, because the
+      // request object must not be touched after the response is sent.
       const ipAddress = this.extractClientIp(req);
-      const deviceResult = await this.trustedDeviceService.recordLoginDevice(
-        user.id,
-        req,
-      );
-
-      void this.notifications
-        .create(user.id, NotificationType.LOGIN, {
-          payload: {
-            ip: ipAddress,
-            userAgent: req.headers['user-agent'] ?? null,
-            newDevice: deviceResult.isNewDevice,
-          },
-        })
+      const userAgent = req.headers['user-agent'] ?? null;
+      const deviceSignals = this.trustedDeviceService.captureSignals(req);
+      void this.trustedDeviceService
+        .recordLoginDevice(user.id, deviceSignals)
+        .then((deviceResult) =>
+          this.notifications.create(user.id, NotificationType.LOGIN, {
+            payload: {
+              ip: ipAddress,
+              userAgent,
+              newDevice: deviceResult.isNewDevice,
+            },
+          }),
+        )
         .catch(() => undefined);
 
       return {
@@ -1837,43 +1843,66 @@ export class AuthService {
     const looksLikeEmail = normalizedIdentifier.includes('@');
 
     try {
+      const loginUserSelect = {
+        ...authUserSelect,
+        password: true,
+        passwordCredentialStatus: true,
+        adminSuspendedReason: true,
+        failedLoginAttempts: true,
+        lastFailedLoginAt: true,
+        loginLockedUntil: true,
+      };
+
+      // Exact match first, case-insensitive only as a fallback.
+      //
+      // `mode: 'insensitive'` compiles to ILIKE, which cannot use the unique
+      // btree indexes on `email` and `username` — so EVERY login, including
+      // every failed one, sequentially scanned the users table. The overwhelming
+      // majority of sign-ins supply the identifier exactly as stored (emails are
+      // normalised to lowercase on the way in), and `findUnique` on that path is
+      // a single index lookup. The old query still runs when the fast path
+      // misses, so a user who registered "Ada@x.com" and types "ADA@X.COM" is
+      // still found — they just pay for the scan instead of everyone paying.
       const user = await this.prisma.user
-        .findFirst({
-          where: {
-            ...(looksLikeEmail
-              ? {
-                  email: {
-                    equals: normalizedLower,
-                    mode: 'insensitive',
-                  },
-                }
-              : {
-                  OR: [
-                    {
-                      username: {
-                        equals: normalizedIdentifier,
-                        mode: 'insensitive',
-                      },
-                    },
-                    {
+        .findUnique({
+          where: looksLikeEmail
+            ? { email: normalizedLower }
+            : { username: normalizedIdentifier },
+          select: loginUserSelect,
+        })
+        .catch(() => null)
+        .then(
+          (exact) =>
+            exact ??
+            this.prisma.user.findFirst({
+              where: {
+                ...(looksLikeEmail
+                  ? {
                       email: {
                         equals: normalizedLower,
                         mode: 'insensitive',
                       },
-                    },
-                  ],
-                }),
-          },
-          select: {
-            ...authUserSelect,
-            password: true,
-            passwordCredentialStatus: true,
-            adminSuspendedReason: true,
-            failedLoginAttempts: true,
-            lastFailedLoginAt: true,
-            loginLockedUntil: true,
-          },
-        })
+                    }
+                  : {
+                      OR: [
+                        {
+                          username: {
+                            equals: normalizedIdentifier,
+                            mode: 'insensitive',
+                          },
+                        },
+                        {
+                          email: {
+                            equals: normalizedLower,
+                            mode: 'insensitive',
+                          },
+                        },
+                      ],
+                    }),
+              },
+              select: loginUserSelect,
+            }),
+        )
         .catch((dbError) => {
           this.logger.error('Database error during user validation:', dbError);
           return null;
@@ -1963,6 +1992,11 @@ export class AuthService {
         loginLockedUntil,
       });
 
+      // Migrate hashes still carrying the old (64 MiB, p=8) parameters. This is
+      // the only moment the plaintext is available, and it runs off the response
+      // path so the user never waits for it.
+      this.rehashPasswordIfStale(user.id, hashedPassword!, password);
+
       return publicUser as AuthUser;
     } catch (error) {
       if (error instanceof HttpException) {
@@ -1971,6 +2005,32 @@ export class AuthService {
       this.logger.error('User validation error:', error);
       return null;
     }
+  }
+
+  /**
+   * Re-hash a verified password when it was stored with cost parameters other
+   * than the current ones. Fire-and-forget: the login response does not wait,
+   * and a failure leaves the existing (still valid) hash in place.
+   */
+  private rehashPasswordIfStale(
+    userId: string,
+    storedHash: string,
+    plainPassword: string,
+  ): void {
+    if (!this.passwordService.needsRehash(storedHash)) {
+      return;
+    }
+    void (async () => {
+      const nextHash = await this.passwordService.hashPassword(plainPassword);
+      await this.prisma.user.update({
+        where: { id: userId },
+        data: { password: nextHash },
+      });
+    })().catch((error) => {
+      this.logger.warn(
+        `Password rehash skipped for ${userId}: ${error?.message ?? error}`,
+      );
+    });
   }
 
   /** Best-effort security email when the lockout policy suspends an account. */
