@@ -137,6 +137,38 @@ type FeedMediaAssetDto = {
   orderIndex: number;
 };
 
+/**
+ * Statuses a publish/resubmit may legitimately start from, besides DRAFT.
+ *
+ * These are the review states where the content is back in the owner's hands:
+ * the reviewer has asked for changes, rejected it, a publish attempt failed, or
+ * it is still with the review team and the owner is amending it. In every one
+ * of them "send this to review" is the correct and expected next action.
+ *
+ * ARCHIVED and REMOVED are deliberately absent — those are exits, not waiting
+ * rooms, and republishing from them needs its own restore flow.
+ */
+const RESUBMITTABLE_COLLECTION_STATUSES = new Set<CollectionStatus>([
+  CollectionStatus.CHANGES_REQUESTED,
+  CollectionStatus.REJECTED,
+  CollectionStatus.FAILED,
+  CollectionStatus.IN_REVIEW,
+]);
+
+/** Reader-facing wording for a status, for error messages. */
+function describeCollectionStatus(status: CollectionStatus): string {
+  switch (status) {
+    case CollectionStatus.ARCHIVED:
+      return 'archived';
+    case CollectionStatus.REMOVED:
+      return 'removed';
+    case CollectionStatus.PROCESSING:
+      return 'still processing its media';
+    default:
+      return String(status).toLowerCase().replace(/_/g, ' ');
+  }
+}
+
 @Injectable()
 export class CollectionsService {
   private readonly logger = new Logger(CollectionsService.name);
@@ -3682,13 +3714,15 @@ export class CollectionsService {
     const requestedAction =
       dto.action ?? (dto.shouldPublish === false ? 'draft' : 'publish');
 
-    if (collection.status !== 'DRAFT') {
-      if (collection.status === 'PUBLISHED' && requestedAction === 'draft') {
+    const currentStatus = collection.status as CollectionStatus;
+
+    if (currentStatus === CollectionStatus.PUBLISHED) {
+      if (requestedAction === 'draft') {
         throw new BadRequestException(
           'This collection is already published. Unpublish it before saving draft changes, or discard the draft.',
         );
       }
-      if (collection.status === 'PUBLISHED' && !hasCompletions) {
+      if (!hasCompletions) {
         const published = await this.prisma.collection.findUnique({
           where: { id: collectionId },
           include: {
@@ -3711,8 +3745,22 @@ export class CollectionsService {
           };
         }
       }
-      if (collection.status !== 'PUBLISHED' || !hasCompletions) {
-        throw new BadRequestException('Collection is not in draft status');
+      // Published + new media falls through to the normal finalize path.
+    } else if (currentStatus !== CollectionStatus.DRAFT) {
+      // Everything that is neither DRAFT nor PUBLISHED used to land on
+      // `throw new BadRequestException('Collection is not in draft status')`.
+      // That is the resubmission bug: answering a reviewer's change request
+      // leaves the design in CHANGES_REQUESTED, the editor finalizes with
+      // `action: 'publish'` and no completions, and this gate rejected it — so
+      // the one action the owner needed was the one action that could not
+      // succeed. REJECTED, FAILED and IN_REVIEW were blocked identically.
+      //
+      // The gate now states what it actually means: which statuses a publish
+      // may START from. ARCHIVED and REMOVED still cannot, and say so.
+      if (!RESUBMITTABLE_COLLECTION_STATUSES.has(currentStatus)) {
+        throw new BadRequestException(
+          `This ${resolvedScope === 'design' ? 'design' : 'collection'} is ${describeCollectionStatus(currentStatus)} and cannot be published from here.`,
+        );
       }
     }
 
@@ -4690,8 +4738,9 @@ export class CollectionsService {
     if (!collection) {
       throw new NotFoundException('Collection not found');
     }
-    if (collection.status !== 'DRAFT') {
-      if (collection.status === 'PUBLISHED') {
+    const storeStatus = collection.status as CollectionStatus;
+    if (storeStatus !== CollectionStatus.DRAFT) {
+      if (storeStatus === CollectionStatus.PUBLISHED) {
         const existing = await this.prisma.storeCollection.findUnique({
           where: { id: collectionId },
           include: {
@@ -4713,7 +4762,14 @@ export class CollectionsService {
           };
         }
       }
-      throw new BadRequestException('Collection is not in draft status');
+      // Store collections share `CollectionStatus` and the same review
+      // lifecycle, so they carried the identical resubmission bug: a store
+      // collection in CHANGES_REQUESTED could not be sent back to review.
+      if (!RESUBMITTABLE_COLLECTION_STATUSES.has(storeStatus)) {
+        throw new BadRequestException(
+          `This collection is ${describeCollectionStatus(storeStatus)} and cannot be published from here.`,
+        );
+      }
     }
 
     if (Array.isArray(dto.completions) && dto.completions.length > 0) {
