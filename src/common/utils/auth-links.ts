@@ -29,13 +29,56 @@ function resolveMobileAuthLinkBaseUrl(): string {
  * (in local dev this is the LAN host the phone already used to reach the API,
  * so it is reachable from the same device).
  */
+/**
+ * An absolute http(s) base URL, or null.
+ *
+ * Everything that becomes an `href` in an email goes through this. A value that
+ * is not an absolute URL cannot be linkified — the mail client keeps the anchor
+ * and drops the destination, so the button renders perfectly and selects text
+ * when tapped. That is indistinguishable, to a user, from the app being broken,
+ * and it is worth being strict to avoid.
+ *
+ * The specific accident this was written for: `APP_PUBLIC_URL` set to
+ * `APP_PUBLIC_URL=https://api.example.com` — the whole `KEY=value` line pasted
+ * as the value. It is truthy, it survives `.trim()`, and it produced hrefs
+ * beginning `APP_PUBLIC_URL=https://…`, which no client will follow. Quotes are
+ * stripped first because `.env` parsers keep them when the value is
+ * double-quoted, and a leading `"` fails the scheme test just as surely.
+ */
+function readAbsoluteHttpUrl(
+  rawValue: string | undefined,
+  label: string,
+): string | null {
+  const trimmed = String(rawValue ?? '')
+    .trim()
+    .replace(/^['"]|['"]$/g, '')
+    .trim();
+  if (!trimmed) return null;
+
+  if (!/^https?:\/\/[^/\s]+/i.test(trimmed)) {
+    // Loud: a misconfigured base silently degrades every auth email, and the
+    // only symptom reaches us as "the button does not work".
+    console.error(
+      `[auth-links] ${label} is not an absolute http(s) URL and was ignored. ` +
+        `Received a value starting with "${trimmed.slice(0, 24)}". ` +
+        `Auth emails will fall back to the web app link.`,
+    );
+    return null;
+  }
+
+  return trimmed.replace(/\/+$/, '');
+}
+
 export function resolveMobileAppBridgeBaseUrl(req?: {
   host?: string | null;
   protocol?: string | null;
   forwardedProto?: string | null;
 }): string {
-  const configured = String(process.env.APP_PUBLIC_URL ?? '').trim();
-  if (configured) return configured.replace(/\/+$/, '');
+  const configured = readAbsoluteHttpUrl(
+    process.env.APP_PUBLIC_URL,
+    'APP_PUBLIC_URL',
+  );
+  if (configured) return configured;
 
   const host = String(req?.host ?? '').trim();
   if (!host) return '';
@@ -97,9 +140,12 @@ export function buildPasswordResetLink(
   // into the app's /reset-password screen. Falls back to the raw scheme only if
   // no reachable backend base is known. Web resets keep the web-app link.
   if (options?.mobile) {
-    const bridgeBase = String(options.bridgeBaseUrl ?? '')
-      .trim()
-      .replace(/\/+$/, '');
+    // Validated, not merely trimmed: a caller-supplied base that is not an
+    // absolute URL would produce an unfollowable href. See `readAbsoluteHttpUrl`.
+    const bridgeBase = readAbsoluteHttpUrl(
+      options.bridgeBaseUrl ?? undefined,
+      'bridgeBaseUrl',
+    );
     if (bridgeBase) {
       return `${bridgeBase}/auth/app-link/reset-password?${query}`;
     }
@@ -134,9 +180,10 @@ export function buildEmailVerificationLink(
   // into the app's /verify-email screen. Falls back to the raw scheme only if
   // no reachable backend base is known. Web signups keep the web-app link.
   if (options?.mobile) {
-    const bridgeBase = String(options.bridgeBaseUrl ?? '')
-      .trim()
-      .replace(/\/+$/, '');
+    const bridgeBase = readAbsoluteHttpUrl(
+      options.bridgeBaseUrl ?? undefined,
+      'bridgeBaseUrl',
+    );
     if (bridgeBase) {
       return `${bridgeBase}/auth/app-link/verify-email?${query}`;
     }

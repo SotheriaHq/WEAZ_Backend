@@ -36,7 +36,7 @@ export function isNonLocalEnvironment(): boolean {
 }
 
 function isConfiguredWebAppUrl(value: string | undefined): boolean {
-  const trimmed = String(value ?? '').trim();
+  const trimmed = stripSurroundingQuotes(value);
   if (!trimmed) {
     return false;
   }
@@ -47,7 +47,27 @@ function isConfiguredWebAppUrl(value: string | undefined): boolean {
     return false;
   }
 
+  // Must be an absolute http(s) URL. This is the base every auth email link
+  // ultimately falls back to, so a malformed value here produces an href no
+  // mail client will follow — a button that renders and does nothing. Rejecting
+  // it means a non-local environment throws below (loud) instead of shipping
+  // dead links (silent).
+  if (!/^https?:\/\/[^/\s]+/i.test(trimmed)) {
+    return false;
+  }
+
   return true;
+}
+
+/**
+ * `.env` parsers keep the quotes when a value is written `KEY="value"`, and a
+ * leading `"` fails every scheme test downstream.
+ */
+function stripSurroundingQuotes(value: string | undefined): string {
+  return String(value ?? '')
+    .trim()
+    .replace(/^['"]|['"]$/g, '')
+    .trim();
 }
 
 function resolveLocalWebAppBaseUrl(
@@ -70,7 +90,7 @@ export function resolveWebAppBaseUrl(): string {
   ].find(isConfiguredWebAppUrl);
 
   if (configuredBaseUrl) {
-    return normalizeBaseUrl(configuredBaseUrl);
+    return normalizeBaseUrl(stripSurroundingQuotes(configuredBaseUrl));
   }
 
   if (!isNonLocalEnvironment()) {

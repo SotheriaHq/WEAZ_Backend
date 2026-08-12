@@ -109,6 +109,48 @@ describe('auth link builders', () => {
     });
   });
 
+  // A base URL that is not absolute cannot be linkified: the client keeps the
+  // anchor and drops the destination, so the button renders and does nothing.
+  // The real incident was `APP_PUBLIC_URL=APP_PUBLIC_URL=https://…` — the whole
+  // KEY=value line pasted as the value.
+  describe('malformed base URLs never reach an href', () => {
+    it('ignores a bridge base that is not an absolute URL', () => {
+      const link = buildEmailVerificationLink('tok', null, {
+        mobile: true,
+        bridgeBaseUrl: 'APP_PUBLIC_URL=http://10.0.0.1:3000',
+      });
+
+      expect(link).toBe('https://app.wiez.test/verify-email?token=tok');
+      expect(link.startsWith('https://')).toBe(true);
+    });
+
+    it('ignores a quoted bridge base carrying its own key', () => {
+      expect(
+        buildPasswordResetLink('tok', {
+          mobile: true,
+          bridgeBaseUrl: '"APP_PUBLIC_URL=https://api.wiez.test"',
+        }),
+      ).toBe('https://app.wiez.test/reset-password?token=tok');
+    });
+
+    it('still uses a well-formed bridge base', () => {
+      expect(
+        buildEmailVerificationLink('tok', null, {
+          mobile: true,
+          bridgeBaseUrl: '  https://api.wiez.test/  ',
+        }),
+      ).toBe('https://api.wiez.test/auth/app-link/verify-email?token=tok');
+    });
+
+    it('rejects a WEB_APP_URL that carries its own key', () => {
+      resetEnv({ WEB_APP_URL: 'WEB_APP_URL=https://app.wiez.test' });
+      // Falls through to the local default rather than emitting a dead href.
+      expect(buildEmailVerificationLink('tok')).toBe(
+        'http://localhost:3000/verify-email?token=tok',
+      );
+    });
+  });
+
   // The bridge page is the surface the email button now lands on, so it owns
   // the same failure mode the email did: a `wiezmobile://` anchor is a no-op in
   // Chrome and in the Gmail in-app browser. Every VISIBLE link here must be
