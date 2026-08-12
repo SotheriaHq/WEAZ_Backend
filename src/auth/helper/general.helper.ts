@@ -13,6 +13,7 @@ import {
   buildAuthTokenPayload,
 } from './prisma-select.helper';
 import { ConfigService } from '@nestjs/config';
+import { isNonLocalEnvironment } from 'src/common/utils/web-app-url';
 
 const DEFAULT_ACCESS_TOKEN_COOKIE = 'accessToken';
 const DEFAULT_REFRESH_TOKEN_COOKIE = 'refreshToken';
@@ -120,22 +121,79 @@ export class TokenService {
   }
 
   /**
-   * HMAC key for refresh-token hashes. Defaults to the access-token secret:
-   * same trust boundary, already mandatory, so this needs no new deployment
-   * step. Set `REFRESH_TOKEN_HASH_SECRET` to separate them.
+   * HMAC key used to WRITE refresh-token hashes.
+   *
+   * This used to fall back to `JWT_ACCESS_SECRET` in every environment, on the
+   * reasoning that it is the same trust boundary and already mandatory. That
+   * reasoning missed something the codebase states outright: the access secret
+   * is designed to be ROTATED. `common/config/jwt-secrets.ts` exists to make
+   * rotation zero-downtime, accepting `JWT_ACCESS_SECRET_PREVIOUS` during the
+   * window. Peppering refresh hashes with that same value silently coupled the
+   * two, so rotating the access secret — an operation that is supposed to be
+   * invisible — would have invalidated every stored refresh hash and signed
+   * every user out.
+   *
+   * A deployed environment must therefore configure its own key. Local dev
+   * still falls back, because there is nothing to protect and no rotation
+   * story, and forcing the variable would just be a setup tax.
    */
   private get refreshTokenHashSecret(): string {
-    return (
-      this.configService.get<string>('REFRESH_TOKEN_HASH_SECRET') ||
-      this.accessTokenSecret
+    const configured = this.configService
+      .get<string>('REFRESH_TOKEN_HASH_SECRET')
+      ?.trim();
+    if (configured) return configured;
+
+    if (isNonLocalEnvironment()) {
+      // Loud, not silent. Borrowing the JWT secret here is exactly the coupling
+      // this property exists to prevent, so a deployed environment that has not
+      // set the key must be told, not quietly given the wrong default.
+      this.logger.error(
+        'REFRESH_TOKEN_HASH_SECRET is not configured. Refusing to pepper refresh tokens with JWT_ACCESS_SECRET: rotating that secret would sign out every user.',
+      );
+      throw new Error('Authentication configuration error');
+    }
+
+    return this.accessTokenSecret;
+  }
+
+  /**
+   * Every key a stored HMAC hash could legitimately have been written with.
+   *
+   * Ordered current-first. Three sources, and each is here for a reason:
+   *   1. the current key;
+   *   2. `REFRESH_TOKEN_HASH_SECRET_PREVIOUS`, so this key can itself be
+   *      rotated the same zero-downtime way the JWT secret already can;
+   *   3. the access secrets, because hashes written before this change used
+   *      `JWT_ACCESS_SECRET` as the pepper. Without this, the very act of
+   *      adopting a proper key would log out everyone holding a session — the
+   *      outage the change is meant to prevent.
+   *
+   * Only ever used to VERIFY. Writes always use the current key, so each
+   * session migrates onto it at its next rotation and the legacy path drains
+   * on its own.
+   */
+  private get refreshTokenHashVerificationSecrets(): string[] {
+    const candidates = [
+      this.configService.get<string>('REFRESH_TOKEN_HASH_SECRET')?.trim(),
+      this.configService
+        .get<string>('REFRESH_TOKEN_HASH_SECRET_PREVIOUS')
+        ?.trim(),
+      this.configService.get<string>('JWT_ACCESS_SECRET')?.trim(),
+      this.configService.get<string>('JWT_ACCESS_SECRET_PREVIOUS')?.trim(),
+    ];
+
+    return Array.from(
+      new Set(candidates.filter((value): value is string => Boolean(value))),
     );
   }
 
-  private hashRefreshSecret(secret: string): string {
-    const digest = createHmac('sha256', this.refreshTokenHashSecret)
-      .update(secret)
-      .digest('hex');
+  private hashRefreshSecretWith(secret: string, key: string): string {
+    const digest = createHmac('sha256', key).update(secret).digest('hex');
     return `${HMAC_REFRESH_HASH_PREFIX}${digest}`;
+  }
+
+  private hashRefreshSecret(secret: string): string {
+    return this.hashRefreshSecretWith(secret, this.refreshTokenHashSecret);
   }
 
   private async verifyRefreshSecret(
@@ -143,11 +201,21 @@ export class TokenService {
     storedHash: string,
   ): Promise<boolean> {
     if (storedHash?.startsWith(HMAC_REFRESH_HASH_PREFIX)) {
-      const expected = Buffer.from(this.hashRefreshSecret(secret));
       const actual = Buffer.from(storedHash);
-      return (
-        expected.length === actual.length && timingSafeEqual(expected, actual)
-      );
+      // Compare against every accepted key. `timingSafeEqual` on each keeps the
+      // comparison constant-time per candidate; the candidate list is at most
+      // four entries and is not attacker-influenced.
+      let matched = false;
+      for (const key of this.refreshTokenHashVerificationSecrets) {
+        const expected = Buffer.from(this.hashRefreshSecretWith(secret, key));
+        if (
+          expected.length === actual.length &&
+          timingSafeEqual(expected, actual)
+        ) {
+          matched = true;
+        }
+      }
+      return matched;
     }
     // Session issued before the format change. Still valid; rotation below
     // rewrites it as HMAC, so each session pays the bcrypt cost at most once
