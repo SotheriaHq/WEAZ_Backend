@@ -8210,6 +8210,20 @@ export class StoreService {
       flags: {
         isEmailVerified: user.isEmailVerified,
         hasLiveStore: Boolean(brand?.isStoreOpen),
+        /**
+         * Whether Store Essentials has actually been SAVED, per the server.
+         *
+         * The clients decided this from a localStorage flag, which is wrong in
+         * both directions and unavailable to the mobile app entirely (its Studio
+         * is a WebView, so it inherits whatever that WebView's storage happens
+         * to hold). A stale `essentialsComplete: true` sent brands who had never
+         * filled essentials straight into the wizard's Social step, and then
+         * bounced them back to Social every time they tried to walk backwards.
+         *
+         * Mirrors the client's own submit rule — a description plus at least one
+         * brand focus — so the two cannot disagree about what "complete" means.
+         */
+        essentialsComplete: Boolean(description) && normalizedTags.length > 0,
       },
     };
   }
