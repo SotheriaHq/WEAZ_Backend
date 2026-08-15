@@ -375,18 +375,61 @@ export class CollectionSchedulerService {
   /**
    * Get draft statistics for a user (used by frontend)
    */
-  async getDraftStats(userId: string) {
+  /**
+   * Draft expiry stats for one owner.
+   *
+   * `domain` matters. `Collection` backs BOTH designs (`domain: 'DESIGN'`) and
+   * store collections (`domain: 'STORE'`) — see the design/collection
+   * decoupling note in CODEMAP — so an unfiltered count mixes two things the
+   * product treats as unrelated. The Studio dashboard's Draft Status card reads
+   * this and its "View All" opens the STORE collections list, so an unfiltered
+   * count meant a brand with two design drafts and no store collections saw
+   * "2 Total Drafts", tapped through to an empty list, and reasonably concluded
+   * it was looking at someone else's data. It never was: the query has always
+   * been `ownerId`-scoped from the JWT subject, with no client-supplied id
+   * anywhere in the path.
+   *
+   * The expiry buckets are new. The web client's `DraftExpiryStats` type has
+   * always declared `expiringIn7Days` / `expiringIn3Days` / `expiringToday` /
+   * `oldestDraftAge` / `warningThresholdDays`, and this method has never
+   * returned any of them — which is why the card rendered blank under
+   * "Expiring Soon" and "Expire Today" instead of a number.
+   */
+  async getDraftStats(userId: string, domain?: 'DESIGN' | 'STORE') {
     const now = this.clock.now();
     const drafts = await (this.prisma as any).collection.findMany({
-      where: { ownerId: userId, status: 'DRAFT', deletedAt: null },
+      where: {
+        ownerId: userId,
+        status: 'DRAFT',
+        deletedAt: null,
+        ...(domain ? { domain } : {}),
+      },
       include: { _count: { select: { medias: true, products: true } } },
       orderBy: { updatedAt: 'desc' },
     });
 
+    const msPerDay = 24 * 60 * 60 * 1000;
+    const daysRemainingByDraft: number[] = drafts.map((d) =>
+      getDaysUntilExpiry(d.lastActivityAt ?? d.createdAt, now),
+    );
+    const oldestDraftAge = drafts.reduce((oldest: number, d) => {
+      const anchor: Date = d.createdAt;
+      const ageDays = Math.max(
+        0,
+        Math.floor((now.getTime() - anchor.getTime()) / msPerDay),
+      );
+      return Math.max(oldest, ageDays);
+    }, 0);
+
     return {
       totalDrafts: drafts.length,
+      expiringIn7Days: daysRemainingByDraft.filter((days) => days <= 7).length,
+      expiringIn3Days: daysRemainingByDraft.filter((days) => days <= 3).length,
+      expiringToday: daysRemainingByDraft.filter((days) => days <= 1).length,
+      oldestDraftAge,
       maxDraftsAllowed: 4,
       draftTtlDays: this.config.DRAFT_TTL_DAYS,
+      warningThresholdDays: this.config.FIRST_WARNING_DAYS_BEFORE_EXPIRY,
       drafts: drafts.map((d) => {
         const anchor = d.lastActivityAt ?? d.createdAt;
         const expiryDate = getDraftExpiryDate(anchor);

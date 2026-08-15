@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { ScheduleModule } from '@nestjs/schedule';
 import { CollectionsService } from './collections.service';
 import { CollectionsController } from './collections.controller';
@@ -31,7 +31,9 @@ import { SearchModule } from 'src/search/search.module';
     StoreModule,
     TagsModule,
     QueueModule,
-    CategoriesModule,
+    // forwardRef: CategoriesModule now hosts CategorySuggestionsService, which
+    // injects CollectionsService — the cycle is real and both sides must defer.
+    forwardRef(() => CategoriesModule),
     ContentIntegrityModule,
     SearchModule,
   ],

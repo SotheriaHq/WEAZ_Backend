@@ -19,6 +19,7 @@ import {
   ApiOperation,
   ApiResponse,
   ApiBody,
+  ApiQuery,
 } from '@nestjs/swagger';
 import {
   CollectionsService,
@@ -443,8 +444,20 @@ export class CollectionsController {
       },
     },
   })
-  async getMyDraftStats(@Req() req: any) {
-    return this.schedulerService.getDraftStats(req.user.id);
+  @ApiQuery({
+    name: 'domain',
+    required: false,
+    enum: ['DESIGN', 'STORE'],
+    description:
+      'Scope the count to design drafts or store-collection drafts. Omit for all of the caller’s drafts.',
+  })
+  async getMyDraftStats(@Req() req: any, @Query('domain') domain?: string) {
+    const normalized = String(domain ?? '').toUpperCase();
+    const scope =
+      normalized === 'DESIGN' || normalized === 'STORE'
+        ? (normalized as 'DESIGN' | 'STORE')
+        : undefined;
+    return this.schedulerService.getDraftStats(req.user.id, scope);
   }
 
   @UseGuards(JwtAuthGuard)
