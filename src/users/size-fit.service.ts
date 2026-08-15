@@ -6,7 +6,7 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { NotificationType, Prisma } from '@prisma/client';
+import { NotificationType, Prisma, UserType } from '@prisma/client';
 import { v4 as uuidv4 } from 'uuid';
 import { NotificationsService } from 'src/notifications/notifications.service';
 import { PrismaService } from 'src/prisma/prisma.service';
@@ -1186,6 +1186,19 @@ export class SizeFitService {
     const dueProfiles = await (this.prisma as any).userSizeFitProfile.findMany({
       where: {
         OR: [{ nextReminderAt: { lte: now } }, { nextReminderAt: null }],
+        /**
+         * Brands do not have fittings, so they must never be reminded to update
+         * them. This selected purely on the existence of a size-fit profile
+         * row, which a brand account can hold — from a converted account, or a
+         * row created before the account became a brand — and every such row
+         * produced a recurring "update your custom size/fits profile" notice
+         * for a seller who has no such profile to update.
+         *
+         * Filtered here rather than skipped in the loop so the batch window
+         * counts only real recipients; excluding them later would let a batch of
+         * brand rows crowd out shoppers who are genuinely due.
+         */
+        user: { is: { type: UserType.REGULAR } },
       },
       orderBy: { updatedAt: 'asc' },
       take: batchSize,
