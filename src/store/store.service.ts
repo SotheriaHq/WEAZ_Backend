@@ -42,6 +42,7 @@ import {
   assertStorePolicyConstraints,
   normalizeCustomOrderSettings,
   sanitizeCustomOrderLeadTime,
+  sanitizeProcessingTime,
   sanitizeResponseTimeSla,
   sanitizeReturnWindow,
   sanitizeShippingRegions,
@@ -10744,6 +10745,7 @@ export class StoreService {
         shippingRegions: dto.shippingRegions,
         returnWindow: dto.returnWindow,
         responseTimeSla: dto.responseTimeSla,
+        processingTime: dto.processingTime,
         shippingRules: dto.shippingRules as Record<string, any> | null,
       });
     } catch (error) {
@@ -10764,8 +10766,11 @@ export class StoreService {
       createData.shippingRegions = sanitizedRegions;
     }
     if (dto.processingTime !== undefined) {
-      updateData.processingTime = dto.processingTime;
-      createData.processingTime = dto.processingTime;
+      // Sanitized as well as asserted: the assert rejects an out-of-range value
+      // outright, this pulls a legacy one already in the row down to the cap.
+      const processingTime = sanitizeProcessingTime(dto.processingTime);
+      updateData.processingTime = processingTime;
+      createData.processingTime = processingTime;
     }
     if (dto.shippingMethods !== undefined) {
       updateData.shippingMethods = { set: dto.shippingMethods };
