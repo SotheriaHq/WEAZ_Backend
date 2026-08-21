@@ -27,6 +27,11 @@ export const canonicalBrandProfileSelect =
     socialFacebook: true,
     socialTwitter: true,
     socialWebsite: true,
+    // Brand-controlled publication of the store contact address. Selected here
+    // so every consumer of the canonical profile can honour it; the decision to
+    // REDACT is made in `brands.service.ts`, not by omitting the column.
+    contactEmail: true,
+    contactEmailPublic: true,
     cacNumber: true,
     tin: true,
     ceoNin: true,
@@ -55,6 +60,8 @@ type LegacyBrandProfileSource = {
   socialFacebook?: string | null;
   socialTwitter?: string | null;
   socialWebsite?: string | null;
+  contactEmail?: string | null;
+  contactEmailPublic?: boolean | null;
   cacNumber?: string | null;
   tin?: string | null;
   ceoNin?: string | null;
@@ -250,6 +257,13 @@ export function normalizeBrandProfileForBrandResponse(
       filled(user.userProfile?.address) ||
       null,
     businessType: resolveNullableBrandField(user, 'brandBusinessType'),
+    /**
+     * The brand's chosen public contact address, and whether they chose to
+     * publish it. Carried through unredacted — the caller decides who may see
+     * it, because only the caller knows who is asking.
+     */
+    contactEmail: filled(user.brand?.contactEmail) ?? null,
+    contactEmailPublic: user.brand?.contactEmailPublic === true,
     tags: resolveBrandTags(user),
     socialLinks: resolveBrandSocialLinks(user),
     verificationFields: resolveBrandVerificationFields(user),

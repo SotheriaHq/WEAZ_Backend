@@ -94,10 +94,18 @@ export interface BrandProfileResponse {
   };
   contactInfo: {
     /**
-     * Account email is private. Only returned when the authenticated viewer is
-     * the brand owner. Public/QR visitors always receive null.
+     * The ACCOUNT email. A credential, owner-only, always null for anyone else.
+     * This is not affected by `contactEmailPublic` and must never be.
      */
     email: string | null;
+    /**
+     * The brand's chosen public contact address. Returned to everyone when the
+     * brand has switched `contactEmailPublic` on, and to the owner always so
+     * the editor can show what is set even while it is unpublished.
+     */
+    publicEmail: string | null;
+    /** Owner-only: whether `publicEmail` is currently published. */
+    contactEmailPublic: boolean | null;
     phone?: string | null;
     businessType?: string | null;
   };
@@ -704,6 +712,23 @@ export class BrandsService {
       },
       contactInfo: {
         email: isOwnerViewer ? brand.email : null,
+        /**
+         * Redaction happens HERE, at the boundary that knows who is asking.
+         *
+         * Before this, `contactInfo.email` was `isOwnerViewer ? ... : null`
+         * with no way for a brand to publish anything — so a shopper on a
+         * brand's catalog had no route to contact them at all. The fix is not
+         * to loosen that line: the ACCOUNT email is a credential and stays
+         * owner-only. This is a separate, brand-set address with an explicit
+         * opt-in, defaulting to off.
+         */
+        publicEmail:
+          isOwnerViewer || canonicalProfile.contactEmailPublic
+            ? canonicalProfile.contactEmail
+            : null,
+        contactEmailPublic: isOwnerViewer
+          ? canonicalProfile.contactEmailPublic
+          : null,
         phone: null,
         // Report what the brand actually chose. This used to substitute
         // 'Fashion Brand' for an unset value, and the editors treat whatever

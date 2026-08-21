@@ -2530,6 +2530,18 @@ model Brand {
   businessType    String?
   companyLocation String?
   contactEmail    String?
+  /**
+   * Whether `contactEmail` may be shown to people who are not the owner.
+   *
+   * Defaults to FALSE, and that default is the point: an address a brand
+   * entered for WIEZ to reach them with is not consent to publish it to every
+   * visitor and scraper. Publication has to be a decision the brand makes, and
+   * only the brand can make it — no admin flow sets this.
+   *
+   * Note this governs `contactEmail`, never `User.email`. The account email is
+   * a credential and is owner-only regardless of this flag.
+   */
+  contactEmailPublic Boolean               @default(false)
   responseTimeSla String                   @default("24h")
 
   // Social links

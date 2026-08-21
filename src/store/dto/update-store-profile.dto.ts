@@ -1,4 +1,10 @@
-import { IsArray, IsOptional, IsString, MaxLength } from 'class-validator';
+import {
+  IsArray,
+  IsBoolean,
+  IsOptional,
+  IsString,
+  MaxLength,
+} from 'class-validator';
 
 export class UpdateStoreProfileDto {
   @IsOptional()
@@ -20,6 +26,16 @@ export class UpdateStoreProfileDto {
   @IsString()
   @MaxLength(254)
   contactEmail?: string;
+
+  /**
+   * Publish `contactEmail` on the public brand profile.
+   *
+   * Only the brand can set this — there is deliberately no admin path. It is
+   * accepted on the owner-authenticated store-profile update and nowhere else.
+   */
+  @IsOptional()
+  @IsBoolean()
+  contactEmailPublic?: boolean;
 
   @IsOptional()
   @IsString()

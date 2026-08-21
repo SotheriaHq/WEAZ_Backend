@@ -8143,6 +8143,7 @@ export class StoreService {
           tagline: true,
           tags: true,
           contactEmail: true,
+          contactEmailPublic: true,
           socialInstagram: true,
           socialFacebook: true,
           socialTwitter: true,
@@ -8194,6 +8195,9 @@ export class StoreService {
         storeName,
         slug,
         contactEmail,
+        // The editor needs the CURRENT setting, not a default, or toggling it
+        // on and reopening the form would silently offer to turn it off again.
+        contactEmailPublic: brand?.contactEmailPublic === true,
         description,
         instagram,
         facebook,
@@ -10621,6 +10625,11 @@ export class StoreService {
     }
     if (dto.contactEmail !== undefined)
       updateData.contactEmail = dto.contactEmail;
+    // Brand-only switch. This handler is already owner-authenticated, which is
+    // the whole access model: there is no admin route that can publish a
+    // brand's contact address on their behalf.
+    if (dto.contactEmailPublic !== undefined)
+      updateData.contactEmailPublic = Boolean(dto.contactEmailPublic);
     if (dto.socialInstagram !== undefined)
       updateData.socialInstagram = dto.socialInstagram;
     if (dto.socialFacebook !== undefined)
