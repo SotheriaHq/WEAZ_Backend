@@ -25,12 +25,35 @@
  * ROTATION RULE (never the same order twice)
  * ------------------------------------------
  * Efraimidis–Spirakis weighted sampling: each item's sort key is
- *   key = u^(1 / max(score, 0.05))   with u = seededUnit(seed, id) ∈ (0, 1)
- * sorted descending. Higher-scored items float toward the top ON AVERAGE,
+ *   key = u^(1 / w)   with u = seededUnit(seed, id) ∈ (0, 1)
+ * sorted descending. Higher-weighted items float toward the top ON AVERAGE,
  * but every new seed produces a different order. The seed is generated per
  * feed session and carried inside the pagination cursor, so page 2+ of the
  * same session recomputes the identical order (stable pagination), while a
  * fresh load (no cursor) gets a fresh seed → a freshly mixed feed.
+ *
+ * WHY `w` IS NOT THE RAW SCORE (2026-08-21)
+ * -----------------------------------------
+ * It used to be `key = u^(1 / max(score, 0.05))`, feeding the raw score
+ * straight in as the weight — and that made the rotation cosmetic. The score
+ * band runs from ~0.05 (old, unengaged) to 0.6+ (the new-content floor), so
+ * the exponent ranged from 1.67 to 20. Expected key for a fresh item is
+ * ~0.63; for a stale one, u^20, it is ~0.05. The probability that anything
+ * else outranks the freshest item is then negligible, so on a young
+ * catalogue — where only one or two designs are inside the 48h window — the
+ * SAME design opened the feed on essentially every load. That is the
+ * "same content first every restart, 95% of the time" report, and it is a
+ * direct contradiction of the product rule at the top of this file.
+ *
+ * The weight is now an affine map of the score into a bounded band. The
+ * max/min ratio (~3.4) is what decides how strongly quality dominates:
+ * wide enough that good content still wins more often than not, narrow
+ * enough that the seed actually decides the head of the feed. Expected keys
+ * across the band are roughly 0.55 (best) → 0.26 (worst), so a strong item
+ * is favoured by about 2:1 rather than 12:1.
+ *
+ * Tune ROTATION_WEIGHT_MIN/MAX to trade freshness against variety. Do NOT go
+ * back to feeding the score in raw — that is what broke it.
  *
  * DIVERSITY RULE
  * --------------
@@ -53,7 +76,20 @@ export interface RankableFeedRow {
 const DAY_MS = 24 * 60 * 60 * 1000;
 const NEW_CONTENT_WINDOW_MS = 48 * 60 * 60 * 1000;
 const NEW_CONTENT_SCORE_FLOOR = 0.6;
-const MIN_SAMPLING_SCORE = 0.05;
+
+/**
+ * Sampling-weight band. See "WHY `w` IS NOT THE RAW SCORE" above.
+ *
+ * `w = MIN + (MAX - MIN) * score`, so score 0 → 0.35 and score 1 → 1.2.
+ */
+const ROTATION_WEIGHT_MIN = 0.35;
+const ROTATION_WEIGHT_MAX = 1.2;
+
+/** Score → Efraimidis–Spirakis sampling weight, always > 0. */
+export function rotationWeightForScore(score: number): number {
+  const clamped = Math.min(1, Math.max(0, Number.isFinite(score) ? score : 0));
+  return ROTATION_WEIGHT_MIN + (ROTATION_WEIGHT_MAX - ROTATION_WEIGHT_MIN) * clamped;
+}
 
 /** Deterministic 32-bit FNV-1a hash of seed+id mapped to (0, 1). */
 export function seededUnit(seed: string, itemId: string): number {
@@ -111,7 +147,7 @@ export function rankFeedRows<T extends RankableFeedRow>(
     row,
     key:
       seededUnit(seed, row.id) **
-      (1 / Math.max(scoreFeedRow(row, nowMs), MIN_SAMPLING_SCORE)),
+      (1 / rotationWeightForScore(scoreFeedRow(row, nowMs))),
   }));
   keyed.sort((a, b) => b.key - a.key || (a.row.id < b.row.id ? -1 : 1));
 

@@ -553,10 +553,26 @@ export class CollectionsService {
         deviceName: true,
         deviceType: true,
         startedAt: true,
+        lastHeartbeatAt: true,
       },
     });
 
     if (!activeSession) return;
+
+    // Same staleness rule as `startDraftSession`: a session nothing has touched
+    // for minutes is abandoned, not held. Without this the lock outlived the
+    // editor that took it and blocked the owner's own next save for the rest of
+    // the 30-minute TTL.
+    const staleAfterMinutes = Math.max(
+      1,
+      parseInt(process.env.DRAFT_SESSION_STALE_MINUTES || '3', 10),
+    );
+    if (
+      now.getTime() - new Date(activeSession.lastHeartbeatAt).getTime() >
+      staleAfterMinutes * 60 * 1000
+    ) {
+      return;
+    }
 
     if (!draftSessionToken) {
       throw new ConflictException({
@@ -594,6 +610,79 @@ export class CollectionsService {
       where: { id: activeSession.id },
       data: { lastHeartbeatAt: now, expiresAt: nextExpiresAt },
     });
+  }
+
+  /** True when `draftSessionToken` is the live editing session for this draft. */
+  private async holdsActiveDraftSession(
+    collectionId: string,
+    ownerId: string,
+    draftSessionToken?: string,
+  ): Promise<boolean> {
+    if (!draftSessionToken) return false;
+    const session = await this.prisma.collectionDraftSession.findFirst({
+      where: {
+        collectionId,
+        ownerId,
+        sessionToken: draftSessionToken,
+        isActive: true,
+        expiresAt: { gt: new Date() },
+      },
+      select: { id: true },
+    });
+    return Boolean(session);
+  }
+
+  /**
+   * Optimistic-concurrency guard for draft writes — "did SOMEONE ELSE move
+   * this?", not "did the number change?".
+   *
+   * A bare `clientVersion !== serverVersion` check made the mobile editor
+   * conflict with itself and could never succeed. Saving an existing design is
+   * a sequence, not one call: `PATCH /designs/:id` → delete removed media →
+   * `POST /media/initialize` → upload → `POST /finalize`. Every one of those
+   * steps increments `draftVersion` server-side, and the client sends the ONE
+   * version it read at bootstrap to all of them. So the PATCH succeeded and
+   * bumped N to N+1, and the finalize that followed a few seconds later still
+   * carried N — the guard then reported "Draft was modified by another
+   * session" against a session that was the caller itself, on the same phone,
+   * mid-save. The upload had already happened; only the finalize died, which
+   * is why the draft card showed a half-finished save that Retry could never
+   * complete (retry re-read N, PATCHed to N+2, and failed the same way).
+   *
+   * The draft session token is the stronger identity and already exists for
+   * exactly this purpose: it names the editing session, and
+   * `enforceDraftSessionLock` (called right after every use of this) still
+   * rejects a caller whose token is not the live one. So when the caller holds
+   * the active session, an advanced version can only be that session's own
+   * earlier step, and is not a conflict. A caller with no token, or a stale
+   * one, is still held to strict version equality.
+   */
+  private async assertDraftVersionUnchanged(params: {
+    collectionId: string;
+    ownerId: string;
+    clientVersion?: number | null;
+    serverVersion?: number | null;
+    draftSessionToken?: string;
+  }): Promise<void> {
+    const { clientVersion, serverVersion } = params;
+    if (typeof clientVersion !== 'number') return;
+    if (clientVersion === serverVersion) return;
+
+    if (
+      await this.holdsActiveDraftSession(
+        params.collectionId,
+        params.ownerId,
+        params.draftSessionToken,
+      )
+    ) {
+      return;
+    }
+
+    throw new ConflictException({
+      code: 'DRAFT_VERSION_CONFLICT',
+      message: 'Draft was modified by another session.',
+      serverVersion,
+    } as any);
   }
 
   private scopeToDomain(scope: CollectionScope): CollectionDomainValue | null {
@@ -3764,16 +3853,13 @@ export class CollectionsService {
       }
     }
 
-    if (
-      typeof dto.draftVersion === 'number' &&
-      dto.draftVersion !== (collection as any).draftVersion
-    ) {
-      throw new ConflictException({
-        code: 'DRAFT_VERSION_CONFLICT',
-        message: 'Draft was modified by another session.',
-        serverVersion: (collection as any).draftVersion,
-      } as any);
-    }
+    await this.assertDraftVersionUnchanged({
+      collectionId,
+      ownerId: collection.ownerId,
+      clientVersion: dto.draftVersion,
+      serverVersion: (collection as any).draftVersion,
+      draftSessionToken: dto.draftSessionToken,
+    });
     await this.enforceDraftSessionLock(
       collectionId,
       collection.ownerId,
@@ -9576,16 +9662,13 @@ export class CollectionsService {
     const now = new Date();
     if (existing.status === 'DRAFT') {
       this.assertDraftUpdateRateLimit(existing);
-      if (
-        typeof body.draftVersion === 'number' &&
-        body.draftVersion !== existing.draftVersion
-      ) {
-        throw new ConflictException({
-          code: 'DRAFT_VERSION_CONFLICT',
-          message: 'Draft was modified by another session.',
-          serverVersion: existing.draftVersion,
-        } as any);
-      }
+      await this.assertDraftVersionUnchanged({
+        collectionId,
+        ownerId,
+        clientVersion: body.draftVersion,
+        serverVersion: existing.draftVersion,
+        draftSessionToken: body.draftSessionToken,
+      });
       await this.enforceDraftSessionLock(
         collectionId,
         ownerId,
@@ -10758,7 +10841,33 @@ export class CollectionsService {
       orderBy: { lastHeartbeatAt: 'desc' },
     });
 
-    if (activeSession && !forceNew) {
+    /**
+     * An idle session is an abandoned one — reclaim it silently.
+     *
+     * `ownerId` here is the JWT subject and the query filters on it, so EVERY
+     * conflict this method can raise is the same human against themselves;
+     * there is no cross-user path and never was. The session TTL is 30 minutes
+     * and nothing heartbeats it except another draft write, so simply opening
+     * the editor, backing out, and opening it again — the ordinary way anyone
+     * edits on a phone — left a live-looking session behind and the owner was
+     * told their own draft belonged to "another device". They then could not
+     * save or publish at all.
+     *
+     * A session is only treated as live if it was touched inside this window.
+     * Past it, the previous editor is gone and this request takes the draft
+     * over. Cross-device protection is unchanged for genuinely concurrent
+     * editing: a session touched seconds ago still reports the conflict.
+     */
+    const staleAfterMinutes = Math.max(
+      1,
+      parseInt(process.env.DRAFT_SESSION_STALE_MINUTES || '3', 10),
+    );
+    const isStale =
+      activeSession != null &&
+      now.getTime() - new Date(activeSession.lastHeartbeatAt).getTime() >
+        staleAfterMinutes * 60 * 1000;
+
+    if (activeSession && !forceNew && !isStale) {
       return {
         collectionId: draftId,
         sessionToken: activeSession.sessionToken,
@@ -10773,7 +10882,7 @@ export class CollectionsService {
       };
     }
 
-    if (activeSession && forceNew) {
+    if (activeSession && (forceNew || isStale)) {
       await this.prisma.collectionDraftSession.updateMany({
         where: { collectionId: draftId, ownerId, isActive: true },
         data: { isActive: false },

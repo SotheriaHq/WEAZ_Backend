@@ -51,6 +51,8 @@
     "reset:all": "node scripts/reset-all-data.cjs",
     "reset:admin": "node scripts/reset-all-data.cjs --admin-only-seed --skip-bucket --skip-local-uploads",
     "check:perf-regressions": "node scripts/check-perf-regressions.cjs",
+    "create:users": "ts-node -T -r tsconfig-paths/register scripts/create-sit-users.ts",
+    "create:sit-users": "ts-node -T -r tsconfig-paths/register scripts/create-sit-users.ts --env sit",
     "ci:phase8": "npm test -- src/upload/upload.service.spec.ts src/designs/mappers/design-response.mapper.spec.ts --runInBand && npm run build && npm run check:perf-regressions"
   },
   "_moduleAliases": {
