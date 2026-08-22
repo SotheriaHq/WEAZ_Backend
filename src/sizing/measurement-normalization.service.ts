@@ -73,7 +73,26 @@ const SLOT_REGISTRY_KEYS: Record<
   SLEEVE_LENGTH: {
     men: 'MEN_SLEEVE_LENGTH',
     women: 'WOMEN_SLEEVE_LENGTH_LONG',
-    neutral: ['SLEEVE', 'SLEEVE_LENGTH', 'ARM_LENGTH'],
+    /*
+      `SLEEVE_LENGTH_LONG` is the key the product actually writes.
+
+      The measurement-point registry that the size sheet renders from
+      (`prisma/seed_measurement_points.ts`) has no plain `SLEEVE_LENGTH` point
+      at all — it has SLEEVE_LENGTH_LONG and SLEEVE_LENGTH_SHORT. So a shopper
+      who filled in every field on the sheet still stored nothing this table
+      recognised, `resolveCanonicalKey` returned null, the value landed in
+      `unknownMeasurements`, and SLEEVE_LENGTH came back as the one missing
+      baseline — "Add Sleeve Length to see your size" on a profile that already
+      had it. `users/size-fit.service.ts` had these keys all along; only this
+      table, the one the recommendation reads, was missing them.
+    */
+    neutral: [
+      'SLEEVE',
+      'SLEEVE_LENGTH',
+      'SLEEVE_LENGTH_LONG',
+      'SLEEVE_LENGTH_SHORT',
+      'ARM_LENGTH',
+    ],
   },
   INSEAM: {
     men: 'MEN_INSEAM',
@@ -91,6 +110,7 @@ const ALIASES: Record<string, CanonicalMeasurementKey> = {
   HEIGHT: 'HEIGHT',
   STATURE: 'HEIGHT',
   BODYHEIGHT: 'HEIGHT',
+  UNISEXHEIGHT: 'HEIGHT',
   MENHEIGHT: 'HEIGHT',
   WOMENHEIGHT: 'HEIGHT',
 
@@ -98,12 +118,14 @@ const ALIASES: Record<string, CanonicalMeasurementKey> = {
   BUST: 'CHEST_BUST',
   FULLBUST: 'CHEST_BUST',
   CHESTBUST: 'CHEST_BUST',
+  UNISEXCHEST: 'CHEST_BUST',
   CHESTFULLBUST: 'CHEST_BUST',
   MENCHEST: 'CHEST_BUST',
   WOMENCHESTFULLBUST: 'CHEST_BUST',
 
   WAIST: 'WAIST',
   NATURALWAIST: 'WAIST',
+  UNISEXWAIST: 'WAIST',
   MENWAIST: 'WAIST',
   WOMENWAIST: 'WAIST',
 
@@ -111,32 +133,53 @@ const ALIASES: Record<string, CanonicalMeasurementKey> = {
   HIPS: 'HIP_SEAT',
   SEAT: 'HIP_SEAT',
   HIPSEAT: 'HIP_SEAT',
+  UNISEXHIP: 'HIP_SEAT',
   MENHIP: 'HIP_SEAT',
   WOMENHIP: 'HIP_SEAT',
 
   SHOULDER: 'SHOULDER',
   SHOULDERWIDTH: 'SHOULDER',
+  UNISEXSHOULDER: 'SHOULDER',
   MENSHOULDER: 'SHOULDER',
   WOMENSHOULDERWIDTH: 'SHOULDER',
 
   SLEEVE: 'SLEEVE_LENGTH',
   SLEEVELENGTH: 'SLEEVE_LENGTH',
+  SLEEVELENGTHLONG: 'SLEEVE_LENGTH',
+  SLEEVELENGTHSHORT: 'SLEEVE_LENGTH',
   ARMLENGTH: 'SLEEVE_LENGTH',
+  UNISEXSLEEVELENGTH: 'SLEEVE_LENGTH',
   MENSLEEVELENGTH: 'SLEEVE_LENGTH',
   WOMENSLEEVELENGTHLONG: 'SLEEVE_LENGTH',
 
   INSEAM: 'INSEAM',
   INSIDELEG: 'INSEAM',
+  UNISEXINSEAM: 'INSEAM',
   MENINSEAM: 'INSEAM',
   WOMENINSEAM: 'INSEAM',
 
   NECK: 'NECK_COLLAR',
   COLLAR: 'NECK_COLLAR',
+  UNISEXNECK: 'NECK_COLLAR',
   COLLARSIZE: 'NECK_COLLAR',
   NECKGIRTH: 'NECK_COLLAR',
   NECKCOLLAR: 'NECK_COLLAR',
   MENNECK: 'NECK_COLLAR',
   WOMENNECK: 'NECK_COLLAR',
+};
+
+/**
+ * Fractional tie-break among ALIAS-sourced keys, read by `entryPriority`.
+ * Anything not listed scores the neutral default, so adding an alias above
+ * needs no entry here unless it competes with a sibling for one slot.
+ */
+const ALIAS_SPECIFICITY_DEFAULT = 0.5;
+const ALIAS_SPECIFICITY: Record<string, number> = {
+  // The full-length sleeve is the sizing baseline; the short one is a detail.
+  SLEEVELENGTHLONG: 0.9,
+  SLEEVELENGTH: 0.7,
+  UNISEXSLEEVELENGTH: 0.6,
+  SLEEVELENGTHSHORT: 0.1,
 };
 
 @Injectable()
@@ -324,10 +367,26 @@ export class MeasurementNormalizationService {
     };
   }
 
+  /**
+   * Rank two keys competing for the same canonical slot.
+   *
+   * The exact-canonical and gendered-registry spellings outrank a loose alias,
+   * as before. What is new is the tie-break BETWEEN aliases: a wardrobe can
+   * legitimately hold both SLEEVE_LENGTH_LONG and SLEEVE_LENGTH_SHORT, and they
+   * are not interchangeable — a ~25cm short-sleeve number standing in for the
+   * long-sleeve baseline skews every recommendation that reads it. Ranking was
+   * a flat 1 for both and the winner was decided by `>`, so it came down to
+   * whichever key happened to appear first in the stored JSON. That is
+   * insertion order, which is to say luck.
+   */
   private entryPriority(entry: NormalizedMeasurementEntry): number {
     if (entry.source === 'CANONICAL') return 3;
     if (entry.source === 'REGISTRY') return 2;
-    return 1;
+    return (
+      1 +
+      (ALIAS_SPECIFICITY[this.compactKey(entry.sourceKey)] ??
+        ALIAS_SPECIFICITY_DEFAULT)
+    );
   }
 
   private resolveGender(
