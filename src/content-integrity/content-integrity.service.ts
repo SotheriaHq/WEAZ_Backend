@@ -145,6 +145,29 @@ export class ContentIntegrityService {
     );
   }
 
+  /** The slot order media is assigned in, when nobody names one explicitly. */
+  getOrderedViewSlots(): ContentMediaViewSlot[] {
+    return [...CONTENT_MEDIA_ORDER_SLOTS];
+  }
+
+  /**
+   * The first slot this item does not already occupy, or null when full.
+   *
+   * Deriving a slot from a POSITION (`slotForOrderIndex`) is only correct while
+   * nothing has ever been deleted. Removing media does not renumber what is
+   * left, so after deleting, say, the FRONT image of four, the next upload is
+   * position 3 — RIGHT_SIDE — which is still occupied, while FRONT sits free
+   * and unreachable. Asking which slots are TAKEN cannot drift that way.
+   */
+  firstAvailableViewSlot(
+    takenSlots: Iterable<ContentMediaViewSlot | string>,
+  ): ContentMediaViewSlot | null {
+    const taken = new Set(Array.from(takenSlots, (slot) => String(slot)));
+    return (
+      CONTENT_MEDIA_ORDER_SLOTS.find((slot) => !taken.has(String(slot))) ?? null
+    );
+  }
+
   slotForOrderIndex(orderIndex: number | null | undefined) {
     const index = Number.isFinite(Number(orderIndex))
       ? Math.max(0, Number(orderIndex))

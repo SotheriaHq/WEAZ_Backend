@@ -1102,18 +1102,54 @@ export class StoreService {
         isPrimary || !product.thumbnail ? uploaded.url : product.thumbnail;
       if (this.contentIntegrity) {
         const orderIndex = nextImages.length - 1;
-        const viewSlot = this.contentIntegrity.normalizeViewSlot(
-          viewSlotRaw,
-          orderIndex,
-        );
-        const existingSlot = await (tx as any).productMedia.findFirst({
-          where: { productId, viewSlot },
-          select: { id: true },
+
+        /**
+         * Which slots this product actually occupies — not which position the
+         * new file happens to land in.
+         *
+         * The slot used to be derived from `nextImages.length - 1` and then
+         * checked for collision. That is correct only until something is
+         * deleted, because deleting media does not renumber the media that
+         * remains. Upload four images (FRONT, BACK, LEFT_SIDE, RIGHT_SIDE),
+         * delete the FRONT one, and the next upload is position 3 —
+         * RIGHT_SIDE — which is still occupied. The upload fails, and it fails
+         * again every time, for any file, while FRONT sits empty and
+         * unreachable. That is the "same image, one uploaded and the other did
+         * not" report: it is a property of the PRODUCT's slot history, not of
+         * the image.
+         */
+        const occupied = await (tx as any).productMedia.findMany({
+          where: { productId },
+          select: { viewSlot: true },
         });
-        if (existingSlot) {
-          throw new BadRequestException(
-            `Product media already has a ${viewSlot} view. Replace or delete that media before uploading another.`,
+        const takenSlots: string[] = (occupied ?? []).map((row: any) =>
+          String(row.viewSlot),
+        );
+
+        const requestedSlotRaw = String(viewSlotRaw ?? '').trim();
+        let viewSlot: any;
+
+        if (requestedSlotRaw) {
+          // An explicit slot is a real request — honour it, and say so when it
+          // is taken, because the caller can act on that (replace or delete).
+          viewSlot = this.contentIntegrity.normalizeViewSlot(
+            requestedSlotRaw,
+            orderIndex,
           );
+          if (takenSlots.includes(String(viewSlot))) {
+            throw new BadRequestException(
+              `Product media already has a ${viewSlot} view. Replace or delete that media before uploading another.`,
+            );
+          }
+        } else {
+          // No slot named: put it in the first free one.
+          const available = this.contentIntegrity.firstAvailableViewSlot(takenSlots);
+          if (!available) {
+            throw new BadRequestException(
+              `You can upload up to ${this.maxProductMediaCount} images`,
+            );
+          }
+          viewSlot = available;
         }
         await (tx as any).productMedia.create({
           data: {
