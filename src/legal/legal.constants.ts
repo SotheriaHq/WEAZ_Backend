@@ -11,9 +11,8 @@ export type LegalDocumentDefinition = {
   requiresCounselReview: boolean;
 };
 
-export const LEGAL_VERSION = '2026.06.08-wiez-draft.1';
-export const LEGAL_EFFECTIVE_DATE =
-  '[LAWYER REVIEW] effective date pending counsel approval';
+export const LEGAL_VERSION = '2026.08.22-v1.0';
+export const LEGAL_EFFECTIVE_DATE = 'August 22, 2026';
 
 export const LEGAL_DOCUMENTS: Record<
   LegalDocumentKey,
@@ -27,7 +26,7 @@ export const LEGAL_DOCUMENTS: Record<
     version: LEGAL_VERSION,
     effectiveDate: LEGAL_EFFECTIVE_DATE,
     owner: 'legal',
-    requiresCounselReview: true,
+    requiresCounselReview: false,
   },
   [LegalDocumentKey.PRIVACY_POLICY]: {
     key: LegalDocumentKey.PRIVACY_POLICY,
@@ -37,7 +36,7 @@ export const LEGAL_DOCUMENTS: Record<
     version: LEGAL_VERSION,
     effectiveDate: LEGAL_EFFECTIVE_DATE,
     owner: 'legal',
-    requiresCounselReview: true,
+    requiresCounselReview: false,
   },
   [LegalDocumentKey.COOKIE_POLICY]: {
     key: LegalDocumentKey.COOKIE_POLICY,
@@ -47,7 +46,7 @@ export const LEGAL_DOCUMENTS: Record<
     version: LEGAL_VERSION,
     effectiveDate: LEGAL_EFFECTIVE_DATE,
     owner: 'legal',
-    requiresCounselReview: true,
+    requiresCounselReview: false,
   },
   [LegalDocumentKey.COMMUNITY_GUIDELINES]: {
     key: LegalDocumentKey.COMMUNITY_GUIDELINES,
@@ -57,7 +56,7 @@ export const LEGAL_DOCUMENTS: Record<
     version: LEGAL_VERSION,
     effectiveDate: LEGAL_EFFECTIVE_DATE,
     owner: 'trust-safety',
-    requiresCounselReview: true,
+    requiresCounselReview: false,
   },
   [LegalDocumentKey.SELLER_TERMS]: {
     key: LegalDocumentKey.SELLER_TERMS,
@@ -67,7 +66,7 @@ export const LEGAL_DOCUMENTS: Record<
     version: LEGAL_VERSION,
     effectiveDate: LEGAL_EFFECTIVE_DATE,
     owner: 'commerce',
-    requiresCounselReview: true,
+    requiresCounselReview: false,
   },
   [LegalDocumentKey.STORE_GUIDELINES]: {
     key: LegalDocumentKey.STORE_GUIDELINES,
@@ -77,7 +76,7 @@ export const LEGAL_DOCUMENTS: Record<
     version: LEGAL_VERSION,
     effectiveDate: LEGAL_EFFECTIVE_DATE,
     owner: 'commerce',
-    requiresCounselReview: true,
+    requiresCounselReview: false,
   },
   [LegalDocumentKey.BUYER_POLICY]: {
     key: LegalDocumentKey.BUYER_POLICY,
@@ -87,7 +86,7 @@ export const LEGAL_DOCUMENTS: Record<
     version: LEGAL_VERSION,
     effectiveDate: LEGAL_EFFECTIVE_DATE,
     owner: 'commerce',
-    requiresCounselReview: true,
+    requiresCounselReview: false,
   },
   [LegalDocumentKey.PAYMENT_POLICY]: {
     key: LegalDocumentKey.PAYMENT_POLICY,
@@ -97,7 +96,7 @@ export const LEGAL_DOCUMENTS: Record<
     version: LEGAL_VERSION,
     effectiveDate: LEGAL_EFFECTIVE_DATE,
     owner: 'payments',
-    requiresCounselReview: true,
+    requiresCounselReview: false,
   },
   [LegalDocumentKey.COPYRIGHT_POLICY]: {
     key: LegalDocumentKey.COPYRIGHT_POLICY,
@@ -107,7 +106,7 @@ export const LEGAL_DOCUMENTS: Record<
     version: LEGAL_VERSION,
     effectiveDate: LEGAL_EFFECTIVE_DATE,
     owner: 'trust-safety',
-    requiresCounselReview: true,
+    requiresCounselReview: false,
   },
   [LegalDocumentKey.ACCOUNT_DELETION_POLICY]: {
     key: LegalDocumentKey.ACCOUNT_DELETION_POLICY,
@@ -117,7 +116,7 @@ export const LEGAL_DOCUMENTS: Record<
     version: LEGAL_VERSION,
     effectiveDate: LEGAL_EFFECTIVE_DATE,
     owner: 'legal',
-    requiresCounselReview: true,
+    requiresCounselReview: false,
   },
   [LegalDocumentKey.CONTENT_POLICY]: {
     key: LegalDocumentKey.CONTENT_POLICY,
@@ -127,7 +126,7 @@ export const LEGAL_DOCUMENTS: Record<
     version: LEGAL_VERSION,
     effectiveDate: LEGAL_EFFECTIVE_DATE,
     owner: 'trust-safety',
-    requiresCounselReview: true,
+    requiresCounselReview: false,
   },
 };
 
