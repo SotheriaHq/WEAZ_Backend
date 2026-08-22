@@ -1,10 +1,12 @@
-import { Type } from 'class-transformer';
+import { applyDecorators } from '@nestjs/common';
+import { Transform, Type } from 'class-transformer';
 import {
   IsBoolean,
   IsArray,
   IsDateString,
   IsEnum,
   IsInt,
+  IsNotEmpty,
   IsNumber,
   IsObject,
   IsOptional,
@@ -27,17 +29,37 @@ import {
 } from '../../common/decorators/is-phone-number.decorator';
 import { PHONE_E164_MAX_LENGTH } from '../../common/utils/phone-number';
 
+/**
+ * Trims before validating, so whitespace cannot satisfy a required field.
+ *
+ * `@IsNotEmpty()` on its own rejects `''` but happily accepts `'   '`, which
+ * is the same hole with an extra step.
+ */
+const TrimmedRequiredString = () =>
+  applyDecorators(
+    Transform(({ value }) => (typeof value === 'string' ? value.trim() : value)),
+    IsString(),
+    IsNotEmpty(),
+  );
+
+/**
+ * Every field here is load-bearing: `businessAddress` is what
+ * `companyLocation` is built from, and it is printed on the verification
+ * letter. `@IsString()` alone let `{ street: '', city: '', state: '',
+ * country: '' }` through — a submission that passes validation and produces an
+ * empty address — so each one is now required and trimmed.
+ */
 export class VerificationBusinessAddressDto {
-  @IsString()
+  @TrimmedRequiredString()
   street: string;
 
-  @IsString()
+  @TrimmedRequiredString()
   city: string;
 
-  @IsString()
+  @TrimmedRequiredString()
   state: string;
 
-  @IsString()
+  @TrimmedRequiredString()
   country: string;
 }
 
@@ -66,10 +88,10 @@ export class VerificationInfoItemDto {
 }
 
 export class SubmitBrandVerificationDto {
-  @IsString()
+  @TrimmedRequiredString()
   ownerLegalFirstName: string;
 
-  @IsString()
+  @TrimmedRequiredString()
   ownerLegalLastName: string;
 
   @IsDateString()
@@ -85,10 +107,10 @@ export class SubmitBrandVerificationDto {
   @MaxLength(PHONE_E164_MAX_LENGTH)
   ownerPhoneNumber?: string;
 
-  @IsString()
+  @TrimmedRequiredString()
   ownerNin: string;
 
-  @IsString()
+  @TrimmedRequiredString()
   cacNumber: string;
 
   @ValidateNested()
@@ -98,7 +120,7 @@ export class SubmitBrandVerificationDto {
   @IsEnum(VerificationIdDocumentType)
   idDocumentType: VerificationIdDocumentType;
 
-  @IsString()
+  @TrimmedRequiredString()
   idDocumentNumber: string;
 
   @IsOptional()
@@ -119,20 +141,20 @@ export class SubmitBrandVerificationDto {
   @IsString()
   authorityProofDescription?: string;
 
-  @IsString()
+  @TrimmedRequiredString()
   ownerPhotoKey: string;
 
-  @IsString()
+  @TrimmedRequiredString()
   idDocumentFrontKey: string;
 
   @IsOptional()
   @IsString()
   idDocumentBackKey?: string;
 
-  @IsString()
+  @TrimmedRequiredString()
   cacCertificateKey: string;
 
-  @IsString()
+  @TrimmedRequiredString()
   letterKey: string;
 
   @IsOptional()

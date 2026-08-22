@@ -5973,6 +5973,28 @@ export class CollectionsService {
   /**
    * Enhanced get method with proper includes
    */
+  /**
+   * Drops media rows that have no viewable file behind them.
+   *
+   * `originalDeletedAt` marks an asset whose source object was removed, and an
+   * empty `s3Url` marks one that never finished landing; neither can render.
+   * A non-READY file is real but not ready, which is information the owner
+   * needs and nobody else does.
+   */
+  private filterViewableCollectionMedias(medias: any, isOwner: boolean): any[] {
+    if (!Array.isArray(medias)) return [];
+    return medias.filter((media: any) => {
+      const file = media?.file;
+      if (!file) return false;
+      if (file.originalDeletedAt) return false;
+      if (typeof file.s3Url !== 'string' || file.s3Url.trim().length === 0) {
+        return false;
+      }
+      if (isOwner) return true;
+      return file.processingStatus === 'READY';
+    });
+  }
+
   async getCollection(
     id: string,
     requesterId?: string,
@@ -6049,6 +6071,31 @@ export class CollectionsService {
     }
 
     const isOwner = !!(requesterId && collection.ownerId === requesterId);
+
+    /**
+     * Only media that is actually viewable leaves this endpoint.
+     *
+     * The include above had no `where` at all, so every row the collection had
+     * ever accumulated came back: files still processing, files whose original
+     * was reaped, rows whose upload never produced an object. The viewer turns
+     * one row into one pager dot and `_count.medias` into the "N angles" label,
+     * so a design capped at six assets could page through nine or more, most of
+     * them blank — the media list was reporting upload bookkeeping to shoppers.
+     *
+     * Rows with nothing behind them are dropped for everyone. Still-processing
+     * rows are kept for the OWNER only, because the edit screen reads this same
+     * endpoint and has to be able to show an upload in flight.
+     */
+    collection.medias = this.filterViewableCollectionMedias(
+      collection.medias,
+      isOwner,
+    );
+    if (collection._count) {
+      // Otherwise the count and the list disagree, and the count is what the
+      // "N angles" label reads from.
+      collection._count.medias = collection.medias.length;
+    }
+
     if (!isOwner && Array.isArray(collection.products)) {
       const now = new Date();
       collection.products = collection.products.filter((link: any) => {
