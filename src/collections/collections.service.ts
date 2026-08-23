@@ -3390,6 +3390,48 @@ export class CollectionsService {
       }
     }
 
+    /*
+      Hydrate the viewer's patch state with the page, the same way `isThreaded`
+      is hydrated above.
+
+      `viewerState.isPatched` was hardcoded `false`, so every client had to go
+      and fetch the shopper's whole patch list separately and reconcile it
+      against the feed. Until that landed the button rendered "not patched" for
+      brands the shopper had already patched, and then visibly flipped — the
+      state change on a settled screen that reads as the feed shaking.
+
+      One query per page, over the distinct owners actually on it.
+    */
+    let isPatchedBrandMap: Record<string, boolean> = {};
+    if (requesterId) {
+      const ownerIds = Array.from(
+        new Set(
+          feedRows
+            .map((row) => row.collection?.owner?.id)
+            .filter((id): id is string => Boolean(id)),
+        ),
+      );
+      if (ownerIds.length) {
+        const patched = await this.prisma.patchConnection.findMany({
+          where: {
+            requesterId,
+            targetId: { in: ownerIds },
+            status: PatchStatus.ACCEPTED,
+            mode: PatchMode.USER_TO_BRAND,
+          },
+          select: { targetId: true },
+        });
+        const patchedSet = new Set(patched.map((row) => row.targetId));
+        isPatchedBrandMap = ownerIds.reduce(
+          (acc, id) => {
+            acc[id] = patchedSet.has(id);
+            return acc;
+          },
+          {} as Record<string, boolean>,
+        );
+      }
+    }
+
     const items = (
       await Promise.all(
         feedRows.map(async ({ collection, media }) => {
@@ -3444,7 +3486,23 @@ export class CollectionsService {
             title: collection.title ?? '',
             description: collection.description ?? null,
             brand: {
-              id: owner.brand?.id ?? owner.id,
+              /*
+                The OWNER'S USER ID, not `Brand.id`.
+
+                A brand has two ids and this was the only feed payload in this
+                service emitting the wrong one — every other one (the private
+                access-request feeds above) already uses `ownerDisplay.id`.
+                Everything a client does with this value is keyed on the user
+                id: `PatchConnection.targetId` is a user id, and so is every
+                entry `GET /users/:id/patches` returns. Sending `Brand.id` meant
+                the Runway compared a brand id against a set of user ids, so a
+                brand the shopper had already patched still rendered as
+                unpatched, and the patch request itself 404'd.
+
+                `GET /brands/:id` resolves either id (`getBrandOrThrow`), so
+                brand navigation from the feed is unaffected.
+              */
+              id: owner.id,
               name: owner.brandFullName ?? owner.username ?? '',
               username: owner.username ?? null,
               avatar,
@@ -3461,7 +3519,7 @@ export class CollectionsService {
             viewerState: {
               isLiked: false,
               isThreaded: requesterId ? !!isThreadedMap[media.id] : false,
-              isPatched: false,
+              isPatched: requesterId ? !!isPatchedBrandMap[owner.id] : false,
               canBag: Boolean(collection.customOrderEnabled),
               isBagged: false,
             },
@@ -3487,12 +3545,14 @@ export class CollectionsService {
             threadsCount: media.threadsCount,
             commentsCount: media.commentsCount,
             collectionCollabCount: collection.collectionCollabsCount,
-            brandId: owner.brand?.id ?? owner.id,
+            // Owner user id, matching `brand.id` above — see the note there.
+            brandId: owner.id,
             brandName: owner.brandFullName ?? owner.username ?? '',
             username: owner.username ?? '',
             brandLogo: avatar?.displayUrl ?? owner.profileImage ?? null,
             brandLogoFileId: logoFileId ?? null,
             isThreaded: requesterId ? !!isThreadedMap[media.id] : false,
+            isPatched: requesterId ? !!isPatchedBrandMap[owner.id] : false,
           };
 
           if (countsPolicy === 'combined') {
