@@ -209,6 +209,9 @@ export class SizeComputationService {
           productFitType: null,
           fabricStretch: FabricStretch.UNKNOWN,
           staleMeasurementWarning,
+          // Profile estimate: no product, and the category fan-out above is an
+          // implementation detail the shopper never chose.
+          context: 'PROFILE',
         });
         return [this.categoryResponseKey(garmentCategory), result];
       }),
@@ -473,6 +476,17 @@ export class SizeComputationService {
     fabricStretch?: FabricStretch | null;
     staleMeasurementWarning?: boolean;
     availableSizes?: Set<string>;
+    /**
+     * Which question is being answered.
+     *
+     * PRODUCT: "what size of THIS garment fits me" — there is a product and a
+     * category, and naming them in a failure message is useful.
+     * PROFILE: "what size am I", asked from the profile screen. There is no
+     * product and the shopper never chose a category — the service fans out over
+     * all five internally — so a message mentioning either is not just unhelpful,
+     * it sends people looking for a product setting that does not exist.
+     */
+    context?: 'PRODUCT' | 'PROFILE';
   }): SizeRecommendationResponseDto {
     const version = input.chartSelection.version;
     const rows = Array.isArray(version?.rows) ? version.rows : [];
@@ -493,7 +507,9 @@ export class SizeComputationService {
         confidenceLabel: RecommendationConfidenceLabel.LOW,
         reasons: [],
         warnings: [
-          'No approved sizing chart is available for this product or category.',
+          input.context === 'PROFILE'
+            ? `Standard ${input.region} sizing charts have not been published yet, so a size cannot be estimated. This is a setup step on our side, not something missing from your measurements.`
+            : 'No approved sizing chart is available for this product or category.',
         ],
         chartSource: null,
         chartVersion: null,

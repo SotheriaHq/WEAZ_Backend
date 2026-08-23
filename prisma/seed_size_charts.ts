@@ -223,7 +223,22 @@ const CATEGORY_ROWS: Record<string, SeedRow[]> = {
 export async function seedSizeCharts(prisma: PrismaClient) {
   console.log('Seeding system size chart fallbacks...');
 
-  for (const region of ['INTERNATIONAL', 'UK', 'US', 'EU']) {
+  /*
+    NG_WEST_AFRICA now carries real rows.
+
+    It previously got a metadata-only record with no rows at all, so a shopper on
+    Nigeria or either hybrid chart fell through `selectChartVersion` to the
+    INTERNATIONAL fallback. That works, but it means the region the shopper
+    explicitly chose was never actually used.
+
+    On the numbers: there is no published SON body-measurement standard to copy —
+    Nigerian retail sizing in practice follows UK labelling with a deliberately
+    more relaxed cut. Body measurement RANGES are a property of bodies, not of
+    cut, so the ranges match the UK grade; what differs is ease, which belongs to
+    the garment, and the display labels. Documented rather than invented: see
+    `notes` on the chart record.
+  */
+  for (const region of ['INTERNATIONAL', 'UK', 'US', 'EU', 'NG_WEST_AFRICA']) {
     for (const [garmentCategory, rows] of Object.entries(CATEGORY_ROWS)) {
       await upsertApprovedFallbackChart(prisma, {
         region,
