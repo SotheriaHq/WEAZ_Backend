@@ -174,7 +174,7 @@ export class UploadController {
     };
 
     const requestedMaxWidth = parseOption(body?.maxWidth) ?? 1200;
-    const requestedQuality = parseOption(body?.quality) ?? 82;
+    const requestedQuality = parseOption(body?.quality) ?? 99;
     const requestedMaxBytes = parseOption(body?.maxBytes);
     const originalSizeBytes = file.buffer.length;
     const startedAt = Date.now();

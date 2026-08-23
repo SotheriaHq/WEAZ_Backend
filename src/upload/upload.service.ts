@@ -68,6 +68,16 @@ export interface FileUploadResult {
   updatedAt: string;
 }
 
+/**
+ * Server-controlled validation overrides for an endpoint whose media policy is
+ * more specific than the storage FileType. These are intentionally accepted
+ * only from internal services, never from an HTTP request.
+ */
+export type UploadValidationOptions = {
+  maxSizeConfigKey?: string;
+  hardMaxSizeBytes?: number;
+};
+
 type S3ObjectMetadata = {
   exists: boolean;
   contentLength: number;
@@ -204,11 +214,20 @@ export class UploadService {
     assertAllowedUploadMimeType(mimeType, fileType);
   }
 
-  private async getMaxFileSize(fileType: FileType): Promise<number> {
-    const configKey = UploadService.FILE_TYPE_CONFIG_KEYS[fileType];
-    return configKey
+  private async getMaxFileSize(
+    fileType: FileType,
+    options: UploadValidationOptions = {},
+  ): Promise<number> {
+    const configKey =
+      options.maxSizeConfigKey ?? UploadService.FILE_TYPE_CONFIG_KEYS[fileType];
+    const configuredMaxSize = configKey
       ? this.systemConfigService.getMaxFileSize(configKey)
       : Promise.resolve(2 * 1024 * 1024);
+    const maxSize = await configuredMaxSize;
+    const hardMaxSize = options.hardMaxSizeBytes;
+    return typeof hardMaxSize === 'number' && Number.isFinite(hardMaxSize)
+      ? Math.min(maxSize, hardMaxSize)
+      : maxSize;
   }
 
   private isTruthyConfig(value?: string | null): boolean {
@@ -505,8 +524,9 @@ export class UploadService {
     file: Express.Multer.File,
     userId: string,
     fileType: FileType,
+    validationOptions: UploadValidationOptions = {},
   ): Promise<FileUploadResult> {
-    await this.validateFile(file, fileType);
+    await this.validateFile(file, fileType, validationOptions);
 
     const fileId = uuidv4();
     const key = this.generateS3Key(fileType, userId, fileId, file.originalname);
@@ -1842,8 +1862,9 @@ export class UploadService {
   private async validateFile(
     file: Express.Multer.File,
     fileType: FileType,
+    validationOptions: UploadValidationOptions = {},
   ): Promise<void> {
-    const maxSize = await this.getMaxFileSize(fileType);
+    const maxSize = await this.getMaxFileSize(fileType, validationOptions);
     this.assertAllowedExtension(file.originalname, fileType);
     const trustedMimeType = this.normalizeContentType(file.mimetype);
     this.assertAllowedMimeType(trustedMimeType, fileType);

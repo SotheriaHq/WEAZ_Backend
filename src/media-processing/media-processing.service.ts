@@ -363,14 +363,15 @@ export class MediaProcessingService {
       typeof options.maxBytes === 'number' && Number.isFinite(options.maxBytes)
         ? Math.max(100 * 1024, Math.min(options.maxBytes, 8 * 1024 * 1024))
         : undefined;
-    const minQuality = 45;
+    const minQuality = 90;
     const minWidth = 360;
-    let quality = Math.max(minQuality, Math.min(options.quality ?? 82, 90));
+    let quality = Math.max(minQuality, Math.min(options.quality ?? 99, 99));
     let width = Math.min(maxWidth, probe.width);
 
-    // Step quality down first (cheapest fidelity loss), then dimensions, until
-    // the encoded JPEG fits under maxBytes. Mirrors the client-side
-    // imagePreprocess loop for devices that cannot decode the file locally.
+    // Reduce pixel dimensions before quality. For photographs, this retains
+    // detail better than heavily quantizing a full-resolution JPEG, and keeps
+    // the requested 99% quality unless the smallest useful rendition still
+    // cannot satisfy the byte target.
     for (let attempt = 0; attempt < 14; attempt += 1) {
       const resized = await sharp(buffer, { animated: false })
         .rotate()
@@ -387,11 +388,18 @@ export class MediaProcessingService {
         };
       }
 
-      if (quality > minQuality) {
-        quality = Math.max(minQuality, quality - 8);
+      const nextWidth = Math.max(minWidth, Math.round(width * 0.82));
+      if (nextWidth < width) {
+        width = nextWidth;
         continue;
       }
-      width = Math.max(minWidth, Math.round(width * 0.82));
+
+      if (quality > minQuality) {
+        quality = Math.max(minQuality, quality - 2);
+        continue;
+      }
+
+      break;
     }
 
     throw new BadRequestException(

@@ -82,6 +82,7 @@ import {
 import { PasswordService } from 'src/auth/helper/password.service';
 import { UploadService } from 'src/upload/upload.service';
 import { FileType } from 'src/upload/upload.enums';
+import { DIRECT_UPLOAD_HARD_LIMIT_BYTES } from 'src/upload/upload-policy';
 import { ProductViewCounterService } from './product-view-counter.service';
 import { NotificationsService } from 'src/notifications/notifications.service';
 import { SystemTagsService } from 'src/tags/system-tags.service';
@@ -1058,11 +1059,17 @@ export class StoreService {
 
     await this.assertBrandOwnsProduct(brandOwnerId, productId);
 
-    // Re-use existing POST_IMAGE validation rules for product images.
+    // Product media uses the dedicated system setting. It retains POST_IMAGE
+    // MIME/extension rules and its immutable 8MB Multer safety ceiling, but
+    // must never inherit the unrelated 2MB social-post setting.
     const uploaded = await this.uploadService.uploadFile(
       file,
       brandOwnerId,
       FileType.POST_IMAGE,
+      {
+        maxSizeConfigKey: 'upload.maxSize.productMedia',
+        hardMaxSizeBytes: DIRECT_UPLOAD_HARD_LIMIT_BYTES[FileType.POST_IMAGE],
+      },
     );
 
     await this.prisma.$transaction(async (tx) => {

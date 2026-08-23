@@ -81,6 +81,39 @@ describe('ImageService', () => {
     expect(service).toBeDefined();
   });
 
+  it('uses the dedicated product-media setting while retaining the 8MB endpoint ceiling', async () => {
+    const systemConfig = (service as any).systemConfigService;
+    systemConfig.getMaxFileSize.mockResolvedValue(8 * 1024 * 1024);
+    const productImage = {
+      originalname: 'product.jpg',
+      mimetype: 'image/jpeg',
+      size: 3 * 1024 * 1024,
+    } as Express.Multer.File;
+
+    await expect(
+      (service as any).validateFile(productImage, FileType.POST_IMAGE, {
+        maxSizeConfigKey: 'upload.maxSize.productMedia',
+        hardMaxSizeBytes: 8 * 1024 * 1024,
+      }),
+    ).resolves.toBeUndefined();
+    expect(systemConfig.getMaxFileSize).toHaveBeenCalledWith(
+      'upload.maxSize.productMedia',
+    );
+
+    systemConfig.getMaxFileSize.mockResolvedValue(20 * 1024 * 1024);
+    const oversizedProductImage = { ...productImage, size: 9 * 1024 * 1024 };
+    await expect(
+      (service as any).validateFile(
+        oversizedProductImage,
+        FileType.POST_IMAGE,
+        {
+          maxSizeConfigKey: 'upload.maxSize.productMedia',
+          hardMaxSizeBytes: 8 * 1024 * 1024,
+        },
+      ),
+    ).rejects.toThrow('8MB');
+  });
+
   /**
    * The only guard that can catch a stale Prisma `include`.
    *

@@ -16,7 +16,7 @@ export const DEFAULT_FILE_SIZE_LIMITS: Record<string, number> = {
   'upload.maxSize.brandVerification': 2 * 1024 * 1024, // 2 MB
   'upload.maxSize.messageImage': 2 * 1024 * 1024, // 2 MB
   'upload.maxSize.messageDocument': 2 * 1024 * 1024, // 2 MB
-  'upload.maxSize.productMedia': 2 * 1024 * 1024, // 2 MB
+  'upload.maxSize.productMedia': 8 * 1024 * 1024, // 8 MB (hard-capped at the product endpoint)
   'upload.maxSize.collectionBulk': 2 * 1024 * 1024, // 2 MB
 };
 
