@@ -18,6 +18,7 @@ import {
   MessageContextType,
   MessageKind,
   MessageParticipantRole,
+  MessageThread,
   MessageThreadStatus,
   NotificationType,
   OrderStatus,
@@ -269,20 +270,93 @@ export class MessagingService {
     actorId: string,
     items: Array<{ id: string; senderUserId?: string | null }>,
   ): Promise<void> {
-    const undeliveredFromOthers = items
-      .filter((m) => m.senderUserId && m.senderUserId !== actorId)
-      .map((m) => m.id);
-    if (undeliveredFromOthers.length > 0) {
-      await this.query
-        .acknowledgeDelivery(threadId, actorId, undeliveredFromOthers)
-        .catch(() => {});
-      // Emit delivery event to all participants so senders update their ticks
-      const thread = await this.query.getThreadById(threadId);
-      if (thread) {
-        const allIds = thread.participants.map((p) => p.userId);
-        this.sideEffects.emitThreadInvalidation(thread, allIds);
-      }
+    const fromOthers = items.filter(
+      (m) => m.senderUserId && m.senderUserId !== actorId,
+    );
+    if (fromOthers.length === 0) return;
+
+    const recorded = await this.query
+      .acknowledgeDelivery(
+        threadId,
+        actorId,
+        fromOthers.map((m) => m.id),
+      )
+      .catch(() => false);
+    if (!recorded) return;
+
+    const thread = await this.query.getThreadById(threadId);
+    if (!thread) return;
+
+    /*
+      Tell each SENDER which of their messages just landed — not everyone that
+      the thread changed.
+
+      This used to broadcast `thread.updated` to every participant, which every
+      client answers with a full thread refetch. So one person opening a
+      conversation made everybody in it re-download it, and the sender's second
+      tick arrived only once that round trip completed. A targeted
+      `message.delivered` carrying the ids updates exactly the bubbles that
+      changed, for exactly the person whose ticks they are, and costs no
+      requests at all.
+    */
+    const bySender = new Map<string, string[]>();
+    for (const message of fromOthers) {
+      const senderId = message.senderUserId as string;
+      const bucket = bySender.get(senderId);
+      if (bucket) bucket.push(message.id);
+      else bySender.set(senderId, [message.id]);
     }
+    for (const [senderId, messageIds] of bySender) {
+      this.sideEffects.emitMessageDelivered(thread, senderId, messageIds, [
+        actorId,
+      ]);
+    }
+  }
+
+  /**
+   * Record delivery the moment the message is pushed, not when it is opened.
+   *
+   * A recipient holding a live socket has the message on their device as soon
+   * as `message.created` goes out — that is what delivery means. Waiting for
+   * them to open the thread and fetch it made the first tick outlive the actual
+   * delivery by however long it took them to look, which is why the sender saw
+   * one tick, then two, then read, all bunched together after the fact.
+   *
+   * Delivery is only claimed when EVERY other participant is accounted for: on
+   * a two-party thread that is the one recipient, and on a group thread a
+   * single offline member correctly holds the message at one tick.
+   */
+  private async markDeliveredToConnectedRecipients(
+    thread: MessageThread,
+    message: { id: string; senderUserId?: string | null },
+    participantIds: string[],
+  ): Promise<void> {
+    const senderId = message.senderUserId;
+    if (!senderId) return;
+
+    const others = Array.from(
+      new Set(participantIds.filter((userId) => userId && userId !== senderId)),
+    );
+    if (others.length === 0) return;
+
+    const connected = await this.sideEffects.getConnectedRecipientIds(others);
+    if (connected.length !== others.length) return;
+
+    const results = await Promise.all(
+      connected.map((recipientId) =>
+        this.query
+          .acknowledgeDelivery(thread.id, recipientId, [message.id])
+          .catch(() => false),
+      ),
+    );
+    if (!results.every(Boolean)) return;
+
+    this.sideEffects.emitMessageDelivered(
+      thread,
+      senderId,
+      [message.id],
+      connected,
+    );
   }
 
   async sendCustomOrderMessageForBuyer(
@@ -689,6 +763,13 @@ export class MessagingService {
       createdAt: message.createdAt,
     });
     this.sideEffects.emitThreadInvalidation(thread, recipientIds);
+    // Fire-and-forget: presence and receipt writes must never sit between the
+    // sender pressing send and the response coming back.
+    void this.markDeliveredToConnectedRecipients(
+      thread,
+      message,
+      recipientIds,
+    ).catch(() => undefined);
 
     return {
       statusCode: 201,
@@ -2758,6 +2839,11 @@ export class MessagingService {
         createdAt: message.createdAt,
       },
     );
+    void this.markDeliveredToConnectedRecipients(
+      thread,
+      message,
+      participants.map((p) => p.userId),
+    ).catch(() => undefined);
 
     await this.adminAudit.log(
       {
@@ -3085,6 +3171,11 @@ export class MessagingService {
         createdAt: result.message.createdAt,
       });
       this.sideEffects.emitThreadInvalidation(result.thread, recipientIds);
+      void this.markDeliveredToConnectedRecipients(
+        result.thread,
+        result.message,
+        recipientIds,
+      ).catch(() => undefined);
     }
 
     return {
@@ -4201,6 +4292,11 @@ export class MessagingService {
       createdAt: actionMessage.createdAt,
     });
     this.sideEffects.emitThreadInvalidation(thread, recipientIds);
+    void this.markDeliveredToConnectedRecipients(
+      thread,
+      actionMessage,
+      recipientIds,
+    ).catch(() => undefined);
 
     return actionMessage;
   }

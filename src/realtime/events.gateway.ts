@@ -270,6 +270,40 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     void run();
   }
 
+  /**
+   * Which of these users currently has a live connection.
+   *
+   * "Delivered" means the message reached the recipient's device. The only
+   * thing that actually knows that is the socket layer: a user with at least
+   * one socket in their `USER:` room is holding the connection the message is
+   * being pushed down, so by the time this resolves the push has been handed to
+   * them. Everything else in the system infers delivery after the fact — the
+   * previous implementation waited for the recipient to OPEN the thread and
+   * fetch it, which is why a message sat on one tick until it was already read.
+   *
+   * Presence is read per user rather than in one sweep because `fetchSockets()`
+   * is room-scoped, and because it must not fail as a group: one user whose
+   * lookup throws should cost that user's receipt, not everyone's.
+   */
+  async getConnectedUserIds(userIds: string[]): Promise<string[]> {
+    if (!this.server || userIds.length === 0) return [];
+    const unique = Array.from(new Set(userIds.filter(Boolean)));
+    const connected: string[] = [];
+    await Promise.all(
+      unique.map(async (userId) => {
+        try {
+          const sockets = await this.server.in(`USER:${userId}`).fetchSockets();
+          if (sockets.length > 0) connected.push(userId);
+        } catch (error: any) {
+          this.logger.debug(
+            `Presence lookup failed for ${userId}: ${error?.message ?? error}`,
+          );
+        }
+      }),
+    );
+    return connected;
+  }
+
   emitThread(
     event: 'thread.created' | 'thread.removed',
     payload: {

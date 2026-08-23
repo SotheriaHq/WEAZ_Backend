@@ -251,13 +251,21 @@ export class MessagingQueryService {
     return { items, hasNextPage, endCursor };
   }
 
-  /** Acknowledge delivery of messages for a recipient */
+  /**
+   * Acknowledge delivery of messages for a recipient.
+   *
+   * Returns whether receipts were actually written. The caller uses this to
+   * decide whether the sender may be told "delivered": a recipient who has
+   * turned delivery receipts off records nothing, and `deliveryStatus` will
+   * keep computing SENT for them. Emitting a delivered event regardless would
+   * put a second tick on screen that the next fetch takes straight back off.
+   */
   async acknowledgeDelivery(
     threadId: string,
     recipientId: string,
     messageIds: string[],
-  ): Promise<void> {
-    if (messageIds.length === 0) return;
+  ): Promise<boolean> {
+    if (messageIds.length === 0) return false;
 
     // Check recipient's privacy setting
     const privacy = await this.getMessagingPrivacy([recipientId]);
@@ -265,7 +273,7 @@ export class MessagingQueryService {
       readReceipts: true,
       deliveryReceipts: true,
     };
-    if (!recipientPrivacy.deliveryReceipts) return;
+    if (!recipientPrivacy.deliveryReceipts) return false;
 
     const now = new Date();
     for (const messageId of messageIds) {
@@ -279,6 +287,7 @@ export class MessagingQueryService {
           /* ignore duplicates or missing messages */
         });
     }
+    return true;
   }
 
   /** Mark messages as read for a recipient (up to a given message) */

@@ -393,6 +393,45 @@ export class MessagingSideEffectsService {
     }
   }
 
+  /** Recipients holding a live socket right now — see `getConnectedUserIds`. */
+  async getConnectedRecipientIds(userIds: string[]): Promise<string[]> {
+    if (!this.events?.getConnectedUserIds) return [];
+    try {
+      return await this.events.getConnectedUserIds(userIds);
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Tell the SENDER their message landed.
+   *
+   * This is the missing half of the tick pipeline. The recipient's arrival was
+   * recorded server-side, but nothing told the sender — their client only found
+   * out by refetching the thread, so the second tick appeared whenever the next
+   * poll or unrelated `thread.updated` happened to fire.
+   *
+   * It carries the message ids so the sender's client can update those bubbles
+   * in place instead of re-fetching the conversation to discover what changed.
+   */
+  emitMessageDelivered(
+    thread: MessageThread,
+    senderUserId: string,
+    messageIds: string[],
+    deliveredToUserIds: string[],
+  ) {
+    if (!senderUserId || messageIds.length === 0) return;
+    this.events?.server?.to(`USER:${senderUserId}`).emit('message.delivered', {
+      threadId: thread.id,
+      contextType: thread.contextType,
+      orderId: thread.orderId,
+      customOrderId: thread.customOrderId,
+      messageIds,
+      deliveredToUserIds,
+      ts: Date.now(),
+    });
+  }
+
   emitMessageRead(
     thread: MessageThread,
     actorId: string,
