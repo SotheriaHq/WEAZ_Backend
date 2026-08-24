@@ -107,6 +107,37 @@ export class SendMessageDto {
   @MaxLength(2000)
   contextDesignCoverUrl?: string;
 
+  /*
+    A message sent from a PRODUCT carries the same reference as one sent from a
+    design. Only the design half existed, so a shopper who opened a product in
+    the Market and tapped its message control sent a remark that named nothing:
+    "does this come in navy?" arriving in a thread with no indication of which
+    product "this" is. The brand then has to guess, and the shopper is expected
+    to have memorised the product's name.
+
+    Deliberately a parallel set of fields rather than a generic
+    contextType/contextId pair: the two live side by side in `metadataJson` and
+    both clients already read the design keys by name, so a shared pair would
+    have meant a migration of stored metadata for no gain.
+  */
+  @IsOptional()
+  @IsUUID('4')
+  contextProductId?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(300)
+  contextProductTitle?: string;
+
+  @IsOptional()
+  @IsUUID('4')
+  contextProductCoverFileId?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(2000)
+  contextProductCoverUrl?: string;
+
   @IsOptional()
   @IsUUID('4')
   replyToMessageId?: string;

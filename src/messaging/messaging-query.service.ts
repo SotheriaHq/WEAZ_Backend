@@ -11,6 +11,7 @@ import {
   resolveProfileImage,
   resolveRequiredProfileField,
 } from 'src/common/user-profile-source.helper';
+import { resolveDisplayName } from 'src/common/display-name.helper';
 
 @Injectable()
 export class MessagingQueryService {
@@ -79,6 +80,12 @@ export class MessagingQueryService {
           select: {
             id: true,
             username: true,
+            // `type` + `brand.name` are what let `resolveDisplayName` label a
+            // brand thread with the STOREFRONT rather than the owner's given
+            // name. Without them selected the resolver cannot tell the two
+            // kinds of account apart and silently falls back to the person.
+            type: true,
+            brand: { select: { name: true } },
             userProfile: { select: canonicalUserProfileSelect },
           },
         },
@@ -106,6 +113,8 @@ export class MessagingQueryService {
               select: {
                 id: true,
                 username: true,
+                type: true,
+                brand: { select: { name: true } },
                 userProfile: { select: canonicalUserProfileSelect },
               },
             },
@@ -221,6 +230,13 @@ export class MessagingQueryService {
                 'firstName',
               ),
               lastName: resolveRequiredProfileField(message.sender, 'lastName'),
+              // Canonical, and the field clients should render. The raw parts
+              // stay for compatibility, but joining them is not the caller's
+              // job — a brand must read as its brand name, not "first last".
+              displayName: resolveDisplayName(
+                message.sender,
+                message.senderRole === 'BRAND_OWNER' ? 'Brand' : 'User',
+              ),
               profileImage: resolveProfileImage(message.sender).url,
             }
           : null,
@@ -229,11 +245,10 @@ export class MessagingQueryService {
               id: replyToRaw.id,
               bodyText: replyToRaw.bodyText,
               senderRole: replyToRaw.senderRole,
-              senderName: replyToRaw.sender
-                ? resolveRequiredProfileField(replyToRaw.sender, 'firstName') ||
-                  replyToRaw.sender.username ||
-                  replyToRaw.senderRole
-                : replyToRaw.senderRole,
+              senderName: resolveDisplayName(
+                replyToRaw.sender,
+                replyToRaw.senderRole,
+              ),
             }
           : null,
         deliveryReceipts: [],

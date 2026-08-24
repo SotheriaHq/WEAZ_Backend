@@ -66,6 +66,7 @@ import {
   resolveProfileImage,
   resolveRequiredProfileField,
 } from 'src/common/user-profile-source.helper';
+import { resolveDisplayName } from 'src/common/display-name.helper';
 
 const ACTIVE_DISPUTE_STATUSES: ReadonlySet<AdminDisputeStatus> = new Set([
   AdminDisputeStatus.OPEN,
@@ -74,9 +75,71 @@ const ACTIVE_DISPUTE_STATUSES: ReadonlySet<AdminDisputeStatus> = new Set([
   AdminDisputeStatus.REOPENED,
 ]);
 
+/**
+ * Everything needed to NAME a participant, in one place.
+ *
+ * `type` and `brand.name` are load-bearing, not extra: `resolveDisplayName`
+ * uses them to tell a brand account from a person, and a row selected without
+ * them silently labels a brand thread with the owner's given name instead of
+ * the storefront. All six messaging queries share this select so that cannot
+ * happen on one path and not another.
+ */
+/**
+ * The content a message is ABOUT, lifted off the send DTO into message metadata.
+ *
+ * A remark only makes sense against the thing it refers to. "Can this be made
+ * in navy?" sent from a design's screen is a complete sentence there and an
+ * unanswerable one in an inbox, and the brand cannot ask the shopper to
+ * remember which of forty pieces they were looking at. So whenever a message is
+ * composed from a piece of content — a design on the Runway, a product in the
+ * Market — the reference travels with it and the clients render it as a
+ * tappable card above the text.
+ *
+ * Returns `undefined` rather than `{}` when there is no reference, because the
+ * caller spreads this into a Prisma `create` and an empty object would overwrite
+ * `metadataJson` with `{}` instead of leaving it null.
+ */
+type ContentContextInput = {
+  contextDesignId?: string;
+  contextDesignTitle?: string;
+  contextDesignCoverFileId?: string;
+  contextDesignCoverUrl?: string;
+  contextProductId?: string;
+  contextProductTitle?: string;
+  contextProductCoverFileId?: string;
+  contextProductCoverUrl?: string;
+};
+
+export function buildContentContextMeta(
+  dto: ContentContextInput,
+): Record<string, string> | undefined {
+  const keys: Array<keyof ContentContextInput> = [
+    'contextDesignId',
+    'contextDesignTitle',
+    'contextDesignCoverFileId',
+    'contextDesignCoverUrl',
+    'contextProductId',
+    'contextProductTitle',
+    'contextProductCoverFileId',
+    'contextProductCoverUrl',
+  ];
+
+  const meta: Record<string, string> = {};
+  for (const key of keys) {
+    const value = dto[key];
+    if (typeof value === 'string' && value.trim().length > 0) {
+      meta[key] = value;
+    }
+  }
+
+  return Object.keys(meta).length > 0 ? meta : undefined;
+}
+
 const MESSAGE_USER_DISPLAY_SELECT = {
   id: true,
   username: true,
+  type: true,
+  brand: { select: { name: true } },
   userProfile: { select: canonicalUserProfileSelect },
 } as const;
 
@@ -108,14 +171,18 @@ export class MessagingService {
     };
   }
 
+  /**
+   * Delegates to the canonical resolver. Kept as a method so the six existing
+   * call sites read unchanged.
+   *
+   * What changed underneath: this used to be `firstName || username || id`.
+   * That showed shoppers as a bare given name, showed BRANDS as the owner's
+   * given name, and — via the `id` arm — could put a raw UUID in a push
+   * notification title. `resolveDisplayName` names a brand by its brand name
+   * and a person by their full name, and never falls back to an id.
+   */
   private resolveUserDisplayName(user: any, fallback: string): string {
-    if (!user) return fallback;
-    return (
-      resolveRequiredProfileField(user, 'firstName') ||
-      user.username ||
-      user.id ||
-      fallback
-    );
+    return resolveDisplayName(user, fallback);
   }
 
   async listCustomOrderMessagesForBuyer(
@@ -632,26 +699,7 @@ export class MessagingService {
       };
     }
 
-    const designContextMeta =
-      dto.contextDesignId ||
-      dto.contextDesignTitle ||
-      dto.contextDesignCoverFileId ||
-      dto.contextDesignCoverUrl
-        ? {
-            ...(dto.contextDesignId
-              ? { contextDesignId: dto.contextDesignId }
-              : {}),
-            ...(dto.contextDesignTitle
-              ? { contextDesignTitle: dto.contextDesignTitle }
-              : {}),
-            ...(dto.contextDesignCoverFileId
-              ? { contextDesignCoverFileId: dto.contextDesignCoverFileId }
-              : {}),
-            ...(dto.contextDesignCoverUrl
-              ? { contextDesignCoverUrl: dto.contextDesignCoverUrl }
-              : {}),
-          }
-        : undefined;
+    const contentContextMeta = buildContentContextMeta(dto);
 
     // Validate that replyToMessageId belongs to the same thread (if provided)
     const safeReplyToMessageId = dto.replyToMessageId
@@ -673,7 +721,7 @@ export class MessagingService {
         kind: MessageKind.USER,
         clientMessageId: dto.clientMessageId,
         bodyText: bodyText || null,
-        ...(designContextMeta ? { metadataJson: designContextMeta } : {}),
+        ...(contentContextMeta ? { metadataJson: contentContextMeta } : {}),
         ...(safeReplyToMessageId
           ? { replyToMessageId: safeReplyToMessageId }
           : {}),
@@ -1002,8 +1050,13 @@ export class MessagingService {
               (thread.subjectSnapshotJson as any)?.type || '',
             ).toUpperCase() === 'CUSTOM_FIT_INQUIRY');
         const isDirect = thread.contextType === MessageContextType.DIRECT;
+        /*
+          Falls back to '' (then to the "#abc12345" titles below), never to
+          `counterpart.user.id`: a UUID reads as corruption in a conversation
+          list, and "Conversation #A1B2C3D4" is at least a legible label.
+        */
         const counterpartName = counterpart?.user
-          ? this.resolveUserDisplayName(counterpart.user, counterpart.user.id)
+          ? this.resolveUserDisplayName(counterpart.user, '') || null
           : null;
 
         const targetUrl = this.resolveThreadTargetUrl(
