@@ -28,7 +28,23 @@ import { SearchModule } from 'src/search/search.module';
     SystemConfigModule,
     AnalyticsModule,
     NotificationsModule,
-    StoreModule,
+    /*
+      forwardRef, for the same reason as CategoriesModule below — and this one
+      was crashing the WORKER process on every boot.
+
+      The cycle is StoreModule → CategoriesModule → CollectionsModule →
+      StoreModule. The API survived it because `AppModule` happens to reach
+      CollectionsModule first, so `store.module.js` was fully evaluated by the
+      time this line ran. `worker.ts` builds its graph in the other order, hit
+      the half-initialised binding, and died with "Cannot access 'StoreModule'
+      before initialization" — 76,000+ PM2 restarts on SIT, which means the
+      queue processors have never run there: no push, no emails, no upload
+      post-processing.
+
+      Depending on module load ORDER for correctness is the bug; deferring the
+      reference is the fix, and it makes both entry points behave the same.
+    */
+    forwardRef(() => StoreModule),
     TagsModule,
     QueueModule,
     // forwardRef: CategoriesModule now hosts CategorySuggestionsService, which

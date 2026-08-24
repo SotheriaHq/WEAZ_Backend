@@ -8,6 +8,8 @@ import {
   Optional,
   InternalServerErrorException,
   Logger,
+  Inject,
+  forwardRef,
 } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { InjectQueue } from '@nestjs/bullmq';
@@ -178,6 +180,14 @@ export class CollectionsService {
     private readonly prisma: PrismaService,
     private readonly helperservice: HelperService,
     private readonly uploadService: UploadService,
+    /*
+      Deferred to match the `forwardRef(() => StoreModule)` on the module.
+      Store and Collections reference each other through CategoriesModule, and
+      a plain injection here resolves only if the modules happen to load in one
+      particular order — which held for the API entry point and not for the
+      worker.
+    */
+    @Inject(forwardRef(() => StoreService))
     private readonly storeService: StoreService,
     private readonly analytics?: AnalyticsService,
     private readonly notifications?: NotificationsService,
