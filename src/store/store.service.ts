@@ -5551,6 +5551,22 @@ export class StoreService {
           id: upload?.id ?? url,
           fileUploadId: upload?.id ?? null,
           url: displayUrlByRawUrl.get(url) ?? url,
+          /*
+            The raw storage URL this entry was built from.
+
+            `media` and `images` are the SAME list — `media` is `images.map(...)`
+            — but the mapping replaces the raw URL with a resolved display URL on
+            a different host and path, and a client receiving both aliases has no
+            way to tell that `images[i]` and `media[i]` are one photograph. It
+            was matching on file id (absent from the plain-string alias) and on
+            URL path (different by construction), so every photo counted twice
+            and a five-image product paged through ten dots.
+
+            Emitting the raw URL alongside the resolved one gives that link a
+            name. It is not a fetchable address for a client — it is an identity,
+            and the only field the two aliases can be joined on.
+          */
+          sourceUrl: url,
           type: 'image',
           width: this.normalizedMediaDimension(upload?.width),
           height: this.normalizedMediaDimension(upload?.height),
@@ -5865,6 +5881,22 @@ export class StoreService {
           id: upload?.id ?? url,
           fileUploadId: upload?.id ?? null,
           url: displayUrlByRawUrl.get(url) ?? url,
+          /*
+            The raw storage URL this entry was built from.
+
+            `media` and `images` are the SAME list — `media` is `images.map(...)`
+            — but the mapping replaces the raw URL with a resolved display URL on
+            a different host and path, and a client receiving both aliases has no
+            way to tell that `images[i]` and `media[i]` are one photograph. It
+            was matching on file id (absent from the plain-string alias) and on
+            URL path (different by construction), so every photo counted twice
+            and a five-image product paged through ten dots.
+
+            Emitting the raw URL alongside the resolved one gives that link a
+            name. It is not a fetchable address for a client — it is an identity,
+            and the only field the two aliases can be joined on.
+          */
+          sourceUrl: url,
           type: 'image',
           width: this.normalizedMediaDimension(upload?.width),
           height: this.normalizedMediaDimension(upload?.height),
