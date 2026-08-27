@@ -15,6 +15,16 @@ import {
   MeasurementNormalizationService,
 } from './measurement-normalization.service';
 import { SizeRecommendationResponseDto } from './dto/size-recommendation.dto';
+import {
+  auditMeasurements,
+  labelFor,
+  type MeasurementProblem,
+} from './measurement-integrity';
+import {
+  type FitDirection,
+  primaryFactor,
+  scoreMeasurement,
+} from './size-scoring';
 
 type ChartSource =
   | 'PRODUCT_METADATA'
@@ -30,7 +40,13 @@ type ChartSource =
 type WeightedSlot = {
   key: CanonicalMeasurementKey;
   weight: number;
+  /**
+   * ISO 8559-2's primary dimension — the body measurement that DESIGNATES the
+   * size. Declared since the engine was written and, until now, never read:
+   * every slot was averaged flat, so three secondaries could outvote it.
+   */
   primary?: boolean;
+  direction?: FitDirection;
 };
 
 type SelectedChartVersion = {
@@ -57,74 +73,92 @@ const CONFIDENCE_BANDS: Array<{
   { min: 0, label: RecommendationConfidenceLabel.LOW },
 ];
 
+/**
+ * Which body measurements designate each garment's size, and how.
+ *
+ * Follows ISO 8559-2 ("Size designation of clothes — primary and secondary
+ * dimension indicators"), the standard the rest of the industry designates
+ * against: ONE primary dimension names the size and the secondaries qualify it.
+ * A men's jacket is designated by chest girth, with waist girth, height or back
+ * shoulder width available as secondary. A bottom is designated by waist girth,
+ * with hip girth and inside-leg secondary. A formal shirt is the one garment
+ * designated by neck girth, which is why it has its own row here.
+ *
+ * Two rules that were wrong and are load-bearing:
+ *
+ * 1. HEIGHT IS NOT A GIRTH SLOT. It used to carry 5–15% in every category. In
+ *    an alpha chart the height bands widen monotonically toward the big end —
+ *    the seeded 4XL row accepts 165–200 cm — so a tall body scored on height
+ *    against every large row at once and height became a pure upward bias with
+ *    no discriminating power. ISO uses height as a secondary dimension to pick
+ *    a LENGTH CLASS (short / regular / tall), never to pick the girth size, and
+ *    that is what `heightLengthClass()` now does with it.
+ *
+ * 2. SECONDARY GIRTHS ARE `OVER_ONLY`. A waist below a top's range is not a
+ *    misfit — it is a drop, the ordinary difference between chest and waist that
+ *    menswear handles with a build letter (regular 6", athletic 8", portly 4")
+ *    rather than a different size. Scored two-sided it punished the athletic
+ *    build for being athletic: a real 114 cm chest / 80 cm waist body scored
+ *    0.000 on the waist slot of the very XL row its chest sat mid-range in.
+ */
 export const GARMENT_MEASUREMENT_WEIGHTS: Record<
   GarmentCategory,
   WeightedSlot[]
 > = {
   [GarmentCategory.TOP]: [
-    { key: 'CHEST_BUST', weight: 50, primary: true },
-    { key: 'SHOULDER', weight: 20 },
-    { key: 'WAIST', weight: 15 },
+    { key: 'CHEST_BUST', weight: 55, primary: true },
+    { key: 'SHOULDER', weight: 25 },
+    { key: 'WAIST', weight: 10, direction: 'OVER_ONLY' },
     { key: 'SLEEVE_LENGTH', weight: 10 },
-    { key: 'HEIGHT', weight: 5 },
   ],
   [GarmentCategory.BOTTOM]: [
-    { key: 'WAIST', weight: 40, primary: true },
+    { key: 'WAIST', weight: 45, primary: true },
     { key: 'HIP_SEAT', weight: 35, primary: true },
     { key: 'INSEAM', weight: 20 },
-    { key: 'HEIGHT', weight: 5 },
   ],
   [GarmentCategory.GOWN]: [
     { key: 'CHEST_BUST', weight: 30, primary: true },
     { key: 'WAIST', weight: 25, primary: true },
-    { key: 'HIP_SEAT', weight: 30, primary: true },
-    { key: 'HEIGHT', weight: 10 },
-    { key: 'SHOULDER', weight: 5 },
+    { key: 'HIP_SEAT', weight: 35, primary: true },
+    { key: 'SHOULDER', weight: 10 },
   ],
   [GarmentCategory.DRESS]: [
     { key: 'CHEST_BUST', weight: 30, primary: true },
     { key: 'WAIST', weight: 25, primary: true },
-    { key: 'HIP_SEAT', weight: 30, primary: true },
-    { key: 'HEIGHT', weight: 10 },
-    { key: 'SHOULDER', weight: 5 },
+    { key: 'HIP_SEAT', weight: 35, primary: true },
+    { key: 'SHOULDER', weight: 10 },
   ],
   [GarmentCategory.FORMAL_SHIRT]: [
-    { key: 'NECK_COLLAR', weight: 35, primary: true },
-    { key: 'CHEST_BUST', weight: 30 },
+    { key: 'NECK_COLLAR', weight: 40, primary: true },
+    { key: 'CHEST_BUST', weight: 30, primary: true },
     { key: 'SLEEVE_LENGTH', weight: 20 },
     { key: 'SHOULDER', weight: 10 },
-    { key: 'WAIST', weight: 5 },
   ],
   [GarmentCategory.JACKET]: [
-    { key: 'CHEST_BUST', weight: 45, primary: true },
-    { key: 'SHOULDER', weight: 20 },
-    { key: 'SLEEVE_LENGTH', weight: 20 },
-    { key: 'WAIST', weight: 10 },
-    { key: 'HEIGHT', weight: 5 },
-  ],
-  [GarmentCategory.SKIRT]: [
-    { key: 'WAIST', weight: 50, primary: true },
-    { key: 'HIP_SEAT', weight: 35, primary: true },
-    { key: 'HEIGHT', weight: 15 },
-  ],
-  [GarmentCategory.UNISEX_TOP]: [
     { key: 'CHEST_BUST', weight: 50, primary: true },
     { key: 'SHOULDER', weight: 20 },
-    { key: 'WAIST', weight: 15 },
+    { key: 'SLEEVE_LENGTH', weight: 20 },
+    { key: 'WAIST', weight: 10, direction: 'OVER_ONLY' },
+  ],
+  [GarmentCategory.SKIRT]: [
+    { key: 'WAIST', weight: 55, primary: true },
+    { key: 'HIP_SEAT', weight: 45, primary: true },
+  ],
+  [GarmentCategory.UNISEX_TOP]: [
+    { key: 'CHEST_BUST', weight: 55, primary: true },
+    { key: 'SHOULDER', weight: 25 },
+    { key: 'WAIST', weight: 10, direction: 'OVER_ONLY' },
     { key: 'SLEEVE_LENGTH', weight: 10 },
-    { key: 'HEIGHT', weight: 5 },
   ],
   [GarmentCategory.UNISEX_BOTTOM]: [
-    { key: 'HIP_SEAT', weight: 40, primary: true },
+    { key: 'HIP_SEAT', weight: 45, primary: true },
     { key: 'WAIST', weight: 35, primary: true },
     { key: 'INSEAM', weight: 20 },
-    { key: 'HEIGHT', weight: 5 },
   ],
   [GarmentCategory.OTHER]: [
-    { key: 'CHEST_BUST', weight: 30, primary: true },
+    { key: 'CHEST_BUST', weight: 35, primary: true },
     { key: 'WAIST', weight: 25 },
-    { key: 'HIP_SEAT', weight: 25 },
-    { key: 'HEIGHT', weight: 10 },
+    { key: 'HIP_SEAT', weight: 30 },
     { key: 'SHOULDER', weight: 10 },
   ],
 };
@@ -224,7 +258,17 @@ export class SizeComputationService {
         (entry: any) => entry?.recommendedSize,
       );
 
+    /*
+      The audit is per-measurement, not per-category, so every category reports
+      the same problems. Report them once at the top level, where the profile
+      screen can put them next to the fields they belong to.
+    */
+    const measurementProblems = auditMeasurements(
+      normalized.canonicalMeasurements,
+    ).problems;
+
     return {
+      measurementProblems,
       estimatedSize: primary?.estimatedSize ?? null,
       displayRange: primary?.displayRange ?? null,
       confidenceScore: primary?.confidenceScore ?? 0,
@@ -493,8 +537,19 @@ export class SizeComputationService {
     const weights =
       GARMENT_MEASUREMENT_WEIGHTS[input.garmentCategory] ??
       GARMENT_MEASUREMENT_WEIGHTS[GarmentCategory.OTHER];
+
+    /*
+      Integrity first. A value that cannot describe a body is withheld from the
+      scoring rather than scored badly — scored badly, it went silent (every row
+      equally wrong) and the remaining slots decided the size on their own,
+      which is exactly how a 45 cm chest produced a confident-looking 4XL.
+    */
+    const audit = auditMeasurements(input.normalizedMeasurements);
+    const measurements = audit.trusted;
+    const measurementProblems = audit.problems;
+
     const missingMeasurements = weights
-      .filter((slot) => input.normalizedMeasurements[slot.key] == null)
+      .filter((slot) => measurements[slot.key] == null)
       .map((slot) => slot.key);
 
     if (!version || rows.length === 0) {
@@ -523,6 +578,55 @@ export class SizeComputationService {
         fallbackUsed: true,
         staleMeasurementWarning: input.staleMeasurementWarning ?? false,
         sizeChartUnavailable: true,
+        measurementProblems,
+      };
+    }
+
+    /*
+      No trusted primary dimension, no size.
+
+      This is the deliberate refusal. The measurement that DESIGNATES this
+      garment's size is either absent or was withheld by the audit above, and a
+      size assembled from the remaining trim measurements is not a weak answer —
+      it is a wrong one wearing the same typography as a right one. The shopper
+      is told which measurement is blocking and why, which is the only part of
+      this they can act on.
+    */
+    const primarySlots = weights.filter((slot) => slot.primary);
+    const untrustedPrimary = primarySlots.filter(
+      (slot) => measurements[slot.key] == null,
+    );
+    if (primarySlots.length > 0 && untrustedPrimary.length === primarySlots.length) {
+      const blocking = untrustedPrimary.map((slot) => slot.key);
+      const explained = measurementProblems.filter((problem) =>
+        blocking.includes(problem.key),
+      );
+      return {
+        estimatedSize: null,
+        recommendedSize: null,
+        displayRange: null,
+        alternativeSize: null,
+        confidenceScore: 0,
+        confidenceLabel: RecommendationConfidenceLabel.LOW,
+        reasons: [],
+        warnings: [
+          explained.length > 0
+            ? `${explained.map((problem) => problem.message).join(' ')} Until that is corrected WIEZ will not guess a size for you.`
+            : `${blocking.map((key) => labelFor(key)).join(' and ')} ${blocking.length === 1 ? 'is the measurement that decides' : 'are the measurements that decide'} this size, so it cannot be worked out without ${blocking.length === 1 ? 'it' : 'them'}.`,
+        ],
+        chartSource: input.chartSelection.source,
+        chartVersion: version.version ?? null,
+        chartId: version.chartId ?? version.chart?.id ?? null,
+        chartVersionId: version.id ?? null,
+        selectedRegion: input.region,
+        garmentCategory: input.garmentCategory,
+        manualOverrideAllowed: true,
+        missingMeasurements,
+        usedMeasurements: [],
+        fallbackUsed: true,
+        staleMeasurementWarning: input.staleMeasurementWarning ?? false,
+        measurementProblems,
+        primaryMeasurementUnavailable: true,
       };
     }
 
@@ -538,7 +642,7 @@ export class SizeComputationService {
 
     const scores = candidateRows
       .map((row: any) =>
-        this.scoreRow(row, weights, input.normalizedMeasurements, {
+        this.scoreRow(row, weights, measurements, {
           fitPreference: input.fitPreference,
           productFitType: input.productFitType,
           fabricStretch: input.fabricStretch ?? FabricStretch.UNKNOWN,
@@ -579,6 +683,7 @@ export class SizeComputationService {
         usedMeasurements,
         fallbackUsed: true,
         staleMeasurementWarning: input.staleMeasurementWarning ?? false,
+        measurementProblems,
       };
     }
 
@@ -594,7 +699,17 @@ export class SizeComputationService {
         input.chartSelection.source === 'INTERNATIONAL' ? 0.15 : 0.1;
     if (input.staleMeasurementWarning) confidence -= 0.07;
     confidence -= Math.min(0.18, missingMeasurements.length * 0.03);
+    /*
+      A withheld measurement costs more confidence than a missing one. Missing
+      means we were never told; withheld means we were told something wrong, so
+      what we WERE told is less trustworthy too.
+    */
+    confidence -= Math.min(0.25, measurementProblems.length * 0.08);
     confidence = this.clamp(confidence, 0, 1);
+
+    const lengthClass = this.heightLengthClass(
+      input.normalizedMeasurements.HEIGHT,
+    );
 
     const displayRange =
       alternative && Math.abs(best.score - alternative.score) <= 0.12
@@ -618,6 +733,16 @@ export class SizeComputationService {
               `Missing measurements reduce confidence: ${missingMeasurements.join(', ')}.`,
             ]
           : []),
+        ...measurementProblems.map((problem) => problem.message),
+        /*
+          Height no longer moves the size (it is not a girth), so it says the
+          only thing it can honestly say: check the LENGTH of this garment.
+        */
+        ...(lengthClass === 'TALL'
+          ? ['You are taller than this chart is cut for — check the body and sleeve length before ordering.']
+          : lengthClass === 'SHORT'
+            ? ['You are shorter than this chart is cut for — check the body and sleeve length before ordering.']
+            : []),
       ]),
     );
 
@@ -641,6 +766,7 @@ export class SizeComputationService {
       usedMeasurements,
       fallbackUsed,
       staleMeasurementWarning: input.staleMeasurementWarning ?? false,
+      measurementProblems,
     };
   }
 
@@ -656,6 +782,13 @@ export class SizeComputationService {
   ): ScoreRow {
     const totalWeight = weights.reduce((sum, item) => sum + item.weight, 0);
     let weightedScore = 0;
+    /*
+      The primary dimension is tracked separately from the flat average so it
+      can gate the row afterwards. Weighted within itself, because a dress has
+      three primaries (bust, waist, hip) and a top has one.
+    */
+    let primaryWeighted = 0;
+    let primaryWeight = 0;
     const reasons: string[] = [];
     const warnings: string[] = [];
     const usedMeasurements: string[] = [];
@@ -666,13 +799,15 @@ export class SizeComputationService {
       const range = this.rangeFor(row, slot.key);
       if (!range) continue;
       usedMeasurements.push(slot.key);
-      const slotScore = this.scoreMeasurement(
-        value,
-        range.min,
-        range.max,
-        context.fabricStretch,
-      );
+      const slotScore = scoreMeasurement(value, range.min, range.max, {
+        stretch: context.fabricStretch,
+        direction: slot.direction,
+      });
       weightedScore += slot.weight * slotScore.score;
+      if (slot.primary) {
+        primaryWeighted += slot.weight * slotScore.score;
+        primaryWeight += slot.weight;
+      }
       if (slotScore.inside) {
         reasons.push(
           `${this.measurementLabel(slot.key)} measurement fits ${row.sizeLabel} range.`,
@@ -699,10 +834,19 @@ export class SizeComputationService {
     }
 
     const baseScore = totalWeight > 0 ? weightedScore / totalWeight : 0;
+    /*
+      ISO designates a size by its primary dimension; the secondaries qualify
+      it. Applying that as a multiplier rather than a hard gate keeps a body
+      genuinely off the end of the chart rankable — it just ranks with the low
+      confidence it has earned — while stopping a shoulder and a sleeve from
+      electing a size the chest points nowhere near.
+    */
+    const primaryScore = primaryWeight > 0 ? primaryWeighted / primaryWeight : null;
+    const gatedScore = baseScore * primaryFactor(primaryScore);
     return {
       row,
       baseScore,
-      score: this.clamp(baseScore, 0, 1),
+      score: this.clamp(gatedScore, 0, 1),
       reasons: Array.from(new Set(reasons)).slice(0, 5),
       warnings: Array.from(new Set(warnings)).slice(0, 5),
       usedMeasurements,
@@ -965,39 +1109,19 @@ export class SizeComputationService {
     };
   }
 
-  private scoreMeasurement(
-    value: number,
-    min: number,
-    max: number,
-    stretch: FabricStretch,
-  ): { score: number; inside: boolean; nearUpperBoundary: boolean } {
-    const width = Math.max(1, max - min);
-    const boundary = Math.max(1, width * 0.12);
-    const stretchMultiplier =
-      stretch === FabricStretch.HIGH
-        ? 1.45
-        : stretch === FabricStretch.MEDIUM
-          ? 1.2
-          : 1;
-    const tolerance = Math.max(6, width * 0.8) * stretchMultiplier;
-
-    if (value >= min && value <= max) {
-      const nearUpperBoundary = max - value <= boundary;
-      const nearLowerBoundary = value - min <= boundary;
-      return {
-        score: nearUpperBoundary || nearLowerBoundary ? 0.9 : 1,
-        inside: true,
-        nearUpperBoundary,
-      };
-    }
-
-    const distance = value < min ? min - value : value - max;
-    const score = this.clamp(1 - distance / tolerance, 0, 0.82);
-    return {
-      score,
-      inside: false,
-      nearUpperBoundary: value > max && distance <= boundary * 2,
-    };
+  /**
+   * Height's real job, per ISO 8559-2: pick a LENGTH CLASS, not a girth size.
+   *
+   * Bands follow the industry's short / regular / tall split (roughly ±8 cm
+   * around a 175 cm regular for adults). This is advisory — it changes the
+   * warnings, never the size — because a chart row that carries no separate
+   * length grading has no shorter or longer version to offer.
+   */
+  private heightLengthClass(heightCm: number | null | undefined): string | null {
+    if (heightCm == null || !Number.isFinite(heightCm)) return null;
+    if (heightCm < 167) return 'SHORT';
+    if (heightCm > 183) return 'TALL';
+    return 'REGULAR';
   }
 
   private confidenceLabel(score: number): RecommendationConfidenceLabel {

@@ -1,4 +1,5 @@
 import { IsEnum, IsOptional, IsString, IsUUID } from 'class-validator';
+import type { MeasurementProblem } from '../measurement-integrity';
 import {
   FabricStretch,
   FitPreference,
@@ -43,6 +44,19 @@ export interface SizeRecommendationResponseDto {
   fallbackUsed: boolean;
   staleMeasurementWarning?: boolean;
   sizeChartUnavailable?: boolean;
+  /**
+   * Measurements withheld from the computation because they cannot describe a
+   * body, each named and explained. Non-empty means the shopper has something
+   * to correct — a client should surface these against the offending field
+   * rather than only reporting the absence of a size.
+   */
+  measurementProblems?: MeasurementProblem[];
+  /**
+   * True when the measurement that DESIGNATES this garment's size (chest for a
+   * top, waist for a bottom) is missing or untrusted. No size is emitted in
+   * that case: a guess assembled from trim measurements is worse than silence.
+   */
+  primaryMeasurementUnavailable?: boolean;
   normalizedMeasurements?: Record<string, number>;
   userFitPreference?: FitPreference | string | null;
   productFitType?: FitType | null;

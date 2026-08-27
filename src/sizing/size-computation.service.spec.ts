@@ -8,6 +8,7 @@ import {
 } from '@prisma/client';
 import { MeasurementNormalizationService } from './measurement-normalization.service';
 import { SizeComputationService } from './size-computation.service';
+import { scoreMeasurement } from './size-scoring';
 
 describe('SizeComputationService', () => {
   let prisma: any;
@@ -27,7 +28,7 @@ describe('SizeComputationService', () => {
     );
   });
 
-  it('computes a top recommendation from chest, shoulder, waist, sleeve, and height', () => {
+  it('computes a top recommendation from chest, shoulder, waist and sleeve — height is not a girth slot', () => {
     const result = compute({
       service,
       garmentCategory: GarmentCategory.TOP,
@@ -44,16 +45,18 @@ describe('SizeComputationService', () => {
     expect(result.confidenceLabel).toBe(
       RecommendationConfidenceLabel.VERY_HIGH,
     );
+    // HEIGHT is deliberately absent: in an alpha chart the height bands widen
+    // toward the big end, so scoring on height is a pure upward bias. It is a
+    // length-class signal now, not a size slot.
     expect(result.usedMeasurements).toEqual([
       'CHEST_BUST',
       'SHOULDER',
       'WAIST',
       'SLEEVE_LENGTH',
-      'HEIGHT',
     ]);
   });
 
-  it('computes a bottom recommendation from waist, hip, inseam, and height', () => {
+  it('computes a bottom recommendation from waist, hip and inseam', () => {
     const result = compute({
       service,
       garmentCategory: GarmentCategory.BOTTOM,
@@ -66,12 +69,7 @@ describe('SizeComputationService', () => {
     });
 
     expect(result.recommendedSize).toBe('XL');
-    expect(result.usedMeasurements).toEqual([
-      'WAIST',
-      'HIP_SEAT',
-      'INSEAM',
-      'HEIGHT',
-    ]);
+    expect(result.usedMeasurements).toEqual(['WAIST', 'HIP_SEAT', 'INSEAM']);
   });
 
   it('weights bust, waist, and hip strongly for gowns and dresses', () => {
@@ -167,8 +165,15 @@ describe('SizeComputationService', () => {
       fitPreference: FitPreference.LOOSE,
     });
 
+    // At REGULAR the body sits at the very top of L and is told so.
+    expect(base.recommendedSize).toBe('L');
+    expect(base.warnings.join(' ')).toContain('upper boundary');
+
+    // At LOOSE the engine no longer merely warns — it moves up. A shopper who
+    // has asked for room and is already against the ceiling of a size wants the
+    // next one, which is the whole point of stating the preference.
+    expect(relaxed.recommendedSize).toBe('XL');
     expect(relaxed.confidenceScore).toBeLessThanOrEqual(base.confidenceScore);
-    expect(relaxed.warnings.join(' ')).toContain('upper boundary');
   });
 
   it('applies product slim fit and fabric stretch adjustments', () => {
@@ -319,7 +324,151 @@ describe('SizeComputationService', () => {
     });
     expect(result.data.status).toBe('REVIEW_REQUIRED');
   });
+
+  /*
+    The reported defect, pinned.
+
+    A shopper who buys XXL–3XL tops and 31–32" trousers was shown 4XL. The saved
+    profile was 182 cm tall with a 45 cm "chest", a 26 cm "hip" and a 59 cm
+    shoulder — the girths had been measured across the front rather than around
+    the body. Two independent faults turned that into a confident 4XL, and both
+    are asserted here so neither can come back.
+  */
+  describe('regression: implausible measurements must not elect a size', () => {
+    const reportedProfile = {
+      HEIGHT: 182,
+      CHEST_BUST: 45,
+      WAIST: 56,
+      HIP_SEAT: 26,
+      SHOULDER: 59,
+      SLEEVE_LENGTH: 71,
+      NECK_COLLAR: 46,
+      INSEAM: 85,
+    };
+
+    it('refuses to size a top when the chest cannot describe a body', () => {
+      const result = compute({
+        service,
+        garmentCategory: GarmentCategory.TOP,
+        measurements: reportedProfile,
+        rows: fullTopLadder(),
+      });
+
+      // The whole bug in one assertion: this used to be '4XL'.
+      expect(result.recommendedSize).toBeNull();
+      expect(result.primaryMeasurementUnavailable).toBe(true);
+      expect(
+        result.measurementProblems?.find(
+          (problem) => problem.key === 'CHEST_BUST',
+        ),
+      ).toMatchObject({ code: 'LIKELY_HALF_GIRTH', suggestedValue: 90 });
+      // It names the fix rather than asking for a measurement already given.
+      expect(result.warnings.join(' ')).toContain('all the way around');
+    });
+
+    it('scores an off-chart primary in the right DIRECTION instead of going silent', () => {
+      // The old curve floored at zero roughly one row-width outside the range,
+      // so a 45 cm chest scored 0.000 against all eight rows and stopped
+      // ranking them at all. Every row must now be ordered by proximity.
+      const smallest = scoreMeasurement(45, 78, 84);
+      const largest = scoreMeasurement(45, 142, 156);
+      expect(smallest.score).toBeGreaterThan(0);
+      expect(largest.score).toBeGreaterThan(0);
+      expect(smallest.score).toBeGreaterThan(largest.score);
+    });
+
+    it('sizes the same body correctly once the girths are measured round', () => {
+      const result = compute({
+        service,
+        garmentCategory: GarmentCategory.TOP,
+        measurements: {
+          HEIGHT: 182,
+          CHEST_BUST: 116,
+          WAIST: 82,
+          SHOULDER: 48,
+          SLEEVE_LENGTH: 66,
+        },
+        rows: fullTopLadder(),
+      });
+
+      expect(result.recommendedSize).toBe('XL');
+      expect(result.measurementProblems ?? []).toHaveLength(0);
+    });
+
+    it('does not let secondary measurements outvote the primary dimension', () => {
+      // Chest says XL. Shoulder and sleeve are at the very top of the ladder.
+      // ISO designates a top by chest girth; the trim measurements qualify it.
+      const result = compute({
+        service,
+        garmentCategory: GarmentCategory.TOP,
+        measurements: {
+          CHEST_BUST: 112,
+          SHOULDER: 58,
+          SLEEVE_LENGTH: 70,
+        },
+        rows: fullTopLadder(),
+      });
+
+      expect(result.recommendedSize).toBe('XL');
+    });
+
+    it('does not push an athletic drop up a size on a top', () => {
+      // 114 cm chest with an 80 cm waist is a drop, not a misfit: waist below a
+      // top's range used to score 0 and drag the whole row down.
+      const athletic = compute({
+        service,
+        garmentCategory: GarmentCategory.TOP,
+        measurements: { CHEST_BUST: 114, WAIST: 80, SHOULDER: 47 },
+        rows: fullTopLadder(),
+      });
+      const straight = compute({
+        service,
+        garmentCategory: GarmentCategory.TOP,
+        measurements: { CHEST_BUST: 114, WAIST: 100, SHOULDER: 47 },
+        rows: fullTopLadder(),
+      });
+
+      expect(athletic.recommendedSize).toBe('XL');
+      expect(straight.recommendedSize).toBe('XL');
+      expect(athletic.warnings.join(' ')).not.toContain('Waist is outside');
+    });
+
+    it('does not let height alone carry a tall body up the ladder', () => {
+      // Every row from XL up accepts 182 cm, so height could only ever bias
+      // upward. It is a length-class warning now and moves no size.
+      const tall = compute({
+        service,
+        garmentCategory: GarmentCategory.TOP,
+        measurements: { CHEST_BUST: 104, SHOULDER: 43, HEIGHT: 196 },
+        rows: fullTopLadder(),
+      });
+      const short = compute({
+        service,
+        garmentCategory: GarmentCategory.TOP,
+        measurements: { CHEST_BUST: 104, SHOULDER: 43, HEIGHT: 160 },
+        rows: fullTopLadder(),
+      });
+
+      expect(tall.recommendedSize).toBe(short.recommendedSize);
+      expect(tall.warnings.join(' ')).toContain('taller');
+      expect(short.warnings.join(' ')).toContain('shorter');
+    });
+  });
 });
+
+/** The seeded INTERNATIONAL top ladder, XS through 4XL. */
+function fullTopLadder() {
+  return [
+    chartRow('XS', 0, { chestBust: [78, 84], waist: [62, 70], shoulder: [35, 38], sleeve: [55, 59], height: [152, 170] }),
+    chartRow('S', 1, { chestBust: [84, 91], waist: [68, 76], shoulder: [37, 40], sleeve: [56, 60], height: [156, 175] }),
+    chartRow('M', 2, { chestBust: [91, 99], waist: [76, 84], shoulder: [39, 42], sleeve: [57, 62], height: [160, 180] }),
+    chartRow('L', 3, { chestBust: [99, 108], waist: [84, 94], shoulder: [41, 45], sleeve: [59, 64], height: [163, 185] }),
+    chartRow('XL', 4, { chestBust: [108, 118], waist: [94, 106], shoulder: [44, 48], sleeve: [60, 66], height: [165, 190] }),
+    chartRow('XXL', 5, { chestBust: [118, 130], waist: [106, 118], shoulder: [47, 51], sleeve: [61, 68], height: [165, 195] }),
+    chartRow('3XL', 6, { chestBust: [130, 142], waist: [118, 132], shoulder: [50, 55], sleeve: [62, 69], height: [165, 198] }),
+    chartRow('4XL', 7, { chestBust: [142, 156], waist: [132, 148], shoulder: [54, 59], sleeve: [63, 70], height: [165, 200] }),
+  ];
+}
 
 function compute(input: {
   service: SizeComputationService;

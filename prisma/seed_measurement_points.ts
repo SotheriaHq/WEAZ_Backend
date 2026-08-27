@@ -50,7 +50,7 @@ type PointSeed = {
 
 const POINTS: PointSeed[] = [
   // ── General (ISO vertical dimensions) ───────────────────────────────────
-  { key: 'HEIGHT', label: 'Height', description: 'Overall body height, standing without shoes', category: 'GENERAL', min: 120, max: 230, childMin: 60, childMax: 190 },
+  { key: 'HEIGHT', label: 'Height', description: 'Total vertical height from the crown of the head to the floor, standing upright without shoes', category: 'GENERAL', min: 120, max: 230, childMin: 60, childMax: 190 },
 
   // ── Upper body (ISO girth / breadth / depth) ────────────────────────────
   { key: 'NECK', label: 'Neck', description: 'Around the base of the neck, where a collar sits', category: 'UPPER_BODY', min: 25, max: 60, childMin: 18, childMax: 45 },
