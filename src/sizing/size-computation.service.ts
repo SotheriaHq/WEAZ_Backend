@@ -640,6 +640,55 @@ export class SizeComputationService {
       }
     }
 
+    /*
+      Do the shopper's own measurements agree about what size they are?
+
+      Withholding an impossible value is not enough. A profile can hold nothing
+      but individually believable numbers that describe two different people —
+      the reported one ended up with a 90 cm chest (an S) beside a 59 cm shoulder
+      and a 71 cm sleeve (a 4XL) — and the primary-dimension rule, working
+      exactly as intended, then answered "S" with a straight face.
+
+      When each measurement points at a row several sizes from the others, the
+      honest answer is that we cannot tell, not the answer the primary happens to
+      give. The threshold is generous (`MAX_SIZE_DISAGREEMENT` steps) because
+      real bodies genuinely straddle sizes; this fires on contradiction, not on
+      the ordinary spread between a chest and a sleeve.
+    */
+    const disagreement = this.measurementDisagreement(
+      candidateRows,
+      weights,
+      measurements,
+    );
+    if (disagreement) {
+      return {
+        estimatedSize: null,
+        recommendedSize: null,
+        displayRange: null,
+        alternativeSize: null,
+        confidenceScore: 0,
+        confidenceLabel: RecommendationConfidenceLabel.LOW,
+        reasons: [],
+        warnings: [
+          `Your saved measurements point at very different sizes — ${labelFor(disagreement.low.key)} suggests ${disagreement.low.sizeLabel} while ${labelFor(disagreement.high.key)} suggests ${disagreement.high.sizeLabel}. Re-take those two with the measuring guide and your size will settle.`,
+          ...measurementProblems.map((problem) => problem.message),
+        ],
+        chartSource: input.chartSelection.source,
+        chartVersion: version.version ?? null,
+        chartId: version.chartId ?? version.chart?.id ?? null,
+        chartVersionId: version.id ?? null,
+        selectedRegion: input.region,
+        garmentCategory: input.garmentCategory,
+        manualOverrideAllowed: true,
+        missingMeasurements,
+        usedMeasurements: [disagreement.low.key, disagreement.high.key],
+        fallbackUsed: true,
+        staleMeasurementWarning: input.staleMeasurementWarning ?? false,
+        measurementProblems,
+        measurementsDisagree: true,
+      };
+    }
+
     const scores = candidateRows
       .map((row: any) =>
         this.scoreRow(row, weights, measurements, {
@@ -767,6 +816,70 @@ export class SizeComputationService {
       fallbackUsed,
       staleMeasurementWarning: input.staleMeasurementWarning ?? false,
       measurementProblems,
+    };
+  }
+
+  /**
+   * How many size steps apart the shopper's own measurements are.
+   *
+   * Each measurement votes for the row it fits best, independently. If the
+   * spread between the lowest and highest vote exceeds `MAX_SIZE_DISAGREEMENT`,
+   * the profile is describing more than one body and no single size is honest.
+   *
+   * Rows are indexed by `sortOrder` (the chart's own ladder), not by array
+   * position, so a chart filtered to the sizes a product actually stocks still
+   * measures distance on the full ladder.
+   */
+  private measurementDisagreement(
+    rows: any[],
+    weights: WeightedSlot[],
+    measurements: Record<string, number>,
+  ): {
+    low: { key: CanonicalMeasurementKey; sizeLabel: string };
+    high: { key: CanonicalMeasurementKey; sizeLabel: string };
+  } | null {
+    const MAX_SIZE_DISAGREEMENT = 3;
+
+    const votes: Array<{
+      key: CanonicalMeasurementKey;
+      order: number;
+      sizeLabel: string;
+    }> = [];
+    for (const slot of weights) {
+      const value = measurements[slot.key];
+      if (value == null) continue;
+
+      let best: { order: number; sizeLabel: string; score: number } | null = null;
+      for (const row of rows) {
+        const range = this.rangeFor(row, slot.key);
+        if (!range) continue;
+        /*
+          Scored two-sided here regardless of the slot's `direction`. `OVER_ONLY`
+          exists so a small waist does not DRAG A ROW DOWN; it would make every
+          row below the body score identically well, which is useless for asking
+          "which row does this measurement actually describe".
+        */
+        const { score } = scoreMeasurement(value, range.min, range.max);
+        if (!best || score > best.score) {
+          best = {
+            order: Number(row.sortOrder ?? 0),
+            sizeLabel: String(row.sizeLabel),
+            score,
+          };
+        }
+      }
+      if (best) votes.push({ key: slot.key, order: best.order, sizeLabel: best.sizeLabel });
+    }
+
+    if (votes.length < 2) return null;
+
+    const sorted = [...votes].sort((a, b) => a.order - b.order);
+    const low = sorted[0];
+    const high = sorted[sorted.length - 1];
+    if (high.order - low.order <= MAX_SIZE_DISAGREEMENT) return null;
+    return {
+      low: { key: low.key, sizeLabel: low.sizeLabel },
+      high: { key: high.key, sizeLabel: high.sizeLabel },
     };
   }
 

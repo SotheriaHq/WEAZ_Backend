@@ -5,13 +5,29 @@
  * 45 cm chest and a 26 cm hip (both physically impossible on an adult) produced
  * a confident-looking "4XL", because a value far outside every row of the chart
  * scores zero against every row and therefore stops influencing the ranking at
- * all — the garbage went quiet instead of going loud, and a 20%-weight shoulder
- * decided a size that the 50%-weight chest was supposed to decide.
+ * all — the garbage went quiet instead of going loud.
  *
  * So integrity is checked BEFORE scoring, and a measurement that fails is
- * withheld from the engine and named to the shopper. Refusing to answer is a
- * better answer than a wrong size: a size nobody can trust is worth less than
- * no size, because it gets acted on.
+ * withheld from the engine and named to the shopper.
+ *
+ * ## Two rules about HOW it is named
+ *
+ * **1. Height is the anchor.** Almost nobody mis-measures their own height, and
+ * every other body dimension is proportional to it, so "for 182 cm, a waist is
+ * usually 73–124 cm" is a REFERENCE the shopper can check themselves. A bare
+ * global range cannot catch a 56 cm waist on a tall adult (it is a real waist on
+ * a small one), and a ratio between two *measured* values is unusable the moment
+ * either of them is the wrong one.
+ *
+ * **2. Never argue, and never guess out loud.** An earlier version asserted the
+ * mistake — "26 looks like inches, that is 66 cm" — and a shopper who had in fact
+ * measured in centimetres was told they had not. Worse, 66 cm is not a plausible
+ * hip either: the correction was offered purely because it landed inside a wide
+ * global band, the shopper accepted it, and the profile got a NEW wrong number
+ * with our name on it. A correction is now offered only when it lands inside the
+ * height-anchored band for that measurement, which means it is a correction we
+ * can actually stand behind. When nothing fits, the copy gives the expected range
+ * and points at the guide, and says nothing about what the shopper did.
  *
  * Pure module — no Nest, no Prisma, no I/O — so it is unit-testable directly.
  */
@@ -21,8 +37,8 @@ import type { CanonicalMeasurementKey } from './measurement-normalization.servic
 export type MeasurementProblemCode =
   /** Outside the range any adult body occupies. */
   | 'IMPLAUSIBLE'
-  /** Plausible on its own, but contradicted by another measurement. */
-  | 'INCONSISTENT'
+  /** Possible on any body, but not on one of this height. */
+  | 'OUT_OF_PROPORTION'
   /** Looks like a girth measured across the front rather than all the way round. */
   | 'LIKELY_HALF_GIRTH'
   /** Looks like inches typed into a centimetre field. */
@@ -32,11 +48,15 @@ export type MeasurementProblem = {
   key: CanonicalMeasurementKey;
   code: MeasurementProblemCode;
   value: number;
-  /** Shopper-facing, names the value and what to do about it. */
+  /** Shopper-facing. States the expected range; never asserts what they did. */
   message: string;
-  /** The other measurement this one contradicts, for INCONSISTENT only. */
-  conflictsWith?: CanonicalMeasurementKey;
-  /** What the value would be under the suspected mistake, when we can say. */
+  /** The height-anchored band, when there was one, so a client can show it. */
+  expected?: { min: number; max: number };
+  /**
+   * Only present when the correction lands inside the expected band — i.e. when
+   * we can stand behind it. Absent means "we could not work out what this is",
+   * which is an honest thing to say and a safe thing to leave alone.
+   */
   suggestedValue?: number;
 };
 
@@ -62,6 +82,30 @@ export const PLAUSIBLE_RANGE_CM: Record<
   NECK_COLLAR: { min: 25, max: 65 },
 };
 
+/**
+ * Each measurement as a fraction of standing height.
+ *
+ * Anthropometric proportion bands, set wide enough to contain every real adult
+ * build from the leanest to the heaviest — the girth bands in particular span
+ * roughly a BMI 15 to BMI 45 body, which is far outside what any size chart
+ * covers. They are here to catch a number that describes a different body from
+ * the rest of the profile, not to police anyone's shape.
+ *
+ * Height itself is absent on purpose: it is the reference, so it has nothing to
+ * be checked against but the global band above.
+ */
+const HEIGHT_PROPORTION_BANDS: Partial<
+  Record<CanonicalMeasurementKey, { min: number; max: number }>
+> = {
+  CHEST_BUST: { min: 0.45, max: 0.78 },
+  WAIST: { min: 0.38, max: 0.75 },
+  HIP_SEAT: { min: 0.46, max: 0.78 },
+  SHOULDER: { min: 0.19, max: 0.29 },
+  SLEEVE_LENGTH: { min: 0.28, max: 0.44 },
+  INSEAM: { min: 0.38, max: 0.55 },
+  NECK_COLLAR: { min: 0.16, max: 0.27 },
+};
+
 /** Girths are measured all the way round; halving one is the classic mistake. */
 const GIRTH_KEYS: CanonicalMeasurementKey[] = [
   'CHEST_BUST',
@@ -70,121 +114,19 @@ const GIRTH_KEYS: CanonicalMeasurementKey[] = [
   'NECK_COLLAR',
 ];
 
-/**
- * Ratios between measurements that hold on every human body.
- *
- * These are proportion checks, not size checks — they catch the case where each
- * number is individually believable but the set describes nobody. A 59 cm
- * shoulder on a 45 cm chest is the reported profile's real defect: both values
- * pass on their own, and together they are impossible.
- *
- * Bounds are set well outside real anthropometric variation (including the
- * athletic V-taper at one end and a portly build at the other) so that only a
- * genuine mistake trips them.
- */
-const COHERENCE_RULES: Array<{
-  key: CanonicalMeasurementKey;
-  against: CanonicalMeasurementKey;
-  min: number;
-  max: number;
-  describe: (value: number, against: number) => string;
-}> = [
-  {
-    key: 'SHOULDER',
-    against: 'CHEST_BUST',
-    min: 0.2,
-    max: 0.42,
-    describe: (value, against) =>
-      `A ${value} cm shoulder width does not go with a ${against} cm chest — shoulder width is measured straight across the back, chest all the way around.`,
-  },
-  {
-    key: 'WAIST',
-    against: 'CHEST_BUST',
-    min: 0.55,
-    max: 1.4,
-    describe: (value, against) =>
-      `A ${value} cm waist does not go with a ${against} cm chest. One of the two is measured differently from the other.`,
-  },
-  {
-    key: 'HIP_SEAT',
-    against: 'WAIST',
-    min: 0.8,
-    max: 1.7,
-    describe: (value, against) =>
-      `A ${value} cm hip does not go with a ${against} cm waist. One of the two is measured differently from the other.`,
-  },
-  {
-    key: 'INSEAM',
-    against: 'HEIGHT',
-    min: 0.35,
-    max: 0.58,
-    describe: (value, against) =>
-      `A ${value} cm inseam does not go with a height of ${against} cm — inseam runs from the crotch to the ankle, not the full leg.`,
-  },
-  {
-    key: 'SLEEVE_LENGTH',
-    against: 'HEIGHT',
-    min: 0.25,
-    max: 0.46,
-    describe: (value, against) =>
-      `A ${value} cm sleeve length does not go with a height of ${against} cm.`,
-  },
-  {
-    key: 'NECK_COLLAR',
-    against: 'CHEST_BUST',
-    min: 0.25,
-    max: 0.55,
-    describe: (value, against) =>
-      `A ${value} cm neck does not go with a ${against} cm chest.`,
-  },
-];
+/** How each point is actually taken, in the words the fittings guide uses. */
+const HOW_TO_TAKE: Record<CanonicalMeasurementKey, string> = {
+  HEIGHT: 'standing straight, barefoot, crown of the head to the floor',
+  CHEST_BUST: 'all the way around the fullest part, under the arms',
+  WAIST: 'all the way around the narrowest part, above the belly button',
+  HIP_SEAT: 'all the way around the fullest part of your seat',
+  SHOULDER: 'straight across the back, shoulder bone to shoulder bone',
+  SLEEVE_LENGTH: 'shoulder bone to wrist, arm slightly bent',
+  INSEAM: 'inside the leg, crotch down to the ankle',
+  NECK_COLLAR: 'all the way around the base of the neck, where a collar sits',
+};
 
 const round1 = (value: number) => Math.round(value * 10) / 10;
-
-function inPlausibleRange(key: CanonicalMeasurementKey, value: number): boolean {
-  const range = PLAUSIBLE_RANGE_CM[key];
-  return value >= range.min && value <= range.max;
-}
-
-/**
- * Name the most likely mistake behind an out-of-range value.
- *
- * Order matters: a halved girth and an inches-for-centimetres entry can both
- * "explain" the same number, and the halved girth is checked first because it is
- * the mistake this vocabulary actually invites — every girth on the fittings
- * form is a tape wrapped around the body, and measuring across the front is the
- * single most common way to get it wrong.
- */
-function explainOutOfRange(
-  key: CanonicalMeasurementKey,
-  value: number,
-): MeasurementProblem {
-  if (GIRTH_KEYS.includes(key) && inPlausibleRange(key, value * 2)) {
-    return {
-      key,
-      code: 'LIKELY_HALF_GIRTH',
-      value,
-      suggestedValue: round1(value * 2),
-      message: `${value} cm is about half a real ${labelFor(key)} — this measurement goes all the way around the body, not across the front. Did you mean ${round1(value * 2)} cm?`,
-    };
-  }
-  if (inPlausibleRange(key, value * 2.54)) {
-    return {
-      key,
-      code: 'LIKELY_INCHES',
-      value,
-      suggestedValue: round1(value * 2.54),
-      message: `${value} looks like inches. In centimetres that is ${round1(value * 2.54)} cm — switch your units or re-enter the value.`,
-    };
-  }
-  const range = PLAUSIBLE_RANGE_CM[key];
-  return {
-    key,
-    code: 'IMPLAUSIBLE',
-    value,
-    message: `${value} cm is outside the range a ${labelFor(key)} can be (${range.min}–${range.max} cm). Please re-measure this one.`,
-  };
-}
 
 export function labelFor(key: CanonicalMeasurementKey): string {
   switch (key) {
@@ -209,6 +151,91 @@ export function labelFor(key: CanonicalMeasurementKey): string {
   }
 }
 
+function inPlausibleRange(key: CanonicalMeasurementKey, value: number): boolean {
+  const range = PLAUSIBLE_RANGE_CM[key];
+  return value >= range.min && value <= range.max;
+}
+
+/**
+ * The band this measurement should fall in for a body of this height, narrowed
+ * by the global plausible range. Null when height is unknown or the measurement
+ * has no proportion to height.
+ */
+export function expectedBandForHeight(
+  key: CanonicalMeasurementKey,
+  heightCm: number | null,
+): { min: number; max: number } | null {
+  if (heightCm == null || !inPlausibleRange('HEIGHT', heightCm)) return null;
+  const band = HEIGHT_PROPORTION_BANDS[key];
+  if (!band) return null;
+  const global = PLAUSIBLE_RANGE_CM[key];
+  return {
+    min: Math.round(Math.max(global.min, heightCm * band.min)),
+    max: Math.round(Math.min(global.max, heightCm * band.max)),
+  };
+}
+
+/**
+ * Try to explain the value as a known data-entry mistake — but only accept an
+ * explanation whose RESULT lands inside `band`.
+ *
+ * That gate is the whole point. Without it, any smallish number in a girth field
+ * could be "explained" as a halved girth or as inches, and the shopper is handed
+ * a confident correction that is simply a different wrong number.
+ */
+function correctionWithin(
+  key: CanonicalMeasurementKey,
+  value: number,
+  band: { min: number; max: number },
+): { code: MeasurementProblemCode; suggestedValue: number } | null {
+  if (GIRTH_KEYS.includes(key)) {
+    const doubled = round1(value * 2);
+    if (doubled >= band.min && doubled <= band.max) {
+      return { code: 'LIKELY_HALF_GIRTH', suggestedValue: doubled };
+    }
+  }
+  const asCm = round1(value * 2.54);
+  if (asCm >= band.min && asCm <= band.max) {
+    return { code: 'LIKELY_INCHES', suggestedValue: asCm };
+  }
+  const asInches = round1(value / 2.54);
+  if (asInches >= band.min && asInches <= band.max) {
+    return { code: 'LIKELY_INCHES', suggestedValue: asInches };
+  }
+  return null;
+}
+
+function describe(
+  key: CanonicalMeasurementKey,
+  value: number,
+  band: { min: number; max: number } | null,
+  heightCm: number | null,
+  correction: { code: MeasurementProblemCode; suggestedValue: number } | null,
+): string {
+  const label = labelFor(key);
+  const how = HOW_TO_TAKE[key];
+
+  /*
+    A correction we can stand behind is offered as a QUESTION. The shopper is
+    the authority on their own body; we are the ones who might be wrong.
+  */
+  if (correction) {
+    const unitNote =
+      correction.code === 'LIKELY_HALF_GIRTH'
+        ? `${label} is measured ${how}`
+        : `check whether this one was taken in inches — your profile is set to centimetres`;
+    return `${label} reads ${value} cm. ${band ? `For a height of ${heightCm} cm we would expect ${band.min}–${band.max} cm. ` : ''}Should this be ${correction.suggestedValue} cm? (${unitNote}.)`;
+  }
+
+  if (band && heightCm != null) {
+    return `${label} reads ${value} cm, and for a height of ${heightCm} cm we would expect ${band.min}–${band.max} cm. Worth re-taking it — ${how} — and checking your unit is set to centimetres.`;
+  }
+
+  const global = PLAUSIBLE_RANGE_CM[key];
+  const article = /^[aeiou]/i.test(label) ? 'an' : 'a';
+  return `${label} reads ${value} cm, which is outside the range ${article} ${label} can be (${global.min}–${global.max} cm). Worth re-taking it — ${how} — and checking your unit is set to centimetres.`;
+}
+
 /**
  * Split a normalized measurement set into what the engine may score and what it
  * must not.
@@ -223,39 +250,45 @@ export function auditMeasurements(measurements: Record<string, number>): {
   const problems: MeasurementProblem[] = [];
   const trusted: Record<string, number> = {};
 
+  const rawHeight = measurements.HEIGHT;
+  const heightCm =
+    Number.isFinite(rawHeight) && inPlausibleRange('HEIGHT', rawHeight)
+      ? rawHeight
+      : null;
+
   for (const [key, value] of Object.entries(measurements)) {
     const canonical = key as CanonicalMeasurementKey;
     if (!(canonical in PLAUSIBLE_RANGE_CM)) continue;
     if (!Number.isFinite(value) || value <= 0) continue;
-    if (inPlausibleRange(canonical, value)) {
+
+    const band = expectedBandForHeight(canonical, heightCm);
+    const globallyOk = inPlausibleRange(canonical, value);
+    const proportionateOk = band ? value >= band.min && value <= band.max : true;
+
+    if (globallyOk && proportionateOk) {
       trusted[canonical] = value;
       continue;
     }
-    problems.push(explainOutOfRange(canonical, value));
-  }
 
-  /*
-    Coherence runs over what survived, so it never fires on a pair where one
-    half is already reported — a shopper told two things about one bad number
-    fixes it twice or, more likely, believes neither.
+    /*
+      A correction is only ever proposed against the height-anchored band. With
+      no height there is no band we trust enough to correct against, so the
+      shopper gets the reference range and the guide, and no guess.
+    */
+    const correction = band ? correctionWithin(canonical, value, band) : null;
+    const code: MeasurementProblemCode = correction
+      ? correction.code
+      : globallyOk
+        ? 'OUT_OF_PROPORTION'
+        : 'IMPLAUSIBLE';
 
-    A failing pair drops the DEPENDENT measurement (the rule's `key`), not the
-    reference. The references are chest, waist and height: the three a shopper
-    is most likely to know from memory and least likely to mistype.
-  */
-  for (const rule of COHERENCE_RULES) {
-    const value = trusted[rule.key];
-    const against = trusted[rule.against];
-    if (value == null || against == null) continue;
-    const ratio = value / against;
-    if (ratio >= rule.min && ratio <= rule.max) continue;
-    delete trusted[rule.key];
     problems.push({
-      key: rule.key,
-      code: 'INCONSISTENT',
+      key: canonical,
+      code,
       value,
-      conflictsWith: rule.against,
-      message: rule.describe(value, against),
+      message: describe(canonical, value, band, heightCm, correction),
+      ...(band ? { expected: band } : {}),
+      ...(correction ? { suggestedValue: correction.suggestedValue } : {}),
     });
   }
 

@@ -12,9 +12,15 @@ export const BRAND_NOT_VERIFIED_CODE = 'BRAND_NOT_VERIFIED';
  * Shopper-facing message shown when a buyer tries to bag/checkout an item from
  * a brand that has NOT completed the store-verification process. Only brands
  * with an APPROVED verification may receive orders (product rule).
+ *
+ * Kept SHORT deliberately. This arrives as a modal over a feed the shopper is
+ * mid-scroll in, and the previous three-sentence version apologised, restated
+ * the two things they cannot do, and then explained the policy — none of which
+ * they can act on, because the missing step is the brand's, not theirs. One line
+ * that names the cause is the whole useful content.
  */
 export const BRAND_ORDER_VERIFICATION_MESSAGE =
-  "Sorry, you can't bag this item or place an order yet — this brand hasn't completed store verification. Only verified brands can take orders.";
+  'Orders are off — this brand is not verified yet.';
 
 /**
  * Brand-facing nudge fired (deduped) when a shopper is turned away from a

@@ -57,6 +57,13 @@ export interface SizeRecommendationResponseDto {
    * that case: a guess assembled from trim measurements is worse than silence.
    */
   primaryMeasurementUnavailable?: boolean;
+  /**
+   * True when the shopper's own measurements vote for sizes several steps
+   * apart. No size is emitted: the profile is describing more than one body,
+   * and the primary dimension answering on its own would be a straight-faced
+   * guess. The warning names the two measurements that disagree.
+   */
+  measurementsDisagree?: boolean;
   normalizedMeasurements?: Record<string, number>;
   userFitPreference?: FitPreference | string | null;
   productFitType?: FitType | null;

@@ -433,6 +433,58 @@ describe('SizeComputationService', () => {
       expect(athletic.warnings.join(' ')).not.toContain('Waist is outside');
     });
 
+    it('refuses when the shopper\'s own measurements vote for different sizes', () => {
+      /*
+        The profile as it stood AFTER the first round of corrections: a 90cm
+        chest (an S) beside a 59cm shoulder and a 71cm sleeve (a 4XL). Every
+        number is individually believable-ish, the shoulder is withheld by the
+        height check, and the primary-dimension rule then answered "S" with a
+        straight face — which is how a shopper who buys XXL-3XL was shown S.
+
+        When the measurements describe two different people, no single size is
+        honest.
+      */
+      const result = compute({
+        service,
+        garmentCategory: GarmentCategory.TOP,
+        measurements: {
+          HEIGHT: 182,
+          CHEST_BUST: 90,
+          WAIST: 56,
+          HIP_SEAT: 66,
+          SHOULDER: 59,
+          SLEEVE_LENGTH: 71,
+          NECK_COLLAR: 46,
+          INSEAM: 85,
+        },
+        rows: fullTopLadder(),
+      });
+
+      expect(result.recommendedSize).toBeNull();
+      expect(result.measurementsDisagree).toBe(true);
+      expect(result.warnings.join(' ')).toContain('very different sizes');
+    });
+
+    it('does not refuse for the ordinary spread between a chest and a sleeve', () => {
+      // A real body straddles sizes all the time. The disagreement check must
+      // fire on contradiction, not on normal variation, or it never answers.
+      const result = compute({
+        service,
+        garmentCategory: GarmentCategory.TOP,
+        measurements: {
+          HEIGHT: 182,
+          CHEST_BUST: 116,
+          WAIST: 96,
+          SHOULDER: 46,
+          SLEEVE_LENGTH: 67,
+        },
+        rows: fullTopLadder(),
+      });
+
+      expect(result.measurementsDisagree).toBeFalsy();
+      expect(result.recommendedSize).toBe('XL');
+    });
+
     it('does not let height alone carry a tall body up the ladder', () => {
       // Every row from XL up accepts 182 cm, so height could only ever bias
       // upward. It is a length-class warning now and moves no size.
