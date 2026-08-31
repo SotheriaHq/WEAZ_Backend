@@ -61,6 +61,16 @@ export class AuthUserResponseDto {
 
   @ApiProperty()
   lastName: string;
+
+  @ApiProperty({
+    required: false,
+    nullable: true,
+    enum: ['MALE', 'FEMALE', 'NON_BINARY', 'UNSPECIFIED'],
+    description:
+      'Shopper identity for size designation and feed audience. Null means we have not asked. Stored codes map to Man / Woman / Non-binary / I\'d rather not say in the UI.',
+  })
+  gender: 'MALE' | 'FEMALE' | 'NON_BINARY' | 'UNSPECIFIED' | null;
+
   @ApiProperty({ enum: ['SuperAdmin', 'Admin', 'User'] })
   role: 'SuperAdmin' | 'Admin' | 'User';
 

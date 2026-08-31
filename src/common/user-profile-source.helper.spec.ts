@@ -33,6 +33,7 @@ describe('user profile media source helper', () => {
         profileVisibility: 'UNLOCKED',
         showUsername: true,
         showLocation: true,
+        gender: null,
         updatedAt: createdAt,
       },
     });

@@ -38,6 +38,9 @@ export class UserProfileResponseDto {
   @IsString()
   lastName: string;
 
+  @IsOptional()
+  gender?: 'MALE' | 'FEMALE' | 'NON_BINARY' | 'UNSPECIFIED' | null;
+
   @IsString()
   @IsOptional()
   profileImage?: string;

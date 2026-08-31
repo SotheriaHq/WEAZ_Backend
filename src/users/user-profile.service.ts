@@ -25,12 +25,14 @@ import {
   normalizeProfileMediaUrlForPersistence,
   resolveBannerImage,
   resolveNullableProfileField,
+  resolveProfileGender,
   resolveProfileImage,
   resolveProfileVisibility,
   resolveRequiredProfileField,
   resolveShowLocation,
   resolveShowUsername,
 } from 'src/common/user-profile-source.helper';
+import { parseProfileGender } from 'src/common/profile-gender';
 import {
   isEmptyPhone,
   normalizePhoneToE164,
@@ -75,6 +77,7 @@ export class UserProfileService {
       username: user.username,
       firstName: resolveRequiredProfileField(user, 'firstName'),
       lastName: resolveRequiredProfileField(user, 'lastName'),
+      gender: resolveProfileGender(user),
       type: user.type,
       profileImage: profileImage.url ?? undefined,
       profileImageId: profileImage.fileId ?? undefined,
@@ -235,7 +238,8 @@ export class UserProfileService {
       | 'profileImage'
       | 'profileImageId'
       | 'bannerImage'
-      | 'bannerImageId';
+      | 'bannerImageId'
+      | 'gender';
     type AllowedProfileUpdateData = Partial<
       Record<AllowedProfileUpdateField, string | null>
     >;
@@ -267,6 +271,16 @@ export class UserProfileService {
     assignString('firstName');
     assignString('lastName');
     assignString('address');
+
+    if (dto.gender !== undefined) {
+      const parsed = parseProfileGender(dto.gender);
+      if (!parsed) {
+        throw new BadRequestException(
+          "Gender must be Man, Woman, Non-binary, or I'd rather not say",
+        );
+      }
+      profileData.gender = parsed;
+    }
 
     if (dto.phoneNumber !== undefined) {
       if (isEmptyPhone(dto.phoneNumber)) {
@@ -365,11 +379,14 @@ export class UserProfileService {
               (profileData.bannerImageId as string | null | undefined) ?? null,
             profileVisibility:
               existingUser.userProfile?.profileVisibility ?? 'UNLOCKED',
+            ...(profileData.gender
+              ? { gender: profileData.gender as any }
+              : {}),
           },
           update: {
             ...profileData,
             ...(profilePhotoUpdatedAt ? { profilePhotoUpdatedAt } : {}),
-          },
+          } as Prisma.UserProfileUncheckedUpdateInput,
         });
       }
 

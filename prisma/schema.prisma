@@ -222,6 +222,9 @@ model UserProfile {
   // Public-display privacy toggles (owner always sees their own values).
   showUsername          Boolean           @default(true)
   showLocation          Boolean           @default(true)
+  /// Shopper identity used for size designation and feed audience.
+  /// Null means we have never asked. UNSPECIFIED means they chose not to say.
+  gender                ProfileGender?
   deliveryAddresses     Json?
   createdAt             DateTime          @default(now())
   updatedAt             DateTime          @updatedAt
@@ -796,6 +799,19 @@ enum Gender {
   MEN
   WOMEN
   UNISEX
+}
+
+/// Person identity — not garment audience.
+///
+/// `Gender` (MEN/WOMEN/UNISEX) labels a product, measurement point, or chart
+/// body. `ProfileGender` labels a shopper. The two must not be overloaded:
+/// a jacket is MEN; Jayde is MALE. Mapping lives in
+/// `src/common/profile-gender.ts` and is the only place that translates.
+enum ProfileGender {
+  MALE
+  FEMALE
+  NON_BINARY
+  UNSPECIFIED
 }
 
 enum MeasurementPointCategory {

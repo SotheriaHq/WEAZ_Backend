@@ -23,6 +23,7 @@ import {
   resolveRequiredProfileField,
 } from 'src/common/user-profile-source.helper';
 import { MeasurementNormalizationService } from 'src/sizing/measurement-normalization.service';
+import { sizingBodyFromProfileGender } from 'src/common/profile-gender';
 
 type PrismaTx = any;
 type SizeFitVisibility = 'PUBLIC' | 'PRIVATE';
@@ -249,6 +250,20 @@ export class SizeFitService {
     return null;
   }
 
+  private async resolveShopperSizingGender(
+    userId: string,
+    measurements: SafeMeasurements,
+    preferredKeys: string[] = [],
+  ): Promise<BaselineMeasurementGender | null> {
+    const identity = await (this.prisma as any).userProfile.findUnique({
+      where: { userId },
+      select: { gender: true },
+    });
+    const body = sizingBodyFromProfileGender(identity?.gender ?? null);
+    if (body === 'MEN' || body === 'WOMEN') return body;
+    return this.inferMeasurementGender(measurements, preferredKeys);
+  }
+
   private hasUsableMeasurementValue(value: unknown): boolean {
     if (typeof value === 'number') {
       return Number.isFinite(value) && value > 0;
@@ -435,7 +450,8 @@ export class SizeFitService {
       !Array.isArray(profile.measurements)
         ? (profile.measurements as Record<string, unknown>)
         : {};
-    const inferredGender = this.inferMeasurementGender(
+    const inferredGender = await this.resolveShopperSizingGender(
+      userId,
       this.sanitizeMeasurements(profile.measurements),
     );
     const normalizedMeasurements = this.measurementNormalizer.normalizeRecord(
@@ -608,7 +624,8 @@ export class SizeFitService {
         profile.measurements,
       );
       const mergeGender = this.normalizeBaselineGender(
-        this.inferMeasurementGender(
+        await this.resolveShopperSizingGender(
+          userId,
           currentMeasurements,
           Object.keys(dto.measurements ?? {}),
         ),
@@ -687,7 +704,10 @@ export class SizeFitService {
         },
       });
 
-      const inferredGender = this.inferMeasurementGender(nextMeasurements);
+      const inferredGender = await this.resolveShopperSizingGender(
+        userId,
+        nextMeasurements,
+      );
       const normalizedMeasurements = this.measurementNormalizer.normalizeRecord(
         nextMeasurements,
         {

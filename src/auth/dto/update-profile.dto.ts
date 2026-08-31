@@ -5,7 +5,9 @@ import {
   Matches,
   IsUUID,
   MaxLength,
+  IsIn,
 } from 'class-validator';
+import { PROFILE_GENDERS } from '../../common/profile-gender';
 import {
   IsPhoneNumberField,
   ToE164Phone,
@@ -60,5 +62,9 @@ export class UpdateProfileDto {
   })
   lastName?: string;
 
-  // Add other profile fields as needed, but do NOT include password
+  @IsOptional()
+  @IsIn([...PROFILE_GENDERS], {
+    message: 'Gender must be Man, Woman, Non-binary, or I\'d rather not say',
+  })
+  gender?: (typeof PROFILE_GENDERS)[number];
 }

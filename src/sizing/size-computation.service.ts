@@ -16,6 +16,15 @@ import {
 } from './measurement-normalization.service';
 import { SizeRecommendationResponseDto } from './dto/size-recommendation.dto';
 import {
+  sizingBodyFromProfileGender,
+  type SizingBody,
+} from '../common/profile-gender';
+import {
+  applyBodyBands,
+  inseamLengthClass,
+  sleeveLengthClass,
+} from './chart-bands';
+import {
   auditMeasurements,
   labelFor,
   type MeasurementProblem,
@@ -100,21 +109,26 @@ const CONFIDENCE_BANDS: Array<{
  *    rather than a different size. Scored two-sided it punished the athletic
  *    build for being athletic: a real 114 cm chest / 80 cm waist body scored
  *    0.000 on the waist slot of the very XL row its chest sat mid-range in.
+ *
+ * 3. SLEEVE AND INSEAM ARE LENGTH CLASS, same as height. ISO 8559-2 lists arm
+ *    length as a shirt secondary and inside-leg as a trouser secondary — both
+ *    pick short/regular/long, neither names the girth size. Seeded alpha rows
+ *    widen sleeve and inseam toward 4XL the same way height did, so a 71 cm
+ *    sleeve (a long arm on a 182 cm body) voted 4XL while a 90 cm chest voted
+ *    S, and the disagreement gate then hid the size entirely.
  */
 export const GARMENT_MEASUREMENT_WEIGHTS: Record<
   GarmentCategory,
   WeightedSlot[]
 > = {
   [GarmentCategory.TOP]: [
-    { key: 'CHEST_BUST', weight: 55, primary: true },
+    { key: 'CHEST_BUST', weight: 65, primary: true },
     { key: 'SHOULDER', weight: 25 },
     { key: 'WAIST', weight: 10, direction: 'OVER_ONLY' },
-    { key: 'SLEEVE_LENGTH', weight: 10 },
   ],
   [GarmentCategory.BOTTOM]: [
-    { key: 'WAIST', weight: 45, primary: true },
-    { key: 'HIP_SEAT', weight: 35, primary: true },
-    { key: 'INSEAM', weight: 20 },
+    { key: 'WAIST', weight: 55, primary: true },
+    { key: 'HIP_SEAT', weight: 45, primary: true },
   ],
   [GarmentCategory.GOWN]: [
     { key: 'CHEST_BUST', weight: 30, primary: true },
@@ -129,15 +143,13 @@ export const GARMENT_MEASUREMENT_WEIGHTS: Record<
     { key: 'SHOULDER', weight: 10 },
   ],
   [GarmentCategory.FORMAL_SHIRT]: [
-    { key: 'NECK_COLLAR', weight: 40, primary: true },
-    { key: 'CHEST_BUST', weight: 30, primary: true },
-    { key: 'SLEEVE_LENGTH', weight: 20 },
-    { key: 'SHOULDER', weight: 10 },
+    { key: 'NECK_COLLAR', weight: 55, primary: true },
+    { key: 'CHEST_BUST', weight: 30 },
+    { key: 'SHOULDER', weight: 15 },
   ],
   [GarmentCategory.JACKET]: [
-    { key: 'CHEST_BUST', weight: 50, primary: true },
-    { key: 'SHOULDER', weight: 20 },
-    { key: 'SLEEVE_LENGTH', weight: 20 },
+    { key: 'CHEST_BUST', weight: 65, primary: true },
+    { key: 'SHOULDER', weight: 25 },
     { key: 'WAIST', weight: 10, direction: 'OVER_ONLY' },
   ],
   [GarmentCategory.SKIRT]: [
@@ -145,20 +157,18 @@ export const GARMENT_MEASUREMENT_WEIGHTS: Record<
     { key: 'HIP_SEAT', weight: 45, primary: true },
   ],
   [GarmentCategory.UNISEX_TOP]: [
-    { key: 'CHEST_BUST', weight: 55, primary: true },
+    { key: 'CHEST_BUST', weight: 65, primary: true },
     { key: 'SHOULDER', weight: 25 },
     { key: 'WAIST', weight: 10, direction: 'OVER_ONLY' },
-    { key: 'SLEEVE_LENGTH', weight: 10 },
   ],
   [GarmentCategory.UNISEX_BOTTOM]: [
     { key: 'HIP_SEAT', weight: 45, primary: true },
-    { key: 'WAIST', weight: 35, primary: true },
-    { key: 'INSEAM', weight: 20 },
+    { key: 'WAIST', weight: 55, primary: true },
   ],
   [GarmentCategory.OTHER]: [
-    { key: 'CHEST_BUST', weight: 35, primary: true },
+    { key: 'CHEST_BUST', weight: 40, primary: true },
     { key: 'WAIST', weight: 25 },
-    { key: 'HIP_SEAT', weight: 30 },
+    { key: 'HIP_SEAT', weight: 25 },
     { key: 'SHOULDER', weight: 10 },
   ],
 };
@@ -202,16 +212,19 @@ export class SizeComputationService {
   }
 
   async getComputedUserSizing(userId: string, region?: SizingRegion) {
-    const profile = await (this.prisma as any).userSizeFitProfile.findUnique({
-      where: { userId },
-    });
+    const [profile, identity] = await Promise.all([
+      (this.prisma as any).userSizeFitProfile.findUnique({
+        where: { userId },
+      }),
+      this.loadSizingBody(userId),
+    ]);
     const selectedRegion = this.normalizeRegion(
       region ?? profile?.preferredSizingRegion,
     );
     const preferredUnit = profile?.preferredLengthUnit ?? 'CM';
     const fitPreference = profile?.fitPreference ?? FitPreference.REGULAR;
     const measurementsCm = this.profileMeasurementsInCm(profile);
-    const gender = this.resolveProfileGender(measurementsCm);
+    const gender = identity.body;
     const normalized = this.measurementNormalizer.normalizeRecord(
       measurementsCm,
       {
@@ -243,6 +256,7 @@ export class SizeComputationService {
           productFitType: null,
           fabricStretch: FabricStretch.UNKNOWN,
           staleMeasurementWarning,
+          sizingBody: identity.body,
           // Profile estimate: no product, and the category fan-out above is an
           // implementation detail the shopper never chose.
           context: 'PROFILE',
@@ -253,10 +267,13 @@ export class SizeComputationService {
 
     const categoryBreakdown = Object.fromEntries(categoryEntries);
     const primary =
-      categoryBreakdown.tops ??
+      (categoryBreakdown.tops?.recommendedSize
+        ? categoryBreakdown.tops
+        : null) ??
       Object.values(categoryBreakdown).find(
         (entry: any) => entry?.recommendedSize,
-      );
+      ) ??
+      categoryBreakdown.tops;
 
     /*
       The audit is per-measurement, not per-category, so every category reports
@@ -301,7 +318,7 @@ export class SizeComputationService {
       measurementsOverride?: Record<string, unknown> | null;
     } = {},
   ): Promise<SizeRecommendationResponseDto> {
-    const [profile, product] = await Promise.all([
+    const [profile, product, identity] = await Promise.all([
       (this.prisma as any).userSizeFitProfile.findUnique({ where: { userId } }),
       (this.prisma as any).product.findFirst({
         where: { id: productId, deletedAt: null, isActive: true },
@@ -313,6 +330,7 @@ export class SizeComputationService {
           sizingMetadata: true,
         },
       }),
+      this.loadSizingBody(userId),
     ]);
 
     if (!product) {
@@ -333,7 +351,8 @@ export class SizeComputationService {
       product,
       selectedVariant,
     );
-    const gender = this.resolveProductGender(product);
+    const gender =
+      this.resolveProductGender(product) ?? identity.body;
     const measurementSource =
       options.measurementsOverride ?? this.profileMeasurementsInCm(profile);
     const normalized = this.measurementNormalizer.normalizeRecord(
@@ -362,6 +381,9 @@ export class SizeComputationService {
       fabricStretch,
       staleMeasurementWarning: this.isProfileStale(profile),
       availableSizes: this.resolveAvailableSizes(product),
+      sizingBody: gender === 'MEN' || gender === 'WOMEN' || gender === 'UNISEX'
+        ? gender
+        : identity.body,
     });
 
     if (
@@ -520,6 +542,7 @@ export class SizeComputationService {
     fabricStretch?: FabricStretch | null;
     staleMeasurementWarning?: boolean;
     availableSizes?: Set<string>;
+    sizingBody?: SizingBody;
     /**
      * Which question is being answered.
      *
@@ -533,7 +556,21 @@ export class SizeComputationService {
     context?: 'PRODUCT' | 'PROFILE';
   }): SizeRecommendationResponseDto {
     const version = input.chartSelection.version;
-    const rows = Array.isArray(version?.rows) ? version.rows : [];
+    const rawRows = Array.isArray(version?.rows) ? version.rows : [];
+    const fallbackSource = [
+      'REGIONAL',
+      'INTERNATIONAL',
+      'SYSTEM',
+      'CATEGORY',
+    ].includes(input.chartSelection.source);
+    const rows =
+      fallbackSource && rawRows.length > 0
+        ? applyBodyBands(
+            rawRows,
+            input.region,
+            input.sizingBody ?? 'UNISEX',
+          )
+        : rawRows;
     const weights =
       GARMENT_MEASUREMENT_WEIGHTS[input.garmentCategory] ??
       GARMENT_MEASUREMENT_WEIGHTS[GarmentCategory.OTHER];
@@ -655,39 +692,17 @@ export class SizeComputationService {
       real bodies genuinely straddle sizes; this fires on contradiction, not on
       the ordinary spread between a chest and a sleeve.
     */
+    /*
+      Length measurements (sleeve, inseam, height) no longer vote. Only the
+      primary girth(s) that DESIGNATE this garment may flag disagreement, and
+      even then we still emit the primary-gated size — hiding it left shoppers
+      with a complete fittings profile and a dash where the selling point sits.
+    */
     const disagreement = this.measurementDisagreement(
       candidateRows,
       weights,
       measurements,
     );
-    if (disagreement) {
-      return {
-        estimatedSize: null,
-        recommendedSize: null,
-        displayRange: null,
-        alternativeSize: null,
-        confidenceScore: 0,
-        confidenceLabel: RecommendationConfidenceLabel.LOW,
-        reasons: [],
-        warnings: [
-          `Your saved measurements point at very different sizes — ${labelFor(disagreement.low.key)} suggests ${disagreement.low.sizeLabel} while ${labelFor(disagreement.high.key)} suggests ${disagreement.high.sizeLabel}. Re-take those two with the measuring guide and your size will settle.`,
-          ...measurementProblems.map((problem) => problem.message),
-        ],
-        chartSource: input.chartSelection.source,
-        chartVersion: version.version ?? null,
-        chartId: version.chartId ?? version.chart?.id ?? null,
-        chartVersionId: version.id ?? null,
-        selectedRegion: input.region,
-        garmentCategory: input.garmentCategory,
-        manualOverrideAllowed: true,
-        missingMeasurements,
-        usedMeasurements: [disagreement.low.key, disagreement.high.key],
-        fallbackUsed: true,
-        staleMeasurementWarning: input.staleMeasurementWarning ?? false,
-        measurementProblems,
-        measurementsDisagree: true,
-      };
-    }
 
     const scores = candidateRows
       .map((row: any) =>
@@ -759,6 +774,17 @@ export class SizeComputationService {
     const lengthClass = this.heightLengthClass(
       input.normalizedMeasurements.HEIGHT,
     );
+    const sleeveClass = sleeveLengthClass(
+      input.normalizedMeasurements.SLEEVE_LENGTH,
+    );
+    const inseamClass = inseamLengthClass(
+      input.normalizedMeasurements.INSEAM,
+    );
+
+    if (disagreement) {
+      confidence -= 0.12;
+      confidence = this.clamp(confidence, 0, 1);
+    }
 
     const displayRange =
       alternative && Math.abs(best.score - alternative.score) <= 0.12
@@ -783,14 +809,29 @@ export class SizeComputationService {
             ]
           : []),
         ...measurementProblems.map((problem) => problem.message),
+        ...(disagreement
+          ? [
+              `Your ${labelFor(disagreement.low.key)} points at ${disagreement.low.sizeLabel} while ${labelFor(disagreement.high.key)} points at ${disagreement.high.sizeLabel}. The size shown follows ${labelFor(primarySlots[0]?.key ?? disagreement.low.key)}, which is what designates this garment. Worth re-taking the other with the measuring guide.`,
+            ]
+          : []),
         /*
-          Height no longer moves the size (it is not a girth), so it says the
-          only thing it can honestly say: check the LENGTH of this garment.
+          Height, sleeve and inseam no longer move the size. They say the only
+          thing they can honestly say: check the LENGTH of this garment.
         */
         ...(lengthClass === 'TALL'
           ? ['You are taller than this chart is cut for — check the body and sleeve length before ordering.']
           : lengthClass === 'SHORT'
             ? ['You are shorter than this chart is cut for — check the body and sleeve length before ordering.']
+            : []),
+        ...(sleeveClass === 'LONG'
+          ? ['Your arms are long for a regular sleeve — look for tall or long fits.']
+          : sleeveClass === 'SHORT'
+            ? ['Your arms are short for a regular sleeve — look for short fits.']
+            : []),
+        ...(inseamClass === 'LONG'
+          ? ['Your inside leg is long for a regular trouser — look for long or tall fits.']
+          : inseamClass === 'SHORT'
+            ? ['Your inside leg is short for a regular trouser — look for short fits.']
             : []),
       ]),
     );
@@ -816,6 +857,7 @@ export class SizeComputationService {
       fallbackUsed,
       staleMeasurementWarning: input.staleMeasurementWarning ?? false,
       measurementProblems,
+      measurementsDisagree: Boolean(disagreement),
     };
   }
 
@@ -823,8 +865,10 @@ export class SizeComputationService {
    * How many size steps apart the shopper's own measurements are.
    *
    * Each measurement votes for the row it fits best, independently. If the
-   * spread between the lowest and highest vote exceeds `MAX_SIZE_DISAGREEMENT`,
-   * the profile is describing more than one body and no single size is honest.
+   * spread between the lowest and highest PRIMARY vote exceeds
+   * `MAX_SIZE_DISAGREEMENT`, the girths that name this garment disagree.
+   * Secondaries (shoulder) and lengths (sleeve, inseam) do not vote: they
+   * qualify a size, they do not hide it.
    *
    * Rows are indexed by `sortOrder` (the chart's own ladder), not by array
    * position, so a chart filtered to the sizes a product actually stocks still
@@ -846,6 +890,7 @@ export class SizeComputationService {
       sizeLabel: string;
     }> = [];
     for (const slot of weights) {
+      if (!slot.primary) continue;
       const value = measurements[slot.key];
       if (value == null) continue;
 
@@ -1186,6 +1231,24 @@ export class SizeComputationService {
     if (keys.some((key) => key.startsWith('MEN_'))) return 'MEN';
     if (keys.some((key) => key.startsWith('WOMEN_'))) return 'WOMEN';
     return null;
+  }
+
+  /**
+   * Canonical shopper gender, from UserProfile — never inferred from a
+   * measurement-key prefix when the identity field exists.
+   */
+  private async loadSizingBody(
+    userId: string,
+  ): Promise<{ gender: string | null; body: SizingBody }> {
+    const identity = await (this.prisma as any).userProfile?.findUnique?.({
+      where: { userId },
+      select: { gender: true },
+    });
+    const gender = identity?.gender ?? null;
+    return {
+      gender,
+      body: sizingBodyFromProfileGender(gender),
+    };
   }
 
   private isProfileStale(profile: any): boolean {

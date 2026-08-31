@@ -58,10 +58,9 @@ export interface SizeRecommendationResponseDto {
    */
   primaryMeasurementUnavailable?: boolean;
   /**
-   * True when the shopper's own measurements vote for sizes several steps
-   * apart. No size is emitted: the profile is describing more than one body,
-   * and the primary dimension answering on its own would be a straight-faced
-   * guess. The warning names the two measurements that disagree.
+   * True when the primary girths that designate this garment vote more than
+   * three size steps apart. A size is still emitted (the primary-gated row);
+   * the warning names the two measurements. Lengths never set this flag.
    */
   measurementsDisagree?: boolean;
   normalizedMeasurements?: Record<string, number>;

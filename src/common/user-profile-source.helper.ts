@@ -1,4 +1,4 @@
-import { Prisma, ProfileVisibility } from '@prisma/client';
+import { Prisma, ProfileGender, ProfileVisibility } from '@prisma/client';
 
 export const canonicalUserProfileFileSelect =
   Prisma.validator<Prisma.FileUploadSelect>()({
@@ -34,6 +34,7 @@ export const canonicalUserProfileSelect =
     profileVisibility: true,
     showUsername: true,
     showLocation: true,
+    gender: true,
   });
 
 export type CanonicalUserProfile = Prisma.UserProfileGetPayload<{
@@ -60,6 +61,7 @@ export type UserProfileSource = {
   profileVisibility?: ProfileVisibility | null;
   showUsername?: boolean | null;
   showLocation?: boolean | null;
+  gender?: ProfileGender | null;
   userProfile?: CanonicalUserProfile | null;
 };
 
@@ -175,4 +177,11 @@ export function resolveShowUsername(user: UserProfileSource): boolean {
 
 export function resolveShowLocation(user: UserProfileSource): boolean {
   return user.userProfile?.showLocation ?? true;
+}
+
+/** Owner-only. Never put this on a public profile response. */
+export function resolveProfileGender(
+  user: UserProfileSource,
+): ProfileGender | null {
+  return user.userProfile?.gender ?? user.gender ?? null;
 }
