@@ -29,21 +29,36 @@ set -euo pipefail
 ARCHIVE_DIR="${ARCHIVE_DIR:-$HOME/log-archive}"
 JOURNAL_MAX="${JOURNAL_MAX:-200M}"
 
-echo "==> [1/4] PM2 log rotation"
+echo "==> [1/4] PM2 log rotation via system logrotate"
+#
+# `pm2 install pm2-logrotate` is the obvious choice and it is the wrong one HERE:
+# measured on this box it runs as a fourth PM2 process holding 64MB resident,
+# permanently, to do a job the OS already does from a timer with no resident
+# memory at all. On a host with ~100MB free, spending 64MB to manage log files
+# is the kind of trade that creates the next incident.
+#
+# `copytruncate` is required rather than preferred: PM2 holds the file
+# descriptor open, so a renamed file would keep receiving writes at an offset
+# nothing can read until the process restarts.
 if pm2 ls -m 2>/dev/null | grep -q 'pm2-logrotate'; then
-  echo "    pm2-logrotate already installed"
-else
-  pm2 install pm2-logrotate
+  echo "    removing the pm2-logrotate module (64MB resident, redundant)"
+  pm2 uninstall pm2-logrotate || true
 fi
 
-# 10MB x 14 files x 4 streams ~= 560MB worst case uncompressed, far less once
-# gzipped, and every file stays small enough to actually open and read.
-pm2 set pm2-logrotate:max_size 10M
-pm2 set pm2-logrotate:retain 14
-pm2 set pm2-logrotate:compress true
-pm2 set pm2-logrotate:rotateInterval '0 0 * * *'
-pm2 set pm2-logrotate:workerInterval 60
-echo "    configured: 10M per file, 14 retained, compressed, checked hourly"
+sudo tee /etc/logrotate.d/pm2-weaz >/dev/null <<'CONF'
+/home/ec2-user/.pm2/logs/*.log {
+    size 10M
+    rotate 14
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+    su ec2-user ec2-user
+}
+CONF
+sudo logrotate --debug /etc/logrotate.d/pm2-weaz >/dev/null
+echo "    configured: 10M per file, 14 retained, compressed, no extra process"
 
 echo "==> [2/4] Archiving oversized existing logs (not deleting)"
 mkdir -p "$ARCHIVE_DIR"
