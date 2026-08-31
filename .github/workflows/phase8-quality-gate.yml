@@ -26,6 +26,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: NestJS module cycle guard
+        run: npm run check:module-cycles
+
       - name: Focused upload and design mapper tests
         run: npm test -- src/upload/upload.service.spec.ts src/designs/mappers/design-response.mapper.spec.ts --runInBand
 

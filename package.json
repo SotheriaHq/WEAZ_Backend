@@ -9,14 +9,14 @@
     "build": "prisma generate && node -e \"require('fs').rmSync('dist', { recursive: true, force: true })\" && nest build",
     "postinstall": "node scripts/postinstall.js",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
-    "start": "prisma generate && node -r module-alias/register dist/main.js",
+    "start": "node -r module-alias/register dist/main.js",
     "dev": "concurrently -k -n BUILD,API \"npm run dev:build\" \"npm run dev:serve\"",
     "dev:build": "nest build --watch",
     "dev:serve": "node scripts/dev-server.cjs",
     "start:dev": "npm run dev",
     "start:debug": "nest start --debug --watch",
-    "start:prod": "prisma generate && node -r module-alias/register dist/main.js",
-    "start:worker": "prisma generate && node -r module-alias/register dist/worker.js",
+    "start:prod": "node -r module-alias/register dist/main.js",
+    "start:worker": "node -r module-alias/register dist/worker.js",
     "dev:worker": "npm run prisma:generate && ts-node -r tsconfig-paths/register src/worker.ts",
     "dev:all": "concurrently -k -n BUILD,API,WORKER \"npm run dev:build\" \"npm run dev:serve\" \"npm run dev:worker\"",
     "dev:reset": "node scripts/reset-all-data.cjs",
@@ -52,8 +52,9 @@
     "seed:size-charts": "npm run prisma:seed:size-charts",
     "reset:all": "node scripts/reset-all-data.cjs",
     "reset:admin": "node scripts/reset-all-data.cjs --admin-only-seed --skip-bucket --skip-local-uploads",
+    "check:module-cycles": "node scripts/check-module-cycles.js",
     "check:perf-regressions": "node scripts/check-perf-regressions.cjs",
-    "ci:phase8": "npm test -- src/upload/upload.service.spec.ts src/designs/mappers/design-response.mapper.spec.ts --runInBand && npm run build && npm run check:perf-regressions"
+    "ci:phase8": "npm run check:module-cycles && npm test -- src/upload/upload.service.spec.ts src/designs/mappers/design-response.mapper.spec.ts --runInBand && npm run build && npm run check:perf-regressions"
   },
   "_moduleAliases": {
     "src": "dist"
@@ -160,6 +161,10 @@
       "ts"
     ],
     "rootDir": "src",
+    "roots": [
+      "<rootDir>",
+      "<rootDir>/../scripts"
+    ],
     "testRegex": ".*\\.spec\\.ts$",
     "transform": {
       "^.+\\.(t|j)s$": "ts-jest"

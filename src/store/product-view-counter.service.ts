@@ -73,19 +73,38 @@ export class ProductViewCounterService
     this.redis = null;
   }
 
+  /**
+   * Release the client without ever rejecting.
+   *
+   * The previous shape — `try { client.disconnect(); } catch {}` — caught
+   * nothing. `disconnect()` returns a Promise and REJECTS with
+   * `ClientClosedError` when the socket is already closed, so a synchronous
+   * `catch` never sees it and the rejection escaped as an unhandled rejection.
+   *
+   * In the API that was merely logged (main.ts installs an `unhandledRejection`
+   * handler). In the worker, which installs none, it was fatal *during
+   * shutdown*: `onModuleDestroy` rejected, `app.close()` never resolved,
+   * `process.exit(0)` never ran, and PM2 fell back to SIGKILL on every single
+   * restart — visible in pm2.log as "exited with code [0] via signal [SIGKILL]"
+   * for both processes, which also means BullMQ jobs in flight were killed
+   * rather than drained.
+   *
+   * Awaiting is the whole fix. Disconnecting a client that is already closed is
+   * pointless, so it is skipped rather than attempted and swallowed.
+   */
   private async closeRedisClient(client: RedisClientType | null) {
     if (!client) return;
     try {
       client.removeAllListeners();
       if (client.isOpen) {
         await client.quit();
-      } else {
-        client.disconnect();
       }
     } catch {
       try {
-        client.disconnect();
-      } catch {}
+        await client.disconnect();
+      } catch {
+        // Socket already gone; nothing left to release.
+      }
     }
   }
 

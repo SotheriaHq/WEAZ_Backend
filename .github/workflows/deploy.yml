@@ -44,6 +44,11 @@ jobs:
           cache: npm
           cache-dependency-path: package-lock.json
       - run: npm ci
+      # Before the build, because a module cycle without forwardRef compiles
+      # perfectly and only fails at boot — and only for whichever entry point
+      # happens to load the graph first. That is how the SIT worker ended up
+      # restarting 74,771 times over nine days while every check stayed green.
+      - run: npm run check:module-cycles
       - run: npx prisma generate
       - run: npm run build
 
