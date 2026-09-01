@@ -94,12 +94,16 @@ module.exports = {
       name: 'weaz-worker',
       script: path.join(APP_DIR, 'dist', 'worker.js'),
       /*
-        `module-alias` only — matching what `npm run start:worker` actually
-        executed. The worker loads `.env` through `ConfigModule.forRoot({
-        envFilePath: '.env' })` in queue-worker.module.ts, which is why it needs
-        no `dotenv/config` preload and why `cwd` above must stay the app dir.
+        `dotenv/config` matches the API, and it is not cosmetic. The worker also
+        loads `.env` through `ConfigModule.forRoot({ envFilePath: '.env' })`,
+        but that runs during BOOTSTRAP — long after module files have been
+        evaluated. Anything read at module scope (a `@Processor` concurrency, a
+        decorator argument) therefore sees an empty `process.env` and silently
+        falls back to its default. Preloading closes that window; the values are
+        identical either way, since @nestjs/config does not overwrite variables
+        already present in the environment.
       */
-      node_args: ['-r', 'module-alias/register'],
+      node_args: ['-r', 'module-alias/register', '-r', 'dotenv/config'],
       /*
         Measured 591 MB RSS on 2026-08-31 with no ceiling of any kind, because
         the 500 MB one was attached to the npm wrapper. 700 MB gives ~18%

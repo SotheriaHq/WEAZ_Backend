@@ -16,7 +16,31 @@ import type {
   ImageProcessSingleJob,
 } from './image-processing.queue.service';
 
-@Processor(IMAGE_PROCESSING_QUEUE)
+/**
+ * Concurrency, measured rather than guessed.
+ *
+ * BullMQ's default is 1, so image jobs ran strictly one at a time. Measured on
+ * SIT: 8 jobs drained in 90 seconds — **11.3s per job** for a 7.8KB PNG, with
+ * the worker process sitting at ~0% CPU throughout. The time is not spent
+ * resizing; it is spent waiting on S3, which is in a different region from the
+ * box. A queue fed at 30 jobs/min against a 5 jobs/min ceiling backs up, which
+ * is exactly what was observed.
+ *
+ * Work that is waiting on the network parallelises almost for free, so a small
+ * concurrency multiplies throughput without multiplying CPU. It does not
+ * multiply memory for free, though: `sharp` holds decoded bitmaps, and a real
+ * user photo is megapixels rather than 64x64. On a 1.9GB host with ~314MB free
+ * under load, 2 is the honest default — a meaningful gain with headroom left —
+ * and the env var exists so a bigger box can raise it without a deploy.
+ */
+const IMAGE_PROCESSING_CONCURRENCY = Math.max(
+  1,
+  Number(process.env.IMAGE_PROCESSING_CONCURRENCY ?? 2) || 2,
+);
+
+@Processor(IMAGE_PROCESSING_QUEUE, {
+  concurrency: IMAGE_PROCESSING_CONCURRENCY,
+})
 export class ImageProcessingProcessor extends WorkerHost {
   private readonly logger = new Logger(ImageProcessingProcessor.name);
 

@@ -16,6 +16,8 @@ import {
   HeadObjectCommand,
   GetObjectCommand,
 } from '@aws-sdk/client-s3';
+import { NodeHttpHandler } from '@smithy/node-http-handler';
+import { Agent as HttpsAgent } from 'https';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { createPresignedPost } from '@aws-sdk/s3-presigned-post';
 import { v4 as uuidv4 } from 'uuid';
@@ -161,6 +163,32 @@ export class UploadService {
 
     const s3Config: any = {
       region: this.region,
+      /*
+        Two defaults are wrong for this workload, and both were measured rather
+        than assumed.
+
+        1. NO SOCKET TIMEOUT. A stalled S3 call blocks forever. That matters far
+           more than it looks: the image-processing worker runs jobs one at a
+           time, so a single wedged request stops image processing for every
+           user until the process is restarted. `socketTimeout` is an INACTIVITY
+           timeout, not a total one (verified in @smithy/node-http-handler:
+           `setSocketTimeout` calls `socket.setTimeout`), so a slow-but-moving
+           50MB video upload is unaffected — only a dead connection is cut.
+           Deliberately NOT `requestTimeout`, which IS total wall-clock and
+           would cap legitimate large uploads.
+
+        2. CONNECTION REUSE LEFT TO THE SDK. Whether keep-alive is on by default
+           has changed between SDK versions, and on SIT the bucket
+           (af-south-1) is a different continent from the box (us-east-1) —
+           measured at 228ms just to connect. A fresh TLS handshake per request
+           costs several of those round trips, on the hot path of every upload
+           and every variant written back.
+      */
+      requestHandler: new NodeHttpHandler({
+        connectionTimeout: 5_000,
+        socketTimeout: 30_000,
+        httpsAgent: new HttpsAgent({ keepAlive: true, maxSockets: 64 }),
+      }),
     };
 
     if (accessKeyId && secretAccessKey) {
