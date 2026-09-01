@@ -3,7 +3,6 @@ import { CacheModule } from '@nestjs/cache-manager';
 import { NotificationsService } from './notifications.service';
 import { NotificationsController } from './notifications.controller';
 import { NotificationsEmailWebhookController } from './notifications-email-webhook.controller';
-import { PrismaService } from 'src/prisma/prisma.service';
 import { EventsGateway } from 'src/realtime/events.gateway';
 import { NotificationRegistry } from './notifications.registry';
 import { EmailOutboxDispatcherService } from './email-outbox-dispatcher.service';
@@ -15,7 +14,6 @@ import { NotificationRealtimeBusService } from 'src/realtime/notification-realti
   imports: [CacheModule.register()],
   providers: [
     NotificationsService,
-    PrismaService,
     EventsGateway,
     {
       provide: NotificationRegistry,

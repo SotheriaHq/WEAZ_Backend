@@ -4,7 +4,6 @@ import { CollectionsService } from './collections.service';
 import { CollectionsController } from './collections.controller';
 import { StoreCollectionsController } from './store-collections.controller';
 import { CollectionSchedulerService } from './collection-scheduler.service';
-import { PrismaService } from 'src/prisma/prisma.service';
 import { UploadModule } from 'src/upload/upload.module';
 import { HelperService } from './helper/Helper.service';
 import { AnalyticsModule } from 'src/analytics/analytics.module';
@@ -56,7 +55,6 @@ import { SearchModule } from 'src/search/search.module';
   providers: [
     CollectionsService,
     CollectionSchedulerService,
-    PrismaService,
     HelperService,
     EventsGateway,
     IdempotencyInterceptor,

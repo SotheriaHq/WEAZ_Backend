@@ -128,6 +128,59 @@ export class BModule {}`,
     expect(result.code).toBe(0);
   });
 
+  describe('single PrismaService', () => {
+    /*
+      PrismaModule is @Global and exports PrismaService. A module that also
+      lists it in its own `providers` gets a second PrismaClient, and every
+      client opens its own connection pool. Twelve modules had done it; under
+      ~50 rps on SIT, Postgres backends went from 6 to 48 on a host where memory
+      is the binding constraint. It reads like a harmless import and produces no
+      runtime warning, so only a check catches it.
+    */
+    const prismaModule = `import { Global, Module } from '@nestjs/common';
+import { PrismaService } from './prisma.service';
+@Global()
+@Module({ providers: [PrismaService], exports: [PrismaService] })
+export class PrismaModule {}`;
+
+    it('allows the declaration in prisma.module.ts itself', () => {
+      const result = check({
+        'prisma.module.ts': prismaModule,
+        'a.module.ts': mod('AModule', ''),
+      });
+
+      expect(result.code).toBe(0);
+    });
+
+    it('fails a module that re-declares PrismaService', () => {
+      const result = check({
+        'prisma.module.ts': prismaModule,
+        'a.module.ts': `import { Module } from '@nestjs/common';
+import { PrismaService } from 'src/prisma/prisma.service';
+@Module({ imports: [], providers: [AService, PrismaService] })
+export class AModule {}`,
+      });
+
+      expect(result.code).toBe(1);
+      expect(result.output).toContain('a.module.ts');
+      expect(result.output).toContain('SECOND PrismaClient');
+    });
+
+    it('does not fire on a module that merely INJECTS it', () => {
+      // Injecting through the global module is the correct pattern; flagging it
+      // would push people back toward re-declaring the provider.
+      const result = check({
+        'prisma.module.ts': prismaModule,
+        'a.module.ts': `import { Module } from '@nestjs/common';
+// AService injects PrismaService via the @Global PrismaModule.
+@Module({ imports: [], providers: [AService] })
+export class AModule {}`,
+      });
+
+      expect(result.code).toBe(0);
+    });
+  });
+
   it('reports the live repository as clean', () => {
     // Guards the guard: if src/ ever regresses, this fails here as well as in CI.
     const result = check({});

@@ -64,12 +64,13 @@ function moduleFiles(dir, out = []) {
 }
 
 /**
- * The `imports:` array of the file's `@Module({...})` decorator.
+ * One named array of the file's `@Module({...})` decorator — `imports` or
+ * `providers`.
  *
  * Found by brace-matching from `@Module(` rather than by regex, because the
  * decorator spans many lines and contains nested arrays and objects.
  */
-function moduleImportsBlock(source) {
+function moduleArrayBlock(source, key) {
   const start = source.indexOf('@Module(');
   if (start === -1) return null;
 
@@ -89,10 +90,10 @@ function moduleImportsBlock(source) {
   if (end === -1) return null;
 
   const decorator = source.slice(start, end);
-  const importsAt = decorator.indexOf('imports:');
-  if (importsAt === -1) return null;
+  const keyAt = decorator.indexOf(`${key}:`);
+  if (keyAt === -1) return null;
 
-  const open = decorator.indexOf('[', importsAt);
+  const open = decorator.indexOf('[', keyAt);
   if (open === -1) return null;
 
   let bracket = 0;
@@ -127,7 +128,7 @@ for (const file of files) {
   if (!declared) continue;
   const self = declared[1];
 
-  const block = moduleImportsBlock(source);
+  const block = moduleArrayBlock(source, 'imports');
   const edges = new Map();
 
   if (block) {
@@ -141,7 +142,12 @@ for (const file of files) {
     }
   }
 
-  graph.set(self, { file: path.relative(path.join(SRC, '..'), file), edges });
+  graph.set(self, {
+    file: path.relative(path.join(SRC, '..'), file),
+    basename: path.basename(file),
+    edges,
+    providers: moduleArrayBlock(source, 'providers') ?? '',
+  });
 }
 
 /**
@@ -190,28 +196,64 @@ for (const ring of cycles.values()) {
   }
 }
 
+/**
+ * Second rule: `PrismaService` may only be declared in `prisma.module.ts`.
+ *
+ * `PrismaModule` is `@Global` and exports it, but a module that ALSO lists
+ * `PrismaService` in its own `providers` gets a module-local instance that
+ * shadows the global one — and every `PrismaClient` opens its own connection
+ * pool. Twelve modules had done exactly that. Measured on SIT at ~50 rps,
+ * Postgres backends climbed from 6 to 48 on a host where memory is the binding
+ * constraint.
+ *
+ * It reads like a harmless import and there is no runtime warning, which is why
+ * it needs a check rather than a convention.
+ */
+const duplicatePrisma = [];
+for (const [name, entry] of graph) {
+  if (entry.basename === 'prisma.module.ts') continue;
+  if (/\bPrismaService\b/.test(entry.providers)) {
+    duplicatePrisma.push({ name, file: entry.file });
+  }
+}
+
 const total = cycles.size;
 
-if (offenders.size === 0) {
+if (offenders.size === 0 && duplicatePrisma.length === 0) {
   console.log(
-    `[module-cycles] OK — ${graph.size} modules, ${total} cycle(s), every edge in a cycle deferred with forwardRef.`,
+    `[module-cycles] OK — ${graph.size} modules, ${total} cycle(s), every edge in a cycle deferred with forwardRef; one PrismaService.`,
   );
   process.exit(0);
 }
 
-console.error(
-  `\n[module-cycles] ${offenders.size} module import(s) inside a cycle are NOT wrapped in forwardRef.\n`,
-);
-console.error(
-  'Each can throw "Cannot access \'X\' before initialization" at boot, depending on\n' +
-    'which entry point (main.ts or worker.ts) loads the graph first — the failure that\n' +
-    'restarted the SIT worker 74,771 times. Wrap the import in forwardRef(() => X).\n',
-);
+if (offenders.size > 0) {
+  console.error(
+    `\n[module-cycles] ${offenders.size} module import(s) inside a cycle are NOT wrapped in forwardRef.\n`,
+  );
+  console.error(
+    'Each can throw "Cannot access \'X\' before initialization" at boot, depending on\n' +
+      'which entry point (main.ts or worker.ts) loads the graph first — the failure that\n' +
+      'restarted the SIT worker 74,771 times. Wrap the import in forwardRef(() => X).\n',
+  );
 
-for (const { from, to, rings } of offenders.values()) {
-  console.error(`  ${graph.get(from).file}`);
-  console.error(`    imports ${to} directly; wrap it: forwardRef(() => ${to})`);
-  console.error(`    cycle: ${[...rings[0], rings[0][0]].join(' -> ')}`);
+  for (const { from, to, rings } of offenders.values()) {
+    console.error(`  ${graph.get(from).file}`);
+    console.error(`    imports ${to} directly; wrap it: forwardRef(() => ${to})`);
+    console.error(`    cycle: ${[...rings[0], rings[0][0]].join(' -> ')}`);
+    console.error('');
+  }
+}
+
+if (duplicatePrisma.length > 0) {
+  console.error(
+    `\n[module-cycles] ${duplicatePrisma.length} module(s) declare PrismaService in their own providers.\n`,
+  );
+  console.error(
+    'PrismaModule is @Global and already exports it. A module-local declaration\n' +
+      'creates a SECOND PrismaClient with its own connection pool — remove the entry\n' +
+      'and the import; injection keeps working through the global module.\n',
+  );
+  for (const { file } of duplicatePrisma) console.error(`  ${file}`);
   console.error('');
 }
 

@@ -2,7 +2,6 @@ import { Module, forwardRef } from '@nestjs/common';
 import { CategoriesAdminController } from './categories.admin.controller';
 import { CategoriesPublicController } from './categories.public.controller';
 import { CategoriesService } from './categories.service';
-import { PrismaService } from '../prisma/prisma.service';
 import { CategoriesBootstrapService } from './categories.bootstrap.service';
 import { NotificationsModule } from 'src/notifications/notifications.module';
 import { AdminAuditService } from 'src/admin/services/admin-audit.service';
@@ -36,7 +35,6 @@ import { CategorySuggestionsService } from './suggestions/category-suggestions.s
   ],
   providers: [
     CategoriesService,
-    PrismaService,
     CategoriesBootstrapService,
     AdminAuditService,
     CategorySuggestionsService,

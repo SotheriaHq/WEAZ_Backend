@@ -1,7 +1,6 @@
 import { Module } from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { AuthController } from './auth.controller';
-import { PrismaService } from 'src/prisma/prisma.service';
 import { PasswordService } from 'src/auth/helper/password.service';
 import { TokenService } from './helper/general.helper';
 import { JwtModule } from '@nestjs/jwt';
@@ -76,7 +75,6 @@ import { getJwtSigningSecret } from 'src/common/config/jwt-secrets';
   controllers: [AuthController],
   providers: [
     AuthService,
-    PrismaService,
     PasswordService,
     TokenService,
     UserHelperService,
