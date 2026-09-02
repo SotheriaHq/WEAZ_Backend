@@ -1516,6 +1516,10 @@ enum ContentSubmissionStatus {
   REJECTED
   CHANGES_REQUESTED
   CANCELLED
+  // The brand answered and submitted again, so this row is no longer the live
+  // one. Distinct from CANCELLED, which means the brand WITHDREW the item from
+  // review — an admin reading the queue needs to tell those apart.
+  SUPERSEDED
 }
 
 enum ContentReviewReasonCode {

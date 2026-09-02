@@ -87,6 +87,13 @@ export class AdminBrandsService {
         name: true,
         ownerId: true,
         isStoreOpen: true,
+        // `isStoreOpen` alone cannot tell an admin whether OPENING a store is a
+        // sensible action. A brand that never finished setup (no bank details,
+        // no policy, never published) has `storePublishedAt = null`, and forcing
+        // its store open would publish an empty storefront that fails every
+        // downstream gate. The list needs the same signal `/store/status`
+        // already gives the owner.
+        storePublishedAt: true,
         description: true,
         logo: true,
         createdAt: true,

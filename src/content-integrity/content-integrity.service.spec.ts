@@ -5,6 +5,7 @@ import {
   BrandVerificationStatus,
   CollectionStatus,
   ContentReportReasonCode,
+  ContentEntityType,
   ContentReportTargetType,
   ContentMediaViewSlot,
   ContentReviewReasonCode,
@@ -392,5 +393,64 @@ describe('ContentIntegrityService', () => {
 
     expect(report.duplicate).toBe(true);
     expect(prisma.contentReport.create).not.toHaveBeenCalled();
+  });
+  describe('createSubmission supersedes open submissions for the same target', () => {
+    const buildTx = () => ({
+      contentSubmission: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        create: jest.fn().mockResolvedValue({ id: 'submission-2' }),
+      },
+      brandTrustEvent: {
+        create: jest.fn().mockResolvedValue({ id: 'event-1' }),
+      },
+    });
+
+    it('retires a CHANGES_REQUESTED row when the brand answers and resubmits', async () => {
+      const { service } = createService();
+      const tx = buildTx();
+
+      await service.createSubmission(tx as any, {
+        entityType: ContentEntityType.DESIGN,
+        legacyCollectionId: 'design-1',
+        brandId: 'brand-1',
+        submittedById: 'owner-1',
+        previousStatus: CollectionStatus.CHANGES_REQUESTED,
+      });
+
+      const where = tx.contentSubmission.updateMany.mock.calls[0][0].where;
+      const data = tx.contentSubmission.updateMany.mock.calls[0][0].data;
+
+      // The bug: this matched IN_REVIEW only, so the change request the brand
+      // had just answered stayed open forever.
+      expect(where.status.in).toEqual(
+        expect.arrayContaining([
+          ContentSubmissionStatus.IN_REVIEW,
+          ContentSubmissionStatus.CHANGES_REQUESTED,
+        ]),
+      );
+      expect(where.legacyCollectionId).toBe('design-1');
+      expect(data.status).toBe(ContentSubmissionStatus.SUPERSEDED);
+    });
+
+    it('leaves terminal decisions alone', async () => {
+      const { service } = createService();
+      const tx = buildTx();
+
+      await service.createSubmission(tx as any, {
+        entityType: ContentEntityType.PRODUCT,
+        productId: 'product-1',
+        brandId: 'brand-1',
+        submittedById: 'owner-1',
+        previousStatus: CollectionStatus.DRAFT,
+      });
+
+      const statuses =
+        tx.contentSubmission.updateMany.mock.calls[0][0].where.status.in;
+      // APPROVED and REJECTED are the record of a decision that was made, not
+      // open work — rewriting them would erase review history.
+      expect(statuses).not.toContain(ContentSubmissionStatus.APPROVED);
+      expect(statuses).not.toContain(ContentSubmissionStatus.REJECTED);
+      expect(statuses).not.toContain(ContentSubmissionStatus.CANCELLED);
+    });
   });
 });

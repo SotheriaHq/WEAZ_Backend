@@ -639,9 +639,29 @@ export class ContentIntegrityService {
     tx: Prisma.TransactionClient,
     target: SubmissionTarget,
   ) {
+    // Close out every submission for this target that is still OPEN.
+    //
+    // This used to match IN_REVIEW only, which left the resubmission case
+    // broken: a brand answers a change request, publishes again, and the
+    // CHANGES_REQUESTED row stays CHANGES_REQUESTED forever. The admin queue
+    // then carried two live rows for one item — a stale "Changes Requested"
+    // beside the new "Pending Review" — with nothing saying which was current,
+    // and `buildSubmissionSummary().changesRequested` counted a request that
+    // had already been answered. The oldest such row on SIT had been sitting
+    // there since 2026-08-08.
+    //
+    // CHANGES_REQUESTED is a question awaiting an answer, so a new submission
+    // IS the answer and retires it. REJECTED and APPROVED are terminal
+    // decisions and are deliberately left alone — they are the record of what
+    // was decided, not open work.
+    const OPEN_SUBMISSION_STATUSES = [
+      ContentSubmissionStatus.IN_REVIEW,
+      ContentSubmissionStatus.CHANGES_REQUESTED,
+    ];
+
     const where: Record<string, unknown> = {
       entityType: target.entityType,
-      status: ContentSubmissionStatus.IN_REVIEW,
+      status: { in: OPEN_SUBMISSION_STATUSES },
     };
     if (target.productId) where.productId = target.productId;
     if (target.designId) where.designId = target.designId;
@@ -651,7 +671,7 @@ export class ContentIntegrityService {
 
     await (tx as any).contentSubmission.updateMany({
       where,
-      data: { status: ContentSubmissionStatus.CANCELLED },
+      data: { status: ContentSubmissionStatus.SUPERSEDED },
     });
 
     const submission = await (tx as any).contentSubmission.create({
