@@ -399,7 +399,23 @@ describe('ContentIntegrityService', () => {
       contentSubmission: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         create: jest.fn().mockResolvedValue({ id: 'submission-2' }),
+        // No open change request in these two cases, so change detection has
+        // nothing to compare against and stays out of the way. The gate itself
+        // is covered by content-change-detection.spec.ts.
+        findFirst: jest.fn().mockResolvedValue(null),
       },
+      product: {
+        findUnique: jest
+          .fn()
+          .mockResolvedValue({ name: 'P', description: 'd', gender: 'MALE' }),
+      },
+      collection: {
+        findUnique: jest
+          .fn()
+          .mockResolvedValue({ title: 'D', description: 'd', type: 'MALE' }),
+      },
+      productMedia: { findMany: jest.fn().mockResolvedValue([]) },
+      collectionMedia: { findMany: jest.fn().mockResolvedValue([]) },
       brandTrustEvent: {
         create: jest.fn().mockResolvedValue({ id: 'event-1' }),
       },

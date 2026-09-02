@@ -40,6 +40,14 @@ import {
   HIGH_SEVERITY_CONTENT_REPORT_REASONS,
   REQUIRED_CONTENT_MEDIA_VIEW_SLOTS,
 } from './content-integrity.constants';
+import {
+  buildSnapshot,
+  evaluateRequiredChange,
+  fingerprintSnapshot,
+  REQUIRED_CHANGE_BY_REASON,
+  summariseChanges,
+  type ReviewableSnapshot,
+} from './content-change-detection';
 
 type BrandReviewSnapshot = {
   id: string;
@@ -669,6 +677,49 @@ export class ContentIntegrityService {
       where.legacyCollectionId = target.legacyCollectionId;
     }
 
+    // What the reviewer will see, captured before anything is written.
+    const snapshot = await this.buildReviewableSnapshot(tx, target);
+
+    // The open request this submission is answering, if there is one. Only a
+    // CHANGES_REQUESTED row is a question awaiting an answer — an IN_REVIEW row
+    // is work nobody has looked at yet, and re-editing during review is fine.
+    const openRequest = await (tx as any).contentSubmission.findFirst({
+      where: { ...where, status: ContentSubmissionStatus.CHANGES_REQUESTED },
+      orderBy: { reviewedAt: 'desc' },
+      select: {
+        id: true,
+        reasonCode: true,
+        contentSnapshot: true,
+      },
+    });
+
+    const previousSnapshot = this.readSnapshot(openRequest?.contentSnapshot);
+
+    if (openRequest && previousSnapshot && snapshot) {
+      // The reviewer asked for something specific. Each reason code implies a
+      // checkable repair, so we can insist on THAT rather than on "some field
+      // is different" — a brand cannot satisfy a poor-image-quality request by
+      // retyping the title.
+      //
+      // Deliberately permissive in one direction: if either snapshot is missing
+      // (a submission that predates this feature, or content we could not
+      // read), the resubmission is allowed through. Blocking a brand because we
+      // have no history would be worse than the problem being solved.
+      const requirement =
+        REQUIRED_CHANGE_BY_REASON[
+          openRequest.reasonCode as ContentReviewReasonCode
+        ] ?? 'ANYTHING';
+      const verdict = evaluateRequiredChange({
+        requirement,
+        before: previousSnapshot,
+        after: snapshot,
+        requiredSlotCount: REQUIRED_CONTENT_MEDIA_VIEW_SLOTS.length,
+      });
+      if (!verdict.satisfied) {
+        throw new BadRequestException(verdict.message);
+      }
+    }
+
     await (tx as any).contentSubmission.updateMany({
       where,
       data: { status: ContentSubmissionStatus.SUPERSEDED },
@@ -686,6 +737,11 @@ export class ContentIntegrityService {
         previousStatus: target.previousStatus ?? CollectionStatus.DRAFT,
         targetStatus: CollectionStatus.PUBLISHED,
         status: ContentSubmissionStatus.IN_REVIEW,
+        contentFingerprint: snapshot ? fingerprintSnapshot(snapshot) : null,
+        contentSnapshot: (snapshot as any) ?? null,
+        changeSummary: snapshot
+          ? (summariseChanges(previousSnapshot, snapshot) as any)
+          : null,
       },
     });
 
@@ -703,6 +759,85 @@ export class ContentIntegrityService {
     });
 
     return submission;
+  }
+
+  /**
+   * Load what the reviewer will see for this target.
+   *
+   * Runs on the transaction client so it reads the content as the publish
+   * transaction has just written it — reading through `this.prisma` would see
+   * the pre-edit row and every resubmission would look unchanged.
+   *
+   * Returns null when the target cannot be read; callers treat that as "no
+   * opinion" rather than as "nothing changed".
+   */
+  private async buildReviewableSnapshot(
+    tx: Prisma.TransactionClient,
+    target: SubmissionTarget,
+  ): Promise<ReviewableSnapshot | null> {
+    if (target.productId) {
+      const [product, media] = await Promise.all([
+        tx.product.findUnique({
+          where: { id: target.productId },
+          select: { name: true, description: true, gender: true },
+        }),
+        (tx as any).productMedia.findMany({
+          where: { productId: target.productId },
+          select: { fileUploadId: true, viewSlot: true },
+          orderBy: [{ orderIndex: 'asc' }, { createdAt: 'asc' }],
+        }),
+      ]);
+      if (!product) return null;
+      return buildSnapshot({
+        title: product.name,
+        description: product.description,
+        audience: product.gender,
+        media,
+        requiredSlots: REQUIRED_CONTENT_MEDIA_VIEW_SLOTS,
+      });
+    }
+
+    const collectionId = target.legacyCollectionId ?? target.designId;
+    if (!collectionId) return null;
+
+    const [collection, media] = await Promise.all([
+      tx.collection.findUnique({
+        where: { id: collectionId },
+        select: { title: true, description: true, type: true },
+      }),
+      (tx as any).collectionMedia.findMany({
+        where: { collectionId },
+        select: { fileUploadId: true, viewSlot: true },
+        orderBy: [{ orderIndex: 'asc' }],
+      }),
+    ]);
+    if (!collection) return null;
+    return buildSnapshot({
+      title: collection.title,
+      description: collection.description,
+      audience: collection.type,
+      media,
+      requiredSlots: REQUIRED_CONTENT_MEDIA_VIEW_SLOTS,
+    });
+  }
+
+  /** Narrow a stored `Json` column back to a snapshot, tolerating old rows. */
+  private readSnapshot(value: unknown): ReviewableSnapshot | null {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const candidate = value as Partial<ReviewableSnapshot>;
+    if (!Array.isArray(candidate.mediaIds)) return null;
+    return {
+      title: String(candidate.title ?? ''),
+      description: String(candidate.description ?? ''),
+      audience: String(candidate.audience ?? ''),
+      mediaOrder: Array.isArray(candidate.mediaOrder)
+        ? candidate.mediaOrder.map(String)
+        : [],
+      mediaIds: candidate.mediaIds.map(String),
+      filledRequiredSlots: Array.isArray(candidate.filledRequiredSlots)
+        ? candidate.filledRequiredSlots.map(String)
+        : [],
+    };
   }
 
   async acknowledgeBrandContentPolicy(
@@ -1199,6 +1334,12 @@ export class ContentIntegrityService {
           ]
         : null,
       reasonNote: submission.reasonNote,
+      // What the brand changed since the previous submission, computed once at
+      // submission time. Stored rather than derived so the queue does not need
+      // a second query per row to answer "is this actually a response?".
+      changeSummary: Array.isArray(submission.changeSummary)
+        ? (submission.changeSummary as string[])
+        : [],
       submittedAt: submission.submittedAt,
       reviewedAt: submission.reviewedAt,
       target,
@@ -1480,8 +1621,16 @@ export class ContentIntegrityService {
           owner: { select: { isEmailVerified: true } },
         },
       }),
+      // Only TRUST_EVALUATED events carry a tier; CONTENT_SUBMITTED,
+      // CONTENT_APPROVED and CONTENT_CHANGES_REQUESTED all write `tier: null`.
+      // This used to take the latest event of ANY type, and since a submission
+      // or approval is almost always the most recent one, `tier` came back null
+      // and the admin queue's Trust column rendered "-" for every row — on SIT,
+      // for all three brands, despite 18 TRUST_EVALUATED rows sitting in the
+      // table. Filtering on a non-null tier reads the last event that actually
+      // recorded one, without hard-coding the event type.
       (this.prisma as any).brandTrustEvent.findFirst({
-        where: { brandId },
+        where: { brandId, tier: { not: null } },
         orderBy: { createdAt: 'desc' },
         select: {
           tier: true,

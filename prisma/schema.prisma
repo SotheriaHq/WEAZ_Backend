@@ -4614,6 +4614,15 @@ model ContentSubmission {
   reasonNote         String?
   submittedAt        DateTime                 @default(now())
   reviewedAt         DateTime?
+  // What the reviewer could see when this was submitted, and a hash of it.
+  // Comparing consecutive submissions for one item is how the system knows
+  // whether a brand answering a change request actually changed anything —
+  // before this, republishing an untouched item went straight back into the
+  // queue as new work.
+  contentFingerprint String?                  @db.VarChar(64)
+  contentSnapshot    Json?
+  /// Plain-language list of what changed since the previous submission.
+  changeSummary      Json?
   createdAt          DateTime                 @default(now())
   updatedAt          DateTime                 @updatedAt
 
