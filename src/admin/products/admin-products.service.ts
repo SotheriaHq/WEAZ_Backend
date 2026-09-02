@@ -55,6 +55,7 @@ export class AdminProductsService {
         currency: true,
         thumbnail: true,
         images: true,
+        viewsCount: true,
         _count: {
           select: {
             orderItems: true,
@@ -102,6 +103,9 @@ export class AdminProductsService {
       items: results.map((item) => ({
         ...item,
         orderCount: item._count?.orderItems ?? 0,
+        // Named `viewCount` to match the admin designs list, which already
+        // renames the column on the way out.
+        viewCount: item.viewsCount ?? 0,
         primaryMediaUrl:
           item.thumbnail || (item.images?.length ? item.images[0] : null),
         taxonomy: {

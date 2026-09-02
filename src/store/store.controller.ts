@@ -36,6 +36,7 @@ import { UserTypeGuard } from '../auth/guard/user-type.guard';
 import { OptionalJwtAuthGuard } from '../auth/guard/optional-jwt-auth.guard';
 import { UserType } from '@prisma/client';
 import { Throttle } from '@nestjs/throttler';
+import { readDeviceId } from '../view-counting/device-id';
 import { IdempotencyInterceptor } from '../common/interceptors/idempotency.interceptor';
 import { resolveSearchQuery } from '../common/utils/search-query';
 import { SizeComputationService } from 'src/sizing/size-computation.service';
@@ -420,6 +421,12 @@ export class StoreController {
       productId,
       req.user?.id,
       includeDeletedFlag,
+      {
+        viewerRole: req.user?.role ?? null,
+        deviceId: readDeviceId(req),
+        ipAddress: req.ip || req.connection?.remoteAddress || null,
+        userAgent: req.headers?.['user-agent'] ?? null,
+      },
     );
   }
 

@@ -26,6 +26,7 @@ import { PaymentModule } from 'src/payment/payment.module';
 import { AdminModule } from 'src/admin/admin.module';
 import { CustomOrdersModule } from 'src/custom-orders/custom-orders.module';
 import { WebhookEventsProcessor } from './webhook-events.processor';
+import { ViewCountingModule } from 'src/view-counting/view-counting.module';
 
 @Module({
   imports: [
@@ -35,6 +36,17 @@ import { WebhookEventsProcessor } from './webhook-events.processor';
     }),
     ClockModule,
     PrismaModule,
+    /*
+      Required, not optional. `@Global()` scopes a module to the application
+      graph that imports it, NOT to the process — and the worker boots
+      `QueueWorkerModule`, not `AppModule`. Since this module imports
+      StoreModule and provides CollectionsService directly, and both inject
+      ViewCountingService, leaving this out fails the worker at boot with an
+      unresolved dependency: the exact failure class that restarted the SIT
+      worker 74,771 times. Anything added to AppModule that these two services
+      depend on has to be added here as well.
+    */
+    ViewCountingModule,
     EmailModule,
     UploadModule,
     StoreModule,

@@ -83,7 +83,7 @@ import { PasswordService } from 'src/auth/helper/password.service';
 import { UploadService } from 'src/upload/upload.service';
 import { FileType } from 'src/upload/upload.enums';
 import { DIRECT_UPLOAD_HARD_LIMIT_BYTES } from 'src/upload/upload-policy';
-import { ProductViewCounterService } from './product-view-counter.service';
+import { ViewCountingService } from '../view-counting/view-counting.service';
 import { NotificationsService } from 'src/notifications/notifications.service';
 import { SystemTagsService } from 'src/tags/system-tags.service';
 import { TagIndexService } from 'src/tags/tag-index.service';
@@ -176,7 +176,7 @@ export class StoreService {
     private readonly prisma: PrismaService,
     private readonly passwordService: PasswordService,
     private readonly uploadService: UploadService,
-    private readonly viewCounter: ProductViewCounterService,
+    private readonly viewCounting: ViewCountingService,
     private readonly notifications?: NotificationsService,
     private readonly systemTags?: SystemTagsService,
     private readonly tagIndex?: TagIndexService,
@@ -4644,7 +4644,17 @@ export class StoreService {
     return { success: true, message: 'Product permanently deleted' };
   }
 
-  async getProduct(productId: string, userId?: string, includeDeleted = false) {
+  async getProduct(
+    productId: string,
+    userId?: string,
+    includeDeleted = false,
+    viewContext?: {
+      viewerRole?: string | null;
+      deviceId?: string | null;
+      ipAddress?: string | null;
+      userAgent?: string | null;
+    },
+  ) {
     // Optimized: Include wishlist check in same query when user is authenticated
     const product = await this.prisma.product.findFirst({
       where: includeDeleted
@@ -4729,8 +4739,25 @@ export class StoreService {
     const isWishlisted =
       Array.isArray(product.wishlistItems) && product.wishlistItems.length > 0;
 
-    // Buffered view counting (process-local).
-    this.viewCounter.increment(productId);
+    // One `+1` per detail fetch used to land here unconditionally: no dedupe,
+    // no minimum attention, and no owner exclusion — so a brand refreshing its
+    // own product page inflated its own view count, which is why 8 of 9
+    // products on SIT had views while 0 of 11 designs did. Products and designs
+    // now count through the same rules.
+    void this.viewCounting
+      .record({
+        target: 'PRODUCT',
+        targetId: productId,
+        ownerId: product.brand?.ownerId ?? null,
+        viewerId: userId ?? null,
+        viewerRole: viewContext?.viewerRole ?? null,
+        deviceId: viewContext?.deviceId ?? null,
+        ipAddress: viewContext?.ipAddress ?? null,
+        userAgent: viewContext?.userAgent ?? null,
+      })
+      .catch(() => {
+        // Counting must never fail a product read.
+      });
 
     // Remove wishlistItems from response (internal use only)
     const { wishlistItems, ...productData } = product;

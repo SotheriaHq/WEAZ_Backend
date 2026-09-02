@@ -1,3 +1,4 @@
+import { createHmac } from 'crypto';
 import { FileType } from '@prisma/client';
 import { FileSpecDto } from '../dto/create-collection.dto';
 import { BadRequestException, Injectable } from '@nestjs/common';
@@ -112,8 +113,24 @@ export class HelperService {
     return this.uploadService.verifyObjectExists(s3Key);
   }
 
-  public hashIP(ip: string): string {
-    // Simple hash for privacy - use crypto.createHash in real implementation
-    return Buffer.from(ip).toString('base64');
+  /**
+   * Pseudonymise an IP address.
+   *
+   * This was `Buffer.from(ip).toString('base64')` — an encoding, not a hash.
+   * Anyone with read access to a stored value could decode the address in one
+   * step, which is exactly what an IP hash exists to prevent.
+   *
+   * Keyed HMAC rather than a bare digest, because the IPv4 space is small
+   * enough to enumerate: an unkeyed SHA-256 of an address is reversible by
+   * brute force in seconds. Returns null when no pepper is configured rather
+   * than falling back to something guessable.
+   */
+  public hashIP(ip: string): string | null {
+    const value = String(ip ?? '').trim();
+    if (!value) return null;
+    const pepper =
+      process.env.VIEW_IP_HASH_SECRET || process.env.JWT_ACCESS_SECRET || '';
+    if (!pepper) return null;
+    return createHmac('sha256', pepper).update(value).digest('hex').slice(0, 32);
   }
 }

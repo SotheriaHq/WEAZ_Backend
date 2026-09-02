@@ -47,6 +47,7 @@ import {
   FinalizeCollectionDto,
 } from './dto/create-collection.dto';
 import { HelperService } from './helper/Helper.service';
+import { ViewCountingService } from '../view-counting/view-counting.service';
 import {
   createFeedSeed,
   encodeMixCursor,
@@ -179,6 +180,7 @@ export class CollectionsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly helperservice: HelperService,
+    private readonly viewCounting: ViewCountingService,
     private readonly uploadService: UploadService,
     /*
       Deferred to match the `forwardRef(() => StoreModule)` on the module.
@@ -8380,52 +8382,68 @@ export class CollectionsService {
   /**
    * Track views with IP-based deduplication
    */
+  /**
+   * Record one design view.
+   *
+   * Replaces a version that could not count. Its dedupe read
+   * `OR: [{ viewerId: viewerId || undefined }, { ipHash: ipHash || undefined }]`
+   * — with both undefined that is `OR: [{}, {}]`, which matches every row, so
+   * an anonymous viewer with no resolvable IP was always discarded as a
+   * duplicate. For a signed-in viewer the IP clause still matched on its own,
+   * so one person on shared wifi suppressed everyone else on that network for a
+   * full day. It then recomputed the total with a `COUNT(*)` per view. The
+   * result was zero rows in `View`, ever.
+   *
+   * Identity, dedupe, self-view/operator/bot exclusion and buffering now live
+   * in `ViewCountingService`, so designs and products count the same way.
+   * The `View` row is still written when the view is counted — the
+   * date-ranged analytics endpoint reads it — but it is no longer what the
+   * count is derived from.
+   */
   async recordView(
     collectionId: string,
     viewerId?: string,
     ipAddress?: string,
+    context?: {
+      viewerRole?: string | null;
+      deviceId?: string | null;
+      userAgent?: string | null;
+      eventId?: string | null;
+    },
   ) {
     const ok = await this.canViewCollection(collectionId, viewerId);
     if (!ok) throw new NotFoundException('Collection not found');
 
-    // Create IP hash for privacy
-    const ipHash = ipAddress ? this.helperservice.hashIP(ipAddress) : null;
+    const collection = await this.prisma.collection.findUnique({
+      where: { id: collectionId },
+      select: { ownerId: true },
+    });
+    if (!collection) throw new NotFoundException('Collection not found');
 
-    // Check if view already exists (prevent spam)
-    const existingView = await this.prisma.view.findFirst({
-      where: {
-        collectionId,
-        OR: [
-          { viewerId: viewerId || undefined },
-          { ipHash: ipHash || undefined },
-        ],
-        createdAt: {
-          gte: new Date(Date.now() - 24 * 60 * 60 * 1000), // Within last 24 hours
-        },
-      },
+    const outcome = await this.viewCounting.record({
+      target: 'DESIGN',
+      targetId: collectionId,
+      ownerId: collection.ownerId,
+      viewerId: viewerId ?? null,
+      viewerRole: context?.viewerRole ?? null,
+      deviceId: context?.deviceId ?? null,
+      ipAddress: ipAddress ?? null,
+      userAgent: context?.userAgent ?? null,
+      eventId: context?.eventId ?? null,
     });
 
-    if (!existingView) {
+    if (outcome.counted) {
       await this.prisma.view.create({
         data: {
           id: uuidv4(),
           collectionId,
           viewerId,
-          ipHash,
+          ipHash: this.viewCounting.hashIp(ipAddress),
         },
-      });
-
-      // Update denormalized count
-      const viewCount = await this.prisma.view.count({
-        where: { collectionId },
-      });
-      await this.prisma.collection.update({
-        where: { id: collectionId },
-        data: { viewsCount: viewCount },
       });
     }
 
-    return { viewed: !existingView };
+    return { viewed: outcome.counted, reason: outcome.reason };
   }
 
   // ============================================

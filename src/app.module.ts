@@ -3,6 +3,7 @@ import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { AuthModule } from './auth/auth.module';
 import { PrismaModule } from './prisma/prisma.module';
+import { ViewCountingModule } from './view-counting/view-counting.module';
 import { ConfigModule } from '@nestjs/config';
 import { UploadModule } from './upload/upload.module';
 import { DevToolsModule } from './dev-tools/dev-tools.module';
@@ -71,6 +72,7 @@ const isHardProduction =
     ScheduleModule.forRoot(),
     EmailModule,
     PrismaModule,
+    ViewCountingModule,
     LegalModule,
     MonitoringModule,
     HealthModule,

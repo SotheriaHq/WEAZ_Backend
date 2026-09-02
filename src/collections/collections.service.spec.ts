@@ -386,6 +386,8 @@ describe('CollectionsService brand catalog access', () => {
       const service = new CollectionsService(
         prisma as any,
         {} as any,
+        // ViewCountingService — this test does not exercise view recording.
+        {} as any,
         uploadService as any,
         {} as any,
       );

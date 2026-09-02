@@ -4,7 +4,6 @@ import { StoreService } from './store.service';
 import { PrismaModule } from '../prisma/prisma.module';
 import { AuthModule } from '../auth/auth.module';
 import { UploadModule } from '../upload/upload.module';
-import { ProductViewCounterService } from './product-view-counter.service';
 import { IdempotencyInterceptor } from '../common/interceptors/idempotency.interceptor';
 import { NotificationsModule } from 'src/notifications/notifications.module';
 import { TagsModule } from 'src/tags/tags.module';
@@ -53,7 +52,6 @@ import { LegalModule } from 'src/legal/legal.module';
   controllers: [StoreController],
   providers: [
     StoreService,
-    ProductViewCounterService,
     IdempotencyInterceptor,
     BrandAccessService,
     BrandPermissionService,
