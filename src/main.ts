@@ -371,9 +371,24 @@ async function bootstrap() {
         .filter((h) => h.length > 0),
     );
     // Always allow headers used by the frontend in authenticated and cache-bypass requests.
+    /*
+      Every custom header the web client sends MUST be listed here.
+
+      A browser will not send a cross-origin request carrying a header the
+      preflight did not approve — it fails the whole request before it leaves
+      the tab. So omitting one does not degrade a feature, it takes the entire
+      web app off the API: `weaz.me` talks to `api.weaz.me`, which is
+      cross-origin, and `httpClient` attaches these to every call.
+
+      `x-wiez-device-id` is the durable client id used to dedupe view counts.
+      It is read only by the view counter, is never trusted for authorisation,
+      and is checked against `test-client-headers-allowed.js`, which fails the
+      build if the web client starts sending a header this list does not cover.
+    */
     [
       'x-client-event-id',
       'x-request-id',
+      'x-wiez-device-id',
       'idempotency-key',
       'x-idempotency-key',
       'x-confirm-wipe',

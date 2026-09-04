@@ -54,7 +54,8 @@
     "reset:admin": "node scripts/reset-all-data.cjs --admin-only-seed --skip-bucket --skip-local-uploads",
     "check:module-cycles": "node scripts/check-module-cycles.js",
     "check:perf-regressions": "node scripts/check-perf-regressions.cjs",
-    "ci:phase8": "npm run check:module-cycles && npm test -- src/upload/upload.service.spec.ts src/designs/mappers/design-response.mapper.spec.ts --runInBand && npm run build && npm run check:perf-regressions"
+    "ci:phase8": "npm run check:module-cycles && npm run check:client-headers && npm test -- src/upload/upload.service.spec.ts src/designs/mappers/design-response.mapper.spec.ts --runInBand && npm run build && npm run check:perf-regressions",
+    "check:client-headers": "node scripts/test-client-headers-allowed.js"
   },
   "_moduleAliases": {
     "src": "dist"
