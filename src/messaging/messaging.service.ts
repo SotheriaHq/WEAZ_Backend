@@ -4438,7 +4438,23 @@ export class MessagingService {
         : `/messages?${qp.toString()}`;
     }
 
-    return '/settings?tab=notifications';
+    /*
+      No thread, no order, no custom order — but this is still a notification
+      about a MESSAGE, so it belongs in the inbox.
+
+      This used to return '/settings?tab=notifications', and that string was
+      stored on the notification and then obeyed by the client ahead of all of
+      its message-type routing. Tapping "You have unread order messages waiting"
+      opened the notifications settings screen: the screen the reader had just
+      tapped from, with no way to reach the message it was telling them about.
+
+      The inbox is the right answer even when we cannot say which thread. The
+      reader takes it from there, and the one destination that is certainly
+      wrong is the screen they came from.
+    */
+    return recipientRole === MessageParticipantRole.BRAND_OWNER
+      ? '/studio/messages'
+      : '/messages';
   }
 
   /**
