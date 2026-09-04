@@ -27,7 +27,7 @@ import {
   FinalizeCollectionDto,
 } from './collections.service';
 import { CollectionSchedulerService } from './collection-scheduler.service';
-import { readDeviceId } from '../view-counting/device-id';
+import { viewContextFromRequest } from '../view-counting/request-context';
 import { JwtAuthGuard } from 'src/auth/guard/jwt-auth.guard';
 import { OptionalJwtAuthGuard } from 'src/auth/guard/optional-jwt-auth.guard';
 import { UserTypeGuard } from 'src/auth/guard/user-type.guard';
@@ -544,31 +544,15 @@ export class CollectionsController {
       );
     } catch {}
 
-    const collection = await this.collectionsService.getCollection(
+    // Passing a view context is what asks for the view to be counted. The
+    // counting itself lives in the service, below the fork between this route
+    // and `GET /designs/:id`, so web and native cannot drift apart.
+    return this.collectionsService.getCollection(
       id,
       req.user?.id,
       scope,
+      viewContextFromRequest(req),
     );
-
-    // Record view asynchronously only after collection is confirmed readable.
-    //
-    // `x-wiez-device-id` is the client's durable, locally generated id. It is
-    // what keeps the dedupe honest across a sign-out and sign-in: the user key
-    // changes, the device key does not. It is never trusted for authorisation —
-    // it only ever suppresses a count.
-    this.collectionsService
-      .recordView(id, userId, ipAddress, {
-        viewerRole: req.user?.role ?? null,
-        deviceId: readDeviceId(req),
-        userAgent: req.headers?.['user-agent'] ?? null,
-      })
-      .catch((err: any) => {
-        const status = err?.status ?? err?.response?.statusCode;
-        if (status === 404 || status === 410) return;
-        console.warn('Failed to record view:', err);
-      });
-
-    return collection;
   }
 
   // ============================================

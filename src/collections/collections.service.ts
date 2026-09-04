@@ -48,6 +48,7 @@ import {
 } from './dto/create-collection.dto';
 import { HelperService } from './helper/Helper.service';
 import { ViewCountingService } from '../view-counting/view-counting.service';
+import type { ViewRequestContext } from '../view-counting/request-context';
 import {
   createFeedSeed,
   encodeMixCursor,
@@ -6067,10 +6068,28 @@ export class CollectionsService {
     });
   }
 
+  /**
+   * Read one collection, and count the view when the caller is serving a real
+   * reader.
+   *
+   * The counting lives HERE, below the fork, because a design's detail is
+   * served by two different routes — `GET /collections/:id` (web) and
+   * `GET /designs/:id` (native, via `DesignsService.getDesignDetail`, which
+   * delegates to this method). Counting in each controller meant adding the
+   * behaviour twice with nothing to catch a miss, and native was missed: every
+   * design opened in the app counted for nothing. Any future route that reads
+   * a design goes through this method, so the rules for what a view is cannot
+   * diverge between clients.
+   *
+   * `viewContext` is the opt-in. Internal callers pass nothing and count
+   * nothing; `getCollectionStats` deliberately passes nothing, because reading
+   * the stats of an item is not viewing it.
+   */
   async getCollection(
     id: string,
     requesterId?: string,
     scope?: CollectionScope,
+    viewContext?: ViewRequestContext,
   ) {
     const resolvedScope = scope ? this.normalizeCollectionScope(scope) : 'all';
     const expectedDomain = this.scopeToDomain(resolvedScope);
@@ -6272,6 +6291,14 @@ export class CollectionsService {
           };
         })
       : medias;
+
+    // Fire-and-forget: counting a view must never fail or slow a read.
+    if (viewContext) {
+      void this.recordDesignView(id, requesterId, viewContext).catch(() => {
+        // Already logged inside the counter.
+      });
+    }
+
     return {
       ...rest,
       entityType: 'DESIGN',
@@ -8400,36 +8427,39 @@ export class CollectionsService {
    * date-ranged analytics endpoint reads it — but it is no longer what the
    * count is derived from.
    */
-  async recordView(
+  /**
+   * Count one design view.
+   *
+   * Private, and called only from `getCollection`, so there is exactly one
+   * place that decides what a design view is. Every public route that reads a
+   * design funnels through that method, which is what stopped web and native
+   * needing the behaviour wired separately.
+   *
+   * Access has already been checked by the caller. The `View` row is still
+   * written when a view counts, because the date-ranged analytics endpoint
+   * reads it, but it is no longer what the count derives from.
+   */
+  private async recordDesignView(
     collectionId: string,
-    viewerId?: string,
-    ipAddress?: string,
-    context?: {
-      viewerRole?: string | null;
-      deviceId?: string | null;
-      userAgent?: string | null;
-      eventId?: string | null;
-    },
+    viewerId: string | undefined,
+    context: ViewRequestContext,
   ) {
-    const ok = await this.canViewCollection(collectionId, viewerId);
-    if (!ok) throw new NotFoundException('Collection not found');
-
     const collection = await this.prisma.collection.findUnique({
       where: { id: collectionId },
       select: { ownerId: true },
     });
-    if (!collection) throw new NotFoundException('Collection not found');
+    if (!collection) return { viewed: false, reason: 'unidentified' as const };
 
     const outcome = await this.viewCounting.record({
       target: 'DESIGN',
       targetId: collectionId,
       ownerId: collection.ownerId,
       viewerId: viewerId ?? null,
-      viewerRole: context?.viewerRole ?? null,
-      deviceId: context?.deviceId ?? null,
-      ipAddress: ipAddress ?? null,
-      userAgent: context?.userAgent ?? null,
-      eventId: context?.eventId ?? null,
+      viewerRole: context.viewerRole ?? null,
+      deviceId: context.deviceId ?? null,
+      ipAddress: context.ipAddress ?? null,
+      userAgent: context.userAgent ?? null,
+      eventId: context.eventId ?? null,
     });
 
     if (outcome.counted) {
@@ -8438,7 +8468,7 @@ export class CollectionsService {
           id: uuidv4(),
           collectionId,
           viewerId,
-          ipHash: this.viewCounting.hashIp(ipAddress),
+          ipHash: this.viewCounting.hashIp(context.ipAddress),
         },
       });
     }

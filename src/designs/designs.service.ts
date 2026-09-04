@@ -3,6 +3,7 @@ import { CustomOrderSourceType } from '@prisma/client';
 import { validate as isUuid } from 'uuid';
 
 import { CollectionsService } from 'src/collections/collections.service';
+import type { ViewRequestContext } from 'src/view-counting/request-context';
 import { CustomOrderConfigurationsService } from 'src/custom-order-configurations/custom-order-configurations.service';
 import { LegacyCollectionDesignAdapter } from './adapters/legacy-collection-design.adapter';
 import { FinalizeDesignUploadDto } from './dto/finalize-design-upload.dto';
@@ -65,12 +66,24 @@ export class DesignsService {
     return DesignResponseMapper.fromLegacyCollection(result);
   }
 
-  async getDesignDetail(designId: string, requesterId?: string) {
+  /**
+   * `/designs/:id` is a facade over the same `Collection` row `/collections/:id`
+   * serves — this method only remaps the response. Cross-cutting behaviour
+   * therefore belongs in `getCollection`, not here and not in either
+   * controller: view counting was added to the controllers and native, which
+   * reads through this path, silently counted nothing.
+   */
+  async getDesignDetail(
+    designId: string,
+    requesterId?: string,
+    viewContext?: ViewRequestContext,
+  ) {
     this.assertPersistedDesignId(designId);
     const result = await this.collectionsService.getCollection(
       designId,
       requesterId,
       'design',
+      viewContext,
     );
     return DesignResponseMapper.fromLegacyCollection(result);
   }

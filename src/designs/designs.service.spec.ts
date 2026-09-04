@@ -107,6 +107,9 @@ describe('DesignsService', () => {
       DESIGN_ID,
       'viewer-1',
       'design',
+      // The view context. Undefined here because this call omits it; the
+      // controller passes one, which is what makes native count views.
+      undefined,
     );
     expect(result).toEqual(
       expect.objectContaining({

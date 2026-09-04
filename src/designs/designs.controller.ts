@@ -15,8 +15,7 @@ import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from 'src/auth/guard/jwt-auth.guard';
 import { OptionalJwtAuthGuard } from 'src/auth/guard/optional-jwt-auth.guard';
 import { DesignsService } from './designs.service';
-import { CollectionsService } from '../collections/collections.service';
-import { readDeviceId } from '../view-counting/device-id';
+import { viewContextFromRequest } from '../view-counting/request-context';
 import { FinalizeDesignUploadDto } from './dto/finalize-design-upload.dto';
 import {
   InitializeDesignMediaUploadDto,
@@ -30,10 +29,7 @@ import { UpdateDesignDto } from './dto/update-design.dto';
 @ApiBearerAuth()
 @Controller('designs')
 export class DesignsController {
-  constructor(
-    private readonly designsService: DesignsService,
-    private readonly collectionsService: CollectionsService,
-  ) {}
+  constructor(private readonly designsService: DesignsService) {}
 
   @UseGuards(JwtAuthGuard)
   @Post('initialize')
@@ -151,32 +147,17 @@ export class DesignsController {
   @UseGuards(OptionalJwtAuthGuard)
   @Get(':id')
   async getDesign(@Param('id') designId: string, @Req() req: any) {
-    const detail = await this.designsService.getDesignDetail(
-      designId,
-      req.user?.id,
-    );
-
     /*
       The native app reads design detail from HERE; only the web app calls
-      `GET /collections/:id`. Recording the view on the collections route alone
-      meant every design opened in the native app counted for nothing, so the
-      surface that most people use was the one the number ignored. Same call,
-      same dedupe, same exclusions — the counter must not care which client
-      asked.
-
-      Fire-and-forget: counting a view must never fail or slow a read.
+      `GET /collections/:id`. Both funnel into `CollectionsService.getCollection`,
+      which is where the view is counted — so passing the context is all this
+      route has to do, and the two clients cannot end up with different rules.
     */
-    void this.collectionsService
-      .recordView(designId, req.user?.id, req.ip, {
-        viewerRole: req.user?.role ?? null,
-        deviceId: readDeviceId(req),
-        userAgent: req.headers?.['user-agent'] ?? null,
-      })
-      .catch(() => {
-        // Already logged inside the counter.
-      });
-
-    return detail;
+    return this.designsService.getDesignDetail(
+      designId,
+      req.user?.id,
+      viewContextFromRequest(req),
+    );
   }
 
   @UseGuards(JwtAuthGuard)
