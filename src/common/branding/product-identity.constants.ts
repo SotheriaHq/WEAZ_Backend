@@ -9,7 +9,8 @@
  * Removed here, all with zero consumers: `PRODUCT_NAME_LEGAL` (a duplicate of
  * `PRODUCT_NAME`), `PRODUCT_NAME_FORMER` (a `@deprecated` marker whose value
  * was the current name), `PRODUCT_LOGO_TAGLINE`, and two placeholder constants
- * that only restated a string already inlined at its one use site.
+ * that only restated a string already inlined at its one use site — plus four
+ * *_ENV_KEY constants that named an environment variable nothing ever read.
  */
 
 /** The product name. There is no former name to surface anywhere. */
@@ -18,11 +19,6 @@ export const PRODUCT_NAME = 'WIEZ';
 export const PRODUCT_TAGLINE = 'When you think WEARS, you think WIEZ.';
 
 export const PRODUCT_CATEGORY = 'African fashion social commerce marketplace';
-
-export const SUPPORT_EMAIL_ENV_KEY = 'SUPPORT_EMAIL';
-export const LEGAL_EMAIL_ENV_KEY = 'LEGAL_EMAIL';
-export const PRIVACY_EMAIL_ENV_KEY = 'PRIVACY_EMAIL';
-export const PUBLIC_WEB_URL_ENV_KEY = 'WEB_APP_URL';
 
 /**
  * The brand palette, as actually painted.
