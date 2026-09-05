@@ -709,8 +709,11 @@ export class StoreService {
     return out;
   }
 
-  private async attachProductMedia(product: any) {
-    const base = this.transformProduct(product);
+  private async attachProductMedia(
+    product: any,
+    options?: { includeOwnerFinancials?: boolean },
+  ) {
+    const base = this.transformProduct(product, options);
     const baseWithFilters = await this.attachProductFiltersToView(
       base,
       product.id,
@@ -2617,7 +2620,7 @@ export class StoreService {
       });
     }
 
-    const response = await this.attachProductMedia(product);
+    const response = await this.attachProductMedia(product, { includeOwnerFinancials: true });
     return {
       ...response,
       publicationStatus: product.publicationStatus,
@@ -2748,7 +2751,7 @@ export class StoreService {
       );
     }
 
-    const response = await this.attachProductMedia(updated);
+    const response = await this.attachProductMedia(updated, { includeOwnerFinancials: true });
     return {
       ...response,
       publicationStatus: updated.publicationStatus,
@@ -3483,7 +3486,7 @@ export class StoreService {
       );
     }
 
-    const response = await this.attachProductMedia(updated);
+    const response = await this.attachProductMedia(updated, { includeOwnerFinancials: true });
     return {
       ...response,
       publicationStatus: (updated as any)?.publicationStatus,
@@ -3807,7 +3810,7 @@ export class StoreService {
       );
     }
 
-    return this.attachProductMedia(duplicated);
+    return this.attachProductMedia(duplicated, { includeOwnerFinancials: true });
   }
 
   // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -3974,7 +3977,7 @@ export class StoreService {
       }
     }
 
-    return this.attachProductMedia(archived);
+    return this.attachProductMedia(archived, { includeOwnerFinancials: true });
   }
 
   // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -4081,7 +4084,7 @@ export class StoreService {
         console.warn('Failed to send wishlist available notifications:', err);
       }
     }
-    return this.attachProductMedia(restored);
+    return this.attachProductMedia(restored, { includeOwnerFinancials: true });
   }
 
   // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -4762,7 +4765,12 @@ export class StoreService {
     // Remove wishlistItems from response (internal use only)
     const { wishlistItems, ...productData } = product;
     void wishlistItems;
-    const withMedia = await this.attachProductMedia(productData);
+    // `GET /products/:id` answers both the public product page and the 
+    // studio editor, so the financials follow ownership rather than the 
+    // route. `isOwner` is computed above from brand.ownerId.
+    const withMedia = await this.attachProductMedia(productData, {
+      includeOwnerFinancials: Boolean(isOwner),
+    });
     return { ...withMedia, isWishlisted };
   }
 
@@ -6014,7 +6022,7 @@ export class StoreService {
       );
     }
 
-    return this.attachProductMedia(restored);
+    return this.attachProductMedia(restored, { includeOwnerFinancials: true });
   }
 
   // ==================== CART ====================
@@ -7072,7 +7080,21 @@ export class StoreService {
     return this.canBagOutOfStockCustomOrderProduct(product);
   }
 
-  private transformProduct(product: any) {
+  /**
+   * @param options.includeOwnerFinancials What the product COST the brand, and
+   * the margin derived from it. Off by default, and it has to stay that way:
+   * this serializer feeds `GET /products/:id`, `GET /products/market` and
+   * `GET /brands/:brandId/products`, and all three answer an unauthenticated
+   * request. Every shopper browsing the market was being handed each brand's
+   * unit cost and profit margin, which is the brand's business and nobody
+   * else's — a competitor could have read the whole catalogue's margins from
+   * the public feed. Only a caller that has established brand ownership passes
+   * true.
+   */
+  private transformProduct(
+    product: any,
+    options?: { includeOwnerFinancials?: boolean },
+  ) {
     const collectionLinks = Array.isArray(product?.collections)
       ? product.collections
       : [];
@@ -7146,8 +7168,17 @@ export class StoreService {
       weightUnit: product.weightUnit,
       materials: product.materials,
       careInstructions: product.careInstructions,
-      costPerItem: product.costPerItem ? Number(product.costPerItem) : null,
-      profitMargin,
+      // Spread, not null: an owner-only field is ABSENT for everyone else
+      // rather than present-and-empty, so no caller can mistake "you may not
+      // see this" for "the brand has not set a cost".
+      ...(options?.includeOwnerFinancials
+        ? {
+            costPerItem: product.costPerItem
+              ? Number(product.costPerItem)
+              : null,
+            profitMargin,
+          }
+        : {}),
       // Variants
       sizes: product.sizes || [],
       sizeStock: product.sizeStock,
