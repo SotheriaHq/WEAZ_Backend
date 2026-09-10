@@ -210,7 +210,20 @@ model UserProfile {
   firstName             String
   lastName              String
   phoneNumber           String?
+  /// Street address only. The administrative levels above it are their own
+  /// columns below, so a stored location can be read back INTO the pickers that
+  /// produced it — parsing "Ikeja, Lagos, Nigeria" back out of one free-text
+  /// field is guesswork, and guesswork is what leaves a shopper re-typing their
+  /// state every time they open the form.
   address               String?
+  /// Country / state / city as the shopper picked them, mirroring the shape
+  /// `Brand` has always had (`Brand.country`/`state`/`city`). "City" is the
+  /// same administrative level Nigeria calls a Local Government Area; the
+  /// upstream list returns one set for that level whatever it is named, so it
+  /// is one column and the UI label says both.
+  country               String?
+  state                 String?
+  city                  String?
   profileImage          String?
   profileImageId        String?           @db.Uuid
   profileImageFile      FileUpload?       @relation("UserProfileProfileImage", fields: [profileImageId], references: [id])

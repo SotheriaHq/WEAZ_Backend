@@ -21,6 +21,7 @@ import {
 } from 'src/common/theme.contract';
 import {
   canonicalUserProfileSelect,
+  composeLocationLine,
   getRejectedProfileMediaUrlReason,
   normalizeProfileMediaUrlForPersistence,
   resolveBannerImage,
@@ -67,6 +68,9 @@ export class UserProfileService {
     options: { includeThemePreference?: boolean } = {},
   ): Promise<UserProfileResponseDto> {
     const address = resolveNullableProfileField(user, 'address') ?? undefined;
+    const country = resolveNullableProfileField(user, 'country') ?? undefined;
+    const state = resolveNullableProfileField(user, 'state') ?? undefined;
+    const city = resolveNullableProfileField(user, 'city') ?? undefined;
     const profileImage = resolveProfileImage(user);
     const bannerImage = resolveBannerImage(user);
     const profilePhotoViewState =
@@ -88,7 +92,21 @@ export class UserProfileService {
       bannerImageId: bannerImage.fileId ?? undefined,
       bannerImageFile: bannerImage.file,
       address,
-      location: address,
+      country,
+      state,
+      city,
+      /*
+        `location` is the DISPLAY line, composed from the administrative parts
+        the shopper picked, in the same "city, state, country" order the brand
+        payloads have always used (see `getPatchedBrands` below).
+
+        It used to be the raw `address` echoed back, which was the only place a
+        location existed at all. The street address is deliberately NOT in it:
+        `location` is rendered under a name on profiles and cards, and a house
+        number does not belong there. It falls back to `address` so profiles
+        saved before this change still show what they hold.
+      */
+      location: composeLocationLine({ city, state, country }) ?? address,
       profileVisibility: resolveProfileVisibility(user),
       showUsername: resolveShowUsername(user),
       showLocation: resolveShowLocation(user),
@@ -235,6 +253,9 @@ export class UserProfileService {
       | 'lastName'
       | 'phoneNumber'
       | 'address'
+      | 'country'
+      | 'state'
+      | 'city'
       | 'profileImage'
       | 'profileImageId'
       | 'bannerImage'
@@ -259,7 +280,13 @@ export class UserProfileService {
     const assignString = (
       field: Extract<
         AllowedProfileUpdateField,
-        'firstName' | 'lastName' | 'phoneNumber' | 'address'
+        | 'firstName'
+        | 'lastName'
+        | 'phoneNumber'
+        | 'address'
+        | 'country'
+        | 'state'
+        | 'city'
       >,
     ) => {
       const value = dto[field];
@@ -271,6 +298,12 @@ export class UserProfileService {
     assignString('firstName');
     assignString('lastName');
     assignString('address');
+    // Sent as '' when the user clears them, which `assignString` writes through
+    // as an empty string rather than skipping — clearing a country has to be
+    // expressible or the field is write-once.
+    assignString('country');
+    assignString('state');
+    assignString('city');
 
     if (dto.gender !== undefined) {
       const parsed = parseProfileGender(dto.gender);
@@ -368,6 +401,9 @@ export class UserProfileService {
             phoneNumber:
               (profileData.phoneNumber as string | null | undefined) ?? null,
             address: (profileData.address as string | null | undefined) ?? null,
+            country: (profileData.country as string | null | undefined) ?? null,
+            state: (profileData.state as string | null | undefined) ?? null,
+            city: (profileData.city as string | null | undefined) ?? null,
             profileImage:
               (profileData.profileImage as string | null | undefined) ?? null,
             profileImageId:
@@ -732,9 +768,19 @@ export class UserProfileService {
       const bannerImage = resolveBannerImage(target);
       const location =
         target.brand?.companyLocation ||
-        [target.brand?.city, target.brand?.state, target.brand?.country]
-          .filter(Boolean)
-          .join(', ') ||
+        composeLocationLine({
+          city: target.brand?.city,
+          state: target.brand?.state,
+          country: target.brand?.country,
+        }) ||
+        // A patched target is a brand, so its own profile location only matters
+        // when the brand record carries none. Shopper parts first, then the
+        // legacy free-text address.
+        composeLocationLine({
+          city: resolveNullableProfileField(target, 'city'),
+          state: resolveNullableProfileField(target, 'state'),
+          country: resolveNullableProfileField(target, 'country'),
+        }) ||
         resolveNullableProfileField(target, 'address') ||
         null;
 

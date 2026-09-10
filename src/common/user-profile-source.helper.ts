@@ -19,6 +19,9 @@ export const canonicalUserProfileSelect =
     lastName: true,
     phoneNumber: true,
     address: true,
+    country: true,
+    state: true,
+    city: true,
     profileImage: true,
     profileImageId: true,
     profilePhotoUpdatedAt: true,
@@ -50,6 +53,9 @@ export type UserProfileSource = {
   lastName?: string | null;
   phoneNumber?: string | null;
   address?: string | null;
+  country?: string | null;
+  state?: string | null;
+  city?: string | null;
   profileImage?: string | null;
   profileImageId?: string | null;
   profilePhotoUpdatedAt?: Date | string | null;
@@ -66,7 +72,12 @@ export type UserProfileSource = {
 };
 
 type RequiredProfileField = 'firstName' | 'lastName';
-type NullableProfileField = 'phoneNumber' | 'address';
+type NullableProfileField =
+  | 'phoneNumber'
+  | 'address'
+  | 'country'
+  | 'state'
+  | 'city';
 type MediaKind = 'profile' | 'banner';
 export type RejectedProfileMediaUrlReason =
   | 'temporary-client-url'
@@ -184,4 +195,30 @@ export function resolveProfileGender(
   user: UserProfileSource,
 ): ProfileGender | null {
   return user.userProfile?.gender ?? user.gender ?? null;
+}
+
+/**
+ * "City, State, Country" from whatever parts exist, or null when none do.
+ *
+ * One definition because there were already two spellings of this idea in the
+ * codebase — `getPatchedBrands` builds it inline, and `Brand.companyLocation`
+ * stores a hand-written version of the same sentence — and a third was about to
+ * appear for shoppers. The order is fixed most-specific-first, which is how a
+ * place is said aloud and how every existing caller already wrote it.
+ *
+ * The STREET address is deliberately not a parameter. `location` is rendered
+ * under a name on profiles, cards and comments; a house number does not belong
+ * in any of those places, and joining it in is how a private address leaks onto
+ * a public surface.
+ */
+export function composeLocationLine(parts: {
+  city?: string | null;
+  state?: string | null;
+  country?: string | null;
+}): string | null {
+  const line = [parts.city, parts.state, parts.country]
+    .map((part) => String(part ?? '').trim())
+    .filter((part) => part.length > 0)
+    .join(', ');
+  return line.length > 0 ? line : null;
 }

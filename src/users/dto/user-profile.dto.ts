@@ -74,6 +74,18 @@ export class UserProfileResponseDto {
   @IsOptional()
   address?: string;
 
+  @IsString()
+  @IsOptional()
+  country?: string;
+
+  @IsString()
+  @IsOptional()
+  state?: string;
+
+  @IsString()
+  @IsOptional()
+  city?: string;
+
   @IsEnum(ProfileVisibility)
   profileVisibility: ProfileVisibility;
 

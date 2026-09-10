@@ -46,6 +46,26 @@ export class UpdateProfileDto {
   @IsString({ message: 'Address must be a string' })
   address?: string;
 
+  /*
+    Administrative location, as picked. Sent even when cleared — an empty string
+    is how a client says "erase what you have", which `@IsOptional()` alone
+    would otherwise make indistinguishable from "leave it alone".
+  */
+  @IsOptional()
+  @IsString({ message: 'Country must be a string' })
+  @MaxLength(120)
+  country?: string;
+
+  @IsOptional()
+  @IsString({ message: 'State must be a string' })
+  @MaxLength(120)
+  state?: string;
+
+  @IsOptional()
+  @IsString({ message: 'City must be a string' })
+  @MaxLength(120)
+  city?: string;
+
   @IsOptional()
   @IsNotEmpty({ message: 'First name is required' })
   @IsString({ message: 'First name must be a string' })
