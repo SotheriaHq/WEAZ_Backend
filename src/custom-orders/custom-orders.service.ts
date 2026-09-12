@@ -87,7 +87,7 @@ const DEFAULT_PRICING_CHART_FAMILY: CustomOrderChartFamily =
 const DEFAULT_DISPLAY_CHART_FAMILY: CustomOrderChartFamily = 'UK';
 const DEFAULT_RESOLVER_POLICY: CustomOrderResolverPolicy = 'MAX_OF_BOTH';
 const NT_BAG_ITEM_ADDED = 'BAG_ITEM_ADDED' as NotificationType;
-const BAG_NOTIFICATION_TARGET_ID = 'buyer-bag';
+const CUSTOM_ORDER_BAG_NOTIFICATION_TARGET_PREFIX = 'custom-order-bag';
 
 type ChartBand = {
   label: string;
@@ -573,7 +573,12 @@ export class CustomOrdersService {
         },
         target: {
           type: 'SYSTEM',
-          id: BAG_NOTIFICATION_TARGET_ID,
+          // A bag can contain multiple custom-order checkout sessions. Using
+          // the shared `buyer-bag` target made NotificationsService treat a
+          // newly submitted custom order as a duplicate of any bag event in
+          // the preceding minute, so neither its inbox row nor email outbox
+          // row was created.
+          id: `${CUSTOM_ORDER_BAG_NOTIFICATION_TARGET_PREFIX}:${args.checkoutSessionId}`,
           // No `preview` — see the note in `store.service.notifyBuyerBagItemAdded`.
         },
         dedupeMs: 60_000,

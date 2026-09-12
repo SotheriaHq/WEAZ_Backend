@@ -201,6 +201,57 @@ describe('CustomOrdersService', () => {
     delete process.env.CUSTOM_ORDER_CANCEL_WINDOW_MS;
   });
 
+  it('uses a unique target for each custom-order bag notification', async () => {
+    const notifications = {
+      create: jest.fn().mockResolvedValue(null),
+    };
+    (service as any).notifications = notifications;
+
+    await (service as any).notifyBuyerCustomOrderBagged({
+      userId: 'buyer_1',
+      checkoutSessionId: 'checkout_session_1',
+      checkoutIntentId: 'checkout_intent_1',
+      configurationId: 'configuration_1',
+      configurationTitle: 'Bespoke Agbada',
+      brandId: 'brand_1',
+      sourceType: 'PRODUCT',
+      sourceId: 'product_1',
+    });
+    await (service as any).notifyBuyerCustomOrderBagged({
+      userId: 'buyer_1',
+      checkoutSessionId: 'checkout_session_2',
+      checkoutIntentId: 'checkout_intent_2',
+      configurationId: 'configuration_2',
+      configurationTitle: 'Custom Kaftan',
+      brandId: 'brand_1',
+      sourceType: 'PRODUCT',
+      sourceId: 'product_2',
+    });
+
+    expect(notifications.create).toHaveBeenNthCalledWith(
+      1,
+      'buyer_1',
+      'BAG_ITEM_ADDED',
+      expect.objectContaining({
+        target: {
+          type: 'SYSTEM',
+          id: 'custom-order-bag:checkout_session_1',
+        },
+      }),
+    );
+    expect(notifications.create).toHaveBeenNthCalledWith(
+      2,
+      'buyer_1',
+      'BAG_ITEM_ADDED',
+      expect.objectContaining({
+        target: {
+          type: 'SYSTEM',
+          id: 'custom-order-bag:checkout_session_2',
+        },
+      }),
+    );
+  });
+
   it('confirms delivery and releases the final completion payout allocation', async () => {
     prisma.customOrder.findFirst.mockResolvedValue(buildOrder());
 
