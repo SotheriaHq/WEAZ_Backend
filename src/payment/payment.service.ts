@@ -4357,6 +4357,126 @@ export class PaymentService implements OnModuleInit {
     }
   }
 
+  /**
+   * Custom orders paid through UNIFIED checkout notify nobody without this.
+   *
+   * `custom-orders-payments.service.ts` enqueues CUSTOM_ORDER_PAYMENT_RECEIVED
+   * (buyer) and CUSTOM_ORDER_REVIEW_REQUIRED (brand owner) when a custom order
+   * is paid on its own `TH-CO-` reference. Unified checkout (`TH-UC-`) commits
+   * custom orders in `finalizeUnifiedCheckoutAttempt` instead and never called
+   * that path, so an order reached ACCEPTED/PAID silently: no in-app
+   * notification for either party, and — because the email outbox row is only
+   * written when a notification is created — no email either. The standard
+   * lines in the same checkout were unaffected, which is what made this look
+   * like an email problem rather than a missing call site.
+   *
+   * `target` is per custom order deliberately. `create()` dedupes on
+   * `payload.target.id`, and one unified checkout can commit several custom
+   * orders at once; without a distinct target the second order's notification
+   * is discarded as a duplicate of the first.
+   *
+   * Never throws: a notification failure must not fail a payment that has
+   * already been captured and committed.
+   */
+  private async notifyCustomOrderPlacementAfterPayment(
+    customOrderIds: string[],
+  ) {
+    const ids = Array.from(new Set(customOrderIds.filter(Boolean)));
+    if (ids.length === 0) {
+      return;
+    }
+
+    const orders = await this.prisma.customOrder.findMany({
+      where: { id: { in: ids } },
+      select: {
+        id: true,
+        buyerId: true,
+        currency: true,
+        sourceTitleSnapshot: true,
+        sourceBrandNameSnapshot: true,
+        buyerPriceSummaryJson: true,
+        brand: { select: { ownerId: true, name: true } },
+        buyer: { select: { username: true } },
+      },
+    });
+
+    const jobs: Array<Promise<unknown>> = [];
+
+    for (const order of orders) {
+      // The grand total lives in the buyer price summary; there is no scalar
+      // column for it on CustomOrder.
+      const priceSummary = this.asObject(order.buyerPriceSummaryJson);
+      const orderAmount = this.roundMoney(
+        Number(priceSummary.grandTotal ?? priceSummary.total ?? 0),
+      );
+      const sourceTitle = order.sourceTitleSnapshot || 'Untitled custom order';
+      const sourceBrandName =
+        order.sourceBrandNameSnapshot || order.brand?.name || 'the brand';
+      const buyerUsername = order.buyer?.username || undefined;
+
+      if (order.buyerId) {
+        jobs.push(
+          this.notificationsService.create(
+            order.buyerId,
+            NotificationType.CUSTOM_ORDER_PAYMENT_RECEIVED,
+            {
+              // The buyer is the actor here, and `create()` drops a
+              // notification whose actor is its own recipient.
+              actorId: null,
+              dedupeMs: 5 * 60 * 1000,
+              target: { type: 'SYSTEM', id: order.id },
+              payload: {
+                customOrderId: order.id,
+                sourceTitle,
+                sourceBrandName,
+                orderAmount,
+                currency: order.currency,
+                buyerUsername,
+                targetUrl: `/custom-orders/${order.id}`,
+              },
+            },
+          ),
+        );
+      }
+
+      if (order.brand?.ownerId) {
+        jobs.push(
+          this.notificationsService.create(
+            order.brand.ownerId,
+            NotificationType.CUSTOM_ORDER_REVIEW_REQUIRED,
+            {
+              actorId: order.buyerId ?? undefined,
+              dedupeMs: 5 * 60 * 1000,
+              target: { type: 'SYSTEM', id: order.id },
+              payload: {
+                customOrderId: order.id,
+                sourceTitle,
+                sourceBrandName,
+                buyerName: buyerUsername || 'A buyer',
+                buyerUsername,
+                orderAmount,
+                currency: order.currency,
+                targetUrl: `/studio/custom-orders/${order.id}`,
+              },
+            },
+          ),
+        );
+      }
+    }
+
+    if (jobs.length === 0) {
+      return;
+    }
+
+    const results = await Promise.allSettled(jobs);
+    const rejected = results.filter((result) => result.status === 'rejected');
+    if (rejected.length > 0) {
+      this.logger.warn(
+        `Failed to send ${rejected.length} custom-order placement notification(s) after payment confirmation`,
+      );
+    }
+  }
+
   async resolveCardValidationSessionForInitialize(params: {
     paymentMethod: PaymentMethod;
     validationSessionId?: string | null;
@@ -8836,6 +8956,14 @@ export class PaymentService implements OnModuleInit {
         }
         await this.notifyOrderPlacementAfterPayment(linkedOrders);
       }
+    }
+
+    // Custom lines in the same checkout need their own announcement — the
+    // standard-order block above only covers `Order` rows.
+    if (finalized && finalized.customOrderIds.length > 0) {
+      await this.notifyCustomOrderPlacementAfterPayment(
+        finalized.customOrderIds,
+      );
     }
 
     return finalized;

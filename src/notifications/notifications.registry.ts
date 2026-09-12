@@ -447,6 +447,10 @@ export class NotificationRegistry {
         productName: Joi.string().optional(),
         productNames: Joi.array().items(Joi.string()).optional(),
         brandName: Joi.string().optional(),
+        // The brand the row links to. Without an id the brand name can only be
+        // printed, not opened — and the payload is stripped of unknown keys, so
+        // it has to be declared here to survive validation.
+        brandId: Joi.string().optional(),
         collectionId: Joi.string().optional(),
         collectionName: Joi.string().optional(),
         checkoutSessionId: Joi.string().optional(),

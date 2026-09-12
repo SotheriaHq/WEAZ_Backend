@@ -6063,6 +6063,7 @@ export class StoreService {
     productId: string;
     productName: string;
     brandName?: string | null;
+    brandId?: string | null;
     currency?: string | null;
     price?: number | null;
     quantity: number;
@@ -6080,6 +6081,7 @@ export class StoreService {
           productId: args.productId,
           productName: args.productName,
           brandName: args.brandName ?? undefined,
+          brandId: args.brandId ?? undefined,
           quantity: args.quantity,
           selectedSize: args.selectedSize ?? null,
           selectedColor: args.selectedColor ?? null,
@@ -6504,6 +6506,7 @@ export class StoreService {
       productId: product.id,
       productName: product.name,
       brandName: product.brand?.name ?? null,
+      brandId: product.brandId,
       currency: product.currency ?? product.brand?.currency ?? null,
       price: this.toMoneyNumber(product.salePrice ?? product.price),
       quantity: resultingQuantity,

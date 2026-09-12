@@ -543,6 +543,7 @@ export class CustomOrdersService {
     checkoutIntentId: string;
     configurationId: string;
     configurationTitle: string;
+    brandId?: string | null;
     sourceType: CustomOrderSourceType;
     sourceId: string;
   }): Promise<void> {
@@ -562,6 +563,7 @@ export class CustomOrdersService {
           checkoutSessionId: args.checkoutSessionId,
           checkoutIntentId: args.checkoutIntentId,
           configurationId: args.configurationId,
+          brandId: args.brandId ?? undefined,
           sourceType: args.sourceType,
           sourceId: args.sourceId,
           productName: title ?? 'Custom order',
@@ -1038,6 +1040,7 @@ export class CustomOrdersService {
       checkoutIntentId: intent.id,
       configurationId: configuration.configuration.id,
       configurationTitle: configuration.configuration.title,
+      brandId: configuration.configuration.brandId,
       sourceType: configuration.configuration.sourceType,
       sourceId: configuration.configuration.sourceId,
     });

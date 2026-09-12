@@ -388,6 +388,7 @@ export class CollectionBaggingService {
           action: 'BAG_ITEM_ADDED',
           collectionId: status.collection.id,
           collectionName,
+          brandId: status.collection.brandId ?? undefined,
           productIds: added.map((item) => item.productId),
           productNames,
           itemCount,
