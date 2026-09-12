@@ -201,6 +201,96 @@ describe('CustomOrdersService', () => {
     delete process.env.CUSTOM_ORDER_CANCEL_WINDOW_MS;
   });
 
+  /**
+   * A declined or abandoned payment must not pin an item in the buyer's bag.
+   *
+   * The guard used to fire on the mere EXISTENCE of a PaymentAttempt row, so one
+   * failed saved-card charge made the line permanently unremovable — the buyer
+   * got "this checkout line cannot be removed because payment processing has
+   * started for it" with no payment in progress and no way out.
+   */
+  describe('removeCheckoutBagLine', () => {
+    const buildTx = () => ({
+      $queryRaw: jest.fn().mockResolvedValue([]),
+      paymentAttemptCheckoutIntentLink: {
+        findFirst: jest.fn().mockResolvedValue(null),
+      },
+      paymentAttempt: { findFirst: jest.fn().mockResolvedValue(null) },
+      checkoutSessionLine: { findFirst: jest.fn().mockResolvedValue(null) },
+      customOrderCheckoutSession: {
+        delete: jest.fn().mockResolvedValue({ id: 'ccs_1' }),
+      },
+      customOrder: { findFirst: jest.fn().mockResolvedValue(null) },
+      customOrderCheckoutIntent: {
+        deleteMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+    });
+
+    beforeEach(() => {
+      prisma.customOrderCheckoutSession.findFirst = jest.fn().mockResolvedValue({
+        id: 'ccs_1',
+        customOrderId: null,
+        checkoutIntentId: 'intent_1',
+      });
+    });
+
+    it('removes a line whose payment attempts are all dead', async () => {
+      const tx = buildTx();
+      prisma.$transaction.mockImplementation(async (cb: any) => cb(tx));
+
+      await expect(
+        service.removeCheckoutBagLine('buyer_1', 'ccs_1'),
+      ).resolves.toMatchObject({ data: { removed: true } });
+      expect(tx.customOrderCheckoutSession.delete).toHaveBeenCalledWith({
+        where: { id: 'ccs_1' },
+      });
+    });
+
+    /*
+      Asserts the FILTERS, not just the outcome. Mocking the queries to return
+      null would pass against the unfixed service too — the defect was that the
+      queries asked "does any row exist", so the query shape is the thing that
+      has to be pinned.
+    */
+    it('counts only live payments as a lock', async () => {
+      const tx = buildTx();
+      prisma.$transaction.mockImplementation(async (cb: any) => cb(tx));
+
+      await service.removeCheckoutBagLine('buyer_1', 'ccs_1');
+
+      const attemptWhere = tx.paymentAttempt.findFirst.mock.calls[0][0].where;
+      expect(attemptWhere.status.in).toEqual(
+        expect.arrayContaining(['PENDING', 'REQUIRES_ACTION', 'PROCESSING', 'PAID']),
+      );
+      expect(attemptWhere.status.in).not.toContain('FAILED');
+      expect(attemptWhere.status.in).not.toContain('CANCELLED');
+      expect(attemptWhere.status.in).not.toContain('EXPIRED');
+
+      const linkWhere =
+        tx.paymentAttemptCheckoutIntentLink.findFirst.mock.calls[0][0].where;
+      expect(linkWhere.status).toEqual({ not: 'RELEASED' });
+
+      const lineWhere = tx.checkoutSessionLine.findFirst.mock.calls[0][0].where;
+      expect(lineWhere.checkoutSession.status.in).not.toContain('FAILED');
+      expect(lineWhere.checkoutSession.status.in).not.toContain('CANCELLED');
+    });
+
+    it('still refuses while a payment is genuinely in flight', async () => {
+      const tx = buildTx();
+      tx.paymentAttempt.findFirst.mockResolvedValue({
+        id: 'pa_1',
+        status: 'PROCESSING',
+        subjectType: 'UNIFIED_CHECKOUT',
+      });
+      prisma.$transaction.mockImplementation(async (cb: any) => cb(tx));
+
+      await expect(
+        service.removeCheckoutBagLine('buyer_1', 'ccs_1'),
+      ).rejects.toThrow('payment processing has started');
+      expect(tx.customOrderCheckoutSession.delete).not.toHaveBeenCalled();
+    });
+  });
+
   it('uses a unique target for each custom-order bag notification', async () => {
     const notifications = {
       create: jest.fn().mockResolvedValue(null),

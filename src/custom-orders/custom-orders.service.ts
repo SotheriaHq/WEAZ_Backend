@@ -7,6 +7,7 @@ import {
   Optional,
 } from '@nestjs/common';
 import {
+  CheckoutSessionStatus,
   CustomOrderCheckoutStatus,
   CustomOrderActorType,
   CustomOrderDisputeStatus,
@@ -1594,11 +1595,42 @@ export class CustomOrdersService {
     await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT "id" FROM "CustomOrderCheckoutIntent" WHERE "id" = ${session.checkoutIntentId}::uuid FOR UPDATE`;
 
+      /*
+        A bag line is locked only while a payment still has a CLAIM on it.
+
+        These three queries used to select `status` and then ignore it: the guard
+        fired on the mere existence of a row, so one declined or abandoned
+        attempt pinned the item in the buyer's bag forever — "this checkout line
+        cannot be removed because payment processing has started for it", with no
+        payment in progress and no way out. Selecting a field and never reading
+        it is the tell that the status check was intended and never written.
+
+        What must stay protected is a payment that is still in flight or has
+        already succeeded. A dead attempt is history, not a lock.
+      */
+      const LIVE_ATTEMPT_STATUSES = [
+        'PENDING',
+        'REQUIRES_ACTION',
+        'PROCESSING',
+        // PAID blocks too: the money moved, so the line is no longer the
+        // buyer's to discard.
+        'PAID',
+      ];
+      const LIVE_CHECKOUT_SESSION_STATUSES: CheckoutSessionStatus[] = [
+        CheckoutSessionStatus.PENDING_PAYMENT,
+        CheckoutSessionStatus.PAYMENT_PROCESSING,
+        CheckoutSessionStatus.PAID,
+        CheckoutSessionStatus.COMPLETED,
+      ];
+
       const [linkedAttemptUsage, legacyAttemptUsage, checkoutLineUsage] =
         await Promise.all([
           tx.paymentAttemptCheckoutIntentLink.findFirst({
             where: {
               checkoutIntentId: session.checkoutIntentId,
+              // 'RELEASED' is written when an attempt is abandoned; anything
+              // else ('PENDING', 'COMMITTED') still claims the intent.
+              status: { not: 'RELEASED' },
             },
             select: {
               id: true,
@@ -1609,6 +1641,7 @@ export class CustomOrdersService {
           tx.paymentAttempt.findFirst({
             where: {
               checkoutIntentId: session.checkoutIntentId,
+              status: { in: LIVE_ATTEMPT_STATUSES },
             },
             select: {
               id: true,
@@ -1619,6 +1652,9 @@ export class CustomOrdersService {
           tx.checkoutSessionLine.findFirst({
             where: {
               checkoutIntentId: session.checkoutIntentId,
+              checkoutSession: {
+                status: { in: LIVE_CHECKOUT_SESSION_STATUSES },
+              },
             },
             select: {
               id: true,
