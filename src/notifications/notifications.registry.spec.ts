@@ -85,13 +85,22 @@ describe('NotificationRegistry', () => {
       quantity: 1,
       targetUrl: '/bag',
       message:
-        'Linen Wrap Dress from Aso Studio (M, Ivory) is now in your bag. Check out soon before your size sells out or the price changes.',
+        "You've successfully bagged Linen Wrap Dress by Aso Studio (M, Ivory). Check out soon before your size sells out or the price changes.",
     };
 
     const { error, value } = config!.schema.validate(payload);
 
     expect(error).toBeUndefined();
     expect(config?.formatter({ payload: value })).toBe(payload.message);
+
+    // With no server-composed message the formatter has to build the same
+    // sentence itself. It must name the item and the brand — clients render
+    // this string whole, and cannot reconstruct a subject from a type label.
+    expect(
+      config?.formatter({ payload: { ...payload, message: undefined } }),
+    ).toBe(
+      "You've successfully bagged Linen Wrap Dress by Aso Studio (M, Ivory). Check out soon before it sells out or the price changes.",
+    );
   });
 
   it('validates and formats bag checkout reminder notifications', () => {

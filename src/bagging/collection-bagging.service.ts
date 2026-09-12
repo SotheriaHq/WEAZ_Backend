@@ -379,8 +379,8 @@ export class CollectionBaggingService {
     const firstProduct = productNames[0] || 'Your item';
     const message =
       added.length > 1
-        ? `${added.length} items from ${collectionName} are now in your bag. Check out soon before sizes sell out or prices change.`
-        : `${firstProduct} from ${collectionName} is now in your bag. Check out soon before it sells out or the price changes.`;
+        ? `You've successfully bagged ${added.length} items from ${collectionName}. Check out soon before sizes sell out or prices change.`
+        : `You've successfully bagged ${firstProduct} from ${collectionName}. Check out soon before it sells out or the price changes.`;
 
     try {
       await this.notifications.create(userId, NT_BAG_ITEM_ADDED, {
@@ -397,7 +397,9 @@ export class CollectionBaggingService {
         target: {
           type: 'SYSTEM',
           id: BAG_NOTIFICATION_TARGET_ID,
-          preview: 'Bag',
+          // No `preview` — see the note in `store.service.notifyBuyerBagItemAdded`.
+          // It is a content title, not a section name, and "Bag" rendered as a
+          // stray word on the end of the row.
         },
         dedupeMs: 60_000,
       });

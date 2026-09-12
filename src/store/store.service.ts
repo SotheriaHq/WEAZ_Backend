@@ -6051,8 +6051,11 @@ export class StoreService {
   }): string {
     const variant = this.buildBagVariantLabel(args);
     const variantText = variant ? ` (${variant})` : '';
-    const brandText = args.brandName ? ` from ${args.brandName}` : '';
-    return `${args.productName}${brandText}${variantText} is now in your bag. Check out soon before your size sells out or the price changes.`;
+    const brandText = args.brandName ? ` by ${args.brandName}` : '';
+    // Confirm the action first, then name what was bagged and who made it. The
+    // sentence has to read correctly on its own, because every surface that
+    // shows it renders it whole.
+    return `You've successfully bagged ${args.productName}${brandText}${variantText}. Check out soon before your size sells out or the price changes.`;
   }
 
   private async notifyBuyerBagItemAdded(args: {
@@ -6088,7 +6091,10 @@ export class StoreService {
         target: {
           type: 'SYSTEM',
           id: BAG_NOTIFICATION_TARGET_ID,
-          preview: 'Bag',
+          // No `preview`. It is a CONTENT TITLE (clients render it as the thing
+          // acted upon, and native feeds it to an image loader), so the literal
+          // "Bag" surfaced as a stray word at the end of the row. The item's
+          // name is in `productName` and in the message itself.
         },
         dedupeMs: 60_000,
       });

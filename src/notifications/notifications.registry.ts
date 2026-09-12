@@ -471,11 +471,11 @@ export class NotificationRegistry {
           typeof n.payload?.productName === 'string' &&
           n.payload.productName.trim()
             ? n.payload.productName.trim()
-            : 'Your item';
+            : 'your item';
         const brandName =
           typeof n.payload?.brandName === 'string' &&
           n.payload.brandName.trim()
-            ? ` from ${n.payload.brandName.trim()}`
+            ? ` by ${n.payload.brandName.trim()}`
             : '';
         const variant = [n.payload?.selectedSize, n.payload?.selectedColor]
           .filter((value) => typeof value === 'string' && value.trim())
@@ -488,10 +488,10 @@ export class NotificationRegistry {
             n.payload.collectionName.trim()
               ? ` from ${n.payload.collectionName.trim()}`
               : '';
-          return `${itemCount} items${collectionName} are in your bag. Check out soon before sizes sell out or prices change.`;
+          return `You've successfully bagged ${itemCount} items${collectionName}. Check out soon before sizes sell out or prices change.`;
         }
 
-        return `${productName}${brandName}${variantText} is in your bag. Check out soon before it sells out or the price changes.`;
+        return `You've successfully bagged ${productName}${brandName}${variantText}. Check out soon before it sells out or the price changes.`;
       },
     });
 

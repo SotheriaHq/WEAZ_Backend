@@ -548,8 +548,12 @@ export class CustomOrdersService {
   }): Promise<void> {
     if (!this.notifications) return;
 
-    const title = args.configurationTitle?.trim() || 'your custom order';
-    const message = `${title} is now in your bag. Complete checkout soon so your price lock does not expire.`;
+    // Kept separate: an untitled configuration must not produce "your custom
+    // order for your custom order".
+    const title = args.configurationTitle?.trim() || null;
+    const message = title
+      ? `You've successfully bagged your custom order for ${title}. Complete checkout soon so your price lock does not expire.`
+      : `You've successfully bagged your custom order. Complete checkout soon so your price lock does not expire.`;
 
     try {
       await this.notifications.create(args.userId, NT_BAG_ITEM_ADDED, {
@@ -560,7 +564,7 @@ export class CustomOrdersService {
           configurationId: args.configurationId,
           sourceType: args.sourceType,
           sourceId: args.sourceId,
-          productName: title,
+          productName: title ?? 'Custom order',
           itemCount: 1,
           targetUrl: '/bag',
           message,
@@ -568,7 +572,7 @@ export class CustomOrdersService {
         target: {
           type: 'SYSTEM',
           id: BAG_NOTIFICATION_TARGET_ID,
-          preview: 'Bag',
+          // No `preview` — see the note in `store.service.notifyBuyerBagItemAdded`.
         },
         dedupeMs: 60_000,
       });
