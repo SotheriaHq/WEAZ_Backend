@@ -110,3 +110,20 @@ export const DEFAULT_ADMIN_PERMISSIONS: AdminPermissionCode[] =
   ALL_PERMISSION_CODES.filter(
     (code) => !SUPERADMIN_ONLY_PERMISSIONS.includes(code),
   );
+
+/**
+ * The floor every new Admin account is created with.
+ *
+ * An Admin holding no grants at all signs in, is sent to `/admin`, and sees
+ * nothing: the dashboard is itself behind `dashboard.read`, so every figure 403s
+ * and the landing page renders as a row of em-dashes — before the account has
+ * even reset its first password. That reads as a broken console rather than as a
+ * permission boundary.
+ *
+ * Seeding this one grant guarantees the console always has a floor to stand on.
+ * It is deliberately READ-ONLY and authorises no action; every capability beyond
+ * looking at the landing page is still granted explicitly by a SuperAdmin.
+ */
+export const BASELINE_ADMIN_PERMISSIONS: AdminPermissionCode[] = [
+  ADMIN_PERMISSIONS.DASHBOARD_READ,
+];

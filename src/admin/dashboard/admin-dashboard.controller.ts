@@ -8,6 +8,13 @@ import { RequirePermissions } from '../decorators/require-permissions.decorator'
 import { AdminPermissionGuard } from '../guards/admin-permission.guard';
 import { AdminDashboardService } from './admin-dashboard.service';
 
+/**
+ * The dashboard keeps its own `dashboard.read` requirement.
+ *
+ * It is the console's landing route, so an admin holding none of it sees no
+ * figures — which is why `AdminUsersService.createAdmin` seeds that one grant at
+ * creation time rather than leaving the permission set empty.
+ */
 @Controller('admin/dashboard')
 @UseGuards(JwtAuthGuard, RolesGuard, AdminPermissionGuard)
 @Roles(Role.SuperAdmin, Role.Admin)

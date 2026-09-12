@@ -22,6 +22,7 @@ import { randomBytes } from 'crypto';
 import {
   ALL_PERMISSION_CODES,
   AdminPermissionCode,
+  BASELINE_ADMIN_PERMISSIONS,
   SUPERADMIN_ONLY_PERMISSIONS,
 } from '../constants/permissions';
 import { Request } from 'express';
@@ -117,7 +118,23 @@ export class AdminUsersService {
         },
       });
 
-      // New Admin users start with zero permissions; SuperAdmin grants explicitly.
+      // A new Admin starts with the read-only baseline (see
+      // BASELINE_ADMIN_PERMISSIONS) so the console is never an empty screen on
+      // first sign-in; every capability beyond it is granted explicitly by a
+      // SuperAdmin. SuperAdmin targets are seeded nothing — the permission guard
+      // bypasses them entirely, and grants on that role would be dead rows.
+      const seededPermissions =
+        targetRole === Role.Admin ? BASELINE_ADMIN_PERMISSIONS : [];
+      if (seededPermissions.length > 0) {
+        await tx.adminPermissionGrant.createMany({
+          data: seededPermissions.map((code) => ({
+            id: uuidv4(),
+            userId: created.id,
+            permissionCode: code,
+            grantedById: actorId,
+          })),
+        });
+      }
 
       await (tx as any).adminAuditLog.create({
         data: {
@@ -126,7 +143,11 @@ export class AdminUsersService {
           action: AdminAuditAction.ADMIN_USER_CREATE,
           targetType: 'User',
           targetId: created.id,
-          newState: { email: created.email, role: created.role },
+          newState: {
+            email: created.email,
+            role: created.role,
+            permissions: seededPermissions,
+          },
           ipAddress: req.socket?.remoteAddress ?? null,
           userAgent: req.headers['user-agent'] ?? null,
         },
