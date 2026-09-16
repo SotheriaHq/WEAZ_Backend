@@ -30,6 +30,7 @@ import {
   ValidatePaymentCardDto,
   SavedPaymentCardSummary,
   SavedPaymentMethodMutationResult,
+  ReconcileStalePaymentsDto,
   SimulatePaymentAttemptDto,
   VerifyPaymentDto,
 } from './payment.types';
@@ -274,6 +275,29 @@ export class PaymentController {
   @RequirePermissions(ADMIN_PERMISSIONS.PAYMENTS_RUNTIME_READ)
   async runtimeHealth() {
     return this.paymentRuntimeHealthService.getRuntimeHealth();
+  }
+
+  /**
+   * The admin-triggered twin of the ten-minute cron in
+   * `payment-ops.cron.service.ts`. The service method and its DTO already
+   * existed and the admin console already called this path — there was simply
+   * no route, so the button answered `Cannot POST /payment/reconcile/stale`
+   * every time.
+   *
+   * Both DTO fields are optional and the service defaults them (30 minutes,
+   * 60 attempts), so the console can post an empty body. It reads as a repair
+   * action, so it is gated like one.
+   */
+  @Post('reconcile/stale')
+  @UseGuards(JwtAuthGuard, RolesGuard, AdminPermissionGuard)
+  @Roles(Role.SuperAdmin, Role.Admin)
+  @RequirePermissions(ADMIN_PERMISSIONS.PAYMENTS_SIMULATE)
+  async reconcileStale(
+    @Body() dto: ReconcileStalePaymentsDto,
+    @Req() req: Request,
+  ) {
+    const userId = (req as any).user?.id ?? (req as any).user?.sub;
+    return this.paymentService.reconcileStalePaymentAttempts(dto ?? {}, userId);
   }
 
   /**
