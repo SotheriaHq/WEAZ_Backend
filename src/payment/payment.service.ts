@@ -48,6 +48,7 @@ import {
 import { v4 as uuidv4 } from 'uuid';
 import { FxRateService } from './fx-rate.service';
 import { StandardOrderFinanceSyncService } from 'src/finance/standard-order-finance-sync.service';
+import { CustomOrderFinanceSyncService } from 'src/finance/custom-order-finance-sync.service';
 import { NotificationsService } from 'src/notifications/notifications.service';
 import {
   WebhookEventsQueueService,
@@ -318,6 +319,7 @@ export class PaymentService implements OnModuleInit {
     private readonly prisma: PrismaService,
     private readonly fxRateService: FxRateService,
     private readonly standardOrderFinanceSyncService: StandardOrderFinanceSyncService,
+    private readonly customOrderFinanceSyncService: CustomOrderFinanceSyncService,
     private readonly notificationsService: NotificationsService,
     private readonly webhookEventsQueue: WebhookEventsQueueService,
     @Optional()
@@ -8961,6 +8963,36 @@ export class PaymentService implements OnModuleInit {
     // Custom lines in the same checkout need their own announcement — the
     // standard-order block above only covers `Order` rows.
     if (finalized && finalized.customOrderIds.length > 0) {
+      /**
+       * And their own SETTLEMENT. The standard block above calls
+       * `syncPaidOrdersByReferences`; this one called nothing, so a custom
+       * order paid through unified checkout got no settlement snapshot and no
+       * `CustomOrderLedgerAllocation` — and since the admin Escrow tab lists
+       * custom money as FINAL_COMPLETION_PORTION allocations in HELD, the
+       * order's money was simply absent from Escrow while the order itself sat
+       * there PAID. Two paid custom orders, one escrow row.
+       *
+       * Same shape of omission as the notifications fix on this path: the
+       * unified branch commits the `CustomOrder` rows and skips the work the
+       * dedicated `custom-orders-payments` path does around them. Settlement
+       * is idempotent (it checks existing allocation types before writing), so
+       * a later admin repair scan or payout-time backfill stays safe.
+       *
+       * Deliberately not fatal: the payment is already captured and the orders
+       * are already committed. A settlement that fails here is repairable from
+       * the admin scan, whereas throwing would fail a finalize that actually
+       * succeeded.
+       */
+      try {
+        await this.customOrderFinanceSyncService.ensureSettlementForCustomOrderIds(
+          finalized.customOrderIds,
+        );
+      } catch (error) {
+        this.logger.error(
+          `Custom-order settlement failed after unified checkout reference=${reference}: ${String(error)}`,
+        );
+      }
+
       await this.notifyCustomOrderPlacementAfterPayment(
         finalized.customOrderIds,
       );

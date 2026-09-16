@@ -40,6 +40,7 @@ describe('PaymentService', () => {
       {} as any,
       {} as any,
       {} as any,
+      {} as any,
     );
   });
 
@@ -159,6 +160,7 @@ describe('PaymentService', () => {
 
     const target = new PaymentService(
       prisma,
+      {} as any,
       {} as any,
       {} as any,
       {} as any,
@@ -508,6 +510,7 @@ describe('PaymentService', () => {
       {} as any,
       {} as any,
       {} as any,
+      {} as any,
       {
         getRedisClient: jest.fn().mockResolvedValue(redis),
       } as any,
@@ -630,6 +633,7 @@ describe('PaymentService', () => {
     const target = new PaymentService(
       prisma,
       fxRateService as any,
+      {} as any,
       {} as any,
       {} as any,
       {} as any,
@@ -773,6 +777,7 @@ describe('PaymentService', () => {
       {} as any,
       {} as any,
       {} as any,
+      {} as any,
     );
 
     jest
@@ -863,6 +868,7 @@ describe('PaymentService', () => {
       {} as any,
       {} as any,
       {} as any,
+      {} as any,
       {
         getRedisClient: jest.fn().mockResolvedValue({
           set: jest.fn().mockResolvedValue(null),
@@ -911,6 +917,7 @@ describe('PaymentService', () => {
       {} as any,
       {} as any,
       {} as any,
+      {} as any,
     );
     const finalizeSpy = jest
       .spyOn(target as any, 'finalizeUnifiedCheckoutAttempt')
@@ -952,6 +959,7 @@ describe('PaymentService', () => {
 
   it('falls back to inline webhook processing when queue enqueue fails', async () => {
     const target = new PaymentService(
+      {} as any,
       {} as any,
       {} as any,
       {} as any,
@@ -1028,6 +1036,7 @@ describe('PaymentService', () => {
           }),
         },
       } as any,
+      {} as any,
       {} as any,
       {} as any,
       {} as any,
@@ -1115,6 +1124,7 @@ describe('PaymentService', () => {
       {} as any,
       {} as any,
       {} as any,
+      {} as any,
     );
     const applyAttemptStatusSpy = jest.spyOn(
       target as any,
@@ -1165,6 +1175,7 @@ describe('PaymentService', () => {
 
   it('redacts sensitive webhook headers and provider payload snapshots', () => {
     const target = new PaymentService(
+      {} as any,
       {} as any,
       {} as any,
       {} as any,
@@ -1223,6 +1234,7 @@ describe('PaymentService', () => {
       {} as any,
       {} as any,
       {} as any,
+      {} as any,
     );
 
     await expect(
@@ -1254,6 +1266,7 @@ describe('PaymentService', () => {
 
   it('does not treat frontend success hints as live Paystack confirmation', async () => {
     const target = new PaymentService(
+      {} as any,
       {} as any,
       {} as any,
       {} as any,
@@ -1425,6 +1438,7 @@ describe('PaymentService', () => {
       {} as any,
       {} as any,
       {} as any,
+      {} as any,
     );
 
     await expect(
@@ -1488,6 +1502,7 @@ describe('PaymentService', () => {
       },
     };
     const target = new PaymentService(
+      {} as any,
       {} as any,
       {} as any,
       {} as any,
@@ -1582,6 +1597,7 @@ describe('PaymentService', () => {
       {} as any,
       {} as any,
       {} as any,
+      {} as any,
     );
 
     await expect(target.purgeOldPaymentTelemetry()).resolves.toEqual({
@@ -1610,6 +1626,7 @@ describe('PaymentService', () => {
   it('emits redacted monitoring alerts for critical payment mismatches', () => {
     const monitoring = { emitAlert: jest.fn() };
     const target = new PaymentService(
+      {} as any,
       {} as any,
       {} as any,
       {} as any,
