@@ -11,7 +11,7 @@ import { BrandsModule } from './brands/brands.module';
 import { CollectionsModule } from './collections/collections.module';
 import { DesignsModule } from './designs/designs.module';
 import { ThrottlerModule } from '@nestjs/throttler';
-import { EventsGateway } from './realtime/events.gateway';
+import { RealtimeModule } from './realtime/realtime.module';
 import { AnalyticsModule } from './analytics/analytics.module';
 import { PostsModule } from './posts/posts.module';
 import { CommentsV2Module } from './commentsv2/commentsv2.module';
@@ -112,11 +112,11 @@ const isHardProduction =
     SizingModule,
     MarketModule,
     SeoModule,
+    RealtimeModule,
   ],
   controllers: [AppController],
   providers: [
     AppService,
-    EventsGateway,
     // Fail-closed default auth: any handler with no explicit `@UseGuards(...)`
     // and no `@IsPublic()` is rejected. Endpoints that already declare a guard
     // (incl. OptionalJwtAuthGuard) are unaffected. Kill-switch: AUTH_FAIL_CLOSED=false.

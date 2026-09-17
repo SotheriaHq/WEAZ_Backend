@@ -3,7 +3,7 @@ import { CacheModule } from '@nestjs/cache-manager';
 import { NotificationsService } from './notifications.service';
 import { NotificationsController } from './notifications.controller';
 import { NotificationsEmailWebhookController } from './notifications-email-webhook.controller';
-import { EventsGateway } from 'src/realtime/events.gateway';
+import { RealtimeModule } from 'src/realtime/realtime.module';
 import { NotificationRegistry } from './notifications.registry';
 import { EmailOutboxDispatcherService } from './email-outbox-dispatcher.service';
 import { PushDeviceTokensService } from './push-device-tokens.service';
@@ -11,10 +11,9 @@ import { PushNotificationsService } from './push-notifications.service';
 import { NotificationRealtimeBusService } from 'src/realtime/notification-realtime-bus.service';
 
 @Module({
-  imports: [CacheModule.register()],
+  imports: [CacheModule.register(), RealtimeModule],
   providers: [
     NotificationsService,
-    EventsGateway,
     {
       provide: NotificationRegistry,
       useFactory: () => NotificationRegistry.createDefault(),

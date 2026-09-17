@@ -8,7 +8,7 @@ import { UploadModule } from 'src/upload/upload.module';
 import { HelperService } from './helper/Helper.service';
 import { AnalyticsModule } from 'src/analytics/analytics.module';
 import { NotificationsModule } from 'src/notifications/notifications.module';
-import { EventsGateway } from 'src/realtime/events.gateway';
+import { RealtimeModule } from 'src/realtime/realtime.module';
 import { StoreModule } from 'src/store/store.module';
 import { IdempotencyInterceptor } from 'src/common/interceptors/idempotency.interceptor';
 import { TagsModule } from 'src/tags/tags.module';
@@ -51,12 +51,12 @@ import { SearchModule } from 'src/search/search.module';
     forwardRef(() => CategoriesModule),
     ContentIntegrityModule,
     SearchModule,
+    RealtimeModule,
   ],
   providers: [
     CollectionsService,
     CollectionSchedulerService,
     HelperService,
-    EventsGateway,
     IdempotencyInterceptor,
     BrandAccessService,
     BrandPermissionService,
