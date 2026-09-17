@@ -13,6 +13,7 @@ import { JwtAuthGuard } from 'src/auth/guard/jwt-auth.guard';
 import { MessagingService } from '../messaging.service';
 import {
   MarkThreadReadDto,
+  OrderConversationDto,
   QueryInboxDto,
   QueryMessagesDto,
   QueryThreadOrdersDto,
@@ -45,6 +46,24 @@ export class MessagingInboxController {
     @Query() query: ResolveConversationQueryDto,
   ) {
     return this.messaging.resolveConversationForActor(req.user.id, query);
+  }
+
+  /** Read-only: does a conversation for this order already exist? */
+  @Get('conversations/by-order')
+  async findOrderConversation(
+    @Req() req: { user: { id: string } },
+    @Query() query: OrderConversationDto,
+  ) {
+    return this.messaging.findOrderConversationForActor(req.user.id, query);
+  }
+
+  /** Reuse (or create the one) buyer<->brand thread and link the order to it. */
+  @Post('conversations/by-order')
+  async openOrderConversation(
+    @Req() req: { user: { id: string } },
+    @Body() dto: OrderConversationDto,
+  ) {
+    return this.messaging.openOrderConversationForActor(req.user.id, dto);
   }
 
   @Post('conversations/start')

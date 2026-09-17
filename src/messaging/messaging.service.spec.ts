@@ -457,4 +457,111 @@ describe('MessagingService', () => {
       }),
     );
   });
+  describe('order conversations', () => {
+    const customOrder = {
+      id: 'co_1',
+      status: CustomOrderStatus.ACCEPTED,
+      brandId: 'brand_1',
+      buyerId: 'buyer_1',
+      brand: { ownerId: 'owner_1' },
+    };
+    const pairThread = {
+      id: 'pair_1',
+      contextType: MessageContextType.DIRECT,
+      orderId: null,
+      customOrderId: null,
+      brandId: 'brand_1',
+      buyerId: 'buyer_1',
+      buyerUserId: 'buyer_1',
+      subjectSnapshotJson: null,
+    };
+
+    const withTransaction = (prisma: any, tx: any) => {
+      prisma.$transaction.mockImplementation((fn: any) => fn(tx));
+      prisma.messageThreadParticipant.findUnique.mockResolvedValue({
+        role: MessageParticipantRole.BUYER,
+        thread: pairThread,
+      });
+    };
+
+    const buildTx = (existingPair: unknown) => ({
+      messageThread: {
+        findFirst: jest.fn().mockResolvedValue(existingPair),
+        findUniqueOrThrow: jest.fn().mockResolvedValue({ ...pairThread, participants: [] }),
+        create: jest.fn().mockResolvedValue({ ...pairThread, participants: [] }),
+      },
+      messageThreadParticipant: { createMany: jest.fn() },
+      messageThreadOrderLink: { upsert: jest.fn() },
+    });
+
+    it('reuses the existing brand window and links the order into it', async () => {
+      const { service, prisma } = buildService();
+      prisma.customOrder.findUnique.mockResolvedValue(customOrder);
+      // Not linked to this order yet, but a chat with the brand exists.
+      prisma.messageThread.findFirst
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({ id: 'pair_1' });
+      const tx = buildTx({ ...pairThread, participants: [] });
+      withTransaction(prisma, tx);
+
+      await expect(
+        service.openOrderConversationForActor('buyer_1', { customOrderId: 'co_1' }),
+      ).resolves.toMatchObject({
+        threadId: 'pair_1',
+        customOrderId: 'co_1',
+        created: false,
+      });
+
+      expect(tx.messageThread.create).not.toHaveBeenCalled();
+      expect(tx.messageThreadOrderLink.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { customOrderId: 'co_1' },
+          create: { threadId: 'pair_1', customOrderId: 'co_1' },
+        }),
+      );
+    });
+
+    it('creates the one pair thread when the buyer has never messaged the brand', async () => {
+      const { service, prisma } = buildService();
+      prisma.customOrder.findUnique.mockResolvedValue(customOrder);
+      prisma.messageThread.findFirst.mockResolvedValue(null);
+      const tx = buildTx(null);
+      withTransaction(prisma, tx);
+
+      await expect(
+        service.openOrderConversationForActor('buyer_1', { customOrderId: 'co_1' }),
+      ).resolves.toMatchObject({ threadId: 'pair_1', created: true });
+
+      expect(tx.messageThread.create).toHaveBeenCalledTimes(1);
+      expect(tx.messageThread.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ pairKey: 'BUYER_BRAND:buyer_1:brand_1' }),
+        }),
+      );
+      expect(tx.messageThreadOrderLink.upsert).toHaveBeenCalledTimes(1);
+    });
+
+    it('answers the label question without writing anything', async () => {
+      const { service, prisma } = buildService();
+      prisma.customOrder.findUnique.mockResolvedValue(customOrder);
+      prisma.messageThread.findFirst
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({ id: 'pair_1' });
+
+      await expect(
+        service.findOrderConversationForActor('buyer_1', { customOrderId: 'co_1' }),
+      ).resolves.toEqual({ exists: true, threadId: 'pair_1' });
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    it('refuses someone who is neither the buyer nor the brand owner', async () => {
+      const { service, prisma } = buildService();
+      prisma.customOrder.findUnique.mockResolvedValue(customOrder);
+
+      await expect(
+        service.openOrderConversationForActor('intruder_1', { customOrderId: 'co_1' }),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+  });
 });

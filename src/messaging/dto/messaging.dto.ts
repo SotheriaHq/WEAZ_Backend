@@ -193,6 +193,20 @@ export class ResolveConversationQueryDto {
   productId?: string;
 }
 
+/**
+ * One order, standard or custom. Exactly one id is required; the service
+ * enforces that because class-validator has no clean "one of" for siblings.
+ */
+export class OrderConversationDto {
+  @IsOptional()
+  @IsUUID('4')
+  orderId?: string;
+
+  @IsOptional()
+  @IsUUID('4')
+  customOrderId?: string;
+}
+
 export class StartConversationDto extends SendMessageDto {
   @IsOptional()
   @IsUUID('4')

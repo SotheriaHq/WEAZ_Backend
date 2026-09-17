@@ -47,6 +47,7 @@ import {
   MarkThreadReadDto,
   OpenCustomOrderDisputeDto,
   OpenOrderDisputeDto,
+  OrderConversationDto,
   QueryInboxDto,
   QueryMessagesDto,
   QueryThreadOrdersDto,
@@ -1217,6 +1218,174 @@ export class MessagingService {
     throw new BadRequestException(
       'A conversation resolution parameter is required',
     );
+  }
+
+  /**
+   * Is there already a conversation this order belongs in?
+   *
+   * Read-only. It answers the order screen's label question — "Go to
+   * conversation" when a window with that brand exists, "Open conversation"
+   * when one does not — and must never create a thread because somebody looked
+   * at an order.
+   */
+  async findOrderConversationForActor(
+    actorId: string,
+    dto: OrderConversationDto,
+  ) {
+    const context = await this.loadOrderConversationContext(actorId, dto);
+    const thread = await this.findExistingOrderConversation(actorId, context);
+    return { exists: Boolean(thread), threadId: thread?.id ?? null };
+  }
+
+  /**
+   * Open the conversation for an order: reuse the window, never add one.
+   *
+   * `resolveConversationForActor` only matched a thread already LINKED to the
+   * order, so a buyer who had never written about this particular order got a
+   * 404 and landed on a blank messages screen — even with a live chat with that
+   * very brand. Custom orders paid through unified checkout made it the common
+   * case: that path never runs `ensureOrderPlacedThread`, so nothing is linked.
+   *
+   * An order's conversation is the buyer<->brand pair thread. This finds it (or
+   * creates the one pair thread, never a second) and links the order into it,
+   * so the conversation opens with the order attached.
+   */
+  async openOrderConversationForActor(
+    actorId: string,
+    dto: OrderConversationDto,
+  ) {
+    const context = await this.loadOrderConversationContext(actorId, dto);
+    const existing = await this.findExistingOrderConversation(actorId, context);
+
+    const thread = await this.prisma.$transaction(async (tx) => {
+      const pair = await this.getOrCreateBuyerBrandThreadInTx(tx, {
+        brandId: context.brandId,
+        buyerId: context.buyerId,
+        brandOwnerUserId: context.brandOwnerUserId,
+        contextType: MessageContextType.DIRECT,
+      });
+      // A draft custom order is still the buyer's private workspace; the brand
+      // should not see it in the thread's order list before it is placed.
+      if (context.linkable) {
+        await this.linkContextToThreadInTx(
+          tx,
+          pair.id,
+          context.contextType,
+          context.contextId,
+        );
+      }
+      return pair;
+    });
+
+    const route = await this.resolveThreadForActor(actorId, thread.id);
+    const isCustom = context.contextType === MessageContextType.CUSTOM_ORDER;
+    return {
+      ...route,
+      // Pair threads carry no order columns of their own; hand back the order
+      // that was asked about so the client attaches it.
+      orderId: isCustom ? route.orderId : context.contextId,
+      customOrderId: isCustom ? context.contextId : route.customOrderId,
+      created: !existing,
+    };
+  }
+
+  private async loadOrderConversationContext(
+    actorId: string,
+    dto: OrderConversationDto,
+  ) {
+    if (Boolean(dto.orderId) === Boolean(dto.customOrderId)) {
+      throw new BadRequestException(
+        'Provide exactly one of orderId or customOrderId',
+      );
+    }
+
+    const select = {
+      id: true,
+      status: true,
+      brandId: true,
+      buyerId: true,
+      brand: { select: { ownerId: true } },
+    } as const;
+    const order = dto.customOrderId
+      ? await this.prisma.customOrder.findUnique({
+          where: { id: dto.customOrderId },
+          select,
+        })
+      : await this.prisma.order.findUnique({
+          where: { id: dto.orderId },
+          select,
+        });
+    if (!order) {
+      throw new NotFoundException(
+        dto.customOrderId ? 'Custom order not found' : 'Order not found',
+      );
+    }
+
+    const isBuyer = Boolean(order.buyerId) && order.buyerId === actorId;
+    const isBrandOwner = order.brand.ownerId === actorId;
+    if (!isBuyer && !isBrandOwner) {
+      this.logger.warn(
+        `[THREAD_ACCESS_DENIED] type=ORDER_CONVERSATION actorId=${actorId} orderId=${dto.orderId ?? 'none'} customOrderId=${dto.customOrderId ?? 'none'}`,
+      );
+      throw new ForbiddenException('Not allowed to access this conversation');
+    }
+    if (!order.buyerId) {
+      throw new BadRequestException(
+        'This order was placed without an account, so there is no conversation to open',
+      );
+    }
+
+    return {
+      contextType: dto.customOrderId
+        ? MessageContextType.CUSTOM_ORDER
+        : MessageContextType.STANDARD_ORDER,
+      contextId: order.id,
+      brandId: order.brandId,
+      buyerId: order.buyerId,
+      brandOwnerUserId: order.brand.ownerId,
+      linkable: !(
+        dto.customOrderId && order.status === CustomOrderStatus.DRAFT
+      ),
+    };
+  }
+
+  private async findExistingOrderConversation(
+    actorId: string,
+    context: {
+      contextType: MessageContextType;
+      contextId: string;
+      brandId: string;
+      buyerId: string;
+    },
+  ) {
+    const [linked, pair] = await Promise.all([
+      context.contextType === MessageContextType.CUSTOM_ORDER
+        ? this.findActorThreadByCustomOrderId(actorId, context.contextId)
+        : this.findActorThreadByOrderId(actorId, context.contextId),
+      // Same pair lookup `getOrCreateBuyerBrandThreadInTx` uses, including the
+      // pre-pairKey threads it adopts, so "exists" here means it would reuse.
+      this.prisma.messageThread.findFirst({
+        where: {
+          participants: { some: { userId: actorId } },
+          OR: [
+            {
+              pairKey: this.buildBuyerBrandPairKey(
+                context.buyerId,
+                context.brandId,
+              ),
+            },
+            {
+              pairKey: null,
+              brandId: context.brandId,
+              buyerId: context.buyerId,
+            },
+          ],
+        },
+        orderBy: [{ lastMessageAt: 'desc' }, { createdAt: 'desc' }],
+        select: { id: true },
+      }),
+    ]);
+    return linked ?? pair;
   }
 
   async startConversationForActor(
