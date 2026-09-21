@@ -428,6 +428,124 @@ describe('PaymentService', () => {
     expect(result.nextAction?.type).toBe('INLINE_POPUP');
   });
 
+  /*
+    A saved card is charged server-side and must never produce a window.
+
+    This path used to post to `POST /charge`, Paystack's CUSTOM FLOW api, which
+    answered `open_url` — a 3-D Secure link owned by the issuer that honours no
+    callback. The web navigated the whole tab to it, the buyer landed on
+    Paystack's "Please close this web page to continue" dead end, and the charge
+    was never confirmed. The endpoint is the fix, so the endpoint is the test.
+  */
+  it('charges a saved card through charge_authorization, never the custom-flow /charge endpoint', async () => {
+    process.env.PAYSTACK_SECRET_KEY = 'sk_test_saved';
+
+    jest
+      .spyOn(service as any, 'resolveSavedPaystackAuthorization')
+      .mockResolvedValue({
+        authorizationCode: 'AUTH_saved_1',
+        authorizationEmail: 'authorizing@example.com',
+      });
+
+    const fetchSpy = jest.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        status: true,
+        message: 'Charge attempted',
+        data: {
+          reference: 'TH-SAVED-1',
+          status: 'success',
+          gateway_response: 'Approved',
+        },
+      }),
+    } as Response);
+
+    const result = await service['initPaystack'](
+      'TH-SAVED-1',
+      {
+        email: 'typed-at-checkout@example.com',
+        phone: '08030000000',
+        channel: 'CARD',
+        useSavedCard: true,
+        savedCardId: 'saved-card-1',
+      },
+      5000,
+      'NGN',
+      'https://checkout.wiez.test/bag/payment-return',
+      { buyerId: 'buyer-1' } as any,
+    );
+
+    const [requestUrl, requestInit] = fetchSpy.mock.calls[0] as [
+      string,
+      RequestInit,
+    ];
+    expect(requestUrl).toBe(
+      'https://api.paystack.co/transaction/charge_authorization',
+    );
+    expect(String(requestInit.body)).toContain(
+      '"authorization_code":"AUTH_saved_1"',
+    );
+
+    // Paystack binds an authorization to the email that created it, and the
+    // checkout lets the buyer edit the payer email freely. The typed one must
+    // never reach this call.
+    expect(String(requestInit.body)).toContain(
+      '"email":"authorizing@example.com"',
+    );
+    expect(String(requestInit.body)).not.toContain(
+      'typed-at-checkout@example.com',
+    );
+
+    expect(result.status).toBe('PROCESSING');
+    expect(result.authorizationUrl).toBeUndefined();
+    expect(result.providerAccessCode).toBeUndefined();
+    expect(result.nextAction?.type).toBe('PENDING_CONFIRMATION');
+  });
+
+  it('maps a declined saved-card charge to FAILED rather than a payment window', async () => {
+    process.env.PAYSTACK_SECRET_KEY = 'sk_test_saved';
+
+    jest
+      .spyOn(service as any, 'resolveSavedPaystackAuthorization')
+      .mockResolvedValue({
+        authorizationCode: 'AUTH_saved_2',
+        authorizationEmail: 'authorizing@example.com',
+      });
+
+    jest.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        status: true,
+        message: 'Charge attempted',
+        data: {
+          reference: 'TH-SAVED-2',
+          status: 'failed',
+          gateway_response: 'Insufficient funds',
+        },
+      }),
+    } as Response);
+
+    const result = await service['initPaystack'](
+      'TH-SAVED-2',
+      {
+        email: 'buyer@example.com',
+        phone: '08030000000',
+        channel: 'CARD',
+        useSavedCard: true,
+        savedCardId: 'saved-card-2',
+      },
+      5000,
+      'NGN',
+      'https://checkout.wiez.test/bag/payment-return',
+      { buyerId: 'buyer-1' } as any,
+    );
+
+    expect(result.status).toBe('FAILED');
+    expect(result.authorizationUrl).toBeUndefined();
+    expect(result.nextAction).toBeUndefined();
+    expect(result.responseSnapshot?.providerMessage).toBe('Insufficient funds');
+  });
+
   it('rejects Paystack initialize responses that do not return an inline access code', async () => {
     process.env.PAYSTACK_SECRET_KEY = 'sk_test_inline';
     process.env.FRONTEND_PUBLIC_CHECKOUT_CALLBACK_URL =

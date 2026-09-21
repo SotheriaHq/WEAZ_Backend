@@ -1215,7 +1215,7 @@ export class PaymentService implements OnModuleInit {
       }
 
       // Ensures the selected card is still reusable and belongs to this user.
-      await this.resolveSavedPaystackAuthorizationCode(userId, savedCardId);
+      await this.resolveSavedPaystackAuthorization(userId, savedCardId);
       const savedCards = await this.listSavedPaymentCards(userId);
       const selectedCard = savedCards.find((card) => card.id === savedCardId);
       if (!selectedCard) {
@@ -2817,21 +2817,143 @@ export class PaymentService implements OnModuleInit {
     }
 
     const savedCardId = String(paymentData.savedCardId ?? '').trim();
-    const authorizationCode = await this.resolveSavedPaystackAuthorizationCode(
-      buyerId,
-      savedCardId,
-    );
+    const { authorizationCode, authorizationEmail } =
+      await this.resolveSavedPaystackAuthorization(buyerId, savedCardId);
 
-    return this.executePaystackCharge(
+    return this.executePaystackAuthorizationCharge(
       reference,
       paymentData,
       amount,
       currency,
       callbackBaseUrl,
+      authorizationCode,
+      authorizationEmail,
+    );
+  }
+
+  /**
+   * A saved card is charged server-side. There is no window.
+   *
+   * This used to post to `POST /charge` with the authorization code, which is
+   * the wrong endpoint and produced the whole failure: `/charge` is Paystack's
+   * CUSTOM FLOW api. Handed a card it treats the charge as a fresh one and
+   * answers `send_pin`, `send_otp` or `open_url`, each of which the merchant is
+   * expected to drive through `/charge/submit_*`. WIEZ drove none of them — it
+   * took the `open_url` 3-D Secure link and navigated the whole tab to it. That
+   * link belongs to the issuer and honours no `callback_url` (the one in the
+   * `/charge` body is simply ignored), so the buyer was carried out of WIEZ,
+   * landed on Paystack's "Please close this web page to continue" dead end, and
+   * nothing ever came back to confirm the payment.
+   *
+   * `POST /transaction/charge_authorization` is the endpoint that exists for
+   * exactly this: a reusable authorization, charged with no buyer interaction,
+   * answering `success` or `failed` outright. Verification still runs by
+   * reference afterwards — the provider's word inside an init response is never
+   * what marks an order paid.
+   */
+  private async executePaystackAuthorizationCharge(
+    reference: string,
+    paymentData: Record<string, any>,
+    amount: number,
+    currency: string,
+    callbackBaseUrl: string,
+    authorizationCode: string,
+    authorizationEmail: string | null,
+  ): Promise<GatewayInitializationResult> {
+    const secret = this.getRequiredPaystackSecret('live payment processing');
+    /*
+      The authorizing email, NOT the payer email on the form. Paystack binds an
+      authorization to the email that created it and rejects any other, and the
+      checkout lets the buyer edit that field freely.
+    */
+    const email =
+      authorizationEmail ?? String(paymentData.email ?? '').trim() ?? '';
+
+    const response = await fetch(
+      'https://api.paystack.co/transaction/charge_authorization',
       {
-        authorization_code: authorizationCode,
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${secret}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          authorization_code: authorizationCode,
+          email,
+          amount: Math.round(this.roundMoney(amount) * 100),
+          currency,
+          reference,
+          metadata: {
+            wiezReference: reference,
+            wiezChannel: 'CARD',
+            payerPhone: paymentData.phone,
+            source: 'wiez-checkout',
+            savedCard: true,
+          },
+        }),
       },
     );
+
+    const payload = await this.parseJsonResponse(response);
+    const data = this.asObject(payload?.data);
+
+    if (!response.ok || payload?.status === false || !data) {
+      throw new BadRequestException(
+        String(
+          payload?.message ||
+            'Unable to charge the saved card. Try another card.',
+        ),
+      );
+    }
+
+    const providerReference =
+      String(data.reference ?? reference).trim() || reference;
+    const rawStatus = String(data.status ?? '')
+      .trim()
+      .toLowerCase();
+    const providerMessage =
+      String(data.gateway_response ?? payload?.message ?? '').trim() || null;
+
+    if (rawStatus === 'failed' || rawStatus === 'abandoned') {
+      return {
+        gateway: 'PAYSTACK',
+        status: 'FAILED',
+        channel: 'CARD',
+        callbackUrl: callbackBaseUrl,
+        providerReference,
+        providerChannel: 'CARD',
+        responseSnapshot: {
+          initializedAt: new Date().toISOString(),
+          providerStatus: rawStatus,
+          providerMessage,
+          providerChannel: 'CARD',
+        },
+      };
+    }
+
+    return {
+      gateway: 'PAYSTACK',
+      status: 'PROCESSING',
+      channel: 'CARD',
+      callbackUrl: callbackBaseUrl,
+      providerReference,
+      providerChannel: 'CARD',
+      nextAction: {
+        type: 'PENDING_CONFIRMATION',
+        title: 'Confirming payment',
+        description:
+          'WIEZ charged your saved card and is waiting for Paystack to confirm it.',
+        instructions: [
+          'Keep this window open while WIEZ verifies the payment reference.',
+        ],
+      },
+      responseSnapshot: {
+        initializedAt: new Date().toISOString(),
+        providerStatus: rawStatus || 'PROCESSING',
+        providerMessage,
+        providerChannel: 'CARD',
+      },
+    };
   }
 
   private async executePaystackCharge(
@@ -6911,10 +7033,24 @@ export class PaymentService implements OnModuleInit {
     }
   }
 
-  private async resolveSavedPaystackAuthorizationCode(
+  /**
+   * Everything `POST /transaction/charge_authorization` needs, not just the code.
+   *
+   * Paystack binds an authorization to the email that created it — "only the
+   * email used to create an authorization can be used to charge it" — so the
+   * payer email typed at checkout is the wrong thing to send. The buyer can
+   * edit that field, and a saved card charged under a different email is
+   * rejected. The authorizing email is recovered from the attempt that minted
+   * the authorization, which every saved card records, so this needs no
+   * migration and no backfill.
+   */
+  private async resolveSavedPaystackAuthorization(
     buyerId: string,
     savedCardId: string,
-  ): Promise<string> {
+  ): Promise<{
+    authorizationCode: string;
+    authorizationEmail: string | null;
+  }> {
     const normalizedSavedCardId =
       this.normalizeSavedCardIdentifier(savedCardId);
     if (!normalizedSavedCardId) {
@@ -6937,6 +7073,8 @@ export class PaymentService implements OnModuleInit {
           select: {
             id: true,
             providerAuthorizationCodeEncrypted: true,
+            providerAuthorizationMeta: true,
+            sourcePaymentAttemptId: true,
           },
         });
 
@@ -6951,12 +7089,30 @@ export class PaymentService implements OnModuleInit {
             );
           }
 
+          const meta = this.asObject(canonicalMethod.providerAuthorizationMeta);
+          // Only an EXPLICIT false is a refusal. The meta is written by the
+          // migration path, so a card saved before it existed has no flag at
+          // all — refusing those would lock buyers out of cards that work.
+          if (meta.reusable === false) {
+            throw new BadRequestException(
+              'This saved card is not reusable. Pay with a new card and WIEZ will save it for next time.',
+            );
+          }
+
           await savedPaymentMethodModel.update({
             where: { id: canonicalMethod.id },
             data: { lastUsedAt: new Date() },
           });
 
-          return authorizationCode;
+          return {
+            authorizationCode,
+            authorizationEmail:
+              this.normalizeCardText(meta.authorizationEmail) ??
+              (await this.resolveAttemptPayerEmail(
+                canonicalMethod.sourcePaymentAttemptId,
+                buyerId,
+              )),
+          };
         }
       }
     }
@@ -7010,7 +7166,50 @@ export class PaymentService implements OnModuleInit {
       );
     }
 
-    return extracted.authorizationCode;
+    return {
+      authorizationCode: extracted.authorizationCode,
+      // This attempt IS the one that created the authorization, so its payer
+      // email is the authorizing email by definition.
+      authorizationEmail:
+        this.normalizeCardText(requestSnapshot?.email) ??
+        (await this.resolveBuyerAccountEmail(buyerId)),
+    };
+  }
+
+  /** The payer email an attempt was charged under, for re-charging its card. */
+  private async resolveAttemptPayerEmail(
+    attemptId: string | null | undefined,
+    buyerId: string,
+  ): Promise<string | null> {
+    const normalizedAttemptId = String(attemptId ?? '').trim();
+    if (normalizedAttemptId) {
+      const attempt = await this.prisma.paymentAttempt.findFirst({
+        where: { id: normalizedAttemptId, buyerId },
+        select: { requestSnapshot: true },
+      });
+      const snapshotEmail = this.normalizeCardText(
+        this.asObject(attempt?.requestSnapshot)?.email,
+      );
+      if (snapshotEmail) {
+        return snapshotEmail;
+      }
+    }
+
+    return this.resolveBuyerAccountEmail(buyerId);
+  }
+
+  private async resolveBuyerAccountEmail(
+    buyerId: string,
+  ): Promise<string | null> {
+    const normalizedBuyerId = String(buyerId ?? '').trim();
+    if (!normalizedBuyerId) {
+      return null;
+    }
+    const buyer = await this.prisma.user.findUnique({
+      where: { id: normalizedBuyerId },
+      select: { email: true },
+    });
+    return this.normalizeCardText(buyer?.email);
   }
 
   private hasRawPaystackCardDetails(paymentData: Record<string, any>) {
