@@ -8,10 +8,16 @@ import {
   AdminAuditAction,
   CustomOrderLedgerAllocationStatus,
   CustomOrderLedgerAllocationType,
+  EmailPriority,
+  LoginCodePurpose,
   PayoutStatus,
   Prisma,
 } from '@prisma/client';
+import { randomInt } from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
+import { PasswordService } from 'src/auth/helper/password.service';
+import { EmailService } from 'src/email/email.service';
+import * as emailTemplates from 'src/email/email.templates';
 import { CommissionService } from 'src/finance/commission.service';
 import { StandardOrderEscrowService } from 'src/finance/standard-order-escrow.service';
 import { StandardOrderFinanceSyncService } from 'src/finance/standard-order-finance-sync.service';
@@ -23,6 +29,31 @@ import {
   resolveRequiredProfileField,
 } from 'src/common/user-profile-source.helper';
 
+/** Matches the other email codes on the platform; long enough to arrive, short
+ *  enough that a code sitting in an inbox stops being useful quickly. */
+const PAYOUT_CODE_TTL_MS = 10 * 60 * 1000;
+const PAYOUT_CODE_MAX_ATTEMPTS = 5;
+const PAYOUT_CODE_RESEND_COOLDOWN_MS = 60 * 1000;
+
+/**
+ * One message for every way a code can be wrong: not found, expired, already
+ * spent, wrong digits, or bound to a different brand or amount. Naming which
+ * of those happened would tell someone probing the endpoint whether a live
+ * code exists and what it was issued for.
+ */
+const PAYOUT_CODE_REJECTED_MESSAGE =
+  'That code is not valid or has expired. Request a new payout code.';
+
+export type PayoutChallengeResult = {
+  challengeRequired: true;
+  amount: number;
+  expiresInSeconds: number;
+  maxAttempts: number;
+  resendAfterSeconds: number;
+  emailHint: string;
+  message: string;
+};
+
 @Injectable()
 export class PayoutService {
   constructor(
@@ -31,6 +62,8 @@ export class PayoutService {
     private readonly commissionService: CommissionService,
     private readonly standardOrderFinanceSyncService: StandardOrderFinanceSyncService,
     private readonly customOrderFinanceSyncService: CustomOrderFinanceSyncService,
+    private readonly passwordService: PasswordService,
+    private readonly emailService: EmailService,
     @Optional()
     private readonly adminAuditService?: AdminAuditService,
   ) {}
@@ -66,11 +99,38 @@ export class PayoutService {
     };
   }
 
+  /**
+   * Step one of two: validate the payout, then email a code to authorise it.
+   *
+   * A session on its own must not be able to move money off the platform. The
+   * threat is not an attacker guessing a payout — it is a session that is
+   * already authenticated: a device left open, a stolen token, a staff account
+   * that should no longer have reach. Every one of those can press "Request
+   * payout", and nothing downstream asks a second question, so control of the
+   * account's inbox is now the second question.
+   *
+   * Everything that could reject the payout runs BEFORE a code is sent. A code
+   * that arrives and then cannot be used is worse than no code: it trains the
+   * person to ignore the email, which is the one place an unauthorised payout
+   * is visible to them.
+   *
+   * No payout row is created here. Nothing is reserved, nothing is held; a
+   * challenge that is never confirmed simply expires.
+   */
   async requestPayout(
     brandId: string,
     amount: number,
     actorUserId?: string | null,
-  ) {
+  ): Promise<PayoutChallengeResult> {
+    const userId = String(actorUserId ?? '').trim();
+    if (!userId) {
+      // Previously optional, and only used for the audit trail. A payout that
+      // nobody is on the hook for cannot be authorised by anybody either.
+      throw new BadRequestException(
+        'Sign in again before requesting a payout.',
+      );
+    }
+
     if (amount < 5000) {
       throw new BadRequestException('Minimum payout amount is 5000');
     }
@@ -86,53 +146,348 @@ export class PayoutService {
       );
     }
 
-    return this.prisma.$transaction(async (tx) => {
-      await tx.$queryRaw`SELECT "id" FROM "Brand" WHERE "id" = ${brandId}::uuid FOR UPDATE`;
-      const refreshedBalance = await this.calculateAvailableBalance(brandId);
-      if (amount > refreshedBalance) {
-        throw new BadRequestException(
-          `Insufficient balance. Available: ${refreshedBalance}`,
-        );
-      }
+    return this.issuePayoutChallenge(brandId, amount, userId);
+  }
 
-      const payoutId = uuidv4();
-      const payout = await tx.payout.create({
+  /**
+   * Step two: spend the code and create the payout.
+   *
+   * The amount is taken from the CODE, not from the request. A client that
+   * could name its own amount here would have turned the challenge into a
+   * formality — confirm a ₦5,000 payout, submit ₦500,000. `pendingValue` binds
+   * the code to the brand and the amount it was issued for, and a mismatch is
+   * treated as a bad code rather than explained, because the only way to
+   * produce one is to be tampering.
+   */
+  async confirmPayoutRequest(
+    brandId: string,
+    submittedCode: string,
+    actorUserId?: string | null,
+  ) {
+    const userId = String(actorUserId ?? '').trim();
+    if (!userId) {
+      throw new BadRequestException('Sign in again before requesting a payout.');
+    }
+
+    const now = new Date();
+    const activeCode = await this.prisma.emailLoginCode.findFirst({
+      where: {
+        userId,
+        purpose: LoginCodePurpose.PAYOUT_REQUEST,
+        usedAt: null,
+        expiresAt: { gt: now },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    if (
+      !activeCode ||
+      !activeCode.pendingValue ||
+      activeCode.attempts >= PAYOUT_CODE_MAX_ATTEMPTS
+    ) {
+      throw new BadRequestException(PAYOUT_CODE_REJECTED_MESSAGE);
+    }
+
+    const valid = await this.passwordService
+      .verifyPassword(activeCode.codeHash, String(submittedCode ?? '').trim())
+      .catch(() => false);
+
+    if (!valid) {
+      const spent = activeCode.attempts + 1 >= PAYOUT_CODE_MAX_ATTEMPTS;
+      await this.prisma.emailLoginCode.update({
+        where: { id: activeCode.id },
         data: {
-          id: payoutId,
-          brandId,
-          amount,
-          currency: 'NGN',
-          status: PayoutStatus.PENDING_APPROVAL,
+          attempts: { increment: 1 },
+          // Burn the code once the budget is spent, so a wrong guess cannot be
+          // retried indefinitely against a live code.
+          ...(spent ? { usedAt: now } : {}),
         },
       });
-
-      await this.reserveLedgerSources(
-        tx,
-        brandId,
-        payoutId,
-        amount,
-        payout.currency,
+      throw new BadRequestException(
+        spent
+          ? 'Too many incorrect codes. Request a new payout code to try again.'
+          : PAYOUT_CODE_REJECTED_MESSAGE,
       );
-      if (actorUserId) {
-        await this.adminAuditService?.safeLogInTransaction(tx, {
-          actorUserId,
-          action: 'BRAND_PAYOUT_REQUEST' as AdminAuditAction,
-          targetType: 'Payout',
-          targetId: payout.id,
-          metadata: {
-            brandId,
-            currency: payout.currency,
-            status: payout.status,
-          },
-          newState: {
-            amount: payout.amount,
-            currency: payout.currency,
-            status: payout.status,
-          },
-        });
+    }
+
+    const authorised = this.parsePayoutChallengeValue(activeCode.pendingValue);
+    if (!authorised || authorised.brandId !== brandId) {
+      throw new BadRequestException(PAYOUT_CODE_REJECTED_MESSAGE);
+    }
+
+    const amount = authorised.amount;
+
+    /*
+      Re-validated at confirmation, not trusted from the request. Ten minutes
+      is long enough for the balance to move, for the payout account to be
+      changed, or for another payout to be confirmed from a second tab.
+    */
+    await this.assertPayoutAccountReadyForRequest(brandId);
+    await this.syncFinanceSources(brandId);
+    const balance = await this.calculateAvailableBalance(brandId);
+    if (amount > balance) {
+      throw new BadRequestException(
+        `Insufficient balance. Available: ${balance}`,
+      );
+    }
+
+    return this.createPayoutRecord(brandId, amount, userId, activeCode.id);
+  }
+
+  private async createPayoutRecord(
+    brandId: string,
+    amount: number,
+    actorUserId: string,
+    challengeCodeId: string,
+  ) {
+    return this.prisma.$transaction(async (tx) => {
+      /*
+        Claim the code inside the same transaction that creates the payout, with
+        the same predicate it was found by. `updateMany` reporting one row is
+        what makes a double confirmation — two tabs, an impatient double press,
+        a retried request — produce one payout instead of two.
+      */
+      const claimed = await tx.emailLoginCode.updateMany({
+        where: {
+          id: challengeCodeId,
+          usedAt: null,
+          expiresAt: { gt: new Date() },
+        },
+        data: { usedAt: new Date() },
+      });
+      if (claimed.count !== 1) {
+        throw new BadRequestException(PAYOUT_CODE_REJECTED_MESSAGE);
       }
-      return payout;
+
+      return this.writePayoutRow(tx, brandId, amount, actorUserId);
     });
+  }
+
+  private async writePayoutRow(
+    tx: Prisma.TransactionClient,
+    brandId: string,
+    amount: number,
+    actorUserId?: string | null,
+  ) {
+    await tx.$queryRaw`SELECT "id" FROM "Brand" WHERE "id" = ${brandId}::uuid FOR UPDATE`;
+    const refreshedBalance = await this.calculateAvailableBalance(brandId);
+    if (amount > refreshedBalance) {
+      throw new BadRequestException(
+        `Insufficient balance. Available: ${refreshedBalance}`,
+      );
+    }
+
+    const payoutId = uuidv4();
+    const payout = await tx.payout.create({
+      data: {
+        id: payoutId,
+        brandId,
+        amount,
+        currency: 'NGN',
+        status: PayoutStatus.PENDING_APPROVAL,
+      },
+    });
+
+    await this.reserveLedgerSources(
+      tx,
+      brandId,
+      payoutId,
+      amount,
+      payout.currency,
+    );
+    if (actorUserId) {
+      await this.adminAuditService?.safeLogInTransaction(tx, {
+        actorUserId,
+        action: 'BRAND_PAYOUT_REQUEST' as AdminAuditAction,
+        targetType: 'Payout',
+        targetId: payout.id,
+        metadata: {
+          brandId,
+          currency: payout.currency,
+          status: payout.status,
+          // The payout was authorised by a code, not by the session alone.
+          authorisedBy: 'EMAIL_OTP',
+        },
+        newState: {
+          amount: payout.amount,
+          currency: payout.currency,
+          status: payout.status,
+        },
+      });
+    }
+    return payout;
+  }
+
+  /**
+   * Mint a payout code, supersede any earlier one, and email it.
+   *
+   * The code goes to the account's own email and only when that email is
+   * VERIFIED. An unverified address is one nobody has proven control of, so
+   * sending a payout authorisation there would hand the second factor to
+   * whoever typed it — which is the first factor's problem all over again.
+   */
+  private async issuePayoutChallenge(
+    brandId: string,
+    amount: number,
+    userId: string,
+  ): Promise<PayoutChallengeResult> {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, email: true, isEmailVerified: true },
+    });
+
+    if (!user?.email) {
+      throw new BadRequestException('Sign in again before requesting a payout.');
+    }
+
+    if (!user.isEmailVerified) {
+      throw new BadRequestException({
+        code: 'PAYOUT_EMAIL_NOT_VERIFIED',
+        message:
+          'Verify your email address before requesting a payout. WIEZ sends the payout confirmation code there.',
+      });
+    }
+
+    const now = new Date();
+
+    /*
+      A cooldown, not a rate limiter. Pressing the button again is the obvious
+      thing to do when an email is slow, and every press invalidates the code
+      already in the person's inbox — so without this, an impatient brand can
+      lock themselves into a loop where the code they are reading is never the
+      live one.
+    */
+    const recent = await this.prisma.emailLoginCode.findFirst({
+      where: {
+        userId,
+        purpose: LoginCodePurpose.PAYOUT_REQUEST,
+        usedAt: null,
+        expiresAt: { gt: now },
+        createdAt: { gt: new Date(now.getTime() - PAYOUT_CODE_RESEND_COOLDOWN_MS) },
+      },
+      orderBy: { createdAt: 'desc' },
+      select: { createdAt: true },
+    });
+
+    if (recent) {
+      const waitSeconds = Math.max(
+        1,
+        Math.ceil(
+          (recent.createdAt.getTime() + PAYOUT_CODE_RESEND_COOLDOWN_MS - now.getTime()) / 1000,
+        ),
+      );
+      throw new BadRequestException({
+        code: 'PAYOUT_CODE_COOLDOWN',
+        message: `A payout code was just sent to your email. Ask for another in ${waitSeconds}s.`,
+      });
+    }
+
+    const code = this.generatePayoutCode();
+    const codeHash = await this.passwordService.hashPassword(code);
+    const expiresAt = new Date(now.getTime() + PAYOUT_CODE_TTL_MS);
+
+    await this.prisma.$transaction(async (tx) => {
+      // Requesting again supersedes anything still in flight, so a brand who
+      // changed the amount cannot confirm the previous one by accident.
+      await tx.emailLoginCode.updateMany({
+        where: {
+          userId,
+          purpose: LoginCodePurpose.PAYOUT_REQUEST,
+          usedAt: null,
+          expiresAt: { gt: now },
+        },
+        data: { usedAt: now },
+      });
+
+      await tx.emailLoginCode.create({
+        data: {
+          id: uuidv4(),
+          userId,
+          purpose: LoginCodePurpose.PAYOUT_REQUEST,
+          codeHash,
+          pendingValue: this.buildPayoutChallengeValue(brandId, amount),
+          expiresAt,
+        },
+      });
+    });
+
+    const brand = await this.prisma.brand.findUnique({
+      where: { id: brandId },
+      select: { name: true },
+    });
+
+    const emailContent = emailTemplates.payoutRequestCodeEmail(
+      code,
+      this.formatPayoutAmount(amount),
+      brand?.name || 'your brand',
+      this.emailService.getAppName(),
+    );
+
+    /*
+      Sent directly rather than through the scenario gate. This is not a
+      notification the brand can have opted out of — they pressed a button one
+      second ago and are waiting for it, and a preference silently swallowing it
+      would present as "payouts are broken".
+    */
+    await this.emailService.send(
+      user.email,
+      emailContent.subject,
+      emailContent.html,
+      emailContent.text,
+      {
+        recipientUserId: user.id,
+        priority: EmailPriority.P0_SECURITY,
+        dispatchImmediately: true,
+      },
+    );
+
+    return {
+      challengeRequired: true,
+      amount,
+      expiresInSeconds: Math.floor(PAYOUT_CODE_TTL_MS / 1000),
+      maxAttempts: PAYOUT_CODE_MAX_ATTEMPTS,
+      resendAfterSeconds: Math.floor(PAYOUT_CODE_RESEND_COOLDOWN_MS / 1000),
+      emailHint: this.maskEmailForHint(user.email),
+      message: 'Enter the 6-digit code we emailed you to release this payout.',
+    };
+  }
+
+  /** Six digits, from a CSPRNG. `Math.random` is not a source for this. */
+  private generatePayoutCode(): string {
+    return randomInt(0, 1_000_000).toString().padStart(6, '0');
+  }
+
+  /**
+   * What the code authorises, canonically. Amount is fixed to 2dp so the value
+   * written at issue and the value compared at confirmation cannot differ by
+   * float formatting.
+   */
+  private buildPayoutChallengeValue(brandId: string, amount: number): string {
+    return `${brandId}|${amount.toFixed(2)}`;
+  }
+
+  private parsePayoutChallengeValue(
+    value: string,
+  ): { brandId: string; amount: number } | null {
+    const [brandId, rawAmount] = String(value ?? '').split('|');
+    const amount = Number(rawAmount);
+    if (!brandId || !Number.isFinite(amount) || amount <= 0) return null;
+    return { brandId, amount };
+  }
+
+  private formatPayoutAmount(amount: number): string {
+    return `₦${amount.toLocaleString('en-NG', {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    })}`;
+  }
+
+  /** Enough to recognise the inbox, not enough to learn the address. */
+  private maskEmailForHint(email: string): string {
+    const [local, domain] = String(email).split('@');
+    if (!domain) return '';
+    const head = local.slice(0, local.length <= 2 ? 1 : 2);
+    return `${head}${'*'.repeat(3)}@${domain}`;
   }
 
   async getOverview(brandId: string) {
@@ -1216,22 +1571,41 @@ export class PayoutService {
       },
     });
 
-    if (
-      !paymentAccount ||
-      String(paymentAccount.status || '').toUpperCase() !== 'ACTIVE'
-    ) {
-      throw new BadRequestException(
-        'Brand payout account is not active. Sync the brand payment account before requesting payout.',
-      );
+    /*
+      Each of these is something the brand can FIX, so each says what to do and
+      carries a code the client can act on.
+
+      They used to be one shape of dead end: prose aimed at an operator ("Sync
+      the brand payment account"), with nothing to distinguish "you never added
+      an account" from "your bank details did not verify". A brand owner read
+      it, had no idea which of those applied to them or where to go, and closed
+      the toast. The code is what lets the client open the right screen instead.
+    */
+    if (!paymentAccount) {
+      throw new BadRequestException({
+        code: 'PAYOUT_ACCOUNT_MISSING',
+        message:
+          'Add the bank account WIEZ should pay you into before requesting a payout.',
+      });
+    }
+
+    if (String(paymentAccount.status || '').toUpperCase() !== 'ACTIVE') {
+      throw new BadRequestException({
+        code: 'PAYOUT_ACCOUNT_INACTIVE',
+        message:
+          'Your payout account is not active yet. Open your payout settings and confirm your bank details.',
+      });
     }
 
     if (
       !paymentAccount.transferRecipientCode ||
       !paymentAccount.transferRecipientActive
     ) {
-      throw new BadRequestException(
-        'Brand payout account does not have an active transfer recipient.',
-      );
+      throw new BadRequestException({
+        code: 'PAYOUT_RECIPIENT_INACTIVE',
+        message:
+          'Your bank account still needs to be verified before WIEZ can pay into it. Open your payout settings to finish.',
+      });
     }
   }
 

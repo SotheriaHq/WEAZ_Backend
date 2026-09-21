@@ -442,6 +442,12 @@ enum LoginCodePurpose {
   // account, so control of that inbox authorises the change — a new phone is
   // unverified by definition and cannot authorise itself.
   PHONE_CHANGE
+  // Confirming a brand payout request. A session alone should not be able to
+  // move money out of the platform: a stolen or left-open session is the exact
+  // threat here, and it already carries everything needed to press the button.
+  // `pendingValue` holds `brandId|amount`, so a code issued for one payout
+  // cannot be replayed to confirm a different or larger one.
+  PAYOUT_REQUEST
 }
 
 enum LegalDocumentKey {

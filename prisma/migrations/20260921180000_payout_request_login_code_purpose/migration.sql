@@ -1,0 +1,12 @@
+-- Confirming a brand payout with a time-limited code emailed to the account.
+--
+-- A session alone should not be able to move money off the platform. A stolen
+-- or left-open session already carries everything needed to press "Request
+-- payout", so the payout is now authorised by control of the account's inbox
+-- as well, reusing the EmailLoginCode machinery that already backs phone
+-- changes and sign-in codes (hashed code, TTL, attempt budget, single use).
+--
+-- Enum values cannot be added inside a transaction on older PostgreSQL, and
+-- Prisma wraps each migration in one. `IF NOT EXISTS` keeps this idempotent on
+-- a database where it has already been applied by hand.
+ALTER TYPE "LoginCodePurpose" ADD VALUE IF NOT EXISTS 'PAYOUT_REQUEST';

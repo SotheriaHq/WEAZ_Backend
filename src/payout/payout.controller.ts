@@ -94,6 +94,12 @@ export class PayoutController {
     );
   }
 
+  /**
+   * Starts a payout. Creates NOTHING — it validates and emails a code.
+   *
+   * The response is a challenge (`challengeRequired: true`), and the payout
+   * exists only once `request/confirm` spends that code.
+   */
   @Post('request')
   @Throttle({ default: { limit: 10, ttl: 60000 } })
   async requestPayout(
@@ -106,5 +112,30 @@ export class PayoutController {
       throw new BadRequestException('Invalid amount');
     }
     return this.payoutService.requestPayout(brandId, body.amount, req.user.id);
+  }
+
+  /**
+   * Spends the emailed code and creates the payout.
+   *
+   * Tighter than the request throttle on purpose: this is the endpoint a
+   * six-digit code can be guessed against. The per-code attempt budget is the
+   * real defence — five wrong tries burns it — and this caps how fast an
+   * attacker can cycle through fresh codes to widen that budget.
+   *
+   * No amount is accepted here. It comes from the code.
+   */
+  @Post('request/confirm')
+  @Throttle({ default: { limit: 10, ttl: 300000 } })
+  async confirmPayoutRequest(
+    @Param('brandId') brandId: string,
+    @Body() body: { code: string },
+    @Req() req: any,
+  ) {
+    await this.payoutService.assertBrandOwnership(brandId, req.user.id);
+    const code = String(body?.code ?? '').trim();
+    if (!code) {
+      throw new BadRequestException('Enter the code we emailed you.');
+    }
+    return this.payoutService.confirmPayoutRequest(brandId, code, req.user.id);
   }
 }

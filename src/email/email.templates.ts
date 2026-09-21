@@ -159,6 +159,40 @@ export function phoneChangeCodeEmail(
   };
 }
 
+/**
+ * The code that authorises a payout, with the amount in it.
+ *
+ * The amount is not decoration. This email is the last point at which someone
+ * who did NOT start the payout can notice it, so it has to state what is being
+ * moved and where — a bare "here is your code" gives a victim nothing to
+ * recognise. It is also what makes the warning at the end actionable.
+ */
+export function payoutRequestCodeEmail(
+  code: string,
+  amountLabel: string,
+  brandName: string,
+  appName: string,
+): EmailContent {
+  const companyName = normalizeCompanyName(appName);
+  const safeCode = escapeHtml(code);
+  const safeAmount = escapeHtml(amountLabel);
+  const safeBrand = escapeHtml(brandName);
+
+  return {
+    subject: `💸 Confirm your ${companyName} payout of ${amountLabel}`,
+    html: wrap(
+      '💸 Confirm your payout',
+      `${p(`Enter this code in ${companyName} to release a payout of <strong>${safeAmount}</strong> from <strong>${safeBrand}</strong> to your settlement bank account.`)}
+      ${renderCodeBox(safeCode)}
+      ${CODE_EXPIRY_WARNING}
+      ${p(`If you did not request this payout, do not share this code. Change your password immediately and contact support — someone with access to your account started it.`)}`,
+      companyName,
+      `This email was sent because a payout was requested on your ${companyName} brand account.`,
+    ),
+    text: `Confirm your payout\n\nEnter this code in ${companyName} to release a payout of ${amountLabel} from ${brandName} to your settlement bank account:\n\n${code}\n\nThis code expires in 10 minutes and can only be used once.\n\nIf you did not request this payout, do not share this code. Change your password immediately and contact support.`,
+  };
+}
+
 export function emailLoginCodeEmail(
   code: string,
   appName: string,

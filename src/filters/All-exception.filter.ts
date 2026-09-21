@@ -50,6 +50,21 @@ export class AllExceptionsFilter implements ExceptionFilter {
     let status: number;
     let message: string | object;
     let errors: any = undefined;
+    /**
+     * A stable identifier for THIS failure, when the thrower supplies one.
+     *
+     * Clients that need to do something about an error — open the screen that
+     * fixes it, rather than print a sentence and stop — were left matching on
+     * prose, which breaks the moment anyone improves the wording. This filter
+     * used to build its response from a fixed set of keys, so a `code` on the
+     * exception body was silently dropped and there was no way to send one.
+     *
+     * Additive and opt-in: only a string `code` is forwarded, only when the
+     * thrower put one there, so every existing error is byte-for-byte what it
+     * was. Never forwarded for a 5xx in production, for the same reason the
+     * message is not: a server fault tells the client nothing about itself.
+     */
+    let code: string | undefined;
 
     if (exception instanceof HttpException) {
       status = exception.getStatus();
@@ -68,6 +83,10 @@ export class AllExceptionsFilter implements ExceptionFilter {
           errors = responseObj.errors
             ? redactSensitiveLogValue(responseObj.errors)
             : undefined;
+          code =
+            typeof responseObj.code === 'string' && responseObj.code.trim()
+              ? responseObj.code.trim()
+              : undefined;
         }
       } else {
         message =
@@ -96,6 +115,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
       timestamp: new Date().toISOString(),
       path: safePath,
       message,
+      ...(code && { code }),
       ...(errors && { errors }),
     };
 
