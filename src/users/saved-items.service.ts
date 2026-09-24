@@ -179,6 +179,9 @@ export class SavedItemsService {
               title: collection.title,
               thumbnail: collection.medias[0]?.file.s3Url,
               collectionId: collection.id,
+              minPrice: collection.minPrice,
+              maxPrice: collection.maxPrice,
+              price: collection.minPrice,
               brand: this.mapSavedBrand(collection.owner),
             };
           }
@@ -204,9 +207,30 @@ export class SavedItemsService {
 
           if (media) {
             additionalData = {
-              title: media.file.originalName,
+              /*
+                The PIECE, not the upload.
+
+                This returned `media.file.originalName`, so a shopper's tags
+                read "IMG_0480.pre.jpg" where the design is called "Grace yel".
+                The design's own title is one hop away on the parent collection
+                and is what every other surface shows for the same content; the
+                filename survives only as a last resort for a row whose parent
+                was never titled.
+              */
+              title: media.collection.title ?? media.file.originalName,
               thumbnail: media.file.s3Url,
               collectionId: media.collectionId,
+              /*
+                The exact frame that was tagged. Without it a client can only
+                open the design's cover, which is the wrong photograph whenever
+                a shopper tagged anything but the first one.
+              */
+              mediaId: media.id,
+              designId: media.collectionId,
+              entityType: 'DESIGN',
+              minPrice: media.collection.minPrice,
+              maxPrice: media.collection.maxPrice,
+              price: media.collection.minPrice,
               brand: this.mapSavedBrand(media.collection.owner),
             };
           }
@@ -238,6 +262,12 @@ export class SavedItemsService {
               legacyCollectionId: null,
               collectionId: design.id,
               entityType: 'DESIGN',
+              // Price bands so a tagged design reads like the same design does
+              // on every other card. `price` is the flat field clients already
+              // consume; the band is there for surfaces that show a range.
+              minPrice: design.minPrice,
+              maxPrice: design.maxPrice,
+              price: design.minPrice,
               brand: this.mapSavedBrand(design.owner),
             };
           }
@@ -266,6 +296,8 @@ export class SavedItemsService {
               thumbnail: product.thumbnail ?? product.images[0] ?? null,
               productId: product.id,
               entityType: 'PRODUCT',
+              // Decimal over the wire is a string; clients expect a number here.
+              price: Number(product.salePrice ?? product.price),
               brand: this.mapSavedBrand(product.brand?.owner),
             };
           }
