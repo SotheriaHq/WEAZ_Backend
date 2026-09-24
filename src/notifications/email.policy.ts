@@ -5,6 +5,7 @@ import {
   normalizeCompanyName,
   renderBrandedAppName,
   renderEmailButton,
+  renderEmailLink,
   renderEmailShell,
   resolveAppUrl,
 } from '../email/email.branding';
@@ -293,7 +294,43 @@ function renderEmailVerifiedConfirmationEmail(args: {
 type NotificationEmailDetail = {
   label: string;
   value: string;
+  /** When set, the value is rendered as a link to this absolute URL. */
+  href?: string;
 };
+
+/**
+ * An order code as the copy writes it: `#CO-F9967352`.
+ *
+ * Matched on text that has ALREADY been HTML-escaped. The pattern is only `#`,
+ * capitals, digits and a hyphen — none of which escaping changes — so a code
+ * found in escaped text is exactly the code that was written, and wrapping it
+ * cannot land inside an entity.
+ */
+const ORDER_REFERENCE_PATTERN = /#[A-Z]{2,4}-[A-Z0-9]{6,}\b/g;
+
+/**
+ * Makes the order code in a message a link to the notification's own
+ * destination.
+ *
+ * "#CO-F9967352 needs a quick review. Tap to open it" said "tap" and gave the
+ * reader nothing to tap: the code was plain text and, for this notification,
+ * there was no button either. The code IS the thing the email is about, so it
+ * goes where the button goes.
+ */
+function linkifyOrderReferences(escapedText: string, href?: string): string {
+  if (!href) return escapedText;
+  return escapedText.replace(ORDER_REFERENCE_PATTERN, (code) => renderEmailLink(href, code));
+}
+
+const shortCustomOrderCode = (customOrderId: string) =>
+  `#CO-${customOrderId.slice(0, 8).toUpperCase()}`;
+
+/** A public profile, when the payload names the person by handle. */
+function profileUrlFor(username: string): string | undefined {
+  const handle = username.replace(/^@+/, '').trim();
+  if (!/^[A-Za-z0-9._-]{1,64}$/.test(handle)) return undefined;
+  return resolveAppUrl(`/u/${encodeURIComponent(handle)}`);
+}
 
 function toCurrencyDisplay(amount: number, currency: string): string {
   try {
@@ -310,6 +347,7 @@ function toCurrencyDisplay(amount: number, currency: string): string {
 
 function buildCustomOrderEmailDetails(
   payload: Record<string, unknown> | null | undefined,
+  targetUrl?: string,
 ): NotificationEmailDetail[] {
   if (!payload) return [];
 
@@ -333,9 +371,19 @@ function buildCustomOrderEmailDetails(
   const amount = Number(payload.orderAmount);
   const currency = asTrimmedString(payload.currency) || 'NGN';
 
+  /*
+    The order, as the code the rest of the product shows (`#CO-F9967352`), and
+    as a link to it. It used to print the raw UUID — 36 characters nobody can
+    read, search for, or tap.
+  */
   if (customOrderId) {
-    details.push({ label: 'Order ID', value: customOrderId });
+    details.push({
+      label: 'Order',
+      value: shortCustomOrderCode(customOrderId),
+      href: targetUrl,
+    });
   }
+  const buyerProfileUrl = buyerUsername ? profileUrlFor(buyerUsername) : undefined;
   if (sourceTitle) {
     details.push({ label: 'Order Item', value: sourceTitle });
   }
@@ -348,11 +396,12 @@ function buildCustomOrderEmailDetails(
       value: toCurrencyDisplay(amount, currency),
     });
   }
+  // A name a reader can open, not just read.
   if (buyerDisplayName) {
-    details.push({ label: 'Customer', value: buyerDisplayName });
+    details.push({ label: 'Customer', value: buyerDisplayName, href: buyerProfileUrl });
   }
   if (buyerUsername) {
-    details.push({ label: 'Customer Username', value: `@${buyerUsername}` });
+    details.push({ label: 'Customer Username', value: `@${buyerUsername}`, href: buyerProfileUrl });
   }
   if (buyerEmail) {
     details.push({ label: 'Customer Email', value: buyerEmail });
@@ -369,9 +418,12 @@ function renderNotificationDetailsTable(
   const rows = details
     .map((detail, index) => {
       const background = index % 2 === 0 ? '#ffffff' : '#f9fafb';
+      const value = detail.href
+        ? renderEmailLink(detail.href, detail.value)
+        : escapeHtml(detail.value);
       return `<div style="display:flex;justify-content:space-between;gap:14px;padding:10px 12px;background:${background}">
         <span style="font-size:12px;color:${EMAIL_COLORS.textMuted};font-weight:600">${escapeHtml(detail.label)}</span>
-        <span style="font-size:13px;color:${EMAIL_COLORS.textPrimary};font-weight:600;text-align:right">${escapeHtml(detail.value)}</span>
+        <span style="font-size:13px;color:${EMAIL_COLORS.textPrimary};font-weight:600;text-align:right">${value}</span>
       </div>`;
     })
     .join('');
@@ -435,6 +487,54 @@ function getNotificationSubjectPrefix(
     default:
       return '';
   }
+}
+
+/**
+ * What the button should say: the thing it opens, not "Open in WIEZ".
+ *
+ * Every notification email ended on the same generic button, so an email about
+ * an order read the same as one about a message or a verification. Naming the
+ * destination — "Review order #CO-F9967352" — tells the reader what pressing
+ * it will do before they press it, which is the whole job of a button label.
+ * An admin link says "Review" because an admin is being asked to act.
+ */
+function getNotificationCtaLabel(
+  notificationType: NotificationType | string | undefined,
+  payload: Record<string, unknown> | null | undefined,
+  targetUrl: string,
+  companyName: string,
+): string {
+  const type = String(notificationType ?? '');
+  const customOrderId = asTrimmedString(payload?.customOrderId);
+  const isAdminLink = /\/admin\//.test(targetUrl);
+
+  if (customOrderId) {
+    const code = shortCustomOrderCode(customOrderId);
+    return isAdminLink ? `Review order ${code}` : `View order ${code}`;
+  }
+  if (type.startsWith('ORDER_')) return isAdminLink ? 'Review order' : 'View order';
+  if (type.startsWith('MESSAGE_') || type === 'THREAD') return 'Open conversation';
+  if (type.startsWith('VERIFICATION_')) return 'Open verification';
+  if (type.startsWith('PAYOUT_')) return 'View payout';
+  return `Open in ${companyName}`;
+}
+
+/**
+ * The action block: the button, and the raw link beneath it.
+ *
+ * The link line is for the clients that mangle styled buttons — some Outlook
+ * builds, plain-text previews, aggressive link rewriters. Without it, a broken
+ * button leaves the reader with no way in at all.
+ */
+function renderNotificationCta(
+  targetUrl: string | undefined,
+  label: string,
+): string {
+  if (!targetUrl) return '';
+  return `<div style="margin:22px 0 6px">
+      ${renderEmailButton(targetUrl, label, { padding: '12px 22px' })}
+      <p style="margin:12px 0 0;font-size:12px;line-height:1.6;color:${EMAIL_COLORS.textMuted}">Button not working? Open this link: ${renderEmailLink(targetUrl, targetUrl)}</p>
+    </div>`;
 }
 
 export function renderNotificationEmail(args: {
@@ -531,9 +631,12 @@ export function renderNotificationEmail(args: {
             : args.notificationType === NotificationType.CONTENT_CHANGES_REQUESTED
               ? 'needs changes'
               : 'review update';
-    const cta = args.targetUrl
-      ? `<p style="margin:20px 0">${renderEmailButton(args.targetUrl, `Open in ${companyName}`, { padding: '11px 18px' })}</p>`
-      : '';
+    const cta = renderNotificationCta(
+      args.targetUrl,
+      args.targetUrl
+        ? getNotificationCtaLabel(args.notificationType, args.payload, args.targetUrl, companyName)
+        : '',
+    );
     const titleLine = contentTitle
       ? `<p style="margin:0 0 8px;font-size:16px;font-weight:700;color:${EMAIL_COLORS.textPrimary}">${escapeHtml(contentTitle)}</p>`
       : '';
@@ -541,7 +644,7 @@ export function renderNotificationEmail(args: {
       appName: companyName,
       headerSubtitle: 'Content review',
       title: `Content ${subjectVerb}`,
-      bodyHtml: `${titleLine}<p style="margin:0 0 10px;line-height:1.7;color:${EMAIL_COLORS.textSecondary}">${escapeHtml(detailedMessage)}</p>${cta}`,
+      bodyHtml: `${titleLine}<p style="margin:0 0 10px;line-height:1.7;color:${EMAIL_COLORS.textSecondary}">${linkifyOrderReferences(escapeHtml(detailedMessage), args.targetUrl)}</p>${cta}`,
       footerContextText: `You are receiving this email because your ${companyName} account has content review notifications enabled.`,
     });
     return {
@@ -553,9 +656,12 @@ export function renderNotificationEmail(args: {
     };
   }
 
-  const cta = args.targetUrl
-    ? `<p style="margin:20px 0">${renderEmailButton(args.targetUrl, `Open in ${companyName}`, { padding: '11px 18px' })}</p>`
-    : '';
+  const cta = renderNotificationCta(
+    args.targetUrl,
+    args.targetUrl
+      ? getNotificationCtaLabel(args.notificationType, args.payload, args.targetUrl, companyName)
+      : '',
+  );
 
   const customOrderDetailTypes = new Set<NotificationType>([
     NotificationType.CUSTOM_ORDER_PAYMENT_RECEIVED,
@@ -564,7 +670,7 @@ export function renderNotificationEmail(args: {
   const detailRows = customOrderDetailTypes.has(
     args.notificationType as NotificationType,
   )
-    ? buildCustomOrderEmailDetails(args.payload)
+    ? buildCustomOrderEmailDetails(args.payload, args.targetUrl)
     : [];
   const detailTable = renderNotificationDetailsTable(detailRows);
   const subjectPrefix = getNotificationSubjectPrefix(args.notificationType);
@@ -576,7 +682,7 @@ export function renderNotificationEmail(args: {
     appName: companyName,
     headerSubtitle: 'Account activity update',
     title: displayHeading,
-    bodyHtml: `<p style="margin:0 0 10px;line-height:1.7;color:${EMAIL_COLORS.textSecondary}">${escapeHtml(args.message)}</p>
+    bodyHtml: `<p style="margin:0 0 10px;line-height:1.7;color:${EMAIL_COLORS.textSecondary}">${linkifyOrderReferences(escapeHtml(args.message), args.targetUrl)}</p>
       ${detailTable}
       ${cta}`,
     footerContextText: `You are receiving this email because your ${companyName} account has email notifications enabled.`,
@@ -590,7 +696,10 @@ export function renderNotificationEmail(args: {
     }
   }
   if (args.targetUrl) {
-    textParts.push('', `Open in ${companyName}: ${args.targetUrl}`);
+    textParts.push(
+      '',
+      `${getNotificationCtaLabel(args.notificationType, args.payload, args.targetUrl, companyName)}: ${args.targetUrl}`,
+    );
   }
 
   return {

@@ -99,6 +99,20 @@ function renderCompanyLogoMarkup(): string {
   return `<img src="${src}" width="44" height="44" alt="" style="display:block;width:44px;height:44px;border:0;outline:none;text-decoration:none">`;
 }
 
+/**
+ * An inline link inside email copy — an order code, a person's name.
+ *
+ * Styled to read as a link in every client (colour AND underline, since some
+ * clients strip one or the other) and bold enough to be found by a thumb. Both
+ * the href and the label are escaped here, so a caller can pass values straight
+ * from a payload without remembering to.
+ */
+export function renderEmailLink(href: string, label: string): string {
+  const safeHref = escapeHtml(String(href ?? '').trim());
+  const safeLabel = escapeHtml(String(label ?? '').trim());
+  return `<a href="${safeHref}" style="color:${EMAIL_COLORS.brandPrimary};font-weight:700;text-decoration:underline;text-underline-offset:2px">${safeLabel}</a>`;
+}
+
 export function renderEmailButton(
   href: string,
   label: string,

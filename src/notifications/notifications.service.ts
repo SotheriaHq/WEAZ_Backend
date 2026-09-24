@@ -1716,7 +1716,27 @@ export class NotificationsService {
       const emailPayload = this.toRecord(
         created.payload as Prisma.JsonValue | null,
       );
-      const targetUrl = this.sanitizeTargetUrl(emailPayload?.targetUrl);
+      /*
+        The email goes where the app goes.
+
+        Only `payload.targetUrl` used to reach the email, and plenty of senders
+        never set it — they pass a SYSTEM `target` whose `preview` is the
+        role-correct path instead (`/custom-orders/:id` for the buyer,
+        `/studio/custom-orders/:id` for the brand, `/admin/custom-orders/:id`
+        for an admin). The app routed those notifications perfectly and the
+        email arrived with no button, telling the reader to "tap to open it"
+        with nothing to tap. That is the "admin review triggered" email.
+
+        `preview` is only trusted when it is already a path, because for other
+        target kinds it holds a display title ("Summer Drop"), and the
+        allowlist would otherwise accept "/Summer Drop" as a route.
+      */
+      const targetPreview = opts?.target?.preview;
+      const targetUrl =
+        this.sanitizeTargetUrl(emailPayload?.targetUrl) ??
+        (typeof targetPreview === 'string' && targetPreview.startsWith('/')
+          ? this.sanitizeTargetUrl(targetPreview)
+          : undefined);
       const message = this.formatMessage(created);
 
       if (!opts?.suppressEmail) {
