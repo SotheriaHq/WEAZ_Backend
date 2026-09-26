@@ -191,6 +191,27 @@ export class MessagingSideEffectsService {
     );
 
     for (const participant of participants) {
+      /*
+        The unread nudge is for the side that OWES a reply.
+
+        `role` was selected here and never read, so every participant on a
+        thread got reminded — including the shopper, who was told "You have
+        unread order messages waiting" about their own order. For a shopper
+        that is not a task: they are waiting on the brand, the thread is one
+        tap away in their inbox, and the reminder fires every 30 minutes until
+        they open it. A brand with many orders is exactly who the nudge is for,
+        because for them an unread thread IS a piece of work sitting still.
+
+        ADMIN is included: a support agent on a thread is also on the hook for
+        an answer. BUYER and SYSTEM are not.
+      */
+      if (
+        participant.role !== MessageParticipantRole.BRAND_OWNER &&
+        participant.role !== MessageParticipantRole.ADMIN
+      ) {
+        continue;
+      }
+
       const lastMessageAt = participant.thread.lastMessageAt;
       if (!lastMessageAt) continue;
       if (participant.thread.lastSenderUserId === participant.userId) continue;

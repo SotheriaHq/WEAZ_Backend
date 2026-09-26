@@ -104,7 +104,10 @@ describe('MessagingSideEffectsService', () => {
       {
         threadId: 'thread_1',
         userId: 'user_1',
-        role: MessageParticipantRole.BUYER,
+        // BRAND_OWNER, because the nudge is only sent to the side that owes a
+        // reply. A BUYER here would be skipped before the cooldown is reached
+        // and the test would pass for the wrong reason.
+        role: MessageParticipantRole.BRAND_OWNER,
         lastReadAt: null,
         thread: {
           id: 'thread_1',
@@ -120,7 +123,7 @@ describe('MessagingSideEffectsService', () => {
       {
         threadId: 'thread_2',
         userId: 'user_1',
-        role: MessageParticipantRole.BUYER,
+        role: MessageParticipantRole.BRAND_OWNER,
         lastReadAt: null,
         thread: {
           id: 'thread_2',
@@ -202,7 +205,16 @@ describe('MessagingSideEffectsService', () => {
 
     await service.enqueueUnreadMessageReminders();
 
-    expect(prisma.messageNotificationOutbox.create).toHaveBeenCalledTimes(2);
+    /*
+      One row, not two: the buyer participant is skipped.
+
+      "You have unread order messages waiting" is a nudge for the side that owes
+      a reply. For a shopper it is not a task — they are waiting on the brand,
+      the thread is one tap away in their inbox, and this cron fires every 30
+      minutes until they open it. For a brand an unread thread IS a piece of
+      work sitting still, which is what the reminder is for.
+    */
+    expect(prisma.messageNotificationOutbox.create).toHaveBeenCalledTimes(1);
 
     const createdRows = prisma.messageNotificationOutbox.create.mock.calls.map(
       (call: any[]) => call[0].data,
@@ -214,12 +226,42 @@ describe('MessagingSideEffectsService', () => {
       (row: any) => row.recipientId === 'buyer_1',
     );
 
+    expect(buyerRow).toBeUndefined();
     expect((brandRow?.payloadJson as Record<string, any>)?.targetUrl).toBe(
       '/studio?tab=orders&thread=thread_brand&messageId=msg_brand&orderId=order_brand&openChat=1',
     );
-    expect((buyerRow?.payloadJson as Record<string, any>)?.targetUrl).toBe(
-      '/messages?thread=thread_buyer&messageId=msg_buyer&orderId=order_buyer',
-    );
+  });
+
+  it('enqueueUnreadMessageReminders never nudges a shopper', async () => {
+    const { service, prisma } = buildService();
+
+    const now = new Date();
+    prisma.messageThreadParticipant.findMany.mockResolvedValue([
+      {
+        threadId: 'thread_buyer',
+        userId: 'buyer_only',
+        role: MessageParticipantRole.BUYER,
+        lastReadAt: null,
+        thread: {
+          id: 'thread_buyer',
+          contextType: MessageContextType.CUSTOM_ORDER,
+          customOrderId: 'co_buyer',
+          orderId: null,
+          brandId: 'brand_1',
+          lastMessageAt: now,
+          lastMessageId: 'msg_buyer',
+          lastSenderUserId: 'brand_owner_1',
+        },
+      },
+    ]);
+    prisma.messageNotificationOutbox.findMany.mockResolvedValue([]);
+    prisma.messageNotificationOutbox.create.mockResolvedValue({ id: 'new_row' });
+
+    await service.enqueueUnreadMessageReminders();
+
+    // Every other condition is satisfied — unread, not the last sender, no
+    // cooldown. The role is the only thing stopping it.
+    expect(prisma.messageNotificationOutbox.create).not.toHaveBeenCalled();
   });
 
   it('cleanupExpiredClosedThreads redacts user messages and archives eligible threads', async () => {
