@@ -41,6 +41,7 @@ import {
 import type { Request } from 'express';
 import { ConfigService } from '@nestjs/config';
 import { getBrandVerificationTruth } from './verification-truth.util';
+import { PhysicalVerificationService } from './physical-verification.service';
 import {
   canonicalUserProfileSelect,
   resolveNullableProfileField,
@@ -130,6 +131,7 @@ export class BrandVerificationService {
     private readonly notifications: NotificationsService,
     private readonly emailService: EmailService,
     private readonly configService: ConfigService,
+    private readonly physicalVerification: PhysicalVerificationService,
   ) {}
 
   private normalizePhoneNumber(value: unknown): string {
@@ -1281,9 +1283,18 @@ export class BrandVerificationService {
       );
     }
 
+    /*
+      Approving the DOCUMENTS is not approving the brand.
+
+      Documents prove a brand exists on paper. What remains is the visit: a
+      person goes and looks at the workspace, the packaging and the branding.
+      So a passed review moves the brand to PHYSICAL_PENDING and opens a visit
+      record; `PhysicalVerificationService.decide` is what writes APPROVED,
+      because that is the step that actually verifies anything.
+    */
     const newStatus =
       decision === 'APPROVED'
-        ? BrandVerificationStatus.APPROVED
+        ? BrandVerificationStatus.PHYSICAL_PENDING
         : BrandVerificationStatus.REJECTED;
     const rejectionReasons = this.normalizeReasonList(
       dto.rejectionReasons ?? [],
@@ -1344,6 +1355,20 @@ export class BrandVerificationService {
         },
       });
 
+      /*
+        In the SAME transaction as the status change.
+
+        A brand left in PHYSICAL_PENDING with no visit record has nothing to
+        act on and appears in no queue — it would simply stop, invisibly. The
+        two writes have to stand or fall together.
+      */
+      if (decision === 'APPROVED') {
+        await this.physicalVerification.openForAttempt(tx, {
+          brandId,
+          attemptId: latestAttempt.id,
+        });
+      }
+
       await (tx as any).adminAuditLog.create({
         data: {
           id: randomUUID(),
@@ -1365,27 +1390,26 @@ export class BrandVerificationService {
 
     const appName = this.emailService.getAppName();
     if (decision === 'APPROVED') {
+      /*
+        "Documents accepted, one step to go" — not "you are verified".
+
+        The approval email is deliberately NOT sent here any more: it announces
+        a verified brand, and at this point nothing has been verified beyond
+        the paperwork. It is sent when the visit passes.
+      */
       await this.notifications.create(
         brand.ownerId,
-        NotificationType.VERIFICATION_APPROVED,
+        NotificationType.VERIFICATION_PHYSICAL_REQUIRED,
         {
           actorId: adminId,
           payload: {
             brandId,
-            approvedAt: now.toISOString(),
+            documentsApprovedAt: now.toISOString(),
             targetUrl: '/studio/verification',
           },
         },
       );
-      if (owner?.email) {
-        const mail = emailTemplates.brandVerificationApprovedEmail(
-          brand.name,
-          appName,
-        );
-        void this.emailService
-          .send(owner.email, mail.subject, mail.html, mail.text)
-          .catch(() => undefined);
-      }
+      void appName;
     } else {
       await this.notifications.create(
         brand.ownerId,

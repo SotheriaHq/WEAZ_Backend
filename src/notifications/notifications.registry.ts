@@ -24,6 +24,23 @@ const NT_VERIFICATION_INFO_REQUESTED =
 const NT_VERIFICATION_INFO_RESUBMITTED =
   'VERIFICATION_INFO_RESUBMITTED' as NotificationType;
 const NT_VERIFICATION_APPROVED = 'VERIFICATION_APPROVED' as NotificationType;
+// The visit — the last step of verification.
+const NT_VERIFICATION_PHYSICAL_REQUIRED =
+  'VERIFICATION_PHYSICAL_REQUIRED' as NotificationType;
+const NT_VERIFICATION_VISIT_PROPOSED =
+  'VERIFICATION_VISIT_PROPOSED' as NotificationType;
+const NT_VERIFICATION_VISIT_CONFIRMED =
+  'VERIFICATION_VISIT_CONFIRMED' as NotificationType;
+const NT_VERIFICATION_VISIT_RESCHEDULE_REQUESTED =
+  'VERIFICATION_VISIT_RESCHEDULE_REQUESTED' as NotificationType;
+const NT_VERIFICATION_VISIT_DECLINED =
+  'VERIFICATION_VISIT_DECLINED' as NotificationType;
+const NT_VERIFICATION_PHYSICAL_PASSED =
+  'VERIFICATION_PHYSICAL_PASSED' as NotificationType;
+const NT_VERIFICATION_PHYSICAL_FAILED =
+  'VERIFICATION_PHYSICAL_FAILED' as NotificationType;
+const NT_VERIFICATION_VISIT_ASSIGNED =
+  'VERIFICATION_VISIT_ASSIGNED' as NotificationType;
 const NT_VERIFICATION_REJECTED = 'VERIFICATION_REJECTED' as NotificationType;
 const NT_VERIFICATION_CANCELLED = 'VERIFICATION_CANCELLED' as NotificationType;
 const NT_VERIFICATION_CANCELLED_ADMIN =
@@ -1111,6 +1128,128 @@ export class NotificationRegistry {
         targetUrl: Joi.string().optional(),
       }),
       formatter: () => 'Your brand verification was approved',
+    });
+
+    /*
+      The visit.
+
+      Document approval no longer means verified, so the brand hears that the
+      paperwork passed and a visit is what is left — and then hears each beat of
+      arranging it. Every one of these carries `targetUrl`, because a
+      notification about an appointment the reader has to answer is useless if
+      it does not land them on the answer.
+    */
+    registry.register({
+      type: NT_VERIFICATION_PHYSICAL_REQUIRED,
+      schema: Joi.object({
+        brandId: Joi.string().required(),
+        documentsApprovedAt: Joi.string().optional(),
+        targetUrl: Joi.string().optional(),
+      }),
+      formatter: () =>
+        'Your documents were accepted. A physical verification visit is the last step.',
+    });
+
+    registry.register({
+      type: NT_VERIFICATION_VISIT_PROPOSED,
+      schema: Joi.object({
+        physicalVerificationId: Joi.string().required(),
+        brandId: Joi.string().required(),
+        slots: Joi.array().items(Joi.string()).optional(),
+        note: Joi.string().allow(null, '').optional(),
+        targetUrl: Joi.string().optional(),
+      }),
+      formatter: (n: any) => {
+        const count = Array.isArray(n.payload?.slots)
+          ? n.payload.slots.length
+          : 0;
+        return count > 0
+          ? `Choose a time for your verification visit (${count} options)`
+          : 'Choose a time for your verification visit';
+      },
+    });
+
+    registry.register({
+      type: NT_VERIFICATION_VISIT_CONFIRMED,
+      schema: Joi.object({
+        physicalVerificationId: Joi.string().required(),
+        brandId: Joi.string().required(),
+        brandName: Joi.string().allow(null, '').optional(),
+        selectedSlot: Joi.string().optional(),
+        targetUrl: Joi.string().optional(),
+      }),
+      formatter: (n: any) =>
+        n.payload?.brandName
+          ? `${n.payload.brandName} confirmed the verification visit`
+          : 'The verification visit was confirmed',
+    });
+
+    registry.register({
+      type: NT_VERIFICATION_VISIT_RESCHEDULE_REQUESTED,
+      schema: Joi.object({
+        physicalVerificationId: Joi.string().required(),
+        brandId: Joi.string().required(),
+        brandName: Joi.string().allow(null, '').optional(),
+        selectedSlot: Joi.string().optional(),
+        targetUrl: Joi.string().optional(),
+      }),
+      formatter: (n: any) =>
+        n.payload?.brandName
+          ? `${n.payload.brandName} asked for a different visit time`
+          : 'The brand asked for a different visit time',
+    });
+
+    registry.register({
+      type: NT_VERIFICATION_VISIT_DECLINED,
+      schema: Joi.object({
+        physicalVerificationId: Joi.string().required(),
+        brandId: Joi.string().required(),
+        targetUrl: Joi.string().optional(),
+      }),
+      formatter: () =>
+        'The verification visit was declined, so verification did not complete',
+    });
+
+    registry.register({
+      type: NT_VERIFICATION_PHYSICAL_PASSED,
+      schema: Joi.object({
+        physicalVerificationId: Joi.string().required(),
+        brandId: Joi.string().required(),
+        decidedAt: Joi.string().optional(),
+        reason: Joi.string().allow(null, '').optional(),
+        targetUrl: Joi.string().optional(),
+      }),
+      formatter: () => 'Your brand is verified',
+    });
+
+    registry.register({
+      type: NT_VERIFICATION_PHYSICAL_FAILED,
+      schema: Joi.object({
+        physicalVerificationId: Joi.string().required(),
+        brandId: Joi.string().required(),
+        decidedAt: Joi.string().optional(),
+        reason: Joi.string().allow(null, '').optional(),
+        targetUrl: Joi.string().optional(),
+      }),
+      formatter: (n: any) =>
+        n.payload?.reason
+          ? `Verification visit did not pass: ${n.payload.reason}`
+          : 'Your verification visit did not pass',
+    });
+
+    // To the agent, not the brand.
+    registry.register({
+      type: NT_VERIFICATION_VISIT_ASSIGNED,
+      schema: Joi.object({
+        physicalVerificationId: Joi.string().required(),
+        brandId: Joi.string().required(),
+        brandName: Joi.string().allow(null, '').optional(),
+        targetUrl: Joi.string().optional(),
+      }),
+      formatter: (n: any) =>
+        n.payload?.brandName
+          ? `A verification visit for ${n.payload.brandName} is yours`
+          : 'A verification visit was assigned to you',
     });
 
     // VERIFICATION_REJECTED

@@ -52,6 +52,14 @@ describe('BrandVerificationService', () => {
     businessHoursConfiguredAt: new Date('2026-05-01T00:00:00.000Z'),
   };
   const notifications = { create: jest.fn() };
+  /*
+    The visit step. Document approval opens one inside its own transaction, so
+    these tests only need it to exist and record that it was called.
+  */
+  const physicalVerificationStub = {
+    openForAttempt: jest.fn(async () => 'physical-verification-id'),
+  };
+
   const emailService = {
     getAppName: jest.fn(() => 'WIEZ'),
     send: jest.fn(),
@@ -63,6 +71,7 @@ describe('BrandVerificationService', () => {
     notifications as any,
     emailService as any,
     { get: jest.fn() } as any,
+    physicalVerificationStub as any,
   );
 
   beforeEach(() => {
@@ -237,6 +246,7 @@ describe('BrandVerificationService', () => {
           key === 'NODE_ENV' ? 'production' : undefined,
         ),
       } as any,
+      physicalVerificationStub as any,
     );
     expect(() => (missing as any).encryptDraft({ currentStep: 1 })).toThrow(
       'Verification draft encryption is not configured',
@@ -256,6 +266,7 @@ describe('BrandVerificationService', () => {
           return undefined;
         }),
       } as any,
+      physicalVerificationStub as any,
     );
     expect(() => (legacy as any).encryptDraft({ currentStep: 1 })).toThrow(
       'Verification draft encryption secret is unsafe',
@@ -273,6 +284,7 @@ describe('BrandVerificationService', () => {
           key === 'NODE_ENV' ? 'test' : undefined,
         ),
       } as any,
+      physicalVerificationStub as any,
     );
 
     const encrypted = (target as any).encryptDraft({ currentStep: 2 });
@@ -427,6 +439,7 @@ describe('BrandVerificationService', () => {
         notifications as any,
         emailService as any,
         { get: jest.fn((key: string) => (key === 'NODE_ENV' ? 'test' : undefined)) } as any,
+        physicalVerificationStub as any,
       );
       const savedAt = new Date('2026-08-05T10:00:00.000Z');
       prisma.brand.findFirst.mockResolvedValue({

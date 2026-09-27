@@ -19,6 +19,27 @@ export const ADMIN_PERMISSIONS = {
   BRANDS_READ: 'brands.read',
   BRANDS_VERIFY: 'brands.verify',
   BRANDS_SUSPEND: 'brands.suspend',
+
+  /*
+    Physical verification — the visit.
+
+    Split from `brands.verify` so an account can be a verification AGENT and
+    nothing else: someone who goes out, looks at a workspace and records what
+    they found, without also holding the power to approve documents, suspend a
+    brand or read the rest of the brand console. Granting both is still
+    possible, and is how a reviewer who also does visits is set up — that is a
+    decision a SuperAdmin makes per account, not one baked into a role.
+
+    `ASSIGN` is handing a visit to SOMEBODY ELSE, which is scheduling other
+    people's work; it is SuperAdmin-only. `CLAIM` is taking one off the queue
+    yourself, which every agent may do — that is what stops a visit nobody
+    noticed from sitting unowned.
+  */
+  VERIFICATION_PHYSICAL_READ: 'verification.physical.read',
+  VERIFICATION_PHYSICAL_CLAIM: 'verification.physical.claim',
+  VERIFICATION_PHYSICAL_ASSIGN: 'verification.physical.assign',
+  VERIFICATION_PHYSICAL_SCHEDULE: 'verification.physical.schedule',
+  VERIFICATION_PHYSICAL_DECIDE: 'verification.physical.decide',
   BRANDS_STORE_READ: 'brands.store_read',
   BRANDS_STORE_VERIFY: 'brands.store_verify',
   BRANDS_STORE_OVERRIDE: 'brands.store_override',
@@ -95,6 +116,8 @@ export const ALL_PERMISSION_CODES = Object.values(
 
 /** Permissions that only SuperAdmin can hold/grant */
 export const SUPERADMIN_ONLY_PERMISSIONS: AdminPermissionCode[] = [
+  // Handing a visit to another person is scheduling someone else's work.
+  ADMIN_PERMISSIONS.VERIFICATION_PHYSICAL_ASSIGN,
   ADMIN_PERMISSIONS.USERS_ROLE_ASSIGN_ADMIN,
   ADMIN_PERMISSIONS.USERS_ROLE_ASSIGN_USER,
   ADMIN_PERMISSIONS.USERS_DATA_WIPE,

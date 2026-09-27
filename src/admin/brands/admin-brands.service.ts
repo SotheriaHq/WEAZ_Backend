@@ -18,6 +18,8 @@ import {
 import { v4 as uuidv4 } from 'uuid';
 import { Request } from 'express';
 import { EmailService } from 'src/email/email.service';
+import { PhysicalVerificationService } from 'src/brand-verification/physical-verification.service';
+import { NotificationsService } from 'src/notifications/notifications.service';
 import * as emailTemplates from 'src/email/email.templates';
 import {
   adminUserDisplaySelect,
@@ -62,6 +64,8 @@ export class AdminBrandsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly emailService: EmailService,
+    private readonly physicalVerification: PhysicalVerificationService,
+    private readonly notifications: NotificationsService,
   ) {}
 
   async list(params: {
@@ -665,9 +669,20 @@ export class AdminBrandsService {
       throw new BadRequestException('Rejection reason is required');
     }
 
+    /*
+      The SECOND door onto the same decision.
+
+      `BrandVerificationService.reviewVerification` is the reviewer's path
+      (requires IN_REVIEW and the assigned reviewer); this one is the direct
+      admin path on `PATCH /admin/brands/:id/verification` and requires only
+      PENDING. Both end in a verification status, so both have to respect the
+      same rule: approving the DOCUMENTS is not approving the brand. Left as it
+      was, this route would hand out the badge without anyone ever visiting —
+      which is exactly the hole the visit step exists to close.
+    */
     const newStatus =
       dto.decision === 'APPROVED'
-        ? BrandVerificationStatus.APPROVED
+        ? BrandVerificationStatus.PHYSICAL_PENDING
         : BrandVerificationStatus.REJECTED;
 
     const updated = await this.prisma.$transaction(async (tx) => {
@@ -700,20 +715,52 @@ export class AdminBrandsService {
         },
       });
 
+      /*
+        Same transaction as the status change: a brand in PHYSICAL_PENDING with
+        no visit record has nothing to act on and shows up in no queue, so it
+        would simply stop, invisibly.
+      */
+      if (dto.decision === 'APPROVED') {
+        const latestAttempt = await tx.brandVerificationAttempt.findFirst({
+          where: { brandId },
+          orderBy: [{ attemptNumber: 'desc' }],
+          select: { id: true },
+        });
+        if (latestAttempt) {
+          await this.physicalVerification.openForAttempt(tx, {
+            brandId,
+            attemptId: latestAttempt.id,
+          });
+        }
+      }
+
       return result;
     });
+
+    if (dto.decision === 'APPROVED') {
+      await this.notifications.create(
+        brand.ownerId,
+        NotificationType.VERIFICATION_PHYSICAL_REQUIRED,
+        {
+          actorId,
+          payload: {
+            brandId,
+            documentsApprovedAt: new Date().toISOString(),
+            targetUrl: '/studio/verification',
+          },
+        },
+      );
+    }
 
     // Send email notification
     const appName = this.emailService.getAppName();
     if (brand.owner?.email) {
       if (dto.decision === 'APPROVED') {
-        const mail = emailTemplates.brandVerificationApprovedEmail(
-          brand.name,
-          appName,
-        );
-        void this.emailService
-          .send(brand.owner.email, mail.subject, mail.html, mail.text)
-          .catch(() => undefined);
+        /*
+          No "you are verified" email here any more — nothing has been verified
+          beyond the paperwork. That email is sent when the visit passes.
+        */
+        void appName;
       } else {
         const mail = emailTemplates.brandVerificationRejectedEmail(
           brand.name,

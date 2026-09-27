@@ -1018,6 +1018,17 @@ enum NotificationType {
   VERIFICATION_NUDGE
   VERIFICATION_SLA_WARNING
   VERIFICATION_SLA_BREACH
+  /// Documents accepted; the visit is what is left.
+  VERIFICATION_PHYSICAL_REQUIRED
+  /// An agent has offered times for the visit. The brand must answer.
+  VERIFICATION_VISIT_PROPOSED
+  VERIFICATION_VISIT_CONFIRMED
+  VERIFICATION_VISIT_RESCHEDULE_REQUESTED
+  VERIFICATION_VISIT_DECLINED
+  VERIFICATION_PHYSICAL_PASSED
+  VERIFICATION_PHYSICAL_FAILED
+  /// To the agent: this visit is yours.
+  VERIFICATION_VISIT_ASSIGNED
   VERIFICATION_REVIEW_DELAYED
 
   // Product Reviews
@@ -2695,6 +2706,7 @@ model Brand {
   featuredItems             FeaturedItem[]
   verificationAttempts      BrandVerificationAttempt[]
   verificationNotes         BrandVerificationNote[]
+  physicalVerifications     BrandPhysicalVerification[]
   reviews                   ProductReview[]            @relation("BrandProductReviews")
   lifecycleReviews          Review[]                   @relation("ReviewBrand")
   reviewPrompts             ReviewPrompt[]             @relation("ReviewPromptBrand")
@@ -2814,9 +2826,87 @@ model BrandVerificationAttempt {
   createdAt                 DateTime                     @default(now())
   updatedAt                 DateTime                     @updatedAt
 
+  physicalVerification      BrandPhysicalVerification?
+
   @@unique([brandId, attemptNumber])
   @@index([brandId, submittedAt])
   @@index([submittedAt])
+}
+
+/// The last step of verification: somebody goes and looks.
+///
+/// Documents prove a brand exists on paper. This step is the one that proves
+/// there is a real workspace, real packaging and real branding behind the
+/// paperwork, and it is carried out by a human who visits. Modelled as its own
+/// record rather than more columns on the attempt because it has a lifecycle of
+/// its own — an owner, a scheduling negotiation with the brand, evidence, and a
+/// decision — and because a brand may see several of those beats before anyone
+/// reaches a verdict.
+///
+/// One per attempt: re-verifying means a new attempt, not a second visit
+/// stapled to the old one.
+model BrandPhysicalVerification {
+  id                   String                             @id @map("_id") @db.Uuid
+  attemptId            String                             @unique @db.Uuid
+  attempt              BrandVerificationAttempt           @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  brandId              String                             @db.Uuid
+  brand                Brand                              @relation(fields: [brandId], references: [id], onDelete: Cascade)
+  status               PhysicalVerificationStatus         @default(PENDING_ASSIGNMENT)
+
+  /// Who is doing the visit. Set by a SuperAdmin assigning it, or by an agent
+  /// claiming it off the queue — `assignedById` distinguishes the two.
+  assignedAgentId      String?                            @db.Uuid
+  assignedById         String?                            @db.Uuid
+  assignedAt           DateTime?
+  claimedAt            DateTime?
+
+  /// The slots the agent offered, as ISO strings. The brand may only pick one
+  /// of these, which is what keeps the negotiation bounded.
+  proposedSlots        Json?
+  scheduleProposedAt   DateTime?
+  scheduleProposedById String?                            @db.Uuid
+  /// The slot currently agreed. Null until the brand accepts one.
+  selectedSlotAt       DateTime?
+
+  brandResponse        PhysicalVerificationBrandResponse?
+  brandRespondedAt     DateTime?
+  brandResponseNote    String?
+  rescheduleCount      Int                                @default(0)
+
+  visitCompletedAt     DateTime?
+  decidedAt            DateTime?
+  decidedById          String?                            @db.Uuid
+  decisionNotes        String?
+  failureReason        String?
+  declineReason        String?
+
+  proofs               PhysicalVerificationProof[]
+  createdAt            DateTime                           @default(now())
+  updatedAt            DateTime                           @updatedAt
+
+  /// The unassigned queue, ordered oldest first.
+  @@index([status, createdAt])
+  /// An agent's own workload.
+  @@index([assignedAgentId, status])
+  @@index([brandId])
+}
+
+/// Evidence from the visit. At least a few of these are required before a
+/// verdict can be recorded — a pass with no proof is just an assertion.
+model PhysicalVerificationProof {
+  id                     String                        @id @map("_id") @db.Uuid
+  physicalVerificationId String                        @db.Uuid
+  physicalVerification   BrandPhysicalVerification     @relation(fields: [physicalVerificationId], references: [id], onDelete: Cascade)
+  kind                   PhysicalVerificationProofKind @default(OTHER)
+  fileKey                String
+  fileName               String?
+  mimeType               String?
+  sizeBytes              Int?
+  caption                String?
+  uploadedById           String                        @db.Uuid
+  createdAt              DateTime                      @default(now())
+
+  @@index([physicalVerificationId, createdAt])
 }
 
 model VerificationRejectionReason {
@@ -4907,9 +4997,43 @@ enum BrandVerificationStatus {
   PENDING
   IN_REVIEW
   ADDITIONAL_INFO_REQUESTED
+  /// Documents accepted; the brand is waiting on the physical visit. Not
+  /// APPROVED — nothing is verified until somebody has been and looked.
+  PHYSICAL_PENDING
   APPROVED
   REJECTED
   CANCELLED
+}
+
+enum PhysicalVerificationStatus {
+  /// Documents passed, nobody owns the visit yet. This is the queue.
+  PENDING_ASSIGNMENT
+  ASSIGNED
+  SCHEDULE_PROPOSED
+  SCHEDULE_CONFIRMED
+  RESCHEDULE_REQUESTED
+  VISIT_COMPLETED
+  PASSED
+  FAILED
+  /// The brand refused the visit. Terminal, and it fails the whole attempt.
+  DECLINED
+}
+
+/// The only three things a brand may say to a visit request. Free text cannot
+/// move this state machine — a reply is one of these or it is a note.
+enum PhysicalVerificationBrandResponse {
+  AGREED
+  RESCHEDULE_REQUESTED
+  DECLINED
+}
+
+enum PhysicalVerificationProofKind {
+  WORKSPACE
+  PACKAGING
+  BRANDING
+  SIGNAGE
+  EQUIPMENT
+  OTHER
 }
 
 enum VerificationIdDocumentType {
