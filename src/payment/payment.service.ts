@@ -1309,6 +1309,125 @@ export class PaymentService implements OnModuleInit {
     };
   }
 
+  /**
+   * Remember a card the buyer will recognise later — without storing the card.
+   *
+   * What goes in is a fingerprint: brand, bank, last four, expiry. There is no
+   * PAN and no CVV anywhere in the path, and the DTO pins `last4` to exactly
+   * four digits so a caller that posted a full number is refused at the
+   * boundary rather than trusted to have trimmed it.
+   *
+   * Such a record is NOT chargeable, and that is deliberate. Paystack only
+   * hands back a reusable authorization once a real payment has completed in
+   * its own window, and that authorization is written by the payment path.
+   * Until then this row exists so the buyer sees "Visa ···· 4081" on their next
+   * checkout instead of an empty list; picking it prepares that card in the
+   * popup rather than charging it silently.
+   *
+   * `providerAuthorizationSignature` carries a non-secret fingerprint so the
+   * table's own uniqueness stops the same card being listed twice — the buyer
+   * saving it again on a later checkout updates the row instead of stacking a
+   * duplicate.
+   */
+  async recordSavedPaymentCard(
+    userId: string,
+    input: {
+      last4: string;
+      expMonth: string;
+      expYear: string;
+      brand?: string;
+      bank?: string;
+      holderName?: string;
+    },
+  ): Promise<SavedPaymentCardSummary[]> {
+    if (!userId) {
+      throw new BadRequestException('Sign in before saving a card');
+    }
+
+    const savedPaymentMethodModel = this.getSavedPaymentMethodModel();
+    if (!savedPaymentMethodModel) {
+      throw new InternalServerErrorException(
+        'Saved payment method storage is unavailable on this deployment.',
+      );
+    }
+
+    const last4 = String(input.last4 ?? '').trim();
+    const expMonth = String(input.expMonth ?? '').trim();
+    const expYear = String(input.expYear ?? '').trim();
+    /*
+      Belt and braces behind the DTO. This is the one place in the codebase
+      where a mistake means card data at rest, so the shape is asserted again
+      here rather than assumed from the decorator.
+    */
+    if (!/^[0-9]{4}$/.test(last4)) {
+      throw new BadRequestException('Only the last four digits may be sent');
+    }
+    if (!/^(0[1-9]|1[0-2])$/.test(expMonth) || !/^[0-9]{4}$/.test(expYear)) {
+      throw new BadRequestException('Card expiry is not valid');
+    }
+
+    // An expired card is not worth remembering: it cannot be used and it
+    // becomes one more row the buyer has to recognise and dismiss.
+    const now = new Date();
+    const expiresEndOf = new Date(
+      Number(expYear),
+      Number(expMonth),
+      0,
+      23,
+      59,
+      59,
+    );
+    if (expiresEndOf.getTime() < now.getTime()) {
+      throw new BadRequestException('That card has already expired');
+    }
+
+    const brand = input.brand?.trim() || null;
+    const bank = input.bank?.trim() || null;
+    const holderName = input.holderName?.trim() || null;
+    /*
+      A fingerprint, not a secret: it identifies the same card across saves so
+      the unique index can dedupe, and it reveals nothing that is not already
+      on the row.
+    */
+    const signature = `manual:${brand ?? 'card'}:${last4}:${expMonth}${expYear}`;
+
+    await savedPaymentMethodModel.upsert({
+      where: {
+        buyerId_providerAuthorizationSignature: {
+          buyerId: userId,
+          providerAuthorizationSignature: signature,
+        },
+      },
+      create: {
+        buyerId: userId,
+        provider: 'PAYSTACK',
+        paymentMethod: PaymentMethod.PAYSTACK,
+        status: 'ACTIVE',
+        brand,
+        bank,
+        last4,
+        expMonth,
+        expYear,
+        holderName,
+        providerAuthorizationSignature: signature,
+        // No authorization code: this card cannot be charged until Paystack
+        // returns one from a completed payment.
+        providerAuthorizationCodeEncrypted: null,
+        providerAuthorizationMeta: { source: 'BUYER_SAVED', reusable: false },
+      },
+      update: {
+        status: 'ACTIVE',
+        brand,
+        bank,
+        holderName,
+        expMonth,
+        expYear,
+      },
+    });
+
+    return this.listSavedPaymentCards(userId);
+  }
+
   async removeSavedPaymentCard(savedCardId: string, userId: string) {
     if (!this.isCanonicalSavedMethodsEnabledForUser(userId)) {
       throw new BadRequestException(

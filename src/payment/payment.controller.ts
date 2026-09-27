@@ -12,6 +12,7 @@ import {
   Req,
   HttpCode,
   UseInterceptors,
+  ValidationPipe,
   Logger,
 } from '@nestjs/common';
 import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
@@ -39,6 +40,7 @@ import { PaymentRuntimeHealthService } from './payment-runtime-health.service';
 import { ADMIN_PERMISSIONS } from 'src/admin/constants/permissions';
 import { RequirePermissions } from 'src/admin/decorators/require-permissions.decorator';
 import { AdminPermissionGuard } from 'src/admin/guards/admin-permission.guard';
+import { RecordSavedCardDto } from './dto/record-saved-card.dto';
 
 @Controller('payment')
 export class PaymentController {
@@ -191,6 +193,24 @@ export class PaymentController {
   ): Promise<SavedPaymentCardSummary[]> {
     const userId = (req as any).user?.id ?? (req as any).user?.sub;
     return this.paymentService.listSavedPaymentCards(userId);
+  }
+
+  /**
+   * Remember a card for next time. Fingerprint only — see RecordSavedCardDto.
+   *
+   * Not behind the canonical-saved-methods gate that `remove` and `default`
+   * use: those manage rows the payment path created, whereas this is how the
+   * first row gets there at all.
+   */
+  @Post('saved-cards/record')
+  @UseGuards(JwtAuthGuard)
+  async recordSavedCard(
+    @Body(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
+    dto: RecordSavedCardDto,
+    @Req() req: Request,
+  ): Promise<SavedPaymentCardSummary[]> {
+    const userId = (req as any).user?.id ?? (req as any).user?.sub;
+    return this.paymentService.recordSavedPaymentCard(userId, dto);
   }
 
   @Delete('saved-cards/:savedCardId')
